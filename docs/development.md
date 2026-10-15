@@ -366,7 +366,10 @@ about a minute per context instead of an eleven-minute 32K prefill:
   restoring the shared saved prefix. It prints both medians, the change
   (positive is faster: decode tokens/s up, C down), the range of per-pair
   changes, and the keep rule's verdict per row and overall; `--json` prints
-  the rows for a ledger. An A/A run (base = candidate) read −0.01 % and
+  the rows for a ledger. `--kv q8_0` compares on the Q8_0 cache (each
+  precision saves its own prefixes), and `--run <dir>` names the fixture
+  run for a model without an acceptance workload (Saluki takes Qwen's,
+  `--run run-2026-09-06`). An A/A run (base = candidate) read −0.01 % and
   +0.07 % with per-pair changes within ±0.23 % at 512 (decode and a 4-row
   verify, 2026-09-30).
 

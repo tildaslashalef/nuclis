@@ -131,9 +131,9 @@ def prompt_candidates(run, context):
     return [FIXTURES / name / f"prompt-{context}.json" for name in names]
 
 
-def bench_argv(nuclis, model, prompt, tokens, verify_rows=None, accept=0):
+def bench_argv(nuclis, model, prompt, tokens, verify_rows=None, accept=0, kv="f16"):
     argv = [str(nuclis), "bench", "--backend", "metal", "--model", model, "--prompt-tokens", str(prompt)]
-    argv += ["--max-tokens", str(tokens), "--ctx-size", "32768", "--kv", "f16"]
+    argv += ["--max-tokens", str(tokens), "--ctx-size", "32768", "--kv", kv]
     # No warm-up: with the weights in the page cache a process's first run
     # decodes at its second's rate; only its first token is slower.
     argv += ["--prefix-cache", str(PREFIX_DIR), "--repeat", "1", "--warmup", "0", "--json"]
@@ -225,6 +225,8 @@ def main():
     ap.add_argument("--accept", type=int, help="drafts each verify batch accepts (default: half the drafts)")
     ap.add_argument("--no-decode", action="store_true", help="only the verify rows")
     ap.add_argument("--model", default="qwen38", help="the gates.json model key (default: %(default)s)")
+    ap.add_argument("--kv", default="f16", choices=("f16", "q8_0"), help="attention cache (default: %(default)s)")
+    ap.add_argument("--run", help="the fixture run holding the token arrays (default: the family's acceptance run)")
     ap.add_argument("--json", action="store_true", help="print the rows as JSON")
     ap.add_argument("--self-test", action="store_true", help="run the unit tests of the pure functions")
     args = ap.parse_args()
@@ -242,14 +244,14 @@ def main():
     if args.model not in gdoc["models"]:
         sys.exit(f"unknown model {args.model}; gates.json has {', '.join(gdoc['models'])}")
     model = gdoc["models"][args.model].get("entry") or gates.model_path(gdoc, args.model)
-    run = family_run(args.model)
+    run = args.run or family_run(args.model)
     modes = [] if args.no_decode else [None]
     modes += parse_list(args.verify_rows) if args.verify_rows else []
     rows = []
     print(
         f"base {info['revision']}{' (dirty)' if info['dirty'] else ''} vs tree "
         f"{git('rev-parse', '--short', 'HEAD')}{' (dirty)' if git('status', '--porcelain') else ''}, "
-        f"{args.model}, {args.pairs} pairs",
+        f"{args.model}, {args.kv} cache, {args.pairs} pairs",
         file=sys.stderr,
     )
     for context in parse_list(args.contexts):
@@ -260,12 +262,16 @@ def main():
             label = f"{context} verify R={rows_n} a={accept}" if verify else f"{context} decode"
             # One unmeasured run first, so a missing saved prefix is prefilled
             # outside the pairs.
-            subprocess.run(bench_argv(CANDIDATE, model, prompt, 2, rows_n, accept), cwd=ROOT, capture_output=True)
+            subprocess.run(
+                bench_argv(CANDIDATE, model, prompt, 2, rows_n, accept, args.kv), cwd=ROOT, capture_output=True
+            )
             base_values, candidate_values = [], []
             for i in range(args.pairs):
                 order = [(base, base_values), (CANDIDATE, candidate_values)]
                 for binary, values in order if i % 2 == 0 else reversed(order):
-                    values.append(measure(bench_argv(binary, model, prompt, args.tokens, rows_n, accept), verify))
+                    values.append(
+                        measure(bench_argv(binary, model, prompt, args.tokens, rows_n, accept, args.kv), verify)
+                    )
             row = summarize(label, base_values, candidate_values, higher_is_better=not verify)
             rows.append(row)
             print(
@@ -274,7 +280,14 @@ def main():
                 f"  {row['verdict']}",
                 file=sys.stderr,
             )
-    result = {"base": info, "model": args.model, "rows": rows, "verdict": overall(rows)}
+    result = {
+        "base": info,
+        "model": args.model,
+        "kv": args.kv,
+        "tokens": args.tokens,
+        "rows": rows,
+        "verdict": overall(rows),
+    }
     print(f"verdict: {result['verdict']}", file=sys.stderr)
     if args.json:
         print(json.dumps(result, indent=2))
@@ -330,6 +343,9 @@ class SelfTest(unittest.TestCase):
     def test_bench_argv(self):
         plain = bench_argv("n", "m", "p.json", 32)
         self.assertEqual(plain[-2:], ["--speculative", "off"])
+        self.assertEqual(plain[plain.index("--kv") + 1], "f16")
+        q8 = bench_argv("n", "m", "p.json", 32, kv="q8_0")
+        self.assertEqual(q8[q8.index("--kv") + 1], "q8_0")
         self.assertIn("--prefix-cache", plain)
         verify = bench_argv("n", "m", "p.json", 16, 4, 1)
         self.assertEqual(verify[-6:], ["--speculative", "on", "--verify-rows", "4", "--accept", "1"])
