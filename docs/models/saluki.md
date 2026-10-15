@@ -31,8 +31,8 @@ The repository also has `mmproj-…-F16.gguf` (927,606,912 B, SHA-256
 (Q8_0 matrices, F16 `ffn_down`, F32 vectors;
 [vision.md § The Qwen3-VL projector](../engine/vision.md#the-qwen3-vl-projector-2026-09-22)),
 which the Qwen3-VL adapter already binds. No catalogue entry: the
-[catalogue](catalogue.md) decision waits for the comparison with
-Unsloth's 2-bit files on nuclis.
+[catalogue](catalogue.md) decision is deferred (the user's, 2026-10-15);
+a comparison with Unsloth's 2-bit files on nuclis would inform it.
 
 ## Metadata
 
