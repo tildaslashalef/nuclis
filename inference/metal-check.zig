@@ -2311,13 +2311,16 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: b
         try std.testing.expectError(error.InvalidShape, b.attentionChunkReuse(any, any, any, any, fitting));
         try b.release(any);
     }
-    // Decode: the wide instantiation (16 heads of 512 over one KV head, four
-    // head groups per split; over two, two groups per KV head) and the
-    // sliding geometry (groups of 2), F32 and F16 (over the rounded rows),
-    // at 257 (two splits) and 1,021 visible.
-    const partials = try b.create(Backend.attentionDecodePartials(16, 512) * 4);
+    // Decode: 16 heads of 512 over one KV head (one head per SIMD group,
+    // one row lane) and over two, the sliding geometry (groups of 2),
+    // Muse Glimmer's 32 heads of 128 over two, and a width only the
+    // general kernel takes (12 heads of 96 over 4), F32 and F16 (over the
+    // rounded rows), at 257 (two splits) and 1,021 visible.
+    const muse: Geometry = .{ .qh = 32, .kvh = 2, .hd = 128 };
+    const general: Geometry = .{ .qh = 12, .kvh = 4, .hd = 96 };
+    const partials = try b.create(Backend.attentionDecodePartials(32, 512) * 4);
     var worst_decode: f32 = 0;
-    for ([_]Geometry{ global, global_two, sliding }) |g| for ([_]usize{ 257, 1021 }) |visible| {
+    for ([_]Geometry{ global, global_two, sliding, muse, general }) |g| for ([_]usize{ 257, 1021 }) |visible| {
         const qw = g.qh * g.hd;
         const kvw = g.kvh * g.hd;
         const keys = try b.create(visible * kvw * 4);
@@ -3079,13 +3082,18 @@ fn checkQ8Cache(alloc: std.mem.Allocator, b: *Backend) !void {
     const random = prng.random();
     const Geometry = struct { qh: usize, kvh: usize, hd: usize, visible: usize, rows: usize };
     // Saluki's full-attention layer at three depths and a verify batch;
-    // Gemma 4's global layer (16 heads of 512 over one KV head).
+    // Gemma 4's global layer (16 heads of 512 over one KV head); Muse
+    // Glimmer's 32 heads of 128 over two; a width only the general
+    // kernel takes (12 heads of 96 over 4).
     const geometries = [_]Geometry{
         .{ .qh = 24, .kvh = 4, .hd = 256, .visible = 257, .rows = 1 },
         .{ .qh = 24, .kvh = 4, .hd = 256, .visible = 1021, .rows = 1 },
         .{ .qh = 24, .kvh = 4, .hd = 256, .visible = 16385, .rows = 1 },
         .{ .qh = 24, .kvh = 4, .hd = 256, .visible = 4099, .rows = 5 },
         .{ .qh = 16, .kvh = 1, .hd = 512, .visible = 2049, .rows = 1 },
+        .{ .qh = 32, .kvh = 2, .hd = 128, .visible = 1021, .rows = 1 },
+        .{ .qh = 32, .kvh = 2, .hd = 128, .visible = 2051, .rows = 3 },
+        .{ .qh = 12, .kvh = 4, .hd = 96, .visible = 1021, .rows = 1 },
     };
     // Edge blocks: all zero, tiny (a subnormal F16 scale), one NaN, one
     // infinity, and an ordinary one.

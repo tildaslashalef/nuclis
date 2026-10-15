@@ -1566,10 +1566,10 @@ top five; bounds 1.0 / 2.5e-2.
 | 32,640 | 1.795 | 1.693 | 2.142 |
 
 F16 reads half F32's bytes in 94 % of its time (about 75 GB/s of cache),
-so the online softmax over eight heads per row, not memory, sets the
-pace, and Q8_0's conversions add 25 % to it. Q8_0 therefore saves memory,
-not decode time, at long context; making this kernel bandwidth-bound is
-open.
+so memory did not set the pace, and Q8_0's conversions added 25 % to it.
+The cause was registers, and the head-split kernel took F16 to the memory
+roof and Q8_0 level with it
+([§ The split pass at the memory roof](#the-split-pass-at-the-memory-roof-2026-10-15)).
 
 What it costs in quality is perplexity, and it costs none measurable: `nuclis eval
 --file wiki.test.raw` (512-token windows, the last 255 of each scored;
@@ -1619,6 +1619,8 @@ rescales every split to the global max and divides by the merged sum;
 empty SIMD groups or splits (`m = −∞`, `l = 0`) drop out of both merges.
 The three-pass kernels stay in the library as `test-metal`'s oracle and
 are no longer dispatched by the plan.
+Since 2026-10-15 keys and values of one width 128, 256, or 512 run in
+the head-split kernel below; this geometry takes every other shape.
 
 Evidence (`test-metal`, 2026-09-10): the six pinned attention fixtures
 (tiny widths, one split, mostly empty SIMD groups) within 1e-5; the model
@@ -1627,6 +1629,73 @@ uneven splits), and 32,000 rows against the F64 CPU reference: F32 cache 2.2e-8 
 Full model: `make gate NAME=qwen38-trace-f32` 129 files, max abs 6.1e-5 (was 1.22e-4: each row is now accumulated once in F32 rather than through a stored score), `make gate NAME=qwen38-trace-f16` 2.50e-2 / 1.9e-4 at the F16 tolerance, greedy unchanged. `test-generation --metal` unchanged
 (bit-identical sessions, snapshot round trip). Performance:
 [benchmarks § Observations](../benchmarks/history.md#observations-so-far) ([KERN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-08--flash-decoding-attention-2026-09-10) rows).
+
+## The split pass at the memory roof (2026-10-15)
+
+`nu_attention_decode_t` held eight heads' queries and accumulators per
+lane (`GROUP × CH × 2` = 128 floats plus the rows), and registers, not
+bytes or ALU, bounded it: about one threadgroup fit per core. Measured
+in a scratch harness running the same kernels on Saluki's layer (24
+query heads over 4 KV heads of 256, 32,640 rows, F16): padding the
+threadgroup memory to 32 KB changed nothing (1.36 ms); the same kernel
+with GROUP 6 instead of 8 was 20 % faster; GROUP 2 over three head
+groups, reading the cache three times, 43 % faster. Per-channel guards
+(`c < width`) cost as much again (Q8_0 0.77 ms without, 0.97 branch-free,
+1.58 branching). Removing `simd_sum` or `exp` saved under 4 %; explicit
+`fma` nothing (clang contracts `a*b + c` even under `MTLMathModeSafe`);
+a lazy rescale (a uniform branch when a head's max rises), two rows per
+step, and four-code vector conversions lost or tied.
+
+**The kernel.** `nu_attention_heads_t<KV, GROUP, CH>` takes keys and
+values of one width `32 × CH` (128, 256, 512) with
+`nu_attention_decode_t`'s contract and partial layout, so
+`nu_attention_merge`, the verify path, and windows are unchanged. A
+threadgroup is (KV head, split, row) with `HG × RL` SIMD groups: SIMD
+group `s` owns GROUP query heads from `GROUP × (s % HG)` and walks rows
+`start + s / HG`, step RL; the head groups read each row together, once
+from memory and the copies from cache. Lane `l` owns channels
+`CH·l … CH·l + CH − 1`, read as packed `float4`/`half4` without guards.
+F32 and F16 keep the per-row body; Q8_0 reads eight codes of one block
+per lane and runs the row in three phases (every head's dot, the
+softmax, the V accumulation) with the block scale outside the per-code
+products (`d · Σ q·code`, `(p · d) · code`), which is what made it fast
+(2.15 → 0.61 ms; with the scale inside, 1.51). `Backend.decodePlan`
+picks it by measured optimum: F32/F16 2 heads per SIMD group at 256, 4
+at 128, 1 at 512, two row lanes; Q8_0 3 at 256 with four row lanes, 4
+at 128 and 1 at 512 with two; row lanes halve until the threadgroup
+holds 1,024 threads and their merge fits the 4,096-float stage (Gemma's
+16 heads of 512 over one KV head run with one). Three heads per SIMD
+group fall off a register cliff for F16 (1.19 ms) but not for Q8_0's
+phased row; four fall off for both.
+
+`metal-check --decode-bench` (Saluki's layer, GPU time, best of four),
+2026-10-15, before → after:
+
+| Visible | F32 ms | F16 ms | Q8_0 ms |
+| ---: | ---: | ---: | ---: |
+| 4,096 | 0.236 → 0.149 | 0.222 → 0.081 | 0.244 → 0.090 |
+| 16,384 | 0.973 → 0.550 | 0.930 → 0.335 | 1.158 → 0.332 |
+| 32,640 | 1.795 → 1.066 | 1.693 → 0.627 | 2.142 → 0.612 |
+
+F32 reads 251 GB/s and F16 213 GB/s at 32,640, the memory roof. Q8_0
+reads half F16's bytes in the same time: it does the same multiply-adds
+per channel (two per head plus the rescale) and those, now, are the
+floor; ablating the V accumulation or the K dot each saves 0.15 ms of
+its 0.61. Q8_0 is 2 % faster than F16 at 32,640, level at 16,384, and
+10 % slower at 4,096; its gain stays memory.
+
+The other families' shapes at 32,640 rows (harness, split pass plus
+merge), before → after: Muse Glimmer's 32 heads of 128 over two, F16
+2.46 → 0.41 ms and Q8_0 2.55 → 0.49; Gemma's global 16 heads of 512
+over one, F16 2.68 → 1.20 and Q8_0 3.28 → 1.22; Gemma's sliding 16 over
+8 of 256, F16 1.31 → 1.09 (the window bounds it in use).
+
+Evidence (`test-metal`, 2026-10-15): every decode, verify, wide, and
+Q8_0 check within its bound, plus Muse Glimmer's shape (F32/F16 decode
+at 257 and 1,021; Q8_0 decode at 1,021 and a 3-row verify at 2,051) and
+a width only the general kernel takes (12 heads of 96 over 4); wide and
+grouped decode 5.96e-7 max abs (bound 5e-5), Q8_0 against the CPU over
+the dequantized rows 2.98e-8 at worst (bounds 2e-5 / 1e-4).
 
 ## Few-query verify attention (2026-09-30)
 
