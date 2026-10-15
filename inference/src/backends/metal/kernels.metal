@@ -899,13 +899,8 @@ inline void nu_segment_sums(device const uchar * w, device const float * x, Matv
         case 14: nu_matvec_q6_k_body<4>(w, x, p, group, sg, lane, acc); return;
         case 21: nu_matvec_iq3_s_body<4>(w, x, p, group, sg, lane, acc); return;
         case 23: nu_matvec_iq4_xs_body<4>(w, x, p, group, sg, lane, acc, iq4); return;
-        case 16: nu_matvec_iq2_xxs_body<4>(w, x, p, group, sg, lane, acc); return;
-        case 17: nu_matvec_iq2_xs_body<4, constant ulong *>(w, x, p, group, sg, lane, acc, nu_iq2_xs_grid); return;
-        case 18: nu_matvec_iq3_xxs_body<4>(w, x, p, group, sg, lane, acc); return;
-        case 22: nu_matvec_iq2_s_body<4, constant ulong *>(w, x, p, group, sg, lane, acc, nu_iq2_s_grid); return;
-        case 10: nu_matvec_q2_k_body<4>(w, x, p, group, sg, lane, acc); return;
-        case 19: nu_matvec_iq1_s_body<4>(w, x, p, group, sg, lane, acc); return;
-        case 29: nu_matvec_iq1_m_body<4>(w, x, p, group, sg, lane, acc); return;
+        // The seven 2-bit encodings never arrive specialized: the host
+        // declines their merges (`mergeDeclined` in root.zig).
         case 142: nu_matvec_pq2_0_body<4>(w, x, p, group, sg, lane, acc); return;
         case 143: nu_matvec_ptq1_0_body<4>(w, x, p, group, sg, lane, acc); return;
         default:

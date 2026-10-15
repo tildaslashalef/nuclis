@@ -205,12 +205,13 @@ fn randomCodebookBlocks(region: []u8, encoding: u32) void {
     }
 }
 
-/// `--matvec-bench [ENCODING]`: achieved weight bandwidth of the matvec kernels on
+/// `--matvec-bench [ENCODING [SHAPE]]`: achieved weight bandwidth of the matvec kernels on
 /// model-shaped matrices (GPU busy time per dispatch, one dispatch per command
 /// buffer with `repeats` dispatches; best and mean over `rounds`), one encoding
-/// when named (a full run heats the GPU progressively). A measurement aid for kernel work, not
+/// when named (a full run heats the GPU progressively), and only the shapes
+/// whose name contains SHAPE when given. A measurement aid for kernel work, not
 /// an acceptance benchmark: it isolates one kernel from the token schedule.
-fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
+fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8, only_shape: ?[]const u8) !void {
     var backend = try openBackend(alloc);
     defer backend.deinit();
     const b = &backend;
@@ -272,6 +273,7 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
             };
             const bytes = sample_bytes orelse return error.FixtureMissing;
             for (shapes) |shape| {
+                if (only_shape) |name| if (std.mem.indexOf(u8, shape.name, name) == null) continue;
                 // Small matrices need longer batches to avoid measuring clock ramp-up.
                 const repeats: usize = if (shape.rows < 8192) 64 else 8;
                 const region = try tiledMatrixRows(alloc, bytes, enc.id, shape.rows, shape.columns);
@@ -306,6 +308,63 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
                     std.debug.print("{s:<8} {s:<26} {d:>9.1} {s:>8} {d:>9.1} {d:>9.1} ", .{ enc.name, shape.name, mb, if (generic) "generic" else "block", best, total / rounds });
                     for (samples) |r| std.debug.print(" {d:.0}", .{r});
                     std.debug.print("\n", .{});
+                }
+                // The gate shape also runs as the gate+up pair of a decode
+                // step: merged (`matvecSegments`, SiLU pair mode) unless the
+                // backend declines the merge, and as two standalone matvecs
+                // and `siluMul` (the models' fallback), on two 17,408-row
+                // halves of the same weights.
+                if (shape.rows == 69632) {
+                    b.generic_only = false;
+                    const half_rows = 17408;
+                    const stride = region.len / shape.rows;
+                    const half_bytes = half_rows * stride;
+                    const out = output.slice(0, half_rows * 4);
+                    const up_out = output.slice(half_rows * 4, half_rows * 4);
+                    const gate: Backend.Segment = .{ .weights = weights.slice(0, half_bytes), .matrix = .{ .rows = half_rows, .columns = shape.columns, .encoding = enc.id, .bytes = region[0..half_bytes] }, .output = out };
+                    const up: Backend.Segment = .{ .weights = weights.slice(half_bytes, half_bytes), .matrix = .{ .rows = half_rows, .columns = shape.columns, .encoding = enc.id, .bytes = region[half_bytes .. 2 * half_bytes] }, .output = out };
+                    const mb = @as(f64, @floatFromInt(2 * half_bytes)) / 1e6;
+                    for ([_]bool{ true, false }) |merged| {
+                        if (merged) {
+                            try b.begin();
+                            const declined = if (b.matvecSegments(&.{ gate, up }, input, .silu_mul_pair)) |_| false else |err| switch (err) {
+                                error.MergeDeclined => true,
+                                else => return err,
+                            };
+                            try b.commit();
+                            if (declined) {
+                                std.debug.print("{s:<8} {s:<26} {d:>9.1} {s:>8}  declined\n", .{ enc.name, "34816x5120 (gate+up)", mb, "merged" });
+                                continue;
+                            }
+                        }
+                        var best: f64 = 0;
+                        var total: f64 = 0;
+                        var samples: [rounds]f64 = undefined;
+                        for (0..rounds + 2) |i| {
+                            if (i == 1) {
+                                var label: [96]u8 = undefined;
+                                try captureCase(b, try std.fmt.bufPrint(&label, "matvec-{s}-34816x5120 (gate+up)-{s}", .{ enc.name, if (merged) "merged" else "unmerged" }));
+                            }
+                            const before = b.gpuSeconds();
+                            try b.begin();
+                            for (0..repeats) |_| if (merged) {
+                                try b.matvecSegments(&.{ gate, up }, input, .silu_mul_pair);
+                            } else {
+                                try b.matvec(gate.weights, gate.matrix, input, out);
+                                try b.matvec(up.weights, up.matrix, input, up_out);
+                                try b.siluMul(out, up_out, half_rows);
+                            };
+                            try b.commit();
+                            const rate = mb / 1e3 / ((b.gpuSeconds() - before) / @as(f64, @floatFromInt(repeats)));
+                            if (i < 2) continue; // warm-up
+                            samples[i - 2] = rate;
+                            best = @max(best, rate);
+                            total += rate;
+                        }
+                        std.debug.print("{s:<8} {s:<26} {d:>9.1} {s:>8} {d:>9.1} {d:>9.1} ", .{ enc.name, "34816x5120 (gate+up)", mb, if (merged) "merged" else "unmerged", best, total / rounds });
+                        for (samples) |r| std.debug.print(" {d:.0}", .{r});
+                        std.debug.print("\n", .{});
+                    }
                 }
             }
         }
@@ -1493,6 +1552,22 @@ fn checkTick(alloc: std.mem.Allocator) !void {
     if (counter.calls != 0) return error.TickFiredOnShortWait;
 }
 
+/// Records a merge, or checks that the backend declined it exactly when a
+/// segment's specialized kernel is one `mergeDeclined` names (nothing is
+/// recorded then). Returns whether the merge was recorded.
+fn mergeOrDecline(b: *Backend, segments: []const Backend.Segment, input: Buffer, mode: Backend.SegmentMode) !bool {
+    var expect_decline = false;
+    if (!b.generic_only) for (segments) |s| {
+        const kernel = Backend.specializedMatvec(s.matrix.encoding, s.weights.offset, s.matrix.bytes.len / s.matrix.rows, input.offset) orelse continue;
+        expect_decline = expect_decline or Backend.mergeDeclined(kernel);
+    };
+    b.matvecSegments(segments, input, mode) catch |err| switch (err) {
+        error.MergeDeclined => return if (expect_decline) false else error.UnexpectedMergeDecline,
+        else => return err,
+    };
+    return if (expect_decline) error.MissingMergeDecline else true;
+}
+
 fn checkSegments(alloc: std.mem.Allocator) !void {
     var backend = try openBackend(alloc);
     defer backend.deinit();
@@ -1527,24 +1602,24 @@ fn checkSegments(alloc: std.mem.Allocator) !void {
             const fourth = list.items[(i + 3) % list.items.len];
             try b.begin();
             try b.matvec(s.weights, s.matrix, input, expected);
-            try b.matvecSegments(&.{ s, next, third, fourth }, input, .plain);
+            const merged = try mergeOrDecline(b, &.{ s, next, third, fourth }, input, .plain);
             try b.commit();
-            for (s.output.floats()[0..rows], expected.floats()[0..rows]) |got, want| if (got != want) return error.MergedMatvecMismatch;
+            if (merged) for (s.output.floats()[0..rows], expected.floats()[0..rows]) |got, want| if (got != want) return error.MergedMatvecMismatch;
             var up = next;
             up.output = s.output;
             try b.begin();
             try b.matvec(next.weights, next.matrix, input, second);
             try b.siluMul(expected, second, rows);
-            try b.matvecSegments(&.{ s, up }, input, .silu_mul_pair);
+            const silu = try mergeOrDecline(b, &.{ s, up }, input, .silu_mul_pair);
             try b.commit();
-            for (s.output.floats()[0..rows], expected.floats()[0..rows]) |got, want| if (got != want) return error.MergedSiluMismatch;
+            if (silu) for (s.output.floats()[0..rows], expected.floats()[0..rows]) |got, want| if (got != want) return error.MergedSiluMismatch;
             try b.begin();
             try b.matvec(s.weights, s.matrix, input, expected);
             try b.matvec(next.weights, next.matrix, input, second);
             try b.geluMul(expected, second, rows);
-            try b.matvecSegments(&.{ s, up }, input, .gelu_mul_pair);
+            const gelu = try mergeOrDecline(b, &.{ s, up }, input, .gelu_mul_pair);
             try b.commit();
-            for (s.output.floats()[0..rows], expected.floats()[0..rows]) |got, want| if (got != want) return error.MergedGeluMismatch;
+            if (gelu) for (s.output.floats()[0..rows], expected.floats()[0..rows]) |got, want| if (got != want) return error.MergedGeluMismatch;
         }
     }
     b.generic_only = false;
@@ -2942,7 +3017,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     capture_match = init.environ_map.get("NUCLIS_CAPTURE");
-    if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-bench")) return matvecBench(alloc, if (args.len > 2) args[2] else null);
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-bench")) return matvecBench(alloc, if (args.len > 2) args[2] else null, if (args.len > 3) args[3] else null);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-split")) return matvecSplitBench(alloc, if (args.len > 2) args[2] else null);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matmul-bench")) return matmulBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-rows-bench")) {

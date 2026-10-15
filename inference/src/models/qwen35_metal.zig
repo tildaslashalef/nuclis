@@ -424,8 +424,9 @@ pub const Plan = struct {
         return scratch;
     }
 
-    /// Merge only shapes the backend can encode as whole threadgroups. A
-    /// rejected merge records no work; the standalone path remains the fallback.
+    /// Merge only shapes the backend can encode as whole threadgroups and
+    /// encodings it does not decline. A rejected or declined merge records
+    /// no work; the standalone path remains the fallback.
     fn projections(self: *Plan, tensors: []const *const Tensor, outputs: []const Buffer, mode: metal.Backend.SegmentMode) !void {
         std.debug.assert(tensors.len == outputs.len and tensors.len <= 4);
         var segments: [4]metal.Backend.Segment = undefined;
@@ -434,7 +435,7 @@ pub const Plan = struct {
             segments[i] = .{ .weights = w.buffer, .matrix = w.matrix, .output = if (mode == .silu_mul_pair) outputs[0] else output };
         }
         self.backend.matvecSegments(segments[0..tensors.len], self.normalized, mode) catch |err| switch (err) {
-            error.InvalidShape => {
+            error.InvalidShape, error.MergeDeclined => {
                 for (segments[0..tensors.len], outputs) |s, output| try self.backend.matvec(s.weights, s.matrix, self.normalized, output);
                 if (mode == .silu_mul_pair) try self.backend.siluMul(outputs[0], outputs[1], segments[0].matrix.rows);
             },

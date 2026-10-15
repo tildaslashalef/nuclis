@@ -1049,8 +1049,22 @@ pub const Backend = struct {
         used.* += 1;
         return @intCast(index);
     }
+    /// Records the merged matvec of up to four projections in one dispatch.
+    /// `error.MergeDeclined` (nothing recorded) when a segment's specialized
+    /// kernel runs faster alone (`mergeDeclined`); the caller then runs the
+    /// segments as standalone matvecs and a pair's activation.
     pub fn matvecSegments(self: *Backend, segments: []const Segment, input: Buffer, mode: SegmentMode) !void {
         return self.matvecSegmentsImpl(segments, input, mode, null);
+    }
+    /// The seven 2-bit encodings' standalone kernels beat their bodies inside
+    /// the merged kernel by 11–23 % on the gate+up pair, even with the two
+    /// extra dispatches and `siluMul` (docs/engine/apple-gpu.md § Saluki's
+    /// 2-bit matvecs on the `ffn_down` shape), so a merge holding one is declined.
+    pub fn mergeDeclined(kernel: Kernel) bool {
+        return switch (kernel) {
+            .matvec_iq2_xxs, .matvec_iq2_xs, .matvec_iq2_s, .matvec_iq3_xxs, .matvec_q2_k, .matvec_iq1_s, .matvec_iq1_m => true,
+            else => false,
+        };
     }
     /// `matvecSegments` forcing the split count (the split sweep's knob; 1 is
     /// the single-pass kernel). Only plain-mode merges whose every segment has
@@ -1084,6 +1098,7 @@ pub const Backend = struct {
         // body* (neither the generic body nor the non-split encodings honour a
         // K range) and a free binding slot for the row partials.
         var all_split_capable = mode == .plain;
+        var declined = false;
         for (segments, 0..) |s, i| {
             const m = s.matrix;
             if (m.rows == 0 or m.rows > std.math.maxInt(u32) / 4 or m.rows % 16 != 0 or m.columns != columns or m.bytes.len % m.rows != 0) return error.InvalidShape;
@@ -1100,6 +1115,7 @@ pub const Backend = struct {
             const kernel = if (self.generic_only) null else specializedMatvec(m.encoding, s.weights.offset, stride, input.offset);
             const specialized = kernel != null;
             all_split_capable = all_split_capable and (if (kernel) |k| matvecSplitKernel(k) != null else false);
+            declined = declined or (if (kernel) |k| mergeDeclined(k) else false);
             p.segments[i] = .{
                 .rows = @intCast(m.rows),
                 .weight_slot = try segmentSlot(&bindings, &used, s.weights),
@@ -1127,6 +1143,7 @@ pub const Backend = struct {
             try self.dispatch(.segment_reduce_splits, &bindings, p, perElement(total_rows), 256, .{});
             return;
         }
+        if (declined) return error.MergeDeclined;
         const groups = if (mode == .plain) total_rows / 16 else p.segments[0].rows / 8;
         try self.dispatch(.matvec_segments, &bindings, p, groups, 128, .{ .rows = total_rows, .columns = p.columns, .bytes = bytes });
     }

@@ -414,14 +414,83 @@ price a cost):
 | Weight loads as one aligned `uint2` (wrong data) | 133.2 |
 | Grid lookup replaced by a byte-splat multiply (wrong) | 131.5 |
 | Sign masks from a 128 × `uint4` constant table (2 KiB) | **80.7** |
+| Signs from a 128 × `ulong` constant table (1 KiB) into the grid bytes' free top bits, then one mask (and a rotate) per pair: about 10 integer instructions per octet instead of 26 | 124.3 |
+| The same table in threadgroup memory | 107.9 |
+| Inputs read as half (wrong data: the F32 buffer read as F16), F32 multiply-adds | 147.3 |
+| The same with half2 multiply-adds within each octet | 148.8 |
+| Half-to-float conversions removed (wrong: each half pair read as one F32, same integer work and multiply-adds) | 135.9 |
+| 2, 8, or 16 SIMD groups per threadgroup instead of 4 | 136.0, 135.0, 135.7 |
+| Next block's weights loaded before the current block's decode (software pipelining) | 135.6 |
+| Input loads coalesced across lanes (wrong data: lane-contiguous 16-byte runs, each lane's eight 512 bytes apart) | 95.9 |
+| 4 rows per SIMD group, K split over 2 SIMD groups (same SIMD-group count, input loads per weight halved) | 126.0 |
+| 8 rows per SIMD group, K split over 4 | 126.5 |
+| Octet-outer loop: two `float4` inputs live at a time instead of eight, each octet decoded for both rows | 125.4 |
+| Each iteration's 4 KiB of inputs staged once per threadgroup in threadgroup memory (double-buffered, one barrier) | 99.1 |
+| F32 inputs loaded as now, held as half (the same bytes, half the input registers) | 134.6 |
 
-Latency chains, the two-byte-aligned loads, and the 2 KiB grid lookup
-cost nothing; the parity costs about 3 % whichever pipe computes it; the
-input loads about 10 %, but 4 rows to share them lose more to the halved
-SIMD-group count than they save. A 16-byte divergent `constant` read per
-eight values costs 40 %, against nothing for the 8-byte grid read: the
-rule that every read wider than 8 bytes per eight values loses holds for
-tables too. What remains is the integer instruction count per value. The
-lever not tried is an F16 dot (inputs converted to half once per lane and
-shared across rows, half2 multiply-adds), which halves the input loads
-and the per-value work but must hold the F32 trace bounds.
+Latency chains, the two-byte-aligned loads, the 2 KiB grid lookup, the
+half-to-float conversions, the threadgroup size, and software-pipelined
+weight loads cost or gain nothing; the parity costs about 3 % whichever
+pipe computes it. Every added read loses, however many instructions it
+replaces: a second table read per octet (8 bytes, the grid's width)
+costs 8 % from `constant` and 20 % from threadgroup memory while saving
+16 integer instructions, and the 16-byte one 40 %. The input bytes are
+the one cost that moved: half inputs gain 9 %, with the same load count,
+and held as half after an F32 load (the same bytes, half the registers)
+they gain nothing, so it is the bytes each lane loads, in per-lane
+contiguous runs (the same bytes strided across a lane lose 29 %).
+Sharing them across rows does not recover it: 4 or 8 rows per SIMD
+group lose 7 % even with K split to keep the SIMD-group count.
+
+**The F16 dot fails the F32 trace.** Inputs rounded to half in the
+IQ2_XXS kernel alone give `saluki-trace-f32` a max abs of 2.56e-2 and a
+relative RMS of 2.5e-4 (bounds 2e-3 and 1e-4; the F32 kernel 6.1e-5 and
+4.5e-7), about what the F16 cache adds (`saluki-trace-f16`: 2.29e-2 and
+2.6e-4). It stays out unless the bounds change; the most it could buy
+is the 9–10 % above, on the kernels it serves.
+
+## The merged gate+up on Saluki's encodings (2026-10-15)
+
+Where a Saluki decode step goes (`nuclis bench --model saluki-27b
+--prompt-tokens tests/fixtures/run-2026-09-06/prompt-512.json
+--max-tokens 128 --ctx-size 32768 --kv f16 --profile`, `176bc43`; 62.8
+ms per step, 14.20 tok/s under profiling): the merged projections
+(`matvec_segments`) take **59 %** (the gate+up pair, 34,816 × 5,120,
+24.5 ms; the DeltaNet merge, 16,480 rows, 10.1 ms; the attention merge,
+14,336 rows, 2.6 ms), the IQ2_XXS `ffn_down` 14.6 % (9.2 ms), the IQ3_S
+output head 5.1 %, and nothing else more than 3.1 %. The merged kernel
+runs every encoding's body at 4 rows per SIMD group through one switch.
+
+`bench-kernels` gained the gate+up pair on the gate shape (two 17,408 ×
+5,120 halves of the same weights, SiLU pair mode), merged and as two
+standalone matvecs plus `siluMul`, against the standalone kernel on the
+whole 69,632 × 5,120 shape (GB/s, best of five):
+
+| Encoding | Standalone | Merged pair | Two matvecs + `siluMul` |
+| --- | ---: | ---: | ---: |
+| IQ2_XXS | 144.0 | 124.8 | **138.7** |
+| IQ2_XS | 158.6 | 133.9 | **152.9** |
+| IQ2_S | 162.7 | 138.8 | **158.1** |
+| IQ3_XXS | 195.6 | 165.9 | **187.1** |
+| Q2_K | 194.3 | 174.3 | **193.4** |
+| IQ1_S | 130.3 | 118.7 | **133.5** |
+| IQ1_M | 134.7 | 106.0 | **130.3** |
+| IQ3_S | | **175.4** | 160.2 |
+| Q4_K | | **237.8** | 192.8 |
+| IQ4_XS | | 192.7 | **213.6** |
+
+The seven lose 11–23 % inside the merged kernel, even against two extra
+dispatches. On IQ2_XXS the loss is a stack of small costs: the switch
+cut to IQ2_XXS's body reads 127.5, then without the IQ4_XS table setup
+129.3, with fixed buffer slots instead of the slot switch 131.1, without
+the generic branch 132.0, and in plain mode instead of the SiLU pair
+136.1; the standalone kernel at 4 rows reads 142 on this shape, so the
+rows are not the cause. Q4_K's merged pair beats its own standalone
+kernel by 23 %, which nothing here explains.
+
+**Decision:** the backend declines a merge holding one of the seven
+(`mergeDeclined`, `error.MergeDeclined`, nothing recorded), and the
+model adapters' standalone fallback runs it. Decode at 512 (the command
+above without `--profile`, mean of three after a warmup, same session):
+**16.09 → 17.10 tok/s**. IQ4_XS gains as much unmerged but belongs to
+other files' records; it is left merged here.
