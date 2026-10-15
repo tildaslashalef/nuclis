@@ -153,6 +153,9 @@ pub const Plan = struct {
     v_c: Buffer,
     /// Half copy of `q_c` for the F16 chunk attention (its operands share one type).
     q_c_h: Buffer, // padded × heads × 256 halves
+    /// A `q8_0` cache's visible rows expanded to F16 for the chunk kernel:
+    /// keys then values, capacity × 1024 halves each; null otherwise.
+    kv_stage: ?Buffer,
     mixed_c: Buffer, // padded × qkv
     convolved_c: Buffer,
     z_c: Buffer, // padded × inner
@@ -198,7 +201,8 @@ pub const Plan = struct {
     /// `chunk` bounds the tokens one `prefill` command buffer processes (and
     /// sizes its activation buffers: about 0.4 MB per token). `kv` is the
     /// attention cache precision: `f16` halves cache memory and the
-    /// bytes attention reads per token; the recurrent state stays F32.
+    /// bytes attention reads per token, `q8_0` about halves it again; the
+    /// recurrent state stays F32.
     pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision, checkpoint: bool, draft: bool) !Plan {
         if (chunk == 0 or chunk > 4096) return error.InvalidShape;
         if (draft and binding.draft == null) return error.NoDraftBlock;
@@ -303,6 +307,7 @@ pub const Plan = struct {
         self.k_c = try backend.create(n * 1024 * 4);
         self.v_c = try backend.create(n * 1024 * 4);
         self.q_c_h = try backend.create(n * heads * 256 * 2);
+        self.kv_stage = if (kv == .q8_0) try backend.create(2 * capacity * 1024 * 2) else null;
         self.mixed_c = try backend.create(n * qkv * 4);
         self.convolved_c = try backend.create(n * qkv * 4);
         self.z_c = try backend.create(n * inner * 4);
@@ -991,30 +996,32 @@ pub const Plan = struct {
         // A verify batch or a drafter's commit (few rows) takes the split
         // pass with F32 queries; a prefill chunk the tiled body.
         const few = count <= metal.Backend.verify_max_rows;
-        var queries = self.q_c;
-        switch (precision) {
-            .f32 => {
-                try b.copy(k_rows, self.k_c, count * 1024);
-                try b.copy(v_rows, self.v_c, count * 1024);
-            },
-            .f16 => {
-                // The F16 chunk kernel multiplies half operands: the cache rows and
-                // a half copy of the rotated queries (padded rows included, as the
-                // kernel computes on them).
-                try b.packHalf(&.{ .{ .dst = k_rows, .src = self.k_c, .count = count * 1024 }, .{ .dst = v_rows, .src = self.v_c, .count = count * 1024 } });
-                if (!few) {
-                    try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * heads * 256 }});
-                    queries = self.q_c_h;
-                }
-            },
-        }
+        try b.storeRows(&.{ .{ .dst = k_rows, .src = self.k_c, .count = count * 1024 }, .{ .dst = v_rows, .src = self.v_c, .count = count * 1024 } }, precision);
         // Row t attends to cache[0 .. position + t]; padded rows of
         // q_c/mixed_out_c absorb the tiled body's tail.
         const total = position + count;
-        const keys = self.stateSlice(cache.keys.range(0, total));
-        const values = self.stateSlice(cache.values.range(0, total));
+        var keys = self.stateSlice(cache.keys.range(0, total));
+        var values = self.stateSlice(cache.values.range(0, total));
+        var queries = self.q_c;
+        var operands = precision;
+        if (!few and precision != .f32) {
+            // The F16 chunk kernel multiplies half operands: the cache rows
+            // (a Q8_0 cache expanded first) and a half copy of the rotated
+            // queries (padded rows included, as the kernel computes on them).
+            if (precision == .q8_0) {
+                const stage = self.kv_stage.?;
+                const half_keys = stage.slice(0, total * 1024 * 2);
+                const half_values = stage.slice(self.state.capacity * 1024 * 2, total * 1024 * 2);
+                try b.unpackQ8(&.{ .{ .dst = half_keys, .src = keys, .count = total * 1024 }, .{ .dst = half_values, .src = values, .count = total * 1024 } });
+                keys = half_keys;
+                values = half_values;
+                operands = .f16;
+            }
+            try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * heads * 256 }});
+            queries = self.q_c_h;
+        }
         const width = heads * 256;
-        const shape: metal.Backend.AttentionChunkShape = .{ .query_heads = heads, .kv_heads = 4, .key_width = 256, .value_width = 256, .position = position, .count = count, .q_stride = width, .out_stride = width, .scale = 1.0 / 16.0, .precision = precision };
+        const shape: metal.Backend.AttentionChunkShape = .{ .query_heads = heads, .kv_heads = 4, .key_width = 256, .value_width = 256, .position = position, .count = count, .q_stride = width, .out_stride = width, .scale = 1.0 / 16.0, .precision = operands };
         if (few) try b.attentionVerify(keys, values, queries, self.partials, self.mixed_out_c, shape) else try b.attentionChunk(keys, values, queries, self.mixed_out_c, shape);
         try b.sigmoidGate(self.mixed_out_c, self.qg_c, count * heads, 256, 512, 256);
         try self.rotate(self.mixed_out_c, width, count);
@@ -1281,8 +1288,8 @@ pub const Plan = struct {
         const k_slot = self.stateSlice(cache.keys.range(row, 1));
         const v_slot = self.stateSlice(cache.values.range(row, 1));
         const precision = cache.keys.precision;
-        // An F32 cache takes the projections directly; an F16 cache takes them
-        // through F32 scratch rows and one pack dispatch.
+        // An F32 cache takes the projections directly; F16 and Q8_0 take
+        // them through F32 scratch rows and one pack dispatch.
         const k_row = if (precision == .f32) k_slot else self.k;
         const v_row = if (precision == .f32) v_slot else self.v;
         const hidden = self.binding.shape.hidden;
@@ -1292,7 +1299,7 @@ pub const Plan = struct {
         // Each projected head stores query then gate; the gate is applied after attention.
         try b.rmsNormRope(self.qg, c.query_norm, self.rope_table, self.q, .{ .rows = heads, .width = 256, .in_stride = 512, .out_stride = 256 }, 64, rope_position, .split_half);
         try b.rmsNormRope(k_row, c.key_norm, self.rope_table, k_row, .{ .rows = 4, .width = 256, .in_stride = 256, .out_stride = 256 }, 64, rope_position, .split_half);
-        if (precision == .f16) try b.packHalf(&.{ .{ .dst = k_slot, .src = k_row, .count = 1024 }, .{ .dst = v_slot, .src = v_row, .count = 1024 } });
+        if (precision != .f32) try b.storeRows(&.{ .{ .dst = k_slot, .src = k_row, .count = 1024 }, .{ .dst = v_slot, .src = v_row, .count = 1024 } }, precision);
         const visible = row + 1;
         try b.attentionDecode(self.stateSlice(cache.keys.range(0, visible)), self.stateSlice(cache.values.range(0, visible)), self.q, self.partials, self.mixed_out, .{ .query_heads = heads, .kv_heads = 4, .key_width = 256, .value_width = 256, .visible = visible, .scale = 1.0 / 16.0, .precision = precision });
         try b.sigmoidGate(self.mixed_out, self.qg, heads, 256, 512, 256);

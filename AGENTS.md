@@ -63,8 +63,11 @@ branch pushed, the section saying what was delivered and what remains,
 and the pull request as a draft.
 
 **Nothing lands silently.** A side fix found inside a unit goes into that
-unit's pull request and its record; work outside any unit is a small unit
-of its own, with its own branch and pull request.
+unit's pull request and its record. Work the user asks for during a
+session belongs to that session's unit: the same branch and pull
+request, named in its record and its `TODO.md` section, never a branch
+of its own. Only work outside any session's unit is a small unit of its
+own, with its own branch and pull request.
 
 **Durable knowledge never lives only in `TODO.md` or a pull request**:
 requirements go to `docs/spec.md`, environment facts to

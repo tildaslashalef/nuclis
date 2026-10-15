@@ -346,7 +346,7 @@ written by each adapter's two schedules, read by the attention kernels.
 
 ```mermaid
 flowchart LR
-    proj[k, v projections\nnorm + RoPE on k] -- write row P --> rows[(Rows: capacity × row\nF32 or F16, in the session block)]
+    proj[k, v projections\nnorm + RoPE on k] -- write row P --> rows[(Rows: capacity × row\nF32, F16 or Q8_0, in the session block)]
     rows -- read rows 0..P --> attn[attention\ndecode: nu_attention_decode\nprefill: nu_attention_chunk\nCPU: cpu.attention.apply]
     rows -. rewind by position .-> pos[Session.position]
 ```
@@ -355,13 +355,14 @@ flowchart LR
 | --- | --- |
 | Declared | `Layout.attention { key_row, value_row, precision }` per layer; the session carves `capacity` key rows and value rows from the block (`runtime/session.zig`) |
 | Viewed | `Rows.range(first, count)`: the byte range a GPU binds; `Rows.floats(first, count)`: the F32 view the CPU reads (asserts F32) |
-| Written | after the key norm and RoPE, at row `position`: `fullAttention` on the CPU; the Metal plan projects into the slot (F32) or through scratch and `nu_pack_half` (F16); prefill writes a chunk of rows |
-| Read | rows `[0, position + 1)`, or a window's suffix: `nu_attention_decode` (each row once per KV head group, online softmax in registers), `nu_attention_chunk` (a chunk tiled against the visible rows), `cpu.attention.apply` |
+| Written | after the key norm and RoPE, at row `position`: `fullAttention` on the CPU; the Metal plan projects into the slot (F32) or through scratch and `Backend.storeRows` (`nu_pack_half`, `nu_pack_q8_0`); prefill writes a chunk of rows |
+| Read | rows `[0, position + 1)`, or a window's suffix: `nu_attention_decode` (each row once per KV head group, online softmax in registers), `nu_attention_chunk` (a chunk tiled against the visible rows; a Q8_0 cache is expanded to F16 for it first), `cpu.attention.apply` |
 | Rewound | by position: rows past it are never read, so `Session.truncate` is a number, not a copy; recurrent layers cannot do this |
 
 The precision is `engine.kv_precision`, F16 by default on the GPU: half
 the block and half the bytes each decode step streams, at a rounding the
-trace gates bound per mode. `--kv f32` is for numerical work.
+trace gates bound per mode. `--kv q8_0` takes about half again (blocks of
+32 values with an F16 scale); `--kv f32` is for numerical work.
 
 **Read:** [engine/session.md](engine/session.md),
 [llm-guide.md § 20](llm-guide.md#20-half-the-bytes-the-f16-cache) and

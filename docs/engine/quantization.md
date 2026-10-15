@@ -39,7 +39,11 @@ model-weight validation.
 ## Equations and evidence
 
 Q8_0 stores an F16 scale followed by 32 signed bytes: each reconstructed value
-is the scale multiplied by the signed byte. IQ4_NL stores an F16 scale and 16
+is the scale multiplied by the signed byte. It is also the one format nuclis
+writes at run time, as the `q8_0` attention cache: `quant/encode.zig`
+`q8_0Row` sets `d = f16(max |x| / 127)` and `q = clamp(round(x / d), -127,
+127)` per block, the arithmetic Metal's `nu_pack_q8_0` repeats bit for bit
+([metal-backend.md § Q8_0 KV cache](metal-backend.md#q8_0-kv-cache-2026-10-15)). IQ4_NL stores an F16 scale and 16
 bytes containing 32 four-bit lookup indices. The low nibbles describe the first
 16 values, and the high nibbles describe the next 16. The lookup values are
 nonuniform: treating IQ4_NL as ordinary signed four-bit integers is incorrect.

@@ -32,6 +32,7 @@ a part of it was built or measured, kept as written.
 - [Prefill in chunks (2026-09-08)](#prefill-in-chunks-2026-09-08)
 - [Merged projections (2026-09-08)](#merged-projections-2026-09-08)
 - [F16 KV cache (2026-09-10)](#f16-kv-cache-2026-09-10)
+- [Q8_0 KV cache (2026-10-15)](#q8_0-kv-cache-2026-10-15)
 - [Flash-decoding attention (2026-09-10)](#flash-decoding-attention-2026-09-10)
 - [Few-query verify attention (2026-09-30)](#few-query-verify-attention-2026-09-30)
 - [Long-context prefill attention (2026-09-10, closed without a kernel change)](#long-context-prefill-attention-2026-09-10-closed-without-a-kernel-change)
@@ -177,7 +178,7 @@ Thread counts are the numbers `Backend` passes to `dispatch`.
 | `nu_segments_softmax` | 256 | (query tile, head) | one strip row at a time | `simd_max`, `simd_sum` | none |
 | `nu_segments_values` | 128 | (query tile, head, 32 value columns) | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 4 KB P tile + 4 KB V tile (F32), `threadgroup_barrier` |
 | `nu_delta_chunk` | 128 | (value head, 32 value rows), all sub-chunks | an 8-row block of every 32×32 tile; column `tid` in the triangular solve | matrix MACs; no shuffles | 24 KB of 32×32 tiles, `threadgroup_barrier` per phase, `mem_device` per sub-chunk |
-| `nu_attention_decode` / `_h` ([KERN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-08--flash-decoding-attention-2026-09-10)), `_w` / `_wh` ([MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11)) | 128 | (KV head, group of ≤ 8 query heads — ≤ 4 in the wide pair —, split of the visible rows) | every fourth row of the slice; lane l owns channels l, l+32, … (8 per lane, 16 in the wide pair) with per-head running max, sum, and accumulator in registers | `simd_sum` per (row, head); 3-round merge of the SIMD groups through 8 KB | 8 KB stage, `threadgroup_barrier` |
+| `nu_attention_decode` / `_h` ([KERN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-08--flash-decoding-attention-2026-09-10)), `_w` / `_wh` ([MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11)), `_q8` / `_wq8` ([Q8_0 KV cache](#q8_0-kv-cache-2026-10-15)) | 128 | (KV head, group of ≤ 8 query heads — ≤ 4 in the wide pair —, split of the visible rows) | every fourth row of the slice; lane l owns channels l, l+32, … (8 per lane, 16 in the wide pair) with per-head running max, sum, and accumulator in registers | `simd_sum` per (row, head); 3-round merge of the SIMD groups through 8 KB | 8 KB stage, `threadgroup_barrier` |
 | `nu_attention_merge` | 256 | one query head | — (threads stride the value channels, log-sum-exp over ≤ 64 splits) | none | none |
 | `nu_attention_scores` / `_values` (and `_h`; the three-pass decode kept as `test-metal`'s oracle) | 32 | one (head, position) / (head, channel) | the dot product / weighted sum | `simd_sum` | none |
 | `nu_attention_softmax` | 32 | one head's score row | the whole row | `simd_max`, `simd_sum` | none |
@@ -187,7 +188,7 @@ Thread counts are the numbers `Backend` passes to `dispatch`.
 | `nu_argmax_partial`, `nu_topk_partial`, `nu_expsum_partial` | 256 | a strided slice of the vocabulary | its 32 values | `simd_shuffle_down` reduction, 8-way threadgroup pick | 8–16 entries |
 | `nu_argmax_final` | 32 | the partials | all of them | `simd_shuffle_down` | none |
 | `nu_topk_final` | 256 | the 64 sorted lists | cursors | k-way merge on plain threads | list cursors |
-| elementwise (`nu_add`, `nu_silu_*`, `nu_gelu_mul`, `nu_gelu_mul_rows`, `nu_combine_experts`, `nu_scale`, `nu_add_scale`, `nu_softcap`, `nu_rope*`, `nu_convolution*`, `nu_copy`, `nu_pack_half`, `nu_sigmoid_gate`, `nu_delta_gates`, `nu_embed`) | 256 | 256 elements | 32 elements, one per lane | none | none |
+| elementwise (`nu_add`, `nu_silu_*`, `nu_gelu_mul`, `nu_gelu_mul_rows`, `nu_combine_experts`, `nu_scale`, `nu_add_scale`, `nu_softcap`, `nu_rope*`, `nu_convolution*`, `nu_copy`, `nu_pack_half`, `nu_unpack_q8_0`, `nu_sigmoid_gate`, `nu_delta_gates`, `nu_embed`) | 256 | 256 elements | 32 elements, one per lane | none | none |
 
 Three patterns cover the table: a *reduction* kernel gives a SIMD group one
 output and reduces with `simd_sum`; a *tile* kernel gives a threadgroup a
@@ -1487,6 +1488,107 @@ generation check and the pinned prompts, never per element.
 
 Performance is in [benchmarks § Observations](../benchmarks/history.md#observations-so-far)
 ([KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10) rows).
+
+## Q8_0 KV cache (2026-10-15)
+
+`session.Precision.q8_0` stores each attention row as GGML's Q8_0 blocks
+(an F16 scale `d`, then 32 `i8` codes; value `d * q`; 34 bytes per 32
+values, 53 % of F16), for every family. `--kv q8_0` selects it
+(`engine.kv_precision`); the default stays `f16` and the CPU reference
+stays F32, as for F16. `Session.init` refuses a `q8_0` row that is not a
+whole number of blocks; every cache row in the catalogue is a multiple
+of 32 (heads of 128, 256, or 512). On Saluki at 32,768 tokens the
+attention rows take 1,088 MiB instead of 2,048.
+
+- **Writing.** `nu_pack_q8_0` (`Backend.packQ8`, the `packHalf` pair
+  contract) quantizes the F32 rows one SIMD group per block:
+  `d = half(amax / 127)`, `q = clamp(round(x / d), -127, 127)`, zero
+  codes when `d` is zero or not finite, NaN coded as zero. The same
+  arithmetic is `quant/encode.zig` `q8_0Row`, the CPU's only encoder,
+  and `test-metal` holds the two bit-identical (`precise::divide` under
+  `MTLMathModeSafe`). `Backend.storeRows(pairs, precision)` (copy,
+  `packHalf`, or `packQ8`) is each plan's one cache write.
+- **Decode and verify.** `nu_attention_decode_t` finds each cache row once
+  (`nu_kv_row`) and fills a lane's channels with `nu_kv_load`, overloaded
+  for F32, F16, and `nu_q8_0`. F32 and F16 keep lane `l` on channels
+  `l, l+32, …`; Q8_0 gives lane `l` four consecutive channels per
+  128-wide stripe (`nu_kv_channel`), so a row costs a lane one scale and
+  two aligned half-words of codes per stripe instead of a byte and a
+  scale per value (the first layout ran at 21 GB/s, this one at 33).
+  `_q8` / `_wq8` are the two new instantiations; `attentionDecode` and
+  `attentionVerify` take `q8_0` when both widths are multiples of 32.
+  `d * q` is exact in F32, so the kernel's own error is the F32 one,
+  which `test-metal` checks against the CPU over the dequantized rows.
+- **Prefill.** The chunk bodies `simdgroup_load` 8×8 tiles straight from
+  device memory and cannot read blocks, so a plan with a `q8_0` cache
+  expands the visible rows `[first, position + count)` of K and V into a
+  plan-owned F16 stage (`kv_stage`: capacity × the widest row × 2 bytes,
+  keys then values; 128 MiB at 32K on Qwen) with `nu_unpack_q8_0`, and
+  runs the F16 chunk kernel on it. The expansion rounds `d * q` once to
+  half (a 2^-12 relative step under Q8_0's own step of up to `d / 2`),
+  so a chunk sees a slightly different K and V than decode does; the
+  generation check bounds both. The cost is linear in the visible rows
+  per chunk, small next to the chunk's attention. `attentionChunk`,
+  `attentionChunkReuse`, and the three-pass `attention` refuse `q8_0`.
+
+Evidence (`test-metal`, 2026-10-15): `packQ8` bit-identical to
+`q8_0Row` on 1,021 to 16,385 rows of N(0, 0.5²) and on edge blocks (all
+zero, a subnormal scale, a NaN, an infinity); `unpackQ8` bit-identical to
+the CPU decoder rounded to half; the Q8_0 split pass within 2e-8 of the
+CPU F64 reference over the dequantized rows (bounds 2e-5 to 1e-4) at
+257, 1,021, and 16,385 visible (24 heads over 4 of 256), a 5-row verify
+batch at 4,099, and Gemma's 16 heads of 512 over one KV head at 2,049.
+Against the CPU F64 reference
+over the original floats the quantization costs at most 6.9e-4 max abs
+(bound 2e-3; F16's cost on the same data is 1.2e-5).
+`test-generation --metal`, 70 tokens against the F32 stepped logits:
+Qwen3.8 Q4_K_M 2.5e-2 / 1.1e-3 stepped and 2.8e-2 / 9.8e-4 chunked
+(F16: 4.8e-4 / 2.2e-5 and 2.5e-3 / 1.3e-4), argmax identical; the
+per-family bounds are in `inference/generation-check.zig` `Bounds`.
+Across families Q8_0's logit error is 40–50× F16's (Muse Glimmer 4.0e-2
+relative RMS, Gemma 4 E4B 1.1e-1, the 12B QAT 1.7e-1 chunked), the ratio
+of an 8-bit block code to an 11-bit mantissa; Gemma's unscaled attention
+scores make it the most sensitive. On the 26B-A4B the routing amplifies it
+past the greedy token at position 70 (4.7e-1 relative RMS; F16 already
+3.4e-1 chunked), so that configuration's Q8_0 logits are checked finite
+only. `qwen38-trace-q8_0` (raw `Hello,`, position 2): 6.1e-1 max abs and
+1.4e-2 relative RMS per layer file, logits 5.1e-2 / 2.4e-3, the same
+top five; bounds 1.0 / 2.5e-2.
+
+**The split pass is ALU-bound, not bandwidth-bound.** `metal-check
+--decode-bench` (one `attentionDecode`, Saluki's 24 heads over 4 of
+256, GPU time, best of four), 2026-10-15:
+
+| Visible | F32 ms | F16 ms | Q8_0 ms |
+| ---: | ---: | ---: | ---: |
+| 4,096 | 0.236 | 0.222 | 0.244 |
+| 16,384 | 0.973 | 0.930 | 1.158 |
+| 32,640 | 1.795 | 1.693 | 2.142 |
+
+F16 reads half F32's bytes in 94 % of its time (about 75 GB/s of cache),
+so the online softmax over eight heads per row, not memory, sets the
+pace, and Q8_0's conversions add 25 % to it. Q8_0 therefore saves memory,
+not decode time, at long context; making this kernel bandwidth-bound is
+open.
+
+What it costs in quality is perplexity, and it costs none measurable: `nuclis eval
+--file wiki.test.raw` (512-token windows, the last 255 of each scored;
+8 windows, or 4 of 4,096), Metal, 2026-10-15:
+
+| Model | Windows | F16 | Q8_0 | Change |
+| --- | --- | ---: | ---: | ---: |
+| Saluki 27B | 8 × 512 | 7.996 ± 0.455 | 7.996 ± 0.455 | −0.00 % |
+| Saluki 27B | 4 × 4,096 | 6.113 ± 0.161 | 6.113 ± 0.161 | +0.01 % |
+| Qwen3.8 27B Q4_K_M | 8 × 512 | 6.670 ± 0.363 | 6.669 ± 0.363 | −0.01 % |
+| Qwen3.8 27B Q4_K_M | 4 × 4,096 | 5.727 ± 0.160 | 5.725 ± 0.160 | −0.02 % |
+| Muse Glimmer 30B | 8 × 512 | 6.625 ± 0.367 | 6.626 ± 0.367 | +0.01 % |
+| Gemma 4 E4B QAT | 8 × 512 | 36.056 ± 3.226 | 36.062 ± 3.227 | +0.02 % |
+| Gemma 4 12B QAT | 8 × 512 | 308.65 ± 38.78 | 291.08 ± 36.27 | −5.7 % |
+| Gemma 4 26B-A4B | 8 × 512 | 1,107.8 ± 130.5 | 1,105.7 ± 130.4 | −0.19 % |
+
+The Gemma instruction-tuned files score raw text poorly in either
+precision; their changes sit well inside the error, the 12B's in the
+favourable direction.
 
 ## Flash-decoding attention (2026-09-10)
 

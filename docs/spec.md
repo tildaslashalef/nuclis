@@ -79,7 +79,7 @@ deferred (§10).
 | Weights are memory-mapped, stay quantized, and are never requantized or expanded. | The 27B model fits only at about four bits; the file's arithmetic is what the checkpoint was validated for. |
 | One active session per process; weights are immutable and separate from session state. | Multiple sessions later must not copy weights. |
 | Session state is opaque and never rewound by truncating an attention position alone; rollback is snapshot/restore, and inside a speculative batch checkpoint/rewind. | Recurrent layers keep no history to truncate back to. |
-| The attention cache is F16 on the GPU by default; the CPU reference keeps F32. | Half the memory and half the bytes per step, at a rounding bounded per mode by the gates. |
+| The attention cache is F16 on the GPU by default, Q8_0 on request (`--kv q8_0`); the CPU reference keeps F32. | Half the memory and half the bytes per step, at a rounding bounded per mode by the gates; Q8_0 nearly halves them again for long contexts, at a larger rounding. |
 | Adapters and profiles register through tables; the enum, the executor union, and the known-architecture list derive from them. | A family costs its own files and one line, and two lists cannot disagree. |
 | A profile is selected by the chat template's SHA-256, never by architecture; the profile owns the stop set, the reasoning markers, and tool rendering and decoding in both directions. | Two files of one family can ship different templates; nothing outside `profiles/` may name a template's tokens. |
 | Every adapter writes its schedule twice, CPU and Metal; no shared op list. | Three families showed the variation is in kernel parameters and instantiations, not operation order. |
@@ -192,7 +192,7 @@ mutable per-conversation session state in one page-aligned block, and
 per-step scratch. GPU-visible memory **must** outlive submitted work, and
 the CPU **must not** touch session memory while a command buffer that
 writes it is in flight. The session's layouts are declared by the adapter
-(attention rows at F32 or F16, recurrent state); a draft source's cache is
+(attention rows at F32, F16, or Q8_0, recurrent state); a draft source's cache is
 one more layout in the same block.
 
 ### 5.4 Session contract
@@ -434,9 +434,9 @@ nuclis agent rm <id>
 nuclis agent export <id> [path]
 nuclis cache [ls] [--json] | clear
 nuclis generate --model <m> (--prompt <text> | --prompt-file <path>) [--raw] [--image <path>]... [--image-max-tokens auto|<n>] [--max-tokens <n>] [--think <e>] [--speculative on|off] [sampling flags] [--json]
-nuclis bench --model <m> (--prompt-file <path> | --prompt-tokens <json>) --max-tokens <n> [--ctx-size <n>] [--kv f16|f32] [--speculative on|off] [--json]
+nuclis bench --model <m> (--prompt-file <path> | --prompt-tokens <json>) --max-tokens <n> [--ctx-size <n>] [--kv f16|f32|q8_0] [--speculative on|off] [--json]
 nuclis tokenize --model <m> --prompt-file <path> [--raw] [--json]
-nuclis eval --model <m> --file <path> [--ctx-size <n>] [--chunks <n>] [--reference <json>] [--kv f16|f32] [--json]
+nuclis eval --model <m> --file <path> [--ctx-size <n>] [--chunks <n>] [--reference <json>] [--kv f16|f32|q8_0] [--json]
 nuclis inspect --model <m> [--json]
 nuclis validate --model <m> [--json]
 nuclis model pull (<name> | <owner/repo> --file <f>) [--revision <r>] [--role <role>] [--all] [--register] [--force] [--json]

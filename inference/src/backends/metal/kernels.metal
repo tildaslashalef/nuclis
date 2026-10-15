@@ -2758,6 +2758,82 @@ kernel void nu_pack_half(device half * dst0 [[buffer(0)]], device const float * 
     else if (i - p.count0 < p.count1) dst1[i - p.count0] = half(src1[i - p.count0]);
 }
 
+// GGML's Q8_0 block: an F16 scale, then 32 signed codes; value = d * q.
+// 34 bytes, 2-byte aligned, the `q8_0` attention cache's storage.
+struct nu_q8_0 { half d; char qs[32]; };
+// Quantizes two F32 vectors to Q8_0 (the `PackParams` contract; both
+// counts are multiples of 32), one SIMD group per block: d = half(amax /
+// 127), q = clamp(round(x / d), -127, 127), zero codes when d is zero or
+// not finite, NaN coded as zero. The arithmetic of quant/encode.zig
+// `q8_0Row`, bit-identical with it (precise division, half conversion to
+// nearest even, rounding half away from zero).
+kernel void nu_pack_q8_0(device nu_q8_0 * dst0 [[buffer(0)]], device const float * src0 [[buffer(1)]],
+                         device nu_q8_0 * dst1 [[buffer(2)]], device const float * src1 [[buffer(3)]],
+                         constant PackParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
+    // Block boundaries are multiples of 32, so a SIMD group returns or stays whole.
+    const bool first = i < p.count0;
+    const uint e = first ? i : i - p.count0;
+    if (!first && e >= p.count1) return;
+    const float x = first ? src0[e] : src1[e];
+    const float amax = simd_max(isnan(x) ? 0.0f : abs(x));
+    const half d = half(precise::divide(amax, 127.0f));
+    const float scale = float(d);
+    const bool zero = scale == 0.0f || !isfinite(scale) || isnan(x);
+    const float q = zero ? 0.0f : clamp(round(precise::divide(x, scale)), -127.0f, 127.0f);
+    device nu_q8_0 & block = (first ? dst0 : dst1)[e / 32];
+    block.qs[e % 32] = char(q);
+    if (e % 32 == 0) block.d = d;
+}
+// Expands two Q8_0 vectors to F16, one thread per value (the `PackParams`
+// contract): the prefill chunk's half view of a `q8_0` cache. `d * q` is
+// exact in F32 and rounds once to half.
+kernel void nu_unpack_q8_0(device half * dst0 [[buffer(0)]], device const nu_q8_0 * src0 [[buffer(1)]],
+                           device half * dst1 [[buffer(2)]], device const nu_q8_0 * src1 [[buffer(3)]],
+                           constant PackParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
+    if (i < p.count0) dst0[i] = half(float(src0[i / 32].d) * float(src0[i / 32].qs[i % 32]));
+    else if (i - p.count0 < p.count1) { const uint e = i - p.count0; dst1[e] = half(float(src1[e / 32].d) * float(src1[e / 32].qs[e % 32])); }
+}
+// A cache row of F32, F16, or Q8_0 blocks: `nu_kv_row` finds the row
+// starting at element `offset` (a block boundary for Q8_0) once, outside
+// the per-channel loop. `nu_kv_channel` is the channel lane `lane` owns in
+// slot `i` of its CH: `lane + 32 i` for F32 and F16 (one element per
+// load), four consecutive channels per 128-wide stripe for Q8_0, so a lane
+// reads one 4-byte code word and one scale per stripe. `nu_kv_load` fills
+// a lane's CH slots (zero past `width`; CH a multiple of 4).
+inline device const float * nu_kv_row(device const float * p, ulong offset) { return p + offset; }
+inline device const half * nu_kv_row(device const half * p, ulong offset) { return p + offset; }
+inline device const nu_q8_0 * nu_kv_row(device const nu_q8_0 * p, ulong offset) { return p + offset / 32; }
+inline uint nu_kv_channel(device const float *, uint lane, uint i) { return lane + 32 * i; }
+inline uint nu_kv_channel(device const half *, uint lane, uint i) { return lane + 32 * i; }
+inline uint nu_kv_channel(device const nu_q8_0 *, uint lane, uint i) { return 4 * lane + 128 * (i >> 2) + (i & 3); }
+template <uint CH>
+inline void nu_kv_load(device const float * row, uint lane, uint width, thread float * out) {
+    for (uint i = 0; i < CH; ++i) { const uint c = lane + 32 * i; out[i] = c < width ? row[c] : 0.0f; }
+}
+template <uint CH>
+inline void nu_kv_load(device const half * row, uint lane, uint width, thread float * out) {
+    for (uint i = 0; i < CH; ++i) { const uint c = lane + 32 * i; out[i] = c < width ? float(row[c]) : 0.0f; }
+}
+template <uint CH>
+inline void nu_kv_load(device const nu_q8_0 * row, uint lane, uint width, thread float * out) {
+    for (uint j = 0; j < CH / 4; ++j) {
+        const uint c = 4 * lane + 128 * j;
+        if (c < width) {
+            device const nu_q8_0 & b = row[c >> 5];
+            const float d = float(b.d);
+            // Codes sit 2 bytes into a 34-byte block: two aligned half-words.
+            device const ushort * w = (device const ushort *)(b.qs + (c & 31));
+            const char2 lo = as_type<char2>(w[0]), hi = as_type<char2>(w[1]);
+            out[4 * j] = d * float(lo.x);
+            out[4 * j + 1] = d * float(lo.y);
+            out[4 * j + 2] = d * float(hi.x);
+            out[4 * j + 3] = d * float(hi.y);
+        } else {
+            for (uint r = 0; r < 4; ++r) out[4 * j + r] = 0.0f;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Flash-decoding attention: one query position over `visible` cache
 // rows in one pass, no score buffer. Grid = (kv_head, split): a threadgroup
@@ -2767,8 +2843,9 @@ kernel void nu_pack_half(device half * dst0 [[buffer(0)]], device const float * 
 // groups walks every fourth row of the slice (the four rows a threadgroup
 // touches per step are adjacent in memory); lane l owns channels l, l+32, …
 // of the key and value rows and keeps, per head, a running max `m`, sum `l`,
-// and accumulator over its channels (online softmax, all F32; F16 rows are
-// converted on load, queries stay F32). The four SIMD groups merge into the
+// and accumulator over its channels (online softmax, all F32; F16 and Q8_0
+// rows are converted on load through `nu_kv_load`, queries stay F32; a
+// Q8_0 lane owns four consecutive channels per stripe, `nu_kv_channel`). The four SIMD groups merge into the
 // first through threadgroup memory with the log-sum-exp rescale, and the
 // threadgroup writes one partial (m, l, acc[value_width]) per head;
 // `nu_attention_merge` combines the splits per head the same way. An empty
@@ -2808,24 +2885,20 @@ kernel void nu_attention_decode_t(device const KV * keys [[buffer(0)]],
     const uint low = (p.window != 0 && seen > p.window) ? seen - p.window : 0;
     const uint start = max(split * per, low), end = min(seen, split * per + per);
     queries += ulong(row) * p.q_stride;
-    const uint kch = (p.key_width + 31) / 32, vch = (p.value_width + 31) / 32;
     float q[GROUP][CH];
     for (uint h = 0; h < GROUP; ++h) for (uint i = 0; i < CH; ++i) {
-        const uint c = lane + 32 * i;
+        const uint c = nu_kv_channel(keys, lane, i);
         q[h][i] = (h < hn && c < p.key_width) ? queries[(kv * g + h0 + h) * p.key_width + c] * p.scale : 0.0f;
     }
     float m[GROUP], l[GROUP], acc[GROUP][CH];
     for (uint h = 0; h < GROUP; ++h) { m[h] = -INFINITY; l[h] = 0.0f; for (uint i = 0; i < CH; ++i) acc[h][i] = 0.0f; }
     const ulong krow = ulong(p.kv_heads) * p.key_width, vrow = ulong(p.kv_heads) * p.value_width;
     for (uint t = start + sg; t < end; t += 4) {
-        device const KV * k = keys + ulong(t) * krow + ulong(kv) * p.key_width;
-        device const KV * v = values + ulong(t) * vrow + ulong(kv) * p.value_width;
+        device const KV * k = nu_kv_row(keys, ulong(t) * krow + ulong(kv) * p.key_width);
+        device const KV * v = nu_kv_row(values, ulong(t) * vrow + ulong(kv) * p.value_width);
         float kr[CH], vr[CH];
-        for (uint i = 0; i < CH; ++i) {
-            const uint c = lane + 32 * i;
-            kr[i] = (i < kch && c < p.key_width) ? float(k[c]) : 0.0f;
-            vr[i] = (i < vch && c < p.value_width) ? float(v[c]) : 0.0f;
-        }
+        nu_kv_load<CH>(k, lane, p.key_width, kr);
+        nu_kv_load<CH>(v, lane, p.value_width, vr);
         for (uint h = 0; h < GROUP; ++h) {
             if (h < hn) {
                 float partial = 0.0f;
@@ -2868,7 +2941,7 @@ kernel void nu_attention_decode_t(device const KV * keys [[buffer(0)]],
         if (h >= hn) break;
         device float * out = partials + ((ulong(row) * p.query_heads + kv * g + h0 + h) * p.splits + split) * stride;
         if (lane == 0) { out[0] = m[h]; out[1] = l[h]; }
-        for (uint i = 0; i < CH; ++i) { const uint c = lane + 32 * i; if (i < vch && c < p.value_width) out[2 + c] = acc[h][i]; }
+        for (uint i = 0; i < CH; ++i) { const uint c = nu_kv_channel(values, lane, i); if (c < p.value_width) out[2 + c] = acc[h][i]; }
     }
 }
 #define NU_ATTN_DECODE_ARGS device const float *, device float *, constant AttentionDecodeParams &, uint, uint, uint
@@ -2876,6 +2949,8 @@ template [[host_name("nu_attention_decode")]] kernel void nu_attention_decode_t<
 template [[host_name("nu_attention_decode_h")]] kernel void nu_attention_decode_t<half, 8, 8>(device const half *, device const half *, NU_ATTN_DECODE_ARGS);
 template [[host_name("nu_attention_decode_w")]] kernel void nu_attention_decode_t<float, 4, 16>(device const float *, device const float *, NU_ATTN_DECODE_ARGS);
 template [[host_name("nu_attention_decode_wh")]] kernel void nu_attention_decode_t<half, 4, 16>(device const half *, device const half *, NU_ATTN_DECODE_ARGS);
+template [[host_name("nu_attention_decode_q8")]] kernel void nu_attention_decode_t<nu_q8_0, 8, 8>(device const nu_q8_0 *, device const nu_q8_0 *, NU_ATTN_DECODE_ARGS);
+template [[host_name("nu_attention_decode_wq8")]] kernel void nu_attention_decode_t<nu_q8_0, 4, 16>(device const nu_q8_0 *, device const nu_q8_0 *, NU_ATTN_DECODE_ARGS);
 // One threadgroup per (row, query head), 256 threads striding the value
 // channels: rescale every split's partial to the global max, divide by the
 // merged sum.

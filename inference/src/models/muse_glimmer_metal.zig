@@ -266,6 +266,9 @@ pub const Plan = struct {
     /// Half copy of `q_c` for the F16 chunk attention (its operands share one type).
     q_c_h: Buffer, // padded × q_width halves
     mixed_out_c: Buffer, // padded × q_width
+    /// A `q8_0` cache's visible rows expanded to F16 for the chunk kernel:
+    /// keys then values, capacity × kv_width halves each; null otherwise.
+    kv_stage: ?Buffer,
     /// The DFlash companion when one was bound; null for a plain language
     /// model run, which then owns no draft layout and no verify scratch.
     draft: ?Draft,
@@ -334,6 +337,7 @@ pub const Plan = struct {
         self.k = self.kv.slice(0, kv_width * 4);
         self.v = self.kv.slice(kv_width * 4, kv_width * 4);
         self.mixed_out = try backend.create(q_width * 4);
+        self.kv_stage = if (kv == .q8_0) try backend.create(2 * capacity * kv_width * 2) else null;
         // Up to `verify_max_rows` rows for a verify batch's split pass.
         self.partials = try backend.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, heads, hd) * 4);
         self.logits = try backend.create(vocabulary * 4);
@@ -586,8 +590,8 @@ pub const Plan = struct {
         const precision = cache.keys.precision;
         const k_slot = self.stateSlice(cache.keys.range(position, 1));
         const v_slot = self.stateSlice(cache.values.range(position, 1));
-        // An F32 cache takes the projections directly; an F16 cache takes them
-        // through F32 scratch rows and one pack dispatch.
+        // An F32 cache takes the projections directly; F16 and Q8_0 take
+        // them through F32 scratch rows and one pack dispatch.
         const k_row = if (precision == .f32) k_slot else self.k;
         const v_row = if (precision == .f32) v_slot else self.v;
         try self.projections(&.{ layer.query, layer.key, layer.value, layer.gate }, &.{ self.q, k_row, v_row, self.attention_gate }, .plain);
@@ -598,7 +602,7 @@ pub const Plan = struct {
             try b.rmsNorm(self.q, c.query_norm, self.q, headNorm(heads));
             try b.rmsNorm(k_row, c.key_norm, k_row, headNorm(kv_heads));
         }
-        if (precision == .f16) try b.packHalf(&.{ .{ .dst = k_slot, .src = k_row, .count = kv_width }, .{ .dst = v_slot, .src = v_row, .count = kv_width } });
+        if (precision != .f32) try b.storeRows(&.{ .{ .dst = k_slot, .src = k_row, .count = kv_width }, .{ .dst = v_slot, .src = v_row, .count = kv_width } }, precision);
         const first = firstVisible(layer.kind, position);
         const visible = position + 1 - first;
         try b.attentionDecode(self.stateSlice(cache.keys.range(first, visible)), self.stateSlice(cache.values.range(first, visible)), self.q, self.partials, self.mixed_out, .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .visible = visible, .scale = model.attention_scale, .precision = precision });
@@ -909,27 +913,31 @@ pub const Plan = struct {
         // A verify batch (few rows) takes the split pass with F32 queries;
         // a prefill chunk the tiled body.
         const few = count <= metal.Backend.verify_max_rows;
-        var queries = self.q_c;
-        switch (precision) {
-            .f32 => {
-                try b.copy(k_rows, self.k_c, count * kv_width);
-                try b.copy(v_rows, self.v_c, count * kv_width);
-            },
-            .f16 => {
-                try b.packHalf(&.{ .{ .dst = k_rows, .src = self.k_c, .count = count * kv_width }, .{ .dst = v_rows, .src = self.v_c, .count = count * kv_width } });
-                if (!few) {
-                    try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * q_width }});
-                    queries = self.q_c_h;
-                }
-            },
-        }
+        try b.storeRows(&.{ .{ .dst = k_rows, .src = self.k_c, .count = count * kv_width }, .{ .dst = v_rows, .src = self.v_c, .count = count * kv_width } }, precision);
         // The cache is sliced at the earliest key the chunk's first row can
         // see; the window mask hides the rest per row on sliding layers.
         const first = firstVisible(layer.kind, position);
         const total = position + count - first;
-        const keys = self.stateSlice(cache.keys.range(first, total));
-        const values = self.stateSlice(cache.values.range(first, total));
-        const shape: metal.Backend.AttentionChunkShape = .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .position = position - first, .count = count, .q_stride = q_width, .out_stride = q_width, .scale = model.attention_scale, .precision = precision, .window = if (layer.kind == .sliding) model.window else 0 };
+        var keys = self.stateSlice(cache.keys.range(first, total));
+        var values = self.stateSlice(cache.values.range(first, total));
+        var queries = self.q_c;
+        var operands = precision;
+        if (!few and precision != .f32) {
+            // The F16 chunk kernel multiplies half operands: a Q8_0 cache's
+            // rows are expanded first, and the queries packed.
+            if (precision == .q8_0) {
+                const stage = self.kv_stage.?;
+                const half_keys = stage.slice(0, total * kv_width * 2);
+                const half_values = stage.slice(self.state.capacity * kv_width * 2, total * kv_width * 2);
+                try b.unpackQ8(&.{ .{ .dst = half_keys, .src = keys, .count = total * kv_width }, .{ .dst = half_values, .src = values, .count = total * kv_width } });
+                keys = half_keys;
+                values = half_values;
+                operands = .f16;
+            }
+            try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * q_width }});
+            queries = self.q_c_h;
+        }
+        const shape: metal.Backend.AttentionChunkShape = .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .position = position - first, .count = count, .q_stride = q_width, .out_stride = q_width, .scale = model.attention_scale, .precision = operands, .window = if (layer.kind == .sliding) model.window else 0 };
         if (few) try b.attentionVerify(keys, values, queries, self.partials, self.mixed_out_c, shape) else try b.attentionChunk(keys, values, queries, self.mixed_out_c, shape);
         // Rows are contiguous at `q_width`, so the chunk's gates are one
         // long run of heads.
@@ -980,16 +988,10 @@ pub const Plan = struct {
             const cache = self.state.layers[model.layer_count + il].attention;
             const k_rows = self.stateSlice(cache.keys.range(start, count));
             const v_rows = self.stateSlice(cache.values.range(start, count));
-            switch (cache.keys.precision) {
-                .f32 => {
-                    try b.copy(k_rows, d.inject_k, count * dflash.kv_width);
-                    try b.copy(v_rows, d.inject_v, count * dflash.kv_width);
-                },
-                .f16 => try b.packHalf(&.{
-                    .{ .dst = k_rows, .src = d.inject_k, .count = count * dflash.kv_width },
-                    .{ .dst = v_rows, .src = d.inject_v, .count = count * dflash.kv_width },
-                }),
-            }
+            try b.storeRows(&.{
+                .{ .dst = k_rows, .src = d.inject_k, .count = count * dflash.kv_width },
+                .{ .dst = v_rows, .src = d.inject_v, .count = count * dflash.kv_width },
+            }, cache.keys.precision);
         }
         try b.commit();
     }
@@ -1073,16 +1075,10 @@ pub const Plan = struct {
             const cache = self.state.layers[model.layer_count + il].attention;
             const k_rows = self.stateSlice(cache.keys.range(base, rows));
             const v_rows = self.stateSlice(cache.values.range(base, rows));
-            switch (cache.keys.precision) {
-                .f32 => {
-                    try b.copy(k_rows, d.k, rows * dflash.kv_width);
-                    try b.copy(v_rows, d.v, rows * dflash.kv_width);
-                },
-                .f16 => try b.packHalf(&.{
-                    .{ .dst = k_rows, .src = d.k, .count = rows * dflash.kv_width },
-                    .{ .dst = v_rows, .src = d.v, .count = rows * dflash.kv_width },
-                }),
-            }
+            try b.storeRows(&.{
+                .{ .dst = k_rows, .src = d.k, .count = rows * dflash.kv_width },
+                .{ .dst = v_rows, .src = d.v, .count = rows * dflash.kv_width },
+            }, cache.keys.precision);
             // The causal chunk kernels cannot express the block's mask; each
             // row takes one decode over its own visible slice.
             for (0..rows) |r| {

@@ -79,7 +79,7 @@ There are no per-key environment variables and no per-project files;
 | `model` | `qwen3.8-27b` | a registry entry, a catalogue name, or a path (under `~/.nuclis/models` unless absolute), tried in that order; flag `--model` |
 | `backend` | `metal` (`cpu` in a build without Metal) | where the model runs |
 | `ctx_size` | `16384` | the context window in tokens, 1..32,768 |
-| `kv_precision` | `f16` | the attention cache on the GPU: `f16` halves its memory and the bytes read per token; `f32` otherwise. The CPU always keeps F32. Flag `--kv` |
+| `kv_precision` | `f16` | the attention cache on the GPU: `f16` halves its memory and the bytes read per token; `q8_0` (blocks of 32 eight-bit codes and an F16 scale) about halves them again, for long contexts; `f32` otherwise. The CPU always keeps F32. Flag `--kv` |
 
 ### `generation`
 

@@ -4,6 +4,7 @@ pub const gguf = @import("formats/gguf.zig");
 pub const safetensors = @import("formats/safetensors.zig");
 pub const encoding = @import("tensor/encoding.zig");
 pub const quant = @import("quant/decode.zig");
+pub const quant_encode = @import("quant/encode.zig");
 pub const metal = @import("backends/metal/root.zig");
 pub const cpu = @import("backends/cpu/root.zig");
 pub const profiles = @import("profiles/root.zig");
@@ -35,6 +36,7 @@ test {
     _ = safetensors;
     _ = encoding;
     _ = quant;
+    _ = quant_encode;
     _ = cpu;
     _ = profiles;
     _ = vocabulary;

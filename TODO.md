@@ -23,7 +23,13 @@ without an external oracle (the cross-encoding check, CPU traces as its
 own fixture), and chats, calls tools, and reads images through `nuclis
 serve`. Since the speed unit (`saluki-2bit-speed`) its specialized
 kernels decode 16.96 tok/s at 512 (llama.cpp 12.46, the Q4_K_M on nuclis
-11.67) and prefill 94.18 (llama.cpp 97.19).
+11.67) and prefill 94.18 (llama.cpp 97.19). Since the Q8_0 cache unit
+(`q8-kv-cache`) `--kv q8_0` holds its 32K session in 1,238 MiB instead
+of 2,198 at no measured perplexity or speed cost at 512
+([docs/engine/metal-backend.md § Q8_0 KV cache](docs/engine/metal-backend.md#q8_0-kv-cache-2026-10-15)).
+Saluki stays out of the catalogue for now, registered in `nuclis.json`
+like Bonsai (the user's decision, 2026-10-15); the comparison unit
+decides.
 
 **North star: Saluki decodes at ≥ 22 tok/s at 512 tokens** on this
 machine (`nuclis bench`, Metal, F16 cache, greedy, 128 tokens). Not
@@ -36,20 +42,11 @@ new work is validated against nuclis's already-validated paths. What
 replaces the oracle for a genuinely new architecture is open
 (docs/models/README.md § 0).
 
-Next: **Q8_0 attention cache**.
+Next: **2-bit files compared on nuclis, the catalogue decision**.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Q8_0 attention cache | `q8-kv-cache` | next; facts to read first |
-| 2-bit files compared on nuclis, the catalogue decision | `two-bit-comparison` | queued |
-
-## Q8_0 attention cache
-
-`runtime/session.zig` `Precision` gains a quantized attention cache
-(Q8_0: 34 bytes per 32 values, half of F16) for every family; at 32K on
-Saluki 2,048 → 1,088 MiB. Read the attention kernels' cache access first
-and rewrite this section at that level. Measured by `nuclis eval` (F16 vs
-Q8_0) and `make verify-long`.
+| 2-bit files compared on nuclis, the catalogue decision | `two-bit-comparison` | next |
 
 ## 2-bit files compared on nuclis, the catalogue decision
 

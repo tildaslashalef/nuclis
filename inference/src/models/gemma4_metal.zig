@@ -278,6 +278,9 @@ pub const Plan = struct {
     v_c: Buffer,
     /// Half copy of `q_c` for the F16 chunk attention (its operands share one type).
     q_c_h: Buffer, // padded × q_width halves
+    /// A `q8_0` cache's visible rows expanded to F16 for the chunk kernel:
+    /// keys then values, capacity × kv_width halves each; null otherwise.
+    kv_stage: ?Buffer,
     mixed_out_c: Buffer, // padded × q_width
     /// The per-layer embedding workspace (E4B; one float otherwise): each
     /// row's `[layers][w]` inputs, the selected embedding rows, the gate
@@ -386,6 +389,7 @@ pub const Plan = struct {
         self.k = try backend.create(kv_width * 4);
         self.v = try backend.create(kv_width * 4);
         self.mixed_out = try backend.create(q_width * 4);
+        self.kv_stage = if (kv == .q8_0) try backend.create(2 * capacity * kv_width * 2) else null;
         // Up to `verify_max_rows` rows for a verify batch's split pass.
         self.partials = try backend.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, model.max_heads, head_max) * 4);
         const pl_width = config.per_layer_input * config.layer_count;
@@ -844,8 +848,8 @@ pub const Plan = struct {
         if (layer.key) |key| {
             const k_slot = self.stateSlice(cache.keys.range(position, 1));
             const v_slot = self.stateSlice(cache.values.range(position, 1));
-            // An F32 cache takes the projections directly; an F16 cache takes them
-            // through F32 scratch rows and one pack dispatch.
+            // An F32 cache takes the projections directly; F16 and Q8_0 take
+            // them through F32 scratch rows and one pack dispatch.
             const k_row = if (precision == .f32) k_slot else self.k.slice(0, kvw * 4);
             const v_row = if (precision == .f32) v_slot else self.v.slice(0, kvw * 4);
             if (layer.value) |value| {
@@ -858,7 +862,7 @@ pub const Plan = struct {
             }
             try b.rmsNormRope(k_row, c.key_norm orelse return error.InvalidShape, rope.table, k_row, .{ .rows = kv_heads, .width = hd, .in_stride = hd, .out_stride = hd }, rope.dims, position, .split_half);
             try b.rmsNorm(v_row, self.ones, v_row, .{ .rows = kv_heads, .width = hd, .in_stride = hd, .out_stride = hd });
-            if (precision == .f16) try b.packHalf(&.{ .{ .dst = k_slot, .src = k_row, .count = kvw }, .{ .dst = v_slot, .src = v_row, .count = kvw } });
+            if (precision != .f32) try b.storeRows(&.{ .{ .dst = k_slot, .src = k_row, .count = kvw }, .{ .dst = v_slot, .src = v_row, .count = kvw } }, precision);
         } else {
             // A shared layer reads the rows its source layer wrote this step.
             try self.mm(layer.query, self.normalized, q);
@@ -1186,13 +1190,7 @@ pub const Plan = struct {
             // The chunk's keys and values are contiguous in the cache; padding rows never leave the chunk buffers.
             const k_rows = self.stateSlice(cache.keys.range(position, count));
             const v_rows = self.stateSlice(cache.values.range(position, count));
-            switch (precision) {
-                .f32 => {
-                    try b.copy(k_rows, self.k_c, count * kvw);
-                    try b.copy(v_rows, self.v_c, count * kvw);
-                },
-                .f16 => try b.packHalf(&.{ .{ .dst = k_rows, .src = self.k_c, .count = count * kvw }, .{ .dst = v_rows, .src = self.v_c, .count = count * kvw } }),
-            }
+            try b.storeRows(&.{ .{ .dst = k_rows, .src = self.k_c, .count = count * kvw }, .{ .dst = v_rows, .src = self.v_c, .count = count * kvw } }, precision);
         }
         // An image span chunk is bidirectional on sliding layers only (the
         // reference's `LLAMA_NON_CAUSAL_TYPE_SWA_ONLY`), and not at all on a
@@ -1203,18 +1201,30 @@ pub const Plan = struct {
         // A verify batch (few causal rows) takes the split pass with F32
         // queries; a prefill chunk or a span the tiled body.
         const few = count <= metal.Backend.verify_max_rows and span.end == 0;
-        var queries = self.q_c;
-        if (precision == .f16 and !few) {
-            try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * qw }});
-            queries = self.q_c_h;
-        }
         // The cache is sliced at the earliest key the chunk's first row can
         // see; the window mask hides the rest per row on sliding layers.
         const first = self.firstVisible(kind, position);
         const total = position + count - first;
-        const keys = self.stateSlice(cache.keys.range(first, total));
-        const values = self.stateSlice(cache.values.range(first, total));
-        const shape: metal.Backend.AttentionChunkShape = .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .position = position - first, .count = count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = precision, .window = if (kind == .sliding) self.binding.config.window else 0, .span = span };
+        var keys = self.stateSlice(cache.keys.range(first, total));
+        var values = self.stateSlice(cache.values.range(first, total));
+        var queries = self.q_c;
+        var operands = precision;
+        if (!few and precision != .f32) {
+            // The F16 chunk kernel multiplies half operands: a Q8_0 cache's
+            // rows are expanded first, and the queries packed.
+            if (precision == .q8_0) {
+                const stage = self.kv_stage.?;
+                const half_keys = stage.slice(0, total * kvw * 2);
+                const half_values = stage.slice(self.state.capacity * kv_width * 2, total * kvw * 2);
+                try b.unpackQ8(&.{ .{ .dst = half_keys, .src = keys, .count = total * kvw }, .{ .dst = half_values, .src = values, .count = total * kvw } });
+                keys = half_keys;
+                values = half_values;
+                operands = .f16;
+            }
+            try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * qw }});
+            queries = self.q_c_h;
+        }
+        const shape: metal.Backend.AttentionChunkShape = .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .position = position - first, .count = count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = operands, .window = if (kind == .sliding) self.binding.config.window else 0, .span = span };
         if (few) try b.attentionVerify(keys, values, queries, self.partials, self.mixed_out_c, shape) else try b.attentionChunk(keys, values, queries, self.mixed_out_c, shape);
         try self.mmRows(layer.output, self.mixed_out_c, qw, self.projected_c, hidden, count);
     }
