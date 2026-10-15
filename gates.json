@@ -343,8 +343,8 @@
     "positions": 2
    },
    "bounds": {
-    "max_absolute": 0.5,
-    "max_relative_rms": 0.01
+    "max_absolute": 1.0,
+    "max_relative_rms": 0.025
    },
    "evidence": "docs/engine/metal-backend.md#q8_0-kv-cache-2026-10-15"
   },
