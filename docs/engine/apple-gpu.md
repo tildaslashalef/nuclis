@@ -350,3 +350,78 @@ are not unrolled whatever `#pragma unroll` asks, so the accumulators'
 indices must be constant in the loops the compiler keeps. At 4 rows the
 float work is near its minimum and the kernel is issue-bound at 25 %
 occupancy.
+
+## Saluki's 2-bit matvecs on the `ffn_down` shape (2026-10-15)
+
+`make bench-kernels ARGS=<ENC> CAPTURE='matvec-<ENC>-5120x17408
+(ffn_down)-block'`: 64 dispatches of the 5,120 × 17,408 matvec (IQ2_XXS
+23.0 MB, IQ2_S 28.5, IQ1_S 17.4) in one command buffer, the subnormal-pair
+decode of the codebook encodings (`c35a6c1`; IQ2_XXS and IQ2_S at 2 rows
+per SIMD group, IQ1_S at 4, IQ2_S's grid in threadgroup memory). Exports
+`matvec-IQ2_XXS-5120x17408-ffn_down-block_2026-10-15T0726_max.csv`,
+`matvec-IQ2_S-…_2026-10-15T0725_max.csv`, and
+`matvec-IQ1_S-…_2026-10-15T0724_max.csv` (not committed), profiled at
+Maximum; the capture runs read 138, 157, and 131 GB/s, and the replays'
+GPU time was not read.
+
+| Counter | IQ2_XXS | IQ2_S | IQ1_S |
+| --- | ---: | ---: | ---: |
+| ALU Utilization | 35.8 % | 34.9 % | 35.5 % |
+| Instruction Throughput Limiter / Utilization | **83.5 / 19.5 %** | **87.2 / 19.3 %** | **78.1 / 19.7 %** |
+| Integer and Complex Limiter / Utilization | **72.2 / 45.9 %** | 50.1 / 36.3 % | 42.4 / 31.2 % |
+| Integer and Conditional Limiter / Utilization | 37.0 / 30.0 % | 40.5 / 31.7 % | 33.1 / 27.1 % |
+| F32 Limiter / Utilization | 26.1 / 18.8 % | 28.1 / 19.9 % | 41.8 / 28.3 % |
+| ALU instruction mix: integer and conditional / integer and complex / float | 41.8 / 32.0 / 26.2 % | 45.5 / 26.0 / 28.5 % | 38.2 / 22.0 / 39.9 % |
+| Kernel ALU instructions (64 dispatches) / per weight | 25.4 × 10⁹ / 4.45 | 26.4 × 10⁹ / 4.63 | 19.7 × 10⁹ / 3.45 |
+| Kernel Occupancy / Occupancy Manager Target | 27.5 / 43.0 % | 33.4 / **75.0 %** | 24.0 / 48.4 % |
+| L1 Register / Buffer / Threadgroup Residency | 4.3 / 87.0 / 0 % | 1.5 / 62.0 / 29.7 % | 11.7 / 77.0 / 0 % |
+| Buffer L1 / Threadgroup Memory L1 Read Bandwidth | 1,576 / 0 | 1,136 / 446 | 1,386 / 0 |
+| L1 Cache Limiter / Buffer L1 Miss Rate | **56.4** / 2.5 % | 50.0 / 5.7 % | **58.2** / 2.6 % |
+| Last Level Cache Limiter / Miss Rate | 4.9 / 90.7 % | 4.4 / 89.7 % | 5.5 / 92.2 % |
+| MMU Limiter / TLB Miss Rate | 6.5 / 25.5 % | 10.1 / 0 % | 5.8 / 3.3 % |
+| Compute Shader Launch Limiter | 43.6 % | 72.1 % | 0.2 % |
+
+(Bandwidths as Xcode exports them, GB/s; per weight is over
+64 × 89.1 M weights.)
+
+**Reading: issue-bound on integer work, as Q4_K and IQ4_XS were.** Memory
+is not the limit (last-level cache 4–6 %, MMU 6–10 %), nothing spills, and
+the instruction throughput limiter sits at 78–87 % at under 20 %
+utilization. Three quarters of the ALU instructions are integer: the
+float work is at its floor (about 1.2 per weight, the multiply-add; the
+half-to-float conversions are not among the float instructions, and
+whether the integer and complex count holds them is not established), and
+the masks, shifts, and sign spreading take the other 3.3 instructions per
+weight. IQ2_XXS's integer and complex limiter (72 %) is the `popcount`
+of its 7-bit sign parity; IQ2_S stores full sign bytes, IQ1_S has no
+signs. The L1 limiter is the second limit, three times Q4_K's: each lane
+reads its 32 F32 inputs (128 bytes) per block for 8–10 bytes of weights
+per row, so input loads are 6–8 times the weight bytes at 2 rows, and the
+L1 serves about ten times the device stream. IQ2_S's 8 KiB threadgroup
+grid holds it at less than half its occupancy target.
+
+**Probes** on IQ2_XXS (`bench-kernels`, the same shape, best rate;
+the kernel read 135.1 GB/s; "wrong" probes break the result and only
+price a cost):
+
+| Probe | GB/s |
+| --- | ---: |
+| Four independent sums per row instead of one 32-deep chain | 134.7 |
+| Sign parity removed (wrong) | 139.8 |
+| Parity by shift-and-XOR on all four fields at once | 134.5 |
+| Three quarters of the input loads removed (wrong) | 150.1 |
+| 4 rows per SIMD group | 124.9 |
+| Weight loads as one aligned `uint2` (wrong data) | 133.2 |
+| Grid lookup replaced by a byte-splat multiply (wrong) | 131.5 |
+| Sign masks from a 128 × `uint4` constant table (2 KiB) | **80.7** |
+
+Latency chains, the two-byte-aligned loads, and the 2 KiB grid lookup
+cost nothing; the parity costs about 3 % whichever pipe computes it; the
+input loads about 10 %, but 4 rows to share them lose more to the halved
+SIMD-group count than they save. A 16-byte divergent `constant` read per
+eight values costs 40 %, against nothing for the 8-byte grid read: the
+rule that every read wider than 8 bytes per eight values loses holds for
+tables too. What remains is the integer instruction count per value. The
+lever not tried is an F16 dot (inputs converted to half once per lane and
+shared across rows, half2 multiply-adds), which halves the input loads
+and the per-value work but must hold the F32 trace bounds.
