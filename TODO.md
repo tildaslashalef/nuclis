@@ -47,11 +47,49 @@ new work is validated against nuclis's already-validated paths. What
 replaces the oracle for a genuinely new architecture is open
 (docs/models/README.md § 0).
 
-Next: **2-bit files compared on nuclis, the catalogue decision**.
+Next: **the head-split attention measured across the families**, then
+**2-bit files compared on nuclis, the catalogue decision**.
 
 | Unit | Branch | State |
 | --- | --- | --- |
+| The head-split attention measured across the families | `split-pass-family-rates` | in progress |
 | 2-bit files compared on nuclis, the catalogue decision | `two-bit-comparison` | next |
+
+## The head-split attention measured across the families
+
+Base: `115cbf7` (#21 merged). No engine code changes; measurement and
+documents, plus the speed loop's options below.
+
+#21 measured only Saluki end to end, back to back, and its 32,639 gain
+(11.63 → 13.20 tok/s, about 10 ms per token) is below the 17 ms the
+kernel bench predicts (16 layers × 1.07 ms). This unit attributes that
+gap and measures the other families.
+
+1. **Before/after without heat bias.** `make speed` (`scripts/speed.py`)
+   with the base saved at `fcebd2b` (the commit before #21: Q8_0 cache,
+   old split pass) against the tree, `--contexts 16384,32639 --tokens 128
+   --pairs 5`: interleaved pairs, so heat falls on both sides equally.
+   `speed.py` gains `--kv f16|q8_0` (it hard-codes F16) and `--run <dir>`
+   (Saluki has no acceptance workload; its arrays are
+   `run-2026-09-06` plus `boundary-2026-09-06`). Families, one at a time,
+   10 minutes idle between: `saluki` (F16 and Q8_0), `muse`,
+   `gemma4_qat`, `gemma4_26b_a4b`. The first run per context prefills the
+   saved prefix (32K: 5–10 minutes each).
+2. **Attribution.** `nuclis bench --profile --prefix-cache
+   .zig-cache/speed/prefix` on Saluki at 16,384, F16 and Q8_0, base and
+   tree binaries, from a cooled chip (10 minutes idle before each): the
+   `attention` family's ms per step against the kernel bench (16 layers ×
+   0.335 / 0.332 ms after; 0.930 / 1.158 before), and whether any other
+   family moved. Reports under `.zig-cache/bench/profile/`.
+3. **Record.** The rates in each family's `docs/models/*.md` (Muse
+   Glimmer, Gemma 4 12B QAT and 26B-A4B in `gemma4.md`, Saluki), the
+   attribution in `docs/engine/metal-backend.md` § The split pass at the
+   memory roof, `speed.py`'s options in `docs/development.md` § The speed
+   loop. The README's results tables (release-record method, same-night
+   llama.cpp, mean of three) are re-run only if the user says so.
+
+Gates: `make workloads-validate` (speed.py self-test), `make lint-py`,
+`make docs-check`, `make verify-auto`.
 
 ## 2-bit files compared on nuclis, the catalogue decision
 
