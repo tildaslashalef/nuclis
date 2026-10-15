@@ -1690,6 +1690,11 @@ merge), before → after: Muse Glimmer's 32 heads of 128 over two, F16
 over one, F16 2.68 → 1.20 and Q8_0 3.28 → 1.22; Gemma's sliding 16 over
 8 of 256, F16 1.31 → 1.09 (the window bounds it in use).
 
+Saluki 27B end to end (`nuclis bench`, 128 tokens, greedy), decode
+before → after: F16 13.78 → 16.01 tok/s at 16,384 and 11.63 → 13.20 at
+32,639; Q8_0 13.38 → 14.89 and 11.02 → 13.26; prefill unchanged
+([saluki.md § Speed](../models/saluki.md#speed)).
+
 Evidence (`test-metal`, 2026-10-15): every decode, verify, wide, and
 Q8_0 check within its bound, plus Muse Glimmer's shape (F32/F16 decode
 at 257 and 1,021; Q8_0 decode at 1,021 and a 3-row verify at 2,051) and

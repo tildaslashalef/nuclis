@@ -287,8 +287,27 @@ and the F16 dot that fails the F32 trace are in
 branch): decode 17.04 / 13.38 / 11.02 at 512 / 16,384 / 32,639 against
 F16's 16.66 / 13.78 / 11.63 the same day, prefill equal (93.82 / 67.20 /
 51.59), the session 1,238 MiB instead of 2,198; perplexity unchanged
-(7.996 at 8 × 512, 6.113 at 4 × 4,096). The decode attention kernel is
-ALU-bound, so halving the cache's bytes saves memory, not time.
+(7.996 at 8 × 512, 6.113 at 4 × 4,096).
+
+**The head-split decode attention** (the same method, 2026-10-15,
+`split-pass-rows` branch; at 16,384 F16 one warmup and three runs, the
+others one run): the split pass reads the F16 cache at the memory roof
+and Q8_0 level with it
+([metal-backend.md § The split pass at the memory roof](../engine/metal-backend.md#the-split-pass-at-the-memory-roof-2026-10-15)).
+Decode, tokens per second, before (the Q8_0 cache's runs above) → after:
+
+| Cache | 16,384 | 32,639 |
+| --- | ---: | ---: |
+| F16 | 13.78 → **16.01** | 11.63 → **13.20** |
+| Q8_0 | 13.38 → **14.89** | 11.02 → **13.26** |
+
+Prefill is unchanged (67.0 and 50.3). The kernel saves about 17 ms of
+attention per token at 32,639 (16 layers × 1.07 ms), more than the
+10 ms the end-to-end rate shows; the runs were back to back, the 32K
+ones after 40 minutes of load, and the difference is not attributed.
+Q8_0 trails F16 at 16,384 in a single run taken after F16's four and
+leads it at 32,639, as the kernel bench predicts (level at 16K, 2 %
+ahead at 32K): its gain is memory.
 
 **The goal of 22 tok/s at 512 is not reached.** A decode step is about
 58.5 ms: gate and up about 35 %, `ffn_down` 19 %, the DeltaNet
@@ -306,6 +325,8 @@ serve`.
 
 Speed (2026-10-15): specialized kernels for the seven, decode 16.96 tok/s
 at 512 (llama.cpp 12.46) and prefill 94.18 (97.19). The 22 tok/s goal is
-not reached; § Speed records where the step goes. Open: prefill at long
+not reached; § Speed records where the step goes. The head-split decode attention
+(2026-10-15) took decode at 32,639 from 11.63 to 13.20 (F16; llama.cpp
+9.54). Open: prefill at long
 context (35 % behind llama.cpp at 32,639), and which 2-bit file becomes a
 catalogue entry (the comparison with Unsloth's UD-IQ2_XXS and UD-IQ2_S).
