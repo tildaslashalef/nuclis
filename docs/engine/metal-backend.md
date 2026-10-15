@@ -1508,14 +1508,17 @@ attention rows take 1,088 MiB instead of 2,048.
   and `test-metal` holds the two bit-identical (`precise::divide` under
   `MTLMathModeSafe`). `Backend.storeRows(pairs, precision)` (copy,
   `packHalf`, or `packQ8`) is each plan's one cache write.
-- **Decode and verify.** `nu_attention_decode_t` reads cache elements
-  through `nu_kv_at`, overloaded for F32, F16, and `nu_q8_0`; lane `l`
-  owns channels `l, l+32, …`, so a block is one byte per lane and a
-  broadcast scale. `_q8` / `_wq8` are the two new instantiations;
-  `attentionDecode` and `attentionVerify` take `q8_0` when both widths are
-  multiples of 32. `d * q` is exact in F32 (at most 18 significant bits),
-  so the Q8_0 split pass is **bit-identical** to the F32 one over the
-  dequantized rows, which is what `test-metal` checks.
+- **Decode and verify.** `nu_attention_decode_t` finds each cache row once
+  (`nu_kv_row`) and fills a lane's channels with `nu_kv_load`, overloaded
+  for F32, F16, and `nu_q8_0`. F32 and F16 keep lane `l` on channels
+  `l, l+32, …`; Q8_0 gives lane `l` four consecutive channels per
+  128-wide stripe (`nu_kv_channel`), so a row costs a lane one scale and
+  two aligned half-words of codes per stripe instead of a byte and a
+  scale per value (the first layout ran at 21 GB/s, this one at 33).
+  `_q8` / `_wq8` are the two new instantiations; `attentionDecode` and
+  `attentionVerify` take `q8_0` when both widths are multiples of 32.
+  `d * q` is exact in F32, so the kernel's own error is the F32 one,
+  which `test-metal` checks against the CPU over the dequantized rows.
 - **Prefill.** The chunk bodies `simdgroup_load` 8×8 tiles straight from
   device memory and cannot read blocks, so a plan with a `q8_0` cache
   expands the visible rows `[first, position + count)` of K and V into a
@@ -1531,16 +1534,61 @@ attention rows take 1,088 MiB instead of 2,048.
 Evidence (`test-metal`, 2026-10-15): `packQ8` bit-identical to
 `q8_0Row` on 1,021 to 16,385 rows of N(0, 0.5²) and on edge blocks (all
 zero, a subnormal scale, a NaN, an infinity); `unpackQ8` bit-identical to
-the CPU decoder rounded to half; the Q8_0 split pass bit-identical to the
-F32 one over the dequantized rows at 257, 1,021, and 16,385 visible
-(24 heads over 4 of 256), a 5-row verify batch at 4,099, and Gemma's
-16 heads of 512 over one KV head at 2,049. Against the CPU F64 reference
+the CPU decoder rounded to half; the Q8_0 split pass within 2e-8 of the
+CPU F64 reference over the dequantized rows (bounds 2e-5 to 1e-4) at
+257, 1,021, and 16,385 visible (24 heads over 4 of 256), a 5-row verify
+batch at 4,099, and Gemma's 16 heads of 512 over one KV head at 2,049.
+Against the CPU F64 reference
 over the original floats the quantization costs at most 6.9e-4 max abs
 (bound 2e-3; F16's cost on the same data is 1.2e-5).
 `test-generation --metal`, 70 tokens against the F32 stepped logits:
 Qwen3.8 Q4_K_M 2.5e-2 / 1.1e-3 stepped and 2.8e-2 / 9.8e-4 chunked
 (F16: 4.8e-4 / 2.2e-5 and 2.5e-3 / 1.3e-4), argmax identical; the
 per-family bounds are in `inference/generation-check.zig` `Bounds`.
+Across families Q8_0's logit error is 40–50× F16's (Muse Glimmer 4.0e-2
+relative RMS, Gemma 4 E4B 1.1e-1, the 12B QAT 1.7e-1 chunked), the ratio
+of an 8-bit block code to an 11-bit mantissa; Gemma's unscaled attention
+scores make it the most sensitive. On the 26B-A4B the routing amplifies it
+past the greedy token at position 70 (4.7e-1 relative RMS; F16 already
+3.4e-1 chunked), so that configuration's Q8_0 logits are checked finite
+only. `qwen38-trace-q8_0` (raw `Hello,`, position 2): 6.1e-1 max abs and
+1.4e-2 relative RMS per layer file, logits 5.1e-2 / 2.4e-3, the same
+top five; bounds 1.0 / 2.5e-2.
+
+**The split pass is ALU-bound, not bandwidth-bound.** `metal-check
+--decode-bench` (one `attentionDecode`, Saluki's 24 heads over 4 of
+256, GPU time, best of four), 2026-10-15:
+
+| Visible | F32 ms | F16 ms | Q8_0 ms |
+| ---: | ---: | ---: | ---: |
+| 4,096 | 0.236 | 0.222 | 0.244 |
+| 16,384 | 0.973 | 0.930 | 1.158 |
+| 32,640 | 1.795 | 1.693 | 2.142 |
+
+F16 reads half F32's bytes in 94 % of its time (about 75 GB/s of cache),
+so the online softmax over eight heads per row, not memory, sets the
+pace, and Q8_0's conversions add 25 % to it. Q8_0 therefore saves memory,
+not decode time, at long context; making this kernel bandwidth-bound is
+open.
+
+What it costs in quality is perplexity, and it costs none measurable: `nuclis eval
+--file wiki.test.raw` (512-token windows, the last 255 of each scored;
+8 windows, or 4 of 4,096), Metal, 2026-10-15:
+
+| Model | Windows | F16 | Q8_0 | Change |
+| --- | --- | ---: | ---: | ---: |
+| Saluki 27B | 8 × 512 | 7.996 ± 0.455 | 7.996 ± 0.455 | −0.00 % |
+| Saluki 27B | 4 × 4,096 | 6.113 ± 0.161 | 6.113 ± 0.161 | +0.01 % |
+| Qwen3.8 27B Q4_K_M | 8 × 512 | 6.670 ± 0.363 | 6.669 ± 0.363 | −0.01 % |
+| Qwen3.8 27B Q4_K_M | 4 × 4,096 | 5.727 ± 0.160 | 5.725 ± 0.160 | −0.02 % |
+| Muse Glimmer 30B | 8 × 512 | 6.625 ± 0.367 | 6.626 ± 0.367 | +0.01 % |
+| Gemma 4 E4B QAT | 8 × 512 | 36.056 ± 3.226 | 36.062 ± 3.227 | +0.02 % |
+| Gemma 4 12B QAT | 8 × 512 | 308.65 ± 38.78 | 291.08 ± 36.27 | −5.7 % |
+| Gemma 4 26B-A4B | 8 × 512 | 1,107.8 ± 130.5 | 1,105.7 ± 130.4 | −0.19 % |
+
+The Gemma instruction-tuned files score raw text poorly in either
+precision; their changes sit well inside the error, the 12B's in the
+favourable direction.
 
 ## Flash-decoding attention (2026-09-10)
 

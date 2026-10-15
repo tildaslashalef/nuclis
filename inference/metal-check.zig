@@ -838,6 +838,60 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
 /// V loads for the same logical bytes). The verify body (`attentionVerify`,
 /// F32 queries) runs at counts up to its limit. A measurement aid, not the
 /// record.
+/// `--decode-bench`: GPU time of one `attentionDecode` (Saluki's layer:
+/// 24 query heads over 4 KV heads of 256) per cache precision and depth,
+/// and the cache bytes it reads per second.
+fn decodeBench(alloc: std.mem.Allocator) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    const rows = 32640;
+    const n = rows * 1024;
+    const k32 = try b.create(n * 4);
+    const v32 = try b.create(n * 4);
+    for (k32.floats(), 0..) |*k, i| k.* = @as(f32, @floatFromInt(i % 17)) / 17 - 0.5;
+    for (v32.floats(), 0..) |*v, i| v.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
+    const k16 = try b.create(n * 2);
+    const v16 = try b.create(n * 2);
+    const k8 = try b.create(n / 32 * 34);
+    const v8 = try b.create(n / 32 * 34);
+    try b.begin();
+    try b.packHalf(&.{ .{ .dst = k16, .src = k32, .count = n }, .{ .dst = v16, .src = v32, .count = n } });
+    try b.packQ8(&.{ .{ .dst = k8, .src = k32, .count = n }, .{ .dst = v8, .src = v32, .count = n } });
+    try b.commit();
+    const queries = try b.create(24 * 256 * 4);
+    for (queries.floats(), 0..) |*q, i| q.* = @as(f32, @floatFromInt(i % 11)) / 11 - 0.5;
+    const partials = try b.create(Backend.attentionDecodePartials(24, 256) * 4);
+    const out = try b.create(24 * 256 * 4);
+    std.debug.print("{s:>8} {s:>5} {s:>9} {s:>8}\n", .{ "visible", "prec", "best ms", "GB/s" });
+    for ([_]usize{ 4096, 16384, 32640 }) |visible| {
+        for ([_]inference.session.Precision{ .f32, .f16, .q8_0 }) |precision| {
+            const keys = switch (precision) {
+                .f32 => k32,
+                .f16 => k16,
+                .q8_0 => k8,
+            };
+            const values = switch (precision) {
+                .f32 => v32,
+                .f16 => v16,
+                .q8_0 => v8,
+            };
+            const repeats = 16;
+            var best: f64 = std.math.inf(f64);
+            for (0..5) |round| {
+                const before = b.gpuSeconds();
+                try b.begin();
+                for (0..repeats) |_| try b.attentionDecode(keys, values, queries, partials, out, .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .visible = visible, .scale = 1.0 / 16.0, .precision = precision });
+                try b.commit();
+                const ms = (b.gpuSeconds() - before) * 1e3 / repeats;
+                if (round > 0) best = @min(best, ms);
+            }
+            const bytes: f64 = @floatFromInt(visible * precision.bytes(2048));
+            std.debug.print("{d:>8} {s:>5} {d:>9.3} {d:>8.1}\n", .{ visible, @tagName(precision), best, bytes / (best / 1e3) / 1e9 });
+        }
+    }
+}
+
 fn attentionBench(alloc: std.mem.Allocator) !void {
     var backend = try openBackend(alloc);
     defer backend.deinit();
@@ -3016,9 +3070,10 @@ fn checkWideRows(alloc: std.mem.Allocator, io: std.Io, b: *Backend, random: std.
 /// `packQ8` bit-identical to `quant_encode.q8_0Row` (zero, tiny, NaN, and
 /// infinite blocks included); `unpackQ8` bit-identical to the CPU decoder
 /// rounded to half; the Q8_0 split pass (decode, wide, verify rows)
-/// bit-identical to the F32 one over the dequantized rows, since `d * q`
-/// is exact in F32; the rounding's cost against the original floats
-/// printed and bounded; shape refusals.
+/// against the CPU F64 reference over the dequantized rows at the F32
+/// kernel's bounds (its own error: `d * q` is exact in F32), and the
+/// rounding's cost against the original floats printed and bounded;
+/// shape refusals.
 fn checkQ8Cache(alloc: std.mem.Allocator, b: *Backend) !void {
     var prng = std.Random.DefaultPrng.init(0x0880);
     const random = prng.random();
@@ -3115,8 +3170,6 @@ fn checkQ8Cache(alloc: std.mem.Allocator, b: *Backend) !void {
         defer b.release(partials) catch {};
         const out8 = try b.create(padded * qw * 4);
         defer b.release(out8) catch {};
-        const out32 = try b.create(padded * qw * 4);
-        defer b.release(out32) catch {};
         const scale = 1.0 / @sqrt(@as(f32, @floatFromInt(g.hd)));
         try b.begin();
         if (g.rows == 1) {
@@ -3124,31 +3177,29 @@ fn checkQ8Cache(alloc: std.mem.Allocator, b: *Backend) !void {
             var q8 = shape;
             q8.precision = .q8_0;
             try b.attentionDecode(k8, v8, queries, partials, out8, q8);
-            try b.commit();
-            try b.begin();
-            try b.attentionDecode(k32, v32, queries, partials, out32, shape);
         } else {
             const shape: Backend.AttentionChunkShape = .{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .position = g.visible - g.rows, .count = g.rows, .q_stride = qw, .out_stride = qw, .scale = scale };
             var q8 = shape;
             q8.precision = .q8_0;
             try b.attentionVerify(k8, v8, queries, partials, out8, q8);
-            try b.commit();
-            try b.begin();
-            try b.attentionVerify(k32, v32, queries, partials, out32, shape);
         }
         try b.commit();
-        const got8 = out8.floats()[0 .. g.rows * qw];
-        const got32 = out32.floats()[0 .. g.rows * qw];
-        if (!std.mem.eql(f32, got8, got32)) {
-            const at = std.mem.indexOfDiff(f32, got8, got32).?;
-            std.debug.print("Q8_0 split pass vs F32 over the dequantized rows: element {d} got {d} want {d}\n", .{ at, got8[at], got32[at] });
-            return error.MetalMismatch;
-        }
-        // The cost: the CPU F64 reference over the original floats, last row.
+        // Its own error: every row against the CPU over the dequantized rows.
         const scratch = try alloc.alloc(f64, g.visible);
         defer alloc.free(scratch);
         const expected = try alloc.alloc(f32, qw);
         defer alloc.free(expected);
+        const bound: f32 = if (g.visible <= 1021) 2e-5 else 1e-4;
+        var own: f32 = 0;
+        for (0..g.rows) |r| {
+            const seen = g.visible - (g.rows - 1 - r);
+            try inference.cpu.attention.apply(.{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .tokens = g.visible, .visible_tokens = seen, .scale = scale, .queries = queries.floats()[r * qw ..][0..qw], .keys = k32.floats(), .values = v32.floats() }, expected, scratch);
+            for (expected, out8.floats()[r * qw ..][0..qw]) |e, a| {
+                own = @max(own, @abs(a - e));
+                try expectClose("q8_0 split pass vs CPU over the dequantized rows", a, e, bound);
+            }
+        }
+        // The cost: the CPU F64 reference over the original floats, last row.
         const last = g.rows - 1;
         try inference.cpu.attention.apply(.{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .tokens = g.visible, .visible_tokens = g.visible, .scale = scale, .queries = queries.floats()[last * qw ..][0..qw], .keys = originals[0..n], .values = originals[n..] }, expected, scratch);
         var worst: f32 = 0;
@@ -3157,7 +3208,7 @@ fn checkQ8Cache(alloc: std.mem.Allocator, b: *Backend) !void {
             try expectClose("q8_0 decode attention vs the original floats", a, e, 2e-3);
         }
         worst_cost = @max(worst_cost, worst);
-        std.debug.print("Q8_0 KV split pass, {d}×{d} heads of {d}, {d} visible, {d} row(s): bit-identical to F32 over the dequantized rows; vs CPU F64 over the original floats max abs {e:.3}\n", .{ g.qh, g.kvh, g.hd, g.visible, g.rows, worst });
+        std.debug.print("Q8_0 KV split pass, {d}×{d} heads of {d}, {d} visible, {d} row(s): vs CPU F64 over the dequantized rows {e:.3} (bound {e:.0}), over the original floats {e:.3}\n", .{ g.qh, g.kvh, g.hd, g.visible, g.rows, own, bound, worst });
     }
     std.debug.print("Q8_0 pack bit-identical to q8_0Row, unpack to the CPU decoder rounded to half; worst cost {e:.3} (bound 2e-3)\n", .{worst_cost});
     // Contract: block multiples, widths of whole blocks, alignment, overlap,
@@ -3192,6 +3243,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--hadamard-bench")) return hadamardBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--attention-bench")) return attentionBench(alloc);
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--decode-bench")) return decodeBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--experts-bench")) return expertsBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
     if (args.len >= 3 and std.mem.eql(u8, args[1], "--wide-rows")) {
         var backend = try openBackend(alloc);

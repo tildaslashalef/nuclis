@@ -119,7 +119,10 @@ Q8_0 projector), which matches the arithmetic of the layout:
 | Total | ≈ 10,900 | |
 
 "Under 8 GB" is the weights. The attention cache is the part that grows
-and the part a quantized cache shrinks.
+and the part a quantized cache shrinks: with `--kv q8_0` nuclis's 32K
+session is 1,238 MiB instead of 2,198 (attention rows 1,088 instead of
+2,048, plus the 150 MB of DeltaNet state;
+[metal-backend.md § Q8_0 KV cache](../engine/metal-backend.md#q8_0-kv-cache-2026-10-15)).
 
 ## The llama.cpp record (2026-10-14)
 
@@ -279,6 +282,13 @@ integer-to-float conversion); the merged projections declined for them
 shared by 16 SIMD groups. The counters, the probes that moved nothing,
 and the F16 dot that fails the F32 trace are in
 [apple-gpu.md](../engine/apple-gpu.md#salukis-2-bit-matvecs-on-the-ffn_down-shape-2026-10-15).
+
+**The Q8_0 cache** (`--kv q8_0`, the same method, 2026-10-15, `q8-kv-cache`
+branch): decode 17.04 / 13.38 / 11.02 at 512 / 16,384 / 32,639 against
+F16's 16.66 / 13.78 / 11.63 the same day, prefill equal (93.82 / 67.20 /
+51.59), the session 1,238 MiB instead of 2,198; perplexity unchanged
+(7.996 at 8 × 512, 6.113 at 4 × 4,096). The decode attention kernel is
+ALU-bound, so halving the cache's bytes saves memory, not time.
 
 **The goal of 22 tok/s at 512 is not reached.** A decode step is about
 58.5 ms: gate and up about 35 %, `ffn_down` 19 %, the DeltaNet
