@@ -11,9 +11,24 @@ Everything here was read on 2026-10-14 from the pulled file with
 [`fixtures/saluki-27b.json`](../../inference/src/models/fixtures/saluki-27b.json))
 and by range reads of the comparison files' headers and tensors.
 
-**Goal.** Decode at ≥ 22 tok/s at 512 tokens on the M4 Pro: the 2-bit
-matvecs at the ~180 GB/s the Q4_K path sustains, over 7.61 GB per token.
-llama.cpp reaches 12.46 (§ [The llama.cpp record](#the-llamacpp-record-2026-10-14)).
+**Goals** (restated 2026-10-15, the user's; the M4 Pro, `nuclis bench`,
+greedy, 128 tokens), set where the model is used, at 32K:
+
+- **Decode at 32,639 ≥ 18 tok/s** (F16 or Q8_0 cache; 14.97 / 15.03
+  today). It needs the 2-bit matvecs at about 200 GB/s over the 7.61 GB
+  of weights a token reads, beside about 10 ms of attention and 8 ms of
+  other work: about 56 ms a step.
+- **A 32,639-token prompt prefilled in ≤ 7 minutes** (≥ 79 tok/s,
+  llama.cpp's 78.87; 51.52 and 10.6 minutes today). The chunk attention
+  is the suspect, and it is the same on every family.
+
+Decode at 512 stays the weights-only measure of the matvec kernels: the
+matvecs at 200 GB/s give about 22 tok/s there (16.96 today, llama.cpp
+12.46, § [The llama.cpp record](#the-llamacpp-record-2026-10-14)).
+Context past 32,768 (nuclis's cap; the model declares 262,144) waits on
+the prefill goal: extrapolating today's rates, whose attention share
+grows with the square of the prompt, a 128K prompt would take over an
+hour.
 
 ## Artifacts
 
@@ -31,8 +46,8 @@ The repository also has `mmproj-…-F16.gguf` (927,606,912 B, SHA-256
 (Q8_0 matrices, F16 `ffn_down`, F32 vectors;
 [vision.md § The Qwen3-VL projector](../engine/vision.md#the-qwen3-vl-projector-2026-09-22)),
 which the Qwen3-VL adapter already binds. No catalogue entry: the
-[catalogue](catalogue.md) decision waits for the comparison with
-Unsloth's 2-bit files on nuclis.
+[catalogue](catalogue.md) decision is deferred (the user's, 2026-10-15);
+a comparison with Unsloth's 2-bit files on nuclis would inform it.
 
 ## Metadata
 
@@ -327,11 +342,11 @@ in 56 % of the session memory. The llama.cpp record (9.54 at 32,639)
 decodes right after its own prefill, as the acceptance method does, so
 these rates are not set against it.
 
-**The goal of 22 tok/s at 512 is not reached.** A decode step is about
+**The decode goal is not reached.** At 512 a decode step is about
 58.5 ms: gate and up about 35 %, `ffn_down` 19 %, the DeltaNet
 projections 13 %, everything outside the matvecs about 8 ms. 22 tok/s
-needs the 7.61 GB per token at about 200 GB/s on average, above every
-2-bit kernel here alone
+(the 512 measure of the 32K goal) needs the 7.61 GB per token at about
+200 GB/s on average, above every 2-bit kernel here alone
 ([apple-gpu.md § The merged gate+up](../engine/apple-gpu.md#the-merged-gateup-on-salukis-encodings-2026-10-15)).
 
 ## Status
@@ -342,8 +357,9 @@ and the model chats, calls tools, and reads images through `nuclis
 serve`.
 
 Speed (2026-10-15): specialized kernels for the seven, decode 16.96 tok/s
-at 512 (llama.cpp 12.46) and prefill 94.18 (97.19). The 22 tok/s goal is
-not reached; § Speed records where the step goes. The head-split decode attention
+at 512 (llama.cpp 12.46) and prefill 94.18 (97.19). Neither goal above
+(decode ≥ 18 tok/s and a prompt in ≤ 7 minutes, at 32,639) is reached;
+§ Speed records where the step goes. The head-split decode attention
 (2026-10-15) took decode at 32,639 from 11.93 to 14.97 (F16, interleaved
 A/B on a restored prefix). Open: prefill at long
 context (35 % behind llama.cpp at 32,639), and which 2-bit file becomes a
