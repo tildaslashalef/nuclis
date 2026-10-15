@@ -425,6 +425,21 @@ record above stays the current one. The sweep is
 the kernel note is
 [metal-backend.md § Split-K](../engine/metal-backend.md#split-k-2026-09-21-closed-negative).
 
+**Long-context decode with the head-split attention (2026-10-15).** Its
+32 query heads of 128 over two KV heads were the shape the old split
+pass served worst (2.46 ms per layer at 32,640 rows, 0.41 now;
+[metal-backend.md § The split pass at the memory roof](../engine/metal-backend.md#the-split-pass-at-the-memory-roof-2026-10-15)).
+The speed loop's interleaved A/B (`make speed ARGS='--contexts
+16384,32639 --tokens 128 --pairs 5 --model muse'`, `fcebd2b` against
+`115cbf7`, F16 cache, medians of five pairs) measures decode 9.78 →
+**11.87** tok/s at 16,384 (+21.3 %, 18.0 ms per token) and 8.52 →
+**11.52** at 32,639 (+35.2 %, 30.6 ms), the largest gain of the
+families: 32,639 now decodes within 2 % of the 512 rate (11.70 on
+`fcebd2b`, one warmup and three runs). The acceptance record's 8.08 /
+7.19 decode right after their own prefill and are not comparable with
+these rates; the README's tables keep them until the next release
+record.
+
 ## Status
 
 [MODL-11](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-11--muse-glimmer-30b-artifact-pin-facts-tokenizer-binding-cpu-reference-2026-09-19) closed on 2026-09-19: the artifact is pinned and verified, the

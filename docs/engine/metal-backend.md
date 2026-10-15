@@ -1690,10 +1690,50 @@ merge), before → after: Muse Glimmer's 32 heads of 128 over two, F16
 over one, F16 2.68 → 1.20 and Q8_0 3.28 → 1.22; Gemma's sliding 16 over
 8 of 256, F16 1.31 → 1.09 (the window bounds it in use).
 
-Saluki 27B end to end (`nuclis bench`, 128 tokens, greedy), decode
-before → after: F16 13.78 → 16.01 tok/s at 16,384 and 11.63 → 13.20 at
-32,639; Q8_0 13.38 → 14.89 and 11.02 → 13.26; prefill unchanged
-([saluki.md § Speed](../models/saluki.md#speed)).
+**End to end, every family** (`make speed ARGS='--contexts
+16384,32639 --tokens 128 --pairs 5 --model <key>'`, 2026-10-15):
+`fcebd2b` (the commit before the head split) against `115cbf7`, five
+pairs alternating the two binaries on each family's acceptance arrays
+from a restored prefix, 10 minutes idle before each family; F16 cache
+unless named; Apple M4 Pro, macOS 27.0.1, AC, ReleaseSafe, Zig 0.17.0.
+Decode, tokens per second, medians; every row's pairs agree within
+0.4 %:
+
+| Model | 16,384 | ms/token | 32,639 | ms/token |
+| --- | ---: | ---: | ---: | ---: |
+| Saluki 27B | 13.98 → **16.12** (+15.3 %) | −9.5 | 11.93 → **14.97** (+25.5 %) | −17.0 |
+| Saluki 27B, Q8_0 | 13.29 → **16.13** (+21.4 %) | −13.3 | 10.96 → **15.03** (+37.2 %) | −24.7 |
+| Muse Glimmer 30B | 9.78 → **11.87** (+21.3 %) | −18.0 | 8.52 → **11.52** (+35.2 %) | −30.6 |
+| Gemma 4 12B QAT | 19.95 → **23.82** (+19.4 %) | −8.1 | 16.61 → **21.07** (+26.8 %) | −12.7 |
+| Gemma 4 26B-A4B | 39.61 → **48.90** (+23.5 %) | −4.8 | 31.67 → **42.32** (+33.6 %) | −7.9 |
+
+Prefill does not use the split pass. The bases sit above the families'
+2026-10-05 acceptance rows (Muse 8.08 / 7.19, Gemma 12B 17.93 / 15.11,
+26B-A4B 37.93 / 31.23) with the kernels unchanged (Muse at 512 on
+`fcebd2b`: 11.70 against the record's 11.62): an acceptance run decodes
+right after its own prefill, minutes of load at these lengths, where
+the speed loop restores a prefix.
+
+**In the model, the whole saving reaches the step.** The head split's
+own Saluki runs (F16 13.78 → 16.01 at 16,384 and 11.63 → 13.20 at
+32,639; Q8_0 13.38 → 14.89 and 11.02 → 13.26) were back to back and
+fell short of the kernel bench (10 ms per token at 32,639 where 16
+layers × 1.07 ms predict 17). Profiled from a cooled chip (`nuclis
+bench --profile`, Saluki, a restored prefix, one warmup
+and three runs of 128 tokens, 10 minutes idle before each, 2026-10-15),
+`fcebd2b` → `115cbf7`, ms per step:
+
+| Context, cache | Split pass per layer | Attention family | GPU time | Decode tok/s (profiled) |
+| --- | ---: | ---: | ---: | ---: |
+| 16,384 F16 | 0.904 → 0.316 | 15.32 → 5.81 | 71.05 → 61.69 | 13.54 → 15.37 |
+| 16,384 Q8_0 | 1.139 → 0.308 | 18.91 → 5.57 | 74.75 → 61.52 | 12.90 → 15.55 |
+| 32,639 F16 | 1.670 → 0.608 | 27.58 → 10.48 | 83.28 → 66.25 | 11.62 → 14.49 |
+
+The kernel in the model runs 1–7 % faster than in `--decode-bench`, the
+step's GPU time falls by the attention family's saving to within
+0.2 ms, and no other family moves by more than 0.2 ms. The shortfall in
+the back-to-back runs was heat: the 32K pair ran after 40 minutes of
+load and the Q8_0 16K run after F16's four.
 
 Evidence (`test-metal`, 2026-10-15): every decode, verify, wide, and
 Q8_0 check within its bound, plus Muse Glimmer's shape (F32/F16 decode

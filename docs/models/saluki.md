@@ -301,13 +301,31 @@ Decode, tokens per second, before (the Q8_0 cache's runs above) → after:
 | F16 | 13.78 → **16.01** | 11.63 → **13.20** |
 | Q8_0 | 13.38 → **14.89** | 11.02 → **13.26** |
 
-Prefill is unchanged (67.0 and 50.3). The kernel saves about 17 ms of
-attention per token at 32,639 (16 layers × 1.07 ms), more than the
-10 ms the end-to-end rate shows; the runs were back to back, the 32K
-ones after 40 minutes of load, and the difference is not attributed.
-Q8_0 trails F16 at 16,384 in a single run taken after F16's four and
-leads it at 32,639, as the kernel bench predicts (level at 16K, 2 %
-ahead at 32K): its gain is memory.
+Prefill is unchanged (67.0 and 50.3). Those runs were back to back and
+heat cost them part of the gain; the interleaved A/B below replaces
+them.
+
+**Measured without heat bias** (`make speed`, `scripts/speed.py
+--contexts 16384,32639 --tokens 128 --pairs 5 --run run-2026-09-06`,
+2026-10-15): `fcebd2b` (the commit before the head split) against
+`115cbf7`, five pairs alternating the two binaries on a restored
+prefix, 10 minutes idle before each cache. Decode, tokens per second,
+medians:
+
+| Cache | 16,384 | 32,639 |
+| --- | ---: | ---: |
+| F16 | 13.98 → **16.12** (+15.3 %) | 11.93 → **14.97** (+25.5 %) |
+| Q8_0 | 13.29 → **16.13** (+21.4 %) | 10.96 → **15.03** (+37.2 %) |
+
+Each row's five pairs agree within 0.3 %. At 32,639 F16 saves 17.0 ms
+per token, all that 16 layers of the kernel bench predict; the cooled
+profile finds the split pass 1–7 % faster than its bench time and nothing
+else in the step moved
+([metal-backend.md § The split pass at the memory roof](../engine/metal-backend.md#the-split-pass-at-the-memory-roof-2026-10-15)).
+Q8_0 now decodes level with F16 at 16,384 and 0.4 % ahead at 32,639,
+in 56 % of the session memory. The llama.cpp record (9.54 at 32,639)
+decodes right after its own prefill, as the acceptance method does, so
+these rates are not set against it.
 
 **The goal of 22 tok/s at 512 is not reached.** A decode step is about
 58.5 ms: gate and up about 35 %, `ffn_down` 19 %, the DeltaNet
@@ -326,7 +344,7 @@ serve`.
 Speed (2026-10-15): specialized kernels for the seven, decode 16.96 tok/s
 at 512 (llama.cpp 12.46) and prefill 94.18 (97.19). The 22 tok/s goal is
 not reached; § Speed records where the step goes. The head-split decode attention
-(2026-10-15) took decode at 32,639 from 11.63 to 13.20 (F16; llama.cpp
-9.54). Open: prefill at long
+(2026-10-15) took decode at 32,639 from 11.93 to 14.97 (F16, interleaved
+A/B on a restored prefix). Open: prefill at long
 context (35 % behind llama.cpp at 32,639), and which 2-bit file becomes a
 catalogue entry (the comparison with Unsloth's UD-IQ2_XXS and UD-IQ2_S).

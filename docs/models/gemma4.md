@@ -796,3 +796,28 @@ prompt (256 greedy tokens, F16 cache); `--speculative on` 69.9 tok/s
 so the entry keeps speculation off. llama.cpp decoded 58.7 tok/s on a
 6-token prompt.
 
+
+## Long-context decode with the head-split attention (2026-10-15)
+
+The decode split pass now spreads query heads across a threadgroup's
+SIMD groups ([metal-backend.md § The split pass at the memory roof](../engine/metal-backend.md#the-split-pass-at-the-memory-roof-2026-10-15)).
+Gemma's global layers (16 heads of 512, over one KV head on the 12B and
+two on the 26B-A4B) run with one head per SIMD group; at 32,640 rows the
+12B's layer takes 1.20 ms instead of 2.68. The sliding layers read at
+most 1,024 rows and gain little.
+
+The speed loop's interleaved A/B (`make speed ARGS='--contexts
+16384,32639 --tokens 128 --pairs 5 --model <key>'`, `fcebd2b` against
+`115cbf7`, F16 cache, medians of five pairs on the acceptance arrays
+from a restored prefix), decode tokens per second:
+
+| File | 16,384 | 32,639 |
+| --- | ---: | ---: |
+| 12B QAT (8 global layers) | 19.95 → **23.82** (+19.4 %, 8.1 ms/token) | 16.61 → **21.07** (+26.8 %, 12.7 ms) |
+| 26B-A4B (5 global layers) | 39.61 → **48.90** (+23.5 %, 4.8 ms) | 31.67 → **42.32** (+33.6 %, 7.9 ms) |
+
+On the 12B the kernel bench's 8 × 1.48 ms predicts 11.8 ms of the 12.7
+at 32,639. The 2026-10-05 acceptance rows (12B 17.93 / 15.11, 26B-A4B
+37.93 / 31.23) decode right after their own prefill and are not
+comparable with these rates; the README's tables keep them until the
+next release record.
