@@ -21,60 +21,27 @@ as `saluki-27b` (facts, lineage, validation, and every number:
 (`saluki-2bit-encodings`) it runs on the CPU and on Metal, validated
 without an external oracle (the cross-encoding check, CPU traces as its
 own fixture), and chats, calls tools, and reads images through `nuclis
-serve`, at the generic kernels' speed: decode 7.22 tok/s at 512 (llama.cpp
-12.46), prefill 67 (llama.cpp 97).
+serve`. Since the speed unit (`saluki-2bit-speed`) its specialized
+kernels decode 16.96 tok/s at 512 (llama.cpp 12.46, the Q4_K_M on nuclis
+11.67) and prefill 94.18 (llama.cpp 97.19).
 
 **North star: Saluki decodes at ≥ 22 tok/s at 512 tokens** on this
-machine (`nuclis bench`, Metal, F16 cache, greedy, 128 tokens): the 2-bit
-matvecs at the ~180 GB/s the Q4_K kernel sustains, over 7.61 GB per token.
-An estimate until measured; every unit reports against it.
+machine (`nuclis bench`, Metal, F16 cache, greedy, 128 tokens). Not
+reached: it needs the 7.61 GB per token at about 200 GB/s on average,
+above every 2-bit kernel alone; where the step goes is in saluki.md
+§ Speed. Every unit reports against it.
 
 **nuclis is its own reference** (since 2026-10-14; AGENTS.md, spec § 3):
 new work is validated against nuclis's already-validated paths. What
 replaces the oracle for a genuinely new architecture is open
 (docs/models/README.md § 0).
 
-Next: **Saluki: the 2-bit matvecs at the north star**.
+Next: **Q8_0 attention cache**.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Saluki: the 2-bit matvecs at the north star | `saluki-2bit-speed` | next |
-| Q8_0 attention cache | `q8-kv-cache` | queued; facts to read first |
+| Q8_0 attention cache | `q8-kv-cache` | next; facts to read first |
 | 2-bit files compared on nuclis, the catalogue decision | `two-bit-comparison` | queued |
-
-## Saluki: the 2-bit matvecs at the north star
-
-Base: the bring-up's merge commit on `main`. The seven encodings decode
-through the generic kernels (`nu_segment` in
-`backends/metal/dequant.metal`: 16 values per call through a switch), at
-43–83 GB/s (`zig build bench-kernels -Dmetal=true -- <ENC>`; the table in
-saluki.md § Speed); the Q4_K specialized matvec runs at 177–198 GB/s on
-the same shapes, its generic path at ~103.
-
-1. **Specialized matvecs** in `backends/metal/kernels.metal`, named
-   `nu_matvec_<enc>` beside `nu_matvec_iq4_xs` and instantiated with
-   `NU_MATVEC_ARGS` like it; a `Kernel` tag each in `metal/root.zig` and a
-   case where encoding 21 routes to `.matvec_iq3_s`. Order by bytes per
-   token: IQ2_XXS (119 tensors, every `ffn_down` but 11), IQ2_S, Q2_K,
-   IQ2_XS, IQ3_XXS, IQ1_S, IQ1_M. Each must equal the CPU within
-   `metal-check`'s matvec bounds (the codebook fixture already runs through
-   every matvec loop) and reach ≥ 170 GB/s on the three shapes above.
-2. **Codebook placement** is the first experiment: the grids sit in
-   `constant` memory (IQ2_XXS 2 KiB, IQ2_XS 4 KiB, IQ2_S 8 KiB, IQ3_XXS
-   1 KiB, IQ1_S 16 KiB); try threadgroup copies and narrower encodings
-   (IQ2 magnitudes are 3 values, so 2 bits each; IQ1 components are
-   ternary). Measure one encoding before generalizing.
-3. **The multi-row matvec** (`nu_matvec_rows_*`, used by verify batches)
-   and the merged segments for the seven, if the profile shows them.
-4. **Exit:** `nuclis bench --model saluki-27b` decode ≥ 22 tok/s at 512
-   and the 4K / 16K / 32,639 rows against saluki.md § Speed; record in
-   saluki.md. If 22 is not reached, record where the time goes
-   (`nuclis bench --profile`) and stop at the measured result.
-5. **Then prefill**: the matmul tiles (`_8`, `_w8`, `_f2` variants, as
-   IQ3_S has) to at least llama.cpp's 97 tok/s at 512.
-
-Gates: `make verify-auto`, `make verify` (Metal kernels), `zig build
-test-metal -Dmetal=true`. Not `verify-cpu`: no CPU arithmetic changes.
 
 ## Q8_0 attention cache
 

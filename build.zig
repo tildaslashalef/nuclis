@@ -102,7 +102,9 @@ pub fn build(b: *std.Build) void {
     const check_tools = b.step("check-tools", "Install the vocabulary, Laya, clef, EmbeddingGemma, generation, and cross-encoding check tools");
     for ([_][]const u8{ "vocabulary-check", "laya-check", "clef-check", "embeddinggemma-check", "generation-check", "cross-encoding-check" }) |name|
         check_tools.dependOn(&b.addInstallArtifact(inference.artifact(name), .{}).step);
-    b.step("test-metal", "Explicit Metal fixture checks (-Dmetal=true)").dependOn(&b.addRunArtifact(inference.artifact("metal-check")).step);
+    const metal_check = b.addRunArtifact(inference.artifact("metal-check"));
+    metal_check.addPassthruArgs();
+    b.step("test-metal", "Explicit Metal fixture checks (-Dmetal=true; -- --wide-rows ID: one encoding's matvec rows)").dependOn(&metal_check.step);
     const matvec_bench = b.addRunArtifact(inference.artifact("metal-check"));
     matvec_bench.addArg("--matvec-bench");
     matvec_bench.addPassthruArgs();

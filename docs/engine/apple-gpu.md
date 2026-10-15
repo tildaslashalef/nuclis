@@ -30,7 +30,7 @@ unless a row names a measurement.
 | Matrix unit | `simdgroup_matrix` 8 × 8; operands of one type (no half → float matrix conversion in MSL); half operands with F32 accumulation reach 4.9–5.2 TFLOP/s in 64 × 64 tiles, F32 operands 3.3–3.5; Apple publishes no peak | measured, [metal-backend.md § Kernels](metal-backend.md#kernels) |
 | Per-lane arithmetic | scalar: building a `float4` value by value cost 3–4× one `uchar4 → float4` cast (Q5_K matvec 113 → 210 GB/s) | measured, [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec) |
 | Loads | the specialized matvecs load `uint4` (16-byte-aligned blocks), `uint2`, or `packed_ushort4` by block alignment; no controlled sweep of load width against rate yet | [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec) |
-| half ↔ float | conversions are free; 16-bit types use fewer registers | 111373 (not isolated by a measurement of ours) |
+| half ↔ float | conversions are free: a half source of an F32 multiply-add adds no ALU instruction (counted, [below](#salukis-2-bit-matvecs-on-the-ffn_down-shape-2026-10-15)); 16-bit types use fewer registers | 111373; measured |
 | Clock | an isolated short dispatch measures the GPU clock's ramp-up, not the kernel: micro-benchmarks run 8 dispatches per command buffer, 64 below 8,192 rows | measured, [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec) |
 
 ## Registers and occupancy under dynamic caching
@@ -350,3 +350,193 @@ are not unrolled whatever `#pragma unroll` asks, so the accumulators'
 indices must be constant in the loops the compiler keeps. At 4 rows the
 float work is near its minimum and the kernel is issue-bound at 25 %
 occupancy.
+
+## Saluki's 2-bit matvecs on the `ffn_down` shape (2026-10-15)
+
+`make bench-kernels ARGS=<ENC> CAPTURE='matvec-<ENC>-5120x17408
+(ffn_down)-block'`: 64 dispatches of the 5,120 × 17,408 matvec (IQ2_XXS
+23.0 MB, IQ2_S 28.5, IQ1_S 17.4) in one command buffer, the subnormal-pair
+decode of the codebook encodings (`c35a6c1`; IQ2_XXS and IQ2_S at 2 rows
+per SIMD group, IQ1_S at 4, IQ2_S's grid in threadgroup memory). Exports
+`matvec-IQ2_XXS-5120x17408-ffn_down-block_2026-10-15T0726_max.csv`,
+`matvec-IQ2_S-…_2026-10-15T0725_max.csv`, and
+`matvec-IQ1_S-…_2026-10-15T0724_max.csv` (not committed), profiled at
+Maximum; the capture runs read 138, 157, and 131 GB/s, and the replays'
+GPU time was not read.
+
+| Counter | IQ2_XXS | IQ2_S | IQ1_S |
+| --- | ---: | ---: | ---: |
+| ALU Utilization | 35.8 % | 34.9 % | 35.5 % |
+| Instruction Throughput Limiter / Utilization | **83.5 / 19.5 %** | **87.2 / 19.3 %** | **78.1 / 19.7 %** |
+| Integer and Complex Limiter / Utilization | **72.2 / 45.9 %** | 50.1 / 36.3 % | 42.4 / 31.2 % |
+| Integer and Conditional Limiter / Utilization | 37.0 / 30.0 % | 40.5 / 31.7 % | 33.1 / 27.1 % |
+| F32 Limiter / Utilization | 26.1 / 18.8 % | 28.1 / 19.9 % | 41.8 / 28.3 % |
+| ALU instruction mix: integer and conditional / integer and complex / float | 41.8 / 32.0 / 26.2 % | 45.5 / 26.0 / 28.5 % | 38.2 / 22.0 / 39.9 % |
+| Kernel ALU instructions (64 dispatches) / per weight | 25.4 × 10⁹ / 4.45 | 26.4 × 10⁹ / 4.63 | 19.7 × 10⁹ / 3.45 |
+| Kernel Occupancy / Occupancy Manager Target | 27.5 / 43.0 % | 33.4 / **75.0 %** | 24.0 / 48.4 % |
+| L1 Register / Buffer / Threadgroup Residency | 4.3 / 87.0 / 0 % | 1.5 / 62.0 / 29.7 % | 11.7 / 77.0 / 0 % |
+| Buffer L1 / Threadgroup Memory L1 Read Bandwidth | 1,576 / 0 | 1,136 / 446 | 1,386 / 0 |
+| L1 Cache Limiter / Buffer L1 Miss Rate | **56.4** / 2.5 % | 50.0 / 5.7 % | **58.2** / 2.6 % |
+| Last Level Cache Limiter / Miss Rate | 4.9 / 90.7 % | 4.4 / 89.7 % | 5.5 / 92.2 % |
+| MMU Limiter / TLB Miss Rate | 6.5 / 25.5 % | 10.1 / 0 % | 5.8 / 3.3 % |
+| Compute Shader Launch Limiter | 43.6 % | 72.1 % | 0.2 % |
+
+(Bandwidths as Xcode exports them, GB/s; per weight is over
+64 × 89.1 M weights.)
+
+**Reading: issue-bound on integer work, as Q4_K and IQ4_XS were.** Memory
+is not the limit (last-level cache 4–6 %, MMU 6–10 %), nothing spills, and
+the instruction throughput limiter sits at 78–87 % at under 20 %
+utilization. Three quarters of the ALU instructions are integer: the
+float work is at its floor (about 1.2 per weight, the multiply-add; the
+half-to-float conversions are no instructions at all, below), and
+the masks, shifts, and sign spreading take the other 3.3 instructions per
+weight. IQ2_XXS's integer and complex limiter (72 %) is the `popcount`
+of its 7-bit sign parity; IQ2_S stores full sign bytes, IQ1_S has no
+signs. The L1 limiter is the second limit, three times Q4_K's: each lane
+reads its 32 F32 inputs (128 bytes) per block for 8–10 bytes of weights
+per row, so input loads are 6–8 times the weight bytes at 2 rows, and the
+L1 serves about ten times the device stream. IQ2_S's 8 KiB threadgroup
+grid holds it at less than half its occupancy target.
+
+**Probes** on IQ2_XXS (`bench-kernels`, the same shape, best rate;
+the kernel read 135.1 GB/s; "wrong" probes break the result and only
+price a cost):
+
+| Probe | GB/s |
+| --- | ---: |
+| Four independent sums per row instead of one 32-deep chain | 134.7 |
+| Sign parity removed (wrong) | 139.8 |
+| Parity by shift-and-XOR on all four fields at once | 134.5 |
+| Three quarters of the input loads removed (wrong) | 150.1 |
+| 4 rows per SIMD group | 124.9 |
+| Weight loads as one aligned `uint2` (wrong data) | 133.2 |
+| Grid lookup replaced by a byte-splat multiply (wrong) | 131.5 |
+| Sign masks from a 128 × `uint4` constant table (2 KiB) | **80.7** |
+| Signs from a 128 × `ulong` constant table (1 KiB) into the grid bytes' free top bits, then one mask (and a rotate) per pair: about 10 integer instructions per octet instead of 26 | 124.3 |
+| The same table in threadgroup memory | 107.9 |
+| Inputs read as half (wrong data: the F32 buffer read as F16), F32 multiply-adds | 147.3 |
+| The same with half2 multiply-adds within each octet | 148.8 |
+| Half-to-float conversions removed (wrong: each half pair read as one F32, same integer work and multiply-adds) | 135.9 |
+| 2, 8, or 16 SIMD groups per threadgroup instead of 4 | 136.0, 135.0, 135.7 |
+| Next block's weights loaded before the current block's decode (software pipelining) | 135.6 |
+| Input loads coalesced across lanes (wrong data: lane-contiguous 16-byte runs, each lane's eight 512 bytes apart) | 95.9 |
+| 4 rows per SIMD group, K split over 2 SIMD groups (same SIMD-group count, input loads per weight halved) | 126.0 |
+| 8 rows per SIMD group, K split over 4 | 126.5 |
+| Octet-outer loop: two `float4` inputs live at a time instead of eight, each octet decoded for both rows | 125.4 |
+| Each iteration's 4 KiB of inputs staged once per threadgroup in threadgroup memory (double-buffered, one barrier) | 99.1 |
+| F32 inputs loaded as now, held as half (the same bytes, half the input registers) | 134.6 |
+
+**The conversions are no instructions.** The ablation that reads each
+half pair as one F32 (the same integer work and multiply-adds, no
+conversion) counts 25,392,447,104 ALU instructions against the kernel's
+25,392,445,984, with the same mix (float 26.18 %, integer and complex
+32.00 %, integer and conditional 41.82 %) and the same limiters
+(`matvec-IQ2_XXS-5120x17408-ffn_down-block-noconv_2026-10-15T0938_max.csv`
+against `…block_2026-10-15T0726_max.csv`). A half operand of an F32
+multiply-add is converted in the operand path: the eight conversions per
+octet cost no issue slot in any pipe, and the integer and complex count
+holds none of them.
+
+Latency chains, the two-byte-aligned loads, the 2 KiB grid lookup, the
+half-to-float conversions, the threadgroup size, and software-pipelined
+weight loads cost or gain nothing; the parity costs about 3 % whichever
+pipe computes it. Every added read loses, however many instructions it
+replaces: a second table read per octet (8 bytes, the grid's width)
+costs 8 % from `constant` and 20 % from threadgroup memory while saving
+16 integer instructions, and the 16-byte one 40 %. The input bytes are
+the one cost that moved: half inputs gain 9 %, with the same load count,
+and held as half after an F32 load (the same bytes, half the registers)
+they gain nothing, so it is the bytes each lane loads, in per-lane
+contiguous runs (the same bytes strided across a lane lose 29 %).
+Sharing them across rows does not recover it: 4 or 8 rows per SIMD
+group lose 7 % even with K split to keep the SIMD-group count.
+
+**The F16 dot fails the F32 trace.** Inputs rounded to half in the
+IQ2_XXS kernel alone give `saluki-trace-f32` a max abs of 2.56e-2 and a
+relative RMS of 2.5e-4 (bounds 2e-3 and 1e-4; the F32 kernel 6.1e-5 and
+4.5e-7), about what the F16 cache adds (`saluki-trace-f16`: 2.29e-2 and
+2.6e-4). It stays out unless the bounds change; the most it could buy
+is the 9–10 % above, on the kernels it serves.
+
+## The merged gate+up on Saluki's encodings (2026-10-15)
+
+Where a Saluki decode step goes (`nuclis bench --model saluki-27b
+--prompt-tokens tests/fixtures/run-2026-09-06/prompt-512.json
+--max-tokens 128 --ctx-size 32768 --kv f16 --profile`, `176bc43`; 62.8
+ms per step, 14.20 tok/s under profiling): the merged projections
+(`matvec_segments`) take **59 %** (the gate+up pair, 34,816 × 5,120,
+24.5 ms; the DeltaNet merge, 16,480 rows, 10.1 ms; the attention merge,
+14,336 rows, 2.6 ms), the IQ2_XXS `ffn_down` 14.6 % (9.2 ms), the IQ3_S
+output head 5.1 %, and nothing else more than 3.1 %. The merged kernel
+runs every encoding's body at 4 rows per SIMD group through one switch.
+
+`bench-kernels` gained the gate+up pair on the gate shape (two 17,408 ×
+5,120 halves of the same weights, SiLU pair mode), merged and as two
+standalone matvecs plus `siluMul`, against the standalone kernel on the
+whole 69,632 × 5,120 shape (GB/s, best of five):
+
+| Encoding | Standalone | Merged pair | Two matvecs + `siluMul` |
+| --- | ---: | ---: | ---: |
+| IQ2_XXS | 144.0 | 124.8 | **138.7** |
+| IQ2_XS | 158.6 | 133.9 | **152.9** |
+| IQ2_S | 162.7 | 138.8 | **158.1** |
+| IQ3_XXS | 195.6 | 165.9 | **187.1** |
+| Q2_K | 194.3 | 174.3 | **193.4** |
+| IQ1_S | 130.3 | 118.7 | **133.5** |
+| IQ1_M | 134.7 | 106.0 | **130.3** |
+| IQ3_S | | **175.4** | 160.2 |
+| Q4_K | | **237.8** | 192.8 |
+| IQ4_XS | | 192.7 | **213.6** |
+
+The seven lose 11–23 % inside the merged kernel, even against two extra
+dispatches. On IQ2_XXS the loss is a stack of small costs: the switch
+cut to IQ2_XXS's body reads 127.5, then without the IQ4_XS table setup
+129.3, with fixed buffer slots instead of the slot switch 131.1, without
+the generic branch 132.0, and in plain mode instead of the SiLU pair
+136.1; the standalone kernel at 4 rows reads 142 on this shape, so the
+rows are not the cause. Q4_K's merged pair beats its own standalone
+kernel by 23 %, which nothing here explains.
+
+**Decision:** the backend declines a merge holding one of the seven
+(`mergeDeclined`, `error.MergeDeclined`, nothing recorded), and the
+model adapters' standalone fallback runs it. Decode at 512 (the command
+above without `--profile`, mean of three after a warmup, same session):
+**16.09 → 17.10 tok/s**. IQ4_XS gains as much unmerged but belongs to
+other files' records; it is left merged here. Keeping a plain merge's
+other segments merged (only the seven leave it) measured lower, 16.89 to
+17.03 against 17.10 and 17.21 in alternation: what stays merged in the
+DeltaNet merge is the two 48-row Q8_0 projections, which the merged
+kernel's generic branch runs on six threadgroups.
+
+**IQ2_S's grid.** Its 8 KiB threadgroup copy held the kernel at 33 %
+occupancy against a 75 % target. More SIMD groups per copy (`ffn_down`
+shape / gate shape / gate+up pair unmerged, GB/s):
+
+| Threadgroup | `ffn_down` | Gate | Gate+up |
+| --- | ---: | ---: | ---: |
+| 4 SIMD groups (was) | 158.2 | 162.4 | 157.2 |
+| 8 | 160.4 | 167.1 | 161.9 |
+| 16 (now) | 161.9 | 168.7 | 163.3 |
+| 32 | 162.7 | 168.4 | 163.7 |
+| 4, the grid in `constant` memory | 152.4 | 158.5 | 153.3 |
+
+Decode at 512 moves within its noise (17.14 and 17.23): IQ2_S is a
+small share of the step.
+
+**Where the step goes now** (`86f9945`, the profile command above): 57.8
+ms per step of command-buffer time, 1,138 dispatches, but 75.5 ms
+attributed: with one encoder per dispatch the independent gate and up
+matvecs overlap and each is charged the other's time (they read 72–107
+GB/s there against 139–193 in `bench-kernels`). Charging the excess to
+them, the step is about 35 % gate+up (19–22 ms), 19 % `ffn_down` (11.1
+ms, 9.1 of it IQ2_XXS at 134 GB/s), 13 % the DeltaNet projections (7.5
+ms), 9 % `attn_output` and `ssm_out` (5.0 ms), 6 % attention's q, k, v
+(3.6 ms), 5 % the IQ3_S head (3.2 ms at 173 GB/s), and about 8 ms of
+everything else (attention 1.8, the DeltaNet update 1.2, norms 2.3, the
+48-row Q8_0 `ssm_alpha`/`ssm_beta` 1.2 ms over 94 dispatches at 21 GB/s).
+22 tok/s is 45.5 ms per token: with the non-matvec 8 ms, the 7.61 GB of
+weights must stream at about 200 GB/s on average, above what any 2-bit
+kernel here reaches alone (130–195) and near the best kernel's 248. The
+overlap itself is a lead: independent matvecs of a step (gate and up;
+q, k, v) on a concurrent encoder would hide the drain between them.

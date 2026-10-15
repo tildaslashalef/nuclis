@@ -241,40 +241,61 @@ reasoned first.
 `nuclis bench --model saluki-27b --prompt-tokens <array> --max-tokens 128
 --ctx-size 32768 --kv f16` with the pinned arrays
 (`tests/fixtures/run-2026-09-06/prompt-<n>.json`,
-`boundary-2026-09-06/prompt-32639.json`), Metal, ReleaseSafe, generic
-kernels (no specialized kernel for the seven encodings yet), 2026-10-14.
-At 512 one warmup and three runs; at the longer prompts one run (a
-baseline, not a record). Tokens per second, nuclis / the llama.cpp record:
+`boundary-2026-09-06/prompt-32639.json`), Metal, ReleaseSafe, the
+specialized kernels (`86f9945`), 2026-10-15. At 512 one warmup and three
+runs, at 4,096 one warmup and one run, at the longer prompts one run.
+Tokens per second, nuclis / the generic kernels (2026-10-14) / the
+llama.cpp record:
 
 | | 512 | 4,096 | 16,384 | 32,639 |
 | --- | ---: | ---: | ---: | ---: |
-| Decode | 7.22 / 12.46 | 6.92 / 12.21 | 6.28 / 11.47 | 6.15 / 9.54 |
-| Prefill | 66.96 / 97.19 | 62.67 / 96.58 | 50.35 / 84.40 | 42.11 / 78.87 |
+| Decode | **16.96** / 7.22 / 12.46 | **16.05** / 6.92 / 12.21 | **14.02** / 6.28 / 11.47 | **11.99** / 6.15 / 9.54 |
+| Prefill | **94.18** / 66.96 / 97.19 | **87.60** / 62.67 / 96.58 | **67.34** / 50.35 / 84.40 | **51.52** / 42.11 / 78.87 |
 
-The matvecs alone (`zig build bench-kernels -Dmetal=true -- <ENC>`, GPU
-busy time, best of five rounds, GB/s of weights read), on the generic
-kernel, against Q4_K's specialized and generic kernels the same day:
+Decode at 512 ranges 16.96–17.23 across this day's runs. It is 36 %
+ahead of llama.cpp, and 45 % ahead of the Q4_K_M on nuclis (11.67),
+from half the bytes. Prefill trails llama.cpp from 3 % at 512 to 35 % at
+32,639.
+
+The matvecs alone (`make bench-kernels ARGS=<ENC>`, GPU busy time, best
+of five rounds, GB/s of weights read), the specialized kernels against
+Q4_K's the same day:
 
 | Encoding | 69632×5120 | 20480×17408 | 5120×17408 |
 | --- | ---: | ---: | ---: |
-| IQ1_S | 45.2 | 45.2 | 43.8 |
-| IQ1_M | 44.3 | 44.2 | 43.1 |
-| Q2_K | 46.2 | 46.0 | 45.0 |
-| IQ2_XXS | 53.8 | 53.8 | 51.2 |
-| IQ2_XS | 65.3 | 65.3 | 61.9 |
-| IQ2_S | 73.9 | 73.9 | 71.4 |
-| IQ3_XXS | 82.9 | 81.9 | 78.2 |
-| Q4_K, specialized | 197.9 | 178.8 | 177.4 |
-| Q4_K, generic | 102.9 | 106.2 | 102.7 |
+| IQ1_S | 137.7 | 135.5 | 128.1 |
+| IQ1_M | 130.3 | 130.2 | 126.2 |
+| Q2_K | 199.7 | 198.2 | 189.2 |
+| IQ2_XXS | 144.0 | 141.5 | 135.1 |
+| IQ2_XS | 157.9 | 156.8 | 149.6 |
+| IQ2_S | 168.7 | 168.5 | 161.6 |
+| IQ3_XXS | 194.4 | 186.6 | 172.4 |
+| Q4_K | 197.4 | 178.1 | 177.6 |
 
-The generic path decodes 16 values per call through a switch on the
-encoding; at two bits the decode, not the read, is the cost. The goal
-needs the seven at Q4_K's specialized rate.
+What took decode from 7.2 to 17 tok/s, in the order measured:
+specialized matvecs for the seven (subnormal-pair decode, no per-value
+integer-to-float conversion); the merged projections declined for them
+(their bodies lost 11–23 % inside the merged kernel); and IQ2_S's grid
+shared by 16 SIMD groups. The counters, the probes that moved nothing,
+and the F16 dot that fails the F32 trace are in
+[apple-gpu.md](../engine/apple-gpu.md#salukis-2-bit-matvecs-on-the-ffn_down-shape-2026-10-15).
+
+**The goal of 22 tok/s at 512 is not reached.** A decode step is about
+58.5 ms: gate and up about 35 %, `ffn_down` 19 %, the DeltaNet
+projections 13 %, everything outside the matvecs about 8 ms. 22 tok/s
+needs the 7.61 GB per token at about 200 GB/s on average, above every
+2-bit kernel here alone
+([apple-gpu.md § The merged gate+up](../engine/apple-gpu.md#the-merged-gateup-on-salukis-encodings-2026-10-15)).
 
 ## Status
 
 Bring-up (2026-10-14): the file validates and binds, the seven encodings
 decode on the CPU and on Metal, Metal matches the CPU reference's traces,
 and the model chats, calls tools, and reads images through `nuclis
-serve`. Speed is the generic kernels'; the specialized 2-bit matvecs and
-the goal above are the next unit.
+serve`.
+
+Speed (2026-10-15): specialized kernels for the seven, decode 16.96 tok/s
+at 512 (llama.cpp 12.46) and prefill 94.18 (97.19). The 22 tok/s goal is
+not reached; § Speed records where the step goes. Open: prefill at long
+context (35 % behind llama.cpp at 32,639), and which 2-bit file becomes a
+catalogue entry (the comparison with Unsloth's UD-IQ2_XXS and UD-IQ2_S).

@@ -189,7 +189,7 @@ bench-profile: metal ## Per-kernel GPU time per token from GPU timestamps (diagn
 # .zig-cache/trace/kernels/<label>.gputrace (small; open in Xcode for counters).
 CAPTURE_ENV = $(if $(CAPTURE),rm -rf .zig-cache/trace/kernels && mkdir -p .zig-cache/trace/kernels && MTL_CAPTURE_ENABLED=1 NUCLIS_CAPTURE="$(CAPTURE)")
 
-bench-kernels: ## Achieved GB/s of each matvec kernel on model-shaped matrices, or one with ARGS=<ENCODING> (no model)
+bench-kernels: ## Achieved GB/s of each matvec kernel on model-shaped matrices, or ARGS="<ENCODING> [<shape substring>]" (no model)
 	$(CAPTURE_ENV) $(ZIG) build bench-kernels $(METAL) $(if $(ARGS),-- $(ARGS))
 
 bench-matvec-split: ## Split-K matvec GB/s on the row-poor shapes at 1/2/4/8 splits, or ARGS=<ENCODING> (no model)
