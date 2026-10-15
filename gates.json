@@ -298,6 +298,57 @@
    "evidence": "docs/engine/sampling.md#numerical-traces"
   },
   {
+   "name": "qwen38-trace-q8_0",
+   "family": "qwen38",
+   "tier": "verify",
+   "model": "qwen38",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "q8_0",
+    "--raw",
+    "--prompt",
+    "Hello,",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/reference-hello-comma",
+    "positions": 2
+   },
+   "bounds": {
+    "max_absolute": 0.5,
+    "max_relative_rms": 0.01
+   },
+   "evidence": "docs/engine/metal-backend.md#q8_0-kv-cache-2026-10-15"
+  },
+  {
    "name": "qwen38-generation-metal",
    "family": "qwen38",
    "tier": "verify",

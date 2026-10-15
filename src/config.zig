@@ -1512,7 +1512,7 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"sampling\": { \"top_q\": 1 } } }", .err = error.UnknownConfigKey, .needle = "generation.sampling.top_q" },
         .{ .text = "{ \"schema_version\": 1, \"tui\": {} }", .err = error.UnknownConfigKey, .needle = "unknown key tui" },
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"backend\": \"cuda\" } }", .err = error.InvalidConfigValue, .needle = "engine.backend must be one of cpu|metal" },
-        .{ .text = "{ \"schema_version\": 1, \"engine\": { \"kv_precision\": \"f64\" } }", .err = error.InvalidConfigValue, .needle = "engine.kv_precision must be one of f32|f16" },
+        .{ .text = "{ \"schema_version\": 1, \"engine\": { \"kv_precision\": \"f64\" } }", .err = error.InvalidConfigValue, .needle = "engine.kv_precision must be one of f32|f16|q8_0" },
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"ctx_size\": -1 } }", .err = error.InvalidConfigValue, .needle = "engine.ctx_size must be a non-negative integer" },
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"ctx_size\": 65536 } }", .err = error.InvalidConfigValue, .needle = "engine.ctx_size must be 1..32768" },
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"model\": \"\" } }", .err = error.InvalidConfigValue, .needle = "engine.model must not be empty" },

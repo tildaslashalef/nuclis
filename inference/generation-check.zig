@@ -19,6 +19,10 @@ const Bounds = struct {
     /// F16 cache vs the F32 cache, stepped and chunked.
     half_max_abs: f64,
     half_rel_rms: f64,
+    /// Q8_0 cache vs the F32 cache, stepped and chunked; null where the
+    /// rounding moves the greedy token, so only finiteness is checked
+    /// and perplexity measures the cost (metal-backend.md § Q8_0 KV cache).
+    q8: ?struct { max_abs: f64, rel_rms: f64 },
 };
 /// The prediction block's pinned trace: the tokens of `Hello,` and the
 /// reference's greedy draft per position, against the embedded hidden rows.
@@ -37,7 +41,7 @@ const Spec = struct {
     /// The prediction block's trace to check, when the family has one.
     draft: ?Draft = null,
 };
-const qwen35_spec: Spec = .{ .Family = inference.models.qwen35.family, .vocabulary = inference.models.qwen35_metal.vocabulary, .tokens = .{ 9419, 11 }, .bounds = .{ .chunk_max_abs = 2e-2, .chunk_rel_rms = 1e-3, .half_max_abs = 2e-2, .half_rel_rms = 1e-3 }, .draft = .{ .tokens = .{ 9419, 11 }, .greedy = .{ 9419, 271 } } };
+const qwen35_spec: Spec = .{ .Family = inference.models.qwen35.family, .vocabulary = inference.models.qwen35_metal.vocabulary, .tokens = .{ 9419, 11 }, .bounds = .{ .chunk_max_abs = 2e-2, .chunk_rel_rms = 1e-3, .half_max_abs = 2e-2, .half_rel_rms = 1e-3, .q8 = .{ .max_abs = 6e-2, .rel_rms = 3e-3 } }, .draft = .{ .tokens = .{ 9419, 11 }, .greedy = .{ 9419, 271 } } };
 // Gemma's F16 tolerance is the model's own sensitivity to rounding keys
 // (unscaled attention scores; gemma4.md), not the kernels': the same
 // kernels are within 2e-4 of the CPU over the rounded operands (test-metal).
@@ -52,8 +56,8 @@ const gemma4_spec: Spec = .{
     .Family = inference.models.gemma4.family,
     .vocabulary = inference.models.gemma4.vocabulary,
     .tokens = .{ 9259, 236764 },
-    .bounds = .{ .chunk_max_abs = 6e-1, .chunk_rel_rms = 2e-2, .half_max_abs = 2.0, .half_rel_rms = 6e-2 },
-    .expert_bounds = .{ .chunk_max_abs = 2e1, .chunk_rel_rms = 5e-1, .half_max_abs = 2e1, .half_rel_rms = 5e-1 },
+    .bounds = .{ .chunk_max_abs = 6e-1, .chunk_rel_rms = 2e-2, .half_max_abs = 2.0, .half_rel_rms = 6e-2, .q8 = .{ .max_abs = 1.2e1, .rel_rms = 3.5e-1 } },
+    .expert_bounds = .{ .chunk_max_abs = 2e1, .chunk_rel_rms = 5e-1, .half_max_abs = 2e1, .half_rel_rms = 5e-1, .q8 = null },
 };
 // Muse Glimmer: `Hello` then `,` (the pinned trace's tokens). The half
 // tiles' rounding measured 1.4e-2 / 4.5e-3 on the 70-token prefill and
@@ -63,7 +67,7 @@ const muse_glimmer_spec: Spec = .{
     .Family = inference.models.muse_glimmer.family,
     .vocabulary = inference.models.muse_glimmer.vocabulary,
     .tokens = .{ 19873, 24 },
-    .bounds = .{ .chunk_max_abs = 5e-2, .chunk_rel_rms = 1e-2, .half_max_abs = 2e-2, .half_rel_rms = 2e-3 },
+    .bounds = .{ .chunk_max_abs = 5e-2, .chunk_rel_rms = 1e-2, .half_max_abs = 2e-2, .half_rel_rms = 2e-3, .q8 = .{ .max_abs = 5e-1, .rel_rms = 1e-1 } },
 };
 /// The bounds of the bound configuration: the expert ones when the family
 /// declares them and the file is an expert configuration.
@@ -2124,6 +2128,17 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
         defer half_chunked.deinit();
         try half_chunked.prefill(&tokens, actual, null, null, null, null, null);
         try compareChunked("F16 KV chunk", 32, tokens.len, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
+        // And through a Q8_0 cache: decode reads the blocks, the chunk an F16
+        // expansion of them (the session holds about half the F16 bytes).
+        var q8_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .q8_0, false, false);
+        defer q8_stepped.deinit();
+        if (q8_stepped.state.bytes() >= half_stepped.state.bytes()) return error.Q8CacheNotSmaller;
+        for (tokens, 0..) |t, i| try q8_stepped.step(t, if (i + 1 == tokens.len) actual else null, null, null, null, null);
+        try compareQ8("Q8_0 KV stepped", 1, tokens.len, expected, actual, bounds);
+        var q8_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .q8_0, false, false);
+        defer q8_chunked.deinit();
+        try q8_chunked.prefill(&tokens, actual, null, null, null, null, null);
+        try compareQ8("Q8_0 KV chunk", 32, tokens.len, expected, actual, bounds);
     }
     // 60 more tokens do not fit the remaining 58 positions: refused before any work.
     if (chunked.prefill(tokens[0..60], null, null, null, null, null, null)) |_| return error.ExpectedContextFull else |err| if (err != error.ContextFull) return err;
@@ -2167,6 +2182,15 @@ const Difference = struct {
         return self.max_abs <= max_abs_bound and self.rel_rms <= rel_rms_bound and self.arg_expected == self.arg_actual;
     }
 };
+
+/// A Q8_0 run against the stepped F32 logits at the family's bound, or,
+/// where it has none, printed and checked finite only.
+fn compareQ8(label: []const u8, chunk: usize, tokens: usize, expected: []const f32, actual: []const f32, bounds: Bounds) !void {
+    if (bounds.q8) |q8| return compareChunked(label, chunk, tokens, expected, actual, q8.max_abs, q8.rel_rms);
+    for (actual) |v| if (!std.math.isFinite(v)) return error.NonFiniteLogits;
+    const d = Difference.of(expected, actual);
+    std.debug.print("Prefill ({d} tokens, {s} {d}) vs per-token F32 steps: max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (not bounded: perplexity measures it)\n", .{ tokens, label, chunk, d.max_abs, d.rel_rms, d.arg_expected, d.arg_actual });
+}
 
 /// Final logits of a chunked prefill against the stepped ones: max abs,
 /// relative RMS, and the greedy choice, within the family's recorded bound.

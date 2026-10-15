@@ -3012,6 +3012,170 @@ fn checkWideRows(alloc: std.mem.Allocator, io: std.Io, b: *Backend, random: std.
     }
 }
 
+/// The `q8_0` cache (docs/engine/metal-backend.md § Q8_0 KV cache):
+/// `packQ8` bit-identical to `quant_encode.q8_0Row` (zero, tiny, NaN, and
+/// infinite blocks included); `unpackQ8` bit-identical to the CPU decoder
+/// rounded to half; the Q8_0 split pass (decode, wide, verify rows)
+/// bit-identical to the F32 one over the dequantized rows, since `d * q`
+/// is exact in F32; the rounding's cost against the original floats
+/// printed and bounded; shape refusals.
+fn checkQ8Cache(alloc: std.mem.Allocator, b: *Backend) !void {
+    var prng = std.Random.DefaultPrng.init(0x0880);
+    const random = prng.random();
+    const Geometry = struct { qh: usize, kvh: usize, hd: usize, visible: usize, rows: usize };
+    // Saluki's full-attention layer at three depths and a verify batch;
+    // Gemma 4's global layer (16 heads of 512 over one KV head).
+    const geometries = [_]Geometry{
+        .{ .qh = 24, .kvh = 4, .hd = 256, .visible = 257, .rows = 1 },
+        .{ .qh = 24, .kvh = 4, .hd = 256, .visible = 1021, .rows = 1 },
+        .{ .qh = 24, .kvh = 4, .hd = 256, .visible = 16385, .rows = 1 },
+        .{ .qh = 24, .kvh = 4, .hd = 256, .visible = 4099, .rows = 5 },
+        .{ .qh = 16, .kvh = 1, .hd = 512, .visible = 2049, .rows = 1 },
+    };
+    // Edge blocks: all zero, tiny (a subnormal F16 scale), one NaN, one
+    // infinity, and an ordinary one.
+    {
+        var edge: [160]f32 = undefined;
+        for (&edge) |*x| x.* = random.floatNorm(f32) * 0.5;
+        @memset(edge[0..32], 0);
+        for (edge[32..64]) |*x| x.* *= 1e-6;
+        edge[70] = std.math.nan(f32);
+        edge[100] = std.math.inf(f32);
+        const src = try upload(b, &edge);
+        defer b.release(src) catch {};
+        const dst = try b.create(5 * 34);
+        defer b.release(dst) catch {};
+        try b.begin();
+        try b.packQ8(&.{.{ .dst = dst, .src = src, .count = 160 }});
+        try b.commit();
+        var want: [5 * 34]u8 = undefined;
+        try inference.quant_encode.q8_0Row(&edge, &want);
+        try std.testing.expectEqualSlices(u8, &want, dst.host[0 .. 5 * 34]);
+        var back: [160]f32 = undefined;
+        try inference.quant.row(8, &want, &back);
+        for (back[0..32]) |x| try std.testing.expectEqual(@as(f32, 0), x);
+        try std.testing.expect(std.mem.readInt(u16, want[34..36], .little) < 0x0400); // subnormal scale
+        try std.testing.expectEqual(@as(f32, 0), back[70]);
+        for (want[3 * 34 + 2 .. 4 * 34]) |code| try std.testing.expectEqual(@as(u8, 0), code); // infinite scale: zero codes
+    }
+    var worst_cost: f32 = 0;
+    for (geometries) |g| {
+        const kvw = g.kvh * g.hd;
+        const n = g.visible * kvw;
+        const k32 = try b.create(n * 4);
+        defer b.release(k32) catch {};
+        const v32 = try b.create(n * 4);
+        defer b.release(v32) catch {};
+        for (k32.floats()) |*k| k.* = random.floatNorm(f32) * 0.5;
+        for (v32.floats()) |*v| v.* = random.floatNorm(f32) * 0.5;
+        const bytes = n / 32 * 34;
+        const k8 = try b.create(bytes);
+        defer b.release(k8) catch {};
+        const v8 = try b.create(bytes);
+        defer b.release(v8) catch {};
+        const kh = try b.create(n * 2);
+        defer b.release(kh) catch {};
+        const vh = try b.create(n * 2);
+        defer b.release(vh) catch {};
+        try b.begin();
+        try b.packQ8(&.{ .{ .dst = k8, .src = k32, .count = n }, .{ .dst = v8, .src = v32, .count = n } });
+        try b.unpackQ8(&.{ .{ .dst = kh, .src = k8, .count = n }, .{ .dst = vh, .src = v8, .count = n } });
+        try b.commit();
+        const want = try alloc.alloc(u8, bytes);
+        defer alloc.free(want);
+        const dequantized = try alloc.alloc(f32, n);
+        defer alloc.free(dequantized);
+        // The dequantized rows replace the originals in k32/v32 for the F32
+        // kernel; the originals are kept for the cost.
+        const originals = try alloc.alloc(f32, 2 * n);
+        defer alloc.free(originals);
+        @memcpy(originals[0..n], k32.floats());
+        @memcpy(originals[n..], v32.floats());
+        for ([_]struct { q: Buffer, h: Buffer, f: Buffer }{ .{ .q = k8, .h = kh, .f = k32 }, .{ .q = v8, .h = vh, .f = v32 } }) |pair| {
+            try inference.quant_encode.q8_0Row(pair.f.floats(), want);
+            if (!std.mem.eql(u8, want, pair.q.host[0..bytes])) {
+                const at = std.mem.indexOfDiff(u8, want, pair.q.host[0..bytes]).?;
+                std.debug.print("packQ8: byte {d} (block {d}) got {d} want {d}\n", .{ at, at / 34, pair.q.host[at], want[at] });
+                return error.MetalMismatch;
+            }
+            try inference.quant.row(8, want, dequantized);
+            const halves = @as([*]const u16, @ptrCast(@alignCast(pair.h.host)))[0..n];
+            for (halves, dequantized) |got, d| {
+                const h: f16 = @floatCast(d);
+                if (got != @as(u16, @bitCast(h))) return error.MetalMismatch;
+            }
+            @memcpy(pair.f.floats(), dequantized);
+        }
+        const qw = g.qh * g.hd;
+        const padded = Backend.attentionChunkRows(g.rows);
+        const queries = try b.create(padded * qw * 4);
+        defer b.release(queries) catch {};
+        for (queries.floats()) |*q| q.* = random.floatNorm(f32) * 0.5;
+        const partials = try b.create(Backend.attentionVerifyPartials(g.rows, g.qh, g.hd) * 4);
+        defer b.release(partials) catch {};
+        const out8 = try b.create(padded * qw * 4);
+        defer b.release(out8) catch {};
+        const out32 = try b.create(padded * qw * 4);
+        defer b.release(out32) catch {};
+        const scale = 1.0 / @sqrt(@as(f32, @floatFromInt(g.hd)));
+        try b.begin();
+        if (g.rows == 1) {
+            const shape: Backend.AttentionShape = .{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .visible = g.visible, .scale = scale };
+            var q8 = shape;
+            q8.precision = .q8_0;
+            try b.attentionDecode(k8, v8, queries, partials, out8, q8);
+            try b.commit();
+            try b.begin();
+            try b.attentionDecode(k32, v32, queries, partials, out32, shape);
+        } else {
+            const shape: Backend.AttentionChunkShape = .{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .position = g.visible - g.rows, .count = g.rows, .q_stride = qw, .out_stride = qw, .scale = scale };
+            var q8 = shape;
+            q8.precision = .q8_0;
+            try b.attentionVerify(k8, v8, queries, partials, out8, q8);
+            try b.commit();
+            try b.begin();
+            try b.attentionVerify(k32, v32, queries, partials, out32, shape);
+        }
+        try b.commit();
+        const got8 = out8.floats()[0 .. g.rows * qw];
+        const got32 = out32.floats()[0 .. g.rows * qw];
+        if (!std.mem.eql(f32, got8, got32)) {
+            const at = std.mem.indexOfDiff(f32, got8, got32).?;
+            std.debug.print("Q8_0 split pass vs F32 over the dequantized rows: element {d} got {d} want {d}\n", .{ at, got8[at], got32[at] });
+            return error.MetalMismatch;
+        }
+        // The cost: the CPU F64 reference over the original floats, last row.
+        const scratch = try alloc.alloc(f64, g.visible);
+        defer alloc.free(scratch);
+        const expected = try alloc.alloc(f32, qw);
+        defer alloc.free(expected);
+        const last = g.rows - 1;
+        try inference.cpu.attention.apply(.{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .tokens = g.visible, .visible_tokens = g.visible, .scale = scale, .queries = queries.floats()[last * qw ..][0..qw], .keys = originals[0..n], .values = originals[n..] }, expected, scratch);
+        var worst: f32 = 0;
+        for (expected, out8.floats()[last * qw ..][0..qw]) |e, a| {
+            worst = @max(worst, @abs(a - e));
+            try expectClose("q8_0 decode attention vs the original floats", a, e, 2e-3);
+        }
+        worst_cost = @max(worst_cost, worst);
+        std.debug.print("Q8_0 KV split pass, {d}×{d} heads of {d}, {d} visible, {d} row(s): bit-identical to F32 over the dequantized rows; vs CPU F64 over the original floats max abs {e:.3}\n", .{ g.qh, g.kvh, g.hd, g.visible, g.rows, worst });
+    }
+    std.debug.print("Q8_0 pack bit-identical to q8_0Row, unpack to the CPU decoder rounded to half; worst cost {e:.3} (bound 2e-3)\n", .{worst_cost});
+    // Contract: block multiples, widths of whole blocks, alignment, overlap,
+    // and the chunk bodies' refusal.
+    const small = try b.create(256);
+    defer b.release(small) catch {};
+    const other = try b.create(256);
+    defer b.release(other) catch {};
+    try b.begin();
+    try std.testing.expectError(error.InvalidShape, b.packQ8(&.{.{ .dst = small, .src = other, .count = 48 }}));
+    try std.testing.expectError(error.InvalidShape, b.packQ8(&.{.{ .dst = small, .src = small, .count = 32 }}));
+    try std.testing.expectError(error.InvalidShape, b.unpackQ8(&.{.{ .dst = other, .src = small.slice(1, 128), .count = 32 }}));
+    try std.testing.expectError(error.InvalidShape, b.attentionDecode(small, small, other, other, other, .{ .query_heads = 1, .kv_heads = 1, .key_width = 40, .value_width = 40, .visible = 1, .scale = 1.0, .precision = .q8_0 }));
+    try std.testing.expectError(error.InvalidShape, b.attentionChunk(small, small, other, other, .{ .query_heads = 1, .kv_heads = 1, .key_width = 32, .value_width = 32, .position = 0, .count = 1, .q_stride = 32, .out_stride = 32, .scale = 1.0, .precision = .q8_0 }));
+    try std.testing.expectError(error.InvalidShape, b.attention(small, small, other, other, other, .{ .query_heads = 1, .kv_heads = 1, .key_width = 32, .value_width = 32, .visible = 1, .scale = 1.0, .precision = .q8_0 }));
+    try b.commit();
+}
+
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
     const io = init.io;
@@ -3892,6 +4056,9 @@ pub fn main(init: std.process.Init) !void {
         try std.testing.expectError(error.InvalidShape, b.attentionDecode(small, small, queries, partials, out, .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .visible = 1, .scale = 1.0 / 16.0 }));
         try b.commit();
     }
+
+    // 8e'. The Q8_0 cache: pack, unpack, and the split pass.
+    try checkQ8Cache(alloc, b);
 
     // 8f. The Gemma 4 attention geometry, both chunk bodies.
     try checkWindowedAndWideAttention(alloc, b, false);

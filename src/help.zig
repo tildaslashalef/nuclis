@@ -96,7 +96,7 @@ fn engineOptions(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "engine.model of the config file (qwen3.8-27b)");
     try row(out, sty, "--backend cpu|metal", "default metal");
     try row(out, sty, "--ctx-size <n>", "context window in tokens, 1..32768; default 16384");
-    try row(out, sty, "--kv f16|f32", "attention cache precision on the GPU; default f16");
+    try row(out, sty, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16");
     try row(out, sty, "--max-tokens <n>", "output budget, 1..16384; default 8192 (bench: 32)");
     try row(out, sty, "--speculative on|off", "verify drafts from the model's draft source; the");
     try more(out, "default is the model entry's verdict, else off");
@@ -335,7 +335,7 @@ fn eval(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--model <name|path>", "registry entry, catalogue name, or path; default");
     try more(out, "engine.model of the config file (qwen3.8-27b)");
     try row(out, sty, "--backend cpu|metal", "default metal");
-    try row(out, sty, "--kv f16|f32", "attention cache precision on the GPU; default f16");
+    try row(out, sty, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16");
     try row(out, sty, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e, or muse_glimmer");
     try more(out, "(its BOS)");
     try row(out, sty, "--json", "the report: every window's running perplexity");

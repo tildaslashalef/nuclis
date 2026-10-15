@@ -10,15 +10,15 @@ on: recurrent state is never rewound by changing a length.
 
 | Layout | Regions | View the layer sees |
 | --- | --- | --- |
-| `attention { key_row, value_row, precision }` | `capacity` key rows and `capacity` value rows, stored as F32 or F16 (`precision`, [KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10)) | `Rows`: `range(first, count)` is a byte range for a GPU binding; `floats(first, count)` is the F32 view the CPU reference reads (asserts `f32`) |
+| `attention { key_row, value_row, precision }` | `capacity` key rows and `capacity` value rows, stored as F32, F16, or Q8_0 blocks (`precision`, [KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10)) | `Rows`: `range(first, count)` is a byte range for a GPU binding; `floats(first, count)` is the F32 view the CPU reference reads (asserts `f32`); a `q8_0` row is a whole number of 32-value blocks (`Precision.bytes`) |
 | `recurrent { history, matrix }` | that many F32 values each, whole | `[]f32` |
 
 `Session.memory` is one page-aligned byte block (`[]align(16384) u8`), so a
 GPU backend wraps it once with no copy; every region starts on a 16-byte
 boundary and each view is exact (padding belongs to nobody).
 `Session.bytes()` is the block, page padding included: 2.15 GiB at 32,768
-tokens with the F16 cache, 4.15 with F32, of which 150 MB is recurrent
-state. A session built with a checkpoint region adds another 150 MB on
+tokens with the F16 cache, 4.15 with F32, and about 1.2 with Q8_0
+(1,088 MiB of attention rows), of which 150 MB is recurrent state. A session built with a checkpoint region adds another 150 MB on
 Qwen (`checkpoint_region`, below). `layout_digest` hashes the layouts and
 the capacity; equal digests mean byte-compatible state.
 

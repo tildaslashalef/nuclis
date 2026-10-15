@@ -2758,6 +2758,46 @@ kernel void nu_pack_half(device half * dst0 [[buffer(0)]], device const float * 
     else if (i - p.count0 < p.count1) dst1[i - p.count0] = half(src1[i - p.count0]);
 }
 
+// GGML's Q8_0 block: an F16 scale, then 32 signed codes; value = d * q.
+// 34 bytes, 2-byte aligned, the `q8_0` attention cache's storage.
+struct nu_q8_0 { half d; char qs[32]; };
+// Quantizes two F32 vectors to Q8_0 (the `PackParams` contract; both
+// counts are multiples of 32), one SIMD group per block: d = half(amax /
+// 127), q = clamp(round(x / d), -127, 127), zero codes when d is zero or
+// not finite, NaN coded as zero. The arithmetic of quant/encode.zig
+// `q8_0Row`, bit-identical with it (precise division, half conversion to
+// nearest even, rounding half away from zero).
+kernel void nu_pack_q8_0(device nu_q8_0 * dst0 [[buffer(0)]], device const float * src0 [[buffer(1)]],
+                         device nu_q8_0 * dst1 [[buffer(2)]], device const float * src1 [[buffer(3)]],
+                         constant PackParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
+    // Block boundaries are multiples of 32, so a SIMD group returns or stays whole.
+    const bool first = i < p.count0;
+    const uint e = first ? i : i - p.count0;
+    if (!first && e >= p.count1) return;
+    const float x = first ? src0[e] : src1[e];
+    const float amax = simd_max(isnan(x) ? 0.0f : abs(x));
+    const half d = half(precise::divide(amax, 127.0f));
+    const float scale = float(d);
+    const bool zero = scale == 0.0f || !isfinite(scale) || isnan(x);
+    const float q = zero ? 0.0f : clamp(round(precise::divide(x, scale)), -127.0f, 127.0f);
+    device nu_q8_0 & block = (first ? dst0 : dst1)[e / 32];
+    block.qs[e % 32] = char(q);
+    if (e % 32 == 0) block.d = d;
+}
+// Expands two Q8_0 vectors to F16, one thread per value (the `PackParams`
+// contract): the prefill chunk's half view of a `q8_0` cache. `d * q` is
+// exact in F32 and rounds once to half.
+kernel void nu_unpack_q8_0(device half * dst0 [[buffer(0)]], device const nu_q8_0 * src0 [[buffer(1)]],
+                           device half * dst1 [[buffer(2)]], device const nu_q8_0 * src1 [[buffer(3)]],
+                           constant PackParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
+    if (i < p.count0) dst0[i] = half(float(src0[i / 32].d) * float(src0[i / 32].qs[i % 32]));
+    else if (i - p.count0 < p.count1) { const uint e = i - p.count0; dst1[e] = half(float(src1[e / 32].d) * float(src1[e / 32].qs[e % 32])); }
+}
+// Element `i` of a cache region stored as F32, F16, or Q8_0 blocks.
+inline float nu_kv_at(device const float * p, ulong i) { return p[i]; }
+inline float nu_kv_at(device const half * p, ulong i) { return float(p[i]); }
+inline float nu_kv_at(device const nu_q8_0 * p, ulong i) { device const nu_q8_0 & b = p[i / 32]; return float(b.d) * float(b.qs[i % 32]); }
+
 // ---------------------------------------------------------------------------
 // Flash-decoding attention: one query position over `visible` cache
 // rows in one pass, no score buffer. Grid = (kv_head, split): a threadgroup
@@ -2767,8 +2807,9 @@ kernel void nu_pack_half(device half * dst0 [[buffer(0)]], device const float * 
 // groups walks every fourth row of the slice (the four rows a threadgroup
 // touches per step are adjacent in memory); lane l owns channels l, l+32, …
 // of the key and value rows and keeps, per head, a running max `m`, sum `l`,
-// and accumulator over its channels (online softmax, all F32; F16 rows are
-// converted on load, queries stay F32). The four SIMD groups merge into the
+// and accumulator over its channels (online softmax, all F32; F16 and Q8_0
+// rows are converted on load through `nu_kv_at`, queries stay F32; a Q8_0
+// block is one byte per lane and a broadcast scale). The four SIMD groups merge into the
 // first through threadgroup memory with the log-sum-exp rescale, and the
 // threadgroup writes one partial (m, l, acc[value_width]) per head;
 // `nu_attention_merge` combines the splits per head the same way. An empty
@@ -2818,13 +2859,14 @@ kernel void nu_attention_decode_t(device const KV * keys [[buffer(0)]],
     for (uint h = 0; h < GROUP; ++h) { m[h] = -INFINITY; l[h] = 0.0f; for (uint i = 0; i < CH; ++i) acc[h][i] = 0.0f; }
     const ulong krow = ulong(p.kv_heads) * p.key_width, vrow = ulong(p.kv_heads) * p.value_width;
     for (uint t = start + sg; t < end; t += 4) {
-        device const KV * k = keys + ulong(t) * krow + ulong(kv) * p.key_width;
-        device const KV * v = values + ulong(t) * vrow + ulong(kv) * p.value_width;
+        // Element offsets, not pointers: a Q8_0 region is indexed by value.
+        const ulong k = ulong(t) * krow + ulong(kv) * p.key_width;
+        const ulong v = ulong(t) * vrow + ulong(kv) * p.value_width;
         float kr[CH], vr[CH];
         for (uint i = 0; i < CH; ++i) {
             const uint c = lane + 32 * i;
-            kr[i] = (i < kch && c < p.key_width) ? float(k[c]) : 0.0f;
-            vr[i] = (i < vch && c < p.value_width) ? float(v[c]) : 0.0f;
+            kr[i] = (i < kch && c < p.key_width) ? nu_kv_at(keys, k + c) : 0.0f;
+            vr[i] = (i < vch && c < p.value_width) ? nu_kv_at(values, v + c) : 0.0f;
         }
         for (uint h = 0; h < GROUP; ++h) {
             if (h < hn) {
@@ -2876,6 +2918,8 @@ template [[host_name("nu_attention_decode")]] kernel void nu_attention_decode_t<
 template [[host_name("nu_attention_decode_h")]] kernel void nu_attention_decode_t<half, 8, 8>(device const half *, device const half *, NU_ATTN_DECODE_ARGS);
 template [[host_name("nu_attention_decode_w")]] kernel void nu_attention_decode_t<float, 4, 16>(device const float *, device const float *, NU_ATTN_DECODE_ARGS);
 template [[host_name("nu_attention_decode_wh")]] kernel void nu_attention_decode_t<half, 4, 16>(device const half *, device const half *, NU_ATTN_DECODE_ARGS);
+template [[host_name("nu_attention_decode_q8")]] kernel void nu_attention_decode_t<nu_q8_0, 8, 8>(device const nu_q8_0 *, device const nu_q8_0 *, NU_ATTN_DECODE_ARGS);
+template [[host_name("nu_attention_decode_wq8")]] kernel void nu_attention_decode_t<nu_q8_0, 4, 16>(device const nu_q8_0 *, device const nu_q8_0 *, NU_ATTN_DECODE_ARGS);
 // One threadgroup per (row, query head), 256 threads striding the value
 // channels: rescale every split's partial to the global max, divide by the
 // merged sum.

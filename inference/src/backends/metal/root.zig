@@ -304,6 +304,10 @@ pub const Kernel = enum(u32) {
     matmul_iq1_m_32,
     matmul_iq1_m_8,
     matmul_iq1_m_f2,
+    pack_q8_0,
+    unpack_q8_0,
+    attention_decode_q8,
+    attention_decode_wq8,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -1880,14 +1884,15 @@ pub const Backend = struct {
     }
     pub const AttentionParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, visible: u32, scale: f32 };
     /// `precision` is how `keys`/`values` are stored; queries, scores,
-    /// and the output are always F32.
+    /// and the output are always F32. This three-pass path reads F32 or
+    /// F16; `attentionDecode` also reads Q8_0.
     pub const AttentionShape = struct { query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize, visible: usize, scale: f32, precision: Precision = .f32 };
     /// Three dispatches; `scores` needs query_heads * visible floats.
     pub fn attention(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, scores: Buffer, output: Buffer, s: AttentionShape) !void {
         if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or s.key_width == 0 or s.value_width == 0 or s.visible == 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
-        const elem = s.precision.size();
-        if (keys.len < s.visible * s.kv_heads * s.key_width * elem or values.len < s.visible * s.kv_heads * s.value_width * elem or queries.len < s.query_heads * s.key_width * 4 or scores.len < s.query_heads * s.visible * 4 or output.len < s.query_heads * s.value_width * 4) return error.InvalidShape;
-        if (keys.offset % elem != 0 or values.offset % elem != 0) return error.InvalidShape;
+        if (s.precision == .q8_0) return error.InvalidShape;
+        try checkCache(s.precision, keys, values, s.visible * s.kv_heads, s.key_width, s.value_width);
+        if (queries.len < s.query_heads * s.key_width * 4 or scores.len < s.query_heads * s.visible * 4 or output.len < s.query_heads * s.value_width * 4) return error.InvalidShape;
         const p: AttentionParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .visible = @intCast(s.visible), .scale = s.scale };
         const half = s.precision == .f16;
         try self.dispatch(if (half) .attention_scores_h else .attention_scores, &.{ keys, queries, scores }, p, @intCast(s.query_heads * s.visible), 32, .{});
@@ -1918,21 +1923,19 @@ pub const Backend = struct {
     }
     /// Flash-decoding attention: two dispatches (split pass, merge)
     /// and no score buffer; `partials` needs `attentionDecodePartials`
-    /// floats. Same shape and precision contract as `attention`, plus
-    /// widths of at most 512 (above 256 through the wide instantiation).
+    /// floats. The shape contract of `attention`, plus widths of at most
+    /// 512 (above 256 through the wide instantiation); the cache may also
+    /// be `q8_0`, whose widths are multiples of 32 (a block per head row).
     pub fn attentionDecode(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, partials: Buffer, output: Buffer, s: AttentionShape) !void {
         if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or s.key_width == 0 or s.key_width > 512 or s.value_width == 0 or s.value_width > 512 or s.visible == 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
-        const elem = s.precision.size();
         const splits = attentionDecodeSplits(s.visible);
-        const wide = s.key_width > 256 or s.value_width > 256;
         const head_groups = attentionDecodeHeadGroups(s.query_heads, s.kv_heads, s.key_width, s.value_width);
-        if (keys.len < s.visible * s.kv_heads * s.key_width * elem or values.len < s.visible * s.kv_heads * s.value_width * elem or queries.len < s.query_heads * s.key_width * 4 or partials.len < s.query_heads * splits * (2 + s.value_width) * 4 or output.len < s.query_heads * s.value_width * 4) return error.InvalidShape;
-        if (keys.offset % elem != 0 or values.offset % elem != 0) return error.InvalidShape;
+        try checkCache(s.precision, keys, values, s.visible * s.kv_heads, s.key_width, s.value_width);
+        if (queries.len < s.query_heads * s.key_width * 4 or partials.len < s.query_heads * splits * (2 + s.value_width) * 4 or output.len < s.query_heads * s.value_width * 4) return error.InvalidShape;
         const p: AttentionDecodeParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .visible = @intCast(s.visible), .splits = @intCast(splits), .scale = s.scale, .rows = 1, .q_stride = @intCast(s.query_heads * s.key_width), .out_stride = @intCast(s.query_heads * s.value_width), .window = 0 };
         // Cache traffic per dispatch, for the profile: every row once.
-        const bytes: u64 = @intCast(s.visible * s.kv_heads * (s.key_width + s.value_width) * elem);
-        const kernel: Kernel = if (wide) (if (s.precision == .f16) .attention_decode_wh else .attention_decode_w) else (if (s.precision == .f16) .attention_decode_h else .attention_decode);
-        try self.dispatch(kernel, &.{ keys, values, queries, partials }, p, @intCast(s.kv_heads * head_groups * splits), 128, .{ .bytes = bytes });
+        const bytes: u64 = @intCast(s.visible * s.precision.bytes(s.kv_heads * (s.key_width + s.value_width)));
+        try self.dispatch(decodeKernel(s.precision, s.key_width, s.value_width), &.{ keys, values, queries, partials }, p, @intCast(s.kv_heads * head_groups * splits), 128, .{ .bytes = bytes });
         try self.dispatch(.attention_merge, &.{ partials, output }, p, @intCast(s.query_heads), 256, .{});
     }
     /// The most rows `attentionVerify` takes: a verify batch or a drafter's
@@ -1946,22 +1949,20 @@ pub const Backend = struct {
     /// (row t sees the cache rows `[0, position + t]`) for at most
     /// `verify_max_rows` rows, through the flash-decoding split pass, so the
     /// grid is (KV head, split, row) instead of one threadgroup per query
-    /// head. Queries are F32 whatever the cache's `precision` (as in
-    /// `attentionDecode`); `partials` needs `attentionVerifyPartials` floats.
+    /// head. Queries are F32 whatever the cache's `precision`, which may be
+    /// `q8_0` (as in `attentionDecode`); `partials` needs
+    /// `attentionVerifyPartials` floats.
     /// A window as in `attentionChunk`; no span.
     pub fn attentionVerify(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, partials: Buffer, output: Buffer, s: AttentionChunkShape) !void {
         if (s.count > verify_max_rows or s.span.end != 0 or s.key_width > 512) return error.InvalidShape;
         try checkAttentionChunk(s, keys, values, queries, output, 4);
-        const elem = s.precision.size();
         const visible = s.position + s.count;
         const splits = attentionDecodeSplits(visible);
-        const wide = s.key_width > 256 or s.value_width > 256;
         const head_groups = attentionDecodeHeadGroups(s.query_heads, s.kv_heads, s.key_width, s.value_width);
         if (partials.len < s.count * s.query_heads * splits * (2 + s.value_width) * 4) return error.InvalidShape;
         const p: AttentionDecodeParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .visible = @intCast(visible), .splits = @intCast(splits), .scale = s.scale, .rows = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .window = @intCast(s.window) };
-        const bytes: u64 = @intCast(s.count * visible * s.kv_heads * (s.key_width + s.value_width) * elem);
-        const kernel: Kernel = if (wide) (if (s.precision == .f16) .attention_decode_wh else .attention_decode_w) else (if (s.precision == .f16) .attention_decode_h else .attention_decode);
-        try self.dispatch(kernel, &.{ keys, values, queries, partials }, p, @intCast(s.kv_heads * head_groups * splits * s.count), 128, .{ .bytes = bytes });
+        const bytes: u64 = @intCast(s.count * visible * s.precision.bytes(s.kv_heads * (s.key_width + s.value_width)));
+        try self.dispatch(decodeKernel(s.precision, s.key_width, s.value_width), &.{ keys, values, queries, partials }, p, @intCast(s.kv_heads * head_groups * splits * s.count), 128, .{ .bytes = bytes });
         try self.dispatch(.attention_merge, &.{ partials, output }, p, @intCast(s.query_heads * s.count), 256, .{});
     }
     pub const PackParams = extern struct { count0: u32, count1: u32 };
@@ -1983,6 +1984,66 @@ pub const Backend = struct {
         const p: PackParams = .{ .count0 = @intCast(pairs[0].count), .count1 = if (pairs.len == 2) @intCast(pairs[1].count) else 0 };
         try self.dispatch(.pack_half, &.{ pairs[0].dst, pairs[0].src, second.dst, second.src }, p, perElement(total), 256, .{});
     }
+    /// Quantizes one or two F32 vectors to Q8_0 blocks in one dispatch, the
+    /// arithmetic of `quant_encode.q8_0Row` (bit-identical): the `q8_0`
+    /// cache slot's write. Counts are multiples of 32; destinations must
+    /// not overlap their sources.
+    pub fn packQ8(self: *Backend, pairs: []const Pack) !void {
+        try self.packPairs(.pack_q8_0, pairs, .q8_0, .f32);
+    }
+    /// Expands one or two Q8_0 vectors (`count` values each) to F16: the
+    /// prefill chunk's half view of a `q8_0` cache.
+    pub fn unpackQ8(self: *Backend, pairs: []const Pack) !void {
+        try self.packPairs(.unpack_q8_0, pairs, .f16, .q8_0);
+    }
+    /// Writes F32 rows into a cache region at `precision`: a copy, an F16
+    /// pack, or a Q8_0 pack, so a plan's cache write is one call.
+    pub fn storeRows(self: *Backend, pairs: []const Pack, precision: Precision) !void {
+        switch (precision) {
+            .f32 => for (pairs) |pair| try self.copy(pair.dst, pair.src, pair.count),
+            .f16 => try self.packHalf(pairs),
+            .q8_0 => try self.packQ8(pairs),
+        }
+    }
+    fn packPairs(self: *Backend, kernel: Kernel, pairs: []const Pack, dst: Precision, src: Precision) !void {
+        if (pairs.len == 0 or pairs.len > 2) return error.InvalidShape;
+        var total: usize = 0;
+        for (pairs) |pair| {
+            if (pair.count == 0 or pair.count % Precision.q8_block != 0) return error.InvalidShape;
+            const dst_bytes = dst.bytes(pair.count);
+            const src_bytes = src.bytes(pair.count);
+            if (pair.dst.len < dst_bytes or pair.src.len < src_bytes or pair.dst.offset % cacheAlignment(dst) != 0 or pair.src.offset % cacheAlignment(src) != 0) return error.InvalidShape;
+            if (overlaps(pair.dst, dst_bytes, pair.src, src_bytes)) return error.InvalidShape;
+            total += pair.count;
+        }
+        const second = if (pairs.len == 2) pairs[1] else pairs[0];
+        const p: PackParams = .{ .count0 = @intCast(pairs[0].count), .count1 = if (pairs.len == 2) @intCast(pairs[1].count) else 0 };
+        try self.dispatch(kernel, &.{ pairs[0].dst, pairs[0].src, second.dst, second.src }, p, perElement(total), 256, .{});
+    }
+    /// Byte alignment a binding of `precision` values needs (Q8_0 blocks
+    /// are 2-byte aligned, by their F16 scale).
+    fn cacheAlignment(precision: Precision) usize {
+        return switch (precision) {
+            .f32 => 4,
+            .f16, .q8_0 => 2,
+        };
+    }
+    /// The split-pass instantiation for a cache precision and widths.
+    fn decodeKernel(precision: Precision, key_width: usize, value_width: usize) Kernel {
+        const wide = key_width > 256 or value_width > 256;
+        return switch (precision) {
+            .f32 => if (wide) .attention_decode_w else .attention_decode,
+            .f16 => if (wide) .attention_decode_wh else .attention_decode_h,
+            .q8_0 => if (wide) .attention_decode_wq8 else .attention_decode_q8,
+        };
+    }
+    /// `rows` rows of keys and values at `precision`: lengths, alignment,
+    /// and, for `q8_0`, widths of whole blocks.
+    fn checkCache(precision: Precision, keys: Buffer, values: Buffer, rows: usize, key_width: usize, value_width: usize) !void {
+        if (!precision.fits(key_width) or !precision.fits(value_width)) return error.InvalidShape;
+        if (keys.len < rows * precision.bytes(key_width) or values.len < rows * precision.bytes(value_width)) return error.InvalidShape;
+        if (keys.offset % cacheAlignment(precision) != 0 or values.offset % cacheAlignment(precision) != 0) return error.InvalidShape;
+    }
     pub const AttentionChunkParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, position: u32, count: u32, q_stride: u32, out_stride: u32, scale: f32, window: u32, span_begin: u32, span_end: u32 };
     /// Chunk rows `[begin, end)` that attend bidirectionally among
     /// themselves: each sees keys up to `position + end` (exclusive) instead
@@ -1999,7 +2060,8 @@ pub const Backend = struct {
     /// `precision` is how the cache **and the queries** are stored:
     /// the `f16` instantiation multiplies half operands into F32
     /// accumulators, so the caller packs its queries to half first
-    /// (`packHalf`); the output is F32 either way.
+    /// (`packHalf`); the output is F32 either way. The chunk bodies read
+    /// no `q8_0` cache: the caller expands it to F16 first (`unpackQ8`).
     pub const AttentionChunkShape = struct { query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize, position: usize, count: usize, q_stride: usize, out_stride: usize, scale: f32, precision: Precision = .f32, window: usize = 0, span: Span = .{} };
     /// The most rows one chunk dispatch covers: a projector's whole patch
     /// set (10,080 for Gemma 4's largest image) runs as one span.
@@ -2015,7 +2077,8 @@ pub const Backend = struct {
     /// (up to 512) take one threadgroup per 256 columns. Counts at or below
     /// `attention_reuse_max_rows` take the register-reuse body instead.
     pub fn attentionChunk(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer, s: AttentionChunkShape) !void {
-        try checkAttentionChunk(s, keys, values, queries, output, s.precision.size());
+        if (s.precision == .q8_0) return error.InvalidShape;
+        try checkAttentionChunk(s, keys, values, queries, output, s.precision.bytes(1));
         const p = attentionChunkParams(s);
         const tiles = @divCeil(s.count, 32);
         const value_splits = (s.value_width + 255) / 256;
@@ -2030,7 +2093,8 @@ pub const Backend = struct {
     /// query rows, so the published P tile makes a V block serve four
     /// multiplies. Measured against `attentionChunk` by `--attention-bench`.
     pub fn attentionChunkReuse(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer, s: AttentionChunkShape) !void {
-        try checkAttentionChunk(s, keys, values, queries, output, s.precision.size());
+        if (s.precision == .q8_0) return error.InvalidShape;
+        try checkAttentionChunk(s, keys, values, queries, output, s.precision.bytes(1));
         if (s.span.end != 0) return error.InvalidShape;
         const p = attentionChunkParams(s);
         const tiles = @divCeil(s.count, 32);
@@ -2050,10 +2114,9 @@ pub const Backend = struct {
         if (s.q_stride < s.query_heads * s.key_width or s.out_stride < s.query_heads * s.value_width) return error.InvalidShape;
         const total = s.position + s.count;
         const rows = attentionChunkRows(s.count);
-        const elem = s.precision.size();
-        if (keys.len < total * s.kv_heads * s.key_width * elem or values.len < total * s.kv_heads * s.value_width * elem) return error.InvalidShape;
+        try checkCache(s.precision, keys, values, total * s.kv_heads, s.key_width, s.value_width);
         if (queries.len < rows * s.q_stride * query_elem or output.len < rows * s.out_stride * 4) return error.InvalidShape;
-        if (keys.offset % elem != 0 or values.offset % elem != 0 or queries.offset % query_elem != 0) return error.InvalidShape;
+        if (queries.offset % query_elem != 0) return error.InvalidShape;
     }
     pub const TopKParams = extern struct { count: u32, partials: u32, k: u32, temperature: f32 };
     pub const topk_partials = 64;

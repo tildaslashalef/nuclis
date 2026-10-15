@@ -5,7 +5,7 @@
 //! All layer state lives in one page-aligned byte block so a GPU backend can
 //! expose it once as a shared buffer; layers borrow typed views of it. The
 //! block is bytes rather than floats because an attention layer may store
-//! its rows as F16 (`Layout.attention.precision`) while recurrent
+//! its rows as F16 or Q8_0 (`Layout.attention.precision`) while recurrent
 //! state stays F32. GPU invariant: `reset`, `fail`, and any CPU read of
 //! layer slices are only valid while no submitted GPU work can still write
 //! this memory. The synchronous backend guarantees that by waiting on every
@@ -14,16 +14,27 @@ const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 
 /// Storage precision of an attention layer's cache rows. The CPU reference
-/// runtime always uses `f32`; `f16` is a GPU option that
-/// halves cache traffic and memory at long context.
+/// runtime always uses `f32`; `f16` and `q8_0` are GPU options that cut
+/// cache traffic and memory at long context. `q8_0` is GGML's block of 32
+/// values (an F16 scale, then 32 `i8` codes; docs/engine/quantization.md),
+/// so its rows are whole blocks.
 pub const Precision = enum {
     f32,
     f16,
-    pub fn size(self: Precision) usize {
+    q8_0,
+    pub const q8_block = 32;
+    pub const q8_block_bytes = 34;
+    /// Bytes of `elements` values; for `q8_0` a multiple of the block.
+    pub fn bytes(self: Precision, elements: usize) usize {
         return switch (self) {
-            .f32 => 4,
-            .f16 => 2,
+            .f32 => elements * 4,
+            .f16 => elements * 2,
+            .q8_0 => elements / q8_block * q8_block_bytes,
         };
+    }
+    /// Whether a row of `elements` values is storable at this precision.
+    pub fn fits(self: Precision, elements: usize) bool {
+        return self != .q8_0 or elements % q8_block == 0;
     }
 };
 
@@ -42,14 +53,14 @@ pub const Rows = struct {
     precision: Precision,
 
     pub fn rowBytes(self: Rows) usize {
-        return self.row * self.precision.size();
+        return self.precision.bytes(self.row);
     }
     /// Byte range of `count` rows starting at row `first`.
     pub fn range(self: Rows, first: usize, count: usize) []u8 {
         return self.bytes[first * self.rowBytes() ..][0 .. count * self.rowBytes()];
     }
     /// F32 view of `count` rows from `first`. Only an `f32` region has one;
-    /// the CPU reference never carves an `f16` layout, so this is an
+    /// the CPU reference never carves another layout, so this is an
     /// assertion, not an error.
     pub fn floats(self: Rows, first: usize, count: usize) []f32 {
         std.debug.assert(self.precision == .f32);
@@ -299,9 +310,12 @@ pub const Session = struct {
     /// hostile capacity cannot wrap.
     fn sizes(layout: Layout, capacity: usize) ![2]usize {
         const n: [2]usize = switch (layout) {
-            .attention => |x| .{
-                try std.math.mul(usize, try std.math.mul(usize, x.key_row, capacity), x.precision.size()),
-                try std.math.mul(usize, try std.math.mul(usize, x.value_row, capacity), x.precision.size()),
+            .attention => |x| blk: {
+                if (!x.precision.fits(x.key_row) or !x.precision.fits(x.value_row)) return error.InvalidShape;
+                break :blk .{
+                    try std.math.mul(usize, x.precision.bytes(x.key_row), capacity),
+                    try std.math.mul(usize, x.precision.bytes(x.value_row), capacity),
+                };
             },
             .recurrent => |x| .{ try std.math.mul(usize, x.history, @sizeOf(f32)), try std.math.mul(usize, x.matrix, @sizeOf(f32)) },
         };
@@ -681,6 +695,17 @@ test "attention views carve rows at the layout's precision" {
     try std.testing.expectEqual(@as(f32, 1.5), full.keys.floats(0, 3)[11]);
     // Byte-count invariant: two 16-byte-aligned regions of each layer.
     try std.testing.expectEqual(@as(usize, 32 + 48), s.offsetOf(full.keys.bytes));
+}
+
+test "q8_0 rows are whole 34-byte blocks" {
+    var s = try Session.init(std.testing.allocator, &.{.{ .attention = .{ .key_row = 64, .value_row = 32, .precision = .q8_0 } }}, 3, false);
+    defer s.deinit();
+    const q = s.layers[0].attention;
+    try std.testing.expectEqual(@as(usize, 68), q.keys.rowBytes());
+    try std.testing.expectEqual(@as(usize, 3 * 68), q.keys.bytes.len);
+    try std.testing.expectEqual(@as(usize, 34), q.values.range(2, 1).len);
+    try std.testing.expectEqual(@as(usize, 208), s.offsetOf(q.values.bytes)); // 3 × 68 bytes, 16-aligned
+    try std.testing.expectError(error.InvalidShape, Session.init(std.testing.allocator, &.{.{ .attention = .{ .key_row = 48, .value_row = 32, .precision = .q8_0 } }}, 3, false));
 }
 
 test "chunk admission requires the whole chunk to fit" {
