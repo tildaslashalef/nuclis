@@ -787,9 +787,9 @@ inline void nu_matvec_iq1_m_body(device const uchar * weights, device const floa
 
 // Copies a codebook into threadgroup memory; every thread of the group must
 // reach it (it holds a barrier).
-template <uint N>
+template <uint N, uint SIMDGROUPS>
 inline void nu_codebook_copy(threadgroup ulong * tg, constant ulong * table, uint sg, uint lane) {
-    for (uint i = sg * 32 + lane; i < N; i += 32 * NU_MATVEC_SIMDGROUPS) tg[i] = table[i];
+    for (uint i = sg * 32 + lane; i < N; i += 32 * SIMDGROUPS) tg[i] = table[i];
     threadgroup_barrier(mem_flags::mem_threadgroup);
 }
 
@@ -814,16 +814,20 @@ kernel void nu_matvec_iq2_xs(device const uchar * weights [[buffer(0)]], device 
     if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
         nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane);
 }
+// Sixteen SIMD groups share one grid copy (`matvecSimdgroups` in root.zig);
+// the virtual group/sg pair keeps the body's four-group row arithmetic.
+#define NU_IQ2_S_SIMDGROUPS 16
 template <uint ROWS>
 kernel void nu_matvec_iq2_s(device const uchar * weights [[buffer(0)]], device const float * input [[buffer(1)]], device float * output [[buffer(2)]],
                              constant MatvecBlockParams & p [[buffer(7)]], uint group_index [[threadgroup_position_in_grid]],
                              uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
     threadgroup ulong grid[1024];
-    nu_codebook_copy<1024>(grid, nu_iq2_s_grid, sg, lane);
+    nu_codebook_copy<1024, NU_IQ2_S_SIMDGROUPS>(grid, nu_iq2_s_grid, sg, lane);
+    uint global_sg = group_index * NU_IQ2_S_SIMDGROUPS + sg;
     float acc[ROWS];
-    nu_matvec_iq2_s_body<ROWS, threadgroup const ulong *>(weights, input, p, group_index, sg, lane, acc, grid);
-    if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
-        nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane);
+    nu_matvec_iq2_s_body<ROWS, threadgroup const ulong *>(weights, input, p, global_sg / NU_MATVEC_SIMDGROUPS, global_sg % NU_MATVEC_SIMDGROUPS, lane, acc, grid);
+    if (global_sg * ROWS < p.rows)
+        nu_store_rows<ROWS>(acc, output, global_sg * ROWS, p.rows, lane);
 }
 NU_MATVEC_KERNEL(iq3_xxs)
 NU_MATVEC_KERNEL(iq3_s)

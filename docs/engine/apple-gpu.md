@@ -493,4 +493,23 @@ kernel by 23 %, which nothing here explains.
 model adapters' standalone fallback runs it. Decode at 512 (the command
 above without `--profile`, mean of three after a warmup, same session):
 **16.09 → 17.10 tok/s**. IQ4_XS gains as much unmerged but belongs to
-other files' records; it is left merged here.
+other files' records; it is left merged here. Keeping a plain merge's
+other segments merged (only the seven leave it) measured lower, 16.89 to
+17.03 against 17.10 and 17.21 in alternation: what stays merged in the
+DeltaNet merge is the two 48-row Q8_0 projections, which the merged
+kernel's generic branch runs on six threadgroups.
+
+**IQ2_S's grid.** Its 8 KiB threadgroup copy held the kernel at 33 %
+occupancy against a 75 % target. More SIMD groups per copy (`ffn_down`
+shape / gate shape / gate+up pair unmerged, GB/s):
+
+| Threadgroup | `ffn_down` | Gate | Gate+up |
+| --- | ---: | ---: | ---: |
+| 4 SIMD groups (was) | 158.2 | 162.4 | 157.2 |
+| 8 | 160.4 | 167.1 | 161.9 |
+| 16 (now) | 161.9 | 168.7 | 163.3 |
+| 32 | 162.7 | 168.4 | 163.7 |
+| 4, the grid in `constant` memory | 152.4 | 158.5 | 153.3 |
+
+Decode at 512 moves within its noise (17.14 and 17.23): IQ2_S is a
+small share of the step.

@@ -628,6 +628,15 @@ pub const Backend = struct {
             else => rows_per_simdgroup,
         };
     }
+    /// SIMD groups per threadgroup of a standalone specialized matvec; must
+    /// match its kernel in kernels.metal. IQ2_S's 16 share one copy of its
+    /// 8 KiB grid (2.5–4 % over 4, docs/engine/apple-gpu.md).
+    pub fn matvecSimdgroups(kernel: Kernel) usize {
+        return switch (kernel) {
+            .matvec_iq2_s => 16,
+            else => simdgroups_per_matvec_group,
+        };
+    }
     /// Most splits the row-partial scratch holds.
     pub const split_k_max = 8;
     /// Most rows the row-partial scratch holds per split (512 KB at 8 splits).
@@ -671,8 +680,9 @@ pub const Backend = struct {
                 return;
             }
             const p: MatvecBlockParams = .{ .columns = @intCast(matrix.columns), .stride = @intCast(stride), .rows = @intCast(matrix.rows), .blocks = @intCast(matrix.columns / 256) };
-            const group_rows = matvecRowsPerSimdgroup(kernel) * simdgroups_per_matvec_group;
-            try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast(@divCeil(matrix.rows, group_rows)), 32 * simdgroups_per_matvec_group, shape);
+            const simdgroups = matvecSimdgroups(kernel);
+            const group_rows = matvecRowsPerSimdgroup(kernel) * simdgroups;
+            try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast(@divCeil(matrix.rows, group_rows)), @intCast(32 * simdgroups), shape);
             return;
         };
         if (splits > 1) return error.InvalidShape;
