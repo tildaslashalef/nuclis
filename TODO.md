@@ -21,8 +21,9 @@ as `saluki-27b` (facts, lineage, validation, and every number:
 (`saluki-2bit-encodings`) it runs on the CPU and on Metal, validated
 without an external oracle (the cross-encoding check, CPU traces as its
 own fixture), and chats, calls tools, and reads images through `nuclis
-serve`, at the generic kernels' speed: decode 7.22 tok/s at 512 (llama.cpp
-12.46), prefill 67 (llama.cpp 97).
+serve`. On this unit's branch the specialized kernels decode 17.1 tok/s at
+512 (llama.cpp 12.46; the generic kernels 7.22) and prefill about 96
+(llama.cpp 97).
 
 **North star: Saluki decodes at ≥ 22 tok/s at 512 tokens** on this
 machine (`nuclis bench`, Metal, F16 cache, greedy, 128 tokens): the 2-bit
@@ -38,40 +39,58 @@ Next: **Saluki: the 2-bit matvecs at the north star**.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Saluki: the 2-bit matvecs at the north star | `saluki-2bit-speed` | next |
+| Saluki: the 2-bit matvecs at the north star | `saluki-2bit-speed` | in progress |
 | Q8_0 attention cache | `q8-kv-cache` | queued; facts to read first |
 | 2-bit files compared on nuclis, the catalogue decision | `two-bit-comparison` | queued |
 
 ## Saluki: the 2-bit matvecs at the north star
 
-Base: `2fe0752`. The seven encodings decode
-through the generic kernels (`nu_segment` in
-`backends/metal/dequant.metal`: 16 values per call through a switch), at
-43–83 GB/s (`zig build bench-kernels -Dmetal=true -- <ENC>`; the table in
-saluki.md § Speed); the Q4_K specialized matvec runs at 177–198 GB/s on
-the same shapes, its generic path at ~103.
+Base: `2fe0752`. Delivered on the branch, measured in
+[docs/engine/apple-gpu.md](docs/engine/apple-gpu.md) § Saluki's 2-bit
+matvecs on the `ffn_down` shape and § The merged gate+up on Saluki's
+encodings:
 
-1. **Specialized matvecs** in `backends/metal/kernels.metal`, named
-   `nu_matvec_<enc>` beside `nu_matvec_iq4_xs` and instantiated with
-   `NU_MATVEC_ARGS` like it; a `Kernel` tag each in `metal/root.zig` and a
-   case where encoding 21 routes to `.matvec_iq3_s`. Order by bytes per
-   token: IQ2_XXS (119 tensors, every `ffn_down` but 11), IQ2_S, Q2_K,
-   IQ2_XS, IQ3_XXS, IQ1_S, IQ1_M. Each must equal the CPU within
-   `metal-check`'s matvec bounds (the codebook fixture already runs through
-   every matvec loop) and reach ≥ 170 GB/s on the three shapes above.
-2. **Codebook placement** is the first experiment: the grids sit in
-   `constant` memory (IQ2_XXS 2 KiB, IQ2_XS 4 KiB, IQ2_S 8 KiB, IQ3_XXS
-   1 KiB, IQ1_S 16 KiB); try threadgroup copies and narrower encodings
-   (IQ2 magnitudes are 3 values, so 2 bits each; IQ1 components are
-   ternary). Measure one encoding before generalizing.
-3. **The multi-row matvec** (`nu_matvec_rows_*`, used by verify batches)
-   and the merged segments for the seven, if the profile shows them.
-4. **Exit:** `nuclis bench --model saluki-27b` decode ≥ 22 tok/s at 512
-   and the 4K / 16K / 32,639 rows against saluki.md § Speed; record in
-   saluki.md. If 22 is not reached, record where the time goes
-   (`nuclis bench --profile`) and stop at the measured result.
-5. **Then prefill**: the matmul tiles (`_8`, `_w8`, `_f2` variants, as
-   IQ3_S has) to at least llama.cpp's 97 tok/s at 512.
+- `c35a6c1`: specialized matvecs `nu_matvec_<enc>` and prefill tiles for
+  the seven (`make bench-kernels ARGS='<ENC> [shape]'`, GB/s: IQ2_XXS
+  135–144, IQ1_S and IQ1_M 129–140, IQ2_XS 150–158, IQ2_S 158–169,
+  IQ3_XXS 172–196, Q2_K 189–200).
+- `7424ae3`: the backend declines a merged projection holding one of the
+  seven (`Backend.mergeDeclined`, `error.MergeDeclined`) and the model
+  adapters' standalone fallback runs it: they lost 11–23 % inside the
+  merged kernel. Decode at 512: 16.09 → 17.10 tok/s.
+- `86f9945`: IQ2_S's matvec at 16 SIMD groups per threadgroup (+2.5–4 %).
+- Decode 17.1–17.2 tok/s at 512 (`nuclis bench --model saluki-27b
+  --prompt-tokens tests/fixtures/run-2026-09-06/prompt-512.json
+  --max-tokens 128 --ctx-size 32768 --kv f16`), prefill about 96.
+
+Measured and closed (the probe tables in apple-gpu.md): the F16 dot
+(fails `saluki-trace-f32`, 2.56e-2 and 2.5e-4 against 2e-3 and 1e-4),
+sign tables, more rows per SIMD group, prefetched weights, inputs staged
+in threadgroup memory, threadgroup size outside IQ2_S, keeping a plain
+merge's other segments merged. The half-to-float conversions cost no
+instruction (counted).
+
+**22 tok/s is not reached**: it needs the 7.61 GB per token at about
+200 GB/s on average, above every 2-bit kernel alone (apple-gpu.md § The
+merged gate+up on Saluki's encodings, *Where the step goes now*: gate+up
+about 35 % of the step, `ffn_down` 19 %). What remains:
+
+1. **The exit record** in [docs/models/saluki.md](docs/models/saluki.md)
+   § Speed: decode and prefill at 512, 4,096, 16,384, and 32,639 with
+   the pinned prompts (the command above, `--prompt-tokens` per length),
+   replacing the generic kernels' table, and the specialized kernels'
+   rates in place of its matvec table; § Status to match. Any README or
+   site figure citing Saluki follows (`make site-check`).
+2. **`make verify` once** before the pull request. `verify-long` is
+   flagged by `make verify-auto` only because kernels.metal holds the
+   attention kernels; nothing here changes attention or the cache.
+3. **Prefill to llama.cpp's 97 tok/s**, if the last 1 % matters: the
+   matmul tiles' `_8`, `_w8`, `_f2` variants, as IQ3_S has.
+
+Leads outside this unit: independent matvecs of a step (gate and up; q,
+k, v) on a concurrent encoder, which the profile's overlap suggests
+would hide the drain between them; the merged-versus-standalone findings
+for Q4_K and IQ4_XS (Qwen3.8's file), proposed as their own unit.
 
 Gates: `make verify-auto`, `make verify` (Metal kernels), `zig build
 test-metal -Dmetal=true`. Not `verify-cpu`: no CPU arithmetic changes.

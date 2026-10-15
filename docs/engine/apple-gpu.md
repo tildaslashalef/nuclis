@@ -30,7 +30,7 @@ unless a row names a measurement.
 | Matrix unit | `simdgroup_matrix` 8 × 8; operands of one type (no half → float matrix conversion in MSL); half operands with F32 accumulation reach 4.9–5.2 TFLOP/s in 64 × 64 tiles, F32 operands 3.3–3.5; Apple publishes no peak | measured, [metal-backend.md § Kernels](metal-backend.md#kernels) |
 | Per-lane arithmetic | scalar: building a `float4` value by value cost 3–4× one `uchar4 → float4` cast (Q5_K matvec 113 → 210 GB/s) | measured, [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec) |
 | Loads | the specialized matvecs load `uint4` (16-byte-aligned blocks), `uint2`, or `packed_ushort4` by block alignment; no controlled sweep of load width against rate yet | [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec) |
-| half ↔ float | conversions are free; 16-bit types use fewer registers | 111373 (not isolated by a measurement of ours) |
+| half ↔ float | conversions are free: a half source of an F32 multiply-add adds no ALU instruction (counted, [below](#salukis-2-bit-matvecs-on-the-ffn_down-shape-2026-10-15)); 16-bit types use fewer registers | 111373; measured |
 | Clock | an isolated short dispatch measures the GPU clock's ramp-up, not the kernel: micro-benchmarks run 8 dispatches per command buffer, 64 below 8,192 rows | measured, [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec) |
 
 ## Registers and occupancy under dynamic caching
@@ -389,8 +389,7 @@ is not the limit (last-level cache 4–6 %, MMU 6–10 %), nothing spills, and
 the instruction throughput limiter sits at 78–87 % at under 20 %
 utilization. Three quarters of the ALU instructions are integer: the
 float work is at its floor (about 1.2 per weight, the multiply-add; the
-half-to-float conversions are not among the float instructions, and
-whether the integer and complex count holds them is not established), and
+half-to-float conversions are no instructions at all, below), and
 the masks, shifts, and sign spreading take the other 3.3 instructions per
 weight. IQ2_XXS's integer and complex limiter (72 %) is the `popcount`
 of its 7-bit sign parity; IQ2_S stores full sign bytes, IQ1_S has no
@@ -427,6 +426,17 @@ price a cost):
 | Octet-outer loop: two `float4` inputs live at a time instead of eight, each octet decoded for both rows | 125.4 |
 | Each iteration's 4 KiB of inputs staged once per threadgroup in threadgroup memory (double-buffered, one barrier) | 99.1 |
 | F32 inputs loaded as now, held as half (the same bytes, half the input registers) | 134.6 |
+
+**The conversions are no instructions.** The ablation that reads each
+half pair as one F32 (the same integer work and multiply-adds, no
+conversion) counts 25,392,447,104 ALU instructions against the kernel's
+25,392,445,984, with the same mix (float 26.18 %, integer and complex
+32.00 %, integer and conditional 41.82 %) and the same limiters
+(`matvec-IQ2_XXS-5120x17408-ffn_down-block-noconv_2026-10-15T0938_max.csv`
+against `…block_2026-10-15T0726_max.csv`). A half operand of an F32
+multiply-add is converted in the operand path: the eight conversions per
+octet cost no issue slot in any pipe, and the integer and complex count
+holds none of them.
 
 Latency chains, the two-byte-aligned loads, the 2 KiB grid lookup, the
 half-to-float conversions, the threadgroup size, and software-pipelined
@@ -513,3 +523,20 @@ shape / gate shape / gate+up pair unmerged, GB/s):
 
 Decode at 512 moves within its noise (17.14 and 17.23): IQ2_S is a
 small share of the step.
+
+**Where the step goes now** (`86f9945`, the profile command above): 57.8
+ms per step of command-buffer time, 1,138 dispatches, but 75.5 ms
+attributed: with one encoder per dispatch the independent gate and up
+matvecs overlap and each is charged the other's time (they read 72–107
+GB/s there against 139–193 in `bench-kernels`). Charging the excess to
+them, the step is about 35 % gate+up (19–22 ms), 19 % `ffn_down` (11.1
+ms, 9.1 of it IQ2_XXS at 134 GB/s), 13 % the DeltaNet projections (7.5
+ms), 9 % `attn_output` and `ssm_out` (5.0 ms), 6 % attention's q, k, v
+(3.6 ms), 5 % the IQ3_S head (3.2 ms at 173 GB/s), and about 8 ms of
+everything else (attention 1.8, the DeltaNet update 1.2, norms 2.3, the
+48-row Q8_0 `ssm_alpha`/`ssm_beta` 1.2 ms over 94 dispatches at 21 GB/s).
+22 tok/s is 45.5 ms per token: with the non-matvec 8 ms, the 7.61 GB of
+weights must stream at about 200 GB/s on average, above what any 2-bit
+kernel here reaches alone (130–195) and near the best kernel's 248. The
+overlap itself is a lead: independent matvecs of a step (gate and up;
+q, k, v) on a concurrent encoder would hide the drain between them.
