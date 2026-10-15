@@ -26,7 +26,12 @@ kernels decode 16.96 tok/s at 512 (llama.cpp 12.46, the Q4_K_M on nuclis
 11.67) and prefill 94.18 (llama.cpp 97.19). Since the Q8_0 cache unit
 (`q8-kv-cache`) `--kv q8_0` holds its 32K session in 1,238 MiB instead
 of 2,198 at no measured perplexity or speed cost at 512
-([docs/engine/metal-backend.md § Q8_0 KV cache](docs/engine/metal-backend.md#q8_0-kv-cache-2026-10-15)).
+([docs/engine/metal-backend.md § Q8_0 KV cache](docs/engine/metal-backend.md#q8_0-kv-cache-2026-10-15)). Since the
+head-split unit (`split-pass-rows`) the decode attention split pass reads
+the F16 cache at the memory roof (Saluki's layer at 32,640 rows: F16
+1.70 → 0.63 ms, Q8_0 2.15 → 0.61) and Saluki decodes 13.20 tok/s at
+32,639 instead of 11.63
+([docs/engine/metal-backend.md § The split pass at the memory roof](docs/engine/metal-backend.md#the-split-pass-at-the-memory-roof-2026-10-15)).
 Saluki stays out of the catalogue for now, registered in `nuclis.json`
 like Bonsai (the user's decision, 2026-10-15); the comparison unit
 decides.

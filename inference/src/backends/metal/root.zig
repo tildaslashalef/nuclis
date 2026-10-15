@@ -308,6 +308,15 @@ pub const Kernel = enum(u32) {
     unpack_q8_0,
     attention_decode_q8,
     attention_decode_wq8,
+    attention_heads_f32_128,
+    attention_heads_f32_256,
+    attention_heads_f32_512,
+    attention_heads_f16_128,
+    attention_heads_f16_256,
+    attention_heads_f16_512,
+    attention_heads_q8_128,
+    attention_heads_q8_256,
+    attention_heads_q8_512,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -1921,6 +1930,45 @@ pub const Backend = struct {
         const g = query_heads / kv_heads;
         return @divCeil(g, per_group);
     }
+    /// How the split pass runs a shape: the kernel, its threadgroups
+    /// per (KV head, split, row), and its threads per threadgroup.
+    const DecodePlan = struct { kernel: Kernel, groups_per_split: usize, threads: u32 };
+    /// The head-split instantiation (`nu_attention_heads_t`) when keys and
+    /// values share a width of 128, 256, or 512 and the KV head's query
+    /// heads fit one threadgroup; the general kernel otherwise. Query heads
+    /// per SIMD group and preferred row lanes per (precision, width) are
+    /// the measured optimum (docs/engine/metal-backend.md § The split pass
+    /// at the memory roof); row lanes halve until the threadgroup holds
+    /// at most 1,024 threads and their merge fits the kernel's 4,096-float
+    /// stage. The group counts must match the kernel's instantiations.
+    fn decodePlan(precision: Precision, query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize) DecodePlan {
+        const general: DecodePlan = .{ .kernel = decodeKernel(precision, key_width, value_width), .groups_per_split = attentionDecodeHeadGroups(query_heads, kv_heads, key_width, value_width), .threads = 128 };
+        if (key_width != value_width) return general;
+        const Choice = struct { kernel: Kernel, group: usize, lanes: usize };
+        const choice: Choice = switch (key_width) {
+            128 => switch (precision) {
+                .f32 => .{ .kernel = .attention_heads_f32_128, .group = 4, .lanes = 2 },
+                .f16 => .{ .kernel = .attention_heads_f16_128, .group = 4, .lanes = 2 },
+                .q8_0 => .{ .kernel = .attention_heads_q8_128, .group = 4, .lanes = 2 },
+            },
+            256 => switch (precision) {
+                .f32 => .{ .kernel = .attention_heads_f32_256, .group = 2, .lanes = 2 },
+                .f16 => .{ .kernel = .attention_heads_f16_256, .group = 2, .lanes = 2 },
+                .q8_0 => .{ .kernel = .attention_heads_q8_256, .group = 3, .lanes = 4 },
+            },
+            512 => switch (precision) {
+                .f32 => .{ .kernel = .attention_heads_f32_512, .group = 1, .lanes = 2 },
+                .f16 => .{ .kernel = .attention_heads_f16_512, .group = 1, .lanes = 2 },
+                .q8_0 => .{ .kernel = .attention_heads_q8_512, .group = 1, .lanes = 2 },
+            },
+            else => return general,
+        };
+        const head_groups = @divCeil(query_heads / kv_heads, choice.group);
+        if (head_groups * 32 > 1024) return general;
+        var lanes = choice.lanes;
+        while (lanes > 1 and (head_groups * lanes * 32 > 1024 or head_groups * choice.group * key_width > 4096)) lanes /= 2;
+        return .{ .kernel = choice.kernel, .groups_per_split = 1, .threads = @intCast(head_groups * lanes * 32) };
+    }
     /// Flash-decoding attention: two dispatches (split pass, merge)
     /// and no score buffer; `partials` needs `attentionDecodePartials`
     /// floats. The shape contract of `attention`, plus widths of at most
@@ -1929,13 +1977,13 @@ pub const Backend = struct {
     pub fn attentionDecode(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, partials: Buffer, output: Buffer, s: AttentionShape) !void {
         if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or s.key_width == 0 or s.key_width > 512 or s.value_width == 0 or s.value_width > 512 or s.visible == 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
         const splits = attentionDecodeSplits(s.visible);
-        const head_groups = attentionDecodeHeadGroups(s.query_heads, s.kv_heads, s.key_width, s.value_width);
+        const plan = decodePlan(s.precision, s.query_heads, s.kv_heads, s.key_width, s.value_width);
         try checkCache(s.precision, keys, values, s.visible * s.kv_heads, s.key_width, s.value_width);
         if (queries.len < s.query_heads * s.key_width * 4 or partials.len < s.query_heads * splits * (2 + s.value_width) * 4 or output.len < s.query_heads * s.value_width * 4) return error.InvalidShape;
         const p: AttentionDecodeParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .visible = @intCast(s.visible), .splits = @intCast(splits), .scale = s.scale, .rows = 1, .q_stride = @intCast(s.query_heads * s.key_width), .out_stride = @intCast(s.query_heads * s.value_width), .window = 0 };
         // Cache traffic per dispatch, for the profile: every row once.
         const bytes: u64 = @intCast(s.visible * s.precision.bytes(s.kv_heads * (s.key_width + s.value_width)));
-        try self.dispatch(decodeKernel(s.precision, s.key_width, s.value_width), &.{ keys, values, queries, partials }, p, @intCast(s.kv_heads * head_groups * splits), 128, .{ .bytes = bytes });
+        try self.dispatch(plan.kernel, &.{ keys, values, queries, partials }, p, @intCast(s.kv_heads * plan.groups_per_split * splits), plan.threads, .{ .bytes = bytes });
         try self.dispatch(.attention_merge, &.{ partials, output }, p, @intCast(s.query_heads), 256, .{});
     }
     /// The most rows `attentionVerify` takes: a verify batch or a drafter's
@@ -1958,11 +2006,11 @@ pub const Backend = struct {
         try checkAttentionChunk(s, keys, values, queries, output, 4);
         const visible = s.position + s.count;
         const splits = attentionDecodeSplits(visible);
-        const head_groups = attentionDecodeHeadGroups(s.query_heads, s.kv_heads, s.key_width, s.value_width);
+        const plan = decodePlan(s.precision, s.query_heads, s.kv_heads, s.key_width, s.value_width);
         if (partials.len < s.count * s.query_heads * splits * (2 + s.value_width) * 4) return error.InvalidShape;
         const p: AttentionDecodeParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .visible = @intCast(visible), .splits = @intCast(splits), .scale = s.scale, .rows = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .window = @intCast(s.window) };
         const bytes: u64 = @intCast(s.count * visible * s.precision.bytes(s.kv_heads * (s.key_width + s.value_width)));
-        try self.dispatch(decodeKernel(s.precision, s.key_width, s.value_width), &.{ keys, values, queries, partials }, p, @intCast(s.kv_heads * head_groups * splits * s.count), 128, .{ .bytes = bytes });
+        try self.dispatch(plan.kernel, &.{ keys, values, queries, partials }, p, @intCast(s.kv_heads * plan.groups_per_split * splits * s.count), plan.threads, .{ .bytes = bytes });
         try self.dispatch(.attention_merge, &.{ partials, output }, p, @intCast(s.query_heads * s.count), 256, .{});
     }
     pub const PackParams = extern struct { count0: u32, count1: u32 };

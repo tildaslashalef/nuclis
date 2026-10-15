@@ -665,7 +665,10 @@ routing: a perturbed router logit swaps a token's eighth expert. With
 the expert projections alone through per-token F32 matvecs the gap is
 still 1.1e-1 relative RMS, because the dense tiles' rounding already
 moves the router. The check records the expert configuration's own
-bounds (2e1 / 5e-1) beside the 12B's. The acceptance record
+bounds (2e1 / 5e-1) beside the 12B's. The recovery check (a chunked verify batch
+against sequential steps) applies them too since 2026-10-15: with the
+head-split decode attention's rounding its last 8-row case swaps an
+expert and reaches 7.4e-1 / 3.0e-2, past the 12B's 6e-1 / 2e-2. The acceptance record
 ([benchmarks](../benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-2026-09-18))
 ran the reference's arrays greedy to the token budget at every length,
 which is what a rate record can say about it; per-token agreement on

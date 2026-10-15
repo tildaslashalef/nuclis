@@ -2856,6 +2856,8 @@ inline void nu_kv_load(device const nu_q8_0 * row, uint lane, uint width, thread
 // A nonzero `window` also bounds each row from below (its last `window`
 // rows). Queries and outputs are `[row][q_stride | out_stride]`; decode is
 // rows = 1, window = 0 (its callers slice the window off the cache).
+// Keys and values of one width 128, 256, or 512 run in
+// `nu_attention_heads_t` below; this kernel takes every other shape.
 struct AttentionDecodeParams { uint query_heads; uint kv_heads; uint key_width; uint value_width; uint visible; uint splits; float scale; uint rows; uint q_stride; uint out_stride; uint window; };
 // GROUP query heads per threadgroup and CH channels per lane (widths up to
 // 32 * CH); the register budget is GROUP * CH * 2 floats per lane in both
@@ -2951,6 +2953,165 @@ template [[host_name("nu_attention_decode_w")]] kernel void nu_attention_decode_
 template [[host_name("nu_attention_decode_wh")]] kernel void nu_attention_decode_t<half, 4, 16>(device const half *, device const half *, NU_ATTN_DECODE_ARGS);
 template [[host_name("nu_attention_decode_q8")]] kernel void nu_attention_decode_t<nu_q8_0, 8, 8>(device const nu_q8_0 *, device const nu_q8_0 *, NU_ATTN_DECODE_ARGS);
 template [[host_name("nu_attention_decode_wq8")]] kernel void nu_attention_decode_t<nu_q8_0, 4, 16>(device const nu_q8_0 *, device const nu_q8_0 *, NU_ATTN_DECODE_ARGS);
+// The split pass for one head width known at compile time, 32 × CH for
+// keys and values alike (CH 4, 8, or 16): `nu_attention_decode_t`'s
+// contract and partial layout, built for occupancy, since registers and
+// not bytes or ALU bound the general kernel. A threadgroup is (KV head,
+// split, row) and holds HG × RL SIMD groups: SIMD group s owns GROUP
+// query heads from GROUP × (s % HG) and walks rows start + s / HG, step
+// RL, so the head groups read each row together (once from memory, the
+// copies from cache). Lane l owns channels CH·l … CH·l + CH − 1, read
+// without guards. The RL row lanes merge through `stage` as in the
+// general kernel; the host keeps HG × GROUP × 32 × CH within it when
+// RL > 1. Design and measurements: docs/engine/metal-backend.md
+// § The split pass at the memory roof.
+template <uint CH>
+inline void nu_heads_load(device const float * row, uint lane, thread float * out) {
+    device const packed_float4 * r = (device const packed_float4 *)(row + CH * lane);
+    for (uint j = 0; j < CH / 4; ++j) { const float4 x = float4(r[j]); out[4 * j] = x.x; out[4 * j + 1] = x.y; out[4 * j + 2] = x.z; out[4 * j + 3] = x.w; }
+}
+template <uint CH>
+inline void nu_heads_load(device const half * row, uint lane, thread float * out) {
+    device const packed_half4 * r = (device const packed_half4 *)(row + CH * lane);
+    for (uint j = 0; j < CH / 4; ++j) { const float4 x = float4(half4(r[j])); out[4 * j] = x.x; out[4 * j + 1] = x.y; out[4 * j + 2] = x.z; out[4 * j + 3] = x.w; }
+}
+// One cache row for a SIMD group's GROUP heads: the dot, the online
+// softmax, and the accumulation, per head.
+template <uint CH, uint GROUP, typename T>
+inline void nu_heads_row(device const T * k, device const T * v, uint lane, thread const float (&q)[GROUP][CH],
+                         thread float * m, thread float * l, thread float (&acc)[GROUP][CH]) {
+    float kr[CH], vr[CH];
+    nu_heads_load<CH>(k, lane, kr);
+    nu_heads_load<CH>(v, lane, vr);
+    for (uint h = 0; h < GROUP; ++h) {
+        float partial = 0.0f;
+        for (uint i = 0; i < CH; ++i) partial += q[h][i] * kr[i];
+        const float sc = simd_sum(partial);
+        const float m_new = max(m[h], sc);
+        const float alpha = exp(m[h] - m_new), pr = exp(sc - m_new);
+        l[h] = l[h] * alpha + pr;
+        m[h] = m_new;
+        for (uint i = 0; i < CH; ++i) acc[h][i] = acc[h][i] * alpha + pr * vr[i];
+    }
+}
+// U consecutive codes of one Q8_0 block from code `at`: the codes sit 2
+// bytes into a 34-byte block, so they are read as aligned half-words.
+template <uint U>
+inline void nu_heads_codes(device const nu_q8_0 & b, uint at, thread float * x) {
+    device const ushort * w = (device const ushort *)(b.qs + at);
+    for (uint u = 0; u < U / 2; ++u) { const char2 e = as_type<char2>(w[u]); x[2 * u] = e.x; x[2 * u + 1] = e.y; }
+}
+// A Q8_0 row in three phases (every head's dot, the softmax, the V
+// accumulation) so K and V codes are never live together, with each
+// block's scale outside the per-code products: dot = d · Σ q·code,
+// acc += (p · d) · code.
+template <uint CH, uint GROUP>
+inline void nu_heads_row(device const nu_q8_0 * k, device const nu_q8_0 * v, uint lane, thread const float (&q)[GROUP][CH],
+                         thread float * m, thread float * l, thread float (&acc)[GROUP][CH]) {
+    constexpr uint U = CH < 8 ? CH : 8;
+    float partial[GROUP], pr[GROUP], alpha[GROUP];
+    for (uint h = 0; h < GROUP; ++h) partial[h] = 0.0f;
+    for (uint j = 0; j < CH / U; ++j) {
+        const uint c = CH * lane + U * j;
+        const float d = float(k[c >> 5].d);
+        float x[U];
+        nu_heads_codes<U>(k[c >> 5], c & 31, x);
+        for (uint h = 0; h < GROUP; ++h) {
+            float s = 0.0f;
+            for (uint u = 0; u < U; ++u) s += q[h][U * j + u] * x[u];
+            partial[h] += d * s;
+        }
+    }
+    for (uint h = 0; h < GROUP; ++h) {
+        const float sc = simd_sum(partial[h]);
+        const float m_new = max(m[h], sc);
+        alpha[h] = exp(m[h] - m_new);
+        pr[h] = exp(sc - m_new);
+        l[h] = l[h] * alpha[h] + pr[h];
+        m[h] = m_new;
+    }
+    for (uint j = 0; j < CH / U; ++j) {
+        const uint c = CH * lane + U * j;
+        const float d = float(v[c >> 5].d);
+        float x[U];
+        nu_heads_codes<U>(v[c >> 5], c & 31, x);
+        for (uint h = 0; h < GROUP; ++h) {
+            const float pd = pr[h] * d;
+            for (uint u = 0; u < U; ++u) acc[h][U * j + u] = acc[h][U * j + u] * alpha[h] + pd * x[u];
+        }
+    }
+}
+template <typename KV, uint GROUP, uint CH>
+kernel void nu_attention_heads_t(device const KV * keys [[buffer(0)]],
+                                 device const KV * values [[buffer(1)]],
+                                 device const float * queries [[buffer(2)]],
+                                 device float * partials [[buffer(3)]],
+                                 constant AttentionDecodeParams & p [[buffer(7)]],
+                                 uint group [[threadgroup_position_in_grid]],
+                                 uint sg [[simdgroup_index_in_threadgroup]],
+                                 uint simdgroups [[simdgroups_per_threadgroup]],
+                                 uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float stage_acc[4096];
+    threadgroup float stage_m[128];
+    threadgroup float stage_l[128];
+    constexpr uint W = 32 * CH;
+    const uint g = p.query_heads / p.kv_heads;
+    const uint head_groups = (g + GROUP - 1) / GROUP, lanes = simdgroups / head_groups;
+    const uint kv = group % p.kv_heads, rest = group / p.kv_heads;
+    const uint split = rest % p.splits, row = rest / p.splits;
+    const uint hg = sg % head_groups, rl = sg / head_groups;
+    const uint h0 = hg * GROUP, hn = min(GROUP, g - h0); // this SIMD group's query heads: kv * g + h0 .. + hn
+    const uint per = (p.visible + p.splits - 1) / p.splits;
+    const uint seen = p.visible - (p.rows - 1 - row);
+    const uint low = (p.window != 0 && seen > p.window) ? seen - p.window : 0;
+    const uint start = max(split * per, low), end = min(seen, split * per + per);
+    queries += ulong(row) * p.q_stride;
+    float q[GROUP][CH];
+    for (uint h = 0; h < GROUP; ++h) for (uint i = 0; i < CH; ++i)
+        q[h][i] = h < hn ? queries[(kv * g + h0 + h) * W + CH * lane + i] * p.scale : 0.0f;
+    float m[GROUP], l[GROUP], acc[GROUP][CH];
+    for (uint h = 0; h < GROUP; ++h) { m[h] = -INFINITY; l[h] = 0.0f; for (uint i = 0; i < CH; ++i) acc[h][i] = 0.0f; }
+    const ulong stride_row = ulong(p.kv_heads) * W;
+    for (uint t = start + rl; t < end; t += lanes)
+        nu_heads_row<CH, GROUP>(nu_kv_row(keys, ulong(t) * stride_row + ulong(kv) * W), nu_kv_row(values, ulong(t) * stride_row + ulong(kv) * W), lane, q, m, l, acc);
+    // Merge row lanes 1.. into lane 0, one at a time; every head group at once.
+    const uint slot = hg * GROUP;
+    for (uint r = 1; r < lanes; ++r) {
+        if (rl == r) {
+            for (uint h = 0; h < GROUP; ++h) {
+                if (lane == 0) { stage_m[slot + h] = m[h]; stage_l[slot + h] = l[h]; }
+                for (uint i = 0; i < CH; ++i) stage_acc[((slot + h) * CH + i) * 32 + lane] = acc[h][i];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (rl == 0) {
+            for (uint h = 0; h < GROUP; ++h) {
+                const float mr = stage_m[slot + h];
+                if (mr != -INFINITY) {
+                    const float m_new = max(m[h], mr);
+                    const float a0 = exp(m[h] - m_new), ar = exp(mr - m_new);
+                    l[h] = l[h] * a0 + stage_l[slot + h] * ar;
+                    m[h] = m_new;
+                    for (uint i = 0; i < CH; ++i) acc[h][i] = acc[h][i] * a0 + stage_acc[((slot + h) * CH + i) * 32 + lane] * ar;
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (rl != 0) return;
+    for (uint h = 0; h < GROUP; ++h) {
+        if (h >= hn) break;
+        device float * out = partials + ((ulong(row) * p.query_heads + kv * g + h0 + h) * p.splits + split) * (2 + W);
+        if (lane == 0) { out[0] = m[h]; out[1] = l[h]; }
+        for (uint i = 0; i < CH; ++i) out[2 + CH * lane + i] = acc[h][i];
+    }
+}
+// GROUP per (precision, width) must match `Backend.attentionHeadsGroup`.
+#define NU_ATTN_HEADS(NAME, KV, GROUP, CH) \
+    template [[host_name("nu_attention_heads_" NAME)]] kernel void nu_attention_heads_t<KV, GROUP, CH>(device const KV *, device const KV *, device const float *, device float *, constant AttentionDecodeParams &, uint, uint, uint, uint);
+NU_ATTN_HEADS("f32_128", float, 4, 4) NU_ATTN_HEADS("f32_256", float, 2, 8) NU_ATTN_HEADS("f32_512", float, 1, 16)
+NU_ATTN_HEADS("f16_128", half, 4, 4) NU_ATTN_HEADS("f16_256", half, 2, 8) NU_ATTN_HEADS("f16_512", half, 1, 16)
+NU_ATTN_HEADS("q8_128", nu_q8_0, 4, 4) NU_ATTN_HEADS("q8_256", nu_q8_0, 3, 8) NU_ATTN_HEADS("q8_512", nu_q8_0, 1, 16)
 // One threadgroup per (row, query head), 256 threads striding the value
 // channels: rescale every split's partial to the global max, divide by the
 // merged sum.
