@@ -16,6 +16,16 @@ it is empty, ask what to work on and write the agreed plan here.
 
 Agreed and not scheduled; when one is picked up, it becomes a unit above.
 
+- **Saluki's speed goals** (restated by the user, 2026-10-15; the numbers
+  and their arithmetic in `docs/models/saluki.md`, its **Goals**): decode at
+  32,639 ≥ 18 tok/s, and a 32,639-token prompt prefilled in ≤ 7 minutes.
+  Decode needs the 2-bit matvecs at about 200 GB/s (IQ2_XXS reads 144
+  today; the limiter is instructions per weight, not bandwidth: at
+  2.26 bits a weight, 200 GB/s leaves an estimated four instructions per
+  weight on the 16-core GPU; `docs/engine/apple-gpu.md` § The merged
+  gate+up on Saluki's encodings). The prefill goal is the entry below. Context past
+  32,768 (`max_context` in `src/config.zig`) waits on the prefill goal.
+
 - **Long-context prefill, every family** (the user's, 2026-10-15). Prefill
   at 512 is level with llama.cpp (0.89–1.02×) and falls behind as the
   prompt grows; at 32,639: Muse Glimmer 0.79×, Qwen3.8 0.71×, Saluki
