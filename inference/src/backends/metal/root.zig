@@ -1086,11 +1086,18 @@ pub const Backend = struct {
         return self.matvecSegmentsImpl(segments, input, mode, splits);
     }
     fn matvecSegmentsImpl(self: *Backend, segments: []const Segment, input: Buffer, mode: SegmentMode, splits_override: ?usize) !void {
-        // Shape first, then availability: with Metal compiled out the early
-        // `MetalNotEnabled` return would otherwise make `InvalidShape`
-        // unreachable, and the adapter's switch on it would not compile in
-        // a CPU-only build.
+        // Shape and the decline first, then availability: with Metal compiled
+        // out the early `MetalNotEnabled` return would otherwise make
+        // `InvalidShape` and `MergeDeclined` unreachable, and the adapters'
+        // switch on them would not compile in a CPU-only build. The decline
+        // needs no validated shape: a declined merge's segments are validated
+        // by the standalone matvecs that run them.
         if (segments.len == 0 or segments.len > 4) return error.InvalidShape;
+        if (splits_override == null and !self.generic_only) for (segments) |s| {
+            if (s.matrix.rows == 0) continue;
+            const kernel = specializedMatvec(s.matrix.encoding, s.weights.offset, s.matrix.bytes.len / s.matrix.rows, input.offset) orelse continue;
+            if (mergeDeclined(kernel)) return error.MergeDeclined;
+        };
         if (!enabled) return error.MetalNotEnabled;
         const columns = segments[0].matrix.columns;
         if (columns == 0 or columns > std.math.maxInt(u32) / 4 or columns % 16 != 0 or input.len < columns * 4 or input.offset % 4 != 0) return error.InvalidShape;
@@ -1108,7 +1115,6 @@ pub const Backend = struct {
         // body* (neither the generic body nor the non-split encodings honour a
         // K range) and a free binding slot for the row partials.
         var all_split_capable = mode == .plain;
-        var declined = false;
         for (segments, 0..) |s, i| {
             const m = s.matrix;
             if (m.rows == 0 or m.rows > std.math.maxInt(u32) / 4 or m.rows % 16 != 0 or m.columns != columns or m.bytes.len % m.rows != 0) return error.InvalidShape;
@@ -1125,7 +1131,6 @@ pub const Backend = struct {
             const kernel = if (self.generic_only) null else specializedMatvec(m.encoding, s.weights.offset, stride, input.offset);
             const specialized = kernel != null;
             all_split_capable = all_split_capable and (if (kernel) |k| matvecSplitKernel(k) != null else false);
-            declined = declined or (if (kernel) |k| mergeDeclined(k) else false);
             p.segments[i] = .{
                 .rows = @intCast(m.rows),
                 .weight_slot = try segmentSlot(&bindings, &used, s.weights),
@@ -1153,7 +1158,6 @@ pub const Backend = struct {
             try self.dispatch(.segment_reduce_splits, &bindings, p, perElement(total_rows), 256, .{});
             return;
         }
-        if (declined) return error.MergeDeclined;
         const groups = if (mode == .plain) total_rows / 16 else p.segments[0].rows / 8;
         try self.dispatch(.matvec_segments, &bindings, p, groups, 128, .{ .rows = total_rows, .columns = p.columns, .bytes = bytes });
     }
