@@ -481,8 +481,8 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
         try draftRecoveryCheck(spec, alloc, io, if (backend) |*b| b else null, mapped.view(), binding, spec.draft.?);
         if (backend) |*b| try draftBatchCommitCheck(spec, alloc, b, mapped.view(), binding);
     } else std.debug.print("Draft block checks skipped: the file carries no embedded block.\n", .{});
-    try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 4, use_metal);
-    if (use_metal) try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 8, true);
+    try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 4, use_metal, boundsOf(spec, binding));
+    if (use_metal) try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 8, true, boundsOf(spec, binding));
     if (backend) |*b| try checkChunkedPrefill(spec, alloc, b, mapped.view(), binding, expected, actual, half_tiles_only);
 }
 
@@ -533,11 +533,11 @@ fn checkSnapshot(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
 /// rewind), and step the next token; the logits must match a second executor that consumed the same
 /// tokens one by one from scratch. Replay is the same sequential arithmetic on
 /// the CPU (bit-identical); on Metal the batch is chunked, so the family's
-/// chunk-versus-step tolerance applies and the difference is printed. Then the
+/// configuration's chunk-versus-step tolerance (`boundsOf`) applies and the difference is printed. Then the
 /// refusals: rewind without a checkpoint, truncate on a recurrent layout, a
 /// cancelled batch poisoning the session, and an over-capacity batch refused
 /// before any write.
-fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Allocator, io: std.Io, first: *Model, second: *Model, other: *Model, rows: usize, use_metal: bool) !void {
+fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Allocator, io: std.Io, first: *Model, second: *Model, other: *Model, rows: usize, use_metal: bool, bounds: Bounds) !void {
     const count = rows + 1;
     const capacity = first.state().capacity;
     const tokens = try alloc.alloc(u32, @max(count + 1, capacity + 1));
@@ -567,7 +567,7 @@ fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
         for (tokens[0 .. 1 + accepted]) |t| try second.step(t, null, null);
         try second.step(tokens[1 + accepted], b, null);
         if (use_metal) {
-            try compareRecovery(rows, b, a, spec.bounds.chunk_max_abs, spec.bounds.chunk_rel_rms);
+            try compareRecovery(rows, b, a, bounds.chunk_max_abs, bounds.chunk_rel_rms);
         } else if (!std.mem.eql(f32, a, b)) return error.RecoveryMismatch;
     }
     // A taped batch keeps its rows pending: a checkpoint is refused until a
