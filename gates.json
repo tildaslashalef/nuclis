@@ -165,7 +165,7 @@
     "site/**",
     "scripts/site-check.py",
     "README.md",
-    "CHANGELOG.md"
+    "build.zig.zon"
    ]
   }
  ],

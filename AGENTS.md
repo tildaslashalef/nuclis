@@ -290,7 +290,8 @@ stale references. Do not claim build/test execution when no code or build exists
 - The root `build.zig.zon` `.version` is the single source of truth, the
   last released version. The manifests under `inference/` and
   `huggingface/` carry the same version because the Zig package format
-  requires one; `make version V=X.Y.Z` sets all three. The executable
+  requires one; `make version V=X.Y.Z` sets all three and the site's
+  download (`make site-check` holds it equal). The executable
   reports it as `nuclis --version`, fed from the root manifest through
   build options.
 - [Semantic Versioning](https://semver.org/) with the 0.x convention: while

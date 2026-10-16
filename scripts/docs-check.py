@@ -6,7 +6,7 @@ tracked `*.md` files; each `docs/….md[#anchor]` path named in `*.json`,
 `*.py`, `*.zig`, `Makefile`, and `.github/`; each `blob/main/…` link in
 `site/`. Anchors follow GitHub's rule (lowercase, punctuation but `-` and
 `_` dropped, spaces to hyphens, `-1`, `-2` for repeats) plus explicit
-`<a id>`/`<a name>`. `CHANGELOG.md`'s links pin release tags and are skipped.
+`<a id>`/`<a name>`.
 
 Move (`--move old=new[,old=new…]`): `git mv` the files, then rewrite every
 reference above, re-relativizing Markdown links from each file's own
@@ -25,7 +25,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 REPO = "tildaslashalef/nuclis"
-SKIP = {"CHANGELOG.md"}
 # Files whose `docs/…` strings are this script's own test data.
 NO_REWRITE = {"scripts/docs-check.py"}
 # The plan names old paths on purpose; only its Markdown links follow a move.
@@ -239,7 +238,7 @@ FIXTURE_DOCS = {"tests/fixtures/provenance.md"}
 
 
 def is_markdown(path):
-    return path.endswith(".md") and path not in SKIP and ("/fixtures/" not in path or path in FIXTURE_DOCS)
+    return path.endswith(".md") and ("/fixtures/" not in path or path in FIXTURE_DOCS)
 
 
 def is_other_text(path):
