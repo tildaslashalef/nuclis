@@ -422,3 +422,77 @@ change cannot safely reinterpret.
 This is also why the resumable unit is the *entry*, not the event. A turn emits
 hundreds of `answer_delta` events and writes one `assistant` entry; the file
 records the turn, so a resume re-renders rather than replays keystrokes.
+
+## 11. The web tools: a host's search service, opt-in
+
+`web_search` and `web_fetch` are not the agent's own: they call a search
+service the user runs elsewhere, **holocron** on the home lab (a static Go
+binary in front of a self-hosted SearXNG; its repository's `SPEC.md` § 3 is
+the authoritative contract). nuclis knows only the service's base URL and the
+v1 contract below, and offers the tools only when the configuration says so.
+
+**Opt-in, per surface.** `web.url` names the service; `agent.web` offers the
+two tools to the agent, `serve.web` lets a chat request ask the server to run
+them ([configuration](../guide/configuration.md#web)). All three default to
+off, and with them off the agent's tool list and system prompt are the same
+bytes as without the feature: `tools.offered(false)` is the six tools, the
+guideline loop renders only offered tools, and `Agent.init` derives both from
+`Workspace.web` so they cannot disagree. A web call the model makes while the
+tools are off is "not a tool I have", which also covers a resumed session
+recorded with them on.
+
+**Why a separate host.** The fetcher reads URLs the model chooses, and a page
+it reads can tell the model which URL to choose next. On the Mac that fetcher
+would sit beside the workspace, the credentials, and the LAN. On a disposable
+guest it sits behind its own firewall and an address guard that refuses any
+non-public address at every redirect, and the hostile HTML is parsed there;
+nuclis receives bounded Markdown. The same separation lets the search backend
+change (a paid API, an offline index) without touching nuclis.
+
+**The contract nuclis relies on (v1).** `GET`, JSON, no authentication; nuclis
+sends `User-Agent: nuclis/<version>` and ignores fields it does not know.
+
+| Call | Answer |
+| --- | --- |
+| `/v1/search?q=&n=` | `{query, provider, results: [{title, url, snippet, engine, published}], engines_failed}`; `q` 1–400 bytes, `n` 1–10; no results while engines failed is `no_engines` |
+| `/v1/fetch?url=&start=&max_chars=` | `{url, final_url, status, content_type, title, text, start, chars, truncated}`; `http`/`https`, ports 80 and 443, at most 5 redirects and 5 MiB; `text` is Markdown with absolute links; `start` and `chars` count code points, and a `start` at or past `chars` returns empty text |
+| `/v1/health` | always `200`, `{version, providers: {<name>: ok \| down}}` |
+
+Errors are non-2xx with `{"error": {"code", "message"}}`: `bad_request`,
+`not_found`, `method_not_allowed`, `blocked_address`, `unsupported_content`,
+`upstream_failed`, `no_engines`, `busy`, `upstream_timeout`, `internal`. A code
+nuclis does not know is still a failure carrying the server's message.
+
+**What the model reads.** `src/web/tools.zig` holds the two definitions and
+their rendering, shared by the agent and the server. A search is a numbered
+list (`N. title — url`, the snippet under it) at most 8 long, with a note when
+engines failed. A fetch is the page's URL and title, its text 16,000 code points
+at a time, and a bracketed note in `read_file`'s form: the range, the length,
+and the `offset` that continues it. Every failure is one sentence naming its
+cause (`busy` reads "try again"); none ends the turn. Queries are checked
+(≤ 400 bytes) and URLs too (`http`/`https`, ≤ 2,048 bytes) before anything
+leaves the machine.
+
+**Waiting without freezing.** `src/web/client.zig` runs each request in a
+concurrent task and waits in 50 ms beats, a pattern `bash`'s polling loop
+already uses: each beat the agent reads keys and repaints, and Ctrl-C cancels
+the request (the task is joined before the call returns, so nothing it
+borrowed outlives it). Its own deadline (15 s search, 30 s fetch) sits above
+the service's budgets, so the service's `upstream_timeout` normally arrives
+first.
+
+**In the API.** A chat request lists `{"type": "web_search"}` or
+`{"type": "web_fetch"}` among its tools. The job intercepts those calls in its
+sink, so the client never sees them as `tool_calls`, runs them on the GPU worker
+while short decision and embedding items run in the waits, appends the
+assistant message and the results, and completes again, at most six rounds
+([api.md § Hosted web tools](../guide/api.md#hosted-web-tools)). The model's
+state carries over between rounds, as between an agent's steps.
+
+**What it costs in trust.** Queries and URLs leave the machine: the search
+engines see the queries, the sites see the fetches. The guideline tells the
+model never to put workspace code, paths, or secrets in a query, and the
+transcript (or the API's `nuclis_web_calls`) shows every query and URL. A
+fetched page can steer the model; its text is data, as the guideline says, and
+`bash` could already reach the web, so the tools add no capability, only a
+better one.
