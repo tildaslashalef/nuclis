@@ -28,18 +28,17 @@ default everywhere**: with no `web` configuration the agent offers the same
 six tools and renders the same system prompt, byte for byte, and `nuclis
 serve` refuses the web tool types.
 
-Next: the unit is done. Steps 1–9 were delivered against the stub
-(`scripts/search-gateway-stub.py`), including fixes for the two limits the
-first runs found (hosted results lost on the client's next request, failed
-calls tallied as done), and the live runs against holocron 0.1.0 passed
-(*Delivered so far*). What remains is the user's: review, then on their
-word the branch is pushed and the pull request opened. **The whole search work is this one unit and this one branch**
+Next: steps 10–16, `web_context` and what holocron 0.5.0 adds (*Second
+part* in the unit's section, agreed 2026-10-17). Steps 1–9 are delivered
+and tested live against holocron 0.1.0 (*Delivered so far*). Then the
+user reviews, and on their word the branch is pushed and the pull request
+opened. **The whole search work is this one unit and this one branch**
 (the user, 2026-10-16): no separate branches. The branch stays local
 until the user says to push it (AGENTS.md, changed on this branch).
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| The web tools, opt-in | `agent-web-tools` | done and tested live; push and pull request wait on the user |
+| The web tools, opt-in | `agent-web-tools` | steps 1–9 done and tested live; steps 10–16 (`web_context`) designed |
 
 ## The web tools, opt-in
 
@@ -216,6 +215,213 @@ changes.
 
 **Depends on.** holocron deployed, for the live runs only (deployed
 2026-10-16, version 0.1.0); steps 1–8 and the unit tests do not.
+
+### Second part: `web_context` and holocron 0.5.0 (agreed 2026-10-17)
+
+**Why.** holocron 0.3.0–0.5.0 put the Brave Search API in front of
+SearXNG (`brave,searxng`: SearXNG answers only when Brave cannot) and
+added `/v1/context`: for one query, passages Brave picked from several
+pages, bounded by a token budget. A probe of ten questions (six coding,
+four chat; 2026-10-16, 30 Brave requests) compared it with search and a
+fetch of the top hit:
+- `/v1/context` at `tokens=2048` held the answer every time, in 4.3–9.2K
+  characters (about 2K tokens), 1.1–1.4 s; 4096 doubled the sources (14–24
+  instead of 8–14) without adding an answer.
+- Search snippets (Brave, ~3K characters, 0.5 s) answer simple facts, but
+  missed what replaces Zig's `usingnamespace` (context carried a
+  before/after example), cut `--force-with-lease` mid-word, and were
+  ambiguous on the current Node.js LTS (context carried nodejs.org's
+  release table).
+- 2 of 10 top-hit fetches were refused (Stack Overflow, AP News: a
+  Cloudflare bot challenge); context had their text from Brave's index.
+- `urls=8` was not honoured: 8–24 sources came back (reported to the
+  holocron side).
+
+Brave is metered: about 1,000 free requests a month, US$5 per 1,000,
+capped at US$10 a month in its dashboard. Every uncached `/v1/search` and
+`/v1/context` is one; fetches and cache hits are free.
+
+**Decisions (user, 2026-10-17).** A third tool, `web_context(query)`,
+offered only when the service's health lists `/v1/context`; `web_search`
+and `web_fetch` stay as they are. Its budget is fixed: `tokens=2048`,
+`urls=8`, host constants. At most 6 uncached Brave calls per agent turn
+and per API request. `nuclis serve` exposes it as the hosted type
+`{"type": "web_context"}`. And from v0.5.0: `freshness` on search and
+context, `extra_snippets` under the top results, `altered_query` shown,
+the bot-challenge failure passed on.
+
+**The contract additions** (holocron `SPEC.md` § 3, v0.5.0; additive, so
+steps 1–9 work unchanged against it):
+- `/v1/context?q=&tokens=1024–16384&urls=1–20[&freshness=]` → `{query,
+  provider, sources: [{url, title, published, snippets: [string]}],
+  engines_failed}`; zero sources is a `200` with an empty list; 20 s
+  budget; `501 not_available` on a host without Brave; `400 bad_request`
+  also when Brave refuses a query (over 600 characters or 75 words).
+- `freshness` on `/v1/search` and `/v1/context`: `pd`, `pw`, `pm`, `py`, or
+  `YYYY-MM-DDtoYYYY-MM-DD`; anything else is `400`.
+- A search result gains `extra_snippets` (up to 5, each ≤ 500
+  characters, `[]` from SearXNG); a search answer gains `altered_query`
+  (the corrected query Brave searched, else `null`); `provider` and
+  `engine` may be `brave`.
+- `/v1/health` gains `endpoints` (lists `/v1/context` when Brave is on),
+  `billed`, `quota`, `cache`; `providers` may hold `brave` and `searxng`.
+- Answers carry `X-Holocron-Cache: hit|miss|stale` and `Age`; nuclis never
+  sends `Cache-Control: no-cache`.
+- A page behind a bot challenge is still `502 upstream_failed`, its
+  message now saying so ("…a bot challenge (Cloudflare) that only a
+  browser passes; try /v1/context, whose provider has the page's text").
+
+**Steps.**
+
+10. **The client** (`src/web/client.zig`).
+    - `Search` gains `altered_query: ?[]const u8 = null`; `Search.Result`
+      gains `extra_snippets: []const []const u8 = &.{}`. New `Context =
+      struct { query, provider, sources: []const Source, engines_failed }`,
+      `Source = struct { url, title = "", published: ?[]const u8 = null,
+      snippets: []const []const u8 = &.{} }`, every field defaulted where
+      the contract allows, parsed with `ignore_unknown_fields` as today.
+    - `Health` gains `endpoints: []const []const u8 = &.{}` and
+      `fn has(self, endpoint) bool`; `Health.ok` becomes true when **any**
+      provider is `ok` (with `brave,searxng` an exhausted Brave still
+      searches), which `nuclis serve`'s `web: ok | down` then reports.
+    - `pub const Freshness = enum { day, week, month, year }` with
+      `fn param(self) []const u8` → `pd`/`pw`/`pm`/`py`. Date ranges are
+      not exposed: the model would have to know today's date.
+    - `Service.search(gpa, query, count, freshness: ?Freshness, beat)`;
+      new `Service.context(gpa, query, freshness: ?Freshness, beat)` →
+      `GET /v1/context?q=&tokens=2048&urls=8[&freshness=]`, host constants
+      `context_tokens = 2048`, `context_urls = 8`, `context_timeout_ms =
+      25_000` (above the service's 20 s, so its own timeout error arrives
+      first).
+    - **The Brave allowance.** `exchange` reads `X-Holocron-Cache`; `Raw`
+      gains `cached: bool` (`hit` or `stale`; absent counts as a miss, so
+      the stub and older services count). `Service` gains `billed: u8`
+      and `pub fn beginTurn(self)` (resets it); `search` and `context`
+      first check `billed < max_billed_calls` (`= 6`, a host constant)
+      and otherwise answer a `Failure` with code `budget` and no request,
+      and after an answer that was not cached add one. `fetch` never
+      counts. One `Service` is used by one turn at a time in both
+      surfaces (the agent's loop; serve's GPU worker), so no lock.
+    - `Service.probe(gpa)`: `GET /v1/health` with
+      `probe_timeout_ms = 2_000`, setting `Service.context_offered:
+      bool` from `endpoints`; any failure leaves it false.
+11. **The tools** (`src/web/tools.zig`, one definition for both
+    surfaces).
+    - `web_context`: description "Passages from several web pages that
+      answer a question, each under its page's title and URL (about 2000
+      tokens in one call). Use it to answer a question from the web; use
+      web_search to find pages or links, and web_fetch to read one page
+      whole."; parameters `{query: string, freshness?: "day" | "week" |
+      "month" | "year"}`. `all` becomes `{ search, fetch, context }`
+      (`isWebTool` and `hostedDefinition` follow).
+    - `web_search` gains the same optional `freshness` (the description
+      adds "freshness limits results to the last day, week, month, or
+      year"). An unknown value is a failed result naming the four.
+    - `renderSearch`: when `altered_query` is set, a first line `searched
+      for "<altered>" (the service corrected the query)`; under each of the
+      first 3 results, at most 2 `extra_snippets`, indented like the
+      snippet (adds at most about 3,000 characters; later results show
+      the snippet only).
+    - `renderContext`: `N. title — url (published)` per source, its
+      snippets indented three spaces, blank line between sources; the
+      whole text bounded at `context_chars = 12_000` (about 3K tokens; the
+      2048-token budget comes in under 9,200 in the probe), cut at a
+      source boundary and marked `[N more sources not shown]`; summary `N
+      sources`; zero sources is a plain result: `no passages matched the
+      query`. `engines_failed`, when any, as in search.
+    - `failure`: code `budget` reads "the web search budget for this
+      turn (6 searches) is spent; answer from what you have, or web_fetch
+      a page already found"; `not_available` reads "web_context is
+      unavailable on the search service now; use web_search"; an
+      `upstream_failed` whose message contains `bot challenge` reads
+      "<host> is behind a bot challenge only a browser passes", adding
+      "; web_context may hold its text" when the service offers context
+      (holocron's `/v1/context` wording never reaches the model).
+12. **The agent** (`src/agent/tools/`, `src/agent/root.zig`,
+    `src/agent/loop.zig`, `src/agent/system_prompt.zig`).
+    - `src/agent/tools/web_context.zig`, thin like `web_search.zig`
+      (reusing its `Beat` and `adopt`); label `Reading the web` / display
+      `Context`, subject `query`.
+    - `offered(web: Web)` with `pub const Web = enum { off, search,
+      context }` (`search` = today's eight tools, `context` = nine);
+      `findOffered` and `toolDefs` take it; `Workspace.web` stays the
+      service, and the tier is read from `service.context_offered`.
+    - Setup (`src/agent/root.zig`, where `web_service` is made): call
+      `probe` once before the system prompt is built; the tier is fixed
+      for the session, so the primed prefix stays valid. A resumed
+      session's `web_context` call with no context offered answers
+      "unknown tool", as web calls do with web off.
+    - `loop.zig` calls `service.beginTurn()` at the start of each
+      `turn`.
+    - Guidelines (`guideline`, rendered only for offered tools):
+      `web_context` — "answer a question from the web in one call; pick
+      it or web_search for a question, not both, and keep the same
+      wording when you repeat a query. Cite the URLs you used."; the
+      `web_search` line gains "use freshness for recent events and
+      releases".
+    - **Pins:** web off renders today's prompt and six tools byte for
+      byte (the existing pin, unchanged); a new pin for `context` (nine
+      definitions, the `web_context` guideline); the `search` tier's
+      bytes change only by `freshness`.
+13. **The API** (`src/api/chat/wire.zig`, `service.zig`,
+    `src/api/root.zig`).
+    - `Hosted` gains `context: bool`; `{"type": "web_context"}` is
+      accepted with `serve.web` like the other two and refused without
+      it (`unsupported_feature`, naming `tools[i]`). It is not refused
+      when the service lacks the endpoint: a server runs for days and
+      Brave can come and go, so the call answers `not_available` as a
+      result and the model goes on.
+    - `Job.run` calls `service.beginTurn()` before its first round: the
+      6-call allowance is per request.
+    - `nuclis serve`'s start line names the three tools when the probe
+      finds `/v1/context`, two otherwise; health's `web` follows the new
+      `Health.ok`.
+    - The stash keeps `web_context` exchanges like the others.
+14. **The stub** (`scripts/search-gateway-stub.py`): `/v1/context` from
+    canned sources (zero sources for one query); `freshness` validated as
+    the contract says; `extra_snippets` on the first results;
+    `altered_query` for one misspelled query; `X-Holocron-Cache: miss`
+    on the first answer to a query and `hit` after; health with
+    `endpoints`; `--no-context` (no `/v1/context` in `endpoints`, and
+    `501 not_available` from it); a fetch of `https://challenged.example/`
+    answering the bot-challenge `upstream_failed`.
+15. **Documents.** `docs/app/agent.md` § 11: the client's copy of the
+    contract to v0.5.0, the three tools and when each is offered, the
+    allowance and why (the metered plan), the probe. `docs/guide/api.md`
+    § Hosted web tools: the third type, `freshness`, the allowance per
+    request, `not_available`. `docs/spec.md`: the decisions row and § 7.6
+    ("two web tools" → "up to three"). `docs/guide/configuration.md`: no
+    new key (every number is a host constant); the `web` paragraph says
+    `web_context` needs a service with Brave.
+16. **Evidence.**
+    - Unit tests (no network, the loopback `web.Fake`): the context URL
+      (`tokens=2048&urls=8&freshness=pw`); context, `extra_snippets`,
+      `altered_query`, and health `endpoints` parsed, unknown fields
+      ignored; `renderContext` (sources, published, zero sources, the
+      12,000 cut); `renderSearch` with extras (top 3, 2 each) and the
+      corrected query; `freshness` mapped and an unknown value refused;
+      the allowance (six misses, then `budget` without a request; hits
+      not counted; `beginTurn` resets; fetch never counts); the
+      bot-challenge and `not_available` renderings; `Health.ok` with one
+      provider down; the three offered tiers and their pins; `wire.zig`
+      accepting and refusing `web_context`.
+    - `make shot` against the stub: a `web_context` answer, a search with
+      `freshness`, the allowance spent (the seventh search refused), a
+      challenged fetch; then live against holocron: one context
+      question, one coding and one chat.
+    - `nuclis serve`: a hosted `web_context` round trip (whole and
+      streamed) and its follow-up through the stash; `--no-context` stub:
+      `not_available` as a result.
+    - `make agent-eval VARIANT=web-context` against the record of
+      `web-on` (the prompt and tools change only with web on; no task
+      calls a web tool, so it spends no Brave request), `--compare` in the
+      pull request.
+    - Brave spend: `billed` from health before and after the live runs,
+      in the record.
+
+**Gates.** As for steps 1–9: `zig build test`, `zig fmt --check`, `make
+lint-py`, `make docs-check`, `make verify-auto`, `make shot`, `make
+agent-eval`. Nothing in `inference/` changes, so no Metal or CPU tier.
 
 **Delivered so far** (2026-10-16, local commits only):
 - Steps 1–8 as designed, with two choices the design left open:
