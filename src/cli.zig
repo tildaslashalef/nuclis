@@ -1291,7 +1291,7 @@ test {
     _ = eval;
     _ = discover;
     _ = @import("interrupt.zig");
-    _ = @import("web/client.zig");
+    _ = @import("web/root.zig");
     _ = style;
     _ = completion;
     _ = decide;
