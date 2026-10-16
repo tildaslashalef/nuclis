@@ -27,16 +27,18 @@ default everywhere**: with no `web` configuration the agent offers the same
 six tools and renders the same system prompt, byte for byte, and `nuclis
 serve` refuses the web tool types.
 
-Next: steps 1–8 against the stub (`scripts/search-gateway-stub.py`),
-started 2026-10-16. holocron is specified, not implemented, and the VM is
-not deployed; when its connection details arrive, a quick test of the
-contract from the Mac, then the live runs of step 9. **The whole search work is this one unit and this one branch**
+Next: steps 1–8 are delivered against the stub
+(`scripts/search-gateway-stub.py`); the agent-eval comparison of step 9 is
+the last check. holocron is specified, not implemented, and the VM is not
+deployed: when its connection details arrive, a quick test of the
+contract from the Mac, the same `make shot` and `curl` runs against it,
+then the unit closes. **The whole search work is this one unit and this one branch**
 (the user, 2026-10-16): no separate branches. The branch stays local
 until the user says to push it (AGENTS.md, changed on this branch).
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| The web tools, opt-in | `agent-web-tools` | in progress, against the stub |
+| The web tools, opt-in | `agent-web-tools` | built against the stub; live runs wait on holocron |
 
 ## The web tools, opt-in
 
@@ -48,8 +50,8 @@ with egress, the guard against requests into the LAN, and HTML parsing on
 a disposable guest instead of the Mac.
 
 **Decisions (user, 2026-10-16).**
-- SearXNG plus a fetch gateway, both on one VM in the lab; the VM is the
-  artoo repository's, nuclis implements the client.
+- The service is holocron (its own repository) on a lab VM (artoo's);
+  nuclis implements only the client.
 - **Opt-in from the start**, per surface: the service's URL and each
   surface's switch are configuration, all off by default. Not a flag and
   not a default URL.
@@ -213,8 +215,30 @@ changes.
 **Depends on.** holocron deployed, for the live runs only; steps 1–8 and
 the unit tests do not.
 
-**Delivered so far.** The plan; AGENTS.md's push rule (pushing a branch
-and opening its pull request wait for the user's word).
+**Delivered so far** (2026-10-16, local commits only):
+- Steps 1–8 as designed, with two choices the design left open:
+  `web.url` accepts `http` on a loopback host (the stub) and `https`
+  elsewhere, one rule (`web.validBase`) for the configuration and the
+  client; the client is its own small `std.http.Client` wrapper
+  (`src/web/client.zig`), since `huggingface/src/http.zig` drops error
+  bodies and sets no `User-Agent`. The test server lives in
+  `src/web/fake.zig` and drains unanswered connections on `stop`, so a
+  failing test ends instead of hanging on a blocked `accept`.
+- A side fix the shot found: the transcript's step tally counted a web
+  call as a shell command; it now reads "searched the web N times",
+  "fetched N pages" (`src/tui/transcript.zig`).
+- AGENTS.md's push rule: pushing a branch and opening its pull request
+  wait for the user's word.
+- Evidence so far: `make verify-auto` passes (no model gate selected);
+  print mode against the stub (Saluki): search, fetch, answer from the
+  fetched page, `User-Agent: nuclis/0.7.0` seen by the stub; `make shot`
+  captures `web-turn`, `web-waiting`, `web-failures` (a LAN URL refused, a
+  slow fetch cancelled by Ctrl-C mid-wait); `nuclis serve` with `serve.web`:
+  a whole response (2 web calls in 3 rounds, 1,257 of 2,084 prompt tokens
+  reused), a stream (`nuclis_web_calls` chunks), a mixed step (the hosted
+  search ran, `save_note` returned with `finish_reason: "tool_calls"`),
+  and without `serve.web` the `unsupported_feature` refusal and
+  `web: off` in health.
 
 ## Deferred
 
