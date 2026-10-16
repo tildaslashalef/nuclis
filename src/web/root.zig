@@ -7,6 +7,11 @@ pub const tools = @import("tools.zig");
 pub const Service = client.Service;
 pub const Beat = client.Beat;
 pub const validBase = client.validBase;
+/// What every request names itself.
+pub const user_agent = "nuclis/" ++ @import("build_options").version;
+
+/// Test-only: the search service played from canned answers.
+pub const Fake = @import("fake.zig").Fake;
 
 test {
     _ = client;

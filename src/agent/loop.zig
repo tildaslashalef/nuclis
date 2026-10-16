@@ -238,9 +238,13 @@ pub const Agent = struct {
         };
         errdefer agent.thinking.deinit();
         errdefer agent.answer.deinit();
-        agent.system = try system_prompt.build(alloc, prompt);
+        // The workspace decides whether the web tools exist; the prompt's
+        // guidelines and the definitions follow it, so they cannot disagree.
+        var options = prompt;
+        options.web = workspace.web != null;
+        agent.system = try system_prompt.build(alloc, options);
         errdefer alloc.free(agent.system);
-        agent.tool_defs = try toolDefs(alloc);
+        agent.tool_defs = try toolDefs(alloc, options.web);
         return agent;
     }
 
@@ -798,7 +802,7 @@ pub const Agent = struct {
     /// Looks up a registered tool and runs it. An unknown name is a typed
     /// error result, not a failure (docs/spec.md § The loop).
     fn runTool(self: *Agent, call: Profile.ToolCall) Allocator.Error!tools.Result {
-        const tool = tools.find(call.name) orelse
+        const tool = tools.findOffered(self.workspace.web != null, call.name) orelse
             return tools.fail(self.alloc, "{s} is not a tool I have", .{call.name});
         if (try tools.checkArguments(self.alloc, tool, call.arguments)) |problem| return problem;
         return tool.run(self.workspace, self.alloc, call.arguments);
@@ -975,9 +979,10 @@ pub const Agent = struct {
 
 /// The tool definitions handed to the profile, in registry order. The names,
 /// descriptions, and schemas borrow the static registry; the slice is owned.
-fn toolDefs(alloc: Allocator) Allocator.Error![]Profile.ToolDefinition {
-    const defs = try alloc.alloc(Profile.ToolDefinition, tools.all.len);
-    for (tools.all, 0..) |tool, i| {
+fn toolDefs(alloc: Allocator, web_enabled: bool) Allocator.Error![]Profile.ToolDefinition {
+    const offered = tools.offered(web_enabled);
+    const defs = try alloc.alloc(Profile.ToolDefinition, offered.len);
+    for (offered, 0..) |tool, i| {
         defs[i] = .{ .name = tool.name, .description = tool.description, .parameters = tool.parameters };
     }
     return defs;
@@ -1174,6 +1179,53 @@ const Fixture = struct {
 const read_hello: Profile.ToolCall = .{ .id = 0, .name = "read_file", .arguments = "{\"path\":\"hello.txt\"}" };
 const read_a: Profile.ToolCall = .{ .id = 0, .name = "read_file", .arguments = "{\"path\":\"a.txt\"}" };
 const write_new: Profile.ToolCall = .{ .id = 0, .name = "write_file", .arguments = "{\"path\":\"new.txt\",\"content\":\"hello\"}" };
+
+const search_zig: Profile.ToolCall = .{ .id = 0, .name = "web_search", .arguments = "{\"query\":\"zig std.http\"}" };
+
+test "web off: no web definitions or guidelines, and a web call is not a tool" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var stub: Stub = .{ .answers = &.{ "Searching.\n", "I cannot search." }, .calls = &.{&.{search_zig}} };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+    try testing.expectEqual(@as(usize, 6), agent.tool_defs.len);
+    try testing.expect(std.mem.indexOf(u8, agent.system, "web_search") == null);
+    _ = try agent.turn("search the web", &.{});
+    try testing.expectEqual(Profile.Role.tool, agent.history.items[2].role);
+    try testing.expectEqualStrings("web_search is not a tool I have", agent.history.items[2].content);
+}
+
+test "web on: eight definitions, the web guidelines, and a search answered by the service" {
+    const alloc = testing.allocator;
+    const web = @import("../web/root.zig");
+    var fake: web.Fake = try .init(testing.io, &.{.{ .status = 200, .body =
+        \\{"query":"zig std.http","provider":"searxng","results":[{"title":"std.http.Client","url":"https://ziglang.org/std/","snippet":"An HTTP client.","engine":"brave","published":null}],"engines_failed":[]}
+    }});
+    var task = try testing.io.concurrent(web.Fake.serve, .{ &fake, testing.io });
+    defer fake.stop(testing.io, &task);
+    var buffer: [64]u8 = undefined;
+    var service: web.Service = .init(alloc, testing.io, fake.base(&buffer), "nuclis/test");
+    defer service.deinit();
+
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    fixture.ws.web = &service;
+    var stub: Stub = .{ .answers = &.{ "Searching.\n", "Found it." }, .calls = &.{&.{search_zig}} };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+    try testing.expectEqual(@as(usize, 8), agent.tool_defs.len);
+    try testing.expectEqualStrings("web_fetch", agent.tool_defs[7].name);
+    try testing.expect(std.mem.indexOf(u8, agent.system, "- web_search: search for the concept") != null);
+    try testing.expect(std.mem.indexOf(u8, agent.system, "- web_fetch: fetch a URL") != null);
+    _ = try agent.turn("how do I make an HTTP request in zig?", &.{});
+    try testing.expectEqualStrings("1. std.http.Client — https://ziglang.org/std/\n   An HTTP client.", agent.history.items[2].content);
+    try testing.expectEqualStrings("/v1/search?q=zig%20std.http&n=8", fake.target(0));
+}
 
 test "a steered message lands after the step's tool results; one left over is taken back" {
     const alloc = testing.allocator;
@@ -1589,7 +1641,7 @@ test "the tools block the profile renders is pinned to its measured size" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const defs = try toolDefs(a);
+    const defs = try toolDefs(a, false);
     const sys = try system_prompt.build(a, .{ .root = "/w" });
     const messages = [_]Profile.Message{
         .{ .role = .system, .content = sys },
@@ -1727,7 +1779,7 @@ test "the primed prefix is what the first turn's rendering starts with" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const defs = try toolDefs(a);
+    const defs = try toolDefs(a, false);
     const sys = try system_prompt.build(a, .{ .root = "/w" });
     inline for (.{ .off, .low, .xhigh }) |effort| {
         const head = try Profile.qwen38.prefix(a, &.{.{ .role = .system, .content = sys }}, defs, effort, .{});

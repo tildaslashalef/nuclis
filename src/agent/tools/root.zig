@@ -16,6 +16,9 @@ const grep = @import("grep.zig");
 pub const bash = @import("bash.zig");
 const write_file = @import("write_file.zig");
 const edit_file = @import("edit_file.zig");
+const web_search = @import("web_search.zig");
+const web_fetch = @import("web_fetch.zig");
+const web = @import("../../web/root.zig");
 
 pub const Allocator = std.mem.Allocator;
 
@@ -40,6 +43,9 @@ pub const Workspace = struct {
     environ: ?*const std.process.Environ.Map = null,
     /// Invoked by a polling tool while it runs. Null in print mode and tests.
     tick: ?Tick = null,
+    /// The search service behind the web tools; null unless the
+    /// configuration opts in (`agent.web`), and then the tools are offered.
+    web: ?*web.Service = null,
 
     /// Canonicalizes `path` and rejects anything outside the workspace. The
     /// caller owns the returned sentinel-terminated absolute path.
@@ -185,9 +191,25 @@ pub const Tool = struct {
 };
 
 pub const all = [_]Tool{ read_file.tool, glob.tool, grep.tool, write_file.tool, edit_file.tool, bash.tool };
+/// Offered after `all`, and only when the workspace has a search service.
+pub const web_tools = [_]Tool{ web_search.tool, web_fetch.tool };
+const with_web = all ++ web_tools;
 
+/// The tools the model is shown and may call, in registry order.
+pub fn offered(web_enabled: bool) []const Tool {
+    return if (web_enabled) &with_web else &all;
+}
+
+/// Any registered tool, offered or not: the transcript describes a resumed
+/// session's web calls even when the web tools are off.
 pub fn find(name: []const u8) ?Tool {
-    for (all) |tool| if (std.mem.eql(u8, tool.name, name)) return tool;
+    for (with_web) |tool| if (std.mem.eql(u8, tool.name, name)) return tool;
+    return null;
+}
+
+/// A tool the model may call now; a web tool when web is off is not one.
+pub fn findOffered(web_enabled: bool, name: []const u8) ?Tool {
+    for (offered(web_enabled)) |tool| if (std.mem.eql(u8, tool.name, name)) return tool;
     return null;
 }
 
@@ -304,6 +326,11 @@ test "the registry finds tools by name" {
     try std.testing.expect(find("edit_file") != null);
     try std.testing.expect(find("bash") != null);
     try std.testing.expect(find("nonexistent") == null);
+    try std.testing.expect(find("web_search") != null);
+    try std.testing.expect(findOffered(false, "web_search") == null);
+    try std.testing.expect(findOffered(true, "web_fetch") != null);
+    try std.testing.expectEqual(@as(usize, 6), offered(false).len);
+    try std.testing.expectEqual(@as(usize, 8), offered(true).len);
 }
 
 test "checkArguments names a missing or mistyped argument and passes a good call" {
@@ -327,7 +354,7 @@ test "checkArguments names a missing or mistyped argument and passes a good call
 
 test "every tool's subject is the first property of its schema" {
     const alloc = std.testing.allocator;
-    for (all) |tool| {
+    for (with_web) |tool| {
         const parsed = try std.json.parseFromSlice(std.json.Value, alloc, tool.parameters, .{});
         defer parsed.deinit();
         const properties = parsed.value.object.get("properties").?.object;
