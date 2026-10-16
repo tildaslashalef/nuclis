@@ -16,25 +16,27 @@ it is empty, ask what to work on and write the agreed plan here.
 
 Theme: **the agent and the API reach the web, opt-in.** Two tools,
 `web_search` and `web_fetch`, backed by a search service the user hosts
-on the home lab: SearXNG plus a Python/trafilatura gateway on a Kamino VM,
-designed and set up from the artoo repository
-(`docs/proposals/search-vm.md` there, with the hand setup in
-`docs/proposals/search-vm/`; drafted 2026-10-16, uncommitted for the
-user's review). nuclis depends only on the service's base URL and its v1
-contract; how the VM is built is not this repository's concern. **Off by
+on the home lab: **holocron**, a static Go binary in front of a
+self-hosted SearXNG, on a Kamino VM (its own private repository,
+`github.com/tildaslashalef/holocron`, whose `SPEC.md` § 3 is the
+contract; the VM, firewall, and hostname are artoo's
+`docs/proposals/search-gateway-vm.md`). nuclis depends only on the
+service's base URL, planned `https://search.apps.lab.nuclis.dev`, and its
+v1 contract; how the service is built is not this repository's concern. **Off by
 default everywhere**: with no `web` configuration the agent offers the same
 six tools and renders the same system prompt, byte for byte, and `nuclis
 serve` refuses the web tool types.
 
-Next: the user sets the VM up and gives the service URL; a quick test of
-the contract from the Mac (`acceptance.sh` in that directory); then step 1
-below. **The whole search work is this one unit and this one branch**
+Next: steps 1–8 against the stub (`scripts/search-gateway-stub.py`),
+started 2026-10-16. holocron is specified, not implemented, and the VM is
+not deployed; when its connection details arrive, a quick test of the
+contract from the Mac, then the live runs of step 9. **The whole search work is this one unit and this one branch**
 (the user, 2026-10-16): no separate branches. The branch stays local
 until the user says to push it (AGENTS.md, changed on this branch).
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| The web tools, opt-in | `agent-web-tools` | waiting on the VM; plan written |
+| The web tools, opt-in | `agent-web-tools` | in progress, against the stub |
 
 ## The web tools, opt-in
 
@@ -58,22 +60,26 @@ a disposable guest instead of the Mac.
   nuclis records the client's view in `docs/app/agent.md` (step 8) so this
   repository never needs an artoo checkout.
 
-**The contract nuclis relies on** (v1; authoritative copy: artoo
-`docs/proposals/search-vm.md` § 3). `GET`, HTTPS, JSON, no
-authentication; nuclis sends `User-Agent: nuclis/<version>`. Errors are
-non-2xx with `{"error": {"code", "message"}}`, codes `bad_request`,
-`blocked_address`, `unsupported_content`, `upstream_failed`, `no_engines`,
-`upstream_timeout`.
-- `/v1/search?q=&n=` → `{query, results: [{title, url, snippet, engine,
-  published}], engines_failed}`; `q` ≤ 400 bytes, `n` ≤ 10 (the server
-  clamps), title ≤ 200 and snippet ≤ 500 characters, 10 s budget; no
-  results while engines failed is `no_engines`.
+**The contract nuclis relies on** (v1; authoritative copy: holocron
+`SPEC.md` § 3). `GET`, HTTPS, JSON, no authentication; nuclis sends
+`User-Agent: nuclis/<version>`; fields nuclis does not know are ignored.
+Errors are non-2xx with `{"error": {"code", "message"}}`, codes
+`bad_request` 400, `not_found` 404, `method_not_allowed` 405,
+`blocked_address` 403, `unsupported_content` 415, `upstream_failed` 502,
+`no_engines` 503, `busy` 503, `upstream_timeout` 504, `internal` 500. A
+code nuclis does not know is still a failure with the server's message.
+- `/v1/search?q=&n=` → `{query, provider, results: [{title, url,
+  snippet, engine, published}], engines_failed}`; `q` 1–400 bytes, `n`
+  1–10 (default 8), title ≤ 200 and snippet ≤ 500 characters, 10 s
+  budget; no results while engines failed is `no_engines`.
 - `/v1/fetch?url=&start=&max_chars=` → `{url, final_url, status,
   content_type, title, text, start, chars, truncated}`; `http`/`https`
-  only, ports 80/443, ≤ 2,048 bytes, 5 redirects, 5 MiB raw, 20 s;
-  `text` is Markdown (links `[text](url)`), `max_chars` ≤ 100,000;
-  `start` and `chars` count code points.
-- `/v1/health` → `{version, searxng}`.
+  only, ports 80/443, ≤ 2,048 bytes, 5 redirects, 5 MiB after
+  decompression, 20 s for everything; `text` is Markdown with absolute
+  links, `max_chars` 1–100,000; `start` and `chars` count code points; a
+  `start` at or past `chars` returns empty text.
+- `/v1/health` → `200` always, `{version, providers: {searxng: ok |
+  down}}`.
 
 **Steps.**
 
@@ -112,7 +118,9 @@ non-2xx with `{"error": {"code", "message"}}`, codes `bad_request`,
      reads — the range, `chars`, and the `offset` to continue — like
      `read_file`'s.
    - Every contract error and transport failure (service down, off the
-     tailnet) renders as one sentence naming the cause.
+     tailnet) renders as one sentence naming the cause; `busy` reads as
+     "the search service is busy, try again"; an offset at or past the
+     end reads "offset N is past the end (C characters)", not empty text.
 3. **The agent's offered tools** (`src/agent/tools/root.zig`). `all`
    stays the six; `web = [_]Tool{ web_search.tool, web_fetch.tool }`
    (thin `src/agent/tools/web_search.zig` / `web_fetch.zig` over
@@ -155,12 +163,13 @@ non-2xx with `{"error": {"code", "message"}}`, codes `bad_request`,
    caller's history (accepted; the answer that used them is in it). The
    GPU is not held during a web call: the pass is released between
    rounds, so decision and embedding passes run then, as between a
-   generation's steps. `/v1/health` reports `web: off | ok | down`.
+   generation's steps. `/v1/health` reports `web: off | ok | down`, from
+the service's `providers` (`ok` when every provider is).
 6. **The agent's records.** Print mode `--json` and the session file
    carry web calls and results like any tool (`tool_call`,
    `tool_result` with its summary); a test pins the event shape.
-7. **The playground and the shot.** `scripts/web-stub.py` (standard
-   library, under `make lint-py`): a local server answering the contract
+7. **The playground and the shot.** `scripts/search-gateway-stub.py`
+   (the user's name; standard library, under `make lint-py`): a local server answering the contract
    from fixtures (the same JSON as the unit tests), for the screenshot
    harness and the API tests when the VM is out of reach.
 8. **Documents.** `docs/spec.md`: the decisions row "six fixed tools"
@@ -201,8 +210,8 @@ non-2xx with `{"error": {"code", "message"}}`, codes `bad_request`,
 `make agent-eval` as above. No Metal or CPU tier: nothing in `inference/`
 changes.
 
-**Depends on.** The service (artoo repository) for the live runs; steps
-1–8 and the unit tests do not.
+**Depends on.** holocron deployed, for the live runs only; steps 1–8 and
+the unit tests do not.
 
 **Delivered so far.** The plan; AGENTS.md's push rule (pushing a branch
 and opening its pull request wait for the user's word).
