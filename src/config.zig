@@ -25,6 +25,7 @@ const inference = @import("inference");
 const catalog = @import("catalog.zig");
 const style = @import("tui/style.zig");
 const tui_theme = @import("tui/theme.zig");
+const web = @import("web/client.zig");
 const Allocator = std.mem.Allocator;
 
 pub const ThemeName = tui_theme.Name;
@@ -646,19 +647,13 @@ fn validate(cfg: *const Config, diag: *Diagnostic) !void {
     }
 }
 
-/// `web.url` must be an `https` URL with a host and no credentials, query,
-/// or fragment; a surface switched on needs it.
+/// `web.url` follows `web.validBase` (https, or http on loopback for a local
+/// stand-in); a surface switched on needs it.
 fn validateWeb(cfg: *const Config, diag: *Diagnostic) !void {
-    if (cfg.web.url) |url| {
-        const uri = std.Uri.parse(url) catch {
-            diag.set("web.url is not a URL (found {s})", .{url});
-            return error.InvalidConfigValue;
-        };
-        if (!std.ascii.eqlIgnoreCase(uri.scheme, "https") or uri.host == null or uri.user != null or uri.password != null or uri.query != null or uri.fragment != null) {
-            diag.set("web.url must be an https URL with a host and no credentials, query, or fragment (found {s})", .{url});
-            return error.InvalidConfigValue;
-        }
-    }
+    if (cfg.web.url) |url| if (!web.validBase(url)) {
+        diag.set("web.url must be an https URL (http only on loopback) with a host and no credentials, query, or fragment (found {s})", .{url});
+        return error.InvalidConfigValue;
+    };
     if (cfg.web.url == null) {
         if (cfg.agent.web) {
             diag.set("agent.web is on but web.url names no search service", .{});
