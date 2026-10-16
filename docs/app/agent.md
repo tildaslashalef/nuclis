@@ -487,7 +487,11 @@ sink, so the client never sees them as `tool_calls`, runs them on the GPU worker
 while short decision and embedding items run in the waits, appends the
 assistant message and the results, and completes again, at most six rounds
 ([api.md § Hosted web tools](../guide/api.md#hosted-web-tools)). The model's
-state carries over between rounds, as between an agent's steps.
+state carries over between rounds, as between an agent's steps. Since the
+client's next request resends only the message it got back, the job keeps
+what the model saw in a bounded stash (`src/api/chat/stash.zig`) keyed by a
+digest of the client's conversation through that message, and puts it back
+when the message returns.
 
 **What it costs in trust.** Queries and URLs leave the machine: the search
 engines see the queries, the sites see the fetches. The guideline tells the

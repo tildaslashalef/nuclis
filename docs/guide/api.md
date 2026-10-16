@@ -578,9 +578,16 @@ the search service `web.url` names:
   the web tools, so it answers from what it has.
 - When a completion also calls one of the request's functions, its hosted
   calls run and the function calls are returned as usual
-  (`finish_reason: "tool_calls"`). The hosted results reached the model only
-  in this request: the conversation the client sends next does not carry
-  them.
+  (`finish_reason: "tool_calls"`).
+- The client never sees the hosted calls and results as messages, so the
+  conversation it sends next does not carry them. The server keeps them:
+  when a later request resends the assistant message a request returned (its
+  text and function calls; reasoning and call ids may differ, outer
+  whitespace too) after the same conversation, the hosted rounds are put back
+  in front of it, so the model reads the results again and the prompt
+  matches what it processed, which keeps its cached state usable. Kept are the last 64 such requests, up to 8 MiB, for an
+  hour; a restart, an edited message, or a conversation that no longer fits
+  the window with them gets the client's conversation as sent.
 - Every hosted call is reported in `message.nuclis_web_calls`, an extension
   OpenAI clients ignore: `name`, `arguments`, `summary` (`3 results`,
   `characters 0 to 642 of 642`, or the failure's sentence), and `is_error`.

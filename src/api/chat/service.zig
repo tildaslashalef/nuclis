@@ -21,6 +21,7 @@ const Pipe = @import("../pipe.zig").Pipe;
 const wire = @import("wire.zig");
 const language_mod = @import("model.zig");
 const web = @import("../../web/root.zig");
+const stash_mod = @import("stash.zig");
 
 const ApiError = errors.ApiError;
 const Profile = inference.profiles;
@@ -39,15 +40,18 @@ pub const Service = struct {
     /// The search service behind the hosted web tools; null unless
     /// `serve.web`, and then requests may ask for them. Borrowed.
     web: ?*web.Service = null,
+    /// The hosted exchanges kept for the clients' next requests; worker-only.
+    stash: stash_mod.Stash,
 
     /// `loaded` and `root` are borrowed for the service's lifetime.
     pub fn init(gpa: std.mem.Allocator, executor: *gpu.Executor, loaded: *const config.Loaded, root: ?[]const u8, timeout_ns: u64) Service {
-        return .{ .executor = executor, .language = .{ .gpa = gpa, .loaded = loaded, .root = root }, .timeout_ns = timeout_ns };
+        return .{ .executor = executor, .language = .{ .gpa = gpa, .loaded = loaded, .root = root }, .timeout_ns = timeout_ns, .stash = .{ .gpa = gpa } };
     }
 
     /// After the executor's worker stopped.
     pub fn deinit(self: *Service, io: std.Io) void {
         self.language.close(io);
+        self.stash.deinit();
     }
 
     pub fn register(self: *Service, gpa: std.mem.Allocator, router: *router_mod.Router, listing: *models.Models) !void {
@@ -239,14 +243,29 @@ const Job = struct {
     chunks: wire.ChunkWriter = undefined,
     scratch: std.heap.ArenaAllocator = undefined,
     /// Worker-only: this round's hosted calls (held back from the client),
-    /// its text for the assistant message that carries them, and the
-    /// client's calls; the usage over every round; the hosted calls run.
+    /// its text for the assistant message that carries them, every call in
+    /// order, and the client's calls; the usage over every round; the
+    /// hosted calls run; the text every round sent the client.
     hosted: std.ArrayList(Profile.ToolCall) = .empty,
     round_answer: std.ArrayList(u8) = .empty,
     round_reasoning: std.ArrayList(u8) = .empty,
+    round_calls: std.ArrayList(RoundCall) = .empty,
     client_calls: usize = 0,
     usage: wire.Usage = .{ .prompt = 0, .cached = 0, .completion = 0, .reasoning = 0 },
     web_calls: usize = 0,
+    answers: std.ArrayList(u8) = .empty,
+    /// Worker-only, with a stash: the conversation as the client sent it
+    /// and its digest, the exchanges put back into it, where this request's
+    /// own hosted rounds start, and the results of hosted calls that ran
+    /// beside the client's in the last round.
+    client_messages: []Profile.Message = &.{},
+    client_counts: []const usize = &.{},
+    chain: stash_mod.Chain = .{},
+    spliced: usize = 0,
+    exchange_start: usize = 0,
+    last_results: ?[]const []const u8 = null,
+
+    const RoundCall = struct { hosted: bool, name: []const u8, arguments: []const u8 };
 
     fn run(item: *gpu.Item, io: std.Io) gpu.Item.After {
         const self: *Job = @alignCast(@fieldParentPtr("item", item));
@@ -271,13 +290,18 @@ const Job = struct {
             self.emit(ChunkStart{});
         }
         const observer: inference.observer.Observer = .{ .context = self, .check = check, .progress = progress };
+        if (self.service.web != null) self.restore() catch {
+            self.fail(.init(.internal_server_error, "internal", "out of memory"));
+            return .done;
+        };
         var round: usize = 1;
         const ran = while (true) : (round += 1) {
             self.hosted.clearRetainingCapacity();
             self.round_answer.clearRetainingCapacity();
             self.round_reasoning.clearRetainingCapacity();
+            self.round_calls.clearRetainingCapacity();
             self.client_calls = 0;
-            const ran = language.run(io, self.arena, self.request, &sink, observer) catch |err| {
+            const ran = self.complete(&sink, observer, round) catch |err| {
                 self.fail(runFailure(self.arena, language, err));
                 return .done;
             };
@@ -289,8 +313,11 @@ const Job = struct {
                 return .done;
             };
             // The client's own calls end the request; the hosted results
-            // reached the model only through this response's report.
-            if (self.client_calls > 0) break ran;
+            // reach the model again through the stash.
+            if (self.client_calls > 0) {
+                self.last_results = results;
+                break ran;
+            }
             self.continueWith(results, round + 1 == max_web_rounds) catch {
                 self.fail(.init(.internal_server_error, "internal", "out of memory"));
                 return .done;
@@ -302,6 +329,8 @@ const Job = struct {
             return .done;
         }
         self.outcome = .{ .done = ran };
+        // Only a cache: a request whose exchange cannot be kept still answers.
+        if (self.web_calls > 0 and outcome.stop != .cancelled) self.record() catch {};
         const finish = wire.finishReason(outcome.stop, self.client_calls);
         const usage = self.usage;
         if (self.pipe != null and outcome.stop != .cancelled) self.emit(ChunkFinish{ .finish = finish, .usage = usage });
@@ -316,6 +345,47 @@ const Job = struct {
             if (self.web_calls > 0) self.arena.print(", {d} web call{s} in {d} round{s}", .{ self.web_calls, if (self.web_calls == 1) "" else "s", round, if (round == 1) "" else "s" }) catch "" else "",
         }) catch "";
         return .done;
+    }
+
+    /// The conversation with the stashed exchanges its assistant messages
+    /// match put back (stash.zig); the client's own is kept for `complete`.
+    fn restore(self: *Job) std.mem.Allocator.Error!void {
+        self.client_messages = self.request.messages;
+        self.client_counts = self.request.image_counts;
+        const restored = try stash_mod.restore(&self.service.stash, self.arena, &self.request, nowSeconds(self.io));
+        self.chain = restored.chain;
+        self.spliced = restored.spliced;
+        self.exchange_start = self.request.messages.len;
+    }
+
+    /// One completion. A first round that does not fit with the exchanges
+    /// put back runs again on the client's conversation alone: a splice
+    /// never fails a request that would succeed without it.
+    fn complete(self: *Job, sink: *completer_mod.Sink, observer: inference.observer.Observer, round: usize) !language_mod.Language.Ran {
+        const language = &self.service.language;
+        return language.run(self.io, self.arena, self.request, sink, observer) catch |err| {
+            const e: anyerror = err;
+            const overflowed = e == error.ContextFull or e == error.LimitExceeded or e == error.InvalidConversation;
+            if (round > 1 or self.spliced == 0 or !overflowed) return err;
+            self.request.messages = self.client_messages;
+            self.request.image_counts = self.client_counts;
+            self.spliced = 0;
+            self.exchange_start = self.client_messages.len;
+            return language.run(self.io, self.arena, self.request, sink, observer);
+        };
+    }
+
+    /// Stashes what the model saw beyond the client's conversation, keyed by
+    /// that conversation and the message the client received.
+    fn record(self: *Job) std.mem.Allocator.Error!void {
+        const kept = try keptExchange(self.arena, self.request.messages, self.exchange_start, .{
+            .calls = self.round_calls.items,
+            .answer = self.round_answer.items,
+            .reasoning = self.round_reasoning.items,
+            .results = self.last_results,
+        });
+        const reply: Profile.Message = .{ .role = .assistant, .content = try wire.validUtf8(self.arena, self.answers.items), .tool_calls = kept.client };
+        try stash_mod.record(&self.service.stash, self.arena, self.chain, reply, kept.exchange, nowSeconds(self.io));
     }
 
     /// Runs this round's hosted calls on the worker, reporting each as it
@@ -359,13 +429,20 @@ const Job = struct {
         const self: *Job = @ptrCast(@alignCast(context));
         switch (event) {
             .tool_call => |call| {
-                if (self.request.web.runs(call.name)) {
-                    try self.hosted.append(self.arena, .{ .id = 0, .name = try self.arena.dupe(u8, call.name), .arguments = try self.arena.dupe(u8, call.arguments) });
+                const hosted = self.request.web.runs(call.name);
+                const name = try self.arena.dupe(u8, call.name);
+                const arguments = try self.arena.dupe(u8, call.arguments);
+                try self.round_calls.append(self.arena, .{ .hosted = hosted, .name = name, .arguments = arguments });
+                if (hosted) {
+                    try self.hosted.append(self.arena, .{ .id = 0, .name = name, .arguments = arguments });
                     return;
                 }
                 self.client_calls += 1;
             },
-            .answer => |text| try self.round_answer.appendSlice(self.arena, text),
+            .answer => |text| {
+                try self.round_answer.appendSlice(self.arena, text);
+                try self.answers.appendSlice(self.arena, text);
+            },
             .thinking => |text| try self.round_reasoning.appendSlice(self.arena, text),
             else => {},
         }
@@ -506,17 +583,64 @@ const Job = struct {
     }
 };
 
+/// A request's last round, as `keptExchange` reads it.
+const LastRound = struct {
+    calls: []const Job.RoundCall,
+    answer: []const u8,
+    reasoning: []const u8,
+    /// The hosted calls' results when they ran beside the client's calls;
+    /// null when the round's hosted calls never ran.
+    results: ?[]const []const u8,
+};
+
+/// What a request's completions saw beyond the client's conversation: the
+/// hosted rounds `extendForHosted` appended to `messages` from `start` on,
+/// then the last round's assistant message (the client's calls with id 0)
+/// and the results of the hosted calls in it that ran. `client` is the
+/// client's calls as the response sent them.
+fn keptExchange(arena: std.mem.Allocator, messages: []const Profile.Message, start: usize, last: LastRound) std.mem.Allocator.Error!struct { exchange: []const Profile.Message, client: []const Profile.ToolCall } {
+    var exchange: std.ArrayList(Profile.Message) = .empty;
+    try exchange.appendSlice(arena, messages[start..]);
+    var next_id = nextId(messages);
+    var calls: std.ArrayList(Profile.ToolCall) = .empty;
+    var client: std.ArrayList(Profile.ToolCall) = .empty;
+    for (last.calls) |call| {
+        if (call.hosted and last.results == null) continue;
+        try calls.append(arena, .{ .id = if (call.hosted) next_id else 0, .name = call.name, .arguments = call.arguments });
+        if (call.hosted) next_id += 1 else try client.append(arena, .{ .id = 0, .name = try wire.validUtf8(arena, call.name), .arguments = try wire.validUtf8(arena, call.arguments) });
+    }
+    try exchange.append(arena, .{ .role = .assistant, .content = last.answer, .reasoning_content = last.reasoning, .tool_calls = calls.items });
+    if (last.results) |texts| {
+        var k: usize = 0;
+        for (calls.items) |call| if (call.id != 0) {
+            try exchange.append(arena, .{ .role = .tool, .content = texts[k], .tool_call_id = call.id });
+            k += 1;
+        };
+    }
+    return .{ .exchange = exchange.items, .client = client.items };
+}
+
+/// The first call id past every one `messages` uses.
+fn nextId(messages: []const Profile.Message) u32 {
+    var next_id: u32 = 1;
+    for (messages) |message| {
+        for (message.tool_calls) |call| next_id = @max(next_id, call.id + 1);
+        if (message.tool_call_id) |id| next_id = @max(next_id, id + 1);
+    }
+    return next_id;
+}
+
+fn nowSeconds(io: std.Io) i64 {
+    return std.Io.Clock.awake.now(io).toSeconds();
+}
+
 /// Extends `request` for the round after hosted calls: the round's
 /// assistant message carrying `hosted` (numbered past every id the
 /// conversation uses), then one tool message per result in `texts`. A
 /// `last` round runs without the hosted definitions.
 fn extendForHosted(arena: std.mem.Allocator, request: *wire.Request, hosted: []const Profile.ToolCall, answer: []const u8, reasoning: []const u8, texts: []const []const u8, last: bool) std.mem.Allocator.Error!void {
     const old = request.messages;
-    var next_id: u32 = 1;
-    for (old) |message| {
-        for (message.tool_calls) |call| next_id = @max(next_id, call.id + 1);
-        if (message.tool_call_id) |id| next_id = @max(next_id, id + 1);
-    }
+    const next_id = nextId(old);
     const calls = try arena.alloc(Profile.ToolCall, hosted.len);
     for (hosted, calls, 0..) |call, *numbered, i| numbered.* = .{ .id = next_id + @as(u32, @intCast(i)), .name = call.name, .arguments = call.arguments };
     const messages = try arena.alloc(Profile.Message, old.len + 1 + calls.len);
@@ -641,6 +765,7 @@ fn runFailure(arena: std.mem.Allocator, language: *language_mod.Language, err: a
 
 test {
     _ = wire;
+    _ = stash_mod;
 }
 
 test "a file the catalogue pins is found by its place in the models directory" {
@@ -685,4 +810,71 @@ test "a hosted round extends the conversation with its calls and results, number
     try std.testing.expectEqual(@as(u32, 3), request.messages[5].tool_calls[0].id);
     try std.testing.expectEqual(@as(usize, 1), request.tools.len);
     try std.testing.expectEqualStrings("read", request.tools[0].name);
+}
+
+test "a request's hosted rounds reach the client's next requests through the stash, turn after turn" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var stash: stash_mod.Stash = .{ .gpa = std.testing.allocator };
+    defer stash.deinit();
+    var problem: wire.Problem = .{};
+    const tools =
+        \\ "tools": [{"type": "web_search"}, {"type": "function", "function": {"name": "save_note"}}]}
+    ;
+
+    // Turn 1: a search round, then an answer.
+    var first = try wire.parseWith(arena, "{\"messages\": [{\"role\": \"user\", \"content\": \"What is Zig?\"}]," ++ tools, &problem, .{ .web = true });
+    const one = try stash_mod.restore(&stash, arena, &first, 0);
+    const start = first.messages.len;
+    const search = [_]Profile.ToolCall{.{ .id = 0, .name = "web_search", .arguments = "{\"query\":\"zig\"}" }};
+    try extendForHosted(arena, &first, &search, "Searching. ", "", &.{"1. Zig — https://ziglang.org/"}, false);
+    const answered = try keptExchange(arena, first.messages, start, .{ .calls = &.{}, .answer = "A language.", .reasoning = "", .results = null });
+    try std.testing.expectEqual(@as(usize, 3), answered.exchange.len);
+    try stash_mod.record(&stash, arena, one.chain, .{ .role = .assistant, .content = "Searching. A language." }, answered.exchange, 0);
+
+    // Turn 2 resends the answer: the search comes back. This round fetches
+    // and calls the client's save_note; a search queued last never ran.
+    var second = try wire.parseWith(arena,
+        \\{"messages": [{"role": "user", "content": "What is Zig?"},
+        \\  {"role": "assistant", "content": "Searching. A language."},
+        \\  {"role": "user", "content": "Save its homepage."}],
+    ++ tools, &problem, .{ .web = true });
+    const two = try stash_mod.restore(&stash, arena, &second, 1);
+    try std.testing.expectEqual(@as(usize, 1), two.spliced);
+    try std.testing.expectEqual(@as(usize, 5), second.messages.len);
+    const calls = [_]Job.RoundCall{
+        .{ .hosted = true, .name = "web_fetch", .arguments = "{\"url\":\"https://ziglang.org/\"}" },
+        .{ .hosted = false, .name = "save_note", .arguments = "{\"url\":\"https://ziglang.org/\"}" },
+    };
+    const mixed = try keptExchange(arena, second.messages, second.messages.len, .{ .calls = &calls, .answer = "", .reasoning = "", .results = &.{"# Zig"} });
+    try std.testing.expectEqual(@as(usize, 2), mixed.exchange.len);
+    try std.testing.expectEqual(@as(usize, 1), mixed.client.len);
+    try stash_mod.record(&stash, arena, two.chain, .{ .role = .assistant, .content = "", .tool_calls = mixed.client }, mixed.exchange, 1);
+
+    // Turn 3 resends both turns: both exchanges come back, ids apart.
+    var third = try wire.parseWith(arena,
+        \\{"messages": [{"role": "user", "content": "What is Zig?"},
+        \\  {"role": "assistant", "content": "Searching. A language."},
+        \\  {"role": "user", "content": "Save its homepage."},
+        \\  {"role": "assistant", "content": null, "tool_calls": [{"id": "call_n", "type": "function", "function": {"name": "save_note", "arguments": "{\"url\":\"https://ziglang.org/\"}"}}]},
+        \\  {"role": "tool", "tool_call_id": "call_n", "content": "saved"}],
+    ++ tools, &problem, .{ .web = true });
+    const three = try stash_mod.restore(&stash, arena, &third, 2);
+    try std.testing.expectEqual(@as(usize, 2), three.spliced);
+    const m = third.messages;
+    try std.testing.expectEqual(@as(usize, 8), m.len);
+    try std.testing.expectEqualStrings("web_search", m[1].tool_calls[0].name);
+    try std.testing.expectEqualStrings("A language.", m[3].content);
+    try std.testing.expectEqualStrings("web_fetch", m[5].tool_calls[0].name);
+    try std.testing.expectEqualStrings("# Zig", m[6].content);
+    try std.testing.expectEqualStrings("saved", m[7].content);
+    try std.testing.expectEqual(m[5].tool_calls[1].id, m[7].tool_call_id.?);
+    try Profile.validate(arena, m, third.tools, .{});
+
+    // A last round whose hosted calls never ran keeps only the client's.
+    const unran = try keptExchange(arena, second.messages, second.messages.len, .{ .calls = &calls, .answer = "", .reasoning = "", .results = null });
+    try std.testing.expectEqual(@as(usize, 1), unran.exchange.len);
+    try std.testing.expectEqual(@as(usize, 1), unran.exchange[0].tool_calls.len);
+    try std.testing.expectEqual(@as(u32, 0), unran.exchange[0].tool_calls[0].id);
 }

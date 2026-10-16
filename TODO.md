@@ -161,8 +161,9 @@ code nuclis does not know is still a failure with the server's message.
    `nuclis_web_calls: [{name, arguments, summary, is_error}]` (an
    extension field OpenAI clients ignore), streamed as chunks with
    `delta.nuclis_web_calls` as each runs. The caller's next request does
-   not resend them, so the model's cached state is reused only up to the
-   caller's history (accepted; the answer that used them is in it). The
+   not resend them; the server keeps each request's hosted exchange and
+   puts it back when the caller resends the message it returned (below,
+   *Delivered so far*). The
    GPU is not held during a web call: the pass is released between
    rounds, so decision and embedding passes run then, as between a
    generation's steps. `/v1/health` reports `web: off | ok | down`, from
