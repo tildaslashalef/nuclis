@@ -113,6 +113,7 @@ pub const Config = struct {
     decide: Decide = .{},
     embed: Embed = .{},
     serve: Serve = .{},
+    web: Web = .{},
     cache: Cache = .{},
     models: Models = .{},
 
@@ -161,6 +162,9 @@ pub const Config = struct {
         /// before the engine closes the reasoning itself; 0 for no cap. The
         /// other efforts are uncapped.
         thinking_budget: usize = default_thinking_budget,
+        /// Offer `web_search` and `web_fetch`, served by `web.url`. Off by
+        /// default: the tools and their guidelines are absent until set.
+        web: bool = false,
     };
     pub const Decide = struct {
         /// The decision checkpoint `nuclis decide` opens: a registry entry
@@ -188,6 +192,14 @@ pub const Config = struct {
         /// The memory every open model may hold together, decision and
         /// language alike; null is physical memory less 16 GiB.
         memory_bytes: ?u64 = null,
+        /// Run the hosted `web_search` and `web_fetch` tool types a request
+        /// asks for, against `web.url`; off refuses them.
+        web: bool = false,
+    };
+    /// The search service behind the web tools (docs/app/agent.md § 11).
+    pub const Web = struct {
+        /// The service's base URL, `https` only; null when there is none.
+        url: ?[]const u8 = null,
     };
     /// The agent's token cache (`completer/cache.zig`): model states kept at
     /// turn boundaries so a prefix is restored instead of prefilled again.
@@ -597,6 +609,7 @@ fn validate(cfg: *const Config, diag: *Diagnostic) !void {
     if (cfg.generation.image_max_tokens.count()) |n| try validateRange(n, "generation.image_max_tokens", max_image_tokens, diag);
     try validateBudget(cfg.agent.thinking_budget, "agent.thinking_budget", diag);
     try validateSampling(cfg.generation.sampling, "generation.sampling", diag);
+    try validateWeb(cfg, diag);
     for (cfg.models.entries) |named| {
         const e = named.entry;
         var buffer: [max_path_bytes]u8 = undefined;
@@ -630,6 +643,31 @@ fn validate(cfg: *const Config, diag: *Diagnostic) !void {
         if (e.agent.thinking_budget) |n| try validateBudget(n, std.fmt.bufPrint(&key_buffer, "{s}.agent.thinking_budget", .{prefix}) catch unreachable, diag);
         if (e.generation.image_max_tokens) |v| if (v.count()) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.generation.image_max_tokens", .{prefix}) catch unreachable, max_image_tokens, diag);
         try validateSampling(e.generation.sampling, std.fmt.bufPrint(&key_buffer, "{s}.generation.sampling", .{prefix}) catch unreachable, diag);
+    }
+}
+
+/// `web.url` must be an `https` URL with a host and no credentials, query,
+/// or fragment; a surface switched on needs it.
+fn validateWeb(cfg: *const Config, diag: *Diagnostic) !void {
+    if (cfg.web.url) |url| {
+        const uri = std.Uri.parse(url) catch {
+            diag.set("web.url is not a URL (found {s})", .{url});
+            return error.InvalidConfigValue;
+        };
+        if (!std.ascii.eqlIgnoreCase(uri.scheme, "https") or uri.host == null or uri.user != null or uri.password != null or uri.query != null or uri.fragment != null) {
+            diag.set("web.url must be an https URL with a host and no credentials, query, or fragment (found {s})", .{url});
+            return error.InvalidConfigValue;
+        }
+    }
+    if (cfg.web.url == null) {
+        if (cfg.agent.web) {
+            diag.set("agent.web is on but web.url names no search service", .{});
+            return error.InvalidConfigValue;
+        }
+        if (cfg.serve.web) {
+            diag.set("serve.web is on but web.url names no search service", .{});
+            return error.InvalidConfigValue;
+        }
     }
 }
 
@@ -691,6 +729,9 @@ pub const Resolved = struct {
     thinking_budget: usize,
     /// The agent's token cache budgets.
     cache: Config.Cache,
+    /// The search service the agent's web tools use; null unless
+    /// `agent.web` is on (which `validateWeb` ties to `web.url`).
+    web_url: ?[]const u8,
     /// The file the values came from; null when only defaults and flags applied.
     config_file: ?[]const u8,
     origin: Origin,
@@ -767,6 +808,7 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
         .instructions = cfg.agent.instructions,
         .thinking_budget = flags.thinking_budget orelse e.agent.thinking_budget orelse cfg.agent.thinking_budget,
         .cache = cfg.cache,
+        .web_url = if (cfg.agent.web) cfg.web.url else null,
         .config_file = if (loaded.found) loaded.path else null,
         .origin = loaded.origin,
         .command = command,
@@ -1231,10 +1273,11 @@ pub const Effective = struct {
     profile: Profile,
     engine: struct { model: []const u8, backend: Backend, ctx_size: usize, kv_precision: KvPrecision },
     generation: struct { max_tokens: usize, think: Effort, speculative: bool, draft_length: usize, image_max_tokens: ImageMaxTokens, sampling: inference.sampling.Options },
-    agent: struct { think: Effort, fold_thinking: bool, theme: ThemeName, instructions: []const u8, thinking_budget: usize },
+    agent: struct { think: Effort, fold_thinking: bool, theme: ThemeName, instructions: []const u8, thinking_budget: usize, web: bool },
     decide: Config.Decide,
     embed: Config.Embed,
     serve: Config.Serve,
+    web: Config.Web,
     cache: Config.Cache,
     origin: Origin,
 
@@ -1249,10 +1292,11 @@ pub const Effective = struct {
             .profile = gen.profile,
             .engine = .{ .model = gen.model, .backend = gen.backend, .ctx_size = gen.ctx_size, .kv_precision = gen.kv_precision },
             .generation = .{ .max_tokens = gen.max_tokens, .think = gen.think, .speculative = gen.speculative, .draft_length = gen.draft_length, .image_max_tokens = gen.image_max_tokens, .sampling = gen.samplingOptions() },
-            .agent = .{ .think = agent.think, .fold_thinking = agent.fold_thinking, .theme = agent.theme, .instructions = agent.instructions, .thinking_budget = agent.thinking_budget },
+            .agent = .{ .think = agent.think, .fold_thinking = agent.fold_thinking, .theme = agent.theme, .instructions = agent.instructions, .thinking_budget = agent.thinking_budget, .web = loaded.config.agent.web },
             .decide = loaded.config.decide,
             .embed = loaded.config.embed,
             .serve = loaded.config.serve,
+            .web = loaded.config.web,
             .cache = loaded.config.cache,
             .origin = origin,
         };
@@ -1363,6 +1407,7 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
     try walk(@TypeOf(view.decide), view.decide, "decide.", &rows);
     try walk(@TypeOf(view.embed), view.embed, "embed.", &rows);
     try walk(@TypeOf(view.serve), view.serve, "serve.", &rows);
+    try walk(@TypeOf(view.web), view.web, "web.", &rows);
     try walk(@TypeOf(view.cache), view.cache, "cache.", &rows);
     for (loaded.config.models.entries) |named| {
         var entry_rows: struct {
@@ -1530,6 +1575,12 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
         .{ .text = "{ \"schema_version\": 1, \"agent\": { \"theme\": \"solarized\" } }", .err = error.InvalidConfigValue, .needle = "agent.theme must be one of gruvbox-dark" },
         .{ .text = "{ \"schema_version\": 1, \"serve\": { \"port\": 70000 } }", .err = error.InvalidConfigValue, .needle = "serve.port must be an integer 0..65535" },
         .{ .text = "{ \"schema_version\": 1, \"serve\": { \"host\": \"\" } }", .err = error.InvalidConfigValue, .needle = "serve.host must not be empty" },
+        .{ .text = "{ \"schema_version\": 1, \"web\": { \"url\": \"http://search.example\" } }", .err = error.InvalidConfigValue, .needle = "web.url must be an https URL" },
+        .{ .text = "{ \"schema_version\": 1, \"web\": { \"url\": \"https://search.example/?key=1\" } }", .err = error.InvalidConfigValue, .needle = "web.url must be an https URL" },
+        .{ .text = "{ \"schema_version\": 1, \"web\": { \"url\": \"https://me:pw@search.example\" } }", .err = error.InvalidConfigValue, .needle = "web.url must be an https URL" },
+        .{ .text = "{ \"schema_version\": 1, \"web\": { \"url\": \"\" } }", .err = error.InvalidConfigValue, .needle = "web.url must not be empty" },
+        .{ .text = "{ \"schema_version\": 1, \"agent\": { \"web\": true } }", .err = error.InvalidConfigValue, .needle = "agent.web is on but web.url names no search service" },
+        .{ .text = "{ \"schema_version\": 1, \"serve\": { \"web\": true } }", .err = error.InvalidConfigValue, .needle = "serve.web is on but web.url names no search service" },
         // The registry: names, shape, unknown companion keys, ranges.
         .{ .text = "{ \"schema_version\": 1, \"models\": [] }", .err = error.InvalidConfigValue, .needle = "models must be an object" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": \"x.gguf\" } }", .err = error.InvalidConfigValue, .needle = "models.g must be an object" },
@@ -1570,6 +1621,22 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
     @memset(big, ' ');
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "big.json", .data = big });
     try std.testing.expectError(error.ConfigTooLarge, load(alloc, std.testing.io, tmp.dir, "big.json", &diag));
+}
+
+test "the web tools are off by default and on only with web.url and the surface's switch" {
+    const alloc = std.testing.allocator;
+    var diag: Diagnostic = .{};
+    var none = try fromText(alloc, "{ \"schema_version\": 1 }", "t.json", &diag);
+    defer none.deinit();
+    try std.testing.expect(resolve(&none, null, .{}, .agent).web_url == null);
+    try std.testing.expect(!none.config.serve.web);
+    var url_only = try fromText(alloc, "{ \"schema_version\": 1, \"web\": { \"url\": \"https://search.apps.lab.nuclis.dev\" } }", "t.json", &diag);
+    defer url_only.deinit();
+    try std.testing.expect(resolve(&url_only, null, .{}, .agent).web_url == null);
+    var on = try fromText(alloc, "{ \"schema_version\": 1, \"web\": { \"url\": \"https://search.apps.lab.nuclis.dev/\" }, \"agent\": { \"web\": true }, \"serve\": { \"web\": true } }", "t.json", &diag);
+    defer on.deinit();
+    try std.testing.expectEqualStrings("https://search.apps.lab.nuclis.dev/", resolve(&on, null, .{}, .agent).web_url.?);
+    try std.testing.expect(on.config.serve.web);
 }
 
 test "the reasoning budget applies at low only, and 0 turns it off" {
