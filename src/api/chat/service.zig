@@ -399,7 +399,10 @@ const Job = struct {
         const texts = try self.arena.alloc([]const u8, self.hosted.items.len);
         const beat: web.Beat = .{ .context = self, .call = webBeat };
         for (self.hosted.items, texts) |call, *text| {
-            const rendered = (try web.tools.run(service, self.arena, call.name, call.arguments, self.request.web.context, beat)).?;
+            const rendered: web.tools.Rendered = if (self.request.web.runs(call.name))
+                (try web.tools.run(service, self.arena, call.name, call.arguments, self.request.web.context, beat)).?
+            else
+                .{ .text = try self.arena.print("{s} is not a tool in this request; use the tools listed", .{call.name}), .is_error = true };
             text.* = rendered.text;
             const report: wire.Collector.WebCall = .{
                 .name = call.name,
@@ -432,7 +435,7 @@ const Job = struct {
         const self: *Job = @ptrCast(@alignCast(context));
         switch (event) {
             .tool_call => |call| {
-                const hosted = self.request.web.runs(call.name);
+                const hosted = wire.holds(self.request, call.name);
                 const name = try self.arena.dupe(u8, call.name);
                 const arguments = try self.arena.dupe(u8, call.arguments);
                 try self.round_calls.append(self.arena, .{ .hosted = hosted, .name = name, .arguments = arguments });

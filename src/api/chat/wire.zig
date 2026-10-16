@@ -41,6 +41,18 @@ pub const Request = struct {
     web: Hosted = .{},
 };
 
+/// Whether the server answers a call named `name` itself rather than
+/// returning it: a hosted tool the request enabled, or, in a request with
+/// hosted tools, another web tool it neither enabled nor defined as a
+/// function (one tool's description names the others), which the server
+/// refuses as a result so the model goes on.
+pub fn holds(request: Request, name: []const u8) bool {
+    if (request.web.runs(name)) return true;
+    if (!request.web.any() or !web.tools.isWebTool(name)) return false;
+    for (request.tools) |tool| if (std.mem.eql(u8, tool.name, name)) return false;
+    return true;
+}
+
 /// Which hosted web tools a request enabled.
 pub const Hosted = struct {
     search: bool = false,
@@ -983,12 +995,25 @@ test "the hosted web tools: accepted with serve.web, refused without it, and nev
     try std.testing.expectEqualStrings("tools[1]", problem.param.?);
     try std.testing.expect(std.mem.indexOf(u8, problem.message, "web_context tool is off on this server (serve.web)") != null);
 
+    // A web tool the request did not enable is the server's to refuse, unless
+    // the request defines a function of that name.
+    try std.testing.expect(holds(asked, "web_context"));
+    try std.testing.expect(holds(asked, "web_fetch"));
+    try std.testing.expect(!holds(asked, "lookup"));
+    const own_fetch = try parseWith(arena,
+        \\{"messages": [{"role": "user", "content": "hi"}],
+        \\ "tools": [{"type": "function", "function": {"name": "web_fetch"}}, {"type": "web_context"}]}
+    , &problem, .{ .web = true });
+    try std.testing.expect(!holds(own_fetch, "web_fetch"));
+
     // A function of that name alone is the client's own tool.
     const own = try parseWith(arena,
         \\{"messages": [{"role": "user", "content": "hi"}],
         \\ "tools": [{"type": "function", "function": {"name": "web_search"}}]}
     , &problem, .{ .web = true });
     try std.testing.expect(!own.web.any());
+    try std.testing.expect(!holds(own, "web_search"));
+    try std.testing.expect(!holds(own, "web_fetch"));
 }
 
 test "hosted calls are reported in nuclis_web_calls, whole and streamed" {

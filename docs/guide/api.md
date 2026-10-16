@@ -589,6 +589,11 @@ the search service `web.url` names:
   uncached `web_search` and `web_context` calls; a seventh answers that the
   budget is spent, without reaching the service. Answers the service had
   cached, and fetches, are free.
+- In a request with hosted tools, a call to a web tool the request did not
+  enable (and defines no function of that name) is not returned either:
+  `web_context`'s description names the other two, so the model may call
+  one, and the server answers it as a failed result, "not a tool in this
+  request", like the agent's "not a tool I have".
 - A completion whose calls are all hosted is not returned: the server runs
   them, appends the assistant message and one tool message per result, and
   completes again, up to six completions per request. The sixth runs without
