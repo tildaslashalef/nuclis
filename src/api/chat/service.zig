@@ -334,7 +334,7 @@ const Job = struct {
         const finish = wire.finishReason(outcome.stop, self.client_calls);
         const usage = self.usage;
         if (self.pipe != null and outcome.stop != .cancelled) self.emit(ChunkFinish{ .finish = finish, .usage = usage });
-        self.note = self.arena.print("{s} {s}: {d} prompt ({d} reused), {d} generated, {s}{s}{s}", .{
+        self.note = self.arena.print("{s} {s}: {d} prompt ({d} reused), {d} generated, {s}{s}{s}{s}", .{
             self.name,
             @tagName(ran.effort),
             usage.prompt,
@@ -343,6 +343,7 @@ const Job = struct {
             if (outcome.stop == .cancelled) "cancelled" else @tagName(finish),
             if (self.pipe != null) ", streamed" else "",
             if (self.web_calls > 0) self.arena.print(", {d} web call{s} in {d} round{s}", .{ self.web_calls, if (self.web_calls == 1) "" else "s", round, if (round == 1) "" else "s" }) catch "" else "",
+            if (self.spliced > 0) self.arena.print(", {d} web exchange{s} put back", .{ self.spliced, if (self.spliced == 1) "" else "s" }) catch "" else "",
         }) catch "";
         return .done;
     }

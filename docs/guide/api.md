@@ -585,16 +585,18 @@ the search service `web.url` names:
   text and function calls; reasoning and call ids may differ, outer
   whitespace too) after the same conversation, the hosted rounds are put back
   in front of it, so the model reads the results again and the prompt
-  matches what it processed, which keeps its cached state usable. Kept are the last 64 such requests, up to 8 MiB, for an
-  hour; a restart, an edited message, or a conversation that no longer fits
-  the window with them gets the client's conversation as sent.
+  matches what it processed, which keeps its cached state usable. Kept are
+  the last 64 such requests, up to 8 MiB, for an hour; a restart, an edited
+  message, or a conversation that no longer fits the window with them gets
+  the client's conversation as sent.
 - Every hosted call is reported in `message.nuclis_web_calls`, an extension
   OpenAI clients ignore: `name`, `arguments`, `summary` (`3 results`,
   `characters 0 to 642 of 642`, or the failure's sentence), and `is_error`.
   Streamed, each arrives as it finishes, a chunk whose `delta` carries
   `nuclis_web_calls` with an `index`.
 - The usage counts every completion; the log line adds `2 web calls in 3
-  rounds`. The model's state carries over between completions, so a round
+  rounds`, and `1 web exchange put back` when earlier hosted rounds were
+  restored. The model's state carries over between completions, so a round
   reuses the conversation before it (measured: 1,257 of 2,084 prompt tokens
   over three rounds, Saluki, against the stub, 2026-10-16).
 - A web call waits on the GPU worker; decision and embedding items queued
