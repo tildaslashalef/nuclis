@@ -292,7 +292,7 @@ class Handler(BaseHTTPRequestHandler):
             status, body = failure.status, {"error": {"code": failure.code, "message": failure.message}}
         self.answer(status, body, cache)
         shown = f" cache={cache}" if cache else ""
-        print(f"{path} {status}{shown} ua={self.headers.get('User-Agent', '-')}", file=sys.stderr, flush=True)
+        print(f"{self.path} {status}{shown} ua={self.headers.get('User-Agent', '-')}", file=sys.stderr, flush=True)
 
     def do_POST(self):
         self.answer(405, {"error": {"code": "method_not_allowed", "message": "only GET"}})
