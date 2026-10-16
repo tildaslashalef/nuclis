@@ -21,25 +21,25 @@ self-hosted SearXNG, on a Kamino VM (its own private repository,
 `github.com/tildaslashalef/holocron`, whose `SPEC.md` § 3 is the
 contract; the VM, firewall, and hostname are artoo's
 `docs/proposals/search-gateway-vm.md`). nuclis depends only on the
-service's base URL, planned `https://search.apps.lab.nuclis.dev`, and its
+service's base URL, `https://search.apps.lab.nuclis.dev` (LAN and
+tailnet only, never public), and its
 v1 contract; how the service is built is not this repository's concern. **Off by
 default everywhere**: with no `web` configuration the agent offers the same
 six tools and renders the same system prompt, byte for byte, and `nuclis
 serve` refuses the web tool types.
 
-Next: steps 1–9 are delivered against the stub
-(`scripts/search-gateway-stub.py`), including fixes for the two limits the first runs found
-(hosted results lost on the client's next request, failed calls tallied as
-done). holocron is specified, not implemented, and the VM is not
-deployed: when its connection details arrive, a quick test of the
-contract from the Mac, the same `make shot` and `curl` runs against it,
-then the unit closes. **The whole search work is this one unit and this one branch**
+Next: the unit is done. Steps 1–9 were delivered against the stub
+(`scripts/search-gateway-stub.py`), including fixes for the two limits the
+first runs found (hosted results lost on the client's next request, failed
+calls tallied as done), and the live runs against holocron 0.1.0 passed
+(*Delivered so far*). What remains is the user's: review, then on their
+word the branch is pushed and the pull request opened. **The whole search work is this one unit and this one branch**
 (the user, 2026-10-16): no separate branches. The branch stays local
 until the user says to push it (AGENTS.md, changed on this branch).
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| The web tools, opt-in | `agent-web-tools` | built against the stub; live runs wait on holocron |
+| The web tools, opt-in | `agent-web-tools` | done and tested live; push and pull request wait on the user |
 
 ## The web tools, opt-in
 
@@ -214,8 +214,8 @@ the service's `providers` (`ok` when every provider is).
 `make agent-eval` as above. No Metal or CPU tier: nothing in `inference/`
 changes.
 
-**Depends on.** holocron deployed, for the live runs only; steps 1–8 and
-the unit tests do not.
+**Depends on.** holocron deployed, for the live runs only (deployed
+2026-10-16, version 0.1.0); steps 1–8 and the unit tests do not.
 
 **Delivered so far** (2026-10-16, local commits only):
 - Steps 1–8 as designed, with two choices the design left open:
@@ -278,6 +278,34 @@ the unit tests do not.
   the agent's prompt nor its tools. `python3 scripts/agent-eval.py
   --compare web-off web-on` reproduces the table from
   `.zig-cache/agent-eval/`.
+- Live against holocron 0.1.0 (`https://search.apps.lab.nuclis.dev`, over
+  the LAN from the Mac; Saluki; 2026-10-16), with `web.url`, `agent.web`,
+  and `serve.web` in `~/.nuclis/nuclis.json` at the user's request:
+  - The contract from the Mac with `curl`: `/v1/health` 200 with
+    `searxng: ok`; a search (0.38 s, 3 results, `engines_failed` brave,
+    duckduckgo, wikipedia); a fetch of `https://ziglang.org/` (1,555
+    characters, title and Markdown text) and its `start=200` page; the
+    errors `blocked_address` 403 (192.168.1.1), `bad_request` 400 (an
+    `ftp` URL, an empty `q`), `upstream_failed` 502 (a 404 page),
+    `not_found` 404 (`/v1/nope`), `method_not_allowed` 405 (a `POST`).
+  - Print mode `--json`: a search (8 results, 4 engines failed;
+    ziglang.org third), a fetch of the homepage, an answer citing it.
+  - `make shot` captures `live-web-turn` (a search, the 0.15.1 release
+    notes fetched, then paged with `offset`: characters 0–16,000 and
+    16,000–32,000 of 69,310, two changes summarized) and
+    `live-web-failure` (a LAN URL refused as not public, a 404 page:
+    "2 calls failed").
+  - `nuclis serve`: `/v1/health` `web: ok`; an answer after one hosted
+    search, whose follow-up resending only the answer listed the search's
+    eight URLs (884 of 912 prompt tokens reused, `1 web exchange put
+    back`); the same with a streamed first request (891 of 919); a mixed
+    request (a hosted search, `save_note` returned with `finish_reason:
+    "tool_calls"`) whose follow-up listed the search's other results (972
+    of 1,012); and one `curl` request with both tool types, a hosted fetch
+    quoting the homepage's first heading.
+  - Search quality is holocron's: three or four of its engines reported
+    failed on every query, and a query for "the Zig homepage" ranked Docker
+    Hub pages first.
 
 ## Deferred
 
