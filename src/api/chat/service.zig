@@ -20,17 +20,25 @@ const completer_mod = @import("../../completer.zig");
 const Pipe = @import("../pipe.zig").Pipe;
 const wire = @import("wire.zig");
 const language_mod = @import("model.zig");
+const web = @import("../../web/root.zig");
 
 const ApiError = errors.ApiError;
+const Profile = inference.profiles;
 
 /// The route's body limit: eight base64 images fit.
 pub const max_body = 32 << 20;
+/// Completions one request may run to answer its hosted web calls; the last
+/// runs without the web tools, so it answers from what it has.
+pub const max_web_rounds = 6;
 
 pub const Service = struct {
     executor: *gpu.Executor,
     language: language_mod.Language,
     /// The wait for the GPU before a request starts; `serve.timeout`.
     timeout_ns: u64,
+    /// The search service behind the hosted web tools; null unless
+    /// `serve.web`, and then requests may ask for them. Borrowed.
+    web: ?*web.Service = null,
 
     /// `loaded` and `root` are borrowed for the service's lifetime.
     pub fn init(gpa: std.mem.Allocator, executor: *gpu.Executor, loaded: *const config.Loaded, root: ?[]const u8, timeout_ns: u64) Service {
@@ -60,7 +68,7 @@ pub const Service = struct {
         const self: *Service = @ptrCast(@alignCast(context));
         const deadline = std.Io.Clock.Timestamp.fromNow(io, .{ .raw = .fromNanoseconds(self.timeout_ns), .clock = .awake });
         var problem: wire.Problem = .{};
-        const parsed = wire.parse(arena, request.body, &problem) catch |err| return switch (err) {
+        const parsed = wire.parseWith(arena, request.body, &problem, .{ .web = self.web != null }) catch |err| return switch (err) {
             error.Refused => refuse(arena, .bad_request, problem.code, problem.message, problem.param),
             error.OutOfMemory => refuse(arena, .internal_server_error, "internal", "out of memory", null),
         };
@@ -230,6 +238,15 @@ const Job = struct {
     io: std.Io = undefined,
     chunks: wire.ChunkWriter = undefined,
     scratch: std.heap.ArenaAllocator = undefined,
+    /// Worker-only: this round's hosted calls (held back from the client),
+    /// its text for the assistant message that carries them, and the
+    /// client's calls; the usage over every round; the hosted calls run.
+    hosted: std.ArrayList(Profile.ToolCall) = .empty,
+    round_answer: std.ArrayList(u8) = .empty,
+    round_reasoning: std.ArrayList(u8) = .empty,
+    client_calls: usize = 0,
+    usage: wire.Usage = .{ .prompt = 0, .cached = 0, .completion = 0, .reasoning = 0 },
+    web_calls: usize = 0,
 
     fn run(item: *gpu.Item, io: std.Io) gpu.Item.After {
         const self: *Job = @alignCast(@fieldParentPtr("item", item));
@@ -248,15 +265,36 @@ const Job = struct {
             return .done;
         };
         self.name = self.arena.dupe(u8, language.name.?) catch "";
-        var sink: completer_mod.Sink = if (self.pipe != null) .{ .context = self, .call = streamEvent } else .{ .context = self, .call = collect };
+        var sink: completer_mod.Sink = .{ .context = self, .call = route };
         if (self.pipe != null) {
             self.chunks = .{ .id = self.id, .created = self.created, .model = self.name, .include_usage = self.request.include_usage };
             self.emit(ChunkStart{});
         }
         const observer: inference.observer.Observer = .{ .context = self, .check = check, .progress = progress };
-        const ran = language.run(io, self.arena, self.request, &sink, observer) catch |err| {
-            self.fail(runFailure(self.arena, language, err));
-            return .done;
+        var round: usize = 1;
+        const ran = while (true) : (round += 1) {
+            self.hosted.clearRetainingCapacity();
+            self.round_answer.clearRetainingCapacity();
+            self.round_reasoning.clearRetainingCapacity();
+            self.client_calls = 0;
+            const ran = language.run(io, self.arena, self.request, &sink, observer) catch |err| {
+                self.fail(runFailure(self.arena, language, err));
+                return .done;
+            };
+            const r = usageOf(ran);
+            self.usage = .{ .prompt = self.usage.prompt + r.prompt, .cached = self.usage.cached + r.cached, .completion = self.usage.completion + r.completion, .reasoning = self.usage.reasoning + r.reasoning };
+            if (ran.reply.outcome.stop != .eos or self.hosted.items.len == 0 or round == max_web_rounds) break ran;
+            const results = self.runHosted() catch {
+                self.fail(.init(.internal_server_error, "internal", "out of memory"));
+                return .done;
+            };
+            // The client's own calls end the request; the hosted results
+            // reached the model only through this response's report.
+            if (self.client_calls > 0) break ran;
+            self.continueWith(results, round + 1 == max_web_rounds) catch {
+                self.fail(.init(.internal_server_error, "internal", "out of memory"));
+                return .done;
+            };
         };
         const outcome = ran.reply.outcome;
         if (outcome.stop == .failure) {
@@ -264,10 +302,10 @@ const Job = struct {
             return .done;
         }
         self.outcome = .{ .done = ran };
-        const finish = wire.finishReason(outcome.stop, ran.calls);
-        const usage = usageOf(ran);
+        const finish = wire.finishReason(outcome.stop, self.client_calls);
+        const usage = self.usage;
         if (self.pipe != null and outcome.stop != .cancelled) self.emit(ChunkFinish{ .finish = finish, .usage = usage });
-        self.note = self.arena.print("{s} {s}: {d} prompt ({d} reused), {d} generated, {s}{s}", .{
+        self.note = self.arena.print("{s} {s}: {d} prompt ({d} reused), {d} generated, {s}{s}{s}", .{
             self.name,
             @tagName(ran.effort),
             usage.prompt,
@@ -275,8 +313,63 @@ const Job = struct {
             usage.completion,
             if (outcome.stop == .cancelled) "cancelled" else @tagName(finish),
             if (self.pipe != null) ", streamed" else "",
+            if (self.web_calls > 0) self.arena.print(", {d} web call{s} in {d} round{s}", .{ self.web_calls, if (self.web_calls == 1) "" else "s", round, if (round == 1) "" else "s" }) catch "" else "",
         }) catch "";
         return .done;
+    }
+
+    /// Runs this round's hosted calls on the worker, reporting each as it
+    /// finishes. The wait lets queued short GPU items run and stops for a
+    /// client that left. Returns the text each call's tool message carries.
+    fn runHosted(self: *Job) std.mem.Allocator.Error![]const []const u8 {
+        const service = self.service.web.?;
+        const texts = try self.arena.alloc([]const u8, self.hosted.items.len);
+        const beat: web.Beat = .{ .context = self, .call = webBeat };
+        for (self.hosted.items, texts) |call, *text| {
+            const rendered = (try web.tools.run(service, self.arena, call.name, call.arguments, beat)).?;
+            text.* = rendered.text;
+            const report: wire.Collector.WebCall = .{
+                .name = call.name,
+                .arguments = call.arguments,
+                .summary = if (rendered.is_error) rendered.text else rendered.summary orelse "",
+                .is_error = rendered.is_error,
+            };
+            if (self.pipe != null) self.emit(report) else try self.collected.web_calls.append(self.arena, report);
+            self.web_calls += 1;
+        }
+        return texts;
+    }
+
+    /// The conversation for the next round (`extendForHosted`).
+    fn continueWith(self: *Job, texts: []const []const u8, last: bool) std.mem.Allocator.Error!void {
+        try extendForHosted(self.arena, &self.request, self.hosted.items, self.round_answer.items, self.round_reasoning.items, texts, last);
+    }
+
+    /// The beat of a hosted call's wait, on the worker: short GPU items
+    /// queued meanwhile run now; a client that left cancels the call.
+    fn webBeat(context: *anyopaque) bool {
+        const self: *Job = @ptrCast(@alignCast(context));
+        self.service.executor.runShort(self.io);
+        return self.cancel.load(.acquire);
+    }
+
+    /// Every event of a round: a hosted call is held back to run here, any
+    /// other goes to the client, whole or streamed.
+    fn route(context: *anyopaque, event: inference.events.Event) anyerror!void {
+        const self: *Job = @ptrCast(@alignCast(context));
+        switch (event) {
+            .tool_call => |call| {
+                if (self.request.web.runs(call.name)) {
+                    try self.hosted.append(self.arena, .{ .id = 0, .name = try self.arena.dupe(u8, call.name), .arguments = try self.arena.dupe(u8, call.arguments) });
+                    return;
+                }
+                self.client_calls += 1;
+            },
+            .answer => |text| try self.round_answer.appendSlice(self.arena, text),
+            .thinking => |text| try self.round_reasoning.appendSlice(self.arena, text),
+            else => {},
+        }
+        if (self.pipe != null) self.emit(event) else try self.collected.send(event);
     }
 
     /// A failure: the response's error, or in a stream an error line.
@@ -301,22 +394,13 @@ const Job = struct {
             ChunkStart => self.chunks.start(&out.writer),
             ChunkFinish => self.chunks.finish(&out.writer, piece.finish, piece.usage),
             ApiError => wire.writeStreamError(&out.writer, piece),
+            wire.Collector.WebCall => self.chunks.webCall(&out.writer, scratch, piece),
             inference.events.Event => self.chunks.event(&out.writer, scratch, piece, if (piece == .tool_call) wire.newId(scratch, self.io, "call_") catch "call_0" else ""),
             else => @compileError("not a stream piece"),
         };
         encoded catch return;
         if (out.written().len == 0) return;
         self.pipe.?.write(self.io, out.written()) catch self.cancel.store(true, .release);
-    }
-
-    fn streamEvent(context: *anyopaque, event: inference.events.Event) anyerror!void {
-        const self: *Job = @ptrCast(@alignCast(context));
-        self.emit(event);
-    }
-
-    fn collect(context: *anyopaque, event: inference.events.Event) anyerror!void {
-        const self: *Job = @ptrCast(@alignCast(context));
-        try self.collected.send(event);
     }
 
     fn check(context: *anyopaque) anyerror!void {
@@ -422,6 +506,35 @@ const Job = struct {
     }
 };
 
+/// Extends `request` for the round after hosted calls: the round's
+/// assistant message carrying `hosted` (numbered past every id the
+/// conversation uses), then one tool message per result in `texts`. A
+/// `last` round runs without the hosted definitions.
+fn extendForHosted(arena: std.mem.Allocator, request: *wire.Request, hosted: []const Profile.ToolCall, answer: []const u8, reasoning: []const u8, texts: []const []const u8, last: bool) std.mem.Allocator.Error!void {
+    const old = request.messages;
+    var next_id: u32 = 1;
+    for (old) |message| {
+        for (message.tool_calls) |call| next_id = @max(next_id, call.id + 1);
+        if (message.tool_call_id) |id| next_id = @max(next_id, id + 1);
+    }
+    const calls = try arena.alloc(Profile.ToolCall, hosted.len);
+    for (hosted, calls, 0..) |call, *numbered, i| numbered.* = .{ .id = next_id + @as(u32, @intCast(i)), .name = call.name, .arguments = call.arguments };
+    const messages = try arena.alloc(Profile.Message, old.len + 1 + calls.len);
+    @memcpy(messages[0..old.len], old);
+    messages[old.len] = .{ .role = .assistant, .content = try arena.dupe(u8, answer), .reasoning_content = try arena.dupe(u8, reasoning), .tool_calls = calls };
+    for (calls, texts, messages[old.len + 1 ..]) |call, text, *message| message.* = .{ .role = .tool, .content = text, .tool_call_id = call.id };
+    const counts = try arena.alloc(usize, messages.len);
+    @memcpy(counts[0..old.len], request.image_counts);
+    @memset(counts[old.len..], 0);
+    request.messages = messages;
+    request.image_counts = counts;
+    if (last) {
+        var kept: std.ArrayList(Profile.ToolDefinition) = .empty;
+        for (request.tools) |tool| if (!request.web.runs(tool.name)) try kept.append(arena, tool);
+        request.tools = kept.items;
+    }
+}
+
 fn fromNow(io: std.Io, ms: i64) std.Io.Clock.Timestamp {
     return std.Io.Clock.Timestamp.fromNow(io, .{ .raw = .fromMilliseconds(ms), .clock = .awake });
 }
@@ -460,7 +573,7 @@ const Opening = struct {
 };
 
 fn respond(arena: std.mem.Allocator, io: std.Io, job: *const Job, ran: language_mod.Language.Ran) !http.Response {
-    const finish = wire.finishReason(ran.reply.outcome.stop, ran.calls);
+    const finish = wire.finishReason(ran.reply.outcome.stop, job.client_calls);
     const call_ids = try arena.alloc([]const u8, job.collected.calls.items.len);
     for (call_ids) |*id| id.* = try wire.newId(arena, io, "call_");
     var out: std.Io.Writer.Allocating = .init(arena);
@@ -469,7 +582,7 @@ fn respond(arena: std.mem.Allocator, io: std.Io, job: *const Job, ran: language_
         .created = job.created,
         .model = job.name,
         .finish = finish,
-        .usage = usageOf(ran),
+        .usage = job.usage,
         .call_ids = call_ids,
     });
     return .{ .body = out.written(), .note = job.note };
@@ -541,4 +654,35 @@ test "a file the catalogue pins is found by its place in the models directory" {
     try std.testing.expect(pinned(arena, "/r", companion) == null);
     try std.testing.expect(pinned(arena, "/r", "/elsewhere/x.gguf") == null);
     try std.testing.expect(pinned(arena, "/r", "/r/models/owner/repo/unknown.gguf") == null);
+}
+
+test "a hosted round extends the conversation with its calls and results, numbered past the client's" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var problem: wire.Problem = .{};
+    var request = try wire.parseWith(arena,
+        \\{"messages": [
+        \\  {"role": "user", "content": "look"},
+        \\  {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
+        \\  {"role": "tool", "tool_call_id": "c1", "content": "data"}],
+        \\ "tools": [{"type": "web_search"}, {"type": "function", "function": {"name": "read"}}]}
+    , &problem, .{ .web = true });
+    const hosted = [_]Profile.ToolCall{.{ .id = 0, .name = "web_search", .arguments = "{\"query\":\"zig\"}" }};
+    try extendForHosted(arena, &request, &hosted, "Searching.", "why", &.{"1. Zig — https://ziglang.org/"}, false);
+    try std.testing.expectEqual(@as(usize, 5), request.messages.len);
+    try std.testing.expectEqual(@as(usize, 5), request.image_counts.len);
+    const assistant = request.messages[3];
+    try std.testing.expectEqual(Profile.Role.assistant, assistant.role);
+    try std.testing.expectEqualStrings("Searching.", assistant.content);
+    try std.testing.expectEqualStrings("why", assistant.reasoning_content);
+    try std.testing.expectEqual(@as(u32, 2), assistant.tool_calls[0].id);
+    try std.testing.expectEqual(@as(?u32, 2), request.messages[4].tool_call_id);
+    try std.testing.expectEqualStrings("1. Zig — https://ziglang.org/", request.messages[4].content);
+    try std.testing.expectEqual(@as(usize, 2), request.tools.len);
+
+    try extendForHosted(arena, &request, &hosted, "", "", &.{"again"}, true);
+    try std.testing.expectEqual(@as(u32, 3), request.messages[5].tool_calls[0].id);
+    try std.testing.expectEqual(@as(usize, 1), request.tools.len);
+    try std.testing.expectEqualStrings("read", request.tools[0].name);
 }

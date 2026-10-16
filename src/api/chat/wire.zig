@@ -7,6 +7,7 @@ const std = @import("std");
 const inference = @import("inference");
 const data_url = @import("../../data_url.zig");
 const errors = @import("../errors.zig");
+const web = @import("../../web/root.zig");
 
 const Allocator = std.mem.Allocator;
 const Profile = inference.profiles;
@@ -34,6 +35,30 @@ pub const Request = struct {
     /// a last chunk carries the usage.
     stream: bool = false,
     include_usage: bool = false,
+    /// The hosted web tools the request asked for (`{"type": "web_search"}`);
+    /// their definitions are in `tools`, and the server runs their calls.
+    web: Hosted = .{},
+};
+
+/// Which hosted web tools a request enabled.
+pub const Hosted = struct {
+    search: bool = false,
+    fetch: bool = false,
+
+    pub fn any(self: Hosted) bool {
+        return self.search or self.fetch;
+    }
+
+    /// Whether a call named `name` is the server's to run.
+    pub fn runs(self: Hosted, name: []const u8) bool {
+        return (self.search and std.mem.eql(u8, name, web.tools.search.name)) or (self.fetch and std.mem.eql(u8, name, web.tools.fetch.name));
+    }
+};
+
+/// What the server offers beyond the request itself.
+pub const Options = struct {
+    /// `serve.web`: the hosted web tool types are accepted.
+    web: bool = false,
 };
 
 /// Why a request was refused: a 400 with this code, message, and field.
@@ -77,8 +102,13 @@ const Reader = struct {
     }
 };
 
-/// Reads `body`. `Refused` sets `problem`; every slice lives in `arena`.
+/// Reads `body` on a server with no hosted tools.
 pub fn parse(arena: Allocator, body: []const u8, problem: *Problem) Error!Request {
+    return parseWith(arena, body, problem, .{});
+}
+
+/// Reads `body`. `Refused` sets `problem`; every slice lives in `arena`.
+pub fn parseWith(arena: Allocator, body: []const u8, problem: *Problem, options: Options) Error!Request {
     var r: Reader = .{ .arena = arena, .problem = problem };
     const root = std.json.parseFromSliceLeaky(Value, arena, body, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -122,7 +152,7 @@ pub fn parse(arena: Allocator, body: []const u8, problem: *Problem) Error!Reques
         else => return r.invalid("tool_choice", "\"tool_choice\" is \"auto\" or \"none\"", .{}),
     } else .auto;
     if (o.get("tools")) |t| {
-        if (tool_choice == .auto) request.tools = try readTools(&r, t, limits.tools);
+        if (tool_choice == .auto) request.tools = try readTools(&r, t, limits.tools, options, &request.web);
     }
 
     if (o.get("reasoning_effort")) |e| switch (e) {
@@ -316,7 +346,7 @@ fn arguments(r: *Reader, value: Value, param: []const u8) Error![]const u8 {
     }
 }
 
-fn readTools(r: *Reader, value: Value, limit: usize) Error![]const Profile.ToolDefinition {
+fn readTools(r: *Reader, value: Value, limit: usize, options: Options, hosted: *Hosted) Error![]const Profile.ToolDefinition {
     const items = switch (value) {
         .null => return &.{},
         .array => |a| a.items,
@@ -328,8 +358,15 @@ fn readTools(r: *Reader, value: Value, limit: usize) Error![]const Profile.ToolD
         const param = try r.arena.print("tools[{d}]", .{i});
         if (item != .object) return r.invalid(param, "{s} must be an object", .{param});
         const kind = item.object.get("type") orelse .null;
+        if (kind == .string) if (hostedDefinition(kind.string)) |definition| {
+            if (!options.web)
+                return r.unsupported(param, "{s}: the hosted {s} tool is off on this server (serve.web)", .{ param, kind.string });
+            if (std.mem.eql(u8, kind.string, web.tools.search.name)) hosted.search = true else hosted.fetch = true;
+            tool.* = .{ .name = definition.name, .description = definition.description, .parameters = definition.parameters };
+            continue;
+        };
         if (kind != .string or !std.mem.eql(u8, kind.string, "function"))
-            return r.unsupported(param, "{s}: only \"function\" tools are supported", .{param});
+            return r.unsupported(param, "{s}: only \"function\" tools and the hosted web_search and web_fetch are supported", .{param});
         const function = switch (item.object.get("function") orelse .null) {
             .object => |f| f,
             else => return r.invalid(param, "{s}.function must be an object", .{param}),
@@ -350,7 +387,18 @@ fn readTools(r: *Reader, value: Value, limit: usize) Error![]const Profile.ToolD
         };
         tool.* = .{ .name = name, .description = description, .parameters = parameters };
     }
+    // A function of the same name would make the server's calls ambiguous.
+    for (items, tools, 0..) |item, tool, i| {
+        const kind = item.object.get("type").?;
+        if (std.mem.eql(u8, kind.string, "function") and hosted.runs(tool.name))
+            return r.invalid(try r.arena.print("tools[{d}]", .{i}), "tools[{d}]: a function named {s} clashes with the hosted tool of that name", .{ i, tool.name });
+    }
     return tools;
+}
+
+fn hostedDefinition(kind: []const u8) ?web.tools.Definition {
+    for (web.tools.all) |definition| if (std.mem.eql(u8, kind, definition.name)) return definition;
+    return null;
 }
 
 /// OpenAI's effort names onto the profile's: `none` is `off`, `minimal` is
@@ -398,8 +446,13 @@ pub const Collector = struct {
     reasoning: std.ArrayList(u8) = .empty,
     content: std.ArrayList(u8) = .empty,
     calls: std.ArrayList(Call) = .empty,
+    /// The hosted calls the server ran, in order.
+    web_calls: std.ArrayList(WebCall) = .empty,
 
     pub const Call = struct { name: []const u8, arguments: []const u8 };
+    /// A hosted call as the response reports it; `summary` is the tool's
+    /// one line (`8 results`), or the failure's text.
+    pub const WebCall = struct { name: []const u8, arguments: []const u8, summary: []const u8, is_error: bool };
 
     pub fn send(self: *Collector, event: inference.events.Event) Allocator.Error!void {
         switch (event) {
@@ -491,6 +544,12 @@ pub fn writeResponse(out: *std.Io.Writer, arena: Allocator, collected: *const Co
         }
         try s.endArray();
     }
+    if (collected.web_calls.items.len > 0) {
+        try s.objectField("nuclis_web_calls");
+        try s.beginArray();
+        for (collected.web_calls.items) |call| try writeWebCall(&s, arena, call, null);
+        try s.endArray();
+    }
     try s.endObject();
     try s.objectField("logprobs");
     try s.write(null);
@@ -504,6 +563,24 @@ pub fn writeResponse(out: *std.Io.Writer, arena: Allocator, collected: *const Co
     try out.writeByte('\n');
 }
 
+/// A hosted call in `nuclis_web_calls`; a streamed one carries its index.
+fn writeWebCall(s: *std.json.Stringify, arena: Allocator, call: Collector.WebCall, index: ?usize) !void {
+    try s.beginObject();
+    if (index) |i| {
+        try s.objectField("index");
+        try s.write(i);
+    }
+    try s.objectField("name");
+    try s.write(try validUtf8(arena, call.name));
+    try s.objectField("arguments");
+    try s.write(try validUtf8(arena, call.arguments));
+    try s.objectField("summary");
+    try s.write(try validUtf8(arena, call.summary));
+    try s.objectField("is_error");
+    try s.write(call.is_error);
+    try s.endObject();
+}
+
 /// One streamed completion as server-sent events: `chat.completion.chunk`
 /// objects on `data:` lines, then `data: [DONE]`. Text arrives token by
 /// token, so a code point split across tokens is held back until its last
@@ -514,6 +591,7 @@ pub const ChunkWriter = struct {
     model: []const u8,
     include_usage: bool,
     calls: usize = 0,
+    web_calls: usize = 0,
     reasoning: Carry = .{},
     content: Carry = .{},
 
@@ -560,6 +638,18 @@ pub const ChunkWriter = struct {
             },
             .tool_progress, .tool_cut, .stop => {},
         }
+    }
+
+    /// A hosted call the server ran: a chunk whose delta carries it in
+    /// `nuclis_web_calls`, which OpenAI clients ignore.
+    pub fn webCall(self: *ChunkWriter, out: *std.Io.Writer, scratch: Allocator, call: Collector.WebCall) !void {
+        var s = try self.begin(out);
+        try s.objectField("nuclis_web_calls");
+        try s.beginArray();
+        try writeWebCall(&s, scratch, call, self.web_calls);
+        try s.endArray();
+        try end(&s, out, null);
+        self.web_calls += 1;
     }
 
     /// The last chunks: whatever text was held back, the finish reason,
@@ -838,6 +928,70 @@ test "refusals name their code and field" {
         if (case.param) |p| try testing.expectEqualStrings(p, problem.param.?) else try testing.expect(problem.param == null);
         try testing.expect(problem.message.len > 0);
     }
+}
+
+test "the hosted web tools: accepted with serve.web, refused without it, and never beside a function of their name" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const body =
+        \\{"messages": [{"role": "user", "content": "hi"}],
+        \\ "tools": [{"type": "web_search"}, {"type": "web_fetch"}, {"type": "function", "function": {"name": "lookup"}}]}
+    ;
+    var problem: Problem = .{};
+    const request = try parseWith(arena, body, &problem, .{ .web = true });
+    try std.testing.expect(request.web.search and request.web.fetch);
+    try std.testing.expectEqual(@as(usize, 3), request.tools.len);
+    try std.testing.expectEqualStrings("web_search", request.tools[0].name);
+    try std.testing.expectEqualStrings(web.tools.fetch.parameters, request.tools[1].parameters);
+    try std.testing.expect(request.web.runs("web_fetch"));
+    try std.testing.expect(!request.web.runs("lookup"));
+
+    try std.testing.expectError(error.Refused, parse(arena, body, &problem));
+    try std.testing.expectEqualStrings("unsupported_feature", problem.code);
+    try std.testing.expectEqualStrings("tools[0]", problem.param.?);
+    try std.testing.expect(std.mem.indexOf(u8, problem.message, "serve.web") != null);
+
+    try std.testing.expectError(error.Refused, parseWith(arena,
+        \\{"messages": [{"role": "user", "content": "hi"}],
+        \\ "tools": [{"type": "web_search"}, {"type": "function", "function": {"name": "web_search"}}]}
+    , &problem, .{ .web = true }));
+    try std.testing.expect(std.mem.indexOf(u8, problem.message, "clashes with the hosted tool") != null);
+
+    // A function of that name alone is the client's own tool.
+    const own = try parseWith(arena,
+        \\{"messages": [{"role": "user", "content": "hi"}],
+        \\ "tools": [{"type": "function", "function": {"name": "web_search"}}]}
+    , &problem, .{ .web = true });
+    try std.testing.expect(!own.web.any());
+}
+
+test "hosted calls are reported in nuclis_web_calls, whole and streamed" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var collected: Collector = .{ .arena = arena };
+    try collected.send(.{ .answer = "Zig 0.17 is current." });
+    try collected.web_calls.append(arena, .{ .name = "web_search", .arguments = "{\"query\":\"zig release\"}", .summary = "8 results", .is_error = false });
+    var out: std.Io.Writer.Allocating = .init(arena);
+    try writeResponse(&out.writer, arena, &collected, .{ .id = "chatcmpl-x", .created = 1, .model = "m", .finish = .stop, .usage = .{ .prompt = 1, .cached = 0, .completion = 1, .reasoning = 0 }, .call_ids = &.{} });
+    const parsed = try std.json.parseFromSliceLeaky(Value, arena, out.written(), .{});
+    const message = parsed.object.get("choices").?.array.items[0].object.get("message").?.object;
+    const call = message.get("nuclis_web_calls").?.array.items[0].object;
+    try std.testing.expectEqualStrings("web_search", call.get("name").?.string);
+    try std.testing.expectEqualStrings("8 results", call.get("summary").?.string);
+    try std.testing.expect(!call.get("is_error").?.bool);
+    try std.testing.expect(message.get("tool_calls") == null);
+
+    var chunks: ChunkWriter = .{ .id = "chatcmpl-x", .created = 1, .model = "m", .include_usage = false };
+    var stream: std.Io.Writer.Allocating = .init(arena);
+    try chunks.webCall(&stream.writer, arena, .{ .name = "web_fetch", .arguments = "{}", .summary = "web_fetch: url is empty", .is_error = true });
+    const line = std.mem.trimEnd(u8, stream.written()["data: ".len..], "\n");
+    const chunk = try std.json.parseFromSliceLeaky(Value, arena, line, .{});
+    const delta = chunk.object.get("choices").?.array.items[0].object.get("delta").?.object;
+    const streamed = delta.get("nuclis_web_calls").?.array.items[0].object;
+    try std.testing.expectEqual(@as(i64, 0), streamed.get("index").?.integer);
+    try std.testing.expect(streamed.get("is_error").?.bool);
 }
 
 test "efforts by OpenAI's names and the profile's" {

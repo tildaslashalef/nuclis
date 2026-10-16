@@ -23,6 +23,7 @@ const memory = @import("memory.zig");
 const log_mod = @import("log.zig");
 const batcher = @import("decisions/batcher.zig");
 const interrupt = @import("../interrupt.zig");
+const web = @import("../web/root.zig");
 
 /// Host constants; a client never chooses them.
 pub const limits = struct {
@@ -186,8 +187,9 @@ const Server = struct {
         const language = self.chat.language.openName(io, arena) catch null;
         const embedding = self.embeddings.pool.openName(io, arena) catch null;
         const resident = self.memory.snapshot(io, arena) catch &.{};
+        const web_state = webState(self.chat.web, arena);
         var out: std.Io.Writer.Allocating = .init(arena);
-        writeHealth(&out.writer, self.version, self.backend, open, language, embedding, .{ .limit = self.memory.limit, .models = resident }, stats, batching, self.embeddings.batcher.stats(io), self.active.load(.monotonic)) catch
+        writeHealth(&out.writer, self.version, self.backend, open, language, embedding, web_state, .{ .limit = self.memory.limit, .models = resident }, stats, batching, self.embeddings.batcher.stats(io), self.active.load(.monotonic)) catch
             return .fromError(arena, .init(.internal_server_error, "internal", "out of memory"));
         return .{ .body = out.written() };
     }
@@ -241,7 +243,20 @@ const Server = struct {
 
 const Memory = struct { limit: u64, models: []const memory.Budget.Model };
 
-fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, language: ?[]const u8, embedding: ?[]const u8, budget: Memory, stats: gpu.Stats, batching: batcher.Stats, embedding_batching: embedding_batcher.Stats, connections: u32) !void {
+/// The hosted web tools as health reports them: `off` without `serve.web`,
+/// else `ok` when the search service and every provider answer, `down`
+/// otherwise (its own health call, at most 5 s).
+fn webState(service: ?*web.Service, arena: std.mem.Allocator) []const u8 {
+    const s = service orelse return "off";
+    var reply = s.health(arena, null) catch return "down";
+    defer reply.deinit();
+    return switch (reply.outcome) {
+        .ok => |h| if (h.ok()) "ok" else "down",
+        .failed => "down",
+    };
+}
+
+fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, language: ?[]const u8, embedding: ?[]const u8, web_state: []const u8, budget: Memory, stats: gpu.Stats, batching: batcher.Stats, embedding_batching: embedding_batcher.Stats, connections: u32) !void {
     var s: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
     try s.objectField("status");
@@ -256,6 +271,8 @@ fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.deci
     try s.write(language);
     try s.objectField("embedding");
     try s.write(embedding);
+    try s.objectField("web");
+    try s.write(web_state);
     try s.objectField("memory");
     try s.beginObject();
     try s.objectField("limit");
@@ -355,6 +372,10 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     server.decisions.timeout_ns = @as(u64, options.timeout) * std.time.ns_per_s;
     server.decisions.bind();
     server.embeddings.bind();
+    // The hosted web tools exist only when the configuration opts in (`serve.web`).
+    var web_service: ?web.Service = if (context.loaded.config.serve.web) .init(gpa, io, context.loaded.config.web.url.?, web.user_agent) else null;
+    defer if (web_service) |*service| service.deinit();
+    if (web_service) |*service| server.chat.web = service;
     defer server.deinit();
     try server.register();
 
@@ -405,6 +426,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     defer listener.deinit(io);
     if (!isLoopback(listen_address))
         try out.print("{s}warning:{s} listening beyond this machine ({s}); the API has no authentication\n", .{ sty.on(.warning), sty.off(), options.host });
+    if (web_service) |*service| try out.print("{s}web tools:{s} web_search and web_fetch run here for requests that ask, through {s}\n", .{ sty.on(.label), sty.off(), service.base });
     try out.print("{s}nuclis serve{s} listening on {s}http://{f}/v1{s} {s}(backend {s}, default model {s}, models within {d:.1} GiB{s}; Ctrl-C stops){s}\n", .{ sty.on(.header), sty.off(), sty.on(.code), listen_address, sty.off(), sty.on(.dim), @tagName(backend), context.default_model, @as(f64, @floatFromInt(server.memory.limit)) / (1 << 30), if (options.log) "" else ", quiet", sty.off() });
     try out.flush();
 
@@ -507,7 +529,7 @@ test "serve arguments" {
 test "health reports the queue and the open models" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, "qwen3.8-27b", "embeddinggemma-2", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60 }, .{ .kind = .decision, .name = "laya", .bytes = 10 } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, .{ .waiting = 1, .passes = 4, .jobs = 2 }, 3);
+    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, "qwen3.8-27b", "embeddinggemma-2", "off", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60 }, .{ .kind = .decision, .name = "laya", .bytes = 10 } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, .{ .waiting = 1, .passes = 4, .jobs = 2 }, 3);
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("cpu", parsed.value.object.get("backend").?.string);
@@ -517,5 +539,6 @@ test "health reports the queue and the open models" {
     try std.testing.expectEqual(@as(i64, 70), parsed.value.object.get("memory").?.object.get("resident").?.integer);
     try std.testing.expectEqual(@as(i64, 5), parsed.value.object.get("decisions").?.object.get("waiting").?.integer);
     try std.testing.expectEqualStrings("embeddinggemma-2", parsed.value.object.get("embedding").?.string);
+    try std.testing.expectEqualStrings("off", parsed.value.object.get("web").?.string);
     try std.testing.expectEqual(@as(i64, 4), parsed.value.object.get("embeddings").?.object.get("passes").?.integer);
 }
