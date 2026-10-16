@@ -151,7 +151,11 @@ pub fn run(
     // The web tools exist only when the configuration opts in (`agent.web`).
     var web_service: ?web.Service = if (settings.web_url) |url| .init(alloc, io, url, web.user_agent) else null;
     defer if (web_service) |*service| service.deinit();
-    if (web_service) |*service| workspace.web = service;
+    if (web_service) |*service| {
+        // Once, before the prompt is built: the tier is fixed for the session.
+        try service.probe(alloc);
+        workspace.web = service;
+    }
     var instructions = try loop.system_prompt.load(alloc, io, .cwd(), settings.instructions);
     defer if (instructions) |*ins| ins.deinit(alloc);
     const override: ?[]u8 = if (options.system_prompt) |path| try engine.readPrompt(alloc, io, null, path) else null;

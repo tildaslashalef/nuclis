@@ -18,5 +18,5 @@ pub const tool: root.Tool = .{
 fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u8) std.mem.Allocator.Error!root.Result {
     const service = workspace.web orelse return root.fail(alloc, "web_fetch: no search service is configured", .{});
     var beat = web_search.Beat{ .workspace = workspace };
-    return web_search.adopt(try web.tools.runFetch(service, alloc, arguments, beat.seam()));
+    return web_search.adopt(try web.tools.runFetch(service, alloc, arguments, service.context_offered, beat.seam()));
 }

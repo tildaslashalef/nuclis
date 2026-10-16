@@ -244,8 +244,8 @@ const Server = struct {
 const Memory = struct { limit: u64, models: []const memory.Budget.Model };
 
 /// The hosted web tools as health reports them: `off` without `serve.web`,
-/// else `ok` when the search service and every provider answer, `down`
-/// otherwise (its own health call, at most 5 s).
+/// else `ok` when the search service answers and any provider is `ok`,
+/// `down` otherwise (its own health call, at most 5 s).
 fn webState(service: ?*web.Service, arena: std.mem.Allocator) []const u8 {
     const s = service orelse return "off";
     var reply = s.health(arena, null) catch return "down";
@@ -375,7 +375,12 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     // The hosted web tools exist only when the configuration opts in (`serve.web`).
     var web_service: ?web.Service = if (context.loaded.config.serve.web) .init(gpa, io, context.loaded.config.web.url.?, web.user_agent) else null;
     defer if (web_service) |*service| service.deinit();
-    if (web_service) |*service| server.chat.web = service;
+    if (web_service) |*service| {
+        // For the start line only: requests may ask for web_context either
+        // way, and a service without it answers `not_available`.
+        try service.probe(gpa);
+        server.chat.web = service;
+    }
     defer server.deinit();
     try server.register();
 
@@ -426,7 +431,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     defer listener.deinit(io);
     if (!isLoopback(listen_address))
         try out.print("{s}warning:{s} listening beyond this machine ({s}); the API has no authentication\n", .{ sty.on(.warning), sty.off(), options.host });
-    if (web_service) |*service| try out.print("{s}web tools:{s} web_search and web_fetch run here for requests that ask, through {s}\n", .{ sty.on(.label), sty.off(), service.base });
+    if (web_service) |*service| try out.print("{s}web tools:{s} {s} run here for requests that ask, through {s}\n", .{ sty.on(.label), sty.off(), if (service.context_offered) "web_search, web_fetch, and web_context" else "web_search and web_fetch", service.base });
     try out.print("{s}nuclis serve{s} listening on {s}http://{f}/v1{s} {s}(backend {s}, default model {s}, models within {d:.1} GiB{s}; Ctrl-C stops){s}\n", .{ sty.on(.header), sty.off(), sty.on(.code), listen_address, sty.off(), sty.on(.dim), @tagName(backend), context.default_model, @as(f64, @floatFromInt(server.memory.limit)) / (1 << 30), if (options.log) "" else ", quiet", sty.off() });
     try out.flush();
 

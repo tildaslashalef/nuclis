@@ -9,17 +9,21 @@ const Io = std.Io;
 /// took by connecting itself (a blocked `accept` does not wake on
 /// cancellation), so a failing test ends instead of hanging.
 pub const Fake = struct {
-    pub const Answer = struct { status: u16, body: []const u8, delay_ms: u64 = 0 };
+    /// `cache`, when set, is sent as `X-Holocron-Cache`.
+    pub const Answer = struct { status: u16, body: []const u8, delay_ms: u64 = 0, cache: ?[]const u8 = null };
 
     server: std.Io.net.Server,
     answers: []const Answer,
-    targets: [4][256]u8 = undefined,
-    target_lens: [4]usize = @splat(0),
+    targets: [max_answers][256]u8 = undefined,
+    target_lens: [max_answers]usize = @splat(0),
     agent: [64]u8 = undefined,
     agent_len: usize = 0,
     served: std.atomic.Value(usize) = .init(0),
 
+    pub const max_answers = 12;
+
     pub fn init(io: Io, answers: []const Answer) !Fake {
+        std.debug.assert(answers.len <= max_answers);
         const address = try std.Io.net.IpAddress.parseIp4("127.0.0.1", 0);
         return .{ .server = try address.listen(io, .{ .reuse_address = true }), .answers = answers };
     }
@@ -76,7 +80,9 @@ pub const Fake = struct {
         if (answer.delay_ms > 0) try io.sleep(.fromMilliseconds(@intCast(answer.delay_ms)), .awake);
         var write_buffer: [1024]u8 = undefined;
         var writer = std.Io.net.Stream.Writer.init(stream, io, &write_buffer);
-        try writer.interface.print("HTTP/1.1 {d} Answer\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ answer.status, answer.body.len, answer.body });
+        try writer.interface.print("HTTP/1.1 {d} Answer\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n", .{ answer.status, answer.body.len });
+        if (answer.cache) |cache| try writer.interface.print("X-Holocron-Cache: {s}\r\n", .{cache});
+        try writer.interface.print("\r\n{s}", .{answer.body});
         try writer.interface.flush();
     }
 };

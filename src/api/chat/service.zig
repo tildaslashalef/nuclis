@@ -294,6 +294,8 @@ const Job = struct {
             self.fail(.init(.internal_server_error, "internal", "out of memory"));
             return .done;
         };
+        // The metered searches are allowed per request.
+        if (self.service.web) |service| service.beginTurn();
         var round: usize = 1;
         const ran = while (true) : (round += 1) {
             self.hosted.clearRetainingCapacity();
@@ -397,7 +399,7 @@ const Job = struct {
         const texts = try self.arena.alloc([]const u8, self.hosted.items.len);
         const beat: web.Beat = .{ .context = self, .call = webBeat };
         for (self.hosted.items, texts) |call, *text| {
-            const rendered = (try web.tools.run(service, self.arena, call.name, call.arguments, beat)).?;
+            const rendered = (try web.tools.run(service, self.arena, call.name, call.arguments, self.request.web.context, beat)).?;
             text.* = rendered.text;
             const report: wire.Collector.WebCall = .{
                 .name = call.name,

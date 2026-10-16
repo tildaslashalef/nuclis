@@ -163,8 +163,9 @@ pub const Config = struct {
         /// before the engine closes the reasoning itself; 0 for no cap. The
         /// other efforts are uncapped.
         thinking_budget: usize = default_thinking_budget,
-        /// Offer `web_search` and `web_fetch`, served by `web.url`. Off by
-        /// default: the tools and their guidelines are absent until set.
+        /// Offer `web_search` and `web_fetch`, and `web_context` when the
+        /// service answers it, served by `web.url`. Off by default: the
+        /// tools and their guidelines are absent until set.
         web: bool = false,
     };
     pub const Decide = struct {
@@ -193,8 +194,8 @@ pub const Config = struct {
         /// The memory every open model may hold together, decision and
         /// language alike; null is physical memory less 16 GiB.
         memory_bytes: ?u64 = null,
-        /// Run the hosted `web_search` and `web_fetch` tool types a request
-        /// asks for, against `web.url`; off refuses them.
+        /// Run the hosted `web_search`, `web_fetch`, and `web_context` tool
+        /// types a request asks for, against `web.url`; off refuses them.
         web: bool = false,
     };
     /// The search service behind the web tools (docs/app/agent.md § 11).

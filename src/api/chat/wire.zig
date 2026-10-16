@@ -35,7 +35,8 @@ pub const Request = struct {
     /// a last chunk carries the usage.
     stream: bool = false,
     include_usage: bool = false,
-    /// The hosted web tools the request asked for (`{"type": "web_search"}`);
+    /// The hosted web tools the request asked for (`{"type": "web_search"}`,
+    /// `web_fetch`, `web_context`);
     /// their definitions are in `tools`, and the server runs their calls.
     web: Hosted = .{},
 };
@@ -44,14 +45,23 @@ pub const Request = struct {
 pub const Hosted = struct {
     search: bool = false,
     fetch: bool = false,
+    context: bool = false,
 
     pub fn any(self: Hosted) bool {
-        return self.search or self.fetch;
+        return self.search or self.fetch or self.context;
     }
 
     /// Whether a call named `name` is the server's to run.
     pub fn runs(self: Hosted, name: []const u8) bool {
-        return (self.search and std.mem.eql(u8, name, web.tools.search.name)) or (self.fetch and std.mem.eql(u8, name, web.tools.fetch.name));
+        return (self.search and std.mem.eql(u8, name, web.tools.search.name)) or
+            (self.fetch and std.mem.eql(u8, name, web.tools.fetch.name)) or
+            (self.context and std.mem.eql(u8, name, web.tools.context.name));
+    }
+
+    fn enable(self: *Hosted, name: []const u8) void {
+        if (std.mem.eql(u8, name, web.tools.search.name)) self.search = true;
+        if (std.mem.eql(u8, name, web.tools.fetch.name)) self.fetch = true;
+        if (std.mem.eql(u8, name, web.tools.context.name)) self.context = true;
     }
 };
 
@@ -361,12 +371,12 @@ fn readTools(r: *Reader, value: Value, limit: usize, options: Options, hosted: *
         if (kind == .string) if (hostedDefinition(kind.string)) |definition| {
             if (!options.web)
                 return r.unsupported(param, "{s}: the hosted {s} tool is off on this server (serve.web)", .{ param, kind.string });
-            if (std.mem.eql(u8, kind.string, web.tools.search.name)) hosted.search = true else hosted.fetch = true;
+            hosted.enable(definition.name);
             tool.* = .{ .name = definition.name, .description = definition.description, .parameters = definition.parameters };
             continue;
         };
         if (kind != .string or !std.mem.eql(u8, kind.string, "function"))
-            return r.unsupported(param, "{s}: only \"function\" tools and the hosted web_search and web_fetch are supported", .{param});
+            return r.unsupported(param, "{s}: only \"function\" tools and the hosted web_search, web_fetch, and web_context are supported", .{param});
         const function = switch (item.object.get("function") orelse .null) {
             .object => |f| f,
             else => return r.invalid(param, "{s}.function must be an object", .{param}),
@@ -957,6 +967,21 @@ test "the hosted web tools: accepted with serve.web, refused without it, and nev
         \\ "tools": [{"type": "web_search"}, {"type": "function", "function": {"name": "web_search"}}]}
     , &problem, .{ .web = true }));
     try std.testing.expect(std.mem.indexOf(u8, problem.message, "clashes with the hosted tool") != null);
+
+    // web_context: accepted beside the others with serve.web, refused
+    // without it like them.
+    const with_context =
+        \\{"messages": [{"role": "user", "content": "hi"}],
+        \\ "tools": [{"type": "function", "function": {"name": "lookup"}}, {"type": "web_context"}]}
+    ;
+    const asked = try parseWith(arena, with_context, &problem, .{ .web = true });
+    try std.testing.expect(asked.web.context and !asked.web.search and !asked.web.fetch);
+    try std.testing.expect(asked.web.runs("web_context"));
+    try std.testing.expectEqualStrings(web.tools.context.description, asked.tools[1].description);
+    try std.testing.expectError(error.Refused, parse(arena, with_context, &problem));
+    try std.testing.expectEqualStrings("unsupported_feature", problem.code);
+    try std.testing.expectEqualStrings("tools[1]", problem.param.?);
+    try std.testing.expect(std.mem.indexOf(u8, problem.message, "web_context tool is off on this server (serve.web)") != null);
 
     // A function of that name alone is the client's own tool.
     const own = try parseWith(arena,

@@ -146,7 +146,7 @@ pub const OpsCount = struct {
     }
 
     fn add(self: *OpsCount, name: []const u8, is_error: bool) void {
-        if (is_error) self.failed += 1 else if (std.mem.eql(u8, name, "read_file")) self.reads += 1 else if (std.mem.eql(u8, name, "grep") or std.mem.eql(u8, name, "glob")) self.searches += 1 else if (std.mem.eql(u8, name, "bash")) self.commands += 1 else if (isWrite(name)) self.writes += 1 else if (std.mem.eql(u8, name, "web_search")) self.web_searches += 1 else if (std.mem.eql(u8, name, "web_fetch")) self.fetches += 1 else self.commands += 1;
+        if (is_error) self.failed += 1 else if (std.mem.eql(u8, name, "read_file")) self.reads += 1 else if (std.mem.eql(u8, name, "grep") or std.mem.eql(u8, name, "glob")) self.searches += 1 else if (std.mem.eql(u8, name, "bash")) self.commands += 1 else if (isWrite(name)) self.writes += 1 else if (std.mem.eql(u8, name, "web_search") or std.mem.eql(u8, name, "web_context")) self.web_searches += 1 else if (std.mem.eql(u8, name, "web_fetch")) self.fetches += 1 else self.commands += 1;
     }
 
     /// `Read 2 files, searched 3 times, ran 1 shell command, wrote 1 file,
