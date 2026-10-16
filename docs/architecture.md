@@ -166,7 +166,7 @@ signals, and the network.
 | `src/decision` | the decision request and response JSON, resolving a decision model's name | HTTP, terminals |
 | `src/api` transport and router (`http.zig`, `router.zig`) | connections, HTTP/1.1, routes, the error body | models, `inference` |
 | `src/api` services (`decisions/`, `chat/`) | validating a request, waiting for the GPU, rendering the answer | sockets; a model except through the GPU executor |
-| `src/web` | the search service's v1 contract, its HTTP client, the two web tools' definitions and the text their results become, for the agent and `chat/` | models, terminals, the GPU |
+| `src/web` | the search service's v1 contract, its HTTP client, the web tools' definitions and the text their results become, for the agent and `chat/` | models, terminals, the GPU |
 | `huggingface` | the Hub API, Xet reconstruction, digests, atomic publication | what a GGUF means |
 
 **Read:** [spec.md § Extension rules](spec.md#57-extension-rules),

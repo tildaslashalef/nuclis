@@ -562,7 +562,8 @@ in its prefill.
 ### Hosted web tools
 
 With `serve.web` on ([configuration](configuration.md#web)), a request may
-list `{"type": "web_search"}` and `{"type": "web_fetch"}` among its tools.
+list `{"type": "web_search"}`, `{"type": "web_fetch"}`, and
+`{"type": "web_context"}` among its tools.
 They render through the model's template like any tool, with the
 definitions the agent uses, and the server runs their calls itself through
 the search service `web.url` names:
@@ -572,6 +573,22 @@ the search service `web.url` names:
  "tools": [{"type": "web_search"}, {"type": "web_fetch"}]}
 ```
 
+- The three tools: `web_search` (`query`, optional `freshness`) returns at
+  most 8 results, a title, URL, and snippet each, with up to two more
+  snippets under the first three; `web_fetch` (`url`, optional `offset`)
+  reads one page as Markdown, 16,000 characters at a time; `web_context`
+  (`query`, optional `freshness`) returns passages from up to 8 pages that
+  answer the question, about 2,000 tokens, each under its page's title and
+  URL. `freshness` is `day`, `week`, `month`, or `year`.
+- `web_context` needs a search service with Brave. The server accepts the
+  type either way and its start line names the tools the service offered
+  when it started; on a service without it, a call answers "web_context is
+  unavailable on the search service now; use web_search" as its result, and
+  the model goes on.
+- Searches are metered upstream (Brave), so one request makes at most six
+  uncached `web_search` and `web_context` calls; a seventh answers that the
+  budget is spent, without reaching the service. Answers the service had
+  cached, and fetches, are free.
 - A completion whose calls are all hosted is not returned: the server runs
   them, appends the assistant message and one tool message per result, and
   completes again, up to six completions per request. The sixth runs without
@@ -601,8 +618,8 @@ the search service `web.url` names:
   over three rounds, Saluki, against the stub, 2026-10-16).
 - A web call waits on the GPU worker; decision and embedding items queued
   meanwhile run during its waits. A client that leaves cancels it.
-- Without `serve.web`, either type is `400 unsupported_feature` naming
-  `tools[i]`.
+- Without `serve.web`, any of the three types is `400 unsupported_feature`
+  naming `tools[i]`.
 
 ## Embeddings
 

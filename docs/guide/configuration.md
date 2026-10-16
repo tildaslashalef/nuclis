@@ -111,7 +111,7 @@ global `generation.speculative` applies to models without an entry.
 | `theme` | `gruvbox-dark` | the terminal palette |
 | `instructions` | `auto` | the project file the agent reads: `auto` (`AGENTS.md`, then `CLAUDE.md`), `off`, or a path in the workspace |
 | `thinking_budget` | `1024` | the most reasoning tokens a step spends at `low` before the engine closes the reasoning; `0` for no cap |
-| `web` | `false` | offer `web_search` and `web_fetch`, served by `web.url` ([below](#web)); needs `web.url` |
+| `web` | `false` | offer `web_search` and `web_fetch`, and `web_context` when the service has it, served by `web.url` ([below](#web)); needs `web.url` |
 
 ### `decide`, `embed`, and `serve`
 
@@ -124,7 +124,7 @@ global `generation.speculative` applies to models without an entry.
 | `serve.log` | `true` | a line per request on stdout; `--quiet` turns it off |
 | `serve.timeout` | `300` | seconds a request may wait for the GPU before `529 timeout` (a clef-flash request can hold it for minutes); flag `--timeout` |
 | `serve.memory_bytes` | `null` | what every model `nuclis serve` keeps open may hold together, decision and language alike; null is physical memory less 16 GiB. Flag `--memory <GiB>` ([api.md § Memory](api.md#memory)) |
-| `serve.web` | `false` | run the hosted `web_search` and `web_fetch` tool types a chat request asks for, through `web.url` ([api.md § Hosted web tools](api.md#hosted-web-tools)); off refuses them. Needs `web.url` |
+| `serve.web` | `false` | run the hosted `web_search`, `web_fetch`, and `web_context` tool types a chat request asks for, through `web.url` ([api.md § Hosted web tools](api.md#hosted-web-tools)); off refuses them. Needs `web.url` |
 
 ### `web`
 
@@ -136,6 +136,11 @@ for the API; either one on without a URL is a load error.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `web.url` | `null` | the service's base URL: `https`, or `http` on a loopback host for a local stand-in (`scripts/search-gateway-stub.py`); no credentials, query, or fragment |
+
+`web_context` needs a service with Brave (holocron 0.5.0 or later with a
+Brave key): the agent offers it only when the service's health lists
+`/v1/context` at startup. Every limit, the context's budget and the six
+uncached searches a turn may make, is a host constant, not a key.
 
 Turning a surface on sends what the model searches for and the URLs it
 fetches to that service, which passes them to search engines and sites
