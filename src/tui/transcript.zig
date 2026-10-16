@@ -130,7 +130,8 @@ pub const Block = union(enum) {
     }
 };
 
-/// Tool calls counted by what they did, for the `ops` row.
+/// Tool calls counted by what they did, for the `ops` row. A call counts
+/// when its result arrives; a failed one (its row red) counts only as failed.
 pub const OpsCount = struct {
     reads: usize = 0,
     searches: usize = 0,
@@ -138,17 +139,18 @@ pub const OpsCount = struct {
     writes: usize = 0,
     web_searches: usize = 0,
     fetches: usize = 0,
+    failed: usize = 0,
 
     fn any(self: OpsCount) bool {
-        return self.reads + self.searches + self.commands + self.writes + self.web_searches + self.fetches > 0;
+        return self.reads + self.searches + self.commands + self.writes + self.web_searches + self.fetches + self.failed > 0;
     }
 
-    fn add(self: *OpsCount, name: []const u8) void {
-        if (std.mem.eql(u8, name, "read_file")) self.reads += 1 else if (std.mem.eql(u8, name, "grep") or std.mem.eql(u8, name, "glob")) self.searches += 1 else if (std.mem.eql(u8, name, "bash")) self.commands += 1 else if (isWrite(name)) self.writes += 1 else if (std.mem.eql(u8, name, "web_search")) self.web_searches += 1 else if (std.mem.eql(u8, name, "web_fetch")) self.fetches += 1 else self.commands += 1;
+    fn add(self: *OpsCount, name: []const u8, is_error: bool) void {
+        if (is_error) self.failed += 1 else if (std.mem.eql(u8, name, "read_file")) self.reads += 1 else if (std.mem.eql(u8, name, "grep") or std.mem.eql(u8, name, "glob")) self.searches += 1 else if (std.mem.eql(u8, name, "bash")) self.commands += 1 else if (isWrite(name)) self.writes += 1 else if (std.mem.eql(u8, name, "web_search")) self.web_searches += 1 else if (std.mem.eql(u8, name, "web_fetch")) self.fetches += 1 else self.commands += 1;
     }
 
     /// `Read 2 files, searched 3 times, ran 1 shell command, wrote 1 file,
-    /// searched the web 2 times, fetched 1 page`.
+    /// searched the web 2 times, fetched 1 page, 2 calls failed`.
     fn text(self: OpsCount, a: Allocator) ![]u8 {
         var w: std.Io.Writer.Allocating = .init(a);
         var parts: usize = 0;
@@ -158,6 +160,7 @@ pub const OpsCount = struct {
         if (self.writes > 0) try part(&w.writer, &parts, "wrote {d} file{s}", self.writes);
         if (self.web_searches > 0) try part(&w.writer, &parts, "searched the web {d} time{s}", self.web_searches);
         if (self.fetches > 0) try part(&w.writer, &parts, "fetched {d} page{s}", self.fetches);
+        if (self.failed > 0) try part(&w.writer, &parts, "{d} call{s} failed", self.failed);
         const out = try w.toOwnedSlice();
         if (out.len > 0) out[0] = std.ascii.toUpper(out[0]);
         return out;
@@ -317,15 +320,15 @@ pub const Transcript = struct {
                 const detail: ?[]u8 = if (call.detail) |detail| try self.alloc.dupe(u8, detail) else null;
                 errdefer if (detail) |d| self.alloc.free(d);
                 try self.blocks.append(self.alloc, .{ .tool_call = .{ .id = call.id, .name = name, .summary = summary, .detail = detail } });
-                self.ops.add(call.name);
             },
             .tool_result => |result| {
                 // The call this result answers is settled now: its line stops
                 // animating and can be written to the scrollback.
                 for (self.blocks.items) |*block| {
-                    if (block.* == .tool_call and block.tool_call.id == result.id) {
+                    if (block.* == .tool_call and block.tool_call.id == result.id and block.tool_call.running) {
                         block.tool_call.running = false;
                         block.tool_call.failed = result.is_error;
+                        self.ops.add(block.tool_call.name, result.is_error);
                     }
                 }
                 const text = try self.alloc.dupe(u8, result.text);
@@ -1466,20 +1469,20 @@ test "Ctrl-O cycles the tool views: summary, output, folded (the call row stays,
     _ = try tr.takeClosed(a, options);
     const open = try texts(a, try tr.replayRows(a, options));
     try testing.expectEqualStrings(
-        "● Bash(make)\n└ $ make\n└ boom\n● Edit(a.zig)\n▾ a.zig  +1 −1\n1   − old\n  1 + new\n└ Edited a.zig: +1 −1 lines\nRan 1 shell command, wrote 1 file\n\n",
+        "● Bash(make)\n└ $ make\n└ boom\n● Edit(a.zig)\n▾ a.zig  +1 −1\n1   − old\n  1 + new\n└ Edited a.zig: +1 −1 lines\nWrote 1 file, 1 call failed\n\n",
         open,
     );
     const rows_open = tr.rows;
     tr.tools = tr.tools.next();
     const output = try texts(a, try tr.replayRows(a, options));
     try testing.expectEqualStrings(
-        "● Bash(make)\n└ $ make\n└ exit 2 · 1 line\n  boom\n● Edit(a.zig)\n▾ a.zig  +1 −1\n1   − old\n  1 + new\n└ Edited a.zig: +1 −1 lines\n  edited\nRan 1 shell command, wrote 1 file\n\n",
+        "● Bash(make)\n└ $ make\n└ exit 2 · 1 line\n  boom\n● Edit(a.zig)\n▾ a.zig  +1 −1\n1   − old\n  1 + new\n└ Edited a.zig: +1 −1 lines\n  edited\nWrote 1 file, 1 call failed\n\n",
         output,
     );
     tr.tools = tr.tools.next();
     try testing.expectEqual(ToolView.folded, tr.tools);
     const folded = try texts(a, try tr.replayRows(a, options));
-    try testing.expectEqualStrings("● Bash(make)\n● Edit(a.zig)\n▸ a.zig  +1 −1\nRan 1 shell command, wrote 1 file\n\n", folded);
+    try testing.expectEqualStrings("● Bash(make)\n● Edit(a.zig)\n▸ a.zig  +1 −1\nWrote 1 file, 1 call failed\n\n", folded);
     try testing.expect(tr.rows < rows_open);
     // A running call folds its detail too.
     try tr.apply(.{ .tool_call = .{ .id = 3, .name = "bash", .summary = "Bash(sleep 9)", .detail = "$ sleep 9" } });
@@ -1536,13 +1539,41 @@ test "an attachment is a dim detail row under its prompt, and a preview reserves
     try testing.expect(lone.blocks.items[0] == .notice);
 }
 
-test "web calls are tallied as web searches and fetched pages, not shell commands" {
-    var ops: OpsCount = .{};
-    ops.add("web_search");
-    ops.add("web_search");
-    ops.add("web_fetch");
-    ops.add("read_file");
-    const text = try ops.text(testing.allocator);
-    defer testing.allocator.free(text);
-    try testing.expectEqualStrings("Read 1 file, searched the web 2 times, fetched 1 page", text);
+test "the tally counts a call by its result: web calls as searches and pages, any failure only as failed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    const options: Render = .{ .width = 80, .th = .{ .kind = .plain } };
+    const calls = [_]struct { name: []const u8, is_error: bool }{
+        .{ .name = "web_search", .is_error = false },
+        .{ .name = "web_search", .is_error = false },
+        .{ .name = "web_fetch", .is_error = false },
+        .{ .name = "read_file", .is_error = false },
+        // A refused fetch, a cancelled search, and a command that exited 1.
+        .{ .name = "web_fetch", .is_error = true },
+        .{ .name = "web_search", .is_error = true },
+        .{ .name = "bash", .is_error = true },
+    };
+    for (calls, 1..) |call, id| {
+        try tr.apply(.{ .tool_call = .{ .id = @intCast(id), .name = call.name, .summary = call.name } });
+        try tr.apply(.{ .tool_result = .{ .id = @intCast(id), .text = "", .truncated = false, .is_error = call.is_error } });
+    }
+    // A call still running when the text resumes has no result to count.
+    try tr.apply(.{ .tool_call = .{ .id = 99, .name = "web_fetch", .summary = "Fetch(x)" } });
+    try tr.apply(.{ .answer_delta = "Done." });
+    var tally: ?[]const u8 = null;
+    for (tr.blocks.items) |block| if (block == .ops) {
+        tally = block.ops;
+    };
+    try testing.expectEqualStrings("Read 1 file, searched the web 2 times, fetched 1 page, 3 calls failed", tally.?);
+    // A failure alone still writes the row.
+    tr.reset();
+    try tr.apply(.{ .tool_call = .{ .id = 1, .name = "web_fetch", .summary = "Fetch(x)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 1, .text = "cancelled", .truncated = false, .is_error = true } });
+    try tr.apply(.{ .turn_end = .{ .stop = .cancelled } });
+    const alone = try texts(a, try tr.takeClosed(a, options));
+    try testing.expect(std.mem.indexOf(u8, alone, "1 call failed\n") != null);
+    try testing.expect(std.mem.indexOf(u8, alone, "fetched") == null);
 }

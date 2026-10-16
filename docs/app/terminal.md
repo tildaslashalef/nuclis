@@ -88,7 +88,8 @@ and no TTY. The rows it produces for a tool call are the dot in the call's
 state colour (`op_running` pulsing against `dim`, then `op_ok`, `op_error`,
 or `op_write`) and `Name(argument)` from `tools.describe`, the tool's
 one-sentence result under `└`, and, where the model's text resumes, the
-dim `ops` row counting the run (`Read 2 files, ran 1 shell command`). The
+dim `ops` row counting the run's calls by their results (`Read 2 files,
+ran 1 shell command, 1 call failed`: a red call counts only as failed). The
 repaint cadence comes from the Metal backend's `tick`: `commit` waits on a
 semaphore its completion handler signals and calls back every 100 ms, and
 the surface installs its poll-and-draw there (`installTick`), so a prefill
