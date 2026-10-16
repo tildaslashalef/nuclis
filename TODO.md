@@ -27,9 +27,10 @@ default everywhere**: with no `web` configuration the agent offers the same
 six tools and renders the same system prompt, byte for byte, and `nuclis
 serve` refuses the web tool types.
 
-Next: steps 1–8 are delivered against the stub
-(`scripts/search-gateway-stub.py`); the agent-eval comparison of step 9 is
-the last check. holocron is specified, not implemented, and the VM is not
+Next: steps 1–9 are delivered against the stub
+(`scripts/search-gateway-stub.py`), including fixes for the two limits the first runs found
+(hosted results lost on the client's next request, failed calls tallied as
+done). holocron is specified, not implemented, and the VM is not
 deployed: when its connection details arrive, a quick test of the
 contract from the Mac, the same `make shot` and `curl` runs against it,
 then the unit closes. **The whole search work is this one unit and this one branch**
@@ -227,7 +228,18 @@ the unit tests do not.
   failing test ends instead of hanging on a blocked `accept`.
 - A side fix the shot found: the transcript's step tally counted a web
   call as a shell command; it now reads "searched the web N times",
-  "fetched N pages" (`src/tui/transcript.zig`).
+  "fetched N pages" (`src/tui/transcript.zig`). Then (the user's choice,
+  for every tool): a call counts when its result arrives, and a failed one
+  (its row red, a bash exit 1 included) only as "N calls failed".
+- Hosted results on the client's next request (the user's choice of
+  design): `src/api/chat/stash.zig` keeps each request's hosted exchange,
+  64 entries, 8 MiB, one hour, LRU, worker-only, under a SHA-256 of the
+  client's conversation through the message it got back (role, trimmed
+  content, images, function calls by name and arguments; not reasoning or
+  call ids). A later request resending that message gets the rounds put
+  back, the client's call ids kept and the hosted ones numbered past them;
+  a first round that no longer fits runs on the client's conversation
+  alone. The log line says `N web exchanges put back`.
 - AGENTS.md's push rule: pushing a branch and opening its pull request
   wait for the user's word.
 - Evidence so far: `make verify-auto` passes (no model gate selected);
@@ -240,6 +252,32 @@ the unit tests do not.
   search ran, `save_note` returned with `finish_reason: "tool_calls"`),
   and without `serve.web` the `unsupported_feature` refusal and
   `web: off` in health.
+- Evidence for the two limits (Saluki, against the stub, 2026-10-16):
+  `make verify-auto` passes; `make shot` captures `web-tally-failed`
+  (a search and a refused LAN fetch: "Searched the web 1 time, 1 call
+  failed") and `web-tally-cancelled` (a slow fetch cancelled by Ctrl-C:
+  "1 call failed"); `nuclis serve` driven over HTTP by a scratch script, a
+  first request then its follow-up resending only the returned message:
+  an answer after one hosted search, then "list the URLs your search
+  returned" answered with the stub's three URLs, 659 of 687 prompt tokens
+  reused, `1 web exchange put back`; the same with the first request
+  streamed (690 of 718 reused); a mixed request (two hosted searches, then
+  `save_note` returned with `finish_reason: "tool_calls"`) whose follow-up,
+  after the client's `saved` result, listed the search's URLs, 1,397 of
+  1,437 reused.
+- `make agent-eval VARIANT=web-off` vs `VARIANT=web-on` (Saluki, seeds 1
+  and 2, scratch roots with a cold cache, 2026-10-16): both 13/13 on both
+  seeds; steps 4.58 vs 4.58; tool errors 2 vs 5; prompt tokens 659 vs 613;
+  generated 697 vs 754; model seconds 56.8 vs 58.7; answer characters 346
+  vs 368; `regex_grep`, `pytest`, `cd` 0 in both, rereads 1 in both. No
+  task called a web tool; web-on's five errors are ordinary ones (a
+  traceback in bugfix-s1, `read_file` of a test not yet written in
+  newfile-s1/s2, exit-s2, json-s1; web-off had exit-s1, json-s2), within
+  two seeds' variance: the two extra definitions cost no measurable steps.
+  web-on was built after the stash and tally commits, which touch neither
+  the agent's prompt nor its tools. `python3 scripts/agent-eval.py
+  --compare web-off web-on` reproduces the table from
+  `.zig-cache/agent-eval/`.
 
 ## Deferred
 
