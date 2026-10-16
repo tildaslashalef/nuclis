@@ -136,16 +136,19 @@ pub const OpsCount = struct {
     searches: usize = 0,
     commands: usize = 0,
     writes: usize = 0,
+    web_searches: usize = 0,
+    fetches: usize = 0,
 
     fn any(self: OpsCount) bool {
-        return self.reads + self.searches + self.commands + self.writes > 0;
+        return self.reads + self.searches + self.commands + self.writes + self.web_searches + self.fetches > 0;
     }
 
     fn add(self: *OpsCount, name: []const u8) void {
-        if (std.mem.eql(u8, name, "read_file")) self.reads += 1 else if (std.mem.eql(u8, name, "grep") or std.mem.eql(u8, name, "glob")) self.searches += 1 else if (std.mem.eql(u8, name, "bash")) self.commands += 1 else if (isWrite(name)) self.writes += 1 else self.commands += 1;
+        if (std.mem.eql(u8, name, "read_file")) self.reads += 1 else if (std.mem.eql(u8, name, "grep") or std.mem.eql(u8, name, "glob")) self.searches += 1 else if (std.mem.eql(u8, name, "bash")) self.commands += 1 else if (isWrite(name)) self.writes += 1 else if (std.mem.eql(u8, name, "web_search")) self.web_searches += 1 else if (std.mem.eql(u8, name, "web_fetch")) self.fetches += 1 else self.commands += 1;
     }
 
-    /// `Read 2 files, searched 3 times, ran 1 shell command, wrote 1 file`.
+    /// `Read 2 files, searched 3 times, ran 1 shell command, wrote 1 file,
+    /// searched the web 2 times, fetched 1 page`.
     fn text(self: OpsCount, a: Allocator) ![]u8 {
         var w: std.Io.Writer.Allocating = .init(a);
         var parts: usize = 0;
@@ -153,6 +156,8 @@ pub const OpsCount = struct {
         if (self.searches > 0) try part(&w.writer, &parts, "searched {d} time{s}", self.searches);
         if (self.commands > 0) try part(&w.writer, &parts, "ran {d} shell command{s}", self.commands);
         if (self.writes > 0) try part(&w.writer, &parts, "wrote {d} file{s}", self.writes);
+        if (self.web_searches > 0) try part(&w.writer, &parts, "searched the web {d} time{s}", self.web_searches);
+        if (self.fetches > 0) try part(&w.writer, &parts, "fetched {d} page{s}", self.fetches);
         const out = try w.toOwnedSlice();
         if (out.len > 0) out[0] = std.ascii.toUpper(out[0]);
         return out;
@@ -1529,4 +1534,15 @@ test "an attachment is a dim detail row under its prompt, and a preview reserves
     defer lone.deinit();
     try lone.apply(.{ .attachment = .{ .label = "image #1: x.png" } });
     try testing.expect(lone.blocks.items[0] == .notice);
+}
+
+test "web calls are tallied as web searches and fetched pages, not shell commands" {
+    var ops: OpsCount = .{};
+    ops.add("web_search");
+    ops.add("web_search");
+    ops.add("web_fetch");
+    ops.add("read_file");
+    const text = try ops.text(testing.allocator);
+    defer testing.allocator.free(text);
+    try testing.expectEqualStrings("Read 1 file, searched the web 2 times, fetched 1 page", text);
 }
