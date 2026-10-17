@@ -283,13 +283,15 @@ release: ## Open the version PR: make release V=X.Y.Z TIERS='ran' (highlights in
 tag: ## Tag the merged version PR and push it: make tag V=X.Y.Z (release.yml publishes)
 	python3 scripts/release.py tag "$(V)"
 
-version: ## Set the version in the three build.zig.zon files: make version V=X.Y.Z (the release's version PR)
+version: ## Set the version in the three build.zig.zon files and the site's download: make version V=X.Y.Z (the release's version PR)
 	@printf '%s' "$(V)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$$' || { echo "usage: make version V=X.Y.Z (got '$(V)')" >&2; exit 1; }
+	@old=$$(sed -nE 's/^    \.version = "([^"]*)",$$/\1/p' build.zig.zon); \
+	  sed -i.bak -e "s/\"softwareVersion\": \"$$old\"/\"softwareVersion\": \"$(V)\"/" -e "s/v$$old/v$(V)/g" site/index.html && rm -f site/index.html.bak
 	@for f in build.zig.zon inference/build.zig.zon huggingface/build.zig.zon; do \
 	  sed -i.bak -E 's/^(    \.version = )"[^"]*",$$/\1"$(V)",/' $$f && rm -f $$f.bak; \
 	  grep -q '^    \.version = "$(V)",$$' $$f || { echo "$$f: no .version line set to $(V)" >&2; exit 1; }; \
 	done
-	@echo "version $(V) in build.zig.zon, inference/build.zig.zon, huggingface/build.zig.zon"
+	@echo "version $(V) in build.zig.zon, inference/build.zig.zon, huggingface/build.zig.zon, site/index.html"
 
 # ---- housekeeping ----------------------------------------------------------
 

@@ -123,7 +123,7 @@ jobs:
           name="nuclis-$tag-aarch64-macos"
           mkdir -p "dist/$name"
           cp zig-out/bin/nuclis "dist/$name/"
-          cp README.md THIRD_PARTY_NOTICES.md CHANGELOG.md "dist/$name/"
+          cp README.md THIRD_PARTY_NOTICES.md "dist/$name/"
           # A licence is the owner's decision, not this workflow's: ship one
           # when the tree has one, and say so plainly when it does not rather
           # than failing the release over a file that was never written.

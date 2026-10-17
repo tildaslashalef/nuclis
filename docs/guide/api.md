@@ -405,7 +405,7 @@ GPU at a time, decisions included.
 | `messages` | roles `system`, `developer`, `user`, `assistant`, `tool`. `content` is a string, null (an assistant turn of calls only), or parts: `text`, and on user messages `image_url` with a base64 data URL (at most 8 images, 16 MiB each) |
 | assistant `reasoning_content` | the turn's reasoning, given back as it was returned (`reasoning` is read too); the model's template keeps or drops it |
 | assistant `tool_calls`, tool `tool_call_id` | the calls and their results; a result must answer an earlier call |
-| `tools` | `type: "function"` with `name`, `description`, `parameters` (a JSON Schema); at most 64. The model's own template renders them |
+| `tools` | `type: "function"` with `name`, `description`, `parameters` (a JSON Schema); at most 64. The model's own template renders them. With `serve.web`, also `{"type": "web_search"}` and `{"type": "web_fetch"}`, which the server runs ([hosted web tools](#hosted-web-tools)) |
 | `tool_choice` | `auto` (the default) or `none`, which renders no tools |
 | `reasoning_effort` | `none` (no reasoning), `minimal` and `low`, `medium`, `high`, `xhigh` (`max` reads as `xhigh`); the model's nearest level. Absent: `agent.think` |
 | `max_completion_tokens`, `max_tokens` | the output budget, reasoning included; absent: the model's `max_tokens` setting. Larger values are capped at 16,384 and at what the window leaves after the prompt |
@@ -429,6 +429,7 @@ change the result and cannot be honoured:
 | `stop`, `logit_bias`, `frequency_penalty` other than 0 | not implemented; the model's own end of turn stops it |
 | `audio`, `modalities` beyond `text`, `prediction`, part types other than `text` and `image_url` | text out, text and images in |
 | an `image_url` that is not a data URL | the server fetches no URL |
+| a `web_search` or `web_fetch` tool type without `serve.web`; a function of the same name beside one (`invalid_request`) | the server runs no web tools unless configured to; a clash would make its calls ambiguous |
 
 ### The response
 
@@ -557,6 +558,73 @@ requests. The first prefilled pi's 7,297-token system prompt and tools in
 previous one had consumed (7,582 of 8,050 tokens, then 8,337 of 9,181,
 10,251 of 10,357, and 10,419 of 10,591). Esc in pi cancelled a request
 in its prefill.
+
+### Hosted web tools
+
+With `serve.web` on ([configuration](configuration.md#web)), a request may
+list `{"type": "web_search"}`, `{"type": "web_fetch"}`, and
+`{"type": "web_context"}` among its tools.
+They render through the model's template like any tool, with the
+definitions the agent uses, and the server runs their calls itself through
+the search service `web.url` names:
+
+```json
+{"messages": [{"role": "user", "content": "What does PEP 8 say about line length?"}],
+ "tools": [{"type": "web_search"}, {"type": "web_fetch"}]}
+```
+
+- The three tools: `web_search` (`query`, optional `freshness`) returns at
+  most 8 results, a title, URL, and snippet each, with up to two more
+  snippets under the first three; `web_fetch` (`url`, optional `offset`)
+  reads one page as Markdown, 16,000 characters at a time; `web_context`
+  (`query`, optional `freshness`) returns passages from up to 8 pages that
+  answer the question, about 2,000 tokens, each under its page's title and
+  URL. `freshness` is `day`, `week`, `month`, or `year`.
+- `web_context` needs a search service with Brave. The server accepts the
+  type either way and its start line names the tools the service offered
+  when it started; on a service without it, a call answers "web_context is
+  unavailable on the search service now; use web_search" as its result, and
+  the model goes on.
+- Searches are metered upstream (Brave), so one request makes at most six
+  uncached `web_search` and `web_context` calls; a seventh answers that the
+  budget is spent, without reaching the service. Answers the service had
+  cached, and fetches, are free.
+- In a request with hosted tools, a call to a web tool the request did not
+  enable (and defines no function of that name) is not returned either:
+  `web_context`'s description names the other two, so the model may call
+  one, and the server answers it as a failed result, "not a tool in this
+  request", like the agent's "not a tool I have".
+- A completion whose calls are all hosted is not returned: the server runs
+  them, appends the assistant message and one tool message per result, and
+  completes again, up to six completions per request. The sixth runs without
+  the web tools, so it answers from what it has.
+- When a completion also calls one of the request's functions, its hosted
+  calls run and the function calls are returned as usual
+  (`finish_reason: "tool_calls"`).
+- The client never sees the hosted calls and results as messages, so the
+  conversation it sends next does not carry them. The server keeps them:
+  when a later request resends the assistant message a request returned (its
+  text and function calls; reasoning and call ids may differ, outer
+  whitespace too) after the same conversation, the hosted rounds are put back
+  in front of it, so the model reads the results again and the prompt
+  matches what it processed, which keeps its cached state usable. Kept are
+  the last 64 such requests, up to 8 MiB, for an hour; a restart, an edited
+  message, or a conversation that no longer fits the window with them gets
+  the client's conversation as sent.
+- Every hosted call is reported in `message.nuclis_web_calls`, an extension
+  OpenAI clients ignore: `name`, `arguments`, `summary` (`3 results`,
+  `characters 0 to 642 of 642`, or the failure's sentence), and `is_error`.
+  Streamed, each arrives as it finishes, a chunk whose `delta` carries
+  `nuclis_web_calls` with an `index`.
+- The usage counts every completion; the log line adds `2 web calls in 3
+  rounds`, and `1 web exchange put back` when earlier hosted rounds were
+  restored. The model's state carries over between completions, so a round
+  reuses the conversation before it (measured: 1,257 of 2,084 prompt tokens
+  over three rounds, Saluki, against the stub, 2026-10-16).
+- A web call waits on the GPU worker; decision and embedding items queued
+  meanwhile run during its waits. A client that leaves cancels it.
+- Without `serve.web`, any of the three types is `400 unsupported_feature`
+  naming `tools[i]`.
 
 ## Embeddings
 
@@ -752,6 +820,7 @@ without one):
   "loaded": ["laya", "laya-multilingual"],
   "language": "qwen3.8-27b",
   "embedding": "embeddinggemma-2",
+  "web": "off",
   "memory": {"limit": 34359738368, "resident": 24227472014,
              "models": [{"name": "qwen3.8-27b", "kind": "language", "bytes": 23583635232},
                         {"name": "laya-multilingual", "kind": "decision", "bytes": 643836782}]},
@@ -771,7 +840,10 @@ model (null before the first chat request), `memory` the budget
 `batches` and `requests` the passes run and the requests they answered
 since the start. `embedding` is the open embedding model (null before the
 first embedding request), and `embeddings` counts its waiting requests,
-passes, and answered requests the same way.
+passes, and answered requests the same way. `web` is `off` without
+`serve.web`; otherwise `ok` when the search service and every provider
+behind it answer its own health call, `down` when not (that call waits at
+most 5 s).
 
 ## Measured rates
 

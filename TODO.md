@@ -16,6 +16,11 @@ it is empty, ask what to work on and write the agreed plan here.
 
 Agreed and not scheduled; when one is picked up, it becomes a unit above.
 
+- **Release v0.8.0** (the user, 2026-10-17), once the web tools' pull
+  request merges: the release steps in AGENTS.md (*Versioning and
+  releases*). `make version` now moves the site's download with the
+  manifests, and the archive no longer ships `CHANGELOG.md`.
+
 - **Saluki's speed goals** (restated by the user, 2026-10-15; the numbers
   and their arithmetic in `docs/models/saluki.md`, its **Goals**): decode at
   32,639 ≥ 18 tok/s, and a 32,639-token prompt prefilled in ≤ 7 minutes.

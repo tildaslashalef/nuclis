@@ -40,7 +40,7 @@
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "macOS",
     "processorRequirements": "Apple Silicon (arm64)",
-    "softwareVersion": "0.5.0",
+    "softwareVersion": "0.7.0",
     "downloadUrl": "https://github.com/tildaslashalef/nuclis/releases/latest",
     "license": "https://opensource.org/license/mit",
     "isAccessibleForFree": true,
@@ -102,9 +102,9 @@
       <p class="lede">nuclis is an inference engine for Apple Silicon, written from scratch in Zig and Metal. Hand it a 27-billion-parameter model and a failing test suite, and watch it find the bug on your laptop, offline. Every layer was proven against a reference before a single kernel was tuned.</p>
       <div class="hero-cta">
         <div class="hero-actions">
-          <a class="btn btn-primary" href="https://github.com/tildaslashalef/nuclis/releases/download/v0.5.0/nuclis-v0.5.0-aarch64-macos.tar.gz" data-release-asset>
+          <a class="btn btn-primary" href="https://github.com/tildaslashalef/nuclis/releases/download/v0.7.0/nuclis-v0.7.0-aarch64-macos.tar.gz" data-release-asset>
             <svg><use href="#i-download"/></svg>
-            <span>Download <small data-release-tag>v0.5.0</small></span>
+            <span>Download <small data-release-tag>v0.7.0</small></span>
           </a>
           <a class="btn btn-quiet" href="https://github.com/tildaslashalef/nuclis">
             <svg><use href="#i-github"/></svg>
@@ -360,8 +360,8 @@ http://127.0.0.1:9000/v1</code></pre>
       <div class="cmd">
         <button class="copy" type="button" data-copy><svg><use href="#i-copy"/></svg><span>Copy</span></button>
 <pre id="cmd-bin" role="tabpanel" aria-labelledby="tab-bin"><code><span class="c"># unpack the release</span>
-tar xzf <span data-release-name>nuclis-v0.5.0-aarch64-macos</span>.tar.gz
-cd <span data-release-name>nuclis-v0.5.0-aarch64-macos</span>
+tar xzf <span data-release-name>nuclis-v0.7.0-aarch64-macos</span>.tar.gz
+cd <span data-release-name>nuclis-v0.7.0-aarch64-macos</span>
 xattr -d com.apple.quarantine nuclis
 <span class="c"># fetch a model, then put it to work</span>
 ./nuclis model pull qwen3.8-27b --all
@@ -403,7 +403,6 @@ cd nuclis &amp;&amp; make metal
     <nav class="foot-links" aria-label="Elsewhere">
       <a href="https://github.com/tildaslashalef/nuclis"><svg><use href="#i-github"/></svg>GitHub</a>
       <a href="https://github.com/tildaslashalef/nuclis/releases"><svg><use href="#i-download"/></svg>Releases</a>
-      <a href="https://github.com/tildaslashalef/nuclis/blob/main/CHANGELOG.md"><svg><use href="#i-log"/></svg>Changelog</a>
     </nav>
   </div>
 </footer>

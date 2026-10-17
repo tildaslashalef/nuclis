@@ -6,7 +6,7 @@ page; nothing is loaded from another origin (links out go only to GitHub);
 the head carries the canonical, description, Open Graph and Twitter tags; no
 inline style or executable inline script exists for the CSP in `_headers`
 to forbid; the JSON-LD and the `#bench` block parse; the version the page
-names is the newest release in CHANGELOG.md; and the `#bench` figures equal
+names is the root build.zig.zon's `.version`, the last release; and the `#bench` figures equal
 README.md's *Results* and *Speculative decoding* tables, ratios included.
 
     make site-check
@@ -238,8 +238,9 @@ def png_size(data):
     return struct.unpack(">II", data[16:24])
 
 
-def newest_release(changelog):
-    m = re.search(r"^## \[v(\d+\.\d+\.\d+)\]", changelog, re.MULTILINE)
+def released_version(manifest):
+    """The root manifest's `.version`: the last release (AGENTS.md)."""
+    m = re.search(r'^\s*\.version\s*=\s*"(\d+\.\d+\.\d+)"', manifest, re.MULTILINE)
     return m[1] if m else None
 
 
@@ -301,9 +302,9 @@ def check_index_head(page, rel, problems):
 
 
 def check_versions(page, problems):
-    version = newest_release((ROOT / "CHANGELOG.md").read_text())
+    version = released_version((ROOT / "build.zig.zon").read_text())
     if version is None:
-        problems.append("CHANGELOG.md: no release section")
+        problems.append("build.zig.zon: no .version line")
         return
     try:
         ld = json.loads(page.data_blocks.get("application/ld+json", ""))
@@ -311,9 +312,7 @@ def check_versions(page, problems):
         problems.append(f"site/index.html: JSON-LD does not parse: {e}")
         ld = {}
     if ld.get("softwareVersion") != version:
-        problems.append(
-            f"site/index.html: JSON-LD softwareVersion {ld.get('softwareVersion')!r}, newest release {version}"
-        )
+        problems.append(f"site/index.html: JSON-LD softwareVersion {ld.get('softwareVersion')!r}, released {version}")
     if page.text_of.get("data-release-tag") != f"v{version}":
         problems.append(f"site/index.html: download label {page.text_of.get('data-release-tag')!r}, want v{version}")
     if page.text_of.get("data-release-name") != f"nuclis-v{version}-aarch64-macos":
@@ -484,8 +483,9 @@ class SelfTest(unittest.TestCase):
         self.assertIsNone(check_ref(site, "https://github.com/x", set(), site))
         self.assertIsNotNone(check_ref(site, "/no-such-file.css", set(), site))
 
-    def test_newest_release_and_png(self):
-        self.assertEqual(newest_release("# Changelog\n\n## [v0.5.0] - 2026-10-04\n\n## [v0.4.0]"), "0.5.0")
+    def test_released_version_and_png(self):
+        self.assertEqual(released_version('.{\n    .name = .nuclis,\n    .version = "0.7.0",\n}'), "0.7.0")
+        self.assertIsNone(released_version(".{ .name = .nuclis }"))
         header = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x0dIHDR" + struct.pack(">II", 1200, 630)
         self.assertEqual(png_size(header), (1200, 630))
 

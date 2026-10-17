@@ -611,12 +611,13 @@ README's *Results* and *Speculative decoding* tables, speedup ratios
 included (the README computes them from unrounded rates, so the page shows
 them as given rather than dividing its rounded ones). `make site-check`
 fails when the two differ, when the JSON-LD `softwareVersion` or the
-download button's fallback is not the newest `CHANGELOG.md` release, when a
+download button's fallback is not the root `build.zig.zon`'s version, when a
 reference or `#fragment` does not resolve, when anything would load from
 another origin, or when an inline style or script would break the CSP.
-`gates.json` runs it when `site/`, `README.md`, or `CHANGELOG.md` changes,
+`gates.json` runs it when `site/`, `README.md`, or `build.zig.zon` changes,
 so a release or a new benchmark table that the page does not follow fails
-`make verify-auto`. The download button asks GitHub's API for the latest
+`make verify-auto`; `make version` moves the page with the manifests, so a
+version pull request passes it. The download button asks GitHub's API for the latest
 release when the page loads and keeps the checked fallback when it cannot.
 
 **Preview and look.** `make site-serve` serves the folder at
@@ -793,8 +794,9 @@ Verify behavior using the newly built binary.
 The version lives in the root `build.zig.zon`: the last released version.
 The manifests under `inference/` and `huggingface/` mirror it (the Zig
 package format requires a `.version`; the path dependencies ignore it), and
-`make version V=X.Y.Z` sets all three. The executable reports it as `nuclis
---version`, fed from the root manifest through build options.
+`make version V=X.Y.Z` sets all three, and the site's download with them
+(below). The executable reports it as `nuclis --version`, fed from the root
+manifest through build options.
 
 - **SemVer with the 0.x convention.** Before 1.0 the minor number is the
   breaking axis: a release with breaking changes or features bumps the
@@ -819,9 +821,10 @@ package format requires a `.version`; the path dependencies ignore it), and
   above the generated list of pull requests.
 - **A tag that exists on the remote never moves.** A ruleset refuses
   updating or deleting a `v*` tag; the fix is the next number.
-- `CHANGELOG.md` keeps the releases up to v0.5.0; from v0.6.0 the
-  [Releases page](https://github.com/tildaslashalef/nuclis/releases) is the
-  changelog.
+- The [Releases page](https://github.com/tildaslashalef/nuclis/releases)
+  is the changelog. The notes of v0.5.0 and earlier stay in
+  [`CHANGELOG.md` at the `v0.5.0` tag](https://github.com/tildaslashalef/nuclis/blob/v0.5.0/CHANGELOG.md);
+  the file is no longer on `main` or in the release archive.
 - Benchmark records cite the git revision, and the release tag once one
   exists.
 - **The Zig toolchain is a separate axis.** `minimum_zig_version` pins source

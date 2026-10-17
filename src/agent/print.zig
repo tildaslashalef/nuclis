@@ -31,6 +31,7 @@ const tui = @import("../tui/root.zig");
 const session_log = @import("session.zig");
 const loop = @import("loop.zig");
 const tools = @import("tools/root.zig");
+const web = @import("../web/root.zig");
 const resume_mod = @import("resume.zig");
 const view = tui.view;
 
@@ -146,7 +147,15 @@ pub fn run(
         .save_turns = options.session != null,
     };
     defer completer.deinit();
-    const workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
+    var workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
+    // The web tools exist only when the configuration opts in (`agent.web`).
+    var web_service: ?web.Service = if (settings.web_url) |url| .init(alloc, io, url, web.user_agent) else null;
+    defer if (web_service) |*service| service.deinit();
+    if (web_service) |*service| {
+        // Once, before the prompt is built: the tier is fixed for the session.
+        try service.probe(alloc);
+        workspace.web = service;
+    }
     var instructions = try loop.system_prompt.load(alloc, io, .cwd(), settings.instructions);
     defer if (instructions) |*ins| ins.deinit(alloc);
     const override: ?[]u8 = if (options.system_prompt) |path| try engine.readPrompt(alloc, io, null, path) else null;

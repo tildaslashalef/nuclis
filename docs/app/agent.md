@@ -422,3 +422,127 @@ change cannot safely reinterpret.
 This is also why the resumable unit is the *entry*, not the event. A turn emits
 hundreds of `answer_delta` events and writes one `assistant` entry; the file
 records the turn, so a resume re-renders rather than replays keystrokes.
+
+## 11. The web tools: a host's search service, opt-in
+
+`web_search`, `web_fetch`, and `web_context` are not the agent's own: they
+call a search service the user runs elsewhere, **holocron** on the home lab
+(a static Go binary in front of the Brave Search API and a self-hosted
+SearXNG, which answers when Brave cannot; its repository's `SPEC.md` § 3 is
+the authoritative contract). nuclis knows only the service's base URL and the
+v1 contract below, and offers the tools only when the configuration says so.
+
+**Opt-in, per surface.** `web.url` names the service; `agent.web` offers the
+tools to the agent, `serve.web` lets a chat request ask the server to run
+them ([configuration](../guide/configuration.md#web)). All three default to
+off, and with them off the agent's tool list and system prompt are the same
+bytes as without the feature. The tools come in tiers, `tools.Web`: `off`
+is the six tools, `search` adds `web_search` and `web_fetch`, `context`
+adds `web_context` too. The guideline loop renders only offered tools, and
+`Agent.init` derives the prompt and the definitions from
+`Workspace.webTier()` so they cannot disagree. A web call the model makes
+for a tool its tier lacks is "not a tool I have", which also covers a
+resumed session recorded with more tools on.
+
+**The probe.** `web_context` exists only on a service with Brave, so the
+agent's setup asks `/v1/health` once (2 s at most) before the prompt is
+built and offers it when `endpoints` lists `/v1/context`; a slow or absent
+service starts at the `search` tier. The tier is fixed for the session, so
+the primed prompt prefix stays valid. `nuclis serve` probes too, for its
+start line only: a server runs for days and Brave may come and go, so it
+accepts the hosted type either way and a call to a service without it
+answers `not_available` as a result.
+
+**Why a separate host.** The fetcher reads URLs the model chooses, and a page
+it reads can tell the model which URL to choose next. On the Mac that fetcher
+would sit beside the workspace, the credentials, and the LAN. On a disposable
+guest it sits behind its own firewall and an address guard that refuses any
+non-public address at every redirect, and the hostile HTML is parsed there;
+nuclis receives bounded Markdown. The same separation lets the search backend
+change (a paid API, an offline index) without touching nuclis.
+
+**The contract nuclis relies on (v1, to holocron 0.5.0).** `GET`, JSON, no
+authentication; nuclis sends `User-Agent: nuclis/<version>` and ignores fields
+it does not know, so additions never break it.
+
+| Call | Answer |
+| --- | --- |
+| `/v1/search?q=&n=[&freshness=]` | `{query, altered_query, provider, results: [{title, url, snippet, extra_snippets, engine, published}], engines_failed}`; `q` 1–400 bytes, `n` 1–10; `altered_query` is the corrected query the provider searched, else `null`; up to 5 `extra_snippets` (`[]` from SearXNG); no results while engines failed is `no_engines` |
+| `/v1/context?q=&tokens=&urls=[&freshness=]` | `{query, provider, sources: [{url, title, published, snippets}], engines_failed}`: passages Brave picked from several pages for one query, `tokens` 1,024–16,384, `urls` 1–20 (not always honoured: 8 asked returned 8–24); zero sources is a `200`; 20 s; `501 not_available` on a host without Brave |
+| `/v1/fetch?url=&start=&max_chars=` | `{url, final_url, status, content_type, title, text, start, chars, truncated}`; `http`/`https`, ports 80 and 443, at most 5 redirects and 5 MiB; `text` is Markdown with absolute links; `start` and `chars` count code points, and a `start` at or past `chars` returns empty text |
+| `/v1/health` | always `200`, `{version, providers: {<name>: ok \| down}, endpoints, billed, quota, cache}`; `endpoints` lists `/v1/context` when Brave is on |
+
+`freshness` is `pd`, `pw`, `pm`, `py`, or `YYYY-MM-DDtoYYYY-MM-DD`; nuclis
+offers only the first four (`day` … `year`), since a range needs today's
+date. Search and context answers carry `X-Holocron-Cache: hit | miss |
+stale`; nuclis never sends `Cache-Control: no-cache`.
+
+Errors are non-2xx with `{"error": {"code", "message"}}`: `bad_request` (also
+a query Brave refuses), `not_found`, `method_not_allowed`, `blocked_address`,
+`unsupported_content`, `upstream_failed` (also a page behind a bot challenge,
+its message saying so), `no_engines`, `busy`, `upstream_timeout`,
+`not_available`, `internal`. A code nuclis does not know is still a failure
+carrying the server's message.
+
+**The allowance.** Brave is metered: about 1,000 free requests a month, then
+US$5 per 1,000, capped at US$10 a month in its dashboard. Every uncached
+search or context is one; fetches and cache hits are free. So a `Service`
+answers at most `max_billed_calls` (6) uncached calls between `beginTurn`s,
+which the agent's loop calls at each turn and the API's job at each request;
+the seventh answers `budget` without a request, and the model reads that
+the turn's budget is spent and to answer from what it has. The count reads
+`X-Holocron-Cache` (an answer without it counts, so the stub and older
+services do). One turn at a time uses a service, so it needs no lock.
+
+**What the model reads.** `src/web/tools.zig` holds the three definitions and
+their rendering, shared by the agent and the server. A search is a numbered
+list (`N. title — url`, the snippet under it, and up to two extra snippets
+under the first three results) at most 8 long, led by the corrected query
+when the provider changed it and followed by a note when engines failed. A
+context is the same numbering per source, its passages indented beneath,
+asked at a 2,048-token budget from 8 pages and cut at a source boundary past
+12,000 characters with the number not shown. A fetch is the page's URL and
+title, its text 16,000 code points at a time, and a bracketed note in
+`read_file`'s form: the range, the length, and the `offset` that continues
+it. Every failure is one sentence naming its cause (`busy` reads "try
+again", a bot challenge names the host and, when offered, points to
+`web_context`, whose provider has the page's text from its index); none ends
+the turn. Queries are checked (≤ 400 bytes, a known `freshness`) and URLs too
+(`http`/`https`, ≤ 2,048 bytes) before anything leaves the machine.
+
+**Why a third tool.** A probe of ten questions (six coding, four chat;
+2026-10-16) compared `/v1/context` with a search and a fetch of the top hit.
+Context at 2,048 tokens held the answer every time in 4.3–9.2K characters
+and 1.1–1.4 s; 4,096 doubled the sources without adding an answer. Snippets
+answered simple facts but missed a before/after example, cut text mid-word,
+and left a version question ambiguous; two of ten top-hit fetches met a bot
+challenge whose page context still had. Search and fetch stay for finding
+links and reading a page whole.
+
+**Waiting without freezing.** `src/web/client.zig` runs each request in a
+concurrent task and waits in 50 ms beats, a pattern `bash`'s polling loop
+already uses: each beat the agent reads keys and repaints, and Ctrl-C cancels
+the request (the task is joined before the call returns, so nothing it
+borrowed outlives it). Its own deadline (15 s search, 25 s context, 30 s fetch) sits above
+the service's budgets, so the service's `upstream_timeout` normally arrives
+first.
+
+**In the API.** A chat request lists `{"type": "web_search"}`,
+`{"type": "web_fetch"}`, or `{"type": "web_context"}` among its tools. The job intercepts those calls in its
+sink, so the client never sees them as `tool_calls`, runs them on the GPU worker
+while short decision and embedding items run in the waits, appends the
+assistant message and the results, and completes again, at most six rounds
+([api.md § Hosted web tools](../guide/api.md#hosted-web-tools)). The model's
+state carries over between rounds, as between an agent's steps. Since the
+client's next request resends only the message it got back, the job keeps
+what the model saw in a bounded stash (`src/api/chat/stash.zig`) keyed by a
+digest of the client's conversation through that message, and puts it back
+when the message returns.
+
+**What it costs in trust.** Queries and URLs leave the machine: the search
+engines see the queries, the sites see the fetches. The guideline tells the
+model never to put workspace code, paths, or secrets in a query, and the
+transcript (or the API's `nuclis_web_calls`) shows every query and URL. A
+fetched page can steer the model; its text is data, as the guideline says, and
+`bash` could already reach the web, so the tools add no capability, only a
+better one.

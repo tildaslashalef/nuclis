@@ -28,6 +28,7 @@ const version = @import("build_options").version;
 const paths = @import("../paths.zig");
 const model = @import("../model.zig");
 const interrupt = @import("../interrupt.zig");
+const web = @import("../web/root.zig");
 const tui = @import("../tui/root.zig");
 const prompt_history = @import("history.zig");
 pub const session_log = @import("session.zig");
@@ -1964,6 +1965,14 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     };
     defer completer.deinit();
     var workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
+    // The web tools exist only when the configuration opts in (`agent.web`).
+    var web_service: ?web.Service = if (settings.web_url) |url| .init(alloc, io, url, web.user_agent) else null;
+    defer if (web_service) |*service| service.deinit();
+    if (web_service) |*service| {
+        // Once, before the prompt is built: the tier is fixed for the session.
+        try service.probe(alloc);
+        workspace.web = service;
+    }
     var agent: loop.Agent = undefined;
     var ui: Ui = .{ .alloc = alloc, .io = io, .environ = environ, .eng = &open.eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .pick = &pick, .switching = switching, .th = th, .agent = &agent, .completer = &completer, .effort = start_effort, .overrides = settings.sampling, .profile = open.profile(), .tokens_seen = &open.history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ), .preview = tui.graphics.enabled(environ), .root_dir = root_dir, .cwd = cwd };
     defer ui.deinit();

@@ -54,13 +54,14 @@ any code.
 
 **Finishing a unit**: the checks pass; the documents it changed are
 updated; its section and row leave `TODO.md` and *Where we are* names the
-next unit; the branch is pushed and the pull request opened (or updated)
-with a Conventional Commit title and the record in its description. The
-user reviews and merges it; a squash merge makes the title the commit's
-subject and the description its body, so `git log main` is the history
-of the work. A session that ends before the unit is finished leaves the
-branch pushed, the section saying what was delivered and what remains,
-and the pull request as a draft.
+next unit; then, on the user's word, the branch is pushed and the pull
+request opened (or updated) with a Conventional Commit title and the
+record in its description. The user reviews and merges it; a squash
+merge makes the title the commit's subject and the description its body,
+so `git log main` is the history of the work. A session that ends before
+the unit is finished leaves the branch committed and the section saying
+what was delivered and what remains; whether it is pushed as a draft
+pull request is the user's call.
 
 **Nothing lands silently.** A side fix found inside a unit goes into that
 unit's pull request and its record. Work the user asks for during a
@@ -289,7 +290,8 @@ stale references. Do not claim build/test execution when no code or build exists
 - The root `build.zig.zon` `.version` is the single source of truth, the
   last released version. The manifests under `inference/` and
   `huggingface/` carry the same version because the Zig package format
-  requires one; `make version V=X.Y.Z` sets all three. The executable
+  requires one; `make version V=X.Y.Z` sets all three and the site's
+  download (`make site-check` holds it equal). The executable
   reports it as `nuclis --version`, fed from the root manifest through
   build options.
 - [Semantic Versioning](https://semver.org/) with the 0.x convention: while
@@ -338,8 +340,10 @@ checks before committing. Use short subjects; add a body only when it
 explains a useful reason or tradeoff. Do not add `Co-Authored-By:` or any
 other co-author/attribution trailer to commits or pull requests.
 
-**Authorized without asking:** commits on the unit's branch, pushing that
-branch, opening the unit's pull request and updating its description.
+**Authorized without asking:** commits on the unit's branch. **Ask first,
+every time:** pushing the branch, opening the unit's pull request, and
+updating its description; the branch stays local until the user says to
+push it.
 **Never:** pushing to `main` (the ruleset refuses it), merging a pull
 request (the user's review), force-pushing a branch others may have
 fetched, rewriting `main`'s history, or opening issues (the project uses
