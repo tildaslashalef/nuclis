@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """A local stand-in for the search service behind the agent's web tools:
-holocron's v1 contract to 0.5.0 (docs/app/agent.md § 11) answered from canned data,
+the v1 contract in docs/app/agent.md § 11 answered from canned data,
 for the screenshot harness, `nuclis serve` checks, and any run where the
-lab's service is out of reach. Standard library only; nothing leaves the
+real service is out of reach. Standard library only; nothing leaves the
 machine.
 
     python3 scripts/search-gateway-stub.py              # http://127.0.0.1:8099
@@ -19,10 +19,10 @@ containing `pyhton` is searched as corrected (`altered_query`). Context
 answers canned passages for any query, none for `nothing`; `--no-context`
 leaves `/v1/context` out of health and answers it `501 not_available`.
 `freshness` is checked as the contract says. The first answer to a search
-or context carries `X-Holocron-Cache: miss`, a repeat `hit`.
+or context carries `X-Search-Cache: miss`, a repeat `hit`.
 
 A fetch of one of the pages serves its text, paged by `start` and
-`max_chars`; a private or lab host is `blocked_address`, a `.pdf` is
+`max_chars`; a private or local host is `blocked_address`, a `.pdf` is
 `unsupported_content`, `challenged.example` is the bot-challenge
 `upstream_failed`, a host named `slow.example` waits 25 s (past the
 service's 20 s budget, so it answers `upstream_timeout`), and any other URL
@@ -145,8 +145,7 @@ SOURCES = [
 
 CHALLENGED = "challenged.example"
 
-LAB_SUFFIXES = (".lab.nuclis.dev", ".home.arpa", ".local", ".localhost", ".internal")
-LAB_NAMES = {"localhost", "kamino", "coruscant", "unifi"}
+LOCAL_SUFFIXES = (".home.arpa", ".local", ".localhost", ".internal")
 
 
 class Failure(Exception):
@@ -216,7 +215,7 @@ def blocked(host):
     try:
         return not ipaddress.ip_address(name.strip("[]")).is_global
     except ValueError:
-        return name in LAB_NAMES or name.endswith(LAB_SUFFIXES) or "." not in name
+        return name.endswith(LOCAL_SUFFIXES) or "." not in name
 
 
 def fetch(params):
@@ -303,7 +302,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         if cache:
-            self.send_header("X-Holocron-Cache", cache)
+            self.send_header("X-Search-Cache", cache)
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(payload)

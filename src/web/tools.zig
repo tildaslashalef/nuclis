@@ -156,7 +156,7 @@ pub fn runFetch(service: *client.Service, alloc: Allocator, arguments: []const u
     return switch (reply.outcome) {
         .ok => |page| renderFetch(alloc, page, offset),
         .failed => |f| if (std.mem.eql(u8, f.code, "upstream_failed") and std.mem.indexOf(u8, f.message, "bot challenge") != null)
-            // holocron's own advice names its endpoint; the model reads ours.
+            // The service's own advice names its endpoint; the model reads ours.
             fail(alloc, "web_fetch: {s} is behind a bot challenge only a browser passes{s}", .{ hostOf(url), if (context_offered) "; web_context may hold its text" else "" })
         else
             failure(alloc, fetch.name, f),

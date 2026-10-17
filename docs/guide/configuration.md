@@ -128,8 +128,9 @@ global `generation.speculative` applies to models without an entry.
 
 ### `web`
 
-The search service behind the web tools: holocron, a separate program the
-user runs (on the home lab, `https://search.apps.lab.nuclis.dev`). The tools
+The search service behind the web tools: a separate program the user runs
+on another host, speaking the contract in
+[app/agent.md § 11](../app/agent.md#11-the-web-tools-a-hosts-search-service-opt-in). The tools
 are off until a surface opts in, `agent.web` for the agent and `serve.web`
 for the API; either one on without a URL is a load error.
 
@@ -137,9 +138,8 @@ for the API; either one on without a URL is a load error.
 | --- | --- | --- |
 | `web.url` | `null` | the service's base URL: `https`, or `http` on a loopback host for a local stand-in (`scripts/search-gateway-stub.py`); no credentials, query, or fragment |
 
-`web_context` needs a service with Brave (holocron 0.5.0 or later with a
-Brave key): the agent offers it only when the service's health lists
-`/v1/context` at startup. Every limit, the context's budget and the six
+`web_context` needs a service with Brave: the agent offers it only when the
+service's health lists `/v1/context` at startup. Every limit, the context's budget and the six
 uncached searches a turn may make, is a host constant, not a key.
 
 Turning a surface on sends what the model searches for and the URLs it
