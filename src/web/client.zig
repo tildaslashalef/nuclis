@@ -1,6 +1,5 @@
 //! The client of the search service behind `web_search`, `web_fetch`, and
-//! `web_context`: holocron's v1 contract, whose client copy is
-//! docs/app/agent.md § 11.
+//! `web_context`: the v1 contract in docs/app/agent.md § 11.
 //!
 //! One `Service` per process holds the base URL and a pooled
 //! `std.http.Client`. Each call returns a `Reply` whose arena owns everything
@@ -307,7 +306,7 @@ pub const Service = struct {
         return .{ .failed = .{ .code = parsed.@"error".code, .message = parsed.@"error".message, .status = raw.status } };
     }
 
-    /// `cached`: `X-Holocron-Cache` said `hit` or `stale`; a missing header
+    /// `cached`: `X-Search-Cache` said `hit` or `stale`; a missing header
     /// (the stub, an older service) counts as a miss.
     const Raw = struct { status: u16, body: []const u8, cached: bool = false };
     const Exchanged = union(enum) { done: Raw, failed: Failure };
@@ -358,7 +357,7 @@ pub const Service = struct {
         // Read before the body: `reader` invalidates the head's bytes.
         var cached = false;
         var headers = res.head.iterateHeaders();
-        while (headers.next()) |header| if (std.ascii.eqlIgnoreCase(header.name, "x-holocron-cache")) {
+        while (headers.next()) |header| if (std.ascii.eqlIgnoreCase(header.name, "x-search-cache")) {
             cached = std.ascii.eqlIgnoreCase(header.value, "hit") or std.ascii.eqlIgnoreCase(header.value, "stale");
         };
         if (res.head.content_encoding != .identity) return error.UnsupportedContentEncoding;
@@ -399,7 +398,7 @@ fn appendEscaped(a: Allocator, out: *std.ArrayList(u8), value: []const u8) Alloc
 }
 
 test "the base URL rule: https anywhere, http on loopback only" {
-    for ([_][]const u8{ "https://search.apps.lab.nuclis.dev", "https://search.example/", "https://search.example/prefix", "http://127.0.0.1:8099", "http://localhost:8099/", "http://[::1]:8099" }) |url|
+    for ([_][]const u8{ "https://search.home.example", "https://search.example/", "https://search.example/prefix", "http://127.0.0.1:8099", "http://localhost:8099/", "http://[::1]:8099" }) |url|
         try std.testing.expect(validBase(url));
     for ([_][]const u8{ "http://search.example", "ftp://search.example", "https://me:pw@search.example", "https://search.example/?key=1", "https://search.example/#x", "search.example", "" }) |url|
         try std.testing.expect(!validBase(url));

@@ -1626,12 +1626,12 @@ test "the web tools are off by default and on only with web.url and the surface'
     defer none.deinit();
     try std.testing.expect(resolve(&none, null, .{}, .agent).web_url == null);
     try std.testing.expect(!none.config.serve.web);
-    var url_only = try fromText(alloc, "{ \"schema_version\": 1, \"web\": { \"url\": \"https://search.apps.lab.nuclis.dev\" } }", "t.json", &diag);
+    var url_only = try fromText(alloc, "{ \"schema_version\": 1, \"web\": { \"url\": \"https://search.example\" } }", "t.json", &diag);
     defer url_only.deinit();
     try std.testing.expect(resolve(&url_only, null, .{}, .agent).web_url == null);
-    var on = try fromText(alloc, "{ \"schema_version\": 1, \"web\": { \"url\": \"https://search.apps.lab.nuclis.dev/\" }, \"agent\": { \"web\": true }, \"serve\": { \"web\": true } }", "t.json", &diag);
+    var on = try fromText(alloc, "{ \"schema_version\": 1, \"web\": { \"url\": \"https://search.example/\" }, \"agent\": { \"web\": true }, \"serve\": { \"web\": true } }", "t.json", &diag);
     defer on.deinit();
-    try std.testing.expectEqualStrings("https://search.apps.lab.nuclis.dev/", resolve(&on, null, .{}, .agent).web_url.?);
+    try std.testing.expectEqualStrings("https://search.example/", resolve(&on, null, .{}, .agent).web_url.?);
     try std.testing.expect(on.config.serve.web);
 }
 

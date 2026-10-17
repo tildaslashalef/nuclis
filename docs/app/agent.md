@@ -426,11 +426,10 @@ records the turn, so a resume re-renders rather than replays keystrokes.
 ## 11. The web tools: a host's search service, opt-in
 
 `web_search`, `web_fetch`, and `web_context` are not the agent's own: they
-call a search service the user runs elsewhere, **holocron** on the home lab
-(a static Go binary in front of the Brave Search API and a self-hosted
-SearXNG, which answers when Brave cannot; its repository's `SPEC.md` § 3 is
-the authoritative contract). nuclis knows only the service's base URL and the
-v1 contract below, and offers the tools only when the configuration says so.
+call a search service the user runs on another host (for example one in
+front of the Brave Search API with a self-hosted SearXNG that answers when
+Brave cannot). nuclis knows only the service's base URL and the v1 contract
+below, and offers the tools only when the configuration says so.
 
 **Opt-in, per surface.** `web.url` names the service; `agent.web` offers the
 tools to the agent, `serve.web` lets a chat request ask the server to run
@@ -461,7 +460,7 @@ non-public address at every redirect, and the hostile HTML is parsed there;
 nuclis receives bounded Markdown. The same separation lets the search backend
 change (a paid API, an offline index) without touching nuclis.
 
-**The contract nuclis relies on (v1, to holocron 0.5.0).** `GET`, JSON, no
+**The contract nuclis relies on (v1).** `GET`, JSON, no
 authentication; nuclis sends `User-Agent: nuclis/<version>` and ignores fields
 it does not know, so additions never break it.
 
@@ -474,7 +473,7 @@ it does not know, so additions never break it.
 
 `freshness` is `pd`, `pw`, `pm`, `py`, or `YYYY-MM-DDtoYYYY-MM-DD`; nuclis
 offers only the first four (`day` … `year`), since a range needs today's
-date. Search and context answers carry `X-Holocron-Cache: hit | miss |
+date. Search and context answers carry `X-Search-Cache: hit | miss |
 stale`; nuclis never sends `Cache-Control: no-cache`.
 
 Errors are non-2xx with `{"error": {"code", "message"}}`: `bad_request` (also
@@ -491,7 +490,7 @@ answers at most `max_billed_calls` (6) uncached calls between `beginTurn`s,
 which the agent's loop calls at each turn and the API's job at each request;
 the seventh answers `budget` without a request, and the model reads that
 the turn's budget is spent and to answer from what it has. The count reads
-`X-Holocron-Cache` (an answer without it counts, so the stub and older
+`X-Search-Cache` (an answer without it counts, so the stub and older
 services do). One turn at a time uses a service, so it needs no lock.
 
 **What the model reads.** `src/web/tools.zig` holds the three definitions and

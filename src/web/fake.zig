@@ -9,7 +9,7 @@ const Io = std.Io;
 /// took by connecting itself (a blocked `accept` does not wake on
 /// cancellation), so a failing test ends instead of hanging.
 pub const Fake = struct {
-    /// `cache`, when set, is sent as `X-Holocron-Cache`.
+    /// `cache`, when set, is sent as `X-Search-Cache`.
     pub const Answer = struct { status: u16, body: []const u8, delay_ms: u64 = 0, cache: ?[]const u8 = null };
 
     server: std.Io.net.Server,
@@ -81,7 +81,7 @@ pub const Fake = struct {
         var write_buffer: [1024]u8 = undefined;
         var writer = std.Io.net.Stream.Writer.init(stream, io, &write_buffer);
         try writer.interface.print("HTTP/1.1 {d} Answer\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n", .{ answer.status, answer.body.len });
-        if (answer.cache) |cache| try writer.interface.print("X-Holocron-Cache: {s}\r\n", .{cache});
+        if (answer.cache) |cache| try writer.interface.print("X-Search-Cache: {s}\r\n", .{cache});
         try writer.interface.print("\r\n{s}", .{answer.body});
         try writer.interface.flush();
     }
