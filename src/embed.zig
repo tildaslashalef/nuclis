@@ -187,9 +187,9 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]cons
         // Prepared with truncation always, so a refusal can give the count.
         p.* = embedder.prepare(arena, rendered, .{ .truncate = true, .image_tokens = request.image_tokens }) catch |err| {
             switch (err) {
-                error.UnsupportedImageFormat, error.MalformedImage => diag.set("{s}: not an image nuclis can read (PNG, JPEG, HEIC, WebP, TIFF, GIF, BMP)", .{input.label}),
+                error.UnsupportedImageFormat, error.MalformedImage => diag.set("{s}: not an image nuclis can read ({s})", .{ input.label, inference.vision.image.readable }),
                 error.ImageTooLarge => diag.set("{s}: the image is too large to decode", .{input.label}),
-                error.UnsupportedAudioFormat => diag.set("{s}: not audio nuclis can read (WAV, AIFF, MP3, M4A, FLAC, CAF)", .{input.label}),
+                error.UnsupportedAudioFormat => diag.set("{s}: not audio nuclis can read ({s})", .{ input.label, inference.audio.audio.readable }),
                 error.AudioTooShort => diag.set("{s}: the clip is shorter than 10 ms", .{input.label}),
                 error.AudioTooLong => diag.set("{s}: a clip is at most {d} s (Google's processor's bound); --truncate keeps its first {d} s", .{ input.label, embed.max_audio_seconds, embed.max_audio_seconds }),
                 error.NoAudioEncoder => diag.set("{s}: the projector has no audio encoder", .{input.label}),

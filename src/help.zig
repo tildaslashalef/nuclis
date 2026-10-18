@@ -504,7 +504,8 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "decision, 1 chat, 1 embedding (what stays open);");
     try more(out, "without it nothing opens until its first request");
     try row(out, sty, "--memory <GiB>", "what every open model may hold together; default");
-    try more(out, "serve.memory_bytes, else physical memory less 16 GiB");
+    try more(out, "serve.memory_bytes, else physical memory less a");
+    try more(out, "third of it, at most 16 GiB");
     try row(out, sty, "--backend cpu|metal", "default metal");
     try row(out, sty, "--quiet", "no line per request (serve.log false does the same)");
     try row(out, sty, "--timeout <s>", "how long a request may wait for the GPU before");

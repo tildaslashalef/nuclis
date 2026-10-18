@@ -123,7 +123,7 @@ global `generation.speculative` applies to models without an entry.
 | `serve.port` | `9000` | flag `--port` |
 | `serve.log` | `true` | a line per request on stdout; `--quiet` turns it off |
 | `serve.timeout` | `300` | seconds a request may wait for the GPU before `529 timeout` (a clef-flash request can hold it for minutes); flag `--timeout` |
-| `serve.memory_bytes` | `null` | what every model `nuclis serve` keeps open may hold together, decision and language alike; null is physical memory less 16 GiB. Flag `--memory <GiB>` ([api.md § Memory](api.md#memory)) |
+| `serve.memory_bytes` | `null` | what every model `nuclis serve` keeps open may hold together, decision and language alike; null is physical memory less a third, at most 16 GiB. Flag `--memory <GiB>` ([api.md § Memory](api.md#memory)) |
 | `serve.web` | `false` | run the hosted `web_search`, `web_fetch`, and `web_context` tool types a chat request asks for, through `web.url` ([api.md § Hosted web tools](api.md#hosted-web-tools)); off refuses them. Needs `web.url` |
 
 ### `web`

@@ -7,6 +7,8 @@ const build_options = @import("build_options");
 
 /// The bridge is compiled with the Metal one: both are the macOS bridges.
 pub const bridge_enabled = build_options.metal;
+/// The formats `decode` reads, for messages.
+pub const readable = if (bridge_enabled) "PNG, JPEG, HEIC, WebP, TIFF, GIF, BMP" else "none: images need the macOS build";
 
 /// Encoded bytes accepted from a file.
 pub const max_bytes: usize = 32 << 20;

@@ -305,9 +305,9 @@ fn prepare(embedder: *embed.Embedder, job: *Job) !void {
         // Prepared with truncation always, so a refusal can give the count.
         p.* = embedder.prepare(job.arena, input, .{ .truncate = true, .image_tokens = job.image_tokens }) catch |err| {
             const refused: ?ApiError = switch (err) {
-                error.UnsupportedImageFormat, error.MalformedImage => .init(.bad_request, "invalid_image", job.arena.print("input[{d}]: not an image nuclis can read (PNG, JPEG, HEIC, WebP, TIFF, GIF, BMP)", .{i}) catch "an image could not be read"),
+                error.UnsupportedImageFormat, error.MalformedImage => .init(.bad_request, "invalid_image", job.arena.print("input[{d}]: not an image nuclis can read ({s})", .{ i, inference.vision.image.readable }) catch "an image could not be read"),
                 error.ImageTooLarge => .init(.bad_request, "invalid_image", job.arena.print("input[{d}]: the image is too large to decode", .{i}) catch "an image is too large"),
-                error.UnsupportedAudioFormat => .init(.bad_request, "invalid_audio", job.arena.print("input[{d}]: not audio nuclis can read (WAV, AIFF, MP3, M4A, FLAC, CAF)", .{i}) catch "a clip could not be read"),
+                error.UnsupportedAudioFormat => .init(.bad_request, "invalid_audio", job.arena.print("input[{d}]: not audio nuclis can read ({s})", .{ i, inference.audio.audio.readable }) catch "a clip could not be read"),
                 error.AudioTooShort => .init(.bad_request, "invalid_audio", job.arena.print("input[{d}]: the clip is shorter than 10 ms", .{i}) catch "a clip is too short"),
                 else => null,
             };

@@ -56,6 +56,8 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            // `src/` calls `std.c`; Linux links no libc unless asked.
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "inference", .module = inference.module("inference") },
                 .{ .name = "huggingface", .module = huggingface.module("huggingface") },

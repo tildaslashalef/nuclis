@@ -192,7 +192,7 @@ pub const Config = struct {
         /// timeout`; a clef-flash request alone can hold it for minutes.
         timeout: u32 = 300,
         /// The memory every open model may hold together, decision and
-        /// language alike; null is physical memory less 16 GiB.
+        /// language alike; null is physical memory less a third, at most 16 GiB.
         memory_bytes: ?u64 = null,
         /// Run the hosted `web_search`, `web_fetch`, and `web_context` tool
         /// types a request asks for, against `web.url`; off refuses them.

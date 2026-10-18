@@ -403,7 +403,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
             .cpu => .cpu,
             .metal => .metal,
         }, context.root, context.registry, context.loaded.config.embed.model, @as(u64, options.timeout) * std.time.ns_per_s),
-        .memory = .init(gpa, options.memory_bytes orelse memory.defaultLimit()),
+        .memory = .init(gpa, options.memory_bytes orelse memory.defaultLimit(io)),
         .backend = backend,
         .version = context.version,
     };
