@@ -667,7 +667,7 @@ refuses force pushes and deletion). The pull request's title, a Conventional
 Commit, becomes the squash commit's subject, and its description, the
 record of the work (`.github/pull_request_template.md`), becomes the body.
 
-Two workflows under `.github/workflows/`. The macOS jobs install the
+Two workflows under `.github/workflows/`. The build jobs install the
 compiler with `.github/install-zig.sh`: the version comes from
 `minimum_zig_version` in `build.zig.zon` and the SHA-256 from
 `.github/zig-toolchain`, verified before anything is unpacked. No
@@ -686,10 +686,11 @@ tag, and checkouts keep `persist-credentials` off.
 | `test` | code changed (macOS) | `zig fmt --check`, a semver check on the manifest's version, `zig build test` |
 | `metal` | code changed (macOS) | a `-Dmetal=true -Doptimize=ReleaseSafe` build, `--version` and `--help` on it |
 | `cpu` | code changed (macOS) | a Debug `-Dmetal=false` build, so the non-Metal path keeps linking |
+| `linux` | code changed (ubuntu) | `zig build test -Dmetal=false` and a Debug build, `--version` on it |
 | `ok` | always | passes when every job passed or was skipped: the check `main` requires |
 
 That is `make check` minus the GPU. The toolchain cache is keyed on the
-compiler version and its pins; each macOS job caches `.zig-cache` and Zig's
+compiler version and its pins; each build job caches `.zig-cache` and Zig's
 global cache per commit, restoring the newest. **Not** in CI: `test-metal`,
 `verify`, `bench`, and anything that pulls a model. They need the pinned
 artifacts and the real M4 Pro, and a rate measured on a virtualised GPU is
@@ -747,6 +748,23 @@ build that left it out produced a binary that failed at run time with
 says so and names both ways out (rebuild, or `--backend cpu`). Building the
 bridge does not make the default tests need a GPU: the fixtures that execute
 kernels are the separate `test-metal` step.
+
+### Linux
+
+A CPU-only target: the executable links libc on every target, the memory
+budget reads `sysinfo` (capped by a cgroup v2 `memory.max`), and image and
+audio input are refused with the formats the build reads (none). Cross-
+compile from the Mac for the host's glibc and CPU, for example an x86_64
+host with AVX-512 and glibc 2.43:
+
+```sh
+zig build -Dmetal=false -Doptimize=ReleaseSafe -Dtarget=x86_64-linux-gnu.2.43 -Dcpu=x86_64_v4
+```
+
+A plain `-Dtarget=x86_64-linux-gnu` builds for baseline x86-64 (SSE2), which
+leaves the CPU kernels' vectors narrow. Copy `zig-out/bin/nuclis` over,
+then `nuclis model pull <name>` there and `nuclis serve` (the backend is
+the CPU when Metal is not built).
 
 The root `Makefile` wraps these and the explicit model/GPU targets with the
 local cache flag already applied; `make help` lists every target. Targets that

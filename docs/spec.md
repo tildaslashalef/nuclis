@@ -44,7 +44,11 @@ repository:
   same engine with a bounded tool layer for small coding tasks in the
   working directory.
 
-The target hardware is an Apple M4 Pro with 48 GB of unified memory. The
+The target hardware is an Apple M4 Pro with 48 GB of unified memory.
+Linux is a CPU-only build target (`-Dmetal=false`, no GPU backend, no
+image or audio decoding): it builds, passes the unit tests, and serves
+the models the CPU reference runs fast enough, such as EmbeddingGemma 2
+([development.md § Linux](development.md#linux)). The
 first model is Qwen3.8-27B; the engine supports four families through one
 extension seam (§4, §5.7). Everything outside these three surfaces is
 deferred (§10).

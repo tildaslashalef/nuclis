@@ -515,7 +515,11 @@ fn catalogRoundTrip(a: Allocator) !void {
 }
 test "catalog owns all strings and cleans up allocation failures" {
     try catalogRoundTrip(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, catalogRoundTrip, .{});
+    // A fixed buffer: the arena grows by resizing in place first, which over
+    // pages succeeds at random on Linux (mremap) and so varies the count.
+    var buffer: [256 << 10]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+    try std.testing.checkAllAllocationFailures(fixed.allocator(), catalogRoundTrip, .{});
     const bad = try std.mem.replaceOwned(u8, std.testing.allocator, catalog_fixture, "Q4.gguf", "../Q4.gguf");
     defer std.testing.allocator.free(bad);
     try std.testing.expectError(error.InvalidMetadata, parseCatalog(std.testing.allocator, "a/b", bad));
