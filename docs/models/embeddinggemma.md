@@ -728,3 +728,4 @@ Proxmox VM (Ubuntu 26.04, 2 vCPU of a Ryzen 9 9955HX, 4 GiB):
 | peak resident memory | 344 MiB |
 | `nuclis serve --model embeddinggemma-2`, two short texts | 181 ms, 768-wide vectors; budget 2.5 GiB |
 | `nuclis model pull embeddinggemma-2` | 309.9 MB in 7.2 s, digest as catalogued |
+| the release's build (`x86_64-linux-gnu.2.35`, `x86_64_v3`), the same 13 texts | bit-identical to the Mac too; 19.56 s |

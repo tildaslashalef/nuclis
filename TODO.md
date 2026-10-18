@@ -16,12 +16,6 @@ it is empty, ask what to work on and write the agreed plan here.
 
 Agreed and not scheduled; when one is picked up, it becomes a unit above.
 
-- **A Linux archive in releases** (from the Linux CPU build unit,
-  2026-10-18). `release.yml` builds on `macos-15` only; a CPU-only
-  `x86_64-linux-gnu` archive (glibc and CPU level chosen and stated),
-  attested like the macOS one, and the site's download. The build and its
-  check are in `docs/development.md` § Linux.
-
 - **Saluki's speed goals** (restated by the user, 2026-10-15; the numbers
   and their arithmetic in `docs/models/saluki.md`, its **Goals**): decode at
   32,639 ≥ 18 tok/s, and a 32,639-token prompt prefilled in ≤ 7 minutes.

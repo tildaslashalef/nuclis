@@ -710,14 +710,17 @@ builds anything, unless:
 The Zig version is the tag's, but `install-zig.sh` is the workflow
 revision's and the digests are the tag's `.github/zig-toolchain` plus the
 workflow revision's (the first matching line wins). It runs the same gate,
-builds `-Dmetal=true -Doptimize=ReleaseSafe`, asserts the binary reports
-the tag's version, attests both tarballs
+builds `-Dmetal=true -Doptimize=ReleaseSafe` and, cross-compiled beside
+it, the CPU-only Linux binary ([Linux](#linux)), asserts the macOS binary
+reports the tag's version and the Linux one carries the same `nuclis
+X.Y.Z` string (it cannot run on the runner), attests the tarballs
 (`actions/attest-build-provenance`; check one with `gh attestation verify
-<file> -R tildaslashalef/nuclis`), and creates a draft release with three
+<file> -R tildaslashalef/nuclis`), and creates a draft release with four
 assets:
-the binary tarball (`nuclis-vX.Y.Z-aarch64-macos.tar.gz`), a source
+the binary tarballs (`nuclis-vX.Y.Z-aarch64-macos.tar.gz`,
+`nuclis-vX.Y.Z-x86_64-linux.tar.gz`), a source
 tarball (`nuclis-vX.Y.Z-src.tar.gz`, `git archive` of the tag), and a
-`SHA256SUMS` covering both. The notes are the tag's message, GitHub's
+`SHA256SUMS` covering them. The notes are the tag's message, GitHub's
 generated list of the pull requests merged since the previous release
 (`releases/generate-notes`), and `.github/release-footer.md`. It publishes
 only once the asset count checks, so a failed upload never leaves a public
@@ -765,6 +768,16 @@ A plain `-Dtarget=x86_64-linux-gnu` builds for baseline x86-64 (SSE2), which
 leaves the CPU kernels' vectors narrow. Copy `zig-out/bin/nuclis` over,
 then `nuclis model pull <name>` there and `nuclis serve` (the backend is
 the CPU when Metal is not built).
+
+The release's Linux archive is built for the widest reach at little cost:
+`-Dtarget=x86_64-linux-gnu.2.35 -Dcpu=x86_64_v3`, so any x86-64 with AVX2
+(Intel since Haswell, AMD since Excavator) and glibc 2.35 or newer (Ubuntu
+22.04, Debian 12). On the Ryzen VM it embeds EmbeddingGemma 2's 13-text
+check in 19.6 s, against 18.0 s for the `x86_64_v4` build, with the same
+vectors ([models/embeddinggemma.md § On Linux, CPU
+only](models/embeddinggemma.md#on-linux-cpu-only-2026-10-18)). Its tarballs are
+written with `tar --no-xattrs`: macOS's tar otherwise records
+`com.apple.provenance`, which GNU tar warns about on unpacking.
 
 The root `Makefile` wraps these and the explicit model/GPU targets with the
 local cache flag already applied; `make help` lists every target. Targets that
