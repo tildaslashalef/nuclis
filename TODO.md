@@ -12,6 +12,52 @@ Session protocol (also in [AGENTS.md](AGENTS.md)): read this file first. If
 it lists work, summarize *Where we are* and ask the user how to continue. If
 it is empty, ask what to work on and write the agreed plan here.
 
+## Where we are
+
+One unit in progress: **serve opens nothing until asked** (branch
+`serve-lazy-models`).
+
+| Unit | State |
+| --- | --- |
+| serve opens nothing until asked | in progress |
+
+## serve opens nothing until asked
+
+Base: `4449064`. Asked by the user, 2026-10-18.
+
+`nuclis serve` today opens `decide.model` before it listens (or the
+`--model` decision models), a language model with `--chat-model`, and the
+embedding model on its first request. Two flags for one idea confuse.
+
+- **No model opens at start** unless named. Every kind opens on its first
+  request, as embeddings already do. Remove the default-model preload and
+  its warning in `serve` (`src/api/root.zig`).
+- **One flag, `--model <name>`, repeatable, any kind.** Its kind comes
+  from the registry entry's `kind`, else the decision or embedding
+  catalogue, else generation: the rule `cli.zig` uses for `generate`,
+  moved to `catalog.kindOf(registry, name)` and shared. Per kind at most
+  `decisions/pool.capacity` decision models, one language model, one
+  embedding model (each service keeps that many open); more is
+  `InvalidOptionValue` naming the kind. Each opens before the server
+  listens, the start line saying its kind and time.
+- **`--chat-model` is removed** (0.x: the minor is the breaking axis; the
+  pull request title carries `!`). `Options.chat_model` goes;
+  `Options.models` holds every kind.
+- **Embeddings gain `Service.preload`** (`src/api/embeddings/service.zig`),
+  the decision service's shape: locate, an `Opening` item on the worker
+  that calls `pool.acquire`.
+- **Completion**: a `Value.served` kind whose candidates are the registry
+  entries and the three catalogues, each described by its kind
+  (`decision`, `chat`, `embedding`) first; serve's `--model` uses it.
+- Documents: `src/help.zig` serve page, `docs/guide/api.md` options,
+  `docs/spec.md` serve row, `README.md`, `site/index.html` snippet,
+  `scripts/api-check.py` (`--model` for `--chat-model`).
+- Gates: `zig build test`, `zig fmt --check`, `make lint-py`,
+  `make docs-check`, `make site-check`, `make verify-auto`; exercise
+  `./zig-out/bin/nuclis serve` with no model (nothing opened, a decision
+  and an embeddings request open theirs) and with `--model` of each kind,
+  and `nuclis __complete serve --model ""`. Executable only: no tier.
+
 ## Deferred
 
 Agreed and not scheduled; when one is picked up, it becomes a unit above.
