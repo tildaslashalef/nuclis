@@ -165,6 +165,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]cons
     var started = std.Io.Clock.awake.now(io);
     const backend = o.backend orelse if (inference.metal.enabled) embed.Backend.metal else .cpu;
     const media = request.hasImages() or request.hasAudio();
+    if (media and !inference.vision.image.bridge_enabled) {
+        diag.set("{s}: this build reads no images or audio (they need the macOS build)", .{identity.name});
+        return error.MediaUnsupported;
+    }
     if (media and mmproj == null) {
         diag.set("{s}: images and audio need the model's projector, which is not pulled (`nuclis model pull {s} --with mmproj`)", .{ identity.name, identity.name });
         return error.NoProjector;
@@ -187,9 +191,9 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]cons
         // Prepared with truncation always, so a refusal can give the count.
         p.* = embedder.prepare(arena, rendered, .{ .truncate = true, .image_tokens = request.image_tokens }) catch |err| {
             switch (err) {
-                error.UnsupportedImageFormat, error.MalformedImage => diag.set("{s}: not an image nuclis can read (PNG, JPEG, HEIC, WebP, TIFF, GIF, BMP)", .{input.label}),
+                error.UnsupportedImageFormat, error.MalformedImage => diag.set("{s}: not an image nuclis can read ({s})", .{ input.label, inference.vision.image.readable }),
                 error.ImageTooLarge => diag.set("{s}: the image is too large to decode", .{input.label}),
-                error.UnsupportedAudioFormat => diag.set("{s}: not audio nuclis can read (WAV, AIFF, MP3, M4A, FLAC, CAF)", .{input.label}),
+                error.UnsupportedAudioFormat => diag.set("{s}: not audio nuclis can read ({s})", .{ input.label, inference.audio.audio.readable }),
                 error.AudioTooShort => diag.set("{s}: the clip is shorter than 10 ms", .{input.label}),
                 error.AudioTooLong => diag.set("{s}: a clip is at most {d} s (Google's processor's bound); --truncate keeps its first {d} s", .{ input.label, embed.max_audio_seconds, embed.max_audio_seconds }),
                 error.NoAudioEncoder => diag.set("{s}: the projector has no audio encoder", .{input.label}),

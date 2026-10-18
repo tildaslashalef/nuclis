@@ -5,6 +5,7 @@
 //! happens on the GPU worker, which owns the models; `snapshot` may be
 //! called from any task. docs/guide/api.md § Running the server.
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const Kind = enum { decision, language, embedding };
 
@@ -200,19 +201,40 @@ pub const Budget = struct {
     }
 };
 
-/// The default limit: physical memory less 16 GiB for the system and other
-/// applications, at least 4 GiB.
-pub fn defaultLimit() u64 {
-    const physical = physicalMemory() orelse return 16 << 30;
-    const reserve_for_system: u64 = 16 << 30;
-    return @max(physical -| reserve_for_system, 4 << 30);
+/// The default limit: physical memory less a reserve for the system and
+/// other applications, a third of it up to 16 GiB (32 GiB on a 48 GiB
+/// machine, 2.7 GiB on a 4 GiB one). 16 GiB when the size is unknown.
+pub fn defaultLimit(io: std.Io) u64 {
+    return limitFor(physicalMemory(io) orelse return 16 << 30);
 }
 
-fn physicalMemory() ?u64 {
-    var size: u64 = 0;
-    var len: usize = @sizeOf(u64);
-    if (std.c.sysctlbyname("hw.memsize", &size, &len, null, 0) != 0) return null;
-    return size;
+fn limitFor(physical: u64) u64 {
+    return physical - @min(physical / 3, 16 << 30);
+}
+
+fn physicalMemory(io: std.Io) ?u64 {
+    switch (builtin.os.tag) {
+        .macos => {
+            var size: u64 = 0;
+            var len: usize = @sizeOf(u64);
+            if (std.c.sysctlbyname("hw.memsize", &size, &len, null, 0) != 0) return null;
+            return size;
+        },
+        .linux => {
+            var info: std.os.linux.Sysinfo = undefined;
+            if (std.os.linux.errno(std.os.linux.sysinfo(&info)) != .SUCCESS) return null;
+            const total = @as(u64, info.totalram) * @max(info.mem_unit, 1);
+            return @min(total, cgroupLimit(io) orelse total);
+        },
+        else => return null,
+    }
+}
+
+/// A cgroup v2 memory limit (a container's), when one is set.
+fn cgroupLimit(io: std.Io) ?u64 {
+    var buffer: [32]u8 = undefined;
+    const text = std.Io.Dir.cwd().readFile(io, "/sys/fs/cgroup/memory.max", &buffer) catch return null;
+    return std.fmt.parseUnsigned(u64, std.mem.trim(u8, text, " \n"), 10) catch null;
 }
 
 // ----- tests: models that record their closing -----
@@ -291,5 +313,11 @@ test "a model that grows once open makes room around itself" {
     try std.testing.expectEqualStrings("laya", fake.closed.items[0]);
     try std.testing.expectEqual(@as(u64, 80), budget.resident(io));
     try std.testing.expectError(error.ModelTooLarge, budget.resize(io, "qwen", 120));
-    try std.testing.expect(defaultLimit() >= 4 << 30);
+}
+
+test "the default limit leaves a third, at most 16 GiB" {
+    try std.testing.expectEqual(@as(u64, 32 << 30), limitFor(48 << 30));
+    try std.testing.expectEqual(@as(u64, 112 << 30), limitFor(128 << 30));
+    try std.testing.expectEqual(@as(u64, (4 << 30) - (4 << 30) / 3), limitFor(4 << 30));
+    try std.testing.expect(defaultLimit(std.testing.io) > 0);
 }

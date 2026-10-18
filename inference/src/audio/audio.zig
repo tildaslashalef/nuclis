@@ -8,6 +8,8 @@ const build_options = @import("build_options");
 
 /// The bridge is compiled with the Metal one: both are the macOS bridges.
 pub const bridge_enabled = build_options.metal;
+/// The formats `decode` reads, for messages.
+pub const readable = if (bridge_enabled) "WAV, AIFF, MP3, M4A, FLAC, CAF" else "none: audio needs the macOS build";
 
 pub const sample_rate = 16000;
 /// Encoded bytes accepted from a file.

@@ -38,7 +38,7 @@ nuclis serve                           # http://127.0.0.1:9000/v1, nothing open 
 | `--host <ip>` | the address to listen on: an IP literal (`127.0.0.1`, `::1`, `0.0.0.0`) or `localhost`; default `serve.host`, `127.0.0.1`. Any address beyond loopback prints a warning: there is no authentication. |
 | `--port <n>` | default `serve.port`, `9000` |
 | `--model <name>` | a model opened before the server listens, of any kind: a decision, language, or embedding model by registry or catalogue name, or a decision checkpoint's directory; repeated, at most 2 decision, 1 language, and 1 embedding model (what the server keeps open). Without it nothing opens at start: each model opens on its first request (`decide.model` for a decision request that names none, `embed.model` for an embeddings request) |
-| `--memory <GiB>` | what every open model may hold together; default `serve.memory_bytes`, else physical memory less 16 GiB ([memory](#memory)) |
+| `--memory <GiB>` | what every open model may hold together; default `serve.memory_bytes`, else physical memory less a third, at most 16 GiB ([memory](#memory)) |
 | `--backend cpu\|metal` | where the models run; default `metal` in a Metal build |
 | `--quiet` | no request log (`serve.log: false` does the same) |
 | `--timeout <s>` | how long a request may wait for the GPU before `529 timeout`; default `serve.timeout`, `300` |
@@ -66,7 +66,7 @@ request that asks. Each model validates questions by its own rules:
 ### Memory
 
 Every open model counts against one budget, whatever its kind:
-32 GiB on a 48 GB machine by default (physical memory less 16 GiB, for
+32 GiB on a 48 GB machine by default (physical memory less a third of it, at most 16 GiB, for
 the system and other applications). A model counts its files (a decision
 checkpoint's weights, backbone, and projector; a language model's
 weights, its draft file when speculative decoding is on, and its image

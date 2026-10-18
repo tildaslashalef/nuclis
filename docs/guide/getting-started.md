@@ -6,7 +6,9 @@ and know where it keeps things. What each command does is in `nuclis
 
 ## Install
 
-nuclis runs on macOS on Apple silicon. The default model, Qwen3.8-27B, is
+nuclis runs on macOS on Apple silicon, and as a CPU-only build on x86-64
+Linux (AVX2, glibc 2.35 or newer), where it serves the small models such as
+EmbeddingGemma 2; images, audio, and the GPU need the macOS build. The default model, Qwen3.8-27B, is
 a 16.5 GB file (about 18 GB with its drafter and vision companions) and
 runs in 48 GB of memory; the smaller families need much less
 ([models/catalogue.md](../models/catalogue.md)).
@@ -20,6 +22,8 @@ tar xzf nuclis-v<version>-aarch64-macos.tar.gz
 cd nuclis-v<version>-aarch64-macos
 xattr -d com.apple.quarantine nuclis   # the binary is not notarized
 ```
+
+On Linux, the same with `x86_64-linux` in the name and no `xattr` line.
 
 Each tarball carries a build provenance attestation (the first line shows
 the workflow that built it) and is listed in the release's `SHA256SUMS`.

@@ -35,6 +35,7 @@ reference rather than the file, the sentence says so.
 - [`nuclis embed` (2026-10-09)](#nuclis-embed-2026-10-09)
 - [Images (2026-10-09)](#images-2026-10-09)
 - [Audio (2026-10-09)](#audio-2026-10-09)
+- [On Linux, CPU only (2026-10-18)](#on-linux-cpu-only-2026-10-18)
 
 ## Artifacts
 
@@ -711,3 +712,20 @@ for 4.8 s and 45 ms for 2 s.
 goes through AudioToolbox's resampler: a 44.1 kHz stereo copy of the
 `north` clip gives cosine 0.9999 to the original, an AAC copy 0.998.
 
+## On Linux, CPU only (2026-10-18)
+
+The Linux build ([development.md § Linux](../development.md#linux)) serves
+the Q8_0 file through the CPU reference; images and audio are refused
+(`unsupported_feature`), the decoders being the macOS bridges. Measured on
+the `linux-cpu-build` branch at `9d40b1d`, Zig 0.17.0, ReleaseSafe, built
+on the Mac with `-Dtarget=x86_64-linux-gnu.2.43 -Dcpu=x86_64_v4`, run on a
+Proxmox VM (Ubuntu 26.04, 2 vCPU of a Ryzen 9 9955HX, 4 GiB):
+
+| Check | Result |
+| --- | --- |
+| 13 texts, `--task document`, 3,367 tokens (11 short sentences in five languages and code, two spans of `docs/spec.md`) against the Mac's CPU path (`--backend cpu`, M4 Pro, same build) | bit-identical: cosine 1.0, largest difference 0, same tokens and space |
+| `nuclis embed` on those 13 | 17.97 s (187 tokens/s); the M4 Pro's CPU path 13.60 s |
+| peak resident memory | 344 MiB |
+| `nuclis serve --model embeddinggemma-2`, two short texts | 181 ms, 768-wide vectors; budget 2.5 GiB |
+| `nuclis model pull embeddinggemma-2` | 309.9 MB in 7.2 s, digest as catalogued |
+| the release's build (`x86_64-linux-gnu.2.35`, `x86_64_v3`), the same 13 texts | bit-identical to the Mac too; 19.56 s |

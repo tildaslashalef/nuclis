@@ -1,11 +1,12 @@
 # Pushes and pull requests that touch code: the checks that need nothing but
 # a compiler.
 #
-# What runs here is `make check` minus the GPU, as three parallel jobs: the
+# What runs here is `make check` minus the GPU, as four parallel jobs: the
 # format check and the default unit tests (no model, no network, no GPU); a
 # ReleaseSafe build with the Metal backend so the Objective-C bridge and the
-# framework links are covered; and a CPU-only Debug build so the
-# `error.MetalNotEnabled` path keeps linking. What does *not* run here,
+# framework links are covered; a CPU-only Debug build so the
+# `error.MetalNotEnabled` path keeps linking; and the CPU-only build and
+# unit tests on Linux, the other platform nuclis builds for. What does *not* run here,
 # deliberately: `test-metal`, `compare`, `bench`, and anything that pulls a
 # model. Those need the pinned 16.5 GB artifact and the real M4 Pro; a number
 # measured on a virtualised GPU would be a number nobody should trust, and
@@ -13,7 +14,7 @@
 #
 # Every push and pull request runs it, and it always reports: `changes`
 # decides whether anything outside `docs/`, `site/`, and Markdown changed,
-# and the macOS jobs run only then; `docs` (the documentation, the site, and
+# and the build jobs run only then; `docs` (the documentation, the site, and
 # the gate manifests, standard library only) runs every time; `ok` passes
 # when every job passed or was skipped, and is the check `main` requires.
 #
@@ -77,7 +78,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     name: ${{ matrix.name }}
-    runs-on: macos-15
+    runs-on: ${{ matrix.os || 'macos-15' }}
     strategy:
       fail-fast: false
       matrix:
@@ -100,6 +101,12 @@ jobs:
               ./zig-out/bin/nuclis agent --help > /dev/null
           - name: cpu
             run: |
+              zig build -Dmetal=false
+              ./zig-out/bin/nuclis --version
+          - name: linux
+            os: ubuntu-latest
+            run: |
+              zig build test -Dmetal=false --summary all
               zig build -Dmetal=false
               ./zig-out/bin/nuclis --version
     steps:
