@@ -165,6 +165,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]cons
     var started = std.Io.Clock.awake.now(io);
     const backend = o.backend orelse if (inference.metal.enabled) embed.Backend.metal else .cpu;
     const media = request.hasImages() or request.hasAudio();
+    if (media and !inference.vision.image.bridge_enabled) {
+        diag.set("{s}: this build reads no images or audio (they need the macOS build)", .{identity.name});
+        return error.MediaUnsupported;
+    }
     if (media and mmproj == null) {
         diag.set("{s}: images and audio need the model's projector, which is not pulled (`nuclis model pull {s} --with mmproj`)", .{ identity.name, identity.name });
         return error.NoProjector;

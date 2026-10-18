@@ -12,6 +12,8 @@
 //! 80 columns (a test holds that).
 const std = @import("std");
 const style = @import("tui/style.zig");
+/// What `--backend` defaults to: the CPU in a build without Metal.
+const default_backend = if (@import("inference").metal.enabled) "default metal" else "default cpu";
 
 /// The commands with a page of their own; `null` is the overview.
 pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, serve, completion };
@@ -94,7 +96,7 @@ fn plain(out: *std.Io.Writer, text: []const u8) !void {
 fn engineOptions(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--model <name|path>", "registry entry, catalogue name, or path; default");
     try more(out, "engine.model of the config file (qwen3.8-27b)");
-    try row(out, sty, "--backend cpu|metal", "default metal");
+    try row(out, sty, "--backend cpu|metal", default_backend);
     try row(out, sty, "--ctx-size <n>", "context window in tokens, 1..32768; default 16384");
     try row(out, sty, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16");
     try row(out, sty, "--max-tokens <n>", "output budget, 1..16384; default 8192 (bench: 32)");
@@ -334,7 +336,7 @@ fn eval(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "fails beyond 0.5 % of its perplexity, or its bound");
     try row(out, sty, "--model <name|path>", "registry entry, catalogue name, or path; default");
     try more(out, "engine.model of the config file (qwen3.8-27b)");
-    try row(out, sty, "--backend cpu|metal", "default metal");
+    try row(out, sty, "--backend cpu|metal", default_backend);
     try row(out, sty, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16");
     try row(out, sty, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e, or muse_glimmer");
     try more(out, "(its BOS)");
@@ -411,7 +413,7 @@ fn decide(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "clef-flash: a 9B model, every question in one pass");
     try row(out, sty, "--truncate head|tail", "the end of a long state that is cut; default tail,");
     try more(out, "head for a JSON list (a conversation)");
-    try row(out, sty, "--backend cpu|metal", "default metal");
+    try row(out, sty, "--backend cpu|metal", default_backend);
     try row(out, sty, "--uncalibrated", "softmax of the raw logits, no temperature");
     try row(out, sty, "--explain", "each sequence decoded, its budget, the logits");
     try row(out, sty, "--json", "one Jev response per state, with timings");
@@ -469,7 +471,7 @@ fn embed(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "it, and a clip over 30 s to its first 30 s");
     try row(out, sty, "--model <name|path>", "an embedding entry or GGUF file; default");
     try more(out, "embed.model (embeddinggemma-2)");
-    try row(out, sty, "--backend cpu|metal", "default metal");
+    try row(out, sty, "--backend cpu|metal", default_backend);
     try row(out, sty, "--json", "every vector with its tokens, space, and timings");
 
     try heading(out, sty, "Examples:");
@@ -506,7 +508,7 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--memory <GiB>", "what every open model may hold together; default");
     try more(out, "serve.memory_bytes, else physical memory less a");
     try more(out, "third of it, at most 16 GiB");
-    try row(out, sty, "--backend cpu|metal", "default metal");
+    try row(out, sty, "--backend cpu|metal", default_backend);
     try row(out, sty, "--quiet", "no line per request (serve.log false does the same)");
     try row(out, sty, "--timeout <s>", "how long a request may wait for the GPU before");
     try more(out, "529 timeout; default serve.timeout, 300");

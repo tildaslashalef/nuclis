@@ -128,6 +128,8 @@ pub const Service = struct {
         const request = parsed.request;
         const inputs = arena.alloc(embed.Input, request.inputs.len) catch return internal(arena);
         for (request.inputs, inputs) |input, *out| out.* = wire.render(arena, request, input) catch return internal(arena);
+        if ((request.hasImages() or request.hasAudio()) and !inference.vision.image.bridge_enabled)
+            return refuse(arena, .bad_request, "unsupported_feature", "input", "{s}: this build reads no images or audio (they need the macOS build)", .{name});
         if ((request.hasImages() or request.hasAudio()) and located.mmproj == null)
             return refuse(arena, .bad_request, "unsupported_feature", "input", "{s}: images and audio need the model's projector, which is not pulled (`nuclis model pull {s} --with mmproj`)", .{ name, name });
         var job: batcher_mod.Job = .{ .arena = arena, .path = located.path, .mmproj = located.mmproj, .name = name, .inputs = inputs, .truncate = request.truncate, .image_tokens = request.image_tokens };
