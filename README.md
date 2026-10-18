@@ -224,7 +224,7 @@ then 65 of 86 prompt tokens cached. Responses stream as server-sent
 events, and a client that leaves stops its request.
 
 ```sh
-nuclis serve --chat-model qwen3.8-27b
+nuclis serve --model qwen3.8-27b
 curl -s localhost:9000/v1/chat/completions -d '{"model": "qwen3.8-27b",
   "messages": [{"role": "user", "content": "Name a prime number above 50."}]}'
 ```

@@ -528,7 +528,7 @@ def main() -> int:
         port = free_port()
         command = [args.binary, "serve", "--port", str(port), "--quiet"]
         if args.model:
-            command += ["--chat-model", args.model]
+            command += ["--model", args.model]
         server = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         url = f"http://127.0.0.1:{port}/v1"
         deadline = time.time() + 600

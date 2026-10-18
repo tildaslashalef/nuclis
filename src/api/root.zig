@@ -24,6 +24,7 @@ const log_mod = @import("log.zig");
 const batcher = @import("decisions/batcher.zig");
 const interrupt = @import("../interrupt.zig");
 const web = @import("../web/root.zig");
+const catalog = @import("../catalog.zig");
 
 /// Host constants; a client never chooses them.
 pub const limits = struct {
@@ -45,12 +46,10 @@ pub const Options = struct {
     log: bool,
     /// Seconds a decision request may wait for the GPU, at least 1.
     timeout: u32,
-    /// Opened at start, in order (the default model when none is named);
-    /// others open on first use.
+    /// Opened at start, by kind (decision, language, embedding), each by
+    /// its service (`byKind`); every other opens on its first request.
     models: std.ArrayList([]const u8) = .empty,
     backend: ?inference.decide.Backend = null,
-    /// A language model opened at start; otherwise the first chat request opens one.
-    chat_model: ?[]const u8 = null,
     /// What every open model may hold together; null is the default.
     memory_bytes: ?u64 = null,
 };
@@ -67,7 +66,7 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
             o.log = false;
             continue;
         }
-        const known = for ([_][]const u8{ "--host", "--port", "--model", "--backend", "--timeout", "--chat-model", "--memory" }) |k| {
+        const known = for ([_][]const u8{ "--host", "--port", "--model", "--backend", "--timeout", "--memory" }) |k| {
             if (std.mem.eql(u8, flag, k)) break true;
         } else false;
         if (!known) {
@@ -109,9 +108,6 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
                 return error.InvalidOptionValue;
             }
             o.memory_bytes = gib << 30;
-        } else if (std.mem.eql(u8, flag, "--chat-model")) {
-            if (o.chat_model != null) return error.DuplicateOption;
-            o.chat_model = value;
         } else {
             if (o.backend != null) return error.DuplicateOption;
             o.backend = std.meta.stringToEnum(inference.decide.Backend, value) orelse {
@@ -124,11 +120,59 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
         diag.set("the wait limit (--timeout or serve.timeout) is at least 1 s", .{});
         return error.InvalidOptionValue;
     }
-    if (o.models.items.len > @import("decisions/pool.zig").capacity) {
-        diag.set("at most {d} --model (the server keeps {d} decision models open)", .{ @import("decisions/pool.zig").capacity, @import("decisions/pool.zig").capacity });
-        return error.InvalidOptionValue;
-    }
     return o;
+}
+
+/// The `--model` names sorted by the service that opens them, in the order
+/// given; `arena` owns the lists. More of a kind than its service keeps
+/// open is `InvalidOptionValue`.
+pub const Named = struct {
+    decision: std.ArrayList([]const u8) = .empty,
+    language: ?[]const u8 = null,
+    embedding: ?[]const u8 = null,
+};
+
+pub fn byKind(arena: std.mem.Allocator, io: std.Io, registry: config.Models, names: []const []const u8, diag: *config.Diagnostic) !Named {
+    const capacity = @import("decisions/pool.zig").capacity;
+    var named: Named = .{};
+    for (names) |name| switch (servedKind(io, registry, name)) {
+        .decision => {
+            if (named.decision.items.len == capacity) {
+                diag.set("at most {d} decision models with --model (the server keeps {d} open)", .{ capacity, capacity });
+                return error.InvalidOptionValue;
+            }
+            try named.decision.append(arena, name);
+        },
+        .generation => {
+            if (named.language) |first| {
+                diag.set("{s} and {s} are both language models; the server keeps one open", .{ first, name });
+                return error.InvalidOptionValue;
+            }
+            named.language = name;
+        },
+        .embedding => {
+            if (named.embedding) |first| {
+                diag.set("{s} and {s} are both embedding models; the server keeps one open", .{ first, name });
+                return error.InvalidOptionValue;
+            }
+            named.embedding = name;
+        },
+    };
+    return named;
+}
+
+fn printOpened(out: *std.Io.Writer, sty: style.Style, io: std.Io, name: []const u8, kind: []const u8, started: std.Io.Timestamp) !void {
+    const ms = @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_ms;
+    try out.print("{s}opened{s} {s} {s}({s}, {d:.0} ms){s}\n", .{ sty.on(.success), sty.off(), name, sty.on(.dim), kind, ms, sty.off() });
+}
+
+/// `catalog.kindOf`, and a directory is a decision checkpoint, as
+/// `nuclis decide --model` takes one.
+fn servedKind(io: std.Io, registry: config.Models, name: []const u8) catalog.ModelKind {
+    const kind = catalog.kindOf(registry, name);
+    if (kind != .generation or catalog.find(name) != null) return kind;
+    const stat = std.Io.Dir.cwd().statFile(io, name, .{}) catch return kind;
+    return if (stat.kind == .directory) .decision else kind;
 }
 
 /// The address `--host` names: an IP literal, or `localhost`.
@@ -396,29 +440,26 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
 
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
-    // Without --model the default opens, so the first request pays nothing;
-    // a default that is not pulled is reported, and the server still runs.
-    const named = options.models.items.len > 0;
-    const opening: []const []const u8 = if (named) options.models.items else &.{context.default_model};
-    for (opening) |name| {
+    // Only what --model names opens here; every other model opens on its
+    // first request.
+    const named = try byKind(arena_state.allocator(), io, context.registry, options.models.items, diag);
+    for (named.decision.items) |name| {
         const started = std.Io.Clock.awake.now(io);
-        server.decisions.preload(arena_state.allocator(), io, name, diag) catch |err| {
-            if (named) return err;
-            try out.print("{s}warning:{s} the default model {s} did not open ({s}); requests for it will say why\n", .{ sty.on(.warning), sty.off(), name, diag.message() });
-            continue;
-        };
-        const ms = @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_ms;
-        try out.print("{s}opened{s} {s} {s}({d:.0} ms){s}\n", .{ sty.on(.success), sty.off(), name, sty.on(.dim), ms, sty.off() });
+        try server.decisions.preload(arena_state.allocator(), io, name, diag);
+        try printOpened(out, sty, io, name, "decision", started);
     }
-
-    if (options.chat_model) |name| {
+    if (named.language) |name| {
         const started = std.Io.Clock.awake.now(io);
         server.chat.preload(io, name) catch |err| {
-            diag.set("the chat model {s} did not open: {s}", .{ name, @errorName(err) });
+            diag.set("the language model {s} did not open: {s}", .{ name, @errorName(err) });
             return err;
         };
-        const ms = @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_ms;
-        try out.print("{s}opened{s} {s} {s}(chat, {d:.0} ms){s}\n", .{ sty.on(.success), sty.off(), name, sty.on(.dim), ms, sty.off() });
+        try printOpened(out, sty, io, name, "chat", started);
+    }
+    if (named.embedding) |name| {
+        const started = std.Io.Clock.awake.now(io);
+        try server.embeddings.preload(arena_state.allocator(), io, name, diag);
+        try printOpened(out, sty, io, name, "embedding", started);
     }
 
     var log: log_mod.Log = .init(out, sty, io);
@@ -432,7 +473,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     if (!isLoopback(listen_address))
         try out.print("{s}warning:{s} listening beyond this machine ({s}); the API has no authentication\n", .{ sty.on(.warning), sty.off(), options.host });
     if (web_service) |*service| try out.print("{s}web tools:{s} {s} run here for requests that ask, through {s}\n", .{ sty.on(.label), sty.off(), if (service.context_offered) "web_search, web_fetch, and web_context" else "web_search and web_fetch", service.base });
-    try out.print("{s}nuclis serve{s} listening on {s}http://{f}/v1{s} {s}(backend {s}, default model {s}, models within {d:.1} GiB{s}; Ctrl-C stops){s}\n", .{ sty.on(.header), sty.off(), sty.on(.code), listen_address, sty.off(), sty.on(.dim), @tagName(backend), context.default_model, @as(f64, @floatFromInt(server.memory.limit)) / (1 << 30), if (options.log) "" else ", quiet", sty.off() });
+    try out.print("{s}nuclis serve{s} listening on {s}http://{f}/v1{s} {s}(backend {s}, default decision model {s}, models within {d:.1} GiB{s}; Ctrl-C stops){s}\n", .{ sty.on(.header), sty.off(), sty.on(.code), listen_address, sty.off(), sty.on(.dim), @tagName(backend), context.default_model, @as(f64, @floatFromInt(server.memory.limit)) / (1 << 30), if (options.log) "" else ", quiet", sty.off() });
     try out.flush();
 
     var group: std.Io.Group = .init;
@@ -488,14 +529,30 @@ test {
     _ = @import("embeddings/pool.zig");
 }
 
+test "--model names sort by kind, each within what its service keeps open" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var diag: config.Diagnostic = .{};
+    const named = try byKind(arena, io, .{}, &.{ "embeddinggemma-2", "laya", "qwen3.8-27b", "clef-flash" }, &diag);
+    try std.testing.expectEqual(@as(usize, 2), named.decision.items.len);
+    try std.testing.expectEqualStrings("clef-flash", named.decision.items[1]);
+    try std.testing.expectEqualStrings("qwen3.8-27b", named.language.?);
+    try std.testing.expectEqualStrings("embeddinggemma-2", named.embedding.?);
+    try std.testing.expectEqual(Named{}, try byKind(arena, io, .{}, &.{}, &diag));
+    try std.testing.expectError(error.InvalidOptionValue, byKind(arena, io, .{}, &.{ "laya", "laya-multilingual", "clef-flash" }, &diag));
+    try std.testing.expectError(error.InvalidOptionValue, byKind(arena, io, .{}, &.{ "qwen3.8-27b", "other.gguf" }, &diag));
+    try std.testing.expectError(error.InvalidOptionValue, byKind(arena, io, .{}, &.{ "embeddinggemma-2", "embeddinggemma-2" }, &diag));
+}
+
 test "serve arguments" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var diag: config.Diagnostic = .{};
     const configured: config.Config.Serve = .{};
-    const o = try parseArgs(arena, &.{ "--port", "9000", "--model", "laya", "--model", "laya-multilingual", "--backend", "cpu", "--host", "0.0.0.0", "--quiet", "--chat-model", "qwen3.8-27b" }, configured, &diag);
-    try std.testing.expectEqualStrings("qwen3.8-27b", o.chat_model.?);
+    const o = try parseArgs(arena, &.{ "--port", "9000", "--model", "laya", "--model", "qwen3.8-27b", "--backend", "cpu", "--host", "0.0.0.0", "--quiet" }, configured, &diag);
     try std.testing.expectEqual(@as(?u64, 20 << 30), (try parseArgs(arena, &.{ "--memory", "20" }, configured, &diag)).memory_bytes);
     try std.testing.expectEqual(@as(?u64, 7), (try parseArgs(arena, &.{}, .{ .memory_bytes = 7 }, &diag)).memory_bytes);
     try std.testing.expect(!o.log);
@@ -513,14 +570,13 @@ test "serve arguments" {
     const cases = .{
         .{ &[_][]const u8{ "--port", "70000" }, error.InvalidOptionValue },
         .{ &[_][]const u8{ "--backend", "tpu" }, error.InvalidOptionValue },
-        .{ &[_][]const u8{ "--model", "a", "--model", "b", "--model", "c" }, error.InvalidOptionValue },
         .{ &[_][]const u8{ "--port", "1", "--port", "2" }, error.DuplicateOption },
         .{ &[_][]const u8{"--json"}, error.UnknownOption },
         .{ &[_][]const u8{"--host"}, error.MissingOptionValue },
         .{ &[_][]const u8{ "--timeout", "0" }, error.InvalidOptionValue },
         .{ &[_][]const u8{ "--timeout", "1.5" }, error.InvalidOptionValue },
         .{ &[_][]const u8{ "--timeout", "5", "--timeout", "6" }, error.DuplicateOption },
-        .{ &[_][]const u8{ "--chat-model", "a", "--chat-model", "b" }, error.DuplicateOption },
+        .{ &[_][]const u8{ "--chat-model", "a" }, error.UnknownOption },
         .{ &[_][]const u8{ "--memory", "0" }, error.InvalidOptionValue },
         .{ &[_][]const u8{ "--memory", "1.5" }, error.InvalidOptionValue },
     };

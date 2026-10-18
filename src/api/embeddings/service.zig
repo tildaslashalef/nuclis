@@ -83,6 +83,19 @@ pub const Service = struct {
         try listing.add(gpa, .{ .context = self, .list = list });
     }
 
+    /// Opens `name` now (a `--model` of `nuclis serve`), with its projector
+    /// when pulled, through the GPU.
+    pub fn preload(self: *Service, arena: std.mem.Allocator, io: std.Io, name: []const u8, diag: *config.Diagnostic) !void {
+        const located = try self.locate(arena, io, name, diag);
+        var opening: Opening = .{ .pool = &self.pool, .arena = arena, .path = located.path, .mmproj = located.mmproj, .name = name };
+        try self.executor.submit(io, &opening.item);
+        opening.item.done.waitUncancelable(io);
+        if (opening.failed) |e| {
+            diag.set("{s}", .{e.message});
+            return error.ModelOpenFailed;
+        }
+    }
+
     fn handle(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, request: http.Request) http.Response {
         const self: *Service = @ptrCast(@alignCast(context));
         return self.answer(arena, io, request.body);
@@ -227,6 +240,25 @@ pub const Service = struct {
             const owner = if (repo) |r| r[0 .. std.mem.indexOfScalar(u8, r, '/') orelse r.len] else "local";
             try out.append(arena, .{ .id = name, .owned_by = owner, .details = .{ .object = details } });
         }
+    }
+};
+
+/// Opening a model on the worker, outside any request.
+const Opening = struct {
+    item: gpu.Item = .{ .run = run },
+    pool: *pool_mod.Pool,
+    arena: std.mem.Allocator,
+    path: []const u8,
+    mmproj: ?[]const u8,
+    name: []const u8,
+    failed: ?ApiError = null,
+
+    fn run(item: *gpu.Item, io: std.Io) gpu.Item.After {
+        const self: *Opening = @fieldParentPtr("item", item);
+        _ = self.pool.acquire(io, self.path, self.mmproj, self.name) catch |err| {
+            self.failed = batcher_mod.openFailure(self.arena, self.name, err);
+        };
+        return .done;
     }
 };
 

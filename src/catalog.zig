@@ -17,6 +17,7 @@
 const std = @import("std");
 const inference = @import("inference");
 const model = @import("model.zig");
+const config = @import("config.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Role = model.Role;
@@ -367,6 +368,15 @@ pub fn embeddingByDigest(sha256: []const u8) ?*const EmbeddingEntry {
 pub fn findDecision(name: []const u8) ?*const DecisionEntry {
     for (&decision_entries) |*e| if (std.mem.eql(u8, e.name, name)) return e;
     return null;
+}
+
+/// What runs `name`: its registry entry's kind, else the catalogue that
+/// lists it; anything else (a path, an unknown name) is a text model's.
+pub fn kindOf(registry: config.Models, name: []const u8) ModelKind {
+    if (registry.find(name)) |e| return e.kind orelse .generation;
+    if (findDecision(name) != null) return .decision;
+    if (findEmbedding(name) != null) return .embedding;
+    return .generation;
 }
 
 /// The checkpoint directory of a decision entry: the weights' directory
