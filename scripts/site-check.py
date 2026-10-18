@@ -317,9 +317,10 @@ def check_versions(page, problems):
         problems.append(f"site/index.html: download label {page.text_of.get('data-release-tag')!r}, want v{version}")
     if page.text_of.get("data-release-name") != f"nuclis-v{version}-aarch64-macos":
         problems.append(f"site/index.html: archive name {page.text_of.get('data-release-name')!r} is not v{version}'s")
-    asset = f"releases/download/v{version}/nuclis-v{version}-aarch64-macos.tar.gz"
-    if not any(asset in v for _, _, v in page.refs):
-        problems.append(f"site/index.html: no download link to {asset}")
+    for arch in ("aarch64-macos", "x86_64-linux"):
+        asset = f"releases/download/v{version}/nuclis-v{version}-{arch}.tar.gz"
+        if not any(asset in v for _, _, v in page.refs):
+            problems.append(f"site/index.html: no download link to {asset}")
 
 
 def check_files(problems):

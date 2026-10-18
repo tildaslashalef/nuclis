@@ -31,8 +31,10 @@
     .then((rel) => {
       if (!rel) return;
       const asset = rel.assets.find((a) => /aarch64-macos\.tar\.gz$/.test(a.name));
+      const linux = rel.assets.find((a) => /x86_64-linux\.tar\.gz$/.test(a.name));
       $$("[data-release-tag]").forEach((n) => (n.textContent = rel.tag_name));
       $$("[data-release-page]").forEach((n) => (n.href = rel.html_url));
+      if (linux) $$("[data-release-linux]").forEach((n) => (n.href = linux.browser_download_url));
       if (!asset) return;
       $$("[data-release-asset]").forEach((n) => (n.href = asset.browser_download_url));
       $$("[data-release-name]").forEach((n) => (n.textContent = asset.name.replace(/\.tar\.gz$/, "")));
