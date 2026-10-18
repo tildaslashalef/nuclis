@@ -493,19 +493,16 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try title(out, sty, "nuclis serve", "the nuclis API: decision, language, embedding models");
     try heading(out, sty, "Usage:");
     try code(out, sty, "nuclis serve [--host <ip>] [--port <n>] [--model <name>]…");
-    try code(out, sty, "             [--chat-model <name>] [--memory <GiB>] [--backend cpu|metal]");
-    try code(out, sty, "             [--timeout <s>]");
+    try code(out, sty, "             [--memory <GiB>] [--backend cpu|metal] [--timeout <s>]");
 
     try heading(out, sty, "Options:");
     try row(out, sty, "--host <ip>", "the address to listen on; default serve.host,");
     try more(out, "127.0.0.1 (any other prints a warning: there is no");
     try more(out, "authentication)");
     try row(out, sty, "--port <n>", "default serve.port, 9000");
-    try row(out, sty, "--model <name|path>", "open a decision model at start, at most 2;");
-    try more(out, "default decide.model; others open on first use");
-    try more(out, "(2 stay open)");
-    try row(out, sty, "--chat-model <name>", "open a language model at start; otherwise the");
-    try more(out, "first chat request opens one (one stays open)");
+    try row(out, sty, "--model <name|path>", "open a model at start, any kind: at most 2");
+    try more(out, "decision, 1 chat, 1 embedding (what stays open);");
+    try more(out, "without it nothing opens until its first request");
     try row(out, sty, "--memory <GiB>", "what every open model may hold together; default");
     try more(out, "serve.memory_bytes, else physical memory less 16 GiB");
     try row(out, sty, "--backend cpu|metal", "default metal");
@@ -530,9 +527,9 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "GET /v1/health", "version, backend, open models, queue depth");
 
     try heading(out, sty, "Examples:");
-    try example(out, sty, "nuclis serve", "listen on 127.0.0.1:9000, decide.model open");
+    try example(out, sty, "nuclis serve", "listen on 127.0.0.1:9000, nothing open yet");
     try example(out, sty, "curl -s localhost:9000/v1/decisions -d @ticket.json", "one decision request");
-    try example(out, sty, "nuclis serve --chat-model qwen3.8-27b", "a language model open from the start");
+    try example(out, sty, "nuclis serve --model laya --model qwen3.8-27b", "a decision and a language model open");
 
     try heading(out, sty, "Notes:");
     try plain(out, "Requests run on the GPU one at a time in arrival order, decision and");

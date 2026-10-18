@@ -35,6 +35,8 @@ pub const Value = union(enum) {
     choice: []const []const u8,
     /// A registry entry, a catalogue name, or a path.
     model,
+    /// A model of any kind `serve` opens: decision, chat, or embedding.
+    served,
     /// What `model pull`/`inspect` name: a catalogue or registry name, or
     /// an `owner/repo` typed out.
     repo,
@@ -265,8 +267,7 @@ pub const commands = [_]Command{
     .{ .name = "serve", .summary = "the nuclis API over HTTP", .actions = &.{.{ .flags = &.{
         .{ .name = "--host", .value = .text, .summary = "the address to listen on" },
         .{ .name = "--port", .value = .number, .summary = "default serve.port, 9000" },
-        .{ .name = "--model", .value = .dir, .repeat = true, .summary = "a decision model opened at start" },
-        .{ .name = "--chat-model", .value = .model, .summary = "a language model opened at start" },
+        .{ .name = "--model", .value = .served, .repeat = true, .summary = "a model opened at start, any kind" },
         .{ .name = "--memory", .value = .number, .summary = "GiB every open model may hold together" },
         backend,
         .{ .name = "--quiet", .summary = "no line per request" },
@@ -360,6 +361,7 @@ pub const Candidate = struct { text: []const u8, description: []const u8 = "" };
 pub const State = struct {
     /// Registry entries, then catalogue names.
     models: []const Candidate = &.{},
+    served: []const Candidate = &.{},
     /// The registry's names alone, for `models.<name>.` keys.
     registry: []const []const u8 = &.{},
     /// Newest first.
@@ -398,6 +400,10 @@ pub fn candidates(arena: Allocator, target: Target, current: []const u8, state: 
                 // local list to offer.
                 if (v.kind == .model and isPathLike(current)) return .file;
                 try list.appendSlice(arena, state.models);
+            },
+            .served => {
+                if (isPathLike(current)) return .dir;
+                try list.appendSlice(arena, state.served);
             },
             .session => try list.appendSlice(arena, state.sessions),
             .config_key => {
@@ -511,8 +517,9 @@ fn gather(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
         .config_value => std.mem.eql(u8, kind.key, "engine.model"),
         else => false,
     };
+    const wants_served = kind.kind == .served;
     const wants_registry = kind.kind == .config_key and std.mem.startsWith(u8, "models.", current[0..@min(current.len, "models.".len)]);
-    if (!wants_models and !wants_registry and kind.kind != .session) return .{};
+    if (!wants_models and !wants_served and !wants_registry and kind.kind != .session) return .{};
     const root = (paths.root(arena, environ.get("NUCLIS_HOME"), environ.get("HOME")) catch null) orelse return .{};
     var state: State = .{};
     if (kind.kind == .session) {
@@ -526,6 +533,7 @@ fn gather(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
         state.registry = list.items;
     }
     if (wants_models) state.models = models(arena, io, root, registry) catch &.{};
+    if (kind.kind == .served) state.served = served(arena, io, root, registry) catch &.{};
     return state;
 }
 
@@ -554,6 +562,45 @@ fn models(arena: Allocator, io: std.Io, root: []const u8, registry: config.Model
         try list.append(arena, .{ .text = e.name, .description = try arena.print("{s} · {s} · {s}", .{ e.architecture, e.quantization, @tagName(status) }) });
     }
     return list.items;
+}
+
+/// Every model `serve --model` takes: registry entries, then each
+/// catalogue's names not shadowed by one, each described by its kind first.
+fn served(arena: Allocator, io: std.Io, root: []const u8, registry: config.Models) ![]const Candidate {
+    var list: std.ArrayList(Candidate) = .empty;
+    for (registry.entries) |named| {
+        const e = named.entry;
+        const where = if (e.path) |p| p else if (e.repo) |r| try arena.print("{s}/{s}", .{ r, e.file orelse "" }) else "";
+        try list.append(arena, .{ .text = named.name, .description = try arena.print("{s} · {s}", .{ servedKind(e.kind orelse .generation), where }) });
+    }
+    const dir = try model.modelsDir(arena, root);
+    for (&catalog.decision_entries) |*e| {
+        if (registry.find(e.name) != null) continue;
+        const path = try catalog.decisionDirectory(arena, dir, e);
+        const present = if (std.Io.Dir.cwd().access(io, path, .{})) true else |_| false;
+        try list.append(arena, .{ .text = e.name, .description = try arena.print("decision · {s} · {s}", .{ e.architecture, if (present) "present" else "absent" }) });
+    }
+    for (&catalog.entries) |*e| {
+        if (registry.find(e.name) != null) continue;
+        const path = try catalog.localPath(arena, dir, e, e.file);
+        const status = catalog.status(arena, io, path, e.sha256, e.size) catch .absent;
+        try list.append(arena, .{ .text = e.name, .description = try arena.print("chat · {s} · {s} · {s}", .{ e.architecture, e.quantization, @tagName(status) }) });
+    }
+    for (&catalog.embedding_entries) |*e| {
+        if (registry.find(e.name) != null) continue;
+        const path = try std.fs.path.join(arena, &.{ dir, e.repo, e.file });
+        const status = catalog.status(arena, io, path, e.sha256, e.size) catch .absent;
+        try list.append(arena, .{ .text = e.name, .description = try arena.print("embedding · {s} · {s}", .{ e.quantization, @tagName(status) }) });
+    }
+    return list.items;
+}
+
+fn servedKind(kind: catalog.ModelKind) []const u8 {
+    return switch (kind) {
+        .generation => "chat",
+        .decision => "decision",
+        .embedding => "embedding",
+    };
 }
 
 fn sessions(arena: Allocator, io: std.Io, root: []const u8) ![]const Candidate {
@@ -743,7 +790,7 @@ test "the answer is one line per candidate, a description never breaks one" {
 fn sample(value: Value) []const u8 {
     return switch (value) {
         .none => unreachable,
-        .text, .file, .dir, .session, .model => "x",
+        .text, .file, .dir, .session, .model, .served => "x",
         .number => "1",
         .choice => |c| c[0],
         .repo => "owner/repo",

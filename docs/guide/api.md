@@ -30,15 +30,14 @@ is the reference for client authors; it assumes nothing about the code.
 
 ```sh
 nuclis model pull laya                 # once: the default decision model
-nuclis serve                           # http://127.0.0.1:9000/v1, decide.model open
+nuclis serve                           # http://127.0.0.1:9000/v1, nothing open yet
 ```
 
 | Option | Meaning |
 | --- | --- |
 | `--host <ip>` | the address to listen on: an IP literal (`127.0.0.1`, `::1`, `0.0.0.0`) or `localhost`; default `serve.host`, `127.0.0.1`. Any address beyond loopback prints a warning: there is no authentication. |
 | `--port <n>` | default `serve.port`, `9000` |
-| `--model <name>` | a decision model opened before the server listens (at most 2); without one, `decide.model` opens; others open on their first request |
-| `--chat-model <name>` | a language model opened before the server listens; without one, the first chat request opens one |
+| `--model <name>` | a model opened before the server listens, of any kind: a decision, language, or embedding model by registry or catalogue name, or a decision checkpoint's directory; repeated, at most 2 decision, 1 language, and 1 embedding model (what the server keeps open). Without it nothing opens at start: each model opens on its first request (`decide.model` for a decision request that names none, `embed.model` for an embeddings request) |
 | `--memory <GiB>` | what every open model may hold together; default `serve.memory_bytes`, else physical memory less 16 GiB ([memory](#memory)) |
 | `--backend cpu\|metal` | where the models run; default `metal` in a Metal build |
 | `--quiet` | no request log (`serve.log: false` does the same) |

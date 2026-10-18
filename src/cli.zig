@@ -681,10 +681,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
     defer loaded.deinit();
     const wanted = options.model orelse loaded.config.engine.model;
-    const kind: catalog.ModelKind = if (loaded.config.models.find(wanted)) |e|
-        e.kind orelse .generation
-    else if (catalog.findDecision(wanted) != null) .decision else if (catalog.findEmbedding(wanted) != null) .embedding else .generation;
-    switch (kind) {
+    switch (catalog.kindOf(loaded.config.models, wanted)) {
         .generation => {},
         .decision => {
             diag.set("{s} is a decision model; `nuclis decide --model {s}` runs it", .{ wanted, wanted });
@@ -884,7 +881,8 @@ fn runEmbed(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path
     return embed.run(alloc, io, located.path, located.mmproj, located.identity, options, out, sty, diag);
 }
 
-/// `serve`: the API over the decision models the configuration names.
+/// `serve`: the API over every model kind, each opened on its first request
+/// unless `--model` names it.
 fn runServe(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();

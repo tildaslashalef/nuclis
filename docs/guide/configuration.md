@@ -117,7 +117,7 @@ global `generation.speculative` applies to models without an entry.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `decide.model` | `laya` | the decision model `nuclis decide` opens, and `nuclis serve` opens at start: a registry entry of kind `decision`, a decision catalogue name, or a directory. A text model is refused |
+| `decide.model` | `laya` | the decision model `nuclis decide` opens, and `nuclis serve` for a decision request that names none: a registry entry of kind `decision`, a decision catalogue name, or a directory. A text model is refused |
 | `embed.model` | `embeddinggemma-2` | the embedding model `nuclis embed` opens: a registry entry of kind `embedding`, an embedding catalogue name, or a GGUF path. Another kind's name is refused |
 | `serve.host` | `127.0.0.1` | an IP literal or `localhost`; beyond loopback the API is reachable from the network with no authentication. Flag `--host` |
 | `serve.port` | `9000` | flag `--port` |
