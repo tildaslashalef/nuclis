@@ -45,6 +45,15 @@ Base: `c7bd570`
 - the speculative matrix, with MTP as the same-day baseline
   (`.zig-cache/dflash2/`), then the verdict and the documents;
 - `make verify` and `make verify-cpu`.
+- **Two decisions that follow the verdict** (the user's, 2026-10-21):
+  - If DFlash2 beats MTP on prose, revamp the README's Qwen3.8-27B story
+    around it: plain → MTP → DFlash2 at 512 and 32K, and the setup.
+    Show the user the draft first.
+  - Whether Saluki 27B stays in the user's registry. Put Saluki (7.9 GB,
+    perplexity 7.996, plain 16.96 / 14.97 tok/s at 512 / 32K) beside the
+    Q4_K_M with its best drafter (16.5 GB, 6.670) at the same contexts.
+    The case for keeping it is memory and 32K speed. Removing it is the
+    user's call: their `~/.nuclis/nuclis.json`, not the catalogue.
 
 **Facts read 2026-10-21.**
 
