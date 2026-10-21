@@ -1,0 +1,218 @@
+{
+ "metadata": {
+  "general.architecture": "qwen35",
+  "general.type": "model",
+  "general.sampling.top_k": 20,
+  "general.sampling.top_p": 0.949999988079071,
+  "general.sampling.temp": 1.0,
+  "general.name": "Qwen3.8-27B",
+  "general.basename": "Qwen3.8-27B",
+  "general.description": "Renewal of the beloved Qwen model, delivering unmatched intelligence density.",
+  "general.quantized_by": "Unsloth",
+  "general.size_label": "27B",
+  "general.license": "apache-2.0",
+  "general.repo_url": "https://huggingface.co/unsloth",
+  "general.base_model.count": 1,
+  "general.base_model.0.name": "Qwen3.8 27B",
+  "general.base_model.0.organization": "Qwen",
+  "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.8-27B",
+  "general.tags": {
+   "count": 1,
+   "offset": 902,
+   "type": 8
+  },
+  "qwen35.block_count": 65,
+  "qwen35.context_length": 262144,
+  "qwen35.embedding_length": 5120,
+  "qwen35.feed_forward_length": 17408,
+  "qwen35.attention.head_count": 24,
+  "qwen35.attention.head_count_kv": 4,
+  "qwen35.rope.dimension_sections": {
+   "count": 4,
+   "offset": 1212,
+   "type": 5,
+   "values": [11,11,10,0]
+  },
+  "qwen35.rope.freq_base": 10000000.0,
+  "qwen35.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
+  "qwen35.attention.key_length": 256,
+  "qwen35.attention.value_length": 256,
+  "qwen35.nextn_predict_layers": 1,
+  "qwen35.ssm.conv_kernel": 4,
+  "qwen35.ssm.state_size": 128,
+  "qwen35.ssm.group_count": 16,
+  "qwen35.ssm.time_step_rank": 48,
+  "qwen35.ssm.inner_size": 6144,
+  "qwen35.full_attention_interval": 4,
+  "qwen35.rope.dimension_count": 64,
+  "tokenizer.ggml.model": "gpt2",
+  "tokenizer.ggml.pre": "qwen35",
+  "tokenizer.ggml.tokens": {
+   "count": 248320,
+   "offset": 1864,
+   "type": 8
+  },
+  "tokenizer.ggml.token_type": {
+   "count": 248320,
+   "offset": 4855271,
+   "type": 5
+  },
+  "tokenizer.ggml.merges": {
+   "count": 247587,
+   "offset": 5848596,
+   "type": 8
+  },
+  "tokenizer.ggml.eos_token_id": 248046,
+  "tokenizer.ggml.padding_token_id": 248055,
+  "tokenizer.ggml.bos_token_id": 248044,
+  "tokenizer.chat_template": {
+   "length": 8945,
+   "offset": 10935140,
+   "sha256": "701ba13a085c0c1b5e05414dec1aa3069904f962beee36f0899e441720b83974",
+   "head": "{%- set image_count = namespace(value=0) %}\n{%- set video_count "
+  },
+  "general.quantization_version": 2,
+  "general.file_type": 14,
+  "quantize.imatrix.file": "runs/imatrix_v3w/final/imatrix.gguf",
+  "quantize.imatrix.entries_count": 496,
+  "quantize.imatrix.chunks_count": 1251
+ },
+ "tensors": [
+  [
+   "output.weight",
+   [
+    5120,
+    248320
+   ],
+   11
+  ],
+  [
+   "output_norm.weight",
+   [
+    5120
+   ],
+   0
+  ],
+  [
+   "token_embd.weight",
+   [
+    5120,
+    248320
+   ],
+   11
+  ],
+  [
+   "blk.64.attn_k.weight",
+   [
+    5120,
+    1024
+   ],
+   14
+  ],
+  [
+   "blk.64.attn_k_norm.weight",
+   [
+    256
+   ],
+   0
+  ],
+  [
+   "blk.64.attn_norm.weight",
+   [
+    5120
+   ],
+   0
+  ],
+  [
+   "blk.64.attn_output.weight",
+   [
+    6144,
+    5120
+   ],
+   14
+  ],
+  [
+   "blk.64.attn_q.weight",
+   [
+    5120,
+    12288
+   ],
+   14
+  ],
+  [
+   "blk.64.attn_q_norm.weight",
+   [
+    256
+   ],
+   0
+  ],
+  [
+   "blk.64.attn_v.weight",
+   [
+    5120,
+    1024
+   ],
+   14
+  ],
+  [
+   "blk.64.ffn_down.weight",
+   [
+    17408,
+    5120
+   ],
+   12
+  ],
+  [
+   "blk.64.ffn_gate.weight",
+   [
+    5120,
+    17408
+   ],
+   12
+  ],
+  [
+   "blk.64.ffn_up.weight",
+   [
+    5120,
+    17408
+   ],
+   12
+  ],
+  [
+   "blk.64.nextn.eh_proj.weight",
+   [
+    10240,
+    5120
+   ],
+   12
+  ],
+  [
+   "blk.64.nextn.enorm.weight",
+   [
+    5120
+   ],
+   0
+  ],
+  [
+   "blk.64.nextn.hnorm.weight",
+   [
+    5120
+   ],
+   0
+  ],
+  [
+   "blk.64.nextn.shared_head_norm.weight",
+   [
+    5120
+   ],
+   0
+  ],
+  [
+   "blk.64.post_attention_norm.weight",
+   [
+    5120
+   ],
+   0
+  ]
+ ]
+}

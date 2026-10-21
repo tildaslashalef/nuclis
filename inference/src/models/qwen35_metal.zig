@@ -379,7 +379,7 @@ pub const Plan = struct {
 
     /// Small F32 tensor copied into its own GPU buffer once at init.
     fn constant(self: *Plan, tensor: *const Tensor) !Buffer {
-        const values = try self.view.vector(self.alloc, tensor);
+        const values = try self.binding.viewOf(self.view, tensor).vector(self.alloc, tensor);
         defer self.alloc.free(values);
         if (values.len == 0) return error.InvalidShape;
         const buffer = try self.backend.create(values.len * 4);
@@ -391,7 +391,7 @@ pub const Plan = struct {
     /// 3-4x between runs, presumably from per-command-buffer residency work over
     /// the entire range; per-tensor buffers are steady.
     fn weight(self: *Plan, tensor: *const Tensor) !Weight {
-        const matrix = try self.view.matrix(tensor);
+        const matrix = try self.binding.viewOf(self.view, tensor).matrix(tensor);
         return .{ .buffer = try self.backend.wrap(matrix.bytes), .matrix = matrix };
     }
     /// The GPU range of one session region (a byte range of the wrapped block).

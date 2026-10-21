@@ -49,6 +49,18 @@ pub const DraftRequest = union(enum) {
 fn hasEmbeddedDraft(comptime Family: type) bool {
     return @hasDecl(Family, "embedded_draft") and Family.embedded_draft;
 }
+/// Whether this file's own binding carries the family's embedded block.
+fn embeddedBlock(comptime Family: type, binding: *const Family.Binding) bool {
+    if (comptime !hasEmbeddedDraft(Family)) return false;
+    return binding.draft != null;
+}
+/// What `.embedded` asks the executor for: unchanged on a family without an
+/// embedded block, whose executor answers it; on one with, only a file that
+/// carries it.
+fn wantsEmbedded(comptime Family: type, binding: *const Family.Binding) bool {
+    if (comptime !hasEmbeddedDraft(Family)) return true;
+    return binding.draft != null;
+}
 /// The `tokenizer.ggml.tokens` count of a document, or null when absent;
 /// the companion's vocabulary must be the target's.
 fn vocabularyCount(doc: *const inference.gguf.Document) ?u64 {
@@ -813,9 +825,11 @@ pub const Engine = struct {
                 var binding = try Family.bind(alloc, &mapped.document);
                 // A companion draft source is a second GGUF of its own
                 // architecture; it is mapped here and must outlive the model.
+                // `preferred` keeps a file's own block and takes the
+                // companion only for a file without one.
                 const companion_path: ?[]const u8 = switch (draft) {
                     .file => |path| path,
-                    .preferred => |path| if (comptime hasEmbeddedDraft(Family)) null else path,
+                    .preferred => |path| if (embeddedBlock(Family, &binding)) null else path,
                     else => null,
                 };
                 if (companion_path) |path| {
@@ -832,11 +846,14 @@ pub const Engine = struct {
                         binding.draft = try Family.bindDraft(alloc, &companion.document, companion.view(), mapped.view(), &binding);
                     } else return error.DraftSourceUnsupported;
                 }
+                // A file whose family embeds a block may still lack one
+                // (Bonsai, Saluki): ask the executor only for a bound block,
+                // so the refusal below is the typed one.
                 const want_draft = switch (draft) {
                     .none => false,
-                    .embedded, .optional_embedded => true,
+                    .embedded, .optional_embedded => wantsEmbedded(Family, &binding),
                     .file => true,
-                    .preferred => if (comptime hasEmbeddedDraft(Family)) true else companion_path != null,
+                    .preferred => embeddedBlock(Family, &binding) or companion_path != null,
                 };
                 break :blk .{ .exec = @unionInit(Executors, @tagName(a), try openExecutor(Family, alloc, io, mapped.view(), binding, backend, capacity, kv, want_draft)) };
             },
@@ -1755,4 +1772,20 @@ fn resetAll(eng: *Engine, history: ?*inference.sampling.History) void {
 
 fn hooks_need_logits(hooks: ?Hooks) bool {
     return if (hooks) |h| h.prefill != null else false;
+}
+
+test "a Qwen file without its own block takes the companion; one with keeps its own" {
+    const qwen = models.registry.family(.qwen35);
+    const inventory = @import("models/inventory.zig");
+    var own = try models.qwen35.inventoryDocument(std.testing.allocator);
+    defer own.deinit();
+    var saluki = try inventory.document(std.testing.allocator, @embedFile("models/fixtures/saluki-27b.json"));
+    defer saluki.deinit();
+    const with = try qwen.bind(std.testing.allocator, &own);
+    const without = try qwen.bind(std.testing.allocator, &saluki);
+    try std.testing.expect(embeddedBlock(qwen, &with) and wantsEmbedded(qwen, &with));
+    try std.testing.expect(!embeddedBlock(qwen, &without) and !wantsEmbedded(qwen, &without));
+    // A companion-only family is left to its executor, as before.
+    const muse = models.registry.family(.@"muse-glimmer");
+    try std.testing.expect(!hasEmbeddedDraft(muse));
 }

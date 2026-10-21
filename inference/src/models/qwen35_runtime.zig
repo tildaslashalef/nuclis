@@ -159,15 +159,17 @@ pub const Runtime = struct {
         result.draft_constants = null;
         if (draft) {
             const block = binding.draft.?;
-            result.draft_enorm = try view.vector(a, block.enorm);
-            result.draft_hnorm_w = try view.vector(a, block.hnorm);
-            result.draft_head_norm = try view.vector(a, block.shared_head_norm);
+            // A companion block reads its own mapping.
+            const source = if (block.source) |c| c.view else view;
+            result.draft_enorm = try source.vector(a, block.enorm);
+            result.draft_hnorm_w = try source.vector(a, block.hnorm);
+            result.draft_head_norm = try source.vector(a, block.shared_head_norm);
             result.draft_constants = .{
-                .attention_norm = try view.vector(a, block.layer.attention_norm),
-                .post_attention_norm = try view.vector(a, block.layer.post_attention_norm),
+                .attention_norm = try source.vector(a, block.layer.attention_norm),
+                .post_attention_norm = try source.vector(a, block.layer.post_attention_norm),
                 .mixer = .{ .full_attention = .{
-                    .query_norm = try view.vector(a, block.layer.mixer.full_attention.query_norm),
-                    .key_norm = try view.vector(a, block.layer.mixer.full_attention.key_norm),
+                    .query_norm = try source.vector(a, block.layer.mixer.full_attention.query_norm),
+                    .key_norm = try source.vector(a, block.layer.mixer.full_attention.key_norm),
                 } },
             };
             @memset(result.draft_pending_h, 0);
@@ -190,7 +192,7 @@ pub const Runtime = struct {
     }
 
     fn mm(self: *Runtime, tensor: *const Tensor, input: []const f32, output: []f32) !void {
-        try cpu.matvec(self.io, try self.view.matrix(tensor), input, output, self.row);
+        try cpu.matvec(self.io, try self.binding.viewOf(self.view, tensor).matrix(tensor), input, output, self.row);
     }
     /// The activation a rotated projection reads: on a rotated file, `input`
     /// sign-flipped and transformed into the `rotated` scratch (so callers

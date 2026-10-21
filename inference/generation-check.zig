@@ -100,6 +100,7 @@ pub fn main(init: std.process.Init) !void {
     var half_tiles_only = false;
     var draft_trace: ?[]const u8 = null;
     var draft_model: ?[]const u8 = null;
+    var prompt_profile: ?inference.profiles.Profile = null;
     var vision_check: ?[]const u8 = null;
     var vision_image: ?[]const u8 = null;
     var vision_oracle: ?[]const u8 = null;
@@ -126,6 +127,10 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedDraftModel;
             draft_model = args[i];
+        } else if (std.mem.eql(u8, arg, "--prompt-profile")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedPromptProfile;
+            prompt_profile = std.meta.stringToEnum(inference.profiles.Profile, args[i]) orelse return error.UnknownPromptProfile;
         } else if (std.mem.eql(u8, arg, "--vision-check")) {
             i += 1;
             if (i >= args.len) return error.ExpectedProjectorPath;
@@ -171,11 +176,11 @@ pub fn main(init: std.process.Init) !void {
             else
                 try visionCheck(alloc, init.io, model_path, projector, use_metal)
         else if (draft_trace) |dir|
-            try draftTrace(qwen35_spec, alloc, init.io, &mapped, use_metal, dir)
+            try draftTrace(qwen35_spec, alloc, init.io, &mapped, use_metal, dir, draft_model)
         else if (draft_stats)
-            try draftStats(qwen35_spec, alloc, init.io, &mapped, use_metal)
+            try draftStats(qwen35_spec, alloc, init.io, &mapped, use_metal, draft_model)
         else if (speculative_check)
-            try speculativeCheck(qwen35_spec, alloc, init.io, &mapped, model_path, use_metal)
+            try speculativeCheck(qwen35_spec, alloc, init.io, &mapped, model_path, use_metal, draft_model, prompt_profile)
         else
             try run(qwen35_spec, alloc, init.io, &mapped, use_metal, half_tiles_only),
         .gemma4 => if (vision_check) |projector|
@@ -819,7 +824,7 @@ fn draftBatchCommitCheck(comptime spec: Spec, alloc: std.mem.Allocator, b: *infe
 /// token for token identical (the replay is the same sequential arithmetic);
 /// on Metal the verify batch uses the chunk tiles, so the first divergence is
 /// recorded by position rather than failed.
-fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, model_path: []const u8, use_metal: bool) !void {
+fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, model_path: []const u8, use_metal: bool, draft_model: ?[]const u8, prompt_profile: ?inference.profiles.Profile) !void {
     const Family = spec.Family;
     const draft = spec.draft.?;
     const hidden = 5120;
@@ -835,7 +840,9 @@ fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, m
             return err;
         };
     }
-    const binding = try Family.bind(alloc, &mapped.document);
+    var companion: ?inference.weights.Mapped = null;
+    defer if (companion) |*c| c.deinit(io);
+    const binding = try bindDraftSource(Family, alloc, io, mapped, draft_model, &companion);
     const view = mapped.view();
     const Runner = DraftRunner(spec);
     var sequential: Runner = if (backend) |*b|
@@ -940,7 +947,7 @@ fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, m
     // batch, recover, and emission control flow the primitives above do not.
     // Backend-independent, so the Metal run covers it and the slow CPU oracle
     // stays on the primitives.
-    if (use_metal) try speculativeLoop(alloc, io, model_path, use_metal);
+    if (use_metal) try speculativeLoop(alloc, io, model_path, use_metal, draft_model, prompt_profile);
     if (backend) |*b| try penaltyCheck(spec, alloc, b, view, binding);
     if (backend) |*b| try verifyTopKCheck(spec, alloc, b, view, binding);
 }
@@ -1164,13 +1171,16 @@ fn penaltyCheck(comptime spec: Spec, alloc: std.mem.Allocator, b: *inference.met
 /// Runs `inference.engine.runLoop` twice on one loaded engine, ordinary greedy
 /// then speculative greedy, and requires identical token streams. This is the
 /// loop-level check: propose, checkpoint, verify, recover, commit, emission.
-fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, use_metal: bool) !void {
+/// `prompt_profile` forces the profile of a file whose template is not
+/// pinned (Saluki), as its registry entry does.
+fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, use_metal: bool, draft_model: ?[]const u8, prompt_profile: ?inference.profiles.Profile) !void {
     const engine = inference.engine;
     const generated = 12;
     const max_limit = 24;
     const capacity = 64;
     const backend: engine.Backend = if (use_metal) .metal else .cpu;
-    var eng = try engine.Engine.open(alloc, io, model_path, backend, capacity, .f32, null, .embedded);
+    const draft: engine.DraftRequest = if (draft_model) |path| .{ .file = path } else .embedded;
+    var eng = try engine.Engine.open(alloc, io, model_path, backend, capacity, .f32, prompt_profile, draft);
     defer eng.deinit();
     const prompt = try eng.encode("Hello,");
     defer alloc.free(prompt);
@@ -1241,7 +1251,7 @@ fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
 
     // Context limit at a batch: a session with room for the prompt and two
     // tokens cannot hold a verify batch plus its correction.
-    var small = try engine.Engine.open(alloc, io, model_path, backend, prompt.len + 2, .f32, null, .embedded);
+    var small = try engine.Engine.open(alloc, io, model_path, backend, prompt.len + 2, .f32, prompt_profile, draft);
     defer small.deinit();
     const full = try engine.runLoop(&small, prompt, 24, &sampler, null, spec, null, logits, no_candidates, a, null, null);
     if (full.stop != .context_limit) return error.SpeculativeContextMismatch;
@@ -1456,7 +1466,7 @@ fn DraftRunner(comptime spec: Spec) type {
     };
 }
 
-fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool) !void {
+fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, draft_model: ?[]const u8) !void {
     const Family = spec.Family;
     const hidden = 5120;
     var backend: ?inference.metal.Backend = null;
@@ -1468,7 +1478,9 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
             return err;
         };
     }
-    const binding = try Family.bind(alloc, &mapped.document);
+    var companion: ?inference.weights.Mapped = null;
+    defer if (companion) |*c| c.deinit(io);
+    const binding = try bindDraftSource(Family, alloc, io, mapped, draft_model, &companion);
     var vocab = try inference.vocabulary.load(alloc, mapped.document, mapped.mapping.memory[0..@intCast(mapped.document.directory_bytes)], .{});
     defer vocab.deinit();
     var encoder = try inference.tokenizer.Encoder.init(alloc, &vocab);
@@ -1590,7 +1602,19 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
 /// `compare-generation.py --draft` can compare it against the reference's
 /// captured rows. The target is stepped live for each position's hidden, so
 /// this is an independent capture, not a replay of the pinned `hprev`.
-fn draftTrace(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, directory: []const u8) !void {
+/// The family's binding with a companion's prediction block bound in when
+/// `draft_model` names one, replacing an embedded block. `companion` holds
+/// the companion's mapping, which must outlive the binding.
+fn bindDraftSource(comptime Family: type, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, draft_model: ?[]const u8, companion: *?inference.weights.Mapped) !Family.Binding {
+    var binding = try Family.bind(alloc, &mapped.document);
+    const path = draft_model orelse return binding;
+    companion.* = try inference.weights.Mapped.open(alloc, io, path);
+    const c = &companion.*.?;
+    binding.draft = try Family.bindDraft(alloc, &c.document, c.view(), mapped.view(), &binding);
+    return binding;
+}
+
+fn draftTrace(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, directory: []const u8, draft_model: ?[]const u8) !void {
     const Family = spec.Family;
     const hidden = 5120;
     const tokens = spec.draft.?.tokens;
@@ -1603,7 +1627,9 @@ fn draftTrace(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
             return err;
         };
     }
-    const binding = try Family.bind(alloc, &mapped.document);
+    var companion: ?inference.weights.Mapped = null;
+    defer if (companion) |*c| c.deinit(io);
+    const binding = try bindDraftSource(Family, alloc, io, mapped, draft_model, &companion);
     const capacity = tokens.len + max_drafts + 2;
     var runner: DraftRunner(spec) = if (backend) |*b|
         .{ .metal = try Family.Plan.init(alloc, b, mapped.view(), binding, capacity, 8, .f32, false, true) }
