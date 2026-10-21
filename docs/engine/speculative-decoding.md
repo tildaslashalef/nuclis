@@ -1163,12 +1163,47 @@ at every length (the rule asks ≥ 1.10× and nothing below 0.98×;
   at 16K and 32K against 2.49–2.84).
 - **Break-even.** At E ≈ 2.5 a batch must cost less than 2.5 single steps
   (about 142 ms at 512) to break even, and it costs 144.
-- **A lead for the next unit.** Five of Saluki's encodings (IQ2_XS,
-  IQ2_S, IQ3_XXS, IQ1_S, IQ1_M) have only the staged `matmul_*_8` tile
-  and no register-fragment tile. Arithmetic, not a measurement: with the
-  verify at the Q4_K_M's ratios (83 ms at 512, 127 ms at 32,639) and
-  everything else as measured, the draft-7 cells would read about 1.36–1.41×
-  at 512 and 1.01–1.36× at 32,639.
+- **What a cheaper verify would buy.** Arithmetic, not a measurement:
+  with the verify at the Q4_K_M's ratios (83 ms at 512, 127 ms at 32,639)
+  and everything else as measured, the draft-7 cells would read about
+  1.36–1.41× at 512 and 1.01–1.36× at 32,639.
 
 A target-trained drafter (DFlash2) raises E but leaves this verify cost,
 so it is not the next step for Saluki.
+
+**Where the verify time goes** (2026-10-21, Saluki at 512, F16 cache,
+unprofiled `bench --verify-rows R --accept 0` from a saved prefix):
+
+| R (rows) | 1 | 2 | 4 | 8 |
+| --- | ---: | ---: | ---: | ---: |
+| verify ms | 130.2 | 118.4 | 121.4 | 126.4 |
+
+A plain decode step is 57 ms, so even a single-row verify costs 2.3× a
+step. The cost is the batch path itself, not the number of rows. A
+profiled 8-row batch puts 89 % of it in the matrices, all on the
+register-fragment tiles (`matmul_*_f2`, which every Saluki encoding
+has).
+
+- **The tiles' rate.** Inside the model they read Saluki's weights at 22–57
+  GB/s, against 72–134 GB/s for the single-row matvecs on the same
+  matrices. IQ2_XXS's 17408×5120 tile costs 0.68 ms per dispatch there,
+  against the matvec's 0.29.
+- **Per weight, not per byte.** On the tile path a 2-bit weight costs
+  about what a 4-bit one costs: Saluki's verify (120–130 ms) is close to
+  the Q4_K_M's (138 ms), while its single-row step is 1.7× faster.
+- **The bench understates it.** `test-metal -- --matvec-rows-bench 8` (now
+  with a fragment-tile column) times the same IQ2_XXS tile at 0.38 ms. Its
+  23 MB matrix, re-read by 16 dispatches in one command buffer, likely
+  stays in the system cache, so the bench understates the tile's cost
+  in the model.
+- **The multi-row matvec does not help.** A multi-row body for IQ2_XXS
+  (`nu_matvec_rows_iq2_xxs`) beats the tile at 2 rows (0.33 against 0.38
+  ms in the bench) and loses from 3 (1.24 ms at 8). Its per-token input
+  loads dominate, as on the K-quants. `matmul` routes it at 2 rows only,
+  as it does every non-K-quant body. In the model it takes a 2-row verify
+  from 118.4 to 112.7 ms (three alternating pairs, identical to 0.1 ms).
+
+A cheaper Saluki verify therefore needs a few-row 2-bit kernel that keeps
+the matvec's decode rate. More rows per tile do not help, and Qwen's own
+register-fragment work once closed below its target
+([KERN-24](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-24--the-register-fragment-verify-matmul-2026-10-01-closed-below-its-target)).

@@ -366,9 +366,13 @@ draft 7, greedy code runs 17.78 → 23.92 tok/s (1.34×) and greedy prose at
 ([benchmarks § Saluki with the Qwen MTP companion](../benchmarks/history.md#saluki-with-the-qwen-mtp-companion-2026-10-21)).
 
 The cost is the verify batch: 2.1× a single-row step at 512 against the
-Q4_K_M's 1.45×, flat in the draft length. Five of the seven 2-bit
-encodings have no register-fragment verify tile. A cheaper few-row verify
-is the step before any drafter change.
+Q4_K_M's 1.45×, flat in the draft length. It is flat in the number of rows
+too: a 1-row verify costs 130 ms. The register-fragment tiles decode
+Saluki's 2-bit weights at about the per-weight cost of 4-bit ones, so the
+verify saves nothing from the smaller file
+([speculative-decoding.md § The Qwen MTP companion](../engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21)).
+A few-row 2-bit kernel at the matvec's decode rate is the step before any
+drafter change.
 
 ## Status
 
