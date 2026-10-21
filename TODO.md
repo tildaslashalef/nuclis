@@ -28,7 +28,8 @@ Theme: speculation for Saluki 27B, on the branch `saluki-mtp-companion`
   (`docs/engine/speculative-decoding.md` § The Qwen MTP companion,
   "Where the verify time goes".)
 
-Next, the user's choice:
+Next (the user's choice, 2026-10-21): **DFlash2 on the Qwen3.8 Q4_K_M**,
+in a fresh session on this branch. The alternatives were:
 
 1. **A few-row 2-bit kernel at the matvec's decode rate.** It would turn
    Saluki's speculation on (about 1.4× at 512 by arithmetic), but it is
