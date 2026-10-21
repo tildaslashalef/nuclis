@@ -2516,6 +2516,22 @@ kernel void nu_silu_mul(device float * gate [[buffer(0)]], device const float * 
                         constant CountParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
     if (i < p.count) gate[i] = nu_silu(gate[i]) * up[i];
 }
+// DFlash2's two-tap dynamic convolution over a block's rows (`dflash2.convolve`):
+// out[t][c] = Σ_{tap ≤ min(t, 1)} (base[half][tap][c] + taps[t][half][tap][c / group]) · in[t − tap][c].
+struct DflashConvParams { uint rows; uint width; uint half_index; uint group; uint groups; uint taps_stride; };
+kernel void nu_dflash_conv(device const float * base [[buffer(0)]], device const float * taps [[buffer(1)]],
+                           device const float * input [[buffer(2)]], device float * output [[buffer(3)]],
+                           constant DflashConvParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
+    if (i >= p.rows * p.width) return;
+    uint t = i / p.width, c = i % p.width;
+    float sum = 0.0f;
+    for (uint tap = 0; tap < 2 && tap <= t; ++tap) {
+        uint which = p.half_index * 2 + tap;
+        float w = base[which * p.width + c] + taps[t * p.taps_stride + which * p.groups + c / p.group];
+        sum += w * input[(t - tap) * p.width + c];
+    }
+    output[i] = sum;
+}
 kernel void nu_silu_inplace(device float * x [[buffer(0)]],
                             constant CountParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
     if (i < p.count) x[i] = nu_silu(x[i]);

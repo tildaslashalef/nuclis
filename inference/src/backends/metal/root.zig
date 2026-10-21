@@ -116,6 +116,7 @@ pub const Kernel = enum(u32) {
     rope,
     add,
     silu_mul,
+    dflash_conv,
     silu_inplace,
     delta_gates,
     sigmoid_gate,
@@ -1719,6 +1720,18 @@ pub const Backend = struct {
     pub fn siluMul(self: *Backend, gate: Buffer, up: Buffer, count: usize) !void {
         if (count == 0 or gate.len < count * 4 or up.len < count * 4) return error.InvalidShape;
         try self.dispatch(.silu_mul, &.{ gate, up }, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
+    }
+    pub const DflashConvParams = extern struct { rows: u32, width: u32, half_index: u32, group: u32, groups: u32, taps_stride: u32 };
+    /// DFlash2's two-tap dynamic convolution over `rows` rows of `width`
+    /// (`dflash2.convolve`): `base` is `[2][2][width]`, `taps` holds each
+    /// row's `taps_stride` projected taps (`[half][tap][width / group]`).
+    /// `input` and `output` must not alias.
+    pub fn dflashConv(self: *Backend, base: Buffer, taps: Buffer, input: Buffer, output: Buffer, rows: usize, width: usize, half: usize, group: usize, taps_stride: usize) !void {
+        if (rows == 0 or half > 1 or group == 0 or width % group != 0) return error.InvalidShape;
+        const groups = width / group;
+        if (base.len < 4 * width * 4 or taps_stride < 4 * groups or taps.len < rows * taps_stride * 4 or input.len < rows * width * 4 or output.len < rows * width * 4) return error.InvalidShape;
+        const p: DflashConvParams = .{ .rows = @intCast(rows), .width = @intCast(width), .half_index = @intCast(half), .group = @intCast(group), .groups = @intCast(groups), .taps_stride = @intCast(taps_stride) };
+        try self.dispatch(.dflash_conv, &.{ base, taps, input, output }, p, perElement(rows * width), 256, .{});
     }
     pub fn silu(self: *Backend, x: Buffer, count: usize) !void {
         if (count == 0 or x.len < count * 4) return error.InvalidShape;

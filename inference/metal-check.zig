@@ -677,6 +677,38 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
     std.debug.print("The multi-row path reads the weights once for all rows; the tile reads them once per 8-row token tile (one tile here).\n", .{});
 }
 
+/// DFlash2's convolution kernel against `dflash2.convolve` on random rows,
+/// both halves, every block length.
+fn checkDflashConv(alloc: std.mem.Allocator) !void {
+    const dflash2 = inference.models.dflash2;
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    var prng = std.Random.DefaultPrng.init(0xdf1a5);
+    const random = prng.random();
+    const width = dflash2.embedding;
+    const rows = dflash2.block_size;
+    const base = try b.create(4 * width * 4);
+    const taps = try b.create(rows * dflash2.conv_projection * 4);
+    const input = try b.create(rows * width * 4);
+    const output = try b.create(rows * width * 4);
+    for (base.floats()) |*v| v.* = random.float(f32) * 2 - 1;
+    for (taps.floats()) |*v| v.* = random.float(f32) * 2 - 1;
+    for (input.floats()) |*v| v.* = random.float(f32) * 4 - 2;
+    const expected = try alloc.alloc(f32, rows * width);
+    defer alloc.free(expected);
+    var worst: f32 = 0;
+    for (1..rows + 1) |count| for (0..2) |half| {
+        dflash2.convolve(half, base.floats()[0 .. 4 * width], taps.floats(), input.floats(), expected, count);
+        try b.begin();
+        try b.dflashConv(base, taps, input, output, count, width, half, dflash2.conv_group, dflash2.conv_projection);
+        try b.commit();
+        for (output.floats()[0 .. count * width], expected[0 .. count * width]) |got, want| worst = @max(worst, @abs(got - want));
+    };
+    if (worst > 1e-5) return error.MetalMismatch;
+    std.debug.print("DFlash2 convolution vs CPU on 1-8 rows, both halves: max abs {e:.3} (bound 1e-5)\n", .{worst});
+}
+
 /// The `simdgroup_matrix` lane layout the register-fragment tiles assume:
 /// lane l holds (row, col) and (row, col + 1), row = (l/4 & 4) + (l/2 % 4),
 /// col = 2·((l/4 & 2) + l % 2).
@@ -3274,6 +3306,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (args.len != 1) return error.UnknownOption;
     try checkFragmentLayout(alloc);
+    try checkDflashConv(alloc);
     try checkDiscard(alloc);
     try checkTick(alloc);
     try checkSegments(alloc);
