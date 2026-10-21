@@ -164,7 +164,7 @@ works without one) and are written by `config init` (the catalogue's),
 | --- | --- |
 | `repo` + `file` (+ `revision`) | a downloaded model in the layout `model pull` writes, `~/.nuclis/models/<repo>/<file>` |
 | `path` | instead, a file anywhere (under `~/.nuclis/models` unless absolute) |
-| `mmproj`, `mtp` | companion files in the same folder: the vision projector and the drafter |
+| `mmproj`, `mtp` | companion files: the vision projector and the drafter, relative to the model file's folder or absolute. A Qwen3.8 file without its own prediction block (Saluki) can name Qwen's `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` from another repository's folder |
 | `profile` | force a prompt profile (`qwen38`, `gemma4`, …) whatever the file's template |
 | `ctx_size`, `generation`, `agent` | overrides that apply only while this model is in use; `null` means the global value |
 | `kind` | `"decision"` for a decision model (`nuclis decide` opens it), `"embedding"` for an embedding model (`nuclis embed` opens it); text commands refuse both |

@@ -242,7 +242,9 @@ batch; the accepted prefix is kept and the session recovered to it.
 
 - The draft contract is family-independent (`propose`, `commit`, `reset`,
   `bytes`); each adapter names its source (an embedded block, a companion
-  file of heads, a block drafter) and the loop never learns which.
+  file of heads, a block drafter) and the loop never learns which. A file
+  without its family's embedded block (Saluki) may take the block from a
+  companion file; a file with one keeps its own.
 - Recovery: attention by position; recurrent state checkpointed before
   the batch and restored on partial acceptance, with GPU work complete
   before host-visible state is touched.

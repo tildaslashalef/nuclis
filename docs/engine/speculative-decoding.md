@@ -10,8 +10,9 @@ and the defaults follow the record
 ([§ The re-priced verdicts](#the-re-priced-verdicts-2026-10-01)):
 Qwen3.8-27B on at draft 7, Gemma 4 12B QAT on at 5, Gemma 4 E4B on at 6,
 Muse Glimmer on at 6, Gemma 4 26B-A4B off. What exists: the draft
-contract in `runtime/draft.zig`; three draft sources (Qwen's embedded
-`nextn` block, Gemma's assistant heads, Muse's DFlash drafter); the
+contract in `runtime/draft.zig`; three draft sources (Qwen's `nextn`
+block, embedded or from its `MTP/` companion file; Gemma's assistant
+heads; Muse's DFlash drafter); the
 session's checkpoint, recovery by accepted length, and Qwen's DeltaNet
 replay tape ([session.md](session.md)); the verify batch, the sampled
 acceptance on the device readback, and the `runLoop` speculative step,
@@ -92,12 +93,13 @@ is no separate draft model: the reference opens the *same* file as a
 second context of type `LLAMA_CONTEXT_TYPE_MTP`
 (`llama_context_params.ctx_type`), which executes only that block with its
 own full-attention cache (`llama_set_embeddings_nextn(ctx, true, true)`).
-The separate `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` adds only lower-quantized
-copies of `token_embd`/`output`/`output_norm` under `nextn.embed_tokens` /
-`nextn.shared_head_head` / `nextn.shared_head_norm`; the main file's block
-carries `shared_head_norm` and falls back to the main `token_embd` and
-`output` (`qwen35.cpp:518,621-635`). The embedded block is therefore the
-source.
+The main file's block carries `shared_head_norm` and falls back to the
+main `token_embd` and `output` (`qwen35.cpp:518,621-635`). The embedded
+block is therefore the source for this file. The separate
+`MTP/mtp-Qwen3.8-27B-Q4_0.gguf` carries the same block at lower precision,
+with its own Q3_K embedding and head. It is the draft source for a
+Qwen3.8 file without a block of its own
+([§ The Qwen MTP companion](#the-qwen-mtp-companion-2026-10-21)).
 
 **The pair.** At MTP position `p` the block consumes the token `x_p` and
 the target hidden `h_{p-1}`: `concat = [enorm(embed(x_p)); hnorm(h_{p-1})]`
@@ -1063,3 +1065,110 @@ multi-row kernels, or split-K unchanged: earlier sweeps are their negative
 controls. A lighter quantization or a truncated context: changes quality
 or the target, a separate decision. A new drafter first: may raise
 acceptance but keeps an expensive verifier.
+
+## The Qwen MTP companion (2026-10-21)
+
+Saluki 27B ([saluki.md](../models/saluki.md)) is Qwen3.8-27B with 64
+blocks and no `nextn` key: its file has no prediction block, so it could
+not speculate. Qwen's own `MTP/mtp-Qwen3.8-27B-Q4_0.gguf`
+(1,369,590,656 B, already in the [catalogue](../models/catalogue.md) under
+the `mtp` role) holds the whole `blk.64` block. It has 18 tensors:
+`nextn.eh_proj` and `ffn_*` at Q4_K, `attn_*` at Q6_K, the norms in F32,
+and its own `token_embd`, `output` (Q3_K) and `output_norm`. The block in
+the Q4_K_M is the same weights at higher precision (`attn_k`/`attn_v`
+Q8_0, `ffn_*` and `eh_proj` Q6_K).
+
+**Binding.** `qwen35.bindDraft` binds the companion's `blk.<layers>.*`
+onto any unrotated target of the same shape and leaves the companion's
+embedding and head unbound, so the block shares the target's, exactly as
+the embedded block does. The block records its `DraftSource` (the
+companion's mapping and tensor table). Both executors read every weight
+through `Binding.viewOf`, which picks that mapping for the block's
+tensors, so the draft forward has no second path. `Engine.open` keeps a
+file's own block under `preferred` and takes the companion only for a
+file without one; `.file` replaces an embedded block. A Bonsai file
+(rotated, and the companion's block is in the plain basis) is refused
+with `DraftSourceMismatch`. `generation-check --draft-model` binds the
+companion for the Qwen draft trace, `--draft-stats`, and
+`--speculative-check`.
+
+**Validation.**
+
+- **Same weights.** The cross-encoding check of the companion against the
+  Q4_K_M (`test-cross-encoding`, 16 rows per matrix) reads cosine 0.9956
+  to 0.9999 per matrix. The Q4_K matrices are the farthest, at up to
+  9.4 % relative RMS.
+- **The companion on the Q4_K_M.** Against the embedded block's pinned
+  trace (`fixtures/qwen35-mtp`), the companion's block rows are 1.56 max
+  abs and 13.3 % relative RMS at position 0, 0.64 and 9.3 % at position
+  1, which is what the Q4_K error predicts. The greedy drafts are equal
+  (9419, 271). Gate: `qwen38-mtp-companion-trace-{metal,cpu}`.
+- **Saluki with the companion.** Metal against the CPU reference: 8.1e-6
+  max abs and 5.5e-7 relative RMS. The CPU rows are pinned under
+  `tests/fixtures/saluki-mtp`. Gate: `saluki-draft-trace-{metal,cpu}`.
+- **Greedy equivalence.** `saluki-speculative-metal`: speculative greedy
+  equals plain greedy on the runner and through `engine.runLoop`, and the
+  forced-token, budget, EOS, cancellation, and context checks pass
+  (`saluki-speculative-cpu`, the runner-level half, runs in the CPU tier). The check needs `--prompt-profile qwen38`, because Saluki's
+  template is not pinned.
+
+Saluki's final hidden after `Hello` differs from the Q4_K_M's by 42 %
+relative RMS (the companion was trained on the full-precision model's).
+That alone does not predict acceptance, which is measured next.
+
+**Acceptance** (`--draft-stats`, Metal, greedy, 32 tokens after each
+prompt, per draft depth 0–3):
+
+| Target, block | Zig reverse prompt | `fibonacci` prompt |
+| --- | --- | --- |
+| Q4_K_M, embedded | 90.3 / 80.0 / 69.0 / 64.3 % | 93.5 / 83.3 / 82.8 / 85.7 % |
+| Q4_K_M, companion | 87.1 / 76.7 / 69.0 / 64.3 % | 93.5 / 83.3 / 82.8 / 82.1 % |
+| Saluki, companion | 96.8 / 93.3 / 89.7 / 85.7 % | 96.8 / 86.7 / 79.3 / 78.6 % |
+
+The companion's lower precision costs the Q4_K_M at most one draft in
+thirty. On these short code prompts Saluki accepts at least as much as
+the Q4_K_M. These samples are small (31 positions at depth 0); the
+speculative matrix below measures prose at every context.
+
+**The speculative matrix** (2026-10-21, `scripts/spec-matrix.py --model
+saluki --run run-2026-09-06 --contexts code,512,4096,16384,32639 --drafts
+3-7 --sampling greedy,instruct --cooldown 60`, Metal, F16 cache, 128
+tokens, three off/on pairs per cell, Qwen's instruct sampling; the full
+table in [benchmarks § Saluki with the Qwen MTP companion](../benchmarks/history.md#saluki-with-the-qwen-mtp-companion-2026-10-21)).
+At draft 7:
+
+| Context | greedy E / C ms | greedy off → on | instruct E / C ms | instruct off → on |
+| --- | ---: | ---: | ---: | ---: |
+| code | 3.53 / 147.5 | 17.78 → 23.92 (1.34×) | 2.74 / 148.0 | 17.47 → 18.55 (1.07×) |
+| 512 | 2.65 / 144.3 | 17.68 → 18.34 (1.04×) | 2.54 / 147.8 | 17.29 → 17.24 (0.98×) |
+| 4,096 | 2.44 / 146.8 | 17.26 → 16.63 (0.96×) | 2.78 / 153.4 | 17.08 → 18.27 (1.08×) |
+| 16,384 | 3.02 / 169.9 | 16.19 → 17.80 (1.10×) | 2.28 / 161.5 | 16.04 → 14.14 (0.87×) |
+| 32,639 | 3.34 / 199.7 | 15.11 → 16.74 (1.11×) | 2.31 / 181.4 | 15.01 → 12.75 (0.85×) |
+
+**The verdict: off.** The prose geometric mean is 0.951, 0.980, 0.984,
+0.989, and 0.993× at drafts 3 to 7, and the worst prose cell is 0.83–0.85×
+at every length (the rule asks ≥ 1.10× and nothing below 0.98×;
+[benchmarks § The re-priced speculative verdicts](../benchmarks/history.md#the-re-priced-speculative-verdicts-2026-10-01)).
+
+**Why: the verify batch, not the drafter.**
+
+- **Verify cost.** Saluki's verify costs 120 ms at 512 and 150–165 ms at
+  32,639, against a single-row step of 57 and 67 ms: 2.1× and 2.4× a
+  step. On the Q4_K_M the same batch is 1.45× and 1.9×
+  ([§ The Qwen verify budget](#the-qwen-verify-budget)). The cost hardly
+  grows with the draft length (120.0 ms at 3 drafts, 120.8 at 7), so it
+  is the fixed price of leaving the single-row matvec.
+- **Acceptance.** E is close to the Q4_K_M's at 512 (instruct 2.54
+  against 2.63). It falls behind at long contexts with sampling (2.28–2.31
+  at 16K and 32K against 2.49–2.84).
+- **Break-even.** At E ≈ 2.5 a batch must cost less than 2.5 single steps
+  (about 142 ms at 512) to break even, and it costs 144.
+- **A lead for the next unit.** Five of Saluki's encodings (IQ2_XS,
+  IQ2_S, IQ3_XXS, IQ1_S, IQ1_M) have only the staged `matmul_*_8` tile
+  and no register-fragment tile. Arithmetic, not a measurement: with the
+  verify at the Q4_K_M's ratios (83 ms at 512, 127 ms at 32,639) and
+  everything else as measured, the draft-7 cells would read about 1.36–1.41×
+  at 512 and 1.01–1.36× at 32,639.
+
+A target-trained drafter (DFlash2) raises E but leaves this verify cost,
+so it is not the next step for Saluki.
