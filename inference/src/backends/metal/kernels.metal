@@ -1658,6 +1658,16 @@ inline void nu_tile_q4_0(device const uchar * b, uint first, thread float4 * q) 
     else { q[0] = nu_low_nibbles(w0); q[1] = nu_low_nibbles(w1); q[2] = nu_low_nibbles(w2); q[3] = nu_low_nibbles(w3); }
     for (uint i = 0; i < 4; ++i) q[i] = d * (q[i] - 8.0f);
 }
+// Q8_0 segment: sixteen of the block's 32 signed bytes, `d * q`; 34-byte
+// blocks, 2-byte aligned, so the bytes are read as ushort pairs.
+inline void nu_tile_q8_0(device const uchar * b, uint first, thread float4 * q) {
+    float d = float(as_type<half>(*(device const ushort *)b));
+    device const ushort * w = (device const ushort *)(b + 2 + first);
+    for (uint i = 0; i < 4; ++i) {
+        ushort lo = w[2 * i], hi = w[2 * i + 1];
+        q[i] = d * float4(float(as_type<char>(uchar(lo & 0xff))), float(as_type<char>(uchar(lo >> 8))), float(as_type<char>(uchar(hi & 0xff))), float(as_type<char>(uchar(hi >> 8))));
+    }
+}
 // IQ4_NL segment: Q4_0's block and nibble order through the nonlinear
 // table, `d * value` as the generic decoder computes it.
 inline void nu_tile_iq4_nl(device const uchar * b, uint first, thread float4 * q) {
@@ -1787,13 +1797,14 @@ inline void nu_tile_segment(device const uchar * row, uint encoding, uint segmen
     }
     // 256-value blocks hold sixteen segments; Q4_0's and IQ4_NL's 32-value block two; the
     // ternary 128-value blocks eight.
-    const uint block_bytes = (ENC == 2 || ENC == 20) ? 18 : ENC == 12 ? 144 : ENC == 13 ? 176 : ENC == 14 ? 210 : ENC == 23 ? 136 : ENC == 142 ? 34 : ENC == 143 ? 28
+    const uint block_bytes = ENC == 8 ? 34 : (ENC == 2 || ENC == 20) ? 18 : ENC == 12 ? 144 : ENC == 13 ? 176 : ENC == 14 ? 210 : ENC == 23 ? 136 : ENC == 142 ? 34 : ENC == 143 ? 28
         : ENC == 10 ? 84 : ENC == 16 ? 66 : ENC == 17 ? 74 : ENC == 18 ? 98 : ENC == 19 ? 50 : ENC == 22 ? 82 : ENC == 29 ? 56 : 110;
-    const uint segments_per_block = (ENC == 2 || ENC == 20) ? 2 : (ENC == 142 || ENC == 143) ? 8 : 16;
+    const uint segments_per_block = (ENC == 2 || ENC == 20 || ENC == 8) ? 2 : (ENC == 142 || ENC == 143) ? 8 : 16;
     device const uchar * b = row + ulong(segment / segments_per_block) * block_bytes;
     uint first = (segment % segments_per_block) * 16;
     switch (ENC) {
         case 2: nu_tile_q4_0(b, first, q); break;
+        case 8: nu_tile_q8_0(b, first, q); break;
         case 20: nu_tile_iq4_nl(b, first, q); break;
         case 11: nu_tile_q3_k(b, first, q); break;
         case 12: nu_tile_k<false>(b, first, q); break;
@@ -2239,6 +2250,8 @@ template [[host_name("nu_matmul_iq3_xxs_f2")]] kernel void nu_matmul_frag_t<18, 
 template [[host_name("nu_matmul_iq1_s_f2")]] kernel void nu_matmul_frag_t<19, 2, half, float>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_iq2_s_f2")]] kernel void nu_matmul_frag_t<22, 2, half, float>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_iq1_m_f2")]] kernel void nu_matmul_frag_t<29, 2, half, float>(NU_MATMUL_ARGS);
+// Q8_0's tile is called by name (the DFlash2 drafter), never routed by `matmul`.
+template [[host_name("nu_matmul_q8_0_f2")]] kernel void nu_matmul_frag_t<8, 2, half, float>(NU_MATMUL_ARGS);
 // Gathered expert tiles: 64 rows × 32 slot rows with half operands for Q4_0
 // (an expert averages k · chunk / experts slot rows per chunk, 16 on the
 // 26B-A4B at 256 tokens, so one token tile covers most experts), and the

@@ -174,10 +174,15 @@ const Flash = struct {
         return buffer;
     }
 
-    /// A batched projection whose weight lives in the companion's file.
+    /// A batched projection whose weight lives in the companion's file. The
+    /// Q8_0 file's few-row projections take Q8_0's fragment tile by name:
+    /// `matmul` routes Q8_0 to the generic tile for every other family.
     fn mmRows(self: *Flash, backend: *metal.Backend, tensor: *const Tensor, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, rows: usize) !void {
         const matrix = try self.binding.view.matrix(tensor);
-        try backend.matmul(try backend.wrap(matrix.bytes), matrix, input, in_stride, output, out_stride, rows);
+        const buffer = try backend.wrap(matrix.bytes);
+        if (matrix.encoding == 8 and rows <= metal.Backend.small_chunk_tokens and buffer.offset % 2 == 0 and (matrix.bytes.len / matrix.rows) % 2 == 0)
+            return backend.matmulKernel(.matmul_q8_0_f2, buffer, matrix, input, in_stride, output, out_stride, rows);
+        try backend.matmul(buffer, matrix, input, in_stride, output, out_stride, rows);
     }
 
     /// The `slot`-th capture slab's `rows` rows.

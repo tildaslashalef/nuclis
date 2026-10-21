@@ -707,6 +707,54 @@ fn checkDflashConv(alloc: std.mem.Allocator) !void {
     };
     if (worst > 1e-5) return error.MetalMismatch;
     std.debug.print("DFlash2 convolution vs CPU on 1-8 rows, both halves: max abs {e:.3} (bound 1e-5)\n", .{worst});
+
+    // Q8_0's fragment tile (the drafter calls it by name) against the CPU
+    // matvec of each token row, 1-24 tokens; weights are rounded to half in
+    // the tile, so the bound is relative to the products' mass.
+    const rows_q8: usize = 40;
+    const columns: usize = 1024;
+    const stride = columns / 32 * 34;
+    const bytes = try alloc.alloc(u8, rows_q8 * stride);
+    defer alloc.free(bytes);
+    for (0..rows_q8 * columns / 32) |block| {
+        const at = bytes[block * 34 ..][0..34];
+        std.mem.writeInt(u16, at[0..2], @bitCast(@as(f16, @floatCast(random.float(f32) * 0.02 + 0.001))), .little);
+        for (at[2..]) |*q| q.* = random.int(u8);
+    }
+    const weights_q8 = try b.create(bytes.len);
+    @memcpy(weights_q8.host[0..bytes.len], bytes);
+    const matrix: inference.cpu.Matrix = .{ .rows = rows_q8, .columns = columns, .encoding = 8, .bytes = bytes };
+    const tokens_max = 24;
+    const x = try b.create(Backend.matmulPadded(tokens_max) * columns * 4);
+    for (x.floats()) |*v| v.* = random.float(f32) * 2 - 1;
+    const y = try b.create(Backend.matmulPadded(tokens_max) * rows_q8 * 4);
+    const want = try alloc.alloc(f32, rows_q8);
+    defer alloc.free(want);
+    const row_scratch = try alloc.alloc(f32, inference.cpu.matvecScratch(columns));
+    defer alloc.free(row_scratch);
+    const decoded = try alloc.alloc(f32, columns);
+    defer alloc.free(decoded);
+    var worst_q8: f64 = 0;
+    for (1..tokens_max + 1) |tokens| {
+        try b.begin();
+        try b.matmulKernel(.matmul_q8_0_f2, weights_q8, matrix, x, columns, y, rows_q8, tokens);
+        try b.commit();
+        for (0..tokens) |t| {
+            const xt = x.floats()[t * columns ..][0..columns];
+            for (0..rows_q8) |r| {
+                try inference.quant.row(8, bytes[r * stride ..][0..stride], decoded);
+                var sum: f64 = 0;
+                var mass: f64 = 0;
+                for (decoded, xt) |w, v| {
+                    sum += @as(f64, w) * v;
+                    mass += @abs(@as(f64, w) * v);
+                }
+                worst_q8 = @max(worst_q8, @abs(y.floats()[t * rows_q8 + r] - sum) / (mass + 1e-6));
+            }
+        }
+    }
+    if (worst_q8 > 2e-4) return error.MetalMismatch;
+    std.debug.print("Q8_0 fragment tile vs CPU on 1-24 tokens: worst |difference| / mass {e:.3} (bound 2e-4, half weights)\n", .{worst_q8});
 }
 
 /// The `simdgroup_matrix` lane layout the register-fragment tiles assume:

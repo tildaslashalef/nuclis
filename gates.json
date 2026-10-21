@@ -689,10 +689,11 @@
     "draft": true
    },
    "bounds": {
-    "max_absolute": 0.002,
-    "max_relative_rms": 0.0001
+    "max_absolute": 0.02,
+    "max_relative_rms": 0.001
    },
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21"
+   "evidence": "docs/engine/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21",
+   "note": "the drafter's Q8_0 projections run the fragment tile, weights rounded to half: the family's half-tile bound (generation-check qwen35_spec); measured 1.6e-2 / 7.7e-4, drafts identical"
   },
   {
    "name": "qwen38-dflash2-trace-cpu",
