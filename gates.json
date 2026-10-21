@@ -76,6 +76,10 @@
   },
   "qwen38_dflash2": {
    "path": "~/.nuclis/models/z-lab/Qwen3.8-27B-DFlash2-GGUF/Qwen3.8-27B-DFlash2-Q8_0.gguf"
+  },
+  "qwen38_dflash2_pair": {
+   "path": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+   "entry": "qwen-dflash2"
   }
  },
  "checks": [
