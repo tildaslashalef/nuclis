@@ -1301,3 +1301,42 @@ run each, not the record):
 DFlash2 drafts a whole block per forward and its later positions stay
 good: at p_min 0 it proposes nearly all 7 and keeps 2.7. But each
 batch then verifies about 8 rows, which costs more than MTP's ~5.
+
+**The speculative matrix** (2026-10-21, same day and method as
+[§ The re-priced verdicts](#the-re-priced-verdicts-2026-10-01): 128
+tokens, F16 cache, three off/on pairs per cell, `--cooldown 60`, Qwen's
+instruct sampling). MTP ran at its default (draft 7, p_min 0.7); DFlash2
+at drafts 5 and 7, p_min 0 and 0.3. The full tables are in
+[benchmarks § DFlash2 against MTP on the Q4_K_M](../benchmarks/history.md#dflash2-against-mtp-on-the-q4_k_m-2026-10-21).
+On-rate, tok/s, at draft 7:
+
+| Context, sampling | MTP, p_min 0.7 | DFlash2, p_min 0.3 | DFlash2 / MTP |
+| --- | ---: | ---: | ---: |
+| code, greedy | 21.17 | 20.72 | 0.98 |
+| code, instruct | 21.76 | 24.19 | 1.11 |
+| 512, greedy | 17.69 | 19.46 | 1.10 |
+| 512, instruct | 17.02 | 17.66 | 1.04 |
+| 4,096, greedy | 17.82 | 18.90 | 1.06 |
+| 4,096, instruct | 15.45 | 13.84 | 0.90 |
+| 16,384, greedy | 13.77 | 14.72 | 1.07 |
+| 16,384, instruct | 13.92 | 13.44 | 0.97 |
+| 32,639, greedy | 14.14 | 13.96 | 0.99 |
+| 32,639, instruct | 14.28 | 14.17 | 0.99 |
+
+**The verdict.**
+
+- **On its own, DFlash2 qualifies.** At draft 7 and p_min 0.3 the prose
+  geometric mean is 1.366× and the worst cell 1.172×. MTP reads 1.387×
+  and 1.260×.
+- **Against MTP it is a wash.** Over the eight prose cells its on-rate is
+  1.012× MTP's geometric mean, ranging from 0.90 to 1.10. It wins at
+  short context and on sampled code, and ties from 16K, where the verify
+  batch (8 rows of a 16.5 GB model) is most of each batch's cost.
+- **The other settings lose.** p_min 0 and draft 5 read 0.925–0.979×
+  MTP.
+- **The default stays MTP.** It is embedded in the file and costs no
+  extra 2 GB. DFlash2 is a supported alternative: name the companion as
+  the entry's `mtp`, with `--draft-p-min 0.3` (bench) and draft 7.
+- **What would change it.** DFlash2 raises acceptance (E 2.95–3.26
+  against MTP's 2.46–2.95 at 512–4K), so it would pull ahead wherever a
+  verify batch got cheaper than it is today.

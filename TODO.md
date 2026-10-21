@@ -17,98 +17,37 @@ it is empty, ask what to work on and write the agreed plan here.
 Theme: speculation, on the branch `saluki-mtp-companion` (no pushes or
 pull requests until the user says).
 
-- Qwen's MTP companion binds on Saluki; its verdict is off, because
-  Saluki's verify costs 2.3× a step at any row count
-  (`docs/engine/speculative-decoding.md` § The Qwen MTP companion).
-- The user chose DFlash2 on the Qwen3.8 Q4_K_M next (2026-10-21), done in
-  this session.
+**DFlash2 on the Q4_K_M is done:** both executors, gated, measured
+(`docs/engine/speculative-decoding.md` § The Qwen DFlash2 drafter;
+`docs/benchmarks/history.md` § DFlash2 against MTP on the Q4_K_M).
 
-| Unit | State |
-| --- | --- |
-| DFlash2 on the Qwen3.8 Q4_K_M | implemented on both executors and gated; the matrix against MTP is running |
+- **On its own** it qualifies at draft 7, p_min 0.3 (prose 1.366×, worst
+  1.172×).
+- **Against MTP it is a wash:** 1.012× MTP's on-rate over prose, 0.90–1.10;
+  ahead at short context, tied from 16K.
+- **The default stays MTP.**
+- `make verify` and `make verify-cpu` were started on 2026-10-21; the
+  pull request record names their results.
 
-## DFlash2 on the Qwen3.8 Q4_K_M
+**Decisions for the user** (raised 2026-10-21):
 
-Base: `c7bd570`
+1. **README revamp around DFlash2: not recommended.** The gain over MTP
+   is about 1 %. The README's Qwen table could gain one line that DFlash2
+   is supported and ties MTP.
+2. **Saluki in the registry.** Same-day numbers, 2026-10-21:
 
-**Delivered** (2026-10-21; the record is in
-`docs/engine/speculative-decoding.md` § The Qwen DFlash2 drafter):
+   | | Saluki 27B | Q4_K_M with MTP or DFlash2 |
+   | --- | ---: | ---: |
+   | Plain decode, tok/s, 512 / 32K | 17.6–17.8 / 15.0–15.1 | 11.9–12.1 / 9.6–10.7 |
+   | Best speculative, tok/s, 512 / 32K | off | 17.7–19.5 / 14.1–14.3 |
+   | Weights (+ drafter) | 7.9 GB | 16.5 GB (+2.1 GB) |
+   | Perplexity (8 × 512, F16) | 7.996 | 6.670 |
 
-- `dflash2.zig` (the binding) and `qwen35.attachDraft`;
-- the CPU reference (`dflash2_runtime.zig`) and the Metal `Flash`, with
-  `nu_dflash_conv` and a Q8_0 fragment tile;
-- the `--flash-trace` check, `tests/fixtures/qwen38-dflash2`, and four
-  gates.
-
-**Remaining:**
-
-- the speculative matrix, with MTP as the same-day baseline
-  (`.zig-cache/dflash2/`), then the verdict and the documents;
-- `make verify` and `make verify-cpu`.
-- **Two decisions that follow the verdict** (the user's, 2026-10-21):
-  - If DFlash2 beats MTP on prose, revamp the README's Qwen3.8-27B story
-    around it: plain → MTP → DFlash2 at 512 and 32K, and the setup.
-    Show the user the draft first.
-  - Whether Saluki 27B stays in the user's registry. Put Saluki (7.9 GB,
-    perplexity 7.996, plain 16.96 / 14.97 tok/s at 512 / 32K) beside the
-    Q4_K_M with its best drafter (16.5 GB, 6.670) at the same contexts.
-    The case for keeping it is memory and 32K speed. Removing it is the
-    user's call: their `~/.nuclis/nuclis.json`, not the catalogue.
-
-**Facts read 2026-10-21.**
-
-- **Checkpoint.** `z-lab/Qwen3.8-27B-DFlash2` (mirror of
-  `incoai/Qwen3.8-27B-DFlash2`, Apache-2.0) ships safetensors only (BF16,
-  3,848,817,896 B).
-- **GGUFs.** `z-lab/Qwen3.8-27B-DFlash2-GGUF` at `2d9571f8` ships BF16
-  (3,860,293,216 B), Q8_0 (2,056,414,816 B), and Q4_K_M
-  (1,143,006,816 B). They come from llama.cpp PR #27342's converter, the
-  only definition of the GGUF keys. Nothing is downloaded yet.
-- **Architecture** (`config.json`; the math from `z-lab/dflash`
-  `dflash/model.py` at `07ebd93`, MIT, read as the format's only
-  definition):
-  - **Layers.** 5 Qwen3 layers: hidden 5120, FFN 17408, 32 query and 8 KV
-    heads of 128, q/k RMS norms, RoPE θ 1e7 over the whole head,
-    non-causal inside the block, a sliding window of 2048 both ways,
-    eps 1e-6.
-  - **Context.** The residuals after target layers 5, 19, 33, 47 and 61
-    (`hidden_states[id + 1]`) are concatenated (5 × 5120), then
-    `fc` → `hidden_norm`. The result enters each layer only as attention
-    keys and values (`k_proj`/`v_proj` of the context rows), cached;
-    queries come from the block rows.
-  - **The block.** 8 rows `[anchor, mask × 7]` (mask id 248070), embedded
-    with the target's `token_embd`. The final `norm` feeds the target's
-    `output` head, with no logit scale or softcap for Qwen. Rows 1–7 are
-    the drafts. The block's own cache rows are cropped after every draft.
-  - **New over the Muse DFlash in `dflash.zig`: two dynamic convolutions
-    per layer.** One wraps attention and one the MLP. Each has
-    `base_kernel [2][2][5120]` and `kernel_projection` 5120 → 2·2·320
-    (groups of 16). `prepare` runs on the normed sublayer input `x`:
-    `y[t] = Σ_{o∈{0,1}} (base[0][o] + dyn₀[t][o][group]) ⊙ x[t−o]`,
-    with `x[−1] = 0` at the block's first row. `finish` runs the same on
-    the sublayer output with `base[1]`, and with `dyn₁` projected from
-    the same normed `x`.
-  - **New: the candidate selector.** Per position it takes the top 16
-    logits (unary) and projects the hidden through `hidden_projection`
-    5120 → 256. Each candidate k scores
-    `unary_k + Σ_r pred[prev][r] · h[r] · succ[cand_k][r]`, where `pred`
-    and `succ` are 248,320 × 256 codebooks. The greedy chain starts from
-    the anchor and takes the argmax at each position.
-- **The contract fits.** `propose(k)` is one block forward plus the
-  selector chain, for k ≤ 7. `commit` injects the 5 captured residuals
-  per committed token, as the Muse drafter does. nuclis's acceptance
-  draws from the target alone, so the selector's sampled q is not needed.
-- **Needs.** A capture of the 5 residuals in the Qwen executors (CPU
-  `qwen35_runtime` and Metal `qwen35_metal`; today only Muse's plan
-  captures). A `dflash2` binding, with the GGUF keys read from the
-  downloaded header. The conv and selector on both executors.
-- **Validation.** No external oracle. Unit tests pin the conv and
-  selector against hand-computed values. Metal is checked against the
-  CPU rows (a pinned fixture). Greedy speculative output must equal
-  plain. Acceptance (`--draft-stats`) is compared with the MTP block's.
-- **Measure.** `make spec-matrix ARGS='--model qwen38 --contexts
-  code,512,4096,16384,32639 --drafts 3-7'` against the MTP record, with
-  the same verdict rule.
+   At 512 the Q4_K_M with a drafter matches or beats Saluki. At 32K
+   Saluki is still about 5 % faster, at half the memory and higher
+   perplexity. Keep it if an 8 GB Qwen 27B or the fastest 32K decode
+   matters; otherwise the Q4_K_M is the one file. The registry is the
+   user's `~/.nuclis/nuclis.json`.
 
 ## Deferred
 
