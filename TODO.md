@@ -26,8 +26,9 @@ pull requests until the user says).
 - **Against MTP it is a wash:** 1.012× MTP's on-rate over prose, 0.90–1.10;
   ahead at short context, tied from 16K.
 - **The default stays MTP.**
-- `make verify` and `make verify-cpu` were started on 2026-10-21; the
-  pull request record names their results.
+- `make verify` passed 50 of 53 gates and `make verify-cpu` 25 of 26
+  (2026-10-21). The ones skipped are Bonsai's, whose model is not on this
+  machine.
 
 **Decisions for the user** (raised 2026-10-21):
 
