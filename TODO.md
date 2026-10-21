@@ -12,6 +12,41 @@ Session protocol (also in [AGENTS.md](AGENTS.md)): read this file first. If
 it lists work, summarize *Where we are* and ask the user how to continue. If
 it is empty, ask what to work on and write the agreed plan here.
 
+## Where we are
+
+Theme: speculation for Saluki 27B, on the branch `saluki-mtp-companion`
+(one session per unit, no pushes or pull requests until the user says).
+Qwen's MTP companion binds and drafts on Saluki, but the verdict is off:
+the 8-row verify batch costs 2.1× a single-row step (Q4_K_M: 1.45×)
+(`docs/engine/speculative-decoding.md` § The Qwen MTP companion). After
+this unit: re-measure, then a DFlash2 drafter unit, first on the Q4_K_M.
+
+| Unit | State |
+| --- | --- |
+| A cheaper few-row verify on Saluki | in progress |
+
+## A cheaper few-row verify on Saluki
+
+Base: `c6ebb02`
+
+1. **Profile.** `nuclis bench --speculative on --verify-rows 8 --accept
+   0 --profile` against a single-row `--profile`, on Saluki at 512 with
+   the companion (a scratch `NUCLIS_HOME` whose `saluki-27b` entry names
+   it as `mtp`). Rank the verify buffer's kernels by time.
+2. **The lead.** `specializedMatmulFrag` in
+   `inference/src/backends/metal/root.zig` has `_f2` fragment tiles for
+   IQ2_XXS and Q2_K, and none for IQ2_XS, IQ2_S, IQ3_XXS, IQ1_S, or IQ1_M
+   (staged `matmul_*_8`). Add tiles for whichever the profile ranks
+   highest, validated against the CPU decoders with `test-metal`, ranked
+   with the tile benchmarks, and gated.
+3. **Re-measure.** `scripts/spec-matrix.py --model saluki --run
+   run-2026-09-06 --contexts code,512,4096,16384,32639 --drafts 3-7
+   --sampling greedy,instruct --cooldown 60`. Apply the verdict rule.
+   Record the result in `docs/models/saluki.md`,
+   `docs/engine/speculative-decoding.md`, and
+   `docs/benchmarks/history.md`.
+4. **Gates.** `make verify`.
+
 ## Deferred
 
 Agreed and not scheduled; when one is picked up, it becomes a unit above.
