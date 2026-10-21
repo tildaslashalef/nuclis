@@ -15,37 +15,27 @@ it is empty, ask what to work on and write the agreed plan here.
 ## Where we are
 
 Theme: speculation for Saluki 27B, on the branch `saluki-mtp-companion`
-(one session per unit, no pushes or pull requests until the user says).
-Qwen's MTP companion binds and drafts on Saluki, but the verdict is off:
-the 8-row verify batch costs 2.1× a single-row step (Q4_K_M: 1.45×)
-(`docs/engine/speculative-decoding.md` § The Qwen MTP companion). After
-this unit: re-measure, then a DFlash2 drafter unit, first on the Q4_K_M.
+(one session per unit; no pushes or pull requests until the user says).
 
-| Unit | State |
-| --- | --- |
-| A cheaper few-row verify on Saluki | in progress |
+- **Qwen's MTP companion** binds and drafts on Saluki (validated, gated).
+  The verdict is off.
+- **The verify unit** found the cause. Saluki's verify costs about 120–130
+  ms at any row count (1 to 8), 2.3× a 57 ms step. The register-fragment
+  tiles decode its 2-bit weights at about the per-weight cost of 4-bit
+  ones, so they save nothing from the smaller file. A 2-row IQ2_XXS body
+  took 2-row batches from 118.4 to 112.7 ms, too little to change the
+  verdict, so the matrix was not re-run.
+  (`docs/engine/speculative-decoding.md` § The Qwen MTP companion,
+  "Where the verify time goes".)
 
-## A cheaper few-row verify on Saluki
+Next, the user's choice:
 
-Base: `c6ebb02`
-
-1. **Profile.** `nuclis bench --speculative on --verify-rows 8 --accept
-   0 --profile` against a single-row `--profile`, on Saluki at 512 with
-   the companion (a scratch `NUCLIS_HOME` whose `saluki-27b` entry names
-   it as `mtp`). Rank the verify buffer's kernels by time.
-2. **The lead.** `specializedMatmulFrag` in
-   `inference/src/backends/metal/root.zig` has `_f2` fragment tiles for
-   IQ2_XXS and Q2_K, and none for IQ2_XS, IQ2_S, IQ3_XXS, IQ1_S, or IQ1_M
-   (staged `matmul_*_8`). Add tiles for whichever the profile ranks
-   highest, validated against the CPU decoders with `test-metal`, ranked
-   with the tile benchmarks, and gated.
-3. **Re-measure.** `scripts/spec-matrix.py --model saluki --run
-   run-2026-09-06 --contexts code,512,4096,16384,32639 --drafts 3-7
-   --sampling greedy,instruct --cooldown 60`. Apply the verdict rule.
-   Record the result in `docs/models/saluki.md`,
-   `docs/engine/speculative-decoding.md`, and
-   `docs/benchmarks/history.md`.
-4. **Gates.** `make verify`.
+1. **A few-row 2-bit kernel at the matvec's decode rate.** It would turn
+   Saluki's speculation on (about 1.4× at 512 by arithmetic), but it is
+   an uncertain kernel project: Qwen's own fragment work once closed
+   below its target.
+2. **DFlash2 on the Qwen3.8 Q4_K_M**, whose verify is already cheap
+   relative to its step. First read the z-lab checkpoint and its format.
 
 ## Deferred
 
