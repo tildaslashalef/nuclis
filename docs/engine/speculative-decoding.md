@@ -1207,3 +1207,97 @@ A cheaper Saluki verify therefore needs a few-row 2-bit kernel that keeps
 the matvec's decode rate. More rows per tile do not help, and Qwen's own
 register-fragment work once closed below its target
 ([KERN-24](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-24--the-register-fragment-verify-matmul-2026-10-01-closed-below-its-target)).
+
+## The Qwen DFlash2 drafter (2026-10-21)
+
+z-lab's DFlash2 is a block drafter trained against Qwen3.8-27B.
+
+**The file.** `z-lab/Qwen3.8-27B-DFlash2-GGUF` at `2d9571f8`,
+`Qwen3.8-27B-DFlash2-Q8_0.gguf`: 2,056,414,816 B, SHA-256 `c18e800d…`,
+Apache-2.0, pulled with role `mtp`. Its keys come from llama.cpp PR
+#27342's converter. The architecture id is `dflash`, Muse's, so the
+selector keys are what tell the two apart.
+
+**The equations.** They come from `z-lab/dflash` `dflash/model.py` at
+`07ebd93` (MIT). That file is the format's only definition: it was read
+for the equations, and nothing was copied.
+
+- **Base.** Muse's drafter
+  ([§ The Muse Glimmer DFlash drafter](#the-muse-glimmer-dflash-drafter-2026-09-21))
+  at Qwen's width:
+  - five Qwen3 blocks of 32 query and 8 KV heads of 128;
+  - q/k norms, RoPE θ 1e7 over the whole head;
+  - non-causal inside the block, a 2048 window both ways;
+  - the residuals entering target layers 6, 20, 34, 48 and 62 encoded by
+    `fc` and `enc.output_norm` into keys and values at their positions;
+  - an 8-row block `[anchor, mask × 7]` (mask 248070) embedded with the
+    target's table;
+  - the final norm, then the target's head.
+- **Two dynamic convolutions per block,** one around attention and one
+  around the FFN. With `x` the normed sublayer input, the taps are
+  `conv_proj(x)`, viewed `[half][tap][group of 16]`. The sublayer reads
+  `Σ_tap (base[0][tap] + taps[0][tap]) ⊙ x[t − tap]`; its output `y`
+  becomes `Σ_tap (base[1][tap] + taps[1][tap]) ⊙ y[t − tap]` before the
+  residual add. Row −1 is zero, and the context rows take no
+  convolution. GGUF stores `*_conv_base` as `[embedding, 2, 2]`, the
+  reverse of PyTorch's `[half][tap][channel]`.
+- **The candidate selector.** At each draft position it takes the 16
+  largest logits `u_k` and the projection `h = selector_hidden(row)`
+  (rank 256). Each candidate scores `u_k + Σ_r pred[prev][r] · h[r] ·
+  succ[cand_k][r]`, and the greedy chain from the anchor takes the
+  highest. Acceptance draws from the target alone, so the selector's
+  sampled distribution is not needed.
+
+**Binding.** `qwen35.attachDraft` takes a DFlash2 companion over the
+file's own prediction block. Under `preferred`, Qwen's MTP companion is
+taken only where the file has none; `.file` forces it. The family
+declares `attachDraft` instead of `bindDraft` so it can choose by content.
+
+**Executors.**
+
+- **Both.** They capture each target layer's input residual during
+  prefill and verify, and report the five per row (25,600 floats) as the
+  commit rows. The drafter's five caches are session layouts after the
+  text layers, so recovery rewinds them.
+- **CPU reference.** `dflash2_runtime.zig`.
+- **Metal.** `Flash` in `qwen35_metal.zig`:
+  - the convolution is `nu_dflash_conv`;
+  - the drafter has its own RoPE table (128 wide, θ 1e7);
+  - its Q8_0 projections call `nu_matmul_q8_0_f2`, a register-fragment
+    tile that only the drafter calls by name (`matmul` keeps routing Q8_0
+    to the generic tile for every other family);
+  - the selector runs on the host over a device top-16 per row and the
+    projected rows.
+
+**Validation.** There is no external oracle.
+
+- **Unit tests** pin the convolution and the selector against
+  hand-computed values. `test-metal` checks `nu_dflash_conv` against
+  `dflash2.convolve` (4.8e-7) and the Q8_0 tile against the CPU matvec
+  (3.7e-5 of the products' mass).
+- **Losslessness.** Greedy output with speculation on equals plain on
+  both executors: `generate` on the CPU over 24 tokens, and on Metal over
+  64. `qwen38-dflash2-speculative-{metal,cpu}` runs the engine's loop:
+  equivalence, forced token, budget, EOS, cancellation, and context.
+- **Metal against the CPU.** `--flash-trace` prefills `Hello,`, commits,
+  runs the block and proposes; the CPU rows are pinned under
+  `tests/fixtures/qwen38-dflash2`. Metal reads 1.6e-2 max abs and 7.7e-4
+  relative RMS with identical drafts, inside the family's half-tile
+  bound (`qwen38-dflash2-trace-metal`).
+- **Acceptance.** On the code prompt, with p_min 0, CPU and Metal agree
+  exactly (3.80 of 6.40 proposed drafts accepted, 24 tokens). A wrong
+  convolution layout or selector would collapse that to near zero.
+
+**Costs on the code prompt** (128 tokens, draft 7, F16 cache, hot; one
+run each, not the record):
+
+| | Propose ms/batch | Verify ms/batch | Accepted / proposed | tok/s (plain 12.0) |
+| --- | ---: | ---: | ---: | ---: |
+| MTP, p_min 0.7 | 22.6 | 135.8 | 2.53 / 3.75 | 21.05 |
+| DFlash2, generic Q8_0 tile, p_min 0 | 43.4 | 147.0 | 2.66 / 6.71 | 17.48 |
+| DFlash2, Q8_0 fragment tile, p_min 0 | 18.9 | 146.6 | 2.66 / 6.71 | 20.69 |
+| DFlash2, fragment tile, p_min 0.3 | | | 2.46 / 3.97 | 20.79 |
+
+DFlash2 drafts a whole block per forward and its later positions stay
+good: at p_min 0 it proposes nearly all 7 and keeps 2.7. But each
+batch then verifies about 8 rows, which costs more than MTP's ~5.

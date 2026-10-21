@@ -25,11 +25,26 @@ pull requests until the user says).
 
 | Unit | State |
 | --- | --- |
-| DFlash2 on the Qwen3.8 Q4_K_M | step 0 done: facts read; waiting on the user's word to download |
+| DFlash2 on the Qwen3.8 Q4_K_M | implemented on both executors and gated; the matrix against MTP is running |
 
 ## DFlash2 on the Qwen3.8 Q4_K_M
 
 Base: `c7bd570`
+
+**Delivered** (2026-10-21; the record is in
+`docs/engine/speculative-decoding.md` § The Qwen DFlash2 drafter):
+
+- `dflash2.zig` (the binding) and `qwen35.attachDraft`;
+- the CPU reference (`dflash2_runtime.zig`) and the Metal `Flash`, with
+  `nu_dflash_conv` and a Q8_0 fragment tile;
+- the `--flash-trace` check, `tests/fixtures/qwen38-dflash2`, and four
+  gates.
+
+**Remaining:**
+
+- the speculative matrix, with MTP as the same-day baseline
+  (`.zig-cache/dflash2/`), then the verdict and the documents;
+- `make verify` and `make verify-cpu`.
 
 **Facts read 2026-10-21.**
 
