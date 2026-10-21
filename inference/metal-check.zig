@@ -634,6 +634,7 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
         .{ .id = 2, .fixture = "simple", .name = "Q4_0" },
         .{ .id = 142, .fixture = "ternary", .name = "PQ2_0" },
         .{ .id = 143, .fixture = "ternary", .name = "PTQ1_0" },
+        .{ .id = 16, .fixture = "codebook", .name = "IQ2_XXS" },
     };
     const rounds = 3;
     const repeats: usize = 16;
@@ -654,7 +655,7 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
     const input = try b.create(Backend.matmulPadded(max_rows) * 17408 * 4);
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(Backend.matmulPadded(max_rows) * (if (with_head) head_shape.rows else 17408) * 4);
-    std.debug.print("{s:<8} {s:<13} {s:>5} {s:>10} {s:>8} {s:>10} {s:>8} {s:>10} {s:>8}  ms/dispatch, GB/s ({d} rounds, {d}/round)\n", .{ "encoding", "shape", "rows", "16x8 ms", "16x8 GB/s", "32x8 ms", "32x8 GB/s", "rows ms", "rows GB/s", rounds, repeats });
+    std.debug.print("{s:<8} {s:<13} {s:>5} {s:>10} {s:>8} {s:>10} {s:>8} {s:>10} {s:>8} {s:>10} {s:>8}  ms/dispatch, GB/s ({d} rounds, {d}/round)\n", .{ "encoding", "shape", "rows", "16x8 ms", "16x8 GB/s", "32x8 ms", "32x8 GB/s", "frag ms", "frag GB/s", "rows ms", "rows GB/s", rounds, repeats });
     inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary", "codebook" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
@@ -809,6 +810,17 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
             if (i == 0) continue;
             wide_ms = if (i == 1) ms else @min(wide_ms, ms);
         };
+        // The fragment tile, what `matmul` runs for a 4–8-row verify batch.
+        var frag_ms: f64 = std.math.nan(f64);
+        if (Backend.specializedMatmulFrag(encoding, weights.offset, region.len / shape.rows, tokens)) |kernel| for (0..rounds + 1) |i| {
+            const before = b.gpuSeconds();
+            try b.begin();
+            for (0..repeats) |_| try b.matmulKernel(kernel, weights, matrix, input, shape.columns, output, shape.rows, tokens);
+            try b.commit();
+            const ms = (b.gpuSeconds() - before) * 1e3 / @as(f64, @floatFromInt(repeats));
+            if (i == 0) continue;
+            frag_ms = if (i == 1) ms else @min(frag_ms, ms);
+        };
         var rows_ms: f64 = std.math.nan(f64);
         if (tokens >= 2) for (0..rounds + 1) |i| {
             if (i == 0) try captureRows(b, "rows", name, shape.name, tokens);
@@ -822,6 +834,7 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
         };
         std.debug.print("{s:<8} {s:<13} {d:>5} {d:>10.2} {d:>8.1} ", .{ name, shape.name, tokens, tile_ms, bytes_mb / tile_ms });
         if (std.math.isNan(wide_ms)) std.debug.print("{s:>10} {s:>8} ", .{ "—", "—" }) else std.debug.print("{d:>10.2} {d:>8.1} ", .{ wide_ms, bytes_mb / wide_ms });
+        if (std.math.isNan(frag_ms)) std.debug.print("{s:>10} {s:>8} ", .{ "—", "—" }) else std.debug.print("{d:>10.2} {d:>8.1} ", .{ frag_ms, bytes_mb / frag_ms });
         if (tokens >= 2) std.debug.print("{d:>10.2} {d:>8.1}\n", .{ rows_ms, bytes_mb / rows_ms }) else std.debug.print("{s:>10} {s:>8}\n", .{ "—", "—" });
     }
 }

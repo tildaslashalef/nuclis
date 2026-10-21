@@ -221,6 +221,13 @@ pub const Kernel = enum(u32) {
     matvec_rows_iq4_xs_t6,
     matvec_rows_iq4_xs_t7,
     matvec_rows_iq4_xs_t8,
+    matvec_rows_iq2_xxs_t2,
+    matvec_rows_iq2_xxs_t3,
+    matvec_rows_iq2_xxs_t4,
+    matvec_rows_iq2_xxs_t5,
+    matvec_rows_iq2_xxs_t6,
+    matvec_rows_iq2_xxs_t7,
+    matvec_rows_iq2_xxs_t8,
     matmul_q3_k_w8,
     matmul_q4_k_w8,
     matmul_q5_k_w8,
@@ -766,6 +773,7 @@ pub const Backend = struct {
             13 => comptime matvecRowsBodies("q5_k"),
             14 => comptime matvecRowsBodies("q6_k"),
             23 => comptime matvecRowsBodies("iq4_xs"),
+            16 => comptime matvecRowsBodies("iq2_xxs"),
             else => return null,
         };
         return bodies[tokens - 2];

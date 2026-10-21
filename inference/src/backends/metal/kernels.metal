@@ -1202,6 +1202,49 @@ inline void nu_matvec_rows_iq4_xs_body(device const uchar * weights, device cons
     }
 }
 
+// IQ2_XXS: lane `g` owns its block's 32-value group, as in the matvec. Each
+// octet is decoded once per row with the group's scale folded in, then dotted
+// with every token's eight inputs. The grid values are half denormals at
+// 2^-24 of the byte, hence the 2^24 in the scale.
+template <uint ROWS, uint TOKENS>
+inline void nu_matvec_rows_iq2_xxs_body(device const uchar * weights, device const float * input, MatvecRowsParams p, uint group_index, uint sg, uint lane, thread float * acc) {
+    uint row0 = nu_rows_lane_row0<ROWS>(group_index, sg, lane);
+    uint g = lane & 7;
+    for (uint i = 0; i < ROWS * TOKENS; ++i) acc[i] = 0;
+    const uint blocks = p.columns / 256;
+    for (uint kb = 0; kb < blocks; ++kb) {
+        uint indices[ROWS], words[ROWS];
+        float scale[ROWS];
+#pragma unroll
+        for (uint r = 0; r < ROWS; ++r) {
+            device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + kb * 66;
+            packed_ushort4 q = *(device const packed_ushort4 *)(b + 2 + g * 8);
+            indices[r] = nu_word(q, 0);
+            words[r] = nu_word(q, 1);
+            float d = float(as_type<half>(*(device const ushort *)b));
+            scale[r] = (d * ((0.5f + float(words[r] >> 28)) * 0.25f)) * 16777216.0f;
+        }
+        device const float * x = input + kb * 256 + g * 32;
+#pragma clang loop unroll(disable)
+        for (uint l = 0; l < 4; ++l) {
+            float4 wa[ROWS], wb[ROWS];
+#pragma unroll
+            for (uint r = 0; r < ROWS; ++r) {
+                NuOctet o = nu_signed_octet(nu_iq2_xxs_grid[(indices[r] >> (8 * l)) & 255u], nu_signs7(words[r] >> (7 * l)));
+                wa[r] = float4(float(o.v02.x), float(o.v13.x), float(o.v02.y), float(o.v13.y)) * scale[r];
+                wb[r] = float4(float(o.v46.x), float(o.v57.x), float(o.v46.y), float(o.v57.y)) * scale[r];
+            }
+#pragma unroll
+            for (uint t = 0; t < TOKENS; ++t) {
+                device const float4 * xt = (device const float4 *)(x + ulong(t) * p.in_stride) + 2 * l;
+                float4 xa = xt[0], xb = xt[1];
+#pragma unroll
+                for (uint r = 0; r < ROWS; ++r) acc[r * TOKENS + t] = nu_dot(wb[r], xb, nu_dot(wa[r], xa, acc[r * TOKENS + t]));
+            }
+        }
+    }
+}
+
 // Sums each accumulator over its 8-lane group; the group's first lane stores.
 template <uint ROWS, uint TOKENS>
 inline void nu_store_rows_multi(thread float * acc, device float * output, uint row0, uint rows, uint out_stride, uint lane) {
@@ -1250,6 +1293,15 @@ kernel void nu_matvec_rows_iq4_xs(device const uchar * weights [[buffer(0)]], de
     nu_store_rows_multi<ROWS, TOKENS>(acc, output, nu_rows_lane_row0<ROWS>(group_index, sg, lane), p.rows, p.out_stride, lane);
 }
 
+template <uint ROWS, uint TOKENS>
+kernel void nu_matvec_rows_iq2_xxs(device const uchar * weights [[buffer(0)]], device const float * input [[buffer(1)]], device float * output [[buffer(2)]],
+                                   constant MatvecRowsParams & p [[buffer(7)]], uint group_index [[threadgroup_position_in_grid]],
+                                   uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    float acc[ROWS * TOKENS];
+    nu_matvec_rows_iq2_xxs_body<ROWS, TOKENS>(weights, input, p, group_index, sg, lane, acc);
+    nu_store_rows_multi<ROWS, TOKENS>(acc, output, nu_rows_lane_row0<ROWS>(group_index, sg, lane), p.rows, p.out_stride, lane);
+}
+
 // Generic fallback for encodings without a specialized multi-row body
 // (Q3_K, IQ3_S, IQ4_NL, Q8_0, F32, ...): one SIMD group per output row, the
 // same segment decode as `nu_matvec`, one accumulator per token row.
@@ -1292,6 +1344,7 @@ NU_MATVEC_ROWS_ALL(q4_k)
 NU_MATVEC_ROWS_ALL(q5_k)
 NU_MATVEC_ROWS_ALL(q6_k)
 NU_MATVEC_ROWS_ALL(iq4_xs)
+NU_MATVEC_ROWS_ALL(iq2_xxs)
 
 // ---------------------------------------------------------------------------
 // Mixture of experts. A 3-D tensor holds `experts` contiguous row-major
