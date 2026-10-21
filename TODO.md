@@ -14,29 +14,77 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-Theme: speculation for Saluki 27B, on the branch `saluki-mtp-companion`
-(one session per unit; no pushes or pull requests until the user says).
+Theme: speculation, on the branch `saluki-mtp-companion` (no pushes or
+pull requests until the user says).
 
-- **Qwen's MTP companion** binds and drafts on Saluki (validated, gated).
-  The verdict is off.
-- **The verify unit** found the cause. Saluki's verify costs about 120–130
-  ms at any row count (1 to 8), 2.3× a 57 ms step. The register-fragment
-  tiles decode its 2-bit weights at about the per-weight cost of 4-bit
-  ones, so they save nothing from the smaller file. A 2-row IQ2_XXS body
-  took 2-row batches from 118.4 to 112.7 ms, too little to change the
-  verdict, so the matrix was not re-run.
-  (`docs/engine/speculative-decoding.md` § The Qwen MTP companion,
-  "Where the verify time goes".)
+- Qwen's MTP companion binds on Saluki; its verdict is off, because
+  Saluki's verify costs 2.3× a step at any row count
+  (`docs/engine/speculative-decoding.md` § The Qwen MTP companion).
+- The user chose DFlash2 on the Qwen3.8 Q4_K_M next (2026-10-21), done in
+  this session.
 
-Next (the user's choice, 2026-10-21): **DFlash2 on the Qwen3.8 Q4_K_M**,
-in a fresh session on this branch. The alternatives were:
+| Unit | State |
+| --- | --- |
+| DFlash2 on the Qwen3.8 Q4_K_M | step 0 done: facts read; waiting on the user's word to download |
 
-1. **A few-row 2-bit kernel at the matvec's decode rate.** It would turn
-   Saluki's speculation on (about 1.4× at 512 by arithmetic), but it is
-   an uncertain kernel project: Qwen's own fragment work once closed
-   below its target.
-2. **DFlash2 on the Qwen3.8 Q4_K_M**, whose verify is already cheap
-   relative to its step. First read the z-lab checkpoint and its format.
+## DFlash2 on the Qwen3.8 Q4_K_M
+
+Base: `c7bd570`
+
+**Facts read 2026-10-21.**
+
+- **Checkpoint.** `z-lab/Qwen3.8-27B-DFlash2` (mirror of
+  `incoai/Qwen3.8-27B-DFlash2`, Apache-2.0) ships safetensors only (BF16,
+  3,848,817,896 B).
+- **GGUFs.** `z-lab/Qwen3.8-27B-DFlash2-GGUF` at `2d9571f8` ships BF16
+  (3,860,293,216 B), Q8_0 (2,056,414,816 B), and Q4_K_M
+  (1,143,006,816 B). They come from llama.cpp PR #27342's converter, the
+  only definition of the GGUF keys. Nothing is downloaded yet.
+- **Architecture** (`config.json`; the math from `z-lab/dflash`
+  `dflash/model.py` at `07ebd93`, MIT, read as the format's only
+  definition):
+  - **Layers.** 5 Qwen3 layers: hidden 5120, FFN 17408, 32 query and 8 KV
+    heads of 128, q/k RMS norms, RoPE θ 1e7 over the whole head,
+    non-causal inside the block, a sliding window of 2048 both ways,
+    eps 1e-6.
+  - **Context.** The residuals after target layers 5, 19, 33, 47 and 61
+    (`hidden_states[id + 1]`) are concatenated (5 × 5120), then
+    `fc` → `hidden_norm`. The result enters each layer only as attention
+    keys and values (`k_proj`/`v_proj` of the context rows), cached;
+    queries come from the block rows.
+  - **The block.** 8 rows `[anchor, mask × 7]` (mask id 248070), embedded
+    with the target's `token_embd`. The final `norm` feeds the target's
+    `output` head, with no logit scale or softcap for Qwen. Rows 1–7 are
+    the drafts. The block's own cache rows are cropped after every draft.
+  - **New over the Muse DFlash in `dflash.zig`: two dynamic convolutions
+    per layer.** One wraps attention and one the MLP. Each has
+    `base_kernel [2][2][5120]` and `kernel_projection` 5120 → 2·2·320
+    (groups of 16). `prepare` runs on the normed sublayer input `x`:
+    `y[t] = Σ_{o∈{0,1}} (base[0][o] + dyn₀[t][o][group]) ⊙ x[t−o]`,
+    with `x[−1] = 0` at the block's first row. `finish` runs the same on
+    the sublayer output with `base[1]`, and with `dyn₁` projected from
+    the same normed `x`.
+  - **New: the candidate selector.** Per position it takes the top 16
+    logits (unary) and projects the hidden through `hidden_projection`
+    5120 → 256. Each candidate k scores
+    `unary_k + Σ_r pred[prev][r] · h[r] · succ[cand_k][r]`, where `pred`
+    and `succ` are 248,320 × 256 codebooks. The greedy chain starts from
+    the anchor and takes the argmax at each position.
+- **The contract fits.** `propose(k)` is one block forward plus the
+  selector chain, for k ≤ 7. `commit` injects the 5 captured residuals
+  per committed token, as the Muse drafter does. nuclis's acceptance
+  draws from the target alone, so the selector's sampled q is not needed.
+- **Needs.** A capture of the 5 residuals in the Qwen executors (CPU
+  `qwen35_runtime` and Metal `qwen35_metal`; today only Muse's plan
+  captures). A `dflash2` binding, with the GGUF keys read from the
+  downloaded header. The conv and selector on both executors.
+- **Validation.** No external oracle. Unit tests pin the conv and
+  selector against hand-computed values. Metal is checked against the
+  CPU rows (a pinned fixture). Greedy speculative output must equal
+  plain. Acceptance (`--draft-stats`) is compared with the MTP block's.
+- **Measure.** `make spec-matrix ARGS='--model qwen38 --contexts
+  code,512,4096,16384,32639 --drafts 3-7'` against the MTP record, with
+  the same verdict rule.
 
 ## Deferred
 
