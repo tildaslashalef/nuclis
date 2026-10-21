@@ -1610,7 +1610,7 @@ fn bindDraftSource(comptime Family: type, alloc: std.mem.Allocator, io: std.Io, 
     const path = draft_model orelse return binding;
     companion.* = try inference.weights.Mapped.open(alloc, io, path);
     const c = &companion.*.?;
-    binding.draft = try Family.bindDraft(alloc, &c.document, c.view(), mapped.view(), &binding);
+    _ = try Family.attachDraft(alloc, &c.document, c.view(), mapped.view(), &binding, true);
     return binding;
 }
 

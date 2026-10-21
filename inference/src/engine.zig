@@ -823,27 +823,37 @@ pub const Engine = struct {
             inline else => |a| blk: {
                 const Family = models.registry.family(a);
                 var binding = try Family.bind(alloc, &mapped.document);
-                // A companion draft source is a second GGUF of its own
-                // architecture; it is mapped here and must outlive the model.
-                // `preferred` keeps a file's own block and takes the
+                // A companion draft source is a second GGUF; it is mapped
+                // here and must outlive the model. A family that declares
+                // `attachDraft` reads the companion and decides itself whether
+                // it overrides the file's own block (Qwen: a DFlash2 drafter
+                // does, its MTP companion does not under `preferred`);
+                // otherwise `preferred` keeps a file's own block and takes the
                 // companion only for a file without one.
+                const attaches = comptime @hasDecl(Family, "attachDraft");
                 const companion_path: ?[]const u8 = switch (draft) {
                     .file => |path| path,
-                    .preferred => |path| if (embeddedBlock(Family, &binding)) null else path,
+                    .preferred => |path| if (!attaches and embeddedBlock(Family, &binding)) null else path,
                     else => null,
                 };
+                var attached = false;
                 if (companion_path) |path| {
-                    if (comptime @hasDecl(Family, "bindDraft")) {
+                    if (comptime attaches or @hasDecl(Family, "bindDraft")) {
                         const companion = inference.weights.Mapped.open(alloc, io, path) catch |err| switch (err) {
                             error.FileNotFound => return error.DraftSourceMissing,
                             else => return err,
                         };
                         draft_mapped = companion;
-                        const arch = companion.document.string("general.architecture") orelse "";
-                        if (!std.mem.eql(u8, arch, Family.draft_architecture)) return error.DraftSourceMismatch;
                         const target_tokens = vocabularyCount(&mapped.document) orelse return error.DraftSourceMismatch;
                         if (vocabularyCount(&companion.document) != target_tokens) return error.DraftSourceMismatch;
-                        binding.draft = try Family.bindDraft(alloc, &companion.document, companion.view(), mapped.view(), &binding);
+                        if (comptime attaches) {
+                            attached = try Family.attachDraft(alloc, &companion.document, companion.view(), mapped.view(), &binding, draft == .file);
+                        } else {
+                            const arch = companion.document.string("general.architecture") orelse "";
+                            if (!std.mem.eql(u8, arch, Family.draft_architecture)) return error.DraftSourceMismatch;
+                            binding.draft = try Family.bindDraft(alloc, &companion.document, companion.view(), mapped.view(), &binding);
+                            attached = true;
+                        }
                     } else return error.DraftSourceUnsupported;
                 }
                 // A file whose family embeds a block may still lack one
@@ -853,7 +863,7 @@ pub const Engine = struct {
                     .none => false,
                     .embedded, .optional_embedded => wantsEmbedded(Family, &binding),
                     .file => true,
-                    .preferred => embeddedBlock(Family, &binding) or companion_path != null,
+                    .preferred => embeddedBlock(Family, &binding) or attached,
                 };
                 break :blk .{ .exec = @unionInit(Executors, @tagName(a), try openExecutor(Family, alloc, io, mapped.view(), binding, backend, capacity, kv, want_draft)) };
             },

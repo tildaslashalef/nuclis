@@ -23,6 +23,7 @@ pub const muse_glimmer_metal = @import("muse_glimmer_metal.zig");
 /// Muse Glimmer's DFlash draft companion (an architecture of its own, not a
 /// registry family: the target binds it).
 pub const dflash = @import("dflash.zig");
+pub const dflash2 = @import("dflash2.zig");
 pub const inventory = @import("inventory.zig");
 /// Laya, the decision model: a ModernBERT encoder and a typed-decision head
 /// from a safetensors checkpoint. Not a registry family: it decodes nothing.
@@ -116,4 +117,5 @@ test {
     _ = embeddinggemma;
     _ = embeddinggemma_runtime;
     _ = dflash;
+    _ = dflash2;
 }
