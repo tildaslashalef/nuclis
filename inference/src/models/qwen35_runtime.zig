@@ -11,6 +11,8 @@ const model = @import("qwen35.zig");
 const weights = @import("../runtime/weights.zig");
 const session = @import("../runtime/session.zig");
 const cpu = @import("../backends/cpu/root.zig");
+const dflash2 = @import("dflash2.zig");
+const dflash2_runtime = @import("dflash2_runtime.zig");
 const Tensor = @import("../formats/gguf.zig").Tensor;
 
 /// The shared layer-boundary callbacks (`runtime/observer.zig`); re-exported
@@ -40,6 +42,12 @@ const Rotation = struct {
         return error.InvalidShape;
     }
 };
+
+/// The DFlash2 capture slot of target layer `index`, or null.
+fn targetSlot(index: usize) ?usize {
+    inline for (dflash2.target_layers, 0..) |layer, slot| if (index == layer) return slot;
+    return null;
+}
 
 pub const Runtime = struct {
     /// Runs `cpu.matvec`'s row tasks; `row` holds a decode row per task.
@@ -72,6 +80,12 @@ pub const Runtime = struct {
     draft_constants: ?LayerConstants,
     draft_layer: usize,
     has_draft: bool,
+    /// The DFlash2 drafter, when the binding carries one (exclusive with the
+    /// prediction block): its caches are the session layouts from
+    /// `draft_layer`, and `capture` holds the last row's five target-layer
+    /// input residuals, the drafter's commit row.
+    flash: ?dflash2_runtime.Draft,
+    capture: []f32,
     projected: []f32,
     gate: []f32,
     up: []f32,
@@ -93,18 +107,26 @@ pub const Runtime = struct {
     pub fn init(gpa: std.mem.Allocator, io: std.Io, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool, draft: bool) !Runtime {
         const shape = binding.shape;
         const text = shape.layers;
-        var layouts: [model.Shape.max_layers + 1]session.Layout = undefined;
+        var layouts: [model.Shape.max_layers + dflash2.block_count]session.Layout = undefined;
         for (binding.layers(), layouts[0..text]) |layer, *layout| layout.* = switch (layer.mixer) {
             .full_attention => .{ .attention = .{ .key_row = model.Shape.kv_width, .value_row = model.Shape.kv_width } },
             .delta_net => .{ .recurrent = .{ .history = shape.deltaHistory(), .matrix = shape.deltaMatrix() } },
         };
-        if (draft) {
+        const flash = draft and binding.dflash != null;
+        const mtp = draft and !flash;
+        var extra: usize = 0;
+        if (mtp) {
             if (binding.draft == null) return error.NoDraftBlock;
             // The block is a full-attention layer of the main shape; its cache
             // is one more layout in the same session, so recovery rewinds it.
             layouts[text] = .{ .attention = .{ .key_row = model.Shape.kv_width, .value_row = model.Shape.kv_width } };
+            extra = 1;
         }
-        var state = try session.Session.init(gpa, layouts[0 .. text + @intFromBool(draft)], capacity, checkpoint);
+        if (flash) {
+            for (layouts[text..][0..dflash2.block_count]) |*layout| layout.* = .{ .attention = .{ .key_row = dflash2.kv_width, .value_row = dflash2.kv_width } };
+            extra = dflash2.block_count;
+        }
+        var state = try session.Session.init(gpa, layouts[0 .. text + extra], capacity, checkpoint);
         errdefer state.deinit();
         var storage: std.heap.ArenaAllocator = .init(gpa);
         errdefer storage.deinit();
@@ -150,14 +172,17 @@ pub const Runtime = struct {
                 },
             };
         }
-        result.has_draft = draft;
+        result.has_draft = mtp;
         result.draft_layer = text;
-        inline for (.{ "draft_h", "draft_hnorm", "draft_chain", "draft_pending_h" }) |field| @field(result, field) = try a.alloc(f32, if (draft) shape.hidden else 0);
-        inline for (.{ "draft_enorm", "draft_hnorm_w", "draft_head_norm" }) |field| @field(result, field) = try a.alloc(f32, if (draft) shape.hidden else 0);
-        result.draft_concat = try a.alloc(f32, if (draft) 2 * shape.hidden else 0);
+        inline for (.{ "draft_h", "draft_hnorm", "draft_chain", "draft_pending_h" }) |field| @field(result, field) = try a.alloc(f32, if (mtp) shape.hidden else 0);
+        inline for (.{ "draft_enorm", "draft_hnorm_w", "draft_head_norm" }) |field| @field(result, field) = try a.alloc(f32, if (mtp) shape.hidden else 0);
+        result.draft_concat = try a.alloc(f32, if (mtp) 2 * shape.hidden else 0);
+        // `verifyGreedy` reads its rows here under either drafter.
         result.draft_logits = try a.alloc(f32, if (draft) 248320 else 0);
         result.draft_constants = null;
-        if (draft) {
+        result.flash = if (flash) try dflash2_runtime.Draft.init(a, io, binding.dflash.?) else null;
+        result.capture = try a.alloc(f32, if (flash) dflash2.hidden_width else 0);
+        if (mtp) {
             const block = binding.draft.?;
             // A companion block reads its own mapping.
             const source = if (block.source) |c| c.view else view;
@@ -302,6 +327,8 @@ pub const Runtime = struct {
             .features => |row| @memcpy(self.x, row),
         }
         for (self.binding.layers(), self.constants, 0..) |layer, constants, il| {
+            // The layer's input residual, before any of its writes.
+            if (self.flash != null) if (targetSlot(il)) |slot| @memcpy(self.capture[slot * self.x.len ..][0..self.x.len], self.x);
             try norm(self.x, self.normalized, constants.attention_norm);
             switch (layer.mixer) {
                 .full_attention => |attn| {
@@ -514,12 +541,31 @@ pub const Runtime = struct {
     /// Reference verify: one step per token, keeping every row's logits and,
     /// when asked, the post-`output_norm` hidden the drafter's `commit` reads.
     pub fn verify(self: *Runtime, tokens: []const u32, rows: []f32, h_rows: ?[]f32, observer: ?Observer) !void {
-        const hidden = self.binding.shape.hidden;
+        const hidden = self.commitRow().len;
         if (rows.len != tokens.len * 248320) return error.InvalidShape;
         if (h_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
         for (tokens, 0..) |token, i| {
             try self.step(token, rows[i * 248320 ..][0..248320], observer);
-            if (h_rows) |h| @memcpy(h[i * hidden ..][0..hidden], self.h);
+            if (h_rows) |h| @memcpy(h[i * hidden ..][0..hidden], self.commitRow());
+        }
+    }
+
+    /// The row a drafter's `commit` reads for the last consumed token: the
+    /// five target-layer input residuals for DFlash2, else the post-
+    /// `output_norm` hidden the prediction block reads.
+    fn commitRow(self: *Runtime) []const f32 {
+        return if (self.flash != null) self.capture else self.h;
+    }
+
+    /// Consumes `tokens` one step each, reading logits on the last; `hidden`
+    /// (`tokens.len` commit rows), when given, receives each row's
+    /// `commitRow` for the prompt commit.
+    pub fn prefill(self: *Runtime, tokens: []const u32, logits: ?[]f32, hidden: ?[]f32, observer: ?Observer) !void {
+        const width = self.commitRow().len;
+        if (hidden) |out| if (out.len != tokens.len * width) return error.InvalidShape;
+        for (tokens, 0..) |token, i| {
+            try self.step(token, if (i + 1 == tokens.len) logits else null, observer);
+            if (hidden) |out| @memcpy(out[i * width ..][0..width], self.commitRow());
         }
     }
 
@@ -527,13 +573,13 @@ pub const Runtime = struct {
     /// of full logits. Reuses the block's logits scratch, which exists exactly
     /// when a drafter does.
     pub fn verifyGreedy(self: *Runtime, tokens: []const u32, out: []u32, h_rows: ?[]f32, observer: ?Observer) !void {
-        const hidden = self.binding.shape.hidden;
+        const hidden = self.commitRow().len;
         if (out.len != tokens.len) return error.InvalidShape;
         if (h_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
         for (tokens, 0..) |token, i| {
             try self.step(token, self.draft_logits, observer);
             out[i] = argmax(self.draft_logits);
-            if (h_rows) |h| @memcpy(h[i * hidden ..][0..hidden], self.h);
+            if (h_rows) |h| @memcpy(h[i * hidden ..][0..hidden], self.commitRow());
         }
     }
 
@@ -547,6 +593,7 @@ pub const Runtime = struct {
 
     /// The contract value the engine holds, or null when no block is loaded.
     pub fn drafter(self: *Runtime) ?@import("../runtime/draft.zig").Drafter {
+        if (self.flash != null) return .{ .host = self, .hidden = dflash2.hidden_width, .max_proposals = dflash2.block_size - 1, .propose_fn = flashProposeFn, .commit_fn = flashCommitFn, .reset_fn = flashResetFn, .carried_fn = flashCarried, .bytes_fn = flashBytes };
         if (!self.has_draft) return null;
         return .{ .host = self, .hidden = self.binding.shape.hidden, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
     }
@@ -567,6 +614,70 @@ pub const Runtime = struct {
         if (!self.has_draft) return &.{};
         return self.draft_pending_h;
     }
+    // --- the DFlash2 drafter --------------------------------------------
+
+    fn flashTarget(self: *Runtime) dflash2_runtime.Target {
+        return .{ .view = self.view, .token_embedding = self.binding.token_embedding, .output = self.binding.output };
+    }
+
+    /// Advances the DFlash2 drafter over committed tokens: each row's five
+    /// residuals encode to one feature whose keys and values enter the
+    /// drafter's caches at the token's position. The accepted prefix ends at
+    /// `state.position`; the caller has already `recover`ed the session.
+    pub fn flashCommit(self: *Runtime, tokens: []const u32, h_rows: []const f32) !void {
+        const d = &(self.flash orelse return error.NoDraftBlock);
+        if (h_rows.len != tokens.len * dflash2.hidden_width) return error.InvalidShape;
+        if (self.state.position < tokens.len) return error.InvalidShape;
+        const start = self.state.position - tokens.len;
+        for (0..tokens.len) |i| {
+            try d.encode(h_rows[i * dflash2.hidden_width ..][0..dflash2.hidden_width]);
+            try d.inject(&self.state, self.draft_layer, start + i);
+        }
+    }
+
+    /// One noise block from `token` at the session position, then the
+    /// selector chain; at most `block_size - 1` drafts.
+    pub fn flashPropose(self: *Runtime, token: u32, out: []u32, p_min: f32) !usize {
+        const d = &(self.flash orelse return error.NoDraftBlock);
+        if (token >= 248320) return error.InvalidTokenId;
+        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        const count: usize = @min(out.len, dflash2.block_size - 1);
+        if (count == 0) return 0;
+        try d.block(self.flashTarget(), &self.state, self.draft_layer, token, 1 + count, self.state.position);
+        return d.select(self.flashTarget(), token, out[0..count], p_min);
+    }
+
+    /// One noise block for `--draft-trace`: every row's final hidden into
+    /// `hidden` (`rows × dflash2.embedding`).
+    pub fn flashBlockTrace(self: *Runtime, token: u32, rows: usize, hidden: []f32) !void {
+        const d = &(self.flash orelse return error.NoDraftBlock);
+        if (hidden.len != rows * dflash2.embedding) return error.InvalidShape;
+        try d.block(self.flashTarget(), &self.state, self.draft_layer, token, rows, self.state.position);
+        @memcpy(hidden, d.hidden[0..hidden.len]);
+    }
+
+    fn flashProposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
+        const self: *Runtime = @ptrCast(@alignCast(host));
+        return self.flashPropose(token, out, p_min);
+    }
+    fn flashCommitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
+        const self: *Runtime = @ptrCast(@alignCast(host));
+        return self.flashCommit(tokens, h_rows);
+    }
+    fn flashResetFn(host: *anyopaque) void {
+        // The drafter's state is its session caches, which `reset` clears.
+        _ = host;
+    }
+    fn flashCarried(host: *anyopaque) []f32 {
+        _ = host;
+        return &.{};
+    }
+    fn flashBytes(host: *anyopaque) usize {
+        const self: *Runtime = @ptrCast(@alignCast(host));
+        const d = self.flash orelse return 0;
+        return (d.x_rows.len * 6 + d.taps_rows.len + d.q_rows.len + d.gate.len * 2 + d.logits.len + d.row.len + self.capture.len) * @sizeOf(f32);
+    }
+
     fn draftBytes(host: *anyopaque) usize {
         const self: *Runtime = @ptrCast(@alignCast(host));
         if (!self.has_draft) return 0;
