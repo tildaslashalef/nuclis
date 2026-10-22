@@ -30,26 +30,6 @@ pull requests until the user says).
   (2026-10-21). The ones skipped are Bonsai's, whose model is not on this
   machine.
 
-**Decisions for the user** (raised 2026-10-21):
-
-1. **README revamp around DFlash2: not recommended.** The gain over MTP
-   is about 1 %. The README's Qwen table could gain one line that DFlash2
-   is supported and ties MTP.
-2. **Saluki in the registry.** Same-day numbers, 2026-10-21:
-
-   | | Saluki 27B | Q4_K_M with MTP or DFlash2 |
-   | --- | ---: | ---: |
-   | Plain decode, tok/s, 512 / 32K | 17.6–17.8 / 15.0–15.1 | 11.9–12.1 / 9.6–10.7 |
-   | Best speculative, tok/s, 512 / 32K | off | 17.7–19.5 / 14.1–14.3 |
-   | Weights (+ drafter) | 7.9 GB | 16.5 GB (+2.1 GB) |
-   | Perplexity (8 × 512, F16) | 7.996 | 6.670 |
-
-   At 512 the Q4_K_M with a drafter matches or beats Saluki. At 32K
-   Saluki is still about 5 % faster, at half the memory and higher
-   perplexity. Keep it if an 8 GB Qwen 27B or the fastest 32K decode
-   matters; otherwise the Q4_K_M is the one file. The registry is the
-   user's `~/.nuclis/nuclis.json`.
-
 ## Deferred
 
 Agreed and not scheduled; when one is picked up, it becomes a unit above.
