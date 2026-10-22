@@ -537,7 +537,7 @@ What the families that went through the seam actually needed:
 | Q4_0 (the QAT file) | a `quant.row` arm, a generic GPU decoder, a specialized matvec and tile, the adapter's `executableEncoding` claim | [gemma4.md § Q4_0 path](models/gemma4.md#q4_0-path-and-the-qat-file-2026-09-12) |
 | Muse Glimmer 30B | a tokenizer splitter, a windowed schedule with global layers, a profile with a reasoning channel and its own tool grammar; no new kernel | [muse-glimmer.md](models/muse-glimmer.md) |
 | Bonsai 2 27B | two ternary encodings, the Hadamard transform, a rotation contract in the Qwen adapter; the Qwen plan otherwise | [bonsai.md](models/bonsai.md) |
-| draft sources | Qwen's embedded block; `gemma4_assistant.zig`, a second GGUF reading the target's caches; `dflash.zig`, a block drafter | [speculative-decoding.md](engine/speculative-decoding.md) |
+| draft sources | Qwen's `nextn` block, embedded or from its `MTP/` companion (`qwen35.bindDraft`); `gemma4_assistant.zig`, a second GGUF reading the target's caches; `dflash.zig`, a block drafter | [speculative-decoding.md](engine/speculative-decoding.md) |
 
 Registration is one line: the adapter publishes a `family` namespace
 (`architecture`, `executableEncoding`, `Binding`/`bind`, `Runtime`, `Plan`)

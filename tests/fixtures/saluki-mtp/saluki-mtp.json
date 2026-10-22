@@ -1,0 +1,17 @@
+{
+  "reference": "nuclis CPU reference",
+  "revision": "f45c772 plus the companion binding",
+  "tool": "zig build test-generation -- <saluki> --draft-trace DIR --draft-model <companion>",
+  "model": "Underdog-Saluki-27B-1.0-IQ2-mix.gguf",
+  "companion": "unsloth/Qwen3.8-27B-GGUF MTP/mtp-Qwen3.8-27B-Q4_0.gguf (sha256 50d9ce5a6da381bbcfb31061cf73df94a90e6faf8efeddee379a9cb8f1501c6e)",
+  "prompt": "Hello,",
+  "tokens": [9419, 11],
+  "greedy_draft": [220775, 4338],
+  "block": "blk.64 (nextn), bound from the companion",
+  "files": {
+    "p0-h.f32": "the block's h_nextn at position 0 (h_prev zeros, token 9419)",
+    "p1-hprev.f32": "Saluki's hidden after position 0, fed as h_prev at position 1",
+    "p1-h.f32": "the block's h_nextn at position 1 (token 11)"
+  },
+  "note": "The CPU reference as fixture (docs/models/saluki.md § Validation); the Metal draft trace is checked against it."
+}

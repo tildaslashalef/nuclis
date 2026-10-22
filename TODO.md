@@ -25,6 +25,10 @@ Agreed and not scheduled; when one is picked up, it becomes a unit above.
   weight on the 16-core GPU; `docs/engine/apple-gpu.md` § The merged
   gate+up on Saluki's encodings). The prefill goal is the entry below. Context past
   32,768 (`max_context` in `src/config.zig`) waits on the prefill goal.
+  Speculation does not reach it yet. Qwen's MTP companion binds and
+  drafts on Saluki, but its verdict is off (prose geometric mean ≤ 0.993×;
+  `docs/models/saluki.md` § Speculation): the 8-row verify batch on the
+  2-bit encodings costs 2.1× a single-row step, against the Q4_K_M's 1.45×.
 
 - **Long-context prefill, every family** (the user's, 2026-10-15). Prefill
   at 512 is level with llama.cpp (0.89–1.02×) and falls behind as the

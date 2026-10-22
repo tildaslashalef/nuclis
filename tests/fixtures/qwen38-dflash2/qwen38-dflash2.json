@@ -1,0 +1,13 @@
+{
+  "reference": "nuclis CPU reference",
+  "tool": "zig build test-generation -- <qwen3.8 Q4_K_M> --flash-trace DIR --draft-model <dflash2>",
+  "model": "Qwen3.8-27B-UD-Q4_K_M.gguf",
+  "companion": "z-lab/Qwen3.8-27B-DFlash2-GGUF Qwen3.8-27B-DFlash2-Q8_0.gguf at 2d9571f8 (sha256 c18e800daedc59ca68fd13b6a856d795746af6d399a9279ac6a277d1d422f87e)",
+  "prompt": "Hello,",
+  "tokens": [9419, 11],
+  "files": {
+    "p0-h.f32 .. p7-h.f32": "the noise block's final normed hidden, rows 0 (the anchor) to 7, after the prompt's commit rows were committed",
+    "greedy.txt": "the anchor (the prompt's greedy token), then the selector's 7 drafts at p_min 0"
+  },
+  "note": "The CPU reference as fixture: DFlash2 has no other oracle. Metal is checked against it."
+}

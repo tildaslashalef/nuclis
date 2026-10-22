@@ -41,7 +41,8 @@
   },
   "saluki": {
    "path": "~/.nuclis/models/ConwayResearch/Underdog-Saluki-27B-1.0/Underdog-Saluki-27B-1.0-IQ2-mix.gguf",
-   "mmproj": "~/.nuclis/models/ConwayResearch/Underdog-Saluki-27B-1.0/mmproj-Underdog-Saluki-27B-1.0-Q8_0.gguf"
+   "mmproj": "~/.nuclis/models/ConwayResearch/Underdog-Saluki-27B-1.0/mmproj-Underdog-Saluki-27B-1.0-Q8_0.gguf",
+   "entry": "saluki-27b"
   },
   "gemma4_e4b": {
    "path": "~/.nuclis/models/unsloth/gemma-4-E4B-it-qat-GGUF/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
@@ -72,6 +73,13 @@
   "embeddinggemma_bf16": {
    "path": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/embeddinggemma-2-BF16.gguf",
    "mmproj": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/mmproj-BF16.gguf"
+  },
+  "qwen38_dflash2": {
+   "path": "~/.nuclis/models/z-lab/Qwen3.8-27B-DFlash2-GGUF/Qwen3.8-27B-DFlash2-Q8_0.gguf"
+  },
+  "qwen38_dflash2_pair": {
+   "path": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+   "entry": "qwen-dflash2"
   }
  },
  "checks": [
@@ -642,6 +650,187 @@
    },
    "note": "about 20 minutes",
    "evidence": "docs/engine/speculative-decoding.md"
+  },
+  {
+   "name": "qwen38-dflash2-trace-metal",
+   "family": "qwen38",
+   "tier": "verify",
+   "model": "qwen38",
+   "mtp": "qwen38_dflash2",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/dflash2*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**",
+    "tests/fixtures/qwen38-dflash2/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--flash-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/qwen38-dflash2",
+    "positions": 8,
+    "embedding": 5120,
+    "draft": true
+   },
+   "bounds": {
+    "max_absolute": 0.02,
+    "max_relative_rms": 0.001
+   },
+   "evidence": "docs/engine/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21",
+   "note": "the drafter's Q8_0 projections run the fragment tile, weights rounded to half: the family's half-tile bound (generation-check qwen35_spec); measured 1.6e-2 / 7.7e-4, drafts identical"
+  },
+  {
+   "name": "qwen38-dflash2-trace-cpu",
+   "family": "qwen38",
+   "tier": "verify-cpu",
+   "model": "qwen38",
+   "mtp": "qwen38_dflash2",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/attention.zig",
+    "inference/src/backends/cpu/recurrent.zig",
+    "inference/src/backends/cpu/root.zig",
+    "inference/src/backends/cpu/rope.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/**",
+    "inference/src/models/dflash2*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**",
+    "tests/fixtures/qwen38-dflash2/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--flash-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/qwen38-dflash2",
+    "positions": 8,
+    "embedding": 5120,
+    "draft": true
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/engine/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21"
+  },
+  {
+   "name": "qwen38-dflash2-speculative-metal",
+   "family": "qwen38",
+   "tier": "verify",
+   "model": "qwen38",
+   "mtp": "qwen38_dflash2",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/dflash2*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/sampling/**",
+    "inference/src/tensor/**",
+    "tests/fixtures/qwen38-dflash2/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--speculative-check",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/engine/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21"
+  },
+  {
+   "name": "qwen38-dflash2-speculative-cpu",
+   "family": "qwen38",
+   "tier": "verify-cpu",
+   "model": "qwen38",
+   "mtp": "qwen38_dflash2",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/attention.zig",
+    "inference/src/backends/cpu/recurrent.zig",
+    "inference/src/backends/cpu/root.zig",
+    "inference/src/backends/cpu/rope.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/dflash2*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/sampling/**",
+    "inference/src/tensor/**",
+    "tests/fixtures/qwen38-dflash2/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--speculative-check",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/engine/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21"
   },
   {
    "name": "qwen38-draft-trace-metal",
@@ -2652,6 +2841,275 @@
     "max_relative_rms": 0.0004
    },
    "evidence": "docs/models/saluki.md"
+  },
+  {
+   "name": "qwen38-mtp-companion-trace-metal",
+   "family": "qwen38",
+   "tier": "verify",
+   "model": "qwen38",
+   "mtp": "qwen38_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "inference/src/models/fixtures/qwen35-mtp",
+    "positions": 2,
+    "draft": true
+   },
+   "bounds": {
+    "max_absolute": 2.0,
+    "max_relative_rms": 0.15
+   },
+   "note": "the companion block (Q4_K/Q6_K) against the embedded block (Q6_K/Q8_0): a cross-encoding bound; measured 1.56 / 0.133, greedy drafts equal",
+   "evidence": "docs/engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
+  },
+  {
+   "name": "qwen38-mtp-companion-trace-cpu",
+   "family": "qwen38",
+   "tier": "verify-cpu",
+   "model": "qwen38",
+   "mtp": "qwen38_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/attention.zig",
+    "inference/src/backends/cpu/recurrent.zig",
+    "inference/src/backends/cpu/root.zig",
+    "inference/src/backends/cpu/rope.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--draft-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "inference/src/models/fixtures/qwen35-mtp",
+    "positions": 2,
+    "draft": true
+   },
+   "bounds": {
+    "max_absolute": 2.0,
+    "max_relative_rms": 0.15
+   },
+   "note": "the companion block (Q4_K/Q6_K) against the embedded block (Q6_K/Q8_0): a cross-encoding bound; measured 1.56 / 0.133, greedy drafts equal",
+   "evidence": "docs/engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
+  },
+  {
+   "name": "saluki-draft-trace-metal",
+   "family": "saluki",
+   "tier": "verify",
+   "model": "saluki",
+   "mtp": "qwen38_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**",
+    "tests/fixtures/saluki-mtp/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/saluki-mtp",
+    "positions": 2,
+    "draft": true
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
+  },
+  {
+   "name": "saluki-draft-trace-cpu",
+   "family": "saluki",
+   "tier": "verify-cpu",
+   "model": "saluki",
+   "mtp": "qwen38_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/attention.zig",
+    "inference/src/backends/cpu/recurrent.zig",
+    "inference/src/backends/cpu/root.zig",
+    "inference/src/backends/cpu/rope.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**",
+    "tests/fixtures/saluki-mtp/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--draft-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/saluki-mtp",
+    "positions": 2,
+    "draft": true
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
+  },
+  {
+   "name": "saluki-speculative-metal",
+   "family": "saluki",
+   "tier": "verify",
+   "model": "saluki",
+   "mtp": "qwen38_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/sampling/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--speculative-check",
+    "--draft-model",
+    "{mtp}",
+    "--prompt-profile",
+    "qwen38"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
+  },
+  {
+   "name": "saluki-speculative-cpu",
+   "family": "saluki",
+   "tier": "verify-cpu",
+   "model": "saluki",
+   "mtp": "qwen38_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/attention.zig",
+    "inference/src/backends/cpu/recurrent.zig",
+    "inference/src/backends/cpu/root.zig",
+    "inference/src/backends/cpu/rope.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/sampling/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--speculative-check",
+    "--draft-model",
+    "{mtp}",
+    "--prompt-profile",
+    "qwen38"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
   },
   {
    "name": "qwen38-perplexity",

@@ -12,6 +12,8 @@ const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const gguf = @import("../formats/gguf.zig");
 const models = @import("root.zig");
+const weights = @import("../runtime/weights.zig");
+const dflash2 = @import("dflash2.zig");
 const Tensor = gguf.Tensor;
 
 pub const FullAttention = struct {
@@ -45,9 +47,10 @@ pub const Layer = struct {
 };
 
 /// The `blk.64` prediction head: the four `nextn` tensors plus one dense
-/// full-attention decoder layer of the main shape. Bound only when the file
-/// declares the 65th block; the text schedule never references it. The head
-/// shares `token_embd` and `output` with the text binding
+/// full-attention decoder layer of the main shape. Bound from the file's
+/// own 65th block, or from a companion file by `bindDraft`; the text
+/// schedule never references it. The head shares `token_embd` and `output`
+/// with the text binding
 /// (docs/engine/speculative-decoding.md § The Qwen3.8 draft head).
 pub const DraftBlock = struct {
     eh_proj: *const Tensor,
@@ -55,6 +58,21 @@ pub const DraftBlock = struct {
     hnorm: *const Tensor,
     shared_head_norm: *const Tensor,
     layer: Layer,
+    /// The companion the block was bound from; null for the embedded block.
+    source: ?DraftSource = null,
+};
+
+/// A companion's mapping and the tensor table its block's references point
+/// into; both must outlive the binding.
+pub const DraftSource = struct {
+    view: weights.View,
+    tensors: []const Tensor,
+
+    fn owns(self: DraftSource, tensor: *const Tensor) bool {
+        const start = @intFromPtr(self.tensors.ptr);
+        const at = @intFromPtr(tensor);
+        return at >= start and at < start + self.tensors.len * @sizeOf(Tensor);
+    }
 };
 
 /// The `general.architecture` id this adapter binds.
@@ -192,10 +210,22 @@ pub const Binding = struct {
     /// The embedded prediction head, present on the Qwen3.8 release (65
     /// blocks) and absent from the Bonsai re-encoding.
     draft: ?DraftBlock = null,
+    /// A DFlash2 drafter from a companion file (`attachDraft`); when set,
+    /// `draft` is null: the two sources are exclusive.
+    dflash: ?dflash2.Binding = null,
 
     /// The text layers, in schedule order.
     pub fn layers(self: *const Binding) []const Layer {
         return self.layer_slots[0..self.shape.layers];
+    }
+
+    /// The mapping `tensor`'s bytes live in: a companion draft block's
+    /// own, otherwise `main`, the target file's. Executors read every
+    /// weight through it, so the draft forward needs no second path.
+    pub fn viewOf(self: *const Binding, main: weights.View, tensor: *const Tensor) weights.View {
+        const block = self.draft orelse return main;
+        const source = block.source orelse return main;
+        return if (source.owns(tensor)) source.view else main;
     }
 };
 
@@ -215,6 +245,9 @@ pub const family = struct {
     pub const Plan = @import("qwen35_metal.zig").Plan;
     /// The artifact's own file carries the prediction block.
     pub const embedded_draft = true;
+    /// Companions: Qwen's `MTP/` block for a file without one (Saluki), or
+    /// a DFlash2 drafter.
+    pub const attachDraft = @import("qwen35.zig").attachDraft;
 };
 
 // The profile is deliberately narrow. Reject unimplemented variants
@@ -525,7 +558,76 @@ const Binder = struct {
             },
         };
     }
+
+    /// The prediction block after the text layers. It always uses full
+    /// attention, regardless of the main schedule's modulo.
+    fn draftBlock(self: *Binder) Error!DraftBlock {
+        const s = self.shape;
+        const at = s.layers;
+        return .{
+            .eh_proj = try self.weight(at, "nextn.eh_proj.weight", &.{ 2 * s.hidden, s.hidden }, .matrix),
+            .enorm = try self.weight(at, "nextn.enorm.weight", &.{s.hidden}, .f32),
+            .hnorm = try self.weight(at, "nextn.hnorm.weight", &.{s.hidden}, .f32),
+            .shared_head_norm = try self.weight(at, "nextn.shared_head_norm.weight", &.{s.hidden}, .f32),
+            .layer = try self.layer(at, true),
+        };
+    }
 };
+
+/// `bindDraft` adds the companion's mismatch, the typed error `Engine.open`
+/// surfaces.
+pub const DraftError = Error || error{DraftSourceMismatch};
+
+/// Binds a companion draft source onto `target` and reports whether it was
+/// taken. A DFlash2 drafter (`dflash` architecture with its keys) always is,
+/// replacing any prediction block. Qwen's MTP companion is taken by a file
+/// without a block, or when `force` asks it to replace the file's own.
+pub fn attachDraft(alloc: std.mem.Allocator, doc: *const gguf.Document, view: weights.View, target_view: weights.View, target: *Binding, force: bool) DraftError!bool {
+    const arch = doc.string("general.architecture") orelse return error.DraftSourceMismatch;
+    if (std.mem.eql(u8, arch, dflash2.architecture)) {
+        if (!dflash2.isDflash2(doc)) return error.DraftSourceMismatch;
+        // The drafter reads the 27B's layer residuals in the plain basis.
+        if (!target.shape.eql(qwen38_shape) or target.rotation != null) return error.DraftSourceMismatch;
+        target.dflash = dflash2.bind(alloc, doc, view) catch |err| switch (err) {
+            error.UnsupportedArchitecture, error.UnsupportedConfiguration, error.MissingMetadata, error.InvalidMetadata => return error.DraftSourceMismatch,
+            else => |e| return e,
+        };
+        target.draft = null;
+        return true;
+    }
+    if (!std.mem.eql(u8, arch, architecture)) return error.DraftSourceMismatch;
+    if (target.draft != null and !force) return false;
+    target.draft = try bindDraft(alloc, doc, view, target_view, target);
+    return true;
+}
+
+/// The prediction block of a companion file (Qwen's `MTP/` file) for a
+/// target that lacks one, such as Saluki's 2-bit re-encoding. `Engine.open`
+/// already checked the architecture and the vocabulary. Only
+/// `blk.<layers>.*` is bound: the companion's own embedding and head stay
+/// unbound, so the block shares the target's, as the embedded block does.
+/// The references borrow `doc`, whose bytes `view` maps.
+pub fn bindDraft(alloc: std.mem.Allocator, doc: *const gguf.Document, view: weights.View, target_view: weights.View, target: *const Binding) DraftError!DraftBlock {
+    _ = target_view;
+    const declared = validateMetadata(doc) catch |err| switch (err) {
+        error.UnsupportedArchitecture, error.UnsupportedConfiguration, error.MissingMetadata, error.InvalidMetadata => return error.DraftSourceMismatch,
+        else => return err,
+    };
+    if (!declared.auxiliary or !declared.shape.eql(target.shape)) return error.DraftSourceMismatch;
+    // The companion's block was trained in the plain basis; a rotated
+    // target would feed it rotated hidden rows.
+    if (target.rotation != null or try validateRotation(doc) != null) return error.DraftSourceMismatch;
+    var binder: Binder = .{ .remaining = .init(alloc), .shape = target.shape };
+    defer binder.remaining.deinit();
+    for (doc.tensors) |*tensor| {
+        const slot = try binder.remaining.getOrPut(tensor.name);
+        if (slot.found_existing) return error.DuplicateTensor;
+        slot.value_ptr.* = tensor;
+    }
+    var block = try binder.draftBlock();
+    block.source = .{ .view = view, .tensors = doc.tensors };
+    return block;
+}
 
 /// doc must come from successful GGUF parsing. Allocations are temporary lookup
 /// storage, freed before return; only the returned tensor references borrow doc.
@@ -555,19 +657,9 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     const text_bytes = binder.bytes;
 
     // The auxiliary block is bound separately, never in `layers`, so the text
-    // schedule keeps its length. It always uses full attention, regardless of
-    // the main schedule's modulo.
-    result.draft = null;
-    if (auxiliary) {
-        const at = shape.layers;
-        result.draft = .{
-            .eh_proj = try binder.weight(at, "nextn.eh_proj.weight", &.{ 2 * shape.hidden, shape.hidden }, .matrix),
-            .enorm = try binder.weight(at, "nextn.enorm.weight", &.{shape.hidden}, .f32),
-            .hnorm = try binder.weight(at, "nextn.hnorm.weight", &.{shape.hidden}, .f32),
-            .shared_head_norm = try binder.weight(at, "nextn.shared_head_norm.weight", &.{shape.hidden}, .f32),
-            .layer = try binder.layer(at, true),
-        };
-    }
+    // schedule keeps its length.
+    result.draft = if (auxiliary) try binder.draftBlock() else null;
+    result.dflash = null;
     if (binder.remaining.count() != 0) return error.UnexpectedTensor;
     result.summary = .{
         .profile = if (shape.eql(qwen38_shape)) "qwen35_27b" else if (shape.eql(qwen35_9b_shape)) "qwen35_9b" else "qwen35",
@@ -753,6 +845,82 @@ test "the prediction head binds its fifteen tensors with the main shapes" {
     try std.testing.expectEqual(@as(u32, 8), attention.key.encoding_id);
     try std.testing.expectEqual(@as(u32, 8), attention.value.encoding_id);
     try std.testing.expectEqual(@as(u64, 10240), draft.eh_proj.dimensions[0]);
+}
+
+fn companionDocument() !gguf.Document {
+    return @import("inventory.zig").document(std.testing.allocator, @embedFile("fixtures/qwen35-mtp-companion.json"));
+}
+
+test "Qwen's MTP companion binds its block onto Saluki, which has none" {
+    var target_doc = try @import("inventory.zig").document(std.testing.allocator, @embedFile("fixtures/saluki-27b.json"));
+    defer target_doc.deinit();
+    var companion = try companionDocument();
+    defer companion.deinit();
+    var target = try bind(std.testing.allocator, &target_doc);
+    try std.testing.expect(target.draft == null);
+    const main: weights.View = .{ .file = &.{}, .data_offset = 1 };
+    const side: weights.View = .{ .file = &.{}, .data_offset = 2 };
+    target.draft = try bindDraft(std.testing.allocator, &companion, side, main, &target);
+    const block = target.draft.?;
+    try std.testing.expect(block.eh_proj == tensorEntry(&companion, "blk.64.nextn.eh_proj.weight"));
+    try std.testing.expect(block.layer.ffn_down == tensorEntry(&companion, "blk.64.ffn_down.weight"));
+    // The companion's block is a lower-precision copy of the embedded one.
+    try std.testing.expectEqual(@as(u32, 14), block.layer.mixer.full_attention.key.encoding_id);
+    try std.testing.expectEqual(@as(u32, 12), block.layer.ffn_gate.encoding_id);
+    // Block tensors read the companion's mapping; the shared head and the
+    // text layers read the target's.
+    try std.testing.expectEqual(@as(u64, 2), target.viewOf(main, block.layer.ffn_up).data_offset);
+    try std.testing.expectEqual(@as(u64, 2), target.viewOf(main, block.enorm).data_offset);
+    try std.testing.expectEqual(@as(u64, 1), target.viewOf(main, target.output).data_offset);
+    try std.testing.expectEqual(@as(u64, 1), target.viewOf(main, target.layers()[3].ffn_up).data_offset);
+}
+
+test "a DFlash2 companion replaces the embedded block; the MTP one does not unless forced" {
+    const view: weights.View = .{ .file = &.{}, .data_offset = 0 };
+    var own = try fixture();
+    defer own.deinit();
+    var mtp = try companionDocument();
+    defer mtp.deinit();
+    var drafter = try dflash2.inventoryDocument(std.testing.allocator);
+    defer drafter.deinit();
+    var target = try bind(std.testing.allocator, &own);
+    const embedded = target.draft.?.eh_proj;
+    try std.testing.expect(!try attachDraft(std.testing.allocator, &mtp, view, view, &target, false));
+    try std.testing.expect(target.draft.?.eh_proj == embedded);
+    try std.testing.expect(try attachDraft(std.testing.allocator, &mtp, view, view, &target, true));
+    try std.testing.expect(target.draft.?.source != null);
+    try std.testing.expect(try attachDraft(std.testing.allocator, &drafter, view, view, &target, false));
+    try std.testing.expect(target.draft == null and target.dflash != null);
+    // Muse's DFlash file shares the architecture id but not the drafter.
+    var muse = try @import("dflash.zig").inventoryDocument(std.testing.allocator);
+    defer muse.deinit();
+    try std.testing.expectError(error.DraftSourceMismatch, attachDraft(std.testing.allocator, &muse, view, view, &target, false));
+    // The rotated Bonsai basis is refused.
+    var bonsai = try bonsaiInventoryDocument(std.testing.allocator);
+    defer bonsai.deinit();
+    var rotated = try bind(std.testing.allocator, &bonsai);
+    try std.testing.expectError(error.DraftSourceMismatch, attachDraft(std.testing.allocator, &drafter, view, view, &rotated, false));
+}
+
+test "the companion is refused by a target of another shape, a rotated target, and without its block" {
+    const view: weights.View = .{ .file = &.{}, .data_offset = 0 };
+    var companion = try companionDocument();
+    defer companion.deinit();
+    var nine = try @import("inventory.zig").document(std.testing.allocator, @embedFile("fixtures/clef-flash-q6k.json"));
+    defer nine.deinit();
+    const nine_target = try bind(std.testing.allocator, &nine);
+    try std.testing.expectError(error.DraftSourceMismatch, bindDraft(std.testing.allocator, &companion, view, view, &nine_target));
+    var bonsai = try bonsaiInventoryDocument(std.testing.allocator);
+    defer bonsai.deinit();
+    const rotated = try bind(std.testing.allocator, &bonsai);
+    try std.testing.expectError(error.DraftSourceMismatch, bindDraft(std.testing.allocator, &companion, view, view, &rotated));
+    var plain = try fixture();
+    defer plain.deinit();
+    const target = try bind(std.testing.allocator, &plain);
+    // A companion that declares no prediction block has nothing to bind.
+    metadataEntry(&companion, "qwen35.nextn_predict_layers").value = .{ .unsigned = 0 };
+    metadataEntry(&companion, "qwen35.block_count").value = .{ .unsigned = 64 };
+    try std.testing.expectError(error.DraftSourceMismatch, bindDraft(std.testing.allocator, &companion, view, view, &target));
 }
 
 test "bind the Bonsai inventory: 64 blocks, ternary and BF16 matrices, the pinned rotation" {

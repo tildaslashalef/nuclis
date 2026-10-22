@@ -116,6 +116,7 @@ pub const Kernel = enum(u32) {
     rope,
     add,
     silu_mul,
+    dflash_conv,
     silu_inplace,
     delta_gates,
     sigmoid_gate,
@@ -221,6 +222,13 @@ pub const Kernel = enum(u32) {
     matvec_rows_iq4_xs_t6,
     matvec_rows_iq4_xs_t7,
     matvec_rows_iq4_xs_t8,
+    matvec_rows_iq2_xxs_t2,
+    matvec_rows_iq2_xxs_t3,
+    matvec_rows_iq2_xxs_t4,
+    matvec_rows_iq2_xxs_t5,
+    matvec_rows_iq2_xxs_t6,
+    matvec_rows_iq2_xxs_t7,
+    matvec_rows_iq2_xxs_t8,
     matmul_q3_k_w8,
     matmul_q4_k_w8,
     matmul_q5_k_w8,
@@ -259,6 +267,7 @@ pub const Kernel = enum(u32) {
     matmul_q3_k_f2,
     matmul_iq3_s_f2,
     matmul_q4_0_f2,
+    matmul_q8_0_f2,
     matmul_pq2_0_f2,
     matmul_ptq1_0_f2,
     matmul_iq4_nl_f2,
@@ -766,6 +775,7 @@ pub const Backend = struct {
             13 => comptime matvecRowsBodies("q5_k"),
             14 => comptime matvecRowsBodies("q6_k"),
             23 => comptime matvecRowsBodies("iq4_xs"),
+            16 => comptime matvecRowsBodies("iq2_xxs"),
             else => return null,
         };
         return bodies[tokens - 2];
@@ -805,7 +815,7 @@ pub const Backend = struct {
             .matmul_q3_k_8, .matmul_q4_k_8, .matmul_q5_k_8, .matmul_q6_k_8, .matmul_iq3_s_8, .matmul_iq4_xs_8, .matmul_q4_0_8, .matmul_pq2_0_8, .matmul_ptq1_0_8 => .{ .rows = 16, .tokens = 8, .half = true },
             .matmul_q2_k_8, .matmul_iq2_xxs_8, .matmul_iq2_xs_8, .matmul_iq3_xxs_8, .matmul_iq1_s_8, .matmul_iq2_s_8, .matmul_iq1_m_8 => .{ .rows = 16, .tokens = 8, .half = true },
             .matmul_q3_k_w8, .matmul_q4_k_w8, .matmul_q5_k_w8, .matmul_q6_k_w8, .matmul_iq3_s_w8, .matmul_iq4_xs_w8, .matmul_q4_0_w8, .matmul_pq2_0_w8, .matmul_ptq1_0_w8 => .{ .rows = 32, .tokens = 8, .half = true },
-            .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q5_k_f2, .matmul_q6_k_f2, .matmul_iq4_xs_f2, .matmul_q3_k_f2, .matmul_iq3_s_f2, .matmul_q4_0_f2, .matmul_pq2_0_f2, .matmul_ptq1_0_f2, .matmul_iq4_nl_f2 => .{ .rows = 16, .tokens = 8, .half = true },
+            .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q5_k_f2, .matmul_q6_k_f2, .matmul_iq4_xs_f2, .matmul_q3_k_f2, .matmul_iq3_s_f2, .matmul_q4_0_f2, .matmul_q8_0_f2, .matmul_pq2_0_f2, .matmul_ptq1_0_f2, .matmul_iq4_nl_f2 => .{ .rows = 16, .tokens = 8, .half = true },
             .matmul_q2_k_f2, .matmul_iq2_xxs_f2, .matmul_iq2_xs_f2, .matmul_iq3_xxs_f2, .matmul_iq1_s_f2, .matmul_iq2_s_f2, .matmul_iq1_m_f2 => .{ .rows = 16, .tokens = 8, .half = true },
             .matmul_q4_k_f4 => .{ .rows = 32, .tokens = 8, .half = true },
             else => .{ .rows = 32, .tokens = 32, .half = true },
@@ -1711,6 +1721,18 @@ pub const Backend = struct {
     pub fn siluMul(self: *Backend, gate: Buffer, up: Buffer, count: usize) !void {
         if (count == 0 or gate.len < count * 4 or up.len < count * 4) return error.InvalidShape;
         try self.dispatch(.silu_mul, &.{ gate, up }, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
+    }
+    pub const DflashConvParams = extern struct { rows: u32, width: u32, half_index: u32, group: u32, groups: u32, taps_stride: u32 };
+    /// DFlash2's two-tap dynamic convolution over `rows` rows of `width`
+    /// (`dflash2.convolve`): `base` is `[2][2][width]`, `taps` holds each
+    /// row's `taps_stride` projected taps (`[half][tap][width / group]`).
+    /// `input` and `output` must not alias.
+    pub fn dflashConv(self: *Backend, base: Buffer, taps: Buffer, input: Buffer, output: Buffer, rows: usize, width: usize, half: usize, group: usize, taps_stride: usize) !void {
+        if (rows == 0 or half > 1 or group == 0 or width % group != 0) return error.InvalidShape;
+        const groups = width / group;
+        if (base.len < 4 * width * 4 or taps_stride < 4 * groups or taps.len < rows * taps_stride * 4 or input.len < rows * width * 4 or output.len < rows * width * 4) return error.InvalidShape;
+        const p: DflashConvParams = .{ .rows = @intCast(rows), .width = @intCast(width), .half_index = @intCast(half), .group = @intCast(group), .groups = @intCast(groups), .taps_stride = @intCast(taps_stride) };
+        try self.dispatch(.dflash_conv, &.{ base, taps, input, output }, p, perElement(rows * width), 256, .{});
     }
     pub fn silu(self: *Backend, x: Buffer, count: usize) !void {
         if (count == 0 or x.len < count * 4) return error.InvalidShape;

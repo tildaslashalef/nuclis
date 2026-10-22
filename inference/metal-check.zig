@@ -634,6 +634,7 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
         .{ .id = 2, .fixture = "simple", .name = "Q4_0" },
         .{ .id = 142, .fixture = "ternary", .name = "PQ2_0" },
         .{ .id = 143, .fixture = "ternary", .name = "PTQ1_0" },
+        .{ .id = 16, .fixture = "codebook", .name = "IQ2_XXS" },
     };
     const rounds = 3;
     const repeats: usize = 16;
@@ -654,7 +655,7 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
     const input = try b.create(Backend.matmulPadded(max_rows) * 17408 * 4);
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(Backend.matmulPadded(max_rows) * (if (with_head) head_shape.rows else 17408) * 4);
-    std.debug.print("{s:<8} {s:<13} {s:>5} {s:>10} {s:>8} {s:>10} {s:>8} {s:>10} {s:>8}  ms/dispatch, GB/s ({d} rounds, {d}/round)\n", .{ "encoding", "shape", "rows", "16x8 ms", "16x8 GB/s", "32x8 ms", "32x8 GB/s", "rows ms", "rows GB/s", rounds, repeats });
+    std.debug.print("{s:<8} {s:<13} {s:>5} {s:>10} {s:>8} {s:>10} {s:>8} {s:>10} {s:>8} {s:>10} {s:>8}  ms/dispatch, GB/s ({d} rounds, {d}/round)\n", .{ "encoding", "shape", "rows", "16x8 ms", "16x8 GB/s", "32x8 ms", "32x8 GB/s", "frag ms", "frag GB/s", "rows ms", "rows GB/s", rounds, repeats });
     inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary", "codebook" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
@@ -674,6 +675,86 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
         }
     }
     std.debug.print("The multi-row path reads the weights once for all rows; the tile reads them once per 8-row token tile (one tile here).\n", .{});
+}
+
+/// DFlash2's convolution kernel against `dflash2.convolve` on random rows,
+/// both halves, every block length.
+fn checkDflashConv(alloc: std.mem.Allocator) !void {
+    const dflash2 = inference.models.dflash2;
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    var prng = std.Random.DefaultPrng.init(0xdf1a5);
+    const random = prng.random();
+    const width = dflash2.embedding;
+    const rows = dflash2.block_size;
+    const base = try b.create(4 * width * 4);
+    const taps = try b.create(rows * dflash2.conv_projection * 4);
+    const input = try b.create(rows * width * 4);
+    const output = try b.create(rows * width * 4);
+    for (base.floats()) |*v| v.* = random.float(f32) * 2 - 1;
+    for (taps.floats()) |*v| v.* = random.float(f32) * 2 - 1;
+    for (input.floats()) |*v| v.* = random.float(f32) * 4 - 2;
+    const expected = try alloc.alloc(f32, rows * width);
+    defer alloc.free(expected);
+    var worst: f32 = 0;
+    for (1..rows + 1) |count| for (0..2) |half| {
+        dflash2.convolve(half, base.floats()[0 .. 4 * width], taps.floats(), input.floats(), expected, count);
+        try b.begin();
+        try b.dflashConv(base, taps, input, output, count, width, half, dflash2.conv_group, dflash2.conv_projection);
+        try b.commit();
+        for (output.floats()[0 .. count * width], expected[0 .. count * width]) |got, want| worst = @max(worst, @abs(got - want));
+    };
+    if (worst > 1e-5) return error.MetalMismatch;
+    std.debug.print("DFlash2 convolution vs CPU on 1-8 rows, both halves: max abs {e:.3} (bound 1e-5)\n", .{worst});
+
+    // Q8_0's fragment tile (the drafter calls it by name) against the CPU
+    // matvec of each token row, 1-24 tokens; weights are rounded to half in
+    // the tile, so the bound is relative to the products' mass.
+    const rows_q8: usize = 40;
+    const columns: usize = 1024;
+    const stride = columns / 32 * 34;
+    const bytes = try alloc.alloc(u8, rows_q8 * stride);
+    defer alloc.free(bytes);
+    for (0..rows_q8 * columns / 32) |block| {
+        const at = bytes[block * 34 ..][0..34];
+        std.mem.writeInt(u16, at[0..2], @bitCast(@as(f16, @floatCast(random.float(f32) * 0.02 + 0.001))), .little);
+        for (at[2..]) |*q| q.* = random.int(u8);
+    }
+    const weights_q8 = try b.create(bytes.len);
+    @memcpy(weights_q8.host[0..bytes.len], bytes);
+    const matrix: inference.cpu.Matrix = .{ .rows = rows_q8, .columns = columns, .encoding = 8, .bytes = bytes };
+    const tokens_max = 24;
+    const x = try b.create(Backend.matmulPadded(tokens_max) * columns * 4);
+    for (x.floats()) |*v| v.* = random.float(f32) * 2 - 1;
+    const y = try b.create(Backend.matmulPadded(tokens_max) * rows_q8 * 4);
+    const want = try alloc.alloc(f32, rows_q8);
+    defer alloc.free(want);
+    const row_scratch = try alloc.alloc(f32, inference.cpu.matvecScratch(columns));
+    defer alloc.free(row_scratch);
+    const decoded = try alloc.alloc(f32, columns);
+    defer alloc.free(decoded);
+    var worst_q8: f64 = 0;
+    for (1..tokens_max + 1) |tokens| {
+        try b.begin();
+        try b.matmulKernel(.matmul_q8_0_f2, weights_q8, matrix, x, columns, y, rows_q8, tokens);
+        try b.commit();
+        for (0..tokens) |t| {
+            const xt = x.floats()[t * columns ..][0..columns];
+            for (0..rows_q8) |r| {
+                try inference.quant.row(8, bytes[r * stride ..][0..stride], decoded);
+                var sum: f64 = 0;
+                var mass: f64 = 0;
+                for (decoded, xt) |w, v| {
+                    sum += @as(f64, w) * v;
+                    mass += @abs(@as(f64, w) * v);
+                }
+                worst_q8 = @max(worst_q8, @abs(y.floats()[t * rows_q8 + r] - sum) / (mass + 1e-6));
+            }
+        }
+    }
+    if (worst_q8 > 2e-4) return error.MetalMismatch;
+    std.debug.print("Q8_0 fragment tile vs CPU on 1-24 tokens: worst |difference| / mass {e:.3} (bound 2e-4, half weights)\n", .{worst_q8});
 }
 
 /// The `simdgroup_matrix` lane layout the register-fragment tiles assume:
@@ -809,6 +890,17 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
             if (i == 0) continue;
             wide_ms = if (i == 1) ms else @min(wide_ms, ms);
         };
+        // The fragment tile, what `matmul` runs for a 4–8-row verify batch.
+        var frag_ms: f64 = std.math.nan(f64);
+        if (Backend.specializedMatmulFrag(encoding, weights.offset, region.len / shape.rows, tokens)) |kernel| for (0..rounds + 1) |i| {
+            const before = b.gpuSeconds();
+            try b.begin();
+            for (0..repeats) |_| try b.matmulKernel(kernel, weights, matrix, input, shape.columns, output, shape.rows, tokens);
+            try b.commit();
+            const ms = (b.gpuSeconds() - before) * 1e3 / @as(f64, @floatFromInt(repeats));
+            if (i == 0) continue;
+            frag_ms = if (i == 1) ms else @min(frag_ms, ms);
+        };
         var rows_ms: f64 = std.math.nan(f64);
         if (tokens >= 2) for (0..rounds + 1) |i| {
             if (i == 0) try captureRows(b, "rows", name, shape.name, tokens);
@@ -822,6 +914,7 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
         };
         std.debug.print("{s:<8} {s:<13} {d:>5} {d:>10.2} {d:>8.1} ", .{ name, shape.name, tokens, tile_ms, bytes_mb / tile_ms });
         if (std.math.isNan(wide_ms)) std.debug.print("{s:>10} {s:>8} ", .{ "—", "—" }) else std.debug.print("{d:>10.2} {d:>8.1} ", .{ wide_ms, bytes_mb / wide_ms });
+        if (std.math.isNan(frag_ms)) std.debug.print("{s:>10} {s:>8} ", .{ "—", "—" }) else std.debug.print("{d:>10.2} {d:>8.1} ", .{ frag_ms, bytes_mb / frag_ms });
         if (tokens >= 2) std.debug.print("{d:>10.2} {d:>8.1}\n", .{ rows_ms, bytes_mb / rows_ms }) else std.debug.print("{s:>10} {s:>8}\n", .{ "—", "—" });
     }
 }
@@ -3261,6 +3354,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (args.len != 1) return error.UnknownOption;
     try checkFragmentLayout(alloc);
+    try checkDflashConv(alloc);
     try checkDiscard(alloc);
     try checkTick(alloc);
     try checkSegments(alloc);

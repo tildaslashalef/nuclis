@@ -100,6 +100,8 @@ pub fn main(init: std.process.Init) !void {
     var half_tiles_only = false;
     var draft_trace: ?[]const u8 = null;
     var draft_model: ?[]const u8 = null;
+    var prompt_profile: ?inference.profiles.Profile = null;
+    var flash_trace: ?[]const u8 = null;
     var vision_check: ?[]const u8 = null;
     var vision_image: ?[]const u8 = null;
     var vision_oracle: ?[]const u8 = null;
@@ -126,6 +128,14 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedDraftModel;
             draft_model = args[i];
+        } else if (std.mem.eql(u8, arg, "--flash-trace")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedTraceDirectory;
+            flash_trace = args[i];
+        } else if (std.mem.eql(u8, arg, "--prompt-profile")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedPromptProfile;
+            prompt_profile = std.meta.stringToEnum(inference.profiles.Profile, args[i]) orelse return error.UnknownPromptProfile;
         } else if (std.mem.eql(u8, arg, "--vision-check")) {
             i += 1;
             if (i >= args.len) return error.ExpectedProjectorPath;
@@ -170,12 +180,14 @@ pub fn main(init: std.process.Init) !void {
                 try visionCompare(alloc, init.io, projector, image, vision_oracle orelse return error.ExpectedOracleDirectory, use_metal, model_path)
             else
                 try visionCheck(alloc, init.io, model_path, projector, use_metal)
+        else if (flash_trace) |dir|
+            try flashTrace(alloc, init.io, &mapped, use_metal, dir, draft_model orelse return error.ExpectedDraftModel)
         else if (draft_trace) |dir|
-            try draftTrace(qwen35_spec, alloc, init.io, &mapped, use_metal, dir)
+            try draftTrace(qwen35_spec, alloc, init.io, &mapped, use_metal, dir, draft_model)
         else if (draft_stats)
-            try draftStats(qwen35_spec, alloc, init.io, &mapped, use_metal)
+            try draftStats(qwen35_spec, alloc, init.io, &mapped, use_metal, draft_model)
         else if (speculative_check)
-            try speculativeCheck(qwen35_spec, alloc, init.io, &mapped, model_path, use_metal)
+            try speculativeCheck(qwen35_spec, alloc, init.io, &mapped, model_path, use_metal, draft_model, prompt_profile)
         else
             try run(qwen35_spec, alloc, init.io, &mapped, use_metal, half_tiles_only),
         .gemma4 => if (vision_check) |projector|
@@ -197,7 +209,7 @@ pub fn main(init: std.process.Init) !void {
     }
     // The ordinary run's engine-level addition, backend-independent like
     // `speculativeLoop`, so the Metal run covers it.
-    const ordinary = !hidden_rows and vision_check == null and draft_trace == null and !draft_stats and !speculative_check and !half_tiles_only;
+    const ordinary = !hidden_rows and vision_check == null and draft_trace == null and flash_trace == null and !draft_stats and !speculative_check and !half_tiles_only;
     if (ordinary and use_metal) try promptSavesCheck(alloc, init.io, model_path);
 }
 
@@ -819,7 +831,15 @@ fn draftBatchCommitCheck(comptime spec: Spec, alloc: std.mem.Allocator, b: *infe
 /// token for token identical (the replay is the same sequential arithmetic);
 /// on Metal the verify batch uses the chunk tiles, so the first divergence is
 /// recorded by position rather than failed.
-fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, model_path: []const u8, use_metal: bool) !void {
+fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, model_path: []const u8, use_metal: bool, draft_model: ?[]const u8, prompt_profile: ?inference.profiles.Profile) !void {
+    // The runner-level half drives the prediction block; a DFlash2 drafter is
+    // checked through the engine's loop alone, on either executor.
+    if (draft_model) |path| {
+        var peek = try inference.weights.Mapped.open(alloc, io, path);
+        const flash = inference.models.dflash2.isDflash2(&peek.document);
+        peek.deinit(io);
+        if (flash) return speculativeLoop(alloc, io, model_path, use_metal, draft_model, prompt_profile);
+    }
     const Family = spec.Family;
     const draft = spec.draft.?;
     const hidden = 5120;
@@ -835,7 +855,9 @@ fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, m
             return err;
         };
     }
-    const binding = try Family.bind(alloc, &mapped.document);
+    var companion: ?inference.weights.Mapped = null;
+    defer if (companion) |*c| c.deinit(io);
+    const binding = try bindDraftSource(Family, alloc, io, mapped, draft_model, &companion);
     const view = mapped.view();
     const Runner = DraftRunner(spec);
     var sequential: Runner = if (backend) |*b|
@@ -940,7 +962,7 @@ fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, m
     // batch, recover, and emission control flow the primitives above do not.
     // Backend-independent, so the Metal run covers it and the slow CPU oracle
     // stays on the primitives.
-    if (use_metal) try speculativeLoop(alloc, io, model_path, use_metal);
+    if (use_metal) try speculativeLoop(alloc, io, model_path, use_metal, draft_model, prompt_profile);
     if (backend) |*b| try penaltyCheck(spec, alloc, b, view, binding);
     if (backend) |*b| try verifyTopKCheck(spec, alloc, b, view, binding);
 }
@@ -1164,13 +1186,16 @@ fn penaltyCheck(comptime spec: Spec, alloc: std.mem.Allocator, b: *inference.met
 /// Runs `inference.engine.runLoop` twice on one loaded engine, ordinary greedy
 /// then speculative greedy, and requires identical token streams. This is the
 /// loop-level check: propose, checkpoint, verify, recover, commit, emission.
-fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, use_metal: bool) !void {
+/// `prompt_profile` forces the profile of a file whose template is not
+/// pinned (Saluki), as its registry entry does.
+fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, use_metal: bool, draft_model: ?[]const u8, prompt_profile: ?inference.profiles.Profile) !void {
     const engine = inference.engine;
     const generated = 12;
     const max_limit = 24;
     const capacity = 64;
     const backend: engine.Backend = if (use_metal) .metal else .cpu;
-    var eng = try engine.Engine.open(alloc, io, model_path, backend, capacity, .f32, null, .embedded);
+    const draft: engine.DraftRequest = if (draft_model) |path| .{ .file = path } else .embedded;
+    var eng = try engine.Engine.open(alloc, io, model_path, backend, capacity, .f32, prompt_profile, draft);
     defer eng.deinit();
     const prompt = try eng.encode("Hello,");
     defer alloc.free(prompt);
@@ -1241,7 +1266,7 @@ fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
 
     // Context limit at a batch: a session with room for the prompt and two
     // tokens cannot hold a verify batch plus its correction.
-    var small = try engine.Engine.open(alloc, io, model_path, backend, prompt.len + 2, .f32, null, .embedded);
+    var small = try engine.Engine.open(alloc, io, model_path, backend, prompt.len + 2, .f32, prompt_profile, draft);
     defer small.deinit();
     const full = try engine.runLoop(&small, prompt, 24, &sampler, null, spec, null, logits, no_candidates, a, null, null);
     if (full.stop != .context_limit) return error.SpeculativeContextMismatch;
@@ -1456,7 +1481,7 @@ fn DraftRunner(comptime spec: Spec) type {
     };
 }
 
-fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool) !void {
+fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, draft_model: ?[]const u8) !void {
     const Family = spec.Family;
     const hidden = 5120;
     var backend: ?inference.metal.Backend = null;
@@ -1468,7 +1493,9 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
             return err;
         };
     }
-    const binding = try Family.bind(alloc, &mapped.document);
+    var companion: ?inference.weights.Mapped = null;
+    defer if (companion) |*c| c.deinit(io);
+    const binding = try bindDraftSource(Family, alloc, io, mapped, draft_model, &companion);
     var vocab = try inference.vocabulary.load(alloc, mapped.document, mapped.mapping.memory[0..@intCast(mapped.document.directory_bytes)], .{});
     defer vocab.deinit();
     var encoder = try inference.tokenizer.Encoder.init(alloc, &vocab);
@@ -1590,7 +1617,80 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
 /// `compare-generation.py --draft` can compare it against the reference's
 /// captured rows. The target is stepped live for each position's hidden, so
 /// this is an independent capture, not a replay of the pinned `hprev`.
-fn draftTrace(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, directory: []const u8) !void {
+/// The family's binding with a companion's prediction block bound in when
+/// `draft_model` names one, replacing an embedded block. `companion` holds
+/// the companion's mapping, which must outlive the binding.
+/// The DFlash2 drafter's trace on `Hello,`: the prompt is prefilled with its
+/// commit rows and committed, then one 8-row noise block from the prompt's
+/// greedy token writes every row's final hidden (`p{r}-h.f32`), and a
+/// proposal at `p_min` 0 writes the anchor and its 7 drafts (`greedy.txt`).
+/// Metal is compared against the CPU's rows (`compare-generation.py --draft
+/// --positions 8`).
+fn flashTrace(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, directory: []const u8, draft_model: []const u8) !void {
+    const qwen35 = inference.models.qwen35;
+    const dflash2 = inference.models.dflash2;
+    var companion: ?inference.weights.Mapped = null;
+    defer if (companion) |*c| c.deinit(io);
+    const binding = try bindDraftSource(qwen35.family, alloc, io, mapped, draft_model, &companion);
+    if (binding.dflash == null) return error.DraftSourceMismatch;
+    const tokens = [_]u32{ 9419, 11 };
+    const rows = dflash2.block_size;
+    const capacity = tokens.len + rows + 2;
+    const logits = try alloc.alloc(f32, inference.models.qwen35_metal.vocabulary);
+    defer alloc.free(logits);
+    var hidden: [tokens.len * dflash2.hidden_width]f32 = undefined;
+    const block = try alloc.alloc(f32, rows * dflash2.embedding);
+    defer alloc.free(block);
+    var drafts: [rows - 1]u32 = undefined;
+    var anchor: u32 = 0;
+    if (use_metal) {
+        var diagnostic: [8192]u8 = @splat(0);
+        var backend = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
+            std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
+            return err;
+        };
+        defer backend.deinit();
+        var plan = try qwen35.family.Plan.init(alloc, &backend, mapped.view(), binding, capacity, 8, .f32, false, true);
+        defer plan.deinit();
+        try plan.prefill(&tokens, logits, null, null, null, &hidden, null);
+        anchor = argmax(logits);
+        try plan.flashCommit(&tokens, &hidden);
+        try plan.flashBlockTrace(anchor, rows, block);
+        _ = try plan.flashPropose(anchor, &drafts, 0);
+    } else {
+        var runtime = try qwen35.family.Runtime.init(alloc, io, mapped.view(), binding, capacity, false, true);
+        defer runtime.deinit();
+        try runtime.prefill(&tokens, logits, &hidden, null);
+        anchor = argmax(logits);
+        try runtime.flashCommit(&tokens, &hidden);
+        try runtime.flashBlockTrace(anchor, rows, block);
+        _ = try runtime.flashPropose(anchor, &drafts, 0);
+    }
+    for (0..rows) |r| {
+        var name: [32]u8 = undefined;
+        try writeFloats(io, directory, try std.fmt.bufPrint(&name, "p{d}-h.f32", .{r}), block[r * dflash2.embedding ..][0..dflash2.embedding]);
+    }
+    var path: [4096]u8 = undefined;
+    const file = try std.Io.Dir.cwd().createFile(io, try std.fmt.bufPrint(&path, "{s}/greedy.txt", .{directory}), .{});
+    defer file.close(io);
+    var buffer: [256]u8 = undefined;
+    var writer = file.writer(io, &buffer);
+    try writer.interface.print("{d}\n", .{anchor});
+    for (drafts) |d| try writer.interface.print("{d}\n", .{d});
+    try writer.interface.flush();
+    std.debug.print("DFlash2 trace ({s}) written to {s}: anchor {d}, drafts {any}.\n", .{ if (use_metal) "metal" else "cpu", directory, anchor, drafts });
+}
+
+fn bindDraftSource(comptime Family: type, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, draft_model: ?[]const u8, companion: *?inference.weights.Mapped) !Family.Binding {
+    var binding = try Family.bind(alloc, &mapped.document);
+    const path = draft_model orelse return binding;
+    companion.* = try inference.weights.Mapped.open(alloc, io, path);
+    const c = &companion.*.?;
+    _ = try Family.attachDraft(alloc, &c.document, c.view(), mapped.view(), &binding, true);
+    return binding;
+}
+
+fn draftTrace(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, directory: []const u8, draft_model: ?[]const u8) !void {
     const Family = spec.Family;
     const hidden = 5120;
     const tokens = spec.draft.?.tokens;
@@ -1603,7 +1703,9 @@ fn draftTrace(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
             return err;
         };
     }
-    const binding = try Family.bind(alloc, &mapped.document);
+    var companion: ?inference.weights.Mapped = null;
+    defer if (companion) |*c| c.deinit(io);
+    const binding = try bindDraftSource(Family, alloc, io, mapped, draft_model, &companion);
     const capacity = tokens.len + max_drafts + 2;
     var runner: DraftRunner(spec) = if (backend) |*b|
         .{ .metal = try Family.Plan.init(alloc, b, mapped.view(), binding, capacity, 8, .f32, false, true) }

@@ -56,7 +56,8 @@ Equal to the pinned Qwen3.8 file
 in every `qwen35.*` dimension, with two exceptions: `qwen35.block_count`
 is 64 (65 there) and `qwen35.nextn_predict_layers` is absent. The file
 has no MTP head, as ISTA's IQ2_XS it was built from has none (ISTA ships
-heads only in separate `-mtp` files). `general.name` is `Qwen3.8-27B
+heads only in separate `-mtp` files). Qwen's own `MTP/` companion supplies
+one (§ [Speculation](#speculation-2026-10-21)). `general.name` is `Qwen3.8-27B
 GSQ-RCO` and `general.quantized_by` `ISTA DASLab`: Underdog left ISTA's
 header in place. `general.sampling.*` says temperature 1.0, top-p 0.95,
 top-k 20; the card recommends 0.6 for general use and 0 for tool calls.
@@ -349,6 +350,30 @@ projections 13 %, everything outside the matvecs about 8 ms. 22 tok/s
 200 GB/s on average, above every 2-bit kernel here alone
 ([apple-gpu.md § The merged gate+up](../engine/apple-gpu.md#the-merged-gateup-on-salukis-encodings-2026-10-15)).
 
+## Speculation (2026-10-21)
+
+Qwen's `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` carries the prediction block this
+file lacks. It binds onto Saluki as a companion (`qwen35.bindDraft`),
+and Metal matches the CPU reference on its rows. Greedy speculative
+output equals plain output. On short code prompts Saluki accepts as many
+drafts as the Q4_K_M with its own block. The design and checks are in
+[speculative-decoding.md § The Qwen MTP companion](../engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21).
+
+It does not pay on prose, so the entry stays `speculative: false`. At
+draft 7, greedy code runs 17.78 → 23.92 tok/s (1.34×) and greedy prose at
+32,639 15.11 → 16.74 (1.11×). With Qwen's instruct sampling, prose at
+16K and 32K loses 13–15 %. The prose geometric mean is at most 0.993×
+([benchmarks § Saluki with the Qwen MTP companion](../benchmarks/history.md#saluki-with-the-qwen-mtp-companion-2026-10-21)).
+
+The cost is the verify batch: 2.1× a single-row step at 512 against the
+Q4_K_M's 1.45×, flat in the draft length. It is flat in the number of rows
+too: a 1-row verify costs 130 ms. The register-fragment tiles decode
+Saluki's 2-bit weights at about the per-weight cost of 4-bit ones, so the
+verify saves nothing from the smaller file
+([speculative-decoding.md § The Qwen MTP companion](../engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21)).
+A few-row 2-bit kernel at the matvec's decode rate is the step before any
+drafter change.
+
 ## Status
 
 Bring-up (2026-10-14): the file validates and binds, the seven encodings
@@ -364,3 +389,7 @@ at 512 (llama.cpp 12.46) and prefill 94.18 (97.19). Neither goal above
 A/B on a restored prefix). Open: prefill at long
 context (35 % behind llama.cpp at 32,639), and which 2-bit file becomes a
 catalogue entry (the comparison with Unsloth's UD-IQ2_XXS and UD-IQ2_S).
+
+Speculation (2026-10-21): Qwen's MTP companion binds and drafts
+correctly, and its verdict is off (§ Speculation). The verify batch on
+the 2-bit encodings is the gap.

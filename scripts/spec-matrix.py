@@ -42,6 +42,8 @@ SAMPLING = {
     },
     "card": {"instruct": {"temperature": 1.0, "top-p": 0.95, "top-k": 64}},
 }
+# Re-encodings of Qwen3.8 that run its profile, and so its sampling.
+QWEN_FILES = {"saluki", "bonsai"}
 
 
 # ---- pure functions (covered by --self-test) --------------------------------
@@ -62,7 +64,7 @@ def parse_ints(text):
 def sampling_flags(model_key, sampling):
     if sampling == "greedy":
         return []
-    table = SAMPLING["qwen" if model_key.startswith("qwen") else "card"]
+    table = SAMPLING["qwen" if model_key.startswith("qwen") or model_key in QWEN_FILES else "card"]
     if sampling not in table:
         raise ValueError(f"{model_key} has no {sampling} sampling")
     flags = []

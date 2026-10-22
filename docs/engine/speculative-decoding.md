@@ -10,8 +10,9 @@ and the defaults follow the record
 ([§ The re-priced verdicts](#the-re-priced-verdicts-2026-10-01)):
 Qwen3.8-27B on at draft 7, Gemma 4 12B QAT on at 5, Gemma 4 E4B on at 6,
 Muse Glimmer on at 6, Gemma 4 26B-A4B off. What exists: the draft
-contract in `runtime/draft.zig`; three draft sources (Qwen's embedded
-`nextn` block, Gemma's assistant heads, Muse's DFlash drafter); the
+contract in `runtime/draft.zig`; three draft sources (Qwen's `nextn`
+block, embedded or from its `MTP/` companion file; Gemma's assistant
+heads; Muse's DFlash drafter); the
 session's checkpoint, recovery by accepted length, and Qwen's DeltaNet
 replay tape ([session.md](session.md)); the verify batch, the sampled
 acceptance on the device readback, and the `runLoop` speculative step,
@@ -92,12 +93,13 @@ is no separate draft model: the reference opens the *same* file as a
 second context of type `LLAMA_CONTEXT_TYPE_MTP`
 (`llama_context_params.ctx_type`), which executes only that block with its
 own full-attention cache (`llama_set_embeddings_nextn(ctx, true, true)`).
-The separate `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` adds only lower-quantized
-copies of `token_embd`/`output`/`output_norm` under `nextn.embed_tokens` /
-`nextn.shared_head_head` / `nextn.shared_head_norm`; the main file's block
-carries `shared_head_norm` and falls back to the main `token_embd` and
-`output` (`qwen35.cpp:518,621-635`). The embedded block is therefore the
-source.
+The main file's block carries `shared_head_norm` and falls back to the
+main `token_embd` and `output` (`qwen35.cpp:518,621-635`). The embedded
+block is therefore the source for this file. The separate
+`MTP/mtp-Qwen3.8-27B-Q4_0.gguf` carries the same block at lower precision,
+with its own Q3_K embedding and head. It is the draft source for a
+Qwen3.8 file without a block of its own
+([§ The Qwen MTP companion](#the-qwen-mtp-companion-2026-10-21)).
 
 **The pair.** At MTP position `p` the block consumes the token `x_p` and
 the target hidden `h_{p-1}`: `concat = [enorm(embed(x_p)); hnorm(h_{p-1})]`
@@ -1063,3 +1065,278 @@ multi-row kernels, or split-K unchanged: earlier sweeps are their negative
 controls. A lighter quantization or a truncated context: changes quality
 or the target, a separate decision. A new drafter first: may raise
 acceptance but keeps an expensive verifier.
+
+## The Qwen MTP companion (2026-10-21)
+
+Saluki 27B ([saluki.md](../models/saluki.md)) is Qwen3.8-27B with 64
+blocks and no `nextn` key: its file has no prediction block, so it could
+not speculate. Qwen's own `MTP/mtp-Qwen3.8-27B-Q4_0.gguf`
+(1,369,590,656 B, already in the [catalogue](../models/catalogue.md) under
+the `mtp` role) holds the whole `blk.64` block. It has 18 tensors:
+`nextn.eh_proj` and `ffn_*` at Q4_K, `attn_*` at Q6_K, the norms in F32,
+and its own `token_embd`, `output` (Q3_K) and `output_norm`. The block in
+the Q4_K_M is the same weights at higher precision (`attn_k`/`attn_v`
+Q8_0, `ffn_*` and `eh_proj` Q6_K).
+
+**Binding.** `qwen35.bindDraft` binds the companion's `blk.<layers>.*`
+onto any unrotated target of the same shape and leaves the companion's
+embedding and head unbound, so the block shares the target's, exactly as
+the embedded block does. The block records its `DraftSource` (the
+companion's mapping and tensor table). Both executors read every weight
+through `Binding.viewOf`, which picks that mapping for the block's
+tensors, so the draft forward has no second path. `Engine.open` keeps a
+file's own block under `preferred` and takes the companion only for a
+file without one; `.file` replaces an embedded block. A Bonsai file
+(rotated, and the companion's block is in the plain basis) is refused
+with `DraftSourceMismatch`. `generation-check --draft-model` binds the
+companion for the Qwen draft trace, `--draft-stats`, and
+`--speculative-check`.
+
+**Validation.**
+
+- **Same weights.** The cross-encoding check of the companion against the
+  Q4_K_M (`test-cross-encoding`, 16 rows per matrix) reads cosine 0.9956
+  to 0.9999 per matrix. The Q4_K matrices are the farthest, at up to
+  9.4 % relative RMS.
+- **The companion on the Q4_K_M.** Against the embedded block's pinned
+  trace (`fixtures/qwen35-mtp`), the companion's block rows are 1.56 max
+  abs and 13.3 % relative RMS at position 0, 0.64 and 9.3 % at position
+  1, which is what the Q4_K error predicts. The greedy drafts are equal
+  (9419, 271). Gate: `qwen38-mtp-companion-trace-{metal,cpu}`.
+- **Saluki with the companion.** Metal against the CPU reference: 8.1e-6
+  max abs and 5.5e-7 relative RMS. The CPU rows are pinned under
+  `tests/fixtures/saluki-mtp`. Gate: `saluki-draft-trace-{metal,cpu}`.
+- **Greedy equivalence.** `saluki-speculative-metal`: speculative greedy
+  equals plain greedy on the runner and through `engine.runLoop`, and the
+  forced-token, budget, EOS, cancellation, and context checks pass
+  (`saluki-speculative-cpu`, the runner-level half, runs in the CPU tier). The check needs `--prompt-profile qwen38`, because Saluki's
+  template is not pinned.
+
+Saluki's final hidden after `Hello` differs from the Q4_K_M's by 42 %
+relative RMS (the companion was trained on the full-precision model's).
+That alone does not predict acceptance, which is measured next.
+
+**Acceptance** (`--draft-stats`, Metal, greedy, 32 tokens after each
+prompt, per draft depth 0–3):
+
+| Target, block | Zig reverse prompt | `fibonacci` prompt |
+| --- | --- | --- |
+| Q4_K_M, embedded | 90.3 / 80.0 / 69.0 / 64.3 % | 93.5 / 83.3 / 82.8 / 85.7 % |
+| Q4_K_M, companion | 87.1 / 76.7 / 69.0 / 64.3 % | 93.5 / 83.3 / 82.8 / 82.1 % |
+| Saluki, companion | 96.8 / 93.3 / 89.7 / 85.7 % | 96.8 / 86.7 / 79.3 / 78.6 % |
+
+The companion's lower precision costs the Q4_K_M at most one draft in
+thirty. On these short code prompts Saluki accepts at least as much as
+the Q4_K_M. These samples are small (31 positions at depth 0); the
+speculative matrix below measures prose at every context.
+
+**The speculative matrix** (2026-10-21, `scripts/spec-matrix.py --model
+saluki --run run-2026-09-06 --contexts code,512,4096,16384,32639 --drafts
+3-7 --sampling greedy,instruct --cooldown 60`, Metal, F16 cache, 128
+tokens, three off/on pairs per cell, Qwen's instruct sampling; the full
+table in [benchmarks § Saluki with the Qwen MTP companion](../benchmarks/history.md#saluki-with-the-qwen-mtp-companion-2026-10-21)).
+At draft 7:
+
+| Context | greedy E / C ms | greedy off → on | instruct E / C ms | instruct off → on |
+| --- | ---: | ---: | ---: | ---: |
+| code | 3.53 / 147.5 | 17.78 → 23.92 (1.34×) | 2.74 / 148.0 | 17.47 → 18.55 (1.07×) |
+| 512 | 2.65 / 144.3 | 17.68 → 18.34 (1.04×) | 2.54 / 147.8 | 17.29 → 17.24 (0.98×) |
+| 4,096 | 2.44 / 146.8 | 17.26 → 16.63 (0.96×) | 2.78 / 153.4 | 17.08 → 18.27 (1.08×) |
+| 16,384 | 3.02 / 169.9 | 16.19 → 17.80 (1.10×) | 2.28 / 161.5 | 16.04 → 14.14 (0.87×) |
+| 32,639 | 3.34 / 199.7 | 15.11 → 16.74 (1.11×) | 2.31 / 181.4 | 15.01 → 12.75 (0.85×) |
+
+**The verdict: off.** The prose geometric mean is 0.951, 0.980, 0.984,
+0.989, and 0.993× at drafts 3 to 7, and the worst prose cell is 0.83–0.85×
+at every length (the rule asks ≥ 1.10× and nothing below 0.98×;
+[benchmarks § The re-priced speculative verdicts](../benchmarks/history.md#the-re-priced-speculative-verdicts-2026-10-01)).
+
+**Why: the verify batch, not the drafter.**
+
+- **Verify cost.** Saluki's verify costs 120 ms at 512 and 150–165 ms at
+  32,639, against a single-row step of 57 and 67 ms: 2.1× and 2.4× a
+  step. On the Q4_K_M the same batch is 1.45× and 1.9×
+  ([§ The Qwen verify budget](#the-qwen-verify-budget)). The cost hardly
+  grows with the draft length (120.0 ms at 3 drafts, 120.8 at 7), so it
+  is the fixed price of leaving the single-row matvec.
+- **Acceptance.** E is close to the Q4_K_M's at 512 (instruct 2.54
+  against 2.63). It falls behind at long contexts with sampling (2.28–2.31
+  at 16K and 32K against 2.49–2.84).
+- **Break-even.** At E ≈ 2.5 a batch must cost less than 2.5 single steps
+  (about 142 ms at 512) to break even, and it costs 144.
+- **What a cheaper verify would buy.** Arithmetic, not a measurement:
+  with the verify at the Q4_K_M's ratios (83 ms at 512, 127 ms at 32,639)
+  and everything else as measured, the draft-7 cells would read about
+  1.36–1.41× at 512 and 1.01–1.36× at 32,639.
+
+A target-trained drafter (DFlash2) raises E but leaves this verify cost,
+so it is not the next step for Saluki.
+
+**Where the verify time goes** (2026-10-21, Saluki at 512, F16 cache,
+unprofiled `bench --verify-rows R --accept 0` from a saved prefix):
+
+| R (rows) | 1 | 2 | 4 | 8 |
+| --- | ---: | ---: | ---: | ---: |
+| verify ms | 130.2 | 118.4 | 121.4 | 126.4 |
+
+A plain decode step is 57 ms, so even a single-row verify costs 2.3× a
+step. The cost is the batch path itself, not the number of rows. A
+profiled 8-row batch puts 89 % of it in the matrices, all on the
+register-fragment tiles (`matmul_*_f2`, which every Saluki encoding
+has).
+
+- **The tiles' rate.** Inside the model they read Saluki's weights at 22–57
+  GB/s, against 72–134 GB/s for the single-row matvecs on the same
+  matrices. IQ2_XXS's 17408×5120 tile costs 0.68 ms per dispatch there,
+  against the matvec's 0.29.
+- **Per weight, not per byte.** On the tile path a 2-bit weight costs
+  about what a 4-bit one costs: Saluki's verify (120–130 ms) is close to
+  the Q4_K_M's (138 ms), while its single-row step is 1.7× faster.
+- **The bench understates it.** `test-metal -- --matvec-rows-bench 8` (now
+  with a fragment-tile column) times the same IQ2_XXS tile at 0.38 ms. Its
+  23 MB matrix, re-read by 16 dispatches in one command buffer, likely
+  stays in the system cache, so the bench understates the tile's cost
+  in the model.
+- **The multi-row matvec does not help.** A multi-row body for IQ2_XXS
+  (`nu_matvec_rows_iq2_xxs`) beats the tile at 2 rows (0.33 against 0.38
+  ms in the bench) and loses from 3 (1.24 ms at 8). Its per-token input
+  loads dominate, as on the K-quants. `matmul` routes it at 2 rows only,
+  as it does every non-K-quant body. In the model it takes a 2-row verify
+  from 118.4 to 112.7 ms (three alternating pairs, identical to 0.1 ms).
+
+A cheaper Saluki verify therefore needs a few-row 2-bit kernel that keeps
+the matvec's decode rate. More rows per tile do not help, and Qwen's own
+register-fragment work once closed below its target
+([KERN-24](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-24--the-register-fragment-verify-matmul-2026-10-01-closed-below-its-target)).
+
+## The Qwen DFlash2 drafter (2026-10-21)
+
+z-lab's DFlash2 is a block drafter trained against Qwen3.8-27B.
+
+**The file.** `z-lab/Qwen3.8-27B-DFlash2-GGUF` at `2d9571f8`,
+`Qwen3.8-27B-DFlash2-Q8_0.gguf`: 2,056,414,816 B, SHA-256 `c18e800d…`,
+Apache-2.0, pulled with role `mtp`. Its keys come from llama.cpp PR
+#27342's converter. The architecture id is `dflash`, Muse's, so the
+selector keys are what tell the two apart.
+
+**The equations.** They come from `z-lab/dflash` `dflash/model.py` at
+`07ebd93` (MIT). That file is the format's only definition: it was read
+for the equations, and nothing was copied.
+
+- **Base.** Muse's drafter
+  ([§ The Muse Glimmer DFlash drafter](#the-muse-glimmer-dflash-drafter-2026-09-21))
+  at Qwen's width:
+  - five Qwen3 blocks of 32 query and 8 KV heads of 128;
+  - q/k norms, RoPE θ 1e7 over the whole head;
+  - non-causal inside the block, a 2048 window both ways;
+  - the residuals entering target layers 6, 20, 34, 48 and 62 encoded by
+    `fc` and `enc.output_norm` into keys and values at their positions;
+  - an 8-row block `[anchor, mask × 7]` (mask 248070) embedded with the
+    target's table;
+  - the final norm, then the target's head.
+- **Two dynamic convolutions per block,** one around attention and one
+  around the FFN. With `x` the normed sublayer input, the taps are
+  `conv_proj(x)`, viewed `[half][tap][group of 16]`. The sublayer reads
+  `Σ_tap (base[0][tap] + taps[0][tap]) ⊙ x[t − tap]`; its output `y`
+  becomes `Σ_tap (base[1][tap] + taps[1][tap]) ⊙ y[t − tap]` before the
+  residual add. Row −1 is zero, and the context rows take no
+  convolution. GGUF stores `*_conv_base` as `[embedding, 2, 2]`, the
+  reverse of PyTorch's `[half][tap][channel]`.
+- **The candidate selector.** At each draft position it takes the 16
+  largest logits `u_k` and the projection `h = selector_hidden(row)`
+  (rank 256). Each candidate scores `u_k + Σ_r pred[prev][r] · h[r] ·
+  succ[cand_k][r]`, and the greedy chain from the anchor takes the
+  highest. Acceptance draws from the target alone, so the selector's
+  sampled distribution is not needed.
+
+**Binding.** `qwen35.attachDraft` takes a DFlash2 companion over the
+file's own prediction block. Under `preferred`, Qwen's MTP companion is
+taken only where the file has none; `.file` forces it. The family
+declares `attachDraft` instead of `bindDraft` so it can choose by content.
+
+**Executors.**
+
+- **Both.** They capture each target layer's input residual during
+  prefill and verify, and report the five per row (25,600 floats) as the
+  commit rows. The drafter's five caches are session layouts after the
+  text layers, so recovery rewinds them.
+- **CPU reference.** `dflash2_runtime.zig`.
+- **Metal.** `Flash` in `qwen35_metal.zig`:
+  - the convolution is `nu_dflash_conv`;
+  - the drafter has its own RoPE table (128 wide, θ 1e7);
+  - its Q8_0 projections call `nu_matmul_q8_0_f2`, a register-fragment
+    tile that only the drafter calls by name (`matmul` keeps routing Q8_0
+    to the generic tile for every other family);
+  - the selector runs on the host over a device top-16 per row and the
+    projected rows.
+
+**Validation.** There is no external oracle.
+
+- **Unit tests** pin the convolution and the selector against
+  hand-computed values. `test-metal` checks `nu_dflash_conv` against
+  `dflash2.convolve` (4.8e-7) and the Q8_0 tile against the CPU matvec
+  (3.7e-5 of the products' mass).
+- **Losslessness.** Greedy output with speculation on equals plain on
+  both executors: `generate` on the CPU over 24 tokens, and on Metal over
+  64. `qwen38-dflash2-speculative-{metal,cpu}` runs the engine's loop:
+  equivalence, forced token, budget, EOS, cancellation, and context.
+- **Metal against the CPU.** `--flash-trace` prefills `Hello,`, commits,
+  runs the block and proposes; the CPU rows are pinned under
+  `tests/fixtures/qwen38-dflash2`. Metal reads 1.6e-2 max abs and 7.7e-4
+  relative RMS with identical drafts, inside the family's half-tile
+  bound (`qwen38-dflash2-trace-metal`).
+- **Acceptance.** On the code prompt, with p_min 0, CPU and Metal agree
+  exactly (3.80 of 6.40 proposed drafts accepted, 24 tokens). A wrong
+  convolution layout or selector would collapse that to near zero.
+
+**Costs on the code prompt** (128 tokens, draft 7, F16 cache, hot; one
+run each, not the record):
+
+| | Propose ms/batch | Verify ms/batch | Accepted / proposed | tok/s (plain 12.0) |
+| --- | ---: | ---: | ---: | ---: |
+| MTP, p_min 0.7 | 22.6 | 135.8 | 2.53 / 3.75 | 21.05 |
+| DFlash2, generic Q8_0 tile, p_min 0 | 43.4 | 147.0 | 2.66 / 6.71 | 17.48 |
+| DFlash2, Q8_0 fragment tile, p_min 0 | 18.9 | 146.6 | 2.66 / 6.71 | 20.69 |
+| DFlash2, fragment tile, p_min 0.3 | | | 2.46 / 3.97 | 20.79 |
+
+DFlash2 drafts a whole block per forward and its later positions stay
+good: at p_min 0 it proposes nearly all 7 and keeps 2.7. But each
+batch then verifies about 8 rows, which costs more than MTP's ~5.
+
+**The speculative matrix** (2026-10-21, same day and method as
+[§ The re-priced verdicts](#the-re-priced-verdicts-2026-10-01): 128
+tokens, F16 cache, three off/on pairs per cell, `--cooldown 60`, Qwen's
+instruct sampling). MTP ran at its default (draft 7, p_min 0.7); DFlash2
+at drafts 5 and 7, p_min 0 and 0.3. The full tables are in
+[benchmarks § DFlash2 against MTP on the Q4_K_M](../benchmarks/history.md#dflash2-against-mtp-on-the-q4_k_m-2026-10-21).
+On-rate, tok/s, at draft 7:
+
+| Context, sampling | MTP, p_min 0.7 | DFlash2, p_min 0.3 | DFlash2 / MTP |
+| --- | ---: | ---: | ---: |
+| code, greedy | 21.17 | 20.72 | 0.98 |
+| code, instruct | 21.76 | 24.19 | 1.11 |
+| 512, greedy | 17.69 | 19.46 | 1.10 |
+| 512, instruct | 17.02 | 17.66 | 1.04 |
+| 4,096, greedy | 17.82 | 18.90 | 1.06 |
+| 4,096, instruct | 15.45 | 13.84 | 0.90 |
+| 16,384, greedy | 13.77 | 14.72 | 1.07 |
+| 16,384, instruct | 13.92 | 13.44 | 0.97 |
+| 32,639, greedy | 14.14 | 13.96 | 0.99 |
+| 32,639, instruct | 14.28 | 14.17 | 0.99 |
+
+**The verdict.**
+
+- **On its own, DFlash2 qualifies.** At draft 7 and p_min 0.3 the prose
+  geometric mean is 1.366× and the worst cell 1.172×. MTP reads 1.387×
+  and 1.260×.
+- **Against MTP it is a wash.** Over the eight prose cells its on-rate is
+  1.012× MTP's geometric mean, ranging from 0.90 to 1.10. It wins at
+  short context and on sampled code, and ties from 16K, where the verify
+  batch (8 rows of a 16.5 GB model) is most of each batch's cost.
+- **The other settings lose.** p_min 0 and draft 5 read 0.925–0.979×
+  MTP.
+- **The default stays MTP.** It is embedded in the file and costs no
+  extra 2 GB. DFlash2 is a supported alternative: name the companion as
+  the entry's `mtp`, with `--draft-p-min 0.3` (bench) and draft 7.
+- **What would change it.** DFlash2 raises acceptance (E 2.95–3.26
+  against MTP's 2.46–2.95 at 512–4K), so it would pull ahead wherever a
+  verify batch got cheaper than it is today.

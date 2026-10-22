@@ -1202,6 +1202,49 @@ inline void nu_matvec_rows_iq4_xs_body(device const uchar * weights, device cons
     }
 }
 
+// IQ2_XXS: lane `g` owns its block's 32-value group, as in the matvec. Each
+// octet is decoded once per row with the group's scale folded in, then dotted
+// with every token's eight inputs. The grid values are half denormals at
+// 2^-24 of the byte, hence the 2^24 in the scale.
+template <uint ROWS, uint TOKENS>
+inline void nu_matvec_rows_iq2_xxs_body(device const uchar * weights, device const float * input, MatvecRowsParams p, uint group_index, uint sg, uint lane, thread float * acc) {
+    uint row0 = nu_rows_lane_row0<ROWS>(group_index, sg, lane);
+    uint g = lane & 7;
+    for (uint i = 0; i < ROWS * TOKENS; ++i) acc[i] = 0;
+    const uint blocks = p.columns / 256;
+    for (uint kb = 0; kb < blocks; ++kb) {
+        uint indices[ROWS], words[ROWS];
+        float scale[ROWS];
+#pragma unroll
+        for (uint r = 0; r < ROWS; ++r) {
+            device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + kb * 66;
+            packed_ushort4 q = *(device const packed_ushort4 *)(b + 2 + g * 8);
+            indices[r] = nu_word(q, 0);
+            words[r] = nu_word(q, 1);
+            float d = float(as_type<half>(*(device const ushort *)b));
+            scale[r] = (d * ((0.5f + float(words[r] >> 28)) * 0.25f)) * 16777216.0f;
+        }
+        device const float * x = input + kb * 256 + g * 32;
+#pragma clang loop unroll(disable)
+        for (uint l = 0; l < 4; ++l) {
+            float4 wa[ROWS], wb[ROWS];
+#pragma unroll
+            for (uint r = 0; r < ROWS; ++r) {
+                NuOctet o = nu_signed_octet(nu_iq2_xxs_grid[(indices[r] >> (8 * l)) & 255u], nu_signs7(words[r] >> (7 * l)));
+                wa[r] = float4(float(o.v02.x), float(o.v13.x), float(o.v02.y), float(o.v13.y)) * scale[r];
+                wb[r] = float4(float(o.v46.x), float(o.v57.x), float(o.v46.y), float(o.v57.y)) * scale[r];
+            }
+#pragma unroll
+            for (uint t = 0; t < TOKENS; ++t) {
+                device const float4 * xt = (device const float4 *)(x + ulong(t) * p.in_stride) + 2 * l;
+                float4 xa = xt[0], xb = xt[1];
+#pragma unroll
+                for (uint r = 0; r < ROWS; ++r) acc[r * TOKENS + t] = nu_dot(wb[r], xb, nu_dot(wa[r], xa, acc[r * TOKENS + t]));
+            }
+        }
+    }
+}
+
 // Sums each accumulator over its 8-lane group; the group's first lane stores.
 template <uint ROWS, uint TOKENS>
 inline void nu_store_rows_multi(thread float * acc, device float * output, uint row0, uint rows, uint out_stride, uint lane) {
@@ -1250,6 +1293,15 @@ kernel void nu_matvec_rows_iq4_xs(device const uchar * weights [[buffer(0)]], de
     nu_store_rows_multi<ROWS, TOKENS>(acc, output, nu_rows_lane_row0<ROWS>(group_index, sg, lane), p.rows, p.out_stride, lane);
 }
 
+template <uint ROWS, uint TOKENS>
+kernel void nu_matvec_rows_iq2_xxs(device const uchar * weights [[buffer(0)]], device const float * input [[buffer(1)]], device float * output [[buffer(2)]],
+                                   constant MatvecRowsParams & p [[buffer(7)]], uint group_index [[threadgroup_position_in_grid]],
+                                   uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    float acc[ROWS * TOKENS];
+    nu_matvec_rows_iq2_xxs_body<ROWS, TOKENS>(weights, input, p, group_index, sg, lane, acc);
+    nu_store_rows_multi<ROWS, TOKENS>(acc, output, nu_rows_lane_row0<ROWS>(group_index, sg, lane), p.rows, p.out_stride, lane);
+}
+
 // Generic fallback for encodings without a specialized multi-row body
 // (Q3_K, IQ3_S, IQ4_NL, Q8_0, F32, ...): one SIMD group per output row, the
 // same segment decode as `nu_matvec`, one accumulator per token row.
@@ -1292,6 +1344,7 @@ NU_MATVEC_ROWS_ALL(q4_k)
 NU_MATVEC_ROWS_ALL(q5_k)
 NU_MATVEC_ROWS_ALL(q6_k)
 NU_MATVEC_ROWS_ALL(iq4_xs)
+NU_MATVEC_ROWS_ALL(iq2_xxs)
 
 // ---------------------------------------------------------------------------
 // Mixture of experts. A 3-D tensor holds `experts` contiguous row-major
@@ -1605,6 +1658,16 @@ inline void nu_tile_q4_0(device const uchar * b, uint first, thread float4 * q) 
     else { q[0] = nu_low_nibbles(w0); q[1] = nu_low_nibbles(w1); q[2] = nu_low_nibbles(w2); q[3] = nu_low_nibbles(w3); }
     for (uint i = 0; i < 4; ++i) q[i] = d * (q[i] - 8.0f);
 }
+// Q8_0 segment: sixteen of the block's 32 signed bytes, `d * q`; 34-byte
+// blocks, 2-byte aligned, so the bytes are read as ushort pairs.
+inline void nu_tile_q8_0(device const uchar * b, uint first, thread float4 * q) {
+    float d = float(as_type<half>(*(device const ushort *)b));
+    device const ushort * w = (device const ushort *)(b + 2 + first);
+    for (uint i = 0; i < 4; ++i) {
+        ushort lo = w[2 * i], hi = w[2 * i + 1];
+        q[i] = d * float4(float(as_type<char>(uchar(lo & 0xff))), float(as_type<char>(uchar(lo >> 8))), float(as_type<char>(uchar(hi & 0xff))), float(as_type<char>(uchar(hi >> 8))));
+    }
+}
 // IQ4_NL segment: Q4_0's block and nibble order through the nonlinear
 // table, `d * value` as the generic decoder computes it.
 inline void nu_tile_iq4_nl(device const uchar * b, uint first, thread float4 * q) {
@@ -1734,13 +1797,14 @@ inline void nu_tile_segment(device const uchar * row, uint encoding, uint segmen
     }
     // 256-value blocks hold sixteen segments; Q4_0's and IQ4_NL's 32-value block two; the
     // ternary 128-value blocks eight.
-    const uint block_bytes = (ENC == 2 || ENC == 20) ? 18 : ENC == 12 ? 144 : ENC == 13 ? 176 : ENC == 14 ? 210 : ENC == 23 ? 136 : ENC == 142 ? 34 : ENC == 143 ? 28
+    const uint block_bytes = ENC == 8 ? 34 : (ENC == 2 || ENC == 20) ? 18 : ENC == 12 ? 144 : ENC == 13 ? 176 : ENC == 14 ? 210 : ENC == 23 ? 136 : ENC == 142 ? 34 : ENC == 143 ? 28
         : ENC == 10 ? 84 : ENC == 16 ? 66 : ENC == 17 ? 74 : ENC == 18 ? 98 : ENC == 19 ? 50 : ENC == 22 ? 82 : ENC == 29 ? 56 : 110;
-    const uint segments_per_block = (ENC == 2 || ENC == 20) ? 2 : (ENC == 142 || ENC == 143) ? 8 : 16;
+    const uint segments_per_block = (ENC == 2 || ENC == 20 || ENC == 8) ? 2 : (ENC == 142 || ENC == 143) ? 8 : 16;
     device const uchar * b = row + ulong(segment / segments_per_block) * block_bytes;
     uint first = (segment % segments_per_block) * 16;
     switch (ENC) {
         case 2: nu_tile_q4_0(b, first, q); break;
+        case 8: nu_tile_q8_0(b, first, q); break;
         case 20: nu_tile_iq4_nl(b, first, q); break;
         case 11: nu_tile_q3_k(b, first, q); break;
         case 12: nu_tile_k<false>(b, first, q); break;
@@ -2186,6 +2250,8 @@ template [[host_name("nu_matmul_iq3_xxs_f2")]] kernel void nu_matmul_frag_t<18, 
 template [[host_name("nu_matmul_iq1_s_f2")]] kernel void nu_matmul_frag_t<19, 2, half, float>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_iq2_s_f2")]] kernel void nu_matmul_frag_t<22, 2, half, float>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_iq1_m_f2")]] kernel void nu_matmul_frag_t<29, 2, half, float>(NU_MATMUL_ARGS);
+// Q8_0's tile is called by name (the DFlash2 drafter), never routed by `matmul`.
+template [[host_name("nu_matmul_q8_0_f2")]] kernel void nu_matmul_frag_t<8, 2, half, float>(NU_MATMUL_ARGS);
 // Gathered expert tiles: 64 rows × 32 slot rows with half operands for Q4_0
 // (an expert averages k · chunk / experts slot rows per chunk, 16 on the
 // 26B-A4B at 256 tokens, so one token tile covers most experts), and the
@@ -2462,6 +2528,22 @@ kernel void nu_add(device float * x [[buffer(0)]], device const float * y [[buff
 kernel void nu_silu_mul(device float * gate [[buffer(0)]], device const float * up [[buffer(1)]],
                         constant CountParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
     if (i < p.count) gate[i] = nu_silu(gate[i]) * up[i];
+}
+// DFlash2's two-tap dynamic convolution over a block's rows (`dflash2.convolve`):
+// out[t][c] = Σ_{tap ≤ min(t, 1)} (base[half][tap][c] + taps[t][half][tap][c / group]) · in[t − tap][c].
+struct DflashConvParams { uint rows; uint width; uint half_index; uint group; uint groups; uint taps_stride; };
+kernel void nu_dflash_conv(device const float * base [[buffer(0)]], device const float * taps [[buffer(1)]],
+                           device const float * input [[buffer(2)]], device float * output [[buffer(3)]],
+                           constant DflashConvParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
+    if (i >= p.rows * p.width) return;
+    uint t = i / p.width, c = i % p.width;
+    float sum = 0.0f;
+    for (uint tap = 0; tap < 2 && tap <= t; ++tap) {
+        uint which = p.half_index * 2 + tap;
+        float w = base[which * p.width + c] + taps[t * p.taps_stride + which * p.groups + c / p.group];
+        sum += w * input[(t - tap) * p.width + c];
+    }
+    output[i] = sum;
 }
 kernel void nu_silu_inplace(device float * x [[buffer(0)]],
                             constant CountParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
