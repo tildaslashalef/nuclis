@@ -12,24 +12,6 @@ Session protocol (also in [AGENTS.md](AGENTS.md)): read this file first. If
 it lists work, summarize *Where we are* and ask the user how to continue. If
 it is empty, ask what to work on and write the agreed plan here.
 
-## Where we are
-
-Theme: speculation, on the branch `saluki-mtp-companion` (no pushes or
-pull requests until the user says).
-
-**DFlash2 on the Q4_K_M is done:** both executors, gated, measured
-(`docs/engine/speculative-decoding.md` § The Qwen DFlash2 drafter;
-`docs/benchmarks/history.md` § DFlash2 against MTP on the Q4_K_M).
-
-- **On its own** it qualifies at draft 7, p_min 0.3 (prose 1.366×, worst
-  1.172×).
-- **Against MTP it is a wash:** 1.012× MTP's on-rate over prose, 0.90–1.10;
-  ahead at short context, tied from 16K.
-- **The default stays MTP.**
-- `make verify` passed 50 of 53 gates and `make verify-cpu` 25 of 26
-  (2026-10-21). The ones skipped are Bonsai's, whose model is not on this
-  machine.
-
 ## Deferred
 
 Agreed and not scheduled; when one is picked up, it becomes a unit above.
