@@ -97,12 +97,16 @@ WebSocket (`GET /v1/audio/transcriptions/stream`) and whole recordings
 segmenter shared with the CLI. Beside an E4B stream, a live clip costs
 E4B 8–13 %, a file transcription about 3×: both carried into task 11.
 
-Next: **task 11** (voice scheduling, all three models together), then
-16, 17, 18 (the agent; any worktree), then 12.
+Task 11 delivered (2026-10-27): a generation keeps the GPU it can while
+speech stays a second ahead of playback and a file takes a quarter;
+E4B beside the 1.7B voice 7.2 → ~25 tok/s, beside a file 3× → −23 %; a
+spoken question answered aloud starts 0.5 s after the turn ends.
+
+Next: **16, 17, 18** (the agent; any worktree), then 12.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: task 11 |
+| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: tasks 16, 17, 18 |
 
 ## Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API
 
@@ -200,7 +204,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 8 | Gemma 4 E4B audio input in chat | D | — | done |
 | 9 | Serve: speech and transcription kinds, pinning, `POST /v1/audio/speech` | C | 4 | done |
 | 10 | Serve: WebSocket transport, streaming transcription | C | 7, 9 | done |
-| 11 | Voice scheduling measured: E4B, TTS, and ASR together | C | 9, 10 | main |
+| 11 | Voice scheduling measured: E4B, TTS, and ASR together | C | 9, 10 | done |
 | 12 | Documents, README, website (links Muon) | — | all | main |
 | 13 | Split `kernels.metal` by operation (before 4 and 7) | — | — | done |
 | 14 | Split the Metal backend's `root.zig` by operation (before 4 and 7) | — | — | done |
@@ -595,44 +599,26 @@ completer's `Media`, the profile's `Message.audio`):
   (captures before and after); the agent task list is not affected (no
   prompt or tool change), so no `make agent-eval`.
 
-#### 11. Voice scheduling measured
+#### 11. Voice scheduling measured (delivered 2026-10-27)
 
-From task 9: speech beside a chat costs E4B 8× (44 → 5.4 tok/s): each
-speech item is a 4-frame chunk (~170 ms of GPU) and every chat step waits
-for one. Try one frame per item first (and a first chunk of one), then a
-policy that keeps the speech buffer just ahead of playback (speak only
-while fewer than N ms are buffered); measure E4B tok/s and speech's
-margin over real time for each. Also from task 9: `/v1/chat/completions`
-given a speech or transcription model's name answers `404
-model_not_found` instead of `400 not_a_language_model` (add the
-`catalog.findAudio` check in `src/api/chat/model.zig` `ensure`); memory
-accounting counts weight files only, not the talker's or the recognizer's
-caches (1.97 GB beside the weights with all three open).
-
-From task 10: live transcription beside an E4B stream costs E4B 8–13 %
-(partials 50/66/74 ms behind the audio, median/p90/max; final 41–48 ms
-after `finish`), measured with another worktree's jobs on the GPU:
-re-measure quiet. The first chunk after the server starts is ~650 ms late
-(Metal warm-up); a warm-up chunk when the model is preloaded or pinned
-fixes it. An unpinned ASR model opened during a long generation queues
-audio and may hit the 10 s backlog limit: the script pins
-`nemotron-asr-0.6b`.
-
-From task 15: a file transcription beside an E4B stream costs E4B about
-3× (45.8–51.5 → 12.0–17.9 tok/s; the file at 28–41× real time instead of
-42–64×): each chat step waits for a 40–64 ms piece, and smaller pieces do
-not help (an 8-row piece still takes ~34 ms: per-token command buffers).
-Batch the RNN-T's token steps or yield between them; `GET /v1/health`
-reports no file-transcription queue counters.
-
-All three models open and pinned; a script under `scripts/` plays a
-recorded question into the stream, sends the transcript to chat, and
-streams the answer's sentences to speech, as Muon will. Measure on this
-machine and write into `docs/guide/api.md` § Measured rates: speech end to
-final transcript, to first token, to first audio; E4B's decode rate with
-and without speech streaming beside it (proposed: ≤ 25 % slower); TTS
-staying ahead of playback. Adjust the short-item policy if speech falls
-behind.
+`gpu.Executor.betweenSteps` tells a short item a generation waits for
+it. Speech there makes one frame a run and none while its audio is a
+second ahead of playback (from the request's first byte); a file
+transcription takes at most a quarter of the time; alone, both run at
+full speed. Chunks after the first ramp 1, 1, 2, 4 (`Synthesizer.read`):
+the old 1-then-4 left a 50–80 ms gap after the first 80 ms of every
+utterance, even alone. A voice and a recognizer count the device memory
+they created on opening (`deviceBytes`: 553 MiB and 48 MiB). Chat names a
+speech or transcription model's route when refusing it. Measured quiet,
+`scripts/voice-loop.py` (`beside`, `loop`): E4B beside the 1.7B voice
+7.2 → 23.7–26.8 tok/s (55 alone; the voice needs ~46 % of the GPU at
+one frame a run, so the proposed ≤ 25 % is out of reach for the 1.7B),
+beside the 0.6B 32.5–33.6; beside a live transcription 52.2 (−5 %);
+beside a file transcription 40.6 (−23 %, was 3×). No underrun in any
+run. A spoken question to its answer's first audio: 523 ms (1.7B), 482 ms
+(0.6B) after `finish`. `docs/guide/api.md` § The voice loop.
+Not reproduced: task 10's 650 ms late first chunk (pinned, quiet: none);
+the first speech request after start is ~90 ms slower than the next.
 
 #### 12. Documents, README, website
 

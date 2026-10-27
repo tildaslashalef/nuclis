@@ -844,7 +844,11 @@ library and pipelines compiling once) and is left out of the table.
 **Against the targets.** First audio is within the proposed 150 ms on
 both sizes once the first chunk is one frame (`Synthesizer.first_chunk`,
 default 1; the codec's samples do not depend on the pieces, so nothing
-else changes). Real time is 3.2× on the 0.6B, at the proposed 3×, and
+else changes). After it a chunk is at most the frames made before it
+(1, 1, 2, 4, …): a second chunk of four would take longer than the first
+frame's 80 ms to make, and a listener playing from the first byte would
+hear a gap (50–80 ms on the 1.7B, found by the server's voice-loop
+measurement, `docs/guide/api.md` § The voice loop). Real time is 3.2× on the 0.6B, at the proposed 3×, and
 2.2× on the 1.7B, below it. Sampling the frame on the device saves 2–3 ms
 a frame against a command buffer per group.
 

@@ -83,13 +83,14 @@ weights, its draft file when speculative decoding is on, and its image
 projector once an image arrives; an embedding model's file; a speech
 model's weights and codec; a transcription model's weights) plus, for a
 language model, its attention cache and the saved states it may keep (`cache.memory_bytes`,
-4 GiB). Qwen3.8 counts 22.0 GiB, `laya-multilingual` 0.6 GiB, clef-flash
-8.4 GiB, Gemma 4 E4B 8.9 GiB, `qwen3-tts-1.7b` 4.2 GiB (4,515,695,644 B:
-the BF16 talker and the F32 codec; the 0.6B 2.3 GiB), `nemotron-asr-0.6b`
-2.4 GiB (2,552,062,944 B). The voice's talker cache and scratch, and the
-recognizer's encoder caches, are not counted: with all three of the
-voice assistant's models open, the process's own footprint (beside the
-mapped weights) was 1.97 GB.
+4 GiB), and for a speech or transcription model the device memory it
+created on opening (its converted weights, caches, and scratch). Qwen3.8 counts 22.0 GiB, `laya-multilingual` 0.6 GiB, clef-flash
+8.4 GiB, Gemma 4 E4B 8.9 GiB, `qwen3-tts-1.7b` 4.7 GiB (5,095,675,552 B:
+the BF16 talker and the F32 codec, 4,515,695,644 B, and 553 MiB of
+device buffers), `nemotron-asr-0.6b` 2.4 GiB (2,602,777,056 B: 2,552,062,944
+and 48 MiB). What a request holds while it runs is not counted: a
+speech request's synthesizer (about 33 MiB on the device), a live
+transcription session (about 70 MB), a file's upload.
 
 Before a model opens, the least recently used others close until it
 fits, whichever kind they are. A language model is never closed while a
@@ -208,7 +209,7 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 422 | `model_too_large` | the decision model alone needs more than the memory budget ([memory](#memory)) |
 | 400 | `invalid_json`, `invalid_request` | chat: the body is not JSON, or a field is malformed (`param` names it) |
 | 400 | `unsupported_feature` | chat: a field nuclis cannot honour ([what is refused](#what-is-refused)) |
-| 400 | `not_a_language_model` | chat: `model` names a decision or embedding model |
+| 400 | `not_a_language_model` | chat: `model` names a decision, embedding, speech, or transcription model |
 | 400 | `images_unsupported` | chat: an image for a model whose projector is not pulled |
 | 400 | `audio_unsupported` | chat: an `input_audio` part for a model that does not hear (only Gemma 4 E4B does), or whose projector is not pulled |
 | 400 | `invalid_audio` | chat: an `input_audio` part that does not decode |
@@ -779,7 +780,9 @@ pass: about 460 ms an image at 280 tokens, 130 ms for 4.8 s of speech.
 
 OpenAI's speech call for the speech models `nuclis speak` runs, Qwen3-TTS
 CustomVoice in two sizes. The audio streams as it is made: the first
-80 ms leave after one frame, the rest in chunks of four (320 ms).
+80 ms leave after one frame, then chunks of one, two, and four frames
+(320 ms), each no longer than the audio sent before it, so a listener
+who plays from the first byte never waits between them.
 
 ```sh
 curl -s localhost:9000/v1/audio/speech -o hello.wav -d '{
@@ -844,14 +847,18 @@ second later.
 ### Scheduling
 
 Speech runs on the one GPU worker as short items: each run makes one
-chunk (one frame first, then four), so a chunk runs between the steps of
-a chat generation (and of its hosted tool waits) and speech never waits
-for a generation to end. A chunk of four frames of the 1.7B takes about
-170 ms, which the generation's step waits for: the generation slows
-while speech is made (measured below), and speech stays faster than real
-time. Opening a voice is the exception: a request whose voice is not open
-waits for the running generation to end, since opening may close the
-language model it runs on.
+chunk, so a chunk runs between the steps of a chat generation (and of
+its hosted tool waits) and speech never waits for a generation to end.
+Between a generation's steps speech takes only what playback needs: one
+frame a run (about 37 ms on the 1.7B), and none while the audio sent is
+a second or more ahead of its playback, counted from the request's
+first byte at real time. So beside a generation a request is made at
+playback speed with a second in hand, and the generation keeps the rest
+of the GPU (on the 1.7B about half its rate, on the 0.6B 60 %: § The
+voice loop below); alone, with nothing waiting, it runs at full speed in
+chunks of four. Opening a voice is the exception: a request whose voice
+is not open waits for the running generation to end, since opening may
+close the language model it runs on.
 
 A voice speaks one request at a time (its talker cache and the codec's
 scratch are one synthesizer's), so concurrent speech requests queue in
@@ -1120,7 +1127,10 @@ The upload is decoded in pieces (`inference/src/audio/audio.zig`
 `Reader`, AudioToolbox read 4,096 frames at a time) and fed to one
 stream 2.56 s (32 rows) at a time, each piece a short GPU item: it runs
 between a chat generation's steps and speech's chunks, never waiting for
-a generation to end. Memory is the upload, the transcriber's state (on
+a generation to end. Beside a generation a file takes at most a quarter
+of the GPU's time (a piece runs only once three times its length has
+passed since the last), since it has no deadline and the generation
+waits for each piece; alone it runs back to back. Memory is the upload, the transcriber's state (on
 Metal 72 MB of device buffers, the front end's pending samples), and the
 segments, never the decoded samples: peak RSS rose 46 MiB from a
 5-minute to a 30-minute recording whose upload is 45.7 MiB larger
@@ -1385,8 +1395,8 @@ about 40 ms of alone; the generation pays: each of its steps waits for a
 four-frame chunk, so it ran at an eighth of its rate while the 21.1 s of
 speech were made (in 14.2 s), and at its own rate after. Audio made beside the
 generation was byte-identical to the same request alone. How to share the
-GPU more evenly (a frame per item, or chunks only every few steps) is the
-voice scheduling unit's measurement.
+GPU more evenly is measured in § The voice loop below, whose policy
+replaced this one.
 
 ### Live transcription alone and beside a chat stream, 2026-10-27, commit `18216d7`
 
@@ -1469,5 +1479,62 @@ at the rates above. Smaller pieces cost nearly as much each: through
 `nuclis transcribe` on the same machine and file, pieces of 8, 16, 32,
 and 64 rows ran at 19, 25, 40, and 68× real time, so a piece of 8 rows
 still took about 34 ms (each emitted token adds a command buffer,
-[nemotron-asr.md § On Metal](../models/nemotron-asr.md#on-metal-2026-10-27)). Sharing the GPU between a transcription and a chat is the voice
-scheduling unit's measurement.
+[nemotron-asr.md § On Metal](../models/nemotron-asr.md#on-metal-2026-10-27)). § The voice loop below measures the share
+that replaced this.
+
+### The voice loop, 2026-10-27, commit `f96f750`
+
+Apple M4 Pro (48 GB), ReleaseSafe (`make build`), Zig 0.17.0, macOS
+27.0, a quiet machine (no other GPU job; load average 3–4 from the
+desktop); `nuclis serve --quiet --model gemma-4-e4b-qat --pin <voice>
+--pin nemotron-asr-0.6b` on Metal, through `scripts/voice-loop.py` and
+`scripts/ws-transcribe.py --measure`, `scripts/transcription-check.py
+long --chat`. Chat rates are streamed content chunks per second as in
+the records above (`reasoning_effort` `none`, temperature 0, 1,200
+tokens of a story). Playback is modelled: audio plays at real time from
+its first byte, each speech request after the one before it; the lead is
+the audio in hand when a chunk arrives, an underrun a chunk that arrives
+after it ran out.
+
+**Beside a chat.** Five sentences (28.1 s of audio on the 1.7B, 30.8 s on
+the 0.6B), each its own request, sent together while the chat streams;
+two rounds each.
+
+| | E4B alone | E4B beside it | It beside E4B |
+| --- | --- | --- | --- |
+| speech, 1.7B, before (1 frame then chunks of 4, every run) | 55.9 tokens/s | 7.1–7.3 tokens/s | 2.06–2.09× real time; a 50–80 ms underrun after the first 80 ms of each utterance, alone too |
+| speech, 1.7B | 53.9–56.4 tokens/s | 23.7–26.8 tokens/s | real time with a second in hand (lead median 2.0 s, min 40 ms), no underrun; first byte 96–118 ms |
+| speech, 0.6B | 55.3 tokens/s | 32.5–33.6 tokens/s | the same, no underrun; first byte 45–103 ms |
+| live transcription (2 clips × 3 rounds at real time) | 55.2 tokens/s | 52.2 tokens/s (48.1–53.1 per clip) | partials 41 ms behind the audio (median; p90 54, max 61), final 33 ms after `finish` (alone 53 and 37) |
+| a 5-minute file | 52.5 tokens/s | 40.6 tokens/s | 12.1× real time (2.18 % of words differ from the clips alone, as before) |
+
+Speech needs what playback needs: one frame of the 1.7B takes about
+37 ms a run for 80 ms of audio, 46 % of the GPU, so E4B keeps about half
+its rate while the 1.7B speaks (the proposed "at most 25 % slower" is out
+of reach for it; the 0.6B leaves 60 %). Two frames a run gave E4B no more
+(23.6–25.1 tokens/s) and a thinner lead. The chat runs at its own rate
+again once the speech is made.
+
+**A spoken question answered aloud.** The question ("What is the
+tallest mountain in Africa, and how long does it take to climb it?")
+spoken once by the server's voice, resampled to 16 kHz, streamed at real
+time to the live route with 0.4 s of silence after it, then `finish`; the
+final transcript to chat (a system prompt asking for three or four
+spoken sentences); each sentence of the streamed answer to speech as
+soon as it ends. Times after `finish`, three rounds:
+
+| | 1.7B voice | 0.6B voice |
+| --- | --- | --- |
+| final transcript | 27 ms (19–29) | 25 ms (23–27) |
+| first token | 287 ms (175–287) | 287 ms (167–297) |
+| first sentence | 387 ms (285–388) | 388 ms (275–393) |
+| first audio byte | 523 ms (418–524) | 482 ms (364–482) |
+| E4B over the answer (4 sentences) | 20.0–20.2 tokens/s | 26.9–27.4 tokens/s |
+| playback | 15.6 s, no underrun, lead min 40 ms | 22.5 s, no underrun, lead min 50 ms |
+
+The transcript was the question word for word. Without the silence the
+recognizer at lookahead 3 drops the last word ("it"), as `nuclis
+transcribe` does on the same file: a clip that ends within 100 ms of its
+last word leaves the encoder no right context, which a turn that ends in
+silence always has. The first speech request after the server starts is
+about 90 ms slower than the next (158 against 71 ms to the first byte).

@@ -238,9 +238,11 @@ apart, so each service is a directory and one registration:
   at once and only the worker touches a model. An item lives in its
   submitter's frame; a waiter that times out unlinks an item that never
   started and otherwise waits for it. A long item (a generation) calls
-  `runShort` between its steps, so short ones (decision batches) run
-  there instead of after it; each model has its own Metal queue and
-  buffers. `memory.zig` is the one budget every open model counts
+  `runShort` between its steps, so short ones (decision batches, speech
+  chunks, transcription pieces) run there instead of after it; one that
+  asks `betweenSteps` takes no more there than it needs (speech stays a
+  second ahead of playback, a file transcription a quarter of the time).
+  Each model has its own Metal queue and buffers. `memory.zig` is the one budget every open model counts
   against: before a model opens, the least recently used others close,
   of any kind; a model in use is pinned for the request, and one named by
   `--pin` for the server's life. `slot.zig` is the one-model holder of
