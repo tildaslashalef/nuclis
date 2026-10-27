@@ -527,6 +527,14 @@ user's word. Website (`site/index.html`): a section of the same, with
 figures copied from the README so `make site-check` holds. Gates:
 `make docs-check`, `make site-check`, screenshots of the site section.
 
+Last, for the user (asked 2026-10-27): a starter prompt for a fresh
+session that builds Muon, written to `~/Code/muon/docs/starter-prompt.md`
+and committed there (locally). It points the session at Muon's
+`AGENTS.md`, `TODO.md`, and `docs/design.md`; states nuclis's final API as
+built (routes, catalogue names, config keys, `--pin`, `model pull --json`
+progress lines, measured latencies) with links into
+`docs/guide/api.md`; and names the first unit (M1) and its done-criteria.
+
 ## Deferred
 
 Agreed and not scheduled; when one is picked up, it becomes a unit above.
