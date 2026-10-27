@@ -161,7 +161,8 @@ pub const Reader = struct {
     pub fn close(self: *Reader) void {
         switch (self.source) {
             .wav => {},
-            .bridge => |handle| nu_audio_close(handle),
+            // Never built without the bridge: `open` cannot make one.
+            .bridge => |handle| if (bridge_enabled) nu_audio_close(handle) else unreachable,
         }
         self.* = undefined;
     }
@@ -177,6 +178,7 @@ pub const Reader = struct {
                 return n;
             },
             .bridge => |handle| {
+                if (!bridge_enabled) unreachable;
                 var n: u32 = 0;
                 if (nu_audio_read(handle, out.ptr, @intCast(@min(out.len, std.math.maxInt(u32))), &n) != 0) return error.UnsupportedAudioFormat;
                 return n;
