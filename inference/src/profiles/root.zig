@@ -134,8 +134,10 @@ pub const Profile = enum {
     muse_glimmer,
 
     /// Resolve control tokens against this artifact once per completion.
-    /// The profile supplies the non-special header suffix separately.
-    pub fn decoder(self: Profile, alloc: std.mem.Allocator, vocab: *const vocabulary.Vocabulary, effort: Effort) !stream.Decoder {
+    /// The profile supplies the non-special header suffix separately. The
+    /// completion starts in reasoning only where `prompt`, the tokens about
+    /// to be fed, ends inside an open channel (`stream.opensInReasoning`).
+    pub fn decoder(self: Profile, alloc: std.mem.Allocator, vocab: *const vocabulary.Vocabulary, effort: Effort, prompt: []const u32) !stream.Decoder {
         return switch (self) {
             inline else => |p| blk: {
                 const m = p.module().stream_markers;
@@ -159,7 +161,7 @@ pub const Profile = enum {
                         .parse = m.tool_parse,
                     };
                 }
-                break :blk stream.Decoder.init(alloc, markers, effort != .off);
+                break :blk stream.Decoder.init(alloc, markers, effort != .off and stream.opensInReasoning(markers, prompt));
             },
         };
     }

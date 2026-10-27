@@ -832,7 +832,7 @@ pub const Completer = struct {
         self.markPromptEnd(full, tokens, reused) catch {};
         errdefer self.dropMark();
         // The effort is the one this render used (Ctrl-T changes it between
-        // turns): it decides whether the completion opens in reasoning.
+        // turns): off, the completion never opens in reasoning.
         var buffers = self.buffers;
         buffers.effort = self.effort;
         buffers.thinking_budget = config.thinkingBudget(self.thinking_budget, self.effort, limit);

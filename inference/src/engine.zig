@@ -1288,7 +1288,8 @@ fn forcedToken(hooks: ?Hooks) ?u32 {
 }
 
 /// Caller-owned sampling scratch and request mode. The effort must match
-/// the prompt's render: it determines whether the reasoning channel is open.
+/// the prompt's render: off, the completion never starts in reasoning;
+/// otherwise the prompt's tail decides whether the channel is open.
 pub const CompletionBuffers = struct {
     logits: []f32,
     candidates: []inference.sampling.Candidate,
@@ -1351,7 +1352,7 @@ pub fn complete(
             return close;
         }
     };
-    var bridge: Bridge = .{ .eng = eng, .decoder = try profile.decoder(eng.alloc, eng.vocab, buffers.effort), .sink = sink, .budget = buffers.thinking_budget };
+    var bridge: Bridge = .{ .eng = eng, .decoder = try profile.decoder(eng.alloc, eng.vocab, buffers.effort, tokens), .sink = sink, .budget = buffers.thinking_budget };
     defer bridge.decoder.deinit();
     var outcome = try runLoop(eng, tokens, limit, sampler, history, settings, images, buffers.logits, buffers.candidates, buffers.generated, observer, .{ .context = &bridge, .token = Bridge.token, .force = Bridge.force, .saves = buffers.saves });
     outcome.reasoning_cut = bridge.cut;
