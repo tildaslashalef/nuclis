@@ -3,7 +3,7 @@
 
 Runs the given binary (by default the fresh `./zig-out/bin/nuclis`) as
 
-    nuclis transcribe <clip> --json --backend cpu --model <dir> --language <locale>
+    nuclis transcribe <clip> --json --backend <cpu|metal> --model <dir> --language <locale>
 
 over the clips of `tests/fixtures/speech-corpus.json` (fetched by `make
 speech-corpus` into `.reference/speech/`), each under its own locale unless
@@ -75,12 +75,12 @@ class Result:
 
 
 def transcribe(
-    nuclis: str, model: str, clip: dict[str, Any], speech: pathlib.Path, auto: bool, lookahead: int
+    nuclis: str, model: str, clip: dict[str, Any], speech: pathlib.Path, auto: bool, lookahead: int, backend: str
 ) -> Result:
     path = speech / clip["file"]
     if not path.is_file():
         raise SystemExit(f"{path}: missing; run make speech-corpus")
-    command = [nuclis, "transcribe", str(path), "--json", "--backend", "cpu", "--lookahead", str(lookahead)]
+    command = [nuclis, "transcribe", str(path), "--json", "--backend", backend, "--lookahead", str(lookahead)]
     command += ["--model", model, "--language", "auto" if auto else clip["language"]]
     done = subprocess.run(command, capture_output=True, text=True, check=False)
     if done.returncode != 0:
@@ -126,6 +126,9 @@ def main() -> int:
     parser.add_argument("--clips", help="comma-separated corpus ids; default every clip")
     parser.add_argument("--auto", action="store_true", help="the prompt auto instead of each clip's locale")
     parser.add_argument("--lookahead", type=int, default=3, choices=(0, 3, 6, 13))
+    parser.add_argument(
+        "--backend", default="cpu", choices=("cpu", "metal"), help="where transcribe runs (default cpu)"
+    )
     parser.add_argument("--max-wer", type=float, help="fail when the overall rate exceeds this")
     parser.add_argument("--json", type=pathlib.Path, help="write every clip's result and the summary here")
     parser.add_argument("--verbose", action="store_true", help="print each clip's words")
@@ -148,7 +151,7 @@ def main() -> int:
     started = time.monotonic()
     results: list[Result] = []
     for clip in clips:
-        result = transcribe(args.nuclis, args.model, clip, args.speech, args.auto, args.lookahead)
+        result = transcribe(args.nuclis, args.model, clip, args.speech, args.auto, args.lookahead, args.backend)
         results.append(result)
         rate = result.errors / max(1, len(result.reference))
         print(
@@ -158,7 +161,7 @@ def main() -> int:
             print(f"  ref {' '.join(result.reference)}\n  hyp {' '.join(result.hypothesis)}")
     elapsed = time.monotonic() - started
     table = summarize(results)
-    print(f"\n{'language':<8} {'clips':>5} {'words':>6} {'errors':>6} {'WER':>7} {'audio s':>8} {'CPU s':>7}")
+    print(f"\n{'language':<8} {'clips':>5} {'words':>6} {'errors':>6} {'WER':>7} {'audio s':>8} {'run s':>7}")
     for key, row in table.items():
         print(
             f"{key:<8} {row['clips']:>5.0f} {row['words']:>6.0f} {row['errors']:>6.0f} {row['wer']:>7.2%} "

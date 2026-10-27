@@ -8,10 +8,12 @@
 //! `--transducer` checks the rest instead: the projector rows, every greedy
 //! step's row, argmax and top logits, and the final tokens and text, from
 //! the pinned features as one pass and from the samples in 80 ms pieces.
+//! `--metal` runs that check on the Metal plan, adding the encoder's stages;
+//! `--bench` times the clips instead (with `--metal`, on the device).
 //! Needs the pulled checkpoint directory; FIXTURES defaults to
 //! `tests/fixtures/nemotron-asr`, read at run time. Results:
 //! docs/models/nemotron-asr.md § Front end and encoder against the trace,
-//! § Transducer against the trace, and word error rate.
+//! § Transducer against the trace, and word error rate, § On Metal.
 const std = @import("std");
 const inference = @import("inference");
 const safetensors = inference.safetensors;
@@ -168,13 +170,29 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(arena);
     var positional: std.ArrayList([]const u8) = .empty;
     var transducer = false;
-    for (args[1..]) |a| {
-        if (std.mem.eql(u8, a, "--transducer")) transducer = true else try positional.append(arena, a);
+    var engine: asr.Engine = .cpu;
+    var bench = false;
+    var clips: std.ArrayList([]const u8) = .empty;
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (std.mem.eql(u8, a, "--transducer")) {
+            transducer = true;
+        } else if (std.mem.eql(u8, a, "--metal")) {
+            engine = .metal;
+        } else if (std.mem.eql(u8, a, "--bench")) {
+            bench = true;
+        } else if (std.mem.eql(u8, a, "--clip")) {
+            i += 1;
+            if (i == args.len) return error.ExpectedClipPath;
+            try clips.append(arena, args[i]);
+        } else try positional.append(arena, a);
     }
     if (positional.items.len < 1 or positional.items.len > 2) return error.ExpectedModelDirectory;
     const directory = positional.items[0];
     const fixtures = if (positional.items.len == 2) positional.items[1] else "tests/fixtures/nemotron-asr";
-    if (transducer) return checkTransducer(gpa, io, arena, directory, fixtures);
+    if (bench) return benchmark(gpa, io, arena, directory, fixtures, clips.items, engine);
+    if (transducer or engine == .metal) return checkTransducer(gpa, io, arena, directory, fixtures, engine);
 
     const config_text = try std.Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ directory, "config.json" }), arena, .limited(1 << 20));
     const config = try nemotron.parseConfig(gpa, config_text);
@@ -306,16 +324,24 @@ const Steps = struct {
     }
 };
 
-fn checkTransducer(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, directory: []const u8, fixtures: []const u8) !void {
+/// Bounds of the Metal encoder's rows against the trace, relative as
+/// above: F32 tiles and norms on the device against the authors' F32 on
+/// the CPU. About five times the first run's worst (2026-10-27): 2.4e-6
+/// and 3.7e-6, the prompt block's rows. The other bounds are the CPU's.
+const metal_encoder_bound: Bound = .{ .max = 2e-5, .rms = 2e-5 };
+
+fn checkTransducer(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, directory: []const u8, fixtures: []const u8, engine: asr.Engine) !void {
     const model = try asr.Model.open(gpa, io, directory);
     defer model.close();
+    if (engine == .metal) try model.openMetal();
     const weights = &model.transducer_binding.weights;
     const c = weights.config;
     var check: Check = .{ .gpa = gpa, .arena = arena, .io = io, .fixtures = fixtures };
+    const stage_bound = if (engine == .metal) metal_encoder_bound else encoder_bound;
 
     var tags: usize = 0;
     for (model.tags) |t| tags += @intFromBool(t != null);
-    std.debug.print("piece table: {d} ids, {d} language tags, blank {d} special: {}\n", .{ model.table.count(), tags, c.blank, model.table.isSpecial(c.blank) });
+    std.debug.print("{s}; piece table: {d} ids, {d} language tags, blank {d} special: {}\n", .{ @tagName(engine), model.table.count(), tags, c.blank, model.table.isSpecial(c.blank) });
     if (tags != language_tags or !model.table.isSpecial(c.blank)) return error.TokenizerMismatch;
 
     const index_text = try std.Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ fixtures, "index.json" }), arena, .limited(1 << 20));
@@ -340,34 +366,59 @@ fn checkTransducer(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator,
 
         for ([_]usize{ 0, 3 }) |r| {
             var name: [64]u8 = undefined;
-            // The whole clip from the pinned features, one push to the decoder.
+            var label: [64]u8 = undefined;
+            // The whole clip from the pinned features, as one push.
             var steps: Steps = .{ .arena = arena };
-            var start = std.Io.Clock.awake.now(io);
-            const rows = try model.encoder.encode(gpa, pinned, r, clip.prompt_id, null);
-            defer gpa.free(rows);
-            var decoder = try rnnt.Decoder.init(gpa, io, weights);
-            defer decoder.deinit();
-            decoder.observer = steps.observer();
+            var stages = Recorder.init(arena, h, clip.rows);
             var tokens: std.ArrayList(rnnt.Token) = .empty;
             defer tokens.deinit(gpa);
-            try decoder.push(rows, &tokens);
+            var rows: std.ArrayList(f32) = .empty;
+            defer rows.deinit(gpa);
+            var start = std.Io.Clock.awake.now(io);
+            switch (engine) {
+                .cpu => {
+                    const encoded = try model.encoder.encode(gpa, pinned, r, clip.prompt_id, stages.observer());
+                    defer gpa.free(encoded);
+                    try rows.appendSlice(gpa, encoded);
+                    var decoder = try rnnt.Decoder.init(gpa, io, weights);
+                    defer decoder.deinit();
+                    decoder.observer = steps.observer();
+                    try decoder.push(rows.items, &tokens);
+                },
+                .metal => {
+                    var stream = try audio.nemotron_metal.Stream.init(gpa, model.metal.?, r, clip.prompt_id);
+                    defer stream.deinit();
+                    stream.observer = stages.observer();
+                    stream.decoder.observer = steps.observer();
+                    stream.rows_out = &rows;
+                    try stream.pushFeatures(pinned, &tokens);
+                    try stream.finish(&tokens);
+                },
+            }
             std.debug.print(" r = {d}, whole: {d} ms\n", .{ r, start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() });
+            if (rows.items.len != clip.rows * h) return error.RowCount;
+            if (r == 0) try compare(&check, &stages, clip, "subsampling", "subsampling", "subsampling", stage_bound);
+            for ([_][]const u8{ "block.0", "block.11", "block.23", "prompt" }) |stage| {
+                try compare(&check, &stages, clip, try std.fmt.bufPrint(&name, "r{d}/whole/{s}", .{ r, stage }), stage, try std.fmt.bufPrint(&label, "whole {s}", .{stage}), stage_bound);
+            }
             const whole = try std.fmt.bufPrint(&name, "r{d}/whole", .{r});
-            try compareProjector(&check, weights, clip, whole, rows, h);
+            try compareProjector(&check, weights, clip, whole, rows.items, h);
             try compareSteps(&check, clip, whole, &steps, tokens.items, model, transcripts.map.get(whole) orelse return error.MissingFixture);
 
             // The samples in 80 ms pieces through a transcriber.
             var heard = Recorder.init(arena, h, clip.rows);
             var live: Steps = .{ .arena = arena };
-            var transcriber = try asr.Transcriber.init(gpa, model, r, clip.prompt_id);
+            var transcriber = try asr.Transcriber.init(gpa, model, r, clip.prompt_id, engine);
             defer transcriber.deinit();
-            transcriber.stream.observer = heard.observer();
-            transcriber.decoder.observer = live.observer();
+            transcriber.observe(heard.observer(), live.observer());
             start = std.Io.Clock.awake.now(io);
             var at: usize = 0;
             while (at < pcm.samples.len) : (at += 1280) _ = try transcriber.push(pcm.samples[at..@min(pcm.samples.len, at + 1280)]);
             _ = try transcriber.finish();
             std.debug.print(" r = {d}, 80 ms pieces: {d} ms\n", .{ r, start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() });
+            for ([_][]const u8{ "block.23", "prompt" }) |stage| {
+                try compare(&check, &heard, clip, try std.fmt.bufPrint(&name, "r{d}/stream/{s}", .{ r, stage }), stage, try std.fmt.bufPrint(&label, "samples {s}", .{stage}), if (engine == .metal) metal_encoder_bound else samples_bound);
+            }
             const streamed = try std.fmt.bufPrint(&name, "r{d}/stream", .{r});
             const all = heard.stages.get("prompt") orelse return error.StageNotTraced;
             try compareProjector(&check, weights, clip, streamed, all, h);
@@ -379,10 +430,170 @@ fn checkTransducer(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator,
                 std.debug.print("  transcriber text differs: {s}\n", .{text.written()});
                 check.failed = true;
             }
+            // After a reset, pieces that end mid-frame give the same tokens.
+            transcriber.observe(null, null);
+            try transcriber.reset();
+            at = 0;
+            while (at < pcm.samples.len) : (at += 1000) _ = try transcriber.push(pcm.samples[at..@min(pcm.samples.len, at + 1000)]);
+            _ = try transcriber.finish();
+            var same = transcriber.tokens.items.len == want.ids.len;
+            if (same) for (transcriber.tokens.items, want.ids, want.rows) |t, id, row| {
+                if (t.id != id or t.row != row) same = false;
+            };
+            std.debug.print("  {s}: after a reset, 1000-sample pieces: {d} tokens{s}\n", .{ streamed, transcriber.tokens.items.len, if (same) " as traced" else " DIFFER" });
+            if (!same) check.failed = true;
         }
     }
     if (check.failed) return error.OutsideTolerance;
-    std.debug.print("Nemotron ASR transducer check passed.\n", .{});
+    std.debug.print("Nemotron ASR transducer check passed ({s}).\n", .{@tagName(engine)});
+}
+
+// ---- --bench: time per chunk, real-time factors, the final delay ----
+
+/// Times each clip on `engine` (the trace's, or the `--clip` files under
+/// `auto`; after one warm-up pass): the whole clip at once; then 80 ms
+/// pieces back to back and paced at real time, each push timed (a push that
+/// completes a chunk runs the encoder), and the final transcript's delay
+/// after the audio ends: the last push and `finish`.
+fn benchmark(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, directory: []const u8, fixtures: []const u8, paths: []const []const u8, engine: asr.Engine) !void {
+    const model = try asr.Model.open(gpa, io, directory);
+    defer model.close();
+    if (engine == .metal) try model.openMetal();
+    const Timed = struct { name: []const u8, file: []const u8, prompt: usize };
+    var clips: std.ArrayList(Timed) = .empty;
+    if (paths.len == 0) {
+        const index_text = try std.Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ fixtures, "index.json" }), arena, .limited(1 << 20));
+        const index = try std.json.parseFromSliceLeaky(Index, arena, index_text, .{ .ignore_unknown_fields = true });
+        for (index.clips) |c| try clips.append(arena, .{ .name = c.name, .file = try std.fs.path.join(arena, &.{ fixtures, c.wav }), .prompt = c.prompt_id });
+    } else for (paths) |path| try clips.append(arena, .{ .name = std.fs.path.basename(path), .file = path, .prompt = model.default_prompt });
+    const rounds = 3;
+    for (clips.items) |clip| {
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, clip.file, arena, .limited(audio.audio.max_bytes));
+        var pcm = try audio.audio.decode(gpa, bytes, std.math.maxInt(u32));
+        defer pcm.deinit(gpa);
+        const seconds = @as(f64, @floatFromInt(pcm.samples.len)) / mel.sample_rate;
+        for ([_]usize{ 0, 3 }) |r| {
+            var transcriber = try asr.Transcriber.init(gpa, model, r, clip.prompt, engine);
+            defer transcriber.deinit();
+            // Warm-up: pipelines, page-ins, the first command buffers.
+            _ = try transcriber.push(pcm.samples);
+            _ = try transcriber.finish();
+            var best_whole: f64 = std.math.inf(f64);
+            for (0..rounds) |_| {
+                try transcriber.reset();
+                const t0 = std.Io.Clock.awake.now(io);
+                _ = try transcriber.push(pcm.samples);
+                _ = try transcriber.finish();
+                best_whole = @min(best_whole, elapsedMs(io, t0));
+            }
+            std.debug.print("{s} {s} r = {d}: {d:.2} s of audio; whole clip {d:.1} ms (RTF {d:.4})\n", .{ @tagName(engine), clip.name, r, seconds, best_whole, best_whole / 1000 / seconds });
+            for ([_]bool{ false, true }) |paced| {
+                var chunk_ms: std.ArrayList(f64) = .empty;
+                var other_ms: std.ArrayList(f64) = .empty;
+                var busy: f64 = 0;
+                var finals: std.ArrayList(f64) = .empty;
+                var encode_ms: f64 = 0;
+                var joint_ms: f64 = 0;
+                var lstm_ms: f64 = 0;
+                var chunks: usize = 0;
+                for (0..rounds) |_| {
+                    try transcriber.reset();
+                    const t0 = std.Io.Clock.awake.now(io);
+                    var at: usize = 0;
+                    var last: f64 = 0;
+                    while (at < pcm.samples.len) : (at += 1280) {
+                        if (paced) {
+                            // The piece's audio ends at (at + 1280) / 16000 s after t0.
+                            const due: i96 = @intCast(@divTrunc(@as(i128, at + 1280) * std.time.ns_per_s, mel.sample_rate));
+                            const elapsed = t0.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds();
+                            if (due > elapsed) try io.sleep(.fromNanoseconds(due - elapsed), .awake);
+                        }
+                        const rows_before = transcriber.rowsDecoded();
+                        const p0 = std.Io.Clock.awake.now(io);
+                        _ = try transcriber.push(pcm.samples[at..@min(pcm.samples.len, at + 1280)]);
+                        const took = elapsedMs(io, p0);
+                        busy += took;
+                        last = took;
+                        try (if (transcriber.rowsDecoded() > rows_before) &chunk_ms else &other_ms).append(arena, took);
+                    }
+                    const f0 = std.Io.Clock.awake.now(io);
+                    _ = try transcriber.finish();
+                    const tail = elapsedMs(io, f0);
+                    try finals.append(arena, last + tail);
+                    busy += tail;
+                    if (engine == .metal) {
+                        const s = transcriber.run.metal.stats;
+                        encode_ms += nsToMs(s.encode_ns);
+                        joint_ms += nsToMs(s.joint_ns);
+                        lstm_ms += nsToMs(s.lstm_ns);
+                        chunks += s.chunks;
+                    }
+                }
+                std.mem.sortUnstable(f64, chunk_ms.items, {}, std.sort.asc(f64));
+                std.mem.sortUnstable(f64, other_ms.items, {}, std.sort.asc(f64));
+                std.mem.sortUnstable(f64, finals.items, {}, std.sort.asc(f64));
+                const per = @as(f64, @floatFromInt(rounds));
+                std.debug.print("  80 ms pieces{s}: chunk push median {d:.2} ms, p90 {d:.2}, max {d:.2} ({d} per round); other pushes median {d:.2} ms; final delay median {d:.1} ms; busy {d:.1} ms (RTF {d:.4})\n", .{
+                    if (paced) " at real time" else " back to back",
+                    percentile(chunk_ms.items, 50),
+                    percentile(chunk_ms.items, 90),
+                    percentile(chunk_ms.items, 100),
+                    chunk_ms.items.len / rounds,
+                    percentile(other_ms.items, 50),
+                    percentile(finals.items, 50),
+                    busy / per,
+                    busy / per / 1000 / seconds,
+                });
+                if (engine == .metal) std.debug.print("    split per round: encoder (with the first joint batch) {d:.1} ms over {d} command buffers, later joint batches {d:.1} ms, LSTM {d:.1} ms\n", .{ encode_ms / per, chunks / rounds, joint_ms / per, lstm_ms / per });
+            }
+            if (engine == .metal) try profileRound(arena, &transcriber, pcm.samples);
+        }
+    }
+}
+
+/// One round in 80 ms pieces with every dispatch timed: where a chunk's
+/// GPU time goes, by kernel and shape (dispatches each in their own
+/// encoder, so the sum exceeds an unprofiled round's).
+fn profileRound(arena: std.mem.Allocator, transcriber: *asr.Transcriber, samples: []const f32) !void {
+    const backend = &transcriber.model.metal.?.backend;
+    if (backend.profile == null) {
+        var diagnostic: [512]u8 = @splat(0);
+        try backend.enableProfiling(4096, &diagnostic);
+    }
+    const profile = &backend.profile.?;
+    try transcriber.reset();
+    profile.clear();
+    var at: usize = 0;
+    while (at < samples.len) : (at += 1280) _ = try transcriber.push(samples[at..@min(samples.len, at + 1280)]);
+    _ = try transcriber.finish();
+    const Row = struct { key: inference.metal.Profile.Key, total: inference.metal.Profile.Total };
+    var rows: std.ArrayList(Row) = .empty;
+    var it = profile.totals.iterator();
+    while (it.next()) |e| try rows.append(arena, .{ .key = e.key_ptr.*, .total = e.value_ptr.* });
+    std.mem.sort(Row, rows.items, {}, struct {
+        fn more(_: void, a: Row, b: Row) bool {
+            return a.total.seconds > b.total.seconds;
+        }
+    }.more);
+    var sum: f64 = 0;
+    for (rows.items) |r| sum += r.total.seconds;
+    std.debug.print("  profile: {d:.1} ms of dispatches, {d:.1} ms GPU, {d} command buffers\n", .{ sum * 1000, profile.gpu_seconds * 1000, profile.command_buffers });
+    for (rows.items[0..@min(rows.items.len, 16)]) |r| std.debug.print("    {s:<20} {d:>5}x{d:<5} {d:>6} calls {d:>8.2} ms  {d:>6.1} GB/s\n", .{ @tagName(r.key.kernel), r.key.rows, r.key.columns, r.total.dispatches, r.total.seconds * 1000, @as(f64, @floatFromInt(r.total.bytes)) / r.total.seconds / 1e9 });
+}
+
+fn elapsedMs(io: std.Io, since: std.Io.Timestamp) f64 {
+    return nsToMs(@intCast(since.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds()));
+}
+
+fn nsToMs(ns: u64) f64 {
+    return @as(f64, @floatFromInt(ns)) / 1e6;
+}
+
+/// The `p`-th percentile of sorted `values` (nearest rank), 0 when empty.
+fn percentile(values: []const f64, p: usize) f64 {
+    if (values.len == 0) return 0;
+    const rank = @max(1, (p * values.len + 99) / 100);
+    return values[@min(values.len, rank) - 1];
 }
 
 /// `encoder_projector` of the encoder's `rows` at the pinned rows, against the trace.

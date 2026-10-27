@@ -193,7 +193,54 @@ fn checkAsrKernels(alloc: std.mem.Allocator, b: *Backend) !void {
         const expected = if (r < 56) cache[p * stride + (r + 4) * 64 + c] else cache[at];
         if (device.cache.floats()[at] != expected) return error.MetalMismatch;
     };
-    std.debug.print("Nemotron ASR kernels vs the CPU reference: subsampling convolutions, GLU, depthwise convolution within 1e-5; attention worst relative {e:.2} (bound 2e-5); joint input, half step, bias and ReLU, row shifts exact\n", .{worst});
+    // The few-rows F32 product: three matrices at once, each epilogue, 1–8
+    // rows (3 and 5 run the next power of two over scratch rows), against F64.
+    var product_worst: f64 = 0;
+    {
+        const rows = 48;
+        const columns = 256;
+        const x_stride = 260;
+        for ([_]usize{ 1, 3, 5, 8 }) |tokens| for ([_]Backend.AsrEpilogue{ .store, .silu, .{ .accumulate = 0.5 }, .glu }) |epilogue| {
+            const matrices: usize = if (epilogue == .glu) 1 else 3;
+            const activations = try Fill.values(arena, random, 8 * x_stride, 1);
+            const width: usize = if (epilogue == .glu) rows / 2 else rows;
+            var products: [3]Backend.AsrProduct = undefined;
+            var weights: [3][]f32 = undefined;
+            var before: [3][]f32 = undefined;
+            for (0..matrices) |m| {
+                weights[m] = try Fill.values(arena, random, rows * columns, 1);
+                before[m] = try Fill.values(arena, random, 8 * width, 1);
+                products[m] = .{ .weights = try upload(b, weights[m]), .output = try upload(b, before[m]) };
+            }
+            const shape: inference.cpu.Matrix = .{ .encoding = 0, .rows = rows, .columns = columns, .bytes = std.mem.sliceAsBytes(weights[0]) };
+            try b.begin();
+            try b.asrMatmulRows(shape, products[0..matrices], try upload(b, activations), x_stride, width, tokens, epilogue);
+            try b.commit();
+            for (0..matrices) |m| for (0..tokens) |t| for (0..width) |r| {
+                // Row r's product, and for the GLU its gate's, row r + rows/2.
+                var dot: [2]f64 = .{ 0, 0 };
+                for (0..2) |half| {
+                    const row = r + half * rows / 2;
+                    if (row >= rows) continue;
+                    for (0..columns) |k| dot[half] += @as(f64, weights[m][row * columns + k]) * activations[t * x_stride + k];
+                }
+                const s = dot[0];
+                const w: f64 = switch (epilogue) {
+                    .store => s,
+                    .silu => s / (1 + @exp(-s)),
+                    .accumulate => |f| before[m][t * width + r] + f * s,
+                    .glu => s / (1 + @exp(-dot[1])),
+                };
+                const got = products[m].output.floats()[t * width + r];
+                product_worst = @max(product_worst, @abs(got - w) / @max(1, @abs(w)));
+            };
+        };
+    }
+    if (product_worst > 1e-5) {
+        std.debug.print("asr_matmul_rows: worst relative difference {e}\n", .{product_worst});
+        return error.MetalMismatch;
+    }
+    std.debug.print("Nemotron ASR kernels vs the CPU reference: subsampling convolutions, GLU, depthwise convolution within 1e-5; attention worst relative {e:.2} (bound 2e-5); the few-rows product (three matrices, every epilogue, 1-8 rows) vs F64 {e:.2} (bound 1e-5); joint input, half step, bias and ReLU, row shifts exact\n", .{ worst, product_worst });
 }
 
 fn openBackend(alloc: std.mem.Allocator) !Backend {
@@ -5064,5 +5111,5 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, the verify rows and their tape replay bit-identical to decode steps, the convolution history after every prefix, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, attention over packed sequences with and without windows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate, the exact erf GELU, and its gate over fused rows among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, Gemma 4's audio attention and light convolution against the CPU, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, the verify rows and their tape replay bit-identical to decode steps, the convolution history after every prefix, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, attention over packed sequences with and without windows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate, the exact erf GELU, and its gate over fused rows among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, Gemma 4's audio attention and light convolution against the CPU, Nemotron ASR's kernels against the CPU functions, and per-dispatch profiling with capacity overflow.\n", .{});
 }

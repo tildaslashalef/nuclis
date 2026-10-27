@@ -33,6 +33,7 @@ from a file, the sentence names the class or function.
 - [Tokenizer](#tokenizer)
 - [Front end and encoder against the trace (2026-10-27)](#front-end-and-encoder-against-the-trace-2026-10-27)
 - [Transducer against the trace, and word error rate (2026-10-27)](#transducer-against-the-trace-and-word-error-rate-2026-10-27)
+- [On Metal (2026-10-27)](#on-metal-2026-10-27)
 - [Decisions and open items](#decisions-and-open-items)
 
 ## Artifacts
@@ -648,6 +649,183 @@ explicit prompt the model still emits a tag, the prompt's own locale, in
 each of the other 55 clips. Under `auto`, the Latin American Spanish clips are tagged
 `<es-ES>`, and under `es-US` they are tagged `<es-US>`.
 
+## On Metal (2026-10-27)
+
+**What runs where.** `inference/src/audio/nemotron_metal.zig` holds a
+`Plan` (the device weights and the scratch its streams share) and a
+`Stream` (one utterance). The front end stays on the host
+(`nemotron_encoder.FrontEnd`, shared with the CPU `Stream`): it writes mel
+frames straight into the stream's first device queue. Everything after
+it runs on the device: the three subsampling convolutions, the 24 blocks,
+the prompt block, `encoder_projector` and the joint. Only the prediction
+network's LSTM runs on the CPU (`nemotron_rnnt.Decoder.predict`): two
+layers and a projection, about 28 MB of weights per emitted token,
+measured below at a few percent of a chunk. Matrices are the mapped F32
+bytes, wrapped in place, as published. Two are copies: the subsampling's
+linear with its columns permuted to `[column][channel]` (so it reads the
+last convolution's rows as they are), and `prompt_projector.linear_1`'s
+first 1024 columns (its one-hot column joins the bias, per stream and
+prompt). The relative keys are the CPU encoder's, uploaded once.
+
+**A stream's state lives on the device.** The bookkeeping is the CPU
+`Stream`'s, run on the host so a whole push is recorded before it is
+committed:
+
+- each subsampling convolution keeps its input rows from `2·next − 2` on
+  (one or two), shifted to the queue's start after each batch;
+- subsampled rows wait in a pending buffer until a whole chunk of `r + 1`
+  is there;
+- per block, the keys and values of the last 56 rows and the last 8 GLU
+  rows, each followed by room for a batch; after a batch one dispatch
+  (`asr_shift`) moves every block's last 56 keys and values, and another
+  every block's last 8 GLU rows, to the front.
+
+By size, a stream's device buffers take 72 MB (the key, value and GLU
+caches 50 MB); the plan creates 51 MB beside the 2.55 GB of mapped
+weights. A push is one command buffer. It holds the subsampling of the new frames,
+every whole chunk through the blocks, the prompt block, the projector,
+and the first batch of joint logits. `finish` ends as the CPU stream
+does, so a whole clip is one stream fed at once. With 512 mel frames per
+batch, a batch runs at most 80 rows through the blocks: the chunks of a
+whole clip share each read of the weights. At the stream's pace, a chunk
+is a batch.
+
+**Greedy decoding** (`Stream.decode`) keeps `Decoder.decodeRow`'s loop on
+the host and speculates on the joint. One prediction `g` scores up to 16
+rows at once (a 13,088 × 640 product over those rows), valid until the
+next emitted token changes `g`. A blank moves to the next row's logits,
+already computed. A token runs the LSTM on the CPU, and the next row needs
+a new joint batch. So a chunk with no token is one command buffer, and
+each token adds one.
+
+**Kernels** (`kernels/asr.metal`, `ops/asr.zig`), each a `make
+test-metal` case against the CPU function it mirrors (the CPU encoder's
+were factored out for this, its rows bit for bit as before):
+
+- `asr_conv2d`: a subsampling convolution, the stem or a depthwise one,
+  rows from a queue, with bias, and ReLU for the stem. The pointwise
+  1×1 that follows is the generic tile, then `asr_bias_relu`.
+- `asr_attention`: the Transformer-XL scores `(q + u)·k + (q + v)·p`
+  over the cached keys and the chunk's under the chunked mask. One SIMD
+  group per (row, head), with the softmax computed online.
+- `asr_glu`, `asr_depthwise` (9 taps over the held rows and the new
+  ones), `asr_joint` (`relu(e + g)`), `asr_add_scaled` (the macaron
+  half step), and `asr_shift` (the caches' row moves; each thread copies
+  one column in increasing row order, so an overlapping move toward the
+  start is safe).
+- `asr_matmul_rows_t{1,2,4,8}`: a few-rows F32 product. Each weight row
+  is read once for up to 8 activation rows (a chunk has 1 to 7). It takes
+  up to three matrices of one shape in one dispatch (q, k, v), and its
+  epilogue stores, applies SiLU, adds to the residual (`x += ½·W·h`), or
+  forms the GLU from rows `r` and `r + 1024`. Batches of more than 8 rows
+  (a whole clip) take the generic 32×32 F32 tile instead.
+
+**`nuclis transcribe`** runs on Metal by default when built with it, `--backend cpu` on the reference. `Transcriber.init` takes the engine (`Model.openMetal` builds the
+plan once), and both engines give the same tokens. `scripts/wer.py`
+passes `--backend` through.
+
+**Against the trace.** The gate `nemotron-asr-trace-metal`
+(`zig build test-nemotron-asr -- MODEL_DIR --metal`) runs the
+`--transducer` check on the plan and adds the encoder's stages. Each clip
+runs at r = 0 and 3, from the pinned features in one pass and from the
+samples in 80 ms pieces. Every greedy step's row and argmax, every token
+id, row and text equals the trace's, in all eight runs. Worst over the
+two clips, relative to the largest reference value (max) and as relative
+RMS:
+
+| Stage | max | RMS | bound |
+| --- | ---: | ---: | --- |
+| subsampling | 1.6e-6 | 1.2e-6 | 2e-5 |
+| blocks 0, 11, 23 | 1.2e-6 | 1.6e-6 | 2e-5 |
+| prompt block (the encoder's output) | 2.4e-6 | 3.7e-6 | 2e-5 |
+| projector rows | 4.1e-6 | 2.9e-6 | 2e-5 (the CPU's) |
+| logits at the trace's top five | 8.0e-6 | 3.9e-6 | 1e-4, 5e-5 (the CPU's) |
+| margins vs the trace's, max abs | 9.2e-4 | | 1e-2 |
+
+The logits differ from the trace's by up to 7e-3 in absolute terms (they
+run to 1.1e3). Their margins, which decide the argmax, agree within
+9.2e-4, against a smallest margin of 0.0107. These are the CPU
+reference's magnitudes or smaller. Whole clips (batches of 64 rows) take
+the 32×32 tile, the 80 ms pieces the few-rows product: both are in the
+table. The check also resets each streamed transcriber and feeds the clip
+again in 1000-sample pieces (ending mid-frame), which gives the traced
+tokens and rows again.
+
+**Word error rate.** The gate `nemotron-asr-wer-metal` runs the whole
+corpus through `nuclis transcribe --backend metal` at r = 3, each clip
+under its locale. Every one of the 60 transcripts is word for word the
+CPU's. The rates are therefore the CPU's:
+
+| Language | Clips | Words | WER, Metal | WER, CPU |
+| --- | ---: | ---: | ---: | ---: |
+| English (LibriSpeech test-clean) | 40 | 828 | 3.86 % | 3.86 % |
+| German (FLEURS) | 5 | 96 | 14.58 % | 14.58 % |
+| French (FLEURS) | 5 | 97 | 15.46 % | 15.46 % |
+| Spanish, Latin American (FLEURS) | 5 | 95 | 5.26 % | 5.26 % |
+| Russian (FLEURS) | 5 | 95 | 8.42 % | 8.42 % |
+| all | 60 | 1211 | 6.11 % | 6.11 % |
+
+The bound is 7 %, eleven errors more than the first run. The 512.2 s of
+audio took 12.2 s of transcription on Metal (0.024× real time, each clip
+a fresh process, whole clips) and 71.5 s on the CPU.
+
+**Speed.** `nemotron-asr-check MODEL_DIR [--metal] --bench --clip FILE`
+(ReleaseSafe, Zig 0.17.0, M4 Pro 48 GB) times each clip after a warm-up
+pass, three rounds each. It runs the whole clip at once. Then it feeds
+80 ms pieces twice, back to back and paced at real time (each piece
+pushed when its audio would have ended), and times every push. A
+*chunk push* is one that completes a chunk and runs the encoder; the
+*final delay* is the last push plus `finish`, the time from the end of
+the audio to the final transcript. Measured on this unit's branch on
+2026-10-27, while another worktree ran Metal benchmarks on the same GPU.
+Repeated runs moved the medians by up to 1.5×, so these are a shared
+machine's figures; the main session re-measures them on a quiet one.
+A LibriSpeech clip of 11.70 s (`6829-68769-0000`, prompt `auto`):
+
+| | Metal r = 0 | Metal r = 3 | CPU r = 0 | CPU r = 3 |
+| --- | ---: | ---: | ---: | ---: |
+| whole clip | 196 ms (0.017×) | 235 ms (0.020×) | 1,432 ms (0.122×) | 1,480 ms (0.127×) |
+| chunk push, median / p90, back to back | 13.8 / 15.3 ms | 21.3 / 24.7 ms | 24.4 / 25.4 ms | 55.7 / 59.3 ms |
+| chunk push, median / p90, at real time | 17.2 / 24.7 ms | 35.3 / 46.1 ms | 25.0 / 26.9 ms | 54.2 / 57.2 ms |
+| other pushes, median (back to back) | — | 0.53 ms | — | 1.30 ms |
+| streamed, busy time over audio (back to back) | 0.173× | 0.073× | 0.303× | 0.187× |
+| final delay, median, back to back / at real time | 14.5 / 14.5 ms | 24.8 / 33.2 ms | 24.4 / 24.6 ms | 52.6 / 51.9 ms |
+
+A FLEURS German clip of 10.38 s (`1191248392415945452`, prompt `auto`)
+ran under heavier load. On Metal: whole clip 189 ms at r = 0 and 175 ms
+at r = 3 (0.018× and 0.017×). The chunk push had a median of 17.7 and
+24.1 ms back to back, and 25.5 and 36.9 ms at real time. The final delay
+was 38.8 and 36.0 ms back to back: this clip ends inside a chunk, so
+`finish` runs one more command buffer. On the CPU: whole clip 1,235 and
+1,311 ms; chunk push 25.3 and 54.5 ms; final delay 51.0 and 53.1 ms.
+
+**Where a chunk's time goes.** At r = 3 one round of the LibriSpeech
+clip spent, back to back, 748 ms in the encoder's command buffers (37
+chunks, each with its first joint batch, and the subsampling-only pushes
+between them), 31 ms in later joint batches and 37 ms in the LSTM. The
+joint's later batches and the LSTM are 8 % of the time, so the LSTM
+stays on the CPU.
+Each dispatch timed on its own (`Backend.enableProfiling`, which adds an
+encoder boundary per dispatch), a round of the clip at r = 3 spent most
+of its 720 ms in the products, the 2.5 GB of F32 weights a chunk reads:
+the feed-forward matrices 352 ms (150 to 200 GB/s), q, k and v 78 ms,
+`o_proj` and the convolution module's two 109 ms. LayerNorm took 62 ms
+(144 dispatches a chunk), the attention 36 ms, and everything else about
+75 ms together.
+At about 230 GB/s the weights alone take about 11 ms a chunk.
+
+Against the proposed target of 15 ms per r = 3 chunk: back to back the
+chunk takes 17 to 25 ms across runs on this shared machine. Paced at real
+time it takes 32 to 39 ms, because the GPU and CPU clock down in the 320
+ms between chunks. At r = 0, with a chunk every 80 ms, the paced chunk
+takes 1.2 to 1.5× the back-to-back one. What is left is in the products'
+bandwidth (the few-rows kernel reaches 200 to 230 GB/s on the large
+matrices when the GPU is not shared, less on the 1024-row ones) and in
+about 220 small dispatches a chunk beside the 190 products (six
+LayerNorms a block, the attention, the depthwise convolution, a SiLU). The next steps, measured first: LayerNorm folded into the
+product that follows it, and fewer, larger dispatches for the 1024-row
+matrices.
+
 ## Decisions and open items
 
 Decided at the plan (2026-10-27); each is checked at bring-up:
@@ -682,3 +860,10 @@ Open, observed at bring-up rather than decided:
   librosa F32 filter bank, the encoder in F32; `mel.zig` works in F64 and
   casts. Measured against the trace:
   [Front end and encoder against the trace](#front-end-and-encoder-against-the-trace-2026-10-27).
+- **Metal chunk latency.** The r = 3 chunk is above the proposed 15 ms on
+  a shared machine, and twice its back-to-back time when paced at real
+  time, as clocks drop between chunks
+  ([On Metal](#on-metal-2026-10-27)). On Metal a whole clip and the same
+  clip streamed are not bit for bit equal: batches of more than 8 rows
+  take the 32×32 tile, chunks the few-rows product. Both match the trace's
+  tokens.

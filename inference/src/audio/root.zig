@@ -14,6 +14,8 @@ pub const nemotron_encoder = @import("nemotron_encoder.zig");
 pub const nemotron_rnnt = @import("nemotron_rnnt.zig");
 /// Nemotron 3.5 ASR opened from its directory: samples to text.
 pub const nemotron_asr = @import("nemotron_asr.zig");
+/// Nemotron 3.5 ASR's encoder and joint on Metal.
+pub const nemotron_metal = @import("nemotron_metal.zig");
 
 test {
     _ = audio;

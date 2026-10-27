@@ -313,4 +313,8 @@ pub const Kernel = enum(u32) {
     asr_depthwise,
     asr_joint,
     asr_add_scaled,
+    asr_matmul_rows_t1,
+    asr_matmul_rows_t2,
+    asr_matmul_rows_t4,
+    asr_matmul_rows_t8,
 };

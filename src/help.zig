@@ -508,7 +508,7 @@ fn transcribe(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "fr, es-US, ...); default auto, which detects it");
     try row(out, sty, "--model <dir>", "the checkpoint directory; default ~/.nuclis/");
     try more(out, "models/nvidia/nemotron-3.5-asr-streaming-0.6b");
-    try row(out, sty, "--backend cpu|metal", "default cpu; metal is not supported yet");
+    try row(out, sty, "--backend cpu|metal", "default metal when built with it, else cpu");
     try row(out, sty, "--json", "the text, language, tokens with times, timings");
 
     try heading(out, sty, "Examples:");

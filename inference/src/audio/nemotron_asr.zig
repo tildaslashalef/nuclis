@@ -1,15 +1,17 @@
 //! Nemotron 3.5 ASR assembled from its checkpoint directory: the encoder
 //! (nemotron_encoder.zig), the transducer (nemotron_rnnt.zig), the piece
 //! table (tokenizer/pieces.zig) and the processor's language prompts. A
-//! `Model` is shared and immutable once open; a `Transcriber` is one
-//! utterance stream: samples in, tokens out as each chunk of rows completes,
-//! the text and the detected language read back at any time. CPU only.
-//! docs/models/nemotron-asr.md.
+//! `Model` is shared and immutable once open (and its Metal plan built); a
+//! `Transcriber` is one utterance stream: samples in, tokens out as each
+//! chunk of rows completes, the text and the detected language read back at
+//! any time, on the CPU reference or on Metal (`nemotron_metal.zig`, once
+//! `Model.openMetal`). docs/models/nemotron-asr.md.
 const std = @import("std");
 const safetensors = @import("../formats/safetensors.zig");
 const pieces = @import("../tokenizer/pieces.zig");
 const encoder = @import("nemotron_encoder.zig");
 const rnnt = @import("nemotron_rnnt.zig");
+const nemotron_metal = @import("nemotron_metal.zig");
 
 /// Bytes read from each JSON file of the directory, at most.
 const max_json_bytes = 16 << 20;
@@ -32,6 +34,8 @@ pub const Model = struct {
     tags: []const ?[]const u8,
     /// Owns `prompts` and `tags`.
     arena: std.heap.ArenaAllocator,
+    /// The device weights, once `openMetal` built them.
+    metal: ?*nemotron_metal.Plan = null,
 
     /// Opens the checkpoint directory (`config.json`, `processor_config.json`,
     /// `tokenizer.json`, `model.safetensors`), refusing what is not this
@@ -78,11 +82,20 @@ pub const Model = struct {
         self.transducer_binding = try rnnt.bind(alloc, &self.checkpoint, transducer_config);
         errdefer self.transducer_binding.deinit();
         self.encoder = try encoder.Encoder.init(alloc, io, &self.encoder_binding.weights);
+        self.metal = null;
         return self;
+    }
+
+    /// Builds the Metal plan on a new backend, once: what a `.metal`
+    /// transcriber runs on.
+    pub fn openMetal(self: *Model) !void {
+        if (self.metal != null) return;
+        self.metal = try nemotron_metal.Plan.create(self.alloc, self.io, &self.encoder, &self.transducer_binding.weights);
     }
 
     pub fn close(self: *Model) void {
         const alloc = self.alloc;
+        if (self.metal) |plan| plan.destroy();
         self.encoder.deinit();
         self.transducer_binding.deinit();
         self.encoder_binding.deinit();
@@ -126,69 +139,132 @@ fn parsePrompts(arena: std.mem.Allocator, text: []const u8, limit: usize) ![]con
     return out;
 }
 
-/// One utterance stream over a shared `Model`. Not thread-safe.
+/// Where a transcriber runs.
+pub const Engine = enum { cpu, metal };
+
+/// One utterance stream over a shared `Model`, on either engine (they gave
+/// the same tokens on every clip measured: nemotron-asr.md § On Metal). Not
+/// thread-safe; on Metal, one transcriber of a model records at a time.
 pub const Transcriber = struct {
     alloc: std.mem.Allocator,
     model: *const Model,
     lookahead: usize,
     prompt: usize,
-    stream: encoder.Stream,
-    decoder: rnnt.Decoder,
+    run: Run,
     /// Every token emitted since the last reset, language tags included.
     tokens: std.ArrayList(rnnt.Token) = .empty,
-    /// The encoder's rows of the push in progress.
+    /// The encoder's rows of the push in progress (CPU).
     rows: std.ArrayList(f32) = .empty,
 
-    pub fn init(alloc: std.mem.Allocator, model: *const Model, lookahead: usize, prompt: usize) !Transcriber {
-        var stream = try encoder.Stream.init(alloc, &model.encoder, lookahead, prompt);
-        errdefer stream.deinit();
-        const decoder = try rnnt.Decoder.init(alloc, model.io, &model.transducer_binding.weights);
-        return .{ .alloc = alloc, .model = model, .lookahead = lookahead, .prompt = prompt, .stream = stream, .decoder = decoder };
+    pub const Run = union(Engine) {
+        cpu: struct { stream: encoder.Stream, decoder: rnnt.Decoder },
+        metal: nemotron_metal.Stream,
+    };
+
+    /// `.metal` needs `model.openMetal()` first.
+    pub fn init(alloc: std.mem.Allocator, model: *const Model, lookahead: usize, prompt: usize, engine: Engine) !Transcriber {
+        const run: Run = switch (engine) {
+            .cpu => blk: {
+                var stream = try encoder.Stream.init(alloc, &model.encoder, lookahead, prompt);
+                errdefer stream.deinit();
+                break :blk .{ .cpu = .{ .stream = stream, .decoder = try rnnt.Decoder.init(alloc, model.io, &model.transducer_binding.weights) } };
+            },
+            .metal => .{ .metal = try nemotron_metal.Stream.init(alloc, model.metal orelse return error.MetalNotOpen, lookahead, prompt) },
+        };
+        return .{ .alloc = alloc, .model = model, .lookahead = lookahead, .prompt = prompt, .run = run };
     }
 
     pub fn deinit(self: *Transcriber) void {
-        self.stream.deinit();
-        self.decoder.deinit();
+        switch (self.run) {
+            .cpu => |*r| {
+                r.stream.deinit();
+                r.decoder.deinit();
+            },
+            .metal => |*s| s.deinit(),
+        }
         self.tokens.deinit(self.alloc);
         self.rows.deinit(self.alloc);
         self.* = undefined;
     }
 
+    /// Shows each encoder stage's rows and each greedy step as they happen.
+    pub fn observe(self: *Transcriber, stages: ?encoder.Observer, steps: ?rnnt.Observer) void {
+        switch (self.run) {
+            .cpu => |*r| {
+                r.stream.observer = stages;
+                r.decoder.observer = steps;
+            },
+            .metal => |*s| {
+                s.observer = stages;
+                s.decoder.observer = steps;
+            },
+        }
+    }
+
     /// Appends 16 kHz samples; returns how many tokens the rows they
     /// completed emitted.
     pub fn push(self: *Transcriber, pcm: []const f32) !usize {
-        self.rows.clearRetainingCapacity();
-        try self.stream.push(pcm, &self.rows);
-        return self.decodeRows();
+        const before = self.tokens.items.len;
+        switch (self.run) {
+            .cpu => |*r| {
+                self.rows.clearRetainingCapacity();
+                try r.stream.push(pcm, &self.rows);
+                try r.decoder.push(self.rows.items, &self.tokens);
+            },
+            .metal => |*s| try s.push(pcm, &self.tokens),
+        }
+        return self.tokens.items.len - before;
     }
 
     /// Ends the utterance as a whole-clip pass ends; returns the tokens of
     /// the last rows. Further pushes need a `reset`.
     pub fn finish(self: *Transcriber) !usize {
-        self.rows.clearRetainingCapacity();
-        try self.stream.finish(&self.rows);
-        return self.decodeRows();
-    }
-
-    fn decodeRows(self: *Transcriber) !usize {
         const before = self.tokens.items.len;
-        try self.decoder.push(self.rows.items, &self.tokens);
+        switch (self.run) {
+            .cpu => |*r| {
+                self.rows.clearRetainingCapacity();
+                try r.stream.finish(&self.rows);
+                try r.decoder.push(self.rows.items, &self.tokens);
+            },
+            .metal => |*s| try s.finish(&self.tokens),
+        }
         return self.tokens.items.len - before;
     }
 
     /// A new utterance: fresh encoder caches, the decoder from its start,
     /// no tokens.
     pub fn reset(self: *Transcriber) !void {
-        const fresh = try encoder.Stream.init(self.alloc, &self.model.encoder, self.lookahead, self.prompt);
-        self.stream.deinit();
-        self.stream = fresh;
-        try self.decoder.reset();
+        switch (self.run) {
+            .cpu => |*r| {
+                var fresh = try encoder.Stream.init(self.alloc, &self.model.encoder, self.lookahead, self.prompt);
+                fresh.observer = r.stream.observer;
+                r.stream.deinit();
+                r.stream = fresh;
+                try r.decoder.reset();
+            },
+            .metal => |*s| try s.reset(),
+        }
         self.tokens.clearRetainingCapacity();
+    }
+
+    /// The language prompt from the next chunk on; the caches stay.
+    pub fn setPrompt(self: *Transcriber, prompt: usize) !void {
+        switch (self.run) {
+            .cpu => |*r| {
+                if (prompt >= self.model.encoder.weights.config.prompts) return error.UnsupportedPrompt;
+                r.stream.prompt = prompt;
+            },
+            .metal => |*s| try s.setPrompt(prompt),
+        }
+        self.prompt = prompt;
     }
 
     /// Encoder rows decoded so far (80 ms each).
     pub fn rowsDecoded(self: *const Transcriber) usize {
-        return self.decoder.row;
+        return switch (self.run) {
+            .cpu => |r| r.decoder.row,
+            .metal => |s| s.decoder.row,
+        };
     }
 
     /// The text so far: special tokens (the language tags) skipped.

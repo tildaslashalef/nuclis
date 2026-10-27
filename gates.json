@@ -4143,6 +4143,77 @@
    },
    "note": "nuclis transcribe --backend cpu (lookahead 3, each clip under its locale) over six clips of the speech corpus (make speech-corpus), three LibriSpeech test-clean and one FLEURS clip each in German, French and Russian: the word error rate over all must stay at most 11 % (first run 2026-10-27: 10 errors in 123 words, 8.13 %; the bound allows three more). The Metal build's binary, for its AudioToolbox FLAC reader; the transcription runs on the CPU",
    "evidence": "docs/models/nemotron-asr.md#transducer-against-the-trace-and-word-error-rate-2026-10-27"
+  },
+  {
+   "name": "nemotron-asr-trace-metal",
+   "family": "nemotron-asr",
+   "tier": "verify",
+   "model": "nemotron_asr",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/nemotron-asr-check.zig",
+    "inference/src/audio/audio.zig",
+    "inference/src/audio/mel.zig",
+    "inference/src/audio/nemotron_*.zig",
+    "inference/src/tokenizer/pieces.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/safetensors.zig",
+    "tests/fixtures/nemotron-asr/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-nemotron-asr",
+    "--",
+    "{model}",
+    "--metal"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the encoder, projector and joint on Metal against the trace pinned from transformers c0d024fb, two clips at lookaheads 0 and 3, from the pinned features in one pass and from the samples in 80 ms pieces: the subsampling, blocks 0, 11, 23 and prompt rows within 2e-5 relative (first run 2.4e-6 max, 3.7e-6 RMS); every greedy step's row and argmax, the final token ids, rows and text exactly equal; the logits at the trace's top five ids within the CPU's bounds (first run 6.2e-6), the margins within 1e-2 of the trace's and above their own disagreement (first run 9.2e-4 apart, smallest margin 0.0107)",
+   "evidence": "docs/models/nemotron-asr.md#on-metal-2026-10-27"
+  },
+  {
+   "name": "nemotron-asr-wer-metal",
+   "family": "nemotron-asr",
+   "tier": "verify",
+   "model": "nemotron_asr",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/audio/audio.zig",
+    "inference/src/audio/audio_bridge.m",
+    "inference/src/audio/mel.zig",
+    "inference/src/audio/nemotron_*.zig",
+    "inference/src/tokenizer/pieces.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/safetensors.zig",
+    "src/transcribe.zig",
+    "scripts/wer.py",
+    "tests/fixtures/speech-corpus.json"
+   ],
+   "command": [
+    "python3",
+    "scripts/wer.py",
+    "--nuclis",
+    "{nuclis}",
+    "--model",
+    "{model}",
+    "--backend",
+    "metal",
+    "--max-wer",
+    "0.07"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "nuclis transcribe --backend metal (lookahead 3, each clip under its locale) over the whole speech corpus (make speech-corpus), 40 LibriSpeech test-clean and 20 FLEURS clips in German, French, Spanish and Russian: the word error rate over all must stay at most 7 % (first run 2026-10-27: 74 errors in 1211 words, 6.11 %, every transcript word for word the CPU's; the bound allows eleven more)",
+   "evidence": "docs/models/nemotron-asr.md#on-metal-2026-10-27"
   }
  ]
 }

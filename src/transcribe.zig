@@ -3,7 +3,8 @@
 //! and fed to one stream, at once or in 80 ms pieces (`--stream`, printing
 //! each partial transcript as it changes); the text report is the transcript
 //! and the detected language, `--json` adds the tokens with their times and
-//! the timings. The CPU only for now. docs/models/nemotron-asr.md.
+//! the timings. On Metal by default when built with it, else the CPU
+//! reference. docs/models/nemotron-asr.md.
 const std = @import("std");
 const inference = @import("inference");
 const style = @import("tui/style.zig");
@@ -22,6 +23,8 @@ pub const max_samples: u32 = 3600 * audio.sample_rate;
 const piece_samples = 1280;
 
 pub const Backend = enum { cpu, metal };
+/// Metal where the build has it.
+pub const default_backend: Backend = if (inference.metal.enabled) .metal else .cpu;
 
 pub const Options = struct {
     file: ?[]const u8 = null,
@@ -29,7 +32,7 @@ pub const Options = struct {
     lookahead: usize = 3,
     /// A `prompt_dictionary` key; null is the model's default (`auto`).
     language: ?[]const u8 = null,
-    backend: Backend = .cpu,
+    backend: Backend = default_backend,
     json: bool = false,
     model: ?[]const u8 = null,
 };
@@ -136,9 +139,9 @@ const Timings = struct {
 
 /// Transcribes `o.file` with the checkpoint directory `directory`.
 pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
-    if (o.backend == .metal) {
-        diag.set("transcription runs on the CPU only for now; run with --backend cpu", .{});
-        return error.BackendNotYetSupported;
+    if (o.backend == .metal and !inference.metal.enabled) {
+        diag.set("this nuclis was built without Metal; run with --backend cpu", .{});
+        return error.MetalNotEnabled;
     }
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
@@ -155,6 +158,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
         return err;
     };
     defer model.close();
+    if (o.backend == .metal) model.openMetal() catch |err| {
+        diag.set("{s}: the Metal plan failed ({s}); run with --backend cpu", .{ directory, @errorName(err) });
+        return err;
+    };
     const load_ns = lap(io, &started);
 
     const prompt_name = o.language orelse "auto";
@@ -181,7 +188,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
     }
     const decode_ns = lap(io, &started);
 
-    var transcriber = try asr.Transcriber.init(gpa, model, o.lookahead, prompt);
+    var transcriber = try asr.Transcriber.init(gpa, model, o.lookahead, prompt, switch (o.backend) {
+        .cpu => .cpu,
+        .metal => .metal,
+    });
     defer transcriber.deinit();
     if (o.stream) {
         var shown: std.Io.Writer.Allocating = .init(arena);
@@ -275,7 +285,8 @@ test "transcribe's options: one file, the lookaheads the checkpoint has, cpu or 
     try std.testing.expectEqualStrings("dir", o.model.?);
     const defaults = try parseArgs(&.{"clip.wav"}, &diag);
     try std.testing.expectEqual(@as(usize, 3), defaults.lookahead);
-    try std.testing.expectEqual(Backend.cpu, defaults.backend);
+    try std.testing.expectEqual(default_backend, defaults.backend);
+    try std.testing.expectEqual(Backend.cpu, (try parseArgs(&.{ "clip.wav", "--backend", "cpu" }, &diag)).backend);
     try std.testing.expectError(error.MissingInput, parseArgs(&.{"--stream"}, &diag));
     try std.testing.expectError(error.InvalidOptionValue, parseArgs(&.{ "a.wav", "--lookahead", "1" }, &diag));
     try std.testing.expectError(error.InvalidOptionValue, parseArgs(&.{ "a.wav", "--backend", "gpu" }, &diag));
@@ -285,9 +296,10 @@ test "transcribe's options: one file, the lookaheads the checkpoint has, cpu or 
     try std.testing.expectError(error.MissingOptionValue, parseArgs(&.{ "a.wav", "--language" }, &diag));
 }
 
-test "--backend metal is refused before anything is opened" {
+test "--backend metal without Metal is refused before anything is opened" {
+    if (inference.metal.enabled) return error.SkipZigTest;
     var diag: config.Diagnostic = .{};
     var buffer: [64]u8 = undefined;
     var out: std.Io.Writer = .fixed(&buffer);
-    try std.testing.expectError(error.BackendNotYetSupported, run(std.testing.allocator, std.testing.io, "nowhere", .{ .file = "a.wav", .backend = .metal }, &out, .none, &diag));
+    try std.testing.expectError(error.MetalNotEnabled, run(std.testing.allocator, std.testing.io, "nowhere", .{ .file = "a.wav", .backend = .metal }, &out, .none, &diag));
 }

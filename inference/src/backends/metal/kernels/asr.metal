@@ -136,3 +136,73 @@ kernel void nu_asr_add_scaled(device float * x [[buffer(0)]], device const float
                               constant AsrScaleParams & p [[buffer(7)]], uint id [[thread_position_in_grid]]) {
     if (id < p.count) x[id] = fma(p.factor, y[id], x[id]);
 }
+
+// out[t][r] = Σ_c w[r][c] · x[t][c] over F32 weights for TOK ≤ 8 rows of x
+// (a chunk's), each weight row read once, for up to three matrices of one
+// shape at once (`matrices`; w_i writes out_i). Four SIMD groups a
+// threadgroup, four weight rows each (each x load serves four rows), a
+// lane walking float4 columns 32 apart. The epilogue stores (0), stores
+// silu (1), adds `factor ·` the product (2), or pairs row r with row
+// r + rows/2 as a GLU, `a · σ(b)`, into row r (3): then a SIMD group's rows
+// are r, r + 1 and their two partners.
+struct AsrRowsMatmulParams { uint columns; uint rows; uint in_stride; uint out_stride; uint epilogue; float factor; uint matrices; };
+template <uint TOK>
+kernel void nu_asr_matmul_rows(device const float4 * w0 [[buffer(0)]],
+                               device const float4 * w1 [[buffer(1)]],
+                               device const float4 * w2 [[buffer(2)]],
+                               device const float * input [[buffer(3)]],
+                               device float * out0 [[buffer(4)]],
+                               device float * out1 [[buffer(5)]],
+                               device float * out2 [[buffer(6)]],
+                               constant AsrRowsMatmulParams & p [[buffer(7)]],
+                               uint group [[threadgroup_position_in_grid]],
+                               uint sg [[simdgroup_index_in_threadgroup]],
+                               uint lane [[thread_index_in_simdgroup]]) {
+    const uint g = group * 4 + sg;
+    uint m = 0, base, row[4];
+    if (p.epilogue == 3) {
+        const uint half_rows = p.rows / 2;
+        base = 2 * g;
+        if (base >= half_rows) return;
+        row[0] = base; row[1] = base + 1; row[2] = base + half_rows; row[3] = base + 1 + half_rows;
+    } else {
+        if (4 * g >= p.rows * p.matrices) return;
+        m = 4 * g / p.rows;
+        base = 4 * g - m * p.rows;
+        for (uint k = 0; k < 4; ++k) row[k] = base + k;
+    }
+    device const float4 * w = m == 0 ? w0 : (m == 1 ? w1 : w2);
+    device float * out = m == 0 ? out0 : (m == 1 ? out1 : out2);
+    const uint quads = p.columns / 4;
+    device const float4 * wr[4];
+    for (uint k = 0; k < 4; ++k) wr[k] = w + ulong(row[k]) * quads;
+    float acc[TOK][4];
+    for (uint t = 0; t < TOK; ++t)
+        for (uint k = 0; k < 4; ++k) acc[t][k] = 0.0f;
+    for (uint i = lane; i < quads; i += 32) {
+        float4 wv[4];
+        for (uint k = 0; k < 4; ++k) wv[k] = wr[k][i];
+        for (uint t = 0; t < TOK; ++t) {
+            const float4 x = ((device const float4 *)(input + ulong(t) * p.in_stride))[i];
+            for (uint k = 0; k < 4; ++k) acc[t][k] = fma(wv[k].x, x.x, fma(wv[k].y, x.y, fma(wv[k].z, x.z, fma(wv[k].w, x.w, acc[t][k]))));
+        }
+    }
+    for (uint t = 0; t < TOK; ++t) {
+        float s[4];
+        for (uint k = 0; k < 4; ++k) s[k] = simd_sum(acc[t][k]);
+        if (lane != 0) continue;
+        device float * o = out + ulong(t) * p.out_stride + base;
+        switch (p.epilogue) {
+            case 0: for (uint k = 0; k < 4; ++k) o[k] = s[k]; break;
+            case 1: for (uint k = 0; k < 4; ++k) o[k] = nu_silu(s[k]); break;
+            case 2: for (uint k = 0; k < 4; ++k) o[k] = fma(p.factor, s[k], o[k]); break;
+            default: o[0] = s[0] * nu_sigmoid(s[2]); o[1] = s[1] * nu_sigmoid(s[3]); break;
+        }
+    }
+}
+#define NU_ASR_MATMUL_ROWS(TOK) \
+    template [[host_name("nu_asr_matmul_rows_t" #TOK)]] kernel void nu_asr_matmul_rows<TOK>(device const float4 *, device const float4 *, device const float4 *, device const float *, device float *, device float *, device float *, constant AsrRowsMatmulParams &, uint, uint, uint);
+NU_ASR_MATMUL_ROWS(1)
+NU_ASR_MATMUL_ROWS(2)
+NU_ASR_MATMUL_ROWS(4)
+NU_ASR_MATMUL_ROWS(8)

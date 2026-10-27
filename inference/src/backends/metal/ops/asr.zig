@@ -6,6 +6,7 @@ const root = @import("../root.zig");
 const Backend = root.Backend;
 const Buffer = root.Buffer;
 const perElement = Backend.perElement;
+const Matrix = @import("../../cpu/root.zig").Matrix;
 
 pub const AsrConvParams = extern struct { rows: u32, next: u32, first: u32, count: u32, width_in: u32, width_out: u32, channels: u32, in_channels: u32, relu: u32 };
 /// What `asrConv2d` computes: outputs `next … next + rows − 1` from input
@@ -99,4 +100,70 @@ pub const AsrScaleParams = extern struct { count: u32, factor: f32 };
 pub fn asrAddScaled(self: *Backend, x: Buffer, y: Buffer, count: usize, factor: f32) !void {
     if (count == 0 or !std.math.isFinite(factor) or x.len < count * 4 or y.len < count * 4) return error.InvalidShape;
     try self.dispatch(.asr_add_scaled, &.{ x, y }, AsrScaleParams{ .count = @intCast(count), .factor = factor }, perElement(count), 256, .{});
+}
+pub const AsrRowsMatmulParams = extern struct { columns: u32, rows: u32, in_stride: u32, out_stride: u32, epilogue: u32, factor: f32, matrices: u32 };
+/// What `asrMatmulRows` does with each product `s`.
+pub const AsrEpilogue = union(enum) {
+    store,
+    silu,
+    /// `out += factor · s`: a residual add.
+    accumulate: f32,
+    /// Row r of the output is `s_r · σ(s_{r + rows/2})`: the convolution
+    /// module's GLU, `rows / 2` wide.
+    glu,
+};
+/// One matrix of an `asrMatmulRows` call and where its rows go.
+pub const AsrProduct = struct { weights: Buffer, output: Buffer };
+/// The largest batch `asrMatmulRows` takes.
+pub const asr_matmul_rows_max = 8;
+/// `out_i[t][r] = Σ_c w_i[r][c] · x[t][c]` for `tokens` ≤ 8 rows over one to
+/// three F32 matrices of `shape` (a chunk's q, k and v at once), each weight
+/// row read once, with `epilogue` applied (`.glu` takes one matrix). Runs
+/// the instantiation for the next power of two of `tokens`: the rows past
+/// `tokens` (up to 8 of `input` and each output) are scratch, as `matmul`'s
+/// padding is. Requires rows % 4 == 0 and columns % 4 == 0.
+pub fn asrMatmulRows(self: *Backend, shape: Matrix, products: []const AsrProduct, input: Buffer, in_stride: usize, out_stride: usize, tokens: usize, epilogue: AsrEpilogue) !void {
+    if (shape.encoding != 0 or shape.rows == 0 or shape.rows % 4 != 0 or shape.columns == 0 or shape.columns % 4 != 0) return error.InvalidShape;
+    if (products.len == 0 or products.len > 3 or (epilogue == .glu and products.len != 1)) return error.InvalidShape;
+    if (tokens == 0 or tokens > asr_matmul_rows_max or in_stride < shape.columns or in_stride % 4 != 0) return error.InvalidShape;
+    const width = if (epilogue == .glu) shape.rows / 2 else shape.rows;
+    if (out_stride < width) return error.InvalidShape;
+    const padded = std.math.ceilPowerOfTwoAssert(usize, tokens);
+    if (input.len < ((padded - 1) * in_stride + shape.columns) * 4 or input.offset % 16 != 0) return error.InvalidShape;
+    var buffers: [7]Buffer = undefined;
+    for (0..3) |i| {
+        const product = products[@min(i, products.len - 1)];
+        if (product.weights.len < shape.rows * shape.columns * 4 or product.weights.offset % 16 != 0) return error.InvalidShape;
+        if (product.output.len < ((padded - 1) * out_stride + width) * 4 or product.output.offset % 4 != 0) return error.InvalidShape;
+        buffers[i] = product.weights;
+        buffers[4 + i] = product.output;
+    }
+    buffers[3] = input;
+    const kernel: root.Kernel = switch (padded) {
+        1 => .asr_matmul_rows_t1,
+        2 => .asr_matmul_rows_t2,
+        4 => .asr_matmul_rows_t4,
+        else => .asr_matmul_rows_t8,
+    };
+    const p: AsrRowsMatmulParams = .{
+        .columns = @intCast(shape.columns),
+        .rows = @intCast(shape.rows),
+        .in_stride = @intCast(in_stride),
+        .out_stride = @intCast(out_stride),
+        .epilogue = switch (epilogue) {
+            .store => 0,
+            .silu => 1,
+            .accumulate => 2,
+            .glu => 3,
+        },
+        .factor = switch (epilogue) {
+            .accumulate => |f| f,
+            else => 0,
+        },
+        .matrices = @intCast(products.len),
+    };
+    // Four weight rows a SIMD group, four SIMD groups a threadgroup.
+    const groups = @divCeil(shape.rows * products.len / 4, 4);
+    const profiled: @import("../profile.zig").Shape = .{ .encoding = 0, .rows = @intCast(shape.rows * products.len), .columns = @intCast(shape.columns), .bytes = shape.rows * shape.columns * 4 * products.len };
+    try self.dispatch(kernel, &buffers, p, @intCast(groups), 128, profiled);
 }

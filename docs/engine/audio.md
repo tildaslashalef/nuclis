@@ -46,16 +46,22 @@ as a cross-check, never copied.
   convolution's left context and 71 rows of K/V per layer, so pieces of any
   size give `decode`'s samples bit for bit ([qwen3-tts.md](../models/qwen3-tts.md)).
 - `nemotron_encoder.zig`: Nemotron 3.5 ASR's cache-aware encoder and its
-  prompt block, CPU only so far: `bind` (the safetensors checkpoint),
-  `Encoder`, and `Stream`
+  prompt block, the CPU reference: `bind` (the safetensors checkpoint),
+  `Encoder`, `Stream`, its `FrontEnd`, and the pure functions the Metal
+  kernels are checked against (`conv2d`, `attention`, `glu`, `depthwise`)
   ([nemotron-asr.md § The encoder](../models/nemotron-asr.md#the-encoder)).
 - `nemotron_rnnt.zig`: its RNN-T transducer: `bind`, and `Decoder`,
   which turns encoder rows into tokens by greedy decoding, a row in full
   as it arrives ([nemotron-asr.md § RNN-T decoding](../models/nemotron-asr.md#rnn-t-decoding)).
+- `nemotron_metal.zig`: `Plan` (the device weights and shared scratch)
+  and `Stream`, the encoder's chunk step, the projector and the joint on
+  the device, the LSTM on the CPU
+  ([nemotron-asr.md § On Metal](../models/nemotron-asr.md#on-metal-2026-10-27)).
 - `nemotron_asr.zig`: the family opened from its directory (`Model`: the
-  encoder, the transducer, the piece table, the language prompts) and
-  `Transcriber`, one utterance stream from samples to text, which
-  `nuclis transcribe` drives.
+  encoder, the transducer, the piece table, the language prompts, and the
+  Metal plan once `openMetal` built it) and `Transcriber`, one utterance
+  stream from samples to text on either engine, which `nuclis transcribe`
+  drives.
 
 ## Decoding
 
@@ -186,6 +192,14 @@ The relative keys are constant per block, so they are computed once at
 init on the host. Buffers are sized for 750 rows. On the BF16 file the
 plan matches the CPU reference's vectors to the same `1 − cos` against
 Google (about 1e-12).
+
+`nemotron_metal.Plan` is a streaming plan and runs everything after the
+front end on the device, the subsampling included: its convolutions
+carry a cache, which lives on the device with the rest of a stream's
+state. Its kernels are their own (`kernels/asr.metal`, `ops/asr.zig`);
+it shares the generic F32 tile, `layerNorm`, `addBiasRows`, `silu`, `add`
+and `copy` with the other plans. The schedule, the state and the
+measurements: [nemotron-asr.md § On Metal](../models/nemotron-asr.md#on-metal-2026-10-27).
 
 ## Against the oracles (2026-10-09)
 
