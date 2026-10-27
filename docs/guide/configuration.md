@@ -128,6 +128,7 @@ global `generation.speculative` applies to models without an entry.
 | `serve.timeout` | `300` | seconds a request may wait for the GPU before `529 timeout` (a clef-flash request can hold it for minutes); flag `--timeout` |
 | `serve.memory_bytes` | `null` | what every model `nuclis serve` keeps open may hold together, whatever their kind; null is physical memory less a third, at most 16 GiB. Flag `--memory <GiB>` ([api.md § Memory](api.md#memory)) |
 | `serve.pin` | `[]` | models `nuclis serve` opens at start and its memory budget never closes, by name, any kind: a JSON list (`["gemma-4-e4b-qat", "qwen3-tts-1.7b"]`) or one comma-separated string (what `nuclis config set serve.pin a,b` writes); at most 8. Flag `--pin`, repeated, replaces it ([api.md § Memory](api.md#memory)) |
+| `serve.transcription_bytes` | `268435456` (256 MiB) | the largest upload `POST /v1/audio/transcriptions` takes, held in memory while it is transcribed: two hours of 16 kHz 16-bit mono WAV fit; past it `413 payload_too_large`. 1 byte to 4 GiB ([api.md § Transcription (files)](api.md#transcription-files)) |
 | `serve.web` | `false` | run the hosted `web_search`, `web_fetch`, and `web_context` tool types a chat request asks for, through `web.url` ([api.md § Hosted web tools](api.md#hosted-web-tools)); off refuses them. Needs `web.url` |
 
 ### `web`

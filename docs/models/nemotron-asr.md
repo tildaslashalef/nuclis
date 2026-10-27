@@ -722,7 +722,12 @@ were factored out for this, its rows bit for bit as before):
 
 **`nuclis transcribe`** runs on Metal by default when built with it, `--backend cpu` on the reference. `Transcriber.init` takes the engine (`Model.openMetal` builds the
 plan once), and both engines give the same tokens. `scripts/wer.py`
-passes `--backend` through.
+passes `--backend` through. A file is decoded and fed in 2.56 s pieces
+(`src/audio/transcript.zig`, as the server's file route feeds it), so a
+recording of any length holds no decoded samples; on all 60 corpus clips
+the tokens and rows equal one whole push. `--segments` and `--format
+srt|vtt` group the tokens into segments
+([api.md § Segments](../guide/api.md#segments)).
 
 **Against the trace.** The gate `nemotron-asr-trace-metal`
 (`zig build test-nemotron-asr -- MODEL_DIR --metal`) runs the
@@ -879,10 +884,18 @@ Decided at the plan (2026-10-27); each is checked at bring-up:
 Open, observed at bring-up rather than decided:
 
 - **Tags in a long stream.** The card describes one tag after the
-  terminal punctuation; whether `auto` emits one per sentence in a
-  continuous stream is not settled by the code. A tag does appear under
-  an explicit language (observed on 55 of 60 clips:
+  terminal punctuation. In a continuous stream under `auto` it does:
+  a 30-minute recording of 177 LibriSpeech clips joined by 1.5–3 s of
+  silence emitted 110 `<en-US>` tags, one after each of its 110
+  sentence-final `.`, `?`, `!`; the other clip ends carried no terminal
+  punctuation, which a clip alone gets at the end of its stream. A tag
+  also appears under an explicit language (observed on 55 of 60 clips:
   [Transducer against the trace](#transducer-against-the-trace-and-word-error-rate-2026-10-27)).
+- **A change of language in one stream** loses words: after a clip in
+  one language, the next clip's first seconds in another are often
+  missing, on both engines (19.0 % WER over a 30-minute mixed recording
+  against 6.3 % for its clips alone,
+  [api.md § Long recordings](../guide/api.md#long-recordings)).
 - **Tag ↔ locale.** The tag `<sl-SL>` has no prompt key (Slovenian is
   `sl-SI`, 62); `mt-MT` (102) has a prompt but no tag, so what `auto`
   emits for Maltese is unknown.

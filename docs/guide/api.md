@@ -29,6 +29,7 @@ is the reference for client authors; it assumes nothing about the code.
   request](#the-speech-request), [streaming and
   cancellation](#streaming-and-cancellation), [scheduling](#scheduling)
 - [Live transcription](#live-transcription): [`GET /v1/audio/transcriptions/stream`](#get-v1audiotranscriptionsstream), a WebSocket
+- [Transcription (files)](#transcription-files): [the request](#the-file-transcription-request), [the response](#the-file-transcription-response), [segments](#segments), [long recordings](#long-recordings)
 - [`GET /v1/models`](#get-v1models), [`GET /v1/health`](#get-v1health)
 - [Measured rates](#measured-rates)
 
@@ -154,10 +155,11 @@ or the error):
 | Limit | Value | Past it |
 | --- | --- | --- |
 | request line and headers | 16 KiB | `431 headers_too_large`, connection closed |
-| request body | 4 MiB; 32 MiB for `/v1/chat/completions` and `/v1/embeddings` | `413 payload_too_large`, connection closed |
+| request body | 4 MiB; 32 MiB for `/v1/chat/completions` and `/v1/embeddings`; 256 MiB for `/v1/audio/transcriptions` (`serve.transcription_bytes`) | `413 payload_too_large`, connection closed |
 | open connections | 64 | `529 busy`, connection closed |
 | decision requests waiting for the GPU | 64 | `529 busy` |
 | embedding requests waiting for the GPU | 64 | `529 busy` |
+| file transcriptions waiting for the GPU (each holds its upload) | 16 | `529 busy` |
 | inputs per embedding request | 2,048 | `400 request_too_large` |
 | text per embedding input | 1 MiB | `400 request_too_large` |
 | wait before a request starts on the GPU | 300 s (`serve.timeout`) | `529 timeout` (a started pass always finishes) |
@@ -193,7 +195,7 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 400 | `bad_request` | not HTTP: a malformed request line or header, an unknown method; the connection closes |
 | 404 | `not_found` | no route at that path |
 | 405 | `method_not_allowed` | the path exists, the method does not (`HEAD` is answered as `GET`) |
-| 413 | `payload_too_large` | the body exceeds 4 MiB (32 MiB for chat and embeddings) |
+| 413 | `payload_too_large` | the body exceeds 4 MiB (32 MiB for chat and embeddings, 256 MiB or `serve.transcription_bytes` for file transcriptions) |
 | 415 | `unsupported_encoding` | a compressed body (`content-encoding`) |
 | 417 | `bad_request` | an `expect` other than `100-continue` |
 | 422 | `invalid_json` | the body is not JSON |
@@ -222,6 +224,12 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 400 | `not_an_embedding_model` | embeddings: `model` names a language or decision model |
 | 404 | `model_not_found` | embeddings: `model` names no pulled embedding model |
 | 400 | `model_too_large` | embeddings: the model alone needs more than the memory budget |
+| 400 | `invalid_request` | file transcriptions: not `multipart/form-data`, no `file` part or two, a malformed form, a field out of range (`param` names it), a `language` the model does not know |
+| 400 | `unsupported_feature` | file transcriptions: a `response_format` other than the five, `prompt`, `include[]`, `stream` with `srt` or `vtt` |
+| 400 | `invalid_audio` | file transcriptions: the file is not audio nuclis reads, or stops decoding midway (the message gives where) |
+| 400 | `not_a_transcription_model` | file transcriptions: `model` names a model of another kind |
+| 404 | `model_not_found` | file transcriptions: `model` names no pulled transcription model |
+| 400 | `model_too_large` | file transcriptions: the model needs more than the budget leaves beside the pinned models |
 | 431 | `headers_too_large` | the request line and headers exceed 16 KiB |
 | 500 | `model_failed` | the model could not be opened, or a completion failed on the GPU |
 | 500 | `internal`, `invalid_registry_entry` | a fault on the server's side |
@@ -988,6 +996,151 @@ utterance (a barge-in the assistant ignores). The server transcribes
 what it is sent: echo cancellation, so the assistant does not hear its
 own voice, is the client's.
 
+## Transcription (files)
+
+### `POST /v1/audio/transcriptions`
+
+OpenAI's transcription call for a whole recording, built for long ones (a
+lecture, a meeting, an hour or more): the transcript as text, JSON with
+segments and words, or subtitles, at once or streamed as segments are
+final. The model is Nemotron 3.5 ASR, the one `nuclis transcribe` runs,
+and the route's text is the command's, byte for byte (the gate
+`nemotron-asr-file-route`).
+
+```sh
+curl -s localhost:9000/v1/audio/transcriptions \
+  -F file=@meeting.m4a -F response_format=verbose_json \
+  -F 'timestamp_granularities[]=segment' -F 'timestamp_granularities[]=word'
+curl -s localhost:9000/v1/audio/transcriptions -F file=@lecture.wav -F response_format=srt > lecture.srt
+```
+
+The upload is held in memory while it is transcribed and is limited to
+256 MiB (`serve.transcription_bytes`; past it `413
+payload_too_large`): two hours of 16 kHz 16-bit mono WAV (230 MB), or
+many hours of a compressed format. Files queue in arrival order, one
+transcribed at a time; at most 16 wait (`529 busy`), and one that waits
+`serve.timeout` without starting is `529 timeout`.
+
+### The file transcription request
+
+`multipart/form-data`, as OpenAI's SDKs send it. Parts are bounded (at
+most 32, each part's headers 1 KiB, a field's value 1 KiB), and exactly
+one is a file.
+
+| Field | In nuclis |
+| --- | --- |
+| `file` | the recording: WAV, AIFF, MP3, M4A/AAC, FLAC, ALAC, or CAF (AudioToolbox, macOS), resampled to 16 kHz and mixed to mono; a 16 kHz mono WAV, 16-bit or float, is read directly on any platform |
+| `model` | a registry entry of kind `transcription` or `nemotron-asr-0.6b`; never a path. Absent: the open one, else `transcribe.model`. OpenAI's names (`whisper-1`, `gpt-4o-transcribe`) are `404 model_not_found` |
+| `language` | `auto` (the default), or a locale or two-letter code the model knows (`en-US`, `de-DE`, `fr`, …; 121 keys); an unknown one is `400 invalid_request` |
+| `response_format` | `json` (the default), `text`, `verbose_json`, `srt`, `vtt` |
+| `timestamp_granularities[]` | `segment`, `word`, or both (repeat the field); with `verbose_json` or `stream`. Absent: segments |
+| `stream` | `true`: server-sent events (below); not with `srt` or `vtt` |
+| `lookahead` | nuclis's: rows of 80 ms the encoder waits for, `0`, `3` (the default), `6`, `13`; as `nuclis transcribe --lookahead` |
+
+Refused with `400 unsupported_feature`: a `prompt` (the model takes no
+text hint; `language` is its only one) and `include[]` (the decoder is
+greedy and keeps no log probabilities). Other fields OpenAI defines are
+ignored (`temperature`: decoding is greedy).
+
+### The file transcription response
+
+- `json` (`application/json`): `{"text", "usage": {"type": "duration",
+  "seconds"}}`.
+- `text` (`text/plain`): the transcript and a newline.
+- `verbose_json`: `{"task": "transcribe", "language", "duration",
+  "text", "segments", "words", "usage"}`, `segments` and `words` as the
+  granularities ask. `language` is the locale of the last language tag
+  the model emitted (`en-US`, `de-DE`), or the request's, where OpenAI
+  writes a name (`english`).
+- `srt` (`text/plain`) and `vtt` (`text/vtt`): one cue per segment,
+  `HH:MM:SS,mmm` and `HH:MM:SS.mmm`, numbered from 1 in SRT, under a
+  `WEBVTT` header in VTT.
+
+A segment is `{"id", "start", "end", "text", "language"}`, a word
+`{"word", "start", "end"}`, times in seconds. The text is the segments'
+texts joined by spaces.
+
+With `stream=true` the response is `text/event-stream`, in OpenAI's
+events, a segment at a time as each becomes final:
+
+```
+data: {"type": "transcript.text.delta", "delta": "The thrall's eyes flashed."}
+
+data: {"type": "transcript.text.segment", "id": 0, "start": 3.6, "end": 4.96, "text": "The thrall's eyes flashed.", "language": "en-US"}
+
+: progress 61.44 of 1802.25 s
+
+data: {"type": "transcript.text.done", "text": "…", "usage": {"type": "duration", "seconds": 1802.25}}
+```
+
+Each final segment is a `transcript.text.delta` (its text, with a
+leading space after the first: the deltas joined are the text) then a
+`transcript.text.segment` (OpenAI's diarized event, with `language`
+for `speaker`, and `words` when asked). A comment `: progress <done> of
+<total> s` comes at most once a second, and `: transcribing` after 10 s
+of silence. The head is sent once the model is open and the language
+checked, so those refusals are still statuses; an error after it (the
+file stops decoding) is one `data: {"error": {…}}` event before the end.
+A client that closes the connection stops its transcription before the
+next 2.56 s piece; a client that does not read keeps at most 64 KiB of
+events queued, and the transcription waits for it rather than hold the
+GPU.
+
+### Segments
+
+Segments come from the transcriber's tokens and their rows (80 ms each),
+by one function `nuclis transcribe --segments` shares
+(`src/audio/transcript.zig`). A new segment starts at a word that follows
+terminal punctuation (`.`, `?`, `!`, `…`, `。`, `？`, `！`, then perhaps
+closing quotes), a pause of 1.04 s or more since the last word's sound,
+or 30 s into a segment. The model emits punctuation late, after the pause
+it marks (up to 2.6 s after the word in the speech corpus), so times and
+pauses follow the pieces holding a letter or digit, and a segment without
+terminal punctuation stays open 4 s for a late comma or period. A
+segment's language is the tag the model emitted at its end, else the
+last before it, else the request's locale. Times are the rows that
+emitted the tokens, not a forced alignment: a word's start is its first
+piece's row, its end one row past its last sounding piece.
+
+The pause was proposed at 0.8 s and measured on the speech corpus's 60
+clips, each one or two sentences (703 word boundaries): at 0.8 s, 14
+sentences split mid-way (5 at a comma); at 1.04 s, 4; at 2 s, none.
+Mid-sentence pauses of 0.8–1 s are common in read speech, so the
+constant is 1.04 s (13 rows). On the 30-minute recording below, every
+join of 1.5 s or more is a segment boundary, and the pause carries much
+of the work: in a continuous stream the model ends fewer sentences with
+punctuation than it does a clip alone (110 of the 258 segments end in
+`.`, `?`, or `!`, each followed by its language tag).
+
+### Long recordings
+
+The upload is decoded in pieces (`inference/src/audio/audio.zig`
+`Reader`, AudioToolbox read 4,096 frames at a time) and fed to one
+stream 2.56 s (32 rows) at a time, each piece a short GPU item: it runs
+between a chat generation's steps and speech's chunks, never waiting for
+a generation to end. Memory is the upload, the transcriber's state (on
+Metal 72 MB of device buffers, the front end's pending samples), and the
+segments, never the decoded samples: peak RSS rose 46 MiB from a
+5-minute to a 30-minute recording whose upload is 45.7 MiB larger
+(measured below). A 2-hour 16 kHz 16-bit WAV would hold its 230 MB plus
+the same fixed part, about 100 MB above an idle server (an estimate from
+those two, not measured). The tokens (8 bytes each) and the segments
+grow with the length, a few hundred kilobytes for two hours.
+
+Fed in 2.56 s pieces, every clip of the corpus gives the same tokens and
+rows as pushed whole (60 of 60, Metal), so `nuclis transcribe` feeds
+files the same way. On a 30-minute recording the piece size changes the
+transcript by a few characters (20,647 to 20,651 for pieces of 8 to 64
+rows): the encoder's batches round differently. The state carries from
+one utterance into the next, which changes a few first words (2 % of the
+words against each clip transcribed alone, measured below). A recording
+that **changes language** loses words after each switch: the 30-minute
+recording of the corpus's five languages, under `auto`, scored 19.0 %
+WER against 6.3 % for its clips alone, the first seconds after a switch
+often missing (the CPU reference drops the same words from the first
+45 s of it), and two segments ran across a join. One language per
+recording is what it transcribes well.
+
 ## `GET /v1/models`
 
 OpenAI's list shape, so an OpenAI client reads the ids; the `nuclis`
@@ -1272,3 +1425,46 @@ An earlier run on this branch, whose other jobs were not logged,
 measured E4B at 56.4 tokens/s alone and 54.8 while a clip streamed. Both
 clips are among the `nemotron-asr-stream-route` gate's four, whose
 finals equal `nuclis transcribe`'s text.
+
+### File transcription, 2026-10-27, commit `4390fa8`
+
+Apple M4 Pro (48 GB), ReleaseSafe (`make build`), Zig 0.17.0, macOS 27.0;
+a fresh `nuclis serve` with `nemotron-asr-0.6b` open on Metal
+(`nvidia/nemotron-3.5-asr-streaming-0.6b` at `ea30d66d`), lookahead 3,
+`auto`. **The machine was shared**: another session's builds and tests
+held it (load average 2–7), and the same run measured 42–64× real time
+from one run to the next. The recording is `scripts/transcription-check.py
+long`'s: the 40 LibriSpeech clips of the speech corpus in a seeded order,
+each followed by 1.5–3 s of silence, 16-bit 16 kHz mono WAV (30 minutes:
+1,802.3 s, 55.0 MiB). Rate is the audio's length over the request's
+wall time (the upload over loopback included); first segment is the
+time from sending the request to the first `transcript.text.segment`
+event with `stream=true`; RSS is `ps`'s, sampled every 50 ms.
+
+| | 5 minutes | 30 minutes |
+| --- | --- | --- |
+| rate, alone (runs) | 42.7–62.5× (3) | 42.4–63.8× (6) |
+| first segment, `stream=true` | 0.17–0.26 s | 0.20–0.29 s |
+| peak RSS (idle 212–217 MiB) | 322–327 MiB | 368–374 MiB |
+| segments; words differing from the clips alone | 44; 2.18 % | 258; 1.98 % |
+| WER against the references (the clips alone) | 5.47 % (4.06 %) | 5.04 % (4.08 %) |
+
+Beside a chat: the same server with `gemma-4-e4b-qat` open too, one
+streamed chat (1,200 tokens of a story, temperature 0, `reasoning_effort`
+`none`) started 2 s before the 30-minute file and running through it,
+then the same chat alone. Its rate is content chunks per second, as in
+the speech measurement.
+
+| | Transcription | E4B decode |
+| --- | --- | --- |
+| alone | 42–64× real time | 45.8–51.5 tokens/s |
+| together | 28.4–40.9× real time | 12.0–17.9 tokens/s |
+
+The transcript beside the chat equals the one alone. The chat pays as
+it does for speech: each of its steps waits for a 2.56 s piece, 40–64 ms
+at the rates above. Smaller pieces cost nearly as much each: through
+`nuclis transcribe` on the same machine and file, pieces of 8, 16, 32,
+and 64 rows ran at 19, 25, 40, and 68× real time, so a piece of 8 rows
+still took about 34 ms (each emitted token adds a command buffer,
+[nemotron-asr.md § On Metal](../models/nemotron-asr.md#on-metal-2026-10-27)). Sharing the GPU between a transcription and a chat is the voice
+scheduling unit's measurement.

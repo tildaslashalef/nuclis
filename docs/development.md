@@ -937,6 +937,10 @@ nearly all as failed while every one is a 200: read the
 `Length:` breakdown and `Non-2xx responses`. Compare served responses
 with `nuclis decide --json` after masking `timings_ms`, and read the
 batching counters from `GET /v1/health` before and after a run.
+File transcription is measured by `python3 scripts/transcription-check.py
+long` (a fresh server per recording, RSS sampled, the first segment of a
+stream timed; `--chat <model>` streams a chat beside it), which the gate
+`nemotron-asr-long` also runs.
 [guide/api.md § Measured rates](guide/api.md#measured-rates)
 holds the record.
 
