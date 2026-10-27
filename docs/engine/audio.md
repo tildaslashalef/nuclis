@@ -35,6 +35,10 @@ as a cross-check, never copied.
   tensors) and `Runtime`, the CPU reference. It also holds the pieces the
   Metal plan shares: `subsample`, `relativeKeys`, `queryScale`.
 - `gemma4a_metal.zig`: `Plan`, the same schedule on the device.
+- `qwen3_codec.zig`: Qwen3-TTS's codec decoder, codes to 24 kHz PCM:
+  `bind`, `Runtime.decode`, and `Stream`, which carries every
+  convolution's left context and 71 rows of K/V per layer, so pieces of any
+  size give `decode`'s samples bit for bit ([qwen3-tts.md](../models/qwen3-tts.md)).
 
 ## Decoding
 

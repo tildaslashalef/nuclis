@@ -133,7 +133,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | # | Task | Track | Depends on | Parallel |
 | --- | --- | --- | --- | --- |
 | 1 | Facts and pins | — | — | done |
-| 2 | TTS codec decoder, CPU | A | 1 | worktree A |
+| 2 | TTS codec decoder, CPU | A | 1 | done |
 | 3 | TTS talker and code predictor, CPU; `nuclis speak` | A | 2 | worktree A |
 | 4 | TTS on Metal, streaming, real-time factor | A | 3 | worktree A |
 | 5 | ASR front end and streaming encoder, CPU | B | 1 | worktree B |
@@ -186,7 +186,7 @@ and `.reference/transformers-c0d024f/`.
   `speech_tokenizer/model.safetensors`; the encoder's 225 are ignored by
   name, not read), `Runtime` with `decode(codes: [n][16]u16, out: []f32)`
   and `Stream` (`push(frames)` → samples, carrying every convolution's
-  left context and the transformer's last 72 rows of K/V per layer), the
+  left context and the transformer's last 71 rows of K/V per layer: a query sees 72 keys including itself), the
   qwen3-tts.md § The codec decoder pipeline: codebook lookup as
   `embedding_sum / max(cluster_usage, 1e-5)`, the two projected sums,
   the causal input convolution, 8 layers with layer scale and RoPE base
