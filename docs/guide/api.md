@@ -401,7 +401,8 @@ GPU at a time, decisions included.
 | Field | In nuclis |
 | --- | --- |
 | `model` | a registry entry or catalogue name of a language model, never a path. Absent: the open model, else `engine.model`. Another model closes the open one and opens itself; that request pays the load |
-| `messages` | roles `system`, `developer`, `user`, `assistant`, `tool`. `content` is a string, null (an assistant turn of calls only), or parts: `text`, and on user messages `image_url` with a base64 data URL (at most 8 images, 16 MiB each) |
+| `messages` | roles `system`, `developer`, `user`, `assistant`, `tool`. `content` is a string, null (an assistant turn of calls only), or parts: `text`, and on user messages `image_url` with a base64 data URL (at most 8 images, 16 MiB each) and `input_audio` (below) |
+| `input_audio` parts | `{"type": "input_audio", "input_audio": {"data": "<base64>", "format": "wav"}}`: `data` base64 or a base64 data URL, `format` one of `wav`, `mp3`, `aiff`, `flac`, `m4a` (the decoder reads the bytes; the name is checked, not trusted). At most 8 clips per request, 16 MiB and **30 s** each (750 rows; a longer clip is `400 input_too_long`, never cut). Only Gemma 4 E4B hears them (its projector pulled); another model answers `400 audio_unsupported`, a clip that does not decode `400 invalid_audio`. The model reads a message's images, then its clips, then its text ([gemma4.md § Audio input](../models/gemma4.md#audio-input-on-the-e4b-2026-10-27)) |
 | assistant `reasoning_content` | the turn's reasoning, given back as it was returned (`reasoning` is read too); the model's template keeps or drops it |
 | assistant `tool_calls`, tool `tool_call_id` | the calls and their results; a result must answer an earlier call |
 | `tools` | `type: "function"` with `name`, `description`, `parameters` (a JSON Schema); at most 64. The model's own template renders them. With `serve.web`, also `{"type": "web_search"}` and `{"type": "web_fetch"}`, which the server runs ([hosted web tools](#hosted-web-tools)) |
@@ -426,7 +427,7 @@ change the result and cannot be honoured:
 | `response_format` other than `text`, `tool_choice: "required"` or a named function | they need the sampler to mask tokens against a grammar, which the engine does not have |
 | `n` above 1, `logprobs`, `top_logprobs` | one choice per request; log probabilities are not returned |
 | `stop`, `logit_bias`, `frequency_penalty` other than 0 | not implemented; the model's own end of turn stops it |
-| `audio`, `modalities` beyond `text`, `prediction`, part types other than `text` and `image_url` | text out, text and images in |
+| `audio`, `modalities` beyond `text`, `prediction`, part types other than `text`, `image_url`, and `input_audio`, an audio `format` outside the five above | text out; text, images, and audio in |
 | an `image_url` that is not a data URL | the server fetches no URL |
 | a `web_search` or `web_fetch` tool type without `serve.web`; a function of the same name beside one (`invalid_request`) | the server runs no web tools unless configured to; a clash would make its calls ambiguous |
 
@@ -488,9 +489,11 @@ reasoning off on the 12B and 26B-A4B, reasoning dropped once a user
 message follows), so there the session goes back to where the last
 prompt ended and continues from it: the answer as rendered and the new
 message are prefilled. A request sent again reuses the same point on
-Gemma 4 and Muse Glimmer. A conversation with an image in it is
-prefilled whole on every request, and changing the model empties the
-cache.
+Gemma 4 and Muse Glimmer. Images and clips count by their bytes: a
+conversation resent with the same ones reuses its state, another image or
+clip in the same place does not (measured on the E4B with a 4.8 s clip:
+133 of 136 tokens cached for the same request again, 152 of 171 for a
+follow-up, 0 for another clip). Changing the model empties the cache.
 
 Measured with `nuclis serve` (M4 Pro, temperature 0, 2026-10-08, the
 same answers before and after; `cached_tokens` and request time):

@@ -6,7 +6,9 @@ EmbeddingGemma 2 is the only family that uses that encoder
 ([embeddinggemma.md § Audio](../models/embeddinggemma.md#audio-2026-10-09)).
 The front end also serves Nemotron 3.5 ASR's own encoder, described with
 its family in [nemotron-asr.md](../models/nemotron-asr.md).
-Gemma 4 E4B carries the same encoder, and chat still refuses audio.
+Gemma 4 E4B carries the same encoder (751 of its 752 tensors byte-identical,
+the projection to 2560 its own) and hears clips in a chat through it
+([gemma4.md § Audio input on the E4B](../models/gemma4.md#audio-input-on-the-e4b-2026-10-27)).
 Everything here was written from Google's code at the pinned revisions
 (transformers 5.19.0: `feature_extraction_gemma4.py`, `modeling_gemma4.py`
 `Gemma4Audio*`, `processing_embedding_gemma2.py`). llama.cpp's
@@ -38,7 +40,8 @@ as a cross-check, never copied.
   `features`, and `frames`, which computes frames from a span of a clip
   for a stream. Pure, no I/O.
 - `gemma4a.zig`: `bind` (the companion file's `a.*` and `mm.a.*`
-  tensors) and `Runtime`, the CPU reference. It also holds the pieces the
+  tensors; the header's norm epsilon may say 1e-6 or E4B's 1e-5, and 1e-6,
+  Google's, is used) and `Runtime`, the CPU reference. It also holds the pieces the
   Metal plan shares: `subsample`, `relativeKeys`, `queryScale`.
 - `gemma4a_metal.zig`: `Plan`, the same schedule on the device.
 - `qwen3_codec.zig`: Qwen3-TTS's codec decoder, codes to 24 kHz PCM:

@@ -66,7 +66,8 @@ projector on the engine's backend with the image token cap in effect
 and runs the projector to `PreparedImage { width_tokens, height_tokens,
 features }`; `profiles.Message.images` (a `[]const ImageRef`) makes the
 profile render the family's markers with the right placeholder count;
-`locateImageSpans` finds the runs; `runLoop`'s `images` argument carries the
+`locateImageSpans` finds the runs (`mediaSpans` the runs of images and
+audio clips together, [gemma4.md § Audio input](../models/gemma4.md#audio-input-on-the-e4b-2026-10-27)); `runLoop`'s `images` argument carries the
 spans and their concatenated features into `Model.prefillVision`. The Qwen
 runtime substitutes a feature row for a token embedding per span row
 (`stepImage`); the Metal plans copy the chunk's feature rows into `x_c`
@@ -222,9 +223,9 @@ suffix — concatenates their rows, and calls `engine.complete` with an
 advance across later turns without engine changes.
 
 **Speculation.** `runLoop` runs an image prefill without the drafter, whose
-cache is stale from then on; the completer therefore turns speculation off
-for the session once an image has been fed (`images_fed`) and `reset`
-restores it. No entry with a projector has speculation on ([ENGN-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-17--the-speculative-verdict-qwen-and-gemma-off-muse-on-the-full-record-and-benchs-true-baseline-2026-09-21)), so
+cache is stale from then on; the completer therefore keeps speculation off
+while what the session consumed holds an image or a clip, which its keyed
+text records ([session.md § The agent's token cache](session.md#the-agents-token-cache-2026-10-04)). No entry with a projector has speculation on ([ENGN-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-17--the-speculative-verdict-qwen-and-gemma-off-muse-on-the-full-record-and-benchs-true-baseline-2026-09-21)), so
 nothing measurable changes today.
 
 **What is shown and stored.** The transcript's user block gets one dim
