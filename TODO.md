@@ -102,11 +102,13 @@ speech stays a second ahead of playback and a file takes a quarter;
 E4B beside the 1.7B voice 7.2 → ~25 tok/s, beside a file 3× → −23 %; a
 spoken question answered aloud starts 0.5 s after the turn ends.
 
-Next: **16, 17, 18** (the agent; any worktree), then 12.
+Task 16 delivered (2026-10-27): Gemma's answers given without a thought channel were filed as thinking; the decoder now starts from the prompt's tail.
+
+Next: **17** (running in a worktree), then **18**, then 12.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: tasks 16, 17, 18 |
+| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: tasks 17, 18 |
 
 ## Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API
 
@@ -209,7 +211,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 13 | Split `kernels.metal` by operation (before 4 and 7) | — | — | done |
 | 14 | Split the Metal backend's `root.zig` by operation (before 4 and 7) | — | — | done |
 | 15 | Serve: file transcription for long recordings (`POST /v1/audio/transcriptions`) | C | 7, 9 | done |
-| 16 | Agent: a short answer after a folded thought is not drawn | — | — | any worktree |
+| 16 | Agent: a short answer after a folded thought is not drawn | — | — | done |
 | 17 | Faster image encoding when an image is attached in the agent | — | — | any worktree |
 | 18 | Audio files dropped into the agent, for models that hear | — | 8 | any worktree (after 16 if both touch the transcript) |
 
@@ -530,25 +532,21 @@ Open, beyond task 11: a language change within one recording loses words
 transcriber after a long silence is untried); piece size changes a few
 characters on long recordings (Metal batch rounding).
 
-#### 16. Agent: a short answer after a folded thought is not drawn
+#### 16. Agent: a short answer after a folded thought is not drawn (delivered 2026-10-27)
 
-Asked by the user (2026-10-27). Found while exercising task 8 through the
-screenshot harness, and present in the build before this unit (`fe714ce`).
-Reproduction: `make shot` with `--command "./zig-out/bin/nuclis agent
---model gemma-4-e4b-qat"`, `until=ready,120`, `paste=<path>/docs/branding/nuclis.png`,
-`keys=What is in this image? One sentence.`, `enter`, `wait=3`,
-`until=ready,180`, `keys=And what colours does it use? One sentence.`,
-`enter`, `wait=3`, `until=ready,180`, `wait=2`, `capture=…`: the second
-turn shows `▸ Thought for 0.5s (Tab to unfold)` and no answer line, though
-the status says `out 11` and Tab (unfolding) shows "The logo uses turquoise
-(teal) and orange." Find whether the answer is never committed to the
-transcript or committed but not drawn (`src/tui/`, `src/agent/root.zig`
-§ the transcript and the live region; a text-only turn after a folded
-thought is the first thing to try, to tell whether the image matters).
-Fix, with a golden test in `src/tui/` that pins the frame, and the
-harness capture before and after as the record's evidence
-(docs/development.md § Looking at the agent without a person at the
-keyboard). A change to the chat surface: `make shot` is the check.
+Not a drawing bug: the stream decoder started every thinking-on
+completion inside the reasoning channel, which holds for Qwen (its
+prompt ends in `<think>`) but not for Gemma 4, whose prompt ends at
+`<|turn>model\n` and whose model may answer without opening
+`<|channel>`; that answer was filed as thinking (the session log had
+`"answer":""`). `stream.opensInReasoning(markers, prompt)` now decides
+the start from the prompt's last reasoning control token
+(`Profile.decoder` takes the prompt); Qwen and Muse Glimmer start as
+before. Pinned by a unit test in `inference/src/profiles/stream.zig`
+(fails with the old start); `make shot` captures before/after (the
+second turn's answer drawn, a longer answer after a thought, thinking
+off). `engine.zig` changed, so the unit's closing `make verify` covers
+the families' gates.
 
 #### 17. Faster image encoding when an image is attached in the agent
 
