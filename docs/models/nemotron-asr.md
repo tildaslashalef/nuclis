@@ -812,7 +812,12 @@ the feed-forward matrices 352 ms (150 to 200 GB/s), q, k and v 78 ms,
 `o_proj` and the convolution module's two 109 ms. LayerNorm took 62 ms
 (144 dispatches a chunk), the attention 36 ms, and everything else about
 75 ms together.
-At about 230 GB/s the weights alone take about 11 ms a chunk.
+At about 230 GB/s the weights alone take about 11 ms a chunk. In one run
+over the trace's clips, the product read its weights about as fast for
+four rows as for one: 180 to 195 GB/s on the feed-forward matrices at
+r = 3 and at r = 0. So an r = 3 chunk costs the device about what an
+r = 0 chunk does, for four times the audio. The rest of its wall time is
+its tokens' joint batches and LSTM steps, and the shared GPU.
 
 Against the proposed target of 15 ms per r = 3 chunk: back to back the
 chunk takes 17 to 25 ms across runs on this shared machine. Paced at real
