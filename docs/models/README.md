@@ -41,8 +41,12 @@ the transcript will not survive.
   against nuclis's own paths, with no external oracle. The steps below that
   name the pinned llama.cpp reference (`7620399`,
   [llama-cpp.md](../benchmarks/llama-cpp.md)) are how the families before
-  that date were brought up; how a genuinely new architecture is validated
-  without one is not yet decided.
+  that date were brought up. A genuinely new architecture is validated by
+  data, with traces from the authors' code pinned once at bring-up
+  ([spec § 3](../spec.md#3-decisions), decided 2026-10-27): its permanent
+  gates compare against human ground truth (word error rate on pinned
+  clips, a synthesis round trip through a validated recognizer), and the
+  traces are fixtures, not a standing oracle.
 
 ## 1. Facts with provenance (`docs/models/<family>.md`)
 

@@ -36,11 +36,15 @@ unless a task edits a shared kernel or backend file, in which case
 CPU tier runs as the new families' gates only (`make gate NAME='…-cpu'`),
 not `make verify-cpu`.
 
-Next: **task 1, facts and pins**; nothing is implemented yet.
+Task 1 (facts and pins) is delivered: the files are pinned, the two
+families' facts are written (`docs/models/qwen3-tts.md`,
+`docs/models/nemotron-asr.md`), and tasks 2–7 below are at the level of
+files and functions. Next: **tasks 2 and 5 in parallel** (worktrees A and
+B), and task 8 whenever a worktree is free.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: task 1 |
+| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: tasks 2 and 5 |
 
 ## Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API
 
@@ -48,11 +52,11 @@ Base: `35737c3`
 
 Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS, and the voice API`.
 
-### Open decisions (the user's, before task 2)
+### Decisions
 
-1. **How a new architecture is validated** (open since 2026-10-14,
-   `docs/models/README.md` § 0). Neither family has a nuclis path to
-   compare against. Recommended, both:
+1. **How a new architecture is validated**: both of the below (the
+   user's, 2026-10-27; `docs/spec.md` § 3, `docs/models/README.md` § 0).
+   Neither family has a nuclis path to compare against.
    - *Data, not implementations, as the permanent gates.* ASR: word error
      rate on a pinned set of public clips with human transcripts (a few
      dozen LibriSpeech test-clean and FLEURS clips, digests pinned like the
@@ -61,19 +65,37 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
      once the ASR passes its own gate; plus the codec's frames
      reconstruct their own decode exactly between CPU and Metal.
    - *One-time bring-up traces* from the authors' published code
-     (`transformers` 5.13 `Nemotron3_5AsrForRNNT`; Qwen's `qwen-tts`
-     package), run once in a venv under `.reference/`, pinned as small
+     (`transformers` at `c0d024fb`, `Nemotron3_5AsrForRNNT`; Qwen's
+     `QwenLM/Qwen3-TTS` at `022e286b`; both sources unpacked under
+     `.reference/`), run once in a venv there, pinned as small
      fixtures under `tests/fixtures/`, as EmbeddingGemma 2's audio was
      (`docs/engine/audio.md` § Against the oracles). They catch the subtle
      errors a WER bound passes. Afterwards the CPU reference is the
      oracle for Metal, as for every family.
-2. **Weights as published, or converted once.** The ASR file is F32
-   (2.55 GB, `model.safetensors`); the TTS talker BF16 (1.81 GB), its codec
-   F32 (0.68 GB, of which only the decoder is used). Task 1 reads which
-   dtypes the Metal matvec and matmul tiles execute. Recommended: run them
-   as published if the kernels exist; otherwise an explicit, documented
-   `nuclis model convert`-style F16 copy, never a silent requantization
-   (AGENTS.md, Inference engine rules).
+2. **Weights as published** (settled by task 1, 2026-10-27). The ASR file
+   is F32 (2.55 GB), the TTS talker BF16 (1.81 GB), its codec F32 (0.68 GB,
+   only the decoder used). The generic dequantizer already reads F32, F16,
+   and BF16 on both backends (`inference/src/quant/decode.zig`,
+   `backends/metal/dequant.metal`, encodings 0, 1, 30), and Laya runs its
+   safetensors matrices through the generic tile in place
+   (`laya_metal.zig`). So both families run as published, nothing
+   converted (spec § 3, weights never requantized or expanded). Estimated
+   bytes read (not measured): a TTS frame ≈ 0.9 GB talker + 15 predictor
+   steps × ≈ 0.16 GB ≈ 3.3 GB, ≈ 41 GB/s at real time (12.5 frames/s);
+   an ASR chunk reads the encoder once, ≈ 2.4 GB. Specialized F32/BF16
+   matvecs are a speed task, measured first, never assumed.
+3. **Both voice sizes, the 1.7B for emotion** (the user's, 2026-10-27).
+   The authors' code drops the instruction on the 0.6B
+   (`generate_custom_voice` in `qwen_tts/inference/qwen3_tts_model.py`,
+   "for 0b6 model, instruct is not supported"; their README's model table
+   agrees): only `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` performs a mood.
+   Same 9 speakers, codec, and code predictor (width 1024, 5 layers); the
+   talker is 28 layers of width 2048, FFN 6144, 3,833,402,552 B BF16. One
+   implementation serves both, parameterized by the talker width; bring-up
+   and the first traces on the 0.6B, then the 1.7B with its own trace and
+   round-trip gate. Muon defaults to the 1.7B. Estimated (not measured)
+   bytes per frame ≈ 2.8 GB talker + 2.4 GB predictor ≈ 5.2 GB, ≈ 65 GB/s
+   at real time.
 
 ### Facts already read (2026-10-27, from the files' `config.json`)
 
@@ -88,7 +110,8 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
   are codec-vocab ids (`spk_id`: vivian, serena, uncle_fu, dylan, eric,
   ryan, aiden, ono_anna, sohee); languages likewise (`codec_language_id`,
   10 plus 2 dialects). Codec decoder (`speech_tokenizer/config.json`):
-  16 quantizers (1 semantic of 4096, 15 of 2048, dim 512), an 8-layer
+  16 codebooks of 2048 (the config's `semantic_codebook_size` 4096 is
+  never read; `docs/models/qwen3-tts.md`), an 8-layer
   transformer of width 512 with a 72-frame sliding window, then
   upsampling [8, 5, 4, 3] × [2, 2] = 1,920 samples per frame: 12.5 frames/s
   to 24 kHz mono. CustomVoice needs no codec *encoder* (that is for
@@ -98,7 +121,8 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
   Front end: 16 kHz, n_fft 512, window 400, hop 160, pre-emphasis 0.97,
   128 mel bins. Encoder (FastConformer, cache-aware): subsampling ×8 (conv,
   256 channels, kernel 3, stride 2), 24 blocks of width 1024, 8 heads, FFN
-  4096 SiLU, depthwise conv kernel 9, attention left context 57 frames,
+  4096 SiLU, depthwise conv kernel 9, attention over its own chunk plus
+  56 rows before it (`sliding_window` 57 counts the row itself),
   lookahead 0, 3, 6, or 13 frames (80 ms each; default 3). RNN-T: a 2-layer
   prediction network of width 640, ReLU joint, vocab 13,088 (blank
   13,087), at most 10 symbols per frame; a language prompt (128 slots;
@@ -108,7 +132,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 
 | # | Task | Track | Depends on | Parallel |
 | --- | --- | --- | --- | --- |
-| 1 | Facts and pins | — | — | no: first |
+| 1 | Facts and pins | — | — | done |
 | 2 | TTS codec decoder, CPU | A | 1 | worktree A |
 | 3 | TTS talker and code predictor, CPU; `nuclis speak` | A | 2 | worktree A |
 | 4 | TTS on Metal, streaming, real-time factor | A | 3 | worktree A |
@@ -126,86 +150,182 @@ Worktree rule: a track owns its new files. Shared registrations
 `THIRD_PARTY_NOTICES.md`) are small appends a track may make; the main
 session rebases each track onto `speech-in-and-out` and resolves them.
 
-#### 1. Facts and pins
+#### 1. Facts and pins (delivered 2026-10-27)
 
-- Pull both repositories at the revisions above (`nuclis model pull`;
-  record commit, size, SHA-256 in `docs/models/catalogue.md` § Safetensors
-  artifacts) and write `docs/models/qwen3-tts.md` and
-  `docs/models/nemotron-asr.md` as `docs/models/README.md` § 1 asks: every
-  tensor name and shape from the files (`inference/src/formats/safetensors.zig`
-  `Checkpoint`), the forward pass in equations from the authors' code
-  (read as the definition, never copied), provenance per fact.
-- Settle what the configs leave open: whether the talker's M-RoPE reduces
-  to one-dimensional RoPE for text-and-codec sequences (all three
-  position components equal) and so reuses the Qwen 3.5 path
-  (`qwen35_metal.zig` notes its M-RoPE table); the talker's prompt layout
-  (`im_start`, speaker, language, instruction, text, `tts_bos` …
-  `codec_eos`); the predictor's sampling (`top_k` 50, temperature 1); the
-  encoder's relative positional encoding and its cache layout per
-  lookahead; which tokenizer model `tokenizer.json` holds.
-- Read which dtypes the Metal matvec and tiles execute for safetensors
-  weights (Laya's path, `laya_metal.zig`), and take decision 2.
-- Write the user's validation decision into `docs/spec.md` § 3 and close
-  the open line in `docs/models/README.md` § 0. Rewrite tasks 2–7 below at
-  the level of files and functions with what was read; commit before code.
-- Gate: `make docs-check`.
+Pulled and pinned (`docs/models/catalogue.md`): both Qwen3-TTS sizes and
+Nemotron at the revisions above. Written: `docs/models/qwen3-tts.md` and
+`docs/models/nemotron-asr.md` (tensors from the headers, forward passes
+in equations from the authors' code, decisions and open items), the
+validation rule in `docs/spec.md` § 3 and `docs/models/README.md` § 0.
+Settled there: the talker's M-RoPE is plain 1-D NEOX RoPE (all three
+components equal), base 1e6, one position per frame; the codec decodes
+causally with carried state (traces compared over the first 300
+frames); text goes in a sentence at a time (non-streaming text mode);
+the ASR mask is chunked (a row sees its chunk plus 56 rows), the stream
+flushes as the whole-clip pass ends, state lives as long as the stream,
+language `auto` by default, no dither. Sources for the traces:
+`.reference/qwen3-tts-022e286/` (package pins `transformers==4.57.3`)
+and `.reference/transformers-c0d024f/`.
 
-#### 2. TTS codec decoder, CPU
+#### 2. TTS codec decoder, CPU (worktree A)
 
-`inference/src/audio/qwen3_codec.zig`: `bind` (the decoder's tensors in
-`speech_tokenizer/model.safetensors`) and `Runtime.decode(frames)`, codes
-[n × 16] to 24 kHz f32, causal, with a streaming state so frames decode in
-chunks with the same samples as one call (a unit test asserts it). Gates:
-`qwen3-tts-codec-cpu` (trace fixture, per decision 1); `make test`.
+- **Trace fixtures first.** `scripts/speech-traces/` (Python, `make
+  lint-py`): `qwen3_tts_trace.py` runs the authors' package in a venv at
+  `.reference/venv-qwen3-tts/` (`qwen-tts` at `022e286b`,
+  `transformers==4.57.3`, CPU, F32) and writes, for two fixed sentences
+  and one speaker per size at seed 0: the prompt's token and codec ids,
+  the talker's hidden rows at layers 0, 13, 27 for the prompt and the
+  first 4 frames, the 16 codes of the first 24 frames, the codec
+  decoder's quantizer output, transformer output, and the first 4,800
+  samples. Pinned as small F32 files under
+  `tests/fixtures/qwen3-tts/` with a JSON index (digests, revision,
+  versions); `THIRD_PARTY_NOTICES.md` names the source. Sampling is
+  replaced by the trace's own codes, so nuclis replays them.
+- `inference/src/audio/qwen3_codec.zig`: `bind(checkpoint)` over the
+  decoder's 271 tensors (`decoder.*` of
+  `speech_tokenizer/model.safetensors`; the encoder's 225 are ignored by
+  name, not read), `Runtime` with `decode(codes: [n][16]u16, out: []f32)`
+  and `Stream` (`push(frames)` → samples, carrying every convolution's
+  left context and the transformer's last 72 rows of K/V per layer), the
+  qwen3-tts.md § The codec decoder pipeline: codebook lookup as
+  `embedding_sum / max(cluster_usage, 1e-5)`, the two projected sums,
+  the causal input convolution, 8 layers with layer scale and RoPE base
+  1e4, the two ×2 transposed-convolution plus ConvNeXt stages, the rates
+  8, 5, 4, 3 with SnakeBeta (α, β stored as logs), the clamp to [−1, 1].
+- Unit tests: a stream pushed 1, 3, and 7 frames at a time gives the
+  samples of one `decode` call, bit for bit.
+- Gate `qwen3-tts-codec-cpu`: the fixture's 24 frames through `decode`,
+  every stage against the trace (bounds from the first run, recorded in
+  `gates.json`). `make test`, `make verify-auto` (selects nothing else:
+  new files only).
 
-#### 3. TTS talker and code predictor, CPU
+#### 3. TTS talker and code predictor, CPU; `nuclis speak` (worktree A)
 
-`inference/src/models/qwen3_tts.zig` (binding, prompt layout) and
-`qwen3_tts_runtime.zig` (CPU forward): per frame, one talker step for
-group 0, then 15 predictor steps; text tokens through the Qwen2 BPE the
-tree already has. `nuclis speak <text> --voice <speaker> [--instruct <s>]
-[--language <l>] -o <file.wav>` in `src/speak.zig` (the CLI's `main.zig`
-only dispatches). Gates: `qwen3-tts-trace-cpu`; listen to five sentences
-and say so in the record.
+- **Tokenizer.** Qwen2's byte-level BPE from `vocab.json` and `merges.txt`
+  (no `tokenizer.json`): `inference/src/tokenizer/vocab_merges.zig` loads
+  them and the added tokens of `tokenizer_config.json` into the shared
+  `Vocabulary`. Check whether Qwen2's split pattern equals the `qwen35`
+  splitter's (`encode.zig`); add a `qwen2` splitter only if it does not.
+  Test: the trace's token ids for both sentences.
+- `inference/src/models/qwen3_tts.zig`: `Config` from `config.json` (both
+  sizes; width, FFN, the predictor projection present or not), `bind`
+  (402 or 404 tensors, refusing any other set by name), `Prompt.build`
+  (qwen3-tts.md § (a): role rows, the codec prefix of think, language,
+  speaker; non-streaming text rows; the instruction rows on the 1.7B,
+  refused on the 0.6B as `InstructionUnsupported`), the text projection
+  (2048 → 2048 → width, SiLU, biases).
+- `inference/src/models/qwen3_tts_runtime.zig`: the CPU forward. The
+  talker: 28 Qwen3 layers (q/k RMSNorm, NEOX RoPE base 1e6, GQA 16/8,
+  SwiGLU), `codec_head`, the group-0 sampler (§ (c): repetition 1.05
+  over generated codes, end blocked for 2 frames, suppression of
+  2048–3071 but 2150, temperature 0.9, top-k 50). The predictor: a fresh
+  16-row cache per frame, inputs projected by `small_to_mtp_projection`
+  on the 1.7B, heads `lm_head[g−1]`, temperature 0.9, top-k 50, exactly
+  15 steps. The next talker row: the 16 code embeddings summed plus the
+  next text-track row (§ (e)); stop at 2150 or 8,192 frames.
+  `inference/src/sampling/` is reused for top-k and temperature.
+- `src/speak.zig` and its line in `src/help.zig`: `nuclis speak <text>
+  [--voice <speaker>] [--language <l>] [--instruct <s>] [--model <path>]
+  [--seed <n>] [--backend cpu|metal] -o <file.wav>`; 24 kHz mono 16-bit
+  WAV. `main.zig` only dispatches.
+- Gates: `qwen3-tts-0.6b-trace-cpu` and `qwen3-tts-1.7b-trace-cpu` (the
+  trace's prompt rows, hidden rows, and, replaying its codes, the
+  predictor's logits). Listen to five sentences per size, moods on the
+  1.7B, and say so in the record.
 
-#### 4. TTS on Metal, streaming
+#### 4. TTS on Metal, streaming (worktree A)
 
-`qwen3_tts_metal.zig` and `qwen3_codec_metal.zig`; the talker reuses the
-existing attention and matvec kernels; the predictor's 15 short steps per
-frame go in one command buffer. Streaming: frames out as produced, the
-codec decoding every 4 frames (320 ms) or as configured. Measure, on this
-machine: first audio after the text (target ≤ 150 ms, proposed), real-time
-factor alone (target ≥ 3× real time, proposed). Gates:
-`qwen3-tts-trace-metal`, `qwen3-tts-codec-metal` (CPU against Metal),
-`qwen3-tts-roundtrip-metal` once task 7 lands.
+- `inference/src/models/qwen3_tts_metal.zig`: the talker from the
+  existing pieces (`rmsNormRope` with `.split_half`, the decode
+  attention, generic matvec over BF16, `siluMul`), the predictor's 15
+  steps encoded into one command buffer per frame (the per-step
+  dispatch is the risk: measure it), sampling on the CPU from the
+  logits as the other families do.
+- `inference/src/audio/qwen3_codec_metal.zig`: the decoder's plan.
+  Missing kernels (transposed convolution, SnakeBeta, the 72-row windowed
+  attention if `attentionSegments` does not cover it) are added to
+  `backends/metal/kernels.metal`; each new kernel gets a `make
+  test-metal` case against the CPU function.
+- Streaming: `Synthesizer` (in `qwen3_tts.zig`) yields PCM in chunks of a
+  configurable number of frames (default 4, 320 ms).
+- Measure on this machine, both sizes, recorded in qwen3-tts.md: first
+  audio after the text (proposed target ≤ 150 ms), real-time factor alone
+  (proposed ≥ 3×), bytes per frame against the estimate.
+- Gates: `qwen3-tts-{0.6b,1.7b}-trace-metal` (Metal against the CPU
+  fixture), `qwen3-tts-codec-metal` (Metal decode against CPU decode on
+  the same codes); `qwen3-tts-roundtrip-metal` once task 7 lands
+  (word error rate of the recognized speech against the text, on a
+  pinned list of 20 sentences, both sizes). If a kernel file shared with
+  other families changed, the gates `make verify-auto` names, and only
+  those.
 
-#### 5. ASR front end and streaming encoder, CPU
+#### 5. ASR front end and streaming encoder, CPU (worktree B)
 
-The mel front end with Nemotron's parameters: parameterize
-`inference/src/audio/mel.zig` `Bank` rather than copy it (it is shared
-with EmbeddingGemma 2, so its gates `embeddinggemma-audio-*` run).
-`inference/src/audio/nemotron_encoder.zig`: subsampling, 24 conformer
-blocks, the cache-aware state (`Stream.push(pcm)` returns the frames whose
-lookahead is complete). A unit test: pushing a clip in 80 ms pieces gives
-the rows one whole-clip pass gives at the same lookahead. Gates:
-`nemotron-asr-encoder-cpu`.
+- **Trace fixtures first.** `scripts/speech-traces/nemotron_trace.py`
+  in `.reference/venv-transformers/` (transformers at `c0d024fb`, CPU,
+  F32): for two clips (one LibriSpeech test-clean, one FLEURS non-English,
+  public, licences in `THIRD_PARTY_NOTICES.md`), the features, the
+  subsampling output, encoder rows at blocks 0, 11, 23, the prompt
+  block's output, the joint's first 20 logit rows and the token ids, at
+  lookaheads 0 and 3; plus the same clip streamed chunk by chunk.
+  Pinned under `tests/fixtures/nemotron-asr/` with an index.
+- **The speech corpus.** `scripts/speech-corpus.py` fetches a pinned set
+  (about 40 LibriSpeech test-clean and 20 FLEURS clips across 4
+  languages, each by URL and SHA-256 in `tests/fixtures/speech-corpus.json`
+  with its reference transcript) into `.reference/speech/`, as `make
+  eval-corpus` does for wikitext; a `make speech-corpus` target.
+- **Front end.** `inference/src/audio/mel.zig` `Bank` gains a `Spec`
+  (window shape and length, centring, power or magnitude, Slaney or HTK
+  scale and area normalization, log guard, pre-emphasis) with Gemma's as
+  one value and Nemotron's as another (nemotron-asr.md § The front end);
+  `features` keeps Gemma's output bit for bit (EmbeddingGemma's unit
+  tests and gates `embeddinggemma-audio-*` prove it).
+- `inference/src/audio/nemotron_encoder.zig`: `bind`, the subsampling
+  (three causal 3×3 stride-2 convolutions, channel-major flatten, 4352 →
+  1024), 24 blocks (macaron FFN halves, Transformer-XL attention with
+  per-layer `bias_u`/`bias_v` and `relative_k_proj`, the chunked mask,
+  the GLU and causal depthwise convolution with LayerNorm), the prompt
+  block (one-hot 128, 1152 → 2048 → 1024, ReLU). `Stream.push(pcm)`
+  returns the rows whose chunk is complete, carrying the state of
+  nemotron-asr.md § Cache-aware streaming; `finish()` flushes as the
+  whole-clip pass ends. Compare `gemma4a.zig` first: the Gemma 4 audio
+  encoder is a conformer too; share what is truly the same, nothing by
+  default.
+- Unit test: a clip of N = 1 + 8r + 8(r+1)m mel frames gives the same
+  rows streamed in chunks as in one pass, at r = 0 and 3.
+- Gate `nemotron-asr-encoder-cpu` (features, subsampling, block rows
+  against the trace).
 
-#### 6. ASR transducer and tokenizer, CPU
+#### 6. ASR transducer and tokenizer, CPU; `nuclis transcribe` (worktree B)
 
-`inference/src/audio/nemotron_rnnt.zig`: the prediction network, the
-joint, greedy decoding (≤ 10 symbols per frame), the language prompt;
-the tokenizer from `tokenizer.json`. `nuclis transcribe <file> [--stream]
-[--language <code>]` in `src/transcribe.zig`, partials printed as they
-come with `--stream`. Gates: `nemotron-asr-trace-cpu`, `nemotron-asr-wer-cpu`
-(on a handful of the pinned clips; the CPU is slow).
+- `inference/src/audio/nemotron_rnnt.zig`: the prediction network (zero
+  start, embedding, two LSTM layers of 640, gates stored `[i|f|g|o]`),
+  the joint `head(relu(e + g))` to 13,088, greedy decoding of at most 10
+  symbols per row, blank 13087, timestamps `t · 0.08 s`.
+- Tokenizer: decode only, a piece table from `tokenizer.json`
+  (`inference/src/tokenizer/hf_json.zig` refuses the `Precompiled`
+  normalizer by name; a decode-only loader for Metaspace pieces is
+  enough), the 39 language tags stripped by id and reported.
+- `src/transcribe.zig` and its help: `nuclis transcribe <file>
+  [--stream] [--lookahead 0|3|6|13] [--language <code>] [--backend
+  cpu|metal] [--json]`; `--stream` feeds the file in 80 ms pieces and
+  prints partials as they change.
+- Gates: `nemotron-asr-trace-cpu` (the joint logits and token ids against
+  the trace), `nemotron-asr-wer-cpu` (6 corpus clips; bound from the
+  first run).
 
-#### 7. ASR on Metal
+#### 7. ASR on Metal (worktree B)
 
-`nemotron_metal.zig`: the encoder's chunk step and the transducer.
-Measure: time per 80 ms chunk at lookahead 3 (target ≤ 15 ms, proposed),
-the final transcript's delay after the speech ends. Gates:
-`nemotron-asr-trace-metal`, `nemotron-asr-wer-metal` (the whole pinned
-set).
+- `inference/src/audio/nemotron_metal.zig`: the encoder's chunk step and
+  the joint; the LSTM steps on the CPU unless measured slow. New kernels
+  (relative-position scores, GLU, the 2-D subsampling convolution) each
+  with a `make test-metal` case against the CPU function.
+- Measure, recorded in nemotron-asr.md: time per chunk at lookahead 3
+  (4 rows, 320 ms of audio; proposed target ≤ 15 ms), the final
+  transcript's delay after the speech ends, word error rate per corpus
+  language against the card's figures.
+- Gates: `nemotron-asr-trace-metal`, `nemotron-asr-wer-metal` (the whole
+  corpus).
 
 #### 8. Gemma 4 E4B audio input in chat
 
@@ -222,7 +342,12 @@ shared, so its rows must match), `gemma4-e4b-*` gates verify-auto selects.
 
 #### 9. Serve: kinds, pinning, `POST /v1/audio/speech`
 
-`catalog.ModelKind` gains `speech` and `transcription`; the server keeps
+`catalog.ModelKind` gains `speech` and `transcription`, and each family a
+catalogue entry (names proposed: `qwen3-tts-0.6b`, `nemotron-asr-0.6b`) so
+`nuclis model pull <name>` fetches the pinned set: Muon, which bundles the
+nuclis binary, sets a new user up with nothing but those names. Check that
+`model pull --json` reports progress as parseable lines while it
+downloads; add it if not. The server keeps
 one of each open beside the language model (`src/api/memory.zig` budget);
 `serve.pin` (and `--pin <name>`, repeated) names models the budget never
 closes. `src/api/speech/`: OpenAI's `/v1/audio/speech` (`model`, `input`,
@@ -261,7 +386,10 @@ API routes), `docs/guide/api.md` (the speech and transcription sections),
 `docs/architecture.md` § The API layer, `docs/README.md`. README: a
 "Speech in and out" section with the measured numbers, linking Muon as
 the experimental app built on it (the link added when Muon's repository
-is public). Website (`site/index.html`): a section of the same, with
+is public). After the merge, a nuclis release carrying this unit is what
+Muon's public release bundles (its tarball pinned by SHA-256 in Muon's
+repository); the release itself follows AGENTS.md § Versioning, on the
+user's word. Website (`site/index.html`): a section of the same, with
 figures copied from the README so `make site-check` holds. Gates:
 `make docs-check`, `make site-check`, screenshots of the site section.
 

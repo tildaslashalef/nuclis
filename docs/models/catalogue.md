@@ -77,9 +77,21 @@ values [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/workl
 | | | `mmproj-BF16.gguf` | 982,074,880 | `995aaa56e88b9b631f651861d659b728a625ccc02a238be37cff56cf11dc0032` |
 | `ConwayResearch/Underdog-Saluki-27B-1.0` | `4f60eba09f4b6db63c72915d328d97e1d93edb8c` | `Underdog-Saluki-27B-1.0-IQ2-mix.gguf` | 7,898,369,152 | `4a673518b11b1c4445f9b9a9d3c40356f5ba39f6a6260dcb25f3fbfd475d9efb` |
 | | | `mmproj-Underdog-Saluki-27B-1.0-Q8_0.gguf` | 629,246,976 | `2e0b88b680a45a58eea666b9776a89601b16f4ef575b871a686d82ee65938756` |
+| `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | `85e237c12c027371202489a0ec509ded67b5e4b5` | `model.safetensors` | 1,811,626,576 | `bc3c7e785eb961179c25450d1acff03f839e0002f2f3a5aeb67b5735c0fa2adb` |
+| | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
+| `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | `0c0e3051f131929182e2c023b9537f8b1c68adfe` | `model.safetensors` | 3,833,402,552 | `38b1d5971bdbd982b561cccec982669a53b0537c3cf5e9bd4778ed07bb2f5137` |
+| | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
+| `nvidia/nemotron-3.5-asr-streaming-0.6b` | `ea30d66debe3740a08b573244286791d423d6b3e` | `model.safetensors` | 2,552,062,944 | `9eebdd6590289cb3030f310858f3df93256600a800a3e8200c5993d5f967e174` |
 
 The Saluki rows were pulled and verified on 2026-10-14; the file is not a
 catalogue entry ([saluki.md](saluki.md)).
+
+The Qwen3-TTS (both sizes; the codec files are byte-identical) and Nemotron rows were pulled and verified on 2026-10-27,
+each with its configuration and tokenizer files as support files
+([qwen3-tts.md](qwen3-tts.md), [nemotron-asr.md](nemotron-asr.md)); the
+codec is a separate `--file speech_tokenizer/model.safetensors` pull,
+since a subdirectory holding other weights is another artifact. Neither
+is a catalogue entry yet.
 
 The 26B-A4B and Muse rows were verified by pulls on 2026-09-17 and entered
 the catalogue the same day as `gemma-4-26b-a4b` and `muse-glimmer-30b`,
