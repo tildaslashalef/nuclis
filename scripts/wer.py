@@ -25,6 +25,12 @@ list (`tests/fixtures/tts-roundtrip.json`) is spoken by `nuclis speak
 --model <--tts-model> --backend <--tts-backend>` with its seed, recognized
 as above, and its words scored against the text, normalized alike.
 docs/models/qwen3-tts.md § The round trip.
+
+`--chat` scores a language model that hears audio instead: each clip goes
+to `nuclis generate --model <--model> --audio <clip> --prompt CHAT_PROMPT
+--temperature 0 --think off --json --backend <--backend>` and its answer is
+the transcript, normalized alike. docs/models/gemma4.md § Audio input on
+the E4B.
 """
 
 from __future__ import annotations
@@ -45,6 +51,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 CORPUS = ROOT / "tests/fixtures/speech-corpus.json"
 SPEECH = ROOT / ".reference/speech"
 APOSTROPHES = "'’ʼ`´"
+# The fixed request `--chat` sends with every clip.
+CHAT_PROMPT = "Transcribe this audio in the language it is spoken in. Write only the transcript."
 
 
 def normalize(text: str) -> list[str]:
@@ -93,13 +101,40 @@ def recognize(
     return json.loads(done.stdout)
 
 
+def hear(nuclis: str, model: str, path: pathlib.Path, backend: str, samples: int) -> dict[str, Any]:
+    """`nuclis generate --audio` of one file, greedy: a report shaped as `recognize`'s."""
+    command = [nuclis, "generate", "--model", model, "--audio", str(path), "--prompt", CHAT_PROMPT]
+    command += ["--temperature", "0", "--think", "off", "--json", "--backend", backend]
+    done = subprocess.run(command, capture_output=True, text=True, check=False)
+    if done.returncode != 0:
+        raise SystemExit(f"{' '.join(command)}: exit {done.returncode}\n{done.stderr}")
+    report = json.loads(done.stdout)
+    spent = report.get("audio_milliseconds", 0) + report["prefill_milliseconds"] + report["decode_milliseconds"]
+    return {
+        "text": report["text"],
+        "audio_seconds": samples / 16000,
+        "timings": {"transcribe_ms": spent},
+        "language": None,
+    }
+
+
 def transcribe(
-    nuclis: str, model: str, clip: dict[str, Any], speech: pathlib.Path, auto: bool, lookahead: int, backend: str
+    nuclis: str,
+    model: str,
+    clip: dict[str, Any],
+    speech: pathlib.Path,
+    auto: bool,
+    lookahead: int,
+    backend: str,
+    chat: bool = False,
 ) -> Result:
     path = speech / clip["file"]
     if not path.is_file():
         raise SystemExit(f"{path}: missing; run make speech-corpus")
-    report = recognize(nuclis, model, path, "auto" if auto else clip["language"], lookahead, backend)
+    if chat:
+        report = hear(nuclis, model, path, backend, clip["samples"])
+    else:
+        report = recognize(nuclis, model, path, "auto" if auto else clip["language"], lookahead, backend)
     reference = normalize(clip.get("normalized") or clip["text"])
     hypothesis = normalize(report["text"])
     return Result(
@@ -178,7 +213,12 @@ def summarize(results: list[Result]) -> dict[str, dict[str, float]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--nuclis", default="./zig-out/bin/nuclis", help="the binary to run")
-    parser.add_argument("--model", help="the checkpoint directory (required unless --self-test)")
+    parser.add_argument(
+        "--model", help="the checkpoint directory (required unless --self-test); with --chat, a language model's name"
+    )
+    parser.add_argument(
+        "--chat", action="store_true", help="a language model hears each clip (nuclis generate --audio)"
+    )
     parser.add_argument("--speech", type=pathlib.Path, default=SPEECH, help="the fetched corpus (.reference/speech)")
     parser.add_argument("--clips", help="comma-separated corpus ids; default every clip")
     parser.add_argument("--auto", action="store_true", help="the prompt auto instead of each clip's locale")
@@ -217,7 +257,9 @@ def main() -> int:
     started = time.monotonic()
     results: list[Result] = []
     for clip in clips:
-        result = transcribe(args.nuclis, args.model, clip, args.speech, args.auto, args.lookahead, args.backend)
+        result = transcribe(
+            args.nuclis, args.model, clip, args.speech, args.auto, args.lookahead, args.backend, args.chat
+        )
         results.append(result)
         rate = result.errors / max(1, len(result.reference))
         print(

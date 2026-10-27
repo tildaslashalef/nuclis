@@ -74,6 +74,9 @@
    "path": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/embeddinggemma-2-BF16.gguf",
    "mmproj": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/mmproj-BF16.gguf"
   },
+  "embeddinggemma_mmproj": {
+   "path": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/mmproj-BF16.gguf"
+  },
   "qwen38_dflash2": {
    "path": "~/.nuclis/models/z-lab/Qwen3.8-27B-DFlash2-GGUF/Qwen3.8-27B-DFlash2-Q8_0.gguf"
   },
@@ -3633,6 +3636,101 @@
    },
    "note": "about 12 minutes",
    "evidence": "docs/engine/vision.md#gemma-4s-projectors-2026-09-23"
+  },
+  {
+   "name": "gemma4-e4b-audio-metal",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_e4b",
+   "baseline": "embeddinggemma_mmproj",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/audio/audio.zig",
+    "inference/src/audio/audio_bridge.m",
+    "inference/src/audio/mel.zig",
+    "inference/src/audio/gemma4a*.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/gguf.zig",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/profiles/gemma4*.zig",
+    "inference/src/profiles/root.zig",
+    "inference/src/quant/**",
+    "inference/src/runtime/**",
+    "inference/src/vision/gemma4.zig",
+    "tests/fixtures/embeddinggemma-inputs/*.wav"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--audio-check",
+    "{mmproj}",
+    "--audio-twin",
+    "{baseline}",
+    "--audio-clip",
+    "tests/fixtures/embeddinggemma-inputs/speech-1.wav",
+    "--audio-clip",
+    "tests/fixtures/embeddinggemma-inputs/speech-2.wav",
+    "--audio-clip",
+    "tests/fixtures/embeddinggemma-inputs/tone-1khz.wav"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "E4B's companion audio encoder on EmbeddingGemma 2's three pinned clips: on the CPU reference its rows before the embedder equal EmbeddingGemma 2's encoder's bit for bit (751 identical tensors); the engine's Metal rows against the CPU's within 2e-3 max abs / 4e-5 relative RMS (first run 2026-10-27: 5.4e-4 / 9.7e-6 on the tone, 2.8e-5 / 1.1e-6 on speech); then the north clip in a chat prompt, 11 greedy steps against one prefill within 2e-2",
+   "evidence": "docs/models/gemma4.md#audio-input-on-the-e4b-2026-10-27"
+  },
+  {
+   "name": "gemma4-e4b-audio-asr",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_e4b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/audio/audio.zig",
+    "inference/src/audio/audio_bridge.m",
+    "inference/src/audio/mel.zig",
+    "inference/src/audio/gemma4a*.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/gguf.zig",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/profiles/gemma4*.zig",
+    "inference/src/profiles/root.zig",
+    "inference/src/quant/**",
+    "inference/src/runtime/**",
+    "inference/src/vision/gemma4.zig",
+    "src/generate.zig",
+    "src/cli.zig",
+    "scripts/wer.py",
+    "tests/fixtures/speech-corpus.json"
+   ],
+   "command": [
+    "python3",
+    "scripts/wer.py",
+    "--nuclis",
+    "{nuclis}",
+    "--chat",
+    "--model",
+    "gemma-4-e4b-qat",
+    "--backend",
+    "metal",
+    "--clips",
+    "librispeech-61-70968-0000,librispeech-672-122797-0000,librispeech-1089-134686-0000,fleurs-de_de-1661,fleurs-fr_fr-1662,fleurs-es_419-1661",
+    "--max-wer",
+    "0.05"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "nuclis generate --audio on the catalogue entry (its mmproj), greedy, one fixed prompt (scripts/wer.py CHAT_PROMPT), over six speech-corpus clips (make speech-corpus): three LibriSpeech test-clean, one FLEURS clip each in German, French and Spanish; the word error rate over all must stay at most 5 % (first run 2026-10-27: 1 error in 114 words, 0.88 %; the bound allows four more)",
+   "evidence": "docs/models/gemma4.md#audio-input-on-the-e4b-2026-10-27"
   },
   {
    "name": "gemma4-e4b-draft-trace-metal",
