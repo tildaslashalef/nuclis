@@ -467,6 +467,28 @@ test "segments end at terminal punctuation, a pause, or the length bound; tags n
     try std.testing.expect(long.segments.items[0].language == null);
 }
 
+test "words: a leading space starts one, punctuation joins it, times span its sounding rows" {
+    var s: Segmenter = .init(std.testing.allocator, null);
+    defer s.deinit();
+    try feed(&s, &.{
+        .{ .row = 3, .text = "He" }, .{ .row = 4, .text = "llo" }, .{ .row = 4, .text = "," },
+        .{ .row = 6, .text = " " },  .{ .row = 7, .text = "wor" }, .{ .row = 9, .text = " ld" },
+        .{ .row = 10, .text = "." },
+    });
+    try s.settle(0, true);
+    const words = s.words.items;
+    try std.testing.expectEqual(@as(usize, 3), words.len);
+    try std.testing.expectEqualStrings("Hello,", words[0].word);
+    try std.testing.expectEqual(@as(u64, 240), words[0].start_ms);
+    try std.testing.expectEqual(@as(u64, 400), words[0].end_ms);
+    // A bare space starts the word; its text, and its time, begin after.
+    try std.testing.expectEqualStrings("wor", words[1].word);
+    try std.testing.expectEqual(@as(u64, 560), words[1].start_ms);
+    // The period, emitted a row late, does not move the end.
+    try std.testing.expectEqualStrings("ld.", words[2].word);
+    try std.testing.expectEqual(@as(u64, 800), words[2].end_ms);
+}
+
 test "srt and vtt: numbered cues, times by separator, the WEBVTT header" {
     const segments = [_]Segment{
         .{ .id = 0, .start_ms = 0, .end_ms = 1520, .text = "Hello world.", .language = "en-US", .first_word = 0, .words = 0 },

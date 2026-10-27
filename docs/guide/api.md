@@ -937,9 +937,11 @@ with pongs; a close is answered once what was asked before it (a
 - `final` after `finish`: the text (equal to `nuclis transcribe --json`'s
   for the same samples, lookahead, and language), the language tag the
   model emitted (`null` if none), the words, and the utterance's length.
-  A word starts at a piece that begins with a space; its `start` and
-  `end` are the 80 ms encoder rows its pieces were emitted at, from the
-  utterance's start, which trail the speech by up to the lookahead. An
+  Words are grouped as a file's are ([segments](#segments)): a word
+  starts at a piece that begins with a space; its `start` and `end` are
+  the 80 ms encoder rows its pieces were emitted at (a late punctuation
+  mark's row left out), from the utterance's start, which trail the
+  speech by up to the lookahead. An
   utterance with no audio has an empty final.
 - `error` with a stable `code` (below); the session continues unless a
   close follows.
@@ -1426,11 +1428,12 @@ measured E4B at 56.4 tokens/s alone and 54.8 while a clip streamed. Both
 clips are among the `nemotron-asr-stream-route` gate's four, whose
 finals equal `nuclis transcribe`'s text.
 
-### File transcription, 2026-10-27, commit `4390fa8`
+### File transcription, 2026-10-27, commit `c4fe892`
 
 Apple M4 Pro (48 GB), ReleaseSafe (`make build`), Zig 0.17.0, macOS 27.0;
-a fresh `nuclis serve` with `nemotron-asr-0.6b` open on Metal
-(`nvidia/nemotron-3.5-asr-streaming-0.6b` at `ea30d66d`), lookahead 3,
+measured on the same file-route code before its rebase onto the live
+route (then `4390fa8`); a fresh `nuclis serve` with `nemotron-asr-0.6b`
+open on Metal (`nvidia/nemotron-3.5-asr-streaming-0.6b` at `ea30d66d`), lookahead 3,
 `auto`. **The machine was shared**: another session's builds and tests
 held it (load average 2–7), and the same run measured 42–64× real time
 from one run to the next. The recording is `scripts/transcription-check.py

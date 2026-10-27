@@ -14,6 +14,7 @@ const inference = @import("inference");
 const config = @import("../../config.zig");
 const catalog = @import("../../catalog.zig");
 const audio_catalog = @import("../../audio/catalog.zig");
+const transcript = @import("../../audio/transcript.zig");
 const http = @import("../http.zig");
 const websocket = @import("../websocket.zig");
 const errors = @import("../errors.zig");
@@ -22,7 +23,6 @@ const router_mod = @import("../router.zig");
 const Service = @import("service.zig").Service;
 
 const asr = inference.audio.nemotron_asr;
-const rnnt = inference.audio.nemotron_rnnt;
 const mel = inference.audio.mel;
 const lookaheads = inference.audio.nemotron_encoder.lookaheads;
 const Code = websocket.Code;
@@ -218,34 +218,9 @@ fn sample(b: [2]u8) f32 {
 
 // ----- the server's events -----
 
-pub const Word = struct { word: []const u8, start: f64, end: f64 };
-
-/// A token's text (spaces decoded, specials left out) and its row.
-pub const Piece = struct { text: []const u8, row: u32 };
-
-/// Words from pieces: a piece that starts with a space starts a word; its
-/// times are its first row's start and its last row's end.
-pub fn groupWords(arena: std.mem.Allocator, pieces: []const Piece) ![]Word {
-    var words: std.ArrayList(Word) = .empty;
-    var word: std.ArrayList(u8) = .empty;
-    var first: u32 = 0;
-    var last: u32 = 0;
-    for (pieces) |p| {
-        if ((p.text.len > 0 and p.text[0] == ' ') or word.items.len == 0) {
-            if (word.items.len > 0) try words.append(arena, wordOf(try word.toOwnedSlice(arena), first, last));
-            word = .empty;
-            first = p.row;
-        }
-        try word.appendSlice(arena, std.mem.trimStart(u8, p.text, " "));
-        last = p.row;
-    }
-    if (word.items.len > 0) try words.append(arena, wordOf(try word.toOwnedSlice(arena), first, last));
-    return words.items;
-}
-
-fn wordOf(text: []const u8, first: u32, last: u32) Word {
-    return .{ .word = text, .start = @as(f64, @floatFromInt(first)) * rnnt.seconds_per_row, .end = @as(f64, @floatFromInt(last + 1)) * rnnt.seconds_per_row };
-}
+/// A word with its times: the grouping the file route and `nuclis
+/// transcribe --segments` use (`audio/transcript.zig`).
+pub const Word = transcript.Word;
 
 fn writeSeconds(s: *std.json.Stringify, seconds: f64) !void {
     try s.print("{d:.3}", .{seconds});
@@ -295,9 +270,9 @@ pub fn writeFinal(out: *std.Io.Writer, text: []const u8, language: ?[]const u8, 
         try s.objectField("word");
         try s.write(w.word);
         try s.objectField("start");
-        try writeSeconds(&s, w.start);
+        try writeSeconds(&s, transcript.seconds(w.start_ms));
         try s.objectField("end");
-        try writeSeconds(&s, w.end);
+        try writeSeconds(&s, transcript.seconds(w.end_ms));
         try s.endObject();
     }
     try s.endArray();
@@ -891,16 +866,11 @@ const Session = struct {
 };
 
 /// The final's words: the transcriber's tokens, specials left out.
-fn wordsOf(arena: std.mem.Allocator, t: *const asr.Transcriber) ![]Word {
-    const table = &t.model.table;
-    var pieces: std.ArrayList(Piece) = .empty;
-    for (t.tokens.items) |token| {
-        if (table.isSpecial(token.id)) continue;
-        var text: std.Io.Writer.Allocating = .init(arena);
-        try table.writePiece(table.piece(token.id) orelse continue, &text.writer);
-        try pieces.append(arena, .{ .text = text.written(), .row = token.row });
-    }
-    return groupWords(arena, pieces.items);
+/// The utterance's words, grouped as a file's are; in `arena`.
+fn wordsOf(arena: std.mem.Allocator, t: *const asr.Transcriber) ![]const Word {
+    var segmenter: transcript.Segmenter = .init(arena, null);
+    _ = try segmenter.update(t.model, t.tokens.items, t.rowsDecoded(), true);
+    return segmenter.words.items;
 }
 
 fn sendClose(out: *std.Io.Writer, code: ?u16, reason: []const u8) void {
@@ -971,33 +941,13 @@ test "PCM: little-endian 16-bit as audio.decode reads it, a sample split across 
     try std.testing.expectEqualSlices(f32, &.{ 0.5, -1, 32767.0 / 32768.0 }, out.items);
 }
 
-test "words: a leading space starts one, punctuation joins it, times span its rows" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-    const words = try groupWords(arena_state.allocator(), &.{
-        .{ .text = "He", .row = 3 }, .{ .text = "llo", .row = 4 }, .{ .text = ",", .row = 4 },
-        .{ .text = " ", .row = 6 },  .{ .text = "wor", .row = 7 }, .{ .text = " ld", .row = 9 },
-        .{ .text = ".", .row = 10 },
-    });
-    try std.testing.expectEqual(@as(usize, 3), words.len);
-    try std.testing.expectEqualStrings("Hello,", words[0].word);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.24), words[0].start, 1e-9);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.40), words[0].end, 1e-9);
-    try std.testing.expectEqualStrings("wor", words[1].word);
-    // A bare space starts the word; its text, and its time, begin after.
-    try std.testing.expectApproxEqAbs(@as(f64, 0.56), words[1].start, 1e-9);
-    try std.testing.expectEqualStrings("ld.", words[2].word);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.88), words[2].end, 1e-9);
-    try std.testing.expectEqual(@as(usize, 0), (try groupWords(arena_state.allocator(), &.{})).len);
-}
-
 test "events as the client reads them" {
     var buffer: [512]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buffer);
     try writePartial(&w, "hello \"you\"", 1.28);
     try std.testing.expectEqualStrings("{\"type\":\"partial\",\"text\":\"hello \\\"you\\\"\",\"audio_seconds\":1.280}", w.buffered());
     w.end = 0;
-    try writeFinal(&w, "Hi.", "en-US", &.{.{ .word = "Hi.", .start = 0.24, .end = 0.4 }}, 0.75);
+    try writeFinal(&w, "Hi.", "en-US", &.{.{ .word = "Hi.", .start_ms = 240, .end_ms = 400 }}, 0.75);
     try std.testing.expectEqualStrings("{\"type\":\"final\",\"text\":\"Hi.\",\"language\":\"en-US\",\"words\":[{\"word\":\"Hi.\",\"start\":0.240,\"end\":0.400}],\"audio_seconds\":0.750}", w.buffered());
     w.end = 0;
     try writeFinal(&w, "", null, &.{}, 0);
