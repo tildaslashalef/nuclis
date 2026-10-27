@@ -202,6 +202,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 15 | Serve: file transcription for long recordings (`POST /v1/audio/transcriptions`) | C | 7, 9 | main, beside 10 |
 | 16 | Agent: a short answer after a folded thought is not drawn | — | — | any worktree |
 | 17 | Faster image encoding when an image is attached in the agent | — | — | any worktree |
+| 18 | Audio files dropped into the agent, for models that hear | — | 8 | any worktree (after 16 if both touch the transcript) |
 
 Worktree rule: a track owns its new files. Shared registrations
 (`src/catalog.zig`, `gates.json`, `docs/spec.md`, `docs/README.md`,
@@ -578,6 +579,30 @@ kernel as the deferred long-context prefill item). Steps:
    token count), checked with `make shot`.
 Report `image_milliseconds` before and after per family, and the time
 from Enter to first token in the chat.
+
+#### 18. Audio files dropped into the agent, for models that hear
+
+Asked by the user (2026-10-27). Task 8 gave Gemma 4 E4B audio in the API
+and `nuclis generate --audio`, not in the agent. Here a dropped (pasted
+path) `.wav`, `.m4a`, `.mp3`, `.flac`, or `.aiff` attaches as a chip, as an
+image does today (`src/agent/root.zig`'s attachment handling, the
+completer's `Media`, the profile's `Message.audio`):
+
+- The chip names the clip and its length (`audio #1: memo.m4a (12.4 s → 310
+  tokens)`); a clip over 30 s is refused at drop with the limit named, not
+  cut; a model that does not hear refuses at drop by name ("gemma-4-12b-qat
+  does not hear audio; gemma-4-e4b-qat does"), never silently drops it.
+- The clip is encoded at drop, in the background, as task 17 does for
+  images; its digest keys the conversation cache (task 8), so follow-up
+  turns read only their new tokens.
+- Sessions: the clip's path and digest are saved as images' are
+  (docs/spec.md § 7.4), and a resumed session re-encodes it, or says it is
+  gone.
+- `/help` and the spec's § 7.2 (editor) list audio beside images.
+- Checks: unit tests of the drop parsing and refusals; `make shot` driving
+  a drop of a corpus clip, a question about it, a follow-up turn
+  (captures before and after); the agent task list is not affected (no
+  prompt or tool change), so no `make agent-eval`.
 
 #### 11. Voice scheduling measured
 
