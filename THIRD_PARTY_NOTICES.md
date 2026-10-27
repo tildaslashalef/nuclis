@@ -208,6 +208,13 @@ code from them is present in nuclis.
   it in a venv under `.reference/`; the fixtures under
   `inference/src/models/fixtures/clef/` are outputs of running it, not
   copies of it.
+- **Qwen3-TTS** (`qwen-tts` 0.1.1) by the Qwen team (Apache-2.0,
+  <https://github.com/QwenLM/Qwen3-TTS> at commit `022e286b`) with PyTorch
+  2.14.1 and Transformers 4.57.3 — the definition of the talker, the code
+  predictor, and the codec decoder. `scripts/speech-traces/qwen3_tts_trace.py`
+  runs it in a venv under `.reference/`; the fixtures under
+  `tests/fixtures/qwen3-tts/` are outputs of running it on the pulled
+  `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` checkpoint, not copies of it.
 - Model documentation: the Qwen3.8 and Gemma 4 model cards and configuration
   on Hugging Face, the `convaiinnovations/laya` model card, and the
   `Cloudflare/clef-flash` model card.

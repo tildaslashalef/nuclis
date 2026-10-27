@@ -1,0 +1,241 @@
+{
+ "cases": {
+  "0.6b-ryan-fox": {
+   "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+   "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+   "codec_sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+   "speaker": "ryan",
+   "language": "english",
+   "text": "The quick brown fox jumps over the lazy dog.",
+   "frames_generated": 46,
+   "codec_frames": 24,
+   "codec_attention": "sdpa",
+   "codec_prefix_vs_whole_max_abs": 6.705522537231445e-07,
+   "files": {
+    "codes": {
+     "file": "0.6b-ryan-fox/codes.u16",
+     "shape": [
+      46,
+      16
+     ],
+     "dtype": "u16",
+     "sha256": "c1b72677ed7fa37c6111f4ce999a8dd9182dde933aef870d4bf630cd2e4c7b79",
+     "note": "every frame the talker and predictor sampled, [frame][group]"
+    },
+    "codec/quantized": {
+     "file": "0.6b-ryan-fox/codec/quantized.f32",
+     "shape": [
+      24,
+      512
+     ],
+     "dtype": "f32",
+     "sha256": "c4953d5ab76badb06f206825621f44e2fcc1b67f972b16ca0fbb5a8e8b5d8c35",
+     "note": "quantized of the first 24 frames, rows 0..24",
+     "rows": [
+      0,
+      24
+     ]
+    },
+    "codec/pre_conv": {
+     "file": "0.6b-ryan-fox/codec/pre_conv.f32",
+     "shape": [
+      24,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "e49d78cb2deb638cbfd07fa78a405e727d8f46b67ad985e64d8772e111641b9d",
+     "note": "pre_conv of the first 24 frames, rows 0..24",
+     "rows": [
+      0,
+      24
+     ]
+    },
+    "codec/transformer": {
+     "file": "0.6b-ryan-fox/codec/transformer.f32",
+     "shape": [
+      24,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "42fb61557ebbe2be0081db47130a43ada84767e452a249338d4636cdcbac0cc2",
+     "note": "transformer of the first 24 frames, rows 0..24",
+     "rows": [
+      0,
+      24
+     ]
+    },
+    "codec/upsample.0": {
+     "file": "0.6b-ryan-fox/codec/upsample.0.f32",
+     "shape": [
+      32,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "d26e32d6bd2c2b4da41694bd03a3546c51422a7e359e2502d415104438b5ceb3",
+     "note": "upsample.0 of the first 24 frames, rows 16..48",
+     "rows": [
+      16,
+      48
+     ]
+    },
+    "codec/upsample.1": {
+     "file": "0.6b-ryan-fox/codec/upsample.1.f32",
+     "shape": [
+      32,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "96c3b7b9bdd3046f09f12c801b97f161267d6f09b52312cd7c520f89d2204830",
+     "note": "upsample.1 of the first 24 frames, rows 64..96",
+     "rows": [
+      64,
+      96
+     ]
+    },
+    "codec/decoder.0": {
+     "file": "0.6b-ryan-fox/codec/decoder.0.f32",
+     "shape": [
+      16,
+      1536
+     ],
+     "dtype": "f32",
+     "sha256": "4a0dc731e1df61a2c4d2423433aa1903028b56b5e610f7fb740449e9245d0739",
+     "note": "decoder.0 of the first 24 frames, rows 80..96",
+     "rows": [
+      80,
+      96
+     ]
+    },
+    "codec/decoder.1": {
+     "file": "0.6b-ryan-fox/codec/decoder.1.f32",
+     "shape": [
+      32,
+      768
+     ],
+     "dtype": "f32",
+     "sha256": "b6b1ada145a13000e38f6cd6fb76210fda36cb93fcc75c573df00b7051f1310c",
+     "note": "decoder.1 of the first 24 frames, rows 736..768",
+     "rows": [
+      736,
+      768
+     ]
+    },
+    "codec/decoder.2": {
+     "file": "0.6b-ryan-fox/codec/decoder.2.f32",
+     "shape": [
+      64,
+      384
+     ],
+     "dtype": "f32",
+     "sha256": "b9b9813b09669bb0f5985fd129637f7f10af6dfe9f960042e74c27ecac657080",
+     "note": "decoder.2 of the first 24 frames, rows 3776..3840",
+     "rows": [
+      3776,
+      3840
+     ]
+    },
+    "codec/decoder.3": {
+     "file": "0.6b-ryan-fox/codec/decoder.3.f32",
+     "shape": [
+      128,
+      192
+     ],
+     "dtype": "f32",
+     "sha256": "274c96d6d1ff1a38b578feb5149de2a254e58ab9c9d0c555841abf9e33319082",
+     "note": "decoder.3 of the first 24 frames, rows 15232..15360",
+     "rows": [
+      15232,
+      15360
+     ]
+    },
+    "codec/decoder.4": {
+     "file": "0.6b-ryan-fox/codec/decoder.4.f32",
+     "shape": [
+      256,
+      96
+     ],
+     "dtype": "f32",
+     "sha256": "86257eecd4194c90cd0637fae2d55ce07049f771f7b758212cfd49083b533e20",
+     "note": "decoder.4 of the first 24 frames, rows 45824..46080",
+     "rows": [
+      45824,
+      46080
+     ]
+    },
+    "codec/samples": {
+     "file": "0.6b-ryan-fox/codec/samples.f32",
+     "shape": [
+      46080
+     ],
+     "dtype": "f32",
+     "sha256": "11ce77a7dfd99e5ba15c218846a59377036e59b9a7890ebc924f75f409786561",
+     "note": "the clamped 24 kHz samples of the first 24 frames, rows 0..46080",
+     "rows": [
+      0,
+      46080
+     ]
+    }
+   }
+  },
+  "0.6b-ryan-window": {
+   "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+   "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+   "codec_sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+   "speaker": "ryan",
+   "language": "english",
+   "text": "Speech synthesis turns written words into sound. The talker predicts one frame of codes at a time, and the codec decoder turns those frames back into a waveform.",
+   "frames_generated": 171,
+   "codec_frames": 112,
+   "codec_attention": "sdpa",
+   "codec_prefix_vs_whole_max_abs": 9.797513484954834e-07,
+   "files": {
+    "codes": {
+     "file": "0.6b-ryan-window/codes.u16",
+     "shape": [
+      171,
+      16
+     ],
+     "dtype": "u16",
+     "sha256": "3589ff7e79e88dc2c4ac478e25502ab3db4a363d80f5aeb036db3c69570c2923",
+     "note": "every frame the talker and predictor sampled, [frame][group]"
+    },
+    "codec/transformer": {
+     "file": "0.6b-ryan-window/codec/transformer.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "0832d2ade8b2730b3648d5683164553e3aa9433668bd88716992a2aa5d71366a",
+     "note": "transformer of the first 112 frames, rows 96..112",
+     "rows": [
+      96,
+      112
+     ]
+    },
+    "codec/samples": {
+     "file": "0.6b-ryan-window/codec/samples.f32",
+     "shape": [
+      3840
+     ],
+     "dtype": "f32",
+     "sha256": "6a6d43d94bf926a815f5fb2bf7106bad5980710f3b2fb54c7f54f231646b5997",
+     "note": "the clamped 24 kHz samples of the first 112 frames, rows 211200..215040",
+     "rows": [
+      211200,
+      215040
+     ]
+    }
+   }
+  }
+ },
+ "$comment": "Written by scripts/speech-traces/qwen3_tts_trace.py; docs/models/qwen3-tts.md.",
+ "package": "QwenLM/Qwen3-TTS",
+ "package_commit": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
+ "torch": "2.14.1",
+ "transformers": "4.57.3",
+ "numpy": "2.5.4",
+ "device": "cpu",
+ "dtype": "float32",
+ "seed": 0
+}
