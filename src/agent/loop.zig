@@ -37,7 +37,7 @@ pub const Completer = completer.Completer;
 pub const Model = completer.Model;
 pub const Reply = completer.Reply;
 pub const Replay = completer.Replay;
-pub const Image = completer.Image;
+pub const Image = completer.Media;
 pub const freeImages = completer.freeImages;
 pub const Overflow = completer.Overflow;
 pub const increment = completer.increment;
@@ -341,7 +341,7 @@ pub const Agent = struct {
             if (item.images.len == 0) continue;
             // Encode first, commit after: a failed allocation leaves the
             // item as it was.
-            const fresh = try self.alloc.alloc(?inference.engine.PreparedImage, item.images.len);
+            const fresh = try self.alloc.alloc(?Encoded, item.images.len);
             defer self.alloc.free(fresh);
             var kept: usize = 0;
             for (item.images, fresh) |image, *f| {
@@ -355,9 +355,9 @@ pub const Agent = struct {
             };
             var at: usize = 0;
             for (item.images, fresh) |*image, f| {
-                if (f) |prepared| {
+                if (f) |encoded| {
                     self.alloc.free(image.prepared.features);
-                    images[at] = .{ .path = image.path, .bytes = image.bytes, .prepared = prepared };
+                    images[at] = .{ .path = image.path, .bytes = image.bytes, .digest = encoded.digest, .prepared = encoded.prepared };
                     refs[at] = images[at].ref();
                     at += 1;
                 } else {
@@ -373,15 +373,17 @@ pub const Agent = struct {
         return dropped;
     }
 
-    fn discard(alloc: Allocator, fresh: []const ?inference.engine.PreparedImage, err: Allocator.Error) Allocator.Error {
-        for (fresh) |f| if (f) |prepared| alloc.free(prepared.features);
+    fn discard(alloc: Allocator, fresh: []const ?Encoded, err: Allocator.Error) Allocator.Error {
+        for (fresh) |f| if (f) |encoded| alloc.free(encoded.prepared.features);
         return err;
     }
 
-    fn encodeAgain(self: *Agent, path: []const u8) !inference.engine.PreparedImage {
+    const Encoded = struct { prepared: inference.engine.PreparedImage, digest: [32]u8 };
+
+    fn encodeAgain(self: *Agent, path: []const u8) !Encoded {
         const bytes = try engine.readImage(self.alloc, self.io, path);
         defer self.alloc.free(bytes);
-        return self.model.encode_image(self.model.context, self.alloc, bytes);
+        return .{ .prepared = try self.model.encode_image(self.model.context, self.alloc, bytes), .digest = completer.digestOf(bytes) };
     }
 
     /// The last assistant message with any answer text, for the clipboard;

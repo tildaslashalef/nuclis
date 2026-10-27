@@ -37,7 +37,8 @@ pub const resume_mod = @import("resume.zig");
 pub const print_mode = @import("print.zig");
 pub const tools = @import("tools/root.zig");
 pub const loop = @import("loop.zig");
-const Open = @import("../completer.zig").Open;
+const completer_mod = @import("../completer.zig");
+const Open = completer_mod.Open;
 const terminal = tui.terminal;
 const screen = tui.screen;
 const editor = tui.editor;
@@ -1513,7 +1514,7 @@ fn loadImage(ui: *Ui, path: []const u8) !loop.Image {
     defer ui.alloc.free(bytes);
     const m = ui.completer.model();
     const prepared = try m.encode_image(m.context, ui.alloc, bytes);
-    return .{ .path = resolved, .bytes = bytes.len, .prepared = prepared };
+    return .{ .path = resolved, .bytes = bytes.len, .digest = completer_mod.digestOf(bytes), .prepared = prepared };
 }
 
 /// The session file's view of a turn's images (at most the editor's bound).

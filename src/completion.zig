@@ -165,6 +165,7 @@ pub const commands = [_]Command{
         prompt_tokens,
         raw,
         .{ .name = "--image", .value = .file, .repeat = true, .summary = "attach an image" },
+        .{ .name = "--audio", .value = .file, .repeat = true, .summary = "attach a clip (Gemma 4 E4B)" },
         image_max_tokens,
         think,
         .{ .name = "--logits", .value = .file, .summary = "write the final prompt logits" },

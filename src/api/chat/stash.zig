@@ -22,17 +22,20 @@ pub const max_age_s = 3600;
 pub const Key = [Sha256.digest_length]u8;
 
 /// A conversation as its client sends it, digested one message at a time:
-/// role, trimmed content, images, and an assistant's calls by name and
+/// role, trimmed content, images and clips, and an assistant's calls by name and
 /// arguments. Reasoning and call ids are left out: clients drop the one and
 /// rename the other.
 pub const Chain = struct {
     hasher: Sha256 = .init(.{}),
 
-    pub fn add(self: *Chain, message: Profile.Message, images: []const []const u8) void {
+    pub fn add(self: *Chain, message: Profile.Message, media: []const wire.Part) void {
         self.hasher.update(&.{@backingInt(message.role)});
         self.field(std.mem.trim(u8, message.content, " \t\r\n"));
-        self.count(images.len);
-        for (images) |image| self.field(image);
+        self.count(media.len);
+        for (media) |part| {
+            self.hasher.update(&.{@backingInt(part.kind)});
+            self.field(part.bytes);
+        }
         self.count(message.tool_calls.len);
         for (message.tool_calls) |call| {
             self.field(call.name);
@@ -238,13 +241,13 @@ pub fn restore(stash: *Stash, arena: Allocator, request: *wire.Request, now_s: i
     var spliced: usize = 0;
     var out: std.ArrayList(Profile.Message) = .empty;
     var counts: std.ArrayList(usize) = .empty;
-    var image_at: usize = 0;
+    var media_at: usize = 0;
     var i: usize = 0;
     while (i < messages.len) {
         const message = messages[i];
-        const images = request.images[image_at..][0..request.image_counts[i]];
-        image_at += images.len;
-        chain.add(message, images);
+        const media = request.media[media_at..][0..request.media_counts[i]];
+        media_at += media.len;
+        chain.add(message, media);
         if (message.role == .assistant) if (stash.get(chain.key(), now_s)) |exchange| {
             var end = i + 1;
             while (end < messages.len and messages[end].role == .tool) end += 1;
@@ -263,12 +266,12 @@ pub fn restore(stash: *Stash, arena: Allocator, request: *wire.Request, now_s: i
             }
         };
         try out.append(arena, message);
-        try counts.append(arena, request.image_counts[i]);
+        try counts.append(arena, request.media_counts[i]);
         i += 1;
     }
     if (spliced > 0) {
         request.messages = out.items;
-        request.image_counts = counts.items;
+        request.media_counts = counts.items;
     }
     return .{ .chain = chain, .spliced = spliced };
 }
@@ -436,7 +439,7 @@ test "an answer after hosted rounds comes back with the rounds the model read" {
     try testing.expectEqual(@as(usize, 1), again.spliced);
     const m = next.messages;
     try testing.expectEqual(@as(usize, 5), m.len);
-    try testing.expectEqual(@as(usize, 5), next.image_counts.len);
+    try testing.expectEqual(@as(usize, 5), next.media_counts.len);
     try testing.expectEqualStrings("Searching. ", m[1].content);
     try testing.expectEqualStrings("look it up", m[1].reasoning_content);
     try testing.expectEqual(@as(u32, 1), m[1].tool_calls[0].id);
@@ -533,7 +536,7 @@ test "a splice past the profile's message limit is skipped" {
     try record(&stash, arena, chain, .{ .role = .assistant, .content = "done" }, exchange, 0);
     const counts = try arena.alloc(usize, limits.messages);
     @memset(counts, 0);
-    var request: wire.Request = .{ .messages = try arena.alloc(Profile.Message, limits.messages), .images = &.{}, .image_counts = counts, .tools = &.{} };
+    var request: wire.Request = .{ .messages = try arena.alloc(Profile.Message, limits.messages), .media = &.{}, .media_counts = counts, .tools = &.{} };
     for (request.messages, 0..) |*message, i| message.* = switch (i) {
         0 => .{ .role = .user, .content = "q" },
         1 => .{ .role = .assistant, .content = "done" },
@@ -543,7 +546,7 @@ test "a splice past the profile's message limit is skipped" {
     try testing.expectEqual(limits.messages, request.messages.len);
     // With room, the same conversation takes it.
     request.messages = request.messages[0..3];
-    request.image_counts = request.image_counts[0..3];
+    request.media_counts = request.media_counts[0..3];
     try testing.expectEqual(@as(usize, 1), (try restore(&stash, arena, &request, 0)).spliced);
     try testing.expectEqual(@as(usize, 9), request.messages.len);
 }

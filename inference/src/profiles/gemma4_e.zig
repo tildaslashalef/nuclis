@@ -15,6 +15,7 @@ pub const template_aliases = [_][]const u8{};
 pub const stop_tokens = gemma4.stop_tokens;
 pub const bos_token = gemma4.bos_token;
 pub const image_placeholder = gemma4.image_placeholder;
+pub const audio_placeholder = gemma4.audio_placeholder;
 pub const reasoning = gemma4.reasoning;
 pub const stream_markers = gemma4.stream_markers;
 pub const efforts = gemma4.efforts;

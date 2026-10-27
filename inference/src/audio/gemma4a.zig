@@ -51,7 +51,12 @@ pub const relative = left + 1;
 pub const logit_cap: f32 = 50;
 pub const residual_weight: f32 = 0.5;
 pub const conv_kernel = 5;
+/// Google's `audio_config.rms_norm_eps` for every Gemma 4 audio tower. The
+/// header's `clip.audio.attention.layer_norm_epsilon` is not trusted beyond
+/// `accepted_header_epsilons`: E4B's file says 1e-5, a converter default,
+/// over byte-identical weights (docs/models/gemma4.md § Audio input on the E4B).
 pub const epsilon: f32 = 1e-6;
+const accepted_header_epsilons = [_]f64{ 1e-6, 1e-5 };
 
 /// Rows the encoder gives for `frames` mel frames: two stride-2 halvings.
 pub fn tokensFor(frames: usize) usize {
@@ -141,7 +146,9 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     if (!std.mem.eql(u8, try qwen3vl.stringValue(doc, "general.architecture"), "clip")) return error.UnsupportedArchitecture;
     if (!present(doc)) return error.UnsupportedProjector;
     switch (doc.get("clip.audio.attention.layer_norm_epsilon") orelse return error.MissingMetadata) {
-        .float => |f| if (@abs(f - epsilon) > 1e-9) return error.UnsupportedConfiguration,
+        .float => |f| for (accepted_header_epsilons) |e| {
+            if (@abs(f - e) <= e * 1e-3) break;
+        } else return error.UnsupportedConfiguration,
         else => return error.InvalidMetadata,
     }
     try expectUnsigned(doc, "clip.audio.embedding_length", hidden);

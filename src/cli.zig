@@ -397,6 +397,10 @@ pub fn parseArgs(args: []const []const u8) !Options {
                 if (g.image_count >= g.images.len) return error.TooManyImages;
                 g.images[g.image_count] = value;
                 g.image_count += 1;
+            } else if (command == .generate and std.mem.eql(u8, flag, "--audio")) {
+                if (g.clip_count >= g.clips.len) return error.TooManyClips;
+                g.clips[g.clip_count] = value;
+                g.clip_count += 1;
             } else if (command == .generate and std.mem.eql(u8, flag, "--logits")) {
                 if (g.logits_path != null) return error.DuplicateOption;
                 g.logits_path = value;

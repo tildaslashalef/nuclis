@@ -61,11 +61,18 @@ pub const ToolDefinition = struct {
 /// The projector's feature rows replace those placeholders at prefill.
 pub const ImageRef = struct { width_tokens: u32, height_tokens: u32 };
 
+/// An audio clip attached to a user message: the rows its encoder gives,
+/// which replace as many placeholders at prefill.
+pub const AudioRef = struct { tokens: u32 };
+
 pub const Message = struct {
     role: Role,
     content: []const u8,
     /// Images on a user message, rendered as marker tokens before the text.
     images: []const ImageRef = &.{},
+    /// Clips on a user message, rendered after its images and before the
+    /// text; only a profile with an `audio_placeholder` renders them.
+    audio: []const AudioRef = &.{},
     /// Assistant reasoning, supplied separately and never extracted from
     /// `content`; profiles that keep no reasoning in history ignore it.
     reasoning_content: []const u8 = "",
@@ -244,6 +251,14 @@ pub const Profile = enum {
     pub fn imagePlaceholder(self: Profile) ?[]const u8 {
         return switch (self) {
             inline else => |p| p.module().image_placeholder,
+        };
+    }
+
+    /// The placeholder token an audio span repeats, or null for a profile
+    /// that renders no audio (it would drop a message's clips).
+    pub fn audioPlaceholder(self: Profile) ?[]const u8 {
+        return switch (self) {
+            inline else => |p| if (@hasDecl(p.module(), "audio_placeholder")) p.module().audio_placeholder else null,
         };
     }
 

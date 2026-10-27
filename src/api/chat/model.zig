@@ -43,9 +43,14 @@ pub const Language = struct {
     /// What the last model asked for needed before it opened, for the
     /// message when it does not fit.
     needed: u64 = 0,
+    /// The companion file (images and audio share it) is in `footprint`.
+    companion_counted: bool = false,
+    /// The message whose clip the last request failed to encode, for the
+    /// message the client reads.
+    failed_clip: ?usize = null,
 
     /// What a request asked for that cannot be served, beside engine errors.
-    pub const Error = error{ ModelNotFound, NotALanguageModel, ImagesUnsupported, ContextFull, InvalidSamplingOptions };
+    pub const Error = error{ ModelNotFound, NotALanguageModel, ImagesUnsupported, AudioUnsupported, ContextFull, InvalidSamplingOptions };
 
     /// The model a request names (none: the open one, else `engine.model`),
     /// opened on this worker and the one before it closed when it is
@@ -121,6 +126,7 @@ pub const Language = struct {
     pub fn close(self: *Language, io: std.Io) void {
         if (self.budget) |b| if (self.name) |n| b.remove(io, n);
         self.footprint = 0;
+        self.companion_counted = false;
         if (self.open) |*open| {
             self.completer.deinit();
             open.deinit(self.gpa);
@@ -175,21 +181,34 @@ pub const Language = struct {
         self.completer.buffers.effort = effort;
 
         const m = self.completer.model();
-        const images = try arena.alloc(completer_mod.Image, request.images.len);
-        if (images.len > 0) {
-            try self.loadVision(io);
-            for (request.images, images) |bytes, *image| image.* = .{
-                .path = try arena.dupe(u8, "request"),
-                .bytes = bytes.len,
-                .prepared = try m.encode_image(m.context, arena, bytes),
-            };
-        }
+        const media = try arena.alloc(completer_mod.Media, request.media.len);
+        self.failed_clip = null;
         var next: usize = 0;
-        for (request.messages, request.image_counts) |*message, count| {
+        for (request.messages, request.media_counts, 0..) |*message, count, i| {
             if (count == 0) continue;
-            const refs = try arena.alloc(Profile.ImageRef, count);
-            for (images[next..][0..count], refs) |image, *ref| ref.* = image.ref();
-            message.images = refs;
+            var images: std.ArrayList(Profile.ImageRef) = .empty;
+            var clips: std.ArrayList(Profile.AudioRef) = .empty;
+            for (request.media[next..][0..count], media[next..][0..count]) |part, *item| {
+                item.* = .{ .path = try arena.dupe(u8, "request"), .bytes = part.bytes.len, .digest = completer_mod.digestOf(part.bytes), .prepared = undefined };
+                switch (part.kind) {
+                    .image => {
+                        try self.loadVision(io);
+                        item.prepared = try m.encode_image(m.context, arena, part.bytes);
+                        try images.append(arena, item.ref());
+                    },
+                    .audio => {
+                        try self.loadAudio(io);
+                        item.kind = .audio;
+                        item.prepared = m.encode_audio(m.context, arena, part.bytes) catch |err| {
+                            self.failed_clip = i;
+                            return err;
+                        };
+                        try clips.append(arena, item.audioRef());
+                    },
+                }
+            }
+            message.images = images.items;
+            message.audio = clips.items;
             next += count;
         }
 
@@ -197,7 +216,7 @@ pub const Language = struct {
         var counted: completer_mod.Sink = .{ .context = &counting, .call = Counting.call };
         self.completer.observer = observer;
         defer self.completer.observer = null;
-        const reply = try m.run(m.context, request.messages, request.tools, images, &counted);
+        const reply = try m.run(m.context, request.messages, request.tools, media, &counted);
         // A turn that ends in an answer is a boundary the next request's
         // render starts with; a turn of calls continues the live session.
         if (reply.outcome.stop == .eos and counting.calls == 0) _ = m.checkpoint(m.context);
@@ -212,15 +231,40 @@ pub const Language = struct {
     fn loadVision(self: *Language, io: std.Io) !void {
         const open = &self.open.?;
         if (open.eng.vision != null) return;
+        const path = try self.companion(io, error.ImagesUnsupported);
+        defer self.gpa.free(path);
+        try open.eng.loadVision(path, self.settings.image_max_tokens.count());
+    }
+
+    /// The companion's audio encoder, loaded on the first clip.
+    fn loadAudio(self: *Language, io: std.Io) !void {
+        const open = &self.open.?;
+        if (open.eng.audio != null) return;
+        if (open.eng.audioPadId() == null) return error.AudioUnsupported;
+        const path = try self.companion(io, error.AudioUnsupported);
+        defer self.gpa.free(path);
+        open.eng.loadAudio(path) catch |err| return switch (err) {
+            error.UnsupportedProjector, error.VisionSourceMismatch => error.AudioUnsupported,
+            else => err,
+        };
+    }
+
+    /// The open model's companion file (owned), counted against the budget
+    /// the first time either encoder needs it; `missing` when it has none.
+    fn companion(self: *Language, io: std.Io, missing: Error) ![]u8 {
+        const open = &self.open.?;
         const name = self.name.?;
         const mmproj = if (self.settings.entry) |entry| entry.mmproj else if (catalog.find(name)) |entry| if (entry.companion(.mmproj)) |c| c.file else null else null;
-        const path = (try engine.visionPath(self.gpa, open.model_path, mmproj)) orelse return error.ImagesUnsupported;
-        defer self.gpa.free(path);
-        std.Io.Dir.cwd().access(io, path, .{}) catch return error.ImagesUnsupported;
-        const grown = self.footprint + fileSize(io, path);
-        if (self.budget) |b| try b.resize(io, name, grown);
-        try open.eng.loadVision(path, self.settings.image_max_tokens.count());
-        self.footprint = grown;
+        const path = (try engine.visionPath(self.gpa, open.model_path, mmproj)) orelse return missing;
+        errdefer self.gpa.free(path);
+        std.Io.Dir.cwd().access(io, path, .{}) catch return missing;
+        if (!self.companion_counted) {
+            const grown = self.footprint + fileSize(io, path);
+            if (self.budget) |b| try b.resize(io, name, grown);
+            self.footprint = grown;
+            self.companion_counted = true;
+        }
+        return path;
     }
 };
 

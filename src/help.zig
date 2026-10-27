@@ -244,6 +244,8 @@ fn generate(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--raw", "skip the chat template; send the text as written");
     try row(out, sty, "--image <path>", "attach an image (repeatable, up to 8); needs a");
     try more(out, "projector (models.<name>.mmproj) for the model");
+    try row(out, sty, "--audio <path>", "attach a clip after the images (repeatable, up");
+    try more(out, "to 8, at most 30 s each); Gemma 4 E4B's projector");
     try row(out, sty, "--image-max-tokens <n>", "most tokens one image becomes: auto (the");
     try more(out, "projector's maximum) or a count; default auto");
     try row(out, sty, "--think <effort>", "off, low, medium, high, xhigh; default off");

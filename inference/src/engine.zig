@@ -734,6 +734,39 @@ pub const Vision = struct {
     }
 };
 
+/// A companion file's `gemma4a` audio encoder on the engine's backend, with
+/// its mel bank. Heap-allocated: the executor borrows `binding`.
+pub const Audio = struct {
+    mapped: inference.weights.Mapped,
+    binding: gemma4a.Binding,
+    bank: inference.audio.mel.Bank,
+    executor: union(Backend) {
+        cpu: gemma4a.Runtime,
+        metal: gemma4a.Plan,
+    },
+    pub fn deinit(self: *Audio, alloc: std.mem.Allocator, io: std.Io) void {
+        switch (self.executor) {
+            inline else => |*e| e.deinit(),
+        }
+        self.mapped.deinit(io);
+        alloc.destroy(self);
+    }
+};
+const gemma4a = inference.audio.gemma4a;
+const mel = inference.audio.mel;
+
+/// The longest clip a prompt takes: Google's feature extractor's 30 s, 750
+/// rows. A longer one is `AudioTooLong`, never cut.
+pub const max_audio_seconds = 30;
+
+/// One clip after the encoder: its rows (`tokens ×` the model width,
+/// caller-owned) and its length at 16 kHz.
+pub const PreparedAudio = struct {
+    tokens: u32,
+    features: []f32,
+    samples: u64,
+};
+
 /// One image after preprocessing and the projector: its token grid and the
 /// feature rows (`width_tokens · height_tokens ×` the model width), caller-owned,
 /// with the decoded pixel size for the caller's display.
@@ -785,6 +818,8 @@ pub const Engine = struct {
     load: std.Io.Duration,
     /// A companion vision projector, loaded on demand (`loadVision`).
     vision: ?*Vision = null,
+    /// A companion audio encoder, loaded on demand (`loadAudio`).
+    audio: ?*Audio = null,
 
     /// Opens the artifact, selects its adapter and binds it, loads the
     /// vocabulary, and prepares a session of `capacity` tokens with an
@@ -901,11 +936,13 @@ pub const Engine = struct {
             .name = mapped.document.string("general.name") orelse "unnamed model",
             .load = started.durationTo(std.Io.Clock.awake.now(io)),
             .vision = null,
+            .audio = null,
         };
     }
 
     pub fn deinit(self: *Engine) void {
         if (self.vision) |v| v.deinit(self.alloc, self.io);
+        if (self.audio) |a| a.deinit(self.alloc, self.io);
         self.model.deinit(self.alloc);
         if (self.spec) |*s| s.deinit(self.alloc);
         if (self.draft_mapped) |*m| m.deinit(self.io);
@@ -982,6 +1019,55 @@ pub const Engine = struct {
         try v.projector.encode(patches, grid, features);
         return .{ .width_tokens = grid.width_tokens, .height_tokens = grid.height_tokens, .features = features, .width = decoded.width, .height = decoded.height };
     }
+    /// Loads the `gemma4a` audio encoder of a companion file (Gemma 4 E4B's
+    /// mmproj) on the engine's backend. `AudioUnsupported` when the profile
+    /// renders no audio or the file has no such encoder;
+    /// `VisionSourceMismatch` when its projection is not the model's width.
+    pub fn loadAudio(self: *Engine, path: []const u8) !void {
+        if (self.audio != null) return error.AudioAlreadyLoaded;
+        if (self.audioPadId() == null) return error.AudioUnsupported;
+        const a = try self.alloc.create(Audio);
+        errdefer self.alloc.destroy(a);
+        a.mapped = try inference.weights.Mapped.open(self.alloc, self.io, path);
+        errdefer a.mapped.deinit(self.io);
+        if (!gemma4a.present(&a.mapped.document)) return error.AudioUnsupported;
+        a.binding = try gemma4a.bind(self.alloc, &a.mapped.document);
+        if (a.binding.output_width != try self.embeddingWidth()) return error.VisionSourceMismatch;
+        a.bank.init(.gemma);
+        a.executor = switch (self.backend) {
+            .cpu => .{ .cpu = try .init(self.alloc, self.io, a.mapped.view(), &a.binding) },
+            .metal => .{ .metal = try .init(self.alloc, self.io, self.model.gpu() orelse return error.MetalNotEnabled, a.mapped.view(), &a.binding) },
+        };
+        self.audio = a;
+    }
+    /// Decodes a clip (any format `inference.audio.audio.decode` reads) and
+    /// encodes it through the loaded audio encoder. `AudioTooLong` over
+    /// `max_audio_seconds`, `AudioTooShort` under one mel frame. Caller owns
+    /// `PreparedAudio.features`.
+    pub fn encodeAudio(self: *Engine, bytes: []const u8) !PreparedAudio {
+        const a = self.audio orelse return error.NoAudio;
+        var pcm = try inference.audio.audio.decode(self.alloc, bytes, max_audio_seconds * mel.sample_rate);
+        defer pcm.deinit(self.alloc);
+        if (pcm.total > pcm.samples.len) return error.AudioTooLong;
+        const frames = mel.Spec.gemma.frameCount(pcm.samples.len);
+        if (frames == 0) return error.AudioTooShort;
+        const spectrum = try self.alloc.alloc(f32, frames * mel.filters);
+        defer self.alloc.free(spectrum);
+        try a.bank.features(pcm.samples, spectrum);
+        const tokens = gemma4a.tokensFor(frames);
+        const features = try self.alloc.alloc(f32, tokens * a.binding.output_width);
+        errdefer self.alloc.free(features);
+        switch (a.executor) {
+            inline else => |*e| try e.encode(spectrum, frames, features),
+        }
+        return .{ .tokens = @intCast(tokens), .features = features, .samples = pcm.samples.len };
+    }
+    /// The audio placeholder id the profile renders (`<|audio|>` for Gemma
+    /// 4), or null without a profile, a placeholder, or its token.
+    pub fn audioPadId(self: *const Engine) ?u32 {
+        const profile = self.profile orelse return null;
+        return self.vocab.tokenId(profile.audioPlaceholder() orelse return null);
+    }
     /// The image placeholder id the profile renders (`<|image_pad|>` for
     /// Qwen3.8, `<|image|>` for Gemma 4), or null without a profile, a
     /// placeholder, or its token.
@@ -1026,8 +1112,49 @@ pub const Engine = struct {
         return spans;
     }
 
-    /// The system block every rendering of these leading messages and tools
-    /// starts with (`profiles.Profile.prefix`). Caller owns the result.
+    /// The spans and concatenated rows of a prompt's media, in token order:
+    /// the image placeholder's runs paired in order with `images`, the
+    /// audio placeholder's with `clips` (a clip's grid is its rows by 1).
+    /// Every run must match its item's row count and every item a run
+    /// (`ImageSpanMismatch`). Caller owns the result.
+    pub fn mediaSpans(self: *const Engine, alloc: std.mem.Allocator, tokens: []const u32, images: []const PreparedImage, clips: []const PreparedImage) !MediaPrefill {
+        const pads = [2]?u32{ self.imagePadId(), self.audioPadId() };
+        const lists = [2][]const PreparedImage{ images, clips };
+        if (images.len > 0 and pads[0] == null) return error.MissingImageToken;
+        if (clips.len > 0 and pads[1] == null) return error.AudioUnsupported;
+        var spans: std.ArrayList(inference.vision.Span) = .empty;
+        errdefer spans.deinit(alloc);
+        var total: usize = 0;
+        for (lists) |list| for (list) |p| {
+            total += p.features.len;
+        };
+        const features = try alloc.alloc(f32, total);
+        errdefer alloc.free(features);
+        var next = [2]usize{ 0, 0 };
+        var at: usize = 0;
+        var i: usize = 0;
+        while (i < tokens.len) {
+            const kind: usize = for (pads, 0..) |pad, k| {
+                if (pad != null and tokens[i] == pad.?) break k;
+            } else {
+                i += 1;
+                continue;
+            };
+            var run: usize = 0;
+            while (i + run < tokens.len and tokens[i + run] == tokens[i]) run += 1;
+            if (next[kind] >= lists[kind].len) return error.ImageSpanMismatch;
+            const item = lists[kind][next[kind]];
+            if (run != item.tokens()) return error.ImageSpanMismatch;
+            try spans.append(alloc, .{ .start = i, .count = run, .width_tokens = item.width_tokens, .height_tokens = item.height_tokens });
+            @memcpy(features[at..][0..item.features.len], item.features);
+            at += item.features.len;
+            next[kind] += 1;
+            i += run;
+        }
+        if (next[0] != images.len or next[1] != clips.len) return error.ImageSpanMismatch;
+        return .{ .spans = try spans.toOwnedSlice(alloc), .features = features };
+    }
+
     /// The system block every rendering of these leading messages and tools
     /// starts with (`profiles.Profile.prefix`). Caller owns the result.
     pub fn prefix(self: *const Engine, messages: []const profiles.Message, tools: []const profiles.ToolDefinition, effort: profiles.Effort) ![]u8 {
@@ -1281,6 +1408,19 @@ pub fn commitPrompt(eng: *Engine, tokens: []const u32, logits: ?[]f32, observer:
 /// Image spans and their projector features for a vision prompt, consumed at
 /// prefill. Speculation is off on this path; the decode loop is unchanged.
 pub const ImagePrefill = struct { spans: []const inference.vision.Span, features: []const f32 };
+/// `Engine.mediaSpans`'s owned result; `value` is what `runLoop` takes.
+pub const MediaPrefill = struct {
+    spans: []inference.vision.Span,
+    features: []f32,
+    pub fn value(self: MediaPrefill) ImagePrefill {
+        return .{ .spans = self.spans, .features = self.features };
+    }
+    pub fn deinit(self: *MediaPrefill, alloc: std.mem.Allocator) void {
+        alloc.free(self.spans);
+        alloc.free(self.features);
+        self.* = undefined;
+    }
+};
 
 pub fn runLoop(
     eng: *Engine,
