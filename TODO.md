@@ -104,11 +104,13 @@ spoken question answered aloud starts 0.5 s after the turn ends.
 
 Task 16 delivered (2026-10-27): Gemma's answers given without a thought channel were filed as thinking; the decoder now starts from the prompt's tail.
 
-Next: **17** (running in a worktree), then **18**, then 12.
+Task 17 delivered (2026-10-27): the vision encoders attend through the segment kernels (E4B 2.6 → 1.6 s, Qwen3.8 19 → 2.5 s) and the agent encodes a dropped image while the prompt is typed.
+
+Next: **18**, then 12.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: tasks 17, 18 |
+| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: task 18 |
 
 ## Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API
 
@@ -212,7 +214,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 14 | Split the Metal backend's `root.zig` by operation (before 4 and 7) | — | — | done |
 | 15 | Serve: file transcription for long recordings (`POST /v1/audio/transcriptions`) | C | 7, 9 | done |
 | 16 | Agent: a short answer after a folded thought is not drawn | — | — | done |
-| 17 | Faster image encoding when an image is attached in the agent | — | — | any worktree |
+| 17 | Faster image encoding when an image is attached in the agent | — | — | done |
 | 18 | Audio files dropped into the agent, for models that hear | — | 8 | any worktree (after 16 if both touch the transcript) |
 
 Worktree rule: a track owns its new files. Shared registrations
@@ -548,30 +550,30 @@ second turn's answer drawn, a longer answer after a thought, thinking
 off). `engine.zig` changed, so the unit's closing `make verify` covers
 the families' gates.
 
-#### 17. Faster image encoding when an image is attached in the agent
+#### 17. Faster image encoding when an image is attached in the agent (delivered 2026-10-27)
 
-Asked by the user (2026-10-27). Measured before any change (`nuclis
-generate --image docs/branding/nuclis.png --json`, `image_milliseconds`,
-ReleaseSafe, two runs each, this branch at `e9c505d`): Gemma 4 E4B 2.65–2.72 s
-for 676 image tokens (then 1.5 s of prefill); Gemma 4 12B QAT 0.09–0.14 s
-(check this is not a cache before trusting it); Qwen3.8-27B 18.4–19.1 s
-for its ~1,000-token span (then 12–18 s of prefill). `docs/engine/vision.md`
-§ Muse Glimmer's projector already names the limiter for the big
-encoders (the global blocks' chunk attention at ~0.76 TFLOP/s, the same
-kernel as the deferred long-context prefill item). Steps:
-1. Profile each family's encode on this image (`generation-check
-   --vision-profile`); find why E4B's 16-block encoder costs ~20× the
-   12B's, and where Qwen3.8's 18 s goes.
-2. Fix what the profile shows (kernels in `backends/metal/kernels/`,
-   encoders in `ops/`), validated by each family's `*-vision-metal`
-   gates; the long-context prefill item in *Deferred* shares the chunk
-   attention, so a win there is reported for both.
-3. Hide what remains: encode when the image is dropped, in the
-   background while the user types, so Enter does not wait for it
-   (`src/agent/root.zig`, `src/tui/`; the chip shows "encoding…" then the
-   token count), checked with `make shot`.
-Report `image_milliseconds` before and after per family, and the time
-from Enter to first token in the chat.
+Profile (the logo, M4 Pro): Qwen3-VL spent 94 % in the old scalar
+`attention_full` over 4,096 patches; E4B 74 % in the chunk attention over
+6,084 patches; the 12B's 0.03 s is real (its projector has no encoder
+blocks). All four vision encoders now attend through the
+materialized-score segment kernels (`inference/src/vision/attention_metal.zig`;
+a single-read row-statistics pass, any head width a multiple of 8,
+padding rows zero; a 128 MB score buffer per plan). `image_milliseconds`:
+E4B 2.58–2.66 → 1.63–1.65 s, Qwen3.8 18.7–19.1 → 2.39–2.75 s, 26B-A4B
+7.1–7.5 → 4.9–5.0 s, Muse 15.4–16.1 → 10.2 s, 12B unchanged. The agent
+encodes a dropped image while the prompt is typed (`src/agent/ahead.zig`,
+keyed by path for the chip and SHA-256 for the turn; kinds `image` and
+`audio`, so task 18 reuses it); chip `encoding…` → `676 tokens`,
+`queued`, `failed: …`. Enter to first token on E4B 4.84 → 2.26 s (encode
+done) or 3.9 s (Enter at once). The text prefill's chunk attention is
+untouched. Gates: the four `*-vision-metal`, the four
+`embeddinggemma-*-metal`, `gemma4-e4b-audio-*`, `laya-*-metal` (the other
+users of the segment kernels); `make test-metal`. Open: the scores
+kernel (~1.7 TFLOP/s) is now E4B's largest piece; 72-wide heads waste a
+quarter of the values kernel's last block; Muse's K-quant matmuls and
+unfused bias adds. For the long-context prefill item: materialized F32
+scores with the stats pass beat the chunk kernel 1.9× on 4–6K-row
+bidirectional spans; a causal variant is bounded by score memory.
 
 #### 18. Audio files dropped into the agent, for models that hear
 
