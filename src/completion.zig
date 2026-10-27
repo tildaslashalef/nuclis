@@ -270,6 +270,8 @@ pub const commands = [_]Command{
         .{ .name = "--lookahead", .value = .{ .choice = &.{ "0", "3", "6", "13" } }, .summary = "rows of 80 ms the encoder waits for" },
         .{ .name = "--language", .value = .text, .summary = "a locale, or auto" },
         .{ .name = "--model", .value = .dir, .summary = "the checkpoint directory" },
+        .{ .name = "--format", .value = .{ .choice = &.{ "text", "json", "srt", "vtt" } }, .summary = "the transcript, JSON, or subtitles" },
+        .{ .name = "--segments", .summary = "the segments with their times" },
         backend,
         json,
     } }} },

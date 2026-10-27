@@ -908,7 +908,7 @@ fn runEmbed(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path
 /// transcription registry entry, catalogue name, or checkpoint directory.
 fn runTranscribe(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty_detected: style.Style, diag: *config.Diagnostic) !void {
     const options = try transcribe.parseArgs(words, diag);
-    const sty: style.Style = if (options.json) .none else sty_detected;
+    const sty: style.Style = if (options.format != .text) .none else sty_detected;
     var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
     defer loaded.deinit();
     var arena_state = std.heap.ArenaAllocator.init(alloc);
@@ -1335,6 +1335,7 @@ test {
     _ = audio_catalog;
     _ = embedding_catalog;
     _ = transcribe;
+    _ = @import("audio/transcript.zig");
     _ = @import("embedding/request.zig");
     _ = @import("embedding/response.zig");
     _ = @import("decision/request.zig");

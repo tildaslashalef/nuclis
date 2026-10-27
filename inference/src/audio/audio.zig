@@ -2,7 +2,9 @@
 //! [-1, 1]. Two decoders: a RIFF/WAVE parser for 16-bit PCM or 32-bit float
 //! at 16 kHz mono (fixtures, tests, any platform) and, when the macOS bridges are built,
 //! AudioToolbox for the platform's formats, which resamples and averages
-//! channels. Bounds are host constants, never model-supplied.
+//! channels. `decode` gives a clip whole, within `max_bytes`; a `Reader`
+//! gives a long recording in pieces, the bytes bounded by its caller.
+//! Bounds are host constants, never model-supplied.
 const std = @import("std");
 const build_options = @import("build_options");
 
@@ -12,7 +14,7 @@ pub const bridge_enabled = build_options.metal;
 pub const readable = if (bridge_enabled) "WAV, AIFF, MP3, M4A, FLAC, CAF" else "none: audio needs the macOS build";
 
 pub const sample_rate = 16000;
-/// Encoded bytes accepted from a file.
+/// Encoded bytes `decode` accepts.
 pub const max_bytes: usize = 64 << 20;
 
 pub const Error = error{
@@ -63,9 +65,50 @@ extern fn nu_audio_free([*]f32) void;
 /// FLEURS uses), plain or `WAVE_FORMAT_EXTENSIBLE`. Other WAVs are
 /// `UnsupportedAudioFormat`.
 pub fn decodeWav(alloc: std.mem.Allocator, bytes: []const u8, max_samples: u32) Error!Pcm {
+    const wav = try parseWav(bytes);
+    const total = wav.count();
+    const samples = try alloc.alloc(f32, @min(total, max_samples));
+    errdefer alloc.free(samples);
+    try wav.convert(0, samples);
+    return .{ .samples = samples, .total = total };
+}
+
+/// The samples of a WAV `decodeWav` reads, still encoded.
+const Wav = struct {
+    format: enum { int16, float32 },
+    data: []const u8,
+
+    fn width(self: Wav) usize {
+        return switch (self.format) {
+            .int16 => 2,
+            .float32 => 4,
+        };
+    }
+
+    fn count(self: Wav) usize {
+        return self.data.len / self.width();
+    }
+
+    /// Samples `first ..` into `out`; a NaN or an infinity is refused.
+    fn convert(self: Wav, first: usize, out: []f32) Error!void {
+        const bytes = self.data[first * self.width() ..];
+        switch (self.format) {
+            .int16 => for (out, 0..) |*s, i| {
+                s.* = @as(f32, @floatFromInt(std.mem.readInt(i16, bytes[i * 2 ..][0..2], .little))) / 32768.0;
+            },
+            .float32 => for (out, 0..) |*s, i| {
+                s.* = @bitCast(std.mem.readInt(u32, bytes[i * 4 ..][0..4], .little));
+                // Untrusted: a NaN or an infinity would reach every feature.
+                if (!std.math.isFinite(s.*)) return error.UnsupportedAudioFormat;
+            },
+        }
+    }
+};
+
+fn parseWav(bytes: []const u8) Error!Wav {
     if (bytes.len < 12 or !std.mem.eql(u8, bytes[0..4], "RIFF") or !std.mem.eql(u8, bytes[8..12], "WAVE")) return error.UnsupportedAudioFormat;
     var at: usize = 12;
-    var format: ?enum { int16, float32 } = null;
+    var format: ?@FieldType(Wav, "format") = null;
     while (at + 8 <= bytes.len) {
         const id = bytes[at..][0..4];
         const size = std.mem.readInt(u32, bytes[at + 4 ..][0..4], .little);
@@ -83,33 +126,68 @@ pub fn decodeWav(alloc: std.mem.Allocator, bytes: []const u8, max_samples: u32) 
             if (channels != 1 or rate != sample_rate) return error.UnsupportedAudioFormat;
             format = if (tag == 1 and bits == 16) .int16 else if (tag == 3 and bits == 32) .float32 else return error.UnsupportedAudioFormat;
         } else if (std.mem.eql(u8, id, "data")) {
-            switch (format orelse return error.UnsupportedAudioFormat) {
-                .int16 => {
-                    const total = size / 2;
-                    const samples = try alloc.alloc(f32, @min(total, max_samples));
-                    for (samples, 0..) |*s, i| s.* = @as(f32, @floatFromInt(std.mem.readInt(i16, body[i * 2 ..][0..2], .little))) / 32768.0;
-                    return .{ .samples = samples, .total = total };
-                },
-                .float32 => {
-                    const total = size / 4;
-                    const samples = try alloc.alloc(f32, @min(total, max_samples));
-                    for (samples, 0..) |*s, i| {
-                        s.* = @bitCast(std.mem.readInt(u32, body[i * 4 ..][0..4], .little));
-                        // Untrusted: a NaN or an infinity would reach every feature.
-                        if (!std.math.isFinite(s.*)) {
-                            alloc.free(samples);
-                            return error.UnsupportedAudioFormat;
-                        }
-                    }
-                    return .{ .samples = samples, .total = total };
-                },
-            }
+            return .{ .format = format orelse return error.UnsupportedAudioFormat, .data = body };
         }
         // Chunks are padded to an even size.
         at = body_start + size + (size & 1);
     }
     return error.UnsupportedAudioFormat;
 }
+
+/// A decoding in pieces of bounded size, for audio too long to hold
+/// decoded: the samples `decode` gives, in the same order, `read` by `read`.
+/// `bytes` are borrowed for the reader's life.
+pub const Reader = struct {
+    source: union(enum) {
+        wav: struct { wav: Wav, at: usize = 0 },
+        bridge: *anyopaque,
+    },
+    /// The length at 16 kHz: exact for a WAV read directly, the bridge's
+    /// estimate otherwise (the reads may pass it by a frame).
+    total: u64,
+
+    pub fn open(bytes: []const u8) Error!Reader {
+        if (parseWav(bytes)) |wav| return .{ .source = .{ .wav = .{ .wav = wav } }, .total = wav.count() } else |_| {}
+        if (!bridge_enabled) return error.UnsupportedAudioFormat;
+        var handle: *anyopaque = undefined;
+        var total: u64 = 0;
+        return switch (nu_audio_open(bytes.ptr, bytes.len, &handle, &total)) {
+            0 => .{ .source = .{ .bridge = handle }, .total = total },
+            1 => error.UnsupportedAudioFormat,
+            else => error.OutOfMemory,
+        };
+    }
+
+    pub fn close(self: *Reader) void {
+        switch (self.source) {
+            .wav => {},
+            .bridge => |handle| nu_audio_close(handle),
+        }
+        self.* = undefined;
+    }
+
+    /// Fills `out` from the next samples; fewer only at the end, 0 past it.
+    /// `UnsupportedAudioFormat` when the file stops decoding midway.
+    pub fn read(self: *Reader, out: []f32) Error!usize {
+        switch (self.source) {
+            .wav => |*w| {
+                const n = @min(out.len, w.wav.count() - w.at);
+                try w.wav.convert(w.at, out[0..n]);
+                w.at += n;
+                return n;
+            },
+            .bridge => |handle| {
+                var n: u32 = 0;
+                if (nu_audio_read(handle, out.ptr, @intCast(@min(out.len, std.math.maxInt(u32))), &n) != 0) return error.UnsupportedAudioFormat;
+                return n;
+            },
+        }
+    }
+};
+
+extern fn nu_audio_open([*]const u8, usize, **anyopaque, *u64) c_int;
+extern fn nu_audio_read(*anyopaque, [*]f32, u32, *u32) c_int;
+extern fn nu_audio_close(*anyopaque) void;
 
 /// A 16-bit WAV of `samples` with the given header fields, for tests.
 fn testWav(alloc: std.mem.Allocator, samples: []const i16, channels: u16, rate: u32) ![]u8 {
@@ -233,4 +311,65 @@ test "the bridge resamples and mixes what the WAV parser refuses" {
     for (pcm.samples[1000..15000]) |s| peak = @max(peak, @abs(s));
     try std.testing.expectApproxEqAbs(@as(f32, 8000.0 / 32768.0), peak, 0.01);
     try std.testing.expectError(error.UnsupportedAudioFormat, decode(alloc, "not audio at all, not even close", 10));
+}
+
+test "a reader gives decode's samples in pieces of any size" {
+    const alloc = std.testing.allocator;
+    var samples: [1000]i16 = undefined;
+    for (&samples, 0..) |*v, i| v.* = @intCast(@as(i32, @intCast(i * 37 % 2000)) - 1000);
+    const wav = try testWav(alloc, &samples, 1, sample_rate);
+    defer alloc.free(wav);
+    var whole = try decode(alloc, wav, std.math.maxInt(u32));
+    defer whole.deinit(alloc);
+    for ([_]usize{ 1, 7, 333, 4096 }) |piece| {
+        var reader = try Reader.open(wav);
+        defer reader.close();
+        try std.testing.expectEqual(@as(u64, 1000), reader.total);
+        var got: std.ArrayList(f32) = .empty;
+        defer got.deinit(alloc);
+        const buffer = try alloc.alloc(f32, piece);
+        defer alloc.free(buffer);
+        while (true) {
+            const n = try reader.read(buffer);
+            if (n == 0) break;
+            try got.appendSlice(alloc, buffer[0..n]);
+        }
+        try std.testing.expectEqualSlices(f32, whole.samples, got.items);
+    }
+    const nan = try floatWav(alloc, &.{ 0, 1, std.math.nan(f32) }, null);
+    defer alloc.free(nan);
+    var reader = try Reader.open(nan);
+    defer reader.close();
+    var two: [2]f32 = undefined;
+    try std.testing.expectEqual(@as(usize, 2), try reader.read(&two));
+    try std.testing.expectError(error.UnsupportedAudioFormat, reader.read(&two));
+    if (!bridge_enabled) try std.testing.expectError(error.UnsupportedAudioFormat, Reader.open("not audio at all, not even close"));
+}
+
+test "the bridge's reader gives its whole decode, in pieces" {
+    if (!bridge_enabled) return error.SkipZigTest;
+    const alloc = std.testing.allocator;
+    var samples: [2 * 22050]i16 = undefined;
+    for (0..22050) |i| {
+        const v: i16 = @intFromFloat(8000 * @sin(2 * std.math.pi * 330 * @as(f64, @floatFromInt(i)) / 22050));
+        samples[2 * i] = v;
+        samples[2 * i + 1] = -v;
+    }
+    const wav = try testWav(alloc, &samples, 2, 22050);
+    defer alloc.free(wav);
+    var whole = try decode(alloc, wav, std.math.maxInt(u32));
+    defer whole.deinit(alloc);
+    var reader = try Reader.open(wav);
+    defer reader.close();
+    try std.testing.expect(reader.source == .bridge);
+    var got: std.ArrayList(f32) = .empty;
+    defer got.deinit(alloc);
+    var buffer: [1000]f32 = undefined;
+    while (true) {
+        const n = try reader.read(&buffer);
+        if (n == 0) break;
+        try got.appendSlice(alloc, buffer[0..n]);
+    }
+    try std.testing.expectEqualSlices(f32, whole.samples, got.items);
+    try std.testing.expectError(error.UnsupportedAudioFormat, Reader.open("not audio at all, not even close"));
 }

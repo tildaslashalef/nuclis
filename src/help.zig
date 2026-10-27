@@ -512,19 +512,26 @@ fn transcribe(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "entry, or a checkpoint directory; default");
     try more(out, "transcribe.model (nemotron-asr-0.6b)");
     try row(out, sty, "--backend cpu|metal", "default metal when built with it, else cpu");
-    try row(out, sty, "--json", "the text, language, tokens with times, timings");
+    try row(out, sty, "--format <f>", "text (default); json: the text, language, tokens");
+    try more(out, "with times, timings; srt or vtt: subtitles");
+    try row(out, sty, "--segments", "the segments: sentences, or speech between");
+    try more(out, "pauses, with their times (and words, in json)");
+    try row(out, sty, "--json", "the same as --format json");
 
     try heading(out, sty, "Examples:");
     try example(out, sty, "nuclis transcribe memo.m4a", "the transcript and its language");
     try example(out, sty, "nuclis transcribe talk.wav --stream --lookahead 0", "partials as fast as they come");
     try example(out, sty, "nuclis transcribe clip.flac --language de-DE --json", "German, with token times");
+    try example(out, sty, "nuclis transcribe lecture.m4a --format srt > lecture.srt", "subtitles");
 
     try heading(out, sty, "Notes:");
     try plain(out, "The model writes punctuated, capitalized text. Under auto it may end a");
     try plain(out, "sentence with a language tag, which is reported as the language and");
     try plain(out, "never printed in the text. Audio is resampled to 16 kHz mono (a 16 kHz");
     try plain(out, "mono WAV, 16-bit or float, is read as is). A token's time is the start");
-    try plain(out, "of its 80 ms row. Pull the model with `nuclis model pull");
+    try plain(out, "of its 80 ms row. A long recording is decoded and fed in 2.56 s pieces,");
+    try plain(out, "as `nuclis serve` does, so memory does not grow with its length (files");
+    try plain(out, "up to 256 MB). Pull the model with `nuclis model pull");
     try plain(out, "nemotron-asr-0.6b`.");
 }
 
