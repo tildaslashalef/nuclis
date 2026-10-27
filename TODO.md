@@ -60,9 +60,25 @@ on both tiers, `make test`, `make test-metal`. The WER gates read
 `.reference/speech/`, which only the main checkout has: run them there,
 or symlink it into a worktree.
 
-Next: **task 8** (E4B hears audio) and **task 9** (serving speech) in
-parallel, then 10 and 15 (the transcription routes), then 11 (all three
-models together), then 12 (documents and the site).
+Task 8 delivered (2026-10-27): E4B hears `input_audio` parts in chat and
+`nuclis generate --audio`; its encoder is EmbeddingGemma 2's to the byte
+but for a 2560-wide projection; transcription by E4B scored 0.88 % WER on
+six clips (`gemma4-e4b-audio-asr`). It does **not** report tone: eight
+clips the 1.7B voice spoke in four moods all came back "Neutral" or
+"Calm", as the transcript-only control did (`docs/models/gemma4.md`
+§ Audio input on the E4B). So Muon's "Gemma hears your tone" is not
+established; the prosody line (`~/Code/muon/docs/design.md` § Emotion)
+becomes the primary path, and the clip stays optional. The completer now
+keys images and clips by digest, so a conversation with media reuses its
+state instead of being re-read (a two-turn image chat in the agent read 46
+tokens on its second turn, against 743 before; `make shot` captures
+`cmp-pre`/`cmp-new` under `.zig-cache/tui/`, same answers). A short answer
+after a folded thought is not drawn until unfolded, in the build before
+this unit too: not this unit's, noted for later.
+
+Next: **task 9** (serving speech, running), then 10 and 15 (the
+transcription routes), then 11 (all three models together), then 12
+(documents and the site).
 
 | Unit | Branch | State |
 | --- | --- | --- |
@@ -161,7 +177,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 5 | ASR front end and streaming encoder, CPU | B | 1 | done |
 | 6 | ASR transducer and tokenizer, CPU; `nuclis transcribe` | B | 5 | done |
 | 7 | ASR on Metal, chunk latency | B | 6 | done |
-| 8 | Gemma 4 E4B audio input in chat | D | — | worktree D, any time |
+| 8 | Gemma 4 E4B audio input in chat | D | — | done |
 | 9 | Serve: speech and transcription kinds, pinning, `POST /v1/audio/speech` | C | 4 | main |
 | 10 | Serve: WebSocket transport, streaming transcription | C | 7, 9 | main |
 | 11 | Voice scheduling measured: E4B, TTS, and ASR together | C | 9, 10 | main |

@@ -177,6 +177,9 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 400 | `unsupported_feature` | chat: a field nuclis cannot honour ([what is refused](#what-is-refused)) |
 | 400 | `not_a_language_model` | chat: `model` names a decision or embedding model |
 | 400 | `images_unsupported` | chat: an image for a model whose projector is not pulled |
+| 400 | `audio_unsupported` | chat: an `input_audio` part for a model that does not hear (only Gemma 4 E4B does), or whose projector is not pulled |
+| 400 | `invalid_audio` | chat: an `input_audio` part that does not decode |
+| 400 | `input_too_long` | chat: a clip over 30 s (never cut) |
 | 400 | `context_length_exceeded` | chat: the rendered conversation does not fit the model's window |
 | 404 | `model_not_found` | chat: `model` names no pulled language model |
 | 400 | `model_too_large` | chat: the language model alone needs more than the memory budget, with the sizes |
