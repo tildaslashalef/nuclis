@@ -200,6 +200,8 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 13 | Split `kernels.metal` by operation (before 4 and 7) | — | — | done |
 | 14 | Split the Metal backend's `root.zig` by operation (before 4 and 7) | — | — | done |
 | 15 | Serve: file transcription for long recordings (`POST /v1/audio/transcriptions`) | C | 7, 9 | main, beside 10 |
+| 16 | Agent: a short answer after a folded thought is not drawn | — | — | any worktree |
+| 17 | Faster image encoding when an image is attached in the agent | — | — | any worktree |
 
 Worktree rule: a track owns its new files. Shared registrations
 (`src/catalog.zig`, `gates.json`, `docs/spec.md`, `docs/README.md`,
@@ -531,6 +533,51 @@ Asked by the user (2026-10-27) for note-taking clients beside Muon.
   oversize, missing file, extra parts) and of the `srt`/`vtt` writers.
   `docs/guide/api.md` § Transcription with a measured rate (audio
   seconds per second on Metal).
+
+#### 16. Agent: a short answer after a folded thought is not drawn
+
+Asked by the user (2026-10-27). Found while exercising task 8 through the
+screenshot harness, and present in the build before this unit (`fe714ce`).
+Reproduction: `make shot` with `--command "./zig-out/bin/nuclis agent
+--model gemma-4-e4b-qat"`, `until=ready,120`, `paste=<path>/docs/branding/nuclis.png`,
+`keys=What is in this image? One sentence.`, `enter`, `wait=3`,
+`until=ready,180`, `keys=And what colours does it use? One sentence.`,
+`enter`, `wait=3`, `until=ready,180`, `wait=2`, `capture=…`: the second
+turn shows `▸ Thought for 0.5s (Tab to unfold)` and no answer line, though
+the status says `out 11` and Tab (unfolding) shows "The logo uses turquoise
+(teal) and orange." Find whether the answer is never committed to the
+transcript or committed but not drawn (`src/tui/`, `src/agent/root.zig`
+§ the transcript and the live region; a text-only turn after a folded
+thought is the first thing to try, to tell whether the image matters).
+Fix, with a golden test in `src/tui/` that pins the frame, and the
+harness capture before and after as the record's evidence
+(docs/development.md § Looking at the agent without a person at the
+keyboard). A change to the chat surface: `make shot` is the check.
+
+#### 17. Faster image encoding when an image is attached in the agent
+
+Asked by the user (2026-10-27). Measured before any change (`nuclis
+generate --image docs/branding/nuclis.png --json`, `image_milliseconds`,
+ReleaseSafe, two runs each, this branch at `e9c505d`): Gemma 4 E4B 2.65–2.72 s
+for 676 image tokens (then 1.5 s of prefill); Gemma 4 12B QAT 0.09–0.14 s
+(check this is not a cache before trusting it); Qwen3.8-27B 18.4–19.1 s
+for its ~1,000-token span (then 12–18 s of prefill). `docs/engine/vision.md`
+§ Muse Glimmer's projector already names the limiter for the big
+encoders (the global blocks' chunk attention at ~0.76 TFLOP/s, the same
+kernel as the deferred long-context prefill item). Steps:
+1. Profile each family's encode on this image (`generation-check
+   --vision-profile`); find why E4B's 16-block encoder costs ~20× the
+   12B's, and where Qwen3.8's 18 s goes.
+2. Fix what the profile shows (kernels in `backends/metal/kernels/`,
+   encoders in `ops/`), validated by each family's `*-vision-metal`
+   gates; the long-context prefill item in *Deferred* shares the chunk
+   attention, so a win there is reported for both.
+3. Hide what remains: encode when the image is dropped, in the
+   background while the user types, so Enter does not wait for it
+   (`src/agent/root.zig`, `src/tui/`; the chip shows "encoding…" then the
+   token count), checked with `make shot`.
+Report `image_milliseconds` before and after per family, and the time
+from Enter to first token in the chat.
 
 #### 11. Voice scheduling measured
 
