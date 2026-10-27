@@ -528,8 +528,9 @@ figures copied from the README so `make site-check` holds. Gates:
 `make docs-check`, `make site-check`, screenshots of the site section.
 
 Last, for the user (asked 2026-10-27): a starter prompt for a fresh
-session that builds Muon, written to `~/Code/muon/docs/starter-prompt.md`
-and committed there (locally). It points the session at Muon's
+session that builds Muon, written to `~/Code/muon/artifacts/starter-prompt.md`
+(git-ignored: it is used once, by feeding it to that session, and never
+committed). It points the session at Muon's
 `AGENTS.md`, `TODO.md`, and `docs/design.md`; states nuclis's final API as
 built (routes, catalogue names, config keys, `--pin`, `model pull --json`
 progress lines, measured latencies) with links into
