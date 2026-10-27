@@ -8,16 +8,15 @@ const std = @import("std");
 const inference = @import("inference");
 const style = @import("tui/style.zig");
 const config = @import("config.zig");
+const audio_catalog = @import("audio/catalog.zig");
 
 const tts = inference.models.qwen3_tts;
 const speech = inference.models.qwen3_tts_runtime;
 
 pub const Backend = speech.Backend;
 pub const sample_rate = 24000;
-/// The checkpoints `--model` defaults to, under the models directory, the first present.
-pub const default_models = [_][]const u8{ "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice" };
 /// Longest text accepted, in bytes.
-const max_text_bytes = 16 * 1024;
+pub const max_text_bytes = 16 * 1024;
 
 pub const Options = struct {
     words: std.ArrayList([]const u8) = .empty,
@@ -137,19 +136,6 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
     return o;
 }
 
-/// The checkpoint directory: `--model`, else the first of `default_models`
-/// present under `<root>/models`.
-fn locate(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, explicit: ?[]const u8, diag: *config.Diagnostic) ![]const u8 {
-    if (explicit) |path| return path;
-    if (root) |dir| for (default_models) |name| {
-        const path = try std.fs.path.join(arena, &.{ dir, "models", name });
-        const config_path = try std.fs.path.join(arena, &.{ path, "config.json" });
-        if (std.Io.Dir.cwd().access(io, config_path, .{})) |_| return path else |_| {}
-    };
-    diag.set("no Qwen3-TTS checkpoint under the models directory; pull {s} (`nuclis model pull`) or pass --model <dir>", .{default_models[0]});
-    return error.MissingModel;
-}
-
 /// A 44-byte RIFF/WAVE header for `samples` 16-bit mono samples at `rate`.
 pub fn wavHeader(samples: usize, rate: u32) ![44]u8 {
     const data: u32 = std.math.cast(u32, samples * 2) orelse return error.AudioTooLong;
@@ -176,8 +162,11 @@ pub fn pcm16(x: f32) i16 {
     return @intFromFloat(@round(clamped * 32767));
 }
 
-/// `nuclis speak <words…>`: parses `words`, synthesizes, writes the WAV, reports.
-pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+/// `nuclis speak <words…>`: parses `words`, synthesizes, writes the WAV,
+/// reports. `--model` (else `speech.model`) is a speech registry entry, a
+/// speech catalogue name, or a checkpoint directory; the speaker defaults
+/// to `speech.voice`.
+pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *const config.Loaded, words: []const []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -192,10 +181,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, words: []con
         diag.set("the text is {d} bytes; speak takes at most {d} (a few sentences at a time)", .{ text.len, max_text_bytes });
         return error.TextTooLong;
     }
-    const dir = try locate(arena, io, root, options.model, diag);
+    const dir = (try audio_catalog.locate(arena, io, root, loaded.config.models, options.model orelse loaded.config.speech.model, .speech, true, diag)).directory;
     const seed = options.seed orelse 0;
     const language = options.language orelse "auto";
-    const speaker = options.voice orelse "ryan";
+    const speaker = options.voice orelse loaded.config.speech.voice;
 
     const load_start = std.Io.Clock.awake.now(io);
     var bind_diag: tts.Diagnostic = .{};

@@ -203,8 +203,9 @@ pub const entries = [_]Entry{
     },
 };
 
-/// What runs an artifact: the text engine, `nuclis decide`, or `nuclis embed`.
-pub const ModelKind = enum { generation, decision, embedding };
+/// What runs an artifact: the text engine, `nuclis decide`, `nuclis embed`,
+/// `nuclis speak`, or `nuclis transcribe`.
+pub const ModelKind = enum { generation, decision, embedding, speech, transcription };
 
 /// A decision checkpoint (Laya, clef): safetensors weights and the support
 /// files beside them, one directory `nuclis decide` opens, and for clef a
@@ -353,6 +354,123 @@ pub const embedding_entries = [_]EmbeddingEntry{
     },
 };
 
+/// A speech or transcription checkpoint: safetensors weights and the
+/// support files beside them, one directory `nuclis speak` or `nuclis
+/// transcribe` opens. Separate from `entries` so nothing that resolves a
+/// text model can pick one.
+pub const AudioEntry = struct {
+    name: []const u8,
+    title: []const u8,
+    /// `speech` or `transcription`.
+    kind: ModelKind,
+    repo: []const u8,
+    /// The weights' Hub name; its directory is the checkpoint's.
+    file: []const u8,
+    revision: []const u8,
+    sha256: []const u8,
+    size: u64,
+    architecture: []const u8,
+    quantization: []const u8,
+    /// Hub names the checkpoint needs beside the weights (plain git files).
+    support: []const []const u8,
+    /// The speech codec's weights, in `repo` at `revision`, pulled with the
+    /// checkpoint; `codec_support` are its own support files.
+    codec: ?Artifact = null,
+    codec_support: []const []const u8 = &.{},
+    /// The speakers a speech model voices, as its `config.json` names them.
+    speakers: []const []const u8 = &.{},
+    /// Whether it performs a delivery instruction (the 1.7B CustomVoice).
+    instructions: bool = false,
+
+    /// The weights and the codec's.
+    pub fn totalSize(self: *const AudioEntry) u64 {
+        return self.size + if (self.codec) |c| c.size else 0;
+    }
+};
+
+const qwen3_tts_speakers = [_][]const u8{ "aiden", "dylan", "eric", "ono_anna", "ryan", "serena", "sohee", "uncle_fu", "vivian" };
+const qwen3_tts_support = [_][]const u8{ "config.json", "generation_config.json", "merges.txt", "preprocessor_config.json", "tokenizer_config.json", "vocab.json" };
+const qwen3_tts_codec_support = [_][]const u8{ "speech_tokenizer/config.json", "speech_tokenizer/configuration.json", "speech_tokenizer/preprocessor_config.json" };
+
+pub const audio_entries = [_]AudioEntry{
+    // Qwen3-TTS 12Hz CustomVoice, both sizes as published (BF16 talker, F32
+    // codec, byte-identical between them); pinned 2026-10-27 by the pull
+    // (docs/models/qwen3-tts.md). Only the 1.7B performs an instruction.
+    .{
+        .name = "qwen3-tts-1.7b",
+        .title = "Qwen3-TTS 1.7B CustomVoice",
+        .kind = .speech,
+        .repo = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        .file = "model.safetensors",
+        .revision = "0c0e3051f131929182e2c023b9537f8b1c68adfe",
+        .sha256 = "38b1d5971bdbd982b561cccec982669a53b0537c3cf5e9bd4778ed07bb2f5137",
+        .size = 3_833_402_552,
+        .architecture = "qwen3_tts",
+        .quantization = "BF16",
+        .support = &qwen3_tts_support,
+        .codec = .{
+            .repo = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+            .file = "speech_tokenizer/model.safetensors",
+            .revision = "0c0e3051f131929182e2c023b9537f8b1c68adfe",
+            .sha256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+            .size = 682_293_092,
+        },
+        .codec_support = &qwen3_tts_codec_support,
+        .speakers = &qwen3_tts_speakers,
+        .instructions = true,
+    },
+    .{
+        .name = "qwen3-tts-0.6b",
+        .title = "Qwen3-TTS 0.6B CustomVoice",
+        .kind = .speech,
+        .repo = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        .file = "model.safetensors",
+        .revision = "85e237c12c027371202489a0ec509ded67b5e4b5",
+        .sha256 = "bc3c7e785eb961179c25450d1acff03f839e0002f2f3a5aeb67b5735c0fa2adb",
+        .size = 1_811_626_576,
+        .architecture = "qwen3_tts",
+        .quantization = "BF16",
+        .support = &qwen3_tts_support,
+        .codec = .{
+            .repo = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+            .file = "speech_tokenizer/model.safetensors",
+            .revision = "85e237c12c027371202489a0ec509ded67b5e4b5",
+            .sha256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+            .size = 682_293_092,
+        },
+        .codec_support = &qwen3_tts_codec_support,
+        .speakers = &qwen3_tts_speakers,
+    },
+    // NVIDIA's Nemotron 3.5 ASR streaming 0.6B, F32 as published; pinned
+    // 2026-10-27 by the pull (docs/models/nemotron-asr.md).
+    .{
+        .name = "nemotron-asr-0.6b",
+        .title = "Nemotron 3.5 ASR Streaming 0.6B",
+        .kind = .transcription,
+        .repo = "nvidia/nemotron-3.5-asr-streaming-0.6b",
+        .file = "model.safetensors",
+        .revision = "ea30d66debe3740a08b573244286791d423d6b3e",
+        .sha256 = "9eebdd6590289cb3030f310858f3df93256600a800a3e8200c5993d5f967e174",
+        .size = 2_552_062_944,
+        .architecture = "nemotron3_5_asr",
+        .quantization = "F32",
+        .support = &.{ "config.json", "generation_config.json", "processor_config.json", "tokenizer.json", "tokenizer_config.json" },
+    },
+};
+
+pub fn findAudio(name: []const u8) ?*const AudioEntry {
+    for (&audio_entries) |*e| if (std.mem.eql(u8, e.name, name)) return e;
+    return null;
+}
+
+/// The checkpoint directory of an audio entry: the weights' directory under
+/// `<models>/<repo>/`.
+pub fn audioDirectory(alloc: Allocator, models_dir: []const u8, entry: *const AudioEntry) ![]u8 {
+    const weights = try std.fs.path.join(alloc, &.{ models_dir, entry.repo, entry.file });
+    defer alloc.free(weights);
+    return alloc.dupe(u8, std.fs.path.dirname(weights).?);
+}
+
 pub fn findEmbedding(name: []const u8) ?*const EmbeddingEntry {
     for (&embedding_entries) |*e| if (std.mem.eql(u8, e.name, name)) return e;
     return null;
@@ -376,7 +494,30 @@ pub fn kindOf(registry: config.Models, name: []const u8) ModelKind {
     if (registry.find(name)) |e| return e.kind orelse .generation;
     if (findDecision(name) != null) return .decision;
     if (findEmbedding(name) != null) return .embedding;
+    if (findAudio(name)) |e| return e.kind;
     return .generation;
+}
+
+/// The command that runs a model of `kind`, for refusals that name it.
+pub fn command(kind: ModelKind) []const u8 {
+    return switch (kind) {
+        .generation => "nuclis generate",
+        .decision => "nuclis decide",
+        .embedding => "nuclis embed",
+        .speech => "nuclis speak",
+        .transcription => "nuclis transcribe",
+    };
+}
+
+/// The kind as a sentence names it ("a speech model").
+pub fn kindName(kind: ModelKind) []const u8 {
+    return switch (kind) {
+        .generation => "language",
+        .decision => "decision",
+        .embedding => "embedding",
+        .speech => "speech",
+        .transcription => "transcription",
+    };
 }
 
 /// The checkpoint directory of a decision entry: the weights' directory
@@ -395,6 +536,7 @@ pub const name_width = blk: {
     for (&entries) |entry| widest = @max(widest, entry.name.len);
     for (&decision_entries) |entry| widest = @max(widest, entry.name.len);
     for (&embedding_entries) |entry| widest = @max(widest, entry.name.len);
+    for (&audio_entries) |entry| widest = @max(widest, entry.name.len);
     break :blk widest + 1;
 };
 
@@ -494,6 +636,35 @@ test "embedding entries are well formed and share no name with another kind" {
     }
     try std.testing.expectEqualStrings("gemma-embedding2", findEmbedding("embeddinggemma-2").?.architecture);
     try std.testing.expect(findEmbedding("qwen3.8-27b") == null and findEmbedding("laya") == null);
+}
+
+test "audio entries are well formed, of their two kinds, and share no name with another kind" {
+    for (&audio_entries, 0..) |*e, i| {
+        try std.testing.expectEqual(@as(usize, 40), e.revision.len);
+        try std.testing.expectEqual(@as(usize, 64), e.sha256.len);
+        try std.testing.expect(e.kind == .speech or e.kind == .transcription);
+        try std.testing.expect(find(e.name) == null and findDecision(e.name) == null and findEmbedding(e.name) == null);
+        try std.testing.expect(std.mem.endsWith(u8, e.file, ".safetensors") and e.title.len > 0 and e.support.len > 0);
+        try std.testing.expectEqual(e.kind, kindOf(.{}, e.name));
+        // A speech model brings its codec from its own repository and commit.
+        try std.testing.expectEqual(e.kind == .speech, e.codec != null);
+        if (e.codec) |c| {
+            try std.testing.expect(std.mem.eql(u8, c.repo, e.repo) and std.mem.eql(u8, c.revision, e.revision) and c.sha256.len == 64);
+            const codec_dir = std.fs.path.dirnamePosix(c.file).?;
+            for (e.codec_support) |name| try std.testing.expect(std.mem.startsWith(u8, name, codec_dir));
+            try std.testing.expect(e.speakers.len > 0);
+        }
+        for (audio_entries[i + 1 ..]) |other| try std.testing.expect(!std.mem.eql(u8, e.name, other.name));
+    }
+    // Only the 1.7B performs an instruction; both speak with the same codec.
+    try std.testing.expect(findAudio("qwen3-tts-1.7b").?.instructions and !findAudio("qwen3-tts-0.6b").?.instructions);
+    try std.testing.expectEqualStrings(findAudio("qwen3-tts-1.7b").?.codec.?.sha256, findAudio("qwen3-tts-0.6b").?.codec.?.sha256);
+    try std.testing.expectEqual(ModelKind.transcription, kindOf(.{}, "nemotron-asr-0.6b"));
+    try std.testing.expectEqual(@as(u64, 3_833_402_552 + 682_293_092), findAudio("qwen3-tts-1.7b").?.totalSize());
+    const dir = try audioDirectory(std.testing.allocator, "/m", findAudio("nemotron-asr-0.6b").?);
+    defer std.testing.allocator.free(dir);
+    try std.testing.expectEqualStrings("/m/nvidia/nemotron-3.5-asr-streaming-0.6b", dir);
+    try std.testing.expect(findAudio("laya") == null and findAudio("qwen3.8-27b") == null);
 }
 
 test "the table is well formed: unique names, 40-character commits, 64-character digests" {

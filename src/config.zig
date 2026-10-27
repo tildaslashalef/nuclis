@@ -56,6 +56,43 @@ pub const max_draft_length = inference.engine.max_draft_length;
 /// The largest image token cap a setting may name.
 pub const max_image_tokens = inference.vision.max_image_tokens;
 
+/// `serve.pin`: model names, as a JSON list or one comma-separated string
+/// (what `config set serve.pin a,b` writes).
+pub const Pins = union(enum) {
+    names: []const []const u8,
+
+    pub const none: Pins = .{ .names = &.{} };
+    pub const description = "a list of model names, or one string of names separated by commas";
+    /// The most names a list holds.
+    pub const max = 8;
+
+    pub fn fromJsonAlloc(arena: Allocator, value: std.json.Value) Allocator.Error!?Pins {
+        var names: std.ArrayList([]const u8) = .empty;
+        switch (value) {
+            .array => |a| for (a.items) |item| {
+                if (item != .string) return null;
+                try names.append(arena, try arena.dupe(u8, item.string));
+            },
+            .string => |text| {
+                var it = std.mem.splitScalar(u8, text, ',');
+                while (it.next()) |part| try names.append(arena, try arena.dupe(u8, std.mem.trim(u8, part, " ")));
+            },
+            else => return null,
+        }
+        if (names.items.len > max) return null;
+        for (names.items) |n| if (n.len == 0 or n.len > max_entry_name_bytes) return null;
+        return .{ .names = names.items };
+    }
+    pub fn format(self: Pins, buf: []u8) []const u8 {
+        var w: std.Io.Writer = .fixed(buf);
+        for (self.names, 0..) |n, i| w.print("{s}{s}", .{ if (i > 0) "," else "", n }) catch return "…";
+        return if (self.names.len == 0) "none" else w.buffered();
+    }
+    pub fn jsonStringify(self: Pins, jws: anytype) !void {
+        try jws.write(self.names);
+    }
+};
+
 /// `generation.image_max_tokens`: the most tokens one image becomes,
 /// `auto` (the projector's own maximum) or a count the projector clamps
 /// to its family's range when it loads. JSON `"auto"` or an integer.
@@ -113,6 +150,8 @@ pub const Config = struct {
     agent: Agent = .{},
     decide: Decide = .{},
     embed: Embed = .{},
+    speech: Speech = .{},
+    transcribe: Transcribe = .{},
     serve: Serve = .{},
     web: Web = .{},
     cache: Cache = .{},
@@ -180,6 +219,20 @@ pub const Config = struct {
         /// (relative to `<root>/models` unless absolute).
         model: []const u8 = "embeddinggemma-2",
     };
+    pub const Speech = struct {
+        /// The speech model `nuclis speak` and `POST /v1/audio/speech`
+        /// open: a registry entry of kind `speech`, a speech catalogue
+        /// name, or (for `speak`) a checkpoint directory.
+        model: []const u8 = "qwen3-tts-1.7b",
+        /// The speaker a request that names none gets.
+        voice: []const u8 = "ryan",
+    };
+    pub const Transcribe = struct {
+        /// The transcription model `nuclis transcribe` and the server open:
+        /// a registry entry of kind `transcription`, a transcription
+        /// catalogue name, or (for `transcribe`) a checkpoint directory.
+        model: []const u8 = "nemotron-asr-0.6b",
+    };
     pub const Serve = struct {
         /// The address `nuclis serve` listens on: an IP literal or
         /// `localhost`. Beyond loopback the API is reachable from the
@@ -197,6 +250,8 @@ pub const Config = struct {
         /// Run the hosted `web_search`, `web_fetch`, and `web_context` tool
         /// types a request asks for, against `web.url`; off refuses them.
         web: bool = false,
+        /// Models opened at start that the memory budget never closes.
+        pin: Pins = .none,
     };
     /// The search service behind the web tools (docs/app/agent.md § 11).
     pub const Web = struct {
@@ -564,7 +619,9 @@ fn parseValue(comptime T: type, comptime Described: type, value: std.json.Value,
             diag.set("{s} must not be empty", .{path});
             return error.InvalidConfigValue;
         },
-        .@"union" => if (T.fromJson(value)) |v| return v,
+        .@"union" => if (@hasDecl(T, "fromJsonAlloc")) {
+            if (try T.fromJsonAlloc(arena, value)) |v| return v;
+        } else if (T.fromJson(value)) |v| return v,
         else => @compileError("unsupported config key type " ++ @typeName(T)),
     }
     diag.set("{s} must be {s}", .{ path, comptime describe(Described) });
@@ -1272,6 +1329,8 @@ pub const Effective = struct {
     agent: struct { think: Effort, fold_thinking: bool, theme: ThemeName, instructions: []const u8, thinking_budget: usize, web: bool },
     decide: Config.Decide,
     embed: Config.Embed,
+    speech: Config.Speech,
+    transcribe: Config.Transcribe,
     serve: Config.Serve,
     web: Config.Web,
     cache: Config.Cache,
@@ -1291,6 +1350,8 @@ pub const Effective = struct {
             .agent = .{ .think = agent.think, .fold_thinking = agent.fold_thinking, .theme = agent.theme, .instructions = agent.instructions, .thinking_budget = agent.thinking_budget, .web = loaded.config.agent.web },
             .decide = loaded.config.decide,
             .embed = loaded.config.embed,
+            .speech = loaded.config.speech,
+            .transcribe = loaded.config.transcribe,
             .serve = loaded.config.serve,
             .web = loaded.config.web,
             .cache = loaded.config.cache,
@@ -1341,6 +1402,10 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
         try s.write(view.decide);
         try s.objectField("embed");
         try s.write(view.embed);
+        try s.objectField("speech");
+        try s.write(view.speech);
+        try s.objectField("transcribe");
+        try s.write(view.transcribe);
         try s.objectField("serve");
         try s.write(view.serve);
         try s.objectField("cache");
@@ -1402,6 +1467,8 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
     try walk(@TypeOf(view.agent), view.agent, "agent.", &rows);
     try walk(@TypeOf(view.decide), view.decide, "decide.", &rows);
     try walk(@TypeOf(view.embed), view.embed, "embed.", &rows);
+    try walk(@TypeOf(view.speech), view.speech, "speech.", &rows);
+    try walk(@TypeOf(view.transcribe), view.transcribe, "transcribe.", &rows);
     try walk(@TypeOf(view.serve), view.serve, "serve.", &rows);
     try walk(@TypeOf(view.web), view.web, "web.", &rows);
     try walk(@TypeOf(view.cache), view.cache, "cache.", &rows);
@@ -1500,6 +1567,45 @@ test "file values override defaults per key and the source is recorded" {
     , "budget.json", &diag);
     defer budgeted.deinit();
     try std.testing.expectEqual(@as(?u64, 20 << 30), budgeted.config.serve.memory_bytes);
+}
+
+test "the voice keys: speech and transcription models, the default speaker, pins as a list or a string" {
+    const alloc = std.testing.allocator;
+    var diag: Diagnostic = .{};
+    var defaults = try fromText(alloc, "{ \"schema_version\": 1 }", "d.json", &diag);
+    defer defaults.deinit();
+    try std.testing.expectEqualStrings("qwen3-tts-1.7b", defaults.config.speech.model);
+    try std.testing.expectEqualStrings("ryan", defaults.config.speech.voice);
+    try std.testing.expectEqualStrings("nemotron-asr-0.6b", defaults.config.transcribe.model);
+    try std.testing.expectEqual(@as(usize, 0), defaults.config.serve.pin.names.len);
+    var listed = try fromText(alloc,
+        \\{ "schema_version": 1, "speech": { "model": "qwen3-tts-0.6b", "voice": "vivian" },
+        \\  "serve": { "pin": ["gemma-4-e4b-qat", "qwen3-tts-0.6b"] } }
+    , "l.json", &diag);
+    defer listed.deinit();
+    try std.testing.expectEqualStrings("vivian", listed.config.speech.voice);
+    try std.testing.expectEqual(.file, listed.source("speech.voice"));
+    try std.testing.expectEqualStrings("qwen3-tts-0.6b", listed.config.serve.pin.names[1]);
+    var buffer: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("gemma-4-e4b-qat,qwen3-tts-0.6b", listed.config.serve.pin.format(&buffer));
+    var joined = try fromText(alloc, "{ \"schema_version\": 1, \"serve\": { \"pin\": \"a, b\" } }", "j.json", &diag);
+    defer joined.deinit();
+    try std.testing.expectEqualStrings("b", joined.config.serve.pin.names[1]);
+    const refused = [_][]const u8{
+        "{ \"schema_version\": 1, \"serve\": { \"pin\": 3 } }",
+        "{ \"schema_version\": 1, \"serve\": { \"pin\": [\"a\", 1] } }",
+        "{ \"schema_version\": 1, \"serve\": { \"pin\": \"a,,b\" } }",
+    };
+    for (refused) |text| {
+        try std.testing.expectError(error.InvalidConfigValue, fromText(alloc, text, "r.json", &diag));
+        try std.testing.expect(std.mem.indexOf(u8, diag.message(), "serve.pin must be a list of model names") != null);
+    }
+    // `config set serve.pin a,b` writes the string form, which loads back.
+    var edit = try set(alloc, null, "c.json", "serve.pin", "e4b,qwen3-tts-1.7b", &diag);
+    defer edit.deinit(alloc);
+    var reloaded = try fromText(alloc, edit.text, "c.json", &diag);
+    defer reloaded.deinit();
+    try std.testing.expectEqualStrings("qwen3-tts-1.7b", reloaded.config.serve.pin.names[1]);
 }
 
 test "registry entries parse by name with their overrides and companions" {

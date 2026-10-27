@@ -38,8 +38,9 @@ pub const version = @import("build_options").version;
 /// What a file is for. The header decides when it says so (`general.type`
 /// `imatrix` or `mmproj`, or a `clip` architecture); otherwise the `--role`
 /// flag (the catalogue resolves it later), and `main` when nothing says.
-/// `support` is a safetensors artifact's configuration, tokenizer, or index.
-pub const Role = enum { main, mmproj, mtp, imatrix, support };
+/// `support` is a safetensors artifact's configuration, tokenizer, or index;
+/// `codec` a speech model's codec weights, pulled with it.
+pub const Role = enum { main, mmproj, mtp, imatrix, support, codec };
 
 pub const sidecar_suffix = ".nuclis.json";
 /// A sidecar is a few hundred bytes; anything larger is not ours.
@@ -82,7 +83,7 @@ pub const PullOptions = struct {
 /// only be a registry entry: the caller then reads `nuclis.json`, which
 /// the other forms never need (a broken file must not block a download).
 pub fn isRegistryName(name: []const u8) bool {
-    return name.len > 0 and catalog.find(name) == null and catalog.findDecision(name) == null and catalog.findEmbedding(name) == null and std.mem.indexOfScalar(u8, name, '/') == null;
+    return name.len > 0 and catalog.find(name) == null and catalog.findDecision(name) == null and catalog.findEmbedding(name) == null and catalog.findAudio(name) == null and std.mem.indexOfScalar(u8, name, '/') == null;
 }
 
 /// `pull <entry>`: the entry's repository, file, and pinned revision as a
@@ -330,7 +331,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     // The package's allocator must be thread safe: the concurrent workers
     // share it. `gpa` from `std.process.Init` is.
     var client = hf.Client.init(gpa, io, environ);
-    var display: Display = .{ .io = io, .started = .now(io, .awake), .tty = std.Io.File.stderr().isTty(io) catch false };
+    var display: Display = .{ .io = io, .started = .now(io, .awake), .tty = std.Io.File.stderr().isTty(io) catch false, .json = json };
     client.progress = .{ .context = &display, .update = Display.update };
 
     // 1. Resolve. A catalogue name pins repository, files, commit, and
@@ -340,6 +341,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     const entry = catalog.find(options.repo);
     const decision = catalog.findDecision(options.repo);
     const embedding = catalog.findEmbedding(options.repo);
+    const audio = catalog.findAudio(options.repo);
     var pinned: [40]u8 = undefined;
     if (embedding) |e| {
         if (options.file != null or options.revision != null) {
@@ -372,6 +374,43 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
             diag.set("{s} has no {s} companion in the catalogue", .{ e.name, @tagName(role) });
             return error.NoSuchCompanion;
         };
+    } else if (audio) |a| {
+        // A speech or transcription checkpoint: the weights and their support
+        // files, and a speech model's codec with its own, from one listing at
+        // the pinned commit, each digest the catalogue's.
+        if (options.all or options.with.count() != 0 or options.file != null or options.revision != null or options.register != null) {
+            diag.set("{s} is a {s} checkpoint pinned to {s} at {s}; it has no companions to choose (its codec comes with it), and pulling by repository id chooses another file or commit", .{ a.name, catalog.kindName(a.kind), a.repo, a.revision[0..12] });
+            return error.ConflictingOptions;
+        }
+        request.repo_id = a.repo;
+        request.revision = a.revision;
+        request.filename = a.file;
+        var remote = client.list(request) catch |err| return listFailure(err, arena, client, request, options.repo, diag);
+        defer remote.deinit();
+        pinned = remote.revision;
+        const parts = [_]struct { file: []const u8, sha256: []const u8, support: []const []const u8 }{
+            .{ .file = a.file, .sha256 = a.sha256, .support = a.support },
+            .{ .file = if (a.codec) |c| c.file else "", .sha256 = if (a.codec) |c| c.sha256 else "", .support = a.codec_support },
+        };
+        for (parts) |part| {
+            if (part.file.len == 0) continue;
+            const selected = (hf.select(arena, &remote, part.file) catch |err| return hubFailure(err, options.repo, diag)).?;
+            const first = jobs.items.len;
+            const role: Role = if (a.codec != null and std.mem.eql(u8, part.file, a.codec.?.file)) .codec else .main;
+            for (selected) |f| try jobs.append(arena, try remoteJob(arena, f, if (std.mem.eql(u8, f.name, part.file)) role else null));
+            for (jobs.items[first..]) |job| if (std.mem.eql(u8, job.name, part.file) and !std.mem.eql(u8, job.sha256 orelse "", part.sha256)) {
+                diag.set("{s}: the Hub's digest at commit {s} is not the catalogue's {s}…; the catalogue entry needs updating", .{ part.file, a.revision[0..12], part.sha256[0..12] });
+                return error.CatalogMismatch;
+            };
+            for (part.support) |name| {
+                for (jobs.items[first..]) |job| {
+                    if (std.mem.eql(u8, job.name, name)) break;
+                } else {
+                    diag.set("{s}: {s} is not beside the weights at commit {s}; the catalogue entry needs updating", .{ a.name, name, a.revision[0..12] });
+                    return error.CatalogMismatch;
+                }
+            }
+        }
     } else {
         if (decision) |d| {
             if (options.all or options.with.count() != 0 or options.file != null or options.revision != null) {
@@ -441,7 +480,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
         };
         try config.registrable(name, request.repo_id, main_file, diag);
     }
-    const pinned_name: ?[]const u8 = if (entry) |e| e.name else if (decision) |d| d.name else if (embedding) |e| e.name else null;
+    const pinned_name: ?[]const u8 = if (entry) |e| e.name else if (decision) |d| d.name else if (embedding) |e| e.name else if (audio) |a| a.name else null;
     if (!json) try renderHeader(out, sty, pinned_name orelse options.name, request.repo_id, if (pinned_name != null) null else options.revision orelse "main", revision);
     try out.flush();
 
@@ -487,8 +526,14 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     // Every job is one file (shard sets and support files were expanded
     // above), so each download is exact.
     request.exact = true;
-    for (jobs.items) |job| {
+    display.count = jobs.items.len;
+    for (jobs.items) |job| display.total += job.size;
+    for (jobs.items, 0..) |job, index| {
         request.filename = job.name;
+        display.index = index;
+        display.file = job.name;
+        display.file_size = job.size;
+        defer display.done += job.size;
         var result = client.download(request) catch |err| switch (err) {
             error.Canceled => {
                 diag.set("interrupted; the partial download was removed", .{});
@@ -542,7 +587,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
                 .main => registration.file = job.name,
                 .mmproj => registration.mmproj = job.name,
                 .mtp => registration.mtp = job.name,
-                .imatrix, .support => {},
+                .imatrix, .support, .codec => {},
             }
         }
     }
@@ -560,10 +605,12 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
             .generation => "engine.model",
             .decision => "decide.model",
             .embedding => "embed.model",
+            .speech => "speech.model",
+            .transcription => "transcribe.model",
         };
         registered = .{ .name = name, .config = config_path, .key = key };
     }
-    try renderPull(out, .{ .name = pinned_name orelse options.name, .repo = request.repo_id, .requested_revision = options.revision orelse (if (entry) |e| e.revision else if (decision) |d| d.revision else if (embedding) |e| e.revision else "main"), .revision = revision, .files = report.items, .registered = registered orelse null }, json, sty);
+    try renderPull(out, .{ .name = pinned_name orelse options.name, .repo = request.repo_id, .requested_revision = options.revision orelse (if (entry) |e| e.revision else if (decision) |d| d.revision else if (embedding) |e| e.revision else if (audio) |a| a.revision else "main"), .revision = revision, .files = report.items, .registered = registered orelse null }, json, sty);
 }
 
 /// Whether safetensors weights come with Laya's `rl_agent_config.json`
@@ -683,18 +730,28 @@ fn hubFailure(err: anyerror, repo: []const u8, diag: *config.Diagnostic) anyerro
 /// terminal, a line rewritten in place at most every 200 ms with the file's
 /// percentage, bytes, throughput since the download started, and the
 /// estimated remaining time. Off a terminal only the phase lines print.
-/// Write failures are ignored: progress is advisory. The interrupt flag is
-/// polled here because this is the one callback the package makes between
-/// chunks.
+/// With `--json`, one JSON object per line instead (`Progress`; the format
+/// is in docs/guide/getting-started.md § Model download). Write failures
+/// are ignored: progress is advisory. The interrupt flag is polled here
+/// because this is the one callback the package makes between chunks.
 const Display = struct {
     io: std.Io,
     started: std.Io.Timestamp,
     tty: bool,
+    json: bool = false,
     last_line: ?std.Io.Timestamp = null,
     last_phase: ?@FieldType(hf.ProgressEvent, "phase") = null,
     download_started: ?std.Io.Timestamp = null,
     download_base: u64 = 0,
     open_line: bool = false,
+    /// The pull's files, set by `pullOne` before each package call: this
+    /// one's Hub name, index, and size, and the bytes of the files before it.
+    file: []const u8 = "",
+    index: usize = 0,
+    count: usize = 0,
+    file_size: u64 = 0,
+    done: u64 = 0,
+    total: u64 = 0,
 
     fn update(context: ?*anyopaque, event: hf.ProgressEvent) error{Canceled}!void {
         const d: *Display = @ptrCast(@alignCast(context.?));
@@ -705,6 +762,44 @@ const Display = struct {
         d.render(event) catch {};
     }
 
+    /// One `--json` progress line.
+    pub const Progress = struct {
+        event: []const u8,
+        file: []const u8,
+        index: usize,
+        count: usize,
+        /// This file's bytes verified or downloaded, and its size.
+        done: u64,
+        size: u64,
+        /// Every file's of the pull, this one's included.
+        pull_done: u64,
+        pull_size: u64,
+    };
+
+    /// The line for `event` as `--json` prints it; null when none is due (a
+    /// download line at most every 250 ms, and at the file's end).
+    fn progress(d: *Display, event: hf.ProgressEvent, now: std.Io.Timestamp) ?Progress {
+        const phase_changed = d.last_phase == null or d.last_phase.? != event.phase;
+        const name: []const u8 = switch (event.phase) {
+            .resolving => "resolving",
+            .selection_required => "interrupted",
+            .verifying => if (event.reused) "reused" else if (event.file_completed == 0) "checking" else "verifying",
+            .downloading => "downloading",
+            .complete => "complete",
+        };
+        const done: u64 = switch (event.phase) {
+            .resolving, .selection_required => 0,
+            .verifying => if (event.reused or event.file_completed > 0) d.file_size else 0,
+            .downloading => event.file_completed,
+            .complete => d.file_size,
+        };
+        if (event.phase == .downloading and !phase_changed and event.file_completed < event.file_total) {
+            if (d.last_line) |last| if (last.durationTo(now).toMilliseconds() < 250) return null;
+        }
+        if (event.phase == .downloading) d.last_line = now;
+        return .{ .event = name, .file = d.file, .index = d.index, .count = d.count, .done = done, .size = d.file_size, .pull_done = d.done + done, .pull_size = d.total };
+    }
+
     fn render(d: *Display, event: hf.ProgressEvent) !void {
         var buffer: [512]u8 = undefined;
         // Streaming, not positional: a positional writer restarts at offset
@@ -713,6 +808,15 @@ const Display = struct {
         const w = &stderr.interface;
         defer w.flush() catch {};
         const now: std.Io.Timestamp = .now(d.io, .awake);
+        if (d.json) {
+            const line = d.progress(event, now);
+            d.last_phase = event.phase;
+            if (line) |l| {
+                try std.json.Stringify.value(l, .{}, w);
+                try w.writeByte('\n');
+            }
+            return;
+        }
         const name = event.filename orelse "";
         const phase_changed = d.last_phase == null or d.last_phase.? != event.phase;
         d.last_phase = event.phase;
@@ -866,6 +970,8 @@ pub const Listing = struct {
                 .generation => "",
                 .decision => " (nuclis decide)",
                 .embedding => " (nuclis embed)",
+                .speech => " (nuclis speak)",
+                .transcription => " (nuclis transcribe)",
             }, hash, row.revision[0..12], off, hash, row.sha256, off });
             if (row.registered) |r| {
                 try out.splatByteAll(' ', 2 + name_w + 1 + status_w + 1);
@@ -958,8 +1064,19 @@ pub fn statusStyle(status: catalog.Status) style.Kind {
 /// directory lists the catalogue as absent.
 pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Models) !Listing {
     const models = try modelsDir(arena, root);
-    const rows = try arena.alloc(CatalogRow, catalog.entries.len + catalog.decision_entries.len + catalog.embedding_entries.len);
-    const embedding_rows = rows[catalog.entries.len + catalog.decision_entries.len ..];
+    const rows = try arena.alloc(CatalogRow, catalog.entries.len + catalog.decision_entries.len + catalog.embedding_entries.len + catalog.audio_entries.len);
+    const embedding_rows = rows[catalog.entries.len + catalog.decision_entries.len ..][0..catalog.embedding_entries.len];
+    const audio_rows = rows[rows.len - catalog.audio_entries.len ..];
+    for (&catalog.audio_entries, audio_rows) |*e, *row| {
+        const path = try std.fs.path.join(arena, &.{ models, e.repo, e.file });
+        var companions: []CompanionRow = &.{};
+        if (e.codec) |c| {
+            const cpath = try std.fs.path.join(arena, &.{ models, c.repo, c.file });
+            companions = try arena.alloc(CompanionRow, 1);
+            companions[0] = .{ .role = .codec, .status = try catalog.status(arena, io, cpath, c.sha256, c.size), .path = cpath[models.len + 1 ..], .size = c.size, .used_for = "the speech codec (pulled with it)" };
+        }
+        row.* = .{ .name = e.name, .kind = e.kind, .status = try catalog.status(arena, io, path, e.sha256, e.size), .path = path[models.len + 1 ..], .size = e.size, .architecture = e.architecture, .quantization = e.quantization, .revision = e.revision, .sha256 = e.sha256, .companions = companions };
+    }
     for (&catalog.embedding_entries, embedding_rows) |*e, *row| {
         const path = try std.fs.path.join(arena, &.{ models, e.repo, e.file });
         var companions: []CompanionRow = &.{};
@@ -1185,8 +1302,19 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
         }
         request = .{ .repo_id = e.repo, .revision = e.revision, .filename = e.file };
     }
+    const audio = catalog.findAudio(options.repo);
+    if (audio) |a| {
+        if (options.file != null or options.revision != null) {
+            diag.set("{s} is a catalogue name and pins its file and commit; inspect by repository id ({s}) to choose another", .{ a.name, a.repo });
+            return error.ConflictingOptions;
+        }
+        request = .{ .repo_id = a.repo, .revision = a.revision, .filename = a.file };
+    }
     var remote = client.list(request) catch |err| return listFailure(err, arena, client, request, options.repo, diag);
     defer remote.deinit();
+    // A safetensors checkpoint has no directory to read remotely: the
+    // verdict is the catalogue's digest against the Hub's.
+    if (audio) |a| return renderInspect(out, try audioReport(arena, a, &remote), json, sty);
     const selected = (hf.select(arena, &remote, request.filename) catch |err| return hubFailure(err, options.repo, diag)) orelse {
         try renderSelection(out, .{ .repo = options.repo, .revision = &remote.revision, .selection_required = try choices(arena, remote.files) }, json, sty);
         try out.flush();
@@ -1213,6 +1341,31 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
         .sha256 = try arena.dupe(u8, &std.fmt.bytesToHex(file.sha256.?, .lower)),
     }, diag);
     try renderInspect(out, report, json, sty);
+}
+
+/// `inspect` of a speech or transcription entry, from the Hub's listing at
+/// the pinned commit: supported when the weights (and a speech model's
+/// codec) carry the catalogue's digests.
+fn audioReport(arena: Allocator, a: *const catalog.AudioEntry, remote: *const hf.Catalog) !InspectReport {
+    const weights = for (remote.files) |f| {
+        if (std.mem.eql(u8, f.name, a.file)) break f;
+    } else return error.FileNotFound;
+    const digest = try hexOrNull(arena, weights.sha256) orelse "";
+    var verdict: Verdict = .{ .status = .supported, .catalog = a.name, .role = .main, .reason = try arena.print("pinned by the catalogue: a {s} checkpoint (safetensors, {s}) that `{s}` runs; `nuclis model pull {s}` fetches it with its support files{s}", .{ catalog.kindName(a.kind), a.quantization, catalog.command(a.kind), a.name, if (a.codec != null) " and its codec" else "" }) };
+    var mismatch: ?[]const u8 = if (!std.mem.eql(u8, digest, a.sha256)) a.file else null;
+    if (a.codec) |c| for (remote.files) |f| if (std.mem.eql(u8, f.name, c.file)) {
+        if (!std.mem.eql(u8, try hexOrNull(arena, f.sha256) orelse "", c.sha256)) mismatch = c.file;
+    };
+    if (mismatch) |file| verdict = .{ .status = .not_runnable, .reason = try arena.print("{s}: the Hub's digest at the pinned commit is not the catalogue's; the catalogue entry needs updating", .{file}) };
+    return finish(.{
+        .name = a.name,
+        .repo = a.repo,
+        .file = a.file,
+        .requested_revision = a.revision,
+        .revision = try arena.dupe(u8, &remote.revision),
+        .size = weights.size,
+        .sha256 = digest,
+    }, 0, 0, null, verdict);
 }
 
 /// The production range reader: one `readRange` per window, bytes owned by
@@ -1355,6 +1508,34 @@ fn renderInspect(out: *std.Io.Writer, report: InspectReport, json: bool, sty: st
     try out.print("{s}Directory read: {d} bytes in {d} request(s); no weights downloaded.{s}\n", .{ sty.on(.dim), report.bytes_read, report.requests, sty.off() });
 }
 
+test "--json progress: a line per phase, downloads at most every 250 ms and at the file's end" {
+    const io = std.testing.io;
+    const t0: std.Io.Timestamp = .now(io, .awake);
+    var d: Display = .{ .io = io, .started = t0, .tty = false, .json = true, .file = "model.safetensors", .index = 1, .count = 3, .file_size = 100, .done = 40, .total = 200 };
+    const resolving = d.progress(.{ .phase = .resolving }, t0).?;
+    try std.testing.expectEqualStrings("resolving", resolving.event);
+    d.last_phase = .resolving;
+    const first = d.progress(.{ .phase = .downloading, .file_completed = 10, .file_total = 100 }, t0).?;
+    try std.testing.expectEqual(@as(u64, 10), first.done);
+    try std.testing.expectEqual(@as(u64, 50), first.pull_done);
+    try std.testing.expectEqual(@as(u64, 200), first.pull_size);
+    d.last_phase = .downloading;
+    // Within 250 ms of the last line: nothing, unless the file is done.
+    const soon = t0.addDuration(.fromMilliseconds(100));
+    try std.testing.expect(d.progress(.{ .phase = .downloading, .file_completed = 20, .file_total = 100 }, soon) == null);
+    try std.testing.expectEqual(@as(u64, 100), d.progress(.{ .phase = .downloading, .file_completed = 100, .file_total = 100 }, soon).?.done);
+    const later = t0.addDuration(.fromMilliseconds(400));
+    try std.testing.expect(d.progress(.{ .phase = .downloading, .file_completed = 60, .file_total = 100 }, later) != null);
+    const reused = d.progress(.{ .phase = .verifying, .reused = true }, later).?;
+    try std.testing.expectEqualStrings("reused", reused.event);
+    try std.testing.expectEqual(@as(u64, 100), reused.done);
+    // One line of JSON each.
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try std.json.Stringify.value(reused, .{}, &out.writer);
+    try std.testing.expectEqualStrings("{\"event\":\"reused\",\"file\":\"model.safetensors\",\"index\":1,\"count\":3,\"done\":100,\"size\":100,\"pull_done\":140,\"pull_size\":200}", out.written());
+}
+
 test "sizes read in decimal units, exact bytes below a kilobyte" {
     var buffer: [16]u8 = undefined;
     try std.testing.expectEqualStrings("16.46 GB", humanSize(&buffer, 16464440224));
@@ -1475,10 +1656,19 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     const arena = arena_state.allocator();
     // Absent directory: the catalogue is absent, nothing else, nothing created.
     const empty = try list(arena, io, root, .{});
-    try std.testing.expectEqual(catalog.entries.len + catalog.decision_entries.len + catalog.embedding_entries.len, empty.catalog.len);
+    try std.testing.expectEqual(catalog.entries.len + catalog.decision_entries.len + catalog.embedding_entries.len + catalog.audio_entries.len, empty.catalog.len);
     try std.testing.expectEqual(catalog.Status.absent, empty.catalog[0].status);
-    // The embedding entries come last, their projector beneath them.
-    const vectors = empty.catalog[empty.catalog.len - 1];
+    // The speech and transcription entries come last, a voice's codec
+    // beneath it; the embedding entries before them, their projector beneath.
+    const voice = empty.catalog[empty.catalog.len - catalog.audio_entries.len];
+    try std.testing.expectEqual(catalog.ModelKind.speech, voice.kind);
+    try std.testing.expectEqualStrings("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/model.safetensors", voice.path);
+    try std.testing.expectEqual(Role.codec, voice.companions[0].role);
+    try std.testing.expectEqualStrings("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/speech_tokenizer/model.safetensors", voice.companions[0].path);
+    const ears = empty.catalog[empty.catalog.len - 1];
+    try std.testing.expectEqual(catalog.ModelKind.transcription, ears.kind);
+    try std.testing.expectEqual(@as(usize, 0), ears.companions.len);
+    const vectors = empty.catalog[empty.catalog.len - catalog.audio_entries.len - 1];
     try std.testing.expectEqual(catalog.ModelKind.embedding, vectors.kind);
     try std.testing.expectEqualStrings("unsloth/embeddinggemma-2-GGUF/embeddinggemma-2-Q8_0.gguf", vectors.path);
     try std.testing.expectEqual(Role.mmproj, vectors.companions[0].role);

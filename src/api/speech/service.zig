@@ -1,0 +1,791 @@
+//! The speech service: `POST /v1/audio/speech` (OpenAI's speech call) and
+//! the speech models for `GET /v1/models`. A handler validates on its
+//! connection's task and queues a job; one short GPU item speaks the jobs
+//! in arrival order, a chunk of frames per run, so a chunk runs between a
+//! chat generation's steps (`gpu.Executor.runShort`) and a voice holds one
+//! synthesizer at a time. The response head waits until the job's prompt
+//! is prefilled, so a refusal on the worker (an unknown speaker) is still a
+//! status; the audio then streams through a `Pipe`. A client that leaves
+//! cancels between chunks. docs/guide/api.md § Speech.
+const std = @import("std");
+const inference = @import("inference");
+const config = @import("../../config.zig");
+const catalog = @import("../../catalog.zig");
+const audio_catalog = @import("../../audio/catalog.zig");
+const http = @import("../http.zig");
+const errors = @import("../errors.zig");
+const gpu = @import("../gpu.zig");
+const models = @import("../models.zig");
+const router_mod = @import("../router.zig");
+const slot_mod = @import("../slot.zig");
+const Pipe = @import("../pipe.zig").Pipe;
+const wire = @import("wire.zig");
+
+const tts = inference.models.qwen3_tts;
+const runtime = inference.models.qwen3_tts_runtime;
+const ApiError = errors.ApiError;
+
+pub const Voice = runtime.Voice;
+pub const Slot = slot_mod.Slot(Voice, .speech);
+
+/// Speech requests waiting for the voice at once; one more is `busy`.
+pub const max_waiting = 64;
+/// Bytes a stream may hold between the worker and the socket: about 5 s
+/// of PCM. A chunk waits (the job parks) rather than block the worker.
+const pipe_capacity = 256 * 1024;
+const samples_per_frame = 1920;
+/// How often a waiting request looks at its client; how long an event
+/// stream may stay silent before a keepalive comment.
+const poll_ms = 1000;
+const keepalive_ms = 10_000;
+
+/// Requests queued behind the one speaking, whether one is, and the
+/// requests answered since the start.
+pub const Stats = struct { waiting: usize, speaking: bool, requests: u64 };
+
+pub const Service = struct {
+    gpa: std.mem.Allocator,
+    executor: *gpu.Executor,
+    slot: Slot,
+    root: ?[]const u8,
+    registry: config.Models,
+    /// `speech.model` and `speech.voice`: what a request that names none gets.
+    settings: config.Config.Speech,
+    timeout_ns: u64,
+    /// Frames in the first chunk and in every later one.
+    first_chunk: usize = runtime.default_first_chunk,
+    chunk: usize = runtime.default_chunk,
+
+    /// The queue: guards the list, `scheduled`, `parked`, and each job's `state`.
+    mutex: std.Io.Mutex = .init,
+    head: ?*Job = null,
+    tail: ?*Job = null,
+    waiting: usize = 0,
+    /// The item is queued or running.
+    scheduled: bool = false,
+    /// The job speaking waits for its client to take what it has.
+    parked: bool = false,
+    requests: u64 = 0,
+    /// Worker-only: the job speaking.
+    active: ?*Job = null,
+    item: gpu.Item = .{ .run = step, .short = true },
+
+    /// `root` and `registry` are borrowed for the service's lifetime; the
+    /// service must not move once a request was queued (the item points
+    /// into it).
+    pub fn init(gpa: std.mem.Allocator, executor: *gpu.Executor, metal: bool, root: ?[]const u8, registry: config.Models, settings: config.Config.Speech, timeout_ns: u64) Service {
+        return .{
+            .gpa = gpa,
+            .executor = executor,
+            .slot = .init(gpa, openVoice, closeVoice, .{ .metal = metal }),
+            .root = root,
+            .registry = registry,
+            .settings = settings,
+            .timeout_ns = timeout_ns,
+        };
+    }
+
+    /// After the executor's worker stopped.
+    pub fn deinit(self: *Service, io: std.Io) void {
+        if (self.active) |job| self.finish(io, job);
+        self.slot.deinit(io);
+    }
+
+    pub fn register(self: *Service, gpa: std.mem.Allocator, router: *router_mod.Router, listing: *models.Models) !void {
+        try router.add(gpa, .POST, router_mod.prefix ++ "/audio/speech", .{ .context = self, .handle = handle });
+        try listing.add(gpa, .{ .context = self, .list = list });
+    }
+
+    pub fn stats(self: *Service, io: std.Io) Stats {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        return .{ .waiting = self.waiting, .speaking = self.scheduled or self.parked, .requests = self.requests };
+    }
+
+    /// Opens `name` now (a `--model` or `--pin` of `nuclis serve`) through the GPU.
+    pub fn preload(self: *Service, arena: std.mem.Allocator, io: std.Io, name: []const u8, diag: *config.Diagnostic) !void {
+        const located = try audio_catalog.locate(arena, io, self.root, self.registry, name, .speech, false, diag);
+        var opening: Opening = .{ .slot = &self.slot, .directory = located.directory, .name = name, .bytes = located.bytes };
+        try self.executor.submit(io, &opening.item);
+        opening.item.done.waitUncancelable(io);
+        if (opening.failed) |err| {
+            diag.set("the speech model {s} did not open: {s}", .{ name, @errorName(err) });
+            return err;
+        }
+    }
+
+    fn handle(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, request: http.Request) http.Response {
+        const self: *Service = @ptrCast(@alignCast(context));
+        return self.answer(arena, io, request.body, request.peer);
+    }
+
+    /// Validates, queues, waits until the job's prompt is prefilled, and
+    /// answers with the stream or the refusal. Every failure is a response.
+    pub fn answer(self: *Service, arena: std.mem.Allocator, io: std.Io, body: []const u8, peer: ?http.Peer) http.Response {
+        const deadline = std.Io.Clock.Timestamp.fromNow(io, .{ .raw = .fromNanoseconds(self.timeout_ns), .clock = .awake });
+        var problem: wire.Problem = .{};
+        const parsed = wire.parse(arena, body, &problem) catch |err| return switch (err) {
+            error.Refused => refuse(arena, .bad_request, problem.code, problem.param, "{s}", .{problem.message}),
+            error.OutOfMemory => internal(arena),
+        };
+        const open = self.slot.openName(io, arena) catch null;
+        const name = parsed.model orelse open orelse self.settings.model;
+        var diag: config.Diagnostic = .{};
+        const located = audio_catalog.locate(arena, io, self.root, self.registry, name, .speech, false, &diag) catch |err| return switch (err) {
+            error.WrongKind => refuse(arena, .bad_request, "not_a_speech_model", "model", "{s} is a {s} model; this route speaks with a speech model ({s})", .{ name, catalog.kindName(catalog.kindOf(self.registry, name)), self.settings.model }),
+            error.ModelNotFound, error.ModelFileNotFound => refuse(arena, .not_found, "model_not_found", "model", "{s}", .{diag.message()}),
+            error.OutOfMemory => internal(arena),
+            else => refuse(arena, .internal_server_error, "model_failed", "model", "{s}: {s}", .{ name, if (diag.len > 0) diag.message() else @errorName(err) }),
+        };
+        if (parsed.instructions != null) if (located.entry) |entry| if (!entry.instructions)
+            return refuse(arena, .bad_request, "instructions_unsupported", "instructions", "{s} performs no instruction; qwen3-tts-1.7b does", .{name});
+
+        const job = arena.create(Job) catch return internal(arena);
+        job.* = .{
+            .service = self,
+            .request = parsed,
+            .directory = located.directory,
+            .name = name,
+            .bytes = located.bytes,
+            .voice = parsed.voice orelse self.settings.voice,
+            .pipe = Pipe.init(self.gpa, pipe_capacity) catch return internal(arena),
+            .note_buffer = arena.alloc(u8, 512) catch return internal(arena),
+            .message_buffer = arena.alloc(u8, 1024) catch return internal(arena),
+            .peer = peer,
+        };
+        self.submit(io, job) catch |err| {
+            job.pipe.deinit(self.gpa);
+            return switch (err) {
+                error.Busy => refuse(arena, http.overloaded, "busy", null, "overloaded: {d} speech requests wait already; retry shortly", .{max_waiting}),
+                error.Stopped => refuse(arena, .service_unavailable, "shutting_down", null, "the server is stopping", .{}),
+            };
+        };
+        switch (job.waitReady(io, deadline)) {
+            .ready => {},
+            .timed_out => {
+                job.release(io);
+                return refuse(arena, http.overloaded, "timeout", null, "overloaded: waited {d} s for the GPU without starting (timeout)", .{self.timeout_ns / std.time.ns_per_s});
+            },
+            .gone => {
+                job.release(io);
+                return refuse(arena, .bad_request, "cancelled", null, "the client closed the connection", .{});
+            },
+        }
+        if (job.failure) |failure| {
+            job.release(io);
+            return .fromError(arena, failure);
+        }
+        return .{
+            .body = "",
+            .content_type = wire.contentType(parsed),
+            .stream = .{ .context = job, .write = Job.writeStream, .note = Job.streamNote },
+        };
+    }
+
+    /// Queues `job` behind the others and schedules the item if it is idle.
+    fn submit(self: *Service, io: std.Io, job: *Job) error{ Busy, Stopped }!void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        if (self.waiting >= max_waiting) return error.Busy;
+        if (!self.scheduled and !self.parked) {
+            try self.executor.submit(io, &self.item);
+            self.scheduled = true;
+        }
+        if (self.tail) |t| t.next = job else self.head = job;
+        self.tail = job;
+        self.waiting += 1;
+        job.state = .queued;
+    }
+
+    /// Takes `job` out of the queue if it has not started: true when the
+    /// worker will never touch it.
+    fn withdraw(self: *Service, io: std.Io, job: *Job) bool {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        if (job.state != .queued) return false;
+        var previous: ?*Job = null;
+        var cursor = self.head;
+        while (cursor) |c| : ({
+            previous = c;
+            cursor = c.next;
+        }) if (c == job) {
+            if (previous) |p| p.next = c.next else self.head = c.next;
+            if (self.tail == c) self.tail = previous;
+            break;
+        };
+        self.waiting -= 1;
+        job.state = .finished;
+        job.done.set(io);
+        return true;
+    }
+
+    /// The parked job's client took bytes (or left): schedule it again.
+    fn unpark(self: *Service, io: std.Io) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        if (!self.parked) return;
+        self.executor.submit(io, &self.item) catch return;
+        self.parked = false;
+        self.scheduled = true;
+    }
+
+    /// The item: one step of the job speaking, taking the next when it ends.
+    fn step(item: *gpu.Item, io: std.Io) gpu.Item.After {
+        const self: *Service = @alignCast(@fieldParentPtr("item", item));
+        const job = self.active orelse blk: {
+            self.mutex.lockUncancelable(io);
+            const next = self.head orelse {
+                self.scheduled = false;
+                self.mutex.unlock(io);
+                return .done;
+            };
+            self.head = next.next;
+            if (self.head == null) self.tail = null;
+            self.waiting -= 1;
+            next.state = .active;
+            self.mutex.unlock(io);
+            self.active = next;
+            break :blk next;
+        };
+        if (job.cancel.load(.acquire)) {
+            self.finish(io, job);
+            return self.afterJob(io);
+        }
+        if (job.synth == null) {
+            // Opening a voice may close the language model a generation is
+            // running: it waits for the generation, not between its steps.
+            if (item.short and !self.slot.isOpen(io, job.directory)) {
+                item.short = false;
+                return .again;
+            }
+            item.short = true;
+            self.start(io, job) catch |err| {
+                job.failure = startFailure(job, err);
+                job.ready.set(io);
+                self.finish(io, job);
+                return self.afterJob(io);
+            };
+            job.ready.set(io);
+        }
+        // Parked rather than blocked: the worker never waits on a client.
+        if (job.pipe.space(io) < wire.maxChunkBytes(@max(self.chunk, self.first_chunk), samples_per_frame, job.request.stream)) {
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
+            self.parked = true;
+            self.scheduled = false;
+            return .done;
+        }
+        if (!job.speak(io)) {
+            self.finish(io, job);
+            return self.afterJob(io);
+        }
+        return .again;
+    }
+
+    /// After a job ended: `.again` while another waits.
+    fn afterJob(self: *Service, io: std.Io) gpu.Item.After {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        if (self.head != null) return .again;
+        self.scheduled = false;
+        return .done;
+    }
+
+    /// Opens the voice if needed, builds the prompt, and prefills it.
+    fn start(self: *Service, io: std.Io, job: *Job) !void {
+        job.started = std.Io.Clock.awake.now(io);
+        const acquired = try self.slot.acquire(io, job.directory, job.name, job.bytes);
+        job.load_ns = acquired.load_ns;
+        const voice = acquired.model;
+        self.slot.hold(io, true);
+        job.holding = true;
+        // For the refusal's list, should the prompt name an unknown one.
+        job.speakers = voice.config.speakers;
+        job.languages = voice.config.languages;
+        var prompt = try voice.prompt(self.gpa, job.request.input, job.voice, job.request.language orelse "auto", job.request.instructions);
+        defer prompt.deinit(self.gpa);
+        job.prompt_rows = prompt.rows.len;
+        var synth = try voice.synthesizer(self.gpa, prompt.rows, job.request.seed orelse 0);
+        errdefer synth.deinit();
+        synth.first_chunk = self.first_chunk;
+        synth.chunk = self.chunk;
+        const frames = @max(self.chunk, self.first_chunk);
+        job.samples = try self.gpa.alloc(f32, frames * samples_per_frame);
+        errdefer self.gpa.free(job.samples);
+        // The raw bytes, then (for events) their framing.
+        const raw = wire.maxChunkBytes(frames, samples_per_frame, .audio);
+        const framed = if (job.request.stream == .sse) wire.maxChunkBytes(frames, samples_per_frame, .sse) else 0;
+        job.bytes_out = try self.gpa.alloc(u8, raw + framed);
+        job.raw_len = raw;
+        job.synth = synth;
+    }
+
+    /// The job is over: its synthesizer and buffers freed, the voice no
+    /// longer held, the stream closed, its waiter woken.
+    fn finish(self: *Service, io: std.Io, job: *Job) void {
+        if (job.synth) |*s| s.deinit();
+        job.synth = null;
+        if (job.samples.len > 0) self.gpa.free(job.samples);
+        if (job.bytes_out.len > 0) self.gpa.free(job.bytes_out);
+        job.samples = &.{};
+        job.bytes_out = &.{};
+        if (job.holding) self.slot.hold(io, false);
+        job.holding = false;
+        job.writeNote();
+        job.pipe.close(io);
+        self.active = null;
+        {
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
+            job.state = .finished;
+            self.requests += 1;
+        }
+        job.done.set(io);
+    }
+
+    fn list(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, out: *std.ArrayList(models.Entry)) anyerror!void {
+        const self: *Service = @ptrCast(@alignCast(context));
+        try listAudio(arena, io, self.root, self.registry, .speech, self.settings.model, &self.slot, out);
+    }
+};
+
+/// The models of `kind` for `GET /v1/models`: every catalogue entry, pulled
+/// or not, then the registry's entries of the kind. Shared with the
+/// transcription service.
+pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: config.Models, kind: audio_catalog.Kind, default_model: []const u8, slot: anytype, out: *std.ArrayList(models.Entry)) !void {
+    var listed: std.ArrayList([]const u8) = .empty;
+    const wanted: catalog.ModelKind = switch (kind) {
+        .speech => .speech,
+        .transcription => .transcription,
+    };
+    for (&catalog.audio_entries) |*e| if (e.kind == wanted and registry.find(e.name) == null) try listed.append(arena, e.name);
+    for (registry.entries) |named| if (named.entry.kind == wanted) try listed.append(arena, named.name);
+    for (listed.items) |name| {
+        var diag: config.Diagnostic = .{};
+        const resolved = audio_catalog.resolve(arena, root, registry, name, kind, false, &diag) catch continue;
+        const present = if (audio_catalog.locate(arena, io, root, registry, name, kind, false, &diag)) |_| true else |_| false;
+        const entry = resolved.entry;
+        var details: std.json.ObjectMap = .empty;
+        try details.put(arena, "kind", .{ .string = @tagName(kind) });
+        try details.put(arena, "name", .{ .string = if (entry) |e| e.title else name });
+        try details.put(arena, "architecture", if (entry) |e| .{ .string = e.architecture } else .null);
+        try details.put(arena, "quantization", if (entry) |e| .{ .string = e.quantization } else .null);
+        try details.put(arena, "size_bytes", .{ .integer = @intCast(if (entry) |e| e.totalSize() else 0) });
+        try details.put(arena, "present", .{ .bool = present });
+        try details.put(arena, "loaded", .{ .bool = slot.isOpen(io, resolved.directory) });
+        try details.put(arena, "default", .{ .bool = std.mem.eql(u8, name, default_model) });
+        switch (kind) {
+            .speech => {
+                var voices: std.json.Array = .init(arena);
+                if (entry) |e| for (e.speakers) |s| try voices.append(.{ .string = s });
+                try details.put(arena, "voices", .{ .array = voices });
+                try details.put(arena, "instructions", if (entry) |e| .{ .bool = e.instructions } else .null);
+                try details.put(arena, "sample_rate", .{ .integer = wire.sample_rate });
+                var formats: std.json.Array = .init(arena);
+                for (std.enums.values(wire.Format)) |f| try formats.append(.{ .string = @tagName(f) });
+                try details.put(arena, "formats", .{ .array = formats });
+            },
+            .transcription => try details.put(arena, "sample_rate", .{ .integer = 16000 }),
+        }
+        const registered = registry.find(name);
+        const repo = if (entry) |e| e.repo else if (registered) |r| r.repo else null;
+        try details.put(arena, "repo", if (repo) |r| .{ .string = r } else .null);
+        try details.put(arena, "revision", if (entry) |e| .{ .string = e.revision } else if (registered) |r| if (r.revision) |v| .{ .string = v } else .null else .null);
+        const owner = if (repo) |r| r[0 .. std.mem.indexOfScalar(u8, r, '/') orelse r.len] else "local";
+        try out.append(arena, .{ .id = name, .owned_by = owner, .details = .{ .object = details } });
+    }
+}
+
+/// One request: queued on the connection's task, spoken on the worker. It
+/// lives in the connection's arena; the worker allocates only from the
+/// service's allocator.
+const Job = struct {
+    service: *Service,
+    next: ?*Job = null,
+    request: wire.Request,
+    directory: []const u8,
+    name: []const u8,
+    bytes: u64,
+    voice: []const u8,
+    pipe: Pipe,
+    peer: ?http.Peer,
+    /// Set by the connection when its client is gone; the worker stops
+    /// before the next chunk.
+    cancel: std.atomic.Value(bool) = .init(false),
+    /// Guarded by the service's mutex.
+    state: enum { idle, queued, active, finished } = .idle,
+    /// Set once the prompt is prefilled or the job failed before.
+    ready: std.Io.Event = .unset,
+    /// Set once the worker can no longer touch the job.
+    done: std.Io.Event = .unset,
+    /// Why the job failed; set before `ready` or `done`.
+    failure: ?ApiError = null,
+    /// The log's line, in `note_buffer`, written by the worker at the end;
+    /// a failure's message lives in `message_buffer`.
+    note: []const u8 = "",
+    note_buffer: []u8,
+    message_buffer: []u8,
+
+    // Worker-only, while it speaks.
+    synth: ?runtime.Synthesizer = null,
+    samples: []f32 = &.{},
+    /// `raw_len` bytes for a chunk's audio, then room to frame it as an event.
+    bytes_out: []u8 = &.{},
+    raw_len: usize = 0,
+    holding: bool = false,
+    header_sent: bool = false,
+    prompt_rows: usize = 0,
+    speakers: []const tts.Speaker = &.{},
+    languages: []const tts.Language = &.{},
+    started: std.Io.Timestamp = undefined,
+    load_ns: u64 = 0,
+    first_audio_ns: ?u64 = null,
+    audio_samples: usize = 0,
+
+    /// One chunk: synthesized, encoded, queued for the client. False once
+    /// the utterance ended, the client left, or the device failed.
+    fn speak(self: *Job, io: std.Io) bool {
+        const synth = &self.synth.?;
+        const n = synth.read(self.samples) catch |err| {
+            self.failure = apiError(self.message_buffer, .internal_server_error, "model_failed", null, "the synthesis failed: {s}", .{@errorName(err)});
+            if (self.request.stream == .sse) self.emitError(io);
+            return false;
+        };
+        if (n == 0) {
+            if (self.request.stream == .sse) {
+                var out: std.Io.Writer = .fixed(self.bytes_out[self.raw_len..]);
+                wire.writeDone(&out, .{ .input_tokens = self.prompt_rows, .output_tokens = synth.frames }) catch return false;
+                self.pipe.write(io, out.buffered()) catch self.cancel.store(true, .release);
+            }
+            return false;
+        }
+        if (self.first_audio_ns == null) self.first_audio_ns = @intCast(@max(0, self.started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds()));
+        self.audio_samples += n;
+        var raw: std.Io.Writer = .fixed(self.bytes_out[0..self.raw_len]);
+        if (self.request.format == .wav and !self.header_sent) raw.writeAll(&wire.streamingWavHeader()) catch return false;
+        self.header_sent = true;
+        const pcm = wire.pcm16(self.samples[0..n], raw.unusedCapacitySlice());
+        raw.advance(pcm.len);
+        const chunk = switch (self.request.stream) {
+            .audio => raw.buffered(),
+            .sse => framed: {
+                var out: std.Io.Writer = .fixed(self.bytes_out[self.raw_len..]);
+                wire.writeDelta(&out, raw.buffered()) catch return false;
+                break :framed out.buffered();
+            },
+        };
+        self.pipe.write(io, chunk) catch {
+            self.cancel.store(true, .release);
+            return false;
+        };
+        return true;
+    }
+
+    /// An SSE error line after the stream began.
+    fn emitError(self: *Job, io: std.Io) void {
+        var line: [512]u8 = undefined;
+        var out: std.Io.Writer = .fixed(&line);
+        wire.writeStreamError(&out, self.failure.?) catch return;
+        self.pipe.write(io, out.buffered()) catch {};
+    }
+
+    fn writeNote(self: *Job) void {
+        const seconds = @as(f64, @floatFromInt(self.audio_samples)) / wire.sample_rate;
+        self.note = if (self.failure) |f|
+            std.fmt.bufPrint(self.note_buffer, "{s}: {s}", .{ f.code, f.message }) catch f.code
+        else if (self.cancel.load(.acquire))
+            std.fmt.bufPrint(self.note_buffer, "{s} · {s} · cancelled after {d:.2} s of audio", .{ self.name, self.voice, seconds }) catch "cancelled"
+        else
+            std.fmt.bufPrint(self.note_buffer, "{s} · {s} · {d:.2} s of audio · first audio {d:.0} ms{s}", .{
+                self.name,
+                self.voice,
+                seconds,
+                if (self.first_audio_ns) |ns| @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms else 0,
+                if (self.load_ns > 0) " · opened the voice" else "",
+            }) catch self.name;
+    }
+
+    const Waited = enum { ready, timed_out, gone };
+
+    /// The connection's side before the head: wait for the prompt's
+    /// prefill, looking at the client every second; a job still queued at
+    /// `deadline` is withdrawn.
+    fn waitReady(self: *Job, io: std.Io, deadline: std.Io.Clock.Timestamp) Waited {
+        const service = self.service;
+        while (true) {
+            self.ready.waitTimeout(io, .{ .deadline = fromNow(io, poll_ms) }) catch {};
+            if (self.ready.isSet()) return .ready;
+            if (self.peer) |peer| if (peer.gone()) {
+                self.cancel.store(true, .release);
+                service.unpark(io);
+                return .gone;
+            };
+            if (pastDeadline(io, deadline) and service.withdraw(io, self)) return .timed_out;
+        }
+    }
+
+    /// The connection's side of the stream: drain the pipe into the body,
+    /// wake a parked job once its client took bytes, keep an event stream
+    /// alive, and stop the job when the client goes. Returns once the
+    /// worker has let go of the job.
+    fn writeStream(context: *anyopaque, io: std.Io, body: *http.Body) bool {
+        const self: *Job = @ptrCast(@alignCast(context));
+        defer self.release(io);
+        var buffer: [16 * 1024]u8 = undefined;
+        var quiet_since = std.Io.Clock.awake.now(io);
+        while (true) {
+            if (self.peer) |peer| if (peer.gone()) return self.abandon(io);
+            const taken = self.pipe.take(io, &buffer, fromNow(io, poll_ms)) catch return self.abandon(io);
+            switch (taken) {
+                // A raw stream that failed midway ends without its last
+                // chunk, which a client reads as an error.
+                .closed => return self.failure == null or self.request.stream == .sse,
+                .data => |bytes| {
+                    body.send(bytes) catch return self.abandon(io);
+                    quiet_since = std.Io.Clock.awake.now(io);
+                    self.service.unpark(io);
+                },
+                .timeout => if (self.request.stream == .sse and quiet_since.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() >= keepalive_ms) {
+                    body.send(": speaking\n\n") catch return self.abandon(io);
+                    quiet_since = std.Io.Clock.awake.now(io);
+                },
+            }
+        }
+    }
+
+    fn abandon(self: *Job, io: std.Io) bool {
+        self.cancel.store(true, .release);
+        self.pipe.abandon(io);
+        self.service.unpark(io);
+        return false;
+    }
+
+    /// Waits until the worker can no longer touch the job (or takes it
+    /// back unstarted), then frees the pipe.
+    fn release(self: *Job, io: std.Io) void {
+        if (!self.service.withdraw(io, self)) {
+            while (true) {
+                self.done.waitTimeout(io, .{ .deadline = fromNow(io, poll_ms) }) catch {};
+                if (self.done.isSet()) break;
+                // A parked job finishes only once scheduled again.
+                if (self.cancel.load(.acquire)) self.service.unpark(io);
+            }
+        }
+        self.pipe.deinit(self.service.gpa);
+    }
+
+    fn streamNote(context: *anyopaque) []const u8 {
+        const self: *Job = @ptrCast(@alignCast(context));
+        return if (self.cancel.load(.acquire) and self.note.len == 0) "cancelled: the client closed the connection" else self.note;
+    }
+};
+
+/// A failure before the first chunk, as the client reads it.
+fn startFailure(job: *Job, err: anyerror) ApiError {
+    const arena_message = job.message_buffer;
+    return switch (err) {
+        error.UnknownSpeaker => apiError(arena_message, .bad_request, "invalid_request", "voice", "{s} is not a speaker of {s}: {f}", .{ job.voice, job.name, names(job.speakers) }),
+        error.UnknownLanguage => apiError(arena_message, .bad_request, "invalid_request", "language", "{s} is not a language of {s}: auto, {f}", .{ job.request.language orelse "auto", job.name, names(job.languages) }),
+        error.InstructionUnsupported => apiError(arena_message, .bad_request, "instructions_unsupported", "instructions", "{s} performs no instruction; qwen3-tts-1.7b does", .{job.name}),
+        error.EmptyText => apiError(arena_message, .bad_request, "invalid_request", "input", "\"input\" has no text to speak", .{}),
+        error.ModelTooLarge => apiError(arena_message, .bad_request, "model_too_large", "model", "{s} needs {d:.1} GiB, more than the server's budget leaves beside the pinned models (serve.memory_bytes, --memory, --pin)", .{ job.name, @as(f64, @floatFromInt(job.bytes)) / (1 << 30) }),
+        error.Pinned => apiError(arena_message, .service_unavailable, "busy", "model", "overloaded: {s} needs memory a running request holds; retry shortly", .{job.name}),
+        else => apiError(arena_message, .internal_server_error, "model_failed", "model", "{s} did not speak: {s}", .{ job.name, @errorName(err) }),
+    };
+}
+
+/// The names of `items` joined by commas, for a message.
+fn names(items: anytype) Names(@TypeOf(items)) {
+    return .{ .items = items };
+}
+
+fn Names(comptime T: type) type {
+    return struct {
+        items: T,
+        pub fn format(self: @This(), w: *std.Io.Writer) std.Io.Writer.Error!void {
+            for (self.items, 0..) |item, i| try w.print("{s}{s}", .{ if (i > 0) ", " else "", item.name });
+        }
+    };
+}
+
+/// Opening a model on the worker, outside any request.
+const Opening = struct {
+    item: gpu.Item = .{ .run = run },
+    slot: *Slot,
+    directory: []const u8,
+    name: []const u8,
+    bytes: u64,
+    failed: ?anyerror = null,
+
+    fn run(item: *gpu.Item, io: std.Io) gpu.Item.After {
+        const self: *Opening = @alignCast(@fieldParentPtr("item", item));
+        _ = self.slot.acquire(io, self.directory, self.name, self.bytes) catch |err| {
+            self.failed = err;
+        };
+        return .done;
+    }
+};
+
+fn openVoice(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, options: Slot.Options) anyerror!*Voice {
+    return Voice.open(gpa, io, directory, null, .{ .backend = if (options.metal) .metal else .cpu });
+}
+
+fn closeVoice(voice: *Voice, io: std.Io) void {
+    voice.close(io);
+}
+
+fn fromNow(io: std.Io, ms: i64) std.Io.Clock.Timestamp {
+    return std.Io.Clock.Timestamp.fromNow(io, .{ .raw = .fromMilliseconds(ms), .clock = .awake });
+}
+
+fn pastDeadline(io: std.Io, deadline: std.Io.Clock.Timestamp) bool {
+    return std.Io.Clock.Timestamp.now(io, deadline.clock).compare(.gte, deadline);
+}
+
+fn apiError(buffer: []u8, status: std.http.Status, code: []const u8, param: ?[]const u8, comptime format: []const u8, args: anytype) ApiError {
+    var err: ApiError = .init(status, code, std.fmt.bufPrint(buffer, format, args) catch code);
+    err.param = param;
+    return err;
+}
+
+fn refuse(arena: std.mem.Allocator, status: std.http.Status, code: []const u8, param: ?[]const u8, comptime format: []const u8, args: anytype) http.Response {
+    var err: ApiError = .init(status, code, arena.print(format, args) catch code);
+    err.param = param;
+    return .fromError(arena, err);
+}
+
+fn internal(arena: std.mem.Allocator) http.Response {
+    return .fromError(arena, .init(.internal_server_error, "internal", "out of memory"));
+}
+
+// ----- tests: everything before the GPU, and an open that fails on it -----
+
+const Fixture = struct {
+    tmp: std.testing.TmpDir,
+    root: [:0]u8,
+    executor: gpu.Executor,
+    service: Service,
+
+    /// A root whose 0.6B voice has files that are not a checkpoint.
+    fn init(self: *Fixture, max_queued: usize) !void {
+        const gpa = std.testing.allocator;
+        const io = std.testing.io;
+        self.tmp = std.testing.tmpDir(.{});
+        errdefer self.tmp.cleanup();
+        const dir = "models/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice";
+        try self.tmp.dir.createDirPath(io, dir ++ "/speech_tokenizer");
+        try self.tmp.dir.writeFile(io, .{ .sub_path = dir ++ "/model.safetensors", .data = "not weights" });
+        try self.tmp.dir.writeFile(io, .{ .sub_path = dir ++ "/speech_tokenizer/model.safetensors", .data = "not weights" });
+        self.root = try self.tmp.dir.realPathFileAlloc(io, ".", gpa);
+        self.executor = .init(max_queued);
+        self.service = .init(gpa, &self.executor, false, self.root, .{}, .{ .model = "qwen3-tts-0.6b" }, 20 * std.time.ns_per_ms);
+    }
+
+    fn deinit(self: *Fixture) void {
+        self.service.deinit(std.testing.io);
+        std.testing.allocator.free(self.root);
+        self.tmp.cleanup();
+    }
+};
+
+fn expectError(r: http.Response, status: std.http.Status, code: []const u8, param: ?[]const u8) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    errdefer std.debug.print("got {d}: {s}\n", .{ @backingInt(r.status), r.body });
+    try std.testing.expect(r.stream == null);
+    try std.testing.expectEqual(status, r.status);
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), r.body, .{});
+    const err = parsed.object.get("error").?.object;
+    try std.testing.expectEqualStrings(code, err.get("code").?.string);
+    if (param) |p| try std.testing.expectEqualStrings(p, err.get("param").?.string);
+}
+
+test "speech: every refusal before the GPU is a typed error body with its field" {
+    var f: Fixture = undefined;
+    try f.init(4);
+    defer f.deinit();
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    const cases = [_]struct { body: []const u8, status: std.http.Status, code: []const u8, param: ?[]const u8 }{
+        .{ .body = "{\"input\":", .status = .bad_request, .code = "invalid_json", .param = null },
+        .{ .body = "{\"input\": \"Hi.\", \"response_format\": \"mp3\"}", .status = .bad_request, .code = "unsupported_feature", .param = "response_format" },
+        .{ .body = "{\"input\": \"Hi.\", \"speed\": 2}", .status = .bad_request, .code = "unsupported_feature", .param = "speed" },
+        .{ .body = "{\"input\": \"Hi.\", \"model\": \"nemotron-asr-0.6b\"}", .status = .bad_request, .code = "not_a_speech_model", .param = "model" },
+        .{ .body = "{\"input\": \"Hi.\", \"model\": \"qwen3.8-27b\"}", .status = .bad_request, .code = "not_a_speech_model", .param = "model" },
+        .{ .body = "{\"input\": \"Hi.\", \"model\": \"laya\"}", .status = .bad_request, .code = "not_a_speech_model", .param = "model" },
+        .{ .body = "{\"input\": \"Hi.\", \"model\": \"tts-1\"}", .status = .not_found, .code = "model_not_found", .param = "model" },
+        .{ .body = "{\"input\": \"Hi.\", \"model\": \"/etc/voice\"}", .status = .not_found, .code = "model_not_found", .param = "model" },
+        .{ .body = "{\"input\": \"Hi.\", \"model\": \"qwen3-tts-1.7b\"}", .status = .not_found, .code = "model_not_found", .param = "model" },
+        .{ .body = "{\"input\": \"Hi.\", \"instructions\": \"Whisper.\"}", .status = .bad_request, .code = "instructions_unsupported", .param = "instructions" },
+    };
+    for (cases) |case| {
+        errdefer std.debug.print("case: {s}\n", .{case.body});
+        try expectError(f.service.answer(arena, io, case.body, null), case.status, case.code, case.param);
+    }
+    try std.testing.expectEqual(Stats{ .waiting = 0, .speaking = false, .requests = 0 }, f.service.stats(io));
+}
+
+test "speech: a full queue is busy; a request that never starts times out and leaves the queue" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    {
+        var f: Fixture = undefined;
+        try f.init(0);
+        defer f.deinit();
+        try expectError(f.service.answer(arena, io, "{\"input\": \"Hi.\"}", null), http.overloaded, "busy", null);
+    }
+    {
+        // No worker runs: the job waits until its deadline, then leaves.
+        var f: Fixture = undefined;
+        try f.init(4);
+        defer f.deinit();
+        try expectError(f.service.answer(arena, io, "{\"input\": \"Hi.\"}", null), http.overloaded, "timeout", null);
+        try std.testing.expectEqual(@as(usize, 0), f.service.stats(io).waiting);
+        try std.testing.expect(f.service.head == null);
+    }
+}
+
+test "speech: a voice that fails to open fails its request before the head, and the next one too" {
+    const io = std.testing.io;
+    var f: Fixture = undefined;
+    try f.init(4);
+    defer f.deinit();
+    f.service.timeout_ns = 60 * std.time.ns_per_s;
+    var budget: @import("../memory.zig").Budget = .init(std.testing.allocator, 1 << 30);
+    defer budget.deinit();
+    f.service.slot.budget = &budget;
+    var worker = try io.concurrent(gpu.Executor.run, .{ &f.executor, io });
+    defer {
+        f.executor.stop(io);
+        worker.await(io);
+    }
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    for (0..2) |_| try expectError(f.service.answer(arena, io, "{\"input\": \"Hi.\", \"response_format\": \"pcm\"}", null), .internal_server_error, "model_failed", "model");
+    const stats = f.service.stats(io);
+    try std.testing.expectEqual(@as(u64, 2), stats.requests);
+    try std.testing.expect(!stats.speaking and stats.waiting == 0);
+    try std.testing.expectEqual(@as(u64, 0), budget.resident(io));
+
+    // The listing names both voices, pulled or not, the default marked.
+    var listing: std.ArrayList(models.Entry) = .empty;
+    try Service.list(&f.service, arena, io, &listing);
+    var seen: usize = 0;
+    for (listing.items) |e| {
+        const d = e.details.object;
+        try std.testing.expectEqualStrings("speech", d.get("kind").?.string);
+        try std.testing.expectEqualStrings("Qwen", e.owned_by);
+        const small = std.mem.eql(u8, e.id, "qwen3-tts-0.6b");
+        try std.testing.expectEqual(small, d.get("present").?.bool);
+        try std.testing.expectEqual(small, d.get("default").?.bool);
+        try std.testing.expectEqual(!small, d.get("instructions").?.bool);
+        try std.testing.expectEqual(@as(usize, 9), d.get("voices").?.array.items.len);
+        seen += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), seen);
+}

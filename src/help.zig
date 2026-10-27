@@ -508,8 +508,9 @@ fn transcribe(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "or 13 (latency 80, 320, 560, 1120 ms); default 3");
     try row(out, sty, "--language <code>", "the language to expect, a locale (en-US, de-DE,");
     try more(out, "fr, es-US, ...); default auto, which detects it");
-    try row(out, sty, "--model <dir>", "the checkpoint directory; default ~/.nuclis/");
-    try more(out, "models/nvidia/nemotron-3.5-asr-streaming-0.6b");
+    try row(out, sty, "--model <name|dir>", "nemotron-asr-0.6b, a transcription registry");
+    try more(out, "entry, or a checkpoint directory; default");
+    try more(out, "transcribe.model (nemotron-asr-0.6b)");
     try row(out, sty, "--backend cpu|metal", "default metal when built with it, else cpu");
     try row(out, sty, "--json", "the text, language, tokens with times, timings");
 
@@ -524,7 +525,7 @@ fn transcribe(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "never printed in the text. Audio is resampled to 16 kHz mono (a 16 kHz");
     try plain(out, "mono WAV, 16-bit or float, is read as is). A token's time is the start");
     try plain(out, "of its 80 ms row. Pull the model with `nuclis model pull");
-    try plain(out, "nvidia/nemotron-3.5-asr-streaming-0.6b`.");
+    try plain(out, "nemotron-asr-0.6b`.");
 }
 
 fn speak(out: *std.Io.Writer, sty: style.Style) !void {
@@ -537,14 +538,15 @@ fn speak(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "-o, --output <file>", "the WAV to write: 24 kHz mono 16-bit");
     try row(out, sty, "--voice <speaker>", "one of the model's nine speakers: aiden, dylan,");
     try more(out, "eric, ono_anna, ryan, serena, sohee, uncle_fu,");
-    try more(out, "vivian; default ryan");
+    try more(out, "vivian; default speech.voice (ryan)");
     try row(out, sty, "--language <name>", "english, chinese, german, spanish, french,");
     try more(out, "italian, portuguese, russian, japanese, korean,");
     try more(out, "or auto; default auto");
     try row(out, sty, "--instruct <text>", "how to say it (\"Speak in a warm, cheerful");
     try more(out, "tone.\"); the 1.7B model only");
-    try row(out, sty, "--model <dir>", "a checkpoint directory; default the 1.7B under");
-    try more(out, "~/.nuclis/models/Qwen, else the 0.6B");
+    try row(out, sty, "--model <name|dir>", "qwen3-tts-1.7b, qwen3-tts-0.6b, a speech");
+    try more(out, "registry entry, or a checkpoint directory;");
+    try more(out, "default speech.model (qwen3-tts-1.7b)");
     try row(out, sty, "--seed <n>", "the sampler's seed; default 0");
     try row(out, sty, "--backend cpu|metal", default_backend);
     try row(out, sty, "--stream", "write each chunk as it is decoded; report the");
@@ -572,9 +574,9 @@ fn speak(out: *std.Io.Writer, sty: style.Style) !void {
 }
 
 fn serve(out: *std.Io.Writer, sty: style.Style) !void {
-    try title(out, sty, "nuclis serve", "the nuclis API: decision, language, embedding models");
+    try title(out, sty, "nuclis serve", "the nuclis API: decision, language, embedding, speech models");
     try heading(out, sty, "Usage:");
-    try code(out, sty, "nuclis serve [--host <ip>] [--port <n>] [--model <name>]…");
+    try code(out, sty, "nuclis serve [--host <ip>] [--port <n>] [--model <name>]… [--pin <name>]…");
     try code(out, sty, "             [--memory <GiB>] [--backend cpu|metal] [--timeout <s>]");
 
     try heading(out, sty, "Options:");
@@ -583,8 +585,11 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "authentication)");
     try row(out, sty, "--port <n>", "default serve.port, 9000");
     try row(out, sty, "--model <name|path>", "open a model at start, any kind: at most 2");
-    try more(out, "decision, 1 chat, 1 embedding (what stays open);");
-    try more(out, "without it nothing opens until its first request");
+    try more(out, "decision, 1 chat, 1 embedding, 1 speech, 1");
+    try more(out, "transcription (what stays open); without it");
+    try more(out, "nothing opens until its first request");
+    try row(out, sty, "--pin <name>", "open it at start, and never close it to make");
+    try more(out, "room; repeated; default serve.pin");
     try row(out, sty, "--memory <GiB>", "what every open model may hold together; default");
     try more(out, "serve.memory_bytes, else physical memory less a");
     try more(out, "third of it, at most 16 GiB");
@@ -605,7 +610,9 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "\"task\", \"title\", \"truncate\", \"image_tokens\" as in");
     try more(out, "nuclis embed; image_url parts as base64 data URLs,");
     try more(out, "input_audio parts as base64 with a format");
-    try row(out, sty, "GET /v1/models", "every model of the three kinds, OpenAI's list");
+    try row(out, sty, "POST /v1/audio/speech", "OpenAI's speech: \"input\" spoken by \"voice\",");
+    try more(out, "pcm or wav, streamed as raw audio or as events");
+    try row(out, sty, "GET /v1/models", "every model of every kind, OpenAI's list");
     try more(out, "shape");
     try row(out, sty, "GET /v1/health", "version, backend, open models, queue depth");
 

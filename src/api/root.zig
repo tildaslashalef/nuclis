@@ -1,5 +1,6 @@
 //! `nuclis serve`: the nuclis API. Composes the transport (`http.zig`), the
-//! router, the GPU executor, and the services (decisions, chat, embeddings),
+//! router, the GPU executor, and the services (decisions, chat, embeddings,
+//! speech, and the transcription models),
 //! then accepts connections, each its own task, until Ctrl-C or a failed
 //! accept; Ctrl-C drains the queued decisions and embeddings before the
 //! connections close. The
@@ -19,6 +20,8 @@ const decisions = @import("decisions/service.zig");
 const chat = @import("chat/service.zig");
 const embeddings = @import("embeddings/service.zig");
 const embedding_batcher = @import("embeddings/batcher.zig");
+const speech = @import("speech/service.zig");
+const transcription = @import("transcription/service.zig");
 const memory = @import("memory.zig");
 const log_mod = @import("log.zig");
 const batcher = @import("decisions/batcher.zig");
@@ -46,9 +49,12 @@ pub const Options = struct {
     log: bool,
     /// Seconds a decision request may wait for the GPU, at least 1.
     timeout: u32,
-    /// Opened at start, by kind (decision, language, embedding), each by
-    /// its service (`byKind`); every other opens on its first request.
+    /// Opened at start, by kind, each by its service (`byKind`); every
+    /// other opens on its first request.
     models: std.ArrayList([]const u8) = .empty,
+    /// Opened at start too, and never closed to make room: `--pin`, else
+    /// `serve.pin`.
+    pins: std.ArrayList([]const u8) = .empty,
     backend: ?inference.decide.Backend = null,
     /// What every open model may hold together; null is the default.
     memory_bytes: ?u64 = null,
@@ -66,7 +72,7 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
             o.log = false;
             continue;
         }
-        const known = for ([_][]const u8{ "--host", "--port", "--model", "--backend", "--timeout", "--memory" }) |k| {
+        const known = for ([_][]const u8{ "--host", "--port", "--model", "--pin", "--backend", "--timeout", "--memory" }) |k| {
             if (std.mem.eql(u8, flag, k)) break true;
         } else false;
         if (!known) {
@@ -99,6 +105,12 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
             };
         } else if (std.mem.eql(u8, flag, "--model")) {
             try o.models.append(arena, value);
+        } else if (std.mem.eql(u8, flag, "--pin")) {
+            if (o.pins.items.len == config.Pins.max) {
+                diag.set("at most {d} models with --pin", .{config.Pins.max});
+                return error.InvalidOptionValue;
+            }
+            try o.pins.append(arena, value);
         } else if (std.mem.eql(u8, flag, "--memory")) {
             if (seen.memory) return error.DuplicateOption;
             seen.memory = true;
@@ -120,7 +132,20 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
         diag.set("the wait limit (--timeout or serve.timeout) is at least 1 s", .{});
         return error.InvalidOptionValue;
     }
+    if (o.pins.items.len == 0) try o.pins.appendSlice(arena, configured.pin.names);
     return o;
+}
+
+/// What opens at start: the `--model` names, then each pin not among them.
+pub fn opened(arena: std.mem.Allocator, options: Options) ![]const []const u8 {
+    var all: std.ArrayList([]const u8) = .empty;
+    try all.appendSlice(arena, options.models.items);
+    for (options.pins.items) |pin| {
+        for (all.items) |name| {
+            if (std.mem.eql(u8, name, pin)) break;
+        } else try all.append(arena, pin);
+    }
+    return all.items;
 }
 
 /// The `--model` names sorted by the service that opens them, in the order
@@ -130,6 +155,8 @@ pub const Named = struct {
     decision: std.ArrayList([]const u8) = .empty,
     language: ?[]const u8 = null,
     embedding: ?[]const u8 = null,
+    speech: ?[]const u8 = null,
+    transcription: ?[]const u8 = null,
 };
 
 pub fn byKind(arena: std.mem.Allocator, io: std.Io, registry: config.Models, names: []const []const u8, diag: *config.Diagnostic) !Named {
@@ -156,6 +183,20 @@ pub fn byKind(arena: std.mem.Allocator, io: std.Io, registry: config.Models, nam
                 return error.InvalidOptionValue;
             }
             named.embedding = name;
+        },
+        .speech => {
+            if (named.speech) |first| {
+                diag.set("{s} and {s} are both speech models; the server keeps one open", .{ first, name });
+                return error.InvalidOptionValue;
+            }
+            named.speech = name;
+        },
+        .transcription => {
+            if (named.transcription) |first| {
+                diag.set("{s} and {s} are both transcription models; the server keeps one open", .{ first, name });
+                return error.InvalidOptionValue;
+            }
+            named.transcription = name;
         },
     };
     return named;
@@ -202,6 +243,8 @@ const Server = struct {
     decisions: decisions.Service,
     chat: chat.Service,
     embeddings: embeddings.Service,
+    speech: speech.Service,
+    transcription: transcription.Service,
     backend: inference.decide.Backend,
     version: []const u8,
     active: std.atomic.Value(u32) = .init(0),
@@ -213,6 +256,8 @@ const Server = struct {
         try self.decisions.register(self.gpa, &self.router, &self.listing);
         try self.chat.register(self.gpa, &self.router, &self.listing);
         try self.embeddings.register(self.gpa, &self.router, &self.listing);
+        try self.speech.register(self.gpa, &self.router, &self.listing);
+        try self.transcription.register(self.gpa, &self.router, &self.listing);
         try self.listing.register(self.gpa, &self.router);
         try self.router.add(self.gpa, .GET, router_mod.prefix ++ "/health", .{ .context = self, .handle = health });
     }
@@ -230,18 +275,21 @@ const Server = struct {
         const open = self.decisions.pool.openNames(io, arena) catch &.{};
         const language = self.chat.language.openName(io, arena) catch null;
         const embedding = self.embeddings.pool.openName(io, arena) catch null;
+        const voice = self.speech.slot.openName(io, arena) catch null;
+        const ears = self.transcription.slot.openName(io, arena) catch null;
         const resident = self.memory.snapshot(io, arena) catch &.{};
         const web_state = webState(self.chat.web, arena);
         var out: std.Io.Writer.Allocating = .init(arena);
-        writeHealth(&out.writer, self.version, self.backend, open, language, embedding, web_state, .{ .limit = self.memory.limit, .models = resident }, stats, batching, self.embeddings.batcher.stats(io), self.active.load(.monotonic)) catch
+        writeHealth(&out.writer, self.version, self.backend, open, .{ .language = language, .embedding = embedding, .speech = voice, .transcription = ears }, web_state, .{ .limit = self.memory.limit, .models = resident }, stats, batching, self.embeddings.batcher.stats(io), self.speech.stats(io), self.active.load(.monotonic)) catch
             return .fromError(arena, .init(.internal_server_error, "internal", "out of memory"));
         return .{ .body = out.written() };
     }
 
-    /// Decision or embedding work queued or running on the GPU.
+    /// Decision, embedding, or speech work queued or running on the GPU.
     fn busy(self: *Server, io: std.Io) bool {
         const queue = self.executor.stats(io);
-        return queue.queued > 0 or queue.running or self.decisions.batcher.stats(io).waiting > 0 or self.embeddings.batcher.stats(io).waiting > 0;
+        const voice = self.speech.stats(io);
+        return queue.queued > 0 or queue.running or self.decisions.batcher.stats(io).waiting > 0 or self.embeddings.batcher.stats(io).waiting > 0 or voice.waiting > 0 or voice.speaking;
     }
 
     /// The accept task: one connection task per accepted stream until the
@@ -286,6 +334,8 @@ const Server = struct {
 };
 
 const Memory = struct { limit: u64, models: []const memory.Budget.Model };
+/// The open model of each kind the server keeps one of.
+const Open = struct { language: ?[]const u8 = null, embedding: ?[]const u8 = null, speech: ?[]const u8 = null, transcription: ?[]const u8 = null };
 
 /// The hosted web tools as health reports them: `off` without `serve.web`,
 /// else `ok` when the search service answers and any provider is `ok`,
@@ -300,7 +350,7 @@ fn webState(service: ?*web.Service, arena: std.mem.Allocator) []const u8 {
     };
 }
 
-fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, language: ?[]const u8, embedding: ?[]const u8, web_state: []const u8, budget: Memory, stats: gpu.Stats, batching: batcher.Stats, embedding_batching: embedding_batcher.Stats, connections: u32) !void {
+fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, singles: Open, web_state: []const u8, budget: Memory, stats: gpu.Stats, batching: batcher.Stats, embedding_batching: embedding_batcher.Stats, speaking: speech.Stats, connections: u32) !void {
     var s: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
     try s.objectField("status");
@@ -312,9 +362,13 @@ fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.deci
     try s.objectField("loaded");
     try s.write(open);
     try s.objectField("language");
-    try s.write(language);
+    try s.write(singles.language);
     try s.objectField("embedding");
-    try s.write(embedding);
+    try s.write(singles.embedding);
+    try s.objectField("speech");
+    try s.write(singles.speech);
+    try s.objectField("transcription");
+    try s.write(singles.transcription);
     try s.objectField("web");
     try s.write(web_state);
     try s.objectField("memory");
@@ -335,6 +389,8 @@ fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.deci
         try s.write(@tagName(m.kind));
         try s.objectField("bytes");
         try s.write(m.bytes);
+        try s.objectField("pinned");
+        try s.write(m.pinned);
         try s.endObject();
     }
     try s.endArray();
@@ -365,6 +421,15 @@ fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.deci
     try s.write(embedding_batching.passes);
     try s.objectField("requests");
     try s.write(embedding_batching.jobs);
+    try s.endObject();
+    try s.objectField("speech_requests");
+    try s.beginObject();
+    try s.objectField("waiting");
+    try s.write(speaking.waiting);
+    try s.objectField("speaking");
+    try s.write(speaking.speaking);
+    try s.objectField("answered");
+    try s.write(speaking.requests);
     try s.endObject();
     try s.objectField("connections");
     try s.write(connections);
@@ -403,6 +468,8 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
             .cpu => .cpu,
             .metal => .metal,
         }, context.root, context.registry, context.loaded.config.embed.model, @as(u64, options.timeout) * std.time.ns_per_s),
+        .speech = .init(gpa, undefined, backend == .metal, context.root, context.registry, context.loaded.config.speech, @as(u64, options.timeout) * std.time.ns_per_s),
+        .transcription = .init(gpa, undefined, backend == .metal, context.root, context.registry, context.loaded.config.transcribe.model),
         .memory = .init(gpa, options.memory_bytes orelse memory.defaultLimit(io)),
         .backend = backend,
         .version = context.version,
@@ -410,9 +477,14 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     server.decisions.executor = &server.executor;
     server.chat.executor = &server.executor;
     server.embeddings.executor = &server.executor;
+    server.speech.executor = &server.executor;
+    server.transcription.executor = &server.executor;
     server.embeddings.pool.budget = &server.memory;
     server.decisions.pool.budget = &server.memory;
     server.chat.language.budget = &server.memory;
+    server.speech.slot.budget = &server.memory;
+    server.transcription.slot.budget = &server.memory;
+    try server.memory.keep(options.pins.items);
     server.decisions.timeout_ns = @as(u64, options.timeout) * std.time.ns_per_s;
     server.decisions.bind();
     server.embeddings.bind();
@@ -435,14 +507,16 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
         server.decisions.deinit(io);
         server.chat.deinit(io);
         server.embeddings.deinit(io);
+        server.speech.deinit(io);
+        server.transcription.deinit(io);
         server.memory.deinit();
     }
 
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
-    // Only what --model names opens here; every other model opens on its
-    // first request.
-    const named = try byKind(arena_state.allocator(), io, context.registry, options.models.items, diag);
+    // Only what --model and the pins name opens here; every other model
+    // opens on its first request.
+    const named = try byKind(arena_state.allocator(), io, context.registry, try opened(arena_state.allocator(), options), diag);
     for (named.decision.items) |name| {
         const started = std.Io.Clock.awake.now(io);
         try server.decisions.preload(arena_state.allocator(), io, name, diag);
@@ -460,6 +534,20 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
         const started = std.Io.Clock.awake.now(io);
         try server.embeddings.preload(arena_state.allocator(), io, name, diag);
         try printOpened(out, sty, io, name, "embedding", started);
+    }
+    if (named.speech) |name| {
+        const started = std.Io.Clock.awake.now(io);
+        try server.speech.preload(arena_state.allocator(), io, name, diag);
+        try printOpened(out, sty, io, name, "speech", started);
+    }
+    if (named.transcription) |name| {
+        const started = std.Io.Clock.awake.now(io);
+        try server.transcription.preload(arena_state.allocator(), io, name, diag);
+        try printOpened(out, sty, io, name, "transcription", started);
+    }
+    if (options.pins.items.len > 0) {
+        const pins = try std.mem.join(arena_state.allocator(), ", ", options.pins.items);
+        try out.print("{s}pinned:{s} {s} {s}(never closed to make room){s}\n", .{ sty.on(.label), sty.off(), pins, sty.on(.dim), sty.off() });
     }
 
     var log: log_mod.Log = .init(out, sty, io);
@@ -527,6 +615,10 @@ test {
     _ = embeddings;
     _ = embedding_batcher;
     _ = @import("embeddings/pool.zig");
+    _ = @import("slot.zig");
+    _ = @import("speech/wire.zig");
+    _ = speech;
+    _ = transcription;
 }
 
 test "--model names sort by kind, each within what its service keeps open" {
@@ -544,6 +636,32 @@ test "--model names sort by kind, each within what its service keeps open" {
     try std.testing.expectError(error.InvalidOptionValue, byKind(arena, io, .{}, &.{ "laya", "laya-multilingual", "clef-flash" }, &diag));
     try std.testing.expectError(error.InvalidOptionValue, byKind(arena, io, .{}, &.{ "qwen3.8-27b", "other.gguf" }, &diag));
     try std.testing.expectError(error.InvalidOptionValue, byKind(arena, io, .{}, &.{ "embeddinggemma-2", "embeddinggemma-2" }, &diag));
+    // One of each kind together: the voice assistant's set.
+    const voice = try byKind(arena, io, .{}, &.{ "gemma-4-e4b-qat", "qwen3-tts-1.7b", "nemotron-asr-0.6b" }, &diag);
+    try std.testing.expectEqualStrings("gemma-4-e4b-qat", voice.language.?);
+    try std.testing.expectEqualStrings("qwen3-tts-1.7b", voice.speech.?);
+    try std.testing.expectEqualStrings("nemotron-asr-0.6b", voice.transcription.?);
+    try std.testing.expectError(error.InvalidOptionValue, byKind(arena, io, .{}, &.{ "qwen3-tts-1.7b", "qwen3-tts-0.6b" }, &diag));
+    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "both speech models") != null);
+}
+
+test "pins open at start beside --model, once each; --pin replaces serve.pin" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diag: config.Diagnostic = .{};
+    const configured: config.Config.Serve = .{ .pin = .{ .names = &.{ "gemma-4-e4b-qat", "qwen3-tts-1.7b" } } };
+    const from_file = try parseArgs(arena, &.{ "--model", "qwen3-tts-1.7b", "--model", "laya" }, configured, &diag);
+    try std.testing.expectEqual(@as(usize, 2), from_file.pins.items.len);
+    const all = try opened(arena, from_file);
+    try std.testing.expectEqual(@as(usize, 3), all.len);
+    try std.testing.expectEqualStrings("gemma-4-e4b-qat", all[2]);
+    const flagged = try parseArgs(arena, &.{ "--pin", "nemotron-asr-0.6b" }, configured, &diag);
+    try std.testing.expectEqual(@as(usize, 1), flagged.pins.items.len);
+    try std.testing.expectEqualStrings("nemotron-asr-0.6b", (try opened(arena, flagged))[0]);
+    var many: [2 * (config.Pins.max + 1)][]const u8 = undefined;
+    for (&many, 0..) |*word, i| word.* = if (i % 2 == 0) "--pin" else "a";
+    try std.testing.expectError(error.InvalidOptionValue, parseArgs(arena, &many, .{}, &diag));
 }
 
 test "serve arguments" {
@@ -590,7 +708,7 @@ test "serve arguments" {
 test "health reports the queue and the open models" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, "qwen3.8-27b", "embeddinggemma-2", "off", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60 }, .{ .kind = .decision, .name = "laya", .bytes = 10 } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, .{ .waiting = 1, .passes = 4, .jobs = 2 }, 3);
+    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, .{ .language = "qwen3.8-27b", .embedding = "embeddinggemma-2", .speech = "qwen3-tts-1.7b" }, "off", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60, .pinned = true }, .{ .kind = .decision, .name = "laya", .bytes = 10 } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, .{ .waiting = 1, .passes = 4, .jobs = 2 }, .{ .waiting = 2, .speaking = true, .requests = 11 }, 3);
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("cpu", parsed.value.object.get("backend").?.string);
@@ -602,4 +720,12 @@ test "health reports the queue and the open models" {
     try std.testing.expectEqualStrings("embeddinggemma-2", parsed.value.object.get("embedding").?.string);
     try std.testing.expectEqualStrings("off", parsed.value.object.get("web").?.string);
     try std.testing.expectEqual(@as(i64, 4), parsed.value.object.get("embeddings").?.object.get("passes").?.integer);
+    try std.testing.expectEqualStrings("qwen3-tts-1.7b", parsed.value.object.get("speech").?.string);
+    try std.testing.expect(parsed.value.object.get("transcription").? == .null);
+    const models_list = parsed.value.object.get("memory").?.object.get("models").?.array.items;
+    try std.testing.expect(models_list[0].object.get("pinned").?.bool and !models_list[1].object.get("pinned").?.bool);
+    const speaking = parsed.value.object.get("speech_requests").?.object;
+    try std.testing.expectEqual(@as(i64, 2), speaking.get("waiting").?.integer);
+    try std.testing.expect(speaking.get("speaking").?.bool);
+    try std.testing.expectEqual(@as(i64, 11), speaking.get("answered").?.integer);
 }

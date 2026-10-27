@@ -442,7 +442,7 @@ pub fn candidates(arena: Allocator, target: Target, current: []const u8, state: 
                 const cut = if (std.mem.lastIndexOfScalar(u8, current, ',')) |c| c + 1 else 0;
                 const typed = current[0..cut];
                 for (names(model.Role)) |role| {
-                    if (std.mem.eql(u8, role, "main") or std.mem.eql(u8, role, "support")) continue;
+                    if (std.mem.eql(u8, role, "main") or std.mem.eql(u8, role, "support") or std.mem.eql(u8, role, "codec")) continue;
                     if (listed(typed, role)) continue;
                     try list.append(arena, .{ .text = try std.mem.concat(arena, u8, &.{ typed, role }) });
                 }
@@ -618,6 +618,8 @@ fn servedKind(kind: catalog.ModelKind) []const u8 {
         .generation => "chat",
         .decision => "decision",
         .embedding => "embedding",
+        .speech => "speech",
+        .transcription => "transcription",
     };
 }
 

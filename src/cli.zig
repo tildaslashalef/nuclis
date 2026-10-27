@@ -24,6 +24,7 @@ const embed = @import("embed.zig");
 const speak = @import("speak.zig");
 const embedding_catalog = @import("embedding/catalog.zig");
 const transcribe = @import("transcribe.zig");
+const audio_catalog = @import("audio/catalog.zig");
 const api = @import("api/root.zig");
 
 // Fed from build.zig.zon through the build_options module (see build.zig);
@@ -581,8 +582,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     }
     if (options.command == .decide) return runDecide(alloc, io, root, config_path, options.words, out, sty, diag);
     if (options.command == .embed) return runEmbed(alloc, io, root, config_path, options.words, out, sty, diag);
-    if (options.command == .transcribe) return runTranscribe(alloc, io, root, options.words, out, sty, diag);
-    if (options.command == .speak) return speak.run(alloc, io, root, options.words, out, sty, diag);
+    if (options.command == .transcribe) return runTranscribe(alloc, io, root, config_path, options.words, out, sty, diag);
+    if (options.command == .speak) {
+        var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
+        defer loaded.deinit();
+        return speak.run(alloc, io, root, &loaded, options.words, out, sty, diag);
+    }
     if (options.command == .serve) return runServe(alloc, io, root, config_path, options.words, out, sty, diag);
     if (options.command == .agent and options.agent_action == .ls) {
         const dir = root orelse return error.MissingHome;
@@ -704,6 +709,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         .embedding => {
             diag.set("{s} is an embedding model; `nuclis embed --model {s}` runs it", .{ wanted, wanted });
             return error.EmbeddingModel;
+        },
+        .speech, .transcription => |kind| {
+            diag.set("{s} is a {s} model; `{s} --model {s}` runs it", .{ wanted, catalog.kindName(kind), catalog.command(kind), wanted });
+            return error.AudioModel;
         },
     }
     const path = try paths.modelPath(alloc, options.model, loaded.config.engine.model, root, loaded.config.models);
@@ -895,15 +904,17 @@ fn runEmbed(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path
     return embed.run(alloc, io, located.path, located.mmproj, located.identity, options, out, sty, diag);
 }
 
-/// `transcribe`: its own flags; the checkpoint directory under the root
-/// unless `--model` names one.
-fn runTranscribe(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty_detected: style.Style, diag: *config.Diagnostic) !void {
+/// `transcribe`: its own flags; `--model` (else `transcribe.model`) is a
+/// transcription registry entry, catalogue name, or checkpoint directory.
+fn runTranscribe(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty_detected: style.Style, diag: *config.Diagnostic) !void {
     const options = try transcribe.parseArgs(words, diag);
     const sty: style.Style = if (options.json) .none else sty_detected;
-    if (options.model) |directory| return transcribe.run(alloc, io, directory, options, out, sty, diag);
-    const directory = try std.fs.path.join(alloc, &.{ root orelse return error.MissingHome, transcribe.default_model });
-    defer alloc.free(directory);
-    return transcribe.run(alloc, io, directory, options, out, sty, diag);
+    var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
+    defer loaded.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const located = try audio_catalog.locate(arena_state.allocator(), io, root, loaded.config.models, options.model orelse loaded.config.transcribe.model, .transcription, true, diag);
+    return transcribe.run(alloc, io, located.directory, options, out, sty, diag);
 }
 
 /// `serve`: the API over every model kind, each opened on its first request
@@ -1321,6 +1332,7 @@ test {
     _ = decision_catalog;
     _ = embed;
     _ = speak;
+    _ = audio_catalog;
     _ = embedding_catalog;
     _ = transcribe;
     _ = @import("embedding/request.zig");

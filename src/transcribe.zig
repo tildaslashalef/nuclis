@@ -15,8 +15,6 @@ const asr = inference.audio.nemotron_asr;
 const rnnt = inference.audio.nemotron_rnnt;
 const lookaheads = inference.audio.nemotron_encoder.lookaheads;
 
-/// The checkpoint `transcribe` opens when `--model` names none, under the root.
-pub const default_model = "models/nvidia/nemotron-3.5-asr-streaming-0.6b";
 /// The longest clip read: an hour of samples, about 230 MB of F32.
 pub const max_samples: u32 = 3600 * audio.sample_rate;
 /// One `--stream` piece: 80 ms, one encoder row.
@@ -151,7 +149,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
     var started = std.Io.Clock.awake.now(io);
     const model = asr.Model.open(gpa, io, directory) catch |err| {
         switch (err) {
-            error.FileNotFound => diag.set("{s}: no Nemotron ASR checkpoint there (`nuclis model pull nvidia/nemotron-3.5-asr-streaming-0.6b`, or --model <directory>)", .{directory}),
+            error.FileNotFound => diag.set("{s}: no Nemotron ASR checkpoint there (`nuclis model pull nemotron-asr-0.6b`, or --model <name or directory>)", .{directory}),
             error.NotAnAsrModel => diag.set("{s}: not a Nemotron 3.5 ASR checkpoint (config.json names another architecture)", .{directory}),
             else => diag.set("{s}: not a checkpoint nuclis can transcribe with ({s})", .{ directory, @errorName(err) }),
         }
