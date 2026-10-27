@@ -106,11 +106,13 @@ Task 16 delivered (2026-10-27): Gemma's answers given without a thought channel 
 
 Task 17 delivered (2026-10-27): the vision encoders attend through the segment kernels (E4B 2.6 → 1.6 s, Qwen3.8 19 → 2.5 s) and the agent encodes a dropped image while the prompt is typed.
 
-Next: **18**, then 12.
+Task 18 delivered (2026-10-27): audio clips dropped into the agent for E4B; a plain question is refused by the agent's system prompt (open, above).
+
+Next: **12**.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: task 18 |
+| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: task 12 |
 
 ## Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API
 
@@ -215,7 +217,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 15 | Serve: file transcription for long recordings (`POST /v1/audio/transcriptions`) | C | 7, 9 | done |
 | 16 | Agent: a short answer after a folded thought is not drawn | — | — | done |
 | 17 | Faster image encoding when an image is attached in the agent | — | — | done |
-| 18 | Audio files dropped into the agent, for models that hear | — | 8 | any worktree (after 16 if both touch the transcript) |
+| 18 | Audio files dropped into the agent, for models that hear | — | 8 | done |
 
 Worktree rule: a track owns its new files. Shared registrations
 (`src/catalog.zig`, `gates.json`, `docs/spec.md`, `docs/README.md`,
@@ -575,29 +577,28 @@ unfused bias adds. For the long-context prefill item: materialized F32
 scores with the stats pass beat the chunk kernel 1.9× on 4–6K-row
 bidirectional spans; a causal variant is bounded by score memory.
 
-#### 18. Audio files dropped into the agent, for models that hear
+#### 18. Audio files dropped into the agent, for models that hear (delivered 2026-10-27)
 
-Asked by the user (2026-10-27). Task 8 gave Gemma 4 E4B audio in the API
-and `nuclis generate --audio`, not in the agent. Here a dropped (pasted
-path) `.wav`, `.m4a`, `.mp3`, `.flac`, or `.aiff` attaches as a chip, as an
-image does today (`src/agent/root.zig`'s attachment handling, the
-completer's `Media`, the profile's `Message.audio`):
-
-- The chip names the clip and its length (`audio #1: memo.m4a (12.4 s → 310
-  tokens)`); a clip over 30 s is refused at drop with the limit named, not
-  cut; a model that does not hear refuses at drop by name ("gemma-4-12b-qat
-  does not hear audio; gemma-4-e4b-qat does"), never silently drops it.
-- The clip is encoded at drop, in the background, as task 17 does for
-  images; its digest keys the conversation cache (task 8), so follow-up
-  turns read only their new tokens.
-- Sessions: the clip's path and digest are saved as images' are
-  (docs/spec.md § 7.4), and a resumed session re-encodes it, or says it is
-  gone.
-- `/help` and the spec's § 7.2 (editor) list audio beside images.
-- Checks: unit tests of the drop parsing and refusals; `make shot` driving
-  a drop of a corpus clip, a question about it, a follow-up turn
-  (captures before and after); the agent task list is not affected (no
-  prompt or tool change), so no `make agent-eval`.
+A pasted `.wav .m4a .mp3 .flac .aiff .aif` path attaches as `[audio #N]`
+on a model that hears (`catalog.Entry.hears`, `catalog.hearing()`),
+encoded in the background through task 17's `Ahead` (chip `10.4 s → 261
+tokens`); refusals at drop, the paste kept as text: `gemma-4-12b-qat does
+not hear audio; gemma-4-e4b-qat does`, `long-tone.wav is 42.0 s: a clip is
+at most 30 s, and is not cut`, an undecodable file, the projector not
+pulled (`src/agent/clip.zig` measures the header without decoding).
+Follow-up turns read only their new tokens (285 then 44). Sessions save
+the clip's path and digest; resume re-encodes it or says it is gone or
+changed; `/model` to a model that does not hear leaves it out by name.
+Side fix: `/model` never loaded the new model's projector, so every
+image was left out after a switch. Spec § 7.2, `docs/app/terminal.md`,
+`/help`, `docs/models/gemma4.md` § In the agent.
+**Open:** asked plainly ("What does the speaker say?"), E4B in the agent
+refuses ("I cannot process the audio file"): its thought finds no audio
+tool and follows the system prompt's "with the available tools, and
+nothing beyond it"; `generate` with the same words transcribes it. One
+sentence in `src/agent/system_prompt.zig` (attached images and clips are
+in the message itself) should fix it; a prompt change is measured with
+`make agent-eval` before and after (AGENTS.md).
 
 #### 11. Voice scheduling measured (delivered 2026-10-27)
 
