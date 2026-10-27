@@ -1232,3 +1232,43 @@ speech were made (in 14.2 s), and at its own rate after. Audio made beside the
 generation was byte-identical to the same request alone. How to share the
 GPU more evenly (a frame per item, or chunks only every few steps) is the
 voice scheduling unit's measurement.
+
+### Live transcription alone and beside a chat stream, 2026-10-27, commit `18216d7`
+
+Apple M4 Pro (48 GB), ReleaseSafe (`make build`), Zig 0.17.0, macOS
+27.0.1; `nuclis serve --quiet --model gemma-4-e4b-qat --pin
+nemotron-asr-0.6b` on Metal (`unsloth/gemma-4-E4B-it-qat-GGUF` at
+`8c5a9e4f`, speculative decoding off as this machine's
+`generation.speculative` sets it; `nvidia/nemotron-3.5-asr-streaming-0.6b`
+at `ea30d66d`). **The machine was not quiet**: another worktree's
+`nuclis serve` and `nuclis transcribe` (file transcription on the same
+GPU) ran for about 80 % of each run, sampled once a second, and its
+compiler for some of it. `python3 scripts/ws-transcribe.py --measure
+--clips librispeech-6829-68769-0000,fleurs-de_de-1660 --beside-chat
+gemma-4-e4b-qat --rounds 3`: one connection, lookahead 3, each clip under
+its locale, sent in 20 ms messages each when its audio has ended at real
+time (as a microphone delivers it), then `finish`; one warm-up, then each
+clip three times (159 partials). A partial's delay is its arrival behind
+the moment the audio it covers had ended; the final's is its arrival
+after `finish` (sent with the last message). The chat is one streamed
+request, `"reasoning_effort": "none"`, temperature 0, 1,200 tokens of a
+story; its rate is content chunks per second between the first and the
+last of a window (alone: the whole answer; beside: from the clip's first
+message to its final). Two runs:
+
+| | Partial behind the audio, median / p90 / max | Final after `finish`, median (range) | E4B decode |
+| --- | --- | --- | --- |
+| transcription alone | 42 / 47 / 60 ms; 29 / 31 / 33 ms | 31 ms (24–34); 20 ms (16–20) | — |
+| E4B alone | — | — | 48.1; 45.8 tokens/s |
+| transcription while E4B streams | 50 / 66 / 74 ms; 49 / 65 / 81 ms | 48 ms (33–60); 41 ms (33–60) | 41.8; 42.1 tokens/s during the clip (34.4–43.3 over the six), 44.7; 44.3 after |
+
+Live transcription keeps up with the speaker beside a generation: every
+partial arrived at most 81 ms after the audio it covers (medians 29 to
+50 ms), every final at most 60 ms after the turn ended. The generation
+pays 8 to 13 % of its rate while a clip streams (a step may wait for one
+chunk of about 20–35 ms every 320 ms), against speech's eightfold
+slowdown ([above](#speech-beside-a-chat-stream-2026-10-27-commit-07dac34)).
+An earlier run on this branch, whose other jobs were not logged,
+measured E4B at 56.4 tokens/s alone and 54.8 while a clip streamed. Both
+clips are among the `nemotron-asr-stream-route` gate's four, whose
+finals equal `nuclis transcribe`'s text.
