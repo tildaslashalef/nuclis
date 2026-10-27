@@ -105,6 +105,12 @@ pub const Model = struct {
         alloc.destroy(self);
     }
 
+    /// Device memory the Metal plan created (its converted weights and
+    /// scratch), beside the mapped checkpoint; 0 on the CPU.
+    pub fn deviceBytes(self: *const Model) u64 {
+        return if (self.metal) |plan| plan.backend.created_bytes else 0;
+    }
+
     /// The prompt id of a `prompt_dictionary` key (`de-DE`, `de`, `auto`).
     pub fn promptId(self: *const Model, locale: []const u8) ?usize {
         for (self.prompts) |p| if (std.mem.eql(u8, p.locale, locale)) return p.id;

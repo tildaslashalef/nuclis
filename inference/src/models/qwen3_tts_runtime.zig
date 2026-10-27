@@ -847,6 +847,12 @@ pub const Voice = struct {
         self.codec = null;
     }
 
+    /// Device memory the Metal engine and codec created (converted weights,
+    /// caches, scratch), beside the mapped checkpoints; 0 on the CPU.
+    pub fn deviceBytes(self: *const Voice) u64 {
+        return if (self.gpu) |g| g.created_bytes else 0;
+    }
+
     pub fn close(self: *Voice, io: std.Io) void {
         self.release();
         self.codec_binding.deinit(self.gpa);

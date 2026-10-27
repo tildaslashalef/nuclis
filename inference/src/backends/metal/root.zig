@@ -109,6 +109,9 @@ pub const Backend = struct {
     fused_norms: bool = true,
     /// Present after `enableProfiling`; read it after `commit()`.
     profile: ?Profile = null,
+    /// Bytes of the buffers `create` made and `release` has not freed: the
+    /// device memory this backend owns, beside the wrapped (borrowed) ranges.
+    created_bytes: u64 = 0,
 
     pub fn init(alloc: std.mem.Allocator, diagnostic: []u8) !Backend {
         if (!enabled) return error.MetalNotEnabled;
@@ -192,6 +195,7 @@ pub const Backend = struct {
         var id: u32 = undefined;
         if (nu_metal_buffer_create(self.handle, len, &id) != 0) return error.MetalBufferFailed;
         const host = nu_metal_buffer_contents(self.handle, id) orelse return error.MetalBufferFailed;
+        self.created_bytes += len;
         return .{ .id = id, .offset = 0, .len = len, .host = host };
     }
     /// Frees a buffer `create` returned (whole, not a slice) while nothing is
@@ -200,6 +204,7 @@ pub const Backend = struct {
         if (!enabled) return error.MetalNotEnabled;
         if (self.recording or buffer.offset != 0) return error.InvalidShape;
         if (nu_metal_buffer_release(self.handle, buffer.id) != 0) return error.MetalBufferFailed;
+        self.created_bytes -|= buffer.len;
     }
     /// Wraps borrowed page-backed memory; repeated wraps of the same start
     /// address reuse the buffer and must request the same length.

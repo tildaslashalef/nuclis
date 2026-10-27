@@ -1,7 +1,8 @@
 //! One open model of a kind the server keeps a single one of (a voice, a
 //! transcriber), keyed by its checkpoint directory; opening another closes
-//! it. It counts its files against the server's memory budget
-//! (`memory.zig`) and is pinned there while a request holds it across GPU
+//! it. It counts its files, and once open the device memory it created
+//! (`deviceBytes`, when the model has one), against the server's memory
+//! budget (`memory.zig`) and is pinned there while a request holds it across GPU
 //! items (`hold`). Only the GPU worker opens, uses, and closes the model;
 //! other tasks only read which one is open.
 const std = @import("std");
@@ -75,9 +76,18 @@ pub fn Slot(comptime Model: type, comptime kind: memory.Kind) type {
             self.close(io);
             const model = try self.open_fn(self.gpa, io, directory, self.options);
             errdefer self.close_fn(model, io);
-            if (self.budget) |b| try b.add(io, kind, directory, name, bytes, .{ .context = self, .close = closeKey });
+            // The device memory it created once open counts too (a voice's
+            // caches and converted weights), beside its files.
+            const counted = bytes + if (@hasDecl(Model, "deviceBytes")) model.deviceBytes() else 0;
+            if (self.budget) |b| {
+                try b.add(io, kind, directory, name, bytes, .{ .context = self, .close = closeKey });
+                b.resize(io, directory, counted) catch |err| {
+                    b.remove(io, directory);
+                    return err;
+                };
+            }
             self.mutex.lockUncancelable(io);
-            self.current = .{ .directory = owned_directory, .name = owned_name, .model = model, .bytes = bytes };
+            self.current = .{ .directory = owned_directory, .name = owned_name, .model = model, .bytes = counted };
             self.mutex.unlock(io);
             return .{ .model = model, .load_ns = @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) };
         }
