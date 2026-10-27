@@ -16,7 +16,7 @@ const style = @import("tui/style.zig");
 const default_backend = if (@import("inference").metal.enabled) "default metal" else "default cpu";
 
 /// The commands with a page of their own; `null` is the overview.
-pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, serve, completion };
+pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, transcribe, serve, completion };
 
 pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []const u8) !void {
     if (topic) |value| return switch (value) {
@@ -32,6 +32,7 @@ pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []co
         .cache => cache(out, sty),
         .decide => decide(out, sty),
         .embed => embed(out, sty),
+        .transcribe => transcribe(out, sty),
         .serve => serve(out, sty),
         .completion => completion(out, sty),
     };
@@ -142,6 +143,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "cache", "list or clear the agent's saved model states");
     try row(out, sty, "decide", "typed questions about text or JSON, answered by Laya");
     try row(out, sty, "embed", "text, images, audio into vectors, by EmbeddingGemma 2");
+    try row(out, sty, "transcribe", "speech to text, by Nemotron 3.5 ASR");
     try row(out, sty, "serve", "the nuclis API over HTTP: decisions, models kept open");
     try row(out, sty, "config", "write, show, or set a key of ~/.nuclis/nuclis.json");
     try row(out, sty, "completion", "the shell completion script for fish, bash, or zsh");
@@ -488,6 +490,38 @@ fn embed(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "Text, images and audio share the space; the image budget changes the");
     try plain(out, "vector. Audio is resampled to 16 kHz mono (16 kHz mono WAV is read as is).");
     try plain(out, "Inputs are packed into batches on Metal; batching never changes a vector.");
+    try out.writeByte('\n');
+}
+
+fn transcribe(out: *std.Io.Writer, sty: style.Style) !void {
+    try title(out, sty, "nuclis transcribe", "speech to text, by Nemotron 3.5 ASR streaming");
+    try heading(out, sty, "Usage:");
+    try code(out, sty, "nuclis transcribe <file> [options]");
+
+    try heading(out, sty, "Options:");
+    try row(out, sty, "--stream", "feed the clip in 80 ms pieces, as a microphone");
+    try more(out, "would, and print the transcript as it changes");
+    try row(out, sty, "--lookahead <n>", "rows of 80 ms each chunk waits for: 0, 3, 6,");
+    try more(out, "or 13 (latency 80, 320, 560, 1120 ms); default 3");
+    try row(out, sty, "--language <code>", "the language to expect, a locale (en-US, de-DE,");
+    try more(out, "fr, es-US, ...); default auto, which detects it");
+    try row(out, sty, "--model <dir>", "the checkpoint directory; default ~/.nuclis/");
+    try more(out, "models/nvidia/nemotron-3.5-asr-streaming-0.6b");
+    try row(out, sty, "--backend cpu|metal", "default cpu; metal is not supported yet");
+    try row(out, sty, "--json", "the text, language, tokens with times, timings");
+
+    try heading(out, sty, "Examples:");
+    try example(out, sty, "nuclis transcribe memo.m4a", "the transcript and its language");
+    try example(out, sty, "nuclis transcribe talk.wav --stream --lookahead 0", "partials as fast as they come");
+    try example(out, sty, "nuclis transcribe clip.flac --language de-DE --json", "German, with token times");
+
+    try heading(out, sty, "Notes:");
+    try plain(out, "The model writes punctuated, capitalized text. Under auto it may end a");
+    try plain(out, "sentence with a language tag, which is reported as the language and");
+    try plain(out, "never printed in the text. Audio is resampled to 16 kHz mono (a 16 kHz");
+    try plain(out, "mono WAV, 16-bit or float, is read as is). A token's time is the start");
+    try plain(out, "of its 80 ms row. Pull the model with `nuclis model pull");
+    try plain(out, "nvidia/nemotron-3.5-asr-streaming-0.6b`.");
     try out.writeByte('\n');
 }
 

@@ -22,6 +22,7 @@ const decide = @import("decide.zig");
 const decision_catalog = @import("decision/catalog.zig");
 const embed = @import("embed.zig");
 const embedding_catalog = @import("embedding/catalog.zig");
+const transcribe = @import("transcribe.zig");
 const api = @import("api/root.zig");
 
 // Fed from build.zig.zon through the build_options module (see build.zig);
@@ -29,7 +30,7 @@ const api = @import("api/root.zig");
 pub const version = @import("build_options").version;
 pub const Diagnostic = config.Diagnostic;
 pub const Options = struct {
-    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, serve, completion, complete },
+    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, transcribe, serve, completion, complete },
     /// `completion <shell>`: which script to print.
     shell: completion.Shell = .fish,
     /// `__complete <words…>`: the words after `nuclis`, the last one being
@@ -108,6 +109,8 @@ pub fn parseArgs(args: []const []const u8) !Options {
         .decide
     else if (std.mem.eql(u8, args[0], "embed"))
         .embed
+    else if (std.mem.eql(u8, args[0], "transcribe"))
+        .transcribe
     else if (std.mem.eql(u8, args[0], "serve"))
         .serve
     else if (std.mem.eql(u8, args[0], "completion"))
@@ -122,6 +125,7 @@ pub fn parseArgs(args: []const []const u8) !Options {
     if (command == .model) return parseModelArgs(args[1..]);
     if (command == .decide) return .{ .command = .decide, .words = args[1..] };
     if (command == .embed) return .{ .command = .embed, .words = args[1..] };
+    if (command == .transcribe) return .{ .command = .transcribe, .words = args[1..] };
     if (command == .serve) return .{ .command = .serve, .words = args[1..] };
     if (command == .completion) {
         if (args.len < 2) return error.MissingShell;
@@ -569,6 +573,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     }
     if (options.command == .decide) return runDecide(alloc, io, root, config_path, options.words, out, sty, diag);
     if (options.command == .embed) return runEmbed(alloc, io, root, config_path, options.words, out, sty, diag);
+    if (options.command == .transcribe) return runTranscribe(alloc, io, root, options.words, out, sty, diag);
     if (options.command == .serve) return runServe(alloc, io, root, config_path, options.words, out, sty, diag);
     if (options.command == .agent and options.agent_action == .ls) {
         const dir = root orelse return error.MissingHome;
@@ -705,7 +710,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // error; the reason (which ids the tree has) is added here, where the
     // diagnostic lives.
     (switch (options.command) {
-        .help, .version, .config, .model, .cache, .decide, .embed, .serve, .completion, .complete => unreachable,
+        .help, .version, .config, .model, .cache, .decide, .embed, .transcribe, .serve, .completion, .complete => unreachable,
         .generate => generate.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .generate), options.generation, options.json, out),
         .bench => bench.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .bench), options.benchmark, options.json, out, sty),
         .tokenize => blk: {
@@ -879,6 +884,17 @@ fn runEmbed(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path
     const name = options.model orelse loaded.config.embed.model;
     const located = try embedding_catalog.locate(arena, io, root, loaded.config.models, name, diag);
     return embed.run(alloc, io, located.path, located.mmproj, located.identity, options, out, sty, diag);
+}
+
+/// `transcribe`: its own flags; the checkpoint directory under the root
+/// unless `--model` names one.
+fn runTranscribe(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty_detected: style.Style, diag: *config.Diagnostic) !void {
+    const options = try transcribe.parseArgs(words, diag);
+    const sty: style.Style = if (options.json) .none else sty_detected;
+    if (options.model) |directory| return transcribe.run(alloc, io, directory, options, out, sty, diag);
+    const directory = try std.fs.path.join(alloc, &.{ root orelse return error.MissingHome, transcribe.default_model });
+    defer alloc.free(directory);
+    return transcribe.run(alloc, io, directory, options, out, sty, diag);
 }
 
 /// `serve`: the API over every model kind, each opened on its first request
@@ -1296,6 +1312,7 @@ test {
     _ = decision_catalog;
     _ = embed;
     _ = embedding_catalog;
+    _ = transcribe;
     _ = @import("embedding/request.zig");
     _ = @import("embedding/response.zig");
     _ = @import("decision/request.zig");

@@ -264,6 +264,14 @@ pub const commands = [_]Command{
         backend,
         json,
     } }} },
+    .{ .name = "transcribe", .summary = "speech to text, by Nemotron 3.5 ASR", .actions = &.{.{ .positionals = &.{.file}, .flags = &.{
+        .{ .name = "--stream", .summary = "80 ms pieces, partials as they change" },
+        .{ .name = "--lookahead", .value = .{ .choice = &.{ "0", "3", "6", "13" } }, .summary = "rows of 80 ms the encoder waits for" },
+        .{ .name = "--language", .value = .text, .summary = "a locale, or auto" },
+        .{ .name = "--model", .value = .dir, .summary = "the checkpoint directory" },
+        backend,
+        json,
+    } }} },
     .{ .name = "serve", .summary = "the nuclis API over HTTP", .actions = &.{.{ .flags = &.{
         .{ .name = "--host", .value = .text, .summary = "the address to listen on" },
         .{ .name = "--port", .value = .number, .summary = "default serve.port, 9000" },
