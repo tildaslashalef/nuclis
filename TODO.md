@@ -165,6 +165,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 12 | Documents, README, website (links Muon) | — | all | main |
 | 13 | Split `kernels.metal` by operation (before 4 and 7) | — | — | done |
 | 14 | Split the Metal backend's `root.zig` by operation (before 4 and 7) | — | — | done |
+| 15 | Serve: file transcription for long recordings (`POST /v1/audio/transcriptions`) | C | 7, 9 | main, beside 10 |
 
 Worktree rule: a track owns its new files. Shared registrations
 (`src/catalog.zig`, `gates.json`, `docs/spec.md`, `docs/README.md`,
@@ -451,9 +452,48 @@ freshly built binary.
 close; text and binary messages). `GET /v1/audio/transcriptions/stream`:
 binary messages carry 16 kHz mono s16le PCM; the server answers JSON
 events `partial`, `final` (with word timings), `error`; each chunk a short
-GPU item. Also the plain `POST /v1/audio/transcriptions` (OpenAI's
-multipart form) for whole files. Gates: unit tests of the framing
+GPU item. (Whole files are task 15's route.) Gates: unit tests of the framing
 (fragments, masking, oversize, abrupt close) and the event stream.
+
+#### 15. Serve: file transcription for long recordings
+
+Asked by the user (2026-10-27) for note-taking clients beside Muon.
+`POST /v1/audio/transcriptions` in OpenAI's shape, under `src/api/transcription/`:
+
+- **Request:** `multipart/form-data` (a parser in `src/api/`, bounded:
+  part count, header size, one file part) with `file`, `model`,
+  `language` (a locale or `auto`), `response_format` (`json` default,
+  `text`, `verbose_json`, `srt`, `vtt`), `timestamp_granularities[]`
+  (`word`, `segment`), `stream` (bool). This route alone takes a larger,
+  explicit body limit (proposed 256 MiB, `serve.transcription_bytes`;
+  `413 payload_too_large` past it), documented beside the others in
+  `docs/guide/api.md` § Conventions.
+- **Segments:** the transcriber's timed tokens grouped into segments at
+  terminal punctuation or a pause of at least 0.8 s (proposed; a
+  constant, measured on the corpus), each `{id, start, end, text,
+  language}`, words `{word, start, end}`. One function in
+  `inference/src/audio/nemotron_asr.zig` (or `src/`), shared with the
+  CLI.
+- **Long audio:** decode the upload, then feed the `Transcriber` in
+  chunks of a few seconds as short GPU items (`gpu.Item.short`), so a
+  two-hour file never blocks a chat turn or speech; memory stays bounded
+  by the encoder's caches plus the decoded PCM. With `stream=true`, the
+  response is server-sent events in OpenAI's form (`transcript.text.delta`,
+  then `transcript.text.done`) plus nuclis's own progress comments, a
+  segment per event as it is finalized. A client that leaves cancels it.
+- **Formats:** `srt` and `vtt` written from the segments (times as
+  `HH:MM:SS,mmm` / `HH:MM:SS.mmm`), `text` the joined text, `json`
+  `{text}`, `verbose_json` `{text, language, duration, segments, words}`.
+- **CLI parity:** `nuclis transcribe <file> --format text|json|srt|vtt`
+  and `--segments`, from the same functions.
+- **Gates:** the corpus WER through the HTTP route equals the CLI's
+  exactly (same text per clip); a 30-minute synthetic recording (corpus
+  clips joined by silences, built by a script, not committed) checks
+  segment times against the joins within one 80 ms row and peak memory
+  flat in duration; unit tests of the multipart parser (boundaries,
+  oversize, missing file, extra parts) and of the `srt`/`vtt` writers.
+  `docs/guide/api.md` § Transcription with a measured rate (audio
+  seconds per second on Metal).
 
 #### 11. Voice scheduling measured
 
@@ -484,6 +524,14 @@ figures copied from the README so `make site-check` holds. Gates:
 ## Deferred
 
 Agreed and not scheduled; when one is picked up, it becomes a unit above.
+
+- **Who said what: speaker diarization** (the user's, 2026-10-27, for
+  note-taking). NVIDIA's `nvidia/Nemotron-3-Diarization`, a streaming
+  model tracking up to 8 speakers with a speaker cache, defined in
+  `transformers` (`models/nemotron3_diarization/`, at the `c0d024fb` this
+  unit pinned). A new family, brought up as Nemotron ASR was (facts,
+  traces, CPU, Metal); then the transcription routes' segments gain a
+  `speaker` field, and the streaming route speaker changes.
 
 - **Saluki's speed goals** (restated by the user, 2026-10-15; the numbers
   and their arithmetic in `docs/models/saluki.md`, its **Goals**): decode at
