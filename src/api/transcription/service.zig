@@ -12,6 +12,7 @@ const router_mod = @import("../router.zig");
 const slot_mod = @import("../slot.zig");
 const speech = @import("../speech/service.zig");
 const live_route = @import("stream.zig");
+const file = @import("file.zig");
 
 const asr = inference.audio.nemotron_asr;
 
@@ -25,6 +26,8 @@ pub const Service = struct {
     /// `transcribe.model`: what a request that names none gets.
     default_model: []const u8,
     live: live_route.Live = .{},
+    /// `POST /v1/audio/transcriptions`: whole recordings.
+    files: file.Files = .{},
 
     /// `root` and `registry` are borrowed for the service's lifetime.
     pub fn init(gpa: std.mem.Allocator, executor: *gpu.Executor, metal: bool, root: ?[]const u8, registry: config.Models, default_model: []const u8) Service {
@@ -38,6 +41,7 @@ pub const Service = struct {
 
     pub fn register(self: *Service, gpa: std.mem.Allocator, router: *router_mod.Router, listing: *models.Models) !void {
         try live_route.register(self, gpa, router);
+        try self.files.register(gpa, router, self);
         try listing.add(gpa, .{ .context = self, .list = list });
     }
 

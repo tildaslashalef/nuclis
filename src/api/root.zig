@@ -484,6 +484,8 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     server.chat.language.budget = &server.memory;
     server.speech.slot.budget = &server.memory;
     server.transcription.slot.budget = &server.memory;
+    server.transcription.files.max_bytes = context.loaded.config.serve.transcription_bytes;
+    server.transcription.files.timeout_ns = @as(u64, options.timeout) * std.time.ns_per_s;
     try server.memory.keep(options.pins.items);
     server.decisions.timeout_ns = @as(u64, options.timeout) * std.time.ns_per_s;
     server.decisions.bind();
@@ -619,6 +621,8 @@ test {
     _ = @import("speech/wire.zig");
     _ = speech;
     _ = transcription;
+    _ = @import("multipart.zig");
+    _ = @import("transcription/file.zig");
 }
 
 test "--model names sort by kind, each within what its service keeps open" {

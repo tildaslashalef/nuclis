@@ -26,7 +26,8 @@ pub fn Slot(comptime Model: type, comptime kind: memory.Kind) type {
         /// Guards `current`'s identity for readers on other tasks.
         mutex: std.Io.Mutex = .init,
         current: ?Current = null,
-        /// Requests holding the model across items: the budget may not close it.
+        /// Requests holding the model across items: the budget may not close
+        /// it, and no other may replace it, while any does.
         held: u32 = 0,
 
         const Current = struct {
@@ -59,7 +60,7 @@ pub fn Slot(comptime Model: type, comptime kind: memory.Kind) type {
                 if (self.budget) |b| b.touch(io, directory);
                 return .{ .model = c.model, .load_ns = 0 };
             };
-            std.debug.assert(self.held == 0);
+            if (self.held > 0) return error.Pinned;
             const started = std.Io.Clock.awake.now(io);
             if (self.budget) |b| {
                 // Asked before anything closes, as the other pools do.
@@ -170,10 +171,11 @@ test "one model at a time, counted in the budget, held models never closed" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     try std.testing.expectEqualStrings("bb", (try slot.openName(io, arena_state.allocator())).?);
-    // Held, another model's room cannot come from it.
+    // Held, another model's room cannot come from it, nor may another replace it.
     slot.hold(io, true);
     slot.hold(io, true);
     try std.testing.expectError(error.Pinned, budget.reserve(io, 40, null));
+    try std.testing.expectError(error.Pinned, slot.acquire(io, "/m/a", "a", 60));
     slot.hold(io, false);
     try std.testing.expectError(error.Pinned, budget.reserve(io, 40, null));
     slot.hold(io, false);

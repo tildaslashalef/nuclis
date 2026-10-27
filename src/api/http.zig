@@ -36,6 +36,8 @@ pub const Request = struct {
     /// After the `?`, empty when there is none.
     query: []const u8,
     body: []const u8,
+    /// The `content-type` header, if any.
+    content_type: ?[]const u8 = null,
     /// The client's socket, when there is one (none in tests).
     peer: ?Peer = null,
     /// Set when a GET's `upgrade` header names `websocket`; the route
@@ -191,6 +193,7 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
         .path = target[0 .. question orelse target.len],
         .query = if (question) |q| target[q + 1 ..] else "",
         .body = "",
+        .content_type = if (request.head.content_type) |c| arena.dupe(u8, c) catch return exchange.fail(.init(.internal_server_error, "internal", "out of memory")) else null,
         .peer = peer,
     };
     exchange.path = parsed.path;
@@ -215,7 +218,13 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
             },
             error.WriteFailed => false,
         };
-        parsed.body = body_reader.allocRemaining(arena, .limited(max_body)) catch |err| return switch (err) {
+        // A known length is read into one allocation: a growing one would
+        // leave its earlier copies in the arena, several times a large body.
+        if (request.head.content_length) |length| {
+            const body = arena.alloc(u8, @intCast(length)) catch return exchange.fail(.init(.internal_server_error, "internal", "out of memory"));
+            body_reader.readSliceAll(body) catch return false;
+            parsed.body = body;
+        } else parsed.body = body_reader.allocRemaining(arena, .limited(max_body)) catch |err| return switch (err) {
             error.StreamTooLong => exchange.fail(.init(.payload_too_large, "payload_too_large", "the request body exceeds the limit")),
             error.OutOfMemory => exchange.fail(.init(.internal_server_error, "internal", "out of memory")),
             error.ReadFailed => false,

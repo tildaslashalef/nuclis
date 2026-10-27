@@ -252,6 +252,9 @@ pub const Config = struct {
         web: bool = false,
         /// Models opened at start that the memory budget never closes.
         pin: Pins = .none,
+        /// The request body `POST /v1/audio/transcriptions` takes: an
+        /// upload held whole while it is transcribed; past it, `413`.
+        transcription_bytes: u64 = 256 << 20,
     };
     /// The search service behind the web tools (docs/app/agent.md § 11).
     pub const Web = struct {
@@ -636,6 +639,9 @@ fn validateBudget(value: usize, path: []const u8, diag: *Diagnostic) !void {
     }
 }
 
+/// `serve.transcription_bytes`' bound: an upload is held in memory.
+const max_transcription_bytes: usize = 4 << 30;
+
 fn validateRange(value: usize, path: []const u8, max: usize, diag: *Diagnostic) !void {
     if (value == 0 or value > max) {
         diag.set("{s} must be 1..{d} (found {d})", .{ path, max, value });
@@ -669,6 +675,7 @@ fn validate(cfg: *const Config, diag: *Diagnostic) !void {
     try validateBudget(cfg.agent.thinking_budget, "agent.thinking_budget", diag);
     try validateSampling(cfg.generation.sampling, "generation.sampling", diag);
     try validateWeb(cfg, diag);
+    try validateRange(cfg.serve.transcription_bytes, "serve.transcription_bytes", max_transcription_bytes, diag);
     for (cfg.models.entries) |named| {
         const e = named.entry;
         var buffer: [max_path_bytes]u8 = undefined;
@@ -1567,6 +1574,14 @@ test "file values override defaults per key and the source is recorded" {
     , "budget.json", &diag);
     defer budgeted.deinit();
     try std.testing.expectEqual(@as(?u64, 20 << 30), budgeted.config.serve.memory_bytes);
+    try std.testing.expectEqual(@as(u64, 256 << 20), budgeted.config.serve.transcription_bytes);
+    var uploads = try fromText(alloc,
+        \\{ "schema_version": 1, "serve": { "transcription_bytes": 1073741824 } }
+    , "uploads.json", &diag);
+    defer uploads.deinit();
+    try std.testing.expectEqual(@as(u64, 1 << 30), uploads.config.serve.transcription_bytes);
+    try std.testing.expectError(error.InvalidConfigValue, fromText(alloc, "{ \"schema_version\": 1, \"serve\": { \"transcription_bytes\": 0 } }", "zero.json", &diag));
+    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "serve.transcription_bytes must be 1..") != null);
 }
 
 test "the voice keys: speech and transcription models, the default speaker, pins as a list or a string" {
