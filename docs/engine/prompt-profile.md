@@ -34,6 +34,10 @@ uses `Profile.decoder` to resolve reasoning controls in the vocabulary and
 stream semantic events. Actual control IDs delimit channels; ordinary tokens
 spelling the same text do not. Gemma's `thought\n` suffix is ordinary text
 following the opening control, so the decoder handles its partial arrival.
+A completion starts in reasoning only where the prompt's last reasoning
+control is the opening one (`stream.opensInReasoning`): Qwen's thinking
+prompt ends inside `<think>`, while Gemma's ends at `<|turn>model\n` and
+the model may answer without opening a channel, which is then answer text.
 The agent stores the channels directly for history and session logging;
 `generate`/`agent` sample with the profile's defaults for the
 `--think` effort ([sampling.md](sampling.md#sampling-profiles-and-the-selection-chain-2026-09-08)).
@@ -128,7 +132,8 @@ empty thought channel in the generation prompt
 (`<|turn>model\n<|channel>thought\n<channel|>`) so the model answers
 directly; any other effort puts `<|think|>\n` at the top of the system
 turn (which then exists even without a system message) and ends the prompt
-at `<|turn>model\n`, after which the model opens its own channel. Assistant
+at `<|turn>model\n`, after which the model opens its own channel or
+answers without one. Assistant
 reasoning renders as `<|channel>thought\n…\n<channel|>` only where the
 template's gate passes: on a message after the last user message (the
 current tool loop) or on any message that calls tools (the reference server

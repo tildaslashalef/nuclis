@@ -46,6 +46,8 @@ pub const stop_tokens = [_][]const u8{ "<turn|>", "<eos>", "<|tool_response>" };
 pub const bos_token: ?[]const u8 = "<bos>";
 /// The image span placeholder, inside `<|image>` … `<image|>`.
 pub const image_placeholder: ?[]const u8 = "<|image|>";
+/// The audio span placeholder, inside `<|audio>` … `<audio|>`.
+pub const audio_placeholder: ?[]const u8 = "<|audio|>";
 /// The template only switches thinking on; `low` is offered beside
 /// `medium` because the host caps reasoning there (`agent.thinking_budget`).
 pub const efforts = [_]Effort{ .off, .low, .medium };
@@ -181,6 +183,13 @@ pub fn renderWith(alloc: std.mem.Allocator, messages: []const Message, tools: []
             const count = @as(usize, image.width_tokens) * image.height_tokens;
             while (n < count) : (n += 1) try builder.add(image_placeholder.?);
             try builder.add("<image|>");
+        };
+        // A clip's run after the images: the processor's `<|audio>` …
+        // `<audio|>` around one placeholder per encoder row.
+        if (message.role == .user) for (message.audio) |clip| {
+            try builder.add("<|audio>");
+            for (0..clip.tokens) |_| try builder.add(audio_placeholder.?);
+            try builder.add("<audio|>");
         };
         const content = trim(own_content orelse message.content);
         try builder.add(content);
@@ -780,6 +789,16 @@ test "a user image renders the image markers before the text" {
     const plain = try render(alloc, &.{.{ .role = .user, .content = "describe this image" }}, &.{}, .off, .{});
     defer alloc.free(plain);
     try std.testing.expect(std.mem.indexOf(u8, plain, "<|image") == null);
+}
+
+test "a user clip renders the audio markers after the images, before the text" {
+    const alloc = std.testing.allocator;
+    const images = [_]profiles.ImageRef{.{ .width_tokens = 1, .height_tokens = 1 }};
+    const clips = [_]profiles.AudioRef{ .{ .tokens = 3 }, .{ .tokens = 1 } };
+    const prompt = try render(alloc, &.{.{ .role = .user, .content = "how does this sound?", .images = &images, .audio = &clips }}, &.{}, .off, .{});
+    defer alloc.free(prompt);
+    const expected = "<bos><|turn>user\n<|image><|image|><image|><|audio><|audio|><|audio|><|audio|><audio|><|audio><|audio|><audio|>how does this sound?<turn|>\n<|turn>model\n<|channel>thought\n<channel|>";
+    try std.testing.expectEqualStrings(expected, prompt);
 }
 
 test "text prompts match the pinned reference fixtures, `<bos>` prepended" {

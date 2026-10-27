@@ -330,6 +330,11 @@ pub fn replay(alloc: Allocator, tr: *transcript.Transcript, loaded: session.Load
                     defer alloc.free(label);
                     try tr.apply(.{ .attachment = .{ .label = label } });
                 }
+                for (u.audio, 1..) |clip, n| {
+                    const label = try alloc.print("audio #{d}: {s} ({d:.1} s → {d} tokens)", .{ n, clip.path, clip.seconds(), clip.tokens });
+                    defer alloc.free(label);
+                    try tr.apply(.{ .attachment = .{ .label = label } });
+                }
                 open_turn = true;
             },
             .assistant => |a| {

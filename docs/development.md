@@ -512,7 +512,9 @@ bar off so the pane is the whole window, `COLORTERM=truecolor` as Ghostty
 sets it so the theme resolves to the same palette) and runs the steps in
 order: `keys=<text>`, `enter`, `key=<tmux key>` (`C-c`, `Tab`, `Escape`),
 `paste=<text>` (a bracketed paste, as a dropped file's path arrives),
-`wait=<s>`, `until=<text>,<s>` (wait for the text on screen), `capture=<name>`,
+`wait=<s>`, `until=<text>,<s>` (wait for the text on screen; prints how
+long it took, to 0.05 s, so `enter until=generating,60` times Enter to
+the first token), `capture=<name>`,
 `burst=<name>,<seconds>,<hz>`, and `buffer=<name>` (tmux's paste buffer,
 where an OSC 52 copy lands, to `<name>.buffer.txt`); `--env KEY=VALUE`
 sets a variable for the agent (`EDITOR`, to drive Ctrl-G). A step with a
@@ -937,6 +939,10 @@ nearly all as failed while every one is a 200: read the
 `Length:` breakdown and `Non-2xx responses`. Compare served responses
 with `nuclis decide --json` after masking `timings_ms`, and read the
 batching counters from `GET /v1/health` before and after a run.
+File transcription is measured by `python3 scripts/transcription-check.py
+long` (a fresh server per recording, RSS sampled, the first segment of a
+stream timed; `--chat <model>` streams a chat beside it), which the gate
+`nemotron-asr-long` also runs.
 [guide/api.md § Measured rates](guide/api.md#measured-rates)
 holds the record.
 

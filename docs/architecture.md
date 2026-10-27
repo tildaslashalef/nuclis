@@ -238,11 +238,15 @@ apart, so each service is a directory and one registration:
   at once and only the worker touches a model. An item lives in its
   submitter's frame; a waiter that times out unlinks an item that never
   started and otherwise waits for it. A long item (a generation) calls
-  `runShort` between its steps, so short ones (decision batches) run
-  there instead of after it; each model has its own Metal queue and
-  buffers. `memory.zig` is the one budget every open model counts
+  `runShort` between its steps, so short ones (decision batches, speech
+  chunks, transcription pieces) run there instead of after it; one that
+  asks `betweenSteps` takes no more there than it needs (speech stays a
+  second ahead of playback, a file transcription a quarter of the time).
+  Each model has its own Metal queue and buffers. `memory.zig` is the one budget every open model counts
   against: before a model opens, the least recently used others close,
-  of either kind, and a model in use is pinned. `pipe.zig` is the bounded byte
+  of any kind; a model in use is pinned for the request, and one named by
+  `--pin` for the server's life. `slot.zig` is the one-model holder of
+  the kinds the server keeps one of (a voice, a recognizer). `pipe.zig` is the bounded byte
   queue a streamed response crosses from the worker to its connection, so
   the worker never writes to a socket.
 - `decisions/` validates on the connection's thread, then waits in the
@@ -261,9 +265,26 @@ apart, so each service is a directory and one registration:
   (`http.Peer`), and one that leaves sets the flag the item's observer
   turns into a cancellation. Clients resend the whole conversation; no
   response is stored.
+- `speech/` queues requests in arrival order behind one short executor
+  item that speaks the head one a chunk of frames per run, so speech
+  advances between a generation's steps; the response's head waits for
+  the prompt's prefill, then the audio drains from a `pipe.zig` queue
+  (the item parks rather than block the worker when its client lags).
+  `transcription/` keeps the recognizer's slot for the routes that use it:
+  `file.zig` takes a whole recording (`multipart.zig` parses the form)
+  and feeds it in 2.56 s pieces, one short item a piece; its segments,
+  subtitles, and word times come from `src/audio/transcript.zig`, which
+  `nuclis transcribe` shares.
 - `src/decision/` holds the wire format and model names that `nuclis
   decide` and the service share, so the CLI's `--json` and the API's
   body are the same bytes.
+- `websocket.zig` is RFC 6455's server side (the handshake, client
+  frames read into bounded messages, server frames written); a response
+  carrying an `http.Upgrade` makes the transport answer `101` and hand
+  the connection to the route. `transcription/stream.zig` is the live
+  route on it: per connection a reader task, the connection's task
+  writing the events, and one short executor item that owns the
+  connection's `Transcriber` and pushes one encoder chunk a run.
 
 ## 3. Three kinds of memory
 
@@ -368,7 +389,7 @@ trace gates bound per mode. `--kv q8_0` takes about half again (blocks of
 **Read:** [engine/session.md](engine/session.md),
 [llm-guide.md § 20](llm-guide.md#20-half-the-bytes-the-f16-cache) and
 [§ 21](llm-guide.md#21-flash-decoding), `Backend.attentionDecode` and
-`attentionChunk` in `backends/metal/root.zig`.
+`attentionChunk` in `backends/metal/ops/attention.zig`.
 
 ## 6. Two executors, one schedule
 
@@ -423,7 +444,7 @@ flowchart LR
 
 - **A kernel is a function run by many threads at once.** Zig chooses the
   grid and thread count and holds the constants the kernels assume; only
-  `kernels.metal` names a lane or a SIMD group. The three kernel shapes
+  `backends/metal/kernels/` names a lane or a SIMD group. The three kernel shapes
   (reductions, tiles on the matrix unit, elementwise) and every kernel's
   geometry are tabulated in [engine/metal-backend.md § Kernel geometry](engine/metal-backend.md#kernel-geometry).
 - **Unified memory.** The GPU addresses the mapped file and the session
@@ -439,7 +460,7 @@ flowchart LR
 
 **Read:** [engine/metal-backend.md](engine/metal-backend.md),
 [llm-guide.md § 11–§ 13](llm-guide.md#11-crossing-the-bridge), `bridge.m`,
-then `kernels.metal` from `nu_add` and `nu_rmsnorm` before `nu_matvec`.
+then `kernels/rowwise.metal` (`nu_add`, `nu_rmsnorm`) before `kernels/matvec.metal`.
 
 ## 8. How correctness is established
 
@@ -487,7 +508,7 @@ flowchart LR
 | Tagged unions with `switch` | A layer is attention *or* recurrent; both cases must be handled | `session.zig` `Layout`, `engine.zig` `Model` |
 | Error sets and `try` | Expected failures are values, not panics | `quant/decode.zig` |
 | Slices | Borrowed views with a length; doc comments say who owns the memory | `runtime/weights.zig` `View` |
-| `comptime` and `@embedFile` | Fixtures and shader source compiled in; the IQ3_S grid becomes MSL text at compile time | `backends/metal/root.zig` `iq3_grid_source` |
+| `comptime` and `@embedFile` | Fixtures and shader source compiled in; the IQ3_S grid becomes MSL text at compile time | `backends/metal/kernels.zig` `codebookSource` |
 | `extern fn` + `*anyopaque` | Calling Objective-C through an opaque handle | `backends/metal/root.zig` |
 | `extern struct` | C layout, passed as kernel constants byte for byte | `Backend.MatvecParams` |
 | `std.Io` passed explicitly | File, clock, and cancellation through an injected interface | `generate.zig` `Trace` |
@@ -591,7 +612,7 @@ entries speculate by default.
 Each is enforced or documented in the file it names.
 
 - **Kernel binding convention:** data buffers at indices 0–6, the
-  parameter struct at 7. The `Backend` encoders in `backends/metal/root.zig`
+  parameter struct at 7. The `Backend` encoders in `backends/metal/ops/`
   are the only place that knows kernel names and argument order.
 - **Specialized matvecs** are chosen per encoding when `specializedMatvec`
   accepts the row alignment; `rows_per_simdgroup` and

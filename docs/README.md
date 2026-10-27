@@ -42,6 +42,8 @@ below.
 | [laya.md](models/laya.md) | Laya: the decision encoder behind `nuclis decide` |
 | [clef-flash.md](models/clef-flash.md) | clef-flash: Cloudflare's decision model |
 | [embeddinggemma.md](models/embeddinggemma.md) | EmbeddingGemma 2: the embedding model, its files, forward pass, prefixes, and encoders |
+| [nemotron-asr.md](models/nemotron-asr.md) | Nemotron 3.5 ASR streaming 0.6B: the speech recognizer, its front end, cache-aware encoder, and transducer |
+| [qwen3-tts.md](models/qwen3-tts.md) | Qwen3-TTS CustomVoice (0.6B and 1.7B): the speech synthesizer, its talker, code predictor, and codec decoder |
 
 ## The engine: `engine/` (the `inference/` package)
 

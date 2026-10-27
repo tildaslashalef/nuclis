@@ -25,7 +25,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT)
 .PHONY: help build debug build-cpu metal install uninstall test test-metal check verify-auto verify verify-release verify-long verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate speed speed-base spec-matrix \
-        agent agent-eval api-check playground model-ls eval-corpus trace capture clean clean-cache distclean hf-downloader test-hf version release-draft release tag site-check site-serve docs-check
+        agent agent-eval api-check playground model-ls eval-corpus speech-corpus trace capture clean clean-cache distclean hf-downloader test-hf version release-draft release tag site-check site-serve docs-check
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -240,6 +240,13 @@ eval-corpus: ## Fetch wikitext-2-raw (the perplexity gates' text) into .referenc
 	  https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip && \
 	  unzip -o -q $(EVAL_DIR)/wikitext-2-raw-v1.zip -d $(EVAL_DIR))
 	@echo "173c87a53759e0201f33e0ccf978e510c2042d7f2cb78229d9a50d79b9e7dd08  $(EVAL_TEXT)" | shasum -a 256 -c -
+
+# ---- the speech corpus (docs/models/nemotron-asr.md) ---------------------
+# Public clips with human transcripts, each pinned by SHA-256 in
+# tests/fixtures/speech-corpus.json; fetched, never committed.
+
+speech-corpus: ## Fetch the speech corpus (LibriSpeech test-clean, FLEURS) into .reference/speech and check every clip's SHA-256
+	python3 scripts/speech-corpus.py fetch
 
 # ---- GPU trace (Xcode Instruments via xctrace; see AGENTS.md § Local toolchain) --
 

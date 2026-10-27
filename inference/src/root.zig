@@ -13,6 +13,10 @@ pub const bpe = @import("tokenizer/bpe.zig");
 pub const text_stream = @import("tokenizer/stream.zig");
 pub const tokenizer = @import("tokenizer/encode.zig");
 pub const hf_tokenizer = @import("tokenizer/hf_json.zig");
+/// Decode-only Metaspace piece tables (a speech recognizer's output side).
+pub const piece_table = @import("tokenizer/pieces.zig");
+/// Qwen2 tokenizers stored as vocab.json and merges.txt (Qwen3-TTS).
+pub const vocab_merges = @import("tokenizer/vocab_merges.zig");
 pub const models = @import("models/root.zig");
 pub const weights = @import("runtime/weights.zig");
 pub const sampling = @import("sampling/root.zig");
@@ -43,6 +47,8 @@ test {
     _ = bpe;
     _ = tokenizer;
     _ = hf_tokenizer;
+    _ = piece_table;
+    _ = vocab_merges;
     _ = text_stream;
     _ = models;
     _ = weights;

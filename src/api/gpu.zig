@@ -36,6 +36,8 @@ pub const Executor = struct {
     running: bool = false,
     stopping: bool = false,
     completed: u64 = 0,
+    /// Worker-only: set while `runShort` runs items between a long item's steps.
+    between: bool = false,
 
     pub fn init(max_queued: usize) Executor {
         return .{ .max_queued = max_queued };
@@ -166,7 +168,16 @@ pub const Executor = struct {
             count += 1;
         }
         self.mutex.unlock(io);
+        self.between = true;
+        defer self.between = false;
         for (taken[0..count]) |item| self.settle(io, item, item.run(item, io));
+    }
+
+    /// On the worker, from inside a running item: whether it runs between
+    /// the steps of a long item (a generation waits for it), so it should
+    /// take no more of the GPU than it needs.
+    pub fn betweenSteps(self: *const Executor) bool {
+        return self.between;
     }
 
     /// After `item` ran: queued again at the tail, or finished and its
@@ -211,11 +222,14 @@ const Counting = struct {
     id: u32,
     gate: ?*std.Io.Event = null,
     repeats: u32 = 0,
+    /// When set, a run between a long item's steps records `id + 10`.
+    executor: ?*const Executor = null,
 
     fn runOne(item: *Item, io: std.Io) Item.After {
         const self: *Counting = @fieldParentPtr("item", item);
         if (self.gate) |g| g.waitUncancelable(io);
-        self.order.appendAssumeCapacity(self.id);
+        const between = if (self.executor) |e| e.betweenSteps() else false;
+        self.order.appendAssumeCapacity(if (between) self.id + 10 else self.id);
         if (self.repeats > 0) {
             self.repeats -= 1;
             return .again;
@@ -344,7 +358,7 @@ test "short items run between a long item's steps; others wait for it" {
     var order: std.ArrayList(u32) = try .initCapacity(std.testing.allocator, 16);
     defer order.deinit(std.testing.allocator);
     var long: Long = .{ .executor = &executor, .order = &order };
-    var short: Counting = .{ .order = &order, .id = 1, .repeats = 1 };
+    var short: Counting = .{ .order = &order, .id = 1, .repeats = 1, .executor = &executor };
     short.item.short = true;
     var other: Counting = .{ .order = &order, .id = 2 };
     try executor.submit(io, &long.item);
@@ -358,7 +372,8 @@ test "short items run between a long item's steps; others wait for it" {
     try executor.wait(io, &short.item, deadlineIn(io, 5_000));
     executor.stop(io);
     worker.await(io);
-    // The short item ran inside the long one; its `.again` went to the
-    // tail, behind the item that was not short.
-    try std.testing.expectEqualSlices(u32, &.{ 100, 1, 101, 2, 1 }, order.items);
+    // The short item ran inside the long one (between its steps); its
+    // `.again` went to the tail, behind the item that was not short, and
+    // ran on its own.
+    try std.testing.expectEqualSlices(u32, &.{ 100, 11, 101, 2, 1 }, order.items);
 }

@@ -26,7 +26,7 @@ const stash_mod = @import("stash.zig");
 const ApiError = errors.ApiError;
 const Profile = inference.profiles;
 
-/// The route's body limit: eight base64 images fit.
+/// The route's body limit: eight base64 images and eight clips fit.
 pub const max_body = 32 << 20;
 /// Completions one request may run to answer its hosted web calls; the last
 /// runs without the web tools, so it answers from what it has.
@@ -354,7 +354,7 @@ const Job = struct {
     /// match put back (stash.zig); the client's own is kept for `complete`.
     fn restore(self: *Job) std.mem.Allocator.Error!void {
         self.client_messages = self.request.messages;
-        self.client_counts = self.request.image_counts;
+        self.client_counts = self.request.media_counts;
         const restored = try stash_mod.restore(&self.service.stash, self.arena, &self.request, nowSeconds(self.io));
         self.chain = restored.chain;
         self.spliced = restored.spliced;
@@ -371,7 +371,7 @@ const Job = struct {
             const overflowed = e == error.ContextFull or e == error.LimitExceeded or e == error.InvalidConversation;
             if (round > 1 or self.spliced == 0 or !overflowed) return err;
             self.request.messages = self.client_messages;
-            self.request.image_counts = self.client_counts;
+            self.request.media_counts = self.client_counts;
             self.spliced = 0;
             self.exchange_start = self.client_messages.len;
             return language.run(self.io, self.arena, self.request, sink, observer);
@@ -654,10 +654,10 @@ fn extendForHosted(arena: std.mem.Allocator, request: *wire.Request, hosted: []c
     messages[old.len] = .{ .role = .assistant, .content = try arena.dupe(u8, answer), .reasoning_content = try arena.dupe(u8, reasoning), .tool_calls = calls };
     for (calls, texts, messages[old.len + 1 ..]) |call, text, *message| message.* = .{ .role = .tool, .content = text, .tool_call_id = call.id };
     const counts = try arena.alloc(usize, messages.len);
-    @memcpy(counts[0..old.len], request.image_counts);
+    @memcpy(counts[0..old.len], request.media_counts);
     @memset(counts[old.len..], 0);
     request.messages = messages;
-    request.image_counts = counts;
+    request.media_counts = counts;
     if (last) {
         var kept: std.ArrayList(Profile.ToolDefinition) = .empty;
         for (request.tools) |tool| if (!request.web.runs(tool.name)) try kept.append(arena, tool);
@@ -734,18 +734,23 @@ fn apiError(arena: std.mem.Allocator, status: std.http.Status, code: []const u8,
     return err;
 }
 
-fn isEmbedding(language: *const language_mod.Language, name: []const u8) bool {
-    if (language.loaded.config.models.find(name)) |entry| return entry.kind == .embedding;
-    return catalog.findEmbedding(name) != null;
+/// The kind of a model that is not a language model, from the registry or the catalogue.
+fn kindOf(language: *const language_mod.Language, name: []const u8) catalog.ModelKind {
+    if (language.loaded.config.models.find(name)) |entry| return entry.kind orelse .generation;
+    if (catalog.findEmbedding(name) != null) return .embedding;
+    if (catalog.findAudio(name)) |entry| return entry.kind;
+    return .decision;
 }
 
 fn openFailure(arena: std.mem.Allocator, language: *const language_mod.Language, name: []const u8, err: anyerror) ApiError {
     return switch (err) {
         error.ModelNotFound => apiError(arena, .not_found, "model_not_found", "model", "{s} is not a pulled language model (`nuclis model ls` lists them, `GET /v1/models` the runnable ones)", .{name}),
-        error.NotALanguageModel => if (isEmbedding(language, name))
-            apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is an embedding model; it answers no chat", .{name})
-        else
-            apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is a decision model; POST /v1/decisions runs it", .{name}),
+        error.NotALanguageModel => switch (kindOf(language, name)) {
+            .embedding => apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is an embedding model; it answers no chat", .{name}),
+            .speech => apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is a speech model; POST /v1/audio/speech runs it", .{name}),
+            .transcription => apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is a transcription model; POST /v1/audio/transcriptions runs it", .{name}),
+            .decision, .generation => apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is a decision model; POST /v1/decisions runs it", .{name}),
+        },
         error.ModelTooLarge => apiError(arena, .bad_request, "model_too_large", "model", "{s} needs about {d:.1} GiB (its weights and cache.memory_bytes) and the server's budget is {d:.1} GiB (serve.memory_bytes, --memory)", .{ name, gib(language.needed), gib(if (language.budget) |b| b.limit else 0) }),
         error.Pinned => apiError(arena, .service_unavailable, "busy", "model", "overloaded: {s} needs memory a running request holds; retry shortly", .{name}),
         else => apiError(arena, .internal_server_error, "model_failed", "model", "{s} did not open: {s}", .{ name, @errorName(err) }),
@@ -764,9 +769,19 @@ fn runFailure(arena: std.mem.Allocator, language: *language_mod.Language, err: a
         error.ToolsUnsupported => apiError(arena, .bad_request, "invalid_request", "tools", "this model's prompt profile has no native tool calling", .{}),
         error.InvalidConversation, error.UnsupportedContent, error.LimitExceeded, error.InvalidUtf8 => apiError(arena, .bad_request, "invalid_request", "messages", "the model's template cannot render this conversation ({s})", .{@errorName(err)}),
         error.MalformedImage, error.UnsupportedImageFormat, error.ImageTooLarge => apiError(arena, .bad_request, "invalid_request", "messages", "an image could not be decoded ({s})", .{@errorName(err)}),
+        error.AudioUnsupported => apiError(arena, .bad_request, "audio_unsupported", "messages", "this model hears no audio: only Gemma 4 E4B with its projector pulled (`nuclis model pull <name> --with mmproj`) does", .{}),
+        error.AudioTooLong => apiError(arena, .bad_request, "input_too_long", clipParam(arena, language), "a clip is at most {d} s (Google's processor's bound); send a longer recording in pieces", .{inference.engine.max_audio_seconds}),
+        error.AudioTooShort => apiError(arena, .bad_request, "invalid_audio", clipParam(arena, language), "a clip is shorter than 10 ms", .{}),
+        error.UnsupportedAudioFormat, error.AudioTooLarge => apiError(arena, .bad_request, "invalid_audio", clipParam(arena, language), "not audio nuclis can read ({s})", .{inference.audio.audio.readable}),
         error.OutOfMemory => apiError(arena, .internal_server_error, "internal", null, "out of memory", .{}),
         else => apiError(arena, .internal_server_error, "model_failed", null, "the completion failed: {s}", .{@errorName(err)}),
     };
+}
+
+/// `messages[i]` for the message whose clip failed, else `messages`.
+fn clipParam(arena: std.mem.Allocator, language: *const language_mod.Language) []const u8 {
+    const i = language.failed_clip orelse return "messages";
+    return arena.print("messages[{d}]", .{i}) catch "messages";
 }
 
 test {
@@ -802,7 +817,7 @@ test "a hosted round extends the conversation with its calls and results, number
     const hosted = [_]Profile.ToolCall{.{ .id = 0, .name = "web_search", .arguments = "{\"query\":\"zig\"}" }};
     try extendForHosted(arena, &request, &hosted, "Searching.", "why", &.{"1. Zig — https://ziglang.org/"}, false);
     try std.testing.expectEqual(@as(usize, 5), request.messages.len);
-    try std.testing.expectEqual(@as(usize, 5), request.image_counts.len);
+    try std.testing.expectEqual(@as(usize, 5), request.media_counts.len);
     const assistant = request.messages[3];
     try std.testing.expectEqual(Profile.Role.assistant, assistant.role);
     try std.testing.expectEqualStrings("Searching.", assistant.content);

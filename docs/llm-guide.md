@@ -442,7 +442,7 @@ groups of 32 lanes that execute the same instruction on different data.
 Four levels: grid, threadgroup, SIMD group, lane. Zig chooses the grid and
 the thread count and holds the constants the kernels assume (rows per SIMD
 group, tile padding); the bridge forwards the geometry; only
-`kernels.metal` ever names a lane. The contract between the layers is a
+the kernels under `backends/metal/kernels/` ever names a lane. The contract between the layers is a
 handful of numbers that must agree, and a comment on each side says so.
 
 A SIMD group can do three things a plain thread cannot, and the kernel
@@ -465,7 +465,7 @@ nearly free) and SIMD groups sharing a tile are not
 this and no Zig vector types either; it is scalar F64 loops so that it
 stays the plain statement of the math.
 
-Read: `kernels.metal` starting with `nu_add` and `nu_rmsnorm`,
+Read: `kernels/rowwise.metal` starting with `nu_add` and `nu_rmsnorm`,
 [engine/metal-backend.md § Kernel geometry](engine/metal-backend.md#kernel-geometry).
 
 ### 13. The matvec that reads 16 GB
@@ -514,7 +514,7 @@ unchanged. The lesson is not that the kernel is optimal. It is that a
 source-level count of operations does not predict the time, and the next
 lever is a different geometry, not a shorter loop.
 
-Read: `kernels.metal` (`nu_matvec_q4_k` and its neighbours),
+Read: `kernels/matvec.metal` (`nu_matvec_q4_k` and its neighbours),
 `Backend.specializedMatvec`,
 [engine/metal-backend.md § Per-block cost research (2026-09-08, closed without a kernel change)](engine/metal-backend.md#per-block-cost-research-2026-09-08-closed-without-a-kernel-change).
 
@@ -583,7 +583,7 @@ on the device before the top-k puts the instruct profile within 2.5 % of
 greedy.
 
 Read: `inference/src/sampling/root.zig`, `nu_topk_partial` and
-`nu_penalize` in `kernels.metal`,
+`nu_penalize` in `kernels/sampling.metal`,
 [engine/sampling.md § Sampling profiles](engine/sampling.md#sampling-profiles-and-the-selection-chain-2026-09-08).
 
 ---
@@ -629,7 +629,7 @@ ms; the same split-K idea applied to the *decode* matvecs later measured
 behind the single pass at every split count and was closed with its
 numbers. Threadgroup count is not what bounds those kernels.
 
-Read: `nu_matmul_t` in `kernels.metal`, `Backend.matmul`,
+Read: `nu_matmul_t` in `kernels/matmul.metal`, `Backend.matmul`,
 [engine/metal-backend.md](engine/metal-backend.md) (the tile sweeps).
 
 ### 17. Attention in tiles: online softmax
@@ -664,7 +664,7 @@ was that F16 and F32 caches differ by 5 to 10 % in this kernel while it
 sits flat at 640 to 750 GFLOP/s, so the long-context deficit is not a load
 problem, and the next attempt would start from a different lever.
 
-Read: `nu_attention_chunk_t` in `kernels.metal`,
+Read: `nu_attention_chunk_t` in `kernels/attention.metal`,
 [benchmarks § Prefill attention sweep](benchmarks/history.md#prefill-attention-sweep-2026-09-21).
 
 ### 18. DeltaNet in chunks: the triangular solve
@@ -701,7 +701,7 @@ with one thread per column. Outputs within 3.4e-8 of the F64 chunk, the
 carried state within 1.2e-7.
 
 Read: `inference/src/backends/cpu/recurrent.zig` (`deltaChunk`),
-`nu_delta_chunk` in `kernels.metal`,
+`nu_delta_chunk` in `kernels/recurrent_chunk.metal`,
 [engine/cpu-reference.md](engine/cpu-reference.md).
 
 ### 19. Experts: sparsity's gift and bill
@@ -742,7 +742,7 @@ here, so a sparse model's prefill is compute-bound at a lower fill than a
 dense one's.
 
 Read: `inference/src/backends/cpu/experts.zig`, `nu_route`,
-`nu_expert_lists`, `nu_matmul_experts_t` in `kernels.metal`,
+`nu_expert_lists` in `kernels/experts.metal`, `nu_matmul_experts_t` in `kernels/matmul.metal`,
 [engine/metal-backend.md § Gathered expert kernels](engine/metal-backend.md#gathered-expert-kernels-2026-09-18).
 
 ---
@@ -789,7 +789,7 @@ rounded to F16 before the write (0.75: the same deviation with no GPU in
 the loop). The QAT file, incidentally, was tighter than the K-quant on
 every path. `--kv f32` exists for numerical work.
 
-Read: `nu_pack_half`, the `_h` instantiations in `kernels.metal`,
+Read: `nu_pack_half`, the `_h` instantiations in `kernels/attention.metal`,
 [engine/session.md](engine/session.md),
 [models/gemma4.md](models/gemma4.md).
 
@@ -820,7 +820,7 @@ per second, and the widest Gemma head became a second instantiation of the
 same template rather than a second kernel, because register budgets are
 why GPU code has instantiations where CPU code has a loop bound.
 
-Read: `nu_attention_decode_t`, `nu_attention_merge` in `kernels.metal`,
+Read: `nu_attention_decode_t`, `nu_attention_merge` in `kernels/attention.metal`,
 `Backend.attentionDecode`.
 
 ### 22. Checkpoints, not rewinds

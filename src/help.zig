@@ -16,7 +16,7 @@ const style = @import("tui/style.zig");
 const default_backend = if (@import("inference").metal.enabled) "default metal" else "default cpu";
 
 /// The commands with a page of their own; `null` is the overview.
-pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, serve, completion };
+pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, transcribe, speak, serve, completion };
 
 pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []const u8) !void {
     if (topic) |value| return switch (value) {
@@ -32,6 +32,8 @@ pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []co
         .cache => cache(out, sty),
         .decide => decide(out, sty),
         .embed => embed(out, sty),
+        .transcribe => transcribe(out, sty),
+        .speak => speak(out, sty),
         .serve => serve(out, sty),
         .completion => completion(out, sty),
     };
@@ -142,6 +144,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "cache", "list or clear the agent's saved model states");
     try row(out, sty, "decide", "typed questions about text or JSON, answered by Laya");
     try row(out, sty, "embed", "text, images, audio into vectors, by EmbeddingGemma 2");
+    try row(out, sty, "speak, transcribe", "text to speech and back: Qwen3-TTS, Nemotron ASR");
     try row(out, sty, "serve", "the nuclis API over HTTP: decisions, models kept open");
     try row(out, sty, "config", "write, show, or set a key of ~/.nuclis/nuclis.json");
     try row(out, sty, "completion", "the shell completion script for fish, bash, or zsh");
@@ -241,6 +244,8 @@ fn generate(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--raw", "skip the chat template; send the text as written");
     try row(out, sty, "--image <path>", "attach an image (repeatable, up to 8); needs a");
     try more(out, "projector (models.<name>.mmproj) for the model");
+    try row(out, sty, "--audio <path>", "attach a clip after the images (repeatable, up");
+    try more(out, "to 8, at most 30 s each); Gemma 4 E4B's projector");
     try row(out, sty, "--image-max-tokens <n>", "most tokens one image becomes: auto (the");
     try more(out, "projector's maximum) or a count; default auto");
     try row(out, sty, "--think <effort>", "off, low, medium, high, xhigh; default off");
@@ -491,10 +496,94 @@ fn embed(out: *std.Io.Writer, sty: style.Style) !void {
     try out.writeByte('\n');
 }
 
-fn serve(out: *std.Io.Writer, sty: style.Style) !void {
-    try title(out, sty, "nuclis serve", "the nuclis API: decision, language, embedding models");
+fn transcribe(out: *std.Io.Writer, sty: style.Style) !void {
+    try title(out, sty, "nuclis transcribe", "speech to text, by Nemotron 3.5 ASR streaming");
     try heading(out, sty, "Usage:");
-    try code(out, sty, "nuclis serve [--host <ip>] [--port <n>] [--model <name>]…");
+    try code(out, sty, "nuclis transcribe <file> [options]");
+
+    try heading(out, sty, "Options:");
+    try row(out, sty, "--stream", "feed the clip in 80 ms pieces, as a microphone");
+    try more(out, "would, and print the transcript as it changes");
+    try row(out, sty, "--lookahead <n>", "rows of 80 ms each chunk waits for: 0, 3, 6,");
+    try more(out, "or 13 (latency 80, 320, 560, 1120 ms); default 3");
+    try row(out, sty, "--language <code>", "the language to expect, a locale (en-US, de-DE,");
+    try more(out, "fr, es-US, ...); default auto, which detects it");
+    try row(out, sty, "--model <name|dir>", "nemotron-asr-0.6b, a transcription registry");
+    try more(out, "entry, or a checkpoint directory; default");
+    try more(out, "transcribe.model (nemotron-asr-0.6b)");
+    try row(out, sty, "--backend cpu|metal", "default metal when built with it, else cpu");
+    try row(out, sty, "--format <f>", "text (default); json: the text, language, tokens");
+    try more(out, "with times, timings; srt or vtt: subtitles");
+    try row(out, sty, "--segments", "the segments: sentences, or speech between");
+    try more(out, "pauses, with their times (and words, in json)");
+    try row(out, sty, "--json", "the same as --format json");
+
+    try heading(out, sty, "Examples:");
+    try example(out, sty, "nuclis transcribe memo.m4a", "the transcript and its language");
+    try example(out, sty, "nuclis transcribe talk.wav --stream --lookahead 0", "partials as fast as they come");
+    try example(out, sty, "nuclis transcribe clip.flac --language de-DE --json", "German, with token times");
+    try example(out, sty, "nuclis transcribe lecture.m4a --format srt > lecture.srt", "subtitles");
+
+    try heading(out, sty, "Notes:");
+    try plain(out, "The model writes punctuated, capitalized text. Under auto it may end a");
+    try plain(out, "sentence with a language tag, which is reported as the language and");
+    try plain(out, "never printed in the text. Audio is resampled to 16 kHz mono (a 16 kHz");
+    try plain(out, "mono WAV, 16-bit or float, is read as is). A token's time is the start");
+    try plain(out, "of its 80 ms row. A long recording is decoded and fed in 2.56 s pieces,");
+    try plain(out, "as `nuclis serve` does, so memory does not grow with its length (files");
+    try plain(out, "up to 256 MB). Pull the model with `nuclis model pull");
+    try plain(out, "nemotron-asr-0.6b`.");
+}
+
+fn speak(out: *std.Io.Writer, sty: style.Style) !void {
+    try title(out, sty, "nuclis speak", "text into speech, by Qwen3-TTS CustomVoice");
+    try heading(out, sty, "Usage:");
+    try code(out, sty, "nuclis speak <text>… -o <file.wav> [options]");
+    try code(out, sty, "  the words are joined by spaces: quote a sentence");
+
+    try heading(out, sty, "Options:");
+    try row(out, sty, "-o, --output <file>", "the WAV to write: 24 kHz mono 16-bit");
+    try row(out, sty, "--voice <speaker>", "one of the model's nine speakers: aiden, dylan,");
+    try more(out, "eric, ono_anna, ryan, serena, sohee, uncle_fu,");
+    try more(out, "vivian; default speech.voice (ryan)");
+    try row(out, sty, "--language <name>", "english, chinese, german, spanish, french,");
+    try more(out, "italian, portuguese, russian, japanese, korean,");
+    try more(out, "or auto; default auto");
+    try row(out, sty, "--instruct <text>", "how to say it (\"Speak in a warm, cheerful");
+    try more(out, "tone.\"); the 1.7B model only");
+    try row(out, sty, "--model <name|dir>", "qwen3-tts-1.7b, qwen3-tts-0.6b, a speech");
+    try more(out, "registry entry, or a checkpoint directory;");
+    try more(out, "default speech.model (qwen3-tts-1.7b)");
+    try row(out, sty, "--seed <n>", "the sampler's seed; default 0");
+    try row(out, sty, "--backend cpu|metal", default_backend);
+    try row(out, sty, "--stream", "write each chunk as it is decoded; report the");
+    try more(out, "time from the text to the first audio");
+    try row(out, sty, "--chunk <n>", "frames of 80 ms per chunk, 1 to 32; default 4");
+    try row(out, sty, "--first-chunk <n>", "frames in the first chunk; default 1");
+    try row(out, sty, "--split", "time the talker and the predictor apart (on");
+    try more(out, "Metal, one more command buffer a frame)");
+    try row(out, sty, "--host-sampling", "on Metal, sample each code group on the CPU");
+    try more(out, "between command buffers: the same audio, slower");
+    try row(out, sty, "--profile", "time every Metal dispatch; print the kernels");
+
+    try heading(out, sty, "Examples:");
+    try example(out, sty, "nuclis speak \"Hello there.\" -o hello.wav", "the default voice");
+    try example(out, sty, "nuclis speak --voice vivian --language chinese \"你好。\" -o hi.wav", "another speaker");
+    try example(out, sty, "nuclis speak --instruct \"Whisper.\" \"Good night.\" -o night.wav", "a mood, on the 1.7B");
+    try example(out, sty, "nuclis speak --stream \"One moment, please.\" -o wait.wav", "chunk by chunk, timed");
+
+    try heading(out, sty, "Notes:");
+    try plain(out, "Speech is sampled: the same text, voice, and seed give the same audio,");
+    try plain(out, "another seed says it differently. The whole text is read before the");
+    try plain(out, "first frame, so give it a sentence or two at a time. The CPU and Metal");
+    try plain(out, "agree to rounding, so a seed gives the same speech on both only nearly.");
+    try out.writeByte('\n');
+}
+
+fn serve(out: *std.Io.Writer, sty: style.Style) !void {
+    try title(out, sty, "nuclis serve", "the nuclis API: decision, language, embedding, speech models");
+    try heading(out, sty, "Usage:");
+    try code(out, sty, "nuclis serve [--host <ip>] [--port <n>] [--model <name>]… [--pin <name>]…");
     try code(out, sty, "             [--memory <GiB>] [--backend cpu|metal] [--timeout <s>]");
 
     try heading(out, sty, "Options:");
@@ -503,8 +592,11 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "authentication)");
     try row(out, sty, "--port <n>", "default serve.port, 9000");
     try row(out, sty, "--model <name|path>", "open a model at start, any kind: at most 2");
-    try more(out, "decision, 1 chat, 1 embedding (what stays open);");
-    try more(out, "without it nothing opens until its first request");
+    try more(out, "decision, 1 chat, 1 embedding, 1 speech, 1");
+    try more(out, "transcription (what stays open); without it");
+    try more(out, "nothing opens until its first request");
+    try row(out, sty, "--pin <name>", "open it at start, and never close it to make");
+    try more(out, "room; repeated; default serve.pin");
     try row(out, sty, "--memory <GiB>", "what every open model may hold together; default");
     try more(out, "serve.memory_bytes, else physical memory less a");
     try more(out, "third of it, at most 16 GiB");
@@ -525,7 +617,9 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "\"task\", \"title\", \"truncate\", \"image_tokens\" as in");
     try more(out, "nuclis embed; image_url parts as base64 data URLs,");
     try more(out, "input_audio parts as base64 with a format");
-    try row(out, sty, "GET /v1/models", "every model of the three kinds, OpenAI's list");
+    try row(out, sty, "POST /v1/audio/speech", "OpenAI's speech: \"input\" spoken by \"voice\",");
+    try more(out, "pcm or wav, streamed as raw audio or as events");
+    try row(out, sty, "GET /v1/models", "every model of every kind, OpenAI's list");
     try more(out, "shape");
     try row(out, sty, "GET /v1/health", "version, backend, open models, queue depth");
 

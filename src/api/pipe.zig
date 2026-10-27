@@ -52,6 +52,14 @@ pub const Pipe = struct {
         if (self.abandoned) return error.Abandoned;
     }
 
+    /// Bytes a `write` can queue now without waiting; a producer that must
+    /// not block checks it first (the consumer only ever frees room).
+    pub fn space(self: *Pipe, io: std.Io) usize {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        return self.buffer.len - self.len;
+    }
+
     /// The producer is done; the consumer drains the queue and then reads `closed`.
     pub fn close(self: *Pipe, io: std.Io) void {
         self.mutex.lockUncancelable(io);

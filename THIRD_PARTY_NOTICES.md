@@ -10,9 +10,10 @@ repository.
 
 ## Material present in the repository
 
-The material falls into three kinds: the model prompt templates reimplemented
-in Zig, the format-defining data any decoder of these formats must contain, and
-the presentation palette the terminal surface draws with.
+The material falls into four kinds: the model prompt templates reimplemented
+in Zig, the format-defining data any decoder of these formats must contain,
+the presentation palette the terminal surface draws with, and speech data
+the speech recognizer is checked against.
 
 ### Model prompt templates
 
@@ -157,6 +158,32 @@ Copyright (c) 2026 Pavel Pertsev, MIT License,
 The website's replay of the agent (`site/style.css`, the `--t-*` colours)
 reuses the same values so the replay looks like the terminal.
 
+### Speech data
+
+#### LibriSpeech — CC BY 4.0
+
+`tests/fixtures/nemotron-asr/librispeech/clip.wav` is the first 80,880
+samples of LibriSpeech test-clean utterance `121-121726-0000`, rounded to
+16-bit PCM, and `tests/fixtures/speech-corpus.json` holds the reference
+transcripts of 40 test-clean utterances (the audio is fetched, not
+committed). LibriSpeech ASR corpus, V. Panayotov, G. Chen, D. Povey and
+S. Khudanpur (2015), from LibriVox public-domain audiobooks, OpenSLR
+resource 12 (<https://www.openslr.org/12>), licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Modifications:
+the cut and the rounding.
+
+#### FLEURS — CC BY 4.0
+
+`tests/fixtures/nemotron-asr/fleurs-de/clip.wav` is the first 80,880 samples
+of FLEURS German test utterance `1191248392415945452.wav` (sentence 1660),
+rounded from 32-bit float to 16-bit PCM, and
+`tests/fixtures/speech-corpus.json` holds the raw and normalized
+transcripts of 20 FLEURS test utterances in German, French, Latin American
+Spanish and Russian. FLEURS, A. Conneau et al. (2022), from
+[google/fleurs at `70bb2e84`](https://huggingface.co/datasets/google/fleurs/tree/70bb2e84b976b7e960aa89f1c648e09c59f894dd),
+licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+Modifications: the cut and the rounding.
+
 ### Website fonts
 
 `site/fonts/` serves two fonts to engine.nuclis.dev, taken from
@@ -208,6 +235,25 @@ code from them is present in nuclis.
   it in a venv under `.reference/`; the fixtures under
   `inference/src/models/fixtures/clef/` are outputs of running it, not
   copies of it.
+- **Qwen3-TTS** (`qwen-tts` 0.1.1) by the Qwen team (Apache-2.0,
+  <https://github.com/QwenLM/Qwen3-TTS> at commit `022e286b`) with PyTorch
+  2.14.1 and Transformers 4.57.3 — the definition of the talker, the code
+  predictor, and the codec decoder. `scripts/speech-traces/qwen3_tts_trace.py`
+  runs it in a venv under `.reference/`; the fixtures under
+  `tests/fixtures/qwen3-tts/` are outputs of running it on the pulled
+  `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` and `-1.7B-CustomVoice`
+  checkpoints, not copies of them. The split pattern of
+  `inference/src/tokenizer/cased.zig` is the one Transformers 4.57.3
+  (Apache-2.0, `tokenization_utils_base.py`, `fix_mistral_regex`) installs
+  on that tokenizer, implemented from the pattern, not copied.
+- **transformers** by Hugging Face (Apache-2.0) at commit
+  `c0d024fbc873ab0325e1b40fc1bd69069609de65` (5.21.0.dev0), with PyTorch
+  2.14.1 and librosa 1.0.0 — the definition of Nemotron 3.5 ASR
+  (`nemotron3_5_asr/`, `nemotron_asr_streaming/`, `parakeet/`): its
+  feature extractor, encoder, cache-aware streaming, and transducer.
+  `scripts/speech-traces/nemotron_trace.py` runs it in a venv under
+  `.reference/`; the fixtures under `tests/fixtures/nemotron-asr/` are
+  outputs of running it, not copies of it.
 - Model documentation: the Qwen3.8 and Gemma 4 model cards and configuration
   on Hugging Face, the `convaiinnovations/laya` model card, and the
   `Cloudflare/clef-flash` model card.

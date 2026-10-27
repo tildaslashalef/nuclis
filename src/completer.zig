@@ -6,7 +6,9 @@
 //! the session moves back to the prompt's end (`Mark`). The agent loop and the
 //! API's language-model service drive it through the same `Model` seam; it
 //! owns no conversation, only the session's consumed-text bookkeeping
-//! (docs/engine/session.md § The agent's token cache).
+//! (docs/engine/session.md § The agent's token cache). That text is the
+//! render with each image or clip's digest after its placeholder run
+//! (`keyedRender`), so a state is reused only under the same media.
 const std = @import("std");
 const inference = @import("inference");
 const engine = @import("engine.zig");
@@ -29,27 +31,44 @@ pub const Sink = struct {
     }
 };
 
-/// One image attached to a user message: where it came from, its decoded
-/// size, and the projector's rows the completer substitutes at prefill.
-/// Owned by the history item that carries it.
-pub const Image = struct {
+/// One image or audio clip attached to a user message: where it came from,
+/// its digest, and the encoder's rows the completer substitutes at prefill.
+/// A clip's `prepared` grid is its rows by 1 and its `width` the clip's
+/// samples at 16 kHz. Owned by the history item that carries it.
+pub const Media = struct {
+    kind: Kind = .image,
     path: []u8,
     /// The file's size in bytes, for the transcript's detail row.
     bytes: u64,
+    /// SHA-256 of the encoded bytes (`digestOf`): what tells two media with
+    /// the same placeholder run apart in the cache's keys.
+    digest: [32]u8,
     prepared: inference.engine.PreparedImage,
 
-    pub fn ref(self: Image) Profile.ImageRef {
+    pub const Kind = enum { image, audio };
+
+    pub fn ref(self: Media) Profile.ImageRef {
         return .{ .width_tokens = self.prepared.width_tokens, .height_tokens = self.prepared.height_tokens };
     }
-    pub fn deinit(self: *Image, alloc: Allocator) void {
+    pub fn audioRef(self: Media) Profile.AudioRef {
+        return .{ .tokens = self.prepared.width_tokens };
+    }
+    pub fn deinit(self: *Media, alloc: Allocator) void {
         alloc.free(self.path);
         alloc.free(self.prepared.features);
         self.* = undefined;
     }
 };
 
-/// Frees a list of images and the list.
-pub fn freeImages(alloc: Allocator, images: []Image) void {
+/// The digest a `Media` carries for these encoded bytes.
+pub fn digestOf(bytes: []const u8) [32]u8 {
+    var out: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &out, .{});
+    return out;
+}
+
+/// Frees a list of media and the list.
+pub fn freeImages(alloc: Allocator, images: []Media) void {
     for (images) |*image| image.deinit(alloc);
     if (images.len != 0) alloc.free(images);
 }
@@ -171,9 +190,10 @@ pub const Replay = struct {
 /// `sink`.
 pub const Model = struct {
     context: *anyopaque,
-    /// `images` are the attachments of every rendered message, in order;
-    /// their `ImageRef`s are already on the messages.
-    run: *const fn (*anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, images: []const Image, sink: *Sink) anyerror!Reply,
+    /// `media` are the attachments of every rendered message, in render
+    /// order (a message's images, then its clips); their refs are already
+    /// on the messages.
+    run: *const fn (*anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, media: []const Media, sink: *Sink) anyerror!Reply,
     /// Tokens `text` costs in the model's vocabulary; what the result budget
     /// is measured in. Empty text costs zero, never an error: tool results
     /// may be empty.
@@ -181,6 +201,10 @@ pub const Model = struct {
     /// Runs the projector over an image's encoded bytes; `NoVision` without
     /// one. The features are allocated with the given allocator.
     encode_image: *const fn (*anyopaque, Allocator, bytes: []const u8) anyerror!inference.engine.PreparedImage = noVision,
+    /// Runs the audio encoder over a clip's encoded bytes; `NoAudio` without
+    /// one. The rows are allocated with the given allocator, the grid being
+    /// rows by 1 and `width` the clip's samples at 16 kHz.
+    encode_audio: *const fn (*anyopaque, Allocator, bytes: []const u8) anyerror!inference.engine.PreparedImage = noAudio,
     /// Called when a turn ends in an answer: a boundary the next turn's
     /// render starts with, worth keeping. Returns where the state was saved
     /// to disk, which the session records for a resume; null when it was
@@ -194,6 +218,89 @@ fn noCheckpoint(_: *anyopaque) ?cache.Boundary {
 
 fn noVision(_: *anyopaque, _: Allocator, _: []const u8) anyerror!inference.engine.PreparedImage {
     return error.NoVision;
+}
+
+fn noAudio(_: *anyopaque, _: Allocator, _: []const u8) anyerror!inference.engine.PreparedImage {
+    return error.NoAudio;
+}
+
+/// Opens and closes a media digest in the keyed render: 0xFF is never
+/// valid UTF-8, so no rendered text spells it.
+const media_mark: u8 = 0xFF;
+
+/// `full` with `media_mark ++ hex digest ++ media_mark` after each image or
+/// audio placeholder run, the runs paired in order with the tail of `media`
+/// (earlier attachments may have been compacted out of the render).
+/// `ImageSpanMismatch` when the runs outnumber the media or a kind differs.
+/// Caller owns the result.
+pub fn keyedRender(alloc: Allocator, full: []const u8, image_pad: ?[]const u8, audio_pad: ?[]const u8, media: []const Media) ![]u8 {
+    const pads = [2]?[]const u8{ image_pad, audio_pad };
+    var runs: usize = 0;
+    var i: usize = 0;
+    while (i < full.len) i = if (runAt(full, i, pads)) |run| blk: {
+        runs += 1;
+        break :blk run.end;
+    } else i + 1;
+    if (runs == 0) return alloc.dupe(u8, full);
+    if (runs > media.len) return error.ImageSpanMismatch;
+    const tail = media[media.len - runs ..];
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    try out.ensureTotalCapacity(alloc, full.len + runs * 66);
+    var next: usize = 0;
+    i = 0;
+    var copied: usize = 0;
+    while (i < full.len) {
+        const run = runAt(full, i, pads) orelse {
+            i += 1;
+            continue;
+        };
+        const item = tail[next];
+        if (run.kind != item.kind) return error.ImageSpanMismatch;
+        try out.appendSlice(alloc, full[copied..run.end]);
+        try out.append(alloc, media_mark);
+        try out.appendSlice(alloc, &std.fmt.bytesToHex(item.digest, .lower));
+        try out.append(alloc, media_mark);
+        next += 1;
+        copied = run.end;
+        i = run.end;
+    }
+    try out.appendSlice(alloc, full[copied..]);
+    return out.toOwnedSlice(alloc);
+}
+
+const Run = struct { kind: Media.Kind, end: usize };
+
+/// The placeholder run starting at `i`, if one does.
+fn runAt(text: []const u8, i: usize, pads: [2]?[]const u8) ?Run {
+    for (pads, [2]Media.Kind{ .image, .audio }) |maybe, kind| {
+        const pad = maybe orelse continue;
+        if (pad.len == 0 or !std.mem.startsWith(u8, text[i..], pad)) continue;
+        var end = i;
+        while (std.mem.startsWith(u8, text[end..], pad)) end += pad.len;
+        return .{ .kind = kind, .end = end };
+    }
+    return null;
+}
+
+/// `keyed` without its media digests: the text the tokenizer reads. Caller
+/// owns the result.
+pub fn plainText(alloc: Allocator, keyed: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    try out.ensureTotalCapacity(alloc, keyed.len);
+    var inside = false;
+    for (keyed) |byte| {
+        if (byte == media_mark) {
+            inside = !inside;
+        } else if (!inside) out.appendAssumeCapacity(byte);
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+/// Whether keyed text holds media.
+fn holdsMedia(keyed: []const u8) bool {
+    return std.mem.indexOfScalar(u8, keyed, media_mark) != null;
 }
 
 /// What did not fit when a completion reported `ContextFull`: the tokens the
@@ -270,9 +377,6 @@ pub const Completer = struct {
     /// Why the next step will not continue where the session stands, when
     /// the reason is known before the render (a reset, a cancel, a re-prime).
     cause: ?Replay.Cause = null,
-    /// An image prefill ran in this session: the drafter's cache is stale
-    /// from then on, so speculation stays off until `reset`.
-    images_fed: bool = false,
     /// Where the last step's prompt ended, when the next render cannot
     /// continue past it (`Mark`).
     mark: ?Mark = null,
@@ -282,7 +386,30 @@ pub const Completer = struct {
     clamp_budget: bool = false,
 
     pub fn model(self: *Completer) Model {
-        return .{ .context = self, .run = run, .count = count, .encode_image = encodeImage, .checkpoint = checkpoint };
+        return .{ .context = self, .run = run, .count = count, .encode_image = encodeImage, .encode_audio = encodeAudio, .checkpoint = checkpoint };
+    }
+
+    /// The audio encoder over one clip's bytes, with the rows moved to the
+    /// caller's allocator. `NoAudio` when no encoder is loaded.
+    fn encodeAudio(context: *anyopaque, alloc: Allocator, bytes: []const u8) anyerror!inference.engine.PreparedImage {
+        const self: *Completer = @ptrCast(@alignCast(context));
+        const heard = try self.eng.encodeAudio(bytes);
+        defer self.eng.alloc.free(heard.features);
+        return .{ .width_tokens = heard.tokens, .height_tokens = 1, .features = try alloc.dupe(f32, heard.features), .width = std.math.cast(u32, heard.samples) orelse std.math.maxInt(u32) };
+    }
+
+    /// The session holds media rows: the drafter's cache is stale over
+    /// them, so speculation stays off until the session drops them.
+    fn mediaFed(self: *const Completer) bool {
+        return holdsMedia(self.seen.items);
+    }
+
+    /// The tokens of keyed text.
+    fn encodeKeyed(self: *Completer, keyed: []const u8) ![]u32 {
+        if (!holdsMedia(keyed)) return self.eng.encode(keyed);
+        const plain = try plainText(self.alloc, keyed);
+        defer self.alloc.free(plain);
+        return self.eng.encode(plain);
     }
 
     /// The projector over one image's bytes, with the features moved to the
@@ -341,7 +468,6 @@ pub const Completer = struct {
             }
         };
         self.dropMark();
-        self.images_fed = false;
         self.eng.model.reset();
         if (self.history) |h| h.reset();
         self.seen.clearRetainingCapacity();
@@ -385,7 +511,6 @@ pub const Completer = struct {
         self.seen.clearRetainingCapacity();
         try self.seen.appendSlice(self.alloc, text);
         self.seen_effort = self.effort;
-        self.images_fed = false;
         self.keep(snap.*);
     }
 
@@ -429,17 +554,15 @@ pub const Completer = struct {
         self.seen.clearRetainingCapacity();
         try self.seen.appendSlice(self.alloc, entry.text);
         self.seen_effort = self.effort;
-        self.images_fed = false;
     }
 
     /// The turn ended in an answer: keep the state under what it consumed,
     /// in memory and, when turns are saved, on disk in place of this
     /// conversation's previous turn. With a `Mark`, the session first moves
-    /// back to the prompt's end, the last point the next render shares. Skipped when images are in it, since
-    /// their placeholder text does not tell one image from another.
+    /// back to the prompt's end, the last point the next render shares.
     fn checkpoint(context: *anyopaque) ?cache.Boundary {
         const self: *Completer = @ptrCast(@alignCast(context));
-        if (self.images_fed or self.seen.items.len == 0) return null;
+        if (self.seen.items.len == 0) return null;
         // The next render cannot continue past the prompt's end: go back
         // there first, so the state kept is one it can use.
         if (self.mark) |m| if (self.eng.profile.?.rewritesTurn(self.effort)) self.rewindToMark(m) catch return null;
@@ -482,7 +605,7 @@ pub const Completer = struct {
         const d = &(self.disk orelse return null);
         const text = full[0..b.bytes];
         var snap = (d.load(self.alloc, d.key(b.digest, self.eng.model.session().layout_digest)) catch return null) orelse return null;
-        const tokens = self.eng.encode(text) catch {
+        const tokens = self.encodeKeyed(text) catch {
             snap.deinit();
             return null;
         };
@@ -517,7 +640,6 @@ pub const Completer = struct {
     /// render.
     pub fn reset(self: *Completer, cause: ?Replay.Cause) void {
         self.dropMark();
-        self.images_fed = false;
         self.seen.clearRetainingCapacity();
         self.primed_len = 0;
         self.cause = cause;
@@ -571,7 +693,7 @@ pub const Completer = struct {
         const end = profile.promptEnd(full);
         if (end <= start) return;
         const fed = if (end == full.len) tokens.len else blk: {
-            const head = try self.eng.encode(full[start..end]);
+            const head = try self.encodeKeyed(full[start..end]);
             defer self.alloc.free(head);
             // A cut before a control token encodes alike; anything else is
             // not a mark.
@@ -627,10 +749,14 @@ pub const Completer = struct {
         }
     };
 
-    fn run(context: *anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, images: []const Image, sink: *Sink) anyerror!Reply {
+    fn run(context: *anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, media: []const Media, sink: *Sink) anyerror!Reply {
         const self: *Completer = @ptrCast(@alignCast(context));
         var replay: ?Replay = null;
-        const full = try self.eng.render(messages, definitions, self.effort);
+        const profile = self.eng.profile orelse return error.UnsupportedPromptTemplate;
+        for (media) |item| if (item.kind == .audio and profile.audioPlaceholder() == null) return error.AudioUnsupported;
+        const rendered = try self.eng.render(messages, definitions, self.effort);
+        defer self.alloc.free(rendered);
+        const full = try keyedRender(self.alloc, rendered, profile.imagePlaceholder(), profile.audioPlaceholder(), media);
         defer self.alloc.free(full);
         const remainder = blk: {
             var continued: ?[]const u8 = if (self.seen.items.len > 0) increment(self.seen.items, full) else null;
@@ -675,8 +801,6 @@ pub const Completer = struct {
                 if (cause) |c| replay = .{ .cause = c };
                 break :blk rest;
             }
-            // The flag describes the live session, which now starts empty.
-            self.images_fed = false;
             self.eng.model.reset();
             if (self.history) |h| h.reset();
             self.seen.clearRetainingCapacity();
@@ -685,7 +809,7 @@ pub const Completer = struct {
         };
         self.cause = null;
         self.primed_len = @min(self.primed_len, self.seen.items.len);
-        const tokens = try self.eng.encode(remainder);
+        const tokens = try self.encodeKeyed(remainder);
         defer self.alloc.free(tokens);
         const session = self.eng.model.session();
         const reused = session.position;
@@ -694,27 +818,26 @@ pub const Completer = struct {
             self.overflow = .{ .needed = session.position + tokens.len + output, .capacity = session.capacity };
             return error.ContextFull;
         };
-        // The remainder's placeholder runs are the last images rendered:
+        // The remainder's placeholder runs are the last media rendered:
         // consumed text is a prefix of the render and compaction drops whole
-        // earlier turns, so the images still rendered are a suffix.
-        var prefill = try self.imagePrefill(tokens, images);
-        defer prefill.deinit(self.alloc);
-        if (prefill.value != null) self.images_fed = true;
+        // earlier turns, so the media still rendered are a suffix.
+        var prefill = try self.mediaPrefill(tokens, remainder, media);
+        defer if (prefill) |*p| p.deinit(self.alloc);
+        const media_fed = self.mediaFed() or prefill != null;
         self.dropMark();
         var saving: Saving = .{ .completer = self, .full = full };
-        if (!self.images_fed) {
-            saving.plan(messages, definitions, tokens, reused) catch {};
-            // Allocation is the only failure: no mark, a replay next turn.
-            self.markPromptEnd(full, tokens, reused) catch {};
-        }
+        // A save inside a prompt is a text prefill's (`InvalidSaves`).
+        if (prefill == null) saving.plan(messages, definitions, tokens, reused) catch {};
+        // Allocation is the only failure: no mark, a replay next turn.
+        self.markPromptEnd(full, tokens, reused) catch {};
         errdefer self.dropMark();
         // The effort is the one this render used (Ctrl-T changes it between
-        // turns): it decides whether the completion opens in reasoning.
+        // turns): off, the completion never opens in reasoning.
         var buffers = self.buffers;
         buffers.effort = self.effort;
         buffers.thinking_budget = config.thinkingBudget(self.thinking_budget, self.effort, limit);
         buffers.saves = saving.saves();
-        const settings: inference.engine.Speculative = if (self.images_fed) .{ .enabled = false, .draft_length = self.speculative.draft_length } else self.speculative;
+        const settings: inference.engine.Speculative = if (media_fed) .{ .enabled = false, .draft_length = self.speculative.draft_length } else self.speculative;
         const outcome = try inference.engine.complete(
             self.eng,
             tokens,
@@ -723,7 +846,7 @@ pub const Completer = struct {
             self.history,
             settings,
             buffers,
-            prefill.value,
+            if (prefill) |p| p.value() else null,
             self.observer,
             sink,
         );
@@ -740,42 +863,22 @@ pub const Completer = struct {
         return .{ .outcome = outcome, .replay = replay, .prompt_tokens = reused + tokens.len, .reused_tokens = reused };
     }
 
-    const Prefill = struct {
-        value: ?inference.engine.ImagePrefill = null,
-        spans: []inference.vision.Span = &.{},
-        features: []f32 = &.{},
-        fn deinit(self: *Prefill, alloc: Allocator) void {
-            if (self.spans.len != 0) alloc.free(self.spans);
-            if (self.features.len != 0) alloc.free(self.features);
-        }
-    };
-
-    /// The spans and concatenated features for the placeholder runs in
-    /// `tokens`, paired with the tail of `images`; none when there are no
-    /// runs. `ImageSpanMismatch` when the runs outnumber the images or a run
-    /// is not an image's token count.
-    fn imagePrefill(self: *Completer, tokens: []const u32, images: []const Image) !Prefill {
-        const pad = self.eng.imagePadId() orelse return .{};
-        const runs = placeholderRuns(tokens, pad);
-        if (runs == 0) return .{};
-        if (runs > images.len) return error.ImageSpanMismatch;
-        const tail = images[images.len - runs ..];
-        const prepared = try self.alloc.alloc(inference.engine.PreparedImage, tail.len);
-        defer self.alloc.free(prepared);
-        var total: usize = 0;
-        for (tail, prepared) |image, *p| {
-            p.* = image.prepared;
-            total += image.prepared.features.len;
-        }
-        const spans = try self.eng.locateImageSpans(tokens, prepared);
-        errdefer self.alloc.free(spans);
-        const features = try self.alloc.alloc(f32, total);
-        var at: usize = 0;
-        for (tail) |image| {
-            @memcpy(features[at..][0..image.prepared.features.len], image.prepared.features);
-            at += image.prepared.features.len;
-        }
-        return .{ .value = .{ .spans = spans, .features = features }, .spans = spans, .features = features };
+    /// The spans and concatenated rows for the media runs in `tokens`
+    /// (`remainder` encoded), paired by kind with the media whose digests
+    /// `remainder` names, in order; null when it names none.
+    fn mediaPrefill(self: *Completer, tokens: []const u32, remainder: []const u8, media: []const Media) !?inference.engine.MediaPrefill {
+        const runs = std.mem.count(u8, remainder, &.{media_mark}) / 2;
+        if (runs == 0) return null;
+        // `keyedRender` paired the render's runs with the tail of `media`;
+        // the remainder holds the last of them.
+        if (runs > media.len) return error.ImageSpanMismatch;
+        const tail = media[media.len - runs ..];
+        var images: std.ArrayList(inference.engine.PreparedImage) = .empty;
+        defer images.deinit(self.alloc);
+        var clips: std.ArrayList(inference.engine.PreparedImage) = .empty;
+        defer clips.deinit(self.alloc);
+        for (tail) |item| try (if (item.kind == .image) &images else &clips).append(self.alloc, item.prepared);
+        return try self.eng.mediaSpans(self.alloc, tokens, images.items, clips.items);
     }
 };
 
@@ -791,18 +894,6 @@ pub fn outputBudget(position: usize, prompt: usize, slice: usize, capacity: usiz
     return left;
 }
 
-/// How many maximal runs of `pad` the tokens hold: one per image span.
-pub fn placeholderRuns(tokens: []const u32, pad: u32) usize {
-    var runs: usize = 0;
-    var inside = false;
-    for (tokens) |token| {
-        const is_pad = token == pad;
-        if (is_pad and !inside) runs += 1;
-        inside = is_pad;
-    }
-    return runs;
-}
-
 // ----- tests -----
 
 const testing = std.testing;
@@ -813,11 +904,35 @@ test "increment is the unseen suffix, or null when the conversation must replay"
     try testing.expect(increment("system A", "system B") == null);
 }
 
-test "placeholder runs count image spans, not tokens" {
-    try testing.expectEqual(@as(usize, 0), placeholderRuns(&.{ 1, 2, 3 }, 9));
-    try testing.expectEqual(@as(usize, 1), placeholderRuns(&.{ 1, 9, 9, 9, 2 }, 9));
-    try testing.expectEqual(@as(usize, 2), placeholderRuns(&.{ 9, 9, 1, 9 }, 9));
-    try testing.expectEqual(@as(usize, 1), placeholderRuns(&.{9}, 9));
+test "the keyed render names each media run's digest; the plain text drops them" {
+    const alloc = testing.allocator;
+    var paths = [2][1]u8{ .{'a'}, .{'b'} };
+    const media = [_]Media{
+        .{ .kind = .image, .path = &paths[0], .bytes = 1, .digest = @splat(0x11), .prepared = .{ .width_tokens = 2, .height_tokens = 1, .features = &.{} } },
+        .{ .kind = .audio, .path = &paths[1], .bytes = 1, .digest = @splat(0x22), .prepared = .{ .width_tokens = 1, .height_tokens = 1, .features = &.{} } },
+    };
+    const full = "u<i><i>x<a>y";
+    const keyed = try keyedRender(alloc, full, "<i>", "<a>", &media);
+    defer alloc.free(keyed);
+    const ones = std.fmt.bytesToHex(media[0].digest, .lower);
+    const twos = std.fmt.bytesToHex(media[1].digest, .lower);
+    const want = "u<i><i>\xff" ++ ones ++ "\xffx<a>\xff" ++ twos ++ "\xffy";
+    try testing.expectEqualStrings(want, keyed);
+    const plain = try plainText(alloc, keyed);
+    defer alloc.free(plain);
+    try testing.expectEqualStrings(full, plain);
+    // Earlier media compacted out of the render: the runs take the tail.
+    const tail = try keyedRender(alloc, "x<a>", "<i>", "<a>", &media);
+    defer alloc.free(tail);
+    try testing.expectEqualStrings("x<a>\xff" ++ twos ++ "\xff", tail);
+    // Another clip under the same run is another key.
+    var other = media;
+    other[1].digest = @splat(0x33);
+    const changed = try keyedRender(alloc, full, "<i>", "<a>", &other);
+    defer alloc.free(changed);
+    try testing.expect(!std.mem.eql(u8, keyed, changed));
+    try testing.expectError(error.ImageSpanMismatch, keyedRender(alloc, "<i>x<i>", "<i>", "<a>", media[1..]));
+    try testing.expectError(error.ImageSpanMismatch, keyedRender(alloc, "<a>", "<i>", "<a>", media[0..1]));
 }
 
 test "the output budget is the slice when it fits, what is left when clamped, else nothing" {

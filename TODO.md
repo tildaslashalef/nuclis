@@ -12,9 +12,54 @@ Session protocol (also in [AGENTS.md](AGENTS.md)): read this file first. If
 it lists work, summarize *Where we are* and ask the user how to continue. If
 it is empty, ask what to work on and write the agreed plan here.
 
+## Where we are
+
+No unit is in progress. The speech unit (`speech-in-and-out`: Qwen3-TTS,
+Nemotron ASR, the voice API, and the agent and vision fixes found with
+them) is in its pull request, whose description is its record. Next, on
+the user's word: a release carrying it (AGENTS.md § Versioning), which
+Muon's public release will bundle; Muon itself is planned and built in
+`~/Code/muon`.
+
 ## Deferred
 
 Agreed and not scheduled; when one is picked up, it becomes a unit above.
+
+- **A language change within one recording loses words** (from the speech
+  unit, 2026-10-27): a mixed 30-minute file scored 19 % WER against 6.3 %
+  for its clips alone, on the CPU and Metal alike, and two segments
+  crossed a join (`docs/guide/api.md` § Long recordings). Candidate:
+  reset the transcriber after a long silence; measure with
+  `scripts/transcription-check.py long --languages all`.
+- **The vision encoders' scores kernel** (same unit): ~1.7 TFLOP/s, its
+  32×32 tile with one 64-wide head as the inner dimension, now the
+  largest piece of E4B's encode (0.54 s of 1.64 s); 72-wide heads waste a
+  quarter of the values kernel's last block; Muse's encode is 6.0 s of
+  K-quant matmuls and 0.86 s of unfused bias adds
+  (`docs/engine/vision.md`).
+- **Link Muon** from the README's *Speech in and out* and the site's
+  *Voice* section once its repository is public.
+
+- **Nemotron ASR's chunk at r = 3 under 15 ms** (from the speech unit,
+  2026-10-27). Quiet machine: 32–33 ms a chunk push (an idle GPU clocks
+  down between chunks), 21 ms beside another GPU job; the F32 weights'
+  floor is 12.5 ms at 200 GB/s. Measure first under task 11's load (E4B
+  generating beside it); then the candidates `docs/models/nemotron-asr.md`
+  § On Metal names: fold LayerNorm into the following product (5,328
+  dispatches a round), stage activations in threadgroup memory, fewer
+  dispatches for the 1024-row matrices. Weights stay F32 (spec § 3).
+- **Qwen3-TTS 1.7B at 3× real time** (same unit). 2.3× today, bandwidth
+  over ~1,100 dependent dispatches a frame; candidates: one kernel per
+  predictor group, or predictors batched across frames
+  (`docs/models/qwen3-tts.md` § Speed).
+
+- **Who said what: speaker diarization** (the user's, 2026-10-27, for
+  note-taking). NVIDIA's `nvidia/Nemotron-3-Diarization`, a streaming
+  model tracking up to 8 speakers with a speaker cache, defined in
+  `transformers` (`models/nemotron3_diarization/`, at the `c0d024fb` this
+  unit pinned). A new family, brought up as Nemotron ASR was (facts,
+  traces, CPU, Metal); then the transcription routes' segments gain a
+  `speaker` field, and the streaming route speaker changes.
 
 - **Saluki's speed goals** (restated by the user, 2026-10-15; the numbers
   and their arithmetic in `docs/models/saluki.md`, its **Goals**): decode at

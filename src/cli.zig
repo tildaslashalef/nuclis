@@ -21,7 +21,10 @@ const completion = @import("completion.zig");
 const decide = @import("decide.zig");
 const decision_catalog = @import("decision/catalog.zig");
 const embed = @import("embed.zig");
+const speak = @import("speak.zig");
 const embedding_catalog = @import("embedding/catalog.zig");
+const transcribe = @import("transcribe.zig");
+const audio_catalog = @import("audio/catalog.zig");
 const api = @import("api/root.zig");
 
 // Fed from build.zig.zon through the build_options module (see build.zig);
@@ -29,7 +32,7 @@ const api = @import("api/root.zig");
 pub const version = @import("build_options").version;
 pub const Diagnostic = config.Diagnostic;
 pub const Options = struct {
-    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, serve, completion, complete },
+    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, transcribe, speak, serve, completion, complete },
     /// `completion <shell>`: which script to print.
     shell: completion.Shell = .fish,
     /// `__complete <words…>`: the words after `nuclis`, the last one being
@@ -108,6 +111,10 @@ pub fn parseArgs(args: []const []const u8) !Options {
         .decide
     else if (std.mem.eql(u8, args[0], "embed"))
         .embed
+    else if (std.mem.eql(u8, args[0], "transcribe"))
+        .transcribe
+    else if (std.mem.eql(u8, args[0], "speak"))
+        .speak
     else if (std.mem.eql(u8, args[0], "serve"))
         .serve
     else if (std.mem.eql(u8, args[0], "completion"))
@@ -122,6 +129,8 @@ pub fn parseArgs(args: []const []const u8) !Options {
     if (command == .model) return parseModelArgs(args[1..]);
     if (command == .decide) return .{ .command = .decide, .words = args[1..] };
     if (command == .embed) return .{ .command = .embed, .words = args[1..] };
+    if (command == .transcribe) return .{ .command = .transcribe, .words = args[1..] };
+    if (command == .speak) return .{ .command = .speak, .words = args[1..] };
     if (command == .serve) return .{ .command = .serve, .words = args[1..] };
     if (command == .completion) {
         if (args.len < 2) return error.MissingShell;
@@ -389,6 +398,10 @@ pub fn parseArgs(args: []const []const u8) !Options {
                 if (g.image_count >= g.images.len) return error.TooManyImages;
                 g.images[g.image_count] = value;
                 g.image_count += 1;
+            } else if (command == .generate and std.mem.eql(u8, flag, "--audio")) {
+                if (g.clip_count >= g.clips.len) return error.TooManyClips;
+                g.clips[g.clip_count] = value;
+                g.clip_count += 1;
             } else if (command == .generate and std.mem.eql(u8, flag, "--logits")) {
                 if (g.logits_path != null) return error.DuplicateOption;
                 g.logits_path = value;
@@ -569,6 +582,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     }
     if (options.command == .decide) return runDecide(alloc, io, root, config_path, options.words, out, sty, diag);
     if (options.command == .embed) return runEmbed(alloc, io, root, config_path, options.words, out, sty, diag);
+    if (options.command == .transcribe) return runTranscribe(alloc, io, root, config_path, options.words, out, sty, diag);
+    if (options.command == .speak) {
+        var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
+        defer loaded.deinit();
+        return speak.run(alloc, io, root, &loaded, options.words, out, sty, diag);
+    }
     if (options.command == .serve) return runServe(alloc, io, root, config_path, options.words, out, sty, diag);
     if (options.command == .agent and options.agent_action == .ls) {
         const dir = root orelse return error.MissingHome;
@@ -691,6 +710,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             diag.set("{s} is an embedding model; `nuclis embed --model {s}` runs it", .{ wanted, wanted });
             return error.EmbeddingModel;
         },
+        .speech, .transcription => |kind| {
+            diag.set("{s} is a {s} model; `{s} --model {s}` runs it", .{ wanted, catalog.kindName(kind), catalog.command(kind), wanted });
+            return error.AudioModel;
+        },
     }
     const path = try paths.modelPath(alloc, options.model, loaded.config.engine.model, root, loaded.config.models);
     defer alloc.free(path);
@@ -705,7 +728,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // error; the reason (which ids the tree has) is added here, where the
     // diagnostic lives.
     (switch (options.command) {
-        .help, .version, .config, .model, .cache, .decide, .embed, .serve, .completion, .complete => unreachable,
+        .help, .version, .config, .model, .cache, .decide, .embed, .transcribe, .speak, .serve, .completion, .complete => unreachable,
         .generate => generate.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .generate), options.generation, options.json, out),
         .bench => bench.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .bench), options.benchmark, options.json, out, sty),
         .tokenize => blk: {
@@ -879,6 +902,19 @@ fn runEmbed(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path
     const name = options.model orelse loaded.config.embed.model;
     const located = try embedding_catalog.locate(arena, io, root, loaded.config.models, name, diag);
     return embed.run(alloc, io, located.path, located.mmproj, located.identity, options, out, sty, diag);
+}
+
+/// `transcribe`: its own flags; `--model` (else `transcribe.model`) is a
+/// transcription registry entry, catalogue name, or checkpoint directory.
+fn runTranscribe(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty_detected: style.Style, diag: *config.Diagnostic) !void {
+    const options = try transcribe.parseArgs(words, diag);
+    const sty: style.Style = if (options.format != .text) .none else sty_detected;
+    var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
+    defer loaded.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const located = try audio_catalog.locate(arena_state.allocator(), io, root, loaded.config.models, options.model orelse loaded.config.transcribe.model, .transcription, true, diag);
+    return transcribe.run(alloc, io, located.directory, options, out, sty, diag);
 }
 
 /// `serve`: the API over every model kind, each opened on its first request
@@ -1295,7 +1331,11 @@ test {
     _ = decide;
     _ = decision_catalog;
     _ = embed;
+    _ = speak;
+    _ = audio_catalog;
     _ = embedding_catalog;
+    _ = transcribe;
+    _ = @import("audio/transcript.zig");
     _ = @import("embedding/request.zig");
     _ = @import("embedding/response.zig");
     _ = @import("decision/request.zig");

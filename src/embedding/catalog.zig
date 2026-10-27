@@ -43,7 +43,7 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
             .entry = entry,
         };
     }
-    const other: ?catalog.ModelKind = if (catalog.find(name) != null) .generation else if (catalog.findDecision(name) != null) .decision else null;
+    const other: ?catalog.ModelKind = if (catalog.find(name) != null) .generation else if (catalog.findDecision(name) != null) .decision else if (catalog.findAudio(name)) |a| a.kind else null;
     if (other) |kind| {
         diag.set("{s} is a {s} model of the catalogue, not an embedding model ({s} is one)", .{ name, kindName(kind), catalog.embedding_entries[0].name });
         return error.NotAnEmbeddingModel;
@@ -51,13 +51,7 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
     return .{ .path = try models(arena, root, name) };
 }
 
-fn kindName(kind: catalog.ModelKind) []const u8 {
-    return switch (kind) {
-        .generation => "language",
-        .decision => "decision",
-        .embedding => "embedding",
-    };
-}
+const kindName = catalog.kindName;
 
 fn models(arena: std.mem.Allocator, root: ?[]const u8, path: []const u8) ![]const u8 {
     if (std.fs.path.isAbsolute(path) or std.mem.startsWith(u8, path, "./") or std.mem.startsWith(u8, path, "../")) return path;

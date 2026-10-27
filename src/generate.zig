@@ -23,6 +23,10 @@ pub const Options = struct {
     /// model's projector; at most the vision contract's per-turn bound.
     images: [8][]const u8 = undefined,
     image_count: usize = 0,
+    /// Audio files attached after the images (`--audio`, repeatable), fed to
+    /// the companion's audio encoder (Gemma 4 E4B).
+    clips: [8][]const u8 = undefined,
+    clip_count: usize = 0,
 };
 
 /// Layer observer: enforces the wall-clock bound and propagates Io and Ctrl-C
@@ -182,29 +186,32 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     // bare path takes the first profile); the file's own template decides.
     if (eng.profile) |profile| if (profile != settings.profile) try sampler.setOptions(profile.samplingOptions(settings.think, settings.sampling));
     interrupt.install();
-    // Images attach to the prompt through the model's projector: each is
-    // decoded and encoded to feature rows, the profile renders its markers,
-    // and the engine locates the placeholder runs to pair them with the rows.
+    // Images and clips attach to the prompt through the model's companion
+    // encoders: each is decoded and encoded to feature rows, the profile
+    // renders its markers, and the engine pairs the placeholder runs with
+    // the rows.
     var image_encode: ?std.Io.Duration = null;
+    var audio_encode: ?std.Io.Duration = null;
     var prepared: []inference.engine.PreparedImage = &.{};
-    var image_prefill: ?inference.engine.ImagePrefill = null;
-    var image_features: []f32 = &.{};
-    var image_spans: []inference.vision.Span = &.{};
+    var heard: []inference.engine.PreparedImage = &.{};
+    var media_prefill: ?inference.engine.MediaPrefill = null;
     defer {
         for (prepared) |p| alloc.free(p.features);
         alloc.free(prepared);
-        alloc.free(image_features);
-        alloc.free(image_spans);
+        for (heard) |p| alloc.free(p.features);
+        alloc.free(heard);
+        if (media_prefill) |*m| m.deinit(alloc);
+    }
+    if (options.image_count > 0 or options.clip_count > 0) {
+        if (options.raw or options.prompt_tokens != null) return error.ImagesNeedChatPrompt;
     }
     if (options.image_count > 0) {
-        if (options.raw or options.prompt_tokens != null) return error.ImagesNeedChatPrompt;
         const projector = try engine.visionPath(alloc, model_path, if (settings.entry) |entry| entry.mmproj else null) orelse return error.NoProjector;
         defer alloc.free(projector);
         try eng.loadVision(projector, settings.image_max_tokens.count());
         prepared = try alloc.alloc(inference.engine.PreparedImage, options.image_count);
         var loaded: usize = 0;
         errdefer for (prepared[0..loaded]) |p| alloc.free(p.features);
-        var total_rows: usize = 0;
         const encode_started = std.Io.Clock.awake.now(io);
         defer image_encode = encode_started.durationTo(std.Io.Clock.awake.now(io));
         for (options.images[0..options.image_count], 0..) |path, idx| {
@@ -215,27 +222,43 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
             defer alloc.free(bytes);
             prepared[idx] = try eng.encodeImage(bytes);
             loaded += 1;
-            total_rows += prepared[idx].tokens();
         }
     }
-    const tokens = if (options.prompt_tokens) |path| try engine.readPromptTokens(alloc, io, path, eng.vocab.tokens.len) else if (options.image_count > 0) blk: {
+    if (options.clip_count > 0) {
+        const projector = try engine.visionPath(alloc, model_path, if (settings.entry) |entry| entry.mmproj else null) orelse return error.NoProjector;
+        defer alloc.free(projector);
+        try eng.loadAudio(projector);
+        heard = try alloc.alloc(inference.engine.PreparedImage, options.clip_count);
+        var loaded: usize = 0;
+        errdefer for (heard[0..loaded]) |p| alloc.free(p.features);
+        const encode_started = std.Io.Clock.awake.now(io);
+        defer audio_encode = encode_started.durationTo(std.Io.Clock.awake.now(io));
+        for (options.clips[0..options.clip_count], 0..) |path, idx| {
+            const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(inference.audio.audio.max_bytes)) catch |err| {
+                std.log.err("could not read audio {d} ({s}): {s}", .{ idx + 1, path, @errorName(err) });
+                return err;
+            };
+            defer alloc.free(bytes);
+            const clip = eng.encodeAudio(bytes) catch |err| {
+                std.log.err("could not hear audio {d} ({s}): {s}", .{ idx + 1, path, @errorName(err) });
+                return err;
+            };
+            heard[idx] = .{ .width_tokens = clip.tokens, .height_tokens = 1, .features = clip.features };
+            loaded += 1;
+        }
+    }
+    const tokens = if (options.prompt_tokens) |path| try engine.readPromptTokens(alloc, io, path, eng.vocab.tokens.len) else if (prepared.len + heard.len > 0) blk: {
         const refs = try alloc.alloc(inference.profiles.ImageRef, prepared.len);
         defer alloc.free(refs);
         for (refs, prepared) |*r, p| r.* = .{ .width_tokens = p.width_tokens, .height_tokens = p.height_tokens };
-        const prompt = try eng.render(&.{.{ .role = .user, .content = user.?, .images = refs }}, &.{}, settings.think);
+        const clips = try alloc.alloc(inference.profiles.AudioRef, heard.len);
+        defer alloc.free(clips);
+        for (clips, heard) |*r, p| r.* = .{ .tokens = p.width_tokens };
+        const prompt = try eng.render(&.{.{ .role = .user, .content = user.?, .images = refs, .audio = clips }}, &.{}, settings.think);
         defer alloc.free(prompt);
         const ids = try eng.encode(prompt);
         errdefer alloc.free(ids);
-        image_spans = try eng.locateImageSpans(ids, prepared);
-        var floats: usize = 0;
-        for (prepared) |p| floats += p.features.len;
-        image_features = try alloc.alloc(f32, floats);
-        var off: usize = 0;
-        for (prepared) |p| {
-            @memcpy(image_features[off..][0..p.features.len], p.features);
-            off += p.features.len;
-        }
-        image_prefill = .{ .spans = image_spans, .features = image_features };
+        media_prefill = try eng.mediaSpans(alloc, ids, prepared, heard);
         break :blk ids;
     } else blk: {
         const prompt = try eng.prompt(user.?, options.raw, settings.think);
@@ -256,7 +279,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     // Final prompt logits are written before decoding so a later failure
     // still leaves the comparison artifact behind.
     var presenter: Presenter = .{ .eng = &eng, .writer = writer, .enabled = !json, .logits_path = options.logits_path };
-    const outcome = try runLoop(&eng, tokens, limit, &sampler, &history, .{ .enabled = settings.speculative, .draft_length = settings.draft_length }, image_prefill, logits, candidates, generated, &trace, .{ .context = &presenter, .prefill = if (options.logits_path != null) Presenter.prefill else null, .token = Presenter.token });
+    const outcome = try runLoop(&eng, tokens, limit, &sampler, &history, .{ .enabled = settings.speculative, .draft_length = settings.draft_length }, if (media_prefill) |m| m.value() else null, logits, candidates, generated, &trace, .{ .context = &presenter, .prefill = if (options.logits_path != null) Presenter.prefill else null, .token = Presenter.token });
     const count = outcome.timing.generated_tokens;
     const decoded = try inference.bpe.decode(alloc, eng.vocab, generated[0..count], false, .{});
     defer alloc.free(decoded);
@@ -286,6 +309,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
             .load_milliseconds = engine.milliseconds(eng.load),
             // Decoding and the projector over every image, before the prefill.
             .image_milliseconds = if (image_encode) |d| @as(?f64, engine.milliseconds(d)) else null,
+            // Decoding, the log-mel frames, and the encoder over every clip.
+            .audio_milliseconds = if (audio_encode) |d| @as(?f64, engine.milliseconds(d)) else null,
             .prefill_milliseconds = engine.milliseconds(outcome.timing.prefill),
             .first_token_milliseconds = engine.milliseconds(outcome.timing.first_token),
             .decode_milliseconds = engine.milliseconds(outcome.timing.decode),

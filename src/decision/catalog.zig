@@ -18,7 +18,7 @@ const profile = inference.profiles.laya;
 pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Models, name: []const u8, diag: *config.Diagnostic) ![]const u8 {
     if (registry.find(name)) |entry| {
         if (entry.kind != .decision) {
-            diag.set("{s} is a registry entry of {s}; `nuclis decide` opens a decision checkpoint (an entry with \"kind\": \"decision\")", .{ name, if (entry.kind == .embedding) "an embedding model" else "a text model" });
+            diag.set("{s} is a registry entry of a {s} model; `nuclis decide` opens a decision checkpoint (an entry with \"kind\": \"decision\")", .{ name, catalog.kindName(entry.kind orelse .generation) });
             return error.NotADecisionModel;
         }
         const located = if (entry.path) |p| p else if (entry.repo != null and entry.file != null) try std.fs.path.join(arena, &.{ entry.repo.?, entry.file.? }) else {
@@ -30,8 +30,9 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
         return if (std.mem.endsWith(u8, full, ".safetensors")) std.fs.path.dirname(full) orelse full else full;
     }
     if (catalog.findDecision(name)) |entry| return catalog.decisionDirectory(arena, try models(arena, root, ""), entry);
-    if (catalog.find(name) != null or catalog.findEmbedding(name) != null) {
-        diag.set("{s} is {s} of the catalogue; `nuclis decide` opens a decision checkpoint (laya)", .{ name, if (catalog.find(name) != null) "a text model" else "an embedding model" });
+    if (catalog.find(name) != null or catalog.findEmbedding(name) != null or catalog.findAudio(name) != null) {
+        const what = if (catalog.find(name) != null) "a text model" else if (catalog.findEmbedding(name) != null) "an embedding model" else if (catalog.findAudio(name).?.kind == .speech) "a speech model" else "a transcription model";
+        diag.set("{s} is {s} of the catalogue; `nuclis decide` opens a decision checkpoint (laya)", .{ name, what });
         return error.NotADecisionModel;
     }
     return models(arena, root, name);

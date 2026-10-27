@@ -6,7 +6,9 @@ typed questions about text or JSON, in TypeSafe's Jev protocol, so a
 client written for `api.typesafe.ai` switches by changing its base URL.
 **Chat Completions** serve the language models in OpenAI's format, so a
 client written for an OpenAI-compatible server does the same.
-**Embeddings** turn text, images and audio into vectors in OpenAI's embeddings format. This page
+**Embeddings** turn text, images and audio into vectors in OpenAI's embeddings format.
+**Speech** speaks text in OpenAI's speech format, streamed as it is
+made, beside a chat generation. This page
 is the reference for client authors; it assumes nothing about the code.
 
 - [Running the server](#running-the-server), [memory](#memory)
@@ -23,6 +25,11 @@ is the reference for client authors; it assumes nothing about the code.
   [the request](#the-embeddings-request), [the
   response](#the-embeddings-response), [passes and
   memory](#passes-and-memory)
+- [Speech](#speech): [`POST /v1/audio/speech`](#post-v1audiospeech), [the
+  request](#the-speech-request), [streaming and
+  cancellation](#streaming-and-cancellation), [scheduling](#scheduling)
+- [Live transcription](#live-transcription): [`GET /v1/audio/transcriptions/stream`](#get-v1audiotranscriptionsstream), a WebSocket
+- [Transcription (files)](#transcription-files): [the request](#the-file-transcription-request), [the response](#the-file-transcription-response), [segments](#segments), [long recordings](#long-recordings)
 - [`GET /v1/models`](#get-v1models), [`GET /v1/health`](#get-v1health)
 - [Measured rates](#measured-rates)
 
@@ -37,7 +44,8 @@ nuclis serve                           # http://127.0.0.1:9000/v1, nothing open 
 | --- | --- |
 | `--host <ip>` | the address to listen on: an IP literal (`127.0.0.1`, `::1`, `0.0.0.0`) or `localhost`; default `serve.host`, `127.0.0.1`. Any address beyond loopback prints a warning: there is no authentication. |
 | `--port <n>` | default `serve.port`, `9000` |
-| `--model <name>` | a model opened before the server listens, of any kind: a decision, language, or embedding model by registry or catalogue name, or a decision checkpoint's directory; repeated, at most 2 decision, 1 language, and 1 embedding model (what the server keeps open). Without it nothing opens at start: each model opens on its first request (`decide.model` for a decision request that names none, `embed.model` for an embeddings request) |
+| `--model <name>` | a model opened before the server listens, of any kind: a decision, language, embedding, speech, or transcription model by registry or catalogue name, or a decision checkpoint's directory; repeated, at most 2 decision, 1 language, 1 embedding, 1 speech, and 1 transcription model (what the server keeps open). Without it nothing opens at start: each model opens on its first request (`decide.model` for a decision request that names none, `embed.model` for an embeddings request, `speech.model` for a speech request) |
+| `--pin <name>` | a model opened at start, as `--model`, that the memory budget never closes ([memory](#memory)); repeated, at most 8; replaces `serve.pin` |
 | `--memory <GiB>` | what every open model may hold together; default `serve.memory_bytes`, else physical memory less a third, at most 16 GiB ([memory](#memory)) |
 | `--backend cpu\|metal` | where the models run; default `metal` in a Metal build |
 | `--quiet` | no request log (`serve.log: false` does the same) |
@@ -47,7 +55,9 @@ The configuration file (`~/.nuclis/nuclis.json`) holds the defaults:
 
 ```json
 "decide": { "model": "laya" },
-"serve":  { "host": "127.0.0.1", "port": 9000, "log": true, "timeout": 300 }
+"speech": { "model": "qwen3-tts-1.7b", "voice": "ryan" },
+"serve":  { "host": "127.0.0.1", "port": 9000, "log": true, "timeout": 300,
+            "pin": ["gemma-4-e4b-qat", "qwen3-tts-1.7b", "nemotron-asr-0.6b"] }
 ```
 
 `nuclis config set serve.port 9000` changes one; the flags override them
@@ -70,10 +80,17 @@ Every open model counts against one budget, whatever its kind:
 the system and other applications). A model counts its files (a decision
 checkpoint's weights, backbone, and projector; a language model's
 weights, its draft file when speculative decoding is on, and its image
-projector once an image arrives; an embedding model's file) plus, for a
+projector once an image arrives; an embedding model's file; a speech
+model's weights and codec; a transcription model's weights) plus, for a
 language model, its attention cache and the saved states it may keep (`cache.memory_bytes`,
-4 GiB). Qwen3.8 counts 22.0 GiB, `laya-multilingual` 0.6 GiB, clef-flash
-8.4 GiB.
+4 GiB), and for a speech or transcription model the device memory it
+created on opening (its converted weights, caches, and scratch). Qwen3.8 counts 22.0 GiB, `laya-multilingual` 0.6 GiB, clef-flash
+8.4 GiB, Gemma 4 E4B 8.9 GiB, `qwen3-tts-1.7b` 4.7 GiB (5,095,675,552 B:
+the BF16 talker and the F32 codec, 4,515,695,644 B, and 553 MiB of
+device buffers), `nemotron-asr-0.6b` 2.4 GiB (2,602,777,056 B: 2,552,062,944
+and 48 MiB). What a request holds while it runs is not counted: a
+speech request's synthesizer (about 33 MiB on the device), a live
+transcription session (about 70 MB), a file's upload.
 
 Before a model opens, the least recently used others close until it
 fits, whichever kind they are. A language model is never closed while a
@@ -84,6 +101,22 @@ clef-flash decision closed Qwen3.8 (and the older Laya) and answered in
 4.2 s; the next chat request reopened Qwen3.8 in 1.2 s and closed
 clef-flash; a clef-flash decision sent during a generation was answered
 0.95 s after it ended. `GET /v1/health` lists what is resident.
+
+A **pinned** model (`--pin`, `serve.pin`) opens at start and is never
+closed to make room, so a voice assistant's three models stay ready
+whatever else is asked:
+
+```sh
+nuclis serve --pin gemma-4-e4b-qat --pin qwen3-tts-1.7b --pin nemotron-asr-0.6b
+```
+
+A model that does not fit beside the pinned ones is refused at once
+(`model_too_large`), however long it would wait. A pin is by the name the
+model is opened by, and it guards against the budget, not against a
+request: the server keeps one model of each kind but decisions, so a
+request naming another language or speech model still replaces the
+pinned one in its slot, and the pin applies again when its name reopens.
+`GET /v1/health` marks each resident model's `pinned`.
 
 `clef-flash` also reads images: a request's `"images"` is a list of data
 URLs (`data:image/png;base64,…`) or bare base64, at most 8, each read
@@ -123,10 +156,11 @@ or the error):
 | Limit | Value | Past it |
 | --- | --- | --- |
 | request line and headers | 16 KiB | `431 headers_too_large`, connection closed |
-| request body | 4 MiB; 32 MiB for `/v1/chat/completions` and `/v1/embeddings` | `413 payload_too_large`, connection closed |
+| request body | 4 MiB; 32 MiB for `/v1/chat/completions` and `/v1/embeddings`; 256 MiB for `/v1/audio/transcriptions` (`serve.transcription_bytes`) | `413 payload_too_large`, connection closed |
 | open connections | 64 | `529 busy`, connection closed |
 | decision requests waiting for the GPU | 64 | `529 busy` |
 | embedding requests waiting for the GPU | 64 | `529 busy` |
+| file transcriptions waiting for the GPU (each holds its upload) | 16 | `529 busy` |
 | inputs per embedding request | 2,048 | `400 request_too_large` |
 | text per embedding input | 1 MiB | `400 request_too_large` |
 | wait before a request starts on the GPU | 300 s (`serve.timeout`) | `529 timeout` (a started pass always finishes) |
@@ -162,7 +196,7 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 400 | `bad_request` | not HTTP: a malformed request line or header, an unknown method; the connection closes |
 | 404 | `not_found` | no route at that path |
 | 405 | `method_not_allowed` | the path exists, the method does not (`HEAD` is answered as `GET`) |
-| 413 | `payload_too_large` | the body exceeds 4 MiB (32 MiB for chat and embeddings) |
+| 413 | `payload_too_large` | the body exceeds 4 MiB (32 MiB for chat and embeddings, 256 MiB or `serve.transcription_bytes` for file transcriptions) |
 | 415 | `unsupported_encoding` | a compressed body (`content-encoding`) |
 | 417 | `bad_request` | an `expect` other than `100-continue` |
 | 422 | `invalid_json` | the body is not JSON |
@@ -175,8 +209,11 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 422 | `model_too_large` | the decision model alone needs more than the memory budget ([memory](#memory)) |
 | 400 | `invalid_json`, `invalid_request` | chat: the body is not JSON, or a field is malformed (`param` names it) |
 | 400 | `unsupported_feature` | chat: a field nuclis cannot honour ([what is refused](#what-is-refused)) |
-| 400 | `not_a_language_model` | chat: `model` names a decision or embedding model |
+| 400 | `not_a_language_model` | chat: `model` names a decision, embedding, speech, or transcription model |
 | 400 | `images_unsupported` | chat: an image for a model whose projector is not pulled |
+| 400 | `audio_unsupported` | chat: an `input_audio` part for a model that does not hear (only Gemma 4 E4B does), or whose projector is not pulled |
+| 400 | `invalid_audio` | chat: an `input_audio` part that does not decode |
+| 400 | `input_too_long` | chat: a clip over 30 s (never cut) |
 | 400 | `context_length_exceeded` | chat: the rendered conversation does not fit the model's window |
 | 404 | `model_not_found` | chat: `model` names no pulled language model |
 | 400 | `model_too_large` | chat: the language model alone needs more than the memory budget, with the sizes |
@@ -188,6 +225,12 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 400 | `not_an_embedding_model` | embeddings: `model` names a language or decision model |
 | 404 | `model_not_found` | embeddings: `model` names no pulled embedding model |
 | 400 | `model_too_large` | embeddings: the model alone needs more than the memory budget |
+| 400 | `invalid_request` | file transcriptions: not `multipart/form-data`, no `file` part or two, a malformed form, a field out of range (`param` names it), a `language` the model does not know |
+| 400 | `unsupported_feature` | file transcriptions: a `response_format` other than the five, `prompt`, `include[]`, `stream` with `srt` or `vtt` |
+| 400 | `invalid_audio` | file transcriptions: the file is not audio nuclis reads, or stops decoding midway (the message gives where) |
+| 400 | `not_a_transcription_model` | file transcriptions: `model` names a model of another kind |
+| 404 | `model_not_found` | file transcriptions: `model` names no pulled transcription model |
+| 400 | `model_too_large` | file transcriptions: the model needs more than the budget leaves beside the pinned models |
 | 431 | `headers_too_large` | the request line and headers exceed 16 KiB |
 | 500 | `model_failed` | the model could not be opened, or a completion failed on the GPU |
 | 500 | `internal`, `invalid_registry_entry` | a fault on the server's side |
@@ -401,7 +444,8 @@ GPU at a time, decisions included.
 | Field | In nuclis |
 | --- | --- |
 | `model` | a registry entry or catalogue name of a language model, never a path. Absent: the open model, else `engine.model`. Another model closes the open one and opens itself; that request pays the load |
-| `messages` | roles `system`, `developer`, `user`, `assistant`, `tool`. `content` is a string, null (an assistant turn of calls only), or parts: `text`, and on user messages `image_url` with a base64 data URL (at most 8 images, 16 MiB each) |
+| `messages` | roles `system`, `developer`, `user`, `assistant`, `tool`. `content` is a string, null (an assistant turn of calls only), or parts: `text`, and on user messages `image_url` with a base64 data URL (at most 8 images, 16 MiB each) and `input_audio` (below) |
+| `input_audio` parts | `{"type": "input_audio", "input_audio": {"data": "<base64>", "format": "wav"}}`: `data` base64 or a base64 data URL, `format` one of `wav`, `mp3`, `aiff`, `flac`, `m4a` (the decoder reads the bytes; the name is checked, not trusted). At most 8 clips per request, 16 MiB and **30 s** each (750 rows; a longer clip is `400 input_too_long`, never cut). Only Gemma 4 E4B hears them (its projector pulled); another model answers `400 audio_unsupported`, a clip that does not decode `400 invalid_audio`. The model reads a message's images, then its clips, then its text ([gemma4.md § Audio input](../models/gemma4.md#audio-input-on-the-e4b-2026-10-27)) |
 | assistant `reasoning_content` | the turn's reasoning, given back as it was returned (`reasoning` is read too); the model's template keeps or drops it |
 | assistant `tool_calls`, tool `tool_call_id` | the calls and their results; a result must answer an earlier call |
 | `tools` | `type: "function"` with `name`, `description`, `parameters` (a JSON Schema); at most 64. The model's own template renders them. With `serve.web`, also `{"type": "web_search"}` and `{"type": "web_fetch"}`, which the server runs ([hosted web tools](#hosted-web-tools)) |
@@ -426,7 +470,7 @@ change the result and cannot be honoured:
 | `response_format` other than `text`, `tool_choice: "required"` or a named function | they need the sampler to mask tokens against a grammar, which the engine does not have |
 | `n` above 1, `logprobs`, `top_logprobs` | one choice per request; log probabilities are not returned |
 | `stop`, `logit_bias`, `frequency_penalty` other than 0 | not implemented; the model's own end of turn stops it |
-| `audio`, `modalities` beyond `text`, `prediction`, part types other than `text` and `image_url` | text out, text and images in |
+| `audio`, `modalities` beyond `text`, `prediction`, part types other than `text`, `image_url`, and `input_audio`, an audio `format` outside the five above | text out; text, images, and audio in |
 | an `image_url` that is not a data URL | the server fetches no URL |
 | a `web_search` or `web_fetch` tool type without `serve.web`; a function of the same name beside one (`invalid_request`) | the server runs no web tools unless configured to; a clash would make its calls ambiguous |
 
@@ -488,9 +532,11 @@ reasoning off on the 12B and 26B-A4B, reasoning dropped once a user
 message follows), so there the session goes back to where the last
 prompt ended and continues from it: the answer as rendered and the new
 message are prefilled. A request sent again reuses the same point on
-Gemma 4 and Muse Glimmer. A conversation with an image in it is
-prefilled whole on every request, and changing the model empties the
-cache.
+Gemma 4 and Muse Glimmer. Images and clips count by their bytes: a
+conversation resent with the same ones reuses its state, another image or
+clip in the same place does not (measured on the E4B with a 4.8 s clip:
+133 of 136 tokens cached for the same request again, 152 of 171 for a
+follow-up, 0 for another clip). Changing the model empties the cache.
 
 Measured with `nuclis serve` (M4 Pro, temperature 0, 2026-10-08, the
 same answers before and after; `cached_tokens` and request time):
@@ -728,6 +774,385 @@ encoder on the first clip (658 MB), and the budget then adds each to the
 model's share. Media are encoded one at a time on the GPU before their
 pass: about 460 ms an image at 280 tokens, 130 ms for 4.8 s of speech.
 
+## Speech
+
+### `POST /v1/audio/speech`
+
+OpenAI's speech call for the speech models `nuclis speak` runs, Qwen3-TTS
+CustomVoice in two sizes. The audio streams as it is made: the first
+80 ms leave after one frame, then chunks of one, two, and four frames
+(320 ms), each no longer than the audio sent before it, so a listener
+who plays from the first byte never waits between them.
+
+```sh
+curl -s localhost:9000/v1/audio/speech -o hello.wav -d '{
+  "input": "Hello there. This is nuclis speaking through the API.",
+  "voice": "ryan"
+}'
+```
+
+The response is `200`, `transfer-encoding: chunked`, `content-type:
+audio/wav`: a WAV header whose sizes are the largest a field holds (the
+length is not known when it is sent; players read to the end of the
+stream), then 24 kHz 16-bit mono samples. With `"response_format":
+"pcm"` it is the samples alone (`audio/pcm`, little-endian).
+
+One speech model is open at a time beside the others; it opens on its
+first request (0.35 s for the 1.7B with its files in the page cache) or
+at start with `--model` or `--pin`. A request's text is spoken whole: send
+a sentence or two at a time, as a client splitting a chat answer at
+sentence ends does.
+
+### The speech request
+
+| Field | In nuclis |
+| --- | --- |
+| `input` | the text, UTF-8, at most 16 KiB (`400 request_too_large`) |
+| `model` | a registry entry of kind `speech` or `qwen3-tts-1.7b`, `qwen3-tts-0.6b`; never a path. Absent: the open one, else `speech.model` (`qwen3-tts-1.7b`). Another speech model replaces the open one; that request pays the open |
+| `voice` | one of the model's speakers: `aiden`, `dylan`, `eric`, `ono_anna`, `ryan`, `serena`, `sohee`, `uncle_fu`, `vivian`; absent, `speech.voice` (`ryan`). OpenAI's voice names are not speakers here (`400 invalid_request`, listing them) |
+| `instructions` | how to say it (`"Speak with excited, breathless joy."`): the 1.7B only. On the 0.6B, `400 instructions_unsupported` |
+| `response_format` | `wav` (the default; OpenAI's is `mp3`) or `pcm` |
+| `stream_format` | `audio` (the default): the bytes as they are made. `sse`: server-sent events, each `{"type": "speech.audio.delta", "audio": "<base64>"}` carrying the next bytes of the same stream (the WAV header in the first, for `wav`), then `{"type": "speech.audio.done", "usage": {"input_tokens", "output_tokens", "total_tokens"}}` (the prompt's rows in, the frames out) |
+| `speed` | `1` only (`400 unsupported_feature` otherwise): the model has no rate control |
+| `seed` | nuclis's: the sampler's seed, default 0. The same text, voice, and seed give the same samples, alone or beside a chat generation |
+| `language` | nuclis's: `auto` (the default), or one of the model's (`english`, `chinese`, `german`, …; `400 invalid_request` lists them) |
+
+Other fields OpenAI defines are ignored. Refused with `400
+unsupported_feature`: `mp3`, `opus`, `aac`, and `flac` (no encoder here),
+a voice given as an object (no custom voices), a `speed` other than 1.
+`model` naming another kind is `400 not_a_speech_model`; a name nothing
+pulled answers is `404 model_not_found`. A refusal on the GPU worker (an
+unknown speaker or language) is still a status: the response's head
+waits until the request's prompt is prefilled, which is before its first
+audio anyway. A model that fails to open is `500 model_failed`; one too
+large for the budget beside the pinned models `400 model_too_large`.
+
+### Streaming and cancellation
+
+The head is sent once the prompt is prefilled; the samples follow chunk
+by chunk. An event stream silent for 10 s gets an SSE comment (`:
+speaking`). An error after the head (the device fails mid-utterance) is
+one `data: {"error": {…}}` event in an event stream; a raw stream ends
+without its last chunk, which an HTTP client reports as a truncated
+body.
+
+A client that closes the connection stops its request between chunks:
+the server notices within a second, frees the synthesizer, and the next
+request starts. A request still waiting is taken out of the queue; one
+that waits `serve.timeout` without starting is `529 timeout`. A
+1.5 s client timeout on a long sentence stopped it after 2.96 s of
+audio had been made, and `GET /v1/health` showed nothing speaking a
+second later.
+
+### Scheduling
+
+Speech runs on the one GPU worker as short items: each run makes one
+chunk, so a chunk runs between the steps of a chat generation (and of
+its hosted tool waits) and speech never waits for a generation to end.
+Between a generation's steps speech takes only what playback needs: one
+frame a run (about 37 ms on the 1.7B), and none while the audio sent is
+a second or more ahead of its playback, counted from the request's
+first byte at real time. So beside a generation a request is made at
+playback speed with a second in hand, and the generation keeps the rest
+of the GPU (on the 1.7B about half its rate, on the 0.6B 60 %: § The
+voice loop below); alone, with nothing waiting, it runs at full speed in
+chunks of four. Opening a voice is the exception: a request whose voice
+is not open waits for the running generation to end, since opening may
+close the language model it runs on.
+
+A voice speaks one request at a time (its talker cache and the codec's
+scratch are one synthesizer's), so concurrent speech requests queue in
+arrival order, at most 64 waiting (`529 busy` past them); each one's head
+is sent when its turn begins. Three sent together answered at 0.14,
+1.57, and 2.83 s, each when the one before it ended. A client that does
+not read keeps at most about 5 s of audio queued on the server; the
+request then waits for it rather than hold the GPU.
+
+The speech models are listed by `GET /v1/models` (`kind` `speech`, with
+`voices`, `instructions`, `sample_rate` 24000, and `formats`), the
+transcription models too (`kind` `transcription`, `sample_rate` 16000), each
+with `present`, `loaded`, `default`, `size_bytes` (weights and codec),
+`repo`, and `revision`. `GET /v1/health` gives the open `speech` and
+`transcription` models and `speech_requests`: `waiting`, whether one is
+`speaking`, and those `answered` since the start.
+
+## Live transcription
+
+### `GET /v1/audio/transcriptions/stream`
+
+A WebSocket ([RFC 6455](https://www.rfc-editor.org/rfc/rfc6455)) for a
+voice client's microphone: the client streams audio as it is captured,
+the server answers with the transcript as it forms, and with a final
+transcript and word times when the client says the utterance ended. It
+runs Nemotron 3.5 ASR streaming 0.6B, the model `nuclis transcribe`
+runs ([nemotron-asr.md](../models/nemotron-asr.md)).
+
+```sh
+python3 scripts/ws-transcribe.py clip.wav --language en-US   # a client in the standard library
+```
+
+The handshake is a `GET` with `upgrade: websocket`, `connection:
+upgrade`, a `sec-websocket-key`, and `sec-websocket-version: 13`; the
+server answers `101` and negotiates no subprotocol and no extension.
+The session is set by the query:
+
+| Parameter | In nuclis |
+| --- | --- |
+| `model` | a registry entry of kind `transcription` or `nemotron-asr-0.6b`; never a path. Absent: the open one, else `transcribe.model` |
+| `language` | a locale of the model's prompt dictionary (`en-US`, `de-DE`, `fr`, `es-419`, …) or `auto` (the default: the model tags the language it heard) |
+| `lookahead` | `0`, `3` (the default), `6`, or `13` rows of 80 ms the encoder waits for: a chunk, and so a possible partial, every 80, 320, 560, or 1,120 ms of audio |
+
+A refusal before the upgrade is an ordinary HTTP response with the
+shared error body: `426 upgrade_required` (with `upgrade: websocket`) to
+a request that is not a WebSocket handshake, `426 unsupported_version`
+(with `sec-websocket-version: 13`) to another version, `400
+bad_handshake` (no `connection: upgrade`, a key that is not 16 bytes in
+base64, not a `GET`), `400 invalid_request` (a malformed parameter,
+`param` names it), `400 not_a_transcription_model`, `404
+model_not_found`, `529 busy` (16 live transcriptions run already).
+
+**The client sends** binary messages of 16 kHz mono 16-bit
+little-endian samples, of any size (a sample may straddle two messages),
+and text messages, each a JSON object:
+
+| Message | Meaning |
+| --- | --- |
+| `{"type": "finish"}` | the utterance ended: the audio sent before it is transcribed to its end, a `final` follows, and the next audio begins a new utterance (the recognizer's state is reset) |
+| `{"type": "reset"}` | drop the utterance in progress and every sample not yet transcribed, without a `final` |
+| `{"type": "language", "language": "de-DE"}` | the language prompt from the next chunk on (`auto` the default's); an unknown locale is an `error` event and the language stays |
+
+A command applies after every sample sent before it. Pings are answered
+with pongs; a close is answered once what was asked before it (a
+`finish`) has been answered, within 5 s.
+
+**The server sends** text messages, each a JSON object:
+
+```json
+{"type": "ready", "model": "nemotron-asr-0.6b", "lookahead": 3, "language": "auto", "sample_rate": 16000}
+{"type": "partial", "text": "Kenneth and Beth refrain from telling", "audio_seconds": 2.813}
+{"type": "final", "text": "Kenneth and Beth refrain from telling the other girls or Uncle John of Old Will Rogers' visit, but they got Mister Watson in the library and questioned him closely about the penalty for forging a check.",
+ "language": "en-US", "words": [{"word": "Kenneth", "start": 0.800, "end": 1.200}, …], "audio_seconds": 11.700}
+{"type": "error", "code": "invalid_message", "message": "a text message is a JSON object with a \"type\""}
+```
+
+- `ready` once the model is open and the session's recognizer exists
+  (audio sent before it waits, within the backlog limit).
+- `partial` when a chunk changed the utterance's text: the whole text so
+  far, never a delta, so a stale one is simply replaced; `audio_seconds`
+  is the audio of the utterance it covers. Chunks that add nothing send
+  nothing.
+- `final` after `finish`: the text (equal to `nuclis transcribe --json`'s
+  for the same samples, lookahead, and language), the language tag the
+  model emitted (`null` if none), the words, and the utterance's length.
+  Words are grouped as a file's are ([segments](#segments)): a word
+  starts at a piece that begins with a space; its `start` and `end` are
+  the 80 ms encoder rows its pieces were emitted at (a late punctuation
+  mark's row left out), from the utterance's start, which trail the
+  speech by up to the lookahead. An
+  utterance with no audio has an empty final.
+- `error` with a stable `code` (below); the session continues unless a
+  close follows.
+
+**Limits**, fixed by the host:
+
+| Limit | Value | Past it |
+| --- | --- | --- |
+| a message (its fragments together) | 1 MiB | close `1009` |
+| a text message | 4 KiB | `error` `invalid_message` |
+| audio received and not yet transcribed | 10 s | `error` `audio_backlog`, close `1008` |
+| events queued for a client that does not read | 1 MiB | close `1008` |
+| silence: no message, ping, or pong received | 60 s | close `1008` |
+| live transcriptions at once | 16 (each holds 72 MB of encoder state on the device) | `529 busy` at the handshake (`1013` if two race for the last) |
+| open connections | 64, shared with every route | `529 busy` |
+
+**Scheduling.** Each connection is one short item on the GPU worker,
+which pushes one encoder chunk a run (4 rows of 80 ms at lookahead 3,
+about 20–35 ms on Metal) and is queued again while audio waits, so live
+transcription runs between a chat generation's steps, and several
+connections take turns a chunk at a time. Audio is buffered on the
+connection until a chunk is complete, whatever the message sizes: the
+transcript does not depend on how the client splits its audio, or how
+fast it sends it. Opening the model is the exception: a connection
+whose model is not open waits for a running generation to end, since
+opening may close the language model it runs on. Every connection has
+its own recognizer state over the one open model, which the memory
+budget never closes while a connection uses it.
+
+**Cancellation.** A client that disconnects, with or without a close
+frame, stops its session at once: nothing more of its audio is
+transcribed, and its recognizer is freed at the worker's next turn. On
+Ctrl-C the server closes every session with `1001`.
+
+**Errors and closes:**
+
+| Event `code` / close | When |
+| --- | --- |
+| `invalid_message` | a text message that is not one of the commands, or over 4 KiB; the session continues |
+| `invalid_language` | a `language` command naming no locale of the model (the session continues), or a `language` query that does not (close `1008`) |
+| `audio_backlog`, close `1008` | more than 10 s of audio waits for the GPU |
+| `model_failed` | the transcription failed on the device: the utterance is dropped and the session continues; if the model did not open, close `1011` |
+| `model_too_large`, close `1011` | the model needs more than the budget leaves beside the pinned models |
+| `busy`, close `1013` | the memory it needs is held by a running request, or another transcription model is in use; retry |
+| close `1002` | a frame RFC 6455 forbids (unmasked, a reserved bit or opcode, a control frame fragmented or over 125 bytes) |
+| close `1007` | a text message that is not UTF-8 |
+| close `1001` | the server is stopping |
+
+**For a voice assistant.** Stream the microphone continuously; send
+`finish` when the turn ends (the client's own voice activity detection
+decides), and read the `final` about 40 ms later; the next audio starts
+the next utterance with no further message. Send `reset` to drop an
+utterance (a barge-in the assistant ignores). The server transcribes
+what it is sent: echo cancellation, so the assistant does not hear its
+own voice, is the client's.
+
+## Transcription (files)
+
+### `POST /v1/audio/transcriptions`
+
+OpenAI's transcription call for a whole recording, built for long ones (a
+lecture, a meeting, an hour or more): the transcript as text, JSON with
+segments and words, or subtitles, at once or streamed as segments are
+final. The model is Nemotron 3.5 ASR, the one `nuclis transcribe` runs,
+and the route's text is the command's, byte for byte (the gate
+`nemotron-asr-file-route`).
+
+```sh
+curl -s localhost:9000/v1/audio/transcriptions \
+  -F file=@meeting.m4a -F response_format=verbose_json \
+  -F 'timestamp_granularities[]=segment' -F 'timestamp_granularities[]=word'
+curl -s localhost:9000/v1/audio/transcriptions -F file=@lecture.wav -F response_format=srt > lecture.srt
+```
+
+The upload is held in memory while it is transcribed and is limited to
+256 MiB (`serve.transcription_bytes`; past it `413
+payload_too_large`): two hours of 16 kHz 16-bit mono WAV (230 MB), or
+many hours of a compressed format. Files queue in arrival order, one
+transcribed at a time; at most 16 wait (`529 busy`), and one that waits
+`serve.timeout` without starting is `529 timeout`.
+
+### The file transcription request
+
+`multipart/form-data`, as OpenAI's SDKs send it. Parts are bounded (at
+most 32, each part's headers 1 KiB, a field's value 1 KiB), and exactly
+one is a file.
+
+| Field | In nuclis |
+| --- | --- |
+| `file` | the recording: WAV, AIFF, MP3, M4A/AAC, FLAC, ALAC, or CAF (AudioToolbox, macOS), resampled to 16 kHz and mixed to mono; a 16 kHz mono WAV, 16-bit or float, is read directly on any platform |
+| `model` | a registry entry of kind `transcription` or `nemotron-asr-0.6b`; never a path. Absent: the open one, else `transcribe.model`. OpenAI's names (`whisper-1`, `gpt-4o-transcribe`) are `404 model_not_found` |
+| `language` | `auto` (the default), or a locale or two-letter code the model knows (`en-US`, `de-DE`, `fr`, …; 121 keys); an unknown one is `400 invalid_request` |
+| `response_format` | `json` (the default), `text`, `verbose_json`, `srt`, `vtt` |
+| `timestamp_granularities[]` | `segment`, `word`, or both (repeat the field); with `verbose_json` or `stream`. Absent: segments |
+| `stream` | `true`: server-sent events (below); not with `srt` or `vtt` |
+| `lookahead` | nuclis's: rows of 80 ms the encoder waits for, `0`, `3` (the default), `6`, `13`; as `nuclis transcribe --lookahead` |
+
+Refused with `400 unsupported_feature`: a `prompt` (the model takes no
+text hint; `language` is its only one) and `include[]` (the decoder is
+greedy and keeps no log probabilities). Other fields OpenAI defines are
+ignored (`temperature`: decoding is greedy).
+
+### The file transcription response
+
+- `json` (`application/json`): `{"text", "usage": {"type": "duration",
+  "seconds"}}`.
+- `text` (`text/plain`): the transcript and a newline.
+- `verbose_json`: `{"task": "transcribe", "language", "duration",
+  "text", "segments", "words", "usage"}`, `segments` and `words` as the
+  granularities ask. `language` is the locale of the last language tag
+  the model emitted (`en-US`, `de-DE`), or the request's, where OpenAI
+  writes a name (`english`).
+- `srt` (`text/plain`) and `vtt` (`text/vtt`): one cue per segment,
+  `HH:MM:SS,mmm` and `HH:MM:SS.mmm`, numbered from 1 in SRT, under a
+  `WEBVTT` header in VTT.
+
+A segment is `{"id", "start", "end", "text", "language"}`, a word
+`{"word", "start", "end"}`, times in seconds. The text is the segments'
+texts joined by spaces.
+
+With `stream=true` the response is `text/event-stream`, in OpenAI's
+events, a segment at a time as each becomes final:
+
+```
+data: {"type": "transcript.text.delta", "delta": "The thrall's eyes flashed."}
+
+data: {"type": "transcript.text.segment", "id": 0, "start": 3.6, "end": 4.96, "text": "The thrall's eyes flashed.", "language": "en-US"}
+
+: progress 61.44 of 1802.25 s
+
+data: {"type": "transcript.text.done", "text": "…", "usage": {"type": "duration", "seconds": 1802.25}}
+```
+
+Each final segment is a `transcript.text.delta` (its text, with a
+leading space after the first: the deltas joined are the text) then a
+`transcript.text.segment` (OpenAI's diarized event, with `language`
+for `speaker`, and `words` when asked). A comment `: progress <done> of
+<total> s` comes at most once a second, and `: transcribing` after 10 s
+of silence. The head is sent once the model is open and the language
+checked, so those refusals are still statuses; an error after it (the
+file stops decoding) is one `data: {"error": {…}}` event before the end.
+A client that closes the connection stops its transcription before the
+next 2.56 s piece; a client that does not read keeps at most 64 KiB of
+events queued, and the transcription waits for it rather than hold the
+GPU.
+
+### Segments
+
+Segments come from the transcriber's tokens and their rows (80 ms each),
+by one function `nuclis transcribe --segments` shares
+(`src/audio/transcript.zig`). A new segment starts at a word that follows
+terminal punctuation (`.`, `?`, `!`, `…`, `。`, `？`, `！`, then perhaps
+closing quotes), a pause of 1.04 s or more since the last word's sound,
+or 30 s into a segment. The model emits punctuation late, after the pause
+it marks (up to 2.6 s after the word in the speech corpus), so times and
+pauses follow the pieces holding a letter or digit, and a segment without
+terminal punctuation stays open 4 s for a late comma or period. A
+segment's language is the tag the model emitted at its end, else the
+last before it, else the request's locale. Times are the rows that
+emitted the tokens, not a forced alignment: a word's start is its first
+piece's row, its end one row past its last sounding piece.
+
+The pause was proposed at 0.8 s and measured on the speech corpus's 60
+clips, each one or two sentences (703 word boundaries): at 0.8 s, 14
+sentences split mid-way (5 at a comma); at 1.04 s, 4; at 2 s, none.
+Mid-sentence pauses of 0.8–1 s are common in read speech, so the
+constant is 1.04 s (13 rows). On the 30-minute recording below, every
+join of 1.5 s or more is a segment boundary, and the pause carries much
+of the work: in a continuous stream the model ends fewer sentences with
+punctuation than it does a clip alone (110 of the 258 segments end in
+`.`, `?`, or `!`, each followed by its language tag).
+
+### Long recordings
+
+The upload is decoded in pieces (`inference/src/audio/audio.zig`
+`Reader`, AudioToolbox read 4,096 frames at a time) and fed to one
+stream 2.56 s (32 rows) at a time, each piece a short GPU item: it runs
+between a chat generation's steps and speech's chunks, never waiting for
+a generation to end. Beside a generation a file takes at most a quarter
+of the GPU's time (a piece runs only once three times its length has
+passed since the last), since it has no deadline and the generation
+waits for each piece; alone it runs back to back. Memory is the upload, the transcriber's state (on
+Metal 72 MB of device buffers, the front end's pending samples), and the
+segments, never the decoded samples: peak RSS rose 46 MiB from a
+5-minute to a 30-minute recording whose upload is 45.7 MiB larger
+(measured below). A 2-hour 16 kHz 16-bit WAV would hold its 230 MB plus
+the same fixed part, about 100 MB above an idle server (an estimate from
+those two, not measured). The tokens (8 bytes each) and the segments
+grow with the length, a few hundred kilobytes for two hours.
+
+Fed in 2.56 s pieces, every clip of the corpus gives the same tokens and
+rows as pushed whole (60 of 60, Metal), so `nuclis transcribe` feeds
+files the same way. On a 30-minute recording the piece size changes the
+transcript by a few characters (20,647 to 20,651 for pieces of 8 to 64
+rows): the encoder's batches round differently. The state carries from
+one utterance into the next, which changes a few first words (2 % of the
+words against each clip transcribed alone, measured below). A recording
+that **changes language** loses words after each switch: the 30-minute
+recording of the corpus's five languages, under `auto`, scored 19.0 %
+WER against 6.3 % for its clips alone, the first seconds after a switch
+often missing (the CPU reference drops the same words from the first
+45 s of it), and two segments ran across a join. One language per
+recording is what it transcribes well.
+
 ## `GET /v1/models`
 
 OpenAI's list shape, so an OpenAI client reads the ids; the `nuclis`
@@ -938,3 +1363,178 @@ Passes of 2,048 rows cost no throughput: the same server with 8,192-row
 passes gave 1,669 ms and 38.3 inputs/s, within the spread, while a
 2,048-row pass holds the GPU for about 0.2 s instead of 1.7 s.
 
+### Speech beside a chat stream, 2026-10-27, commit `07dac34`
+
+Apple M4 Pro (48 GB), ReleaseSafe (`make build`), Zig 0.17.0, macOS
+27.0; `nuclis serve --quiet --model gemma-4-e4b-qat --pin qwen3-tts-1.7b
+--pin nemotron-asr-0.6b` on Metal (`unsloth/gemma-4-E4B-it-qat-GGUF` at
+`8c5a9e4f`, speculative decoding on at draft 6;
+`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` at `0c0e3051`). **The machine was
+not quiet**: another session's builds held the CPU (load average 3–4.6),
+and `nuclis speak --stream` of the first sentence ran at 1.65× real time
+then against 2.3× on a quiet machine
+([qwen3-tts.md § Speed](../models/qwen3-tts.md#speed)); the server's
+speech alone ran at 1.72×, so the server adds nothing measurable, and
+every rate below is low by that margin. A Python client (`http.client`
+on loopback) sent five sentences of 3–5 s of audio, one after another,
+each `"response_format": "pcm"`, `"seed": 1`; first byte is the first
+audio byte of the body after the request was sent, the real-time factor
+the audio's length over the request's wall time. The chat is one streamed
+request, `"reasoning_effort": "none"`, temperature 0, 1,200 tokens of a
+story; its rate is content chunks per second (a chunk is a token but for
+a held split character), between the first and the last of a window.
+
+| | First audio byte (median, range) | Real-time factor (median, range) | E4B decode |
+| --- | --- | --- | --- |
+| speech alone | 99 ms (87–107) | 1.72× (1.32–1.78) | — |
+| E4B alone | — | — | 43.7 tokens/s |
+| speech while E4B streams | 135 ms (129–152) | 1.49× (1.43–1.53) | 5.4 tokens/s during the speech, 44.3 after |
+
+Speech beside a generation stays faster than real time and starts within
+about 40 ms of alone; the generation pays: each of its steps waits for a
+four-frame chunk, so it ran at an eighth of its rate while the 21.1 s of
+speech were made (in 14.2 s), and at its own rate after. Audio made beside the
+generation was byte-identical to the same request alone. How to share the
+GPU more evenly is measured in § The voice loop below, whose policy
+replaced this one.
+
+### Live transcription alone and beside a chat stream, 2026-10-27, commit `18216d7`
+
+Apple M4 Pro (48 GB), ReleaseSafe (`make build`), Zig 0.17.0, macOS
+27.0.1; `nuclis serve --quiet --model gemma-4-e4b-qat --pin
+nemotron-asr-0.6b` on Metal (`unsloth/gemma-4-E4B-it-qat-GGUF` at
+`8c5a9e4f`, speculative decoding off as this machine's
+`generation.speculative` sets it; `nvidia/nemotron-3.5-asr-streaming-0.6b`
+at `ea30d66d`). **The machine was not quiet**: another worktree's
+`nuclis serve` and `nuclis transcribe` (file transcription on the same
+GPU) ran for about 80 % of each run, sampled once a second, and its
+compiler for some of it. `python3 scripts/ws-transcribe.py --measure
+--clips librispeech-6829-68769-0000,fleurs-de_de-1660 --beside-chat
+gemma-4-e4b-qat --rounds 3`: one connection, lookahead 3, each clip under
+its locale, sent in 20 ms messages each when its audio has ended at real
+time (as a microphone delivers it), then `finish`; one warm-up, then each
+clip three times (159 partials). A partial's delay is its arrival behind
+the moment the audio it covers had ended; the final's is its arrival
+after `finish` (sent with the last message). The chat is one streamed
+request, `"reasoning_effort": "none"`, temperature 0, 1,200 tokens of a
+story; its rate is content chunks per second between the first and the
+last of a window (alone: the whole answer; beside: from the clip's first
+message to its final). Two runs:
+
+| | Partial behind the audio, median / p90 / max | Final after `finish`, median (range) | E4B decode |
+| --- | --- | --- | --- |
+| transcription alone | 42 / 47 / 60 ms; 29 / 31 / 33 ms | 31 ms (24–34); 20 ms (16–20) | — |
+| E4B alone | — | — | 48.1; 45.8 tokens/s |
+| transcription while E4B streams | 50 / 66 / 74 ms; 49 / 65 / 81 ms | 48 ms (33–60); 41 ms (33–60) | 41.8; 42.1 tokens/s during the clip (34.4–43.3 over the six), 44.7; 44.3 after |
+
+Live transcription keeps up with the speaker beside a generation: every
+partial arrived at most 81 ms after the audio it covers (medians 29 to
+50 ms), every final at most 60 ms after the turn ended. The generation
+pays 8 to 13 % of its rate while a clip streams (a step may wait for one
+chunk of about 20–35 ms every 320 ms), against speech's eightfold
+slowdown ([above](#speech-beside-a-chat-stream-2026-10-27-commit-07dac34)).
+An earlier run on this branch, whose other jobs were not logged,
+measured E4B at 56.4 tokens/s alone and 54.8 while a clip streamed. Both
+clips are among the `nemotron-asr-stream-route` gate's four, whose
+finals equal `nuclis transcribe`'s text.
+
+### File transcription, 2026-10-27, commit `c4fe892`
+
+Apple M4 Pro (48 GB), ReleaseSafe (`make build`), Zig 0.17.0, macOS 27.0;
+measured on the same file-route code before its rebase onto the live
+route (then `4390fa8`); a fresh `nuclis serve` with `nemotron-asr-0.6b`
+open on Metal (`nvidia/nemotron-3.5-asr-streaming-0.6b` at `ea30d66d`), lookahead 3,
+`auto`. **The machine was shared**: another session's builds and tests
+held it (load average 2–7), and the same run measured 42–64× real time
+from one run to the next. The recording is `scripts/transcription-check.py
+long`'s: the 40 LibriSpeech clips of the speech corpus in a seeded order,
+each followed by 1.5–3 s of silence, 16-bit 16 kHz mono WAV (30 minutes:
+1,802.3 s, 55.0 MiB). Rate is the audio's length over the request's
+wall time (the upload over loopback included); first segment is the
+time from sending the request to the first `transcript.text.segment`
+event with `stream=true`; RSS is `ps`'s, sampled every 50 ms.
+
+| | 5 minutes | 30 minutes |
+| --- | --- | --- |
+| rate, alone (runs) | 42.7–62.5× (3) | 42.4–63.8× (6) |
+| first segment, `stream=true` | 0.17–0.26 s | 0.20–0.29 s |
+| peak RSS (idle 212–217 MiB) | 322–327 MiB | 368–374 MiB |
+| segments; words differing from the clips alone | 44; 2.18 % | 258; 1.98 % |
+| WER against the references (the clips alone) | 5.47 % (4.06 %) | 5.04 % (4.08 %) |
+
+Beside a chat: the same server with `gemma-4-e4b-qat` open too, one
+streamed chat (1,200 tokens of a story, temperature 0, `reasoning_effort`
+`none`) started 2 s before the 30-minute file and running through it,
+then the same chat alone. Its rate is content chunks per second, as in
+the speech measurement.
+
+| | Transcription | E4B decode |
+| --- | --- | --- |
+| alone | 42–64× real time | 45.8–51.5 tokens/s |
+| together | 28.4–40.9× real time | 12.0–17.9 tokens/s |
+
+The transcript beside the chat equals the one alone. The chat pays as
+it does for speech: each of its steps waits for a 2.56 s piece, 40–64 ms
+at the rates above. Smaller pieces cost nearly as much each: through
+`nuclis transcribe` on the same machine and file, pieces of 8, 16, 32,
+and 64 rows ran at 19, 25, 40, and 68× real time, so a piece of 8 rows
+still took about 34 ms (each emitted token adds a command buffer,
+[nemotron-asr.md § On Metal](../models/nemotron-asr.md#on-metal-2026-10-27)). § The voice loop below measures the share
+that replaced this.
+
+### The voice loop, 2026-10-27, commit `f96f750`
+
+Apple M4 Pro (48 GB), ReleaseSafe (`make build`), Zig 0.17.0, macOS
+27.0, a quiet machine (no other GPU job; load average 3–4 from the
+desktop); `nuclis serve --quiet --model gemma-4-e4b-qat --pin <voice>
+--pin nemotron-asr-0.6b` on Metal, through `scripts/voice-loop.py` and
+`scripts/ws-transcribe.py --measure`, `scripts/transcription-check.py
+long --chat`. Chat rates are streamed content chunks per second as in
+the records above (`reasoning_effort` `none`, temperature 0, 1,200
+tokens of a story). Playback is modelled: audio plays at real time from
+its first byte, each speech request after the one before it; the lead is
+the audio in hand when a chunk arrives, an underrun a chunk that arrives
+after it ran out.
+
+**Beside a chat.** Five sentences (28.1 s of audio on the 1.7B, 30.8 s on
+the 0.6B), each its own request, sent together while the chat streams;
+two rounds each.
+
+| | E4B alone | E4B beside it | It beside E4B |
+| --- | --- | --- | --- |
+| speech, 1.7B, before (1 frame then chunks of 4, every run) | 55.9 tokens/s | 7.1–7.3 tokens/s | 2.06–2.09× real time; a 50–80 ms underrun after the first 80 ms of each utterance, alone too |
+| speech, 1.7B | 53.9–56.4 tokens/s | 23.7–26.8 tokens/s | real time with a second in hand (lead median 2.0 s, min 40 ms), no underrun; first byte 96–118 ms |
+| speech, 0.6B | 55.3 tokens/s | 32.5–33.6 tokens/s | the same, no underrun; first byte 45–103 ms |
+| live transcription (2 clips × 3 rounds at real time) | 55.2 tokens/s | 52.2 tokens/s (48.1–53.1 per clip) | partials 41 ms behind the audio (median; p90 54, max 61), final 33 ms after `finish` (alone 53 and 37) |
+| a 5-minute file | 52.5 tokens/s | 40.6 tokens/s | 12.1× real time (2.18 % of words differ from the clips alone, as before) |
+
+Speech needs what playback needs: one frame of the 1.7B takes about
+37 ms a run for 80 ms of audio, 46 % of the GPU, so E4B keeps about half
+its rate while the 1.7B speaks (the proposed "at most 25 % slower" is out
+of reach for it; the 0.6B leaves 60 %). Two frames a run gave E4B no more
+(23.6–25.1 tokens/s) and a thinner lead. The chat runs at its own rate
+again once the speech is made.
+
+**A spoken question answered aloud.** The question ("What is the
+tallest mountain in Africa, and how long does it take to climb it?")
+spoken once by the server's voice, resampled to 16 kHz, streamed at real
+time to the live route with 0.4 s of silence after it, then `finish`; the
+final transcript to chat (a system prompt asking for three or four
+spoken sentences); each sentence of the streamed answer to speech as
+soon as it ends. Times after `finish`, three rounds:
+
+| | 1.7B voice | 0.6B voice |
+| --- | --- | --- |
+| final transcript | 27 ms (19–29) | 25 ms (23–27) |
+| first token | 287 ms (175–287) | 287 ms (167–297) |
+| first sentence | 387 ms (285–388) | 388 ms (275–393) |
+| first audio byte | 523 ms (418–524) | 482 ms (364–482) |
+| E4B over the answer (4 sentences) | 20.0–20.2 tokens/s | 26.9–27.4 tokens/s |
+| playback | 15.6 s, no underrun, lead min 40 ms | 22.5 s, no underrun, lead min 50 ms |
+
+The transcript was the question word for word. Without the silence the
+recognizer at lookahead 3 drops the last word ("it"), as `nuclis
+transcribe` does on the same file: a clip that ends within 100 ms of its
+last word leaves the encoder no right context, which a turn that ends in
+silence always has. The first speech request after the server starts is
+about 90 ms slower than the next (158 against 71 ms to the first byte).

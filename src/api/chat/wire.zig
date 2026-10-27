@@ -1,11 +1,12 @@
 //! `POST /v1/chat/completions` on the wire, without a model: a request read
-//! into the profile's shapes (messages, tools, images still encoded, effort,
+//! into the profile's shapes (messages, tools, images and clips still encoded, effort,
 //! sampling, budget), and a completion's events collected and written back
 //! in OpenAI's response shape. Every refusal names the field at fault.
 //! What a field means and why some are refused: docs/guide/api.md § Chat Completions.
 const std = @import("std");
 const inference = @import("inference");
 const data_url = @import("../../data_url.zig");
+const embedding_request = @import("../../embedding/request.zig");
 const errors = @import("../errors.zig");
 const web = @import("../../web/root.zig");
 
@@ -18,14 +19,29 @@ const Value = std.json.Value;
 pub const max_output_tokens = 16384;
 pub const max_images = inference.decide.max_images;
 pub const max_image_bytes = inference.decide.max_image_bytes;
+/// Clips one request may carry, each at most `max_audio_bytes` encoded and
+/// `inference.engine.max_audio_seconds` long (checked once decoded).
+pub const max_clips = 8;
+pub const max_audio_bytes = 16 * 1024 * 1024;
+/// The `input_audio` formats taken, as the embeddings route takes them; the
+/// decoder sniffs the bytes, so the name is checked, not trusted.
+pub const audio_formats = embedding_request.audio_formats;
+
+/// An image or clip of a user message, still encoded.
+pub const Part = struct {
+    kind: Kind,
+    bytes: []const u8,
+    pub const Kind = enum { image, audio };
+};
 
 pub const Request = struct {
     model: ?[]const u8 = null,
-    /// Images are not yet on the messages: `image_counts[i]` of `images`
-    /// belong to message `i`, in order; the worker encodes them.
+    /// Media are not yet on the messages: `media_counts[i]` of `media`
+    /// belong to message `i`, its images then its clips, in order; the
+    /// worker encodes them.
     messages: []Profile.Message,
-    images: []const []const u8,
-    image_counts: []const usize,
+    media: []const Part,
+    media_counts: []const usize,
     tools: []const Profile.ToolDefinition,
     effort: ?Profile.Effort = null,
     sampling: inference.sampling.Overrides = .{},
@@ -97,7 +113,13 @@ const Reader = struct {
     problem: *Problem,
     /// Host ids for the conversation's call ids, by first appearance (id = index + 1).
     call_ids: std.ArrayList([]const u8) = .empty,
+    /// One message's parts as read; `readMessage`'s caller moves them to
+    /// `media`, images first, the order the profile renders them in.
     images: std.ArrayList([]const u8) = .empty,
+    clips: std.ArrayList([]const u8) = .empty,
+    media: std.ArrayList(Part) = .empty,
+    image_total: usize = 0,
+    clip_total: usize = 0,
 
     fn refuse(self: *Reader, code: []const u8, param: ?[]const u8, comptime format: []const u8, args: anytype) Error {
         self.problem.* = .{ .code = code, .param = param, .message = try self.arena.print(format, args) };
@@ -140,7 +162,7 @@ pub fn parseWith(arena: Allocator, body: []const u8, problem: *Problem, options:
     const o = root.object;
     try refuseUnsupported(&r, o);
 
-    var request: Request = .{ .messages = &.{}, .images = &.{}, .image_counts = &.{}, .tools = &.{} };
+    var request: Request = .{ .messages = &.{}, .media = &.{}, .media_counts = &.{}, .tools = &.{} };
     if (o.get("model")) |m| switch (m) {
         .string => |s| request.model = s,
         .null => {},
@@ -156,13 +178,16 @@ pub fn parseWith(arena: Allocator, body: []const u8, problem: *Problem, options:
     const messages = try arena.alloc(Profile.Message, list.len);
     const counts = try arena.alloc(usize, list.len);
     for (list, messages, counts, 0..) |item, *message, *count, i| {
-        const before = r.images.items.len;
+        r.images.clearRetainingCapacity();
+        r.clips.clearRetainingCapacity();
         message.* = try readMessage(&r, item, i);
-        count.* = r.images.items.len - before;
+        for (r.images.items) |bytes| try r.media.append(arena, .{ .kind = .image, .bytes = bytes });
+        for (r.clips.items) |bytes| try r.media.append(arena, .{ .kind = .audio, .bytes = bytes });
+        count.* = r.images.items.len + r.clips.items.len;
     }
     request.messages = messages;
-    request.image_counts = counts;
-    request.images = r.images.items;
+    request.media_counts = counts;
+    request.media = r.media.items;
 
     const tool_choice: enum { auto, none } = if (o.get("tool_choice")) |c| switch (c) {
         .null => .auto,
@@ -272,8 +297,8 @@ fn readMessage(r: *Reader, item: Value, index: usize) Error!Profile.Message {
 }
 
 /// A message's text: a string, null (an assistant turn of calls only), or
-/// parts. Image parts are kept, encoded, in `r.images`; only user messages
-/// carry them.
+/// parts. Image and audio parts are kept, encoded, in `r.images` and
+/// `r.clips`; only user messages carry them.
 fn readContent(r: *Reader, value: ?Value, role: Profile.Role, param: []const u8) Error![]const u8 {
     const v = value orelse return "";
     switch (v) {
@@ -296,8 +321,11 @@ fn readContent(r: *Reader, value: ?Value, role: Profile.Role, param: []const u8)
                 } else if (std.mem.eql(u8, kind, "image_url")) {
                     if (role != .user) return r.invalid(part_param, "images go on user messages", .{});
                     try readImage(r, part.object.get("image_url") orelse .null, part_param);
+                } else if (std.mem.eql(u8, kind, "input_audio")) {
+                    if (role != .user) return r.invalid(part_param, "audio goes on user messages", .{});
+                    try readAudio(r, part.object.get("input_audio") orelse .null, part_param);
                 } else {
-                    return r.unsupported(part_param, "{s} is a \"{s}\" part; text and image_url parts are supported", .{ part_param, kind });
+                    return r.unsupported(part_param, "{s} is a \"{s}\" part; text, image_url, and input_audio parts are supported", .{ part_param, kind });
                 }
             }
             return text.items;
@@ -314,7 +342,7 @@ fn readImage(r: *Reader, value: Value, param: []const u8) Error!void {
     } orelse return r.invalid(param, "{s}.image_url must hold a \"url\"", .{param});
     if (!std.mem.startsWith(u8, url, "data:"))
         return r.unsupported(param, "{s}: nuclis fetches no URL; send the image as a base64 data URL", .{param});
-    if (r.images.items.len == max_images) return r.invalid(param, "at most {d} images per request", .{max_images});
+    if (r.image_total == max_images) return r.invalid(param, "at most {d} images per request", .{max_images});
     const encoded = data_url.payload(url) orelse return r.invalid(param, "{s}: a data URL must be base64 (data:<type>;base64,…)", .{param});
     const bytes = data_url.decode(r.arena, encoded, max_image_bytes) catch |err| switch (err) {
         error.NotBase64 => return r.invalid(param, "{s}: not base64", .{param}),
@@ -322,6 +350,28 @@ fn readImage(r: *Reader, value: Value, param: []const u8) Error!void {
         error.OutOfMemory => return error.OutOfMemory,
     };
     try r.images.append(r.arena, bytes);
+    r.image_total += 1;
+}
+
+/// OpenAI's `{"data": base64, "format": …}`; the format one the decoder
+/// reads (`audio_formats`).
+fn readAudio(r: *Reader, value: Value, param: []const u8) Error!void {
+    const object = if (value == .object) value.object else return r.invalid(param, "{s}.input_audio must hold \"data\" and \"format\"", .{param});
+    const data = if (object.get("data")) |d| if (d == .string) d.string else null else null;
+    const format = if (object.get("format")) |f| if (f == .string) f.string else null else null;
+    if (data == null or format == null) return r.invalid(param, "{s}.input_audio needs \"data\" (base64) and \"format\"", .{param});
+    for (audio_formats) |name| {
+        if (std.mem.eql(u8, name, format.?)) break;
+    } else return r.unsupported(param, "{s}: an audio format is wav, mp3, aiff, flac, or m4a, not \"{s}\"", .{ param, format.? });
+    if (r.clip_total == max_clips) return r.invalid(param, "at most {d} clips per request", .{max_clips});
+    const encoded = data_url.payload(data.?) orelse return r.invalid(param, "{s}: a data URL must be base64 (data:<type>;base64,…)", .{param});
+    const bytes = data_url.decode(r.arena, encoded, max_audio_bytes) catch |err| switch (err) {
+        error.NotBase64 => return r.invalid(param, "{s}: not base64", .{param}),
+        error.TooLarge => return r.invalid(param, "{s}: a clip is at most {d} bytes", .{ param, max_audio_bytes }),
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    try r.clips.append(r.arena, bytes);
+    r.clip_total += 1;
 }
 
 fn readCalls(r: *Reader, value: Value, param: []const u8) Error![]const Profile.ToolCall {
@@ -861,6 +911,34 @@ fn parseOk(arena: Allocator, body: []const u8) !Request {
     };
 }
 
+test "a user message's clips follow its images in the media list, at most eight" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const request = try parseOk(arena,
+        \\{"messages": [
+        \\  {"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": "aGk=", "format": "wav"}},
+        \\     {"type": "text", "text": "How does this sound?"},
+        \\     {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1n"}},
+        \\     {"type": "input_audio", "input_audio": {"data": "data:audio/mpeg;base64,bXAz", "format": "mp3"}}]}]}
+    );
+    try testing.expectEqualSlices(usize, &.{3}, request.media_counts);
+    try testing.expectEqual(Part.Kind.image, request.media[0].kind);
+    try testing.expectEqualStrings("img", request.media[0].bytes);
+    try testing.expectEqual(Part.Kind.audio, request.media[1].kind);
+    try testing.expectEqualStrings("hi", request.media[1].bytes);
+    try testing.expectEqualStrings("mp3", request.media[2].bytes);
+    try testing.expectEqualStrings("How does this sound?", request.messages[0].content);
+
+    var body: std.ArrayList(u8) = .empty;
+    try body.appendSlice(arena, "{\"messages\": [{\"role\": \"user\", \"content\": [");
+    for (0..max_clips + 1) |i| try body.print(arena, "{s}{{\"type\": \"input_audio\", \"input_audio\": {{\"data\": \"aGk=\", \"format\": \"wav\"}}}}", .{if (i == 0) "" else ", "});
+    try body.appendSlice(arena, "]}]}");
+    var problem: Problem = .{};
+    try testing.expectError(error.Refused, parse(arena, body.items, &problem));
+    try testing.expectEqualStrings("messages[0].content[8]", problem.param.?);
+}
+
 test "a conversation as an agent sends it: roles, an image, calls and their result, tools" {
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
@@ -885,8 +963,9 @@ test "a conversation as an agent sends it: roles, an image, calls and their resu
     try testing.expectEqual(@as(usize, 5), request.messages.len);
     try testing.expectEqual(Profile.Role.developer, request.messages[0].role);
     try testing.expectEqualStrings("What is in\nthis?", request.messages[1].content);
-    try testing.expectEqualSlices(usize, &.{ 0, 1, 0, 0, 0 }, request.image_counts);
-    try testing.expectEqualStrings("hi", request.images[0]);
+    try testing.expectEqualSlices(usize, &.{ 0, 1, 0, 0, 0 }, request.media_counts);
+    try testing.expectEqual(Part.Kind.image, request.media[0].kind);
+    try testing.expectEqualStrings("hi", request.media[0].bytes);
     const assistant = request.messages[2];
     try testing.expectEqualStrings("", assistant.content);
     try testing.expectEqualStrings("Look first.", assistant.reasoning_content);
@@ -934,7 +1013,11 @@ test "refusals name their code and field" {
         .{ .body = "{\"messages\": [{\"role\": \"user\", \"content\": \"x\"}], \"reasoning_effort\": \"extreme\"}", .code = "invalid_request", .param = "reasoning_effort" },
         .{ .body = "{\"messages\": [{\"role\": \"user\", \"content\": \"x\"}], \"temperature\": 3}", .code = "invalid_request", .param = "temperature" },
         .{ .body = "{\"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"image_url\", \"image_url\": {\"url\": \"https://x/y.png\"}}]}]}", .code = "unsupported_feature", .param = "messages[0].content[0]" },
-        .{ .body = "{\"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"input_audio\"}]}]}", .code = "unsupported_feature", .param = "messages[0].content[0]" },
+        .{ .body = "{\"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"input_audio\"}]}]}", .code = "invalid_request", .param = "messages[0].content[0]" },
+        .{ .body = "{\"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"input_audio\", \"input_audio\": {\"data\": \"aGk=\", \"format\": \"ogg\"}}]}]}", .code = "unsupported_feature", .param = "messages[0].content[0]" },
+        .{ .body = "{\"messages\": [{\"role\": \"assistant\", \"content\": [{\"type\": \"input_audio\", \"input_audio\": {\"data\": \"aGk=\", \"format\": \"wav\"}}]}]}", .code = "invalid_request", .param = "messages[0].content[0]" },
+        .{ .body = "{\"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"input_audio\", \"input_audio\": {\"data\": \"a!k=\", \"format\": \"wav\"}}]}]}", .code = "invalid_request", .param = "messages[0].content[0]" },
+        .{ .body = "{\"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"video_url\"}]}]}", .code = "unsupported_feature", .param = "messages[0].content[0]" },
         .{ .body = "{\"messages\": [{\"role\": \"assistant\", \"content\": [{\"type\": \"image_url\", \"image_url\": \"data:image/png;base64,aGk=\"}]}]}", .code = "invalid_request", .param = "messages[0].content[0]" },
         .{ .body = "{\"messages\": [{\"role\": \"tool\", \"tool_call_id\": \"nope\", \"content\": \"x\"}]}", .code = "invalid_request", .param = "messages[0]" },
         .{ .body = "{\"messages\": [{\"role\": \"assistant\", \"tool_calls\": [{\"id\": \"a\", \"function\": {\"name\": \"f\", \"arguments\": \"[1]\"}}]}]}", .code = "invalid_request", .param = "messages[0].tool_calls[0]" },

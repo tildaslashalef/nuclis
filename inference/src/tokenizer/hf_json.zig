@@ -18,6 +18,7 @@ const vocabulary = @import("vocabulary.zig");
 const bpe = @import("bpe.zig");
 const encoder = @import("encode.zig");
 const gpt2 = @import("gpt2.zig");
+const cased = @import("cased.zig");
 pub const nfc = @import("nfc.zig");
 const pre = @import("pre.zig");
 
@@ -48,8 +49,10 @@ pub const Error = std.mem.Allocator.Error || error{
 
 pub const EncodeError = encoder.Error || nfc.Error;
 
-/// The accepted shapes, named by their pre-tokenizer.
-pub const Shape = enum { byte_level, metaspace };
+/// The accepted shapes, named by their pre-tokenizer. `cased` (byte-level
+/// pieces split by cased.zig) comes from vocab_merges.zig, never from a
+/// `tokenizer.json`.
+pub const Shape = enum { byte_level, metaspace, cased };
 
 pub const Tokenizer = struct {
     /// `pre` is "gpt2" (byte-level: normal tokens decode through the byte
@@ -123,6 +126,10 @@ const Encoding = struct {
                     var it = try gpt2.Iterator.init(text);
                     while (it.next()) |text_piece| try self.piece(text_piece);
                 },
+                .cased => {
+                    var it = try cased.Iterator.init(text);
+                    while (it.next()) |text_piece| try self.piece(text_piece);
+                },
                 .metaspace => try self.metaspace(text),
             },
         }
@@ -163,7 +170,7 @@ const Encoding = struct {
         piece_limits.output_tokens = @min(piece_limits.output_tokens, self.limits.output_tokens - self.output.items.len);
         const vocab = &self.tokenizer.vocab;
         const ids = switch (self.tokenizer.shape) {
-            .byte_level => try bpe.encodePieceBudget(self.alloc, vocab, text, piece_limits, &self.bpe_work),
+            .byte_level, .cased => try bpe.encodePieceBudget(self.alloc, vocab, text, piece_limits, &self.bpe_work),
             .metaspace => try bpe.encodeSpmBudget(self.alloc, vocab, text, piece_limits, &self.bpe_work),
         };
         defer self.alloc.free(ids);
@@ -274,6 +281,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!To
                 return error.UnsupportedPreTokenizer;
             if (file.decoder) |d| if (!isMetaspaceDecoder(d)) return error.UnsupportedDecoder;
         },
+        .cased => unreachable,
     }
 
     if (model.vocab.map.count() == 0 or model.merges.len > limits.merges or file.added_tokens.len > limits.added)
@@ -474,6 +482,10 @@ fn expectIds(t: *const Tokenizer, text: []const u8, expected: []const u32) !void
     const got = try t.encode(gpa, text, .{});
     defer gpa.free(got);
     try std.testing.expectEqualSlices(u32, expected, got);
+}
+
+test {
+    _ = cased;
 }
 
 test "added-token passes, lstrip, NFC between them, and byte-level BPE" {

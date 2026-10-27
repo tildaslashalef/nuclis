@@ -2,9 +2,13 @@
 
 How nuclis turns a clip into embedding rows: the decoder, the log-mel front
 end, and Gemma 4's audio encoder (`gemma4a`) on the CPU and on Metal. Today
-EmbeddingGemma 2 is the only family that uses it
+EmbeddingGemma 2 is the only family that uses that encoder
 ([embeddinggemma.md § Audio](../models/embeddinggemma.md#audio-2026-10-09)).
-Gemma 4 E4B carries the same encoder, and chat still refuses audio.
+The front end also serves Nemotron 3.5 ASR's own encoder, described with
+its family in [nemotron-asr.md](../models/nemotron-asr.md).
+Gemma 4 E4B carries the same encoder (751 of its 752 tensors byte-identical,
+the projection to 2560 its own) and hears clips in a chat through it
+([gemma4.md § Audio input on the E4B](../models/gemma4.md#audio-input-on-the-e4b-2026-10-27)).
 Everything here was written from Google's code at the pinned revisions
 (transformers 5.19.0: `feature_extraction_gemma4.py`, `modeling_gemma4.py`
 `Gemma4Audio*`, `processing_embedding_gemma2.py`). llama.cpp's
@@ -26,15 +30,45 @@ as a cross-check, never copied.
 `inference/src/audio/`:
 
 - `audio.zig`: `decode` to 16 kHz mono f32 (`Pcm`, with the clip's whole
-  length when it was cut). A RIFF/WAVE parser reads 16-bit mono 16 kHz PCM
-  on any platform. Everything else goes through `audio_bridge.m`, built
+  length when it was cut). A RIFF/WAVE parser reads mono 16 kHz WAV of
+  16-bit PCM or 32-bit IEEE float (plain or `WAVE_FORMAT_EXTENSIBLE`;
+  FLEURS's clips are float) on any platform, and refuses a float file
+  holding a NaN or an infinity. Everything else goes through `audio_bridge.m`, built
   with the Metal bridge. Encoded bytes are bounded at 64 MiB.
-- `mel.zig`: `Bank` (the window, the filter bank, the FFT twiddles) and
-  `features`. Pure, no I/O.
+- `mel.zig`: `Spec` (what one extractor's front end is: Gemma's and
+  Nemotron's), `Bank` (the window, the filter bank, the FFT twiddles),
+  `features`, and `frames`, which computes frames from a span of a clip
+  for a stream. Pure, no I/O.
 - `gemma4a.zig`: `bind` (the companion file's `a.*` and `mm.a.*`
-  tensors) and `Runtime`, the CPU reference. It also holds the pieces the
+  tensors; the header's norm epsilon may say 1e-6 or E4B's 1e-5, and 1e-6,
+  Google's, is used) and `Runtime`, the CPU reference. It also holds the pieces the
   Metal plan shares: `subsample`, `relativeKeys`, `queryScale`.
 - `gemma4a_metal.zig`: `Plan`, the same schedule on the device.
+- `qwen3_codec.zig`: Qwen3-TTS's codec decoder, codes to 24 kHz PCM:
+  `bind`, `Runtime.decode`, and `Stream`, which carries every
+  convolution's left context and 71 rows of K/V per layer, so pieces of any
+  size give `decode`'s samples bit for bit ([qwen3-tts.md](../models/qwen3-tts.md)).
+- `qwen3_codec_metal.zig`: `Decoder`, the codec's stream on the device,
+  checked against `qwen3_codec.zig` on the same codes (gate
+  `qwen3-tts-codec-metal`); the voice's talker and predictor are
+  `models/qwen3_tts*.zig` ([qwen3-tts.md](../models/qwen3-tts.md)).
+- `nemotron_encoder.zig`: Nemotron 3.5 ASR's cache-aware encoder and its
+  prompt block, the CPU reference: `bind` (the safetensors checkpoint),
+  `Encoder`, `Stream`, its `FrontEnd`, and the pure functions the Metal
+  kernels are checked against (`conv2d`, `attention`, `glu`, `depthwise`)
+  ([nemotron-asr.md § The encoder](../models/nemotron-asr.md#the-encoder)).
+- `nemotron_rnnt.zig`: its RNN-T transducer: `bind`, and `Decoder`,
+  which turns encoder rows into tokens by greedy decoding, a row in full
+  as it arrives ([nemotron-asr.md § RNN-T decoding](../models/nemotron-asr.md#rnn-t-decoding)).
+- `nemotron_metal.zig`: `Plan` (the device weights and shared scratch)
+  and `Stream`, the encoder's chunk step, the projector and the joint on
+  the device, the LSTM on the CPU
+  ([nemotron-asr.md § On Metal](../models/nemotron-asr.md#on-metal-2026-10-27)).
+- `nemotron_asr.zig`: the family opened from its directory (`Model`: the
+  encoder, the transducer, the piece table, the language prompts, and the
+  Metal plan once `openMetal` built it) and `Transcriber`, one utterance
+  stream from samples to text on either engine, which `nuclis transcribe`
+  drives.
 
 ## Decoding
 
@@ -45,7 +79,7 @@ channel count, and the converter's sample-rate quality is set to its
 maximum (`Mastering` complexity). Channels are averaged afterwards, as
 librosa's `mono=True` does. A 16 kHz mono 16-bit WAV never reaches the
 bridge: each sample over 32768 is what every decoder gives, so it is exact
-on any platform.
+on any platform. A 16 kHz mono float WAV is read as stored, likewise.
 
 Other clips match Google's only as far as two resamplers agree. On the
 `north` clip, a 44.1 kHz stereo copy gives a vector at cosine 0.9999 to the
@@ -69,7 +103,13 @@ Google's `Gemma4AudioFeatureExtractor`, with the pinned
    per-bin normalization.
 
 `mel.Bank.features` does this in F64 with an iterative radix-2 FFT and
-casts to F32. Against the extractor's own features
+casts to F32. The steps are one `mel.Spec` value, `Spec.gemma`: the window
+(length, periodic or symmetric, where it sits in the FFT's 512 points), the
+lead (zeros before the clip), which frames a clip keeps, magnitude or power,
+HTK or Slaney filters, the log guard, and pre-emphasis.
+`Spec.nemotron` is Nemotron ASR's extractor
+([nemotron-asr.md § The front end](../models/nemotron-asr.md#the-front-end));
+parameterizing the bank left Gemma's features bit for bit what they were. Against the extractor's own features
 (`tests/fixtures/embeddinggemma-audio-features/`) the largest difference
 is 4.8e-7 on all three clips.
 
@@ -159,6 +199,14 @@ The relative keys are constant per block, so they are computed once at
 init on the host. Buffers are sized for 750 rows. On the BF16 file the
 plan matches the CPU reference's vectors to the same `1 − cos` against
 Google (about 1e-12).
+
+`nemotron_metal.Plan` is a streaming plan and runs everything after the
+front end on the device, the subsampling included: its convolutions
+carry a cache, which lives on the device with the rest of a stream's
+state. Its kernels are their own (`kernels/asr.metal`, `ops/asr.zig`);
+it shares the generic F32 tile, `layerNorm`, `addBiasRows`, `silu`, `add`
+and `copy` with the other plans. The schedule, the state and the
+measurements: [nemotron-asr.md § On Metal](../models/nemotron-asr.md#on-metal-2026-10-27).
 
 ## Against the oracles (2026-10-09)
 

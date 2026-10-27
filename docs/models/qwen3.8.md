@@ -34,7 +34,7 @@ fixture](../../inference/src/models/fixtures/qwen35-27b.json)):
 | CPU forward, DeltaNet, traces against the reference | [engine/cpu-reference.md](../engine/cpu-reference.md), [engine/sampling.md § Numerical traces](../engine/sampling.md#numerical-traces) |
 | Metal plan and its kernels | [engine/metal-backend.md](../engine/metal-backend.md) |
 | Draft head and speculation budget | [engine/speculative-decoding.md § The Qwen3.8 draft head](../engine/speculative-decoding.md#the-qwen38-draft-head-2026-09-20), [§ The Qwen verify budget](../engine/speculative-decoding.md#the-qwen-verify-budget) |
-| Vision projector | [engine/vision.md § The Qwen3-VL projector](../engine/vision.md#the-qwen3-vl-projector-2026-09-22) |
+| Vision projector | [engine/vision.md § The Qwen3-VL projector](../engine/vision.md#the-qwen3-vl-projector-2026-09-22); its speed (1,024 tokens in 2.4–2.7 s) in [§ Encoders at the materialized-score attention](../engine/vision.md#encoders-at-the-materialized-score-attention-2026-10-27) |
 | Companion files and the catalogue entry | [catalogue.md](catalogue.md) |
 
 ## Structural validation

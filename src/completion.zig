@@ -165,6 +165,7 @@ pub const commands = [_]Command{
         prompt_tokens,
         raw,
         .{ .name = "--image", .value = .file, .repeat = true, .summary = "attach an image" },
+        .{ .name = "--audio", .value = .file, .repeat = true, .summary = "attach a clip (Gemma 4 E4B)" },
         image_max_tokens,
         think,
         .{ .name = "--logits", .value = .file, .summary = "write the final prompt logits" },
@@ -263,6 +264,25 @@ pub const commands = [_]Command{
         .{ .name = "--model", .value = .text, .summary = "an embedding entry or GGUF file" },
         backend,
         json,
+    } }} },
+    .{ .name = "transcribe", .summary = "speech to text, by Nemotron 3.5 ASR", .actions = &.{.{ .positionals = &.{.file}, .flags = &.{
+        .{ .name = "--stream", .summary = "80 ms pieces, partials as they change" },
+        .{ .name = "--lookahead", .value = .{ .choice = &.{ "0", "3", "6", "13" } }, .summary = "rows of 80 ms the encoder waits for" },
+        .{ .name = "--language", .value = .text, .summary = "a locale, or auto" },
+        .{ .name = "--model", .value = .dir, .summary = "the checkpoint directory" },
+        .{ .name = "--format", .value = .{ .choice = &.{ "text", "json", "srt", "vtt" } }, .summary = "the transcript, JSON, or subtitles" },
+        .{ .name = "--segments", .summary = "the segments with their times" },
+        backend,
+        json,
+    } }} },
+    .{ .name = "speak", .summary = "text into a WAV of speech, by Qwen3-TTS", .actions = &.{.{ .flags = &.{
+        .{ .name = "--output", .short = "-o", .value = .file, .summary = "the WAV to write" },
+        .{ .name = "--voice", .value = .{ .choice = &.{ "aiden", "dylan", "eric", "ono_anna", "ryan", "serena", "sohee", "uncle_fu", "vivian" } }, .summary = "the speaker" },
+        .{ .name = "--language", .value = .{ .choice = &.{ "auto", "english", "chinese", "german", "spanish", "french", "italian", "portuguese", "russian", "japanese", "korean" } }, .summary = "the language, or auto" },
+        .{ .name = "--instruct", .value = .text, .summary = "how to say it (the 1.7B)" },
+        .{ .name = "--model", .value = .dir, .summary = "the checkpoint directory" },
+        .{ .name = "--seed", .value = .number, .summary = "the sampler's seed" },
+        backend,
     } }} },
     .{ .name = "serve", .summary = "the nuclis API over HTTP", .actions = &.{.{ .flags = &.{
         .{ .name = "--host", .value = .text, .summary = "the address to listen on" },
@@ -424,7 +444,7 @@ pub fn candidates(arena: Allocator, target: Target, current: []const u8, state: 
                 const cut = if (std.mem.lastIndexOfScalar(u8, current, ',')) |c| c + 1 else 0;
                 const typed = current[0..cut];
                 for (names(model.Role)) |role| {
-                    if (std.mem.eql(u8, role, "main") or std.mem.eql(u8, role, "support")) continue;
+                    if (std.mem.eql(u8, role, "main") or std.mem.eql(u8, role, "support") or std.mem.eql(u8, role, "codec")) continue;
                     if (listed(typed, role)) continue;
                     try list.append(arena, .{ .text = try std.mem.concat(arena, u8, &.{ typed, role }) });
                 }
@@ -600,6 +620,8 @@ fn servedKind(kind: catalog.ModelKind) []const u8 {
         .generation => "chat",
         .decision => "decision",
         .embedding => "embedding",
+        .speech => "speech",
+        .transcription => "transcription",
     };
 }
 

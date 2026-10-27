@@ -66,6 +66,20 @@ pub const Markers = struct {
     channel: ?Channel = null,
 };
 
+/// Whether a completion of `prompt` starts inside the reasoning channel: the
+/// prompt's last reasoning control is the opening one. Qwen's thinking prompt
+/// ends inside `<think>`; Gemma's opens its channel only after tool results
+/// and otherwise leaves it to the model, which may answer without one.
+pub fn opensInReasoning(markers: Markers, prompt: []const u32) bool {
+    var i = prompt.len;
+    while (i > 0) {
+        i -= 1;
+        if (prompt[i] == markers.close) return false;
+        if (prompt[i] == markers.open) return true;
+    }
+    return false;
+}
+
 pub const Decoder = struct {
     alloc: std.mem.Allocator,
     markers: Markers,
@@ -456,6 +470,41 @@ test "UTF-8 split at every byte, cancelled thought, and no cross-channel scalar"
     try d.finish(&r);
     try std.testing.expectEqualStrings("�", r.thinking.written());
     try std.testing.expectEqualStrings("��", r.answer.written());
+}
+
+test "a prompt that leaves the channel to the model starts in the answer, wherever thinking is on" {
+    const gemma: Markers = .{ .open = 1, .close = 2, .open_suffix = "thought\n" };
+    // `<|turn>model\n` after a closed thought, after none, and after tool
+    // results (`<|channel>thought\n`); Qwen's `<think>\n`.
+    try std.testing.expect(!opensInReasoning(gemma, &.{ 3, 1, 3, 2, 3, 4 }));
+    try std.testing.expect(!opensInReasoning(gemma, &.{ 3, 4 }));
+    try std.testing.expect(!opensInReasoning(gemma, &.{}));
+    try std.testing.expect(opensInReasoning(gemma, &.{ 3, 1, 3 }));
+    try std.testing.expect(opensInReasoning(.{ .open = 1, .close = 2 }, &.{ 3, 1, 4 }));
+
+    // The model answers at once: answer text, not a thought.
+    var r = Recorder.init(std.testing.allocator);
+    defer r.deinit();
+    var d = Decoder.init(std.testing.allocator, gemma, opensInReasoning(gemma, &.{ 3, 4 }));
+    defer d.deinit();
+    try d.feed(3, "Teal and ", &r);
+    try d.feed(3, "orange.", &r);
+    try d.finish(&r);
+    try std.testing.expectEqualStrings("", r.thinking.written());
+    try std.testing.expectEqualStrings("Teal and orange.", r.answer.written());
+
+    // The model opens its own channel: a thought, then the answer.
+    var s = Recorder.init(std.testing.allocator);
+    defer s.deinit();
+    var e = Decoder.init(std.testing.allocator, gemma, opensInReasoning(gemma, &.{ 3, 4 }));
+    defer e.deinit();
+    try e.feed(1, "<|channel>", &s);
+    try e.feed(3, "thought\nplan", &s);
+    try e.feed(2, "<channel|>", &s);
+    try e.feed(3, "\nreply", &s);
+    try e.finish(&s);
+    try std.testing.expectEqualStrings("plan", s.thinking.written());
+    try std.testing.expectEqualStrings("reply", s.answer.written());
 }
 
 test "thinking off keeps leading answer newlines and drops a stray close" {

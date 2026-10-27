@@ -77,9 +77,22 @@ values [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/workl
 | | | `mmproj-BF16.gguf` | 982,074,880 | `995aaa56e88b9b631f651861d659b728a625ccc02a238be37cff56cf11dc0032` |
 | `ConwayResearch/Underdog-Saluki-27B-1.0` | `4f60eba09f4b6db63c72915d328d97e1d93edb8c` | `Underdog-Saluki-27B-1.0-IQ2-mix.gguf` | 7,898,369,152 | `4a673518b11b1c4445f9b9a9d3c40356f5ba39f6a6260dcb25f3fbfd475d9efb` |
 | | | `mmproj-Underdog-Saluki-27B-1.0-Q8_0.gguf` | 629,246,976 | `2e0b88b680a45a58eea666b9776a89601b16f4ef575b871a686d82ee65938756` |
+| `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | `85e237c12c027371202489a0ec509ded67b5e4b5` | `model.safetensors` | 1,811,626,576 | `bc3c7e785eb961179c25450d1acff03f839e0002f2f3a5aeb67b5735c0fa2adb` |
+| | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
+| `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | `0c0e3051f131929182e2c023b9537f8b1c68adfe` | `model.safetensors` | 3,833,402,552 | `38b1d5971bdbd982b561cccec982669a53b0537c3cf5e9bd4778ed07bb2f5137` |
+| | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
+| `nvidia/nemotron-3.5-asr-streaming-0.6b` | `ea30d66debe3740a08b573244286791d423d6b3e` | `model.safetensors` | 2,552,062,944 | `9eebdd6590289cb3030f310858f3df93256600a800a3e8200c5993d5f967e174` |
 
 The Saluki rows were pulled and verified on 2026-10-14; the file is not a
 catalogue entry ([saluki.md](saluki.md)).
+
+The Qwen3-TTS (both sizes; the codec files are byte-identical) and Nemotron rows were pulled and verified on 2026-10-27,
+each with its configuration and tokenizer files as support files
+([qwen3-tts.md](qwen3-tts.md), [nemotron-asr.md](nemotron-asr.md)); the
+codec is a separate `--file speech_tokenizer/model.safetensors` pull,
+since a subdirectory holding other weights is another artifact. All three
+are catalogue entries since 2026-10-27 (the fourth table, [below](#the-catalogue)),
+whose pull fetches the codec with its voice.
 
 The 26B-A4B and Muse rows were verified by pulls on 2026-09-17 and entered
 the catalogue the same day as `gemma-4-26b-a4b` and `muse-glimmer-30b`,
@@ -267,7 +280,8 @@ inspect` reads GGUF directories only.
 `models/` is *runnable* when its architecture id has an adapter,
 *supported* only when the catalogue pins it (name, title, repository, file,
 commit, SHA-256, size, quantization, architecture, sampling profile, and
-companions with what they are for: `mmproj` for image input, `mtp` for
+companions with what they are for: `mmproj` for image input, and audio
+input on the one entry marked `hears` (Gemma 4 E4B), `mtp` for
 speculative decoding). Entries are named after the model (`qwen3.8-27b`), not the
 quantization. `nuclis model pull <name> [--with mmproj,mtp | --all]`
 fetches through it, `--model` and `engine.model` resolve names through it,
@@ -324,7 +338,7 @@ with the same four support files under `multilingual/`, which lands in
 pull laya` (or `laya-multilingual`) fetches the set at that commit and refuses it if the Hub's weights digest
 or a named support file differs; `model ls` lists it after the text
 models, marked `(nuclis decide)`, and its JSON rows carry `kind`
-(listing schema 5 since the `embedding` kind joined it). `decide.model` defaults to `laya`; the name is not a
+(listing schema 6 since the `speech` and `transcription` kinds joined it, with the companion role `codec`). `decide.model` defaults to `laya`; the name is not a
 text model's, so `generate --model laya` is refused by name.
 
 `clef-flash` ([MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one)) spans two repositories: its head
@@ -365,3 +379,24 @@ commands refuse the name. `model pull <owner/repo> --register <name>`
 records a GGUF whose header says `gemma-embedding2` as `"kind":
 "embedding"` and names `embed.model` as the key that makes it the
 default.
+
+A fourth table, `audio_entries`, pins the speech and transcription
+checkpoints (2026-10-27): `qwen3-tts-1.7b` and `qwen3-tts-0.6b` (kind
+`speech`, `nuclis speak`) and `nemotron-asr-0.6b` (kind `transcription`,
+`nuclis transcribe`), at the commits and digests of the table above.
+`nuclis model pull <name>` lists the repository once at the pinned
+commit and fetches the weights with their support files (`config.json`,
+`generation_config.json`, the tokenizer's files, and
+`preprocessor_config.json` or `processor_config.json`) and, for a voice,
+the codec `speech_tokenizer/model.safetensors` with its own three, each
+digest checked against the catalogue before anything downloads
+(`CatalogMismatch`) and a named support file missing at the commit
+refused the same way. The codec's sidecar records the role `codec`. `--with`, `--all`, `--file`,
+`--revision`, and `--register` are refused for these names. `model ls`
+lists them last, marked `(nuclis speak)` or `(nuclis transcribe)`, the
+codec beneath its voice; `model inspect <name>` compares the Hub's
+digests with the catalogue's (a safetensors file has no directory to read
+remotely). `speech.model` defaults to `qwen3-tts-1.7b` (the only one that
+takes a delivery instruction), `transcribe.model` to `nemotron-asr-0.6b`;
+the other commands refuse these names, and `speak` and `transcribe`
+refuse each other's.

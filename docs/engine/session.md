@@ -203,9 +203,17 @@ removed.
   the prompt in two segments and calls back between them
   (`engine.Saves`); this is the server's primed prefix, since it never
   primes. Every boundary sits before a control token, which BPE never
-  merges across, so the remainder encodes the same alone. A state with an
-  image in it is not kept: the placeholder text is the same for every
-  image.
+  merges across, so the remainder encodes the same alone.
+- **Media** (2026-10-27). The placeholder text of an image or a clip is the
+  same for every image or clip of its size, so the text the completer
+  matches on is the render with each placeholder run followed by its
+  item's SHA-256 between two 0xFF bytes, never valid UTF-8 and so never in
+  rendered text (`keyedRender`); the tokenizer reads it without them
+  (`plainText`). A state with media is then kept, restored, and moved back
+  to like any other, under the same media only. Speculation stays off
+  while the consumed text holds media (the drafter's cache is stale over
+  their rows), and a step that prefills media saves no state inside its
+  prompt (`engine.Saves` refuses an image prefill).
 - **Rewritten turns.** Gemma 4's template never re-renders an answer as
   the model generated it (`Profile.rewritesTurn`), so neither the session
   nor an answer-end state is ever a prefix of the next turn. On an

@@ -1,13 +1,15 @@
-//! One memory budget over every model `nuclis serve` keeps open, decision,
-//! language, and embedding alike. Before a model opens, `reserve` closes the least
-//! recently used others (through their own `close`) until it fits; a model
-//! in use by a running request is pinned and never closed. Every change
+//! One memory budget over every model `nuclis serve` keeps open, whatever
+//! its kind. Before a model opens, `reserve` closes the least recently used
+//! others (through their own `close`) until it fits. Two kinds of model are
+//! never closed: one in use by a running request (`pin`, for its duration)
+//! and one the server keeps for its whole life (`keep`, `--pin` by name);
+//! a model that cannot fit beside the kept ones is too large. Every change
 //! happens on the GPU worker, which owns the models; `snapshot` may be
-//! called from any task. docs/guide/api.md § Running the server.
+//! called from any task. docs/guide/api.md § Memory.
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const Kind = enum { decision, language, embedding };
+pub const Kind = enum { decision, language, embedding, speech, transcription };
 
 /// Closes the model registered under `key`; it calls `Budget.remove`.
 pub const Closer = struct {
@@ -16,7 +18,8 @@ pub const Closer = struct {
 };
 
 pub const Error = error{
-    /// The model alone is larger than the limit.
+    /// The model alone is larger than the limit, or than what the kept
+    /// models leave of it.
     ModelTooLarge,
     /// Only pinned models stand in the way: it fits once they are released.
     Pinned,
@@ -29,6 +32,8 @@ pub const Budget = struct {
     mutex: std.Io.Mutex = .init,
     entries: std.ArrayList(Entry) = .empty,
     tick: u64 = 0,
+    /// Names of the models never closed to make room (`keep`); owned.
+    kept: []const []const u8 = &.{},
 
     const Entry = struct {
         kind: Kind,
@@ -38,7 +43,10 @@ pub const Budget = struct {
         name: []u8,
         bytes: u64,
         used: u64,
+        /// In use by a running request.
         pinned: bool = false,
+        /// Named by `keep`: never closed by the budget.
+        kept: bool = false,
         closer: Closer,
     };
 
@@ -50,11 +58,31 @@ pub const Budget = struct {
     pub fn deinit(self: *Budget) void {
         for (self.entries.items) |e| self.free(e);
         self.entries.deinit(self.gpa);
+        for (self.kept) |n| self.gpa.free(n);
+        self.gpa.free(self.kept);
     }
 
-    /// Makes room for `bytes` more: closes the least recently used unpinned
-    /// models other than `keep` until they fit.
-    pub fn reserve(self: *Budget, io: std.Io, bytes: u64, keep: ?[]const u8) Error!void {
+    /// The models named `names` are never closed to make room, once open
+    /// under that name; replaces any earlier list. Before any model opens.
+    pub fn keep(self: *Budget, names: []const []const u8) std.mem.Allocator.Error!void {
+        const owned = try self.gpa.alloc([]const u8, names.len);
+        var done: usize = 0;
+        errdefer {
+            for (owned[0..done]) |n| self.gpa.free(n);
+            self.gpa.free(owned);
+        }
+        for (names, owned) |n, *o| {
+            o.* = try self.gpa.dupe(u8, n);
+            done += 1;
+        }
+        for (self.kept) |n| self.gpa.free(n);
+        self.gpa.free(self.kept);
+        self.kept = owned;
+    }
+
+    /// Makes room for `bytes` more: closes the least recently used models,
+    /// neither in use nor kept, other than `keep_key`, until they fit.
+    pub fn reserve(self: *Budget, io: std.Io, bytes: u64, keep_key: ?[]const u8) Error!void {
         if (bytes > self.limit) return error.ModelTooLarge;
         while (true) {
             self.mutex.lockUncancelable(io);
@@ -62,7 +90,11 @@ pub const Budget = struct {
                 self.mutex.unlock(io);
                 return;
             }
-            const victim = self.victimLocked(keep) orelse {
+            if (self.keptLocked() + bytes > self.limit) {
+                self.mutex.unlock(io);
+                return error.ModelTooLarge;
+            }
+            const victim = self.victimLocked(keep_key) orelse {
                 self.mutex.unlock(io);
                 return error.Pinned;
             };
@@ -75,17 +107,20 @@ pub const Budget = struct {
         }
     }
 
-    /// Whether `reserve(bytes)` can succeed: everything unpinned may be
-    /// closed. No side effects, so a caller can ask before closing its own.
+    /// Whether `reserve(bytes)` can succeed: everything neither in use nor
+    /// kept may be closed. No side effects, so a caller can ask before
+    /// closing its own.
     pub fn canFit(self: *Budget, io: std.Io, bytes: u64) Error!void {
         if (bytes > self.limit) return error.ModelTooLarge;
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
+        const kept = self.keptLocked();
+        if (kept + bytes > self.limit) return error.ModelTooLarge;
         var pinned: u64 = 0;
-        for (self.entries.items) |e| if (e.pinned) {
+        for (self.entries.items) |e| if (e.pinned and !e.kept) {
             pinned += e.bytes;
         };
-        if (pinned + bytes > self.limit) return error.Pinned;
+        if (kept + pinned + bytes > self.limit) return error.Pinned;
     }
 
     /// Registers a model that has opened, `bytes` resident.
@@ -97,7 +132,10 @@ pub const Budget = struct {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         self.tick += 1;
-        try self.entries.append(self.gpa, .{ .kind = kind, .key = owned_key, .name = owned_name, .bytes = bytes, .used = self.tick, .closer = closer });
+        const kept = for (self.kept) |n| {
+            if (std.mem.eql(u8, n, name)) break true;
+        } else false;
+        try self.entries.append(self.gpa, .{ .kind = kind, .key = owned_key, .name = owned_name, .bytes = bytes, .used = self.tick, .kept = kept, .closer = closer });
     }
 
     /// `key`'s model now holds `bytes` (its real size once open, or a
@@ -139,7 +177,7 @@ pub const Budget = struct {
         if (self.findLocked(key)) |e| e.pinned = pinned;
     }
 
-    pub const Model = struct { kind: Kind, name: []const u8, bytes: u64 };
+    pub const Model = struct { kind: Kind, name: []const u8, bytes: u64, pinned: bool = false };
 
     /// The resident models, most recently used first, in `arena`; any task.
     pub fn snapshot(self: *Budget, io: std.Io, arena: std.mem.Allocator) ![]Model {
@@ -155,7 +193,7 @@ pub const Budget = struct {
         }.newer);
         for (order, out) |i, *m| {
             const e = self.entries.items[i];
-            m.* = .{ .kind = e.kind, .name = try arena.dupe(u8, e.name), .bytes = e.bytes };
+            m.* = .{ .kind = e.kind, .name = try arena.dupe(u8, e.name), .bytes = e.bytes, .pinned = e.kept };
         }
         return out;
     }
@@ -180,16 +218,24 @@ pub const Budget = struct {
         return total;
     }
 
+    fn keptLocked(self: *const Budget) u64 {
+        var total: u64 = 0;
+        for (self.entries.items) |e| if (e.kept) {
+            total += e.bytes;
+        };
+        return total;
+    }
+
     fn findLocked(self: *Budget, key: []const u8) ?*Entry {
         for (self.entries.items) |*e| if (std.mem.eql(u8, e.key, key)) return e;
         return null;
     }
 
-    fn victimLocked(self: *Budget, keep: ?[]const u8) ?*Entry {
+    fn victimLocked(self: *Budget, keep_key: ?[]const u8) ?*Entry {
         var best: ?*Entry = null;
         for (self.entries.items) |*e| {
-            if (e.pinned) continue;
-            if (keep) |k| if (std.mem.eql(u8, e.key, k)) continue;
+            if (e.pinned or e.kept) continue;
+            if (keep_key) |k| if (std.mem.eql(u8, e.key, k)) continue;
             if (best == null or e.used < best.?.used) best = e;
         }
         return best;
@@ -313,6 +359,42 @@ test "a model that grows once open makes room around itself" {
     try std.testing.expectEqualStrings("laya", fake.closed.items[0]);
     try std.testing.expectEqual(@as(u64, 80), budget.resident(io));
     try std.testing.expectError(error.ModelTooLarge, budget.resize(io, "qwen", 120));
+}
+
+test "kept models are never closed; what cannot fit beside them is too large" {
+    const io = std.testing.io;
+    var budget: Budget = .init(std.testing.allocator, 100);
+    defer budget.deinit();
+    var fake: Fake = .{ .budget = &budget };
+    defer fake.deinit();
+    try budget.keep(&.{ "e4b", "voice" });
+    try budget.add(io, .language, "e4b", "e4b", 40, fake.closer());
+    try budget.add(io, .speech, "/m/voice", "voice", 30, fake.closer());
+    try budget.add(io, .decision, "laya", "laya", 20, fake.closer());
+    try budget.add(io, .transcription, "/m/ears", "ears", 10, fake.closer());
+    budget.touch(io, "e4b");
+    budget.touch(io, "/m/voice");
+    // 100 resident; 15 more closes the least recently used unkept model
+    // (laya) though both kept ones are older by use than nothing else.
+    try budget.reserve(io, 15, null);
+    try std.testing.expectEqualStrings("laya", fake.closed.items[0]);
+    // 31 more than the kept 70 leave: too large, at once, nothing closed.
+    try std.testing.expectError(error.ModelTooLarge, budget.canFit(io, 31));
+    try std.testing.expectError(error.ModelTooLarge, budget.reserve(io, 31, null));
+    try std.testing.expectEqual(@as(usize, 1), fake.closed.items.len);
+    // 30 fits once the unkept transcription model closes.
+    try budget.reserve(io, 30, null);
+    try std.testing.expectEqualStrings("/m/ears", fake.closed.items[1]);
+    try std.testing.expectEqual(@as(u64, 70), budget.resident(io));
+    // A kept model in use is still only kept: in use adds nothing to wait for.
+    budget.pin(io, "e4b", true);
+    try budget.canFit(io, 30);
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const models = try budget.snapshot(io, arena_state.allocator());
+    for (models) |m| try std.testing.expect(m.pinned);
+    // A kept model that grows past what the limit holds is too large.
+    try std.testing.expectError(error.ModelTooLarge, budget.resize(io, "/m/voice", 61));
 }
 
 test "the default limit leaves a third, at most 16 GiB" {

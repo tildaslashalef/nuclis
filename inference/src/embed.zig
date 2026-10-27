@@ -343,7 +343,7 @@ pub const Embedder = struct {
         var pcm = try audio.audio.decode(alloc, bytes, max_audio_samples);
         defer pcm.deinit(alloc);
         if (pcm.total > pcm.samples.len and !cut_long) return error.AudioTooLong;
-        const frames = mel.frameCount(pcm.samples.len);
+        const frames = mel.Spec.gemma.frameCount(pcm.samples.len);
         if (frames == 0) return error.AudioTooShort;
         const features = try alloc.alloc(f32, frames * mel.filters);
         defer alloc.free(features);
@@ -352,7 +352,7 @@ pub const Embedder = struct {
         const rows = try alloc.alloc(f32, count * model.config.embedding);
         errdefer alloc.free(rows);
         try self.encodeFeatures(features, frames, rows);
-        const whole = gemma4a.tokensFor(mel.frameCount(@intCast(@min(pcm.total, std.math.maxInt(usize)))));
+        const whole = gemma4a.tokensFor(mel.Spec.gemma.frameCount(@intCast(@min(pcm.total, std.math.maxInt(usize)))));
         return .{ .rows = rows, .cut = whole -| count };
     }
 
@@ -371,7 +371,7 @@ pub const Embedder = struct {
         if (projector.listener) |*l| return l;
         const bank = try self.gpa.create(mel.Bank);
         errdefer self.gpa.destroy(bank);
-        bank.init();
+        bank.init(.gemma);
         projector.listener = .{ .bank = bank, .engine = switch (self.engine) {
             .cpu => .{ .cpu = try .init(self.gpa, self.io, projector.mapped.view(), binding) },
             .metal => |plan| .{ .metal = try .init(self.gpa, self.io, &plan.backend, projector.mapped.view(), binding) },

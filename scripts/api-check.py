@@ -258,6 +258,8 @@ def check_refusals(client: Client) -> None:
             "messages[0]",
         ),
         ({"model": "laya", "messages": user}, 400, "not_a_language_model", "model"),
+        ({"model": "qwen3-tts-1.7b", "messages": user}, 400, "not_a_language_model", "model"),
+        ({"model": "nemotron-asr-0.6b", "messages": user}, 400, "not_a_language_model", "model"),
         ({"model": "no-such-model", "messages": user}, 404, "model_not_found", "model"),
     ]
     for body, status, code, param in cases:

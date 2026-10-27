@@ -65,15 +65,19 @@ same `--logits`/`--trace-dir` oracle as the CPU backend ([sampling.md](sampling.
 | --- | --- |
 | `backends/metal/bridge.m` | Device, queue, shader library, pipelines, buffers, one open command buffer. A generic recording API: `begin`, `dispatch(pipeline, bindings, constants, grid)`, `commit`, and `discard` (an error path drops the open command buffer unsubmitted). Opt-in profiling: timestamp counter sample buffers and one encoder per dispatch, resolved to seconds per dispatch at commit. Knows nothing about models, shapes, or encodings. |
 | `backends/metal/root.zig` | `Backend`: compiles the kernel set, hands out `Buffer` handles (`create`/`wrap`/`slice`), and exposes one typed encoder per kernel that validates shapes before recording. `Profile` accumulates timed dispatches by kernel, encoding, and shape. Knows kernel contracts, not layer schedules. |
+| `backends/metal/kernels.zig`, `profile.zig` | The MSL source's assembly and the `Kernel` table (`kernel_files`, the codebooks as MSL constants); per-dispatch timing types. |
+| `backends/metal/ops/*.zig` | The typed encoders, one file per `kernels/*.metal` file (`matvec`, `matmul`, `experts`, `rowwise`, `encoders`, `recurrent`, `attention`, `sampling`, `audio`, `asr`, `tts`): functions of `*Backend` that `root.zig` aliases as methods, so callers write `backend.matvec(…)`. |
 | `backends/metal/dequant.metal` | GGUF block decoders, ported line by line from `quant/decode.zig`. Bit-exact with the CPU decoders. |
-| `backends/metal/kernels.metal` | Compute kernels: generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0, merged projections (plain, SiLU pair, GELU pair) and their forced split-K twins, embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, quick-gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window, bidirectional span, and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing. |
+| `backends/metal/kernels/*.metal` | Compute kernels, one file per kind of operation (`common`, `matvec`, `matvec_codebook`, `matvec_split`, `matvec_rows`, `experts`, `matmul`, `rowwise`, `recurrent`, `attention`, `recurrent_chunk`, `sampling`, `encoders`, `audio`, `asr`, `tts`), joined in that order (`kernel_files` in `root.zig`; later files use earlier helpers): generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0, merged projections (plain, SiLU pair, GELU pair) and their forced split-K twins, embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, quick-gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window, bidirectional span, and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing; Nemotron ASR's subsampling convolutions, chunk-masked relative attention over a cached window, GLU, depthwise convolution, row shifts, joint input, and a few-rows F32 product with epilogues. |
 | `models/qwen35_metal.zig` | `Plan`: the Qwen schedule expressed as encoder calls. Owns the session and activation buffers; borrows weights and the backend. |
 | `models/gemma4_metal.zig` | `Plan`: the Gemma 4 12B schedule ([MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11)) on the same encoders; sliding-window slices, two RoPE tables, the wide global-layer attention ([gemma4.md § Metal plan](../models/gemma4.md#metal-plan-2026-09-11)). |
 | `models/muse_glimmer_metal.zig` | `Plan`: the Muse Glimmer 30B schedule ([MODL-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-12--muse-glimmer-30b-metal-plan-2026-09-19)) on the same encoders; adjacent-pair RoPE on sliding layers only, the sigmoid attention gate, the untied scaled head ([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-2026-09-19)). |
-| `metal-check.zig` | Explicit GPU checks against pinned fixtures and CPU references; `--matvec-bench` measures the matvec kernels' achieved bandwidth. |
+| `models/qwen3_tts_metal.zig` | `Plan`: Qwen3-TTS's talker and code predictor over the BF16 matrices wrapped in place; a frame's 15 groups sampled on the device and checked by the host sampler ([qwen3-tts.md § On Metal](../models/qwen3-tts.md#on-metal-2026-10-27)). |
+| `audio/qwen3_codec_metal.zig` | `Decoder` and `Stream`: Qwen3-TTS's codec decoder, streamed with its carried state on the device, bit for bit the same for any piece size. |
+| `metal-check.zig` | Explicit GPU checks against pinned fixtures and CPU references (the TTS kernels' in `tts-metal-check.zig`); `--matvec-bench` measures the matvec kernels' achieved bandwidth, `--tts-bench` the BF16 matvec's. |
 
 The MSL source is assembled at compile time: the IQ3_S codebook is emitted from
-the single Zig definition, then `dequant.metal` and `kernels.metal` are embedded.
+the single Zig definition, then `dequant.metal` and the `kernels/` files, in `kernel_files` order, are embedded.
 The shader compiles at backend creation with `MTLMathModeSafe`, so no
 reassociation or contraction is applied. Metal's per-user shader cache
 keeps that cheap: measured on the M4 Pro (2026-10-02, 159 pipelines,
@@ -175,7 +179,7 @@ Thread counts are the numbers `Backend` passes to `dispatch`.
 | `nu_matmul` (generic) | 128 | 32-row × 32-token output tile | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 8 KB F32 weight tile + 8 KB F32 activation tile, `threadgroup_barrier` |
 | `nu_attention_chunk` / `_h` | 128 | (query head, 32-query tile, 256 value columns) | 8 query rows: 4 score blocks, 32 output blocks | `simd_shuffle_xor`, `simd_shuffle`, `simd_any`, matrix MACs | 6 KB (per-group score tile, diagonal, staging); 7.5 KB in the half instantiation (its own probability tile), `simdgroup_barrier` only |
 | `nu_segments_scores` | 128 | (query tile of ≤ 32 rows, head, 32-key block) | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 8 KB Q tile + 8 KB transposed K tile (F32), `threadgroup_barrier` |
-| `nu_segments_softmax` | 256 | (query tile, head) | one strip row at a time | `simd_max`, `simd_sum` | none |
+| `nu_segments_stats` | 256 | (query tile, head) | one strip row at a time, an online (max, sum) per lane | `simd_max`, `simd_sum` | none |
 | `nu_segments_values` | 128 | (query tile, head, 32 value columns) | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 4 KB P tile + 4 KB V tile (F32), `threadgroup_barrier` |
 | `nu_delta_chunk` | 128 | (value head, 32 value rows), all sub-chunks | an 8-row block of every 32×32 tile; column `tid` in the triangular solve | matrix MACs; no shuffles | 24 KB of 32×32 tiles, `threadgroup_barrier` per phase, `mem_device` per sub-chunk |
 | `nu_attention_decode` / `_h` ([KERN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-08--flash-decoding-attention-2026-09-10)), `_w` / `_wh` ([MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11)), `_q8` / `_wq8` ([Q8_0 KV cache](#q8_0-kv-cache-2026-10-15)) | 128 | (KV head, group of ≤ 8 query heads — ≤ 4 in the wide pair —, split of the visible rows) | every fourth row of the slice; lane l owns channels l, l+32, … (8 per lane, 16 in the wide pair) with per-head running max, sum, and accumulator in registers | `simd_sum` per (row, head); 3-round merge of the SIMD groups through 8 KB | 8 KB stage, `threadgroup_barrier` |
@@ -423,7 +427,7 @@ F32, unresolvable in any softmax). The costs and the record rows are in
 
 Decode reads every weight once per token, so the matvec kernels for Q5_K,
 IQ4_XS, Q4_K, and Q6_K decide decode speed. Their design, in
-`kernels.metal` (templates instantiated with `[[host_name]]`, so the bridge
+`kernels/` (templates instantiated with `[[host_name]]`, so the bridge
 needs no function constants):
 
 - **Geometry.** 128-thread groups of four SIMD groups; each SIMD group owns
@@ -1922,11 +1926,28 @@ the output.
 1. `nu_segments_scores`: S = scale · Q·Kᵀ per (tile, head, 32-key block).
    A 32×32 matmul tile with both operands staged in threadgroup memory, as
    the generic `nu_matmul` stages them. Invisible keys are written −∞.
-2. `nu_segments_softmax`: the exact two-pass softmax of each strip row.
+2. `nu_segments_stats`: each strip row's max and 1 / sum, read once
+   (an online pair per lane, merged across the SIMD group), stored after
+   the strips (`scoreFloats`: at most a sixteenth more).
 3. `nu_segments_values`: O = P·V per (tile, head, 32 value columns), the
-   same tile over the span in 32-key steps.
+   same tile over the span in 32-key steps; P = exp(S − max) / sum is
+   formed while the strip is staged.
 
-Key rows past `rows` stage as zeros, so padding never reaches a sum.
+Key rows past `rows` stage as zeros, so padding never reaches a sum; a
+row that sees no key (padding past `rows`) comes out zero. Head widths
+are any multiple of 8 up to 512: the last 64-wide step of the scores and
+the last 32-column block of the values stage the missing columns as zeros
+and store only their own 8-column blocks.
+
+Until 2026-10-27 the middle pass was an in-place two-pass softmax (three
+reads and two writes of every strip); on the vision encoders' 64-wide
+heads the strips are the traffic, and the statistics pass cut the E4B's
+attention from 1.52 s to 0.98 s
+([vision.md § Encoders at the materialized-score attention](vision.md#encoders-at-the-materialized-score-attention-2026-10-27)).
+A 64-key score tile (32 × 64 per threadgroup, K staged row-major and
+loaded transposed, 25 KB of threadgroup memory) was slower on that shape
+(0.54 s → 0.69 s, 0.685 s with rows padded against bank conflicts) and
+was not kept.
 
 **Why not an online softmax.** Two flash-style bodies were built first
 and passed the same checks:

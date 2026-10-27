@@ -76,6 +76,173 @@ fn checkAudioKernels(alloc: std.mem.Allocator, b: *Backend) !void {
     std.debug.print("audio attention (40 rows across four chunks) and the GLU depthwise convolution vs the CPU reference: attention worst relative {e:.2} (bound 2e-5)\n", .{worst});
 }
 
+/// Nemotron ASR's kernels against the CPU reference's functions
+/// (`audio.nemotron_encoder`, `nemotron_rnnt`), on random rows: the stem and
+/// a depthwise subsampling convolution over a window that starts past row 0
+/// and ends on the zero pad row; the attention with a full and a partial
+/// cache at lookaheads 3 and 0; the GLU, the depthwise convolution, the
+/// joint's input, and the row shifts and half-step add, which are exact.
+fn checkAsrKernels(alloc: std.mem.Allocator, b: *Backend) !void {
+    const ne = inference.audio.nemotron_encoder;
+    const rnnt = inference.audio.nemotron_rnnt;
+    var prng = std.Random.DefaultPrng.init(0xa5a);
+    const random = prng.random();
+    var arena_state: std.heap.ArenaAllocator = .init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const Fill = struct {
+        fn values(a: std.mem.Allocator, r: std.Random, n: usize, scale: f32) ![]f32 {
+            const out = try a.alloc(f32, n);
+            for (out) |*x| x.* = r.floatNorm(f32) * scale;
+            return out;
+        }
+    };
+    var worst: f32 = 0;
+
+    // Subsampling: input rows 4 … 9 held (first 4, count 10), outputs 3 … 5;
+    // output 5 reads row 10, the pad.
+    const channels = 16;
+    for ([_]struct { in_channels: usize, width_in: usize, relu: bool }{ .{ .in_channels = 1, .width_in = 128, .relu = true }, .{ .in_channels = channels, .width_in = 33, .relu = false } }) |case| {
+        const width_out = case.width_in / 2 + 1;
+        const first = 4;
+        const count = 10;
+        const next = 3;
+        const end = 6;
+        const in_row = case.width_in * case.in_channels;
+        const rows = try Fill.values(arena, random, (count - first) * in_row, 2);
+        const filter: ne.Linear = .{ .weight = try Fill.values(arena, random, channels * 9, 1), .bias = try Fill.values(arena, random, channels, 0.5) };
+        const want = try arena.alloc(f32, (end - next) * width_out * channels);
+        ne.conv2d(filter, channels, case.in_channels, .{ .rows = rows, .first = first, .count = count }, next, end, case.width_in, width_out, want);
+        if (case.relu) for (want) |*x| {
+            x.* = @max(x.*, 0);
+        };
+        const out = try b.create(want.len * 4);
+        try b.begin();
+        try b.asrConv2d(try upload(b, rows), try upload(b, filter.weight), try upload(b, filter.bias.?), out, .{ .rows = end - next, .next = next, .first = first, .count = count, .width_in = case.width_in, .width_out = width_out, .channels = channels, .in_channels = case.in_channels, .relu = case.relu });
+        try b.commit();
+        for (out.floats()[0..want.len], want) |got, w| try expectClose("asr_conv2d", got, w, 1e-5 * @max(1, @abs(w)));
+    }
+
+    // Attention at the encoder's width: a full cache at r = 3 (rows 100 …
+    // 103 over 56 cached), a partial one at r = 0 (row 3 over 3).
+    const config = ne.Config.nemotron;
+    const h = config.hidden;
+    const relk = try Fill.values(arena, random, config.positions() * h, 1);
+    const bias_u = try Fill.values(arena, random, h, 0.3);
+    const bias_v = try Fill.values(arena, random, h, 0.3);
+    const scores = try arena.alloc(f64, config.positions());
+    for ([_]struct { lookahead: usize, rows: usize, held: usize, first: usize }{ .{ .lookahead = 3, .rows = 4, .held = 56, .first = 100 }, .{ .lookahead = 0, .rows = 1, .held = 3, .first = 3 }, .{ .lookahead = 3, .rows = 12, .held = 8, .first = 8 } }) |case| {
+        const q = try Fill.values(arena, random, case.rows * h, 1);
+        const keys = try Fill.values(arena, random, (case.held + case.rows) * h, 1);
+        const values = try Fill.values(arena, random, (case.held + case.rows) * h, 1);
+        const want = try arena.alloc(f32, case.rows * h);
+        ne.attention(config, case.lookahead, bias_u, bias_v, relk, q, keys, values, case.first, case.first - case.held, case.rows, want, scores);
+        const out = try b.create(want.len * 4);
+        const chunk = case.lookahead + 1;
+        try b.begin();
+        try b.asrAttention(try upload(b, q), try upload(b, keys), try upload(b, values), try upload(b, relk), try upload(b, bias_u), try upload(b, bias_v), out, .{ .rows = case.rows, .held = case.held, .first = case.first, .chunk = chunk, .reach = config.left / chunk, .width = h, .offset = ne.max_lookahead, .positions = config.positions() });
+        try b.commit();
+        for (out.floats()[0..want.len], want) |got, w| worst = @max(worst, @abs(got - w) / @max(1, @abs(w)));
+    }
+    if (worst > 2e-5) {
+        std.debug.print("asr_attention: worst relative difference {e}\n", .{worst});
+        return error.MetalMismatch;
+    }
+
+    // The convolution module: GLU into the rows after 8 held ones, then the depthwise convolution.
+    const n = 5;
+    const wide = try Fill.values(arena, random, n * 2 * h, 3);
+    const gated = try Fill.values(arena, random, (config.kernel - 1 + n) * h, 1);
+    ne.glu(wide, n, h, gated[(config.kernel - 1) * h ..]);
+    const dw = try Fill.values(arena, random, h * config.kernel, 1);
+    const want = try arena.alloc(f32, n * h);
+    ne.depthwise(gated, dw, config.kernel, n, h, want);
+    const device_gated = try upload(b, gated);
+    @memset(device_gated.floats()[(config.kernel - 1) * h ..], 0);
+    const out = try b.create(n * h * 4);
+    try b.begin();
+    try b.asrGlu(try upload(b, wide), device_gated.slice((config.kernel - 1) * h * 4, n * h * 4), h, n);
+    try b.asrDepthwise(device_gated, try upload(b, dw), out, h, n, config.kernel);
+    try b.commit();
+    for (device_gated.floats(), gated) |got, w| try expectClose("asr_glu", got, w, 1e-6 * @max(1, @abs(w)));
+    for (out.floats(), want) |got, w| try expectClose("asr_depthwise", got, w, 1e-5 * @max(1, @abs(w)));
+
+    // The joint's input, the bias and ReLU, the half step, the shifts.
+    const e = try Fill.values(arena, random, n * 640, 2);
+    const g = try Fill.values(arena, random, 640, 2);
+    const joint = try arena.alloc(f32, n * 640);
+    for (0..n) |r| rnnt.jointInput(e[r * 640 ..][0..640], g, joint[r * 640 ..][0..640]);
+    const x = try Fill.values(arena, random, n * 640, 2);
+    const y = try Fill.values(arena, random, n * 640, 2);
+    const bias = try Fill.values(arena, random, 640, 1);
+    const planes = 3;
+    const stride = 70 * 64;
+    const cache = try Fill.values(arena, random, planes * stride, 1);
+    const device = .{ .joint = try b.create(n * 640 * 4), .x = try upload(b, x), .relu = try upload(b, x), .cache = try upload(b, cache) };
+    try b.begin();
+    try b.asrJoint(try upload(b, e), try upload(b, g), device.joint, 640, n);
+    try b.asrAddScaled(device.x, try upload(b, y), n * 640, 0.5);
+    try b.asrBiasRelu(device.relu, try upload(b, bias), 640, n);
+    try b.asrShift(device.cache, 64, 56, 4, planes, stride);
+    try b.commit();
+    for (device.joint.floats(), joint) |got, w| if (got != w) return error.MetalMismatch;
+    for (device.x.floats(), x, y) |got, a, c| if (got != a + 0.5 * c) return error.MetalMismatch;
+    for (device.relu.floats(), x, 0..) |got, a, i| if (got != @max(a + bias[i % 640], 0)) return error.MetalMismatch;
+    for (0..planes) |p| for (0..70) |r| for (0..64) |c| {
+        const at = p * stride + r * 64 + c;
+        const expected = if (r < 56) cache[p * stride + (r + 4) * 64 + c] else cache[at];
+        if (device.cache.floats()[at] != expected) return error.MetalMismatch;
+    };
+    // The few-rows F32 product: three matrices at once, each epilogue, 1–8
+    // rows (3 and 5 run the next power of two over scratch rows), against F64.
+    var product_worst: f64 = 0;
+    {
+        const rows = 48;
+        const columns = 256;
+        const x_stride = 260;
+        for ([_]usize{ 1, 3, 5, 8 }) |tokens| for ([_]Backend.AsrEpilogue{ .store, .silu, .{ .accumulate = 0.5 }, .glu }) |epilogue| {
+            const matrices: usize = if (epilogue == .glu) 1 else 3;
+            const activations = try Fill.values(arena, random, 8 * x_stride, 1);
+            const width: usize = if (epilogue == .glu) rows / 2 else rows;
+            var products: [3]Backend.AsrProduct = undefined;
+            var weights: [3][]f32 = undefined;
+            var before: [3][]f32 = undefined;
+            for (0..matrices) |m| {
+                weights[m] = try Fill.values(arena, random, rows * columns, 1);
+                before[m] = try Fill.values(arena, random, 8 * width, 1);
+                products[m] = .{ .weights = try upload(b, weights[m]), .output = try upload(b, before[m]) };
+            }
+            const shape: inference.cpu.Matrix = .{ .encoding = 0, .rows = rows, .columns = columns, .bytes = std.mem.sliceAsBytes(weights[0]) };
+            try b.begin();
+            try b.asrMatmulRows(shape, products[0..matrices], try upload(b, activations), x_stride, width, tokens, epilogue);
+            try b.commit();
+            for (0..matrices) |m| for (0..tokens) |t| for (0..width) |r| {
+                // Row r's product, and for the GLU its gate's, row r + rows/2.
+                var dot: [2]f64 = .{ 0, 0 };
+                for (0..2) |half| {
+                    const row = r + half * rows / 2;
+                    if (row >= rows) continue;
+                    for (0..columns) |k| dot[half] += @as(f64, weights[m][row * columns + k]) * activations[t * x_stride + k];
+                }
+                const s = dot[0];
+                const w: f64 = switch (epilogue) {
+                    .store => s,
+                    .silu => s / (1 + @exp(-s)),
+                    .accumulate => |f| before[m][t * width + r] + f * s,
+                    .glu => s / (1 + @exp(-dot[1])),
+                };
+                const got = products[m].output.floats()[t * width + r];
+                product_worst = @max(product_worst, @abs(got - w) / @max(1, @abs(w)));
+            };
+        };
+    }
+    if (product_worst > 1e-5) {
+        std.debug.print("asr_matmul_rows: worst relative difference {e}\n", .{product_worst});
+        return error.MetalMismatch;
+    }
+    std.debug.print("Nemotron ASR kernels vs the CPU reference: subsampling convolutions, GLU, depthwise convolution within 1e-5; attention worst relative {e:.2} (bound 2e-5); the few-rows product (three matrices, every epilogue, 1-8 rows) vs F64 {e:.2} (bound 1e-5); joint input, half step, bias and ReLU, row shifts exact\n", .{ worst, product_worst });
+}
+
 fn openBackend(alloc: std.mem.Allocator) !Backend {
     var diagnostic: [8192]u8 = @splat(0);
     return Backend.init(alloc, &diagnostic) catch |err| {
@@ -2253,6 +2420,107 @@ fn checkGroupedSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
     var wide = ok;
     wide.width = 576;
     try std.testing.expectError(error.InvalidShape, b.attentionSegmentsGrouped(qkv, qkv, qkv, o, small, t, chunk, small, wide));
+    var ragged = ok;
+    ragged.width = 68;
+    try std.testing.expectError(error.InvalidShape, b.attentionSegmentsGrouped(qkv, qkv, qkv, o, small, t, chunk, small, ragged));
+}
+
+/// The vision encoders' attention (`vision.attention_metal.Spans`) against
+/// F64 attention over each row's window: the E4B's 64-wide heads over its
+/// 6,084 patches at scale 1 (several score chunks), Qwen3-VL's 72-wide and
+/// Muse Glimmer's 96-wide heads (widths that are not a multiple of 64) over
+/// one window and over windows of uneven lengths, rows not a multiple of 8.
+/// Key rows past the patches and query rows in the padding are NaN; the
+/// padding rows' output must come out zero.
+fn checkVisionSpanAttention(alloc: std.mem.Allocator, b: *Backend) !void {
+    const attention = inference.vision.attention_metal;
+    const W = attention.Window;
+    const Case = struct { heads: usize, width: usize, rows: usize, scale: f32, windows: []const W, step: usize };
+    const cases = [_]Case{
+        .{ .heads = 12, .width = 64, .rows = 6084, .scale = 1, .windows = &.{.{ .begin = 0, .count = 6084 }}, .step = 61 },
+        .{ .heads = 4, .width = 72, .rows = 1003, .scale = 1.0 / @sqrt(72.0), .windows = &.{.{ .begin = 0, .count = 1003 }}, .step = 1 },
+        .{ .heads = 4, .width = 96, .rows = 1003, .scale = 1.0 / @sqrt(96.0), .windows = &.{ .{ .begin = 0, .count = 300 }, .{ .begin = 300, .count = 1 }, .{ .begin = 301, .count = 517 }, .{ .begin = 818, .count = 185 } }, .step = 1 },
+        .{ .heads = 4, .width = 72, .rows = 13, .scale = 1.0 / @sqrt(72.0), .windows = &.{ .{ .begin = 0, .count = 5 }, .{ .begin = 5, .count = 8 } }, .step = 1 },
+    };
+    var created: usize = 0;
+    var spans = try attention.Spans.init(alloc, b, 8192, &created);
+    defer spans.deinit(alloc);
+    const scores_buffer = try b.create(attention.score_capacity * 4);
+    defer b.release(scores_buffer) catch {};
+    var prng = std.Random.DefaultPrng.init(0x715e);
+    const random = prng.random();
+    for (cases) |case| {
+        const row_floats = case.heads * case.width;
+        const padded = Backend.attentionChunkRows(case.rows);
+        const q = try alloc.alloc(f32, padded * row_floats);
+        defer alloc.free(q);
+        const k = try alloc.alloc(f32, padded * row_floats);
+        defer alloc.free(k);
+        const v = try alloc.alloc(f32, padded * row_floats);
+        defer alloc.free(v);
+        for (q, k, v, 0..) |*x, *y, *z, i| {
+            const real = i / row_floats < case.rows;
+            x.* = if (real) random.floatNorm(f32) else std.math.nan(f32);
+            y.* = if (real) random.floatNorm(f32) else std.math.nan(f32);
+            z.* = if (real) random.floatNorm(f32) else std.math.nan(f32);
+        }
+        const qb = try upload(b, q);
+        const kb = try upload(b, k);
+        const vb = try upload(b, v);
+        const out = try b.create(padded * row_floats * 4);
+        @memset(out.floats(), std.math.nan(f32));
+        try spans.plan(case.windows, case.rows, case.heads);
+        try b.begin();
+        try spans.attend(b, qb, kb, vb, out, scores_buffer, .{ .width = case.width, .q_stride = row_floats, .kv_stride = row_floats, .out_stride = row_floats, .scale = case.scale });
+        try b.commit();
+        const got = out.floats();
+        for (got[case.rows * row_floats .. padded * row_floats]) |x| if (x != 0) {
+            std.debug.print("vision span attention: a padding row holds {d}\n", .{x});
+            return error.MetalMismatch;
+        };
+        const scores = try alloc.alloc(f64, case.rows);
+        defer alloc.free(scores);
+        var worst: f64 = 0;
+        var i: usize = 0;
+        while (i < case.rows) : (i += case.step) {
+            var lo: usize = 0;
+            var hi: usize = 0;
+            for (case.windows) |w| if (i >= w.begin and i < w.begin + w.count) {
+                lo = w.begin;
+                hi = w.begin + w.count;
+            };
+            for (0..case.heads) |h| {
+                const qi = q[i * row_floats + h * case.width ..][0..case.width];
+                var max: f64 = -std.math.inf(f64);
+                for (lo..hi) |j| {
+                    var dot: f64 = 0;
+                    for (qi, k[j * row_floats + h * case.width ..][0..case.width]) |x, y| dot += @as(f64, x) * y;
+                    scores[j] = dot * case.scale;
+                    max = @max(max, scores[j]);
+                }
+                var sum: f64 = 0;
+                for (scores[lo..hi]) |*x| {
+                    x.* = @exp(x.* - max);
+                    sum += x.*;
+                }
+                for (got[i * row_floats + h * case.width ..][0..case.width], 0..) |x, d| {
+                    var want: f64 = 0;
+                    for (lo..hi) |j| want += scores[j] * v[j * row_floats + h * case.width + d];
+                    worst = @max(worst, @abs(want / sum - x));
+                }
+            }
+        }
+        if (!(worst <= 2e-4)) {
+            std.debug.print("vision span attention ({d} heads of {d}, {d} rows, {d} windows): worst |difference| {e:.3}\n", .{ case.heads, case.width, case.rows, case.windows.len, worst });
+            return error.MetalMismatch;
+        }
+        std.debug.print("vision span attention, {d} heads of {d}, {d} rows in {d} windows, {d} chunks, vs F64 (every {d}th row): worst |difference| {e:.3} (bound 2e-4), padding rows zero\n", .{ case.heads, case.width, case.rows, case.windows.len, spans.chunk_count, case.step, worst });
+        for ([_]Buffer{ qb, kb, vb, out }) |buffer| try b.release(buffer);
+    }
+    // Windows that leave a gap or overrun the rows are refused.
+    try std.testing.expectError(error.InvalidShape, spans.plan(&[_]W{ .{ .begin = 0, .count = 4 }, .{ .begin = 5, .count = 4 } }, 9, 4));
+    try std.testing.expectError(error.InvalidShape, spans.plan(&[_]W{.{ .begin = 0, .count = 10 }}, 9, 4));
+    try std.testing.expectError(error.InvalidShape, spans.plan(&[_]W{.{ .begin = 0, .count = 8 }}, 9, 4));
 }
 
 /// The exact-GELU gate over the two halves of strided fused rows against
@@ -3345,6 +3613,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--hadamard-bench")) return hadamardBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--attention-bench")) return attentionBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--decode-bench")) return decodeBench(alloc);
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--tts-bench")) return @import("tts-metal-check.zig").bench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--experts-bench")) return expertsBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
     if (args.len >= 3 and std.mem.eql(u8, args[1], "--wide-rows")) {
         var backend = try openBackend(alloc);
@@ -4222,11 +4491,14 @@ pub fn main(init: std.process.Init) !void {
     try checkWindowAttention(alloc, b);
     try checkSegmentAttention(alloc, b);
     try checkGroupedSegmentAttention(alloc, b);
+    try checkVisionSpanAttention(alloc, b);
     try checkGeluErfRows(alloc, b);
     try checkFusedNorms(alloc, b);
     try checkDenseEncodings(alloc, io, b);
     try checkVisionNorms(alloc, b);
     try checkAudioKernels(alloc, b);
+    try checkAsrKernels(alloc, b);
+    try @import("tts-metal-check.zig").check(alloc, b);
 
     // 8c. Chunkwise DeltaNet: a 70-token layer chunk (sub-chunks of
     // 32, 32, and 6) on the model shape (16 Q/K heads broadcast to 48 value
@@ -4943,5 +5215,5 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, the verify rows and their tape replay bit-identical to decode steps, the convolution history after every prefix, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, attention over packed sequences with and without windows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate, the exact erf GELU, and its gate over fused rows among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, Gemma 4's audio attention and light convolution against the CPU, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, the verify rows and their tape replay bit-identical to decode steps, the convolution history after every prefix, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, attention over packed sequences with and without windows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate, the exact erf GELU, and its gate over fused rows among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, Gemma 4's audio attention and light convolution against the CPU, Nemotron ASR's kernels against the CPU functions, and per-dispatch profiling with capacity overflow.\n", .{});
 }

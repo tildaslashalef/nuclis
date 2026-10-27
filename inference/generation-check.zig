@@ -105,6 +105,10 @@ pub fn main(init: std.process.Init) !void {
     var vision_check: ?[]const u8 = null;
     var vision_image: ?[]const u8 = null;
     var vision_oracle: ?[]const u8 = null;
+    var audio_check: ?[]const u8 = null;
+    var audio_twin: ?[]const u8 = null;
+    var audio_clips: std.ArrayList([]const u8) = .empty;
+    defer audio_clips.deinit(alloc);
     var verify_depth: ?[]const u8 = null;
     var prefix_dir: ?[]const u8 = null;
     var hidden_rows = false;
@@ -140,6 +144,18 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedProjectorPath;
             vision_check = args[i];
+        } else if (std.mem.eql(u8, arg, "--audio-check")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedProjectorPath;
+            audio_check = args[i];
+        } else if (std.mem.eql(u8, arg, "--audio-twin")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedProjectorPath;
+            audio_twin = args[i];
+        } else if (std.mem.eql(u8, arg, "--audio-clip")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedAudioPath;
+            try audio_clips.append(alloc, args[i]);
         } else if (std.mem.eql(u8, arg, "--vision-image")) {
             i += 1;
             if (i >= args.len) return error.ExpectedImagePath;
@@ -177,7 +193,7 @@ pub fn main(init: std.process.Init) !void {
             try hiddenRowsCheck(alloc, init.io, &mapped)
         else if (vision_check) |projector|
             if (vision_image) |image|
-                try visionCompare(alloc, init.io, projector, image, vision_oracle orelse return error.ExpectedOracleDirectory, use_metal, model_path)
+                try visionCompare(alloc, init.io, projector, image, vision_oracle, use_metal, model_path)
             else
                 try visionCheck(alloc, init.io, model_path, projector, use_metal)
         else if (flash_trace) |dir|
@@ -190,9 +206,11 @@ pub fn main(init: std.process.Init) !void {
             try speculativeCheck(qwen35_spec, alloc, init.io, &mapped, model_path, use_metal, draft_model, prompt_profile)
         else
             try run(qwen35_spec, alloc, init.io, &mapped, use_metal, half_tiles_only),
-        .gemma4 => if (vision_check) |projector|
+        .gemma4 => if (audio_check) |projector|
+            try audioCheck(alloc, init.io, model_path, projector, audio_twin, audio_clips.items, use_metal)
+        else if (vision_check) |projector|
             if (vision_image) |image|
-                try visionCompare(alloc, init.io, projector, image, vision_oracle orelse return error.ExpectedOracleDirectory, use_metal, model_path)
+                try visionCompare(alloc, init.io, projector, image, vision_oracle, use_metal, model_path)
             else
                 try visionCheck(alloc, init.io, model_path, projector, use_metal)
         else if (draft_trace != null)
@@ -200,7 +218,7 @@ pub fn main(init: std.process.Init) !void {
         else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal, half_tiles_only),
         .@"muse-glimmer" => if (vision_check) |projector|
             if (vision_image) |image|
-                try visionCompare(alloc, init.io, projector, image, vision_oracle orelse return error.ExpectedOracleDirectory, use_metal, model_path)
+                try visionCompare(alloc, init.io, projector, image, vision_oracle, use_metal, model_path)
             else
                 try visionCheck(alloc, init.io, model_path, projector, use_metal)
         else if (draft_trace) |dir|
@@ -209,7 +227,7 @@ pub fn main(init: std.process.Init) !void {
     }
     // The ordinary run's engine-level addition, backend-independent like
     // `speculativeLoop`, so the Metal run covers it.
-    const ordinary = !hidden_rows and vision_check == null and draft_trace == null and flash_trace == null and !draft_stats and !speculative_check and !half_tiles_only;
+    const ordinary = !hidden_rows and vision_check == null and audio_check == null and draft_trace == null and flash_trace == null and !draft_stats and !speculative_check and !half_tiles_only;
     if (ordinary and use_metal) try promptSavesCheck(alloc, init.io, model_path);
 }
 
@@ -2575,6 +2593,155 @@ fn visionCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, pro
     }
 }
 
+/// Bounds of E4B's audio rows on the Metal plan against the CPU reference:
+/// the first run's worst (the tone, 5.4e-4 / 9.7e-6) with about 4× headroom
+/// (docs/models/gemma4.md § Audio input on the E4B).
+const audio_rows_max_abs = 2e-3;
+const audio_rows_rel_rms = 4e-5;
+
+/// Gemma 4 E4B hears audio. Per clip: the companion's encoder on the CPU
+/// reference, whose rows before the embedder must equal `twin`'s
+/// (EmbeddingGemma 2's companion, the same 751 tensors, validated against
+/// Google's) bit for bit; with `use_metal`, the engine's clip on the Metal
+/// plan against the CPU rows. Then the first clip in a chat prompt: greedy
+/// steps after it must give the logits one prefill of the same tokens gives.
+fn audioCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, projector_path: []const u8, twin_path: ?[]const u8, clips: []const []const u8, use_metal: bool) !void {
+    const audio = inference.audio;
+    const a = audio.gemma4a;
+    if (clips.len == 0) return error.ExpectedAudioPath;
+    var mapped = try inference.weights.Mapped.open(alloc, io, projector_path);
+    defer mapped.deinit(io);
+    const binding = try a.bind(alloc, &mapped.document);
+    var runtime = try a.Runtime.init(alloc, io, mapped.view(), &binding);
+    defer runtime.deinit();
+    var twin_mapped: ?inference.weights.Mapped = if (twin_path) |t| try inference.weights.Mapped.open(alloc, io, t) else null;
+    defer if (twin_mapped) |*m| m.deinit(io);
+    const twin_binding: ?a.Binding = if (twin_mapped) |*m| try a.bind(alloc, &m.document) else null;
+    var twin: ?a.Runtime = if (twin_binding) |*b| try a.Runtime.init(alloc, io, twin_mapped.?.view(), b) else null;
+    defer if (twin) |*t| t.deinit();
+    const bank = try alloc.create(audio.mel.Bank);
+    defer alloc.destroy(bank);
+    bank.init(.gemma);
+
+    var eng = try inference.engine.Engine.open(alloc, io, model_path, if (use_metal) .metal else .cpu, 1024, .f32, null, .none);
+    defer eng.deinit();
+    try eng.loadAudio(projector_path);
+    const width = binding.output_width;
+    std.debug.print("E4B audio: {d} tensors, {d} MB, projection to {d}\n", .{ binding.tensors, binding.bytes / 1_000_000, width });
+
+    var first: ?[]f32 = null;
+    defer if (first) |rows| alloc.free(rows);
+    var failures: usize = 0;
+    for (clips) |path| {
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(audio.audio.max_bytes));
+        defer alloc.free(bytes);
+        var pcm = try audio.audio.decode(alloc, bytes, inference.engine.max_audio_seconds * audio.mel.sample_rate);
+        defer pcm.deinit(alloc);
+        const frames = audio.mel.Spec.gemma.frameCount(pcm.samples.len);
+        const features = try alloc.alloc(f32, frames * audio.mel.filters);
+        defer alloc.free(features);
+        try bank.features(pcm.samples, features);
+        const n = a.tokensFor(frames);
+        const cpu_rows = try alloc.alloc(f32, n * width);
+        defer alloc.free(cpu_rows);
+        var ours: Capture = .{ .alloc = alloc, .stage = "output" };
+        defer ours.deinit();
+        try runtime.encodeObserved(features, frames, cpu_rows, ours.observer());
+        const name = std.fs.path.basename(path);
+        if (twin) |*t| {
+            const twin_rows = try alloc.alloc(f32, n * t.binding.output_width);
+            defer alloc.free(twin_rows);
+            var theirs: Capture = .{ .alloc = alloc, .stage = "output" };
+            defer theirs.deinit();
+            try t.encodeObserved(features, frames, twin_rows, theirs.observer());
+            const equal = std.mem.eql(f32, ours.rows.?, theirs.rows.?);
+            std.debug.print("{s}: {d} rows; encoder output against EmbeddingGemma 2's: {s}\n", .{ name, n, if (equal) "bit for bit" else "DIFFERENT" });
+            if (!equal) failures += 1;
+        }
+        if (use_metal) {
+            const heard = try eng.encodeAudio(bytes);
+            defer alloc.free(heard.features);
+            if (heard.tokens != n) return error.AudioRowsMismatch;
+            const d = differences(cpu_rows, heard.features);
+            const ok = d.max_abs <= audio_rows_max_abs and d.rel_rms <= audio_rows_rel_rms;
+            std.debug.print("{s}: Metal rows against the CPU's: max abs {e:.3}, relative RMS {e:.3} (bounds {e:.0} / {e:.0}){s}\n", .{ name, d.max_abs, d.rel_rms, audio_rows_max_abs, audio_rows_rel_rms, if (ok) "" else " FAILED" });
+            if (!ok) failures += 1;
+        }
+        if (first == null) first = try alloc.dupe(f32, cpu_rows);
+    }
+    if (failures > 0) return error.AudioMismatch;
+
+    // The first clip in a chat prompt, on the CPU rows.
+    const rows = first.?;
+    const clip = [_]inference.profiles.AudioRef{.{ .tokens = @intCast(rows.len / width) }};
+    const prompt = try eng.render(&.{.{ .role = .user, .content = "Transcribe this audio.", .audio = &clip }}, &.{}, .off);
+    defer alloc.free(prompt);
+    const tokens = try eng.encode(prompt);
+    defer alloc.free(tokens);
+    var prefill = try eng.mediaSpans(alloc, tokens, &.{}, &.{.{ .width_tokens = clip[0].tokens, .height_tokens = 1, .features = rows }});
+    defer prefill.deinit(alloc);
+    if (prefill.spans.len != 1 or prefill.spans[0].count != clip[0].tokens) return error.AudioSpanMismatch;
+    const vocabulary = eng.vocab.tokens.len;
+    const stepped = try alloc.alloc(f32, vocabulary);
+    defer alloc.free(stepped);
+    const logits = try alloc.alloc(f32, vocabulary);
+    defer alloc.free(logits);
+    const count = 12;
+    var generated: [count]u32 = undefined;
+    try eng.model.prefillVision(tokens, prefill.spans, prefill.features, stepped, null, null, null, null);
+    for (&generated, 0..) |*g, k| {
+        if (k > 0) try eng.model.step(generated[k - 1], stepped, null, null, null, null);
+        g.* = argmaxOf(stepped);
+    }
+    const text = try inference.bpe.decode(alloc, eng.vocab, &generated, false, .{});
+    defer alloc.free(text);
+    std.debug.print("{d}-token prompt, a {d}-row clip; greedy: {s}\n", .{ tokens.len, clip[0].tokens, text });
+    var extended: std.ArrayList(u32) = .empty;
+    defer extended.deinit(alloc);
+    try extended.appendSlice(alloc, tokens);
+    try extended.appendSlice(alloc, generated[0 .. count - 1]);
+    eng.model.reset();
+    try eng.model.prefillVision(extended.items, prefill.spans, prefill.features, logits, null, null, null, null);
+    var max_abs: f64 = 0;
+    for (stepped, logits) |x, y| max_abs = @max(max_abs, @abs(@as(f64, x) - y));
+    std.debug.print("Decode after the clip, {d} steps vs one prefill: max abs {e:.3} (bound 2e-2)\n", .{ count - 1, max_abs });
+    if (!(max_abs <= 2e-2)) return error.AudioDecodeMismatch;
+}
+
+/// Keeps a copy of one stage's rows from a `gemma4a` observer.
+const Capture = struct {
+    alloc: std.mem.Allocator,
+    stage: []const u8,
+    rows: ?[]f32 = null,
+
+    fn observer(self: *Capture) inference.audio.gemma4a.Observer {
+        return .{ .context = self, .record = record };
+    }
+    fn record(context: *anyopaque, stage: []const u8, rows: []const f32) void {
+        const self: *Capture = @ptrCast(@alignCast(context));
+        if (!std.mem.eql(u8, stage, self.stage) or self.rows != null) return;
+        self.rows = self.alloc.dupe(f32, rows) catch null;
+    }
+    fn deinit(self: *Capture) void {
+        if (self.rows) |r| self.alloc.free(r);
+    }
+};
+
+const Differences = struct { max_abs: f64, rel_rms: f64 };
+
+fn differences(expected: []const f32, actual: []const f32) Differences {
+    var max_abs: f64 = 0;
+    var sum_sq: f64 = 0;
+    var ref_sq: f64 = 0;
+    for (expected, actual) |e, x| {
+        const d = @abs(@as(f64, e) - x);
+        max_abs = @max(max_abs, d);
+        sum_sq += d * d;
+        ref_sq += @as(f64, e) * e;
+    }
+    return .{ .max_abs = max_abs, .rel_rms = @sqrt(sum_sq / ref_sq) };
+}
+
 fn argmaxOf(values: []const f32) u32 {
     var best: usize = 0;
     for (values, 0..) |v, i| {
@@ -2604,8 +2771,9 @@ fn oracleTokens(alloc: std.mem.Allocator, json: []const u8, pad: u32) ![]u32 {
 /// Any image against an oracle directory (`scripts/reference-vision.cpp`'s
 /// `image-embd.f32`): the whole-image numbers, then the relative RMS per
 /// block of the token grid, so a fault that lives in one region or one
-/// row band shows where it is. Reports; never gates.
-fn visionCompare(alloc: std.mem.Allocator, io: std.Io, projector_path: []const u8, image_path: []const u8, oracle: []const u8, use_metal: bool, model_path: ?[]const u8) !void {
+/// row band shows where it is. Reports; never gates. Without an oracle it
+/// only encodes (with `--vision-profile`, the per-kernel times).
+fn visionCompare(alloc: std.mem.Allocator, io: std.Io, projector_path: []const u8, image_path: []const u8, oracle_dir: ?[]const u8, use_metal: bool, model_path: ?[]const u8) !void {
     const vision = inference.vision;
     var loaded: LoadedProjector = undefined;
     try loaded.open(alloc, io, projector_path, use_metal);
@@ -2615,6 +2783,11 @@ fn visionCompare(alloc: std.mem.Allocator, io: std.Io, projector_path: []const u
     var source = try vision.image.decode(alloc, bytes);
     defer source.deinit(alloc);
     const grid = loaded.projector.grid(.{ .width = source.width, .height = source.height });
+    const oracle = oracle_dir orelse {
+        std.debug.print("Image {d}x{d} -> grid {d}x{d} tokens.\n", .{ source.width, source.height, grid.width_tokens, grid.height_tokens });
+        alloc.free(try loaded.encode(alloc, io, source, grid));
+        return;
+    };
     const oracle_path = try std.fs.path.join(alloc, &.{ oracle, "image-embd.f32" });
     defer alloc.free(oracle_path);
     const expected = try std.Io.Dir.cwd().readFileAlloc(io, oracle_path, alloc, .limited(256 << 20));

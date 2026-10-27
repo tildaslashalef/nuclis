@@ -4,6 +4,7 @@
 
 - Runs on macOS on Apple Silicon. Download a release binary or build with Zig 0.17.0.
 - Models are pinned to a repository, commit and SHA-256: Qwen3.8 27B, Gemma 4 (12B QAT, 26B-A4B, E4B QAT), Muse Glimmer 30B, and the decision models Laya and clef-flash.
+- Speech in and out: Qwen3-TTS (1.7B and 0.6B) speaks, Nemotron 3.5 ASR streaming 0.6B transcribes live or whole recordings, Gemma 4 E4B hears clips; served as OpenAI's `/v1/audio/speech` and `/v1/audio/transcriptions` and a WebSocket for live transcription.
 - Speculative decoding is on by default where it measured faster.
 
 ## Docs
@@ -12,7 +13,7 @@
 - [All documents](https://github.com/tildaslashalef/nuclis/blob/main/docs/README.md): every document, by folder
 - [Architecture](https://github.com/tildaslashalef/nuclis/blob/main/docs/architecture.md): how a token flows through the engine
 - [Benchmarks](https://github.com/tildaslashalef/nuclis/blob/main/docs/benchmarks/README.md): methodology and every record
-- [The nuclis API](https://github.com/tildaslashalef/nuclis/blob/main/docs/guide/api.md): `nuclis serve`, decisions and OpenAI-compatible chat completions
+- [The nuclis API](https://github.com/tildaslashalef/nuclis/blob/main/docs/guide/api.md): `nuclis serve`, decisions, OpenAI-compatible chat completions, embeddings, speech and transcription
 - [Releases](https://github.com/tildaslashalef/nuclis/releases): binaries, source and checksums
 
 ## Optional

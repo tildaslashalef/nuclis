@@ -13,7 +13,9 @@ oracle, never copied. Where a fact comes from the reference source rather
 than the file, the sentence says so. Nothing below is from memory of the
 model card. Images (the two projectors and the language model's
 bidirectional image spans on its sliding layers) are in
-[vision.md § Gemma 4's projectors](../engine/vision.md#gemma-4s-projectors-2026-09-23).
+[vision.md § Gemma 4's projectors](../engine/vision.md#gemma-4s-projectors-2026-09-23);
+their encode times (the E4B's 676-token logo in 1.6 s, the 12B's in
+0.03 s) in [§ Encoders at the materialized-score attention](../engine/vision.md#encoders-at-the-materialized-score-attention-2026-10-27).
 
 **Contents.**
 
@@ -29,6 +31,8 @@ bidirectional image spans on its sliding layers) are in
 - [Q4_0 path and the QAT file (2026-09-12)](#q4_0-path-and-the-qat-file-2026-09-12)
 - [Gemma 4 26B-A4B: the expert configuration (2026-09-18)](#gemma-4-26b-a4b-the-expert-configuration-2026-09-18)
 - [Gemma 4 E4B: per-layer embeddings and shared KV (2026-09-26)](#gemma-4-e4b-per-layer-embeddings-and-shared-kv-2026-09-26)
+- [Long-context decode with the head-split attention (2026-10-15)](#long-context-decode-with-the-head-split-attention-2026-10-15)
+- [Audio input on the E4B (2026-10-27)](#audio-input-on-the-e4b-2026-10-27)
 
 ## Artifacts
 
@@ -768,8 +772,8 @@ reference (`7620399`):
   `bindDraft` refuses a head whose KV heads or window differ from the
   target's. Q4_0 `MTP/mtp-gemma-4-E4B-it-Q4_0.gguf` (byte-identical to the
   root `mtp-gemma-4-E4B-it.gguf`).
-- **Projector** (`clip`, 1,411 tensors, 745 of them the audio encoder, left
-  unbound): `gemma4v`, the 26B-A4B's SigLIP path at 16 blocks, width 768,
+- **Projector** (`clip`, 1,411 tensors, 752 of them the audio encoder,
+  bound since 2026-10-27, [§ Audio input](#audio-input-on-the-e4b-2026-10-27)): `gemma4v`, the 26B-A4B's SigLIP path at 16 blocks, width 768,
   12 heads of 64, FFN 3072, no standardization, and **clipped linears**:
   each block's q/k/v/out and gate/up/down carry `input_min/max` and
   `output_min/max` scalars, `y = clamp(W · clamp(x))` (`gemma4v.cpp`,
@@ -821,3 +825,134 @@ at 32,639. The 2026-10-05 acceptance rows (12B 17.93 / 15.11, 26B-A4B
 37.93 / 31.23) decode right after their own prefill and are not
 comparable with these rates; the README's tables keep them until the
 next release record.
+
+## Audio input on the E4B (2026-10-27)
+
+The E4B hears a clip in a chat: a user message's `input_audio` part
+([api.md § The request](../guide/api.md#the-request)) or `nuclis generate
+--audio <file>`. The encoder is the `gemma4a` conformer already validated
+for EmbeddingGemma 2 ([audio.md](../engine/audio.md)); the E4B brings only
+its own projection.
+
+**The weights** (the pinned `mmproj-BF16.gguf`, 991,552,320 B, read with
+`scripts/gguf-inventory.py` and by tensor digests):
+
+- 752 audio tensors, `a.*` and `mm.a.*`, with the names, shapes and
+  encodings of EmbeddingGemma 2's companion (618 F32, 134 BF16; 620 MB). 751
+  are **byte-identical** to EmbeddingGemma 2's: the same tower. The one
+  that differs is `mm.a.input_projection` (BF16 1536 → **2560**, the text
+  width, against 512 there); `clip.audio.projection_dim` says 2560. So
+  `gemma4a.bind` binds the file unchanged and the encoder's rows before the
+  embedder equal EmbeddingGemma 2's bit for bit (the gate below).
+- `clip.audio.attention.layer_norm_epsilon` is **1e-5** here and 1e-6 in
+  EmbeddingGemma 2's file. Google's `config.json` for `google/gemma-4-E4B-it`
+  says `audio_config.rms_norm_eps` 1e-6, which the embedder's norm uses too
+  (`Gemma4MultimodalEmbedder`, `eps = multimodal_config.rms_norm_eps`); the
+  pinned reference's `gemma4a.cpp` ignores the key and uses 1e-6; the
+  converter at that revision writes the audio config's `layer_norm_eps`,
+  absent from Google's config, default 1e-6, so the 1e-5 is an earlier
+  converter's default over the same weights. `bind` accepts either value
+  and computes at 1e-6.
+- The embedder is EmbeddingGemma 2's: an RMS norm without a weight, then
+  `mm.a.input_projection`; the rows are not scaled by √2560 (only token
+  rows are), and each audio row takes the padding token's per-layer
+  embedding, as an image row does (Google's `Gemma4Model.forward` replaces
+  every media id by `pad_token_id` before `get_per_layer_inputs`).
+
+**The prompt.** The E4B template (`241c50d8…`) renders an `audio` or
+`input_audio` part as one `<|audio|>`, in the content's order; Google's
+`Gemma4Processor.replace_audio_token` expands it to `<|audio>` (256000),
+one `<|audio|>` (258881) per encoder row, `<audio|>` (258883), the ids in
+Google's `config.json` and in the vocabulary. Rows: two stride-2 halvings
+of the mel frames, 25 a second, at most 750 (30 s: Google's extractor cuts
+there; nuclis refuses a longer clip rather than cut it). The profile
+renders a message's images, then its clips, then its text, as it already
+put images before the text; the processor would keep the client's part
+order. The span is **causal**: the E4B has no `use_bidirectional_attention`
+(Google's mask overlays blocks for vision only, and only on models that
+set it) and nuclis's `Config.bidirectional_images` is off for it. So a
+clip's span goes through the same `prefillVision` as an image's, the
+engine pairing each kind's placeholder runs with its rows
+(`Engine.mediaSpans`).
+
+**Loading.** The encoder is bound on the first clip
+(`Engine.loadAudio`), on the CPU (`gemma4a.Runtime`) or Metal
+(`gemma4a.Plan`), from the same companion file as the vision projector;
+the server counts that file against its memory budget once, whichever
+encoder needs it first.
+
+**Validation** (M4 Pro, Metal, `3e44397`):
+
+| Check | Result |
+| --- | --- |
+| encoder output (before the embedder), CPU, against EmbeddingGemma 2's encoder, three pinned clips | bit for bit (`speech-1`, `speech-2`, `tone-1khz`: 120, 88, 50 rows) |
+| E4B rows, Metal against the CPU reference | speech 2.8e-5 / 1.0e-6 and 2.2e-5 / 1.1e-6, tone 5.4e-4 / 9.7e-6 (max abs / relative RMS) |
+| `north` clip in a chat prompt, 11 greedy steps against one prefill | 7.2e-3 max abs; greedy "The Northern Lights are caused by charged particles from the sun striking" |
+| transcription, six corpus clips, greedy, one fixed prompt | 1 error in 114 words, **0.88 %** WER (English 0/55, German 0/18, French 1/21, Spanish 0/20) |
+
+The transcription prompt is `scripts/wer.py`'s `CHAT_PROMPT` ("Transcribe
+this audio in the language it is spoken in. Write only the transcript."),
+the clips `librispeech-61-70968-0000`, `-672-122797-0000`,
+`-1089-134686-0000`, `fleurs-de_de-1661`, `fleurs-fr_fr-1662`,
+`fleurs-es_419-1661`; the French error is a dropped "de". The same text
+went through `POST /v1/chat/completions` (wav and AAC m4a parts).
+
+| Gate | Tier | Runs |
+| --- | --- | --- |
+| `gemma4-e4b-audio-metal` | `verify` | the rows above, bounds 2e-3 / 4e-5 on Metal, bit equality with EmbeddingGemma 2's encoder, 2e-2 on decode after the clip (12 s) |
+| `gemma4-e4b-audio-asr` | `verify` | `scripts/wer.py --chat` over the six clips, WER at most 5 % (11 s) |
+
+**The cache.** A conversation with a clip in it is reused like any other:
+the completer keys what the session consumed with each image and clip's
+SHA-256 after its placeholder run ([session.md § The agent's token
+cache](../engine/session.md#the-agents-token-cache-2026-10-04)). Over
+`nuclis serve` (greedy, `none`): the north clip's request 0 of 136 tokens
+cached; the same request again 133; a follow-up under it 152 of 171; a
+different clip in the same place 0; that clip under the first one's
+follow-up 101 of 139, its own request's prompt.
+
+**In the agent** (2026-10-27): a dropped clip is an `[audio #N]` chip,
+encoded while the prompt is typed ([spec § 7.2](../spec.md#72-editor),
+[app/terminal.md](../app/terminal.md)). The plumbing holds: told "You hear
+this clip directly, no tool needed", the E4B gave `1089-134686-0000`'s
+sentence word for word (thinking low, 295 tokens read), and the follow-up
+turn read 57. Asked plainly ("What does the speaker say? One sentence."),
+it first answered that it cannot process audio: its thought listed the
+agent's tools, found none for audio, and followed the system prompt's
+"with the available tools, and nothing beyond it" (`generate` with the
+same words transcribed it). The prompt now says "An image or audio clip
+attached to a message is part of it: you see and hear it yourself, with
+no tool", and the plain question gets the sentence (285 tokens read).
+Measured on the agent's task list (two seeds, docs/development.md § The
+agent's task list): Qwen3.8 96 % → 100 % of tasks, tool errors 5 → 3;
+the E4B 69 % → 81 %, tool errors 40 → 28.
+
+**Speed** (Metal, a fresh `generate` per run, five runs each): decoding,
+the log-mel frames and the encoder take 134–149 ms for 4.8 s of speech
+(`speech-1.wav`) and 137–145 ms for a 4.9 s FLAC; the prefill of the
+136-token prompt 356–397 ms, as long as a 129-token text prompt's
+(409–419 ms in the same fresh process). On a warm server, a request with a
+5 s clip and a one-token answer takes 436–444 ms end to end (575 ms the
+first, which builds the encoder).
+
+**Does it hear tone?** An observation, not a gate. Two neutral sentences
+("The meeting has been moved to Thursday afternoon.", "I put the keys on
+the kitchen table.") spoken by Qwen3-TTS 1.7B CustomVoice (`ryan`, seed 7)
+under four `--instruct` moods, then asked, greedy, "In one word, what is
+the speaker's emotional tone?" with the clip, and with only the
+transcript in the text (the control):
+
+| Asked for | Sentence 1, audio | Sentence 1, transcript only | Sentence 2, audio | Sentence 2, transcript only |
+| --- | --- | --- | --- | --- |
+| cheerful | Neutral | Neutral | Casual | Neutral |
+| sad | Neutral | Neutral | Frustration | Neutral |
+| angry | Neutral | Neutral | Casual | Neutral |
+| calm | Neutral | Neutral | Indifferent | Neutral |
+
+With the closed question "Is the speaker cheerful, sad, angry, or calm?
+Answer with one word." every clip and every control answered "Calm". E4B
+transcribed all eight clips word for word, so it heard them; it named no
+mood it was asked to tell apart. Whether the clips carry the moods
+strongly was not measured (they last 2.2–3.4 s; the angry readings are
+the quietest, −24.6 and −25.4 dBFS); with these
+clips and prompts, the tone did not reach the answer.
