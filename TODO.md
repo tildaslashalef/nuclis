@@ -36,34 +36,37 @@ unless a task edits a shared kernel or backend file, in which case
 CPU tier runs as the new families' gates only (`make gate NAME='…-cpu'`),
 not `make verify-cpu`.
 
-Delivered, all on the CPU and against the authors' traces: task 1 (facts
-and pins); task 2 (the codec decoder); task 5 (the mel `Spec`, the
-streaming encoder, the 60-clip corpus); task 3 (the talker and code
-predictor of both sizes, the Qwen2 tokenizer with its case-seam split,
-`nuclis speak`: every stage within 3.0e-6 relative RMS, every logit row's
-top choice equal); task 6 (the transducer, the piece table, float WAV,
-`nuclis transcribe`, `scripts/wer.py`: token ids equal to the trace's;
-word error rate 6.1 % over the corpus, 3.9 % on its English clips, at
-lookahead 3). Tasks 13 and 14 split the Metal backend's kernels and
-encoders by operation, so tasks 4 and 7 can add theirs side by side.
-The round trip works: `nuclis speak` on the 1.7B, then `nuclis
-transcribe`, gave back the sentence word for word (2026-10-27). On the
-CPU, speech runs at 0.62× real time (1.7B) and 0.75× (0.6B);
-recognition at 0.12×.
+Delivered: tasks 1–7 (both families pinned, described, and running on
+the CPU and on Metal against the authors' traces) and 13–14 (the Metal
+backend split by operation). `nuclis speak` and `nuclis transcribe`
+default to Metal. Measured on a quiet machine (2026-10-27, `519a898`):
 
-Not run, deliberately: `make verify-auto` (it selects the whole Metal tier
-through the build files); run instead were every new gate, the gates the
-shared files select (`embeddinggemma-audio-*`, `laya*-vocabulary`), and
-once, for task 14, `make verify` (50 of 53, 0 failed, Bonsai skipped).
-The WER gates read `.reference/speech/`, which only the main checkout
-has: run them there, not in a worktree.
+- **Voice:** 0.6B 3.1× real time, first audio 82–101 ms after the text;
+  1.7B 2.3×, first audio 123–126 ms (`docs/models/qwen3-tts.md` § Speed).
+  The 1.7B is below the proposed 3× (bandwidth over ~1,100 dependent
+  dispatches a frame) and comfortably above real time. Codes on Metal
+  equal the CPU sampler's exactly. Round trip (20 sentences, spoken on
+  Metal, heard by the CPU recognizer): 2.6 % WER on both sizes.
+- **Ears:** a whole 11.7 s clip in 189–220 ms; streamed at r = 3, a chunk
+  push takes 32–33 ms idle (the GPU clocks down between chunks; 21 ms
+  beside another GPU job), the final transcript 37–41 ms after the audio
+  ends; the proposed ≤ 15 ms per chunk is not met (deferred below).
+  Metal transcripts equal the CPU's word for word on all 60 clips
+  (6.11 % WER).
 
-Next: **tasks 4 and 7 in parallel** (worktrees A and B; the voice's and
-the ears' Metal plans), task 8 when a worktree is free.
+Checks: `make verify` once with both Metal plans in (57 passed, 0
+failed, the 3 Bonsai gates skipped, its file absent), every speech gate
+on both tiers, `make test`, `make test-metal`. The WER gates read
+`.reference/speech/`, which only the main checkout has: run them there,
+or symlink it into a worktree.
+
+Next: **task 8** (E4B hears audio) and **task 9** (serving speech) in
+parallel, then 10 and 15 (the transcription routes), then 11 (all three
+models together), then 12 (documents and the site).
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: tasks 4 and 7 |
+| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: tasks 8 and 9 |
 
 ## Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API
 
@@ -154,10 +157,10 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 1 | Facts and pins | — | — | done |
 | 2 | TTS codec decoder, CPU | A | 1 | done |
 | 3 | TTS talker and code predictor, CPU; `nuclis speak` | A | 2 | done |
-| 4 | TTS on Metal, streaming, real-time factor | A | 3 | worktree A |
+| 4 | TTS on Metal, streaming, real-time factor | A | 3 | done |
 | 5 | ASR front end and streaming encoder, CPU | B | 1 | done |
 | 6 | ASR transducer and tokenizer, CPU; `nuclis transcribe` | B | 5 | done |
-| 7 | ASR on Metal, chunk latency | B | 6 | worktree B |
+| 7 | ASR on Metal, chunk latency | B | 6 | done |
 | 8 | Gemma 4 E4B audio input in chat | D | — | worktree D, any time |
 | 9 | Serve: speech and transcription kinds, pinning, `POST /v1/audio/speech` | C | 4 | main |
 | 10 | Serve: WebSocket transport, streaming transcription | C | 7, 9 | main |
@@ -524,6 +527,19 @@ figures copied from the README so `make site-check` holds. Gates:
 ## Deferred
 
 Agreed and not scheduled; when one is picked up, it becomes a unit above.
+
+- **Nemotron ASR's chunk at r = 3 under 15 ms** (from the speech unit,
+  2026-10-27). Quiet machine: 32–33 ms a chunk push (an idle GPU clocks
+  down between chunks), 21 ms beside another GPU job; the F32 weights'
+  floor is 12.5 ms at 200 GB/s. Measure first under task 11's load (E4B
+  generating beside it); then the candidates `docs/models/nemotron-asr.md`
+  § On Metal names: fold LayerNorm into the following product (5,328
+  dispatches a round), stage activations in threadgroup memory, fewer
+  dispatches for the 1024-row matrices. Weights stay F32 (spec § 3).
+- **Qwen3-TTS 1.7B at 3× real time** (same unit). 2.3× today, bandwidth
+  over ~1,100 dependent dispatches a frame; candidates: one kernel per
+  predictor group, or predictors batched across frames
+  (`docs/models/qwen3-tts.md` § Speed).
 
 - **Who said what: speaker diarization** (the user's, 2026-10-27, for
   note-taking). NVIDIA's `nvidia/Nemotron-3-Diarization`, a streaming

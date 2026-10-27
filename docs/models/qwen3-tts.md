@@ -867,6 +867,21 @@ latency, not dispatch count, bounds it. What would move it: the predictor's 5 la
 group, or several frames' predictors batched (they are sequential within
 a frame only).
 
+**Re-measured on a quiet machine** (2026-10-27, `519a898`, both Metal plans
+merged, nothing else on the GPU; the same sentence, speaker, seed, and
+build; three runs each, ranges):
+
+| | 0.6B | 1.7B |
+| --- | ---: | ---: |
+| real time | 3.09–3.14× | 2.33–2.34× |
+| a frame: codes / codec | 21.6–21.8 / 3.2–3.3 ms | 29.8 / 3.3–3.4 ms |
+| prefill | 49–59 ms | 82–85 ms |
+| first audio after the text (first chunk of 1 frame) | 82–101 ms | 123–126 ms |
+
+The 1.7B stays below the proposed 3×, as above (bandwidth over about
+1,100 dependent dispatches a frame), and above real time by 2.3×, which
+is what streaming needs.
+
 ### For serving
 
 What `POST /v1/audio/speech` can call: `qwen3_tts_runtime.Voice.open(…,

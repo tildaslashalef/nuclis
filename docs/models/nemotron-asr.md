@@ -831,6 +831,30 @@ LayerNorms a block, the attention, the depthwise convolution, a SiLU). The next 
 product that follows it, and fewer, larger dispatches for the 1024-row
 matrices.
 
+**Re-measured on a quiet machine** (2026-10-27, `519a898`, both Metal plans
+merged, nothing else on the GPU; `zig build -Doptimize=ReleaseSafe
+test-nemotron-asr -- MODEL_DIR --metal --bench --clip …/6829-68769-0000.flac`,
+two runs, which agree within 5 %):
+
+| | Metal r = 0 | Metal r = 3 |
+| --- | ---: | ---: |
+| whole clip | 189 ms (0.016×) | 219–220 ms (0.019×) |
+| chunk push, median / p90, back to back | 12.6 / 13.8 ms | 32.1–33.4 / 41.4–43.7 ms |
+| chunk push, median / p90, at real time | 19.7–19.9 / 26.1–26.2 ms | 36.4–36.9 / 46.8–47.6 ms |
+| final delay, median, back to back / at real time | 12.9–13.1 / 19.0–23.0 ms | 37.6–39.1 / 37.0–41.1 ms |
+| streamed, busy time over audio, back to back | 0.16× | 0.12× |
+
+The r = 3 chunk is *slower* idle than it was measured beside another GPU
+job (21.3 ms): with nothing else running the GPU clocks down between
+chunks, so these figures are the pessimistic case, and beside a
+generating language model (Muon's case) they should fall; task 11
+measures that. Either way the proposed ≤ 15 ms per r = 3 chunk is not
+met. Its floor is the weights: 2.5 GB of F32 read per chunk is 12.5 ms
+at 200 GB/s, and the 4-row products reach 133–168 GB/s; layer norms
+(5,328 dispatches per round) are the next cost. The final transcript
+arrives 37–41 ms after the audio ends, an order of magnitude under the
+silence a turn-taker waits for.
+
 ## Decisions and open items
 
 Decided at the plan (2026-10-27); each is checked at bring-up:
