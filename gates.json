@@ -80,6 +80,9 @@
   "qwen38_dflash2_pair": {
    "path": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
    "entry": "qwen-dflash2"
+  },
+  "qwen3_tts_06b": {
+   "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
   }
  },
  "checks": [
@@ -3926,6 +3929,39 @@
     "kind": "exit"
    },
    "evidence": "docs/engine/metal-backend.md"
+  },
+  {
+   "name": "qwen3-tts-codec-cpu",
+   "family": "qwen3-tts",
+   "tier": "verify-cpu",
+   "model": "qwen3_tts_06b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/qwen3-tts-check.zig",
+    "inference/src/audio/qwen3_codec*.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/rope.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/safetensors.zig",
+    "tests/fixtures/qwen3-tts/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-qwen3-tts",
+    "--",
+    "{model}",
+    "codec",
+    "--max-relative-rms",
+    "2e-5",
+    "--max-absolute",
+    "1e-5"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the authors' traced codes (24 frames) through the codec decoder: every pinned stage and the samples against their trace, relative RMS <= 2e-5 per stage and samples max |difference| <= 1e-5 (first run: 3.8e-6 and 1.9e-6); then the same frames streamed in pieces of 5 equal the decode bit for bit",
+   "evidence": "docs/models/qwen3-tts.md#codec-decoder-against-the-trace-2026-10-27"
   }
  ]
 }

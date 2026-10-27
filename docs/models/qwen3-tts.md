@@ -42,6 +42,7 @@ read as the definition, never copied.
 - [The codec decoder (from `modeling_qwen3_tts_tokenizer_v2.py`)](#the-codec-decoder-from-modeling_qwen3_tts_tokenizer_v2py)
 - [Tokenizer and the rendered text](#tokenizer-and-the-rendered-text)
 - [The 1.7B CustomVoice](#the-17b-customvoice)
+- [Codec decoder against the trace (2026-10-27)](#codec-decoder-against-the-trace-2026-10-27)
 - [Open for the implementation](#open-for-the-implementation)
 
 ## Artifacts
@@ -437,7 +438,9 @@ stored as logarithms.
 the length is kept. `Qwen3TTSTokenizerV2CausalTransConvNet` runs
 `ConvTranspose1d` and trims `kernel − stride` samples on the right
 (0 for kernel 2 stride 2; r for kernel 2r stride r), giving L·stride
-outputs. Output n of a transposed conv reads inputs ⌊n/s⌋ and ⌊n/s⌋ − 1.
+outputs. Output n of a decoder block's transposed conv (kernel 2s) reads
+inputs ⌊n/s⌋ and ⌊n/s⌋ − 1; an `upsample` one (kernel = stride) reads
+⌊n/s⌋ only.
 **The decoder is causal**: the samples of frame t depend only on frames
 ≤ t, so decoding a prefix and decoding the whole give the same samples for
 the prefix, in exact arithmetic. Its reach back is long (8 layers of a
@@ -451,10 +454,12 @@ fresh state** (zero conv padding, RoPE positions from 0) on frames
 c × 1920 samples. So the authors' audio for T ≤ 300 frames (24 s) is one
 full causal decode; beyond that, each 300-frame chunk sees only 25 frames
 of history and differs from a full decode near its start. A nuclis
-decoder that streams frame by frame with carried state (a 72-entry KV
-window per layer, a left history per conv) reproduces the authors' samples
-exactly up to frame 300; to keep reproducing them it resets at each
-300-frame boundary and re-warms on the previous 25 frames.
+decoder that streams frame by frame with carried state (per layer the 71
+keys and values before the new row, since a query sees 72 including
+itself; a left history per conv) reproduces the authors' decode up to
+frame 300, to summation order; to keep reproducing it, it would reset at
+each 300-frame boundary and re-warm on the previous 25 frames (it does
+not: see the last section).
 
 ## Tokenizer and the rendered text
 
@@ -526,14 +531,87 @@ What differs, from the two headers (404 tensors against 402, all BF16) and
   codec are the 0.6B's; the prompt additionally carries the instruction
   (§ (a)).
 
+## Codec decoder against the trace (2026-10-27)
+
+**The implementation.** `inference/src/audio/qwen3_codec.zig`: `bind`
+(the 271 `decoder.*` tensors by name and shape, the encode side's two
+`input_proj`s included so that nothing in `decoder.*` is unknown; the
+`encoder.*` ones skipped by name), `Runtime` (every tensor decoded to F32
+at load, 457 MB, 0.15 s), and `Stream`. Each causal convolution is one
+matrix over gathered input rows, tap-major (`[out][k · in]`), and each
+transposed convolution one matrix `[stride · out][taps · in]` whose
+product for input row m is output rows m·stride … m·stride + stride − 1,
+the right trim implied. So every output element is a single dot product
+whose order does not depend on how frames are grouped, and a stream fed
+in pieces gives `decode`'s samples bit for bit. A stream carries the left
+context of each convolution ((k − 1)·d rows: 2 for `pre_conv`, 6 for each
+ConvNeXt depthwise conv, `decoder.0`, and the output conv, 6, 18, 54 for
+the residual units' dilated convs; one input row for each decoder block's
+transposed conv, none for `upsample`'s), the transformer's 71 previous
+rows of keys (after RoPE) and values per layer, and the frame count as
+the RoPE position. Attention scores and sums are F64, norms take F64
+statistics; everything else is F32.
+
+**The trace.** `scripts/speech-traces/qwen3_tts_trace.py` runs the
+authors' package (`022e286b`) in `.reference/venv-qwen3-tts/` (Python
+3.12.15, `torch` 2.14.1 CPU, `transformers` 4.57.3, `numpy` 2.5.4) on the
+0.6B in F32 at seed 0, speaker `ryan`, language `english`, with the
+codec's default `sdpa` attention, and pins its outputs under
+`tests/fixtures/qwen3-tts/` (`index.json`: shapes, rows, digests,
+revision, versions; 1.2 MB). Two cases, both one causal decode (under 300
+frames):
+
+- `fox`, "The quick brown fox jumps over the lazy dog.": 46 frames
+  sampled; the codec decodes the first 24 and every stage boundary is
+  pinned (the wide stages' last rows only).
+- `window`, a two-sentence text: 171 frames sampled; the codec decodes the
+  first 112, 40 past the transformer's window, and the transformer's last
+  16 rows and the last two frames' samples are pinned.
+
+In the authors' own decode the prefix's samples equal the whole clip's to
+6.7e-7 and 9.8e-7: the decoder is causal, as read. The run reproduces
+itself: two runs wrote identical files.
+
+**Measured** (`make gate NAME=qwen3-tts-codec-cpu`, ReleaseFast, Apple M4
+Pro). Relative RMS is ‖Δ‖ / ‖reference‖ over the rows compared:
+
+| Case | Stage | Rows | max \|Δ\| | max \|ref\| | rel RMS |
+| --- | --- | --- | ---: | ---: | ---: |
+| fox | `quantized` | 0–24 | 3.43e-5 | 89.6 | 3.54e-7 |
+| fox | `pre_conv` | 0–24 | 4.77e-6 | 5.00 | 7.52e-7 |
+| fox | `transformer` | 0–24 | 1.27e-7 | 0.210 | 1.03e-6 |
+| fox | `upsample.0` | 16–48 | 3.70e-6 | 2.22 | 1.61e-6 |
+| fox | `upsample.1` | 64–96 | 2.68e-5 | 17.1 | 1.99e-6 |
+| fox | `decoder.0` | 80–96 | 3.43e-5 | 11.4 | 1.84e-6 |
+| fox | `decoder.1` | 736–768 | 8.94e-6 | 3.16 | 1.62e-6 |
+| fox | `decoder.2` | 3,776–3,840 | 2.69e-5 | 3.28 | 3.16e-6 |
+| fox | `decoder.3` | 15,232–15,360 | 1.57e-5 | 2.04 | 3.77e-6 |
+| fox | `decoder.4` | 45,824–46,080 | 6.87e-5 | 67.0 | 8.59e-7 |
+| fox | samples | 0–46,080 | 1.90e-6 | 0.379 | 2.40e-6 |
+| window | `transformer` | 96–112 | 1.19e-7 | 0.133 | 9.94e-7 |
+| window | samples | 211,200–215,040 | 6.15e-8 | 0.0193 | 2.61e-6 |
+
+The gate's bounds, about five times the worst: relative RMS 2e-5 for
+every stage and the samples, and 1e-5 for the samples' largest
+difference. Both cases also stream in pieces of five frames to `decode`'s
+samples bit for bit.
+
+**The window is 72 keys.** Rebuilt with a 73-key window, the `window`
+case's transformer rows differ by relative RMS 6.8e-3 and its samples by
+3.2e-3, so the gate tells the two apart; with 72 they agree to 1e-6. The
+mask read in a newer `transformers` holds under 4.57.3.
+
+**Speed, not a target.** The CPU reference decodes at 3.5× real time
+(24 frames in 549 ms, 112 in 2,561 ms); real-time streaming is the Metal
+plan's.
+
 ## Open for the implementation
 
-- **Sliding window and generation processors are `transformers`
-  behaviour**, read in a newer `transformers` than the pinned 4.57.3
-  (`.reference/transformers-c0d024f/masking_utils.py`; generation in an
-  installed 5.x). The bring-up trace from the pinned venv settles them;
-  the decoder window (72 keys including self) is the one that changes
-  samples.
+- **Generation processors are `transformers` behaviour**, read in a
+  newer `transformers` than the pinned 4.57.3 (an installed 5.x). The
+  bring-up trace from the pinned venv settles them. The decoder's
+  sliding window, the other such behaviour, is settled: 72 keys including
+  the query, under 4.57.3 too ([the window case](#codec-decoder-against-the-trace-2026-10-27)).
 - **Past 300 frames nuclis decodes causally with carried state**
   (decided 2026-10-27): the decoder is fully causal, so a stream that
   carries its convolution and attention state is the true decode; the

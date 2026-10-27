@@ -80,6 +80,19 @@ pub fn build(b: *std.Build) void {
     const run_embeddinggemma = b.addRunArtifact(embeddinggemma_check);
     run_embeddinggemma.addPassthruArgs();
     b.step("test-embeddinggemma", "Check EmbeddingGemma 2 against the oracles, or time it (-- MODEL traces|vectors|google|bench [--backend cpu|metal])").dependOn(&run_embeddinggemma.step);
+    const qwen3_tts_check = b.addExecutable(.{
+        .name = "qwen3-tts-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("qwen3-tts-check.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "inference", .module = mod }},
+        }),
+    });
+    b.installArtifact(qwen3_tts_check);
+    const run_qwen3_tts = b.addRunArtifact(qwen3_tts_check);
+    run_qwen3_tts.addPassthruArgs();
+    b.step("test-qwen3-tts", "Check Qwen3-TTS against the authors' trace (-- MODEL_DIR codec)").dependOn(&run_qwen3_tts.step);
     const generation_check = b.addExecutable(.{
         .name = "generation-check",
         .root_module = b.createModule(.{
