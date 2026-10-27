@@ -36,15 +36,27 @@ unless a task edits a shared kernel or backend file, in which case
 CPU tier runs as the new families' gates only (`make gate NAME='…-cpu'`),
 not `make verify-cpu`.
 
-Task 1 (facts and pins) is delivered: the files are pinned, the two
-families' facts are written (`docs/models/qwen3-tts.md`,
-`docs/models/nemotron-asr.md`), and tasks 2–7 below are at the level of
-files and functions. Next: **tasks 2 and 5 in parallel** (worktrees A and
-B), and task 8 whenever a worktree is free.
+Delivered: task 1 (facts and pins), task 2 (the Qwen3-TTS codec decoder on
+the CPU, gate `qwen3-tts-codec-cpu`: every stage within 3.8e-6 relative RMS
+of the authors' trace, a stream in any pieces equal to one decode bit for
+bit), and task 5 (`mel.Spec` with Nemotron's front end beside Gemma's,
+Gemma's output unchanged; Nemotron's cache-aware encoder on the CPU, gate
+`nemotron-asr-encoder-cpu`: every stage within 3.1e-6 relative RMS of the
+trace, streamed rows equal to the whole clip bit for bit; the 60-clip
+speech corpus, `make speech-corpus`). Tasks 2 and 5 ran in parallel
+worktrees and were rebased onto this branch.
+
+Not run, deliberately: `make verify-auto`, which selects 42 Metal gates
+because both tasks registered a check tool in `build.zig` and
+`inference/build.zig` (no numerical change); run instead were the new
+gates and the `embeddinggemma-audio-*` gates the `mel.zig` change selects.
+
+Next: **tasks 3 and 6 in parallel** (worktrees A and B), task 8 when a
+worktree is free.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: tasks 2 and 5 |
+| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: tasks 3 and 6 |
 
 ## Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API
 
@@ -136,7 +148,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 2 | TTS codec decoder, CPU | A | 1 | done |
 | 3 | TTS talker and code predictor, CPU; `nuclis speak` | A | 2 | worktree A |
 | 4 | TTS on Metal, streaming, real-time factor | A | 3 | worktree A |
-| 5 | ASR front end and streaming encoder, CPU | B | 1 | worktree B |
+| 5 | ASR front end and streaming encoder, CPU | B | 1 | done |
 | 6 | ASR transducer and tokenizer, CPU; `nuclis transcribe` | B | 5 | worktree B |
 | 7 | ASR on Metal, chunk latency | B | 6 | worktree B |
 | 8 | Gemma 4 E4B audio input in chat | D | — | worktree D, any time |
@@ -200,6 +212,14 @@ and `.reference/transformers-c0d024f/`.
   new files only).
 
 #### 3. TTS talker and code predictor, CPU; `nuclis speak` (worktree A)
+
+From task 2: the trace's codes are sampled with torch's generator, which
+nuclis cannot reproduce; compare the talker's and predictor's hidden rows
+and logits while replaying the trace's codes, never sampled ids. The
+script's cases are `Spec` entries; talker hooks go on
+`tts.model.talker.model.layers[i]` (with the cache they fire once for the
+prefill, then once per step). The `window` sentence can be the second
+case.
 
 - **Tokenizer.** Qwen2's byte-level BPE from `vocab.json` and `merges.txt`
   (no `tokenizer.json`): `inference/src/tokenizer/vocab_merges.zig` loads
@@ -297,6 +317,16 @@ and `.reference/transformers-c0d024f/`.
   against the trace).
 
 #### 6. ASR transducer and tokenizer, CPU; `nuclis transcribe` (worktree B)
+
+From task 5: `encoder_projector` (1024 → 640) is not implemented yet and
+belongs here. The fixtures under `tests/fixtures/nemotron-asr/` are at
+2.8 MB; pin the joint's output as argmax ids with their margins (or the
+top 5 per row), not whole logit rows. `audio.zig`'s own WAV reader takes
+16-bit PCM only, and the FLEURS corpus clips are 32-bit float WAV, so the
+WER gates decode them through AudioToolbox (macOS); add a float-WAV path
+to the reader so they also run on Linux. `scripts/speech-traces/
+nemotron_trace.py` is extended by returning more arrays from `whole()`
+and `streamed()`.
 
 - `inference/src/audio/nemotron_rnnt.zig`: the prediction network (zero
   start, embedding, two LSTM layers of 640, gates stored `[i|f|g|o]`),
