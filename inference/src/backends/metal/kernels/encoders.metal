@@ -168,7 +168,8 @@ struct AttentionTile { uint first; uint rows; uint key_lo; uint span; uint offse
 struct AttentionGemmParams { uint query_heads; uint kv_heads; uint width; uint rows; uint q_stride; uint kv_stride; uint out_stride; uint head_stride; float scale; uint window; };
 
 // Scores: one threadgroup per (tile, head × 32-key block), S[32][32] =
-// scale · Q · Kᵀ over the head width in 64-wide steps; four SIMD groups own a
+// scale · Q · Kᵀ over the head width (a multiple of 8) in 64-wide steps, the
+// last step's missing columns staged as zeros; four SIMD groups own a
 // 16 × 16 quarter each. Invisible keys are written −∞, key rows past `rows`
 // stage as zeros.
 kernel void nu_segments_scores(device const float * queries [[buffer(0)]],
@@ -212,15 +213,17 @@ kernel void nu_segments_scores(device const float * queries [[buffer(0)]],
     simdgroup_float8x8 acc[2][2];
     for (uint i = 0; i < 2; ++i) for (uint j = 0; j < 2; ++j) acc[i][j] = simdgroup_float8x8(0.0f);
     for (uint d0 = 0; d0 < p.width; d0 += 64) {
+        const uint dn = min(64u, p.width - d0); // a multiple of 8, uniform
         for (uint c = 0; c < 4; ++c) {
-            const float4 x = q_ok ? ((device const float4 *)(qrow + d0 + seg * 16))[c] : float4(0.0f);
+            const bool d_ok = seg * 16 + 4 * c < dn;
+            const float4 x = q_ok && d_ok ? ((device const float4 *)(qrow + d0 + seg * 16))[c] : float4(0.0f);
             ((threadgroup float4 *)(qs + r * 64 + seg * 16))[c] = x;
-            const float4 y = k_ok ? ((device const float4 *)(krow + d0 + seg * 16))[c] : float4(0.0f);
+            const float4 y = k_ok && d_ok ? ((device const float4 *)(krow + d0 + seg * 16))[c] : float4(0.0f);
             threadgroup float * column = kt + (seg * 16 + 4 * c) * 32 + r;
             column[0] = y.x; column[32] = y.y; column[64] = y.z; column[96] = y.w;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        for (uint k8 = 0; k8 < 64; k8 += 8) {
+        for (uint k8 = 0; k8 < dn; k8 += 8) {
             simdgroup_float8x8 a[2], b[2];
             for (uint i = 0; i < 2; ++i) simdgroup_load(a[i], qs + (sub_row + 8 * i) * 64 + k8, 64);
             for (uint j = 0; j < 2; ++j) simdgroup_load(b[j], kt + k8 * 32 + sub_key + 8 * j, 32);
@@ -239,31 +242,43 @@ kernel void nu_segments_scores(device const float * queries [[buffer(0)]],
     }
 }
 
-// Softmax of each strip row in place: one SIMD group per row, eight rows at a
-// time; one threadgroup per (tile, head).
-kernel void nu_segments_softmax(device const AttentionTile * tiles [[buffer(0)]],
-                                 device float * scores [[buffer(1)]],
-                                 constant AttentionGemmParams & p [[buffer(7)]],
-                                 uint2 group [[threadgroup_position_in_grid]],
-                                 uint sg [[simdgroup_index_in_threadgroup]],
-                                 uint lane [[thread_index_in_simdgroup]]) {
+// The softmax statistics of each strip row, read once: one SIMD group per
+// row, eight rows at a time, one threadgroup per (tile, head); each lane
+// keeps an online (max, sum), merged across the group. Row r of a tile in
+// head h stores (max, 1 / sum) at float2 index h · head_stride / 32 +
+// (offset + r · span) / 32, past the strips (`nu_segments_values` applies
+// them while staging P). A row that sees no key (a padding row past `rows`)
+// stores (0, 0), so its weights and output are zeros rather than NaN.
+kernel void nu_segments_stats(device const AttentionTile * tiles [[buffer(0)]],
+                              device float * scores [[buffer(1)]],
+                              constant AttentionGemmParams & p [[buffer(7)]],
+                              uint2 group [[threadgroup_position_in_grid]],
+                              uint sg [[simdgroup_index_in_threadgroup]],
+                              uint lane [[thread_index_in_simdgroup]]) {
     const AttentionTile t = tiles[group.x];
-    device float * strip = scores + ulong(group.y) * p.head_stride + t.offset;
+    device const float * strip = scores + ulong(group.y) * p.head_stride + t.offset;
+    device float2 * stats = (device float2 *)(scores + ulong(p.query_heads) * p.head_stride) + ulong(group.y) * (p.head_stride / 32);
     for (uint row = sg; row < t.rows; row += 8) {
-        device float * x = strip + ulong(row) * t.span;
-        float m = -INFINITY;
-        for (uint i = lane; i < t.span; i += 32) m = max(m, x[i]);
-        m = simd_max(m);
-        float sum = 0.0f;
-        for (uint i = lane; i < t.span; i += 32) { const float e = exp(x[i] - m); x[i] = e; sum += e; }
-        const float inv = 1.0f / simd_sum(sum);
-        for (uint i = lane; i < t.span; i += 32) x[i] *= inv;
+        device const float * x = strip + ulong(row) * t.span;
+        float m = -INFINITY, sum = 0.0f;
+        for (uint i = lane; i < t.span; i += 32) {
+            const float v = x[i];
+            if (v == -INFINITY) continue;
+            if (v > m) { sum = sum * exp(m - v) + 1.0f; m = v; }
+            else sum += exp(v - m);
+        }
+        const float mx = simd_max(m);
+        const float total = simd_sum(m == -INFINITY ? 0.0f : sum * exp(m - mx));
+        if (lane == 0) stats[(t.offset + row * t.span) / 32] = mx == -INFINITY ? float2(0.0f) : float2(mx, 1.0f / total);
     }
 }
 
 // Values: one threadgroup per (tile, head × 32 value columns), O[32][32] =
-// P · V over the span in 32-key steps; key rows past `rows` stage as zeros
-// (their weights are 0, and padding rows may hold anything).
+// P · V over the span in 32-key steps, P = exp(S − max) / sum staged from
+// the scores and `nu_segments_stats`' row statistics; key rows past `rows` stage as zeros
+// (their weights are 0, and padding rows may hold anything). The last block
+// of a width that is not a multiple of 32 stages and stores only its own
+// 8-column blocks.
 kernel void nu_segments_values(device const float * scores [[buffer(0)]],
                                 device const float * values [[buffer(1)]],
                                 device const AttentionTile * tiles [[buffer(2)]],
@@ -279,9 +294,13 @@ kernel void nu_segments_values(device const float * scores [[buffer(0)]],
     const uint head = group.y % p.query_heads, cb = group.y / p.query_heads;
     const uint kv = head / (p.query_heads / p.kv_heads);
     const uint c0 = cb * 32;
+    const uint cn = min(32u, p.width - c0); // a multiple of 8, uniform
     const uint r = tid >> 2, part = (tid & 3) * 8;
+    const bool c_ok = part < cn;
     const bool p_ok = r < t.rows;
     device const float * prow = scores + ulong(head) * p.head_stride + t.offset + ulong(r) * t.span + part;
+    device const float2 * stats = (device const float2 *)(scores + ulong(p.query_heads) * p.head_stride) + ulong(head) * (p.head_stride / 32);
+    const float2 st = p_ok ? stats[(t.offset + r * t.span) / 32] : float2(0.0f);
     device const float * vbase = values + ulong(kv) * p.width + c0 + part;
     const uint sub_row = (sg & 1) * 16, sub_col = (sg >> 1) * 16;
     simdgroup_float8x8 acc[2][2];
@@ -289,8 +308,8 @@ kernel void nu_segments_values(device const float * scores [[buffer(0)]],
     for (uint k0 = 0; k0 < t.span; k0 += 32) {
         const uint key = t.key_lo + k0 + r;
         for (uint c = 0; c < 2; ++c) {
-            ((threadgroup float4 *)(ps + r * 32 + part))[c] = p_ok ? ((device const float4 *)(prow + k0))[c] : float4(0.0f);
-            ((threadgroup float4 *)(vs + r * 32 + part))[c] = key < p.rows ? ((device const float4 *)(vbase + ulong(key) * p.kv_stride))[c] : float4(0.0f);
+            ((threadgroup float4 *)(ps + r * 32 + part))[c] = p_ok ? exp(((device const float4 *)(prow + k0))[c] - st.x) * st.y : float4(0.0f);
+            ((threadgroup float4 *)(vs + r * 32 + part))[c] = key < p.rows && c_ok ? ((device const float4 *)(vbase + ulong(key) * p.kv_stride))[c] : float4(0.0f);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         for (uint k8 = 0; k8 < 32; k8 += 8) {
@@ -304,7 +323,8 @@ kernel void nu_segments_values(device const float * scores [[buffer(0)]],
     device float * out = output + ulong(t.first) * p.out_stride + ulong(head) * p.width + c0;
     for (uint i = 0; i < 2; ++i) {
         if (sub_row + 8 * i >= t.rows) continue;
-        for (uint j = 0; j < 2; ++j) simdgroup_store(acc[i][j], out + ulong(sub_row + 8 * i) * p.out_stride + sub_col + 8 * j, p.out_stride);
+        for (uint j = 0; j < 2; ++j)
+            if (sub_col + 8 * j < cn) simdgroup_store(acc[i][j], out + ulong(sub_row + 8 * i) * p.out_stride + sub_col + 8 * j, p.out_stride);
     }
 }
 

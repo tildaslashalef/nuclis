@@ -193,7 +193,7 @@ pub fn main(init: std.process.Init) !void {
             try hiddenRowsCheck(alloc, init.io, &mapped)
         else if (vision_check) |projector|
             if (vision_image) |image|
-                try visionCompare(alloc, init.io, projector, image, vision_oracle orelse return error.ExpectedOracleDirectory, use_metal, model_path)
+                try visionCompare(alloc, init.io, projector, image, vision_oracle, use_metal, model_path)
             else
                 try visionCheck(alloc, init.io, model_path, projector, use_metal)
         else if (flash_trace) |dir|
@@ -210,7 +210,7 @@ pub fn main(init: std.process.Init) !void {
             try audioCheck(alloc, init.io, model_path, projector, audio_twin, audio_clips.items, use_metal)
         else if (vision_check) |projector|
             if (vision_image) |image|
-                try visionCompare(alloc, init.io, projector, image, vision_oracle orelse return error.ExpectedOracleDirectory, use_metal, model_path)
+                try visionCompare(alloc, init.io, projector, image, vision_oracle, use_metal, model_path)
             else
                 try visionCheck(alloc, init.io, model_path, projector, use_metal)
         else if (draft_trace != null)
@@ -218,7 +218,7 @@ pub fn main(init: std.process.Init) !void {
         else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal, half_tiles_only),
         .@"muse-glimmer" => if (vision_check) |projector|
             if (vision_image) |image|
-                try visionCompare(alloc, init.io, projector, image, vision_oracle orelse return error.ExpectedOracleDirectory, use_metal, model_path)
+                try visionCompare(alloc, init.io, projector, image, vision_oracle, use_metal, model_path)
             else
                 try visionCheck(alloc, init.io, model_path, projector, use_metal)
         else if (draft_trace) |dir|
@@ -2771,8 +2771,9 @@ fn oracleTokens(alloc: std.mem.Allocator, json: []const u8, pad: u32) ![]u32 {
 /// Any image against an oracle directory (`scripts/reference-vision.cpp`'s
 /// `image-embd.f32`): the whole-image numbers, then the relative RMS per
 /// block of the token grid, so a fault that lives in one region or one
-/// row band shows where it is. Reports; never gates.
-fn visionCompare(alloc: std.mem.Allocator, io: std.Io, projector_path: []const u8, image_path: []const u8, oracle: []const u8, use_metal: bool, model_path: ?[]const u8) !void {
+/// row band shows where it is. Reports; never gates. Without an oracle it
+/// only encodes (with `--vision-profile`, the per-kernel times).
+fn visionCompare(alloc: std.mem.Allocator, io: std.Io, projector_path: []const u8, image_path: []const u8, oracle_dir: ?[]const u8, use_metal: bool, model_path: ?[]const u8) !void {
     const vision = inference.vision;
     var loaded: LoadedProjector = undefined;
     try loaded.open(alloc, io, projector_path, use_metal);
@@ -2782,6 +2783,11 @@ fn visionCompare(alloc: std.mem.Allocator, io: std.Io, projector_path: []const u
     var source = try vision.image.decode(alloc, bytes);
     defer source.deinit(alloc);
     const grid = loaded.projector.grid(.{ .width = source.width, .height = source.height });
+    const oracle = oracle_dir orelse {
+        std.debug.print("Image {d}x{d} -> grid {d}x{d} tokens.\n", .{ source.width, source.height, grid.width_tokens, grid.height_tokens });
+        alloc.free(try loaded.encode(alloc, io, source, grid));
+        return;
+    };
     const oracle_path = try std.fs.path.join(alloc, &.{ oracle, "image-embd.f32" });
     defer alloc.free(oracle_path);
     const expected = try std.Io.Dir.cwd().readFileAlloc(io, oracle_path, alloc, .limited(256 << 20));

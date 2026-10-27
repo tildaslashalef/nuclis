@@ -87,7 +87,7 @@ pub const AttentionSegmentsGroupedShape = struct {
     query_heads: usize,
     /// Query head h reads kv head `h / (query_heads / kv_heads)`.
     kv_heads: usize,
-    /// Query, key, and value head width: a multiple of 64, at most 512.
+    /// Query, key, and value head width: a multiple of 8, at most 512.
     width: usize,
     rows: usize,
     q_stride: usize,
@@ -111,14 +111,16 @@ pub const AttentionChunk = struct { first: usize, count: usize, head_stride: usi
 /// padding, `rows` a multiple of 8) to `tiles` at `count.*`, each with
 /// the key range its rows see under `bounds` (host u32 pairs) and
 /// `window`, as the kernels mask them; offsets are left 0 for `chunkTiles`.
+/// Rows past `total_rows`, up to `attentionChunkRows(total_rows)`, see no
+/// key (the kernels write them zeros).
 pub fn attentionTiles(bounds: []const u32, total_rows: usize, window: ?usize, first: usize, rows: usize, tiles: []AttentionTile, count: *usize) !void {
-    if (rows % 8 != 0 or first + rows > total_rows or bounds.len < 2 * total_rows) return error.InvalidShape;
+    if (total_rows == 0 or first % 8 != 0 or rows % 8 != 0 or first + rows > attentionChunkRows(total_rows) or bounds.len < 2 * total_rows) return error.InvalidShape;
     var at: usize = 0;
     while (at < rows) {
         const n = @min(rows - at, attention_tile_rows);
         var lo: usize = std.math.maxInt(usize);
         var hi: usize = 0;
-        for (first + at..first + at + n) |r| {
+        for (first + at..@min(first + at + n, total_rows)) |r| {
             var a: usize = @min(bounds[2 * r], r);
             var b: usize = std.math.clamp(@as(usize, bounds[2 * r + 1]), r + 1, total_rows);
             if (window) |w| {
@@ -134,8 +136,15 @@ pub fn attentionTiles(bounds: []const u32, total_rows: usize, window: ?usize, fi
         at += n;
     }
 }
+/// Floats of score buffer a chunk of `head_stride` takes over `heads` heads:
+/// the strips, then one (max, 1 / sum) pair per strip row (a row's strip is
+/// at least 32 floats, so the pairs take at most a sixteenth more).
+pub fn scoreFloats(heads: usize, head_stride: usize) usize {
+    return heads * head_stride + heads * head_stride / 16;
+}
 /// Sets each tile's strip offset and splits `tiles` into chunks whose
-/// strips fit `capacity` floats over `heads` heads; returns the chunk count.
+/// strips and row statistics fit `capacity` floats over `heads` heads
+/// (`scoreFloats`); returns the chunk count.
 pub fn chunkTiles(tiles: []AttentionTile, heads: usize, capacity: usize, chunks: []AttentionChunk) !usize {
     var count: usize = 0;
     var i: usize = 0;
@@ -144,8 +153,8 @@ pub fn chunkTiles(tiles: []AttentionTile, heads: usize, capacity: usize, chunks:
         var chunk: AttentionChunk = .{ .first = i, .count = 0, .head_stride = 0, .max_span = 0 };
         while (i < tiles.len) : (i += 1) {
             const strip = @as(usize, tiles[i].rows) * tiles[i].span;
-            if (chunk.count > 0 and heads * (chunk.head_stride + strip) > capacity) break;
-            if (heads * strip > capacity) return error.InvalidShape;
+            if (chunk.count > 0 and scoreFloats(heads, chunk.head_stride + strip) > capacity) break;
+            if (scoreFloats(heads, strip) > capacity) return error.InvalidShape;
             tiles[i].offset = @intCast(chunk.head_stride);
             chunk.head_stride += strip;
             chunk.max_span = @max(chunk.max_span, tiles[i].span);
@@ -158,15 +167,16 @@ pub fn chunkTiles(tiles: []AttentionTile, heads: usize, capacity: usize, chunks:
 }
 /// `attentionSegments` with grouped-query heads, widths to 512, and no
 /// bound on a sequence's length, over the query tiles of one chunk:
-/// scores into `scores` (`query_heads · chunk.head_stride` floats),
-/// their softmax, and P·V into `output`, F32 throughout. `tiles` is the
+/// scores into `scores` (`scoreFloats(query_heads, chunk.head_stride)`
+/// floats), each row's softmax statistics after them, and P·V (the
+/// probabilities formed while staged) into `output`, F32 throughout. `tiles` is the
 /// chunk's slice of the tile buffer (`attentionTiles`, `chunkTiles`),
 /// checked here: ascending, disjoint, inside the rows. Queries and output
 /// hold `attentionChunkRows(rows)` rows, keys and values `rows`, all
 /// float4-aligned. A row's result depends on its tile's rows and keys
 /// only. The device clamps the bounds; keeping them true is the caller's job.
 pub fn attentionSegmentsGrouped(self: *Backend, queries: Buffer, keys: Buffer, values: Buffer, output: Buffer, bounds: Buffer, tiles: Buffer, chunk: AttentionChunk, scores: Buffer, s: AttentionSegmentsGroupedShape) !void {
-    if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or s.width == 0 or s.width % 64 != 0 or s.width > 512) return error.InvalidShape;
+    if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or s.width == 0 or s.width % 8 != 0 or s.width > 512) return error.InvalidShape;
     if (s.rows == 0 or s.rows >= std.math.maxInt(u32) or !std.math.isFinite(s.scale)) return error.InvalidShape;
     const q_floats = s.query_heads * s.width;
     const kv_floats = s.kv_heads * s.width;
@@ -177,7 +187,7 @@ pub fn attentionSegmentsGrouped(self: *Backend, queries: Buffer, keys: Buffer, v
     const out_len = ((padded - 1) * s.out_stride + q_floats) * 4;
     if (queries.len < q_len or keys.len < kv_len or values.len < kv_len or output.len < out_len or bounds.len < s.rows * 8 or bounds.offset % 8 != 0) return error.InvalidShape;
     if (queries.offset % 16 != 0 or keys.offset % 16 != 0 or values.offset % 16 != 0 or output.offset % 16 != 0 or scores.offset % 16 != 0) return error.InvalidShape;
-    const scores_len = s.query_heads * chunk.head_stride * 4;
+    const scores_len = scoreFloats(s.query_heads, chunk.head_stride) * 4;
     if (chunk.count == 0 or chunk.head_stride == 0 or chunk.head_stride >= std.math.maxInt(u32) or scores.len < scores_len) return error.InvalidShape;
     if (tiles.len < chunk.count * @sizeOf(AttentionTile) or tiles.offset % 4 != 0) return error.InvalidShape;
     if (Buffer.overlaps(output, out_len, queries, q_len) or Buffer.overlaps(output, out_len, keys, kv_len) or Buffer.overlaps(output, out_len, values, kv_len) or Buffer.overlaps(output, out_len, scores, scores_len)) return error.InvalidShape;
@@ -196,6 +206,6 @@ pub fn attentionSegmentsGrouped(self: *Backend, queries: Buffer, keys: Buffer, v
     const p: AttentionGemmParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .width = @intCast(s.width), .rows = @intCast(s.rows), .q_stride = @intCast(s.q_stride), .kv_stride = @intCast(s.kv_stride), .out_stride = @intCast(s.out_stride), .head_stride = @intCast(chunk.head_stride), .scale = s.scale, .window = window };
     const n: u32 = @intCast(chunk.count);
     try self.dispatch2(.segments_scores, &.{ queries, keys, bounds, tiles, scores }, p, n, @intCast(s.query_heads * chunk.max_span / 32), 128);
-    try self.dispatch2(.segments_softmax, &.{ tiles, scores }, p, n, @intCast(s.query_heads), 256);
-    try self.dispatch2(.segments_values, &.{ scores, values, tiles, output }, p, n, @intCast(s.query_heads * s.width / 32), 128);
+    try self.dispatch2(.segments_stats, &.{ tiles, scores }, p, n, @intCast(s.query_heads), 256);
+    try self.dispatch2(.segments_values, &.{ scores, values, tiles, output }, p, n, @intCast(s.query_heads * @divCeil(s.width, 32)), 128);
 }

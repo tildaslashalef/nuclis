@@ -2420,6 +2420,107 @@ fn checkGroupedSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
     var wide = ok;
     wide.width = 576;
     try std.testing.expectError(error.InvalidShape, b.attentionSegmentsGrouped(qkv, qkv, qkv, o, small, t, chunk, small, wide));
+    var ragged = ok;
+    ragged.width = 68;
+    try std.testing.expectError(error.InvalidShape, b.attentionSegmentsGrouped(qkv, qkv, qkv, o, small, t, chunk, small, ragged));
+}
+
+/// The vision encoders' attention (`vision.attention_metal.Spans`) against
+/// F64 attention over each row's window: the E4B's 64-wide heads over its
+/// 6,084 patches at scale 1 (several score chunks), Qwen3-VL's 72-wide and
+/// Muse Glimmer's 96-wide heads (widths that are not a multiple of 64) over
+/// one window and over windows of uneven lengths, rows not a multiple of 8.
+/// Key rows past the patches and query rows in the padding are NaN; the
+/// padding rows' output must come out zero.
+fn checkVisionSpanAttention(alloc: std.mem.Allocator, b: *Backend) !void {
+    const attention = inference.vision.attention_metal;
+    const W = attention.Window;
+    const Case = struct { heads: usize, width: usize, rows: usize, scale: f32, windows: []const W, step: usize };
+    const cases = [_]Case{
+        .{ .heads = 12, .width = 64, .rows = 6084, .scale = 1, .windows = &.{.{ .begin = 0, .count = 6084 }}, .step = 61 },
+        .{ .heads = 4, .width = 72, .rows = 1003, .scale = 1.0 / @sqrt(72.0), .windows = &.{.{ .begin = 0, .count = 1003 }}, .step = 1 },
+        .{ .heads = 4, .width = 96, .rows = 1003, .scale = 1.0 / @sqrt(96.0), .windows = &.{ .{ .begin = 0, .count = 300 }, .{ .begin = 300, .count = 1 }, .{ .begin = 301, .count = 517 }, .{ .begin = 818, .count = 185 } }, .step = 1 },
+        .{ .heads = 4, .width = 72, .rows = 13, .scale = 1.0 / @sqrt(72.0), .windows = &.{ .{ .begin = 0, .count = 5 }, .{ .begin = 5, .count = 8 } }, .step = 1 },
+    };
+    var created: usize = 0;
+    var spans = try attention.Spans.init(alloc, b, 8192, &created);
+    defer spans.deinit(alloc);
+    const scores_buffer = try b.create(attention.score_capacity * 4);
+    defer b.release(scores_buffer) catch {};
+    var prng = std.Random.DefaultPrng.init(0x715e);
+    const random = prng.random();
+    for (cases) |case| {
+        const row_floats = case.heads * case.width;
+        const padded = Backend.attentionChunkRows(case.rows);
+        const q = try alloc.alloc(f32, padded * row_floats);
+        defer alloc.free(q);
+        const k = try alloc.alloc(f32, padded * row_floats);
+        defer alloc.free(k);
+        const v = try alloc.alloc(f32, padded * row_floats);
+        defer alloc.free(v);
+        for (q, k, v, 0..) |*x, *y, *z, i| {
+            const real = i / row_floats < case.rows;
+            x.* = if (real) random.floatNorm(f32) else std.math.nan(f32);
+            y.* = if (real) random.floatNorm(f32) else std.math.nan(f32);
+            z.* = if (real) random.floatNorm(f32) else std.math.nan(f32);
+        }
+        const qb = try upload(b, q);
+        const kb = try upload(b, k);
+        const vb = try upload(b, v);
+        const out = try b.create(padded * row_floats * 4);
+        @memset(out.floats(), std.math.nan(f32));
+        try spans.plan(case.windows, case.rows, case.heads);
+        try b.begin();
+        try spans.attend(b, qb, kb, vb, out, scores_buffer, .{ .width = case.width, .q_stride = row_floats, .kv_stride = row_floats, .out_stride = row_floats, .scale = case.scale });
+        try b.commit();
+        const got = out.floats();
+        for (got[case.rows * row_floats .. padded * row_floats]) |x| if (x != 0) {
+            std.debug.print("vision span attention: a padding row holds {d}\n", .{x});
+            return error.MetalMismatch;
+        };
+        const scores = try alloc.alloc(f64, case.rows);
+        defer alloc.free(scores);
+        var worst: f64 = 0;
+        var i: usize = 0;
+        while (i < case.rows) : (i += case.step) {
+            var lo: usize = 0;
+            var hi: usize = 0;
+            for (case.windows) |w| if (i >= w.begin and i < w.begin + w.count) {
+                lo = w.begin;
+                hi = w.begin + w.count;
+            };
+            for (0..case.heads) |h| {
+                const qi = q[i * row_floats + h * case.width ..][0..case.width];
+                var max: f64 = -std.math.inf(f64);
+                for (lo..hi) |j| {
+                    var dot: f64 = 0;
+                    for (qi, k[j * row_floats + h * case.width ..][0..case.width]) |x, y| dot += @as(f64, x) * y;
+                    scores[j] = dot * case.scale;
+                    max = @max(max, scores[j]);
+                }
+                var sum: f64 = 0;
+                for (scores[lo..hi]) |*x| {
+                    x.* = @exp(x.* - max);
+                    sum += x.*;
+                }
+                for (got[i * row_floats + h * case.width ..][0..case.width], 0..) |x, d| {
+                    var want: f64 = 0;
+                    for (lo..hi) |j| want += scores[j] * v[j * row_floats + h * case.width + d];
+                    worst = @max(worst, @abs(want / sum - x));
+                }
+            }
+        }
+        if (!(worst <= 2e-4)) {
+            std.debug.print("vision span attention ({d} heads of {d}, {d} rows, {d} windows): worst |difference| {e:.3}\n", .{ case.heads, case.width, case.rows, case.windows.len, worst });
+            return error.MetalMismatch;
+        }
+        std.debug.print("vision span attention, {d} heads of {d}, {d} rows in {d} windows, {d} chunks, vs F64 (every {d}th row): worst |difference| {e:.3} (bound 2e-4), padding rows zero\n", .{ case.heads, case.width, case.rows, case.windows.len, spans.chunk_count, case.step, worst });
+        for ([_]Buffer{ qb, kb, vb, out }) |buffer| try b.release(buffer);
+    }
+    // Windows that leave a gap or overrun the rows are refused.
+    try std.testing.expectError(error.InvalidShape, spans.plan(&[_]W{ .{ .begin = 0, .count = 4 }, .{ .begin = 5, .count = 4 } }, 9, 4));
+    try std.testing.expectError(error.InvalidShape, spans.plan(&[_]W{.{ .begin = 0, .count = 10 }}, 9, 4));
+    try std.testing.expectError(error.InvalidShape, spans.plan(&[_]W{.{ .begin = 0, .count = 8 }}, 9, 4));
 }
 
 /// The exact-GELU gate over the two halves of strided fused rows against
@@ -4390,6 +4491,7 @@ pub fn main(init: std.process.Init) !void {
     try checkWindowAttention(alloc, b);
     try checkSegmentAttention(alloc, b);
     try checkGroupedSegmentAttention(alloc, b);
+    try checkVisionSpanAttention(alloc, b);
     try checkGeluErfRows(alloc, b);
     try checkFusedNorms(alloc, b);
     try checkDenseEncodings(alloc, io, b);

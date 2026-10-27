@@ -254,7 +254,7 @@ pub const Kernel = enum(u32) {
     delta_rows,
     delta_replay,
     segments_scores,
-    segments_softmax,
+    segments_stats,
     segments_values,
     audio_attention,
     glu_conv,

@@ -1,11 +1,9 @@
 //! The Muse Glimmer projector on Metal: the CPU reference's schedule
 //! (`muse_glimmer.Runtime.encode`) over the batched matmul tiles and the
-//! LayerNorm, bias, RoPE, and erf-GELU kernels. Attention is the chunk
-//! kernel with a bidirectional span: once per window on its row slice in a
-//! windowed block (in window order, since each dispatch stores up to seven
-//! padding rows into the next window's output, which that window then
-//! overwrites), once over the whole patch set in a global block. The pixel
-//! shuffle runs on the host between two command buffers.
+//! LayerNorm, bias, RoPE, and erf-GELU kernels. Attention is the
+//! materialized-score attention (`attention_metal`): each row over its
+//! window's rows in a windowed block, over the whole patch set in a global
+//! block. The pixel shuffle runs on the host between two command buffers.
 //! Weights are the mapped file's bytes wrapped in place, except the patch
 //! kernel, zero-padded from 588 to the tile's 640 columns. Activations are
 //! sized for the largest image (16,384 patches).
@@ -15,6 +13,7 @@ const cpu = @import("../backends/cpu/root.zig");
 const weights = @import("../runtime/weights.zig");
 const preprocess = @import("preprocess.zig");
 const model = @import("muse_glimmer.zig");
+const attention = @import("attention_metal.zig");
 
 const Backend = metal.Backend;
 const Buffer = metal.Buffer;
@@ -73,6 +72,9 @@ pub const Plan = struct {
     up: Buffer,
     rope: Buffer,
     out: Buffer, // token rows × output_width
+    windowed: attention.Spans,
+    global: attention.Spans,
+    scores: Buffer, // attention.score_capacity floats
     scratch: []f32,
     /// Bytes of device memory the plan created (the padded kernel and the
     /// activations); the wrapped file bytes are not counted.
@@ -120,6 +122,11 @@ pub const Plan = struct {
         self.up = try self.created(@max(rows * ffn, tokens * (merged + 2 * adapter)) * 4);
         self.rope = try self.created(model.max_patches * model.rope_pairs * 8);
         self.out = try self.created(tokens * out_width * 4);
+        self.scores = try self.created(attention.score_capacity * 4);
+        self.windowed = try attention.Spans.init(alloc, backend, model.max_patches, &self.created_bytes);
+        errdefer self.windowed.deinit(alloc);
+        self.global = try attention.Spans.init(alloc, backend, model.max_patches, &self.created_bytes);
+        errdefer self.global.deinit(alloc);
         self.scratch = try alloc.alloc(f32, 4 * hidden);
         return self;
     }
@@ -138,6 +145,8 @@ pub const Plan = struct {
     pub fn deinit(self: *Plan) void {
         // Device buffers belong to the backend and go with it.
         self.alloc.free(self.scratch);
+        self.windowed.deinit(self.alloc);
+        self.global.deinit(self.alloc);
         self.* = undefined;
     }
 
@@ -173,6 +182,8 @@ pub const Plan = struct {
         try model.ropeTable(self.rope.floats(), grid, layout);
         for ([_]Buffer{ self.x, self.h, self.attn, self.q, self.k, self.v }) |buffer| @memset(buffer.floats()[n * hidden .. rows * hidden], 0);
         @memset(self.up.floats()[n * ffn .. rows * ffn], 0);
+        try self.windowed.plan(layout.windows, n, model.heads);
+        try self.global.plan(&[_]attention.Window{.{ .begin = 0, .count = @intCast(n) }}, n, model.heads);
 
         const b = self.backend;
         const norm: Backend.Norm = .{ .rows = n, .width = hidden, .in_stride = hidden, .out_stride = hidden, .eps = model.norm_epsilon };
@@ -192,13 +203,8 @@ pub const Plan = struct {
             }
             try b.ropeRows(self.q, self.rope, model.heads, model.head_dim, model.head_dim, 0, n, hidden, .adjacent);
             try b.ropeRows(self.k, self.rope, model.heads, model.head_dim, model.head_dim, 0, n, hidden, .adjacent);
-            const whole = [_]model.Window{.{ .begin = 0, .count = @intCast(n) }};
-            for (if (model.isGlobal(il)) &whole else layout.windows) |w| {
-                const offset = @as(usize, w.begin) * hidden * 4;
-                const keys = @as(usize, w.count) * hidden * 4;
-                const rows_len = Backend.attentionChunkRows(w.count) * hidden * 4;
-                try b.attentionChunk(self.k.slice(offset, keys), self.v.slice(offset, keys), self.q.slice(offset, rows_len), self.attn.slice(offset, rows_len), .{ .query_heads = model.heads, .kv_heads = model.heads, .key_width = model.head_dim, .value_width = model.head_dim, .position = 0, .count = w.count, .q_stride = hidden, .out_stride = hidden, .scale = scale, .span = .{ .begin = 0, .end = w.count } });
-            }
+            const spans = if (model.isGlobal(il)) &self.global else &self.windowed;
+            try spans.attend(b, self.q, self.k, self.v, self.attn, self.scores, .{ .width = model.head_dim, .q_stride = hidden, .kv_stride = hidden, .out_stride = hidden, .scale = scale });
             try b.matmul(l.output.buffer, l.output.matrix, self.attn, hidden, self.h, hidden, n);
             try b.addBiasRows(self.h, l.ob, hidden, n, hidden);
             try b.add(self.x, self.h, n * hidden);

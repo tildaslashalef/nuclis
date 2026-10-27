@@ -1,7 +1,7 @@
 //! Gemma 4's projectors on Metal: the CPU reference's schedules
 //! (`gemma4.Runtime`) over the batched matmul tiles and the norm, RoPE, and
-//! attention kernels. The SigLIP encoder's attention is the chunk attention
-//! kernel with the whole patch set as one bidirectional span; its 3×3 pool
+//! attention kernels. The SigLIP encoder's attention is the materialized-
+//! score attention over the whole patch set (`attention_metal`); its 3×3 pool
 //! and standardization run on the host between two command buffers. Weights
 //! are the mapped file's bytes wrapped in place, except the FFN down
 //! matrices, whose columns (4,304 on the 26B-A4B) are zero-padded to the
@@ -14,6 +14,7 @@ const cpu = @import("../backends/cpu/root.zig");
 const weights = @import("../runtime/weights.zig");
 const preprocess = @import("preprocess.zig");
 const model = @import("gemma4.zig");
+const attention = @import("attention_metal.zig");
 
 const Backend = metal.Backend;
 const Buffer = metal.Buffer;
@@ -80,6 +81,8 @@ const Siglip = struct {
     rope_x: Buffer,
     rope_y: Buffer,
     pooled: Buffer, // token rows × hidden
+    spans: attention.Spans,
+    scores: Buffer, // attention.score_capacity floats
 };
 
 pub const Plan = struct {
@@ -170,6 +173,9 @@ pub const Plan = struct {
                 s.rope_x = try self.created(siglip.max_patches * g.ropePairs() * 8);
                 s.rope_y = try self.created(siglip.max_patches * g.ropePairs() * 8);
                 s.pooled = try self.created(tokens * h * 4);
+                s.scores = try self.created(attention.score_capacity * 4);
+                s.spans = try attention.Spans.init(alloc, backend, siglip.max_patches, &self.created_bytes);
+                errdefer s.spans.deinit(alloc);
                 self.net = .{ .siglip = s };
                 self.scratch = try alloc.alloc(f32, siglip.max_patches * h + h);
             },
@@ -212,9 +218,10 @@ pub const Plan = struct {
         self.alloc.free(self.scratch);
         switch (self.net) {
             .unified => {},
-            .siglip => |s| {
+            .siglip => |*s| {
                 if (s.std_bias.len != 0) self.alloc.free(s.std_bias);
                 if (s.std_scale.len != 0) self.alloc.free(s.std_scale);
+                s.spans.deinit(self.alloc);
             },
         }
         self.* = undefined;
@@ -311,6 +318,7 @@ pub const Plan = struct {
         try model.positionRows(self.view, net.position, h, siglip.table, wp, n, self.scratch, self.scratch[n * h ..]);
         @memcpy(s.h.floats()[0 .. n * h], self.scratch[0 .. n * h]);
         try model.ropeTables(s.rope_x.floats(), s.rope_y.floats(), g.ropePairs(), wp, n);
+        try s.spans.plan(&[_]attention.Window{.{ .begin = 0, .count = @intCast(n) }}, n, heads);
         const b = self.backend;
         try b.begin();
         errdefer b.discard();
@@ -332,7 +340,7 @@ pub const Plan = struct {
                 try b.ropeRows(data.slice(half * 4, data.len - half * 4), s.rope_y, heads, d, half, 0, n, h, .split_half);
             }
             try b.rmsNorm(s.v, self.ones, s.v, per_head);
-            try b.attentionChunk(s.k, s.v, s.q, s.attn, .{ .query_heads = heads, .kv_heads = heads, .key_width = d, .value_width = d, .position = 0, .count = n, .q_stride = h, .out_stride = h, .scale = 1.0, .span = .{ .begin = 0, .end = n } });
+            try s.spans.attend(b, s.q, s.k, s.v, s.attn, s.scores, .{ .width = d, .q_stride = h, .kv_stride = h, .out_stride = h, .scale = 1.0 });
             try self.clipped(l.output, l.bounds[@backingInt(model.Linear.output)], s.attn, h, s.h, h, n);
             try b.rmsNorm(s.h, l.post_attention_norm, s.h, rows);
             try b.add(s.x, s.h, n * h);

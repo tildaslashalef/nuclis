@@ -1,7 +1,8 @@
 //! The Qwen3-VL projector on Metal: the CPU reference's schedule
 //! (`qwen3vl.Runtime.encode`) as one command buffer over the batched
-//! matmul tiles, the LayerNorm, bias, GELU, and bidirectional attention
-//! kernels, and the per-row RoPE table. Weights are the mapped file's
+//! matmul tiles, the LayerNorm, bias, and GELU kernels, the materialized-
+//! score attention over the whole patch set (`attention_metal`), and the
+//! per-row RoPE table. Weights are the mapped file's
 //! bytes wrapped in place, except the summed patch kernel and the FFN down
 //! matrices (F32, F16, or BF16), whose 4,304 columns are zero-padded to the
 //! tile's 64.
@@ -11,6 +12,7 @@ const cpu = @import("../backends/cpu/root.zig");
 const weights = @import("../runtime/weights.zig");
 const preprocess = @import("preprocess.zig");
 const model = @import("qwen3vl.zig");
+const attention = @import("attention_metal.zig");
 
 const Backend = metal.Backend;
 const Buffer = metal.Buffer;
@@ -72,6 +74,9 @@ pub const Plan = struct {
     rope: Buffer,
     mid: Buffer,
     out: Buffer,
+    spans: attention.Spans,
+    /// `attention.score_capacity` floats.
+    scores: Buffer,
     scratch: []f32,
     /// Bytes of device memory the plan created (weights copied or padded,
     /// and the activations); the wrapped file bytes are not counted.
@@ -131,6 +136,9 @@ pub const Plan = struct {
         self.rope = try self.created(max_patches * model.rope_pairs * 8);
         self.mid = try self.created(max_tokens * merged * 4);
         self.out = try self.created(max_tokens * binding.output_width * 4);
+        self.scores = try self.created(attention.score_capacity * 4);
+        self.spans = try attention.Spans.init(alloc, backend, max_patches, &self.created_bytes);
+        errdefer self.spans.deinit(alloc);
         self.scratch = try alloc.alloc(f32, 4 * hidden);
         return self;
     }
@@ -145,6 +153,7 @@ pub const Plan = struct {
     pub fn deinit(self: *Plan) void {
         // Device buffers belong to the backend and go with it.
         self.alloc.free(self.scratch);
+        self.spans.deinit(self.alloc);
         self.* = undefined;
     }
 
@@ -163,6 +172,7 @@ pub const Plan = struct {
         // The tile reads the padded rows past `n`; leave them finite.
         @memset(self.x.floats(), 0);
         @memset(self.h.floats(), 0);
+        try self.spans.plan(&[_]attention.Window{.{ .begin = 0, .count = @intCast(n) }}, n, model.heads);
 
         try b.begin();
         errdefer b.discard();
@@ -177,7 +187,7 @@ pub const Plan = struct {
             try b.addBiasRows(self.qkv, layer.qkv_b, qkv_width, n, qkv_width);
             try b.ropeRows(self.qkv, self.rope, model.heads, model.head_dim, model.head_dim, 0, n, qkv_width, .split_half);
             try b.ropeRows(keys, self.rope, model.heads, model.head_dim, model.head_dim, 0, n, qkv_width, .split_half);
-            try b.attentionFull(self.qkv, keys, values, self.attn, .{ .heads = model.heads, .width = model.head_dim, .rows = n, .q_stride = qkv_width, .kv_stride = qkv_width, .out_stride = hidden, .scale = 1.0 / @sqrt(@as(f32, model.head_dim)) });
+            try self.spans.attend(b, self.qkv, keys, values, self.attn, self.scores, .{ .width = model.head_dim, .q_stride = qkv_width, .kv_stride = qkv_width, .out_stride = hidden, .scale = 1.0 / @sqrt(@as(f32, model.head_dim)) });
             try b.matmul(layer.out, layer.out_m, self.attn, hidden, self.h, hidden, n);
             try b.addBiasRows(self.h, layer.out_b, hidden, n, hidden);
             try b.add(self.x, self.h, n * hidden);
