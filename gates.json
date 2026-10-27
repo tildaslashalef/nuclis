@@ -4537,6 +4537,48 @@
    },
    "note": "nuclis transcribe --backend metal (lookahead 3, each clip under its locale) over the whole speech corpus (make speech-corpus), 40 LibriSpeech test-clean and 20 FLEURS clips in German, French, Spanish and Russian: the word error rate over all must stay at most 7 % (first run 2026-10-27: 74 errors in 1211 words, 6.11 %, every transcript word for word the CPU's; the bound allows eleven more)",
    "evidence": "docs/models/nemotron-asr.md#on-metal-2026-10-27"
+  },
+  {
+   "name": "nemotron-asr-stream-route",
+   "family": "nemotron-asr",
+   "tier": "verify",
+   "model": "nemotron_asr",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/audio/audio.zig",
+    "inference/src/audio/audio_bridge.m",
+    "inference/src/audio/mel.zig",
+    "inference/src/audio/nemotron_*.zig",
+    "inference/src/tokenizer/pieces.zig",
+    "inference/src/backends/metal/**",
+    "src/transcribe.zig",
+    "src/api/http.zig",
+    "src/api/websocket.zig",
+    "src/api/gpu.zig",
+    "src/api/slot.zig",
+    "src/api/transcription/**",
+    "scripts/ws-transcribe.py",
+    "tests/fixtures/speech-corpus.json"
+   ],
+   "command": [
+    "python3",
+    "scripts/ws-transcribe.py",
+    "--check",
+    "--nuclis",
+    "{nuclis}",
+    "--model",
+    "{model}",
+    "--speed",
+    "3",
+    "--clips",
+    "librispeech-61-70968-0000,librispeech-6829-68769-0000,fleurs-de_de-1660,fleurs-fr_fr-1661"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "nuclis serve's GET /v1/audio/transcriptions/stream on Metal: four corpus clips (make speech-corpus; two LibriSpeech test-clean, one FLEURS German, one French) streamed at three times real time on one WebSocket, each under its locale (a language message before its audio, a finish after it), lookahead 3: every final's text must equal nuclis transcribe --json of the same 16-bit samples exactly (first run 2026-10-27: 4 of 4)",
+   "evidence": "docs/guide/api.md#live-transcription"
   }
  ]
 }
