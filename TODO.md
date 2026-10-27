@@ -91,13 +91,18 @@ chat step waits for a ~170 ms 4-frame chunk): task 11's first problem.
 End to end through one server: the 1.7B voice asked a question, E4B
 heard the clip and answered it correctly in 0.7 s.
 
-Next: **tasks 10 and 15 in parallel** (the transcription routes; the
-recognizer's slot is ready in `src/api/transcription/service.zig`), then
-11, then 12.
+Tasks 10 and 15 delivered (2026-10-27): live transcription over a
+WebSocket (`GET /v1/audio/transcriptions/stream`) and whole recordings
+(`POST /v1/audio/transcriptions`, OpenAI's shape, srt/vtt, SSE), one
+segmenter shared with the CLI. Beside an E4B stream, a live clip costs
+E4B 8–13 %, a file transcription about 3×: both carried into task 11.
+
+Next: **task 11** (voice scheduling, all three models together), then
+16, 17, 18 (the agent; any worktree), then 12.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: tasks 8 and 9 |
+| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: task 11 |
 
 ## Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API
 
@@ -199,7 +204,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 12 | Documents, README, website (links Muon) | — | all | main |
 | 13 | Split `kernels.metal` by operation (before 4 and 7) | — | — | done |
 | 14 | Split the Metal backend's `root.zig` by operation (before 4 and 7) | — | — | done |
-| 15 | Serve: file transcription for long recordings (`POST /v1/audio/transcriptions`) | C | 7, 9 | main, beside 10 |
+| 15 | Serve: file transcription for long recordings (`POST /v1/audio/transcriptions`) | C | 7, 9 | done |
 | 16 | Agent: a short answer after a folded thought is not drawn | — | — | any worktree |
 | 17 | Faster image encoding when an image is attached in the agent | — | — | any worktree |
 | 18 | Audio files dropped into the agent, for models that hear | — | 8 | any worktree (after 16 if both touch the transcript) |
@@ -500,45 +505,26 @@ backlog, 60 s idle, 16 sessions. `Slot.held` is a count now (pairs of
 `nemotron-asr-stream-route` (4 clips, finals equal `transcribe --json`).
 The protocol and measured rates: `docs/guide/api.md` § Live transcription.
 
-#### 15. Serve: file transcription for long recordings
+#### 15. Serve: file transcription for long recordings (delivered 2026-10-27)
 
-Asked by the user (2026-10-27) for note-taking clients beside Muon.
-`POST /v1/audio/transcriptions` in OpenAI's shape, under `src/api/transcription/`:
-
-- **Request:** `multipart/form-data` (a parser in `src/api/`, bounded:
-  part count, header size, one file part) with `file`, `model`,
-  `language` (a locale or `auto`), `response_format` (`json` default,
-  `text`, `verbose_json`, `srt`, `vtt`), `timestamp_granularities[]`
-  (`word`, `segment`), `stream` (bool). This route alone takes a larger,
-  explicit body limit (proposed 256 MiB, `serve.transcription_bytes`;
-  `413 payload_too_large` past it), documented beside the others in
-  `docs/guide/api.md` § Conventions.
-- **Segments:** the transcriber's timed tokens grouped into segments at
-  terminal punctuation or a pause of at least 0.8 s (proposed; a
-  constant, measured on the corpus), each `{id, start, end, text,
-  language}`, words `{word, start, end}`. One function in
-  `inference/src/audio/nemotron_asr.zig` (or `src/`), shared with the
-  CLI.
-- **Long audio:** decode the upload, then feed the `Transcriber` in
-  chunks of a few seconds as short GPU items (`gpu.Item.short`), so a
-  two-hour file never blocks a chat turn or speech; memory stays bounded
-  by the encoder's caches plus the decoded PCM. With `stream=true`, the
-  response is server-sent events in OpenAI's form (`transcript.text.delta`,
-  then `transcript.text.done`) plus nuclis's own progress comments, a
-  segment per event as it is finalized. A client that leaves cancels it.
-- **Formats:** `srt` and `vtt` written from the segments (times as
-  `HH:MM:SS,mmm` / `HH:MM:SS.mmm`), `text` the joined text, `json`
-  `{text}`, `verbose_json` `{text, language, duration, segments, words}`.
-- **CLI parity:** `nuclis transcribe <file> --format text|json|srt|vtt`
-  and `--segments`, from the same functions.
-- **Gates:** the corpus WER through the HTTP route equals the CLI's
-  exactly (same text per clip); a 30-minute synthetic recording (corpus
-  clips joined by silences, built by a script, not committed) checks
-  segment times against the joins within one 80 ms row and peak memory
-  flat in duration; unit tests of the multipart parser (boundaries,
-  oversize, missing file, extra parts) and of the `srt`/`vtt` writers.
-  `docs/guide/api.md` § Transcription with a measured rate (audio
-  seconds per second on Metal).
+`POST /v1/audio/transcriptions` in OpenAI's shape (`src/api/multipart.zig`,
+`src/api/transcription/file.zig`): `json`, `text`, `verbose_json`, `srt`,
+`vtt`, `timestamp_granularities[]`, `stream=true` as SSE
+(`transcript.text.delta`, `transcript.text.segment`,
+`transcript.text.done`, progress comments); body limit
+`serve.transcription_bytes` (256 MiB); 2.56 s pieces as short GPU items;
+a client that leaves cancels. One segmenter for the CLI and both routes
+(`src/audio/transcript.zig`): terminal punctuation, a pause of 1.04 s
+(measured on the corpus: 0.8 s split 14 sentences, 1.04 s split 4), or
+30 s. `audio.zig` gained a piece-by-piece `Reader`; the CLI's 1-hour cap
+is gone (`--format`, `--segments`). Gates `nemotron-asr-file-route` (60/60
+equal to the CLI) and `nemotron-asr-long` (5 and 30 minutes: no segment
+crosses a join, ~2 % word drift against clips alone, memory flat).
+Measured in `docs/guide/api.md` § Measured rates (a shared machine).
+Open, beyond task 11: a language change within one recording loses words
+(19 % WER on a mixed 30-minute file against 6.3 % alone; resetting the
+transcriber after a long silence is untried); piece size changes a few
+characters on long recordings (Metal batch rounding).
 
 #### 16. Agent: a short answer after a folded thought is not drawn
 
@@ -631,6 +617,13 @@ re-measure quiet. The first chunk after the server starts is ~650 ms late
 fixes it. An unpinned ASR model opened during a long generation queues
 audio and may hit the 10 s backlog limit: the script pins
 `nemotron-asr-0.6b`.
+
+From task 15: a file transcription beside an E4B stream costs E4B about
+3× (45.8–51.5 → 12.0–17.9 tok/s; the file at 28–41× real time instead of
+42–64×): each chat step waits for a 40–64 ms piece, and smaller pieces do
+not help (an 8-row piece still takes ~34 ms: per-token command buffers).
+Batch the RNN-T's token steps or yield between them; `GET /v1/health`
+reports no file-transcription queue counters.
 
 All three models open and pinned; a script under `scripts/` plays a
 recorded question into the stream, sends the transcript to chat, and
