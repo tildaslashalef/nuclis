@@ -156,6 +156,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 10 | Serve: WebSocket transport, streaming transcription | C | 7, 9 | main |
 | 11 | Voice scheduling measured: E4B, TTS, and ASR together | C | 9, 10 | main |
 | 12 | Documents, README, website (links Muon) | — | all | main |
+| 13 | Split `kernels.metal` by operation (before 4 and 7) | — | — | done |
 
 Worktree rule: a track owns its new files. Shared registrations
 (`src/catalog.zig`, `gates.json`, `docs/spec.md`, `docs/README.md`,
@@ -178,6 +179,18 @@ flushes as the whole-clip pass ends, state lives as long as the stream,
 language `auto` by default, no dither. Sources for the traces:
 `.reference/qwen3-tts-022e286/` (package pins `transformers==4.57.3`)
 and `.reference/transformers-c0d024f/`.
+
+#### 13. Split `kernels.metal` by operation (delivered 2026-10-27)
+
+The 4,249-line `inference/src/backends/metal/kernels.metal` became 14 files
+under `backends/metal/kernels/` along its own sections (`common`, `matvec`,
+`matvec_codebook`, `matvec_split`, `matvec_rows`, `experts`, `matmul`,
+`rowwise`, `recurrent`, `attention`, `recurrent_chunk`, `sampling`,
+`encoders`, `audio`), joined at compile time in that order (`kernel_files`
+in `root.zig`), so tasks 4 and 7 add their kernels in separate files
+instead of colliding in one. Proof of no change: the joined files are
+byte-identical to the old file (so the compiled library is the same);
+`make build` and `make test-metal` pass; no model gate needed.
 
 #### 2. TTS codec decoder, CPU (worktree A)
 
@@ -264,7 +277,7 @@ case.
 - `inference/src/audio/qwen3_codec_metal.zig`: the decoder's plan.
   Missing kernels (transposed convolution, SnakeBeta, the 72-row windowed
   attention if `attentionSegments` does not cover it) are added to
-  `backends/metal/kernels.metal`; each new kernel gets a `make
+  `backends/metal/kernels/` (the voice's and the ears' kernels in `audio.metal`, or a file of their own appended to `kernel_files`); each new kernel gets a `make
   test-metal` case against the CPU function.
 - Streaming: `Synthesizer` (in `qwen3_tts.zig`) yields PCM in chunks of a
   configurable number of frames (default 4, 320 ms).

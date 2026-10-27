@@ -423,7 +423,7 @@ flowchart LR
 
 - **A kernel is a function run by many threads at once.** Zig chooses the
   grid and thread count and holds the constants the kernels assume; only
-  `kernels.metal` names a lane or a SIMD group. The three kernel shapes
+  `backends/metal/kernels/` names a lane or a SIMD group. The three kernel shapes
   (reductions, tiles on the matrix unit, elementwise) and every kernel's
   geometry are tabulated in [engine/metal-backend.md § Kernel geometry](engine/metal-backend.md#kernel-geometry).
 - **Unified memory.** The GPU addresses the mapped file and the session
@@ -439,7 +439,7 @@ flowchart LR
 
 **Read:** [engine/metal-backend.md](engine/metal-backend.md),
 [llm-guide.md § 11–§ 13](llm-guide.md#11-crossing-the-bridge), `bridge.m`,
-then `kernels.metal` from `nu_add` and `nu_rmsnorm` before `nu_matvec`.
+then `kernels/rowwise.metal` (`nu_add`, `nu_rmsnorm`) before `kernels/matvec.metal`.
 
 ## 8. How correctness is established
 

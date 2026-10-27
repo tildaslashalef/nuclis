@@ -200,7 +200,7 @@
    "tier": "verify-long",
    "paths": [
     "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/metal/kernels.metal",
+    "inference/src/backends/metal/kernels/*.metal",
     "inference/src/backends/metal/root.zig",
     "inference/src/runtime/session.zig",
     "inference/src/models/gemma4*.zig"

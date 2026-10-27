@@ -66,14 +66,14 @@ same `--logits`/`--trace-dir` oracle as the CPU backend ([sampling.md](sampling.
 | `backends/metal/bridge.m` | Device, queue, shader library, pipelines, buffers, one open command buffer. A generic recording API: `begin`, `dispatch(pipeline, bindings, constants, grid)`, `commit`, and `discard` (an error path drops the open command buffer unsubmitted). Opt-in profiling: timestamp counter sample buffers and one encoder per dispatch, resolved to seconds per dispatch at commit. Knows nothing about models, shapes, or encodings. |
 | `backends/metal/root.zig` | `Backend`: compiles the kernel set, hands out `Buffer` handles (`create`/`wrap`/`slice`), and exposes one typed encoder per kernel that validates shapes before recording. `Profile` accumulates timed dispatches by kernel, encoding, and shape. Knows kernel contracts, not layer schedules. |
 | `backends/metal/dequant.metal` | GGUF block decoders, ported line by line from `quant/decode.zig`. Bit-exact with the CPU decoders. |
-| `backends/metal/kernels.metal` | Compute kernels: generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0, merged projections (plain, SiLU pair, GELU pair) and their forced split-K twins, embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, quick-gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window, bidirectional span, and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing. |
+| `backends/metal/kernels/*.metal` | Compute kernels, one file per kind of operation (`common`, `matvec`, `matvec_codebook`, `matvec_split`, `matvec_rows`, `experts`, `matmul`, `rowwise`, `recurrent`, `attention`, `recurrent_chunk`, `sampling`, `encoders`, `audio`), joined in that order (`kernel_files` in `root.zig`; later files use earlier helpers): generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0, merged projections (plain, SiLU pair, GELU pair) and their forced split-K twins, embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, quick-gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window, bidirectional span, and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing. |
 | `models/qwen35_metal.zig` | `Plan`: the Qwen schedule expressed as encoder calls. Owns the session and activation buffers; borrows weights and the backend. |
 | `models/gemma4_metal.zig` | `Plan`: the Gemma 4 12B schedule ([MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11)) on the same encoders; sliding-window slices, two RoPE tables, the wide global-layer attention ([gemma4.md § Metal plan](../models/gemma4.md#metal-plan-2026-09-11)). |
 | `models/muse_glimmer_metal.zig` | `Plan`: the Muse Glimmer 30B schedule ([MODL-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-12--muse-glimmer-30b-metal-plan-2026-09-19)) on the same encoders; adjacent-pair RoPE on sliding layers only, the sigmoid attention gate, the untied scaled head ([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-2026-09-19)). |
 | `metal-check.zig` | Explicit GPU checks against pinned fixtures and CPU references; `--matvec-bench` measures the matvec kernels' achieved bandwidth. |
 
 The MSL source is assembled at compile time: the IQ3_S codebook is emitted from
-the single Zig definition, then `dequant.metal` and `kernels.metal` are embedded.
+the single Zig definition, then `dequant.metal` and the `kernels/` files, in `kernel_files` order, are embedded.
 The shader compiles at backend creation with `MTLMathModeSafe`, so no
 reassociation or contraction is applied. Metal's per-user shader cache
 keeps that cheap: measured on the M4 Pro (2026-10-02, 159 pipelines,
@@ -423,7 +423,7 @@ F32, unresolvable in any softmax). The costs and the record rows are in
 
 Decode reads every weight once per token, so the matvec kernels for Q5_K,
 IQ4_XS, Q4_K, and Q6_K decide decode speed. Their design, in
-`kernels.metal` (templates instantiated with `[[host_name]]`, so the bridge
+`kernels/` (templates instantiated with `[[host_name]]`, so the bridge
 needs no function constants):
 
 - **Geometry.** 128-thread groups of four SIMD groups; each SIMD group owns

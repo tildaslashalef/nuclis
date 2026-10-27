@@ -91,7 +91,22 @@ const codebook_source = codebookSource("uint", "u", "nu_iq3_grid", @import("../.
     codebookSource("ulong", "ul", "nu_iq1_s_grid", codebooks.iq1_s) ++
     codebookSource("ushort", "", "nu_iq1_codes", iq1Codes()) ++
     codebookSource("ushort", "", "nu_iq2_s_codes", iq2Codes(codebooks.iq2_s));
-const source = "#include <metal_stdlib>\nusing namespace metal;\n" ++ codebook_source ++ @embedFile("dequant.metal") ++ "\n" ++ @embedFile("kernels.metal");
+/// The kernels, one file per kind of operation, joined in this order into one
+/// library: later files call helpers defined in earlier ones (`common.metal`
+/// first), so the order is part of the source.
+const kernel_files = [_][]const u8{
+    "kernels/common.metal",       "kernels/matvec.metal",          "kernels/matvec_codebook.metal",
+    "kernels/matvec_split.metal", "kernels/matvec_rows.metal",     "kernels/experts.metal",
+    "kernels/matmul.metal",       "kernels/rowwise.metal",         "kernels/recurrent.metal",
+    "kernels/attention.metal",    "kernels/recurrent_chunk.metal", "kernels/sampling.metal",
+    "kernels/encoders.metal",     "kernels/audio.metal",
+};
+const kernels_source = blk: {
+    var joined: []const u8 = "";
+    for (kernel_files) |file| joined = joined ++ @embedFile(file);
+    break :blk joined;
+};
+const source = "#include <metal_stdlib>\nusing namespace metal;\n" ++ codebook_source ++ @embedFile("dequant.metal") ++ "\n" ++ kernels_source;
 
 /// Each `Kernel` names its MSL entry point as `nu_` plus the tag; pipelines
 /// are indexed by the tag's value, so the two cannot drift apart.
@@ -622,7 +637,7 @@ pub const Backend = struct {
     pub const MatvecParams = extern struct { columns: u32, encoding: u32, stride: u32, rows: u32 };
     pub const MatvecBlockParams = extern struct { columns: u32, stride: u32, rows: u32, blocks: u32 };
     /// Rows each SIMD group of a specialized matvec accumulates; must equal the
-    /// template argument of the `nu_matvec_*` instantiations in kernels.metal.
+    /// template argument of the `nu_matvec_*` instantiations in kernels/.
     pub const rows_per_simdgroup = 4;
     const simdgroups_per_matvec_group = 4;
     /// output[r] = sum_c weights[r,c] * input[c]; weights are an encoded matrix
@@ -643,7 +658,7 @@ pub const Backend = struct {
         return self.matvecImpl(weights, matrix, input, output, splits);
     }
     /// Rows per SIMD group of a standalone specialized matvec: the template
-    /// argument of its instantiation in kernels.metal.
+    /// argument of its instantiation in kernels/.
     pub fn matvecRowsPerSimdgroup(kernel: Kernel) usize {
         return switch (kernel) {
             .matvec_iq2_xxs, .matvec_iq2_xs, .matvec_iq2_s, .matvec_q2_k, .matvec_iq1_m => 2,
@@ -651,7 +666,7 @@ pub const Backend = struct {
         };
     }
     /// SIMD groups per threadgroup of a standalone specialized matvec; must
-    /// match its kernel in kernels.metal. IQ2_S's 16 share one copy of its
+    /// match its kernel in kernels/. IQ2_S's 16 share one copy of its
     /// 8 KiB grid (2.5–4 % over 4, docs/engine/apple-gpu.md).
     pub fn matvecSimdgroups(kernel: Kernel) usize {
         return switch (kernel) {
@@ -729,7 +744,7 @@ pub const Backend = struct {
     /// routes only to `small_batch_rows`.
     pub const matvec_rows_max = 8;
     /// Rows each SIMD group of a multi-row body accumulates: four 8-lane
-    /// groups of `NU_ROWS_PER_SIMDGROUP` (kernels.metal) rows each.
+    /// groups of `NU_ROWS_PER_SIMDGROUP` (kernels/matvec_rows.metal) rows each.
     pub const matvec_rows_per_simdgroup = 8;
     pub fn usesMatvecRows(encoding: u32, tokens: usize) bool {
         const limit: usize = switch (encoding) {
@@ -767,7 +782,7 @@ pub const Backend = struct {
     /// The multi-row bodies that exist (Q4_K, Q5_K, Q6_K, IQ4_XS), one per token
     /// count 2..8; every other encoding takes the generic `nu_matvec_rows` above.
     /// The token count is a template parameter so the body's accumulator loops
-    /// are compile-time bound (see kernels.metal).
+    /// are compile-time bound (see kernels/).
     pub fn specializedMatvecRows(encoding: u32, tokens: usize, weight_offset: usize, stride: usize, input_offset: usize) ?Kernel {
         if (input_offset % 16 != 0 or tokens < 2 or tokens > matvec_rows_max or !blockAligned(encoding, weight_offset, stride)) return null;
         const bodies = switch (encoding) {
@@ -801,7 +816,7 @@ pub const Backend = struct {
         return @divCeil(tokens, matmul_tile) * matmul_tile;
     }
     /// Output tile of a matmul kernel and whether its operands are rounded to
-    /// half; must match the instantiations in kernels.metal. The specialized
+    /// half; must match the instantiations in kernels/matmul.metal. The specialized
     /// tiles hold half operands and accumulate in F32: 64×64 tiles, 32×32 for
     /// chunks of at most 32 tokens, and a 16×8 split-K tile for chunks of at
     /// most `small_chunk_tokens`, where the grid's row parallelism matters more
