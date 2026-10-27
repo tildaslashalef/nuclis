@@ -43,6 +43,7 @@ read as the definition, never copied.
 - [Tokenizer and the rendered text](#tokenizer-and-the-rendered-text)
 - [The 1.7B CustomVoice](#the-17b-customvoice)
 - [Codec decoder against the trace (2026-10-27)](#codec-decoder-against-the-trace-2026-10-27)
+- [Talker and code predictor against the trace (2026-10-27)](#talker-and-code-predictor-against-the-trace-2026-10-27)
 - [Open for the implementation](#open-for-the-implementation)
 
 ## Artifacts
@@ -468,14 +469,24 @@ accepts `Qwen2TokenizerFast`), byte-level BPE from `vocab.json` (151,643
 entries, ids 0…151642) and `merges.txt` (151,387 lines, no `#version`
 header). `add_bos_token` false, `add_prefix_space` false, no BOS, EOS
 `<|im_end|>`, pad `<|endoftext|>`; `Qwen3TTSProcessor` adds nothing.
-There is no `tokenizer.json`, so the pre-tokenizer is `Qwen2Tokenizer`'s
-own pattern. `from_pretrained` loads the processor with
-`fix_mistral_regex=True`. In the `transformers` 5.x read here
-(`tokenization_utils_tokenizers.py`), that flag replaces the split
-pattern only for a Mistral-family config or a Hub model tagged
-`base_model:mistralai`; a local `model_type` `qwen3_tts` returns the
-tokenizer unchanged (open below for 4.57.3). The text embedding has 151,936 rows, more than the
-vocabulary.
+There is no `tokenizer.json`; `AutoProcessor` builds `Qwen2TokenizerFast`
+from the slow files (NFC normalizer, then the split, then byte level).
+**The split is not `Qwen2Tokenizer`'s pattern.** `from_pretrained` loads
+the processor with `fix_mistral_regex=True`, and in the pinned
+`transformers` 4.57.3 (`tokenization_utils_base.py`,
+`_patch_mistral_regex`) a local checkpoint whose `config.json` names a
+`transformers_version` after 4.57.2 and before 5.0 is treated as
+Mistral-like whatever its `model_type`; this one names 4.57.3, so the
+flag replaces the pattern with the case-seam one
+(`[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+|…`,
+in full in `inference/src/tokenizer/cased.zig`). Checked 2026-10-27 by
+printing the loaded processor's pre-tokenizer in the pinned venv: the
+authors' run splits `McDonald's iPhone` as `Mc`, `Donald`, `'s`, `i`,
+`Phone`, where `Qwen2Tokenizer`'s pattern keeps `McDonald` and `iPhone`
+whole. (In `transformers` 5.x the check returns before replacing, so the
+same files tokenize differently there.) nuclis follows the authors' run:
+[tokenizer.md § Vocabulary and merges files](../engine/tokenizer.md#vocabulary-and-merges-files).
+The text embedding has 151,936 rows, more than the vocabulary.
 
 Added tokens (151643…151675) include `<|endoftext|>` 151643,
 `<|im_start|>` 151644, `<|im_end|>` 151645, `<tts_pad>` 151671,
@@ -605,13 +616,103 @@ mask read in a newer `transformers` holds under 4.57.3.
 (24 frames in 549 ms, 112 in 2,561 ms); real-time streaming is the Metal
 plan's.
 
+## Talker and code predictor against the trace (2026-10-27)
+
+**The implementation.** `inference/src/models/qwen3_tts.zig`: `parseConfig`
+(`config.json` and `generation_config.json`; any `tts_model_type` but
+`custom_voice` is `UnsupportedModelType`), `bind` (the 402 or 404 tensors
+by name and shape, the 1.7B's two `small_to_mtp_projection` tensors
+required exactly when the predictor is narrower than the talker; any
+other tensor is `UnexpectedTensor`, named), `encodeText` (the rendered
+texts of [§ Tokenizer](#tokenizer-and-the-rendered-text), sliced by
+position as the authors slice them), and `Prompt.build` (§ (a),
+non-streaming; an instruction on the 0.6B is `InstructionUnsupported`).
+`inference/src/models/qwen3_tts_runtime.zig`: `Model` (every tensor but
+the text embedding decoded to F32 at load: 2,378 MB for the 0.6B, 6,422 MB
+for the 1.7B, against 1,811 and 3,833 MB as published; text rows are
+decoded from the mapped BF16 file per id), `Talker` (28 layers over a
+growing cache), `Predictor` (a fresh cache each frame, inputs through the
+projection on the 1.7B), `Sampler` (§ (c), (d)), `Synthesizer` (prefill,
+frame by frame until the end code or `max_new_tokens`, decoded through the
+codec's `Stream`), and `Voice` (a checkpoint directory opened whole).
+Projections are `dense.zig`'s F32 matmul; norms, RoPE, and attention take
+F64 statistics. The tokenizer: [tokenizer.md § Vocabulary and merges files](../engine/tokenizer.md#vocabulary-and-merges-files).
+
+**The sampler.** The processors and their order were read in the pinned
+`transformers` 4.57.3 (`generation/utils.py`, `_get_logits_processor`):
+repetition penalty, then `MinNewTokensLengthLogitsProcessor`, then
+`SuppressTokensLogitsProcessor`, then temperature, top-k, top-p, as § (c)
+says. nuclis applies the penalty to the codes 0…2047 it has generated
+(the generated ids are the only `input_ids`), drops the suppressed ids
+and, for the first two frames, the end code from the candidates instead
+of setting them to −∞, and draws with `sampling.Sampler`. Where the
+k-th and (k+1)-th logits tie exactly, `TopKLogitsWarper` keeps both and
+nuclis keeps the lower id. torch's generator is not reproduced: a seed
+gives nuclis's own stream of draws.
+
+**The trace.** `qwen3_tts_trace.py`'s `talker` section hooks one
+`generate_custom_voice` run (the run that samples the codes): the
+processor's token ids, the talker's input rows (`inputs_embeds` of each
+call), its residual stream after layers 0, 13, 27 and after the final
+norm, the `codec_head` logits, and the predictor's `lm_head` outputs. The
+prompt's (text id, codec id) rows are derived from the config by
+`generate`'s rules and checked in the script: rebuilt from them, the rows
+equal those the talker received exactly (max |Δ| 0 in all three cases).
+Cases, all speaker `ryan`, language `english`, the `fox` sentence, seed 0,
+F32: the 0.6B (21 prompt rows, every row pinned), the 1.7B (21), and the
+1.7B with the instruction "Speak in a warm, cheerful tone." (13
+instruction ids, 34 prompt rows); on the 1.7B the hidden stages keep the
+last 4 prompt rows and the 4 decode rows. The fixtures grew to 3.6 MB;
+the 0.6B case's existing files were rewritten bit for bit.
+
+**Measured** (`make gate NAME='qwen3-tts-*'`, ReleaseFast, Apple M4 Pro),
+replaying the trace's codes: the token ids and the prompt rows are equal
+in every case; relative RMS ‖Δ‖ / ‖reference‖ over the rows compared:
+
+| Stage | 0.6B | 1.7B | 1.7B, instruction |
+| --- | ---: | ---: | ---: |
+| talker inputs (prompt, 4 decode rows) | 3.45e-7 | 5.05e-7 | 5.81e-7 |
+| layer 0 | 2.27e-6 | 1.08e-6 | 9.62e-7 |
+| layer 13 | 9.63e-7 | 2.45e-6 | 2.98e-6 |
+| layer 27 | 9.61e-7 | 2.76e-6 | 2.83e-6 |
+| final norm | 2.90e-6 | 2.59e-6 | 3.02e-6 |
+| group-0 logits, frames 0–4 | 1.58e-6 | 1.27e-6 | 1.52e-6 |
+| predictor logits, groups 1–15 of frames 0–1 | 1.47e-6 | 1.34e-6 | 1.59e-6 |
+
+Every one of the 5 group-0 and 30 predictor logit rows has the trace's
+argmax in every case. The gates' bound is relative RMS 1.5e-5 per stage,
+five times the worst (3.02e-6).
+
+**Time per frame, the CPU reference** (Apple M4 Pro, 14 cores, F32
+weights; the speed is not a target, real time is the Metal plan's). The
+gate's replay at ReleaseFast, predictor and talker step without the codec:
+69.7 ms a frame for the 0.6B, 84.0 and 90.7 ms for the 1.7B (prefill of
+21 rows 131 ms and 366 ms). `nuclis speak` end to end (`make build`,
+ReleaseSafe, the codec decoding 16 frames at a time), over the listening
+samples below: 106–125 ms a frame on the 0.6B (0.64–0.76× real time) and
+130–157 ms on the 1.7B (0.51–0.62×). Loading takes 0.7–0.8 s for the 0.6B
+and 1.5–1.6 s for the 1.7B with the files in the page cache (2.8 s and
+5.7 s cold).
+
+**Listening samples** (`nuclis speak --language english`, speaker `ryan`,
+seed 0; written to `.zig-cache/speak/`, not kept). Five sentences on each
+size (the `fox` sentence, a question, one with a time and prices, a
+36-word sentence, a confirmation) and, on the 1.7B, one sentence without
+an instruction and with three (cheerful, gentle, serious). Checked by
+script, not by ear: every file is 24 kHz mono 16-bit, none is silent
+(RMS −26.3 to −19.4 dBFS, peaks 0.32–0.64), none has a run of three or
+more samples at full scale, and the pace is speech's: 2.2–3.9 words per
+second of active audio (50 ms windows above −40 dBFS), the time-and-prices
+sentence the slowest on the 1.7B (16 words in 8.96 s). The 0.6B leaves
+about 0.45 s of silence before and after; the 1.7B starts within 0.1 s.
+The instructions change the delivery measurably on the same sentence and
+seed: 6.08 s without, 5.04 s cheerful (−19.4 dBFS), 3.84 s gentle
+(−24.2 dBFS, the quietest), 4.96 s serious. Whether they sound right is for
+a listener; the round trip through the ASR is the permanent gate (the
+unit's decision 1).
+
 ## Open for the implementation
 
-- **Generation processors are `transformers` behaviour**, read in a
-  newer `transformers` than the pinned 4.57.3 (an installed 5.x). The
-  bring-up trace from the pinned venv settles them. The decoder's
-  sliding window, the other such behaviour, is settled: 72 keys including
-  the query, under 4.57.3 too ([the window case](#codec-decoder-against-the-trace-2026-10-27)).
 - **Past 300 frames nuclis decodes causally with carried state**
   (decided 2026-10-27): the decoder is fully causal, so a stream that
   carries its convolution and attention state is the true decode; the
@@ -625,10 +726,11 @@ plan's.
   (streaming text, `tts_pad` before the text is complete) is not
   implemented; it waits for a measurement showing that a sentence's
   wait matters.
-- **`fix_mistral_regex=True`** in `Qwen3TTSModel.from_pretrained`'s
-  `AutoProcessor` call: a no-op for this model in `transformers` 5.x;
-  4.57.3's version of the check is not read. The bring-up trace's token
-  ids answer it.
 - **Precision of the authors' runs.** The talker is BF16 and the codec F32
-  in the files; the dtype the authors' examples load them with (and so the
-  precision of the trace) is set by the caller, not by the files.
+  in the files; the dtype the authors' examples load them with is set by
+  the caller, not by the files. The trace loads F32 (the BF16 weights
+  widened exactly), as nuclis's CPU reference computes.
+- **The tokenizer's case seam is ASCII-only**
+  ([tokenizer.md](../engine/tokenizer.md#vocabulary-and-merges-files)): a
+  word of a non-ASCII capital then ASCII capitals splits differently from
+  the authors' run. A case table would close it if a language needs it.

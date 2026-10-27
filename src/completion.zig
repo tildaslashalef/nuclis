@@ -272,6 +272,15 @@ pub const commands = [_]Command{
         backend,
         json,
     } }} },
+    .{ .name = "speak", .summary = "text into a WAV of speech, by Qwen3-TTS", .actions = &.{.{ .flags = &.{
+        .{ .name = "--output", .short = "-o", .value = .file, .summary = "the WAV to write" },
+        .{ .name = "--voice", .value = .{ .choice = &.{ "aiden", "dylan", "eric", "ono_anna", "ryan", "serena", "sohee", "uncle_fu", "vivian" } }, .summary = "the speaker" },
+        .{ .name = "--language", .value = .{ .choice = &.{ "auto", "english", "chinese", "german", "spanish", "french", "italian", "portuguese", "russian", "japanese", "korean" } }, .summary = "the language, or auto" },
+        .{ .name = "--instruct", .value = .text, .summary = "how to say it (the 1.7B)" },
+        .{ .name = "--model", .value = .dir, .summary = "the checkpoint directory" },
+        .{ .name = "--seed", .value = .number, .summary = "the sampler's seed" },
+        backend,
+    } }} },
     .{ .name = "serve", .summary = "the nuclis API over HTTP", .actions = &.{.{ .flags = &.{
         .{ .name = "--host", .value = .text, .summary = "the address to listen on" },
         .{ .name = "--port", .value = .number, .summary = "default serve.port, 9000" },

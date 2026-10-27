@@ -21,6 +21,7 @@ const completion = @import("completion.zig");
 const decide = @import("decide.zig");
 const decision_catalog = @import("decision/catalog.zig");
 const embed = @import("embed.zig");
+const speak = @import("speak.zig");
 const embedding_catalog = @import("embedding/catalog.zig");
 const transcribe = @import("transcribe.zig");
 const api = @import("api/root.zig");
@@ -30,7 +31,7 @@ const api = @import("api/root.zig");
 pub const version = @import("build_options").version;
 pub const Diagnostic = config.Diagnostic;
 pub const Options = struct {
-    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, transcribe, serve, completion, complete },
+    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, transcribe, speak, serve, completion, complete },
     /// `completion <shell>`: which script to print.
     shell: completion.Shell = .fish,
     /// `__complete <words…>`: the words after `nuclis`, the last one being
@@ -111,6 +112,8 @@ pub fn parseArgs(args: []const []const u8) !Options {
         .embed
     else if (std.mem.eql(u8, args[0], "transcribe"))
         .transcribe
+    else if (std.mem.eql(u8, args[0], "speak"))
+        .speak
     else if (std.mem.eql(u8, args[0], "serve"))
         .serve
     else if (std.mem.eql(u8, args[0], "completion"))
@@ -126,6 +129,7 @@ pub fn parseArgs(args: []const []const u8) !Options {
     if (command == .decide) return .{ .command = .decide, .words = args[1..] };
     if (command == .embed) return .{ .command = .embed, .words = args[1..] };
     if (command == .transcribe) return .{ .command = .transcribe, .words = args[1..] };
+    if (command == .speak) return .{ .command = .speak, .words = args[1..] };
     if (command == .serve) return .{ .command = .serve, .words = args[1..] };
     if (command == .completion) {
         if (args.len < 2) return error.MissingShell;
@@ -574,6 +578,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     if (options.command == .decide) return runDecide(alloc, io, root, config_path, options.words, out, sty, diag);
     if (options.command == .embed) return runEmbed(alloc, io, root, config_path, options.words, out, sty, diag);
     if (options.command == .transcribe) return runTranscribe(alloc, io, root, options.words, out, sty, diag);
+    if (options.command == .speak) return speak.run(alloc, io, root, options.words, out, sty, diag);
     if (options.command == .serve) return runServe(alloc, io, root, config_path, options.words, out, sty, diag);
     if (options.command == .agent and options.agent_action == .ls) {
         const dir = root orelse return error.MissingHome;
@@ -710,7 +715,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // error; the reason (which ids the tree has) is added here, where the
     // diagnostic lives.
     (switch (options.command) {
-        .help, .version, .config, .model, .cache, .decide, .embed, .transcribe, .serve, .completion, .complete => unreachable,
+        .help, .version, .config, .model, .cache, .decide, .embed, .transcribe, .speak, .serve, .completion, .complete => unreachable,
         .generate => generate.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .generate), options.generation, options.json, out),
         .bench => bench.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .bench), options.benchmark, options.json, out, sty),
         .tokenize => blk: {
@@ -1311,6 +1316,7 @@ test {
     _ = decide;
     _ = decision_catalog;
     _ = embed;
+    _ = speak;
     _ = embedding_catalog;
     _ = transcribe;
     _ = @import("embedding/request.zig");

@@ -241,7 +241,11 @@ code from them is present in nuclis.
   predictor, and the codec decoder. `scripts/speech-traces/qwen3_tts_trace.py`
   runs it in a venv under `.reference/`; the fixtures under
   `tests/fixtures/qwen3-tts/` are outputs of running it on the pulled
-  `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` checkpoint, not copies of it.
+  `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` and `-1.7B-CustomVoice`
+  checkpoints, not copies of them. The split pattern of
+  `inference/src/tokenizer/cased.zig` is the one Transformers 4.57.3
+  (Apache-2.0, `tokenization_utils_base.py`, `fix_mistral_regex`) installs
+  on that tokenizer, implemented from the pattern, not copied.
 - **transformers** by Hugging Face (Apache-2.0) at commit
   `c0d024fbc873ab0325e1b40fc1bd69069609de65` (5.21.0.dev0), with PyTorch
   2.14.1 and librosa 1.0.0 — the definition of Nemotron 3.5 ASR

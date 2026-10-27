@@ -36,6 +36,10 @@ pub const clef = @import("clef.zig");
 /// EmbeddingGemma 2, the embedding model. Not a registry family: it decodes nothing.
 pub const embeddinggemma = @import("embeddinggemma.zig");
 pub const embeddinggemma_runtime = @import("embeddinggemma_runtime.zig");
+/// Qwen3-TTS, the speech model: a talker and a code predictor from a
+/// safetensors checkpoint. Not a registry family: it decodes into codes.
+pub const qwen3_tts = @import("qwen3_tts.zig");
+pub const qwen3_tts_runtime = @import("qwen3_tts_runtime.zig");
 
 /// The registered families, in lookup order. Each registers itself through
 /// its `family` declaration.
@@ -117,6 +121,8 @@ test {
     _ = clef;
     _ = embeddinggemma;
     _ = embeddinggemma_runtime;
+    _ = qwen3_tts;
+    _ = qwen3_tts_runtime;
     _ = dflash;
     _ = dflash2;
     _ = dflash2_runtime;

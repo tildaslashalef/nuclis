@@ -84,6 +84,9 @@
   "qwen3_tts_06b": {
    "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
   },
+  "qwen3_tts_17b": {
+   "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+  },
   "nemotron_asr": {
    "path": "~/.nuclis/models/nvidia/nemotron-3.5-asr-streaming-0.6b"
   }
@@ -3968,6 +3971,80 @@
    },
    "note": "the authors' traced codes (24 frames) through the codec decoder: every pinned stage and the samples against their trace, relative RMS <= 2e-5 per stage and samples max |difference| <= 1e-5 (first run: 3.8e-6 and 1.9e-6); then the same frames streamed in pieces of 5 equal the decode bit for bit",
    "evidence": "docs/models/qwen3-tts.md#codec-decoder-against-the-trace-2026-10-27"
+  },
+  {
+   "name": "qwen3-tts-0.6b-trace-cpu",
+   "family": "qwen3-tts",
+   "tier": "verify-cpu",
+   "model": "qwen3_tts_06b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/qwen3-tts-check.zig",
+    "inference/src/models/qwen3_tts*.zig",
+    "inference/src/tokenizer/bpe.zig",
+    "inference/src/tokenizer/cased.zig",
+    "inference/src/tokenizer/hf_json.zig",
+    "inference/src/tokenizer/nfc*.zig",
+    "inference/src/tokenizer/pre.zig",
+    "inference/src/tokenizer/vocab_merges.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/rope.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/safetensors.zig",
+    "tests/fixtures/qwen3-tts/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-qwen3-tts",
+    "--",
+    "{model}",
+    "talker",
+    "--max-relative-rms",
+    "1.5e-5"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the fox case replayed from the authors' codes: token ids and the prompt's rows exactly, then the talker's input rows, layers 0, 13, 27, final norm, group-0 logits of frames 0-4, and the predictor's logits of frames 0-1, relative RMS <= 1.5e-5 per stage (first run: 2.9e-6)",
+   "evidence": "docs/models/qwen3-tts.md#talker-and-code-predictor-against-the-trace-2026-10-27"
+  },
+  {
+   "name": "qwen3-tts-1.7b-trace-cpu",
+   "family": "qwen3-tts",
+   "tier": "verify-cpu",
+   "model": "qwen3_tts_17b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/qwen3-tts-check.zig",
+    "inference/src/models/qwen3_tts*.zig",
+    "inference/src/tokenizer/bpe.zig",
+    "inference/src/tokenizer/cased.zig",
+    "inference/src/tokenizer/hf_json.zig",
+    "inference/src/tokenizer/nfc*.zig",
+    "inference/src/tokenizer/pre.zig",
+    "inference/src/tokenizer/vocab_merges.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/rope.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/safetensors.zig",
+    "tests/fixtures/qwen3-tts/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-qwen3-tts",
+    "--",
+    "{model}",
+    "talker",
+    "--max-relative-rms",
+    "1.5e-5"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the fox case with and without an instruction, replayed from the authors' codes: token ids and the prompt's rows exactly, then the talker's input rows, layers 0, 13, 27 and final norm (the last prompt rows and four decode rows), group-0 logits of frames 0-4, and the predictor (through small_to_mtp_projection) of frames 0-1, relative RMS <= 1.5e-5 per stage (first run: 3.0e-6)",
+   "evidence": "docs/models/qwen3-tts.md#talker-and-code-predictor-against-the-trace-2026-10-27"
   },
   {
    "name": "nemotron-asr-encoder-cpu",

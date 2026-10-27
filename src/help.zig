@@ -16,7 +16,7 @@ const style = @import("tui/style.zig");
 const default_backend = if (@import("inference").metal.enabled) "default metal" else "default cpu";
 
 /// The commands with a page of their own; `null` is the overview.
-pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, transcribe, serve, completion };
+pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, transcribe, speak, serve, completion };
 
 pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []const u8) !void {
     if (topic) |value| return switch (value) {
@@ -33,6 +33,7 @@ pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []co
         .decide => decide(out, sty),
         .embed => embed(out, sty),
         .transcribe => transcribe(out, sty),
+        .speak => speak(out, sty),
         .serve => serve(out, sty),
         .completion => completion(out, sty),
     };
@@ -143,7 +144,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "cache", "list or clear the agent's saved model states");
     try row(out, sty, "decide", "typed questions about text or JSON, answered by Laya");
     try row(out, sty, "embed", "text, images, audio into vectors, by EmbeddingGemma 2");
-    try row(out, sty, "transcribe", "speech to text, by Nemotron 3.5 ASR");
+    try row(out, sty, "speak, transcribe", "text to speech and back: Qwen3-TTS, Nemotron ASR");
     try row(out, sty, "serve", "the nuclis API over HTTP: decisions, models kept open");
     try row(out, sty, "config", "write, show, or set a key of ~/.nuclis/nuclis.json");
     try row(out, sty, "completion", "the shell completion script for fish, bash, or zsh");
@@ -522,6 +523,38 @@ fn transcribe(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "mono WAV, 16-bit or float, is read as is). A token's time is the start");
     try plain(out, "of its 80 ms row. Pull the model with `nuclis model pull");
     try plain(out, "nvidia/nemotron-3.5-asr-streaming-0.6b`.");
+}
+
+fn speak(out: *std.Io.Writer, sty: style.Style) !void {
+    try title(out, sty, "nuclis speak", "text into speech, by Qwen3-TTS CustomVoice");
+    try heading(out, sty, "Usage:");
+    try code(out, sty, "nuclis speak <text>… -o <file.wav> [options]");
+    try code(out, sty, "  the words are joined by spaces: quote a sentence");
+
+    try heading(out, sty, "Options:");
+    try row(out, sty, "-o, --output <file>", "the WAV to write: 24 kHz mono 16-bit");
+    try row(out, sty, "--voice <speaker>", "one of the model's nine speakers: aiden, dylan,");
+    try more(out, "eric, ono_anna, ryan, serena, sohee, uncle_fu,");
+    try more(out, "vivian; default ryan");
+    try row(out, sty, "--language <name>", "english, chinese, german, spanish, french,");
+    try more(out, "italian, portuguese, russian, japanese, korean,");
+    try more(out, "or auto; default auto");
+    try row(out, sty, "--instruct <text>", "how to say it (\"Speak in a warm, cheerful");
+    try more(out, "tone.\"); the 1.7B model only");
+    try row(out, sty, "--model <dir>", "a checkpoint directory; default the 1.7B under");
+    try more(out, "~/.nuclis/models/Qwen, else the 0.6B");
+    try row(out, sty, "--seed <n>", "the sampler's seed; default 0");
+    try row(out, sty, "--backend cpu|metal", "default cpu; metal is not written yet");
+
+    try heading(out, sty, "Examples:");
+    try example(out, sty, "nuclis speak \"Hello there.\" -o hello.wav", "the default voice");
+    try example(out, sty, "nuclis speak --voice vivian --language chinese \"你好。\" -o hi.wav", "another speaker");
+    try example(out, sty, "nuclis speak --instruct \"Whisper.\" \"Good night.\" -o night.wav", "a mood, on the 1.7B");
+
+    try heading(out, sty, "Notes:");
+    try plain(out, "Speech is sampled: the same text, voice, and seed give the same audio,");
+    try plain(out, "another seed says it differently. The whole text is read before the");
+    try plain(out, "first frame, so give it a sentence or two at a time.");
     try out.writeByte('\n');
 }
 

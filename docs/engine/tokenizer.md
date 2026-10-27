@@ -264,6 +264,42 @@ and the first piece written loses one leading `▁` unless the scheme is
 `limits.text_bytes`; a piece that is empty or not UTF-8, an id given twice,
 or an added token that contradicts the vocabulary is refused. Nemotron
 ASR's use: [nemotron-asr.md § Tokenizer](../models/nemotron-asr.md#tokenizer).
+## Vocabulary and merges files
+
+A `Qwen2Tokenizer` stored the slow way (Qwen3-TTS ships no
+`tokenizer.json`) loads through
+[vocab_merges.zig](../../inference/src/tokenizer/vocab_merges.zig):
+`vocab_merges.load(allocator, vocab_json, merges_txt, tokenizer_config_json,
+limits)` builds the same `hf_tokenizer.Tokenizer` from `vocab.json` (the
+model vocabulary), `merges.txt` (one `a b` pair a line in rank order; a
+leading `#version` line is skipped), and `tokenizer_config.json`'s
+`added_tokens_decoder` (ids dense after the vocabulary; `special` ones
+`control`, the others `user_defined`). It refuses another
+`tokenizer_class`, `add_prefix_space`, and the `single_word` and `rstrip`
+flags by name. Encoding is the path above with NFC on and the third shape,
+`cased`:
+
+The split is not `Qwen2Tokenizer`'s own pattern. Qwen's processor loads the
+tokenizer with `fix_mistral_regex=True`, and `transformers` 4.57.3, the
+version the package pins, applies that flag to any local checkpoint whose
+`config.json` names a `transformers_version` after 4.57.2 and before 5.0,
+whatever its model type: Qwen3-TTS's says 4.57.3, so its pre-tokenizer is
+replaced by the case-seam pattern of
+[cased.zig](../../inference/src/tokenizer/cased.zig) (checked by printing
+the loaded processor's pre-tokenizer in the pinned venv, 2026-10-27; in
+`transformers` 5.x the check returns before the replacement). Against
+`Qwen2Tokenizer`'s pattern it cuts words at case seams (`McDonald` is `Mc`,
+`Donald`; `iPhone` is `i`, `Phone`), has no contraction alternative (`'t`
+is a prefix and a letter run instead: the same pieces for lowercase
+contractions), lets a punctuation run absorb trailing `/`, and counts
+combining marks in both letter classes. The category table has no case, so
+"upper" is a letter that is not ASCII a–z and "lower" one that is not
+ASCII A–Z: exact for ASCII and for caseless scripts; a word whose non-ASCII
+capital is followed by ASCII capitals (`ÉCOLE`) splits after that capital,
+where the reference keeps it whole. The unit test pins the reference's
+pieces for 12 strings and that one difference; the gates
+`qwen3-tts-*-trace-cpu` compare the whole rendered prompts' ids with the
+trace's.
 
 ## Validation evidence
 
