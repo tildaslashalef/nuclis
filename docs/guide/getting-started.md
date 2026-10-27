@@ -117,6 +117,8 @@ to an exact commit and SHA-256 digest:
 | `laya`, `laya-multilingual` | decision encoders for `nuclis decide` |
 | `clef-flash` | Cloudflare's decision model for `nuclis decide` |
 | `embeddinggemma-2` | EmbeddingGemma 2, text, images and audio into vectors for `nuclis embed` (310 MB) |
+| `qwen3-tts-1.7b`, `qwen3-tts-0.6b` | Qwen3-TTS CustomVoice, text into speech for `nuclis speak` (4.5 and 2.5 GB with the codec; only the 1.7B takes a delivery instruction) |
+| `nemotron-asr-0.6b` | Nemotron 3.5 ASR streaming, speech into text for `nuclis transcribe` (2.6 GB) |
 
 ```sh
 nuclis model pull qwen3.8-27b             # the model alone
@@ -173,7 +175,21 @@ nor `owner/repo` is `UnknownModel`. The entries are described in
   plain lines otherwise. **Ctrl-C** stops the download and removes the
   partial file; a second Ctrl-C kills the process and may leave a temporary
   file behind.
-- Every form takes `--json` for scripts.
+- Every form takes `--json` for scripts: the report on stdout, and the
+  progress on stderr as one JSON object per line instead of the text, for
+  a program that shows its own (Muon's first-run window):
+
+  ```json
+  {"event":"downloading","file":"model.safetensors","index":0,"count":11,"done":107578,"size":1811626576,"pull_done":107578,"pull_size":2498383610}
+  ```
+
+  `event` is `resolving`, `checking` (for a file already in place),
+  `downloading` (at most every 250 ms, and when the file is whole),
+  `verifying`, `reused` (a file in place that verified), `complete` (the
+  file is published), or `interrupted`; `file` is its Hub name, `index`
+  of `count` the files of the pull (a safetensors set counts its
+  support files), `done` of `size` this file's bytes, `pull_done` of
+  `pull_size` the whole pull's.
 
 The download itself is the `huggingface` package's work (Xet
 reconstruction, SHA-256 verification, atomic publication):

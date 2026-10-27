@@ -894,7 +894,9 @@ each call one chunk of 16-bit-ready samples (`first_chunk` frames, then
 commit waits), so a request is cancelled by not calling `read` again and
 calling `deinit`; a `read` itself runs to the end of its chunk (at most
 `chunk` frames). One synthesizer at a time per voice: the plan holds the
-talker's cache and the scratch, and the codec decoder its scratch.
+talker's cache and the scratch, and the codec decoder its scratch. The
+route that does so, its queue, and its rates beside a chat generation:
+[api.md § Speech](../guide/api.md#speech).
 
 ## Open for the implementation
 

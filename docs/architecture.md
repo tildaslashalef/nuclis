@@ -242,7 +242,9 @@ apart, so each service is a directory and one registration:
   there instead of after it; each model has its own Metal queue and
   buffers. `memory.zig` is the one budget every open model counts
   against: before a model opens, the least recently used others close,
-  of either kind, and a model in use is pinned. `pipe.zig` is the bounded byte
+  of any kind; a model in use is pinned for the request, and one named by
+  `--pin` for the server's life. `slot.zig` is the one-model holder of
+  the kinds the server keeps one of (a voice, a recognizer). `pipe.zig` is the bounded byte
   queue a streamed response crosses from the worker to its connection, so
   the worker never writes to a socket.
 - `decisions/` validates on the connection's thread, then waits in the
@@ -261,6 +263,12 @@ apart, so each service is a directory and one registration:
   (`http.Peer`), and one that leaves sets the flag the item's observer
   turns into a cancellation. Clients resend the whole conversation; no
   response is stored.
+- `speech/` queues requests in arrival order behind one short executor
+  item that speaks the head one a chunk of frames per run, so speech
+  advances between a generation's steps; the response's head waits for
+  the prompt's prefill, then the audio drains from a `pipe.zig` queue
+  (the item parks rather than block the worker when its client lags).
+  `transcription/` keeps the recognizer's slot for the routes that use it.
 - `src/decision/` holds the wire format and model names that `nuclis
   decide` and the service share, so the CLI's `--json` and the API's
   body are the same bytes.

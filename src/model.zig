@@ -924,7 +924,7 @@ pub const CatalogRow = struct {
 };
 
 pub const Listing = struct {
-    schema_version: u32 = 5,
+    schema_version: u32 = 6,
     models_dir: []const u8,
     /// Every catalogue entry with its local status, companions beneath.
     catalog: []const CatalogRow,

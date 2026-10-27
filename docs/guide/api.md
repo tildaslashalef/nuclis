@@ -6,7 +6,9 @@ typed questions about text or JSON, in TypeSafe's Jev protocol, so a
 client written for `api.typesafe.ai` switches by changing its base URL.
 **Chat Completions** serve the language models in OpenAI's format, so a
 client written for an OpenAI-compatible server does the same.
-**Embeddings** turn text, images and audio into vectors in OpenAI's embeddings format. This page
+**Embeddings** turn text, images and audio into vectors in OpenAI's embeddings format.
+**Speech** speaks text in OpenAI's speech format, streamed as it is
+made, beside a chat generation. This page
 is the reference for client authors; it assumes nothing about the code.
 
 - [Running the server](#running-the-server), [memory](#memory)
@@ -23,6 +25,9 @@ is the reference for client authors; it assumes nothing about the code.
   [the request](#the-embeddings-request), [the
   response](#the-embeddings-response), [passes and
   memory](#passes-and-memory)
+- [Speech](#speech): [`POST /v1/audio/speech`](#post-v1audiospeech), [the
+  request](#the-speech-request), [streaming and
+  cancellation](#streaming-and-cancellation), [scheduling](#scheduling)
 - [`GET /v1/models`](#get-v1models), [`GET /v1/health`](#get-v1health)
 - [Measured rates](#measured-rates)
 
@@ -37,7 +42,8 @@ nuclis serve                           # http://127.0.0.1:9000/v1, nothing open 
 | --- | --- |
 | `--host <ip>` | the address to listen on: an IP literal (`127.0.0.1`, `::1`, `0.0.0.0`) or `localhost`; default `serve.host`, `127.0.0.1`. Any address beyond loopback prints a warning: there is no authentication. |
 | `--port <n>` | default `serve.port`, `9000` |
-| `--model <name>` | a model opened before the server listens, of any kind: a decision, language, or embedding model by registry or catalogue name, or a decision checkpoint's directory; repeated, at most 2 decision, 1 language, and 1 embedding model (what the server keeps open). Without it nothing opens at start: each model opens on its first request (`decide.model` for a decision request that names none, `embed.model` for an embeddings request) |
+| `--model <name>` | a model opened before the server listens, of any kind: a decision, language, embedding, speech, or transcription model by registry or catalogue name, or a decision checkpoint's directory; repeated, at most 2 decision, 1 language, 1 embedding, 1 speech, and 1 transcription model (what the server keeps open). Without it nothing opens at start: each model opens on its first request (`decide.model` for a decision request that names none, `embed.model` for an embeddings request, `speech.model` for a speech request) |
+| `--pin <name>` | a model opened at start, as `--model`, that the memory budget never closes ([memory](#memory)); repeated, at most 8; replaces `serve.pin` |
 | `--memory <GiB>` | what every open model may hold together; default `serve.memory_bytes`, else physical memory less a third, at most 16 GiB ([memory](#memory)) |
 | `--backend cpu\|metal` | where the models run; default `metal` in a Metal build |
 | `--quiet` | no request log (`serve.log: false` does the same) |
@@ -47,7 +53,9 @@ The configuration file (`~/.nuclis/nuclis.json`) holds the defaults:
 
 ```json
 "decide": { "model": "laya" },
-"serve":  { "host": "127.0.0.1", "port": 9000, "log": true, "timeout": 300 }
+"speech": { "model": "qwen3-tts-1.7b", "voice": "ryan" },
+"serve":  { "host": "127.0.0.1", "port": 9000, "log": true, "timeout": 300,
+            "pin": ["gemma-4-e4b-qat", "qwen3-tts-1.7b", "nemotron-asr-0.6b"] }
 ```
 
 `nuclis config set serve.port 9000` changes one; the flags override them
@@ -70,10 +78,16 @@ Every open model counts against one budget, whatever its kind:
 the system and other applications). A model counts its files (a decision
 checkpoint's weights, backbone, and projector; a language model's
 weights, its draft file when speculative decoding is on, and its image
-projector once an image arrives; an embedding model's file) plus, for a
+projector once an image arrives; an embedding model's file; a speech
+model's weights and codec; a transcription model's weights) plus, for a
 language model, its attention cache and the saved states it may keep (`cache.memory_bytes`,
 4 GiB). Qwen3.8 counts 22.0 GiB, `laya-multilingual` 0.6 GiB, clef-flash
-8.4 GiB.
+8.4 GiB, Gemma 4 E4B 8.9 GiB, `qwen3-tts-1.7b` 4.2 GiB (4,515,695,644 B:
+the BF16 talker and the F32 codec; the 0.6B 2.3 GiB), `nemotron-asr-0.6b`
+2.4 GiB (2,552,062,944 B). The voice's talker cache and scratch, and the
+recognizer's encoder caches, are not counted: with all three of the
+voice assistant's models open, the process's own footprint (beside the
+mapped weights) was 1.97 GB.
 
 Before a model opens, the least recently used others close until it
 fits, whichever kind they are. A language model is never closed while a
@@ -84,6 +98,22 @@ clef-flash decision closed Qwen3.8 (and the older Laya) and answered in
 4.2 s; the next chat request reopened Qwen3.8 in 1.2 s and closed
 clef-flash; a clef-flash decision sent during a generation was answered
 0.95 s after it ended. `GET /v1/health` lists what is resident.
+
+A **pinned** model (`--pin`, `serve.pin`) opens at start and is never
+closed to make room, so a voice assistant's three models stay ready
+whatever else is asked:
+
+```sh
+nuclis serve --pin gemma-4-e4b-qat --pin qwen3-tts-1.7b --pin nemotron-asr-0.6b
+```
+
+A model that does not fit beside the pinned ones is refused at once
+(`model_too_large`), however long it would wait. A pin is by the name the
+model is opened by, and it guards against the budget, not against a
+request: the server keeps one model of each kind but decisions, so a
+request naming another language or speech model still replaces the
+pinned one in its slot, and the pin applies again when its name reopens.
+`GET /v1/health` marks each resident model's `pinned`.
 
 `clef-flash` also reads images: a request's `"images"` is a list of data
 URLs (`data:image/png;base64,…`) or bare base64, at most 8, each read
@@ -734,6 +764,102 @@ encoder on the first clip (658 MB), and the budget then adds each to the
 model's share. Media are encoded one at a time on the GPU before their
 pass: about 460 ms an image at 280 tokens, 130 ms for 4.8 s of speech.
 
+## Speech
+
+### `POST /v1/audio/speech`
+
+OpenAI's speech call for the speech models `nuclis speak` runs, Qwen3-TTS
+CustomVoice in two sizes. The audio streams as it is made: the first
+80 ms leave after one frame, the rest in chunks of four (320 ms).
+
+```sh
+curl -s localhost:9000/v1/audio/speech -o hello.wav -d '{
+  "input": "Hello there. This is nuclis speaking through the API.",
+  "voice": "ryan"
+}'
+```
+
+The response is `200`, `transfer-encoding: chunked`, `content-type:
+audio/wav`: a WAV header whose sizes are the largest a field holds (the
+length is not known when it is sent; players read to the end of the
+stream), then 24 kHz 16-bit mono samples. With `"response_format":
+"pcm"` it is the samples alone (`audio/pcm`, little-endian).
+
+One speech model is open at a time beside the others; it opens on its
+first request (0.35 s for the 1.7B with its files in the page cache) or
+at start with `--model` or `--pin`. A request's text is spoken whole: send
+a sentence or two at a time, as a client splitting a chat answer at
+sentence ends does.
+
+### The speech request
+
+| Field | In nuclis |
+| --- | --- |
+| `input` | the text, UTF-8, at most 16 KiB (`400 request_too_large`) |
+| `model` | a registry entry of kind `speech` or `qwen3-tts-1.7b`, `qwen3-tts-0.6b`; never a path. Absent: the open one, else `speech.model` (`qwen3-tts-1.7b`). Another speech model replaces the open one; that request pays the open |
+| `voice` | one of the model's speakers: `aiden`, `dylan`, `eric`, `ono_anna`, `ryan`, `serena`, `sohee`, `uncle_fu`, `vivian`; absent, `speech.voice` (`ryan`). OpenAI's voice names are not speakers here (`400 invalid_request`, listing them) |
+| `instructions` | how to say it (`"Speak with excited, breathless joy."`): the 1.7B only. On the 0.6B, `400 instructions_unsupported` |
+| `response_format` | `wav` (the default; OpenAI's is `mp3`) or `pcm` |
+| `stream_format` | `audio` (the default): the bytes as they are made. `sse`: server-sent events, each `{"type": "speech.audio.delta", "audio": "<base64>"}` carrying the next bytes of the same stream (the WAV header in the first, for `wav`), then `{"type": "speech.audio.done", "usage": {"input_tokens", "output_tokens", "total_tokens"}}` (the prompt's rows in, the frames out) |
+| `speed` | `1` only (`400 unsupported_feature` otherwise): the model has no rate control |
+| `seed` | nuclis's: the sampler's seed, default 0. The same text, voice, and seed give the same samples, alone or beside a chat generation |
+| `language` | nuclis's: `auto` (the default), or one of the model's (`english`, `chinese`, `german`, …; `400 invalid_request` lists them) |
+
+Other fields OpenAI defines are ignored. Refused with `400
+unsupported_feature`: `mp3`, `opus`, `aac`, and `flac` (no encoder here),
+a voice given as an object (no custom voices), a `speed` other than 1.
+`model` naming another kind is `400 not_a_speech_model`; a name nothing
+pulled answers is `404 model_not_found`. A refusal on the GPU worker (an
+unknown speaker or language) is still a status: the response's head
+waits until the request's prompt is prefilled, which is before its first
+audio anyway. A model that fails to open is `500 model_failed`; one too
+large for the budget beside the pinned models `400 model_too_large`.
+
+### Streaming and cancellation
+
+The head is sent once the prompt is prefilled; the samples follow chunk
+by chunk. An event stream silent for 10 s gets an SSE comment (`:
+speaking`). An error after the head (the device fails mid-utterance) is
+one `data: {"error": {…}}` event in an event stream; a raw stream ends
+without its last chunk, which an HTTP client reports as a truncated
+body.
+
+A client that closes the connection stops its request between chunks:
+the server notices within a second, frees the synthesizer, and the next
+request starts. A request still waiting is taken out of the queue; one
+that waits `serve.timeout` without starting is `529 timeout`. A
+1.5 s client timeout on a long sentence stopped it after 2.96 s of
+audio had been made, and `GET /v1/health` showed nothing speaking a
+second later.
+
+### Scheduling
+
+Speech runs on the one GPU worker as short items: each run makes one
+chunk (one frame first, then four), so a chunk runs between the steps of
+a chat generation (and of its hosted tool waits) and speech never waits
+for a generation to end. A chunk of four frames of the 1.7B takes about
+170 ms, which the generation's step waits for: the generation slows
+while speech is made (measured below), and speech stays faster than real
+time. Opening a voice is the exception: a request whose voice is not open
+waits for the running generation to end, since opening may close the
+language model it runs on.
+
+A voice speaks one request at a time (its talker cache and the codec's
+scratch are one synthesizer's), so concurrent speech requests queue in
+arrival order, at most 64 waiting (`529 busy` past them); each one's head
+is sent when its turn begins. Three sent together answered at 0.14,
+1.57, and 2.83 s, each when the one before it ended. A client that does
+not read keeps at most about 5 s of audio queued on the server; the
+request then waits for it rather than hold the GPU.
+
+The speech models are listed by `GET /v1/models` (`kind` `speech`, with
+`voices`, `instructions`, `sample_rate` 24000, and `formats`), the
+transcription models too (`kind` `transcription`, `sample_rate` 16000), each
+with `present`, `loaded`, `default`, `size_bytes` (weights and codec),
+`repo`, and `revision`. `GET /v1/health` gives the open `speech` and
+`transcription` models and `speech_requests`: `waiting`, whether one is
+`speaking`, and those `answered` since the start.
+
 ## `GET /v1/models`
 
 OpenAI's list shape, so an OpenAI client reads the ids; the `nuclis`
@@ -944,3 +1070,37 @@ Passes of 2,048 rows cost no throughput: the same server with 8,192-row
 passes gave 1,669 ms and 38.3 inputs/s, within the spread, while a
 2,048-row pass holds the GPU for about 0.2 s instead of 1.7 s.
 
+### Speech beside a chat stream, 2026-10-27, commit `07dac34`
+
+Apple M4 Pro (48 GB), ReleaseSafe (`make build`), Zig 0.17.0, macOS
+27.0; `nuclis serve --quiet --model gemma-4-e4b-qat --pin qwen3-tts-1.7b
+--pin nemotron-asr-0.6b` on Metal (`unsloth/gemma-4-E4B-it-qat-GGUF` at
+`8c5a9e4f`, speculative decoding on at draft 6;
+`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` at `0c0e3051`). **The machine was
+not quiet**: another session's builds held the CPU (load average 3–4.6),
+and `nuclis speak --stream` of the first sentence ran at 1.65× real time
+then against 2.3× on a quiet machine
+([qwen3-tts.md § Speed](../models/qwen3-tts.md#speed)); the server's
+speech alone ran at 1.72×, so the server adds nothing measurable, and
+every rate below is low by that margin. A Python client (`http.client`
+on loopback) sent five sentences of 3–5 s of audio, one after another,
+each `"response_format": "pcm"`, `"seed": 1`; first byte is the first
+audio byte of the body after the request was sent, the real-time factor
+the audio's length over the request's wall time. The chat is one streamed
+request, `"reasoning_effort": "none"`, temperature 0, 1,200 tokens of a
+story; its rate is content chunks per second (a chunk is a token but for
+a held split character), between the first and the last of a window.
+
+| | First audio byte (median, range) | Real-time factor (median, range) | E4B decode |
+| --- | --- | --- | --- |
+| speech alone | 99 ms (87–107) | 1.72× (1.32–1.78) | — |
+| E4B alone | — | — | 43.7 tokens/s |
+| speech while E4B streams | 135 ms (129–152) | 1.49× (1.43–1.53) | 5.4 tokens/s during the speech, 44.3 after |
+
+Speech beside a generation stays faster than real time and starts within
+about 40 ms of alone; the generation pays: each of its steps waits for a
+four-frame chunk, so it ran at an eighth of its rate while the 21.1 s of
+speech were made (in 14.2 s), and at its own rate after. Audio made beside the
+generation was byte-identical to the same request alone. How to share the
+GPU more evenly (a frame per item, or chunks only every few steps) is the
+voice scheduling unit's measurement.

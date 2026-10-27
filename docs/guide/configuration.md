@@ -113,17 +113,21 @@ global `generation.speculative` applies to models without an entry.
 | `thinking_budget` | `1024` | the most reasoning tokens a step spends at `low` before the engine closes the reasoning; `0` for no cap |
 | `web` | `false` | offer `web_search` and `web_fetch`, and `web_context` when the service has it, served by `web.url` ([below](#web)); needs `web.url` |
 
-### `decide`, `embed`, and `serve`
+### `decide`, `embed`, `speech`, `transcribe`, and `serve`
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `decide.model` | `laya` | the decision model `nuclis decide` opens, and `nuclis serve` for a decision request that names none: a registry entry of kind `decision`, a decision catalogue name, or a directory. A text model is refused |
 | `embed.model` | `embeddinggemma-2` | the embedding model `nuclis embed` opens: a registry entry of kind `embedding`, an embedding catalogue name, or a GGUF path. Another kind's name is refused |
+| `speech.model` | `qwen3-tts-1.7b` | the speech model `nuclis speak` opens, and `POST /v1/audio/speech` for a request that names none: a registry entry of kind `speech`, a speech catalogue name (`qwen3-tts-1.7b`, `qwen3-tts-0.6b`), or (for `speak`) a checkpoint directory. Another kind's name is refused |
+| `speech.voice` | `ryan` | the speaker a `speak` or speech request that names none gets: one of the model's nine |
+| `transcribe.model` | `nemotron-asr-0.6b` | the transcription model `nuclis transcribe` opens, and the server's default: a registry entry of kind `transcription`, the catalogue name, or (for `transcribe`) a checkpoint directory |
 | `serve.host` | `127.0.0.1` | an IP literal or `localhost`; beyond loopback the API is reachable from the network with no authentication. Flag `--host` |
 | `serve.port` | `9000` | flag `--port` |
 | `serve.log` | `true` | a line per request on stdout; `--quiet` turns it off |
 | `serve.timeout` | `300` | seconds a request may wait for the GPU before `529 timeout` (a clef-flash request can hold it for minutes); flag `--timeout` |
-| `serve.memory_bytes` | `null` | what every model `nuclis serve` keeps open may hold together, decision and language alike; null is physical memory less a third, at most 16 GiB. Flag `--memory <GiB>` ([api.md § Memory](api.md#memory)) |
+| `serve.memory_bytes` | `null` | what every model `nuclis serve` keeps open may hold together, whatever their kind; null is physical memory less a third, at most 16 GiB. Flag `--memory <GiB>` ([api.md § Memory](api.md#memory)) |
+| `serve.pin` | `[]` | models `nuclis serve` opens at start and its memory budget never closes, by name, any kind: a JSON list (`["gemma-4-e4b-qat", "qwen3-tts-1.7b"]`) or one comma-separated string (what `nuclis config set serve.pin a,b` writes); at most 8. Flag `--pin`, repeated, replaces it ([api.md § Memory](api.md#memory)) |
 | `serve.web` | `false` | run the hosted `web_search`, `web_fetch`, and `web_context` tool types a chat request asks for, through `web.url` ([api.md § Hosted web tools](api.md#hosted-web-tools)); off refuses them. Needs `web.url` |
 
 ### `web`
