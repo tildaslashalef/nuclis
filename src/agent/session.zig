@@ -26,6 +26,7 @@ const std = @import("std");
 const inference = @import("inference");
 const paths = @import("../paths.zig");
 const model = @import("../model.zig");
+const repeat = @import("../text.zig").repeat;
 
 const Profile = inference.profiles;
 const Allocator = std.mem.Allocator;
@@ -90,9 +91,10 @@ pub const Stats = struct {
 /// One line of the file after the header. The tag is the entry's `type`, and
 /// the payload's fields are written beside `id`, `parent`, and `time`.
 pub const Entry = union(enum) {
-    /// `images` are the attachments by path and grid, never pixels: a
-    /// resumed session decodes them again (absent in older files).
-    user: struct { text: []const u8, images: []const ImageEntry = &.{} },
+    /// `images` and `audio` are the attachments by path, never pixels or
+    /// samples: a resumed session decodes them again (absent in older files
+    /// and on a turn without them).
+    user: struct { text: []const u8, images: []const ImageEntry = &.{}, audio: []const AudioEntry = &.{} },
     assistant: struct {
         thinking: []const u8 = "",
         answer: []const u8 = "",
@@ -128,6 +130,20 @@ pub const Entry = union(enum) {
 /// A saved turn end (`completer/cache.zig`): the rendered text's first `bytes`
 /// bytes and their digest.
 pub const Boundary = struct { bytes: usize, digest: u64 };
+
+/// One attached clip as the file records it: the SHA-256 of the bytes the
+/// model heard (hex), so a resume can tell the file changed since.
+pub const AudioEntry = struct {
+    path: []const u8,
+    sha256: []const u8 = "",
+    /// Its length at 16 kHz.
+    samples: u64 = 0,
+    tokens: u32 = 0,
+
+    pub fn seconds(self: AudioEntry) f64 {
+        return @as(f64, @floatFromInt(self.samples)) / 16_000;
+    }
+};
 
 /// One attached image as the file records it.
 pub const ImageEntry = struct {
@@ -344,9 +360,9 @@ pub fn writeEntry(out: *std.Io.Writer, entry: Entry, id: u32, parent: ?u32, time
         inline else => |payload| {
             inline for (@typeInfo(@TypeOf(payload)).@"struct".field_names) |name| {
                 const value = @field(payload, name);
-                // A turn without images or a boundary writes the line older
-                // readers know.
-                const absent = if (comptime std.mem.eql(u8, name, "images"))
+                // A turn without images, clips, or a boundary writes the line
+                // older readers know.
+                const absent = if (comptime (std.mem.eql(u8, name, "images") or std.mem.eql(u8, name, "audio")))
                     value.len == 0
                 else if (comptime @typeInfo(@TypeOf(value)) == .optional)
                     value == null
@@ -482,7 +498,7 @@ fn readRecord(a: Allocator, object: std.json.ObjectMap) !Record {
     const parent: ?u32 = if (integer(object.get("parent"))) |value| @intCast(value) else null;
     const time = try a.dupe(u8, string(object.get("time")) orelse "");
     const entry: Entry = blk: {
-        if (std.mem.eql(u8, kind, "user")) break :blk .{ .user = .{ .text = try text(a, object, "text"), .images = try readImages(a, object.get("images")) } };
+        if (std.mem.eql(u8, kind, "user")) break :blk .{ .user = .{ .text = try text(a, object, "text"), .images = try readImages(a, object.get("images")), .audio = try readAudio(a, object.get("audio")) } };
         if (std.mem.eql(u8, kind, "assistant")) break :blk .{ .assistant = .{
             .thinking = try text(a, object, "thinking"),
             .answer = try text(a, object, "answer"),
@@ -559,6 +575,28 @@ fn readImages(a: Allocator, value: ?std.json.Value) ![]const ImageEntry {
         };
     }
     return images;
+}
+
+fn readAudio(a: Allocator, value: ?std.json.Value) ![]const AudioEntry {
+    const array = switch (value orelse .null) {
+        .array => |array| array,
+        .null => return &.{},
+        else => return error.MalformedSessionLine,
+    };
+    const clips = try a.alloc(AudioEntry, array.items.len);
+    for (array.items, 0..) |element, i| {
+        const object = switch (element) {
+            .object => |object| object,
+            else => return error.MalformedSessionLine,
+        };
+        clips[i] = .{
+            .path = try a.dupe(u8, string(object.get("path")) orelse ""),
+            .sha256 = try a.dupe(u8, string(object.get("sha256")) orelse ""),
+            .samples = std.math.cast(u64, integer(object.get("samples")) orelse 0) orelse 0,
+            .tokens = std.math.cast(u32, integer(object.get("tokens")) orelse 0) orelse 0,
+        };
+    }
+    return clips;
 }
 
 /// A malformed boundary is no boundary: it only ever saves a prefill.
@@ -644,7 +682,8 @@ pub fn exportMarkdown(loaded: Loaded, out: *std.Io.Writer) !void {
                 try out.print("---\n\n### You — {s}\n\n", .{record.time});
                 try out.print("{s}\n\n", .{u.text});
                 for (u.images, 1..) |image, n| try out.print("- image #{d}: `{s}` ({d}×{d} → {d}×{d} tokens)\n", .{ n, image.path, image.width, image.height, image.width_tokens, image.height_tokens });
-                if (u.images.len > 0) try out.writeAll("\n");
+                for (u.audio, 1..) |clip, n| try out.print("- audio #{d}: `{s}` ({d:.1} s → {d} tokens)\n", .{ n, clip.path, clip.seconds(), clip.tokens });
+                if (u.images.len + u.audio.len > 0) try out.writeAll("\n");
             },
             .assistant => |assistant| {
                 try out.print("### nuclis — {s}\n\n", .{record.time});
@@ -872,6 +911,34 @@ test "a user entry with images round-trips its paths and grids, and older files 
     defer document.deinit();
     try exportMarkdown(loaded, &document.writer);
     try testing.expect(std.mem.indexOf(u8, document.written(), "- image #1: `/tmp/a.png` (640×480 → 16×12 tokens)") != null);
+}
+
+test "a user entry's clips round-trip their paths, digests, and lengths" {
+    const a = testing.allocator;
+    var buffer: std.Io.Writer.Allocating = .init(a);
+    defer buffer.deinit();
+    const clips = [_]AudioEntry{.{ .path = "/tmp/memo.m4a", .sha256 = repeat("ab", 32), .samples = 198_400, .tokens = 310 }};
+    try writeEntry(&buffer.writer, .{ .user = .{ .text = "what does [audio #1] say?", .audio = &clips } }, 1, null, "t1");
+    try testing.expect(std.mem.indexOf(u8, buffer.written(), "\"audio\":[{\"path\":\"/tmp/memo.m4a\",\"sha256\":\"abab") != null);
+    try testing.expect(std.mem.indexOf(u8, buffer.written(), "\"samples\":198400,\"tokens\":310}]") != null);
+    try testing.expect(std.mem.indexOf(u8, buffer.written(), "\"images\"") == null);
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(a);
+    try source.appendSlice(a, "{\"type\":\"session\",\"version\":1,\"id\":\"a\",\"time\":\"t\",\"cwd\":\"/w\",\"model\":{\"path\":\"/m\"},\"effort\":\"off\",\"ctx_size\":8}\n");
+    try source.appendSlice(a, buffer.written());
+    try source.appendSlice(a, "{\"type\":\"user\",\"id\":2,\"parent\":1,\"time\":\"t2\",\"text\":\"older\"}\n");
+    const loaded = try parseText(a, source.items, null);
+    defer loaded.deinit();
+    const clip = loaded.records[0].entry.user.audio[0];
+    try testing.expectEqualStrings("/tmp/memo.m4a", clip.path);
+    try testing.expectEqualStrings(repeat("ab", 32), clip.sha256);
+    try testing.expectEqual(@as(u64, 198_400), clip.samples);
+    try testing.expectEqual(@as(u32, 310), clip.tokens);
+    try testing.expectEqual(@as(usize, 0), loaded.records[1].entry.user.audio.len);
+    var document: std.Io.Writer.Allocating = .init(a);
+    defer document.deinit();
+    try exportMarkdown(loaded, &document.writer);
+    try testing.expect(std.mem.indexOf(u8, document.written(), "- audio #1: `/tmp/memo.m4a` (12.4 s → 310 tokens)") != null);
 }
 
 test "an assistant entry's boundary round-trips, any digest, and is absent unless set" {

@@ -536,25 +536,37 @@ one command; the evaluation CLI stays separate.
   `· failed: <reason>`, and the turn takes the encoded rows when the file's
   digest is unchanged (encoding it at submit otherwise, and waiting for an
   encode still running). A deleted chip's encode finishes and is dropped;
-  quitting waits for it. A UTF-8
+  quitting waits for it. An audio clip (`.wav .m4a .mp3 .flac .aiff`,
+  decoded by AudioToolbox) on a model that hears (the catalogue marks it:
+  Gemma 4 E4B with its projector) is `[audio #N]`, encoded the same way,
+  its chip showing `· 10.4 s → 261 tokens` when ready. A clip is measured
+  at drop from its header: one over 30 s is refused with the limit named
+  (`long.wav is 42.0 s: a clip is at most 30 s, and is not cut`), never cut;
+  a file no decoder reads is refused naming the formats; a model that does
+  not hear refuses by name (`gemma-4-12b-qat does not hear audio;
+  gemma-4-e4b-qat does`). A UTF-8
   text file within the input limit is `[file name, N lines]` over its
-  content, fenced and headed by the path. A typed image path in a prompt is
-  attached at submit: an `@path` (workspace-relative, as completion offers
-  it), or a path starting `/`, `~`, or `.` (what a drop types on a terminal
-  that does not bracket pastes).
-  At most 8 images per prompt, numbered in attachment order and renumbered
-  on deletion; Backspace removes a chip and its file; Ctrl-E turns an
-  image chip back into its path. A model without a working projector
-  refuses the chip with a notice naming the reason; the paste stays text.
-- The transcript shows an attached image as a dim detail row under the
-  prompt (`image #1: shot.png (320×240 → 10×8 tokens)`) and, on a terminal
+  content, fenced and headed by the path. A typed image or clip path in a
+  prompt is attached at submit: an `@path` (workspace-relative, as
+  completion offers it), or a path starting `/`, `~`, or `.` (what a drop
+  types on a terminal that does not bracket pastes).
+  At most 8 images and 8 clips per prompt, each kind numbered in attachment
+  order and renumbered on deletion; Backspace removes a chip and its file;
+  Ctrl-E turns an image or audio chip back into its path. A model without a
+  working projector or audio encoder refuses the chip with a notice naming
+  the reason; the paste stays text.
+- The transcript shows an attached image or clip as a dim detail row under
+  the prompt (`image #1: shot.png (320×240 → 10×8 tokens)`, `audio #1:
+  memo.m4a (12.4 s → 310 tokens)`) and, for an image on a terminal
   that draws kitty graphics (Ghostty, kitty; by environment, never under
   tmux, off with `NUCLIS_NO_PREVIEW=1`), a preview of at most 12 rows under
   it, fewer when less room stands above the input box. Sessions
-  record an image's path and grid, never its pixels; a resumed session
-  decodes and encodes it again at the current cap (the conversation is
-  prefilled anew, so the recorded grid binds nothing) and leaves a
-  missing file out with a notice.
+  record an image's path and grid, never its pixels, and a clip's path,
+  SHA-256, length, and rows, never its samples; a resumed session decodes
+  and encodes each again (an image at the current cap; the recorded grid
+  binds nothing), leaves a missing file out with a notice, and says when a
+  clip's file changed since it was sent. A clip's digest keys the token
+  cache as an image's does, so a follow-up turn reads only its new tokens.
 - Up/Down move inside a multi-line input and recall history from the
   first and last rows; history persists across sessions (200 entries).
 - Tab completes a `/command` or an `@path`, else folds thinking; Enter
@@ -626,8 +638,9 @@ one command; the evaluation CLI stays separate.
   precision, output ceiling, and image cap from the command line hold),
   primes it (the token cache's disk tier serves a model used before), and
   continues the conversation rendered through the new profile, which is a
-  full prefill; the conversation's images are encoded again by the new
-  projector, and one it cannot read leaves the model's view with a notice.
+  full prefill; the conversation's images and clips are encoded again by
+  the new model's encoders, and one it cannot read or hear leaves the
+  model's view with a notice.
   A failed open falls back to the previous model. On the running model,
   Enter applies a new effort (re-priming) or window (re-opening).
 - **`/resume [id]`**: an id or a prefix of exactly one id resumes it;

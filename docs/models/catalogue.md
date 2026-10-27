@@ -280,7 +280,8 @@ inspect` reads GGUF directories only.
 `models/` is *runnable* when its architecture id has an adapter,
 *supported* only when the catalogue pins it (name, title, repository, file,
 commit, SHA-256, size, quantization, architecture, sampling profile, and
-companions with what they are for: `mmproj` for image input, `mtp` for
+companions with what they are for: `mmproj` for image input, and audio
+input on the one entry marked `hears` (Gemma 4 E4B), `mtp` for
 speculative decoding). Entries are named after the model (`qwen3.8-27b`), not the
 quantization. `nuclis model pull <name> [--with mmproj,mtp | --all]`
 fetches through it, `--model` and `engine.model` resolve names through it,

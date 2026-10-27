@@ -15,6 +15,8 @@
 const std = @import("std");
 const inference = @import("inference");
 const completer = @import("../completer.zig");
+const repeat = @import("../text.zig").repeat;
+const clip = @import("clip.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -226,12 +228,15 @@ pub const Ahead = struct {
 pub const note_bytes = 48;
 
 /// The chip's word for an entry's state: `queued`, `encoding…`, the token
-/// count, or why it failed.
+/// count (a clip's length first), or why it failed.
 pub fn note(entry: *const Entry, buffer: *[note_bytes]u8) []const u8 {
     return switch (entry.state) {
         .queued => "queued",
         .encoding => "encoding…",
-        .ready => std.fmt.bufPrint(buffer, "{d} tokens", .{entry.tokens()}) catch "ready",
+        .ready => switch (entry.kind) {
+            .image => std.fmt.bufPrint(buffer, "{d} tokens", .{entry.tokens()}),
+            .audio => std.fmt.bufPrint(buffer, "{d:.1} s → {d} tokens", .{ clip.seconds(entry.prepared.width), entry.tokens() }),
+        } catch "ready",
         .failed => std.fmt.bufPrint(buffer, "failed: {s}", .{@errorName(entry.failure orelse error.Unknown)}) catch "failed",
     };
 }
@@ -242,7 +247,16 @@ const testing = std.testing;
 const Fake = struct {
     calls: std.atomic.Value(usize) = .init(0),
     fn model(self: *Fake) completer.Model {
-        return .{ .context = self, .run = undefined, .count = undefined, .encode_image = encodeImage };
+        return .{ .context = self, .run = undefined, .count = undefined, .encode_image = encodeImage, .encode_audio = encodeAudio };
+    }
+    /// A clip of `bytes.len * 1000` samples, one row per byte.
+    fn encodeAudio(context: *anyopaque, alloc: Allocator, bytes: []const u8) anyerror!Prepared {
+        const self: *Fake = @ptrCast(@alignCast(context));
+        _ = self.calls.fetchAdd(1, .monotonic);
+        if (bytes.len == 0) return error.AudioTooShort;
+        const features = try alloc.alloc(f32, bytes.len);
+        @memset(features, 0);
+        return .{ .width_tokens = @intCast(bytes.len), .height_tokens = 1, .features = features, .width = @intCast(bytes.len * 1000) };
     }
     fn encodeImage(context: *anyopaque, alloc: Allocator, bytes: []const u8) anyerror!Prepared {
         const self: *Fake = @ptrCast(@alignCast(context));
@@ -294,6 +308,37 @@ test "an attachment is encoded in the background and taken by its digest" {
     try testing.expectEqual(@as(f32, 'A'), prepared.features[0]);
     try testing.expect(ahead.find("~/a.png") == null);
     try testing.expectEqual(@as(usize, 2), fake.calls.load(.monotonic));
+}
+
+test "a clip's chip gives its length and tokens, or why it failed" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "memo.m4a", repeat("x", 310));
+    try writeFile(tmp.dir, "empty.wav", "");
+    const memo = try tmp.dir.realPathFileAlloc(testing.io, "memo.m4a", testing.allocator);
+    defer testing.allocator.free(memo);
+    const empty = try tmp.dir.realPathFileAlloc(testing.io, "empty.wav", testing.allocator);
+    defer testing.allocator.free(empty);
+    var fake: Fake = .{};
+    var ahead: Ahead = .init(testing.allocator, testing.io);
+    defer ahead.deinit();
+    const a = try ahead.want(.audio, "memo.m4a", memo);
+    const e = try ahead.want(.audio, "empty.wav", empty);
+    var buffer: [note_bytes]u8 = undefined;
+    try testing.expectEqualStrings("queued", note(a, &buffer));
+    ahead.pump(fake.model());
+    if (ahead.unavailable) return error.SkipZigTest;
+    try testing.expectEqualStrings("encoding…", note(a, &buffer));
+    ahead.settle();
+    try testing.expectEqualStrings("19.4 s → 310 tokens", note(a, &buffer));
+    ahead.pump(fake.model());
+    ahead.settle();
+    try testing.expectEqualStrings("failed: AudioTooShort", note(e, &buffer));
+    // An image's digest does not take a clip's rows.
+    try testing.expect(ahead.take(.image, completer.digestOf(repeat("x", 310))) == null);
+    const prepared = ahead.take(.audio, completer.digestOf(repeat("x", 310))).?;
+    defer testing.allocator.free(prepared.features);
+    try testing.expectEqual(@as(u32, 310), prepared.width_tokens);
 }
 
 test "a removed attachment's task finishes and its result is dropped" {

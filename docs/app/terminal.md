@@ -98,25 +98,34 @@ rewrites only from the first row that differs from the last frame.
 
 An attachment is an `attachment` event after the prompt's `user` event:
 the transcript keeps it as a detail of that user block and renders a dim
-`└ image #1: shot.png (320×240 → 10×8 tokens)` row under the prompt. When
+`└ image #1: shot.png (320×240 → 10×8 tokens)` row under the prompt (a
+clip's is `└ audio #1: memo.m4a (12.4 s → 310 tokens)`, no preview). When
 the event carries a preview (the chat builds one where
 `tui.graphics.enabled` says the terminal draws kitty graphics, never under
 tmux), the block also emits the preview's rows blank and then one raw row
 that climbs over them, places the image with the cursor kept, and comes
 back — the row model stays text, and the goldens never contain a sequence.
 The chat caps the picture to the rows above the live region. A drop and a
-typed path both reach the same `Editor.attachImage`; the
-chat's `dropProbe` is the editor's only view of the file system.
+typed path both reach the same `Editor.attachImage` or `Editor.attachAudio`
+(`[audio #N]`, numbered apart from the images); the chat's `dropProbe` is
+the editor's only view of the file system. For a clip it loads the audio
+encoder on first use (`audioAvailable`, refusing by name on a model that
+does not hear, the hearing one taken from the catalogue's `hears`) and
+measures the file from its header (`src/agent/clip.zig`): over 30 s or
+undecodable is a notice and the paste stays text. The encoder never loads
+from inside the GPU wait's tick (a drop read during a turn): that drop is
+refused with a notice to drop it again after the turn.
 
-An image chip is encoded while the prompt is typed (`src/agent/ahead.zig`,
-keyed by the attachment's path for the chip and by the file's SHA-256 for
-the turn; audio can use the same piece). The idle loop's `syncAhead` queues
+An image or audio chip is encoded while the prompt is typed
+(`src/agent/ahead.zig`, keyed by the attachment's path for the chip and by
+the file's SHA-256 for the turn). The idle loop's `syncAhead` queues
 a new chip's file, drops a deleted chip's entry, writes each chip's note
-(`Editor.setNote`: `queued`, `encoding…`, `676 tokens`, `failed: …`), and
+(`Editor.setNote`: `queued`, `encoding…`, `676 tokens` or `10.4 s → 261
+tokens`, `failed: …`), and
 starts the next queued file on a task (`Io.concurrent`) when none runs.
 The task uses the model's own Metal backend, so the driver calls
 `Ahead.settle` (wait for the running task) before anything else touches
-the engine: a turn (`loadImages`, under its `encoding image #1` label), a
+the engine: a turn (`loadMedia`, under its `encoding image #1` label), a
 command, a model or context switch, a resume, quitting. The backend's
 `tick` runs on whichever thread commits, so `toolTick` returns at once off
 the driver's thread: the task never reads keys or draws. Measured on the

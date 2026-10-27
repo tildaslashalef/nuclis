@@ -68,6 +68,9 @@ pub const Entry = struct {
     /// not yet measured per family.
     think: ?inference.profiles.Effort = null,
     thinking_budget: ?usize = null,
+    /// Its `mmproj` companion carries an audio encoder: the model hears
+    /// clips (`input_audio`, `generate --audio`, a clip dropped in the agent).
+    hears: bool = false,
 
     pub fn companion(self: *const Entry, role: Role) ?*const Companion {
         for (self.companions) |*c| if (c.role == role) return c;
@@ -170,8 +173,9 @@ pub const entries = [_]Entry{
         .draft_length = 6,
         .think = .low,
         .thinking_budget = 1024,
+        .hears = true,
         .companions = &.{
-            .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 991_552_320, .sha256 = "7c9bafa27f82d658eda805c1d82ef62bb0368e1ff75f64f77de58ad318beaaf9", .used_for = "image input" },
+            .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 991_552_320, .sha256 = "7c9bafa27f82d658eda805c1d82ef62bb0368e1ff75f64f77de58ad318beaaf9", .used_for = "image and audio input" },
             .{ .role = .mtp, .file = "MTP/mtp-gemma-4-E4B-it-Q4_0.gguf", .size = 59_678_016, .sha256 = "423074e537504b4f9ec5eafed5c639fac82c96631626efccacdd3c4039b20605", .used_for = "speculative decoding" },
         },
     },
@@ -553,6 +557,13 @@ pub fn padName(buffer: []u8, text: []const u8) []const u8 {
 
 /// Exact name match; names never contain `/` or end in `.gguf`, so a path
 /// can never be mistaken for one.
+/// The first catalogue model that hears audio, for a refusal that names
+/// where to go instead; null when none does.
+pub fn hearing() ?*const Entry {
+    for (&entries) |*e| if (e.hears) return e;
+    return null;
+}
+
 pub fn find(name: []const u8) ?*const Entry {
     for (&entries) |*e| if (std.mem.eql(u8, e.name, name)) return e;
     return null;
@@ -694,6 +705,9 @@ test "the table is well formed: unique names, 40-character commits, 64-character
     try std.testing.expectEqual(@as(usize, 6), find("gemma-4-e4b-qat").?.draft_length);
     try std.testing.expectEqual(@as(usize, 6), find("muse-glimmer-30b").?.draft_length);
     try std.testing.expect(!find("gemma-4-26b-a4b").?.speculative);
+    // Only the E4B's projector carries an audio encoder.
+    try std.testing.expectEqualStrings("gemma-4-e4b-qat", hearing().?.name);
+    for (&entries) |*e| if (e.hears) try std.testing.expect(e.companion(.mmproj) != null);
     for (&entries) |e| if (e.speculative) try std.testing.expect(e.draft_length >= 1 and e.draft_length <= inference.engine.max_draft_length);
     try std.testing.expectEqualStrings("muse-glimmer", find("muse-glimmer-30b").?.architecture);
     try std.testing.expectEqual(Role.mtp, findFile("unsloth/Muse-Glimmer-30B-GGUF", "dflash-kquant.gguf").?.role);

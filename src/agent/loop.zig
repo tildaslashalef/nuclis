@@ -75,7 +75,8 @@ pub const Record = union(enum) {
     compaction: Compaction,
 };
 
-/// A user message and the images attached to it, for the session file.
+/// A user message and the images and clips attached to it (images first),
+/// for the session file.
 pub const UserRecord = struct { text: []const u8, images: []const Image = &.{} };
 
 pub const Compaction = struct {
@@ -138,11 +139,31 @@ const Item = struct {
     reasoning: []u8,
     tool_calls: []Profile.ToolCall = &.{},
     tool_call_id: ?u32 = null,
-    /// Attached images (user messages only), owned, with their grids as the
-    /// profile renders them.
+    /// Attached images then clips (user messages only), owned, with the
+    /// images' grids and the clips' rows as the profile renders them.
     images: []Image = &.{},
     refs: []Profile.ImageRef = &.{},
+    clips: []Profile.AudioRef = &.{},
 };
+
+/// The profile's view of a message's media, which are sorted images first:
+/// the images' grids and the clips' rows. Caller owns both.
+fn mediaRefs(alloc: Allocator, media: []const Image) !struct { []Profile.ImageRef, []Profile.AudioRef } {
+    var images: usize = 0;
+    for (media) |m| images += @intFromBool(m.kind == .image);
+    const refs = try alloc.alloc(Profile.ImageRef, images);
+    errdefer alloc.free(refs);
+    const clips = try alloc.alloc(Profile.AudioRef, media.len - images);
+    for (media[0..images], refs) |m, *r| r.* = m.ref();
+    for (media[images..], clips) |m, *r| r.* = m.audioRef();
+    return .{ refs, clips };
+}
+
+/// Images before clips, each kind in attachment order: the order a profile
+/// renders a message's spans in, which the completer pairs media with.
+fn imagesFirst(_: void, a: Image, b: Image) bool {
+    return a.kind == .image and b.kind == .audio;
+}
 
 pub const Agent = struct {
     alloc: Allocator,
@@ -331,12 +352,15 @@ pub const Agent = struct {
         self.clearReads();
     }
 
-    /// Encodes every attached image again through `model`'s projector: after
-    /// a model switch the old rows mean nothing to the new model. An image
-    /// that fails (no projector, a moved file) leaves the model's view, its
-    /// marker text staying; returns how many did.
-    pub fn reencodeImages(self: *Agent) Allocator.Error!usize {
-        var dropped: usize = 0;
+    /// Images and clips a re-encode left out of the model's view.
+    pub const Dropped = struct { images: usize = 0, clips: usize = 0 };
+
+    /// Encodes every attached image and clip again through `model`'s
+    /// encoders: after a model switch the old rows mean nothing to the new
+    /// model. One that fails (no projector, a model that does not hear, a
+    /// moved file) leaves the model's view, its marker text staying.
+    pub fn reencodeMedia(self: *Agent) Allocator.Error!Dropped {
+        var dropped: Dropped = .{};
         for (self.history.items) |*item| {
             if (item.images.len == 0) continue;
             // Encode first, commit after: a failed allocation leaves the
@@ -345,30 +369,37 @@ pub const Agent = struct {
             defer self.alloc.free(fresh);
             var kept: usize = 0;
             for (item.images, fresh) |image, *f| {
-                f.* = self.encodeAgain(image.path) catch null;
+                f.* = self.encodeAgain(image.kind, image.path) catch null;
                 if (f.* != null) kept += 1;
             }
             const images = self.alloc.alloc(Image, kept) catch |err| return discard(self.alloc, fresh, err);
-            const refs = self.alloc.alloc(Profile.ImageRef, kept) catch |err| {
+            var at: usize = 0;
+            for (item.images, fresh) |image, f| {
+                const encoded = f orelse continue;
+                images[at] = .{ .kind = image.kind, .path = image.path, .bytes = image.bytes, .digest = encoded.digest, .prepared = encoded.prepared };
+                at += 1;
+            }
+            const refs, const clips = mediaRefs(self.alloc, images) catch |err| {
                 self.alloc.free(images);
                 return discard(self.alloc, fresh, err);
             };
-            var at: usize = 0;
             for (item.images, fresh) |*image, f| {
-                if (f) |encoded| {
+                if (f != null) {
                     self.alloc.free(image.prepared.features);
-                    images[at] = .{ .path = image.path, .bytes = image.bytes, .digest = encoded.digest, .prepared = encoded.prepared };
-                    refs[at] = images[at].ref();
-                    at += 1;
                 } else {
+                    switch (image.kind) {
+                        .image => dropped.images += 1,
+                        .audio => dropped.clips += 1,
+                    }
                     image.deinit(self.alloc);
-                    dropped += 1;
                 }
             }
             self.alloc.free(item.images);
             self.alloc.free(item.refs);
+            self.alloc.free(item.clips);
             item.images = images;
             item.refs = refs;
+            item.clips = clips;
         }
         return dropped;
     }
@@ -380,10 +411,23 @@ pub const Agent = struct {
 
     const Encoded = struct { prepared: inference.engine.PreparedImage, digest: [32]u8 };
 
-    fn encodeAgain(self: *Agent, path: []const u8) !Encoded {
-        const bytes = try engine.readImage(self.alloc, self.io, path);
+    fn encodeAgain(self: *Agent, kind: Image.Kind, path: []const u8) !Encoded {
+        const bytes = switch (kind) {
+            .image => try engine.readImage(self.alloc, self.io, path),
+            .audio => try std.Io.Dir.cwd().readFileAlloc(self.io, path, self.alloc, .limited(inference.audio.audio.max_bytes)),
+        };
         defer self.alloc.free(bytes);
-        return .{ .prepared = try self.model.encode_image(self.model.context, self.alloc, bytes), .digest = completer.digestOf(bytes) };
+        const prepared = switch (kind) {
+            .image => try self.model.encode_image(self.model.context, self.alloc, bytes),
+            .audio => try self.model.encode_audio(self.model.context, self.alloc, bytes),
+        };
+        return .{ .prepared = prepared, .digest = completer.digestOf(bytes) };
+    }
+
+    /// Whether any message carries an attachment of `kind`.
+    pub fn holds(self: *const Agent, kind: Image.Kind) bool {
+        for (self.history.items) |item| for (item.images) |image| if (image.kind == kind) return true;
+        return false;
     }
 
     /// The last assistant message with any answer text, for the clipboard;
@@ -612,6 +656,7 @@ pub const Agent = struct {
                 .role = item.role,
                 .content = item.content,
                 .images = item.refs,
+                .audio = item.clips,
                 .reasoning_content = item.reasoning,
                 .tool_calls = item.tool_calls,
                 .tool_call_id = item.tool_call_id,
@@ -835,12 +880,16 @@ pub const Agent = struct {
         return true;
     }
 
-    /// Takes ownership of `images` whatever happens.
+    /// Takes ownership of `images` (images and clips, sorted here images
+    /// first) whatever happens.
     fn appendItem(self: *Agent, role: Profile.Role, content: []const u8, reasoning: []const u8, tool_calls: []const Profile.ToolCall, tool_call_id: ?u32, images: []Image) !void {
         errdefer freeImages(self.alloc, images);
-        const refs = try self.alloc.alloc(Profile.ImageRef, images.len);
-        errdefer self.alloc.free(refs);
-        for (images, refs) |image, *ref| ref.* = image.ref();
+        std.sort.insertion(Image, images, {}, imagesFirst);
+        const refs, const clips = try mediaRefs(self.alloc, images);
+        errdefer {
+            self.alloc.free(refs);
+            self.alloc.free(clips);
+        }
         const owned_content = try self.alloc.dupe(u8, content);
         errdefer self.alloc.free(owned_content);
         const owned_reasoning = try self.alloc.dupe(u8, reasoning);
@@ -869,6 +918,7 @@ pub const Agent = struct {
             .tool_call_id = tool_call_id,
             .images = images,
             .refs = refs,
+            .clips = clips,
         });
     }
 
@@ -895,6 +945,7 @@ pub const Agent = struct {
         if (item.tool_calls.len != 0) self.alloc.free(item.tool_calls);
         freeImages(self.alloc, item.images);
         self.alloc.free(item.refs);
+        self.alloc.free(item.clips);
     }
 
     fn turnCount(self: *const Agent) usize {

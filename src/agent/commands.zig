@@ -13,6 +13,8 @@
 //! is also the help text and the completion list, so the three agree.
 const std = @import("std");
 const fuzzy = @import("../tui/fuzzy.zig");
+const inference = @import("inference");
+const catalog = @import("../catalog.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -157,7 +159,7 @@ pub fn help(alloc: Allocator, ascii: bool) ![]const []const u8 {
         .{ "Up / Down", "move in the input; history at the first and last row" },
         .{ "Tab", "complete a /command or an @path, otherwise fold thinking" },
         .{ "Ctrl-O", "cycle the tool rows of the last turn: summary, output, folded" },
-        .{ "Ctrl-E", "expand a paste, file, or image chip into editable text" },
+        .{ "Ctrl-E", "expand a paste, file, image, or audio chip into editable text" },
         .{ "Ctrl-G", "edit the input in $VISUAL or $EDITOR" },
         .{ "Ctrl-X", "copy the last answer to the clipboard" },
         .{ "Esc", "cancel a turn; close a list or picker" },
@@ -165,7 +167,8 @@ pub fn help(alloc: Allocator, ascii: bool) ![]const []const u8 {
     };
     for (keys) |pair| try rows.append(alloc, try alloc.print("    {s: <17}  {s}", .{ pair[0], pair[1] }));
     try rows.append(alloc, "");
-    try rows.append(alloc, "  Drop a file onto the window, or type @path, to attach it (images too).");
+    try rows.append(alloc, "  Drop a file onto the window, or type @path, to attach it: text, images,");
+    try rows.append(alloc, try alloc.print("  and audio clips up to {d} s on a model that hears ({s}).", .{ inference.engine.max_audio_seconds, if (catalog.hearing()) |e| e.name else "none" }));
     return rows.toOwnedSlice(alloc);
 }
 

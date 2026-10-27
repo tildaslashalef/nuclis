@@ -39,6 +39,7 @@ pub const tools = @import("tools/root.zig");
 pub const loop = @import("loop.zig");
 const completer_mod = @import("../completer.zig");
 const ahead_mod = @import("ahead.zig");
+const clip_mod = @import("clip.zig");
 const Open = completer_mod.Open;
 const terminal = tui.terminal;
 const screen = tui.screen;
@@ -204,9 +205,9 @@ const Ui = struct {
     /// A session path to replay on the next main-loop pass, set by the picker
     /// and consumed there because the loop owns the session file. Owned.
     resume_request: ?[]u8 = null,
-    /// The images of the turn being sent, shown under its prompt when the
-    /// loop's `user` event arrives (`send`). Borrowed from the agent's
-    /// history for the turn.
+    /// The images and clips of the turn being sent, shown under its prompt
+    /// when the loop's `user` event arrives (`send`). Borrowed from the
+    /// agent's history for the turn.
     attachments_pending: []const loop.Image = &.{},
     /// The terminal draws inline images (kitty graphics), by environment.
     preview: bool = false,
@@ -221,6 +222,9 @@ const Ui = struct {
     ahead: *ahead_mod.Ahead,
     /// The driver's thread: the only one that reads keys and draws.
     thread: std.Thread.Id,
+    /// Inside the GPU wait's tick: the engine is mid-command, so a drop
+    /// read there must not load an encoder.
+    ticking: bool = false,
 
     /// The next tool view, named in the bar so the cycle is legible.
     fn cycleTools(self: *Ui) void {
@@ -530,19 +534,32 @@ const Ui = struct {
         }
     }
 
-    /// The detail row per image of the turn just sent, with the inline
-    /// preview where the terminal draws one. A preview that cannot be built
-    /// (an unreadable file, a decode error) just leaves the row alone.
+    /// The detail row per image and clip of the turn just sent, with an
+    /// image's inline preview where the terminal draws one. A preview that
+    /// cannot be built (an unreadable file, a decode error) just leaves the
+    /// row alone.
     fn showAttachments(self: *Ui) !void {
-        const images = self.attachments_pending;
+        const media = self.attachments_pending;
         self.attachments_pending = &.{};
         var arena = std.heap.ArenaAllocator.init(self.alloc);
         defer arena.deinit();
         const a = arena.allocator();
-        for (images, 1..) |image, n| {
-            const label = try a.print("image #{d}: {s} ({d}×{d} → {d}×{d} tokens)", .{ n, image.path, image.prepared.width, image.prepared.height, image.prepared.width_tokens, image.prepared.height_tokens });
-            const preview: ?tui.event.Preview = if (self.preview) self.buildPreview(a, image.path) catch null else null;
-            try self.tr.apply(.{ .attachment = .{ .label = label, .preview = preview } });
+        var counts: [2]usize = @splat(0);
+        for (media) |item| {
+            counts[@backingInt(item.kind)] += 1;
+            const n = counts[@backingInt(item.kind)];
+            const p = item.prepared;
+            switch (item.kind) {
+                .image => {
+                    const label = try a.print("image #{d}: {s} ({d}×{d} → {d}×{d} tokens)", .{ n, item.path, p.width, p.height, p.width_tokens, p.height_tokens });
+                    const preview: ?tui.event.Preview = if (self.preview) self.buildPreview(a, item.path) catch null else null;
+                    try self.tr.apply(.{ .attachment = .{ .label = label, .preview = preview } });
+                },
+                .audio => {
+                    const label = try a.print("audio #{d}: {s} ({d:.1} s → {d} tokens)", .{ n, item.path, clip_mod.seconds(p.width), p.width_tokens });
+                    try self.tr.apply(.{ .attachment = .{ .label = label } });
+                },
+            }
         }
     }
 
@@ -559,8 +576,10 @@ const Ui = struct {
     }
 
     /// The editor's file-system side of a drop: an existing regular file
-    /// that is an image (when the model can take one) or UTF-8 text within
-    /// the input limit. Anything else leaves the paste as typed.
+    /// that is an image (when the model can take one), an audio clip within
+    /// the bound (when the model hears), or UTF-8 text within the input
+    /// limit. Anything else leaves the paste as typed; a refused image or
+    /// clip says why in a notice.
     fn dropProbe(context: *anyopaque, alloc: std.mem.Allocator, path: []const u8) ?editor.Dropped {
         const self: *Ui = @ptrCast(@alignCast(context));
         return self.probe(alloc, path) catch null;
@@ -575,6 +594,7 @@ const Ui = struct {
             if (!self.visionAvailable()) return null;
             return .image;
         }
+        if (editor.looksLikeAudio(resolved)) return self.probeClip(alloc, resolved, stat.size);
         if (stat.size > editor.max_input) return null;
         const content = std.Io.Dir.cwd().readFileAlloc(self.io, resolved, alloc, .limited(editor.max_input)) catch return null;
         errdefer alloc.free(content);
@@ -583,6 +603,64 @@ const Ui = struct {
             return null;
         }
         return .{ .text = content };
+    }
+
+    /// A dropped clip, refused with a notice by a model that does not hear,
+    /// over the length bound (measured from the header, never cut), or not
+    /// decodable; the encode runs once the chip exists (`syncAhead`).
+    fn probeClip(self: *Ui, alloc: std.mem.Allocator, resolved: []const u8, size: u64) ?editor.Dropped {
+        if (!self.audioAvailable()) return null;
+        var sentence: [clip_mod.sentence_bytes]u8 = undefined;
+        if (size > inference.audio.audio.max_bytes) {
+            self.emit(.{ .notice = clip_mod.tooLarge(&sentence, resolved) }) catch {};
+            return null;
+        }
+        const bytes = std.Io.Dir.cwd().readFileAlloc(self.io, resolved, alloc, .limited(inference.audio.audio.max_bytes)) catch return null;
+        defer alloc.free(bytes);
+        switch (clip_mod.measure(bytes)) {
+            .fits => return .audio,
+            .too_long => |samples| self.emit(.{ .notice = clip_mod.tooLong(&sentence, resolved, samples) }) catch {},
+            .unreadable => self.emit(.{ .notice = clip_mod.unreadable(&sentence, resolved) }) catch {},
+        }
+        return null;
+    }
+
+    /// Loads the audio encoder from the entry's projector on first use.
+    /// False, with the refusal as a notice naming the model that hears, when
+    /// this one does not: the chip is refused, never silently dropped.
+    fn audioAvailable(self: *Ui) bool {
+        if (self.eng.audio != null) return true;
+        var sentence: [clip_mod.sentence_bytes]u8 = undefined;
+        if (self.eng.audioPadId() == null or self.mmproj == null) {
+            self.emit(.{ .notice = clip_mod.deaf(&sentence, self.model_label) }) catch {};
+            return false;
+        }
+        if (self.ticking) {
+            self.emit(.{ .notice = "  — the audio encoder loads between steps: drop the clip again when the turn ends" }) catch {};
+            return false;
+        }
+        const resolved = engine.visionPath(self.alloc, self.model_path, self.mmproj) catch return false;
+        const path = resolved orelse return false;
+        defer self.alloc.free(path);
+        // A background encode uses the backend the encoder is bound on.
+        self.ahead.settle();
+        const was_busy = self.busy;
+        const was_preparing = self.preparing;
+        self.beginPreparing("loading the audio encoder");
+        defer {
+            self.endPreparing();
+            self.busy = was_busy;
+            self.preparing = was_preparing;
+        }
+        self.eng.loadAudio(path) catch |err| {
+            const notice = switch (err) {
+                error.AudioUnsupported, error.VisionSourceMismatch, error.UnsupportedProjector, error.FileNotFound => clip_mod.deaf(&sentence, self.model_label),
+                else => std.fmt.bufPrint(&sentence, "  — {s} could not load its audio encoder: {s}", .{ self.model_label, @errorName(err) }) catch "  — the audio encoder did not load",
+            };
+            self.emit(.{ .notice = notice }) catch {};
+            return false;
+        };
+        return true;
     }
 
     /// Loads the entry's projector on first use. False, with the reason as
@@ -599,6 +677,8 @@ const Ui = struct {
         defer self.alloc.free(path);
         const was_busy = self.busy;
         const was_preparing = self.preparing;
+        // A background encode uses the backend the projector is bound on.
+        self.ahead.settle();
         self.beginPreparing("loading the image projector");
         defer {
             self.endPreparing();
@@ -623,8 +703,10 @@ const Ui = struct {
         const self: *Ui = @ptrCast(@alignCast(context));
         var call: [16]u8 = undefined;
         var images: [editor.max_images]session_log.ImageEntry = undefined;
+        var clips: [editor.max_clips]session_log.AudioEntry = undefined;
+        var digests: [editor.max_clips][64]u8 = undefined;
         const mapped: session_log.Entry = switch (entry) {
-            .user => |u| .{ .user = .{ .text = u.text, .images = imageEntries(&images, u.images) } },
+            .user => |u| .{ .user = .{ .text = u.text, .images = imageEntries(&images, u.images), .audio = audioEntries(&clips, &digests, u.images) } },
             .assistant => |step| .{ .assistant = .{
                 .thinking = step.thinking,
                 .answer = step.answer,
@@ -1434,6 +1516,8 @@ fn toolTick(context: *anyopaque) void {
     // A background encode's GPU wait ticks on its own thread: not the
     // driver's, whose keys and frame it must not touch.
     if (std.Thread.getCurrentId() != self.thread) return;
+    self.ticking = true;
+    defer self.ticking = false;
     self.poll(0) catch {};
     self.draw() catch {};
 }
@@ -1449,12 +1533,12 @@ fn installTick(ui: *Ui) void {
 /// Runs one user turn through the loop: prepares the display state, hands the
 /// prompt to the agent, and notifies once it is done if the window was
 /// elsewhere. The loop owns everything the model saw and produced.
-/// `image_paths` are the prompt's attachments in marker order: each is read
-/// and run through the projector before the turn; one that fails is a
-/// notice and the turn is not sent.
-fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8, image_paths: []const []const u8) !void {
-    const images = loadImages(ui, image_paths) catch |err| switch (err) {
-        error.ImageUnreadable => return,
+/// `wanted` are the prompt's images and clips in attachment order: each is
+/// read and run through its encoder before the turn (or taken encoded from
+/// `Ahead`); one that fails is a notice and the turn is not sent.
+fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8, wanted: []const Wanted) !void {
+    const images = loadMedia(ui, wanted) catch |err| switch (err) {
+        error.MediaUnreadable => return,
         else => return err,
     };
     // The effort may have changed since the last turn (Ctrl-T): rebuild the
@@ -1491,33 +1575,65 @@ fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8, imag
     }
 }
 
-/// Reads and encodes each attached image through the loaded projector. Owned
-/// by the caller (the agent takes them). `ImageUnreadable` after a notice
-/// naming the image that failed.
-fn loadImages(ui: *Ui, image_paths: []const []const u8) ![]loop.Image {
-    if (image_paths.len == 0) return &.{};
-    var images: std.ArrayList(loop.Image) = .empty;
-    errdefer loop.freeImages(ui.alloc, images.toOwnedSlice(ui.alloc) catch &.{});
+/// One attachment of the prompt being sent: an image or a clip, by the path
+/// the editor holds.
+const Wanted = struct { kind: completer_mod.Media.Kind, path: []const u8 };
+
+/// Reads and encodes each attached image and clip through the loaded
+/// encoders. Owned by the caller (the agent takes them). `MediaUnreadable`
+/// after a notice naming the attachment that failed.
+fn loadMedia(ui: *Ui, wanted: []const Wanted) ![]loop.Image {
+    if (wanted.len == 0) return &.{};
+    var media: std.ArrayList(loop.Image) = .empty;
+    errdefer loop.freeImages(ui.alloc, media.toOwnedSlice(ui.alloc) catch &.{});
     defer ui.endPreparing();
+    var totals: [2]usize = @splat(0);
+    for (wanted) |w| totals[@backingInt(w.kind)] += 1;
     var label: [48]u8 = undefined;
     // An encode still running for the prompt's attachments finishes first.
     if (ui.ahead.busy()) {
-        ui.beginPreparing("encoding image #1");
+        ui.beginPreparing(encodingLabel(&label, wanted[0].kind, 1, 1));
         ui.ahead.settle();
     }
-    for (image_paths, 1..) |path, n| {
-        ui.beginPreparing(if (image_paths.len == 1)
-            "encoding image #1"
-        else
-            std.fmt.bufPrint(&label, "encoding image #{d} of {d}", .{ n, image_paths.len }) catch "encoding images");
-        const image = loadImage(ui, path) catch |err| {
+    var counts: [2]usize = @splat(0);
+    for (wanted) |w| {
+        counts[@backingInt(w.kind)] += 1;
+        const n = counts[@backingInt(w.kind)];
+        ui.beginPreparing(encodingLabel(&label, w.kind, n, totals[@backingInt(w.kind)]));
+        const item = (switch (w.kind) {
+            .image => loadImage(ui, w.path),
+            .audio => loadClip(ui, w.path),
+        }) catch |err| {
             var note: [256]u8 = undefined;
-            try ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — could not read image #{d}: {s}: {s}", .{ n, path, @errorName(err) }) catch "  — could not read an image" });
-            return error.ImageUnreadable;
+            try ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — could not read {s} #{d}: {s}: {s}", .{ @tagName(w.kind), n, w.path, @errorName(err) }) catch "  — could not read an attachment" });
+            return error.MediaUnreadable;
         };
-        try images.append(ui.alloc, image);
+        try media.append(ui.alloc, item);
     }
-    return images.toOwnedSlice(ui.alloc);
+    return media.toOwnedSlice(ui.alloc);
+}
+
+/// `encoding image #1`, or `encoding audio #2 of 3` among several.
+fn encodingLabel(buffer: *[48]u8, kind: completer_mod.Media.Kind, n: usize, of: usize) []const u8 {
+    return (if (of <= 1)
+        std.fmt.bufPrint(buffer, "encoding {s} #{d}", .{ @tagName(kind), n })
+    else
+        std.fmt.bufPrint(buffer, "encoding {s} #{d} of {d}", .{ @tagName(kind), n, of })) catch "encoding";
+}
+
+fn loadClip(ui: *Ui, path: []const u8) !loop.Image {
+    if (!ui.audioAvailable()) return error.NoAudio;
+    const resolved = try expandHome(ui.alloc, ui.environ, path);
+    errdefer ui.alloc.free(resolved);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(ui.io, resolved, ui.alloc, .limited(inference.audio.audio.max_bytes));
+    defer ui.alloc.free(bytes);
+    const digest = completer_mod.digestOf(bytes);
+    // Encoded while the prompt was typed, when the file is still the same.
+    const prepared = ui.ahead.take(.audio, digest) orelse blk: {
+        const m = ui.completer.model();
+        break :blk try m.encode_audio(m.context, ui.alloc, bytes);
+    };
+    return .{ .kind = .audio, .path = resolved, .bytes = bytes.len, .digest = digest, .prepared = prepared };
 }
 
 fn loadImage(ui: *Ui, path: []const u8) !loop.Image {
@@ -1535,47 +1651,74 @@ fn loadImage(ui: *Ui, path: []const u8) !loop.Image {
     return .{ .path = resolved, .bytes = bytes.len, .digest = digest, .prepared = prepared };
 }
 
-/// Keeps the encode-ahead entries in step with the editor's image chips:
-/// a new chip queues its file, a removed one drops its entry, each chip's
-/// note shows its state, and the next queued file starts when none runs.
-/// Called from the idle loop only (never inside a turn).
+/// Keeps the encode-ahead entries in step with the editor's image and
+/// audio chips: a new chip queues its file, a removed one drops its entry,
+/// each chip's note shows its state, and the next queued file starts when
+/// none runs. Called from the idle loop only (never inside a turn).
 fn syncAhead(ui: *Ui) void {
     const ahead = ui.ahead;
-    // Without a loaded projector there is nothing to encode with (the
-    // probe refuses an image chip then); every entry is swept.
-    const vision = ui.eng.vision != null;
+    // Without a loaded encoder there is nothing to encode with (the probe
+    // refuses the chip then); such entries are swept.
+    const loaded = [2]bool{ ui.eng.vision != null, ui.eng.audio != null };
     ahead.beginSweep();
-    if (vision) for (ui.ed.attachmentList()) |att| {
-        if (att.kind != .image) continue;
+    for (ui.ed.attachmentList()) |att| {
+        const kind = mediaKind(att.kind) orelse continue;
+        if (!loaded[@backingInt(kind)]) continue;
         if (ahead.find(att.path)) |entry| {
             entry.kept = true;
             continue;
         }
         const resolved = expandHome(ui.alloc, ui.environ, att.path) catch continue;
         defer ui.alloc.free(resolved);
-        _ = ahead.want(.image, att.path, resolved) catch continue;
-    };
+        _ = ahead.want(kind, att.path, resolved) catch continue;
+    }
     ahead.endSweep();
-    if (!vision) return;
+    if (!loaded[0] and !loaded[1]) return;
     ahead.pump(ui.completer.model());
     for (ui.ed.attachmentList(), 0..) |att, i| {
-        if (att.kind != .image) continue;
+        if (mediaKind(att.kind) == null) continue;
         const entry = ahead.find(att.path) orelse continue;
         var note: [ahead_mod.note_bytes]u8 = undefined;
         ui.ed.setNote(i, ahead_mod.note(entry, &note));
     }
 }
 
-/// The session file's view of a turn's images (at most the editor's bound).
-fn imageEntries(buffer: *[editor.max_images]session_log.ImageEntry, images: []const loop.Image) []const session_log.ImageEntry {
-    const n = @min(images.len, buffer.len);
-    for (images[0..n], buffer[0..n]) |image, *entry| entry.* = .{
-        .path = image.path,
-        .width = image.prepared.width,
-        .height = image.prepared.height,
-        .width_tokens = image.prepared.width_tokens,
-        .height_tokens = image.prepared.height_tokens,
+/// The media kind behind an editor attachment; null for a text file.
+fn mediaKind(kind: editor.Attachment.Kind) ?completer_mod.Media.Kind {
+    return switch (kind) {
+        .image => .image,
+        .audio => .audio,
+        .file => null,
     };
+}
+
+/// The session file's view of a turn's images (at most the editor's bound).
+fn imageEntries(buffer: *[editor.max_images]session_log.ImageEntry, media: []const loop.Image) []const session_log.ImageEntry {
+    var n: usize = 0;
+    for (media) |image| {
+        if (image.kind != .image or n == buffer.len) continue;
+        buffer[n] = .{
+            .path = image.path,
+            .width = image.prepared.width,
+            .height = image.prepared.height,
+            .width_tokens = image.prepared.width_tokens,
+            .height_tokens = image.prepared.height_tokens,
+        };
+        n += 1;
+    }
+    return buffer[0..n];
+}
+
+/// The session file's view of a turn's clips: path, digest (hex, written
+/// into `digests`), length, and rows (at most the editor's bound).
+fn audioEntries(buffer: *[editor.max_clips]session_log.AudioEntry, digests: *[editor.max_clips][64]u8, media: []const loop.Image) []const session_log.AudioEntry {
+    var n: usize = 0;
+    for (media) |item| {
+        if (item.kind != .audio or n == buffer.len) continue;
+        digests[n] = std.fmt.bytesToHex(item.digest, .lower);
+        buffer[n] = .{ .path = item.path, .sha256 = &digests[n], .samples = item.prepared.width, .tokens = item.prepared.width_tokens };
+        n += 1;
+    }
     return buffer[0..n];
 }
 
@@ -1754,7 +1897,7 @@ fn performResume(ui: *Ui, alloc: std.mem.Allocator, io: std.Io, path: []const u8
     ui.agent.resetConversation();
     ui.effort = effort;
     const built = try resume_mod.messages(a, loaded);
-    const images = try resumeImages(ui, loaded);
+    const images = try resumeMedia(ui, loaded);
     try ui.agent.restore(built, images);
     ui.tr.reset();
     const rows = try resume_mod.replay(a, ui.tr, loaded, .{ .width = ui.columnsFor(), .th = ui.th });
@@ -1772,9 +1915,11 @@ fn sessionId(path: []const u8) []const u8 {
 
 /// The attachments of each conversation entry of a stored session, parallel
 /// to `resume.messages`, decoded and encoded again from their paths: the
-/// file holds no pixels. One that cannot be read is a notice and is left out
-/// of the model's view (the text keeps its marker). Owned by the caller.
-fn resumeImages(ui: *Ui, loaded: session_log.Loaded) ![]const []loop.Image {
+/// file holds no pixels or samples. One that cannot be read (gone, or a
+/// model that does not hear) is a notice and is left out of the model's view
+/// (the text keeps its marker); a clip whose file changed since is read as
+/// it is now, with a notice. Owned by the caller.
+fn resumeMedia(ui: *Ui, loaded: session_log.Loaded) ![]const []loop.Image {
     var out: std.ArrayList([]loop.Image) = .empty;
     errdefer out.deinit(ui.alloc);
     var turn: usize = 0;
@@ -1791,6 +1936,17 @@ fn resumeImages(ui: *Ui, loaded: session_log.Loaded) ![]const []loop.Image {
                     };
                     try images.append(ui.alloc, image);
                 }
+                for (u.audio, 1..) |entry, n| {
+                    var note: [256]u8 = undefined;
+                    const item = loadClip(ui, entry.path) catch |err| {
+                        try ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — audio #{d} of turn {d} left out: {s}: {s}", .{ n, turn, entry.path, @errorName(err) }) catch "  — a resumed clip was left out" });
+                        continue;
+                    };
+                    try images.append(ui.alloc, item);
+                    const now = std.fmt.bytesToHex(item.digest, .lower);
+                    if (entry.sha256.len > 0 and !std.mem.eql(u8, entry.sha256, &now))
+                        try ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — audio #{d} of turn {d} changed since it was sent: {s}", .{ n, turn, entry.path }) catch "  — a resumed clip changed since" });
+                }
                 try out.append(ui.alloc, try images.toOwnedSlice(ui.alloc));
             },
             .assistant, .tool_result => try out.append(ui.alloc, &.{}),
@@ -1800,20 +1956,22 @@ fn resumeImages(ui: *Ui, loaded: session_log.Loaded) ![]const []loop.Image {
     return out.toOwnedSlice(ui.alloc);
 }
 
-/// The editor's image attachments' paths, in marker order, copied so the
-/// editor can be cleared before the turn runs.
-fn imagePaths(alloc: std.mem.Allocator, ed: *const editor.Editor) ![]const []const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    errdefer freePaths(alloc, out.items);
+/// The editor's image and audio attachments, in attachment order, their
+/// paths copied so the editor can be cleared before the turn runs.
+fn wantedMedia(alloc: std.mem.Allocator, ed: *const editor.Editor) ![]const Wanted {
+    var out: std.ArrayList(Wanted) = .empty;
+    errdefer freeWanted(alloc, out.items);
     for (ed.attachmentList()) |att| {
-        if (att.kind != .image) continue;
-        try out.append(alloc, try alloc.dupe(u8, att.path));
+        const kind = mediaKind(att.kind) orelse continue;
+        const path = try alloc.dupe(u8, att.path);
+        errdefer alloc.free(path);
+        try out.append(alloc, .{ .kind = kind, .path = path });
     }
     return out.toOwnedSlice(alloc);
 }
 
-fn freePaths(alloc: std.mem.Allocator, list: []const []const u8) void {
-    for (list) |p| alloc.free(p);
+fn freeWanted(alloc: std.mem.Allocator, list: []const Wanted) void {
+    for (list) |w| alloc.free(w.path);
     alloc.free(list);
 }
 
@@ -1900,8 +2058,8 @@ fn modelLabel(settings: config.Resolved, eng: *const engine.Engine) []const u8 {
 
 /// Replaces the running model with `path` opened with `settings`, carrying
 /// the conversation: the engine is unloaded first (two models need not fit
-/// at once), the new one bound and primed, the conversation's images
-/// encoded again by its projector. Same file means a context change. On
+/// at once), the new one bound and primed, the conversation's images and
+/// clips encoded again by its encoders. Same file means a context change. On
 /// failure the previous model is opened again and the error returned; when
 /// that fails too, `open` is left unloaded (`alive` false) and the caller
 /// must end the session.
@@ -1936,10 +2094,17 @@ fn switchModel(ui: *Ui, open: *Open, sampler: *inference.sampling.Sampler, path:
         ui.record(.{ .context = .{ .ctx_size = settings.ctx_size } });
     } else {
         ui.record(.{ .model = .{ .name = ui.model_label, .path = open.model_path, .sha256 = open.digest, .ctx_size = settings.ctx_size, .effort = @tagName(ui.effort) } });
-        const dropped = try ui.agent.reencodeImages();
-        if (dropped > 0) {
-            var note: [128]u8 = undefined;
-            try ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — {d} image{s} of the conversation left out: {s} cannot read {s}", .{ dropped, if (dropped == 1) "" else "s", ui.model_label, if (dropped == 1) "it" else "them" }) catch "  — images left out" });
+        // The new model's encoders load before the conversation's media are
+        // encoded again; one it lacks says why.
+        if (ui.agent.holds(.image)) _ = ui.visionAvailable();
+        if (ui.agent.holds(.audio)) _ = ui.audioAvailable();
+        const dropped = try ui.agent.reencodeMedia();
+        var note: [128]u8 = undefined;
+        if (dropped.images > 0) {
+            try ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — {d} image{s} of the conversation left out: {s} cannot read {s}", .{ dropped.images, if (dropped.images == 1) "" else "s", ui.model_label, if (dropped.images == 1) "it" else "them" }) catch "  — images left out" });
+        }
+        if (dropped.clips > 0) {
+            try ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — {d} clip{s} of the conversation left out: {s} cannot hear {s}", .{ dropped.clips, if (dropped.clips == 1) "" else "s", ui.model_label, if (dropped.clips == 1) "it" else "them" }) catch "  — clips left out" });
         }
     }
     primeSession(ui);
@@ -2125,7 +2290,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             try ui.draw();
             try ui.poll(100);
             // Everything below uses the engine, except a plain submit, whose
-            // turn settles the encode with its own label (`loadImages`).
+            // turn settles the encode with its own label (`loadMedia`).
             if (ui.ctx_request != null or ui.model_request != null or ui.new_session or ui.resume_request != null or ui.quit) ahead.settle();
             if (ui.ctx_request) |newcap| {
                 ui.ctx_request = null;
@@ -2199,15 +2364,15 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 ui.status = "invalid UTF-8 input";
                 continue;
             }
-            // A typed image path (a drop on a terminal that does not bracket
-            // pastes) is attached now, so the recorded prompt shows the chip;
-            // a command's argument is the command's to read.
-            if (commands.parse(ed.text()) == null) _ = ed.attachTypedImages() catch 0;
+            // A typed image or clip path (a drop on a terminal that does not
+            // bracket pastes) is attached now, so the recorded prompt shows
+            // the chip; a command's argument is the command's to read.
+            if (commands.parse(ed.text()) == null) _ = ed.attachTypedMedia() catch 0;
             // The prompt outlives the editor's buffer: recall rewrites it.
             const user = try alloc.dupe(u8, ed.text());
             defer alloc.free(user);
-            const image_paths = try imagePaths(alloc, &ed);
-            defer freePaths(alloc, image_paths);
+            const wanted = try wantedMedia(alloc, &ed);
+            defer freeWanted(alloc, wanted);
             ed.clear();
             try ed.remember(user);
             // A slash command is an instruction to the agent, not a turn: it
@@ -2221,7 +2386,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 // A history write is a convenience, never a reason to lose a turn.
                 prompt_history.append(io, std.Io.Dir.cwd(), history_path.?, user, now) catch {};
             }
-            const outcome = if (parsed) |command| runCommand(&ui, &sampler, command) else runTurn(&ui, &sampler, user, image_paths);
+            const outcome = if (parsed) |command| runCommand(&ui, &sampler, command) else runTurn(&ui, &sampler, user, wanted);
             outcome catch |err| {
                 ui.agent.abortTurn();
                 ui.eng.model.reset();
@@ -2264,4 +2429,5 @@ test {
     _ = loop;
     _ = loop.cache;
     _ = ahead_mod;
+    _ = clip_mod;
 }

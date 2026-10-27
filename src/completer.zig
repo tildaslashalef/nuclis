@@ -33,8 +33,8 @@ pub const Sink = struct {
 
 /// One image or audio clip attached to a user message: where it came from,
 /// its digest, and the encoder's rows the completer substitutes at prefill.
-/// A clip's `prepared` grid is its rows by 1. Owned by the history item that
-/// carries it.
+/// A clip's `prepared` grid is its rows by 1 and its `width` the clip's
+/// samples at 16 kHz. Owned by the history item that carries it.
 pub const Media = struct {
     kind: Kind = .image,
     path: []u8,
@@ -203,7 +203,7 @@ pub const Model = struct {
     encode_image: *const fn (*anyopaque, Allocator, bytes: []const u8) anyerror!inference.engine.PreparedImage = noVision,
     /// Runs the audio encoder over a clip's encoded bytes; `NoAudio` without
     /// one. The rows are allocated with the given allocator, the grid being
-    /// rows by 1.
+    /// rows by 1 and `width` the clip's samples at 16 kHz.
     encode_audio: *const fn (*anyopaque, Allocator, bytes: []const u8) anyerror!inference.engine.PreparedImage = noAudio,
     /// Called when a turn ends in an answer: a boundary the next turn's
     /// render starts with, worth keeping. Returns where the state was saved
@@ -395,7 +395,7 @@ pub const Completer = struct {
         const self: *Completer = @ptrCast(@alignCast(context));
         const heard = try self.eng.encodeAudio(bytes);
         defer self.eng.alloc.free(heard.features);
-        return .{ .width_tokens = heard.tokens, .height_tokens = 1, .features = try alloc.dupe(f32, heard.features) };
+        return .{ .width_tokens = heard.tokens, .height_tokens = 1, .features = try alloc.dupe(f32, heard.features), .width = std.math.cast(u32, heard.samples) orelse std.math.maxInt(u32) };
     }
 
     /// The session holds media rows: the drafter's cache is stale over
