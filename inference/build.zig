@@ -92,7 +92,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(qwen3_tts_check);
     const run_qwen3_tts = b.addRunArtifact(qwen3_tts_check);
     run_qwen3_tts.addPassthruArgs();
-    b.step("test-qwen3-tts", "Check Qwen3-TTS against the authors' trace (-- MODEL_DIR codec)").dependOn(&run_qwen3_tts.step);
+    b.step("test-qwen3-tts", "Check Qwen3-TTS against the authors' trace (-- MODEL_DIR codec|talker)").dependOn(&run_qwen3_tts.step);
     const nemotron_asr_check = b.addExecutable(.{
         .name = "nemotron-asr-check",
         .root_module = b.createModule(.{

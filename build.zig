@@ -95,7 +95,7 @@ pub fn build(b: *std.Build) void {
     b.step("test-embeddinggemma", "Check EmbeddingGemma 2 against the oracles, or time it (-- MODEL traces|vectors|google|bench [--backend cpu|metal])").dependOn(&embeddinggemma_check.step);
     const qwen3_tts_check = b.addRunArtifact(inference.artifact("qwen3-tts-check"));
     qwen3_tts_check.addPassthruArgs();
-    b.step("test-qwen3-tts", "Check Qwen3-TTS against the authors' trace (-- MODEL_DIR codec)").dependOn(&qwen3_tts_check.step);
+    b.step("test-qwen3-tts", "Check Qwen3-TTS against the authors' trace (-- MODEL_DIR codec|talker)").dependOn(&qwen3_tts_check.step);
     const nemotron_asr_check = b.addRunArtifact(inference.artifact("nemotron-asr-check"));
     nemotron_asr_check.addPassthruArgs();
     b.step("test-nemotron-asr", "Check Nemotron ASR's front end and encoder against the pinned trace (-- MODEL_DIR [FIXTURES])").dependOn(&nemotron_asr_check.step);

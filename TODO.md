@@ -36,27 +36,34 @@ unless a task edits a shared kernel or backend file, in which case
 CPU tier runs as the new families' gates only (`make gate NAME='…-cpu'`),
 not `make verify-cpu`.
 
-Delivered: task 1 (facts and pins), task 2 (the Qwen3-TTS codec decoder on
-the CPU, gate `qwen3-tts-codec-cpu`: every stage within 3.8e-6 relative RMS
-of the authors' trace, a stream in any pieces equal to one decode bit for
-bit), and task 5 (`mel.Spec` with Nemotron's front end beside Gemma's,
-Gemma's output unchanged; Nemotron's cache-aware encoder on the CPU, gate
-`nemotron-asr-encoder-cpu`: every stage within 3.1e-6 relative RMS of the
-trace, streamed rows equal to the whole clip bit for bit; the 60-clip
-speech corpus, `make speech-corpus`). Tasks 2 and 5 ran in parallel
-worktrees and were rebased onto this branch.
+Delivered, all on the CPU and against the authors' traces: task 1 (facts
+and pins); task 2 (the codec decoder); task 5 (the mel `Spec`, the
+streaming encoder, the 60-clip corpus); task 3 (the talker and code
+predictor of both sizes, the Qwen2 tokenizer with its case-seam split,
+`nuclis speak`: every stage within 3.0e-6 relative RMS, every logit row's
+top choice equal); task 6 (the transducer, the piece table, float WAV,
+`nuclis transcribe`, `scripts/wer.py`: token ids equal to the trace's;
+word error rate 6.1 % over the corpus, 3.9 % on its English clips, at
+lookahead 3). Tasks 13 and 14 split the Metal backend's kernels and
+encoders by operation, so tasks 4 and 7 can add theirs side by side.
+The round trip works: `nuclis speak` on the 1.7B, then `nuclis
+transcribe`, gave back the sentence word for word (2026-10-27). On the
+CPU, speech runs at 0.62× real time (1.7B) and 0.75× (0.6B);
+recognition at 0.12×.
 
-Not run, deliberately: `make verify-auto`, which selects 42 Metal gates
-because both tasks registered a check tool in `build.zig` and
-`inference/build.zig` (no numerical change); run instead were the new
-gates and the `embeddinggemma-audio-*` gates the `mel.zig` change selects.
+Not run, deliberately: `make verify-auto` (it selects the whole Metal tier
+through the build files); run instead were every new gate, the gates the
+shared files select (`embeddinggemma-audio-*`, `laya*-vocabulary`), and
+once, for task 14, `make verify` (50 of 53, 0 failed, Bonsai skipped).
+The WER gates read `.reference/speech/`, which only the main checkout
+has: run them there, not in a worktree.
 
-Next: **tasks 3 and 6 in parallel** (worktrees A and B), task 8 when a
-worktree is free.
+Next: **tasks 4 and 7 in parallel** (worktrees A and B; the voice's and
+the ears' Metal plans), task 8 when a worktree is free.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: tasks 3 and 6 |
+| Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API | `speech-in-and-out` | next: tasks 4 and 7 |
 
 ## Speech in and out: Nemotron ASR, Qwen3-TTS, the voice API
 
@@ -146,10 +153,10 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | --- | --- | --- | --- | --- |
 | 1 | Facts and pins | — | — | done |
 | 2 | TTS codec decoder, CPU | A | 1 | done |
-| 3 | TTS talker and code predictor, CPU; `nuclis speak` | A | 2 | worktree A |
+| 3 | TTS talker and code predictor, CPU; `nuclis speak` | A | 2 | done |
 | 4 | TTS on Metal, streaming, real-time factor | A | 3 | worktree A |
 | 5 | ASR front end and streaming encoder, CPU | B | 1 | done |
-| 6 | ASR transducer and tokenizer, CPU; `nuclis transcribe` | B | 5 | worktree B |
+| 6 | ASR transducer and tokenizer, CPU; `nuclis transcribe` | B | 5 | done |
 | 7 | ASR on Metal, chunk latency | B | 6 | worktree B |
 | 8 | Gemma 4 E4B audio input in chat | D | — | worktree D, any time |
 | 9 | Serve: speech and transcription kinds, pinning, `POST /v1/audio/speech` | C | 4 | main |
@@ -286,6 +293,17 @@ case.
 
 #### 4. TTS on Metal, streaming (worktree A)
 
+From task 3: replay the trace's codes (`talker` mode, the `Replay` pick)
+and compare logits against the CPU reference; torch's generator is not
+reproduced. Keep the weights BF16 in place on Metal (the CPU widens to F32
+only as a reference; 6.4 GB for the 1.7B). The predictor's 15 sequential
+steps through 5 layers per frame are about 40–55 ms of the CPU's frame:
+launch overhead decides the Metal frame time. `Synthesizer.read` pushes up
+to 32 frames per codec call; streaming needs small pushes (the codec is
+exact for any piece size). New kernels go in their own
+`backends/metal/kernels/*.metal` file appended to `kernel_files`, their
+encoders in `backends/metal/ops/` with one alias line each in `root.zig`.
+
 - `inference/src/models/qwen3_tts_metal.zig`: the talker from the
   existing pieces (`rmsNormRope` with `.split_half`, the decode
   attention, generic matvec over BF16, `siluMul`), the predictor's 15
@@ -376,6 +394,15 @@ and `streamed()`.
   first run).
 
 #### 7. ASR on Metal (worktree B)
+
+From task 6: `--backend metal` returns `BackendNotYetSupported` today.
+The joint is a 13,088 × 640 matvec per symbol step and the LSTM four
+matvecs of 2,560 per emitted token, neither profiled. The trace's
+smallest margin is 0.0107 (German, r = 3): Metal must stay within about
+1e-3 on the logits to keep the token ids exact. r = 0 streaming costs
+0.26× real time on the CPU (one-row chunks batch poorly). `scripts/wer.py`
+takes a backend once `transcribe` passes `--backend` through. Kernels and
+encoders go in their own files, as task 4's note says.
 
 - `inference/src/audio/nemotron_metal.zig`: the encoder's chunk step and
   the joint; the LSTM steps on the CPU unless measured slow. New kernels
