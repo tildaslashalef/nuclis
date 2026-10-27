@@ -431,7 +431,7 @@ fn clips(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder:
     var failures: usize = 0;
     var vector: [embed.dimensions]f32 = undefined;
     const bank = try arena.create(audio.mel.Bank);
-    bank.init();
+    bank.init(.gemma);
 
     for (cases) |case| {
         const bytes = for (case.parts) |p| switch (p) {
@@ -440,7 +440,7 @@ fn clips(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder:
         } else unreachable;
         var pcm = try audio.audio.decode(gpa, bytes, std.math.maxInt(u32));
         defer pcm.deinit(gpa);
-        const frames = audio.mel.frameCount(pcm.samples.len);
+        const frames = audio.mel.Spec.gemma.frameCount(pcm.samples.len);
         const features = try arena.alloc(f32, frames * audio.mel.filters);
         try bank.features(pcm.samples, features);
         const want = try readF32(arena, io, try std.fmt.allocPrint(arena, "{s}/embeddinggemma-audio-features/{s}.f32", .{ fixtures, case.id }));
