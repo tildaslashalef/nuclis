@@ -10,6 +10,10 @@ pub const gemma4a = @import("gemma4a.zig");
 pub const qwen3_codec = @import("qwen3_codec.zig");
 /// Nemotron 3.5 ASR's cache-aware encoder: speech in, mel rows to encoder rows.
 pub const nemotron_encoder = @import("nemotron_encoder.zig");
+/// Nemotron 3.5 ASR's RNN-T transducer: encoder rows to tokens.
+pub const nemotron_rnnt = @import("nemotron_rnnt.zig");
+/// Nemotron 3.5 ASR opened from its directory: samples to text.
+pub const nemotron_asr = @import("nemotron_asr.zig");
 
 test {
     _ = audio;
@@ -17,4 +21,6 @@ test {
     _ = gemma4a;
     _ = qwen3_codec;
     _ = nemotron_encoder;
+    _ = nemotron_rnnt;
+    _ = nemotron_asr;
 }
