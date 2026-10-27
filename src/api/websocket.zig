@@ -19,6 +19,7 @@ pub const Code = struct {
     pub const policy: u16 = 1008;
     pub const too_big: u16 = 1009;
     pub const internal: u16 = 1011;
+    pub const try_again: u16 = 1013;
 };
 
 /// What the request's headers say about an upgrade, read by the transport

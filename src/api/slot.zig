@@ -26,8 +26,8 @@ pub fn Slot(comptime Model: type, comptime kind: memory.Kind) type {
         /// Guards `current`'s identity for readers on other tasks.
         mutex: std.Io.Mutex = .init,
         current: ?Current = null,
-        /// A request holds the model across items: the budget may not close it.
-        held: bool = false,
+        /// Requests holding the model across items: the budget may not close it.
+        held: u32 = 0,
 
         const Current = struct {
             /// Owned: the checkpoint directory and the name it was opened by.
@@ -59,7 +59,7 @@ pub fn Slot(comptime Model: type, comptime kind: memory.Kind) type {
                 if (self.budget) |b| b.touch(io, directory);
                 return .{ .model = c.model, .load_ns = 0 };
             };
-            std.debug.assert(!self.held);
+            std.debug.assert(self.held == 0);
             const started = std.Io.Clock.awake.now(io);
             if (self.budget) |b| {
                 // Asked before anything closes, as the other pools do.
@@ -81,12 +81,13 @@ pub fn Slot(comptime Model: type, comptime kind: memory.Kind) type {
             return .{ .model = model, .load_ns = @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) };
         }
 
-        /// GPU worker only: the open model is in use across items (true) or
-        /// no longer (false); the budget never closes it in between.
+        /// GPU worker only: one more request uses the open model across
+        /// items (true), or one fewer (false); the budget never closes it
+        /// while any does. Each `true` is paired with a `false`.
         pub fn hold(self: *Self, io: std.Io, held: bool) void {
             const c = self.current orelse return;
-            self.held = held;
-            if (self.budget) |b| b.pin(io, c.directory, held);
+            if (held) self.held += 1 else self.held -= 1;
+            if (self.held == @intFromBool(held)) if (self.budget) |b| b.pin(io, c.directory, held);
         }
 
         /// GPU worker only: closes the open model, if any, and leaves the budget.
@@ -96,7 +97,7 @@ pub fn Slot(comptime Model: type, comptime kind: memory.Kind) type {
             self.current = null;
             self.mutex.unlock(io);
             const c = current orelse return;
-            std.debug.assert(!self.held);
+            std.debug.assert(self.held == 0);
             if (self.budget) |b| b.remove(io, c.directory);
             self.close_fn(c.model, io);
             self.gpa.free(c.directory);
@@ -171,6 +172,9 @@ test "one model at a time, counted in the budget, held models never closed" {
     try std.testing.expectEqualStrings("bb", (try slot.openName(io, arena_state.allocator())).?);
     // Held, another model's room cannot come from it.
     slot.hold(io, true);
+    slot.hold(io, true);
+    try std.testing.expectError(error.Pinned, budget.reserve(io, 40, null));
+    slot.hold(io, false);
     try std.testing.expectError(error.Pinned, budget.reserve(io, 40, null));
     slot.hold(io, false);
     try budget.reserve(io, 40, null);
