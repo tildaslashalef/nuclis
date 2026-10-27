@@ -14,12 +14,12 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-No unit is in progress. The speech unit (`speech-in-and-out`: Qwen3-TTS,
-Nemotron ASR, the voice API, and the agent and vision fixes found with
-them) is in its pull request, whose description is its record. Next, on
-the user's word: a release carrying it (AGENTS.md § Versioning), which
-Muon's public release will bundle; Muon itself is planned and built in
-`~/Code/muon`.
+Nothing is in progress. The speech unit merged as
+[nuclis#33](https://github.com/tildaslashalef/nuclis/pull/33) and shipped
+in v0.10.0 (2026-10-27), which Muon's public release will bundle; Muon
+itself is planned and built in `~/Code/muon`. The next theme is the
+user's to choose; the *Deferred* list below holds what is agreed but not
+scheduled.
 
 ## Deferred
 
