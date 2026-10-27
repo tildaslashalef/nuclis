@@ -134,7 +134,7 @@ const Report = struct {
     model: []const u8,
     audio_seconds: f64,
     tokens: []const TokenReport,
-    /// With `--segments`.
+    /// With `--segments`, else null.
     segments: ?Segments = null,
     timings: Timings,
 };
@@ -283,7 +283,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
         },
     };
     if (o.format == .json) {
-        try std.json.Stringify.value(report, .{ .whitespace = .indent_2, .emit_null_optional_fields = false }, out);
+        try std.json.Stringify.value(report, .{ .whitespace = .indent_2 }, out);
         return out.writeByte('\n');
     }
     const off = sty.off();
