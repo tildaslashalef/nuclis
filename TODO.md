@@ -428,9 +428,12 @@ for EmbeddingGemma 2. Bind them for E4B, accept `input_audio` parts on
 user messages in `/v1/chat/completions` (OpenAI's shape: base64 `data`,
 `format` `wav` or `mp3`), at most 30 s each, `<|audio>` rows `<audio|>` as
 the template renders them. Muon sends the clip of each finished turn
-beside its transcript, so Gemma hears the tone. Gates: an E4B audio trace
-against EmbeddingGemma 2's encoder rows on the same clip (the encoder is
-shared, so its rows must match), `gemma4-e4b-*` gates verify-auto selects.
+beside its transcript, so Gemma hears the tone. Gates: the E4B audio rows on the CPU against Metal (`gemma4-e4b-audio-metal`);
+the encoder's code is EmbeddingGemma 2's but its weights are E4B's own, so
+rows are not compared across the two models. Behaviourally, E4B transcribes
+corpus clips (`gemma4-e4b-audio-asr`, WER with `scripts/wer.py`'s
+normalization), and an observation, not a gate: whether it names the tone
+of clips the 1.7B voice spoke in four moods, against transcript-only.
 
 #### 9. Serve: kinds, pinning, `POST /v1/audio/speech`
 
