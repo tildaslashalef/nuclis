@@ -15,6 +15,7 @@ that built it are in the [worklog](https://github.com/tildaslashalef/nuclis/blob
 - [Decode after an image (2026-09-23)](#decode-after-an-image-2026-09-23)
 - [Gemma 4's projectors (2026-09-23)](#gemma-4s-projectors-2026-09-23)
 - [Muse Glimmer's projector (2026-09-23)](#muse-glimmers-projector-2026-09-23)
+- [Encoders at the materialized-score attention (2026-10-27)](#encoders-at-the-materialized-score-attention-2026-10-27)
 
 ## The contract
 
@@ -49,6 +50,9 @@ The package (`inference/src/vision/root.zig`):
 - `gemma4.zig` / `gemma4_metal.zig` — Gemma 4's two adapters (below).
 - `muse_glimmer.zig` / `muse_glimmer_metal.zig` — Muse Glimmer's adapter
   (below).
+- `attention_metal.zig` — `Spans`, the encoders' bidirectional attention on
+  Metal: per-row window bounds and query tiles over the materialized-score
+  kernels (below).
 - `projector.zig` — `Projector`, one loaded projector whatever its family:
   the file's projector type (`clip.projector_type` for Qwen and Muse,
   `clip.vision.projector_type` for Gemma) picks the adapter and the
@@ -346,8 +350,10 @@ EmbeddingGemma 2, whose oracle is Google's, sets tanh
 After the blocks: a 3×3 average pool over the patch grid, × √1152,
 `(x − std_bias) ⊙ std_scale`, RMS norm without a weight,
 `mm.input_projection` (BF16 1152×2816). The Metal plan runs the attention
-through the chunk attention kernel with the whole patch set as one
-bidirectional span, pools on the host between two command buffers, and
+over the whole patch set through the materialized-score kernels
+([§ Encoders at the materialized-score attention](#encoders-at-the-materialized-score-attention-2026-10-27);
+the chunk attention kernel with a bidirectional span until 2026-10-27),
+pools on the host between two command buffers, and
 pads the FFN down matrices to 4,352 columns; activations are sized for
 10,080 patches.
 
@@ -528,11 +534,12 @@ weight row once for all patch rows, F64 accumulation. The Metal plan
 (the patch kernel zero-padded from 588 to 640 columns), LayerNorm, bias,
 `ropeRows(.adjacent)`, a new `nu_gelu_erf_inplace` (Abramowitz & Stegun
 7.1.26, |error| ≤ 1.5e-7; the CPU's `erf` is a series and continued
-fraction to ~1e-14), and the chunk attention kernel with a bidirectional
-span: once per window on its row slice, in window order (a dispatch
-stores up to seven padding rows into the next window's output, which that
-window then overwrites), and once over all rows in a global block. The
-shuffle runs on the host between two command buffers. Activations are
+fraction to ~1e-14), and the materialized-score attention with per-row
+bounds: each row over its window's rows in a windowed block, over all rows
+in a global block (until 2026-10-27, the chunk attention kernel once per
+window and once over all rows;
+[§ Encoders at the materialized-score attention](#encoders-at-the-materialized-score-attention-2026-10-27)).
+The shuffle runs on the host between two command buffers. Activations are
 sized for 16,384 patches: ~1.35 GB (input, six 101 MB row buffers, the
 587 MB FFN buffer reused for the adapter, the output).
 
@@ -621,9 +628,93 @@ snow-dusted mountains, and "a rocky outcrop with a solitary pine tree" on
 the right, and answered "What stands on the right shore?" from the image
 with 14 new prompt tokens (Muse keeps its session; nothing is replayed).
 
-**Limits.** The global blocks' attention is the encoder's limiter; a
-full-size image costs about 100 s before the first token (a lower
-`image_max_tokens` is the lever). Speculation stays off for the rest of a
+**Limits.** The global blocks' attention was the encoder's limiter; since
+2026-10-27 the K-quant matmuls are (§ below). A full-size image cost about
+100 s before the first token (a lower `image_max_tokens` is the lever). Speculation stays off for the rest of a
 conversation once an image is in it (the drafter never saw the image
 rows), so Muse's default-on drafter is idle there. Rows track the
 reference only up to the sink blocks, and only on the same pixels.
+
+## Encoders at the materialized-score attention (2026-10-27)
+
+**Where the time went** (M4 Pro, 48 GB, macOS 27, Zig 0.17.0, ReleaseSafe,
+base `61a6011`; the logo `docs/branding/nuclis.png`, 1254×1254;
+`generation-check <model> --metal --vision-check <mmproj> --vision-image
+<file> --vision-profile`, which without `--vision-oracle` only encodes and
+prints the per-kernel GPU times):
+
+| projector | rows | encode | the largest share |
+| --- | ---: | ---: | --- |
+| Qwen3-VL (27 blocks, 16 heads of 72) | 4,096 patches | 18.7 s | `attention_full`, the scalar kernel: 17.6 s (94 %); the matmuls 1.0 s |
+| Gemma 4 E4B SigLIP (16 blocks, 12 heads of 64) | 6,084 patches (676 tokens, 3×3 pool) | 2.53 s | the chunk attention: 1.86 s (74 %, ~1.0 TFLOP/s); the matmuls 0.53 s |
+| Gemma 4 12B unified embedder (no blocks) | 676 tokens | 0.031 s | two matmuls |
+
+The E4B costs ~20× the 12B because the 12B has no encoder blocks at all
+(one patch per token, two projections; the language model does the vision
+work), while the E4B runs 16 attention blocks over nine times as many
+rows. The 12B's 75–140 ms in `generate` is the PNG decode and resize around
+those 31 ms, not a cache.
+
+**The change.** The vision encoders' attention moved to the segments
+kernels (`Backend.attentionSegmentsGrouped`, EmbeddingGemma 2's, which
+materialize the scores in F32;
+[metal-backend.md § Segments attention with materialized scores](metal-backend.md#segments-attention-with-materialized-scores-2026-10-09)),
+through `attention_metal.Spans`: one window of all rows (Qwen3-VL, both
+Gemma SigLIP encoders, Muse Glimmer's global blocks) or per-row windows
+(Muse's windowed blocks), with query tiles across the window boundaries
+and the padding rows past the patches zero. The kernels now take any head
+width that is a multiple of 8 (72, 96), and their softmax pass became a
+row-statistics pass whose probabilities the values kernel forms while
+staging (on the E4B the in-place softmax was a third of the attention:
+the strips are the traffic at 64-wide heads). Each plan holds a 128 MB
+score buffer; an image's attention runs in as many chunks as its strips
+need (15 per block on the E4B's 6,084 rows). `make test-metal` checks the
+encoders' shapes against F64 attention (64-wide over 6,084 rows, 72- and
+96-wide over one window and over uneven windows): worst |difference|
+1.0e-5 and below, padding rows zero. The four `*-vision-metal` gates pass
+with the rows they measured before (Qwen 0.39 max abs / 3.9e-3 relative
+RMS, 26B-A4B 6.2e-2 / 6.6e-3, E4B 3.6e-2 / 7.5e-3, Muse's residual after
+block 30 1.8e-3), and EmbeddingGemma 2's four Metal gates, the kernels'
+other user, pass unchanged.
+
+**`image_milliseconds`** (`nuclis generate --model <name> --image
+docs/branding/nuclis.png --prompt "Describe this image in one sentence."
+--max-tokens 8 --json`, two runs each, nothing else on the GPU):
+
+| model | image tokens | before (`61a6011`) | after |
+| --- | ---: | ---: | ---: |
+| `gemma-4-e4b-qat` | 676 | 2,576–2,659 ms | 1,632–1,651 ms |
+| `gemma-4-12b-qat` | 676 | 75–141 ms | 73–138 ms (unchanged: no attention) |
+| `qwen3.8-27b` | 1,024 | 18,657–19,077 ms | 2,389–2,748 ms |
+
+The two other encoders, timed by `generation-check` on the same image
+(their entries name no `mmproj` for `generate`), two runs each:
+Gemma 4 26B-A4B's SigLIP (6,084 patches) 7.11–7.54 s → 4.94–4.99 s; Muse
+Glimmer (8,100 patches, 45×45 tokens) 15.4–16.1 s → 10.2 s.
+
+**What is left** (profiles after): the E4B's 1.64 s is the scores kernel
+0.54 s (~1.7 TFLOP/s: a 32×32 tile whose inner dimension is one 64-wide
+head), the values kernel 0.32 s, the statistics 0.12 s, the matmuls
+0.53 s. Qwen3-VL's 2.43 s: scores 0.66 s, values 0.51 s, statistics
+0.13 s, the matmuls 0.91 s. The 26B-A4B's
+4.95 s: the attention 2.95 s (its 72-wide heads waste a quarter of the
+values kernel's last column block), the matmuls 1.84 s. Muse's 10.0 s:
+the K-quant matmuls 6.0 s, the attention 3.2 s, and 0.86 s of separate
+bias additions after them. A 64-key scores tile was tried and was slower
+(metal-backend.md, same section). The chunk attention kernel (text
+prefill) is unchanged.
+
+**Hidden in the agent.** An image dropped into `nuclis agent` is encoded
+while the prompt is typed (docs/app/terminal.md, the attachment
+paragraphs). Enter to the first answer token, Gemma 4 E4B, `--think off`,
+the logo and "What is this logo? One sentence." (`make shot`, the
+harness's `until=generating` after `enter`, ±0.05 s, three runs each, the
+projector already loaded):
+
+| build | Enter → first token |
+| --- | ---: |
+| base `61a6011` (encoded at Enter, the old kernels) | 4.84–4.85 s |
+| this tree, Enter at once after the paste (the encode on the critical path) | 3.89–3.97 s |
+| this tree, Enter after the chip shows `676 tokens` | 2.26–2.30 s |
+
+What remains after Enter is the prefill of the ~700-token turn.

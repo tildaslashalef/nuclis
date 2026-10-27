@@ -179,7 +179,7 @@ Thread counts are the numbers `Backend` passes to `dispatch`.
 | `nu_matmul` (generic) | 128 | 32-row × 32-token output tile | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 8 KB F32 weight tile + 8 KB F32 activation tile, `threadgroup_barrier` |
 | `nu_attention_chunk` / `_h` | 128 | (query head, 32-query tile, 256 value columns) | 8 query rows: 4 score blocks, 32 output blocks | `simd_shuffle_xor`, `simd_shuffle`, `simd_any`, matrix MACs | 6 KB (per-group score tile, diagonal, staging); 7.5 KB in the half instantiation (its own probability tile), `simdgroup_barrier` only |
 | `nu_segments_scores` | 128 | (query tile of ≤ 32 rows, head, 32-key block) | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 8 KB Q tile + 8 KB transposed K tile (F32), `threadgroup_barrier` |
-| `nu_segments_softmax` | 256 | (query tile, head) | one strip row at a time | `simd_max`, `simd_sum` | none |
+| `nu_segments_stats` | 256 | (query tile, head) | one strip row at a time, an online (max, sum) per lane | `simd_max`, `simd_sum` | none |
 | `nu_segments_values` | 128 | (query tile, head, 32 value columns) | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 4 KB P tile + 4 KB V tile (F32), `threadgroup_barrier` |
 | `nu_delta_chunk` | 128 | (value head, 32 value rows), all sub-chunks | an 8-row block of every 32×32 tile; column `tid` in the triangular solve | matrix MACs; no shuffles | 24 KB of 32×32 tiles, `threadgroup_barrier` per phase, `mem_device` per sub-chunk |
 | `nu_attention_decode` / `_h` ([KERN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-08--flash-decoding-attention-2026-09-10)), `_w` / `_wh` ([MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11)), `_q8` / `_wq8` ([Q8_0 KV cache](#q8_0-kv-cache-2026-10-15)) | 128 | (KV head, group of ≤ 8 query heads — ≤ 4 in the wide pair —, split of the visible rows) | every fourth row of the slice; lane l owns channels l, l+32, … (8 per lane, 16 in the wide pair) with per-head running max, sum, and accumulator in registers | `simd_sum` per (row, head); 3-round merge of the SIMD groups through 8 KB | 8 KB stage, `threadgroup_barrier` |
@@ -1926,11 +1926,28 @@ the output.
 1. `nu_segments_scores`: S = scale · Q·Kᵀ per (tile, head, 32-key block).
    A 32×32 matmul tile with both operands staged in threadgroup memory, as
    the generic `nu_matmul` stages them. Invisible keys are written −∞.
-2. `nu_segments_softmax`: the exact two-pass softmax of each strip row.
+2. `nu_segments_stats`: each strip row's max and 1 / sum, read once
+   (an online pair per lane, merged across the SIMD group), stored after
+   the strips (`scoreFloats`: at most a sixteenth more).
 3. `nu_segments_values`: O = P·V per (tile, head, 32 value columns), the
-   same tile over the span in 32-key steps.
+   same tile over the span in 32-key steps; P = exp(S − max) / sum is
+   formed while the strip is staged.
 
-Key rows past `rows` stage as zeros, so padding never reaches a sum.
+Key rows past `rows` stage as zeros, so padding never reaches a sum; a
+row that sees no key (padding past `rows`) comes out zero. Head widths
+are any multiple of 8 up to 512: the last 64-wide step of the scores and
+the last 32-column block of the values stage the missing columns as zeros
+and store only their own 8-column blocks.
+
+Until 2026-10-27 the middle pass was an in-place two-pass softmax (three
+reads and two writes of every strip); on the vision encoders' 64-wide
+heads the strips are the traffic, and the statistics pass cut the E4B's
+attention from 1.52 s to 0.98 s
+([vision.md § Encoders at the materialized-score attention](vision.md#encoders-at-the-materialized-score-attention-2026-10-27)).
+A 64-key score tile (32 × 64 per threadgroup, K staged row-major and
+loaded transposed, 25 KB of threadgroup memory) was slower on that shape
+(0.54 s → 0.69 s, 0.685 s with rows padded against bank conflicts) and
+was not kept.
 
 **Why not an online softmax.** Two flash-style bodies were built first
 and passed the same checks:

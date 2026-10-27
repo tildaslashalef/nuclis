@@ -13,7 +13,9 @@ oracle, never copied. Where a fact comes from the reference source rather
 than the file, the sentence says so. Nothing below is from memory of the
 model card. Images (the two projectors and the language model's
 bidirectional image spans on its sliding layers) are in
-[vision.md § Gemma 4's projectors](../engine/vision.md#gemma-4s-projectors-2026-09-23).
+[vision.md § Gemma 4's projectors](../engine/vision.md#gemma-4s-projectors-2026-09-23);
+their encode times (the E4B's 676-token logo in 1.6 s, the 12B's in
+0.03 s) in [§ Encoders at the materialized-score attention](../engine/vision.md#encoders-at-the-materialized-score-attention-2026-10-27).
 
 **Contents.**
 
