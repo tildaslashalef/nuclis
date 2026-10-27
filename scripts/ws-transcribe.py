@@ -7,8 +7,9 @@
     python3 scripts/ws-transcribe.py --measure --clips ID --beside-chat gemma-4-e4b-qat
 
 A clip is streamed to `GET /v1/audio/transcriptions/stream` as 16 kHz mono
-s16le in binary messages of `--piece-ms` (20 ms), at real time or `--speed`
-times it (0: as fast as the socket takes it), then `{"type": "finish"}`; each
+s16le in binary messages of `--piece-ms` (20 ms), each sent once its audio
+has ended at real time or `--speed` times it (0: as fast as the socket
+takes it), then `{"type": "finish"}`; each
 event is printed with its time since the stream began. A partial's delay is
 its arrival behind the moment the audio it covers (its `audio_seconds`) had
 been sent; the final's is its arrival after `finish`. The raw socket speaks
@@ -278,18 +279,14 @@ class Session:
             first = len(self.events)
         piece = RATE * piece_ms // 1000 * 2
         result = Result(started=time.monotonic())
-        for i, at in enumerate(range(0, len(pcm), piece)):
+        for at in range(0, len(pcm), piece):
             if speed > 0:
-                due = result.started + i * piece_ms / 1000 / speed
+                # As a microphone delivers it: a piece once its audio has ended.
+                due = result.started + min(at + piece, len(pcm)) / 2 / RATE / speed
                 pause = due - time.monotonic()
                 if pause > 0:
                     time.sleep(pause)
             self.ws.send(0x2, pcm[at : at + piece])
-        if speed > 0:
-            # The last piece's audio ends at its own end, not when it was sent.
-            pause = result.started + len(pcm) / 2 / RATE / speed - time.monotonic()
-            if pause > 0:
-                time.sleep(pause)
         result.finished = time.monotonic()
         self.ws.send_json({"type": "finish"})
         final = self.wait_for("final", first, 120)

@@ -867,8 +867,9 @@ Decided at the plan (2026-10-27); each is checked at bring-up:
   drops the tail); a trace confirms the equality.
 - **State lives as long as the stream.** Nothing in HF resets the decoder
   or the encoder caches between utterances; nuclis carries both for the
-  life of a stream and clears both when the client asks (a reset message
-  on the streaming route, sent by a client after each final transcript).
+  life of an utterance: the streaming route clears both after each final
+  transcript (a client's `finish`) and when the client sends `reset`
+  ([api.md § Live transcription](../guide/api.md#live-transcription)).
 - **Default language `auto`** (101), the code's default; a client names a
   locale to fix it. Language tags are stripped from the text by id and
   reported beside it. (The card's pipeline note says `en-US`.)

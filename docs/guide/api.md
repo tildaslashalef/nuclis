@@ -28,6 +28,7 @@ is the reference for client authors; it assumes nothing about the code.
 - [Speech](#speech): [`POST /v1/audio/speech`](#post-v1audiospeech), [the
   request](#the-speech-request), [streaming and
   cancellation](#streaming-and-cancellation), [scheduling](#scheduling)
+- [Live transcription](#live-transcription): [`GET /v1/audio/transcriptions/stream`](#get-v1audiotranscriptionsstream), a WebSocket
 - [`GET /v1/models`](#get-v1models), [`GET /v1/health`](#get-v1health)
 - [Measured rates](#measured-rates)
 
@@ -859,6 +860,133 @@ with `present`, `loaded`, `default`, `size_bytes` (weights and codec),
 `repo`, and `revision`. `GET /v1/health` gives the open `speech` and
 `transcription` models and `speech_requests`: `waiting`, whether one is
 `speaking`, and those `answered` since the start.
+
+## Live transcription
+
+### `GET /v1/audio/transcriptions/stream`
+
+A WebSocket ([RFC 6455](https://www.rfc-editor.org/rfc/rfc6455)) for a
+voice client's microphone: the client streams audio as it is captured,
+the server answers with the transcript as it forms, and with a final
+transcript and word times when the client says the utterance ended. It
+runs Nemotron 3.5 ASR streaming 0.6B, the model `nuclis transcribe`
+runs ([nemotron-asr.md](../models/nemotron-asr.md)).
+
+```sh
+python3 scripts/ws-transcribe.py clip.wav --language en-US   # a client in the standard library
+```
+
+The handshake is a `GET` with `upgrade: websocket`, `connection:
+upgrade`, a `sec-websocket-key`, and `sec-websocket-version: 13`; the
+server answers `101` and negotiates no subprotocol and no extension.
+The session is set by the query:
+
+| Parameter | In nuclis |
+| --- | --- |
+| `model` | a registry entry of kind `transcription` or `nemotron-asr-0.6b`; never a path. Absent: the open one, else `transcribe.model` |
+| `language` | a locale of the model's prompt dictionary (`en-US`, `de-DE`, `fr`, `es-419`, …) or `auto` (the default: the model tags the language it heard) |
+| `lookahead` | `0`, `3` (the default), `6`, or `13` rows of 80 ms the encoder waits for: a chunk, and so a possible partial, every 80, 320, 560, or 1,120 ms of audio |
+
+A refusal before the upgrade is an ordinary HTTP response with the
+shared error body: `426 upgrade_required` (with `upgrade: websocket`) to
+a request that is not a WebSocket handshake, `426 unsupported_version`
+(with `sec-websocket-version: 13`) to another version, `400
+bad_handshake` (no `connection: upgrade`, a key that is not 16 bytes in
+base64, not a `GET`), `400 invalid_request` (a malformed parameter,
+`param` names it), `400 not_a_transcription_model`, `404
+model_not_found`, `529 busy` (16 live transcriptions run already).
+
+**The client sends** binary messages of 16 kHz mono 16-bit
+little-endian samples, of any size (a sample may straddle two messages),
+and text messages, each a JSON object:
+
+| Message | Meaning |
+| --- | --- |
+| `{"type": "finish"}` | the utterance ended: the audio sent before it is transcribed to its end, a `final` follows, and the next audio begins a new utterance (the recognizer's state is reset) |
+| `{"type": "reset"}` | drop the utterance in progress and every sample not yet transcribed, without a `final` |
+| `{"type": "language", "language": "de-DE"}` | the language prompt from the next chunk on (`auto` the default's); an unknown locale is an `error` event and the language stays |
+
+A command applies after every sample sent before it. Pings are answered
+with pongs; a close is answered once what was asked before it (a
+`finish`) has been answered, within 5 s.
+
+**The server sends** text messages, each a JSON object:
+
+```json
+{"type": "ready", "model": "nemotron-asr-0.6b", "lookahead": 3, "language": "auto", "sample_rate": 16000}
+{"type": "partial", "text": "Kenneth and Beth refrain from telling", "audio_seconds": 2.813}
+{"type": "final", "text": "Kenneth and Beth refrain from telling the other girls or Uncle John of Old Will Rogers' visit, but they got Mister Watson in the library and questioned him closely about the penalty for forging a check.",
+ "language": "en-US", "words": [{"word": "Kenneth", "start": 0.800, "end": 1.200}, …], "audio_seconds": 11.700}
+{"type": "error", "code": "invalid_message", "message": "a text message is a JSON object with a \"type\""}
+```
+
+- `ready` once the model is open and the session's recognizer exists
+  (audio sent before it waits, within the backlog limit).
+- `partial` when a chunk changed the utterance's text: the whole text so
+  far, never a delta, so a stale one is simply replaced; `audio_seconds`
+  is the audio of the utterance it covers. Chunks that add nothing send
+  nothing.
+- `final` after `finish`: the text (equal to `nuclis transcribe --json`'s
+  for the same samples, lookahead, and language), the language tag the
+  model emitted (`null` if none), the words, and the utterance's length.
+  A word starts at a piece that begins with a space; its `start` and
+  `end` are the 80 ms encoder rows its pieces were emitted at, from the
+  utterance's start, which trail the speech by up to the lookahead. An
+  utterance with no audio has an empty final.
+- `error` with a stable `code` (below); the session continues unless a
+  close follows.
+
+**Limits**, fixed by the host:
+
+| Limit | Value | Past it |
+| --- | --- | --- |
+| a message (its fragments together) | 1 MiB | close `1009` |
+| a text message | 4 KiB | `error` `invalid_message` |
+| audio received and not yet transcribed | 10 s | `error` `audio_backlog`, close `1008` |
+| events queued for a client that does not read | 1 MiB | close `1008` |
+| silence: no message, ping, or pong received | 60 s | close `1008` |
+| live transcriptions at once | 16 (each holds 72 MB of encoder state on the device) | `529 busy` at the handshake (`1013` if two race for the last) |
+| open connections | 64, shared with every route | `529 busy` |
+
+**Scheduling.** Each connection is one short item on the GPU worker,
+which pushes one encoder chunk a run (4 rows of 80 ms at lookahead 3,
+about 20–35 ms on Metal) and is queued again while audio waits, so live
+transcription runs between a chat generation's steps, and several
+connections take turns a chunk at a time. Audio is buffered on the
+connection until a chunk is complete, whatever the message sizes: the
+transcript does not depend on how the client splits its audio, or how
+fast it sends it. Opening the model is the exception: a connection
+whose model is not open waits for a running generation to end, since
+opening may close the language model it runs on. Every connection has
+its own recognizer state over the one open model, which the memory
+budget never closes while a connection uses it.
+
+**Cancellation.** A client that disconnects, with or without a close
+frame, stops its session at once: nothing more of its audio is
+transcribed, and its recognizer is freed at the worker's next turn. On
+Ctrl-C the server closes every session with `1001`.
+
+**Errors and closes:**
+
+| Event `code` / close | When |
+| --- | --- |
+| `invalid_message` | a text message that is not one of the commands, or over 4 KiB; the session continues |
+| `invalid_language` | a `language` command naming no locale of the model (the session continues), or a `language` query that does not (close `1008`) |
+| `audio_backlog`, close `1008` | more than 10 s of audio waits for the GPU |
+| `model_failed` | the transcription failed on the device: the utterance is dropped and the session continues; if the model did not open, close `1011` |
+| `model_too_large`, close `1011` | the model needs more than the budget leaves beside the pinned models |
+| `busy`, close `1013` | the memory it needs is held by a running request, or another transcription model is in use; retry |
+| close `1002` | a frame RFC 6455 forbids (unmasked, a reserved bit or opcode, a control frame fragmented or over 125 bytes) |
+| close `1007` | a text message that is not UTF-8 |
+| close `1001` | the server is stopping |
+
+**For a voice assistant.** Stream the microphone continuously; send
+`finish` when the turn ends (the client's own voice activity detection
+decides), and read the `final` about 40 ms later; the next audio starts
+the next utterance with no further message. Send `reset` to drop an
+utterance (a barge-in the assistant ignores). The server transcribes
+what it is sent: echo cancellation, so the assistant does not hear its
+own voice, is the client's.
 
 ## `GET /v1/models`
 

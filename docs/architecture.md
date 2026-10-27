@@ -272,6 +272,13 @@ apart, so each service is a directory and one registration:
 - `src/decision/` holds the wire format and model names that `nuclis
   decide` and the service share, so the CLI's `--json` and the API's
   body are the same bytes.
+- `websocket.zig` is RFC 6455's server side (the handshake, client
+  frames read into bounded messages, server frames written); a response
+  carrying an `http.Upgrade` makes the transport answer `101` and hand
+  the connection to the route. `transcription/stream.zig` is the live
+  route on it: per connection a reader task, the connection's task
+  writing the events, and one short executor item that owns the
+  connection's `Transcriber` and pushes one encoder chunk a run.
 
 ## 3. Three kinds of memory
 
