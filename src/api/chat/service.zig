@@ -734,18 +734,23 @@ fn apiError(arena: std.mem.Allocator, status: std.http.Status, code: []const u8,
     return err;
 }
 
-fn isEmbedding(language: *const language_mod.Language, name: []const u8) bool {
-    if (language.loaded.config.models.find(name)) |entry| return entry.kind == .embedding;
-    return catalog.findEmbedding(name) != null;
+/// The kind of a model that is not a language model, from the registry or the catalogue.
+fn kindOf(language: *const language_mod.Language, name: []const u8) catalog.ModelKind {
+    if (language.loaded.config.models.find(name)) |entry| return entry.kind orelse .generation;
+    if (catalog.findEmbedding(name) != null) return .embedding;
+    if (catalog.findAudio(name)) |entry| return entry.kind;
+    return .decision;
 }
 
 fn openFailure(arena: std.mem.Allocator, language: *const language_mod.Language, name: []const u8, err: anyerror) ApiError {
     return switch (err) {
         error.ModelNotFound => apiError(arena, .not_found, "model_not_found", "model", "{s} is not a pulled language model (`nuclis model ls` lists them, `GET /v1/models` the runnable ones)", .{name}),
-        error.NotALanguageModel => if (isEmbedding(language, name))
-            apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is an embedding model; it answers no chat", .{name})
-        else
-            apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is a decision model; POST /v1/decisions runs it", .{name}),
+        error.NotALanguageModel => switch (kindOf(language, name)) {
+            .embedding => apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is an embedding model; it answers no chat", .{name}),
+            .speech => apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is a speech model; POST /v1/audio/speech runs it", .{name}),
+            .transcription => apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is a transcription model; POST /v1/audio/transcriptions runs it", .{name}),
+            .decision, .generation => apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is a decision model; POST /v1/decisions runs it", .{name}),
+        },
         error.ModelTooLarge => apiError(arena, .bad_request, "model_too_large", "model", "{s} needs about {d:.1} GiB (its weights and cache.memory_bytes) and the server's budget is {d:.1} GiB (serve.memory_bytes, --memory)", .{ name, gib(language.needed), gib(if (language.budget) |b| b.limit else 0) }),
         error.Pinned => apiError(arena, .service_unavailable, "busy", "model", "overloaded: {s} needs memory a running request holds; retry shortly", .{name}),
         else => apiError(arena, .internal_server_error, "model_failed", "model", "{s} did not open: {s}", .{ name, @errorName(err) }),
