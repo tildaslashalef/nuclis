@@ -76,9 +76,24 @@ tokens on its second turn, against 743 before; `make shot` captures
 after a folded thought is not drawn until unfolded, in the build before
 this unit too: not this unit's, noted for later.
 
-Next: **task 9** (serving speech, running), then 10 and 15 (the
-transcription routes), then 11 (all three models together), then 12
-(documents and the site).
+Task 9 delivered (2026-10-27): kinds `speech` and `transcription`;
+catalogue entries `qwen3-tts-1.7b` (default), `qwen3-tts-0.6b`,
+`nemotron-asr-0.6b` (`nuclis model pull <name>`); `model pull --json`
+writes one JSON progress line per event on stderr
+(`docs/guide/getting-started.md`), for Muon's first-run window; config
+`speech.model`, `speech.voice`, `transcribe.model`, `serve.pin`; `serve
+--pin`; `POST /v1/audio/speech` (`pcm`, `wav`; `audio` or `sse` streams;
+first chunk 1 frame then 4; cancellation between chunks; requests queue in
+arrival order). Measured on a loaded machine: first audio byte 99 ms
+alone, 135 ms while E4B streams; speech stays above real time beside a
+chat, but **E4B drops from 44 to 5.4 tok/s while speech is made** (every
+chat step waits for a ~170 ms 4-frame chunk): task 11's first problem.
+End to end through one server: the 1.7B voice asked a question, E4B
+heard the clip and answered it correctly in 0.7 s.
+
+Next: **tasks 10 and 15 in parallel** (the transcription routes; the
+recognizer's slot is ready in `src/api/transcription/service.zig`), then
+11, then 12.
 
 | Unit | Branch | State |
 | --- | --- | --- |
@@ -178,7 +193,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 6 | ASR transducer and tokenizer, CPU; `nuclis transcribe` | B | 5 | done |
 | 7 | ASR on Metal, chunk latency | B | 6 | done |
 | 8 | Gemma 4 E4B audio input in chat | D | — | done |
-| 9 | Serve: speech and transcription kinds, pinning, `POST /v1/audio/speech` | C | 4 | main |
+| 9 | Serve: speech and transcription kinds, pinning, `POST /v1/audio/speech` | C | 4 | done |
 | 10 | Serve: WebSocket transport, streaming transcription | C | 7, 9 | main |
 | 11 | Voice scheduling measured: E4B, TTS, and ASR together | C | 9, 10 | main |
 | 12 | Documents, README, website (links Muon) | — | all | main |
@@ -518,6 +533,18 @@ Asked by the user (2026-10-27) for note-taking clients beside Muon.
   seconds per second on Metal).
 
 #### 11. Voice scheduling measured
+
+From task 9: speech beside a chat costs E4B 8× (44 → 5.4 tok/s): each
+speech item is a 4-frame chunk (~170 ms of GPU) and every chat step waits
+for one. Try one frame per item first (and a first chunk of one), then a
+policy that keeps the speech buffer just ahead of playback (speak only
+while fewer than N ms are buffered); measure E4B tok/s and speech's
+margin over real time for each. Also from task 9: `/v1/chat/completions`
+given a speech or transcription model's name answers `404
+model_not_found` instead of `400 not_a_language_model` (add the
+`catalog.findAudio` check in `src/api/chat/model.zig` `ensure`); memory
+accounting counts weight files only, not the talker's or the recognizer's
+caches (1.97 GB beside the weights with all three open).
 
 All three models open and pinned; a script under `scripts/` plays a
 recorded question into the stream, sends the transcript to chat, and
