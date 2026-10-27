@@ -194,7 +194,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 7 | ASR on Metal, chunk latency | B | 6 | done |
 | 8 | Gemma 4 E4B audio input in chat | D | — | done |
 | 9 | Serve: speech and transcription kinds, pinning, `POST /v1/audio/speech` | C | 4 | done |
-| 10 | Serve: WebSocket transport, streaming transcription | C | 7, 9 | main |
+| 10 | Serve: WebSocket transport, streaming transcription | C | 7, 9 | done |
 | 11 | Voice scheduling measured: E4B, TTS, and ASR together | C | 9, 10 | main |
 | 12 | Documents, README, website (links Muon) | — | all | main |
 | 13 | Split `kernels.metal` by operation (before 4 and 7) | — | — | done |
@@ -486,14 +486,19 @@ speech advances between a generation's steps (`runShort`). Gates: unit
 tests of the wire and the scheduler; an end-to-end request through the
 freshly built binary.
 
-#### 10. Serve: WebSocket, streaming transcription
+#### 10. Serve: WebSocket, streaming transcription (delivered 2026-10-27)
 
-`src/api/http.zig` gains the RFC 6455 upgrade (bounded frames, ping,
-close; text and binary messages). `GET /v1/audio/transcriptions/stream`:
-binary messages carry 16 kHz mono s16le PCM; the server answers JSON
-events `partial`, `final` (with word timings), `error`; each chunk a short
-GPU item. (Whole files are task 15's route.) Gates: unit tests of the framing
-(fragments, masking, oversize, abrupt close) and the event stream.
+`src/api/websocket.zig` (RFC 6455 framing), the upgrade hook in
+`src/api/http.zig` (`Response.upgrade`, `Response.extra_header`), and
+`src/api/transcription/stream.zig`: `GET
+/v1/audio/transcriptions/stream?model=&language=&lookahead=` with
+`ready`, `partial`, `final` (word times), `error`; commands `finish`
+(final, then an automatic reset), `reset`, `language`; one short GPU item
+per session, one encoder chunk per run; limits 1 MiB per message, 10 s of
+backlog, 60 s idle, 16 sessions. `Slot.held` is a count now (pairs of
+`hold(true)`/`hold(false)`). Client and gate: `scripts/ws-transcribe.py`,
+`nemotron-asr-stream-route` (4 clips, finals equal `transcribe --json`).
+The protocol and measured rates: `docs/guide/api.md` § Live transcription.
 
 #### 15. Serve: file transcription for long recordings
 
@@ -617,6 +622,15 @@ model_not_found` instead of `400 not_a_language_model` (add the
 `catalog.findAudio` check in `src/api/chat/model.zig` `ensure`); memory
 accounting counts weight files only, not the talker's or the recognizer's
 caches (1.97 GB beside the weights with all three open).
+
+From task 10: live transcription beside an E4B stream costs E4B 8–13 %
+(partials 50/66/74 ms behind the audio, median/p90/max; final 41–48 ms
+after `finish`), measured with another worktree's jobs on the GPU:
+re-measure quiet. The first chunk after the server starts is ~650 ms late
+(Metal warm-up); a warm-up chunk when the model is preloaded or pinned
+fixes it. An unpinned ASR model opened during a long generation queues
+audio and may hit the 10 s backlog limit: the script pins
+`nemotron-asr-0.6b`.
 
 All three models open and pinned; a script under `scripts/` plays a
 recorded question into the stream, sends the transcript to chat, and
