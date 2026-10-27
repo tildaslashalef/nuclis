@@ -1,0 +1,955 @@
+{
+ "$comment": "Nemotron 3.5 ASR bring-up trace: scripts/speech-traces/nemotron_trace.py. Arrays are little-endian, row-major; `rows` names the encoder rows pinned (of the clip's valid rows).",
+ "model": {
+  "repository": "nvidia/nemotron-3.5-asr-streaming-0.6b",
+  "revision": "ea30d66debe3740a08b573244286791d423d6b3e",
+  "sha256": "9eebdd6590289cb3030f310858f3df93256600a800a3e8200c5993d5f967e174"
+ },
+ "transformers": {
+  "version": "5.21.0.dev0",
+  "commit": "c0d024fbc873ab0325e1b40fc1bd69069609de65"
+ },
+ "torch": "2.14.1",
+ "librosa": "1.0.0",
+ "numpy": "2.5.4",
+ "clips": [
+  {
+   "name": "librispeech",
+   "wav": "librispeech/clip.wav",
+   "wav_sha256": "55cf2b15b6e0909c26d3854b9855c80731796a502802615745f6320f8f4b297d",
+   "samples": 80880,
+   "frames": 505,
+   "rows": 64,
+   "language": "auto",
+   "prompt_id": 101,
+   "source": {
+    "corpus_id": "librispeech-121-121726-0000",
+    "url": "https://www.openslr.org/resources/12/test-clean.tar.gz",
+    "member": "LibriSpeech/test-clean/121/121726/121-121726-0000.flac",
+    "sha256": "81378fdb3e648b43efb1cb8c4f87da3fc9cfbe19c5dda97e9e7361c4a2470d2f",
+    "license": "CC BY 4.0",
+    "attribution": "LibriSpeech ASR corpus (Panayotov, Chen, Povey, Khudanpur, 2015), OpenSLR SLR12",
+    "cut": "the first 80880 samples, rounded to 16-bit PCM"
+   },
+   "stream_minus_whole_max_abs": {
+    "r0": {
+     "features": 0.0,
+     "subsampling": 0.00146484375,
+     "block.0": 0.00018310546875,
+     "block.11": 7.62939453125e-05,
+     "block.23": 4.172325134277344e-07,
+     "prompt": 5.841255187988281e-06
+    },
+    "r3": {
+     "features": 0.0,
+     "subsampling": 0.000457763671875,
+     "block.0": 3.814697265625e-05,
+     "block.11": 5.841255187988281e-05,
+     "block.23": 7.748603820800781e-07,
+     "prompt": 1.1742115020751953e-05
+    }
+   },
+   "arrays": [
+    {
+     "name": "features",
+     "file": "librispeech/features.f32",
+     "shape": [
+      506,
+      128
+     ],
+     "dtype": "f32",
+     "sha256": "40d591332761df5024521a2a0d67da5af56800f89525f84ddafd4191ae36bcf4"
+    },
+    {
+     "name": "subsampling",
+     "file": "librispeech/subsampling.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "d3df2a78df9fe7cfade73262531112c162bf0b65b54b041f892897012e0ffa76",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/whole/block.0",
+     "file": "librispeech/r0/whole/block.0.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "c745e7b737f49e44fb8cd182c799aab9921514b7d5960e943c240f633e5e214e",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/whole/block.11",
+     "file": "librispeech/r0/whole/block.11.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "09862f892d633be9d040655075b82f1fece2f58696cb1e302826648bd4e3fb10",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/whole/block.23",
+     "file": "librispeech/r0/whole/block.23.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "d2a14a8bbf6a1c2dafaf4e751ca53e27e24b719c69161a9b32ba40857ea2c11c",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/whole/prompt",
+     "file": "librispeech/r0/whole/prompt.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "adba337027642b51983a5352b449461d4f45ed13d79125e5a124f0192027c416",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/stream/block.0",
+     "file": "librispeech/r0/stream/block.0.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "0de498d9ba9f92c4fb44fe3c5ab34deffbab6f7175dccb2310679d6dfa9bcaca",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/stream/block.23",
+     "file": "librispeech/r0/stream/block.23.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "51a671f14d4956f7fa356bd218005b23fc6f34df2bcd042f54a2e9a6495cae68",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/stream/prompt",
+     "file": "librispeech/r0/stream/prompt.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "a97feaac0594e651198bd010028b02bffa9253920e1cced0211b45b4dd9c27f5",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/whole/block.0",
+     "file": "librispeech/r3/whole/block.0.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "d0ac8a02f6ed8f2b1bf2355c28b3a7ffecd40b929814f0de7a7cecb9f7d71647",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/whole/block.11",
+     "file": "librispeech/r3/whole/block.11.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "257ab7e3f8698bbfccd7cc19f0d165ae12c910921cdb9332b651150d4b4a1c4f",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/whole/block.23",
+     "file": "librispeech/r3/whole/block.23.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "1978fc075088f80b1a3037f1777418cc54b5be1fb1fd8a1e1995401c68d2b3a6",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/whole/prompt",
+     "file": "librispeech/r3/whole/prompt.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "7b29d8c609b3ac2f8b2b04cf5468ea864d0595a712d7ce22ea95aa74e556fcaf",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/stream/block.0",
+     "file": "librispeech/r3/stream/block.0.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "0648d67d796b4df29f0d5787e273b45ed593bae3b73d63b38b35e19f0c1c35be",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/stream/block.23",
+     "file": "librispeech/r3/stream/block.23.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "f4e2eba2ebdf92a6bb2b427b4db2e6d85d8867b797ba7d608a342d0a2764e21c",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/stream/prompt",
+     "file": "librispeech/r3/stream/prompt.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "2c9f8a07177f8103a1b9211cc8b1ca17422ca5a11e480694bad342211d0f2d0a",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fleurs-de",
+   "wav": "fleurs-de/clip.wav",
+   "wav_sha256": "ca605c79e74ec23a41584d82e4d1f59905f0f22bb1731cef1b7d0e7a85e2fe1a",
+   "samples": 80880,
+   "frames": 505,
+   "rows": 64,
+   "language": "de-DE",
+   "prompt_id": 9,
+   "source": {
+    "corpus_id": "fleurs-de_de-1660",
+    "url": "https://huggingface.co/datasets/google/fleurs/resolve/70bb2e84b976b7e960aa89f1c648e09c59f894dd/data/de_de/audio/test.tar.gz",
+    "member": "test/1191248392415945452.wav",
+    "sha256": "7fedda3ac6a639187b484a968421f8c5f6abdcc7eb264ef8021ffca1014c99fa",
+    "license": "CC BY 4.0",
+    "attribution": "FLEURS (Conneau et al., 2022), google/fleurs at 70bb2e84, de_de test split",
+    "cut": "the first 80880 samples, rounded to 16-bit PCM"
+   },
+   "stream_minus_whole_max_abs": {
+    "r0": {
+     "features": 0.0,
+     "subsampling": 0.00164794921875,
+     "block.0": 0.0001678466796875,
+     "block.11": 6.389617919921875e-05,
+     "block.23": 6.258487701416016e-07,
+     "prompt": 4.76837158203125e-06
+    },
+    "r3": {
+     "features": 0.0,
+     "subsampling": 0.00048828125,
+     "block.0": 4.57763671875e-05,
+     "block.11": 6.4849853515625e-05,
+     "block.23": 5.140900611877441e-07,
+     "prompt": 3.7670135498046875e-05
+    }
+   },
+   "arrays": [
+    {
+     "name": "features",
+     "file": "fleurs-de/features.f32",
+     "shape": [
+      506,
+      128
+     ],
+     "dtype": "f32",
+     "sha256": "d3dc16940113069d1ceaaa891f966138e1847292ee02774bc208706dc0caac77"
+    },
+    {
+     "name": "subsampling",
+     "file": "fleurs-de/subsampling.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "c30dfc05b5080dfaa0133a95cab4c9a54c6f9070f0891fad74a24292933517c4",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/whole/block.0",
+     "file": "fleurs-de/r0/whole/block.0.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "f9c20ab8221a273cac60729ee7c3889dd500284f3714b72e518875c15d68844a",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/whole/block.11",
+     "file": "fleurs-de/r0/whole/block.11.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "9f46978746cf4e548e88ca61a1edfc6a9493dd8616eff4e648ddd8e7490dc9d3",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/whole/block.23",
+     "file": "fleurs-de/r0/whole/block.23.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "f8cc6230c13ef315ba73cd47b5e43b9811b3503d2c8fc26c1b82e29d9f377f3a",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/whole/prompt",
+     "file": "fleurs-de/r0/whole/prompt.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "dbd359242afac3be85c784fd71031f035cac84d258b920d1278e84ca0921f957",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/stream/block.0",
+     "file": "fleurs-de/r0/stream/block.0.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "0d793d53df43d5463eeae7d59dc808d613b3b004d8357eb5f6b5dca241ce8acd",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/stream/block.23",
+     "file": "fleurs-de/r0/stream/block.23.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "2535b1658149a40f9f7f776d989f0b0d964416da2777974cdbf36d5673cd4cb6",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/stream/prompt",
+     "file": "fleurs-de/r0/stream/prompt.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "9aed1e80ed9a8d540e41d1c0662bd53f0a26cf02587412275b0410ac70b70e87",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/whole/block.0",
+     "file": "fleurs-de/r3/whole/block.0.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "29ecdd4a8f16732b5b1fe6bb0d44c0b8bd8dd3d202852cfb352a9b0e589fe87a",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/whole/block.11",
+     "file": "fleurs-de/r3/whole/block.11.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "ed35bbfe7f3328f28c0216b4c68b3cbb6d6d496905ec38c01f30e3a42a3c708e",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/whole/block.23",
+     "file": "fleurs-de/r3/whole/block.23.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "fbbeb0cd266dd1c3b34ed3bfe0b8d2fdea3d7efc5e8f7630ae9b61d57cc8edf1",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/whole/prompt",
+     "file": "fleurs-de/r3/whole/prompt.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "e8b91f46227b4bfa65fd6b206d438b8784c1f571da2d74e32613e487c31466c4",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/stream/block.0",
+     "file": "fleurs-de/r3/stream/block.0.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "81f2e43eb75c23898740e0af9ef1919775e87d5511285189ded97e97d2f27e2e",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/stream/block.23",
+     "file": "fleurs-de/r3/stream/block.23.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "7ca73d1397d5317873ebf3bc2a78d061f24117ab626623294eec35fe4773b184",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/stream/prompt",
+     "file": "fleurs-de/r3/stream/prompt.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "1d4cb28db1911dcacd40c47dceead486d5fce04023cdfea12e844edeb9159233",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    }
+   ]
+  }
+ ]
+}
