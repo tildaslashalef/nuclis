@@ -270,7 +270,11 @@ apart, so each service is a directory and one registration:
   advances between a generation's steps; the response's head waits for
   the prompt's prefill, then the audio drains from a `pipe.zig` queue
   (the item parks rather than block the worker when its client lags).
-  `transcription/` keeps the recognizer's slot for the routes that use it.
+  `transcription/` keeps the recognizer's slot for the routes that use it:
+  `file.zig` takes a whole recording (`multipart.zig` parses the form)
+  and feeds it in 2.56 s pieces, one short item a piece; its segments,
+  subtitles, and word times come from `src/audio/transcript.zig`, which
+  `nuclis transcribe` shares.
 - `src/decision/` holds the wire format and model names that `nuclis
   decide` and the service share, so the CLI's `--json` and the API's
   body are the same bytes.

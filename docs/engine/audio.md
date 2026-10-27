@@ -48,6 +48,10 @@ as a cross-check, never copied.
   `bind`, `Runtime.decode`, and `Stream`, which carries every
   convolution's left context and 71 rows of K/V per layer, so pieces of any
   size give `decode`'s samples bit for bit ([qwen3-tts.md](../models/qwen3-tts.md)).
+- `qwen3_codec_metal.zig`: `Decoder`, the codec's stream on the device,
+  checked against `qwen3_codec.zig` on the same codes (gate
+  `qwen3-tts-codec-metal`); the voice's talker and predictor are
+  `models/qwen3_tts*.zig` ([qwen3-tts.md](../models/qwen3-tts.md)).
 - `nemotron_encoder.zig`: Nemotron 3.5 ASR's cache-aware encoder and its
   prompt block, the CPU reference: `bind` (the safetensors checkpoint),
   `Encoder`, `Stream`, its `FrontEnd`, and the pure functions the Metal

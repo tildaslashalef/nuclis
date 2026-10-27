@@ -34,7 +34,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "nuclis",
-    "description": "A local inference engine for open-weight language models on Apple Silicon, written in Zig with a Metal backend, with a small coding agent, typed decision models, multimodal embeddings and an OpenAI-compatible API on top.",
+    "description": "A local inference engine for open-weight language models on Apple Silicon, written in Zig with a Metal backend, with a small coding agent, typed decision models, multimodal embeddings, speech in and out, and an OpenAI-compatible API on top.",
     "url": "https://engine.nuclis.dev/",
     "image": "https://engine.nuclis.dev/og.png",
     "applicationCategory": "DeveloperApplication",
@@ -87,6 +87,7 @@
       <a href="#api">API</a>
       <a href="#decide">Decisions</a>
       <a href="#embed">Embeddings</a>
+      <a href="#voice">Voice</a>
       <a href="https://github.com/tildaslashalef/nuclis" class="nav-icon" aria-label="nuclis on GitHub"><svg><use href="#i-github"/></svg></a>
       <a href="#start" class="nav-dl"><svg><use href="#i-download"/></svg>Download</a>
     </nav>
@@ -338,6 +339,21 @@ http://127.0.0.1:9000/v1</code></pre>
     </ul>
     <pre class="snip"><code><span class="c">$</span> nuclis embed --image photo.jpg --audio memo.m4a "the shopping list"
 <span class="c">$</span> curl -s localhost:9000/v1/embeddings -d '{"input": ["a cat", "a kitten"]}'</code></pre>
+  </div>
+</section>
+
+<section class="sec" id="voice">
+  <div class="wrap">
+    <h2>It hears you, and answers aloud.</h2>
+    <p class="sec-lede">Qwen3-TTS speaks, in nine voices that take direction (&ldquo;warmly, smiling&rdquo;); NVIDIA's Nemotron ASR writes down what it hears while you are still talking; Gemma 4 E4B hears a clip itself. One <code>nuclis serve</code> keeps the ears, the brain and the voice open together, and a spoken question gets the first sound of its spoken answer about half a second after you stop. Speech shares the GPU by staying just ahead of playback, so the chat keeps going while it talks.</p>
+    <ul class="tools trio routes">
+      <li><code>audio/speech</code><span>2.3&times; real time, first audio in about 120 ms</span></li>
+      <li><code>transcriptions/stream</code><span>the final words 30&ndash;40 ms after you stop</span></li>
+      <li><code>transcriptions</code><span>half an hour of audio in under a minute</span></li>
+    </ul>
+    <pre class="snip"><code><span class="c">$</span> nuclis speak "The lighthouse stood at the edge of the world." -o story.wav
+<span class="c">$</span> nuclis transcribe story.wav --stream
+<span class="c">$</span> nuclis serve --model gemma-4-e4b-qat --pin qwen3-tts-1.7b --pin nemotron-asr-0.6b</code></pre>
   </div>
 </section>
 

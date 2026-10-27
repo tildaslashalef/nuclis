@@ -68,7 +68,9 @@ Decision models, which answer typed questions instead of writing text,
 have their own entries: `laya`, `laya-multilingual`, and `clef-flash`
 ([below](#decision-models-laya-and-clef-flash)). So does the embedding
 model, `embeddinggemma-2`, which turns text, images and audio into vectors
-([below](#embeddings-embeddinggemma-2)).
+([below](#embeddings-embeddinggemma-2)), and the speech models,
+`qwen3-tts-1.7b`, `qwen3-tts-0.6b`, and `nemotron-asr-0.6b`, which speak
+and hear ([below](#speech-in-and-out)).
 
 **Anything else** runs when its architecture has an adapter (Qwen3.8,
 Gemma 4, Muse Glimmer): finetunes, other quantizations, Gemma 4's K-quant
@@ -260,6 +262,57 @@ and gives every input the same vector alone or batched. Details:
 ```sh
 curl -s localhost:9000/v1/embeddings -d '{"input": ["a cat", "a kitten"], "task": "similarity"}'
 ```
+
+## Speech in and out
+
+nuclis speaks and hears, on the same machine as the language model:
+Qwen's [Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice)
+turns text into speech, NVIDIA's [Nemotron 3.5 ASR
+streaming](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
+turns speech into text as it is spoken, and Gemma 4 E4B hears a clip
+directly. Together they are a voice assistant's ears, voice, and brain,
+served from one process.
+
+| Model | Name | Does | Size |
+| --- | --- | --- | ---: |
+| Qwen3-TTS 1.7B | `qwen3-tts-1.7b` | speech from text in nine voices, told how to say it ("warmly, smiling") | 4.5 GB |
+| Qwen3-TTS 0.6B | `qwen3-tts-0.6b` | the same voices, lighter and faster, without instructions | 1.8 GB |
+| Nemotron 3.5 ASR | `nemotron-asr-0.6b` | streaming recognition with punctuation and word times | 2.6 GB |
+| Gemma 4 E4B | `gemma-4-e4b-qat` | hears a clip of up to 30 s in a chat, the agent, or `generate` | 4.2 GB |
+
+```sh
+nuclis model pull qwen3-tts-1.7b && nuclis model pull nemotron-asr-0.6b
+nuclis speak "The lighthouse stood at the edge of the world." --instruct "Calm, like a story at bedtime." -o story.wav
+nuclis transcribe story.wav --stream                  # partials as they change, then the text
+nuclis transcribe meeting.m4a --format srt            # a long recording as subtitles
+```
+
+Over HTTP, `nuclis serve --model gemma-4-e4b-qat --pin qwen3-tts-1.7b
+--pin nemotron-asr-0.6b` keeps all three open. `POST /v1/audio/speech`
+is OpenAI's speech call and streams the audio as it is made; `POST
+/v1/audio/transcriptions` is OpenAI's transcription call for whole
+recordings (JSON, text, SRT, VTT, or segments as server-sent events);
+`GET /v1/audio/transcriptions/stream` is a WebSocket that takes a
+microphone's samples and answers with partials and a final transcript
+with word times.
+
+Both families were brought up from their authors' code, checked against
+it once, and are held by data since: Nemotron's transcripts of a pinned
+60-clip corpus in five languages score 6.1 % word error rate (3.9 % in
+English), the same words on the CPU and on Metal, and speech spoken by
+Qwen3-TTS and heard back by Nemotron scores 2.6 %. On an M4 Pro the 1.7B
+speaks at 2.3× real time with its first audio about 120 ms after the text
+(the 0.6B 3.1×, about 90 ms); a final transcript arrives 30–40 ms after
+the speech ends, and a 30-minute recording transcribes in under a
+minute. Through one server, a spoken question gets the first audio of
+its spoken answer about half a second after the speaker stops. Speech
+shares the GPU with a running chat by staying just ahead of playback:
+E4B keeps about half its speed while the 1.7B speaks, and 95 % beside a
+live transcription. Details: [docs/guide/api.md](docs/guide/api.md#speech),
+[qwen3-tts.md](docs/models/qwen3-tts.md), [nemotron-asr.md](docs/models/nemotron-asr.md).
+
+Muon, an experimental macOS voice assistant with an animated character,
+is being built on these routes.
 
 ## Documentation
 
