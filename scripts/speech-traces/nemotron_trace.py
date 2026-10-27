@@ -13,14 +13,22 @@ LibriSpeech test-clean and one FLEURS German, and writes under
   the prompt block, at lookaheads 0 and 3: once over the whole clip, once
   streamed chunk by chunk as the authors' streaming path runs it (the
   processor's chunked features, the encoder's caches);
+- the transducer's side, at the same lookaheads, whole and streamed: the
+  `encoder_projector` rows, and `generate`'s greedy decoding step by step
+  (each step's encoder row and the joint's five largest logits with their
+  ids: the argmax and its margin over the runner-up), plus the prediction
+  network's output for the start (blank) input;
 - `index.json`: every array's file, shape, dtype, SHA-256 and row indices,
-  the clips' sources and licences, the versions, and the authors' own
-  stream-versus-whole differences.
+  the clips' sources and licences, the versions, the authors' own
+  stream-versus-whole differences, and each run's final token ids, rows and
+  text (special tokens skipped, and kept).
 
 Each clip is cut to N = 25 + 32m mel frames, so both lookaheads end on a whole
 chunk and the stream equals the whole clip; rows are pinned at their first
-and last eight to keep the fixture small. More stages (the joint's logits,
-the token ids) join by returning more arrays from `whole` and `streamed`.
+and last eight, and the joint as its top five per step rather than whole
+logit rows, to keep the fixture small. More stages join by returning more
+arrays from `whole` and `streamed`. `--out` writes elsewhere, to compare a
+regeneration with the committed fixtures byte for byte before replacing them.
 Run once, in the venv of `.reference/` (docs/models/nemotron-asr.md § Front
 end and encoder against the trace):
 
@@ -49,6 +57,7 @@ MODEL_SHA256 = "9eebdd6590289cb3030f310858f3df93256600a800a3e8200c5993d5f967e174
 TRANSFORMERS_COMMIT = "c0d024fbc873ab0325e1b40fc1bd69069609de65"
 
 HOP = 160
+TOP = 5
 LOOKAHEADS = (0, 3)
 WHOLE_STAGES = ("block.0", "block.11", "block.23", "prompt")
 STREAM_STAGES = ("block.0", "block.23", "prompt")
@@ -138,13 +147,53 @@ class Recorder:
             h.remove()
 
 
+def decode(model: Any, **kwargs: Any) -> dict[str, np.ndarray]:
+    """`generate`'s greedy RNN-T decoding: per step (one joint call inside the loop; streaming's
+    setup forward excluded) the encoder row it read and the joint's top five logits with their
+    ids; then the emitted (non-blank) ids and their rows."""
+    import torch
+
+    steps: list[np.ndarray] = []
+
+    def record(_module: Any, _args: Any, call: dict[str, Any], output: Any) -> None:
+        # The loop passes the decoder cache; streaming's setup forward does not.
+        if call.get("decoder_cache") is not None:
+            steps.append(output.logits.detach().float().numpy().reshape(-1))
+
+    handle = model.register_forward_hook(record, with_kwargs=True)
+    try:
+        with torch.inference_mode():
+            out = model.generate(**kwargs)
+    finally:
+        handle.remove()
+    sequence = out.sequences[0].numpy()
+    durations = out.durations[0].numpy()
+    rows = np.cumsum(durations) - durations
+    # Index 0 is the start token `generate` prepends; every later index is one step.
+    if len(steps) != len(sequence) - 1:
+        raise SystemExit(f"{len(steps)} joint calls for {len(sequence) - 1} steps")
+    logits = np.stack(steps)
+    order = np.argsort(-logits, axis=1, kind="stable")[:, :TOP]
+    if not np.array_equal(order[:, 0], sequence[1:]):
+        raise SystemExit("the recorded argmax is not generate's token")
+    blank = model.config.blank_token_id
+    emitted = [i for i in range(1, len(sequence)) if sequence[i] != blank]
+    return {
+        "step_rows": rows[1:].astype(np.int32),
+        "top_ids": order.astype(np.int32),
+        "top_logits": np.take_along_axis(logits, order, axis=1).astype(np.float32),
+        "ids": sequence[emitted].astype(np.int32),
+        "rows": rows[emitted].astype(np.int32),
+    }
+
+
 def whole(model: Any, processor: Any, audio: np.ndarray, language: str, r: int) -> dict[str, np.ndarray]:
     import torch
 
     inputs = processor(audio, sampling_rate=16000, language=language)
     recorder = Recorder(model)
     with torch.inference_mode():
-        model.get_audio_features(
+        out = model.get_audio_features(
             input_features=inputs["input_features"],
             attention_mask=inputs["attention_mask"],
             prompt_ids=inputs["prompt_ids"],
@@ -152,8 +201,18 @@ def whole(model: Any, processor: Any, audio: np.ndarray, language: str, r: int) 
         )
     stages = recorder.take()
     recorder.close()
+    stages["projector"] = out.pooler_output.detach().float().numpy()[0]
     stages["features"] = inputs["input_features"][0].numpy()
     stages["valid_frames"] = np.array([int(inputs["attention_mask"].sum())])
+    stages.update(
+        decode(
+            model,
+            input_features=inputs["input_features"],
+            attention_mask=inputs["attention_mask"],
+            prompt_ids=inputs["prompt_ids"],
+            num_lookahead_tokens=r,
+        )
+    )
     return stages
 
 
@@ -169,6 +228,7 @@ def streamed(model: Any, processor: Any, audio: np.ndarray, language: str, r: in
     frames = len(audio) // HOP
     recorder = Recorder(model)
     pieces: list[np.ndarray] = []
+    projected: list[np.ndarray] = []
     past = None
     padding = None
     done = 0
@@ -200,18 +260,41 @@ def streamed(model: Any, processor: Any, audio: np.ndarray, language: str, r: in
                 num_lookahead_tokens=r,
             )
         past, padding = out.past_key_values, out.padding_cache
+        projected.append(out.pooler_output.detach().float().numpy()[0])
         done += n
     if done != frames:
         raise SystemExit(f"{frames} frames are not whole chunks at r = {r}")
     stages = recorder.take()
     recorder.close()
     stages["features"] = np.concatenate(pieces, axis=0)
+    stages["projector"] = np.concatenate(projected, axis=0)
+
+    def chunks() -> Any:
+        for piece in pieces:
+            yield torch.from_numpy(piece)[None]
+
+    # `generate` over a generator of the same chunks: the authors' streaming decode.
+    stages.update(decode(model, input_features=chunks(), prompt_ids=prompt_ids, num_lookahead_tokens=r))
     return stages
 
 
+def start_output(model: Any) -> np.ndarray:
+    """The prediction network's output for the start input (the blank) from a zero state."""
+    import torch
+
+    blank = torch.full((1, 1), model.config.blank_token_id, dtype=torch.long)
+    with torch.inference_mode():
+        return model.decoder(blank).detach().float().numpy().reshape(-1)
+
+
+def text(processor: Any, ids: np.ndarray, skip: bool) -> str:
+    return processor.decode(ids.tolist(), skip_special_tokens=skip)
+
+
 class Pin:
-    def __init__(self, directory: pathlib.Path) -> None:
+    def __init__(self, directory: pathlib.Path, root: pathlib.Path) -> None:
         self.directory = directory
+        self.root = root
         self.arrays: list[dict[str, Any]] = []
 
     def put(self, name: str, values: np.ndarray, rows: list[int] | None = None) -> None:
@@ -223,7 +306,7 @@ class Pin:
         path.write_bytes(data.tobytes())
         entry: dict[str, Any] = {
             "name": name,
-            "file": str(path.relative_to(OUT)),
+            "file": str(path.relative_to(self.root)),
             "shape": list(data.shape),
             "dtype": "f32" if data.dtype.kind == "f" else "i32",
             "sha256": sha256(data.tobytes()),
@@ -243,16 +326,20 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--speech", type=pathlib.Path, default=SPEECH, help="the fetched corpus (.reference/speech)")
+    parser.add_argument("--out", type=pathlib.Path, default=OUT, help="where to write (tests/fixtures/nemotron-asr)")
     args = parser.parse_args()
+    out_dir: pathlib.Path = args.out.resolve()
     torch.manual_seed(0)
     corpus = json.loads(CORPUS.read_text())
     sources = {s["id"]: s for s in corpus["sources"]}
     processor = AutoProcessor.from_pretrained(str(MODEL))
     model = Nemotron3_5AsrForRNNT.from_pretrained(str(MODEL), dtype=torch.float32).eval()
-    OUT.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     index: dict[str, Any] = {
         "$comment": "Nemotron 3.5 ASR bring-up trace: scripts/speech-traces/nemotron_trace.py. Arrays are "
-        "little-endian, row-major; `rows` names the encoder rows pinned (of the clip's valid rows).",
+        "little-endian, row-major; `rows` names the encoder rows pinned (of the clip's valid rows). "
+        "`step_rows`, `top_ids`, `top_logits`: per greedy step, the encoder row read and the joint's "
+        "five largest logits, largest first.",
         "model": {"repository": MODEL_REPOSITORY, "revision": MODEL_REVISION, "sha256": MODEL_SHA256},
         "transformers": {"version": transformers.__version__, "commit": TRANSFORMERS_COMMIT},
         "torch": torch.__version__,
@@ -263,16 +350,17 @@ def main() -> None:
     for clip in CLIPS:
         samples = clip.frames * HOP + HOP // 2
         entry = choose(corpus, clip.source, samples)
-        pin = Pin(OUT / clip.name)
-        wav = OUT / clip.name / "clip.wav"
+        pin = Pin(out_dir / clip.name, out_dir)
+        wav = out_dir / clip.name / "clip.wav"
         wav.parent.mkdir(parents=True, exist_ok=True)
         audio = cut(args.speech, entry, samples, wav)
         rows = encoder_rows(clip.frames)
         selected = list(range(EDGE_ROWS)) + list(range(rows - EDGE_ROWS, rows))
         consistency: dict[str, Any] = {}
+        transcripts: dict[str, Any] = {}
         record: dict[str, Any] = {
             "name": clip.name,
-            "wav": str(wav.relative_to(OUT)),
+            "wav": str(wav.relative_to(out_dir)),
             "wav_sha256": sha256(wav.read_bytes()),
             "samples": samples,
             "frames": clip.frames,
@@ -302,16 +390,32 @@ def main() -> None:
             for stage in STREAM_STAGES:
                 pin.put(f"r{r}/stream/{stage}", stream[stage], selected)
             gaps = {"features": float(np.abs(stream["features"] - full["features"][: clip.frames]).max())}
-            for stage in ("subsampling", *WHOLE_STAGES):
+            for stage in ("subsampling", *WHOLE_STAGES, "projector"):
                 gaps[stage] = float(np.abs(stream[stage] - full[stage][:rows]).max())
             consistency[f"r{r}"] = gaps
             print(clip.name, f"r={r}", {k: f"{v:.2e}" for k, v in gaps.items()})
+            for mode, run in (("whole", full), ("stream", stream)):
+                pin.put(f"r{r}/{mode}/projector", run["projector"][:rows], selected)
+                for name in ("step_rows", "top_ids", "top_logits"):
+                    pin.put(f"r{r}/{mode}/{name}", run[name])
+                margins = run["top_logits"][:, 0] - run["top_logits"][:, 1]
+                transcripts[f"r{r}/{mode}"] = {
+                    "ids": run["ids"].tolist(),
+                    "rows": run["rows"].tolist(),
+                    "steps": len(run["step_rows"]),
+                    "smallest_margin": float(margins.min()),
+                    "text": text(processor, run["ids"], True),
+                    "text_with_special": text(processor, run["ids"], False),
+                }
+                print(clip.name, f"r={r}", mode, repr(transcripts[f"r{r}/{mode}"]["text_with_special"]))
+        pin.put("decoder_start", start_output(model))
         record["stream_minus_whole_max_abs"] = consistency
+        record["transcripts"] = transcripts
         record["arrays"] = pin.arrays
         index["clips"].append(record)
-    (OUT / "index.json").write_text(json.dumps(index, indent=1) + "\n")
-    total = sum(p.stat().st_size for p in OUT.rglob("*") if p.is_file())
-    print(f"{total} bytes under {OUT.relative_to(ROOT)}")
+    (out_dir / "index.json").write_text(json.dumps(index, indent=1) + "\n")
+    total = sum(p.stat().st_size for p in out_dir.rglob("*") if p.is_file())
+    print(f"{total} bytes under {out_dir}")
 
 
 if __name__ == "__main__":

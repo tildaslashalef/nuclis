@@ -1,5 +1,5 @@
 {
- "$comment": "Nemotron 3.5 ASR bring-up trace: scripts/speech-traces/nemotron_trace.py. Arrays are little-endian, row-major; `rows` names the encoder rows pinned (of the clip's valid rows).",
+ "$comment": "Nemotron 3.5 ASR bring-up trace: scripts/speech-traces/nemotron_trace.py. Arrays are little-endian, row-major; `rows` names the encoder rows pinned (of the clip's valid rows). `step_rows`, `top_ids`, `top_logits`: per greedy step, the encoder row read and the joint's five largest logits, largest first.",
  "model": {
   "repository": "nvidia/nemotron-3.5-asr-streaming-0.6b",
   "revision": "ea30d66debe3740a08b573244286791d423d6b3e",
@@ -38,7 +38,8 @@
      "block.0": 0.00018310546875,
      "block.11": 7.62939453125e-05,
      "block.23": 4.172325134277344e-07,
-     "prompt": 5.841255187988281e-06
+     "prompt": 5.841255187988281e-06,
+     "projector": 5.200505256652832e-06
     },
     "r3": {
      "features": 0.0,
@@ -46,7 +47,286 @@
      "block.0": 3.814697265625e-05,
      "block.11": 5.841255187988281e-05,
      "block.23": 7.748603820800781e-07,
-     "prompt": 1.1742115020751953e-05
+     "prompt": 1.1742115020751953e-05,
+     "projector": 8.285045623779297e-06
+    }
+   },
+   "transcripts": {
+    "r0/whole": {
+     "ids": [
+      632,
+      2,
+      38,
+      263,
+      1339,
+      9820,
+      1033,
+      34,
+      581,
+      141,
+      1088,
+      2,
+      133,
+      826,
+      311,
+      1749,
+      2,
+      290,
+      306,
+      2,
+      815,
+      914,
+      2959,
+      2,
+      815,
+      129,
+      427,
+      859
+     ],
+     "rows": [
+      11,
+      18,
+      18,
+      22,
+      23,
+      23,
+      28,
+      30,
+      30,
+      32,
+      32,
+      41,
+      41,
+      41,
+      41,
+      44,
+      47,
+      47,
+      49,
+      51,
+      51,
+      52,
+      52,
+      57,
+      57,
+      57,
+      59,
+      62
+     ],
+     "steps": 92,
+     "smallest_margin": 0.06038665771484375,
+     "text": "Also a popular contrivance whereby love making may be su",
+     "text_with_special": "Also a popular contrivance whereby love making may be su"
+    },
+    "r0/stream": {
+     "ids": [
+      632,
+      2,
+      38,
+      263,
+      1339,
+      9820,
+      1033,
+      34,
+      581,
+      141,
+      1088,
+      2,
+      133,
+      826,
+      311,
+      1749,
+      2,
+      290,
+      306,
+      2,
+      815,
+      914,
+      2959,
+      2,
+      815,
+      129,
+      427,
+      859
+     ],
+     "rows": [
+      11,
+      18,
+      18,
+      22,
+      23,
+      23,
+      28,
+      30,
+      30,
+      32,
+      32,
+      41,
+      41,
+      41,
+      41,
+      44,
+      47,
+      47,
+      49,
+      51,
+      51,
+      52,
+      52,
+      57,
+      57,
+      57,
+      59,
+      62
+     ],
+     "steps": 92,
+     "smallest_margin": 0.06037712097167969,
+     "text": "Also a popular contrivance whereby love making may be su",
+     "text_with_special": "Also a popular contrivance whereby love making may be su"
+    },
+    "r3/whole": {
+     "ids": [
+      632,
+      2,
+      38,
+      263,
+      1339,
+      9820,
+      2813,
+      2,
+      71,
+      581,
+      141,
+      1088,
+      2,
+      133,
+      826,
+      311,
+      1749,
+      2,
+      290,
+      306,
+      2,
+      815,
+      914,
+      2959,
+      2,
+      815,
+      129,
+      427,
+      859,
+      586,
+      463
+     ],
+     "rows": [
+      12,
+      16,
+      16,
+      20,
+      21,
+      21,
+      25,
+      29,
+      29,
+      29,
+      31,
+      32,
+      40,
+      40,
+      40,
+      40,
+      42,
+      45,
+      45,
+      47,
+      49,
+      49,
+      50,
+      50,
+      53,
+      53,
+      56,
+      57,
+      60,
+      62,
+      62
+     ],
+     "steps": 95,
+     "smallest_margin": 0.24721717834472656,
+     "text": "Also a popular can drivance whereby love making may be suspende",
+     "text_with_special": "Also a popular can drivance whereby love making may be suspende"
+    },
+    "r3/stream": {
+     "ids": [
+      632,
+      2,
+      38,
+      263,
+      1339,
+      9820,
+      2813,
+      2,
+      71,
+      581,
+      141,
+      1088,
+      2,
+      133,
+      826,
+      311,
+      1749,
+      2,
+      290,
+      306,
+      2,
+      815,
+      914,
+      2959,
+      2,
+      815,
+      129,
+      427,
+      859,
+      586,
+      463
+     ],
+     "rows": [
+      12,
+      16,
+      16,
+      20,
+      21,
+      21,
+      25,
+      29,
+      29,
+      29,
+      31,
+      32,
+      40,
+      40,
+      40,
+      40,
+      42,
+      45,
+      45,
+      47,
+      49,
+      49,
+      50,
+      50,
+      53,
+      53,
+      56,
+      57,
+      60,
+      62,
+      62
+     ],
+     "steps": 95,
+     "smallest_margin": 0.24721336364746094,
+     "text": "Also a popular can drivance whereby love making may be suspende",
+     "text_with_special": "Also a popular can drivance whereby love making may be suspende"
     }
    },
    "arrays": [
@@ -285,6 +565,120 @@
      ]
     },
     {
+     "name": "r0/whole/projector",
+     "file": "librispeech/r0/whole/projector.f32",
+     "shape": [
+      16,
+      640
+     ],
+     "dtype": "f32",
+     "sha256": "01b3747476da2c8c6d2202f9fbb2172a0b363c84ed735a82e05c949a1e5f69ad",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/whole/step_rows",
+     "file": "librispeech/r0/whole/step_rows.i32",
+     "shape": [
+      92
+     ],
+     "dtype": "i32",
+     "sha256": "268cc888c8b16fccf246348d9b8a68c99a79fc1aedaf2abb91af57f45e611c0b"
+    },
+    {
+     "name": "r0/whole/top_ids",
+     "file": "librispeech/r0/whole/top_ids.i32",
+     "shape": [
+      92,
+      5
+     ],
+     "dtype": "i32",
+     "sha256": "47b8a1ce6be7f4569fe1bea526df522d146ea4a4fae4a2db0728fd5d9e37c7c8"
+    },
+    {
+     "name": "r0/whole/top_logits",
+     "file": "librispeech/r0/whole/top_logits.f32",
+     "shape": [
+      92,
+      5
+     ],
+     "dtype": "f32",
+     "sha256": "01290abfee80ac8df9e6c06c27b8c845ca4fc73de041d3244adbcb93ecca4999"
+    },
+    {
+     "name": "r0/stream/projector",
+     "file": "librispeech/r0/stream/projector.f32",
+     "shape": [
+      16,
+      640
+     ],
+     "dtype": "f32",
+     "sha256": "28e2c4ea9ce5f1549d91511d1489318dac73e84aa39ccf1d607b86230790cf6c",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/stream/step_rows",
+     "file": "librispeech/r0/stream/step_rows.i32",
+     "shape": [
+      92
+     ],
+     "dtype": "i32",
+     "sha256": "268cc888c8b16fccf246348d9b8a68c99a79fc1aedaf2abb91af57f45e611c0b"
+    },
+    {
+     "name": "r0/stream/top_ids",
+     "file": "librispeech/r0/stream/top_ids.i32",
+     "shape": [
+      92,
+      5
+     ],
+     "dtype": "i32",
+     "sha256": "47b8a1ce6be7f4569fe1bea526df522d146ea4a4fae4a2db0728fd5d9e37c7c8"
+    },
+    {
+     "name": "r0/stream/top_logits",
+     "file": "librispeech/r0/stream/top_logits.f32",
+     "shape": [
+      92,
+      5
+     ],
+     "dtype": "f32",
+     "sha256": "84054951fa6f2202b397b2dbe2bbbe232c309ba1504b1852f98fac1e9d0ae350"
+    },
+    {
      "name": "r3/whole/block.0",
      "file": "librispeech/r3/whole/block.0.f32",
      "shape": [
@@ -479,6 +873,129 @@
       62,
       63
      ]
+    },
+    {
+     "name": "r3/whole/projector",
+     "file": "librispeech/r3/whole/projector.f32",
+     "shape": [
+      16,
+      640
+     ],
+     "dtype": "f32",
+     "sha256": "f02ca66851d6b9dd85d72b051490ac0dcb062ea9e5e733669e5d8249ac8015e8",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/whole/step_rows",
+     "file": "librispeech/r3/whole/step_rows.i32",
+     "shape": [
+      95
+     ],
+     "dtype": "i32",
+     "sha256": "feecaf0e3cc6bc6e2b476f4f641348e8069abdeb668120151e7393abc703b9f4"
+    },
+    {
+     "name": "r3/whole/top_ids",
+     "file": "librispeech/r3/whole/top_ids.i32",
+     "shape": [
+      95,
+      5
+     ],
+     "dtype": "i32",
+     "sha256": "926f3c51169f4f80d9ef59faf61e4cb038dae7e3aff4f8fb7816cd57a0764a73"
+    },
+    {
+     "name": "r3/whole/top_logits",
+     "file": "librispeech/r3/whole/top_logits.f32",
+     "shape": [
+      95,
+      5
+     ],
+     "dtype": "f32",
+     "sha256": "3596861a4be4d484fe55aec47602daf7858ba3ffdcc30979b775e179817c6239"
+    },
+    {
+     "name": "r3/stream/projector",
+     "file": "librispeech/r3/stream/projector.f32",
+     "shape": [
+      16,
+      640
+     ],
+     "dtype": "f32",
+     "sha256": "7a73c7fefe126cba91ea573731a0f35af3f72f76ca4b9aaf1e1c719a7ad9e5f7",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/stream/step_rows",
+     "file": "librispeech/r3/stream/step_rows.i32",
+     "shape": [
+      95
+     ],
+     "dtype": "i32",
+     "sha256": "feecaf0e3cc6bc6e2b476f4f641348e8069abdeb668120151e7393abc703b9f4"
+    },
+    {
+     "name": "r3/stream/top_ids",
+     "file": "librispeech/r3/stream/top_ids.i32",
+     "shape": [
+      95,
+      5
+     ],
+     "dtype": "i32",
+     "sha256": "926f3c51169f4f80d9ef59faf61e4cb038dae7e3aff4f8fb7816cd57a0764a73"
+    },
+    {
+     "name": "r3/stream/top_logits",
+     "file": "librispeech/r3/stream/top_logits.f32",
+     "shape": [
+      95,
+      5
+     ],
+     "dtype": "f32",
+     "sha256": "5601aa6cd0af6f175584113edf54e48605f46d49936c0f1f735573532f2ce3bb"
+    },
+    {
+     "name": "decoder_start",
+     "file": "librispeech/decoder_start.f32",
+     "shape": [
+      640
+     ],
+     "dtype": "f32",
+     "sha256": "5c532f48f541a4d8df7fa6f79713c663496a468ff7a516e50b1264020994d70f"
     }
    ]
   },
@@ -507,7 +1024,8 @@
      "block.0": 0.0001678466796875,
      "block.11": 6.389617919921875e-05,
      "block.23": 6.258487701416016e-07,
-     "prompt": 4.76837158203125e-06
+     "prompt": 4.76837158203125e-06,
+     "projector": 6.735324859619141e-06
     },
     "r3": {
      "features": 0.0,
@@ -515,7 +1033,242 @@
      "block.0": 4.57763671875e-05,
      "block.11": 6.4849853515625e-05,
      "block.23": 5.140900611877441e-07,
-     "prompt": 3.7670135498046875e-05
+     "prompt": 3.7670135498046875e-05,
+     "projector": 1.5497207641601562e-05
+    }
+   },
+   "transcripts": {
+    "r0/whole": {
+     "ids": [
+      626,
+      2,
+      217,
+      411,
+      1020,
+      1148,
+      2800,
+      525,
+      2,
+      852,
+      59,
+      851,
+      40,
+      2287,
+      588,
+      399,
+      130,
+      299,
+      287,
+      257,
+      2796,
+      40,
+      2996,
+      1037
+     ],
+     "rows": [
+      16,
+      19,
+      19,
+      19,
+      20,
+      21,
+      24,
+      26,
+      31,
+      31,
+      32,
+      32,
+      33,
+      39,
+      45,
+      52,
+      53,
+      54,
+      56,
+      57,
+      58,
+      59,
+      62,
+      63
+     ],
+     "steps": 88,
+     "smallest_margin": 0.015195846557617188,
+     "text": "Die Romantik hatte ein starkes kulturell deterministisches Element",
+     "text_with_special": "Die Romantik hatte ein starkes kulturell deterministisches Element"
+    },
+    "r0/stream": {
+     "ids": [
+      626,
+      2,
+      217,
+      411,
+      1020,
+      1148,
+      2800,
+      525,
+      2,
+      852,
+      59,
+      851,
+      40,
+      2287,
+      588,
+      399,
+      130,
+      299,
+      287,
+      257,
+      2796,
+      40,
+      2996,
+      1037
+     ],
+     "rows": [
+      16,
+      19,
+      19,
+      19,
+      20,
+      21,
+      24,
+      26,
+      31,
+      31,
+      32,
+      32,
+      33,
+      39,
+      45,
+      52,
+      53,
+      54,
+      56,
+      57,
+      58,
+      59,
+      62,
+      63
+     ],
+     "steps": 88,
+     "smallest_margin": 0.015199661254882812,
+     "text": "Die Romantik hatte ein starkes kulturell deterministisches Element",
+     "text_with_special": "Die Romantik hatte ein starkes kulturell deterministisches Element"
+    },
+    "r3/whole": {
+     "ids": [
+      626,
+      2,
+      217,
+      411,
+      1020,
+      1148,
+      2800,
+      525,
+      2,
+      852,
+      59,
+      851,
+      40,
+      2287,
+      588,
+      399,
+      130,
+      299,
+      287,
+      257,
+      2796,
+      40,
+      2996,
+      1037
+     ],
+     "rows": [
+      12,
+      17,
+      17,
+      17,
+      18,
+      20,
+      23,
+      28,
+      30,
+      30,
+      31,
+      31,
+      32,
+      38,
+      44,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      59,
+      60,
+      61
+     ],
+     "steps": 88,
+     "smallest_margin": 0.010677337646484375,
+     "text": "Die Romantik hatte ein starkes kulturell deterministisches Element",
+     "text_with_special": "Die Romantik hatte ein starkes kulturell deterministisches Element"
+    },
+    "r3/stream": {
+     "ids": [
+      626,
+      2,
+      217,
+      411,
+      1020,
+      1148,
+      2800,
+      525,
+      2,
+      852,
+      59,
+      851,
+      40,
+      2287,
+      588,
+      399,
+      130,
+      299,
+      287,
+      257,
+      2796,
+      40,
+      2996,
+      1037
+     ],
+     "rows": [
+      12,
+      17,
+      17,
+      17,
+      18,
+      20,
+      23,
+      28,
+      30,
+      30,
+      31,
+      31,
+      32,
+      38,
+      44,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      59,
+      60,
+      61
+     ],
+     "steps": 88,
+     "smallest_margin": 0.010663986206054688,
+     "text": "Die Romantik hatte ein starkes kulturell deterministisches Element",
+     "text_with_special": "Die Romantik hatte ein starkes kulturell deterministisches Element"
     }
    },
    "arrays": [
@@ -754,6 +1507,120 @@
      ]
     },
     {
+     "name": "r0/whole/projector",
+     "file": "fleurs-de/r0/whole/projector.f32",
+     "shape": [
+      16,
+      640
+     ],
+     "dtype": "f32",
+     "sha256": "c33d7c07735b93a8b3508f1de8ee8f794bffead9505b020dcdb4d6ead43086cb",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/whole/step_rows",
+     "file": "fleurs-de/r0/whole/step_rows.i32",
+     "shape": [
+      88
+     ],
+     "dtype": "i32",
+     "sha256": "f49aea36a1d9eb82e0557251a3aa37a59c9f0ea4cb4f74fc5ac37b05a8b5400b"
+    },
+    {
+     "name": "r0/whole/top_ids",
+     "file": "fleurs-de/r0/whole/top_ids.i32",
+     "shape": [
+      88,
+      5
+     ],
+     "dtype": "i32",
+     "sha256": "6cee7567cf5ecefc23a5a58140808fcad41b5bf3e587805094bb96da54a030ba"
+    },
+    {
+     "name": "r0/whole/top_logits",
+     "file": "fleurs-de/r0/whole/top_logits.f32",
+     "shape": [
+      88,
+      5
+     ],
+     "dtype": "f32",
+     "sha256": "cebe86f831653044ce09b1d73138f33101c9a2b695635279a879225113bdd916"
+    },
+    {
+     "name": "r0/stream/projector",
+     "file": "fleurs-de/r0/stream/projector.f32",
+     "shape": [
+      16,
+      640
+     ],
+     "dtype": "f32",
+     "sha256": "eb1747925c0044c6c00877aceb32c8c9c82d329ee2e3962bf852e80bf4b71501",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r0/stream/step_rows",
+     "file": "fleurs-de/r0/stream/step_rows.i32",
+     "shape": [
+      88
+     ],
+     "dtype": "i32",
+     "sha256": "f49aea36a1d9eb82e0557251a3aa37a59c9f0ea4cb4f74fc5ac37b05a8b5400b"
+    },
+    {
+     "name": "r0/stream/top_ids",
+     "file": "fleurs-de/r0/stream/top_ids.i32",
+     "shape": [
+      88,
+      5
+     ],
+     "dtype": "i32",
+     "sha256": "6cee7567cf5ecefc23a5a58140808fcad41b5bf3e587805094bb96da54a030ba"
+    },
+    {
+     "name": "r0/stream/top_logits",
+     "file": "fleurs-de/r0/stream/top_logits.f32",
+     "shape": [
+      88,
+      5
+     ],
+     "dtype": "f32",
+     "sha256": "55e87621541b84cccaaad344f8e0f1d10c0f507dfa7501b688d1f96a8d229bfa"
+    },
+    {
      "name": "r3/whole/block.0",
      "file": "fleurs-de/r3/whole/block.0.f32",
      "shape": [
@@ -948,6 +1815,129 @@
       62,
       63
      ]
+    },
+    {
+     "name": "r3/whole/projector",
+     "file": "fleurs-de/r3/whole/projector.f32",
+     "shape": [
+      16,
+      640
+     ],
+     "dtype": "f32",
+     "sha256": "4040060ea8bfb2aacc805288b1a8c9fca21aed48a9ca53192cc5b611fd06c554",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/whole/step_rows",
+     "file": "fleurs-de/r3/whole/step_rows.i32",
+     "shape": [
+      88
+     ],
+     "dtype": "i32",
+     "sha256": "0323bd3465d70b7406f913eb4ed15bfb9384b34e62f93ce61b280bbab1bd2645"
+    },
+    {
+     "name": "r3/whole/top_ids",
+     "file": "fleurs-de/r3/whole/top_ids.i32",
+     "shape": [
+      88,
+      5
+     ],
+     "dtype": "i32",
+     "sha256": "f84c3fe2a154cec204a8d2d715b88ded1f72c6f21a49f303a9e7f690c90ff237"
+    },
+    {
+     "name": "r3/whole/top_logits",
+     "file": "fleurs-de/r3/whole/top_logits.f32",
+     "shape": [
+      88,
+      5
+     ],
+     "dtype": "f32",
+     "sha256": "00056cca74e6495c30452a8b34c39a3242fa7e69ffc74e9a4371fe72494d9e48"
+    },
+    {
+     "name": "r3/stream/projector",
+     "file": "fleurs-de/r3/stream/projector.f32",
+     "shape": [
+      16,
+      640
+     ],
+     "dtype": "f32",
+     "sha256": "62e59b0201e321b73390543fcfb67d75757794e6dfe12c86505ddceb9c1e2f16",
+     "rows": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+     ]
+    },
+    {
+     "name": "r3/stream/step_rows",
+     "file": "fleurs-de/r3/stream/step_rows.i32",
+     "shape": [
+      88
+     ],
+     "dtype": "i32",
+     "sha256": "0323bd3465d70b7406f913eb4ed15bfb9384b34e62f93ce61b280bbab1bd2645"
+    },
+    {
+     "name": "r3/stream/top_ids",
+     "file": "fleurs-de/r3/stream/top_ids.i32",
+     "shape": [
+      88,
+      5
+     ],
+     "dtype": "i32",
+     "sha256": "f84c3fe2a154cec204a8d2d715b88ded1f72c6f21a49f303a9e7f690c90ff237"
+    },
+    {
+     "name": "r3/stream/top_logits",
+     "file": "fleurs-de/r3/stream/top_logits.f32",
+     "shape": [
+      88,
+      5
+     ],
+     "dtype": "f32",
+     "sha256": "7bda5c6dfcbe55f3af1d443322afbf36f327487a242a1cf47da497ebcbcb5a4c"
+    },
+    {
+     "name": "decoder_start",
+     "file": "fleurs-de/decoder_start.f32",
+     "shape": [
+      640
+     ],
+     "dtype": "f32",
+     "sha256": "5c532f48f541a4d8df7fa6f79713c663496a468ff7a516e50b1264020994d70f"
     }
    ]
   }
