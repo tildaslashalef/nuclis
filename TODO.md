@@ -592,13 +592,27 @@ changed; `/model` to a model that does not hear leaves it out by name.
 Side fix: `/model` never loaded the new model's projector, so every
 image was left out after a switch. Spec § 7.2, `docs/app/terminal.md`,
 `/help`, `docs/models/gemma4.md` § In the agent.
-**Open:** asked plainly ("What does the speaker say?"), E4B in the agent
-refuses ("I cannot process the audio file"): its thought finds no audio
-tool and follows the system prompt's "with the available tools, and
-nothing beyond it"; `generate` with the same words transcribes it. One
-sentence in `src/agent/system_prompt.zig` (attached images and clips are
-in the message itself) should fix it; a prompt change is measured with
-`make agent-eval` before and after (AGENTS.md).
+**The prompt's refusal, fixed** (asked by the user, 2026-10-27): asked
+plainly ("What does the speaker say?"), E4B refused, its thought finding
+no audio tool under the rules' "with the available tools, and nothing
+beyond it". `src/agent/system_prompt.zig` now says "An image or audio
+clip attached to a message is part of it: you see and hear it yourself,
+with no tool"; re-pinned (`fixtures/system_prompt*.txt`) with this table
+(`make agent-eval`, seeds 1 and 2, before `base-*`, after `attach-*`):
+
+| | Qwen3.8 before | after | E4B before | after |
+| --- | --- | --- | --- | --- |
+| passed | 96 % (12/13) | 100 % (13/13) | 69 % (7/13) | 81 % (10/13) |
+| steps | 4.35 | 4.38 | 5.58 | 5.08 |
+| tool errors | 5 | 3 | 40 | 28 |
+| prompt / generated tokens (median) | 652 / 686 | 729 / 753 | 1,702 / 1,732 | 1,864 / 1,723 |
+| model seconds (median) | 42.7 | 47.2 | 22.5 | 20.8 |
+| habits (regex grep, pytest, re-read, cd) | — | — | 0, 0, 2, 0 | 0, 0, 1, 0 |
+
+E4B's `count` failed on both seeds after (a wrong `awk`/`sed` for the
+maximum, no media involved); `newfile`, `json`, `validate`, `history`
+passed where they had failed. In the agent the plain question now gets
+the clip's sentence (`make shot`, capture `t18-prompt-after`).
 
 #### 11. Voice scheduling measured (delivered 2026-10-27)
 

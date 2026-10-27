@@ -917,12 +917,15 @@ encoded while the prompt is typed ([spec § 7.2](../spec.md#72-editor),
 this clip directly, no tool needed", the E4B gave `1089-134686-0000`'s
 sentence word for word (thinking low, 295 tokens read), and the follow-up
 turn read 57. Asked plainly ("What does the speaker say? One sentence."),
-it answered that it cannot process audio: its thought lists the agent's
-tools, finds none for audio, and follows the system prompt's "with the
-available tools, and nothing beyond it". `generate --think low` with the
-same words and marker transcribes it, so the refusal is the agent's prompt,
-not the clip; a sentence there saying attached media are in the message
-would change the agent's task list and is measured as such.
+it first answered that it cannot process audio: its thought listed the
+agent's tools, found none for audio, and followed the system prompt's
+"with the available tools, and nothing beyond it" (`generate` with the
+same words transcribed it). The prompt now says "An image or audio clip
+attached to a message is part of it: you see and hear it yourself, with
+no tool", and the plain question gets the sentence (285 tokens read).
+Measured on the agent's task list (two seeds, docs/development.md § The
+agent's task list): Qwen3.8 96 % → 100 % of tasks, tool errors 5 → 3;
+the E4B 69 % → 81 %, tool errors 40 → 28.
 
 **Speed** (Metal, a fresh `generate` per run, five runs each): decoding,
 the log-mel frames and the encoder take 134–149 ms for 4.8 s of speech
