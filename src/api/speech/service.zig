@@ -34,6 +34,9 @@ pub const max_waiting = 64;
 /// of PCM. A chunk waits (the job parks) rather than block the worker.
 const pipe_capacity = 256 * 1024;
 const samples_per_frame = 1920;
+/// Beside a generation, how far the audio may run ahead of its playback
+/// (which starts with its first byte) before speech yields to the generation.
+const lead_ms = 1000;
 /// How often a waiting request looks at its client; how long an event
 /// stream may stay silent before a keepalive comment.
 const poll_ms = 1000;
@@ -267,6 +270,12 @@ pub const Service = struct {
             };
             job.ready.set(io);
         }
+        if (self.executor.betweenSteps()) {
+            // A generation waits for this run: a frame at a time, and only
+            // while the listener could run out.
+            if (job.ahead(io) >= lead_ms * std.time.ns_per_ms) return .again;
+            job.synth.?.chunk = 1;
+        } else job.synth.?.chunk = self.chunk;
         // Parked rather than blocked: the worker never waits on a client.
         if (job.pipe.space(io) < wire.maxChunkBytes(@max(self.chunk, self.first_chunk), samples_per_frame, job.request.stream)) {
             self.mutex.lockUncancelable(io);
@@ -440,6 +449,7 @@ const Job = struct {
     started: std.Io.Timestamp = undefined,
     load_ns: u64 = 0,
     first_audio_ns: ?u64 = null,
+    first_audio_at: ?std.Io.Timestamp = null,
     audio_samples: usize = 0,
 
     /// One chunk: synthesized, encoded, queued for the client. False once
@@ -459,7 +469,11 @@ const Job = struct {
             }
             return false;
         }
-        if (self.first_audio_ns == null) self.first_audio_ns = @intCast(@max(0, self.started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds()));
+        if (self.first_audio_at == null) {
+            const now = std.Io.Clock.awake.now(io);
+            self.first_audio_at = now;
+            self.first_audio_ns = @intCast(@max(0, self.started.durationTo(now).toNanoseconds()));
+        }
         self.audio_samples += n;
         var raw: std.Io.Writer = .fixed(self.bytes_out[0..self.raw_len]);
         if (self.request.format == .wav and !self.header_sent) raw.writeAll(&wire.streamingWavHeader()) catch return false;
@@ -479,6 +493,14 @@ const Job = struct {
             return false;
         };
         return true;
+    }
+
+    /// Nanoseconds the audio made is ahead of its playback, which starts
+    /// with the first audio and runs at real time; 0 before it.
+    fn ahead(self: *const Job, io: std.Io) i64 {
+        const first = self.first_audio_at orelse return 0;
+        const made: i64 = @intCast(self.audio_samples * std.time.ns_per_s / wire.sample_rate);
+        return made - @as(i64, @intCast(first.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds()));
     }
 
     /// An SSE error line after the stream began.

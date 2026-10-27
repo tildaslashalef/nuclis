@@ -39,6 +39,9 @@ const max_field_bytes = 1024;
 const poll_ms = 1000;
 const keepalive_ms = 10_000;
 const progress_ms = 1000;
+/// Beside a generation, a file takes at most one part in this many of the
+/// GPU's time: it has no deadline, and the generation waits for each piece.
+const beside_share = 4;
 
 pub const Format = enum { json, text, verbose_json, srt, vtt };
 
@@ -162,6 +165,9 @@ pub const Files = struct {
     requests: u64 = 0,
     /// Worker-only: the job running.
     active: ?*Job = null,
+    /// Worker-only: when the last piece ended and how long it took.
+    last_end: ?std.Io.Timestamp = null,
+    last_ns: u64 = 0,
     item: gpu.Item = .{ .run = step, .short = true },
 
     pub fn register(self: *Files, gpa: std.mem.Allocator, router: *router_mod.Router, service: *service_mod.Service) !void {
@@ -361,7 +367,15 @@ pub const Files = struct {
             self.finish(io, job);
             return self.afterJob(io);
         }
+        if (self.service.executor.betweenSteps()) if (self.last_end) |end| {
+            const since: u64 = @intCast(@max(0, end.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds()));
+            if (since < (beside_share - 1) * self.last_ns) return .again;
+        };
+        const started = std.Io.Clock.awake.now(io);
         job.advance(io);
+        const ended = std.Io.Clock.awake.now(io);
+        self.last_ns = nanos(started, ended);
+        self.last_end = ended;
         return .again;
     }
 
