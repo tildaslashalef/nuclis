@@ -555,8 +555,6 @@ pub fn padName(buffer: []u8, text: []const u8) []const u8 {
     return buffer[0..total];
 }
 
-/// Exact name match; names never contain `/` or end in `.gguf`, so a path
-/// can never be mistaken for one.
 /// The first catalogue model that hears audio, for a refusal that names
 /// where to go instead; null when none does.
 pub fn hearing() ?*const Entry {
@@ -564,6 +562,8 @@ pub fn hearing() ?*const Entry {
     return null;
 }
 
+/// Exact name match; names never contain `/` or end in `.gguf`, so a path
+/// can never be mistaken for one.
 pub fn find(name: []const u8) ?*const Entry {
     for (&entries) |*e| if (std.mem.eql(u8, e.name, name)) return e;
     return null;
