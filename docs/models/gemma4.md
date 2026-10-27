@@ -911,6 +911,19 @@ cached; the same request again 133; a follow-up under it 152 of 171; a
 different clip in the same place 0; that clip under the first one's
 follow-up 101 of 139, its own request's prompt.
 
+**In the agent** (2026-10-27): a dropped clip is an `[audio #N]` chip,
+encoded while the prompt is typed ([spec § 7.2](../spec.md#72-editor),
+[app/terminal.md](../app/terminal.md)). The plumbing holds: told "You hear
+this clip directly, no tool needed", the E4B gave `1089-134686-0000`'s
+sentence word for word (thinking low, 295 tokens read), and the follow-up
+turn read 57. Asked plainly ("What does the speaker say? One sentence."),
+it answered that it cannot process audio: its thought lists the agent's
+tools, finds none for audio, and follows the system prompt's "with the
+available tools, and nothing beyond it". `generate --think low` with the
+same words and marker transcribes it, so the refusal is the agent's prompt,
+not the clip; a sentence there saying attached media are in the message
+would change the agent's task list and is measured as such.
+
 **Speed** (Metal, a fresh `generate` per run, five runs each): decoding,
 the log-mel frames and the encoder take 134–149 ms for 4.8 s of speech
 (`speech-1.wav`) and 137–145 ms for a 4.9 s FLAC; the prefill of the
