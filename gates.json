@@ -202,6 +202,9 @@
     "inference/src/backends/cpu/attention.zig",
     "inference/src/backends/metal/kernels/*.metal",
     "inference/src/backends/metal/root.zig",
+    "inference/src/backends/metal/kernels.zig",
+    "inference/src/backends/metal/ops/*.zig",
+    "inference/src/backends/metal/profile.zig",
     "inference/src/runtime/session.zig",
     "inference/src/models/gemma4*.zig"
    ],

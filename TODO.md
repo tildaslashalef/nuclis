@@ -157,6 +157,7 @@ Pull request title: `feat: speech in and out: Nemotron streaming ASR, Qwen3-TTS,
 | 11 | Voice scheduling measured: E4B, TTS, and ASR together | C | 9, 10 | main |
 | 12 | Documents, README, website (links Muon) | — | all | main |
 | 13 | Split `kernels.metal` by operation (before 4 and 7) | — | — | done |
+| 14 | Split the Metal backend's `root.zig` by operation (before 4 and 7) | — | — | done |
 
 Worktree rule: a track owns its new files. Shared registrations
 (`src/catalog.zig`, `gates.json`, `docs/spec.md`, `docs/README.md`,
@@ -179,6 +180,23 @@ flushes as the whole-clip pass ends, state lives as long as the stream,
 language `auto` by default, no dither. Sources for the traces:
 `.reference/qwen3-tts-022e286/` (package pins `transformers==4.57.3`)
 and `.reference/transformers-c0d024f/`.
+
+#### 14. Split the Metal backend's `root.zig` by operation (delivered 2026-10-27)
+
+`inference/src/backends/metal/root.zig` (2,258 lines) became `root.zig`
+(`Backend`'s core: device, buffers, recording, dispatch, profiling; about
+470 lines), `kernels.zig` (the MSL source's assembly and `Kernel`),
+`profile.zig` (timing types), and `ops/<kind>.zig`, one per
+`kernels/<kind>.metal` (`matvec`, `matmul`, `experts`, `rowwise`,
+`encoders`, `recurrent`, `attention`, `sampling`, `audio`). Each encoder is
+a function of `*Backend` that `root.zig` aliases as a method, so no caller
+changed. `Backend`'s public declarations are the same 202 plus `dispatch`,
+`dispatch2`, and `perElement`, made public for `ops/` (documented as
+such); `overlaps` became `Buffer.overlaps`. Checked: `make build`, `make
+test`, `make test-metal`, `zig build check-tools`, and `make verify` once
+(50 of 53 passed, 0 failed; the 3 Bonsai gates skipped, its file not on
+this machine). Tasks 4 and 7 add their encoders in new `ops/` files and
+one alias line each.
 
 #### 13. Split `kernels.metal` by operation (delivered 2026-10-27)
 

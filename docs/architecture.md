@@ -368,7 +368,7 @@ trace gates bound per mode. `--kv q8_0` takes about half again (blocks of
 **Read:** [engine/session.md](engine/session.md),
 [llm-guide.md § 20](llm-guide.md#20-half-the-bytes-the-f16-cache) and
 [§ 21](llm-guide.md#21-flash-decoding), `Backend.attentionDecode` and
-`attentionChunk` in `backends/metal/root.zig`.
+`attentionChunk` in `backends/metal/ops/attention.zig`.
 
 ## 6. Two executors, one schedule
 
@@ -487,7 +487,7 @@ flowchart LR
 | Tagged unions with `switch` | A layer is attention *or* recurrent; both cases must be handled | `session.zig` `Layout`, `engine.zig` `Model` |
 | Error sets and `try` | Expected failures are values, not panics | `quant/decode.zig` |
 | Slices | Borrowed views with a length; doc comments say who owns the memory | `runtime/weights.zig` `View` |
-| `comptime` and `@embedFile` | Fixtures and shader source compiled in; the IQ3_S grid becomes MSL text at compile time | `backends/metal/root.zig` `iq3_grid_source` |
+| `comptime` and `@embedFile` | Fixtures and shader source compiled in; the IQ3_S grid becomes MSL text at compile time | `backends/metal/kernels.zig` `codebookSource` |
 | `extern fn` + `*anyopaque` | Calling Objective-C through an opaque handle | `backends/metal/root.zig` |
 | `extern struct` | C layout, passed as kernel constants byte for byte | `Backend.MatvecParams` |
 | `std.Io` passed explicitly | File, clock, and cancellation through an injected interface | `generate.zig` `Trace` |
@@ -591,7 +591,7 @@ entries speculate by default.
 Each is enforced or documented in the file it names.
 
 - **Kernel binding convention:** data buffers at indices 0–6, the
-  parameter struct at 7. The `Backend` encoders in `backends/metal/root.zig`
+  parameter struct at 7. The `Backend` encoders in `backends/metal/ops/`
   are the only place that knows kernel names and argument order.
 - **Specialized matvecs** are chosen per encoding when `specializedMatvec`
   accepts the row alignment; `rows_per_simdgroup` and

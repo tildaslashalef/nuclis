@@ -13,6 +13,11 @@
 //! accumulates them per kernel and shape in `Profile`. It is a diagnostic
 //! mode: each dispatch then runs in its own encoder, which costs GPU time that
 //! the report exposes rather than hides.
+//!
+//! Layout: `kernels.zig` assembles the Metal source and names the kernels,
+//! `profile.zig` holds the timing types, and each `ops/<kind>.zig` encodes the
+//! kernels of `kernels/<kind>.metal`; `Backend` aliases their functions, so a
+//! new encoder is its function plus one alias line below.
 const std = @import("std");
 const cpu = @import("../cpu/root.zig");
 const quant = @import("../../quant/decode.zig");
@@ -39,309 +44,15 @@ extern fn nu_metal_profile_enable(*anyopaque, u32, [*]u8, usize) c_int;
 extern fn nu_metal_profile_read(*anyopaque, [*]f64, u32) u32;
 extern fn nu_metal_capture_next(*anyopaque, [*:0]const u8, [*]u8, usize) c_int;
 
-/// The IQ codebooks are emitted into the shader source at compile time from
-/// their single Zig definitions, so the CPU and GPU decoders share one table.
-fn codebookSource(comptime msl_type: []const u8, comptime suffix: []const u8, comptime name: []const u8, comptime values: anytype) []const u8 {
-    @setEvalBranchQuota(20_000_000);
-    var text: []const u8 = std.fmt.comptimePrint("constant {s} {s}[{d}] = {{\n", .{ msl_type, name, values.len });
-    for (values, 0..) |value, i| {
-        text = text ++ std.fmt.comptimePrint("0x{x}{s},", .{ value, suffix });
-        if (i % 16 == 15) text = text ++ "\n";
-    }
-    return text ++ "};\n";
-}
-/// An IQ2 grid as 2-bit codes: magnitude 8, 25, 43 of component j as 0, 1, 2 at bits 2j.
-fn iq2Codes(comptime grid: anytype) [grid.len]u16 {
-    @setEvalBranchQuota(20_000_000);
-    var codes: [grid.len]u16 = undefined;
-    for (&codes, grid) |*code, entry| {
-        code.* = 0;
-        for (0..8) |j| {
-            const magnitude: u8 = @truncate(entry >> @intCast(8 * j));
-            const c: u16 = switch (magnitude) {
-                8 => 0,
-                25 => 1,
-                43 => 2,
-                else => @compileError("IQ2 magnitude outside {8, 25, 43}"),
-            };
-            code.* |= c << @intCast(2 * j);
-        }
-    }
-    return codes;
-}
-/// The IQ1 grid as 2-bit codes: component j + 1 (0, 1, 2) at bits 2j.
-fn iq1Codes() [2048]u16 {
-    @setEvalBranchQuota(20_000_000);
-    var codes: [2048]u16 = undefined;
-    for (&codes, codebooks.iq1_s) |*code, entry| {
-        code.* = 0;
-        for (0..8) |j| {
-            const component: i8 = @bitCast(@as(u8, @truncate(entry >> @intCast(8 * j))));
-            code.* |= @as(u16, @intCast(component + 1)) << @intCast(2 * j);
-        }
-    }
-    return codes;
-}
-const codebooks = @import("../../quant/iq-codebooks.zig");
-const codebook_source = codebookSource("uint", "u", "nu_iq3_grid", @import("../../quant/iq3-grid.zig").values) ++
-    codebookSource("ulong", "ul", "nu_iq2_xxs_grid", codebooks.iq2_xxs) ++
-    codebookSource("ulong", "ul", "nu_iq2_xs_grid", codebooks.iq2_xs) ++
-    codebookSource("ulong", "ul", "nu_iq2_s_grid", codebooks.iq2_s) ++
-    codebookSource("uint", "u", "nu_iq3_xxs_grid", codebooks.iq3_xxs) ++
-    codebookSource("ulong", "ul", "nu_iq1_s_grid", codebooks.iq1_s) ++
-    codebookSource("ushort", "", "nu_iq1_codes", iq1Codes()) ++
-    codebookSource("ushort", "", "nu_iq2_s_codes", iq2Codes(codebooks.iq2_s));
-/// The kernels, one file per kind of operation, joined in this order into one
-/// library: later files call helpers defined in earlier ones (`common.metal`
-/// first), so the order is part of the source.
-const kernel_files = [_][]const u8{
-    "kernels/common.metal",       "kernels/matvec.metal",          "kernels/matvec_codebook.metal",
-    "kernels/matvec_split.metal", "kernels/matvec_rows.metal",     "kernels/experts.metal",
-    "kernels/matmul.metal",       "kernels/rowwise.metal",         "kernels/recurrent.metal",
-    "kernels/attention.metal",    "kernels/recurrent_chunk.metal", "kernels/sampling.metal",
-    "kernels/encoders.metal",     "kernels/audio.metal",
-};
-const kernels_source = blk: {
-    var joined: []const u8 = "";
-    for (kernel_files) |file| joined = joined ++ @embedFile(file);
-    break :blk joined;
-};
-const source = "#include <metal_stdlib>\nusing namespace metal;\n" ++ codebook_source ++ @embedFile("dequant.metal") ++ "\n" ++ kernels_source;
-
-/// Each `Kernel` names its MSL entry point as `nu_` plus the tag; pipelines
-/// are indexed by the tag's value, so the two cannot drift apart.
-const kernel_names = blk: {
-    const info = @typeInfo(Kernel).@"enum";
-    var names: [info.field_names.len][:0]const u8 = undefined;
-    for (info.field_names, info.field_values, &names, 0..) |tag, value, *name, i| {
-        if (value != i) @compileError("Kernel values must be 0..n-1 in declaration order");
-        name.* = "nu_" ++ tag;
-    }
-    break :blk names;
-};
-pub const Kernel = enum(u32) {
-    matvec,
-    matvec_q4_k,
-    matvec_q5_k,
-    matvec_q6_k,
-    matvec_iq4_xs,
-    embed,
-    rmsnorm,
-    l2norm,
-    rope,
-    add,
-    silu_mul,
-    dflash_conv,
-    silu_inplace,
-    delta_gates,
-    sigmoid_gate,
-    delta,
-    convolution,
-    attention_scores,
-    attention_softmax,
-    attention_values,
-    penalize,
-    argmax_partial,
-    argmax_final,
-    matvec_q3_k,
-    matvec_iq3_s,
-    matvec_segments,
-    topk_partial,
-    topk_final,
-    expsum_partial,
-    matmul,
-    rope_rows,
-    copy,
-    convolution_rows,
-    convolution_history,
-    attention_chunk,
-    delta_chunk,
-    matmul_q3_k,
-    matmul_q4_k,
-    matmul_q5_k,
-    matmul_q6_k,
-    matmul_iq3_s,
-    matmul_iq4_xs,
-    matmul_q3_k_32,
-    matmul_q4_k_32,
-    matmul_q5_k_32,
-    matmul_q6_k_32,
-    matmul_iq3_s_32,
-    matmul_iq4_xs_32,
-    attention_scores_h,
-    attention_values_h,
-    attention_chunk_h,
-    pack_half,
-    attention_decode,
-    attention_decode_h,
-    attention_merge,
-    gelu_mul,
-    scale,
-    add_scale,
-    softcap,
-    attention_decode_w,
-    attention_decode_wh,
-    matvec_q4_0,
-    matmul_q4_0,
-    matmul_q4_0_32,
-    matvec_experts,
-    route,
-    combine_experts,
-    gelu_mul_rows,
-    expert_lists,
-    matmul_experts,
-    matmul_experts_q4_0,
-    matvec_pq2_0,
-    matvec_ptq1_0,
-    matmul_pq2_0,
-    matmul_ptq1_0,
-    matmul_pq2_0_32,
-    matmul_ptq1_0_32,
-    hadamard,
-    gather_rows,
-    matmul_q3_k_8,
-    matmul_q4_k_8,
-    matmul_q5_k_8,
-    matmul_q6_k_8,
-    matmul_iq3_s_8,
-    matmul_iq4_xs_8,
-    matmul_q4_0_8,
-    matmul_pq2_0_8,
-    matmul_ptq1_0_8,
-    matvec_rows,
-    matvec_rows_q4_k_t2,
-    matvec_rows_q4_k_t3,
-    matvec_rows_q4_k_t4,
-    matvec_rows_q4_k_t5,
-    matvec_rows_q4_k_t6,
-    matvec_rows_q4_k_t7,
-    matvec_rows_q4_k_t8,
-    matvec_rows_q5_k_t2,
-    matvec_rows_q5_k_t3,
-    matvec_rows_q5_k_t4,
-    matvec_rows_q5_k_t5,
-    matvec_rows_q5_k_t6,
-    matvec_rows_q5_k_t7,
-    matvec_rows_q5_k_t8,
-    matvec_rows_q6_k_t2,
-    matvec_rows_q6_k_t3,
-    matvec_rows_q6_k_t4,
-    matvec_rows_q6_k_t5,
-    matvec_rows_q6_k_t6,
-    matvec_rows_q6_k_t7,
-    matvec_rows_q6_k_t8,
-    matvec_rows_iq4_xs_t2,
-    matvec_rows_iq4_xs_t3,
-    matvec_rows_iq4_xs_t4,
-    matvec_rows_iq4_xs_t5,
-    matvec_rows_iq4_xs_t6,
-    matvec_rows_iq4_xs_t7,
-    matvec_rows_iq4_xs_t8,
-    matvec_rows_iq2_xxs_t2,
-    matvec_rows_iq2_xxs_t3,
-    matvec_rows_iq2_xxs_t4,
-    matvec_rows_iq2_xxs_t5,
-    matvec_rows_iq2_xxs_t6,
-    matvec_rows_iq2_xxs_t7,
-    matvec_rows_iq2_xxs_t8,
-    matmul_q3_k_w8,
-    matmul_q4_k_w8,
-    matmul_q5_k_w8,
-    matmul_q6_k_w8,
-    matmul_iq3_s_w8,
-    matmul_iq4_xs_w8,
-    matmul_q4_0_w8,
-    matmul_pq2_0_w8,
-    matmul_ptq1_0_w8,
-    matvec_q4_k_split,
-    matvec_q5_k_split,
-    reduce_splits,
-    matvec_segments_split,
-    segment_reduce_splits,
-    attention_chunk_reuse,
-    attention_chunk_reuse_h,
-    rmsnorm_add,
-    add_rmsnorm,
-    rmsnorm_rope,
-    layernorm,
-    add_bias_rows,
-    gelu_inplace,
-    attention_full,
-    gelu_quick_mul,
-    gelu_erf_inplace,
-    clamp,
-    attention_segments,
-    gelu_erf_mul_rows,
-    fragment_layout,
-    matmul_q4_k_f2,
-    matmul_q4_k_f2hh,
-    matmul_q4_k_f4,
-    matmul_q5_k_f2,
-    matmul_q6_k_f2,
-    matmul_iq4_xs_f2,
-    matmul_q3_k_f2,
-    matmul_iq3_s_f2,
-    matmul_q4_0_f2,
-    matmul_q8_0_f2,
-    matmul_pq2_0_f2,
-    matmul_ptq1_0_f2,
-    matmul_iq4_nl_f2,
-    delta_rows,
-    delta_replay,
-    segments_scores,
-    segments_softmax,
-    segments_values,
-    audio_attention,
-    glu_conv,
-    matvec_iq2_xxs,
-    matvec_iq2_xs,
-    matvec_iq2_s,
-    matvec_iq3_xxs,
-    matvec_q2_k,
-    matvec_iq1_s,
-    matvec_iq1_m,
-    matmul_q2_k,
-    matmul_q2_k_32,
-    matmul_q2_k_8,
-    matmul_q2_k_f2,
-    matmul_iq2_xxs,
-    matmul_iq2_xxs_32,
-    matmul_iq2_xxs_8,
-    matmul_iq2_xxs_f2,
-    matmul_iq2_xs,
-    matmul_iq2_xs_32,
-    matmul_iq2_xs_8,
-    matmul_iq2_xs_f2,
-    matmul_iq3_xxs,
-    matmul_iq3_xxs_32,
-    matmul_iq3_xxs_8,
-    matmul_iq3_xxs_f2,
-    matmul_iq1_s,
-    matmul_iq1_s_32,
-    matmul_iq1_s_8,
-    matmul_iq1_s_f2,
-    matmul_iq2_s,
-    matmul_iq2_s_32,
-    matmul_iq2_s_8,
-    matmul_iq2_s_f2,
-    matmul_iq1_m,
-    matmul_iq1_m_32,
-    matmul_iq1_m_8,
-    matmul_iq1_m_f2,
-    pack_q8_0,
-    unpack_q8_0,
-    attention_decode_q8,
-    attention_decode_wq8,
-    attention_heads_f32_128,
-    attention_heads_f32_256,
-    attention_heads_f32_512,
-    attention_heads_f16_128,
-    attention_heads_f16_256,
-    attention_heads_f16_512,
-    attention_heads_q8_128,
-    attention_heads_q8_256,
-    attention_heads_q8_512,
-};
+const kernels = @import("kernels.zig");
+const source = kernels.source;
+const kernel_names = kernels.kernel_names;
+pub const Kernel = kernels.Kernel;
+const profile_mod = @import("profile.zig");
+pub const Profile = profile_mod.Profile;
+pub const Tick = profile_mod.Tick;
+pub const PipelineStats = profile_mod.PipelineStats;
+const Shape = profile_mod.Shape;
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
 pub const Buffer = struct {
@@ -362,72 +73,12 @@ pub const Buffer = struct {
     fn binding(self: Buffer) Binding {
         return .{ .buffer = self.id, .offset = self.offset };
     }
-};
-
-/// Per-dispatch GPU time accumulated by kernel and shape. Only dispatches the
-/// GPU actually timestamped are added to `totals`; the rest are counted in
-/// `unsampled` so a report can never attribute time it did not measure.
-pub const Profile = struct {
-    /// Matrix kernels carry their encoding and dimensions so one kernel's time
-    /// splits by tensor shape (a 48-row projection is not a 17,408-row one);
-    /// other kernels aggregate by name with `encoding = null` and zero dims.
-    pub const Key = struct { kernel: Kernel, encoding: ?u32, rows: u32, columns: u32 };
-    pub const Total = struct { dispatches: u64 = 0, seconds: f64 = 0, bytes: u64 = 0 };
-    const Pending = struct { key: Key, bytes: u64 };
-
-    totals: std.AutoHashMapUnmanaged(Key, Total) = .empty,
-    /// Kernels recorded into the open command buffer, in dispatch order; paired
-    /// with the bridge's durations at `commit`.
-    pending: std.ArrayListUnmanaged(Pending) = .empty,
-    durations: []f64 = &.{},
-    /// Committed command buffers that contained at least one dispatch.
-    command_buffers: u64 = 0,
-    unsampled: u64 = 0,
-    /// Whole-command-buffer GPU time while profiling. Exceeds the sum of the
-    /// totals by the cost of the per-dispatch encoder boundaries.
-    gpu_seconds: f64 = 0,
-    /// While set, committed command buffers are timed but not accounted: a
-    /// caller narrows the profile to the work it brackets.
-    paused: bool = false,
-
-    pub fn deinit(self: *Profile, alloc: std.mem.Allocator) void {
-        self.totals.deinit(alloc);
-        self.pending.deinit(alloc);
-        alloc.free(self.durations);
-        self.* = undefined;
+    /// Whether `a_len` bytes at `a` and `b_len` bytes at `b` share a byte.
+    pub fn overlaps(a: Buffer, a_len: usize, b: Buffer, b_len: usize) bool {
+        if (a.id != b.id) return false;
+        // Subtraction avoids overflow when validating caller-provided offsets.
+        return if (a.offset <= b.offset) b.offset - a.offset < a_len else a.offset - b.offset < b_len;
     }
-    /// Discards accumulated totals (for example after warm-up runs); the
-    /// bridge's sample buffers stay in place.
-    pub fn clear(self: *Profile) void {
-        self.totals.clearRetainingCapacity();
-        self.pending.clearRetainingCapacity();
-        self.command_buffers = 0;
-        self.unsampled = 0;
-        self.gpu_seconds = 0;
-    }
-};
-
-/// What a dispatch is about, for profiling: the weight encoding and matrix
-/// dimensions of a matrix kernel and the bytes it must read. Elementwise
-/// kernels pass `.{}`.
-const Shape = struct { encoding: ?u32 = null, rows: u32 = 0, columns: u32 = 0, bytes: u64 = 0 };
-
-/// A cooperative beat during a GPU wait longer than ~100 ms: an interactive
-/// caller reads its keyboard and repaints here. It must not touch the backend
-/// or the model — the command buffer it interrupts is still in flight.
-pub const Tick = struct {
-    context: *anyopaque,
-    call: *const fn (context: *anyopaque) void,
-};
-
-/// A compiled pipeline's limits: `max_threads` per threadgroup drops below
-/// the device's 1024 when the kernel's registers limit occupancy.
-pub const PipelineStats = struct {
-    name: []const u8,
-    max_threads: u32,
-    execution_width: u32,
-    /// Bytes of `threadgroup` arrays the kernel declares statically.
-    threadgroup_memory: u32,
 };
 
 pub const Backend = struct {
@@ -607,7 +258,9 @@ pub const Backend = struct {
         if (self.tick) |t| t.call(t.context);
     }
 
-    fn dispatch(self: *Backend, kernel: Kernel, buffers: []const Buffer, params: anytype, groups: u32, threads: u32, shape: Shape) !void {
+    /// Records one dispatch of `kernel` over `groups` threadgroups of `threads`.
+    /// Public for the encoders under `ops/`, not for model plans.
+    pub fn dispatch(self: *Backend, kernel: Kernel, buffers: []const Buffer, params: anytype, groups: u32, threads: u32, shape: Shape) !void {
         if (!enabled) return error.MetalNotEnabled;
         if (!self.recording) return error.MetalNotRecording;
         var bindings: [7]Binding = undefined;
@@ -618,8 +271,8 @@ pub const Backend = struct {
         // is the i-th dispatch the GPU will time.
         if (self.profile) |*p| try p.pending.append(self.alloc, .{ .key = .{ .kernel = kernel, .encoding = shape.encoding, .rows = shape.rows, .columns = shape.columns }, .bytes = shape.bytes });
     }
-    /// `dispatch` over a two-dimensional grid of threadgroups.
-    fn dispatch2(self: *Backend, kernel: Kernel, buffers: []const Buffer, params: anytype, groups_x: u32, groups_y: u32, threads: u32) !void {
+    /// `dispatch` over a two-dimensional grid of threadgroups; for `ops/` too.
+    pub fn dispatch2(self: *Backend, kernel: Kernel, buffers: []const Buffer, params: anytype, groups_x: u32, groups_y: u32, threads: u32) !void {
         if (!enabled) return error.MetalNotEnabled;
         if (!self.recording) return error.MetalNotRecording;
         var bindings: [7]Binding = undefined;
@@ -628,1646 +281,206 @@ pub const Backend = struct {
         if (nu_metal_dispatch(self.handle, self.pipelines[@backingInt(kernel)], &bindings, @intCast(buffers.len), @ptrCast(&params), @sizeOf(@TypeOf(params)), groups_x, groups_y, threads, 1) != 0) return error.MetalExecutionFailed;
         if (self.profile) |*p| try p.pending.append(self.alloc, .{ .key = .{ .kernel = kernel, .encoding = null, .rows = 0, .columns = 0 }, .bytes = 0 });
     }
-    fn perElement(count: usize) u32 {
+    /// Threadgroups of 256 covering `count` elements.
+    pub fn perElement(count: usize) u32 {
         return @intCast((count + 255) / 256);
     }
 
-    // ----- Kernel encoders. Each validates shapes before recording. -----
-
-    pub const MatvecParams = extern struct { columns: u32, encoding: u32, stride: u32, rows: u32 };
-    pub const MatvecBlockParams = extern struct { columns: u32, stride: u32, rows: u32, blocks: u32 };
-    /// Rows each SIMD group of a specialized matvec accumulates; must equal the
-    /// template argument of the `nu_matvec_*` instantiations in kernels/.
-    pub const rows_per_simdgroup = 4;
-    const simdgroups_per_matvec_group = 4;
-    /// output[r] = sum_c weights[r,c] * input[c]; weights are an encoded matrix
-    /// with `stride` bytes per row. Input/output are F32 vectors. Every
-    /// encoding `specializedMatvec` names uses its block kernel when the
-    /// weight range and input are aligned for its vector loads.
-    pub fn matvec(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, output: Buffer) !void {
-        return self.matvecImpl(weights, matrix, input, output, 1);
-    }
-    /// `matvec`'s contract, forcing `splits` K splits (the split sweep's knob;
-    /// 1 is the single-pass kernel). Only the specialized encodings with a
-    /// split body are served. No production shape routes here: the 2026-09-21
-    /// sweep measured the split path behind the single pass on every row
-    /// bucket, so the kernels stay as the measured fixture and the
-    /// single pass is what `matvec` records.
-    pub fn matvecSplits(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, output: Buffer, splits: usize) !void {
-        if (splits == 0 or splits > split_k_max) return error.InvalidShape;
-        return self.matvecImpl(weights, matrix, input, output, splits);
-    }
-    /// Rows per SIMD group of a standalone specialized matvec: the template
-    /// argument of its instantiation in kernels/.
-    pub fn matvecRowsPerSimdgroup(kernel: Kernel) usize {
-        return switch (kernel) {
-            .matvec_iq2_xxs, .matvec_iq2_xs, .matvec_iq2_s, .matvec_q2_k, .matvec_iq1_m => 2,
-            else => rows_per_simdgroup,
-        };
-    }
-    /// SIMD groups per threadgroup of a standalone specialized matvec; must
-    /// match its kernel in kernels/. IQ2_S's 16 share one copy of its
-    /// 8 KiB grid (2.5–4 % over 4, docs/engine/apple-gpu.md).
-    pub fn matvecSimdgroups(kernel: Kernel) usize {
-        return switch (kernel) {
-            .matvec_iq2_s => 16,
-            else => simdgroups_per_matvec_group,
-        };
-    }
-    /// Most splits the row-partial scratch holds.
-    pub const split_k_max = 8;
-    /// Most rows the row-partial scratch holds per split (512 KB at 8 splits).
-    pub const split_k_rows = 16_384;
-    /// The split body of a specialized matvec, when one exists.
-    pub fn matvecSplitKernel(kernel: Kernel) ?Kernel {
-        return switch (kernel) {
-            .matvec_q4_k => .matvec_q4_k_split,
-            .matvec_q5_k => .matvec_q5_k_split,
-            else => null,
-        };
-    }
-    /// Row-partial scratch, created on first use: `split_k_rows` rows per
-    /// split; the forced path validates the row count against it.
-    fn splitScratch(self: *Backend) !Buffer {
-        if (self.split_scratch) |b| return b;
-        const b = try self.create(split_k_rows * split_k_max * 4);
-        self.split_scratch = b;
-        return b;
-    }
-    fn matvecImpl(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, output: Buffer, splits: usize) !void {
-        if (matrix.rows == 0 or matrix.columns == 0 or matrix.columns % 16 != 0 or matrix.bytes.len % matrix.rows != 0) return error.InvalidShape;
-        const stride = matrix.bytes.len / matrix.rows;
-        try quant.validateRow(matrix.encoding, stride, matrix.columns);
-        if (weights.len < matrix.bytes.len or input.len < matrix.columns * 4 or output.len < matrix.rows * 4) return error.InvalidShape;
-        // Weight bytes are the traffic that bounds decode; the profile divides them by measured time.
-        const shape: Shape = .{ .encoding = matrix.encoding, .rows = @intCast(matrix.rows), .columns = @intCast(matrix.columns), .bytes = matrix.bytes.len };
-        const rows_per_group = rows_per_simdgroup * simdgroups_per_matvec_group;
-        if (!self.generic_only) if (specializedMatvec(matrix.encoding, weights.offset, stride, input.offset)) |kernel| {
-            if (splits > 1) {
-                const split_kernel = matvecSplitKernel(kernel) orelse return error.InvalidShape;
-                const scratch = try self.splitScratch();
-                if (matrix.rows * splits * 4 > scratch.len) return error.InvalidShape;
-                const blocks = matrix.columns / 256;
-                const split_blocks = @divCeil(blocks, splits);
-                const p: MatvecSplitParams = .{ .columns = @intCast(matrix.columns), .stride = @intCast(stride), .rows = @intCast(matrix.rows), .blocks = @intCast(blocks), .splits = @intCast(splits), .split_blocks = @intCast(split_blocks) };
-                const row_groups = @divCeil(matrix.rows, rows_per_group);
-                try self.dispatch(split_kernel, &.{ weights, input, scratch }, p, @intCast(row_groups * splits), 32 * simdgroups_per_matvec_group, shape);
-                const rp: ReduceSplitsParams = .{ .rows = @intCast(matrix.rows), .splits = @intCast(splits) };
-                try self.dispatch(.reduce_splits, &.{ scratch, output }, rp, perElement(matrix.rows), 256, .{});
-                return;
-            }
-            const p: MatvecBlockParams = .{ .columns = @intCast(matrix.columns), .stride = @intCast(stride), .rows = @intCast(matrix.rows), .blocks = @intCast(matrix.columns / 256) };
-            const simdgroups = matvecSimdgroups(kernel);
-            const group_rows = matvecRowsPerSimdgroup(kernel) * simdgroups;
-            try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast(@divCeil(matrix.rows, group_rows)), @intCast(32 * simdgroups), shape);
-            return;
-        };
-        if (splits > 1) return error.InvalidShape;
-        const p: MatvecParams = .{ .columns = @intCast(matrix.columns), .encoding = matrix.encoding, .stride = @intCast(stride), .rows = @intCast(matrix.rows) };
-        try self.dispatch(.matvec, &.{ weights, input, output }, p, @intCast(matrix.rows), 32, shape);
-    }
-    pub const MatvecSplitParams = extern struct { columns: u32, stride: u32, rows: u32, blocks: u32, splits: u32, split_blocks: u32 };
-    pub const ReduceSplitsParams = extern struct { rows: u32, splits: u32 };
-    pub const MatvecRowsParams = extern struct { columns: u32, encoding: u32, stride: u32, rows: u32, tokens: u32, in_stride: u32, out_stride: u32 };
-    /// Largest batch `matmul` routes to the multi-row matvec: 2 rows for every
-    /// encoding with a body, 3 for the K-quants. The word-outer bodies read
-    /// 150–214 GB/s (weight bytes) at 2 rows and Q4_K/Q5_K/Q6_K 121–158 at
-    /// 3, against the fragment tile's 104–151; IQ4_XS at 3 and every
-    /// encoding from 4 lose to the tile (`--matvec-rows-bench`, 2026-10-03).
-    pub const small_batch_rows = 3;
-    /// Whether `matmul` routes the multi-row matvec at all. Verify batches
-    /// of 2 and 3 rows are common: the drafter stops its chain at a
-    /// low-probability proposal.
-    pub const route_small_batch = true;
-    /// Largest token count the multi-row kernels are instantiated for; the
-    /// sweep measures every count to `matvec_rows_max` even though `matmul`
-    /// routes only to `small_batch_rows`.
-    pub const matvec_rows_max = 8;
-    /// Rows each SIMD group of a multi-row body accumulates: four 8-lane
-    /// groups of `NU_ROWS_PER_SIMDGROUP` (kernels/matvec_rows.metal) rows each.
-    pub const matvec_rows_per_simdgroup = 8;
-    pub fn usesMatvecRows(encoding: u32, tokens: usize) bool {
-        const limit: usize = switch (encoding) {
-            12, 13, 14 => small_batch_rows,
-            else => 2,
-        };
-        return route_small_batch and tokens >= 2 and tokens <= limit;
-    }
-    /// output[t][r] = Σ_c weights[r,c] · input[t,c] for `1 < tokens ≤
-    /// matvec_rows_max` activation rows. Each weight block is decoded once
-    /// and multiplied against every token row, so the weight bytes (the
-    /// bandwidth bound of a small batch) are read once instead of once per
-    /// token. The specialized encodings use their multi-row body when aligned,
-    /// every other encoding the generic one. `input` and `output` hold
-    /// `tokens` rows of `in_stride`/`out_stride` floats. `matmul` routes only
-    /// the specialized encodings here; `metal-check` calls it directly for
-    /// every encoding.
-    pub fn matvecRows(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
-        if (matrix.rows == 0 or matrix.columns == 0 or matrix.columns % 16 != 0 or matrix.bytes.len % matrix.rows != 0) return error.InvalidShape;
-        const stride = matrix.bytes.len / matrix.rows;
-        try quant.validateRow(matrix.encoding, stride, matrix.columns);
-        if (tokens < 2 or tokens > matvec_rows_max or tokens > 64) return error.InvalidShape;
-        if (in_stride < matrix.columns or out_stride < matrix.rows) return error.InvalidShape;
-        if (weights.len < matrix.bytes.len or input.len < ((tokens - 1) * in_stride + matrix.columns) * 4 or output.len < ((tokens - 1) * out_stride + matrix.rows) * 4) return error.InvalidShape;
-        if (input.offset % 16 != 0 or in_stride % 4 != 0 or output.offset % 4 != 0) return error.InvalidShape;
-        const shape: Shape = .{ .encoding = matrix.encoding, .rows = @intCast(matrix.rows), .columns = @intCast(matrix.columns), .bytes = matrix.bytes.len };
-        const p: MatvecRowsParams = .{ .columns = @intCast(matrix.columns), .encoding = matrix.encoding, .stride = @intCast(stride), .rows = @intCast(matrix.rows), .tokens = @intCast(tokens), .in_stride = @intCast(in_stride), .out_stride = @intCast(out_stride) };
-        if (!self.generic_only) if (specializedMatvecRows(matrix.encoding, tokens, weights.offset, stride, input.offset)) |kernel| {
-            const rows_per_group = matvec_rows_per_simdgroup * simdgroups_per_matvec_group;
-            try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast(@divCeil(matrix.rows, rows_per_group)), 32 * simdgroups_per_matvec_group, shape);
-            return;
-        };
-        try self.dispatch(.matvec_rows, &.{ weights, input, output }, p, @intCast(matrix.rows), 32, shape);
-    }
-    /// The multi-row bodies that exist (Q4_K, Q5_K, Q6_K, IQ4_XS), one per token
-    /// count 2..8; every other encoding takes the generic `nu_matvec_rows` above.
-    /// The token count is a template parameter so the body's accumulator loops
-    /// are compile-time bound (see kernels/).
-    pub fn specializedMatvecRows(encoding: u32, tokens: usize, weight_offset: usize, stride: usize, input_offset: usize) ?Kernel {
-        if (input_offset % 16 != 0 or tokens < 2 or tokens > matvec_rows_max or !blockAligned(encoding, weight_offset, stride)) return null;
-        const bodies = switch (encoding) {
-            12 => comptime matvecRowsBodies("q4_k"),
-            13 => comptime matvecRowsBodies("q5_k"),
-            14 => comptime matvecRowsBodies("q6_k"),
-            23 => comptime matvecRowsBodies("iq4_xs"),
-            16 => comptime matvecRowsBodies("iq2_xxs"),
-            else => return null,
-        };
-        return bodies[tokens - 2];
-    }
-    /// `matvec_rows_<name>_t2` .. `_t<matvec_rows_max>`, looked up by name.
-    fn matvecRowsBodies(comptime name: []const u8) [matvec_rows_max - 1]Kernel {
-        var bodies: [matvec_rows_max - 1]Kernel = undefined;
-        for (&bodies, 2..) |*body, tokens| body.* = @field(Kernel, std.fmt.comptimePrint("matvec_rows_{s}_t{d}", .{ name, tokens }));
-        return bodies;
-    }
-    pub const MatmulParams = extern struct { columns: u32, encoding: u32, stride: u32, rows: u32, tokens: u32, in_stride: u32, out_stride: u32, row_tiles: u32 };
-    /// Token padding of `matmul`: activation buffers hold a multiple of this
-    /// many token rows (the largest token tile any instantiation uses).
-    pub const matmul_tile = 64;
-    /// Chunk length up to which the split-K 16×8 tile serves. Set to the
-    /// measured crossover between the small tile and the 32×32 one.
-    pub const small_chunk_tokens = 24;
-    /// Rows up to which a 2–8-token batch with no specialized tile
-    /// (`specializedTile`) runs the generic multi-row matvec instead of the
-    /// generic tile (Qwen's 48-row β/α and 1,024-row projections).
-    pub const small_matrix_rows = 1024;
-    pub fn matmulPadded(tokens: usize) usize {
-        return @divCeil(tokens, matmul_tile) * matmul_tile;
-    }
-    /// Output tile of a matmul kernel and whether its operands are rounded to
-    /// half; must match the instantiations in kernels/matmul.metal. The specialized
-    /// tiles hold half operands and accumulate in F32: 64×64 tiles, 32×32 for
-    /// chunks of at most 32 tokens, and a 16×8 split-K tile for chunks of at
-    /// most `small_chunk_tokens`, where the grid's row parallelism matters more
-    /// than the tile's K reuse; the generic tile keeps F32 operands in 32×32.
-    pub const MatmulGeometry = struct { rows: usize, tokens: usize, half: bool };
-    pub fn matmulGeometry(kernel: Kernel) MatmulGeometry {
-        return switch (kernel) {
-            .matmul => .{ .rows = 32, .tokens = 32, .half = false },
-            .matmul_q3_k, .matmul_q4_k, .matmul_q5_k, .matmul_q6_k, .matmul_iq3_s, .matmul_iq4_xs, .matmul_q4_0, .matmul_pq2_0, .matmul_ptq1_0 => .{ .rows = 64, .tokens = 64, .half = true },
-            .matmul_q2_k, .matmul_iq2_xxs, .matmul_iq2_xs, .matmul_iq3_xxs, .matmul_iq1_s, .matmul_iq2_s, .matmul_iq1_m => .{ .rows = 64, .tokens = 64, .half = true },
-            .matmul_q3_k_8, .matmul_q4_k_8, .matmul_q5_k_8, .matmul_q6_k_8, .matmul_iq3_s_8, .matmul_iq4_xs_8, .matmul_q4_0_8, .matmul_pq2_0_8, .matmul_ptq1_0_8 => .{ .rows = 16, .tokens = 8, .half = true },
-            .matmul_q2_k_8, .matmul_iq2_xxs_8, .matmul_iq2_xs_8, .matmul_iq3_xxs_8, .matmul_iq1_s_8, .matmul_iq2_s_8, .matmul_iq1_m_8 => .{ .rows = 16, .tokens = 8, .half = true },
-            .matmul_q3_k_w8, .matmul_q4_k_w8, .matmul_q5_k_w8, .matmul_q6_k_w8, .matmul_iq3_s_w8, .matmul_iq4_xs_w8, .matmul_q4_0_w8, .matmul_pq2_0_w8, .matmul_ptq1_0_w8 => .{ .rows = 32, .tokens = 8, .half = true },
-            .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q5_k_f2, .matmul_q6_k_f2, .matmul_iq4_xs_f2, .matmul_q3_k_f2, .matmul_iq3_s_f2, .matmul_q4_0_f2, .matmul_q8_0_f2, .matmul_pq2_0_f2, .matmul_ptq1_0_f2, .matmul_iq4_nl_f2 => .{ .rows = 16, .tokens = 8, .half = true },
-            .matmul_q2_k_f2, .matmul_iq2_xxs_f2, .matmul_iq2_xs_f2, .matmul_iq3_xxs_f2, .matmul_iq1_s_f2, .matmul_iq2_s_f2, .matmul_iq1_m_f2 => .{ .rows = 16, .tokens = 8, .half = true },
-            .matmul_q4_k_f4 => .{ .rows = 32, .tokens = 8, .half = true },
-            else => .{ .rows = 32, .tokens = 32, .half = true },
-        };
-    }
-    /// out[t][r] = Σ_c weights[r,c] · input[t,c] for `tokens` activation rows
-    /// (chunked prefill). `input` holds `matmulPadded(tokens)` rows of
-    /// `in_stride` floats and `output` as many rows of `out_stride`; rows past
-    /// `tokens` are scratch the caller must ignore. Requires columns % 64 == 0,
-    /// rows % 8 == 0, and a float4-aligned input (offset and stride). Weights
-    /// are read once per token tile. Q3_K, Q4_K, Q5_K, Q6_K, IQ3_S, IQ4_XS,
-    /// and Q4_0 go through their specialized half-operand tile when the weight
-    /// range is aligned (`specializedMatmul`; Q4_K, Q5_K, Q6_K, and IQ4_XS
-    /// through the register-fragment tile up to `small_chunk_tokens`,
-    /// `specializedMatmulFrag`), every other case through the generic F32
-    /// tile (`matmulGeometry`).
-    pub fn matmul(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
-        return self.matmulImpl(weights, matrix, input, in_stride, output, out_stride, tokens, .auto);
-    }
-    /// Same contract as `matmul`, but always uses a matrix tile. Keeps benchmark
-    /// controls independent of production small-batch routing.
-    pub fn matmulTile(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
-        return self.matmulImpl(weights, matrix, input, in_stride, output, out_stride, tokens, .tile);
-    }
-    /// Same contract, forcing the wide 32×8 split-K tile (a measured
-    /// candidate, against `matmulTile`'s 16×8 control). Rejected
-    /// when the encoding or alignment has no wide body, or past its 8-token
-    /// tile.
-    pub fn matmulTile32(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
-        return self.matmulImpl(weights, matrix, input, in_stride, output, out_stride, tokens, .wide);
-    }
-    /// Same contract, through `kernel`, a matmul instantiation for this
-    /// encoding and token count the caller has checked (a measurement aid).
-    pub fn matmulKernel(self: *Backend, kernel: Kernel, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
-        return self.matmulImpl(weights, matrix, input, in_stride, output, out_stride, tokens, .{ .forced = kernel });
-    }
-    const MatmulPolicy = union(enum) { auto, tile, wide, forced: Kernel };
-    fn matmulImpl(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize, policy: MatmulPolicy) !void {
-        if (matrix.rows == 0 or matrix.rows % 8 != 0 or matrix.columns == 0 or matrix.columns % 64 != 0 or matrix.bytes.len % matrix.rows != 0) return error.InvalidShape;
-        if (tokens == 0 or in_stride < matrix.columns or out_stride < matrix.rows) return error.InvalidShape;
-        const stride = matrix.bytes.len / matrix.rows;
-        try quant.validateRow(matrix.encoding, stride, matrix.columns);
-        const padded = matmulPadded(tokens);
-        if (weights.len < matrix.bytes.len or input.len < padded * in_stride * 4 or output.len < padded * out_stride * 4) return error.InvalidShape;
-        if (input.offset % 16 != 0 or in_stride % 4 != 0 or output.offset % 4 != 0) return error.InvalidShape;
-        // A 2-row batch is a matvec problem, not a tile one, and only the
-        // specialized bodies beat the tile: the generic `nu_matvec_rows` is
-        // slower there (the sweep measures both).
-        if (policy == .auto and usesMatvecRows(matrix.encoding, tokens) and !self.generic_only and
-            specializedMatvecRows(matrix.encoding, tokens, weights.offset, stride, input.offset) != null)
-            return self.matvecRows(weights, matrix, input, in_stride, output, out_stride, tokens);
-        // A matrix of few rows on the generic tile leaves the GPU nearly
-        // empty (48 rows: two threadgroups); one SIMD group per row does not.
-        const specialized = specializedTile(matrix.encoding, weights.offset, stride, tokens);
-        if (policy == .auto and !self.generic_only and tokens >= 2 and tokens <= matvec_rows_max and matrix.rows <= small_matrix_rows and specialized == null)
-            return self.matvecRows(weights, matrix, input, in_stride, output, out_stride, tokens);
-        const kernel = (if (self.generic_only) null else switch (policy) {
-            .auto => specialized,
-            .tile => specializedMatmul(matrix.encoding, weights.offset, stride, tokens),
-            .wide => specializedMatmulWide(matrix.encoding, weights.offset, stride, tokens),
-            .forced => |k| k,
-        }) orelse blk: {
-            if (policy == .wide) return error.InvalidShape;
-            break :blk .matmul;
-        };
-        const geometry = matmulGeometry(kernel);
-        const row_tiles = @divCeil(matrix.rows, geometry.rows);
-        // The buffers hold `padded` rows, a multiple of every token tile.
-        const token_tiles = @divCeil(tokens, geometry.tokens);
-        const p: MatmulParams = .{ .columns = @intCast(matrix.columns), .encoding = matrix.encoding, .stride = @intCast(stride), .rows = @intCast(matrix.rows), .tokens = @intCast(tokens), .in_stride = @intCast(in_stride), .out_stride = @intCast(out_stride), .row_tiles = @intCast(row_tiles) };
-        // Weights are read once per token tile, so the profile attributes that many bytes.
-        const shape: Shape = .{ .encoding = matrix.encoding, .rows = @intCast(matrix.rows), .columns = @intCast(matrix.columns), .bytes = matrix.bytes.len * token_tiles };
-        try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast(row_tiles * token_tiles), 128, shape);
-    }
-    /// Whether the row start (buffer offset) and the row stride are multiples
-    /// of the vector-load width the encoding's block size allows (Q4_K/Q5_K
-    /// 16, IQ4_XS 8, Q3_K/Q6_K/IQ3_S/Q4_0/IQ2_XXS 2). False for encodings
-    /// without a specialized matvec; an encoding may have a matvec and no
-    /// matmul tile, so each picker below answers null for its own gaps.
-    fn blockAligned(encoding: u32, weight_offset: usize, stride: usize) bool {
-        const alignment: usize = switch (encoding) {
-            12, 13 => 16,
-            23, 29 => 8,
-            10, 143 => 4,
-            2, 11, 14, 16, 17, 18, 19, 21, 22, 142 => 2,
-            else => return false,
-        };
-        return weight_offset % alignment == 0 and stride % alignment == 0;
-    }
-    /// Picks a specialized matvec when its vector loads are aligned
-    /// (`blockAligned`) and the input vector is float4-aligned. Otherwise
-    /// `null`: generic path. The K-quant kernels walk 256-value strides;
-    /// the Q4_0 kernel walks 32-value blocks and the ternary kernels
-    /// 128-value blocks (lanes past the last block idle), so any whole-block
-    /// row serves those three.
-    pub fn specializedMatvec(encoding: u32, weight_offset: usize, stride: usize, input_offset: usize) ?Kernel {
-        if (input_offset % 16 != 0 or !blockAligned(encoding, weight_offset, stride)) return null;
-        return switch (encoding) {
-            2 => .matvec_q4_0,
-            142 => .matvec_pq2_0,
-            143 => .matvec_ptq1_0,
-            11 => .matvec_q3_k,
-            21 => .matvec_iq3_s,
-            12 => .matvec_q4_k,
-            13 => .matvec_q5_k,
-            14 => .matvec_q6_k,
-            23 => .matvec_iq4_xs,
-            16 => .matvec_iq2_xxs,
-            17 => .matvec_iq2_xs,
-            22 => .matvec_iq2_s,
-            18 => .matvec_iq3_xxs,
-            10 => .matvec_q2_k,
-            19 => .matvec_iq1_s,
-            29 => .matvec_iq1_m,
-            else => unreachable,
-        };
-    }
-    /// Picks the wide 32×8 split-K tile for the specialized encodings, up to
-    /// its 8-token tile. A measured candidate that lost to the 16×8 tile;
-    /// nothing routes to it in production.
-    pub fn specializedMatmulWide(encoding: u32, weight_offset: usize, stride: usize, tokens: usize) ?Kernel {
-        if (tokens == 0 or tokens > 8 or !blockAligned(encoding, weight_offset, stride)) return null;
-        return switch (encoding) {
-            2 => .matmul_q4_0_w8,
-            142 => .matmul_pq2_0_w8,
-            143 => .matmul_ptq1_0_w8,
-            11 => .matmul_q3_k_w8,
-            21 => .matmul_iq3_s_w8,
-            12 => .matmul_q4_k_w8,
-            13 => .matmul_q5_k_w8,
-            14 => .matmul_q6_k_w8,
-            23 => .matmul_iq4_xs_w8,
-            else => null,
-        };
-    }
-    /// The specialized tile production `matmul` records for this shape: the
-    /// fragment tile, else `specializedMatmul`'s; `null` means the generic
-    /// tile or, for few rows, the generic multi-row matvec.
-    pub fn specializedTile(encoding: u32, weight_offset: usize, stride: usize, tokens: usize) ?Kernel {
-        return specializedMatmulFrag(encoding, weight_offset, stride, tokens) orelse specializedMatmul(encoding, weight_offset, stride, tokens);
-    }
-    /// Picks the register-fragment 16×8 tile for at most `small_chunk_tokens`
-    /// tokens: every encoding with a specialized tile under its alignment
-    /// rules, and IQ4_NL (18-byte blocks, 2-byte aligned), which has no
-    /// other specialized kernel.
-    pub fn specializedMatmulFrag(encoding: u32, weight_offset: usize, stride: usize, tokens: usize) ?Kernel {
-        if (tokens == 0 or tokens > small_chunk_tokens) return null;
-        if (encoding == 20) return if (weight_offset % 2 == 0 and stride % 2 == 0) .matmul_iq4_nl_f2 else null;
-        if (!blockAligned(encoding, weight_offset, stride)) return null;
-        return switch (encoding) {
-            12 => .matmul_q4_k_f2,
-            13 => .matmul_q5_k_f2,
-            14 => .matmul_q6_k_f2,
-            23 => .matmul_iq4_xs_f2,
-            11 => .matmul_q3_k_f2,
-            21 => .matmul_iq3_s_f2,
-            2 => .matmul_q4_0_f2,
-            142 => .matmul_pq2_0_f2,
-            143 => .matmul_ptq1_0_f2,
-            10 => .matmul_q2_k_f2,
-            16 => .matmul_iq2_xxs_f2,
-            17 => .matmul_iq2_xs_f2,
-            18 => .matmul_iq3_xxs_f2,
-            19 => .matmul_iq1_s_f2,
-            22 => .matmul_iq2_s_f2,
-            29 => .matmul_iq1_m_f2,
-            else => null,
-        };
-    }
-    /// Writes element (r, c) of an 8×8 `simdgroup_matrix` filled through
-    /// `thread_elements()` as 2·lane + i into `out[8r + c]` (64 floats): the
-    /// lane layout the register-fragment tiles assume.
-    pub fn fragmentLayout(self: *Backend, out: Buffer) !void {
-        if (out.len < 64 * 4) return error.InvalidShape;
-        try self.dispatch(.fragment_layout, &.{out}, @as(u32, 0), 1, 32, .{ .encoding = null, .rows = 8, .columns = 8, .bytes = 0 });
-    }
-    /// Picks a specialized matmul tile under the same weight alignment
-    /// rules (the activation tile is staged through float4 loads, which
-    /// `matmul` checks), first the 16×8 split-K instantiation for chunks of at
-    /// most `small_chunk_tokens` tokens, then the 32×32 one for at most 32.
-    pub fn specializedMatmul(encoding: u32, weight_offset: usize, stride: usize, tokens: usize) ?Kernel {
-        if (!blockAligned(encoding, weight_offset, stride)) return null;
-        if (tokens <= small_chunk_tokens) return switch (encoding) {
-            2 => .matmul_q4_0_8,
-            142 => .matmul_pq2_0_8,
-            143 => .matmul_ptq1_0_8,
-            11 => .matmul_q3_k_8,
-            21 => .matmul_iq3_s_8,
-            12 => .matmul_q4_k_8,
-            13 => .matmul_q5_k_8,
-            14 => .matmul_q6_k_8,
-            23 => .matmul_iq4_xs_8,
-            10 => .matmul_q2_k_8,
-            16 => .matmul_iq2_xxs_8,
-            17 => .matmul_iq2_xs_8,
-            18 => .matmul_iq3_xxs_8,
-            19 => .matmul_iq1_s_8,
-            22 => .matmul_iq2_s_8,
-            29 => .matmul_iq1_m_8,
-            else => null,
-        };
-        if (tokens <= 32) return switch (encoding) {
-            2 => .matmul_q4_0_32,
-            142 => .matmul_pq2_0_32,
-            143 => .matmul_ptq1_0_32,
-            11 => .matmul_q3_k_32,
-            21 => .matmul_iq3_s_32,
-            12 => .matmul_q4_k_32,
-            13 => .matmul_q5_k_32,
-            14 => .matmul_q6_k_32,
-            23 => .matmul_iq4_xs_32,
-            10 => .matmul_q2_k_32,
-            16 => .matmul_iq2_xxs_32,
-            17 => .matmul_iq2_xs_32,
-            18 => .matmul_iq3_xxs_32,
-            19 => .matmul_iq1_s_32,
-            22 => .matmul_iq2_s_32,
-            29 => .matmul_iq1_m_32,
-            else => null,
-        };
-        return switch (encoding) {
-            2 => .matmul_q4_0,
-            142 => .matmul_pq2_0,
-            143 => .matmul_ptq1_0,
-            11 => .matmul_q3_k,
-            21 => .matmul_iq3_s,
-            12 => .matmul_q4_k,
-            13 => .matmul_q5_k,
-            14 => .matmul_q6_k,
-            23 => .matmul_iq4_xs,
-            10 => .matmul_q2_k,
-            16 => .matmul_iq2_xxs,
-            17 => .matmul_iq2_xs,
-            18 => .matmul_iq3_xxs,
-            19 => .matmul_iq1_s,
-            22 => .matmul_iq2_s,
-            29 => .matmul_iq1_m,
-            else => null,
-        };
-    }
-    /// Borrowed projection descriptors. All projections read the same input.
-    /// Plain outputs must be disjoint; a gate pair (SiLU or tanh GELU) names
-    /// the same output in both entries and writes only act(segment[0]) * segment[1].
-    pub const Segment = struct { weights: Buffer, matrix: cpu.Matrix, output: Buffer };
-    pub const SegmentMode = enum(u32) { plain, silu_mul_pair, gelu_mul_pair };
-    const SegmentParams = extern struct { rows: u32, weight_slot: u32, weight_offset: u32, encoding: u32, stride: u32, output_slot: u32, output_offset: u32 };
-    const MatvecSegments = extern struct { columns: u32, blocks: u32, count: u32, mode: u32, splits: u32, split_blocks: u32, total_rows: u32, partials_slot: u32, segments: [4]SegmentParams };
-
-    fn overlaps(a: Buffer, a_len: usize, b: Buffer, b_len: usize) bool {
-        if (a.id != b.id) return false;
-        // Subtraction avoids overflow when validating caller-provided offsets.
-        return if (a.offset <= b.offset) b.offset - a.offset < a_len else a.offset - b.offset < b_len;
-    }
-    /// Bind each underlying buffer once at offset zero. Segment byte offsets
-    /// retain its original slice. This fits both four weights + packed DeltaNet
-    /// outputs and three weights + attention outputs in six slots, plus input.
-    /// The rebased descriptors are used only as Metal bindings, never as host views.
-    fn segmentSlot(bindings: *[7]Buffer, used: *usize, buffer: Buffer) !u32 {
-        for (1..used.*) |i| if (bindings[i].id == buffer.id) return @intCast(i);
-        if (used.* == bindings.len) return error.InvalidShape;
-        const index = used.*;
-        bindings[index] = buffer;
-        bindings[index].offset = 0;
-        used.* += 1;
-        return @intCast(index);
-    }
-    /// Records the merged matvec of up to four projections in one dispatch.
-    /// `error.MergeDeclined` (nothing recorded) when a segment's specialized
-    /// kernel runs faster alone (`mergeDeclined`); the caller then runs the
-    /// segments as standalone matvecs and a pair's activation.
-    pub fn matvecSegments(self: *Backend, segments: []const Segment, input: Buffer, mode: SegmentMode) !void {
-        return self.matvecSegmentsImpl(segments, input, mode, null);
-    }
-    /// The seven 2-bit encodings' standalone kernels beat their bodies inside
-    /// the merged kernel by 11–23 % on the gate+up pair, even with the two
-    /// extra dispatches and `siluMul` (docs/engine/apple-gpu.md § Saluki's
-    /// 2-bit matvecs on the `ffn_down` shape), so a merge holding one is declined.
-    pub fn mergeDeclined(kernel: Kernel) bool {
-        return switch (kernel) {
-            .matvec_iq2_xxs, .matvec_iq2_xs, .matvec_iq2_s, .matvec_iq3_xxs, .matvec_q2_k, .matvec_iq1_s, .matvec_iq1_m => true,
-            else => false,
-        };
-    }
-    /// `matvecSegments` forcing the split count (the split sweep's knob; 1 is
-    /// the single-pass kernel). Only plain-mode merges whose every segment has
-    /// a specialized split body (Q4_K/Q5_K) are served. As with
-    /// `matvecSplits`, no production merge routes here (the split measured
-    /// behind the single pass); the segment split kernels stay as the measured fixture.
-    pub fn matvecSegmentsSplits(self: *Backend, segments: []const Segment, input: Buffer, mode: SegmentMode, splits: usize) !void {
-        if (splits == 0 or splits > split_k_max) return error.InvalidShape;
-        return self.matvecSegmentsImpl(segments, input, mode, splits);
-    }
-    fn matvecSegmentsImpl(self: *Backend, segments: []const Segment, input: Buffer, mode: SegmentMode, splits_override: ?usize) !void {
-        // Shape and the decline first, then availability: with Metal compiled
-        // out the early `MetalNotEnabled` return would otherwise make
-        // `InvalidShape` and `MergeDeclined` unreachable, and the adapters'
-        // switch on them would not compile in a CPU-only build. The decline
-        // needs no validated shape: a declined merge's segments are validated
-        // by the standalone matvecs that run them.
-        if (segments.len == 0 or segments.len > 4) return error.InvalidShape;
-        if (splits_override == null and !self.generic_only) for (segments) |s| {
-            if (s.matrix.rows == 0) continue;
-            const kernel = specializedMatvec(s.matrix.encoding, s.weights.offset, s.matrix.bytes.len / s.matrix.rows, input.offset) orelse continue;
-            if (mergeDeclined(kernel)) return error.MergeDeclined;
-        };
-        if (!enabled) return error.MetalNotEnabled;
-        const columns = segments[0].matrix.columns;
-        if (columns == 0 or columns > std.math.maxInt(u32) / 4 or columns % 16 != 0 or input.len < columns * 4 or input.offset % 4 != 0) return error.InvalidShape;
-        if (mode != .plain and (segments.len != 2 or segments[0].matrix.rows != segments[1].matrix.rows or segments[0].output.id != segments[1].output.id or segments[0].output.offset != segments[1].output.offset)) return error.InvalidShape;
-        var bindings: [7]Buffer = @splat(input);
-        var used: usize = 1;
-        var p: MatvecSegments = std.mem.zeroes(MatvecSegments);
-        p.columns = @intCast(columns);
-        p.blocks = @intCast(columns / 256);
-        p.count = @intCast(segments.len);
-        p.mode = @backingInt(mode);
-        var total_rows: u32 = 0;
-        var bytes: u64 = 0;
-        // The forced split path needs every segment specialized *with a split
-        // body* (neither the generic body nor the non-split encodings honour a
-        // K range) and a free binding slot for the row partials.
-        var all_split_capable = mode == .plain;
-        for (segments, 0..) |s, i| {
-            const m = s.matrix;
-            if (m.rows == 0 or m.rows > std.math.maxInt(u32) / 4 or m.rows % 16 != 0 or m.columns != columns or m.bytes.len % m.rows != 0) return error.InvalidShape;
-            const stride = m.bytes.len / m.rows;
-            try quant.validateRow(m.encoding, stride, columns);
-            if (s.weights.len < m.bytes.len or s.output.len < m.rows * 4 or s.output.offset % 4 != 0) return error.InvalidShape;
-            if (overlaps(s.output, m.rows * 4, input, columns * 4)) return error.InvalidShape;
-            for (segments) |other| if (overlaps(s.output, m.rows * 4, other.weights, other.matrix.bytes.len)) return error.InvalidShape;
-            if (mode == .plain) for (segments[0..i]) |other| {
-                if (overlaps(s.output, m.rows * 4, other.output, other.matrix.rows * 4)) return error.InvalidShape;
-            };
-            total_rows = std.math.add(u32, total_rows, @intCast(m.rows)) catch return error.InvalidShape;
-            bytes = std.math.add(u64, bytes, m.bytes.len) catch return error.InvalidShape;
-            const kernel = if (self.generic_only) null else specializedMatvec(m.encoding, s.weights.offset, stride, input.offset);
-            const specialized = kernel != null;
-            all_split_capable = all_split_capable and (if (kernel) |k| matvecSplitKernel(k) != null else false);
-            p.segments[i] = .{
-                .rows = @intCast(m.rows),
-                .weight_slot = try segmentSlot(&bindings, &used, s.weights),
-                .weight_offset = std.math.cast(u32, s.weights.offset) orelse return error.InvalidShape,
-                .encoding = m.encoding | (if (specialized) @as(u32, 0) else 0x80000000),
-                .stride = std.math.cast(u32, stride) orelse return error.InvalidShape,
-                .output_slot = try segmentSlot(&bindings, &used, s.output),
-                .output_offset = std.math.cast(u32, s.output.offset) orelse return error.InvalidShape,
-            };
-        }
-        // Unused slots bind the valid input buffer, because the kernel signature
-        // declares all seven. No dispatch is recorded before all validation passes.
-        const splits = splits_override orelse 1;
-        if (splits > 1) {
-            if (!all_split_capable or used >= bindings.len) return error.InvalidShape;
-            const scratch = try self.splitScratch();
-            if (total_rows * splits * 4 > scratch.len) return error.InvalidShape;
-            bindings[used] = scratch;
-            p.splits = @intCast(splits);
-            p.split_blocks = @intCast(@divCeil(p.blocks, splits));
-            p.total_rows = total_rows;
-            p.partials_slot = @intCast(used);
-            const groups: u32 = @intCast((total_rows / 16) * splits);
-            try self.dispatch(.matvec_segments_split, &bindings, p, groups, 128, .{ .rows = total_rows, .columns = p.columns, .bytes = bytes * splits });
-            try self.dispatch(.segment_reduce_splits, &bindings, p, perElement(total_rows), 256, .{});
-            return;
-        }
-        const groups = if (mode == .plain) total_rows / 16 else p.segments[0].rows / 8;
-        try self.dispatch(.matvec_segments, &bindings, p, groups, 128, .{ .rows = total_rows, .columns = p.columns, .bytes = bytes });
-    }
-
-    // ----- Mixture of experts: routing, gathered projections, combine. -----
-
-    pub const RouteParams = extern struct { experts: u32, k: u32, rows: u32, in_stride: u32 };
-    /// Bounds of `route`: one logit per thread of the 256-thread group, and
-    /// the selected-probability scratch (`NU_ROUTE_MAX_K`).
-    pub const route_max_experts = 256;
-    pub const route_max_k = 64;
-    /// For each of `rows` logit rows (`[row][in_stride]`), the `k` experts
-    /// with the largest logits by (value desc, index asc) into `indices`
-    /// (`[row][k]` u32) and their softmax probabilities renormalized to sum
-    /// one into `weights` (`[row][k]` f32): `cpu.experts.route` per row.
-    pub fn route(self: *Backend, logits: Buffer, experts: usize, k: usize, rows: usize, in_stride: usize, indices: Buffer, weights: Buffer) !void {
-        if (experts == 0 or experts > route_max_experts or k == 0 or k > experts or k > route_max_k or rows == 0 or in_stride < experts) return error.InvalidShape;
-        if (logits.len < ((rows - 1) * in_stride + experts) * 4 or indices.len < rows * k * 4 or weights.len < rows * k * 4 or indices.offset % 4 != 0 or weights.offset % 4 != 0) return error.InvalidShape;
-        const p: RouteParams = .{ .experts = @intCast(experts), .k = @intCast(k), .rows = @intCast(rows), .in_stride = @intCast(in_stride) };
-        try self.dispatch(.route, &.{ logits, indices, weights }, p, @intCast(rows), 256, .{});
-    }
-
-    pub const ExpertMatvecParams = extern struct { columns: u32, stride: u32, rows: u32, blocks: u32, encoding: u32, experts: u32, slots: u32, in_stride: u32, out_stride: u32, row_groups: u32 };
-    /// Gathered projection: for each slot `s < slots`,
-    /// `output[s·out_stride + r] = W[indices[s]][r] · input[s·in_stride]`
-    /// over the expert matrices of `tensor` (`cpu.ExpertMatrix`, experts
-    /// contiguous). `in_stride` 0 shares one input across the slots.
-    /// Specialized bodies apply under `matvec`'s alignment rules (the input
-    /// stride must keep every slot float4-aligned); otherwise the generic
-    /// decoder. Reads only the selected experts' bytes.
-    pub fn matvecExperts(self: *Backend, weights: Buffer, tensor: cpu.ExpertMatrix, indices: Buffer, slots: usize, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize) !void {
-        const per_expert = tensor.expertBytes() catch return error.InvalidShape;
-        const stride = per_expert / tensor.rows;
-        if (tensor.columns % 16 != 0 or tensor.rows > std.math.maxInt(u32) / 4 or tensor.experts > std.math.maxInt(u32)) return error.InvalidShape;
-        if (slots == 0 or slots > std.math.maxInt(u16) or out_stride < tensor.rows or (in_stride != 0 and in_stride < tensor.columns) or in_stride % 4 != 0) return error.InvalidShape;
-        if (weights.len < tensor.bytes.len or indices.len < slots * 4 or indices.offset % 4 != 0) return error.InvalidShape;
-        if (input.len < ((slots - 1) * in_stride + tensor.columns) * 4 or output.len < ((slots - 1) * out_stride + tensor.rows) * 4 or output.offset % 4 != 0) return error.InvalidShape;
-        const specialized = !self.generic_only and specializedMatvec(tensor.encoding, weights.offset, stride, input.offset) != null;
-        const row_groups = @divCeil(tensor.rows, 16);
-        const p: ExpertMatvecParams = .{
-            .columns = @intCast(tensor.columns),
-            .stride = std.math.cast(u32, stride) orelse return error.InvalidShape,
-            .rows = @intCast(tensor.rows),
-            .blocks = @intCast(tensor.columns / 256),
-            .encoding = tensor.encoding | (if (specialized) @as(u32, 0) else 0x80000000),
-            .experts = @intCast(tensor.experts),
-            .slots = @intCast(slots),
-            .in_stride = @intCast(in_stride),
-            .out_stride = std.math.cast(u32, out_stride) orelse return error.InvalidShape,
-            .row_groups = @intCast(row_groups),
-        };
-        // The bytes that bound the dispatch are the selected experts', read once each.
-        const shape: Shape = .{ .encoding = tensor.encoding, .rows = @intCast(tensor.rows * slots), .columns = @intCast(tensor.columns), .bytes = @as(u64, per_expert) * slots };
-        try self.dispatch(.matvec_experts, &.{ weights, input, output, indices }, p, @intCast(slots * row_groups), 32 * simdgroups_per_matvec_group, shape);
-    }
-
-    pub const CombineParams = extern struct { columns: u32, slots: u32, rows: u32, in_stride: u32, out_stride: u32, experts: u32, flags: u32 };
-    pub const CombineShape = struct { columns: usize, slots: usize, rows: usize = 1, experts: usize, in_stride: usize, out_stride: usize };
-    /// `output[row][c] = Σ_s weights[row][s] · scale[indices[row][s]] · values[row·slots + s][c]`
-    /// (the scale factor only when `scales` is given): the weighted sum of
-    /// the slots' down projections into one row per token.
-    pub fn combineExperts(self: *Backend, values: Buffer, weights: Buffer, indices: Buffer, scales: ?Buffer, output: Buffer, s: CombineShape) !void {
-        if (s.columns == 0 or s.slots == 0 or s.rows == 0 or s.experts == 0 or s.in_stride < s.columns or s.out_stride < s.columns) return error.InvalidShape;
-        const slot_rows = s.rows * s.slots;
-        if (values.len < ((slot_rows - 1) * s.in_stride + s.columns) * 4 or weights.len < slot_rows * 4 or indices.len < slot_rows * 4 or indices.offset % 4 != 0) return error.InvalidShape;
-        if (output.len < ((s.rows - 1) * s.out_stride + s.columns) * 4) return error.InvalidShape;
-        if (scales) |sc| if (sc.len < s.experts * 4) return error.InvalidShape;
-        const p: CombineParams = .{ .columns = @intCast(s.columns), .slots = @intCast(s.slots), .rows = @intCast(s.rows), .in_stride = @intCast(s.in_stride), .out_stride = @intCast(s.out_stride), .experts = @intCast(s.experts), .flags = if (scales != null) 1 else 0 };
-        try self.dispatch(.combine_experts, &.{ values, weights, indices, scales orelse weights, output }, p, perElement(s.columns * s.rows), 256, .{});
-    }
-
-    pub const GeluRowsParams = extern struct { width: u32, rows: u32, gate_stride: u32, up_stride: u32, out_stride: u32 };
-    /// `output[r][i] = gelu(gate[r][i]) · up[r][i]` over `rows` strided rows
-    /// of `width`; with a fused gate-up row, `up` is the gate buffer sliced
-    /// at the up half. The output must not overlap the inputs.
-    pub fn geluMulRows(self: *Backend, gate: Buffer, up: Buffer, output: Buffer, width: usize, rows: usize, gate_stride: usize, up_stride: usize, out_stride: usize) !void {
-        if (width == 0 or rows == 0 or gate_stride < width or up_stride < width or out_stride < width) return error.InvalidShape;
-        if (gate.len < ((rows - 1) * gate_stride + width) * 4 or up.len < ((rows - 1) * up_stride + width) * 4 or output.len < ((rows - 1) * out_stride + width) * 4) return error.InvalidShape;
-        const out_len = ((rows - 1) * out_stride + width) * 4;
-        if (overlaps(output, out_len, gate, ((rows - 1) * gate_stride + width) * 4) or overlaps(output, out_len, up, ((rows - 1) * up_stride + width) * 4)) return error.InvalidShape;
-        const p: GeluRowsParams = .{ .width = @intCast(width), .rows = @intCast(rows), .gate_stride = @intCast(gate_stride), .up_stride = @intCast(up_stride), .out_stride = @intCast(out_stride) };
-        try self.dispatch(.gelu_mul_rows, &.{ gate, up, output }, p, perElement(width * rows), 256, .{});
-    }
-
-    // Prefill: the chunk's slot rows grouped by expert, then gathered tiles.
-
-    pub const ExpertListsParams = extern struct { experts: u32, n: u32, max_tiles: u32 };
-    /// Slot rows per gathered tile; the tile bound below counts them.
-    pub const expert_tile = 32;
-    /// Tiles the lists of `n` slot rows over `experts` can hold at most:
-    /// Σ ceil(count/32) ≤ n/32 + experts. This bounds the gathered matmul
-    /// grid before the counts are known.
-    pub fn expertTileBound(n: usize, experts: usize) usize {
-        return @divCeil(n, expert_tile) + experts;
-    }
-    /// Words of the lists buffer, in order: the tile count, `n`, the
-    /// `experts + 1` exclusive prefix offsets, `expertTileBound` tiles of
-    /// (expert, first, count), and the `n` row list.
-    pub const ExpertListsLayout = struct { tiles_at: usize, rows_at: usize, words: usize };
-    pub fn expertListsLayout(n: usize, experts: usize) ExpertListsLayout {
-        const tiles_at = experts + 3;
-        const rows_at = tiles_at + 3 * expertTileBound(n, experts);
-        return .{ .tiles_at = tiles_at, .rows_at = rows_at, .words = rows_at + n };
-    }
-    /// Groups the `rows · k` slot rows of `indices` (`[row][k]`, as `route`
-    /// writes them) by expert into `lists` (`expertListsLayout(rows · k,
-    /// experts).words` u32, layout above) for `matmulExperts`. One
-    /// threadgroup; at most 256 experts.
-    pub fn expertLists(self: *Backend, indices: Buffer, rows: usize, k: usize, experts: usize, lists: Buffer) !void {
-        if (rows == 0 or k == 0 or experts == 0 or experts > route_max_experts) return error.InvalidShape;
-        const n = std.math.mul(usize, rows, k) catch return error.InvalidShape;
-        if (n > std.math.maxInt(u32) / 4) return error.InvalidShape;
-        const layout = expertListsLayout(n, experts);
-        if (indices.len < n * 4 or indices.offset % 4 != 0 or lists.len < layout.words * 4 or lists.offset % 4 != 0) return error.InvalidShape;
-        const p: ExpertListsParams = .{ .experts = @intCast(experts), .n = @intCast(n), .max_tiles = @intCast(expertTileBound(n, experts)) };
-        try self.dispatch(.expert_lists, &.{ indices, lists }, p, 1, 256, .{});
-    }
-
-    pub const MatmulExpertsParams = extern struct { columns: u32, encoding: u32, stride: u32, rows: u32, in_stride: u32, out_stride: u32, row_tiles: u32, experts: u32, in_group: u32, tiles_at: u32, rows_at: u32 };
-    /// Gathered projection over the row lists: for each slot row `s` of the
-    /// chunk (`rows · k` of them, expert `e_s` per the lists),
-    /// `output[s·out_stride + r] = W[e_s][r] · input[(s / in_group)·in_stride]`.
-    /// `in_group` = k shares a token's input across its slots (gate-up);
-    /// 1 reads one input row per slot (down). Weights are read once per
-    /// 32-row tile of an expert's slot rows; no padding rows are written,
-    /// so `output` holds exactly `rows · k` rows. Same shape rules as
-    /// `matmul` (columns % 64, rows % 8, float4-aligned input). Q4_0 takes
-    /// the half tile under the matvec alignment rules, everything else the
-    /// generic F32 tile. The profile attributes no bytes: the volume read
-    /// depends on the routing.
-    pub fn matmulExperts(self: *Backend, weights: Buffer, tensor: cpu.ExpertMatrix, lists: Buffer, rows: usize, k: usize, input: Buffer, in_stride: usize, in_group: usize, output: Buffer, out_stride: usize) !void {
-        const per_expert = tensor.expertBytes() catch return error.InvalidShape;
-        const stride = per_expert / tensor.rows;
-        if (tensor.rows % 8 != 0 or tensor.columns % 64 != 0 or tensor.rows > std.math.maxInt(u32) / 4 or tensor.experts > route_max_experts) return error.InvalidShape;
-        if (rows == 0 or k == 0 or in_group == 0 or in_stride < tensor.columns or out_stride < tensor.rows) return error.InvalidShape;
-        const n = std.math.mul(usize, rows, k) catch return error.InvalidShape;
-        if (n > std.math.maxInt(u32) / 4) return error.InvalidShape;
-        const layout = expertListsLayout(n, tensor.experts);
-        const input_rows = @divCeil(n, in_group);
-        if (weights.len < tensor.bytes.len or lists.len < layout.words * 4 or lists.offset % 4 != 0) return error.InvalidShape;
-        if (input.len < ((input_rows - 1) * in_stride + tensor.columns) * 4 or input.offset % 16 != 0 or in_stride % 4 != 0) return error.InvalidShape;
-        if (output.len < ((n - 1) * out_stride + tensor.rows) * 4 or output.offset % 4 != 0) return error.InvalidShape;
-        const specialized = !self.generic_only and tensor.encoding == 2 and blockAligned(tensor.encoding, weights.offset, stride);
-        const kernel: Kernel = if (specialized) .matmul_experts_q4_0 else .matmul_experts;
-        const tile_rows: usize = if (specialized) 64 else 32;
-        const row_tiles = @divCeil(tensor.rows, tile_rows);
-        const p: MatmulExpertsParams = .{
-            .columns = @intCast(tensor.columns),
-            .encoding = tensor.encoding,
-            .stride = std.math.cast(u32, stride) orelse return error.InvalidShape,
-            .rows = @intCast(tensor.rows),
-            .in_stride = std.math.cast(u32, in_stride) orelse return error.InvalidShape,
-            .out_stride = std.math.cast(u32, out_stride) orelse return error.InvalidShape,
-            .row_tiles = @intCast(row_tiles),
-            .experts = @intCast(tensor.experts),
-            .in_group = std.math.cast(u32, in_group) orelse return error.InvalidShape,
-            .tiles_at = @intCast(layout.tiles_at),
-            .rows_at = @intCast(layout.rows_at),
-        };
-        const groups = std.math.cast(u32, row_tiles * expertTileBound(n, tensor.experts)) orelse return error.InvalidShape;
-        try self.dispatch(kernel, &.{ weights, input, output, lists }, p, groups, 128, .{ .encoding = tensor.encoding, .rows = @intCast(tensor.rows), .columns = @intCast(tensor.columns) });
-    }
-
-    pub const EmbedParams = extern struct { columns: u32, encoding: u32, stride: u32, token: u32 };
-    pub fn embed(self: *Backend, weights: Buffer, matrix: cpu.Matrix, token: u32, output: Buffer) !void {
-        if (matrix.rows == 0 or matrix.columns == 0 or matrix.columns % 16 != 0 or matrix.bytes.len % matrix.rows != 0 or token >= matrix.rows) return error.InvalidShape;
-        const stride = matrix.bytes.len / matrix.rows;
-        try quant.validateRow(matrix.encoding, stride, matrix.columns);
-        if (weights.len < matrix.bytes.len or output.len < matrix.columns * 4) return error.InvalidShape;
-        const p: EmbedParams = .{ .columns = @intCast(matrix.columns), .encoding = matrix.encoding, .stride = @intCast(stride), .token = token };
-        // One row is read, so the profiled shape is 1 x columns and `stride` bytes.
-        try self.dispatch(.embed, &.{ weights, output }, p, perElement(matrix.columns / 16), 256, .{ .encoding = matrix.encoding, .rows = 1, .columns = @intCast(matrix.columns), .bytes = stride });
-    }
-    pub const NormParams = extern struct { width: u32, in_stride: u32, out_stride: u32, mult_stride: u32, eps: f32, flags: u32 };
-    pub const Norm = struct {
-        rows: usize,
-        width: usize,
-        in_stride: usize,
-        out_stride: usize,
-        eps: f32 = 1e-6,
-        /// Optional per-row multiplier applied as silu(multiplier) after the norm.
-        silu_multiplier: ?struct { buffer: Buffer, stride: usize } = null,
-    };
-    /// Weighted RMSNorm over `rows` rows of `width`; input and output may alias exactly.
-    pub fn rmsNorm(self: *Backend, input: Buffer, weight: Buffer, output: Buffer, spec: Norm) !void {
-        if (spec.rows == 0 or spec.width == 0 or spec.in_stride < spec.width or spec.out_stride < spec.width or !(spec.eps > 0)) return error.InvalidShape;
-        if (input.len < ((spec.rows - 1) * spec.in_stride + spec.width) * 4 or output.len < ((spec.rows - 1) * spec.out_stride + spec.width) * 4 or weight.len < spec.width * 4) return error.InvalidShape;
-        var mult = input;
-        var mult_stride: usize = 0;
-        var flags: u32 = 0;
-        if (spec.silu_multiplier) |m| {
-            if (m.stride < spec.width or m.buffer.len < ((spec.rows - 1) * m.stride + spec.width) * 4) return error.InvalidShape;
-            mult = m.buffer;
-            mult_stride = m.stride;
-            flags = 1;
-        }
-        const p: NormParams = .{ .width = @intCast(spec.width), .in_stride = @intCast(spec.in_stride), .out_stride = @intCast(spec.out_stride), .mult_stride = @intCast(mult_stride), .eps = spec.eps, .flags = flags };
-        try self.dispatch(.rmsnorm, &.{ input, weight, output, mult }, p, @intCast(spec.rows), 256, .{});
-    }
-    pub const LayerNormParams = extern struct { width: u32, in_stride: u32, out_stride: u32, eps: f32 };
-    /// LayerNorm with weight and bias over `rows` rows of `width`
-    /// (`spec.silu_multiplier` unused); input and output may alias exactly.
-    pub fn layerNorm(self: *Backend, input: Buffer, weight: Buffer, bias: Buffer, output: Buffer, spec: Norm) !void {
-        if (spec.rows == 0 or spec.width == 0 or spec.in_stride < spec.width or spec.out_stride < spec.width or !(spec.eps > 0)) return error.InvalidShape;
-        if (input.len < ((spec.rows - 1) * spec.in_stride + spec.width) * 4 or output.len < ((spec.rows - 1) * spec.out_stride + spec.width) * 4 or weight.len < spec.width * 4 or bias.len < spec.width * 4) return error.InvalidShape;
-        const p: LayerNormParams = .{ .width = @intCast(spec.width), .in_stride = @intCast(spec.in_stride), .out_stride = @intCast(spec.out_stride), .eps = spec.eps };
-        try self.dispatch(.layernorm, &.{ input, weight, bias, output }, p, @intCast(spec.rows), 256, .{});
-    }
-    pub const BiasRowsParams = extern struct { width: u32, rows: u32, stride: u32 };
-    /// `x[row · stride + i] += bias[i]` over `rows` rows of `width`.
-    pub fn addBiasRows(self: *Backend, x: Buffer, bias: Buffer, width: usize, rows: usize, stride: usize) !void {
-        if (width == 0 or rows == 0 or stride < width or x.len < ((rows - 1) * stride + width) * 4 or bias.len < width * 4) return error.InvalidShape;
-        const p: BiasRowsParams = .{ .width = @intCast(width), .rows = @intCast(rows), .stride = @intCast(stride) };
-        try self.dispatch(.add_bias_rows, &.{ x, bias }, p, perElement(width * rows), 256, .{});
-    }
-    /// x = gelu(x) (the tanh form of `cpu.gelu`) over `count` values.
-    pub fn gelu(self: *Backend, x: Buffer, count: usize) !void {
-        if (count == 0 or x.len < count * 4) return error.InvalidShape;
-        try self.dispatch(.gelu_inplace, &.{x}, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
-    }
-    pub const AttentionFullParams = extern struct { heads: u32, width: u32, rows: u32, q_stride: u32, kv_stride: u32, out_stride: u32, scale: f32 };
-    pub const AttentionFullShape = struct { heads: usize, width: usize, rows: usize, q_stride: usize, kv_stride: usize, out_stride: usize, scale: f32 };
-    /// Maximum rows one bidirectional attention can cover (threadgroup memory).
-    pub const attention_full_max_rows = 4096;
-    /// Bidirectional attention over `rows` rows: every row attends to every
-    /// row, `heads` heads of `width` (at most 256) per row. Queries, keys, and
-    /// values are separate buffers (or slices of one) with their own row
-    /// strides; the output is `heads · width` wide at `out_stride`.
-    pub fn attentionFull(self: *Backend, queries: Buffer, keys: Buffer, values: Buffer, output: Buffer, s: AttentionFullShape) !void {
-        if (s.heads == 0 or s.width == 0 or s.width > 256 or s.rows == 0 or s.rows > attention_full_max_rows) return error.InvalidShape;
-        const row_floats = s.heads * s.width;
-        if (s.q_stride < row_floats or s.kv_stride < row_floats or s.out_stride < row_floats) return error.InvalidShape;
-        if (queries.len < ((s.rows - 1) * s.q_stride + row_floats) * 4 or keys.len < ((s.rows - 1) * s.kv_stride + row_floats) * 4 or values.len < ((s.rows - 1) * s.kv_stride + row_floats) * 4 or output.len < ((s.rows - 1) * s.out_stride + row_floats) * 4) return error.InvalidShape;
-        if (overlaps(output, ((s.rows - 1) * s.out_stride + row_floats) * 4, queries, ((s.rows - 1) * s.q_stride + row_floats) * 4) or overlaps(output, ((s.rows - 1) * s.out_stride + row_floats) * 4, keys, ((s.rows - 1) * s.kv_stride + row_floats) * 4) or overlaps(output, ((s.rows - 1) * s.out_stride + row_floats) * 4, values, ((s.rows - 1) * s.kv_stride + row_floats) * 4)) return error.InvalidShape;
-        const p: AttentionFullParams = .{ .heads = @intCast(s.heads), .width = @intCast(s.width), .rows = @intCast(s.rows), .q_stride = @intCast(s.q_stride), .kv_stride = @intCast(s.kv_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale };
-        try self.dispatch(.attention_full, &.{ queries, keys, values, output }, p, @intCast(s.rows * s.heads), 256, .{});
-    }
-    pub const AttentionSegmentsParams = extern struct { heads: u32, width: u32, rows: u32, q_stride: u32, kv_stride: u32, out_stride: u32, scale: f32, window: u32 };
-    pub const AttentionSegmentsShape = struct {
-        heads: usize,
-        width: usize,
-        rows: usize,
-        q_stride: usize,
-        kv_stride: usize,
-        out_stride: usize,
-        scale: f32,
-        /// Row i sees key j when |i − j| ≤ window; null sees its whole sequence.
-        window: ?usize = null,
-    };
-    /// `attentionFull` over packed sequences: `bounds` holds one `[begin,
-    /// end)` u32 pair per row, the rows of that row's sequence (at most
-    /// `attention_full_max_rows` of them), and each row attends only there.
-    /// The device clamps the pairs; keeping them true is the caller's job.
-    pub fn attentionSegments(self: *Backend, queries: Buffer, keys: Buffer, values: Buffer, output: Buffer, bounds: Buffer, s: AttentionSegmentsShape) !void {
-        if (s.heads == 0 or s.width == 0 or s.width > 256 or s.rows == 0 or s.rows > std.math.maxInt(u32) / s.heads) return error.InvalidShape;
-        const row_floats = s.heads * s.width;
-        if (s.q_stride < row_floats or s.kv_stride < row_floats or s.out_stride < row_floats) return error.InvalidShape;
-        const q_len = ((s.rows - 1) * s.q_stride + row_floats) * 4;
-        const kv_len = ((s.rows - 1) * s.kv_stride + row_floats) * 4;
-        const out_len = ((s.rows - 1) * s.out_stride + row_floats) * 4;
-        if (queries.len < q_len or keys.len < kv_len or values.len < kv_len or output.len < out_len or bounds.len < s.rows * 8 or bounds.offset % 8 != 0) return error.InvalidShape;
-        if (overlaps(output, out_len, queries, q_len) or overlaps(output, out_len, keys, kv_len) or overlaps(output, out_len, values, kv_len) or overlaps(output, out_len, bounds, s.rows * 8)) return error.InvalidShape;
-        const window: u32 = if (s.window) |w| @intCast(@min(w, std.math.maxInt(u32) - 1)) else std.math.maxInt(u32);
-        const p: AttentionSegmentsParams = .{ .heads = @intCast(s.heads), .width = @intCast(s.width), .rows = @intCast(s.rows), .q_stride = @intCast(s.q_stride), .kv_stride = @intCast(s.kv_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .window = window };
-        try self.dispatch(.attention_segments, &.{ queries, keys, values, output, bounds }, p, @intCast(s.rows * s.heads), 256, .{});
-    }
-    pub const AttentionGemmParams = extern struct { query_heads: u32, kv_heads: u32, width: u32, rows: u32, q_stride: u32, kv_stride: u32, out_stride: u32, head_stride: u32, scale: f32, window: u32 };
-    pub const AttentionSegmentsGroupedShape = struct {
-        query_heads: usize,
-        /// Query head h reads kv head `h / (query_heads / kv_heads)`.
-        kv_heads: usize,
-        /// Query, key, and value head width: a multiple of 64, at most 512.
-        width: usize,
-        rows: usize,
-        q_stride: usize,
-        kv_stride: usize,
-        out_stride: usize,
-        scale: f32,
-        /// Row i sees key j when |i − j| ≤ window; null sees its whole sequence.
-        window: ?usize = null,
-    };
-    /// One query tile of `attentionSegmentsGrouped`: rows `[first, first +
-    /// rows)` (a multiple of 8, at most `attention_tile_rows`), the keys
-    /// `[key_lo, key_lo + span)` they may see (span a multiple of 32), and
-    /// their score strip of `rows · span` floats at `offset`.
-    pub const AttentionTile = extern struct { first: u32, rows: u32, key_lo: u32, span: u32, offset: u32 };
-    pub const attention_tile_rows = 32;
-    /// One dispatchable run of tiles: `tiles[first ..][0..count]`, whose
-    /// strips take `head_stride` floats per head, `max_span` the widest.
-    pub const AttentionChunk = struct { first: usize, count: usize, head_stride: usize, max_span: usize };
-
-    /// Appends the tiles of rows `[first, first + rows)` (one input with its
-    /// padding, `rows` a multiple of 8) to `tiles` at `count.*`, each with
-    /// the key range its rows see under `bounds` (host u32 pairs) and
-    /// `window`, as the kernels mask them; offsets are left 0 for `chunkTiles`.
-    pub fn attentionTiles(bounds: []const u32, total_rows: usize, window: ?usize, first: usize, rows: usize, tiles: []AttentionTile, count: *usize) !void {
-        if (rows % 8 != 0 or first + rows > total_rows or bounds.len < 2 * total_rows) return error.InvalidShape;
-        var at: usize = 0;
-        while (at < rows) {
-            const n = @min(rows - at, attention_tile_rows);
-            var lo: usize = std.math.maxInt(usize);
-            var hi: usize = 0;
-            for (first + at..first + at + n) |r| {
-                var a: usize = @min(bounds[2 * r], r);
-                var b: usize = std.math.clamp(@as(usize, bounds[2 * r + 1]), r + 1, total_rows);
-                if (window) |w| {
-                    a = @max(a, r -| w);
-                    b = @min(b, r + w + 1);
-                }
-                lo = @min(lo, a);
-                hi = @max(hi, b);
-            }
-            if (count.* >= tiles.len) return error.InvalidShape;
-            tiles[count.*] = .{ .first = @intCast(first + at), .rows = @intCast(n), .key_lo = @intCast(lo), .span = @intCast(std.mem.alignForward(usize, hi - lo, 32)), .offset = 0 };
-            count.* += 1;
-            at += n;
-        }
-    }
-    /// Sets each tile's strip offset and splits `tiles` into chunks whose
-    /// strips fit `capacity` floats over `heads` heads; returns the chunk count.
-    pub fn chunkTiles(tiles: []AttentionTile, heads: usize, capacity: usize, chunks: []AttentionChunk) !usize {
-        var count: usize = 0;
-        var i: usize = 0;
-        while (i < tiles.len) {
-            if (count >= chunks.len) return error.InvalidShape;
-            var chunk: AttentionChunk = .{ .first = i, .count = 0, .head_stride = 0, .max_span = 0 };
-            while (i < tiles.len) : (i += 1) {
-                const strip = @as(usize, tiles[i].rows) * tiles[i].span;
-                if (chunk.count > 0 and heads * (chunk.head_stride + strip) > capacity) break;
-                if (heads * strip > capacity) return error.InvalidShape;
-                tiles[i].offset = @intCast(chunk.head_stride);
-                chunk.head_stride += strip;
-                chunk.max_span = @max(chunk.max_span, tiles[i].span);
-                chunk.count += 1;
-            }
-            chunks[count] = chunk;
-            count += 1;
-        }
-        return count;
-    }
-    /// `attentionSegments` with grouped-query heads, widths to 512, and no
-    /// bound on a sequence's length, over the query tiles of one chunk:
-    /// scores into `scores` (`query_heads · chunk.head_stride` floats),
-    /// their softmax, and P·V into `output`, F32 throughout. `tiles` is the
-    /// chunk's slice of the tile buffer (`attentionTiles`, `chunkTiles`),
-    /// checked here: ascending, disjoint, inside the rows. Queries and output
-    /// hold `attentionChunkRows(rows)` rows, keys and values `rows`, all
-    /// float4-aligned. A row's result depends on its tile's rows and keys
-    /// only. The device clamps the bounds; keeping them true is the caller's job.
-    pub fn attentionSegmentsGrouped(self: *Backend, queries: Buffer, keys: Buffer, values: Buffer, output: Buffer, bounds: Buffer, tiles: Buffer, chunk: AttentionChunk, scores: Buffer, s: AttentionSegmentsGroupedShape) !void {
-        if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or s.width == 0 or s.width % 64 != 0 or s.width > 512) return error.InvalidShape;
-        if (s.rows == 0 or s.rows >= std.math.maxInt(u32) or !std.math.isFinite(s.scale)) return error.InvalidShape;
-        const q_floats = s.query_heads * s.width;
-        const kv_floats = s.kv_heads * s.width;
-        if (s.q_stride < q_floats or s.q_stride % 4 != 0 or s.kv_stride < kv_floats or s.kv_stride % 4 != 0 or s.out_stride < q_floats or s.out_stride % 4 != 0) return error.InvalidShape;
-        const padded = attentionChunkRows(s.rows);
-        const q_len = ((padded - 1) * s.q_stride + q_floats) * 4;
-        const kv_len = ((s.rows - 1) * s.kv_stride + kv_floats) * 4;
-        const out_len = ((padded - 1) * s.out_stride + q_floats) * 4;
-        if (queries.len < q_len or keys.len < kv_len or values.len < kv_len or output.len < out_len or bounds.len < s.rows * 8 or bounds.offset % 8 != 0) return error.InvalidShape;
-        if (queries.offset % 16 != 0 or keys.offset % 16 != 0 or values.offset % 16 != 0 or output.offset % 16 != 0 or scores.offset % 16 != 0) return error.InvalidShape;
-        const scores_len = s.query_heads * chunk.head_stride * 4;
-        if (chunk.count == 0 or chunk.head_stride == 0 or chunk.head_stride >= std.math.maxInt(u32) or scores.len < scores_len) return error.InvalidShape;
-        if (tiles.len < chunk.count * @sizeOf(AttentionTile) or tiles.offset % 4 != 0) return error.InvalidShape;
-        if (overlaps(output, out_len, queries, q_len) or overlaps(output, out_len, keys, kv_len) or overlaps(output, out_len, values, kv_len) or overlaps(output, out_len, scores, scores_len)) return error.InvalidShape;
-        // Overlapping tiles or strips would race, so the list is checked here.
-        const list: []const AttentionTile = @as([*]const AttentionTile, @ptrCast(@alignCast(tiles.host)))[0..chunk.count];
-        var next_row: usize = 0;
-        var max_span: usize = 0;
-        for (list) |t| {
-            if (t.first < next_row or t.first % 8 != 0 or t.rows == 0 or t.rows % 8 != 0 or t.rows > attention_tile_rows or t.first + t.rows > padded) return error.InvalidShape;
-            if (t.span == 0 or t.span % 32 != 0 or t.key_lo >= s.rows or t.offset % 32 != 0 or @as(usize, t.offset) + @as(usize, t.rows) * t.span > chunk.head_stride) return error.InvalidShape;
-            next_row = t.first + t.rows;
-            max_span = @max(max_span, t.span);
-        }
-        if (max_span != chunk.max_span) return error.InvalidShape;
-        const window: u32 = if (s.window) |w| @intCast(@min(w, std.math.maxInt(u32) - 1)) else std.math.maxInt(u32);
-        const p: AttentionGemmParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .width = @intCast(s.width), .rows = @intCast(s.rows), .q_stride = @intCast(s.q_stride), .kv_stride = @intCast(s.kv_stride), .out_stride = @intCast(s.out_stride), .head_stride = @intCast(chunk.head_stride), .scale = s.scale, .window = window };
-        const n: u32 = @intCast(chunk.count);
-        try self.dispatch2(.segments_scores, &.{ queries, keys, bounds, tiles, scores }, p, n, @intCast(s.query_heads * chunk.max_span / 32), 128);
-        try self.dispatch2(.segments_softmax, &.{ tiles, scores }, p, n, @intCast(s.query_heads), 256);
-        try self.dispatch2(.segments_values, &.{ scores, values, tiles, output }, p, n, @intCast(s.query_heads * s.width / 32), 128);
-    }
-    pub const NormAddParams = extern struct { width: u32, in_stride: u32, out_stride: u32, eps: f32, scale: f32 };
-    /// `(destination + norm(input)·w) · factor` over `rows` rows in one
-    /// dispatch, where the plans would run `rmsNorm` + `addScale` (`input`
-    /// and `destination` must not overlap; the fallback normalizes `input`
-    /// in place row by row, as the plans do).
-    pub fn rmsNormAdd(self: *Backend, destination: Buffer, input: Buffer, weight: Buffer, factor: f32, spec: Norm) !void {
-        if (spec.rows == 0 or spec.width == 0 or spec.in_stride < spec.width or spec.out_stride < spec.width or !(spec.eps > 0) or !std.math.isFinite(factor)) return error.InvalidShape;
-        if (input.len < ((spec.rows - 1) * spec.in_stride + spec.width) * 4 or destination.len < ((spec.rows - 1) * spec.out_stride + spec.width) * 4 or weight.len < spec.width * 4) return error.InvalidShape;
-        if (!self.fused_norms) {
-            try self.rmsNorm(input, weight, input, .{ .rows = spec.rows, .width = spec.width, .in_stride = spec.in_stride, .out_stride = spec.in_stride, .eps = spec.eps });
-            for (0..spec.rows) |row| {
-                const dst = destination.slice(row * spec.out_stride * 4, spec.width * 4);
-                const src = input.slice(row * spec.in_stride * 4, spec.width * 4);
-                try self.addScale(dst, src, spec.width, factor);
-            }
-            return;
-        }
-        const p: NormAddParams = .{ .width = @intCast(spec.width), .in_stride = @intCast(spec.in_stride), .out_stride = @intCast(spec.out_stride), .eps = spec.eps, .scale = factor };
-        try self.dispatch(.rmsnorm_add, &.{ input, weight, destination }, p, @intCast(spec.rows), 256, .{});
-    }
-    pub const AddNormParams = extern struct { width: u32, in_stride: u32, out_stride: u32, eps: f32 };
-    /// `residual += input` and `output = norm(residual)·w` over `rows` rows
-    /// in one dispatch, where the plans would run `add` + `rmsNorm`. `input`
-    /// shares the residual's stride and must not overlap `output`.
-    pub fn addRmsNorm(self: *Backend, residual: Buffer, input: Buffer, weight: Buffer, output: Buffer, spec: Norm) !void {
-        if (spec.rows == 0 or spec.width == 0 or spec.in_stride < spec.width or spec.out_stride < spec.width or !(spec.eps > 0)) return error.InvalidShape;
-        if (input.len < ((spec.rows - 1) * spec.in_stride + spec.width) * 4 or residual.len < ((spec.rows - 1) * spec.in_stride + spec.width) * 4 or output.len < ((spec.rows - 1) * spec.out_stride + spec.width) * 4 or weight.len < spec.width * 4) return error.InvalidShape;
-        if (!self.fused_norms) {
-            if (spec.in_stride == spec.width) {
-                try self.add(residual, input, spec.rows * spec.width);
-            } else {
-                for (0..spec.rows) |row| {
-                    const dst = residual.slice(row * spec.in_stride * 4, spec.width * 4);
-                    const src = input.slice(row * spec.in_stride * 4, spec.width * 4);
-                    try self.add(dst, src, spec.width);
-                }
-            }
-            return self.rmsNorm(residual, weight, output, spec);
-        }
-        const p: AddNormParams = .{ .width = @intCast(spec.width), .in_stride = @intCast(spec.in_stride), .out_stride = @intCast(spec.out_stride), .eps = spec.eps };
-        try self.dispatch(.add_rmsnorm, &.{ residual, input, weight, output }, p, @intCast(spec.rows), 256, .{});
-    }
-    pub const NormRopeParams = extern struct { width: u32, in_stride: u32, out_stride: u32, dims: u32, position: u32, pairing: u32, eps: f32 };
-    /// `output = norm(input)·w` over `rows` rows followed by the rotation of
-    /// the leading `dims` channels at `position`, in one dispatch where the
-    /// plans would run `rmsNorm` + `rope`. `output` may alias `input`.
-    pub fn rmsNormRope(self: *Backend, input: Buffer, weight: Buffer, table: Buffer, output: Buffer, spec: Norm, dims: usize, position: usize, pairing: Pairing) !void {
-        if (spec.rows == 0 or spec.width == 0 or spec.in_stride < spec.width or spec.out_stride < spec.width or !(spec.eps > 0)) return error.InvalidShape;
-        if (dims == 0 or dims % 2 != 0 or dims > spec.width) return error.InvalidShape;
-        if (input.len < ((spec.rows - 1) * spec.in_stride + spec.width) * 4 or output.len < ((spec.rows - 1) * spec.out_stride + spec.width) * 4 or weight.len < spec.width * 4) return error.InvalidShape;
-        if (table.len < (position + 1) * (dims / 2) * 8) return error.InvalidShape;
-        if (!self.fused_norms) {
-            try self.rmsNorm(input, weight, output, spec);
-            return self.rope(output, table, spec.rows, spec.out_stride, dims, position, pairing);
-        }
-        const p: NormRopeParams = .{ .width = @intCast(spec.width), .in_stride = @intCast(spec.in_stride), .out_stride = @intCast(spec.out_stride), .dims = @intCast(dims), .position = @intCast(position), .pairing = @backingInt(pairing), .eps = spec.eps };
-        try self.dispatch(.rmsnorm_rope, &.{ input, weight, table, output }, p, @intCast(spec.rows), 256, .{});
-    }
-    pub const HadamardParams = extern struct { width: u32, stride: u32, rows: u32, blocks: u32, inverse: u32 };
-    /// The block the transform is written for (`cpu.hadamard`'s contract).
-    pub const hadamard_block = 1024;
-    /// In place over `rows` rows of `width` floats at `stride`: per 1,024-block,
-    /// forward `x = H (signs ⊙ x)`, inverse `x = signs ⊙ (H x)`
-    /// (`cpu.hadamard.forward` / `.inverse`). `signs` holds `width` floats of
-    /// ±1; data and signs must be float4-aligned, `width` a multiple of the block.
-    pub fn hadamard(self: *Backend, data: Buffer, signs: Buffer, width: usize, rows: usize, stride: usize, inverse: bool) !void {
-        if (rows == 0 or width == 0 or width % hadamard_block != 0 or stride < width or stride % 4 != 0) return error.InvalidShape;
-        if (data.offset % 16 != 0 or signs.offset % 16 != 0 or signs.len < width * 4 or data.len < ((rows - 1) * stride + width) * 4) return error.InvalidShape;
-        const blocks = width / hadamard_block;
-        if (rows * blocks > std.math.maxInt(u32)) return error.InvalidShape;
-        const p: HadamardParams = .{ .width = @intCast(width), .stride = @intCast(stride), .rows = @intCast(rows), .blocks = @intCast(blocks), .inverse = @intFromBool(inverse) };
-        try self.dispatch(.hadamard, &.{ data, signs }, p, @intCast(rows * blocks), 256, .{});
-    }
-    pub const GatherParams = extern struct { width: u32, groups: u32, rows: u32, in_stride: u32, out_stride: u32 };
-    /// dst[r][g][0..width] = src[r][map[g]][0..width] over `rows` rows of
-    /// `groups` vectors: a fixed permutation of the vectors inside every row.
-    /// `map` holds `groups` u32 indices below `groups` (a bijection is the
-    /// caller's contract); `dst` and `src` must not overlap.
-    pub fn gatherRows(self: *Backend, dst: Buffer, src: Buffer, map: Buffer, width: usize, groups: usize, rows: usize, in_stride: usize, out_stride: usize) !void {
-        if (width == 0 or groups == 0 or rows == 0 or in_stride < groups * width or out_stride < groups * width) return error.InvalidShape;
-        const count = rows * groups * width;
-        if (count > std.math.maxInt(u32) or map.len < groups * 4 or map.offset % 4 != 0) return error.InvalidShape;
-        const src_len = ((rows - 1) * in_stride + groups * width) * 4;
-        const dst_len = ((rows - 1) * out_stride + groups * width) * 4;
-        if (src.len < src_len or dst.len < dst_len or overlaps(dst, dst_len, src, src_len)) return error.InvalidShape;
-        const p: GatherParams = .{ .width = @intCast(width), .groups = @intCast(groups), .rows = @intCast(rows), .in_stride = @intCast(in_stride), .out_stride = @intCast(out_stride) };
-        try self.dispatch(.gather_rows, &.{ dst, src, map }, p, perElement(count), 256, .{});
-    }
-    pub const L2Params = extern struct { width: u32, stride: u32, eps: f32, rows: u32, heads: u32, row_stride: u32 };
-    pub fn l2Norm(self: *Backend, data: Buffer, rows: usize, width: usize, stride: usize, eps: f32) !void {
-        if (rows == 0 or width == 0 or stride < width or !(eps > 0) or data.len < ((rows - 1) * stride + width) * 4) return error.InvalidShape;
-        const p: L2Params = .{ .width = @intCast(width), .stride = @intCast(stride), .eps = eps, .rows = @intCast(rows), .heads = @intCast(rows), .row_stride = 0 };
-        try self.dispatch(.l2norm, &.{data}, p, @intCast(rows), 32, .{});
-    }
-    /// `l2Norm` over `rows` token rows of `row_stride`, each holding `heads`
-    /// vectors of `width` at `stride`.
-    pub fn l2NormRows(self: *Backend, data: Buffer, rows: usize, heads: usize, width: usize, stride: usize, row_stride: usize, eps: f32) !void {
-        if (rows == 0 or heads == 0 or width == 0 or stride < width or row_stride < (heads - 1) * stride + width or !(eps > 0)) return error.InvalidShape;
-        if (data.len < ((rows - 1) * row_stride + (heads - 1) * stride + width) * 4) return error.InvalidShape;
-        const p: L2Params = .{ .width = @intCast(width), .stride = @intCast(stride), .eps = eps, .rows = @intCast(rows * heads), .heads = @intCast(heads), .row_stride = @intCast(row_stride) };
-        try self.dispatch(.l2norm, &.{data}, p, @intCast(rows * heads), 32, .{});
-    }
-    /// Which two channels form rotation pair `i`: `cpu.rope.Pairing`.
-    pub const Pairing = cpu.rope.Pairing;
-    pub const RopeParams = extern struct { heads: u32, head_stride: u32, dims: u32, position: u32, pairing: u32 };
-    /// Rotates the leading `dims` channels of `heads` heads using a (cos, sin)
-    /// table with `dims/2` entries per position (`ropeTable`), pairing the
-    /// channels split-half or adjacently as `cpu.rope.apply` does.
-    pub fn rope(self: *Backend, data: Buffer, table: Buffer, heads: usize, head_stride: usize, dims: usize, position: usize, pairing: Pairing) !void {
-        if (heads == 0 or dims == 0 or dims % 2 != 0 or head_stride < dims or data.len < ((heads - 1) * head_stride + dims) * 4) return error.InvalidShape;
-        if (table.len < (position + 1) * (dims / 2) * 8) return error.InvalidShape;
-        const p: RopeParams = .{ .heads = @intCast(heads), .head_stride = @intCast(head_stride), .dims = @intCast(dims), .position = @intCast(position), .pairing = @backingInt(pairing) };
-        try self.dispatch(.rope, &.{ data, table }, p, perElement(heads * dims / 2), 256, .{});
-    }
-    pub const RopeRowsParams = extern struct { heads: u32, head_stride: u32, dims: u32, position: u32, rows: u32, row_stride: u32, pairing: u32 };
-    /// `rope` over `rows` token rows of `row_stride` floats; row t is rotated
-    /// for position `position + t`.
-    pub fn ropeRows(self: *Backend, data: Buffer, table: Buffer, heads: usize, head_stride: usize, dims: usize, position: usize, rows: usize, row_stride: usize, pairing: Pairing) !void {
-        if (rows == 0 or heads == 0 or dims == 0 or dims % 2 != 0 or head_stride < dims or row_stride < (heads - 1) * head_stride + dims) return error.InvalidShape;
-        if (data.len < ((rows - 1) * row_stride + (heads - 1) * head_stride + dims) * 4 or table.len < (position + rows) * (dims / 2) * 8) return error.InvalidShape;
-        const p: RopeRowsParams = .{ .heads = @intCast(heads), .head_stride = @intCast(head_stride), .dims = @intCast(dims), .position = @intCast(position), .rows = @intCast(rows), .row_stride = @intCast(row_stride), .pairing = @backingInt(pairing) };
-        try self.dispatch(.rope_rows, &.{ data, table }, p, perElement(rows * heads * dims / 2), 256, .{});
-    }
-    /// Fills `table` with F64-computed (cos, sin) pairs for `positions` positions
-    /// of the unscaled rotation with `dims` rotary channels: the angles of
-    /// `cpu.rope.apply` (the same for either pairing), including its optional
-    /// per-pair `factors` (`dims / 2` finite positive divisors; a checkpoint's
-    /// 1e30 entries leave a pair in place to F32 precision).
-    pub fn ropeTable(table: Buffer, positions: usize, dims: usize, base: f64, factors: ?[]const f32) !void {
-        if (dims == 0 or dims % 2 != 0 or table.len < positions * (dims / 2) * 8) return error.InvalidShape;
-        const half = dims / 2;
-        if (factors) |f| {
-            if (f.len != half) return error.InvalidShape;
-            for (f) |x| if (!std.math.isFinite(x) or x <= 0) return error.InvalidShape;
-        }
-        const out = table.floats();
-        for (0..positions) |position| for (0..half) |i| {
-            const factor: f64 = if (factors) |f| f[i] else 1;
-            const theta = @as(f64, @floatFromInt(position)) * std.math.pow(f64, base, -@as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(half))) / factor;
-            out[(position * half + i) * 2] = @floatCast(@cos(theta));
-            out[(position * half + i) * 2 + 1] = @floatCast(@sin(theta));
-        };
-    }
-    pub const CountParams = extern struct { count: u32 };
-    pub fn add(self: *Backend, x: Buffer, y: Buffer, count: usize) !void {
-        if (count == 0 or x.len < count * 4 or y.len < count * 4) return error.InvalidShape;
-        try self.dispatch(.add, &.{ x, y }, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
-    }
-    /// dst[0..count] = src[0..count]; the ranges must not overlap.
-    pub fn copy(self: *Backend, dst: Buffer, src: Buffer, count: usize) !void {
-        if (count == 0 or dst.len < count * 4 or src.len < count * 4) return error.InvalidShape;
-        if (dst.id == src.id and dst.offset < src.offset + count * 4 and src.offset < dst.offset + count * 4) return error.InvalidShape;
-        try self.dispatch(.copy, &.{ dst, src }, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
-    }
-    pub fn siluMul(self: *Backend, gate: Buffer, up: Buffer, count: usize) !void {
-        if (count == 0 or gate.len < count * 4 or up.len < count * 4) return error.InvalidShape;
-        try self.dispatch(.silu_mul, &.{ gate, up }, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
-    }
-    pub const DflashConvParams = extern struct { rows: u32, width: u32, half_index: u32, group: u32, groups: u32, taps_stride: u32 };
-    /// DFlash2's two-tap dynamic convolution over `rows` rows of `width`
-    /// (`dflash2.convolve`): `base` is `[2][2][width]`, `taps` holds each
-    /// row's `taps_stride` projected taps (`[half][tap][width / group]`).
-    /// `input` and `output` must not alias.
-    pub fn dflashConv(self: *Backend, base: Buffer, taps: Buffer, input: Buffer, output: Buffer, rows: usize, width: usize, half: usize, group: usize, taps_stride: usize) !void {
-        if (rows == 0 or half > 1 or group == 0 or width % group != 0) return error.InvalidShape;
-        const groups = width / group;
-        if (base.len < 4 * width * 4 or taps_stride < 4 * groups or taps.len < rows * taps_stride * 4 or input.len < rows * width * 4 or output.len < rows * width * 4) return error.InvalidShape;
-        const p: DflashConvParams = .{ .rows = @intCast(rows), .width = @intCast(width), .half_index = @intCast(half), .group = @intCast(group), .groups = @intCast(groups), .taps_stride = @intCast(taps_stride) };
-        try self.dispatch(.dflash_conv, &.{ base, taps, input, output }, p, perElement(rows * width), 256, .{});
-    }
-    pub fn silu(self: *Backend, x: Buffer, count: usize) !void {
-        if (count == 0 or x.len < count * 4) return error.InvalidShape;
-        try self.dispatch(.silu_inplace, &.{x}, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
-    }
-    /// gate[i] = gelu(gate[i]) * up[i], the tanh GELU of `cpu.gelu`.
-    pub fn geluMul(self: *Backend, gate: Buffer, up: Buffer, count: usize) !void {
-        if (count == 0 or gate.len < count * 4 or up.len < count * 4) return error.InvalidShape;
-        try self.dispatch(.gelu_mul, &.{ gate, up }, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
-    }
-    /// gate[i] = gelu_quick(gate[i]) * up[i], with gelu_quick(x) = x·σ(1.702x).
-    pub fn geluQuickMul(self: *Backend, gate: Buffer, up: Buffer, count: usize) !void {
-        if (count == 0 or gate.len < count * 4 or up.len < count * 4) return error.InvalidShape;
-        try self.dispatch(.gelu_quick_mul, &.{ gate, up }, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
-    }
-    /// x = gelu(x), the exact (erf) form of `cpu.geluErf`, over `count` values.
-    pub fn geluErf(self: *Backend, x: Buffer, count: usize) !void {
-        if (count == 0 or x.len < count * 4) return error.InvalidShape;
-        try self.dispatch(.gelu_erf_inplace, &.{x}, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
-    }
-    /// out[r][i] = gelu_erf(gate[r][i]) · up[r][i] over `rows` strided rows:
-    /// the exact-GELU gate (ModernBERT's GeGLU) where `geluMulRows` is tanh.
-    pub fn geluErfMulRows(self: *Backend, gate: Buffer, up: Buffer, output: Buffer, width: usize, rows: usize, gate_stride: usize, up_stride: usize, out_stride: usize) !void {
-        if (width == 0 or rows == 0 or width * rows > std.math.maxInt(u32) or gate_stride < width or up_stride < width or out_stride < width) return error.InvalidShape;
-        if (gate.len < ((rows - 1) * gate_stride + width) * 4 or up.len < ((rows - 1) * up_stride + width) * 4 or output.len < ((rows - 1) * out_stride + width) * 4) return error.InvalidShape;
-        const out_len = ((rows - 1) * out_stride + width) * 4;
-        if (overlaps(output, out_len, gate, ((rows - 1) * gate_stride + width) * 4) or overlaps(output, out_len, up, ((rows - 1) * up_stride + width) * 4)) return error.InvalidShape;
-        const p: GeluRowsParams = .{ .width = @intCast(width), .rows = @intCast(rows), .gate_stride = @intCast(gate_stride), .up_stride = @intCast(up_stride), .out_stride = @intCast(out_stride) };
-        try self.dispatch(.gelu_erf_mul_rows, &.{ gate, up, output }, p, perElement(width * rows), 256, .{});
-    }
-    pub const ScaleParams = extern struct { count: u32, factor: f32 };
-    /// x[i] *= factor; the factor must be finite.
-    pub fn scale(self: *Backend, x: Buffer, count: usize, factor: f32) !void {
-        if (count == 0 or x.len < count * 4 or !std.math.isFinite(factor)) return error.InvalidShape;
-        try self.dispatch(.scale, &.{x}, ScaleParams{ .count = @intCast(count), .factor = factor }, perElement(count), 256, .{});
-    }
-    /// x[i] = (x[i] + y[i]) * factor: a residual add with a per-layer output
-    /// scale, rounded once after the add as the CPU reference does.
-    pub fn addScale(self: *Backend, x: Buffer, y: Buffer, count: usize, factor: f32) !void {
-        if (count == 0 or x.len < count * 4 or y.len < count * 4 or !std.math.isFinite(factor)) return error.InvalidShape;
-        try self.dispatch(.add_scale, &.{ x, y }, ScaleParams{ .count = @intCast(count), .factor = factor }, perElement(count), 256, .{});
-    }
-    /// x[i] = cap * tanh(x[i] / cap), the final logit soft-cap; cap > 0.
-    pub fn softcap(self: *Backend, x: Buffer, count: usize, cap: f32) !void {
-        if (count == 0 or x.len < count * 4 or !std.math.isFinite(cap) or cap <= 0) return error.InvalidShape;
-        try self.dispatch(.softcap, &.{x}, ScaleParams{ .count = @intCast(count), .factor = cap }, perElement(count), 256, .{});
-    }
-    pub const AudioAttentionParams = extern struct { rows: u32, width: u32, key_scale: f32, cap: f32 };
-    /// Gemma 4's chunked audio attention over `rows` rows of 8 heads of 128
-    /// (`gemma4a.attention`): q scaled by `qscale` (128 values), k by
-    /// `key_scale`, each query seeing the 11 rows before it and itself.
-    pub fn audioAttention(self: *Backend, q: Buffer, k: Buffer, v: Buffer, relk: Buffer, qscale: Buffer, output: Buffer, rows: usize, key_scale: f32, cap: f32) !void {
-        const width = 1024;
-        if (rows == 0 or q.len < rows * width * 4 or k.len < rows * width * 4 or v.len < rows * width * 4 or output.len < rows * width * 4 or relk.len < 13 * width * 4 or qscale.len < 128 * 4) return error.InvalidShape;
-        try self.dispatch(.audio_attention, &.{ q, k, v, relk, qscale, output }, AudioAttentionParams{ .rows = @intCast(rows), .width = width, .key_scale = key_scale, .cap = cap }, @intCast(rows * 8), 32, .{});
-    }
-    pub const GluConvParams = extern struct { rows: u32, width: u32 };
-    /// `out[t][c] = Σ_tap dw[c][tap] · glu(start[t − 4 + tap])[c]` over
-    /// `rows` rows of `width`; `start` rows are `2·width` (values, gates).
-    pub fn gluConv(self: *Backend, start: Buffer, dw: Buffer, output: Buffer, rows: usize, width: usize) !void {
-        if (rows == 0 or start.len < rows * 2 * width * 4 or dw.len < width * 5 * 4 or output.len < rows * width * 4) return error.InvalidShape;
-        try self.dispatch(.glu_conv, &.{ start, dw, output }, GluConvParams{ .rows = @intCast(rows), .width = @intCast(width) }, perElement(rows * width), 256, .{});
-    }
-    pub const ClampParams = extern struct { count: u32, low: f32, high: f32 };
-    /// x[i] = min(max(x[i], low), high); either bound may be infinite.
-    pub fn clamp(self: *Backend, x: Buffer, count: usize, low: f32, high: f32) !void {
-        if (count == 0 or x.len < count * 4 or std.math.isNan(low) or std.math.isNan(high) or low > high) return error.InvalidShape;
-        try self.dispatch(.clamp, &.{x}, ClampParams{ .count = @intCast(count), .low = low, .high = high }, perElement(count), 256, .{});
-    }
-    pub const DeltaGatesParams = extern struct { count: u32, heads: u32 };
-    pub fn deltaGates(self: *Backend, alpha: Buffer, beta: Buffer, a: Buffer, bias: Buffer, heads: usize) !void {
-        try self.deltaGatesRows(alpha, beta, a, bias, heads, 1);
-    }
-    /// `deltaGates` over `rows` consecutive token rows of `heads` gates each.
-    pub fn deltaGatesRows(self: *Backend, alpha: Buffer, beta: Buffer, a: Buffer, bias: Buffer, heads: usize, rows: usize) !void {
-        const count = heads * rows;
-        if (heads == 0 or rows == 0 or alpha.len < count * 4 or beta.len < count * 4 or a.len < heads * 4 or bias.len < heads * 4) return error.InvalidShape;
-        try self.dispatch(.delta_gates, &.{ alpha, beta, a, bias }, DeltaGatesParams{ .count = @intCast(count), .heads = @intCast(heads) }, perElement(count), 256, .{});
-    }
-    pub const GateParams = extern struct { heads: u32, width: u32, gate_stride: u32, gate_offset: u32 };
-    pub fn sigmoidGate(self: *Backend, out: Buffer, gates: Buffer, heads: usize, width: usize, gate_stride: usize, gate_offset: usize) !void {
-        if (heads == 0 or width == 0 or out.len < heads * width * 4 or gate_stride < gate_offset + width or gates.len < ((heads - 1) * gate_stride + gate_offset + width) * 4) return error.InvalidShape;
-        const p: GateParams = .{ .heads = @intCast(heads), .width = @intCast(width), .gate_stride = @intCast(gate_stride), .gate_offset = @intCast(gate_offset) };
-        try self.dispatch(.sigmoid_gate, &.{ out, gates }, p, perElement(heads * width), 256, .{});
-    }
-    pub const DeltaParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, scale: f32 };
-    pub const DeltaShape = struct { qheads: usize, vheads: usize, keys: usize, values: usize, scale: f32 };
-    /// Nontransactional in-place state update: a failed command buffer leaves
-    /// partially updated state; the owning session must be reset.
-    pub fn delta(self: *Backend, state: Buffer, qkv: Buffer, decay_log: Buffer, beta: Buffer, output: Buffer, s: DeltaShape) !void {
-        if (s.qheads == 0 or s.vheads == 0 or s.keys == 0 or s.values == 0 or s.vheads % s.qheads != 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
-        if (state.len < s.vheads * s.values * s.keys * 4 or qkv.len < (2 * s.qheads * s.keys + s.vheads * s.values) * 4 or decay_log.len < s.vheads * 4 or beta.len < s.vheads * 4 or output.len < s.vheads * s.values * 4) return error.InvalidShape;
-        const p: DeltaParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .scale = s.scale };
-        try self.dispatch(.delta, &.{ state, qkv, decay_log, beta, output }, p, @intCast(s.vheads * s.values), 32, .{});
-    }
-    pub const DeltaChunkParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, count: u32, in_stride: u32, gate_stride: u32, out_stride: u32, scale: f32 };
-    /// `count` tokens of one layer: `qkv` rows `[token][in_stride]` laid out
-    /// as `nu_delta`'s input (q, k, then v per head), `decay_log`/`beta` rows
-    /// `[token][gate_stride]`, `output` rows `[token][out_stride]` at
-    /// `head * values`. State `[head][value][key]` is updated in place.
-    pub const DeltaChunkShape = struct { qheads: usize, vheads: usize, keys: usize, values: usize, count: usize, in_stride: usize, gate_stride: usize, out_stride: usize, scale: f32 };
-    /// Rows the `qkv` buffer must hold for `count` tokens (the kernel walks
-    /// 32-token sub-chunks; rows past `count` are masked, never read).
-    pub fn deltaChunkRows(count: usize) usize {
-        return @divCeil(count, 32) * 32;
-    }
-    /// Chunkwise DeltaNet: one dispatch per layer for a prefill chunk,
-    /// threadgroup per (value head, 32 value rows), 32-token sub-chunks.
-    /// Nontransactional like `delta`: a failed command buffer leaves partial
-    /// state and the session must be reset.
-    pub fn deltaChunk(self: *Backend, state: Buffer, qkv: Buffer, decay_log: Buffer, beta: Buffer, output: Buffer, s: DeltaChunkShape) !void {
-        if (s.qheads == 0 or s.vheads == 0 or s.keys == 0 or s.values == 0 or s.vheads % s.qheads != 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
-        if (s.keys % 8 != 0 or s.values % 32 != 0 or s.count == 0 or s.count > 4096) return error.InvalidShape;
-        const qkv_row = 2 * s.qheads * s.keys + s.vheads * s.values;
-        if (s.in_stride < qkv_row or s.gate_stride < s.vheads or s.out_stride < s.vheads * s.values) return error.InvalidShape;
-        const rows = deltaChunkRows(s.count);
-        if (state.len < s.vheads * s.values * s.keys * 4) return error.InvalidShape;
-        if (qkv.len < rows * s.in_stride * 4 or decay_log.len < s.count * s.gate_stride * 4 or beta.len < s.count * s.gate_stride * 4 or output.len < s.count * s.out_stride * 4) return error.InvalidShape;
-        const p: DeltaChunkParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .count = @intCast(s.count), .in_stride = @intCast(s.in_stride), .gate_stride = @intCast(s.gate_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale };
-        try self.dispatch(.delta_chunk, &.{ state, qkv, decay_log, beta, output }, p, @intCast(s.vheads * (s.values / 32)), 128, .{});
-    }
-    /// A verify batch's rows for `deltaRows` and the tape `deltaReplay` reads:
-    /// `count` rows written, `capacity` the rows the tape holds. The other
-    /// fields are `deltaChunk`'s.
-    pub const DeltaRowsShape = struct { qheads: usize, vheads: usize, keys: usize, values: usize, count: usize, capacity: usize, in_stride: usize = 0, gate_stride: usize = 0, out_stride: usize = 0, scale: f32 = 1 };
-    pub const DeltaRowsParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, count: u32, in_stride: u32, gate_stride: u32, out_stride: u32, key_stride: u32, corr_offset: u32, scale: f32 };
-    pub const DeltaReplayParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, count: u32, key_stride: u32, corr_offset: u32 };
-    /// Floats a one-layer tape of `capacity` rows takes: per row the
-    /// normalized keys and the decays, then per row the corrections.
-    pub fn deltaTapeFloats(s: DeltaRowsShape) usize {
-        return s.capacity * (s.qheads * s.keys + s.vheads + s.vheads * s.values);
-    }
-    fn deltaTapeShape(s: DeltaRowsShape, tape: Buffer) !struct { key_stride: u32, corr_offset: u32 } {
-        if (s.qheads == 0 or s.vheads == 0 or s.keys == 0 or s.values == 0 or s.vheads % s.qheads != 0) return error.InvalidShape;
-        if (s.keys % 32 != 0 or s.keys > 128 or s.count > s.capacity or tape.len < deltaTapeFloats(s) * 4) return error.InvalidShape;
-        const key_stride = s.qheads * s.keys + s.vheads;
-        return .{ .key_stride = @intCast(key_stride), .corr_offset = @intCast(s.capacity * key_stride) };
-    }
-    /// Verify rows token by token without writing `state`: `nu_delta`'s
-    /// arithmetic per row, outputs as `deltaChunk` lays them out, and the
-    /// rows' tape for `deltaReplay`. One to `capacity` rows.
-    pub fn deltaRows(self: *Backend, state: Buffer, qkv: Buffer, decay_log: Buffer, beta: Buffer, output: Buffer, tape: Buffer, s: DeltaRowsShape) !void {
-        const t = try deltaTapeShape(s, tape);
-        if (s.count == 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
-        if (s.in_stride < 2 * s.qheads * s.keys + s.vheads * s.values or s.gate_stride < s.vheads or s.out_stride < s.vheads * s.values) return error.InvalidShape;
-        if (state.len < s.vheads * s.values * s.keys * 4 or qkv.len < s.count * s.in_stride * 4 or decay_log.len < s.count * s.gate_stride * 4 or beta.len < s.count * s.gate_stride * 4 or output.len < s.count * s.out_stride * 4) return error.InvalidShape;
-        const p: DeltaRowsParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .count = @intCast(s.count), .in_stride = @intCast(s.in_stride), .gate_stride = @intCast(s.gate_stride), .out_stride = @intCast(s.out_stride), .key_stride = t.key_stride, .corr_offset = t.corr_offset, .scale = s.scale };
-        try self.dispatch(.delta_rows, &.{ state, qkv, decay_log, beta, output, tape }, p, @intCast(s.vheads * s.values), 32, .{});
-    }
-    /// Applies a `deltaRows` tape's first `count` rows to `state` in place:
-    /// the state after `count` decode steps. Nontransactional like `delta`.
-    pub fn deltaReplay(self: *Backend, state: Buffer, tape: Buffer, s: DeltaRowsShape) !void {
-        const t = try deltaTapeShape(s, tape);
-        if (s.count == 0 or state.len < s.vheads * s.values * s.keys * 4) return error.InvalidShape;
-        const p: DeltaReplayParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .count = @intCast(s.count), .key_stride = t.key_stride, .corr_offset = t.corr_offset };
-        try self.dispatch(.delta_replay, &.{ state, tape }, p, @intCast(s.vheads * s.values), 32, .{});
-    }
-    pub const ConvParams = extern struct { channels: u32, taps: u32 };
-    pub fn convolution(self: *Backend, history: Buffer, input: Buffer, weights: Buffer, output: Buffer, channels: usize, taps: usize) !void {
-        if (channels == 0 or taps < 2 or taps > 32 or history.len < channels * (taps - 1) * 4 or input.len < channels * 4 or weights.len < channels * taps * 4 or output.len < channels * 4) return error.InvalidShape;
-        try self.dispatch(.convolution, &.{ history, input, weights, output }, ConvParams{ .channels = @intCast(channels), .taps = @intCast(taps) }, perElement(channels), 256, .{});
-    }
-    pub const ConvRowsParams = extern struct { channels: u32, taps: u32, rows: u32, stride: u32 };
-    /// Causal convolution over `rows` token rows (stride `stride`) reading the
-    /// pre-chunk inputs from `history`; bit-identical to `rows` sequential
-    /// `convolution` calls. Does not touch `history`: call
-    /// `convolutionHistory` afterwards.
-    pub fn convolutionRows(self: *Backend, history: Buffer, input: Buffer, weights: Buffer, output: Buffer, channels: usize, taps: usize, rows: usize, stride: usize) !void {
-        if (channels == 0 or taps < 2 or taps > 32 or rows == 0 or stride < channels) return error.InvalidShape;
-        if (history.len < channels * (taps - 1) * 4 or input.len < ((rows - 1) * stride + channels) * 4 or weights.len < channels * taps * 4 or output.len < ((rows - 1) * stride + channels) * 4) return error.InvalidShape;
-        const p: ConvRowsParams = .{ .channels = @intCast(channels), .taps = @intCast(taps), .rows = @intCast(rows), .stride = @intCast(stride) };
-        try self.dispatch(.convolution_rows, &.{ history, input, weights, output }, p, perElement(rows * channels), 256, .{});
-    }
-    /// Shifts the last `taps - 1` inputs of the chunk into `history`.
-    pub fn convolutionHistory(self: *Backend, history: Buffer, input: Buffer, channels: usize, taps: usize, rows: usize, stride: usize) !void {
-        if (channels == 0 or taps < 2 or taps > 32 or rows == 0 or stride < channels) return error.InvalidShape;
-        if (history.len < channels * (taps - 1) * 4 or input.len < ((rows - 1) * stride + channels) * 4) return error.InvalidShape;
-        const p: ConvRowsParams = .{ .channels = @intCast(channels), .taps = @intCast(taps), .rows = @intCast(rows), .stride = @intCast(stride) };
-        try self.dispatch(.convolution_history, &.{ history, input }, p, perElement(channels), 256, .{});
-    }
-    pub const AttentionParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, visible: u32, scale: f32 };
-    /// `precision` is how `keys`/`values` are stored; queries, scores,
-    /// and the output are always F32. This three-pass path reads F32 or
-    /// F16; `attentionDecode` also reads Q8_0.
-    pub const AttentionShape = struct { query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize, visible: usize, scale: f32, precision: Precision = .f32 };
-    /// Three dispatches; `scores` needs query_heads * visible floats.
-    pub fn attention(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, scores: Buffer, output: Buffer, s: AttentionShape) !void {
-        if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or s.key_width == 0 or s.value_width == 0 or s.visible == 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
-        if (s.precision == .q8_0) return error.InvalidShape;
-        try checkCache(s.precision, keys, values, s.visible * s.kv_heads, s.key_width, s.value_width);
-        if (queries.len < s.query_heads * s.key_width * 4 or scores.len < s.query_heads * s.visible * 4 or output.len < s.query_heads * s.value_width * 4) return error.InvalidShape;
-        const p: AttentionParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .visible = @intCast(s.visible), .scale = s.scale };
-        const half = s.precision == .f16;
-        try self.dispatch(if (half) .attention_scores_h else .attention_scores, &.{ keys, queries, scores }, p, @intCast(s.query_heads * s.visible), 32, .{});
-        try self.dispatch(.attention_softmax, &.{scores}, p, @intCast(s.query_heads), 32, .{});
-        try self.dispatch(if (half) .attention_values_h else .attention_values, &.{ values, scores, output }, p, @intCast(s.query_heads * s.value_width), 32, .{});
-    }
-    pub const AttentionDecodeParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, visible: u32, splits: u32, scale: f32, rows: u32, q_stride: u32, out_stride: u32, window: u32 };
-    /// Most splits of the visible range one `attentionDecode` uses, and the
-    /// rows each split holds before another split is added; must match the
-    /// partial layout the kernels write.
-    pub const decode_splits_max = 64;
-    pub const decode_split_rows = 256;
-    pub fn attentionDecodeSplits(visible: usize) usize {
-        return @min(decode_splits_max, @divCeil(visible, decode_split_rows));
-    }
-    /// Floats the partial buffer must hold: `[query_heads][splits][2 + value_width]`.
-    pub fn attentionDecodePartials(query_heads: usize, value_width: usize) usize {
-        return query_heads * decode_splits_max * (2 + value_width);
-    }
-    /// Query heads one threadgroup of the split pass covers: 8 in the
-    /// instantiation for widths up to 256, 4 in the wide one (widths up to
-    /// 512); a KV head with more query heads takes several threadgroups
-    /// per split, each reading the slice once.
-    pub fn attentionDecodeHeadGroups(query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize) usize {
-        const per_group: usize = if (key_width > 256 or value_width > 256) 4 else 8;
-        const g = query_heads / kv_heads;
-        return @divCeil(g, per_group);
-    }
-    /// How the split pass runs a shape: the kernel, its threadgroups
-    /// per (KV head, split, row), and its threads per threadgroup.
-    const DecodePlan = struct { kernel: Kernel, groups_per_split: usize, threads: u32 };
-    /// The head-split instantiation (`nu_attention_heads_t`) when keys and
-    /// values share a width of 128, 256, or 512 and the KV head's query
-    /// heads fit one threadgroup; the general kernel otherwise. Query heads
-    /// per SIMD group and preferred row lanes per (precision, width) are
-    /// the measured optimum (docs/engine/metal-backend.md § The split pass
-    /// at the memory roof); row lanes halve until the threadgroup holds
-    /// at most 1,024 threads and their merge fits the kernel's 4,096-float
-    /// stage. The group counts must match the kernel's instantiations.
-    fn decodePlan(precision: Precision, query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize) DecodePlan {
-        const general: DecodePlan = .{ .kernel = decodeKernel(precision, key_width, value_width), .groups_per_split = attentionDecodeHeadGroups(query_heads, kv_heads, key_width, value_width), .threads = 128 };
-        if (key_width != value_width) return general;
-        const Choice = struct { kernel: Kernel, group: usize, lanes: usize };
-        const choice: Choice = switch (key_width) {
-            128 => switch (precision) {
-                .f32 => .{ .kernel = .attention_heads_f32_128, .group = 4, .lanes = 2 },
-                .f16 => .{ .kernel = .attention_heads_f16_128, .group = 4, .lanes = 2 },
-                .q8_0 => .{ .kernel = .attention_heads_q8_128, .group = 4, .lanes = 2 },
-            },
-            256 => switch (precision) {
-                .f32 => .{ .kernel = .attention_heads_f32_256, .group = 2, .lanes = 2 },
-                .f16 => .{ .kernel = .attention_heads_f16_256, .group = 2, .lanes = 2 },
-                .q8_0 => .{ .kernel = .attention_heads_q8_256, .group = 3, .lanes = 4 },
-            },
-            512 => switch (precision) {
-                .f32 => .{ .kernel = .attention_heads_f32_512, .group = 1, .lanes = 2 },
-                .f16 => .{ .kernel = .attention_heads_f16_512, .group = 1, .lanes = 2 },
-                .q8_0 => .{ .kernel = .attention_heads_q8_512, .group = 1, .lanes = 2 },
-            },
-            else => return general,
-        };
-        const head_groups = @divCeil(query_heads / kv_heads, choice.group);
-        if (head_groups * 32 > 1024) return general;
-        var lanes = choice.lanes;
-        while (lanes > 1 and (head_groups * lanes * 32 > 1024 or head_groups * choice.group * key_width > 4096)) lanes /= 2;
-        return .{ .kernel = choice.kernel, .groups_per_split = 1, .threads = @intCast(head_groups * lanes * 32) };
-    }
-    /// Flash-decoding attention: two dispatches (split pass, merge)
-    /// and no score buffer; `partials` needs `attentionDecodePartials`
-    /// floats. The shape contract of `attention`, plus widths of at most
-    /// 512 (above 256 through the wide instantiation); the cache may also
-    /// be `q8_0`, whose widths are multiples of 32 (a block per head row).
-    pub fn attentionDecode(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, partials: Buffer, output: Buffer, s: AttentionShape) !void {
-        if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or s.key_width == 0 or s.key_width > 512 or s.value_width == 0 or s.value_width > 512 or s.visible == 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
-        const splits = attentionDecodeSplits(s.visible);
-        const plan = decodePlan(s.precision, s.query_heads, s.kv_heads, s.key_width, s.value_width);
-        try checkCache(s.precision, keys, values, s.visible * s.kv_heads, s.key_width, s.value_width);
-        if (queries.len < s.query_heads * s.key_width * 4 or partials.len < s.query_heads * splits * (2 + s.value_width) * 4 or output.len < s.query_heads * s.value_width * 4) return error.InvalidShape;
-        const p: AttentionDecodeParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .visible = @intCast(s.visible), .splits = @intCast(splits), .scale = s.scale, .rows = 1, .q_stride = @intCast(s.query_heads * s.key_width), .out_stride = @intCast(s.query_heads * s.value_width), .window = 0 };
-        // Cache traffic per dispatch, for the profile: every row once.
-        const bytes: u64 = @intCast(s.visible * s.precision.bytes(s.kv_heads * (s.key_width + s.value_width)));
-        try self.dispatch(plan.kernel, &.{ keys, values, queries, partials }, p, @intCast(s.kv_heads * plan.groups_per_split * splits), plan.threads, .{ .bytes = bytes });
-        try self.dispatch(.attention_merge, &.{ partials, output }, p, @intCast(s.query_heads), 256, .{});
-    }
-    /// The most rows `attentionVerify` takes: a verify batch or a drafter's
-    /// commit, never a prefill chunk.
-    pub const verify_max_rows = 16;
-    /// Floats `attentionVerify`'s partial buffer must hold for `rows` rows.
-    pub fn attentionVerifyPartials(rows: usize, query_heads: usize, value_width: usize) usize {
-        return rows * attentionDecodePartials(query_heads, value_width);
-    }
-    /// Few-query causal attention: the chunk contract of `attentionChunk`
-    /// (row t sees the cache rows `[0, position + t]`) for at most
-    /// `verify_max_rows` rows, through the flash-decoding split pass, so the
-    /// grid is (KV head, split, row) instead of one threadgroup per query
-    /// head. Queries are F32 whatever the cache's `precision`, which may be
-    /// `q8_0` (as in `attentionDecode`); `partials` needs
-    /// `attentionVerifyPartials` floats.
-    /// A window as in `attentionChunk`; no span.
-    pub fn attentionVerify(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, partials: Buffer, output: Buffer, s: AttentionChunkShape) !void {
-        if (s.count > verify_max_rows or s.span.end != 0 or s.key_width > 512) return error.InvalidShape;
-        try checkAttentionChunk(s, keys, values, queries, output, 4);
-        const visible = s.position + s.count;
-        const splits = attentionDecodeSplits(visible);
-        const plan = decodePlan(s.precision, s.query_heads, s.kv_heads, s.key_width, s.value_width);
-        if (partials.len < s.count * s.query_heads * splits * (2 + s.value_width) * 4) return error.InvalidShape;
-        const p: AttentionDecodeParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .visible = @intCast(visible), .splits = @intCast(splits), .scale = s.scale, .rows = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .window = @intCast(s.window) };
-        const bytes: u64 = @intCast(s.count * visible * s.precision.bytes(s.kv_heads * (s.key_width + s.value_width)));
-        try self.dispatch(plan.kernel, &.{ keys, values, queries, partials }, p, @intCast(s.kv_heads * plan.groups_per_split * splits * s.count), plan.threads, .{ .bytes = bytes });
-        try self.dispatch(.attention_merge, &.{ partials, output }, p, @intCast(s.query_heads * s.count), 256, .{});
-    }
-    pub const PackParams = extern struct { count0: u32, count1: u32 };
-    /// One F32 → F16 conversion: `count` floats of `src` into `dst`.
-    pub const Pack = struct { dst: Buffer, src: Buffer, count: usize };
-    /// Rounds one or two F32 vectors to F16 in one dispatch (round to
-    /// nearest even, as `@floatCast`): the attention projections stay F32
-    /// and this writes the F16 cache slot. Destinations must not overlap
-    /// their sources.
-    pub fn packHalf(self: *Backend, pairs: []const Pack) !void {
-        if (pairs.len == 0 or pairs.len > 2) return error.InvalidShape;
-        var total: usize = 0;
-        for (pairs) |pair| {
-            if (pair.count == 0 or pair.dst.len < pair.count * 2 or pair.src.len < pair.count * 4 or pair.dst.offset % 2 != 0 or pair.src.offset % 4 != 0) return error.InvalidShape;
-            if (overlaps(pair.dst, pair.count * 2, pair.src, pair.count * 4)) return error.InvalidShape;
-            total += pair.count;
-        }
-        const second = if (pairs.len == 2) pairs[1] else pairs[0];
-        const p: PackParams = .{ .count0 = @intCast(pairs[0].count), .count1 = if (pairs.len == 2) @intCast(pairs[1].count) else 0 };
-        try self.dispatch(.pack_half, &.{ pairs[0].dst, pairs[0].src, second.dst, second.src }, p, perElement(total), 256, .{});
-    }
-    /// Quantizes one or two F32 vectors to Q8_0 blocks in one dispatch, the
-    /// arithmetic of `quant_encode.q8_0Row` (bit-identical): the `q8_0`
-    /// cache slot's write. Counts are multiples of 32; destinations must
-    /// not overlap their sources.
-    pub fn packQ8(self: *Backend, pairs: []const Pack) !void {
-        try self.packPairs(.pack_q8_0, pairs, .q8_0, .f32);
-    }
-    /// Expands one or two Q8_0 vectors (`count` values each) to F16: the
-    /// prefill chunk's half view of a `q8_0` cache.
-    pub fn unpackQ8(self: *Backend, pairs: []const Pack) !void {
-        try self.packPairs(.unpack_q8_0, pairs, .f16, .q8_0);
-    }
-    /// Writes F32 rows into a cache region at `precision`: a copy, an F16
-    /// pack, or a Q8_0 pack, so a plan's cache write is one call.
-    pub fn storeRows(self: *Backend, pairs: []const Pack, precision: Precision) !void {
-        switch (precision) {
-            .f32 => for (pairs) |pair| try self.copy(pair.dst, pair.src, pair.count),
-            .f16 => try self.packHalf(pairs),
-            .q8_0 => try self.packQ8(pairs),
-        }
-    }
-    fn packPairs(self: *Backend, kernel: Kernel, pairs: []const Pack, dst: Precision, src: Precision) !void {
-        if (pairs.len == 0 or pairs.len > 2) return error.InvalidShape;
-        var total: usize = 0;
-        for (pairs) |pair| {
-            if (pair.count == 0 or pair.count % Precision.q8_block != 0) return error.InvalidShape;
-            const dst_bytes = dst.bytes(pair.count);
-            const src_bytes = src.bytes(pair.count);
-            if (pair.dst.len < dst_bytes or pair.src.len < src_bytes or pair.dst.offset % cacheAlignment(dst) != 0 or pair.src.offset % cacheAlignment(src) != 0) return error.InvalidShape;
-            if (overlaps(pair.dst, dst_bytes, pair.src, src_bytes)) return error.InvalidShape;
-            total += pair.count;
-        }
-        const second = if (pairs.len == 2) pairs[1] else pairs[0];
-        const p: PackParams = .{ .count0 = @intCast(pairs[0].count), .count1 = if (pairs.len == 2) @intCast(pairs[1].count) else 0 };
-        try self.dispatch(kernel, &.{ pairs[0].dst, pairs[0].src, second.dst, second.src }, p, perElement(total), 256, .{});
-    }
-    /// Byte alignment a binding of `precision` values needs (Q8_0 blocks
-    /// are 2-byte aligned, by their F16 scale).
-    fn cacheAlignment(precision: Precision) usize {
-        return switch (precision) {
-            .f32 => 4,
-            .f16, .q8_0 => 2,
-        };
-    }
-    /// The split-pass instantiation for a cache precision and widths.
-    fn decodeKernel(precision: Precision, key_width: usize, value_width: usize) Kernel {
-        const wide = key_width > 256 or value_width > 256;
-        return switch (precision) {
-            .f32 => if (wide) .attention_decode_w else .attention_decode,
-            .f16 => if (wide) .attention_decode_wh else .attention_decode_h,
-            .q8_0 => if (wide) .attention_decode_wq8 else .attention_decode_q8,
-        };
-    }
-    /// `rows` rows of keys and values at `precision`: lengths, alignment,
-    /// and, for `q8_0`, widths of whole blocks.
-    fn checkCache(precision: Precision, keys: Buffer, values: Buffer, rows: usize, key_width: usize, value_width: usize) !void {
-        if (!precision.fits(key_width) or !precision.fits(value_width)) return error.InvalidShape;
-        if (keys.len < rows * precision.bytes(key_width) or values.len < rows * precision.bytes(value_width)) return error.InvalidShape;
-        if (keys.offset % cacheAlignment(precision) != 0 or values.offset % cacheAlignment(precision) != 0) return error.InvalidShape;
-    }
-    pub const AttentionChunkParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, position: u32, count: u32, q_stride: u32, out_stride: u32, scale: f32, window: u32, span_begin: u32, span_end: u32 };
-    /// Chunk rows `[begin, end)` that attend bidirectionally among
-    /// themselves: each sees keys up to `position + end` (exclusive) instead
-    /// of its own row, the window still bounding it from below. Gemma 4's
-    /// image span on sliding layers; an empty span is plain causal.
-    pub const Span = struct { begin: usize = 0, end: usize = 0 };
-    /// `count` query rows at cache positions `position..position + count`,
-    /// each attending causally over the cache rows `[0, position + t]`, or
-    /// `[position + t + 1 - window, position + t]` when `window` is nonzero
-    /// (a sliding window; the caller may slice the cache so that row 0
-    /// is the earliest key any row of the chunk can see).
-    /// `queries` holds `[row][q_stride]` with the row's heads at
-    /// `head * key_width`; `output` is written `[row][out_stride]` likewise.
-    /// `precision` is how the cache **and the queries** are stored:
-    /// the `f16` instantiation multiplies half operands into F32
-    /// accumulators, so the caller packs its queries to half first
-    /// (`packHalf`); the output is F32 either way. The chunk bodies read
-    /// no `q8_0` cache: the caller expands it to F16 first (`unpackQ8`).
-    pub const AttentionChunkShape = struct { query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize, position: usize, count: usize, q_stride: usize, out_stride: usize, scale: f32, precision: Precision = .f32, window: usize = 0, span: Span = .{} };
-    /// The most rows one chunk dispatch covers: a projector's whole patch
-    /// set (10,080 for Gemma 4's largest image) runs as one span.
-    pub const max_chunk_rows = 16384;
-    /// Rows the query and output buffers must hold for `count` rows: the
-    /// last SIMD-group tile computes and stores on the caller's padding.
-    pub fn attentionChunkRows(count: usize) usize {
-        return (count + 7) / 8 * 8;
-    }
-    /// One dispatch per layer for a prefill chunk: threadgroup per
-    /// (query head, 32-query tile, 256 value columns), no score buffer.
-    /// Reads at most `position + count` cache rows. Value widths above 256
-    /// (up to 512) take one threadgroup per 256 columns. Counts at or below
-    /// `attention_reuse_max_rows` take the register-reuse body instead.
-    pub fn attentionChunk(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer, s: AttentionChunkShape) !void {
-        if (s.precision == .q8_0) return error.InvalidShape;
-        try checkAttentionChunk(s, keys, values, queries, output, s.precision.bytes(1));
-        const p = attentionChunkParams(s);
-        const tiles = @divCeil(s.count, 32);
-        const value_splits = (s.value_width + 255) / 256;
-        // The register-reuse body has no span; a span takes the row-split body.
-        const reuse = s.value_width == 256 and s.count <= self.attention_reuse_max_rows and s.span.end == 0;
-        const half = s.precision == .f16;
-        const kernel: Kernel = if (reuse) (if (half) .attention_chunk_reuse_h else .attention_chunk_reuse) else if (half) .attention_chunk_h else .attention_chunk;
-        try self.dispatch(kernel, &.{ keys, values, queries, output }, p, @intCast(s.query_heads * tiles * value_splits), 128, .{});
-    }
-    /// The register-reuse body explicitly: the same contract, but each
-    /// threadgroup's four SIMD groups split the value columns instead of the
-    /// query rows, so the published P tile makes a V block serve four
-    /// multiplies. Measured against `attentionChunk` by `--attention-bench`.
-    pub fn attentionChunkReuse(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer, s: AttentionChunkShape) !void {
-        if (s.precision == .q8_0) return error.InvalidShape;
-        try checkAttentionChunk(s, keys, values, queries, output, s.precision.bytes(1));
-        if (s.span.end != 0) return error.InvalidShape;
-        const p = attentionChunkParams(s);
-        const tiles = @divCeil(s.count, 32);
-        const value_splits = (s.value_width + 255) / 256;
-        try self.dispatch(if (s.precision == .f16) .attention_chunk_reuse_h else .attention_chunk_reuse, &.{ keys, values, queries, output }, p, @intCast(s.query_heads * tiles * value_splits), 128, .{});
-    }
-    fn attentionChunkParams(s: AttentionChunkShape) AttentionChunkParams {
-        return .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .position = @intCast(s.position), .count = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .window = @intCast(s.window), .span_begin = @intCast(s.span.begin), .span_end = @intCast(s.span.end) };
-    }
-    /// `query_elem` is the queries' bytes per value: the cache's for the
-    /// chunk bodies, 4 for `attentionVerify`.
-    fn checkAttentionChunk(s: AttentionChunkShape, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer, query_elem: usize) !void {
-        if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
-        if (s.key_width == 0 or s.key_width % 8 != 0 or s.value_width == 0 or s.value_width % 8 != 0 or s.value_width > 512) return error.InvalidShape;
-        if (s.count == 0 or s.count > max_chunk_rows or s.position > 32768 - s.count) return error.InvalidShape;
-        if (s.span.begin > s.span.end or s.span.end > s.count) return error.InvalidShape;
-        if (s.q_stride < s.query_heads * s.key_width or s.out_stride < s.query_heads * s.value_width) return error.InvalidShape;
-        const total = s.position + s.count;
-        const rows = attentionChunkRows(s.count);
-        try checkCache(s.precision, keys, values, total * s.kv_heads, s.key_width, s.value_width);
-        if (queries.len < rows * s.q_stride * query_elem or output.len < rows * s.out_stride * 4) return error.InvalidShape;
-        if (queries.offset % query_elem != 0) return error.InvalidShape;
-    }
-    pub const TopKParams = extern struct { count: u32, partials: u32, k: u32, temperature: f32 };
-    pub const topk_partials = 64;
-    /// Values each partial-pass thread keeps in registers (`NU_TOPK_LOCAL`);
-    /// bounds the vocabulary size the kernels accept.
-    const topk_local = 16;
-    pub const topk_max_count = topk_partials * 256 * topk_local;
-    /// Scratch and result buffers for `topk`, sized by `topkBuffers`.
-    pub const TopKBuffers = struct {
-        partial_values: Buffer, // partials * k floats
-        partial_indices: Buffer, // partials * k u32
-        values: Buffer, // k floats, sorted (value desc, index asc)
-        indices: Buffer, // k u32
-        sums: Buffer, // partials floats: F32 partial sums of exp((l - max) / T)
-        flags: Buffer, // partials u32: nonzero when the partition saw a non-finite logit
-    };
-    pub fn topkBuffers(self: *Backend, k: usize) !TopKBuffers {
-        return .{
-            .partial_values = try self.create(topk_partials * k * 4),
-            .partial_indices = try self.create(topk_partials * k * 4),
-            .values = try self.create(k * 4),
-            .indices = try self.create(k * 4),
-            .sums = try self.create(topk_partials * 4),
-            .flags = try self.create(topk_partials * 4),
-        };
-    }
-    /// The `k` best of `count` logits by (value desc, index asc) into
-    /// `scratch.values`/`indices`, and Σ exp((l − max) / temperature) as
-    /// `topk_partials` F32 partial sums with per-partition non-finite flags.
-    /// The CPU adds the partials in F64 (see `sampling.TopK`). Three dispatches.
-    pub fn topk(self: *Backend, logits: Buffer, count: usize, k: usize, temperature: f32, scratch: TopKBuffers) !void {
-        if (!enabled) return error.MetalNotEnabled;
-        if (count == 0 or count > topk_max_count or k == 0 or k > 256 or logits.len < count * 4) return error.InvalidShape;
-        if (!std.math.isFinite(temperature) or temperature <= 0) return error.InvalidShape;
-        if (scratch.partial_values.len < topk_partials * k * 4 or scratch.partial_indices.len < topk_partials * k * 4 or
-            scratch.values.len < k * 4 or scratch.indices.len < k * 4 or scratch.sums.len < topk_partials * 4 or scratch.flags.len < topk_partials * 4) return error.InvalidShape;
-        const p: TopKParams = .{ .count = @intCast(count), .partials = topk_partials, .k = @intCast(k), .temperature = temperature };
-        try self.dispatch(.topk_partial, &.{ logits, scratch.partial_values, scratch.partial_indices }, p, topk_partials, 256, .{});
-        try self.dispatch(.topk_final, &.{ scratch.partial_values, scratch.partial_indices, scratch.values, scratch.indices }, p, 1, 256, .{});
-        try self.dispatch(.expsum_partial, &.{ logits, scratch.values, scratch.sums, scratch.flags }, p, topk_partials, 256, .{});
-    }
-
-    pub const PenalizeParams = extern struct { count: u32, history_words: u32, repetition: f32, presence: f32 };
-    /// Applies the history penalties to `logits[0..count]` in place:
-    /// `l / r` for positive and `l · r` for negative logits of every token in
-    /// `history` (bit `id` in word `id / 32`), then `l − presence`. One thread
-    /// per logit; `repetition` must be positive and both values finite. The
-    /// readback taken after this is the penalized logits, which is what the
-    /// CPU sampler sorts (`sampling.Sampler.penalize`).
-    pub fn penalize(self: *Backend, logits: Buffer, count: usize, history: Buffer, repetition: f32, presence: f32) !void {
-        if (count == 0 or count > std.math.maxInt(u32) or logits.len < count * 4) return error.InvalidShape;
-        if (!std.math.isFinite(repetition) or repetition <= 0 or !std.math.isFinite(presence)) return error.InvalidShape;
-        const words = @divCeil(count, 32);
-        if (history.len < words * 4) return error.InvalidShape;
-        const p: PenalizeParams = .{ .count = @intCast(count), .history_words = @intCast(words), .repetition = repetition, .presence = presence };
-        try self.dispatch(.penalize, &.{ logits, history }, p, perElement(count), 256, .{});
-    }
-
-    pub const ArgmaxParams = extern struct { count: u32, partials: u32 };
-    pub const argmax_partials = 64;
-    /// Two-pass greedy selection with lowest-index tie breaking. `values` and
-    /// `indices` hold `argmax_partials` scratch entries; `result` receives one u32.
-    pub fn argmax(self: *Backend, logits: Buffer, count: usize, values: Buffer, indices: Buffer, result: Buffer) !void {
-        if (count == 0 or logits.len < count * 4 or values.len < argmax_partials * 4 or indices.len < argmax_partials * 4 or result.len < 4) return error.InvalidShape;
-        const p: ArgmaxParams = .{ .count = @intCast(count), .partials = argmax_partials };
-        try self.dispatch(.argmax_partial, &.{ logits, values, indices }, p, argmax_partials, 256, .{});
-        try self.dispatch(.argmax_final, &.{ values, indices, result }, p, 1, 32, .{});
-    }
+    // ----- Kernel encoders, one file per kind of operation under `ops/`. -----
+    const matvec_ops = @import("ops/matvec.zig");
+    const matmul_ops = @import("ops/matmul.zig");
+    const experts_ops = @import("ops/experts.zig");
+    const rowwise_ops = @import("ops/rowwise.zig");
+    const encoders_ops = @import("ops/encoders.zig");
+    const audio_ops = @import("ops/audio.zig");
+    const recurrent_ops = @import("ops/recurrent.zig");
+    const attention_ops = @import("ops/attention.zig");
+    const sampling_ops = @import("ops/sampling.zig");
+    pub const MatvecParams = matvec_ops.MatvecParams;
+    pub const MatvecBlockParams = matvec_ops.MatvecBlockParams;
+    pub const rows_per_simdgroup = matvec_ops.rows_per_simdgroup;
+    pub const matvec = matvec_ops.matvec;
+    pub const matvecSplits = matvec_ops.matvecSplits;
+    pub const matvecRowsPerSimdgroup = matvec_ops.matvecRowsPerSimdgroup;
+    pub const matvecSimdgroups = matvec_ops.matvecSimdgroups;
+    pub const split_k_max = matvec_ops.split_k_max;
+    pub const split_k_rows = matvec_ops.split_k_rows;
+    pub const matvecSplitKernel = matvec_ops.matvecSplitKernel;
+    pub const MatvecSplitParams = matvec_ops.MatvecSplitParams;
+    pub const ReduceSplitsParams = matvec_ops.ReduceSplitsParams;
+    pub const MatvecRowsParams = matvec_ops.MatvecRowsParams;
+    pub const small_batch_rows = matvec_ops.small_batch_rows;
+    pub const route_small_batch = matvec_ops.route_small_batch;
+    pub const matvec_rows_max = matvec_ops.matvec_rows_max;
+    pub const matvec_rows_per_simdgroup = matvec_ops.matvec_rows_per_simdgroup;
+    pub const usesMatvecRows = matvec_ops.usesMatvecRows;
+    pub const matvecRows = matvec_ops.matvecRows;
+    pub const specializedMatvecRows = matvec_ops.specializedMatvecRows;
+    pub const specializedMatvec = matvec_ops.specializedMatvec;
+    pub const Segment = matvec_ops.Segment;
+    pub const SegmentMode = matvec_ops.SegmentMode;
+    pub const matvecSegments = matvec_ops.matvecSegments;
+    pub const mergeDeclined = matvec_ops.mergeDeclined;
+    pub const matvecSegmentsSplits = matvec_ops.matvecSegmentsSplits;
+    pub const MatmulParams = matmul_ops.MatmulParams;
+    pub const matmul_tile = matmul_ops.matmul_tile;
+    pub const small_chunk_tokens = matmul_ops.small_chunk_tokens;
+    pub const small_matrix_rows = matmul_ops.small_matrix_rows;
+    pub const matmulPadded = matmul_ops.matmulPadded;
+    pub const MatmulGeometry = matmul_ops.MatmulGeometry;
+    pub const matmulGeometry = matmul_ops.matmulGeometry;
+    pub const matmul = matmul_ops.matmul;
+    pub const matmulTile = matmul_ops.matmulTile;
+    pub const matmulTile32 = matmul_ops.matmulTile32;
+    pub const matmulKernel = matmul_ops.matmulKernel;
+    pub const specializedMatmulWide = matmul_ops.specializedMatmulWide;
+    pub const specializedTile = matmul_ops.specializedTile;
+    pub const specializedMatmulFrag = matmul_ops.specializedMatmulFrag;
+    pub const fragmentLayout = matmul_ops.fragmentLayout;
+    pub const specializedMatmul = matmul_ops.specializedMatmul;
+    pub const RouteParams = experts_ops.RouteParams;
+    pub const route_max_experts = experts_ops.route_max_experts;
+    pub const route_max_k = experts_ops.route_max_k;
+    pub const route = experts_ops.route;
+    pub const ExpertMatvecParams = experts_ops.ExpertMatvecParams;
+    pub const matvecExperts = experts_ops.matvecExperts;
+    pub const CombineParams = experts_ops.CombineParams;
+    pub const CombineShape = experts_ops.CombineShape;
+    pub const combineExperts = experts_ops.combineExperts;
+    pub const GeluRowsParams = experts_ops.GeluRowsParams;
+    pub const geluMulRows = experts_ops.geluMulRows;
+    pub const ExpertListsParams = experts_ops.ExpertListsParams;
+    pub const expert_tile = experts_ops.expert_tile;
+    pub const expertTileBound = experts_ops.expertTileBound;
+    pub const ExpertListsLayout = experts_ops.ExpertListsLayout;
+    pub const expertListsLayout = experts_ops.expertListsLayout;
+    pub const expertLists = experts_ops.expertLists;
+    pub const MatmulExpertsParams = experts_ops.MatmulExpertsParams;
+    pub const matmulExperts = experts_ops.matmulExperts;
+    pub const EmbedParams = rowwise_ops.EmbedParams;
+    pub const embed = rowwise_ops.embed;
+    pub const NormParams = rowwise_ops.NormParams;
+    pub const Norm = rowwise_ops.Norm;
+    pub const rmsNorm = rowwise_ops.rmsNorm;
+    pub const NormAddParams = rowwise_ops.NormAddParams;
+    pub const rmsNormAdd = rowwise_ops.rmsNormAdd;
+    pub const AddNormParams = rowwise_ops.AddNormParams;
+    pub const addRmsNorm = rowwise_ops.addRmsNorm;
+    pub const NormRopeParams = rowwise_ops.NormRopeParams;
+    pub const rmsNormRope = rowwise_ops.rmsNormRope;
+    pub const HadamardParams = rowwise_ops.HadamardParams;
+    pub const hadamard_block = rowwise_ops.hadamard_block;
+    pub const hadamard = rowwise_ops.hadamard;
+    pub const GatherParams = rowwise_ops.GatherParams;
+    pub const gatherRows = rowwise_ops.gatherRows;
+    pub const L2Params = rowwise_ops.L2Params;
+    pub const l2Norm = rowwise_ops.l2Norm;
+    pub const l2NormRows = rowwise_ops.l2NormRows;
+    pub const Pairing = rowwise_ops.Pairing;
+    pub const RopeParams = rowwise_ops.RopeParams;
+    pub const rope = rowwise_ops.rope;
+    pub const RopeRowsParams = rowwise_ops.RopeRowsParams;
+    pub const ropeRows = rowwise_ops.ropeRows;
+    pub const ropeTable = rowwise_ops.ropeTable;
+    pub const CountParams = rowwise_ops.CountParams;
+    pub const add = rowwise_ops.add;
+    pub const copy = rowwise_ops.copy;
+    pub const siluMul = rowwise_ops.siluMul;
+    pub const DflashConvParams = rowwise_ops.DflashConvParams;
+    pub const dflashConv = rowwise_ops.dflashConv;
+    pub const silu = rowwise_ops.silu;
+    pub const geluMul = rowwise_ops.geluMul;
+    pub const geluQuickMul = rowwise_ops.geluQuickMul;
+    pub const geluErf = rowwise_ops.geluErf;
+    pub const geluErfMulRows = rowwise_ops.geluErfMulRows;
+    pub const ScaleParams = rowwise_ops.ScaleParams;
+    pub const scale = rowwise_ops.scale;
+    pub const addScale = rowwise_ops.addScale;
+    pub const softcap = rowwise_ops.softcap;
+    pub const ClampParams = rowwise_ops.ClampParams;
+    pub const clamp = rowwise_ops.clamp;
+    pub const DeltaGatesParams = rowwise_ops.DeltaGatesParams;
+    pub const deltaGates = rowwise_ops.deltaGates;
+    pub const deltaGatesRows = rowwise_ops.deltaGatesRows;
+    pub const GateParams = rowwise_ops.GateParams;
+    pub const sigmoidGate = rowwise_ops.sigmoidGate;
+    pub const LayerNormParams = encoders_ops.LayerNormParams;
+    pub const layerNorm = encoders_ops.layerNorm;
+    pub const BiasRowsParams = encoders_ops.BiasRowsParams;
+    pub const addBiasRows = encoders_ops.addBiasRows;
+    pub const gelu = encoders_ops.gelu;
+    pub const AttentionFullParams = encoders_ops.AttentionFullParams;
+    pub const AttentionFullShape = encoders_ops.AttentionFullShape;
+    pub const attention_full_max_rows = encoders_ops.attention_full_max_rows;
+    pub const attentionFull = encoders_ops.attentionFull;
+    pub const AttentionSegmentsParams = encoders_ops.AttentionSegmentsParams;
+    pub const AttentionSegmentsShape = encoders_ops.AttentionSegmentsShape;
+    pub const attentionSegments = encoders_ops.attentionSegments;
+    pub const AttentionGemmParams = encoders_ops.AttentionGemmParams;
+    pub const AttentionSegmentsGroupedShape = encoders_ops.AttentionSegmentsGroupedShape;
+    pub const AttentionTile = encoders_ops.AttentionTile;
+    pub const attention_tile_rows = encoders_ops.attention_tile_rows;
+    pub const AttentionChunk = encoders_ops.AttentionChunk;
+    pub const attentionTiles = encoders_ops.attentionTiles;
+    pub const chunkTiles = encoders_ops.chunkTiles;
+    pub const attentionSegmentsGrouped = encoders_ops.attentionSegmentsGrouped;
+    pub const AudioAttentionParams = audio_ops.AudioAttentionParams;
+    pub const audioAttention = audio_ops.audioAttention;
+    pub const GluConvParams = audio_ops.GluConvParams;
+    pub const gluConv = audio_ops.gluConv;
+    pub const DeltaParams = recurrent_ops.DeltaParams;
+    pub const DeltaShape = recurrent_ops.DeltaShape;
+    pub const delta = recurrent_ops.delta;
+    pub const DeltaChunkParams = recurrent_ops.DeltaChunkParams;
+    pub const DeltaChunkShape = recurrent_ops.DeltaChunkShape;
+    pub const deltaChunkRows = recurrent_ops.deltaChunkRows;
+    pub const deltaChunk = recurrent_ops.deltaChunk;
+    pub const DeltaRowsShape = recurrent_ops.DeltaRowsShape;
+    pub const DeltaRowsParams = recurrent_ops.DeltaRowsParams;
+    pub const DeltaReplayParams = recurrent_ops.DeltaReplayParams;
+    pub const deltaTapeFloats = recurrent_ops.deltaTapeFloats;
+    pub const deltaRows = recurrent_ops.deltaRows;
+    pub const deltaReplay = recurrent_ops.deltaReplay;
+    pub const ConvParams = recurrent_ops.ConvParams;
+    pub const convolution = recurrent_ops.convolution;
+    pub const ConvRowsParams = recurrent_ops.ConvRowsParams;
+    pub const convolutionRows = recurrent_ops.convolutionRows;
+    pub const convolutionHistory = recurrent_ops.convolutionHistory;
+    pub const AttentionParams = attention_ops.AttentionParams;
+    pub const AttentionShape = attention_ops.AttentionShape;
+    pub const attention = attention_ops.attention;
+    pub const AttentionDecodeParams = attention_ops.AttentionDecodeParams;
+    pub const decode_splits_max = attention_ops.decode_splits_max;
+    pub const decode_split_rows = attention_ops.decode_split_rows;
+    pub const attentionDecodeSplits = attention_ops.attentionDecodeSplits;
+    pub const attentionDecodePartials = attention_ops.attentionDecodePartials;
+    pub const attentionDecodeHeadGroups = attention_ops.attentionDecodeHeadGroups;
+    pub const attentionDecode = attention_ops.attentionDecode;
+    pub const verify_max_rows = attention_ops.verify_max_rows;
+    pub const attentionVerifyPartials = attention_ops.attentionVerifyPartials;
+    pub const attentionVerify = attention_ops.attentionVerify;
+    pub const PackParams = attention_ops.PackParams;
+    pub const Pack = attention_ops.Pack;
+    pub const packHalf = attention_ops.packHalf;
+    pub const packQ8 = attention_ops.packQ8;
+    pub const unpackQ8 = attention_ops.unpackQ8;
+    pub const storeRows = attention_ops.storeRows;
+    pub const AttentionChunkParams = attention_ops.AttentionChunkParams;
+    pub const Span = attention_ops.Span;
+    pub const AttentionChunkShape = attention_ops.AttentionChunkShape;
+    pub const max_chunk_rows = attention_ops.max_chunk_rows;
+    pub const attentionChunkRows = attention_ops.attentionChunkRows;
+    pub const attentionChunk = attention_ops.attentionChunk;
+    pub const attentionChunkReuse = attention_ops.attentionChunkReuse;
+    pub const TopKParams = sampling_ops.TopKParams;
+    pub const topk_partials = sampling_ops.topk_partials;
+    pub const topk_max_count = sampling_ops.topk_max_count;
+    pub const TopKBuffers = sampling_ops.TopKBuffers;
+    pub const topkBuffers = sampling_ops.topkBuffers;
+    pub const topk = sampling_ops.topk;
+    pub const PenalizeParams = sampling_ops.PenalizeParams;
+    pub const penalize = sampling_ops.penalize;
+    pub const ArgmaxParams = sampling_ops.ArgmaxParams;
+    pub const argmax_partials = sampling_ops.argmax_partials;
+    pub const argmax = sampling_ops.argmax;
 };
