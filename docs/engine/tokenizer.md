@@ -249,6 +249,22 @@ The reference library may carry an older Unicode version; text with scalars
 assigned since then could normalize differently there. Nothing in the
 fixtures does.
 
+### Decode-only piece tables
+
+A speech recognizer only maps ids to text, so its `tokenizer.json` never
+needs the encoder above (which refuses Nemotron ASR's `Precompiled`
+normalizer by name). `piece_table.parse(allocator, bytes, limits)`
+([pieces.zig](../../inference/src/tokenizer/pieces.zig)) reads a `BPE`
+model's vocabulary and the added tokens (with their `special` flag) into a
+`Table` by id, under a `Metaspace` decoder only; normalizer, pre-tokenizer
+and merges are not read. Decoding follows the library's `Metaspace`
+decoder: special ids are skipped, the replacement (`▁`) becomes a space,
+and the first piece written loses one leading `▁` unless the scheme is
+`never`. Ids are bounded by `limits.tokens`, copied piece bytes by
+`limits.text_bytes`; a piece that is empty or not UTF-8, an id given twice,
+or an added token that contradicts the vocabulary is refused. Nemotron
+ASR's use: [nemotron-asr.md § Tokenizer](../models/nemotron-asr.md#tokenizer).
+
 ## Validation evidence
 
 Default tests use a tiny synthetic GGUF and cover ownership after source release,

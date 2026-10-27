@@ -32,6 +32,7 @@ from a file, the sentence names the class or function.
 - [RNN-T decoding](#rnn-t-decoding)
 - [Tokenizer](#tokenizer)
 - [Front end and encoder against the trace (2026-10-27)](#front-end-and-encoder-against-the-trace-2026-10-27)
+- [Transducer against the trace, and word error rate (2026-10-27)](#transducer-against-the-trace-and-word-error-rate-2026-10-27)
 - [Decisions and open items](#decisions-and-open-items)
 
 ## Artifacts
@@ -337,8 +338,10 @@ This checkpoint's `att_context_size` does not, so nuclis accepts only
   frequency padding is zeros.
 - **Front end**: none in HF (it re-reads 400 overlapping samples per
   chunk); nuclis keeps the samples of open frames and the last sample.
-- **Decoder**: LSTM `h, c` (2 × 640 each), the last `g` (640), the frame
-  pointer and symbol count (below). Nothing resets between chunks.
+- **Decoder**: LSTM `h, c` (2 × 640 each), the last `g` (640), and the
+  rows decoded so far. Nothing resets between chunks. No symbol count
+  crosses a chunk: a row is decoded to its blank or its tenth symbol as
+  soon as it arrives, and every row of a chunk is final when the chunk is.
 
 **The first chunk differs.** Its features are computed with
 `center=True` (256 left zeros). Each subsampling convolution prepends one
@@ -368,7 +371,8 @@ chunk"), and the card's example drops the tail.
 `h' = σ(o) tanh(c')`. Layer 2's input is layer 1's `h'`. The start state
 is zeros, and the first input is the blank (`decoder_start_token_id`
 13087), so the first output is the LSTM of a zero vector from a zero
-state.
+state; the state that step leaves (not zeros) is the one the first token
+runs from.
 
 **Joint** (`Nemotron3_5AsrRNNTJointNetwork`): `logits = head · relu(e_t +
 g) + b_head`, 13,088 wide, where index 13087 is the blank. Greedy decoding
@@ -530,8 +534,119 @@ differs. Clips already present and correct are not fetched again.
   unit test with a 1.03 s clip reaches this case. The trace's clips end
   80 samples into a frame, so they do not.
 - FLEURS stores its audio as 32-bit float WAV. `audio.zig`'s own RIFF
-  reader takes 16-bit PCM only, so those clips go through AudioToolbox,
-  on macOS only. The trace's cut clips are 16-bit.
+  reader took 16-bit PCM only, so those clips went through AudioToolbox,
+  on macOS only; it reads float WAV too since the transducer's bring-up.
+  The trace's cut clips are 16-bit. LibriSpeech's clips are FLAC, which
+  only AudioToolbox reads.
+
+## Transducer against the trace, and word error rate (2026-10-27)
+
+**The implementation.** `inference/src/audio/nemotron_rnnt.zig` is the
+transducer's CPU reference. `bind` views `encoder_projector.*`,
+`decoder.*` and `joint.*` in place. `Decoder` holds the LSTM state, the
+prediction `g` and the rows decoded. `push` projects a batch of encoder
+rows (1024 → 640) and decodes each row in full: the joint's argmax, the
+prediction network run on each emitted token, and the next row on the
+blank or the tenth symbol. `reset` starts an utterance, the start blank
+included. A row never waits for a later one, so rows pushed chunk by chunk
+emit the whole clip's tokens. `nemotron_asr.zig` opens the directory:
+`Model` holds the encoder, the transducer, the piece table
+([tokenizer.md § Decode-only piece tables](../engine/tokenizer.md#decode-only-piece-tables)),
+the `prompt_dictionary` and the language tag of each special id.
+`Transcriber` is one utterance from samples to tokens, text and
+language. `nuclis transcribe` drives it, whole or in 80 ms pieces. Unit
+tests with synthetic weights cover the gate order `[i | f | g | o]`, the
+blank and the ten-symbol cap, the start state, the tag pattern, and rows
+in pieces against one push.
+
+**The trace, extended.** `scripts/speech-traces/nemotron_trace.py` also
+pins, for the same two cut clips at r = 0 and 3, whole and streamed: the
+`encoder_projector` rows (0–7, 56–63); every step of `generate`'s greedy
+decoding (the row read, and the joint's five largest logits with their
+ids); the prediction network's output for the start blank; and each run's
+token ids, rows and text. The regeneration reproduced every earlier array
+byte for byte. The fixtures grew to 3.1 MB. The authors' own streamed
+decode emits the same tokens as their whole clip. Their projector rows
+differ by up to 1.6e-5.
+
+**Against it.** The gate `nemotron-asr-trace-cpu`
+(`zig build test-nemotron-asr -- MODEL_DIR --transducer`, 6.1 s with the
+build cached, M4 Pro) decodes each clip twice. The first pass is the
+pinned features through the encoder in one pass. The second is the
+clip's samples in 80 ms pieces through a `Transcriber`. Every step's row
+and argmax, and the final ids, rows and text, equal the trace's exactly
+at both lookaheads in both modes: 92 and 95 steps for the LibriSpeech
+clip (28 and 31 tokens), and 88 for the German one (24 tokens). The
+values below are the worst over the two clips. "max" is the largest
+difference over the largest reference value, "RMS" the relative RMS.
+The logits run to about 1.1e3 in magnitude.
+
+| Stage | whole r = 0 | whole r = 3 | 80 ms pieces r = 0 | 80 ms pieces r = 3 |
+| --- | --- | --- | --- | --- |
+| projector rows, max / RMS | 3.2e-6 / 2.4e-6 | 2.2e-6 / 1.4e-6 | 1.9e-6 / 1.3e-6 | 2.2e-6 / 1.9e-6 |
+| logits at the trace's top five, max / RMS | 2.1e-6 / 1.1e-6 | 4.0e-6 / 2.0e-6 | 8.7e-7 / 3.8e-7 | 1.4e-5 / 6.8e-6 |
+| margin (top 1 − top 2) vs the trace's, max abs | 1.4e-4 | 4.3e-4 | 2.4e-4 | 1.7e-3 |
+
+The prediction network's start output is within 1.6e-7. The smallest
+margins, ours and the trace's alike, are 0.060 and 0.247 (LibriSpeech,
+r = 0, 3) and 0.015 and 0.011 (German). These are several times the
+margins' own disagreement, so the exact argmax is not luck. The bounds
+in `inference/nemotron-asr-check.zig` are 2e-5 on the projector and 1e-4
+max / 5e-5 RMS on the logits. Each margin must lie within 1e-2 of the
+trace's and the smallest must exceed that gap. The pinned transcripts are
+those of the 5.05 s cuts: "Also a popular contrivance whereby love making may be
+su" (r = 0) and "Also a popular can drivance whereby love making may be
+suspende" (r = 3); "Die Romantik hatte ein starkes kulturell
+deterministisches Element" (both). The whole clips through
+`nuclis transcribe` (r = 3, `auto`): "Also a popular can drivance whereby
+love making may be suspended but not stopped during the picnic season."
+(`en-US`) and "Die Romantik hatte ein starkes kulturell
+deterministisches Element, das sich aus Schriftstellern wie Goethe,
+Fichte und Schlägel schöpfte." (`de-DE`).
+
+**Speed (CPU, M4 Pro).** In the check tool (ReleaseFast), a 5.05 s clip
+(64 rows) is encoded and decoded whole in 0.43–0.47 s; the transducer adds
+little to the encoder's 0.41–0.45 s. Fed in 80 ms pieces it takes 1.33–1.38 s at
+r = 0 (one-row chunks) and 0.73–0.75 s at r = 3. Through `nuclis
+transcribe` (the ReleaseSafe build, whole clips, r = 3) the 60-clip corpus,
+512.2 s of audio, transcribed in 64.5 s: 0.13× real time.
+
+**Word error rate.** `scripts/wer.py` runs the fresh binary's
+`transcribe --json --backend cpu` over corpus clips. Each clip runs under
+its locale, or `--auto`. Both sides are normalized the same way: NFKC,
+case folded, `ё` as `е`, apostrophes dropped, other punctuation a space.
+For FLEURS the reference is its normalized transcript, what the speaker
+said ("dass", a repeated "sie"), not the written sentence. The script sums
+edits over clips before dividing. The whole corpus at r = 3 (`nuclis`
+at this unit's `1f0be96`, 67 s wall time, one process per clip):
+
+| Language | Clips | Words | WER, locale prompt | WER, `auto` | Card, FLEURS test, LangID / auto, 320 ms |
+| --- | ---: | ---: | ---: | ---: | --- |
+| English (LibriSpeech test-clean) | 40 | 828 | 3.86 % | 4.11 % | 8.27 / 8.84 (FLEURS, not LibriSpeech) |
+| German (FLEURS) | 5 | 96 | 14.58 % | 14.58 % | 8.83 / 8.87 |
+| French (FLEURS) | 5 | 97 | 15.46 % | 15.46 % | 9.79 / 9.84 |
+| Spanish, Latin American (FLEURS) | 5 | 95 | 5.26 % | 5.26 % | 4.39 / 4.48 |
+| Russian (FLEURS) | 5 | 95 | 8.42 % | 7.37 % | 9.87 / 11.01 |
+| all | 60 | 1211 | 6.11 % | 6.19 % | |
+
+The card's figures are on the whole FLEURS test sets, with its own
+normalization. Ours are five sentences per language under ours, so they
+are a different test set and not a comparison of accuracy. The German
+and French errors are concentrated in two sentences each, mostly proper
+names ("Cochamó", "Goethe, Fichte").
+
+The gate `nemotron-asr-wer-cpu` runs six clips: three LibriSpeech, and
+FLEURS German 1660, French 1661 and Russian 1660. Its first run had 10
+errors in 123 words, 8.13 %. The bound is 11 %, three more errors. It
+runs `./zig-out/bin/nuclis`, the Metal build, because LibriSpeech's FLAC
+needs AudioToolbox. The transcription itself runs on the CPU.
+
+**Language tags, observed.** A tagged sentence ends `.`, `▁`, `<de-DE>`:
+the text then ends in a space, which `transcribe` trims. Five of the 40
+LibriSpeech clips end without a tag under either prompt. Under an
+explicit prompt the model still emits a tag, the prompt's own locale, in
+each of the other 55 clips. Under `auto`, the Latin American Spanish clips are tagged
+`<es-ES>`, and under `es-US` they are tagged `<es-US>`.
 
 ## Decisions and open items
 
@@ -557,8 +672,9 @@ Open, observed at bring-up rather than decided:
 
 - **Tags in a long stream.** The card describes one tag after the
   terminal punctuation; whether `auto` emits one per sentence in a
-  continuous stream, and whether a tag can appear under an explicit
-  language, is not settled by the code.
+  continuous stream is not settled by the code. A tag does appear under
+  an explicit language (observed on 55 of 60 clips:
+  [Transducer against the trace](#transducer-against-the-trace-and-word-error-rate-2026-10-27)).
 - **Tag ↔ locale.** The tag `<sl-SL>` has no prompt key (Slovenian is
   `sl-SI`, 62); `mt-MT` (102) has a prompt but no tag, so what `auto`
   emits for Maltese is unknown.

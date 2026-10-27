@@ -28,8 +28,10 @@ as a cross-check, never copied.
 `inference/src/audio/`:
 
 - `audio.zig`: `decode` to 16 kHz mono f32 (`Pcm`, with the clip's whole
-  length when it was cut). A RIFF/WAVE parser reads 16-bit mono 16 kHz PCM
-  on any platform. Everything else goes through `audio_bridge.m`, built
+  length when it was cut). A RIFF/WAVE parser reads mono 16 kHz WAV of
+  16-bit PCM or 32-bit IEEE float (plain or `WAVE_FORMAT_EXTENSIBLE`;
+  FLEURS's clips are float) on any platform, and refuses a float file
+  holding a NaN or an infinity. Everything else goes through `audio_bridge.m`, built
   with the Metal bridge. Encoded bytes are bounded at 64 MiB.
 - `mel.zig`: `Spec` (what one extractor's front end is: Gemma's and
   Nemotron's), `Bank` (the window, the filter bank, the FFT twiddles),
@@ -47,6 +49,13 @@ as a cross-check, never copied.
   prompt block, CPU only so far: `bind` (the safetensors checkpoint),
   `Encoder`, and `Stream`
   ([nemotron-asr.md § The encoder](../models/nemotron-asr.md#the-encoder)).
+- `nemotron_rnnt.zig`: its RNN-T transducer: `bind`, and `Decoder`,
+  which turns encoder rows into tokens by greedy decoding, a row in full
+  as it arrives ([nemotron-asr.md § RNN-T decoding](../models/nemotron-asr.md#rnn-t-decoding)).
+- `nemotron_asr.zig`: the family opened from its directory (`Model`: the
+  encoder, the transducer, the piece table, the language prompts) and
+  `Transcriber`, one utterance stream from samples to text, which
+  `nuclis transcribe` drives.
 
 ## Decoding
 
@@ -57,7 +66,7 @@ channel count, and the converter's sample-rate quality is set to its
 maximum (`Mastering` complexity). Channels are averaged afterwards, as
 librosa's `mono=True` does. A 16 kHz mono 16-bit WAV never reaches the
 bridge: each sample over 32768 is what every decoder gives, so it is exact
-on any platform.
+on any platform. A 16 kHz mono float WAV is read as stored, likewise.
 
 Other clips match Google's only as far as two resamplers agree. On the
 `north` clip, a 44.1 kHz stereo copy gives a vector at cosine 0.9999 to the

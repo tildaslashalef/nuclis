@@ -3997,6 +3997,75 @@
    },
    "note": "the front end's frames and the encoder's subsampling, blocks 0, 11, 23 and prompt rows of two clips at lookaheads 0 and 3, whole clip, the authors' chunks, and the samples in 80 ms pieces, against the trace pinned from transformers c0d024fb (relative bounds in the check tool)",
    "evidence": "docs/models/nemotron-asr.md"
+  },
+  {
+   "name": "nemotron-asr-trace-cpu",
+   "family": "nemotron-asr",
+   "tier": "verify-cpu",
+   "model": "nemotron_asr",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/nemotron-asr-check.zig",
+    "inference/src/audio/audio.zig",
+    "inference/src/audio/mel.zig",
+    "inference/src/audio/nemotron_*.zig",
+    "inference/src/tokenizer/pieces.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/safetensors.zig",
+    "tests/fixtures/nemotron-asr/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-nemotron-asr",
+    "--",
+    "{model}",
+    "--transducer"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the transducer against the trace pinned from transformers c0d024fb, two clips at lookaheads 0 and 3, from the pinned features in one pass and from the samples in 80 ms pieces: every greedy step's row and argmax exactly equal, the final token ids, rows and text exactly equal; the projector rows and the logits at the trace's top five ids within relative bounds, the margins within 1e-2 of the trace's and above their own disagreement (first run: 1.4e-5 relative, margins 1.7e-3 apart, smallest margin 0.011)",
+   "evidence": "docs/models/nemotron-asr.md#transducer-against-the-trace-and-word-error-rate-2026-10-27"
+  },
+  {
+   "name": "nemotron-asr-wer-cpu",
+   "family": "nemotron-asr",
+   "tier": "verify-cpu",
+   "model": "nemotron_asr",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/audio/audio.zig",
+    "inference/src/audio/audio_bridge.m",
+    "inference/src/audio/mel.zig",
+    "inference/src/audio/nemotron_*.zig",
+    "inference/src/tokenizer/pieces.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/safetensors.zig",
+    "src/transcribe.zig",
+    "scripts/wer.py",
+    "tests/fixtures/speech-corpus.json"
+   ],
+   "command": [
+    "python3",
+    "scripts/wer.py",
+    "--nuclis",
+    "{nuclis}",
+    "--model",
+    "{model}",
+    "--clips",
+    "librispeech-61-70968-0000,librispeech-4507-16021-0001,librispeech-6829-68769-0000,fleurs-de_de-1660,fleurs-fr_fr-1661,fleurs-ru_ru-1660",
+    "--max-wer",
+    "0.11"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "nuclis transcribe --backend cpu (lookahead 3, each clip under its locale) over six clips of the speech corpus (make speech-corpus), three LibriSpeech test-clean and one FLEURS clip each in German, French and Russian: the word error rate over all must stay at most 11 % (first run 2026-10-27: 10 errors in 123 words, 8.13 %; the bound allows three more). The Metal build's binary, for its AudioToolbox FLAC reader; the transcription runs on the CPU",
+   "evidence": "docs/models/nemotron-asr.md#transducer-against-the-trace-and-word-error-rate-2026-10-27"
   }
  ]
 }
