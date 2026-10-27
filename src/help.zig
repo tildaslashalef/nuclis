@@ -544,17 +544,28 @@ fn speak(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--model <dir>", "a checkpoint directory; default the 1.7B under");
     try more(out, "~/.nuclis/models/Qwen, else the 0.6B");
     try row(out, sty, "--seed <n>", "the sampler's seed; default 0");
-    try row(out, sty, "--backend cpu|metal", "default cpu; metal is not written yet");
+    try row(out, sty, "--backend cpu|metal", default_backend);
+    try row(out, sty, "--stream", "write each chunk as it is decoded; report the");
+    try more(out, "time from the text to the first audio");
+    try row(out, sty, "--chunk <n>", "frames of 80 ms per chunk, 1 to 32; default 4");
+    try row(out, sty, "--first-chunk <n>", "frames in the first chunk; default 1");
+    try row(out, sty, "--split", "time the talker and the predictor apart (on");
+    try more(out, "Metal, one more command buffer a frame)");
+    try row(out, sty, "--host-sampling", "on Metal, sample each code group on the CPU");
+    try more(out, "between command buffers: the same audio, slower");
+    try row(out, sty, "--profile", "time every Metal dispatch; print the kernels");
 
     try heading(out, sty, "Examples:");
     try example(out, sty, "nuclis speak \"Hello there.\" -o hello.wav", "the default voice");
     try example(out, sty, "nuclis speak --voice vivian --language chinese \"你好。\" -o hi.wav", "another speaker");
     try example(out, sty, "nuclis speak --instruct \"Whisper.\" \"Good night.\" -o night.wav", "a mood, on the 1.7B");
+    try example(out, sty, "nuclis speak --stream \"One moment, please.\" -o wait.wav", "chunk by chunk, timed");
 
     try heading(out, sty, "Notes:");
     try plain(out, "Speech is sampled: the same text, voice, and seed give the same audio,");
     try plain(out, "another seed says it differently. The whole text is read before the");
-    try plain(out, "first frame, so give it a sentence or two at a time.");
+    try plain(out, "first frame, so give it a sentence or two at a time. The CPU and Metal");
+    try plain(out, "agree to rounding, so a seed gives the same speech on both only nearly.");
     try out.writeByte('\n');
 }
 

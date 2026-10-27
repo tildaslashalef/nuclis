@@ -30,8 +30,9 @@ pub const Options = struct {
     output: ?[]const u8 = null,
     /// Write each chunk as it is decoded and report the time to the first audio.
     stream: bool = false,
-    /// Frames per chunk (1 … `speech.max_chunk`).
+    /// Frames per chunk, and in the first (1 … `speech.max_chunk`).
     chunk: ?usize = null,
+    first_chunk: ?usize = null,
     /// Time every Metal dispatch and print where the device's time went.
     profile: bool = false,
     /// Split a frame's time into the talker and the predictor (on Metal, one
@@ -73,7 +74,7 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
             o.host_sampling = true;
             continue;
         }
-        const known = [_][]const u8{ "--voice", "--language", "--instruct", "--model", "--seed", "--backend", "--output", "-o", "--chunk" };
+        const known = [_][]const u8{ "--voice", "--language", "--instruct", "--model", "--seed", "--backend", "--output", "-o", "--chunk", "--first-chunk" };
         const takes_value = for (known) |k| {
             if (std.mem.eql(u8, word, k)) break true;
         } else false;
@@ -97,14 +98,15 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
             &o.model
         else if (std.mem.eql(u8, word, "--output") or std.mem.eql(u8, word, "-o"))
             &o.output
-        else if (std.mem.eql(u8, word, "--chunk")) {
-            if (o.chunk != null) return error.DuplicateOption;
+        else if (std.mem.eql(u8, word, "--chunk") or std.mem.eql(u8, word, "--first-chunk")) {
+            const chunk_slot = if (std.mem.eql(u8, word, "--chunk")) &o.chunk else &o.first_chunk;
+            if (chunk_slot.* != null) return error.DuplicateOption;
             const n = std.fmt.parseInt(usize, value, 10) catch 0;
             if (n == 0 or n > speech.max_chunk) {
-                diag.set("--chunk takes a number of frames from 1 to {d}, not {s}", .{ speech.max_chunk, value });
+                diag.set("{s} takes a number of frames from 1 to {d}, not {s}", .{ word, speech.max_chunk, value });
                 return error.InvalidOptionValue;
             }
-            o.chunk = n;
+            chunk_slot.* = n;
             continue;
         } else if (std.mem.eql(u8, word, "--seed")) {
             if (o.seed != null) return error.DuplicateOption;
@@ -244,10 +246,11 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, words: []con
     var synth = try voice.synthesizer(alloc, prompt.rows, seed);
     defer synth.deinit();
     synth.chunk = options.chunk orelse speech.default_chunk;
+    synth.first_chunk = options.first_chunk orelse speech.default_first_chunk;
     synth.split = options.split;
     synth.host_sampling = options.host_sampling;
     const per = 1920;
-    const buffer = try arena.alloc(f32, synth.chunk * per);
+    const buffer = try arena.alloc(f32, @max(synth.chunk, synth.first_chunk) * per);
     var first_ms: ?f64 = null;
     var samples: usize = 0;
     var pending: std.ArrayList(i16) = .empty;
@@ -288,7 +291,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, words: []con
     }.ms;
     try out.print("prefill {d:.0} ms; a frame: codes {d:.1} ms, codec {d:.1} ms", .{ @as(f64, @floatFromInt(t.prefill)) / 1e6, per_frame(t.frames, frames), per_frame(t.codec, frames) });
     if (backend == .cpu or synth.split) try out.print(" (talker {d:.1} ms, predictor {d:.1} ms{s})", .{ per_frame(t.talker, frames), per_frame(t.predictor, frames), if (backend == .metal) " on the device" else "" });
-    if (first_ms) |ms| try out.print("; first audio {d:.0} ms after the text ({d} frames a chunk)", .{ ms, synth.chunk });
+    if (first_ms) |ms| try out.print("; first audio {d:.0} ms after the text (chunks of {d} frames, the first {d})", .{ ms, synth.chunk, synth.first_chunk });
     if (voice.plan) |plan| if (plan.disagreements > 0) try out.print("; the host overruled the device's draw {d} times", .{plan.disagreements});
     try out.writeByte('\n');
     if (voice.gpu) |*g| if (g.profile) |*p| try printProfile(arena, out, p, frames);

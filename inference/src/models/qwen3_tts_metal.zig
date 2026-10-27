@@ -567,6 +567,13 @@ pub const Plan = struct {
         try self.stack(self.predictor, p, &self.predictor_cache, 1, position, null);
     }
 
+    /// Whether the fused BF16 kernels take these matrices (BF16, rows a
+    /// multiple of 8, one width).
+    fn bf16(weights: []const Weight) bool {
+        for (weights) |w| if (w.matrix.encoding != 30 or w.matrix.rows % 8 != 0 or w.matrix.columns != weights[0].matrix.columns) return false;
+        return true;
+    }
+
     /// `output = w · input` for one row: BF16 through the TTS kernel.
     fn mv(self: *Plan, w: Weight, input: Buffer, output: Buffer) !void {
         if (w.matrix.encoding == 30 and input.offset % 16 == 0) return self.backend.ttsMatvecBf16(w.buffer, w.matrix, input, output, matvec_rows);
@@ -595,23 +602,33 @@ pub const Plan = struct {
         const scale: f32 = @floatCast(1 / @sqrt(@as(f64, @floatFromInt(hd))));
         const norm: Backend.Norm = .{ .rows = n, .width = w, .in_stride = w, .out_stride = w, .eps = s.rms_eps };
         const total = position + n;
+        // The input norm of every layer but the first is fused into the
+        // previous layer's last residual add (`addRmsNorm`).
+        try b.rmsNorm(self.x, blocks[0].input_norm, self.h, norm);
         for (blocks, cache.keys, cache.values, 0..) |l, keys, values, layer| {
-            try b.rmsNorm(self.x, l.input_norm, self.h, norm);
-            try self.mm(l.q, self.h, self.q, n);
-            try self.mm(l.k, self.h, self.k, n);
-            try self.mm(l.v, self.h, self.v, n);
+            const k_rows = keys.slice(position * row_bytes, n * row_bytes);
+            const v_rows = values.slice(position * row_bytes, n * row_bytes);
+            // A row into an F32 cache: the values projected into their slot,
+            // the keys normed and rotated into theirs.
+            const direct = n == 1 and precision == .f32;
+            const v_out = if (direct) v_rows else self.v;
+            if (n == 1 and bf16(&.{ l.q, l.k, l.v }))
+                try b.ttsMatvec3Bf16(.{ l.q.buffer, l.k.buffer, l.v.buffer }, .{ l.q.matrix, l.k.matrix, l.v.matrix }, self.h, .{ self.q, self.k, v_out })
+            else {
+                try self.mm(l.q, self.h, self.q, n);
+                try self.mm(l.k, self.h, self.k, n);
+                try self.mm(l.v, self.h, v_out, n);
+            }
             if (n == 1) {
                 try b.rmsNormRope(self.q, l.q_norm, rope, self.q, .{ .rows = s.heads, .width = hd, .in_stride = hd, .out_stride = hd, .eps = s.rms_eps }, hd, position, .split_half);
-                try b.rmsNormRope(self.k, l.k_norm, rope, self.k, .{ .rows = s.kv_heads, .width = hd, .in_stride = hd, .out_stride = hd, .eps = s.rms_eps }, hd, position, .split_half);
+                try b.rmsNormRope(self.k, l.k_norm, rope, if (direct) k_rows else self.k, .{ .rows = s.kv_heads, .width = hd, .in_stride = hd, .out_stride = hd, .eps = s.rms_eps }, hd, position, .split_half);
             } else {
                 try b.rmsNorm(self.q, l.q_norm, self.q, .{ .rows = n * s.heads, .width = hd, .in_stride = hd, .out_stride = hd, .eps = s.rms_eps });
                 try b.ropeRows(self.q, rope, s.heads, hd, hd, position, n, qw, .split_half);
                 try b.rmsNorm(self.k, l.k_norm, self.k, .{ .rows = n * s.kv_heads, .width = hd, .in_stride = hd, .out_stride = hd, .eps = s.rms_eps });
                 try b.ropeRows(self.k, rope, s.kv_heads, hd, hd, position, n, kvw, .split_half);
             }
-            const k_rows = keys.slice(position * row_bytes, n * row_bytes);
-            const v_rows = values.slice(position * row_bytes, n * row_bytes);
-            try b.storeRows(&.{ .{ .dst = k_rows, .src = self.k, .count = n * kvw }, .{ .dst = v_rows, .src = self.v, .count = n * kvw } }, precision);
+            if (!direct) try b.storeRows(&.{ .{ .dst = k_rows, .src = self.k, .count = n * kvw }, .{ .dst = v_rows, .src = self.v, .count = n * kvw } }, precision);
             const all_keys = keys.slice(0, total * row_bytes);
             const all_values = values.slice(0, total * row_bytes);
             if (n == 1) {
@@ -627,13 +644,16 @@ pub const Plan = struct {
                 if (few) try b.attentionVerify(all_keys, all_values, queries, self.partials, self.att, shape) else try b.attentionChunk(all_keys, all_values, queries, self.att, shape);
             }
             try self.mm(l.o, self.att, self.o, n);
-            try b.add(self.x, self.o, n * w);
-            try b.rmsNorm(self.x, l.post_norm, self.h, norm);
-            try self.mm(l.gate, self.h, self.gate, n);
-            try self.mm(l.up, self.h, self.up, n);
-            try b.siluMul(self.gate, self.up, n * s.intermediate);
+            try b.addRmsNorm(self.x, self.o, l.post_norm, self.h, norm);
+            if (n == 1 and bf16(&.{ l.gate, l.up }) and l.gate.matrix.rows == l.up.matrix.rows)
+                try b.ttsGateUpBf16(l.gate.buffer, l.up.buffer, l.gate.matrix, self.h, self.gate)
+            else {
+                try self.mm(l.gate, self.h, self.gate, n);
+                try self.mm(l.up, self.h, self.up, n);
+                try b.siluMul(self.gate, self.up, n * s.intermediate);
+            }
             try self.mm(l.down, self.gate, self.o, n);
-            try b.add(self.x, self.o, n * w);
+            if (layer + 1 < blocks.len) try b.addRmsNorm(self.x, self.o, blocks[layer + 1].input_norm, self.h, norm) else try b.add(self.x, self.o, n * w);
             if (observer) |obs| {
                 try b.commit();
                 obs.record(obs.context, layer, self.x.floats()[0 .. n * w]);

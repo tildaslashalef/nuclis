@@ -1,10 +1,12 @@
-//! Qwen3-TTS's codec decoder kernels: the host side of `kernels/tts.metal`.
-//! Methods of `Backend`, which `root.zig` aliases so callers write
-//! `backend.ttsGather(…)`.
+//! Qwen3-TTS's kernels, the host side of `kernels/tts.metal`: the codec
+//! decoder's, the BF16 matrix products of the talker and predictor, and the
+//! device frame's row gather and sampler. Methods of `Backend`, which
+//! `root.zig` aliases so callers write `backend.ttsGather(…)`.
 const std = @import("std");
 const root = @import("../root.zig");
 const Backend = root.Backend;
 const Buffer = root.Buffer;
+const Matrix = @import("../../cpu/root.zig").Matrix;
 const perElement = Backend.perElement;
 
 fn fits(buffer: Buffer, floats: usize) bool {
@@ -95,7 +97,7 @@ pub const TtsMatvecParams = extern struct { rows: u32, columns: u32, stride: u32
 /// with `rows_per_simdgroup` (1, 2, or 4) rows per SIMD group. The weights
 /// need 2-byte alignment, the input 16 (it is read as float4), and the
 /// columns a multiple of 8.
-pub fn ttsMatvecBf16(self: *Backend, weights: Buffer, matrix: @import("../../cpu/root.zig").Matrix, input: Buffer, output: Buffer, rows_per_simdgroup: usize) !void {
+pub fn ttsMatvecBf16(self: *Backend, weights: Buffer, matrix: Matrix, input: Buffer, output: Buffer, rows_per_simdgroup: usize) !void {
     if (matrix.encoding != 30 or matrix.rows == 0 or matrix.columns == 0 or matrix.columns % 8 != 0 or matrix.bytes.len != matrix.rows * matrix.columns * 2) return error.InvalidShape;
     if (weights.len < matrix.bytes.len or weights.offset % 2 != 0 or !fits(input, matrix.columns) or input.offset % 16 != 0 or !fits(output, matrix.rows)) return error.InvalidShape;
     const kernel: root.Kernel = switch (rows_per_simdgroup) {
@@ -113,7 +115,7 @@ pub fn ttsMatvecBf16(self: *Backend, weights: Buffer, matrix: @import("../../cpu
 /// a BF16 decode (`nu_tts_matmul_bf16`): bit for bit the generic tile's
 /// result, for `tokens` rows of `input` (buffers holding
 /// `matmulPadded(tokens)` rows).
-pub fn ttsMatmulBf16(self: *Backend, weights: Buffer, matrix: @import("../../cpu/root.zig").Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
+pub fn ttsMatmulBf16(self: *Backend, weights: Buffer, matrix: Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
     if (matrix.encoding != 30 or matrix.rows == 0 or matrix.rows % 8 != 0 or matrix.columns == 0 or matrix.columns % 64 != 0 or matrix.bytes.len != matrix.rows * matrix.columns * 2) return error.InvalidShape;
     if (tokens == 0 or in_stride < matrix.columns or out_stride < matrix.rows) return error.InvalidShape;
     const padded = Backend.matmulPadded(tokens);
@@ -145,4 +147,33 @@ pub fn ttsSample(self: *Backend, logits: Buffer, count: usize, draws: Buffer, dr
     if (!(top_p > 0 and top_p <= 1) or !(temperature >= 0) or !std.math.isFinite(temperature)) return error.InvalidShape;
     const p: TtsSampleParams = .{ .count = @intCast(count), .slot = @intCast(slot), .top_k = @intCast(@min(top_k, count)), .draw = @intCast(draw), .top_p = top_p, .temperature = temperature };
     try self.dispatch(.tts_sample, &.{ logits, draws, codes }, p, 1, 1024, .{});
+}
+
+pub const TtsMatvec3Params = extern struct { rows0: u32, rows1: u32, rows2: u32, columns: u32 };
+/// `outputs[i] = matrices[i] · input` for three BF16 matrices of the same
+/// width in one dispatch (each row count a multiple of 8; the input
+/// 16-byte aligned).
+pub fn ttsMatvec3Bf16(self: *Backend, weights: [3]Buffer, matrices: [3]Matrix, input: Buffer, outputs: [3]Buffer) !void {
+    const columns = matrices[0].columns;
+    if (columns == 0 or columns % 8 != 0 or !fits(input, columns) or input.offset % 16 != 0) return error.InvalidShape;
+    var bytes: u64 = 0;
+    var rows: usize = 0;
+    for (weights, matrices, outputs) |w, m, out| {
+        if (m.encoding != 30 or m.columns != columns or m.rows == 0 or m.rows % 8 != 0 or m.bytes.len != m.rows * columns * 2) return error.InvalidShape;
+        if (w.len < m.bytes.len or w.offset % 2 != 0 or !fits(out, m.rows)) return error.InvalidShape;
+        bytes += m.bytes.len;
+        rows += m.rows;
+    }
+    const p: TtsMatvec3Params = .{ .rows0 = @intCast(matrices[0].rows), .rows1 = @intCast(matrices[1].rows), .rows2 = @intCast(matrices[2].rows), .columns = @intCast(columns) };
+    try self.dispatch(.tts_matvec3_bf16, &.{ weights[0], weights[1], weights[2], input, outputs[0], outputs[1], outputs[2] }, p, @intCast(rows / 8), 128, .{ .encoding = 30, .rows = @intCast(rows), .columns = @intCast(columns), .bytes = bytes });
+}
+
+pub const TtsGateUpParams = extern struct { rows: u32, columns: u32 };
+/// `out = silu(gate · input) ⊙ (up · input)` for BF16 `gate` and `up` of
+/// the same shape, in one dispatch.
+pub fn ttsGateUpBf16(self: *Backend, gate: Buffer, up: Buffer, matrix: Matrix, input: Buffer, out: Buffer) !void {
+    if (matrix.encoding != 30 or matrix.rows == 0 or matrix.columns == 0 or matrix.columns % 8 != 0 or matrix.bytes.len != matrix.rows * matrix.columns * 2) return error.InvalidShape;
+    if (gate.len < matrix.bytes.len or up.len < matrix.bytes.len or gate.offset % 2 != 0 or up.offset % 2 != 0 or !fits(input, matrix.columns) or input.offset % 16 != 0 or !fits(out, matrix.rows)) return error.InvalidShape;
+    const p: TtsGateUpParams = .{ .rows = @intCast(matrix.rows), .columns = @intCast(matrix.columns) };
+    try self.dispatch(.tts_gate_up_bf16, &.{ gate, up, input, out }, p, @intCast(@divCeil(matrix.rows, 8)), 128, .{ .encoding = 30, .rows = @intCast(matrix.rows), .columns = @intCast(matrix.columns), .bytes = 2 * matrix.bytes.len });
 }

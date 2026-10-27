@@ -331,4 +331,6 @@ pub const Kernel = enum(u32) {
     tts_matmul_bf16,
     tts_embed_row,
     tts_sample,
+    tts_matvec3_bf16,
+    tts_gate_up_bf16,
 };

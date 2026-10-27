@@ -44,6 +44,7 @@ read as the definition, never copied.
 - [The 1.7B CustomVoice](#the-17b-customvoice)
 - [Codec decoder against the trace (2026-10-27)](#codec-decoder-against-the-trace-2026-10-27)
 - [Talker and code predictor against the trace (2026-10-27)](#talker-and-code-predictor-against-the-trace-2026-10-27)
+- [On Metal (2026-10-27)](#on-metal-2026-10-27)
 - [Open for the implementation](#open-for-the-implementation)
 
 ## Artifacts
@@ -710,6 +711,175 @@ seed: 6.08 s without, 5.04 s cheerful (−19.4 dBFS), 3.84 s gentle
 (−24.2 dBFS, the quietest), 4.96 s serious. Whether they sound right is for
 a listener; the round trip through the ASR is the permanent gate (the
 unit's decision 1).
+
+## On Metal (2026-10-27)
+
+**The talker and the code predictor** (`inference/src/models/qwen3_tts_metal.zig`,
+`Plan`) run the CPU reference's forward with the checkpoint's BF16 matrices
+wrapped in place: nothing is widened, so the device holds 1.8 GB (0.6B) or
+3.8 GB (1.7B) of weights as published, against the CPU reference's 2.4 and
+6.4 GB of F32. Norms and biases are decoded to F32 buffers; text rows and
+code rows are BF16 rows widened where they are needed. A decode row runs
+each layer as the RMSNorm, one dispatch for q, k, and v
+(`nu_tts_matvec3_bf16`), the q/k norm fused with RoPE (`rmsNormRope`,
+NEOX pairing), the flash-decoding attention, the output projection with
+the residual add fused into the next norm (`addRmsNorm`), gate·up with
+SiLU in one dispatch (`nu_tts_gate_up_bf16`), and the down projection. A
+prompt runs as chunks of up to 128 rows through the generic F32 matmul
+tile with a BF16 segment decode (`nu_tts_matmul_bf16`: the same values in
+the same order as the generic tile, which reads BF16 through the
+all-encodings switch at a third of the rate) and the causal chunk
+attention. The talker's cache is F16 (the family convention, `--kv` in
+the check) or F32, grown on demand to 16,384 rows; the predictor's 16 rows
+are F32.
+
+**Sampling stays the host's, and the frame stays on the device.** Group 0
+(the repetition penalty over generated codes, the end blocked for two
+frames, the markers suppressed) is sampled on the CPU from the talker's
+logits, as before. A frame's groups 1–15 each depend on the code just
+sampled, so sampling them on the host costs a command buffer and a round
+trip per group: 16 per frame. Instead `Plan.frameOnDevice` records the
+whole frame in one command buffer: each group's logits are sampled by
+`nu_tts_sample` (a bitonic sort of the 2,048 logits to the CPU sampler's
+order, value descending and id ascending, then its temperature, top-k,
+top-p walk in F32) with the uniform the host sampler would draw next
+(copied from its generator before the frame), the next group's input row
+is gathered from the BF16 table at the device's code (`nu_tts_embed_row`),
+and after group 15 the next talker row (§ (e)) and the talker's step
+follow. After the commit the host sampler decides every group again from
+the same logits, consuming its draws as the CPU path does; where it
+disagrees (a draw that F32 rounding moves across a boundary) its code
+stands, and the rest of the frame and the talker step are run again a
+group at a time. So the codes are always the CPU sampler's: `nuclis speak
+--host-sampling` (a command buffer per group) writes the same WAV byte for
+byte (checked on both sizes at two seeds), and over every run here the
+host overruled the device's draw 0 times. `make test-metal` checks the
+sampler against `sampling.Sampler` with the same draw: 380 of 380 equal,
+over top-k 50, a nucleus, greedy, and ties at the top.
+
+**The codec decoder** (`inference/src/audio/qwen3_codec_metal.zig`,
+`Decoder` and `Stream`) copies the CPU runtime's F32 matrices (the same
+tap-major convolution layout, columns padded with zeros to the tile's
+64; 543 MB of device buffers) and runs the CPU stream's schedule as one
+command buffer per piece of at most 8 frames, its carried state (every
+convolution's history, the attention window's 71 keys and values per
+layer, the RoPE position) in one device buffer. Convolutions gather their
+taps (`nu_tts_gather`) into rows for the generic F32 tile; the window
+attention (`nu_tts_window_attention`) gives each key the lane of its
+distance from the window's start, and every other kernel sums an output
+in an order fixed by the output's own index, so the samples do not depend
+on how frames are grouped: pieces of 1, 3, and 7 frames equal one decode
+bit for bit (the gate checks it). The new kernels are in
+`backends/metal/kernels/tts.metal`, their encoders in `ops/tts.zig`, and
+each is a `make test-metal` case against the CPU function it replaces
+(`inference/tts-metal-check.zig`); no shared kernel or encoder changed.
+
+**Against the trace and the CPU** (`make gate NAME='qwen3-tts-*'`,
+ReleaseSafe, Apple M4 Pro), replaying the trace's codes, relative RMS per
+stage:
+
+| Stage | 0.6B, F32 cache | 0.6B, F16 | 1.7B, F32 | 1.7B, F16 | 1.7B instruction, F32 | 1.7B instruction, F16 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| talker inputs | 3.67e-7 | 3.67e-7 | 4.99e-7 | 4.99e-7 | 5.74e-7 | 5.74e-7 |
+| layer 0 | 8.62e-7 | 4.90e-5 | 8.37e-7 | 2.78e-4 | 7.93e-7 | 3.44e-4 |
+| layer 13 | 4.32e-7 | 1.97e-5 | 2.51e-6 | 3.69e-4 | 2.62e-6 | 4.67e-4 |
+| layer 27 | 4.14e-7 | 4.58e-5 | 2.99e-6 | 1.87e-4 | 2.80e-6 | 3.46e-4 |
+| final norm | 2.94e-6 | 5.28e-4 | 2.59e-6 | 5.04e-4 | 2.83e-6 | 4.22e-4 |
+| group-0 logits | 1.21e-6 | 4.37e-4 | 1.09e-6 | 2.74e-4 | 1.21e-6 | 2.33e-4 |
+| predictor logits | 1.35e-6 | 2.06e-4 | 1.58e-6 | 1.27e-4 | 1.66e-6 | 9.58e-5 |
+
+Every logit row keeps the trace's argmax in every case and either cache.
+With the F32 cache Metal is as close to the trace as the CPU reference
+(worst 2.99e-6 against the CPU's 3.02e-6); the F16 cache costs about
+5e-4. The gates `qwen3-tts-{0.6b,1.7b}-trace-metal` run both caches:
+relative RMS 1.5e-5 per stage with F32, 3e-3 with F16. The codec on Metal
+against the CPU decode of the same codes, every frame each case sampled
+(46, 171, 141, 86): relative RMS 1.8e-6 to 2.2e-6, max |Δ| 2.9e-6; against
+the trace's samples 2.5e-6 and 2.8e-6. `qwen3-tts-codec-metal` bounds both
+at 1.5e-5.
+
+### The round trip
+
+`scripts/wer.py --speak tests/fixtures/tts-roundtrip.json` speaks 20
+pinned sentences (a question, names, a time, prices, counts spelled as
+they are said; speaker `ryan`, English, each its own seed) with `nuclis
+speak` on Metal and hears them with `nuclis transcribe --backend cpu`,
+then scores the words against the text with the corpus's normalization.
+First run, 2026-10-27: on both sizes 5 errors in 190 words, 2.63 %. Most
+are the recognizer's spelling, not the voice: "dr" for "Doctor" and
+"heres" for "here is" on both, "and" dropped before "fifteen cents" on
+both; then "Pitzell" for "Patel" on the 0.6B and "said" for "set" on the
+1.7B. The gates `qwen3-tts-{0.6b,1.7b}-roundtrip-metal` hold the rate at
+6 % (six more errors).
+
+### Speed
+
+`nuclis speak --stream` (ReleaseSafe, Apple M4 Pro, 48 GB) on "Is it
+twenty past nine already? Doctor Okafor said the results would arrive by
+Tuesday.", speaker `ryan`, English, seed 0, F16 talker cache, files in
+the page cache. Task 7 (the recognizer on Metal) was benchmarking on the
+same GPU in parallel: every run below started with no other GPU job
+running, and runs another job overlapped are left out; the main session
+re-measures after merging. "Codes" is a frame's talker and predictor
+wall time, sampling included; the device split comes from `--split`,
+which commits between the predictor and the talker (one more command
+buffer a frame); the codec is per frame in chunks of 4.
+
+| | 0.6B | 1.7B |
+| --- | ---: | ---: |
+| frames, audio | 88, 7.04 s | 86, 6.88 s |
+| real time (runs) | 3.16×, 3.19×, 3.24× | 2.17×, 2.17× |
+| codes a frame | 20.9–21.4 ms | 32.3–32.4 ms |
+| of it on the device: talker / predictor | 5.2–5.5 / 14.3–14.9 ms | 14.4–14.6 / 15.9–16.0 ms |
+| codec a frame | 3.2–3.3 ms | 3.6 ms |
+| prefill (embedding and prompt) | 30–45 ms | 65–68 ms |
+| first audio after the text, first chunk 1 frame | 65–80 ms | 111–115 ms |
+| first audio, first chunk 4 frames | 139–157 ms (a run before the first-chunk option, chunks of 4) | 209–222 ms |
+| with `--host-sampling` (16 command buffers a frame) | 2.86×, 2.88× | 2.03×, 2.05× |
+| loading (`Voice.open`, warm) | 0.4 s | 0.4 s |
+
+The first 1.7B run after a build took 1,165 ms to prefill (the shader
+library and pipelines compiling once) and is left out of the table.
+
+**Against the targets.** First audio is within the proposed 150 ms on
+both sizes once the first chunk is one frame (`Synthesizer.first_chunk`,
+default 1; the codec's samples do not depend on the pieces, so nothing
+else changes). Real time is 3.2× on the 0.6B, at the proposed 3×, and
+2.2× on the 1.7B, below it. Sampling the frame on the device saves 2–3 ms
+a frame against a command buffer per group.
+
+**Where the 1.7B's frame goes, and why 3× is near the roof.** The bytes a
+frame reads, from the tensor shapes (not measured): the 1.7B's talker
+2.70 GB (28 layers of 96 MB, the head 13 MB), its predictor 2.37 GB (15
+groups of 5 layers of 30 MB, a head and the 2048 → 1024 projection of
+4 MB each), 5.07 GB; the 0.6B's talker 0.85 GB and predictor 2.31 GB,
+3.16 GB (the unit's estimates were 5.2 and 3.3 GB). At the device times
+above the talker reads 186 GB/s (1.7B) and 160 GB/s (0.6B), the predictor
+about 150 GB/s; `metal-check --tts-bench` puts one BF16 matvec at 200–250
+GB/s in isolation. 3× real time on the 1.7B needs the 5.07 GB in 26.7 ms
+less the codec's 3.6, 220 GB/s sustained across about 1,100 dependent dispatches
+a frame: the predictor's 1,024-wide matrices (2–6 MB each) are too small
+to reach the roof one at a time. Fusing q/k/v, gate·up with SiLU, the
+residual adds into the next norm, and writing the F32 cache rows in place
+took the predictor's dispatches from about 90 to 55 a group and left its
+device time where it was (14.5 ms a frame before, 14.3–14.9 after, 0.6B):
+latency, not dispatch count, bounds it. What would move it: the predictor's 5 layers as one kernel per
+group, or several frames' predictors batched (they are sequential within
+a frame only).
+
+### For serving
+
+What `POST /v1/audio/speech` can call: `qwen3_tts_runtime.Voice.open(…,
+.{ .backend = .metal })` once (it owns its own `metal.Backend`; 0.4 s for
+either size with the files in the page cache), then
+per request `voice.prompt(text, speaker, language, instruct)` and
+`voice.synthesizer(prompt.rows, seed)`, and `read` until it returns 0,
+each call one chunk of 16-bit-ready samples (`first_chunk` frames, then
+`chunk`). Between `read` calls no command buffer is in flight (every
+commit waits), so a request is cancelled by not calling `read` again and
+calling `deinit`; a `read` itself runs to the end of its chunk (at most
+`chunk` frames). One synthesizer at a time per voice: the plan holds the
+talker's cache and the scratch, and the codec decoder its scratch.
 
 ## Open for the implementation
 

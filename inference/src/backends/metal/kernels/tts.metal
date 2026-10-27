@@ -286,3 +286,69 @@ kernel void nu_tts_sample(device const float * logits [[buffer(0)]],
     }
     codes[p.slot] = code;
 }
+
+// Three BF16 matrices over one input in one dispatch (a layer's q, k, v):
+// the rows of the three are numbered in turn, each SIMD group owns two rows
+// of one matrix (every row count a multiple of 8), and a row is summed as
+// in `nu_tts_matvec_bf16`.
+struct TtsMatvec3Params { uint rows0; uint rows1; uint rows2; uint columns; };
+inline float nu_tts_row_bf16(device const uchar * row, device const float * input, uint columns, uint lane) {
+    float sum = 0.0f;
+    for (uint c = lane * 8; c < columns; c += 256) {
+        device const packed_ushort4 * w = (device const packed_ushort4 *)(row + c * 2);
+        sum += dot(nu_bf16x4(ushort4(w[0])), *(device const float4 *)(input + c)) + dot(nu_bf16x4(ushort4(w[1])), *(device const float4 *)(input + c + 4));
+    }
+    return simd_sum(sum);
+}
+kernel void nu_tts_matvec3_bf16(device const uchar * w0 [[buffer(0)]],
+                                device const uchar * w1 [[buffer(1)]],
+                                device const uchar * w2 [[buffer(2)]],
+                                device const float * input [[buffer(3)]],
+                                device float * out0 [[buffer(4)]],
+                                device float * out1 [[buffer(5)]],
+                                device float * out2 [[buffer(6)]],
+                                constant TtsMatvec3Params & p [[buffer(7)]],
+                                uint group [[threadgroup_position_in_grid]],
+                                uint sg [[simdgroup_index_in_threadgroup]],
+                                uint lane [[thread_index_in_simdgroup]]) {
+    uint first = (group * 4 + sg) * 2;
+    device const uchar * w = w0;
+    device float * out = out0;
+    if (first >= p.rows0) {
+        first -= p.rows0;
+        w = w1;
+        out = out1;
+        if (first >= p.rows1) {
+            first -= p.rows1;
+            w = w2;
+            out = out2;
+            if (first >= p.rows2) return;
+        }
+    }
+    const ulong stride = ulong(p.columns) * 2;
+    for (uint r = 0; r < 2; ++r) {
+        const float s = nu_tts_row_bf16(w + (first + r) * stride, input, p.columns, lane);
+        if (lane == 0) out[first + r] = s;
+    }
+}
+
+// The feed-forward's first half in one dispatch: out[r] = silu(gate[r] ·
+// input) · (up[r] · input) for BF16 gate and up, two rows a SIMD group.
+struct TtsGateUpParams { uint rows; uint columns; };
+kernel void nu_tts_gate_up_bf16(device const uchar * gate [[buffer(0)]],
+                                device const uchar * up [[buffer(1)]],
+                                device const float * input [[buffer(2)]],
+                                device float * out [[buffer(3)]],
+                                constant TtsGateUpParams & p [[buffer(7)]],
+                                uint group [[threadgroup_position_in_grid]],
+                                uint sg [[simdgroup_index_in_threadgroup]],
+                                uint lane [[thread_index_in_simdgroup]]) {
+    const uint first = (group * 4 + sg) * 2;
+    if (first >= p.rows) return;
+    const ulong stride = ulong(p.columns) * 2;
+    for (uint r = 0; r < 2 && first + r < p.rows; ++r) {
+        const float g = nu_tts_row_bf16(gate + (first + r) * stride, input, p.columns, lane);
+        const float u = nu_tts_row_bf16(up + (first + r) * stride, input, p.columns, lane);
+        if (lane == 0) out[first + r] = nu_silu(g) * u;
+    }
+}

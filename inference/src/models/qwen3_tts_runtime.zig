@@ -1,10 +1,12 @@
 //! The CPU reference of Qwen3-TTS's talker and code predictor, and the
-//! `Synthesizer` that drives them into the codec decoder. `Model.init`
-//! decodes every bound weight but the text embedding to F32 (about 2.4 GB
-//! for the 0.6B, 6.4 GB for the 1.7B; text rows are decoded from the
-//! checkpoint as ids need them, so it must outlive the model). Projections
-//! are dense.zig's F32 matmul; norms, RoPE, and attention keep F64
-//! statistics. The equations: docs/models/qwen3-tts.md § Forward pass.
+//! `Synthesizer` that drives them, or the Metal plan (qwen3_tts_metal.zig),
+//! into a codec decoder stream, a chunk of frames at a time; `Voice` opens a
+//! checkpoint directory on either backend. `Model.init` decodes every bound
+//! weight but the text embedding to F32 (about 2.4 GB for the 0.6B, 6.4 GB
+//! for the 1.7B; text rows are decoded from the checkpoint as ids need them,
+//! so it must outlive the model). Projections are dense.zig's F32 matmul;
+//! norms, RoPE, and attention keep F64 statistics. The equations:
+//! docs/models/qwen3-tts.md § Forward pass.
 const std = @import("std");
 const safetensors = @import("../formats/safetensors.zig");
 const cpu = @import("../backends/cpu/root.zig");
@@ -513,6 +515,9 @@ pub const Decoder = union(enum) {
 
 /// Frames `Synthesizer.read` decodes at once by default: 320 ms of audio.
 pub const default_chunk = 4;
+/// Frames the first `read` decodes by default: the first audio leaves after
+/// one frame (80 ms), the rest in `chunk`s. The pieces change no sample.
+pub const default_first_chunk = 1;
 /// The most frames one `read` decodes.
 pub const max_chunk = 32;
 
@@ -545,8 +550,9 @@ pub const Synthesizer = struct {
     /// The next input row and the projected `tts_pad` row.
     row: []f32,
     pad: []f32,
-    /// Frames `read` decodes per call at most (1 … `max_chunk`).
+    /// Frames `read` decodes per call at most (1 … `max_chunk`), and in its first call.
     chunk: usize = default_chunk,
+    first_chunk: usize = default_first_chunk,
     frames: usize = 0,
     done: bool = false,
     timing: Timing = .{},
@@ -576,6 +582,7 @@ pub const Synthesizer = struct {
         self.io = io;
         self.config = config;
         self.chunk = default_chunk;
+        self.first_chunk = default_first_chunk;
         self.frames = 0;
         self.done = false;
         self.timing = .{};
@@ -703,16 +710,16 @@ pub const Synthesizer = struct {
         return frame;
     }
 
-    /// Generates up to `chunk` frames (and no more than `out` holds) and
-    /// decodes them into `out`; returns the samples written, 0 once the
-    /// utterance ended. Needs a decoder.
+    /// Generates up to `chunk` frames (`first_chunk` in the first call, and
+    /// no more than `out` holds) and decodes them into `out`; returns the
+    /// samples written, 0 once the utterance ended. Needs a decoder.
     pub fn read(self: *Synthesizer, out: []f32) !usize {
         const per = switch (self.stream) {
             .none => return error.NoCodec,
             .cpu => |s| s.runtime.config.samplesPerFrame(),
             .metal => |s| s.decoder.config.samplesPerFrame(),
         };
-        const capacity = @min(out.len / per, self.chunk, max_chunk);
+        const capacity = @min(out.len / per, if (self.frames == 0) self.first_chunk else self.chunk, max_chunk);
         if (capacity == 0) return error.InvalidShape;
         var frames: [max_chunk]Frame = undefined;
         var n: usize = 0;

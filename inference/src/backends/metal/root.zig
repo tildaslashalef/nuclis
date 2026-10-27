@@ -529,4 +529,8 @@ pub const Backend = struct {
     pub const TtsSampleParams = tts_ops.TtsSampleParams;
     pub const tts_sample_max = tts_ops.tts_sample_max;
     pub const ttsSample = tts_ops.ttsSample;
+    pub const TtsMatvec3Params = tts_ops.TtsMatvec3Params;
+    pub const ttsMatvec3Bf16 = tts_ops.ttsMatvec3Bf16;
+    pub const TtsGateUpParams = tts_ops.TtsGateUpParams;
+    pub const ttsGateUpBf16 = tts_ops.ttsGateUpBf16;
 };

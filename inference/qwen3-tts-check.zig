@@ -8,14 +8,15 @@
 //! the token ids and the prompt's rows exactly, then the talker's input
 //! rows, its layers and final norm, the group-0 logits, and the
 //! predictor's logits against the trace. `talker-metal` replays the same
-//! codes through the Metal plan (`--kv f32|f16`, the talker cache), and
+//! codes through the Metal plan (`--kv f32|f16|both`, the talker cache;
+//! the F16 cache's bound is `--max-relative-rms-f16`), and
 //! `codec-metal` decodes each case's codes on Metal against the CPU decode
 //! and the trace, then in pieces of 1, 3, and 7 frames, which must equal the
 //! Metal decode bit for bit. The bounds are arguments, so the gate manifest
 //! holds them.
 //!
 //!   qwen3-tts-check MODEL_DIR codec|codec-metal [--max-relative-rms X] [--max-absolute X] [--fixtures DIR]
-//!   qwen3-tts-check MODEL_DIR talker|talker-metal [--max-relative-rms X] [--kv f32|f16] [--fixtures DIR]
+//!   qwen3-tts-check MODEL_DIR talker|talker-metal [--max-relative-rms X] [--kv f32|f16|both] [--max-relative-rms-f16 X] [--fixtures DIR]
 const std = @import("std");
 const inference = @import("inference");
 const codec = inference.audio.qwen3_codec;
@@ -27,7 +28,7 @@ const tts_metal = inference.models.qwen3_tts_metal;
 const codec_metal = inference.audio.qwen3_codec_metal;
 const metal = inference.metal;
 
-const usage = "usage: qwen3-tts-check MODEL_DIR codec|talker|codec-metal|talker-metal [--max-relative-rms X] [--max-absolute X] [--kv f32|f16] [--fixtures DIR]\n";
+const usage = "usage: qwen3-tts-check MODEL_DIR codec|talker|codec-metal|talker-metal [--max-relative-rms X] [--max-absolute X] [--kv f32|f16|both] [--max-relative-rms-f16 X] [--fixtures DIR]\n";
 
 const Stats = struct { max_abs: f64 = 0, max_ref: f64 = 0, diff2: f64 = 0, ref2: f64 = 0 };
 
@@ -589,7 +590,10 @@ pub fn main(init: std.process.Init) !void {
     };
     var bounds: Bounds = .{ .relative_rms = 1e-5, .absolute = 1e-5 };
     var fixtures: []const u8 = "tests/fixtures/qwen3-tts";
-    var kv: tts_metal.Precision = .f16;
+    // Each Metal talker cache to check, with its bound (the F16 cache's from --max-relative-rms-f16).
+    var f32_cache = true;
+    var f16_cache = false;
+    var f16_bound: f64 = 1e-3;
     var i: usize = 3;
     while (i + 1 < args.len) : (i += 2) {
         const value = args[i + 1];
@@ -599,8 +603,12 @@ pub fn main(init: std.process.Init) !void {
             bounds.absolute = try std.fmt.parseFloat(f64, value);
         } else if (std.mem.eql(u8, args[i], "--fixtures")) {
             fixtures = value;
+        } else if (std.mem.eql(u8, args[i], "--max-relative-rms-f16")) {
+            f16_bound = try std.fmt.parseFloat(f64, value);
         } else if (std.mem.eql(u8, args[i], "--kv")) {
-            kv = std.meta.stringToEnum(tts_metal.Precision, value) orelse return error.InvalidArguments;
+            f32_cache = std.mem.eql(u8, value, "f32") or std.mem.eql(u8, value, "both");
+            f16_cache = std.mem.eql(u8, value, "f16") or std.mem.eql(u8, value, "both");
+            if (!f32_cache and !f16_cache) return error.InvalidArguments;
         } else break;
     }
     if (i != args.len) {
@@ -611,7 +619,11 @@ pub fn main(init: std.process.Init) !void {
         .codec => try checkCodec(gpa, arena, io, args[1], fixtures, bounds),
         .talker => try checkTalker(gpa, arena, io, args[1], fixtures, bounds.relative_rms, false, .f32),
         .@"codec-metal" => try checkCodecMetal(gpa, arena, io, args[1], fixtures, bounds),
-        .@"talker-metal" => try checkTalker(gpa, arena, io, args[1], fixtures, bounds.relative_rms, true, kv),
+        .@"talker-metal" => metal: {
+            const exact = !f32_cache or try checkTalker(gpa, arena, io, args[1], fixtures, bounds.relative_rms, true, .f32);
+            const half = !f16_cache or try checkTalker(gpa, arena, io, args[1], fixtures, f16_bound, true, .f16);
+            break :metal exact and half;
+        },
     };
     if (!ok) std.process.exit(1);
 }

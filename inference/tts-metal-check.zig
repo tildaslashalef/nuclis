@@ -233,6 +233,39 @@ pub fn check(alloc: std.mem.Allocator, b: *Backend) !void {
         matvec_worst = @max(matvec_worst, try expectWithin("tts_matvec_bf16", out.floats()[0..m_rows], mv_want, 1e-1, 2e-5));
     }
 
+    // Three matrices in one dispatch, and gate·up with SiLU: each row summed
+    // as the single BF16 matvec sums it, so bit for bit its result (and, for
+    // gate·up, `siluMul`'s).
+    {
+        const widths = [3]usize{ 16, 8, 8 };
+        const columns = 512;
+        var mats: [3]inference.cpu.Matrix = undefined;
+        var bufs: [3]Buffer = undefined;
+        var outs: [3]Buffer = undefined;
+        var at: usize = 1;
+        for (&mats, &bufs, &outs, widths) |*m, *w, *o, height| {
+            w.* = try b.create(height * columns * 2);
+            try created.append(alloc, w.*);
+            @memcpy(w.host[0 .. height * columns * 2], std.mem.sliceAsBytes(raw[at..][0 .. height * columns]));
+            at += height * columns;
+            m.* = .{ .encoding = 30, .rows = height, .columns = columns, .bytes = w.host[0 .. height * columns * 2] };
+            o.* = try Up.zeros(b, &created, alloc, height);
+        }
+        var singles: [3]Buffer = undefined;
+        for (&singles, widths) |*s, height| s.* = try Up.zeros(b, &created, alloc, height);
+        const gated = try Up.zeros(b, &created, alloc, 8);
+        const unfused = try Up.zeros(b, &created, alloc, 8);
+        try b.begin();
+        try b.ttsMatvec3Bf16(bufs, mats, in, outs);
+        for (bufs, mats, singles) |w, m, s| try b.ttsMatvecBf16(w, m, in, s, 2);
+        try b.ttsGateUpBf16(bufs[1], bufs[2], mats[1], in, gated);
+        try b.copy(unfused, singles[1], 8);
+        try b.siluMul(unfused, singles[2], 8);
+        try b.commit();
+        for (outs, singles, widths) |o, s, height| try expectEqual("tts_matvec3_bf16", o.floats()[0..height], s.floats()[0..height]);
+        try expectEqual("tts_gate_up_bf16", gated.floats()[0..8], unfused.floats()[0..8]);
+    }
+
     // The BF16 tile: the generic F32 tile's result bit for bit, on 32 rows
     // of 1024 columns (a copy: the tile reads whole segments).
     const t_rows = 32;
@@ -303,7 +336,7 @@ pub fn check(alloc: std.mem.Allocator, b: *Backend) !void {
         }
         trials += 1;
     };
-    std.debug.print("Qwen3-TTS kernels vs the CPU: codebook sum, gather, row gather, and the BF16 tile (against the generic tile) bit for bit; scaled add {e:.2}, depthwise {e:.2}, SnakeBeta {e:.2}, window attention {e:.2} (F64 scores), output convolution {e:.2}, BF16 matvec {e:.2} (worst relative); the device sampler chose the CPU sampler's id in {d} of {d} draws\n", .{ add_worst, dw_worst, snake_worst, attention_worst, conv_worst, matvec_worst, trials, trials });
+    std.debug.print("Qwen3-TTS kernels vs the CPU: codebook sum, gather, row gather, the fused q/k/v and gate·up matvecs (against the single one), and the BF16 tile (against the generic tile) bit for bit; scaled add {e:.2}, depthwise {e:.2}, SnakeBeta {e:.2}, window attention {e:.2} (F64 scores), output convolution {e:.2}, BF16 matvec {e:.2} (worst relative); the device sampler chose the CPU sampler's id in {d} of {d} draws\n", .{ add_worst, dw_worst, snake_worst, attention_worst, conv_worst, matvec_worst, trials, trials });
 }
 
 /// The BF16 matvec against the generic one on the TTS shapes: GB/s of
