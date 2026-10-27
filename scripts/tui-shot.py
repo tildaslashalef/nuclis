@@ -20,7 +20,8 @@ Steps, in order, as arguments:
   wait=<seconds>         sleep
   capture=<name>         capture the screen now
   burst=<name>,<s>,<hz>  capture every 1/hz seconds for s seconds
-  until=<text>,<s>       wait up to s seconds for the text to appear on screen
+  until=<text>,<s>       wait up to s seconds for the text to appear on screen,
+                         and print how long it took (to 0.05 s)
   buffer=<name>          save tmux's paste buffer (what an OSC 52 copy set)
                          to <name>.buffer.txt
   paste=<text>           a bracketed paste of the text (a dropped file's path)
@@ -535,11 +536,14 @@ def burst(session, out_dir, name, seconds, hz):
 
 
 def wait_for(session, text, seconds):
-    deadline = time.time() + seconds
+    started = time.time()
+    deadline = started + seconds
     while time.time() < deadline:
         if text in plain(session.screen()):
+            # Measured from the step's start, at the polling step's resolution.
+            print("until %r: seen after %.2fs" % (text, time.time() - started))
             return True
-        time.sleep(0.2)
+        time.sleep(0.05)
     print("until: %r not seen within %ss" % (text, seconds), file=sys.stderr)
     return False
 

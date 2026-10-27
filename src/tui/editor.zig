@@ -67,6 +67,15 @@ pub const Attachment = struct {
     kind: enum { image, file },
     /// Owned by the editor.
     path: []u8,
+    /// The caller's word on an image chip (`encoding…`, `676 tokens`),
+    /// shown inside it; empty shows the bare marker.
+    note_buffer: [max_note]u8 = undefined,
+    note_len: u8 = 0,
+
+    pub const max_note = 32;
+    pub fn note(self: *const Attachment) []const u8 {
+        return self.note_buffer[0..self.note_len];
+    }
 };
 
 /// What a dropped path turned out to be: an image, to attach by path, or a
@@ -256,6 +265,16 @@ pub const Editor = struct {
     /// ones, in this order, are what `[image #N]` numbers.
     pub fn attachmentList(self: *const Editor) []const Attachment {
         return self.attachments.items;
+    }
+
+    /// Sets attachment `index`'s note (cut at `Attachment.max_note` bytes,
+    /// on a code point boundary). Only the label changes, never the bytes.
+    pub fn setNote(self: *Editor, index: usize, note: []const u8) void {
+        const att = &self.attachments.items[index];
+        var n = @min(note.len, Attachment.max_note);
+        while (n > 0 and n < note.len and note[n] & 0xC0 == 0x80) n -= 1;
+        @memcpy(att.note_buffer[0..n], note[0..n]);
+        att.note_len = @intCast(n);
     }
 
     pub fn imageCount(self: *const Editor) usize {
@@ -809,8 +828,13 @@ pub const Editor = struct {
     fn chipLabel(self: *const Editor, buffer: []u8, chip: Chip) []const u8 {
         const bytes = chip.end - chip.start;
         switch (chip.kind) {
-            // The marker is the buffer's own bytes.
-            .image => return self.buffer.items[chip.start..chip.end],
+            // The marker is the buffer's own bytes, with the note inside it.
+            .image => {
+                const marker = self.buffer.items[chip.start..chip.end];
+                const note = self.attachments.items[chip.attachment].note();
+                if (note.len == 0 or marker.len < 2) return marker;
+                return std.fmt.bufPrint(buffer, "{s} · {s}]", .{ marker[0 .. marker.len - 1], note }) catch marker;
+            },
             .file => {
                 const name = std.fs.path.basename(self.attachments.items[chip.attachment].path);
                 return std.fmt.bufPrint(buffer, "[file {s}, {d} line{s}]", .{ name, chip.lines, if (chip.lines == 1) "" else "s" }) catch "[file]";
@@ -1433,6 +1457,26 @@ test "a dropped image path becomes an [image #N] chip whose marker is the text" 
     try paste(&e, "/tmp/notes.pdf");
     try testing.expectEqualStrings("what is this? [image #1][image #2]/tmp/notes.pdf", e.text());
     try testing.expectEqual(@as(usize, 2), e.attachmentList().len);
+}
+
+test "an image chip shows its note inside the marker, and the text stays the marker" {
+    var e = probedEditor();
+    defer e.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try paste(&e, "/a.png");
+    try typeText(&e, " why?");
+    e.setNote(0, "encoding…");
+    const options: Options = .{ .width = 60, .min_rows = 3, .max_rows = 6, .theme = .{ .kind = .plain } };
+    var l = try e.layout(arena.allocator(), options);
+    try testing.expect(std.mem.indexOf(u8, try stripped(arena.allocator(), l.rows[0].text), "[image #1 · encoding…] why?") != null);
+    e.setNote(0, "676 tokens");
+    l = try e.layout(arena.allocator(), options);
+    try testing.expect(std.mem.indexOf(u8, try stripped(arena.allocator(), l.rows[0].text), "[image #1 · 676 tokens] why?") != null);
+    try testing.expectEqualStrings("[image #1] why?", e.text());
+    // A note past the bound is cut on a code point boundary.
+    e.setNote(0, repeat("é", 20));
+    try testing.expectEqual(@as(usize, 32), e.attachmentList()[0].note().len);
 }
 
 test "deleting an image chip drops its file and renumbers the markers after it" {

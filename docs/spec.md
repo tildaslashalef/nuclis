@@ -530,7 +530,13 @@ one command; the evaluation CLI stays separate.
 - A paste that is one file's path (a file dropped onto the window) becomes
   an attachment chip: an image (`.png .jpg .jpeg .gif .webp .heic .tiff
   .bmp .ppm`, decoded by the vision contract) is `[image #N]`, whose bytes
-  in the prompt are that marker and whose file is read at submit; a UTF-8
+  in the prompt are that marker. The file is encoded at once, in the
+  background while the prompt is typed, one image at a time; the chip
+  shows `[image #1 · queued]`, `· encoding…`, `· 676 tokens`, or
+  `· failed: <reason>`, and the turn takes the encoded rows when the file's
+  digest is unchanged (encoding it at submit otherwise, and waiting for an
+  encode still running). A deleted chip's encode finishes and is dropped;
+  quitting waits for it. A UTF-8
   text file within the input limit is `[file name, N lines]` over its
   content, fenced and headed by the path. A typed image path in a prompt is
   attached at submit: an `@path` (workspace-relative, as completion offers

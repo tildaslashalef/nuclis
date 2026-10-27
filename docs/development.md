@@ -512,7 +512,9 @@ bar off so the pane is the whole window, `COLORTERM=truecolor` as Ghostty
 sets it so the theme resolves to the same palette) and runs the steps in
 order: `keys=<text>`, `enter`, `key=<tmux key>` (`C-c`, `Tab`, `Escape`),
 `paste=<text>` (a bracketed paste, as a dropped file's path arrives),
-`wait=<s>`, `until=<text>,<s>` (wait for the text on screen), `capture=<name>`,
+`wait=<s>`, `until=<text>,<s>` (wait for the text on screen; prints how
+long it took, to 0.05 s, so `enter until=generating,60` times Enter to
+the first token), `capture=<name>`,
 `burst=<name>,<seconds>,<hz>`, and `buffer=<name>` (tmux's paste buffer,
 where an OSC 52 copy lands, to `<name>.buffer.txt`); `--env KEY=VALUE`
 sets a variable for the agent (`EDITOR`, to drive Ctrl-G). A step with a

@@ -108,6 +108,20 @@ The chat caps the picture to the rows above the live region. A drop and a
 typed path both reach the same `Editor.attachImage`; the
 chat's `dropProbe` is the editor's only view of the file system.
 
+An image chip is encoded while the prompt is typed (`src/agent/ahead.zig`,
+keyed by the attachment's path for the chip and by the file's SHA-256 for
+the turn; audio can use the same piece). The idle loop's `syncAhead` queues
+a new chip's file, drops a deleted chip's entry, writes each chip's note
+(`Editor.setNote`: `queued`, `encoding…`, `676 tokens`, `failed: …`), and
+starts the next queued file on a task (`Io.concurrent`) when none runs.
+The task uses the model's own Metal backend, so the driver calls
+`Ahead.settle` (wait for the running task) before anything else touches
+the engine: a turn (`loadImages`, under its `encoding image #1` label), a
+command, a model or context switch, a resume, quitting. The backend's
+`tick` runs on whichever thread commits, so `toolTick` returns at once off
+the driver's thread: the task never reads keys or draws. Measured on the
+E4B: [vision.md § Encoders at the materialized-score attention](../engine/vision.md#encoders-at-the-materialized-score-attention-2026-10-27).
+
 A mutation's diff is a header row (the path, `+N −M`), then rows of a
 `dim` gutter (old and new line numbers, right-aligned), a marker cell
 (`+`, `−`, or a space), and the text on its band — `diff_add` and

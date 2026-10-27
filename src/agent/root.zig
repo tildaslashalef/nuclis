@@ -38,6 +38,7 @@ pub const print_mode = @import("print.zig");
 pub const tools = @import("tools/root.zig");
 pub const loop = @import("loop.zig");
 const completer_mod = @import("../completer.zig");
+const ahead_mod = @import("ahead.zig");
 const Open = completer_mod.Open;
 const terminal = tui.terminal;
 const screen = tui.screen;
@@ -215,6 +216,11 @@ const Ui = struct {
     /// The image token cap the projector loads with (null: its maximum).
     image_max_tokens: ?usize = null,
     model_path: []const u8 = "",
+    /// Attachments encoded while the prompt is composed; `settle` before
+    /// anything else uses the engine.
+    ahead: *ahead_mod.Ahead,
+    /// The driver's thread: the only one that reads keys and draws.
+    thread: std.Thread.Id,
 
     /// The next tool view, named in the bar so the cycle is legible.
     fn cycleTools(self: *Ui) void {
@@ -1425,6 +1431,9 @@ fn seconds(from: std.Io.Timestamp, to: std.Io.Timestamp) f64 {
 /// a tool.
 fn toolTick(context: *anyopaque) void {
     const self: *Ui = @ptrCast(@alignCast(context));
+    // A background encode's GPU wait ticks on its own thread: not the
+    // driver's, whose keys and frame it must not touch.
+    if (std.Thread.getCurrentId() != self.thread) return;
     self.poll(0) catch {};
     self.draw() catch {};
 }
@@ -1491,6 +1500,11 @@ fn loadImages(ui: *Ui, image_paths: []const []const u8) ![]loop.Image {
     errdefer loop.freeImages(ui.alloc, images.toOwnedSlice(ui.alloc) catch &.{});
     defer ui.endPreparing();
     var label: [48]u8 = undefined;
+    // An encode still running for the prompt's attachments finishes first.
+    if (ui.ahead.busy()) {
+        ui.beginPreparing("encoding image #1");
+        ui.ahead.settle();
+    }
     for (image_paths, 1..) |path, n| {
         ui.beginPreparing(if (image_paths.len == 1)
             "encoding image #1"
@@ -1512,9 +1526,44 @@ fn loadImage(ui: *Ui, path: []const u8) !loop.Image {
     errdefer ui.alloc.free(resolved);
     const bytes = try engine.readImage(ui.alloc, ui.io, resolved);
     defer ui.alloc.free(bytes);
-    const m = ui.completer.model();
-    const prepared = try m.encode_image(m.context, ui.alloc, bytes);
-    return .{ .path = resolved, .bytes = bytes.len, .digest = completer_mod.digestOf(bytes), .prepared = prepared };
+    const digest = completer_mod.digestOf(bytes);
+    // Encoded while the prompt was typed, when the file is still the same.
+    const prepared = ui.ahead.take(.image, digest) orelse blk: {
+        const m = ui.completer.model();
+        break :blk try m.encode_image(m.context, ui.alloc, bytes);
+    };
+    return .{ .path = resolved, .bytes = bytes.len, .digest = digest, .prepared = prepared };
+}
+
+/// Keeps the encode-ahead entries in step with the editor's image chips:
+/// a new chip queues its file, a removed one drops its entry, each chip's
+/// note shows its state, and the next queued file starts when none runs.
+/// Called from the idle loop only (never inside a turn).
+fn syncAhead(ui: *Ui) void {
+    const ahead = ui.ahead;
+    // Without a loaded projector there is nothing to encode with (the
+    // probe refuses an image chip then); every entry is swept.
+    const vision = ui.eng.vision != null;
+    ahead.beginSweep();
+    if (vision) for (ui.ed.attachmentList()) |att| {
+        if (att.kind != .image) continue;
+        if (ahead.find(att.path)) |entry| {
+            entry.kept = true;
+            continue;
+        }
+        const resolved = expandHome(ui.alloc, ui.environ, att.path) catch continue;
+        defer ui.alloc.free(resolved);
+        _ = ahead.want(.image, att.path, resolved) catch continue;
+    };
+    ahead.endSweep();
+    if (!vision) return;
+    ahead.pump(ui.completer.model());
+    for (ui.ed.attachmentList(), 0..) |att, i| {
+        if (att.kind != .image) continue;
+        const entry = ahead.find(att.path) orelse continue;
+        var note: [ahead_mod.note_bytes]u8 = undefined;
+        ui.ed.setNote(i, ahead_mod.note(entry, &note));
+    }
 }
 
 /// The session file's view of a turn's images (at most the editor's bound).
@@ -1557,6 +1606,7 @@ fn reclaimSteering(ui: *Ui) !void {
 /// transcript (or a picker), so the conversation records what was asked of
 /// the agent as well as of the model.
 fn runCommand(ui: *Ui, sampler: *inference.sampling.Sampler, parsed: commands.Result) !void {
+    ui.ahead.settle();
     var arena = std.heap.ArenaAllocator.init(ui.alloc);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1866,6 +1916,8 @@ fn switchModel(ui: *Ui, open: *Open, sampler: *inference.sampling.Sampler, path:
     defer alloc.free(previous_label);
     ui.status = if (same_file) "resizing context…" else "loading model…";
     try ui.draw();
+    // Encoded attachments belong to the projector being unloaded.
+    ui.ahead.reset();
     open.deinit(alloc);
     open.* = Open.init(alloc, ui.io, path, settings) catch |err| {
         // Fall back rather than lose the session over a failed open.
@@ -1965,6 +2017,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         .save_turns = root_dir != null,
     };
     defer completer.deinit();
+    // Declared after the engine and the completer, so its in-flight encode
+    // is awaited before either is torn down.
+    var ahead: ahead_mod.Ahead = .init(alloc, io);
+    defer ahead.deinit();
     var workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
     // The web tools exist only when the configuration opts in (`agent.web`).
     var web_service: ?web.Service = if (settings.web_url) |url| .init(alloc, io, url, web.user_agent) else null;
@@ -1975,7 +2031,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         workspace.web = service;
     }
     var agent: loop.Agent = undefined;
-    var ui: Ui = .{ .alloc = alloc, .io = io, .environ = environ, .eng = &open.eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .pick = &pick, .switching = switching, .th = th, .agent = &agent, .completer = &completer, .effort = start_effort, .overrides = settings.sampling, .profile = open.profile(), .tokens_seen = &open.history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ), .preview = tui.graphics.enabled(environ), .root_dir = root_dir, .cwd = cwd };
+    var ui: Ui = .{ .alloc = alloc, .io = io, .environ = environ, .eng = &open.eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .pick = &pick, .switching = switching, .th = th, .agent = &agent, .completer = &completer, .effort = start_effort, .overrides = settings.sampling, .profile = open.profile(), .tokens_seen = &open.history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ), .preview = tui.graphics.enabled(environ), .root_dir = root_dir, .cwd = cwd, .ahead = &ahead, .thread = std.Thread.getCurrentId() };
     defer ui.deinit();
     ed.probe = .{ .context = &ui, .call = Ui.dropProbe };
     // A polling tool reaches back into the driver while it runs, so keys are
@@ -2065,8 +2121,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             }
         }
         while (!ui.quit) {
+            syncAhead(&ui);
             try ui.draw();
             try ui.poll(100);
+            // Everything below uses the engine, except a plain submit, whose
+            // turn settles the encode with its own label (`loadImages`).
+            if (ui.ctx_request != null or ui.model_request != null or ui.new_session or ui.resume_request != null or ui.quit) ahead.settle();
             if (ui.ctx_request) |newcap| {
                 ui.ctx_request = null;
                 // KV capacity is allocated at open time: the same file again.
@@ -2203,4 +2263,5 @@ test {
     _ = tools;
     _ = loop;
     _ = loop.cache;
+    _ = ahead_mod;
 }
