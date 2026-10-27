@@ -63,7 +63,7 @@ const kernel_files = [_][]const u8{
     "kernels/matvec_split.metal", "kernels/matvec_rows.metal",     "kernels/experts.metal",
     "kernels/matmul.metal",       "kernels/rowwise.metal",         "kernels/recurrent.metal",
     "kernels/attention.metal",    "kernels/recurrent_chunk.metal", "kernels/sampling.metal",
-    "kernels/encoders.metal",     "kernels/audio.metal",
+    "kernels/encoders.metal",     "kernels/audio.metal",           "kernels/asr.metal",
 };
 const kernels_source = blk: {
     var joined: []const u8 = "";
@@ -305,4 +305,12 @@ pub const Kernel = enum(u32) {
     attention_heads_q8_128,
     attention_heads_q8_256,
     attention_heads_q8_512,
+    asr_conv2d,
+    asr_bias_relu,
+    asr_shift,
+    asr_attention,
+    asr_glu,
+    asr_depthwise,
+    asr_joint,
+    asr_add_scaled,
 };

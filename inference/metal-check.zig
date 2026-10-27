@@ -76,6 +76,126 @@ fn checkAudioKernels(alloc: std.mem.Allocator, b: *Backend) !void {
     std.debug.print("audio attention (40 rows across four chunks) and the GLU depthwise convolution vs the CPU reference: attention worst relative {e:.2} (bound 2e-5)\n", .{worst});
 }
 
+/// Nemotron ASR's kernels against the CPU reference's functions
+/// (`audio.nemotron_encoder`, `nemotron_rnnt`), on random rows: the stem and
+/// a depthwise subsampling convolution over a window that starts past row 0
+/// and ends on the zero pad row; the attention with a full and a partial
+/// cache at lookaheads 3 and 0; the GLU, the depthwise convolution, the
+/// joint's input, and the row shifts and half-step add, which are exact.
+fn checkAsrKernels(alloc: std.mem.Allocator, b: *Backend) !void {
+    const ne = inference.audio.nemotron_encoder;
+    const rnnt = inference.audio.nemotron_rnnt;
+    var prng = std.Random.DefaultPrng.init(0xa5a);
+    const random = prng.random();
+    var arena_state: std.heap.ArenaAllocator = .init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const Fill = struct {
+        fn values(a: std.mem.Allocator, r: std.Random, n: usize, scale: f32) ![]f32 {
+            const out = try a.alloc(f32, n);
+            for (out) |*x| x.* = r.floatNorm(f32) * scale;
+            return out;
+        }
+    };
+    var worst: f32 = 0;
+
+    // Subsampling: input rows 4 … 9 held (first 4, count 10), outputs 3 … 5;
+    // output 5 reads row 10, the pad.
+    const channels = 16;
+    for ([_]struct { in_channels: usize, width_in: usize, relu: bool }{ .{ .in_channels = 1, .width_in = 128, .relu = true }, .{ .in_channels = channels, .width_in = 33, .relu = false } }) |case| {
+        const width_out = case.width_in / 2 + 1;
+        const first = 4;
+        const count = 10;
+        const next = 3;
+        const end = 6;
+        const in_row = case.width_in * case.in_channels;
+        const rows = try Fill.values(arena, random, (count - first) * in_row, 2);
+        const filter: ne.Linear = .{ .weight = try Fill.values(arena, random, channels * 9, 1), .bias = try Fill.values(arena, random, channels, 0.5) };
+        const want = try arena.alloc(f32, (end - next) * width_out * channels);
+        ne.conv2d(filter, channels, case.in_channels, .{ .rows = rows, .first = first, .count = count }, next, end, case.width_in, width_out, want);
+        if (case.relu) for (want) |*x| {
+            x.* = @max(x.*, 0);
+        };
+        const out = try b.create(want.len * 4);
+        try b.begin();
+        try b.asrConv2d(try upload(b, rows), try upload(b, filter.weight), try upload(b, filter.bias.?), out, .{ .rows = end - next, .next = next, .first = first, .count = count, .width_in = case.width_in, .width_out = width_out, .channels = channels, .in_channels = case.in_channels, .relu = case.relu });
+        try b.commit();
+        for (out.floats()[0..want.len], want) |got, w| try expectClose("asr_conv2d", got, w, 1e-5 * @max(1, @abs(w)));
+    }
+
+    // Attention at the encoder's width: a full cache at r = 3 (rows 100 …
+    // 103 over 56 cached), a partial one at r = 0 (row 3 over 3).
+    const config = ne.Config.nemotron;
+    const h = config.hidden;
+    const relk = try Fill.values(arena, random, config.positions() * h, 1);
+    const bias_u = try Fill.values(arena, random, h, 0.3);
+    const bias_v = try Fill.values(arena, random, h, 0.3);
+    const scores = try arena.alloc(f64, config.positions());
+    for ([_]struct { lookahead: usize, rows: usize, held: usize, first: usize }{ .{ .lookahead = 3, .rows = 4, .held = 56, .first = 100 }, .{ .lookahead = 0, .rows = 1, .held = 3, .first = 3 }, .{ .lookahead = 3, .rows = 12, .held = 8, .first = 8 } }) |case| {
+        const q = try Fill.values(arena, random, case.rows * h, 1);
+        const keys = try Fill.values(arena, random, (case.held + case.rows) * h, 1);
+        const values = try Fill.values(arena, random, (case.held + case.rows) * h, 1);
+        const want = try arena.alloc(f32, case.rows * h);
+        ne.attention(config, case.lookahead, bias_u, bias_v, relk, q, keys, values, case.first, case.first - case.held, case.rows, want, scores);
+        const out = try b.create(want.len * 4);
+        const chunk = case.lookahead + 1;
+        try b.begin();
+        try b.asrAttention(try upload(b, q), try upload(b, keys), try upload(b, values), try upload(b, relk), try upload(b, bias_u), try upload(b, bias_v), out, .{ .rows = case.rows, .held = case.held, .first = case.first, .chunk = chunk, .reach = config.left / chunk, .width = h, .offset = ne.max_lookahead, .positions = config.positions() });
+        try b.commit();
+        for (out.floats()[0..want.len], want) |got, w| worst = @max(worst, @abs(got - w) / @max(1, @abs(w)));
+    }
+    if (worst > 2e-5) {
+        std.debug.print("asr_attention: worst relative difference {e}\n", .{worst});
+        return error.MetalMismatch;
+    }
+
+    // The convolution module: GLU into the rows after 8 held ones, then the depthwise convolution.
+    const n = 5;
+    const wide = try Fill.values(arena, random, n * 2 * h, 3);
+    const gated = try Fill.values(arena, random, (config.kernel - 1 + n) * h, 1);
+    ne.glu(wide, n, h, gated[(config.kernel - 1) * h ..]);
+    const dw = try Fill.values(arena, random, h * config.kernel, 1);
+    const want = try arena.alloc(f32, n * h);
+    ne.depthwise(gated, dw, config.kernel, n, h, want);
+    const device_gated = try upload(b, gated);
+    @memset(device_gated.floats()[(config.kernel - 1) * h ..], 0);
+    const out = try b.create(n * h * 4);
+    try b.begin();
+    try b.asrGlu(try upload(b, wide), device_gated.slice((config.kernel - 1) * h * 4, n * h * 4), h, n);
+    try b.asrDepthwise(device_gated, try upload(b, dw), out, h, n, config.kernel);
+    try b.commit();
+    for (device_gated.floats(), gated) |got, w| try expectClose("asr_glu", got, w, 1e-6 * @max(1, @abs(w)));
+    for (out.floats(), want) |got, w| try expectClose("asr_depthwise", got, w, 1e-5 * @max(1, @abs(w)));
+
+    // The joint's input, the bias and ReLU, the half step, the shifts.
+    const e = try Fill.values(arena, random, n * 640, 2);
+    const g = try Fill.values(arena, random, 640, 2);
+    const joint = try arena.alloc(f32, n * 640);
+    for (0..n) |r| rnnt.jointInput(e[r * 640 ..][0..640], g, joint[r * 640 ..][0..640]);
+    const x = try Fill.values(arena, random, n * 640, 2);
+    const y = try Fill.values(arena, random, n * 640, 2);
+    const bias = try Fill.values(arena, random, 640, 1);
+    const planes = 3;
+    const stride = 70 * 64;
+    const cache = try Fill.values(arena, random, planes * stride, 1);
+    const device = .{ .joint = try b.create(n * 640 * 4), .x = try upload(b, x), .relu = try upload(b, x), .cache = try upload(b, cache) };
+    try b.begin();
+    try b.asrJoint(try upload(b, e), try upload(b, g), device.joint, 640, n);
+    try b.asrAddScaled(device.x, try upload(b, y), n * 640, 0.5);
+    try b.asrBiasRelu(device.relu, try upload(b, bias), 640, n);
+    try b.asrShift(device.cache, 64, 56, 4, planes, stride);
+    try b.commit();
+    for (device.joint.floats(), joint) |got, w| if (got != w) return error.MetalMismatch;
+    for (device.x.floats(), x, y) |got, a, c| if (got != a + 0.5 * c) return error.MetalMismatch;
+    for (device.relu.floats(), x, 0..) |got, a, i| if (got != @max(a + bias[i % 640], 0)) return error.MetalMismatch;
+    for (0..planes) |p| for (0..70) |r| for (0..64) |c| {
+        const at = p * stride + r * 64 + c;
+        const expected = if (r < 56) cache[p * stride + (r + 4) * 64 + c] else cache[at];
+        if (device.cache.floats()[at] != expected) return error.MetalMismatch;
+    };
+    std.debug.print("Nemotron ASR kernels vs the CPU reference: subsampling convolutions, GLU, depthwise convolution within 1e-5; attention worst relative {e:.2} (bound 2e-5); joint input, half step, bias and ReLU, row shifts exact\n", .{worst});
+}
+
 fn openBackend(alloc: std.mem.Allocator) !Backend {
     var diagnostic: [8192]u8 = @splat(0);
     return Backend.init(alloc, &diagnostic) catch |err| {
@@ -4227,6 +4347,7 @@ pub fn main(init: std.process.Init) !void {
     try checkDenseEncodings(alloc, io, b);
     try checkVisionNorms(alloc, b);
     try checkAudioKernels(alloc, b);
+    try checkAsrKernels(alloc, b);
 
     // 8c. Chunkwise DeltaNet: a 70-token layer chunk (sub-chunks of
     // 32, 32, and 6) on the model shape (16 Q/K heads broadcast to 48 value

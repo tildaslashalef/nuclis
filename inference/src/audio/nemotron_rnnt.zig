@@ -255,7 +255,7 @@ pub const Decoder = struct {
     /// `head · relu(e + g) + b`; the first largest logit's index.
     fn argmaxJoint(self: *Decoder, e: []const f32) !u32 {
         const c = self.weights.config;
-        for (self.joint, e, self.g) |*j, a, b| j.* = @max(a + b, 0);
+        jointInput(e, self.g, self.joint);
         try dense.matmul(self.io, .{ .rows = 1, .inner = c.hidden, .outputs = c.vocab, .x = self.joint, .w = self.weights.head.weight, .bias = self.weights.head.bias }, self.logits);
         const k: u32 = @intCast(argmax(self.logits));
         if (self.observer) |o| o.record(o.context, .{ .row = self.row, .logits = self.logits, .token = k });
@@ -264,7 +264,7 @@ pub const Decoder = struct {
 
     /// The prediction network on `token`: its embedding through every LSTM
     /// layer (state updated), then `decoder_projector` into `g`.
-    fn predict(self: *Decoder, token: u32) !void {
+    pub fn predict(self: *Decoder, token: u32) !void {
         const c = self.weights.config;
         const hd = c.hidden;
         var x: []const f32 = self.weights.embedding[@as(usize, token) * hd ..][0..hd];
@@ -279,6 +279,11 @@ pub const Decoder = struct {
         try dense.matmul(self.io, .{ .rows = 1, .inner = hd, .outputs = hd, .x = x, .w = self.weights.output.weight, .bias = self.weights.output.bias }, self.g);
     }
 };
+
+/// The joint's input, `relu(e + g)`, one row.
+pub fn jointInput(e: []const f32, g: []const f32, out: []f32) void {
+    for (out, e, g) |*j, a, b| j.* = @max(a + b, 0);
+}
 
 /// One LSTM step from the two pre-activations `[i | f | g | o]`:
 /// `c ← σ(f)·c + σ(i)·tanh(g)`, `h ← σ(o)·tanh(c)`.

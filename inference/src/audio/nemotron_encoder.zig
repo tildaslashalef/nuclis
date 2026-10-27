@@ -364,6 +364,57 @@ pub fn positionRows(config: Config, out: []f32) void {
     }
 }
 
+/// A stream's front end: the samples of the frames not yet computed and the
+/// one before them (pre-emphasis reads it), so no sample is read twice.
+pub const FrontEnd = struct {
+    samples: std.ArrayList(f32) = .empty,
+    /// The clip index of `samples[0]`.
+    origin: usize = 0,
+    previous: f32 = 0,
+    pushed: usize = 0,
+    /// The next frame to compute.
+    frame: usize = 0,
+
+    pub fn deinit(self: *FrontEnd, alloc: std.mem.Allocator) void {
+        self.samples.deinit(alloc);
+        self.* = undefined;
+    }
+
+    /// Appends 16 kHz samples; returns how many frames are now final.
+    pub fn append(self: *FrontEnd, alloc: std.mem.Allocator, spec: mel.Spec, pcm: []const f32) !usize {
+        try self.samples.appendSlice(alloc, pcm);
+        self.pushed += pcm.len;
+        var ready = self.frame;
+        while (spec.frameEnd(ready) <= self.pushed) ready += 1;
+        return ready;
+    }
+
+    /// The frames a whole-clip pass over the samples so far computes:
+    /// past the end they read zeros.
+    pub fn lastFrame(self: *const FrontEnd, spec: mel.Spec) usize {
+        return if (self.pushed > 0) spec.frameCount(self.pushed) else self.frame;
+    }
+
+    /// Computes the next `out.len / filters` frames into `out`.
+    pub fn compute(self: *FrontEnd, bank: *const mel.Bank, out: []f32) void {
+        const span: mel.Span = .{ .values = self.samples.items, .origin = self.origin, .previous = self.previous };
+        bank.frames(span, self.frame, out);
+        self.frame += out.len / mel.filters;
+    }
+
+    /// Drops the samples no later frame reads.
+    pub fn trim(self: *FrontEnd, spec: mel.Spec) void {
+        const keep = spec.frameStart(self.frame);
+        if (keep <= self.origin) return;
+        const drop = @min(keep - self.origin, self.samples.items.len);
+        if (drop == 0) return;
+        self.previous = self.samples.items[drop - 1];
+        std.mem.copyForwards(f32, self.samples.items, self.samples.items[drop..]);
+        self.samples.shrinkRetainingCapacity(self.samples.items.len - drop);
+        self.origin += drop;
+    }
+};
+
 /// One subsampling convolution's pending input: rows `first …` of
 /// `width · channels` values each, `[column][channel]`.
 const Queue = struct {
@@ -384,12 +435,7 @@ pub const Stream = struct {
     /// The language prompt; may change between pushes.
     prompt: usize,
     observer: ?Observer = null,
-    // The front end: samples from `origin`, the one before it, and the next frame.
-    samples: std.ArrayList(f32) = .empty,
-    origin: usize = 0,
-    previous: f32 = 0,
-    pushed: usize = 0,
-    frame: usize = 0,
+    front: FrontEnd = .{},
     // The subsampling's three convolutions.
     queues: [3]Queue = .{ .{}, .{}, .{} },
     /// Encoder rows from the linear awaiting a whole chunk, from row `row`.
@@ -427,7 +473,7 @@ pub const Stream = struct {
         self.alloc.free(self.history);
         for (&self.queues) |*q| q.rows.deinit(self.alloc);
         self.pending.deinit(self.alloc);
-        self.samples.deinit(self.alloc);
+        self.front.deinit(self.alloc);
         self.* = undefined;
     }
 
@@ -437,18 +483,13 @@ pub const Stream = struct {
 
     /// Mel frames per batch through the pipeline: bounds the working memory
     /// whatever a push holds.
-    const batch_frames = 512;
+    pub const batch_frames = 512;
 
     /// Appends 16 kHz samples; the rows whose chunk they complete go to `out`.
     pub fn push(self: *Stream, pcm: []const f32, out: *std.ArrayList(f32)) !void {
         if (self.finished) return error.StreamFinished;
         const bank = self.encoder.bank orelse return error.NoFrontEnd;
-        try self.samples.appendSlice(self.alloc, pcm);
-        self.pushed += pcm.len;
-        const spec = bank.spec;
-        var ready = self.frame;
-        while (spec.frameEnd(ready) <= self.pushed) ready += 1;
-        try self.frames(bank, ready, out);
+        try self.frames(bank, try self.front.append(self.alloc, bank.spec, pcm), out);
     }
 
     /// Computes frames up to `end` (exclusive) from the held samples and
@@ -456,23 +497,12 @@ pub const Stream = struct {
     fn frames(self: *Stream, bank: *const mel.Bank, end: usize, out: *std.ArrayList(f32)) !void {
         const features = try self.alloc.alloc(f32, batch_frames * mel.filters);
         defer self.alloc.free(features);
-        while (self.frame < end) {
-            const n: usize = @min(end - self.frame, batch_frames);
-            const span: mel.Span = .{ .values = self.samples.items, .origin = self.origin, .previous = self.previous };
-            bank.frames(span, self.frame, features[0 .. n * mel.filters]);
-            self.frame += n;
+        while (self.front.frame < end) {
+            const n: usize = @min(end - self.front.frame, batch_frames);
+            self.front.compute(bank, features[0 .. n * mel.filters]);
             try self.pushFeatures(features[0 .. n * mel.filters], out);
         }
-        const keep = bank.spec.frameStart(self.frame);
-        if (keep > self.origin) {
-            const drop = @min(keep - self.origin, self.samples.items.len);
-            if (drop > 0) {
-                self.previous = self.samples.items[drop - 1];
-                std.mem.copyForwards(f32, self.samples.items, self.samples.items[drop..]);
-                self.samples.shrinkRetainingCapacity(self.samples.items.len - drop);
-                self.origin += drop;
-            }
-        }
+        self.front.trim(bank.spec);
     }
 
     /// Appends mel frames (`n × mels`); the rows whose chunk they complete
@@ -496,7 +526,7 @@ pub const Stream = struct {
     /// convolution, and a final chunk of the rows left.
     pub fn finish(self: *Stream, out: *std.ArrayList(f32)) !void {
         if (self.finished) return error.StreamFinished;
-        if (self.encoder.bank) |bank| if (self.pushed > 0) try self.frames(bank, bank.spec.frameCount(self.pushed), out);
+        if (self.encoder.bank) |bank| try self.frames(bank, self.front.lastFrame(bank.spec), out);
         try self.advance(true, out);
         self.finished = true;
     }
@@ -521,7 +551,7 @@ pub const Stream = struct {
             const end = (limit - 1) / 2 + 1;
             if (end <= q.next) continue;
             const produced = try ws.alloc(f32, (end - q.next) * out_row);
-            try self.convolve(stage, q, end, in_row, width_in, width_out, produced, ws);
+            try self.convolve(stage, q, end, width_in, width_out, produced, ws);
             // Rows before 2·next − 2 are read by no later output.
             const keep_from = (2 * end) -| 2;
             if (keep_from > q.first) {
@@ -557,33 +587,13 @@ pub const Stream = struct {
 
     /// Outputs `q.next … end − 1` of subsampling stage `stage` into `out`
     /// (`[t][column][channel]`), ReLU applied.
-    fn convolve(self: *Stream, stage: usize, q: *const Queue, end: usize, in_row: usize, width_in: usize, width_out: usize, out: []f32, ws: std.mem.Allocator) !void {
+    fn convolve(self: *Stream, stage: usize, q: *const Queue, end: usize, width_in: usize, width_out: usize, out: []f32, ws: std.mem.Allocator) !void {
         const c = self.config();
         const w = self.encoder.weights;
         const ch = c.channels;
         const count = end - q.next;
-        const zero = try ws.alloc(f32, in_row);
-        @memset(zero, 0);
-        for (0..count) |i| {
-            const t = q.next + i;
-            var inputs: [taps][]const f32 = undefined;
-            for (0..taps) |kh| {
-                const y = @as(i64, @intCast(2 * t + kh)) - 2;
-                inputs[kh] = if (y < 0 or y >= q.count) zero else q.rows.items[(@as(usize, @intCast(y)) - q.first) * in_row ..][0..in_row];
-            }
-            const o = out[i * width_out * ch ..][0 .. width_out * ch];
-            for (0..width_out) |f| for (0..ch) |channel| {
-                const filter = if (stage == 0) w.conv_in else w.depthwise[stage - 1];
-                var acc: f64 = 0;
-                for (0..taps) |kh| for (0..taps) |kw| {
-                    const x = @as(i64, @intCast(2 * f + kw)) - 2;
-                    if (x < 0 or x >= width_in) continue;
-                    const v = if (stage == 0) inputs[kh][@intCast(x)] else inputs[kh][@as(usize, @intCast(x)) * ch + channel];
-                    acc += @as(f64, filter.weight[(channel * taps + kh) * taps + kw]) * v;
-                };
-                o[f * ch + channel] = @floatCast(acc + filter.bias.?[channel]);
-            };
-        }
+        const filter = if (stage == 0) w.conv_in else w.depthwise[stage - 1];
+        conv2d(filter, ch, if (stage == 0) 1 else ch, .{ .rows = q.rows.items, .first = q.first, .count = q.count }, q.next, end, width_in, width_out, out);
         if (stage > 0) {
             const mixed = try ws.alloc(f32, out.len);
             const p = w.pointwise[stage - 1];
@@ -625,7 +635,7 @@ pub const Stream = struct {
         const q = try ws.alloc(f32, n * h);
         const k = try ws.alloc(f32, n * h);
         const v = try ws.alloc(f32, n * h);
-        const glu = try ws.alloc(f32, (c.kernel - 1 + n) * h);
+        const gated = try ws.alloc(f32, (c.kernel - 1 + n) * h);
         const scores = try ws.alloc(f64, c.left + 2 * max_lookahead + 1);
         for (w.blocks, 0..) |blk, il| {
             try self.feedForward(blk.norm_ff1, blk.ff1_in, blk.ff1_out, x, t, wide, n);
@@ -639,7 +649,8 @@ pub const Stream = struct {
             try keys.appendSlice(self.alloc, k);
             try values.appendSlice(self.alloc, v);
             const held = keys.items.len / h;
-            self.attention(blk, il, q, keys.items, values.items, first, first + n - held, n, t, scores);
+            const relk = self.encoder.relk[il * c.positions() * h ..][0 .. c.positions() * h];
+            attention(c, self.lookahead, blk.bias_u, blk.bias_v, relk, q, keys.items, values.items, first, first + n - held, n, t, scores);
             try dense.matmul(io, .{ .rows = n, .inner = h, .outputs = h, .x = t, .w = blk.o }, q);
             for (x, q) |*a, b| a.* += b;
             trim(keys, c.left * h);
@@ -649,18 +660,10 @@ pub const Stream = struct {
             try dense.matmul(io, .{ .rows = n, .inner = h, .outputs = 2 * h, .x = t, .w = blk.pointwise1 }, wide[0 .. n * 2 * h]);
             const held_glu = (c.kernel - 1) * h;
             const history = self.history[il * held_glu ..][0..held_glu];
-            @memcpy(glu[0..held_glu], history);
-            for (0..n) |r| for (0..h) |ch| {
-                const a = wide[r * 2 * h + ch];
-                const g = wide[r * 2 * h + h + ch];
-                glu[held_glu + r * h + ch] = a * cpu.sigmoid(g);
-            };
-            for (0..n) |r| for (0..h) |ch| {
-                var acc: f64 = 0;
-                for (0..c.kernel) |tap| acc += @as(f64, blk.depthwise[ch * c.kernel + tap]) * glu[(r + tap) * h + ch];
-                q[r * h + ch] = @floatCast(acc);
-            };
-            @memcpy(history, glu[n * h ..][0..held_glu]);
+            @memcpy(gated[0..held_glu], history);
+            glu(wide[0 .. n * 2 * h], n, h, gated[held_glu..][0 .. n * h]);
+            depthwise(gated, blk.depthwise, c.kernel, n, h, q);
+            @memcpy(history, gated[n * h ..][0..held_glu]);
             try norm(blk.conv_norm, q, q, h);
             for (q) |*value| value.* = cpu.silu(value.*);
             try dense.matmul(io, .{ .rows = n, .inner = h, .outputs = h, .x = q, .w = blk.pointwise2 }, t);
@@ -695,58 +698,110 @@ pub const Stream = struct {
         try dense.matmul(io, .{ .rows = n, .inner = c.ffn, .outputs = c.hidden, .x = up, .w = w_out }, t);
         for (x, t) |*a, b| a.* += 0.5 * b;
     }
-
-    /// Relative attention of `n` queries (rows `first …`) over the held
-    /// keys (rows `key_first …`), chunk-masked; per head
-    /// `((q + u)·k + (q + v)·p(i − j)) / √head_dim`, softmax, values.
-    fn attention(self: *Stream, blk: Block, layer: usize, q: []const f32, keys: []const f32, values: []const f32, first: usize, key_first: usize, n: usize, out: []f32, scores: []f64) void {
-        const c = self.config();
-        const h = c.hidden;
-        const d = c.headDim();
-        const chunk = self.lookahead + 1;
-        const reach = c.left / chunk;
-        const relk = self.encoder.relk[layer * c.positions() * h ..][0 .. c.positions() * h];
-        const held = keys.len / h;
-        const scale = 1.0 / @sqrt(@as(f64, @floatFromInt(d)));
-        for (0..c.heads) |head| for (0..n) |i| {
-            const a = first + i;
-            const qi = q[i * h + head * d ..][0..d];
-            const u = blk.bias_u[head * d ..][0..d];
-            const pv = blk.bias_v[head * d ..][0..d];
-            // Visible keys: chunks ⌊a/chunk⌋ − reach … ⌊a/chunk⌋.
-            const lo_row = @max(key_first, (a / chunk -| reach) * chunk);
-            const hi_row = @min(key_first + held, (a / chunk + 1) * chunk);
-            var max: f64 = -std.math.inf(f64);
-            for (lo_row..hi_row, 0..) |b, s| {
-                const kj = keys[(b - key_first) * h + head * d ..][0..d];
-                const p = relk[(a + max_lookahead - b) * h + head * d ..][0..d];
-                var ac: f64 = 0;
-                var bd: f64 = 0;
-                for (qi, u, pv, kj, p) |qv, uv, vv, kv, pp| {
-                    ac += @as(f64, qv + uv) * kv;
-                    bd += @as(f64, qv + vv) * pp;
-                }
-                scores[s] = (ac + bd) * scale;
-                max = @max(max, scores[s]);
-            }
-            const count = hi_row - lo_row;
-            var total: f64 = 0;
-            for (scores[0..count]) |*s| {
-                s.* = @exp(s.* - max);
-                total += s.*;
-            }
-            const o = out[i * h + head * d ..][0..d];
-            for (o, 0..) |*value, e| {
-                var sum: f64 = 0;
-                for (lo_row..hi_row, 0..) |b, s| sum += scores[s] * values[(b - key_first) * h + head * d + e];
-                value.* = @floatCast(sum / total);
-            }
-        };
-    }
 };
 
 fn norm(n: Norm, x: []const f32, out: []f32, width: usize) !void {
     for (0..x.len / width) |r| try dense.layerNorm(x[r * width ..][0..width], n.weight, n.bias, epsilon, out[r * width ..][0..width]);
+}
+
+/// A subsampling convolution's input: rows `first …` of `[column][channel]`
+/// values; rows from `count` on (and before 0) read as zeros.
+pub const Rows = struct { rows: []const f32, first: usize, count: usize };
+
+/// Outputs `next … end − 1` of a subsampling convolution into `out`
+/// (`[t][column][channel]`), bias added, no activation: 3×3, stride 2,
+/// causal on both axes (output `(t, f)` reads input rows `2t − 2 … 2t`,
+/// columns `2f − 2 … 2f`). `in_channels` is 1 (the stem, every filter on
+/// the mel image) or `channels` (depthwise).
+pub fn conv2d(filter: Linear, channels: usize, in_channels: usize, input: Rows, next: usize, end: usize, width_in: usize, width_out: usize, out: []f32) void {
+    const in_row = width_in * in_channels;
+    for (0..end - next) |i| {
+        const t = next + i;
+        const o = out[i * width_out * channels ..][0 .. width_out * channels];
+        for (0..width_out) |f| for (0..channels) |channel| {
+            var acc: f64 = 0;
+            for (0..taps) |kh| {
+                const y = @as(i64, @intCast(2 * t + kh)) - 2;
+                if (y < 0 or y >= input.count) continue;
+                const row = input.rows[(@as(usize, @intCast(y)) - input.first) * in_row ..][0..in_row];
+                for (0..taps) |kw| {
+                    const x = @as(i64, @intCast(2 * f + kw)) - 2;
+                    if (x < 0 or x >= width_in) continue;
+                    const v = if (in_channels == 1) row[@intCast(x)] else row[@as(usize, @intCast(x)) * channels + channel];
+                    acc += @as(f64, filter.weight[(channel * taps + kh) * taps + kw]) * v;
+                }
+            }
+            o[f * channels + channel] = @floatCast(acc + filter.bias.?[channel]);
+        };
+    }
+}
+
+/// The relative attention of `n` queries (rows `first …`) over `keys` and
+/// `values` (rows `key_first …`, `[row][hidden]`), chunk-masked at
+/// `lookahead`: per head `((q + u)·k + (q + v)·p(i − j)) / √head_dim`,
+/// softmax, values. `relk` is the block's `positions × hidden` relative keys
+/// (row `d + max_lookahead`); `scores` holds `positions` values.
+pub fn attention(config: Config, lookahead: usize, bias_u: []const f32, bias_v: []const f32, relk: []const f32, q: []const f32, keys: []const f32, values: []const f32, first: usize, key_first: usize, n: usize, out: []f32, scores: []f64) void {
+    const c = config;
+    const h = c.hidden;
+    const d = c.headDim();
+    const chunk = lookahead + 1;
+    const reach = c.left / chunk;
+    const held = keys.len / h;
+    const scale = 1.0 / @sqrt(@as(f64, @floatFromInt(d)));
+    for (0..c.heads) |head| for (0..n) |i| {
+        const a = first + i;
+        const qi = q[i * h + head * d ..][0..d];
+        const u = bias_u[head * d ..][0..d];
+        const pv = bias_v[head * d ..][0..d];
+        // Visible keys: chunks ⌊a/chunk⌋ − reach … ⌊a/chunk⌋.
+        const lo_row = @max(key_first, (a / chunk -| reach) * chunk);
+        const hi_row = @min(key_first + held, (a / chunk + 1) * chunk);
+        var max: f64 = -std.math.inf(f64);
+        for (lo_row..hi_row, 0..) |b, s| {
+            const kj = keys[(b - key_first) * h + head * d ..][0..d];
+            const p = relk[(a + max_lookahead - b) * h + head * d ..][0..d];
+            var ac: f64 = 0;
+            var bd: f64 = 0;
+            for (qi, u, pv, kj, p) |qv, uv, vv, kv, pp| {
+                ac += @as(f64, qv + uv) * kv;
+                bd += @as(f64, qv + vv) * pp;
+            }
+            scores[s] = (ac + bd) * scale;
+            max = @max(max, scores[s]);
+        }
+        const count = hi_row - lo_row;
+        var total: f64 = 0;
+        for (scores[0..count]) |*s| {
+            s.* = @exp(s.* - max);
+            total += s.*;
+        }
+        const o = out[i * h + head * d ..][0..d];
+        for (o, 0..) |*value, e| {
+            var sum: f64 = 0;
+            for (lo_row..hi_row, 0..) |b, s| sum += scores[s] * values[(b - key_first) * h + head * d + e];
+            value.* = @floatCast(sum / total);
+        }
+    };
+}
+
+/// The GLU of `n` rows of `2 · width` (values, then gates) into `out`
+/// (`n × width`): `a ⊙ σ(b)`.
+pub fn glu(wide: []const f32, n: usize, width: usize, out: []f32) void {
+    for (0..n) |r| for (0..width) |ch| {
+        out[r * width + ch] = wide[r * 2 * width + ch] * cpu.sigmoid(wide[r * 2 * width + width + ch]);
+    };
+}
+
+/// The convolution module's causal depthwise convolution: `rows` holds
+/// `kernel − 1` earlier rows, then `n` new ones (`width` each); output t is
+/// `Σ_tap weight[c][tap] · rows[t + tap][c]`.
+pub fn depthwise(rows: []const f32, weight: []const f32, kernel: usize, n: usize, width: usize, out: []f32) void {
+    for (0..n) |r| for (0..width) |ch| {
+        var acc: f64 = 0;
+        for (0..kernel) |tap| acc += @as(f64, weight[ch * kernel + tap]) * rows[(r + tap) * width + ch];
+        out[r * width + ch] = @floatCast(acc);
+    };
 }
 
 /// Keeps the last `keep` values of `list`.
@@ -953,7 +1008,7 @@ test "samples in 80 ms pieces give the rows of the clip's features" {
     while (at < pcm.len) : (at += 1280) {
         try stream.push(pcm[at..@min(pcm.len, at + 1280)], &rows);
         // Only the samples of frames still open are held.
-        try std.testing.expect(stream.samples.items.len < 1280 + 400);
+        try std.testing.expect(stream.front.samples.items.len < 1280 + 400);
     }
     try stream.finish(&rows);
     try std.testing.expectEqualSlices(f32, whole, rows.items);
