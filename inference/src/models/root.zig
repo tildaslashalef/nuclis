@@ -40,6 +40,7 @@ pub const embeddinggemma_runtime = @import("embeddinggemma_runtime.zig");
 /// safetensors checkpoint. Not a registry family: it decodes into codes.
 pub const qwen3_tts = @import("qwen3_tts.zig");
 pub const qwen3_tts_runtime = @import("qwen3_tts_runtime.zig");
+pub const qwen3_tts_metal = @import("qwen3_tts_metal.zig");
 
 /// The registered families, in lookup order. Each registers itself through
 /// its `family` declaration.
@@ -123,6 +124,7 @@ test {
     _ = embeddinggemma_runtime;
     _ = qwen3_tts;
     _ = qwen3_tts_runtime;
+    _ = qwen3_tts_metal;
     _ = dflash;
     _ = dflash2;
     _ = dflash2_runtime;

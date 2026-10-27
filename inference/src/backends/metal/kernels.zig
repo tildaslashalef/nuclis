@@ -64,6 +64,7 @@ const kernel_files = [_][]const u8{
     "kernels/matmul.metal",       "kernels/rowwise.metal",         "kernels/recurrent.metal",
     "kernels/attention.metal",    "kernels/recurrent_chunk.metal", "kernels/sampling.metal",
     "kernels/encoders.metal",     "kernels/audio.metal",           "kernels/asr.metal",
+    "kernels/tts.metal",
 };
 const kernels_source = blk: {
     var joined: []const u8 = "";
@@ -317,4 +318,17 @@ pub const Kernel = enum(u32) {
     asr_matmul_rows_t2,
     asr_matmul_rows_t4,
     asr_matmul_rows_t8,
+    tts_codebook_sum,
+    tts_gather,
+    tts_depthwise,
+    tts_snake,
+    tts_scaled_add,
+    tts_window_attention,
+    tts_conv_out,
+    tts_matvec_bf16,
+    tts_matvec_bf16_r1,
+    tts_matvec_bf16_r4,
+    tts_matmul_bf16,
+    tts_embed_row,
+    tts_sample,
 };

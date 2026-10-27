@@ -3512,6 +3512,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--hadamard-bench")) return hadamardBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--attention-bench")) return attentionBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--decode-bench")) return decodeBench(alloc);
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--tts-bench")) return @import("tts-metal-check.zig").bench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--experts-bench")) return expertsBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
     if (args.len >= 3 and std.mem.eql(u8, args[1], "--wide-rows")) {
         var backend = try openBackend(alloc);
@@ -4395,6 +4396,7 @@ pub fn main(init: std.process.Init) !void {
     try checkVisionNorms(alloc, b);
     try checkAudioKernels(alloc, b);
     try checkAsrKernels(alloc, b);
+    try @import("tts-metal-check.zig").check(alloc, b);
 
     // 8c. Chunkwise DeltaNet: a 70-token layer chunk (sub-chunks of
     // 32, 32, and 6) on the model shape (16 Q/K heads broadcast to 48 value

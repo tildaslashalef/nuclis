@@ -8,6 +8,8 @@ pub const mel = @import("mel.zig");
 pub const gemma4a = @import("gemma4a.zig");
 /// Qwen3-TTS's codec decoder: speech out, codes to samples.
 pub const qwen3_codec = @import("qwen3_codec.zig");
+/// The codec decoder on Metal, with the same streaming contract.
+pub const qwen3_codec_metal = @import("qwen3_codec_metal.zig");
 /// Nemotron 3.5 ASR's cache-aware encoder: speech in, mel rows to encoder rows.
 pub const nemotron_encoder = @import("nemotron_encoder.zig");
 /// Nemotron 3.5 ASR's RNN-T transducer: encoder rows to tokens.
@@ -22,6 +24,7 @@ test {
     _ = mel;
     _ = gemma4a;
     _ = qwen3_codec;
+    _ = qwen3_codec_metal;
     _ = nemotron_encoder;
     _ = nemotron_rnnt;
     _ = nemotron_asr;

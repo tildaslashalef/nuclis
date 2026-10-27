@@ -311,7 +311,7 @@ const CausalConv = struct { w: []const f32, b: []const f32, in: usize, out: usiz
 /// m·stride … m·stride + stride − 1. `w` is [stride · out][taps · in].
 const TransConv = struct { w: []const f32, b: []const f32, in: usize, out: usize, stride: usize, taps: usize };
 /// SnakeBeta with its logarithms already raised: x + inv · sin²(scale · x).
-const SnakeBeta = struct { scale: []const f32, inv: []const f32 };
+pub const SnakeBeta = struct { scale: []const f32, inv: []const f32 };
 const NeXt = struct { dw: []const f32, dw_b: []const f32, ln_w: []const f32, ln_b: []const f32, gamma: []const f32, pw1: Linear, pw2: Linear };
 const AttnLayer = struct { input_norm: []const f32, post_norm: []const f32, q: Linear, k: Linear, v: Linear, o: Linear, gate: Linear, up: Linear, down: Linear, attn_scale: []const f32, mlp_scale: []const f32 };
 const UpStage = struct { trans: TransConv, next: NeXt };
@@ -482,23 +482,15 @@ pub const Runtime = struct {
         const n = codes.len;
         const first = try ws.alloc(f32, n * c.codebook_dim);
         const rest = try ws.alloc(f32, n * c.codebook_dim);
-        for (codes, 0..) |frame, t| {
-            @memcpy(first[t * c.codebook_dim ..][0..c.codebook_dim], self.entry(0, frame[0]));
-            const sum = rest[t * c.codebook_dim ..][0..c.codebook_dim];
-            @memcpy(sum, self.entry(1, frame[1]));
-            for (2..groups) |g| for (sum, self.entry(g, frame[g])) |*a, b| {
-                a.* += b;
-            };
-        }
+        self.lookup(codes, first, rest);
         const projected = try ws.alloc(f32, n * c.quantized);
         try linear(self.io, self.project[0], first, n, out);
         try linear(self.io, self.project[1], rest, n, projected);
         for (out, projected) |*a, b| a.* += b;
     }
 
-    fn entry(self: *const Runtime, group: usize, code: u16) []const f32 {
-        const c = self.config;
-        return self.codebooks[(group * c.codebook_size + code) * c.codebook_dim ..][0..c.codebook_dim];
+    fn lookup(self: *const Runtime, codes: []const Frame, first: []f32, rest: []f32) void {
+        sumCodebooks(self.codebooks, self.config.codebook_size, self.config.codebook_dim, codes, first, rest);
     }
 };
 
@@ -580,7 +572,22 @@ fn linear(io: std.Io, m: Linear, x: []const f32, rows: usize, y: []f32) !void {
     try dense.matmul(io, .{ .rows = rows, .inner = m.in, .outputs = m.out, .x = x[0 .. rows * m.in], .w = m.w, .bias = m.b }, y[0 .. rows * m.out]);
 }
 
-fn snakeBeta(s: SnakeBeta, x: []const f32, y: []f32) void {
+/// The split quantizer's lookup: of `books` (`[groups][size][dim]`), group
+/// 0's vectors at `codes` into `first`, groups 1–15's summed in group order
+/// into `rest` (`[codes.len][dim]` each).
+pub fn sumCodebooks(books: []const f32, size: usize, dim: usize, codes: []const Frame, first: []f32, rest: []f32) void {
+    for (codes, 0..) |frame, t| {
+        @memcpy(first[t * dim ..][0..dim], books[@as(usize, frame[0]) * dim ..][0..dim]);
+        const sum = rest[t * dim ..][0..dim];
+        @memcpy(sum, books[(size + frame[1]) * dim ..][0..dim]);
+        for (2..groups) |g| for (sum, books[(g * size + frame[g]) * dim ..][0..dim]) |*a, b| {
+            a.* += b;
+        };
+    }
+}
+
+/// `y` may alias `x`; rows of `s.scale.len` channels.
+pub fn snakeBeta(s: SnakeBeta, x: []const f32, y: []f32) void {
     const channels = s.scale.len;
     for (x, y, 0..) |v, *out, i| {
         const sine = @sin(v * s.scale[i % channels]);
@@ -791,13 +798,13 @@ pub const Stream = struct {
             @memcpy(values[past * width ..][0 .. n * width], v);
             attention(c, q, keys, values, n, past, scores, attended);
             try linear(io, layer.o, attended, n, o);
-            for (x, o, 0..) |*r, value, i| r.* += layer.attn_scale[i % c.hidden] * value;
+            addScaled(x, layer.attn_scale, o);
             try rmsRows(x, layer.post_norm, c.rms_eps, h);
             try linear(io, layer.gate, h, n, gate);
             try linear(io, layer.up, h, n, up);
             for (gate, up) |*g, u| g.* = cpu.silu(g.*) * u;
             try linear(io, layer.down, gate, n, o);
-            for (x, o, 0..) |*r, value, i| r.* += layer.mlp_scale[i % c.hidden] * value;
+            addScaled(x, layer.mlp_scale, o);
             const kept = @min(c.window - 1, total);
             @memcpy(cache.keys[0 .. kept * width], keys[(total - kept) * width ..][0 .. kept * width]);
             @memcpy(cache.values[0 .. kept * width], values[(total - kept) * width ..][0 .. kept * width]);
@@ -818,9 +825,14 @@ fn transHistory(a: Allocator, conv: TransConv) !History {
     return history(a, conv.taps - 1, conv.in);
 }
 
+/// `x[i] += scale[i mod scale.len] · y[i]`: the layer scales and ConvNeXt's γ.
+pub fn addScaled(x: []f32, scale: []const f32, y: []const f32) void {
+    for (x, y, 0..) |*r, value, i| r.* += scale[i % scale.len] * value;
+}
+
 /// Sliding-window attention of `n` new queries: query t (row `past + t` of
 /// `keys`) sees rows `past + t − window + 1 … past + t`. Scores and sums in F64.
-fn attention(c: Config, q: []const f32, keys: []const f32, values: []const f32, n: usize, past: usize, scores: []f64, out: []f32) void {
+pub fn attention(c: Config, q: []const f32, keys: []const f32, values: []const f32, n: usize, past: usize, scores: []f64, out: []f32) void {
     const width = c.heads * c.head_dim;
     const scale = 1 / @sqrt(@as(f64, @floatFromInt(c.head_dim)));
     for (0..n) |t| for (0..c.heads) |head| {
@@ -849,6 +861,18 @@ fn attention(c: Config, q: []const f32, keys: []const f32, values: []const f32, 
     };
 }
 
+/// A convolution's input rows tap-major: `out[r][j·width …]` is row
+/// `first + r + base + j·step` of `joined` (`[rows][taps · width]`). A causal
+/// convolution reads base 0 and its dilation as the step; a transposed one
+/// its history length and step −1.
+pub fn gather(joined: []const f32, width: usize, taps: usize, base: usize, step: isize, first: usize, rows: usize, out: []f32) void {
+    const inner = taps * width;
+    for (0..rows) |r| for (0..taps) |j| {
+        const row: usize = @intCast(@as(isize, @intCast(first + r + base)) + @as(isize, @intCast(j)) * step);
+        @memcpy(out[r * inner + j * width ..][0..width], joined[row * width ..][0..width]);
+    };
+}
+
 /// A causal convolution of `n` new rows (`[n][in]`) into `y` (`[n][out]`)
 /// through `h`'s left context, which it then advances. A kernel of 1 has
 /// no context (`h` null).
@@ -861,10 +885,7 @@ fn causalConv(ws: Allocator, io: std.Io, conv: CausalConv, h: ?*History, x: []co
     var first: usize = 0;
     while (first < n) {
         const rows = @min(tile, n - first);
-        for (0..rows) |r| for (0..conv.kernel) |j| {
-            const source = (first + r + j * conv.dilation) * conv.in;
-            @memcpy(gathered[r * inner + j * conv.in ..][0..conv.in], joined[source..][0..conv.in]);
-        };
+        gather(joined, conv.in, conv.kernel, 0, @intCast(conv.dilation), first, rows, gathered);
         try dense.matmul(io, .{ .rows = rows, .inner = inner, .outputs = conv.out, .x = gathered[0 .. rows * inner], .w = conv.w, .bias = conv.b }, y[first * conv.out ..][0 .. rows * conv.out]);
         first += rows;
     }
@@ -883,10 +904,7 @@ fn transConv(ws: Allocator, io: std.Io, conv: TransConv, h: *History, x: []const
     var first: usize = 0;
     while (first < n) {
         const rows = @min(tile, n - first);
-        for (0..rows) |r| for (0..conv.taps) |q| {
-            const source = (first + r + h.rows - q) * conv.in;
-            @memcpy(gathered[r * inner + q * conv.in ..][0..conv.in], joined[source..][0..conv.in]);
-        };
+        gather(joined, conv.in, conv.taps, h.rows, -1, first, rows, gathered);
         try dense.matmul(io, .{ .rows = rows, .inner = inner, .outputs = outputs, .x = gathered[0 .. rows * inner], .w = conv.w, .bias = conv.b }, y[first * outputs ..][0 .. rows * outputs]);
         first += rows;
     }
@@ -899,11 +917,7 @@ fn convNeXt(ws: Allocator, io: std.Io, next: NeXt, h: *History, x: []f32, rows: 
     const channels = next.gamma.len;
     const joined = try h.join(ws, x);
     const d = try ws.alloc(f32, rows * channels);
-    for (0..rows) |t| for (0..channels) |ch| {
-        var acc: f32 = 0;
-        for (0..dwconv_kernel) |j| acc += next.dw[ch * dwconv_kernel + j] * joined[(t + j) * channels + ch];
-        d[t * channels + ch] = acc + next.dw_b[ch];
-    };
+    depthwise(next.dw, next.dw_b, joined, rows, d);
     h.keep(joined);
     for (0..rows) |t| {
         const row = d[t * channels ..][0..channels];
@@ -913,7 +927,20 @@ fn convNeXt(ws: Allocator, io: std.Io, next: NeXt, h: *History, x: []f32, rows: 
     try linear(io, next.pw1, d, rows, wide);
     for (wide) |*v| v.* = cpu.geluErf(v.*);
     try linear(io, next.pw2, wide, rows, d);
-    for (x, d, 0..) |*r, v, i| r.* += next.gamma[i % channels] * v;
+    addScaled(x, next.gamma, d);
+}
+
+/// ConvNeXt's causal depthwise convolution: `out[t][c] = Σ_j weight[c][j] ·
+/// joined[t + j][c] + bias[c]` over `rows` rows of `bias.len` channels;
+/// `joined` holds the kernel's history rows, then the input.
+pub fn depthwise(weight: []const f32, bias: []const f32, joined: []const f32, rows: usize, out: []f32) void {
+    const channels = bias.len;
+    const taps = weight.len / channels;
+    for (0..rows) |t| for (0..channels) |ch| {
+        var acc: f32 = 0;
+        for (0..taps) |j| acc += weight[ch * taps + j] * joined[(t + j) * channels + ch];
+        out[t * channels + ch] = acc + bias[ch];
+    };
 }
 
 // ---- tests ------------------------------------------------------------------

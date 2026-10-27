@@ -12,6 +12,9 @@ const sampling = @import("../sampling/root.zig");
 const codec = @import("../audio/qwen3_codec.zig");
 const tts = @import("qwen3_tts.zig");
 const hf_json = @import("../tokenizer/hf_json.zig");
+const metal = @import("../backends/metal/root.zig");
+const tts_metal = @import("qwen3_tts_metal.zig");
+const codec_metal = @import("../audio/qwen3_codec_metal.zig");
 
 const Allocator = std.mem.Allocator;
 const dense = cpu.dense;
@@ -494,70 +497,157 @@ pub const Sampler = struct {
     }
 };
 
+/// Where a synthesizer's talker and predictor run: the CPU reference's
+/// `Model`, or the Metal plan. Borrowed.
+pub const Engine = union(enum) {
+    cpu: *const Model,
+    metal: *tts_metal.Plan,
+};
+
+/// Where its codec decoder runs, if anywhere. Borrowed.
+pub const Decoder = union(enum) {
+    none,
+    cpu: *const codec.Runtime,
+    metal: *codec_metal.Decoder,
+};
+
+/// Frames `Synthesizer.read` decodes at once by default: 320 ms of audio.
+pub const default_chunk = 4;
+/// The most frames one `read` decodes.
+pub const max_chunk = 32;
+
+/// Wall time by stage over an utterance, in nanoseconds.
+pub const Timing = struct {
+    /// The prompt's embedding and prefill, through the first logits.
+    prefill: u64 = 0,
+    /// Every frame's codes and the talker step after it, sampling included.
+    frames: u64 = 0,
+    /// Of `frames`, the talker steps (the next row, its layers, the group-0
+    /// logits) and the predictor (15 groups): wall time on the CPU, device
+    /// time on Metal (there only with `Synthesizer.split`).
+    talker: u64 = 0,
+    predictor: u64 = 0,
+    /// Codec pushes.
+    codec: u64 = 0,
+};
+
 /// One utterance: the prompt's prefill, then frame after frame of codes
 /// (talker, sampler, predictor) until the end code or the length limit,
-/// decoded through a codec `Stream` when given a codec runtime. Borrows the
-/// model and the codec runtime.
+/// decoded through a codec stream in chunks of `chunk` frames. Borrows the
+/// engine and the decoder.
 pub const Synthesizer = struct {
     gpa: Allocator,
-    model: *const Model,
-    talker: Talker,
-    predictor: Predictor,
+    io: std.Io,
+    config: *const tts.Config,
+    state: State,
     sampler: Sampler,
-    stream: ?codec.Stream,
-    /// The last post-norm talker row, its logits, the next input row, the
-    /// projected `tts_pad` row.
-    hidden: []f32,
-    logits: []f32,
+    stream: Stream,
+    /// The next input row and the projected `tts_pad` row.
     row: []f32,
     pad: []f32,
+    /// Frames `read` decodes per call at most (1 … `max_chunk`).
+    chunk: usize = default_chunk,
     frames: usize = 0,
     done: bool = false,
+    timing: Timing = .{},
+    /// On Metal, commit between the predictor and the talker step so that
+    /// `timing` splits them (one more command buffer a frame).
+    split: bool = false,
+    /// On Metal, sample groups 1–15 on the host a command buffer at a time
+    /// instead of on the device: the same codes, slower.
+    host_sampling: bool = false,
+
+    const State = union(enum) {
+        cpu: struct { model: *const Model, talker: Talker, predictor: Predictor, hidden: []f32, logits: []f32 },
+        metal: *tts_metal.Plan,
+    };
+    const Stream = union(enum) {
+        none,
+        cpu: codec.Stream,
+        metal: codec_metal.Stream,
+    };
 
     /// Embeds and prefills `prompt`; the first frame's logits are ready after.
-    pub fn init(gpa: Allocator, model: *const Model, codec_runtime: ?*const codec.Runtime, prompt: []const tts.Row, seed: u64) !Synthesizer {
-        const config = model.config;
+    pub fn init(gpa: Allocator, io: std.Io, config: *const tts.Config, engine: Engine, decoder: Decoder, prompt: []const tts.Row, seed: u64) !Synthesizer {
         const w = config.talker.hidden;
+        const start = std.Io.Clock.awake.now(io);
         var self: Synthesizer = undefined;
         self.gpa = gpa;
-        self.model = model;
+        self.io = io;
+        self.config = config;
+        self.chunk = default_chunk;
         self.frames = 0;
         self.done = false;
-        self.talker = try .init(gpa, model);
-        errdefer self.talker.deinit();
-        self.predictor = try .init(gpa, model);
-        errdefer self.predictor.deinit();
+        self.timing = .{};
+        self.split = false;
+        self.host_sampling = false;
         self.sampler = try .init(gpa, seed, config.generation, config.codec.eos);
         errdefer self.sampler.deinit(gpa);
-        self.stream = if (codec_runtime) |r| try codec.Stream.init(gpa, r) else null;
-        errdefer if (self.stream) |*s| s.deinit();
-        self.hidden = try gpa.alloc(f32, w);
-        errdefer gpa.free(self.hidden);
-        self.logits = try gpa.alloc(f32, config.codec_vocab);
-        errdefer gpa.free(self.logits);
         self.row = try gpa.alloc(f32, w);
         errdefer gpa.free(self.row);
         self.pad = try gpa.alloc(f32, w);
         errdefer gpa.free(self.pad);
-        try model.embed(gpa, &.{.{ .text = config.text.tts_pad, .codec = null }}, self.pad);
-
+        self.stream = switch (decoder) {
+            .none => .none,
+            .cpu => |r| .{ .cpu = try codec.Stream.init(gpa, r) },
+            .metal => |d| .{ .metal = try codec_metal.Stream.init(d) },
+        };
+        errdefer self.closeStream();
+        const pad_row = [_]tts.Row{.{ .text = config.text.tts_pad, .codec = null }};
         const x = try gpa.alloc(f32, prompt.len * w);
         defer gpa.free(x);
-        const hidden = try gpa.alloc(f32, prompt.len * w);
-        defer gpa.free(hidden);
-        try model.embed(gpa, prompt, x);
-        try self.talker.forward(x, prompt.len, hidden, null);
-        @memcpy(self.hidden, hidden[(prompt.len - 1) * w ..][0..w]);
-        try self.talker.logits(self.hidden, self.logits);
+        switch (engine) {
+            .cpu => |model| {
+                var talker = try Talker.init(gpa, model);
+                errdefer talker.deinit();
+                var predictor = try Predictor.init(gpa, model);
+                errdefer predictor.deinit();
+                const hidden = try gpa.alloc(f32, w);
+                errdefer gpa.free(hidden);
+                const logits = try gpa.alloc(f32, config.codec_vocab);
+                errdefer gpa.free(logits);
+                try model.embed(gpa, &pad_row, self.pad);
+                const rows = try gpa.alloc(f32, prompt.len * w);
+                defer gpa.free(rows);
+                try model.embed(gpa, prompt, x);
+                try talker.forward(x, prompt.len, rows, null);
+                @memcpy(hidden, rows[(prompt.len - 1) * w ..][0..w]);
+                try talker.logits(hidden, logits);
+                self.state = .{ .cpu = .{ .model = model, .talker = talker, .predictor = predictor, .hidden = hidden, .logits = logits } };
+            },
+            .metal => |plan| {
+                try plan.embed(&pad_row, self.pad);
+                try plan.embed(prompt, x);
+                try plan.prefill(x, prompt.len);
+                self.state = .{ .metal = plan };
+            },
+        }
+        self.timing.prefill = elapsed(io, start);
         return self;
     }
 
+    fn closeStream(self: *Synthesizer) void {
+        switch (self.stream) {
+            .none => {},
+            .cpu => |*s| s.deinit(),
+            .metal => |*s| s.deinit(),
+        }
+    }
+
     pub fn deinit(self: *Synthesizer) void {
-        for ([_][]f32{ self.hidden, self.logits, self.row, self.pad }) |b| self.gpa.free(b);
-        if (self.stream) |*s| s.deinit();
+        switch (self.state) {
+            .cpu => |*s| {
+                self.gpa.free(s.hidden);
+                self.gpa.free(s.logits);
+                s.predictor.deinit();
+                s.talker.deinit();
+            },
+            .metal => {},
+        }
+        self.closeStream();
+        self.gpa.free(self.row);
+        self.gpa.free(self.pad);
         self.sampler.deinit(self.gpa);
-        self.predictor.deinit();
-        self.talker.deinit();
         self.* = undefined;
     }
 
@@ -565,58 +655,131 @@ pub const Synthesizer = struct {
     /// has sampled `max_new_tokens` codes (the last of which has no frame).
     pub fn nextFrame(self: *Synthesizer) !?Frame {
         if (self.done) return null;
-        const c0 = try self.sampler.groupZero(self.logits);
-        if (c0 == self.model.config.codec.eos or self.sampler.sampled >= self.model.config.generation.max_new_tokens) {
+        const logits = switch (self.state) {
+            .cpu => |s| s.logits,
+            .metal => |plan| plan.talkerLogits(),
+        };
+        const c0 = try self.sampler.groupZero(logits);
+        if (c0 == self.config.codec.eos or self.sampler.sampled >= self.config.generation.max_new_tokens) {
             self.done = true;
             return null;
         }
-        const frame = try self.predictor.frame(self.hidden, @intCast(c0), self.sampler.pick());
-        self.model.nextRow(frame, self.pad, self.row);
-        try self.talker.forward(self.row, 1, self.hidden, null);
-        try self.talker.logits(self.hidden, self.logits);
+        const start = std.Io.Clock.awake.now(self.io);
+        const frame = switch (self.state) {
+            .cpu => |*s| frame: {
+                const frame = try s.predictor.frame(s.hidden, @intCast(c0), self.sampler.pick());
+                const step = std.Io.Clock.awake.now(self.io);
+                self.timing.predictor += @intCast(start.durationTo(step).toNanoseconds());
+                s.model.nextRow(frame, self.pad, self.row);
+                try s.talker.forward(self.row, 1, s.hidden, null);
+                try s.talker.logits(s.hidden, s.logits);
+                self.timing.talker += elapsed(self.io, step);
+                break :frame frame;
+            },
+            .metal => |plan| frame: {
+                const o = self.sampler.predictor;
+                if (self.host_sampling or o.min_p != 0) {
+                    const frame = try plan.frame(@intCast(c0), self.sampler.pick());
+                    try plan.nextRow(frame, self.pad, self.row);
+                    try plan.step(self.row);
+                    break :frame frame;
+                }
+                // The device samples with the host sampler's next draws; the
+                // host checks every choice (`Plan.frameOnDevice`).
+                var draws: [groups - 1]f64 = undefined;
+                var rng = self.sampler.inner.rng;
+                for (&draws) |*d| d.* = rng.random().float(f64);
+                plan.split_timing = self.split;
+                const frame = try plan.frameOnDevice(@intCast(c0), &draws, .{ .temperature = o.temperature, .top_k = o.top_k, .top_p = o.top_p }, self.pad, self.sampler.pick());
+                if (self.split) {
+                    self.timing.predictor += @intFromFloat(plan.predictor_gpu * 1e9);
+                    self.timing.talker += @intFromFloat(plan.talker_gpu * 1e9);
+                }
+                break :frame frame;
+            },
+        };
+        self.timing.frames += elapsed(self.io, start);
         self.frames += 1;
         return frame;
     }
 
-    /// Generates up to `out.len / samplesPerFrame` frames and decodes them
-    /// into `out`; returns the samples written, 0 once the utterance ended.
-    /// Needs the codec runtime.
+    /// Generates up to `chunk` frames (and no more than `out` holds) and
+    /// decodes them into `out`; returns the samples written, 0 once the
+    /// utterance ended. Needs a decoder.
     pub fn read(self: *Synthesizer, out: []f32) !usize {
-        const stream = if (self.stream) |*s| s else return error.NoCodec;
-        const per = stream.runtime.config.samplesPerFrame();
-        const capacity = out.len / per;
+        const per = switch (self.stream) {
+            .none => return error.NoCodec,
+            .cpu => |s| s.runtime.config.samplesPerFrame(),
+            .metal => |s| s.decoder.config.samplesPerFrame(),
+        };
+        const capacity = @min(out.len / per, self.chunk, max_chunk);
         if (capacity == 0) return error.InvalidShape;
-        var frames: [32]Frame = undefined;
+        var frames: [max_chunk]Frame = undefined;
         var n: usize = 0;
-        while (n < @min(capacity, frames.len)) {
+        while (n < capacity) {
             frames[n] = (try self.nextFrame()) orelse break;
             n += 1;
         }
         if (n == 0) return 0;
-        try stream.push(frames[0..n], out[0 .. n * per]);
+        const start = std.Io.Clock.awake.now(self.io);
+        switch (self.stream) {
+            .none => unreachable,
+            .cpu => |*s| try s.push(frames[0..n], out[0 .. n * per]),
+            .metal => |*s| try s.push(frames[0..n], out[0 .. n * per]),
+        }
+        self.timing.codec += elapsed(self.io, start);
         return n * per;
     }
 };
 
+fn elapsed(io: std.Io, start: std.Io.Timestamp) u64 {
+    return @intCast(start.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds());
+}
+
+/// Where a `Voice` runs.
+pub const Backend = enum { cpu, metal };
+
+pub const VoiceOptions = struct {
+    backend: Backend = .cpu,
+    /// The talker cache's precision on Metal (the CPU's is F32).
+    kv: tts_metal.Precision = .f16,
+};
+
 /// A checkpoint directory opened whole: the config, the tokenizer, the
-/// talker and predictor, and the codec decoder of `speech_tokenizer/`. Heap
-/// allocated so the model's borrows stay put (`open`, `close`).
+/// talker and predictor, and the codec decoder of `speech_tokenizer/`, on
+/// the CPU (F32 copies of every weight) or on Metal (its own `Backend`, the
+/// BF16 weights wrapped in place). Heap allocated so the borrows stay put
+/// (`open`, `close`).
 pub const Voice = struct {
     gpa: Allocator,
+    io: std.Io,
+    backend: Backend,
     config: tts.Config,
     tokenizer: hf_json.Tokenizer,
     checkpoint: safetensors.Checkpoint,
     binding: tts.Binding,
-    model: Model,
     codec_checkpoint: safetensors.Checkpoint,
     codec_binding: codec.Binding,
-    codec: codec.Runtime,
+    /// The CPU engine and codec (`.cpu`).
+    model: ?Model,
+    codec: ?codec.Runtime,
+    /// The Metal engine and codec (`.metal`), on `gpu`.
+    gpu: ?metal.Backend,
+    plan: ?tts_metal.Plan,
+    decoder: ?codec_metal.Decoder,
 
     /// Opens `dir`; a binding error names its tensor in `diagnostic`.
-    pub fn open(gpa: Allocator, io: std.Io, dir: []const u8, diagnostic: ?*tts.Diagnostic) !*Voice {
+    pub fn open(gpa: Allocator, io: std.Io, dir: []const u8, diagnostic: ?*tts.Diagnostic, options: VoiceOptions) !*Voice {
         const self = try gpa.create(Voice);
         errdefer gpa.destroy(self);
         self.gpa = gpa;
+        self.io = io;
+        self.backend = options.backend;
+        self.model = null;
+        self.codec = null;
+        self.gpu = null;
+        self.plan = null;
+        self.decoder = null;
         var arena: std.heap.ArenaAllocator = .init(gpa);
         defer arena.deinit();
         const a = arena.allocator();
@@ -633,8 +796,6 @@ pub const Voice = struct {
         errdefer self.checkpoint.deinit(io);
         self.binding = try tts.bind(gpa, &self.checkpoint, &self.config, diagnostic);
         errdefer self.binding.deinit(gpa);
-        self.model = try .init(gpa, io, &self.binding, &self.config);
-        errdefer self.model.deinit();
         self.codec_checkpoint = try .open(gpa, io, try std.fs.path.join(a, &.{ dir, "speech_tokenizer", "model.safetensors" }), .{});
         errdefer self.codec_checkpoint.deinit(io);
         var codec_diagnostic: codec.Diagnostic = .{};
@@ -643,15 +804,41 @@ pub const Voice = struct {
             return err;
         };
         errdefer self.codec_binding.deinit(gpa);
-        self.codec = try .init(gpa, io, &self.codec_binding);
+        // The codec's F32 matrices are laid out once on the CPU; Metal copies them.
+        self.codec = try codec.Runtime.init(gpa, io, &self.codec_binding);
+        errdefer self.release();
+        switch (options.backend) {
+            .cpu => self.model = try Model.init(gpa, io, &self.binding, &self.config),
+            .metal => {
+                var message: [512]u8 = @splat(0);
+                self.gpu = try metal.Backend.init(gpa, &message);
+                self.plan = try tts_metal.Plan.init(gpa, &self.gpu.?, &self.binding, &self.config, options.kv);
+                self.decoder = try codec_metal.Decoder.init(gpa, &self.gpu.?, &self.codec.?);
+                self.codec.?.deinit();
+                self.codec = null;
+            },
+        }
         return self;
     }
 
+    /// The engines, in reverse order of creation.
+    fn release(self: *Voice) void {
+        if (self.decoder) |*d| d.deinit();
+        if (self.plan) |*p| p.deinit();
+        if (self.gpu) |*g| g.deinit();
+        if (self.model) |*m| m.deinit();
+        if (self.codec) |*c| c.deinit();
+        self.decoder = null;
+        self.plan = null;
+        self.gpu = null;
+        self.model = null;
+        self.codec = null;
+    }
+
     pub fn close(self: *Voice, io: std.Io) void {
-        self.codec.deinit();
+        self.release();
         self.codec_binding.deinit(self.gpa);
         self.codec_checkpoint.deinit(io);
-        self.model.deinit();
         self.binding.deinit(self.gpa);
         self.checkpoint.deinit(io);
         self.tokenizer.deinit();
@@ -668,9 +855,20 @@ pub const Voice = struct {
         return tts.Prompt.build(gpa, &self.config, .{ .role = ids.role, .text = ids.text, .instruct = ids.instruct, .speaker = speaker, .language = language });
     }
 
-    /// A synthesizer for `prompt` that decodes into samples.
-    pub fn synthesizer(self: *const Voice, gpa: Allocator, prompt_rows: []const tts.Row, seed: u64) !Synthesizer {
-        return Synthesizer.init(gpa, &self.model, &self.codec, prompt_rows, seed);
+    /// The engine the voice opened.
+    pub fn engine(self: *Voice) Engine {
+        return if (self.plan) |*p| .{ .metal = p } else .{ .cpu = &self.model.? };
+    }
+
+    /// The codec decoder the voice opened.
+    pub fn decoderOf(self: *Voice) Decoder {
+        return if (self.decoder) |*d| .{ .metal = d } else .{ .cpu = &self.codec.? };
+    }
+
+    /// A synthesizer for `prompt` that decodes into samples. One at a time
+    /// on Metal: the plan holds the talker's cache.
+    pub fn synthesizer(self: *Voice, gpa: Allocator, prompt_rows: []const tts.Row, seed: u64) !Synthesizer {
+        return Synthesizer.init(gpa, self.io, &self.config, self.engine(), self.decoderOf(), prompt_rows, seed);
     }
 };
 
@@ -772,7 +970,7 @@ test "a tiny model synthesizes frames of valid codes and stops at the length lim
     for (hidden[0 .. n * w], hidden[n * w ..]) |a, b| try std.testing.expectApproxEqAbs(a, b, 1e-5);
 
     var frames: usize = 0;
-    var s = try Synthesizer.init(gpa, &model, null, prompt.rows, 7);
+    var s = try Synthesizer.init(gpa, io, &config, .{ .cpu = &model }, .none, prompt.rows, 7);
     defer s.deinit();
     while (try s.nextFrame()) |frame| {
         for (frame) |code| try std.testing.expect(code < tts.codebook_size);

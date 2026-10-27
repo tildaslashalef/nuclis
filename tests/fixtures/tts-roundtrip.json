@@ -1,0 +1,28 @@
+{
+ "$comment": "The text-to-speech round trip: each sentence is spoken by nuclis speak (speaker, language, and seed as given) and recognized by nuclis transcribe; scripts/wer.py --speak scores the words against the text. Written for nuclis (no third-party text); numbers are spelled as they are said, so the recognizer's words can match them. docs/models/qwen3-tts.md § The round trip.",
+ "speaker": "ryan",
+ "language": "english",
+ "asr_language": "en-US",
+ "sentences": [
+  {"id": "fox", "seed": 1, "text": "The quick brown fox jumps over the lazy dog."},
+  {"id": "rain", "seed": 2, "text": "Is it going to rain in Seattle tomorrow afternoon?"},
+  {"id": "appointment", "seed": 3, "text": "Your appointment with Doctor Patel is at three thirty on Thursday."},
+  {"id": "total", "seed": 4, "text": "The total comes to forty two dollars and fifteen cents."},
+  {"id": "call", "seed": 5, "text": "Please call me back when you get this message."},
+  {"id": "flight", "seed": 6, "text": "Maria and James flew from Lisbon to Toronto last spring."},
+  {"id": "directions", "seed": 7, "text": "Turn left at the second traffic light, then keep going for two miles."},
+  {"id": "museum", "seed": 8, "text": "What time does the museum close on Sundays?"},
+  {"id": "timer", "seed": 9, "text": "I have set a timer for twenty minutes."},
+  {"id": "meeting", "seed": 10, "text": "The meeting has been moved to the ninth of December."},
+  {"id": "groceries", "seed": 11, "text": "Could you remind me to buy milk, eggs, and bread?"},
+  {"id": "repeat", "seed": 12, "text": "Sorry, I did not catch that. Could you say it again?"},
+  {"id": "weather", "seed": 13, "text": "The temperature outside is seventeen degrees and falling."},
+  {"id": "novel", "seed": 14, "text": "Elena wrote three chapters of her novel this week."},
+  {"id": "population", "seed": 15, "text": "There are about eight billion people living on Earth."},
+  {"id": "morning", "seed": 16, "text": "Good morning! Here is a summary of your day."},
+  {"id": "train", "seed": 17, "text": "The train to Boston leaves from platform six at noon."},
+  {"id": "email", "seed": 18, "text": "Do you want me to read the next email?"},
+  {"id": "exam", "seed": 19, "text": "Fourteen students passed the exam with honors."},
+  {"id": "order", "seed": 20, "text": "Thank you for your patience. Your order will arrive on Friday."}
+ ]
+}

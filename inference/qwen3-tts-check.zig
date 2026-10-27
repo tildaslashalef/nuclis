@@ -7,11 +7,15 @@
 //! `talker`: each case of MODEL_DIR's size, replaying the trace's codes:
 //! the token ids and the prompt's rows exactly, then the talker's input
 //! rows, its layers and final norm, the group-0 logits, and the
-//! predictor's logits against the trace. The bounds are arguments, so the
-//! gate manifest holds them.
+//! predictor's logits against the trace. `talker-metal` replays the same
+//! codes through the Metal plan (`--kv f32|f16`, the talker cache), and
+//! `codec-metal` decodes each case's codes on Metal against the CPU decode
+//! and the trace, then in pieces of 1, 3, and 7 frames, which must equal the
+//! Metal decode bit for bit. The bounds are arguments, so the gate manifest
+//! holds them.
 //!
-//!   qwen3-tts-check MODEL_DIR codec [--max-relative-rms X] [--max-absolute X] [--fixtures DIR]
-//!   qwen3-tts-check MODEL_DIR talker [--max-relative-rms X] [--fixtures DIR]
+//!   qwen3-tts-check MODEL_DIR codec|codec-metal [--max-relative-rms X] [--max-absolute X] [--fixtures DIR]
+//!   qwen3-tts-check MODEL_DIR talker|talker-metal [--max-relative-rms X] [--kv f32|f16] [--fixtures DIR]
 const std = @import("std");
 const inference = @import("inference");
 const codec = inference.audio.qwen3_codec;
@@ -19,7 +23,11 @@ const safetensors = inference.safetensors;
 const tts = inference.models.qwen3_tts;
 const speech = inference.models.qwen3_tts_runtime;
 
-const usage = "usage: qwen3-tts-check MODEL_DIR codec|talker [--max-relative-rms X] [--max-absolute X] [--fixtures DIR]\n";
+const tts_metal = inference.models.qwen3_tts_metal;
+const codec_metal = inference.audio.qwen3_codec_metal;
+const metal = inference.metal;
+
+const usage = "usage: qwen3-tts-check MODEL_DIR codec|talker|codec-metal|talker-metal [--max-relative-rms X] [--max-absolute X] [--kv f32|f16] [--fixtures DIR]\n";
 
 const Stats = struct { max_abs: f64 = 0, max_ref: f64 = 0, diff2: f64 = 0, ref2: f64 = 0 };
 
@@ -174,6 +182,95 @@ fn checkCodec(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mode
     return passed;
 }
 
+fn readCodes(arena: std.mem.Allocator, io: std.Io, fixtures: []const u8, entry: std.json.Value, frames: usize) ![]codec.Frame {
+    const code_bytes = try readFixture(arena, io, fixtures, entry);
+    if (code_bytes.len < frames * codec.groups * 2) return error.FixtureMismatch;
+    const codes = try arena.alloc(codec.Frame, frames);
+    for (codes, 0..) |*frame, t| for (frame, 0..) |*code, g| {
+        code.* = std.mem.readInt(u16, code_bytes[(t * codec.groups + g) * 2 ..][0..2], .little);
+    };
+    return codes;
+}
+
+/// Each case's traced codes (every frame the trace sampled) decoded on Metal
+/// against the CPU decode of the same codes, and the trace's samples where it
+/// pinned them; then the Metal stream in pieces of 1, 3, and 7 against its
+/// own whole decode, bit for bit.
+fn checkCodecMetal(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, model: []const u8, fixtures: []const u8, bounds: Bounds) !bool {
+    const index_path = try std.fs.path.join(arena, &.{ fixtures, "index.json" });
+    const index_text = try std.Io.Dir.cwd().readFileAlloc(io, index_path, arena, .limited(1 << 20));
+    const index = try std.json.parseFromSliceLeaky(std.json.Value, arena, index_text, .{});
+    const codec_path = try std.fs.path.join(arena, &.{ model, "speech_tokenizer", "model.safetensors" });
+    var checkpoint = try safetensors.Checkpoint.open(gpa, io, codec_path, .{});
+    defer checkpoint.deinit(io);
+    var binding = try codec.bind(gpa, &checkpoint, .{}, null);
+    defer binding.deinit(gpa);
+    var runtime = try codec.Runtime.init(gpa, io, &binding);
+    defer runtime.deinit();
+    var message: [512]u8 = @splat(0);
+    var gpu = metal.Backend.init(gpa, &message) catch |err| {
+        std.debug.print("Metal: {s} {s}\n", .{ @errorName(err), std.mem.sliceTo(&message, 0) });
+        return err;
+    };
+    defer gpu.deinit();
+    var decoder = try codec_metal.Decoder.init(gpa, &gpu, &runtime);
+    defer decoder.deinit();
+    std.debug.print("Codec decoder on Metal: {d} MB of device buffers.\n", .{decoder.bytes / 1_000_000});
+    const per = runtime.config.samplesPerFrame();
+
+    var passed = true;
+    var cases = index.object.get("cases").?.object.iterator();
+    while (cases.next()) |case| {
+        const meta = case.value_ptr.object;
+        const files = meta.get("files").?.object;
+        const sampled = meta.get("frames_generated") orelse continue;
+        const frames: usize = @intCast(sampled.integer);
+        const codes = try readCodes(arena, io, fixtures, files.get("codes") orelse continue, frames);
+        const want = try arena.alloc(f32, frames * per);
+        const cpu_start = std.Io.Clock.awake.now(io);
+        try runtime.decode(gpa, codes, want);
+        const cpu_ms = cpu_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds();
+        var stream = try codec_metal.Stream.init(&decoder);
+        defer stream.deinit();
+        const whole = try arena.alloc(f32, frames * per);
+        const start = std.Io.Clock.awake.now(io);
+        try stream.push(codes, whole);
+        const metal_us = start.durationTo(std.Io.Clock.awake.now(io)).toMicroseconds();
+        const s = compare(whole, want);
+        const rel = @sqrt(s.diff2 / s.ref2);
+        const over = !(rel <= bounds.relative_rms and s.max_abs <= bounds.absolute);
+        if (over) passed = false;
+        std.debug.print("{s}: {d} frames, Metal {d:.1} ms ({d:.2} ms a frame; the CPU {d} ms)\n", .{ case.key_ptr.*, frames, @as(f64, @floatFromInt(metal_us)) / 1000, @as(f64, @floatFromInt(metal_us)) / 1000 / @as(f64, @floatFromInt(frames)), cpu_ms });
+        std.debug.print("  {s:<26} max |Δ| {e:.2}  max |ref| {e:.2}  rel RMS {e:.2}{s}\n", .{ "samples vs the CPU decode", s.max_abs, s.max_ref, rel, if (over) "  OVER" else "" });
+        if (files.get("codec/samples")) |entry| {
+            const traced = try floats(arena, try readFixture(arena, io, fixtures, entry));
+            const rows = entry.object.get("rows").?.array.items;
+            const first: usize = @intCast(rows[0].integer);
+            const last: usize = @intCast(rows[1].integer);
+            if (last > whole.len or traced.len != last - first) return error.FixtureMismatch;
+            const t = compare(whole[first..last], traced);
+            const trel = @sqrt(t.diff2 / t.ref2);
+            const tover = !(trel <= bounds.relative_rms and t.max_abs <= bounds.absolute);
+            if (tover) passed = false;
+            std.debug.print("  {s:<26} max |Δ| {e:.2}  max |ref| {e:.2}  rel RMS {e:.2}{s}\n", .{ "samples vs the trace", t.max_abs, t.max_ref, trel, if (tover) "  OVER" else "" });
+        }
+        for ([_]usize{ 1, 3, 7 }) |piece| {
+            stream.reset();
+            const pieces = try arena.alloc(f32, whole.len);
+            var at: usize = 0;
+            while (at < frames) : (at += piece) {
+                const n = @min(piece, frames - at);
+                try stream.push(codes[at..][0..n], pieces[at * per ..][0 .. n * per]);
+            }
+            const same = std.mem.eql(u8, std.mem.sliceAsBytes(whole), std.mem.sliceAsBytes(pieces));
+            if (!same) passed = false;
+            std.debug.print("  streamed in pieces of {d}: {s}\n", .{ piece, if (same) "the Metal decode bit for bit" else "DIFFERS from the Metal decode" });
+        }
+    }
+    std.debug.print("Bounds: relative RMS {e}, max |Δ| {e}: {s}.\n", .{ bounds.relative_rms, bounds.absolute, if (passed) "passed" else "FAILED" });
+    return passed;
+}
+
 /// Every talker layer's rows and the final norm's, appended call by call.
 const Layers = struct {
     gpa: std.mem.Allocator,
@@ -231,7 +328,62 @@ fn sameArgmax(got: []const f32, want: []const f32, width: usize) usize {
     return same;
 }
 
-fn checkTalker(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, model_dir: []const u8, fixtures: []const u8, bound: f64) !bool {
+/// The talker and predictor under test: the CPU reference or the Metal plan.
+const Engine = union(enum) {
+    cpu: struct { model: *const speech.Model, talker: *speech.Talker, predictor: *speech.Predictor },
+    metal: *tts_metal.Plan,
+
+    fn embed(self: Engine, gpa: std.mem.Allocator, rows: []const tts.Row, out: []f32) !void {
+        switch (self) {
+            .cpu => |e| try e.model.embed(gpa, rows, out),
+            .metal => |plan| try plan.embed(rows, out),
+        }
+    }
+    /// The prompt's rows `x` (consumed); the last post-norm row into `last` and its logits.
+    fn prefill(self: Engine, x: []f32, n: usize, hidden: []f32, last: []f32, logits: []f32, observer: speech.Observer) !void {
+        const w = last.len;
+        switch (self) {
+            .cpu => |e| {
+                try e.talker.forward(x, n, hidden, observer);
+                @memcpy(last, hidden[(n - 1) * w ..][0..w]);
+                try e.talker.logits(last, logits);
+            },
+            .metal => |plan| {
+                plan.observer = observer;
+                try plan.prefill(x, n);
+                @memcpy(last, plan.hiddenRow());
+                @memcpy(logits, plan.talkerLogits());
+            },
+        }
+    }
+    fn frame(self: Engine, last: []const f32, c0: u16, pick: speech.Pick) !codec.Frame {
+        return switch (self) {
+            .cpu => |e| try e.predictor.frame(last, c0, pick),
+            .metal => |plan| try plan.frame(c0, pick),
+        };
+    }
+    fn nextRow(self: Engine, frame_codes: codec.Frame, pad: []const f32, row: []f32) !void {
+        switch (self) {
+            .cpu => |e| e.model.nextRow(frame_codes, pad, row),
+            .metal => |plan| try plan.nextRow(frame_codes, pad, row),
+        }
+    }
+    fn step(self: Engine, row: []f32, last: []f32, logits: []f32, observer: speech.Observer) !void {
+        switch (self) {
+            .cpu => |e| {
+                try e.talker.forward(row, 1, last, observer);
+                try e.talker.logits(last, logits);
+            },
+            .metal => |plan| {
+                try plan.step(row);
+                @memcpy(last, plan.hiddenRow());
+                @memcpy(logits, plan.talkerLogits());
+            },
+        }
+    }
+};
+
+fn checkTalker(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, model_dir: []const u8, fixtures: []const u8, bound: f64, on_metal: bool, kv: tts_metal.Precision) !bool {
     const index_path = try std.fs.path.join(arena, &.{ fixtures, "index.json" });
     const index_text = try std.Io.Dir.cwd().readFileAlloc(io, index_path, arena, .limited(1 << 20));
     const index = try std.json.parseFromSliceLeaky(std.json.Value, arena, index_text, .{});
@@ -256,9 +408,24 @@ fn checkTalker(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mod
         return err;
     };
     defer binding.deinit(gpa);
-    var model = try speech.Model.init(gpa, io, &binding, &config);
-    defer model.deinit();
-    std.debug.print("Talker and predictor ({s}) bound and loaded in {d} ms: {d} tensors, {d} MB as published, {d} MB as F32.\n", .{ config.size, load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds(), binding.tensors, binding.bytes / 1_000_000, model.bytes / 1_000_000 });
+    var model: ?speech.Model = null;
+    defer if (model) |*m| m.deinit();
+    var gpu: ?metal.Backend = null;
+    defer if (gpu) |*g| g.deinit();
+    var plan: ?tts_metal.Plan = null;
+    defer if (plan) |*p| p.deinit();
+    if (on_metal) {
+        var message: [512]u8 = @splat(0);
+        gpu = metal.Backend.init(gpa, &message) catch |err| {
+            std.debug.print("Metal: {s} {s}\n", .{ @errorName(err), std.mem.sliceTo(&message, 0) });
+            return err;
+        };
+        plan = try tts_metal.Plan.init(gpa, &gpu.?, &binding, &config, kv);
+        std.debug.print("Talker and predictor ({s}) on Metal in {d} ms: {d} tensors, {d} MB as published (wrapped), {s} talker cache.\n", .{ config.size, load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds(), binding.tensors, binding.bytes / 1_000_000, @tagName(kv) });
+    } else {
+        model = try speech.Model.init(gpa, io, &binding, &config);
+        std.debug.print("Talker and predictor ({s}) bound and loaded in {d} ms: {d} tensors, {d} MB as published, {d} MB as F32.\n", .{ config.size, load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds(), binding.tensors, binding.bytes / 1_000_000, model.?.bytes / 1_000_000 });
+    }
     const sidecar: ?std.json.Value = if (read.file(arena, io, model_dir, "model.safetensors.nuclis.json")) |text|
         try std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{})
     else |_|
@@ -334,19 +501,23 @@ fn checkTalker(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mod
             layers.norm.deinit(gpa);
         }
         const observer: speech.Observer = .{ .context = &layers, .record = Layers.record };
-        var talker = try speech.Talker.init(gpa, &model);
-        defer talker.deinit();
-        var predictor = try speech.Predictor.init(gpa, &model);
-        defer predictor.deinit();
+        var talker: ?speech.Talker = null;
+        defer if (talker) |*t| t.deinit();
+        var predictor: ?speech.Predictor = null;
+        defer if (predictor) |*p| p.deinit();
+        const engine: Engine = if (plan) |*p| .{ .metal = p } else blk: {
+            talker = try speech.Talker.init(gpa, &model.?);
+            predictor = try speech.Predictor.init(gpa, &model.?);
+            break :blk .{ .cpu = .{ .model = &model.?, .talker = &talker.?, .predictor = &predictor.? } };
+        };
         const pad = try arena.alloc(f32, w);
-        try model.embed(gpa, &.{.{ .text = config.text.tts_pad, .codec = null }}, pad);
+        try engine.embed(gpa, &.{.{ .text = config.text.tts_pad, .codec = null }}, pad);
 
         const prefill_start = std.Io.Clock.awake.now(io);
-        try model.embed(gpa, prompt.rows, inputs[0 .. length * w]);
+        try engine.embed(gpa, prompt.rows, inputs[0 .. length * w]);
         @memcpy(x, inputs[0 .. length * w]);
-        try talker.forward(x, length, hidden, observer);
-        const last = try arena.dupe(f32, hidden[(length - 1) * w ..][0..w]);
-        try talker.logits(last, logits[0..config.codec_vocab]);
+        const last = try arena.alloc(f32, w);
+        try engine.prefill(x, length, hidden, last, logits[0..config.codec_vocab], observer);
         const prefill_ms = prefill_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds();
 
         var predictor_logits: std.ArrayList(f32) = .empty;
@@ -356,13 +527,12 @@ fn checkTalker(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mod
         for (codes, 0..) |frame, f| {
             replay.frame = frame;
             replay.logits = if (f < predicted) &predictor_logits else null;
-            const got = try predictor.frame(last, frame[0], .{ .context = &replay, .pick = Replay.pick });
+            const got = try engine.frame(last, frame[0], .{ .context = &replay, .pick = Replay.pick });
             std.debug.assert(std.mem.eql(u16, &got, &frame));
             const row = inputs[(length + f) * w ..][0..w];
-            model.nextRow(frame, pad, row);
+            try engine.nextRow(frame, pad, row);
             const step = try arena.dupe(f32, row);
-            try talker.forward(step, 1, last, observer);
-            try talker.logits(last, logits[(f + 1) * config.codec_vocab ..][0..config.codec_vocab]);
+            try engine.step(step, last, logits[(f + 1) * config.codec_vocab ..][0..config.codec_vocab], observer);
         }
         const frame_ms = @as(f64, @floatFromInt(frames_start.durationTo(std.Io.Clock.awake.now(io)).toMicroseconds())) / 1000 / @as(f64, @floatFromInt(frames));
         if (layers.failed) return error.OutOfMemory;
@@ -412,13 +582,14 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
-    const mode = if (args.len >= 3) args[2] else "";
-    if (!std.mem.eql(u8, mode, "codec") and !std.mem.eql(u8, mode, "talker")) {
+    const Mode = enum { codec, talker, @"codec-metal", @"talker-metal" };
+    const mode = std.meta.stringToEnum(Mode, if (args.len >= 3) args[2] else "") orelse {
         std.debug.print(usage, .{});
         return error.InvalidArguments;
-    }
+    };
     var bounds: Bounds = .{ .relative_rms = 1e-5, .absolute = 1e-5 };
     var fixtures: []const u8 = "tests/fixtures/qwen3-tts";
+    var kv: tts_metal.Precision = .f16;
     var i: usize = 3;
     while (i + 1 < args.len) : (i += 2) {
         const value = args[i + 1];
@@ -428,15 +599,19 @@ pub fn main(init: std.process.Init) !void {
             bounds.absolute = try std.fmt.parseFloat(f64, value);
         } else if (std.mem.eql(u8, args[i], "--fixtures")) {
             fixtures = value;
+        } else if (std.mem.eql(u8, args[i], "--kv")) {
+            kv = std.meta.stringToEnum(tts_metal.Precision, value) orelse return error.InvalidArguments;
         } else break;
     }
     if (i != args.len) {
         std.debug.print(usage, .{});
         return error.InvalidArguments;
     }
-    const ok = if (std.mem.eql(u8, mode, "codec"))
-        try checkCodec(gpa, arena, io, args[1], fixtures, bounds)
-    else
-        try checkTalker(gpa, arena, io, args[1], fixtures, bounds.relative_rms);
+    const ok = switch (mode) {
+        .codec => try checkCodec(gpa, arena, io, args[1], fixtures, bounds),
+        .talker => try checkTalker(gpa, arena, io, args[1], fixtures, bounds.relative_rms, false, .f32),
+        .@"codec-metal" => try checkCodecMetal(gpa, arena, io, args[1], fixtures, bounds),
+        .@"talker-metal" => try checkTalker(gpa, arena, io, args[1], fixtures, bounds.relative_rms, true, kv),
+    };
     if (!ok) std.process.exit(1);
 }

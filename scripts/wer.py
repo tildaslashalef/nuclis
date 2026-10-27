@@ -19,6 +19,12 @@ can differ from the written sentence), else the transcript (LibriSpeech's).
 `--max-wer` makes it a gate: the overall rate must not exceed it. Standard
 library only. docs/models/nemotron-asr.md § Transducer against the trace,
 and word error rate.
+
+`--speak SENTENCES` scores text to speech instead: each sentence of the
+list (`tests/fixtures/tts-roundtrip.json`) is spoken by `nuclis speak
+--model <--tts-model> --backend <--tts-backend>` with its seed, recognized
+as above, and its words scored against the text, normalized alike.
+docs/models/qwen3-tts.md § The round trip.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 import unittest
@@ -74,23 +81,73 @@ class Result:
     detected: str | None
 
 
+def recognize(
+    nuclis: str, model: str, path: pathlib.Path, language: str, lookahead: int, backend: str = "cpu"
+) -> dict[str, Any]:
+    """`nuclis transcribe --json --backend <backend>` of one file: its report."""
+    command = [nuclis, "transcribe", str(path), "--json", "--backend", backend, "--lookahead", str(lookahead)]
+    command += ["--model", model, "--language", language]
+    done = subprocess.run(command, capture_output=True, text=True, check=False)
+    if done.returncode != 0:
+        raise SystemExit(f"{' '.join(command)}: exit {done.returncode}\n{done.stderr}")
+    return json.loads(done.stdout)
+
+
 def transcribe(
     nuclis: str, model: str, clip: dict[str, Any], speech: pathlib.Path, auto: bool, lookahead: int, backend: str
 ) -> Result:
     path = speech / clip["file"]
     if not path.is_file():
         raise SystemExit(f"{path}: missing; run make speech-corpus")
-    command = [nuclis, "transcribe", str(path), "--json", "--backend", backend, "--lookahead", str(lookahead)]
-    command += ["--model", model, "--language", "auto" if auto else clip["language"]]
-    done = subprocess.run(command, capture_output=True, text=True, check=False)
-    if done.returncode != 0:
-        raise SystemExit(f"{' '.join(command)}: exit {done.returncode}\n{done.stderr}")
-    report = json.loads(done.stdout)
+    report = recognize(nuclis, model, path, "auto" if auto else clip["language"], lookahead, backend)
     reference = normalize(clip.get("normalized") or clip["text"])
     hypothesis = normalize(report["text"])
     return Result(
         clip=clip["id"],
         language=clip["language"],
+        reference=reference,
+        hypothesis=hypothesis,
+        errors=edits(reference, hypothesis),
+        seconds=report["audio_seconds"],
+        transcribe_ms=report["timings"]["transcribe_ms"],
+        detected=report["language"],
+    )
+
+
+def speak_and_recognize(
+    nuclis: str,
+    tts_model: str,
+    backend: str,
+    asr_model: str,
+    sentence: dict[str, Any],
+    plan: dict[str, Any],
+    directory: pathlib.Path,
+    lookahead: int,
+) -> Result:
+    """One sentence spoken, then recognized: its words against the text."""
+    wav = directory / f"{sentence['id']}.wav"
+    command = [
+        nuclis,
+        "speak",
+        "--model",
+        tts_model,
+        "--backend",
+        backend,
+        "--voice",
+        plan["speaker"],
+        "--language",
+        plan["language"],
+    ]
+    command += ["--seed", str(sentence["seed"]), "-o", str(wav), "--", sentence["text"]]
+    done = subprocess.run(command, capture_output=True, text=True, check=False)
+    if done.returncode != 0:
+        raise SystemExit(f"{' '.join(command)}: exit {done.returncode}\n{done.stderr}")
+    report = recognize(nuclis, asr_model, wav, plan["asr_language"], lookahead)
+    reference = normalize(sentence["text"])
+    hypothesis = normalize(report["text"])
+    return Result(
+        clip=sentence["id"],
+        language=plan["language"],
         reference=reference,
         hypothesis=hypothesis,
         errors=edits(reference, hypothesis),
@@ -133,12 +190,21 @@ def main() -> int:
     parser.add_argument("--json", type=pathlib.Path, help="write every clip's result and the summary here")
     parser.add_argument("--verbose", action="store_true", help="print each clip's words")
     parser.add_argument("--self-test", action="store_true", help="run the normalizer's and the alignment's tests")
+    parser.add_argument("--speak", type=pathlib.Path, help="a sentence list: speak each, then recognize it")
+    parser.add_argument("--tts-model", help="the speech model's directory (with --speak)")
+    parser.add_argument(
+        "--tts-backend", default="metal", choices=("cpu", "metal"), help="where it speaks (with --speak)"
+    )
     args = parser.parse_args()
     if args.self_test:
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(Tests)
         return 0 if unittest.TextTestRunner(verbosity=1).run(suite).wasSuccessful() else 1
     if not args.model:
         parser.error("--model is required")
+    if args.speak:
+        if not args.tts_model:
+            parser.error("--speak needs --tts-model")
+        return round_trip(args)
     corpus = json.loads(CORPUS.read_text())
     clips: list[dict[str, Any]] = corpus["clips"]
     if args.clips:
@@ -177,6 +243,49 @@ def main() -> int:
     return 0
 
 
+def round_trip(args: argparse.Namespace) -> int:
+    """`--speak`: every sentence spoken and recognized; the rate over all of them."""
+    plan = json.loads(args.speak.read_text())
+    sentences: list[dict[str, Any]] = plan["sentences"]
+    if args.clips:
+        wanted = set(args.clips.split(","))
+        sentences = [s for s in sentences if s["id"] in wanted]
+    started = time.monotonic()
+    results: list[Result] = []
+    with tempfile.TemporaryDirectory(prefix="nuclis-roundtrip-") as directory:
+        for sentence in sentences:
+            result = speak_and_recognize(
+                args.nuclis,
+                args.tts_model,
+                args.tts_backend,
+                args.model,
+                sentence,
+                plan,
+                pathlib.Path(directory),
+                args.lookahead,
+            )
+            results.append(result)
+            rate = result.errors / max(1, len(result.reference))
+            print(
+                f"{result.clip:<14} {result.errors:>3}/{len(result.reference):<3} {rate:6.1%}  {result.seconds:5.2f} s of audio"
+            )
+            if args.verbose and result.errors:
+                print(f"  ref {' '.join(result.reference)}\n  hyp {' '.join(result.hypothesis)}")
+    table = summarize(results)
+    row = table["all"]
+    print(f"\n{row['clips']:.0f} sentences, {row['words']:.0f} words, {row['errors']:.0f} errors: WER {row['wer']:.2%}")
+    print(
+        f"{row['audio_s']:.1f} s of audio; wall time {time.monotonic() - started:.1f} s (every sentence two fresh processes)"
+    )
+    if args.json:
+        payload = {"results": [r.__dict__ for r in results], "summary": table}
+        args.json.write_text(json.dumps(payload, indent=1, ensure_ascii=False) + "\n")
+    if args.max_wer is not None and row["wer"] > args.max_wer:
+        print(f"WER {row['wer']:.2%} exceeds the bound {args.max_wer:.2%}", file=sys.stderr)
+        return 1
+    return 0
+
+
 class Tests(unittest.TestCase):
     def test_normalize(self) -> None:
         self.assertEqual(
@@ -186,6 +295,15 @@ class Tests(unittest.TestCase):
         self.assertEqual(normalize("Das Cochamó-Tal – Chiles"), ["das", "cochamó", "tal", "chiles"])
         self.assertEqual(normalize("ЁМКОСТИ, ёлка"), ["емкости", "елка"])
         self.assertEqual(normalize("HE BEGAN A CONFUSED COMPLAINT"), normalize("He began a confused complaint."))
+
+    def test_round_trip_list(self) -> None:
+        plan = json.loads((ROOT / "tests/fixtures/tts-roundtrip.json").read_text())
+        ids = [s["id"] for s in plan["sentences"]]
+        self.assertEqual(len(ids), 20)
+        self.assertEqual(len(set(ids)), 20)
+        for sentence in plan["sentences"]:
+            self.assertTrue(normalize(sentence["text"]))
+            self.assertFalse(any(ch.isdigit() for ch in sentence["text"]), sentence["id"])
 
     def test_edits(self) -> None:
         self.assertEqual(edits(["a", "b", "c"], ["a", "b", "c"]), 0)
