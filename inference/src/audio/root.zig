@@ -8,10 +8,13 @@ pub const mel = @import("mel.zig");
 pub const gemma4a = @import("gemma4a.zig");
 /// Qwen3-TTS's codec decoder: speech out, codes to samples.
 pub const qwen3_codec = @import("qwen3_codec.zig");
+/// Nemotron 3.5 ASR's cache-aware encoder: speech in, mel rows to encoder rows.
+pub const nemotron_encoder = @import("nemotron_encoder.zig");
 
 test {
     _ = audio;
     _ = mel;
     _ = gemma4a;
     _ = qwen3_codec;
+    _ = nemotron_encoder;
 }

@@ -83,6 +83,9 @@
   },
   "qwen3_tts_06b": {
    "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+  },
+  "nemotron_asr": {
+   "path": "~/.nuclis/models/nvidia/nemotron-3.5-asr-streaming-0.6b"
   }
  },
  "checks": [
@@ -3962,6 +3965,35 @@
    },
    "note": "the authors' traced codes (24 frames) through the codec decoder: every pinned stage and the samples against their trace, relative RMS <= 2e-5 per stage and samples max |difference| <= 1e-5 (first run: 3.8e-6 and 1.9e-6); then the same frames streamed in pieces of 5 equal the decode bit for bit",
    "evidence": "docs/models/qwen3-tts.md#codec-decoder-against-the-trace-2026-10-27"
+  },
+  {
+   "name": "nemotron-asr-encoder-cpu",
+   "family": "nemotron-asr",
+   "tier": "verify-cpu",
+   "model": "nemotron_asr",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/nemotron-asr-check.zig",
+    "inference/src/audio/audio.zig",
+    "inference/src/audio/mel.zig",
+    "inference/src/audio/nemotron_encoder.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/safetensors.zig",
+    "tests/fixtures/nemotron-asr/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-nemotron-asr",
+    "--",
+    "{model}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the front end's frames and the encoder's subsampling, blocks 0, 11, 23 and prompt rows of two clips at lookaheads 0 and 3, whole clip, the authors' chunks, and the samples in 80 ms pieces, against the trace pinned from transformers c0d024fb (relative bounds in the check tool)",
+   "evidence": "docs/models/nemotron-asr.md"
   }
  ]
 }

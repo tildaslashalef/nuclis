@@ -31,6 +31,7 @@ from a file, the sentence names the class or function.
 - [Cache-aware streaming](#cache-aware-streaming)
 - [RNN-T decoding](#rnn-t-decoding)
 - [Tokenizer](#tokenizer)
+- [Front end and encoder against the trace (2026-10-27)](#front-end-and-encoder-against-the-trace-2026-10-27)
 - [Decisions and open items](#decisions-and-open-items)
 
 ## Artifacts
@@ -433,6 +434,105 @@ A tag has no `▁`, so if it is kept it attaches to the preceding
 punctuation. Scripts without spaces (Chinese, Japanese, Thai) simply
 concatenate.
 
+## Front end and encoder against the trace (2026-10-27)
+
+**The implementation.** `inference/src/audio/mel.zig` computes the front
+end as `Spec.nemotron` ([audio.md § The front end](../engine/audio.md#the-front-end)),
+in F64 with the products and pre-emphasis in F32, as for Gemma.
+`inference/src/audio/nemotron_encoder.zig` is the CPU reference: `bind`
+views the checkpoint's F32 tensors in place, `Encoder` holds the relative
+keys of distances −13 … 69 per block, and `Stream` is the only path. A
+whole clip is one stream fed at once and finished, so the chunked mask,
+the caches, and the end of stream are one implementation. A stream keeps
+the samples of open frames and the one before them, one input row per
+subsampling convolution, each block's last 56 keys and values and last 8
+GLU rows, and the subsampled rows of an unfinished chunk. Rows leave in
+whole chunks of `r + 1`, and `finish` flushes as the whole-clip pass ends.
+With synthetic weights, the unit tests show the authors' chunks
+(`1 + 8r`, then `8(r + 1)` frames, at r = 0 and 3), pieces of 7 frames,
+and samples in 80 ms pieces giving the whole clip's rows **bit for bit**.
+
+**The trace.** `scripts/speech-traces/nemotron_trace.py` ran the authors'
+`Nemotron3_5AsrForRNNT` (transformers `c0d024fb`, torch 2.14.1, librosa
+1.0.0, CPU, F32) on two clips of the speech corpus, each cut to 80,880
+samples (505 mel frames, 64 rows): a LibriSpeech test-clean utterance
+under the prompt `auto` (101), and a FLEURS German one under `de-DE` (9).
+At N = 25 + 32m frames both lookaheads end on a whole chunk. It pinned the
+features, the subsampling's rows, and the rows after blocks 0, 11, 23 and
+the prompt block at r = 0 and 3, from the whole clip and from the authors'
+streaming path (the processor's chunk features, the encoder's caches).
+Rows 0–7 and 56–63 are pinned. Rows 57–63 at r = 0, and 60–63 at r = 3,
+are the first that no longer see row 0. The files, 2.8 MB, are in `tests/fixtures/nemotron-asr/` with
+their digests in `index.json`.
+
+The authors' stream gives their whole clip's features exactly. Their rows
+differ only by F32 rounding: at most 1.6e-3 in the subsampling (values up
+to 1.2e3), 1.8e-4 after block 0, 7.7e-7 after block 23, and 3.8e-5 after
+the prompt block (`index.json`, `stream_minus_whole_max_abs`).
+
+**Against it.** The gate `nemotron-asr-encoder-cpu`
+(`zig build test-nemotron-asr -- MODEL_DIR`, 9.9 s with the build cached,
+M4 Pro) runs the following. Each clip's WAV goes through the front end.
+The pinned features go through the whole clip and through the authors'
+chunks. The samples go in 80 ms pieces, which adds the front end's own
+error. Each stage gets two figures: the largest difference over the
+largest reference value ("max"), and the RMS of the difference over the
+reference's ("RMS"). Worst over the two clips:
+
+| Stage | r = 0 max | r = 0 RMS | r = 3 max | r = 3 RMS |
+| --- | ---: | ---: | ---: | ---: |
+| features (r-independent) | 1.5e-5 | 4.5e-7 | | |
+| subsampling (r-independent) | 1.5e-6 | 1.2e-6 | | |
+| whole, block 0 | 5.2e-7 | 1.6e-6 | 5.0e-7 | 1.6e-6 |
+| whole, block 11 | 3.6e-7 | 9.7e-7 | 3.6e-7 | 9.4e-7 |
+| whole, block 23 | 9.5e-7 | 1.2e-6 | 2.8e-7 | 4.8e-7 |
+| whole, prompt block | 1.9e-6 | 3.1e-6 | 1.2e-6 | 1.8e-6 |
+| chunked, block 0 | 2.3e-7 | 1.4e-6 | 5.2e-7 | 1.6e-6 |
+| chunked, block 23 | 5.6e-7 | 8.3e-7 | 5.9e-7 | 8.0e-7 |
+| chunked, prompt block | 1.5e-6 | 2.1e-6 | 1.6e-6 | 2.7e-6 |
+| samples, block 23 | 4.3e-7 | 6.6e-7 | 3.3e-7 | 6.7e-7 |
+| samples, prompt block | 1.1e-6 | 1.7e-6 | 1.4e-6 | 2.4e-6 |
+
+The features' largest difference, 2.4e-4 on values up to 16.6, is in a
+near-silent bin of the LibriSpeech clip. There `log(mel + 2⁻²⁴)` magnifies
+the F32 STFT's rounding: the FLEURS clip's is 1.7e-5. The encoder's
+differences are F32 summation order and do not grow through the 24
+blocks. The bounds sit about five times above the worst: 1e-4 max and
+5e-6 RMS on the features, 1e-5 and 2e-5 on every encoder stage
+(`inference/nemotron-asr-check.zig`). A whole clip of 64 rows took 0.41 to
+0.45 s on the CPU reference (ReleaseFast, M4 Pro).
+
+**The speech corpus.** `make speech-corpus` (`scripts/speech-corpus.py`)
+fetches the clips that `tests/fixtures/speech-corpus.json` pins into
+`.reference/speech/`:
+
+- 40 LibriSpeech test-clean utterances, one per speaker, the first of each
+  speaker between 4 and 12 s;
+- 5 FLEURS test utterances in each of German, French, Latin American
+  Spanish and Russian, the first five sentences by id between 4 and 12 s.
+
+Each clip is a member of its source archive: OpenSLR's
+`test-clean.tar.gz`, or FLEURS's `test.tar.gz` per language at `70bb2e84`.
+The JSON records the archive's URL and SHA-256 and the clip's own SHA-256
+and transcript. The fetch streams each archive, keeps only the listed
+members, stops once it has them, and refuses any clip whose digest
+differs. Clips already present and correct are not fetched again.
+
+**Found at bring-up.**
+
+- At r = 0 the second chunk starts at sample `160 − 256 = −96`, before
+  the clip. The processor's chunking then needs 96 leading zeros (the
+  trace supplies them). nuclis never re-reads samples, so it has no such
+  case.
+- The last kept frame reads up to 40 samples past the clip when
+  `L < 160⌊L/160⌋ + 40`. `finish` reads them as zeros, as the whole-clip
+  STFT's padding does, so the decision under *End of stream* holds. The
+  unit test with a 1.03 s clip reaches this case. The trace's clips end
+  80 samples into a frame, so they do not.
+- FLEURS stores its audio as 32-bit float WAV. `audio.zig`'s own RIFF
+  reader takes 16-bit PCM only, so those clips go through AudioToolbox,
+  on macOS only. The trace's cut clips are 16-bit.
+
 ## Decisions and open items
 
 Decided at the plan (2026-10-27); each is checked at bring-up:
@@ -464,5 +564,5 @@ Open, observed at bring-up rather than decided:
   emits for Maltese is unknown.
 - **Precision.** HF computes the STFT and the mel product in F32 with a
   librosa F32 filter bank, the encoder in F32; `mel.zig` works in F64 and
-  casts. The bounds against HF's features and encoder rows are measured
-  at bring-up, not assumed.
+  casts. Measured against the trace:
+  [Front end and encoder against the trace](#front-end-and-encoder-against-the-trace-2026-10-27).

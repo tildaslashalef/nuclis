@@ -2,8 +2,10 @@
 
 How nuclis turns a clip into embedding rows: the decoder, the log-mel front
 end, and Gemma 4's audio encoder (`gemma4a`) on the CPU and on Metal. Today
-EmbeddingGemma 2 is the only family that uses it
+EmbeddingGemma 2 is the only family that uses that encoder
 ([embeddinggemma.md § Audio](../models/embeddinggemma.md#audio-2026-10-09)).
+The front end also serves Nemotron 3.5 ASR's own encoder, described with
+its family in [nemotron-asr.md](../models/nemotron-asr.md).
 Gemma 4 E4B carries the same encoder, and chat still refuses audio.
 Everything here was written from Google's code at the pinned revisions
 (transformers 5.19.0: `feature_extraction_gemma4.py`, `modeling_gemma4.py`
@@ -29,8 +31,10 @@ as a cross-check, never copied.
   length when it was cut). A RIFF/WAVE parser reads 16-bit mono 16 kHz PCM
   on any platform. Everything else goes through `audio_bridge.m`, built
   with the Metal bridge. Encoded bytes are bounded at 64 MiB.
-- `mel.zig`: `Bank` (the window, the filter bank, the FFT twiddles) and
-  `features`. Pure, no I/O.
+- `mel.zig`: `Spec` (what one extractor's front end is: Gemma's and
+  Nemotron's), `Bank` (the window, the filter bank, the FFT twiddles),
+  `features`, and `frames`, which computes frames from a span of a clip
+  for a stream. Pure, no I/O.
 - `gemma4a.zig`: `bind` (the companion file's `a.*` and `mm.a.*`
   tensors) and `Runtime`, the CPU reference. It also holds the pieces the
   Metal plan shares: `subsample`, `relativeKeys`, `queryScale`.
@@ -39,6 +43,10 @@ as a cross-check, never copied.
   `bind`, `Runtime.decode`, and `Stream`, which carries every
   convolution's left context and 71 rows of K/V per layer, so pieces of any
   size give `decode`'s samples bit for bit ([qwen3-tts.md](../models/qwen3-tts.md)).
+- `nemotron_encoder.zig`: Nemotron 3.5 ASR's cache-aware encoder and its
+  prompt block, CPU only so far: `bind` (the safetensors checkpoint),
+  `Encoder`, and `Stream`
+  ([nemotron-asr.md § The encoder](../models/nemotron-asr.md#the-encoder)).
 
 ## Decoding
 
@@ -73,7 +81,13 @@ Google's `Gemma4AudioFeatureExtractor`, with the pinned
    per-bin normalization.
 
 `mel.Bank.features` does this in F64 with an iterative radix-2 FFT and
-casts to F32. Against the extractor's own features
+casts to F32. The steps are one `mel.Spec` value, `Spec.gemma`: the window
+(length, periodic or symmetric, where it sits in the FFT's 512 points), the
+lead (zeros before the clip), which frames a clip keeps, magnitude or power,
+HTK or Slaney filters, the log guard, and pre-emphasis.
+`Spec.nemotron` is Nemotron ASR's extractor
+([nemotron-asr.md § The front end](../models/nemotron-asr.md#the-front-end));
+parameterizing the bank left Gemma's features bit for bit what they were. Against the extractor's own features
 (`tests/fixtures/embeddinggemma-audio-features/`) the largest difference
 is 4.8e-7 on all three clips.
 
