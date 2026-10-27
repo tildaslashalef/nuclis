@@ -5,11 +5,14 @@
 //! carries a `Stream`. Knows no route and no model; transport
 //! failures answer with the shared error body and close. The arena is reset
 //! after every response, so nothing of a request outlives it. Every
-//! response is logged when a log is given.
+//! response is logged when a log is given. A response may instead upgrade
+//! the connection to a WebSocket (`Upgrade`, `websocket.zig`): the route
+//! then owns the connection until it closes.
 const std = @import("std");
 const repeat = @import("../text.zig").repeat;
 const errors = @import("errors.zig");
 const log_mod = @import("log.zig");
+const websocket = @import("websocket.zig");
 
 /// TypeSafe's "overloaded", which Jev clients retry with backoff; no
 /// standard code says "the queue is full, come back" as plainly.
@@ -35,6 +38,9 @@ pub const Request = struct {
     body: []const u8,
     /// The client's socket, when there is one (none in tests).
     peer: ?Peer = null,
+    /// Set when a GET's `upgrade` header names `websocket`; the route
+    /// checks it (`websocket.refusal`) before answering with an `Upgrade`.
+    websocket: ?websocket.Handshake = null,
 
     /// The value of `name` in the query (`a=1&b`: `b` is ""), or null.
     pub fn param(self: Request, name: []const u8) ?[]const u8 {
@@ -57,6 +63,11 @@ pub const Response = struct {
     note: []const u8 = "",
     /// Set for a body written as it is produced; `body` is then unused.
     stream: ?Stream = null,
+    /// Set to switch the connection to a WebSocket: the transport answers
+    /// `101` and hands the connection over; the rest of the response is unused.
+    upgrade: ?Upgrade = null,
+    /// One more header (a `426`'s `upgrade` or `sec-websocket-version`).
+    extra_header: ?std.http.Header = null,
 
     pub fn fromError(arena: std.mem.Allocator, err: errors.ApiError) Response {
         return .{ .status = err.status, .body = errors.body(arena, err), .note = noteOf(arena, err) };
@@ -93,6 +104,18 @@ pub const Stream = struct {
     write: *const fn (context: *anyopaque, io: std.Io, body: *Body) bool,
     /// The log's note once `write` returned, when it says more than the
     /// response's own.
+    note: ?*const fn (context: *anyopaque) []const u8 = null,
+};
+
+/// A WebSocket session on the connection, after the transport sent `101
+/// Switching Protocols`. `run` reads frames from `in` and writes them to
+/// `out` until it is done; the connection then closes. It is not called
+/// when the `101` could not be sent, so the route may own nothing before
+/// it runs; `context` must outlive it.
+pub const Upgrade = struct {
+    context: *anyopaque,
+    run: *const fn (context: *anyopaque, io: std.Io, in: *std.Io.Reader, out: *std.Io.Writer) void,
+    /// The log's note once `run` returned.
     note: ?*const fn (context: *anyopaque) []const u8 = null,
 };
 
@@ -171,6 +194,11 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
         .peer = peer,
     };
     exchange.path = parsed.path;
+    if (request.head.method == .GET or request.head.method == .HEAD) {
+        var headers = request.iterateHeaders();
+        parsed.websocket = websocket.readHandshake(arena, &headers) catch return exchange.fail(.init(.internal_server_error, "internal", "out of memory"));
+        if (parsed.websocket) |h| exchange.websocket_key = h.key;
+    }
     if (request.head.transfer_compression != .identity)
         return exchange.fail(.init(.unsupported_media_type, "unsupported_encoding", "compressed request bodies are not accepted"));
     if (request.head.method.requestHasBody()) {
@@ -206,6 +234,8 @@ const Exchange = struct {
     started: std.Io.Timestamp,
     method: std.http.Method,
     path: []const u8 = "?",
+    /// The handshake's `sec-websocket-key`, for an `Upgrade` response.
+    websocket_key: []const u8 = "",
 
     /// An error response that ends the connection: the request may not
     /// have been read whole.
@@ -218,15 +248,18 @@ const Exchange = struct {
 
     /// Whether the connection stays open.
     fn respond(self: *Exchange, response: Response) bool {
+        if (response.upgrade) |upgrade| return self.respondUpgrade(response, upgrade);
         if (response.stream) |stream| return self.respondStream(response, stream);
         const request = self.request;
+        var headers: [2]std.http.Header = .{ .{ .name = "content-type", .value = response.content_type }, undefined };
+        if (response.extra_header) |h| headers[1] = h;
         const sent = if (request.respond(response.body, .{
             // An HTTP/1.0 client keeps the connection only when told so.
             .version = request.head.version,
             .status = response.status,
             .reason = reason(response.status),
             .keep_alive = !response.close,
-            .extra_headers = &.{.{ .name = "content-type", .value = response.content_type }},
+            .extra_headers = headers[0 .. @as(usize, 1) + @intFromBool(response.extra_header != null)],
         })) |_| true else |_| false;
         if (self.log) |l| l.request(self.io, .{
             .method = self.method,
@@ -237,6 +270,27 @@ const Exchange = struct {
             .note = response.note,
         });
         return sent and request.head.keep_alive and !response.close;
+    }
+
+    /// `101` with the accept value (RFC 6455 § 4.2.2), then the session;
+    /// the connection never serves another request.
+    fn respondUpgrade(self: *Exchange, response: Response, upgrade: Upgrade) bool {
+        const out = self.request.server.out;
+        const accept = websocket.accept(self.websocket_key);
+        const sent = if (out.print("HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {s}\r\n\r\n", .{&accept})) |_|
+            if (out.flush()) |_| true else |_| false
+        else |_|
+            false;
+        if (sent) upgrade.run(upgrade.context, self.io, self.request.server.reader.in, out);
+        if (self.log) |l| l.request(self.io, .{
+            .method = self.method,
+            .path = self.path,
+            .status = .switching_protocols,
+            .duration_ns = @intCast(@max(0, self.started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds())),
+            .bytes_out = 0,
+            .note = if (!sent) "the 101 could not be sent" else if (upgrade.note) |note| note(upgrade.context) else response.note,
+        });
+        return false;
     }
 
     fn respondStream(self: *Exchange, response: Response, stream: Stream) bool {
@@ -304,6 +358,15 @@ const Echo = struct {
             return .{ .body = "", .content_type = "text/event-stream", .stream = .{ .context = self, .write = writeStream } };
         if (std.mem.eql(u8, request.path, "/broken"))
             return .{ .body = "", .content_type = "text/event-stream", .stream = .{ .context = self, .write = writeBroken } };
+        if (std.mem.eql(u8, request.path, "/ws")) {
+            const h = request.websocket orelse {
+                var r: Response = .fromError(arena, .init(.upgrade_required, "upgrade_required", "a WebSocket route"));
+                r.extra_header = .{ .name = "upgrade", .value = "websocket" };
+                return r;
+            };
+            if (websocket.refusal(h, request.method)) |refused| return .fromError(arena, refused);
+            return .{ .body = "", .upgrade = .{ .context = self, .run = runEcho } };
+        }
         const text = arena.print("{s} {s} q={s} explain={s} body={s}", .{ @tagName(request.method), request.path, request.query, request.param("explain") orelse "-", request.body }) catch unreachable;
         return .{ .body = text, .content_type = "text/plain" };
     }
@@ -318,6 +381,18 @@ const Echo = struct {
         _ = io;
         for ([_][]const u8{ "data: a\n\n", "data: bc\n\n", "data: def\n\n" }) |piece| body.send(piece) catch return false;
         return true;
+    }
+
+    /// Answers the first message with its text, then closes.
+    fn runEcho(context: *anyopaque, io: std.Io, in: *std.Io.Reader, out: *std.Io.Writer) void {
+        _ = context;
+        _ = io;
+        var reader: websocket.Reader = .{ .in = in, .max_message = 64 };
+        defer reader.deinit(std.testing.allocator);
+        const message = reader.next(std.testing.allocator) catch return;
+        websocket.writeFrame(out, .text, message.text) catch return;
+        websocket.writeClose(out, websocket.Code.normal, "") catch return;
+        out.flush() catch return;
     }
 
     fn writeBroken(context: *anyopaque, io: std.Io, body: *Body) bool {
@@ -455,10 +530,34 @@ test "a peer is gone once the other end closes, not while it is open and quiet" 
     try std.testing.expect(peer.gone());
 }
 
+test "an upgrade answers 101 with the accept value and hands the connection over for good" {
+    var echo: Echo = .{};
+    const handshake = "GET /ws HTTP/1.1\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n";
+    // "hi" in a text frame masked with 1 2 3 4, then a request that is never served.
+    const output = try roundTrip(handshake ++ "\x81\x82\x01\x02\x03\x04\x69\x6b" ++ "GET /after HTTP/1.1\r\n\r\n", .{ .max_head = 1024 }, &echo);
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqual(@as(usize, 1), echo.calls);
+    try std.testing.expect(std.mem.endsWith(u8, output, "sec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n\x81\x02hi\x88\x02\x03\xe8"));
+    try std.testing.expect(std.mem.startsWith(u8, output, "HTTP/1.1 101 Switching Protocols\r\n"));
+}
+
+test "a WebSocket route refuses a plain GET and a bad handshake with the header it needs" {
+    var echo: Echo = .{};
+    const output = try roundTrip("GET /ws HTTP/1.1\r\n\r\nGET /ws HTTP/1.1\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 8\r\nconnection: close\r\n\r\n", .{ .max_head = 1024 }, &echo);
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqual(@as(usize, 2), echo.calls);
+    try expectContains(output, &.{ "426 Upgrade Required", "upgrade: websocket", "upgrade_required", "unsupported_version" });
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, output, "HTTP/1.1 426"));
+}
+
 test "query parameters" {
     const r: Request = .{ .method = .GET, .path = "/", .query = "a=1&explain&b=", .body = "" };
     try std.testing.expectEqualStrings("1", r.param("a").?);
     try std.testing.expectEqualStrings("", r.param("explain").?);
     try std.testing.expectEqualStrings("", r.param("b").?);
     try std.testing.expect(r.param("c") == null);
+}
+
+test {
+    _ = websocket;
 }
