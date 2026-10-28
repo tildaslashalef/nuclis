@@ -137,8 +137,8 @@ pub const MatmulExpertsParams = extern struct { columns: u32, encoding: u32, str
 /// 1 reads one input row per slot (down). Weights are read once per
 /// 32-row tile of an expert's slot rows; no padding rows are written,
 /// so `output` holds exactly `rows · k` rows. Same shape rules as
-/// `matmul` (columns % 64, rows % 8, float4-aligned input). Q4_0 takes
-/// the half tile under the matvec alignment rules, everything else the
+/// `matmul` (columns % 64, rows % 8, float4-aligned input). Q4_0, Q5_0,
+/// and Q5_1 take the half tile under the matvec alignment rules, everything else the
 /// generic F32 tile. The profile attributes no bytes: the volume read
 /// depends on the routing.
 pub fn matmulExperts(self: *Backend, weights: Buffer, tensor: cpu.ExpertMatrix, lists: Buffer, rows: usize, k: usize, input: Buffer, in_stride: usize, in_group: usize, output: Buffer, out_stride: usize) !void {
@@ -153,8 +153,14 @@ pub fn matmulExperts(self: *Backend, weights: Buffer, tensor: cpu.ExpertMatrix, 
     if (weights.len < tensor.bytes.len or lists.len < layout.words * 4 or lists.offset % 4 != 0) return error.InvalidShape;
     if (input.len < ((input_rows - 1) * in_stride + tensor.columns) * 4 or input.offset % 16 != 0 or in_stride % 4 != 0) return error.InvalidShape;
     if (output.len < ((n - 1) * out_stride + tensor.rows) * 4 or output.offset % 4 != 0) return error.InvalidShape;
-    const specialized = !self.generic_only and tensor.encoding == 2 and blockAligned(tensor.encoding, weights.offset, stride);
-    const kernel: Kernel = if (specialized) .matmul_experts_q4_0 else .matmul_experts;
+    const half_tile: ?Kernel = switch (tensor.encoding) {
+        2 => .matmul_experts_q4_0,
+        6 => .matmul_experts_q5_0,
+        7 => .matmul_experts_q5_1,
+        else => null,
+    };
+    const specialized = !self.generic_only and half_tile != null and blockAligned(tensor.encoding, weights.offset, stride);
+    const kernel: Kernel = if (specialized) half_tile.? else .matmul_experts;
     const tile_rows: usize = if (specialized) 64 else 32;
     const row_tiles = @divCeil(tensor.rows, tile_rows);
     const p: MatmulExpertsParams = .{

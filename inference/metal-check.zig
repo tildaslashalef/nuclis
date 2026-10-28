@@ -323,21 +323,30 @@ fn tiledMatrixRows(alloc: std.mem.Allocator, sample_bytes: []const u8, encoding:
 /// half operands of the matmul tiles. The CPU reference reads the same
 /// bytes, so the comparison stays exact. Positions are format facts
 /// (dequant.metal header): Q4_K/Q5_K d and dmin at 0/2, Q6_K d at 208,
-/// Q3_K d at 108, IQ3_S, IQ4_XS, Q4_0, and PQ2_0 d at 0, PTQ1_0 d at 26.
+/// Q3_K d at 108, IQ3_S, IQ4_XS, Q4_0, Q5_0, and PQ2_0 d at 0, Q5_1 d and m
+/// at 0/2, PTQ1_0 d at 26.
 fn tameScales(region: []u8, encoding: u32) void {
     const layout = inference.encoding.layout(encoding) orelse return;
     const positions: []const usize = switch (encoding) {
-        12, 13 => &.{ 0, 2 },
+        7, 12, 13 => &.{ 0, 2 },
         14 => &.{208},
         11 => &.{108},
         143 => &.{26},
-        2, 20, 21, 23, 142 => &.{0},
+        2, 6, 20, 21, 23, 142 => &.{0},
         else => return,
     };
     var offset: usize = 0;
     while (offset + layout.bytes_per_block <= region.len) : (offset += layout.bytes_per_block) {
         for (positions) |at| std.mem.writeInt(u16, region[offset + at ..][0..2], 0x2400, .little);
     }
+}
+
+/// The fixture row of `encoding` for an expert down projection: the Q4_0
+/// sample, or the five-bit fixture's Q5_0/Q5_1 row.
+fn downSample(q4_0: []const u8, five: QuantFixture, encoding: u32) ![]const u8 {
+    if (encoding == 2) return q4_0;
+    for (five.rows) |row| if (row.encoding == encoding) return row.bytes;
+    return error.FixtureMissing;
 }
 
 /// Whether `randomCodebookBlocks` serves the encoding: Q2_K and the
@@ -404,6 +413,8 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8, only_shape: ?[]const
         .{ .id = 14, .fixture = "k-signed", .name = "Q6_K" },
         .{ .id = 23, .fixture = "iq", .name = "IQ4_XS" },
         .{ .id = 2, .fixture = "simple", .name = "Q4_0" },
+        .{ .id = 6, .fixture = "five-bit", .name = "Q5_0" },
+        .{ .id = 7, .fixture = "five-bit", .name = "Q5_1" },
         .{ .id = 142, .fixture = "ternary", .name = "PQ2_0" },
         .{ .id = 143, .fixture = "ternary", .name = "PTQ1_0" },
         .{ .id = 10, .fixture = "codebook", .name = "Q2_K" },
@@ -427,7 +438,7 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8, only_shape: ?[]const
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(248320 * 4);
     std.debug.print("{s:<8} {s:<26} {s:>9} {s:>8} {s:>9} {s:>9}  rounds (GB/s)\n", .{ "encoding", "shape", "MB", "path", "best", "mean" });
-    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary", "codebook" }) |fixture_name| {
+    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary", "codebook", "five-bit" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
         for (encodings) |enc| {
@@ -693,6 +704,8 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
         .{ .id = 14, .fixture = "k-signed", .name = "Q6_K" },
         .{ .id = 23, .fixture = "iq", .name = "IQ4_XS" },
         .{ .id = 2, .fixture = "simple", .name = "Q4_0" },
+        .{ .id = 6, .fixture = "five-bit", .name = "Q5_0" },
+        .{ .id = 7, .fixture = "five-bit", .name = "Q5_1" },
         .{ .id = 142, .fixture = "ternary", .name = "PQ2_0" },
         .{ .id = 143, .fixture = "ternary", .name = "PTQ1_0" },
         .{ .id = 10, .fixture = "codebook", .name = "Q2_K" },
@@ -718,7 +731,7 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(Backend.matmulPadded(tokens) * 17408 * 4);
     std.debug.print("{s:<8} {s:<24} {s:<11} {s:>8} {s:>9} {s:>10} {s:>8} {s:>8}  rounds (ms), {d} tokens, {d}/round\n", .{ "encoding", "shape", "tile", "MB", "best ms", "GFLOP/s", "tok/s*", "GB/s", tokens, repeats });
-    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary", "codebook" }) |fixture_name| {
+    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary", "codebook", "five-bit" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
         for (encodings) |enc| {
@@ -799,6 +812,8 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
         .{ .id = 14, .fixture = "k-signed", .name = "Q6_K" },
         .{ .id = 23, .fixture = "iq", .name = "IQ4_XS" },
         .{ .id = 2, .fixture = "simple", .name = "Q4_0" },
+        .{ .id = 6, .fixture = "five-bit", .name = "Q5_0" },
+        .{ .id = 7, .fixture = "five-bit", .name = "Q5_1" },
         .{ .id = 142, .fixture = "ternary", .name = "PQ2_0" },
         .{ .id = 143, .fixture = "ternary", .name = "PTQ1_0" },
         .{ .id = 16, .fixture = "codebook", .name = "IQ2_XXS" },
@@ -823,7 +838,7 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(Backend.matmulPadded(max_rows) * (if (with_head) head_shape.rows else 17408) * 4);
     std.debug.print("{s:<8} {s:<13} {s:>5} {s:>10} {s:>8} {s:>10} {s:>8} {s:>10} {s:>8} {s:>10} {s:>8}  ms/dispatch, GB/s ({d} rounds, {d}/round)\n", .{ "encoding", "shape", "rows", "16x8 ms", "16x8 GB/s", "32x8 ms", "32x8 GB/s", "frag ms", "frag GB/s", "rows ms", "rows GB/s", rounds, repeats });
-    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary", "codebook" }) |fixture_name| {
+    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary", "codebook", "five-bit" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
         for (encodings) |enc| {
@@ -971,6 +986,8 @@ fn fragBench(alloc: std.mem.Allocator, max_rows: usize) !void {
         .{ .id = 11, .fixture = "k-signed", .name = "Q3_K" },
         .{ .id = 21, .fixture = "iq", .name = "IQ3_S" },
         .{ .id = 2, .fixture = "simple", .name = "Q4_0" },
+        .{ .id = 6, .fixture = "five-bit", .name = "Q5_0" },
+        .{ .id = 7, .fixture = "five-bit", .name = "Q5_1" },
         .{ .id = 142, .fixture = "ternary", .name = "PQ2_0" },
         .{ .id = 143, .fixture = "ternary", .name = "PTQ1_0" },
         .{ .id = 20, .fixture = "simple", .name = "IQ4_NL" },
@@ -1323,6 +1340,10 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
         break;
     };
     const sample_bytes = q4_0 orelse return error.FixtureMissing;
+    // The chains below run their down projection (rows of 704, where K-quant
+    // files fall back to 32-value blocks) in Q4_0, Q5_0, and Q5_1.
+    const five = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/five-bit.json"), .{ .ignore_unknown_fields = true });
+    defer five.deinit();
     {
         const experts: usize = 6;
         const rows: usize = 40;
@@ -1418,8 +1439,9 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
     // gelu·up rows → gathered down → combine (with and without the
     // per-expert down scale) against `cpu.experts.ffn` per token. Six
     // experts of width 256 and the model's ff of 704 (the down projection's
-    // 22-block rows on the specialized Q4_0 kernel), k 3.
-    {
+    // 22-block rows on the specialized 32-value kernels), k 3.
+    for ([_]u32{ 2, 6, 7 }) |down_encoding| {
+        const down_bytes = try downSample(sample_bytes, five.value, down_encoding);
         const experts: usize = 6;
         const k: usize = 3;
         const tokens: usize = 3;
@@ -1427,12 +1449,12 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
         const ff: usize = 704;
         const gu_region = try tiledMatrix(alloc, sample_bytes, 2, experts * 2 * ff, width);
         defer alloc.free(gu_region);
-        const down_region = try tiledMatrix(alloc, sample_bytes, 2, experts * width, ff);
+        const down_region = try tiledMatrix(alloc, down_bytes, down_encoding, experts * width, ff);
         defer alloc.free(down_region);
         tameScales(gu_region, 2);
-        tameScales(down_region, 2);
+        tameScales(down_region, down_encoding);
         const gate_up: inference.cpu.ExpertMatrix = .{ .encoding = 2, .experts = experts, .rows = 2 * ff, .columns = width, .bytes = gu_region };
-        const down: inference.cpu.ExpertMatrix = .{ .encoding = 2, .experts = experts, .rows = width, .columns = ff, .bytes = down_region };
+        const down: inference.cpu.ExpertMatrix = .{ .encoding = down_encoding, .experts = experts, .rows = width, .columns = ff, .bytes = down_region };
         const gu_weights = try uploadBytes(b, gu_region);
         const down_weights = try uploadBytes(b, down_region);
         const scales = try b.create(experts * 4);
@@ -1484,7 +1506,7 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
                 }
             }
         }
-        std.debug.print("Expert decode chain (route, gathered gate-up, gelu rows, gathered down, combine) vs CPU F64 over 3 tokens: worst |difference| / (1 + max|y|) {e:.3} (bound 2e-5)\n", .{worst});
+        std.debug.print("Expert decode chain (route, gathered gate-up, gelu rows, gathered down {s}, combine) vs CPU F64 over 3 tokens: worst |difference| / (1 + max|y|) {e:.3} (bound 2e-5)\n", .{ inference.encoding.layout(down_encoding).?.name, worst });
         // Contract: the pair output must not alias its inputs; combine needs every slot's weight.
         if (b.geluMulRows(gu_out, gu_out.slice(ff * 4, gu_out.len - ff * 4), gu_out, ff, tokens * k, 2 * ff, 2 * ff, ff)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
         if (b.combineExperts(y, weights.slice(0, 8), indices, null, out, .{ .columns = width, .slots = k, .rows = tokens, .experts = experts, .in_stride = width, .out_stride = width })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
@@ -1496,7 +1518,8 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
     // every token (two tiles, one partial) and expert 5 none; both tile
     // kernels against `cpu.experts.ffn` per token and against the decode
     // path row by row; then a chunk of one token; then the contracts.
-    {
+    for ([_]u32{ 2, 6, 7 }) |down_encoding| {
+        const down_bytes = try downSample(sample_bytes, five.value, down_encoding);
         const experts: usize = 6;
         const k: usize = 3;
         const width: usize = 256;
@@ -1505,12 +1528,12 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
         const n = chunk * k;
         const gu_region = try tiledMatrix(alloc, sample_bytes, 2, experts * 2 * ff, width);
         defer alloc.free(gu_region);
-        const down_region = try tiledMatrix(alloc, sample_bytes, 2, experts * width, ff);
+        const down_region = try tiledMatrix(alloc, down_bytes, down_encoding, experts * width, ff);
         defer alloc.free(down_region);
         tameScales(gu_region, 2);
-        tameScales(down_region, 2);
+        tameScales(down_region, down_encoding);
         const gate_up: inference.cpu.ExpertMatrix = .{ .encoding = 2, .experts = experts, .rows = 2 * ff, .columns = width, .bytes = gu_region };
-        const down: inference.cpu.ExpertMatrix = .{ .encoding = 2, .experts = experts, .rows = width, .columns = ff, .bytes = down_region };
+        const down: inference.cpu.ExpertMatrix = .{ .encoding = down_encoding, .experts = experts, .rows = width, .columns = ff, .bytes = down_region };
         const gu_weights = try uploadBytes(b, gu_region);
         const down_weights = try uploadBytes(b, down_region);
         const scales = try b.create(experts * 4);
@@ -1609,7 +1632,7 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
                 };
             }
         }
-        std.debug.print("Expert prefill chain (lists, gathered gate-up and down tiles) over 45 tokens vs CPU F64: worst |difference| / max|y| F32 tile {e:.3} (bound 2e-5), half tile {e:.3} (bound 2e-3); vs the decode path {e:.3} and {e:.3}\n", .{ worst_cpu[1], worst_cpu[0], worst_decode[1], worst_decode[0] });
+        std.debug.print("Expert prefill chain (lists, gathered gate-up and {s} down tiles) over 45 tokens vs CPU F64: worst |difference| / max|y| F32 tile {e:.3} (bound 2e-5), half tile {e:.3} (bound 2e-3); vs the decode path {e:.3} and {e:.3}\n", .{ inference.encoding.layout(down_encoding).?.name, worst_cpu[1], worst_cpu[0], worst_decode[1], worst_decode[0] });
         // A chunk of one token: three slot rows, every tile partial; the
         // same token as row 0 of the chunk above.
         {
@@ -1893,7 +1916,7 @@ fn checkSegments(alloc: std.mem.Allocator) !void {
     const packed_output = try b.create(24 * rows * 4); // one slice per fixture encoding
     var list: std.ArrayList(Backend.Segment) = .empty;
     defer list.deinit(alloc);
-    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook" }) |name| {
+    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit" }) |name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
         var seen: [256]bool = @splat(false);
@@ -3391,7 +3414,7 @@ fn checkWideRows(alloc: std.mem.Allocator, io: std.Io, b: *Backend, random: std.
         for (input) |*x| x.* = random.float(f32) * 2 - 1;
         const decoded = try alloc.alloc(f32, columns);
         defer alloc.free(decoded);
-        inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook" }) |name| {
+        inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit" }) |name| {
             const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
             defer fixtures.deinit();
             var seen: [256]bool = @splat(false);
@@ -3632,7 +3655,7 @@ pub fn main(init: std.process.Init) !void {
 
     // 1. Every quantized fixture column through the GPU matvec, exact. The
     // backend is recreated per fixture file to exercise object cleanup.
-    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook" }) |name| {
+    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit" }) |name| {
         var backend = try openBackend(alloc);
         defer backend.deinit();
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
@@ -3810,7 +3833,7 @@ pub fn main(init: std.process.Init) !void {
                 const generic_out = try b.create(padded * mm_rows * 4);
                 const decoded = try alloc.alloc(f32, columns);
                 defer alloc.free(decoded);
-                inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook" }) |name| {
+                inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit" }) |name| {
                     const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
                     defer fixtures.deinit();
                     var seen: [256]bool = @splat(false);
@@ -4000,7 +4023,7 @@ pub fn main(init: std.process.Init) !void {
                     for (activations.floats()) |*x| x.* = random.float(f32) * 2 - 1;
                     const decoded = try alloc.alloc(f32, columns);
                     defer alloc.free(decoded);
-                    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook" }) |name| {
+                    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit" }) |name| {
                         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
                         defer fixtures.deinit();
                         var seen: [256]bool = @splat(false);

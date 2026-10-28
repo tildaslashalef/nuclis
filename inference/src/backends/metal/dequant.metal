@@ -6,7 +6,7 @@
 // see THIRD_PARTY_NOTICES.md for the provenance of the lookup tables.
 //
 // Block sizes in bytes / elements per block:
-//   F32 4/1  F16 2/1  BF16 2/1  Q8_0 34/32  IQ4_NL 18/32  Q4_0 18/32
+//   F32 4/1  F16 2/1  BF16 2/1  Q8_0 34/32  IQ4_NL 18/32  Q4_0 18/32  Q5_0 22/32  Q5_1 24/32
 //   Q3_K 110/256  Q4_K 144/256  Q5_K 176/256  Q6_K 210/256  IQ3_S 110/256  IQ4_XS 136/256
 //   Q2_K 84/256  IQ2_XXS 66/256  IQ2_XS 74/256  IQ2_S 82/256  IQ3_XXS 98/256
 //   IQ1_S 50/256  IQ1_M 56/256 (codebooks: quant/iq-codebooks.zig)
@@ -90,6 +90,20 @@ inline void nu_dequant_q4_0(device const uchar * b, uint first, thread float * o
     for (uint j = 0; j < 16; ++j) {
         uchar byte = b[2 + j];
         out[j] = d * float(int(first == 0 ? (byte & 15) : (byte >> 4)) - 8);
+    }
+}
+
+// Q5_0 / Q5_1 (OFFSET): Q4_0's nibble order, each code completed by its bit
+// of the 32-bit plane (bit j for value j); d * (q - 16), or d * q + m.
+template <bool OFFSET>
+inline void nu_dequant_five(device const uchar * b, uint first, thread float * out) {
+    float d = nu_half(b), m = OFFSET ? nu_half(b + 2) : 0.0f;
+    device const uchar * plane = b + (OFFSET ? 4 : 2);
+    uint qh = uint(plane[0]) | (uint(plane[1]) << 8) | (uint(plane[2]) << 16) | (uint(plane[3]) << 24);
+    for (uint j = 0; j < 16; ++j) {
+        uchar byte = plane[4 + j];
+        int q = int(first == 0 ? (byte & 15) : (byte >> 4)) | int(((qh >> (first + j)) & 1u) << 4);
+        out[j] = OFFSET ? d * float(q) + m : d * float(q - 16);
     }
 }
 
@@ -328,6 +342,8 @@ inline uint2 nu_block_geometry(uint encoding) {
         case 0: return uint2(4, 1);
         case 1: return uint2(2, 1);
         case 2: return uint2(18, 32);
+        case 6: return uint2(22, 32);
+        case 7: return uint2(24, 32);
         case 8: return uint2(34, 32);
         case 10: return uint2(84, 256);
         case 11: return uint2(110, 256);
@@ -360,6 +376,8 @@ inline void nu_segment(device const uchar * row, uint encoding, uint segment, th
     uint first = element % g.y;
     switch (encoding) {
         case 2: nu_dequant_q4_0(block, first, out); break;
+        case 6: nu_dequant_five<false>(block, first, out); break;
+        case 7: nu_dequant_five<true>(block, first, out); break;
         case 8: nu_dequant_q8_0(block, first, out); break;
         case 10: nu_dequant_q2_k(block, first, out); break;
         case 11: nu_dequant_q3_k(block, first, out); break;
