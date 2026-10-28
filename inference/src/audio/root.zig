@@ -14,6 +14,8 @@ pub const qwen3_codec_metal = @import("qwen3_codec_metal.zig");
 pub const nemotron_encoder = @import("nemotron_encoder.zig");
 /// Nemotron 3.5 ASR's RNN-T transducer: encoder rows to tokens.
 pub const nemotron_rnnt = @import("nemotron_rnnt.zig");
+/// Phrases a transducer's greedy decoding leans toward.
+pub const boost = @import("boost.zig");
 /// Nemotron 3.5 ASR opened from its directory: samples to text.
 pub const nemotron_asr = @import("nemotron_asr.zig");
 /// Nemotron 3.5 ASR's encoder and joint on Metal.
@@ -27,5 +29,6 @@ test {
     _ = qwen3_codec_metal;
     _ = nemotron_encoder;
     _ = nemotron_rnnt;
+    _ = boost;
     _ = nemotron_asr;
 }

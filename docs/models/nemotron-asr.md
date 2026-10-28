@@ -860,6 +860,29 @@ at 200 GB/s, and the 4-row products reach 133–168 GB/s; layer norms
 arrives 37–41 ms after the audio ends, an order of magnitude under the
 silence a turn-taker waits for.
 
+## Phrase boosting (2026-10-28)
+
+The decoder can lean toward phrases a client names
+(`inference/src/audio/boost.zig`): no retraining and no text prompt, which
+the checkpoint does not take. Each phrase is spelled as the pieces spell
+it (`▁` before each word) and matched as text against the piece table, so
+any segmentation counts and no encoder is needed. At each greedy step a
+piece that starts a phrase gets 2 logits added, one that continues a
+phrase begun 6; the argmax is taken over the plain logits and those
+candidates. A bare `▁` never gets the start bonus, since it begins every
+word. The state (positions in the phrases) moves with each emitted token
+and resets with the decoder; the CPU and Metal paths share `Decoder.choose`.
+
+The two bonuses were chosen on three recorded utterances of a name the
+model misheard each time (`en-US`, r = 3; the recordings stay with their
+owner). One bonus for both fixed one utterance at 3; at 4–5 the others
+began the name and left it, a misspelled word. A larger bonus to continue
+fixed that, two of three spelled right, with the start at 2, 3, or 4
+alike, so 2 is kept. The third stays wrong: its word begins with a piece
+the name does not. Twenty unrelated names on the 60-clip corpus (Metal):
+6.11 % → 6.19 % WER (74 → 75 errors in 1,211 words; en-US 32 → 31,
+es-US 5 → 7).
+
 ## Decisions and open items
 
 Decided at the plan (2026-10-27); each is checked at bring-up:
@@ -910,3 +933,23 @@ Open, observed at bring-up rather than decided:
   clip streamed are not bit for bit equal: batches of more than 8 rows
   take the 32×32 tile, chunks the few-rows product. Both match the trace's
   tokens.
+- **A short word after silence is held or lost** (measured 2026-10-28 on
+  Muon's turns: 16 kHz recordings of one or two words after 1.9–24.8 s
+  of digital zeros, `en-US`). Four of six came back empty at every
+  lookahead but one case at r = 13, on the CPU and Metal alike; the two
+  "Hello"s heard beside them sit after as much silence. In each lost
+  one the word's first piece (`▁He`, `▁H`, `▁Ha`, `▁M`) came within 0.5
+  to 2 logits of the blank and lost. How long the silence before it is
+  does not decide it monotonically ("Hey." heard after 3–5 s and 12 s,
+  lost after 6, 8, 16, 20 s), so it is a borderline call, not a state
+  that decays. What decides it is speech in the encoder's 4.5 s window:
+  Muon's barge-in clip transcribed whole emits "Yeah" at 8.72 s (spoken
+  8.24–8.56 s); with the first question's audio zeroed it is held to
+  11.52 s, when the next words arrive; with 3 or 6 s of silence inserted
+  before it, it is dropped. Text already decoded does not help (the
+  inserted silence keeps it). Not remedies: a blank penalty (−1 to −3 on
+  the blank logit) brings the four back but moves the first piece
+  earlier and changes its spelling ("Hello." → "Hallo.", "Hey" → "Hei"
+  under `en-US`); 2.5 s of unrelated speech before the word loses the
+  word and the controls' "Hello" too. The numbers equal the trace, so
+  this is the checkpoint's behaviour, not nuclis's.

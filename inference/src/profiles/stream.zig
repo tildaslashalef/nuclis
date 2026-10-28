@@ -16,7 +16,8 @@
 //! completion stops is parsed as if closed at EOS; otherwise (or when it does
 //! not parse) it is dropped with a `tool_cut` event: a partial call is
 //! neither an action nor answer text. A body that closes but does not parse
-//! is released as text, exactly as the model wrote it.
+//! is released as text, exactly as the model wrote it, or dropped the same
+//! way where the profile says so (`Tool.unparsed`).
 //!
 //! The second grammar (`Markers.channel`, Muse Glimmer) is a sequence of
 //! messages `HEADER<|message|>BODY` ended by `<|eom|>` or the next
@@ -38,6 +39,12 @@ pub const Tool = struct {
     open: u32,
     close: u32,
     parse: ParseTool,
+    /// A closed body that does not parse: released as the model wrote it, or
+    /// dropped with `tool_cut` where the brackets are control tokens a reader
+    /// must never be shown.
+    unparsed: Unparsed = .text,
+
+    pub const Unparsed = enum { text, cut };
 };
 
 /// The message-header grammar: `start` opens a header, `message` ends it
@@ -333,8 +340,8 @@ pub const Decoder = struct {
         self.tool_buf.clearRetainingCapacity();
     }
 
-    /// One complete call: parse the collected body and emit it, or release the
-    /// whole thing as answer text when it is not one well-formed call.
+    /// One complete call: parse the collected body and emit it; otherwise
+    /// release it as answer text or drop it, as `Tool.unparsed` says.
     fn finishTool(self: *Decoder, sink: anytype) !void {
         const tool = self.markers.tool.?;
         const parsed = try tool.parse(self.alloc, self.tool_buf.items);
@@ -344,6 +351,8 @@ pub const Decoder = struct {
                 self.alloc.free(call.arguments);
             }
             try sink.send(.{ .tool_call = call });
+        } else if (tool.unparsed == .cut) {
+            try sink.send(.{ .tool_cut = self.tool_buf.items.len });
         } else {
             try self.text(self.tool_open_text.items, sink);
             try self.text(self.tool_buf.items, sink);
@@ -714,6 +723,23 @@ test "a call open at a stop is cut, not text; at EOS a whole body is a call; a r
     try malformed.finish(&r);
     try std.testing.expectEqual(@as(usize, 0), r.calls);
     try std.testing.expectEqualStrings("<tool_call>\nNOPE\n</tool_call>", r.answer.written());
+
+    var cut = ToolSink.init(std.testing.allocator);
+    defer cut.deinit();
+    var dropping = Decoder.init(std.testing.allocator, .{
+        .open = 1,
+        .close = 2,
+        .tool = .{ .open = 3, .close = 4, .parse = ToolFixture.parse, .unparsed = .cut },
+    }, false);
+    defer dropping.deinit();
+    try dropping.feed(11, "Sure. ", &cut);
+    try dropping.feed(3, "<tool_call>", &cut);
+    try dropping.feed(11, "\nNOPE\n", &cut);
+    try dropping.feed(4, "</tool_call>", &cut);
+    try dropping.finish(&cut);
+    try std.testing.expectEqual(@as(usize, 0), cut.calls);
+    try std.testing.expectEqual(@as(?usize, 6), cut.cut);
+    try std.testing.expectEqualStrings("Sure. ", cut.answer.written());
 }
 
 test "a growing call body reports its size; a stray close while answering is dropped" {

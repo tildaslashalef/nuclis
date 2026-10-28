@@ -250,6 +250,8 @@ const Job = struct {
     round_answer: std.ArrayList(u8) = .empty,
     round_reasoning: std.ArrayList(u8) = .empty,
     round_calls: std.ArrayList(RoundCall) = .empty,
+    /// The round dropped a call that was cut off or did not parse.
+    round_cut: bool = false,
     client_calls: usize = 0,
     usage: wire.Usage = .{ .prompt = 0, .cached = 0, .completion = 0, .reasoning = 0 },
     web_calls: usize = 0,
@@ -302,6 +304,7 @@ const Job = struct {
             self.round_answer.clearRetainingCapacity();
             self.round_reasoning.clearRetainingCapacity();
             self.round_calls.clearRetainingCapacity();
+            self.round_cut = false;
             self.client_calls = 0;
             const ran = self.complete(&sink, observer, round) catch |err| {
                 self.fail(runFailure(self.arena, language, err));
@@ -328,6 +331,12 @@ const Job = struct {
         const outcome = ran.reply.outcome;
         if (outcome.stop == .failure) {
             self.fail(.init(.internal_server_error, "model_failed", "the completion failed on the GPU"));
+            return .done;
+        }
+        // A call the model meant and wrote wrongly is neither an action nor
+        // an answer; a call cut by the token budget stays a `length` finish.
+        if (self.round_cut and self.round_calls.items.len == 0 and outcome.stop == .eos) {
+            self.fail(.init(.internal_server_error, "malformed_tool_call", "the model wrote a tool call that does not parse; nothing ran"));
             return .done;
         }
         self.outcome = .{ .done = ran };
@@ -399,6 +408,8 @@ const Job = struct {
         const texts = try self.arena.alloc([]const u8, self.hosted.items.len);
         const beat: web.Beat = .{ .context = self, .call = webBeat };
         for (self.hosted.items, texts) |call, *text| {
+            // Streamed, the client hears of the call before its wait.
+            if (self.pipe != null) self.emit(wire.Collector.WebCall{ .name = call.name, .arguments = call.arguments, .status = .started });
             const rendered: web.tools.Rendered = if (self.request.web.runs(call.name))
                 (try web.tools.run(service, self.arena, call.name, call.arguments, self.request.web.context, beat)).?
             else
@@ -450,6 +461,7 @@ const Job = struct {
                 try self.answers.appendSlice(self.arena, text);
             },
             .thinking => |text| try self.round_reasoning.appendSlice(self.arena, text),
+            .tool_cut => self.round_cut = true,
             else => {},
         }
         if (self.pipe != null) self.emit(event) else try self.collected.send(event);

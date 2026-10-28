@@ -14,16 +14,26 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-No unit is in progress. The model-management unit (`model rm`, `pull
---force` that downloads again, resumable pulls, `serve --web-url` and
-`--no-web`, for Muon's engine manager) is in its pull request, whose
-description is its record; the next release (0.11.0) carries it. Until
-then Muon uses the build installed from that branch (`make install`,
-`~/.local/bin/nuclis`, reporting 0.10.0).
+No unit is in progress. Muon's voice loop (Gemma 4 calls in plain quotes,
+a started chunk for hosted web calls, state reused after a search, phrases
+the recognizer should expect) is in its pull request, whose description
+is its record; the next release (0.11.0) carries it with the
+model-management unit
+([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)).
 
 ## Deferred
 
 Agreed and not scheduled; when one is picked up, it becomes a unit above.
+
+- **A short word after silence is lost** (from Muon's voice loop,
+  2026-10-28): the checkpoint's own borderline call, the same on CPU and
+  Metal, live and whole-file (`docs/models/nemotron-asr.md` § Decisions
+  and open items). A blank penalty recovers the words but changes heard
+  spellings ("Hello." → "Hallo."), so it is not shipped. Candidate: only
+  when an utterance's final would be empty, decode its rows again with the
+  penalty, and mark the final as recovered; measure on Muon's recordings
+  (kept on the user's Mac, never in the repository) and with
+  `scripts/wer.py`.
 
 - **A language change within one recording loses words** (from the speech
   unit, 2026-10-27): a mixed 30-minute file scored 19 % WER against 6.3 %

@@ -25,6 +25,7 @@ const service_mod = @import("service.zig");
 const audio = inference.audio.audio;
 const asr = inference.audio.nemotron_asr;
 const lookaheads = inference.audio.nemotron_encoder.lookaheads;
+const boost = inference.audio.boost;
 const ApiError = errors.ApiError;
 
 pub const path = router_mod.prefix ++ "/audio/transcriptions";
@@ -34,8 +35,10 @@ pub const max_waiting = 16;
 /// Bytes an event stream may hold between the worker and the socket; the
 /// job parks rather than block the worker.
 const pipe_capacity = 64 * 1024;
-/// A form field's value, every one but the file.
+/// A form field's value, every one but the file and `phrases`.
 const max_field_bytes = 1024;
+const max_phrases_bytes = 8192;
+const phrases_message = std.fmt.comptimePrint("phrases is a JSON array of at most {d} words or names, each at most {d} bytes", .{ boost.max_phrases, boost.max_phrase_bytes });
 const poll_ms = 1000;
 const keepalive_ms = 10_000;
 const progress_ms = 1000;
@@ -56,6 +59,8 @@ pub const Request = struct {
     words: bool = false,
     stream: bool = false,
     lookahead: usize = 3,
+    /// Words to lean toward (`phrases`, a JSON array), in the arena.
+    phrases: []const []const u8 = &.{},
 };
 
 /// Why a request was refused before it was queued.
@@ -66,7 +71,8 @@ pub const Problem = struct {
 };
 
 /// Reads the form: `file`, `model`, `language`, `response_format`,
-/// `timestamp_granularities[]`, `stream`, and nuclis's `lookahead`. Other
+/// `timestamp_granularities[]`, `stream`, and nuclis's `lookahead` and
+/// `phrases`. Other
 /// fields OpenAI defines are ignored, but for those that would change the
 /// text (`prompt`, `include[]`), which are refused.
 pub fn parse(arena: std.mem.Allocator, body: []const u8, content_type: ?[]const u8, problem: *Problem) error{ Refused, OutOfMemory }!Request {
@@ -90,7 +96,8 @@ pub fn parse(arena: std.mem.Allocator, body: []const u8, content_type: ?[]const 
         if (part.filename != null) continue;
         const name = part.name;
         const value = std.mem.trim(u8, part.data, " \t\r\n");
-        if (value.len > max_field_bytes) return refusef(arena, problem, "invalid_request", name, "{s} is longer than {d} bytes", .{ name, max_field_bytes });
+        const max_bytes: usize = if (std.mem.eql(u8, name, "phrases")) max_phrases_bytes else max_field_bytes;
+        if (value.len > max_bytes) return refusef(arena, problem, "invalid_request", name, "{s} is longer than {d} bytes", .{ name, max_bytes });
         if (std.mem.eql(u8, name, "file")) {
             return refuse(problem, "file", "file must be a file part (with a filename), not a field");
         } else if (std.mem.eql(u8, name, "model")) {
@@ -114,6 +121,11 @@ pub fn parse(arena: std.mem.Allocator, body: []const u8, content_type: ?[]const 
             if (std.mem.indexOfScalar(usize, &lookaheads, n) == null)
                 return refusef(arena, problem, "invalid_request", name, "lookahead takes 0, 3, 6, or 13 (rows of 80 ms), not {s}", .{value});
             request.lookahead = n;
+        } else if (std.mem.eql(u8, name, "phrases")) {
+            request.phrases = parsePhrases(arena, value) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.Invalid => return refuse(problem, name, phrases_message),
+            };
         } else if (std.mem.eql(u8, name, "prompt")) {
             if (value.len > 0) return refusef(arena, problem, "unsupported_feature", name, "the model takes no prompt text; language is its only hint", .{});
         } else if (std.mem.eql(u8, name, "include[]") or std.mem.eql(u8, name, "include")) {
@@ -127,6 +139,16 @@ pub fn parse(arena: std.mem.Allocator, body: []const u8, content_type: ?[]const 
     if (request.stream and (request.format == .srt or request.format == .vtt))
         return refusef(arena, problem, "unsupported_feature", "stream", "stream gives events, not {s}: ask for {s} without stream", .{ @tagName(request.format), @tagName(request.format) });
     return request;
+}
+
+fn parsePhrases(arena: std.mem.Allocator, value: []const u8) error{ Invalid, OutOfMemory }![]const []const u8 {
+    const list = std.json.parseFromSliceLeaky([]const []const u8, arena, value, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.Invalid,
+    };
+    if (list.len > boost.max_phrases) return error.Invalid;
+    for (list) |p| if (!boost.valid(p)) return error.Invalid;
+    return list;
 }
 
 fn parseBool(value: []const u8) ?bool {
@@ -409,6 +431,14 @@ pub const Files = struct {
             job.transcriber.?.deinit();
             job.transcriber = null;
         }
+        if (job.request.phrases.len > 0) {
+            job.phrases = try model.boost(gpa, job.request.phrases, boost.default_bonus, boost.default_follow);
+            job.transcriber.?.setBoost(&job.phrases.?);
+        }
+        errdefer if (job.phrases) |*p| {
+            p.deinit();
+            job.phrases = null;
+        };
         job.run = try transcript.Run.init(gpa, &job.reader, &job.transcriber.?, &job.segmenter);
     }
 
@@ -421,6 +451,8 @@ pub const Files = struct {
         job.run = null;
         if (job.transcriber) |*t| t.deinit();
         job.transcriber = null;
+        if (job.phrases) |*p| p.deinit();
+        job.phrases = null;
         if (job.holding) self.service.slot.hold(io, false);
         job.holding = false;
         job.pending.deinit(gpa);
@@ -470,6 +502,8 @@ const Job = struct {
 
     // Worker-only, while it runs.
     transcriber: ?asr.Transcriber = null,
+    /// The phrases the transcriber borrows.
+    phrases: ?boost.Boost = null,
     run: ?transcript.Run = null,
     holding: bool = false,
     /// No piece is left: the job ends once `pending` reached the pipe.
@@ -855,7 +889,10 @@ test "the form: fields, defaults, granularities, and what is refused" {
         .{ "lookahead", "13" },
         .{ "temperature", "0" },
         .{ "prompt", "" },
+        .{ "phrases", "[\"Siobhan\", \"Dun Laoghaire\"]" },
     }, "x"), test_type, &problem);
+    try std.testing.expectEqual(@as(usize, 2), full.phrases.len);
+    try std.testing.expectEqualStrings("Dun Laoghaire", full.phrases[1]);
     try std.testing.expectEqualStrings("de-DE", full.language.?);
     try std.testing.expect(full.format == .verbose_json and full.words and !full.segments and full.stream);
     try std.testing.expectEqual(@as(usize, 13), full.lookahead);
@@ -870,6 +907,9 @@ test "the form: fields, defaults, granularities, and what is refused" {
         .{ .fields = &.{.{ "stream", "maybe" }}, .param = "stream" },
         .{ .fields = &.{ .{ "stream", "true" }, .{ "response_format", "srt" } }, .code = "unsupported_feature", .param = "stream" },
         .{ .fields = &.{.{ "lookahead", "4" }}, .param = "lookahead" },
+        .{ .fields = &.{.{ "phrases", "Siobhan" }}, .param = "phrases" },
+        .{ .fields = &.{.{ "phrases", "[\"\"]" }}, .param = "phrases" },
+        .{ .fields = &.{.{ "phrases", "[1]" }}, .param = "phrases" },
         .{ .fields = &.{.{ "prompt", "Names: Goethe." }}, .code = "unsupported_feature", .param = "prompt" },
         .{ .fields = &.{.{ "include[]", "logprobs" }}, .code = "unsupported_feature", .param = "include" },
         .{ .fields = &.{.{ "model", "m" ++ @import("../../text.zig").repeat("mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm", 32) }}, .param = "model" },

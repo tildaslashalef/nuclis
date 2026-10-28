@@ -180,8 +180,10 @@ appends `<|turn>model\n`, and the profile reproduces that (its
 Decoding uses the `<|tool_call>` / `<tool_call|>` control tokens (48/49)
 through the shared stream decoder and `gemma4.parseTool`, a bounded
 recursive-descent reader of the DSL (nesting depth 16, whitespace where the
-reference grammar allows it) that writes the JSON object the agent consumes;
-a malformed body is released as text, a truncated one cut (below). The model hands off by
+reference grammar allows it, and JSON strings in plain quotes, which the
+26B-A4B sometimes writes) that writes the JSON object the agent consumes;
+a malformed body is cut like a truncated one (below), never released as
+text ([tool-calling.md § Gemma](tool-calling.md#gemma-calls-and-results-inside-a-model-turn)). The model hands off by
 emitting `<|tool_response>` after its calls — Google's guide calls it an
 additional stop sequence and the reference marks it end-of-generation by
 name — so it is the profile's third stop token and several calls in one step

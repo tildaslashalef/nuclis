@@ -233,6 +233,7 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 400 | `model_too_large` | file transcriptions: the model needs more than the budget leaves beside the pinned models |
 | 431 | `headers_too_large` | the request line and headers exceed 16 KiB |
 | 500 | `model_failed` | the model could not be opened, or a completion failed on the GPU |
+| 500 | `malformed_tool_call` | chat: the model wrote a tool call that does not parse (Gemma 4), so nothing ran and there is no answer; streamed, it is the stream's error line. Sending the request again usually works |
 | 500 | `internal`, `invalid_registry_entry` | a fault on the server's side |
 | 503 | `shutting_down` | the server is stopping |
 | 529 | `busy` | 64 requests wait already, or 64 connections are open |
@@ -496,7 +497,8 @@ one chunk with `delta.tool_calls[{index, id, type, function{name,
 arguments}}]`, the arguments whole: the model's call syntax is decoded
 only once it is complete. The last choice chunk carries the
 `finish_reason`; with `include_usage`, a chunk with no choices carries the
-usage. An error after the stream began (the model fails, or the request
+usage. A hosted web call is reported as it starts and as it finishes
+([hosted web tools](#hosted-web-tools)). An error after the stream began (the model fails, or the request
 waited `serve.timeout` without reaching the GPU) is one
 `data: {"error": {…}}` line, and the stream ends.
 
@@ -666,13 +668,33 @@ way rather than rewriting `nuclis.json`.
 - Every hosted call is reported in `message.nuclis_web_calls`, an extension
   OpenAI clients ignore: `name`, `arguments`, `summary` (`3 results`,
   `characters 0 to 642 of 642`, or the failure's sentence), and `is_error`.
-  Streamed, each arrives as it finishes, a chunk whose `delta` carries
-  `nuclis_web_calls` with an `index`.
+  Streamed, each call is two chunks whose `delta` carries
+  `nuclis_web_calls` with the call's `index` and a `status`: `started`
+  as the server is about to run it (its `name` and `arguments`, no
+  outcome yet), then `finished` with the `summary` and `is_error`. A
+  client can say it is searching from the first (a search takes a second
+  or more); one that reads only finished entries skips `started`, and an
+  entry without `status` (not streamed) is finished.
+
+  ```json
+  {"delta": {"nuclis_web_calls": [{"index": 0, "status": "started", "name": "web_search", "arguments": "{\"query\":\"PEP 8 line length\"}"}]}}
+  {"delta": {"nuclis_web_calls": [{"index": 0, "status": "finished", "name": "web_search", "arguments": "{\"query\":\"PEP 8 line length\"}", "summary": "8 results", "is_error": false}]}}
+  ```
 - The usage counts every completion; the log line adds `2 web calls in 3
   rounds`, and `1 web exchange put back` when earlier hosted rounds were
   restored. The model's state carries over between completions, so a round
   reuses the conversation before it (measured: 1,257 of 2,084 prompt tokens
   over three rounds, Saluki, against the stub, 2026-10-16).
+- Text the model writes before a call (Muon's "Let me check.") is rendered
+  by Gemma 4's template after the call's results, where the next round's
+  prompt closes the turn and opens another; history keeps the answer in
+  that turn. The state is kept where the two still agree, after the
+  results, so the turn after a search prefills only the answer and the new
+  message. Measured on Muon's conversation (E4B, reasoning `none`, against
+  the stub, 2026-10-28): the turn after a search reused 1,214 of 1,784
+  prompt tokens in 2.22 s before, 1,723 of 1,785 in 1.04 s after; the
+  26B-A4B, which rewrites its turns anyway, reused 1,701 of 1,773 either
+  way.
 - A web call waits on the GPU worker; decision and embedding items queued
   meanwhile run during its waits. A client that leaves cancels it.
 - Without `serve.web` (or `--web-url`), and under `--no-web`, any of the
@@ -927,6 +949,7 @@ and text messages, each a JSON object:
 | `{"type": "finish"}` | the utterance ended: the audio sent before it is transcribed to its end, a `final` follows, and the next audio begins a new utterance (the recognizer's state is reset) |
 | `{"type": "reset"}` | drop the utterance in progress and every sample not yet transcribed, without a `final` |
 | `{"type": "language", "language": "de-DE"}` | the language prompt from the next chunk on (`auto` the default's); an unknown locale is an `error` event and the language stays |
+| `{"type": "phrases", "phrases": ["Siobhan", "Dun Laoghaire"]}` | names or words to expect, from the next chunk on, until the next `phrases` (`[]` clears them); send it first to have them from the start. At most 64, each at most 48 bytes; more is an `error` event and the list stays ([phrases](#phrases-to-expect)) |
 
 A command applies after every sample sent before it. Pings are answered
 with pongs; a close is answered once what was asked before it (a
@@ -1041,7 +1064,7 @@ transcribed at a time; at most 16 wait (`529 busy`), and one that waits
 
 `multipart/form-data`, as OpenAI's SDKs send it. Parts are bounded (at
 most 32, each part's headers 1 KiB, a field's value 1 KiB), and exactly
-one is a file.
+one is a file (`phrases` may be 8 KiB).
 
 | Field | In nuclis |
 | --- | --- |
@@ -1052,11 +1075,28 @@ one is a file.
 | `timestamp_granularities[]` | `segment`, `word`, or both (repeat the field); with `verbose_json` or `stream`. Absent: segments |
 | `stream` | `true`: server-sent events (below); not with `srt` or `vtt` |
 | `lookahead` | nuclis's: rows of 80 ms the encoder waits for, `0`, `3` (the default), `6`, `13`; as `nuclis transcribe --lookahead` |
+| `phrases` | nuclis's: a JSON array of names or words to expect, `["Siobhan", "Dun Laoghaire"]` (at most 64, each at most 48 bytes, the field 8 KiB); as `nuclis transcribe --phrase` ([phrases](#phrases-to-expect)) |
 
 Refused with `400 unsupported_feature`: a `prompt` (the model takes no
-text hint; `language` is its only one) and `include[]` (the decoder is
+text; `phrases` and `language` are its hints) and `include[]` (the decoder is
 greedy and keeps no log probabilities). Other fields OpenAI defines are
 ignored (`temperature`: decoding is greedy).
+
+### Phrases to expect
+
+Nemotron ASR knows no names it was not trained on, and takes no text
+prompt. A client that knows the names in its user's life lists them in
+`phrases`; the decoder then leans toward them: a piece that starts one
+gains 2 logits over the blank and the other pieces, a piece that continues
+one 6 (`docs/models/nemotron-asr.md` § Phrase boosting). Write each as it
+should be spelled. Without phrases nothing changes.
+
+Measured on three recorded utterances of a name the model misheard each
+time (2026-10-28, `en-US`, r = 3, the same on both routes): two came back
+spelled right; the third stayed wrong, its word never beginning with the
+name's first piece. Twenty unrelated names listed on the 60-clip speech
+corpus moved the word error rate from 6.11 % to 6.19 % (74 to 75 errors
+in 1,211 words).
 
 ### The file transcription response
 

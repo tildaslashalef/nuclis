@@ -118,6 +118,7 @@ pub const StreamMarkers = struct {
     tool_open: ?[]const u8 = null,
     tool_close: ?[]const u8 = null,
     tool_parse: ?stream.ParseTool = null,
+    tool_unparsed: stream.Tool.Unparsed = .text,
     /// The message-header grammar's control texts (`stream.Channel`);
     /// `tool_parse` then reads a tool body. Replaces the bracket grammar.
     channel: ?struct { start: []const u8, message: []const u8, eom: []const u8 } = null,
@@ -151,6 +152,7 @@ pub const Profile = enum {
                         .open = vocab.tokenId(open_text) orelse return error.MissingToolToken,
                         .close = vocab.tokenId(m.tool_close.?) orelse return error.MissingToolToken,
                         .parse = m.tool_parse.?,
+                        .unparsed = m.tool_unparsed,
                     };
                 }
                 if (m.channel) |c| {
@@ -527,9 +529,11 @@ test "a next turn starts with the prompt end; with the generated text only when 
     const more: Message = .{ .role = .user, .content = "More" };
     const call_step: Message = .{ .role = .assistant, .content = "", .reasoning_content = "Look.", .tool_calls = &.{read_call} };
     const result: Message = .{ .role = .tool, .content = "contents", .tool_call_id = read_call.id };
+    // Text before a call, which Gemma renders after its results.
+    const said_step: Message = .{ .role = .assistant, .content = "Let me look.", .tool_calls = &.{read_call} };
     // Each answer as the model writes it after the generation prompt, and
     // the conversation it answers.
-    const Case = struct { profile: Profile, effort: Effort, generated: []const u8, reasoning: []const u8 = "", tools: bool = false };
+    const Case = struct { profile: Profile, effort: Effort, generated: []const u8, reasoning: []const u8 = "", tools: bool = false, said: bool = false };
     const gemma_thought = "<|channel>thought\nPlan.\n<channel|>Done.";
     const cases = [_]Case{
         .{ .profile = .qwen38, .effort = .off, .generated = "Done." },
@@ -538,13 +542,16 @@ test "a next turn starts with the prompt end; with the generated text only when 
         .{ .profile = .gemma4, .effort = .medium, .generated = gemma_thought, .reasoning = "Plan." },
         .{ .profile = .gemma4, .effort = .medium, .generated = "Plan.\n<channel|>Done.", .reasoning = "Plan.", .tools = true },
         .{ .profile = .gemma4_e, .effort = .off, .generated = "Done." },
+        .{ .profile = .gemma4_e, .effort = .off, .generated = "Done.", .tools = true, .said = true },
+        .{ .profile = .gemma4, .effort = .off, .generated = "Done.", .tools = true, .said = true },
         .{ .profile = .gemma4_e, .effort = .medium, .generated = gemma_thought, .reasoning = "Plan." },
         .{ .profile = .muse_glimmer, .effort = .low, .generated = " to=self<|message|>Plan.<|eom|><|start|>assistant to=user<|message|>Done.", .reasoning = "Plan." },
     };
     for (cases) |case| {
         const reply: Message = .{ .role = .assistant, .content = "Done.", .reasoning_content = case.reasoning };
-        const asked: []const Message = if (case.tools) &.{ system, user, call_step, result } else &.{ system, user };
-        const next_messages: []const Message = if (case.tools) &.{ system, user, call_step, result, reply, more } else &.{ system, user, reply, more };
+        const step = if (case.said) said_step else call_step;
+        const asked: []const Message = if (case.tools) &.{ system, user, step, result } else &.{ system, user };
+        const next_messages: []const Message = if (case.tools) &.{ system, user, step, result, reply, more } else &.{ system, user, reply, more };
         const first = try case.profile.render(alloc, asked, &.{}, case.effort, .{});
         defer alloc.free(first);
         const consumed = try std.mem.concat(alloc, u8, &.{ first, case.generated });
@@ -555,7 +562,11 @@ test "a next turn starts with the prompt end; with the generated text only when 
         errdefer std.debug.print("{t} at {t}, tools {}\n", .{ case.profile, case.effort, case.tools });
         try std.testing.expect(end < first.len);
         try std.testing.expect(std.mem.startsWith(u8, next, first[0..end]));
-        try std.testing.expectEqual(!case.profile.rewritesTurn(case.effort), std.mem.startsWith(u8, next, consumed));
+        // Text before a call closes the turn after its results, which
+        // history does not: rewritten at any effort, so the next turn
+        // continues from the mark.
+        const kept = !case.said and !case.profile.rewritesTurn(case.effort);
+        try std.testing.expectEqual(kept, std.mem.startsWith(u8, next, consumed));
     }
     // Results that leave the turn open with thinking off end with no prompt.
     const open = try Profile.gemma4.render(alloc, &.{ system, user, call_step, result }, &.{}, .off, .{});

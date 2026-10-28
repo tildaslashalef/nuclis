@@ -1,6 +1,6 @@
 //! `GET /v1/audio/transcriptions/stream`: live transcription over a
 //! WebSocket. The client streams 16 kHz mono s16le PCM in binary messages
-//! and sends `finish`, `reset`, and `language` as JSON text; the server
+//! and sends `finish`, `reset`, `language`, and `phrases` as JSON text; the server
 //! answers `ready`, `partial` (when the hypothesis changes), `final` (after
 //! `finish`, with word times) and `error`. A connection is one `Session`:
 //! a reader task takes frames off the socket, the connection's task writes
@@ -23,6 +23,7 @@ const router_mod = @import("../router.zig");
 const Service = @import("service.zig").Service;
 
 const asr = inference.audio.nemotron_asr;
+const boost = inference.audio.boost;
 const mel = inference.audio.mel;
 const lookaheads = inference.audio.nemotron_encoder.lookaheads;
 const Code = websocket.Code;
@@ -43,7 +44,7 @@ const retry_ms = 20;
 /// The longest locale a client may name (`es-419`, `zh-CN`, `auto`).
 const max_locale = 32;
 /// The longest text message: a command, never a transcript.
-const max_command = 4096;
+const max_command = 8192;
 
 /// What the service keeps for this route.
 pub const Live = struct {
@@ -159,8 +160,17 @@ pub const Command = struct {
     at: u64 = 0,
     locale: [max_locale]u8 = undefined,
     locale_len: usize = 0,
+    /// `phrases`: owned, each phrase and the list (`deinit`).
+    phrases: ?[][]u8 = null,
 
-    pub const Kind = enum { finish, reset, language };
+    pub const Kind = enum { finish, reset, language, phrases };
+
+    pub fn deinit(self: *Command, gpa: std.mem.Allocator) void {
+        const list = self.phrases orelse return;
+        for (list) |p| gpa.free(p);
+        gpa.free(list);
+        self.phrases = null;
+    }
 
     fn localeName(self: *const Command) []const u8 {
         return self.locale[0..self.locale_len];
@@ -169,7 +179,7 @@ pub const Command = struct {
 
 /// A text message as a command, or the error event's message.
 fn parseCommand(gpa: std.mem.Allocator, text: []const u8, problem: *Problem) error{ Refused, OutOfMemory }!Command {
-    if (text.len > max_command) return problem.refuse(null, "a text message is a command of at most 4 KiB; audio goes in binary messages");
+    if (text.len > max_command) return problem.refuse(null, "a text message is a command of at most 8 KiB; audio goes in binary messages");
     const parsed = std.json.parseFromSlice(std.json.Value, gpa, text, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return problem.refuse(null, "a text message is a JSON object with a \"type\""),
@@ -179,9 +189,9 @@ fn parseCommand(gpa: std.mem.Allocator, text: []const u8, problem: *Problem) err
     const o = parsed.value.object;
     const kind_text = switch (o.get("type") orelse .null) {
         .string => |s| s,
-        else => return problem.refuse("type", "\"type\" is finish, reset, or language"),
+        else => return problem.refuse("type", type_message),
     };
-    const kind = std.meta.stringToEnum(Command.Kind, kind_text) orelse return problem.refuse("type", "\"type\" is finish, reset, or language");
+    const kind = std.meta.stringToEnum(Command.Kind, kind_text) orelse return problem.refuse("type", type_message);
     var command: Command = .{ .kind = kind };
     if (kind == .language) {
         const locale = switch (o.get("language") orelse .null) {
@@ -192,7 +202,36 @@ fn parseCommand(gpa: std.mem.Allocator, text: []const u8, problem: *Problem) err
         @memcpy(command.locale[0..locale.len], locale);
         command.locale_len = locale.len;
     }
+    if (kind == .phrases) command.phrases = try parsePhrases(gpa, o.get("phrases") orelse .null, problem);
     return command;
+}
+
+const type_message = "\"type\" is finish, reset, language, or phrases";
+const phrases_message = std.fmt.comptimePrint("\"phrases\" is an array of at most {d} words or names, each at most {d} bytes", .{ boost.max_phrases, boost.max_phrase_bytes });
+
+/// The `phrases` of a command, copied; `[]` clears them.
+fn parsePhrases(gpa: std.mem.Allocator, value: std.json.Value, problem: *Problem) error{ Refused, OutOfMemory }![][]u8 {
+    const items = switch (value) {
+        .array => |a| a.items,
+        else => return problem.refuse("phrases", phrases_message),
+    };
+    if (items.len > boost.max_phrases) return problem.refuse("phrases", phrases_message);
+    const list = try gpa.alloc([]u8, items.len);
+    var copied: usize = 0;
+    errdefer {
+        for (list[0..copied]) |p| gpa.free(p);
+        gpa.free(list);
+    }
+    for (items) |item| {
+        const text = switch (item) {
+            .string => |t| t,
+            else => return problem.refuse("phrases", phrases_message),
+        };
+        if (!boost.valid(text)) return problem.refuse("phrases", phrases_message);
+        list[copied] = try gpa.dupe(u8, text);
+        copied += 1;
+    }
+    return list;
 }
 
 /// Appends little-endian 16-bit samples as floats; a byte left over joins
@@ -350,6 +389,8 @@ const Session = struct {
 
     // Worker-only.
     transcriber: ?asr.Transcriber = null,
+    /// The phrases the transcriber leans toward, which it borrows.
+    phrases: ?boost.Boost = null,
     scratch: std.ArrayList(f32) = .empty,
     /// The text of the last partial sent.
     shown: std.ArrayList(u8) = .empty,
@@ -643,10 +684,14 @@ const Session = struct {
         switch (action) {
             .none => {},
             .chunk => |b| self.pushChunk(io, b),
-            .command => |c| switch (c.kind) {
-                .finish => self.finishUtterance(io, c.at),
-                .reset => self.resetUtterance(io, c.at),
-                .language => self.setLanguage(io, c.localeName()),
+            .command => |*c| {
+                defer c.deinit(self.gpa);
+                switch (c.kind) {
+                    .finish => self.finishUtterance(io, c.at),
+                    .reset => self.resetUtterance(io, c.at),
+                    .language => self.setLanguage(io, c.localeName()),
+                    .phrases => self.setPhrases(io, c.phrases.?),
+                }
             },
         }
         return self.idle(io);
@@ -796,6 +841,19 @@ const Session = struct {
         t.setPrompt(prompt) catch |err| return self.fail(io, err);
     }
 
+    /// From the next chunk on; the utterance and its state stay.
+    fn setPhrases(self: *Session, io: std.Io, list: []const []const u8) void {
+        const t = &self.transcriber.?;
+        const next: ?boost.Boost = if (list.len == 0) null else t.model.boost(self.gpa, list, boost.default_bonus, boost.default_follow) catch |err| switch (err) {
+            error.InvalidPhrase => return self.queueError(io, "invalid_message", phrases_message),
+            error.OutOfMemory => return self.fail(io, err),
+        };
+        t.setBoost(null);
+        if (self.phrases) |*old| old.deinit();
+        self.phrases = next;
+        if (self.phrases) |*p| t.setBoost(p);
+    }
+
     /// Worker (or, once the worker stopped, the connection's task): frees
     /// the transcriber and lets go of the model.
     fn teardown(self: *Session, io: std.Io) void {
@@ -804,6 +862,8 @@ const Session = struct {
             self.transcriber = null;
             self.service.slot.hold(io, false);
         }
+        if (self.phrases) |*p| p.deinit();
+        self.phrases = null;
         self.scratch.deinit(self.gpa);
         self.shown.deinit(self.gpa);
         self.scratch = .empty;
@@ -844,6 +904,7 @@ const Session = struct {
 
     fn free(self: *Session) void {
         self.pending.deinit(self.gpa);
+        for (self.commands.items) |*c| c.deinit(self.gpa);
         self.commands.deinit(self.gpa);
         self.outgoing.deinit(self.gpa);
     }
@@ -914,14 +975,21 @@ test "the query: lookahead, language, model, each refused by name" {
     }
 }
 
-test "commands: finish, reset, language; anything else is refused with a reason" {
+test "commands: finish, reset, language, phrases; anything else is refused with a reason" {
     const gpa = std.testing.allocator;
     var problem: Problem = .{};
     try std.testing.expectEqual(Command.Kind.finish, (try parseCommand(gpa, "{\"type\":\"finish\"}", &problem)).kind);
     try std.testing.expectEqual(Command.Kind.reset, (try parseCommand(gpa, "{\"type\": \"reset\", \"extra\": 1}", &problem)).kind);
     const language = try parseCommand(gpa, "{\"type\":\"language\",\"language\":\"fr-FR\"}", &problem);
     try std.testing.expectEqualStrings("fr-FR", language.localeName());
-    for ([_][]const u8{ "finish", "[]", "{\"type\":\"session.update\"}", "{\"type\":3}", "{\"type\":\"language\"}", "{\"type\":\"language\",\"language\":\"a b\"}", "{}" }) |text| {
+    var phrases = try parseCommand(gpa, "{\"type\":\"phrases\",\"phrases\":[\"Siobhan\",\"Dun Laoghaire\"]}", &problem);
+    defer phrases.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 2), phrases.phrases.?.len);
+    try std.testing.expectEqualStrings("Dun Laoghaire", phrases.phrases.?[1]);
+    var cleared = try parseCommand(gpa, "{\"type\":\"phrases\",\"phrases\":[]}", &problem);
+    defer cleared.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), cleared.phrases.?.len);
+    for ([_][]const u8{ "finish", "[]", "{\"type\":\"session.update\"}", "{\"type\":3}", "{\"type\":\"language\"}", "{\"type\":\"language\",\"language\":\"a b\"}", "{}", "{\"type\":\"phrases\"}", "{\"type\":\"phrases\",\"phrases\":[\"ok\",3]}", "{\"type\":\"phrases\",\"phrases\":[\" \"]}", "{\"type\":\"phrases\",\"phrases\":[\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"]}" }) |text| {
         errdefer std.debug.print("text: {s}\n", .{text});
         try std.testing.expectError(error.Refused, parseCommand(gpa, text, &problem));
         try std.testing.expect(problem.message.len > 0);
