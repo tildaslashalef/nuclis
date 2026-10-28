@@ -296,8 +296,12 @@ pub const commands = [_]Command{
         .{ .name = "--host", .value = .text, .summary = "the address to listen on" },
         .{ .name = "--port", .value = .number, .summary = "default serve.port, 9000" },
         .{ .name = "--model", .value = .served, .repeat = true, .summary = "a model opened at start, any kind" },
+        .{ .name = "--pin", .value = .served, .repeat = true, .summary = "opened at start, never closed for room" },
         .{ .name = "--memory", .value = .number, .summary = "GiB every open model may hold together" },
         backend,
+        .{ .name = "--timeout", .value = .number, .summary = "seconds a request may wait for the GPU" },
+        .{ .name = "--web-url", .value = .text, .summary = "hosted web tools against this service" },
+        .{ .name = "--no-web", .summary = "hosted web tools off, whatever the file says" },
         .{ .name = "--quiet", .summary = "no line per request" },
     } }} },
     .{ .name = "config", .summary = "write, show, or set a key of the config file", .actions = &.{

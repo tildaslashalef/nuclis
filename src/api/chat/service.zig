@@ -38,7 +38,7 @@ pub const Service = struct {
     /// The wait for the GPU before a request starts; `serve.timeout`.
     timeout_ns: u64,
     /// The search service behind the hosted web tools; null unless
-    /// `serve.web`, and then requests may ask for them. Borrowed.
+    /// `serve.web` or `--web-url`, and then requests may ask for them. Borrowed.
     web: ?*web.Service = null,
     /// The hosted exchanges kept for the clients' next requests; worker-only.
     stash: stash_mod.Stash,

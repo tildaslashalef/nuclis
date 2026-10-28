@@ -585,6 +585,7 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try heading(out, sty, "Usage:");
     try code(out, sty, "nuclis serve [--host <ip>] [--port <n>] [--model <name>]… [--pin <name>]…");
     try code(out, sty, "             [--memory <GiB>] [--backend cpu|metal] [--timeout <s>]");
+    try code(out, sty, "             [--web-url <url> | --no-web]");
 
     try heading(out, sty, "Options:");
     try row(out, sty, "--host <ip>", "the address to listen on; default serve.host,");
@@ -604,6 +605,10 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--quiet", "no line per request (serve.log false does the same)");
     try row(out, sty, "--timeout <s>", "how long a request may wait for the GPU before");
     try more(out, "529 timeout; default serve.timeout, 300");
+    try row(out, sty, "--web-url <url>", "the hosted web tools on, against this search");
+    try more(out, "service (https, http only on loopback); the");
+    try more(out, "config file is not read for them nor written");
+    try row(out, sty, "--no-web", "the hosted web tools off, whatever serve.web says");
 
     try heading(out, sty, "Routes:");
     try row(out, sty, "POST /v1/decisions", "a `decide --request` body (\"model\" picks the");

@@ -509,7 +509,7 @@ nuclis decide (--request <file|-> | --questions <file> <states> | <inline questi
 nuclis embed (<text>... | --image <path>... | --audio <path>... | --input-file <file|->)... [--task <t>] [--title <s>] [--dimensions <n>] [--image-tokens <n>] [--truncate] [--model <m>] [--backend cpu|metal] [--json]
 nuclis speak <text>... -o <file.wav> [--voice <speaker>] [--language <l>] [--instruct <s>] [--model <m>] [--seed <n>] [--backend cpu|metal] [--stream] [--chunk <n>] [--first-chunk <n>]
 nuclis transcribe <file> [--stream] [--lookahead 0|3|6|13] [--language <code>] [--model <m>] [--backend cpu|metal] [--format text|json|srt|vtt] [--segments] [--json]
-nuclis serve [--host <ip>] [--port <n>] [--model <m>]... [--pin <m>]... [--memory <GiB>] [--backend cpu|metal] [--timeout <s>]
+nuclis serve [--host <ip>] [--port <n>] [--model <m>]... [--pin <m>]... [--memory <GiB>] [--backend cpu|metal] [--timeout <s>] [--web-url <url> | --no-web]
 nuclis config init [--discover [--dry-run]] [--json] | show [--json] | set <key> <value>
 nuclis completion fish|bash|zsh
 nuclis --help | <command> --help | --version

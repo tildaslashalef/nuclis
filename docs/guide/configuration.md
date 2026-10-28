@@ -137,7 +137,10 @@ The search service behind the web tools: a separate program the user runs
 on another host, speaking the contract in
 [app/agent.md § 11](../app/agent.md#11-the-web-tools-a-hosts-search-service-opt-in). The tools
 are off until a surface opts in, `agent.web` for the agent and `serve.web`
-for the API; either one on without a URL is a load error.
+for the API; either one on without a URL is a load error. `nuclis serve
+--web-url <url>` turns the API's on against a URL without the file (the
+same rule as `web.url`), and `--no-web` turns them off whatever `serve.web`
+says ([api.md § Hosted web tools](api.md#hosted-web-tools)).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
