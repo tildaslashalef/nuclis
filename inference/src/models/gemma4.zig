@@ -199,11 +199,12 @@ pub fn kvHeadsOf(config: *const Config, kind: Kind) usize {
 }
 
 /// Whether a weight matrix of this encoding can be bound: the storage
-/// layouts the shared CPU reference and Metal kernels execute. Q4_0 (id 2),
-/// the QAT checkpoints' only weight encoding, completes the set.
+/// layouts the shared CPU reference and Metal kernels execute: Q4_0 (id 2)
+/// for the QAT checkpoints, Q5_0 and Q5_1 (6, 7) for the `ffn_down` rows of
+/// 704 and 2,112 values a K-quant file stores in 32-value blocks.
 pub fn executableEncoding(encoding_id: u32) bool {
     return switch (encoding_id) {
-        0, 2, 8, 11, 12, 13, 14, 20, 21, 23 => true,
+        0, 2, 6, 7, 8, 11, 12, 13, 14, 20, 21, 23 => true,
         else => false,
     };
 }
