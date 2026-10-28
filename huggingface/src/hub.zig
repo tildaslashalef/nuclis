@@ -19,6 +19,10 @@ pub const Request = struct {
     /// Download only `filename`, which may be any listed file (a support
     /// file included), without shard or support-file expansion.
     exact: bool = false,
+    /// Download every file again, even one already verified in place, and
+    /// rename the verified copy over the destination; the old file stays
+    /// until then. A kept partial download is ignored.
+    replace: bool = false,
 };
 
 pub const Format = enum { gguf, safetensors };

@@ -49,7 +49,7 @@ pub const Options = struct {
     /// `config set <key> <value>`.
     set_key: []const u8 = "",
     set_value: []const u8 = "",
-    model_action: enum { pull, ls, inspect } = .ls,
+    model_action: enum { pull, ls, inspect, rm } = .ls,
     pull: model.PullOptions = .{},
     /// The command-line layer of the configuration: only what was stated,
     /// so `config.resolve` can put it above the file.
@@ -446,7 +446,8 @@ fn parseOnOff(value: []const u8) ?bool {
 }
 
 /// `model pull <name|owner/repo> [flags]` | `model inspect <name|owner/repo>
-/// [--file] [--revision] [--json]` | `model ls [--json]`: the action and the
+/// [--file] [--revision] [--json]` | `model rm <name> [--with r,… | --all]
+/// [--json]` | `model ls [--json]`: the action and the
 /// repository are positional; the flags are the command's own, none of the
 /// generation flags apply, and `--model` in particular does not (there is
 /// no model to open).
@@ -470,17 +471,20 @@ fn parseModelArgs(args: []const []const u8) !Options {
         }
         if (options.model_action == .ls) return error.UnknownOption;
         const pulls = options.model_action == .pull;
+        // `rm` takes the companion choice and nothing else of pull's.
+        const removes = options.model_action == .rm;
         if (pulls and std.mem.eql(u8, flag, "--force")) {
             if (p.force) return error.DuplicateOption;
             p.force = true;
             continue;
         }
-        if (pulls and std.mem.eql(u8, flag, "--all")) {
+        if ((pulls or removes) and std.mem.eql(u8, flag, "--all")) {
             if (p.all) return error.DuplicateOption;
             p.all = true;
             continue;
         }
-        if (!pulls and !std.mem.eql(u8, flag, "--file") and !std.mem.eql(u8, flag, "--revision")) return error.UnknownOption;
+        if (removes and !std.mem.eql(u8, flag, "--with")) return error.UnknownOption;
+        if (!pulls and !removes and !std.mem.eql(u8, flag, "--file") and !std.mem.eql(u8, flag, "--revision")) return error.UnknownOption;
         i += 1;
         if (i == args.len) return error.MissingOptionValue;
         const value = args[i];
@@ -500,7 +504,7 @@ fn parseModelArgs(args: []const []const u8) !Options {
         } else if (pulls and std.mem.eql(u8, flag, "--profile")) {
             if (p.profile != null) return error.DuplicateOption;
             p.profile = std.meta.stringToEnum(config.Profile, value) orelse return error.UnknownPromptProfile;
-        } else if (pulls and std.mem.eql(u8, flag, "--with")) {
+        } else if ((pulls or removes) and std.mem.eql(u8, flag, "--with")) {
             if (p.with.count() != 0) return error.DuplicateOption;
             var roles = std.mem.splitScalar(u8, value, ',');
             while (roles.next()) |name| {
@@ -512,6 +516,7 @@ fn parseModelArgs(args: []const []const u8) !Options {
         } else return error.UnknownOption;
     }
     if (p.profile != null and p.register == null) return error.ConflictingOptions;
+    if (options.model_action == .rm and p.all and p.with.count() != 0) return error.ConflictingOptions;
     return options;
 }
 
@@ -559,6 +564,13 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 return model.ls(alloc, io, dir, if (loaded) |l| l.config.models else .{}, options.json, out, sty);
             },
             .inspect => return model.inspect(alloc, io, environ, options.pull, options.json, out, sty, diag),
+            // The registry decides which files other entries still use, so
+            // a file that fails to load stops the removal.
+            .rm => {
+                var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
+                defer loaded.deinit();
+                return model.rm(alloc, io, dir, loaded.config.models, options.pull, options.json, out, sty, diag);
+            },
             .pull => {
                 var pull_options = options.pull;
                 pull_options.config_path = config_path;
@@ -1243,7 +1255,19 @@ test "model parses its action, the positional repository, and its own flags only
     try std.testing.expect(ls.json);
     try std.testing.expectEqual(.help, (try parseArgs(&.{ "model", "--help" })).command);
     try std.testing.expectError(error.MissingModelAction, parseArgs(&.{"model"}));
-    try std.testing.expectError(error.UnknownModelAction, parseArgs(&.{ "model", "rm" }));
+    try std.testing.expectError(error.UnknownModelAction, parseArgs(&.{ "model", "delete" }));
+    // rm: the name, the companion choice, --json; nothing else of pull's.
+    const rm = try parseArgs(&.{ "model", "rm", "qwen3.8-27b", "--with", "mmproj,mtp", "--json" });
+    try std.testing.expectEqual(.rm, rm.model_action);
+    try std.testing.expectEqualStrings("qwen3.8-27b", rm.pull.repo);
+    try std.testing.expect(rm.pull.with.contains(.mmproj) and rm.pull.with.contains(.mtp) and rm.json);
+    try std.testing.expect((try parseArgs(&.{ "model", "rm", "laya", "--all" })).pull.all);
+    try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "rm" }));
+    try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "rm", "--all" }));
+    try std.testing.expectError(error.ConflictingOptions, parseArgs(&.{ "model", "rm", "qwen3.8-27b", "--all", "--with", "mtp" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "model", "rm", "qwen3.8-27b", "--force" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "model", "rm", "qwen3.8-27b", "--file", "x.gguf" }));
+    try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "rm", "qwen3.8-27b", "--with", "main" }));
     try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "pull" }));
     try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "pull", "--file", "x.gguf" }));
     try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "pull", "a/b", "--role", "draft" }));

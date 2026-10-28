@@ -238,7 +238,8 @@ Hub collides):
   means the file beside it was checked against the Hub's catalog. Nothing
   is written for a file the user copied in by hand until a `pull` verifies
   it. A sidecar recording other content makes `pull` refuse
-  (`ExistingFileMismatch`) unless `--force` replaces file and sidecar.
+  (`ExistingFileMismatch`) unless `--force`, which downloads the file
+  again and replaces it, then its sidecar, once the new copy verifies.
 - `size` lets `model ls` flag a file that changed underneath its sidecar.
 
 ### Safetensors artifacts

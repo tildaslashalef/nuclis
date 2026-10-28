@@ -40,6 +40,9 @@ pub const Value = union(enum) {
     /// What `model pull`/`inspect` name: a catalogue or registry name, or
     /// an `owner/repo` typed out.
     repo,
+    /// A catalogue or registry name with files in the models directory:
+    /// what `model rm` removes.
+    present,
     /// A saved session of the working directory.
     session,
     config_key,
@@ -215,7 +218,7 @@ pub const commands = [_]Command{
         json,
     } }} },
     .{ .name = "validate", .summary = "whether a file binds to its adapter", .actions = &.{.{ .flags = &.{ model_flag, json } }} },
-    .{ .name = "model", .summary = "pull, list, and judge Hub artifacts", .actions = &.{
+    .{ .name = "model", .summary = "pull, list, judge, and remove Hub artifacts", .actions = &.{
         .{ .name = "ls", .summary = "the catalogue and every local file", .flags = &.{json} },
         .{ .name = "pull", .summary = "fetch a model, verified by digest", .positionals = &.{.repo}, .flags = &.{
             .{ .name = "--with", .value = .roles, .summary = "also fetch these companions" },
@@ -231,6 +234,11 @@ pub const commands = [_]Command{
         .{ .name = "inspect", .summary = "judge a remote file before the download", .positionals = &.{.repo}, .flags = &.{
             .{ .name = "--file", .value = .text, .summary = "which file of the repository" },
             .{ .name = "--revision", .value = .text, .summary = "a branch, tag, or commit" },
+            json,
+        } },
+        .{ .name = "rm", .summary = "delete a model's files", .positionals = &.{.present}, .flags = &.{
+            .{ .name = "--with", .value = .roles, .summary = "also delete these companions" },
+            .{ .name = "--all", .summary = "every companion the entry names" },
             json,
         } },
     } },
@@ -288,8 +296,12 @@ pub const commands = [_]Command{
         .{ .name = "--host", .value = .text, .summary = "the address to listen on" },
         .{ .name = "--port", .value = .number, .summary = "default serve.port, 9000" },
         .{ .name = "--model", .value = .served, .repeat = true, .summary = "a model opened at start, any kind" },
+        .{ .name = "--pin", .value = .served, .repeat = true, .summary = "opened at start, never closed for room" },
         .{ .name = "--memory", .value = .number, .summary = "GiB every open model may hold together" },
         backend,
+        .{ .name = "--timeout", .value = .number, .summary = "seconds a request may wait for the GPU" },
+        .{ .name = "--web-url", .value = .text, .summary = "hosted web tools against this service" },
+        .{ .name = "--no-web", .summary = "hosted web tools off, whatever the file says" },
         .{ .name = "--quiet", .summary = "no line per request" },
     } }} },
     .{ .name = "config", .summary = "write, show, or set a key of the config file", .actions = &.{
@@ -382,6 +394,8 @@ pub const State = struct {
     /// Registry entries, then catalogue names.
     models: []const Candidate = &.{},
     served: []const Candidate = &.{},
+    /// Catalogue and registry names whose files are present.
+    present: []const Candidate = &.{},
     /// The registry's names alone, for `models.<name>.` keys.
     registry: []const []const u8 = &.{},
     /// Newest first.
@@ -425,6 +439,7 @@ pub fn candidates(arena: Allocator, target: Target, current: []const u8, state: 
                 if (isPathLike(current)) return .dir;
                 try list.appendSlice(arena, state.served);
             },
+            .present => try list.appendSlice(arena, state.present),
             .session => try list.appendSlice(arena, state.sessions),
             .config_key => {
                 for (config.global_keys) |k| try list.append(arena, .{ .text = k.path });
@@ -538,8 +553,9 @@ fn gather(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
         else => false,
     };
     const wants_served = kind.kind == .served;
+    const wants_present = kind.kind == .present;
     const wants_registry = kind.kind == .config_key and std.mem.startsWith(u8, "models.", current[0..@min(current.len, "models.".len)]);
-    if (!wants_models and !wants_served and !wants_registry and kind.kind != .session) return .{};
+    if (!wants_models and !wants_served and !wants_present and !wants_registry and kind.kind != .session) return .{};
     const root = (paths.root(arena, environ.get("NUCLIS_HOME"), environ.get("HOME")) catch null) orelse return .{};
     var state: State = .{};
     if (kind.kind == .session) {
@@ -554,6 +570,7 @@ fn gather(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
     }
     if (wants_models) state.models = models(arena, io, root, registry) catch &.{};
     if (kind.kind == .served) state.served = served(arena, io, root, registry) catch &.{};
+    if (kind.kind == .present) state.present = onDisk(arena, io, root, registry) catch &.{};
     return state;
 }
 
@@ -611,6 +628,26 @@ fn served(arena: Allocator, io: std.Io, root: []const u8, registry: config.Model
         const path = try std.fs.path.join(arena, &.{ dir, e.repo, e.file });
         const status = catalog.status(arena, io, path, e.sha256, e.size) catch .absent;
         try list.append(arena, .{ .text = e.name, .description = try arena.print("embedding · {s} · {s}", .{ e.quantization, @tagName(status) }) });
+    }
+    return list.items;
+}
+
+/// What `model rm` can remove, as `model ls` finds it: catalogue entries
+/// whose main file is there, then registry entries whose file is.
+fn onDisk(arena: Allocator, io: std.Io, root: []const u8, registry: config.Models) ![]const Candidate {
+    const listing = try model.list(arena, io, root, registry);
+    var list: std.ArrayList(Candidate) = .empty;
+    for (listing.catalog) |row| {
+        if (row.status == .absent) continue;
+        try list.append(arena, .{ .text = row.name, .description = try arena.print("{s} · {s}", .{ servedKind(row.kind), row.path }) });
+    }
+    entries: for (registry.entries) |named| {
+        if (named.entry.path == null and (named.entry.repo == null or named.entry.file == null)) continue;
+        for (listing.missing) |m| if (std.mem.eql(u8, m.name, named.name)) continue :entries;
+        for (list.items) |c| if (std.mem.eql(u8, c.text, named.name)) continue :entries;
+        const e = named.entry;
+        const where = e.path orelse try arena.print("{s}/{s}", .{ e.repo.?, e.file.? });
+        try list.append(arena, .{ .text = named.name, .description = try arena.print("{s} · {s}", .{ servedKind(e.kind orelse .generation), where }) });
     }
     return list.items;
 }
@@ -784,6 +821,11 @@ test "paths go to the shell, and the user's state fills models, sessions, and ke
     };
     try expectTexts(a, &.{ "agent", "--model", "" }, state, &.{ "mine", "qwen3.8-27b" });
     try expectTexts(a, &.{ "model", "pull", "q" }, state, &.{"qwen3.8-27b"});
+    // `rm` offers only what is on disk, not the whole catalogue.
+    const pulled: State = .{ .models = state.models, .present = &.{.{ .text = "laya", .description = "decision · convaiinnovations/laya/model.safetensors" }} };
+    try expectTexts(a, &.{ "model", "rm", "" }, pulled, &.{"laya"});
+    try expectTexts(a, &.{ "model", "rm", "laya", "--" }, pulled, &.{ "--with", "--all", "--json" });
+    try expectTexts(a, &.{ "model", "rm", "laya", "--with", "m" }, pulled, &.{ "mmproj", "mtp" });
     try expectTexts(a, &.{ "agent", "--resume", "" }, state, &.{ "abc123", "def456" });
     try expectTexts(a, &.{ "agent", "export", "a" }, state, &.{"abc123"});
     try testing.expect(try answerFor(a, &.{ "agent", "export", "abc123", "" }, state) == .file);
@@ -812,7 +854,7 @@ test "the answer is one line per candidate, a description never breaks one" {
 fn sample(value: Value) []const u8 {
     return switch (value) {
         .none => unreachable,
-        .text, .file, .dir, .session, .model, .served => "x",
+        .text, .file, .dir, .session, .model, .served, .present => "x",
         .number => "1",
         .choice => |c| c[0],
         .repo => "owner/repo",

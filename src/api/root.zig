@@ -58,7 +58,26 @@ pub const Options = struct {
     backend: ?inference.decide.Backend = null,
     /// What every open model may hold together; null is the default.
     memory_bytes: ?u64 = null,
+    /// The hosted web tools: as `serve.web` and `web.url` say, off
+    /// (`--no-web`), or on against a URL (`--web-url`), the file untouched.
+    web: Web = .configured,
+
+    pub const Web = union(enum) { configured, off, url: []const u8 };
+
+    /// The search service's base URL, or null when the tools are off.
+    pub fn webUrl(self: Options, cfg: *const config.Config) ?[]const u8 {
+        return switch (self.web) {
+            .configured => if (cfg.serve.web) cfg.web.url.? else null,
+            .off => null,
+            .url => |url| url,
+        };
+    }
 };
+
+fn webConflict(diag: *config.Diagnostic) error{ConflictingOptions} {
+    diag.set("--web-url and --no-web are given once, and not together", .{});
+    return error.ConflictingOptions;
+}
 
 /// Parses the words after `serve` over `serve`'s configured `host` and
 /// `port`; `arena` owns the list.
@@ -72,7 +91,12 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
             o.log = false;
             continue;
         }
-        const known = for ([_][]const u8{ "--host", "--port", "--model", "--pin", "--backend", "--timeout", "--memory" }) |k| {
+        if (std.mem.eql(u8, flag, "--no-web")) {
+            if (o.web != .configured) return webConflict(diag);
+            o.web = .off;
+            continue;
+        }
+        const known = for ([_][]const u8{ "--host", "--port", "--model", "--pin", "--backend", "--timeout", "--memory", "--web-url" }) |k| {
             if (std.mem.eql(u8, flag, k)) break true;
         } else false;
         if (!known) {
@@ -120,6 +144,13 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
                 return error.InvalidOptionValue;
             }
             o.memory_bytes = gib << 30;
+        } else if (std.mem.eql(u8, flag, "--web-url")) {
+            if (o.web != .configured) return webConflict(diag);
+            if (!web.validBase(value)) {
+                diag.set("--web-url must be an https URL (http only on loopback) with a host and no credentials, query, or fragment, not {s}", .{value});
+                return error.InvalidOptionValue;
+            }
+            o.web = .{ .url = value };
         } else {
             if (o.backend != null) return error.DuplicateOption;
             o.backend = std.meta.stringToEnum(inference.decide.Backend, value) orelse {
@@ -337,7 +368,7 @@ const Memory = struct { limit: u64, models: []const memory.Budget.Model };
 /// The open model of each kind the server keeps one of.
 const Open = struct { language: ?[]const u8 = null, embedding: ?[]const u8 = null, speech: ?[]const u8 = null, transcription: ?[]const u8 = null };
 
-/// The hosted web tools as health reports them: `off` without `serve.web`,
+/// The hosted web tools as health reports them: `off` without a service,
 /// else `ok` when the search service answers and any provider is `ok`,
 /// `down` otherwise (its own health call, at most 5 s).
 fn webState(service: ?*web.Service, arena: std.mem.Allocator) []const u8 {
@@ -490,8 +521,9 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     server.decisions.timeout_ns = @as(u64, options.timeout) * std.time.ns_per_s;
     server.decisions.bind();
     server.embeddings.bind();
-    // The hosted web tools exist only when the configuration opts in (`serve.web`).
-    var web_service: ?web.Service = if (context.loaded.config.serve.web) .init(gpa, io, context.loaded.config.web.url.?, web.user_agent) else null;
+    // The hosted web tools exist only when asked for: `serve.web`, or
+    // `--web-url` without touching the file.
+    var web_service: ?web.Service = if (options.webUrl(&context.loaded.config)) |url| .init(gpa, io, url, web.user_agent) else null;
     defer if (web_service) |*service| service.deinit();
     if (web_service) |*service| {
         // For the start line only: requests may ask for web_context either
@@ -666,6 +698,33 @@ test "pins open at start beside --model, once each; --pin replaces serve.pin" {
     var many: [2 * (config.Pins.max + 1)][]const u8 = undefined;
     for (&many, 0..) |*word, i| word.* = if (i % 2 == 0) "--pin" else "a";
     try std.testing.expectError(error.InvalidOptionValue, parseArgs(arena, &many, .{}, &diag));
+}
+
+test "--web-url turns the hosted web tools on without the file, --no-web turns them off" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diag: config.Diagnostic = .{};
+    const on: config.Config = .{ .serve = .{ .web = true }, .web = .{ .url = "https://search.example" } };
+    const off: config.Config = .{};
+    const configured = try parseArgs(arena, &.{}, on.serve, &diag);
+    try std.testing.expectEqualStrings("https://search.example", configured.webUrl(&on).?);
+    try std.testing.expect(configured.webUrl(&off) == null);
+    const flagged = try parseArgs(arena, &.{ "--web-url", "https://example.com" }, off.serve, &diag);
+    try std.testing.expectEqualStrings("https://example.com", flagged.webUrl(&off).?);
+    try std.testing.expectEqualStrings("https://example.com", flagged.webUrl(&on).?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8787", (try parseArgs(arena, &.{ "--web-url", "http://127.0.0.1:8787" }, off.serve, &diag)).webUrl(&off).?);
+    try std.testing.expect((try parseArgs(arena, &.{"--no-web"}, on.serve, &diag)).webUrl(&on) == null);
+    // The same rule as `web.url`; the two flags exclude each other.
+    try std.testing.expectError(error.InvalidOptionValue, parseArgs(arena, &.{ "--web-url", "http://example.com" }, off.serve, &diag));
+    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "https") != null);
+    try std.testing.expectError(error.InvalidOptionValue, parseArgs(arena, &.{ "--web-url", "https://u:p@example.com" }, off.serve, &diag));
+    try std.testing.expectError(error.InvalidOptionValue, parseArgs(arena, &.{ "--web-url", "example.com" }, off.serve, &diag));
+    try std.testing.expectError(error.MissingOptionValue, parseArgs(arena, &.{"--web-url"}, off.serve, &diag));
+    try std.testing.expectError(error.ConflictingOptions, parseArgs(arena, &.{ "--no-web", "--web-url", "https://example.com" }, off.serve, &diag));
+    try std.testing.expectError(error.ConflictingOptions, parseArgs(arena, &.{ "--web-url", "https://example.com", "--no-web" }, off.serve, &diag));
+    try std.testing.expectError(error.ConflictingOptions, parseArgs(arena, &.{ "--web-url", "https://a.example", "--web-url", "https://b.example" }, off.serve, &diag));
+    try std.testing.expectError(error.ConflictingOptions, parseArgs(arena, &.{ "--no-web", "--no-web" }, off.serve, &diag));
 }
 
 test "serve arguments" {

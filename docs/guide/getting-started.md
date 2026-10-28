@@ -170,11 +170,28 @@ nor `owner/repo` is `UnknownModel`. The entries are described in
 
 - **Pulling again** re-hashes the file and downloads nothing.
 - **A file that does not match** its sidecar, or that nuclis never verified,
-  is refused (`ExistingFileMismatch`); `--force` replaces it.
+  is refused (`ExistingFileMismatch`).
+- **`--force`** downloads every file of the pull again, verified ones
+  included, and replaces each only once the new copy verifies: the old
+  file stays in place until then, and a failed or interrupted download
+  leaves it as it was. The sidecar is rewritten after; the report marks
+  each file `xet` or `http`, never `verified_local`.
 - **Progress** is one updating line (bytes, rate, time left) on a terminal,
-  plain lines otherwise. **Ctrl-C** stops the download and removes the
-  partial file; a second Ctrl-C kills the process and may leave a temporary
-  file behind.
+  plain lines otherwise. A file downloads into `<file>.partial` beside its
+  destination and is renamed into place once its digest verifies.
+- **Ctrl-C** (SIGINT) stops the pull and removes the partial file; a second
+  Ctrl-C kills the process and may leave `<file>.partial` behind, which the
+  next pull starts over.
+- **SIGTERM** (an app quitting, `kill`) stops the pull and keeps
+  `<file>.partial` with `<file>.partial.json` (repository, commit, digest,
+  size, bytes written). The next pull of the same file at the same commit
+  and digest hashes those bytes again and fetches only the rest; the whole
+  file is still verified before it is published, so a damaged partial fails
+  and is removed (pull again to download it whole). A partial of another
+  commit or digest is discarded and the file starts over; `--force` ignores
+  partials. Two pulls of the same file at once: the second is refused while
+  the first holds the partial. The report's `resumed_bytes` says how much of
+  a file came from a kept partial.
 - Every form takes `--json` for scripts: the report on stdout, and the
   progress on stderr as one JSON object per line instead of the text, for
   a program that shows its own (Muon's first-run window):
@@ -184,7 +201,9 @@ nor `owner/repo` is `UnknownModel`. The entries are described in
   ```
 
   `event` is `resolving`, `checking` (for a file already in place),
-  `downloading` (at most every 250 ms, and when the file is whole),
+  `resuming` (the first line of a file continued from a kept partial, its
+  bytes already in `done`), `downloading` (at most every 250 ms, and when
+  the file is whole),
   `verifying`, `reused` (a file in place that verified), `complete` (the
   file is published), or `interrupted`; `file` is its Hub name, `index`
   of `count` the files of the pull (a safetensors set counts its
@@ -222,3 +241,55 @@ folder with its facts, and marks the files your settings name (`registered
 as <name>`). `--model` and `engine.model` accept a settings entry, a
 catalogue name, or a path; a missing file fails before anything loads,
 naming the path it looked for.
+
+### Remove a model
+
+```sh
+nuclis model rm qwen3.8-27b               # the model file alone
+nuclis model rm qwen3.8-27b --with mmproj # and the companions named: mmproj, mtp
+nuclis model rm qwen3.8-27b --all         # and every companion
+nuclis model rm laya --json               # the report as one JSON object
+```
+
+`nuclis model rm <name>` takes a catalogue name or a settings entry and
+deletes its files with their `.nuclis.json` sidecars: a catalogue entry's
+main file, its support files (configuration, tokenizer), a speech model's
+codec, and clef-flash's backbone; companions only with `--with` or `--all`,
+as `pull` takes them. A settings entry removes its file and, asked, the
+`mmproj` and `mtp` it names; a file outside `~/.nuclis/models` is never
+touched. The directories the removal leaves empty go too.
+
+A file another model still uses stays, and the report names that model: a
+catalogue entry whose file is present, or a settings entry of another name
+pointing at the file. The settings entry of the same name that `config
+init` writes for every catalogue model is the same model, not another user.
+Your settings are not edited: `nuclis model ls` then lists the entry among
+those without a file. A name with nothing on disk is an error
+(`NotPulled`); an entry only partly present loses what is there.
+
+With `--json` the report is one object on stdout, absolute paths, every
+sidecar its own `removed` item (here the four support files' eight items
+are left out):
+
+```
+{
+  "schema_version": 1,
+  "name": "laya-multilingual",
+  "models_dir": "/Users/you/.nuclis/models",
+  "removed": [
+    { "path": "/Users/you/.nuclis/models/convaiinnovations/laya/multilingual/model.safetensors", "bytes": 643835514 },
+    { "path": "/Users/you/.nuclis/models/convaiinnovations/laya/multilingual/model.safetensors.nuclis.json", "bytes": 376 },
+    …
+  ],
+  "kept": [],
+  "freed_bytes": 678203650
+}
+```
+
+`kept` lists `{ "path", "used_by" }`, `used_by` naming the entry that
+keeps the file. A model a running `nuclis serve` has
+open keeps working after `rm`: macOS keeps an open file's mapping valid
+once the file is unlinked, so the disk space is freed only when the server
+closes the model (it is unloaded, or the server stops), and opening it
+again fails as a missing file until it is pulled again. `rm` cannot ask the
+server, so it does not refuse.

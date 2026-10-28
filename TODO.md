@@ -14,12 +14,12 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-Nothing is in progress. The speech unit merged as
-[nuclis#33](https://github.com/tildaslashalef/nuclis/pull/33) and shipped
-in v0.10.0 (2026-10-27), which Muon's public release will bundle; Muon
-itself is planned and built in `~/Code/muon`. The next theme is the
-user's to choose; the *Deferred* list below holds what is agreed but not
-scheduled.
+No unit is in progress. The model-management unit (`model rm`, `pull
+--force` that downloads again, resumable pulls, `serve --web-url` and
+`--no-web`, for Muon's engine manager) is in its pull request, whose
+description is its record; the next release (0.11.0) carries it. Until
+then Muon uses the build installed from that branch (`make install`,
+`~/.local/bin/nuclis`, reporting 0.10.0).
 
 ## Deferred
 

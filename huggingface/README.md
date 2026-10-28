@@ -40,6 +40,7 @@ var result = try client.download(.{
     .filename = "Qwen3.8-27B-UD-Q4_K_M.gguf", // optional
     // .revision = "main",                    // optional, default main
     // .local_dir = "/data/models",           // optional
+    // .replace = true,                       // optional: download again, replace once verified
 });
 defer result.deinit();
 
@@ -94,8 +95,36 @@ commit, so a model registry can predict it (`client.localPath`). The pinned
 commit is returned in `Result.revision`. A file already at that path is reused
 only after its size and full SHA-256 match the catalog; a different file there
 (another revision, a partial copy) is `error.ExistingFileMismatch`, never
-overwritten. `~` is not expanded inside API strings; the CLI shell can expand
+overwritten. `request.replace` skips that check: every file is downloaded
+again and renamed over the destination once verified, so the old file stays
+until the new one is whole and correct, and a failed download leaves it
+untouched. `~` is not expanded inside API strings; the CLI shell can expand
 `~/models` before passing it. Repository/file traversal components are rejected.
+
+### Partial files and resuming
+
+A file is written to `<path>.partial`, opened under an exclusive advisory
+lock (a second download of the same file meanwhile is
+`error.DownloadInProgress`), and renamed to `<path>` only after the whole
+file's digest verifies; without `replace` that rename refuses to clobber a
+file created meanwhile (`PathAlreadyExists`). A failure or `error.Canceled`
+removes the partial. `error.Paused` from the progress sink keeps it, synced,
+with `<path>.partial.json`:
+
+```json
+{"repo_id":"owner/repo","revision":"<40 hex>","sha256":"<64 hex>","git_blob":null,"size":931000000,"bytes":402653184}
+```
+
+The next download of that file (without `replace`) continues it when the
+state names the same repository, commit, digest, and size and the partial
+holds at least `bytes` (a longer tail is cut): it hashes those bytes into the
+verifier, checks the container's head again, and fetches from that offset
+(`transfer.fetch` takes a start for Xet reconstructions and HTTP ranges
+alike). The whole file is verified before the rename, so a damaged partial
+fails as `error.ResumedChecksumMismatch` and is removed. Any disagreement
+starts the file over. `LocalFile.resumed_bytes` and the progress events'
+`resumed_bytes` say how much came from the partial; those bytes count as
+completed from the first downloading event.
 
 The client borrows environment strings and the optional `HF_TOKEN` (a blank
 value counts as unset); keep the environment map alive. Public repositories
@@ -119,6 +148,7 @@ Set `client.progress` to a `Progress` sink. `ProgressEvent` includes:
 - `filename`, zero-based `file_index`, and `file_count`.
 - `file_completed`/`file_total` and overall `completed_bytes`/`total_bytes`.
 - `reused` for a verified existing local file.
+- `resumed_bytes`: bytes of this file continued from a kept partial.
 - `fraction()`: optional 0–1 overall completion; null before totals are known.
 
 ```zig
@@ -127,13 +157,14 @@ const DownloadStatus = struct {
     bytes: u64 = 0,
     total: u64 = 0,
 
-    fn update(context: ?*anyopaque, event: hf.ProgressEvent) error{Canceled}!void {
+    fn update(context: ?*anyopaque, event: hf.ProgressEvent) hf.Progress.Error!void {
         const self: *@This() = @ptrCast(@alignCast(context.?));
         self.fraction = event.fraction();
         self.bytes = event.completed_bytes;
         self.total = event.total_bytes;
         // The TUI can timestamp events using its injected Io for rate/ETA.
-        // Return error.Canceled here if the user requested cancellation.
+        // Return error.Canceled here if the user requested cancellation,
+        // error.Paused to stop and keep the partial file.
     }
 };
 
@@ -155,10 +186,13 @@ phase: checksum verification and file publication can fail. Metadata and full
 verification of an existing local file have phase events but no incremental
 byte events.
 
-Returning `error.Canceled` stops at the callback. Hosts can cancel the task through
-their injected `Io` to interrupt pending I/O sooner. All workers are joined before
-their borrowed buffers and temporary file are freed. Already published shards
-remain valid if cancellation or failure occurs later in a multi-file operation.
+Returning `error.Canceled` stops at the callback and removes the current
+file's partial; `error.Paused` stops and keeps it for the next download to
+continue (above). Hosts can cancel the task through their injected `Io` to
+interrupt pending I/O sooner (that removes the partial). All workers are
+joined before their borrowed buffers and the partial file are released.
+Already published shards remain valid if cancellation or failure occurs later
+in a multi-file operation.
 
 ## How a Xet file is transferred
 
@@ -271,10 +305,10 @@ pipeline, vision/model support, or inference behavior is implied.
 
 Progress goes to stderr, results to stdout (revision, then one line per file:
 path, size, transport `xet` / `http` / `verified_local`). Interrupting the
-standalone binary with a signal leaves the temporary file of the current
-download behind (the atomic file is cleaned up only on cancellation through
-the API); `nuclis model pull` turns Ctrl-C into that cancellation from its
-progress sink, so it leaves no partial file.
+standalone binary with a signal leaves `<path>.partial` behind without its
+state, so the next download starts it over (the partial is removed only on
+cancellation through the API); `nuclis model pull` turns Ctrl-C into
+`error.Canceled` and SIGTERM into `error.Paused` from its progress sink.
 
 ## Sources and provenance
 

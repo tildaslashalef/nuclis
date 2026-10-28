@@ -611,7 +611,14 @@ list `{"type": "web_search"}`, `{"type": "web_fetch"}`, and
 `{"type": "web_context"}` among its tools.
 They render through the model's template like any tool, with the
 definitions the agent uses, and the server runs their calls itself through
-the search service `web.url` names:
+the search service `web.url` names.
+
+The command line decides without the file: `nuclis serve --web-url <url>`
+turns the tools on against that service (the same rule as `web.url`:
+`https`, or `http` on a loopback host; no credentials, query, or fragment),
+whatever `serve.web` says, and `--no-web` turns them off; the two exclude
+each other. An app that starts the server (Muon) passes the address this
+way rather than rewriting `nuclis.json`.
 
 ```json
 {"messages": [{"role": "user", "content": "What does PEP 8 say about line length?"}],
@@ -668,8 +675,8 @@ the search service `web.url` names:
   over three rounds, Saluki, against the stub, 2026-10-16).
 - A web call waits on the GPU worker; decision and embedding items queued
   meanwhile run during its waits. A client that leaves cancels it.
-- Without `serve.web`, any of the three types is `400 unsupported_feature`
-  naming `tools[i]`.
+- Without `serve.web` (or `--web-url`), and under `--no-web`, any of the
+  three types is `400 unsupported_feature` naming `tools[i]`.
 
 ## Embeddings
 
@@ -1264,8 +1271,8 @@ model (null before the first chat request), `memory` the budget
 `batches` and `requests` the passes run and the requests they answered
 since the start. `embedding` is the open embedding model (null before the
 first embedding request), and `embeddings` counts its waiting requests,
-passes, and answered requests the same way. `web` is `off` without
-`serve.web`; otherwise `ok` when the search service and every provider
+passes, and answered requests the same way. `web` is `off` when the tools
+are (no `serve.web` or `--web-url`, or `--no-web`); otherwise `ok` when the search service and every provider
 behind it answer its own health call, `down` when not (that call waits at
 most 5 s).
 

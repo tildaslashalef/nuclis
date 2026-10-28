@@ -95,7 +95,7 @@ pub const Hosted = struct {
 
 /// What the server offers beyond the request itself.
 pub const Options = struct {
-    /// `serve.web`: the hosted web tool types are accepted.
+    /// `serve.web` or `--web-url`: the hosted web tool types are accepted.
     web: bool = false,
 };
 
@@ -432,7 +432,7 @@ fn readTools(r: *Reader, value: Value, limit: usize, options: Options, hosted: *
         const kind = item.object.get("type") orelse .null;
         if (kind == .string) if (hostedDefinition(kind.string)) |definition| {
             if (!options.web)
-                return r.unsupported(param, "{s}: the hosted {s} tool is off on this server (serve.web)", .{ param, kind.string });
+                return r.unsupported(param, "{s}: the hosted {s} tool is off on this server (serve.web, or serve --web-url)", .{ param, kind.string });
             hosted.enable(definition.name);
             tool.* = .{ .name = definition.name, .description = definition.description, .parameters = definition.parameters };
             continue;
@@ -1076,7 +1076,7 @@ test "the hosted web tools: accepted with serve.web, refused without it, and nev
     try std.testing.expectError(error.Refused, parse(arena, with_context, &problem));
     try std.testing.expectEqualStrings("unsupported_feature", problem.code);
     try std.testing.expectEqualStrings("tools[1]", problem.param.?);
-    try std.testing.expect(std.mem.indexOf(u8, problem.message, "web_context tool is off on this server (serve.web)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, problem.message, "web_context tool is off on this server (serve.web, or serve --web-url)") != null);
 
     // A web tool the request did not enable is the server's to refuse, unless
     // the request defines a function of that name.
