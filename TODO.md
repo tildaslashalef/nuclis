@@ -14,70 +14,34 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-In progress: **Q5_0 and Q5_1** (below), on `q5-0-q5-1-encodings`. Muon's
-voice loop (Gemma 4 calls in plain quotes, a started chunk for hosted web
-calls, state reused after a search, phrases the recognizer should expect)
-is in its pull request, whose description is its record; the next release
-(0.11.0) carries it with the model-management unit
-([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)).
-
-## Q5_0 and Q5_1
-
-Base: `a52d799`. Branch `q5-0-q5-1-encodings`.
-
-**Why.** K-quants need rows that are multiples of 256. Where a row is not
-(Gemma 4 26B-A4B's `ffn_down`: 2,112 dense, 704 per expert), llama.cpp's
-quantizer falls back to a 32-value block of similar size: Q4_K → Q5_0,
-Q5_K → Q5_1, Q6_K → Q8_0, IQ4_XS → IQ4_NL. So most K-quant Gemma 4
-files carry Q5_0 or Q5_1 `ffn_down` tensors, and `model inspect` refuses
-them ("encoding id 6/7, which nuclis does not store"). Measured on the
-Hub headers: Unsloth's non-QAT 26B-A4B `UD-Q4_K_S` has 29 Q5_0 expert
-`ffn_down`, `UD-Q4_K_M` 29 Q5_1.
-
-**The formats** (ggml-common.h, blocks of 32, little-endian):
-- Q5_0, id 6, 22 B: `d` F16, `qh` u32, `qs[16]`. Value j (0..15):
-  `q = (qs[j] & 15) | ((qh >> j) & 1) << 4`; value j+16: `q = (qs[j] >> 4)
-  | ((qh >> (j+16)) & 1) << 4`; `w = d·(q − 16)`.
-- Q5_1, id 7, 24 B: `d` F16, `m` F16, `qh`, `qs[16]`; same codes;
-  `w = d·q + m`.
-
-**Tasks.**
-1. `inference/src/tensor/encoding.zig` `layout`: ids 6 and 7.
-   `inference/src/quant/decode.zig`: `row` and `validateRow` decode both;
-   hand-calculated tests pin both halves of the `qh` plane, every code,
-   the bias of 16, Q5_1's offset, successive scales, and the size errors.
-2. Fixture `inference/src/quant/fixtures/five-bit.json`: eight blocks of
-   each (256 values) with seeded payloads, written by
-   `scripts/five-bit-fixtures.py` from the equations above; a `decode.zig`
-   test holds the CPU decoder to it, `metal-check` the GPU (add
-   `"five-bit"` to every fixture list, `tameScales` positions).
-3. Metal: `dequant.metal` `nu_dequant_q5_0`/`_q5_1` and
-   `nu_block_geometry`; `matvec.metal` `nu_matvec_q5_0`/`_q5_1` (Q4_0's
-   lane-per-block body, the fifth bit spread into the packed code bytes,
-   the bias through the input sum), in `matvec_split.metal`'s
-   `nu_segment_sums`; `matmul.metal` tile decoders and the routed sets
-   (64×64, `_32`, `_8`, `_f2`) and the gathered expert tile;
-   `kernels.zig` names; `ops/matmul.zig` `blockAligned` (Q5_0 2, Q5_1 4),
-   the pickers, `matmulGeometry`; `ops/matvec.zig` `specializedMatvec`;
-   `ops/experts.zig` the expert tile for 2, 6, 7. `metal-check`'s expert
-   chains run the down projection in Q4_0, Q5_0, and Q5_1.
-4. `inference/src/models/gemma4.zig` `executableEncoding`: 6 and 7 (Qwen's
-   set unchanged: no Qwen file needs them).
-5. Docs: `docs/engine/quantization.md` (equations, evidence, the fallback
-   rule), `docs/models/catalogue.md` (implemented list), the
-   `dequant.metal` header table.
-
-**Gates.** `zig build test`; `make metal-check`; `make verify-auto`;
-`make verify` once; the CPU tier is not needed (no existing CPU arithmetic
-changes, the new decoders are pinned by unit tests). The cross-encoding
-check is not run in this unit (the user's call: no 60 GB of reference
-downloads); end to end, a local Gemma 4 26B-A4B Q4_K_M file with Q5_0
-`ffn_down` must load, generate coherent text on Metal and the CPU, and
-agree between them on a short greedy run.
+No unit is in progress. Q5_0 and Q5_1 (`q5-0-q5-1-encodings`: the CPU
+decoders, the Metal kernels, the Gemma 4 adapter, and two side fixes, a
+gate that skips when its data is missing and `discover` taking a Gemma 4
+file's verdict from the entry of its layer count) waits for its pull
+request, whose description is its record. Muon's voice loop is in its pull
+request; the next release (0.11.0) carries it with the model-management
+unit ([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)).
 
 ## Deferred
 
 Agreed and not scheduled; when one is picked up, it becomes a unit above.
+
+- **MTP slows Gemma 4 26B-A4B down** (the user's, 2026-10-28). The
+  catalogue's verdict is off: 0.63–0.76× on prose at drafts 2–7, the
+  verify growing from 60 to 98 ms with its rows
+  (`docs/engine/speculative-decoding.md`, the 26B-A4B verdict). Again on a
+  K-quant 26B-A4B file with the same `mtp-gemma-4-26B-A4B-it.gguf` head,
+  2026-10-28, M4 Pro, greedy, 300-token story, draft 5: 50.5 tok/s off,
+  27.6 on (0.55×), 164 of 368 drafts accepted. The head's card reports
+  about +35 % under llama.cpp. First step: measure llama.cpp on the same
+  machine, files, and prompt (`llama-server -md <head> --spec-type
+  draft-mtp`, `docs/benchmarks/llama-cpp.md` for the build) to tell
+  acceptance from verify cost; then a cooled `nuclis bench --profile` of
+  one verify step at 2, 4, and 6 rows. Suspect: the verify's expert work
+  reads an expert's weights once per row that selects it rather than once
+  per batch (the gathered tile groups rows by expert, the per-token
+  matvecs do not). llama.cpp is a speed comparison here, never a source to
+  copy.
 
 - **A short word after silence is lost** (from Muon's voice loop,
   2026-10-28): the checkpoint's own borderline call, the same on CPU and
