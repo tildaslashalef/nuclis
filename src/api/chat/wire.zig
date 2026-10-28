@@ -523,8 +523,18 @@ pub const Collector = struct {
 
     pub const Call = struct { name: []const u8, arguments: []const u8 };
     /// A hosted call as the response reports it; `summary` is the tool's
-    /// one line (`8 results`), or the failure's text.
-    pub const WebCall = struct { name: []const u8, arguments: []const u8, summary: []const u8, is_error: bool };
+    /// one line (`8 results`), or the failure's text. A stream reports each
+    /// call twice: `started` as it is about to run (no summary yet), then
+    /// `finished`.
+    pub const WebCall = struct {
+        name: []const u8,
+        arguments: []const u8,
+        summary: []const u8 = "",
+        is_error: bool = false,
+        status: Status = .finished,
+
+        pub const Status = enum { started, finished };
+    };
 
     pub fn send(self: *Collector, event: inference.events.Event) Allocator.Error!void {
         switch (event) {
@@ -635,17 +645,21 @@ pub fn writeResponse(out: *std.Io.Writer, arena: Allocator, collected: *const Co
     try out.writeByte('\n');
 }
 
-/// A hosted call in `nuclis_web_calls`; a streamed one carries its index.
+/// A hosted call in `nuclis_web_calls`; a streamed one carries its index
+/// and status, and a started one has no outcome yet.
 fn writeWebCall(s: *std.json.Stringify, arena: Allocator, call: Collector.WebCall, index: ?usize) !void {
     try s.beginObject();
     if (index) |i| {
         try s.objectField("index");
         try s.write(i);
+        try s.objectField("status");
+        try s.write(@tagName(call.status));
     }
     try s.objectField("name");
     try s.write(try validUtf8(arena, call.name));
     try s.objectField("arguments");
     try s.write(try validUtf8(arena, call.arguments));
+    if (index != null and call.status == .started) return s.endObject();
     try s.objectField("summary");
     try s.write(try validUtf8(arena, call.summary));
     try s.objectField("is_error");
@@ -721,7 +735,7 @@ pub const ChunkWriter = struct {
         try writeWebCall(&s, scratch, call, self.web_calls);
         try s.endArray();
         try end(&s, out, null);
-        self.web_calls += 1;
+        if (call.status == .finished) self.web_calls += 1;
     }
 
     /// The last chunks: whatever text was held back, the finish reason,
@@ -1116,15 +1130,31 @@ test "hosted calls are reported in nuclis_web_calls, whole and streamed" {
     try std.testing.expect(!call.get("is_error").?.bool);
     try std.testing.expect(message.get("tool_calls") == null);
 
+    try std.testing.expect(call.get("status") == null);
+
     var chunks: ChunkWriter = .{ .id = "chatcmpl-x", .created = 1, .model = "m", .include_usage = false };
-    var stream: std.Io.Writer.Allocating = .init(arena);
-    try chunks.webCall(&stream.writer, arena, .{ .name = "web_fetch", .arguments = "{}", .summary = "web_fetch: url is empty", .is_error = true });
-    const line = std.mem.trimEnd(u8, stream.written()["data: ".len..], "\n");
-    const chunk = try std.json.parseFromSliceLeaky(Value, arena, line, .{});
-    const delta = chunk.object.get("choices").?.array.items[0].object.get("delta").?.object;
-    const streamed = delta.get("nuclis_web_calls").?.array.items[0].object;
-    try std.testing.expectEqual(@as(i64, 0), streamed.get("index").?.integer);
-    try std.testing.expect(streamed.get("is_error").?.bool);
+    const Streamed = struct {
+        fn of(a: Allocator, c: *ChunkWriter, report: Collector.WebCall) !std.json.ObjectMap {
+            var stream: std.Io.Writer.Allocating = .init(a);
+            try c.webCall(&stream.writer, a, report);
+            const line = std.mem.trimEnd(u8, stream.written()["data: ".len..], "\n");
+            const chunk = try std.json.parseFromSliceLeaky(Value, a, line, .{});
+            const delta = chunk.object.get("choices").?.array.items[0].object.get("delta").?.object;
+            return delta.get("nuclis_web_calls").?.array.items[0].object;
+        }
+    };
+    // Two calls, each started then finished, share their index.
+    for ([_]i64{ 0, 1 }) |index| {
+        const started = try Streamed.of(arena, &chunks, .{ .name = "web_fetch", .arguments = "{}", .status = .started });
+        try std.testing.expectEqual(index, started.get("index").?.integer);
+        try std.testing.expectEqualStrings("started", started.get("status").?.string);
+        try std.testing.expectEqualStrings("{}", started.get("arguments").?.string);
+        try std.testing.expect(started.get("summary") == null and started.get("is_error") == null);
+        const finished = try Streamed.of(arena, &chunks, .{ .name = "web_fetch", .arguments = "{}", .summary = "web_fetch: url is empty", .is_error = true });
+        try std.testing.expectEqual(index, finished.get("index").?.integer);
+        try std.testing.expectEqualStrings("finished", finished.get("status").?.string);
+        try std.testing.expect(finished.get("is_error").?.bool);
+    }
 }
 
 test "efforts by OpenAI's names and the profile's" {
