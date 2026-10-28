@@ -140,7 +140,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "eval", "perplexity of a text file, teacher-forced");
     try row(out, sty, "inspect", "an artifact's identity, dimensions, tensor encodings");
     try row(out, sty, "validate", "whether a file binds to its architecture's adapter");
-    try row(out, sty, "model", "pull, list, and judge Hugging Face Hub artifacts");
+    try row(out, sty, "model", "pull, list, judge, and remove Hugging Face Hub artifacts");
     try row(out, sty, "cache", "list or clear the agent's saved model states");
     try row(out, sty, "decide", "typed questions about text or JSON, answered by Laya");
     try row(out, sty, "embed", "text, images, audio into vectors, by EmbeddingGemma 2");
@@ -696,6 +696,7 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try code(out, sty, "                  [--register <name> [--profile <p>]] [--force] [--json]");
     try code(out, sty, "nuclis model inspect <name> [--json]");
     try code(out, sty, "nuclis model inspect <owner/repo> --file <name> [--revision <rev>] [--json]");
+    try code(out, sty, "nuclis model rm <name> [--with mmproj,mtp | --all] [--json]");
 
     try heading(out, sty, "Commands:");
     try row(out, sty, "ls", "the catalogue with each entry's local status, then");
@@ -708,9 +709,12 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "inspect", "read a remote file's header (at most 64 MiB, no");
     try more(out, "weights) and say whether it would run: supported,");
     try more(out, "runnable, or not");
+    try row(out, sty, "rm", "delete a catalogue or registry entry's files and");
+    try more(out, "sidecars; a file another present entry uses stays,");
+    try more(out, "and the registry entry is not edited");
 
     try heading(out, sty, "Options:");
-    try row(out, sty, "--with mmproj,mtp", "also fetch those companions of the entry");
+    try row(out, sty, "--with mmproj,mtp", "also fetch (rm: also delete) those companions");
     try row(out, sty, "--all", "every companion the entry names");
     try row(out, sty, "--file <name>", "which weight file (.gguf, .safetensors); required");
     try more(out, "when several; its support files come with it");
@@ -722,7 +726,7 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "gemma4_e, or muse_glimmer");
     try row(out, sty, "--force", "download every file again, replacing each once the");
     try more(out, "new copy verifies (the old one stays until then)");
-    try row(out, sty, "--json", "the listing, transfer report, or verdict as JSON");
+    try row(out, sty, "--json", "the listing, pull, verdict, or removal as JSON");
 
     try heading(out, sty, "Examples:");
     try example(out, sty, "nuclis model pull qwen3.8-27b --all", "the default model with its projector and draft head");
@@ -731,13 +735,15 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try code(out, sty, "nuclis model pull convaiinnovations/laya --file model.safetensors");
     try more(out, "a safetensors set with its config and tokenizer");
     try example(out, sty, "nuclis model inspect unsloth/Muse-Glimmer-30B-GGUF --file dflash-kquant.gguf", "will it run, before the download");
+    try example(out, sty, "nuclis model rm qwen3.8-27b --all", "the model, its projector and draft head");
 
     try heading(out, sty, "Notes:");
     try plain(out, "Downloads go over Xet, verify the digest, publish atomically, and leave a");
     try plain(out, "<file>.nuclis.json sidecar beside the file; a second pull of the same file");
     try plain(out, "downloads nothing. Ctrl-C stops a pull and removes the partial file; SIGTERM");
     try plain(out, "stops it and keeps <file>.partial, which the next pull continues.");
-    try plain(out, "HF_TOKEN is read for gated repositories only.");
+    try plain(out, "HF_TOKEN is read for gated repositories only. A model a running serve has");
+    try plain(out, "open keeps working after rm; its space is freed when the server closes it.");
     try out.writeByte('\n');
 }
 

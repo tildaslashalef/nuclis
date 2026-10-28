@@ -166,6 +166,9 @@ Requirements:
   executable (the adapter has kernels for it), bindable (every expected
   tensor present with its shape, nothing unexpected), supported (the
   catalogue pins the digest).
+- `model rm` **must** delete only under the models directory, **must**
+  keep a file another present catalogue or registry entry uses (naming it),
+  and **must not** edit the registry.
 - Companion files are loaded only by the unit that consumes them; a
   missing or mismatched companion is a typed load error, never an implicit
   download or a silent fallback.
@@ -501,6 +504,7 @@ nuclis validate --model <m> [--json]
 nuclis model pull (<name> | <owner/repo> --file <f>) [--revision <r>] [--role <role>] [--all] [--register] [--force] [--json]
 nuclis model inspect (<name> | <owner/repo> --file <f>) [--revision <r>] [--json]
 nuclis model ls [--json]
+nuclis model rm <name> [--with mmproj,mtp | --all] [--json]
 nuclis decide (--request <file|-> | --questions <file> <states> | <inline questions> <states>) [--model <m>] [--truncate head|tail] [--uncalibrated] [--explain] [--json]
 nuclis embed (<text>... | --image <path>... | --audio <path>... | --input-file <file|->)... [--task <t>] [--title <s>] [--dimensions <n>] [--image-tokens <n>] [--truncate] [--model <m>] [--backend cpu|metal] [--json]
 nuclis speak <text>... -o <file.wav> [--voice <speaker>] [--language <l>] [--instruct <s>] [--model <m>] [--seed <n>] [--backend cpu|metal] [--stream] [--chunk <n>] [--first-chunk <n>]

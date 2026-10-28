@@ -1,6 +1,7 @@
 //! `nuclis model`: acquiring artifacts through the `huggingface` package,
-//! listing what the models directory holds, and judging a remote file
-//! from its directory alone before any download (`inspect`).
+//! listing what the models directory holds, removing an entry's files
+//! (`rm`), and judging a remote file from its directory alone before any
+//! download (`inspect`).
 //!
 //! Layout: `<root>/models/<owner>/<repo>/<file>`, the package's own
 //! (`Client.localPath`), predictable from the repository id alone and
@@ -1248,6 +1249,318 @@ pub fn ls(gpa: Allocator, io: std.Io, root: []const u8, registry: config.Models,
     try listing.render(out, json, sty);
 }
 
+// ---- rm --------------------------------------------------------------------
+
+/// A file `rm` deleted (a model file or a sidecar) and the bytes it held.
+pub const Removed = struct { path: []const u8, bytes: u64 };
+/// A file `rm` left in place because another present entry uses it.
+pub const Kept = struct { path: []const u8, used_by: []const u8 };
+
+pub const RmReport = struct {
+    schema_version: u32 = 1,
+    name: []const u8,
+    models_dir: []const u8,
+    removed: []const Removed,
+    kept: []const Kept,
+    freed_bytes: u64,
+
+    pub fn render(self: RmReport, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+        if (json) {
+            try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
+            return out.writeByte('\n');
+        }
+        const off = sty.off();
+        for (self.removed) |r| {
+            var size: [16]u8 = undefined;
+            try out.print("{s}removed{s} {s}{s}{s}  {s}{s}{s}\n", .{ sty.on(.success), off, sty.on(.code), self.relative(r.path), off, sty.on(.number), humanSize(&size, r.bytes), off });
+        }
+        for (self.kept) |k| try out.print("{s}kept{s}    {s}{s}{s}  {s}used by{s} {s}{s}{s}\n", .{ sty.on(.warning), off, sty.on(.code), self.relative(k.path), off, sty.on(.dim), off, sty.on(.keyword), k.used_by, off });
+        var size: [16]u8 = undefined;
+        try out.print("{s}{s}{s}: {s}{s}{s} freed\n", .{ sty.on(.keyword), self.name, off, sty.on(.number), humanSize(&size, self.freed_bytes), off });
+    }
+
+    fn relative(self: RmReport, path: []const u8) []const u8 {
+        return if (inside(self.models_dir, path)) path[self.models_dir.len + 1 ..] else path;
+    }
+};
+
+/// Which companions a removal takes, as `pull` takes them.
+const Selection = struct {
+    with: std.EnumSet(Role) = .empty,
+    all: bool = false,
+
+    const every: Selection = .{ .all = true };
+
+    fn takes(self: Selection, role: Role) bool {
+        return self.all or self.with.contains(role);
+    }
+};
+
+/// `model rm <name>`: deletes a catalogue or registry entry's files and
+/// their sidecars from the models directory, keeping any file another
+/// present entry uses, then the directories the removal emptied. The
+/// registry is not edited. A same-named registry entry is the catalogue
+/// entry's twin (`config init` writes one per catalogue model), not a user.
+pub fn rm(gpa: Allocator, io: std.Io, root: []const u8, registry: config.Models, options: PullOptions, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const report = try remove(arena_state.allocator(), io, root, registry, options.repo, .{ .with = options.with, .all = options.all }, diag);
+    try report.render(out, json, sty);
+}
+
+fn remove(arena: Allocator, io: std.Io, root: []const u8, registry: config.Models, name: []const u8, selection: Selection, diag: *config.Diagnostic) !RmReport {
+    if (name.len == 0) return error.MissingRepository;
+    const models = try modelsDir(arena, root);
+    const registered = registry.find(name);
+    const targets = (try catalogueFiles(arena, io, models, name, selection, diag)) orelse blk: {
+        const entry = registered orelse {
+            diag.set("{s} is not a catalogue name or an entry of the models registry", .{name});
+            return error.UnknownModel;
+        };
+        break :blk try registryFiles(arena, io, models, name, entry, selection, diag);
+    };
+    for (targets) |path| if (!inside(models, path)) {
+        diag.set("{s}: {s} is outside the models directory; remove it by hand", .{ name, path });
+        return error.OutsideModelsDirectory;
+    };
+    if (!try anyPresent(arena, io, targets)) {
+        const whole = (try catalogueFiles(arena, io, models, name, .every, diag)) orelse
+            try registryFiles(arena, io, models, name, registered.?, .every, diag);
+        if (!selection.all and try anyPresent(arena, io, whole)) {
+            diag.set("{s}: only its companions are present; --all removes them", .{name});
+        } else diag.set("{s} has nothing pulled in {s}", .{ name, models });
+        return error.NotPulled;
+    }
+    // Every other entry whose main file is present, with all its files.
+    var users: std.ArrayList(Kept) = .empty;
+    for (try catalogueNames(arena)) |other| {
+        if (std.mem.eql(u8, other, name)) continue;
+        const files = (try catalogueFiles(arena, io, models, other, .every, diag)).?;
+        if (!try exists(io, files[0])) continue;
+        for (files) |f| try users.append(arena, .{ .path = f, .used_by = other });
+    }
+    for (registry.entries) |*named| {
+        if (std.mem.eql(u8, named.name, name)) continue;
+        const files = try registryFiles(arena, io, models, named.name, &named.entry, .every, diag);
+        if (files.len == 0 or !try exists(io, files[0])) continue;
+        for (files) |f| try users.append(arena, .{ .path = f, .used_by = named.name });
+    }
+    var removed: std.ArrayList(Removed) = .empty;
+    var kept: std.ArrayList(Kept) = .empty;
+    var freed: u64 = 0;
+    targets: for (targets) |path| {
+        for (users.items) |u| if (std.mem.eql(u8, u.path, path)) {
+            if (try exists(io, path)) try kept.append(arena, .{ .path = path, .used_by = u.used_by });
+            continue :targets;
+        };
+        for ([_][]const u8{ path, try sidecarPath(arena, path) }) |file| {
+            const bytes = try deleteCounted(io, file) orelse continue;
+            try removed.append(arena, .{ .path = file, .bytes = bytes });
+            freed += bytes;
+        }
+    }
+    for (removed.items) |r| try tidy(io, models, std.fs.path.dirname(r.path).?);
+    return .{ .name = name, .models_dir = models, .removed = removed.items, .kept = kept.items, .freed_bytes = freed };
+}
+
+/// Whether `path` lies strictly below `dir` (both normalized and absolute).
+fn inside(dir: []const u8, path: []const u8) bool {
+    return path.len > dir.len + 1 and std.mem.startsWith(u8, path, dir) and path[dir.len] == '/';
+}
+
+fn exists(io: std.Io, path: []const u8) !bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    return true;
+}
+
+fn anyPresent(arena: Allocator, io: std.Io, files: []const []const u8) !bool {
+    for (files) |f| if (try exists(io, f) or try exists(io, try sidecarPath(arena, f))) return true;
+    return false;
+}
+
+/// The file's size, after deleting it; null when it was not there.
+fn deleteCounted(io: std.Io, path: []const u8) !?u64 {
+    const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    try std.Io.Dir.cwd().deleteFile(io, path);
+    return stat.size;
+}
+
+/// Removes `start` and each parent below `models` while it is empty (a
+/// Finder `.DS_Store` alone counts as empty).
+fn tidy(io: std.Io, models: []const u8, start: []const u8) !void {
+    var dir = start;
+    while (inside(models, dir)) : (dir = std.fs.path.dirname(dir).?) {
+        if (std.Io.Dir.cwd().openDir(io, dir, .{ .iterate = true })) |opened| {
+            var d = opened;
+            defer d.close(io);
+            var it = d.iterate();
+            while (try it.next(io)) |entry| if (!std.mem.eql(u8, entry.name, ".DS_Store")) return;
+            d.deleteFile(io, ".DS_Store") catch |err| switch (err) {
+                error.FileNotFound => {},
+                else => return err,
+            };
+        } else |err| switch (err) {
+            error.FileNotFound => continue,
+            else => return err,
+        }
+        std.Io.Dir.cwd().deleteDir(io, dir) catch |err| switch (err) {
+            error.FileNotFound => {},
+            error.DirNotEmpty => return,
+            else => return err,
+        };
+    }
+}
+
+fn catalogueNames(arena: Allocator) ![]const []const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    for (&catalog.entries) |e| try names.append(arena, e.name);
+    for (&catalog.decision_entries) |e| try names.append(arena, e.name);
+    for (&catalog.embedding_entries) |e| try names.append(arena, e.name);
+    for (&catalog.audio_entries) |e| try names.append(arena, e.name);
+    return names.items;
+}
+
+/// Appends `<models>/<parts...>` normalized (an absolute part wins), once.
+fn addFile(arena: Allocator, files: *std.ArrayList([]const u8), models: []const u8, parts: []const []const u8) !void {
+    const joined = try std.fs.path.join(arena, parts);
+    const path = try std.fs.path.resolveAlloc(arena, &.{ models, joined });
+    for (files.items) |f| if (std.mem.eql(u8, f, path)) return;
+    try files.append(arena, path);
+}
+
+fn noSuchCompanion(name: []const u8, with: std.EnumSet(Role), has: std.EnumSet(Role), diag: *config.Diagnostic) !void {
+    var wanted = with.iterator();
+    while (wanted.next()) |role| if (!has.contains(role)) {
+        diag.set("{s} has no {s} companion", .{ name, @tagName(role) });
+        return error.NoSuchCompanion;
+    };
+}
+
+/// A catalogue entry's files, main file first: its support files, codec,
+/// and backbone always, its companions as `selection` takes them. Null for
+/// a name the catalogue does not hold.
+fn catalogueFiles(arena: Allocator, io: std.Io, models: []const u8, name: []const u8, selection: Selection, diag: *config.Diagnostic) !?[]const []const u8 {
+    var files: std.ArrayList([]const u8) = .empty;
+    if (catalog.find(name)) |e| {
+        var has: std.EnumSet(Role) = .empty;
+        for (e.companions) |c| has.insert(c.role);
+        try noSuchCompanion(name, selection.with, has, diag);
+        try addFile(arena, &files, models, &.{ e.repo, e.file });
+        for (e.companions) |c| if (selection.takes(c.role)) try addFile(arena, &files, models, &.{ e.repo, c.file });
+    } else if (catalog.findDecision(name)) |d| {
+        try noSuchCompanion(name, selection.with, if (d.mmproj != null) .initOne(.mmproj) else .empty, diag);
+        try addFile(arena, &files, models, &.{ d.repo, d.file });
+        for (d.support) |s| try addFile(arena, &files, models, &.{ d.repo, s });
+        try discoverSupport(arena, io, models, files.items[0], d.repo, &files);
+        if (d.backbone) |b| try addFile(arena, &files, models, &.{ b.repo, b.file });
+        if (d.mmproj) |m| if (selection.takes(.mmproj)) try addFile(arena, &files, models, &.{ m.repo, m.file });
+    } else if (catalog.findEmbedding(name)) |e| {
+        try noSuchCompanion(name, selection.with, if (e.mmproj != null) .initOne(.mmproj) else .empty, diag);
+        try addFile(arena, &files, models, &.{ e.repo, e.file });
+        if (e.mmproj) |m| if (selection.takes(.mmproj)) try addFile(arena, &files, models, &.{ m.repo, m.file });
+    } else if (catalog.findAudio(name)) |a| {
+        try noSuchCompanion(name, selection.with, .empty, diag);
+        try addFile(arena, &files, models, &.{ a.repo, a.file });
+        for (a.support) |s| try addFile(arena, &files, models, &.{ a.repo, s });
+        try discoverSupport(arena, io, models, files.items[0], a.repo, &files);
+        if (a.codec) |c| {
+            const first = files.items.len;
+            try addFile(arena, &files, models, &.{ c.repo, c.file });
+            for (a.codec_support) |s| try addFile(arena, &files, models, &.{ c.repo, s });
+            try discoverSupport(arena, io, models, files.items[first], c.repo, &files);
+        }
+    } else return null;
+    return files.items;
+}
+
+/// A registry entry's files, located as `model ls` locates them: the main
+/// file, its support files when it is safetensors, and the `mmproj`/`mtp`
+/// it names (relative to the main file's directory) as `selection` takes
+/// them. Empty for an entry that locates no file.
+fn registryFiles(arena: Allocator, io: std.Io, models: []const u8, name: []const u8, entry: *const config.ModelEntry, selection: Selection, diag: *config.Diagnostic) ![]const []const u8 {
+    var has: std.EnumSet(Role) = .empty;
+    if (entry.mmproj != null) has.insert(.mmproj);
+    if (entry.mtp != null) has.insert(.mtp);
+    try noSuchCompanion(name, selection.with, has, diag);
+    var files: std.ArrayList([]const u8) = .empty;
+    if (entry.path) |p| {
+        try addFile(arena, &files, models, &.{p});
+    } else if (entry.repo != null and entry.file != null) {
+        try addFile(arena, &files, models, &.{ entry.repo.?, entry.file.? });
+    } else return &.{};
+    const main = files.items[0];
+    if (hf.format(main) == .safetensors) {
+        const recorded = readSidecar(arena, io, .cwd(), try sidecarPath(arena, main)) catch null;
+        if (entry.repo orelse if (recorded) |r| r.repo else null) |repo| try discoverSupport(arena, io, models, main, repo, &files);
+    }
+    const dir = std.fs.path.dirname(main).?;
+    for ([_]struct { role: Role, file: ?[]const u8 }{ .{ .role = .mmproj, .file = entry.mmproj }, .{ .role = .mtp, .file = entry.mtp } }) |c| {
+        const file = c.file orelse continue;
+        if (selection.takes(c.role)) try addFile(arena, &files, models, &.{ dir, file });
+    }
+    return files.items;
+}
+
+/// Support files pulled with safetensors weights: those beside the weights
+/// and in subdirectories that are not another checkpoint's (the package's
+/// `select` rule), found by a sidecar recording role `support` from `repo`.
+fn discoverSupport(arena: Allocator, io: std.Io, models: []const u8, weights: []const u8, repo: []const u8, files: *std.ArrayList([]const u8)) !void {
+    const path = std.fs.path.dirname(weights).?;
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => return,
+        else => return err,
+    };
+    defer dir.close(io);
+    // The catalogue's checkpoint directories, which may nest in this one.
+    var foreign: std.ArrayList([]const u8) = .empty;
+    for (&catalog.decision_entries) |d| try addFile(arena, &foreign, models, &.{ d.repo, std.fs.path.dirnamePosix(d.file) orelse "" });
+    for (&catalog.audio_entries) |a| {
+        try addFile(arena, &foreign, models, &.{ a.repo, std.fs.path.dirnamePosix(a.file) orelse "" });
+        if (a.codec) |c| try addFile(arena, &foreign, models, &.{ c.repo, std.fs.path.dirnamePosix(c.file) orelse "" });
+    }
+    try walkSupport(arena, io, dir, path, 0, repo, foreign.items, files);
+}
+
+fn walkSupport(arena: Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8, depth: u8, repo: []const u8, foreign: []const []const u8, files: *std.ArrayList([]const u8)) !void {
+    if (depth > 0) {
+        for (foreign) |f| if (std.mem.eql(u8, f, path)) return;
+        // Weights, or the sidecar left of them, mark another checkpoint.
+        var probe = dir.iterate();
+        while (try probe.next(io)) |entry| {
+            const stem = if (std.mem.endsWith(u8, entry.name, sidecar_suffix)) entry.name[0 .. entry.name.len - sidecar_suffix.len] else entry.name;
+            if (hf.format(stem) != null) return;
+        }
+    }
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| switch (entry.kind) {
+        .directory => {
+            if (depth >= max_depth_below_repo) continue;
+            var child = dir.openDir(io, entry.name, .{ .iterate = true }) catch continue;
+            defer child.close(io);
+            try walkSupport(arena, io, child, try std.fs.path.join(arena, &.{ path, entry.name }), depth + 1, repo, foreign, files);
+        },
+        .file => {
+            if (!std.mem.endsWith(u8, entry.name, sidecar_suffix)) continue;
+            const recorded = readSidecar(arena, io, dir, entry.name) catch |err| switch (err) {
+                error.InvalidSidecar => continue,
+                else => return err,
+            } orelse continue;
+            if (recorded.role != .support or !std.mem.eql(u8, recorded.repo, repo)) continue;
+            const file = try std.fs.path.join(arena, &.{ path, entry.name[0 .. entry.name.len - sidecar_suffix.len] });
+            for (files.items) |f| {
+                if (std.mem.eql(u8, f, file)) break;
+            } else try files.append(arena, file);
+        },
+        else => {},
+    };
+}
+
 // ---- tests -----------------------------------------------------------------
 
 // ---- inspect ---------------------------------------------------------------
@@ -2043,4 +2356,138 @@ test "registry entries translate into repository pulls with their companions" {
     try std.testing.expectError(error.NotPullable, fromRegistry(.{ .repo = "local" }, &.{ .path = "/scratch/x.gguf" }, &diag));
     try std.testing.expectError(error.ConflictingOptions, fromRegistry(.{ .repo = "gemma", .file = "other.gguf" }, &gemma, &diag));
     try std.testing.expect(isRegistryName("gemma") and !isRegistryName("qwen3.8-27b") and !isRegistryName("embeddinggemma-2") and !isRegistryName("a/b") and !isRegistryName(""));
+}
+
+/// A file and, unless `role` is null, its sidecar, for the `rm` tests.
+fn plant(arena: Allocator, io: std.Io, dir: std.Io.Dir, sub_path: []const u8, repo: []const u8, role: ?Role) !void {
+    if (std.fs.path.dirname(sub_path)) |parent| try dir.createDirPath(io, parent);
+    try dir.writeFile(io, .{ .sub_path = sub_path, .data = "0123456789" });
+    const r = role orelse return;
+    try writeSidecar(arena, io, dir, try sidecarPath(arena, sub_path), .{ .repo = repo, .file = sub_path, .revision = "0123456789abcdef0123456789abcdef01234567", .sha256 = "84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882", .size = 10, .role = r, .downloaded_at = "2026-10-28T00:00:00Z", .nuclis_version = version });
+}
+
+test "rm removes an entry's files, sidecars, and support files, then the directories it emptied" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(root);
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diag: config.Diagnostic = .{};
+    const laya = catalog.findDecision("laya-multilingual").?;
+    const base = "models/convaiinnovations/laya/";
+    try plant(arena, io, tmp.dir, base ++ "multilingual/model.safetensors", laya.repo, .main);
+    for (laya.support) |s| try plant(arena, io, tmp.dir, try std.mem.concat(arena, u8, &.{ "models/", laya.repo, "/", s }), laya.repo, .support);
+    // A support file the catalogue does not name, found by its sidecar.
+    try plant(arena, io, tmp.dir, base ++ "multilingual/eval/results.json", laya.repo, .support);
+    // The English checkpoint's support file, its weights absent: a partly
+    // present entry of its own, which the first removal leaves alone.
+    try plant(arena, io, tmp.dir, base ++ "rl_agent_config.json", laya.repo, .support);
+    try std.testing.expectError(error.NoSuchCompanion, remove(arena, io, root, .{}, "laya-multilingual", .{ .with = .initOne(.mtp) }, &diag));
+
+    const first = try remove(arena, io, root, .{}, "laya-multilingual", .{}, &diag);
+    try std.testing.expectEqual(2 * (1 + laya.support.len + 1), first.removed.len);
+    try std.testing.expectEqual(@as(usize, 0), first.kept.len);
+    var freed: u64 = 0;
+    for (first.removed) |r| freed += r.bytes;
+    try std.testing.expectEqual(freed, first.freed_bytes);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, base ++ "multilingual", .{}));
+    try tmp.dir.access(io, base ++ "rl_agent_config.json.nuclis.json", .{});
+
+    const second = try remove(arena, io, root, .{}, "laya", .{}, &diag);
+    try std.testing.expectEqual(@as(usize, 2), second.removed.len);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "models/convaiinnovations", .{}));
+    try tmp.dir.access(io, "models", .{});
+    // Nothing left: an error naming the entry.
+    try std.testing.expectError(error.NotPulled, remove(arena, io, root, .{}, "laya", .{}, &diag));
+    try std.testing.expect(std.mem.startsWith(u8, diag.message(), "laya has nothing pulled"));
+    try std.testing.expectError(error.NotPulled, remove(arena, io, root, .{}, "qwen3.8-27b", .{}, &diag));
+    try std.testing.expectError(error.UnknownModel, remove(arena, io, root, .{}, "nothing-by-this-name", .{}, &diag));
+}
+
+test "rm keeps a file another entry uses, takes companions only when asked, and is not blocked by its registry twin" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(root);
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diag: config.Diagnostic = .{};
+    const qwen = catalog.find("qwen3.8-27b").?;
+    const main = try std.mem.concat(arena, u8, &.{ "models/", qwen.repo, "/", qwen.file });
+    const mmproj = try std.mem.concat(arena, u8, &.{ "models/", qwen.repo, "/", qwen.companion(.mmproj).?.file });
+    const mtp = try std.mem.concat(arena, u8, &.{ "models/", qwen.repo, "/", qwen.companion(.mtp).?.file });
+    try plant(arena, io, tmp.dir, main, qwen.repo, .main);
+    try plant(arena, io, tmp.dir, mmproj, qwen.repo, .mmproj);
+    try plant(arena, io, tmp.dir, mtp, qwen.repo, .mtp);
+    const twin: config.NamedModel = .{ .name = "qwen3.8-27b", .entry = config.registryEntry(qwen) };
+
+    // Another name for the same file keeps it; the twin does not.
+    const shared = [_]config.NamedModel{ twin, .{ .name = "big", .entry = .{ .repo = qwen.repo, .file = qwen.file } } };
+    const blocked = try remove(arena, io, root, .{ .entries = &shared }, "qwen3.8-27b", .{}, &diag);
+    try std.testing.expectEqual(@as(usize, 0), blocked.removed.len);
+    try std.testing.expectEqual(@as(usize, 1), blocked.kept.len);
+    try std.testing.expectEqualStrings("big", blocked.kept[0].used_by);
+    try tmp.dir.access(io, main, .{});
+
+    // The default leaves the companions; --with takes the one named.
+    const registry: config.Models = .{ .entries = &.{twin} };
+    const bare = try remove(arena, io, root, registry, "qwen3.8-27b", .{}, &diag);
+    try std.testing.expectEqual(@as(usize, 2), bare.removed.len);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, main, .{}));
+    try tmp.dir.access(io, mmproj, .{});
+    try std.testing.expectError(error.NotPulled, remove(arena, io, root, registry, "qwen3.8-27b", .{}, &diag));
+    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "--all") != null);
+    const projector = try remove(arena, io, root, registry, "qwen3.8-27b", .{ .with = .initOne(.mmproj) }, &diag);
+    try std.testing.expectEqual(@as(usize, 2), projector.removed.len);
+    try tmp.dir.access(io, mtp, .{});
+    _ = try remove(arena, io, root, registry, "qwen3.8-27b", .{ .all = true }, &diag);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "models/unsloth", .{}));
+    try tmp.dir.access(io, "models", .{});
+}
+
+test "rm by registry name: its file and named companions, never outside the models directory" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(root);
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diag: config.Diagnostic = .{};
+    try plant(arena, io, tmp.dir, "models/acme/thing/x.gguf", "acme/thing", null);
+    try plant(arena, io, tmp.dir, "models/acme/thing/mmproj.gguf", "acme/thing", .mmproj);
+    try plant(arena, io, tmp.dir, "models/acme/thing/README.md", "acme/thing", null);
+    const entries = [_]config.NamedModel{
+        .{ .name = "local", .entry = .{ .path = "acme/thing/x.gguf", .mmproj = "mmproj.gguf" } },
+        .{ .name = "away", .entry = .{ .path = "/elsewhere/x.gguf" } },
+    };
+    const registry: config.Models = .{ .entries = &entries };
+    try std.testing.expectError(error.NoSuchCompanion, remove(arena, io, root, registry, "local", .{ .with = .initOne(.mtp) }, &diag));
+    const report = try remove(arena, io, root, registry, "local", .{ .with = .initOne(.mmproj) }, &diag);
+    try std.testing.expectEqual(@as(usize, 3), report.removed.len);
+    try std.testing.expectEqual(10 + 10 + report.removed[2].bytes, report.freed_bytes);
+    // A file the removal did not name keeps the directory.
+    try tmp.dir.access(io, "models/acme/thing/README.md", .{});
+    try std.testing.expectError(error.OutsideModelsDirectory, remove(arena, io, root, registry, "away", .{}, &diag));
+    // Both forms come from the same report.
+    var text: std.Io.Writer.Allocating = .init(alloc);
+    defer text.deinit();
+    try report.render(&text.writer, false, .none);
+    try std.testing.expect(std.mem.indexOf(u8, text.written(), "removed acme/thing/x.gguf") != null);
+    var json: std.Io.Writer.Allocating = .init(alloc);
+    defer json.deinit();
+    try report.render(&json.writer, true, .none);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, json.written(), .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(i64, @intCast(report.freed_bytes)), parsed.value.object.get("freed_bytes").?.integer);
+    try std.testing.expectEqual(@as(usize, 3), parsed.value.object.get("removed").?.array.items.len);
 }
