@@ -673,7 +673,7 @@ pub const Stream = struct {
                 self.stats.joint_ns += lapse(plan.io, started);
             }
             const logits = plan.logits.floats()[(i - lo) * t.vocab ..][0..t.vocab];
-            const k: u32 = @intCast(rnnt.argmax(logits));
+            const k = self.decoder.choose(logits);
             if (self.decoder.observer) |o| o.record(o.context, .{ .row = self.decoder.row, .logits = logits, .token = k });
             if (k == t.blank) {
                 i += 1;

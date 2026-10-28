@@ -13,6 +13,7 @@ const builtin = @import("builtin");
 const safetensors = @import("../formats/safetensors.zig");
 const cpu = @import("../backends/cpu/root.zig");
 const mel = @import("mel.zig");
+const boost_mod = @import("boost.zig");
 
 const dense = cpu.dense;
 
@@ -173,6 +174,10 @@ pub const Decoder = struct {
     io: std.Io,
     weights: *const Weights,
     observer: ?Observer = null,
+    /// Phrases to lean toward (borrowed; outlives the decoder's use of it),
+    /// and where the emitted pieces stand in them.
+    boost: ?*const boost_mod.Boost = null,
+    boosting: boost_mod.State = .{},
     /// `layers × hidden` each.
     h: []f32,
     c: []f32,
@@ -221,6 +226,7 @@ pub const Decoder = struct {
         @memset(self.h, 0);
         @memset(self.c, 0);
         self.row = 0;
+        self.boosting.reset();
         try self.predict(self.weights.config.blank);
     }
 
@@ -257,15 +263,25 @@ pub const Decoder = struct {
         const c = self.weights.config;
         jointInput(e, self.g, self.joint);
         try dense.matmul(self.io, .{ .rows = 1, .inner = c.hidden, .outputs = c.vocab, .x = self.joint, .w = self.weights.head.weight, .bias = self.weights.head.bias }, self.logits);
-        const k: u32 = @intCast(argmax(self.logits));
+        const k = self.choose(self.logits);
         if (self.observer) |o| o.record(o.context, .{ .row = self.row, .logits = self.logits, .token = k });
         return k;
     }
 
+    /// The greedy choice from one row's joint logits: the argmax, or a
+    /// phrase's piece within the bonus of it.
+    pub fn choose(self: *const Decoder, logits: []const f32) u32 {
+        const k: u32 = @intCast(argmax(logits));
+        const b = self.boost orelse return k;
+        return self.boosting.choose(b, logits, k);
+    }
+
     /// The prediction network on `token`: its embedding through every LSTM
-    /// layer (state updated), then `decoder_projector` into `g`.
+    /// layer (state updated), then `decoder_projector` into `g`. An emitted
+    /// token also moves the phrase state.
     pub fn predict(self: *Decoder, token: u32) !void {
         const c = self.weights.config;
+        if (token != c.blank) if (self.boost) |b| self.boosting.advance(b, token);
         const hd = c.hidden;
         var x: []const f32 = self.weights.embedding[@as(usize, token) * hd ..][0..hd];
         for (self.weights.layers, 0..) |layer, l| {

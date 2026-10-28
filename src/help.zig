@@ -508,6 +508,8 @@ fn transcribe(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "or 13 (latency 80, 320, 560, 1120 ms); default 3");
     try row(out, sty, "--language <code>", "the language to expect, a locale (en-US, de-DE,");
     try more(out, "fr, es-US, ...); default auto, which detects it");
+    try row(out, sty, "--phrase <words>", "a name or words to expect (Siobhan, Dun");
+    try more(out, "Laoghaire); repeat it, at most 64 times");
     try row(out, sty, "--model <name|dir>", "nemotron-asr-0.6b, a transcription registry");
     try more(out, "entry, or a checkpoint directory; default");
     try more(out, "transcribe.model (nemotron-asr-0.6b)");

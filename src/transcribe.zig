@@ -17,6 +17,7 @@ const audio = inference.audio.audio;
 const asr = inference.audio.nemotron_asr;
 const rnnt = inference.audio.nemotron_rnnt;
 const lookaheads = inference.audio.nemotron_encoder.lookaheads;
+const boost = inference.audio.boost;
 
 /// One `--stream` piece: 80 ms, one encoder row.
 const piece_samples = 1280;
@@ -38,6 +39,13 @@ pub const Options = struct {
     language: ?[]const u8 = null,
     backend: Backend = default_backend,
     model: ?[]const u8 = null,
+    /// `--phrase`, in order: words to lean toward.
+    phrase_buf: [boost.max_phrases][]const u8 = undefined,
+    phrase_count: usize = 0,
+
+    pub fn phrases(self: *const Options) []const []const u8 {
+        return self.phrase_buf[0..self.phrase_count];
+    }
 };
 
 /// Parses the words after `transcribe`.
@@ -69,7 +77,7 @@ pub fn parseArgs(args: []const []const u8, diag: *config.Diagnostic) !Options {
             o.format = .json;
             continue;
         }
-        const takes_value = for ([_][]const u8{ "--lookahead", "--language", "--backend", "--model", "--format" }) |known| {
+        const takes_value = for ([_][]const u8{ "--lookahead", "--language", "--backend", "--model", "--format", "--phrase" }) |known| {
             if (std.mem.eql(u8, word, known)) break true;
         } else false;
         if (!takes_value) {
@@ -104,6 +112,13 @@ pub fn parseArgs(args: []const []const u8, diag: *config.Diagnostic) !Options {
         } else if (std.mem.eql(u8, word, "--model")) {
             if (o.model != null) return error.DuplicateOption;
             o.model = value;
+        } else if (std.mem.eql(u8, word, "--phrase")) {
+            if (o.phrase_count == boost.max_phrases) {
+                diag.set("--phrase is given at most {d} times", .{boost.max_phrases});
+                return error.InvalidOptionValue;
+            }
+            o.phrase_buf[o.phrase_count] = value;
+            o.phrase_count += 1;
         } else if (std.mem.eql(u8, word, "--format")) {
             if (format_set) return error.DuplicateOption;
             format_set = true;
@@ -225,6 +240,15 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
         .metal => .metal,
     });
     defer transcriber.deinit();
+    var phrases: ?inference.audio.boost.Boost = if (o.phrase_count == 0) null else model.boost(gpa, o.phrases(), boost.default_bonus, boost.default_follow) catch |err| switch (err) {
+        error.InvalidPhrase => {
+            diag.set("--phrase takes words: at most {d} bytes, no control characters", .{boost.max_phrase_bytes});
+            return error.InvalidOptionValue;
+        },
+        else => return err,
+    };
+    defer if (phrases) |*p| p.deinit();
+    if (phrases) |*p| transcriber.setBoost(p);
     var segmenter: transcript.Segmenter = .init(gpa, if (o.language != null and !std.mem.eql(u8, prompt_name, "auto")) prompt_name else null);
     defer segmenter.deinit();
     var samples: u64 = 0;

@@ -11,6 +11,7 @@ const safetensors = @import("../formats/safetensors.zig");
 const pieces = @import("../tokenizer/pieces.zig");
 const encoder = @import("nemotron_encoder.zig");
 const rnnt = @import("nemotron_rnnt.zig");
+const rnnt_boost = @import("boost.zig");
 const nemotron_metal = @import("nemotron_metal.zig");
 
 /// Bytes read from each JSON file of the directory, at most.
@@ -109,6 +110,11 @@ pub const Model = struct {
     /// scratch), beside the mapped checkpoint; 0 on the CPU.
     pub fn deviceBytes(self: *const Model) u64 {
         return if (self.metal) |plan| plan.backend.created_bytes else 0;
+    }
+
+    /// `phrases` against this model's pieces at `bonus` (owned; `deinit`).
+    pub fn boost(self: *const Model, alloc: std.mem.Allocator, phrases: []const []const u8, bonus: f32, follow: f32) rnnt_boost.Error!rnnt_boost.Boost {
+        return rnnt_boost.Boost.init(alloc, phrases, bonus, follow, &self.table);
     }
 
     /// The prompt id of a `prompt_dictionary` key (`de-DE`, `de`, `auto`).
@@ -263,6 +269,17 @@ pub const Transcriber = struct {
             .metal => |*s| try s.setPrompt(prompt),
         }
         self.prompt = prompt;
+    }
+
+    /// Phrases to lean toward from the next row on, or none; `boost` is
+    /// borrowed and must outlive its use here.
+    pub fn setBoost(self: *Transcriber, boost: ?*const rnnt_boost.Boost) void {
+        const d = switch (self.run) {
+            .cpu => |*r| &r.decoder,
+            .metal => |*s| &s.decoder,
+        };
+        d.boost = boost;
+        d.boosting.reset();
     }
 
     /// Encoder rows decoded so far (80 ms each).
