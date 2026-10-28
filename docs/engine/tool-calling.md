@@ -93,6 +93,15 @@ model's own bytes are reproduced for the incremental prefill, and numbers are
 rendered as their JSON text where the reference reformats floats
 (`1e10` → `10000000000.0`).
 
+The models leave the grammar in one way seen so far: the 26B-A4B wrote
+`call:remember{fact: "…"}`, a JSON string in plain quotes, in 2 of 4
+replays of one turn (Muon, 2026-10-28). The parser reads a JSON string,
+as value or key (`{"fact":…}`), as JSON reads it. A body that still does
+not parse is dropped with `tool_cut`, not released as answer text as the
+other profiles do (`Tool.unparsed`): its brackets are control tokens, so
+the text would show the reader the model's call syntax; the API answers
+`malformed_tool_call`.
+
 ## Muse Glimmer: ATEM calls as their own messages
 
 The pinned template (digest `114f55eb…`, [muse-glimmer.md](../models/muse-glimmer.md#chat-template))

@@ -54,8 +54,10 @@ pub const efforts = [_]Effort{ .off, .low, .medium };
 pub const reasoning: profiles.Reasoning = .{ .open = "<|channel>thought\n", .close = "<channel|>" };
 /// The generation prompts a render may end with, longest first: what
 /// `promptEnd` cuts off. After tool results the turn is
-/// still open: only the thought channel, or nothing.
-pub const generation_prompts = [_][]const u8{ "<|turn>model\n<|channel>thought\n<channel|>", "<|turn>model\n", "<|channel>thought\n" };
+/// still open: only the thought channel, or nothing. Results followed by
+/// the call step's text close the turn and the render reopens one, where
+/// history continues the turn: the close is cut too.
+pub const generation_prompts = [_][]const u8{ "<|turn>model\n<|channel>thought\n<channel|>", "<turn|>\n<|turn>model\n", "<|turn>model\n", "<|channel>thought\n" };
 /// History never renders a generated answer as consumed: thinking off, the
 /// generation prompt's empty thought channel is absent from past turns;
 /// thinking on, the reasoning gate drops the thought once a user follows.
@@ -69,6 +71,9 @@ pub const stream_markers: profiles.StreamMarkers = .{
     .tool_open = "<|tool_call>",
     .tool_close = "<tool_call|>",
     .tool_parse = parseTool,
+    // Its brackets are control tokens: a call that does not parse is no
+    // answer text either.
+    .tool_unparsed = .cut,
 };
 
 /// The DSL's string delimiter: strings are literal between two of these and
@@ -585,6 +590,8 @@ fn renderResponse(builder: *Builder, name: []const u8, content: []const u8) Erro
 /// of `renderCall`: strings are literal between delimiters, numbers keep
 /// their text, nested objects and arrays keep their wire order. Whitespace is
 /// allowed where the reference grammar allows it (after `{`, `[`, `,`, `:`).
+/// The models also write JSON strings (`{fact: "…"}`, `{"fact":…}`), off
+/// the grammar but unambiguous: they are read as JSON reads them.
 pub fn parseTool(alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.Error!?profiles.ToolCall {
     const text = std.mem.trim(u8, body, " \t\r\n");
     const call_marker = "call:";
@@ -598,7 +605,8 @@ pub fn parseTool(alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.E
     // Also frees the partial JSON on every null return; the success path
     // takes ownership of the bytes first.
     defer arguments.deinit();
-    var parser: Parser = .{ .text = text, .pos = brace, .json = .{ .writer = &arguments.writer } };
+    var parser: Parser = .{ .alloc = alloc, .text = text, .pos = brace, .json = .{ .writer = &arguments.writer } };
+    defer parser.scratch.deinit(alloc);
     if (!try parser.object(0)) return null;
     parser.space();
     if (parser.pos != text.len) return null;
@@ -613,9 +621,12 @@ pub fn parseTool(alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.E
 /// Every method returns false for a malformed or truncated body; the only
 /// error is allocation (the writer is allocating, so its failure is OOM).
 const Parser = struct {
+    alloc: std.mem.Allocator,
     text: []const u8,
     pos: usize,
     json: std.json.Stringify,
+    /// The last JSON string read, decoded; valid until the next one.
+    scratch: std.ArrayList(u8) = .empty,
 
     const Fail = std.mem.Allocator.Error;
 
@@ -638,12 +649,20 @@ const Parser = struct {
             return true;
         }
         while (true) {
-            // A key is anything up to the colon, bar a closing brace.
-            const start = self.pos;
-            while (self.pos < self.text.len and self.text[self.pos] != ':' and self.text[self.pos] != '}') self.pos += 1;
-            if (self.pos == start or self.pos == self.text.len or self.text[self.pos] != ':') return false;
-            self.json.objectField(self.text[start..self.pos]) catch return error.OutOfMemory;
-            self.pos += 1;
+            if (self.pos < self.text.len and self.text[self.pos] == '"') {
+                const key = try self.jsonString() orelse return false;
+                if (key.len == 0) return false;
+                self.json.objectField(key) catch return error.OutOfMemory;
+                self.space();
+                if (!self.take(":")) return false;
+            } else {
+                // A key is anything up to the colon, bar a closing brace.
+                const start = self.pos;
+                while (self.pos < self.text.len and self.text[self.pos] != ':' and self.text[self.pos] != '}') self.pos += 1;
+                if (self.pos == start or self.pos == self.text.len or self.text[self.pos] != ':') return false;
+                self.json.objectField(self.text[start..self.pos]) catch return error.OutOfMemory;
+                self.pos += 1;
+            }
             self.space();
             if (!try self.value(depth)) return false;
             self.space();
@@ -683,6 +702,10 @@ const Parser = struct {
             return true;
         }
         switch (self.text[self.pos]) {
+            '"' => {
+                const string = try self.jsonString() orelse return false;
+                self.json.write(string) catch return error.OutOfMemory;
+            },
             '{' => return self.object(depth + 1),
             '[' => return self.array(depth + 1),
             't' => {
@@ -700,6 +723,61 @@ const Parser = struct {
             else => return self.number(),
         }
         return true;
+    }
+
+    /// A JSON string at `pos`, decoded into `scratch`; null when it is
+    /// unterminated or has an invalid escape. Raw control characters are
+    /// kept: the writer escapes them.
+    fn jsonString(self: *Parser) Fail!?[]const u8 {
+        self.scratch.clearRetainingCapacity();
+        self.pos += 1;
+        while (self.pos < self.text.len) {
+            const c = self.text[self.pos];
+            self.pos += 1;
+            switch (c) {
+                '"' => return self.scratch.items,
+                '\\' => {
+                    if (self.pos >= self.text.len) return null;
+                    const e = self.text[self.pos];
+                    self.pos += 1;
+                    const byte: u8 = switch (e) {
+                        '"', '\\', '/' => e,
+                        'b' => 0x08,
+                        'f' => 0x0c,
+                        'n' => '\n',
+                        'r' => '\r',
+                        't' => '\t',
+                        'u' => {
+                            const unit = self.hex4() orelse return null;
+                            var point: u21 = unit;
+                            if (std.unicode.utf16IsHighSurrogate(unit)) {
+                                if (!self.take("\\u")) return null;
+                                const low = self.hex4() orelse return null;
+                                if (!std.unicode.utf16IsLowSurrogate(low)) return null;
+                                point = 0x10000 + ((point - 0xD800) << 10) + (low - 0xDC00);
+                            } else if (std.unicode.utf16IsLowSurrogate(unit)) return null;
+                            var buf: [4]u8 = undefined;
+                            const n = std.unicode.utf8Encode(point, &buf) catch return null;
+                            try self.scratch.appendSlice(self.alloc, buf[0..n]);
+                            continue;
+                        },
+                        else => return null,
+                    };
+                    try self.scratch.append(self.alloc, byte);
+                },
+                else => try self.scratch.append(self.alloc, c),
+            }
+        }
+        return null;
+    }
+
+    fn hex4(self: *Parser) ?u16 {
+        if (self.pos + 4 > self.text.len) return null;
+        const digits = self.text[self.pos..][0..4];
+        for (digits) |d| if (!std.ascii.isHex(d)) return null;
+        const v = std.fmt.parseInt(u16, digits, 16) catch return null;
+        self.pos += 4;
+        return v;
     }
 
     /// A JSON number, copied as written.
@@ -1023,6 +1101,35 @@ test "parseTool accepts the grammar's whitespace and refuses malformed or trunca
         "call:f{a:[1,]}", // dangling comma
         "call:f{a:{b:1},}", // dangling comma
         "call:f{a:[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]}", // beyond the depth bound
+    }) |body| {
+        try std.testing.expect((try parseTool(alloc, body)) == null);
+    }
+}
+
+test "parseTool reads JSON strings, as the models sometimes write them" {
+    const alloc = std.testing.allocator;
+    for ([_][2][]const u8{
+        .{ "call:remember{fact: \"The user likes tea.\"}", "{\"fact\":\"The user likes tea.\"}" },
+        .{ "call:remember{\"fact\":\"x\"}", "{\"fact\":\"x\"}" },
+        .{ "call:remember{\"fact\" : \"x\"}", "{\"fact\":\"x\"}" },
+        .{ "call:remember{fact:<|\"|>x<|\"|>}", "{\"fact\":\"x\"}" },
+        .{ "call:f{a: \"say \\\"hi\\\"\\n\", b:<|\"|>c: d<|\"|>, c:[\"\\u00e9\\ud83d\\ude00\", 1]}", "{\"a\":\"say \\\"hi\\\"\\n\",\"b\":\"c: d\",\"c\":[\"é😀\",1]}" },
+        .{ "call:f{\"a:b\":1}", "{\"a:b\":1}" },
+    }) |case| {
+        const call = (try parseTool(alloc, case[0])) orelse return error.TestUnexpectedResult;
+        defer {
+            alloc.free(call.name);
+            alloc.free(call.arguments);
+        }
+        try std.testing.expectEqualStrings(case[1], call.arguments);
+    }
+    for ([_][]const u8{
+        "call:f{a: \"open}", // unterminated
+        "call:f{a: \"\\x\"}", // invalid escape
+        "call:f{a: \"\\u12\"}", // short escape
+        "call:f{a: \"\\ud83d\"}", // lone surrogate
+        "call:f{\"\":1}", // empty key
+        "call:f{\"a\" 1}", // no colon
     }) |body| {
         try std.testing.expect((try parseTool(alloc, body)) == null);
     }

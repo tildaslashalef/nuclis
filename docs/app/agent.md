@@ -350,7 +350,8 @@ open when the stream ends — EOS, the token budget, a cancellation — never
 reached its closing token, so it is released to the transcript as plain answer
 text, the same bytes the model wrote. A body that arrives complete but that the
 parser refuses (no function name, malformed parameters) is likewise released as
-text. Neither can reach execution: an incomplete or malformed call is a
+text, except under Gemma 4, whose call brackets are control tokens: there it is
+dropped with a notice. Neither can reach execution: an incomplete or malformed call is a
 message, never an action. This is the tool analogue of §6's rule that a
 process is not an instruction until the host has actually built it.
 

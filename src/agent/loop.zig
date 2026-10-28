@@ -996,7 +996,7 @@ pub const Agent = struct {
             .tool_cut => |bytes| {
                 try self.events.send(self.events.context, .{ .call_progress = 0 });
                 var note: [96]u8 = undefined;
-                try self.events.send(self.events.context, .{ .notice = std.fmt.bufPrint(&note, "  — a tool call was cut off after {d} bytes, before it closed; nothing ran", .{bytes}) catch "  — a tool call was cut off before it closed; nothing ran" });
+                try self.events.send(self.events.context, .{ .notice = std.fmt.bufPrint(&note, "  — a tool call of {d} bytes was cut off or did not parse; nothing ran", .{bytes}) catch "  — a tool call was cut off or did not parse; nothing ran" });
             },
             .tool_call => |call| {
                 const name = try self.alloc.dupe(u8, call.name);
