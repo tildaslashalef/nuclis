@@ -94,6 +94,19 @@
    "path": "~/.nuclis/models/nvidia/nemotron-3.5-asr-streaming-0.6b"
   }
  },
+ "data": {
+  "wikitext-2": {
+   "paths": [
+    ".reference/eval/wikitext-2-raw/wiki.test.raw"
+   ],
+   "fetch": "make eval-corpus"
+  },
+  "speech-corpus": {
+   "root": ".reference/speech",
+   "listed_in": "tests/fixtures/speech-corpus.json",
+   "fetch": "make speech-corpus"
+  }
+ },
  "checks": [
   {
    "name": "fmt",
@@ -3131,6 +3144,9 @@
    "family": "qwen38",
    "tier": "verify",
    "model": "qwen38",
+   "data": [
+    "wikitext-2"
+   ],
    "paths": [
     "build.zig",
     "inference/build.zig",
@@ -3174,6 +3190,9 @@
    "family": "qwen38",
    "tier": "verify-release",
    "model": "qwen38",
+   "data": [
+    "wikitext-2"
+   ],
    "paths": [
     "build.zig",
     "inference/build.zig",
@@ -3215,6 +3234,9 @@
    "family": "gemma4",
    "tier": "verify",
    "model": "gemma4_26b_a4b",
+   "data": [
+    "wikitext-2"
+   ],
    "paths": [
     "build.zig",
     "inference/build.zig",
@@ -3256,6 +3278,9 @@
    "family": "muse",
    "tier": "verify",
    "model": "muse",
+   "data": [
+    "wikitext-2"
+   ],
    "paths": [
     "build.zig",
     "inference/build.zig",
@@ -3299,6 +3324,9 @@
    "family": "muse",
    "tier": "verify-release",
    "model": "muse",
+   "data": [
+    "wikitext-2"
+   ],
    "paths": [
     "build.zig",
     "inference/build.zig",
@@ -3690,6 +3718,9 @@
    "family": "gemma4",
    "tier": "verify",
    "model": "gemma4_e4b",
+   "data": [
+    "speech-corpus"
+   ],
    "paths": [
     "build.zig",
     "inference/build.zig",
@@ -3835,6 +3866,9 @@
    "family": "gemma4",
    "tier": "verify",
    "model": "gemma4_e4b",
+   "data": [
+    "wikitext-2"
+   ],
    "paths": [
     "build.zig",
     "inference/build.zig",
@@ -3878,6 +3912,9 @@
    "family": "gemma4",
    "tier": "verify-release",
    "model": "gemma4_e4b",
+   "data": [
+    "wikitext-2"
+   ],
    "paths": [
     "build.zig",
     "inference/build.zig",
@@ -3919,6 +3956,9 @@
    "family": "gemma4",
    "tier": "verify-long",
    "model": "gemma4_e4b",
+   "data": [
+    "wikitext-2"
+   ],
    "paths": [
     "build.zig",
     "inference/build.zig",
@@ -4434,6 +4474,9 @@
    "family": "nemotron-asr",
    "tier": "verify-cpu",
    "model": "nemotron_asr",
+   "data": [
+    "speech-corpus"
+   ],
    "paths": [
     "build.zig",
     "inference/build.zig",
@@ -4504,6 +4547,9 @@
    "family": "nemotron-asr",
    "tier": "verify",
    "model": "nemotron_asr",
+   "data": [
+    "speech-corpus"
+   ],
    "paths": [
     "build.zig",
     "inference/build.zig",
@@ -4543,6 +4589,9 @@
    "family": "nemotron-asr",
    "tier": "verify",
    "model": "nemotron_asr",
+   "data": [
+    "speech-corpus"
+   ],
    "paths": [
     "build.zig",
     "inference/build.zig",
@@ -4587,6 +4636,9 @@
    "family": "nemotron-asr",
    "tier": "verify",
    "model": "nemotron_asr",
+   "data": [
+    "speech-corpus"
+   ],
    "paths": [
     "build.zig",
     "inference/build.zig",
@@ -4631,6 +4683,9 @@
    "family": "nemotron-asr",
    "tier": "verify",
    "model": "nemotron_asr",
+   "data": [
+    "speech-corpus"
+   ],
    "paths": [
     "build.zig",
     "inference/build.zig",

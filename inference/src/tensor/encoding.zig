@@ -31,6 +31,8 @@ pub fn layout(id: u32) ?Layout {
         0 => .{ .name = "F32", .elements_per_block = 1, .bytes_per_block = 4 },
         1 => .{ .name = "F16", .elements_per_block = 1, .bytes_per_block = 2 },
         2 => .{ .name = "Q4_0", .elements_per_block = 32, .bytes_per_block = 18 },
+        6 => .{ .name = "Q5_0", .elements_per_block = 32, .bytes_per_block = 22 },
+        7 => .{ .name = "Q5_1", .elements_per_block = 32, .bytes_per_block = 24 },
         8 => .{ .name = "Q8_0", .elements_per_block = 32, .bytes_per_block = 34 },
         10 => .{ .name = "Q2_K", .elements_per_block = 256, .bytes_per_block = 84 },
         11 => .{ .name = "Q3_K", .elements_per_block = 256, .bytes_per_block = 110 },
@@ -58,6 +60,8 @@ test "quantized rows must contain whole blocks" {
     // 128 * 2 is divisible by 256, but neither individual row is.
     try std.testing.expectError(error.InvalidShape, layout(12).?.byteCount(&.{ 128, 2 }));
     try std.testing.expectEqual(@as(u64, 18), try layout(20).?.byteCount(&.{32}));
+    try std.testing.expectEqual(@as(u64, 22 * 22), try layout(6).?.byteCount(&.{704}));
+    try std.testing.expectEqual(@as(u64, 24 * 66), try layout(7).?.byteCount(&.{2112}));
     try std.testing.expectError(error.InvalidShape, layout(0).?.byteCount(&.{ 4, 0 }));
     try std.testing.expectError(error.Overflow, layout(0).?.byteCount(&.{std.math.maxInt(u64)}));
     try std.testing.expectEqual(@as(u64, 34 * 40), try layout(142).?.byteCount(&.{5120}));

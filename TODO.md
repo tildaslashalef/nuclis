@@ -14,16 +14,34 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-No unit is in progress. Muon's voice loop (Gemma 4 calls in plain quotes,
-a started chunk for hosted web calls, state reused after a search, phrases
-the recognizer should expect) is in its pull request, whose description
-is its record; the next release (0.11.0) carries it with the
-model-management unit
-([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)).
+No unit is in progress. Q5_0 and Q5_1 (`q5-0-q5-1-encodings`: the CPU
+decoders, the Metal kernels, the Gemma 4 adapter, and two side fixes, a
+gate that skips when its data is missing and `discover` taking a Gemma 4
+file's verdict from the entry of its layer count) waits for its pull
+request, whose description is its record. Muon's voice loop is in its pull
+request; the next release (0.11.0) carries it with the model-management
+unit ([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)).
 
 ## Deferred
 
 Agreed and not scheduled; when one is picked up, it becomes a unit above.
+
+- **MTP slows Gemma 4 26B-A4B down** (the user's, 2026-10-28). The
+  catalogue's verdict is off: 0.63–0.76× on prose at drafts 2–7, the
+  verify growing from 60 to 98 ms with its rows
+  (`docs/engine/speculative-decoding.md`, the 26B-A4B verdict). Again on a
+  K-quant 26B-A4B file with the same `mtp-gemma-4-26B-A4B-it.gguf` head,
+  2026-10-28, M4 Pro, greedy, 300-token story, draft 5: 50.5 tok/s off,
+  27.6 on (0.55×), 164 of 368 drafts accepted. The head's card reports
+  about +35 % under llama.cpp. First step: measure llama.cpp on the same
+  machine, files, and prompt (`llama-server -md <head> --spec-type
+  draft-mtp`, `docs/benchmarks/llama-cpp.md` for the build) to tell
+  acceptance from verify cost; then a cooled `nuclis bench --profile` of
+  one verify step at 2, 4, and 6 rows. Suspect: the verify's expert work
+  reads an expert's weights once per row that selects it rather than once
+  per batch (the gathered tile groups rows by expert, the per-token
+  matvecs do not). llama.cpp is a speed comparison here, never a source to
+  copy.
 
 - **A short word after silence is lost** (from Muon's voice loop,
   2026-10-28): the checkpoint's own borderline call, the same on CPU and

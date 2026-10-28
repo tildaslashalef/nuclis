@@ -125,6 +125,22 @@ inline void nu_tile_q4_0(device const uchar * b, uint first, thread float4 * q) 
     else { q[0] = nu_low_nibbles(w0); q[1] = nu_low_nibbles(w1); q[2] = nu_low_nibbles(w2); q[3] = nu_low_nibbles(w3); }
     for (uint i = 0; i < 4; ++i) q[i] = d * (q[i] - 8.0f);
 }
+// Q5_0 / Q5_1 (OFFSET) segment: Q4_0's nibbles completed by their plane
+// bits, `d * (q - 16)` or `d * q + m` in the generic decoder's operation
+// order; 2-byte aligned blocks.
+template <bool OFFSET>
+inline void nu_tile_five(device const uchar * b, uint first, thread float4 * q) {
+    const uint plane_at = OFFSET ? 4 : 2;
+    device const ushort * h = (device const ushort *)b;
+    float d = float(as_type<half>(h[0])), m = OFFSET ? float(as_type<half>(h[1])) : 0.0f;
+    uint qh = uint(h[plane_at / 2]) | (uint(h[plane_at / 2 + 1]) << 16);
+    packed_ushort4 l0 = *(device const packed_ushort4 *)(b + plane_at + 4), l1 = *(device const packed_ushort4 *)(b + plane_at + 12);
+    uint w[4] = { nu_word(l0, 0), nu_word(l0, 1), nu_word(l1, 0), nu_word(l1, 1) };
+    for (uint i = 0; i < 4; ++i) {
+        float4 code = nu_bytes(((first ? w[i] >> 4 : w[i]) & 0x0f0f0f0fu) | nu_plane_bits(qh, first + 4 * i));
+        q[i] = OFFSET ? d * code + m : d * (code - 16.0f);
+    }
+}
 // Q8_0 segment: sixteen of the block's 32 signed bytes, `d * q`; 34-byte
 // blocks, 2-byte aligned, so the bytes are read as ushort pairs.
 inline void nu_tile_q8_0(device const uchar * b, uint first, thread float4 * q) {
@@ -262,15 +278,17 @@ inline void nu_tile_segment(device const uchar * row, uint encoding, uint segmen
         for (uint i = 0; i < 4; ++i) q[i] = float4(values[4 * i], values[4 * i + 1], values[4 * i + 2], values[4 * i + 3]);
         return;
     }
-    // 256-value blocks hold sixteen segments; Q4_0's and IQ4_NL's 32-value block two; the
-    // ternary 128-value blocks eight.
-    const uint block_bytes = ENC == 8 ? 34 : (ENC == 2 || ENC == 20) ? 18 : ENC == 12 ? 144 : ENC == 13 ? 176 : ENC == 14 ? 210 : ENC == 23 ? 136 : ENC == 142 ? 34 : ENC == 143 ? 28
+    // 256-value blocks hold sixteen segments; the 32-value blocks (Q4_0, Q5_0,
+    // Q5_1, Q8_0, IQ4_NL) two; the ternary 128-value blocks eight.
+    const uint block_bytes = ENC == 8 ? 34 : (ENC == 2 || ENC == 20) ? 18 : ENC == 6 ? 22 : ENC == 7 ? 24 : ENC == 12 ? 144 : ENC == 13 ? 176 : ENC == 14 ? 210 : ENC == 23 ? 136 : ENC == 142 ? 34 : ENC == 143 ? 28
         : ENC == 10 ? 84 : ENC == 16 ? 66 : ENC == 17 ? 74 : ENC == 18 ? 98 : ENC == 19 ? 50 : ENC == 22 ? 82 : ENC == 29 ? 56 : 110;
-    const uint segments_per_block = (ENC == 2 || ENC == 20 || ENC == 8) ? 2 : (ENC == 142 || ENC == 143) ? 8 : 16;
+    const uint segments_per_block = (ENC == 2 || ENC == 6 || ENC == 7 || ENC == 20 || ENC == 8) ? 2 : (ENC == 142 || ENC == 143) ? 8 : 16;
     device const uchar * b = row + ulong(segment / segments_per_block) * block_bytes;
     uint first = (segment % segments_per_block) * 16;
     switch (ENC) {
         case 2: nu_tile_q4_0(b, first, q); break;
+        case 6: nu_tile_five<false>(b, first, q); break;
+        case 7: nu_tile_five<true>(b, first, q); break;
         case 8: nu_tile_q8_0(b, first, q); break;
         case 20: nu_tile_iq4_nl(b, first, q); break;
         case 11: nu_tile_q3_k(b, first, q); break;
@@ -639,6 +657,8 @@ template [[host_name("nu_matmul_q6_k")]] kernel void nu_matmul_t<14, 64, 64, hal
 template [[host_name("nu_matmul_iq3_s")]] kernel void nu_matmul_t<21, 64, 64, half, half, true>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_iq4_xs")]] kernel void nu_matmul_t<23, 64, 64, half, half, true>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q4_0")]] kernel void nu_matmul_t<2, 64, 64, half, half, true>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q5_0")]] kernel void nu_matmul_t<6, 64, 64, half, half, true>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q5_1")]] kernel void nu_matmul_t<7, 64, 64, half, half, true>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q3_k_32")]] kernel void nu_matmul_t<11, 32, 32, half, float, false>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q4_k_32")]] kernel void nu_matmul_t<12, 32, 32, half, float, false>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q5_k_32")]] kernel void nu_matmul_t<13, 32, 32, half, float, false>(NU_MATMUL_ARGS);
@@ -646,6 +666,8 @@ template [[host_name("nu_matmul_q6_k_32")]] kernel void nu_matmul_t<14, 32, 32, 
 template [[host_name("nu_matmul_iq3_s_32")]] kernel void nu_matmul_t<21, 32, 32, half, float, false>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_iq4_xs_32")]] kernel void nu_matmul_t<23, 32, 32, half, float, false>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q4_0_32")]] kernel void nu_matmul_t<2, 32, 32, half, float, false>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q5_0_32")]] kernel void nu_matmul_t<6, 32, 32, half, float, false>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q5_1_32")]] kernel void nu_matmul_t<7, 32, 32, half, float, false>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_pq2_0")]] kernel void nu_matmul_t<142, 64, 64, half, half, true>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_ptq1_0")]] kernel void nu_matmul_t<143, 64, 64, half, half, true>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_pq2_0_32")]] kernel void nu_matmul_t<142, 32, 32, half, float, false>(NU_MATMUL_ARGS);
@@ -674,6 +696,8 @@ template [[host_name("nu_matmul_q6_k_8")]] kernel void nu_matmul_split_t<14, hal
 template [[host_name("nu_matmul_iq3_s_8")]] kernel void nu_matmul_split_t<21, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_iq4_xs_8")]] kernel void nu_matmul_split_t<23, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q4_0_8")]] kernel void nu_matmul_split_t<2, half>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q5_0_8")]] kernel void nu_matmul_split_t<6, half>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q5_1_8")]] kernel void nu_matmul_split_t<7, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_pq2_0_8")]] kernel void nu_matmul_split_t<142, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_ptq1_0_8")]] kernel void nu_matmul_split_t<143, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q2_k_8")]] kernel void nu_matmul_split_t<10, half>(NU_MATMUL_ARGS);
@@ -707,6 +731,8 @@ template [[host_name("nu_matmul_iq4_xs_f2")]] kernel void nu_matmul_frag_t<23, 2
 template [[host_name("nu_matmul_q3_k_f2")]] kernel void nu_matmul_frag_t<11, 2, half, float>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_iq3_s_f2")]] kernel void nu_matmul_frag_t<21, 2, half, float>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q4_0_f2")]] kernel void nu_matmul_frag_t<2, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q5_0_f2")]] kernel void nu_matmul_frag_t<6, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q5_1_f2")]] kernel void nu_matmul_frag_t<7, 2, half, float>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_pq2_0_f2")]] kernel void nu_matmul_frag_t<142, 2, half, float>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_ptq1_0_f2")]] kernel void nu_matmul_frag_t<143, 2, half, float>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_iq4_nl_f2")]] kernel void nu_matmul_frag_t<20, 2, half, float>(NU_MATMUL_ARGS);
@@ -719,11 +745,13 @@ template [[host_name("nu_matmul_iq2_s_f2")]] kernel void nu_matmul_frag_t<22, 2,
 template [[host_name("nu_matmul_iq1_m_f2")]] kernel void nu_matmul_frag_t<29, 2, half, float>(NU_MATMUL_ARGS);
 // Q8_0's tile is called by name (the DFlash2 drafter), never routed by `matmul`.
 template [[host_name("nu_matmul_q8_0_f2")]] kernel void nu_matmul_frag_t<8, 2, half, float>(NU_MATMUL_ARGS);
-// Gathered expert tiles: 64 rows × 32 slot rows with half operands for Q4_0
-// (an expert averages k · chunk / experts slot rows per chunk, 16 on the
-// 26B-A4B at 256 tokens, so one token tile covers most experts), and the
-// generic F32 32 × 32 tile for every other encoding or alignment.
+// Gathered expert tiles: 64 rows × 32 slot rows with half operands for Q4_0,
+// Q5_0, and Q5_1 (an expert averages k · chunk / experts slot rows per chunk,
+// 16 on the 26B-A4B at 256 tokens, so one token tile covers most experts), and
+// the generic F32 32 × 32 tile for every other encoding or alignment.
 #define NU_MATMUL_EXPERTS_ARGS device const uchar *, device const float *, device float *, device const uint *, constant MatmulExpertsParams &, uint, uint, uint
 template [[host_name("nu_matmul_experts")]] kernel void nu_matmul_experts_t<NU_TILE_GENERIC, 32, float, float>(NU_MATMUL_EXPERTS_ARGS);
 template [[host_name("nu_matmul_experts_q4_0")]] kernel void nu_matmul_experts_t<2, 64, half, half>(NU_MATMUL_EXPERTS_ARGS);
+template [[host_name("nu_matmul_experts_q5_0")]] kernel void nu_matmul_experts_t<6, 64, half, half>(NU_MATMUL_EXPERTS_ARGS);
+template [[host_name("nu_matmul_experts_q5_1")]] kernel void nu_matmul_experts_t<7, 64, half, half>(NU_MATMUL_EXPERTS_ARGS);
 

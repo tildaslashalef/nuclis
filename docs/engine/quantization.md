@@ -5,11 +5,12 @@ The inference library exposes `quant.row(id, bytes, output)` through
 row into caller-owned `f32` storage. This is a numerical reference for future
 kernels; the CLI still provides structural inspection and validation only.
 
-Implemented encodings are F32 (ID 0), F16 (1), Q4_0 (2), Q8_0 (8), Q3_K (11),
+Implemented encodings are F32 (ID 0), F16 (1), Q4_0 (2), Q5_0 (6), Q5_1 (7), Q8_0 (8), Q3_K (11),
 Q4_K (12), Q5_K (13), Q6_K (14), IQ4_NL (20), IQ3_S (21), and IQ4_XS (23).
 This covers all nine encodings in the pinned Qwen artifact, plus F16, plus
 Q4_0 ([MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12), 2026-09-12: the only weight encoding of the catalogue's Gemma 4
-12B file). A [CPU matrix-vector reference](cpu-reference.md) consumes these
+12B file), plus Q5_0 and Q5_1 (2026-10-28: K-quant files' fallback where
+a row is not a multiple of 256, below). A [CPU matrix-vector reference](cpu-reference.md) consumes these
 rows. Inspection also recognizes the BF16 layout; row decoding rejects it
 explicitly.
 
@@ -49,6 +50,18 @@ bytes containing 32 four-bit lookup indices. The low nibbles describe the first
 nonuniform: treating IQ4_NL as ordinary signed four-bit integers is incorrect.
 Q4_0 is that ordinary case: the same 18-byte block and nibble order, and the
 value is `d * (q - 8)` for the four-bit code `q`, no table.
+
+Q5_0 (22 bytes) and Q5_1 (24 bytes) add a fifth bit to Q4_0's 32 values: an
+F16 `d` (Q5_1 then an F16 `m`), a little-endian 32-bit plane `qh`, and Q4_0's
+sixteen nibble bytes. Value `j` below 16 is the low nibble of byte `j` with
+bit `j` of `qh` as its fifth bit; value `j + 16` the high nibble with bit
+`j + 16`. Q5_0 is `d * (q - 16)`, Q5_1 `d * q + m`, for the five-bit code
+`q`. They reach nuclis through K-quant files: a K-quant row is a multiple of
+256 values, and llama.cpp's quantizer stores a tensor whose rows are not in
+a 32-value block of similar size instead (Q4_K becomes Q5_0, Q5_K Q5_1, Q6_K
+Q8_0, IQ4_XS IQ4_NL). Gemma 4 26B-A4B's `ffn_down` rows (2,112 dense, 704
+per expert) are such tensors, so its Q4_K_M and Q4_K_S files carry Q5_0 and
+its Q5_K files Q5_1.
 
 Q4_K and Q5_K store 256 values in eight groups of 32. Each group reconstructs
 `value = (d * scale) * q - (dmin * minimum)`, where `d` and `dmin` are F16
@@ -159,6 +172,20 @@ two real blocks of each from Saluki 27B, written by `zig build
 test-cross-encoding -- --fixture <out> <saluki.gguf>` with the CPU
 decoders' values: a regression pin for the CPU and the rows `metal-check`
 holds the GPU decoders to, bit for bit.
+
+Q5_0 and Q5_1 (2026-10-28) were validated without an external decoder and
+without the cross-encoding check. Hand-calculated tests pin both halves of
+the plane, every code on each half-row, the bias of 16 and Q5_1's offset.
+The [five-bit fixture](../../inference/src/quant/fixtures/five-bit.json)
+(eight blocks of each, written by `scripts/five-bit-fixtures.py` from the
+equations above, with negative, subnormal and large scales) holds the CPU
+decoder and `metal-check` holds the GPU to it: exact decode through every
+matvec and matmul path, and the 26B-A4B expert chains with a Q5_0 or Q5_1
+down projection against the F64 CPU reference. End to end, a Gemma 4
+26B-A4B Q4_K_M file with 32 Q5_0 `ffn_down` tensors gave the same greedy
+text on Metal and the CPU, and the same top five after a 368-token prefill
+(final logits max abs 5.2e-2, relative RMS 1.9e-3, inside the family's
+chunked-prefill bounds).
 
 Default tests consume only the committed fixtures and need no external checkout or model:
 

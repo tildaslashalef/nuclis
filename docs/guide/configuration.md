@@ -205,7 +205,9 @@ neither the catalogue nor an existing entry covers:
 - **Filled:** `repo`, `file`, and `revision` from the sidecar (or `path`
   without one); companions beside the file as `mmproj` and `mtp`; the
   family's `profile` when the template matches none (a finetune); the
-  catalogue's speculation verdict for the same architecture.
+  speculation verdict of the catalogue entry with the same architecture
+  and, where the catalogue records one, the same layer count (a Gemma 4
+  26B-A4B finetune takes the 26B-A4B's verdict, off, not the 12B's).
 - `--dry-run` reports without writing; the file is created if absent and
   otherwise kept.
 

@@ -23,7 +23,8 @@ kernel void nu_matvec(device const uchar * weights [[buffer(0)]],
 // ---------------------------------------------------------------------------
 // Specialized matrix-vector kernels for Q4_K, Q5_K, Q6_K, and IQ4_XS: the four
 // encodings holding 96 % of Qwen's bytes, so these decide decode speed; then
-// Q3_K, Q4_0 (the QAT Gemma checkpoint's only weight encoding), the ternary
+// Q3_K, Q4_0 (the QAT Gemma checkpoint's only weight encoding), Q5_0 and Q5_1
+// (K-quant files' fallback where a row is not a multiple of 256), the ternary
 // blocks, and the codebook encodings further down (Saluki's).
 //
 // Geometry: 128-thread groups of four SIMD groups. Each SIMD group owns ROWS
@@ -41,11 +42,11 @@ kernel void nu_matvec(device const uchar * weights [[buffer(0)]],
 // SIMD group beat one.
 //
 // Vector-load widths follow each block's natural alignment: Q4_K/Q5_K blocks
-// (144/176 B) are 16-byte aligned, IQ4_XS (136 B) 8-byte, Q6_K (210 B) and
-// Q4_0 (18 B) only 2-byte. The Zig encoder verifies row offset/stride
-// alignment before choosing a specialized kernel and otherwise records
-// nu_matvec. `blocks` counts 256-value strides; the Q4_0 body walks its own
-// 32-value blocks from `columns` instead.
+// (144/176 B) are 16-byte aligned, IQ4_XS (136 B) 8-byte, Q6_K (210 B),
+// Q4_0 (18 B), and Q5_0 (22 B) only 2-byte (Q5_1's 24 B are read as Q5_0's).
+// The Zig encoder verifies row offset/stride alignment before choosing a
+// specialized kernel and otherwise records nu_matvec. `blocks` counts
+// 256-value strides; the 32-value bodies walk their blocks from `columns`.
 struct MatvecBlockParams { uint columns; uint stride; uint rows; uint blocks; };
 #define NU_MATVEC_SIMDGROUPS 4 // must match simdgroups_per_matvec_group in root.zig
 
@@ -62,6 +63,9 @@ inline float4 nu_high_nibbles(uint w) { return nu_bytes((w >> 4) & 0x0f0f0f0fu);
 // Q5_K: nibbles of `v` completed with bit `shift` of each byte of the plane word `h`.
 inline float4 nu_low_fives(uint v, uint h, uint shift) { return nu_bytes((v & 0x0f0f0f0fu) | (((h >> shift) & 0x01010101u) << 4)); }
 inline float4 nu_high_fives(uint v, uint h, uint shift) { return nu_bytes(((v >> 4) & 0x0f0f0f0fu) | (((h >> shift) & 0x01010101u) << 4)); }
+// Q5_0/Q5_1: plane bits shift..shift+3 at bit 4 of a word's four bytes, one
+// bit per byte (the multiply places bit i at bit 8i without carries).
+inline uint nu_plane_bits(uint qh, uint shift) { return ((((qh >> shift) & 15u) * 0x00204081u) & 0x01010101u) << 4; }
 // Q6_K: nibbles of `l` plus the two bits at `shift` of each byte of `hb`; the
 // bias of 32 is applied by the caller through the input sum.
 inline float4 nu_low_sixes(uint l, uint hb, uint shift) { return nu_bytes((l & 0x0f0f0f0fu) | (((hb >> shift) & 0x03030303u) << 4)); }
@@ -336,6 +340,48 @@ kernel void nu_matvec_q4_0(device const uchar * weights [[buffer(0)]], device co
                            uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
     float acc[ROWS];
     nu_matvec_q4_0_body<ROWS>(weights, input, p, group_index, sg, lane, acc);
+    if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
+        nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane);
+}
+
+// Q5_0 (22 B) and Q5_1 (OFFSET, 24 B): Q4_0's lane slice and nibble words,
+// each code byte completed by its plane bit, 2-byte aligned loads. The bias
+// folds into the input sum as Q4_0's does, Q5_1's offset likewise:
+// Σ d·(q−16)·x = d·(Σq·x − 16·Σx) and Σ (d·q + m)·x = d·Σq·x + m·Σx, which
+// with a one-hot input are the CPU decoder's expressions exactly.
+template <uint ROWS, bool OFFSET>
+inline void nu_matvec_five_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc) {
+    const uint block_bytes = OFFSET ? 24 : 22, plane_at = OFFSET ? 4 : 2;
+    uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
+    if (row0 >= p.rows) return;
+    for (uint r = 0; r < ROWS; ++r) acc[r] = 0;
+    for (uint block = lane; block < p.columns / 32; block += 32) {
+        device const float4 * x = (device const float4 *)(input + block * 32);
+        float4 x0 = x[0], x1 = x[1], x2 = x[2], x3 = x[3], x4 = x[4], x5 = x[5], x6 = x[6], x7 = x[7];
+        float sx = nu_sum4(((x0 + x1) + (x2 + x3)) + ((x4 + x5) + (x6 + x7)));
+        uint base = block * block_bytes;
+        for (uint r = 0; r < ROWS; ++r) {
+            device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + base;
+            device const ushort * h = (device const ushort *)b;
+            float d = float(as_type<half>(h[0])), m = OFFSET ? float(as_type<half>(h[1])) : 0.0f;
+            uint qh = uint(h[plane_at / 2]) | (uint(h[plane_at / 2 + 1]) << 16);
+            packed_ushort4 l0 = *(device const packed_ushort4 *)(b + plane_at + 4);
+            packed_ushort4 l1 = *(device const packed_ushort4 *)(b + plane_at + 12);
+            uint w0 = nu_word(l0, 0), w1 = nu_word(l0, 1), w2 = nu_word(l1, 0), w3 = nu_word(l1, 1);
+            float sum = nu_dot(nu_bytes((w0 & 0x0f0f0f0fu) | nu_plane_bits(qh, 0)), x0, nu_dot(nu_bytes((w1 & 0x0f0f0f0fu) | nu_plane_bits(qh, 4)), x1,
+                        nu_dot(nu_bytes((w2 & 0x0f0f0f0fu) | nu_plane_bits(qh, 8)), x2, nu_dot(nu_bytes((w3 & 0x0f0f0f0fu) | nu_plane_bits(qh, 12)), x3, 0.0f))));
+            sum = nu_dot(nu_bytes(((w0 >> 4) & 0x0f0f0f0fu) | nu_plane_bits(qh, 16)), x4, nu_dot(nu_bytes(((w1 >> 4) & 0x0f0f0f0fu) | nu_plane_bits(qh, 20)), x5,
+                  nu_dot(nu_bytes(((w2 >> 4) & 0x0f0f0f0fu) | nu_plane_bits(qh, 24)), x6, nu_dot(nu_bytes(((w3 >> 4) & 0x0f0f0f0fu) | nu_plane_bits(qh, 28)), x7, sum))));
+            acc[r] += OFFSET ? fma(m, sx, d * sum) : d * fma(-16.0f, sx, sum);
+        }
+    }
+}
+template <uint ROWS, bool OFFSET>
+kernel void nu_matvec_five(device const uchar * weights [[buffer(0)]], device const float * input [[buffer(1)]], device float * output [[buffer(2)]],
+                           constant MatvecBlockParams & p [[buffer(7)]], uint group_index [[threadgroup_position_in_grid]],
+                           uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    float acc[ROWS];
+    nu_matvec_five_body<ROWS, OFFSET>(weights, input, p, group_index, sg, lane, acc);
     if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
         nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane);
 }

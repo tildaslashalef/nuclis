@@ -185,13 +185,15 @@ fn matvecRowsBodies(comptime name: []const u8) [matvec_rows_max - 1]Kernel {
 /// Picks a specialized matvec when its vector loads are aligned
 /// (`blockAligned`) and the input vector is float4-aligned. Otherwise
 /// `null`: generic path. The K-quant kernels walk 256-value strides;
-/// the Q4_0 kernel walks 32-value blocks and the ternary kernels
-/// 128-value blocks (lanes past the last block idle), so any whole-block
-/// row serves those three.
+/// the Q4_0, Q5_0, and Q5_1 kernels walk 32-value blocks and the ternary
+/// kernels 128-value blocks (lanes past the last block idle), so any
+/// whole-block row serves those five.
 pub fn specializedMatvec(encoding: u32, weight_offset: usize, stride: usize, input_offset: usize) ?Kernel {
     if (input_offset % 16 != 0 or !blockAligned(encoding, weight_offset, stride)) return null;
     return switch (encoding) {
         2 => .matvec_q4_0,
+        6 => .matvec_q5_0,
+        7 => .matvec_q5_1,
         142 => .matvec_pq2_0,
         143 => .matvec_ptq1_0,
         11 => .matvec_q3_k,

@@ -143,7 +143,14 @@ its `baseline` file) or `trace` (the `{trace}` directory goes through
 `scripts/compare-generation.py` against the gate's `bounds`). A gate whose
 model files (`model`, `mtp`, `baseline`, or the `mmproj` its command names) are not on
 this machine is skipped, not failed: `SKIP <gate> no model: <path>`, a
-separate count in the summary, `skipped` in `--json`. A skip is not a
+separate count in the summary, `skipped` in `--json`. So is a gate whose
+data is not: a gate names the sets it reads in `data`, and the manifest's
+`data` registry gives each set's files (`paths`, or every clip `file` of a
+`listed_in` manifest under `root`) and the command that fetches it
+(`SKIP <gate> no data: speech-corpus (60 of 60 files missing; make
+speech-corpus)`). The wikitext text is fetched by the make targets
+themselves; the speech corpus (about 1.7 GB of archives) only by `make
+speech-corpus`. A skip is not a
 pass; `--strict` turns it into a failure, and `make verify-release` (so
 every release) runs strict. Two things
 make the registry cheaper than the recipes it replaced:

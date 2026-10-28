@@ -36,11 +36,14 @@ guides worth reading before touching an artifact:
   `executableEncoding`): F32, Q8_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ3_S,
   IQ4_XS, Q4_0, BF16, the ternary PQ2_0 and PTQ1_0, and since 2026-10-14
   Q2_K, IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, and IQ3_XXS
-  ([saluki.md](saluki.md)) for matrices (F16 decodes on the CPU but the
-  adapters do not accept it for a matrix; the Qwen adapter's executable
-  set does not list Q4_0, the Gemma adapter's does); specialized Metal
-  matvec and matmul kernels exist for Q3_K, Q4_K, Q5_K, Q6_K, IQ3_S,
-  IQ4_XS, Q4_0, PQ2_0, and PTQ1_0, the generic kernels serve the rest.
+  ([saluki.md](saluki.md)), and since 2026-10-28 Q5_0 and Q5_1 (a
+  K-quant file's `ffn_down` where its rows are not multiples of 256,
+  [quantization.md](../engine/quantization.md#equations-and-evidence)) for
+  matrices (F16 decodes on the CPU but the adapters do not accept it for a
+  matrix; the Qwen adapter's executable set does not list Q4_0, Q5_0, or
+  Q5_1, the Gemma adapter's does); specialized Metal matvec and matmul
+  kernels exist for Q3_K, Q4_K, Q5_K, Q6_K, IQ3_S, IQ4_XS, Q4_0, Q5_0,
+  Q5_1, PQ2_0, and PTQ1_0, the generic kernels serve the rest.
   Not implemented: Q4_1, Q8_K, MXFP4. A repository file is *runnable* when every tensor is in the
   implemented set (only `inspect` can tell; the filename cannot) and
   *supported* only when the catalogue pins it (see [the catalogue](#the-catalogue)). Every
