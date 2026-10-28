@@ -7,7 +7,8 @@
 //! independent and verified against pinned fixtures. The IQ4_NL value table and
 //! the IQ3_S codebook are format constants; see THIRD_PARTY_NOTICES.md. Q4_0
 //! shares IQ4_NL's 18-byte block and nibble order with a linear code
-//! (`q - 8`) in place of the table. PQ2_0 and PTQ1_0 are the PrismML fork's
+//! (`q - 8`) in place of the table; Q5_0 and Q5_1 add a fifth bit per value
+//! from a 32-bit plane (`d * (q - 16)`, `d * q + m`). PQ2_0 and PTQ1_0 are the PrismML fork's
 //! group-128 ternary blocks (`w = d * t`, `t` in {-1, 0, +1}), verified against
 //! the fork's own decoder (docs/models/bonsai.md). Q2_K, IQ1_S, IQ1_M,
 //! IQ2_XXS, IQ2_XS, IQ2_S, and IQ3_XXS index the codebooks in
@@ -51,6 +52,8 @@ pub fn row(id: u32, bytes: []const u8, output: []f32) Error!void {
                     output[out + j + 16] = scale * @as(f32, @floatFromInt(@as(i32, encoded >> 4) - 8));
                 }
             },
+            6 => fiveBlock(false, block, output[out..][0..32]),
+            7 => fiveBlock(true, block, output[out..][0..32]),
             8 => {
                 const scale = half(block[0..2]);
                 for (block[2..], 0..) |encoded, j| {
@@ -104,7 +107,7 @@ pub fn row(id: u32, bytes: []const u8, output: []f32) Error!void {
 /// block-size rules remain centralized in the quantization module.
 pub fn validateRow(id: u32, byte_count: usize, element_count: usize) Error!void {
     switch (id) {
-        0, 1, 2, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 29, 30, 142, 143 => {},
+        0, 1, 2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 29, 30, 142, 143 => {},
         else => return error.UnsupportedEncoding,
     }
     const layout = encoding.layout(id).?;
@@ -114,6 +117,28 @@ pub fn validateRow(id: u32, byte_count: usize, element_count: usize) Error!void 
     // Compare quotients rather than multiplying a caller-controlled length.
     if (byte_count % block_bytes != 0 or byte_count / block_bytes != element_count / elements)
         return error.InvalidByteLength;
+}
+
+/// Q5_0 (`offset` false: `d * (q - 16)`) and Q5_1 (`d * q + m`): Q4_0's
+/// nibble order, each code completed by its bit of the 32-bit plane `qh`
+/// (bit j for value j, so the high nibbles take bits 16..31).
+fn fiveBlock(comptime offset: bool, block: []const u8, output: *[32]f32) void {
+    const d = half(block[0..2]);
+    const m: f32 = if (offset) half(block[2..4]) else 0;
+    const plane_at: usize = if (offset) 4 else 2;
+    const qh = std.mem.readInt(u32, block[plane_at..][0..4], .little);
+    for (block[plane_at + 4 ..][0..16], 0..) |encoded, j| {
+        const shift: u5 = @intCast(j);
+        const low: i32 = (encoded & 15) | @as(i32, @intCast((qh >> shift) & 1)) << 4;
+        const high: i32 = (encoded >> 4) | @as(i32, @intCast((qh >> (shift + 16)) & 1)) << 4;
+        if (offset) {
+            output[j] = d * @as(f32, @floatFromInt(low)) + m;
+            output[j + 16] = d * @as(f32, @floatFromInt(high)) + m;
+        } else {
+            output[j] = d * @as(f32, @floatFromInt(low - 16));
+            output[j + 16] = d * @as(f32, @floatFromInt(high - 16));
+        }
+    }
 }
 
 /// Q4_K and Q5_K share eight affine groups of 32 values. `fifth_bit` is
@@ -480,10 +505,68 @@ test "Q4_0 all codes, half-row ordering, and successive scales" {
     }
 }
 
+/// The fifth bit of value `i` of a Q5_0/Q5_1 block whose plane is `qh`.
+fn planeBit(qh: u32, i: usize) i32 {
+    return @intCast((qh >> @intCast(i)) & 1);
+}
+
+test "Q5_0 fifth bits from both halves of the plane, every code, and the bias of 16" {
+    // Q4_0's nibble bytes (code j in the low nibble of byte j, 15-j in its
+    // high nibble). Plane 0x5555aaaa sets the odd values' bits in the first
+    // half-row and the even ones' in the second; the second block inverts
+    // it, so the two blocks hold every code 0..31 on each half-row.
+    const nibbles = [_]u8{ 0xf0, 0xe1, 0xd2, 0xc3, 0xb4, 0xa5, 0x96, 0x87, 0x78, 0x69, 0x5a, 0x4b, 0x3c, 0x2d, 0x1e, 0x0f };
+    const planes = [_]u32{ 0x5555aaaa, 0xaaaa5555 };
+    const scales = [_]f32{ 0.5, -1 };
+    var bytes: [44]u8 = undefined;
+    for (0..2) |b| {
+        std.mem.writeInt(u16, bytes[22 * b ..][0..2], @bitCast(@as(f16, @floatCast(scales[b]))), .little);
+        std.mem.writeInt(u32, bytes[22 * b + 2 ..][0..4], planes[b], .little);
+        @memcpy(bytes[22 * b + 6 ..][0..16], &nibbles);
+    }
+    var output: [64]f32 = undefined;
+    try row(6, &bytes, &output);
+    var seen: [2][32]bool = @splat(@splat(false));
+    for (0..2) |b| for (0..16) |j| {
+        const low: i32 = @as(i32, @intCast(j)) | planeBit(planes[b], j) << 4;
+        const high: i32 = @as(i32, @intCast(15 - j)) | planeBit(planes[b], j + 16) << 4;
+        try std.testing.expectEqual(scales[b] * @as(f32, @floatFromInt(low - 16)), output[32 * b + j]);
+        try std.testing.expectEqual(scales[b] * @as(f32, @floatFromInt(high - 16)), output[32 * b + j + 16]);
+        seen[0][@intCast(low)] = true;
+        seen[1][@intCast(high)] = true;
+    };
+    for (seen) |half_row| for (half_row) |code| try std.testing.expect(code);
+    // The extremes: code 0 is -16·d (value 0), code 31 is +15·d (value 15).
+    try std.testing.expectEqual(@as(f32, -8), output[0]);
+    try std.testing.expectEqual(@as(f32, 7.5), output[15]);
+    try std.testing.expectEqual(@as(f32, 7.5), output[16]);
+}
+
+test "Q5_1 offset, scale order, and the same plane layout as Q5_0" {
+    // d = 0.25, m = -2, then Q5_0's first block; codes are unsigned.
+    const nibbles = [_]u8{ 0xf0, 0xe1, 0xd2, 0xc3, 0xb4, 0xa5, 0x96, 0x87, 0x78, 0x69, 0x5a, 0x4b, 0x3c, 0x2d, 0x1e, 0x0f };
+    const qh: u32 = 0x5555aaaa;
+    var bytes: [24]u8 = undefined;
+    std.mem.writeInt(u16, bytes[0..2], 0x3400, .little);
+    std.mem.writeInt(u16, bytes[2..4], 0xc000, .little);
+    std.mem.writeInt(u32, bytes[4..8], qh, .little);
+    @memcpy(bytes[8..24], &nibbles);
+    var output: [32]f32 = undefined;
+    try row(7, &bytes, &output);
+    for (0..16) |j| {
+        const low: i32 = @as(i32, @intCast(j)) | planeBit(qh, j) << 4;
+        const high: i32 = @as(i32, @intCast(15 - j)) | planeBit(qh, j + 16) << 4;
+        try std.testing.expectEqual(0.25 * @as(f32, @floatFromInt(low)) - 2, output[j]);
+        try std.testing.expectEqual(0.25 * @as(f32, @floatFromInt(high)) - 2, output[j + 16]);
+    }
+    try std.testing.expectEqual(@as(f32, -2), output[0]);
+    try std.testing.expectEqual(@as(f32, 5.75), output[15]);
+}
+
 test "invalid encodings and row sizes leave caller output untouched" {
     var output: [512]f32 = @splat(123);
     const bytes: [420]u8 = @splat(0);
-    for ([_]u32{ 0, 1, 2, 8, 11, 12, 13, 14, 20, 21, 23, 30, 142, 143 }) |id| {
+    for ([_]u32{ 0, 1, 2, 6, 7, 8, 11, 12, 13, 14, 20, 21, 23, 30, 142, 143 }) |id| {
         const layout = encoding.layout(id).?;
         const n = layout.elements_per_block;
         const size = layout.bytes_per_block;
@@ -510,6 +593,10 @@ test "packed rows match pinned llama.cpp CPU decoder fixtures exactly" {
 
 test "codebook rows keep the values the cross-encoding-validated decoders gave" {
     try checkFixture(@embedFile("fixtures/codebook.json"), "nuclis CPU decoders; blocks from ConwayResearch/Underdog-Saluki-27B-1.0 4f60eba0");
+}
+
+test "Q5_0 and Q5_1 rows match the values their formats' equations give" {
+    try checkFixture(@embedFile("fixtures/five-bit.json"), "nuclis: the formats' equations (scripts/five-bit-fixtures.py)");
 }
 
 test "ternary rows match the PrismML fork's decoder fixtures exactly" {
