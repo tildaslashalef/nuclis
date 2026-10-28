@@ -233,6 +233,8 @@ const PulledFile = struct {
     size: u64,
     sha256: []const u8,
     transport: []const u8,
+    /// Bytes continued from a partial download an earlier pull kept.
+    resumed_bytes: u64 = 0,
     role: Role,
     sidecar: []const u8,
 };
@@ -328,6 +330,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     const models = try modelsDir(arena, root);
 
     interrupt.install();
+    interrupt.installTerminate();
     // The package's allocator must be thread safe: the concurrent workers
     // share it. `gpa` from `std.process.Init` is.
     var client = hf.Client.init(gpa, io, environ);
@@ -485,8 +488,9 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     try out.flush();
 
     // 2. Destinations: a sidecar recording other content is a conflict
-    //    (`--force` replaces file and sidecar); a file without one is left
-    //    to the package's verification unless forced.
+    //    unless `--force`, whose verified download replaces the file (the
+    //    old one stays until then) and then its sidecar; a file without one
+    //    is left to the package's verification.
     for (jobs.items) |job| {
         const path = try client.localPath(request, job.name);
         defer gpa.free(path);
@@ -505,19 +509,17 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
                 diag.set("{s}: its sidecar records commit {s} ({s} {s}…), the request resolved to commit {s} ({s} {s}…); pass --force to replace it", .{ path, r.revision[0..12], kind, have[0..@min(12, have.len)], revision[0..12], kind, want[0..12] });
                 return error.ExistingFileMismatch;
             }
-            try deleteIfPresent(io, path);
-            try deleteIfPresent(io, sidecar);
-        } else if (options.force) {
-            try deleteIfPresent(io, path);
         }
     }
 
     // 3. Transfer, one package call per job (a split file expands to its
     //    shard set inside the package). The package verifies existing
-    //    files, never overwrites, and removes its temporary file on every
-    //    failure including cancel. 4. Provenance, only once a file is
+    //    files, overwrites only under `--force` (`replace`), removes its
+    //    partial file on failure and Ctrl-C, and keeps it on SIGTERM for
+    //    the next pull to continue. 4. Provenance, only once a file is
     //    verified, so an interrupted multi-file pull keeps the sidecars of
     //    what it finished.
+    request.replace = options.force;
     var report: std.ArrayList(PulledFile) = .empty;
     // What `--register` records: filled per verified file by its role.
     var registration: config.Registration = .{ .repo = request.repo_id, .revision = revision, .file = null, .profile = options.profile, .kind = model_kind };
@@ -539,6 +541,18 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
                 diag.set("interrupted; the partial download was removed", .{});
                 return error.Cancelled;
             },
+            error.Paused => {
+                diag.set("stopped; the partial download of {s} was kept, and pulling again continues it", .{job.name});
+                return error.Cancelled;
+            },
+            error.ResumedChecksumMismatch => {
+                diag.set("{s}: the partial download kept from an earlier pull did not verify and was removed; pull again to download it whole", .{job.name});
+                return err;
+            },
+            error.DownloadInProgress => {
+                diag.set("{s}: another pull is downloading this file", .{job.name});
+                return err;
+            },
             error.ExistingFileMismatch => {
                 diag.set("{s}: a file nuclis never verified is at the destination and differs from the Hub's; move it away or pass --force", .{job.name});
                 return err;
@@ -552,19 +566,22 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
         };
         for (files) |file| {
             const digest = try arena.dupe(u8, &std.fmt.bytesToHex(file.sha256, .lower));
+            const sidecar = try sidecarPath(arena, file.path);
             // The Hub at the pinned commit must agree with the catalogue;
             // otherwise the table is wrong, and the file stays without a
-            // sidecar so it is never taken for verified.
+            // sidecar so it is never taken for verified (a replaced file's
+            // old sidecar goes too).
             if ((entry != null or embedding != null) and !std.mem.eql(u8, digest, job.sha256.?)) {
+                if (options.force) try deleteIfPresent(io, sidecar);
                 diag.set("{s}: the Hub's digest at commit {s} is {s}…, the catalogue pins {s}…; the catalogue entry needs updating", .{ file.path, revision[0..12], digest[0..12], job.sha256.?[0..12] });
                 return error.CatalogMismatch;
             }
             const header = if (hf.format(file.path) == .gguf) try roleFromHeader(gpa, io, file.path) else null;
             const role = resolveRole(header, job.role) catch |err| {
+                if (options.force) try deleteIfPresent(io, sidecar);
                 diag.set("{s}: the header says its role is {s}; --role {s} contradicts it (no sidecar written)", .{ file.path, @tagName(header.?), @tagName(job.role.?) });
                 return err;
             };
-            const sidecar = try sidecarPath(arena, file.path);
             // The Hub name of a published file (a shard set returns
             // several): the path below the repository directory, without
             // the separator `join` leaves in front of it.
@@ -580,7 +597,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
                 .nuclis_version = version,
                 .git_blob = try hexOrNull(arena, file.remote.git_oid),
             });
-            try report.append(arena, .{ .path = try arena.dupe(u8, file.path), .size = file.size, .sha256 = digest, .transport = @tagName(file.transport), .role = role, .sidecar = sidecar });
+            try report.append(arena, .{ .path = try arena.dupe(u8, file.path), .size = file.size, .sha256 = digest, .transport = @tagName(file.transport), .resumed_bytes = file.resumed_bytes, .role = role, .sidecar = sidecar });
             // A repository's GGUF registers as what its header says it is.
             if (role == .main and options.register != null and model_kind == null and try isEmbeddingFile(gpa, io, file.path)) registration.kind = .embedding;
             switch (role) {
@@ -753,11 +770,12 @@ const Display = struct {
     done: u64 = 0,
     total: u64 = 0,
 
-    fn update(context: ?*anyopaque, event: hf.ProgressEvent) error{Canceled}!void {
+    fn update(context: ?*anyopaque, event: hf.ProgressEvent) hf.Progress.Error!void {
         const d: *Display = @ptrCast(@alignCast(context.?));
         if (interrupt.requested()) {
             d.render(.{ .phase = .selection_required }) catch {};
-            return error.Canceled;
+            // SIGTERM (an app quitting) keeps the partial; Ctrl-C removes it.
+            return if (interrupt.terminated()) error.Paused else error.Canceled;
         }
         d.render(event) catch {};
     }
@@ -784,7 +802,7 @@ const Display = struct {
             .resolving => "resolving",
             .selection_required => "interrupted",
             .verifying => if (event.reused) "reused" else if (event.file_completed == 0) "checking" else "verifying",
-            .downloading => "downloading",
+            .downloading => if (phase_changed and event.resumed_bytes > 0) "resuming" else "downloading",
             .complete => "complete",
         };
         const done: u64 = switch (event.phase) {
@@ -846,7 +864,8 @@ const Display = struct {
                     d.download_started = now;
                     d.download_base = event.file_completed;
                     if (event.file_count > 1) try w.print("file {d} of {d}\n", .{ event.file_index + 1, event.file_count });
-                    if (!d.tty) try w.print("{s}: downloading {d:.1} MB\n", .{ name, mb(event.file_total) });
+                    if (event.resumed_bytes > 0) try w.print("{s}: resuming a kept partial download at {d:.1} of {d:.1} MB\n", .{ name, mb(event.resumed_bytes), mb(event.file_total) });
+                    if (!d.tty) try w.print("{s}: downloading {d:.1} MB\n", .{ name, mb(event.file_total - event.resumed_bytes) });
                 }
                 if (!d.tty) return;
                 if (d.last_line) |last| if (event.file_completed < event.file_total and last.durationTo(now).toMilliseconds() < 200) return;
@@ -1529,6 +1548,14 @@ test "--json progress: a line per phase, downloads at most every 250 ms and at t
     const reused = d.progress(.{ .phase = .verifying, .reused = true }, later).?;
     try std.testing.expectEqualStrings("reused", reused.event);
     try std.testing.expectEqual(@as(u64, 100), reused.done);
+    // A file continued from a kept partial starts with its bytes as done.
+    d.last_phase = .verifying;
+    const resumed = d.progress(.{ .phase = .downloading, .file_completed = 30, .resumed_bytes = 30, .file_total = 100 }, later).?;
+    try std.testing.expectEqualStrings("resuming", resumed.event);
+    try std.testing.expectEqual(@as(u64, 30), resumed.done);
+    d.last_phase = .downloading;
+    const after = later.addDuration(.fromMilliseconds(400));
+    try std.testing.expectEqualStrings("downloading", d.progress(.{ .phase = .downloading, .file_completed = 40, .resumed_bytes = 30, .file_total = 100 }, after).?.event);
     // One line of JSON each.
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();

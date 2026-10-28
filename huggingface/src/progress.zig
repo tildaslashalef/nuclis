@@ -12,6 +12,9 @@ pub const Event = struct {
     completed_bytes: u64 = 0,
     total_bytes: u64 = 0,
     reused: bool = false,
+    /// Bytes of this file continued from a kept partial download, counted in
+    /// `file_completed` and `completed_bytes` from the first downloading event.
+    resumed_bytes: u64 = 0,
 
     /// null means indeterminate (metadata/selection); 1 still needs phase==complete
     /// before the TUI announces success, since hashing and publication may fail.
@@ -25,10 +28,15 @@ pub const Sink = struct {
     context: ?*anyopaque = null,
     /// Synchronous, serialized on the caller task, never called by download
     /// workers. Keep it short; enqueue an event for a TUI running elsewhere.
-    /// Canceled stops the operation; already published files remain valid.
-    update: *const fn (?*anyopaque, Event) error{Canceled}!void,
+    /// Canceled stops the operation and removes the current file's partial
+    /// download; Paused stops and keeps it (`<path>.partial` and its
+    /// `.partial.json`) for the next download to continue. Already published
+    /// files remain valid either way.
+    update: *const fn (?*anyopaque, Event) Error!void,
 
-    pub fn report(s: Sink, event: Event) error{Canceled}!void {
+    pub const Error = error{ Canceled, Paused };
+
+    pub fn report(s: Sink, event: Event) Error!void {
         try s.update(s.context, event);
     }
 };

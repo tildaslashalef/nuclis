@@ -720,7 +720,8 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "(repo, file, commit); a companion fills the same entry");
     try row(out, sty, "--profile <p>", "with --register: force qwen38, gemma4,");
     try more(out, "gemma4_e, or muse_glimmer");
-    try row(out, sty, "--force", "replace a file whose sidecar records other content");
+    try row(out, sty, "--force", "download every file again, replacing each once the");
+    try more(out, "new copy verifies (the old one stays until then)");
     try row(out, sty, "--json", "the listing, transfer report, or verdict as JSON");
 
     try heading(out, sty, "Examples:");
@@ -734,7 +735,9 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try heading(out, sty, "Notes:");
     try plain(out, "Downloads go over Xet, verify the digest, publish atomically, and leave a");
     try plain(out, "<file>.nuclis.json sidecar beside the file; a second pull of the same file");
-    try plain(out, "downloads nothing. HF_TOKEN is read for gated repositories only.");
+    try plain(out, "downloads nothing. Ctrl-C stops a pull and removes the partial file; SIGTERM");
+    try plain(out, "stops it and keeps <file>.partial, which the next pull continues.");
+    try plain(out, "HF_TOKEN is read for gated repositories only.");
     try out.writeByte('\n');
 }
 

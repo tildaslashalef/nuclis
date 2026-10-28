@@ -113,7 +113,7 @@ const Display = struct {
     download_base: u64 = 0,
     open_line: bool = false,
 
-    fn update(context: ?*anyopaque, event: hf.ProgressEvent) error{Canceled}!void {
+    fn update(context: ?*anyopaque, event: hf.ProgressEvent) hf.Progress.Error!void {
         const d: *Display = @ptrCast(@alignCast(context.?));
         d.render(event) catch {};
     }

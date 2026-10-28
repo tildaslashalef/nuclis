@@ -170,11 +170,28 @@ nor `owner/repo` is `UnknownModel`. The entries are described in
 
 - **Pulling again** re-hashes the file and downloads nothing.
 - **A file that does not match** its sidecar, or that nuclis never verified,
-  is refused (`ExistingFileMismatch`); `--force` replaces it.
+  is refused (`ExistingFileMismatch`).
+- **`--force`** downloads every file of the pull again, verified ones
+  included, and replaces each only once the new copy verifies: the old
+  file stays in place until then, and a failed or interrupted download
+  leaves it as it was. The sidecar is rewritten after; the report marks
+  each file `xet` or `http`, never `verified_local`.
 - **Progress** is one updating line (bytes, rate, time left) on a terminal,
-  plain lines otherwise. **Ctrl-C** stops the download and removes the
-  partial file; a second Ctrl-C kills the process and may leave a temporary
-  file behind.
+  plain lines otherwise. A file downloads into `<file>.partial` beside its
+  destination and is renamed into place once its digest verifies.
+- **Ctrl-C** (SIGINT) stops the pull and removes the partial file; a second
+  Ctrl-C kills the process and may leave `<file>.partial` behind, which the
+  next pull starts over.
+- **SIGTERM** (an app quitting, `kill`) stops the pull and keeps
+  `<file>.partial` with `<file>.partial.json` (repository, commit, digest,
+  size, bytes written). The next pull of the same file at the same commit
+  and digest hashes those bytes again and fetches only the rest; the whole
+  file is still verified before it is published, so a damaged partial fails
+  and is removed (pull again to download it whole). A partial of another
+  commit or digest is discarded and the file starts over; `--force` ignores
+  partials. Two pulls of the same file at once: the second is refused while
+  the first holds the partial. The report's `resumed_bytes` says how much of
+  a file came from a kept partial.
 - Every form takes `--json` for scripts: the report on stdout, and the
   progress on stderr as one JSON object per line instead of the text, for
   a program that shows its own (Muon's first-run window):
@@ -184,7 +201,9 @@ nor `owner/repo` is `UnknownModel`. The entries are described in
   ```
 
   `event` is `resolving`, `checking` (for a file already in place),
-  `downloading` (at most every 250 ms, and when the file is whole),
+  `resuming` (the first line of a file continued from a kept partial, its
+  bytes already in `done`), `downloading` (at most every 250 ms, and when
+  the file is whole),
   `verifying`, `reused` (a file in place that verified), `complete` (the
   file is published), or `interrupted`; `file` is its Hub name, `index`
   of `count` the files of the pull (a safetensors set counts its
