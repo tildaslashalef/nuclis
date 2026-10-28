@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -67,6 +68,15 @@ def validate(doc):
     for name, entry in models.items():
         if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
             problems.append(f'models.{name}: needs a "path" string')
+    data = doc.get("data", {})
+    for name, entry in data.items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("fetch"), str):
+            problems.append(f'data.{name}: needs a "fetch" command string')
+        elif not (
+            is_globs(entry.get("paths"))
+            or (isinstance(entry.get("root"), str) and isinstance(entry.get("listed_in"), str))
+        ):
+            problems.append(f'data.{name}: needs "paths", or "root" and "listed_in"')
     seen = set()
     for i, gate in enumerate(doc.get("gates", [])):
         name = gate.get("name", f"#{i}")
@@ -82,6 +92,9 @@ def validate(doc):
                 problems.append(f'{name}: {key} names an unknown model "{gate[key]}"')
         if "model" not in gate:
             problems.append(f"{name}: missing model")
+        for key in gate.get("data", []):
+            if key not in data:
+                problems.append(f'{name}: data names an unknown set "{key}"')
         paths = gate.get("paths")
         if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
             problems.append(f"{name}: paths must be a non-empty list of globs")
@@ -262,6 +275,29 @@ def missing_files(gate, doc, env=None):
     return [path for path in paths if not os.path.exists(path)]
 
 
+def data_files(doc, name, root=ROOT):
+    """The files of data set `name`: its `paths`, or every clip `file` that
+    its `listed_in` manifest names under `root`; relative to the repository."""
+    entry = doc["data"][name]
+    if "paths" in entry:
+        return [root / path for path in entry["paths"]]
+    listing = json.loads((root / entry["listed_in"]).read_text())
+    return [root / entry["root"] / clip["file"] for clip in listing["clips"]]
+
+
+def missing_data(gate, doc, root=ROOT):
+    """For each data set the gate reads with files not on this machine: its
+    name, how many of its files are missing out of how many, and the command
+    that fetches it."""
+    out = []
+    for name in gate.get("data", []):
+        files = data_files(doc, name, root)
+        absent = [f for f in files if not f.exists()]
+        if absent:
+            out.append((name, len(absent), len(files), doc["data"][name]["fetch"]))
+    return out
+
+
 def builds_needed(gates):
     """Which binaries the selected gates run: the two nuclis builds, and the check tools behind the zig placeholders (built up front so the build is timed apart from the checks)."""
     joined = [" ".join(g["command"]) for g in gates]
@@ -337,14 +373,21 @@ def build(doc, which, dry_run):
 
 
 def run_gate(gate, doc, dry_run):
-    """Runs one gate; `passed` is None with `skipped` set when a model file it
-    reads is not on this machine (the run neither passes nor fails it)."""
+    """Runs one gate; `passed` is None with `skipped` set when a model file or
+    a data set it reads is not on this machine (the run neither passes nor
+    fails it)."""
     argv = expand(gate["command"], gate, doc)
     trace = ROOT / TRACE_ROOT / gate["name"]
     result = {"name": gate["name"], "tier": gate["tier"], "command": argv, "passed": None, "seconds": 0.0}
     missing = missing_files(gate, doc)
+    absent = missing_data(gate, doc)
     if missing:
         result["skipped"] = "no model: " + ", ".join(missing)
+    elif absent:
+        result["skipped"] = "no data: " + "; ".join(
+            f"{n} ({k} of {t} files missing; {fetch})" for n, k, t, fetch in absent
+        )
+    if missing or absent:
         if dry_run:
             print(f"{gate['name']}: skipped ({result['skipped']})")
         return result
@@ -473,7 +516,7 @@ def main():
     ap.add_argument(
         "--strict",
         action="store_true",
-        help="a gate whose model is not on this machine fails instead of being skipped (before a release)",
+        help="a gate whose model or data is not on this machine fails instead of being skipped (before a release)",
     )
     ap.add_argument(
         "--changed",
@@ -576,7 +619,11 @@ def main():
     print(
         f"{passed}/{len(results)} passed in {total:.0f} s"
         + (f" after {built:.0f} s of builds" if builds else "")
-        + (f"; {len(skipped)} skipped, their models not on this machine: {', '.join(skipped)}" if skipped else "")
+        + (
+            f"; {len(skipped)} skipped, their models or data not on this machine: {', '.join(skipped)}"
+            if skipped
+            else ""
+        )
         + (f"; failed: {', '.join(failed)}" if failed else ""),
         file=sys.stderr,
     )
@@ -653,7 +700,7 @@ def auto(doc, args):
         )
     if not args.dry_run:
         if skipped:
-            print("skipped, their models not on this machine: " + ", ".join(skipped), file=sys.stderr)
+            print("skipped, their models or data not on this machine: " + ", ".join(skipped), file=sys.stderr)
         if failed:
             print("failed: " + ", ".join(failed), file=sys.stderr)
         else:
@@ -677,6 +724,10 @@ def sample_doc():
     return {
         "build": {"metal_optimize": "ReleaseSafe", "cpu_optimize": "ReleaseFast", "cache": ".zig-cache/global"},
         "models": {"a": {"path": "~/m/a.gguf"}, "a_mtp": {"path": "~/m/a-mtp.gguf"}},
+        "data": {
+            "text": {"paths": ["eval/t.raw"], "fetch": "make eval-corpus"},
+            "clips": {"root": "speech", "listed_in": "corpus.json", "fetch": "make speech-corpus"},
+        },
         "gates": [
             {
                 "name": "a-trace",
@@ -777,6 +828,35 @@ class SelfTest(unittest.TestCase):
         env = {"A_MODEL": "/nowhere/a.gguf", "A_MTP_MODEL": "/nowhere/mtp.gguf"}
         self.assertEqual(missing_files(gate, doc, env=env), ["/nowhere/a.gguf", "/nowhere/mtp.gguf"])
         self.assertEqual(missing_files(gate, doc, env={"A_MODEL": __file__, "A_MTP_MODEL": __file__}), [])
+
+    def test_missing_data_names_the_set_and_its_fetch(self):
+        doc = sample_doc()
+        gate = {"name": "g", "data": ["text", "clips"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "corpus.json").write_text(json.dumps({"clips": [{"file": "a.flac"}, {"file": "b/c.wav"}]}))
+            self.assertEqual(
+                missing_data(gate, doc, root),
+                [("text", 1, 1, "make eval-corpus"), ("clips", 2, 2, "make speech-corpus")],
+            )
+            (root / "eval").mkdir()
+            (root / "eval/t.raw").write_text("x")
+            (root / "speech/b").mkdir(parents=True)
+            (root / "speech/a.flac").write_text("x")
+            self.assertEqual(missing_data(gate, doc, root), [("clips", 1, 2, "make speech-corpus")])
+            (root / "speech/b/c.wav").write_text("x")
+            self.assertEqual(missing_data(gate, doc, root), [])
+        self.assertEqual(missing_data({"name": "h"}, doc), [])
+
+    def test_validation_names_bad_data(self):
+        doc = sample_doc()
+        doc["data"]["bad"] = {"paths": ["x"]}
+        doc["data"]["loose"] = {"root": "r", "fetch": "make x"}
+        doc["gates"][0]["data"] = ["nowhere"]
+        problems = validate(doc)
+        self.assertIn('data.bad: needs a "fetch" command string', problems)
+        self.assertIn('data.loose: needs "paths", or "root" and "listed_in"', problems)
+        self.assertIn('a-trace: data names an unknown set "nowhere"', problems)
 
     def test_expand_placeholders(self):
         doc = sample_doc()
