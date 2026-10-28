@@ -115,7 +115,7 @@ pub fn discover(arena: Allocator, gpa: Allocator, io: std.Io, root: []const u8, 
                 continue;
             },
         };
-        const family = familyOf(architecture) orelse {
+        const family = familyOf(architecture, blockCount(&doc, architecture)) orelse {
             try skipped.append(arena, .{ .path = f.path, .reason = try arena.print("no catalogue family for architecture \"{s}\"", .{architecture}) });
             continue;
         };
@@ -174,10 +174,26 @@ fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, 
     return .{ .adapter = adapter };
 }
 
-/// The catalogue entry that carries the family's profile and verdict.
-fn familyOf(architecture: []const u8) ?*const catalog.Entry {
-    for (&catalog.entries) |*e| if (std.mem.eql(u8, e.architecture, architecture)) return e;
-    return null;
+/// The catalogue entry that carries the family's profile and verdict: the
+/// one whose `block_count` matches the file's, else the architecture's first.
+fn familyOf(architecture: []const u8, blocks: ?u64) ?*const catalog.Entry {
+    var first: ?*const catalog.Entry = null;
+    for (&catalog.entries) |*e| if (std.mem.eql(u8, e.architecture, architecture)) {
+        if (blocks != null and e.block_count == blocks) return e;
+        if (first == null) first = e;
+    };
+    return first;
+}
+
+/// The file's `<architecture>.block_count`, when it states one.
+fn blockCount(doc: *const inference.gguf.Document, architecture: []const u8) ?u64 {
+    var key: [96]u8 = undefined;
+    const name = std.fmt.bufPrint(&key, "{s}.block_count", .{architecture}) catch return null;
+    return switch (doc.get(name) orelse return null) {
+        .unsigned => |n| n,
+        .signed => |n| if (n < 0) null else @intCast(n),
+        else => null,
+    };
 }
 
 /// A companion by its sidecar's role, else by the names the Hub uses
@@ -284,6 +300,22 @@ pub fn toEntries(arena: Allocator, candidates: []const Candidate) ![]const confi
 // ----- tests -----
 
 const testing = std.testing;
+
+test "a file takes the verdict of the catalogue entry its layer count matches" {
+    // Gemma 4's three checkpoints share an architecture and differ in verdict.
+    const e4b = familyOf("gemma4", 42).?;
+    try std.testing.expectEqualStrings("gemma-4-e4b-qat", e4b.name);
+    try std.testing.expect(e4b.speculative and e4b.draft_length == 6);
+    const moe = familyOf("gemma4", 30).?;
+    try std.testing.expectEqualStrings("gemma-4-26b-a4b", moe.name);
+    try std.testing.expect(!moe.speculative);
+    try std.testing.expectEqualStrings("gemma-4-12b-qat", familyOf("gemma4", 48).?.name);
+    // An unknown layer count, or none, falls back to the architecture's first entry.
+    try std.testing.expectEqualStrings("gemma-4-12b-qat", familyOf("gemma4", 7).?.name);
+    try std.testing.expectEqualStrings("gemma-4-12b-qat", familyOf("gemma4", null).?.name);
+    try std.testing.expectEqualStrings("qwen3.8-27b", familyOf("qwen35", 64).?.name);
+    try std.testing.expect(familyOf("llama", 32) == null);
+}
 
 test "companions are told by sidecar role, then by the Hub's names" {
     const none: ?model.Sidecar = null;

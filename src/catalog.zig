@@ -51,6 +51,10 @@ pub const Entry = struct {
     quantization: []const u8,
     /// `general.architecture` of the main file.
     architecture: []const u8,
+    /// `<architecture>.block_count` where one architecture spans checkpoints
+    /// with different verdicts (Gemma 4's 12B, 26B-A4B, E4B): `discover`
+    /// takes a file's verdict from the entry its layer count matches.
+    block_count: ?u64 = null,
     /// The checkpoint's prompt profile, forced at open (which lets an entry
     /// pin a protocol onto a file whose own template digest is not).
     profile: Profile,
@@ -117,6 +121,7 @@ pub const entries = [_]Entry{
         // "smart Q4_0, QAT-lossless" and every matrix is Q4_0.
         .quantization = "Q4_0 (QAT)",
         .architecture = "gemma4",
+        .block_count = inference.models.gemma4.config_12b.layer_count,
         .profile = .gemma4,
         // The assistant heads at draft 5: prose 1.34x geometric mean, 0.98x at 32K; on.
         .speculative = true,
@@ -142,6 +147,7 @@ pub const entries = [_]Entry{
         .size = 14_249_047_104,
         .quantization = "Q4_0 (QAT)",
         .architecture = "gemma4",
+        .block_count = inference.models.gemma4.config_26b_a4b.layer_count,
         .profile = .gemma4,
         // The 26B-A4B head loses 0.63-0.76x on prose at drafts 2-7 (rows route to their own experts); off.
         .speculative = false,
@@ -167,6 +173,7 @@ pub const entries = [_]Entry{
         .size = 4_215_695_776,
         .quantization = "Q4_0 (QAT)",
         .architecture = "gemma4",
+        .block_count = inference.models.gemma4.config_e4b.layer_count,
         .profile = .gemma4_e,
         // The E4B head at draft 6: prose 1.47x geometric mean, 0.99x at 32K; on.
         .speculative = true,
