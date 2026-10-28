@@ -14,108 +14,12 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-The model-management unit is in progress on `model-management`
-(2026-10-28): what Muon's engine manager and settings need from `nuclis
-model` and `nuclis serve`. The speech unit shipped in v0.10.0.
-
-| Unit | Branch | State |
-| --- | --- | --- |
-| Model management for Muon: `model rm`, `pull --force` that downloads again, resumable pulls, `serve --web-url` | `model-management` | in progress |
-
-## Model management for Muon
-
-Base: `babce65`
-
-Asked by the user (2026-10-28) for Muon's Settings › Engine (Redownload,
-Remove) and its first-run downloads. One branch, one pull request.
-
-| # | Task | Depends on |
-| --- | --- | --- |
-| 1 | `nuclis model rm` | — |
-| 2 | `pull --force` downloads every file again, replacing it once verified | — |
-| 3 | Resumable pulls: SIGTERM keeps the partial file, the next pull continues | 2 |
-| 4 | `serve --web-url <url>` and `--no-web` | — |
-
-#### 1. `nuclis model rm <name> [--with mmproj,mtp | --all] [--json]`
-
-`src/model.zig` `rm`, parsed in `src/cli.zig` `parseModelArgs` (action
-`rm`), with help, completion, and `docs/guide/getting-started.md`.
-
-- **The entry's files.** A catalogue name: the main file, its support
-  files (a decision or speech entry's `support`, a speech entry's codec
-  and `codec_support`; clef-flash's backbone), each with its
-  `.nuclis.json` sidecar; companions (`mmproj`, `mtp`) only with `--with`
-  or `--all`, as `pull` takes them. A registry name: its main file and
-  the `mmproj`/`mtp` it names (only with `--with`/`--all`), resolved as
-  `model ls` resolves registry entries.
-- **Shared files stay.** A file another *present* entry uses (a
-  catalogue entry, or a registry entry of another name pointing at it)
-  is kept and reported with that entry's name. A registry entry of the
-  same name as the catalogue entry, which `config init` writes for every
-  catalogue model, is the same model, not a second user.
-- **Tidy.** Each directory emptied by the removal, up to the models
-  directory, is removed.
-- **Report.** Text, or with `--json` one object on stdout: `removed`
-  (path, bytes), `kept` (path, the entry that keeps it), `freed_bytes`.
-  A name nothing pulled is an error naming it (non-zero exit); a partly
-  present entry removes what is there. The registry entry stays: `model
-  ls` then shows it missing.
-- **A running `serve`.** macOS keeps an open mapping valid after the
-  file is unlinked, so a model already open keeps working until the
-  server closes it; the disk space is freed then, and reopening it fails
-  as a missing file. Documented, not refused (the server cannot be asked
-  from here). Tests over a temporary models directory: an entry, a
-  shared file kept, the same-name registry twin, a partly present entry,
-  a name never pulled, the directory tidying.
-
-#### 2. `pull --force` downloads every file again
-
-Today `--force` replaces only a file whose sidecar records other content;
-a verified copy is kept (`verified_local`). Now `--force` downloads every
-file of the entry again and replaces each one only once the new copy is
-verified (the old file stays until then). The `huggingface` package's
-`Request` gains `replace: bool`: skip `verifyExisting`, and publish the
-verified temporary file over the destination (`Io.File.Atomic`'s
-replace, where today it links and refuses to clobber). `src/model.zig`
-stops deleting files before the download under `--force` and passes
-`replace`; the sidecar is rewritten after. `--json` marks each file
-`xet` or `http`, never `verified_local`. Help, `docs/guide/getting-started.md`
-§ pulling, the release notes say `--force`'s meaning grew (0.x).
-
-#### 3. Resumable pulls
-
-Today an interrupted pull removes its partial file (`AtomicFile` cleanup),
-and the next pull starts that file again. Now:
-
-- **SIGINT** keeps its meaning: stop and remove the partial file
-  (Muon's Cancel).
-- **SIGTERM** stops and keeps the partial file and its state (Muon's
-  quit): `<path>.partial` beside the destination and
-  `<path>.partial.json` with the repository, the revision, the file's
-  SHA-256 (or git blob) and size, and the bytes written.
-- **The next pull** of the same file at the same revision and digest
-  hashes the partial bytes already on disk into the verifier and asks
-  `transfer.fetch` for the rest (its `start` already exists); the whole
-  file is still verified before publish, so a damaged partial fails the
-  digest and is removed. A partial for another revision or digest is
-  removed and the file starts over. `--force` ignores a partial.
-- `src/interrupt.zig` tells the two signals apart; the package gets a
-  `keep_partial` cancellation outcome. Tests in the package with a fake
-  transport: a resumed file equals one downloaded whole; a stale partial
-  is discarded; SIGINT removes. A real check: SIGTERM a pull of a 1–2 GB
-  file midway, pull again, see it continue (bytes transferred < size).
-
-If it outgrows the unit, it goes to *Deferred* with what was learned.
-
-#### 4. `serve --web-url <url>` and `--no-web`
-
-Muon must not rewrite `~/.nuclis/nuclis.json`, so the hosted web tools
-take their address from the command line: `--web-url <url>` turns the
-tools on against that URL (the same `web.validBase` check as `web.url`),
-`--no-web` turns them off whatever the file says; the two are exclusive.
-`src/api/root.zig` `parseArgs` and the web service's construction;
-`GET /v1/health` already reports `web`. Help, `docs/guide/api.md` §
-Hosted web tools, `docs/guide/configuration.md`.
+No unit is in progress. The model-management unit (`model rm`, `pull
+--force` that downloads again, resumable pulls, `serve --web-url` and
+`--no-web`, for Muon's engine manager) is in its pull request, whose
+description is its record; the next release (0.11.0) carries it. Until
+then Muon uses the build installed from that branch (`make install`,
+`~/.local/bin/nuclis`, reporting 0.10.0).
 
 ## Deferred
 
