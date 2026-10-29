@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
     // than a version this build might not be. Read from the build root, not
     // the working directory (`zig build` may run in a subdirectory); the
     // configure cache already tracks every package's manifest.
-    const version = blk: {
+    const manifest_version = blk: {
         const zon_path = b.pathJoin(&.{ b.root.sub_path, "build.zig.zon" });
         const zon = b.root.root_dir.handle.readFileAlloc(b.graph.io, zon_path, b.allocator, .limited(1 << 16)) catch
             break :blk "unknown";
@@ -28,7 +28,10 @@ pub fn build(b: *std.Build) void {
     };
     // The commit the tree was built from, and whether the work tree differed
     // from it: the agent's prefix cache keys saved model states by build, so
-    // a state is restored only into the build that computed it.
+    // a state is restored only into the build that computed it. Git state is
+    // not a file the configure cache can track, so configure re-runs on every
+    // build; otherwise a cached revision outlives the commit it names.
+    b.graph.poisonCache();
     const root_path = b.root.root_dir.path orelse ".";
     const revision = blk: {
         var code: u8 = 0;
@@ -40,6 +43,7 @@ pub fn build(b: *std.Build) void {
         const out = b.runAllowFail(&.{ "git", "-C", root_path, "status", "--porcelain" }, &code, .ignore) catch break :blk true;
         break :blk out.len != 0;
     };
+    const version = reportedVersion(b, root_path, manifest_version, revision, dirty);
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
     build_options.addOption([]const u8, "revision", revision);
@@ -139,4 +143,25 @@ pub fn build(b: *std.Build) void {
     const attention_bench = b.addRunArtifact(inference.artifact("metal-check"));
     attention_bench.addArg("--attention-bench");
     b.step("bench-attention", "Prefill chunk attention, row-split vs register-reuse at 4K-32K visible (-Dmetal=true)").dependOn(&attention_bench.step);
+}
+
+/// The version `--version` reports: the manifest's on a clean checkout of its
+/// release tag (or with no git at all, as in a release's source archive);
+/// otherwise the next minor as a prerelease with the commit in the build
+/// metadata, `0.11.0-dev+48e8e1e[.dirty]`, so a binary built from `main`
+/// never claims the last release.
+fn reportedVersion(b: *std.Build, root_path: []const u8, manifest: []const u8, revision: []const u8, dirty: bool) []const u8 {
+    if (std.mem.eql(u8, manifest, "unknown") or std.mem.eql(u8, revision, "unknown")) return manifest;
+    if (!dirty) {
+        var code: u8 = 0;
+        const tag = b.fmt("v{s}", .{manifest});
+        const out = b.runAllowFail(&.{ "git", "-C", root_path, "tag", "--list", "--points-at", "HEAD", tag }, &code, .ignore) catch "";
+        if (std.mem.trim(u8, out, " \n").len != 0) return manifest;
+    }
+    // A prerelease manifest (0.11.0-rc.1) is already heading to its core
+    // version; a release one (0.10.0) is followed by the next minor.
+    const next = std.SemanticVersion.parse(manifest) catch return b.fmt("{s}-dev+{s}", .{ manifest, revision[0..@min(revision.len, 7)] });
+    const minor = if (next.pre == null) next.minor + 1 else next.minor;
+    const patch = if (next.pre == null) 0 else next.patch;
+    return b.fmt("{d}.{d}.{d}-dev+{s}{s}", .{ next.major, minor, patch, revision[0..@min(revision.len, 7)], if (dirty) ".dirty" else "" });
 }

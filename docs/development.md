@@ -836,7 +836,13 @@ The manifests under `inference/` and `huggingface/` mirror it (the Zig
 package format requires a `.version`; the path dependencies ignore it), and
 `make version V=X.Y.Z` sets all three, and the site's download with them
 (below). The executable reports it as `nuclis --version`, fed from the root
-manifest through build options.
+manifest through build options, but only when built from a clean checkout
+of its tag `vX.Y.Z` (or outside git, as from a release's source archive).
+Any other build reports the next minor as a prerelease with the commit:
+`0.11.0-dev+48e8e1e` on `main` after 0.10.0, `.dirty` appended when the
+work tree differed, so an installed binary built from `main` never claims
+the last release. `release.yml` builds at the tag and refuses to publish a
+binary that does not report the plain version.
 
 - **SemVer with the 0.x convention.** Before 1.0 the minor number is the
   breaking axis: a release with breaking changes or features bumps the
