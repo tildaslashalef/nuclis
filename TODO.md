@@ -14,17 +14,108 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-No unit is in progress. `qwen3-tts-base-voice-cloning` (the Base
-checkpoints, voice cloning with saved voices, VoiceDesign, the rename to
-`-customvoice`) is finished on its branch, unpushed: its pull request
-waits for the user's word, and its description is the record. The next
-release (0.11.0) carries it with K-quant E4B files
-([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
-Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
-Muon's voice loop, the model-management unit
-([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)), the
-Qwen3-TTS fine-tunes ([nuclis#41](https://github.com/tildaslashalef/nuclis/pull/41)),
-and `GET /v1/models` ([nuclis#42](https://github.com/tildaslashalef/nuclis/pull/42)).
+`serve-request-log-and-speech-budget` is planned (below) and not started:
+its branch holds only this plan. Next: task 1, the speech frame budget.
+
+| Unit | Branch | State |
+| --- | --- | --- |
+| The speech frame budget, and a request log for `nuclis serve` | `serve-request-log-and-speech-budget` | planned |
+
+## The speech frame budget, and a request log for `nuclis serve`
+
+Base: `55e015c`. Raised by Muon's agent, 2026-10-29, on
+0.11.0-dev+8dbc2f7: a clip-only voice on the 0.6B Base turned "Hello."
+into 655.28 s of audio (8,191 frames: the model never sampled the end
+code, and the only cap is `generation_config.json`'s `max_new_tokens`
+8192, every speech model's), visible only when the request ended four
+minutes later. The user, 2026-10-29: a separate pull request from #43; the
+log covers every API route but `/v1/health`, never a request's or a
+response's payload, only structured data on what nuclis did; requests
+carry ids and clients' correlation ids.
+
+**The budget, measured** (2026-10-29, `nuclis speak`, Metal, M4 Pro;
+frames of 80 ms per text token of the input):
+
+| Input | Frames per token | Most frames |
+| --- | ---: | ---: |
+| 20 English sentences, 0.6B CustomVoice `ryan` | 3.2–11.6 | 104 (9 tokens) |
+| 3 Chinese sentences, 0.6B CustomVoice `vivian` | 4.9–7.5 | 49 |
+| 8 sentences, 1.7B VoiceDesign "very, very slowly" | 6.4–14.5 | 145 (10 tokens) |
+| "Hi.", "Okay.", "Hello.", "Yes.", "Thanks!" (2 tokens), both | 6.5–37.5 | 75 ("Hello.") |
+
+**Decisions.**
+
+- A synthesizer stops at `min(max_new_tokens, 100 + 20 × text tokens)`
+  frames: 11.2 s for "Hello." (1.9× the longest short line measured), 24 s
+  for 10 tokens (2× the slowest sentence). The constants live beside
+  `default_chunk` in `qwen3_tts_runtime.zig`; the text tokens are the
+  target's (`Prompt.text_tokens`), not a reference transcript's.
+- The finish reason, `eos`, `length` (the budget or the cap), or
+  `cancelled`, is the synthesizer's (`Synthesizer.finish`), shown by
+  `nuclis speak`, in `speech.audio.done` (`finish_reason`), and logged.
+- The request log is `<root>/logs/serve.jsonl`, written by `nuclis serve`
+  whoever started it, JSON lines, rotated at 16 MiB to `serve.1.jsonl` …
+  `serve.4.jsonl`. The stdout line stays as it is (`serve.log`); a new
+  `serve.request_log` (default true) turns the file off. A write failure
+  never fails a request.
+- Two lines a request: `start` (id, correlation id, time, method, route)
+  once it is routed, so a request still running is in the file; `end`
+  (status, duration, bytes out, the error's code, the route's fields).
+  `GET` and `HEAD /v1/health` are not logged (pollers); every other route
+  is. A WebSocket logs its `start`, then its `end` when the session closes.
+- Ids: every request gets a UUIDv7 (time-ordered), returned as
+  `x-request-id` on every response (OpenAI's header; errors and streams
+  included) and logged as `id`. A client's `X-Client-Request-Id`
+  (OpenAI's SDK header; printable ASCII, at most 128 bytes, else ignored
+  and marked) is logged as `client_id` and echoed back, so one client turn
+  (transcription, chat, speech) reads as one thread.
+- Never a payload: no text, message, image, clip, vector, or audio, in or
+  out. Sizes, counts, durations, names nuclis resolved (model, voice,
+  language), and nuclis's own error codes and messages. Opt-in bodies are
+  not built.
+- `GET /v1/health` gains `in_flight`: id, client id, route, model, running
+  for, and the route's progress (audio seconds so far, tokens so far).
+
+**Tasks.**
+
+1. *The speech budget.* `Prompt.text_tokens` (set by `build` and
+   `buildClone`), `Synthesizer.budget` and `finish` (`eos`, `length`;
+   `cancelled` set by the service); `nuclis speak` prints a stop at the
+   budget; `speech.audio.done` gains `finish_reason`; the log note shows
+   it. Tests: a tiny model stops at the budget with `length`; the trace
+   gates unchanged.
+2. *Route inventory.* Read every handler (`chat`, `decisions` and
+   `systemone`, `embeddings`, `models`, `audio/speech`, `audio/voices`,
+   both transcription routes) and write, into `docs/guide/api.md` § The
+   request log, each route's fields: what it resolved (model, kind,
+   voice, language, mode), sizes in and out (tokens, inputs, questions,
+   audio seconds, frames, bytes), timings (queued, prefill, first output),
+   and outcomes (finish reason, cache reuse, web calls). Rewrite tasks 3
+   and 4 at that level, committed before code.
+3. *The log.* `src/api/request_log.zig`: the file, rotation, the two
+   lines; the ids (UUIDv7 from `io.random` and the clock; the client's
+   header read and checked) in `http.zig`, `x-request-id` and the echo on
+   every response; a typed `Fields` each handler fills (a fixed set of
+   named numbers, strings, and booleans, nothing else), carried by the
+   response and its stream's end; `serve.request_log` in `config.zig`.
+4. *Every route fills its fields* (task 2's list); the in-flight table
+   behind `GET /v1/health`.
+5. *Docs and checks.* `docs/guide/api.md` § The request log and §
+   `GET /v1/health`, `docs/guide/configuration.md`, `docs/spec.md`; the
+   correction of § Speed in `docs/models/qwen3-tts.md` and § Voices: with
+   a transcript, the first audio grows with the reference clip (Muon's
+   0.6B: 430 ms for 10 s, 630–680 ms for 15 s; 260 ms for 4.6 s), a
+   clip-only voice does not (45 ms). `make api-check` gains the ids and a
+   read of the log.
+
+**When the unit is done:** tell Muon's agent ("Nuclis TTS base models and
+voice cloning") that it is in, where the log is, and the ids. **No pull
+request until the user says so.**
+
+**Gates.** `zig build test`; `make verify-auto` before each commit (the
+speech gates, the API's); `make api-check`; `make docs-check`. No numeric
+change to any model: `make verify-cpu` and `make verify` are not called
+for, the budget only stops generating sooner.
 
 ## Deferred
 
