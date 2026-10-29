@@ -158,9 +158,9 @@ nuclis model pull <owner/repo> --file <name> --register mymodel   # and name it
   pull of the same repository:
 
   ```sh
-  nuclis model pull itshamdi404/Egy_Arabic_Qwen3-TTS-12Hz-1.7B-Base --file model.safetensors --register egy-tts
+  nuclis model pull itshamdi404/Egy_Arabic_Qwen3-TTS-12Hz-1.7B-Base --file model.safetensors --register qwen3-tts-1.7b-eg
   nuclis model pull itshamdi404/Egy_Arabic_Qwen3-TTS-12Hz-1.7B-Base --file speech_tokenizer/model.safetensors
-  nuclis speak --model egy-tts --voice egyptian_speaker "ازيك؟" -o egy.wav
+  nuclis speak --model qwen3-tts-1.7b-eg --voice egyptian_speaker "ازيك؟" -o egy.wav
   ```
 
 Whether such a file actually runs depends on its architecture having an
