@@ -125,6 +125,7 @@ global `generation.speculative` applies to models without an entry.
 | `serve.host` | `127.0.0.1` | an IP literal or `localhost`; beyond loopback the API is reachable from the network with no authentication. Flag `--host` |
 | `serve.port` | `9000` | flag `--port` |
 | `serve.log` | `true` | a line per request on stdout; `--quiet` turns it off |
+| `serve.request_log` | `true` | the request log, two JSON lines a request under `~/.nuclis/logs/` ([api.md § The request log](api.md#the-request-log)); `--quiet` leaves it on |
 | `serve.timeout` | `300` | seconds a request may wait for the GPU before `529 timeout` (a clef-flash request can hold it for minutes); flag `--timeout` |
 | `serve.memory_bytes` | `null` | what every model `nuclis serve` keeps open may hold together, whatever their kind; null is physical memory less a third, at most 16 GiB. Flag `--memory <GiB>` ([api.md § Memory](api.md#memory)) |
 | `serve.pin` | `[]` | models `nuclis serve` opens at start and its memory budget never closes, by name, any kind: a JSON list (`["gemma-4-e4b-qat", "qwen3-tts-1.7b-customvoice"]`) or one comma-separated string (what `nuclis config set serve.pin a,b` writes); at most 8. Flag `--pin`, repeated, replaces it ([api.md § Memory](api.md#memory)) |

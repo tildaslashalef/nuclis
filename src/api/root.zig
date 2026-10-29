@@ -24,6 +24,7 @@ const speech = @import("speech/service.zig");
 const transcription = @import("transcription/service.zig");
 const memory = @import("memory.zig");
 const log_mod = @import("log.zig");
+const request_log = @import("request_log.zig");
 const batcher = @import("decisions/batcher.zig");
 const interrupt = @import("../interrupt.zig");
 const web = @import("../web/root.zig");
@@ -47,6 +48,8 @@ pub const Options = struct {
     port: u16,
     /// A line per request on stdout.
     log: bool,
+    /// The request log's files under the root.
+    request_log: bool = true,
     /// Seconds a decision request may wait for the GPU, at least 1.
     timeout: u32,
     /// Opened at start, by kind, each by its service (`byKind`); every
@@ -82,7 +85,7 @@ fn webConflict(diag: *config.Diagnostic) error{ConflictingOptions} {
 /// Parses the words after `serve` over `serve`'s configured `host` and
 /// `port`; `arena` owns the list.
 pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured: config.Config.Serve, diag: *config.Diagnostic) !Options {
-    var o: Options = .{ .host = configured.host, .port = configured.port, .log = configured.log, .timeout = configured.timeout, .memory_bytes = configured.memory_bytes };
+    var o: Options = .{ .host = configured.host, .port = configured.port, .log = configured.log, .request_log = configured.request_log, .timeout = configured.timeout, .memory_bytes = configured.memory_bytes };
     var seen: struct { host: bool = false, port: bool = false, timeout: bool = false, memory: bool = false } = .{};
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -280,6 +283,9 @@ const Server = struct {
     version: []const u8,
     active: std.atomic.Value(u32) = .init(0),
     log: ?*log_mod.Log = null,
+    /// The requests in flight and, unless `serve.request_log` is off, the
+    /// request log's files.
+    book: request_log.Book = .{},
     /// Set when the accept task returns, so the main task stops waiting.
     accept_ended: std.atomic.Value(bool) = .init(false),
 
@@ -310,8 +316,9 @@ const Server = struct {
         const ears = self.transcription.slot.openName(io, arena) catch null;
         const resident = self.memory.snapshot(io, arena) catch &.{};
         const web_state = webState(self.chat.web, arena);
+        const flights = self.book.inFlight(io, arena) catch &.{};
         var out: std.Io.Writer.Allocating = .init(arena);
-        writeHealth(&out.writer, self.version, self.backend, open, .{ .language = language, .embedding = embedding, .speech = voice, .transcription = ears }, web_state, .{ .limit = self.memory.limit, .models = resident }, stats, batching, self.embeddings.batcher.stats(io), self.speech.stats(io), self.active.load(.monotonic)) catch
+        writeHealth(&out.writer, self.version, self.backend, open, .{ .language = language, .embedding = embedding, .speech = voice, .transcription = ears }, web_state, .{ .limit = self.memory.limit, .models = resident }, stats, batching, self.embeddings.batcher.stats(io), self.speech.stats(io), self.active.load(.monotonic), flights) catch
             return .fromError(arena, .init(.internal_server_error, "internal", "out of memory"));
         return .{ .body = out.written() };
     }
@@ -342,10 +349,10 @@ const Server = struct {
                 },
             };
             if (self.active.fetchAdd(1, .monotonic) >= limits.connections) {
-                refuse(io, stream, &self.active, self.log);
+                refuse(io, stream, &self.active, self.log, &self.book);
                 continue;
             }
-            group.concurrent(io, connection, .{ self, io, stream }) catch refuse(io, stream, &self.active, self.log);
+            group.concurrent(io, connection, .{ self, io, stream }) catch refuse(io, stream, &self.active, self.log, &self.book);
         }
     }
 
@@ -360,7 +367,7 @@ const Server = struct {
         var write_buffer: [limits.write_buffer]u8 = undefined;
         var reader = stream.reader(io, &read_buffer);
         var writer = stream.writer(io, &write_buffer);
-        http.serve(self.gpa, io, &reader.interface, &writer.interface, self.router.handler(), limits.transport, self.log, .{ .handle = stream.socket.handle });
+        http.serve(self.gpa, io, &reader.interface, &writer.interface, self.router.handler(), limits.transport, self.log, &self.book, .{ .handle = stream.socket.handle });
     }
 };
 
@@ -381,7 +388,7 @@ fn webState(service: ?*web.Service, arena: std.mem.Allocator) []const u8 {
     };
 }
 
-fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, singles: Open, web_state: []const u8, budget: Memory, stats: gpu.Stats, batching: batcher.Stats, embedding_batching: embedding_batcher.Stats, speaking: speech.Stats, connections: u32) !void {
+fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, singles: Open, web_state: []const u8, budget: Memory, stats: gpu.Stats, batching: batcher.Stats, embedding_batching: embedding_batcher.Stats, speaking: speech.Stats, connections: u32, flights: []const request_log.Flight) !void {
     var s: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
     try s.objectField("status");
@@ -464,6 +471,10 @@ fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.deci
     try s.endObject();
     try s.objectField("connections");
     try s.write(connections);
+    try s.objectField("in_flight");
+    try s.beginArray();
+    for (flights) |f| try f.write(&s);
+    try s.endArray();
     try s.endObject();
     try out.writeByte('\n');
 }
@@ -587,6 +598,9 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
 
     var log: log_mod.Log = .init(out, sty, io);
     if (options.log) server.log = &log;
+    defer server.book.deinit(gpa);
+    if (options.request_log) if (context.root) |root| server.book.open(gpa, io, root) catch |err|
+        try out.print("{s}warning:{s} no request log under {s}/logs: {s}\n", .{ sty.on(.warning), sty.off(), root, @errorName(err) });
 
     var listener = listen_address.listen(io, .{ .reuse_address = true, .kernel_backlog = 128 }) catch |err| {
         diag.set("cannot listen on {f}: {s}", .{ listen_address, @errorName(err) });
@@ -627,7 +641,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
 }
 
 /// Answers `busy` and closes: over the connection limit, or no task to run it.
-fn refuse(io: std.Io, stream: std.Io.net.Stream, active: *std.atomic.Value(u32), log: ?*log_mod.Log) void {
+fn refuse(io: std.Io, stream: std.Io.net.Stream, active: *std.atomic.Value(u32), log: ?*log_mod.Log, book: *request_log.Book) void {
     defer {
         stream.close(io);
         _ = active.fetchSub(1, .monotonic);
@@ -638,7 +652,11 @@ fn refuse(io: std.Io, stream: std.Io.net.Stream, active: *std.atomic.Value(u32),
     var body: std.Io.Writer = .fixed(&body_buffer);
     const refusal: errors.ApiError = .init(http.overloaded, "busy", "overloaded: too many connections; retry shortly");
     errors.write(&body, refusal) catch return;
-    http.writeClosing(&writer.interface, http.overloaded, body.buffered()) catch {};
+    var record: request_log.Record = .init(io);
+    book.begin(io, &record);
+    http.writeClosing(&writer.interface, http.overloaded, body.buffered(), &record.id) catch {};
+    (request_log.Fields{ .record = &record, .book = book, .io = io }).fail(refusal);
+    book.finish(io, &record, .{ .status = http.overloaded, .bytes_out = body.buffered().len });
     if (log) |l| l.request(io, .{ .method = null, .path = "-", .status = http.overloaded, .duration_ns = 0, .bytes_out = body.buffered().len, .note = "busy: too many connections" });
 }
 
@@ -646,6 +664,7 @@ test {
     // The streamed routes' worker-to-connection queue, tested on its own.
     _ = @import("pipe.zig");
     _ = @import("memory.zig");
+    _ = @import("request_log.zig");
     _ = chat;
     _ = embeddings;
     _ = embedding_batcher;
@@ -772,13 +791,16 @@ test "serve arguments" {
 test "health reports the queue and the open models" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, .{ .language = "qwen3.8-27b", .embedding = "embeddinggemma-2", .speech = "qwen3-tts-1.7b-customvoice" }, "off", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60, .pinned = true }, .{ .kind = .decision, .name = "laya", .bytes = 10 } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, .{ .waiting = 1, .passes = 4, .jobs = 2 }, .{ .waiting = 2, .speaking = true, .requests = 11 }, 3);
+    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, .{ .language = "qwen3.8-27b", .embedding = "embeddinggemma-2", .speech = "qwen3-tts-1.7b-customvoice" }, "off", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60, .pinned = true }, .{ .kind = .decision, .name = "laya", .bytes = 10 } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, .{ .waiting = 1, .passes = 4, .jobs = 2 }, .{ .waiting = 2, .speaking = true, .requests = 11 }, 3, &.{.{ .id = "019a3412-6f1e-7c2a-9b4d-0e5f6a7b8c9d", .client_id = "turn-41", .method = "POST", .path = "/v1/audio/speech", .running_ms = 812.5, .fields = &.{.{ .name = "model", .value = .{ .text = "qwen3-tts-0.6b-base" } }} }});
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("cpu", parsed.value.object.get("backend").?.string);
     try std.testing.expectEqual(@as(i64, 2), parsed.value.object.get("queue").?.object.get("queued").?.integer);
     try std.testing.expectEqualStrings("laya", parsed.value.object.get("loaded").?.array.items[0].string);
     try std.testing.expectEqualStrings("qwen3.8-27b", parsed.value.object.get("language").?.string);
+    const flight = parsed.value.object.get("in_flight").?.array.items[0].object;
+    try std.testing.expectEqualStrings("turn-41", flight.get("client_id").?.string);
+    try std.testing.expectEqualStrings("qwen3-tts-0.6b-base", flight.get("model").?.string);
     try std.testing.expectEqual(@as(i64, 70), parsed.value.object.get("memory").?.object.get("resident").?.integer);
     try std.testing.expectEqual(@as(i64, 5), parsed.value.object.get("decisions").?.object.get("waiting").?.integer);
     try std.testing.expectEqualStrings("embeddinggemma-2", parsed.value.object.get("embedding").?.string);
