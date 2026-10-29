@@ -933,6 +933,14 @@ rows: 1,514 ms against 227 ms; VoiceDesign's 45 rows, without priming,
 961 ms), so the first audio of a long prompt on the 1.7B is about a
 second later than a speaker's; the cause is not yet measured.
 
+With a transcript the prompt carries the clip's frames (12.5 a second) and
+its words, so the first audio grows with the clip: Muon measured
+(2026-10-29, `nuclis serve`, the 0.6B Base) 430 ms for a 10 s clip and
+630–680 ms for 15 s, against 259 ms for the 4.6 s clip above, and
+576–1,111 ms on the 1.7B. A clip-alone voice is one speaker row whatever
+the clip's length: about 45 ms on the 0.6B and 107–112 ms on the 1.7B. A
+short clip with its exact words keeps the likeness and most of the speed.
+
 ## VoiceDesign
 
 `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` at

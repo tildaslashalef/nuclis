@@ -866,9 +866,12 @@ A Base speaks in a voice saved from a clip of 1–30 s: its timbre from the
 clip alone, or, with the clip's exact words, the closest likeness (Qwen's
 in-context cloning). A voice is saved once and named; the first speech
 request in it on a Base encodes it on the CPU (under a second; the
-connection waits, the GPU does not) and keeps the result, so later
-requests start as fast as a speaker's. Either Base size speaks any saved
-voice. The routes follow OpenAI's custom voices; nuclis has no consent
+connection waits, the GPU does not) and keeps the result for later
+requests. A clip-alone voice then starts as fast as a speaker's; with a
+transcript the clip's frames are part of every prompt, so the first audio
+grows with the clip (on the 0.6B about 260 ms for 4.6 s, 430 ms for 10 s,
+650 ms for 15 s; [qwen3-tts.md § Speed](../models/qwen3-tts.md#speed-2026-10-29)).
+Either Base size speaks any saved voice. The routes follow OpenAI's custom voices; nuclis has no consent
 flow, so clone only a voice you have the right to use.
 
 ```sh
@@ -1416,7 +1419,10 @@ A speech or transcription model's:
   "queue": {"queued": 0, "running": false, "completed": 1709},
   "decisions": {"waiting": 0, "batches": 1707, "requests": 3136},
   "embeddings": {"waiting": 0, "passes": 42, "requests": 37},
-  "connections": 1
+  "connections": 1,
+  "in_flight": [{"id": "019a3412-6f1e-7c2a-9b4d-0e5f6a7b8c9d", "client_id": "turn-41",
+                 "method": "POST", "path": "/v1/audio/speech", "running_ms": 1505.6,
+                 "model": "qwen3-tts-0.6b-base", "voice_kind": "clone", "voice": "isa"}]
 }
 ```
 
@@ -1432,7 +1438,10 @@ first embedding request), and `embeddings` counts its waiting requests,
 passes, and answered requests the same way. `web` is `off` when the tools
 are (no `serve.web` or `--web-url`, or `--no-web`); otherwise `ok` when the search service and every provider
 behind it answer its own health call, `down` when not (that call waits at
-most 5 s).
+most 5 s). `in_flight` lists the requests under way, newest first: the
+id, the client's id when it sent one, the method, the path, how long it has
+run, and the [request log](#the-request-log) fields its route has recorded
+so far (a route records most of them when it ends).
 
 ## The request log
 

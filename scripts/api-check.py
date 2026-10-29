@@ -4,8 +4,9 @@ shapes the OpenAI SDKs parse, a conversation whose later requests reuse the
 earlier ones (`cached_tokens`), a tool round trip, an image, embeddings
 (float and base64 alike, batches equal to single calls bit for bit), the
 saved voices (`--only voices`: OpenAI's custom-voice routes, a Base
-speaking in one by id, VoiceDesign speaking a described voice), and the
-refusals. Not a gate: it needs the models and a GPU.
+speaking in one by id, VoiceDesign speaking a described voice), the
+request ids (and, with a temporary NUCLIS_HOME, the request log's lines),
+and the refusals. Not a gate: it needs the models and a GPU.
 
     make api-check                              # starts ./zig-out/bin/nuclis serve
     make api-check ARGS='--model gemma-4-e4b-qat --image-model gemma-4-12b-qat'
@@ -28,6 +29,7 @@ import socket
 import struct
 import subprocess
 import sys
+import re
 import tempfile
 import threading
 import time
@@ -621,6 +623,49 @@ def check_voices(client: Client) -> None:
     )
 
 
+UUID7 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
+
+def check_ids(client: Client, logs: Path | None) -> None:
+    """`x-request-id` on a success and an error, the client's id echoed or
+    refused; with the server's log directory, the two lines of each."""
+    seen: list[tuple[str, str | None, int]] = []
+    for path, client_id, status in (
+        ("/models", "api-check-1", 200),
+        ("/models/no-such-model", "api-check-2", 404),
+        ("/models", "x" * 129, 200),
+    ):
+        request = urllib.request.Request(client.url + path, headers={"x-client-request-id": client_id})
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                code, headers = response.status, response.headers
+        except urllib.error.HTTPError as error:
+            code, headers = error.code, error.headers
+        check(code == status, f"{path}: {code}")
+        request_id = headers.get("x-request-id") or ""
+        check(UUID7.match(request_id) is not None, f"x-request-id {request_id!r}")
+        echoed = headers.get("x-client-request-id")
+        valid = len(client_id) <= 128
+        check(echoed == (client_id if valid else None), f"x-client-request-id {echoed!r}")
+        seen.append((request_id, client_id if valid else None, status))
+    with urllib.request.urlopen(client.url + "/health", timeout=60) as response:
+        check(response.headers.get("x-request-id") is None, "health has no request id")
+    if logs is None:
+        return
+    lines = [
+        cast(Json, json.loads(line)) for f in sorted(logs.glob("serve-*.jsonl")) for line in f.read_text().splitlines()
+    ]
+    check(not any(line.get("path") == "/v1/health" for line in lines), "health is not logged")
+    for request_id, client_id, status in seen:
+        mine = [line for line in lines if line["id"] == request_id]
+        check([line["event"] for line in mine] == ["request.start", "request.end"], f"{request_id}: {mine}")
+        start, end = mine
+        check(start.get("client_id") == client_id, f"start client_id {start}")
+        check((client_id is None) == bool(start.get("client_id_refused")), f"client_id_refused {start}")
+        check(end["status"] == status and end["schema"] == 1 and end["duration_ms"] >= 0, f"end {end}")
+        check(status == 200 or end.get("error") == "model_not_found", f"end error {end}")
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -681,6 +726,7 @@ def main() -> int:
             check_embeddings(client)
         if only == "voices":
             check_voices(client)
+        check_ids(client, Path(home.name) / "logs" if home is not None else None)
         print("api-check: ok")
         return 0
     except Failure as failure:
