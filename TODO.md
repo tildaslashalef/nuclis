@@ -14,16 +14,62 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-No unit is in progress. Qwen3-TTS fine-tunes (`xet-compressed-xorb-bound`,
-base `dd36eec`: Xet plans whose xorbs unpack past 64 MiB, a greedy
-`generation_config.json`, and `pull --register` of a speech checkpoint)
-waits for its pull request. K-quant E4B files
-(`gemma4-bf16-per-layer-projection`: a BF16 `per_layer_model_proj` and
-the shared-KV layers' stored K/V bind) waits for its pull request, whose
-description is its record. The next release (0.11.0) carries it with
-Q5_0 and Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
-Muon's voice loop, and the model-management unit
-([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)).
+`models-listing-for-settings` is in progress: `GET /v1/models` as the
+data a client (Muon's settings) renders its model pages from. Delivered:
+a registered speech checkpoint lists its voices, instructions, dtype,
+name, and size. Next: the user reviews the proposed `options` payload
+(below), then it is built. K-quant E4B files
+(`gemma4-bf16-per-layer-projection`) waits for its pull request. The next
+release (0.11.0) carries it with Q5_0 and Q5_1
+([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)), Muon's
+voice loop, the model-management unit
+([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)), and the
+Qwen3-TTS fine-tunes ([nuclis#41](https://github.com/tildaslashalef/nuclis/pull/41)).
+
+| Unit | What | Sessions |
+| --- | --- | --- |
+| models-listing-for-settings | `GET /v1/models` describes every model well enough to render a settings page from it | 1 |
+
+## models-listing-for-settings
+
+Base: `8d0a941`
+
+**Delivered.** `listAudio` (`src/api/speech/service.zig`) describes a
+registry speech entry from its own files once pulled
+(`audio_catalog.describeSpeech`: `qwen3_tts.parseConfig` and the
+safetensors header): `voices`, `instructions`, `architecture`,
+`quantization`, `name` (the repository's), `size_bytes` (weights and
+codec on disk). `docs/guide/api.md § GET /v1/models` documents the speech
+and transcription fields.
+
+**Proposed, waiting on the user's review** (the sample payload was shown
+in the session, 2026-10-29):
+
+- Every kind carries `kind`, `name`, `architecture`, `quantization`,
+  `size_bytes`, `present`, `loaded`, `default`, `repo`, `revision`, and
+  `endpoint` (the route it serves). Decision entries lack the first four
+  today, language entries `repo` and `revision`.
+- `options`: one object per request field the model takes, `type`
+  (`enum`, `enum_list`, `number`, `integer`, `string`, `string_list`,
+  `boolean`), `values` or `min`/`max` (and `max_items`/`max_bytes`),
+  `default` as this server resolves it for a request without the field,
+  and `by_effort` for a language model's sampling defaults that differ by
+  effort. Ranges come from the parsers: `src/api/chat/wire.zig`
+  (`temperature` 0–2, `top_p` and `min_p` 0–1, `presence_penalty` −2–2,
+  `repetition_penalty` 0–10, `top_k` ≥ 0, `max_tokens` 1–`max_output_tokens`),
+  `src/api/speech/wire.zig`, the embeddings and transcription services;
+  sampling defaults from each profile's `samplingDefaults(effort)` with
+  `generation.sampling` and the registry's overrides applied.
+- Speech adds `languages` (the checkpoint's `codec_language_id`);
+  `voice.default` is `speech.voice` when the model has it, else null.
+- Existing fields stay, so current clients are unaffected.
+
+Open questions put to the user: marking languages a fine-tune speaks only
+through `auto` (Arabic on `qwen3-tts-1.7b-eg`); per-model input limits;
+pinned/memory state; the `nuclis.json` key a default comes from; a pull
+hint for an absent model.
+
+Gates: `make verify-auto` (executable and documents only; no tier).
 
 ## Deferred
 
