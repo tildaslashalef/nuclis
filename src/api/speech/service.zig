@@ -372,23 +372,29 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
     for (listed.items) |name| {
         var diag: config.Diagnostic = .{};
         const resolved = audio_catalog.resolve(arena, root, registry, name, kind, false, &diag) catch continue;
-        const present = if (audio_catalog.locate(arena, io, root, registry, name, kind, false, &diag)) |_| true else |_| false;
+        const located: ?audio_catalog.Located = audio_catalog.locate(arena, io, root, registry, name, kind, false, &diag) catch null;
+        const present = located != null;
         const entry = resolved.entry;
+        const registered = registry.find(name);
+        // A model the catalogue does not describe describes itself once pulled.
+        const described = if (entry == null and present and kind == .speech) try audio_catalog.describeSpeech(arena, io, resolved.directory) else null;
         var details: std.json.ObjectMap = .empty;
         try details.put(arena, "kind", .{ .string = @tagName(kind) });
-        try details.put(arena, "name", .{ .string = if (entry) |e| e.title else name });
-        try details.put(arena, "architecture", if (entry) |e| .{ .string = e.architecture } else .null);
-        try details.put(arena, "quantization", if (entry) |e| .{ .string = e.quantization } else .null);
-        try details.put(arena, "size_bytes", .{ .integer = @intCast(if (entry) |e| e.totalSize() else 0) });
+        const title = if (entry) |e| e.title else if (registered) |r| if (r.repo) |repo| std.fs.path.basenamePosix(repo) else name else name;
+        try details.put(arena, "name", .{ .string = title });
+        try details.put(arena, "architecture", if (entry) |e| .{ .string = e.architecture } else if (described != null) .{ .string = "qwen3_tts" } else .null);
+        try details.put(arena, "quantization", if (entry) |e| .{ .string = e.quantization } else if (described) |d| .{ .string = d.quantization } else .null);
+        try details.put(arena, "size_bytes", .{ .integer = @intCast(if (entry) |e| e.totalSize() else if (located) |l| l.bytes else 0) });
         try details.put(arena, "present", .{ .bool = present });
         try details.put(arena, "loaded", .{ .bool = slot.isOpen(io, resolved.directory) });
         try details.put(arena, "default", .{ .bool = std.mem.eql(u8, name, default_model) });
         switch (kind) {
             .speech => {
                 var voices: std.json.Array = .init(arena);
-                if (entry) |e| for (e.speakers) |s| try voices.append(.{ .string = s });
+                const speakers = if (entry) |e| e.speakers else if (described) |d| d.speakers else &.{};
+                for (speakers) |v| try voices.append(.{ .string = v });
                 try details.put(arena, "voices", .{ .array = voices });
-                try details.put(arena, "instructions", if (entry) |e| .{ .bool = e.instructions } else .null);
+                try details.put(arena, "instructions", if (entry) |e| .{ .bool = e.instructions } else if (described) |d| .{ .bool = d.instructions } else .null);
                 try details.put(arena, "sample_rate", .{ .integer = wire.sample_rate });
                 var formats: std.json.Array = .init(arena);
                 for (std.enums.values(wire.Format)) |f| try formats.append(.{ .string = @tagName(f) });
@@ -396,7 +402,6 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
             },
             .transcription => try details.put(arena, "sample_rate", .{ .integer = 16000 }),
         }
-        const registered = registry.find(name);
         const repo = if (entry) |e| e.repo else if (registered) |r| r.repo else null;
         try details.put(arena, "repo", if (repo) |r| .{ .string = r } else .null);
         try details.put(arena, "revision", if (entry) |e| .{ .string = e.revision } else if (registered) |r| if (r.revision) |v| .{ .string = v } else .null else .null);

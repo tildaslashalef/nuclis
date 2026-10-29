@@ -1281,6 +1281,23 @@ without one):
 | `tasks` | the `task` values it takes |
 | `repo`, `revision` | where its file came from |
 
+A speech or transcription model's: every catalogue model of the kind,
+pulled or not, then the registry's entries of the kind (`owned_by` is the
+repository's owner):
+
+| Field | Meaning |
+| --- | --- |
+| `kind` | `speech` or `transcription` |
+| `name` | the catalogue's title ("Qwen3-TTS 1.7B CustomVoice"), else the entry's repository name |
+| `architecture`, `quantization` | the catalogue's (`qwen3_tts`, `BF16`); for a registered speech checkpoint, read from it once pulled (`quantization` is the weights' dtype, `mixed` when they differ); null before |
+| `size_bytes` | the weights and, for speech, the codec: the catalogue's sizes, else the files on disk (0 before the pull) |
+| `present`, `loaded`, `default` | as above; `default` is `speech.model` or `transcribe.model` |
+| `voices` | speech: the speakers a request's `voice` takes, from the checkpoint's `spk_id` for a registered one (`["egyptian_speaker"]`); empty before the pull |
+| `instructions` | speech: whether it performs a request's `instructions` (the 1.7B); null before the pull |
+| `sample_rate` | 24,000 for speech output, 16,000 for transcription input |
+| `formats` | speech: the `response_format` values, `["pcm", "wav"]` |
+| `repo`, `revision` | where its files came from |
+
 ## `GET /v1/health`
 
 ```json
