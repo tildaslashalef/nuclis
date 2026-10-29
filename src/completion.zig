@@ -21,6 +21,7 @@ const paths = @import("paths.zig");
 const model = @import("model.zig");
 const engine = @import("engine.zig");
 const resume_mod = @import("agent/resume.zig");
+const voices = @import("voices.zig");
 const Allocator = std.mem.Allocator;
 
 /// What a flag's value or a positional argument is, and so where its
@@ -45,6 +46,10 @@ pub const Value = union(enum) {
     present,
     /// A saved session of the working directory.
     session,
+    /// What `speak --voice` takes: a catalogue speaker or a saved voice.
+    voice,
+    /// A saved voice alone: what `voice rm` removes.
+    saved_voice,
     config_key,
     /// The value of the `config_key` before it.
     config_value,
@@ -285,13 +290,21 @@ pub const commands = [_]Command{
     } }} },
     .{ .name = "speak", .summary = "text into a WAV of speech, by Qwen3-TTS", .actions = &.{.{ .flags = &.{
         .{ .name = "--output", .short = "-o", .value = .file, .summary = "the WAV to write" },
-        .{ .name = "--voice", .value = .{ .choice = &.{ "aiden", "dylan", "eric", "ono_anna", "ryan", "serena", "sohee", "uncle_fu", "vivian" } }, .summary = "the speaker" },
+        .{ .name = "--voice", .value = .voice, .summary = "a speaker, or a saved voice on a Base" },
         .{ .name = "--language", .value = .{ .choice = &.{ "auto", "english", "chinese", "german", "spanish", "french", "italian", "portuguese", "russian", "japanese", "korean" } }, .summary = "the language, or auto" },
-        .{ .name = "--instruct", .value = .text, .summary = "how to say it (the 1.7B)" },
+        .{ .name = "--instruct", .value = .text, .summary = "how to say it, or VoiceDesign's voice" },
         .{ .name = "--model", .value = .dir, .summary = "the checkpoint directory" },
         .{ .name = "--seed", .value = .number, .summary = "the sampler's seed" },
         backend,
     } }} },
+    .{ .name = "voice", .summary = "save a clip as a voice for Qwen3-TTS Base", .actions = &.{
+        .{ .name = "add", .summary = "save a clip under a name", .positionals = &.{ .text, .file }, .flags = &.{
+            .{ .name = "--text", .value = .text, .summary = "what the clip says" },
+            json,
+        } },
+        .{ .name = "list", .summary = "every saved voice", .flags = &.{json} },
+        .{ .name = "rm", .summary = "delete a saved voice", .positionals = &.{.saved_voice}, .flags = &.{json} },
+    } },
     .{ .name = "serve", .summary = "the nuclis API over HTTP", .actions = &.{.{ .flags = &.{
         .{ .name = "--host", .value = .text, .summary = "the address to listen on" },
         .{ .name = "--port", .value = .number, .summary = "default serve.port, 9000" },
@@ -400,6 +413,8 @@ pub const State = struct {
     registry: []const []const u8 = &.{},
     /// Newest first.
     sessions: []const Candidate = &.{},
+    /// Saved voices, by name.
+    voices: []const Candidate = &.{},
 };
 
 pub const Answer = union(enum) {
@@ -441,6 +456,17 @@ pub fn candidates(arena: Allocator, target: Target, current: []const u8, state: 
             },
             .present => try list.appendSlice(arena, state.present),
             .session => try list.appendSlice(arena, state.sessions),
+            .voice => {
+                // Both CustomVoice sizes name the same speakers: each once.
+                for (catalog.audio_entries) |e| for (e.speakers) |speaker| {
+                    const seen = for (list.items) |c| {
+                        if (std.mem.eql(u8, c.text, speaker)) break true;
+                    } else false;
+                    if (!seen) try list.append(arena, .{ .text = speaker, .description = "CustomVoice speaker" });
+                };
+                try list.appendSlice(arena, state.voices);
+            },
+            .saved_voice => try list.appendSlice(arena, state.voices),
             .config_key => {
                 for (config.global_keys) |k| try list.append(arena, .{ .text = k.path });
                 if (std.mem.startsWith(u8, current, "models.")) {
@@ -555,11 +581,16 @@ fn gather(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
     const wants_served = kind.kind == .served;
     const wants_present = kind.kind == .present;
     const wants_registry = kind.kind == .config_key and std.mem.startsWith(u8, "models.", current[0..@min(current.len, "models.".len)]);
-    if (!wants_models and !wants_served and !wants_present and !wants_registry and kind.kind != .session) return .{};
+    const wants_voices = kind.kind == .voice or kind.kind == .saved_voice;
+    if (!wants_models and !wants_served and !wants_present and !wants_registry and !wants_voices and kind.kind != .session) return .{};
     const root = (paths.root(arena, environ.get("NUCLIS_HOME"), environ.get("HOME")) catch null) orelse return .{};
     var state: State = .{};
     if (kind.kind == .session) {
         state.sessions = sessions(arena, io, root) catch &.{};
+        return state;
+    }
+    if (wants_voices) {
+        state.voices = savedVoices(arena, io, root) catch &.{};
         return state;
     }
     const registry = loadRegistry(arena, io, root);
@@ -572,6 +603,13 @@ fn gather(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
     if (kind.kind == .served) state.served = served(arena, io, root, registry) catch &.{};
     if (kind.kind == .present) state.present = onDisk(arena, io, root, registry) catch &.{};
     return state;
+}
+
+fn savedVoices(arena: Allocator, io: std.Io, root: []const u8) ![]const Candidate {
+    const store: voices.Store = .{ .io = io, .path = try paths.voicesPath(arena, root) };
+    var list: std.ArrayList(Candidate) = .empty;
+    for (try store.list(arena)) |v| try list.append(arena, .{ .text = v.name, .description = try arena.print("saved voice · {d:.1} s", .{v.seconds}) });
+    return list.items;
 }
 
 fn loadRegistry(arena: Allocator, io: std.Io, root: []const u8) config.Models {
@@ -838,6 +876,12 @@ test "paths go to the shell, and the user's state fills models, sessions, and ke
     try expectTexts(a, &.{ "config", "set", "engine.model", "m" }, state, &.{"mine"});
     try expectTexts(a, &.{ "config", "set", "models.mine.profile", "gemma4_" }, state, &.{"gemma4_e"});
     try expectTexts(a, &.{ "model", "pull", "x", "--with", "mmproj," }, state, &.{ "mmproj,mtp", "mmproj,imatrix" });
+    // `speak --voice` offers each speaker once and the saved voices; `voice rm` the saved alone.
+    const saved: State = .{ .voices = &.{ .{ .text = "anna" }, .{ .text = "sam" } } };
+    try expectTexts(a, &.{ "speak", "--voice", "s" }, saved, &.{ "serena", "sohee", "sam" });
+    try expectTexts(a, &.{ "voice", "rm", "" }, saved, &.{ "anna", "sam" });
+    try expectTexts(a, &.{ "voice", "" }, saved, &.{ "add", "list", "rm" });
+    try testing.expect(try answerFor(a, &.{ "voice", "add", "anna", "" }, .{}) == .file);
 }
 
 test "the answer is one line per candidate, a description never breaks one" {
@@ -854,7 +898,7 @@ test "the answer is one line per candidate, a description never breaks one" {
 fn sample(value: Value) []const u8 {
     return switch (value) {
         .none => unreachable,
-        .text, .file, .dir, .session, .model, .served, .present => "x",
+        .text, .file, .dir, .session, .model, .served, .present, .voice, .saved_voice => "x",
         .number => "1",
         .choice => |c| c[0],
         .repo => "owner/repo",

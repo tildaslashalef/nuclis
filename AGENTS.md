@@ -254,7 +254,12 @@ stale references. Do not claim build/test execution when no code or build exists
   release notes are online. Do not rely on `current`: `~/.local/bin/zig`
   links to `current/zig`, which the user may point at `nightly` for a
   while, so check `zig version` against `stable/zig version` before
-  building and say so if they differ. `zigup install x.y.z` fetches another
+  building and say so if they differ.
+- Zig 0.17 has no `**` array-repetition operator (`"ab" ** 2` fails to
+  parse: "binary operator '*' has whitespace on one side"). Repeat with
+  `@splat`, e.g. `&@as([64]u8, @splat('m'))` for a string; `++` still
+  concatenates. Check a construct remembered from older Zig against
+  `stable/doc/langref.html` before writing it. `zigup install x.y.z` fetches another
   version (sha256 verified) without switching, at
   `~/.local/opt/zig/zig-aarch64-macos-x.y.z/zig`, for A/B builds; `zigup gc`
   deletes versions no link references. Switching links is the user's call.

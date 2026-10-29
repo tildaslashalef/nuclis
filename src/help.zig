@@ -16,7 +16,7 @@ const style = @import("tui/style.zig");
 const default_backend = if (@import("inference").metal.enabled) "default metal" else "default cpu";
 
 /// The commands with a page of their own; `null` is the overview.
-pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, transcribe, speak, serve, completion };
+pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, transcribe, speak, voice, serve, completion };
 
 pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []const u8) !void {
     if (topic) |value| return switch (value) {
@@ -34,6 +34,7 @@ pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []co
         .embed => embed(out, sty),
         .transcribe => transcribe(out, sty),
         .speak => speak(out, sty),
+        .voice => voice(out, sty),
         .serve => serve(out, sty),
         .completion => completion(out, sty),
     };
@@ -144,7 +145,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "cache", "list or clear the agent's saved model states");
     try row(out, sty, "decide", "typed questions about text or JSON, answered by Laya");
     try row(out, sty, "embed", "text, images, audio into vectors, by EmbeddingGemma 2");
-    try row(out, sty, "speak, transcribe", "text to speech and back: Qwen3-TTS, Nemotron ASR");
+    try row(out, sty, "speak, voice, transcribe", "speech by Qwen3-TTS, saved voices, Nemotron ASR");
     try row(out, sty, "serve", "the nuclis API over HTTP: decisions, models kept open");
     try row(out, sty, "config", "write, show, or set a key of ~/.nuclis/nuclis.json");
     try row(out, sty, "completion", "the shell completion script for fish, bash, or zsh");
@@ -538,24 +539,28 @@ fn transcribe(out: *std.Io.Writer, sty: style.Style) !void {
 }
 
 fn speak(out: *std.Io.Writer, sty: style.Style) !void {
-    try title(out, sty, "nuclis speak", "text into speech, by Qwen3-TTS CustomVoice");
+    try title(out, sty, "nuclis speak", "text into speech, by Qwen3-TTS");
     try heading(out, sty, "Usage:");
     try code(out, sty, "nuclis speak <text>… -o <file.wav> [options]");
     try code(out, sty, "  the words are joined by spaces: quote a sentence");
 
     try heading(out, sty, "Options:");
     try row(out, sty, "-o, --output <file>", "the WAV to write: 24 kHz mono 16-bit");
-    try row(out, sty, "--voice <speaker>", "one of the model's speakers; Qwen's nine: aiden,");
-    try more(out, "dylan, eric, ono_anna, ryan, serena, sohee,");
-    try more(out, "uncle_fu, vivian; default speech.voice (ryan)");
+    try row(out, sty, "--voice <name>", "on CustomVoice one of its speakers, Qwen's nine:");
+    try more(out, "aiden, dylan, eric, ono_anna, ryan, serena,");
+    try more(out, "sohee, uncle_fu, vivian; on a Base a saved voice");
+    try more(out, "(nuclis voice); default speech.voice (ryan)");
     try row(out, sty, "--language <name>", "english, chinese, german, spanish, french,");
     try more(out, "italian, portuguese, russian, japanese, korean,");
     try more(out, "or auto; default auto");
     try row(out, sty, "--instruct <text>", "how to say it (\"Speak in a warm, cheerful");
-    try more(out, "tone.\"); the 1.7B model only");
-    try row(out, sty, "--model <name|dir>", "qwen3-tts-1.7b, qwen3-tts-0.6b, a speech");
-    try more(out, "registry entry, or a checkpoint directory;");
-    try more(out, "default speech.model (qwen3-tts-1.7b)");
+    try more(out, "tone.\"), on the 1.7B CustomVoice; on VoiceDesign");
+    try more(out, "the voice itself (\"a calm elderly man, deep\")");
+    try row(out, sty, "--model <name|dir>", "qwen3-tts-1.7b-customvoice, -0.6b-customvoice,");
+    try more(out, "-1.7b-base, -0.6b-base, -1.7b-voicedesign, a speech");
+    try more(out, "registry entry,");
+    try more(out, "or a checkpoint directory; default speech.model");
+    try more(out, "(qwen3-tts-1.7b-customvoice)");
     try row(out, sty, "--seed <n>", "the sampler's seed; default 0");
     try row(out, sty, "--backend cpu|metal", default_backend);
     try row(out, sty, "--stream", "write each chunk as it is decoded; report the");
@@ -573,12 +578,50 @@ fn speak(out: *std.Io.Writer, sty: style.Style) !void {
     try example(out, sty, "nuclis speak --voice vivian --language chinese \"你好。\" -o hi.wav", "another speaker");
     try example(out, sty, "nuclis speak --instruct \"Whisper.\" \"Good night.\" -o night.wav", "a mood, on the 1.7B");
     try example(out, sty, "nuclis speak --stream \"One moment, please.\" -o wait.wav", "chunk by chunk, timed");
+    try example(out, sty, "nuclis speak --model qwen3-tts-1.7b-base --voice anna \"Hi.\" -o hi.wav", "a saved voice");
 
     try heading(out, sty, "Notes:");
     try plain(out, "Speech is sampled: the same text, voice, and seed give the same audio,");
     try plain(out, "another seed says it differently. The whole text is read before the");
     try plain(out, "first frame, so give it a sentence or two at a time. The CPU and Metal");
     try plain(out, "agree to rounding, so a seed gives the same speech on both only nearly.");
+    try plain(out, "A saved voice is encoded the first time a Base speaks in it (a second");
+    try plain(out, "or less on the CPU), and kept. On qwen3-tts-1.7b-voicedesign,");
+    try plain(out, "--instruct describes the voice itself (\"a calm elderly man with a deep");
+    try plain(out, "voice\"), sampled anew each time; for one that stays the same, save a");
+    try plain(out, "clip of it with `nuclis voice add` and speak in it on a Base.");
+    try out.writeByte('\n');
+}
+
+fn voice(out: *std.Io.Writer, sty: style.Style) !void {
+    try title(out, sty, "nuclis voice", "save a clip as a voice for Qwen3-TTS Base");
+    try heading(out, sty, "Usage:");
+    try code(out, sty, "nuclis voice add <name> <audio> [--text <transcript>] [--json]");
+    try code(out, sty, "nuclis voice list [--json]");
+    try code(out, sty, "nuclis voice rm <name> [--json]");
+
+    try heading(out, sty, "Actions:");
+    try row(out, sty, "add", "save <audio> (WAV, AIFF, MP3, M4A, FLAC, CAF; 1");
+    try more(out, "to 30 s) as <name>: a-z, 0-9, _ and -, up to 64,");
+    try more(out, "not one of Qwen's speakers");
+    try row(out, sty, "list", "every saved voice, its length and transcript");
+    try row(out, sty, "rm", "delete a voice and all that was made of it");
+
+    try heading(out, sty, "Options:");
+    try row(out, sty, "--text <transcript>", "what the clip says, up to 2 KiB: the closest");
+    try more(out, "likeness; without it, the speaker's timbre alone");
+    try row(out, sty, "--json", "the voice, the list, or the removal as JSON");
+
+    try heading(out, sty, "Examples:");
+    try example(out, sty, "nuclis voice add anna anna.m4a --text \"Hello, it's Anna.\"", "clip and words");
+    try example(out, sty, "nuclis speak --model qwen3-tts-1.7b-base --voice anna \"Hi.\" -o hi.wav", "use it");
+    try example(out, sty, "nuclis voice rm anna", "forget it");
+
+    try heading(out, sty, "Notes:");
+    try plain(out, "A voice is kept under ~/.nuclis/voices/<name>: the clip at 24 kHz and");
+    try plain(out, "what each Base made of it, made on its first use with that model. A");
+    try plain(out, "clean clip of a few sentences, with its exact words, clones best. Clone");
+    try plain(out, "only a voice you have the right to use.");
     try out.writeByte('\n');
 }
 

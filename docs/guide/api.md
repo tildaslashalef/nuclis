@@ -8,7 +8,8 @@ client written for `api.typesafe.ai` switches by changing its base URL.
 client written for an OpenAI-compatible server does the same.
 **Embeddings** turn text, images and audio into vectors in OpenAI's embeddings format.
 **Speech** speaks text in OpenAI's speech format, streamed as it is
-made, beside a chat generation. This page
+made, beside a chat generation, in a built-in speaker, a saved voice
+cloned from a clip, or a voice described in words. This page
 is the reference for client authors; it assumes nothing about the code.
 
 - [Running the server](#running-the-server), [memory](#memory)
@@ -26,7 +27,7 @@ is the reference for client authors; it assumes nothing about the code.
   response](#the-embeddings-response), [passes and
   memory](#passes-and-memory)
 - [Speech](#speech): [`POST /v1/audio/speech`](#post-v1audiospeech), [the
-  request](#the-speech-request), [streaming and
+  request](#the-speech-request), [voices](#voices), [streaming and
   cancellation](#streaming-and-cancellation), [scheduling](#scheduling)
 - [Live transcription](#live-transcription): [`GET /v1/audio/transcriptions/stream`](#get-v1audiotranscriptionsstream), a WebSocket
 - [Transcription (files)](#transcription-files): [the request](#the-file-transcription-request), [the response](#the-file-transcription-response), [segments](#segments), [long recordings](#long-recordings)
@@ -55,9 +56,9 @@ The configuration file (`~/.nuclis/nuclis.json`) holds the defaults:
 
 ```json
 "decide": { "model": "laya" },
-"speech": { "model": "qwen3-tts-1.7b", "voice": "ryan" },
+"speech": { "model": "qwen3-tts-1.7b-customvoice", "voice": "ryan" },
 "serve":  { "host": "127.0.0.1", "port": 9000, "log": true, "timeout": 300,
-            "pin": ["gemma-4-e4b-qat", "qwen3-tts-1.7b", "nemotron-asr-0.6b"] }
+            "pin": ["gemma-4-e4b-qat", "qwen3-tts-1.7b-customvoice", "nemotron-asr-0.6b"] }
 ```
 
 `nuclis config set serve.port 9000` changes one; the flags override them
@@ -85,7 +86,7 @@ model's weights and codec; a transcription model's weights) plus, for a
 language model, its attention cache and the saved states it may keep (`cache.memory_bytes`,
 4 GiB), and for a speech or transcription model the device memory it
 created on opening (its converted weights, caches, and scratch). Qwen3.8 counts 22.0 GiB, `laya-multilingual` 0.6 GiB, clef-flash
-8.4 GiB, Gemma 4 E4B 8.9 GiB, `qwen3-tts-1.7b` 4.7 GiB (5,095,675,552 B:
+8.4 GiB, Gemma 4 E4B 8.9 GiB, `qwen3-tts-1.7b-customvoice` 4.7 GiB (5,095,675,552 B:
 the BF16 talker and the F32 codec, 4,515,695,644 B, and 553 MiB of
 device buffers), `nemotron-asr-0.6b` 2.4 GiB (2,602,777,056 B: 2,552,062,944
 and 48 MiB). What a request holds while it runs is not counted: a
@@ -107,7 +108,7 @@ closed to make room, so a voice assistant's three models stay ready
 whatever else is asked:
 
 ```sh
-nuclis serve --pin gemma-4-e4b-qat --pin qwen3-tts-1.7b --pin nemotron-asr-0.6b
+nuclis serve --pin gemma-4-e4b-qat --pin qwen3-tts-1.7b-customvoice --pin nemotron-asr-0.6b
 ```
 
 A model that does not fit beside the pinned ones is refused at once
@@ -808,7 +809,10 @@ pass: about 460 ms an image at 280 tokens, 130 ms for 4.8 s of speech.
 ### `POST /v1/audio/speech`
 
 OpenAI's speech call for the speech models `nuclis speak` runs, Qwen3-TTS
-CustomVoice in two sizes. The audio streams as it is made: the first
+in three kinds: CustomVoice (two sizes) speaks in nine built-in speakers,
+Base (two sizes) in a saved voice cloned from a clip ([voices](#voices)),
+and the 1.7B VoiceDesign in a voice its `instructions` describe. The
+audio streams as it is made: the first
 80 ms leave after one frame, then chunks of one, two, and four frames
 (320 ms), each no longer than the audio sent before it, so a listener
 who plays from the first byte never waits between them.
@@ -837,9 +841,9 @@ sentence ends does.
 | Field | In nuclis |
 | --- | --- |
 | `input` | the text, UTF-8, at most 16 KiB (`400 request_too_large`) |
-| `model` | a registry entry of kind `speech` or `qwen3-tts-1.7b`, `qwen3-tts-0.6b`; never a path. Absent: the open one, else `speech.model` (`qwen3-tts-1.7b`). Another speech model replaces the open one; that request pays the open |
-| `voice` | one of the model's speakers: `aiden`, `dylan`, `eric`, `ono_anna`, `ryan`, `serena`, `sohee`, `uncle_fu`, `vivian`; absent, `speech.voice` (`ryan`). OpenAI's voice names are not speakers here (`400 invalid_request`, listing them) |
-| `instructions` | how to say it (`"Speak with excited, breathless joy."`): the 1.7B only. On the 0.6B, `400 instructions_unsupported` |
+| `model` | a registry entry of kind `speech` or a catalogue speech name (`qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice`, `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base`, `qwen3-tts-1.7b-voicedesign`); never a path. The names before 0.11.0 (`qwen3-tts-1.7b`, `qwen3-tts-0.6b`) are `404 model_not_found`, the message naming the new one. Absent: the open one, else `speech.model` (`qwen3-tts-1.7b-customvoice`). Another speech model replaces the open one; that request pays the open |
+| `voice` | on CustomVoice one of its speakers: `aiden`, `dylan`, `eric`, `ono_anna`, `ryan`, `serena`, `sohee`, `uncle_fu`, `vivian` (OpenAI's voice names are not speakers here: `400 invalid_request`, listing them). On a Base a saved voice, by name or as OpenAI's custom voice `{"id": "<name>"}`: `404 voice_not_found` for one not saved, `400 invalid_request` for a speaker's name. On VoiceDesign ignored (OpenAI's clients always send one). A custom voice on CustomVoice or VoiceDesign is `400 voice_cloning_unsupported`. Absent: `speech.voice` (`ryan`) |
+| `instructions` | on the 1.7B CustomVoice how to say it (`"Speak with excited, breathless joy."`); on VoiceDesign the voice itself (`"A calm elderly man with a deep, gravelly voice."`), sampled anew each request; absent, the model's own choice. On the 0.6B CustomVoice and a Base, `400 instructions_unsupported` |
 | `response_format` | `wav` (the default; OpenAI's is `mp3`) or `pcm` |
 | `stream_format` | `audio` (the default): the bytes as they are made. `sse`: server-sent events, each `{"type": "speech.audio.delta", "audio": "<base64>"}` carrying the next bytes of the same stream (the WAV header in the first, for `wav`), then `{"type": "speech.audio.done", "usage": {"input_tokens", "output_tokens", "total_tokens"}}` (the prompt's rows in, the frames out) |
 | `speed` | `1` only (`400 unsupported_feature` otherwise): the model has no rate control |
@@ -848,13 +852,48 @@ sentence ends does.
 
 Other fields OpenAI defines are ignored. Refused with `400
 unsupported_feature`: `mp3`, `opus`, `aac`, and `flac` (no encoder here),
-a voice given as an object (no custom voices), a `speed` other than 1.
+a `speed` other than 1.
 `model` naming another kind is `400 not_a_speech_model`; a name nothing
 pulled answers is `404 model_not_found`. A refusal on the GPU worker (an
 unknown speaker or language) is still a status: the response's head
 waits until the request's prompt is prefilled, which is before its first
 audio anyway. A model that fails to open is `500 model_failed`; one too
 large for the budget beside the pinned models `400 model_too_large`.
+
+### Voices
+
+A Base speaks in a voice saved from a clip of 1–30 s: its timbre from the
+clip alone, or, with the clip's exact words, the closest likeness (Qwen's
+in-context cloning). A voice is saved once and named; the first speech
+request in it on a Base encodes it on the CPU (under a second; the
+connection waits, the GPU does not) and keeps the result, so later
+requests start as fast as a speaker's. Either Base size speaks any saved
+voice. The routes follow OpenAI's custom voices; nuclis has no consent
+flow, so clone only a voice you have the right to use.
+
+```sh
+curl -s localhost:9000/v1/audio/voices -F name=anna -F audio_sample=@anna.m4a \
+  -F 'reference_text=Hello, it is Anna. I will be reading the news today.'
+curl -s localhost:9000/v1/audio/speech -o hi.wav -d '{
+  "model": "qwen3-tts-1.7b-base", "input": "Good morning.", "voice": {"id": "anna"}
+}'
+```
+
+| Route | Does |
+| --- | --- |
+| `POST /v1/audio/voices` | saves a voice, `201` with its object. Multipart: `audio_sample` (the clip: WAV, AIFF, MP3, M4A, FLAC, CAF; the body at most 32 MiB), `name` (`[a-z0-9][a-z0-9_-]{0,63}`, not one of the speakers), and nuclis's `reference_text` (what the clip says, at most 2 KiB; trimmed, empty is none). OpenAI's `consent` is ignored. `409 voice_exists`, `400 too_many_voices` past 256, `400 invalid_request` with the field for the rest |
+| `GET /v1/audio/voices` | `{"object": "list", "data": [voice…]}`, by name |
+| `GET /v1/audio/voices/{name}` | one voice, or `404 voice_not_found` |
+| `DELETE /v1/audio/voices/{name}` | `{"id", "object": "audio.voice.deleted", "deleted": true}`; the clip and all made of it go |
+
+A voice object is OpenAI's `{"id", "object": "audio.voice", "name",
+"created_at"}` (`id` is the name; `created_at` Unix seconds) with
+nuclis's `reference_text` (or null) and `seconds`. Voices live under the
+server's user root, `~/.nuclis/voices/<name>/`, shared with `nuclis voice`.
+
+For a voice that stays the same, VoiceDesign's output can be saved: speak
+a line or two in a described voice, then save that audio with its text as
+a voice and speak in it on a Base (Qwen's *voice design then clone*).
 
 ### Streaming and cancellation
 
@@ -1349,14 +1388,16 @@ A speech or transcription model's:
 | `architecture`, `quantization` | the catalogue's (`qwen3_tts`, `BF16`); for a registered speech checkpoint, read from it once pulled (`quantization` is the weights' dtype, `mixed` when they differ); null before |
 | `size_bytes` | the weights and, for speech, the codec: the catalogue's sizes, else the files on disk (0 before the pull) |
 | `default` | `speech.model` or `transcribe.model` |
-| `voices` | speech: the speakers a request's `voice` takes, in the checkpoint's order (`spk_id`); for a model not pulled, the catalogue's; for a registered one, empty before the pull |
+| `voices` | speech: what a request's `voice` takes: on CustomVoice the speakers, in the checkpoint's order (`spk_id`; for a model not pulled, the catalogue's; for a registered one, empty before the pull); on a Base the saved voices' names; on VoiceDesign none |
 | `speakers` | speech: the same as objects, `{"id": "eric", "dialect": "sichuan_dialect"}`: a dialect speaker speaks its dialect for `auto` and `chinese` (`dialect` null before the pull) |
 | `languages` | speech: the `language` values besides `auto`, the codec's (`english`, …, and the dialects `beijing_dialect`, `sichuan_dialect` on Qwen's); transcription: the locales of its `prompt_dictionary` (121 on Nemotron, `auto` among them). Empty before the pull |
-| `instructions` | speech: whether it performs a request's `instructions` (the 1.7B); null before the pull |
+| `instructions` | speech: whether it performs a request's `instructions` (the 1.7B CustomVoice, and VoiceDesign, whose instructions describe the voice); null before the pull |
+| `cloning` | speech: on a Base `{"modes": ["audio", "audio_and_transcript"], "voices_route": "/v1/audio/voices"}` (a voice from a clip alone, or a clip and its words), else null; null for a registered model not pulled |
+| `design` | speech: whether `instructions` describe the voice (VoiceDesign); null for a registered model not pulled |
 | `sample_rate` | 24,000 for speech output, 16,000 for transcription input |
 | `formats` | speech: the `response_format` values, `["pcm", "wav"]` |
 | `limits` | speech: `max_input_bytes` (16 KiB). Transcription: `max_phrases` and `max_phrase_bytes` (64, 48), `max_file_bytes` (`serve.transcription_bytes`) |
-| `options` | speech: `voice` (default `speech.voice` when it is one of the speakers, else null), `language` (default `auto`), `instructions` (the 1.7B), `response_format` (`wav`), `stream_format` (`audio`), `seed` (0). Transcription, the file route's: `language` (`auto`), `response_format` (`json`), `timestamp_granularities` (`["segment"]`), `stream`, `lookahead` (`0`, `3`, `6`, `13`; default 3), `phrases` |
+| `options` | speech: `voice` (its values the `voices`; default `speech.voice` when it is one of them, else null; absent on VoiceDesign), `language` (default `auto`), `instructions` (the 1.7B), `response_format` (`wav`), `stream_format` (`audio`), `seed` (0). Transcription, the file route's: `language` (`auto`), `response_format` (`json`), `timestamp_granularities` (`["segment"]`), `stream`, `lookahead` (`0`, `3`, `6`, `13`; default 3), `phrases` |
 
 ## `GET /v1/health`
 
@@ -1490,7 +1531,7 @@ passes gave 1,669 ms and 38.3 inputs/s, within the spread, while a
 ### Speech beside a chat stream, 2026-10-27, commit `07dac34`
 
 Apple M4 Pro (48 GB), ReleaseSafe (`make build`), Zig 0.17.0, macOS
-27.0; `nuclis serve --quiet --model gemma-4-e4b-qat --pin qwen3-tts-1.7b
+27.0; `nuclis serve --quiet --model gemma-4-e4b-qat --pin qwen3-tts-1.7b-customvoice
 --pin nemotron-asr-0.6b` on Metal (`unsloth/gemma-4-E4B-it-qat-GGUF` at
 `8c5a9e4f`, speculative decoding on at draft 6;
 `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` at `0c0e3051`). **The machine was

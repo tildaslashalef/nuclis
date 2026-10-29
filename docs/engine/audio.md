@@ -52,6 +52,16 @@ as a cross-check, never copied.
   checked against `qwen3_codec.zig` on the same codes (gate
   `qwen3-tts-codec-metal`); the voice's talker and predictor are
   `models/qwen3_tts*.zig` ([qwen3-tts.md](../models/qwen3-tts.md)).
+- `ecapa.zig`: Qwen3-TTS Base's speaker encoder, CPU only: `Front`, the
+  24 kHz mel `extract_speaker_embedding` computes, and `Encoder`, the
+  ECAPA-TDNN to one embedding at the talker's width (gate
+  `qwen3-tts-0.6b-clone-cpu`;
+  [qwen3-tts.md § The speaker encoder](../models/qwen3-tts.md#the-speaker-encoder)).
+- `qwen3_codec_encoder.zig`: Qwen3-TTS's codec encoder, CPU only, 24 kHz
+  samples to frames of 16 codes (the Base's reference codes): `bind` (its
+  quantizer is the decoder binding's, the file's copies checked equal) and
+  `Encoder` (gate `qwen3-tts-0.6b-clone-cpu`;
+  [qwen3-tts.md § The codec encoder](../models/qwen3-tts.md#the-codec-encoder)).
 - `nemotron_encoder.zig`: Nemotron 3.5 ASR's cache-aware encoder and its
   prompt block, the CPU reference: `bind` (the safetensors checkpoint),
   `Encoder`, `Stream`, its `FrontEnd`, and the pure functions the Metal
@@ -74,12 +84,16 @@ as a cross-check, never copied.
 
 AudioToolbox reads the bytes through `AudioFileOpenWithCallbacks` and
 `ExtAudioFileWrapAudioFileID`. The formats are WAV, AIFF, CAF, MP3,
-M4A/AAC, FLAC and ALAC. The client format is 16 kHz float in the file's
-channel count, and the converter's sample-rate quality is set to its
-maximum (`Mastering` complexity). Channels are averaged afterwards, as
-librosa's `mono=True` does. A 16 kHz mono 16-bit WAV never reaches the
-bridge: each sample over 32768 is what every decoder gives, so it is exact
-on any platform. A 16 kHz mono float WAV is read as stored, likewise.
+M4A/AAC, FLAC and ALAC. The client format is float in the file's channel
+count at the caller's rate: 16 kHz for the encoders here (`decode`,
+`Reader`), 24 kHz for Qwen3-TTS's reference clips (`decodeAt`,
+[qwen3-tts.md § Voice cloning (the Base)](../models/qwen3-tts.md#voice-cloning-the-base)).
+The converter's sample-rate quality is set to its maximum (`Mastering`
+complexity). Channels are averaged afterwards, as librosa's `mono=True`
+does. A mono 16-bit WAV at the asked rate never reaches the bridge: each
+sample over 32768 is what every decoder gives (`soundfile` and librosa
+included), so it is exact on any platform. A mono float WAV at that rate
+is read as stored, likewise.
 
 Other clips match Google's only as far as two resamplers agree. On the
 `north` clip, a 44.1 kHz stereo copy gives a vector at cosine 0.9999 to the

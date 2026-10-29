@@ -942,6 +942,1226 @@
      "note": "the predictor's logits, row 15 * frame + group - 1, before temperature and top-k"
     }
    }
+  },
+  "0.6b-clone-reference": {
+   "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+   "revision": "5d83992436eae1d760afd27aff78a71d676296fc",
+   "model_sha256": "180b3b10eb1c9f1b4db7806d5475bae3071c0243c299d49926bab1da3b6946f6",
+   "codec_sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+   "reference_speaker": "vivian",
+   "reference_language": "english",
+   "reference_text": "Every morning I walk along the river and listen to the birds.",
+   "reference_repo": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+   "reference_frames": 58,
+   "codec_encoder_attention": "sdpa",
+   "files": {
+    "reference": {
+     "file": "0.6b-clone-reference/reference.wav",
+     "sha256": "4413f4701ce2a0ede7700b37691fe40f7f730815f2c1cc6564a7594e5a693692",
+     "note": "the clip, 24 kHz mono 16-bit PCM: Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice speaker vivian, seed 0"
+    },
+    "encoders/mel": {
+     "file": "0.6b-clone-reference/encoders/mel.f32",
+     "shape": [
+      64,
+      128
+     ],
+     "dtype": "f32",
+     "sha256": "c4eb4fc792f4b656de455259ca1e3e2863434a2378b463bbf0c2e3ccca02e6ee",
+     "note": "the speaker encoder's input mel, rows 371..435",
+     "rows": [
+      371,
+      435
+     ]
+    },
+    "encoders/blocks.0": {
+     "file": "0.6b-clone-reference/encoders/blocks.0.f32",
+     "shape": [
+      8,
+      512
+     ],
+     "dtype": "f32",
+     "sha256": "1689b12a15f42059f82b754cc49ac934a583957ce0983f0e3b1ef687656a4b55",
+     "note": "blocks.0, rows 427..435",
+     "rows": [
+      427,
+      435
+     ]
+    },
+    "encoders/blocks.3": {
+     "file": "0.6b-clone-reference/encoders/blocks.3.f32",
+     "shape": [
+      8,
+      512
+     ],
+     "dtype": "f32",
+     "sha256": "0cc416c3ce7313f77a87b70e40a83ed2cd34a9050fc0df41cab5318f927f597e",
+     "note": "blocks.3, rows 427..435",
+     "rows": [
+      427,
+      435
+     ]
+    },
+    "encoders/mfa": {
+     "file": "0.6b-clone-reference/encoders/mfa.f32",
+     "shape": [
+      8,
+      1536
+     ],
+     "dtype": "f32",
+     "sha256": "4228d6a4d9e6b1ad2b612651156f93970a0a7c629a9121ce1f1bf2027572f383",
+     "note": "mfa, rows 427..435",
+     "rows": [
+      427,
+      435
+     ]
+    },
+    "encoders/seanet": {
+     "file": "0.6b-clone-reference/encoders/seanet.f32",
+     "shape": [
+      16,
+      512
+     ],
+     "dtype": "f32",
+     "sha256": "d6c1043069c75eb75b81780102f9da94d38c94e4bf35ce0e508ab9d7fe442de0",
+     "note": "seanet, rows 100..116",
+     "rows": [
+      100,
+      116
+     ]
+    },
+    "encoders/transformer": {
+     "file": "0.6b-clone-reference/encoders/transformer.f32",
+     "shape": [
+      16,
+      512
+     ],
+     "dtype": "f32",
+     "sha256": "b209ff8ef114852e1e85788835c03ca0e9edf352804a2fe0b4c5492a73418fa9",
+     "note": "transformer, rows 100..116",
+     "rows": [
+      100,
+      116
+     ]
+    },
+    "encoders/downsample": {
+     "file": "0.6b-clone-reference/encoders/downsample.f32",
+     "shape": [
+      16,
+      512
+     ],
+     "dtype": "f32",
+     "sha256": "e25a6e4c0732b3c06003f7760b1652bfa4552eb02505eb712ee15871b446691d",
+     "note": "downsample, rows 42..58",
+     "rows": [
+      42,
+      58
+     ]
+    },
+    "encoders/asp": {
+     "file": "0.6b-clone-reference/encoders/asp.f32",
+     "shape": [
+      3072
+     ],
+     "dtype": "f32",
+     "sha256": "b45245928625452c0709ff40cd7b93791b83565729f9b97ce8f5a5a4cc002934",
+     "note": "the attentive pooling's output, [mean; std]"
+    },
+    "embedding": {
+     "file": "0.6b-clone-reference/embedding.f32",
+     "shape": [
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "e926363033fb3a45c788b8a71c519d5e046732b4d5de4b1d7779ab1e00b7832a",
+     "note": "ref_spk_embedding, the speaker encoder's output"
+    },
+    "codes": {
+     "file": "0.6b-clone-reference/codes.u16",
+     "shape": [
+      58,
+      16
+     ],
+     "dtype": "u16",
+     "sha256": "2eea8b54f03ff1d5d99f8974aa049f3109e26f139931cdff65cf5f897059de00",
+     "note": "ref_code: the codec encoder's 16 groups per 12.5 Hz frame, [frame][group]"
+    }
+   }
+  },
+  "0.6b-clone-xvector-fox": {
+   "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+   "revision": "5d83992436eae1d760afd27aff78a71d676296fc",
+   "model_sha256": "180b3b10eb1c9f1b4db7806d5475bae3071c0243c299d49926bab1da3b6946f6",
+   "codec_sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+   "reference": "0.6b-clone-reference",
+   "frames_generated": 39,
+   "mode": "xvector",
+   "text": "The quick brown fox jumps over the lazy dog.",
+   "text_ids": [
+    151644,
+    77091,
+    198,
+    785,
+    3974,
+    13876,
+    38835,
+    34208,
+    916,
+    279,
+    15678,
+    5562,
+    13,
+    151645,
+    198,
+    151644,
+    77091,
+    198
+   ],
+   "ref_ids": null,
+   "prompt_rows": [
+    [
+     151644,
+     -1,
+     -1
+    ],
+    [
+     77091,
+     -1,
+     -1
+    ],
+    [
+     198,
+     -1,
+     -1
+    ],
+    [
+     151671,
+     2154,
+     -1
+    ],
+    [
+     151671,
+     2156,
+     -1
+    ],
+    [
+     151671,
+     2050,
+     -1
+    ],
+    [
+     151671,
+     2157,
+     -1
+    ],
+    [
+     151671,
+     -2,
+     -1
+    ],
+    [
+     151672,
+     2148,
+     -1
+    ],
+    [
+     785,
+     2149,
+     -1
+    ]
+   ],
+   "prompt_rows_note": "[text id, codec id, reference frame] per prompt row, -1 for none, -2 for the speaker embedding: rebuilt from them, the rows equal those the talker received",
+   "trailing_ids": [
+    3974,
+    13876,
+    38835,
+    34208,
+    916,
+    279,
+    15678,
+    5562,
+    13,
+    151673
+   ],
+   "prompt_rebuilt_max_abs": 3.5762786865234375e-07,
+   "talker_frames": 4,
+   "predictor_frames": 2,
+   "files": {
+    "codes": {
+     "file": "0.6b-clone-xvector-fox/codes.u16",
+     "shape": [
+      39,
+      16
+     ],
+     "dtype": "u16",
+     "sha256": "50bc463b793181bdb832d65c18564fd9c51729db63b50980d33ebf8934be9c70",
+     "note": "every frame the talker and predictor sampled, [frame][group]"
+    },
+    "talker/inputs": {
+     "file": "0.6b-clone-xvector-fox/talker/inputs.f32",
+     "shape": [
+      14,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "d7955b510e296fca433ca51d587d1c31c445748ae97da89c5888978ad78ecd6c",
+     "note": "the talker's input rows: the prompt's 10, then decode rows of frames 0..3",
+     "rows": [
+      0,
+      14
+     ]
+    },
+    "talker/layer.0": {
+     "file": "0.6b-clone-xvector-fox/talker/layer.0.f32",
+     "shape": [
+      8,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "73d18e1d122af8df98c3be3eb99161a59d031bf9186fae43e39e487344cbcd84",
+     "note": "the talker's rows after layer 0, rows 6..14 (prompt then decode)",
+     "rows": [
+      6,
+      14
+     ]
+    },
+    "talker/layer.13": {
+     "file": "0.6b-clone-xvector-fox/talker/layer.13.f32",
+     "shape": [
+      8,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "58f78600c31978c2efe9da2cb42a495bcaa398b08e3514395ee009867cb870f1",
+     "note": "the talker's rows after layer 13, rows 6..14 (prompt then decode)",
+     "rows": [
+      6,
+      14
+     ]
+    },
+    "talker/layer.27": {
+     "file": "0.6b-clone-xvector-fox/talker/layer.27.f32",
+     "shape": [
+      8,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "07db78b9361b136fe554429f2ffe3111880e918af7ea3087b009ec5aaa8cfefe",
+     "note": "the talker's rows after layer 27, rows 6..14 (prompt then decode)",
+     "rows": [
+      6,
+      14
+     ]
+    },
+    "talker/norm": {
+     "file": "0.6b-clone-xvector-fox/talker/norm.f32",
+     "shape": [
+      8,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "37abd7fd1fdfb1be0afdd6578ecafd4758b1b70dccdaef360844fc431547d89d",
+     "note": "the talker's rows after the final norm, rows 6..14 (prompt then decode)",
+     "rows": [
+      6,
+      14
+     ]
+    },
+    "talker/logits": {
+     "file": "0.6b-clone-xvector-fox/talker/logits.f32",
+     "shape": [
+      5,
+      3072
+     ],
+     "dtype": "f32",
+     "sha256": "6d32b3250c6d175f159d6e3ff42e8607fbc3b9661657ef7951b23b2bf26b2d4f",
+     "note": "group-0 logits (codec_head, before every processor) of frames 0..4"
+    },
+    "predictor/logits": {
+     "file": "0.6b-clone-xvector-fox/predictor/logits.f32",
+     "shape": [
+      30,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "c2a9eed5eec5baa4ddecd9a47f30213e3c59653aceb0087c4d855ec3b52e3b87",
+     "note": "the predictor's logits, row 15 * frame + group - 1, before temperature and top-k"
+    },
+    "samples/head": {
+     "file": "0.6b-clone-xvector-fox/samples/head.f32",
+     "shape": [
+      3840
+     ],
+     "dtype": "f32",
+     "sha256": "794699e6e49825864dd25d93b4a31f18532263d40e92dfb92fb604539496b6b8",
+     "note": "the first 2 frames' samples after the reference's are cut"
+    },
+    "samples/tail": {
+     "file": "0.6b-clone-xvector-fox/samples/tail.f32",
+     "shape": [
+      1920
+     ],
+     "dtype": "f32",
+     "sha256": "612d73fac57cfee94491ebf9b824a04fc7a45fab81d69228d345d672c4d486b6",
+     "note": "the last frame's samples"
+    }
+   }
+  },
+  "0.6b-clone-icl-fox": {
+   "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+   "revision": "5d83992436eae1d760afd27aff78a71d676296fc",
+   "model_sha256": "180b3b10eb1c9f1b4db7806d5475bae3071c0243c299d49926bab1da3b6946f6",
+   "codec_sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+   "reference": "0.6b-clone-reference",
+   "frames_generated": 40,
+   "mode": "icl",
+   "text": "The quick brown fox jumps over the lazy dog.",
+   "text_ids": [
+    151644,
+    77091,
+    198,
+    785,
+    3974,
+    13876,
+    38835,
+    34208,
+    916,
+    279,
+    15678,
+    5562,
+    13,
+    151645,
+    198,
+    151644,
+    77091,
+    198
+   ],
+   "ref_ids": [
+    151644,
+    77091,
+    198,
+    11510,
+    6556,
+    358,
+    4227,
+    3156,
+    279,
+    14796,
+    323,
+    8844,
+    311,
+    279,
+    19654,
+    13,
+    151645,
+    198
+   ],
+   "prompt_rows": [
+    [
+     151644,
+     -1,
+     -1
+    ],
+    [
+     77091,
+     -1,
+     -1
+    ],
+    [
+     198,
+     -1,
+     -1
+    ],
+    [
+     151671,
+     2154,
+     -1
+    ],
+    [
+     151671,
+     2156,
+     -1
+    ],
+    [
+     151671,
+     2050,
+     -1
+    ],
+    [
+     151671,
+     2157,
+     -1
+    ],
+    [
+     151671,
+     -2,
+     -1
+    ],
+    [
+     151672,
+     2148,
+     -1
+    ],
+    [
+     11510,
+     2149,
+     -1
+    ],
+    [
+     6556,
+     -1,
+     0
+    ],
+    [
+     358,
+     -1,
+     1
+    ],
+    [
+     4227,
+     -1,
+     2
+    ],
+    [
+     3156,
+     -1,
+     3
+    ],
+    [
+     279,
+     -1,
+     4
+    ],
+    [
+     14796,
+     -1,
+     5
+    ],
+    [
+     323,
+     -1,
+     6
+    ],
+    [
+     8844,
+     -1,
+     7
+    ],
+    [
+     311,
+     -1,
+     8
+    ],
+    [
+     279,
+     -1,
+     9
+    ],
+    [
+     19654,
+     -1,
+     10
+    ],
+    [
+     13,
+     -1,
+     11
+    ],
+    [
+     785,
+     -1,
+     12
+    ],
+    [
+     3974,
+     -1,
+     13
+    ],
+    [
+     13876,
+     -1,
+     14
+    ],
+    [
+     38835,
+     -1,
+     15
+    ],
+    [
+     34208,
+     -1,
+     16
+    ],
+    [
+     916,
+     -1,
+     17
+    ],
+    [
+     279,
+     -1,
+     18
+    ],
+    [
+     15678,
+     -1,
+     19
+    ],
+    [
+     5562,
+     -1,
+     20
+    ],
+    [
+     13,
+     -1,
+     21
+    ],
+    [
+     151673,
+     -1,
+     22
+    ],
+    [
+     151671,
+     -1,
+     23
+    ],
+    [
+     151671,
+     -1,
+     24
+    ],
+    [
+     151671,
+     -1,
+     25
+    ],
+    [
+     151671,
+     -1,
+     26
+    ],
+    [
+     151671,
+     -1,
+     27
+    ],
+    [
+     151671,
+     -1,
+     28
+    ],
+    [
+     151671,
+     -1,
+     29
+    ],
+    [
+     151671,
+     -1,
+     30
+    ],
+    [
+     151671,
+     -1,
+     31
+    ],
+    [
+     151671,
+     -1,
+     32
+    ],
+    [
+     151671,
+     -1,
+     33
+    ],
+    [
+     151671,
+     -1,
+     34
+    ],
+    [
+     151671,
+     -1,
+     35
+    ],
+    [
+     151671,
+     -1,
+     36
+    ],
+    [
+     151671,
+     -1,
+     37
+    ],
+    [
+     151671,
+     -1,
+     38
+    ],
+    [
+     151671,
+     -1,
+     39
+    ],
+    [
+     151671,
+     -1,
+     40
+    ],
+    [
+     151671,
+     -1,
+     41
+    ],
+    [
+     151671,
+     -1,
+     42
+    ],
+    [
+     151671,
+     -1,
+     43
+    ],
+    [
+     151671,
+     -1,
+     44
+    ],
+    [
+     151671,
+     -1,
+     45
+    ],
+    [
+     151671,
+     -1,
+     46
+    ],
+    [
+     151671,
+     -1,
+     47
+    ],
+    [
+     151671,
+     -1,
+     48
+    ],
+    [
+     151671,
+     -1,
+     49
+    ],
+    [
+     151671,
+     -1,
+     50
+    ],
+    [
+     151671,
+     -1,
+     51
+    ],
+    [
+     151671,
+     -1,
+     52
+    ],
+    [
+     151671,
+     -1,
+     53
+    ],
+    [
+     151671,
+     -1,
+     54
+    ],
+    [
+     151671,
+     -1,
+     55
+    ],
+    [
+     151671,
+     -1,
+     56
+    ],
+    [
+     151671,
+     -1,
+     57
+    ]
+   ],
+   "prompt_rows_note": "[text id, codec id, reference frame] per prompt row, -1 for none, -2 for the speaker embedding: rebuilt from them, the rows equal those the talker received",
+   "trailing_ids": [
+    151671
+   ],
+   "prompt_rebuilt_max_abs": 5.960464477539063e-08,
+   "talker_frames": 4,
+   "predictor_frames": 2,
+   "files": {
+    "codes": {
+     "file": "0.6b-clone-icl-fox/codes.u16",
+     "shape": [
+      40,
+      16
+     ],
+     "dtype": "u16",
+     "sha256": "a1e29dbc07eb29f93719c46e62165b6dd1ead81c1ebd2a3f16ff2fe0efc04352",
+     "note": "every frame the talker and predictor sampled, [frame][group]"
+    },
+    "talker/inputs": {
+     "file": "0.6b-clone-icl-fox/talker/inputs.f32",
+     "shape": [
+      72,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "7588f8f52a6ca27178ed43b5280c74a3689bc9d183a5831d10eaf0c1cfa72c7b",
+     "note": "the talker's input rows: the prompt's 68, then decode rows of frames 0..3",
+     "rows": [
+      0,
+      72
+     ]
+    },
+    "talker/layer.0": {
+     "file": "0.6b-clone-icl-fox/talker/layer.0.f32",
+     "shape": [
+      8,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "7cd6eb2a75c6a19130f0eed494e3e847a5ebd36a86fe19f35fada655293c425f",
+     "note": "the talker's rows after layer 0, rows 64..72 (prompt then decode)",
+     "rows": [
+      64,
+      72
+     ]
+    },
+    "talker/layer.13": {
+     "file": "0.6b-clone-icl-fox/talker/layer.13.f32",
+     "shape": [
+      8,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "5a634c2c2f276c60178484786dfeaaef2677cdc52971d1f7a555d9448bfc77a9",
+     "note": "the talker's rows after layer 13, rows 64..72 (prompt then decode)",
+     "rows": [
+      64,
+      72
+     ]
+    },
+    "talker/layer.27": {
+     "file": "0.6b-clone-icl-fox/talker/layer.27.f32",
+     "shape": [
+      8,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "5d8cd2e6e6cf3b2afa085f02be7a1e5e888c1b2470710e6858c5d68830b19e1f",
+     "note": "the talker's rows after layer 27, rows 64..72 (prompt then decode)",
+     "rows": [
+      64,
+      72
+     ]
+    },
+    "talker/norm": {
+     "file": "0.6b-clone-icl-fox/talker/norm.f32",
+     "shape": [
+      8,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "5b3615bf45c541db7b9c8db0969807f0a9defc8ff0e52ab0c69d612ff9f0953f",
+     "note": "the talker's rows after the final norm, rows 64..72 (prompt then decode)",
+     "rows": [
+      64,
+      72
+     ]
+    },
+    "talker/logits": {
+     "file": "0.6b-clone-icl-fox/talker/logits.f32",
+     "shape": [
+      5,
+      3072
+     ],
+     "dtype": "f32",
+     "sha256": "9e81247ce345933f3224b53cc273e99e48ffa8d3631711d1cf1a12134472fafd",
+     "note": "group-0 logits (codec_head, before every processor) of frames 0..4"
+    },
+    "predictor/logits": {
+     "file": "0.6b-clone-icl-fox/predictor/logits.f32",
+     "shape": [
+      30,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "17771bdb7e9ce05ee612e864c7264760fcbb4a01070f6ab23db52da6d5d92f0d",
+     "note": "the predictor's logits, row 15 * frame + group - 1, before temperature and top-k"
+    },
+    "samples/head": {
+     "file": "0.6b-clone-icl-fox/samples/head.f32",
+     "shape": [
+      3840
+     ],
+     "dtype": "f32",
+     "sha256": "ddfa6690658c4a853e91d4896f660f7b6fbd2b266b64df55f08ef782e7ac9bad",
+     "note": "the first 2 frames' samples after the reference's are cut"
+    },
+    "samples/tail": {
+     "file": "0.6b-clone-icl-fox/samples/tail.f32",
+     "shape": [
+      1920
+     ],
+     "dtype": "f32",
+     "sha256": "9d35a725382edb6b0049d289b98f1df2bce57e7846498efeebeedca90a9f48f0",
+     "note": "the last frame's samples"
+    }
+   }
+  },
+  "1.7b-design-keeper-fox": {
+   "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+   "revision": "5ecdb67327fd37bb2e042aab12ff7391903235d3",
+   "codec_sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+   "speaker": "",
+   "language": "english",
+   "text": "The quick brown fox jumps over the lazy dog.",
+   "instruct": "A calm elderly man with a deep, slightly gravelly voice, speaking slowly and warmly.",
+   "design": true,
+   "model_sha256": "391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522",
+   "frames_generated": 43,
+   "text_ids": [
+    151644,
+    77091,
+    198,
+    785,
+    3974,
+    13876,
+    38835,
+    34208,
+    916,
+    279,
+    15678,
+    5562,
+    13,
+    151645,
+    198,
+    151644,
+    77091,
+    198
+   ],
+   "instruct_ids": [
+    151644,
+    872,
+    198,
+    32,
+    19300,
+    28820,
+    883,
+    448,
+    264,
+    5538,
+    11,
+    10078,
+    41523,
+    398,
+    7743,
+    11,
+    12094,
+    13970,
+    323,
+    96370,
+    13,
+    151645,
+    198
+   ],
+   "prompt_rows": [
+    [
+     151644,
+     -1
+    ],
+    [
+     872,
+     -1
+    ],
+    [
+     198,
+     -1
+    ],
+    [
+     32,
+     -1
+    ],
+    [
+     19300,
+     -1
+    ],
+    [
+     28820,
+     -1
+    ],
+    [
+     883,
+     -1
+    ],
+    [
+     448,
+     -1
+    ],
+    [
+     264,
+     -1
+    ],
+    [
+     5538,
+     -1
+    ],
+    [
+     11,
+     -1
+    ],
+    [
+     10078,
+     -1
+    ],
+    [
+     41523,
+     -1
+    ],
+    [
+     398,
+     -1
+    ],
+    [
+     7743,
+     -1
+    ],
+    [
+     11,
+     -1
+    ],
+    [
+     12094,
+     -1
+    ],
+    [
+     13970,
+     -1
+    ],
+    [
+     323,
+     -1
+    ],
+    [
+     96370,
+     -1
+    ],
+    [
+     13,
+     -1
+    ],
+    [
+     151645,
+     -1
+    ],
+    [
+     198,
+     -1
+    ],
+    [
+     151644,
+     -1
+    ],
+    [
+     77091,
+     -1
+    ],
+    [
+     198,
+     -1
+    ],
+    [
+     151671,
+     2154
+    ],
+    [
+     151671,
+     2156
+    ],
+    [
+     151671,
+     2050
+    ],
+    [
+     151671,
+     2157
+    ],
+    [
+     151672,
+     2148
+    ],
+    [
+     785,
+     2148
+    ],
+    [
+     3974,
+     2148
+    ],
+    [
+     13876,
+     2148
+    ],
+    [
+     38835,
+     2148
+    ],
+    [
+     34208,
+     2148
+    ],
+    [
+     916,
+     2148
+    ],
+    [
+     279,
+     2148
+    ],
+    [
+     15678,
+     2148
+    ],
+    [
+     5562,
+     2148
+    ],
+    [
+     13,
+     2148
+    ],
+    [
+     151673,
+     2148
+    ],
+    [
+     151671,
+     2149
+    ]
+   ],
+   "prompt_rows_note": "[text id, codec id] per prompt row, -1 for none: derived from config.json by generate's rules; rebuilt from them, the rows equal those the talker received",
+   "prompt_rebuilt_max_abs": 0.0,
+   "talker_frames": 4,
+   "predictor_frames": 2,
+   "files": {
+    "codes": {
+     "file": "1.7b-design-keeper-fox/codes.u16",
+     "shape": [
+      43,
+      16
+     ],
+     "dtype": "u16",
+     "sha256": "f4f2999bbbb1f062b98922a310b3154c49bf1144e67613a824565c0770829605",
+     "note": "every frame the talker and predictor sampled, [frame][group]"
+    },
+    "talker/inputs": {
+     "file": "1.7b-design-keeper-fox/talker/inputs.f32",
+     "shape": [
+      47,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "8cb7c8a7e6839e2ca833176bc412417417e0c65efca01fb1892f26917f4ad847",
+     "note": "the talker's input rows: the prompt's 43, then decode rows of frames 0..3",
+     "rows": [
+      0,
+      47
+     ]
+    },
+    "talker/layer.0": {
+     "file": "1.7b-design-keeper-fox/talker/layer.0.f32",
+     "shape": [
+      8,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "233609acd360e9f4ccaa5f6471c14ae6e56df1eade56cd86dc07039843a5d238",
+     "note": "the talker's rows after layer 0, rows 39..47 (prompt then decode)",
+     "rows": [
+      39,
+      47
+     ]
+    },
+    "talker/layer.13": {
+     "file": "1.7b-design-keeper-fox/talker/layer.13.f32",
+     "shape": [
+      8,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "3950f97d8e6f7b34f08457f267b4b2d69ebb1f5f21d8f993a02dbff8a3f0011a",
+     "note": "the talker's rows after layer 13, rows 39..47 (prompt then decode)",
+     "rows": [
+      39,
+      47
+     ]
+    },
+    "talker/layer.27": {
+     "file": "1.7b-design-keeper-fox/talker/layer.27.f32",
+     "shape": [
+      8,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "fd36938f6d7339eea07a9f8134a388fbf099a49be6d49db77488c2e11d1893a4",
+     "note": "the talker's rows after layer 27, rows 39..47 (prompt then decode)",
+     "rows": [
+      39,
+      47
+     ]
+    },
+    "talker/norm": {
+     "file": "1.7b-design-keeper-fox/talker/norm.f32",
+     "shape": [
+      8,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "7a0d4fd4a221496ca8f09df6e3ff8bae010a40c867ca942324f9dd8e5d6c93dc",
+     "note": "the talker's rows after the final norm, rows 39..47 (prompt then decode)",
+     "rows": [
+      39,
+      47
+     ]
+    },
+    "talker/logits": {
+     "file": "1.7b-design-keeper-fox/talker/logits.f32",
+     "shape": [
+      5,
+      3072
+     ],
+     "dtype": "f32",
+     "sha256": "c649d2fe92eefa19036bb80e72f61b80946381e1f6e945c1f891813dc554f358",
+     "note": "group-0 logits (codec_head, before every processor) of frames 0..4"
+    },
+    "predictor/logits": {
+     "file": "1.7b-design-keeper-fox/predictor/logits.f32",
+     "shape": [
+      30,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "aa1def796a93ea032a04f996e073665bab9b7fd632814040a22b8252ade19e7b",
+     "note": "the predictor's logits, row 15 * frame + group - 1, before temperature and top-k"
+    }
+   }
   }
  },
  "$comment": "Written by scripts/speech-traces/qwen3_tts_trace.py; docs/models/qwen3-tts.md.",

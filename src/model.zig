@@ -1351,6 +1351,10 @@ fn remove(arena: Allocator, io: std.Io, root: []const u8, registry: config.Model
     const registered = registry.find(name);
     const targets = (try catalogueFiles(arena, io, models, name, selection, diag)) orelse blk: {
         const entry = registered orelse {
+            if (catalog.renamedAudio(name)) |now| {
+                diag.set("{s} is now {s}: a speech model's name says CustomVoice or Base", .{ name, now });
+                return error.UnknownModel;
+            }
             diag.set("{s} is not a catalogue name or an entry of the models registry", .{name});
             return error.UnknownModel;
         };
@@ -2300,9 +2304,18 @@ test "--register knows a speech checkpoint from its config.json and refuses anot
     // A greedy generation config is one `speak` runs, so it registers too.
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = generation_path, .data = "{\"do_sample\":false,\"max_new_tokens\":256}" });
     try std.testing.expectEqual(catalog.ModelKind.speech, try speechCheckpoint(gpa, io, weights, &diag));
+    // A Base and a VoiceDesign register as speech; another type does not.
     const base_json = try inference.models.qwen3_tts.testConfigJson(gpa, "1b7", 16, "base");
     defer gpa.free(base_json);
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = config_path, .data = base_json });
+    try std.testing.expectEqual(catalog.ModelKind.speech, try speechCheckpoint(gpa, io, weights, &diag));
+    const design_json = try inference.models.qwen3_tts.testConfigJson(gpa, "1b7", 16, "voice_design");
+    defer gpa.free(design_json);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = config_path, .data = design_json });
+    try std.testing.expectEqual(catalog.ModelKind.speech, try speechCheckpoint(gpa, io, weights, &diag));
+    const other_json = try inference.models.qwen3_tts.testConfigJson(gpa, "1b7", 16, "voice_clone");
+    defer gpa.free(other_json);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = config_path, .data = other_json });
     try std.testing.expectError(error.NotRunnable, speechCheckpoint(gpa, io, weights, &diag));
     try std.testing.expect(std.mem.indexOf(u8, diag.message(), "UnsupportedModelType") != null);
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = config_path, .data = "{\"model_type\":\"bert\"}" });

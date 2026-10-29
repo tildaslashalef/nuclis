@@ -14,15 +14,17 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-No unit is in progress. `models-listing-for-settings` (`GET /v1/models`
-as the data any client builds its model pages from) waits for its pull
-request, whose description is its record. K-quant E4B files
-(`gemma4-bf16-per-layer-projection`) waits for its pull request. The next
-release (0.11.0) carries it with Q5_0 and Q5_1
-([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)), Muon's
-voice loop, the model-management unit
-([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)), and the
-Qwen3-TTS fine-tunes ([nuclis#41](https://github.com/tildaslashalef/nuclis/pull/41)).
+No unit is in progress. `qwen3-tts-base-voice-cloning` (the Base
+checkpoints, voice cloning with saved voices, VoiceDesign, the rename to
+`-customvoice`) is finished on its branch, unpushed: its pull request
+waits for the user's word, and its description is the record. The next
+release (0.11.0) carries it with K-quant E4B files
+([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
+Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
+Muon's voice loop, the model-management unit
+([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)), the
+Qwen3-TTS fine-tunes ([nuclis#41](https://github.com/tildaslashalef/nuclis/pull/41)),
+and `GET /v1/models` ([nuclis#42](https://github.com/tildaslashalef/nuclis/pull/42)).
 
 ## Deferred
 
@@ -90,20 +92,6 @@ Agreed and not scheduled; when one is picked up, it becomes a unit above.
   unit pinned). A new family, brought up as Nemotron ASR was (facts,
   traces, CPU, Metal); then the transcription routes' segments gain a
   `speaker` field, and the streaming route speaker changes.
-
-- **Saluki's speed goals** (restated by the user, 2026-10-15; the numbers
-  and their arithmetic in `docs/models/saluki.md`, its **Goals**): decode at
-  32,639 ≥ 18 tok/s, and a 32,639-token prompt prefilled in ≤ 7 minutes.
-  Decode needs the 2-bit matvecs at about 200 GB/s (IQ2_XXS reads 144
-  today; the limiter is instructions per weight, not bandwidth: at
-  2.26 bits a weight, 200 GB/s leaves an estimated four instructions per
-  weight on the 16-core GPU; `docs/engine/apple-gpu.md` § The merged
-  gate+up on Saluki's encodings). The prefill goal is the entry below. Context past
-  32,768 (`max_context` in `src/config.zig`) waits on the prefill goal.
-  Speculation does not reach it yet. Qwen's MTP companion binds and
-  drafts on Saluki, but its verdict is off (prose geometric mean ≤ 0.993×;
-  `docs/models/saluki.md` § Speculation): the 8-row verify batch on the
-  2-bit encodings costs 2.1× a single-row step, against the Q4_K_M's 1.45×.
 
 - **Long-context prefill, every family** (the user's, 2026-10-15). Prefill
   at 512 is level with llama.cpp (0.89–1.02×) and falls behind as the

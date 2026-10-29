@@ -1,6 +1,6 @@
 // Audio decoding through AudioToolbox, behind a C-compatible interface: any
 // format the platform reads (WAV, AIFF, CAF, MP3, M4A/AAC, FLAC, ALAC)
-// becomes 16 kHz mono float samples. ExtAudioFile converts the sample rate
+// becomes mono float samples at the caller's rate. ExtAudioFile converts the sample rate
 // (at its best quality) and the sample format; channels are averaged here.
 // Whole: the caller copies the samples out and frees them with
 // nu_audio_free. In pieces: nu_audio_open, nu_audio_read until it gives
@@ -33,10 +33,10 @@ static SInt64 source_size(void * client) {
     return (SInt64) ((const Source *) client)->len;
 }
 
-// Opens `source` as an ExtAudioFile delivering 16 kHz float frames of the
-// file's own channels; `total` is the length at 16 kHz. Returns 0, or 1 when
-// the bytes are not decodable audio (nothing is left open).
-static int open_ext(Source * source, AudioFileID * file, ExtAudioFileRef * ext, UInt32 * channels, uint64_t * total) {
+// Opens `source` as an ExtAudioFile delivering float frames of the file's
+// own channels at `rate`; `total` is the length at `rate`. Returns 0, or 1
+// when the bytes are not decodable audio (nothing is left open).
+static int open_ext(Source * source, uint32_t rate, AudioFileID * file, ExtAudioFileRef * ext, UInt32 * channels, uint64_t * total) {
     *file = NULL;
     *ext = NULL;
     if (AudioFileOpenWithCallbacks(source, read_bytes, NULL, source_size, NULL, 0, file) != noErr) return 1;
@@ -53,7 +53,7 @@ static int open_ext(Source * source, AudioFileID * file, ExtAudioFileRef * ext, 
     {
         *channels = in.mChannelsPerFrame;
         AudioStreamBasicDescription client = {0};
-        client.mSampleRate = 16000;
+        client.mSampleRate = rate;
         client.mFormatID = kAudioFormatLinearPCM;
         client.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
         client.mBitsPerChannel = 32;
@@ -62,7 +62,7 @@ static int open_ext(Source * source, AudioFileID * file, ExtAudioFileRef * ext, 
         client.mBytesPerFrame = 4 * *channels;
         client.mBytesPerPacket = 4 * *channels;
         if (ExtAudioFileSetProperty(*ext, kExtAudioFileProperty_ClientDataFormat, sizeof(client), &client) != noErr) goto fail;
-        if (in.mSampleRate != 16000) {
+        if (in.mSampleRate != rate) {
             AudioConverterRef converter = NULL;
             UInt32 converter_size = sizeof(converter);
             if (ExtAudioFileGetProperty(*ext, kExtAudioFileProperty_AudioConverter, &converter_size, &converter) == noErr && converter) {
@@ -74,7 +74,7 @@ static int open_ext(Source * source, AudioFileID * file, ExtAudioFileRef * ext, 
                 ExtAudioFileSetProperty(*ext, kExtAudioFileProperty_ConverterConfig, sizeof(config), &config);
             }
         }
-        *total = (uint64_t) ((double) frames * 16000.0 / in.mSampleRate + 0.5);
+        *total = (uint64_t) ((double) frames * (double) rate / in.mSampleRate + 0.5);
         return 0;
     }
 fail:
@@ -83,15 +83,16 @@ fail:
     return 1;
 }
 
-// Returns 0 with `samples` (malloc'd, `count` of them, at most `max_samples`)
-// and `total`, the clip's length at 16 kHz before the bound, on success; 1
-// when the bytes are not decodable audio; 3 on an allocation failure.
-int nu_audio_decode(const uint8_t * bytes, size_t len, uint32_t max_samples, float ** samples, uint32_t * count, uint64_t * total) {
+// Returns 0 with `samples` at `rate` (malloc'd, `count` of them, at most
+// `max_samples`) and `total`, the clip's length at `rate` before the bound,
+// on success; 1 when the bytes are not decodable audio; 3 on an allocation
+// failure.
+int nu_audio_decode(const uint8_t * bytes, size_t len, uint32_t rate, uint32_t max_samples, float ** samples, uint32_t * count, uint64_t * total) {
     Source source = {bytes, len};
     AudioFileID file = NULL;
     ExtAudioFileRef ext = NULL;
     UInt32 channels = 0;
-    if (open_ext(&source, &file, &ext, &channels, total) != 0) return 1;
+    if (open_ext(&source, rate, &file, &ext, &channels, total) != 0) return 1;
     int result = 1;
     {
         uint64_t capacity = *total < max_samples ? *total : max_samples;
@@ -153,14 +154,14 @@ typedef struct {
     UInt32 at;
 } Reader;
 
-// Returns 0 with `reader` and `total` (the length at 16 kHz, an estimate
+// Returns 0 with `reader` and `total` (the length at `rate`, an estimate
 // the reads may pass by a frame); 1 when the bytes are not decodable audio;
 // 3 on an allocation failure.
-int nu_audio_open(const uint8_t * bytes, size_t len, void ** reader, uint64_t * total) {
+int nu_audio_open(const uint8_t * bytes, size_t len, uint32_t rate, void ** reader, uint64_t * total) {
     Reader * r = calloc(1, sizeof(Reader));
     if (!r) return 3;
     r->source = (Source) {bytes, len};
-    if (open_ext(&r->source, &r->file, &r->ext, &r->channels, total) != 0) {
+    if (open_ext(&r->source, rate, &r->file, &r->ext, &r->channels, total) != 0) {
         free(r);
         return 1;
     }

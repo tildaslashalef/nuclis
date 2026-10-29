@@ -1,10 +1,12 @@
-//! Decoded audio for the audio encoders: 16 kHz mono f32 samples in
-//! [-1, 1]. Two decoders: a RIFF/WAVE parser for 16-bit PCM or 32-bit float
-//! at 16 kHz mono (fixtures, tests, any platform) and, when the macOS bridges are built,
-//! AudioToolbox for the platform's formats, which resamples and averages
-//! channels. `decode` gives a clip whole, within `max_bytes`; a `Reader`
-//! gives a long recording in pieces, the bytes bounded by its caller.
-//! Bounds are host constants, never model-supplied.
+//! Decoded audio: mono f32 samples in [-1, 1], at 16 kHz for the audio
+//! encoders (`decode`, `Reader`) or at a rate the caller names (`decodeAt`:
+//! 24 kHz for Qwen3-TTS's reference clips). Two decoders: a RIFF/WAVE parser
+//! for 16-bit PCM or 32-bit float, mono at the asked rate (fixtures, tests,
+//! any platform) and, when the macOS bridges are built, AudioToolbox for the
+//! platform's formats, which resamples and averages channels. `decode` gives
+//! a clip whole, within `max_bytes`; a `Reader` gives a long recording in
+//! pieces, the bytes bounded by its caller. Bounds are host constants, never
+//! model-supplied.
 const std = @import("std");
 const build_options = @import("build_options");
 
@@ -26,8 +28,8 @@ pub const Error = error{
 pub const Pcm = struct {
     /// At most the `max_samples` the decode was given, owned.
     samples: []f32,
-    /// The clip's length at 16 kHz before that bound; above `samples.len`
-    /// only when it was cut.
+    /// The clip's length at the decode's rate before that bound; above
+    /// `samples.len` only when it was cut.
     total: u64,
 
     pub fn deinit(self: *Pcm, alloc: std.mem.Allocator) void {
@@ -36,11 +38,18 @@ pub const Pcm = struct {
     }
 };
 
-/// Decodes `bytes`, keeping at most `max_samples`: a 16 kHz mono 16-bit or
-/// float WAV directly, anything else through the bridge.
+/// Decodes `bytes` at 16 kHz, keeping at most `max_samples` (`decodeAt`).
 pub fn decode(alloc: std.mem.Allocator, bytes: []const u8, max_samples: u32) Error!Pcm {
+    return decodeAt(alloc, bytes, max_samples, sample_rate);
+}
+
+/// Decodes `bytes` at `rate` (8–192 kHz), keeping at most `max_samples`: a
+/// mono 16-bit or float WAV at that rate directly, anything else through
+/// the bridge.
+pub fn decodeAt(alloc: std.mem.Allocator, bytes: []const u8, max_samples: u32, rate: u32) Error!Pcm {
+    std.debug.assert(rate >= 8000 and rate <= 192000);
     if (bytes.len > max_bytes) return error.AudioTooLarge;
-    if (decodeWav(alloc, bytes, max_samples)) |pcm| return pcm else |err| switch (err) {
+    if (decodeWavAt(alloc, bytes, max_samples, rate)) |pcm| return pcm else |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {},
     }
@@ -48,7 +57,7 @@ pub fn decode(alloc: std.mem.Allocator, bytes: []const u8, max_samples: u32) Err
     var samples: [*]f32 = undefined;
     var count: u32 = 0;
     var total: u64 = 0;
-    switch (nu_audio_decode(bytes.ptr, bytes.len, max_samples, &samples, &count, &total)) {
+    switch (nu_audio_decode(bytes.ptr, bytes.len, rate, max_samples, &samples, &count, &total)) {
         0 => {},
         1 => return error.UnsupportedAudioFormat,
         else => return error.OutOfMemory,
@@ -57,15 +66,20 @@ pub fn decode(alloc: std.mem.Allocator, bytes: []const u8, max_samples: u32) Err
     return .{ .samples = try alloc.dupe(f32, samples[0..count]), .total = total };
 }
 
-extern fn nu_audio_decode([*]const u8, usize, u32, *[*]f32, *u32, *u64) c_int;
+extern fn nu_audio_decode([*]const u8, usize, u32, u32, *[*]f32, *u32, *u64) c_int;
 extern fn nu_audio_free([*]f32) void;
 
-/// A RIFF/WAVE file of one channel at 16 kHz, 16-bit PCM (each sample over
+/// A RIFF/WAVE file of one channel at 16 kHz (`decodeWavAt`).
+pub fn decodeWav(alloc: std.mem.Allocator, bytes: []const u8, max_samples: u32) Error!Pcm {
+    return decodeWavAt(alloc, bytes, max_samples, sample_rate);
+}
+
+/// A RIFF/WAVE file of one channel at `rate`, 16-bit PCM (each sample over
 /// 32768, as every decoder reads it) or 32-bit IEEE float (as stored, which
 /// FLEURS uses), plain or `WAVE_FORMAT_EXTENSIBLE`. Other WAVs are
 /// `UnsupportedAudioFormat`.
-pub fn decodeWav(alloc: std.mem.Allocator, bytes: []const u8, max_samples: u32) Error!Pcm {
-    const wav = try parseWav(bytes);
+pub fn decodeWavAt(alloc: std.mem.Allocator, bytes: []const u8, max_samples: u32, rate: u32) Error!Pcm {
+    const wav = try parseWav(bytes, rate);
     const total = wav.count();
     const samples = try alloc.alloc(f32, @min(total, max_samples));
     errdefer alloc.free(samples);
@@ -105,7 +119,7 @@ const Wav = struct {
     }
 };
 
-fn parseWav(bytes: []const u8) Error!Wav {
+fn parseWav(bytes: []const u8, want_rate: u32) Error!Wav {
     if (bytes.len < 12 or !std.mem.eql(u8, bytes[0..4], "RIFF") or !std.mem.eql(u8, bytes[8..12], "WAVE")) return error.UnsupportedAudioFormat;
     var at: usize = 12;
     var format: ?@FieldType(Wav, "format") = null;
@@ -123,7 +137,7 @@ fn parseWav(bytes: []const u8) Error!Wav {
             const bits = std.mem.readInt(u16, body[14..16], .little);
             // WAVE_FORMAT_EXTENSIBLE: the real tag opens the sub-format GUID.
             if (tag == 0xFFFE) tag = if (size >= 40) std.mem.readInt(u16, body[24..26], .little) else 0;
-            if (channels != 1 or rate != sample_rate) return error.UnsupportedAudioFormat;
+            if (channels != 1 or rate != want_rate) return error.UnsupportedAudioFormat;
             format = if (tag == 1 and bits == 16) .int16 else if (tag == 3 and bits == 32) .float32 else return error.UnsupportedAudioFormat;
         } else if (std.mem.eql(u8, id, "data")) {
             return .{ .format = format orelse return error.UnsupportedAudioFormat, .data = body };
@@ -147,11 +161,11 @@ pub const Reader = struct {
     total: u64,
 
     pub fn open(bytes: []const u8) Error!Reader {
-        if (parseWav(bytes)) |wav| return .{ .source = .{ .wav = .{ .wav = wav } }, .total = wav.count() } else |_| {}
+        if (parseWav(bytes, sample_rate)) |wav| return .{ .source = .{ .wav = .{ .wav = wav } }, .total = wav.count() } else |_| {}
         if (!bridge_enabled) return error.UnsupportedAudioFormat;
         var handle: *anyopaque = undefined;
         var total: u64 = 0;
-        return switch (nu_audio_open(bytes.ptr, bytes.len, &handle, &total)) {
+        return switch (nu_audio_open(bytes.ptr, bytes.len, sample_rate, &handle, &total)) {
             0 => .{ .source = .{ .bridge = handle }, .total = total },
             1 => error.UnsupportedAudioFormat,
             else => error.OutOfMemory,
@@ -187,7 +201,7 @@ pub const Reader = struct {
     }
 };
 
-extern fn nu_audio_open([*]const u8, usize, **anyopaque, *u64) c_int;
+extern fn nu_audio_open([*]const u8, usize, u32, **anyopaque, *u64) c_int;
 extern fn nu_audio_read(*anyopaque, [*]f32, u32, *u32) c_int;
 extern fn nu_audio_close(*anyopaque) void;
 
@@ -231,6 +245,22 @@ test "a 16-bit mono 16 kHz WAV decodes directly; other WAVs and other bytes are 
     try std.testing.expectError(error.UnsupportedAudioFormat, decodeWav(alloc, rate, 10));
     try std.testing.expectError(error.UnsupportedAudioFormat, decodeWav(alloc, "RIFF\x00\x00\x00\x00WAVE", 10));
     try std.testing.expectError(error.UnsupportedAudioFormat, decodeWav(alloc, "not audio at all", 10));
+}
+
+test "a WAV at the asked rate decodes directly, and only at that rate" {
+    const alloc = std.testing.allocator;
+    const wav = try testWav(alloc, &.{ 0, 16384, -32768 }, 1, 24000);
+    defer alloc.free(wav);
+    var pcm = try decodeWavAt(alloc, wav, std.math.maxInt(u32), 24000);
+    defer pcm.deinit(alloc);
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0.5, -1 }, pcm.samples);
+    var whole = try decodeAt(alloc, wav, std.math.maxInt(u32), 24000);
+    defer whole.deinit(alloc);
+    try std.testing.expectEqualSlices(f32, pcm.samples, whole.samples);
+    try std.testing.expectError(error.UnsupportedAudioFormat, decodeWav(alloc, wav, 10));
+    const narrow = try testWav(alloc, &.{ 1, 2 }, 1, sample_rate);
+    defer alloc.free(narrow);
+    try std.testing.expectError(error.UnsupportedAudioFormat, decodeWavAt(alloc, narrow, 10, 24000));
 }
 
 /// A 32-bit float WAV of `samples` as FLEURS writes it (an 18-byte `fmt `
@@ -313,6 +343,22 @@ test "the bridge resamples and mixes what the WAV parser refuses" {
     for (pcm.samples[1000..15000]) |s| peak = @max(peak, @abs(s));
     try std.testing.expectApproxEqAbs(@as(f32, 8000.0 / 32768.0), peak, 0.01);
     try std.testing.expectError(error.UnsupportedAudioFormat, decode(alloc, "not audio at all, not even close", 10));
+
+    // The same second at 24 kHz, and a 16 kHz clip brought up to it.
+    var wide = try decodeAt(alloc, wav, std.math.maxInt(u32), 24000);
+    defer wide.deinit(alloc);
+    try std.testing.expect(wide.samples.len >= 23990 and wide.samples.len <= 24010);
+    try std.testing.expectEqual(@as(u64, 24000), wide.total);
+    peak = 0;
+    for (wide.samples[1500..22500]) |s| peak = @max(peak, @abs(s));
+    try std.testing.expectApproxEqAbs(@as(f32, 8000.0 / 32768.0), peak, 0.01);
+    var tone: [sample_rate]i16 = undefined;
+    for (&tone, 0..) |*v, i| v.* = @intFromFloat(8000 * @sin(2 * std.math.pi * 440 * @as(f64, @floatFromInt(i)) / sample_rate));
+    const narrow = try testWav(alloc, &tone, 1, sample_rate);
+    defer alloc.free(narrow);
+    var up = try decodeAt(alloc, narrow, std.math.maxInt(u32), 24000);
+    defer up.deinit(alloc);
+    try std.testing.expect(up.samples.len >= 23990 and up.samples.len <= 24010);
 }
 
 test "a reader gives decode's samples in pieces of any size" {

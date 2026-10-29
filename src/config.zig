@@ -223,7 +223,7 @@ pub const Config = struct {
         /// The speech model `nuclis speak` and `POST /v1/audio/speech`
         /// open: a registry entry of kind `speech`, a speech catalogue
         /// name, or (for `speak`) a checkpoint directory.
-        model: []const u8 = "qwen3-tts-1.7b",
+        model: []const u8 = "qwen3-tts-1.7b-customvoice",
         /// The speaker a request that names none gets.
         voice: []const u8 = "ryan",
     };
@@ -1589,20 +1589,20 @@ test "the voice keys: speech and transcription models, the default speaker, pins
     var diag: Diagnostic = .{};
     var defaults = try fromText(alloc, "{ \"schema_version\": 1 }", "d.json", &diag);
     defer defaults.deinit();
-    try std.testing.expectEqualStrings("qwen3-tts-1.7b", defaults.config.speech.model);
+    try std.testing.expectEqualStrings("qwen3-tts-1.7b-customvoice", defaults.config.speech.model);
     try std.testing.expectEqualStrings("ryan", defaults.config.speech.voice);
     try std.testing.expectEqualStrings("nemotron-asr-0.6b", defaults.config.transcribe.model);
     try std.testing.expectEqual(@as(usize, 0), defaults.config.serve.pin.names.len);
     var listed = try fromText(alloc,
-        \\{ "schema_version": 1, "speech": { "model": "qwen3-tts-0.6b", "voice": "vivian" },
-        \\  "serve": { "pin": ["gemma-4-e4b-qat", "qwen3-tts-0.6b"] } }
+        \\{ "schema_version": 1, "speech": { "model": "qwen3-tts-0.6b-customvoice", "voice": "vivian" },
+        \\  "serve": { "pin": ["gemma-4-e4b-qat", "qwen3-tts-0.6b-customvoice"] } }
     , "l.json", &diag);
     defer listed.deinit();
     try std.testing.expectEqualStrings("vivian", listed.config.speech.voice);
     try std.testing.expectEqual(.file, listed.source("speech.voice"));
-    try std.testing.expectEqualStrings("qwen3-tts-0.6b", listed.config.serve.pin.names[1]);
+    try std.testing.expectEqualStrings("qwen3-tts-0.6b-customvoice", listed.config.serve.pin.names[1]);
     var buffer: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("gemma-4-e4b-qat,qwen3-tts-0.6b", listed.config.serve.pin.format(&buffer));
+    try std.testing.expectEqualStrings("gemma-4-e4b-qat,qwen3-tts-0.6b-customvoice", listed.config.serve.pin.format(&buffer));
     var joined = try fromText(alloc, "{ \"schema_version\": 1, \"serve\": { \"pin\": \"a, b\" } }", "j.json", &diag);
     defer joined.deinit();
     try std.testing.expectEqualStrings("b", joined.config.serve.pin.names[1]);
@@ -1616,11 +1616,11 @@ test "the voice keys: speech and transcription models, the default speaker, pins
         try std.testing.expect(std.mem.indexOf(u8, diag.message(), "serve.pin must be a list of model names") != null);
     }
     // `config set serve.pin a,b` writes the string form, which loads back.
-    var edit = try set(alloc, null, "c.json", "serve.pin", "e4b,qwen3-tts-1.7b", &diag);
+    var edit = try set(alloc, null, "c.json", "serve.pin", "e4b,qwen3-tts-1.7b-customvoice", &diag);
     defer edit.deinit(alloc);
     var reloaded = try fromText(alloc, edit.text, "c.json", &diag);
     defer reloaded.deinit();
-    try std.testing.expectEqualStrings("qwen3-tts-1.7b", reloaded.config.serve.pin.names[1]);
+    try std.testing.expectEqualStrings("qwen3-tts-1.7b-customvoice", reloaded.config.serve.pin.names[1]);
 }
 
 test "registry entries parse by name with their overrides and companions" {

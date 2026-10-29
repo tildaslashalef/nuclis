@@ -674,11 +674,11 @@ test "--model names sort by kind, each within what its service keeps open" {
     try std.testing.expectError(error.InvalidOptionValue, byKind(arena, io, .{}, &.{ "qwen3.8-27b", "other.gguf" }, &diag));
     try std.testing.expectError(error.InvalidOptionValue, byKind(arena, io, .{}, &.{ "embeddinggemma-2", "embeddinggemma-2" }, &diag));
     // One of each kind together: the voice assistant's set.
-    const voice = try byKind(arena, io, .{}, &.{ "gemma-4-e4b-qat", "qwen3-tts-1.7b", "nemotron-asr-0.6b" }, &diag);
+    const voice = try byKind(arena, io, .{}, &.{ "gemma-4-e4b-qat", "qwen3-tts-1.7b-customvoice", "nemotron-asr-0.6b" }, &diag);
     try std.testing.expectEqualStrings("gemma-4-e4b-qat", voice.language.?);
-    try std.testing.expectEqualStrings("qwen3-tts-1.7b", voice.speech.?);
+    try std.testing.expectEqualStrings("qwen3-tts-1.7b-customvoice", voice.speech.?);
     try std.testing.expectEqualStrings("nemotron-asr-0.6b", voice.transcription.?);
-    try std.testing.expectError(error.InvalidOptionValue, byKind(arena, io, .{}, &.{ "qwen3-tts-1.7b", "qwen3-tts-0.6b" }, &diag));
+    try std.testing.expectError(error.InvalidOptionValue, byKind(arena, io, .{}, &.{ "qwen3-tts-1.7b-customvoice", "qwen3-tts-0.6b-customvoice" }, &diag));
     try std.testing.expect(std.mem.indexOf(u8, diag.message(), "both speech models") != null);
 }
 
@@ -687,8 +687,8 @@ test "pins open at start beside --model, once each; --pin replaces serve.pin" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var diag: config.Diagnostic = .{};
-    const configured: config.Config.Serve = .{ .pin = .{ .names = &.{ "gemma-4-e4b-qat", "qwen3-tts-1.7b" } } };
-    const from_file = try parseArgs(arena, &.{ "--model", "qwen3-tts-1.7b", "--model", "laya" }, configured, &diag);
+    const configured: config.Config.Serve = .{ .pin = .{ .names = &.{ "gemma-4-e4b-qat", "qwen3-tts-1.7b-customvoice" } } };
+    const from_file = try parseArgs(arena, &.{ "--model", "qwen3-tts-1.7b-customvoice", "--model", "laya" }, configured, &diag);
     try std.testing.expectEqual(@as(usize, 2), from_file.pins.items.len);
     const all = try opened(arena, from_file);
     try std.testing.expectEqual(@as(usize, 3), all.len);
@@ -772,7 +772,7 @@ test "serve arguments" {
 test "health reports the queue and the open models" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, .{ .language = "qwen3.8-27b", .embedding = "embeddinggemma-2", .speech = "qwen3-tts-1.7b" }, "off", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60, .pinned = true }, .{ .kind = .decision, .name = "laya", .bytes = 10 } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, .{ .waiting = 1, .passes = 4, .jobs = 2 }, .{ .waiting = 2, .speaking = true, .requests = 11 }, 3);
+    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, .{ .language = "qwen3.8-27b", .embedding = "embeddinggemma-2", .speech = "qwen3-tts-1.7b-customvoice" }, "off", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60, .pinned = true }, .{ .kind = .decision, .name = "laya", .bytes = 10 } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, .{ .waiting = 1, .passes = 4, .jobs = 2 }, .{ .waiting = 2, .speaking = true, .requests = 11 }, 3);
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("cpu", parsed.value.object.get("backend").?.string);
@@ -784,7 +784,7 @@ test "health reports the queue and the open models" {
     try std.testing.expectEqualStrings("embeddinggemma-2", parsed.value.object.get("embedding").?.string);
     try std.testing.expectEqualStrings("off", parsed.value.object.get("web").?.string);
     try std.testing.expectEqual(@as(i64, 4), parsed.value.object.get("embeddings").?.object.get("passes").?.integer);
-    try std.testing.expectEqualStrings("qwen3-tts-1.7b", parsed.value.object.get("speech").?.string);
+    try std.testing.expectEqualStrings("qwen3-tts-1.7b-customvoice", parsed.value.object.get("speech").?.string);
     try std.testing.expect(parsed.value.object.get("transcription").? == .null);
     const models_list = parsed.value.object.get("memory").?.object.get("models").?.array.items;
     try std.testing.expect(models_list[0].object.get("pinned").?.bool and !models_list[1].object.get("pinned").?.bool);

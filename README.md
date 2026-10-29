@@ -68,9 +68,12 @@ Decision models, which answer typed questions instead of writing text,
 have their own entries: `laya`, `laya-multilingual`, and `clef-flash`
 ([below](#decision-models-laya-and-clef-flash)). So does the embedding
 model, `embeddinggemma-2`, which turns text, images and audio into vectors
-([below](#embeddings-embeddinggemma-2)), and the speech models,
-`qwen3-tts-1.7b`, `qwen3-tts-0.6b`, and `nemotron-asr-0.6b`, which speak
-and hear ([below](#speech-in-and-out)).
+([below](#embeddings-embeddinggemma-2)), and the speech models, which
+speak and hear ([below](#speech-in-and-out)): `qwen3-tts-1.7b-customvoice`
+and `qwen3-tts-0.6b-customvoice` in nine built-in voices,
+`qwen3-tts-1.7b-base` and `qwen3-tts-0.6b-base` in a voice cloned from a
+short clip, `qwen3-tts-1.7b-voicedesign` in a voice described in words,
+and `nemotron-asr-0.6b`.
 
 **Anything else** runs when its architecture has an adapter (Qwen3.8,
 Gemma 4, Muse Glimmer): finetunes, other quantizations, Gemma 4's K-quant
@@ -275,19 +278,24 @@ served from one process.
 
 | Model | Name | Does | Size |
 | --- | --- | --- | ---: |
-| Qwen3-TTS 1.7B | `qwen3-tts-1.7b` | speech from text in nine voices, told how to say it ("warmly, smiling") | 4.5 GB |
-| Qwen3-TTS 0.6B | `qwen3-tts-0.6b` | the same voices, lighter and faster, without instructions | 1.8 GB |
+| Qwen3-TTS 1.7B CustomVoice | `qwen3-tts-1.7b-customvoice` | speech from text in nine voices, told how to say it ("warmly, smiling") | 4.5 GB |
+| Qwen3-TTS 0.6B CustomVoice | `qwen3-tts-0.6b-customvoice` | the same voices, lighter and faster, without instructions | 2.5 GB |
+| Qwen3-TTS 1.7B Base | `qwen3-tts-1.7b-base` | speech in a voice cloned from a saved clip of 1–30 s (and its transcript) | 4.5 GB |
+| Qwen3-TTS 0.6B Base | `qwen3-tts-0.6b-base` | the same, lighter and faster | 2.5 GB |
+| Qwen3-TTS 1.7B VoiceDesign | `qwen3-tts-1.7b-voicedesign` | speech in a voice described in words ("a calm elderly man, deep and warm") | 4.5 GB |
 | Nemotron 3.5 ASR | `nemotron-asr-0.6b` | streaming recognition with punctuation and word times | 2.6 GB |
 | Gemma 4 E4B | `gemma-4-e4b-qat` | hears a clip of up to 30 s in a chat, the agent, or `generate` | 4.2 GB |
 
 ```sh
-nuclis model pull qwen3-tts-1.7b && nuclis model pull nemotron-asr-0.6b
+nuclis model pull qwen3-tts-1.7b-customvoice && nuclis model pull nemotron-asr-0.6b
 nuclis speak "The lighthouse stood at the edge of the world." --instruct "Calm, like a story at bedtime." -o story.wav
 nuclis transcribe story.wav --stream                  # partials as they change, then the text
 nuclis transcribe meeting.m4a --format srt            # a long recording as subtitles
+nuclis voice add anna anna.m4a --text "Hello, it's Anna."   # a clip and its words, saved once
+nuclis speak --model qwen3-tts-1.7b-base --voice anna "Your parcel is here." -o anna.wav
 ```
 
-Over HTTP, `nuclis serve --model gemma-4-e4b-qat --pin qwen3-tts-1.7b
+Over HTTP, `nuclis serve --model gemma-4-e4b-qat --pin qwen3-tts-1.7b-customvoice
 --pin nemotron-asr-0.6b` keeps all three open. `POST /v1/audio/speech`
 is OpenAI's speech call and streams the audio as it is made; `POST
 /v1/audio/transcriptions` is OpenAI's transcription call for whole
