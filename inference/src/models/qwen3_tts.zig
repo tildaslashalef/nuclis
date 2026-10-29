@@ -757,6 +757,9 @@ pub const Prompt = struct {
     rows: []Row,
     trailing: []u32 = &.{},
     clone: ?Clone = null,
+    /// The target text's tokens (a reference transcript's not counted):
+    /// what the synthesizer's frame budget is sized by.
+    text_tokens: usize = 0,
 
     pub fn deinit(self: *Prompt, gpa: Allocator) void {
         gpa.free(self.rows);
@@ -810,7 +813,7 @@ pub const Prompt = struct {
         n += request.text.len;
         rows[n] = .{ .text = config.text.tts_eos, .codec = c.pad };
         rows[n + 1] = .{ .text = config.text.tts_pad, .codec = c.bos };
-        return .{ .rows = rows };
+        return .{ .rows = rows, .text_tokens = request.text.len };
     }
 
     /// A Base's prompt for `request` (`generate_voice_clone`, streaming
@@ -876,7 +879,7 @@ pub const Prompt = struct {
             .{ .text = id, .codec = null, .voice = .{ .frame = @intCast(i - 1) } };
         // x-vector only reads no frames, so none are decoded before its own.
         const clone: Clone = if (request.reference == null) .{ .embedding = request.clone.embedding } else request.clone;
-        return .{ .rows = rows, .trailing = try trailing.toOwnedSlice(gpa), .clone = clone };
+        return .{ .rows = rows, .trailing = try trailing.toOwnedSlice(gpa), .clone = clone, .text_tokens = request.text.len };
     }
 };
 

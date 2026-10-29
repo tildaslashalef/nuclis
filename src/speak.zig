@@ -323,6 +323,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
     if (first_ms) |ms| try out.print("; first audio {d:.0} ms after the text (chunks of {d} frames, the first {d})", .{ ms, synth.chunk, synth.first_chunk });
     if (voice.plan) |plan| if (plan.disagreements > 0) try out.print("; the host overruled the device's draw {d} times", .{plan.disagreements});
     try out.writeByte('\n');
+    if (synth.finish == .length) try out.print("{s}stopped at the length budget ({d} frames for {d} text tokens): the model did not end the speech{s}\n", .{ sty.on(.warning), synth.budget, prompt.text_tokens, sty.off() });
     if (voice.gpu) |*g| if (g.profile) |*p| try printProfile(arena, out, p, frames);
 }
 

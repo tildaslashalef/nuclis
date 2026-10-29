@@ -16,6 +16,7 @@ const catalog = @import("../../catalog.zig");
 const audio_catalog = @import("../../audio/catalog.zig");
 const transcript = @import("../../audio/transcript.zig");
 const http = @import("../http.zig");
+const request_log = @import("../request_log.zig");
 const websocket = @import("../websocket.zig");
 const errors = @import("../errors.zig");
 const gpu = @import("../gpu.zig");
@@ -130,6 +131,8 @@ fn handle(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, request: ht
         error.OutOfMemory => .fromError(arena, .init(.internal_server_error, "internal", "out of memory")),
         else => refuse(arena, .internal_server_error, "model_failed", "model", "{s}: {s}", .{ name, if (diag.len > 0) diag.message() else @errorName(err) }),
     };
+    request.fields.text("model", name);
+    request.fields.int("lookahead", query.lookahead);
     if (service.live.sessions.load(.monotonic) >= max_sessions)
         return refuse(arena, http.overloaded, "busy", null, "overloaded: {d} live transcriptions run already; retry shortly", .{max_sessions});
     const session = arena.create(Session) catch return .fromError(arena, .init(.internal_server_error, "internal", "out of memory"));
@@ -142,6 +145,7 @@ fn handle(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, request: ht
         .lookahead = query.lookahead,
         .language = query.language,
         .note_buffer = arena.alloc(u8, 256) catch return .fromError(arena, .init(.internal_server_error, "internal", "out of memory")),
+        .fields = request.fields,
     };
     return .{ .status = .switching_protocols, .body = "", .upgrade = .{ .context = session, .run = Session.run, .note = Session.writtenNote } };
 }
@@ -366,6 +370,8 @@ const Session = struct {
     pending: std.ArrayList(f32) = .empty,
     odd: ?u8 = null,
     received: u64 = 0,
+    /// The request's log fields, filled when the session ends.
+    fields: request_log.Fields = .{},
     consumed: u64 = 0,
     /// The utterance in progress began at this sample; its chunks pushed.
     utterance_start: u64 = 0,
@@ -911,6 +917,20 @@ const Session = struct {
 
     fn writeNote(self: *Session, e: End) void {
         const seconds = @as(f64, @floatFromInt(self.received)) / sample_rate;
+        self.fields.float("audio_s", seconds, 2);
+        self.fields.int("finals", self.finals);
+        switch (e) {
+            .gone => self.fields.text("closed_by", "gone"),
+            .client => |code| {
+                self.fields.text("closed_by", "client");
+                if (code) |c| self.fields.int("close_code", c);
+            },
+            .server => |s| {
+                self.fields.text("closed_by", "server");
+                self.fields.int("close_code", s.code);
+                self.fields.text("close_reason", s.reason);
+            },
+        }
         var how_buffer: [96]u8 = undefined;
         const how = switch (e) {
             .gone => "the client left",

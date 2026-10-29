@@ -548,6 +548,23 @@ pub const default_first_chunk = 1;
 /// The most frames one `read` decodes.
 pub const max_chunk = 32;
 
+/// The frame budget: an utterance stops at `budget_floor_frames` plus
+/// `budget_frames_per_token` per text token, or the config's
+/// `max_new_tokens` if lower. Speech measured 3–15 frames a token, short
+/// lines up to 75 frames; a model that never samples the end code would
+/// otherwise run to the config's cap (8,192 frames, 655 s).
+/// docs/models/qwen3-tts.md § The frame budget.
+pub const budget_floor_frames = 50;
+pub const budget_frames_per_token = 20;
+
+/// The frames an utterance of `text_tokens` may make.
+pub fn frameBudget(config: *const tts.Config, text_tokens: usize) usize {
+    return @min(config.generation.max_new_tokens, budget_floor_frames + budget_frames_per_token * text_tokens);
+}
+
+/// Why an utterance ended: the model's end code, or the frame budget.
+pub const Finish = enum { eos, length };
+
 /// Wall time by stage over an utterance, in nanoseconds.
 pub const Timing = struct {
     /// The prompt's embedding and prefill, through the first logits.
@@ -585,6 +602,10 @@ pub const Synthesizer = struct {
     first_chunk: usize = default_first_chunk,
     frames: usize = 0,
     done: bool = false,
+    /// The frames this utterance may make (`frameBudget`).
+    budget: usize = 0,
+    /// Set when `nextFrame` first returns null.
+    finish: ?Finish = null,
     timing: Timing = .{},
     /// On Metal, commit between the predictor and the talker step so that
     /// `timing` splits them (one more command buffer a frame).
@@ -619,6 +640,8 @@ pub const Synthesizer = struct {
         self.first_chunk = default_first_chunk;
         self.frames = 0;
         self.done = false;
+        self.budget = frameBudget(config, prompt.text_tokens);
+        self.finish = null;
         self.timing = .{};
         self.split = false;
         self.host_sampling = false;
@@ -729,10 +752,16 @@ pub const Synthesizer = struct {
         self.* = undefined;
     }
 
-    /// The next frame's codes, or null at the end code or when the talker
-    /// has sampled `max_new_tokens` codes (the last of which has no frame).
+    /// The next frame's codes, or null at the end code or the frame budget
+    /// (`finish` says which), or when the talker has sampled
+    /// `max_new_tokens` codes (the last of which has no frame).
     pub fn nextFrame(self: *Synthesizer) !?Frame {
         if (self.done) return null;
+        if (self.frames >= self.budget) {
+            self.done = true;
+            self.finish = .length;
+            return null;
+        }
         const logits = switch (self.state) {
             .cpu => |s| s.logits,
             .metal => |plan| plan.talkerLogits(),
@@ -740,6 +769,7 @@ pub const Synthesizer = struct {
         const c0 = try self.sampler.groupZero(logits);
         if (c0 == self.config.codec.eos or self.sampler.sampled >= self.config.generation.max_new_tokens) {
             self.done = true;
+            self.finish = if (c0 == self.config.codec.eos) .eos else .length;
             return null;
         }
         const start = std.Io.Clock.awake.now(self.io);
@@ -1209,4 +1239,25 @@ test "a tiny model synthesizes frames of valid codes and stops at the length lim
     // Six group-0 samples at most, the last without a frame; or the end code earlier.
     try std.testing.expect(frames <= 5);
     try std.testing.expect(s.sampler.sampled >= 2 or frames == 0);
+    try std.testing.expect(s.finish != null);
+
+    // The frame budget stops an utterance that does not end: `length`.
+    var bounded = try Synthesizer.init(gpa, io, &config, .{ .cpu = &model }, .none, &prompt, 7);
+    defer bounded.deinit();
+    bounded.budget = 2;
+    var made: usize = 0;
+    while (try bounded.nextFrame()) |_| made += 1;
+    try std.testing.expect(made <= 2);
+    if (made == 2) try std.testing.expectEqual(Finish.length, bounded.finish.?);
+}
+
+test "the frame budget: a floor and a per-token allowance, never past the config's cap" {
+    const gpa = std.testing.allocator;
+    const json = try tts.testConfigJson(gpa, "0b6", 8, "custom_voice");
+    defer gpa.free(json);
+    var config = try tts.parseConfig(gpa, json, "{\"max_new_tokens\":8192}");
+    defer config.deinit();
+    try std.testing.expectEqual(@as(usize, 90), frameBudget(&config, 2));
+    try std.testing.expectEqual(@as(usize, 250), frameBudget(&config, 10));
+    try std.testing.expectEqual(@as(usize, 8192), frameBudget(&config, 4000));
 }

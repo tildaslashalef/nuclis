@@ -7,16 +7,21 @@
 //! after every response, so nothing of a request outlives it. Every
 //! response is logged when a log is given. A response may instead upgrade
 //! the connection to a WebSocket (`Upgrade`, `websocket.zig`): the route
-//! then owns the connection until it closes.
+//! then owns the connection until it closes. With a `request_log.Book`,
+//! every request but the quiet path's gets an id (`x-request-id`), the
+//! client's `x-client-request-id` echoed, and a start and an end line.
 const std = @import("std");
 const repeat = @import("../text.zig").repeat;
 const errors = @import("errors.zig");
 const log_mod = @import("log.zig");
+const request_log = @import("request_log.zig");
 const websocket = @import("websocket.zig");
 
 /// TypeSafe's "overloaded", which Jev clients retry with backoff; no
 /// standard code says "the queue is full, come back" as plainly.
 pub const overloaded: std.http.Status = @fromBackingInt(529);
+/// nginx's "client closed request", logged only: nothing is sent.
+const client_closed: std.http.Status = @fromBackingInt(499);
 
 fn reason(status: std.http.Status) []const u8 {
     return if (status == overloaded) "Overloaded" else status.phrase() orelse "";
@@ -45,6 +50,9 @@ pub const Request = struct {
     /// Set when a GET's `upgrade` header names `websocket`; the route
     /// checks it (`websocket.refusal`) before answering with an `Upgrade`.
     websocket: ?websocket.Handshake = null,
+    /// What the handler records for the request log's end line; a stream or
+    /// a session keeps a copy until it ends.
+    fields: request_log.Fields = .{},
 
     /// The value of `name` in the query (`a=1&b`: `b` is ""), or null.
     pub fn param(self: Request, name: []const u8) ?[]const u8 {
@@ -72,9 +80,11 @@ pub const Response = struct {
     upgrade: ?Upgrade = null,
     /// One more header (a `426`'s `upgrade` or `sec-websocket-version`).
     extra_header: ?std.http.Header = null,
+    /// The error this response reports, for the request log.
+    failure: ?errors.ApiError = null,
 
     pub fn fromError(arena: std.mem.Allocator, err: errors.ApiError) Response {
-        return .{ .status = err.status, .body = errors.body(arena, err), .note = noteOf(arena, err) };
+        return .{ .status = err.status, .body = errors.body(arena, err), .note = noteOf(arena, err), .failure = err };
     }
 };
 
@@ -157,7 +167,7 @@ pub fn noteOf(arena: std.mem.Allocator, err: errors.ApiError) []const u8 {
 /// Serves requests from `in` until the client closes, asks to close, or a
 /// transport failure ends the connection. `in`'s buffer holds the head, so
 /// the head limit is the smaller of `limits.max_head` and that buffer.
-pub fn serve(gpa: std.mem.Allocator, io: std.Io, in: *std.Io.Reader, out: *std.Io.Writer, handler: Handler, limits: Limits, log: ?*log_mod.Log, peer: ?Peer) void {
+pub fn serve(gpa: std.mem.Allocator, io: std.Io, in: *std.Io.Reader, out: *std.Io.Writer, handler: Handler, limits: Limits, log: ?*log_mod.Log, book: ?*request_log.Book, peer: ?Peer) void {
     var server = std.http.Server.init(in, out);
     server.reader.max_head_len = @min(limits.max_head, in.buffer.len);
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
@@ -167,12 +177,12 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, in: *std.Io.Reader, out: *std.I
         // what the previous one allocated.
         _ = arena_state.reset(.{ .retain_with_limit = 256 * 1024 });
         const arena = arena_state.allocator();
-        if (!serveOne(arena, io, &server, handler, limits, log, peer)) return;
+        if (!serveOne(arena, io, &server, handler, limits, log, book, peer)) return;
     }
 }
 
 /// One request and its response; false when the connection is done.
-fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, handler: Handler, limits: Limits, log: ?*log_mod.Log, peer: ?Peer) bool {
+fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, handler: Handler, limits: Limits, log: ?*log_mod.Log, book: ?*request_log.Book, peer: ?Peer) bool {
     var request = server.receiveHead() catch |err| {
         const refusal: ?errors.ApiError = switch (err) {
             error.HttpConnectionClosing, error.HttpRequestTruncated, error.ReadFailed => null,
@@ -181,12 +191,21 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
         };
         if (refusal) |r| {
             const body = errors.body(arena, r);
-            writeClosing(server.out, r.status, body) catch {};
+            var record: request_log.Record = .init(io);
+            if (book) |b| b.begin(io, &record);
+            writeClosing(server.out, r.status, body, if (book != null) &record.id else null) catch {};
+            if (book) |b| {
+                (request_log.Fields{ .record = &record, .book = b, .io = io }).fail(r);
+                b.finish(io, &record, .{ .status = r.status, .bytes_out = body.len });
+            }
             if (log) |l| l.request(io, .{ .method = null, .path = "-", .status = r.status, .duration_ns = 0, .bytes_out = body.len, .note = noteOf(arena, r) });
         }
         return false;
     };
     var exchange: Exchange = .{ .request = &request, .arena = arena, .io = io, .log = log, .started = std.Io.Clock.awake.now(io), .method = request.head.method };
+    // A connection that ends before the request is read never responds;
+    // its record must still leave the book before the arena is reset.
+    defer exchange.finish(client_closed, .init(client_closed, "client_closed", "the connection ended before the request was read"), 0);
     // The head's strings die when the body is read: copy what is kept.
     const target = arena.dupe(u8, request.head.target) catch return exchange.fail(.init(.internal_server_error, "internal", "out of memory"));
     const question = std.mem.indexOfScalar(u8, target, '?');
@@ -199,6 +218,20 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
         .peer = peer,
     };
     exchange.path = parsed.path;
+    if (book) |b| if (b.logs(parsed.method, parsed.path)) {
+        const record = arena.create(request_log.Record) catch return exchange.fail(.init(.internal_server_error, "internal", "out of memory"));
+        record.* = .init(io);
+        record.method = parsed.method;
+        record.path = parsed.path;
+        var headers = request.iterateHeaders();
+        while (headers.next()) |h| if (std.ascii.eqlIgnoreCase(h.name, "x-client-request-id")) {
+            record.setClientId(arena.dupe(u8, h.value) catch "");
+        };
+        b.begin(io, record);
+        exchange.record = record;
+        exchange.book = b;
+        parsed.fields = .{ .record = record, .book = b, .io = io };
+    };
     if (request.head.method == .GET or request.head.method == .HEAD) {
         var headers = request.iterateHeaders();
         parsed.websocket = websocket.readHandshake(arena, &headers) catch return exchange.fail(.init(.internal_server_error, "internal", "out of memory"));
@@ -236,6 +269,7 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
             error.ReadFailed => false,
         };
     }
+    exchange.bytes_in = parsed.body.len;
     const response = handler.handle(handler.context, arena, io, parsed);
     return exchange.respond(response) and !response.close;
 }
@@ -251,6 +285,28 @@ const Exchange = struct {
     path: []const u8 = "?",
     /// The handshake's `sec-websocket-key`, for an `Upgrade` response.
     websocket_key: []const u8 = "",
+    /// Set when the request is in the book: begun, and finished here.
+    record: ?*request_log.Record = null,
+    book: ?*request_log.Book = null,
+    bytes_in: usize = 0,
+
+    /// `x-request-id` and the client's id echoed, as many as apply.
+    fn idHeaders(self: *const Exchange, into: []std.http.Header) usize {
+        const record = self.record orelse return 0;
+        into[0] = .{ .name = "x-request-id", .value = &record.id };
+        if (record.client_id.len == 0) return 1;
+        into[1] = .{ .name = "x-client-request-id", .value = record.client_id };
+        return 2;
+    }
+
+    /// The end line, once the response, its stream, or its session is done.
+    fn finish(self: *Exchange, status: std.http.Status, failure: ?errors.ApiError, bytes_out: usize) void {
+        const record = self.record orelse return;
+        const book = self.book.?;
+        if (failure) |f| (request_log.Fields{ .record = record, .book = book, .io = self.io }).fail(f);
+        book.finish(self.io, record, .{ .status = status, .bytes_in = self.bytes_in, .bytes_out = bytes_out });
+        self.record = null;
+    }
 
     /// An error response that ends the connection: the request may not
     /// have been read whole.
@@ -266,16 +322,23 @@ const Exchange = struct {
         if (response.upgrade) |upgrade| return self.respondUpgrade(response, upgrade);
         if (response.stream) |stream| return self.respondStream(response, stream);
         const request = self.request;
-        var headers: [2]std.http.Header = .{ .{ .name = "content-type", .value = response.content_type }, undefined };
-        if (response.extra_header) |h| headers[1] = h;
+        var headers: [4]std.http.Header = undefined;
+        headers[0] = .{ .name = "content-type", .value = response.content_type };
+        var n: usize = 1;
+        if (response.extra_header) |h| {
+            headers[n] = h;
+            n += 1;
+        }
+        n += self.idHeaders(headers[n..]);
         const sent = if (request.respond(response.body, .{
             // An HTTP/1.0 client keeps the connection only when told so.
             .version = request.head.version,
             .status = response.status,
             .reason = reason(response.status),
             .keep_alive = !response.close,
-            .extra_headers = headers[0 .. @as(usize, 1) + @intFromBool(response.extra_header != null)],
+            .extra_headers = headers[0..n],
         })) |_| true else |_| false;
+        self.finish(response.status, response.failure, response.body.len);
         if (self.log) |l| l.request(self.io, .{
             .method = self.method,
             .path = self.path,
@@ -292,11 +355,11 @@ const Exchange = struct {
     fn respondUpgrade(self: *Exchange, response: Response, upgrade: Upgrade) bool {
         const out = self.request.server.out;
         const accept = websocket.accept(self.websocket_key);
-        const sent = if (out.print("HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {s}\r\n\r\n", .{&accept})) |_|
-            if (out.flush()) |_| true else |_| false
-        else |_|
-            false;
+        var ids: [2]std.http.Header = undefined;
+        const n = self.idHeaders(&ids);
+        const sent = if (writeUpgrade(out, &accept, ids[0..n])) |_| true else |_| false;
         if (sent) upgrade.run(upgrade.context, self.io, self.request.server.reader.in, out);
+        self.finish(.switching_protocols, null, 0);
         if (self.log) |l| l.request(self.io, .{
             .method = self.method,
             .path = self.path,
@@ -315,16 +378,17 @@ const Exchange = struct {
         const keep_alive = !response.close and !http10 and request.head.keep_alive;
         var buffer: [4096]u8 = undefined;
         var bytes: usize = 0;
+        var headers: [4]std.http.Header = undefined;
+        headers[0] = .{ .name = "content-type", .value = response.content_type };
+        headers[1] = .{ .name = "cache-control", .value = "no-cache" };
+        const n = 2 + self.idHeaders(headers[2..]);
         const sent = if (request.respondStreaming(&buffer, .{ .respond_options = .{
             .version = request.head.version,
             .status = response.status,
             .reason = reason(response.status),
             .keep_alive = keep_alive,
             .transfer_encoding = if (http10) .none else null,
-            .extra_headers = &.{
-                .{ .name = "content-type", .value = response.content_type },
-                .{ .name = "cache-control", .value = "no-cache" },
-            },
+            .extra_headers = headers[0..n],
         } })) |writer| blk: {
             var inner = writer;
             var body: Body = .{ .inner = &inner };
@@ -350,14 +414,24 @@ const Exchange = struct {
             .bytes_out = bytes,
             .note = if (stream.note) |note| note(stream.context) else response.note,
         });
+        self.finish(response.status, response.failure, bytes);
         return sent and keep_alive;
     }
 };
 
 /// A whole response with `connection: close`, outside any request: the
 /// transport's refusals and the accept loop's `busy`.
-pub fn writeClosing(out: *std.Io.Writer, status: std.http.Status, body: []const u8) std.Io.Writer.Error!void {
-    try out.print("HTTP/1.1 {d} {s}\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {d}\r\n\r\n{s}", .{ @backingInt(status), reason(status), body.len, body });
+pub fn writeClosing(out: *std.Io.Writer, status: std.http.Status, body: []const u8, id: ?[]const u8) std.Io.Writer.Error!void {
+    try out.print("HTTP/1.1 {d} {s}\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {d}\r\n", .{ @backingInt(status), reason(status), body.len });
+    if (id) |v| try out.print("x-request-id: {s}\r\n", .{v});
+    try out.print("\r\n{s}", .{body});
+    try out.flush();
+}
+
+fn writeUpgrade(out: *std.Io.Writer, accept: []const u8, headers: []const std.http.Header) std.Io.Writer.Error!void {
+    try out.print("HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {s}\r\n", .{accept});
+    for (headers) |h| try out.print("{s}: {s}\r\n", .{ h.name, h.value });
+    try out.writeAll("\r\n");
     try out.flush();
 }
 
@@ -427,7 +501,16 @@ fn roundTrip(input: []const u8, limits: Limits, echo: *Echo) ![]u8 {
     in.artificial_limit = .limited(7);
     var buffer: [64 * 1024]u8 = undefined;
     var out: std.Io.Writer = .fixed(&buffer);
-    serve(std.testing.allocator, std.testing.io, &in.interface, &out, .{ .context = echo, .handle = Echo.handle, .body_limit = Echo.bodyLimit }, limits, null, null);
+    serve(std.testing.allocator, std.testing.io, &in.interface, &out, .{ .context = echo, .handle = Echo.handle, .body_limit = Echo.bodyLimit }, limits, null, null, null);
+    return std.testing.allocator.dupe(u8, out.buffered());
+}
+
+/// `roundTrip` with a book: ids, the echo, and the in-flight list.
+fn roundTripBook(input: []const u8, echo: *Echo, book: *request_log.Book) ![]u8 {
+    var in: std.Io.Reader = .fixed(input);
+    var buffer: [64 * 1024]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&buffer);
+    serve(std.testing.allocator, std.testing.io, &in, &out, .{ .context = echo, .handle = Echo.handle, .body_limit = Echo.bodyLimit }, .{ .max_head = 1024 }, null, book, null);
     return std.testing.allocator.dupe(u8, out.buffered());
 }
 
@@ -563,6 +646,27 @@ test "a WebSocket route refuses a plain GET and a bad handshake with the header 
     try std.testing.expectEqual(@as(usize, 2), echo.calls);
     try expectContains(output, &.{ "426 Upgrade Required", "upgrade: websocket", "upgrade_required", "unsupported_version" });
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, output, "HTTP/1.1 426"));
+}
+
+test "with a book every request but health's gets an id, the client's echoed when it is valid" {
+    var echo: Echo = .{};
+    var book: request_log.Book = .{};
+    const input = "GET /v1/health HTTP/1.1\r\nx-client-request-id: poll\r\n\r\n" ++
+        "POST /a HTTP/1.1\r\nX-Client-Request-Id: turn-41\r\ncontent-length: 2\r\n\r\nhi" ++
+        "POST /stream HTTP/1.1\r\nx-client-request-id: " ++ repeat("b", 129) ++ "\r\ncontent-length: 0\r\n\r\n" ++
+        "POST /a HTTP/1.1\r\ncontent-length: 9\r\n\r\ncut";
+    const output = try roundTripBook(input, &echo, &book);
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqual(@as(usize, 3), echo.calls);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, output, "x-request-id: "));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, "x-client-request-id: turn-41"));
+    try std.testing.expect(std.mem.indexOf(u8, output, "poll") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "bbbb") == null);
+    // The cut body's request left the book with the others.
+    try std.testing.expectEqual(@as(?*request_log.Record, null), book.head);
+    const refused = try roundTripBook("BREW / HTTP/1.1\r\n\r\n", &echo, &book);
+    defer std.testing.allocator.free(refused);
+    try expectContains(refused, &.{ "400", "x-request-id: " });
 }
 
 test "query parameters" {

@@ -181,9 +181,11 @@ pub fn writeDelta(out: *std.Io.Writer, audio: []const u8) std.Io.Writer.Error!vo
 
 pub const Usage = struct { input_tokens: usize, output_tokens: usize };
 
-/// The `speech.audio.done` event: the text's tokens in, the frames out.
-pub fn writeDone(out: *std.Io.Writer, usage: Usage) std.Io.Writer.Error!void {
-    try out.print("data: {{\"type\":\"speech.audio.done\",\"usage\":{{\"input_tokens\":{d},\"output_tokens\":{d},\"total_tokens\":{d}}}}}\n\n", .{ usage.input_tokens, usage.output_tokens, usage.input_tokens + usage.output_tokens });
+/// The `speech.audio.done` event: why the speech ended (nuclis's
+/// `finish_reason`: `eos`, the model's end; `length`, the frame budget),
+/// then the text's tokens in, the frames out.
+pub fn writeDone(out: *std.Io.Writer, usage: Usage, finish: []const u8) std.Io.Writer.Error!void {
+    try out.print("data: {{\"type\":\"speech.audio.done\",\"finish_reason\":\"{s}\",\"usage\":{{\"input_tokens\":{d},\"output_tokens\":{d},\"total_tokens\":{d}}}}}\n\n", .{ finish, usage.input_tokens, usage.output_tokens, usage.input_tokens + usage.output_tokens });
 }
 
 /// An error after the stream began: one `data:` line with the error body.
@@ -285,7 +287,7 @@ test "the stream's bytes: PCM, a header for an unknown length, and the events" {
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
     try writeDelta(&out.writer, "\x01\x02\x03\x04");
-    try writeDone(&out.writer, .{ .input_tokens = 12, .output_tokens = 40 });
+    try writeDone(&out.writer, .{ .input_tokens = 12, .output_tokens = 40 }, "length");
     var err: errors.ApiError = .init(.internal_server_error, "model_failed", "the device failed");
     err.param = null;
     try writeStreamError(&out.writer, err);
@@ -305,6 +307,7 @@ test "the stream's bytes: PCM, a header for an unknown length, and the events" {
     try testing.expectEqualStrings("AQIDBA==", parsed[0].value.object.get("audio").?.string);
     try testing.expectEqualStrings("speech.audio.done", parsed[1].value.object.get("type").?.string);
     try testing.expectEqual(@as(i64, 52), parsed[1].value.object.get("usage").?.object.get("total_tokens").?.integer);
+    try testing.expectEqualStrings("length", parsed[1].value.object.get("finish_reason").?.string);
     try testing.expectEqualStrings("model_failed", parsed[2].value.object.get("error").?.object.get("code").?.string);
     // A chunk's room covers its frames, the header, and the event's framing.
     try testing.expect(maxChunkBytes(4, 1920, .sse) > std.base64.standard.Encoder.calcSize(4 * 1920 * 2 + 44));

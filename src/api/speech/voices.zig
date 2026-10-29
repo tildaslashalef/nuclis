@@ -51,7 +51,10 @@ pub const Routes = struct {
         const name = std.mem.trim(u8, form.field("name") orelse return refuse(arena, .bad_request, "invalid_request", "name", "\"name\" is required: the voice's name, what a speech request's voice names", .{}), " \t\r\n");
         // `consent` (OpenAI's consent recording) has no meaning for a local clip and is ignored.
         const now = std.Io.Timestamp.now(io, .real).toSeconds();
+        request.fields.text("voice", name);
+        request.fields.flag("transcript", form.field("reference_text") != null);
         const added = s.add(arena, name, file.data, form.field("reference_text"), now) catch |err| return storeError(arena, err, name);
+        request.fields.float("clip_s", added.seconds, 2);
         return json(arena, .created, voiceObject(added));
     }
 
@@ -62,9 +65,11 @@ pub const Routes = struct {
         if (std.mem.eql(u8, request.path, path)) {
             const data = arena.alloc(Voice, listed.len) catch return internal(arena);
             for (data, listed) |*d, v| d.* = voiceObject(v);
+            request.fields.int("voices", listed.len);
             return json(arena, .ok, .{ .object = "list", .data = data });
         }
         const id = request.path[path.len + 1 ..];
+        request.fields.text("voice", id);
         for (listed) |v| if (std.mem.eql(u8, v.name, id)) return json(arena, .ok, voiceObject(v));
         return refuse(arena, .not_found, "voice_not_found", "voice_id", "no saved voice named {s} (GET {s} lists them)", .{ id, path });
     }
@@ -74,6 +79,7 @@ pub const Routes = struct {
         const s = self.store(arena, io) orelse return noHome(arena);
         if (std.mem.eql(u8, request.path, path)) return refuse(arena, .bad_request, "invalid_request", "voice_id", "name the voice: DELETE {s}/<name>", .{path});
         const id = request.path[path.len + 1 ..];
+        request.fields.text("voice", id);
         s.remove(id) catch |err| return storeError(arena, err, id);
         return json(arena, .ok, .{ .id = id, .object = "audio.voice.deleted", .deleted = true });
     }

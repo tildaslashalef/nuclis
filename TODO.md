@@ -14,17 +14,11 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-No unit is in progress. `qwen3-tts-base-voice-cloning` (the Base
-checkpoints, voice cloning with saved voices, VoiceDesign, the rename to
-`-customvoice`) is finished on its branch, unpushed: its pull request
-waits for the user's word, and its description is the record. The next
-release (0.11.0) carries it with K-quant E4B files
-([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
-Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
-Muon's voice loop, the model-management unit
-([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)), the
-Qwen3-TTS fine-tunes ([nuclis#41](https://github.com/tildaslashalef/nuclis/pull/41)),
-and `GET /v1/models` ([nuclis#42](https://github.com/tildaslashalef/nuclis/pull/42)).
+No unit is in progress. `serve-request-log-and-speech-budget` (the speech
+frame budget and `finish_reason`; the request log under `~/.nuclis/logs/`,
+request ids, and `in_flight` in `GET /v1/health`) is finished on its
+branch, unpushed: its pull request waits for the user's word, and its
+description is the record.
 
 ## Deferred
 
