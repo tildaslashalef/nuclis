@@ -4243,7 +4243,11 @@
     "inference/src/audio/audio.zig",
     "inference/src/audio/ecapa.zig",
     "inference/src/audio/mel.zig",
+    "inference/src/audio/qwen3_codec.zig",
+    "inference/src/audio/qwen3_codec_encoder.zig",
     "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/rope.zig",
+    "inference/src/backends/cpu/vector.zig",
     "inference/src/formats/safetensors.zig",
     "inference/src/models/qwen3_tts.zig",
     "tests/fixtures/qwen3-tts/**"
@@ -4255,12 +4259,12 @@
     "{model}",
     "clone",
     "--max-relative-rms",
-    "1.5e-5"
+    "1e-4"
    ],
    "comparator": {
     "kind": "exit"
    },
-   "note": "the Base's reference clip, read from its 16-bit WAV at 24 kHz, through the speaker encoder (the CPU is its only path, so this gate is in the fast tier): the mel's last 64 rows, blocks 0 and 3 and mfa's last 8, the pooled statistics, and the embedding, relative RMS <= 1.5e-5 per stage (first run 2026-10-29: worst 1.74e-6, mfa)",
+   "note": "the Base's reference clip, read from its 16-bit WAV at 24 kHz, through both encoders (the CPU is their only path, so this gate is in the fast tier): the speaker encoder's mel (last 64 rows), blocks 0 and 3 and mfa (last 8), pooled statistics, and embedding; the codec encoder's SEANet, transformer, and downsample outputs (last 16 rows), each within relative RMS 1e-4; and the 58 frames of codes equal (first run 2026-10-29: speaker encoder worst 1.74e-6, codec encoder worst 3.26e-5 at the SEANet output, every code equal)",
    "evidence": "docs/models/qwen3-tts.md#the-speaker-encoder-against-the-trace-2026-10-29"
   },
   {

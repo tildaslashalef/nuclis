@@ -843,8 +843,34 @@ every stage the trace pins, on the 0.6B, M4 Pro:
 | embedding | 1 | 9.5e-7 | 7.78 | 3.5e-7 |
 
 The 4.6 s clip takes 60 ms (ReleaseSafe, the matmuls on every core).
-`qwen3-tts-0.6b-clone-cpu` (tier `verify`, the CPU being this network's
-only path) bounds each stage at relative RMS 1.5e-5.
+
+### The codec encoder against the trace (2026-10-29)
+
+`inference/src/audio/qwen3_codec_encoder.zig`: `bind` takes the encoder's
+125 tensors of its own (SEANet 28, transformer 96, downsample 1) and
+checks that the file's quantizer copies equal the decoder's tensors byte
+for byte, refusing a file whose copies differ; `Encoder` reads the
+codebooks and `input_proj`s from the decoder's binding. Each convolution
+is one `cpu.dense.matmul` over gathered taps, causal with zeros (the
+downsample with the edge row); the transformer is the decoder's
+`attention` with a window as long as the clip, which is plain causal; the
+nearest codeword is found by exact F64 distance, the lowest code on a tie
+as `argmin`. On the reference clip (0.6B Base's codec file, M4 Pro):
+
+| Stage | Rows | max \|Δ\| | max \|ref\| | rel RMS |
+| --- | --- | ---: | ---: | ---: |
+| SEANet output | 100–116 | 4.6e-4 | 29.4 | 3.3e-5 |
+| transformer | 100–116 | 3.4e-4 | 23.2 | 2.0e-5 |
+| downsample | 42–58 | 5.4e-4 | 32.2 | 1.4e-5 |
+| codes | 58 × 16 | | | all equal |
+
+The float stages sit an order above the speaker encoder's: 14
+convolutions over 111,360 samples, summed in F32 in another order than
+PyTorch's; no code lies near enough a boundary to move. The clip takes
+658 ms, most of it the 16 × 2048-codeword searches.
+`qwen3-tts-0.6b-clone-cpu` (tier `verify`, the CPU being both encoders'
+only path) bounds every stage of both at relative RMS 1e-4 and holds the
+codes equal.
 
 ## Codec decoder against the trace (2026-10-27)
 

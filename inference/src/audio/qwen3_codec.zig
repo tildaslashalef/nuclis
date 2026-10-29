@@ -107,6 +107,8 @@ pub const Binding = struct {
     cluster_usage: [groups]Ref,
     /// `rvq_first`'s and `rvq_rest`'s 1×1 projections to `quantized`.
     output_proj: [2]Ref,
+    /// Their projections from `quantized`, the encode side's.
+    input_proj: [2]Ref,
     pre_conv: Conv,
     transformer_in: Conv,
     layers: []Layer,
@@ -128,8 +130,9 @@ pub const Binding = struct {
 };
 
 /// Looks tensors up by name and shape, or (with `record`) lists the names
-/// and shapes asked for instead, which is how the tests build a file.
-const Binder = struct {
+/// and shapes asked for instead, which is how the tests build a file. The
+/// codec encoder's binder too (`at`, under its own prefix).
+pub const Binder = struct {
     gpa: Allocator,
     checkpoint: ?*const safetensors.Checkpoint,
     bound: std.StringHashMapUnmanaged(void) = .empty,
@@ -139,13 +142,18 @@ const Binder = struct {
     bytes: u64 = 0,
     placeholder: safetensors.Tensor = .{ .name = "", .dtype = .f32, .shape = &.{}, .offset = 0, .bytes = 0, .elements = 0 },
 
-    fn deinit(self: *Binder) void {
+    pub fn deinit(self: *Binder) void {
         self.bound.deinit(self.gpa);
     }
 
     fn get(self: *Binder, comptime format: []const u8, args: anytype, shape: []const u64) Error!Ref {
+        return self.at("decoder." ++ format, args, shape);
+    }
+
+    /// The tensor named `format` (the whole name), of `shape`.
+    pub fn at(self: *Binder, comptime format: []const u8, args: anytype, shape: []const u64) Error!Ref {
         var buffer: [160]u8 = undefined;
-        const name = std.fmt.bufPrint(&buffer, "decoder." ++ format, args) catch unreachable;
+        const name = std.fmt.bufPrint(&buffer, format, args) catch unreachable;
         if (self.record) |list| {
             try list.ensureUnusedCapacity(self.gpa, 1);
             const owned = try self.gpa.dupe(u8, name);
@@ -199,8 +207,8 @@ const Binder = struct {
     }
 };
 
-/// A tensor the decoder reads, for building test files.
-const Spec = struct { name: []const u8, shape: []const u64 };
+/// A tensor a binder asks for, for building test files.
+pub const Spec = struct { name: []const u8, shape: []const u64 };
 
 /// Binds the decoder's tensors of `checkpoint` (a `speech_tokenizer`
 /// file) against `config`. A missing, misshapen, or unknown `decoder.*`
@@ -237,8 +245,7 @@ fn bindWith(b: *Binder, c: Config) Error!Binding {
     }
     for ([2][]const u8{ "first", "rest" }, 0..) |at, i| {
         r.output_proj[i] = try b.get("quantizer.rvq_{s}.output_proj.weight", .{at}, &.{ c.quantized, cd, 1 });
-        // The encode side's projection: bound so the file holds nothing unknown.
-        _ = try b.get("quantizer.rvq_{s}.input_proj.weight", .{at}, &.{ cd, c.quantized, 1 });
+        r.input_proj[i] = try b.get("quantizer.rvq_{s}.input_proj.weight", .{at}, &.{ cd, c.quantized, 1 });
     }
     const latent: u64 = c.latent;
     const hidden: u64 = c.hidden;
@@ -391,16 +398,7 @@ pub const Runtime = struct {
         const l: Loader = .{ .arena = self.storage.allocator(), .gpa = gpa };
         const c = binding.config;
         const codebooks = try l.arena.alloc(f32, groups * c.codebook_size * c.codebook_dim);
-        const usage = try gpa.alloc(f32, c.codebook_size);
-        defer gpa.free(usage);
-        for (0..groups) |g| {
-            const table = codebooks[g * c.codebook_size * c.codebook_dim ..][0 .. c.codebook_size * c.codebook_dim];
-            try binding.embedding_sum[g].decode(0, table);
-            try binding.cluster_usage[g].decode(0, usage);
-            for (0..c.codebook_size) |code| for (table[code * c.codebook_dim ..][0..c.codebook_dim]) |*x| {
-                x.* /= @max(usage[code], codebook_eps);
-            };
-        }
+        try decodeCodebooks(gpa, binding, codebooks);
         self.codebooks = codebooks;
         for (&self.project, binding.output_proj) |*p, ref| p.* = .{ .w = try l.floats(ref), .b = null, .in = c.codebook_dim, .out = c.quantized };
         self.pre_conv = try l.causal(binding.pre_conv, 1);
@@ -493,6 +491,23 @@ pub const Runtime = struct {
         sumCodebooks(self.codebooks, self.config.codebook_size, self.config.codebook_dim, codes, first, rest);
     }
 };
+
+/// Every group's codebook into `out` (`[groups][codebook_size][codebook_dim]`),
+/// each vector divided by its clamped usage, as the authors' `embed`.
+pub fn decodeCodebooks(gpa: Allocator, binding: *const Binding, out: []f32) !void {
+    const c = binding.config;
+    std.debug.assert(out.len == groups * c.codebook_size * c.codebook_dim);
+    const usage = try gpa.alloc(f32, c.codebook_size);
+    defer gpa.free(usage);
+    for (0..groups) |g| {
+        const table = out[g * c.codebook_size * c.codebook_dim ..][0 .. c.codebook_size * c.codebook_dim];
+        try binding.embedding_sum[g].decode(0, table);
+        try binding.cluster_usage[g].decode(0, usage);
+        for (0..c.codebook_size) |code| for (table[code * c.codebook_dim ..][0..c.codebook_dim]) |*x| {
+            x.* /= @max(usage[code], codebook_eps);
+        };
+    }
+}
 
 /// Decodes `Binding` refs into the runtime's arena, re-laying convolution
 /// kernels for `CausalConv` and `TransConv`.
@@ -980,14 +995,26 @@ fn freeSpecs(gpa: Allocator, list: *std.ArrayList(Spec)) void {
     list.deinit(gpa);
 }
 
-const Change = struct { skip: ?[]const u8 = null, reshape: ?Spec = null, extra: ?Spec = null };
+pub const Change = struct { skip: ?[]const u8 = null, reshape: ?Spec = null, extra: ?Spec = null };
 
 /// Writes `model.safetensors` with the tiny decoder's tensors (values in
 /// [−0.5, 0.5), usages in [0.5, 1.5)), one encoder tensor, and `change`.
 fn writeTiny(gpa: Allocator, io: std.Io, dir: std.Io.Dir, change: Change) !void {
+    try writeTestCheckpoint(gpa, io, dir, &.{.{ .name = "encoder.quantizer.weight", .shape = &.{ 2, 3 } }}, change);
+}
+
+/// The tiny decoder's configuration, for tests here and in the encoder's.
+pub const test_config = tiny;
+
+/// Writes `model.safetensors` into `dir`: the tiny decoder's tensors, then
+/// `more`, then `change`, every value random as `writeTiny`'s.
+pub fn writeTestCheckpoint(gpa: Allocator, io: std.Io, dir: std.Io.Dir, more: []const Spec, change: Change) !void {
     var list = try specs(gpa, tiny);
     defer freeSpecs(gpa, &list);
-    var extras: [2]Spec = .{ .{ .name = "encoder.quantizer.weight", .shape = &.{ 2, 3 } }, change.extra orelse .{ .name = "", .shape = &.{} } };
+    var extras: std.ArrayList(Spec) = .empty;
+    defer extras.deinit(gpa);
+    try extras.appendSlice(gpa, more);
+    if (change.extra) |e| try extras.append(gpa, e);
     var header: std.Io.Writer.Allocating = .init(gpa);
     defer header.deinit();
     var data: std.ArrayList(u8) = .empty;
@@ -995,8 +1022,7 @@ fn writeTiny(gpa: Allocator, io: std.Io, dir: std.Io.Dir, change: Change) !void 
     var prng = std.Random.DefaultPrng.init(11);
     try header.writer.writeByte('{');
     var first = true;
-    for ([2][]Spec{ list.items, &extras }) |part| for (part) |s| {
-        if (s.name.len == 0) continue;
+    for ([2][]const Spec{ list.items, extras.items }) |part| for (part) |s| {
         if (change.skip) |name| if (std.mem.eql(u8, s.name, name)) continue;
         var shape = s.shape;
         if (change.reshape) |r| if (std.mem.eql(u8, s.name, r.name)) {

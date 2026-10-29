@@ -14,10 +14,10 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–5, the
-facts, the traces, the config and binding, audio at 24 kHz, and the
-speaker encoder, are done and committed. Next: task 6, the codec
-encoder. The next release
+`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–6, the
+facts, the traces, the config and binding, audio at 24 kHz, and both
+encoders, are done and committed. Next: task 7, the prompt and the
+synthesizer. The next release
 (0.11.0) carries K-quant E4B files
 ([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
 Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
@@ -29,7 +29,7 @@ this unit, if it lands first.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 6 next |
+| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 7 next |
 
 ## Qwen3-TTS Base: voice cloning with saved voices
 
@@ -116,15 +116,15 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
    own 24 kHz mel; `Encoder`, the ECAPA-TDNN, CPU only, 60 ms for the
    4.6 s clip); `qwen3-tts-check <Base dir> clone` against the trace
    (worst stage relative RMS 1.7e-6); gate `qwen3-tts-0.6b-clone-cpu`
-   (tier `verify`, bound 1.5e-5); `gates.json` models
-   `qwen3_tts_06b_base`, `qwen3_tts_17b_base`. Task 6 extends the `clone`
-   mode with the codec encoder's stages and codes.
-6. *Codec encoder* (`inference/src/audio/qwen3_codec.zig`: bind
-   `encoder.encoder.*`, `encoder.encoder_transformer.*`,
-   `encoder.downsample.*`; the quantizer from the decoder's binding, the
-   encoder's copies skipped; `Runtime.encode(samples) → []Frame`). Against
-   the trace's codes; codes are integers, so the gate is equality, with
-   any disagreement explained by a distance at a quantizer boundary.
+   (tier `verify`); `gates.json` models `qwen3_tts_06b_base`,
+   `qwen3_tts_17b_base`.
+6. *Codec encoder.* Done: `inference/src/audio/qwen3_codec_encoder.zig`
+   (`bind` over the 125 tensors of its own, the file's quantizer copies
+   checked equal to the decoder's; `Encoder.encode`, 658 ms for the 4.6 s
+   clip); `qwen3_codec.Binding.input_proj` kept, `decodeCodebooks`,
+   `Binder.at` shared. The `clone` check now holds every code equal (58 ×
+   16 on the first run) and both encoders' stages within relative RMS
+   1e-4 (codec encoder worst 3.3e-5, SEANet output).
 7. *Prompt and synthesizer.* `qwen3_tts.Row` gains the speaker-vector
    row and the reference frame (embedded as `nextRow` does); `Prompt`
    gains `trailing` (text ids, then `tts_eos`);

@@ -13,9 +13,10 @@
 //! `codec-metal` decodes each case's codes on Metal against the CPU decode
 //! and the trace, then in pieces of 1, 3, and 7 frames, which must equal the
 //! Metal decode bit for bit. `clone` (a Base's MODEL_DIR): the reference
-//! case's clip, read from its WAV at 24 kHz, through the speaker encoder,
-//! each stage the trace pins and the embedding compared. The bounds are
-//! arguments, so the gate manifest holds them.
+//! case's clip, read from its WAV at 24 kHz, through the speaker encoder
+//! and the codec encoder, each stage the trace pins and the embedding
+//! compared, and the codes exactly. The bounds are arguments, so the gate
+//! manifest holds them.
 //!
 //!   qwen3-tts-check MODEL_DIR codec|codec-metal [--max-relative-rms X] [--max-absolute X] [--fixtures DIR]
 //!   qwen3-tts-check MODEL_DIR talker|talker-metal [--max-relative-rms X] [--kv f32|f16|both] [--max-relative-rms-f16 X] [--fixtures DIR]
@@ -24,6 +25,7 @@ const std = @import("std");
 const inference = @import("inference");
 const codec = inference.audio.qwen3_codec;
 const ecapa = inference.audio.ecapa;
+const codec_encoder = inference.audio.qwen3_codec_encoder;
 const safetensors = inference.safetensors;
 const tts = inference.models.qwen3_tts;
 const speech = inference.models.qwen3_tts_runtime;
@@ -600,7 +602,7 @@ const Stages = struct {
     }
 };
 
-/// The reference case's clip through the speaker encoder, against the trace.
+/// The reference case's clip through both encoders, against the trace.
 fn checkClone(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, model_dir: []const u8, fixtures: []const u8, bound: f64) !bool {
     const index_path = try std.fs.path.join(arena, &.{ fixtures, "index.json" });
     const index_text = try std.Io.Dir.cwd().readFileAlloc(io, index_path, arena, .limited(1 << 20));
@@ -628,6 +630,22 @@ fn checkClone(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mode
     defer binding.deinit(gpa);
     var encoder = try ecapa.Encoder.init(gpa, &binding.speaker_encoder.?, encoder_config);
     defer encoder.deinit();
+    const codec_path = try std.fs.path.join(arena, &.{ model_dir, "speech_tokenizer", "model.safetensors" });
+    var codec_checkpoint = try safetensors.Checkpoint.open(gpa, io, codec_path, .{});
+    defer codec_checkpoint.deinit(io);
+    var codec_diagnostic: codec.Diagnostic = .{};
+    var decoder_binding = codec.bind(gpa, &codec_checkpoint, .{}, &codec_diagnostic) catch |err| {
+        std.debug.print("codec bind: {s} ({s})\n", .{ @errorName(err), codec_diagnostic.name() });
+        return err;
+    };
+    defer decoder_binding.deinit(gpa);
+    var encoder_binding = codec_encoder.bind(gpa, &codec_checkpoint, &decoder_binding, .{}, &codec_diagnostic) catch |err| {
+        std.debug.print("codec encoder bind: {s} ({s})\n", .{ @errorName(err), codec_diagnostic.name() });
+        return err;
+    };
+    defer encoder_binding.deinit(gpa);
+    var codes_encoder = try codec_encoder.Encoder.init(gpa, io, &decoder_binding, &encoder_binding);
+    defer codes_encoder.deinit();
     const sidecar: ?std.json.Value = if (read.file(arena, io, model_dir, "model.safetensors.nuclis.json")) |text|
         try std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{})
     else |_|
@@ -654,10 +672,15 @@ fn checkClone(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mode
         const start = std.Io.Clock.awake.now(io);
         try encoder.embed(gpa, io, pcm.samples, embedding, .{ .context = &stages, .record = Stages.record });
         if (stages.failed) return error.OutOfMemory;
-        std.debug.print("{s}: {d:.2} s of reference, speaker encoder in {d} ms\n", .{ case.key_ptr.*, @as(f64, @floatFromInt(pcm.samples.len)) / ecapa.sample_rate, start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() });
+        const speaker_ms = start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds();
+        const codes = try arena.alloc(codec.Frame, codes_encoder.frameCount(pcm.samples.len));
+        const codec_start = std.Io.Clock.awake.now(io);
+        try codes_encoder.encode(gpa, pcm.samples, codes, .{ .context = &stages, .record = Stages.record });
+        if (stages.failed) return error.OutOfMemory;
+        std.debug.print("{s}: {d:.2} s of reference, speaker encoder in {d} ms, codec encoder in {d} ms\n", .{ case.key_ptr.*, @as(f64, @floatFromInt(pcm.samples.len)) / ecapa.sample_rate, speaker_ms, codec_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() });
         std.debug.print("  {s:<12} {s:>13} {s:>10} {s:>10} {s:>10}\n", .{ "stage", "rows", "max |Δ|", "max |ref|", "rel RMS" });
         try stages.rows.put(arena, "embedding", embedding);
-        for ([_][]const u8{ "mel", "blocks.0", "blocks.3", "mfa", "asp", "embedding" }) |label| {
+        for ([_][]const u8{ "mel", "blocks.0", "blocks.3", "mfa", "asp", "embedding", "seanet", "transformer", "downsample" }) |label| {
             const key = if (std.mem.eql(u8, label, "embedding")) label else try std.fmt.allocPrint(arena, "encoders/{s}", .{label});
             const entry = files.get(key) orelse continue;
             const want = try floats(arena, try readFixture(arena, io, fixtures, entry));
@@ -684,12 +707,28 @@ fn checkClone(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mode
             if (over) passed = false;
             std.debug.print("  {s:<12} {d:>6}–{d:<6} {e:>10.2} {e:>10.2} {e:>10.2}{s}\n", .{ label, first, last, s.max_abs, s.max_ref, rel, if (over) "  OVER" else "" });
         }
+        // Codes are integers: equal, frame by frame and group by group.
+        const want_frames: usize = @intCast(files.get("codes").?.object.get("shape").?.array.items[0].integer);
+        if (want_frames != codes.len) {
+            std.debug.print("  codes: {d} frames, the trace's {d}\n", .{ codes.len, want_frames });
+            return error.FixtureMismatch;
+        }
+        const want = try readCodes(arena, io, fixtures, files.get("codes").?, codes.len);
+        var differ: usize = 0;
+        for (codes, want, 0..) |got, w, t| for (got, w, 0..) |a, b, g| if (a != b) {
+            if (differ < 8) std.debug.print("    frame {d} group {d}: {d}, the trace's {d}\n", .{ t, g, a, b });
+            differ += 1;
+        };
+        const total_codes = codes.len * codec.groups;
+        if (differ > 0) passed = false;
+        std.debug.print("  codes ({d} × {d}): {s}", .{ codes.len, codec.groups, if (differ == 0) "equal\n" else "" });
+        if (differ > 0) std.debug.print("{d} of {d} DIFFER\n", .{ differ, total_codes });
     }
     if (checked == 0) {
         std.debug.print("No reference case in {s} for {s}.\n", .{ fixtures, dir_name });
         return false;
     }
-    std.debug.print("Bound: relative RMS {e} per stage: {s}.\n", .{ bound, if (passed) "passed" else "FAILED" });
+    std.debug.print("Bound: relative RMS {e} per stage, codes equal: {s}.\n", .{ bound, if (passed) "passed" else "FAILED" });
     return passed;
 }
 

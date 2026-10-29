@@ -57,6 +57,11 @@ as a cross-check, never copied.
   ECAPA-TDNN to one embedding at the talker's width (gate
   `qwen3-tts-0.6b-clone-cpu`;
   [qwen3-tts.md § The speaker encoder](../models/qwen3-tts.md#the-speaker-encoder)).
+- `qwen3_codec_encoder.zig`: Qwen3-TTS's codec encoder, CPU only, 24 kHz
+  samples to frames of 16 codes (the Base's reference codes): `bind` (its
+  quantizer is the decoder binding's, the file's copies checked equal) and
+  `Encoder` (gate `qwen3-tts-0.6b-clone-cpu`;
+  [qwen3-tts.md § The codec encoder](../models/qwen3-tts.md#the-codec-encoder)).
 - `nemotron_encoder.zig`: Nemotron 3.5 ASR's cache-aware encoder and its
   prompt block, the CPU reference: `bind` (the safetensors checkpoint),
   `Encoder`, `Stream`, its `FrontEnd`, and the pure functions the Metal
