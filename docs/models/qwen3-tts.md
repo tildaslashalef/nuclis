@@ -14,9 +14,10 @@ networks, in two files:
   codes into 24 kHz mono PCM, 1,920 samples per frame (12.5 frames/s).
 
 The *CustomVoice* variant speaks with one of nine built-in speakers chosen
-by a codec-vocabulary id. The codec **encoder** and the speaker encoder
-serve voice cloning in the *Base* variant only; nuclis does not implement
-them.
+by a codec-vocabulary id. The *Base* variant has no speakers: it clones a
+voice from a reference clip through two more networks, a speaker encoder
+and the codec's **encoder**
+([Voice cloning (the Base)](#voice-cloning-the-base)).
 
 Everything here was read on 2026-10-27 from these sources: the pinned
 files' safetensors headers and JSON files (read over HTTP at the pinned
@@ -42,6 +43,7 @@ read as the definition, never copied.
 - [The codec decoder (from `modeling_qwen3_tts_tokenizer_v2.py`)](#the-codec-decoder-from-modeling_qwen3_tts_tokenizer_v2py)
 - [Tokenizer and the rendered text](#tokenizer-and-the-rendered-text)
 - [The 1.7B CustomVoice](#the-17b-customvoice)
+- [Voice cloning (the Base)](#voice-cloning-the-base)
 - [Codec decoder against the trace (2026-10-27)](#codec-decoder-against-the-trace-2026-10-27)
 - [Talker and code predictor against the trace (2026-10-27)](#talker-and-code-predictor-against-the-trace-2026-10-27)
 - [On Metal (2026-10-27)](#on-metal-2026-10-27)
@@ -552,6 +554,234 @@ What differs, from the two headers (404 tensors against 402, all BF16) and
 - The prompt layout, speakers, languages, sampling defaults, and the
   codec are the 0.6B's; the prompt additionally carries the instruction
   (§ (a)).
+
+## Voice cloning (the Base)
+
+Read 2026-10-29: the two Base checkpoints' JSON files and safetensors
+headers over HTTP at the pinned revisions; Qwen's package at the commit
+above (`qwen3_tts_model.py` `create_voice_clone_prompt`,
+`generate_voice_clone`; `modeling_qwen3_tts.py` the speaker encoder,
+`mel_spectrogram`, `extract_speaker_embedding`, `generate_icl_prompt`,
+`generate`; `qwen3_tts_tokenizer.py` `encode`;
+`modeling_qwen3_tts_tokenizer_v2.py` `Qwen3TTSTokenizerV2Model.encode`);
+and `transformers` v4.57.3, the version the package pins,
+`models/mimi/modeling_mimi.py` and `masking_utils.py` for the codec
+encoder, which is a `MimiModel`.
+
+### Artifacts
+
+`Qwen/Qwen3-TTS-12Hz-0.6B-Base` at
+`5d83992436eae1d760afd27aff78a71d676296fc` and
+`Qwen/Qwen3-TTS-12Hz-1.7B-Base` at
+`fd4b254389122332181a7c3db7f27e918eec64e3`. The codec files, the
+tokenizer files, `generation_config.json`, and `preprocessor_config.json`
+are byte-identical between the two sizes and to the CustomVoice files;
+only `model.safetensors` and `config.json` differ:
+
+| File | Size (B) | SHA-256 |
+| --- | ---: | --- |
+| 0.6B `model.safetensors` | 1,829,344,272 | `180b3b10eb1c9f1b4db7806d5475bae3071c0243c299d49926bab1da3b6946f6` |
+| 0.6B `config.json` | 4,494 | `2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef72ba011` |
+| 1.7B `model.safetensors` | 3,857,413,744 | `38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c` |
+| 1.7B `config.json` | 4,494 | `b4f01752d15a488abde3e1ab44723ae4f4b9e68a4037257b098b3737893cc1f9` |
+| `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
+
+The other eight files are the CustomVoice table's (same sizes and
+hashes).
+
+**Configuration.** `tts_model_type` `base`; `speaker_encoder_config`
+`{enc_dim, sample_rate: 24000}` with `enc_dim` 1024 (0.6B) or 2048
+(1.7B), the talker's width; every other speaker-encoder key takes the
+package's default (`Qwen3TTSSpeakerEncoderConfig`: `mel_dim` 128,
+`enc_channels` [512, 512, 512, 512, 1536], `enc_kernel_sizes`
+[5, 3, 3, 3, 1], `enc_dilations` [1, 2, 3, 4, 1],
+`enc_attention_channels` 128, `enc_res2net_scale` 8, `enc_se_channels`
+128). `talker_config` is the CustomVoice's of the same size except
+`spk_id` and `spk_is_dialect` empty and `codec_language_id` without the
+two dialects (ten languages). `generation_config.json` is the
+CustomVoice's (§ Configuration).
+
+**Tensors.** `model.safetensors`, all BF16: the CustomVoice's tensors of
+the same size, names, shapes, and dtypes equal (402 on the 0.6B, 404 on
+the 1.7B), plus 80 under `speaker_encoder.` (8,854,336 parameters on the
+0.6B, 12,001,088 on the 1.7B, the difference being `fc`):
+
+| Group | Tensors | Shapes (weight, bias) |
+| --- | --- | --- |
+| `blocks.0.conv` | 2 | [512, 128, 5], [512] |
+| `blocks.{1,2,3}.tdnn1.conv`, `.tdnn2.conv` | 12 | [512, 512, 1], [512] |
+| `blocks.{1,2,3}.res2net_block.blocks.{0..6}.conv` | 42 | [64, 64, 3], [64] |
+| `blocks.{1,2,3}.se_block.conv1` | 6 | [128, 512, 1], [128] |
+| `blocks.{1,2,3}.se_block.conv2` | 6 | [512, 128, 1], [512] |
+| `mfa.conv` | 2 | [1536, 1536, 1], [1536] |
+| `asp.tdnn.conv` | 2 | [128, 4608, 1], [128] |
+| `asp.conv` | 2 | [1536, 128, 1], [1536] |
+| `fc` | 2 | [enc_dim, 3072, 1], [enc_dim] |
+
+The codec file's 225 `encoder.*` tensors (224,937,216 B, F32) are listed
+under [The codec encoder](#the-codec-encoder).
+
+### The voice-clone item
+
+`create_voice_clone_prompt(ref_audio, ref_text, x_vector_only_mode)`
+returns a `VoiceClonePromptItem` per clip: `ref_spk_embedding` (enc_dim
+floats), `ref_code` (T × 16 codes, absent in x-vector-only mode),
+`ref_text`, and the mode. `generate_voice_clone(voice_clone_prompt=…)`
+takes the item instead of the audio, so the encoders run once per clip.
+`ref_text` is required unless `x_vector_only_mode`; that mode is ICL
+(in-context) otherwise. The clip is read by `librosa.load(sr=None,
+mono=True)` or `soundfile` (channels averaged), unnormalized; the speaker
+encoder resamples it to 24 kHz with `librosa.resample`, and the codec's
+`encode` does the same.
+
+### The speaker encoder
+
+`extract_speaker_embedding` (24 kHz only):
+
+1. **Mel.** Reflect-pad (n_fft − hop) / 2 = 384 samples at each end;
+   STFT with `n_fft` 1024, hop 256, a periodic Hann window of 1024,
+   `center` false; magnitude `sqrt(re² + im² + 1e-9)`; librosa's Slaney
+   mel filters (`htk` false, `norm` `slaney`), 128 bins over 0–12 kHz;
+   `log(max(x, 1e-5))`. Frames: ⌊(L + 768 − 1024) / 256⌋ + 1.
+2. **ECAPA-TDNN** (`Qwen3TTSSpeakerEncoder`). Every convolution is
+   `padding="same"` with reflect padding, d·(k − 1) / 2 frames at each
+   end (symmetric for every kernel here), and every TDNN is conv + ReLU:
+   - `blocks.0`: TDNN 128 → 512, k 5.
+   - `blocks.1..3` (SE-Res2Net, dilation 2, 3, 4): TDNN 1×1 →
+     Res2Net (the 512 channels in 8 chunks of 64: chunk 0 passes;
+     chunk 1 → `blocks.0`; chunk i ≥ 2 → `blocks.(i−1)` of chunk i plus
+     the previous chunk's output; concatenated; each a TDNN k 3 at the
+     block's dilation) → TDNN 1×1 → squeeze-excitation (the time mean →
+     `conv1` → ReLU → `conv2` → sigmoid, scaling every channel) → plus
+     the block's input.
+   - `mfa`: the three blocks' outputs concatenated (1536) → TDNN 1×1.
+   - `asp` (attentive statistics pooling, `eps` 1e-12): the time mean μ
+     and standard deviation σ = √max(mean((x − μ)²), 1e-12) per channel;
+     [x; μ; σ] (4608 channels, μ and σ repeated over time) → TDNN 1×1 to
+     128 → tanh → `asp.conv` to 1536 → softmax over time per channel →
+     the weighted mean and standard deviation → [μ_w; σ_w] (3072).
+   - `fc`: 1×1 conv 3072 → enc_dim, with bias. The output is
+     `ref_spk_embedding`.
+
+It runs in the model's dtype (the mel is cast to it); the file is BF16.
+
+### The codec encoder
+
+`Qwen3TTSTokenizer.encode`: the `EncodecFeatureExtractor`
+(`speech_tokenizer/preprocessor_config.json`: 24 kHz, right-padded with
+zeros, no normalization, no chunking) then
+`Qwen3TTSTokenizerV2Model.encode`, which runs `MimiModel.encode` (a
+subclass without the decoder halves) and keeps the first
+`encoder_valid_num_quantizers` = 16 of 32 quantizers, cut to
+⌈samples / 1920⌉ frames (`encode_downsample_rate`). `encoder_config`
+(a `MimiConfig`): `use_causal_conv` true, `pad_mode` `constant`,
+`num_filters` 64, `upsampling_ratios` [8, 6, 5, 4] (applied reversed),
+`num_residual_layers` 1, `residual_kernel_size` 3, `compress` 2,
+`kernel_size` 7, `last_kernel_size` 3, `hidden_size` 512, 8 layers of
+8 heads × 64, `intermediate_size` 2048, `hidden_act` `gelu` (erf),
+`norm_eps` 1e-5, `rope_theta` 1e4, `sliding_window` 250, `num_quantizers`
+32, `num_semantic_quantizers` 1, `codebook_size` 2048, `codebook_dim`
+256, `_frame_rate` 12.5 against an encodec frame rate of 24000 / 960 = 25.
+
+**Causal convolutions** (`MimiConv1d`): zeros on the left of
+k_eff − stride (k_eff = (k − 1)·d + 1), and on the right as many as bring
+the length to a whole number of strides, so a stride-s layer gives
+⌈L / s⌉ frames. The downsample alone pads by replicating the edge
+frames. ELU has α = 1.
+
+| Stage (`encoder.encoder.layers.N`) | Shape |
+| --- | --- |
+| 0: conv 1 → 64, k 7 | [64, 1, 7] + bias |
+| 1: residual (ELU, conv 64 → 32 k 3, ELU, conv 32 → 64 k 1, plus input) | `block.1` [32, 64, 3], `block.3` [64, 32, 1], biases |
+| 2: ELU; 3: conv 64 → 128, k 8, stride 4 | [128, 64, 8] + bias |
+| 4: residual at 128 (via 64) | [64, 128, 3], [128, 64, 1] |
+| 5: ELU; 6: conv 128 → 256, k 10, stride 5 | [256, 128, 10] + bias |
+| 7: residual at 256 (via 128) | [128, 256, 3], [256, 128, 1] |
+| 8: ELU; 9: conv 256 → 512, k 12, stride 6 | [512, 256, 12] + bias |
+| 10: residual at 512 (via 256) | [256, 512, 3], [512, 256, 1] |
+| 11: ELU; 12: conv 512 → 1024, k 16, stride 8 | [1024, 512, 16] + bias |
+| 13: ELU; 14: conv 1024 → 512, k 3 | [512, 1024, 3] + bias |
+
+That is ⌈L / 960⌉ frames of 512 at 25 Hz. Then:
+
+- **`encoder.encoder_transformer.layers.{0..7}`**, pre-norm:
+  `input_layernorm` (LayerNorm with bias, eps 1e-5) → attention
+  (`q,k,v,o_proj` [512, 512], no bias; NEOX RoPE, θ 1e4, over positions
+  0…T−1; scale 1/8) → times `self_attn_layer_scale.scale` → residual;
+  `post_attention_layernorm` → `mlp.fc1` [2048, 512] → GELU →
+  `mlp.fc2` [512, 2048] → times `mlp_layer_scale.scale` → residual. No
+  final norm. The mask is `create_causal_mask`, which under the default
+  SDPA and eager attention is plain causal: `sliding_window` 250 is not
+  applied (only the flash-attention class reads it). The two agree for
+  clips up to 250 frames (10 s).
+- **`encoder.downsample.conv`** [512, 512, 4], stride 2, no bias,
+  replicate padding: ⌈L / 1920⌉ frames at 12.5 Hz.
+- **Split RVQ.** The semantic quantizer: `input_proj` [256, 512, 1] (no
+  bias), then the nearest of 2048 codewords by Euclidean distance, a
+  codebook being `embed_sum / max(cluster_usage, 1e-5)`: code group 0.
+  The acoustic quantizer applies its own `input_proj` to the **same**
+  512-wide input (not the semantic residual) and quantizes 15 times
+  residually (each stage subtracts its codeword): groups 1–15. Its layers
+  15–30 are never used (layer 30's `initialized` is 0).
+
+The encoder's quantizer tensors are bit-identical to the decoder's, which
+nuclis already binds: `semantic_residual_vector_quantizer` to
+`decoder.quantizer.rvq_first` and the acoustic to `rvq_rest`
+(`embed_sum` = `embedding_sum`, `cluster_usage`, and both `input_proj`
+weights, compared value for value). What the encoder adds is the SEANet
+stack (28 tensors), the transformer (96), and the downsample (1); the
+other 100 are the quantizer copies.
+
+It runs in the codec model's dtype, the caller's choice; the file is F32.
+
+### The prompt
+
+Built in `Qwen3TTSForConditionalGeneration.generate`. Both cloning modes
+put `ref_spk_embedding` itself as the speaker row, where CustomVoice puts
+the codec table's row for an `spk_id`: the codec track's prefix is
+`think, think_bos, language, think_eos` (or `nothink, think_bos,
+think_eos` for `auto`), then the speaker embedding, then `pad, bos`.
+There are no dialects (no speakers to carry one).
+
+`generate_voice_clone` defaults to `non_streaming_mode=False`, where
+`generate_custom_voice` and `generate_voice_design` default to true: the
+text is summed into the rows the talker generates, one text row per
+step, instead of all prefilled.
+
+- **x-vector only.** The role rows (`<|im_start|>assistant\n`), then the
+  prefix with the text track `tts_pad` and `tts_bos` on its last row
+  (`pad`), then one row: the target's first text token plus `codec_bos`.
+  The trailing text is the rest of the target text, then `tts_eos`; each
+  generated step adds the next trailing row, and `tts_pad` once they run
+  out.
+- **ICL.** The role rows, then the prefix rows **without** the
+  `codec_bos` row, then rows summing two tracks: the text track
+  `ref_text ids ++ text ids ++ tts_eos` (the reference rendered by
+  `_build_ref_text`, `<|im_start|>assistant\n{ref}<|im_end|>\n`, sliced
+  `[3:-2]`; the target by `_build_assistant_text`, sliced `[3:-5]`), and
+  the codec track `codec_bos ++` one row per reference frame, the sum of
+  its 16 groups' embeddings (group 0 through the talker's codec table,
+  group g through predictor table g − 1). If the text track is longer,
+  the prompt takes its first `codec_lens` rows and the rest is the
+  trailing text; otherwise it is padded with `tts_pad` to the codec
+  track's length and the trailing text is `tts_pad` alone. For a typical
+  10 s reference (126 codec rows) and a sentence or two of text, the
+  whole text lies within the reference rows and generation sees only
+  `tts_pad`. A reference frame's row is the row nuclis already computes
+  for a generated frame (§ (e)).
+
+Generation then runs as for CustomVoice (§ (c)–(f)), with the same
+sampling defaults.
+
+### The decode
+
+`generate_voice_clone` prepends `ref_code` to the generated codes,
+decodes the whole, and cuts the first `ref_len / total` of the samples,
+which is exactly `ref_len × 1920` (every frame is 1920 samples). The
+decoder is causal, so nuclis decodes the reference frames first, carries
+their state, and discards their samples: the same samples, without the
+authors' 300-frame chunking (§ Open for the implementation). In
+x-vector-only mode nothing is prepended.
 
 ## Codec decoder against the trace (2026-10-27)
 

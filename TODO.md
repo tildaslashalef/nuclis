@@ -14,8 +14,9 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`qwen3-tts-base-voice-cloning` is planned (below) and not started: its
-branch holds only this plan. Next: task 1, the facts. The next release
+`qwen3-tts-base-voice-cloning` is in progress (below): task 1, the
+facts, is done and committed (`docs/models/qwen3-tts.md` § Voice cloning
+(the Base)). Next: task 2, the traces. The next release
 (0.11.0) carries K-quant E4B files
 ([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
 Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
@@ -27,7 +28,7 @@ this unit, if it lands first.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | planned |
+| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 2 next |
 
 ## Qwen3-TTS Base: voice cloning with saved voices
 
@@ -37,66 +38,25 @@ two checkpoints are CustomVoice and their names should say so; cloning is
 shown in `GET /v1/models`; a voice is encoded once and saved. One unit,
 one branch.
 
-**What exists.** `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (revision
-`5d83992436eae1d760afd27aff78a71d676296fc`) and `…-1.7B-Base`
-(`fd4b254389122332181a7c3db7f27e918eec64e3`), read 2026-10-29 over HTTP:
+**The facts** are in [docs/models/qwen3-tts.md § Voice cloning (the
+Base)](docs/models/qwen3-tts.md#voice-cloning-the-base): the pinned
+revisions, sizes, and hashes; the speaker encoder (mel and ECAPA-TDNN);
+the codec encoder (Mimi); both prompts; the decode. What shapes the work:
 
-- `config.json`: `tts_model_type` `base`, `speaker_encoder_config`
-  `{enc_dim: 1024 | 2048, sample_rate: 24000}`; `talker_config` as the
-  CustomVoice of the same size except `spk_id` and `spk_is_dialect` empty
-  and the ten languages without the two dialects.
-- `model.safetensors`: all BF16; the talker, text projection, head and
-  code predictor tensors of the CustomVoice of the same size (402 for
-  0.6B, 404 for 1.7B), plus 80 under `speaker_encoder.` (an ECAPA-TDNN:
-  `blocks.0.conv` [512, 128, 5]; `blocks.{1,2,3}` each `tdnn1`, 7
-  `res2net_block.blocks.N.conv` [64, 64, 3], `tdnn2`, `se_block.conv1`
-  [128, 512, 1], `conv2` [512, 128, 1]; `mfa.conv` [1536, 1536, 1];
-  `asp.tdnn.conv` [128, 4608, 1], `asp.conv` [1536, 128, 1]; `fc`
-  [enc_dim, 3072, 1]).
-- `speech_tokenizer/model.safetensors`: the catalogue's codec, SHA-256
-  `836b7b35…1258`, byte-identical. Its 225 `encoder.*` tensors (a Mimi
-  encoder) are bound by nobody today (`qwen3_codec.bind` skips them).
-- `generation_config.json`: sampled, temperature 0.9, top-k 50, top-p
-  1.0, repetition penalty 1.05, the predictor the same, `max_new_tokens`
-  8192.
+- The talker, code predictor, tokenizer, generation config, and codec
+  file are the CustomVoice's of the same size, byte for byte or name,
+  shape, and dtype. New: 80 BF16 `speaker_encoder.*` tensors, and the
+  codec's `encoder.*`, of which only 125 (SEANet, transformer,
+  downsample) are new to nuclis: the encoder's quantizer tensors equal the
+  decoder's that `qwen3_codec.bind` already binds.
+- A reference frame's prompt row is the row `Model.nextRow` /
+  `Plan.nextRow` already make for a generated frame; ICL needs no new
+  embedding path beyond the speaker vector.
+- The codec encoder's attention is plain causal under the pinned
+  `transformers` (its `sliding_window` 250 is read only by the flash
+  class); nuclis follows that. Clips up to 10 s are the same either way.
 - Nothing local: `~/.nuclis/models/Qwen/` holds only the two CustomVoice
-  checkpoints; `itshamdi404/Egy_Arabic_…-1.7B-Base` is `custom_voice`
-  despite its name.
-
-**The definition** (Qwen's package at `022e286b`, read as the definition,
-never copied): `Qwen3TTSModel.create_voice_clone_prompt` makes a
-`VoiceClonePromptItem` (`ref_code` T×16, `ref_spk_embedding`, `ref_text`,
-`x_vector_only_mode`) that `generate_voice_clone(voice_clone_prompt=…)`
-reuses. That item is what nuclis saves as a voice.
-
-- *Speaker embedding* (`extract_speaker_embedding`): 24 kHz mono; mel
-  with `n_fft` 1024, hop 256, Hann window 1024, `center` false after a
-  reflect pad of 384 each side; magnitude `sqrt(re² + im² + 1e-9)`;
-  librosa Slaney mel, 128 bins, 0–12 kHz; `log(max(x, 1e-5))`. Then the
-  ECAPA-TDNN, every convolution `padding="same"` with reflect padding:
-  TDNN (k 5) → three SE-Res2Net blocks (k 3, dilations 2, 3, 4, scale 8,
-  residual) → concatenation of the three blocks' outputs → `mfa` → ReLU
-  → attentive statistics pooling (`eps` 1e-12) → `fc` (1×1). Every TDNN
-  is conv + ReLU. Runs in the model's dtype (BF16 in Qwen's examples).
-- *Reference codes*: `speech_tokenizer.encode` at 24 kHz, the first 16 of
-  32 quantizers, trimmed to `ceil(samples / 1920)` frames.
-- *Prompt*: rows as CustomVoice's, with the speaker row (between
-  `think_eos` and `pad`) the speaker embedding itself instead of an
-  `spk_id` row. Cloning's default is `non_streaming_mode=False`
-  (CustomVoice's is true), so text streams in: x-vector only, the prompt
-  ends with the target's first text token + `codec_bos`, and the rest of
-  the target text then `tts_eos` is added to the next rows, then
-  `tts_pad`. ICL: the role and prefix rows without `codec_bos`, then the
-  text track `ref_text ids ++ text ids ++ tts_eos` (`ref_text` rendered by
-  `_build_ref_text`, sliced `[3:-2]`; text `[3:-5]`) summed row by row
-  with the codec track `codec_bos ++ Σ_groups embed(ref_code frame)`
-  (group 0 from the talker's table, groups 1–15 from the predictor's);
-  the longer track's excess becomes trailing text (or `tts_pad` rows pad
-  the text track when the codec track is longer).
-- *Decode*: the reference codes are prepended to the generated ones and
-  the first `ref_len / total` of the samples cut. nuclis's decoder is
-  causal, so it runs the reference frames first and discards their
-  samples: exactly `ref_len × 1920`.
+  checkpoints; `itshamdi404/Egy_Arabic_…-1.7B-Base` is `custom_voice`.
 
 **Decisions.**
 
@@ -111,7 +71,8 @@ reuses. That item is what nuclis saves as a voice.
   kHz mono 16-bit), `voice.json` (`name`, `reference_text` or null,
   `audio_sha256`, `seconds`, `created`, `codes` keyed by the codec's
   SHA-256 as base64 little-endian u16 T×16, `embeddings` keyed by the
-  speaker encoder's weights SHA-256 as base64 little-endian f32). An
+  model file's SHA-256 (the catalogue's, or the one the pull recorded) as
+  base64 little-endian f32). An
   entry missing for the open model is computed on first use from
   `reference.wav` and written back, so one voice serves both sizes.
 - Both encoders run on the CPU reference only, once per voice per model;
@@ -129,14 +90,8 @@ reuses. That item is what nuclis saves as a voice.
 
 **Tasks.**
 
-1. *Facts.* Read the Mimi encoder (`transformers` 4.57.3
-   `models/mimi/modeling_mimi.py`: `MimiEncoder`, `MimiTransformerModel`
-   with sliding window 250, `MimiConv1d` downsample, split RVQ encode)
-   and `speech_tokenizer/config.json`'s `encoder_config`, and write
-   § Voice cloning (the Base) into `docs/models/qwen3-tts.md`: the
-   artifacts table for both Base checkpoints, the speaker encoder and mel
-   above, the encoder's layer list with shapes, the prompt in both modes.
-   Rewrite this section where the facts differ; commit before code.
+1. *Facts.* Done: `docs/models/qwen3-tts.md` § Voice cloning (the
+   Base).
 2. *Traces.* Extend `scripts/speech-traces/qwen3_tts_trace.py` with a
    `clone` mode on the 0.6B Base: a short public-domain or generated clip
    (provenance in `tests/fixtures/provenance.md`) → mel, embedding,
@@ -153,13 +108,15 @@ reuses. That item is what nuclis saves as a voice.
    `mel.zig` `Spec` if it fits, else its own; the network over the bound
    tensors widened to F32. Against the trace's mel and embedding.
 6. *Codec encoder* (`inference/src/audio/qwen3_codec.zig`: bind
-   `encoder.*`, `Runtime.encode(samples) → []Frame`). Against the trace's
-   codes; codes are integers, so the gate is equality, with any
-   disagreement explained by a distance at a quantizer boundary.
+   `encoder.encoder.*`, `encoder.encoder_transformer.*`,
+   `encoder.downsample.*`; the quantizer from the decoder's binding, the
+   encoder's copies skipped; `Runtime.encode(samples) → []Frame`). Against
+   the trace's codes; codes are integers, so the gate is equality, with
+   any disagreement explained by a distance at a quantizer boundary.
 7. *Prompt and synthesizer.* `qwen3_tts.Row` gains the speaker-vector
-   row and the summed reference frame; `Prompt` gains `trailing` (text
-   ids, then `tts_eos`); `Prompt.buildClone(config, request, voice)` for
-   both modes; `Model.embed`, `Plan.embed` (`qwen3_tts_metal.zig`), and
+   row and the reference frame (embedded as `nextRow` does); `Prompt`
+   gains `trailing` (text ids, then `tts_eos`);
+   `Prompt.buildClone(config, request, voice)` for both modes; `Model.embed`, `Plan.embed` (`qwen3_tts_metal.zig`), and
    `Synthesizer` (`qwen3_tts_runtime.zig`, the per-step text row,
    including `frameOnDevice`'s `pad`) use them. `Synthesizer` primes the
    decoder with the reference frames and discards their samples. Against
