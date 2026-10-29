@@ -14,16 +14,15 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-No unit is in progress. Qwen3-TTS fine-tunes (`xet-compressed-xorb-bound`,
-base `dd36eec`: Xet plans whose xorbs unpack past 64 MiB, a greedy
-`generation_config.json`, and `pull --register` of a speech checkpoint)
-waits for its pull request. K-quant E4B files
-(`gemma4-bf16-per-layer-projection`: a BF16 `per_layer_model_proj` and
-the shared-KV layers' stored K/V bind) waits for its pull request, whose
-description is its record. The next release (0.11.0) carries it with
-Q5_0 and Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
-Muon's voice loop, and the model-management unit
-([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)).
+No unit is in progress. `models-listing-for-settings` (`GET /v1/models`
+as the data any client builds its model pages from) waits for its pull
+request, whose description is its record. K-quant E4B files
+(`gemma4-bf16-per-layer-projection`) waits for its pull request. The next
+release (0.11.0) carries it with Q5_0 and Q5_1
+([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)), Muon's
+voice loop, the model-management unit
+([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)), and the
+Qwen3-TTS fine-tunes ([nuclis#41](https://github.com/tildaslashalef/nuclis/pull/41)).
 
 ## Deferred
 

@@ -59,7 +59,17 @@ pub const Service = struct {
 
     fn list(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, out: *std.ArrayList(models.Entry)) anyerror!void {
         const self: *Service = @ptrCast(@alignCast(context));
-        try speech.listAudio(arena, io, self.root, self.registry, .transcription, self.default_model, &self.slot, out);
+        const first = out.items.len;
+        try speech.listAudio(arena, io, self.root, self.registry, .transcription, self.default_model, null, &self.slot, out);
+        for (out.items[first..]) |*e| {
+            const details = &e.details.object;
+            if (details.getPtr("limits")) |l| try l.object.put(arena, "max_file_bytes", .{ .integer = @intCast(self.files.max_bytes) });
+            var diag: config.Diagnostic = .{};
+            const resolved = audio_catalog.resolve(arena, self.root, self.registry, e.id, .transcription, false, &diag) catch continue;
+            const languages = (try audio_catalog.transcriptionLanguages(arena, io, resolved.directory)) orelse &.{};
+            try details.put(arena, "languages", .{ .array = try models.strings(arena, languages) });
+            try details.put(arena, "options", .{ .object = try requestOptions(arena, languages) });
+        }
     }
 };
 
@@ -95,4 +105,23 @@ fn closeModel(model: *asr.Model, io: std.Io) void {
 
 test {
     _ = live_route;
+}
+
+/// The request fields a transcription model takes (the file route's; the
+/// live route takes `language` and `lookahead` as query parameters).
+fn requestOptions(arena: std.mem.Allocator, languages: []const []const u8) !std.json.ObjectMap {
+    const Option = models.Option;
+    const defaults: file.Request = .{ .file = "" };
+    var o: std.json.ObjectMap = .empty;
+    var language_values = try models.strings(arena, &.{"auto"});
+    for (languages) |l| if (!std.mem.eql(u8, l, "auto")) try language_values.append(.{ .string = l });
+    try o.put(arena, "language", try (Option{ .type = .@"enum", .values = language_values, .default = .{ .string = "auto" } }).value(arena));
+    var formats: std.ArrayList([]const u8) = .empty;
+    for (std.enums.values(file.Format)) |f| try formats.append(arena, @tagName(f));
+    try o.put(arena, "response_format", try (Option{ .type = .@"enum", .values = try models.strings(arena, formats.items), .default = .{ .string = @tagName(defaults.format) } }).value(arena));
+    try o.put(arena, "timestamp_granularities", try (Option{ .type = .enum_list, .values = try models.strings(arena, &.{ "segment", "word" }), .default = .{ .array = try models.strings(arena, &.{"segment"}) } }).value(arena));
+    try o.put(arena, "stream", try (Option{ .type = .boolean, .default = .{ .bool = defaults.stream } }).value(arena));
+    try o.put(arena, "lookahead", try (Option{ .type = .@"enum", .values = try models.integers(arena, inference.audio.nemotron_encoder.lookaheads), .default = .{ .integer = @intCast(defaults.lookahead) } }).value(arena));
+    try o.put(arena, "phrases", try (Option{ .type = .string_list, .max_items = inference.audio.boost.max_phrases, .max_bytes = inference.audio.boost.max_phrase_bytes, .default = .{ .array = .init(arena) } }).value(arena));
+    return o;
 }

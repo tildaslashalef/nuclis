@@ -222,6 +222,9 @@ pub const Service = struct {
             try details.put(arena, "quantization", if (pinned) |p| .{ .string = p.quantization } else .null);
             try details.put(arena, "size_bytes", .{ .integer = @intCast(if (stat) |s| s.size else if (pinned) |p| p.size else 0) });
             try details.put(arena, "present", .{ .bool = stat != null });
+            try details.put(arena, "source", .{ .string = if (registered != null) "registry" else "catalogue" });
+            // What `nuclis model pull <name>` fetches: the model, not its projector.
+            try details.put(arena, "download_bytes", if (registered == null) if (resolved.entry) |e| .{ .integer = @intCast(e.size) } else .null else .null);
             try details.put(arena, "loaded", .{ .bool = self.pool.isOpen(io, resolved.path) });
             try details.put(arena, "default", .{ .bool = std.mem.eql(u8, name, self.default_model) });
             try details.put(arena, "dimensions", .{ .array = widths });
@@ -234,6 +237,13 @@ pub const Service = struct {
             } else |_| {};
             try details.put(arena, "modalities", .{ .array = modalities });
             try details.put(arena, "max_tokens", .{ .integer = embed.max_tokens });
+            var limits: std.json.ObjectMap = .empty;
+            try limits.put(arena, "max_inputs", .{ .integer = wire.max_inputs });
+            try limits.put(arena, "max_tokens", .{ .integer = embed.max_tokens });
+            try limits.put(arena, "max_audio_seconds", .{ .integer = embed.max_audio_seconds });
+            try limits.put(arena, "max_body_bytes", .{ .integer = max_body });
+            try details.put(arena, "limits", .{ .object = limits });
+            try details.put(arena, "options", .{ .object = try requestOptions(arena) });
             try details.put(arena, "tasks", .{ .array = tasks });
             const repo = if (sidecar) |s| s.repo else if (registered) |r| r.repo else if (pinned) |p| p.repo else null;
             const revision = if (sidecar) |s| s.revision else if (registered) |r| r.revision else if (pinned) |p| p.revision else null;
@@ -407,4 +417,22 @@ test "embeddings: a file that is no model fails the request on the worker, not t
         try std.testing.expect(!entry.details.object.get("present").?.bool);
         try std.testing.expectEqualStrings("unsloth", entry.owned_by);
     };
+}
+
+/// The request fields an embedding model takes, with `Request`'s defaults.
+fn requestOptions(arena: std.mem.Allocator) !std.json.ObjectMap {
+    const Option = models.Option;
+    const defaults: wire.Request = .{ .inputs = &.{} };
+    var o: std.json.ObjectMap = .empty;
+    try o.put(arena, "dimensions", try (Option{ .type = .@"enum", .values = try models.integers(arena, embed.widths), .default = .{ .integer = @intCast(defaults.dimensions) } }).value(arena));
+    var tasks: std.ArrayList([]const u8) = .empty;
+    for (std.enums.values(wire.Task)) |t| try tasks.append(arena, @tagName(t));
+    try o.put(arena, "task", try (Option{ .type = .@"enum", .values = try models.strings(arena, tasks.items) }).value(arena));
+    try o.put(arena, "title", try (Option{ .type = .string }).value(arena));
+    var encodings: std.ArrayList([]const u8) = .empty;
+    for (std.enums.values(wire.Encoding)) |e| try encodings.append(arena, @tagName(e));
+    try o.put(arena, "encoding_format", try (Option{ .type = .@"enum", .values = try models.strings(arena, encodings.items), .default = .{ .string = "float" } }).value(arena));
+    try o.put(arena, "truncate", try (Option{ .type = .boolean, .default = .{ .bool = defaults.truncate } }).value(arena));
+    try o.put(arena, "image_tokens", try (Option{ .type = .@"enum", .values = try models.integers(arena, embed.image_budgets), .default = .{ .integer = defaults.image_tokens } }).value(arena));
+    return o;
 }
