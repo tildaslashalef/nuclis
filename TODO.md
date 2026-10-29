@@ -17,8 +17,9 @@ it is empty, ask what to work on and write the agreed plan here.
 `models-listing-for-settings` is in progress: `GET /v1/models` as the
 data a client (Muon's settings) renders its model pages from. Delivered:
 a registered speech checkpoint lists its voices, instructions, dtype,
-name, and size. Next: the user reviews the proposed `options` payload
-(below), then it is built. K-quant E4B files
+name, and size; every entry carries the shared fields, modalities,
+limits, and features, and absent catalogue language models are listed.
+Next: `options` and `speakers` (below), once the user agrees. K-quant E4B files
 (`gemma4-bf16-per-layer-projection`) waits for its pull request. The next
 release (0.11.0) carries it with Q5_0 and Q5_1
 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)), Muon's
@@ -41,6 +42,16 @@ safetensors header): `voices`, `instructions`, `architecture`,
 `quantization`, `name` (the repository's), `size_bytes` (weights and
 codec on disk). `docs/guide/api.md § GET /v1/models` documents the speech
 and transcription fields.
+
+Then the cheap part of the listing for every client: `GET /v1/models/{id}`
+(a subtree route, `Router.addSubtree`); a strong `ETag` and `304` on both
+(`If-None-Match` read in `http.zig`); in every entry `schema_version`,
+`source`, `download_bytes`, `pinned` (`Models.pins`), `endpoints`,
+`input_modalities`/`output_modalities`, and `detail` (completed in
+`models.zig`); `limits` per kind from the parsers' constants; on language
+models `features` (`tools`, `hosted_tools`, `reasoning`, `streaming`,
+`structured_output`), `audio` (the projector's audio encoder, as
+`loadAudio` checks), `repo`/`revision`, and the catalogue's absent ones.
 
 **Proposed, waiting on the user's review** (the sample payload was shown
 in the session, 2026-10-29):

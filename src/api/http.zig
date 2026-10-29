@@ -38,6 +38,8 @@ pub const Request = struct {
     body: []const u8,
     /// The `content-type` header, if any.
     content_type: ?[]const u8 = null,
+    /// A GET's `if-none-match` header, if any.
+    if_none_match: ?[]const u8 = null,
     /// The client's socket, when there is one (none in tests).
     peer: ?Peer = null,
     /// Set when a GET's `upgrade` header names `websocket`; the route
@@ -201,6 +203,10 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
         var headers = request.iterateHeaders();
         parsed.websocket = websocket.readHandshake(arena, &headers) catch return exchange.fail(.init(.internal_server_error, "internal", "out of memory"));
         if (parsed.websocket) |h| exchange.websocket_key = h.key;
+        var conditional = request.iterateHeaders();
+        while (conditional.next()) |h| if (std.ascii.eqlIgnoreCase(h.name, "if-none-match")) {
+            parsed.if_none_match = arena.dupe(u8, h.value) catch return exchange.fail(.init(.internal_server_error, "internal", "out of memory"));
+        };
     }
     if (request.head.transfer_compression != .identity)
         return exchange.fail(.init(.unsupported_media_type, "unsupported_encoding", "compressed request bodies are not accepted"));

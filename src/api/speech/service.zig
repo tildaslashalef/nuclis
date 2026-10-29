@@ -386,6 +386,9 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
         try details.put(arena, "quantization", if (entry) |e| .{ .string = e.quantization } else if (described) |d| .{ .string = d.quantization } else .null);
         try details.put(arena, "size_bytes", .{ .integer = @intCast(if (entry) |e| e.totalSize() else if (located) |l| l.bytes else 0) });
         try details.put(arena, "present", .{ .bool = present });
+        try details.put(arena, "source", .{ .string = if (registered != null) "registry" else "catalogue" });
+        // What `nuclis model pull <name>` fetches: the weights and, for speech, the codec.
+        try details.put(arena, "download_bytes", if (registered == null) if (entry) |e| .{ .integer = @intCast(e.totalSize()) } else .null else .null);
         try details.put(arena, "loaded", .{ .bool = slot.isOpen(io, resolved.directory) });
         try details.put(arena, "default", .{ .bool = std.mem.eql(u8, name, default_model) });
         switch (kind) {
@@ -399,8 +402,17 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
                 var formats: std.json.Array = .init(arena);
                 for (std.enums.values(wire.Format)) |f| try formats.append(.{ .string = @tagName(f) });
                 try details.put(arena, "formats", .{ .array = formats });
+                var limits: std.json.ObjectMap = .empty;
+                try limits.put(arena, "max_input_bytes", .{ .integer = wire.max_input_bytes });
+                try details.put(arena, "limits", .{ .object = limits });
             },
-            .transcription => try details.put(arena, "sample_rate", .{ .integer = 16000 }),
+            .transcription => {
+                try details.put(arena, "sample_rate", .{ .integer = 16000 });
+                var limits: std.json.ObjectMap = .empty;
+                try limits.put(arena, "max_phrases", .{ .integer = inference.audio.boost.max_phrases });
+                try limits.put(arena, "max_phrase_bytes", .{ .integer = inference.audio.boost.max_phrase_bytes });
+                try details.put(arena, "limits", .{ .object = limits });
+            },
         }
         const repo = if (entry) |e| e.repo else if (registered) |r| r.repo else null;
         try details.put(arena, "repo", if (repo) |r| .{ .string = r } else .null);

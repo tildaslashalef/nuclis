@@ -518,6 +518,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     server.transcription.files.max_bytes = context.loaded.config.serve.transcription_bytes;
     server.transcription.files.timeout_ns = @as(u64, options.timeout) * std.time.ns_per_s;
     try server.memory.keep(options.pins.items);
+    server.listing.pins = options.pins.items;
     server.decisions.timeout_ns = @as(u64, options.timeout) * std.time.ns_per_s;
     server.decisions.bind();
     server.embeddings.bind();

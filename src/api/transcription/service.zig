@@ -59,7 +59,9 @@ pub const Service = struct {
 
     fn list(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, out: *std.ArrayList(models.Entry)) anyerror!void {
         const self: *Service = @ptrCast(@alignCast(context));
+        const first = out.items.len;
         try speech.listAudio(arena, io, self.root, self.registry, .transcription, self.default_model, &self.slot, out);
+        for (out.items[first..]) |*e| if (e.details.object.getPtr("limits")) |l| try l.object.put(arena, "max_file_bytes", .{ .integer = @intCast(self.files.max_bytes) });
     }
 };
 

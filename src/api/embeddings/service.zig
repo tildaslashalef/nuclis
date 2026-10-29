@@ -222,6 +222,9 @@ pub const Service = struct {
             try details.put(arena, "quantization", if (pinned) |p| .{ .string = p.quantization } else .null);
             try details.put(arena, "size_bytes", .{ .integer = @intCast(if (stat) |s| s.size else if (pinned) |p| p.size else 0) });
             try details.put(arena, "present", .{ .bool = stat != null });
+            try details.put(arena, "source", .{ .string = if (registered != null) "registry" else "catalogue" });
+            // What `nuclis model pull <name>` fetches: the model, not its projector.
+            try details.put(arena, "download_bytes", if (registered == null) if (resolved.entry) |e| .{ .integer = @intCast(e.size) } else .null else .null);
             try details.put(arena, "loaded", .{ .bool = self.pool.isOpen(io, resolved.path) });
             try details.put(arena, "default", .{ .bool = std.mem.eql(u8, name, self.default_model) });
             try details.put(arena, "dimensions", .{ .array = widths });
@@ -234,6 +237,12 @@ pub const Service = struct {
             } else |_| {};
             try details.put(arena, "modalities", .{ .array = modalities });
             try details.put(arena, "max_tokens", .{ .integer = embed.max_tokens });
+            var limits: std.json.ObjectMap = .empty;
+            try limits.put(arena, "max_inputs", .{ .integer = wire.max_inputs });
+            try limits.put(arena, "max_tokens", .{ .integer = embed.max_tokens });
+            try limits.put(arena, "max_audio_seconds", .{ .integer = embed.max_audio_seconds });
+            try limits.put(arena, "max_body_bytes", .{ .integer = max_body });
+            try details.put(arena, "limits", .{ .object = limits });
             try details.put(arena, "tasks", .{ .array = tasks });
             const repo = if (sidecar) |s| s.repo else if (registered) |r| r.repo else if (pinned) |p| p.repo else null;
             const revision = if (sidecar) |s| s.revision else if (registered) |r| r.revision else if (pinned) |p| p.revision else null;

@@ -1080,7 +1080,7 @@ pub const Listing = struct {
 /// A size for reading: decimal units, two decimals from a gigabyte up,
 /// one below (`16.46 GB`, `931.1 MB`, `12.0 KB`, `512 B`). The JSON form
 /// and the pull report keep exact bytes.
-fn humanSize(buffer: []u8, bytes: u64) []const u8 {
+pub fn humanSize(buffer: []u8, bytes: u64) []const u8 {
     const b: f64 = @floatFromInt(bytes);
     return if (bytes >= 1_000_000_000)
         std.fmt.bufPrint(buffer, "{d:.2} GB", .{b / 1e9}) catch "?"

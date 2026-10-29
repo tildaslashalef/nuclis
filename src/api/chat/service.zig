@@ -11,6 +11,7 @@ const config = @import("../../config.zig");
 const catalog = @import("../../catalog.zig");
 const model_ls = @import("../../model.zig");
 const paths = @import("../../paths.zig");
+const engine = @import("../../engine.zig");
 const http = @import("../http.zig");
 const errors = @import("../errors.zig");
 const gpu = @import("../gpu.zig");
@@ -120,30 +121,93 @@ pub const Service = struct {
         const loaded = self.language.loaded;
         const listing = try model_ls.list(arena, io, root, loaded.config.models);
         for (try model_ls.runnableModels(arena, listing, loaded.config.models)) |runnable| {
-            const settings = config.resolve(loaded, runnable.name, .{}, .agent);
-            const profile = settings.forced_profile orelse settings.profile;
-            var efforts: std.json.Array = .init(arena);
-            for (profile.efforts()) |e| try efforts.append(.{ .string = @tagName(e) });
-            const projector = if (settings.entry) |entry| entry.mmproj != null else if (catalog.find(runnable.name)) |entry| entry.companion(.mmproj) != null else false;
             const about = describe(arena, io, root, loaded.config.models, runnable.name);
-            var details: std.json.ObjectMap = .empty;
-            try details.put(arena, "kind", .{ .string = "language" });
-            try details.put(arena, "name", .{ .string = about.name });
-            try details.put(arena, "architecture", if (about.architecture) |a| .{ .string = a } else .null);
-            try details.put(arena, "profile", .{ .string = @tagName(profile) });
-            try details.put(arena, "quantization", if (about.quantization) |q| .{ .string = q } else .null);
-            try details.put(arena, "size_bytes", .{ .integer = @intCast(about.size_bytes) });
-            try details.put(arena, "present", .{ .bool = true });
-            try details.put(arena, "loaded", .{ .bool = self.language.isOpen(io, runnable.name) });
-            try details.put(arena, "default", .{ .bool = std.mem.eql(u8, runnable.name, loaded.config.engine.model) });
-            try details.put(arena, "context_length", .{ .integer = @intCast(settings.ctx_size) });
-            try details.put(arena, "images", .{ .bool = projector });
-            try details.put(arena, "efforts", .{ .array = efforts });
+            const details = try self.languageDetails(arena, io, runnable.name, about, true);
             try details.put(arena, "detail", .{ .string = runnable.detail });
-            try out.append(arena, .{ .id = runnable.name, .owned_by = "nuclis", .details = .{ .object = details } });
+            try out.append(arena, .{ .id = runnable.name, .owned_by = "nuclis", .details = .{ .object = details.* } });
+        }
+        // The catalogue's language models not on disk, so a client can offer the pull.
+        for (listing.catalog) |row| {
+            if (row.kind != .generation or row.status != .absent or loaded.config.models.find(row.name) != null) continue;
+            const entry = catalog.find(row.name) orelse continue;
+            const about: About = .{ .name = entry.title, .architecture = entry.architecture, .quantization = entry.quantization, .size_bytes = entry.size };
+            const details = try self.languageDetails(arena, io, row.name, about, false);
+            try out.append(arena, .{ .id = row.name, .owned_by = "nuclis", .details = .{ .object = details.* } });
         }
     }
+
+    /// A language model's `nuclis` object, without `detail`.
+    fn languageDetails(self: *Service, arena: std.mem.Allocator, io: std.Io, name: []const u8, about: About, present: bool) !*std.json.ObjectMap {
+        const loaded = self.language.loaded;
+        const settings = config.resolve(loaded, name, .{}, .agent);
+        const profile = settings.forced_profile orelse settings.profile;
+        const pinned_entry = catalog.find(name);
+        const registered = settings.entry != null;
+        var efforts: std.json.Array = .init(arena);
+        for (profile.efforts()) |e| try efforts.append(.{ .string = @tagName(e) });
+        const mmproj = if (settings.entry) |entry| entry.mmproj else if (pinned_entry) |entry| if (entry.companion(.mmproj)) |c| c.file else null else null;
+        const projector = mmproj != null;
+        // A registry entry naming a catalogue file pulls what the catalogue pins.
+        const catalogue_file = if (settings.entry) |e| if (e.repo != null and e.file != null) catalog.findFile(e.repo.?, e.file.?) else null else null;
+        const download: ?u64 = if (pinned_entry != null and !registered) pinned_entry.?.size else if (catalogue_file) |m| if (m.role == .main) m.entry.size else null else null;
+        const details = try arena.create(std.json.ObjectMap);
+        details.* = .empty;
+        try details.put(arena, "kind", .{ .string = "language" });
+        try details.put(arena, "name", .{ .string = about.name });
+        try details.put(arena, "architecture", if (about.architecture) |a| .{ .string = a } else .null);
+        try details.put(arena, "profile", .{ .string = @tagName(profile) });
+        try details.put(arena, "quantization", if (about.quantization) |q| .{ .string = q } else .null);
+        try details.put(arena, "size_bytes", .{ .integer = @intCast(about.size_bytes) });
+        try details.put(arena, "present", .{ .bool = present });
+        try details.put(arena, "loaded", .{ .bool = present and self.language.isOpen(io, name) });
+        try details.put(arena, "default", .{ .bool = std.mem.eql(u8, name, loaded.config.engine.model) });
+        try details.put(arena, "source", .{ .string = if (registered) "registry" else "catalogue" });
+        // What `nuclis model pull <name>` fetches: the model alone.
+        try details.put(arena, "download_bytes", if (download) |b| .{ .integer = @intCast(b) } else .null);
+        try details.put(arena, "context_length", .{ .integer = @intCast(settings.ctx_size) });
+        try details.put(arena, "images", .{ .bool = projector });
+        try details.put(arena, "audio", .{ .bool = present and profile.audioPlaceholder() != null and hearsAudio(arena, io, self.language.root.?, loaded.config.models, name, mmproj) });
+        try details.put(arena, "efforts", .{ .array = efforts });
+        var features: std.json.ObjectMap = .empty;
+        // Every prompt profile renders native tool calls.
+        try features.put(arena, "tools", .{ .bool = true });
+        var hosted: std.json.Array = .init(arena);
+        if (self.web != null) {
+            try hosted.append(.{ .string = "web_search" });
+            try hosted.append(.{ .string = "web_fetch" });
+        }
+        try features.put(arena, "hosted_tools", .{ .array = hosted });
+        try features.put(arena, "reasoning", .{ .bool = efforts.items.len > 1 });
+        try features.put(arena, "streaming", .{ .bool = true });
+        // A JSON `response_format` needs constrained decoding, which nuclis has not.
+        try features.put(arena, "structured_output", .{ .bool = false });
+        try details.put(arena, "features", .{ .object = features });
+        var limits: std.json.ObjectMap = .empty;
+        try limits.put(arena, "max_output_tokens", .{ .integer = wire.max_output_tokens });
+        try limits.put(arena, "max_tools", .{ .integer = @intCast((inference.profiles.Limits{}).tools) });
+        try limits.put(arena, "max_images", .{ .integer = wire.max_images });
+        try limits.put(arena, "max_image_bytes", .{ .integer = wire.max_image_bytes });
+        try limits.put(arena, "max_audio_clips", .{ .integer = wire.max_clips });
+        try limits.put(arena, "max_audio_bytes", .{ .integer = wire.max_audio_bytes });
+        try limits.put(arena, "max_audio_seconds", .{ .integer = inference.engine.max_audio_seconds });
+        try details.put(arena, "limits", .{ .object = limits });
+        const repo = if (settings.entry) |e| e.repo else if (pinned_entry) |e| e.repo else null;
+        const revision = if (settings.entry) |e| e.revision else if (pinned_entry) |e| e.revision else null;
+        try details.put(arena, "repo", if (repo) |r| .{ .string = r } else .null);
+        try details.put(arena, "revision", if (revision) |r| .{ .string = r } else .null);
+        return details;
+    }
 };
+
+/// Whether the model's projector on disk carries an audio encoder, as the
+/// first clip's `loadAudio` checks (Gemma 4 E4B's does, the 12B's does not).
+fn hearsAudio(arena: std.mem.Allocator, io: std.Io, root: []const u8, registry: config.Models, name: []const u8, mmproj: ?[]const u8) bool {
+    const model_path = paths.modelPath(arena, name, "", root, registry) catch return false;
+    const path = (engine.visionPath(arena, model_path, mmproj) catch return false) orelse return false;
+    var doc = inference.gguf.open(arena, io, path, .{}) catch return false;
+    defer doc.deinit();
+    return inference.audio.gemma4a.present(&doc);
+}
 
 /// Bytes a streamed response may hold between the worker and the socket.
 const pipe_capacity = 256 * 1024;

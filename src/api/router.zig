@@ -1,6 +1,7 @@
 //! Method and path to a service's handler. Services register their routes
 //! (full paths under `/v1`); an unknown path is 404 and a known path with
-//! another method 405, both with the shared error body. Paths match exactly.
+//! another method 405, both with the shared error body. Paths match exactly,
+//! except a subtree route, which also takes `<path>/<rest>`.
 const std = @import("std");
 const http = @import("http.zig");
 const errors = @import("errors.zig");
@@ -13,6 +14,14 @@ pub const Route = struct {
     handler: http.Handler,
     /// The body limit when it is not the transport's.
     max_body: ?usize = null,
+    /// Also matches `<path>/<rest>` (a non-empty rest, no further `/`).
+    subtree: bool = false,
+
+    fn matches(self: Route, path: []const u8) bool {
+        if (std.mem.eql(u8, self.path, path)) return true;
+        if (!self.subtree or !std.mem.startsWith(u8, path, self.path) or path.len < self.path.len + 2 or path[self.path.len] != '/') return false;
+        return std.mem.indexOfScalar(u8, path[self.path.len + 1 ..], '/') == null;
+    }
 };
 
 pub const Router = struct {
@@ -32,6 +41,13 @@ pub const Router = struct {
         std.debug.assert(std.mem.startsWith(u8, path, prefix));
         for (self.routes.items) |r| std.debug.assert(!(r.method == method and std.mem.eql(u8, r.path, path)));
         try self.routes.append(gpa, .{ .method = method, .path = path, .handler = route, .max_body = max_body });
+    }
+
+    /// `add`, also taking `<path>/<rest>`: the handler reads the rest from
+    /// `request.path`.
+    pub fn addSubtree(self: *Router, gpa: std.mem.Allocator, method: std.http.Method, path: []const u8, route: http.Handler) !void {
+        try self.add(gpa, method, path, route);
+        self.routes.items[self.routes.items.len - 1].subtree = true;
     }
 
     /// The router as the transport's handler; `self` must outlive it.
@@ -55,7 +71,7 @@ pub const Router = struct {
         const self: *Router = @ptrCast(@alignCast(context));
         var path_known = false;
         for (self.routes.items) |r| {
-            if (!std.mem.eql(u8, r.path, request.path)) continue;
+            if (!r.matches(request.path)) continue;
             // HEAD is GET without the body; the transport drops the body.
             if (r.method == request.method or (r.method == .GET and request.method == .HEAD))
                 return r.handler.handle(r.handler.context, arena, io, request);
@@ -114,4 +130,25 @@ test "a route's own body limit, the transport's elsewhere" {
     try std.testing.expectEqual(@as(?usize, 32 << 20), h.body_limit.?(h.context, "/v1/big"));
     try std.testing.expectEqual(@as(?usize, null), h.body_limit.?(h.context, "/v1/decisions"));
     try std.testing.expectEqual(@as(?usize, null), h.body_limit.?(h.context, "/v1/nope"));
+}
+
+test "a subtree route takes its path and one segment below it, nothing deeper" {
+    const gpa = std.testing.allocator;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var router: Router = .{};
+    defer router.deinit(gpa);
+    var unused: u8 = 0;
+    try router.addSubtree(gpa, .GET, "/v1/models", .{ .context = &unused, .handle = Stub.ok });
+    const h = router.handler();
+    const io = std.testing.io;
+    for ([_][]const u8{ "/v1/models", "/v1/models/laya" }) |path| {
+        const hit = h.handle(h.context, arena, io, .{ .method = .GET, .path = path, .query = "", .body = "" });
+        try std.testing.expectEqualStrings(path, hit.body);
+    }
+    for ([_][]const u8{ "/v1/models/", "/v1/models/a/b", "/v1/modelsx" }) |path| {
+        const miss = h.handle(h.context, arena, io, .{ .method = .GET, .path = path, .query = "", .body = "" });
+        try std.testing.expectEqual(std.http.Status.not_found, miss.status);
+    }
 }
