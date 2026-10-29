@@ -120,7 +120,7 @@ global `generation.speculative` applies to models without an entry.
 | `decide.model` | `laya` | the decision model `nuclis decide` opens, and `nuclis serve` for a decision request that names none: a registry entry of kind `decision`, a decision catalogue name, or a directory. A text model is refused |
 | `embed.model` | `embeddinggemma-2` | the embedding model `nuclis embed` opens: a registry entry of kind `embedding`, an embedding catalogue name, or a GGUF path. Another kind's name is refused |
 | `speech.model` | `qwen3-tts-1.7b-customvoice` | the speech model `nuclis speak` opens, and `POST /v1/audio/speech` for a request that names none: a registry entry of kind `speech`, a speech catalogue name (`qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice`), or (for `speak`) a checkpoint directory. Another kind's name is refused |
-| `speech.voice` | `ryan` | the speaker a `speak` or speech request that names none gets: one of the model's (Qwen's checkpoints have nine; a fine-tune may have its own) |
+| `speech.voice` | `ryan` | the voice a `speak` or speech request that names none gets: on CustomVoice one of the model's speakers (Qwen's checkpoints have nine; a fine-tune may have its own), on a Base a saved voice (`nuclis voice list`); VoiceDesign ignores it |
 | `transcribe.model` | `nemotron-asr-0.6b` | the transcription model `nuclis transcribe` opens, and the server's default: a registry entry of kind `transcription`, the catalogue name, or (for `transcribe`) a checkpoint directory |
 | `serve.host` | `127.0.0.1` | an IP literal or `localhost`; beyond loopback the API is reachable from the network with no authentication. Flag `--host` |
 | `serve.port` | `9000` | flag `--port` |

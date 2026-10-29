@@ -913,6 +913,26 @@ first frames are near silence (peak 1.4e-4, max |Δ| 6.5e-9). Gates:
 `qwen3-tts-0.6b-clone-metal` (tier `verify`, 1.5e-5 and 3e-3), and the
 primed decode in `qwen3-tts-0.6b-clone-cpu`.
 
+### Speed (2026-10-29)
+
+`nuclis speak` (ReleaseSafe, Metal, M4 Pro, 48 GB) on the 4.6 s reference
+clip, the files in the page cache, a sentence of 3–4.4 s:
+
+| Model, mode | Voice ready | Prefill | First audio | Real time |
+| --- | ---: | ---: | ---: | ---: |
+| 0.6B Base, clip and transcript (first use) | 751 ms (both encoders) | 227 ms | 259 ms | 2.69× |
+| 0.6B Base, clip alone | 63 ms (the speaker encoder) | 46 ms | 83 ms | 3.06× |
+| 1.7B Base, clip and transcript | 93 ms (the codes reused) | 1,514 ms | 1,748 ms | 1.17× |
+| 1.7B Base, clip alone | 65 ms | 76 ms | 122 ms | 2.22× |
+| 1.7B VoiceDesign, a 12-word description | — | 961 ms | 1,110 ms | 1.28× |
+
+A voice used again is read back in 0 ms. The prefill timing includes the
+decoder's priming with the reference frames (58 here). Open: the 1.7B's
+prefill grows far faster with the prompt's rows than the 0.6B's (68
+rows: 1,514 ms against 227 ms; VoiceDesign's 45 rows, without priming,
+961 ms), so the first audio of a long prompt on the 1.7B is about a
+second later than a speaker's; the cause is not yet measured.
+
 ## VoiceDesign
 
 `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` at
