@@ -67,7 +67,7 @@ test "adapters are looked up by architecture id" {
     try std.testing.expectEqual(Adapter.gemma4, try select("gemma4"));
     try std.testing.expectError(error.UnknownArchitecture, select("gemma3"));
     try std.testing.expect(registry.executableEncoding(.qwen35, 12) and !registry.executableEncoding(.qwen35, 2));
-    try std.testing.expect(registry.executableEncoding(.gemma4, 2) and !registry.executableEncoding(.gemma4, 30));
+    try std.testing.expect(registry.executableEncoding(.gemma4, 2) and registry.executableEncoding(.gemma4, 30) and !registry.executableEncoding(.gemma4, 10));
     try std.testing.expectEqual(3, known.len);
     try std.testing.expectEqualStrings("qwen35", known[0]);
     try std.testing.expectEqualStrings("gemma4", known[1]);
