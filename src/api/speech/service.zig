@@ -849,8 +849,8 @@ test "speech: a voice that fails to open fails its request before the head, and 
     try std.testing.expect(!stats.speaking and stats.waiting == 0);
     try std.testing.expectEqual(@as(u64, 0), budget.resident(io));
 
-    // The listing names the four speech models, pulled or not, the default
-    // marked; a Base has no speakers.
+    // The listing names the five speech models, pulled or not, the default
+    // marked; only CustomVoice has speakers.
     var listing: std.ArrayList(models.Entry) = .empty;
     try Service.list(&f.service, arena, io, &listing);
     var seen: usize = 0;
@@ -859,14 +859,14 @@ test "speech: a voice that fails to open fails its request before the head, and 
         try std.testing.expectEqualStrings("speech", d.get("kind").?.string);
         try std.testing.expectEqualStrings("Qwen", e.owned_by);
         const small = std.mem.eql(u8, e.id, "qwen3-tts-0.6b-customvoice");
-        const base = std.mem.endsWith(u8, e.id, "-base");
+        const speakers = std.mem.endsWith(u8, e.id, "-customvoice");
         try std.testing.expectEqual(small, d.get("present").?.bool);
         try std.testing.expectEqual(small, d.get("default").?.bool);
-        try std.testing.expectEqual(std.mem.eql(u8, e.id, "qwen3-tts-1.7b-customvoice"), d.get("instructions").?.bool);
-        try std.testing.expectEqual(@as(usize, if (base) 0 else 9), d.get("voices").?.array.items.len);
+        try std.testing.expectEqual(std.mem.indexOf(u8, e.id, "1.7b-customvoice") != null or std.mem.endsWith(u8, e.id, "-voicedesign"), d.get("instructions").?.bool);
+        try std.testing.expectEqual(@as(usize, if (speakers) 9 else 0), d.get("voices").?.array.items.len);
         seen += 1;
     }
-    try std.testing.expectEqual(@as(usize, 4), seen);
+    try std.testing.expectEqual(@as(usize, 5), seen);
 }
 
 test "a speech model's voice has no default when speech.voice is not one of its speakers" {

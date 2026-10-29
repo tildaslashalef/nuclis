@@ -498,6 +498,31 @@ pub const audio_entries = [_]AudioEntry{
         },
         .codec_support = &qwen3_tts_codec_support,
     },
+    // Qwen3-TTS 12Hz VoiceDesign 1.7B as published: the 1.7B CustomVoice's
+    // networks without speakers, the instruction describing the voice
+    // (docs/models/qwen3-tts.md § VoiceDesign); pinned 2026-10-29.
+    .{
+        .name = "qwen3-tts-1.7b-voicedesign",
+        .title = "Qwen3-TTS 1.7B VoiceDesign",
+        .kind = .speech,
+        .repo = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+        .file = "model.safetensors",
+        .revision = "5ecdb67327fd37bb2e042aab12ff7391903235d3",
+        .sha256 = "391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522",
+        .size = 3_833_402_552,
+        .architecture = "qwen3_tts",
+        .quantization = "BF16",
+        .support = &qwen3_tts_support,
+        .codec = .{
+            .repo = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+            .file = "speech_tokenizer/model.safetensors",
+            .revision = "5ecdb67327fd37bb2e042aab12ff7391903235d3",
+            .sha256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+            .size = 682_293_092,
+        },
+        .codec_support = &qwen3_tts_codec_support,
+        .instructions = true,
+    },
     // NVIDIA's Nemotron 3.5 ASR streaming 0.6B, F32 as published; pinned
     // 2026-10-27 by the pull (docs/models/nemotron-asr.md).
     .{
@@ -730,13 +755,15 @@ test "audio entries are well formed, of their two kinds, and share no name with 
             try std.testing.expect(std.mem.eql(u8, c.repo, e.repo) and std.mem.eql(u8, c.revision, e.revision) and c.sha256.len == 64);
             const codec_dir = std.fs.path.dirnamePosix(c.file).?;
             for (e.codec_support) |name| try std.testing.expect(std.mem.startsWith(u8, name, codec_dir));
-            // A Base clones a voice instead of naming speakers.
-            try std.testing.expectEqual(!std.mem.endsWith(u8, e.name, "-base"), e.speakers.len > 0);
+            // Only CustomVoice names speakers: a Base clones a voice, VoiceDesign describes one.
+            try std.testing.expectEqual(std.mem.endsWith(u8, e.name, "-customvoice"), e.speakers.len > 0);
         }
         for (audio_entries[i + 1 ..]) |other| try std.testing.expect(!std.mem.eql(u8, e.name, other.name));
     }
-    // Only the 1.7B CustomVoice performs an instruction; all four speak with the same codec.
+    // Only the 1.7B CustomVoice performs an instruction, besides VoiceDesign's
+    // description; all five speak with the same codec.
     try std.testing.expect(findAudio("qwen3-tts-1.7b-customvoice").?.instructions and !findAudio("qwen3-tts-0.6b-customvoice").?.instructions);
+    try std.testing.expect(findAudio("qwen3-tts-1.7b-voicedesign").?.instructions);
     for ([_][]const u8{ "qwen3-tts-0.6b-customvoice", "qwen3-tts-1.7b-base", "qwen3-tts-0.6b-base" }) |name| {
         try std.testing.expectEqualStrings(findAudio("qwen3-tts-1.7b-customvoice").?.codec.?.sha256, findAudio(name).?.codec.?.sha256);
         try std.testing.expect(!findAudio(name).?.instructions);

@@ -2,7 +2,8 @@
 //! (`inference.models.qwen3_tts_runtime.Voice`): on CustomVoice one of the
 //! checkpoint's speakers, and on the 1.7B an instruction for the delivery;
 //! on a Base a saved voice (`voices.zig`), encoded on its first use with
-//! that model; a language or `auto`. On Metal by default when built with it;
+//! that model; on VoiceDesign the instruction describing the voice; a
+//! language or `auto`. On Metal by default when built with it;
 //! `--stream` writes each chunk of frames as it is decoded and reports the
 //! time to the first audio. docs/models/qwen3-tts.md.
 const std = @import("std");
@@ -209,7 +210,15 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
         };
     }
     const cloned = voice.config.clones();
-    try out.print("{s}{s}{s} ({s}), {s} {s}, language {s}, seed {d}, {s}; loaded in {d:.1} s\n", .{ sty.on(.header), std.fs.path.basename(dir), sty.off(), voice.config.size, if (cloned) "voice" else "speaker", speaker, language, seed, @tagName(backend), @as(f64, @floatFromInt(load_ms)) / 1000 });
+    const designed = voice.config.designs();
+    if (designed and options.voice != null) {
+        diag.set("{s} is a VoiceDesign: it has no speakers or saved voices; describe the voice with --instruct", .{std.fs.path.basename(dir)});
+        return error.UnknownSpeaker;
+    }
+    if (designed)
+        try out.print("{s}{s}{s} ({s}), the voice {s}{s}{s}, language {s}, seed {d}, {s}; loaded in {d:.1} s\n", .{ sty.on(.header), std.fs.path.basename(dir), sty.off(), voice.config.size, if (options.instruct != null) "described as \"" else "left to the model (no --instruct)", options.instruct orelse "", if (options.instruct != null) "\"" else "", language, seed, @tagName(backend), @as(f64, @floatFromInt(load_ms)) / 1000 })
+    else
+        try out.print("{s}{s}{s} ({s}), {s} {s}, language {s}, seed {d}, {s}; loaded in {d:.1} s\n", .{ sty.on(.header), std.fs.path.basename(dir), sty.off(), voice.config.size, if (cloned) "voice" else "speaker", speaker, language, seed, @tagName(backend), @as(f64, @floatFromInt(load_ms)) / 1000 });
     try out.flush();
 
     // A Base speaks in a saved voice, made ready (encoded on its first use
@@ -237,7 +246,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
 
     // The clock of the first audio starts when the text is handed over.
     const start = std.Io.Clock.awake.now(io);
-    const made = if (ready) |*r| voice.clonePrompt(alloc, text, r.reference_text, language, r.clone()) else voice.prompt(alloc, text, speaker, language, options.instruct);
+    const made = if (ready) |*r|
+        voice.clonePrompt(alloc, text, r.reference_text, language, r.clone())
+    else
+        voice.prompt(alloc, text, if (designed) null else speaker, language, options.instruct);
     var prompt = made catch |err| {
         switch (err) {
             error.InstructionUnsupported => diag.set("{s} ({s}) takes no instruction; the 1.7B CustomVoice does", .{ std.fs.path.basename(dir), voice.config.size }),

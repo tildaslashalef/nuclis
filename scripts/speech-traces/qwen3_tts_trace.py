@@ -12,7 +12,8 @@ one upsampled step) of all channels.
 Sections, each a function that adds files to a case:
 
 - `codes`: the talker and code predictor sample the sentence's frames
-  (`generate_custom_voice`, the authors' defaults), captured at the codec's door.
+  (`generate_custom_voice`, or `generate_voice_design` for a `design` case, the
+  authors' defaults), captured at the codec's door.
 - `talker`: hooked during that same generation (`Spec.talker`): the token ids the
   processor returned, the prompt's rows as (text id, codec id) pairs derived from the
   config by `generate`'s rules and checked against the rows the talker received, the
@@ -109,6 +110,9 @@ EVERY_STAGE: dict[str, int | None] = {
 }
 PAST_THE_WINDOW: dict[str, int | None] = {"transformer": 16, "samples": 2 * SAMPLES_PER_FRAME}
 INSTRUCTIONS = {"warm": "Speak in a warm, cheerful tone."}
+# VoiceDesign: the instruction describes the voice; a case names one here.
+DESIGNS = {"keeper": "A calm elderly man with a deep, slightly gravelly voice, speaking slowly and warmly."}
+DESIGN_MODELS = {"1.7b": {"dir": "Qwen3-TTS-12Hz-1.7B-VoiceDesign", "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"}}
 BASE = {"0.6b": {"dir": "Qwen3-TTS-12Hz-0.6B-Base", "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-Base"}}
 # The reference clip: a CustomVoice speaker other than the cases' `ryan`, so a clone is
 # told from the default by ear.
@@ -153,9 +157,13 @@ class Spec:
     talker: Talker | None = None
     # A key of INSTRUCTIONS (the 1.7B only: the authors drop it on the 0.6B).
     instruct: str | None = None
+    # A key of DESIGNS: the VoiceDesign model, no speaker, this description.
+    design: str | None = None
 
     @property
     def name(self) -> str:
+        if self.design:
+            return f"{self.size}-design-{self.design}-{self.sentence}"
         suffix = f"-{self.instruct}" if self.instruct else ""
         return f"{self.size}-{self.speaker}-{self.sentence}{suffix}"
 
@@ -167,6 +175,7 @@ CASES = [
     # The 1.7B's codec file is the 0.6B's (byte-identical), so it pins the talker only.
     Spec("1.7b", "ryan", "english", "fox", None, {}, Talker(prompt_rows=4)),
     Spec("1.7b", "ryan", "english", "fox", None, {}, Talker(prompt_rows=4), instruct="warm"),
+    Spec("1.7b", "", "english", "fox", None, {}, Talker(prompt_rows=4), design="keeper"),
 ]
 
 
@@ -282,8 +291,9 @@ class TalkerTrace:
         import torch
 
         text_ids = self.tokenized[0]
-        instruct_ids = self.tokenized[1] if spec.instruct else []
-        assert len(self.tokenized) == (2 if spec.instruct else 1), len(self.tokenized)
+        instructed = bool(spec.instruct or spec.design)
+        instruct_ids = self.tokenized[1] if instructed else []
+        assert len(self.tokenized) == (2 if instructed else 1), len(self.tokenized)
         layout = prompt_rows(self.tts.model.config, text_ids, instruct_ids, spec.speaker, spec.language)
         prompt = self.inputs[0]
         assert prompt.shape[0] == len(layout), (prompt.shape, len(layout))
@@ -362,14 +372,15 @@ def prompt_rows(
     t = config.talker_config
     language = language.lower()
     language_id = None if language == "auto" else t.codec_language_id[language]
-    dialect = t.spk_is_dialect[speaker.lower()]
+    # No speaker (VoiceDesign): no speaker row and no dialect.
+    dialect = t.spk_is_dialect[speaker.lower()] if speaker else False
     if language in ("chinese", "auto") and dialect:
         language_id = t.codec_language_id[dialect]
     if language_id is None:
         prefix = [t.codec_nothink_id, t.codec_think_bos_id, t.codec_think_eos_id]
     else:
         prefix = [t.codec_think_id, t.codec_think_bos_id, language_id, t.codec_think_eos_id]
-    codec = [*prefix, t.spk_id[speaker.lower()], t.codec_pad_id]
+    codec = [*prefix, *([t.spk_id[speaker.lower()]] if speaker else []), t.codec_pad_id]
     text = [config.tts_pad_token_id] * (len(codec) - 1) + [config.tts_bos_token_id]
     rows = [(i, -1) for i in instruct_ids] + [(i, -1) for i in text_ids[:3]]
     rows += list(zip(text, codec, strict=True))
@@ -397,9 +408,12 @@ def section_codes(tts: Any, case: Case, spec: Spec, talker: TalkerTrace | None) 
         talker.install()
     torch.manual_seed(SEED)
     try:
-        wavs, rate = tts.generate_custom_voice(
-            text=text, speaker=spec.speaker, language=spec.language, instruct=instruct
-        )
+        if spec.design:
+            wavs, rate = tts.generate_voice_design(text=text, instruct=DESIGNS[spec.design], language=spec.language)
+        else:
+            wavs, rate = tts.generate_custom_voice(
+                text=text, speaker=spec.speaker, language=spec.language, instruct=instruct
+            )
     finally:
         tokenizer.decode = decode
         if talker:
@@ -753,7 +767,7 @@ def main() -> None:
     for spec in [] if args.clone else CASES:
         if spec.name not in chosen:
             continue
-        size = SIZES[spec.size]
+        size = DESIGN_MODELS[spec.size] if spec.design else SIZES[spec.size]
         model_dir = MODELS / size["dir"]
         sidecar = json.loads((model_dir / "model.safetensors.nuclis.json").read_text())
         codec_sha = json.loads((model_dir / "speech_tokenizer/model.safetensors.nuclis.json").read_text())["sha256"]
@@ -767,6 +781,9 @@ def main() -> None:
         }
         if spec.instruct:
             meta["instruct"] = INSTRUCTIONS[spec.instruct]
+        if spec.design:
+            meta["instruct"] = DESIGNS[spec.design]
+            meta["design"] = True
         case = Case(spec.name, meta, args.debug_dir)
         tts = Qwen3TTSModel.from_pretrained(str(model_dir), dtype=torch.float32, device_map="cpu")
         tts.model.eval()

@@ -292,7 +292,7 @@ pub const commands = [_]Command{
         .{ .name = "--output", .short = "-o", .value = .file, .summary = "the WAV to write" },
         .{ .name = "--voice", .value = .voice, .summary = "a speaker, or a saved voice on a Base" },
         .{ .name = "--language", .value = .{ .choice = &.{ "auto", "english", "chinese", "german", "spanish", "french", "italian", "portuguese", "russian", "japanese", "korean" } }, .summary = "the language, or auto" },
-        .{ .name = "--instruct", .value = .text, .summary = "how to say it (the 1.7B)" },
+        .{ .name = "--instruct", .value = .text, .summary = "how to say it, or VoiceDesign's voice" },
         .{ .name = "--model", .value = .dir, .summary = "the checkpoint directory" },
         .{ .name = "--seed", .value = .number, .summary = "the sampler's seed" },
         backend,

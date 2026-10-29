@@ -1,4 +1,4 @@
-//! Qwen3-TTS CustomVoice and Base, 0.6B and 1.7B: `Config` from the
+//! Qwen3-TTS CustomVoice, Base, and VoiceDesign, 0.6B and 1.7B: `Config` from the
 //! checkpoint's `config.json` and `generation_config.json`, `bind` over the
 //! 402 (0.6B) or 404 (1.7B: the predictor's input projection) tensors of
 //! `model.safetensors` by name and shape, plus a Base's 76 speaker-encoder
@@ -102,6 +102,8 @@ pub const Config = struct {
     generation: Generation,
     /// A Base's (`tts_model_type` `base`); null on CustomVoice.
     speaker_encoder: ?SpeakerEncoder,
+    /// VoiceDesign (`voice_design`): no speakers, the instruction describes the voice.
+    design: bool,
 
     pub fn deinit(self: *Config) void {
         self.storage.deinit();
@@ -116,6 +118,11 @@ pub const Config = struct {
     /// Whether the model clones a voice from a reference clip (a Base).
     pub fn clones(self: *const Config) bool {
         return self.speaker_encoder != null;
+    }
+
+    /// Whether the instruction designs the voice itself (VoiceDesign).
+    pub fn designs(self: *const Config) bool {
+        return self.design;
     }
 
     /// Whether the predictor's inputs pass through `small_to_mtp_projection`.
@@ -271,8 +278,8 @@ const GenerationJson = struct {
 };
 
 /// Parses `config.json` and, when present, `generation_config.json`. Any
-/// model but `qwen3_tts` CustomVoice or Base is `UnsupportedModelType`. The
-/// bytes may be freed once this returns.
+/// model but `qwen3_tts` CustomVoice, Base, or VoiceDesign is
+/// `UnsupportedModelType`. The bytes may be freed once this returns.
 pub fn parseConfig(gpa: Allocator, config_json: []const u8, generation_json: ?[]const u8) Error!Config {
     var storage: std.heap.ArenaAllocator = .init(gpa);
     errdefer storage.deinit();
@@ -284,7 +291,8 @@ pub fn parseConfig(gpa: Allocator, config_json: []const u8, generation_json: ?[]
         else => error.InvalidConfig,
     };
     const base = std.mem.eql(u8, j.tts_model_type, "base");
-    if (!std.mem.eql(u8, j.model_type, "qwen3_tts") or !(base or std.mem.eql(u8, j.tts_model_type, "custom_voice")))
+    const design = std.mem.eql(u8, j.tts_model_type, "voice_design");
+    if (!std.mem.eql(u8, j.model_type, "qwen3_tts") or !(base or design or std.mem.eql(u8, j.tts_model_type, "custom_voice")))
         return error.UnsupportedModelType;
     const t = j.talker_config;
     const talker = try (StackJson{
@@ -388,6 +396,7 @@ pub fn parseConfig(gpa: Allocator, config_json: []const u8, generation_json: ?[]
         .languages = languages,
         .generation = generation,
         .speaker_encoder = speaker_encoder,
+        .design = design,
     };
 }
 
@@ -760,7 +769,9 @@ pub const Prompt = struct {
 
     /// Instruction rows, role rows, the codec prefix, every text row over
     /// `codec_pad`, the end of text, then `tts_pad` over `codec_bos`. A Base
-    /// has no speakers: `VoiceRequired` (`buildClone`).
+    /// has no speakers: `VoiceRequired` (`buildClone`). VoiceDesign has none
+    /// either: no speaker row, the instruction (if any) the voice's
+    /// description (`generate_voice_design`).
     pub fn build(gpa: Allocator, config: *const Config, request: Request) PromptError!Prompt {
         if (config.clones()) return error.VoiceRequired;
         if (request.text.len == 0) return error.EmptyText;
@@ -870,14 +881,15 @@ pub const Prompt = struct {
 // ---- tests -----------------------------------------------------------------
 
 /// A small `config.json` of the published shape with the stacks scaled
-/// down, for tests here and in the executable. A `base` has no speakers and
-/// a speaker encoder of the published structure (five entries, scale 8).
+/// down, for tests here and in the executable. Only `custom_voice` has
+/// speakers; a `base` has a speaker encoder of the published structure (five
+/// entries, scale 8).
 pub fn testConfigJson(gpa: Allocator, size: []const u8, talker_hidden: usize, kind: []const u8) ![]u8 {
-    const base = std.mem.eql(u8, kind, "base");
+    const base = !std.mem.eql(u8, kind, "custom_voice");
     const speakers =
         if (base) "\"spk_id\":{},\"spk_is_dialect\":{}" else "\"spk_id\":{\"ryan\":3061,\"eric\":2875},\"spk_is_dialect\":{\"ryan\":false,\"eric\":\"sichuan_dialect\"}";
     var encoder_buffer: [320]u8 = undefined;
-    const encoder = if (base) try std.fmt.bufPrint(&encoder_buffer,
+    const encoder = if (std.mem.eql(u8, kind, "base")) try std.fmt.bufPrint(&encoder_buffer,
         \\,"speaker_encoder_config":{{"enc_dim":{d},"enc_channels":[16,16,16,16,48],"enc_kernel_sizes":[5,3,3,3,1],
         \\ "enc_dilations":[1,2,3,4,1],"enc_attention_channels":4,"enc_res2net_scale":8,"enc_se_channels":4,"sample_rate":24000}}
     , .{talker_hidden}) else "";
@@ -919,9 +931,12 @@ test "the config of either size, its generation settings, and its refusals" {
     defer large.deinit();
     try std.testing.expect(large.takesInstruction() and large.projects() and !large.clones());
 
-    const design = try testConfigJson(gpa, "1b7", 16, "voice_design");
-    defer gpa.free(design);
-    try std.testing.expectError(error.UnsupportedModelType, parseConfig(gpa, design, null));
+    const other = try testConfigJson(gpa, "1b7", 16, "voice_clone");
+    defer gpa.free(other);
+    try std.testing.expectError(error.UnsupportedModelType, parseConfig(gpa, other, null));
+    var design = try testConfigOf(gpa, "1b7", 16, "voice_design");
+    defer design.deinit();
+    try std.testing.expect(design.designs() and !design.clones() and design.takesInstruction() and design.speakers.len == 0);
     try std.testing.expectError(error.InvalidConfig, parseConfig(gpa, "{}", null));
     const json = try testConfigJson(gpa, "0b6", 8, "custom_voice");
     defer gpa.free(json);
@@ -1066,6 +1081,15 @@ test "the prompt's rows for both sizes, with and without an instruction" {
     try std.testing.expectError(error.UnknownSpeaker, Prompt.build(gpa, &small, .{ .role = role, .text = &text, .speaker = "nobody" }));
     try std.testing.expectError(error.UnknownLanguage, Prompt.build(gpa, &small, .{ .role = role, .text = &text, .speaker = "ryan", .language = "klingon" }));
     try std.testing.expectError(error.EmptyText, Prompt.build(gpa, &small, .{ .role = role, .text = &.{}, .speaker = "ryan" }));
+
+    // VoiceDesign: no speaker row; the instruction rows describe the voice.
+    var design = try testConfigOf(gpa, "1b7", 16, "voice_design");
+    defer design.deinit();
+    var designed = try Prompt.build(gpa, &design, .{ .role = role, .text = &text, .instruct = &instruct, .speaker = null, .language = "english" });
+    defer designed.deinit(gpa);
+    try std.testing.expectEqual(instruct.len + want.len - 1, designed.rows.len);
+    for (designed.rows) |row| try std.testing.expect(row.codec != 3061 and row.voice == .none);
+    try std.testing.expectError(error.UnknownSpeaker, Prompt.build(gpa, &design, .{ .role = role, .text = &text, .speaker = "ryan" }));
 
     var large = try testConfig(gpa, "1b7", 16);
     defer large.deinit();

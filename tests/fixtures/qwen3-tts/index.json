@@ -1825,6 +1825,343 @@
      "note": "the last frame's samples"
     }
    }
+  },
+  "1.7b-design-keeper-fox": {
+   "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+   "revision": "5ecdb67327fd37bb2e042aab12ff7391903235d3",
+   "codec_sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+   "speaker": "",
+   "language": "english",
+   "text": "The quick brown fox jumps over the lazy dog.",
+   "instruct": "A calm elderly man with a deep, slightly gravelly voice, speaking slowly and warmly.",
+   "design": true,
+   "model_sha256": "391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522",
+   "frames_generated": 43,
+   "text_ids": [
+    151644,
+    77091,
+    198,
+    785,
+    3974,
+    13876,
+    38835,
+    34208,
+    916,
+    279,
+    15678,
+    5562,
+    13,
+    151645,
+    198,
+    151644,
+    77091,
+    198
+   ],
+   "instruct_ids": [
+    151644,
+    872,
+    198,
+    32,
+    19300,
+    28820,
+    883,
+    448,
+    264,
+    5538,
+    11,
+    10078,
+    41523,
+    398,
+    7743,
+    11,
+    12094,
+    13970,
+    323,
+    96370,
+    13,
+    151645,
+    198
+   ],
+   "prompt_rows": [
+    [
+     151644,
+     -1
+    ],
+    [
+     872,
+     -1
+    ],
+    [
+     198,
+     -1
+    ],
+    [
+     32,
+     -1
+    ],
+    [
+     19300,
+     -1
+    ],
+    [
+     28820,
+     -1
+    ],
+    [
+     883,
+     -1
+    ],
+    [
+     448,
+     -1
+    ],
+    [
+     264,
+     -1
+    ],
+    [
+     5538,
+     -1
+    ],
+    [
+     11,
+     -1
+    ],
+    [
+     10078,
+     -1
+    ],
+    [
+     41523,
+     -1
+    ],
+    [
+     398,
+     -1
+    ],
+    [
+     7743,
+     -1
+    ],
+    [
+     11,
+     -1
+    ],
+    [
+     12094,
+     -1
+    ],
+    [
+     13970,
+     -1
+    ],
+    [
+     323,
+     -1
+    ],
+    [
+     96370,
+     -1
+    ],
+    [
+     13,
+     -1
+    ],
+    [
+     151645,
+     -1
+    ],
+    [
+     198,
+     -1
+    ],
+    [
+     151644,
+     -1
+    ],
+    [
+     77091,
+     -1
+    ],
+    [
+     198,
+     -1
+    ],
+    [
+     151671,
+     2154
+    ],
+    [
+     151671,
+     2156
+    ],
+    [
+     151671,
+     2050
+    ],
+    [
+     151671,
+     2157
+    ],
+    [
+     151672,
+     2148
+    ],
+    [
+     785,
+     2148
+    ],
+    [
+     3974,
+     2148
+    ],
+    [
+     13876,
+     2148
+    ],
+    [
+     38835,
+     2148
+    ],
+    [
+     34208,
+     2148
+    ],
+    [
+     916,
+     2148
+    ],
+    [
+     279,
+     2148
+    ],
+    [
+     15678,
+     2148
+    ],
+    [
+     5562,
+     2148
+    ],
+    [
+     13,
+     2148
+    ],
+    [
+     151673,
+     2148
+    ],
+    [
+     151671,
+     2149
+    ]
+   ],
+   "prompt_rows_note": "[text id, codec id] per prompt row, -1 for none: derived from config.json by generate's rules; rebuilt from them, the rows equal those the talker received",
+   "prompt_rebuilt_max_abs": 0.0,
+   "talker_frames": 4,
+   "predictor_frames": 2,
+   "files": {
+    "codes": {
+     "file": "1.7b-design-keeper-fox/codes.u16",
+     "shape": [
+      43,
+      16
+     ],
+     "dtype": "u16",
+     "sha256": "f4f2999bbbb1f062b98922a310b3154c49bf1144e67613a824565c0770829605",
+     "note": "every frame the talker and predictor sampled, [frame][group]"
+    },
+    "talker/inputs": {
+     "file": "1.7b-design-keeper-fox/talker/inputs.f32",
+     "shape": [
+      47,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "8cb7c8a7e6839e2ca833176bc412417417e0c65efca01fb1892f26917f4ad847",
+     "note": "the talker's input rows: the prompt's 43, then decode rows of frames 0..3",
+     "rows": [
+      0,
+      47
+     ]
+    },
+    "talker/layer.0": {
+     "file": "1.7b-design-keeper-fox/talker/layer.0.f32",
+     "shape": [
+      8,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "233609acd360e9f4ccaa5f6471c14ae6e56df1eade56cd86dc07039843a5d238",
+     "note": "the talker's rows after layer 0, rows 39..47 (prompt then decode)",
+     "rows": [
+      39,
+      47
+     ]
+    },
+    "talker/layer.13": {
+     "file": "1.7b-design-keeper-fox/talker/layer.13.f32",
+     "shape": [
+      8,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "3950f97d8e6f7b34f08457f267b4b2d69ebb1f5f21d8f993a02dbff8a3f0011a",
+     "note": "the talker's rows after layer 13, rows 39..47 (prompt then decode)",
+     "rows": [
+      39,
+      47
+     ]
+    },
+    "talker/layer.27": {
+     "file": "1.7b-design-keeper-fox/talker/layer.27.f32",
+     "shape": [
+      8,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "fd36938f6d7339eea07a9f8134a388fbf099a49be6d49db77488c2e11d1893a4",
+     "note": "the talker's rows after layer 27, rows 39..47 (prompt then decode)",
+     "rows": [
+      39,
+      47
+     ]
+    },
+    "talker/norm": {
+     "file": "1.7b-design-keeper-fox/talker/norm.f32",
+     "shape": [
+      8,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "7a0d4fd4a221496ca8f09df6e3ff8bae010a40c867ca942324f9dd8e5d6c93dc",
+     "note": "the talker's rows after the final norm, rows 39..47 (prompt then decode)",
+     "rows": [
+      39,
+      47
+     ]
+    },
+    "talker/logits": {
+     "file": "1.7b-design-keeper-fox/talker/logits.f32",
+     "shape": [
+      5,
+      3072
+     ],
+     "dtype": "f32",
+     "sha256": "c649d2fe92eefa19036bb80e72f61b80946381e1f6e945c1f891813dc554f358",
+     "note": "group-0 logits (codec_head, before every processor) of frames 0..4"
+    },
+    "predictor/logits": {
+     "file": "1.7b-design-keeper-fox/predictor/logits.f32",
+     "shape": [
+      30,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "aa1def796a93ea032a04f996e073665bab9b7fd632814040a22b8252ade19e7b",
+     "note": "the predictor's logits, row 15 * frame + group - 1, before temperature and top-k"
+    }
+   }
   }
  },
  "$comment": "Written by scripts/speech-traces/qwen3_tts_trace.py; docs/models/qwen3-tts.md.",

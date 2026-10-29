@@ -72,7 +72,8 @@ model, `embeddinggemma-2`, which turns text, images and audio into vectors
 speak and hear ([below](#speech-in-and-out)): `qwen3-tts-1.7b-customvoice`
 and `qwen3-tts-0.6b-customvoice` in nine built-in voices,
 `qwen3-tts-1.7b-base` and `qwen3-tts-0.6b-base` in a voice cloned from a
-short clip, and `nemotron-asr-0.6b`.
+short clip, `qwen3-tts-1.7b-voicedesign` in a voice described in words,
+and `nemotron-asr-0.6b`.
 
 **Anything else** runs when its architecture has an adapter (Qwen3.8,
 Gemma 4, Muse Glimmer): finetunes, other quantizations, Gemma 4's K-quant
@@ -281,6 +282,7 @@ served from one process.
 | Qwen3-TTS 0.6B CustomVoice | `qwen3-tts-0.6b-customvoice` | the same voices, lighter and faster, without instructions | 2.5 GB |
 | Qwen3-TTS 1.7B Base | `qwen3-tts-1.7b-base` | speech in a voice cloned from a saved clip of 1–30 s (and its transcript) | 4.5 GB |
 | Qwen3-TTS 0.6B Base | `qwen3-tts-0.6b-base` | the same, lighter and faster | 2.5 GB |
+| Qwen3-TTS 1.7B VoiceDesign | `qwen3-tts-1.7b-voicedesign` | speech in a voice described in words ("a calm elderly man, deep and warm") | 4.5 GB |
 | Nemotron 3.5 ASR | `nemotron-asr-0.6b` | streaming recognition with punctuation and word times | 2.6 GB |
 | Gemma 4 E4B | `gemma-4-e4b-qat` | hears a clip of up to 30 s in a chat, the agent, or `generate` | 4.2 GB |
 

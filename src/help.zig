@@ -554,9 +554,11 @@ fn speak(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "italian, portuguese, russian, japanese, korean,");
     try more(out, "or auto; default auto");
     try row(out, sty, "--instruct <text>", "how to say it (\"Speak in a warm, cheerful");
-    try more(out, "tone.\"); the 1.7B CustomVoice only");
+    try more(out, "tone.\"), on the 1.7B CustomVoice; on VoiceDesign");
+    try more(out, "the voice itself (\"a calm elderly man, deep\")");
     try row(out, sty, "--model <name|dir>", "qwen3-tts-1.7b-customvoice, -0.6b-customvoice,");
-    try more(out, "-1.7b-base, -0.6b-base, a speech registry entry,");
+    try more(out, "-1.7b-base, -0.6b-base, -1.7b-voicedesign, a speech");
+    try more(out, "registry entry,");
     try more(out, "or a checkpoint directory; default speech.model");
     try more(out, "(qwen3-tts-1.7b-customvoice)");
     try row(out, sty, "--seed <n>", "the sampler's seed; default 0");
@@ -584,7 +586,10 @@ fn speak(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "first frame, so give it a sentence or two at a time. The CPU and Metal");
     try plain(out, "agree to rounding, so a seed gives the same speech on both only nearly.");
     try plain(out, "A saved voice is encoded the first time a Base speaks in it (a second");
-    try plain(out, "or less on the CPU), and kept.");
+    try plain(out, "or less on the CPU), and kept. On qwen3-tts-1.7b-voicedesign,");
+    try plain(out, "--instruct describes the voice itself (\"a calm elderly man with a deep");
+    try plain(out, "voice\"), sampled anew each time; for one that stays the same, save a");
+    try plain(out, "clip of it with `nuclis voice add` and speak in it on a Base.");
     try out.writeByte('\n');
 }
 

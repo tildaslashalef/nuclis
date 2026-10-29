@@ -14,11 +14,11 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–10 (the
+`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–11 (the
 facts, the traces, the config and binding, audio at 24 kHz, both
 encoders, the clone prompt and synthesizer, the voice store, the
-catalogue and the rename, the CLI) are done and committed. Next: task
-11, VoiceDesign. A side fix in the
+catalogue and the rename, the CLI, VoiceDesign) are done and committed.
+Next: task 12, the API. A side fix in the
 branch: `AGENTS.md` notes that Zig 0.17 has no `**` operator (`0aabc3a`). The next release
 (0.11.0) carries K-quant E4B files
 ([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
@@ -31,7 +31,7 @@ this unit, if it lands first.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 11 next |
+| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 12 next |
 
 ## Qwen3-TTS Base: voice cloning with saved voices
 
@@ -165,40 +165,41 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
     back word for word by the transcriber each time; first use 751 ms on
     the 0.6B (both encoders), 93 ms on the 1.7B (the codes reused, its own
     embedding made), 0 ms after; an AAC clip through AudioToolbox.
-11. *VoiceDesign* (the user's, 2026-10-29, after task 10).
-    `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` at
-    `5ecdb67327fd37bb2e042aab12ff7391903235d3`: 404 tensors equal in name,
-    shape, and dtype to the 1.7B CustomVoice's, the same codec (`836b7b…`)
-    and generation config; `tts_model_type` `voice_design`, no speakers,
-    ten languages. `generate_voice_design`: the CustomVoice prompt without
-    a speaker row, the instruction describing the voice (empty allowed),
-    non-streaming text. Work: read its facts into `qwen3-tts.md`; a trace
-    case (`--design`) and a talker gate; `parseConfig` accepts
-    `voice_design` (`Config.designs()`), `Prompt.build` refuses a speaker
-    on it and takes the instruction as the description; catalogue entry
-    `qwen3-tts-1.7b-voicedesign`; `speak --instruct` as the description (no
-    `--voice`), the API's `instructions` likewise (`voice` refused),
-    `/v1/models` showing it (`design`, no speakers); docs. No new network.
+11. *VoiceDesign.* Done: `qwen3-tts-1.7b-voicedesign` pinned at
+    `5ecdb67` and pulled; `parseConfig` accepts `voice_design`
+    (`Config.designs()`), and the 1.7B CustomVoice's path runs it with no
+    speaker; `speak --instruct` describes the voice (`--voice` refused);
+    trace case `1.7b-design-keeper-fox`; gates
+    `qwen3-tts-1.7b-design-trace-cpu`, `qwen3-tts-1.7b-design-metal`
+    (worst 1.6e-6; F16 cache 2.9e-4); docs (`qwen3-tts.md § VoiceDesign`,
+    tables, help). Design then clone checked end to end: a described voice
+    saved with `voice add` and cloned on the 1.7B Base, both heard back.
+    The provenance line also gained task 2's missing Base description.
 12. *API.* `POST /v1/audio/voices` (multipart `name`, `audio`,
-    `reference_text`; encodes on the CPU for the open or default Base
-    model, `201` with the voice object), `GET /v1/audio/voices`, `GET` and
-    `DELETE /v1/audio/voices/{name}`; check OpenAI's custom-voice API for
-    field names first and match where it has one. `/v1/audio/speech`:
-    `voice` a saved voice's name or `{"id": name}` on a Base model;
-    `400 voice_cloning_unsupported` for a saved voice on CustomVoice;
-    `400 invalid_request` for a speaker on a Base. `GET /v1/models`: a
-    speech model's `cloning` (`{"modes": ["audio",
-    "audio_and_transcript"]}` on a Base, null on CustomVoice, null before
-    the pull), `voices` on a Base the saved voices' names, `speakers`
-    empty, `instructions` false, `options.voice` default null. Encoding
-    a voice runs off the GPU worker.
+    `reference_text`; saves as `voice add` does, no model opened: the
+    first request in the voice encodes it; `201` with the voice object),
+    `GET /v1/audio/voices`, `GET` and `DELETE /v1/audio/voices/{name}`;
+    check OpenAI's custom-voice API for field names first and match where
+    it has one. `/v1/audio/speech`: `voice` a saved voice's name or
+    `{"id": name}` on a Base (made ready off the GPU worker before the
+    request's prefill); `400 voice_cloning_unsupported` for a saved voice
+    on CustomVoice or VoiceDesign; `400 invalid_request` for a speaker on
+    a Base; on VoiceDesign `instructions` is the voice's description and
+    `voice` is refused. `GET /v1/models`: a speech model's `cloning`
+    (`{"modes": ["audio", "audio_and_transcript"]}` on a Base, null
+    otherwise and before the pull), `design` (true on VoiceDesign),
+    `voices` on a Base the saved voices' names, `speakers` empty on a Base
+    and VoiceDesign, `instructions` false on a Base, `options.voice`
+    default null where there are no speakers.
 13. *Measure and document.* Encode time for a 10 s clip on both sizes;
     first-chunk latency and real-time factor with a saved voice against a
     speaker, 0.6B and 1.7B; the priming's cost per request (cache the
     primed decoder state per voice only if it exceeds 50 ms). Explain the
     1.7B's ICL prefill first: 1,514 ms on Metal for a 4.6 s reference
     (2026-10-29, `speak`), against 227 ms on the 0.6B ICL and 76 ms on the
-    1.7B x-vector; the prefill timing includes the decoder's priming. Into
+    1.7B x-vector; the prefill timing includes the decoder's priming. The
+    1.7B VoiceDesign shows it too (961 ms for about 45 rows, no priming),
+    so suspect the 1.7B's Metal prefill per row, not cloning. Into
     `docs/models/qwen3-tts.md`, `docs/guide/api.md` § Speech and
     § `GET /v1/models`, `docs/guide/configuration.md`, `docs/spec.md`,
     `docs/models/catalogue.md`, the README's *Speech in and out*.

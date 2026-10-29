@@ -88,6 +88,8 @@ values [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/workl
 | | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
 | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | `fd4b254389122332181a7c3db7f27e918eec64e3` | `model.safetensors` | 3,857,413,744 | `38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c` |
 | | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
+| `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` | `5ecdb67327fd37bb2e042aab12ff7391903235d3` | `model.safetensors` | 3,833,402,552 | `391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522` |
+| | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
 | `nvidia/nemotron-3.5-asr-streaming-0.6b` | `ea30d66debe3740a08b573244286791d423d6b3e` | `model.safetensors` | 2,552,062,944 | `9eebdd6590289cb3030f310858f3df93256600a800a3e8200c5993d5f967e174` |
 
 The Saluki rows were pulled and verified on 2026-10-14; the file is not a
@@ -395,11 +397,12 @@ default.
 
 A fourth table, `audio_entries`, pins the speech and transcription
 checkpoints: `qwen3-tts-1.7b-customvoice` and `qwen3-tts-0.6b-customvoice`
-(2026-10-27) and `qwen3-tts-1.7b-base` and `qwen3-tts-0.6b-base`
-(2026-10-29), kind `speech` (`nuclis speak`), and `nemotron-asr-0.6b`
-(kind `transcription`, `nuclis transcribe`), at the commits and digests
-of the table above. A speech name says CustomVoice (built-in speakers) or
-Base (a saved voice). The names before 0.11.0, `qwen3-tts-1.7b` and
+(2026-10-27), `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base`, and
+`qwen3-tts-1.7b-voicedesign` (2026-10-29), kind `speech` (`nuclis
+speak`), and `nemotron-asr-0.6b` (kind `transcription`, `nuclis
+transcribe`), at the commits and digests of the table above. A speech
+name says CustomVoice (built-in speakers), Base (a saved voice), or
+VoiceDesign (a described voice). The names before 0.11.0, `qwen3-tts-1.7b` and
 `qwen3-tts-0.6b`, resolve to nothing: every command and the server refuse
 them with the name each became (`catalog.renamedAudio`), and a registry
 entry may take them.

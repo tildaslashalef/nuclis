@@ -17,7 +17,9 @@ The *CustomVoice* variant speaks with one of nine built-in speakers chosen
 by a codec-vocabulary id. The *Base* variant has no speakers: it clones a
 voice from a reference clip through two more networks, a speaker encoder
 and the codec's **encoder**
-([Voice cloning (the Base)](#voice-cloning-the-base)).
+([Voice cloning (the Base)](#voice-cloning-the-base)). The 1.7B
+*VoiceDesign* has none either: its instruction describes the voice
+([VoiceDesign](#voicedesign)).
 
 Everything here was read on 2026-10-27 from these sources: the pinned
 files' safetensors headers and JSON files (read over HTTP at the pinned
@@ -44,6 +46,7 @@ read as the definition, never copied.
 - [Tokenizer and the rendered text](#tokenizer-and-the-rendered-text)
 - [The 1.7B CustomVoice](#the-17b-customvoice)
 - [Voice cloning (the Base)](#voice-cloning-the-base)
+- [VoiceDesign](#voicedesign)
 - [Codec decoder against the trace (2026-10-27)](#codec-decoder-against-the-trace-2026-10-27)
 - [Talker and code predictor against the trace (2026-10-27)](#talker-and-code-predictor-against-the-trace-2026-10-27)
 - [On Metal (2026-10-27)](#on-metal-2026-10-27)
@@ -909,6 +912,47 @@ first frames are near silence (peak 1.4e-4, max |Δ| 6.5e-9). Gates:
 `qwen3-tts-0.6b-clone-trace-cpu` (tier `verify-cpu`, 1.5e-5),
 `qwen3-tts-0.6b-clone-metal` (tier `verify`, 1.5e-5 and 3e-3), and the
 primed decode in `qwen3-tts-0.6b-clone-cpu`.
+
+## VoiceDesign
+
+`Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` at
+`5ecdb67327fd37bb2e042aab12ff7391903235d3`, read and pulled 2026-10-29:
+
+| File | Size (B) | SHA-256 |
+| --- | ---: | --- |
+| `model.safetensors` | 3,833,402,552 | `391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522` |
+| `config.json` | 4,421 | `aecd2cc4c1fe9edef1cb7ca7c401685a43879ad43f3f9e883f1c6760b61731e0` |
+| `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
+
+The other files are the CustomVoice table's. The weights are the 1.7B
+CustomVoice's in every tensor's name, shape, and dtype (404, BF16; their
+values differ), and there is no speaker encoder. `config.json`:
+`tts_model_type` `voice_design`, `spk_id` and `spk_is_dialect` empty, the
+ten languages; `generation_config.json` is the CustomVoice's.
+`generate_voice_design(text, instruct, language)` runs `generate` with no
+speaker and the instruction tokenized as CustomVoice's
+(`_build_instruct_text`; empty is none), in non-streaming text mode
+(`non_streaming_mode=True`, as `generate_custom_voice`): the prompt of
+§ (a) without the speaker row, the instruction's rows first. So nuclis
+runs it as the 1.7B CustomVoice with `speaker` null: `parseConfig` accepts
+`voice_design` (`Config.designs()`) and nothing else changes. The authors'
+README pairs it with the Base (*Voice Design then Clone*): a designed
+voice is sampled anew each time, so for one that stays the same, a clip of
+it is saved and cloned.
+
+**The trace.** `qwen3_tts_trace.py`'s `1.7b-design-keeper-fox` case: the
+`fox` sentence in English described as "A calm elderly man with a deep,
+slightly gravelly voice, speaking slowly and warmly." (43 frames; the
+talker section's pins, the layout derived without a speaker row and
+checked by rebuilding the rows). `qwen3-tts-check <VoiceDesign dir>
+talker`: token ids (18 and 23) and the 43 prompt rows exact; every stage
+within 1.6e-6 on the CPU, 1.2e-6 on Metal with an F32 talker cache and
+2.9e-4 with F16; every argmax equal. Gates
+`qwen3-tts-1.7b-design-trace-cpu` (tier `verify-cpu`) and
+`qwen3-tts-1.7b-design-metal` (tier `verify`). `nuclis speak --model
+qwen3-tts-1.7b-voicedesign --instruct "…"` spoke a designed voice that
+nuclis's transcriber read back word for word, and the clip, saved with
+`nuclis voice add`, cloned on the 1.7B Base likewise.
 
 ## Codec decoder against the trace (2026-10-27)
 

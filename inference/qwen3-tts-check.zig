@@ -495,7 +495,8 @@ fn checkTalker(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mod
             .role = text.role,
             .text = text.text,
             .instruct = text.instruct,
-            .speaker = meta.get("speaker").?.string,
+            // An empty speaker is VoiceDesign's: no speaker row.
+            .speaker = if (meta.get("speaker").?.string.len > 0) meta.get("speaker").?.string else null,
             .language = meta.get("language").?.string,
         });
         defer prompt.deinit(gpa);
