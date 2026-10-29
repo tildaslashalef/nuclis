@@ -1434,6 +1434,66 @@ are (no `serve.web` or `--web-url`, or `--no-web`); otherwise `ok` when the sear
 behind it answer its own health call, `down` when not (that call waits at
 most 5 s).
 
+## The request log
+
+`nuclis serve` writes two JSON lines a request to
+`~/.nuclis/logs/` (under `NUCLIS_HOME` when set), whoever started it: a
+`request.start` once the head is read, so a request still running is in the
+file, and a `request.end` once the response is written, its stream ended,
+or its WebSocket closed. `GET` and `HEAD /v1/health` are not logged
+(pollers). The stdout line (`serve.log`, `--quiet`) is separate and
+unchanged; `serve.request_log: false` turns the file off.
+
+**Never a payload.** No text, message, image, clip, vector, transcript, or
+audio, in or out, and no query string: sizes, counts, durations, the names
+nuclis resolved (model, voice), and nuclis's own error codes and messages.
+
+**Files.** One a UTC day, `serve-2026-10-30.jsonl`, never renamed: any
+number of servers append to it safely (opened `O_APPEND`, one write a line,
+a line at most 4 KiB). Past 64 MiB a day continues in
+`serve-2026-10-30.1.jsonl`, `.2`, …. At start a server deletes the files
+older than 14 days, then the oldest until those left hold at most 256 MiB
+(never today's). Files are created `0600`. A failed write never fails a
+request.
+
+**Ids.** Every request gets a UUIDv7 (time-ordered), returned as
+`x-request-id` on every response, errors, streams, and a WebSocket's `101`
+included, and logged as `id`. A client's `X-Client-Request-Id` (OpenAI's
+SDKs send it; printable ASCII, at most 128 bytes) is echoed back and
+logged as `client_id`, so one client turn reads as one thread across
+routes; one that breaks those rules is ignored, and the start line says
+`client_id_refused: true`.
+
+**A line.** An object: `time` (RFC 3339, UTC, milliseconds), `schema`
+(1), `event`, `id`, then snake_case fields whose names carry their units,
+numbers as numbers. A field a request did not reach is absent.
+
+```json
+{"time":"2026-10-30T09:12:04.318Z","schema":1,"event":"request.start","id":"019a3412-6f1e-7c2a-9b4d-0e5f6a7b8c9d","client_id":"turn-41","method":"POST","path":"/v1/audio/speech"}
+{"time":"2026-10-30T09:12:06.904Z","schema":1,"event":"request.end","id":"019a3412-6f1e-7c2a-9b4d-0e5f6a7b8c9d","client_id":"turn-41","status":200,"duration_ms":2586.2,"bytes_in":212,"bytes_out":214080,"model":"qwen3-tts-0.6b-base","voice":"isa","voice_kind":"clone","stream":true,"frames":56,"audio_s":4.46,"first_audio_ms":431.0,"finish_reason":"eos"}
+```
+
+| Event | Fields |
+| --- | --- |
+| `request.start` | `client_id`, `client_id_refused`, `method`, `path` |
+| `request.end`, every route | `client_id`, `status`, `duration_ms`, `bytes_in`, `bytes_out`; an error's `error` (its code) and `message` |
+
+What each route adds to its `request.end`:
+
+| Route | Fields |
+| --- | --- |
+| `POST /v1/chat/completions` | `model`, `effort`, `stream`, `prompt_tokens`, `cached_tokens`, `completion_tokens`, `finish_reason` (`stop`, `length`, `tool_calls`, `cancelled`), `web_calls`, `web_rounds`, `web_restored` |
+| `POST /v1/decisions`, `POST /v1/systemone` | `model`, `states`, `questions`, `input_tokens`, `batch_requests` (the requests that shared the pass), `open_ms` (when this request opened the model) |
+| `POST /v1/embeddings` | `model`, `inputs`, `input_tokens`, `passes`, `batch_requests`, `open_ms` |
+| `POST /v1/audio/speech` | `model`, `voice` (none for VoiceDesign), `voice_kind` (`speakers`, `clone`, `design`), `stream`, `frames`, `audio_s`, `first_audio_ms`, `finish_reason` (`eos`, `length`, `cancelled`), `voice_ready_ms` (when this request encoded a saved voice) |
+| `POST`, `GET`, `DELETE /v1/audio/voices` | `voice`; a list's `voices` (its count); a create's `clip_s` and `transcript` (whether one came) |
+| `POST /v1/audio/transcriptions` | `model`, `stream`, `audio_s`, `real_time` (audio seconds per second), `segments`, `first_segment_ms`, `open_ms`, `finish_reason` (`done`, `cancelled`) |
+| `GET /v1/audio/transcriptions/stream` | `model`, `lookahead`, `audio_s`, `finals`, `closed_by` (`client`, `server`, `gone`), `close_code` |
+| `GET /v1/models` | `models` (the count); a retrieve's `model` |
+
+`GET /v1/health` lists the requests in flight, each with its fields so far
+(`GET /v1/health` above).
+
 ## Measured rates
 
 Apple M4 Pro (48 GB), ReleaseFast, Zig 0.16.0, macOS 27.0; `nuclis serve

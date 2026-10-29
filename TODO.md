@@ -14,12 +14,12 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`serve-request-log-and-speech-budget` is planned (below) and not started:
-its branch holds only this plan. Next: task 1, the speech frame budget.
+`serve-request-log-and-speech-budget`: task 1 (the speech budget) and
+task 2 (the route inventory) are done. Next: task 3, the log.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| The speech frame budget, and a request log for `nuclis serve` | `serve-request-log-and-speech-budget` | planned |
+| The speech frame budget, and a request log for `nuclis serve` | `serve-request-log-and-speech-budget` | in progress |
 
 ## The speech frame budget, and a request log for `nuclis serve`
 
@@ -92,22 +92,32 @@ frames of 80 ms per text token of the input):
    budget; `speech.audio.done` gains `finish_reason`; the log note shows
    it. Tests: a tiny model stops at the budget with `length`; the trace
    gates unchanged.
-2. *Route inventory.* Read every handler (`chat`, `decisions` and
-   `systemone`, `embeddings`, `models`, `audio/speech`, `audio/voices`,
-   both transcription routes) and write, into `docs/guide/api.md` § The
-   request log, each route's fields: what it resolved (model, kind,
-   voice, language, mode), sizes in and out (tokens, inputs, questions,
-   audio seconds, frames, bytes), timings (queued, prefill, first output),
-   and outcomes (finish reason, cache reuse, web calls). Rewrite tasks 3
-   and 4 at that level, committed before code.
-3. *The log.* `src/api/request_log.zig`: the daily files, the size
-   guard, retention, the two lines; the ids (UUIDv7 from `io.random` and the clock; the client's
-   header read and checked) in `http.zig`, `x-request-id` and the echo on
-   every response; a typed `Fields` each handler fills (a fixed set of
-   named numbers, strings, and booleans, nothing else), carried by the
-   response and its stream's end; `serve.request_log` in `config.zig`.
-4. *Every route fills its fields* (task 2's list); the in-flight table
-   behind `GET /v1/health`.
+2. *Route inventory.* Done: `docs/guide/api.md` § The request log lists
+   every route's fields; tasks 3 and 4 follow it.
+3. *The log.* `src/api/request_log.zig`:
+   - `Record` (in the connection's arena): id, client id, method, path,
+     start, and at most 24 fields (`int`, `float`, `text` copied into the
+     record and cut at 128 bytes, `flag`), names comptime strings.
+   - `Fields`, the handle a handler fills (`request.fields`): copyable, a
+     no-op when null, locked by the book's mutex so health reads it whole.
+   - `Book`: the mutex, the in-flight list, and the file writer (`logs/`
+     under the root; `std.c.open` with `APPEND`, `CREAT`, `CLOEXEC`, 0600;
+     the day and part; 64 MiB guard; retention at `open`). `begin` writes
+     the start line and links the record; `finish` the end line and
+     unlinks it; `refused` logs an accept-loop `busy` alone.
+   - UUIDv7 from `io.random` and `Clock.real`; RFC 3339 from
+     `std.time.epoch`.
+   - `http.zig`: `serve` takes `?*Book`; `serveOne` reads
+     `x-client-request-id` for every method, skips the book for
+     `GET`/`HEAD` of the quiet path (`/v1/health`), begins before the body
+     is read, and sends `x-request-id` (and the echo) on `respond`,
+     `respondStream`, `respondUpgrade`, and `fail`; `Response.failure`
+     (set by `fromError`) gives `error` and `message`.
+   - `serve.request_log` (default true) in `config.zig`; `root.zig` opens
+     the book beside the stdout log.
+4. *Every route fills its fields* (the api.md table), in the code that
+   writes its stdout note; `writeHealth` gains `in_flight` (id, client id,
+   method, path, running_ms, fields so far).
 5. *Docs and checks.* `docs/guide/api.md` § The request log and §
    `GET /v1/health`, `docs/guide/configuration.md`, `docs/spec.md`; the
    correction of § Speed in `docs/models/qwen3-tts.md` and § Voices: with
