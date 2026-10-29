@@ -545,9 +545,9 @@ fn speak(out: *std.Io.Writer, sty: style.Style) !void {
 
     try heading(out, sty, "Options:");
     try row(out, sty, "-o, --output <file>", "the WAV to write: 24 kHz mono 16-bit");
-    try row(out, sty, "--voice <speaker>", "one of the model's nine speakers: aiden, dylan,");
-    try more(out, "eric, ono_anna, ryan, serena, sohee, uncle_fu,");
-    try more(out, "vivian; default speech.voice (ryan)");
+    try row(out, sty, "--voice <speaker>", "one of the model's speakers; Qwen's nine: aiden,");
+    try more(out, "dylan, eric, ono_anna, ryan, serena, sohee,");
+    try more(out, "uncle_fu, vivian; default speech.voice (ryan)");
     try row(out, sty, "--language <name>", "english, chinese, german, spanish, french,");
     try more(out, "italian, portuguese, russian, japanese, korean,");
     try more(out, "or auto; default auto");

@@ -46,7 +46,8 @@ pub const Speaker = struct { name: []const u8, id: u32, dialect: ?[]const u8 };
 pub const Language = struct { name: []const u8, id: u32 };
 
 /// Sampling as `generation_config.json` sets it (docs/models/qwen3-tts.md
-/// § Configuration); the defaults are `_merge_generate_kwargs`'s.
+/// § Configuration); the defaults are `_merge_generate_kwargs`'s. A
+/// temperature of 0 is greedy (`do_sample` false).
 pub const Generation = struct {
     temperature: f32 = 0.9,
     top_k: usize = 50,
@@ -283,9 +284,6 @@ pub fn parseConfig(gpa: Allocator, config_json: []const u8, generation_json: ?[]
             error.OutOfMemory => error.OutOfMemory,
             else => error.InvalidConfig,
         };
-        // Greedy decoding is the authors' option, not their default; this
-        // implementation samples as they do by default.
-        if (!g.do_sample or !g.subtalker_dosample) return error.UnsupportedConfiguration;
         if (g.temperature) |v| generation.temperature = v;
         if (g.top_k) |v| generation.top_k = v;
         if (g.top_p) |v| generation.top_p = v;
@@ -294,6 +292,10 @@ pub fn parseConfig(gpa: Allocator, config_json: []const u8, generation_json: ?[]
         if (g.subtalker_top_k) |v| generation.predictor_top_k = v;
         if (g.subtalker_top_p) |v| generation.predictor_top_p = v;
         if (g.max_new_tokens) |v| generation.max_new_tokens = v;
+        // Greedy is temperature 0; the repetition penalty and the end/marker
+        // processors still apply, as in transformers' greedy search.
+        if (!g.do_sample) generation.temperature = 0;
+        if (!g.subtalker_dosample) generation.predictor_temperature = 0;
     }
     if (generation.max_new_tokens < generation.min_new_tokens) return error.InvalidConfig;
     return .{
@@ -634,7 +636,7 @@ fn testConfig(gpa: Allocator, size: []const u8, talker_hidden: usize) !Config {
     return parseConfig(gpa, json, "{\"max_new_tokens\":8192,\"top_k\":40}");
 }
 
-test "the config of either size, its generation defaults, and its refusals" {
+test "the config of either size, its generation settings, and its refusals" {
     const gpa = std.testing.allocator;
     var small = try testConfig(gpa, "0b6", 8);
     defer small.deinit();
@@ -653,7 +655,16 @@ test "the config of either size, its generation defaults, and its refusals" {
     try std.testing.expectError(error.InvalidConfig, parseConfig(gpa, "{}", null));
     const json = try testConfigJson(gpa, "0b6", 8, "custom_voice");
     defer gpa.free(json);
-    try std.testing.expectError(error.UnsupportedConfiguration, parseConfig(gpa, json, "{\"do_sample\":false}"));
+    // `do_sample` false is greedy for that network alone; its other settings still apply.
+    var greedy = try parseConfig(gpa, json, "{\"do_sample\":false,\"max_new_tokens\":256,\"temperature\":0.7}");
+    defer greedy.deinit();
+    try std.testing.expectEqual(@as(f32, 0), greedy.generation.temperature);
+    try std.testing.expectEqual(@as(f32, 0.9), greedy.generation.predictor_temperature);
+    try std.testing.expectEqual(@as(f32, 1.05), greedy.generation.repetition_penalty);
+    try std.testing.expectEqual(@as(usize, 256), greedy.generation.max_new_tokens);
+    var both = try parseConfig(gpa, json, "{\"do_sample\":false,\"subtalker_dosample\":false}");
+    defer both.deinit();
+    try std.testing.expectEqual(@as(f32, 0), both.generation.predictor_temperature);
 }
 
 test "the prompt's rows for both sizes, with and without an instruction" {
