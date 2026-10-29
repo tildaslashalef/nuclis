@@ -117,7 +117,8 @@ to an exact commit and SHA-256 digest:
 | `laya`, `laya-multilingual` | decision encoders for `nuclis decide` |
 | `clef-flash` | Cloudflare's decision model for `nuclis decide` |
 | `embeddinggemma-2` | EmbeddingGemma 2, text, images and audio into vectors for `nuclis embed` (310 MB) |
-| `qwen3-tts-1.7b`, `qwen3-tts-0.6b` | Qwen3-TTS CustomVoice, text into speech for `nuclis speak` (4.5 and 2.5 GB with the codec; only the 1.7B takes a delivery instruction) |
+| `qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice` | Qwen3-TTS CustomVoice, text into speech in nine built-in voices for `nuclis speak` (4.5 and 2.5 GB with the codec; only the 1.7B takes a delivery instruction) |
+| `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base` | Qwen3-TTS Base, text into speech in a voice cloned from a clip saved with `nuclis voice add` (4.5 and 2.5 GB with the codec) |
 | `nemotron-asr-0.6b` | Nemotron 3.5 ASR streaming, speech into text for `nuclis transcribe` (2.6 GB) |
 
 ```sh

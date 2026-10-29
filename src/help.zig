@@ -553,9 +553,10 @@ fn speak(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "or auto; default auto");
     try row(out, sty, "--instruct <text>", "how to say it (\"Speak in a warm, cheerful");
     try more(out, "tone.\"); the 1.7B model only");
-    try row(out, sty, "--model <name|dir>", "qwen3-tts-1.7b, qwen3-tts-0.6b, a speech");
-    try more(out, "registry entry, or a checkpoint directory;");
-    try more(out, "default speech.model (qwen3-tts-1.7b)");
+    try row(out, sty, "--model <name|dir>", "qwen3-tts-1.7b-customvoice, -0.6b-customvoice,");
+    try more(out, "a speech registry entry, or a checkpoint");
+    try more(out, "directory; default speech.model");
+    try more(out, "(qwen3-tts-1.7b-customvoice)");
     try row(out, sty, "--seed <n>", "the sampler's seed; default 0");
     try row(out, sty, "--backend cpu|metal", default_backend);
     try row(out, sty, "--stream", "write each chunk as it is decoded; report the");

@@ -405,10 +405,11 @@ const qwen3_tts_codec_support = [_][]const u8{ "speech_tokenizer/config.json", "
 
 pub const audio_entries = [_]AudioEntry{
     // Qwen3-TTS 12Hz CustomVoice, both sizes as published (BF16 talker, F32
-    // codec, byte-identical between them); pinned 2026-10-27 by the pull
-    // (docs/models/qwen3-tts.md). Only the 1.7B performs an instruction.
+    // codec, byte-identical between them and the Base's); pinned 2026-10-27
+    // by the pull (docs/models/qwen3-tts.md). Only the 1.7B performs an
+    // instruction.
     .{
-        .name = "qwen3-tts-1.7b",
+        .name = "qwen3-tts-1.7b-customvoice",
         .title = "Qwen3-TTS 1.7B CustomVoice",
         .kind = .speech,
         .repo = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
@@ -431,7 +432,7 @@ pub const audio_entries = [_]AudioEntry{
         .instructions = true,
     },
     .{
-        .name = "qwen3-tts-0.6b",
+        .name = "qwen3-tts-0.6b-customvoice",
         .title = "Qwen3-TTS 0.6B CustomVoice",
         .kind = .speech,
         .repo = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
@@ -452,6 +453,51 @@ pub const audio_entries = [_]AudioEntry{
         .codec_support = &qwen3_tts_codec_support,
         .speakers = &qwen3_tts_speakers,
     },
+    // Qwen3-TTS 12Hz Base, both sizes as published: no speakers, a voice
+    // cloned from a saved clip (docs/models/qwen3-tts.md § Voice cloning (the
+    // Base)); pinned 2026-10-29.
+    .{
+        .name = "qwen3-tts-1.7b-base",
+        .title = "Qwen3-TTS 1.7B Base",
+        .kind = .speech,
+        .repo = "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        .file = "model.safetensors",
+        .revision = "fd4b254389122332181a7c3db7f27e918eec64e3",
+        .sha256 = "38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c",
+        .size = 3_857_413_744,
+        .architecture = "qwen3_tts",
+        .quantization = "BF16",
+        .support = &qwen3_tts_support,
+        .codec = .{
+            .repo = "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+            .file = "speech_tokenizer/model.safetensors",
+            .revision = "fd4b254389122332181a7c3db7f27e918eec64e3",
+            .sha256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+            .size = 682_293_092,
+        },
+        .codec_support = &qwen3_tts_codec_support,
+    },
+    .{
+        .name = "qwen3-tts-0.6b-base",
+        .title = "Qwen3-TTS 0.6B Base",
+        .kind = .speech,
+        .repo = "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        .file = "model.safetensors",
+        .revision = "5d83992436eae1d760afd27aff78a71d676296fc",
+        .sha256 = "180b3b10eb1c9f1b4db7806d5475bae3071c0243c299d49926bab1da3b6946f6",
+        .size = 1_829_344_272,
+        .architecture = "qwen3_tts",
+        .quantization = "BF16",
+        .support = &qwen3_tts_support,
+        .codec = .{
+            .repo = "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            .file = "speech_tokenizer/model.safetensors",
+            .revision = "5d83992436eae1d760afd27aff78a71d676296fc",
+            .sha256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+            .size = 682_293_092,
+        },
+        .codec_support = &qwen3_tts_codec_support,
+    },
     // NVIDIA's Nemotron 3.5 ASR streaming 0.6B, F32 as published; pinned
     // 2026-10-27 by the pull (docs/models/nemotron-asr.md).
     .{
@@ -471,6 +517,20 @@ pub const audio_entries = [_]AudioEntry{
 
 pub fn findAudio(name: []const u8) ?*const AudioEntry {
     for (&audio_entries) |*e| if (std.mem.eql(u8, e.name, name)) return e;
+    return null;
+}
+
+/// The audio catalogue's names before 0.11.0 and the entries they became:
+/// a name says whether it is CustomVoice or Base.
+const renamed_audio = [_][2][]const u8{
+    .{ "qwen3-tts-1.7b", "qwen3-tts-1.7b-customvoice" },
+    .{ "qwen3-tts-0.6b", "qwen3-tts-0.6b-customvoice" },
+};
+
+/// The entry an old audio name became, for a message that refuses it; no
+/// name resolves through it.
+pub fn renamedAudio(name: []const u8) ?[]const u8 {
+    for (renamed_audio) |pair| if (std.mem.eql(u8, pair[0], name)) return pair[1];
     return null;
 }
 
@@ -670,15 +730,23 @@ test "audio entries are well formed, of their two kinds, and share no name with 
             try std.testing.expect(std.mem.eql(u8, c.repo, e.repo) and std.mem.eql(u8, c.revision, e.revision) and c.sha256.len == 64);
             const codec_dir = std.fs.path.dirnamePosix(c.file).?;
             for (e.codec_support) |name| try std.testing.expect(std.mem.startsWith(u8, name, codec_dir));
-            try std.testing.expect(e.speakers.len > 0);
+            // A Base clones a voice instead of naming speakers.
+            try std.testing.expectEqual(!std.mem.endsWith(u8, e.name, "-base"), e.speakers.len > 0);
         }
         for (audio_entries[i + 1 ..]) |other| try std.testing.expect(!std.mem.eql(u8, e.name, other.name));
     }
-    // Only the 1.7B performs an instruction; both speak with the same codec.
-    try std.testing.expect(findAudio("qwen3-tts-1.7b").?.instructions and !findAudio("qwen3-tts-0.6b").?.instructions);
-    try std.testing.expectEqualStrings(findAudio("qwen3-tts-1.7b").?.codec.?.sha256, findAudio("qwen3-tts-0.6b").?.codec.?.sha256);
+    // Only the 1.7B CustomVoice performs an instruction; all four speak with the same codec.
+    try std.testing.expect(findAudio("qwen3-tts-1.7b-customvoice").?.instructions and !findAudio("qwen3-tts-0.6b-customvoice").?.instructions);
+    for ([_][]const u8{ "qwen3-tts-0.6b-customvoice", "qwen3-tts-1.7b-base", "qwen3-tts-0.6b-base" }) |name| {
+        try std.testing.expectEqualStrings(findAudio("qwen3-tts-1.7b-customvoice").?.codec.?.sha256, findAudio(name).?.codec.?.sha256);
+        try std.testing.expect(!findAudio(name).?.instructions);
+    }
+    // The old names resolve to nothing; they only say what they became.
+    try std.testing.expect(findAudio("qwen3-tts-1.7b") == null);
+    try std.testing.expectEqualStrings("qwen3-tts-0.6b-customvoice", renamedAudio("qwen3-tts-0.6b").?);
+    try std.testing.expect(renamedAudio("qwen3-tts-0.6b-base") == null);
     try std.testing.expectEqual(ModelKind.transcription, kindOf(.{}, "nemotron-asr-0.6b"));
-    try std.testing.expectEqual(@as(u64, 3_833_402_552 + 682_293_092), findAudio("qwen3-tts-1.7b").?.totalSize());
+    try std.testing.expectEqual(@as(u64, 3_833_402_552 + 682_293_092), findAudio("qwen3-tts-1.7b-customvoice").?.totalSize());
     const dir = try audioDirectory(std.testing.allocator, "/m", findAudio("nemotron-asr-0.6b").?);
     defer std.testing.allocator.free(dir);
     try std.testing.expectEqualStrings("/m/nvidia/nemotron-3.5-asr-streaming-0.6b", dir);

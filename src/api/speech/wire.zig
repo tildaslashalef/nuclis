@@ -208,11 +208,11 @@ test "the speech request: OpenAI's fields and nuclis's, defaults where absent" {
     const arena = arena_state.allocator();
     var problem: Problem = .{};
     const full = try parse(arena,
-        \\{"model": "qwen3-tts-1.7b", "input": "Hello there.", "voice": "vivian",
+        \\{"model": "qwen3-tts-1.7b-customvoice", "input": "Hello there.", "voice": "vivian",
         \\ "instructions": "Whisper.", "response_format": "pcm", "stream_format": "sse",
         \\ "speed": 1.0, "seed": 7, "language": "english", "user": "ignored"}
     , &problem);
-    try testing.expectEqualStrings("qwen3-tts-1.7b", full.model.?);
+    try testing.expectEqualStrings("qwen3-tts-1.7b-customvoice", full.model.?);
     try testing.expectEqualStrings("Hello there.", full.input);
     try testing.expectEqualStrings("vivian", full.voice.?);
     try testing.expectEqualStrings("Whisper.", full.instructions.?);

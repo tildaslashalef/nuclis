@@ -1351,6 +1351,10 @@ fn remove(arena: Allocator, io: std.Io, root: []const u8, registry: config.Model
     const registered = registry.find(name);
     const targets = (try catalogueFiles(arena, io, models, name, selection, diag)) orelse blk: {
         const entry = registered orelse {
+            if (catalog.renamedAudio(name)) |now| {
+                diag.set("{s} is now {s}: a speech model's name says CustomVoice or Base", .{ name, now });
+                return error.UnknownModel;
+            }
             diag.set("{s} is not a catalogue name or an entry of the models registry", .{name});
             return error.UnknownModel;
         };

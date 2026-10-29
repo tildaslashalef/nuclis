@@ -978,7 +978,7 @@ test "files: refusals before the GPU, a full queue, a file that never starts" {
         try f.init(4);
         defer f.deinit();
         const files = &f.service.files;
-        try expectError(files.answer(arena, io, try testForm(arena, &.{.{ "model", "qwen3-tts-1.7b" }}, wav), test_type, null), .bad_request, "not_a_transcription_model", "model");
+        try expectError(files.answer(arena, io, try testForm(arena, &.{.{ "model", "qwen3-tts-1.7b-customvoice" }}, wav), test_type, null), .bad_request, "not_a_transcription_model", "model");
         try expectError(files.answer(arena, io, try testForm(arena, &.{.{ "model", "laya" }}, wav), test_type, null), .bad_request, "not_a_transcription_model", "model");
         try expectError(files.answer(arena, io, try testForm(arena, &.{.{ "model", "whisper-1" }}, wav), test_type, null), .not_found, "model_not_found", "model");
         try expectError(files.answer(arena, io, try testForm(arena, &.{}, "not audio at all, not even close"), test_type, null), .bad_request, "invalid_audio", "file");

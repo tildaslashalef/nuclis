@@ -369,7 +369,7 @@ def main() -> int:
     parser.add_argument("mode", choices=["beside", "loop"])
     parser.add_argument("--nuclis", default=str(ROOT / "zig-out/bin/nuclis"))
     parser.add_argument("--chat", default="gemma-4-e4b-qat")
-    parser.add_argument("--voice-model", default="qwen3-tts-1.7b")
+    parser.add_argument("--voice-model", default="qwen3-tts-1.7b-customvoice")
     parser.add_argument("--voice", default="ryan")
     parser.add_argument("--ears", default="nemotron-asr-0.6b")
     parser.add_argument("--rounds", type=int, default=3)

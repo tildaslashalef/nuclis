@@ -14,10 +14,10 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–8 (the
+`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–9 (the
 facts, the traces, the config and binding, audio at 24 kHz, both
-encoders, the clone prompt and synthesizer, the voice store) are done and
-committed. Next: task 9, the catalogue and the rename. A side fix in the
+encoders, the clone prompt and synthesizer, the voice store, the
+catalogue and the rename) are done and committed. Next: task 10, the CLI. A side fix in the
 branch: `AGENTS.md` notes that Zig 0.17 has no `**` operator (`0aabc3a`). The next release
 (0.11.0) carries K-quant E4B files
 ([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
@@ -30,7 +30,7 @@ this unit, if it lands first.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 9 next |
+| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 10 next |
 
 ## Qwen3-TTS Base: voice cloning with saved voices
 
@@ -143,14 +143,16 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
    add` then `speak --voice` on both Base sizes, heard back by the
    transcriber). The module doc links `docs/guide/api.md § Voices`,
    which task 11 writes.
-9. *Catalogue and rename.* `src/catalog.zig` `audio_entries`: the two
-   renamed CustomVoice entries, the two Base entries (sizes and SHA-256
-   from the Hub at the pinned revisions; `speakers` empty; a `clones`
-   flag); old names refused in `src/audio/catalog.zig` `resolve`; every
-   reference: `src/config.zig`, `src/help.zig`, `src/api/speech/*`,
-   `src/api/root.zig`, `src/api/transcription/file.zig`, `gates.json`
-   (models `qwen3_tts_06b_base`, `qwen3_tts_17b_base`), `scripts/`,
-   `site/index.html`, `README.md`, `docs/`.
+9. *Catalogue and rename.* Done: `audio_entries` names
+   `qwen3-tts-{1.7b,0.6b}-customvoice` and adds `qwen3-tts-{1.7b,0.6b}-base`
+   (pinned 2026-10-29); `catalog.renamedAudio` refuses the old names in
+   `audio/catalog.resolve` (speak, transcribe, serve), `model pull`, and
+   `model rm`, naming the new one; a registry entry may still take them.
+   Every reference renamed (code, tests, help, scripts, site, README,
+   docs), the Base rows added to the README, getting-started, spec, and
+   catalogue tables. Checked: `model pull qwen3-tts-0.6b-base` verifies the
+   files pulled by repository; `model ls` lists all four. The user's
+   `nuclis.json` names no speech model; Muon does (see below).
 10. *CLI.* `nuclis voice add <name> <audio> [--text <transcript>]`,
     `voice list`, `voice rm <name>`; `nuclis speak --voice <name>` on a
     Base model loads the saved voice (`ensure`, then prompt). Help and
@@ -185,7 +187,11 @@ answers to its three questions: a clip is registered once as a named voice
 (`POST /v1/audio/voices`), not sent with every request; the clip's limits
 (1–30 s after decoding, the formats `audio.readable` names, a transcript
 ≤ 2 KiB); a Base takes no instructions (Qwen's cloning call has none), so
-moods show on the face only, as on the 0.6B CustomVoice. **No pull
+moods show on the face only, as on the 0.6B CustomVoice. Also tell it
+the rename: Muon names `qwen3-tts-1.7b` and `qwen3-tts-0.6b` in
+`Sources/MuonCore/Engine/EngineModels.swift` (and its tests), which nuclis
+now refuses with `404 model_not_found`; they are
+`qwen3-tts-1.7b-customvoice` and `qwen3-tts-0.6b-customvoice`. **No pull
 request until the user says so.**
 
 **Gates.** `zig build test`; `zig build test-qwen3-tts -- <dir> clone` (a new mode beside `codec` and `talker`); new gates

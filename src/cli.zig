@@ -583,6 +583,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                     }
                     loaded = try config.load(alloc, io, .cwd(), config_path, diag);
                     const entry = loaded.?.config.models.find(options.pull.repo) orelse {
+                        if (catalog.renamedAudio(options.pull.repo)) |now| {
+                            diag.set("{s} is now {s}: a speech model's name says CustomVoice or Base", .{ options.pull.repo, now });
+                            return error.UnknownModel;
+                        }
                         diag.set("{s} is not a catalogue name, an entry of the models registry in {s}, or an owner/repo id", .{ options.pull.repo, config_path.? });
                         return error.UnknownModel;
                     };

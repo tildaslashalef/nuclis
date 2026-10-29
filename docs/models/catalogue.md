@@ -84,6 +84,10 @@ values [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/workl
 | | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
 | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | `0c0e3051f131929182e2c023b9537f8b1c68adfe` | `model.safetensors` | 3,833,402,552 | `38b1d5971bdbd982b561cccec982669a53b0537c3cf5e9bd4778ed07bb2f5137` |
 | | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
+| `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | `5d83992436eae1d760afd27aff78a71d676296fc` | `model.safetensors` | 1,829,344,272 | `180b3b10eb1c9f1b4db7806d5475bae3071c0243c299d49926bab1da3b6946f6` |
+| | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
+| `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | `fd4b254389122332181a7c3db7f27e918eec64e3` | `model.safetensors` | 3,857,413,744 | `38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c` |
+| | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
 | `nvidia/nemotron-3.5-asr-streaming-0.6b` | `ea30d66debe3740a08b573244286791d423d6b3e` | `model.safetensors` | 2,552,062,944 | `9eebdd6590289cb3030f310858f3df93256600a800a3e8200c5993d5f967e174` |
 
 The Saluki rows were pulled and verified on 2026-10-14; the file is not a
@@ -390,9 +394,15 @@ records a GGUF whose header says `gemma-embedding2` as `"kind":
 default.
 
 A fourth table, `audio_entries`, pins the speech and transcription
-checkpoints (2026-10-27): `qwen3-tts-1.7b` and `qwen3-tts-0.6b` (kind
-`speech`, `nuclis speak`) and `nemotron-asr-0.6b` (kind `transcription`,
-`nuclis transcribe`), at the commits and digests of the table above.
+checkpoints: `qwen3-tts-1.7b-customvoice` and `qwen3-tts-0.6b-customvoice`
+(2026-10-27) and `qwen3-tts-1.7b-base` and `qwen3-tts-0.6b-base`
+(2026-10-29), kind `speech` (`nuclis speak`), and `nemotron-asr-0.6b`
+(kind `transcription`, `nuclis transcribe`), at the commits and digests
+of the table above. A speech name says CustomVoice (built-in speakers) or
+Base (a saved voice). The names before 0.11.0, `qwen3-tts-1.7b` and
+`qwen3-tts-0.6b`, resolve to nothing: every command and the server refuse
+them with the name each became (`catalog.renamedAudio`), and a registry
+entry may take them.
 `nuclis model pull <name>` lists the repository once at the pinned
 commit and fetches the weights with their support files (`config.json`,
 `generation_config.json`, the tokenizer's files, and
@@ -405,7 +415,7 @@ refused the same way. The codec's sidecar records the role `codec`. `--with`, `-
 lists them last, marked `(nuclis speak)` or `(nuclis transcribe)`, the
 codec beneath its voice; `model inspect <name>` compares the Hub's
 digests with the catalogue's (a safetensors file has no directory to read
-remotely). `speech.model` defaults to `qwen3-tts-1.7b` (the only one that
+remotely). `speech.model` defaults to `qwen3-tts-1.7b-customvoice` (the only one that
 takes a delivery instruction), `transcribe.model` to `nemotron-asr-0.6b`;
 the other commands refuse these names, and `speak` and `transcribe`
 refuse each other's.

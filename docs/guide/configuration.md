@@ -119,7 +119,7 @@ global `generation.speculative` applies to models without an entry.
 | --- | --- | --- |
 | `decide.model` | `laya` | the decision model `nuclis decide` opens, and `nuclis serve` for a decision request that names none: a registry entry of kind `decision`, a decision catalogue name, or a directory. A text model is refused |
 | `embed.model` | `embeddinggemma-2` | the embedding model `nuclis embed` opens: a registry entry of kind `embedding`, an embedding catalogue name, or a GGUF path. Another kind's name is refused |
-| `speech.model` | `qwen3-tts-1.7b` | the speech model `nuclis speak` opens, and `POST /v1/audio/speech` for a request that names none: a registry entry of kind `speech`, a speech catalogue name (`qwen3-tts-1.7b`, `qwen3-tts-0.6b`), or (for `speak`) a checkpoint directory. Another kind's name is refused |
+| `speech.model` | `qwen3-tts-1.7b-customvoice` | the speech model `nuclis speak` opens, and `POST /v1/audio/speech` for a request that names none: a registry entry of kind `speech`, a speech catalogue name (`qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice`), or (for `speak`) a checkpoint directory. Another kind's name is refused |
 | `speech.voice` | `ryan` | the speaker a `speak` or speech request that names none gets: one of the model's (Qwen's checkpoints have nine; a fine-tune may have its own) |
 | `transcribe.model` | `nemotron-asr-0.6b` | the transcription model `nuclis transcribe` opens, and the server's default: a registry entry of kind `transcription`, the catalogue name, or (for `transcribe`) a checkpoint directory |
 | `serve.host` | `127.0.0.1` | an IP literal or `localhost`; beyond loopback the API is reachable from the network with no authentication. Flag `--host` |
@@ -127,7 +127,7 @@ global `generation.speculative` applies to models without an entry.
 | `serve.log` | `true` | a line per request on stdout; `--quiet` turns it off |
 | `serve.timeout` | `300` | seconds a request may wait for the GPU before `529 timeout` (a clef-flash request can hold it for minutes); flag `--timeout` |
 | `serve.memory_bytes` | `null` | what every model `nuclis serve` keeps open may hold together, whatever their kind; null is physical memory less a third, at most 16 GiB. Flag `--memory <GiB>` ([api.md § Memory](api.md#memory)) |
-| `serve.pin` | `[]` | models `nuclis serve` opens at start and its memory budget never closes, by name, any kind: a JSON list (`["gemma-4-e4b-qat", "qwen3-tts-1.7b"]`) or one comma-separated string (what `nuclis config set serve.pin a,b` writes); at most 8. Flag `--pin`, repeated, replaces it ([api.md § Memory](api.md#memory)) |
+| `serve.pin` | `[]` | models `nuclis serve` opens at start and its memory budget never closes, by name, any kind: a JSON list (`["gemma-4-e4b-qat", "qwen3-tts-1.7b-customvoice"]`) or one comma-separated string (what `nuclis config set serve.pin a,b` writes); at most 8. Flag `--pin`, repeated, replaces it ([api.md § Memory](api.md#memory)) |
 | `serve.transcription_bytes` | `268435456` (256 MiB) | the largest upload `POST /v1/audio/transcriptions` takes, held in memory while it is transcribed: two hours of 16 kHz 16-bit mono WAV fit; past it `413 payload_too_large`. 1 byte to 4 GiB ([api.md § Transcription (files)](api.md#transcription-files)) |
 | `serve.web` | `false` | run the hosted `web_search`, `web_fetch`, and `web_context` tool types a chat request asks for, through `web.url` ([api.md § Hosted web tools](api.md#hosted-web-tools)); off refuses them. Needs `web.url` |
 

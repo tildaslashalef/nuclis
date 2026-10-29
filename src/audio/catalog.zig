@@ -1,5 +1,5 @@
 //! Speech and transcription models by name: a registry entry of the kind,
-//! an audio catalogue name (`qwen3-tts-1.7b`, `nemotron-asr-0.6b`), or, for
+//! an audio catalogue name (`qwen3-tts-1.7b-customvoice`, `nemotron-asr-0.6b`), or, for
 //! the commands only, a checkpoint directory. Shared by `nuclis speak`,
 //! `nuclis transcribe`, and `nuclis serve`, which opens no path a client
 //! names. docs/models/catalogue.md § The catalogue.
@@ -58,6 +58,10 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
         }
         return .{ .directory = try catalog.audioDirectory(arena, try models(arena, root, ""), entry), .entry = entry, .bytes = entry.totalSize() };
     }
+    if (catalog.renamedAudio(name)) |now| {
+        diag.set("{s} is now {s}: a speech model's name says CustomVoice or Base", .{ name, now });
+        return error.ModelNotFound;
+    }
     const other = catalog.kindOf(.{}, name);
     if (other != .generation or catalog.find(name) != null) {
         diag.set("{s} is a {s} model of the catalogue; `{s}` opens a {s} model ({s})", .{ name, catalog.kindName(other), catalog.command(kind.model()), @tagName(kind), defaultName(kind) });
@@ -101,7 +105,7 @@ fn files(kind: Kind) []const []const u8 {
 
 fn defaultName(kind: Kind) []const u8 {
     return switch (kind) {
-        .speech => "qwen3-tts-1.7b",
+        .speech => "qwen3-tts-1.7b-customvoice",
         .transcription => "nemotron-asr-0.6b",
     };
 }
@@ -191,7 +195,7 @@ test "names resolve by kind; another kind's name is refused by name; the server 
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var diag: config.Diagnostic = .{};
-    const voice = try resolve(arena, "/r", .{}, "qwen3-tts-1.7b", .speech, false, &diag);
+    const voice = try resolve(arena, "/r", .{}, "qwen3-tts-1.7b-customvoice", .speech, false, &diag);
     try std.testing.expectEqualStrings("/r/models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", voice.directory);
     try std.testing.expect(voice.entry.?.instructions);
     const ears = try resolve(arena, "/r", .{}, "nemotron-asr-0.6b", .transcription, false, &diag);
@@ -222,8 +226,11 @@ test "a model not pulled names the pull that fetches it" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", arena);
-    try std.testing.expectError(error.ModelFileNotFound, locate(arena, std.testing.io, root, .{}, "qwen3-tts-0.6b", .speech, false, &diag));
-    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "nuclis model pull qwen3-tts-0.6b") != null);
+    try std.testing.expectError(error.ModelFileNotFound, locate(arena, std.testing.io, root, .{}, "qwen3-tts-0.6b-customvoice", .speech, false, &diag));
+    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "nuclis model pull qwen3-tts-0.6b-customvoice") != null);
+    // An old name is refused with the one it became, for a path-taking command too.
+    try std.testing.expectError(error.ModelNotFound, resolve(arena, root, .{}, "qwen3-tts-1.7b", .speech, true, &diag));
+    try std.testing.expectEqualStrings("qwen3-tts-1.7b is now qwen3-tts-1.7b-customvoice: a speech model's name says CustomVoice or Base", diag.message());
     try tmp.dir.createDirPath(std.testing.io, "models/nvidia/nemotron-3.5-asr-streaming-0.6b");
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "models/nvidia/nemotron-3.5-asr-streaming-0.6b/model.safetensors", .data = "abcd" });
     try std.testing.expectEqual(@as(u64, 4), (try locate(arena, std.testing.io, root, .{}, "nemotron-asr-0.6b", .transcription, false, &diag)).bytes);

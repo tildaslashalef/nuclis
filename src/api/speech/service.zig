@@ -141,7 +141,7 @@ pub const Service = struct {
             else => refuse(arena, .internal_server_error, "model_failed", "model", "{s}: {s}", .{ name, if (diag.len > 0) diag.message() else @errorName(err) }),
         };
         if (parsed.instructions != null) if (located.entry) |entry| if (!entry.instructions)
-            return refuse(arena, .bad_request, "instructions_unsupported", "instructions", "{s} performs no instruction; qwen3-tts-1.7b does", .{name});
+            return refuse(arena, .bad_request, "instructions_unsupported", "instructions", "{s} performs no instruction; qwen3-tts-1.7b-customvoice does", .{name});
 
         const job = arena.create(Job) catch return internal(arena);
         job.* = .{
@@ -663,7 +663,7 @@ fn startFailure(job: *Job, err: anyerror) ApiError {
     return switch (err) {
         error.UnknownSpeaker => apiError(arena_message, .bad_request, "invalid_request", "voice", "{s} is not a speaker of {s}: {f}", .{ job.voice, job.name, names(job.speakers) }),
         error.UnknownLanguage => apiError(arena_message, .bad_request, "invalid_request", "language", "{s} is not a language of {s}: auto, {f}", .{ job.request.language orelse "auto", job.name, names(job.languages) }),
-        error.InstructionUnsupported => apiError(arena_message, .bad_request, "instructions_unsupported", "instructions", "{s} performs no instruction; qwen3-tts-1.7b does", .{job.name}),
+        error.InstructionUnsupported => apiError(arena_message, .bad_request, "instructions_unsupported", "instructions", "{s} performs no instruction; qwen3-tts-1.7b-customvoice does", .{job.name}),
         error.EmptyText => apiError(arena_message, .bad_request, "invalid_request", "input", "\"input\" has no text to speak", .{}),
         error.ModelTooLarge => apiError(arena_message, .bad_request, "model_too_large", "model", "{s} needs {d:.1} GiB, more than the server's budget leaves beside the pinned models (serve.memory_bytes, --memory, --pin)", .{ job.name, @as(f64, @floatFromInt(job.bytes)) / (1 << 30) }),
         error.Pinned => apiError(arena_message, .service_unavailable, "busy", "model", "overloaded: {s} needs memory a running request holds; retry shortly", .{job.name}),
@@ -755,7 +755,7 @@ const Fixture = struct {
         try self.tmp.dir.writeFile(io, .{ .sub_path = dir ++ "/speech_tokenizer/model.safetensors", .data = "not weights" });
         self.root = try self.tmp.dir.realPathFileAlloc(io, ".", gpa);
         self.executor = .init(max_queued);
-        self.service = .init(gpa, &self.executor, false, self.root, .{}, .{ .model = "qwen3-tts-0.6b" }, 20 * std.time.ns_per_ms);
+        self.service = .init(gpa, &self.executor, false, self.root, .{}, .{ .model = "qwen3-tts-0.6b-customvoice" }, 20 * std.time.ns_per_ms);
     }
 
     fn deinit(self: *Fixture) void {
@@ -794,7 +794,7 @@ test "speech: every refusal before the GPU is a typed error body with its field"
         .{ .body = "{\"input\": \"Hi.\", \"model\": \"laya\"}", .status = .bad_request, .code = "not_a_speech_model", .param = "model" },
         .{ .body = "{\"input\": \"Hi.\", \"model\": \"tts-1\"}", .status = .not_found, .code = "model_not_found", .param = "model" },
         .{ .body = "{\"input\": \"Hi.\", \"model\": \"/etc/voice\"}", .status = .not_found, .code = "model_not_found", .param = "model" },
-        .{ .body = "{\"input\": \"Hi.\", \"model\": \"qwen3-tts-1.7b\"}", .status = .not_found, .code = "model_not_found", .param = "model" },
+        .{ .body = "{\"input\": \"Hi.\", \"model\": \"qwen3-tts-1.7b-customvoice\"}", .status = .not_found, .code = "model_not_found", .param = "model" },
         .{ .body = "{\"input\": \"Hi.\", \"instructions\": \"Whisper.\"}", .status = .bad_request, .code = "instructions_unsupported", .param = "instructions" },
     };
     for (cases) |case| {
@@ -849,7 +849,8 @@ test "speech: a voice that fails to open fails its request before the head, and 
     try std.testing.expect(!stats.speaking and stats.waiting == 0);
     try std.testing.expectEqual(@as(u64, 0), budget.resident(io));
 
-    // The listing names both voices, pulled or not, the default marked.
+    // The listing names the four speech models, pulled or not, the default
+    // marked; a Base has no speakers.
     var listing: std.ArrayList(models.Entry) = .empty;
     try Service.list(&f.service, arena, io, &listing);
     var seen: usize = 0;
@@ -857,14 +858,15 @@ test "speech: a voice that fails to open fails its request before the head, and 
         const d = e.details.object;
         try std.testing.expectEqualStrings("speech", d.get("kind").?.string);
         try std.testing.expectEqualStrings("Qwen", e.owned_by);
-        const small = std.mem.eql(u8, e.id, "qwen3-tts-0.6b");
+        const small = std.mem.eql(u8, e.id, "qwen3-tts-0.6b-customvoice");
+        const base = std.mem.endsWith(u8, e.id, "-base");
         try std.testing.expectEqual(small, d.get("present").?.bool);
         try std.testing.expectEqual(small, d.get("default").?.bool);
-        try std.testing.expectEqual(!small, d.get("instructions").?.bool);
-        try std.testing.expectEqual(@as(usize, 9), d.get("voices").?.array.items.len);
+        try std.testing.expectEqual(std.mem.eql(u8, e.id, "qwen3-tts-1.7b-customvoice"), d.get("instructions").?.bool);
+        try std.testing.expectEqual(@as(usize, if (base) 0 else 9), d.get("voices").?.array.items.len);
         seen += 1;
     }
-    try std.testing.expectEqual(@as(usize, 2), seen);
+    try std.testing.expectEqual(@as(usize, 4), seen);
 }
 
 test "a speech model's voice has no default when speech.voice is not one of its speakers" {

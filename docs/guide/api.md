@@ -55,9 +55,9 @@ The configuration file (`~/.nuclis/nuclis.json`) holds the defaults:
 
 ```json
 "decide": { "model": "laya" },
-"speech": { "model": "qwen3-tts-1.7b", "voice": "ryan" },
+"speech": { "model": "qwen3-tts-1.7b-customvoice", "voice": "ryan" },
 "serve":  { "host": "127.0.0.1", "port": 9000, "log": true, "timeout": 300,
-            "pin": ["gemma-4-e4b-qat", "qwen3-tts-1.7b", "nemotron-asr-0.6b"] }
+            "pin": ["gemma-4-e4b-qat", "qwen3-tts-1.7b-customvoice", "nemotron-asr-0.6b"] }
 ```
 
 `nuclis config set serve.port 9000` changes one; the flags override them
@@ -85,7 +85,7 @@ model's weights and codec; a transcription model's weights) plus, for a
 language model, its attention cache and the saved states it may keep (`cache.memory_bytes`,
 4 GiB), and for a speech or transcription model the device memory it
 created on opening (its converted weights, caches, and scratch). Qwen3.8 counts 22.0 GiB, `laya-multilingual` 0.6 GiB, clef-flash
-8.4 GiB, Gemma 4 E4B 8.9 GiB, `qwen3-tts-1.7b` 4.7 GiB (5,095,675,552 B:
+8.4 GiB, Gemma 4 E4B 8.9 GiB, `qwen3-tts-1.7b-customvoice` 4.7 GiB (5,095,675,552 B:
 the BF16 talker and the F32 codec, 4,515,695,644 B, and 553 MiB of
 device buffers), `nemotron-asr-0.6b` 2.4 GiB (2,602,777,056 B: 2,552,062,944
 and 48 MiB). What a request holds while it runs is not counted: a
@@ -107,7 +107,7 @@ closed to make room, so a voice assistant's three models stay ready
 whatever else is asked:
 
 ```sh
-nuclis serve --pin gemma-4-e4b-qat --pin qwen3-tts-1.7b --pin nemotron-asr-0.6b
+nuclis serve --pin gemma-4-e4b-qat --pin qwen3-tts-1.7b-customvoice --pin nemotron-asr-0.6b
 ```
 
 A model that does not fit beside the pinned ones is refused at once
@@ -837,7 +837,7 @@ sentence ends does.
 | Field | In nuclis |
 | --- | --- |
 | `input` | the text, UTF-8, at most 16 KiB (`400 request_too_large`) |
-| `model` | a registry entry of kind `speech` or `qwen3-tts-1.7b`, `qwen3-tts-0.6b`; never a path. Absent: the open one, else `speech.model` (`qwen3-tts-1.7b`). Another speech model replaces the open one; that request pays the open |
+| `model` | a registry entry of kind `speech` or a catalogue speech name (`qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice`, `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base`); never a path. The names before 0.11.0 (`qwen3-tts-1.7b`, `qwen3-tts-0.6b`) are `404 model_not_found`, the message naming the new one. Absent: the open one, else `speech.model` (`qwen3-tts-1.7b-customvoice`). Another speech model replaces the open one; that request pays the open |
 | `voice` | one of the model's speakers: `aiden`, `dylan`, `eric`, `ono_anna`, `ryan`, `serena`, `sohee`, `uncle_fu`, `vivian`; absent, `speech.voice` (`ryan`). OpenAI's voice names are not speakers here (`400 invalid_request`, listing them) |
 | `instructions` | how to say it (`"Speak with excited, breathless joy."`): the 1.7B only. On the 0.6B, `400 instructions_unsupported` |
 | `response_format` | `wav` (the default; OpenAI's is `mp3`) or `pcm` |
@@ -1490,7 +1490,7 @@ passes gave 1,669 ms and 38.3 inputs/s, within the spread, while a
 ### Speech beside a chat stream, 2026-10-27, commit `07dac34`
 
 Apple M4 Pro (48 GB), ReleaseSafe (`make build`), Zig 0.17.0, macOS
-27.0; `nuclis serve --quiet --model gemma-4-e4b-qat --pin qwen3-tts-1.7b
+27.0; `nuclis serve --quiet --model gemma-4-e4b-qat --pin qwen3-tts-1.7b-customvoice
 --pin nemotron-asr-0.6b` on Metal (`unsloth/gemma-4-E4B-it-qat-GGUF` at
 `8c5a9e4f`, speculative decoding on at draft 6;
 `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` at `0c0e3051`). **The machine was
