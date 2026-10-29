@@ -1275,7 +1275,24 @@ Every kind's fields:
 | `endpoints` | the routes that serve it |
 | `input_modalities`, `output_modalities` | what a request may carry and what comes back: `text`, `image`, `audio` in; `text`, `audio`, `embedding`, `decision` out |
 | `detail` | one line for people: architecture, quantization, and size |
+| `options` | the request fields it takes, by name (below) |
 | `repo`, `revision` | where its files came from; null for a local directory |
+
+Each `options` field is an object a client can build a control or check a
+request from:
+
+| Key | Meaning |
+| --- | --- |
+| `type` | `enum` (one of `values`), `enum_list` (several), `number`, `integer`, `string`, `string_list`, `boolean` |
+| `values` | an enum's choices |
+| `min`, `max` | a number's bounds, inclusive; left out when there is none |
+| `max_items`, `max_bytes` | a list's length and each item's size |
+| `default` | what this server uses for a request that leaves the field out, from its settings as they are now; null when it uses nothing (no seed, no task) or the request must name it (a speech model without `speech.voice` among its speakers) |
+| `by_effort` | a language model's default under another `reasoning_effort`, where it differs (Qwen3.8 at `off`: `temperature` 0.7) |
+
+A field the model does not take is left out (`instructions` on the 0.6B);
+the request formats' own fields (`messages`, `input`, `file`) are not
+listed.
 | `owned_by` | the repository's owner, `nuclis` for a language model, `local` for a directory |
 | `created` | always 0 |
 
@@ -1284,6 +1301,7 @@ A decision model's:
 | Field | Meaning |
 | --- | --- |
 | `name`, `architecture`, `quantization`, `size_bytes` | the id; the catalogue's (`modernbert`, `F16`, the weights with clef's backbone), null for a registry entry |
+| `options` | `{}`: a decision request's fields describe the task, not the model |
 | `family` | `laya` or `clef`, known before the model is pulled |
 | `packs` | `true`: the states of a request, and the requests waiting with it, share one GPU pass (Laya). `false`: each state is its own pass, its cost linear in tokens (clef-flash: send one state per request with every question in it, and keep one or two requests in flight; [clef-flash.md § Time per decision](../models/clef-flash.md#time-per-decision)) |
 | `images` | it reads a request's `images` (clef-flash with its projector pulled) |
@@ -1306,6 +1324,7 @@ A language model's:
 | `features` | `tools` (native function calling; every profile renders it), `hosted_tools` (`["web_search", "web_fetch"]` when the server has web, else `[]`), `reasoning` (more than one effort), `streaming`, `structured_output` (`false`: a JSON `response_format` needs constrained decoding, which nuclis has not) |
 | `limits` | what a request may carry: `max_output_tokens` (16,384), `max_tools` (64), `max_images` and `max_image_bytes` (8, 16 MiB), `max_audio_clips`, `max_audio_bytes`, and `max_audio_seconds` (8, 16 MiB, 30) |
 | `detail` | for a model on disk, the same as `nuclis model ls`: architecture, quantization, and size, or the file's name |
+| `options` | `reasoning_effort` (its efforts; default `agent.think`, the profile's nearest), `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repetition_penalty` (the parser's bounds; defaults the profile's for that effort after `generation.sampling` and the entry's overrides, with `by_effort`), `max_tokens` (1–16,384; default the model's `max_tokens`), `seed`, `tool_choice`, `tools` (the tool types: `function`, and `web_search`, `web_fetch` with web), `stream` |
 
 An embedding model's:
 
@@ -1320,6 +1339,7 @@ An embedding model's:
 | `max_tokens` | tokens per input, 8,192 |
 | `tasks` | the `task` values it takes |
 | `limits` | `max_inputs` (2,048), `max_tokens` (8,192), `max_audio_seconds` (30), `max_body_bytes` (32 MiB) |
+| `options` | `dimensions` (default 768), `task` (no default: text as given), `title`, `encoding_format` (`float`), `truncate` (`false`), `image_tokens` (280) |
 
 A speech or transcription model's:
 
@@ -1329,11 +1349,14 @@ A speech or transcription model's:
 | `architecture`, `quantization` | the catalogue's (`qwen3_tts`, `BF16`); for a registered speech checkpoint, read from it once pulled (`quantization` is the weights' dtype, `mixed` when they differ); null before |
 | `size_bytes` | the weights and, for speech, the codec: the catalogue's sizes, else the files on disk (0 before the pull) |
 | `default` | `speech.model` or `transcribe.model` |
-| `voices` | speech: the speakers a request's `voice` takes, from the checkpoint's `spk_id` for a registered one (`["egyptian_speaker"]`); empty before the pull |
+| `voices` | speech: the speakers a request's `voice` takes, in the checkpoint's order (`spk_id`); for a model not pulled, the catalogue's; for a registered one, empty before the pull |
+| `speakers` | speech: the same as objects, `{"id": "eric", "dialect": "sichuan_dialect"}`: a dialect speaker speaks its dialect for `auto` and `chinese` (`dialect` null before the pull) |
+| `languages` | speech: the `language` values besides `auto`, the codec's (`english`, …, and the dialects `beijing_dialect`, `sichuan_dialect` on Qwen's); transcription: the locales of its `prompt_dictionary` (121 on Nemotron, `auto` among them). Empty before the pull |
 | `instructions` | speech: whether it performs a request's `instructions` (the 1.7B); null before the pull |
 | `sample_rate` | 24,000 for speech output, 16,000 for transcription input |
 | `formats` | speech: the `response_format` values, `["pcm", "wav"]` |
 | `limits` | speech: `max_input_bytes` (16 KiB). Transcription: `max_phrases` and `max_phrase_bytes` (64, 48), `max_file_bytes` (`serve.transcription_bytes`) |
+| `options` | speech: `voice` (default `speech.voice` when it is one of the speakers, else null), `language` (default `auto`), `instructions` (the 1.7B), `response_format` (`wav`), `stream_format` (`audio`), `seed` (0). Transcription, the file route's: `language` (`auto`), `response_format` (`json`), `timestamp_granularities` (`["segment"]`), `stream`, `lookahead` (`0`, `3`, `6`, `13`; default 3), `phrases` |
 
 ## `GET /v1/health`
 

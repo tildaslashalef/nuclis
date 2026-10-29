@@ -354,14 +354,14 @@ pub const Service = struct {
 
     fn list(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, out: *std.ArrayList(models.Entry)) anyerror!void {
         const self: *Service = @ptrCast(@alignCast(context));
-        try listAudio(arena, io, self.root, self.registry, .speech, self.settings.model, &self.slot, out);
+        try listAudio(arena, io, self.root, self.registry, .speech, self.settings.model, self.settings.voice, &self.slot, out);
     }
 };
 
 /// The models of `kind` for `GET /v1/models`: every catalogue entry, pulled
 /// or not, then the registry's entries of the kind. Shared with the
 /// transcription service.
-pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: config.Models, kind: audio_catalog.Kind, default_model: []const u8, slot: anytype, out: *std.ArrayList(models.Entry)) !void {
+pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: config.Models, kind: audio_catalog.Kind, default_model: []const u8, default_voice: ?[]const u8, slot: anytype, out: *std.ArrayList(models.Entry)) !void {
     var listed: std.ArrayList([]const u8) = .empty;
     const wanted: catalog.ModelKind = switch (kind) {
         .speech => .speech,
@@ -376,8 +376,9 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
         const present = located != null;
         const entry = resolved.entry;
         const registered = registry.find(name);
-        // A model the catalogue does not describe describes itself once pulled.
-        const described = if (entry == null and present and kind == .speech) try audio_catalog.describeSpeech(arena, io, resolved.directory) else null;
+        // A pulled speech model describes itself: its speakers' dialects and
+        // its languages, and for one the catalogue does not pin, the rest.
+        const described = if (present and kind == .speech) try audio_catalog.describeSpeech(arena, io, resolved.directory) else null;
         var details: std.json.ObjectMap = .empty;
         try details.put(arena, "kind", .{ .string = @tagName(kind) });
         const title = if (entry) |e| e.title else if (registered) |r| if (r.repo) |repo| std.fs.path.basenamePosix(repo) else name else name;
@@ -393,11 +394,22 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
         try details.put(arena, "default", .{ .bool = std.mem.eql(u8, name, default_model) });
         switch (kind) {
             .speech => {
-                var voices: std.json.Array = .init(arena);
-                const speakers = if (entry) |e| e.speakers else if (described) |d| d.speakers else &.{};
-                for (speakers) |v| try voices.append(.{ .string = v });
+                const speakers = if (described) |d| d.speakers else if (entry) |e| e.speakers else &.{};
+                const voices = try models.strings(arena, speakers);
                 try details.put(arena, "voices", .{ .array = voices });
-                try details.put(arena, "instructions", if (entry) |e| .{ .bool = e.instructions } else if (described) |d| .{ .bool = d.instructions } else .null);
+                var objects: std.json.Array = .init(arena);
+                for (speakers, 0..) |v, i| {
+                    var speaker: std.json.ObjectMap = .empty;
+                    try speaker.put(arena, "id", .{ .string = v });
+                    const dialect = if (described) |d| d.dialects[i] else null;
+                    try speaker.put(arena, "dialect", if (dialect) |d| .{ .string = d } else .null);
+                    try objects.append(.{ .object = speaker });
+                }
+                try details.put(arena, "speakers", .{ .array = objects });
+                const languages = if (described) |d| d.languages else &.{};
+                try details.put(arena, "languages", .{ .array = try models.strings(arena, languages) });
+                const instructions: ?bool = if (entry) |e| e.instructions else if (described) |d| d.instructions else null;
+                try details.put(arena, "instructions", if (instructions) |b| .{ .bool = b } else .null);
                 try details.put(arena, "sample_rate", .{ .integer = wire.sample_rate });
                 var formats: std.json.Array = .init(arena);
                 for (std.enums.values(wire.Format)) |f| try formats.append(.{ .string = @tagName(f) });
@@ -405,6 +417,7 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
                 var limits: std.json.ObjectMap = .empty;
                 try limits.put(arena, "max_input_bytes", .{ .integer = wire.max_input_bytes });
                 try details.put(arena, "limits", .{ .object = limits });
+                try details.put(arena, "options", .{ .object = try speechOptions(arena, voices, languages, instructions orelse false, default_voice) });
             },
             .transcription => {
                 try details.put(arena, "sample_rate", .{ .integer = 16000 });
@@ -420,6 +433,31 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
         const owner = if (repo) |r| r[0 .. std.mem.indexOfScalar(u8, r, '/') orelse r.len] else "local";
         try out.append(arena, .{ .id = name, .owned_by = owner, .details = .{ .object = details } });
     }
+}
+
+/// The request fields a speech model takes. A request without `voice`
+/// gets `speech.voice`, so its default is null when the model has no such
+/// speaker (the request must name one).
+fn speechOptions(arena: std.mem.Allocator, voices: std.json.Array, languages: []const []const u8, instructions: bool, default_voice: ?[]const u8) !std.json.ObjectMap {
+    const Option = models.Option;
+    var o: std.json.ObjectMap = .empty;
+    var voice_default: std.json.Value = .null;
+    if (default_voice) |v| for (voices.items) |item| if (std.mem.eql(u8, item.string, v)) {
+        voice_default = .{ .string = v };
+    };
+    try o.put(arena, "voice", try (Option{ .type = .@"enum", .values = voices, .default = voice_default }).value(arena));
+    var language_values = try models.strings(arena, &.{"auto"});
+    for (languages) |l| try language_values.append(.{ .string = l });
+    try o.put(arena, "language", try (Option{ .type = .@"enum", .values = language_values, .default = .{ .string = "auto" } }).value(arena));
+    if (instructions) try o.put(arena, "instructions", try (Option{ .type = .string }).value(arena));
+    var formats: std.ArrayList([]const u8) = .empty;
+    for (std.enums.values(wire.Format)) |f| try formats.append(arena, @tagName(f));
+    try o.put(arena, "response_format", try (Option{ .type = .@"enum", .values = try models.strings(arena, formats.items), .default = .{ .string = "wav" } }).value(arena));
+    var streams: std.ArrayList([]const u8) = .empty;
+    for (std.enums.values(wire.StreamFormat)) |f| try streams.append(arena, @tagName(f));
+    try o.put(arena, "stream_format", try (Option{ .type = .@"enum", .values = try models.strings(arena, streams.items), .default = .{ .string = "audio" } }).value(arena));
+    try o.put(arena, "seed", try (Option{ .type = .integer, .min = .{ .integer = 0 }, .default = .{ .integer = 0 } }).value(arena));
+    return o;
 }
 
 /// One request: queued on the connection's task, spoken on the worker. It
@@ -827,4 +865,18 @@ test "speech: a voice that fails to open fails its request before the head, and 
         seen += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), seen);
+}
+
+test "a speech model's voice has no default when speech.voice is not one of its speakers" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const voices = try models.strings(arena, &.{"egyptian_speaker"});
+    const fine_tune = try speechOptions(arena, voices, &.{"english"}, true, "ryan");
+    try std.testing.expect(fine_tune.get("voice").?.object.get("default").? == .null);
+    try std.testing.expectEqual(@as(usize, 2), fine_tune.get("language").?.object.get("values").?.array.items.len);
+    try std.testing.expect(fine_tune.get("instructions") != null);
+    const own = try speechOptions(arena, voices, &.{}, false, "egyptian_speaker");
+    try std.testing.expectEqualStrings("egyptian_speaker", own.get("voice").?.object.get("default").?.string);
+    try std.testing.expect(own.get("instructions") == null);
 }

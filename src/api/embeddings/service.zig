@@ -243,6 +243,7 @@ pub const Service = struct {
             try limits.put(arena, "max_audio_seconds", .{ .integer = embed.max_audio_seconds });
             try limits.put(arena, "max_body_bytes", .{ .integer = max_body });
             try details.put(arena, "limits", .{ .object = limits });
+            try details.put(arena, "options", .{ .object = try requestOptions(arena) });
             try details.put(arena, "tasks", .{ .array = tasks });
             const repo = if (sidecar) |s| s.repo else if (registered) |r| r.repo else if (pinned) |p| p.repo else null;
             const revision = if (sidecar) |s| s.revision else if (registered) |r| r.revision else if (pinned) |p| p.revision else null;
@@ -416,4 +417,22 @@ test "embeddings: a file that is no model fails the request on the worker, not t
         try std.testing.expect(!entry.details.object.get("present").?.bool);
         try std.testing.expectEqualStrings("unsloth", entry.owned_by);
     };
+}
+
+/// The request fields an embedding model takes, with `Request`'s defaults.
+fn requestOptions(arena: std.mem.Allocator) !std.json.ObjectMap {
+    const Option = models.Option;
+    const defaults: wire.Request = .{ .inputs = &.{} };
+    var o: std.json.ObjectMap = .empty;
+    try o.put(arena, "dimensions", try (Option{ .type = .@"enum", .values = try models.integers(arena, embed.widths), .default = .{ .integer = @intCast(defaults.dimensions) } }).value(arena));
+    var tasks: std.ArrayList([]const u8) = .empty;
+    for (std.enums.values(wire.Task)) |t| try tasks.append(arena, @tagName(t));
+    try o.put(arena, "task", try (Option{ .type = .@"enum", .values = try models.strings(arena, tasks.items) }).value(arena));
+    try o.put(arena, "title", try (Option{ .type = .string }).value(arena));
+    var encodings: std.ArrayList([]const u8) = .empty;
+    for (std.enums.values(wire.Encoding)) |e| try encodings.append(arena, @tagName(e));
+    try o.put(arena, "encoding_format", try (Option{ .type = .@"enum", .values = try models.strings(arena, encodings.items), .default = .{ .string = "float" } }).value(arena));
+    try o.put(arena, "truncate", try (Option{ .type = .boolean, .default = .{ .bool = defaults.truncate } }).value(arena));
+    try o.put(arena, "image_tokens", try (Option{ .type = .@"enum", .values = try models.integers(arena, embed.image_budgets), .default = .{ .integer = defaults.image_tokens } }).value(arena));
+    return o;
 }

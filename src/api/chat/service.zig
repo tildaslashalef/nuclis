@@ -191,6 +191,7 @@ pub const Service = struct {
         try limits.put(arena, "max_audio_bytes", .{ .integer = wire.max_audio_bytes });
         try limits.put(arena, "max_audio_seconds", .{ .integer = inference.engine.max_audio_seconds });
         try details.put(arena, "limits", .{ .object = limits });
+        try details.put(arena, "options", .{ .object = try requestOptions(arena, profile, settings, self.web != null) });
         const repo = if (settings.entry) |e| e.repo else if (pinned_entry) |e| e.repo else null;
         const revision = if (settings.entry) |e| e.revision else if (pinned_entry) |e| e.revision else null;
         try details.put(arena, "repo", if (repo) |r| .{ .string = r } else .null);
@@ -198,6 +199,60 @@ pub const Service = struct {
         return details;
     }
 };
+
+/// The request fields a language model takes, each with the default a
+/// request without it gets: the effort from `agent.think` (the profile's
+/// nearest), the sampling the profile sets for that effort after
+/// `generation.sampling` and the registry's overrides, as `Language.run`
+/// resolves them; `by_effort` where another effort changes a default.
+fn requestOptions(arena: std.mem.Allocator, profile: inference.profiles.Profile, settings: config.Resolved, web_tools: bool) !std.json.ObjectMap {
+    const Option = models.Option;
+    const effort = profile.nearestEffort(settings.think);
+    const chosen = profile.samplingOptions(effort, settings.sampling);
+    var o: std.json.ObjectMap = .empty;
+    var efforts: std.ArrayList([]const u8) = .empty;
+    for (profile.efforts()) |e| try efforts.append(arena, @tagName(e));
+    try o.put(arena, "reasoning_effort", try (Option{ .type = .@"enum", .values = try models.strings(arena, efforts.items), .default = .{ .string = @tagName(effort) } }).value(arena));
+    const Field = struct { name: []const u8, min: f32, max: ?f32 };
+    const fields = [_]Field{
+        .{ .name = "temperature", .min = 0, .max = 2 },
+        .{ .name = "top_p", .min = 0, .max = 1 },
+        .{ .name = "top_k", .min = 0, .max = null },
+        .{ .name = "min_p", .min = 0, .max = 1 },
+        .{ .name = "presence_penalty", .min = -2, .max = 2 },
+        .{ .name = "repetition_penalty", .min = 0, .max = 10 },
+    };
+    inline for (fields) |f| {
+        const is_int = comptime std.mem.eql(u8, f.name, "top_k");
+        const of = struct {
+            fn value(a: std.mem.Allocator, s: inference.sampling.Options) !std.json.Value {
+                return if (is_int) .{ .integer = @intCast(@field(s, f.name)) } else models.number(a, @field(s, f.name));
+            }
+        }.value;
+        var by_effort: std.json.ObjectMap = .empty;
+        for (profile.efforts()) |e| {
+            if (e == effort) continue;
+            const other = profile.samplingOptions(e, settings.sampling);
+            if (@field(other, f.name) != @field(chosen, f.name)) try by_effort.put(arena, @tagName(e), try of(arena, other));
+        }
+        try o.put(arena, f.name, try (Option{
+            .type = if (is_int) .integer else .number,
+            .min = if (is_int) .{ .integer = 0 } else try models.number(arena, f.min),
+            .max = if (f.max) |m| try models.number(arena, m) else null,
+            .default = try of(arena, chosen),
+            .by_effort = by_effort,
+        }).value(arena));
+    }
+    try o.put(arena, "max_tokens", try (Option{ .type = .integer, .min = .{ .integer = 1 }, .max = .{ .integer = wire.max_output_tokens }, .default = .{ .integer = @intCast(@min(settings.max_tokens, wire.max_output_tokens)) } }).value(arena));
+    try o.put(arena, "seed", try (Option{ .type = .integer, .min = .{ .integer = 0 } }).value(arena));
+    try o.put(arena, "tool_choice", try (Option{ .type = .@"enum", .values = try models.strings(arena, &.{ "auto", "none" }), .default = .{ .string = "auto" } }).value(arena));
+    var tool_types: std.ArrayList([]const u8) = .empty;
+    try tool_types.append(arena, "function");
+    if (web_tools) try tool_types.appendSlice(arena, &.{ "web_search", "web_fetch" });
+    try o.put(arena, "tools", try (Option{ .type = .enum_list, .values = try models.strings(arena, tool_types.items), .max_items = (inference.profiles.Limits{}).tools, .default = .{ .array = .init(arena) } }).value(arena));
+    try o.put(arena, "stream", try (Option{ .type = .boolean, .default = .{ .bool = false } }).value(arena));
+    return o;
+}
 
 /// Whether the model's projector on disk carries an audio encoder, as the
 /// first clip's `loadAudio` checks (Gemma 4 E4B's does, the 12B's does not).

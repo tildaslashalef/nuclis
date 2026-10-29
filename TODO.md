@@ -19,7 +19,8 @@ data a client (Muon's settings) renders its model pages from. Delivered:
 a registered speech checkpoint lists its voices, instructions, dtype,
 name, and size; every entry carries the shared fields, modalities,
 limits, and features, and absent catalogue language models are listed.
-Next: `options` and `speakers` (below), once the user agrees. K-quant E4B files
+`options` (every kind) and speech `speakers` and `languages` are built;
+what remains is the pull request. K-quant E4B files
 (`gemma4-bf16-per-layer-projection`) waits for its pull request. The next
 release (0.11.0) carries it with Q5_0 and Q5_1
 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)), Muon's
@@ -52,6 +53,13 @@ Then the cheap part of the listing for every client: `GET /v1/models/{id}`
 models `features` (`tools`, `hosted_tools`, `reasoning`, `streaming`,
 `structured_output`), `audio` (the projector's audio encoder, as
 `loadAudio` checks), `repo`/`revision`, and the catalogue's absent ones.
+
+Then `options` (`models.Option`): each kind's request fields with type,
+values or bounds, and the default as the request path resolves it
+(`requestOptions` in the chat, embeddings, and transcription services,
+`speechOptions` in speech); speech `speakers` (`{id, dialect}`) and
+`languages` from the checkpoint (`describeSpeech`), transcription
+`languages` from `prompt_dictionary` (`transcriptionLanguages`).
 
 **Proposed, waiting on the user's review** (the sample payload was shown
 in the session, 2026-10-29):

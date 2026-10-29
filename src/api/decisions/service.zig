@@ -183,6 +183,8 @@ pub const Service = struct {
             const clef_budget: ?std.json.Value = if (l.family == .clef) .{ .integer = inference.profiles.clef.max_length } else null;
             try details.put(arena, "max_len", clef_budget orelse if (l.budget) |b| .{ .integer = @intCast(b.max_len) } else .null);
             try details.put(arena, "head_max_len", if (l.budget) |b| .{ .integer = @intCast(b.head_max_len) } else .null);
+            // A decision request's fields describe the task, not the model: none to choose.
+            try details.put(arena, "options", .{ .object = .empty });
             try details.put(arena, "repo", if (l.repo) |r| .{ .string = r } else .null);
             try details.put(arena, "revision", if (l.revision) |r| .{ .string = r } else .null);
             const owner = if (l.repo) |r| r[0 .. std.mem.indexOfScalar(u8, r, '/') orelse r.len] else "local";

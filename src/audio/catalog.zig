@@ -112,10 +112,14 @@ fn models(arena: std.mem.Allocator, root: ?[]const u8, path: []const u8) ![]cons
     return std.fs.path.join(arena, &.{ dir, "models", path });
 }
 
-/// What a speech checkpoint on disk says about itself, for a model the
-/// catalogue does not describe. Strings live in `arena`.
+/// What a speech checkpoint on disk says about itself. Strings live in
+/// `arena`.
 pub const Described = struct {
     speakers: []const []const u8,
+    /// Each speaker's dialect (`sichuan_dialect`), or null; by `speakers`' index.
+    dialects: []const ?[]const u8,
+    /// The `language` values besides `auto`: the codec's language ids.
+    languages: []const []const u8,
     instructions: bool,
     /// The weights' dtype (`BF16`), or `mixed`.
     quantization: []const u8,
@@ -141,7 +145,13 @@ pub fn describeSpeech(arena: std.mem.Allocator, io: std.Io, directory: []const u
     };
     defer parsed.deinit();
     const speakers = try arena.alloc([]const u8, parsed.speakers.len);
-    for (speakers, parsed.speakers) |*name, s| name.* = try arena.dupe(u8, s.name);
+    const dialects = try arena.alloc(?[]const u8, parsed.speakers.len);
+    for (speakers, dialects, parsed.speakers) |*name, *dialect, s| {
+        name.* = try arena.dupe(u8, s.name);
+        dialect.* = if (s.dialect) |d| try arena.dupe(u8, d) else null;
+    }
+    const languages = try arena.alloc([]const u8, parsed.languages.len);
+    for (languages, parsed.languages) |*name, l| name.* = try arena.dupe(u8, l.name);
     var weights = inference.safetensors.open(arena, io, try std.fs.path.join(arena, &.{ directory, "model.safetensors" }), .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
@@ -151,8 +161,29 @@ pub fn describeSpeech(arena: std.mem.Allocator, io: std.Io, directory: []const u
     for (weights.tensors) |t| {
         if (dtype != null and dtype.? != t.dtype) break;
         dtype = t.dtype;
-    } else if (dtype) |d| return .{ .speakers = speakers, .instructions = parsed.takesInstruction(), .quantization = try std.ascii.allocUpperString(arena, @tagName(d)) };
-    return .{ .speakers = speakers, .instructions = parsed.takesInstruction(), .quantization = "mixed" };
+    } else if (dtype) |d| return .{ .speakers = speakers, .dialects = dialects, .languages = languages, .instructions = parsed.takesInstruction(), .quantization = try std.ascii.allocUpperString(arena, @tagName(d)) };
+    return .{ .speakers = speakers, .dialects = dialects, .languages = languages, .instructions = parsed.takesInstruction(), .quantization = "mixed" };
+}
+
+/// The `language` values a transcription checkpoint takes: its
+/// `processor_config.json`'s `prompt_dictionary` keys, as the model reads
+/// them (`auto`, `de-DE`, `fr`, …). Null when the file is missing or unread.
+pub fn transcriptionLanguages(arena: std.mem.Allocator, io: std.Io, directory: []const u8) !?[]const []const u8 {
+    const path = try std.fs.path.join(arena, &.{ directory, "processor_config.json" });
+    const text = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    const Json = struct { prompt_dictionary: std.json.ArrayHashMap(u32) };
+    const parsed = std.json.parseFromSliceLeaky(Json, arena, text, .{ .ignore_unknown_fields = true }) catch return null;
+    const keys = parsed.prompt_dictionary.map.keys();
+    const sorted = try arena.dupe([]const u8, keys);
+    std.mem.sort([]const u8, sorted, {}, struct {
+        fn less(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.less);
+    return sorted;
 }
 
 test "names resolve by kind; another kind's name is refused by name; the server takes no path" {
@@ -215,8 +246,27 @@ test "a pulled speech checkpoint describes its speakers, instructions, and dtype
     try tmp.dir.writeFile(io, .{ .sub_path = "model.safetensors", .data = &bytes });
     const d = (try describeSpeech(arena, io, dir)).?;
     try std.testing.expectEqual(@as(usize, 2), d.speakers.len);
+    try std.testing.expectEqualStrings("sichuan_dialect", d.dialects[1].?);
+    try std.testing.expectEqual(@as(?[]const u8, null), d.dialects[0]);
+    try std.testing.expectEqual(@as(usize, 3), d.languages.len);
     try std.testing.expect(d.instructions);
     try std.testing.expectEqualStrings("BF16", d.quantization);
     try tmp.dir.writeFile(io, .{ .sub_path = "config.json", .data = "{\"model_type\":\"bert\"}" });
     try std.testing.expectEqual(@as(?Described, null), try describeSpeech(arena, io, dir));
+}
+
+test "a transcription checkpoint's languages are its prompt dictionary's keys, sorted" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(io, ".", arena);
+    try std.testing.expectEqual(@as(?[]const []const u8, null), try transcriptionLanguages(arena, io, dir));
+    try tmp.dir.writeFile(io, .{ .sub_path = "processor_config.json", .data = "{\"prompt_dictionary\":{\"fr\":3,\"auto\":0,\"de-DE\":1},\"other\":1}" });
+    const languages = (try transcriptionLanguages(arena, io, dir)).?;
+    try std.testing.expectEqual(@as(usize, 3), languages.len);
+    try std.testing.expectEqualStrings("auto", languages[0]);
+    try std.testing.expectEqualStrings("de-DE", languages[1]);
 }

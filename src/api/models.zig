@@ -64,6 +64,56 @@ pub const Models = struct {
     }
 };
 
+/// One request field a model takes, for a `nuclis` object's `options`:
+/// its type, what it accepts, and what this server uses when a request
+/// leaves it out. Unset bounds are left out of the JSON; `default` is not.
+pub const Option = struct {
+    type: Type,
+    values: ?std.json.Array = null,
+    min: ?std.json.Value = null,
+    max: ?std.json.Value = null,
+    max_items: ?usize = null,
+    max_bytes: ?usize = null,
+    default: std.json.Value = .null,
+    /// A language model's default where an effort changes it.
+    by_effort: ?std.json.ObjectMap = null,
+
+    pub const Type = enum { @"enum", enum_list, number, integer, string, string_list, boolean };
+
+    pub fn value(self: Option, arena: std.mem.Allocator) !std.json.Value {
+        var o: std.json.ObjectMap = .empty;
+        try o.put(arena, "type", .{ .string = @tagName(self.type) });
+        if (self.values) |v| try o.put(arena, "values", .{ .array = v });
+        if (self.min) |v| try o.put(arena, "min", v);
+        if (self.max) |v| try o.put(arena, "max", v);
+        if (self.max_items) |v| try o.put(arena, "max_items", .{ .integer = @intCast(v) });
+        if (self.max_bytes) |v| try o.put(arena, "max_bytes", .{ .integer = @intCast(v) });
+        try o.put(arena, "default", self.default);
+        if (self.by_effort) |b| if (b.count() > 0) try o.put(arena, "by_effort", .{ .object = b });
+        return .{ .object = o };
+    }
+};
+
+/// A float as the shortest decimal that reads back as `x` (`0.95`, not the
+/// f32's `0.949999988`).
+pub fn number(arena: std.mem.Allocator, x: f32) !std.json.Value {
+    return .{ .number_string = try arena.print("{d}", .{x}) };
+}
+
+/// String values as a JSON array.
+pub fn strings(arena: std.mem.Allocator, items: []const []const u8) !std.json.Array {
+    var out: std.json.Array = .init(arena);
+    for (items) |i| try out.append(.{ .string = i });
+    return out;
+}
+
+/// Integer values as a JSON array.
+pub fn integers(arena: std.mem.Allocator, items: anytype) !std.json.Array {
+    var out: std.json.Array = .init(arena);
+    for (items) |i| try out.append(.{ .integer = @intCast(i) });
+    return out;
+}
+
 /// The body with a strong ETag of its bytes, or an empty `304` when the
 /// client's `If-None-Match` already holds it.
 fn conditional(arena: std.mem.Allocator, request: http.Request, body: []const u8) http.Response {
@@ -252,4 +302,20 @@ test "a body's ETag answers a matching If-None-Match with an empty 304" {
     stale.if_none_match = "\"0\"";
     try std.testing.expectEqual(std.http.Status.ok, conditional(arena, stale, "{}").status);
     try std.testing.expect(!std.mem.eql(u8, tag, conditional(arena, plain, "[]").extra_header.?.value));
+}
+
+test "an option leaves out unset bounds, keeps a null default, and prints floats short" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var by_effort: std.json.ObjectMap = .empty;
+    try by_effort.put(arena, "off", try number(arena, 0.8));
+    const top_p = try (Option{ .type = .number, .min = try number(arena, 0), .max = try number(arena, 1), .default = try number(arena, 0.95), .by_effort = by_effort }).value(arena);
+    var out: std.Io.Writer.Allocating = .init(arena);
+    try std.json.Stringify.value(top_p, .{}, &out.writer);
+    try std.testing.expectEqualStrings("{\"type\":\"number\",\"min\":0,\"max\":1,\"default\":0.95,\"by_effort\":{\"off\":0.8}}", out.written());
+    const seed = try (Option{ .type = .integer }).value(arena);
+    out.clearRetainingCapacity();
+    try std.json.Stringify.value(seed, .{}, &out.writer);
+    try std.testing.expectEqualStrings("{\"type\":\"integer\",\"default\":null}", out.written());
 }
