@@ -153,6 +153,15 @@ nuclis model pull <owner/repo> --file <name> --register mymodel   # and name it
   fills the same entry's `mmproj` or `mtp`. A name that already locates
   other content is refused, and so is a catalogue name unless the pull is
   that catalogue entry's own file.
+- A Qwen3-TTS CustomVoice fine-tune registers as a speech model
+  (`speech.model`, `nuclis speak --model <name>`); its codec is a second
+  pull of the same repository:
+
+  ```sh
+  nuclis model pull itshamdi404/Egy_Arabic_Qwen3-TTS-12Hz-1.7B-Base --file model.safetensors --register egy-tts
+  nuclis model pull itshamdi404/Egy_Arabic_Qwen3-TTS-12Hz-1.7B-Base --file speech_tokenizer/model.safetensors
+  nuclis speak --model egy-tts --voice egyptian_speaker "ازيك؟" -o egy.wav
+  ```
 
 Whether such a file actually runs depends on its architecture having an
 adapter; `nuclis model inspect` tells you before you download (below).

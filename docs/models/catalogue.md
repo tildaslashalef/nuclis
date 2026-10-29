@@ -272,10 +272,15 @@ sidecar, so `convaiinnovations/laya --file model.safetensors` gives:
 `multilingual/model.safetensors` and `typed-decisions/model.safetensors`
 are separate choices with their own support files. `model ls` lists the
 weights (not the support files). `--register` takes a safetensors artifact
-only when `rl_agent_config.json` sits beside the weights (Laya's layout)
-and writes the entry with `"kind": "decision"`, which `nuclis decide`
-opens and every text command refuses; any other safetensors artifact is
-`NotRunnable`. `config init --discover` skips safetensors; remote `model
+in two layouts. With `rl_agent_config.json` beside the weights (Laya's)
+it writes the entry with `"kind": "decision"`, which `nuclis decide`
+opens. With a `config.json` that `nuclis speak` opens (a Qwen3-TTS
+CustomVoice checkpoint, judged by the same parse once the files are
+verified) it writes `"kind": "speech"`; the codec is the separate
+`--file speech_tokenizer/model.safetensors` pull. Text commands refuse
+both kinds. Any other safetensors artifact is `NotRunnable`, before the
+download when no `config.json` comes with it, after it (the files kept,
+nothing registered) when its `config.json` is not one of these. `config init --discover` skips safetensors; remote `model
 inspect` reads GGUF directories only.
 
 ### The catalogue

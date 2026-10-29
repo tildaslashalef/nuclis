@@ -475,12 +475,15 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
             if (job.role == null or job.role == .main) break job.name;
         } else null;
         if (main_file) |f| if (hf.format(f) == .safetensors) {
-            // The one safetensors checkpoint nuclis runs is Laya's layout.
-            if (!decisionLayout(f, jobs.items)) {
-                diag.set("{s} is a safetensors artifact without rl_agent_config.json beside it; only a Laya decision checkpoint registers (pull it without --register)", .{f});
+            // Laya's layout registers as a decision model; any other
+            // checkpoint only once its downloaded config.json proves it a
+            // speech model (`speechCheckpoint`, after the transfer).
+            if (besideWeights(f, jobs.items, "rl_agent_config.json")) {
+                model_kind = .decision;
+            } else if (!besideWeights(f, jobs.items, "config.json")) {
+                diag.set("{s} is a safetensors artifact with neither rl_agent_config.json nor config.json beside it; only a Laya decision or a Qwen3-TTS CustomVoice checkpoint registers (pull it without --register)", .{f});
                 return error.NotRunnable;
             }
-            model_kind = .decision;
         };
         try config.registrable(name, request.repo_id, main_file, diag);
     }
@@ -524,6 +527,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     var report: std.ArrayList(PulledFile) = .empty;
     // What `--register` records: filled per verified file by its role.
     var registration: config.Registration = .{ .repo = request.repo_id, .revision = revision, .file = null, .profile = options.profile, .kind = model_kind };
+    var main_path: ?[]const u8 = null;
     var stamp: [20]u8 = undefined;
     const downloaded_at = rfc3339(&stamp, std.Io.Timestamp.now(io, .real).toSeconds());
     // Every job is one file (shard sets and support files were expanded
@@ -600,15 +604,21 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
             });
             try report.append(arena, .{ .path = try arena.dupe(u8, file.path), .size = file.size, .sha256 = digest, .transport = @tagName(file.transport), .resumed_bytes = file.resumed_bytes, .role = role, .sidecar = sidecar });
             // A repository's GGUF registers as what its header says it is.
-            if (role == .main and options.register != null and model_kind == null and try isEmbeddingFile(gpa, io, file.path)) registration.kind = .embedding;
+            if (role == .main and options.register != null and model_kind == null and hf.format(file.path) == .gguf and try isEmbeddingFile(gpa, io, file.path)) registration.kind = .embedding;
             switch (role) {
-                .main => registration.file = job.name,
+                .main => {
+                    registration.file = job.name;
+                    main_path = try arena.dupe(u8, file.path);
+                },
                 .mmproj => registration.mmproj = job.name,
                 .mtp => registration.mtp = job.name,
                 .imatrix, .support, .codec => {},
             }
         }
     }
+    if (options.register != null and registration.kind == null) if (main_path) |p| if (hf.format(p) == .safetensors) {
+        registration.kind = try speechCheckpoint(gpa, io, p, diag);
+    };
     // 5. The registry entry, only once every file above is verified, so a
     //    failed pull registers nothing.
     var registered: ?@FieldType(PullReport, "registered") = null;
@@ -631,15 +641,42 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     try renderPull(out, .{ .name = pinned_name orelse options.name, .repo = request.repo_id, .requested_revision = options.revision orelse (if (entry) |e| e.revision else if (decision) |d| d.revision else if (embedding) |e| e.revision else if (audio) |a| a.revision else "main"), .revision = revision, .files = report.items, .registered = registered orelse null }, json, sty);
 }
 
-/// Whether safetensors weights come with Laya's `rl_agent_config.json`
-/// beside them among the files pulled.
-fn decisionLayout(weights: []const u8, jobs: []const Job) bool {
+/// Whether the files pulled hold `name` in the weights' own directory.
+fn besideWeights(weights: []const u8, jobs: []const Job, name: []const u8) bool {
     const dir = std.fs.path.dirnamePosix(weights) orelse "";
     for (jobs) |job| {
         const job_dir = std.fs.path.dirnamePosix(job.name) orelse "";
-        if (std.mem.eql(u8, job_dir, dir) and std.mem.eql(u8, std.fs.path.basenamePosix(job.name), "rl_agent_config.json")) return true;
+        if (std.mem.eql(u8, job_dir, dir) and std.mem.eql(u8, std.fs.path.basenamePosix(job.name), name)) return true;
     }
     return false;
+}
+
+/// `.speech` when the configuration beside the pulled `weights` is one
+/// `nuclis speak` opens (the same parse it runs); otherwise `NotRunnable`,
+/// with the files kept and nothing registered.
+fn speechCheckpoint(gpa: Allocator, io: std.Io, weights: []const u8, diag: *config.Diagnostic) !catalog.ModelKind {
+    const max_config_bytes = 1024 * 1024;
+    const dir = std.fs.path.dirname(weights) orelse ".";
+    const config_path = try std.fs.path.join(gpa, &.{ dir, "config.json" });
+    defer gpa.free(config_path);
+    const generation_path = try std.fs.path.join(gpa, &.{ dir, "generation_config.json" });
+    defer gpa.free(generation_path);
+    const config_json = try std.Io.Dir.cwd().readFileAlloc(io, config_path, gpa, .limited(max_config_bytes));
+    defer gpa.free(config_json);
+    const generation_json = std.Io.Dir.cwd().readFileAlloc(io, generation_path, gpa, .limited(max_config_bytes)) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    defer if (generation_json) |g| gpa.free(g);
+    var parsed = inference.models.qwen3_tts.parseConfig(gpa, config_json, generation_json) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            diag.set("{s}: {s}; only Laya decision and Qwen3-TTS CustomVoice checkpoints register (the files stay, nothing was registered)", .{ config_path, @errorName(err) });
+            return error.NotRunnable;
+        },
+    };
+    parsed.deinit();
+    return .speech;
 }
 
 /// `name = repo @ requested: commit <40 hex>`; the name and the requested
@@ -2241,6 +2278,44 @@ fn inspectFixture(arena: Allocator, gpa: Allocator, mutation: Mutation, sha256: 
         .size = std.mem.alignForward(u64, directory.len, 32) + inventory.file_bytes,
         .sha256 = sha256,
     }, &diag);
+}
+
+test "--register knows a speech checkpoint from its config.json and refuses another" {
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", arena);
+    const weights = try std.fs.path.join(arena, &.{ root, "model.safetensors" });
+    const config_path = try std.fs.path.join(arena, &.{ root, "config.json" });
+    const generation_path = try std.fs.path.join(arena, &.{ root, "generation_config.json" });
+    const tts_json = try inference.models.qwen3_tts.testConfigJson(gpa, "1b7", 16, "custom_voice");
+    defer gpa.free(tts_json);
+    var diag: config.Diagnostic = .{};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = config_path, .data = tts_json });
+    try std.testing.expectEqual(catalog.ModelKind.speech, try speechCheckpoint(gpa, io, weights, &diag));
+    // A greedy generation config is one `speak` runs, so it registers too.
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = generation_path, .data = "{\"do_sample\":false,\"max_new_tokens\":256}" });
+    try std.testing.expectEqual(catalog.ModelKind.speech, try speechCheckpoint(gpa, io, weights, &diag));
+    const base_json = try inference.models.qwen3_tts.testConfigJson(gpa, "1b7", 16, "base");
+    defer gpa.free(base_json);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = config_path, .data = base_json });
+    try std.testing.expectError(error.NotRunnable, speechCheckpoint(gpa, io, weights, &diag));
+    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "UnsupportedModelType") != null);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = config_path, .data = "{\"model_type\":\"bert\"}" });
+    try std.testing.expectError(error.NotRunnable, speechCheckpoint(gpa, io, weights, &diag));
+
+    const jobs = [_]Job{
+        .{ .name = "model.safetensors", .role = .main, .sha256 = null, .size = 1 },
+        .{ .name = "config.json", .role = .support, .sha256 = null, .size = 1 },
+        .{ .name = "speech_tokenizer/config.json", .role = .support, .sha256 = null, .size = 1 },
+    };
+    try std.testing.expect(besideWeights("model.safetensors", &jobs, "config.json"));
+    try std.testing.expect(!besideWeights("model.safetensors", &jobs, "rl_agent_config.json"));
+    try std.testing.expect(besideWeights("speech_tokenizer/model.safetensors", &jobs, "config.json"));
 }
 
 test "a verified file whose encoding this build does not store still gets its role from the request" {

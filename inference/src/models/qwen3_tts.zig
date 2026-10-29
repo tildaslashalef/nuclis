@@ -614,7 +614,8 @@ pub const Prompt = struct {
 // ---- tests -----------------------------------------------------------------
 
 /// A config.json of the published shape with the stacks scaled down.
-fn testConfigJson(gpa: Allocator, size: []const u8, talker_hidden: usize, kind: []const u8) ![]u8 {
+/// A small `config.json` that parses, for tests here and in the executable.
+pub fn testConfigJson(gpa: Allocator, size: []const u8, talker_hidden: usize, kind: []const u8) ![]u8 {
     return std.fmt.allocPrint(gpa,
         \\{{"model_type":"qwen3_tts","tts_model_type":"{s}","tts_model_size":"{s}",
         \\ "im_start_token_id":20,"im_end_token_id":21,"assistant_token_id":7,"tts_pad_token_id":22,"tts_bos_token_id":23,"tts_eos_token_id":24,

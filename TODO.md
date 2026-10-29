@@ -14,7 +14,10 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-No unit is in progress. K-quant E4B files
+No unit is in progress. Qwen3-TTS fine-tunes (`xet-compressed-xorb-bound`,
+base `dd36eec`: Xet plans whose xorbs unpack past 64 MiB, a greedy
+`generation_config.json`, and `pull --register` of a speech checkpoint)
+waits for its pull request. K-quant E4B files
 (`gemma4-bf16-per-layer-projection`: a BF16 `per_layer_model_proj` and
 the shared-KV layers' stored K/V bind) waits for its pull request, whose
 description is its record. The next release (0.11.0) carries it with
