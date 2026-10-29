@@ -173,7 +173,10 @@ Requirements:
   missing or mismatched companion is a typed load error, never an implicit
   download or a silent fallback.
 - The user root is `~/.nuclis` (`NUCLIS_HOME` overrides it with an absolute
-  path); models live under `models/<owner>/<repo>/<file>`.
+  path); models live under `models/<owner>/<repo>/<file>`, saved voices
+  under `voices/<name>/` (`reference.wav` and `voice.json`, which keys
+  what the encoders made of the clip by the SHA-256 of the files that made
+  it; [qwen3-tts.md § Voice cloning (the Base)](models/qwen3-tts.md#voice-cloning-the-base)).
 
 Read: [models/catalogue.md](models/catalogue.md),
 [engine/gguf.md](engine/gguf.md), and the

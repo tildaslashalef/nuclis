@@ -14,10 +14,11 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–7 (the
+`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–8 (the
 facts, the traces, the config and binding, audio at 24 kHz, both
-encoders, the clone prompt and synthesizer) are done and committed.
-Next: task 8, the voice store. The next release
+encoders, the clone prompt and synthesizer, the voice store) are done and
+committed. Next: task 9, the catalogue and the rename. A side fix in the
+branch: `AGENTS.md` notes that Zig 0.17 has no `**` operator (`0aabc3a`). The next release
 (0.11.0) carries K-quant E4B files
 ([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
 Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
@@ -29,7 +30,7 @@ this unit, if it lands first.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 8 next |
+| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 9 next |
 
 ## Qwen3-TTS Base: voice cloning with saved voices
 
@@ -133,9 +134,15 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
    `qwen3-tts-0.6b-clone-trace-cpu`, `qwen3-tts-0.6b-clone-metal`, and the
    primed decode in `qwen3-tts-0.6b-clone-cpu`. Building a voice from audio
    (the encoders on an open `Voice`) is task 8's `ensure`.
-8. *Voice store* (new `src/voices.zig`): add, list, remove, load,
-   `ensure(model)` filling a missing codes or embedding entry; atomic
-   writes; the bounds above; `NUCLIS_HOME`.
+8. *Voice store.* Done: `src/voices.zig` (`Store.add`, `list`,
+   `remove`, `ensure`; `checkName`, `modelKeys`, `encodersOf`;
+   `paths.voicesPath`); `Voice.speakerEmbedding`, `Voice.referenceCodes`
+   in `qwen3_tts_runtime.zig`. Unit tests with fake encoders (caching per
+   model and codec key, x-vector voices make no codes, every bound, a
+   changed clip refused). The real-model exercise is task 10's (`voice
+   add` then `speak --voice` on both Base sizes, heard back by the
+   transcriber). The module doc links `docs/guide/api.md § Voices`,
+   which task 11 writes.
 9. *Catalogue and rename.* `src/catalog.zig` `audio_entries`: the two
    renamed CustomVoice entries, the two Base entries (sizes and SHA-256
    from the Hub at the pinned revisions; `speakers` empty; a `clones`

@@ -17,6 +17,8 @@ const hf_json = @import("../tokenizer/hf_json.zig");
 const metal = @import("../backends/metal/root.zig");
 const tts_metal = @import("qwen3_tts_metal.zig");
 const codec_metal = @import("../audio/qwen3_codec_metal.zig");
+const ecapa = @import("../audio/ecapa.zig");
+const codec_encoder = @import("../audio/qwen3_codec_encoder.zig");
 
 const Allocator = std.mem.Allocator;
 const dense = cpu.dense;
@@ -929,6 +931,31 @@ pub const Voice = struct {
         self.tokenizer.deinit();
         self.config.deinit();
         self.gpa.destroy(self);
+    }
+
+    /// A Base's speaker embedding of `samples` (24 kHz mono) into `out`
+    /// (the talker's width). The CPU encoder is built for the call and
+    /// freed after; `NotABase` on a CustomVoice.
+    pub fn speakerEmbedding(self: *const Voice, gpa: Allocator, samples: []const f32, out: []f32) !void {
+        const config = self.config.speaker_encoder orelse return error.NotABase;
+        var encoder = try ecapa.Encoder.init(gpa, &self.binding.speaker_encoder.?, config);
+        defer encoder.deinit();
+        try encoder.embed(gpa, self.io, samples, out, null);
+    }
+
+    /// The codec's codes of `samples` (24 kHz mono), `⌈samples / 1920⌉`
+    /// frames owned by `gpa`: a Base's reference codes. The CPU encoder is
+    /// built for the call (about 190 MB as F32) and freed after.
+    pub fn referenceCodes(self: *const Voice, gpa: Allocator, samples: []const f32) ![]Frame {
+        var diagnostic: codec.Diagnostic = .{};
+        var binding = try codec_encoder.bind(gpa, &self.codec_checkpoint, &self.codec_binding, .{}, &diagnostic);
+        defer binding.deinit(gpa);
+        var encoder = try codec_encoder.Encoder.init(gpa, self.io, &self.codec_binding, &binding);
+        defer encoder.deinit();
+        const frames = try gpa.alloc(Frame, encoder.frameCount(samples.len));
+        errdefer gpa.free(frames);
+        try encoder.encode(gpa, samples, frames, null);
+        return frames;
     }
 
     /// A Base's prompt for `text` in `voice`: ICL when `reference` (the

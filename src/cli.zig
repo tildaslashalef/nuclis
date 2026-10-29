@@ -1356,6 +1356,7 @@ test {
     _ = decision_catalog;
     _ = embed;
     _ = speak;
+    _ = @import("voices.zig");
     _ = audio_catalog;
     _ = embedding_catalog;
     _ = transcribe;
