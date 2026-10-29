@@ -28,7 +28,10 @@ pub fn build(b: *std.Build) void {
     };
     // The commit the tree was built from, and whether the work tree differed
     // from it: the agent's prefix cache keys saved model states by build, so
-    // a state is restored only into the build that computed it.
+    // a state is restored only into the build that computed it. Git state is
+    // not a file the configure cache can track, so configure re-runs on every
+    // build; otherwise a cached revision outlives the commit it names.
+    b.graph.poisonCache();
     const root_path = b.root.root_dir.path orelse ".";
     const revision = blk: {
         var code: u8 = 0;
