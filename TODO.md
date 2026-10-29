@@ -14,9 +14,9 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1 and 2,
-the facts and the traces, are done and committed. Next: task 3, the
-config and binding. The next release
+`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–3, the
+facts, the traces, and the config and binding, are done and committed.
+Next: task 4, audio at 24 kHz. The next release
 (0.11.0) carries K-quant E4B files
 ([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
 Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
@@ -28,7 +28,7 @@ this unit, if it lands first.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 3 next |
+| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 4 next |
 
 ## Qwen3-TTS Base: voice cloning with saved voices
 
@@ -45,7 +45,7 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
 
 - The talker, code predictor, tokenizer, generation config, and codec
   file are the CustomVoice's of the same size, byte for byte or name,
-  shape, and dtype. New: 80 BF16 `speaker_encoder.*` tensors, and the
+  shape, and dtype. New: 76 BF16 `speaker_encoder.*` tensors, and the
   codec's `encoder.*`, of which only 125 (SEANet, transformer,
   downsample) are new to nuclis: the encoder's quantizer tensors equal the
   decoder's that `qwen3_codec.bind` already binds.
@@ -97,10 +97,15 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
    (`docs/models/qwen3-tts.md` § The trace (2026-10-29)). The venv is
    `.reference/venv-qwen3-tts`; the 0.6B Base is pulled (not registered:
    `parseConfig` refuses it until task 3).
-3. *Config and binding.* `qwen3_tts.parseConfig` accepts `base` (a
-   `Config.clones()`; `speaker_encoder` dims); `qwen3_tts.bind` binds
-   `speaker_encoder.*` on a Base and still refuses it elsewhere; the
-   tests at "parseConfig refuses…" change to accept `base`.
+3. *Config and binding.* Done: `qwen3_tts.parseConfig` accepts `base`
+   (`Config.speaker_encoder`, `Config.clones()`; the package's defaults
+   when `speaker_encoder_config` is absent; `enc_dim` must equal the
+   talker's width, the front end 128 bins at 24 kHz); `bind` binds the 76
+   `speaker_encoder.*` tensors (`Binding.speaker_encoder`). The real 0.6B
+   Base opens through `nuclis speak --model <dir>` and stops at
+   `UnknownSpeaker` (no speakers) until task 10. The talker check
+   (`qwen3-tts-check <Base dir> talker`) would reach the clone cases,
+   which have no `speaker`: task 7 gives them their own path.
 4. *Audio at 24 kHz.* `inference/src/audio/audio.zig` `decode` takes the
    target rate (16,000 for the encoders, 24,000 here); the WAV fast path
    reads either rate, the bridge resamples.

@@ -603,7 +603,7 @@ CustomVoice's (§ Configuration).
 
 **Tensors.** `model.safetensors`, all BF16: the CustomVoice's tensors of
 the same size, names, shapes, and dtypes equal (402 on the 0.6B, 404 on
-the 1.7B), plus 80 under `speaker_encoder.` (8,854,336 parameters on the
+the 1.7B), plus 76 under `speaker_encoder.` (8,854,336 parameters on the
 0.6B, 12,001,088 on the 1.7B, the difference being `fc`):
 
 | Group | Tensors | Shapes (weight, bias) |
