@@ -14,81 +14,15 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`models-listing-for-settings` is in progress: `GET /v1/models` as the
-data a client (Muon's settings) renders its model pages from. Delivered:
-a registered speech checkpoint lists its voices, instructions, dtype,
-name, and size; every entry carries the shared fields, modalities,
-limits, and features, and absent catalogue language models are listed.
-`options` (every kind) and speech `speakers` and `languages` are built;
-what remains is the pull request. K-quant E4B files
+No unit is in progress. `models-listing-for-settings` (`GET /v1/models`
+as the data any client builds its model pages from) waits for its pull
+request, whose description is its record. K-quant E4B files
 (`gemma4-bf16-per-layer-projection`) waits for its pull request. The next
 release (0.11.0) carries it with Q5_0 and Q5_1
 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)), Muon's
 voice loop, the model-management unit
 ([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)), and the
 Qwen3-TTS fine-tunes ([nuclis#41](https://github.com/tildaslashalef/nuclis/pull/41)).
-
-| Unit | What | Sessions |
-| --- | --- | --- |
-| models-listing-for-settings | `GET /v1/models` describes every model well enough to render a settings page from it | 1 |
-
-## models-listing-for-settings
-
-Base: `8d0a941`
-
-**Delivered.** `listAudio` (`src/api/speech/service.zig`) describes a
-registry speech entry from its own files once pulled
-(`audio_catalog.describeSpeech`: `qwen3_tts.parseConfig` and the
-safetensors header): `voices`, `instructions`, `architecture`,
-`quantization`, `name` (the repository's), `size_bytes` (weights and
-codec on disk). `docs/guide/api.md § GET /v1/models` documents the speech
-and transcription fields.
-
-Then the cheap part of the listing for every client: `GET /v1/models/{id}`
-(a subtree route, `Router.addSubtree`); a strong `ETag` and `304` on both
-(`If-None-Match` read in `http.zig`); in every entry `schema_version`,
-`source`, `download_bytes`, `pinned` (`Models.pins`), `endpoints`,
-`input_modalities`/`output_modalities`, and `detail` (completed in
-`models.zig`); `limits` per kind from the parsers' constants; on language
-models `features` (`tools`, `hosted_tools`, `reasoning`, `streaming`,
-`structured_output`), `audio` (the projector's audio encoder, as
-`loadAudio` checks), `repo`/`revision`, and the catalogue's absent ones.
-
-Then `options` (`models.Option`): each kind's request fields with type,
-values or bounds, and the default as the request path resolves it
-(`requestOptions` in the chat, embeddings, and transcription services,
-`speechOptions` in speech); speech `speakers` (`{id, dialect}`) and
-`languages` from the checkpoint (`describeSpeech`), transcription
-`languages` from `prompt_dictionary` (`transcriptionLanguages`).
-
-**Proposed, waiting on the user's review** (the sample payload was shown
-in the session, 2026-10-29):
-
-- Every kind carries `kind`, `name`, `architecture`, `quantization`,
-  `size_bytes`, `present`, `loaded`, `default`, `repo`, `revision`, and
-  `endpoint` (the route it serves). Decision entries lack the first four
-  today, language entries `repo` and `revision`.
-- `options`: one object per request field the model takes, `type`
-  (`enum`, `enum_list`, `number`, `integer`, `string`, `string_list`,
-  `boolean`), `values` or `min`/`max` (and `max_items`/`max_bytes`),
-  `default` as this server resolves it for a request without the field,
-  and `by_effort` for a language model's sampling defaults that differ by
-  effort. Ranges come from the parsers: `src/api/chat/wire.zig`
-  (`temperature` 0–2, `top_p` and `min_p` 0–1, `presence_penalty` −2–2,
-  `repetition_penalty` 0–10, `top_k` ≥ 0, `max_tokens` 1–`max_output_tokens`),
-  `src/api/speech/wire.zig`, the embeddings and transcription services;
-  sampling defaults from each profile's `samplingDefaults(effort)` with
-  `generation.sampling` and the registry's overrides applied.
-- Speech adds `languages` (the checkpoint's `codec_language_id`);
-  `voice.default` is `speech.voice` when the model has it, else null.
-- Existing fields stay, so current clients are unaffected.
-
-Open questions put to the user: marking languages a fine-tune speaks only
-through `auto` (Arabic on `qwen3-tts-1.7b-eg`); per-model input limits;
-pinned/memory state; the `nuclis.json` key a default comes from; a pull
-hint for an absent model.
-
-Gates: `make verify-auto` (executable and documents only; no tier).
 
 ## Deferred
 
