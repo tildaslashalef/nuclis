@@ -14,10 +14,10 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–6, the
-facts, the traces, the config and binding, audio at 24 kHz, and both
-encoders, are done and committed. Next: task 7, the prompt and the
-synthesizer. The next release
+`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–7 (the
+facts, the traces, the config and binding, audio at 24 kHz, both
+encoders, the clone prompt and synthesizer) are done and committed.
+Next: task 8, the voice store. The next release
 (0.11.0) carries K-quant E4B files
 ([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
 Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
@@ -29,7 +29,7 @@ this unit, if it lands first.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 7 next |
+| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 8 next |
 
 ## Qwen3-TTS Base: voice cloning with saved voices
 
@@ -104,10 +104,8 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
    talker's width, the front end 128 bins at 24 kHz); `bind` binds the 76
    `speaker_encoder.*` tensors (`Binding.speaker_encoder`). Both Base
    sizes are pulled at the pinned revisions and open through `nuclis speak
-   --model <dir>` (every tensor bound), then stop at `UnknownSpeaker` (no
-   speakers) until task 10. The talker check
-   (`qwen3-tts-check <Base dir> talker`) would reach the clone cases,
-   which have no `speaker`: task 7 gives them their own path.
+   --model <dir>` (every tensor bound), then stop at `VoiceRequired` (a
+   Base has no speakers) until task 10.
 4. *Audio at 24 kHz.* Done: `audio.decodeAt(alloc, bytes, max, rate)` and
    `decodeWavAt`; `decode` and `decodeWav` stay the encoders' 16 kHz; the
    bridge (`nu_audio_decode`, `nu_audio_open`) takes the rate. `Reader`
@@ -125,14 +123,16 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
    `Binder.at` shared. The `clone` check now holds every code equal (58 ×
    16 on the first run) and both encoders' stages within relative RMS
    1e-4 (codec encoder worst 3.3e-5, SEANet output).
-7. *Prompt and synthesizer.* `qwen3_tts.Row` gains the speaker-vector
-   row and the reference frame (embedded as `nextRow` does); `Prompt`
-   gains `trailing` (text ids, then `tts_eos`);
-   `Prompt.buildClone(config, request, voice)` for both modes; `Model.embed`, `Plan.embed` (`qwen3_tts_metal.zig`), and
-   `Synthesizer` (`qwen3_tts_runtime.zig`, the per-step text row,
-   including `frameOnDevice`'s `pad`) use them. `Synthesizer` primes the
-   decoder with the reference frames and discards their samples. Against
-   the trace's rows and frames, CPU and Metal.
+7. *Prompt and synthesizer.* Done: `qwen3_tts.Row.voice`, `Clone`,
+   `Prompt.trailing`/`clone`/`primer`, `Prompt.buildClone`,
+   `encodeReference`; `Model.embed`/`Plan.embed` take the clone;
+   `Synthesizer.init` takes `*const Prompt` (trailing text per step,
+   decoder primed with the reference frames); `Voice.clonePrompt`,
+   `Voice.synthesizer(gpa, *const Prompt, seed)`. The talker check replays
+   both clone cases on CPU and Metal (worst 1.4e-6; F16 cache 3.3e-4); gates
+   `qwen3-tts-0.6b-clone-trace-cpu`, `qwen3-tts-0.6b-clone-metal`, and the
+   primed decode in `qwen3-tts-0.6b-clone-cpu`. Building a voice from audio
+   (the encoders on an open `Voice`) is task 8's `ensure`.
 8. *Voice store* (new `src/voices.zig`): add, list, remove, load,
    `ensure(model)` filling a missing codes or embedding entry; atomic
    writes; the bounds above; `NUCLIS_HOME`.

@@ -108,8 +108,9 @@ pub const Model = struct {
     }
 
     /// The talker's input rows for `rows` into `out` ([rows.len][width]):
-    /// the projected text row plus the codec row, where present.
-    pub fn embed(self: *const Model, gpa: Allocator, rows: []const tts.Row, out: []f32) !void {
+    /// the projected text row plus the codec row, where present, plus a
+    /// Base's voice term from `clone`.
+    pub fn embed(self: *const Model, gpa: Allocator, rows: []const tts.Row, clone: ?tts.Clone, out: []f32) !void {
         const w = self.width();
         const n = rows.len;
         if (out.len != n * w) return error.InvalidShape;
@@ -142,17 +143,38 @@ pub const Model = struct {
                 if (id >= self.config.codec_vocab) return error.InvalidCode;
                 for (o, self.codec_embedding[id * w ..][0..w]) |*a, b| a.* += b;
             }
+            switch (row.voice) {
+                .none => {},
+                .speaker => for (o, (clone orelse return error.InvalidVoice).embedding) |*a, b| {
+                    a.* += b;
+                },
+                .frame => |k| {
+                    const frames = (clone orelse return error.InvalidVoice).frames;
+                    if (k >= frames.len) return error.InvalidVoice;
+                    // The groups summed first, then the text: the authors' order, and `nextRow`'s.
+                    const sum = try ws.alloc(f32, w);
+                    @memset(sum, 0);
+                    self.addFrame(frames[k], sum);
+                    for (o, sum) |*a, b| a.* += b;
+                },
+            }
         }
+    }
+
+    /// `out += ` the frame's 16 code embeddings, in group order.
+    fn addFrame(self: *const Model, frame: Frame, out: []f32) void {
+        const w = self.width();
+        for (out, self.codec_embedding[@as(usize, frame[0]) * w ..][0..w]) |*a, b| a.* += b;
+        for (self.embeddings, frame[1..]) |table, code| for (out, table[@as(usize, code) * w ..][0..w]) |*a, b| {
+            a.* += b;
+        };
     }
 
     /// The next talker row (§ (e)): the frame's 16 code embeddings summed,
     /// then the text track `text` (the projected `tts_pad` row).
     pub fn nextRow(self: *const Model, frame: Frame, text: []const f32, out: []f32) void {
-        const w = self.width();
-        @memcpy(out, self.codec_embedding[@as(usize, frame[0]) * w ..][0..w]);
-        for (self.embeddings, frame[1..]) |table, code| for (out, table[@as(usize, code) * w ..][0..w]) |*a, b| {
-            a.* += b;
-        };
+        @memset(out, 0);
+        self.addFrame(frame, out);
         for (out, text) |*a, b| a.* += b;
     }
 };
@@ -553,6 +575,9 @@ pub const Synthesizer = struct {
     /// The next input row and the projected `tts_pad` row.
     row: []f32,
     pad: []f32,
+    /// The prompt's trailing text, projected: frame k's next row adds row
+    /// k, then `pad` (`[n][width]`).
+    trailing: []f32,
     /// Frames `read` decodes per call at most (1 … `max_chunk`), and in its first call.
     chunk: usize = default_chunk,
     first_chunk: usize = default_first_chunk,
@@ -576,8 +601,12 @@ pub const Synthesizer = struct {
         metal: codec_metal.Stream,
     };
 
-    /// Embeds and prefills `prompt`; the first frame's logits are ready after.
-    pub fn init(gpa: Allocator, io: std.Io, config: *const tts.Config, engine: Engine, decoder: Decoder, prompt: []const tts.Row, seed: u64) !Synthesizer {
+    /// Embeds and prefills `prompt`; the first frame's logits are ready
+    /// after. A cloned voice's reference frames go through the decoder
+    /// first, their samples discarded, so the voice's audio begins where its
+    /// reference ends (docs/models/qwen3-tts.md § The decode). The prompt's
+    /// rows and trailing text are copied in; its clone is not read after.
+    pub fn init(gpa: Allocator, io: std.Io, config: *const tts.Config, engine: Engine, decoder: Decoder, prompt: *const tts.Prompt, seed: u64) !Synthesizer {
         const w = config.talker.hidden;
         const start = std.Io.Clock.awake.now(io);
         var self: Synthesizer = undefined;
@@ -597,14 +626,21 @@ pub const Synthesizer = struct {
         errdefer gpa.free(self.row);
         self.pad = try gpa.alloc(f32, w);
         errdefer gpa.free(self.pad);
+        self.trailing = try gpa.alloc(f32, prompt.trailing.len * w);
+        errdefer gpa.free(self.trailing);
         self.stream = switch (decoder) {
             .none => .none,
             .cpu => |r| .{ .cpu = try codec.Stream.init(gpa, r) },
             .metal => |d| .{ .metal = try codec_metal.Stream.init(d) },
         };
         errdefer self.closeStream();
+        try self.prime(prompt.primer());
         const pad_row = [_]tts.Row{.{ .text = config.text.tts_pad, .codec = null }};
-        const x = try gpa.alloc(f32, prompt.len * w);
+        const trailing_rows = try gpa.alloc(tts.Row, prompt.trailing.len);
+        defer gpa.free(trailing_rows);
+        for (trailing_rows, prompt.trailing) |*r, id| r.* = .{ .text = id, .codec = null };
+        const rows = prompt.rows;
+        const x = try gpa.alloc(f32, rows.len * w);
         defer gpa.free(x);
         switch (engine) {
             .cpu => |model| {
@@ -616,24 +652,53 @@ pub const Synthesizer = struct {
                 errdefer gpa.free(hidden);
                 const logits = try gpa.alloc(f32, config.codec_vocab);
                 errdefer gpa.free(logits);
-                try model.embed(gpa, &pad_row, self.pad);
-                const rows = try gpa.alloc(f32, prompt.len * w);
-                defer gpa.free(rows);
-                try model.embed(gpa, prompt, x);
-                try talker.forward(x, prompt.len, rows, null);
-                @memcpy(hidden, rows[(prompt.len - 1) * w ..][0..w]);
+                try model.embed(gpa, &pad_row, null, self.pad);
+                if (trailing_rows.len > 0) try model.embed(gpa, trailing_rows, null, self.trailing);
+                const states = try gpa.alloc(f32, rows.len * w);
+                defer gpa.free(states);
+                try model.embed(gpa, rows, prompt.clone, x);
+                try talker.forward(x, rows.len, states, null);
+                @memcpy(hidden, states[(rows.len - 1) * w ..][0..w]);
                 try talker.logits(hidden, logits);
                 self.state = .{ .cpu = .{ .model = model, .talker = talker, .predictor = predictor, .hidden = hidden, .logits = logits } };
             },
             .metal => |plan| {
-                try plan.embed(&pad_row, self.pad);
-                try plan.embed(prompt, x);
-                try plan.prefill(x, prompt.len);
+                try plan.embed(&pad_row, null, self.pad);
+                if (trailing_rows.len > 0) try plan.embed(trailing_rows, null, self.trailing);
+                try plan.embed(rows, prompt.clone, x);
+                try plan.prefill(x, rows.len);
                 self.state = .{ .metal = plan };
             },
         }
         self.timing.prefill = elapsed(io, start);
         return self;
+    }
+
+    /// Decodes `frames` into the stream and drops their samples.
+    fn prime(self: *Synthesizer, frames: []const Frame) !void {
+        if (frames.len == 0 or self.stream == .none) return;
+        const per = switch (self.stream) {
+            .none => unreachable,
+            .cpu => |s| s.runtime.config.samplesPerFrame(),
+            .metal => |s| s.decoder.config.samplesPerFrame(),
+        };
+        const scratch = try self.gpa.alloc(f32, max_chunk * per);
+        defer self.gpa.free(scratch);
+        var at: usize = 0;
+        while (at < frames.len) : (at += max_chunk) {
+            const piece = frames[at..@min(frames.len, at + max_chunk)];
+            switch (self.stream) {
+                .none => unreachable,
+                .cpu => |*s| try s.push(piece, scratch[0 .. piece.len * per]),
+                .metal => |*s| try s.push(piece, scratch[0 .. piece.len * per]),
+            }
+        }
+    }
+
+    /// The text track frame `k`'s next row adds: trailing row k, then `tts_pad`.
+    fn textRow(self: *const Synthesizer, k: usize) []const f32 {
+        const w = self.pad.len;
+        return if (k * w < self.trailing.len) self.trailing[k * w ..][0..w] else self.pad;
     }
 
     fn closeStream(self: *Synthesizer) void {
@@ -657,6 +722,7 @@ pub const Synthesizer = struct {
         self.closeStream();
         self.gpa.free(self.row);
         self.gpa.free(self.pad);
+        self.gpa.free(self.trailing);
         self.sampler.deinit(self.gpa);
         self.* = undefined;
     }
@@ -675,12 +741,13 @@ pub const Synthesizer = struct {
             return null;
         }
         const start = std.Io.Clock.awake.now(self.io);
+        const text = self.textRow(self.frames);
         const frame = switch (self.state) {
             .cpu => |*s| frame: {
                 const frame = try s.predictor.frame(s.hidden, @intCast(c0), self.sampler.pick());
                 const step = std.Io.Clock.awake.now(self.io);
                 self.timing.predictor += @intCast(start.durationTo(step).toNanoseconds());
-                s.model.nextRow(frame, self.pad, self.row);
+                s.model.nextRow(frame, text, self.row);
                 try s.talker.forward(self.row, 1, s.hidden, null);
                 try s.talker.logits(s.hidden, s.logits);
                 self.timing.talker += elapsed(self.io, step);
@@ -690,7 +757,7 @@ pub const Synthesizer = struct {
                 const o = self.sampler.predictor;
                 if (self.host_sampling or o.min_p != 0) {
                     const frame = try plan.frame(@intCast(c0), self.sampler.pick());
-                    try plan.nextRow(frame, self.pad, self.row);
+                    try plan.nextRow(frame, text, self.row);
                     try plan.step(self.row);
                     break :frame frame;
                 }
@@ -700,7 +767,7 @@ pub const Synthesizer = struct {
                 var rng = self.sampler.inner.rng;
                 for (&draws) |*d| d.* = rng.random().float(f64);
                 plan.split_timing = self.split;
-                const frame = try plan.frameOnDevice(@intCast(c0), &draws, .{ .temperature = o.temperature, .top_k = o.top_k, .top_p = o.top_p }, self.pad, self.sampler.pick());
+                const frame = try plan.frameOnDevice(@intCast(c0), &draws, .{ .temperature = o.temperature, .top_k = o.top_k, .top_p = o.top_p }, text, self.sampler.pick());
                 if (self.split) {
                     self.timing.predictor += @intFromFloat(plan.predictor_gpu * 1e9);
                     self.timing.talker += @intFromFloat(plan.talker_gpu * 1e9);
@@ -864,6 +931,17 @@ pub const Voice = struct {
         self.gpa.destroy(self);
     }
 
+    /// A Base's prompt for `text` in `voice`: ICL when `reference` (the
+    /// clip's transcript) is given, the speaker embedding alone otherwise.
+    /// The prompt borrows `voice`.
+    pub fn clonePrompt(self: *const Voice, gpa: Allocator, text: []const u8, reference: ?[]const u8, language: []const u8, voice: tts.Clone) !tts.Prompt {
+        var ids = try tts.encodeText(gpa, &self.tokenizer, text, null);
+        defer ids.deinit(gpa);
+        const reference_ids: ?[]u32 = if (reference) |r| try tts.encodeReference(gpa, &self.tokenizer, r) else null;
+        defer if (reference_ids) |r| gpa.free(r);
+        return tts.Prompt.buildClone(gpa, &self.config, .{ .role = ids.role, .text = ids.text, .reference = reference_ids, .language = language, .clone = voice });
+    }
+
     /// The prompt for `text` spoken by `speaker` in `language`, under
     /// `instruct` (the 1.7B's only: `error.InstructionUnsupported` otherwise).
     pub fn prompt(self: *const Voice, gpa: Allocator, text: []const u8, speaker: ?[]const u8, language: []const u8, instruct: ?[]const u8) !tts.Prompt {
@@ -885,8 +963,8 @@ pub const Voice = struct {
 
     /// A synthesizer for `prompt` that decodes into samples. One at a time
     /// on Metal: the plan holds the talker's cache.
-    pub fn synthesizer(self: *Voice, gpa: Allocator, prompt_rows: []const tts.Row, seed: u64) !Synthesizer {
-        return Synthesizer.init(gpa, self.io, &self.config, self.engine(), self.decoderOf(), prompt_rows, seed);
+    pub fn synthesizer(self: *Voice, gpa: Allocator, request: *const tts.Prompt, seed: u64) !Synthesizer {
+        return Synthesizer.init(gpa, self.io, &self.config, self.engine(), self.decoderOf(), request, seed);
     }
 };
 
@@ -944,6 +1022,42 @@ test "top-k bounds every draw to the k best, for group 0 and the predictor" {
     try std.testing.expect(seen[0] and seen[1] and !seen[2]);
 }
 
+test "a Base's voice rows: the speaker embedding added, a reference frame embedded as a generated one's next row" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const json = try tts.testConfigJson(gpa, "0b6", 8, "base");
+    defer gpa.free(json);
+    var config = try tts.parseConfig(gpa, json, null);
+    defer config.deinit();
+    var file = try tts.TestFile.open(io, &config, .{});
+    defer file.close(io);
+    var binding = try tts.bind(gpa, &file.checkpoint, &config, null);
+    defer binding.deinit(gpa);
+    var model = try Model.init(gpa, io, &binding, &config);
+    defer model.deinit();
+    const w = config.talker.hidden;
+    var embedding: [8]f32 = undefined;
+    for (&embedding, 0..) |*v, i| v.* = @floatFromInt(i);
+    var frame: Frame = undefined;
+    for (&frame, 0..) |*code, g| code.* = @intCast(100 + 37 * g);
+    const clone: tts.Clone = .{ .embedding = &embedding, .frames = &.{frame} };
+    const rows = [_]tts.Row{
+        .{ .text = 22, .codec = null },
+        .{ .text = 22, .codec = null, .voice = .speaker },
+        .{ .text = 22, .codec = null, .voice = .{ .frame = 0 } },
+    };
+    var out: [3 * 8]f32 = undefined;
+    try model.embed(gpa, &rows, clone, &out);
+    for (out[w..][0..w], out[0..w], embedding) |got, text, e| try std.testing.expectEqual(text + e, got);
+    var next: [8]f32 = undefined;
+    model.nextRow(frame, out[0..w], &next);
+    try std.testing.expectEqualSlices(f32, &next, out[2 * w ..][0..w]);
+    // A voice row needs the clone, and its frame must exist.
+    try std.testing.expectError(error.InvalidVoice, model.embed(gpa, rows[1..2], null, out[0..w]));
+    const late = [_]tts.Row{.{ .text = 22, .codec = null, .voice = .{ .frame = 1 } }};
+    try std.testing.expectError(error.InvalidVoice, model.embed(gpa, &late, clone, out[0..w]));
+}
+
 test "a tiny model synthesizes frames of valid codes and stops at the length limit" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
@@ -977,7 +1091,7 @@ test "a tiny model synthesizes frames of valid codes and stops at the length lim
     defer gpa.free(x);
     const hidden = try gpa.alloc(f32, 2 * n * w);
     defer gpa.free(hidden);
-    try model.embed(gpa, prompt.rows, x[0 .. n * w]);
+    try model.embed(gpa, prompt.rows, null, x[0 .. n * w]);
     @memcpy(x[n * w ..], x[0 .. n * w]);
     var whole = try Talker.init(gpa, &model);
     defer whole.deinit();
@@ -988,7 +1102,7 @@ test "a tiny model synthesizes frames of valid codes and stops at the length lim
     for (hidden[0 .. n * w], hidden[n * w ..]) |a, b| try std.testing.expectApproxEqAbs(a, b, 1e-5);
 
     var frames: usize = 0;
-    var s = try Synthesizer.init(gpa, io, &config, .{ .cpu = &model }, .none, prompt.rows, 7);
+    var s = try Synthesizer.init(gpa, io, &config, .{ .cpu = &model }, .none, &prompt, 7);
     defer s.deinit();
     while (try s.nextFrame()) |frame| {
         for (frame) |code| try std.testing.expect(code < tts.codebook_size);

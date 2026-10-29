@@ -314,7 +314,7 @@ pub const Service = struct {
         var prompt = try voice.prompt(self.gpa, job.request.input, job.voice, job.request.language orelse "auto", job.request.instructions);
         defer prompt.deinit(self.gpa);
         job.prompt_rows = prompt.rows.len;
-        var synth = try voice.synthesizer(self.gpa, prompt.rows, job.request.seed orelse 0);
+        var synth = try voice.synthesizer(self.gpa, &prompt, job.request.seed orelse 0);
         errdefer synth.deinit();
         synth.first_chunk = self.first_chunk;
         synth.chunk = self.chunk;

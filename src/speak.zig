@@ -232,7 +232,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
     // A placeholder header; its sizes are written once the length is known.
     try writer.interface.writeAll(&try wavHeader(0, sample_rate));
 
-    var synth = try voice.synthesizer(alloc, prompt.rows, seed);
+    var synth = try voice.synthesizer(alloc, &prompt, seed);
     defer synth.deinit();
     synth.chunk = options.chunk orelse speech.default_chunk;
     synth.first_chunk = options.first_chunk orelse speech.default_first_chunk;

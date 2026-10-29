@@ -872,6 +872,44 @@ PyTorch's; no code lies near enough a boundary to move. The clip takes
 only path) bounds every stage of both at relative RMS 1e-4 and holds the
 codes equal.
 
+### The talker and the decode against the trace (2026-10-29)
+
+A prompt row carries, besides its text and codec ids, a Base's voice term
+(`qwen3_tts.Row.voice`): the speaker embedding, or reference frame k,
+embedded as `nextRow` embeds a generated frame (its 16 groups summed, then
+the text track added, the authors' order). `Prompt.buildClone` gives both
+modes' rows and the trailing text; the prompt borrows the voice
+(`qwen3_tts.Clone`). `Synthesizer.init` takes the prompt: it projects the
+trailing text once, adds row k to frame k's next row (then `tts_pad`, on
+the CPU and on Metal, whose `frameOnDevice` already takes the text row),
+and runs the reference frames through the decoder stream before any
+generated one, discarding their samples (`Prompt.primer`; none in
+x-vector mode). `Prompt.build` refuses a Base (`VoiceRequired`),
+`buildClone` a CustomVoice (`CloningUnsupported`).
+
+`qwen3-tts-check <Base dir> talker` replays both clone cases from the
+authors' codes, with the trace's embedding and reference codes so that
+the talker is checked apart from the encoders: token ids (the reference
+transcript's `[3:-2]` too), the prompt's `[text, codec, frame]` rows, and
+the trailing ids exactly, then every pinned stage. On the 0.6B Base, M4 Pro:
+
+| Case | Inputs | Worst stage | Logits' argmax |
+| --- | ---: | ---: | --- |
+| x-vector, CPU | 3.3e-7 | 1.4e-6 (norm) | 5 of 5, 30 of 30 |
+| ICL, CPU | 3.9e-7 | 1.3e-6 (norm) | 5 of 5, 30 of 30 |
+| x-vector, Metal F32 / F16 cache | 3.8e-7 | 1.2e-6 / 2.5e-4 | equal |
+| ICL, Metal F32 / F16 cache | 4.6e-7 | 1.3e-6 / 3.3e-4 | equal |
+
+The x-vector decode rows carry the trailing text, so their agreement fixes
+the step it starts at: frame 0's next row adds trailing row 0. `clone`
+then decodes each case's codes through a CPU stream, primed with the
+reference codes for ICL: the first two frames after the cut match the
+trace to 3.6e-6 (their peak 0.35), the last frame to 7.0e-6; x-vector's
+first frames are near silence (peak 1.4e-4, max |Δ| 6.5e-9). Gates:
+`qwen3-tts-0.6b-clone-trace-cpu` (tier `verify-cpu`, 1.5e-5),
+`qwen3-tts-0.6b-clone-metal` (tier `verify`, 1.5e-5 and 3e-3), and the
+primed decode in `qwen3-tts-0.6b-clone-cpu`.
+
 ## Codec decoder against the trace (2026-10-27)
 
 **The implementation.** `inference/src/audio/qwen3_codec.zig`: `bind`

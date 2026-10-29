@@ -29,7 +29,7 @@ pub const Error = Allocator.Error || error{
     UnexpectedTensor,
 };
 
-pub const PromptError = Allocator.Error || error{ UnknownSpeaker, UnknownLanguage, InstructionUnsupported, EmptyText };
+pub const PromptError = Allocator.Error || error{ UnknownSpeaker, UnknownLanguage, InstructionUnsupported, EmptyText, VoiceRequired, CloningUnsupported, InvalidVoice };
 
 /// One decoder stack's geometry (the talker's or the predictor's).
 pub const Stack = struct {
@@ -679,9 +679,40 @@ pub fn encodeText(gpa: Allocator, tokenizer: *const hf_json.Tokenizer, text: []c
     return .{ .role = all[0..3].*, .text = all[3 .. all.len - 5], .instruct = instruct_ids, .all = all };
 }
 
+/// A cloned voice's reference transcript as the prompt takes it:
+/// `_build_ref_text`'s rendering, its ids sliced `[3:-2]` (owned).
+pub fn encodeReference(gpa: Allocator, tokenizer: *const hf_json.Tokenizer, text: []const u8) ![]u32 {
+    const rendered = try std.fmt.allocPrint(gpa, "<|im_start|>assistant\n{s}<|im_end|>\n", .{text});
+    defer gpa.free(rendered);
+    const all = try tokenizer.encode(gpa, rendered, .{});
+    defer gpa.free(all);
+    if (all.len <= 5) return error.EmptyText;
+    return gpa.dupe(u32, all[3 .. all.len - 2]);
+}
+
 /// One talker input row: the sum of a text-track and a codec-track term,
-/// either of which may be absent.
-pub const Row = struct { text: ?u32, codec: ?u32 };
+/// either of which may be absent, and on a Base a voice term.
+pub const Row = struct {
+    text: ?u32,
+    codec: ?u32,
+    voice: VoiceTerm = .none,
+
+    /// A Base's codec-track terms that are no code of the table.
+    pub const VoiceTerm = union(enum) {
+        none,
+        /// The speaker embedding (`Clone.embedding`).
+        speaker,
+        /// Reference frame k's 16 groups summed, as a generated frame's next row.
+        frame: u32,
+    };
+};
+
+/// A saved voice as a prompt reads it (borrowed): the speaker embedding at
+/// the talker's width and, for ICL, the reference frames.
+pub const Clone = struct {
+    embedding: []const f32,
+    frames: []const [groups]u16 = &.{},
+};
 
 pub const Request = struct {
     /// The rendered text's role ids and text ids (`encodeText`).
@@ -695,19 +726,43 @@ pub const Request = struct {
     language: []const u8 = "auto",
 };
 
-/// The non-streaming prompt (docs/models/qwen3-tts.md § (a)): instruction
-/// rows, role rows, the codec prefix, every text row over `codec_pad`, the
-/// end of text, then `tts_pad` over `codec_bos`. During decoding the text
-/// track is `tts_pad` (the trailing text of the non-streaming mode).
+pub const CloneRequest = struct {
+    role: [3]u32,
+    text: []const u32,
+    /// The reference transcript's ids (`encodeReference`) for ICL; null for
+    /// the speaker embedding alone (x-vector only).
+    reference: ?[]const u32,
+    language: []const u8 = "auto",
+    /// Its frames are read only with `reference`.
+    clone: Clone,
+};
+
+/// A prompt's rows and, during decoding, its text track: step k adds
+/// `trailing[k]`, then `tts_pad` once they run out. `build` gives the
+/// non-streaming prompt (docs/models/qwen3-tts.md § (a)), whose trailing
+/// text is empty; `buildClone` a Base's streaming one (§ The prompt), whose
+/// rows borrow its `clone`.
 pub const Prompt = struct {
     rows: []Row,
+    trailing: []u32 = &.{},
+    clone: ?Clone = null,
 
     pub fn deinit(self: *Prompt, gpa: Allocator) void {
         gpa.free(self.rows);
+        gpa.free(self.trailing);
         self.* = undefined;
     }
 
+    /// The reference frames to decode, and discard, before the generated ones.
+    pub fn primer(self: *const Prompt) []const [groups]u16 {
+        return if (self.clone) |c| c.frames else &.{};
+    }
+
+    /// Instruction rows, role rows, the codec prefix, every text row over
+    /// `codec_pad`, the end of text, then `tts_pad` over `codec_bos`. A Base
+    /// has no speakers: `VoiceRequired` (`buildClone`).
     pub fn build(gpa: Allocator, config: *const Config, request: Request) PromptError!Prompt {
+        if (config.clones()) return error.VoiceRequired;
         if (request.text.len == 0) return error.EmptyText;
         if (request.instruct.len > 0 and !config.takesInstruction()) return error.InstructionUnsupported;
         const auto = std.ascii.eqlIgnoreCase(request.language, "auto");
@@ -743,6 +798,72 @@ pub const Prompt = struct {
         rows[n] = .{ .text = config.text.tts_eos, .codec = c.pad };
         rows[n + 1] = .{ .text = config.text.tts_pad, .codec = c.bos };
         return .{ .rows = rows };
+    }
+
+    /// A Base's prompt for `request` (`generate_voice_clone`, streaming
+    /// text): role rows; the codec prefix, the speaker embedding, and
+    /// `codec_pad` over `tts_pad` … `tts_bos`; then x-vector only, the first
+    /// text id over `codec_bos`, the rest of the text and `tts_eos`
+    /// trailing; or ICL, the text track `reference ++ text ++ tts_eos`
+    /// summed with `codec_bos` and the reference frames, the longer track's
+    /// excess trailing (§ The prompt).
+    pub fn buildClone(gpa: Allocator, config: *const Config, request: CloneRequest) PromptError!Prompt {
+        if (!config.clones()) return error.CloningUnsupported;
+        if (request.text.len == 0) return error.EmptyText;
+        if (request.clone.embedding.len != config.talker.hidden) return error.InvalidVoice;
+        if (request.reference) |r| if (r.len == 0 or request.clone.frames.len == 0) return error.InvalidVoice;
+        for (request.clone.frames) |frame| for (frame) |code| if (code >= codebook_size) return error.InvalidVoice;
+        const c = config.codec;
+        const t = config.text;
+        const auto = std.ascii.eqlIgnoreCase(request.language, "auto");
+        var prefix_buffer: [4]u32 = undefined;
+        var prefix: std.ArrayList(u32) = .initBuffer(&prefix_buffer);
+        if (auto) prefix.appendSliceAssumeCapacity(&.{ c.nothink, c.think_bos, c.think_eos }) else {
+            const language = config.language(request.language) orelse return error.UnknownLanguage;
+            prefix.appendSliceAssumeCapacity(&.{ c.think, c.think_bos, language.id, c.think_eos });
+        }
+        // The text track's ids beyond the role and prefix, and the codec track's rows.
+        var track: std.ArrayList(u32) = .empty;
+        defer track.deinit(gpa);
+        var trailing: std.ArrayList(u32) = .empty;
+        errdefer trailing.deinit(gpa);
+        var tail: usize = 1;
+        if (request.reference) |reference| {
+            try track.appendSlice(gpa, reference);
+            try track.appendSlice(gpa, request.text);
+            try track.append(gpa, t.tts_eos);
+            tail = request.clone.frames.len + 1;
+            if (track.items.len > tail) {
+                try trailing.appendSlice(gpa, track.items[tail..]);
+                track.shrinkRetainingCapacity(tail);
+            } else {
+                try trailing.append(gpa, t.tts_pad);
+                try track.appendNTimes(gpa, t.tts_pad, tail - track.items.len);
+            }
+        } else {
+            try track.append(gpa, request.text[0]);
+            try trailing.appendSlice(gpa, request.text[1..]);
+            try trailing.append(gpa, t.tts_eos);
+        }
+        const head = 3 + prefix.items.len + 2;
+        const rows = try gpa.alloc(Row, head + tail);
+        errdefer gpa.free(rows);
+        for (request.role, 0..) |id, i| rows[i] = .{ .text = id, .codec = null };
+        var n: usize = 3;
+        for (prefix.items) |id| {
+            rows[n] = .{ .text = t.tts_pad, .codec = id };
+            n += 1;
+        }
+        rows[n] = .{ .text = t.tts_pad, .codec = null, .voice = .speaker };
+        rows[n + 1] = .{ .text = t.tts_bos, .codec = c.pad };
+        n += 2;
+        for (track.items, 0..) |id, i| rows[n + i] = if (i == 0)
+            .{ .text = id, .codec = c.bos }
+        else
+            .{ .text = id, .codec = null, .voice = .{ .frame = @intCast(i - 1) } };
+        // x-vector only reads no frames, so none are decoded before its own.
+        const clone: Clone = if (request.reference == null) .{ .embedding = request.clone.embedding } else request.clone;
+        return .{ .rows = rows, .trailing = try trailing.toOwnedSlice(gpa), .clone = clone };
     }
 };
 
@@ -856,6 +977,61 @@ test "a Base's speaker encoder: its config, the package's defaults, and its refu
         try std.testing.expect(!std.mem.eql(u8, changed, json));
         try std.testing.expectError(case.err, parseConfig(gpa, changed, null));
     }
+}
+
+test "a Base's clone prompt: x-vector and ICL rows and trailing text, and the refusals" {
+    const gpa = std.testing.allocator;
+    var base = try testConfigOf(gpa, "0b6", 8, "base");
+    defer base.deinit();
+    const embedding: [8]f32 = @splat(0.5);
+    const frames: [6][groups]u16 = @splat(@splat(7));
+    const role = [3]u32{ 20, 7, 1 };
+    const n: ?u32 = null;
+    const head = [_]Row{
+        .{ .text = 20, .codec = n },    .{ .text = 7, .codec = n },                     .{ .text = 1, .codec = n },
+        .{ .text = 22, .codec = 2154 }, .{ .text = 22, .codec = 2156 },                 .{ .text = 22, .codec = 2050 },
+        .{ .text = 22, .codec = 2157 }, .{ .text = 22, .codec = n, .voice = .speaker }, .{ .text = 23, .codec = 2148 },
+    };
+
+    // x-vector only: the first text id over codec_bos, the rest trailing.
+    var xvector = try Prompt.buildClone(gpa, &base, .{ .role = role, .text = &.{ 30, 31, 32 }, .reference = null, .language = "english", .clone = .{ .embedding = &embedding, .frames = &frames } });
+    defer xvector.deinit(gpa);
+    try std.testing.expectEqualSlices(Row, &head ++ [_]Row{.{ .text = 30, .codec = 2149 }}, xvector.rows);
+    try std.testing.expectEqualSlices(u32, &.{ 31, 32, 24 }, xvector.trailing);
+    try std.testing.expectEqual(@as(usize, 0), xvector.primer().len);
+
+    // ICL, the text track longer than the reference: its excess trails.
+    var long = try Prompt.buildClone(gpa, &base, .{ .role = role, .text = &.{ 30, 31 }, .reference = &.{ 40, 41 }, .language = "english", .clone = .{ .embedding = &embedding, .frames = frames[0..3] } });
+    defer long.deinit(gpa);
+    try std.testing.expectEqualSlices(Row, &head ++ [_]Row{
+        .{ .text = 40, .codec = 2149 },                        .{ .text = 41, .codec = n, .voice = .{ .frame = 0 } },
+        .{ .text = 30, .codec = n, .voice = .{ .frame = 1 } }, .{ .text = 31, .codec = n, .voice = .{ .frame = 2 } },
+    }, long.rows);
+    try std.testing.expectEqualSlices(u32, &.{24}, long.trailing);
+    try std.testing.expectEqual(@as(usize, 3), long.primer().len);
+
+    // ICL, the reference longer: tts_pad fills the text track and trails.
+    var short = try Prompt.buildClone(gpa, &base, .{ .role = role, .text = &.{ 30, 31 }, .reference = &.{ 40, 41 }, .clone = .{ .embedding = &embedding, .frames = &frames } });
+    defer short.deinit(gpa);
+    try std.testing.expectEqual(@as(?u32, 2155), short.rows[3].codec);
+    const track = short.rows[short.rows.len - 7 ..];
+    for (track, [_]u32{ 40, 41, 30, 31, 24, 22, 22 }, 0..) |row, id, i| {
+        try std.testing.expectEqual(@as(?u32, id), row.text);
+        if (i > 0) try std.testing.expectEqual(Row.VoiceTerm{ .frame = @intCast(i - 1) }, row.voice);
+    }
+    try std.testing.expectEqualSlices(u32, &.{22}, short.trailing);
+
+    const voice: Clone = .{ .embedding = &embedding, .frames = &frames };
+    try std.testing.expectError(error.VoiceRequired, Prompt.build(gpa, &base, .{ .role = role, .text = &.{30}, .speaker = null }));
+    try std.testing.expectError(error.InvalidVoice, Prompt.buildClone(gpa, &base, .{ .role = role, .text = &.{30}, .reference = null, .clone = .{ .embedding = embedding[0..7] } }));
+    try std.testing.expectError(error.InvalidVoice, Prompt.buildClone(gpa, &base, .{ .role = role, .text = &.{30}, .reference = &.{40}, .clone = .{ .embedding = &embedding } }));
+    const wild = [1][groups]u16{@splat(codebook_size)};
+    try std.testing.expectError(error.InvalidVoice, Prompt.buildClone(gpa, &base, .{ .role = role, .text = &.{30}, .reference = &.{40}, .clone = .{ .embedding = &embedding, .frames = &wild } }));
+    try std.testing.expectError(error.UnknownLanguage, Prompt.buildClone(gpa, &base, .{ .role = role, .text = &.{30}, .reference = null, .language = "klingon", .clone = voice }));
+    try std.testing.expectError(error.EmptyText, Prompt.buildClone(gpa, &base, .{ .role = role, .text = &.{}, .reference = null, .clone = voice }));
+    var custom = try testConfig(gpa, "0b6", 8);
+    defer custom.deinit();
+    try std.testing.expectError(error.CloningUnsupported, Prompt.buildClone(gpa, &custom, .{ .role = role, .text = &.{30}, .reference = null, .clone = voice }));
 }
 
 test "the prompt's rows for both sizes, with and without an instruction" {

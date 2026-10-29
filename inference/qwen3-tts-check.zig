@@ -15,8 +15,9 @@
 //! Metal decode bit for bit. `clone` (a Base's MODEL_DIR): the reference
 //! case's clip, read from its WAV at 24 kHz, through the speaker encoder
 //! and the codec encoder, each stage the trace pins and the embedding
-//! compared, and the codes exactly. The bounds are arguments, so the gate
-//! manifest holds them.
+//! compared, and the codes exactly; then each clone case's codes decoded
+//! after the reference's (ICL), their samples against the trace's after the
+//! authors' cut. The bounds are arguments, so the gate manifest holds them.
 //!
 //!   qwen3-tts-check MODEL_DIR codec|codec-metal [--max-relative-rms X] [--max-absolute X] [--fixtures DIR]
 //!   qwen3-tts-check MODEL_DIR talker|talker-metal [--max-relative-rms X] [--kv f32|f16|both] [--max-relative-rms-f16 X] [--fixtures DIR]
@@ -340,10 +341,10 @@ const Engine = union(enum) {
     cpu: struct { model: *const speech.Model, talker: *speech.Talker, predictor: *speech.Predictor },
     metal: *tts_metal.Plan,
 
-    fn embed(self: Engine, gpa: std.mem.Allocator, rows: []const tts.Row, out: []f32) !void {
+    fn embed(self: Engine, gpa: std.mem.Allocator, rows: []const tts.Row, clone: ?tts.Clone, out: []f32) !void {
         switch (self) {
-            .cpu => |e| try e.model.embed(gpa, rows, out),
-            .metal => |plan| try plan.embed(rows, out),
+            .cpu => |e| try e.model.embed(gpa, rows, clone, out),
+            .metal => |plan| try plan.embed(rows, clone, out),
         }
     }
     /// The prompt's rows `x` (consumed); the last post-norm row into `last` and its logits.
@@ -455,16 +456,42 @@ fn checkTalker(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mod
         checked += 1;
         std.debug.print("{s}:\n", .{case.key_ptr.*});
 
-        // Token ids and the prompt's rows: exact.
+        // Token ids, the prompt's rows, and its trailing text: exact.
         const instruct: ?[]const u8 = if (meta.get("instruct")) |v| v.string else null;
         var text = try tts.encodeText(gpa, &tokenizer, meta.get("text").?.string, instruct);
         defer text.deinit(gpa);
         const want_text = try integers(arena, meta.get("text_ids"));
-        const want_instruct = try integers(arena, meta.get("instruct_ids"));
-        const ids_equal = std.mem.eql(u32, text.all, want_text) and std.mem.eql(u32, text.instruct, want_instruct);
-        std.debug.print("  token ids ({d} + {d}): {s}\n", .{ want_text.len, want_instruct.len, if (ids_equal) "equal" else "DIFFER" });
+        const want_instruct = if (meta.get("instruct_ids")) |v| try integers(arena, v) else &.{};
+        var ids_equal = std.mem.eql(u32, text.all, want_text) and std.mem.eql(u32, text.instruct, want_instruct);
+        // A clone case reads the reference case's pinned embedding and codes,
+        // so the talker is checked apart from the encoders.
+        const clone_mode: ?[]const u8 = if (meta.get("mode")) |v| v.string else null;
+        var reference_ids: ?[]u32 = null;
+        defer if (reference_ids) |r| gpa.free(r);
+        var clone: ?tts.Clone = null;
+        if (clone_mode) |mode| {
+            const reference = index.object.get("cases").?.object.get(meta.get("reference").?.string).?.object;
+            const reference_files = reference.get("files").?.object;
+            const shape = reference_files.get("codes").?.object.get("shape").?.array.items;
+            clone = .{
+                .embedding = try floats(arena, try readFixture(arena, io, fixtures, reference_files.get("embedding").?)),
+                .frames = try readCodes(arena, io, fixtures, reference_files.get("codes").?, @intCast(shape[0].integer)),
+            };
+            if (std.mem.eql(u8, mode, "icl")) {
+                reference_ids = try tts.encodeReference(gpa, &tokenizer, reference.get("reference_text").?.string);
+                const traced = try integers(arena, meta.get("ref_ids"));
+                ids_equal = ids_equal and traced.len > 5 and std.mem.eql(u32, reference_ids.?, traced[3 .. traced.len - 2]);
+            }
+        }
+        std.debug.print("  token ids ({d} + {d}{s}): {s}\n", .{ want_text.len, want_instruct.len, if (reference_ids != null) " + reference" else "", if (ids_equal) "equal" else "DIFFER" });
         if (!ids_equal) passed = false;
-        var prompt = try tts.Prompt.build(gpa, &config, .{
+        var prompt = if (clone) |voice| try tts.Prompt.buildClone(gpa, &config, .{
+            .role = text.role,
+            .text = text.text,
+            .reference = reference_ids,
+            .language = reference_language(index, meta),
+            .clone = voice,
+        }) else try tts.Prompt.build(gpa, &config, .{
             .role = text.role,
             .text = text.text,
             .instruct = text.instruct,
@@ -474,14 +501,21 @@ fn checkTalker(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mod
         defer prompt.deinit(gpa);
         const want_rows = meta.get("prompt_rows").?.array.items;
         var rows_equal = want_rows.len == prompt.rows.len;
+        // [text id, codec id] per row, and on a clone case the reference frame;
+        // −1 for none, −2 for the speaker embedding.
         if (rows_equal) for (prompt.rows, want_rows) |row, pair| {
-            const t = pair.array.items[0].integer;
-            const c = pair.array.items[1].integer;
+            const items = pair.array.items;
             const got_t: i64 = if (row.text) |v| v else -1;
-            const got_c: i64 = if (row.codec) |v| v else -1;
-            rows_equal = rows_equal and t == got_t and c == got_c;
+            const got_c: i64 = if (row.voice == .speaker) -2 else if (row.codec) |v| v else -1;
+            const got_k: i64 = switch (row.voice) {
+                .frame => |k| k,
+                else => -1,
+            };
+            const want_k: i64 = if (items.len > 2) items[2].integer else -1;
+            rows_equal = rows_equal and items[0].integer == got_t and items[1].integer == got_c and want_k == got_k;
         };
-        std.debug.print("  prompt rows ({d}): {s}\n", .{ want_rows.len, if (rows_equal) "equal" else "DIFFER" });
+        if (meta.get("trailing_ids")) |v| rows_equal = rows_equal and std.mem.eql(u32, prompt.trailing, try integers(arena, v));
+        std.debug.print("  prompt rows ({d}){s}: {s}\n", .{ want_rows.len, if (prompt.trailing.len > 0) " and trailing text" else "", if (rows_equal) "equal" else "DIFFER" });
         if (!rows_equal) {
             passed = false;
             continue;
@@ -518,10 +552,13 @@ fn checkTalker(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mod
             break :blk .{ .cpu = .{ .model = &model.?, .talker = &talker.?, .predictor = &predictor.? } };
         };
         const pad = try arena.alloc(f32, w);
-        try engine.embed(gpa, &.{.{ .text = config.text.tts_pad, .codec = null }}, pad);
+        try engine.embed(gpa, &.{.{ .text = config.text.tts_pad, .codec = null }}, null, pad);
+        // Frame f's next row adds trailing row f, then `tts_pad`.
+        const trailing = try arena.alloc(f32, prompt.trailing.len * w);
+        for (prompt.trailing, 0..) |id, k| try engine.embed(gpa, &.{.{ .text = id, .codec = null }}, null, trailing[k * w ..][0..w]);
 
         const prefill_start = std.Io.Clock.awake.now(io);
-        try engine.embed(gpa, prompt.rows, inputs[0 .. length * w]);
+        try engine.embed(gpa, prompt.rows, prompt.clone, inputs[0 .. length * w]);
         @memcpy(x, inputs[0 .. length * w]);
         const last = try arena.alloc(f32, w);
         try engine.prefill(x, length, hidden, last, logits[0..config.codec_vocab], observer);
@@ -537,7 +574,7 @@ fn checkTalker(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mod
             const got = try engine.frame(last, frame[0], .{ .context = &replay, .pick = Replay.pick });
             std.debug.assert(std.mem.eql(u16, &got, &frame));
             const row = inputs[(length + f) * w ..][0..w];
-            try engine.nextRow(frame, pad, row);
+            try engine.nextRow(frame, if (f < prompt.trailing.len) trailing[f * w ..][0..w] else pad, row);
             const step = try arena.dupe(f32, row);
             try engine.step(step, last, logits[(f + 1) * config.codec_vocab ..][0..config.codec_vocab], observer);
         }
@@ -582,6 +619,49 @@ fn checkTalker(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mod
     }
     std.debug.print("Bound: relative RMS {e} per stage: {s}.\n", .{ bound, if (passed) "passed" else "FAILED" });
     return passed;
+}
+
+/// Each clone case of `reference`: its codes decoded through a stream that
+/// first decoded `primer` (ICL; nothing in x-vector mode), the samples
+/// against the trace's after the reference's are cut.
+fn checkPrimedDecode(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, index: std.json.Value, reference: []const u8, decoder: *const codec.Runtime, primer: []const codec.Frame, fixtures: []const u8, bound: f64) !bool {
+    const per = decoder.config.samplesPerFrame();
+    var passed = true;
+    var cases = index.object.get("cases").?.object.iterator();
+    while (cases.next()) |case| {
+        const meta = case.value_ptr.object;
+        const of = meta.get("reference") orelse continue;
+        if (!std.mem.eql(u8, of.string, reference)) continue;
+        const files = meta.get("files").?.object;
+        const frames: usize = @intCast(files.get("codes").?.object.get("shape").?.array.items[0].integer);
+        const codes = try readCodes(arena, io, fixtures, files.get("codes").?, frames);
+        var stream = try codec.Stream.init(gpa, decoder);
+        defer stream.deinit();
+        const icl = std.mem.eql(u8, meta.get("mode").?.string, "icl");
+        if (icl) {
+            const discarded = try arena.alloc(f32, primer.len * per);
+            try stream.push(primer, discarded);
+        }
+        const samples = try arena.alloc(f32, frames * per);
+        try stream.push(codes, samples);
+        std.debug.print("  {s}: {d} frames decoded{s}\n", .{ case.key_ptr.*, frames, if (icl) " after the reference's" else "" });
+        for ([_][]const u8{ "samples/head", "samples/tail" }) |key| {
+            const want = try floats(arena, try readFixture(arena, io, fixtures, files.get(key).?));
+            const got = if (std.mem.endsWith(u8, key, "head")) samples[0..want.len] else samples[samples.len - want.len ..];
+            const s = compare(got, want);
+            const rel = @sqrt(s.diff2 / s.ref2);
+            const over = rel > bound;
+            if (over) passed = false;
+            std.debug.print("    {s:<12} {d:>6} {e:>10.2} {e:>10.2} {e:>10.2}{s}\n", .{ key, want.len, s.max_abs, s.max_ref, rel, if (over) "  OVER" else "" });
+        }
+    }
+    return passed;
+}
+
+/// A clone case's language: the reference case's.
+fn reference_language(index: std.json.Value, meta: std.json.ObjectMap) []const u8 {
+    const reference = index.object.get("cases").?.object.get(meta.get("reference").?.string).?.object;
+    return reference.get("reference_language").?.string;
 }
 
 /// Every speaker-encoder stage's rows, by label.
@@ -646,6 +726,8 @@ fn checkClone(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mode
     defer encoder_binding.deinit(gpa);
     var codes_encoder = try codec_encoder.Encoder.init(gpa, io, &decoder_binding, &encoder_binding);
     defer codes_encoder.deinit();
+    var decoder = try codec.Runtime.init(gpa, io, &decoder_binding);
+    defer decoder.deinit();
     const sidecar: ?std.json.Value = if (read.file(arena, io, model_dir, "model.safetensors.nuclis.json")) |text|
         try std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{})
     else |_|
@@ -723,6 +805,7 @@ fn checkClone(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mode
         if (differ > 0) passed = false;
         std.debug.print("  codes ({d} × {d}): {s}", .{ codes.len, codec.groups, if (differ == 0) "equal\n" else "" });
         if (differ > 0) std.debug.print("{d} of {d} DIFFER\n", .{ differ, total_codes });
+        if (!try checkPrimedDecode(gpa, arena, io, index, case.key_ptr.*, &decoder, codes, fixtures, bound)) passed = false;
     }
     if (checked == 0) {
         std.debug.print("No reference case in {s} for {s}.\n", .{ fixtures, dir_name });

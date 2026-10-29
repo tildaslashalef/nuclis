@@ -4154,6 +4154,43 @@
    "evidence": "docs/models/qwen3-tts.md#talker-and-code-predictor-against-the-trace-2026-10-27"
   },
   {
+   "name": "qwen3-tts-0.6b-clone-trace-cpu",
+   "family": "qwen3-tts",
+   "tier": "verify-cpu",
+   "model": "qwen3_tts_06b_base",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/qwen3-tts-check.zig",
+    "inference/src/models/qwen3_tts*.zig",
+    "inference/src/tokenizer/bpe.zig",
+    "inference/src/tokenizer/cased.zig",
+    "inference/src/tokenizer/hf_json.zig",
+    "inference/src/tokenizer/nfc*.zig",
+    "inference/src/tokenizer/pre.zig",
+    "inference/src/tokenizer/vocab_merges.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/rope.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/safetensors.zig",
+    "tests/fixtures/qwen3-tts/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-qwen3-tts",
+    "--",
+    "{model}",
+    "talker",
+    "--max-relative-rms",
+    "1.5e-5"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the Base's two clone cases replayed from the authors' codes with the trace's embedding and reference codes (the talker apart from the encoders): token ids (the reference transcript's too), the prompt's [text, codec, frame] rows, and the trailing text exactly; then the talker's input rows (prompt and 4 decode rows, the trailing text added), layers 0, 13, 27, final norm, group-0 logits of frames 0-4, and the predictor's logits of frames 0-1, relative RMS <= 1.5e-5 per stage (first run 2026-10-29: worst 1.41e-6, every argmax equal)",
+   "evidence": "docs/models/qwen3-tts.md#the-talker-and-the-decode-against-the-trace-2026-10-29"
+  },
+  {
    "name": "qwen3-tts-1.7b-trace-cpu",
    "family": "qwen3-tts",
    "tier": "verify-cpu",
@@ -4264,8 +4301,49 @@
    "comparator": {
     "kind": "exit"
    },
-   "note": "the Base's reference clip, read from its 16-bit WAV at 24 kHz, through both encoders (the CPU is their only path, so this gate is in the fast tier): the speaker encoder's mel (last 64 rows), blocks 0 and 3 and mfa (last 8), pooled statistics, and embedding; the codec encoder's SEANet, transformer, and downsample outputs (last 16 rows), each within relative RMS 1e-4; and the 58 frames of codes equal (first run 2026-10-29: speaker encoder worst 1.74e-6, codec encoder worst 3.26e-5 at the SEANet output, every code equal)",
+   "note": "the Base's reference clip, read from its 16-bit WAV at 24 kHz, through both encoders (the CPU is their only path, so this gate is in the fast tier): the speaker encoder's mel (last 64 rows), blocks 0 and 3 and mfa (last 8), pooled statistics, and embedding; the codec encoder's SEANet, transformer, and downsample outputs (last 16 rows), each within relative RMS 1e-4; the 58 frames of codes equal; and each clone case's codes decoded through a stream primed with the reference codes (ICL) against the trace's samples after the cut, within 1e-4 (first run 2026-10-29: speaker encoder worst 1.74e-6, codec encoder worst 3.26e-5 at the SEANet output, every code equal, the primed decode's first two frames 3.6e-6)",
    "evidence": "docs/models/qwen3-tts.md#the-speaker-encoder-against-the-trace-2026-10-29"
+  },
+  {
+   "name": "qwen3-tts-0.6b-clone-metal",
+   "family": "qwen3-tts",
+   "tier": "verify",
+   "model": "qwen3_tts_06b_base",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/qwen3-tts-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/safetensors.zig",
+    "inference/src/models/qwen3_tts*.zig",
+    "inference/src/runtime/session.zig",
+    "inference/src/sampling/root.zig",
+    "inference/src/tokenizer/bpe.zig",
+    "inference/src/tokenizer/cased.zig",
+    "inference/src/tokenizer/hf_json.zig",
+    "inference/src/tokenizer/nfc*.zig",
+    "inference/src/tokenizer/pre.zig",
+    "inference/src/tokenizer/vocab_merges.zig",
+    "tests/fixtures/qwen3-tts/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-qwen3-tts",
+    "--",
+    "{model}",
+    "talker-metal",
+    "--kv",
+    "both",
+    "--max-relative-rms",
+    "1.5e-5",
+    "--max-relative-rms-f16",
+    "3e-3"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the Base's two clone cases through the Metal plan as qwen3-tts-0.6b-clone-trace-cpu: ids, rows, and trailing text exactly, then every stage against the trace with an F32 talker cache within relative RMS 1.5e-5 and with the F16 cache within 3e-3 (first run 2026-10-29: F32 cache worst 1.27e-6, F16 cache worst 3.30e-4; every argmax equal)",
+   "evidence": "docs/models/qwen3-tts.md#the-talker-and-the-decode-against-the-trace-2026-10-29"
   },
   {
    "name": "qwen3-tts-1.7b-trace-metal",

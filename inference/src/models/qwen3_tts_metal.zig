@@ -311,8 +311,9 @@ pub const Plan = struct {
     }
 
     /// The talker's input rows for `prompt` into `out` (`[rows.len][width]`):
-    /// the projected text row plus the codec row, as `Model.embed`.
-    pub fn embed(self: *Plan, prompt: []const tts.Row, out: []f32) !void {
+    /// the projected text row plus the codec row and a Base's voice term
+    /// from `clone`, as `Model.embed`.
+    pub fn embed(self: *Plan, prompt: []const tts.Row, clone: ?tts.Clone, out: []f32) !void {
         const c = self.config;
         const w = c.talker.hidden;
         const th = c.text_hidden;
@@ -340,6 +341,21 @@ pub const Plan = struct {
                 if (row.codec) |id| {
                     if (id >= c.codec_vocab) return error.InvalidCode;
                     try self.addRow(self.codec_embedding, id, o);
+                }
+                switch (row.voice) {
+                    .none => {},
+                    .speaker => for (o, (clone orelse return error.InvalidVoice).embedding) |*a, b| {
+                        a.* += b;
+                    },
+                    .frame => |k| {
+                        const frames = (clone orelse return error.InvalidVoice).frames;
+                        if (k >= frames.len) return error.InvalidVoice;
+                        // The groups summed first, then the text, as `Model.embed`.
+                        var sum: [4096]f32 = undefined;
+                        @memset(sum[0..w], 0);
+                        try self.addFrame(frames[k], sum[0..w]);
+                        for (o, sum[0..w]) |*a, b| a.* += b;
+                    },
                 }
             }
             at = end;
@@ -372,10 +388,15 @@ pub const Plan = struct {
     /// The next talker row (§ (e)), as `Model.nextRow`: the frame's 16 code
     /// embeddings summed in order, then the text track `text`.
     pub fn nextRow(self: *Plan, codes: Frame, text: []const f32, out: []f32) !void {
-        const w = self.config.talker.hidden;
-        try self.codec_embedding.decode(@as(u64, codes[0]) * w, out);
-        for (self.embeddings, codes[1..]) |table, code| try self.addRow(table, code, out);
+        @memset(out, 0);
+        try self.addFrame(codes, out);
         for (out, text) |*a, b| a.* += b;
+    }
+
+    /// `out += ` the frame's 16 code embeddings, in group order.
+    fn addFrame(self: *Plan, codes: Frame, out: []f32) !void {
+        try self.addRow(self.codec_embedding, codes[0], out);
+        for (self.embeddings, codes[1..]) |table, code| try self.addRow(table, code, out);
     }
 
     /// Runs the prompt's input rows `x` (`[n][width]`) from position 0; the
