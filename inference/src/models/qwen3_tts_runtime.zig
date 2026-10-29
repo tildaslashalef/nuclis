@@ -554,7 +554,7 @@ pub const max_chunk = 32;
 /// lines up to 75 frames; a model that never samples the end code would
 /// otherwise run to the config's cap (8,192 frames, 655 s).
 /// docs/models/qwen3-tts.md § The frame budget.
-pub const budget_floor_frames = 100;
+pub const budget_floor_frames = 50;
 pub const budget_frames_per_token = 20;
 
 /// The frames an utterance of `text_tokens` may make.
@@ -1257,7 +1257,7 @@ test "the frame budget: a floor and a per-token allowance, never past the config
     defer gpa.free(json);
     var config = try tts.parseConfig(gpa, json, "{\"max_new_tokens\":8192}");
     defer config.deinit();
-    try std.testing.expectEqual(@as(usize, 140), frameBudget(&config, 2));
-    try std.testing.expectEqual(@as(usize, 300), frameBudget(&config, 10));
+    try std.testing.expectEqual(@as(usize, 90), frameBudget(&config, 2));
+    try std.testing.expectEqual(@as(usize, 250), frameBudget(&config, 10));
     try std.testing.expectEqual(@as(usize, 8192), frameBudget(&config, 4000));
 }

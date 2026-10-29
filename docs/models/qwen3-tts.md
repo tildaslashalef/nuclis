@@ -391,6 +391,8 @@ the codes are cut at the first frame whose c₀ is 2150, and a final c₀
 sampled at the length limit has no groups 1–15 and is dropped.
 `min_new_tokens` 2 guarantees at least two frames.
 
+nuclis stops sooner: see [The frame budget](#the-frame-budget).
+
 ### (g) Streaming
 
 `non_streaming_mode=False` is the only "streaming" in the package, and it
@@ -940,6 +942,36 @@ its words, so the first audio grows with the clip: Muon measured
 576–1,111 ms on the 1.7B. A clip-alone voice is one speaker row whatever
 the clip's length: about 45 ms on the 0.6B and 107–112 ms on the 1.7B. A
 short clip with its exact words keeps the likeness and most of the speed.
+
+## The frame budget
+
+A model that never samples the end code runs to `max_new_tokens`: a
+clip-only voice on the 0.6B Base turned "Hello." into 8,191 frames (655 s;
+Muon, 2026-10-29). Every synthesizer therefore stops at
+`min(max_new_tokens, 50 + 20 × text tokens)` frames
+(`budget_floor_frames`, `budget_frames_per_token` in
+`qwen3_tts_runtime.zig`), counting the target text's tokens, not a
+reference transcript's, and reports why it stopped (`Synthesizer.finish`:
+`eos`, or `length` at the budget). `nuclis speak` warns at `length`;
+`nuclis serve` puts it in `speech.audio.done` (`finish_reason`) and the
+request log.
+
+Measured (2026-10-29, `nuclis speak`, Metal, M4 Pro; frames of 80 ms per
+token of the input):
+
+| Input | Frames per token | Most frames |
+| --- | ---: | ---: |
+| 20 English sentences, 0.6B CustomVoice `ryan` | 3.2–11.6 | 104 (9 tokens) |
+| 3 Chinese sentences, 0.6B CustomVoice `vivian` | 4.9–7.5 | 49 |
+| 8 sentences, 1.7B VoiceDesign "very, very slowly" | 6.4–14.5 | 145 (10 tokens) |
+| "Hi.", "Okay.", "Hello.", "Yes.", "Thanks!" (2 tokens), both 0.6B and 1.7B | 6.5–37.5 | 75 ("Hello.") |
+
+Muon's benchmark (2026-10-30, 36 voices) put a one-word line that ended
+on its own at 0.4–3.7 s. The floor sets the margin on short lines:
+"Hello." may run 90 frames (7.2 s), 1.2× the longest measured; ten tokens
+250 frames (20 s), 1.7× the slowest sentence. A client of raw audio hears
+what the budget allows before the reason arrives; one on `sse` can drop
+the clip on `length`.
 
 ## VoiceDesign
 
