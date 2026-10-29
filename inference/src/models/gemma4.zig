@@ -202,11 +202,18 @@ pub fn kvHeadsOf(config: *const Config, kind: Kind) usize {
 /// layouts the shared CPU reference and Metal kernels execute: Q4_0 (id 2)
 /// for the QAT checkpoints, Q5_0 and Q5_1 (6, 7) for the `ffn_down` rows of
 /// 704 and 2,112 values a K-quant file stores in 32-value blocks.
-pub fn executableEncoding(encoding_id: u32) bool {
+pub fn matrixEncoding(encoding_id: u32) bool {
     return switch (encoding_id) {
         0, 2, 6, 7, 8, 11, 12, 13, 14, 20, 21, 23 => true,
         else => false,
     };
+}
+
+/// `matrixEncoding` plus BF16 (id 30), which only `per_layer_model_proj`
+/// may use: K-quant E-series files keep it unquantized, and its products
+/// run the generic decode, never a fused or expert kernel.
+pub fn executableEncoding(encoding_id: u32) bool {
+    return matrixEncoding(encoding_id) or encoding_id == 30;
 }
 
 pub const Summary = models.Summary;
@@ -478,7 +485,8 @@ fn knownArchitectureKey(config: *const Config, key: []const u8) bool {
     return false;
 }
 
-const Storage = enum { f32, matrix };
+/// `projection` admits BF16 (`executableEncoding`); `matrix` does not.
+const Storage = enum { f32, matrix, projection };
 const Binder = struct {
     remaining: std.StringHashMap(*const Tensor),
     config: *const Config,
@@ -491,7 +499,8 @@ const Binder = struct {
         if (!std.mem.eql(u64, tensor.dimensions, dimensions)) return error.InvalidTensorShape;
         const supported = switch (storage) {
             .f32 => tensor.encoding_id == 0,
-            .matrix => executableEncoding(tensor.encoding_id),
+            .matrix => matrixEncoding(tensor.encoding_id),
+            .projection => executableEncoding(tensor.encoding_id),
         };
         if (!supported) return error.UnsupportedTensorEncoding;
         self.tensors += 1;
@@ -502,6 +511,14 @@ const Binder = struct {
         var name: [128]u8 = undefined;
         const key = std.fmt.bufPrint(&name, "blk.{d}.{s}", .{ index, suffix }) catch unreachable;
         return self.take(key, dimensions, storage);
+    }
+    /// Claims a tensor the forward never reads, if the file stores it; its
+    /// shape must still match. Not counted in the summary.
+    fn unused(self: *Binder, index: usize, suffix: []const u8, dimensions: []const u64) Error!void {
+        var name: [128]u8 = undefined;
+        const key = std.fmt.bufPrint(&name, "blk.{d}.{s}", .{ index, suffix }) catch unreachable;
+        const entry = self.remaining.fetchRemove(key) orelse return;
+        if (!std.mem.eql(u64, entry.value.dimensions, dimensions)) return error.InvalidTensorShape;
     }
     fn expertLayer(self: *Binder, index: usize, experts: Experts) Error!ExpertLayer {
         const d = self.config.embedding;
@@ -530,6 +547,13 @@ const Binder = struct {
         const owns_kv = index < config.kv_layers;
         const has_value = owns_kv and (kind == .sliding or config.global_value);
         const w = config.per_layer_input;
+        if (!owns_kv) {
+            // A shared-KV layer attends over an earlier layer's cache; some
+            // converters still store its own K, V, and K norm.
+            try self.unused(index, "attn_k.weight", &.{ d, kv });
+            try self.unused(index, "attn_v.weight", &.{ d, kv });
+            try self.unused(index, "attn_k_norm.weight", &.{hd});
+        }
         return .{
             .kind = kind,
             .heads = config.heads,
@@ -580,7 +604,7 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     const w = config.per_layer_input;
     result.per_layer = if (w != 0) .{
         .token_embedding = try binder.take("per_layer_token_embd.weight", &.{ w * config.layer_count, vocabulary }, .matrix),
-        .model_projection = try binder.take("per_layer_model_proj.weight", &.{ config.embedding, w * config.layer_count }, .matrix),
+        .model_projection = try binder.take("per_layer_model_proj.weight", &.{ config.embedding, w * config.layer_count }, .projection),
         .projection_norm = try binder.take("per_layer_proj_norm.weight", &.{w}, .f32),
     } else null;
     for (result.layers[0..config.layer_count], 0..) |*layer, index| layer.* = try binder.layer(index);
@@ -719,6 +743,7 @@ const Mutation = union(enum) {
     reshape: struct { name: []const u8, dimensions: []const u64 },
     encode: struct { name: []const u8, id: u32 },
     add_tensor: []const u8,
+    add_shaped: struct { name: []const u8, dimensions: []const u64 },
     set_unsigned: struct { key: []const u8, value: u64 },
     flip_pattern: usize,
     drop_key: []const u8,
@@ -747,8 +772,15 @@ fn mutated(base: *const Config, mutation: Mutation) !gguf.Document {
         .encode => |e| for (tensors) |*t| if (std.mem.eql(u8, t.name, e.name)) {
             t.encoding_id = e.id;
         },
-        .add_tensor => |name| {
-            const extra: Tensor = .{ .name = name, .dimensions = try alloc.dupe(u64, &.{base.embedding}), .encoding_id = 0, .offset = 0, .elements = base.embedding, .bytes = base.embedding * 4 };
+        .add_tensor, .add_shaped => {
+            const name, const dimensions = switch (mutation) {
+                .add_tensor => |name| .{ name, &[_]u64{base.embedding} },
+                .add_shaped => |a| .{ a.name, a.dimensions },
+                else => unreachable,
+            };
+            var elements: u64 = 1;
+            for (dimensions) |n| elements *= n;
+            const extra: Tensor = .{ .name = name, .dimensions = try alloc.dupe(u64, dimensions), .encoding_id = 0, .offset = 0, .elements = elements, .bytes = elements * 4 };
             const more = try alloc.alloc(Tensor, doc.tensors.len + 1);
             @memcpy(more[0..doc.tensors.len], doc.tensors);
             more[doc.tensors.len] = extra;
@@ -807,7 +839,12 @@ test "deviations from the pinned configurations are typed rejections" {
         .{ .base = &config_26b_a4b, .mutation = .{ .drop_key = "gemma4.expert_feed_forward_length" }, .expected = error.MissingMetadata },
         .{ .base = &config_26b_a4b, .mutation = .{ .flip_pattern = 11 }, .expected = error.UnsupportedConfiguration },
         .{ .base = &config_e4b, .mutation = .{ .drop_tensor = "blk.23.attn_v.weight" }, .expected = error.MissingTensor },
-        .{ .base = &config_e4b, .mutation = .{ .add_tensor = "blk.24.attn_k_norm.weight" }, .expected = error.UnexpectedTensor },
+        // BF16 binds only as the per-layer projection.
+        .{ .base = &config_e4b, .mutation = .{ .encode = .{ .name = "per_layer_token_embd.weight", .id = 30 } }, .expected = error.UnsupportedTensorEncoding },
+        .{ .base = &config_e4b, .mutation = .{ .encode = .{ .name = "blk.0.inp_gate.weight", .id = 30 } }, .expected = error.UnsupportedTensorEncoding },
+        // A shared layer's stored K norm is claimed unread, at its own width.
+        .{ .base = &config_e4b, .mutation = .{ .add_tensor = "blk.24.attn_k_norm.weight" }, .expected = error.InvalidTensorShape },
+        .{ .base = &config_e4b, .mutation = .{ .add_tensor = "blk.24.attn_q_proj.weight" }, .expected = error.UnexpectedTensor },
         .{ .base = &config_e4b, .mutation = .{ .drop_tensor = "per_layer_proj_norm.weight" }, .expected = error.MissingTensor },
         .{ .base = &config_e4b, .mutation = .{ .drop_tensor = "blk.41.inp_gate.weight" }, .expected = error.MissingTensor },
         .{ .base = &config_e4b, .mutation = .{ .set_unsigned = .{ .key = "gemma4.attention.shared_kv_layers", .value = 20 } }, .expected = error.UnsupportedConfiguration },
@@ -845,5 +882,30 @@ test "kindOf and the geometry constants" {
     try std.testing.expectEqual(@as(usize, 1), kvHeadsOf(&config_12b, .global));
     try std.testing.expectEqual(@as(usize, 2), kvHeadsOf(&config_26b_a4b, .global));
     try std.testing.expectEqual(@as(f32, @sqrt(3840.0)), config_12b.embeddingScale());
-    try std.testing.expect(executableEncoding(12) and executableEncoding(2) and !executableEncoding(30));
+    try std.testing.expect(executableEncoding(12) and executableEncoding(2) and executableEncoding(30));
+    try std.testing.expect(matrixEncoding(12) and !matrixEncoding(30) and !executableEncoding(10));
+}
+
+test "an E4B file that stores a shared layer's K, V, and K norm binds without them" {
+    const extras = [_]Mutation{
+        .{ .add_shaped = .{ .name = "blk.24.attn_k.weight", .dimensions = &.{ 2560, 512 } } },
+        .{ .add_shaped = .{ .name = "blk.24.attn_v.weight", .dimensions = &.{ 2560, 512 } } },
+        .{ .add_shaped = .{ .name = "blk.29.attn_k_norm.weight", .dimensions = &.{512} } },
+        .{ .add_shaped = .{ .name = "blk.41.attn_v.weight", .dimensions = &.{ 2560, 1024 } } },
+    };
+    for (extras) |extra| {
+        var doc = try mutated(&config_e4b, extra);
+        defer doc.deinit();
+        const binding = try bind(std.testing.allocator, &doc);
+        try std.testing.expectEqual(@as(u32, 666), binding.summary.text_tensors);
+        try std.testing.expect(binding.layers[24].key == null and binding.layers[41].value == null);
+    }
+}
+
+test "an E4B file with a BF16 per-layer projection binds it" {
+    var doc = try mutated(&config_e4b, .{ .encode = .{ .name = "per_layer_model_proj.weight", .id = 30 } });
+    defer doc.deinit();
+    const binding = try bind(std.testing.allocator, &doc);
+    const ple = binding.per_layer orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 30), ple.model_projection.encoding_id);
 }

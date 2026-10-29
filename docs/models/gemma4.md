@@ -33,6 +33,7 @@ their encode times (the E4B's 676-token logo in 1.6 s, the 12B's in
 - [Gemma 4 E4B: per-layer embeddings and shared KV (2026-09-26)](#gemma-4-e4b-per-layer-embeddings-and-shared-kv-2026-09-26)
 - [Long-context decode with the head-split attention (2026-10-15)](#long-context-decode-with-the-head-split-attention-2026-10-15)
 - [Audio input on the E4B (2026-10-27)](#audio-input-on-the-e4b-2026-10-27)
+- [K-quant E4B files (2026-10-29)](#k-quant-e4b-files-2026-10-29)
 
 ## Artifacts
 
@@ -956,3 +957,45 @@ mood it was asked to tell apart. Whether the clips carry the moods
 strongly was not measured (they last 2.2–3.4 s; the angry readings are
 the quietest, −24.6 and −25.4 dBFS); with these
 clips and prompts, the tone did not reach the answer.
+
+## K-quant E4B files (2026-10-29)
+
+llama.cpp's converter writes two things the QAT file does not, in every
+K-quant and IQ quant of the E4B (read from `unsloth/gemma-4-E4B-it-GGUF`
+at `bfc15c38…`, `gemma-4-E4B-it-Q4_K_M.gguf`, 4,977,171,584 bytes,
+SHA-256 `85a896a0…`; 720 tensors against the QAT file's 666):
+
+- **`per_layer_model_proj` in BF16** (`[2560, 10752]`, 55,050,240 bytes)
+  whatever the quant type. Its products already run the generic decode
+  (`quant.decodeRow` id 30 on the CPU, `nu_dequant` under Metal's generic
+  `matvec` and `matmul` tile), as EmbeddingGemma 2's same tensor does.
+  `executableEncoding` admits id 30 and the binder takes it only for this
+  tensor (`Storage.projection`); every other matrix is held to
+  `matrixEncoding`, since the fused, expert, and row-gather kernels have no
+  BF16 body. Its stored scale is about 70× the QAT file's; the per-layer
+  RMS norm that follows `P · x0` cancels it.
+- **`attn_k`, `attn_v`, `attn_k_norm` on the shared-KV layers 24–41** (54
+  tensors, the owners' shapes). Those layers attend over layer 22's or
+  23's cache, so the binder claims the tensors with their shapes checked
+  (`Binder.unused`) and never reads them; they are not in the summary's
+  count.
+
+A file whose chat template is not Google's (a fine-tune's own) has no
+detected profile: `generate` and `chat` refuse with
+`UnsupportedPromptTemplate`, and `eval` reads raw text without `<bos>`
+when the file's `add_bos_token` is false. Force it with `--prompt-profile
+gemma4_e`, or register the pull with `--profile gemma4_e`.
+
+**Measured** (M4 Pro, the Q4_K_M above, `<bos>Hello,` unless noted):
+
+| Check | Result |
+| --- | --- |
+| `model inspect` | runnable (was: BF16 outside the executable set, then `UnexpectedTensor`) |
+| logits, Metal F32 cache against the CPU reference | max abs 3.0e-5, relative RMS 1.5e-6, top-5 equal |
+| hidden state per layer against the QAT file, CPU | cosine 0.91–0.99 over layers 0–41 (lowest at layer 30 of the first token) |
+| perplexity, WikiText-2 512×8, Metal, `gemma4_e` | 75.56 ± 8.44 (QAT file 36.06 ± 3.23) |
+| greedy chat, "Name three primary colors." | Red, Yellow, Blue |
+
+The perplexity is the non-QAT checkpoint's, a different model from the
+QAT file's; it is a sanity figure, not a bound. No gate pins a K-quant E4B
+file.

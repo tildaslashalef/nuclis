@@ -77,8 +77,9 @@ pub fn kvHeadsOf(config: *const Config, kind: Kind) usize {
         .global => config.global_kv_heads,
     };
 }
-/// The same storage layouts the main Gemma 4 adapter executes.
-pub const executableEncoding = @import("gemma4.zig").executableEncoding;
+/// The main Gemma 4 adapter's matrix layouts; the head has no per-layer
+/// projection, so no BF16.
+pub const executableEncoding = @import("gemma4.zig").matrixEncoding;
 
 pub const Error = models.BindError;
 

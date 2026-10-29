@@ -14,13 +14,13 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-No unit is in progress. Q5_0 and Q5_1 (`q5-0-q5-1-encodings`: the CPU
-decoders, the Metal kernels, the Gemma 4 adapter, and two side fixes, a
-gate that skips when its data is missing and `discover` taking a Gemma 4
-file's verdict from the entry of its layer count) waits for its pull
-request, whose description is its record. Muon's voice loop is in its pull
-request; the next release (0.11.0) carries it with the model-management
-unit ([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)).
+No unit is in progress. K-quant E4B files
+(`gemma4-bf16-per-layer-projection`: a BF16 `per_layer_model_proj` and
+the shared-KV layers' stored K/V bind) waits for its pull request, whose
+description is its record. The next release (0.11.0) carries it with
+Q5_0 and Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
+Muon's voice loop, and the model-management unit
+([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)).
 
 ## Deferred
 
