@@ -118,7 +118,29 @@ fn models(arena: std.mem.Allocator, root: ?[]const u8, path: []const u8) ![]cons
 
 /// What a speech checkpoint on disk says about itself. Strings live in
 /// `arena`.
+pub const Mode = catalog.SpeechMode;
+
+/// `directory`'s mode, from its `config.json` alone; null when it is not a
+/// speech checkpoint nuclis opens.
+pub fn speechMode(arena: std.mem.Allocator, io: std.Io, directory: []const u8) !?Mode {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ directory, "config.json" }), arena, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    var parsed = inference.models.qwen3_tts.parseConfig(arena, bytes, null) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    defer parsed.deinit();
+    return modeOf(&parsed);
+}
+
+fn modeOf(parsed: *const inference.models.qwen3_tts.Config) Mode {
+    return if (parsed.clones()) .clone else if (parsed.designs()) .design else .speakers;
+}
+
 pub const Described = struct {
+    mode: Mode,
     speakers: []const []const u8,
     /// Each speaker's dialect (`sichuan_dialect`), or null; by `speakers`' index.
     dialects: []const ?[]const u8,
@@ -165,8 +187,8 @@ pub fn describeSpeech(arena: std.mem.Allocator, io: std.Io, directory: []const u
     for (weights.tensors) |t| {
         if (dtype != null and dtype.? != t.dtype) break;
         dtype = t.dtype;
-    } else if (dtype) |d| return .{ .speakers = speakers, .dialects = dialects, .languages = languages, .instructions = parsed.takesInstruction(), .quantization = try std.ascii.allocUpperString(arena, @tagName(d)) };
-    return .{ .speakers = speakers, .dialects = dialects, .languages = languages, .instructions = parsed.takesInstruction(), .quantization = "mixed" };
+    } else if (dtype) |d| return .{ .mode = modeOf(&parsed), .speakers = speakers, .dialects = dialects, .languages = languages, .instructions = parsed.takesInstruction(), .quantization = try std.ascii.allocUpperString(arena, @tagName(d)) };
+    return .{ .mode = modeOf(&parsed), .speakers = speakers, .dialects = dialects, .languages = languages, .instructions = parsed.takesInstruction(), .quantization = "mixed" };
 }
 
 /// The `language` values a transcription checkpoint takes: its

@@ -390,6 +390,8 @@ pub const AudioEntry = struct {
     codec_support: []const []const u8 = &.{},
     /// The speakers a speech model voices, as its `config.json` names them.
     speakers: []const []const u8 = &.{},
+    /// How a speech model picks its voice, as its `config.json` says.
+    mode: SpeechMode = .speakers,
     /// Whether it performs a delivery instruction (the 1.7B CustomVoice).
     instructions: bool = false,
 
@@ -402,6 +404,16 @@ pub const AudioEntry = struct {
 const qwen3_tts_speakers = [_][]const u8{ "aiden", "dylan", "eric", "ono_anna", "ryan", "serena", "sohee", "uncle_fu", "vivian" };
 const qwen3_tts_support = [_][]const u8{ "config.json", "generation_config.json", "merges.txt", "preprocessor_config.json", "tokenizer_config.json", "vocab.json" };
 const qwen3_tts_codec_support = [_][]const u8{ "speech_tokenizer/config.json", "speech_tokenizer/configuration.json", "speech_tokenizer/preprocessor_config.json" };
+
+/// How a speech model picks its voice (`config.json`'s `tts_model_type`).
+pub const SpeechMode = enum {
+    /// CustomVoice: one of its speakers.
+    speakers,
+    /// Base: a saved voice, cloned.
+    clone,
+    /// VoiceDesign: the instruction describes it.
+    design,
+};
 
 pub const audio_entries = [_]AudioEntry{
     // Qwen3-TTS 12Hz CustomVoice, both sizes as published (BF16 talker, F32
@@ -460,6 +472,7 @@ pub const audio_entries = [_]AudioEntry{
         .name = "qwen3-tts-1.7b-base",
         .title = "Qwen3-TTS 1.7B Base",
         .kind = .speech,
+        .mode = .clone,
         .repo = "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         .file = "model.safetensors",
         .revision = "fd4b254389122332181a7c3db7f27e918eec64e3",
@@ -481,6 +494,7 @@ pub const audio_entries = [_]AudioEntry{
         .name = "qwen3-tts-0.6b-base",
         .title = "Qwen3-TTS 0.6B Base",
         .kind = .speech,
+        .mode = .clone,
         .repo = "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         .file = "model.safetensors",
         .revision = "5d83992436eae1d760afd27aff78a71d676296fc",
@@ -505,6 +519,7 @@ pub const audio_entries = [_]AudioEntry{
         .name = "qwen3-tts-1.7b-voicedesign",
         .title = "Qwen3-TTS 1.7B VoiceDesign",
         .kind = .speech,
+        .mode = .design,
         .repo = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
         .file = "model.safetensors",
         .revision = "5ecdb67327fd37bb2e042aab12ff7391903235d3",
@@ -757,6 +772,7 @@ test "audio entries are well formed, of their two kinds, and share no name with 
             for (e.codec_support) |name| try std.testing.expect(std.mem.startsWith(u8, name, codec_dir));
             // Only CustomVoice names speakers: a Base clones a voice, VoiceDesign describes one.
             try std.testing.expectEqual(std.mem.endsWith(u8, e.name, "-customvoice"), e.speakers.len > 0);
+            try std.testing.expectEqual(e.speakers.len > 0, e.mode == .speakers);
         }
         for (audio_entries[i + 1 ..]) |other| try std.testing.expect(!std.mem.eql(u8, e.name, other.name));
     }

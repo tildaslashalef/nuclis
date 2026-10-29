@@ -14,11 +14,11 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–11 (the
+`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–12 (the
 facts, the traces, the config and binding, audio at 24 kHz, both
 encoders, the clone prompt and synthesizer, the voice store, the
-catalogue and the rename, the CLI, VoiceDesign) are done and committed.
-Next: task 12, the API. A side fix in the
+catalogue and the rename, the CLI, VoiceDesign, the API) are done and
+committed. Next: task 13, measure and document. A side fix in the
 branch: `AGENTS.md` notes that Zig 0.17 has no `**` operator (`0aabc3a`). The next release
 (0.11.0) carries K-quant E4B files
 ([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
@@ -31,7 +31,7 @@ this unit, if it lands first.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 12 next |
+| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 13 next |
 
 ## Qwen3-TTS Base: voice cloning with saved voices
 
@@ -175,22 +175,25 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
     tables, help). Design then clone checked end to end: a described voice
     saved with `voice add` and cloned on the 1.7B Base, both heard back.
     The provenance line also gained task 2's missing Base description.
-12. *API.* `POST /v1/audio/voices` (multipart `name`, `audio`,
-    `reference_text`; saves as `voice add` does, no model opened: the
-    first request in the voice encodes it; `201` with the voice object),
-    `GET /v1/audio/voices`, `GET` and `DELETE /v1/audio/voices/{name}`;
-    check OpenAI's custom-voice API for field names first and match where
-    it has one. `/v1/audio/speech`: `voice` a saved voice's name or
-    `{"id": name}` on a Base (made ready off the GPU worker before the
-    request's prefill); `400 voice_cloning_unsupported` for a saved voice
-    on CustomVoice or VoiceDesign; `400 invalid_request` for a speaker on
-    a Base; on VoiceDesign `instructions` is the voice's description and
-    `voice` is refused. `GET /v1/models`: a speech model's `cloning`
-    (`{"modes": ["audio", "audio_and_transcript"]}` on a Base, null
-    otherwise and before the pull), `design` (true on VoiceDesign),
-    `voices` on a Base the saved voices' names, `speakers` empty on a Base
-    and VoiceDesign, `instructions` false on a Base, `options.voice`
-    default null where there are no speakers.
+12. *API.* Done, in OpenAI's custom-voice shape (read 2026-10-29: multipart
+    `name`, `audio_sample`, `consent`; `{"object": "audio.voice", "id",
+    "name", "created_at"}`; a custom voice as `{"id"}`):
+    `src/api/speech/voices.zig` (`POST`, `GET`, `DELETE /v1/audio/voices`,
+    `consent` ignored, nuclis's `reference_text` and `seconds`);
+    `/v1/audio/speech` reads the model's mode (`audio_catalog.speechMode`)
+    and, on a Base, makes the voice ready on the connection's task
+    (`voices.FileEncoders` over `runtime.Encoding`: nothing mapped when it
+    is made already), refusing a speaker's name (400), an unknown voice
+    (404 `voice_not_found`), instructions (400), and a custom voice on
+    another kind (400 `voice_cloning_unsupported`); VoiceDesign ignores
+    `voice` (OpenAI's clients always send one: a change from the plan,
+    which refused it) and takes `instructions` as the voice; `/v1/models`
+    gains `cloning`, `design`, a Base's saved voices as `voices`, no `voice`
+    option on VoiceDesign (`catalog.SpeechMode` before the pull). Side
+    fixes: `Config.takesInstruction()` was true for the 1.7B Base; a
+    voice's record keeps `created_at` (Unix seconds). `make api-check
+    ARGS='--only voices'` (a temporary `NUCLIS_HOME`) passes; checked by
+    hand on a running server too, every response heard back.
 13. *Measure and document.* Encode time for a 10 s clip on both sizes;
     first-chunk latency and real-time factor with a saved voice against a
     speaker, 0.6B and 1.7B; the priming's cost per request (cache the
@@ -299,20 +302,6 @@ Agreed and not scheduled; when one is picked up, it becomes a unit above.
   unit pinned). A new family, brought up as Nemotron ASR was (facts,
   traces, CPU, Metal); then the transcription routes' segments gain a
   `speaker` field, and the streaming route speaker changes.
-
-- **Saluki's speed goals** (restated by the user, 2026-10-15; the numbers
-  and their arithmetic in `docs/models/saluki.md`, its **Goals**): decode at
-  32,639 ≥ 18 tok/s, and a 32,639-token prompt prefilled in ≤ 7 minutes.
-  Decode needs the 2-bit matvecs at about 200 GB/s (IQ2_XXS reads 144
-  today; the limiter is instructions per weight, not bandwidth: at
-  2.26 bits a weight, 200 GB/s leaves an estimated four instructions per
-  weight on the 16-core GPU; `docs/engine/apple-gpu.md` § The merged
-  gate+up on Saluki's encodings). The prefill goal is the entry below. Context past
-  32,768 (`max_context` in `src/config.zig`) waits on the prefill goal.
-  Speculation does not reach it yet. Qwen's MTP companion binds and
-  drafts on Saluki, but its verdict is off (prose geometric mean ≤ 0.993×;
-  `docs/models/saluki.md` § Speculation): the 8-row verify batch on the
-  2-bit encodings costs 2.1× a single-row step, against the Q4_K_M's 1.45×.
 
 - **Long-context prefill, every family** (the user's, 2026-10-15). Prefill
   at 512 is level with llama.cpp (0.89–1.02×) and falls behind as the

@@ -58,8 +58,8 @@ const Record = struct {
     /// Of `reference.wav`, lowercase hex.
     reference_sha256: []const u8,
     samples: u64,
-    /// RFC 3339 UTC.
-    created: []const u8,
+    /// Unix seconds, as OpenAI's voice object's `created_at`.
+    created_at: i64,
     /// Codec file SHA-256 → base64 of little-endian u16 `[frames][16]`.
     codes: std.json.ArrayHashMap([]const u8) = .{},
     /// Model file SHA-256 → base64 of little-endian f32 `[width]`.
@@ -71,7 +71,8 @@ pub const Summary = struct {
     name: []const u8,
     reference_text: ?[]const u8,
     seconds: f64,
-    created: []const u8,
+    /// Unix seconds.
+    created_at: i64,
 };
 
 /// The files a voice's derived data is keyed by: the SHA-256 (lowercase
@@ -101,6 +102,52 @@ pub fn encodersOf(voice: *speech.Voice) Encoders {
     };
     return .{ .context = voice, .dim = voice.config.talker.hidden, .embed = wrap.embed, .codes = wrap.codes };
 }
+
+/// Encoders over a Base checkpoint's directory, mapped on their first call
+/// (`speech.Encoding`), so a voice already made for the model maps nothing:
+/// the server's way, beside the voice its worker holds. Not thread-safe.
+pub const FileEncoders = struct {
+    gpa: Allocator,
+    io: std.Io,
+    dir: []const u8,
+    dim: usize,
+    encoding: ?*speech.Encoding = null,
+
+    /// Reads `dir`'s `config.json` only; `NotABase` when it clones nothing.
+    /// `dir` is borrowed.
+    pub fn init(gpa: Allocator, io: std.Io, dir: []const u8) !FileEncoders {
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(a, &.{ dir, "config.json" }), a, .limited(1 << 20));
+        var parsed = try inference.models.qwen3_tts.parseConfig(gpa, bytes, null);
+        defer parsed.deinit();
+        if (!parsed.clones()) return error.NotABase;
+        return .{ .gpa = gpa, .io = io, .dir = dir, .dim = parsed.talker.hidden };
+    }
+
+    pub fn deinit(self: *FileEncoders) void {
+        if (self.encoding) |e| e.close();
+        self.* = undefined;
+    }
+
+    pub fn encoders(self: *FileEncoders) Encoders {
+        const wrap = struct {
+            fn opened(context: *anyopaque) !*speech.Encoding {
+                const f: *FileEncoders = @ptrCast(@alignCast(context));
+                if (f.encoding == null) f.encoding = try speech.Encoding.open(f.gpa, f.io, f.dir);
+                return f.encoding.?;
+            }
+            fn embed(context: *anyopaque, gpa: Allocator, samples: []const f32, out: []f32) anyerror!void {
+                try (try opened(context)).speakerEmbedding(gpa, samples, out);
+            }
+            fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]Frame {
+                return (try opened(context)).referenceCodes(gpa, samples);
+            }
+        };
+        return .{ .context = self, .dim = self.dim, .embed = wrap.embed, .codes = wrap.codes };
+    }
+};
 
 /// A voice ready for a prompt, owned (`deinit`).
 pub const Ready = struct {
@@ -165,13 +212,12 @@ pub const Store = struct {
         defer alloc.free(wav);
         wav[0..44].* = try speak.wavHeader(pcm.samples.len, sample_rate);
         for (pcm.samples, 0..) |x, i| std.mem.writeInt(i16, wav[44 + 2 * i ..][0..2], speak.pcm16(x), .little);
-        var stamp: [20]u8 = undefined;
         const record: Record = .{
             .name = name,
             .reference_text = text,
             .reference_sha256 = &sha256Hex(wav),
             .samples = pcm.samples.len,
-            .created = model.rfc3339(&stamp, now_seconds),
+            .created_at = now_seconds,
         };
 
         // Built beside the voices under a temporary name, then renamed into
@@ -194,7 +240,7 @@ pub const Store = struct {
             .name = try alloc.dupe(u8, name),
             .reference_text = if (text) |t| try alloc.dupe(u8, t) else null,
             .seconds = @as(f64, @floatFromInt(pcm.samples.len)) / sample_rate,
-            .created = try alloc.dupe(u8, record.created),
+            .created_at = now_seconds,
         };
     }
 
@@ -218,7 +264,7 @@ pub const Store = struct {
                 .name = try alloc.dupe(u8, entry.name),
                 .reference_text = if (r.reference_text) |t| try alloc.dupe(u8, t) else null,
                 .seconds = @as(f64, @floatFromInt(r.samples)) / sample_rate,
-                .created = try alloc.dupe(u8, r.created),
+                .created_at = r.created_at,
             });
         }
         std.mem.sort(Summary, out.items, {}, struct {
@@ -500,7 +546,8 @@ pub fn run(alloc: Allocator, io: std.Io, root: ?[]const u8, words: []const []con
             if (options.json) return writeJson(out, listed);
             if (listed.len == 0) return out.writeAll("no saved voices (`nuclis voice add <name> <audio> --text <transcript>` saves one)\n");
             for (listed) |v| {
-                try out.print("{s}{s:<20}{s} {d:>5.1} s  {s}  ", .{ sty.on(.header), v.name, sty.off(), v.seconds, v.created });
+                var stamp: [20]u8 = undefined;
+                try out.print("{s}{s:<20}{s} {d:>5.1} s  {s}  ", .{ sty.on(.header), v.name, sty.off(), v.seconds, model.rfc3339(&stamp, v.created_at) });
                 if (v.reference_text) |t| try out.print("\"{s}\"\n", .{t}) else try out.writeAll("(no transcript)\n");
             }
         },
@@ -559,6 +606,7 @@ fn fileSha256(io: std.Io, dir: std.Io.Dir, path: []const u8) ![64]u8 {
 test {
     // `encodersOf` has no caller here; this compiles it and the Voice methods it wraps.
     _ = &encodersOf;
+    _ = &FileEncoders.encoders;
 }
 
 /// A 24 kHz mono 16-bit WAV of `seconds` of a tone.
@@ -622,7 +670,7 @@ test "a voice is added once, listed, made ready per model, and removed" {
     try std.testing.expectEqual(@as(usize, 2), listed.len);
     try std.testing.expectEqualStrings("alice", listed[0].name);
     try std.testing.expect(listed[1].reference_text == null);
-    try std.testing.expectEqualStrings("2027-01-15T08:00:00Z", listed[0].created);
+    try std.testing.expectEqual(@as(i64, 1_800_000_000), listed[0].created_at);
 
     // The first use computes both and saves them; the second reads them.
     var fake: Fake = .{};

@@ -21,8 +21,11 @@ pub const Request = struct {
     /// else `speech.model`.
     model: ?[]const u8 = null,
     input: []const u8,
-    /// A speaker of the model; null: `speech.voice`.
+    /// A speaker of the model, or on a Base a saved voice; null:
+    /// `speech.voice`.
     voice: ?[]const u8 = null,
+    /// Given as OpenAI's custom voice, `{"id": …}`: a saved voice only.
+    voice_by_id: bool = false,
     instructions: ?[]const u8 = null,
     format: Format = .wav,
     stream: StreamFormat = .audio,
@@ -64,8 +67,14 @@ pub fn parse(arena: Allocator, body: []const u8, problem: *Problem) Error!Reques
     if (o.get("voice")) |v| switch (v) {
         .null => {},
         .string => |s| request.voice = s,
-        .object => return refuse(arena, problem, "unsupported_feature", "voice", "a custom voice by id is not available; name one of the model's speakers", .{}),
-        else => return refuse(arena, problem, "invalid_request", "voice", "\"voice\" must be a string", .{}),
+        .object => |custom| switch (custom.get("id") orelse .null) {
+            .string => |id| {
+                request.voice = id;
+                request.voice_by_id = true;
+            },
+            else => return refuse(arena, problem, "invalid_request", "voice", "a custom \"voice\" is {{\"id\": \"<saved voice>\"}}", .{}),
+        },
+        else => return refuse(arena, problem, "invalid_request", "voice", "\"voice\" must be a string or {{\"id\": \"<saved voice>\"}}", .{}),
     };
     request.instructions = try optionalString(arena, problem, o, "instructions");
     if (request.instructions) |i| if (std.mem.trim(u8, i, " \t\r\n").len == 0) {
@@ -241,7 +250,13 @@ test "the speech request: every refusal names its code and field" {
     try expectRefused("{\"input\": \"x\", \"stream_format\": \"chunks\"}", "invalid_request", "stream_format");
     try expectRefused("{\"input\": \"x\", \"speed\": 1.25}", "unsupported_feature", "speed");
     try expectRefused("{\"input\": \"x\", \"speed\": \"fast\"}", "invalid_request", "speed");
-    try expectRefused("{\"input\": \"x\", \"voice\": {\"id\": \"v1\"}}", "unsupported_feature", "voice");
+    try expectRefused("{\"input\": \"x\", \"voice\": {\"name\": \"v1\"}}", "invalid_request", "voice");
+    var problem: Problem = .{};
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const by_id = try parse(arena_state.allocator(), "{\"input\": \"x\", \"voice\": {\"id\": \"anna\"}}", &problem);
+    try testing.expectEqualStrings("anna", by_id.voice.?);
+    try testing.expect(by_id.voice_by_id);
     try expectRefused("{\"input\": \"x\", \"voice\": 1}", "invalid_request", "voice");
     try expectRefused("{\"input\": \"x\", \"seed\": -1}", "invalid_request", "seed");
     try expectRefused("{\"input\": \"x\", \"model\": 5}", "invalid_request", "model");

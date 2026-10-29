@@ -110,9 +110,11 @@ pub const Config = struct {
         self.* = undefined;
     }
 
-    /// Whether the model performs an instruction (the 1.7B; `generate_custom_voice`).
+    /// Whether the model performs an instruction: the 1.7B CustomVoice
+    /// (`generate_custom_voice`) and VoiceDesign; a Base never (its cloning
+    /// call takes none).
     pub fn takesInstruction(self: *const Config) bool {
-        return !std.mem.eql(u8, self.size, "0b6");
+        return !self.clones() and !std.mem.eql(u8, self.size, "0b6");
     }
 
     /// Whether the model clones a voice from a reference clip (a Base).
@@ -956,7 +958,7 @@ test "a Base's speaker encoder: its config, the package's defaults, and its refu
     const gpa = std.testing.allocator;
     var base = try testConfigOf(gpa, "1b7", 16, "base");
     defer base.deinit();
-    try std.testing.expect(base.clones() and base.speakers.len == 0);
+    try std.testing.expect(base.clones() and base.speakers.len == 0 and !base.takesInstruction());
     const e = base.speaker_encoder.?;
     try std.testing.expectEqual(@as(usize, 16), e.dim);
     try std.testing.expectEqualSlices(usize, &.{ 1, 2, 3, 4, 1 }, e.dilations);

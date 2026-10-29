@@ -2,12 +2,15 @@
 """Checks `nuclis serve`'s OpenAI-compatible routes against real models: the
 shapes the OpenAI SDKs parse, a conversation whose later requests reuse the
 earlier ones (`cached_tokens`), a tool round trip, an image, embeddings
-(float and base64 alike, batches equal to single calls bit for bit), and
-the refusals. Not a gate: it needs the models and a GPU.
+(float and base64 alike, batches equal to single calls bit for bit), the
+saved voices (`--only voices`: OpenAI's custom-voice routes, a Base
+speaking in one by id, VoiceDesign speaking a described voice), and the
+refusals. Not a gate: it needs the models and a GPU.
 
     make api-check                              # starts ./zig-out/bin/nuclis serve
     make api-check ARGS='--model gemma-4-e4b-qat --image-model gemma-4-12b-qat'
     make api-check ARGS='--only embeddings'     # no language model needed
+    make api-check ARGS='--only voices'         # the Base and VoiceDesign pulled; a temporary NUCLIS_HOME
     python3 scripts/api-check.py --url http://127.0.0.1:9000/v1   # a running server
 
 Standard library only, so it runs without the SDKs installed; it asserts
@@ -20,10 +23,12 @@ import argparse
 import base64
 import json
 import math
+import os
 import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -508,6 +513,114 @@ def check_audio(client: Client) -> None:
     )
 
 
+VOICE_CLIP = ROOT / "tests/fixtures/qwen3-tts/0.6b-clone-reference/reference.wav"
+VOICE_TEXT = "Every morning I walk along the river and listen to the birds."
+
+
+def multipart(fields: dict[str, str], clip: bytes) -> tuple[bytes, str]:
+    boundary = "nuclis-api-check"
+    out = b""
+    for name, value in fields.items():
+        out += f'--{boundary}\r\ncontent-disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
+    out += f'--{boundary}\r\ncontent-disposition: form-data; name="audio_sample"; filename="clip.wav"\r\n'.encode()
+    out += b"content-type: audio/wav\r\n\r\n" + clip + f"\r\n--{boundary}--\r\n".encode()
+    return out, f"multipart/form-data; boundary={boundary}"
+
+
+def speak(client: Client, body: Json) -> tuple[int, bytes]:
+    request = urllib.request.Request(
+        client.url + "/audio/speech", json.dumps(body).encode(), {"content-type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=600) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, error.read()
+
+
+def check_voices(client: Client) -> None:
+    body, content_type = multipart({"name": "api-check", "reference_text": VOICE_TEXT}, VOICE_CLIP.read_bytes())
+    request = urllib.request.Request(client.url + "/audio/voices", body, {"content-type": content_type})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        check(response.status == 201, f"create: {response.status}")
+        voice = cast(Json, json.load(response))
+    check(
+        voice["id"] == "api-check" and voice["object"] == "audio.voice" and isinstance(voice["created_at"], int),
+        f"the voice object {voice}",
+    )
+    check(
+        voice["reference_text"] == VOICE_TEXT and abs(voice["seconds"] - 4.64) < 0.01,
+        f"the voice's text and length {voice}",
+    )
+    status, listed = client.call("GET", "/audio/voices")
+    check(
+        status == 200 and listed["object"] == "list" and [v["id"] for v in listed["data"]] == ["api-check"],
+        f"list {listed}",
+    )
+    status, base = client.call("GET", "/models/qwen3-tts-0.6b-base")
+    details = base.get("nuclis", base)
+    check(
+        details["cloning"]["modes"] == ["audio", "audio_and_transcript"] and details["voices"] == ["api-check"],
+        f"a Base {details}",
+    )
+    status, design = client.call("GET", "/models/qwen3-tts-1.7b-voicedesign")
+    details = design.get("nuclis", design)
+    check(
+        details["design"] is True and details["cloning"] is None and "voice" not in details["options"],
+        f"VoiceDesign {details}",
+    )
+
+    status, audio = speak(
+        client, {"model": "qwen3-tts-0.6b-base", "input": "Hello there.", "voice": {"id": "api-check"}}
+    )
+    check(
+        status == 200 and audio[:4] == b"RIFF" and len(audio) > 44 + 24000,
+        f"a Base in the saved voice: {status} {audio[:200]!r}",
+    )
+    status, designed = speak(
+        client,
+        {
+            "model": "qwen3-tts-1.7b-voicedesign",
+            "input": "Hello there.",
+            "voice": "alloy",
+            "instructions": "A calm elderly man with a deep voice.",
+        },
+    )
+    check(
+        status == 200 and designed[:4] == b"RIFF" and len(designed) > 44 + 24000,
+        f"VoiceDesign: {status} {designed[:200]!r}",
+    )
+    cases: list[tuple[Json, int, str]] = [
+        (
+            {"model": "qwen3-tts-0.6b-customvoice", "input": "Hi.", "voice": {"id": "api-check"}},
+            400,
+            "voice_cloning_unsupported",
+        ),
+        ({"model": "qwen3-tts-0.6b-base", "input": "Hi.", "voice": "ryan"}, 400, "invalid_request"),
+        ({"model": "qwen3-tts-0.6b-base", "input": "Hi.", "voice": "nobody"}, 404, "voice_not_found"),
+        (
+            {"model": "qwen3-tts-0.6b-base", "input": "Hi.", "voice": "api-check", "instructions": "x"},
+            400,
+            "instructions_unsupported",
+        ),
+        ({"model": "qwen3-tts-1.7b", "input": "Hi."}, 404, "model_not_found"),
+    ]
+    for case, want_status, code in cases:
+        got, raw = speak(client, case)
+        error = json.loads(raw).get("error", {}) if raw[:1] == b"{" else {}
+        check(got == want_status and error.get("code") == code, f"{case}: {got} {raw[:200]!r}")
+    status, removed = client.call("DELETE", "/audio/voices/api-check")
+    check(
+        status == 200 and removed == {"id": "api-check", "object": "audio.voice.deleted", "deleted": True},
+        f"delete {removed}",
+    )
+    status, gone = client.call("GET", "/audio/voices/api-check")
+    check(status == 404 and gone["error"]["code"] == "voice_not_found", f"after delete {gone}")
+    print(
+        f"  voices: saved, listed, spoken by id on a Base ({len(audio)} B), VoiceDesign ({len(designed)} B), {len(cases)} refusals, deleted"
+    )
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -520,18 +633,28 @@ def main() -> int:
     parser.add_argument("--model", help="the language model (default: the server's engine.model)")
     parser.add_argument("--image-model", help="the model the image check uses (default: --model)")
     parser.add_argument("--embedding-model", help="the embedding model (default: the server's embed.model)")
-    parser.add_argument("--only", choices=("all", "chat", "embeddings"), default="all", help="which routes to check")
+    parser.add_argument(
+        "--only", choices=("all", "chat", "embeddings", "voices"), default="all", help="which routes to check"
+    )
     parser.add_argument("--binary", default=str(ROOT / "zig-out/bin/nuclis"))
     args = parser.parse_args()
 
     server: subprocess.Popen[bytes] | None = None
     url = cast(str | None, args.url)
+    home: tempfile.TemporaryDirectory[str] | None = None
     if url is None:
         port = free_port()
         command = [args.binary, "serve", "--port", str(port), "--quiet"]
         if args.model:
             command += ["--model", args.model]
-        server = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        environment = dict(os.environ)
+        if cast(str, args.only) == "voices":
+            # Voices are saved under the server's root: a temporary one, the models linked in.
+            home = tempfile.TemporaryDirectory(prefix="nuclis-api-check-")
+            real = Path(os.environ.get("NUCLIS_HOME") or Path.home() / ".nuclis")
+            os.symlink(real / "models", Path(home.name) / "models")
+            environment["NUCLIS_HOME"] = home.name
+        server = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=environment)
         url = f"http://127.0.0.1:{port}/v1"
         deadline = time.time() + 600
         while True:
@@ -556,6 +679,8 @@ def main() -> int:
             check_refusals(client)
         if only in ("all", "embeddings"):
             check_embeddings(client)
+        if only == "voices":
+            check_voices(client)
         print("api-check: ok")
         return 0
     except Failure as failure:
@@ -565,6 +690,8 @@ def main() -> int:
         if server is not None:
             server.send_signal(2)
             server.wait(timeout=60)
+        if home is not None:
+            home.cleanup()
 
 
 if __name__ == "__main__":

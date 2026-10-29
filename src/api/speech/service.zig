@@ -1,5 +1,8 @@
-//! The speech service: `POST /v1/audio/speech` (OpenAI's speech call) and
-//! the speech models for `GET /v1/models`. A handler validates on its
+//! The speech service: `POST /v1/audio/speech` (OpenAI's speech call), the
+//! saved voices' routes (`voices.zig`), and the speech models for `GET
+//! /v1/models`. A Base's saved voice is made ready (encoded on its first use
+//! with the model) on the connection's task, before the job is queued, so
+//! the GPU worker never waits on the CPU encoders. A handler validates on its
 //! connection's task and queues a job; one short GPU item speaks the jobs
 //! in arrival order, a chunk of frames per run, so a chunk runs between a
 //! chat generation's steps (`gpu.Executor.runShort`) and a voice holds one
@@ -20,6 +23,9 @@ const router_mod = @import("../router.zig");
 const slot_mod = @import("../slot.zig");
 const Pipe = @import("../pipe.zig").Pipe;
 const wire = @import("wire.zig");
+const voice_routes = @import("voices.zig");
+const voice_store = @import("../../voices.zig");
+const paths = @import("../../paths.zig");
 
 const tts = inference.models.qwen3_tts;
 const runtime = inference.models.qwen3_tts_runtime;
@@ -71,6 +77,7 @@ pub const Service = struct {
     requests: u64 = 0,
     /// Worker-only: the job speaking.
     active: ?*Job = null,
+    routes: voice_routes.Routes,
     item: gpu.Item = .{ .run = step, .short = true },
 
     /// `root` and `registry` are borrowed for the service's lifetime; the
@@ -85,6 +92,7 @@ pub const Service = struct {
             .registry = registry,
             .settings = settings,
             .timeout_ns = timeout_ns,
+            .routes = .{ .root = root },
         };
     }
 
@@ -96,6 +104,7 @@ pub const Service = struct {
 
     pub fn register(self: *Service, gpa: std.mem.Allocator, router: *router_mod.Router, listing: *models.Models) !void {
         try router.add(gpa, .POST, router_mod.prefix ++ "/audio/speech", .{ .context = self, .handle = handle });
+        try self.routes.register(gpa, router);
         try listing.add(gpa, .{ .context = self, .list = list });
     }
 
@@ -140,24 +149,46 @@ pub const Service = struct {
             error.OutOfMemory => internal(arena),
             else => refuse(arena, .internal_server_error, "model_failed", "model", "{s}: {s}", .{ name, if (diag.len > 0) diag.message() else @errorName(err) }),
         };
-        if (parsed.instructions != null) if (located.entry) |entry| if (!entry.instructions)
-            return refuse(arena, .bad_request, "instructions_unsupported", "instructions", "{s} performs no instruction; qwen3-tts-1.7b-customvoice does", .{name});
+        const mode = (audio_catalog.speechMode(arena, io, located.directory) catch return internal(arena)) orelse .speakers;
+        if (parsed.instructions != null) {
+            if (mode == .clone) return refuse(arena, .bad_request, "instructions_unsupported", "instructions", "{s} is a Base: it takes no instruction (qwen3-tts-1.7b-customvoice does)", .{name});
+            if (located.entry) |entry| if (!entry.instructions)
+                return refuse(arena, .bad_request, "instructions_unsupported", "instructions", "{s} performs no instruction; qwen3-tts-1.7b-customvoice does", .{name});
+        }
+        if (parsed.voice_by_id and mode != .clone)
+            return refuse(arena, .bad_request, "voice_cloning_unsupported", "voice", "{s} speaks in {s}; a saved voice needs a Base (qwen3-tts-1.7b-base, qwen3-tts-0.6b-base)", .{ name, if (mode == .design) "a voice its instructions describe" else "its own speakers" });
+        // VoiceDesign has no voice to name: OpenAI's clients always send one, so it is ignored.
+        const voice_name = if (mode == .design) "" else parsed.voice orelse self.settings.voice;
+        var ready: ?voice_store.Ready = null;
+        if (mode == .clone) {
+            var refusal: ApiError = undefined;
+            ready = readyVoice(self.gpa, arena, io, self.root, located.directory, name, voice_name, &refusal) catch return .fromError(arena, refusal);
+        }
 
-        const job = arena.create(Job) catch return internal(arena);
+        const job = arena.create(Job) catch {
+            if (ready) |*r| r.deinit(self.gpa);
+            return internal(arena);
+        };
         job.* = .{
             .service = self,
             .request = parsed,
             .directory = located.directory,
             .name = name,
             .bytes = located.bytes,
-            .voice = parsed.voice orelse self.settings.voice,
-            .pipe = Pipe.init(self.gpa, pipe_capacity) catch return internal(arena),
+            .voice = voice_name,
+            .mode = mode,
+            .saved = ready,
+            .pipe = Pipe.init(self.gpa, pipe_capacity) catch {
+                if (ready) |*r| r.deinit(self.gpa);
+                return internal(arena);
+            },
             .note_buffer = arena.alloc(u8, 512) catch return internal(arena),
             .message_buffer = arena.alloc(u8, 1024) catch return internal(arena),
             .peer = peer,
         };
         self.submit(io, job) catch |err| {
             job.pipe.deinit(self.gpa);
+            job.dropVoice();
             return switch (err) {
                 error.Busy => refuse(arena, http.overloaded, "busy", null, "overloaded: {d} speech requests wait already; retry shortly", .{max_waiting}),
                 error.Stopped => refuse(arena, .service_unavailable, "shutting_down", null, "the server is stopping", .{}),
@@ -311,7 +342,12 @@ pub const Service = struct {
         // For the refusal's list, should the prompt name an unknown one.
         job.speakers = voice.config.speakers;
         job.languages = voice.config.languages;
-        var prompt = try voice.prompt(self.gpa, job.request.input, job.voice, job.request.language orelse "auto", job.request.instructions);
+        const language = job.request.language orelse "auto";
+        var prompt = switch (job.mode) {
+            .clone => try voice.clonePrompt(self.gpa, job.request.input, job.saved.?.reference_text, language, job.saved.?.clone()),
+            .design => try voice.prompt(self.gpa, job.request.input, null, language, job.request.instructions),
+            .speakers => try voice.prompt(self.gpa, job.request.input, job.voice, language, job.request.instructions),
+        };
         defer prompt.deinit(self.gpa);
         job.prompt_rows = prompt.rows.len;
         var synth = try voice.synthesizer(self.gpa, &prompt, job.request.seed orelse 0);
@@ -395,7 +431,10 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
         switch (kind) {
             .speech => {
                 const speakers = if (described) |d| d.speakers else if (entry) |e| e.speakers else &.{};
-                const voices = try models.strings(arena, speakers);
+                // The checkpoint's own word once pulled, else the catalogue's; unknown for a registry entry not pulled.
+                const mode: ?audio_catalog.Mode = if (described) |d| d.mode else if (entry) |e| e.mode else null;
+                // A Base's voices are the saved ones, VoiceDesign's none.
+                const voices = if (mode == .clone) try savedVoices(arena, io, root) else try models.strings(arena, speakers);
                 try details.put(arena, "voices", .{ .array = voices });
                 var objects: std.json.Array = .init(arena);
                 for (speakers, 0..) |v, i| {
@@ -410,6 +449,8 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
                 try details.put(arena, "languages", .{ .array = try models.strings(arena, languages) });
                 const instructions: ?bool = if (entry) |e| e.instructions else if (described) |d| d.instructions else null;
                 try details.put(arena, "instructions", if (instructions) |b| .{ .bool = b } else .null);
+                try details.put(arena, "cloning", if (mode == .clone) try cloning(arena) else .null);
+                try details.put(arena, "design", if (mode) |m| .{ .bool = m == .design } else .null);
                 try details.put(arena, "sample_rate", .{ .integer = wire.sample_rate });
                 var formats: std.json.Array = .init(arena);
                 for (std.enums.values(wire.Format)) |f| try formats.append(.{ .string = @tagName(f) });
@@ -417,7 +458,7 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
                 var limits: std.json.ObjectMap = .empty;
                 try limits.put(arena, "max_input_bytes", .{ .integer = wire.max_input_bytes });
                 try details.put(arena, "limits", .{ .object = limits });
-                try details.put(arena, "options", .{ .object = try speechOptions(arena, voices, languages, instructions orelse false, default_voice) });
+                try details.put(arena, "options", .{ .object = try speechOptions(arena, voices, languages, instructions orelse false, default_voice, mode != .design) });
             },
             .transcription => {
                 try details.put(arena, "sample_rate", .{ .integer = 16000 });
@@ -435,17 +476,35 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
     }
 }
 
+/// The saved voices' names, for a Base's `voices`.
+fn savedVoices(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8) !std.json.Array {
+    var names_list: std.json.Array = .init(arena);
+    const home = root orelse return names_list;
+    const store: voice_store.Store = .{ .io = io, .path = try paths.voicesPath(arena, home) };
+    for (store.list(arena) catch &.{}) |v| try names_list.append(.{ .string = v.name });
+    return names_list;
+}
+
+/// What a Base clones from: a clip alone, or a clip and its transcript.
+fn cloning(arena: std.mem.Allocator) !std.json.Value {
+    var o: std.json.ObjectMap = .empty;
+    try o.put(arena, "modes", .{ .array = try models.strings(arena, &.{ "audio", "audio_and_transcript" }) });
+    try o.put(arena, "voices_route", .{ .string = router_mod.prefix ++ "/audio/voices" });
+    return .{ .object = o };
+}
+
 /// The request fields a speech model takes. A request without `voice`
 /// gets `speech.voice`, so its default is null when the model has no such
-/// speaker (the request must name one).
-fn speechOptions(arena: std.mem.Allocator, voices: std.json.Array, languages: []const []const u8, instructions: bool, default_voice: ?[]const u8) !std.json.ObjectMap {
+/// speaker or saved voice (the request must name one); VoiceDesign takes
+/// no voice (`takes_voice` false).
+fn speechOptions(arena: std.mem.Allocator, voices: std.json.Array, languages: []const []const u8, instructions: bool, default_voice: ?[]const u8, takes_voice: bool) !std.json.ObjectMap {
     const Option = models.Option;
     var o: std.json.ObjectMap = .empty;
     var voice_default: std.json.Value = .null;
     if (default_voice) |v| for (voices.items) |item| if (std.mem.eql(u8, item.string, v)) {
         voice_default = .{ .string = v };
     };
-    try o.put(arena, "voice", try (Option{ .type = .@"enum", .values = voices, .default = voice_default }).value(arena));
+    if (takes_voice) try o.put(arena, "voice", try (Option{ .type = .@"enum", .values = voices, .default = voice_default }).value(arena));
     var language_values = try models.strings(arena, &.{"auto"});
     for (languages) |l| try language_values.append(.{ .string = l });
     try o.put(arena, "language", try (Option{ .type = .@"enum", .values = language_values, .default = .{ .string = "auto" } }).value(arena));
@@ -470,7 +529,12 @@ const Job = struct {
     directory: []const u8,
     name: []const u8,
     bytes: u64,
+    /// The speaker or saved voice; empty on VoiceDesign.
     voice: []const u8,
+    mode: audio_catalog.Mode,
+    /// A Base's voice, owned by the service's allocator; the connection
+    /// frees it once the worker let go of the job (`release`).
+    saved: ?voice_store.Ready = null,
     pipe: Pipe,
     peer: ?http.Peer,
     /// Set by the connection when its client is gone; the worker stops
@@ -575,7 +639,7 @@ const Job = struct {
         else
             std.fmt.bufPrint(self.note_buffer, "{s} · {s} · {d:.2} s of audio · first audio {d:.0} ms{s}", .{
                 self.name,
-                self.voice,
+                if (self.mode == .design) "designed" else self.voice,
                 seconds,
                 if (self.first_audio_ns) |ns| @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms else 0,
                 if (self.load_ns > 0) " · opened the voice" else "",
@@ -637,8 +701,13 @@ const Job = struct {
         return false;
     }
 
+    fn dropVoice(self: *Job) void {
+        if (self.saved) |*r| r.deinit(self.service.gpa);
+        self.saved = null;
+    }
+
     /// Waits until the worker can no longer touch the job (or takes it
-    /// back unstarted), then frees the pipe.
+    /// back unstarted), then frees the pipe and the voice.
     fn release(self: *Job, io: std.Io) void {
         if (!self.service.withdraw(io, self)) {
             while (true) {
@@ -649,6 +718,7 @@ const Job = struct {
             }
         }
         self.pipe.deinit(self.service.gpa);
+        self.dropVoice();
     }
 
     fn streamNote(context: *anyopaque) []const u8 {
@@ -656,6 +726,33 @@ const Job = struct {
         return if (self.cancel.load(.acquire) and self.note.len == 0) "cancelled: the client closed the connection" else self.note;
     }
 };
+
+/// `voice_name` ready for the Base in `directory`: read back, or encoded
+/// now on this task and saved (`voice_store.Store.ensure`), owned by `gpa`. A
+/// refusal is in `refusal`, its message in `arena`.
+fn readyVoice(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, directory: []const u8, name: []const u8, voice_name: []const u8, refusal: *ApiError) error{Refused}!voice_store.Ready {
+    const fail = struct {
+        fn with(out: *ApiError, a: std.mem.Allocator, status: std.http.Status, code: []const u8, param: ?[]const u8, comptime format: []const u8, args: anytype) error{Refused} {
+            out.* = .init(status, code, a.print(format, args) catch code);
+            out.param = param;
+            return error.Refused;
+        }
+    }.with;
+    voice_store.checkName(voice_name) catch |err| return switch (err) {
+        error.ReservedVoiceName => fail(refusal, arena, .bad_request, "invalid_request", "voice", "{s} is a speaker of the CustomVoice models; {s} is a Base and speaks in a saved voice (GET /v1/audio/voices)", .{ voice_name, name }),
+        else => fail(refusal, arena, .not_found, "voice_not_found", "voice", "no saved voice named {s} (GET /v1/audio/voices)", .{voice_name}),
+    };
+    const home = root orelse return fail(refusal, arena, .internal_server_error, "no_home", "voice", "the server has no user root (HOME or NUCLIS_HOME) to keep voices in", .{});
+    const store: voice_store.Store = .{ .io = io, .path = paths.voicesPath(arena, home) catch return fail(refusal, arena, .internal_server_error, "internal", null, "out of memory", .{}) };
+    const keys = voice_store.modelKeys(arena, io, directory) catch |err| return fail(refusal, arena, .internal_server_error, "model_failed", "model", "{s}: its files' digests could not be read ({s})", .{ name, @errorName(err) });
+    var encoders = voice_store.FileEncoders.init(gpa, io, directory) catch |err| return fail(refusal, arena, .internal_server_error, "model_failed", "model", "{s}: {s}", .{ name, @errorName(err) });
+    defer encoders.deinit();
+    return store.ensure(gpa, voice_name, keys, encoders.encoders()) catch |err| switch (err) {
+        error.VoiceNotFound => fail(refusal, arena, .not_found, "voice_not_found", "voice", "no saved voice named {s} (GET /v1/audio/voices)", .{voice_name}),
+        error.InvalidVoiceRecord => fail(refusal, arena, .internal_server_error, "voice_store_failed", "voice", "{s}: its saved files are damaged (DELETE /v1/audio/voices/{s}, then save it again)", .{ voice_name, voice_name }),
+        else => fail(refusal, arena, .internal_server_error, "model_failed", "voice", "{s} could not be made ready: {s}", .{ voice_name, @errorName(err) }),
+    };
+}
 
 /// A failure before the first chunk, as the client reads it.
 fn startFailure(job: *Job, err: anyerror) ApiError {
@@ -743,7 +840,8 @@ const Fixture = struct {
     executor: gpu.Executor,
     service: Service,
 
-    /// A root whose 0.6B voice has files that are not a checkpoint.
+    /// A root whose 0.6B voice has files that are not a checkpoint, and a
+    /// 0.6B Base with a config but no weights (what precedes the GPU).
     fn init(self: *Fixture, max_queued: usize) !void {
         const gpa = std.testing.allocator;
         const io = std.testing.io;
@@ -753,6 +851,13 @@ const Fixture = struct {
         try self.tmp.dir.createDirPath(io, dir ++ "/speech_tokenizer");
         try self.tmp.dir.writeFile(io, .{ .sub_path = dir ++ "/model.safetensors", .data = "not weights" });
         try self.tmp.dir.writeFile(io, .{ .sub_path = dir ++ "/speech_tokenizer/model.safetensors", .data = "not weights" });
+        const base = "models/Qwen/Qwen3-TTS-12Hz-0.6B-Base";
+        try self.tmp.dir.createDirPath(io, base ++ "/speech_tokenizer");
+        try self.tmp.dir.writeFile(io, .{ .sub_path = base ++ "/model.safetensors", .data = "not weights" });
+        try self.tmp.dir.writeFile(io, .{ .sub_path = base ++ "/speech_tokenizer/model.safetensors", .data = "not weights" });
+        const config_json = try inference.models.qwen3_tts.testConfigJson(gpa, "0b6", 8, "base");
+        defer gpa.free(config_json);
+        try self.tmp.dir.writeFile(io, .{ .sub_path = base ++ "/config.json", .data = config_json });
         self.root = try self.tmp.dir.realPathFileAlloc(io, ".", gpa);
         self.executor = .init(max_queued);
         self.service = .init(gpa, &self.executor, false, self.root, .{}, .{ .model = "qwen3-tts-0.6b-customvoice" }, 20 * std.time.ns_per_ms);
@@ -796,6 +901,12 @@ test "speech: every refusal before the GPU is a typed error body with its field"
         .{ .body = "{\"input\": \"Hi.\", \"model\": \"/etc/voice\"}", .status = .not_found, .code = "model_not_found", .param = "model" },
         .{ .body = "{\"input\": \"Hi.\", \"model\": \"qwen3-tts-1.7b-customvoice\"}", .status = .not_found, .code = "model_not_found", .param = "model" },
         .{ .body = "{\"input\": \"Hi.\", \"instructions\": \"Whisper.\"}", .status = .bad_request, .code = "instructions_unsupported", .param = "instructions" },
+        // A saved voice needs a Base; a Base needs a saved voice, and takes no instruction.
+        .{ .body = "{\"input\": \"Hi.\", \"voice\": {\"id\": \"anna\"}}", .status = .bad_request, .code = "voice_cloning_unsupported", .param = "voice" },
+        .{ .body = "{\"input\": \"Hi.\", \"model\": \"qwen3-tts-0.6b-base\"}", .status = .bad_request, .code = "invalid_request", .param = "voice" },
+        .{ .body = "{\"input\": \"Hi.\", \"model\": \"qwen3-tts-0.6b-base\", \"voice\": \"nobody\"}", .status = .not_found, .code = "voice_not_found", .param = "voice" },
+        .{ .body = "{\"input\": \"Hi.\", \"model\": \"qwen3-tts-0.6b-base\", \"voice\": {\"id\": \"Not A Name\"}}", .status = .not_found, .code = "voice_not_found", .param = "voice" },
+        .{ .body = "{\"input\": \"Hi.\", \"model\": \"qwen3-tts-0.6b-base\", \"voice\": \"anna\", \"instructions\": \"Whisper.\"}", .status = .bad_request, .code = "instructions_unsupported", .param = "instructions" },
     };
     for (cases) |case| {
         errdefer std.debug.print("case: {s}\n", .{case.body});
@@ -860,10 +971,15 @@ test "speech: a voice that fails to open fails its request before the head, and 
         try std.testing.expectEqualStrings("Qwen", e.owned_by);
         const small = std.mem.eql(u8, e.id, "qwen3-tts-0.6b-customvoice");
         const speakers = std.mem.endsWith(u8, e.id, "-customvoice");
-        try std.testing.expectEqual(small, d.get("present").?.bool);
+        // The fixture holds the 0.6B CustomVoice's files and the 0.6B Base's.
+        try std.testing.expectEqual(small or std.mem.eql(u8, e.id, "qwen3-tts-0.6b-base"), d.get("present").?.bool);
         try std.testing.expectEqual(small, d.get("default").?.bool);
         try std.testing.expectEqual(std.mem.indexOf(u8, e.id, "1.7b-customvoice") != null or std.mem.endsWith(u8, e.id, "-voicedesign"), d.get("instructions").?.bool);
         try std.testing.expectEqual(@as(usize, if (speakers) 9 else 0), d.get("voices").?.array.items.len);
+        // A Base clones (from a clip, or a clip and its words); VoiceDesign designs; both before the pull.
+        try std.testing.expectEqual(std.mem.endsWith(u8, e.id, "-base"), d.get("cloning").? != .null);
+        try std.testing.expectEqual(std.mem.endsWith(u8, e.id, "-voicedesign"), d.get("design").?.bool);
+        if (std.mem.endsWith(u8, e.id, "-base")) try std.testing.expectEqual(@as(usize, 2), d.get("cloning").?.object.get("modes").?.array.items.len);
         seen += 1;
     }
     try std.testing.expectEqual(@as(usize, 5), seen);
@@ -874,11 +990,14 @@ test "a speech model's voice has no default when speech.voice is not one of its 
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const voices = try models.strings(arena, &.{"egyptian_speaker"});
-    const fine_tune = try speechOptions(arena, voices, &.{"english"}, true, "ryan");
+    const fine_tune = try speechOptions(arena, voices, &.{"english"}, true, "ryan", true);
     try std.testing.expect(fine_tune.get("voice").?.object.get("default").? == .null);
     try std.testing.expectEqual(@as(usize, 2), fine_tune.get("language").?.object.get("values").?.array.items.len);
     try std.testing.expect(fine_tune.get("instructions") != null);
-    const own = try speechOptions(arena, voices, &.{}, false, "egyptian_speaker");
+    const own = try speechOptions(arena, voices, &.{}, false, "egyptian_speaker", true);
+    // VoiceDesign takes no voice.
+    const designed = try speechOptions(arena, .init(arena), &.{}, true, "ryan", false);
+    try std.testing.expect(designed.get("voice") == null and designed.get("instructions") != null);
     try std.testing.expectEqualStrings("egyptian_speaker", own.get("voice").?.object.get("default").?.string);
     try std.testing.expect(own.get("instructions") == null);
 }

@@ -817,6 +817,88 @@ fn elapsed(io: std.Io, start: std.Io.Timestamp) u64 {
     return @intCast(start.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds());
 }
 
+/// A Base's speaker embedding of `samples` into `out` through a CPU
+/// encoder built for the call.
+fn embedSpeaker(gpa: Allocator, io: std.Io, config: *const tts.Config, binding: *const tts.Binding, samples: []const f32, out: []f32) !void {
+    const encoder_config = config.speaker_encoder orelse return error.NotABase;
+    var encoder = try ecapa.Encoder.init(gpa, &binding.speaker_encoder.?, encoder_config);
+    defer encoder.deinit();
+    try encoder.embed(gpa, io, samples, out, null);
+}
+
+/// The codes of `samples` through a CPU codec encoder built for the call
+/// (about 190 MB as F32), owned by `gpa`.
+fn encodeReference(gpa: Allocator, io: std.Io, checkpoint: *const safetensors.Checkpoint, decoder: *const codec.Binding, samples: []const f32) ![]Frame {
+    var diagnostic: codec.Diagnostic = .{};
+    var binding = try codec_encoder.bind(gpa, checkpoint, decoder, .{}, &diagnostic);
+    defer binding.deinit(gpa);
+    var encoder = try codec_encoder.Encoder.init(gpa, io, decoder, &binding);
+    defer encoder.deinit();
+    const frames = try gpa.alloc(Frame, encoder.frameCount(samples.len));
+    errdefer gpa.free(frames);
+    try encoder.encode(gpa, samples, frames, null);
+    return frames;
+}
+
+/// A Base checkpoint's two encoders without its talker: what a saved voice
+/// is made from, opened beside (or without) a `Voice` on any thread. The
+/// checkpoints are mapped and bound, nothing decoded until a call.
+pub const Encoding = struct {
+    gpa: Allocator,
+    io: std.Io,
+    config: tts.Config,
+    checkpoint: safetensors.Checkpoint,
+    binding: tts.Binding,
+    codec_checkpoint: safetensors.Checkpoint,
+    codec_binding: codec.Binding,
+
+    /// Opens `dir`'s weights and codec; `NotABase` when it has no speaker encoder.
+    pub fn open(gpa: Allocator, io: std.Io, dir: []const u8) !*Encoding {
+        const self = try gpa.create(Encoding);
+        errdefer gpa.destroy(self);
+        self.gpa = gpa;
+        self.io = io;
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const config_bytes = try std.Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(a, &.{ dir, "config.json" }), a, .limited(1 << 20));
+        self.config = try tts.parseConfig(gpa, config_bytes, null);
+        errdefer self.config.deinit();
+        if (!self.config.clones()) return error.NotABase;
+        self.checkpoint = try .open(gpa, io, try std.fs.path.join(a, &.{ dir, "model.safetensors" }), .{});
+        errdefer self.checkpoint.deinit(io);
+        self.binding = try tts.bind(gpa, &self.checkpoint, &self.config, null);
+        errdefer self.binding.deinit(gpa);
+        self.codec_checkpoint = try .open(gpa, io, try std.fs.path.join(a, &.{ dir, "speech_tokenizer", "model.safetensors" }), .{});
+        errdefer self.codec_checkpoint.deinit(io);
+        self.codec_binding = try codec.bind(gpa, &self.codec_checkpoint, .{}, null);
+        return self;
+    }
+
+    pub fn close(self: *Encoding) void {
+        const gpa = self.gpa;
+        self.codec_binding.deinit(gpa);
+        self.codec_checkpoint.deinit(self.io);
+        self.binding.deinit(gpa);
+        self.checkpoint.deinit(self.io);
+        self.config.deinit();
+        gpa.destroy(self);
+    }
+
+    /// The embedding's width: the talker's.
+    pub fn width(self: *const Encoding) usize {
+        return self.config.talker.hidden;
+    }
+
+    pub fn speakerEmbedding(self: *const Encoding, gpa: Allocator, samples: []const f32, out: []f32) !void {
+        return embedSpeaker(gpa, self.io, &self.config, &self.binding, samples, out);
+    }
+
+    pub fn referenceCodes(self: *const Encoding, gpa: Allocator, samples: []const f32) ![]Frame {
+        return encodeReference(gpa, self.io, &self.codec_checkpoint, &self.codec_binding, samples);
+    }
+};
+
 /// Where a `Voice` runs.
 pub const Backend = enum { cpu, metal };
 
@@ -937,25 +1019,14 @@ pub const Voice = struct {
     /// (the talker's width). The CPU encoder is built for the call and
     /// freed after; `NotABase` on a CustomVoice.
     pub fn speakerEmbedding(self: *const Voice, gpa: Allocator, samples: []const f32, out: []f32) !void {
-        const config = self.config.speaker_encoder orelse return error.NotABase;
-        var encoder = try ecapa.Encoder.init(gpa, &self.binding.speaker_encoder.?, config);
-        defer encoder.deinit();
-        try encoder.embed(gpa, self.io, samples, out, null);
+        return embedSpeaker(gpa, self.io, &self.config, &self.binding, samples, out);
     }
 
     /// The codec's codes of `samples` (24 kHz mono), `⌈samples / 1920⌉`
     /// frames owned by `gpa`: a Base's reference codes. The CPU encoder is
     /// built for the call (about 190 MB as F32) and freed after.
     pub fn referenceCodes(self: *const Voice, gpa: Allocator, samples: []const f32) ![]Frame {
-        var diagnostic: codec.Diagnostic = .{};
-        var binding = try codec_encoder.bind(gpa, &self.codec_checkpoint, &self.codec_binding, .{}, &diagnostic);
-        defer binding.deinit(gpa);
-        var encoder = try codec_encoder.Encoder.init(gpa, self.io, &self.codec_binding, &binding);
-        defer encoder.deinit();
-        const frames = try gpa.alloc(Frame, encoder.frameCount(samples.len));
-        errdefer gpa.free(frames);
-        try encoder.encode(gpa, samples, frames, null);
-        return frames;
+        return encodeReference(gpa, self.io, &self.codec_checkpoint, &self.codec_binding, samples);
     }
 
     /// A Base's prompt for `text` in `voice`: ICL when `reference` (the
