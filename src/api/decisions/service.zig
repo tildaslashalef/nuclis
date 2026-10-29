@@ -15,6 +15,7 @@ const response = @import("../../decision/response.zig");
 const catalog = @import("../../decision/catalog.zig");
 const catalog_table = @import("../../catalog.zig");
 const http = @import("../http.zig");
+const request_log = @import("../request_log.zig");
 const errors = @import("../errors.zig");
 const gpu = @import("../gpu.zig");
 const models = @import("../models.zig");
@@ -136,6 +137,7 @@ pub const Service = struct {
             .decisions => response.write(&out.writer, body),
             .systemone => response.writeSystemOne(&out.writer, body),
         }) catch return fail(arena, .internal_server_error, "internal", "out of memory");
+        logTo(request.fields, located.identity.name, decision, done);
         return .{ .body = out.written(), .note = note(arena, located.identity.name, decision, done) };
     }
 
@@ -246,6 +248,17 @@ fn note(arena: std.mem.Allocator, model: []const u8, request: wire.Request, done
     const opened = if (done.load_ns > 0) arena.print(" · opened in {d:.0} ms", .{@as(f64, @floatFromInt(done.load_ns)) / std.time.ns_per_ms}) catch "" else "";
     const pass = if (done.batch_jobs > 1) arena.print(" · pass of {d}", .{done.batch_jobs}) catch "" else "";
     return arena.print("{s} · {d} state{s} × {d} question{s} · {d} tokens{s}{s}", .{ model, states, if (states == 1) "" else "s", questions, if (questions == 1) "" else "s", tokens, pass, opened }) catch model;
+}
+
+fn logTo(fields: request_log.Fields, model: []const u8, request: wire.Request, done: batcher_mod.Job.Done) void {
+    var tokens: usize = 0;
+    for (done.results) |r| tokens += r.input_tokens;
+    fields.text("model", model);
+    fields.int("states", request.states.len);
+    fields.int("questions", request.questions.len);
+    fields.int("input_tokens", tokens);
+    fields.int("batch_requests", done.batch_jobs);
+    if (done.load_ns > 0) fields.ms("open_ms", done.load_ns);
 }
 
 /// `?explain` or `?explain=1`; `0` and `false` turn it off.

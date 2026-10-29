@@ -15,6 +15,7 @@ const catalog = @import("../../catalog.zig");
 const audio_catalog = @import("../../audio/catalog.zig");
 const transcript = @import("../../audio/transcript.zig");
 const http = @import("../http.zig");
+const request_log = @import("../request_log.zig");
 const errors = @import("../errors.zig");
 const gpu = @import("../gpu.zig");
 const multipart = @import("../multipart.zig");
@@ -199,13 +200,13 @@ pub const Files = struct {
 
     fn handle(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, request: http.Request) http.Response {
         const self: *Files = @ptrCast(@alignCast(context));
-        return self.answer(arena, io, request.body, request.content_type, request.peer);
+        return self.answer(arena, io, request.body, request.content_type, request.peer, request.fields);
     }
 
     /// Validates, queues, and answers: the whole transcript once it is
     /// done, or the event stream once the job started. Every failure is a
     /// response.
-    pub fn answer(self: *Files, arena: std.mem.Allocator, io: std.Io, body: []const u8, content_type: ?[]const u8, peer: ?http.Peer) http.Response {
+    pub fn answer(self: *Files, arena: std.mem.Allocator, io: std.Io, body: []const u8, content_type: ?[]const u8, peer: ?http.Peer, fields: request_log.Fields) http.Response {
         const service = self.service;
         const gpa = service.slot.gpa;
         const deadline = std.Io.Clock.Timestamp.fromNow(io, .{ .raw = .fromNanoseconds(self.timeout_ns), .clock = .awake });
@@ -223,6 +224,8 @@ pub const Files = struct {
             error.OutOfMemory => internal(arena),
             else => refusal(arena, .internal_server_error, "model_failed", "model", "{s}: {s}", .{ name, if (diag.len > 0) diag.message() else @errorName(err) }),
         };
+        fields.text("model", name);
+        fields.flag("stream", parsed.stream);
         const reader = audio.Reader.open(parsed.file) catch |err| return switch (err) {
             error.OutOfMemory => internal(arena),
             else => refusal(arena, .bad_request, "invalid_audio", "file", "the file is not audio nuclis can read ({s}; or a 16 kHz mono WAV)", .{audio.readable}),
@@ -251,6 +254,7 @@ pub const Files = struct {
             .note_buffer = &.{},
             .message_buffer = &.{},
             .peer = peer,
+            .fields = fields,
         };
         job.note_buffer = arena.alloc(u8, 512) catch {
             job.free(gpa);
@@ -289,6 +293,7 @@ pub const Files = struct {
             .stream = .{ .context = job, .write = Job.writeStream, .note = Job.streamNote },
         };
         defer job.release(io);
+        job.logTo(fields);
         const out = job.writeResponse(arena) catch return internal(arena);
         return .{ .body = out, .content_type = contentType(parsed.format), .note = job.note };
     }
@@ -517,6 +522,10 @@ const Job = struct {
     load_ns: u64 = 0,
     first_segment_ns: ?u64 = null,
     elapsed_ns: u64 = 0,
+    /// Counted with the note, before the segmenter is freed.
+    segment_count: usize = 0,
+    /// The request's log fields, filled once the worker is done.
+    fields: request_log.Fields = .{},
     /// The samples transcribed, kept from the run when `finish` frees it.
     fed: u64 = 0,
 
@@ -703,6 +712,7 @@ const Job = struct {
 
     fn writeNote(self: *Job) void {
         if (self.run) |r| self.fed = r.fed;
+        self.segment_count = self.segmenter.segments.items.len;
         const seconds = @as(f64, @floatFromInt(self.fed)) / audio.sample_rate;
         const ms = @as(f64, @floatFromInt(self.elapsed_ns)) / std.time.ns_per_ms;
         self.note = if (self.failure) |f|
@@ -795,7 +805,20 @@ const Job = struct {
 
     fn streamNote(context: *anyopaque) []const u8 {
         const self: *Job = @ptrCast(@alignCast(context));
+        self.logTo(self.fields);
         return if (self.cancel.load(.acquire) and self.note.len == 0) "cancelled: the client closed the connection" else self.note;
+    }
+
+    /// The request log's fields; only once the worker is done.
+    fn logTo(self: *const Job, fields: request_log.Fields) void {
+        if (self.failure) |f| fields.fail(f);
+        const seconds = @as(f64, @floatFromInt(self.fed)) / audio.sample_rate;
+        fields.float("audio_s", seconds, 2);
+        if (self.elapsed_ns > 0) fields.float("real_time", seconds * std.time.ns_per_s / @as(f64, @floatFromInt(self.elapsed_ns)), 1);
+        fields.int("segments", self.segment_count);
+        if (self.first_segment_ns) |ns| fields.ms("first_segment_ms", ns);
+        if (self.load_ns > 0) fields.ms("open_ms", self.load_ns);
+        if (self.failure == null) fields.text("finish_reason", if (self.cancel.load(.acquire)) "cancelled" else "done");
     }
 };
 
@@ -978,20 +1001,20 @@ test "files: refusals before the GPU, a full queue, a file that never starts" {
         try f.init(4);
         defer f.deinit();
         const files = &f.service.files;
-        try expectError(files.answer(arena, io, try testForm(arena, &.{.{ "model", "qwen3-tts-1.7b-customvoice" }}, wav), test_type, null), .bad_request, "not_a_transcription_model", "model");
-        try expectError(files.answer(arena, io, try testForm(arena, &.{.{ "model", "laya" }}, wav), test_type, null), .bad_request, "not_a_transcription_model", "model");
-        try expectError(files.answer(arena, io, try testForm(arena, &.{.{ "model", "whisper-1" }}, wav), test_type, null), .not_found, "model_not_found", "model");
-        try expectError(files.answer(arena, io, try testForm(arena, &.{}, "not audio at all, not even close"), test_type, null), .bad_request, "invalid_audio", "file");
-        try expectError(files.answer(arena, io, try testForm(arena, &.{}, null), test_type, null), .bad_request, "invalid_request", "file");
+        try expectError(files.answer(arena, io, try testForm(arena, &.{.{ "model", "qwen3-tts-1.7b-customvoice" }}, wav), test_type, null, .{}), .bad_request, "not_a_transcription_model", "model");
+        try expectError(files.answer(arena, io, try testForm(arena, &.{.{ "model", "laya" }}, wav), test_type, null, .{}), .bad_request, "not_a_transcription_model", "model");
+        try expectError(files.answer(arena, io, try testForm(arena, &.{.{ "model", "whisper-1" }}, wav), test_type, null, .{}), .not_found, "model_not_found", "model");
+        try expectError(files.answer(arena, io, try testForm(arena, &.{}, "not audio at all, not even close"), test_type, null, .{}), .bad_request, "invalid_audio", "file");
+        try expectError(files.answer(arena, io, try testForm(arena, &.{}, null), test_type, null, .{}), .bad_request, "invalid_request", "file");
         // No worker runs: the file waits until its deadline, then leaves.
-        try expectError(files.answer(arena, io, try testForm(arena, &.{}, wav), test_type, null), http.overloaded, "timeout", null);
+        try expectError(files.answer(arena, io, try testForm(arena, &.{}, wav), test_type, null, .{}), http.overloaded, "timeout", null);
         try std.testing.expect(files.head == null and files.waiting == 0);
     }
     {
         var f: Fixture = undefined;
         try f.init(0);
         defer f.deinit();
-        try expectError(f.service.files.answer(arena, io, try testForm(arena, &.{}, wav), test_type, null), http.overloaded, "busy", null);
+        try expectError(f.service.files.answer(arena, io, try testForm(arena, &.{}, wav), test_type, null, .{}), http.overloaded, "busy", null);
     }
 }
 
@@ -1013,8 +1036,8 @@ test "files: a model that fails to open fails its request, and the next one too"
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const wav = try testWav(arena, 1600);
-    try expectError(f.service.files.answer(arena, io, try testForm(arena, &.{}, wav), test_type, null), .internal_server_error, "model_failed", "model");
-    try expectError(f.service.files.answer(arena, io, try testForm(arena, &.{.{ "stream", "true" }}, wav), test_type, null), .internal_server_error, "model_failed", "model");
+    try expectError(f.service.files.answer(arena, io, try testForm(arena, &.{}, wav), test_type, null, .{}), .internal_server_error, "model_failed", "model");
+    try expectError(f.service.files.answer(arena, io, try testForm(arena, &.{.{ "stream", "true" }}, wav), test_type, null, .{}), .internal_server_error, "model_failed", "model");
     try std.testing.expectEqual(@as(u64, 2), f.service.files.requests);
     try std.testing.expect(!f.service.files.scheduled and f.service.files.waiting == 0);
     try std.testing.expectEqual(@as(u64, 0), budget.resident(io));

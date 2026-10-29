@@ -13,6 +13,7 @@ const model_ls = @import("../../model.zig");
 const paths = @import("../../paths.zig");
 const engine = @import("../../engine.zig");
 const http = @import("../http.zig");
+const request_log = @import("../request_log.zig");
 const errors = @import("../errors.zig");
 const gpu = @import("../gpu.zig");
 const models = @import("../models.zig");
@@ -87,7 +88,9 @@ pub const Service = struct {
             .id = wire.newId(arena, io, "chatcmpl-") catch return refuse(arena, .internal_server_error, "internal", "out of memory", null),
             .created = std.Io.Timestamp.now(io, .real).toSeconds(),
             .collected = .{ .arena = arena },
+            .fields = request.fields,
         };
+        if (parsed.model) |m| request.fields.text("model", m);
         if (parsed.stream) job.pipe = Pipe.init(self.language.gpa, pipe_capacity) catch
             return refuse(arena, .internal_server_error, "internal", "out of memory", null);
         self.executor.submit(io, &job.item) catch |err| {
@@ -107,6 +110,7 @@ pub const Service = struct {
             .timed_out => return refuse(arena, http.overloaded, "timeout", timeoutMessage(arena, self.timeout_ns), null),
             .gone => return refuse(arena, .bad_request, "cancelled", "the client closed the connection", null),
         }
+        job.logTo(request.fields);
         const ran = switch (job.outcome) {
             .pending => unreachable,
             .failed => |e| return .fromError(arena, e),
@@ -357,6 +361,12 @@ const Job = struct {
     name: []const u8 = "",
     /// The streamed response's log line, written by the worker.
     note: []const u8 = "",
+    /// For the request log, written by the worker with the note.
+    effort: []const u8 = "",
+    finish_reason: []const u8 = "",
+    web_rounds: usize = 0,
+    /// The request's log fields, filled once the worker is done.
+    fields: request_log.Fields = .{},
     /// Worker-only, while it runs: the chunk encoder and its scratch.
     io: std.Io = undefined,
     chunks: wire.ChunkWriter = undefined,
@@ -464,6 +474,9 @@ const Job = struct {
         const finish = wire.finishReason(outcome.stop, self.client_calls);
         const usage = self.usage;
         if (self.pipe != null and outcome.stop != .cancelled) self.emit(ChunkFinish{ .finish = finish, .usage = usage });
+        self.effort = @tagName(ran.effort);
+        self.finish_reason = if (outcome.stop == .cancelled) "cancelled" else @tagName(finish);
+        self.web_rounds = round;
         self.note = self.arena.print("{s} {s}: {d} prompt ({d} reused), {d} generated, {s}{s}{s}{s}", .{
             self.name,
             @tagName(ran.effort),
@@ -716,7 +729,26 @@ const Job = struct {
 
     fn streamNote(context: *anyopaque) []const u8 {
         const self: *Job = @ptrCast(@alignCast(context));
+        self.logTo(self.fields);
         return self.note;
+    }
+
+    /// The request log's fields; only once the worker can no longer touch
+    /// the job.
+    fn logTo(self: *const Job, fields: request_log.Fields) void {
+        if (self.name.len > 0) fields.text("model", self.name);
+        if (self.effort.len > 0) fields.text("effort", self.effort);
+        fields.flag("stream", self.pipe != null);
+        if (self.finish_reason.len == 0) return;
+        fields.int("prompt_tokens", self.usage.prompt);
+        fields.int("cached_tokens", self.usage.cached);
+        fields.int("completion_tokens", self.usage.completion);
+        fields.text("finish_reason", self.finish_reason);
+        if (self.web_calls > 0) {
+            fields.int("web_calls", self.web_calls);
+            fields.int("web_rounds", self.web_rounds);
+        }
+        if (self.spliced > 0) fields.int("web_restored", self.spliced);
     }
 };
 

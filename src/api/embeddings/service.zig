@@ -15,6 +15,7 @@ const wire = @import("../../embedding/request.zig");
 const response = @import("../../embedding/response.zig");
 const names = @import("../../embedding/catalog.zig");
 const http = @import("../http.zig");
+const request_log = @import("../request_log.zig");
 const errors = @import("../errors.zig");
 const gpu = @import("../gpu.zig");
 const models = @import("../models.zig");
@@ -98,12 +99,12 @@ pub const Service = struct {
 
     fn handle(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, request: http.Request) http.Response {
         const self: *Service = @ptrCast(@alignCast(context));
-        return self.answer(arena, io, request.body);
+        return self.answer(arena, io, request.body, request.fields);
     }
 
     /// Validates, waits for the GPU, writes OpenAI's body. Every failure is
     /// a response.
-    pub fn answer(self: *Service, arena: std.mem.Allocator, io: std.Io, body: []const u8) http.Response {
+    pub fn answer(self: *Service, arena: std.mem.Allocator, io: std.Io, body: []const u8, fields: request_log.Fields) http.Response {
         const deadline = std.Io.Clock.Timestamp.fromNow(io, .{ .raw = .fromNanoseconds(self.timeout_ns), .clock = .awake });
         const root = std.json.parseFromSliceLeaky(std.json.Value, arena, body, .{}) catch |err| return switch (err) {
             error.OutOfMemory => internal(arena),
@@ -159,6 +160,7 @@ pub const Service = struct {
         };
         var out: std.Io.Writer.Allocating = .init(arena);
         response.writeOpenAI(&out.writer, arena, out_body, parsed.encoding) catch return internal(arena);
+        logTo(fields, name, out_body, job.timings);
         return .{ .body = out.written(), .note = note(arena, name, out_body, job.timings) };
     }
 
@@ -293,6 +295,15 @@ fn note(arena: std.mem.Allocator, model: []const u8, body: response.Body, timing
     return arena.print("{s} · {d} input{s} · {d} tokens{s}{s}", .{ model, n, if (n == 1) "" else "s", body.tokens(), passes, opened }) catch model;
 }
 
+fn logTo(fields: request_log.Fields, model: []const u8, body: response.Body, timings: batcher_mod.Job.Timings) void {
+    fields.text("model", model);
+    fields.int("inputs", body.vectors.len);
+    fields.int("input_tokens", body.tokens());
+    fields.int("passes", timings.passes);
+    fields.int("batch_requests", timings.shared);
+    if (timings.load_ns > 0) fields.ms("open_ms", timings.load_ns);
+}
+
 // ----- tests: everything before the GPU, with no model file -----
 
 const Fixture = struct {
@@ -349,7 +360,7 @@ test "embeddings: every refusal before the GPU is a typed error body with its fi
     };
     for (cases) |case| {
         errdefer std.debug.print("case: {s}\n", .{case.body});
-        const r = f.service.answer(arena, std.testing.io, case.body);
+        const r = f.service.answer(arena, std.testing.io, case.body, .{});
         try std.testing.expectEqual(case.status, r.status);
         const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, r.body, .{});
         const err = parsed.object.get("error").?.object;
@@ -366,7 +377,7 @@ test "embeddings: a full queue is busy; a request that never starts times out" {
         var f: Fixture = undefined;
         try f.init(0);
         defer f.deinit();
-        const r = f.service.answer(arena, std.testing.io, "{\"input\":\"x\"}");
+        const r = f.service.answer(arena, std.testing.io, "{\"input\":\"x\"}", .{});
         try std.testing.expectEqual(http.overloaded, r.status);
         try std.testing.expect(std.mem.indexOf(u8, r.body, "\"busy\"") != null);
     }
@@ -375,7 +386,7 @@ test "embeddings: a full queue is busy; a request that never starts times out" {
         var f: Fixture = undefined;
         try f.init(4);
         defer f.deinit();
-        const r = f.service.answer(arena, std.testing.io, "{\"input\":\"x\"}");
+        const r = f.service.answer(arena, std.testing.io, "{\"input\":\"x\"}", .{});
         try std.testing.expectEqual(http.overloaded, r.status);
         try std.testing.expect(std.mem.indexOf(u8, r.body, "\"timeout\"") != null);
         try std.testing.expectEqual(@as(usize, 0), f.service.batcher.stats(std.testing.io).waiting);
@@ -396,7 +407,7 @@ test "embeddings: a file that is no model fails the request on the worker, not t
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const r = f.service.answer(arena, io, "{\"input\":[\"x\",\"y\"]}");
+    const r = f.service.answer(arena, io, "{\"input\":[\"x\",\"y\"]}", .{});
     try std.testing.expectEqual(std.http.Status.internal_server_error, r.status);
     try std.testing.expect(std.mem.indexOf(u8, r.body, "\"model_failed\"") != null);
     try std.testing.expect(!f.service.pool.isOpen(io, f.file));

@@ -1470,7 +1470,7 @@ numbers as numbers. A field a request did not reach is absent.
 
 ```json
 {"time":"2026-10-30T09:12:04.318Z","schema":1,"event":"request.start","id":"019a3412-6f1e-7c2a-9b4d-0e5f6a7b8c9d","client_id":"turn-41","method":"POST","path":"/v1/audio/speech"}
-{"time":"2026-10-30T09:12:06.904Z","schema":1,"event":"request.end","id":"019a3412-6f1e-7c2a-9b4d-0e5f6a7b8c9d","client_id":"turn-41","status":200,"duration_ms":2586.2,"bytes_in":212,"bytes_out":214080,"model":"qwen3-tts-0.6b-base","voice":"isa","voice_kind":"clone","stream":true,"frames":56,"audio_s":4.46,"first_audio_ms":431.0,"finish_reason":"eos"}
+{"time":"2026-10-30T09:12:06.904Z","schema":1,"event":"request.end","id":"019a3412-6f1e-7c2a-9b4d-0e5f6a7b8c9d","client_id":"turn-41","status":200,"duration_ms":2586.2,"bytes_in":212,"bytes_out":214080,"model":"qwen3-tts-0.6b-base","voice_kind":"clone","voice":"isa","voice_ready_ms":0.4,"format":"pcm","stream_format":"audio","frames":56,"audio_s":4.46,"first_audio_ms":431.0,"finish_reason":"eos"}
 ```
 
 | Event | Fields |
@@ -1485,14 +1485,15 @@ What each route adds to its `request.end`:
 | `POST /v1/chat/completions` | `model`, `effort`, `stream`, `prompt_tokens`, `cached_tokens`, `completion_tokens`, `finish_reason` (`stop`, `length`, `tool_calls`, `cancelled`), `web_calls`, `web_rounds`, `web_restored` |
 | `POST /v1/decisions`, `POST /v1/systemone` | `model`, `states`, `questions`, `input_tokens`, `batch_requests` (the requests that shared the pass), `open_ms` (when this request opened the model) |
 | `POST /v1/embeddings` | `model`, `inputs`, `input_tokens`, `passes`, `batch_requests`, `open_ms` |
-| `POST /v1/audio/speech` | `model`, `voice` (none for VoiceDesign), `voice_kind` (`speakers`, `clone`, `design`), `stream`, `frames`, `audio_s`, `first_audio_ms`, `finish_reason` (`eos`, `length`, `cancelled`), `voice_ready_ms` (when this request encoded a saved voice) |
+| `POST /v1/audio/speech` | `model`, `voice` (none for VoiceDesign), `voice_kind` (`speakers`, `clone`, `design`), `voice_ready_ms` (a saved voice read back, or encoded on its first use with the model), `format`, `stream_format`, `frames`, `audio_s`, `first_audio_ms`, `open_ms`, `finish_reason` (`eos`, `length`, `cancelled`) |
 | `POST`, `GET`, `DELETE /v1/audio/voices` | `voice`; a list's `voices` (its count); a create's `clip_s` and `transcript` (whether one came) |
 | `POST /v1/audio/transcriptions` | `model`, `stream`, `audio_s`, `real_time` (audio seconds per second), `segments`, `first_segment_ms`, `open_ms`, `finish_reason` (`done`, `cancelled`) |
-| `GET /v1/audio/transcriptions/stream` | `model`, `lookahead`, `audio_s`, `finals`, `closed_by` (`client`, `server`, `gone`), `close_code` |
+| `GET /v1/audio/transcriptions/stream` | `model`, `lookahead`, `audio_s`, `finals`, `closed_by` (`client`, `server`, `gone`), `close_code`, and the server's `close_reason` |
 | `GET /v1/models` | `models` (the count); a retrieve's `model` |
 
-`GET /v1/health` lists the requests in flight, each with its fields so far
-(`GET /v1/health` above).
+An error a stream reports after its `200` is the end line's `error` and
+`message` beside the `200`. `GET /v1/health` lists the requests in flight, each with
+its fields so far (`GET /v1/health` above).
 
 ## Measured rates
 

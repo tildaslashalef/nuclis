@@ -53,11 +53,13 @@ pub const Models = struct {
         var out: std.Io.Writer.Allocating = .init(arena);
         if (request.path.len > base.len) {
             const id = request.path[base.len + 1 ..];
+            request.fields.text("model", id);
             const entry = for (entries.items) |*e| {
                 if (std.mem.eql(u8, e.id, id)) break e;
             } else return .fromError(arena, .init(.not_found, "model_not_found", arena.print("{s} is not a model of this server (GET {s} lists them)", .{ id, base }) catch "model not found"));
             writeOne(&out.writer, entry.*) catch return .fromError(arena, .init(.internal_server_error, "internal", "out of memory"));
         } else {
+            request.fields.int("models", entries.items.len);
             write(&out.writer, entries.items) catch return .fromError(arena, .init(.internal_server_error, "internal", "out of memory"));
         }
         return conditional(arena, request, out.written());

@@ -16,6 +16,7 @@ const config = @import("../../config.zig");
 const catalog = @import("../../catalog.zig");
 const audio_catalog = @import("../../audio/catalog.zig");
 const http = @import("../http.zig");
+const request_log = @import("../request_log.zig");
 const errors = @import("../errors.zig");
 const gpu = @import("../gpu.zig");
 const models = @import("../models.zig");
@@ -128,12 +129,12 @@ pub const Service = struct {
 
     fn handle(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, request: http.Request) http.Response {
         const self: *Service = @ptrCast(@alignCast(context));
-        return self.answer(arena, io, request.body, request.peer);
+        return self.answer(arena, io, request.body, request.peer, request.fields);
     }
 
     /// Validates, queues, waits until the job's prompt is prefilled, and
     /// answers with the stream or the refusal. Every failure is a response.
-    pub fn answer(self: *Service, arena: std.mem.Allocator, io: std.Io, body: []const u8, peer: ?http.Peer) http.Response {
+    pub fn answer(self: *Service, arena: std.mem.Allocator, io: std.Io, body: []const u8, peer: ?http.Peer, fields: request_log.Fields) http.Response {
         const deadline = std.Io.Clock.Timestamp.fromNow(io, .{ .raw = .fromNanoseconds(self.timeout_ns), .clock = .awake });
         var problem: wire.Problem = .{};
         const parsed = wire.parse(arena, body, &problem) catch |err| return switch (err) {
@@ -150,6 +151,8 @@ pub const Service = struct {
             else => refuse(arena, .internal_server_error, "model_failed", "model", "{s}: {s}", .{ name, if (diag.len > 0) diag.message() else @errorName(err) }),
         };
         const mode = (audio_catalog.speechMode(arena, io, located.directory) catch return internal(arena)) orelse .speakers;
+        fields.text("model", name);
+        fields.text("voice_kind", @tagName(mode));
         if (parsed.instructions != null) {
             if (mode == .clone) return refuse(arena, .bad_request, "instructions_unsupported", "instructions", "{s} is a Base: it takes no instruction (qwen3-tts-1.7b-customvoice does)", .{name});
             if (located.entry) |entry| if (!entry.instructions)
@@ -159,10 +162,13 @@ pub const Service = struct {
             return refuse(arena, .bad_request, "voice_cloning_unsupported", "voice", "{s} speaks in {s}; a saved voice needs a Base (qwen3-tts-1.7b-base, qwen3-tts-0.6b-base)", .{ name, if (mode == .design) "a voice its instructions describe" else "its own speakers" });
         // VoiceDesign has no voice to name: OpenAI's clients always send one, so it is ignored.
         const voice_name = if (mode == .design) "" else parsed.voice orelse self.settings.voice;
+        if (voice_name.len > 0) fields.text("voice", voice_name);
         var ready: ?voice_store.Ready = null;
         if (mode == .clone) {
             var refusal: ApiError = undefined;
+            const started = std.Io.Clock.awake.now(io);
             ready = readyVoice(self.gpa, arena, io, self.root, located.directory, name, voice_name, &refusal) catch return .fromError(arena, refusal);
+            fields.ms("voice_ready_ms", @intCast(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds()));
         }
 
         const job = arena.create(Job) catch {
@@ -185,6 +191,7 @@ pub const Service = struct {
             .note_buffer = arena.alloc(u8, 512) catch return internal(arena),
             .message_buffer = arena.alloc(u8, 1024) catch return internal(arena),
             .peer = peer,
+            .fields = fields,
         };
         self.submit(io, job) catch |err| {
             job.pipe.deinit(self.gpa);
@@ -368,7 +375,10 @@ pub const Service = struct {
     /// The job is over: its synthesizer and buffers freed, the voice no
     /// longer held, the stream closed, its waiter woken.
     fn finish(self: *Service, io: std.Io, job: *Job) void {
-        if (job.synth) |*s| s.deinit();
+        if (job.synth) |*s| {
+            job.frames = s.frames;
+            s.deinit();
+        }
         job.synth = null;
         if (job.samples.len > 0) self.gpa.free(job.samples);
         if (job.bytes_out.len > 0) self.gpa.free(job.bytes_out);
@@ -572,6 +582,10 @@ const Job = struct {
     audio_samples: usize = 0,
     /// `eos` or `length` once the utterance ended; empty before (or cancelled).
     finish_reason: []const u8 = "",
+    /// The frames generated, kept once the synthesizer is freed.
+    frames: usize = 0,
+    /// The request's log fields, filled once the worker is done.
+    fields: request_log.Fields = .{},
 
     /// One chunk: synthesized, encoded, queued for the client. False once
     /// the utterance ended, the client left, or the device failed.
@@ -727,7 +741,22 @@ const Job = struct {
 
     fn streamNote(context: *anyopaque) []const u8 {
         const self: *Job = @ptrCast(@alignCast(context));
+        self.logTo(self.fields);
         return if (self.cancel.load(.acquire) and self.note.len == 0) "cancelled: the client closed the connection" else self.note;
+    }
+
+    /// The request log's fields; only once the worker can no longer touch
+    /// the job.
+    fn logTo(self: *const Job, fields: request_log.Fields) void {
+        fields.text("format", @tagName(self.request.format));
+        fields.text("stream_format", @tagName(self.request.stream));
+        if (self.failure) |f| fields.fail(f);
+        fields.int("frames", self.frames);
+        fields.float("audio_s", @as(f64, @floatFromInt(self.audio_samples)) / wire.sample_rate, 2);
+        if (self.first_audio_ns) |ns| fields.ms("first_audio_ms", ns);
+        if (self.load_ns > 0) fields.ms("open_ms", self.load_ns);
+        const finish = if (self.cancel.load(.acquire)) "cancelled" else self.finish_reason;
+        if (finish.len > 0) fields.text("finish_reason", finish);
     }
 };
 
@@ -914,7 +943,7 @@ test "speech: every refusal before the GPU is a typed error body with its field"
     };
     for (cases) |case| {
         errdefer std.debug.print("case: {s}\n", .{case.body});
-        try expectError(f.service.answer(arena, io, case.body, null), case.status, case.code, case.param);
+        try expectError(f.service.answer(arena, io, case.body, null, .{}), case.status, case.code, case.param);
     }
     try std.testing.expectEqual(Stats{ .waiting = 0, .speaking = false, .requests = 0 }, f.service.stats(io));
 }
@@ -928,14 +957,14 @@ test "speech: a full queue is busy; a request that never starts times out and le
         var f: Fixture = undefined;
         try f.init(0);
         defer f.deinit();
-        try expectError(f.service.answer(arena, io, "{\"input\": \"Hi.\"}", null), http.overloaded, "busy", null);
+        try expectError(f.service.answer(arena, io, "{\"input\": \"Hi.\"}", null, .{}), http.overloaded, "busy", null);
     }
     {
         // No worker runs: the job waits until its deadline, then leaves.
         var f: Fixture = undefined;
         try f.init(4);
         defer f.deinit();
-        try expectError(f.service.answer(arena, io, "{\"input\": \"Hi.\"}", null), http.overloaded, "timeout", null);
+        try expectError(f.service.answer(arena, io, "{\"input\": \"Hi.\"}", null, .{}), http.overloaded, "timeout", null);
         try std.testing.expectEqual(@as(usize, 0), f.service.stats(io).waiting);
         try std.testing.expect(f.service.head == null);
     }
@@ -958,7 +987,7 @@ test "speech: a voice that fails to open fails its request before the head, and 
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    for (0..2) |_| try expectError(f.service.answer(arena, io, "{\"input\": \"Hi.\", \"response_format\": \"pcm\"}", null), .internal_server_error, "model_failed", "model");
+    for (0..2) |_| try expectError(f.service.answer(arena, io, "{\"input\": \"Hi.\", \"response_format\": \"pcm\"}", null, .{}), .internal_server_error, "model_failed", "model");
     const stats = f.service.stats(io);
     try std.testing.expectEqual(@as(u64, 2), stats.requests);
     try std.testing.expect(!stats.speaking and stats.waiting == 0);
