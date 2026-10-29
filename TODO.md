@@ -14,9 +14,9 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–3, the
-facts, the traces, and the config and binding, are done and committed.
-Next: task 4, audio at 24 kHz. The next release
+`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–4, the
+facts, the traces, the config and binding, and audio at 24 kHz, are done
+and committed. Next: task 5, the speaker encoder. The next release
 (0.11.0) carries K-quant E4B files
 ([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
 Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
@@ -28,7 +28,7 @@ this unit, if it lands first.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 4 next |
+| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 5 next |
 
 ## Qwen3-TTS Base: voice cloning with saved voices
 
@@ -101,14 +101,16 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
    (`Config.speaker_encoder`, `Config.clones()`; the package's defaults
    when `speaker_encoder_config` is absent; `enc_dim` must equal the
    talker's width, the front end 128 bins at 24 kHz); `bind` binds the 76
-   `speaker_encoder.*` tensors (`Binding.speaker_encoder`). The real 0.6B
-   Base opens through `nuclis speak --model <dir>` and stops at
-   `UnknownSpeaker` (no speakers) until task 10. The talker check
+   `speaker_encoder.*` tensors (`Binding.speaker_encoder`). Both Base
+   sizes are pulled at the pinned revisions and open through `nuclis speak
+   --model <dir>` (every tensor bound), then stop at `UnknownSpeaker` (no
+   speakers) until task 10. The talker check
    (`qwen3-tts-check <Base dir> talker`) would reach the clone cases,
    which have no `speaker`: task 7 gives them their own path.
-4. *Audio at 24 kHz.* `inference/src/audio/audio.zig` `decode` takes the
-   target rate (16,000 for the encoders, 24,000 here); the WAV fast path
-   reads either rate, the bridge resamples.
+4. *Audio at 24 kHz.* Done: `audio.decodeAt(alloc, bytes, max, rate)` and
+   `decodeWavAt`; `decode` and `decodeWav` stay the encoders' 16 kHz; the
+   bridge (`nu_audio_decode`, `nu_audio_open`) takes the rate. `Reader`
+   stays 16 kHz (transcription only).
 5. *Speaker encoder* (new `inference/src/audio/ecapa.zig`): the mel as a
    `mel.zig` `Spec` if it fits, else its own; the network over the bound
    tensors widened to F32. Against the trace's mel and embedding.

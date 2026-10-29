@@ -74,12 +74,16 @@ as a cross-check, never copied.
 
 AudioToolbox reads the bytes through `AudioFileOpenWithCallbacks` and
 `ExtAudioFileWrapAudioFileID`. The formats are WAV, AIFF, CAF, MP3,
-M4A/AAC, FLAC and ALAC. The client format is 16 kHz float in the file's
-channel count, and the converter's sample-rate quality is set to its
-maximum (`Mastering` complexity). Channels are averaged afterwards, as
-librosa's `mono=True` does. A 16 kHz mono 16-bit WAV never reaches the
-bridge: each sample over 32768 is what every decoder gives, so it is exact
-on any platform. A 16 kHz mono float WAV is read as stored, likewise.
+M4A/AAC, FLAC and ALAC. The client format is float in the file's channel
+count at the caller's rate: 16 kHz for the encoders here (`decode`,
+`Reader`), 24 kHz for Qwen3-TTS's reference clips (`decodeAt`,
+[qwen3-tts.md § Voice cloning (the Base)](../models/qwen3-tts.md#voice-cloning-the-base)).
+The converter's sample-rate quality is set to its maximum (`Mastering`
+complexity). Channels are averaged afterwards, as librosa's `mono=True`
+does. A mono 16-bit WAV at the asked rate never reaches the bridge: each
+sample over 32768 is what every decoder gives (`soundfile` and librosa
+included), so it is exact on any platform. A mono float WAV at that rate
+is read as stored, likewise.
 
 Other clips match Google's only as far as two resamplers agree. On the
 `north` clip, a 44.1 kHz stereo copy gives a vector at cosine 0.9999 to the
