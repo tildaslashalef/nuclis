@@ -52,6 +52,11 @@ as a cross-check, never copied.
   checked against `qwen3_codec.zig` on the same codes (gate
   `qwen3-tts-codec-metal`); the voice's talker and predictor are
   `models/qwen3_tts*.zig` ([qwen3-tts.md](../models/qwen3-tts.md)).
+- `ecapa.zig`: Qwen3-TTS Base's speaker encoder, CPU only: `Front`, the
+  24 kHz mel `extract_speaker_embedding` computes, and `Encoder`, the
+  ECAPA-TDNN to one embedding at the talker's width (gate
+  `qwen3-tts-0.6b-clone-cpu`;
+  [qwen3-tts.md § The speaker encoder](../models/qwen3-tts.md#the-speaker-encoder)).
 - `nemotron_encoder.zig`: Nemotron 3.5 ASR's cache-aware encoder and its
   prompt block, the CPU reference: `bind` (the safetensors checkpoint),
   `Encoder`, `Stream`, its `FrontEnd`, and the pure functions the Metal

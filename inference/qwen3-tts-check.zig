@@ -12,14 +12,18 @@
 //! the F16 cache's bound is `--max-relative-rms-f16`), and
 //! `codec-metal` decodes each case's codes on Metal against the CPU decode
 //! and the trace, then in pieces of 1, 3, and 7 frames, which must equal the
-//! Metal decode bit for bit. The bounds are arguments, so the gate manifest
-//! holds them.
+//! Metal decode bit for bit. `clone` (a Base's MODEL_DIR): the reference
+//! case's clip, read from its WAV at 24 kHz, through the speaker encoder,
+//! each stage the trace pins and the embedding compared. The bounds are
+//! arguments, so the gate manifest holds them.
 //!
 //!   qwen3-tts-check MODEL_DIR codec|codec-metal [--max-relative-rms X] [--max-absolute X] [--fixtures DIR]
 //!   qwen3-tts-check MODEL_DIR talker|talker-metal [--max-relative-rms X] [--kv f32|f16|both] [--max-relative-rms-f16 X] [--fixtures DIR]
+//!   qwen3-tts-check MODEL_DIR clone [--max-relative-rms X] [--fixtures DIR]
 const std = @import("std");
 const inference = @import("inference");
 const codec = inference.audio.qwen3_codec;
+const ecapa = inference.audio.ecapa;
 const safetensors = inference.safetensors;
 const tts = inference.models.qwen3_tts;
 const speech = inference.models.qwen3_tts_runtime;
@@ -28,7 +32,7 @@ const tts_metal = inference.models.qwen3_tts_metal;
 const codec_metal = inference.audio.qwen3_codec_metal;
 const metal = inference.metal;
 
-const usage = "usage: qwen3-tts-check MODEL_DIR codec|talker|codec-metal|talker-metal [--max-relative-rms X] [--max-absolute X] [--kv f32|f16|both] [--max-relative-rms-f16 X] [--fixtures DIR]\n";
+const usage = "usage: qwen3-tts-check MODEL_DIR codec|talker|codec-metal|talker-metal|clone [--max-relative-rms X] [--max-absolute X] [--kv f32|f16|both] [--max-relative-rms-f16 X] [--fixtures DIR]\n";
 
 const Stats = struct { max_abs: f64 = 0, max_ref: f64 = 0, diff2: f64 = 0, ref2: f64 = 0 };
 
@@ -578,12 +582,123 @@ fn checkTalker(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mod
     return passed;
 }
 
+/// Every speaker-encoder stage's rows, by label.
+const Stages = struct {
+    arena: std.mem.Allocator,
+    rows: std.StringArrayHashMapUnmanaged([]const f32) = .empty,
+    failed: bool = false,
+
+    fn record(context: *anyopaque, label: []const u8, values: []const f32) void {
+        const self: *Stages = @ptrCast(@alignCast(context));
+        const key = self.arena.dupe(u8, label) catch return self.fail();
+        const copy = self.arena.dupe(f32, values) catch return self.fail();
+        self.rows.put(self.arena, key, copy) catch return self.fail();
+    }
+
+    fn fail(self: *Stages) void {
+        self.failed = true;
+    }
+};
+
+/// The reference case's clip through the speaker encoder, against the trace.
+fn checkClone(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, model_dir: []const u8, fixtures: []const u8, bound: f64) !bool {
+    const index_path = try std.fs.path.join(arena, &.{ fixtures, "index.json" });
+    const index_text = try std.Io.Dir.cwd().readFileAlloc(io, index_path, arena, .limited(1 << 20));
+    const index = try std.json.parseFromSliceLeaky(std.json.Value, arena, index_text, .{});
+    const read = struct {
+        fn file(a: std.mem.Allocator, i: std.Io, dir: []const u8, name: []const u8) ![]u8 {
+            const path = try std.fs.path.join(a, &.{ dir, name });
+            return std.Io.Dir.cwd().readFileAlloc(i, path, a, .limited(1 << 20));
+        }
+    };
+    var config = try tts.parseConfig(gpa, try read.file(arena, io, model_dir, "config.json"), null);
+    defer config.deinit();
+    const encoder_config = config.speaker_encoder orelse {
+        std.debug.print("{s}: not a Base (no speaker encoder)\n", .{model_dir});
+        return error.NotABase;
+    };
+    const weights_path = try std.fs.path.join(arena, &.{ model_dir, "model.safetensors" });
+    var checkpoint = try safetensors.Checkpoint.open(gpa, io, weights_path, .{});
+    defer checkpoint.deinit(io);
+    var diagnostic: tts.Diagnostic = .{};
+    var binding = tts.bind(gpa, &checkpoint, &config, &diagnostic) catch |err| {
+        std.debug.print("bind: {s} ({s})\n", .{ @errorName(err), diagnostic.name() });
+        return err;
+    };
+    defer binding.deinit(gpa);
+    var encoder = try ecapa.Encoder.init(gpa, &binding.speaker_encoder.?, encoder_config);
+    defer encoder.deinit();
+    const sidecar: ?std.json.Value = if (read.file(arena, io, model_dir, "model.safetensors.nuclis.json")) |text|
+        try std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{})
+    else |_|
+        null;
+
+    const dir_name = std.fs.path.basename(std.mem.trimEnd(u8, model_dir, "/"));
+    var passed = true;
+    var checked: usize = 0;
+    var cases = index.object.get("cases").?.object.iterator();
+    while (cases.next()) |case| {
+        const meta = case.value_ptr.object;
+        const files = meta.get("files").?.object;
+        const reference = files.get("reference") orelse continue;
+        if (!std.mem.eql(u8, std.fs.path.basename(meta.get("repo").?.string), dir_name)) continue;
+        if (sidecar) |s| if (!std.mem.eql(u8, s.object.get("sha256").?.string, meta.get("model_sha256").?.string)) {
+            std.debug.print("{s}: model.safetensors is not the one traced\n", .{case.key_ptr.*});
+            return error.ArtifactMismatch;
+        };
+        checked += 1;
+        var pcm = try inference.audio.audio.decodeWavAt(gpa, try readFixture(arena, io, fixtures, reference), std.math.maxInt(u32), ecapa.sample_rate);
+        defer pcm.deinit(gpa);
+        var stages: Stages = .{ .arena = arena };
+        const embedding = try arena.alloc(f32, encoder_config.dim);
+        const start = std.Io.Clock.awake.now(io);
+        try encoder.embed(gpa, io, pcm.samples, embedding, .{ .context = &stages, .record = Stages.record });
+        if (stages.failed) return error.OutOfMemory;
+        std.debug.print("{s}: {d:.2} s of reference, speaker encoder in {d} ms\n", .{ case.key_ptr.*, @as(f64, @floatFromInt(pcm.samples.len)) / ecapa.sample_rate, start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() });
+        std.debug.print("  {s:<12} {s:>13} {s:>10} {s:>10} {s:>10}\n", .{ "stage", "rows", "max |Δ|", "max |ref|", "rel RMS" });
+        try stages.rows.put(arena, "embedding", embedding);
+        for ([_][]const u8{ "mel", "blocks.0", "blocks.3", "mfa", "asp", "embedding" }) |label| {
+            const key = if (std.mem.eql(u8, label, "embedding")) label else try std.fmt.allocPrint(arena, "encoders/{s}", .{label});
+            const entry = files.get(key) orelse continue;
+            const want = try floats(arena, try readFixture(arena, io, fixtures, entry));
+            const got_all = stages.rows.get(label) orelse {
+                std.debug.print("  {s}: not computed\n", .{label});
+                return error.FixtureMismatch;
+            };
+            // A stage pinned by rows keeps its last ones; the others are whole.
+            var first: usize = 0;
+            var last: usize = 1;
+            var width = want.len;
+            if (entry.object.get("rows")) |rows| {
+                first = @intCast(rows.array.items[0].integer);
+                last = @intCast(rows.array.items[1].integer);
+                width = want.len / (last - first);
+            }
+            if (got_all.len != last * width) {
+                std.debug.print("  {s}: {d} values, the trace's {d} rows of {d}\n", .{ label, got_all.len, last, width });
+                return error.FixtureMismatch;
+            }
+            const s = compare(got_all[first * width ..], want);
+            const rel = @sqrt(s.diff2 / s.ref2);
+            const over = rel > bound;
+            if (over) passed = false;
+            std.debug.print("  {s:<12} {d:>6}–{d:<6} {e:>10.2} {e:>10.2} {e:>10.2}{s}\n", .{ label, first, last, s.max_abs, s.max_ref, rel, if (over) "  OVER" else "" });
+        }
+    }
+    if (checked == 0) {
+        std.debug.print("No reference case in {s} for {s}.\n", .{ fixtures, dir_name });
+        return false;
+    }
+    std.debug.print("Bound: relative RMS {e} per stage: {s}.\n", .{ bound, if (passed) "passed" else "FAILED" });
+    return passed;
+}
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
-    const Mode = enum { codec, talker, @"codec-metal", @"talker-metal" };
+    const Mode = enum { codec, talker, @"codec-metal", @"talker-metal", clone };
     const mode = std.meta.stringToEnum(Mode, if (args.len >= 3) args[2] else "") orelse {
         std.debug.print(usage, .{});
         return error.InvalidArguments;
@@ -624,6 +739,7 @@ pub fn main(init: std.process.Init) !void {
             const half = !f16_cache or try checkTalker(gpa, arena, io, args[1], fixtures, f16_bound, true, .f16);
             break :metal exact and half;
         },
+        .clone => try checkClone(gpa, arena, io, args[1], fixtures, bounds.relative_rms),
     };
     if (!ok) std.process.exit(1);
 }

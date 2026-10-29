@@ -8,6 +8,8 @@ pub const mel = @import("mel.zig");
 pub const gemma4a = @import("gemma4a.zig");
 /// Qwen3-TTS's codec decoder: speech out, codes to samples.
 pub const qwen3_codec = @import("qwen3_codec.zig");
+/// Qwen3-TTS Base's speaker encoder (mel and ECAPA-TDNN), on the CPU.
+pub const ecapa = @import("ecapa.zig");
 /// The codec decoder on Metal, with the same streaming contract.
 pub const qwen3_codec_metal = @import("qwen3_codec_metal.zig");
 /// Nemotron 3.5 ASR's cache-aware encoder: speech in, mel rows to encoder rows.
@@ -26,6 +28,7 @@ test {
     _ = mel;
     _ = gemma4a;
     _ = qwen3_codec;
+    _ = ecapa;
     _ = qwen3_codec_metal;
     _ = nemotron_encoder;
     _ = nemotron_rnnt;

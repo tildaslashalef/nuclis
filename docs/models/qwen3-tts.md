@@ -819,6 +819,33 @@ mode, so `generate_voice_clone` tokenizes it after the text in x-vector
 mode too, and does not use it. nuclis's transcriber reads back the
 reference and both clones word for word.
 
+### The speaker encoder against the trace (2026-10-29)
+
+`inference/src/audio/ecapa.zig`: `Front`, the mel (its own: 24 kHz, a
+1024-point FFT, hop 256, reflection; `mel.zig`'s front ends are 16 kHz
+with a 512-point FFT, and only the Slaney scale is shared), with the
+window and librosa's filter bank held in F32 as the authors' tensors are
+and the sums in F64; and `Encoder`, the ECAPA-TDNN over the weights
+widened to F32, each convolution one `cpu.dense.matmul` over its gathered
+taps (reflected at both ends), time-major. It runs on the CPU only: a
+voice's embedding is computed once and saved, so no Metal path is worth
+its cost. `qwen3-tts-check <Base dir> clone` reads the reference case's
+WAV at 24 kHz (`audio.decodeWavAt`, ÷ 32768 as `soundfile`) and compares
+every stage the trace pins, on the 0.6B, M4 Pro:
+
+| Stage | Rows | max \|Δ\| | max \|ref\| | rel RMS |
+| --- | --- | ---: | ---: | ---: |
+| mel | 371–435 | 4.1e-5 | 11.5 | 2.4e-7 |
+| `blocks.0` | 427–435 | 2.6e-5 | 21.9 | 8.1e-7 |
+| `blocks.3` | 427–435 | 2.6e-5 | 21.9 | 9.3e-7 |
+| `mfa` | 427–435 | 1.1e-5 | 2.6 | 1.7e-6 |
+| pooled statistics | 1 | 2.0e-6 | 1.77 | 4.6e-7 |
+| embedding | 1 | 9.5e-7 | 7.78 | 3.5e-7 |
+
+The 4.6 s clip takes 60 ms (ReleaseSafe, the matmuls on every core).
+`qwen3-tts-0.6b-clone-cpu` (tier `verify`, the CPU being this network's
+only path) bounds each stage at relative RMS 1.5e-5.
+
 ## Codec decoder against the trace (2026-10-27)
 
 **The implementation.** `inference/src/audio/qwen3_codec.zig`: `bind`

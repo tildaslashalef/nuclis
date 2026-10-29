@@ -214,14 +214,16 @@ const slaney_step = 200.0 / 3.0;
 const slaney_knee = 1000.0;
 const slaney_log_step = @log(6.4) / 27.0;
 
-fn toMel(scale: Spec.Scale, hz: f64) f64 {
+/// Hertz to mels on `scale`.
+pub fn toMel(scale: Spec.Scale, hz: f64) f64 {
     return switch (scale) {
         .htk => 2595.0 * std.math.log10(1.0 + hz / 700.0),
         .slaney => if (hz < slaney_knee) hz / slaney_step else slaney_knee / slaney_step + @log(hz / slaney_knee) / slaney_log_step,
     };
 }
 
-fn fromMel(scale: Spec.Scale, mel: f64) f64 {
+/// Mels to hertz on `scale`.
+pub fn fromMel(scale: Spec.Scale, mel: f64) f64 {
     return switch (scale) {
         .htk => 700.0 * (std.math.pow(f64, 10, mel / 2595.0) - 1.0),
         .slaney => if (mel < slaney_knee / slaney_step) mel * slaney_step else slaney_knee * @exp(slaney_log_step * (mel - slaney_knee / slaney_step)),

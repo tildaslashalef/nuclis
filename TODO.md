@@ -14,9 +14,10 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–4, the
-facts, the traces, the config and binding, and audio at 24 kHz, are done
-and committed. Next: task 5, the speaker encoder. The next release
+`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–5, the
+facts, the traces, the config and binding, audio at 24 kHz, and the
+speaker encoder, are done and committed. Next: task 6, the codec
+encoder. The next release
 (0.11.0) carries K-quant E4B files
 ([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
 Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
@@ -28,7 +29,7 @@ this unit, if it lands first.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 5 next |
+| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 6 next |
 
 ## Qwen3-TTS Base: voice cloning with saved voices
 
@@ -111,9 +112,13 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
    `decodeWavAt`; `decode` and `decodeWav` stay the encoders' 16 kHz; the
    bridge (`nu_audio_decode`, `nu_audio_open`) takes the rate. `Reader`
    stays 16 kHz (transcription only).
-5. *Speaker encoder* (new `inference/src/audio/ecapa.zig`): the mel as a
-   `mel.zig` `Spec` if it fits, else its own; the network over the bound
-   tensors widened to F32. Against the trace's mel and embedding.
+5. *Speaker encoder.* Done: `inference/src/audio/ecapa.zig` (`Front`, its
+   own 24 kHz mel; `Encoder`, the ECAPA-TDNN, CPU only, 60 ms for the
+   4.6 s clip); `qwen3-tts-check <Base dir> clone` against the trace
+   (worst stage relative RMS 1.7e-6); gate `qwen3-tts-0.6b-clone-cpu`
+   (tier `verify`, bound 1.5e-5); `gates.json` models
+   `qwen3_tts_06b_base`, `qwen3_tts_17b_base`. Task 6 extends the `clone`
+   mode with the codec encoder's stages and codes.
 6. *Codec encoder* (`inference/src/audio/qwen3_codec.zig`: bind
    `encoder.encoder.*`, `encoder.encoder_transformer.*`,
    `encoder.downsample.*`; the quantizer from the decoder's binding, the
@@ -163,6 +168,18 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
     `docs/models/qwen3-tts.md`, `docs/guide/api.md` § Speech and
     § `GET /v1/models`, `docs/guide/configuration.md`, `docs/spec.md`,
     `docs/models/catalogue.md`, the README's *Speech in and out*.
+
+**When the unit is done** (the user's, 2026-10-29): `make install` so
+Muon (`~/Code/muon`) runs the new build; then message the agent developing
+Muon (its session, "Nuclis TTS base models and voice cloning") with the
+changes, the API (the voice routes, `/v1/audio/speech`'s `voice`, and
+`GET /v1/models`' `cloning`, `voices`, `speakers`, `instructions`), and the
+answers to its three questions: a clip is registered once as a named voice
+(`POST /v1/audio/voices`), not sent with every request; the clip's limits
+(1–30 s after decoding, the formats `audio.readable` names, a transcript
+≤ 2 KiB); a Base takes no instructions (Qwen's cloning call has none), so
+moods show on the face only, as on the 0.6B CustomVoice. **No pull
+request until the user says so.**
 
 **Gates.** `zig build test`; `zig build test-qwen3-tts -- <dir> clone` (a new mode beside `codec` and `talker`); new gates
 `qwen3-tts-0.6b-clone-cpu` (embedding, codes, rows, 8 frames against the

@@ -90,6 +90,12 @@
   "qwen3_tts_17b": {
    "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
   },
+  "qwen3_tts_06b_base": {
+   "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+  },
+  "qwen3_tts_17b_base": {
+   "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+  },
   "nemotron_asr": {
    "path": "~/.nuclis/models/nvidia/nemotron-3.5-asr-streaming-0.6b"
   }
@@ -4224,6 +4230,38 @@
    },
    "note": "the authors' traced codes replayed through the Metal plan (the fox case): token ids and prompt rows exactly, then the talker's input rows, layers 0, 13, 27, final norm, group-0 logits of frames 0-4, and the predictor's logits of frames 0-1 against the trace, with an F32 talker cache within relative RMS 1.5e-5 per stage and with the F16 cache within 3e-3 (first run 2026-10-27: F32 cache worst 2.94e-6, F16 cache worst 5.28e-4; every logit row's argmax equal)",
    "evidence": "docs/models/qwen3-tts.md#on-metal-2026-10-27"
+  },
+  {
+   "name": "qwen3-tts-0.6b-clone-cpu",
+   "family": "qwen3-tts",
+   "tier": "verify",
+   "model": "qwen3_tts_06b_base",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/qwen3-tts-check.zig",
+    "inference/src/audio/audio.zig",
+    "inference/src/audio/ecapa.zig",
+    "inference/src/audio/mel.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/formats/safetensors.zig",
+    "inference/src/models/qwen3_tts.zig",
+    "tests/fixtures/qwen3-tts/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-qwen3-tts",
+    "--",
+    "{model}",
+    "clone",
+    "--max-relative-rms",
+    "1.5e-5"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the Base's reference clip, read from its 16-bit WAV at 24 kHz, through the speaker encoder (the CPU is its only path, so this gate is in the fast tier): the mel's last 64 rows, blocks 0 and 3 and mfa's last 8, the pooled statistics, and the embedding, relative RMS <= 1.5e-5 per stage (first run 2026-10-29: worst 1.74e-6, mfa)",
+   "evidence": "docs/models/qwen3-tts.md#the-speaker-encoder-against-the-trace-2026-10-29"
   },
   {
    "name": "qwen3-tts-1.7b-trace-metal",
