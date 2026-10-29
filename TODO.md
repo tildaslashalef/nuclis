@@ -14,9 +14,9 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`qwen3-tts-base-voice-cloning` is in progress (below): task 1, the
-facts, is done and committed (`docs/models/qwen3-tts.md` § Voice cloning
-(the Base)). Next: task 2, the traces. The next release
+`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1 and 2,
+the facts and the traces, are done and committed. Next: task 3, the
+config and binding. The next release
 (0.11.0) carries K-quant E4B files
 ([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
 Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
@@ -28,7 +28,7 @@ this unit, if it lands first.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 2 next |
+| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 3 next |
 
 ## Qwen3-TTS Base: voice cloning with saved voices
 
@@ -92,11 +92,11 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
 
 1. *Facts.* Done: `docs/models/qwen3-tts.md` § Voice cloning (the
    Base).
-2. *Traces.* Extend `scripts/speech-traces/qwen3_tts_trace.py` with a
-   `clone` mode on the 0.6B Base: a short public-domain or generated clip
-   (provenance in `tests/fixtures/provenance.md`) → mel, embedding,
-   reference codes, both prompts' rows, the first 8 frames greedy, under
-   `tests/fixtures/qwen3-tts/`.
+2. *Traces.* Done: `qwen3_tts_trace.py --clone`, cases
+   `0.6b-clone-reference`, `0.6b-clone-xvector-fox`, `0.6b-clone-icl-fox`
+   (`docs/models/qwen3-tts.md` § The trace (2026-10-29)). The venv is
+   `.reference/venv-qwen3-tts`; the 0.6B Base is pulled (not registered:
+   `parseConfig` refuses it until task 3).
 3. *Config and binding.* `qwen3_tts.parseConfig` accepts `base` (a
    `Config.clones()`; `speaker_encoder` dims); `qwen3_tts.bind` binds
    `speaker_encoder.*` on a Base and still refuses it elsewhere; the

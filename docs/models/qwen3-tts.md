@@ -783,6 +783,42 @@ their state, and discards their samples: the same samples, without the
 authors' 300-frame chunking (§ Open for the implementation). In
 x-vector-only mode nothing is prepended.
 
+### The trace (2026-10-29)
+
+`qwen3_tts_trace.py --clone` runs in the same venv (Python 3.12.15,
+`torch` 2.14.1 CPU, `transformers` 4.57.3, `numpy` 2.5.4), F32, seed 0,
+and adds three cases under `tests/fixtures/qwen3-tts/` (1.7 MB):
+
+- **`0.6b-clone-reference`.** The clip: the 0.6B CustomVoice, speaker
+  `vivian`, says "Every morning I walk along the river and listen to the
+  birds." (4.6 s), written as 24 kHz 16-bit PCM (`reference.wav`) and
+  read back from it, so nuclis's WAV reader (÷ 32768, as `soundfile`)
+  sees the same samples. Then `create_voice_clone_prompt` on the 0.6B
+  Base: the speaker encoder's input mel (the last 64 of 435 frames),
+  `blocks.0`, `blocks.3`, `mfa` (last 8 rows each), the pooled statistics,
+  the embedding; the codec encoder's SEANet, transformer, and downsample
+  outputs (last 16 rows each) and the 58 frames of codes. The encoder ran
+  under `sdpa`.
+- **`0.6b-clone-xvector-fox`, `0.6b-clone-icl-fox`.**
+  `generate_voice_clone` on that item, x-vector only and ICL, saying the
+  `fox` sentence (39 and 40 frames). Each pins the prompt's layout
+  (`[text id, codec id, reference frame]` per row, −2 for the speaker
+  row) and the trailing text ids, both derived from the config by the
+  rules above and checked by rebuilding the talker's input rows from them
+  (max |difference| 3.6e-7 and 6e-8); the talker's input rows (prompt
+  then 4 decode rows), layers 0, 13, 27 and the final norm (the last 4
+  prompt rows and the decode rows), group-0 logits of frames 0–4, the
+  predictor's logits of frames 0–1, the generated codes, and the samples
+  after the reference's are cut (the first 2 frames and the last).
+
+The ICL prompt is 68 rows: 3 role, 6 prefix, and 59 summed rows
+(`codec_bos` and the 58 reference frames) that hold the whole text track
+(13 reference and 10 target ids and `tts_eos`, then 35 `tts_pad`), so the
+trailing text is `tts_pad` alone. An item keeps its transcript in either
+mode, so `generate_voice_clone` tokenizes it after the text in x-vector
+mode too, and does not use it. nuclis's transcriber reads back the
+reference and both clones word for word.
+
 ## Codec decoder against the trace (2026-10-27)
 
 **The implementation.** `inference/src/audio/qwen3_codec.zig`: `bind`
