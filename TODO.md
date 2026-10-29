@@ -53,11 +53,19 @@ frames of 80 ms per text token of the input):
 - The finish reason, `eos`, `length` (the budget or the cap), or
   `cancelled`, is the synthesizer's (`Synthesizer.finish`), shown by
   `nuclis speak`, in `speech.audio.done` (`finish_reason`), and logged.
-- The request log is `<root>/logs/serve.jsonl`, written by `nuclis serve`
-  whoever started it, JSON lines, rotated at 16 MiB to `serve.1.jsonl` …
-  `serve.4.jsonl`. The stdout line stays as it is (`serve.log`); a new
-  `serve.request_log` (default true) turns the file off. A write failure
-  never fails a request.
+- The request log is JSON lines under `<root>/logs/`, written by `nuclis
+  serve` whoever started it (agreed with the user, 2026-10-29): one file a
+  UTC day, `serve-2026-10-29.jsonl`, never renamed, so any number of
+  servers append safely (`O_APPEND`, one write a line, a line at most
+  4 KiB); past 64 MiB a day continues in `serve-2026-10-29.1.jsonl`, `.2`, …;
+  at start a server deletes `serve-*.jsonl` older than 14 days and the
+  oldest beyond 256 MiB in all. Files are 0600. The stdout line stays as
+  it is (`serve.log`); `serve.request_log` (default true) turns the file
+  off. A write failure never fails a request.
+- A line is an object: `time` (RFC 3339 UTC, milliseconds), `schema` (1),
+  `event` (`request.start`, `request.end`), `id`, then snake_case fields
+  whose names carry their units (`duration_ms`, `audio_s`, `bytes_out`),
+  numbers as numbers.
 - Two lines a request: `start` (id, correlation id, time, method, route)
   once it is routed, so a request still running is in the file; `end`
   (status, duration, bytes out, the error's code, the route's fields).
@@ -92,8 +100,8 @@ frames of 80 ms per text token of the input):
    audio seconds, frames, bytes), timings (queued, prefill, first output),
    and outcomes (finish reason, cache reuse, web calls). Rewrite tasks 3
    and 4 at that level, committed before code.
-3. *The log.* `src/api/request_log.zig`: the file, rotation, the two
-   lines; the ids (UUIDv7 from `io.random` and the clock; the client's
+3. *The log.* `src/api/request_log.zig`: the daily files, the size
+   guard, retention, the two lines; the ids (UUIDv7 from `io.random` and the clock; the client's
    header read and checked) in `http.zig`, `x-request-id` and the echo on
    every response; a typed `Fields` each handler fills (a fixed set of
    named numbers, strings, and booleans, nothing else), carried by the
