@@ -7,12 +7,16 @@
 //! A key the model in use lacks is computed from `reference.wav` and written
 //! back (`ensure`), so one voice serves either Base. A voice appears whole
 //! (a directory renamed into place) and its record is replaced by rename.
-//! Bounds are host constants. docs/guide/api.md § Voices.
+//! Bounds are host constants. `run` is `nuclis voice`. docs/guide/api.md
+//! § Voices.
 const std = @import("std");
 const inference = @import("inference");
 const catalog = @import("catalog.zig");
+const config = @import("config.zig");
 const model = @import("model.zig");
+const paths = @import("paths.zig");
 const speak = @import("speak.zig");
+const style = @import("tui/style.zig");
 
 const Allocator = std.mem.Allocator;
 const audio = inference.audio.audio;
@@ -405,6 +409,135 @@ pub fn modelKeys(alloc: Allocator, io: std.Io, dir: []const u8) !Keys {
         key.* = try alloc.dupe(u8, &try fileSha256(io, opened, file));
     }
     return .{ .model = out[0], .codec = out[1] };
+}
+
+// ---- the command -----------------------------------------------------------
+
+pub const Command = union(enum) {
+    add: struct { name: []const u8, audio: []const u8, text: ?[]const u8 },
+    list,
+    rm: []const u8,
+};
+
+pub const Options = struct { command: Command, json: bool = false };
+
+/// Parses the words after `voice`.
+pub fn parseArgs(args: []const []const u8, diag: *config.Diagnostic) !Options {
+    const usage = "`nuclis voice add <name> <audio> [--text <transcript>]`, `voice list`, or `voice rm <name>`";
+    if (args.len == 0) {
+        diag.set("give an action: {s}", .{usage});
+        return error.MissingAction;
+    }
+    var json = false;
+    var text: ?[]const u8 = null;
+    var positionals: [2][]const u8 = undefined;
+    var count: usize = 0;
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const word = args[i];
+        if (std.mem.eql(u8, word, "--json")) {
+            json = true;
+        } else if (std.mem.eql(u8, word, "--text")) {
+            i += 1;
+            if (i == args.len) {
+                diag.set("--text needs the clip's transcript", .{});
+                return error.MissingOptionValue;
+            }
+            if (text != null) return error.DuplicateOption;
+            text = args[i];
+        } else if (std.mem.startsWith(u8, word, "-") and word.len > 1) {
+            diag.set("{s} is not an option of voice (`nuclis voice --help`)", .{word});
+            return error.UnknownOption;
+        } else {
+            if (count == positionals.len) {
+                diag.set("{s}: too many arguments; {s}", .{ word, usage });
+                return error.UnexpectedArgument;
+            }
+            positionals[count] = word;
+            count += 1;
+        }
+    }
+    const action = args[0];
+    const want: usize = if (std.mem.eql(u8, action, "add")) 2 else if (std.mem.eql(u8, action, "rm")) 1 else if (std.mem.eql(u8, action, "list")) 0 else {
+        diag.set("{s} is not an action of voice: {s}", .{ action, usage });
+        return error.UnknownAction;
+    };
+    if (count != want or (text != null and want != 2)) {
+        diag.set("{s}", .{usage});
+        return error.InvalidArguments;
+    }
+    const command: Command = if (want == 2) .{ .add = .{ .name = positionals[0], .audio = positionals[1], .text = text } } else if (want == 1) .{ .rm = positionals[0] } else .list;
+    return .{ .command = command, .json = json };
+}
+
+/// `nuclis voice`: saves a clip under a name, lists the saved voices, or
+/// removes one. No model is opened: a voice is encoded on its first use.
+pub fn run(alloc: Allocator, io: std.Io, root: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+    const options = try parseArgs(words, diag);
+    const home = root orelse return error.MissingHome;
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const store: Store = .{ .io = io, .path = try paths.voicesPath(arena, home) };
+    switch (options.command) {
+        .add => |a| {
+            const bytes = std.Io.Dir.cwd().readFileAlloc(io, a.audio, arena, .limited(audio.max_bytes)) catch |err| {
+                diag.set("{s}: {s}", .{ a.audio, if (err == error.StreamTooLong) "larger than 64 MiB" else @errorName(err) });
+                return err;
+            };
+            const now = std.Io.Timestamp.now(io, .real).toSeconds();
+            const added = store.add(arena, a.name, bytes, a.text, now) catch |err| {
+                explain(err, a.name, a.audio, diag);
+                return err;
+            };
+            if (options.json) return writeJson(out, added);
+            try out.print("saved {s}{s}{s}: {d:.1} s", .{ sty.on(.header), added.name, sty.off(), added.seconds });
+            if (added.reference_text) |t| try out.print(", transcript \"{s}\"", .{t}) else try out.writeAll(", no transcript (the speaker embedding alone)");
+            try out.print("\nit is encoded on its first use: `nuclis speak --model qwen3-tts-1.7b-base --voice {s} \"…\" -o out.wav`\n", .{added.name});
+        },
+        .list => {
+            const listed = try store.list(arena);
+            if (options.json) return writeJson(out, listed);
+            if (listed.len == 0) return out.writeAll("no saved voices (`nuclis voice add <name> <audio> --text <transcript>` saves one)\n");
+            for (listed) |v| {
+                try out.print("{s}{s:<20}{s} {d:>5.1} s  {s}  ", .{ sty.on(.header), v.name, sty.off(), v.seconds, v.created });
+                if (v.reference_text) |t| try out.print("\"{s}\"\n", .{t}) else try out.writeAll("(no transcript)\n");
+            }
+        },
+        .rm => |name| {
+            store.remove(name) catch |err| {
+                explain(err, name, "", diag);
+                return err;
+            };
+            if (options.json) return out.print("{{\"removed\":\"{s}\"}}\n", .{name});
+            try out.print("removed {s}\n", .{name});
+        },
+    }
+}
+
+fn writeJson(out: *std.Io.Writer, value: anytype) !void {
+    var w: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_2 } };
+    try w.write(value);
+    try out.writeByte('\n');
+}
+
+/// The message for a store error about voice `name` (and clip `path`).
+pub fn explain(err: anyerror, name: []const u8, path: []const u8, diag: *config.Diagnostic) void {
+    switch (err) {
+        error.InvalidVoiceName => diag.set("{s}: a voice's name is 1 to 64 of a-z, 0-9, _ and -, starting with a letter or digit", .{name}),
+        error.ReservedVoiceName => diag.set("{s} is a built-in speaker of the CustomVoice models; give the voice another name", .{name}),
+        error.VoiceExists => diag.set("{s} is saved already (`nuclis voice rm {s}` removes it)", .{ name, name }),
+        error.VoiceNotFound => diag.set("no saved voice named {s} (`nuclis voice list`)", .{name}),
+        error.TooManyVoices => diag.set("{d} voices are saved, the most kept; remove one first", .{max_voices}),
+        error.ClipTooShort => diag.set("{s}: under 1 s of audio; a voice needs 1 to 30 s", .{path}),
+        error.ClipTooLong => diag.set("{s}: over 30 s of audio; a voice needs 1 to 30 s (a few sentences clone best)", .{path}),
+        error.TranscriptTooLong => diag.set("the transcript is over {d} bytes", .{max_transcript_bytes}),
+        error.InvalidTranscript => diag.set("the transcript is not UTF-8", .{}),
+        error.UnsupportedAudioFormat => diag.set("{s}: not audio nuclis reads ({s})", .{ path, audio.readable }),
+        error.AudioTooLarge => diag.set("{s}: larger than 64 MiB", .{path}),
+        error.InvalidVoiceRecord => diag.set("{s}: its voice.json or reference.wav is damaged (`nuclis voice rm {s}`, then add it again)", .{ name, name }),
+        else => {},
+    }
 }
 
 fn fileSha256(io: std.Io, dir: std.Io.Dir, path: []const u8) ![64]u8 {

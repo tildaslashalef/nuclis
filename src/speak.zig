@@ -1,7 +1,8 @@
 //! `nuclis speak`: text into a 24 kHz mono 16-bit WAV through Qwen3-TTS
-//! CustomVoice (`inference.models.qwen3_tts_runtime.Voice`): one of the
-//! checkpoint's speakers, a language or `auto`, and on the 1.7B an
-//! instruction for the delivery. On Metal by default when built with it;
+//! (`inference.models.qwen3_tts_runtime.Voice`): on CustomVoice one of the
+//! checkpoint's speakers, and on the 1.7B an instruction for the delivery;
+//! on a Base a saved voice (`voices.zig`), encoded on its first use with
+//! that model; a language or `auto`. On Metal by default when built with it;
 //! `--stream` writes each chunk of frames as it is decoded and reports the
 //! time to the first audio. docs/models/qwen3-tts.md.
 const std = @import("std");
@@ -9,6 +10,8 @@ const inference = @import("inference");
 const style = @import("tui/style.zig");
 const config = @import("config.zig");
 const audio_catalog = @import("audio/catalog.zig");
+const paths = @import("paths.zig");
+const voices = @import("voices.zig");
 
 const tts = inference.models.qwen3_tts;
 const speech = inference.models.qwen3_tts_runtime;
@@ -205,12 +208,37 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
             return err;
         };
     }
-    try out.print("{s}{s}{s} ({s}), speaker {s}, language {s}, seed {d}, {s}; loaded in {d:.1} s\n", .{ sty.on(.header), std.fs.path.basename(dir), sty.off(), voice.config.size, speaker, language, seed, @tagName(backend), @as(f64, @floatFromInt(load_ms)) / 1000 });
+    const cloned = voice.config.clones();
+    try out.print("{s}{s}{s} ({s}), {s} {s}, language {s}, seed {d}, {s}; loaded in {d:.1} s\n", .{ sty.on(.header), std.fs.path.basename(dir), sty.off(), voice.config.size, if (cloned) "voice" else "speaker", speaker, language, seed, @tagName(backend), @as(f64, @floatFromInt(load_ms)) / 1000 });
     try out.flush();
+
+    // A Base speaks in a saved voice, made ready (encoded on its first use
+    // with this model) before the clock of the first audio starts.
+    var ready: ?voices.Ready = null;
+    defer if (ready) |*r| r.deinit(alloc);
+    if (cloned) {
+        if (options.instruct != null) {
+            diag.set("{s} is a Base: it takes no instruction (the 1.7B CustomVoice does)", .{std.fs.path.basename(dir)});
+            return error.InstructionUnsupported;
+        }
+        const store: voices.Store = .{ .io = io, .path = try paths.voicesPath(arena, root orelse return error.MissingHome) };
+        const ready_start = std.Io.Clock.awake.now(io);
+        ready = store.ensure(alloc, speaker, try voices.modelKeys(arena, io, dir), voices.encodersOf(voice)) catch |err| {
+            if (err == error.ReservedVoiceName)
+                diag.set("{s} is a speaker of the CustomVoice models; {s} is a Base and speaks in a saved voice: --voice <name> (`nuclis voice list`)", .{ speaker, std.fs.path.basename(dir) })
+            else
+                voices.explain(err, speaker, "", diag);
+            return err;
+        };
+        const r = &ready.?;
+        try out.print("voice {s}: {s}; ready in {d} ms\n", .{ r.name, if (r.reference_text != null) "its clip and transcript" else "its speaker embedding alone", ready_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() });
+        try out.flush();
+    }
 
     // The clock of the first audio starts when the text is handed over.
     const start = std.Io.Clock.awake.now(io);
-    var prompt = voice.prompt(alloc, text, speaker, language, options.instruct) catch |err| {
+    const made = if (ready) |*r| voice.clonePrompt(alloc, text, r.reference_text, language, r.clone()) else voice.prompt(alloc, text, speaker, language, options.instruct);
+    var prompt = made catch |err| {
         switch (err) {
             error.InstructionUnsupported => diag.set("{s} ({s}) takes no instruction; the 1.7B CustomVoice does", .{ std.fs.path.basename(dir), voice.config.size }),
             error.UnknownSpeaker => diag.set("{s} is not a speaker of this model: {s}", .{ speaker, try names(arena, voice.config.speakers) }),

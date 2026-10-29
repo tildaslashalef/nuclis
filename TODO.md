@@ -14,10 +14,11 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–9 (the
+`qwen3-tts-base-voice-cloning` is in progress (below): tasks 1–10 (the
 facts, the traces, the config and binding, audio at 24 kHz, both
 encoders, the clone prompt and synthesizer, the voice store, the
-catalogue and the rename) are done and committed. Next: task 10, the CLI. A side fix in the
+catalogue and the rename, the CLI) are done and committed. Next: task
+11, VoiceDesign. A side fix in the
 branch: `AGENTS.md` notes that Zig 0.17 has no `**` operator (`0aabc3a`). The next release
 (0.11.0) carries K-quant E4B files
 ([nuclis#39](https://github.com/tildaslashalef/nuclis/pull/39)), Q5_0 and
@@ -30,7 +31,7 @@ this unit, if it lands first.
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 10 next |
+| Qwen3-TTS Base: the two Base checkpoints, voice cloning, saved voices | `qwen3-tts-base-voice-cloning` | in progress: task 11 next |
 
 ## Qwen3-TTS Base: voice cloning with saved voices
 
@@ -142,7 +143,7 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
    changed clip refused). The real-model exercise is task 10's (`voice
    add` then `speak --voice` on both Base sizes, heard back by the
    transcriber). The module doc links `docs/guide/api.md § Voices`,
-   which task 11 writes.
+   which task 12 writes.
 9. *Catalogue and rename.* Done: `audio_entries` names
    `qwen3-tts-{1.7b,0.6b}-customvoice` and adds `qwen3-tts-{1.7b,0.6b}-base`
    (pinned 2026-10-29); `catalog.renamedAudio` refuses the old names in
@@ -153,11 +154,32 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
    catalogue tables. Checked: `model pull qwen3-tts-0.6b-base` verifies the
    files pulled by repository; `model ls` lists all four. The user's
    `nuclis.json` names no speech model; Muon does (see below).
-10. *CLI.* `nuclis voice add <name> <audio> [--text <transcript>]`,
-    `voice list`, `voice rm <name>`; `nuclis speak --voice <name>` on a
-    Base model loads the saved voice (`ensure`, then prompt). Help and
-    completion.
-11. *API.* `POST /v1/audio/voices` (multipart `name`, `audio`,
+10. *CLI.* Done: `nuclis voice add|list|rm` (`voices.parseArgs`,
+    `voices.run`, `voices.explain`), `speak --voice` on a Base (the voice
+    made ready before the first-audio clock; an instruction, a speaker
+    name, or an unknown voice each refused by name); help pages (`voice`;
+    `speak`; the overview's speech row) and completion (`.voice`: the
+    speakers once and the saved voices; `.saved_voice` for `rm`); spec and
+    README. Exercised with the built binary against a scratch
+    `NUCLIS_HOME`: ICL and x-vector on both Base sizes, a sentence heard
+    back word for word by the transcriber each time; first use 751 ms on
+    the 0.6B (both encoders), 93 ms on the 1.7B (the codes reused, its own
+    embedding made), 0 ms after; an AAC clip through AudioToolbox.
+11. *VoiceDesign* (the user's, 2026-10-29, after task 10).
+    `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` at
+    `5ecdb67327fd37bb2e042aab12ff7391903235d3`: 404 tensors equal in name,
+    shape, and dtype to the 1.7B CustomVoice's, the same codec (`836b7b…`)
+    and generation config; `tts_model_type` `voice_design`, no speakers,
+    ten languages. `generate_voice_design`: the CustomVoice prompt without
+    a speaker row, the instruction describing the voice (empty allowed),
+    non-streaming text. Work: read its facts into `qwen3-tts.md`; a trace
+    case (`--design`) and a talker gate; `parseConfig` accepts
+    `voice_design` (`Config.designs()`), `Prompt.build` refuses a speaker
+    on it and takes the instruction as the description; catalogue entry
+    `qwen3-tts-1.7b-voicedesign`; `speak --instruct` as the description (no
+    `--voice`), the API's `instructions` likewise (`voice` refused),
+    `/v1/models` showing it (`design`, no speakers); docs. No new network.
+12. *API.* `POST /v1/audio/voices` (multipart `name`, `audio`,
     `reference_text`; encodes on the CPU for the open or default Base
     model, `201` with the voice object), `GET /v1/audio/voices`, `GET` and
     `DELETE /v1/audio/voices/{name}`; check OpenAI's custom-voice API for
@@ -170,10 +192,13 @@ the codec encoder (Mimi); both prompts; the decode. What shapes the work:
     the pull), `voices` on a Base the saved voices' names, `speakers`
     empty, `instructions` false, `options.voice` default null. Encoding
     a voice runs off the GPU worker.
-12. *Measure and document.* Encode time for a 10 s clip on both sizes;
+13. *Measure and document.* Encode time for a 10 s clip on both sizes;
     first-chunk latency and real-time factor with a saved voice against a
     speaker, 0.6B and 1.7B; the priming's cost per request (cache the
-    primed decoder state per voice only if it exceeds 50 ms). Into
+    primed decoder state per voice only if it exceeds 50 ms). Explain the
+    1.7B's ICL prefill first: 1,514 ms on Metal for a 4.6 s reference
+    (2026-10-29, `speak`), against 227 ms on the 0.6B ICL and 76 ms on the
+    1.7B x-vector; the prefill timing includes the decoder's priming. Into
     `docs/models/qwen3-tts.md`, `docs/guide/api.md` § Speech and
     § `GET /v1/models`, `docs/guide/configuration.md`, `docs/spec.md`,
     `docs/models/catalogue.md`, the README's *Speech in and out*.
@@ -187,7 +212,11 @@ answers to its three questions: a clip is registered once as a named voice
 (`POST /v1/audio/voices`), not sent with every request; the clip's limits
 (1–30 s after decoding, the formats `audio.readable` names, a transcript
 ≤ 2 KiB); a Base takes no instructions (Qwen's cloning call has none), so
-moods show on the face only, as on the 0.6B CustomVoice. Also tell it
+moods show on the face only, as on the 0.6B CustomVoice. Tell it about
+VoiceDesign (task 11): the brain (Gemma 4) can write the voice description
+per character or mood; a description is sampled anew each request, so for
+a voice that must stay the same, design once and save the clip as a Base
+voice (`POST /v1/audio/voices` with its text). Also tell it
 the rename: Muon names `qwen3-tts-1.7b` and `qwen3-tts-0.6b` in
 `Sources/MuonCore/Engine/EngineModels.swift` (and its tests), which nuclis
 now refuses with `404 model_not_found`; they are

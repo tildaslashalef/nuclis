@@ -289,6 +289,8 @@ nuclis model pull qwen3-tts-1.7b-customvoice && nuclis model pull nemotron-asr-0
 nuclis speak "The lighthouse stood at the edge of the world." --instruct "Calm, like a story at bedtime." -o story.wav
 nuclis transcribe story.wav --stream                  # partials as they change, then the text
 nuclis transcribe meeting.m4a --format srt            # a long recording as subtitles
+nuclis voice add anna anna.m4a --text "Hello, it's Anna."   # a clip and its words, saved once
+nuclis speak --model qwen3-tts-1.7b-base --voice anna "Your parcel is here." -o anna.wav
 ```
 
 Over HTTP, `nuclis serve --model gemma-4-e4b-qat --pin qwen3-tts-1.7b-customvoice
