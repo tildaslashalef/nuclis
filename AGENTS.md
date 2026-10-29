@@ -293,7 +293,8 @@ stale references. Do not claim build/test execution when no code or build exists
   requires one; `make version V=X.Y.Z` sets all three and the site's
   download (`make site-check` holds it equal). The executable
   reports it as `nuclis --version`, fed from the root manifest through
-  build options.
+  build options; a build that is not a clean checkout of the release tag
+  reports the next minor as `X.Y.0-dev+<commit>`.
 - [Semantic Versioning](https://semver.org/) with the 0.x convention: while
   `0.y.z`, the **minor** is the breaking axis; a release with features
   bumps the minor, one with only fixes the patch.

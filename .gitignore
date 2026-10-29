@@ -8,3 +8,4 @@ zig-out/
 !.env.example
 .reference/
 .cloudflare/
+dist/
