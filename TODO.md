@@ -14,65 +14,13 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-One unit is in progress: **BF16 per-layer projection on Gemma 4**
-(`gemma4-bf16-per-layer-projection`, below). Q5_0 and Q5_1 merged as
-[nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38); the next
-release (0.11.0) carries it with Muon's voice loop and the
-model-management unit
+No unit is in progress. K-quant E4B files
+(`gemma4-bf16-per-layer-projection`: a BF16 `per_layer_model_proj` and
+the shared-KV layers' stored K/V bind) waits for its pull request, whose
+description is its record. The next release (0.11.0) carries it with
+Q5_0 and Q5_1 ([nuclis#38](https://github.com/tildaslashalef/nuclis/pull/38)),
+Muon's voice loop, and the model-management unit
 ([nuclis#36](https://github.com/tildaslashalef/nuclis/pull/36)).
-
-| Unit | Branch | State |
-| --- | --- | --- |
-| BF16 per-layer projection on Gemma 4 | `gemma4-bf16-per-layer-projection` | in progress |
-
-### BF16 per-layer projection on Gemma 4
-
-Base: `e475bd1`
-
-**Why.** llama.cpp's quantizer keeps an E-series file's
-`per_layer_model_proj.weight` (`[2560, 10752]` on E4B, 55,050,240 bytes)
-in BF16 for every K-quant and IQ type: on 2026-10-29 `nuclis model
-inspect` refused eleven E4B quants (Q2_K…Q8_0, IQ3_M, IQ4_XS) with
-`per_layer_model_proj.weight uses encoding BF16 (id 30), outside the
-gemma4 adapter's executable set`. Nothing else in those files is outside
-the set except Q2_K in a Q2_K mix, which stays refused.
-
-**What already runs BF16.** `quant.decodeRow` id 30 (the CPU `matvec`),
-Metal's generic `nu_dequant` (`dequant.metal`, `encoding == 30`) under the
-generic `matvec` and the generic `matmul` tile; EmbeddingGemma 2 binds the
-same tensor as BF16 and its gates hold the Metal path to the CPU. The
-projection's two call sites, `gemma4_runtime.zig` `perLayerInputs` (`mm`)
-and `gemma4_metal.zig` (`mm` / `mmRows`), go through exactly those.
-
-**Design.**
-
-1. `inference/src/models/gemma4.zig`: split the set. `matrixEncoding(id)`
-   keeps today's list (the ids the specialised and fused kernels take);
-   `executableEncoding(id)` is `matrixEncoding(id) or id == 30`, so
-   `discover` and `model inspect`'s per-tensor pre-check pass a BF16
-   projection. `Storage` gains `.projection`; `Binder.take` checks
-   `.matrix` against `matrixEncoding` and `.projection` against
-   `executableEncoding`. Only `per_layer_model_proj.weight` binds as
-   `.projection`: a BF16 attention, FFN, expert, or embedding matrix
-   stays `UnsupportedTensorEncoding` (the fused segments, expert kernels,
-   and row gathers have no BF16 body).
-2. `inference/src/models/gemma4_assistant.zig`: its binder and its
-   `executableEncoding` use `gemma4.matrixEncoding` (the head has no
-   per-layer projection).
-3. Tests: the mutation table keeps BF16 `blk.0.ffn_up` refused and adds an
-   E4B case binding BF16 `per_layer_model_proj`; `executableEncoding(30)`
-   flips in `gemma4.zig` and `models/root.zig`; `matrixEncoding(30)` is
-   false.
-4. Docs: `docs/models/gemma4.md` § Gemma 4 E4B (the BF16 projection and
-   its paths), `docs/engine/quantization.md` if it lists the per-family
-   sets.
-
-**Gates.** `zig build test`; `make verify-auto`; `make verify` once (the
-change touches the adapter). No CPU tier: no CPU kernel's arithmetic
-changes. Evidence on a K-quant E4B file with a BF16 projection: `model
-inspect` verdict runnable; Metal against the CPU reference on the
-hello-comma prompt's logits; a two-chunk WikiText-2 perplexity on Metal
-beside the QAT file's; a short chat.
 
 ## Deferred
 
