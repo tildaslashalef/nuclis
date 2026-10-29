@@ -120,7 +120,7 @@ global `generation.speculative` applies to models without an entry.
 | `decide.model` | `laya` | the decision model `nuclis decide` opens, and `nuclis serve` for a decision request that names none: a registry entry of kind `decision`, a decision catalogue name, or a directory. A text model is refused |
 | `embed.model` | `embeddinggemma-2` | the embedding model `nuclis embed` opens: a registry entry of kind `embedding`, an embedding catalogue name, or a GGUF path. Another kind's name is refused |
 | `speech.model` | `qwen3-tts-1.7b` | the speech model `nuclis speak` opens, and `POST /v1/audio/speech` for a request that names none: a registry entry of kind `speech`, a speech catalogue name (`qwen3-tts-1.7b`, `qwen3-tts-0.6b`), or (for `speak`) a checkpoint directory. Another kind's name is refused |
-| `speech.voice` | `ryan` | the speaker a `speak` or speech request that names none gets: one of the model's nine |
+| `speech.voice` | `ryan` | the speaker a `speak` or speech request that names none gets: one of the model's (Qwen's checkpoints have nine; a fine-tune may have its own) |
 | `transcribe.model` | `nemotron-asr-0.6b` | the transcription model `nuclis transcribe` opens, and the server's default: a registry entry of kind `transcription`, the catalogue name, or (for `transcribe`) a checkpoint directory |
 | `serve.host` | `127.0.0.1` | an IP literal or `localhost`; beyond loopback the API is reachable from the network with no authentication. Flag `--host` |
 | `serve.port` | `9000` | flag `--port` |
@@ -175,7 +175,7 @@ works without one) and are written by `config init` (the catalogue's),
 | `mmproj`, `mtp` | companion files: the vision projector and the drafter, relative to the model file's folder or absolute. A Qwen3.8 file without its own prediction block (Saluki) can name Qwen's `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` from another repository's folder |
 | `profile` | force a prompt profile (`qwen38`, `gemma4`, …) whatever the file's template |
 | `ctx_size`, `generation`, `agent` | overrides that apply only while this model is in use; `null` means the global value |
-| `kind` | `"decision"` for a decision model (`nuclis decide` opens it), `"embedding"` for an embedding model (`nuclis embed` opens it); text commands refuse both |
+| `kind` | `"decision"` for a decision model (`nuclis decide` opens it), `"embedding"` for an embedding model (`nuclis embed` opens it), `"speech"` for a speech model (`nuclis speak` opens it), `"transcription"` for a transcription model; text commands refuse all four |
 
 - **Names** are 1..64 printable characters, no `/`, not ending in `.gguf`.
 - **A registry name wins over a catalogue name** for `--model` and

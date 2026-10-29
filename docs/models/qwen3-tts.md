@@ -127,6 +127,16 @@ absent: `_merge_generate_kwargs` hard defaults (the same, but
 `max_new_tokens` 2048) and `Qwen3TTSForConditionalGeneration.generate`'s
 signature (4096).
 
+nuclis takes the file as written. A key it leaves out keeps the
+fallback; `do_sample` (or `subtalker_dosample`) false makes that network
+greedy (temperature 0) while the other keeps sampling, and the repetition
+penalty and the processors of [§ (c)](#c-the-talkers-head-group-0) still
+apply, as in transformers' greedy search. Fine-tunes ship such files: the
+Egyptian Arabic 1.7B `itshamdi404/Egy_Arabic_Qwen3-TTS-12Hz-1.7B-Base` (a
+`custom_voice` checkpoint despite its name, one speaker,
+`egyptian_speaker`) has `{"do_sample": false, "max_new_tokens": 256}`, a
+greedy talker and at most about 20 s per request.
+
 **Codec decoder** (`speech_tokenizer/config.json` `decoder_config`):
 `num_quantizers` 16, `num_semantic_quantizers` 1, `codebook_size` 2048,
 `codebook_dim` 512, `latent_dim` 1024, `hidden_size` 512,

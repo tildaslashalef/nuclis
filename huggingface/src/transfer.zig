@@ -32,6 +32,7 @@ const Value = std.json.Value;
 /// requested, so spans are large (a 256 MiB plan is ~100 KB of JSON).
 pub const span_size = 256 * 1024 * 1024;
 pub const window_size = 8 * 1024 * 1024;
+/// A xorb's serialized size; its chunks may decompress to more.
 const max_xorb = 64 * 1024 * 1024;
 /// A serialized xorb: 64 MiB of chunk data plus chunk headers and LZ4 framing.
 const max_unit = max_xorb + 1024 * 1024;
@@ -221,7 +222,7 @@ fn parsePlan(gpa: A, body: []const u8, version: u8, count: u64) !Plan {
         if (key.len != 64 or !hub.isHex(key)) return error.InvalidReconstruction;
         const tr = try chunkRange(try field(term, "range"));
         const unpacked = try number(try field(term, "unpacked_length"));
-        if (unpacked == 0 or unpacked > max_xorb) return error.InvalidReconstruction;
+        if (unpacked == 0 or unpacked > (tr.end - tr.start) * xorb.max_chunk) return error.InvalidReconstruction;
         total_unpacked = std.math.add(u64, total_unpacked, unpacked) catch return error.InvalidReconstruction;
         if (total_unpacked > count + skip + 2 * xorb.max_chunk) return error.InvalidReconstruction;
         const entries = try array(try field(fetches, key));
@@ -564,4 +565,17 @@ test "reconstruction rejects malformed metadata and corrupt xorb bodies" {
     try std.testing.expectError(error.InvalidReconstruction, parsePlan(a, uncovered, 2, 9));
     try std.testing.expectError(error.InvalidReconstruction, parsePlan(a, "{}", 2, 9));
     try std.testing.expectError(error.InvalidReconstruction, parsePlan(a, fixture_v2, 2, 100)); // Terms too short for the span.
+    const overfull = try std.mem.replaceOwned(u8, a, fixture_v2, "\"unpacked_length\":10,", "\"unpacked_length\":262145,"); // 2 chunks of at most 128 KiB.
+    defer a.free(overfull);
+    try std.testing.expectError(error.InvalidReconstruction, parsePlan(a, overfull, 2, 9));
+}
+
+test "a term may unpack past 64 MiB when its serialized xorb fits" {
+    // Shaped like a BF16 checkpoint's plan: 1,228 chunks, 67 MB on the wire, 77 MB unpacked.
+    const body =
+        \\{"offset_into_first_range":0,"terms":[{"hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","unpacked_length":77121704,"range":{"start":0,"end":1228}}],"xorbs":{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":[{"url":"https://test.invalid/xorb","ranges":[{"chunks":{"start":0,"end":1228},"bytes":{"start":0,"end":67101867}}]}]}}
+    ;
+    var plan = try parsePlan(std.testing.allocator, body, 2, 77121704);
+    defer plan.deinit();
+    try std.testing.expectEqual(77121704, plan.terms[0].unpacked);
 }
