@@ -570,6 +570,8 @@ const Job = struct {
     first_audio_ns: ?u64 = null,
     first_audio_at: ?std.Io.Timestamp = null,
     audio_samples: usize = 0,
+    /// `eos` or `length` once the utterance ended; empty before (or cancelled).
+    finish_reason: []const u8 = "",
 
     /// One chunk: synthesized, encoded, queued for the client. False once
     /// the utterance ended, the client left, or the device failed.
@@ -581,9 +583,10 @@ const Job = struct {
             return false;
         };
         if (n == 0) {
+            self.finish_reason = @tagName(synth.finish orelse .eos);
             if (self.request.stream == .sse) {
                 var out: std.Io.Writer = .fixed(self.bytes_out[self.raw_len..]);
-                wire.writeDone(&out, .{ .input_tokens = self.prompt_rows, .output_tokens = synth.frames }) catch return false;
+                wire.writeDone(&out, .{ .input_tokens = self.prompt_rows, .output_tokens = synth.frames }, @tagName(synth.finish orelse .eos)) catch return false;
                 self.pipe.write(io, out.buffered()) catch self.cancel.store(true, .release);
             }
             return false;
@@ -637,12 +640,13 @@ const Job = struct {
         else if (self.cancel.load(.acquire))
             std.fmt.bufPrint(self.note_buffer, "{s} · {s} · cancelled after {d:.2} s of audio", .{ self.name, self.voice, seconds }) catch "cancelled"
         else
-            std.fmt.bufPrint(self.note_buffer, "{s} · {s} · {d:.2} s of audio · first audio {d:.0} ms{s}", .{
+            std.fmt.bufPrint(self.note_buffer, "{s} · {s} · {d:.2} s of audio · first audio {d:.0} ms{s}{s}", .{
                 self.name,
                 if (self.mode == .design) "designed" else self.voice,
                 seconds,
                 if (self.first_audio_ns) |ns| @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms else 0,
                 if (self.load_ns > 0) " · opened the voice" else "",
+                if (std.mem.eql(u8, self.finish_reason, "length")) " · stopped at the length budget" else "",
             }) catch self.name;
     }
 
