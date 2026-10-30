@@ -616,6 +616,9 @@ const Job = struct {
     finish_reason: []const u8 = "",
     /// The frames generated, kept once the synthesizer is freed.
     frames: usize = 0,
+    /// Drama 3's sentences, silent starts redrawn, and sentences its
+    /// silence stop ended, kept like `frames`.
+    drama: ?struct { sentences: usize, redraws: usize, silence_stops: usize } = null,
     /// The request's log fields, filled once the worker is done.
     fields: request_log.Fields = .{},
 
@@ -630,6 +633,10 @@ const Job = struct {
         };
         if (n == 0) {
             self.finish_reason = @tagName(synth.finish());
+            if (synth.* == .drama3) {
+                const d = &synth.drama3;
+                self.drama = .{ .sentences = d.chunks.len, .redraws = d.retried, .silence_stops = d.stops[@backingInt(inference.models.drama3_speech.Stop.silence)] };
+            }
             if (self.request.stream == .sse) {
                 var out: std.Io.Writer = .fixed(self.bytes_out[self.raw_len..]);
                 wire.writeDone(&out, .{ .input_tokens = self.prompt_rows, .output_tokens = synth.frames() }, @tagName(synth.finish())) catch return false;
@@ -784,6 +791,12 @@ const Job = struct {
         fields.text("stream_format", @tagName(self.request.stream));
         if (self.failure) |f| fields.fail(f);
         fields.int("frames", self.frames);
+        fields.int("seed", self.request.seed orelse 0);
+        if (self.drama) |d| {
+            fields.int("sentences", d.sentences);
+            fields.int("redraws", d.redraws);
+            fields.int("silence_stops", d.silence_stops);
+        }
         fields.float("audio_s", @as(f64, @floatFromInt(self.audio_samples)) / @as(f64, @floatFromInt(self.rate)), 2);
         if (self.first_audio_ns) |ns| fields.ms("first_audio_ms", ns);
         if (self.load_ns > 0) fields.ms("open_ms", self.load_ns);
