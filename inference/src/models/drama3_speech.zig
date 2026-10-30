@@ -5,9 +5,9 @@
 //! tower teacher-forced, then frame by frame), decoding as it goes. Beyond
 //! Fish: a take that has not started speaking is held back and retried with
 //! the next seed, and a long run of silent frames ends a chunk
-//! (docs/models/drama3.md § Stalls, and what nuclis adds). The backbone and
-//! the tower run on the CPU reference or the Metal plan (`Options.backend`);
-//! the codec stays on the CPU.
+//! (docs/models/drama3.md § Stalls, and what nuclis adds). The backbone, the
+//! tower, and the codec decoder run on the CPU references or on Metal
+//! (`Options.backend`).
 const std = @import("std");
 const gguf = @import("../formats/gguf.zig");
 const weights = @import("../runtime/weights.zig");
@@ -18,6 +18,7 @@ const metal_plan = @import("drama3_metal.zig");
 const metal = @import("../backends/metal/root.zig");
 const adapter = @import("drama3.zig");
 const codec = @import("../audio/fish_codec.zig");
+const codec_metal = @import("../audio/fish_codec_metal.zig");
 const codec_encoder = @import("../audio/fish_codec_encoder.zig");
 
 const Allocator = std.mem.Allocator;
@@ -47,7 +48,7 @@ pub const retries = 2;
 /// Frames decoded per codec push once a chunk is speaking.
 pub const push_frames = 4;
 
-/// Where the backbone and the tower run.
+/// Where the backbone, the tower, and the codec decoder run.
 pub const Backend = enum { cpu, metal };
 pub const Options = struct { backend: Backend = .cpu };
 
@@ -60,7 +61,10 @@ pub const Voice = struct {
     backend: Backend,
     /// The device the synthesizers' plans run on, with `.metal`.
     gpu: ?metal.Backend = null,
-    codec: codec.Runtime,
+    /// The codec decoder: the CPU reference, or (with `.metal`) its copy on
+    /// the device, the CPU one released once copied.
+    codec: ?codec.Runtime = null,
+    decoder: ?codec_metal.Decoder = null,
     /// Built on the first `referenceCodes`.
     encoder: ?codec_encoder.Encoder = null,
     defaults: Params,
@@ -79,6 +83,8 @@ pub const Voice = struct {
         self.encoder = null;
         self.backend = options.backend;
         self.gpu = null;
+        self.codec = null;
+        self.decoder = null;
         self.mapped = try weights.Mapped.open(gpa, io, path);
         errdefer self.mapped.deinit(io);
         const doc = &self.mapped.document;
@@ -87,12 +93,18 @@ pub const Voice = struct {
         self.model = try runtime.Model.init(gpa, io, doc, self.mapped.view(), .{});
         errdefer self.model.deinit();
         self.codec = try codec.Runtime.init(gpa, io, doc.*, self.mapped.view());
-        errdefer self.codec.deinit();
+        errdefer if (self.codec) |*c| c.deinit();
         if (options.backend == .metal) {
             var message: [512]u8 = @splat(0);
             self.gpu = try metal.Backend.init(gpa, &message);
         }
         errdefer if (self.gpu) |*g| g.deinit();
+        if (self.gpu) |*g| {
+            self.decoder = try codec_metal.Decoder.init(gpa, g, &self.codec.?);
+            self.codec.?.deinit();
+            self.codec = null;
+        }
+        errdefer if (self.decoder) |*d| d.deinit();
         self.defaults = .{
             .temperature = float(doc.*, "drama3.sampling.temperature") orelse 1.0,
             .top_p = float(doc.*, "drama3.sampling.top_p") orelse 0.9,
@@ -111,8 +123,9 @@ pub const Voice = struct {
 
     pub fn close(self: *Voice) void {
         if (self.encoder) |*e| e.deinit();
+        if (self.decoder) |*d| d.deinit();
         if (self.gpu) |*g| g.deinit();
-        self.codec.deinit();
+        if (self.codec) |*c| c.deinit();
         self.model.deinit();
         self.text.deinit();
         self.mapped.deinit(self.io);
@@ -176,7 +189,7 @@ pub const Synthesizer = struct {
     history: text_mod.History,
     engine: Engine,
     sampler: sampler_mod.Sampler,
-    stream: codec.Stream,
+    stream: Stream,
     /// The take being generated, if one is.
     take: ?Take = null,
     /// Frames one `read` generates at most before handing out what it has.
@@ -202,6 +215,8 @@ pub const Synthesizer = struct {
         errdefer engine.deinit();
         var sampler = try sampler_mod.Sampler.init(gpa, request.seed, text_mod.codebook_size + 1);
         errdefer sampler.deinit(gpa);
+        var stream = try Stream.init(gpa, voice);
+        errdefer stream.deinit();
         return .{
             .gpa = gpa,
             .voice = voice,
@@ -211,7 +226,7 @@ pub const Synthesizer = struct {
             .history = .init(gpa, 1),
             .engine = engine,
             .sampler = sampler,
-            .stream = try codec.Stream.init(gpa, &voice.codec),
+            .stream = stream,
         };
     }
 
@@ -493,6 +508,34 @@ const Engine = union(Backend) {
         switch (self.*) {
             .cpu => |*c| try c.runtime.decode(&c.state, frame, logits, null),
             .metal => |*p| try p.decode(frame, logits),
+        }
+    }
+};
+
+/// The codec stream a synthesizer decodes through, on the voice's backend.
+const Stream = union(Backend) {
+    cpu: codec.Stream,
+    metal: codec_metal.Stream,
+
+    fn init(gpa: Allocator, voice: *Voice) !Stream {
+        return switch (voice.backend) {
+            .cpu => .{ .cpu = try codec.Stream.init(gpa, &voice.codec.?) },
+            .metal => .{ .metal = try codec_metal.Stream.init(&voice.decoder.?) },
+        };
+    }
+    fn deinit(self: *Stream) void {
+        switch (self.*) {
+            inline else => |*s| s.deinit(),
+        }
+    }
+    fn reset(self: *Stream) void {
+        switch (self.*) {
+            inline else => |*s| s.reset(),
+        }
+    }
+    fn push(self: *Stream, codes: []const Codes, out: []f32) !void {
+        switch (self.*) {
+            inline else => |*s| try s.push(codes, out),
         }
     }
 };

@@ -528,6 +528,7 @@ pub const Backend = struct {
     pub const ttsWindowAttention = tts_ops.ttsWindowAttention;
     pub const TtsConvOutParams = tts_ops.TtsConvOutParams;
     pub const ttsConvOut = tts_ops.ttsConvOut;
+    pub const ttsConvOutTanh = tts_ops.ttsConvOutTanh;
     pub const TtsMatvecParams = tts_ops.TtsMatvecParams;
     pub const ttsMatvecBf16 = tts_ops.ttsMatvecBf16;
     pub const ttsMatmulBf16 = tts_ops.ttsMatmulBf16;

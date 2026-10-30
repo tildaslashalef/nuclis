@@ -13,6 +13,7 @@
 //!   drama3-check MODEL.gguf smoke [--frames N] [--value-order grouped|tiled] [--norm-offset X]
 //!   drama3-check MODEL.gguf trace [--max-relative-rms X] [--fixtures DIR] [--value-order ...] [--norm-offset X]
 //!   drama3-check MODEL.gguf codec [--max-relative-rms X] [--fixtures DIR]
+//!   drama3-check MODEL.gguf codec-metal [--max-relative-rms X] [--fixtures DIR]
 //!   drama3-check MODEL.gguf metal [--frames N] [--chunk N] [--max-relative-rms X] [--value-order ...]
 //!   drama3-check MODEL.gguf speak --text T --out FILE.wav [--seed N] [--frames N] [--backend cpu|metal]
 //! `metal`: the smoke prompt and N argmax frames recorded on the CPU, then
@@ -20,7 +21,9 @@
 //! once with every kernel the generic decoder and once with the production
 //! kernels, each within the bound (max relative RMS per stage); then timed.
 //! `codec`: Fish's codec cases through the CPU encoder and decoder
-//! (drama3_codec_check.zig).
+//! (drama3_codec_check.zig). `codec-metal`: Fish's pinned codes through the
+//! Metal decoder against the CPU one, streamed in pushes of 1, 4 and the
+//! whole (drama3_codec_metal_check.zig).
 //! `speak` runs `drama3_speech.Synthesizer` end to end (no reference voice)
 //! and writes a 44.1 kHz 16-bit WAV.
 const std = @import("std");
@@ -29,8 +32,9 @@ const drama3 = inference.models.drama3;
 const runtime = inference.models.drama3_runtime;
 const weights = inference.weights;
 const codec_check = @import("drama3_codec_check.zig");
+const codec_metal_check = @import("drama3_codec_metal_check.zig");
 
-const usage = "usage: drama3-check MODEL.gguf smoke|trace|codec|metal|speak [--text T] [--out FILE] [--seed N] [--frames N] [--chunk N] [--backend cpu|metal] [--max-relative-rms X] [--fixtures DIR] [--value-order grouped|tiled] [--norm-offset X]\n";
+const usage = "usage: drama3-check MODEL.gguf smoke|trace|codec|codec-metal|metal|speak [--text T] [--out FILE] [--seed N] [--frames N] [--chunk N] [--backend cpu|metal] [--max-relative-rms X] [--fixtures DIR] [--value-order grouped|tiled] [--norm-offset X]\n";
 
 fn elapsedUs(io: std.Io, start: std.Io.Timestamp) f64 {
     return @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toMicroseconds());
@@ -587,7 +591,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
-    const Mode = enum { smoke, trace, codec, speak, metal };
+    const Mode = enum { smoke, trace, codec, @"codec-metal", speak, metal };
     const mode = std.meta.stringToEnum(Mode, if (args.len >= 3) args[2] else "") orelse {
         std.debug.print(usage, .{});
         return error.InvalidArguments;
@@ -642,6 +646,7 @@ pub fn main(init: std.process.Init) !void {
         .smoke => try smoke(gpa, io, &m, frames),
         .trace => try trace(gpa, arena, io, &m, fixtures, bounds),
         .codec => try codec_check.run(gpa, arena, io, &mapped, fixtures, bounds.relative_rms),
+        .@"codec-metal" => try codec_metal_check.run(gpa, arena, io, &mapped, fixtures, bounds.relative_rms),
         .metal => try metalCheck(gpa, io, &m, frames, chunk, bounds.relative_rms),
         .speak => unreachable,
     };

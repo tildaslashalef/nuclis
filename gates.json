@@ -4764,6 +4764,40 @@
    "evidence": "docs/models/drama3.md#the-traces"
   },
   {
+   "name": "drama3-codec-metal",
+   "family": "drama3",
+   "tier": "verify",
+   "model": "drama3_q4_k",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/drama3-check.zig",
+    "inference/drama3_codec_metal_check.zig",
+    "inference/src/audio/fish_codec*.zig",
+    "inference/src/audio/qwen3_codec.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/gguf.zig",
+    "inference/src/runtime/weights.zig",
+    "tests/fixtures/drama3/codec-*/**",
+    "tests/fixtures/drama3/index.json"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-drama3",
+    "--",
+    "{model}",
+    "codec-metal",
+    "--max-relative-rms",
+    "1e-5"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "Fish's pinned codes (100 and 200 frames) decoded by fish_codec_metal against the CPU decoder on the same codes, the Metal stream in pushes of 1, 4 and the whole: every observed stage (quantized, the post-transformer, both upsamples, the decoder's input conv, its four blocks, the samples) within 1e-5 relative RMS over all its rows, and the three push sizes' samples equal bit for bit (first run 2026-10-30: 1.6e-6 at worst, samples 1.7e-6, max |difference| 2.5e-6)",
+   "evidence": "docs/models/drama3.md#the-codec-on-metal"
+  },
+  {
    "name": "nemotron-asr-encoder-cpu",
    "family": "nemotron-asr",
    "tier": "verify-cpu",
