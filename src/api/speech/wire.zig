@@ -132,10 +132,10 @@ pub fn contentType(request: Request) []const u8 {
     };
 }
 
-/// A WAV header for 16-bit mono at `sample_rate` whose length is not known
-/// when it is sent: both sizes are the largest a field holds, which players
-/// read as "until the end of the stream".
-pub fn streamingWavHeader() [44]u8 {
+/// A WAV header for 16-bit mono at `rate` whose length is not known when
+/// it is sent: both sizes are the largest a field holds, which players read
+/// as "until the end of the stream".
+pub fn streamingWavHeader(rate: u32) [44]u8 {
     var h: [44]u8 = undefined;
     @memcpy(h[0..4], "RIFF");
     std.mem.writeInt(u32, h[4..8], std.math.maxInt(u32), .little);
@@ -143,8 +143,8 @@ pub fn streamingWavHeader() [44]u8 {
     std.mem.writeInt(u32, h[16..20], 16, .little);
     std.mem.writeInt(u16, h[20..22], 1, .little); // PCM
     std.mem.writeInt(u16, h[22..24], 1, .little); // mono
-    std.mem.writeInt(u32, h[24..28], sample_rate, .little);
-    std.mem.writeInt(u32, h[28..32], sample_rate * 2, .little);
+    std.mem.writeInt(u32, h[24..28], rate, .little);
+    std.mem.writeInt(u32, h[28..32], rate * 2, .little);
     std.mem.writeInt(u16, h[32..34], 2, .little);
     std.mem.writeInt(u16, h[34..36], 16, .little);
     @memcpy(h[36..40], "data");
@@ -273,7 +273,7 @@ test "the speech request: every refusal names its code and field" {
 }
 
 test "the stream's bytes: PCM, a header for an unknown length, and the events" {
-    const h = streamingWavHeader();
+    const h = streamingWavHeader(sample_rate);
     try testing.expectEqualStrings("RIFF", h[0..4]);
     try testing.expectEqualStrings("WAVEfmt ", h[8..16]);
     try testing.expectEqual(@as(u32, 24000), std.mem.readInt(u32, h[24..28], .little));

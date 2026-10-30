@@ -1,6 +1,7 @@
 //! Speech and transcription models by name: a registry entry of the kind,
-//! an audio catalogue name (`qwen3-tts-1.7b-customvoice`, `nemotron-asr-0.6b`), or, for
-//! the commands only, a checkpoint directory. Shared by `nuclis speak`,
+//! an audio catalogue name (`qwen3-tts-1.7b-customvoice`, `drama-3`,
+//! `nemotron-asr-0.6b`), or, for the commands only, a checkpoint directory
+//! or a speech GGUF (Drama 3's whole model is one file). Shared by `nuclis speak`,
 //! `nuclis transcribe`, and `nuclis serve`, which opens no path a client
 //! names. docs/models/catalogue.md § The catalogue.
 const std = @import("std");
@@ -21,7 +22,7 @@ pub const Kind = enum {
 };
 
 pub const Located = struct {
-    /// The checkpoint directory.
+    /// The checkpoint directory, or a speech GGUF's path (`isFile`).
     directory: []const u8,
     /// The catalogue's entry when the name is one.
     entry: ?*const catalog.AudioEntry = null,
@@ -74,18 +75,24 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
     return .{ .directory = try models(arena, root, name) };
 }
 
+/// Whether a located speech model is one GGUF rather than a directory.
+pub fn isFile(directory: []const u8) bool {
+    return std.mem.endsWith(u8, directory, ".gguf");
+}
+
 /// `resolve`, then the weights' presence: `ModelFileNotFound` names the
 /// pull that fetches them. `bytes` is the files' size on disk.
 pub fn locate(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: config.Models, name: []const u8, kind: Kind, paths: bool, diag: *config.Diagnostic) Error!Located {
     var located = try resolve(arena, root, registry, name, kind, paths, diag);
     var bytes: u64 = 0;
-    for (files(kind)) |file| {
-        const path = try std.fs.path.join(arena, &.{ located.directory, file });
+    const single: []const []const u8 = &.{""};
+    for (if (isFile(located.directory)) single else files(kind)) |file| {
+        const path = if (file.len == 0) located.directory else try std.fs.path.join(arena, &.{ located.directory, file });
         const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch {
             if (located.entry) |e|
                 diag.set("{s}: not pulled yet (`nuclis model pull {s}` fetches it, {d} MB)", .{ name, e.name, e.totalSize() / 1_000_000 })
             else
-                diag.set("{s}: no {s} (a {s} checkpoint directory, a registry entry of kind {s}, or a catalogue name such as {s})", .{ located.directory, file, @tagName(kind), @tagName(kind), defaultName(kind) });
+                diag.set("{s}: no {s} (a {s} checkpoint directory, a registry entry of kind {s}, or a catalogue name such as {s})", .{ located.directory, if (file.len == 0) "such file" else file, @tagName(kind), @tagName(kind), defaultName(kind) });
             return error.ModelFileNotFound;
         };
         bytes += stat.size;
@@ -120,9 +127,10 @@ fn models(arena: std.mem.Allocator, root: ?[]const u8, path: []const u8) ![]cons
 /// `arena`.
 pub const Mode = catalog.SpeechMode;
 
-/// `directory`'s mode, from its `config.json` alone; null when it is not a
-/// speech checkpoint nuclis opens.
+/// `directory`'s mode, from its `config.json` alone (a GGUF is Drama 3,
+/// which clones); null when it is not a speech checkpoint nuclis opens.
 pub fn speechMode(arena: std.mem.Allocator, io: std.Io, directory: []const u8) !?Mode {
+    if (isFile(directory)) return .clone;
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ directory, "config.json" }), arena, .limited(1024 * 1024)) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,

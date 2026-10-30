@@ -1,11 +1,13 @@
-//! Saved voices for Qwen3-TTS Base: a reference clip, and optionally its
-//! transcript, registered once under a name and used by every request that
-//! names it. Each lives in `<root>/voices/<name>/`: `reference.wav`, the
-//! clip decoded to 24 kHz mono 16-bit, and `voice.json`, its record and what
-//! the encoders made of it, keyed by the file that made it (reference codes
-//! by the codec file's SHA-256, a speaker embedding by the model file's).
-//! A key the model in use lacks is computed from `reference.wav` and written
-//! back (`ensure`), so one voice serves either Base. A voice appears whole
+//! Saved voices for the cloning speech models (Qwen3-TTS Base, Drama 3): a
+//! reference clip, and optionally its transcript, registered once under a
+//! name and used by every request that names it. Each lives in
+//! `<root>/voices/<name>/`: `reference.wav`, the clip decoded to 24 kHz mono
+//! 16-bit, `reference-44k.wav`, the same at 44.1 kHz (Drama 3's codec rate;
+//! absent from voices saved before it), and `voice.json`, its record and
+//! what the encoders made of it, keyed by the file that made it (reference
+//! codes by the codec file's SHA-256, a speaker embedding by the model
+//! file's). A key the model in use lacks is computed from the clip and
+//! written back (`ensure`), so one voice serves every cloning model. A voice appears whole
 //! (a directory renamed into place) and its record is replaced by rename.
 //! Bounds are host constants. `run` is `nuclis voice`. docs/guide/api.md
 //! § Voices.
@@ -21,9 +23,13 @@ const style = @import("tui/style.zig");
 const Allocator = std.mem.Allocator;
 const audio = inference.audio.audio;
 const speech = inference.models.qwen3_tts_runtime;
+const drama3 = inference.models.drama3_speech;
+const fish = inference.audio.fish_codec;
 pub const Frame = inference.audio.qwen3_codec.Frame;
 
 pub const sample_rate = 24000;
+/// The rate of the wide copy, which Drama 3's codec encodes.
+pub const wide_rate = 44100;
 /// A clip's length after decoding: 1 to 30 s.
 pub const min_samples = 1 * sample_rate;
 pub const max_samples = 30 * sample_rate;
@@ -32,9 +38,12 @@ pub const max_voices = 256;
 pub const max_name = 64;
 const record_file = "voice.json";
 const clip_file = "reference.wav";
+const wide_clip_file = "reference-44k.wav";
 /// A record holds a few codes and embeddings, each tens of KB as base64.
 const max_record_bytes = 1 << 20;
 const max_clip_bytes = 44 + 2 * max_samples;
+const max_wide_samples = 30 * wide_rate;
+const max_wide_clip_bytes = 44 + 2 * max_wide_samples;
 
 pub const Error = error{
     InvalidVoiceName,
@@ -46,6 +55,8 @@ pub const Error = error{
     ClipTooLong,
     TranscriptTooLong,
     InvalidTranscript,
+    /// The model clones only from a clip with its transcript (Drama 3).
+    TranscriptRequired,
     /// `voice.json` unreadable, or `reference.wav` not the one it records.
     InvalidVoiceRecord,
 };
@@ -57,10 +68,12 @@ const Record = struct {
     reference_text: ?[]const u8 = null,
     /// Of `reference.wav`, lowercase hex.
     reference_sha256: []const u8,
+    /// Of `reference-44k.wav`, when the voice has one.
+    wide_sha256: ?[]const u8 = null,
     samples: u64,
     /// Unix seconds, as OpenAI's voice object's `created_at`.
     created_at: i64,
-    /// Codec file SHA-256 → base64 of little-endian u16 `[frames][16]`.
+    /// Codec file SHA-256 → base64 of little-endian u16 `[frames][codebooks]`.
     codes: std.json.ArrayHashMap([]const u8) = .{},
     /// Model file SHA-256 → base64 of little-endian f32 `[width]`.
     embeddings: std.json.ArrayHashMap([]const u8) = .{},
@@ -79,14 +92,47 @@ pub const Summary = struct {
 /// hex) of the model's `model.safetensors` and of its codec's.
 pub const Keys = struct { model: []const u8, codec: []const u8 };
 
-/// What makes a voice's data, from 24 kHz mono samples: the speaker
-/// embedding (`dim` floats) and the reference codes (owned by `gpa`).
+/// What makes a voice's data, from mono samples at `rate`: the speaker
+/// embedding (`dim` floats; none when 0) and the reference codes, frame by
+/// frame, `sizes.len` codebooks of `sizes[k]` codes each (owned by `gpa`).
 pub const Encoders = struct {
     context: *anyopaque,
+    rate: u32 = sample_rate,
+    sizes: []const u16 = &qwen3_sizes,
     dim: usize,
     embed: *const fn (context: *anyopaque, gpa: Allocator, samples: []const f32, out: []f32) anyerror!void,
-    codes: *const fn (context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]Frame,
+    codes: *const fn (context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]u16,
 };
+
+const qwen3_sizes: [16]u16 = @splat(inference.models.qwen3_tts.codebook_size);
+const drama3_sizes = blk: {
+    var sizes: [fish.codebooks]u16 = @splat(fish.residual_size);
+    sizes[0] = fish.semantic_size;
+    break :blk sizes;
+};
+
+fn noEmbedding(_: *anyopaque, _: Allocator, _: []const f32, _: []f32) anyerror!void {
+    unreachable;
+}
+
+/// An open Drama 3's encoder, which needs the transcript and makes no
+/// embedding.
+pub fn drama3Encoders(voice: *drama3.Voice) Encoders {
+    const wrap = struct {
+        fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]u16 {
+            const v: *drama3.Voice = @ptrCast(@alignCast(context));
+            return flat(try v.referenceCodes(gpa, samples));
+        }
+    };
+    return .{ .context = voice, .rate = wide_rate, .sizes = &drama3_sizes, .dim = 0, .embed = noEmbedding, .codes = wrap.codes };
+}
+
+/// `frames` as one slice of codes, the same allocation.
+fn flat(frames: anytype) []u16 {
+    const Row = @typeInfo(@TypeOf(frames)).pointer.child;
+    const per = @typeInfo(Row).array.len;
+    return @as([*]u16, @ptrCast(frames.ptr))[0 .. frames.len * per];
+}
 
 /// An open Base's encoders.
 pub fn encodersOf(voice: *speech.Voice) Encoders {
@@ -95,27 +141,30 @@ pub fn encodersOf(voice: *speech.Voice) Encoders {
             const v: *speech.Voice = @ptrCast(@alignCast(context));
             try v.speakerEmbedding(gpa, samples, out);
         }
-        fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]Frame {
+        fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]u16 {
             const v: *speech.Voice = @ptrCast(@alignCast(context));
-            return v.referenceCodes(gpa, samples);
+            return flat(try v.referenceCodes(gpa, samples));
         }
     };
     return .{ .context = voice, .dim = voice.config.talker.hidden, .embed = wrap.embed, .codes = wrap.codes };
 }
 
-/// Encoders over a Base checkpoint's directory, mapped on their first call
-/// (`speech.Encoding`), so a voice already made for the model maps nothing:
-/// the server's way, beside the voice its worker holds. Not thread-safe.
+/// Encoders over a Base checkpoint's directory or a Drama 3 GGUF, mapped on
+/// their first call (`speech.Encoding`, `Drama3Encoding`), so a voice
+/// already made for the model maps nothing: the server's way, beside the
+/// voice its worker holds. Not thread-safe.
 pub const FileEncoders = struct {
     gpa: Allocator,
     io: std.Io,
     dir: []const u8,
     dim: usize,
     encoding: ?*speech.Encoding = null,
+    drama3: ?*Drama3Encoding = null,
 
-    /// Reads `dir`'s `config.json` only; `NotABase` when it clones nothing.
-    /// `dir` is borrowed.
+    /// Reads `dir`'s `config.json` only (nothing for a `.gguf`, Drama 3);
+    /// `NotABase` when it clones nothing. `dir` is borrowed.
     pub fn init(gpa: Allocator, io: std.Io, dir: []const u8) !FileEncoders {
+        if (std.mem.endsWith(u8, dir, ".gguf")) return .{ .gpa = gpa, .io = io, .dir = dir, .dim = 0 };
         var arena: std.heap.ArenaAllocator = .init(gpa);
         defer arena.deinit();
         const a = arena.allocator();
@@ -128,10 +177,21 @@ pub const FileEncoders = struct {
 
     pub fn deinit(self: *FileEncoders) void {
         if (self.encoding) |e| e.close();
+        if (self.drama3) |e| e.close();
         self.* = undefined;
     }
 
     pub fn encoders(self: *FileEncoders) Encoders {
+        if (std.mem.endsWith(u8, self.dir, ".gguf")) {
+            const wrap = struct {
+                fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]u16 {
+                    const f: *FileEncoders = @ptrCast(@alignCast(context));
+                    if (f.drama3 == null) f.drama3 = try Drama3Encoding.open(f.gpa, f.io, f.dir);
+                    return flat(try f.drama3.?.encoder.encode(gpa, samples));
+                }
+            };
+            return .{ .context = self, .rate = wide_rate, .sizes = &drama3_sizes, .dim = 0, .embed = noEmbedding, .codes = wrap.codes };
+        }
         const wrap = struct {
             fn opened(context: *anyopaque) !*speech.Encoding {
                 const f: *FileEncoders = @ptrCast(@alignCast(context));
@@ -141,11 +201,37 @@ pub const FileEncoders = struct {
             fn embed(context: *anyopaque, gpa: Allocator, samples: []const f32, out: []f32) anyerror!void {
                 try (try opened(context)).speakerEmbedding(gpa, samples, out);
             }
-            fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]Frame {
-                return (try opened(context)).referenceCodes(gpa, samples);
+            fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]u16 {
+                return flat(try (try opened(context)).referenceCodes(gpa, samples));
             }
         };
         return .{ .context = self, .dim = self.dim, .embed = wrap.embed, .codes = wrap.codes };
+    }
+};
+
+/// Drama 3's encoder alone over its GGUF: the mapping and the Fish codec's
+/// encoder, without the backbone.
+pub const Drama3Encoding = struct {
+    gpa: Allocator,
+    io: std.Io,
+    mapped: inference.weights.Mapped,
+    encoder: inference.audio.fish_codec_encoder.Encoder,
+
+    pub fn open(gpa: Allocator, io: std.Io, path: []const u8) !*Drama3Encoding {
+        const self = try gpa.create(Drama3Encoding);
+        errdefer gpa.destroy(self);
+        self.gpa = gpa;
+        self.io = io;
+        self.mapped = try .open(gpa, io, path);
+        errdefer self.mapped.deinit(io);
+        self.encoder = try .init(gpa, io, self.mapped.document, self.mapped.view());
+        return self;
+    }
+
+    pub fn close(self: *Drama3Encoding) void {
+        self.encoder.deinit();
+        self.mapped.deinit(self.io);
+        self.gpa.destroy(self);
     }
 };
 
@@ -153,19 +239,28 @@ pub const FileEncoders = struct {
 pub const Ready = struct {
     name: []u8,
     reference_text: ?[]u8,
+    /// Empty for a model that makes none (Drama 3).
     embedding: []f32,
-    /// The reference codes; empty without a transcript (x-vector only).
-    frames: []Frame,
+    /// The reference codes, `codebooks` a frame; empty without a transcript
+    /// (x-vector only).
+    codes: []u16,
+    codebooks: usize,
 
     pub fn clone(self: *const Ready) inference.models.qwen3_tts.Clone {
-        return .{ .embedding = self.embedding, .frames = self.frames };
+        return .{ .embedding = self.embedding, .frames = self.rows(Frame) };
+    }
+
+    /// The codes as frames of `Row` (an array of `codebooks` codes).
+    pub fn rows(self: *const Ready, comptime Row: type) []const Row {
+        std.debug.assert(@typeInfo(Row).array.len == self.codebooks);
+        return @as([*]const Row, @ptrCast(self.codes.ptr))[0 .. self.codes.len / self.codebooks];
     }
 
     pub fn deinit(self: *Ready, alloc: Allocator) void {
         alloc.free(self.name);
         if (self.reference_text) |t| alloc.free(t);
         alloc.free(self.embedding);
-        alloc.free(self.frames);
+        alloc.free(self.codes);
         self.* = undefined;
     }
 };
@@ -208,14 +303,22 @@ pub const Store = struct {
         if (try exists(self.io, root, name)) return error.VoiceExists;
         if (try countVoices(self.io, root) >= self.limit) return error.TooManyVoices;
 
-        const wav = try alloc.alloc(u8, 44 + 2 * pcm.samples.len);
+        const wav = try wavBytes(alloc, pcm.samples, sample_rate);
         defer alloc.free(wav);
-        wav[0..44].* = try speak.wavHeader(pcm.samples.len, sample_rate);
-        for (pcm.samples, 0..) |x, i| std.mem.writeInt(i16, wav[44 + 2 * i ..][0..2], speak.pcm16(x), .little);
+        // The wide copy needs the platform's decoder unless the upload is a
+        // 44.1 kHz WAV; without it, Drama 3 encodes the 24 kHz clip.
+        var wide: ?audio.Pcm = audio.decodeAt(alloc, bytes, max_wide_samples, wide_rate) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => null,
+        };
+        defer if (wide) |*w| w.deinit(alloc);
+        const wide_wav: ?[]u8 = if (wide) |w| try wavBytes(alloc, w.samples, wide_rate) else null;
+        defer if (wide_wav) |w| alloc.free(w);
         const record: Record = .{
             .name = name,
             .reference_text = text,
             .reference_sha256 = &sha256Hex(wav),
+            .wide_sha256 = if (wide_wav) |w| &sha256Hex(w) else null,
             .samples = pcm.samples.len,
             .created_at = now_seconds,
         };
@@ -231,6 +334,7 @@ pub const Store = struct {
         var dir = try root.openDir(self.io, temp, .{});
         defer dir.close(self.io);
         try dir.writeFile(self.io, .{ .sub_path = clip_file, .data = wav });
+        if (wide_wav) |w| try dir.writeFile(self.io, .{ .sub_path = wide_clip_file, .data = w });
         try writeRecord(alloc, self.io, dir, record, false);
         std.Io.Dir.renamePreserve(root, temp, root, name, self.io) catch |err| return switch (err) {
             error.PathAlreadyExists => error.VoiceExists,
@@ -287,9 +391,10 @@ pub const Store = struct {
         try root.deleteTree(self.io, name);
     }
 
-    /// `name` ready for the model `keys` names: its embedding and (with a
-    /// transcript) its reference codes, each computed by `encoders` from
-    /// `reference.wav` and saved when the record lacks it.
+    /// `name` ready for the model `keys` names: its embedding (if the model
+    /// makes one) and (with a transcript) its reference codes, each computed
+    /// by `encoders` from the clip at their rate and saved when the record
+    /// lacks it.
     pub fn ensure(self: Store, alloc: Allocator, name: []const u8, keys: Keys, encoders: Encoders) !Ready {
         try checkName(name);
         var root = std.Io.Dir.cwd().openDir(self.io, self.path, .{}) catch |err| switch (err) {
@@ -304,48 +409,49 @@ pub const Store = struct {
         defer parsed.deinit();
         const record = &parsed.value;
         const icl = record.reference_text != null;
+        const embeds = encoders.dim > 0;
+        if (!embeds and !icl) return error.TranscriptRequired;
         const arena = parsed.arena.allocator();
 
-        const have_embedding = record.embeddings.map.get(keys.model);
+        const have_embedding = if (embeds) record.embeddings.map.get(keys.model) else null;
         const have_codes = if (icl) record.codes.map.get(keys.codec) else null;
-        if (have_embedding == null or (icl and have_codes == null)) {
-            const wav = dir.readFileAlloc(self.io, clip_file, alloc, .limited(max_clip_bytes)) catch return error.InvalidVoiceRecord;
-            defer alloc.free(wav);
-            if (!std.mem.eql(u8, &sha256Hex(wav), record.reference_sha256)) return error.InvalidVoiceRecord;
-            var pcm = audio.decodeWavAt(alloc, wav, max_samples, sample_rate) catch return error.InvalidVoiceRecord;
+        if ((embeds and have_embedding == null) or (icl and have_codes == null)) {
+            var pcm = try readClip(alloc, self.io, dir, record.*, encoders.rate);
             defer pcm.deinit(alloc);
-            if (have_embedding == null) {
+            if (embeds and have_embedding == null) {
                 const embedding = try alloc.alloc(f32, encoders.dim);
                 defer alloc.free(embedding);
                 try encoders.embed(encoders.context, alloc, pcm.samples, embedding);
                 try record.embeddings.map.put(arena, try arena.dupe(u8, keys.model), try base64(arena, std.mem.sliceAsBytes(embedding)));
             }
             if (icl and have_codes == null) {
-                const frames = try encoders.codes(encoders.context, alloc, pcm.samples);
-                defer alloc.free(frames);
-                try record.codes.map.put(arena, try arena.dupe(u8, keys.codec), try base64(arena, std.mem.sliceAsBytes(frames)));
+                const codes = try encoders.codes(encoders.context, alloc, pcm.samples);
+                defer alloc.free(codes);
+                try record.codes.map.put(arena, try arena.dupe(u8, keys.codec), try base64(arena, std.mem.sliceAsBytes(codes)));
             }
             try writeRecord(alloc, self.io, dir, record.*, true);
         }
 
-        const embedding_bytes = try unbase64(alloc, record.embeddings.map.get(keys.model).?);
-        defer alloc.free(embedding_bytes);
-        if (embedding_bytes.len != encoders.dim * 4) return error.InvalidVoiceRecord;
         const embedding = try alloc.alloc(f32, encoders.dim);
         errdefer alloc.free(embedding);
-        for (embedding, 0..) |*v, i| v.* = @bitCast(std.mem.readInt(u32, embedding_bytes[i * 4 ..][0..4], .little));
-        var frames: []Frame = &.{};
-        errdefer alloc.free(frames);
+        if (embeds) {
+            const embedding_bytes = try unbase64(alloc, record.embeddings.map.get(keys.model).?);
+            defer alloc.free(embedding_bytes);
+            if (embedding_bytes.len != encoders.dim * 4) return error.InvalidVoiceRecord;
+            for (embedding, 0..) |*v, i| v.* = @bitCast(std.mem.readInt(u32, embedding_bytes[i * 4 ..][0..4], .little));
+        }
+        const books = encoders.sizes.len;
+        var codes: []u16 = &.{};
+        errdefer alloc.free(codes);
         if (icl) {
             const code_bytes = try unbase64(alloc, record.codes.map.get(keys.codec).?);
             defer alloc.free(code_bytes);
-            const frame_bytes = @sizeOf(Frame);
-            if (code_bytes.len == 0 or code_bytes.len % frame_bytes != 0) return error.InvalidVoiceRecord;
-            frames = try alloc.alloc(Frame, code_bytes.len / frame_bytes);
-            for (frames, 0..) |*frame, t| for (frame, 0..) |*code, g| {
-                code.* = std.mem.readInt(u16, code_bytes[(t * 16 + g) * 2 ..][0..2], .little);
-                if (code.* >= inference.models.qwen3_tts.codebook_size) return error.InvalidVoiceRecord;
-            };
+            if (code_bytes.len == 0 or code_bytes.len % (2 * books) != 0) return error.InvalidVoiceRecord;
+            codes = try alloc.alloc(u16, code_bytes.len / 2);
+            for (codes, 0..) |*code, i| {
+                code.* = std.mem.readInt(u16, code_bytes[i * 2 ..][0..2], .little);
+                if (code.* >= encoders.sizes[i % books]) return error.InvalidVoiceRecord;
+            }
         }
         const owned_name = try alloc.dupe(u8, name);
         errdefer alloc.free(owned_name);
@@ -353,10 +459,31 @@ pub const Store = struct {
             .name = owned_name,
             .reference_text = if (record.reference_text) |t| try alloc.dupe(u8, t) else null,
             .embedding = embedding,
-            .frames = frames,
+            .codes = codes,
+            .codebooks = books,
         };
     }
 };
+
+/// The voice's clip at `rate`: the saved one at its rate, else the 24 kHz
+/// clip resampled. Each file must be the one the record names.
+fn readClip(alloc: Allocator, io: std.Io, dir: std.Io.Dir, record: Record, rate: u32) !audio.Pcm {
+    const wide = rate == wide_rate and record.wide_sha256 != null;
+    const file = if (wide) wide_clip_file else clip_file;
+    const wav = dir.readFileAlloc(io, file, alloc, .limited(if (wide) max_wide_clip_bytes else max_clip_bytes)) catch return error.InvalidVoiceRecord;
+    defer alloc.free(wav);
+    if (!std.mem.eql(u8, &sha256Hex(wav), if (wide) record.wide_sha256.? else record.reference_sha256)) return error.InvalidVoiceRecord;
+    if (wide or rate == sample_rate) return audio.decodeWavAt(alloc, wav, if (wide) max_wide_samples else max_samples, rate) catch error.InvalidVoiceRecord;
+    return audio.decodeAt(alloc, wav, @intCast(@as(u64, max_samples) * rate / sample_rate), rate);
+}
+
+/// A mono 16-bit WAV of `samples` at `rate`.
+fn wavBytes(alloc: Allocator, samples: []const f32, rate: u32) ![]u8 {
+    const wav = try alloc.alloc(u8, 44 + 2 * samples.len);
+    wav[0..44].* = try speak.wavHeader(samples.len, rate);
+    for (samples, 0..) |x, i| std.mem.writeInt(i16, wav[44 + 2 * i ..][0..2], speak.pcm16(x), .little);
+    return wav;
+}
 
 /// A transcript as saved: trimmed, null when empty, bounded, UTF-8.
 fn checkTranscript(transcript: ?[]const u8) Error!?[]const u8 {
@@ -441,7 +568,17 @@ fn unbase64(alloc: Allocator, text: []const u8) ![]u8 {
 
 /// The keys of the checkpoint in `dir`: each file's SHA-256 from its pull's
 /// sidecar, or, without one, from the file itself (seconds for the weights).
+/// A `.gguf` (Drama 3) holds model and codec both: one key for the two.
 pub fn modelKeys(alloc: Allocator, io: std.Io, dir: []const u8) !Keys {
+    if (std.mem.endsWith(u8, dir, ".gguf")) {
+        var parent = try std.Io.Dir.cwd().openDir(io, std.fs.path.dirname(dir) orelse ".", .{});
+        defer parent.close(io);
+        const file = std.fs.path.basename(dir);
+        const sidecar_path = try model.sidecarPath(alloc, file);
+        defer alloc.free(sidecar_path);
+        const key = if (model.readSidecar(alloc, io, parent, sidecar_path) catch null) |sidecar| sidecar.sha256 else try alloc.dupe(u8, &try fileSha256(io, parent, file));
+        return .{ .model = key, .codec = key };
+    }
     var opened = try std.Io.Dir.cwd().openDir(io, dir, .{});
     defer opened.close(io);
     var out: [2][]const u8 = undefined;
@@ -606,6 +743,7 @@ fn fileSha256(io: std.Io, dir: std.Io.Dir, path: []const u8) ![64]u8 {
 test {
     // `encodersOf` has no caller here; this compiles it and the Voice methods it wraps.
     _ = &encodersOf;
+    _ = &drama3Encoders;
     _ = &FileEncoders.encoders;
 }
 
@@ -637,12 +775,12 @@ const Fake = struct {
         for (samples) |s| sum += s;
         out[0..4].* = .{ sum / @as(f32, @floatFromInt(samples.len)), @floatFromInt(samples.len), 1, -1 };
     }
-    fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]Frame {
+    fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]u16 {
         const self: *Fake = @ptrCast(@alignCast(context));
         self.codings += 1;
         const frames = try gpa.alloc(Frame, (samples.len + 1919) / 1920);
         for (frames, 0..) |*f, t| f.* = @splat(@intCast(t));
-        return frames;
+        return flat(frames);
     }
 };
 
@@ -677,12 +815,12 @@ test "a voice is added once, listed, made ready per model, and removed" {
     const keys: Keys = .{ .model = &@as([64]u8, @splat('m')), .codec = &@as([64]u8, @splat('c')) };
     var ready = try store.ensure(gpa, "alice", keys, fake.encoders());
     defer ready.deinit(gpa);
-    try std.testing.expectEqual(@as(usize, 32), ready.frames.len);
+    try std.testing.expectEqual(@as(usize, 32), ready.rows(Frame).len);
     try std.testing.expectEqual(@as(f32, 60000), ready.embedding[1]);
     var again = try store.ensure(gpa, "alice", keys, fake.encoders());
     defer again.deinit(gpa);
     try std.testing.expectEqualSlices(f32, ready.embedding, again.embedding);
-    try std.testing.expectEqualSlices(Frame, ready.frames, again.frames);
+    try std.testing.expectEqualSlices(u16, ready.codes, again.codes);
     try std.testing.expectEqual(@as(usize, 1), fake.embeds);
     try std.testing.expectEqual(@as(usize, 1), fake.codings);
     // Another model with the same codec: a new embedding, the codes kept.
@@ -693,13 +831,52 @@ test "a voice is added once, listed, made ready per model, and removed" {
     // Without a transcript, no codes are made (x-vector only).
     var plain = try store.ensure(gpa, "bob-2", keys, fake.encoders());
     defer plain.deinit(gpa);
-    try std.testing.expectEqual(@as(usize, 0), plain.frames.len);
+    try std.testing.expectEqual(@as(usize, 0), plain.codes.len);
     try std.testing.expectEqual(@as(usize, 1), fake.codings);
 
     try store.remove("bob-2");
     try std.testing.expectEqual(@as(usize, 1), (try store.list(arena)).len);
     try std.testing.expectError(error.VoiceNotFound, store.remove("bob-2"));
     try std.testing.expectError(error.VoiceNotFound, store.ensure(gpa, "bob-2", keys, fake.encoders()));
+}
+
+test "a model without an embedding needs the transcript and encodes the 44.1 kHz copy" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(root);
+    const path = try std.fs.path.join(gpa, &.{ root, "voices" });
+    defer gpa.free(path);
+    const store: Store = .{ .io = io, .path = path };
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const clip = try testClip(gpa, 2);
+    defer gpa.free(clip);
+    _ = try store.add(arena, "carol", clip, "Hello.", 0);
+    _ = try store.add(arena, "dave", clip, null, 0);
+
+    const Wide = struct {
+        rate: usize = 0,
+        fn codes(context: *anyopaque, a: Allocator, samples: []const f32) anyerror![]u16 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.rate = samples.len / 2;
+            const out = try a.alloc(u16, 3 * fish.codebooks);
+            for (out, 0..) |*c, i| c.* = @intCast(i % fish.codebooks);
+            return out;
+        }
+    };
+    var wide: Wide = .{};
+    const encoders: Encoders = .{ .context = &wide, .rate = wide_rate, .sizes = &drama3_sizes, .dim = 0, .embed = noEmbedding, .codes = Wide.codes };
+    const keys: Keys = .{ .model = &@as([64]u8, @splat('g')), .codec = &@as([64]u8, @splat('g')) };
+    try std.testing.expectError(error.TranscriptRequired, store.ensure(gpa, "dave", keys, encoders));
+    var ready = try store.ensure(gpa, "carol", keys, encoders);
+    defer ready.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, wide_rate), wide.rate);
+    try std.testing.expectEqual(@as(usize, 0), ready.embedding.len);
+    try std.testing.expectEqual(@as(usize, 3), ready.rows([fish.codebooks]u16).len);
 }
 
 test "names, clips, transcripts, and the count are bounded; a changed clip is refused" {
