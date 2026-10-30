@@ -91,6 +91,9 @@ values [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/workl
 | `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` | `5ecdb67327fd37bb2e042aab12ff7391903235d3` | `model.safetensors` | 3,833,402,552 | `391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522` |
 | | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
 | `nvidia/nemotron-3.5-asr-streaming-0.6b` | `ea30d66debe3740a08b573244286791d423d6b3e` | `model.safetensors` | 2,552,062,944 | `9eebdd6590289cb3030f310858f3df93256600a800a3e8200c5993d5f967e174` |
+| `sakasegawa/drama-3-GGUF` | `9a01354d04ab6eb521bc9cdfc56ab6824c474af2` | `Drama-35B-A3B-v3-Q4_K.gguf` | 20,787,264,352 | `2a57b14c9b208a2ff833ab7305b920ca8f154ad807004a52d96a86a90a55523e` |
+
+The Drama 3 row was pulled and verified on 2026-10-30 ([drama3.md](drama3.md)).
 
 The Saluki rows were pulled and verified on 2026-10-14; the file is not a
 catalogue entry ([saluki.md](saluki.md)).

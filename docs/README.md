@@ -43,6 +43,7 @@ below.
 | [clef-flash.md](models/clef-flash.md) | clef-flash: Cloudflare's decision model |
 | [embeddinggemma.md](models/embeddinggemma.md) | EmbeddingGemma 2: the embedding model, its files, forward pass, prefixes, and encoders |
 | [nemotron-asr.md](models/nemotron-asr.md) | Nemotron 3.5 ASR streaming 0.6B: the speech recognizer, its front end, cache-aware encoder, and transducer |
+| [drama3.md](models/drama3.md) | Fish Audio Drama 3 (35B-A3B): the dialogue speech synthesizer, its MoE backbone, codebook tower, and 44.1 kHz codec |
 | [qwen3-tts.md](models/qwen3-tts.md) | Qwen3-TTS CustomVoice (0.6B and 1.7B): the speech synthesizer, its talker, code predictor, and codec decoder |
 
 ## The engine: `engine/` (the `inference/` package)
