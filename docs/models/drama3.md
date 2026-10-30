@@ -530,6 +530,112 @@ in F64 (the index's `dtype` says so). The
 backbone and tower verdicts are unchanged under it. The best reading's
 reference log-probability goes from −4.4039 to −4.3752.
 
+## On Metal (2026-10-30)
+
+`drama3_metal.Plan` (`inference/src/models/drama3_metal.zig`) runs the
+CPU reference's backbone and tower (`drama3_runtime.zig`) on the GPU; the
+codec stays on the CPU. `drama3_speech` takes it through
+`Voice.openWith(gpa, io, path, .{ .backend = .metal })`, and
+`drama3-check speak --backend metal` drives it.
+
+- **Weights are wrapped in place** from the mapping, Q4_K and F32 alike;
+  nothing is requantized. The reference `Model`'s F32 constants (norms,
+  the DeltaNet's a, dt bias and convolution) go to device buffers once.
+- **The input rows are decoded on the host** exactly as the reference
+  decodes them (the backbone's embedding plus its codebook sum, the
+  tower's code embeddings), then copied into the plan's buffers.
+- **One command buffer per prefill chunk and per backbone row.** A tower
+  step commits after each codebook head, since the caller's `Pick`
+  samples on the host: codebook 1's buffer runs the four shared layers,
+  residual layer 0 and head 0, and each later one a residual layer and
+  its head. Ten commits a frame.
+- **The MoE** routes on the device (softmax top 8, renormalized). One row
+  takes the gathered expert matvecs; a chunk builds per-expert row lists
+  and runs the gathered tiles. The shared expert is three projections and
+  `sharedExpertAdd`, which scales its output by sigmoid(g · x) per row.
+- **The DeltaNet** runs the delta step and chunk with `.grouped` (value
+  head h reads key head h / 2, § The backbone) unless
+  `Options.value_order` is `.tiled`; q and k take `l2NormRows`, the
+  reference's clamp.
+- **Prefill projections take the generic F32 tile**
+  (`matmulKernel(.matmul, …)`), not the half-operand Q4_K tiles. The
+  router is discrete: rounding the operands to half moves its logits past
+  near-ties, a different expert runs, and the error compounds over 40
+  layers. On a 290-row prompt the half tiles reach 3.9e-1 relative RMS on
+  the prefill hidden (5.4e-2 at 29 rows) at 776 ms; the F32 tile holds
+  7.2e-6 at 895 ms. Decode rows use the specialized matvecs, which keep
+  F32 operands.
+
+### Agreement with the CPU
+
+`drama3-check MODEL metal` records the smoke prompt (29 rows) and 8 argmax
+frames on the CPU, then replays them through the plan twice: every kernel
+the generic decoder (`Backend.generic_only`), then the production kernels.
+Each stage's worst relative RMS over its rows, argmax compared on every
+logits row; the gate `drama3-metal` holds both runs to 1e-5 with the frames
+equal.
+
+| Stage (29 rows, chunk 24) | Rows | Generic | Production | Argmax |
+| --- | --- | --- | --- | --- |
+| prefill hidden | 29 | 5.3e-6 | 5.3e-6 | — |
+| prefill logits | 1 | 6.3e-7 | 6.3e-7 | 1/1 |
+| decode hidden | 7 | 6.0e-7 | 7.8e-7 | — |
+| decode logits | 7 | 4.8e-7 | 4.1e-7 | 7/7 |
+| codebook 1–9 logits (worst) | 8 each | 6.6e-7 | 9.9e-7 | 8/8 each |
+
+On a 290-row prompt in one chunk of 512 (the smoke text ten times): prefill
+hidden 7.2e-6, prefill logits 8.5e-7, decode hidden ≤ 1.1e-6, decode logits
+≤ 5.9e-7, codebooks ≤ 1.4e-6, every argmax and frame equal. With
+`--value-order tiled` the prefill hidden differs by 1.3e-4 and the
+codebooks by up to 4.8e-5, every argmax still equal (the CPU stops after
+one frame under that reading): the wrong reading puts the router nearer
+its ties, so a rounding moves an expert, where a mapping error would be
+O(1). The file's order is grouped (§ Confirmed by likelihood), so the gate
+runs grouped only.
+
+### Speed
+
+Apple M4 Pro (48 GB), Zig 0.17.0, ReleaseFast, this file (Q4_K), at the
+revision of the pull request that brought the plan up. Each `metal` run
+times the plan's second pass (after `reset`) in the same process. Runs
+vary: the same day's earlier runs, with other work on the machine, were
+up to 1.5 × as slow; the tables give the latest.
+
+| `drama3-check metal`, production kernels | 29 rows, chunk 24 | 290 rows, chunk 512 |
+| --- | --- | --- |
+| prefill | 312 ms (93 rows/s) | 895 ms (324 rows/s) |
+| tower prefill | 45 ms | 246 ms |
+| tower step, argmax picks | 5.8 ms a frame | 10.0 ms a frame |
+| backbone decode | 12.7 ms a row | 16.3 ms a row |
+| device memory (buffers and state) | 121 MB | 355 MB |
+
+The 290-row column (the smoke text ten times) is from an earlier run. The
+CPU reference on the same machine takes about 0.5 s a prefill row and
+110 ms a frame. `drama3_speech` sizes the plan for its 10,240-row
+context: about 1 GB of state and 230 MB of buffers per `Synthesizer`,
+released when it ends.
+
+`drama3-check speak --backend metal` (no reference voice, the sampler's
+defaults, `--frames 400`), load 0.9 s:
+
+| Text, seed | Frames | Audio | Prompt | Frames (sample, tower, decode) | Codec (CPU) | Wall |
+| --- | --- | --- | --- | --- | --- | --- |
+| `The quick brown fox jumps over the lazy dog.`, 1 | 84 | 3.90 s | 0.5 s (31 rows) | 2.0 s (23.8 ms a frame) | 2.5 s | 5.1 s |
+| `Every morning the old fisherman walked down to the harbour, counted the boats, and waited for the tide to turn before he said a single word.`, 0 | 175 | 8.13 s | 0.6 s (51 rows) | 4.3 s (24.6 ms a frame) | 5.5 s | 10.5 s |
+
+A frame is 46.4 ms of audio, so the backbone and the tower run at about
+half of real time (prompt included, 0.6), and the whole at 1.3 × real
+time, of which the CPU codec (about 31 ms a frame) is the larger half. Of
+the 24 ms a frame, the tower and the decode are about 18 ms; the rest is
+the host sampler, which sorts all 4,096 codes for each of the ten draws.
+
 ## Open
 
 - The silence stop and retry.
+- The codec on Metal, gated against the CPU codec: on the CPU it is the
+  larger half of a Metal take (§ On Metal).
+- The sampler's draw: a partial selection instead of sorting all 4,096
+  codes, ten times a frame.
+- The tower's ten commits a frame: the picks could move to the device
+  (the sampler's top-k and exp-sum kernels) so one frame is one command
+  buffer.

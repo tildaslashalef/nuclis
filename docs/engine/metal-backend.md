@@ -188,6 +188,7 @@ Thread counts are the numbers `Backend` passes to `dispatch`.
 | `nu_attention_softmax` | 32 | one head's score row | the whole row | `simd_max`, `simd_sum` | none |
 | `nu_delta` | 32 | one (value head, coordinate) | the 128-wide contraction | `simd_sum` | none |
 | `nu_l2norm` | 32 | one head vector | the norm | `simd_sum` | none |
+| `nu_shared_expert_add` | 256 | one row | a strided slice of the gate dot | `simd_sum` then 8-way combine | 8 floats |
 | `nu_rmsnorm` | 256 | one row | a 32-value strip | `simd_sum` then 8-way combine | 8 floats |
 | `nu_argmax_partial`, `nu_topk_partial`, `nu_expsum_partial` | 256 | a strided slice of the vocabulary | its 32 values | `simd_shuffle_down` reduction, 8-way threadgroup pick | 8–16 entries |
 | `nu_argmax_final` | 32 | the partials | all of them | `simd_shuffle_down` | none |
@@ -226,7 +227,10 @@ memory, and leave the rest to the grid.
   ±20 on, so the clamp changes no finite result (the first Gemma step
   produced NaN in nine gate values before it).
 - `nu_delta`: one SIMD group per (value head, value coordinate); decayed
-  prediction, error, in-place update, scaled output; Q/K heads broadcast modulo.
+  prediction, error, in-place update, scaled output; Q/K heads broadcast modulo
+  (llama.cpp's tiled order), or with `DeltaShape.grouped` value head `h`
+  reads Q/K head `h / (vheads / qheads)` (Fish's `repeat_interleave`, the
+  order Drama 3's GGUF keeps; `nu_delta_chunk` takes the same flag).
 - `nu_convolution`: one thread per channel, history shifted in place.
 - Attention (decode): scores, softmax, values as three dispatches over a
   `[head][visible]` score buffer.
@@ -300,7 +304,7 @@ memory, and leave the rest to the grid.
   Contract (`Backend.deltaChunk`): `keys % 8 == 0`, `values % 32 == 0`,
   `count` ≤ 4,096, `qkv` rows padded to a multiple of 32
   (`deltaChunkRows`), input row layout as `nu_delta` (q, k, v per head; the
-  Q/K head of value head `h` is `h % qheads`), gate rows `[token][gate_stride]`,
+  Q/K head of value head `h` is `h % qheads`, or `h / group` when grouped), gate rows `[token][gate_stride]`,
   output rows `[token][out_stride]`. Nontransactional like `nu_delta`.
   Evidence: `test-metal` runs a 70-token chunk (sub-chunks 32, 32, 6) on
   the model shape with L2-normalized q/k against the F64 chunk reference
@@ -886,6 +890,17 @@ greedy token agreed in every comparison. The check records the expert
 configuration's own bounds (2e1 / 5e-1) beside the 12B's and keeps the
 F32-tile bound (5e-3 / 2e-4) unchanged, which is the one that proves the
 schedule.
+
+**The gated shared expert** (2026-10-30). Qwen3.5-MoE adds a shared
+expert scaled by sigmoid(g · x), g a vector of the hidden width
+(`ffn_gate_inp_shexp`). `Backend.sharedExpertAdd` is that scale and the
+add in one dispatch per row: a 256-thread group computes the dot
+(`simd_sum`, 8-way combine), then `x[r] += sigmoid(dot) · y[r]`. A [hidden, 1]
+matrix cannot take the tile (rows % 8), so the gate cannot be a projection
+in a chunk. `drama3_metal.zig` runs the decode chain above with SiLU and
+separate gate and up tensors, and the prefill chain through the generic
+F32 expert tile (Q4_K has no half instantiation); the evidence is
+[drama3.md § On Metal](../models/drama3.md#on-metal-2026-10-30).
 
 ### Per-block cost research (2026-09-08, closed without a kernel change)
 
