@@ -508,7 +508,10 @@ fn transcribe(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--lookahead <n>", "rows of 80 ms each chunk waits for: 0, 3, 6,");
     try more(out, "or 13 (latency 80, 320, 560, 1120 ms); default 3");
     try row(out, sty, "--language <code>", "the language to expect, a locale (en-US, de-DE,");
-    try more(out, "fr, es-US, ...); default auto, which detects it");
+    try more(out, "fr, es-US, ...); default auto, which detects it.");
+    try more(out, "Up to 4 as a list (ar,en-US,auto): each decodes,");
+    try more(out, "the words take the one that writes them, and auto,");
+    try more(out, "only last, is used when none of the others does");
     try row(out, sty, "--phrase <words>", "a name or words to expect (Siobhan, Dun");
     try more(out, "Laoghaire); repeat it, at most 64 times");
     try row(out, sty, "--model <name|dir>", "nemotron-asr-0.6b, a transcription registry");
@@ -525,6 +528,7 @@ fn transcribe(out: *std.Io.Writer, sty: style.Style) !void {
     try example(out, sty, "nuclis transcribe memo.m4a", "the transcript and its language");
     try example(out, sty, "nuclis transcribe talk.wav --stream --lookahead 0", "partials as fast as they come");
     try example(out, sty, "nuclis transcribe clip.flac --language de-DE --json", "German, with token times");
+    try example(out, sty, "nuclis transcribe turn.wav --language ar,en-US,auto", "Arabic or English, else any language");
     try example(out, sty, "nuclis transcribe lecture.m4a --format srt > lecture.srt", "subtitles");
 
     try heading(out, sty, "Notes:");

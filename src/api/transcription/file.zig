@@ -53,7 +53,8 @@ pub const Format = enum { json, text, verbose_json, srt, vtt };
 pub const Request = struct {
     file: []const u8,
     model: ?[]const u8 = null,
-    /// A `prompt_dictionary` key; null is `auto`.
+    /// A `prompt_dictionary` key, or a comma-separated list of up to
+    /// `asr.max_languages` (`ar,en,auto`); null is `auto`.
     language: ?[]const u8 = null,
     format: Format = .json,
     segments: bool = true,
@@ -249,7 +250,7 @@ pub const Files = struct {
             .name = name,
             .bytes = located.bytes,
             .reader = reader,
-            .segmenter = .init(gpa, parsed.language),
+            .segmenter = .init(gpa, if (parsed.language) |l| (if (std.mem.indexOfScalar(u8, l, ',') == null) l else null) else null),
             .pipe = pipe,
             .note_buffer = &.{},
             .message_buffer = &.{},
@@ -424,18 +425,20 @@ pub const Files = struct {
         const acquired = try slot.acquire(io, job.directory, job.name, job.bytes);
         job.load_ns = acquired.load_ns;
         const model = acquired.model;
-        const prompt = if (job.request.language) |l| model.promptId(l) orelse return error.UnknownLanguage else model.default_prompt;
+        var prompts: [asr.max_languages]usize = .{model.default_prompt} ++ @as([asr.max_languages - 1]usize, @splat(0));
+        const languages = if (job.request.language) |l| try model.languages(l, &prompts) else 1;
         slot.hold(io, true);
         job.holding = true;
         errdefer {
             slot.hold(io, false);
             job.holding = false;
         }
-        job.transcriber = try asr.Transcriber.init(gpa, model, job.request.lookahead, prompt, if (model.metal != null) .metal else .cpu);
+        job.transcriber = try asr.Transcriber.init(gpa, model, job.request.lookahead, prompts[0], if (model.metal != null) .metal else .cpu);
         errdefer {
             job.transcriber.?.deinit();
             job.transcriber = null;
         }
+        if (languages > 1) try job.transcriber.?.setLanguages(prompts[0..languages]);
         if (job.request.phrases.len > 0) {
             job.phrases = try model.boost(gpa, job.request.phrases, boost.default_bonus, boost.default_follow);
             job.transcriber.?.setBoost(&job.phrases.?);
@@ -690,14 +693,18 @@ const Job = struct {
         return self.fed;
     }
 
-    /// The last tag's locale, or the prompt's.
+    /// The last tag's locale, or the prompt's; with several languages
+    /// and no tag, the one chosen last (`transcript.Run.step`).
     fn language(self: *const Job) ?[]const u8 {
         return self.segmenter.language;
     }
 
     fn startFailure(self: *Job, err: anyerror) ApiError {
         return switch (err) {
-            error.UnknownLanguage => self.apiError(.bad_request, "invalid_request", "language", "{s} is not a language of {s}: a locale (en-US, de-DE, fr-FR, es-US, …), a two-letter code (en, de, fr, …), or auto", .{ self.request.language.?, self.name }),
+            error.UnknownLanguage => self.apiError(.bad_request, "invalid_request", "language", "{s} is not a language of {s}: a locale (en-US, de-DE, fr-FR, es-US, …), a two-letter code (en, de, fr, …), or auto, or a list of them (ar,en,auto)", .{ self.request.language.?, self.name }),
+            error.TooManyLanguages => self.apiError(.bad_request, "invalid_request", "language", "{s} names more than {d} languages", .{ self.request.language.?, asr.max_languages }),
+            error.DuplicateLanguage => self.apiError(.bad_request, "invalid_request", "language", "{s} names a language twice", .{self.request.language.?}),
+            error.FallbackNotLast => self.apiError(.bad_request, "invalid_request", "language", "{s}: auto may only come last, as the fallback", .{self.request.language.?}),
             error.ModelTooLarge => self.apiError(.bad_request, "model_too_large", "model", "{s} needs {d:.1} GiB, more than the server's budget leaves beside the pinned models (serve.memory_bytes, --memory, --pin)", .{ self.name, @as(f64, @floatFromInt(self.bytes)) / (1 << 30) }),
             error.Pinned => self.apiError(http.overloaded, "busy", "model", "overloaded: {s} needs the transcriber another request holds; retry shortly", .{self.name}),
             else => self.apiError(.internal_server_error, "model_failed", "model", "{s} did not transcribe: {s}", .{ self.name, @errorName(err) }),

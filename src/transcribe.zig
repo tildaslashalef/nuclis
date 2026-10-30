@@ -148,6 +148,8 @@ const Report = struct {
     backend: []const u8,
     model: []const u8,
     audio_seconds: f64,
+    /// The greedy path's log probability, blanks included.
+    score: f64,
     tokens: []const TokenReport,
     /// With `--segments`, else null.
     segments: ?Segments = null,
@@ -216,10 +218,16 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
     const load_ns = lap(io, &started);
 
     const prompt_name = o.language orelse "auto";
-    const prompt = if (o.language) |l| model.promptId(l) orelse {
-        diag.set("--language takes a locale the model knows (en-US, de-DE, fr, auto, ...), not {s}", .{l});
+    var prompts: [asr.max_languages]usize = undefined;
+    const languages = model.languages(prompt_name, &prompts) catch |err| {
+        switch (err) {
+            error.UnknownLanguage => diag.set("--language takes locales the model knows (en-US, de-DE, fr, auto, ...), not {s}", .{prompt_name}),
+            error.TooManyLanguages => diag.set("--language takes at most {d} locales", .{asr.max_languages}),
+            error.DuplicateLanguage => diag.set("--language names a language twice: {s}", .{prompt_name}),
+            error.FallbackNotLast => diag.set("--language takes auto only last, as the fallback: {s}", .{prompt_name}),
+        }
         return error.InvalidOptionValue;
-    } else model.default_prompt;
+    };
 
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(transcript.max_file_bytes)) catch |err| {
         switch (err) {
@@ -235,11 +243,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
     defer reader.close();
     const decode_ns = lap(io, &started);
 
-    var transcriber = try asr.Transcriber.init(gpa, model, o.lookahead, prompt, switch (o.backend) {
+    var transcriber = try asr.Transcriber.init(gpa, model, o.lookahead, prompts[0], switch (o.backend) {
         .cpu => .cpu,
         .metal => .metal,
     });
     defer transcriber.deinit();
+    if (languages > 1) try transcriber.setLanguages(prompts[0..languages]);
     var phrases: ?inference.audio.boost.Boost = if (o.phrase_count == 0) null else model.boost(gpa, o.phrases(), boost.default_bonus, boost.default_follow) catch |err| switch (err) {
         error.InvalidPhrase => {
             diag.set("--phrase takes words: at most {d} bytes, no control characters", .{boost.max_phrase_bytes});
@@ -249,7 +258,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
     };
     defer if (phrases) |*p| p.deinit();
     if (phrases) |*p| transcriber.setBoost(p);
-    var segmenter: transcript.Segmenter = .init(gpa, if (o.language != null and !std.mem.eql(u8, prompt_name, "auto")) prompt_name else null);
+    var segmenter: transcript.Segmenter = .init(gpa, if (languages == 1 and prompts[0] != model.default_prompt) prompt_name else null);
     defer segmenter.deinit();
     var samples: u64 = 0;
     if (o.stream) {
@@ -297,6 +306,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
         .backend = @tagName(o.backend),
         .model = directory,
         .audio_seconds = seconds,
+        .score = transcriber.score(),
         .tokens = tokens,
         .segments = if (o.segments) .{ .segmenter = &segmenter } else null,
         .timings = .{
