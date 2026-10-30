@@ -19,8 +19,19 @@ user's decision (2026-10-30), its five units below share that one branch
 and one pull request, an exception to one unit per branch. One session
 leads; it may run at most two subagents (the same model) at a time, on
 units or pieces that touch disjoint files. The user tested the artifact
-in the TTS lab (`~/Code/ttslab`, speech.cpp 0.9.2) and chose Q4_K. Next:
-**Facts and pin**.
+in the TTS lab (`~/Code/ttslab`, speech.cpp 0.9.2) and chose Q4_K.
+
+Delivered so far: the facts, the pin, and the Fish traces
+(`tests/fixtures/drama3/`, `scripts/speech-traces/drama3_trace.py`); the
+backbone and tower on the CPU, the codec decoder and encoder on the CPU
+(both match Fish's traces: all 1,000 reference codes exactly, decoded
+samples at 9e-5 relative RMS), the sampler, the text and cue checks, the
+chunker, the streaming synthesizer with the silence stop and the retry
+(first WAVs in English and Arabic transcribe back exactly); and
+`drama-3` in the catalogue, `nuclis speak`, `/v1/audio/speech`, and the
+saved voices (a 44.1 kHz copy of the clip, Fish codes keyed by the GGUF).
+In flight: the backbone and tower trace replay with its CPU gate, and
+**Metal** (backbone and tower; the codec stays on the CPU so far).
 
 ## Fish Audio Drama 3
 
@@ -68,11 +79,11 @@ model's, not the quantization's.
 
 | Unit | Delivers | State |
 | --- | --- | --- |
-| Facts and pin | `docs/models/drama3.md`, inventory fixture, tokenizer check, pinned traces from Fish's code | next |
-| Backbone on the CPU | `drama3` adapter, binding, the Qwen3.5-MoE forward against the traces | |
-| Tower, codec, sampler on the CPU | codebooks 1–9, the codec decoder and encoder, Fish's sampler, the first WAV | |
-| Metal | the three networks on the GPU, gated against the CPU, speed recorded | |
-| Voices and the API | saved voices, speakers, cues, chunking, `speak`, `/v1/audio/speech`, catalogue, round-trip gates | |
+| Facts and pin | `docs/models/drama3.md`, inventory fixture, tokenizer check, pinned traces from Fish's code | done |
+| Backbone on the CPU | `drama3` adapter, binding, the Qwen3.5-MoE forward against the traces | trace replay and gate in flight |
+| Tower, codec, sampler on the CPU | codebooks 1–9, the codec decoder and encoder, Fish's sampler, the first WAV | done; the codec's gate remains |
+| Metal | the three networks on the GPU, gated against the CPU, speed recorded | backbone and tower in flight |
+| Voices and the API | saved voices, speakers, cues, chunking, `speak`, `/v1/audio/speech`, catalogue, round-trip gates | done but the round-trip gates and the stall measurement |
 
 ### Facts and pin
 
