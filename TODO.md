@@ -32,8 +32,8 @@ service; the round trip through Nemotron on Metal
 (`drama3-roundtrip-metal`, WER 1.05 %); and `drama-3` in the catalogue,
 `nuclis speak`, `/v1/audio/speech`, and the saved voices (a 44.1 kHz copy
 of the clip, Fish codes keyed by the GGUF). In flight: the codec decoder
-on Metal (`fish_codec_metal.zig`) and the stall measurement
-(`scripts/drama3-stalls.py`); then the verify tiers and the pull request.
+on Metal (`fish_codec_metal.zig`);
+the stall measurement is done (2 stalls in 64 takes, § Stalls); then the verify tiers and the pull request.
 
 ## Fish Audio Drama 3
 
@@ -85,7 +85,7 @@ model's, not the quantization's.
 | Backbone on the CPU | `drama3` adapter, binding, the Qwen3.5-MoE forward against the traces | done |
 | Tower, codec, sampler on the CPU | codebooks 1–9, the codec decoder and encoder, Fish's sampler, the first WAV | done |
 | Metal | the three networks on the GPU, gated against the CPU, speed recorded | backbone and tower done; the codec decoder in flight |
-| Voices and the API | saved voices, speakers, cues, chunking, `speak`, `/v1/audio/speech`, catalogue, round-trip gates | done but the stall measurement |
+| Voices and the API | saved voices, speakers, cues, chunking, `speak`, `/v1/audio/speech`, catalogue, round-trip gates | done |
 
 ### Facts and pin
 

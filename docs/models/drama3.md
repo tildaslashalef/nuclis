@@ -461,6 +461,27 @@ the clause mark `،` past the chunker's limit), not only past 300 bytes.
 Held-back and cut samples are never streamed, so the API's first bytes
 come only once a take has spoken.
 
+Measured through `nuclis speak` on Metal (2026-10-30, the M4 Pro, this
+file). `scripts/drama3-stalls.py` ran the lab's two Egyptian voices
+(`doo-v4-12s` and `nda-v2-12s`, each saved with its transcript) on
+8 short phrases, the lab's four worst first, with seeds 1–4. Each take was
+heard by `nuclis transcribe --language ar`. A take counts as a stall when
+the recognizer hears under 60 % of the phrase's letters, or when the take
+ends in more than 1.5 s of silence:
+
+| Configuration | 4 worst phrases | All 8 phrases |
+| --- | --- | --- |
+| the lab, split at sentence ends | 5 / 32 | — |
+| nuclis: the split, the stop on silence, the retry | 2 / 32 | 2 / 64 |
+
+No take ran past 4.0 s, and none ended in more than 1.3 s of silence, so
+the lab's 10–28 s silences are gone. None needed the retry. The two
+stalls are dropped words, not silence: `nda-v2-12s` seed 3 spoke only
+"عامل إيه" of "إزيك يا باشا؟ عامل إيه؟", and seed 2 spoke "طيب" for
+"طب استنى بس.". The mean character error rate over all 64 takes is
+15 %. Most of it is the recognizer's spelling of Egyptian Arabic, not
+missing speech.
+
 ## The traces
 
 `scripts/speech-traces/drama3_trace.py` runs Fish's own modules (the
@@ -565,8 +586,9 @@ their relative error is the largest.
 ## On Metal (2026-10-30)
 
 `drama3_metal.Plan` (`inference/src/models/drama3_metal.zig`) runs the
-CPU reference's backbone and tower (`drama3_runtime.zig`) on the GPU; the
-codec stays on the CPU. `drama3_speech` takes it through
+CPU reference's backbone and tower (`drama3_runtime.zig`) on the GPU, and
+`fish_codec_metal` (`inference/src/audio/fish_codec_metal.zig`) the codec
+decoder (§ The codec on Metal). `drama3_speech` takes both through
 `Voice.openWith(gpa, io, path, .{ .backend = .metal })`, and
 `drama3-check speak --backend metal` drives it.
 
@@ -624,6 +646,53 @@ one frame under that reading): the wrong reading puts the router nearer
 its ties, so a rounding moves an expert, where a mapping error would be
 O(1). The file's order is grouped (§ Confirmed by likelihood), so the gate
 runs grouped only.
+
+### The codec on Metal
+
+`fish_codec_metal` is the CPU decoder's pipeline (§ Decode) in the shape
+of [Qwen3-TTS's Metal decoder](qwen3-tts.md#on-metal-2026-10-27), with
+its kernels: `Decoder` holds the weights and the scratch, `Stream` one
+clip's carried state (every causal convolution's history, the transposed
+convolutions' tails, the window's 127 cached keys and values per layer)
+in one device buffer, separate from the weights.
+
+- **The weights are copied in F32** from the CPU `fish_codec.Runtime`,
+  which the voice then releases: 823 MB of buffers. The file's F16
+  widens exactly, the convolutions are already re-laid tap-major on the
+  CPU (so the mapping cannot be wrapped as it stands), and the generic
+  F32 tile keeps F32 operands.
+- **The lookup runs on the host**: each frame's ten codes (clamped to
+  their book, as the reference does) pick 8-wide rows into one 80-wide
+  row, and one product with the ten out_proj matrices side by side (their
+  biases summed) gives the summed projections.
+- **The post-transformer** is `rmsNorm`, the generic tile, `ropeRows`
+  with `.adjacent` pairing on a table of the reference's BF16-rounded cos
+  and sin (16,384 positions, more than a take's 600 frames), and
+  `ttsWindowAttention` over the cached rows and the new ones.
+- **The convolutions** gather their taps (`ttsGather`) after their
+  history and the new rows are joined, then take the generic tile; the
+  last one is `ttsConvOutTanh`, `ttsConvOut` with tanh in place of the
+  clamp.
+- **One command buffer per piece** of at most 8 frames. Every kernel sums
+  an output in an order fixed by its own index, so pushes of any size give
+  the same samples bit for bit.
+
+`drama3-check MODEL codec-metal` decodes Fish's pinned codes
+(`codec-reference`, 100 frames, and `codec-window`, 200, past every
+window) on the CPU and through the Metal stream in pushes of 1, 4 and the
+whole, comparing every observed stage over all its rows; the gate
+`drama3-codec-metal` (tier `verify`) holds each to 1e-5 relative RMS and
+the three push sizes' samples equal. First run, 2026-10-30, the same in
+all three push sizes:
+
+| Stage | `codec-reference` | `codec-window` |
+| --- | --- | --- |
+| quantized | 2.1e-7 | 2.1e-7 |
+| transformer | 4.9e-7 | 4.8e-7 |
+| upsample 0 / 1 | 1.1e-6 / 1.3e-6 | 1.1e-6 / 1.3e-6 |
+| decoder input conv | 1.4e-6 | 1.4e-6 |
+| blocks 0–3 (worst) | 1.6e-6 | 1.6e-6 |
+| samples | 1.7e-6 (max \|Δ\| 2.5e-6) | 1.7e-6 (max \|Δ\| 2.5e-6) |
 
 ### Speed
 
