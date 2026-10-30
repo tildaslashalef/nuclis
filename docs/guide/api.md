@@ -928,7 +928,7 @@ spaces. A request's text is split at sentence ends (Arabic's `؟` and `؛`
 included) and spoken sentence by sentence, each in the voice of the one
 before it. A sentence that has not started speaking within about 2 s of
 audio is drawn again with the next seed (twice at most), and a sentence
-that falls silent for 0.75 s ends there: [drama3.md § Stalls, and what
+that falls silent for 1.5 s ends there, keeping 0.28 s of it: [drama3.md § Stalls, and what
 nuclis adds](../models/drama3.md#stalls-and-what-nuclis-adds).
 
 ### Streaming and cancellation
