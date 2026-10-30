@@ -34,10 +34,9 @@ Metal (`drama3-roundtrip-metal`, WER 1.05 %); the stall measurement
 (§ Stalls); and `drama-3` in the catalogue, `nuclis speak`,
 `/v1/audio/speech` (whose log records the seed, redraws, and silence
 stops), and the saved voices (a 44.1 kHz copy of the clip, Fish codes
-keyed by the GGUF). In flight: an application's questions (cue
-placement against stalls; the silence stop made relative to the take's
-peak, since a fixed threshold cut whispers). Left: the verify tiers and
-the pull request.
+keyed by the GGUF). Measured and recorded in docs/models/drama3.md: cue placement against
+stalls, cues written in Arabic, and Drama 3 resident beside a language
+model and a recognizer. Left: the verify tiers and the pull request.
 
 ## Fish Audio Drama 3
 

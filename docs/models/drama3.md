@@ -490,7 +490,11 @@ ends in more than 1.5 s of silence:
 | Configuration | 4 worst phrases | All 8 phrases |
 | --- | --- | --- |
 | the lab, split at sentence ends | 5 / 32 | — |
-| nuclis: the split, the stop on silence, the retry | 2 / 32 | 2 / 64 |
+| nuclis: the split, the stop on silence, the retry (a fixed 0.02) | 2 / 32 | 2 / 64 |
+| nuclis, the rule above | 1 / 32 | 1 / 64 |
+| the rule above, `[warmly]` before each phrase | 3 / 32 | 4 / 64 |
+| a level threshold relative to the peak, no onset test, `[warmly]` before each phrase | 4 / 32 | 5 / 64 |
+| the same, `[warmly]` after each phrase's second word | 5 / 32 | 11 / 64 |
 
 No take ran past 4.0 s, and none ended in more than 1.3 s of silence, so
 the lab's 10–28 s silences are gone. None needed the retry. The two
@@ -499,6 +503,36 @@ stalls are dropped words, not silence: voice B at seed 3 spoke only
 "طب استنى بس.". The mean character error rate over all 64 takes is
 15 %. Most of it is the recognizer's spelling of Egyptian Arabic, not
 missing speech.
+
+**A cue costs takes.** With a cue in the phrase, more takes stall, all
+but three of them on voice B. A cue before the phrase stalls less than
+one after its second word: placed mid-phrase, the model more often
+falls into the steady hiss the onset test now catches at the start but
+not after speech. Of the four stalls with `[warmly]` first under the
+final rule, three are takes the recognizer heard nothing in. The model
+also holds a silent start more often after a cue: `[tired, half
+laughing]` before an Egyptian sentence gave two silent takes (levels of
+0.002–0.003 for 48 frames) before the third spoke.
+
+**Cues written in Arabic.** A whisper cue is the one whose effect can be
+measured without listening: the take's mean level over its sounding
+frames. On "أنا مش عايز حد يسمعنا، تعالى نتكلم هنا شوية." (voices A and
+B, seeds 1–4, against the same text without a cue):
+
+| Cue | Voice A | Voice B | Words heard (of 8) |
+| --- | --- | --- | --- |
+| none | 1.00 | 1.00 | 6 |
+| `[whispering]` | 0.14 | 0.33 | 2 |
+| `<whisper>…</whisper>` | 0.21 | 0.46 | 7 |
+| `[بهمس]` | 0.28 | 0.67 | 6 |
+| `[يهمس]` | 0.39 | 0.38 | 5 |
+| `[بيوشوش]` | 0.40 | 0.36 | 2 |
+
+The Arabic cues quieten the voice, so the model reads them, less
+strongly than the English cue. The Egyptian `[بيوشوش]` gave three takes
+of steady hiss in eight. Nemotron hears whispers poorly, so "words
+heard" falls with the depth of the whisper and is not a measure of the
+cue.
 
 ## The prompt's prefix
 
@@ -755,6 +789,19 @@ all three push sizes:
 | decoder input conv | 1.4e-6 | 1.4e-6 |
 | blocks 0–3 (worst) | 1.6e-6 | 1.6e-6 |
 | samples | 1.7e-6 (max \|Δ\| 2.5e-6) | 1.7e-6 (max \|Δ\| 2.5e-6) |
+
+### Beside a language model and a recognizer
+
+One `nuclis serve` (the default 32 GiB budget on the 48 GB M4 Pro) opened
+a Gemma 4 E4B Q4_K, Nemotron ASR, and Drama 3 in turn, one request each,
+then the language model again. Nothing was closed: the budget counted
+10.6 GB for the language model (its file and its context), 2.6 GB for
+the recognizer, and 20.8 GB for Drama 3, 34.0 of 34.4 GB. The budget
+counts files, not Drama 3's own buffers (the codec decoder widened to
+F32, about 0.8 GB; a synthesizer's plan, about 1.2 GB while it speaks; a
+kept prefix, about 90 MB each), so the machine holds about 2.5 GB more
+than the budget shows. A larger language model, or a longer context,
+closes the least recently used.
 
 ### Speed
 
