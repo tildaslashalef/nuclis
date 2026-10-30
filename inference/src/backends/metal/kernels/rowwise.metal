@@ -164,11 +164,10 @@ kernel void nu_add_rmsnorm(device float * residual [[buffer(0)]],
     for (uint i = tid; i < p.width; i += 256) y[i] = x[i] * inv * weight[i];
 }
 
-// L2 normalization in place: x / max(sqrt(sum(x^2)), eps), or with `inside`
-// x / sqrt(sum(x^2) + eps) (Fish's l2norm). One SIMD group per row; rows are
-// grouped `heads` per token row of `row_stride` floats (a single token
-// passes heads = rows, row_stride = 0).
-struct L2Params { uint width; uint stride; float eps; uint rows; uint heads; uint row_stride; uint inside; };
+// L2 normalization in place: x / max(sqrt(sum(x^2)), eps). One SIMD group per
+// row; rows are grouped `heads` per token row of `row_stride` floats (a
+// single token passes heads = rows, row_stride = 0).
+struct L2Params { uint width; uint stride; float eps; uint rows; uint heads; uint row_stride; };
 kernel void nu_l2norm(device float * data [[buffer(0)]],
                       constant L2Params & p [[buffer(7)]],
                       uint row [[threadgroup_position_in_grid]],
@@ -177,7 +176,7 @@ kernel void nu_l2norm(device float * data [[buffer(0)]],
     float sum = 0;
     for (uint i = lane; i < p.width; i += 32) sum += x[i] * x[i];
     sum = simd_sum(sum);
-    float scale = p.inside ? 1.0f / sqrt(sum + p.eps) : 1.0f / max(sqrt(sum), p.eps);
+    float scale = 1.0f / max(sqrt(sum), p.eps);
     for (uint i = lane; i < p.width; i += 32) x[i] *= scale;
 }
 
