@@ -25,6 +25,7 @@ const slot_mod = @import("../slot.zig");
 const Pipe = @import("../pipe.zig").Pipe;
 const wire = @import("wire.zig");
 const voice_routes = @import("voices.zig");
+const contexts = @import("contexts.zig");
 const voice_store = @import("../../voices.zig");
 const paths = @import("../../paths.zig");
 const speech = @import("../../audio/speech.zig");
@@ -81,6 +82,8 @@ pub const Service = struct {
     /// Worker-only: the job speaking.
     active: ?*Job = null,
     routes: voice_routes.Routes,
+    /// Drama 3's last sentences, for a later request's `context`.
+    contexts: contexts.Store,
     item: gpu.Item = .{ .run = step, .short = true },
 
     /// `root` and `registry` are borrowed for the service's lifetime; the
@@ -96,6 +99,7 @@ pub const Service = struct {
             .settings = settings,
             .timeout_ns = timeout_ns,
             .routes = .{ .root = root },
+            .contexts = .init(gpa),
         };
     }
 
@@ -103,6 +107,7 @@ pub const Service = struct {
     pub fn deinit(self: *Service, io: std.Io) void {
         if (self.active) |job| self.finish(io, job);
         self.slot.deinit(io);
+        self.contexts.deinit();
     }
 
     pub fn register(self: *Service, gpa: std.mem.Allocator, router: *router_mod.Router, listing: *models.Models) !void {
@@ -201,6 +206,19 @@ pub const Service = struct {
             .peer = peer,
             .fields = fields,
         };
+        if (speech.engineOf(located.directory) == .drama3) {
+            job.context_id = request_log.uuid7(io);
+            fields.text("context_id", &job.context_id.?);
+            if (parsed.context) |id| {
+                const found = self.contexts.lookup(self.gpa, io, std.Io.Clock.awake.now(io), id, located.directory, voice_name) catch {
+                    job.pipe.deinit(self.gpa);
+                    job.dropVoice();
+                    return internal(arena);
+                };
+                fields.text("context", @tagName(found));
+                if (found == .hit) job.context_in = found.hit;
+            }
+        }
         self.submit(io, job) catch |err| {
             job.pipe.deinit(self.gpa);
             job.dropVoice();
@@ -227,6 +245,7 @@ pub const Service = struct {
         return .{
             .body = "",
             .content_type = wire.contentType(parsed),
+            .extra_header = if (job.context_id) |*id| .{ .name = "x-speech-context", .value = id } else null,
             .stream = .{ .context = job, .write = Job.writeStream, .note = Job.streamNote },
         };
     }
@@ -376,9 +395,12 @@ pub const Service = struct {
             .drama3 => |v| d: {
                 const saved = &job.saved.?;
                 job.reference = .{ .transcript = saved.reference_text.?, .codes = saved.rows(drama.Codes) };
+                // The synthesizer copies the context.
+                defer job.dropContext();
                 break :d .{ .drama3 = try drama.Synthesizer.init(self.gpa, v, .{
                     .text = job.request.input,
                     .references = (&job.reference)[0..1],
+                    .context = if (job.context_in) |c| .{ .text = c.text, .codes = c.codes } else null,
                     .seed = job.request.seed orelse 0,
                 }) };
             },
@@ -616,9 +638,14 @@ const Job = struct {
     finish_reason: []const u8 = "",
     /// The frames generated, kept once the synthesizer is freed.
     frames: usize = 0,
-    /// Drama 3's sentences, silent starts redrawn, and sentences its
-    /// silence stop ended, kept like `frames`.
-    drama: ?struct { sentences: usize, redraws: usize, silence_stops: usize } = null,
+    /// Drama 3's sentences, silent starts redrawn, sentences its silence
+    /// stop ended, and its prefill, kept like `frames`.
+    drama: ?struct { sentences: usize, redraws: usize, silence_stops: usize, prefill_ns: u64, prefix_hits: usize, prefix_misses: usize } = null,
+    /// Drama 3: the id its last sentence is kept under (`x-speech-context`),
+    /// and the earlier sentence its `context` found, owned until the
+    /// synthesizer took it.
+    context_id: ?contexts.Id = null,
+    context_in: ?contexts.Turn = null,
     /// The request's log fields, filled once the worker is done.
     fields: request_log.Fields = .{},
 
@@ -635,7 +662,16 @@ const Job = struct {
             self.finish_reason = @tagName(synth.finish());
             if (synth.* == .drama3) {
                 const d = &synth.drama3;
-                self.drama = .{ .sentences = d.chunks.len, .redraws = d.retried, .silence_stops = d.stops[@backingInt(inference.models.drama3_speech.Stop.silence)] };
+                self.drama = .{
+                    .sentences = d.chunks.len,
+                    .redraws = d.retried,
+                    .silence_stops = d.stops[@backingInt(drama.Stop.silence)],
+                    .prefill_ns = d.timing.prefill_ns,
+                    .prefix_hits = d.timing.prefix_hits,
+                    .prefix_misses = d.timing.prefix_misses,
+                };
+                if (self.context_id) |id| if (d.lastTurn()) |last|
+                    self.service.contexts.put(io, std.Io.Clock.awake.now(io), id, self.directory, self.voice, last.text, last.codes) catch {};
             }
             if (self.request.stream == .sse) {
                 var out: std.Io.Writer = .fixed(self.bytes_out[self.raw_len..]);
@@ -761,6 +797,12 @@ const Job = struct {
     fn dropVoice(self: *Job) void {
         if (self.saved) |*r| r.deinit(self.service.gpa);
         self.saved = null;
+        self.dropContext();
+    }
+
+    fn dropContext(self: *Job) void {
+        if (self.context_in) |*c| c.deinit(self.service.gpa);
+        self.context_in = null;
     }
 
     /// Waits until the worker can no longer touch the job (or takes it
@@ -796,6 +838,9 @@ const Job = struct {
             fields.int("sentences", d.sentences);
             fields.int("redraws", d.redraws);
             fields.int("silence_stops", d.silence_stops);
+            fields.ms("prefill_ms", d.prefill_ns);
+            fields.int("prefix_restored", d.prefix_hits);
+            fields.int("prefix_prefilled", d.prefix_misses);
         }
         fields.float("audio_s", @as(f64, @floatFromInt(self.audio_samples)) / @as(f64, @floatFromInt(self.rate)), 2);
         if (self.first_audio_ns) |ns| fields.ms("first_audio_ms", ns);

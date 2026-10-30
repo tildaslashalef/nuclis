@@ -671,6 +671,7 @@ test {
     _ = @import("embeddings/pool.zig");
     _ = @import("slot.zig");
     _ = @import("speech/wire.zig");
+    _ = @import("speech/contexts.zig");
     _ = speech;
     _ = transcription;
     _ = @import("multipart.zig");

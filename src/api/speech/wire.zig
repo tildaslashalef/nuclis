@@ -32,6 +32,9 @@ pub const Request = struct {
     seed: ?u64 = null,
     /// A language of the model, or `auto`; null is `auto`.
     language: ?[]const u8 = null,
+    /// Drama 3: an earlier response's `x-speech-context`, whose last
+    /// sentence this one continues.
+    context: ?[]const u8 = null,
 };
 
 /// Why a request was refused: a 400 with this code, message, and field.
@@ -106,6 +109,7 @@ pub fn parse(arena: Allocator, body: []const u8, problem: *Problem) Error!Reques
         else => return refuse(arena, problem, "invalid_request", "seed", "\"seed\" must be an integer", .{}),
     };
     request.language = try optionalString(arena, problem, o, "language");
+    request.context = try optionalString(arena, problem, o, "context");
     return request;
 }
 
