@@ -228,6 +228,8 @@ pub const Service = struct {
             // What `nuclis model pull <name>` fetches: the model, not its projector.
             try details.put(arena, "download_bytes", if (registered == null) if (resolved.entry) |e| .{ .integer = @intCast(e.size) } else .null else .null);
             try details.put(arena, "loaded", .{ .bool = self.pool.isOpen(io, resolved.path) });
+            // It counts its file once open, and its media encoders once a request needs them.
+            try models.putMemory(arena, io, &details, self.pool.budget, name, 0, if (stat) |st| st.size else if (pinned) |p| p.size else null);
             try details.put(arena, "default", .{ .bool = std.mem.eql(u8, name, self.default_model) });
             try details.put(arena, "dimensions", .{ .array = widths });
             // What this server embeds: text, and images and audio once the projector is pulled.

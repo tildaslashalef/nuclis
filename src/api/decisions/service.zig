@@ -178,6 +178,7 @@ pub const Service = struct {
             try details.put(arena, "download_bytes", if (pinned) |p| .{ .integer = @intCast(p.totalSize()) } else .null);
             try details.put(arena, "present", .{ .bool = l.present });
             try details.put(arena, "loaded", .{ .bool = if (l.directory) |d| self.pool.isOpen(io, d) else false });
+            try models.putMemory(arena, io, &details, self.pool.budget, l.name, 0, if (pinned) |p| p.totalSize() else null);
             try details.put(arena, "default", .{ .bool = std.mem.eql(u8, l.name, self.default_model) });
             try details.put(arena, "family", .{ .string = @tagName(l.family) });
             try details.put(arena, "packs", .{ .bool = l.family.packs() });

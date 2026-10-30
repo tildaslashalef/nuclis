@@ -23,6 +23,7 @@ const embedding_batcher = @import("embeddings/batcher.zig");
 const speech = @import("speech/service.zig");
 const transcription = @import("transcription/service.zig");
 const memory = @import("memory.zig");
+const paths = @import("../paths.zig");
 const log_mod = @import("log.zig");
 const request_log = @import("request_log.zig");
 const batcher = @import("decisions/batcher.zig");
@@ -495,6 +496,19 @@ pub const Context = struct {
     version: []const u8,
 };
 
+/// `err` from opening a `--model` or `--pin` at startup; a `ModelTooLarge`
+/// says what the model needs and what the budget leaves it.
+fn tooLarge(io: std.Io, budget: *memory.Budget, diag: *config.Diagnostic, kind: []const u8, name: []const u8, err: anyerror) anyerror {
+    if (err != error.ModelTooLarge) return err;
+    const r = budget.refusal(io) orelse return err;
+    diag.set("the {s} model {s} needs {d:.1} GiB; {d:.1} of {d:.1} GiB is free beside the pinned models (--memory, serve.memory_bytes)", .{ kind, name, gibibytes(r.needed), gibibytes(r.free), gibibytes(budget.limit) });
+    return err;
+}
+
+fn gibibytes(bytes: u64) f64 {
+    return @as(f64, @floatFromInt(bytes)) / (1 << 30);
+}
+
 /// Serves until Ctrl-C or a failed accept. Prints where it listens, what it
 /// opened, and the shutdown to `out`. After Ctrl-C it accepts nothing new,
 /// waits up to `limits.drain_seconds` for queued decisions, closes the
@@ -521,6 +535,9 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     server.embeddings.executor = &server.executor;
     server.speech.executor = &server.executor;
     server.transcription.executor = &server.executor;
+    const record_path = if (context.root) |r| try paths.memoryRecordPath(gpa, r) else null;
+    defer if (record_path) |p| gpa.free(p);
+    if (record_path) |p| server.memory.load(io, p);
     server.embeddings.pool.budget = &server.memory;
     server.decisions.pool.budget = &server.memory;
     server.chat.language.budget = &server.memory;
@@ -565,30 +582,30 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     const named = try byKind(arena_state.allocator(), io, context.registry, try opened(arena_state.allocator(), options), diag);
     for (named.decision.items) |name| {
         const started = std.Io.Clock.awake.now(io);
-        try server.decisions.preload(arena_state.allocator(), io, name, diag);
+        server.decisions.preload(arena_state.allocator(), io, name, diag) catch |err| return tooLarge(io, &server.memory, diag, "decision", name, err);
         try printOpened(out, sty, io, name, "decision", started);
     }
     if (named.language) |name| {
         const started = std.Io.Clock.awake.now(io);
         server.chat.preload(io, name) catch |err| {
             diag.set("the language model {s} did not open: {s}", .{ name, @errorName(err) });
-            return err;
+            return tooLarge(io, &server.memory, diag, "language", name, err);
         };
         try printOpened(out, sty, io, name, "chat", started);
     }
     if (named.embedding) |name| {
         const started = std.Io.Clock.awake.now(io);
-        try server.embeddings.preload(arena_state.allocator(), io, name, diag);
+        server.embeddings.preload(arena_state.allocator(), io, name, diag) catch |err| return tooLarge(io, &server.memory, diag, "embedding", name, err);
         try printOpened(out, sty, io, name, "embedding", started);
     }
     if (named.speech) |name| {
         const started = std.Io.Clock.awake.now(io);
-        try server.speech.preload(arena_state.allocator(), io, name, diag);
+        server.speech.preload(arena_state.allocator(), io, name, diag) catch |err| return tooLarge(io, &server.memory, diag, "speech", name, err);
         try printOpened(out, sty, io, name, "speech", started);
     }
     if (named.transcription) |name| {
         const started = std.Io.Clock.awake.now(io);
-        try server.transcription.preload(arena_state.allocator(), io, name, diag);
+        server.transcription.preload(arena_state.allocator(), io, name, diag) catch |err| return tooLarge(io, &server.memory, diag, "transcription", name, err);
         try printOpened(out, sty, io, name, "transcription", started);
     }
     if (options.pins.items.len > 0) {

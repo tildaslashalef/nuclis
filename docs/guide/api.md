@@ -119,6 +119,45 @@ request naming another language or speech model still replaces the
 pinned one in its slot, and the pin applies again when its name reopens.
 `GET /v1/health` marks each resident model's `pinned`.
 
+**Before a model opens**, `GET /v1/models` says what it will count in
+each entry's `memory_bytes`, with `memory_source` saying how it knows:
+
+| `memory_source` | `memory_bytes` |
+| --- | --- |
+| `open` | what it counts now, the number `/v1/health` reports |
+| `measured` | what it counted the last time it opened, with the same files and, for a language model, the same `ctx_size`, `kv_precision`, `cache.memory_bytes`, and speculative decoding; kept in `~/.nuclis/cache/memory.json` across starts |
+| `estimate` | what it counts before it opens. Exact for an embedding and a decision model; for a speech or transcription model its files, under the count by the device memory (none for Drama 3 and Qwen3-TTS, 49 MiB for Nemotron ASR); for a language model its files and `cache.memory_bytes`, under the count by its attention cache and draft file |
+
+A model opened once on this machine is `measured`, exact until its
+files or those settings change. Measured on the M4 Pro (2026-10-30)
+with four models pinned at `--memory 47`, every listed number equalled
+`/v1/health`'s: the Gemma 4 26B-A4B with its draft 24,781,970,336 B
+(before its first open the estimate was 21,090,982,816 B, the file and the 4 GiB of saved states: 15 % under),
+drama-3 20,787,264,352 B, `nemotron-asr-0.6b` 2,603,784,672 B, and
+embeddinggemma-2 309,855,520 B. Opened once each, the others counted:
+
+| Model | Counted | Estimate before |
+| --- | ---: | ---: |
+| `qwen3.8-27b` | 23,583,635,232 | 20,759,407,520 |
+| `gemma-4-26b-a4b` | 22,235,001,920 | 18,544,014,400 |
+| `gemma-4-12b-qat` | 16,902,177,472 | 11,011,324,096 |
+| `gemma-4-e4b-qat` | 9,509,865,184 | 8,510,663,072 |
+| `qwen3-tts-1.7b-base` | 4,539,706,836 | the same |
+| `qwen3-tts-1.7b-customvoice`, `-voicedesign` | 4,515,695,644 | the same |
+| `qwen3-tts-0.6b-base` | 2,511,637,364 | the same |
+| `qwen3-tts-0.6b-customvoice` | 2,493,919,668 | the same |
+
+A model refused at start (`--model`, `--pin`) says the sizes, the
+needed and the free beside the models pinned before it:
+
+```text
+error: ModelTooLarge: the speech model drama-3 needs 19.4 GiB; 16.6 of 40.0 GiB is free beside the pinned models (--memory, serve.memory_bytes)
+```
+
+The pins open in the order decision, language, embedding, speech,
+transcription, so a later kind is the one refused; a limit that fits
+them all is at least the sum of their `memory_bytes`.
+
 `clef-flash` also reads images: a request's `"images"` is a list of data
 URLs (`data:image/png;base64,…`) or bare base64, at most 8, each read
 before every state (`422 images_unsupported` from Laya, or from
@@ -1360,6 +1399,8 @@ settings, or a model opening or closing (`loaded`).
         "download_bytes": 842609210,
         "present": true,
         "loaded": false,
+        "memory_bytes": 842609210,
+        "memory_source": "estimate",
         "default": false,
         "family": "laya",
         "packs": true,
@@ -1397,6 +1438,7 @@ Every kind's fields:
 | `download_bytes` | what `nuclis model pull <id>` fetches without `--with`/`--all`, from the catalogue's pinned sizes; null when nuclis cannot know it (a registry entry naming a file the catalogue does not pin) |
 | `present` | its weights are on disk |
 | `loaded` | it is open now |
+| `memory_bytes`, `memory_source` | what it counts against the budget once open, and how that is known: `open`, `measured`, or `estimate` ([memory](#memory)); `memory_bytes` is null when unknown |
 | `pinned` | the server keeps it open for its whole life (`serve.pin`, `--pin`) |
 | `default` | a request without `model` gets it |
 | `endpoints` | the routes that serve it |

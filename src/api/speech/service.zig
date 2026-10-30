@@ -20,6 +20,7 @@ const request_log = @import("../request_log.zig");
 const errors = @import("../errors.zig");
 const gpu = @import("../gpu.zig");
 const models = @import("../models.zig");
+const memory = @import("../memory.zig");
 const router_mod = @import("../router.zig");
 const slot_mod = @import("../slot.zig");
 const Pipe = @import("../pipe.zig").Pipe;
@@ -484,6 +485,8 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
         // What `nuclis model pull <name>` fetches: the weights and, for speech, the codec.
         try details.put(arena, "download_bytes", if (registered == null) if (entry) |e| .{ .integer = @intCast(e.totalSize()) } else .null else .null);
         try details.put(arena, "loaded", .{ .bool = slot.isOpen(io, resolved.directory) });
+        const files: ?u64 = if (located) |l| l.bytes else if (entry) |e| e.totalSize() else null;
+        try models.putMemory(arena, io, &details, slot.budget, name, memory.basis(&.{files orelse 0}), files);
         try details.put(arena, "default", .{ .bool = std.mem.eql(u8, name, default_model) });
         switch (kind) {
             .speech => {

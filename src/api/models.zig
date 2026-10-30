@@ -8,6 +8,7 @@ const http = @import("http.zig");
 const errors = @import("errors.zig");
 const router_mod = @import("router.zig");
 const model_files = @import("../model.zig");
+const memory = @import("memory.zig");
 
 /// Raised when a `nuclis` object changes incompatibly.
 pub const schema_version = 1;
@@ -103,6 +104,20 @@ pub fn number(arena: std.mem.Allocator, x: f32) !std.json.Value {
 }
 
 /// String values as a JSON array.
+/// `memory_bytes` and `memory_source`: what `name` holds against the budget
+/// while open ("open"), what it counted the last time it opened under
+/// `basis` ("measured"), else `floor`, what it counts before it opens
+/// ("estimate", null when unknown). docs/guide/api.md § Memory.
+pub fn putMemory(arena: std.mem.Allocator, io: std.Io, details: *std.json.ObjectMap, budget: ?*memory.Budget, name: []const u8, basis: u64, floor: ?u64) !void {
+    const b = budget orelse {
+        try details.put(arena, "memory_bytes", if (floor) |f| .{ .integer = @intCast(f) } else .null);
+        return details.put(arena, "memory_source", .{ .string = "estimate" });
+    };
+    const bytes: ?u64, const source: []const u8 = if (b.openBytes(io, name)) |n| .{ n, "open" } else if (b.measuredBytes(io, name, basis)) |n| .{ n, "measured" } else .{ floor, "estimate" };
+    try details.put(arena, "memory_bytes", if (bytes) |n| .{ .integer = @intCast(n) } else .null);
+    try details.put(arena, "memory_source", .{ .string = source });
+}
+
 pub fn strings(arena: std.mem.Allocator, items: []const []const u8) !std.json.Array {
     var out: std.json.Array = .init(arena);
     for (items) |i| try out.append(.{ .string = i });
