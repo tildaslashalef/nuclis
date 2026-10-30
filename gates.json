@@ -99,6 +99,9 @@
   "qwen3_tts_17b_design": {
    "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
   },
+  "drama3_q4_k": {
+   "path": "~/.nuclis/models/sakasegawa/drama-3-GGUF/Drama-35B-A3B-v3-Q4_K.gguf"
+  },
   "nemotron_asr": {
    "path": "~/.nuclis/models/nvidia/nemotron-3.5-asr-streaming-0.6b"
   }
@@ -4609,6 +4612,40 @@
    },
    "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal (speaker ryan, english, each its own seed), recognized by nuclis transcribe --backend cpu (the baseline model, Nemotron ASR), words scored against the text (scripts/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-27: 5 errors in 190 words, 2.63 %, mostly the recognizer's spelling, dr for doctor and heres for here is; the bound allows six more)",
    "evidence": "docs/models/qwen3-tts.md#on-metal-2026-10-27"
+  },
+  {
+   "name": "drama3-trace-cpu",
+   "family": "drama3",
+   "tier": "verify-cpu",
+   "model": "drama3_q4_k",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/drama3-check.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/formats/gguf.zig",
+    "inference/src/models/drama3.zig",
+    "inference/src/models/drama3_runtime.zig",
+    "inference/src/quant/**",
+    "inference/src/runtime/session.zig",
+    "inference/src/runtime/weights.zig",
+    "tests/fixtures/drama3/clone-fox/**",
+    "tests/fixtures/drama3/index.json"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-drama3",
+    "--",
+    "{model}",
+    "trace",
+    "--max-relative-rms",
+    "1e-5"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "Fish's clone-fox trace (188 rows, 164 prompt and 24 teacher-forced frames) replayed on the CPU: the backbone's input, layers 0, 3, 19 and 39, output_norm and logits at 40 rows, the tower's shared output, residual layers and heads at 6 rows, relative RMS <= 1e-5 per stage and every logits argmax equal (first run against the trace with the exact delta rule: 3.2e-6 at worst)",
+   "evidence": "docs/models/drama3.md#the-traces"
   },
   {
    "name": "nemotron-asr-encoder-cpu",

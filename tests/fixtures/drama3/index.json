@@ -1655,21 +1655,21 @@
    "backbone_checks": [
     {
      "convention": "shifted/codebooks k-1/grouped",
-     "reference_mean_logprob": -4.4039,
-     "reference_top1": 0.17,
-     "continuation_mean_logprob": -2.013
+     "reference_mean_logprob": -4.3752,
+     "reference_top1": 0.16,
+     "continuation_mean_logprob": -1.9652
     },
     {
      "convention": "unshifted/codebooks k-1/grouped",
-     "reference_mean_logprob": -28.0262,
+     "reference_mean_logprob": -28.0365,
      "reference_top1": 0.0,
-     "continuation_mean_logprob": -28.9618
+     "continuation_mean_logprob": -29.0958
     },
     {
      "convention": "shifted/codebooks k/grouped",
-     "reference_mean_logprob": -8.5106,
+     "reference_mean_logprob": -8.5077,
      "reference_top1": 0.0,
-     "continuation_mean_logprob": -7.2923
+     "continuation_mean_logprob": -7.2653
     },
     {
      "convention": "shifted/codebooks k-1/grouped/q-gate swapped",
@@ -1679,27 +1679,27 @@
     },
     {
      "convention": "shifted/codebooks k-1/tiled",
-     "reference_mean_logprob": -11.1061,
+     "reference_mean_logprob": -10.6222,
      "reference_top1": 0.0,
-     "continuation_mean_logprob": -11.131
+     "continuation_mean_logprob": -10.7802
     },
     {
      "convention": "unshifted/codebooks k-1/tiled",
-     "reference_mean_logprob": -25.7887,
+     "reference_mean_logprob": -25.7768,
      "reference_top1": 0.0,
-     "continuation_mean_logprob": -24.782
+     "continuation_mean_logprob": -24.7876
     },
     {
      "convention": "shifted/codebooks k/tiled",
-     "reference_mean_logprob": -10.5557,
+     "reference_mean_logprob": -10.6001,
      "reference_top1": 0.0,
-     "continuation_mean_logprob": -11.6969
+     "continuation_mean_logprob": -11.7629
     },
     {
      "convention": "shifted/codebooks k-1/tiled/q-gate swapped",
-     "reference_mean_logprob": -8.9065,
+     "reference_mean_logprob": -8.9128,
      "reference_top1": 0.0,
-     "continuation_mean_logprob": -9.171
+     "continuation_mean_logprob": -9.1833
     }
    ],
    "backbone_convention": "shifted/codebooks k-1/grouped",
@@ -1763,71 +1763,71 @@
    "tower_checks": [
     {
      "convention": "shifted/codebooks k-1/grouped",
-     "reference_mean_logprob": -5.2682,
+     "reference_mean_logprob": -5.2546,
      "reference_per_codebook": [
-      -4.287,
-      -5.09,
-      -4.981,
-      -5.232,
-      -5.299,
-      -5.577,
-      -5.679,
-      -5.56,
-      -5.709
+      -4.249,
+      -5.068,
+      -4.957,
+      -5.222,
+      -5.301,
+      -5.563,
+      -5.671,
+      -5.556,
+      -5.704
      ],
-     "reference_top1": 0.0544,
-     "continuation_mean_logprob": -3.4253
+     "reference_top1": 0.0556,
+     "continuation_mean_logprob": -3.384
     },
     {
      "convention": "unshifted/codebooks k-1/grouped",
-     "reference_mean_logprob": -23.223,
+     "reference_mean_logprob": -22.9744,
      "reference_per_codebook": [
-      -21.323,
-      -30.35,
-      -31.364,
-      -26.352,
-      -21.408,
-      -17.604,
-      -13.926,
-      -24.22,
-      -22.461
+      -20.593,
+      -29.914,
+      -32.274,
+      -26.325,
+      -23.777,
+      -17.935,
+      -13.557,
+      -21.355,
+      -21.038
      ],
-     "reference_top1": 0.0,
-     "continuation_mean_logprob": -22.829
+     "reference_top1": 0.0022,
+     "continuation_mean_logprob": -22.7889
     },
     {
      "convention": "shifted/codebooks k/grouped",
-     "reference_mean_logprob": -6.3655,
+     "reference_mean_logprob": -6.3626,
      "reference_per_codebook": [
-      -5.164,
-      -6.434,
-      -6.626,
-      -6.546,
-      -6.584,
-      -6.708,
-      -6.645,
-      -6.22,
-      -6.363
+      -5.15,
+      -6.425,
+      -6.631,
+      -6.534,
+      -6.582,
+      -6.713,
+      -6.654,
+      -6.205,
+      -6.37
      ],
      "reference_top1": 0.0222,
-     "continuation_mean_logprob": -6.9429
+     "continuation_mean_logprob": -6.9799
     },
     {
      "convention": "shifted/codebooks k-1/grouped/q-gate swapped",
-     "reference_mean_logprob": -11.2015,
+     "reference_mean_logprob": -11.242,
      "reference_per_codebook": [
-      -7.939,
-      -10.193,
-      -10.883,
-      -11.845,
-      -9.912,
-      -11.569,
-      -12.434,
-      -13.258,
-      -12.779
+      -7.957,
+      -10.21,
+      -10.906,
+      -11.849,
+      -9.888,
+      -11.637,
+      -12.567,
+      -13.36,
+      -12.804
      ],
      "reference_top1": 0.0011,
-     "continuation_mean_logprob": -10.7955
+     "continuation_mean_logprob": -10.7828
     }
    ],
    "tower_rows": [
@@ -1877,7 +1877,7 @@
       2048
      ],
      "dtype": "f32",
-     "sha256": "839d80d9e4b4d27627b45f8b3d5a514f484bb395c40f33682ff21c4533727993",
+     "sha256": "8c062fcc109bf6871f9602ec13d71d4f9ced12064e8efa7b6df7d714de79134b",
      "note": "the residual stream after layer 0 (linear_attention)",
      "rows": [
       [
@@ -1897,7 +1897,7 @@
       2048
      ],
      "dtype": "f32",
-     "sha256": "2e18ec774346a56a255db14e9835714d06b9b88baa31eab4c5744fdab65bbf76",
+     "sha256": "ed3c41b39c608181626d0e8c632bf6dd8adceeaf2e200f7a161ac7fb5458c8ec",
      "note": "the residual stream after layer 3 (full_attention)",
      "rows": [
       [
@@ -1917,7 +1917,7 @@
       2048
      ],
      "dtype": "f32",
-     "sha256": "e221995d510c57dd184010dee32dd935ba7e26549dbae22c19e56eecb44f59d3",
+     "sha256": "a8f0594f6826a652c287bc9d407b152b4109ecbcede23ef8effdaa4db6efdfce",
      "note": "the residual stream after layer 19 (full_attention)",
      "rows": [
       [
@@ -1937,7 +1937,7 @@
       2048
      ],
      "dtype": "f32",
-     "sha256": "1910da8079df3db1728c241e8a7408e0a54d6bdc683a2163535b0bd1b6f2c8ba",
+     "sha256": "cd7ebbda2fd9a59b988a1ca05882d348ad5e912fa444cef4f3af72933add36e1",
      "note": "the residual stream after layer 39 (full_attention)",
      "rows": [
       [
@@ -1957,7 +1957,7 @@
       2048
      ],
      "dtype": "f32",
-     "sha256": "4e7c9872e191be1160112ffae7a9c7a7b98b5a44862f5b342eff1fe1d7a21947",
+     "sha256": "6ff3707d53f11b522ee088fbe86dc424f0ebf6d8c2e7a33ccb8355f2c37c9d7c",
      "note": "after output_norm: the hidden the lm head and the tower read",
      "rows": [
       [
@@ -1977,7 +1977,7 @@
       4097
      ],
      "dtype": "f32",
-     "sha256": "c71668b5813f21d102701912d48610918dbaec88ef9c451761345064a2a1d129",
+     "sha256": "f6c8fd79c05021888087c4be2019c26f690e8b9bab2af5be620f35ac56000a96",
      "note": "the 4,097 `output` logits per pinned row (row r predicts row r + 1's main token)",
      "rows": [
       [
@@ -1997,7 +1997,7 @@
       2048
      ],
      "dtype": "f32",
-     "sha256": "6ec9a529e5125aecdfa38d3a8a3880e03a3d74dd0a48d941aa48da1dafec3333",
+     "sha256": "d2bce9a2c26e3145818b7ea03b1d52f68318a2135d77bcdc0119f02b84418535",
      "note": "the shared stack's output (after shared layer 3) at tower_rows",
      "rows": [
       [
@@ -2034,7 +2034,7 @@
       2048
      ],
      "dtype": "f32",
-     "sha256": "a53000120546af09ba3e61dbfb0b4176eee4f6cf5668c0ca3f49f0087c792ff3",
+     "sha256": "3f031dbb60f8194bdf0e380dcb7d40af3bed516a43c8185bf00c2806a71e1f5a",
      "note": "[row][j] residual layer j's output at tower_rows",
      "rows": [
       [
@@ -2071,7 +2071,7 @@
       4096
      ],
      "dtype": "f32",
-     "sha256": "be1db52bc7d6799135e8a4cc50a83a915d1b585d5291c1c0d57e335d73232383",
+     "sha256": "d1a6a4849c59c843ec6119e2cc655314a6a2b0afd76661fa4522ee1936eedc23",
      "note": "[row][j] codebook head j's 4,096 logits (code j + 1 of the next frame) at tower_rows",
      "rows": [
       [
@@ -2116,7 +2116,7 @@
  "tokenizers": "0.22.2",
  "numpy": "2.5.4",
  "device": "cpu",
- "dtype": "float32 (every GGUF tensor dequantized to F32: Q4_K by ggml's formula, F16 widened)",
+ "dtype": "float32 (every GGUF tensor dequantized to F32: Q4_K by ggml's formula, F16 widened); the clone case's gated delta rule recurrent in float64 (exact_delta_rule)",
  "conventions": "Each file is little-endian, row-major, time first. `rows` lists the [start, end) ranges of the whole stage's rows the file holds, in order; a file without `rows` is whole.",
  "verdicts": {
   "codec layout": {
@@ -2135,44 +2135,44 @@
   },
   "backbone: norm shift (stored 1 + w)": {
    "measure": "mean log-prob of the reference's own codes, teacher-forced",
-   "chosen": -4.4039,
-   "rejected": -28.0262,
+   "chosen": -4.3752,
+   "rejected": -28.0365,
    "rejected_convention": "unshifted/codebooks k-1/grouped"
   },
   "backbone: codebook rows (k - 1) * 4096 + c": {
    "measure": "mean log-prob of the reference's own codes, teacher-forced",
-   "chosen": -4.4039,
-   "rejected": -8.5106,
+   "chosen": -4.3752,
+   "rejected": -8.5077,
    "rejected_convention": "shifted/codebooks k/grouped"
   },
   "backbone: query/gate split as named": {
    "measure": "mean log-prob of the reference's own codes, teacher-forced",
-   "chosen": -4.4039,
+   "chosen": -4.3752,
    "rejected": -9.2183,
    "rejected_convention": "shifted/codebooks k-1/grouped/q-gate swapped"
   },
   "backbone: DeltaNet value heads grouped (Fish's order, no permutation)": {
    "measure": "mean log-prob of the reference's own codes, teacher-forced",
-   "chosen": -4.4039,
-   "rejected": -11.1061,
+   "chosen": -4.3752,
+   "rejected": -10.6222,
    "rejected_convention": "shifted/codebooks k-1/tiled"
   },
   "tower: norm shift (stored 1 + w)": {
    "measure": "mean log-prob of the reference's own codes, teacher-forced",
-   "chosen": -5.2682,
-   "rejected": -23.223,
+   "chosen": -5.2546,
+   "rejected": -22.9744,
    "rejected_convention": "unshifted/codebooks k-1/grouped"
   },
   "tower: codebook rows (k - 1) * 4096 + c": {
    "measure": "mean log-prob of the reference's own codes, teacher-forced",
-   "chosen": -5.2682,
-   "rejected": -6.3655,
+   "chosen": -5.2546,
+   "rejected": -6.3626,
    "rejected_convention": "shifted/codebooks k/grouped"
   },
   "tower: query/gate split as named": {
    "measure": "mean log-prob of the reference's own codes, teacher-forced",
-   "chosen": -5.2682,
-   "rejected": -11.2015,
+   "chosen": -5.2546,
+   "rejected": -11.242,
    "rejected_convention": "shifted/codebooks k-1/grouped/q-gate swapped"
   }
  }

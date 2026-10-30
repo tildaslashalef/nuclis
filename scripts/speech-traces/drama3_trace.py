@@ -1118,12 +1118,48 @@ def build_frames(tok: Any, config: Any, codes: Any) -> tuple[Any, dict[str, Any]
     return frames, layout
 
 
+def exact_delta_rule(
+    query: Any, key: Any, value: Any, decay: Any, beta: Any, initial_state: Any = None, chunk_size: int = 64
+) -> Any:
+    """Fish's gated delta rule, recurrent row by row in F64, for `chunk_gated_delta_rule`.
+
+    Fish's chunked F32 form (64-row chunks, two triangular solves) rounds by about 2e-6
+    at layer 2, which flips a near-tied expert choice of the clone prompt (layer 3, row
+    34: 0.41913772 against 0.41913646); the exact rule makes the trace a fixed point.
+    State: decayed by exp(decay), corrected by beta·(v − Sᵀk); q and k L2-normalized,
+    q scaled by key_dim^-0.5; the output in the input's dtype, the state in F32.
+    """
+    import torch
+
+    del chunk_size
+    out_dtype = query.dtype
+    batch, length, heads, key_dim = key.shape
+    q, k, v, b, d = (t.transpose(1, 2).to(torch.float64).contiguous() for t in (query, key, value, beta, decay))
+    q = q * torch.rsqrt((q * q).sum(-1, keepdim=True) + 1e-6) * key_dim**-0.5
+    k = k * torch.rsqrt((k * k).sum(-1, keepdim=True) + 1e-6)
+    state = (
+        v.new_zeros(batch, heads, key_dim, v.shape[-1]) if initial_state is None else initial_state.to(torch.float64)
+    )
+    out = torch.empty_like(v)
+    for i in range(length):
+        state = state * d[:, :, i].exp()[..., None, None]
+        kt = k[:, :, i]
+        remembered = (state * kt.unsqueeze(-1)).sum(-2)
+        delta = (v[:, :, i] - remembered) * b[:, :, i].unsqueeze(-1)
+        state = state + kt.unsqueeze(-1) * delta.unsqueeze(-2)
+        out[:, :, i] = (state * q[:, :, i].unsqueeze(-1)).sum(-2)
+    return out.transpose(1, 2).contiguous().to(out_dtype), state.to(torch.float32)
+
+
 def section_clone(g: Gguf, tok: Any, case: Case, codes: Any, debug: bool) -> None:
     import torch
     import torch.nn.functional as F
     from fish_speech.models.text2semantic.fish_omni.backbone import DecoderLayer
     from fish_speech.models.text2semantic.fish_omni.layers import LayerContext, ZeroCenteredRMSNorm
     from fish_speech.models.text2semantic.fish_omni.tower import FishOmniAudioDecoder
+    from fish_speech.models.text2semantic.fish_omni import layers as fish_layers
+
+    fish_layers.chunk_gated_delta_rule = exact_delta_rule  # pyright: ignore[reportAttributeAccessIssue]
 
     config = fish_config(g)
     cfg = config.text
@@ -1425,7 +1461,7 @@ def main() -> None:
             "tokenizers": tokenizers.__version__,
             "numpy": np.__version__,
             "device": "cpu",
-            "dtype": "float32 (every GGUF tensor dequantized to F32: Q4_K by ggml's formula, F16 widened)",
+            "dtype": "float32 (every GGUF tensor dequantized to F32: Q4_K by ggml's formula, F16 widened); the clone case's gated delta rule recurrent in float64 (exact_delta_rule)",
             "conventions": "Each file is little-endian, row-major, time first. `rows` lists the [start, end) ranges of the "
             "whole stage's rows the file holds, in order; a file without `rows` is whole.",
         }

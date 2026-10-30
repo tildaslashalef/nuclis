@@ -229,6 +229,25 @@ fn stage(label: []const u8, got: []const f32, want: []const f32, width: usize, b
     std.debug.print("  {s:<20} {d:>6} {e:>10.2} {e:>10.2} {e:>10.2} {d:>10.7}", .{ label, count, s.max_abs, s.max_ref, rel, cosine });
     if (logits) std.debug.print("  argmax {d}/{d}", .{ same, count });
     std.debug.print("{s}\n", .{if (ok) "" else "  OVER"});
+    if (!ok) {
+        // The rows that carry the error, by their relative RMS.
+        std.debug.print("    worst rows (index in the trace's order):", .{});
+        var shown: [4]usize = @splat(count);
+        for (&shown) |*slot| {
+            var worst: f64 = -1;
+            for (0..count) |i| {
+                if (std.mem.indexOfScalar(usize, &shown, i) != null) continue;
+                const t = compare(got[i * width ..][0..width], want[i * width ..][0..width]);
+                const e = @sqrt(t.diff2 / t.ref2);
+                if (e > worst) {
+                    worst = e;
+                    slot.* = i;
+                }
+            }
+            if (slot.* < count) std.debug.print(" {d} ({e:.2})", .{ slot.*, worst });
+        }
+        std.debug.print("\n", .{});
+    }
     return ok;
 }
 
@@ -308,9 +327,23 @@ fn trace(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, m: *const
         std.debug.print("  {d} prompt rows, {d} frames; prefill {d:.2} rows/s, tower prefill {d:.0} ms a row, tower {d:.0} ms a frame, decode {d:.0} ms a row\n", .{ prompt_rows, generated, @as(f64, @floatFromInt(prompt_rows)) * 1e6 / prefill_us, tower_prefill_us / 1000 / @as(f64, @floatFromInt(@max(prompt_rows - 1, 1))), tower_us / 1000 / @as(f64, @floatFromInt(@max(generated, 1))), decode_us / 1000 / @as(f64, @floatFromInt(@max(generated -| 1, 1))) });
         std.debug.print("  frames replayed through the tower: {s}\n", .{if (codes_equal) "equal" else "DIFFER"});
         if (!codes_equal) passed = false;
+        // Every tower row's head logits from its residual outputs; the rows
+        // `step` ran must equal what it handed the pick.
+        const tower_rows = tower.rows[drama3.shared_layers].items.len / drama3.hidden;
+        const heads = try arena.alloc(f32, tower_rows * drama3.residual_layers * drama3.codebook_size);
+        const residual = try arena.alloc(f32, tower_rows * drama3.residual_layers * drama3.hidden);
+        for (0..tower_rows) |t| for (0..drama3.residual_layers) |j| {
+            const h = tower.rows[drama3.shared_layers + j].items[t * drama3.hidden ..][0..drama3.hidden];
+            @memcpy(residual[(t * drama3.residual_layers + j) * drama3.hidden ..][0..drama3.hidden], h);
+            try r.headLogits(j, h, heads[(t * drama3.residual_layers + j) * drama3.codebook_size ..][0..drama3.codebook_size]);
+        };
+        const stepped = heads[(prompt_rows - 1) * drama3.residual_layers * drama3.codebook_size ..];
+        const same_heads = std.mem.eql(f32, stepped, replay.logits.items);
+        std.debug.print("  the step's head logits against the heads on its recorded rows: {s}\n", .{if (same_heads) "equal" else "DIFFER"});
+        if (!same_heads) passed = false;
         std.debug.print("  {s:<20} {s:>6} {s:>10} {s:>10} {s:>10} {s:>10}\n", .{ "stage", "rows", "max |Δ|", "max |ref|", "rel RMS", "cosine" });
 
-        // Each pinned stage of the backbone and the tower, `[rows][width]`.
+        // Each pinned stage, `[rows][...][width]`; `rows` index the first axis.
         var stages = files.iterator();
         while (stages.next()) |entry| {
             const key = entry.key_ptr.*;
@@ -318,6 +351,8 @@ fn trace(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, m: *const
             const object = entry.value_ptr.object;
             const shape = object.get("shape").?.array.items;
             const w: usize = @intCast(shape[shape.len - 1].integer);
+            var row_width: usize = 1;
+            for (shape[1..]) |d| row_width *= @intCast(d.integer);
             const values: []const f32 = blk: {
                 if (std.mem.eql(u8, key, "backbone/inputs")) break :blk inputs;
                 if (std.mem.eql(u8, key, "backbone/norm")) break :blk norm_rows;
@@ -326,11 +361,10 @@ fn trace(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, m: *const
                     const layer = std.fmt.parseInt(usize, key["backbone/layer.".len..], 10) catch break :blk &.{};
                     if (layer < backbone.rows.len) break :blk backbone.rows[layer].items;
                 }
-                if (std.mem.startsWith(u8, key, "tower/layer.")) {
-                    const layer = std.fmt.parseInt(usize, key["tower/layer.".len..], 10) catch break :blk &.{};
-                    if (layer < tower.rows.len) break :blk tower.rows[layer].items;
-                }
-                if (std.mem.eql(u8, key, "tower/heads")) break :blk replay.logits.items;
+                // The shared stack's output is shared layer 3's.
+                if (std.mem.eql(u8, key, "tower/shared")) break :blk tower.rows[drama3.shared_layers - 1].items;
+                if (std.mem.eql(u8, key, "tower/residual")) break :blk residual;
+                if (std.mem.eql(u8, key, "tower/logits")) break :blk heads;
                 break :blk &.{};
             };
             if (values.len == 0 or w == 0) {
@@ -339,13 +373,12 @@ fn trace(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, m: *const
                 continue;
             }
             const want = try floats(arena, try readFixture(arena, io, fixtures, entry.value_ptr.*));
-            const got = try select(arena, values, w, object) orelse {
-                std.debug.print("  {s:<20} rows outside the {d} computed: MISMATCH\n", .{ key, values.len / w });
+            const got = try select(arena, values, row_width, object) orelse {
+                std.debug.print("  {s:<20} rows outside the {d} computed: MISMATCH\n", .{ key, values.len / row_width });
                 passed = false;
                 continue;
             };
-            const is_logits = std.mem.endsWith(u8, key, "logits") or std.mem.eql(u8, key, "tower/heads");
-            if (!stage(key, got, want, w, bounds.relative_rms, is_logits)) passed = false;
+            if (!stage(key, got, want, w, bounds.relative_rms, std.mem.endsWith(u8, key, "logits"))) passed = false;
         }
     }
     if (checked == 0) {

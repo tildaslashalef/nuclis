@@ -495,6 +495,41 @@ The clip is read as `torchaudio.load` reads it (int16 / 32768); torchaudio
 the codec in bfloat16 by default (`load_codec_model`), and the traces are
 F32.
 
+### Agreement on the CPU (2026-10-30)
+
+`drama3-check MODEL.gguf trace` replays `clone-fox` through the CPU
+runtime: prefill of the 164 prompt rows, the tower's prefill over rows
+0–162, then each continuation row as a tower step fed the trace's codes and
+a backbone decode of the next frame. The gate `drama3-trace-cpu` holds
+every stage at relative RMS ≤ 1e-5 and every logits argmax equal. Measured
+on the M4 Pro, ReleaseFast, the Q4_K file, against a trace computed with the
+delta rule exact (below):
+
+| Stage | Rows | rel RMS |
+| --- | --- | --- |
+| backbone input | 40 | 5.4e-8 |
+| after layer 0 / 3 / 19 / 39 | 40 | 4.1e-7 / 5.3e-7 / 4.5e-7 / 1.0e-6 |
+| `output_norm` | 40 | 2.1e-6 |
+| logits (argmax 40/40) | 40 | 2.5e-6 |
+| tower, shared stack | 6 | 3.2e-6 |
+| tower, residual layers | 54 | 3.1e-6 |
+| tower, head logits (argmax 54/54) | 54 | 1.7e-6 |
+
+Fish's prefill runs `chunk_gated_delta_rule` (64-row chunks, two F32
+triangular solves). Its rounding, about 2e-6 at layer 2, changes the input
+of layer 3's router at row 34. The eighth and ninth experts there are
+0.41913772 and 0.41913646 apart by 1.3e-6, so the chunked trace takes the
+other expert. From that row on it differs from the exact computation by
+2e-3 at layer 39, 3.8e-2 at `output_norm`, and one logits argmax in 40
+(two in 54 for the tower). Fish's own layers rerun with
+`recurrent_gated_delta_rule` in F64, everything else unchanged, agree with
+nuclis to 2.2e-6 through layer 19 at all 188 rows. The `clone-fox`
+fixtures therefore come from that run: `section_clone` replaces
+`layers.chunk_gated_delta_rule` with `exact_delta_rule`, the recurrent rule
+in F64 (the index's `dtype` says so). The
+backbone and tower verdicts are unchanged under it. The best reading's
+reference log-probability goes from −4.4039 to −4.3752.
+
 ## Open
 
 - The silence stop and retry.

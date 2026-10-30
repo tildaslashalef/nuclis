@@ -427,6 +427,14 @@ pub const Runtime = struct {
 
     // --- the tower ------------------------------------------------------
 
+    /// Codebook head `j`'s 4,096 logits (code j + 1) of residual layer j's
+    /// output `h`: what `step` hands its `Pick`.
+    pub fn headLogits(self: *Runtime, j: usize, h: []const f32, out: []f32) !void {
+        if (j >= model.residual_layers or h.len != model.hidden or out.len != model.codebook_size) return error.InvalidShape;
+        try self.mm(self.model.binding.heads[j], h, out);
+        for (out) |x| if (!std.math.isFinite(x)) return error.NonFiniteResult;
+    }
+
     /// Teacher-forces the tower over the next `hidden_rows.len / hidden`
     /// rows (`prefill`): row i's hidden is labelled with `frames[i + 1]`'s
     /// codes and enriched by `frames[i]`'s, so `frames` holds one more frame
