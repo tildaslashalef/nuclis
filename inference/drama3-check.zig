@@ -12,13 +12,16 @@
 //!
 //!   drama3-check MODEL.gguf smoke [--frames N] [--value-order grouped|tiled] [--norm-offset X]
 //!   drama3-check MODEL.gguf trace [--max-relative-rms X] [--fixtures DIR] [--value-order ...] [--norm-offset X]
+//!   drama3-check MODEL.gguf speak --text T --out FILE.wav [--seed N] [--frames N]
+//! `speak` runs `drama3_speech.Synthesizer` on the CPU end to end (no
+//! reference voice) and writes a 44.1 kHz 16-bit WAV.
 const std = @import("std");
 const inference = @import("inference");
 const drama3 = inference.models.drama3;
 const runtime = inference.models.drama3_runtime;
 const weights = inference.weights;
 
-const usage = "usage: drama3-check MODEL.gguf smoke|trace [--frames N] [--max-relative-rms X] [--fixtures DIR] [--value-order grouped|tiled] [--norm-offset X]\n";
+const usage = "usage: drama3-check MODEL.gguf smoke|trace|speak [--text T] [--out FILE] [--seed N] [--frames N] [--max-relative-rms X] [--fixtures DIR] [--value-order grouped|tiled] [--norm-offset X]\n";
 
 fn elapsedUs(io: std.Io, start: std.Io.Timestamp) f64 {
     return @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toMicroseconds());
@@ -358,7 +361,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
-    const Mode = enum { smoke, trace };
+    const Mode = enum { smoke, trace, speak };
     const mode = std.meta.stringToEnum(Mode, if (args.len >= 3) args[2] else "") orelse {
         std.debug.print(usage, .{});
         return error.InvalidArguments;
@@ -367,6 +370,9 @@ pub fn main(init: std.process.Init) !void {
     var fixtures: []const u8 = "tests/fixtures/drama3";
     var frames: usize = 4;
     var options: runtime.Options = .{};
+    var text: []const u8 = "Hello, this is a test.";
+    var out_path: []const u8 = "drama3.wav";
+    var seed: u64 = 0;
     var i: usize = 3;
     while (i + 1 < args.len) : (i += 2) {
         const value = args[i + 1];
@@ -378,6 +384,12 @@ pub fn main(init: std.process.Init) !void {
             frames = try std.fmt.parseInt(usize, value, 10);
         } else if (std.mem.eql(u8, args[i], "--value-order")) {
             options.value_order = std.meta.stringToEnum(runtime.ValueOrder, value) orelse return error.InvalidArguments;
+        } else if (std.mem.eql(u8, args[i], "--text")) {
+            text = value;
+        } else if (std.mem.eql(u8, args[i], "--out")) {
+            out_path = value;
+        } else if (std.mem.eql(u8, args[i], "--seed")) {
+            seed = try std.fmt.parseInt(u64, value, 10);
         } else if (std.mem.eql(u8, args[i], "--norm-offset")) {
             options.norm_offset = try std.fmt.parseFloat(f32, value);
         } else break;
@@ -386,6 +398,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print(usage, .{});
         return error.InvalidArguments;
     }
+    if (mode == .speak) return speak(gpa, io, args[1], text, out_path, seed, frames);
     const load_start = std.Io.Clock.awake.now(io);
     var mapped = try weights.Mapped.open(gpa, io, args[1]);
     defer mapped.deinit(io);
@@ -395,6 +408,53 @@ pub fn main(init: std.process.Init) !void {
     const ok = switch (mode) {
         .smoke => try smoke(gpa, io, &m, frames),
         .trace => try trace(gpa, arena, io, &m, fixtures, bounds),
+        .speak => unreachable,
     };
     if (!ok) std.process.exit(1);
+}
+
+fn speak(gpa: std.mem.Allocator, io: std.Io, path: []const u8, text: []const u8, out_path: []const u8, seed: u64, frames: usize) !void {
+    const speech = inference.models.drama3_speech;
+    const load_start = std.Io.Clock.awake.now(io);
+    const voice = try speech.Voice.open(gpa, io, path);
+    defer voice.close();
+    std.debug.print("loaded in {d:.0} ms\n", .{elapsedUs(io, load_start) / 1000});
+    var synth = try speech.Synthesizer.init(gpa, voice, .{ .text = text, .seed = seed, .max_frames = @max(frames, 64) });
+    defer synth.deinit();
+    var samples: std.ArrayList(i16) = .empty;
+    defer samples.deinit(gpa);
+    var buffer: [8192]f32 = undefined;
+    const start = std.Io.Clock.awake.now(io);
+    while (true) {
+        const n = try synth.read(&buffer);
+        if (n == 0) break;
+        for (buffer[0..n]) |x| try samples.append(gpa, @intFromFloat(@round(std.math.clamp(x, -1, 1) * 32767)));
+    }
+    const file = try std.Io.Dir.cwd().createFile(io, out_path, .{});
+    defer file.close(io);
+    var header: [44]u8 = undefined;
+    const data: u32 = @intCast(samples.items.len * 2);
+    @memcpy(header[0..4], "RIFF");
+    std.mem.writeInt(u32, header[4..8], 36 + data, .little);
+    @memcpy(header[8..16], "WAVEfmt ");
+    std.mem.writeInt(u32, header[16..20], 16, .little);
+    std.mem.writeInt(u16, header[20..22], 1, .little);
+    std.mem.writeInt(u16, header[22..24], 1, .little);
+    std.mem.writeInt(u32, header[24..28], speech.sample_rate, .little);
+    std.mem.writeInt(u32, header[28..32], speech.sample_rate * 2, .little);
+    std.mem.writeInt(u16, header[32..34], 2, .little);
+    std.mem.writeInt(u16, header[34..36], 16, .little);
+    @memcpy(header[36..40], "data");
+    std.mem.writeInt(u32, header[40..44], data, .little);
+    try file.writePositionalAll(io, &header, 0);
+    try file.writePositionalAll(io, std.mem.sliceAsBytes(samples.items), 44);
+    const t = synth.timing;
+    std.debug.print("wrote {s}: {d} frames, {d:.2} s of audio in {d:.1} s; chunks {d}, retried {d}, stops eos/silence/length {any}; prefill {d:.1} s ({d} rows), frames {d:.1} s, codec {d:.1} s\n", .{
+        out_path,                                                        synth.frames,
+        @as(f64, @floatFromInt(samples.items.len)) / speech.sample_rate, elapsedUs(io, start) / 1e6,
+        synth.chunks.len,                                                synth.retried,
+        synth.stops,                                                     @as(f64, @floatFromInt(t.prefill_ns)) / 1e9,
+        t.prompt_rows,                                                   @as(f64, @floatFromInt(t.frames_ns)) / 1e9,
+        @as(f64, @floatFromInt(t.codec_ns)) / 1e9,
+    });
 }
