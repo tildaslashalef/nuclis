@@ -14,6 +14,7 @@ const weights = @import("../runtime/weights.zig");
 const text_mod = @import("drama3_text.zig");
 const sampler_mod = @import("drama3_sampler.zig");
 const runtime = @import("drama3_runtime.zig");
+const session = @import("../runtime/session.zig");
 const metal_plan = @import("drama3_metal.zig");
 const metal = @import("../backends/metal/root.zig");
 const adapter = @import("drama3.zig");
@@ -35,21 +36,27 @@ pub const chunk_frames = 600;
 /// `frames_per_char` for each code point (about twice a brisk speaking rate).
 pub const budget_floor_frames = 64;
 pub const frames_per_char = 3;
-/// A take has started speaking once a frame's RMS reaches this (−40 dBFS).
+/// A take has spoken once its last `level_window` frames' RMS (the
+/// codec's first frame left out) peaks at `spoken_rms` (−40 dBFS) and
+/// `onset_ratio` times their quietest, so steady noise from the start is
+/// not speech. After that a frame is silent under `silence_ratio` of the
+/// take's loudest, clamped to 0.003–0.02, so a whisper is not
+/// (docs/models/drama3.md § Stalls).
+pub const level_window = 16;
 pub const spoken_rms = 0.01;
-/// After that, a frame is silent below `silence_ratio` of the take's
-/// loudest frame, clamped to these: a whisper peaks near 0.04 and stays
-/// above 0.003 between its words, where a fixed 0.02 cut it.
+pub const onset_ratio = 3.0;
 pub const silence_ratio = 0.1;
 pub const silence_rms_min = 0.003;
 pub const silence_rms_max = 0.02;
+/// The quietest level `onset_ratio` multiplies.
+const level_floor = 0.002;
 /// After speech starts, this many silent frames in a row (about 1.5 s) end
-/// the chunk; the silence is cut to `kept_silence` frames.
+/// the chunk; the run is cut to `kept_silence` frames.
 pub const silence_frames = 32;
 pub const kept_silence = 6;
 /// A take that has not spoken within this many frames, or ends first, is
 /// retried with the next seed, at most `retries` times.
-pub const start_frames = 48;
+pub const start_frames = 32;
 pub const retries = 2;
 /// Frames decoded per codec push once a chunk is speaking.
 pub const push_frames = 4;
@@ -75,6 +82,12 @@ pub const Voice = struct {
     encoder: ?codec_encoder.Encoder = null,
     defaults: Params,
     repeat: Repeat,
+    /// The state after each recent prompt prefix (the system turn and a
+    /// voice's references), restored instead of prefilled again; at most
+    /// `max_prefixes`, the least recently used dropped. The voice's
+    /// synthesizers run one at a time.
+    prefixes: std.ArrayList(Prefix) = .empty,
+    prefix_clock: u64 = 0,
 
     /// `openWith` on the CPU.
     pub fn open(gpa: Allocator, io: std.Io, path: []const u8) !*Voice {
@@ -91,6 +104,8 @@ pub const Voice = struct {
         self.gpu = null;
         self.codec = null;
         self.decoder = null;
+        self.prefixes = .empty;
+        self.prefix_clock = 0;
         self.mapped = try weights.Mapped.open(gpa, io, path);
         errdefer self.mapped.deinit(io);
         const doc = &self.mapped.document;
@@ -128,6 +143,8 @@ pub const Voice = struct {
     }
 
     pub fn close(self: *Voice) void {
+        for (self.prefixes.items) |*p| p.deinit(self.gpa);
+        self.prefixes.deinit(self.gpa);
         if (self.encoder) |*e| e.deinit();
         if (self.decoder) |*d| d.deinit();
         if (self.gpu) |*g| g.deinit();
@@ -138,11 +155,64 @@ pub const Voice = struct {
         self.gpa.destroy(self);
     }
 
+    /// The state kept after `rows`, marked used; null when none is.
+    fn findPrefix(self: *Voice, rows: []const text_mod.Row) ?*const Prefix {
+        for (self.prefixes.items) |*p| if (std.mem.eql(u8, std.mem.sliceAsBytes(p.rows), std.mem.sliceAsBytes(rows))) {
+            self.prefix_clock += 1;
+            p.used = self.prefix_clock;
+            return p;
+        };
+        return null;
+    }
+
+    /// Keeps `state` (its backbone after `rows`, its tower one row behind)
+    /// and `last`, the backbone's hidden at the last of `rows`.
+    fn keepPrefix(self: *Voice, rows: []const text_mod.Row, state: *const runtime.State, last: []const f32) !void {
+        var kept: Prefix = .{ .rows = try self.gpa.dupe(text_mod.Row, rows), .backbone = undefined, .tower = undefined, .last = &.{}, .used = 0 };
+        errdefer self.gpa.free(kept.rows);
+        kept.backbone = try state.backbone.snapshot(self.gpa);
+        errdefer kept.backbone.deinit();
+        kept.tower = try state.tower.snapshot(self.gpa);
+        errdefer kept.tower.deinit();
+        kept.last = try self.gpa.dupe(f32, last);
+        errdefer self.gpa.free(kept.last);
+        self.prefix_clock += 1;
+        kept.used = self.prefix_clock;
+        if (self.prefixes.items.len == max_prefixes) {
+            var oldest: usize = 0;
+            for (self.prefixes.items, 0..) |p, i| if (p.used < self.prefixes.items[oldest].used) {
+                oldest = i;
+            };
+            var dropped = self.prefixes.swapRemove(oldest);
+            dropped.deinit(self.gpa);
+        }
+        try self.prefixes.append(self.gpa, kept);
+    }
+
     /// The codes of a reference clip (44.1 kHz mono), owned by the caller.
     pub fn referenceCodes(self: *Voice, gpa: Allocator, samples: []const f32) ![]Codes {
         if (self.encoder == null) self.encoder = try codec_encoder.Encoder.init(self.gpa, self.io, self.mapped.document, self.mapped.view());
         const frames = try self.encoder.?.encode(gpa, samples);
         return frames;
+    }
+};
+
+/// Prompt prefixes a voice keeps the state after (each about 90 MB with a
+/// 12 s reference).
+pub const max_prefixes = 4;
+
+const Prefix = struct {
+    rows: []text_mod.Row,
+    backbone: session.Snapshot,
+    tower: session.Snapshot,
+    last: []f32,
+    used: u64,
+
+    fn deinit(self: *Prefix, gpa: Allocator) void {
+        gpa.free(self.rows);
+        self.backbone.deinit();
+        self.tower.deinit();
+        gpa.free(self.last);
     }
 };
 
@@ -164,6 +234,10 @@ pub const Request = struct {
     text: []const u8,
     /// Each reference's transcript (speaker-tagged as Fish requires) and codes.
     references: []const text_mod.Reference = &.{},
+    /// A sentence spoken before this text in the same voice (its text and
+    /// codes), taken as the first chunk's history as a chunk of this text
+    /// would be.
+    context: ?text_mod.Turn = null,
     params: ?Params = null,
     seed: u64 = 0,
     chunking: Chunking = .{},
@@ -176,6 +250,11 @@ pub const Stop = enum { eos, silence, length };
 
 pub const Timing = struct {
     prefill_ns: u64 = 0,
+    /// Takes whose prompt prefix was restored from the voice, and those
+    /// that prefilled it (and kept it).
+    prefix_hits: usize = 0,
+    prefix_misses: usize = 0,
+    prefix_rows: usize = 0,
     /// The frames' sampling, tower steps, and backbone decodes.
     frames_ns: u64 = 0,
     codec_ns: u64 = 0,
@@ -192,6 +271,9 @@ pub const Synthesizer = struct {
     params: Params,
     chunks: [][]u8,
     next_chunk: usize = 0,
+    /// Every prompt's first rows (`Text.prefix`), prefilled apart so the
+    /// voice can keep their state.
+    prefix: []text_mod.Row,
     history: text_mod.History,
     engine: Engine,
     sampler: sampler_mod.Sampler,
@@ -217,6 +299,12 @@ pub const Synthesizer = struct {
             gpa.free(chunks);
         }
         if (chunks.len == 0) return error.EmptyText;
+        if (request.context) |c| try voice.text.validate(c.text);
+        const prefix = try voice.text.prefix(gpa, request.references);
+        errdefer gpa.free(prefix);
+        var history: text_mod.History = .init(gpa, 1);
+        errdefer history.deinit();
+        if (request.context) |c| if (c.codes.len > 0) try history.push(c.text, c.codes);
         var engine = try Engine.init(gpa, voice);
         errdefer engine.deinit();
         var sampler = try sampler_mod.Sampler.init(gpa, request.seed, text_mod.codebook_size + 1);
@@ -229,7 +317,8 @@ pub const Synthesizer = struct {
             .request = request,
             .params = request.params orelse voice.defaults,
             .chunks = chunks,
-            .history = .init(gpa, 1),
+            .prefix = prefix,
+            .history = history,
             .engine = engine,
             .sampler = sampler,
             .stream = stream,
@@ -241,6 +330,7 @@ pub const Synthesizer = struct {
         self.gpa.free(self.chunks);
         if (self.take) |*t| t.deinit(self.gpa);
         self.history.deinit();
+        self.gpa.free(self.prefix);
         self.engine.deinit();
         self.sampler.deinit(self.gpa);
         self.stream.deinit();
@@ -269,6 +359,15 @@ pub const Synthesizer = struct {
     }
 
     /// The chunk the take speaks.
+    /// The last sentence spoken (or the request's context when none was),
+    /// borrowed until the synthesizer ends: the next request's `context`.
+    pub fn lastTurn(self: *const Synthesizer) ?text_mod.Turn {
+        const turns = self.history.turns.items;
+        if (turns.len == 0) return null;
+        const t = turns[turns.len - 1];
+        return .{ .text = t.text, .codes = t.codes };
+    }
+
     fn chunkText(self: *const Synthesizer) []const u8 {
         return self.chunks[self.next_chunk - 1];
     }
@@ -284,8 +383,9 @@ pub const Synthesizer = struct {
         decoded: usize = 0,
         /// Silent frames since the last sounding one.
         silent: usize = 0,
-        /// The loudest frame's RMS so far.
+        /// The loudest frame's RMS so far, and every decoded frame's.
         peak: f32 = 0,
+        levels: std.ArrayList(f32) = .empty,
         spoke: bool = false,
         done: bool = false,
         stop: Stop = .length,
@@ -297,6 +397,7 @@ pub const Synthesizer = struct {
         fn deinit(self: *Take, gpa: Allocator) void {
             self.codes.deinit(gpa);
             self.samples.deinit(gpa);
+            self.levels.deinit(gpa);
             self.recent.deinit(gpa);
         }
     };
@@ -342,8 +443,24 @@ pub const Synthesizer = struct {
         const hidden = try gpa.alloc(f32, rows.len * adapter.hidden);
         defer gpa.free(hidden);
         const prefill_start = std.Io.Clock.awake.now(io);
-        try self.engine.prefill(frames, hidden, &take.logits);
-        try self.engine.towerPrefill(hidden[0 .. (rows.len - 1) * adapter.hidden], frames);
+        // The prefix and the rest are always prefilled apart, so a restored
+        // prefix gives the same take bit for bit.
+        const h = adapter.hidden;
+        const n = self.prefix.len;
+        std.debug.assert(n >= 2 and rows.len > n and std.mem.eql(u8, std.mem.sliceAsBytes(rows[0..n]), std.mem.sliceAsBytes(self.prefix)));
+        self.timing.prefix_rows = n;
+        if (voice.findPrefix(self.prefix)) |kept| {
+            try self.engine.restore(kept);
+            @memcpy(hidden[(n - 1) * h ..][0..h], kept.last);
+            self.timing.prefix_hits += 1;
+        } else {
+            try self.engine.prefill(frames[0..n], hidden[0 .. n * h], null);
+            try self.engine.towerPrefill(hidden[0 .. (n - 1) * h], frames[0..n]);
+            try voice.keepPrefix(self.prefix, self.engine.state(), hidden[(n - 1) * h ..][0..h]);
+            self.timing.prefix_misses += 1;
+        }
+        try self.engine.prefill(frames[n..], hidden[n * h ..], &take.logits);
+        try self.engine.towerPrefill(hidden[(n - 1) * h .. (rows.len - 1) * h], frames[n - 1 ..]);
         self.timing.prefill_ns += elapsed(io, prefill_start);
         take.input = frames[rows.len - 1];
         for (rows[rows.len -| voice.repeat.window..]) |r| try take.recent.append(gpa, r.main);
@@ -443,11 +560,23 @@ pub const Synthesizer = struct {
             var sum: f64 = 0;
             for (samples) |v| sum += @as(f64, v) * v;
             const rms: f32 = @floatCast(@sqrt(sum / samples_per_frame));
+            try take.levels.append(self.gpa, rms);
+            const levels = take.levels.items;
+            if (!take.spoke) {
+                const window = levels[@max(1, levels.len -| level_window)..];
+                if (window.len >= 3) {
+                    const range = std.mem.minMax(f32, window);
+                    if (range[1] >= spoken_rms and range[1] >= onset_ratio * @max(range[0], level_floor)) {
+                        take.spoke = true;
+                        take.peak = range[1];
+                    }
+                }
+                continue;
+            }
             take.peak = @max(take.peak, rms);
-            if (rms >= spoken_rms) take.spoke = true;
             if (rms >= std.math.clamp(silence_ratio * take.peak, silence_rms_min, silence_rms_max)) {
                 take.silent = 0;
-            } else if (take.spoke) {
+            } else {
                 take.silent += 1;
                 if (take.silent == silence_frames) {
                     const end = at + (i + 1) * samples_per_frame;
@@ -494,7 +623,22 @@ const Engine = union(Backend) {
             .metal => |*p| p.reset(),
         }
     }
-    fn prefill(self: *Engine, frames: []const runtime.Frame, hidden: []f32, logits: []f32) !void {
+    fn state(self: *Engine) *const runtime.State {
+        return switch (self.*) {
+            .cpu => |*c| &c.state,
+            .metal => |*p| &p.state,
+        };
+    }
+    /// Takes a kept prefix's state; the engine must be fresh (`reset`).
+    fn restore(self: *Engine, kept: *const Prefix) !void {
+        const s = switch (self.*) {
+            .cpu => |*c| &c.state,
+            .metal => |*p| &p.state,
+        };
+        try s.backbone.restore(&kept.backbone);
+        try s.tower.restore(&kept.tower);
+    }
+    fn prefill(self: *Engine, frames: []const runtime.Frame, hidden: []f32, logits: ?[]f32) !void {
         switch (self.*) {
             .cpu => |*c| try c.runtime.prefill(&c.state, frames, hidden, logits, null),
             .metal => |*p| try p.prefill(frames, hidden, logits),

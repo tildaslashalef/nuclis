@@ -153,8 +153,35 @@ pub const Text = struct {
         errdefer rows.deinit(gpa);
         var scratch: std.ArrayList(u8) = .empty;
         defer scratch.deinit(gpa);
-        try self.literalRows(gpa, &rows, self.system);
-        try self.literalRows(gpa, &rows, if (references.len == 0) self.instruction else self.reference_instruction);
+        try self.prefixRows(gpa, &rows, &scratch, references);
+        for (history) |turn| {
+            try self.validate(turn.text);
+            try self.userRows(gpa, &rows, &scratch, turn.text);
+            try self.literalRows(gpa, &rows, self.assistant);
+            try self.audioRows(gpa, &rows, turn.codes);
+            try self.literalRows(gpa, &rows, self.end);
+        }
+        try self.userRows(gpa, &rows, &scratch, text);
+        try self.literalRows(gpa, &rows, self.assistant);
+        if (rows.items.len > max_prompt_rows) return error.PromptTooLong;
+        return rows.toOwnedSlice(gpa);
+    }
+
+    /// The rows every `prompt` with `references` starts with (the system
+    /// turn and the references), whatever history and text follow; owned
+    /// by the caller.
+    pub fn prefix(self: *const Text, gpa: Allocator, references: []const Reference) Error![]Row {
+        var rows: std.ArrayList(Row) = .empty;
+        errdefer rows.deinit(gpa);
+        var scratch: std.ArrayList(u8) = .empty;
+        defer scratch.deinit(gpa);
+        try self.prefixRows(gpa, &rows, &scratch, references);
+        return rows.toOwnedSlice(gpa);
+    }
+
+    fn prefixRows(self: *const Text, gpa: Allocator, rows: *std.ArrayList(Row), scratch: *std.ArrayList(u8), references: []const Reference) Error!void {
+        try self.literalRows(gpa, rows, self.system);
+        try self.literalRows(gpa, rows, if (references.len == 0) self.instruction else self.reference_instruction);
         for (references, 1..) |reference, index| {
             try self.validate(reference.transcript);
             // The tag must follow "Text: " directly: leading white space moves
@@ -169,21 +196,10 @@ pub const Text = struct {
                 try scratch.print(gpa, "<|speaker:0|> {s}", .{reference.transcript});
             }
             try scratch.appendSlice(gpa, self.reference_speech);
-            try self.literalRows(gpa, &rows, scratch.items);
-            try self.audioRows(gpa, &rows, reference.codes);
+            try self.literalRows(gpa, rows, scratch.items);
+            try self.audioRows(gpa, rows, reference.codes);
         }
-        try self.literalRows(gpa, &rows, self.end);
-        for (history) |turn| {
-            try self.validate(turn.text);
-            try self.userRows(gpa, &rows, &scratch, turn.text);
-            try self.literalRows(gpa, &rows, self.assistant);
-            try self.audioRows(gpa, &rows, turn.codes);
-            try self.literalRows(gpa, &rows, self.end);
-        }
-        try self.userRows(gpa, &rows, &scratch, text);
-        try self.literalRows(gpa, &rows, self.assistant);
-        if (rows.items.len > max_prompt_rows) return error.PromptTooLong;
-        return rows.toOwnedSlice(gpa);
+        try self.literalRows(gpa, rows, self.end);
     }
 
     fn userRows(self: *const Text, gpa: Allocator, rows: *std.ArrayList(Row), scratch: *std.ArrayList(u8), text: []const u8) Error!void {
