@@ -25,9 +25,10 @@ pub const sample_rate = 44100;
 pub const Frame = [codebooks]u16;
 
 const layers = 8;
-const heads = 16;
-const head_dim = 64;
-const window = 128;
+pub const heads = 16;
+pub const head_dim = 64;
+/// The quantizer's transformers' attention window (rows).
+pub const window = 128;
 const intermediate = 3072;
 const rms_eps = 1e-5;
 const rope_base = 1e4;
@@ -50,7 +51,7 @@ pub const Observer = struct {
     }
 };
 
-const Layer = struct {
+pub const Layer = struct {
     attn_norm: []const f32,
     ffn_norm: []const f32,
     q: q3.Linear,
@@ -78,8 +79,7 @@ pub const Runtime = struct {
     /// [codebook][size][dim]: the semantic book, then the nine residual ones.
     books: [codebooks][]const f32,
     project: [codebooks]q3.Linear,
-    layers: [layers]Layer,
-    norm: []const f32,
+    post: Transformer,
     upsample: [2]UpStage,
     conv_in: q3.CausalConv,
     blocks: [4]Block,
@@ -94,6 +94,7 @@ pub const Runtime = struct {
         self.storage = .init(gpa);
         errdefer self.storage.deinit();
         const l: Loader = .{ .arena = self.storage.allocator(), .gpa = gpa, .doc = doc, .view = view };
+        self.post = try l.transformer("codec.q.post", layers, window);
         for (0..codebooks) |c| {
             const size: usize = if (c == 0) semantic_size else residual_size;
             var name: Name = .{};
@@ -101,24 +102,6 @@ pub const Runtime = struct {
             self.books[c] = try l.floats(try l.sub(base, "codebook"), &.{ codebook_dim, size });
             self.project[c] = try l.linear(try l.sub(base, "out_proj.weight"), try l.sub(base, "out_proj.bias"), codebook_dim, latent);
         }
-        for (&self.layers, 0..) |*layer, i| {
-            var name: Name = .{};
-            const base = name.of("codec.q.post.blk.{d}", .{i});
-            layer.* = .{
-                .attn_norm = try l.floats(try l.sub(base, "attn_norm"), &.{latent}),
-                .ffn_norm = try l.floats(try l.sub(base, "ffn_norm"), &.{latent}),
-                .q = try l.linear(try l.sub(base, "attn_q"), null, latent, heads * head_dim),
-                .k = try l.linear(try l.sub(base, "attn_k"), null, latent, heads * head_dim),
-                .v = try l.linear(try l.sub(base, "attn_v"), null, latent, heads * head_dim),
-                .o = try l.linear(try l.sub(base, "attn_o"), null, heads * head_dim, latent),
-                .gate = try l.linear(try l.sub(base, "ffn_gate"), null, latent, intermediate),
-                .up = try l.linear(try l.sub(base, "ffn_up"), null, latent, intermediate),
-                .down = try l.linear(try l.sub(base, "ffn_down"), null, intermediate, latent),
-                .attn_scale = try l.floats(try l.sub(base, "attn_scale"), &.{latent}),
-                .ffn_scale = try l.floats(try l.sub(base, "ffn_scale"), &.{latent}),
-            };
-        }
-        self.norm = try l.floats("codec.q.post.norm", &.{latent});
         for (&self.upsample, 0..) |*stage, i| {
             var name: Name = .{};
             const base = name.of("codec.q.up.{d}", .{i});
@@ -191,25 +174,25 @@ pub const Runtime = struct {
 };
 
 /// A tensor name built in place.
-const Name = struct {
+pub const Name = struct {
     buffer: [96]u8 = undefined,
-    fn of(self: *Name, comptime format: []const u8, args: anytype) []const u8 {
+    pub fn of(self: *Name, comptime format: []const u8, args: anytype) []const u8 {
         return std.fmt.bufPrint(&self.buffer, format, args) catch unreachable;
     }
 };
 
-const Loader = struct {
+pub const Loader = struct {
     arena: Allocator,
     gpa: Allocator,
     doc: gguf.Document,
     view: weights.View,
 
     /// `base.leaf` in the arena (names outlive the call that builds them).
-    fn sub(self: Loader, base: []const u8, leaf: []const u8) ![]const u8 {
+    pub fn sub(self: Loader, base: []const u8, leaf: []const u8) ![]const u8 {
         return std.fmt.allocPrint(self.arena, "{s}.{s}", .{ base, leaf });
     }
 
-    fn find(self: Loader, name: []const u8, dims: []const u64) !*const gguf.Tensor {
+    pub fn find(self: Loader, name: []const u8, dims: []const u64) !*const gguf.Tensor {
         for (self.doc.tensors) |*t| if (std.mem.eql(u8, t.name, name)) {
             if (!std.mem.eql(u64, t.dimensions, dims) or (t.encoding_id != 0 and t.encoding_id != 1)) return error.InvalidTensor;
             return t;
@@ -218,19 +201,19 @@ const Loader = struct {
     }
 
     /// The tensor whole, in F32, in its stored order (GGUF dimension 0 fastest).
-    fn decode(self: Loader, alloc: Allocator, name: []const u8, dims: []const u64) ![]f32 {
+    pub fn decode(self: Loader, alloc: Allocator, name: []const u8, dims: []const u64) ![]f32 {
         const t = try self.find(name, dims);
         const out = try alloc.alloc(f32, @intCast(t.elements));
         try quant.row(t.encoding_id, try self.view.bytes(t), out);
         return out;
     }
 
-    fn floats(self: Loader, name: []const u8, dims: []const u64) ![]f32 {
+    pub fn floats(self: Loader, name: []const u8, dims: []const u64) ![]f32 {
         return self.decode(self.arena, name, dims);
     }
 
     /// Stored `[out][in]`.
-    fn linear(self: Loader, weight: []const u8, bias: ?[]const u8, in: usize, out: usize) !q3.Linear {
+    pub fn linear(self: Loader, weight: []const u8, bias: ?[]const u8, in: usize, out: usize) !q3.Linear {
         return .{
             .w = try self.floats(weight, &.{ in, out }),
             .b = if (bias) |b| try self.floats(b, &.{out}) else null,
@@ -240,7 +223,7 @@ const Loader = struct {
     }
 
     /// Stored `[kernel][out][in]`; the matrix wants `[out][kernel][in]`.
-    fn causal(self: Loader, base: []const u8, in: usize, out: usize, kernel: usize, dilation: usize) !q3.CausalConv {
+    pub fn causal(self: Loader, base: []const u8, in: usize, out: usize, kernel: usize, dilation: usize) !q3.CausalConv {
         const raw = try self.decode(self.gpa, try self.sub(base, "weight"), &.{ in, out, kernel });
         defer self.gpa.free(raw);
         const w = try self.arena.alloc(f32, raw.len);
@@ -254,7 +237,7 @@ const Loader = struct {
     /// stored `[kernel][out][in]`, as qwen3_codec's `TransConv`
     /// (`[stride][out][taps][in]`): output row m·stride + p reads tap
     /// p + q·stride of input row m − q.
-    fn transposed(self: Loader, base: []const u8, in: usize, out: usize, stride: usize) !q3.TransConv {
+    pub fn transposed(self: Loader, base: []const u8, in: usize, out: usize, stride: usize) !q3.TransConv {
         const name = try self.sub(base, "weight");
         const t = for (self.doc.tensors) |*t| {
             if (std.mem.eql(u8, t.name, name)) break t;
@@ -277,7 +260,7 @@ const Loader = struct {
     }
 
     /// Snake `x + inv · sin²(α · x)`; the file stores α and 1/(α + 1e-9).
-    fn snake(self: Loader, base: []const u8, channels: usize) !q3.SnakeBeta {
+    pub fn snake(self: Loader, base: []const u8, channels: usize) !q3.SnakeBeta {
         return .{
             .scale = try self.floats(try self.sub(base, "alpha"), &.{channels}),
             .inv = try self.floats(try self.sub(base, "inv_alpha"), &.{channels}),
@@ -286,7 +269,7 @@ const Loader = struct {
 
     /// The depthwise kernel is stored `[kernel][channel]`; `q3.depthwise`
     /// reads `[channel][kernel]`.
-    fn convNeXt(self: Loader, base: []const u8) !q3.NeXt {
+    pub fn convNeXt(self: Loader, base: []const u8) !q3.NeXt {
         const raw = try self.decode(self.gpa, try self.sub(base, "convnext.dwconv.weight"), &.{ latent, dwconv_kernel });
         defer self.gpa.free(raw);
         const dw = try self.arena.alloc(f32, raw.len);
@@ -302,6 +285,28 @@ const Loader = struct {
             .pw1 = try self.linear(try self.sub(base, "convnext.pw1.weight"), try self.sub(base, "convnext.pw1.bias"), latent, 4 * latent),
             .pw2 = try self.linear(try self.sub(base, "convnext.pw2.weight"), try self.sub(base, "convnext.pw2.bias"), 4 * latent, latent),
         };
+    }
+
+    /// `layers` pre-norm blocks under `base.blk.N` and `base.norm`.
+    pub fn transformer(self: Loader, base: []const u8, count: usize, attention_window: usize) !Transformer {
+        const list = try self.arena.alloc(Layer, count);
+        for (list, 0..) |*layer, i| {
+            const b = try std.fmt.allocPrint(self.arena, "{s}.blk.{d}", .{ base, i });
+            layer.* = .{
+                .attn_norm = try self.floats(try self.sub(b, "attn_norm"), &.{latent}),
+                .ffn_norm = try self.floats(try self.sub(b, "ffn_norm"), &.{latent}),
+                .q = try self.linear(try self.sub(b, "attn_q"), null, latent, heads * head_dim),
+                .k = try self.linear(try self.sub(b, "attn_k"), null, latent, heads * head_dim),
+                .v = try self.linear(try self.sub(b, "attn_v"), null, latent, heads * head_dim),
+                .o = try self.linear(try self.sub(b, "attn_o"), null, heads * head_dim, latent),
+                .gate = try self.linear(try self.sub(b, "ffn_gate"), null, latent, intermediate),
+                .up = try self.linear(try self.sub(b, "ffn_up"), null, latent, intermediate),
+                .down = try self.linear(try self.sub(b, "ffn_down"), null, intermediate, latent),
+                .attn_scale = try self.floats(try self.sub(b, "attn_scale"), &.{latent}),
+                .ffn_scale = try self.floats(try self.sub(b, "ffn_scale"), &.{latent}),
+            };
+        }
+        return .{ .layers = list, .norm = try self.floats(try self.sub(base, "norm"), &.{latent}), .window = attention_window };
     }
 };
 
@@ -330,7 +335,76 @@ pub fn bf16(v: f32) f32 {
     return @bitCast(rounded & 0xFFFF0000);
 }
 
-const Cache = struct { keys: []f32, values: []f32, count: usize };
+/// A causal windowed transformer (`WindowLimitedTransformer`): pre-norm
+/// blocks with layer scales, then a final norm.
+pub const Transformer = struct {
+    layers: []const Layer,
+    norm: []const f32,
+    window: usize,
+
+    /// Each layer's cache, sized for this transformer's window.
+    pub fn caches(self: Transformer, a: Allocator) ![]Cache {
+        const width = heads * head_dim;
+        const list = try a.alloc(Cache, self.layers.len);
+        for (list) |*cache| cache.* = .{
+            .keys = try a.alloc(f32, (self.window - 1) * width),
+            .values = try a.alloc(f32, (self.window - 1) * width),
+            .count = 0,
+        };
+        return list;
+    }
+
+    /// `n` new rows of `x` (`[n][latent]`) in place, the first at RoPE
+    /// `position`, attending over `caches`' earlier rows, which it advances.
+    pub fn run(self: Transformer, io: std.Io, ws: Allocator, caches_: []Cache, position: usize, x: []f32, n: usize) !void {
+        const width = heads * head_dim;
+        const h = try ws.alloc(f32, n * latent);
+        const q = try ws.alloc(f32, n * width);
+        const k = try ws.alloc(f32, n * width);
+        const v = try ws.alloc(f32, n * width);
+        const attended = try ws.alloc(f32, n * width);
+        const o = try ws.alloc(f32, n * latent);
+        const gate = try ws.alloc(f32, n * intermediate);
+        const up = try ws.alloc(f32, n * intermediate);
+        const keys = try ws.alloc(f32, (self.window - 1 + n) * width);
+        const values = try ws.alloc(f32, (self.window - 1 + n) * width);
+        const scores = try ws.alloc(f64, self.window);
+        for (self.layers, caches_) |layer, *cache| {
+            try q3.rmsRows(x, layer.attn_norm, rms_eps, h);
+            try q3.linear(io, layer.q, h, n, q);
+            try q3.linear(io, layer.k, h, n, k);
+            try q3.linear(io, layer.v, h, n, v);
+            for (0..n) |t| for (0..heads) |head| {
+                const at = t * width + head * head_dim;
+                rope(q[at..][0..head_dim], position + t, rope_base);
+                rope(k[at..][0..head_dim], position + t, rope_base);
+            };
+            const past = cache.count;
+            const total = past + n;
+            @memcpy(keys[0 .. past * width], cache.keys[0 .. past * width]);
+            @memcpy(keys[past * width ..][0 .. n * width], k);
+            @memcpy(values[0 .. past * width], cache.values[0 .. past * width]);
+            @memcpy(values[past * width ..][0 .. n * width], v);
+            attention(self.window, q, keys, values, n, past, scores, attended);
+            try q3.linear(io, layer.o, attended, n, o);
+            q3.addScaled(x, layer.attn_scale, o);
+            try q3.rmsRows(x, layer.ffn_norm, rms_eps, h);
+            try q3.linear(io, layer.gate, h, n, gate);
+            try q3.linear(io, layer.up, h, n, up);
+            for (gate, up) |*g, u| g.* = cpu.silu(g.*) * u;
+            try q3.linear(io, layer.down, gate, n, o);
+            q3.addScaled(x, layer.ffn_scale, o);
+            const kept: usize = @min(self.window - 1, total);
+            @memcpy(cache.keys[0 .. kept * width], keys[(total - kept) * width ..][0 .. kept * width]);
+            @memcpy(cache.values[0 .. kept * width], values[(total - kept) * width ..][0 .. kept * width]);
+            cache.count = kept;
+        }
+        try q3.rmsRows(x, self.norm, rms_eps, h);
+        @memcpy(x, h);
+    }
+};
+
+pub const Cache = struct { keys: []f32, values: []f32, count: usize };
 const UpState = struct { trans: q3.History, dw: q3.History };
 const BlockState = struct { trans: q3.History, units: [3]q3.History };
 
@@ -342,7 +416,7 @@ pub const Stream = struct {
     memory: std.heap.ArenaAllocator,
     /// Frames pushed so far: the next frame's RoPE position.
     position: usize,
-    caches: [layers]Cache,
+    caches: []Cache,
     upsample: [2]UpState,
     conv_in: q3.History,
     blocks: [4]BlockState,
@@ -355,12 +429,7 @@ pub const Stream = struct {
         self.memory = .init(gpa);
         errdefer self.memory.deinit();
         const a = self.memory.allocator();
-        const width = heads * head_dim;
-        for (&self.caches) |*cache| cache.* = .{
-            .keys = try a.alloc(f32, (window - 1) * width),
-            .values = try a.alloc(f32, (window - 1) * width),
-            .count = 0,
-        };
+        self.caches = try runtime.post.caches(a);
         for (&self.upsample, runtime.upsample) |*state, stage| state.* = .{
             .trans = try q3.transHistory(a, stage.trans),
             .dw = try q3.history(a, dwconv_kernel - 1, latent),
@@ -383,7 +452,7 @@ pub const Stream = struct {
     /// Back to the start of a clip: zero context, position 0.
     pub fn reset(self: *Stream) void {
         self.position = 0;
-        for (&self.caches) |*cache| cache.count = 0;
+        for (self.caches) |*cache| cache.count = 0;
         for (&self.upsample) |*u| {
             @memset(u.trans.data, 0);
             @memset(u.dw.data, 0);
@@ -414,7 +483,7 @@ pub const Stream = struct {
         var x = try ws.alloc(f32, n * latent);
         try rt.quantize(ws, codes, x);
         Observer.see(observer, .quantized, x);
-        try self.transformer(ws, x, n);
+        try rt.post.run(io, ws, self.caches, self.position, x, n);
         Observer.see(observer, .transformer, x);
 
         var rows = n;
@@ -455,67 +524,16 @@ pub const Stream = struct {
         Observer.see(observer, .samples, out);
         self.position += n;
     }
-
-    /// The post-quantizer transformer over `n` new rows of `x` (`[n][latent]`),
-    /// in place: pre-norm blocks with layer scales, causal attention over the
-    /// last `window` rows.
-    fn transformer(self: *Stream, ws: Allocator, x: []f32, n: usize) !void {
-        const io = self.runtime.io;
-        const width = heads * head_dim;
-        const h = try ws.alloc(f32, n * latent);
-        const q = try ws.alloc(f32, n * width);
-        const k = try ws.alloc(f32, n * width);
-        const v = try ws.alloc(f32, n * width);
-        const attended = try ws.alloc(f32, n * width);
-        const o = try ws.alloc(f32, n * latent);
-        const gate = try ws.alloc(f32, n * intermediate);
-        const up = try ws.alloc(f32, n * intermediate);
-        const keys = try ws.alloc(f32, (window - 1 + n) * width);
-        const values = try ws.alloc(f32, (window - 1 + n) * width);
-        const scores = try ws.alloc(f64, window);
-        for (self.runtime.layers, &self.caches) |layer, *cache| {
-            try q3.rmsRows(x, layer.attn_norm, rms_eps, h);
-            try q3.linear(io, layer.q, h, n, q);
-            try q3.linear(io, layer.k, h, n, k);
-            try q3.linear(io, layer.v, h, n, v);
-            for (0..n) |t| for (0..heads) |head| {
-                const at = t * width + head * head_dim;
-                rope(q[at..][0..head_dim], self.position + t, rope_base);
-                rope(k[at..][0..head_dim], self.position + t, rope_base);
-            };
-            const past = cache.count;
-            const total = past + n;
-            @memcpy(keys[0 .. past * width], cache.keys[0 .. past * width]);
-            @memcpy(keys[past * width ..][0 .. n * width], k);
-            @memcpy(values[0 .. past * width], cache.values[0 .. past * width]);
-            @memcpy(values[past * width ..][0 .. n * width], v);
-            attention(q, keys, values, n, past, scores, attended);
-            try q3.linear(io, layer.o, attended, n, o);
-            q3.addScaled(x, layer.attn_scale, o);
-            try q3.rmsRows(x, layer.ffn_norm, rms_eps, h);
-            try q3.linear(io, layer.gate, h, n, gate);
-            try q3.linear(io, layer.up, h, n, up);
-            for (gate, up) |*g, u| g.* = cpu.silu(g.*) * u;
-            try q3.linear(io, layer.down, gate, n, o);
-            q3.addScaled(x, layer.ffn_scale, o);
-            const kept: usize = @min(window - 1, total);
-            @memcpy(cache.keys[0 .. kept * width], keys[(total - kept) * width ..][0 .. kept * width]);
-            @memcpy(cache.values[0 .. kept * width], values[(total - kept) * width ..][0 .. kept * width]);
-            cache.count = kept;
-        }
-        try q3.rmsRows(x, self.runtime.norm, rms_eps, h);
-        @memcpy(x, h);
-    }
 };
 
 /// Sliding-window attention of `n` new queries: query t (row `past + t` of
-/// `keys`) sees rows `past + t − window + 1 … past + t`. Scores and sums in F64.
-fn attention(q: []const f32, keys: []const f32, values: []const f32, n: usize, past: usize, scores: []f64, out: []f32) void {
+/// `keys`) sees rows `past + t − attention_window + 1 … past + t`. Scores and sums in F64.
+fn attention(attention_window: usize, q: []const f32, keys: []const f32, values: []const f32, n: usize, past: usize, scores: []f64, out: []f32) void {
     const width = heads * head_dim;
     const scale = 1 / @sqrt(@as(f64, head_dim));
     for (0..n) |t| for (0..heads) |head| {
         const i = past + t;
-        const lowest = (i + 1) -| window;
+        const lowest = (i + 1) -| attention_window;
         const qi = q[t * width + head * head_dim ..][0..head_dim];
         var max: f64 = -std.math.inf(f64);
         for (lowest..i + 1, 0..) |j, s| {
