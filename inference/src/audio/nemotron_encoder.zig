@@ -335,6 +335,30 @@ pub const Encoder = struct {
 
     /// The whole-clip pass over `features` (`frames × mels`): one stream fed
     /// at once. Returns `rowsFor(frames) × hidden` rows, owned by `alloc`.
+    /// The prompt block over the rows `x` (`n × hidden`, the blocks' output):
+    /// `[row ; one-hot(prompt)] → prompt_hidden → hidden` into `out`.
+    /// `scratch` holds its intermediates.
+    pub fn applyPrompt(self: *const Encoder, scratch: std.mem.Allocator, x: []const f32, prompt: usize, out: []f32) !void {
+        const c = self.weights.config;
+        const w = self.weights;
+        const h = c.hidden;
+        if (prompt >= c.prompts) return error.UnsupportedPrompt;
+        if (x.len % h != 0 or out.len != x.len) return error.InvalidShape;
+        const n = x.len / h;
+        const joined = try scratch.alloc(f32, n * (h + c.prompts));
+        defer scratch.free(joined);
+        @memset(joined, 0);
+        for (0..n) |r| {
+            @memcpy(joined[r * (h + c.prompts) ..][0..h], x[r * h ..][0..h]);
+            joined[r * (h + c.prompts) + h + prompt] = 1;
+        }
+        const inner = try scratch.alloc(f32, n * c.prompt_hidden);
+        defer scratch.free(inner);
+        try dense.matmul(self.io, .{ .rows = n, .inner = h + c.prompts, .outputs = c.prompt_hidden, .x = joined, .w = w.prompt_in.weight, .bias = w.prompt_in.bias }, inner);
+        for (inner) |*value| value.* = @max(value.*, 0);
+        try dense.matmul(self.io, .{ .rows = n, .inner = c.prompt_hidden, .outputs = h, .x = inner, .w = w.prompt_out.weight, .bias = w.prompt_out.bias }, out);
+    }
+
     pub fn encode(self: *const Encoder, alloc: std.mem.Allocator, features: []const f32, lookahead: usize, prompt: usize, observer: ?Observer) ![]f32 {
         var stream = try Stream.init(alloc, self, lookahead, prompt);
         defer stream.deinit();
@@ -434,6 +458,9 @@ pub const Stream = struct {
     lookahead: usize,
     /// The language prompt; may change between pushes.
     prompt: usize,
+    /// When set, the rows leave before the prompt block, for a caller that
+    /// applies several prompts (`Encoder.applyPrompt`).
+    raw: bool = false,
     observer: ?Observer = null,
     front: FrontEnd = .{},
     // The subsampling's three convolutions.
@@ -672,18 +699,9 @@ pub const Stream = struct {
             try norm(blk.norm_out, x, x, h);
             Observer.see(self.observer, .{ .block = il }, first, x);
         }
-        // The prompt block: [row ; one-hot] → prompt_hidden → hidden.
-        const joined = try ws.alloc(f32, n * (h + c.prompts));
-        @memset(joined, 0);
-        for (0..n) |r| {
-            @memcpy(joined[r * (h + c.prompts) ..][0..h], x[r * h ..][0..h]);
-            joined[r * (h + c.prompts) + h + self.prompt] = 1;
-        }
-        const inner = try ws.alloc(f32, n * c.prompt_hidden);
-        try dense.matmul(io, .{ .rows = n, .inner = h + c.prompts, .outputs = c.prompt_hidden, .x = joined, .w = w.prompt_in.weight, .bias = w.prompt_in.bias }, inner);
-        for (inner) |*value| value.* = @max(value.*, 0);
+        if (self.raw) return out.appendSlice(self.alloc, x);
         const rows = try out.addManyAsSlice(self.alloc, n * h);
-        try dense.matmul(io, .{ .rows = n, .inner = c.prompt_hidden, .outputs = h, .x = inner, .w = w.prompt_out.weight, .bias = w.prompt_out.bias }, rows);
+        try self.encoder.applyPrompt(ws, x, self.prompt, rows);
         Observer.see(self.observer, .prompt, first, rows);
     }
 
