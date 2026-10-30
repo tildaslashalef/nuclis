@@ -20,7 +20,7 @@ import sys
 import wave
 from pathlib import Path
 
-NUCLIS = Path(__file__).resolve().parent.parent / "zig-out" / "bin" / "nuclis"
+NUCLIS = str(Path(__file__).resolve().parent.parent / "zig-out" / "bin" / "nuclis")
 
 # Short Egyptian phrases; the lab's four worst first.
 PHRASES = [
@@ -79,6 +79,7 @@ def main() -> None:
     parser.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3, 4])
     parser.add_argument("--phrases", type=int, default=len(PHRASES), help="the first N phrases")
     parser.add_argument("--model", default="drama-3")
+    parser.add_argument("--nuclis", default=NUCLIS, help="the binary to run")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
@@ -96,7 +97,7 @@ def main() -> None:
         name = re.sub(r"[^a-z0-9_-]", "-", ref.name.lower())
         if not (home / "voices" / name).exists():
             text = ref.with_suffix(".txt").read_text().strip()
-            run([str(NUCLIS), "voice", "add", name, str(ref.with_suffix(".wav")), "--text", text], env)
+            run([args.nuclis, "voice", "add", name, str(ref.with_suffix(".wav")), "--text", text], env)
         voices.append(name)
 
     rows = []
@@ -106,7 +107,7 @@ def main() -> None:
                 wav = out / f"{voice}-p{i}-s{seed}.wav"
                 log = run(
                     [
-                        str(NUCLIS),
+                        args.nuclis,
                         "speak",
                         "--model",
                         args.model,
@@ -121,7 +122,7 @@ def main() -> None:
                     env,
                 )
                 heard = json.loads(
-                    run([str(NUCLIS), "transcribe", str(wav), "--language", "ar", "--json"], env) or "{}"
+                    run([args.nuclis, "transcribe", str(wav), "--language", "ar", "--json"], env) or "{}"
                 ).get("text", "")
                 seconds, tail = tail_silence(wav)
                 reference, hypothesis = normalize(phrase), normalize(heard)

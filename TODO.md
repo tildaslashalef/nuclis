@@ -23,15 +23,17 @@ in the TTS lab (`~/Code/ttslab`, speech.cpp 0.9.2) and chose Q4_K.
 
 Delivered so far: the facts, the pin, and the Fish traces
 (`tests/fixtures/drama3/`, `scripts/speech-traces/drama3_trace.py`); the
-backbone and tower on the CPU, the codec decoder and encoder on the CPU
-(both match Fish's traces: all 1,000 reference codes exactly, decoded
-samples at 9e-5 relative RMS), the sampler, the text and cue checks, the
-chunker, the streaming synthesizer with the silence stop and the retry
-(first WAVs in English and Arabic transcribe back exactly); and
-`drama-3` in the catalogue, `nuclis speak`, `/v1/audio/speech`, and the
-saved voices (a 44.1 kHz copy of the clip, Fish codes keyed by the GGUF).
-In flight: the backbone and tower trace replay with its CPU gate, and
-**Metal** (backbone and tower; the codec stays on the CPU so far).
+backbone, tower, and codec on the CPU, each replayed against Fish's
+traces with its gate (`drama3-trace-cpu`, `drama3-codec-cpu`); the
+sampler, the text and cue checks, the chunker, and the streaming
+synthesizer with the silence stop and the retry; the backbone and tower
+on Metal (`drama3-metal`), taken by `nuclis speak` and the speech
+service; the round trip through Nemotron on Metal
+(`drama3-roundtrip-metal`, WER 1.05 %); and `drama-3` in the catalogue,
+`nuclis speak`, `/v1/audio/speech`, and the saved voices (a 44.1 kHz copy
+of the clip, Fish codes keyed by the GGUF). In flight: the codec decoder
+on Metal (`fish_codec_metal.zig`) and the stall measurement
+(`scripts/drama3-stalls.py`); then the verify tiers and the pull request.
 
 ## Fish Audio Drama 3
 
@@ -80,10 +82,10 @@ model's, not the quantization's.
 | Unit | Delivers | State |
 | --- | --- | --- |
 | Facts and pin | `docs/models/drama3.md`, inventory fixture, tokenizer check, pinned traces from Fish's code | done |
-| Backbone on the CPU | `drama3` adapter, binding, the Qwen3.5-MoE forward against the traces | trace replay and gate in flight |
-| Tower, codec, sampler on the CPU | codebooks 1–9, the codec decoder and encoder, Fish's sampler, the first WAV | done; the codec's gate remains |
-| Metal | the three networks on the GPU, gated against the CPU, speed recorded | backbone and tower in flight |
-| Voices and the API | saved voices, speakers, cues, chunking, `speak`, `/v1/audio/speech`, catalogue, round-trip gates | done but the round-trip gates and the stall measurement |
+| Backbone on the CPU | `drama3` adapter, binding, the Qwen3.5-MoE forward against the traces | done |
+| Tower, codec, sampler on the CPU | codebooks 1–9, the codec decoder and encoder, Fish's sampler, the first WAV | done |
+| Metal | the three networks on the GPU, gated against the CPU, speed recorded | backbone and tower done; the codec decoder in flight |
+| Voices and the API | saved voices, speakers, cues, chunking, `speak`, `/v1/audio/speech`, catalogue, round-trip gates | done but the stall measurement |
 
 ### Facts and pin
 
