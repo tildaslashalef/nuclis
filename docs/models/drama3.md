@@ -444,9 +444,22 @@ clips), so this is the model's behaviour, not the quantization's.
 | temperature 0.7, top-p 0.7 | 13 / 32 |
 | split at sentence ends | 5 / 32 |
 
-nuclis therefore splits at every sentence end, not only past 300 bytes.
-The stop on silent frames and the retry are designed with the sampler
-(§ Open).
+nuclis therefore splits at every sentence end (`.!?` and Arabic `؟؛۔`,
+the clause mark `،` past the chunker's limit), not only past 300 bytes.
+`drama3_speech.Synthesizer` adds two more:
+
+- **The stop on silence.** A frame is silent when its decoded samples'
+  RMS is under 0.02. Once a take has spoken, 32 silent frames in a row
+  (1.5 s) end its chunk; 6 of them (0.28 s) are kept, the rest are cut
+  and never reach the caller.
+- **The retry.** A take's leading silence is held back. A take still
+  silent after 48 frames (2.2 s) is dropped and the chunk restarts on
+  the next seed, at most twice; the third take is released as it is.
+  `nuclis speak` reports the retries and how each chunk stopped (`eos`,
+  `silence`, `length`).
+
+Held-back and cut samples are never streamed, so the API's first bytes
+come only once a take has spoken.
 
 ## The traces
 
@@ -529,6 +542,25 @@ fixtures therefore come from that run: `section_clone` replaces
 in F64 (the index's `dtype` says so). The
 backbone and tower verdicts are unchanged under it. The best reading's
 reference log-probability goes from −4.4039 to −4.3752.
+
+### The codec on the CPU (2026-10-30)
+
+`drama3-check MODEL.gguf codec` replays `codec-reference` and
+`codec-window` through `fish_codec_encoder` and `fish_codec`. It encodes
+each case's samples and requires Fish's codes exactly. It then decodes
+Fish's codes, and every pinned stage on either side is compared by
+relative RMS over its pinned rows. The gate `drama3-codec-cpu` (tier
+`verify-cpu`) holds them to 5e-4. Measured on the M4 Pro, ReleaseFast:
+
+| | `codec-reference` (100 frames) | `codec-window` (200 frames) |
+| --- | --- | --- |
+| codes equal to Fish's | 1,000 / 1,000 | 2,000 / 2,000 |
+| encoder stages (worst) | 3.4e-5 (`q.pre`), all ten | 2.7e-5, `enc.blk.3` and `q.pre` |
+| decoder stages (worst) | 1.7e-6 (`dec.in_conv`), all nine | 6.2e-7, `q.post` |
+| samples | 9.3e-5 | 1.8e-4 |
+
+The window case's samples are its last two frames, which are quiet, so
+their relative error is the largest.
 
 ## On Metal (2026-10-30)
 
@@ -629,9 +661,21 @@ time, of which the CPU codec (about 31 ms a frame) is the larger half. Of
 the 24 ms a frame, the tower and the decode are about 18 ms; the rest is
 the host sampler, which sorts all 4,096 codes for each of the ten draws.
 
+## The round trip
+
+`scripts/wer.py --speak tests/fixtures/tts-roundtrip.json --own-voice`
+speaks the 20 pinned English sentences shared with Qwen3-TTS through
+`nuclis speak --backend metal`, each with its own seed. There is no
+reference, so the voice is the model's own and the language comes from
+the text. `nuclis transcribe` (Nemotron ASR) then hears each sentence,
+and its words are scored against the text. On 2026-10-30, the M4 Pro and
+this file gave 2 errors in 190 words, a WER of 1.05 % over 65.2 s of
+audio. Both errors are the recognizer's: "dr" for "doctor", and a dropped
+"and". The gate `drama3-roundtrip-metal` (tier `verify`) bounds the rate
+at 6 %, Qwen3-TTS's bound.
+
 ## Open
 
-- The silence stop and retry.
 - The codec on Metal, gated against the CPU codec: on the CPU it is the
   larger half of a Metal take (§ On Metal).
 - The sampler's draw: a partial selection instead of sorting all 4,096

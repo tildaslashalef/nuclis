@@ -23,7 +23,8 @@ and word error rate.
 `--speak SENTENCES` scores text to speech instead: each sentence of the
 list (`tests/fixtures/tts-roundtrip.json`) is spoken by `nuclis speak
 --model <--tts-model> --backend <--tts-backend>` with its seed, recognized
-as above, and its words scored against the text, normalized alike.
+as above, and its words scored against the text, normalized alike;
+`--own-voice` drops the list's speaker and language (Drama 3).
 docs/models/qwen3-tts.md § The round trip.
 
 `--chat` scores a language model that hears audio instead: each clip goes
@@ -158,6 +159,7 @@ def speak_and_recognize(
     plan: dict[str, Any],
     directory: pathlib.Path,
     lookahead: int,
+    own_voice: bool,
 ) -> Result:
     """One sentence spoken, then recognized: its words against the text."""
     wav = directory / f"{sentence['id']}.wav"
@@ -168,11 +170,9 @@ def speak_and_recognize(
         tts_model,
         "--backend",
         backend,
-        "--voice",
-        plan["speaker"],
-        "--language",
-        plan["language"],
     ]
+    if not own_voice:
+        command += ["--voice", plan["speaker"], "--language", plan["language"]]
     command += ["--seed", str(sentence["seed"]), "-o", str(wav), "--", sentence["text"]]
     done = subprocess.run(command, capture_output=True, text=True, check=False)
     if done.returncode != 0:
@@ -234,6 +234,11 @@ def main() -> int:
     parser.add_argument("--tts-model", help="the speech model's directory (with --speak)")
     parser.add_argument(
         "--tts-backend", default="metal", choices=("cpu", "metal"), help="where it speaks (with --speak)"
+    )
+    parser.add_argument(
+        "--own-voice",
+        action="store_true",
+        help="no --voice or --language: the model's own voice, the language from the text (Drama 3)",
     )
     args = parser.parse_args()
     if args.self_test:
@@ -305,6 +310,7 @@ def round_trip(args: argparse.Namespace) -> int:
                 plan,
                 pathlib.Path(directory),
                 args.lookahead,
+                args.own_voice,
             )
             results.append(result)
             rate = result.errors / max(1, len(result.reference))

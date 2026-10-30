@@ -4681,6 +4681,56 @@
    "evidence": "docs/models/drama3.md#the-traces"
   },
   {
+   "name": "drama3-roundtrip-metal",
+   "family": "drama3",
+   "tier": "verify",
+   "model": "drama3_q4_k",
+   "baseline": "nemotron_asr",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/audio/audio.zig",
+    "inference/src/audio/audio_bridge.m",
+    "inference/src/audio/mel.zig",
+    "inference/src/audio/nemotron_*.zig",
+    "inference/src/audio/fish_codec*.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/gguf.zig",
+    "inference/src/models/drama3*.zig",
+    "inference/src/quant/**",
+    "inference/src/runtime/session.zig",
+    "inference/src/runtime/weights.zig",
+    "inference/src/sampling/root.zig",
+    "inference/src/tokenizer/**",
+    "scripts/wer.py",
+    "src/audio/speech.zig",
+    "src/speak.zig",
+    "src/transcribe.zig",
+    "tests/fixtures/tts-roundtrip.json"
+   ],
+   "command": [
+    "python3",
+    "scripts/wer.py",
+    "--nuclis",
+    "{nuclis}",
+    "--model",
+    "{baseline}",
+    "--speak",
+    "tests/fixtures/tts-roundtrip.json",
+    "--tts-model",
+    "{model}",
+    "--own-voice",
+    "--max-wer",
+    "0.06"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal in the model's own voice (no reference, the language from the text, each its own seed), recognized by nuclis transcribe (the baseline model, Nemotron ASR), words scored against the text (scripts/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-30: 2 errors in 190 words, 1.05 %, both the recognizer's: dr for doctor, a dropped and)",
+   "evidence": "docs/models/drama3.md#the-round-trip"
+  },
+  {
    "name": "drama3-codec-cpu",
    "family": "drama3",
    "tier": "verify-cpu",
