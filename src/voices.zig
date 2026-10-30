@@ -841,6 +841,8 @@ test "a voice is added once, listed, made ready per model, and removed" {
 }
 
 test "a model without an embedding needs the transcript and encodes the 44.1 kHz copy" {
+    // The stored clip is 24 kHz; reading it at 44.1 kHz resamples through the bridge.
+    if (!audio.bridge_enabled) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
