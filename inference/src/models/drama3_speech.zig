@@ -35,8 +35,14 @@ pub const chunk_frames = 600;
 /// `frames_per_char` for each code point (about twice a brisk speaking rate).
 pub const budget_floor_frames = 64;
 pub const frames_per_char = 3;
-/// A frame is voiced when its RMS reaches this (about −34 dBFS).
-pub const voiced_rms = 0.02;
+/// A take has started speaking once a frame's RMS reaches this (−40 dBFS).
+pub const spoken_rms = 0.01;
+/// After that, a frame is silent below `silence_ratio` of the take's
+/// loudest frame, clamped to these: a whisper peaks near 0.04 and stays
+/// above 0.003 between its words, where a fixed 0.02 cut it.
+pub const silence_ratio = 0.1;
+pub const silence_rms_min = 0.003;
+pub const silence_rms_max = 0.02;
 /// After speech starts, this many silent frames in a row (about 1.5 s) end
 /// the chunk; the silence is cut to `kept_silence` frames.
 pub const silence_frames = 32;
@@ -276,8 +282,10 @@ pub const Synthesizer = struct {
         samples: std.ArrayList(f32) = .empty,
         released: usize = 0,
         decoded: usize = 0,
-        /// Unvoiced frames since the last voiced one.
+        /// Silent frames since the last sounding one.
         silent: usize = 0,
+        /// The loudest frame's RMS so far.
+        peak: f32 = 0,
         spoke: bool = false,
         done: bool = false,
         stop: Stop = .length,
@@ -434,9 +442,10 @@ pub const Synthesizer = struct {
             const samples = take.samples.items[at + i * samples_per_frame ..][0..samples_per_frame];
             var sum: f64 = 0;
             for (samples) |v| sum += @as(f64, v) * v;
-            const voiced = @sqrt(sum / samples_per_frame) >= voiced_rms;
-            if (voiced) {
-                take.spoke = true;
+            const rms: f32 = @floatCast(@sqrt(sum / samples_per_frame));
+            take.peak = @max(take.peak, rms);
+            if (rms >= spoken_rms) take.spoke = true;
+            if (rms >= std.math.clamp(silence_ratio * take.peak, silence_rms_min, silence_rms_max)) {
                 take.silent = 0;
             } else if (take.spoke) {
                 take.silent += 1;

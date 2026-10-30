@@ -4,7 +4,9 @@ Saves each reference clip (a WAV beside a .txt transcript) as a voice under a
 throwaway NUCLIS_HOME whose `models` links to the real one, speaks every phrase
 with every voice and seed, and scores each take: a stall when Nemotron hears
 under 60 % of the phrase's letters, or the take ends in more than 1.5 s of
-silence. The method is docs/models/drama3.md § Stalls, and what nuclis adds.
+silence. `--cue` puts a [cue] into every phrase, first or after `--cue-after`
+words; the score is against the phrase alone. The method is docs/models/drama3.md
+§ Stalls, and what nuclis adds.
 
     python3 scripts/drama3-stalls.py --refs ~/Code/ttslab/voicerefs/doo-v4-12s \
         --refs ~/Code/ttslab/voicerefs/nda-v2-12s --seeds 1 2 3 4 --out .zig-cache/stalls
@@ -80,6 +82,8 @@ def main() -> None:
     parser.add_argument("--phrases", type=int, default=len(PHRASES), help="the first N phrases")
     parser.add_argument("--model", default="drama-3")
     parser.add_argument("--nuclis", default=NUCLIS, help="the binary to run")
+    parser.add_argument("--cue", help="a [cue] put into every phrase")
+    parser.add_argument("--cue-after", type=int, default=0, help="the cue after this many words (0: first)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
@@ -103,6 +107,10 @@ def main() -> None:
     rows = []
     for voice in voices:
         for i, phrase in enumerate(PHRASES[: args.phrases]):
+            spoken = phrase
+            if args.cue:
+                words = phrase.split()
+                spoken = " ".join([*words[: args.cue_after], args.cue, *words[args.cue_after :]])
             for seed in args.seeds:
                 wav = out / f"{voice}-p{i}-s{seed}.wav"
                 log = run(
@@ -117,7 +125,7 @@ def main() -> None:
                         str(seed),
                         "-o",
                         str(wav),
-                        phrase,
+                        spoken,
                     ],
                     env,
                 )
