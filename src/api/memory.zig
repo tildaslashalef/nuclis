@@ -83,12 +83,20 @@ pub const Budget = struct {
     /// keeps later ones there. A missing or unreadable file starts empty.
     pub fn load(self: *Budget, io: std.Io, path: []const u8) void {
         self.measured_path = path;
+        self.mergeFile(io, path, null);
+    }
+
+    /// Takes the counts kept at `path` for every name but `except`.
+    fn mergeFile(self: *Budget, io: std.Io, path: []const u8, except: ?[]const u8) void {
         const text = std.Io.Dir.cwd().readFileAlloc(io, path, self.gpa, .limited(max_measured_bytes)) catch return;
         defer self.gpa.free(text);
         const parsed = std.json.parseFromSlice(std.json.ArrayHashMap(Measured), self.gpa, text, .{}) catch return;
         defer parsed.deinit();
         var it = parsed.value.map.iterator();
-        while (it.next()) |e| self.putMeasured(e.key_ptr.*, e.value_ptr.*) catch return;
+        while (it.next()) |e| {
+            if (except) |n| if (std.mem.eql(u8, n, e.key_ptr.*)) continue;
+            self.putMeasured(e.key_ptr.*, e.value_ptr.*) catch return;
+        }
     }
 
     /// Records what `name` counts once open under `under` (a `basis`), and keeps it at
@@ -99,6 +107,8 @@ pub const Budget = struct {
         if (self.measured.get(name)) |m| if (m.basis == under and m.bytes == bytes) return;
         self.putMeasured(name, .{ .basis = under, .bytes = bytes }) catch return;
         const path = self.measured_path orelse return;
+        // Another server may have kept counts since this one started.
+        self.mergeFile(io, path, name);
         var out: std.Io.Writer.Allocating = .init(self.gpa);
         defer out.deinit();
         std.json.Stringify.value(std.json.ArrayHashMap(Measured){ .map = self.measured }, .{ .whitespace = .indent_2 }, &out.writer) catch return;
@@ -525,6 +535,19 @@ test "a refusal says what was needed and what the kept models left; counts are k
     var again: Budget = .init(std.testing.allocator, 100);
     defer again.deinit();
     again.load(io, path);
+    {
+        // Two servers that loaded the same file each keep the other's count.
+        var other: Budget = .init(std.testing.allocator, 100);
+        defer other.deinit();
+        other.load(io, path);
+        other.measure(io, "voice", 3, 30);
+        again.measure(io, "ears", 4, 10);
+        var third: Budget = .init(std.testing.allocator, 100);
+        defer third.deinit();
+        third.load(io, path);
+        try std.testing.expectEqual(@as(?u64, 30), third.measuredBytes(io, "voice", 3));
+        try std.testing.expectEqual(@as(?u64, 10), third.measuredBytes(io, "ears", 4));
+    }
     try std.testing.expectEqual(@as(?u64, 60), again.measuredBytes(io, "lm", 7));
     try std.testing.expectEqual(@as(?u64, null), again.measuredBytes(io, "lm", 8));
     try std.testing.expectEqual(@as(?u64, null), again.openBytes(io, "lm"));
