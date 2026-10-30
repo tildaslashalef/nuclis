@@ -1,0 +1,2179 @@
+{
+ "cases": {
+  "tokenizer": {
+   "source": "the GGUF's drama3.tokenizer.* only (no tokenizer.json on disk)",
+   "shape": "NFC normalizer; Split(drama3.tokenizer.pre_tokenizer, isolated); ByteLevel(add_prefix_space=false, use_regex=false); BPE (no dropout, no affixes, ignore_merges=false); every drama3.tokenizer.added_ids token matched whole before normalization; no BOS or post-processor (Fish encodes each literal with Tokenizer.encode, add_special_tokens=True, which adds nothing here)",
+   "vocab": 252216,
+   "merges": 247587,
+   "added_ids": 4172,
+   "strings": [
+    {
+     "text": "The quick brown fox jumps over the lazy dog.",
+     "ids": [
+      760,
+      3841,
+      13477,
+      37550,
+      33075,
+      888,
+      279,
+      15217,
+      5388,
+      13
+     ],
+     "tokens": [
+      "The",
+      "Ġquick",
+      "Ġbrown",
+      "Ġfox",
+      "Ġjumps",
+      "Ġover",
+      "Ġthe",
+      "Ġlazy",
+      "Ġdog",
+      "."
+     ]
+    },
+    {
+     "text": "إزيك يا باشا؟ عامل إيه النهارده؟",
+     "ids": [
+      88792,
+      149929,
+      30055,
+      175117,
+      152490,
+      5525,
+      152033,
+      191099,
+      82215,
+      152388,
+      242571,
+      88190,
+      152033
+     ],
+     "tokens": [
+      "Ø¥",
+      "Ø²ÙĬ",
+      "Ùĥ",
+      "ĠÙĬØ§",
+      "ĠØ¨Ø§Ø´",
+      "Ø§",
+      "ØŁ",
+      "ĠØ¹Ø§ÙħÙĦ",
+      "ĠØ¥",
+      "ÙĬÙĩ",
+      "ĠØ§ÙĦÙĨÙĩØ§Ø±",
+      "Ø¯Ùĩ",
+      "ØŁ"
+     ]
+    },
+    {
+     "text": "今天天气很好，我们去公园散步吧。",
+     "ids": [
+      97375,
+      101618,
+      98692,
+      3709,
+      116450,
+      99192,
+      112869,
+      97198,
+      1710
+     ],
+     "tokens": [
+      "ä»Ĭå¤©",
+      "å¤©æ°Ķ",
+      "å¾Īå¥½",
+      "ï¼Į",
+      "æĪĳä»¬åİ»",
+      "åħ¬åĽŃ",
+      "æķ£æŃ¥",
+      "åĲ§",
+      "ãĢĤ"
+     ]
+    },
+    {
+     "text": "Привет, как дела?",
+     "ids": [
+      51844,
+      26125,
+      7921,
+      11,
+      150914,
+      170220,
+      30
+     ],
+     "tokens": [
+      "ÐŁÑĢ",
+      "Ð¸Ð²",
+      "ÐµÑĤ",
+      ",",
+      "ĠÐºÐ°Ðº",
+      "ĠÐ´ÐµÐ»Ð°",
+      "?"
+     ]
+    },
+    {
+     "text": "It costs $1,234.56 on 2026-10-30 at 7:45pm, about 3x more.",
+     "ids": [
+      2064,
+      6829,
+      393,
+      16,
+      11,
+      17,
+      18,
+      19,
+      13,
+      20,
+      21,
+      383,
+      220,
+      17,
+      15,
+      17,
+      21,
+      12,
+      16,
+      15,
+      12,
+      18,
+      15,
+      506,
+      220,
+      22,
+      25,
+      19,
+      20,
+      5022,
+      11,
+      883,
+      220,
+      18,
+      87,
+      777,
+      13
+     ],
+     "tokens": [
+      "It",
+      "Ġcosts",
+      "Ġ$",
+      "1",
+      ",",
+      "2",
+      "3",
+      "4",
+      ".",
+      "5",
+      "6",
+      "Ġon",
+      "Ġ",
+      "2",
+      "0",
+      "2",
+      "6",
+      "-",
+      "1",
+      "0",
+      "-",
+      "3",
+      "0",
+      "Ġat",
+      "Ġ",
+      "7",
+      ":",
+      "4",
+      "5",
+      "pm",
+      ",",
+      "Ġabout",
+      "Ġ",
+      "3",
+      "x",
+      "Ġmore",
+      "."
+     ]
+    },
+    {
+     "text": "[sighs] I can't believe it. [laughs] Really?",
+     "ids": [
+      11541,
+      1055,
+      82,
+      60,
+      353,
+      628,
+      914,
+      4267,
+      424,
+      13,
+      498,
+      69997,
+      60,
+      27291,
+      30
+     ],
+     "tokens": [
+      "[s",
+      "igh",
+      "s",
+      "]",
+      "ĠI",
+      "Ġcan",
+      "'t",
+      "Ġbelieve",
+      "Ġit",
+      ".",
+      "Ġ[",
+      "laughs",
+      "]",
+      "ĠReally",
+      "?"
+     ]
+    },
+    {
+     "text": "<whisper>Don't tell anyone.</whisper>",
+     "ids": [
+      27,
+      1266,
+      26483,
+      29,
+      7751,
+      914,
+      3184,
+      5316,
+      3786,
+      1266,
+      26483,
+      29
+     ],
+     "tokens": [
+      "<",
+      "wh",
+      "isper",
+      ">",
+      "Don",
+      "'t",
+      "Ġtell",
+      "Ġanyone",
+      ".</",
+      "wh",
+      "isper",
+      ">"
+     ]
+    },
+    {
+     "text": "<|speaker:1|>Hello there.<|speaker:0|> Hi!",
+     "ids": [
+      248084,
+      9419,
+      1017,
+      13,
+      248083,
+      20375,
+      0
+     ],
+     "tokens": [
+      "<|speaker:1|>",
+      "Hello",
+      "Ġthere",
+      ".",
+      "<|speaker:0|>",
+      "ĠHi",
+      "!"
+     ]
+    },
+    {
+     "text": "First line.\nSecond line.\n\n  Indented third.\r\n",
+     "ids": [
+      5170,
+      1500,
+      13,
+      198,
+      15207,
+      1500,
+      13,
+      271,
+      220,
+      2190,
+      15397,
+      4688,
+      13,
+      317
+     ],
+     "tokens": [
+      "First",
+      "Ġline",
+      ".",
+      "Ċ",
+      "Second",
+      "Ġline",
+      ".",
+      "ĊĊ",
+      "Ġ",
+      "ĠInd",
+      "ented",
+      "Ġthird",
+      ".",
+      "čĊ"
+     ]
+    },
+    {
+     "text": "Café naïve — “quoted” résumé",
+     "ids": [
+      34,
+      2492,
+      933,
+      91603,
+      571,
+      1892,
+      1001,
+      61574,
+      828,
+      238976
+     ],
+     "tokens": [
+      "C",
+      "af",
+      "Ã©",
+      "ĠnaÃ¯",
+      "ve",
+      "ĠâĢĶ",
+      "ĠâĢľ",
+      "quoted",
+      "âĢĿ",
+      "ĠrÃ©sumÃ©"
+     ]
+    },
+    {
+     "text": "Hello,   world!  \t tabs   ",
+     "ids": [
+      9419,
+      11,
+      256,
+      1814,
+      0,
+      18688,
+      21700,
+      262
+     ],
+     "tokens": [
+      "Hello",
+      ",",
+      "ĠĠ",
+      "Ġworld",
+      "!",
+      "ĠĠĉ",
+      "Ġtabs",
+      "ĠĠĠ"
+     ]
+    },
+    {
+     "text": "<|im_start|>user\n<|speaker:0|> 你好<|im_end|>\n",
+     "ids": [
+      248045,
+      846,
+      198,
+      248083,
+      220,
+      109266,
+      248046,
+      198
+     ],
+     "tokens": [
+      "<|im_start|>",
+      "user",
+      "Ċ",
+      "<|speaker:0|>",
+      "Ġ",
+      "ä½łå¥½",
+      "<|im_end|>",
+      "Ċ"
+     ]
+    }
+   ],
+   "files": {}
+  },
+  "codec-reference": {
+   "clip": "tests/fixtures/qwen3-tts/0.6b-clone-reference/reference.wav",
+   "clip_sha256": "4413f4701ce2a0ede7700b37691fe40f7f730815f2c1cc6564a7594e5a693692",
+   "clip_rate": 24000,
+   "clip_samples": 111360,
+   "transcript": "Every morning I walk along the river and listen to the birds.",
+   "sample_rate": 44100,
+   "samples": 204624,
+   "frames": 100,
+   "padding": "DAC.encode pads the samples on the right with zeros to 204800 (a multiple of 2048); frames = ceil(samples / 2048)",
+   "layout": "tap-major/k-major/k,out,in/applied",
+   "layout_search": [
+    {
+     "layout": "tap-major/k-major/k,out,in/applied",
+     "snr_db": 10.595,
+     "log_spectral_l1": 1.0029
+    },
+    {
+     "layout": "tap-major/k-major/k,out,in/reversed",
+     "snr_db": -0.112,
+     "log_spectral_l1": 3.3565
+    },
+    {
+     "layout": "tap-major/k-major/k,in,out/applied",
+     "snr_db": -0.185,
+     "log_spectral_l1": 2.7755
+    },
+    {
+     "layout": "tap-major/k-major/k,in,out/reversed",
+     "snr_db": -0.117,
+     "log_spectral_l1": 2.6561
+    },
+    {
+     "layout": "tap-major/c-major/k,out,in/applied",
+     "snr_db": -1.168,
+     "log_spectral_l1": 4.6873
+    },
+    {
+     "layout": "tap-major/c-major/k,out,in/reversed",
+     "snr_db": -0.264,
+     "log_spectral_l1": 3.3906
+    },
+    {
+     "layout": "tap-major/c-major/k,in,out/applied",
+     "snr_db": -0.517,
+     "log_spectral_l1": 3.6437
+    },
+    {
+     "layout": "tap-major/c-major/k,in,out/reversed",
+     "snr_db": -0.112,
+     "log_spectral_l1": 3.344
+    },
+    {
+     "layout": "channel-major/k-major/k,out,in/applied",
+     "snr_db": -0.305,
+     "log_spectral_l1": 2.8497
+    },
+    {
+     "layout": "channel-major/k-major/k,out,in/reversed",
+     "snr_db": -0.146,
+     "log_spectral_l1": 3.2764
+    },
+    {
+     "layout": "channel-major/k-major/k,in,out/applied",
+     "snr_db": -0.104,
+     "log_spectral_l1": 2.9849
+    },
+    {
+     "layout": "channel-major/k-major/k,in,out/reversed",
+     "snr_db": -0.186,
+     "log_spectral_l1": 3.3096
+    },
+    {
+     "layout": "channel-major/c-major/k,out,in/applied",
+     "snr_db": -1.21,
+     "log_spectral_l1": 4.6076
+    },
+    {
+     "layout": "channel-major/c-major/k,out,in/reversed",
+     "snr_db": -0.417,
+     "log_spectral_l1": 3.0019
+    },
+    {
+     "layout": "channel-major/c-major/k,in,out/applied",
+     "snr_db": -0.786,
+     "log_spectral_l1": 3.6602
+    },
+    {
+     "layout": "channel-major/c-major/k,in,out/reversed",
+     "snr_db": -0.099,
+     "log_spectral_l1": 3.0601
+    }
+   ],
+   "reconstruction": {
+    "snr_db": 10.595,
+    "log_spectral_l1": 1.0029
+   },
+   "decoder_samples": 204800,
+   "decoder_samples_sha256": "402710cad9a1d0f39b3eebe2ebfa5f965048d4de1d170e1a309b890877cdfd80",
+   "decoder_samples_rms": 0.09474999457597733,
+   "names": {
+    "codec.enc.in_conv.weight": "encoder.block.0.conv.weight",
+    "codec.enc.in_conv.bias": "encoder.block.0.conv.bias",
+    "codec.enc.blk.0.res.0.snake1.alpha": "encoder.block.1.block.0.block.0.alpha",
+    "codec.enc.blk.0.res.0.snake1.inv_alpha": "(1 / (encoder.block.1.block.0.block.0.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.0.res.0.conv1.weight": "encoder.block.1.block.0.block.1.conv.weight",
+    "codec.enc.blk.0.res.0.conv1.bias": "encoder.block.1.block.0.block.1.conv.bias",
+    "codec.enc.blk.0.res.0.snake2.alpha": "encoder.block.1.block.0.block.2.alpha",
+    "codec.enc.blk.0.res.0.snake2.inv_alpha": "(1 / (encoder.block.1.block.0.block.2.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.0.res.0.conv2.weight": "encoder.block.1.block.0.block.3.conv.weight",
+    "codec.enc.blk.0.res.0.conv2.bias": "encoder.block.1.block.0.block.3.conv.bias",
+    "codec.enc.blk.0.res.1.snake1.alpha": "encoder.block.1.block.1.block.0.alpha",
+    "codec.enc.blk.0.res.1.snake1.inv_alpha": "(1 / (encoder.block.1.block.1.block.0.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.0.res.1.conv1.weight": "encoder.block.1.block.1.block.1.conv.weight",
+    "codec.enc.blk.0.res.1.conv1.bias": "encoder.block.1.block.1.block.1.conv.bias",
+    "codec.enc.blk.0.res.1.snake2.alpha": "encoder.block.1.block.1.block.2.alpha",
+    "codec.enc.blk.0.res.1.snake2.inv_alpha": "(1 / (encoder.block.1.block.1.block.2.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.0.res.1.conv2.weight": "encoder.block.1.block.1.block.3.conv.weight",
+    "codec.enc.blk.0.res.1.conv2.bias": "encoder.block.1.block.1.block.3.conv.bias",
+    "codec.enc.blk.0.res.2.snake1.alpha": "encoder.block.1.block.2.block.0.alpha",
+    "codec.enc.blk.0.res.2.snake1.inv_alpha": "(1 / (encoder.block.1.block.2.block.0.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.0.res.2.conv1.weight": "encoder.block.1.block.2.block.1.conv.weight",
+    "codec.enc.blk.0.res.2.conv1.bias": "encoder.block.1.block.2.block.1.conv.bias",
+    "codec.enc.blk.0.res.2.snake2.alpha": "encoder.block.1.block.2.block.2.alpha",
+    "codec.enc.blk.0.res.2.snake2.inv_alpha": "(1 / (encoder.block.1.block.2.block.2.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.0.res.2.conv2.weight": "encoder.block.1.block.2.block.3.conv.weight",
+    "codec.enc.blk.0.res.2.conv2.bias": "encoder.block.1.block.2.block.3.conv.bias",
+    "codec.enc.blk.0.snake.alpha": "encoder.block.1.block.3.alpha",
+    "codec.enc.blk.0.snake.inv_alpha": "(1 / (encoder.block.1.block.3.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.0.down.first": "encoder.block.1.block.4.conv.weight taps 0..1",
+    "codec.enc.blk.0.down.second": "encoder.block.1.block.4.conv.weight taps 2..3",
+    "codec.enc.blk.0.down.bias": "encoder.block.1.block.4.conv.bias",
+    "codec.enc.blk.1.res.0.snake1.alpha": "encoder.block.2.block.0.block.0.alpha",
+    "codec.enc.blk.1.res.0.snake1.inv_alpha": "(1 / (encoder.block.2.block.0.block.0.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.1.res.0.conv1.weight": "encoder.block.2.block.0.block.1.conv.weight",
+    "codec.enc.blk.1.res.0.conv1.bias": "encoder.block.2.block.0.block.1.conv.bias",
+    "codec.enc.blk.1.res.0.snake2.alpha": "encoder.block.2.block.0.block.2.alpha",
+    "codec.enc.blk.1.res.0.snake2.inv_alpha": "(1 / (encoder.block.2.block.0.block.2.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.1.res.0.conv2.weight": "encoder.block.2.block.0.block.3.conv.weight",
+    "codec.enc.blk.1.res.0.conv2.bias": "encoder.block.2.block.0.block.3.conv.bias",
+    "codec.enc.blk.1.res.1.snake1.alpha": "encoder.block.2.block.1.block.0.alpha",
+    "codec.enc.blk.1.res.1.snake1.inv_alpha": "(1 / (encoder.block.2.block.1.block.0.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.1.res.1.conv1.weight": "encoder.block.2.block.1.block.1.conv.weight",
+    "codec.enc.blk.1.res.1.conv1.bias": "encoder.block.2.block.1.block.1.conv.bias",
+    "codec.enc.blk.1.res.1.snake2.alpha": "encoder.block.2.block.1.block.2.alpha",
+    "codec.enc.blk.1.res.1.snake2.inv_alpha": "(1 / (encoder.block.2.block.1.block.2.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.1.res.1.conv2.weight": "encoder.block.2.block.1.block.3.conv.weight",
+    "codec.enc.blk.1.res.1.conv2.bias": "encoder.block.2.block.1.block.3.conv.bias",
+    "codec.enc.blk.1.res.2.snake1.alpha": "encoder.block.2.block.2.block.0.alpha",
+    "codec.enc.blk.1.res.2.snake1.inv_alpha": "(1 / (encoder.block.2.block.2.block.0.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.1.res.2.conv1.weight": "encoder.block.2.block.2.block.1.conv.weight",
+    "codec.enc.blk.1.res.2.conv1.bias": "encoder.block.2.block.2.block.1.conv.bias",
+    "codec.enc.blk.1.res.2.snake2.alpha": "encoder.block.2.block.2.block.2.alpha",
+    "codec.enc.blk.1.res.2.snake2.inv_alpha": "(1 / (encoder.block.2.block.2.block.2.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.1.res.2.conv2.weight": "encoder.block.2.block.2.block.3.conv.weight",
+    "codec.enc.blk.1.res.2.conv2.bias": "encoder.block.2.block.2.block.3.conv.bias",
+    "codec.enc.blk.1.snake.alpha": "encoder.block.2.block.3.alpha",
+    "codec.enc.blk.1.snake.inv_alpha": "(1 / (encoder.block.2.block.3.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.1.down.first": "encoder.block.2.block.4.conv.weight taps 0..3",
+    "codec.enc.blk.1.down.second": "encoder.block.2.block.4.conv.weight taps 4..7",
+    "codec.enc.blk.1.down.bias": "encoder.block.2.block.4.conv.bias",
+    "codec.enc.blk.2.res.0.snake1.alpha": "encoder.block.3.block.0.block.0.alpha",
+    "codec.enc.blk.2.res.0.snake1.inv_alpha": "(1 / (encoder.block.3.block.0.block.0.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.2.res.0.conv1.weight": "encoder.block.3.block.0.block.1.conv.weight",
+    "codec.enc.blk.2.res.0.conv1.bias": "encoder.block.3.block.0.block.1.conv.bias",
+    "codec.enc.blk.2.res.0.snake2.alpha": "encoder.block.3.block.0.block.2.alpha",
+    "codec.enc.blk.2.res.0.snake2.inv_alpha": "(1 / (encoder.block.3.block.0.block.2.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.2.res.0.conv2.weight": "encoder.block.3.block.0.block.3.conv.weight",
+    "codec.enc.blk.2.res.0.conv2.bias": "encoder.block.3.block.0.block.3.conv.bias",
+    "codec.enc.blk.2.res.1.snake1.alpha": "encoder.block.3.block.1.block.0.alpha",
+    "codec.enc.blk.2.res.1.snake1.inv_alpha": "(1 / (encoder.block.3.block.1.block.0.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.2.res.1.conv1.weight": "encoder.block.3.block.1.block.1.conv.weight",
+    "codec.enc.blk.2.res.1.conv1.bias": "encoder.block.3.block.1.block.1.conv.bias",
+    "codec.enc.blk.2.res.1.snake2.alpha": "encoder.block.3.block.1.block.2.alpha",
+    "codec.enc.blk.2.res.1.snake2.inv_alpha": "(1 / (encoder.block.3.block.1.block.2.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.2.res.1.conv2.weight": "encoder.block.3.block.1.block.3.conv.weight",
+    "codec.enc.blk.2.res.1.conv2.bias": "encoder.block.3.block.1.block.3.conv.bias",
+    "codec.enc.blk.2.res.2.snake1.alpha": "encoder.block.3.block.2.block.0.alpha",
+    "codec.enc.blk.2.res.2.snake1.inv_alpha": "(1 / (encoder.block.3.block.2.block.0.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.2.res.2.conv1.weight": "encoder.block.3.block.2.block.1.conv.weight",
+    "codec.enc.blk.2.res.2.conv1.bias": "encoder.block.3.block.2.block.1.conv.bias",
+    "codec.enc.blk.2.res.2.snake2.alpha": "encoder.block.3.block.2.block.2.alpha",
+    "codec.enc.blk.2.res.2.snake2.inv_alpha": "(1 / (encoder.block.3.block.2.block.2.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.2.res.2.conv2.weight": "encoder.block.3.block.2.block.3.conv.weight",
+    "codec.enc.blk.2.res.2.conv2.bias": "encoder.block.3.block.2.block.3.conv.bias",
+    "codec.enc.blk.2.snake.alpha": "encoder.block.3.block.3.alpha",
+    "codec.enc.blk.2.snake.inv_alpha": "(1 / (encoder.block.3.block.3.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.2.down.first": "encoder.block.3.block.4.conv.weight taps 0..7",
+    "codec.enc.blk.2.down.second": "encoder.block.3.block.4.conv.weight taps 8..15",
+    "codec.enc.blk.2.down.bias": "encoder.block.3.block.4.conv.bias",
+    "codec.enc.blk.3.res.0.snake1.alpha": "encoder.block.4.block.0.block.0.alpha",
+    "codec.enc.blk.3.res.0.snake1.inv_alpha": "(1 / (encoder.block.4.block.0.block.0.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.3.res.0.conv1.weight": "encoder.block.4.block.0.block.1.conv.weight",
+    "codec.enc.blk.3.res.0.conv1.bias": "encoder.block.4.block.0.block.1.conv.bias",
+    "codec.enc.blk.3.res.0.snake2.alpha": "encoder.block.4.block.0.block.2.alpha",
+    "codec.enc.blk.3.res.0.snake2.inv_alpha": "(1 / (encoder.block.4.block.0.block.2.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.3.res.0.conv2.weight": "encoder.block.4.block.0.block.3.conv.weight",
+    "codec.enc.blk.3.res.0.conv2.bias": "encoder.block.4.block.0.block.3.conv.bias",
+    "codec.enc.blk.3.res.1.snake1.alpha": "encoder.block.4.block.1.block.0.alpha",
+    "codec.enc.blk.3.res.1.snake1.inv_alpha": "(1 / (encoder.block.4.block.1.block.0.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.3.res.1.conv1.weight": "encoder.block.4.block.1.block.1.conv.weight",
+    "codec.enc.blk.3.res.1.conv1.bias": "encoder.block.4.block.1.block.1.conv.bias",
+    "codec.enc.blk.3.res.1.snake2.alpha": "encoder.block.4.block.1.block.2.alpha",
+    "codec.enc.blk.3.res.1.snake2.inv_alpha": "(1 / (encoder.block.4.block.1.block.2.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.3.res.1.conv2.weight": "encoder.block.4.block.1.block.3.conv.weight",
+    "codec.enc.blk.3.res.1.conv2.bias": "encoder.block.4.block.1.block.3.conv.bias",
+    "codec.enc.blk.3.res.2.snake1.alpha": "encoder.block.4.block.2.block.0.alpha",
+    "codec.enc.blk.3.res.2.snake1.inv_alpha": "(1 / (encoder.block.4.block.2.block.0.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.3.res.2.conv1.weight": "encoder.block.4.block.2.block.1.conv.weight",
+    "codec.enc.blk.3.res.2.conv1.bias": "encoder.block.4.block.2.block.1.conv.bias",
+    "codec.enc.blk.3.res.2.snake2.alpha": "encoder.block.4.block.2.block.2.alpha",
+    "codec.enc.blk.3.res.2.snake2.inv_alpha": "(1 / (encoder.block.4.block.2.block.2.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.3.res.2.conv2.weight": "encoder.block.4.block.2.block.3.conv.weight",
+    "codec.enc.blk.3.res.2.conv2.bias": "encoder.block.4.block.2.block.3.conv.bias",
+    "codec.enc.blk.3.snake.alpha": "encoder.block.4.block.3.alpha",
+    "codec.enc.blk.3.snake.inv_alpha": "(1 / (encoder.block.4.block.3.alpha + 1e-9), not a parameter)",
+    "codec.enc.blk.3.down.first": "encoder.block.4.block.4.conv.weight taps 0..7",
+    "codec.enc.blk.3.down.second": "encoder.block.4.block.4.conv.weight taps 8..15",
+    "codec.enc.blk.3.down.bias": "encoder.block.4.block.4.conv.bias",
+    "codec.enc.blk.3.tf.blk.0.attn_q": "encoder.block.4.block.5.layers.0.attention.wqkv.weight rows [q | k | v]",
+    "codec.enc.blk.3.tf.blk.0.attn_k": "encoder.block.4.block.5.layers.0.attention.wqkv.weight rows [q | k | v]",
+    "codec.enc.blk.3.tf.blk.0.attn_v": "encoder.block.4.block.5.layers.0.attention.wqkv.weight rows [q | k | v]",
+    "codec.enc.blk.3.tf.blk.0.attn_o": "encoder.block.4.block.5.layers.0.attention.wo.weight",
+    "codec.enc.blk.3.tf.blk.0.attn_norm": "encoder.block.4.block.5.layers.0.attention_norm.weight",
+    "codec.enc.blk.3.tf.blk.0.attn_scale": "encoder.block.4.block.5.layers.0.attention_layer_scale.gamma",
+    "codec.enc.blk.3.tf.blk.0.ffn_norm": "encoder.block.4.block.5.layers.0.ffn_norm.weight",
+    "codec.enc.blk.3.tf.blk.0.ffn_gate": "encoder.block.4.block.5.layers.0.feed_forward.w1.weight",
+    "codec.enc.blk.3.tf.blk.0.ffn_up": "encoder.block.4.block.5.layers.0.feed_forward.w3.weight",
+    "codec.enc.blk.3.tf.blk.0.ffn_down": "encoder.block.4.block.5.layers.0.feed_forward.w2.weight",
+    "codec.enc.blk.3.tf.blk.0.ffn_scale": "encoder.block.4.block.5.layers.0.ffn_layer_scale.gamma",
+    "codec.enc.blk.3.tf.blk.1.attn_q": "encoder.block.4.block.5.layers.1.attention.wqkv.weight rows [q | k | v]",
+    "codec.enc.blk.3.tf.blk.1.attn_k": "encoder.block.4.block.5.layers.1.attention.wqkv.weight rows [q | k | v]",
+    "codec.enc.blk.3.tf.blk.1.attn_v": "encoder.block.4.block.5.layers.1.attention.wqkv.weight rows [q | k | v]",
+    "codec.enc.blk.3.tf.blk.1.attn_o": "encoder.block.4.block.5.layers.1.attention.wo.weight",
+    "codec.enc.blk.3.tf.blk.1.attn_norm": "encoder.block.4.block.5.layers.1.attention_norm.weight",
+    "codec.enc.blk.3.tf.blk.1.attn_scale": "encoder.block.4.block.5.layers.1.attention_layer_scale.gamma",
+    "codec.enc.blk.3.tf.blk.1.ffn_norm": "encoder.block.4.block.5.layers.1.ffn_norm.weight",
+    "codec.enc.blk.3.tf.blk.1.ffn_gate": "encoder.block.4.block.5.layers.1.feed_forward.w1.weight",
+    "codec.enc.blk.3.tf.blk.1.ffn_up": "encoder.block.4.block.5.layers.1.feed_forward.w3.weight",
+    "codec.enc.blk.3.tf.blk.1.ffn_down": "encoder.block.4.block.5.layers.1.feed_forward.w2.weight",
+    "codec.enc.blk.3.tf.blk.1.ffn_scale": "encoder.block.4.block.5.layers.1.ffn_layer_scale.gamma",
+    "codec.enc.blk.3.tf.blk.2.attn_q": "encoder.block.4.block.5.layers.2.attention.wqkv.weight rows [q | k | v]",
+    "codec.enc.blk.3.tf.blk.2.attn_k": "encoder.block.4.block.5.layers.2.attention.wqkv.weight rows [q | k | v]",
+    "codec.enc.blk.3.tf.blk.2.attn_v": "encoder.block.4.block.5.layers.2.attention.wqkv.weight rows [q | k | v]",
+    "codec.enc.blk.3.tf.blk.2.attn_o": "encoder.block.4.block.5.layers.2.attention.wo.weight",
+    "codec.enc.blk.3.tf.blk.2.attn_norm": "encoder.block.4.block.5.layers.2.attention_norm.weight",
+    "codec.enc.blk.3.tf.blk.2.attn_scale": "encoder.block.4.block.5.layers.2.attention_layer_scale.gamma",
+    "codec.enc.blk.3.tf.blk.2.ffn_norm": "encoder.block.4.block.5.layers.2.ffn_norm.weight",
+    "codec.enc.blk.3.tf.blk.2.ffn_gate": "encoder.block.4.block.5.layers.2.feed_forward.w1.weight",
+    "codec.enc.blk.3.tf.blk.2.ffn_up": "encoder.block.4.block.5.layers.2.feed_forward.w3.weight",
+    "codec.enc.blk.3.tf.blk.2.ffn_down": "encoder.block.4.block.5.layers.2.feed_forward.w2.weight",
+    "codec.enc.blk.3.tf.blk.2.ffn_scale": "encoder.block.4.block.5.layers.2.ffn_layer_scale.gamma",
+    "codec.enc.blk.3.tf.blk.3.attn_q": "encoder.block.4.block.5.layers.3.attention.wqkv.weight rows [q | k | v]",
+    "codec.enc.blk.3.tf.blk.3.attn_k": "encoder.block.4.block.5.layers.3.attention.wqkv.weight rows [q | k | v]",
+    "codec.enc.blk.3.tf.blk.3.attn_v": "encoder.block.4.block.5.layers.3.attention.wqkv.weight rows [q | k | v]",
+    "codec.enc.blk.3.tf.blk.3.attn_o": "encoder.block.4.block.5.layers.3.attention.wo.weight",
+    "codec.enc.blk.3.tf.blk.3.attn_norm": "encoder.block.4.block.5.layers.3.attention_norm.weight",
+    "codec.enc.blk.3.tf.blk.3.attn_scale": "encoder.block.4.block.5.layers.3.attention_layer_scale.gamma",
+    "codec.enc.blk.3.tf.blk.3.ffn_norm": "encoder.block.4.block.5.layers.3.ffn_norm.weight",
+    "codec.enc.blk.3.tf.blk.3.ffn_gate": "encoder.block.4.block.5.layers.3.feed_forward.w1.weight",
+    "codec.enc.blk.3.tf.blk.3.ffn_up": "encoder.block.4.block.5.layers.3.feed_forward.w3.weight",
+    "codec.enc.blk.3.tf.blk.3.ffn_down": "encoder.block.4.block.5.layers.3.feed_forward.w2.weight",
+    "codec.enc.blk.3.tf.blk.3.ffn_scale": "encoder.block.4.block.5.layers.3.ffn_layer_scale.gamma",
+    "codec.enc.blk.3.tf.norm": "encoder.block.4.block.5.norm.weight",
+    "codec.enc.out_snake.alpha": "encoder.block.5.alpha",
+    "codec.enc.out_snake.inv_alpha": "(1 / (encoder.block.5.alpha + 1e-9), not a parameter)",
+    "codec.enc.out_conv.weight": "encoder.block.6.conv.weight",
+    "codec.enc.out_conv.bias": "encoder.block.6.conv.bias",
+    "codec.q.down.0.conv.weight": "quantizer.downsample.0.0.conv.weight",
+    "codec.q.down.0.conv.bias": "quantizer.downsample.0.0.conv.bias",
+    "codec.q.down.0.convnext.dwconv.weight": "quantizer.downsample.0.1.dwconv.conv.weight",
+    "codec.q.down.0.convnext.dwconv.bias": "quantizer.downsample.0.1.dwconv.conv.bias",
+    "codec.q.down.0.convnext.norm.weight": "quantizer.downsample.0.1.norm.weight",
+    "codec.q.down.0.convnext.norm.bias": "quantizer.downsample.0.1.norm.bias",
+    "codec.q.down.0.convnext.pw1.weight": "quantizer.downsample.0.1.pwconv1.weight",
+    "codec.q.down.0.convnext.pw1.bias": "quantizer.downsample.0.1.pwconv1.bias",
+    "codec.q.down.0.convnext.pw2.weight": "quantizer.downsample.0.1.pwconv2.weight",
+    "codec.q.down.0.convnext.pw2.bias": "quantizer.downsample.0.1.pwconv2.bias",
+    "codec.q.down.0.convnext.gamma": "quantizer.downsample.0.1.gamma",
+    "codec.q.up.0.conv.weight": "quantizer.upsample.0.0.conv.weight",
+    "codec.q.up.0.conv.bias": "quantizer.upsample.0.0.conv.bias",
+    "codec.q.up.0.convnext.dwconv.weight": "quantizer.upsample.0.1.dwconv.conv.weight",
+    "codec.q.up.0.convnext.dwconv.bias": "quantizer.upsample.0.1.dwconv.conv.bias",
+    "codec.q.up.0.convnext.norm.weight": "quantizer.upsample.0.1.norm.weight",
+    "codec.q.up.0.convnext.norm.bias": "quantizer.upsample.0.1.norm.bias",
+    "codec.q.up.0.convnext.pw1.weight": "quantizer.upsample.0.1.pwconv1.weight",
+    "codec.q.up.0.convnext.pw1.bias": "quantizer.upsample.0.1.pwconv1.bias",
+    "codec.q.up.0.convnext.pw2.weight": "quantizer.upsample.0.1.pwconv2.weight",
+    "codec.q.up.0.convnext.pw2.bias": "quantizer.upsample.0.1.pwconv2.bias",
+    "codec.q.up.0.convnext.gamma": "quantizer.upsample.0.1.gamma",
+    "codec.q.down.1.conv.weight": "quantizer.downsample.1.0.conv.weight",
+    "codec.q.down.1.conv.bias": "quantizer.downsample.1.0.conv.bias",
+    "codec.q.down.1.convnext.dwconv.weight": "quantizer.downsample.1.1.dwconv.conv.weight",
+    "codec.q.down.1.convnext.dwconv.bias": "quantizer.downsample.1.1.dwconv.conv.bias",
+    "codec.q.down.1.convnext.norm.weight": "quantizer.downsample.1.1.norm.weight",
+    "codec.q.down.1.convnext.norm.bias": "quantizer.downsample.1.1.norm.bias",
+    "codec.q.down.1.convnext.pw1.weight": "quantizer.downsample.1.1.pwconv1.weight",
+    "codec.q.down.1.convnext.pw1.bias": "quantizer.downsample.1.1.pwconv1.bias",
+    "codec.q.down.1.convnext.pw2.weight": "quantizer.downsample.1.1.pwconv2.weight",
+    "codec.q.down.1.convnext.pw2.bias": "quantizer.downsample.1.1.pwconv2.bias",
+    "codec.q.down.1.convnext.gamma": "quantizer.downsample.1.1.gamma",
+    "codec.q.up.1.conv.weight": "quantizer.upsample.1.0.conv.weight",
+    "codec.q.up.1.conv.bias": "quantizer.upsample.1.0.conv.bias",
+    "codec.q.up.1.convnext.dwconv.weight": "quantizer.upsample.1.1.dwconv.conv.weight",
+    "codec.q.up.1.convnext.dwconv.bias": "quantizer.upsample.1.1.dwconv.conv.bias",
+    "codec.q.up.1.convnext.norm.weight": "quantizer.upsample.1.1.norm.weight",
+    "codec.q.up.1.convnext.norm.bias": "quantizer.upsample.1.1.norm.bias",
+    "codec.q.up.1.convnext.pw1.weight": "quantizer.upsample.1.1.pwconv1.weight",
+    "codec.q.up.1.convnext.pw1.bias": "quantizer.upsample.1.1.pwconv1.bias",
+    "codec.q.up.1.convnext.pw2.weight": "quantizer.upsample.1.1.pwconv2.weight",
+    "codec.q.up.1.convnext.pw2.bias": "quantizer.upsample.1.1.pwconv2.bias",
+    "codec.q.up.1.convnext.gamma": "quantizer.upsample.1.1.gamma",
+    "codec.q.pre.blk.0.attn_q": "quantizer.pre_module.layers.0.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.0.attn_k": "quantizer.pre_module.layers.0.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.0.attn_v": "quantizer.pre_module.layers.0.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.0.attn_o": "quantizer.pre_module.layers.0.attention.wo.weight",
+    "codec.q.pre.blk.0.attn_norm": "quantizer.pre_module.layers.0.attention_norm.weight",
+    "codec.q.pre.blk.0.attn_scale": "quantizer.pre_module.layers.0.attention_layer_scale.gamma",
+    "codec.q.pre.blk.0.ffn_norm": "quantizer.pre_module.layers.0.ffn_norm.weight",
+    "codec.q.pre.blk.0.ffn_gate": "quantizer.pre_module.layers.0.feed_forward.w1.weight",
+    "codec.q.pre.blk.0.ffn_up": "quantizer.pre_module.layers.0.feed_forward.w3.weight",
+    "codec.q.pre.blk.0.ffn_down": "quantizer.pre_module.layers.0.feed_forward.w2.weight",
+    "codec.q.pre.blk.0.ffn_scale": "quantizer.pre_module.layers.0.ffn_layer_scale.gamma",
+    "codec.q.pre.blk.1.attn_q": "quantizer.pre_module.layers.1.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.1.attn_k": "quantizer.pre_module.layers.1.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.1.attn_v": "quantizer.pre_module.layers.1.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.1.attn_o": "quantizer.pre_module.layers.1.attention.wo.weight",
+    "codec.q.pre.blk.1.attn_norm": "quantizer.pre_module.layers.1.attention_norm.weight",
+    "codec.q.pre.blk.1.attn_scale": "quantizer.pre_module.layers.1.attention_layer_scale.gamma",
+    "codec.q.pre.blk.1.ffn_norm": "quantizer.pre_module.layers.1.ffn_norm.weight",
+    "codec.q.pre.blk.1.ffn_gate": "quantizer.pre_module.layers.1.feed_forward.w1.weight",
+    "codec.q.pre.blk.1.ffn_up": "quantizer.pre_module.layers.1.feed_forward.w3.weight",
+    "codec.q.pre.blk.1.ffn_down": "quantizer.pre_module.layers.1.feed_forward.w2.weight",
+    "codec.q.pre.blk.1.ffn_scale": "quantizer.pre_module.layers.1.ffn_layer_scale.gamma",
+    "codec.q.pre.blk.2.attn_q": "quantizer.pre_module.layers.2.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.2.attn_k": "quantizer.pre_module.layers.2.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.2.attn_v": "quantizer.pre_module.layers.2.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.2.attn_o": "quantizer.pre_module.layers.2.attention.wo.weight",
+    "codec.q.pre.blk.2.attn_norm": "quantizer.pre_module.layers.2.attention_norm.weight",
+    "codec.q.pre.blk.2.attn_scale": "quantizer.pre_module.layers.2.attention_layer_scale.gamma",
+    "codec.q.pre.blk.2.ffn_norm": "quantizer.pre_module.layers.2.ffn_norm.weight",
+    "codec.q.pre.blk.2.ffn_gate": "quantizer.pre_module.layers.2.feed_forward.w1.weight",
+    "codec.q.pre.blk.2.ffn_up": "quantizer.pre_module.layers.2.feed_forward.w3.weight",
+    "codec.q.pre.blk.2.ffn_down": "quantizer.pre_module.layers.2.feed_forward.w2.weight",
+    "codec.q.pre.blk.2.ffn_scale": "quantizer.pre_module.layers.2.ffn_layer_scale.gamma",
+    "codec.q.pre.blk.3.attn_q": "quantizer.pre_module.layers.3.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.3.attn_k": "quantizer.pre_module.layers.3.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.3.attn_v": "quantizer.pre_module.layers.3.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.3.attn_o": "quantizer.pre_module.layers.3.attention.wo.weight",
+    "codec.q.pre.blk.3.attn_norm": "quantizer.pre_module.layers.3.attention_norm.weight",
+    "codec.q.pre.blk.3.attn_scale": "quantizer.pre_module.layers.3.attention_layer_scale.gamma",
+    "codec.q.pre.blk.3.ffn_norm": "quantizer.pre_module.layers.3.ffn_norm.weight",
+    "codec.q.pre.blk.3.ffn_gate": "quantizer.pre_module.layers.3.feed_forward.w1.weight",
+    "codec.q.pre.blk.3.ffn_up": "quantizer.pre_module.layers.3.feed_forward.w3.weight",
+    "codec.q.pre.blk.3.ffn_down": "quantizer.pre_module.layers.3.feed_forward.w2.weight",
+    "codec.q.pre.blk.3.ffn_scale": "quantizer.pre_module.layers.3.ffn_layer_scale.gamma",
+    "codec.q.pre.blk.4.attn_q": "quantizer.pre_module.layers.4.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.4.attn_k": "quantizer.pre_module.layers.4.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.4.attn_v": "quantizer.pre_module.layers.4.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.4.attn_o": "quantizer.pre_module.layers.4.attention.wo.weight",
+    "codec.q.pre.blk.4.attn_norm": "quantizer.pre_module.layers.4.attention_norm.weight",
+    "codec.q.pre.blk.4.attn_scale": "quantizer.pre_module.layers.4.attention_layer_scale.gamma",
+    "codec.q.pre.blk.4.ffn_norm": "quantizer.pre_module.layers.4.ffn_norm.weight",
+    "codec.q.pre.blk.4.ffn_gate": "quantizer.pre_module.layers.4.feed_forward.w1.weight",
+    "codec.q.pre.blk.4.ffn_up": "quantizer.pre_module.layers.4.feed_forward.w3.weight",
+    "codec.q.pre.blk.4.ffn_down": "quantizer.pre_module.layers.4.feed_forward.w2.weight",
+    "codec.q.pre.blk.4.ffn_scale": "quantizer.pre_module.layers.4.ffn_layer_scale.gamma",
+    "codec.q.pre.blk.5.attn_q": "quantizer.pre_module.layers.5.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.5.attn_k": "quantizer.pre_module.layers.5.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.5.attn_v": "quantizer.pre_module.layers.5.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.5.attn_o": "quantizer.pre_module.layers.5.attention.wo.weight",
+    "codec.q.pre.blk.5.attn_norm": "quantizer.pre_module.layers.5.attention_norm.weight",
+    "codec.q.pre.blk.5.attn_scale": "quantizer.pre_module.layers.5.attention_layer_scale.gamma",
+    "codec.q.pre.blk.5.ffn_norm": "quantizer.pre_module.layers.5.ffn_norm.weight",
+    "codec.q.pre.blk.5.ffn_gate": "quantizer.pre_module.layers.5.feed_forward.w1.weight",
+    "codec.q.pre.blk.5.ffn_up": "quantizer.pre_module.layers.5.feed_forward.w3.weight",
+    "codec.q.pre.blk.5.ffn_down": "quantizer.pre_module.layers.5.feed_forward.w2.weight",
+    "codec.q.pre.blk.5.ffn_scale": "quantizer.pre_module.layers.5.ffn_layer_scale.gamma",
+    "codec.q.pre.blk.6.attn_q": "quantizer.pre_module.layers.6.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.6.attn_k": "quantizer.pre_module.layers.6.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.6.attn_v": "quantizer.pre_module.layers.6.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.6.attn_o": "quantizer.pre_module.layers.6.attention.wo.weight",
+    "codec.q.pre.blk.6.attn_norm": "quantizer.pre_module.layers.6.attention_norm.weight",
+    "codec.q.pre.blk.6.attn_scale": "quantizer.pre_module.layers.6.attention_layer_scale.gamma",
+    "codec.q.pre.blk.6.ffn_norm": "quantizer.pre_module.layers.6.ffn_norm.weight",
+    "codec.q.pre.blk.6.ffn_gate": "quantizer.pre_module.layers.6.feed_forward.w1.weight",
+    "codec.q.pre.blk.6.ffn_up": "quantizer.pre_module.layers.6.feed_forward.w3.weight",
+    "codec.q.pre.blk.6.ffn_down": "quantizer.pre_module.layers.6.feed_forward.w2.weight",
+    "codec.q.pre.blk.6.ffn_scale": "quantizer.pre_module.layers.6.ffn_layer_scale.gamma",
+    "codec.q.pre.blk.7.attn_q": "quantizer.pre_module.layers.7.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.7.attn_k": "quantizer.pre_module.layers.7.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.7.attn_v": "quantizer.pre_module.layers.7.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.pre.blk.7.attn_o": "quantizer.pre_module.layers.7.attention.wo.weight",
+    "codec.q.pre.blk.7.attn_norm": "quantizer.pre_module.layers.7.attention_norm.weight",
+    "codec.q.pre.blk.7.attn_scale": "quantizer.pre_module.layers.7.attention_layer_scale.gamma",
+    "codec.q.pre.blk.7.ffn_norm": "quantizer.pre_module.layers.7.ffn_norm.weight",
+    "codec.q.pre.blk.7.ffn_gate": "quantizer.pre_module.layers.7.feed_forward.w1.weight",
+    "codec.q.pre.blk.7.ffn_up": "quantizer.pre_module.layers.7.feed_forward.w3.weight",
+    "codec.q.pre.blk.7.ffn_down": "quantizer.pre_module.layers.7.feed_forward.w2.weight",
+    "codec.q.pre.blk.7.ffn_scale": "quantizer.pre_module.layers.7.ffn_layer_scale.gamma",
+    "codec.q.pre.norm": "quantizer.pre_module.norm.weight",
+    "codec.q.post.blk.0.attn_q": "quantizer.post_module.layers.0.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.0.attn_k": "quantizer.post_module.layers.0.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.0.attn_v": "quantizer.post_module.layers.0.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.0.attn_o": "quantizer.post_module.layers.0.attention.wo.weight",
+    "codec.q.post.blk.0.attn_norm": "quantizer.post_module.layers.0.attention_norm.weight",
+    "codec.q.post.blk.0.attn_scale": "quantizer.post_module.layers.0.attention_layer_scale.gamma",
+    "codec.q.post.blk.0.ffn_norm": "quantizer.post_module.layers.0.ffn_norm.weight",
+    "codec.q.post.blk.0.ffn_gate": "quantizer.post_module.layers.0.feed_forward.w1.weight",
+    "codec.q.post.blk.0.ffn_up": "quantizer.post_module.layers.0.feed_forward.w3.weight",
+    "codec.q.post.blk.0.ffn_down": "quantizer.post_module.layers.0.feed_forward.w2.weight",
+    "codec.q.post.blk.0.ffn_scale": "quantizer.post_module.layers.0.ffn_layer_scale.gamma",
+    "codec.q.post.blk.1.attn_q": "quantizer.post_module.layers.1.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.1.attn_k": "quantizer.post_module.layers.1.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.1.attn_v": "quantizer.post_module.layers.1.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.1.attn_o": "quantizer.post_module.layers.1.attention.wo.weight",
+    "codec.q.post.blk.1.attn_norm": "quantizer.post_module.layers.1.attention_norm.weight",
+    "codec.q.post.blk.1.attn_scale": "quantizer.post_module.layers.1.attention_layer_scale.gamma",
+    "codec.q.post.blk.1.ffn_norm": "quantizer.post_module.layers.1.ffn_norm.weight",
+    "codec.q.post.blk.1.ffn_gate": "quantizer.post_module.layers.1.feed_forward.w1.weight",
+    "codec.q.post.blk.1.ffn_up": "quantizer.post_module.layers.1.feed_forward.w3.weight",
+    "codec.q.post.blk.1.ffn_down": "quantizer.post_module.layers.1.feed_forward.w2.weight",
+    "codec.q.post.blk.1.ffn_scale": "quantizer.post_module.layers.1.ffn_layer_scale.gamma",
+    "codec.q.post.blk.2.attn_q": "quantizer.post_module.layers.2.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.2.attn_k": "quantizer.post_module.layers.2.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.2.attn_v": "quantizer.post_module.layers.2.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.2.attn_o": "quantizer.post_module.layers.2.attention.wo.weight",
+    "codec.q.post.blk.2.attn_norm": "quantizer.post_module.layers.2.attention_norm.weight",
+    "codec.q.post.blk.2.attn_scale": "quantizer.post_module.layers.2.attention_layer_scale.gamma",
+    "codec.q.post.blk.2.ffn_norm": "quantizer.post_module.layers.2.ffn_norm.weight",
+    "codec.q.post.blk.2.ffn_gate": "quantizer.post_module.layers.2.feed_forward.w1.weight",
+    "codec.q.post.blk.2.ffn_up": "quantizer.post_module.layers.2.feed_forward.w3.weight",
+    "codec.q.post.blk.2.ffn_down": "quantizer.post_module.layers.2.feed_forward.w2.weight",
+    "codec.q.post.blk.2.ffn_scale": "quantizer.post_module.layers.2.ffn_layer_scale.gamma",
+    "codec.q.post.blk.3.attn_q": "quantizer.post_module.layers.3.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.3.attn_k": "quantizer.post_module.layers.3.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.3.attn_v": "quantizer.post_module.layers.3.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.3.attn_o": "quantizer.post_module.layers.3.attention.wo.weight",
+    "codec.q.post.blk.3.attn_norm": "quantizer.post_module.layers.3.attention_norm.weight",
+    "codec.q.post.blk.3.attn_scale": "quantizer.post_module.layers.3.attention_layer_scale.gamma",
+    "codec.q.post.blk.3.ffn_norm": "quantizer.post_module.layers.3.ffn_norm.weight",
+    "codec.q.post.blk.3.ffn_gate": "quantizer.post_module.layers.3.feed_forward.w1.weight",
+    "codec.q.post.blk.3.ffn_up": "quantizer.post_module.layers.3.feed_forward.w3.weight",
+    "codec.q.post.blk.3.ffn_down": "quantizer.post_module.layers.3.feed_forward.w2.weight",
+    "codec.q.post.blk.3.ffn_scale": "quantizer.post_module.layers.3.ffn_layer_scale.gamma",
+    "codec.q.post.blk.4.attn_q": "quantizer.post_module.layers.4.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.4.attn_k": "quantizer.post_module.layers.4.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.4.attn_v": "quantizer.post_module.layers.4.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.4.attn_o": "quantizer.post_module.layers.4.attention.wo.weight",
+    "codec.q.post.blk.4.attn_norm": "quantizer.post_module.layers.4.attention_norm.weight",
+    "codec.q.post.blk.4.attn_scale": "quantizer.post_module.layers.4.attention_layer_scale.gamma",
+    "codec.q.post.blk.4.ffn_norm": "quantizer.post_module.layers.4.ffn_norm.weight",
+    "codec.q.post.blk.4.ffn_gate": "quantizer.post_module.layers.4.feed_forward.w1.weight",
+    "codec.q.post.blk.4.ffn_up": "quantizer.post_module.layers.4.feed_forward.w3.weight",
+    "codec.q.post.blk.4.ffn_down": "quantizer.post_module.layers.4.feed_forward.w2.weight",
+    "codec.q.post.blk.4.ffn_scale": "quantizer.post_module.layers.4.ffn_layer_scale.gamma",
+    "codec.q.post.blk.5.attn_q": "quantizer.post_module.layers.5.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.5.attn_k": "quantizer.post_module.layers.5.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.5.attn_v": "quantizer.post_module.layers.5.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.5.attn_o": "quantizer.post_module.layers.5.attention.wo.weight",
+    "codec.q.post.blk.5.attn_norm": "quantizer.post_module.layers.5.attention_norm.weight",
+    "codec.q.post.blk.5.attn_scale": "quantizer.post_module.layers.5.attention_layer_scale.gamma",
+    "codec.q.post.blk.5.ffn_norm": "quantizer.post_module.layers.5.ffn_norm.weight",
+    "codec.q.post.blk.5.ffn_gate": "quantizer.post_module.layers.5.feed_forward.w1.weight",
+    "codec.q.post.blk.5.ffn_up": "quantizer.post_module.layers.5.feed_forward.w3.weight",
+    "codec.q.post.blk.5.ffn_down": "quantizer.post_module.layers.5.feed_forward.w2.weight",
+    "codec.q.post.blk.5.ffn_scale": "quantizer.post_module.layers.5.ffn_layer_scale.gamma",
+    "codec.q.post.blk.6.attn_q": "quantizer.post_module.layers.6.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.6.attn_k": "quantizer.post_module.layers.6.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.6.attn_v": "quantizer.post_module.layers.6.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.6.attn_o": "quantizer.post_module.layers.6.attention.wo.weight",
+    "codec.q.post.blk.6.attn_norm": "quantizer.post_module.layers.6.attention_norm.weight",
+    "codec.q.post.blk.6.attn_scale": "quantizer.post_module.layers.6.attention_layer_scale.gamma",
+    "codec.q.post.blk.6.ffn_norm": "quantizer.post_module.layers.6.ffn_norm.weight",
+    "codec.q.post.blk.6.ffn_gate": "quantizer.post_module.layers.6.feed_forward.w1.weight",
+    "codec.q.post.blk.6.ffn_up": "quantizer.post_module.layers.6.feed_forward.w3.weight",
+    "codec.q.post.blk.6.ffn_down": "quantizer.post_module.layers.6.feed_forward.w2.weight",
+    "codec.q.post.blk.6.ffn_scale": "quantizer.post_module.layers.6.ffn_layer_scale.gamma",
+    "codec.q.post.blk.7.attn_q": "quantizer.post_module.layers.7.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.7.attn_k": "quantizer.post_module.layers.7.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.7.attn_v": "quantizer.post_module.layers.7.attention.wqkv.weight rows [q | k | v]",
+    "codec.q.post.blk.7.attn_o": "quantizer.post_module.layers.7.attention.wo.weight",
+    "codec.q.post.blk.7.attn_norm": "quantizer.post_module.layers.7.attention_norm.weight",
+    "codec.q.post.blk.7.attn_scale": "quantizer.post_module.layers.7.attention_layer_scale.gamma",
+    "codec.q.post.blk.7.ffn_norm": "quantizer.post_module.layers.7.ffn_norm.weight",
+    "codec.q.post.blk.7.ffn_gate": "quantizer.post_module.layers.7.feed_forward.w1.weight",
+    "codec.q.post.blk.7.ffn_up": "quantizer.post_module.layers.7.feed_forward.w3.weight",
+    "codec.q.post.blk.7.ffn_down": "quantizer.post_module.layers.7.feed_forward.w2.weight",
+    "codec.q.post.blk.7.ffn_scale": "quantizer.post_module.layers.7.ffn_layer_scale.gamma",
+    "codec.q.post.norm": "quantizer.post_module.norm.weight",
+    "codec.q.semantic.in_proj.weight": "quantizer.semantic_quantizer.quantizers.0.in_proj.weight",
+    "codec.q.semantic.in_proj.bias": "quantizer.semantic_quantizer.quantizers.0.in_proj.bias",
+    "codec.q.semantic.out_proj.weight": "quantizer.semantic_quantizer.quantizers.0.out_proj.weight",
+    "codec.q.semantic.out_proj.bias": "quantizer.semantic_quantizer.quantizers.0.out_proj.bias",
+    "codec.q.semantic.codebook": "quantizer.semantic_quantizer.quantizers.0.codebook.weight",
+    "codec.q.residual.0.in_proj.weight": "quantizer.quantizer.quantizers.0.in_proj.weight",
+    "codec.q.residual.0.in_proj.bias": "quantizer.quantizer.quantizers.0.in_proj.bias",
+    "codec.q.residual.0.out_proj.weight": "quantizer.quantizer.quantizers.0.out_proj.weight",
+    "codec.q.residual.0.out_proj.bias": "quantizer.quantizer.quantizers.0.out_proj.bias",
+    "codec.q.residual.0.codebook": "quantizer.quantizer.quantizers.0.codebook.weight",
+    "codec.q.residual.1.in_proj.weight": "quantizer.quantizer.quantizers.1.in_proj.weight",
+    "codec.q.residual.1.in_proj.bias": "quantizer.quantizer.quantizers.1.in_proj.bias",
+    "codec.q.residual.1.out_proj.weight": "quantizer.quantizer.quantizers.1.out_proj.weight",
+    "codec.q.residual.1.out_proj.bias": "quantizer.quantizer.quantizers.1.out_proj.bias",
+    "codec.q.residual.1.codebook": "quantizer.quantizer.quantizers.1.codebook.weight",
+    "codec.q.residual.2.in_proj.weight": "quantizer.quantizer.quantizers.2.in_proj.weight",
+    "codec.q.residual.2.in_proj.bias": "quantizer.quantizer.quantizers.2.in_proj.bias",
+    "codec.q.residual.2.out_proj.weight": "quantizer.quantizer.quantizers.2.out_proj.weight",
+    "codec.q.residual.2.out_proj.bias": "quantizer.quantizer.quantizers.2.out_proj.bias",
+    "codec.q.residual.2.codebook": "quantizer.quantizer.quantizers.2.codebook.weight",
+    "codec.q.residual.3.in_proj.weight": "quantizer.quantizer.quantizers.3.in_proj.weight",
+    "codec.q.residual.3.in_proj.bias": "quantizer.quantizer.quantizers.3.in_proj.bias",
+    "codec.q.residual.3.out_proj.weight": "quantizer.quantizer.quantizers.3.out_proj.weight",
+    "codec.q.residual.3.out_proj.bias": "quantizer.quantizer.quantizers.3.out_proj.bias",
+    "codec.q.residual.3.codebook": "quantizer.quantizer.quantizers.3.codebook.weight",
+    "codec.q.residual.4.in_proj.weight": "quantizer.quantizer.quantizers.4.in_proj.weight",
+    "codec.q.residual.4.in_proj.bias": "quantizer.quantizer.quantizers.4.in_proj.bias",
+    "codec.q.residual.4.out_proj.weight": "quantizer.quantizer.quantizers.4.out_proj.weight",
+    "codec.q.residual.4.out_proj.bias": "quantizer.quantizer.quantizers.4.out_proj.bias",
+    "codec.q.residual.4.codebook": "quantizer.quantizer.quantizers.4.codebook.weight",
+    "codec.q.residual.5.in_proj.weight": "quantizer.quantizer.quantizers.5.in_proj.weight",
+    "codec.q.residual.5.in_proj.bias": "quantizer.quantizer.quantizers.5.in_proj.bias",
+    "codec.q.residual.5.out_proj.weight": "quantizer.quantizer.quantizers.5.out_proj.weight",
+    "codec.q.residual.5.out_proj.bias": "quantizer.quantizer.quantizers.5.out_proj.bias",
+    "codec.q.residual.5.codebook": "quantizer.quantizer.quantizers.5.codebook.weight",
+    "codec.q.residual.6.in_proj.weight": "quantizer.quantizer.quantizers.6.in_proj.weight",
+    "codec.q.residual.6.in_proj.bias": "quantizer.quantizer.quantizers.6.in_proj.bias",
+    "codec.q.residual.6.out_proj.weight": "quantizer.quantizer.quantizers.6.out_proj.weight",
+    "codec.q.residual.6.out_proj.bias": "quantizer.quantizer.quantizers.6.out_proj.bias",
+    "codec.q.residual.6.codebook": "quantizer.quantizer.quantizers.6.codebook.weight",
+    "codec.q.residual.7.in_proj.weight": "quantizer.quantizer.quantizers.7.in_proj.weight",
+    "codec.q.residual.7.in_proj.bias": "quantizer.quantizer.quantizers.7.in_proj.bias",
+    "codec.q.residual.7.out_proj.weight": "quantizer.quantizer.quantizers.7.out_proj.weight",
+    "codec.q.residual.7.out_proj.bias": "quantizer.quantizer.quantizers.7.out_proj.bias",
+    "codec.q.residual.7.codebook": "quantizer.quantizer.quantizers.7.codebook.weight",
+    "codec.q.residual.8.in_proj.weight": "quantizer.quantizer.quantizers.8.in_proj.weight",
+    "codec.q.residual.8.in_proj.bias": "quantizer.quantizer.quantizers.8.in_proj.bias",
+    "codec.q.residual.8.out_proj.weight": "quantizer.quantizer.quantizers.8.out_proj.weight",
+    "codec.q.residual.8.out_proj.bias": "quantizer.quantizer.quantizers.8.out_proj.bias",
+    "codec.q.residual.8.codebook": "quantizer.quantizer.quantizers.8.codebook.weight",
+    "codec.dec.in_conv.weight": "decoder.model.0.conv.weight",
+    "codec.dec.in_conv.bias": "decoder.model.0.conv.bias",
+    "codec.dec.blk.0.snake.alpha": "decoder.model.1.block.0.alpha",
+    "codec.dec.blk.0.snake.inv_alpha": "(1 / (decoder.model.1.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.0.up.weight": "decoder.model.1.block.1.conv.weight",
+    "codec.dec.blk.0.up.bias": "decoder.model.1.block.1.conv.bias",
+    "codec.dec.blk.0.res.0.snake1.alpha": "decoder.model.1.block.2.block.0.alpha",
+    "codec.dec.blk.0.res.0.snake1.inv_alpha": "(1 / (decoder.model.1.block.2.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.0.res.0.conv1.weight": "decoder.model.1.block.2.block.1.conv.weight",
+    "codec.dec.blk.0.res.0.conv1.bias": "decoder.model.1.block.2.block.1.conv.bias",
+    "codec.dec.blk.0.res.0.snake2.alpha": "decoder.model.1.block.2.block.2.alpha",
+    "codec.dec.blk.0.res.0.snake2.inv_alpha": "(1 / (decoder.model.1.block.2.block.2.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.0.res.0.conv2.weight": "decoder.model.1.block.2.block.3.conv.weight",
+    "codec.dec.blk.0.res.0.conv2.bias": "decoder.model.1.block.2.block.3.conv.bias",
+    "codec.dec.blk.0.res.1.snake1.alpha": "decoder.model.1.block.3.block.0.alpha",
+    "codec.dec.blk.0.res.1.snake1.inv_alpha": "(1 / (decoder.model.1.block.3.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.0.res.1.conv1.weight": "decoder.model.1.block.3.block.1.conv.weight",
+    "codec.dec.blk.0.res.1.conv1.bias": "decoder.model.1.block.3.block.1.conv.bias",
+    "codec.dec.blk.0.res.1.snake2.alpha": "decoder.model.1.block.3.block.2.alpha",
+    "codec.dec.blk.0.res.1.snake2.inv_alpha": "(1 / (decoder.model.1.block.3.block.2.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.0.res.1.conv2.weight": "decoder.model.1.block.3.block.3.conv.weight",
+    "codec.dec.blk.0.res.1.conv2.bias": "decoder.model.1.block.3.block.3.conv.bias",
+    "codec.dec.blk.0.res.2.snake1.alpha": "decoder.model.1.block.4.block.0.alpha",
+    "codec.dec.blk.0.res.2.snake1.inv_alpha": "(1 / (decoder.model.1.block.4.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.0.res.2.conv1.weight": "decoder.model.1.block.4.block.1.conv.weight",
+    "codec.dec.blk.0.res.2.conv1.bias": "decoder.model.1.block.4.block.1.conv.bias",
+    "codec.dec.blk.0.res.2.snake2.alpha": "decoder.model.1.block.4.block.2.alpha",
+    "codec.dec.blk.0.res.2.snake2.inv_alpha": "(1 / (decoder.model.1.block.4.block.2.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.0.res.2.conv2.weight": "decoder.model.1.block.4.block.3.conv.weight",
+    "codec.dec.blk.0.res.2.conv2.bias": "decoder.model.1.block.4.block.3.conv.bias",
+    "codec.dec.blk.1.snake.alpha": "decoder.model.2.block.0.alpha",
+    "codec.dec.blk.1.snake.inv_alpha": "(1 / (decoder.model.2.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.1.up.weight": "decoder.model.2.block.1.conv.weight",
+    "codec.dec.blk.1.up.bias": "decoder.model.2.block.1.conv.bias",
+    "codec.dec.blk.1.res.0.snake1.alpha": "decoder.model.2.block.2.block.0.alpha",
+    "codec.dec.blk.1.res.0.snake1.inv_alpha": "(1 / (decoder.model.2.block.2.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.1.res.0.conv1.weight": "decoder.model.2.block.2.block.1.conv.weight",
+    "codec.dec.blk.1.res.0.conv1.bias": "decoder.model.2.block.2.block.1.conv.bias",
+    "codec.dec.blk.1.res.0.snake2.alpha": "decoder.model.2.block.2.block.2.alpha",
+    "codec.dec.blk.1.res.0.snake2.inv_alpha": "(1 / (decoder.model.2.block.2.block.2.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.1.res.0.conv2.weight": "decoder.model.2.block.2.block.3.conv.weight",
+    "codec.dec.blk.1.res.0.conv2.bias": "decoder.model.2.block.2.block.3.conv.bias",
+    "codec.dec.blk.1.res.1.snake1.alpha": "decoder.model.2.block.3.block.0.alpha",
+    "codec.dec.blk.1.res.1.snake1.inv_alpha": "(1 / (decoder.model.2.block.3.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.1.res.1.conv1.weight": "decoder.model.2.block.3.block.1.conv.weight",
+    "codec.dec.blk.1.res.1.conv1.bias": "decoder.model.2.block.3.block.1.conv.bias",
+    "codec.dec.blk.1.res.1.snake2.alpha": "decoder.model.2.block.3.block.2.alpha",
+    "codec.dec.blk.1.res.1.snake2.inv_alpha": "(1 / (decoder.model.2.block.3.block.2.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.1.res.1.conv2.weight": "decoder.model.2.block.3.block.3.conv.weight",
+    "codec.dec.blk.1.res.1.conv2.bias": "decoder.model.2.block.3.block.3.conv.bias",
+    "codec.dec.blk.1.res.2.snake1.alpha": "decoder.model.2.block.4.block.0.alpha",
+    "codec.dec.blk.1.res.2.snake1.inv_alpha": "(1 / (decoder.model.2.block.4.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.1.res.2.conv1.weight": "decoder.model.2.block.4.block.1.conv.weight",
+    "codec.dec.blk.1.res.2.conv1.bias": "decoder.model.2.block.4.block.1.conv.bias",
+    "codec.dec.blk.1.res.2.snake2.alpha": "decoder.model.2.block.4.block.2.alpha",
+    "codec.dec.blk.1.res.2.snake2.inv_alpha": "(1 / (decoder.model.2.block.4.block.2.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.1.res.2.conv2.weight": "decoder.model.2.block.4.block.3.conv.weight",
+    "codec.dec.blk.1.res.2.conv2.bias": "decoder.model.2.block.4.block.3.conv.bias",
+    "codec.dec.blk.2.snake.alpha": "decoder.model.3.block.0.alpha",
+    "codec.dec.blk.2.snake.inv_alpha": "(1 / (decoder.model.3.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.2.up.weight": "decoder.model.3.block.1.conv.weight",
+    "codec.dec.blk.2.up.bias": "decoder.model.3.block.1.conv.bias",
+    "codec.dec.blk.2.res.0.snake1.alpha": "decoder.model.3.block.2.block.0.alpha",
+    "codec.dec.blk.2.res.0.snake1.inv_alpha": "(1 / (decoder.model.3.block.2.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.2.res.0.conv1.weight": "decoder.model.3.block.2.block.1.conv.weight",
+    "codec.dec.blk.2.res.0.conv1.bias": "decoder.model.3.block.2.block.1.conv.bias",
+    "codec.dec.blk.2.res.0.snake2.alpha": "decoder.model.3.block.2.block.2.alpha",
+    "codec.dec.blk.2.res.0.snake2.inv_alpha": "(1 / (decoder.model.3.block.2.block.2.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.2.res.0.conv2.weight": "decoder.model.3.block.2.block.3.conv.weight",
+    "codec.dec.blk.2.res.0.conv2.bias": "decoder.model.3.block.2.block.3.conv.bias",
+    "codec.dec.blk.2.res.1.snake1.alpha": "decoder.model.3.block.3.block.0.alpha",
+    "codec.dec.blk.2.res.1.snake1.inv_alpha": "(1 / (decoder.model.3.block.3.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.2.res.1.conv1.weight": "decoder.model.3.block.3.block.1.conv.weight",
+    "codec.dec.blk.2.res.1.conv1.bias": "decoder.model.3.block.3.block.1.conv.bias",
+    "codec.dec.blk.2.res.1.snake2.alpha": "decoder.model.3.block.3.block.2.alpha",
+    "codec.dec.blk.2.res.1.snake2.inv_alpha": "(1 / (decoder.model.3.block.3.block.2.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.2.res.1.conv2.weight": "decoder.model.3.block.3.block.3.conv.weight",
+    "codec.dec.blk.2.res.1.conv2.bias": "decoder.model.3.block.3.block.3.conv.bias",
+    "codec.dec.blk.2.res.2.snake1.alpha": "decoder.model.3.block.4.block.0.alpha",
+    "codec.dec.blk.2.res.2.snake1.inv_alpha": "(1 / (decoder.model.3.block.4.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.2.res.2.conv1.weight": "decoder.model.3.block.4.block.1.conv.weight",
+    "codec.dec.blk.2.res.2.conv1.bias": "decoder.model.3.block.4.block.1.conv.bias",
+    "codec.dec.blk.2.res.2.snake2.alpha": "decoder.model.3.block.4.block.2.alpha",
+    "codec.dec.blk.2.res.2.snake2.inv_alpha": "(1 / (decoder.model.3.block.4.block.2.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.2.res.2.conv2.weight": "decoder.model.3.block.4.block.3.conv.weight",
+    "codec.dec.blk.2.res.2.conv2.bias": "decoder.model.3.block.4.block.3.conv.bias",
+    "codec.dec.blk.3.snake.alpha": "decoder.model.4.block.0.alpha",
+    "codec.dec.blk.3.snake.inv_alpha": "(1 / (decoder.model.4.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.3.up.weight": "decoder.model.4.block.1.conv.weight",
+    "codec.dec.blk.3.up.bias": "decoder.model.4.block.1.conv.bias",
+    "codec.dec.blk.3.res.0.snake1.alpha": "decoder.model.4.block.2.block.0.alpha",
+    "codec.dec.blk.3.res.0.snake1.inv_alpha": "(1 / (decoder.model.4.block.2.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.3.res.0.conv1.weight": "decoder.model.4.block.2.block.1.conv.weight",
+    "codec.dec.blk.3.res.0.conv1.bias": "decoder.model.4.block.2.block.1.conv.bias",
+    "codec.dec.blk.3.res.0.snake2.alpha": "decoder.model.4.block.2.block.2.alpha",
+    "codec.dec.blk.3.res.0.snake2.inv_alpha": "(1 / (decoder.model.4.block.2.block.2.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.3.res.0.conv2.weight": "decoder.model.4.block.2.block.3.conv.weight",
+    "codec.dec.blk.3.res.0.conv2.bias": "decoder.model.4.block.2.block.3.conv.bias",
+    "codec.dec.blk.3.res.1.snake1.alpha": "decoder.model.4.block.3.block.0.alpha",
+    "codec.dec.blk.3.res.1.snake1.inv_alpha": "(1 / (decoder.model.4.block.3.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.3.res.1.conv1.weight": "decoder.model.4.block.3.block.1.conv.weight",
+    "codec.dec.blk.3.res.1.conv1.bias": "decoder.model.4.block.3.block.1.conv.bias",
+    "codec.dec.blk.3.res.1.snake2.alpha": "decoder.model.4.block.3.block.2.alpha",
+    "codec.dec.blk.3.res.1.snake2.inv_alpha": "(1 / (decoder.model.4.block.3.block.2.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.3.res.1.conv2.weight": "decoder.model.4.block.3.block.3.conv.weight",
+    "codec.dec.blk.3.res.1.conv2.bias": "decoder.model.4.block.3.block.3.conv.bias",
+    "codec.dec.blk.3.res.2.snake1.alpha": "decoder.model.4.block.4.block.0.alpha",
+    "codec.dec.blk.3.res.2.snake1.inv_alpha": "(1 / (decoder.model.4.block.4.block.0.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.3.res.2.conv1.weight": "decoder.model.4.block.4.block.1.conv.weight",
+    "codec.dec.blk.3.res.2.conv1.bias": "decoder.model.4.block.4.block.1.conv.bias",
+    "codec.dec.blk.3.res.2.snake2.alpha": "decoder.model.4.block.4.block.2.alpha",
+    "codec.dec.blk.3.res.2.snake2.inv_alpha": "(1 / (decoder.model.4.block.4.block.2.alpha + 1e-9), not a parameter)",
+    "codec.dec.blk.3.res.2.conv2.weight": "decoder.model.4.block.4.block.3.conv.weight",
+    "codec.dec.blk.3.res.2.conv2.bias": "decoder.model.4.block.4.block.3.conv.bias",
+    "codec.dec.out_snake.alpha": "decoder.model.5.alpha",
+    "codec.dec.out_snake.inv_alpha": "(1 / (decoder.model.5.alpha + 1e-9), not a parameter)",
+    "codec.dec.out_conv.weight": "decoder.model.6.conv.weight",
+    "codec.dec.out_conv.bias": "decoder.model.6.conv.bias"
+   },
+   "files": {
+    "samples": {
+     "file": "codec-reference/samples.f32",
+     "shape": [
+      204624
+     ],
+     "dtype": "f32",
+     "sha256": "290fa9f8945e10d0bba0fe9c77fdefc25cf3623f729668fef1abbf81a8955dde",
+     "note": "the clip resampled 24000 -> 44100 Hz by torchaudio.functional.resample defaults"
+    },
+    "encoder/enc.in_conv": {
+     "file": "codec-reference/encoder/enc.in_conv.f32",
+     "shape": [
+      64,
+      64
+     ],
+     "dtype": "f32",
+     "sha256": "22d4acf88de74cc2ab3f568e2f4c087264f2f7e0a5ee27073f46b210efb6e206",
+     "note": "encoder.block.0, the causal 7-tap input conv (1 -> 64); [rows, channels]",
+     "rows": [
+      [
+       0,
+       32
+      ],
+      [
+       204768,
+       204800
+      ]
+     ]
+    },
+    "encoder/enc.blk.0.res.0": {
+     "file": "codec-reference/encoder/enc.blk.0.res.0.f32",
+     "shape": [
+      64,
+      64
+     ],
+     "dtype": "f32",
+     "sha256": "24eb779926592a38ec368e76c1ebabcf577c79b7c54c06bb1e89360fab4d74e1",
+     "note": "encoder.block.1.block.0, the first ResidualUnit (dilation 1) of encoder block 0; [rows, channels]",
+     "rows": [
+      [
+       0,
+       32
+      ],
+      [
+       204768,
+       204800
+      ]
+     ]
+    },
+    "encoder/enc.blk.0": {
+     "file": "codec-reference/encoder/enc.blk.0.f32",
+     "shape": [
+      64,
+      128
+     ],
+     "dtype": "f32",
+     "sha256": "b2eca7822091824ef373e7011e8dacb9abc24c3b6827e350984a2ea7e6dc57b6",
+     "note": "encoder block 0 (3 ResidualUnits, Snake, causal stride-2 conv 64 -> 128); [rows, channels]",
+     "rows": [
+      [
+       0,
+       32
+      ],
+      [
+       102368,
+       102400
+      ]
+     ]
+    },
+    "encoder/enc.blk.1": {
+     "file": "codec-reference/encoder/enc.blk.1.f32",
+     "shape": [
+      32,
+      256
+     ],
+     "dtype": "f32",
+     "sha256": "1bfe76d2fa7849714b60eafeb831013bf4d411e345c842e4636b11ab929dbc76",
+     "note": "encoder block 1 (stride 4, 128 -> 256); [rows, channels]",
+     "rows": [
+      [
+       0,
+       16
+      ],
+      [
+       25584,
+       25600
+      ]
+     ]
+    },
+    "encoder/enc.blk.2": {
+     "file": "codec-reference/encoder/enc.blk.2.f32",
+     "shape": [
+      32,
+      512
+     ],
+     "dtype": "f32",
+     "sha256": "69de970b097a0ca40423b6dfc1744f5e880fff300054536356abfcb8e9b22267",
+     "note": "encoder block 2 (stride 8, 256 -> 512); [rows, channels]",
+     "rows": [
+      [
+       0,
+       16
+      ],
+      [
+       3184,
+       3200
+      ]
+     ]
+    },
+    "encoder/enc.blk.3.down": {
+     "file": "codec-reference/encoder/enc.blk.3.down.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "232d5e6504d4d2fb1b2021cd7ed6d7bd654ce6b17c3525a275ecab4ee6ea8211",
+     "note": "encoder block 3's stride-8 conv (512 -> 1024), before its transformer; [rows, channels]",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       392,
+       400
+      ]
+     ]
+    },
+    "encoder/enc.blk.3": {
+     "file": "codec-reference/encoder/enc.blk.3.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "93961342534f272b8b16701144481270a0380d24b06d77cd651d28602ae6f6fe",
+     "note": "encoder block 3 after its 4-layer causal windowed (512) transformer; [rows, channels]",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       392,
+       400
+      ]
+     ]
+    },
+    "encoder/enc.out": {
+     "file": "codec-reference/encoder/enc.out.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "2be167e6c8d2851dfded81a62ee994f12d47f06eb1756c1d1c2c18c9eee71644",
+     "note": "the encoder's output: Snake then the causal 3-tap conv (1024 -> 1024), the latent z; [rows, channels]",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       392,
+       400
+      ]
+     ]
+    },
+    "encoder/q.down.0.conv": {
+     "file": "codec-reference/encoder/q.down.0.conv.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "5abb4e53a74ac693b1cfcbe5dd92991768256b454fa41ee2d015244ceb9e6d2f",
+     "note": "quantizer.downsample.0's causal stride-2 conv; [rows, channels]",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       192,
+       200
+      ]
+     ]
+    },
+    "encoder/q.down.0": {
+     "file": "codec-reference/encoder/q.down.0.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "be1e98e4bd028e4956f8be084548eaea7db63571d222141c7324e23ecf316116",
+     "note": "quantizer.downsample.0 after its ConvNeXt block; [rows, channels]",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       192,
+       200
+      ]
+     ]
+    },
+    "encoder/q.down.1": {
+     "file": "codec-reference/encoder/q.down.1.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "8569e514677f24336b220c82f93eb1e6312c8923db1ffede88295e238f96e686",
+     "note": "quantizer.downsample.1 (stride 2 + ConvNeXt): frame rate; [rows, channels]",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       92,
+       100
+      ]
+     ]
+    },
+    "encoder/q.pre": {
+     "file": "codec-reference/encoder/q.pre.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "bc4f0a37bfd3a7d552ecaade3ce9ca85514af44f886cb689ef9c6fd6719c476c",
+     "note": "the quantizer's 8-layer causal windowed (128) pre-transformer: what the VQs read; [rows, channels]",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       92,
+       100
+      ]
+     ]
+    },
+    "encoder/q.latents": {
+     "file": "codec-reference/encoder/q.latents.f32",
+     "shape": [
+      100,
+      80
+     ],
+     "dtype": "f32",
+     "sha256": "138f584b7c78f53c489bc68fbe3acd2c60cf9b54a5843664445b256e7f296bd6",
+     "note": "each VQ's in_proj output z_e (the 8-dim latent before the L2-normalized nearest-codeword search), [frame][codebook * 8 + d], codebook 0 the semantic one, 1-9 the residual ones (each reads the residual left by the earlier ones)"
+    },
+    "codes": {
+     "file": "codec-reference/codes.i32",
+     "shape": [
+      100,
+      10
+     ],
+     "dtype": "i32",
+     "sha256": "db6703e672a9390f96a72f53c389ae67a27a999ed1940271cd55faccb0f0b305",
+     "note": "the codes DAC.encode returns, [frame][codebook]: 0 semantic (< 4096), 1-9 residual (< 1024)"
+    },
+    "decoder/q.z": {
+     "file": "codec-reference/decoder/q.z.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "bb7e30e02078c139bbac503b0ce28d51052d2c6172a4d86b5d992c9fae16658d",
+     "note": "from_indices on `codes`: the quantizer decode's sum of the 10 codebook vectors after their out_proj (post_module's input); [rows, channels]",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       92,
+       100
+      ]
+     ]
+    },
+    "decoder/q.post": {
+     "file": "codec-reference/decoder/q.post.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "8a24666edc5c998309e3602ffe85facad642d9ee74bcf5132af4d4cbfa286ebb",
+     "note": "from_indices on `codes`: the 8-layer causal windowed (128) post-transformer; [rows, channels]",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       92,
+       100
+      ]
+     ]
+    },
+    "decoder/q.up.0": {
+     "file": "codec-reference/decoder/q.up.0.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "7d65622042088437826b88c3251172a2da1eb094cec2d981547e7e252ef5a90f",
+     "note": "from_indices on `codes`: quantizer.upsample.0: causal transposed conv x2 + ConvNeXt; [rows, channels]",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       192,
+       200
+      ]
+     ]
+    },
+    "decoder/q.up.1": {
+     "file": "codec-reference/decoder/q.up.1.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "bcd9d02847ab3b05a49b294dae3785c486f92177c6e2bb044d464ca7e64885fa",
+     "note": "from_indices on `codes`: quantizer.upsample.1: causal transposed conv x2 + ConvNeXt; the decoder's input; [rows, channels]",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       392,
+       400
+      ]
+     ]
+    },
+    "decoder/dec.in_conv": {
+     "file": "codec-reference/decoder/dec.in_conv.f32",
+     "shape": [
+      16,
+      1536
+     ],
+     "dtype": "f32",
+     "sha256": "8f005ac55eaa4370f894265ed0013e3e6311d706f52cd2996883fa12eac57c33",
+     "note": "from_indices on `codes`: decoder.model.0, the causal 7-tap conv (1024 -> 1536); [rows, channels]",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       392,
+       400
+      ]
+     ]
+    },
+    "decoder/dec.blk.0.up": {
+     "file": "codec-reference/decoder/dec.blk.0.up.f32",
+     "shape": [
+      32,
+      768
+     ],
+     "dtype": "f32",
+     "sha256": "16781a38e724ea7b2c0191793b292b577f0d7860cd58255023554513ec5df8c3",
+     "note": "from_indices on `codes`: decoder block 0's Snake + causal transposed conv x8 (1536 -> 768); [rows, channels]",
+     "rows": [
+      [
+       0,
+       16
+      ],
+      [
+       3184,
+       3200
+      ]
+     ]
+    },
+    "decoder/dec.blk.0": {
+     "file": "codec-reference/decoder/dec.blk.0.f32",
+     "shape": [
+      32,
+      768
+     ],
+     "dtype": "f32",
+     "sha256": "52e1b5f0558932da4c7632c4a2390a9a3f938cdf7ace6d95d3b7209bfb83b755",
+     "note": "from_indices on `codes`: decoder block 0 after its 3 ResidualUnits; [rows, channels]",
+     "rows": [
+      [
+       0,
+       16
+      ],
+      [
+       3184,
+       3200
+      ]
+     ]
+    },
+    "decoder/dec.blk.1": {
+     "file": "codec-reference/decoder/dec.blk.1.f32",
+     "shape": [
+      64,
+      384
+     ],
+     "dtype": "f32",
+     "sha256": "28c9f63b2a77645ee34cfe28476dfdfad0f725a32e11cbd887943b7ce8697a4a",
+     "note": "from_indices on `codes`: decoder block 1 (x8, 768 -> 384); [rows, channels]",
+     "rows": [
+      [
+       0,
+       32
+      ],
+      [
+       25568,
+       25600
+      ]
+     ]
+    },
+    "decoder/dec.blk.2": {
+     "file": "codec-reference/decoder/dec.blk.2.f32",
+     "shape": [
+      64,
+      192
+     ],
+     "dtype": "f32",
+     "sha256": "8d4d8725251cc80b0b9f7bcb474fe88221c2dfdd724c0b7b47ad1ad71952016e",
+     "note": "from_indices on `codes`: decoder block 2 (x4, 384 -> 192); [rows, channels]",
+     "rows": [
+      [
+       0,
+       32
+      ],
+      [
+       102368,
+       102400
+      ]
+     ]
+    },
+    "decoder/dec.blk.3": {
+     "file": "codec-reference/decoder/dec.blk.3.f32",
+     "shape": [
+      128,
+      96
+     ],
+     "dtype": "f32",
+     "sha256": "48511f6f7c82bf621cd6b18e3867c090e418055da1d1b7c0b5b8a95d6e1fe30e",
+     "note": "from_indices on `codes`: decoder block 3 (x2, 192 -> 96); [rows, channels]",
+     "rows": [
+      [
+       0,
+       64
+      ],
+      [
+       204736,
+       204800
+      ]
+     ]
+    },
+    "decoder/dec.out_conv": {
+     "file": "codec-reference/decoder/dec.out_conv.f32",
+     "shape": [
+      128,
+      1
+     ],
+     "dtype": "f32",
+     "sha256": "3e8e04fb42b9b2522c2ba74be868cab40ccc05255ba5139713836f435d1c4315",
+     "note": "from_indices on `codes`: Snake then the causal 7-tap conv (96 -> 1), before tanh; [rows, channels]",
+     "rows": [
+      [
+       0,
+       64
+      ],
+      [
+       204736,
+       204800
+      ]
+     ]
+    },
+    "decoder/samples": {
+     "file": "codec-reference/decoder/samples.f32",
+     "shape": [
+      8192
+     ],
+     "dtype": "f32",
+     "sha256": "64211b1ffc82913537a4d6aa685a931da2f5a7a921e7a1a557ca6a323c3f7414",
+     "note": "from_indices's waveform (after tanh), its first and last 2 frames; the whole's SHA-256 and RMS are in the case",
+     "rows": [
+      [
+       0,
+       4096
+      ],
+      [
+       200704,
+       204800
+      ]
+     ]
+    }
+   }
+  },
+  "codec-window": {
+   "input": "codec-reference's samples twice over, end to end",
+   "samples": 409248,
+   "frames": 200,
+   "windows": "the encoder transformer runs over 800 rows (window 512); the quantizer transformers over 200 frames (window 128)",
+   "reconstruction": {
+    "snr_db": 10.291,
+    "log_spectral_l1": 0.9867
+   },
+   "decoder_samples_sha256": "a4fdd39d0d7f5a67c5b0f0bc3060457f1016f2fde0ae52933dd7f92a833b81b6",
+   "files": {
+    "encoder/enc.blk.3": {
+     "file": "codec-window/encoder/enc.blk.3.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "186e3d3af794be9ef9de14ee9002e311edfea2c895bf6e25a806893e548a612e",
+     "note": "the last 16 rows of encoder block 3 after its 4-layer causal windowed (512) transformer",
+     "rows": [
+      [
+       784,
+       800
+      ]
+     ]
+    },
+    "encoder/q.pre": {
+     "file": "codec-window/encoder/q.pre.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "671155481cd84092eeb7dda970d5a9635e4060672f41ce43794e66a58494b6c1",
+     "note": "the last 16 rows of the quantizer's 8-layer causal windowed (128) pre-transformer: what the VQs read",
+     "rows": [
+      [
+       184,
+       200
+      ]
+     ]
+    },
+    "codes": {
+     "file": "codec-window/codes.i32",
+     "shape": [
+      200,
+      10
+     ],
+     "dtype": "i32",
+     "sha256": "d29b9f27db37a9f327d68ad02c52b44e5fd8ce0779d85cdc8ffdb4b04f4f309d",
+     "note": "DAC.encode's codes of the doubled clip, [frame][codebook]"
+    },
+    "decoder/q.post": {
+     "file": "codec-window/decoder/q.post.f32",
+     "shape": [
+      16,
+      1024
+     ],
+     "dtype": "f32",
+     "sha256": "04db8e286b1b335d4205da4aef6f8c0941e44440ee83a80e5fe2d0921a7d13a4",
+     "note": "from_indices on `codes`: the last 16 rows of the post-transformer",
+     "rows": [
+      [
+       184,
+       200
+      ]
+     ]
+    },
+    "decoder/samples": {
+     "file": "codec-window/decoder/samples.f32",
+     "shape": [
+      4096
+     ],
+     "dtype": "f32",
+     "sha256": "6d3c0529222a88050dbce9db43cae1fe67b06a27b8c6d3e34fb0b9194d20dbf3",
+     "note": "the last 2 frames of from_indices's waveform",
+     "rows": [
+      [
+       405504,
+       409600
+      ]
+     ]
+    }
+   }
+  },
+  "clone-fox": {
+   "reference": "codec-reference (its codes are Reference 1's)",
+   "backbone_checks": [
+    {
+     "convention": "shifted/codebooks k-1/grouped",
+     "reference_mean_logprob": -4.4039,
+     "reference_top1": 0.17,
+     "continuation_mean_logprob": -2.013
+    },
+    {
+     "convention": "unshifted/codebooks k-1/grouped",
+     "reference_mean_logprob": -28.0262,
+     "reference_top1": 0.0,
+     "continuation_mean_logprob": -28.9618
+    },
+    {
+     "convention": "shifted/codebooks k/grouped",
+     "reference_mean_logprob": -8.5106,
+     "reference_top1": 0.0,
+     "continuation_mean_logprob": -7.2923
+    },
+    {
+     "convention": "shifted/codebooks k-1/grouped/q-gate swapped",
+     "reference_mean_logprob": -9.2183,
+     "reference_top1": 0.0,
+     "continuation_mean_logprob": -9.329
+    },
+    {
+     "convention": "shifted/codebooks k-1/tiled",
+     "reference_mean_logprob": -11.1061,
+     "reference_top1": 0.0,
+     "continuation_mean_logprob": -11.131
+    },
+    {
+     "convention": "unshifted/codebooks k-1/tiled",
+     "reference_mean_logprob": -25.7887,
+     "reference_top1": 0.0,
+     "continuation_mean_logprob": -24.782
+    },
+    {
+     "convention": "shifted/codebooks k/tiled",
+     "reference_mean_logprob": -10.5557,
+     "reference_top1": 0.0,
+     "continuation_mean_logprob": -11.6969
+    },
+    {
+     "convention": "shifted/codebooks k-1/tiled/q-gate swapped",
+     "reference_mean_logprob": -8.9065,
+     "reference_top1": 0.0,
+     "continuation_mean_logprob": -9.171
+    }
+   ],
+   "backbone_convention": "shifted/codebooks k-1/grouped",
+   "text": "The quick brown fox jumps over the lazy dog.",
+   "reference_text": "Every morning I walk along the river and listen to the birds.",
+   "prompt_rows": 164,
+   "rows": 188,
+   "reference_rows": [
+    42,
+    142
+   ],
+   "continuation_rows": [
+    164,
+    188
+   ],
+   "frames_note": "frames.i32 [row][main, c0..c9]: a text row is [token id, 0 x 10] (Fish's build_drama3_prompt), a semantic row [248099 + c0, c0..c9]; the prompt rows end at <|voice|>, then the continuation rows are the reference's first 24 frames, teacher-forced",
+   "pinned_rows": [
+    [
+     0,
+     8
+    ],
+    [
+     156,
+     188
+    ]
+   ],
+   "positions": "row r is at position r (one sequence from 0)",
+   "logits_columns": "column j is drama3.output.token_ids[j] (j 0: EOS 248046, j 1 + c: semantic code c)",
+   "names": {
+    "token_embd": "model.embed_tokens.weight (rows read per id)",
+    "output": "lm_head.weight rows drama3.output.token_ids (EOS, then the semantic band)",
+    "output_norm": "model.norm.weight + 1 (ZeroCenteredRMSNorm)",
+    "blk.N.attn_norm": "model.layers.N.input_layernorm.weight + 1",
+    "blk.N.post_attn_norm": "model.layers.N.post_attention_layernorm.weight + 1",
+    "blk.N.attn_q, blk.N.attn_gate": "model.layers.N.self_attn.q_proj.weight: per head h, rows [h*512, h*512+256) = attn_q rows [h*256, h*256+256), rows [h*512+256, h*512+512) = attn_gate's",
+    "blk.N.attn_k / attn_v / attn_output": "self_attn.k_proj / v_proj / o_proj",
+    "blk.N.attn_q_norm / attn_k_norm": "self_attn.q_norm / k_norm .weight + 1",
+    "blk.N.ssm_in_qkv": "linear_attn.in_proj_qkv.weight (rows q 2048 | k 2048 | v 4096)",
+    "blk.N.ssm_in_z / ssm_in_b / ssm_in_a": "linear_attn.in_proj_z / in_proj_b / in_proj_a",
+    "blk.N.ssm_conv1d": "linear_attn.conv1d.weight [8192, 1, 4] (GGUF [channel][tap])",
+    "blk.N.ssm_dt_bias / ssm_a_log": "linear_attn.dt_bias / A_log (A_log raw, not -exp)",
+    "blk.N.ssm_norm": "linear_attn.norm.weight (GatedRMSNorm, a plain weight)",
+    "blk.N.ssm_out": "linear_attn.out_proj",
+    "blk.N.ffn_gate_inp": "mlp.gate.weight (router, 256 rows)",
+    "blk.N.ffn_gate_exps / ffn_up_exps": "mlp.experts.w13_weight[e][:512] / [512:] = GGUF rows [e*512, e*512+512)",
+    "blk.N.ffn_down_exps": "mlp.experts.w2_weight[e] = GGUF rows [e*2048, e*2048+2048)",
+    "blk.N.ffn_gate_shexp / ffn_up_shexp / ffn_down_shexp": "mlp.shared_expert.gate_proj / up_proj / down_proj",
+    "blk.N.ffn_gate_inp_shexp": "mlp.shared_expert_gate.weight [1, 2048]",
+    "ad.codebook_embd": "codebook_embeddings.weight rows [4096, 40960): GGUF row (k-1)*4096 + c is codebook k >= 1, code c (Fish's codebook 0 rows, never read, are absent)",
+    "ad.shared.N.embd": "shared_layers.N.semantic_embedding.weight",
+    "ad.layer.N.embd": "residual_layers.N.codebook_embedding.weight",
+    "ad.{shared,layer}.N.enorm / hnorm / final_norm": "enorm / hnorm / final_layernorm .weight + 1",
+    "ad.{shared,layer}.N.eh_proj": "eh_proj.weight [2048, 4096] (input [enorm(e) | hnorm(hidden)])",
+    "ad.{shared,layer}.N.attn_norm / ffn_norm": "transformer_layer.attention_norm / ffn_norm .weight + 1",
+    "ad.{shared,layer}.N.attn_q, attn_gate, attn_k, attn_v": "transformer_layer.attention.wqkv.weight rows [q 4096 | gate 4096 | k 512 | v 512]",
+    "ad.{shared,layer}.N.attn_q_norm / attn_k_norm": "attention.q_norm / k_norm .weight + 1",
+    "ad.{shared,layer}.N.attn_output": "attention.wo",
+    "ad.{shared,layer}.N.ffn_gate / ffn_up / ffn_down": "feed_forward.w1 / w3 / w2",
+    "ad.head.N": "codebook_heads.N.weight (predicts code N + 1)"
+   },
+   "tower_checks": [
+    {
+     "convention": "shifted/codebooks k-1/grouped",
+     "reference_mean_logprob": -5.2682,
+     "reference_per_codebook": [
+      -4.287,
+      -5.09,
+      -4.981,
+      -5.232,
+      -5.299,
+      -5.577,
+      -5.679,
+      -5.56,
+      -5.709
+     ],
+     "reference_top1": 0.0544,
+     "continuation_mean_logprob": -3.4253
+    },
+    {
+     "convention": "unshifted/codebooks k-1/grouped",
+     "reference_mean_logprob": -23.223,
+     "reference_per_codebook": [
+      -21.323,
+      -30.35,
+      -31.364,
+      -26.352,
+      -21.408,
+      -17.604,
+      -13.926,
+      -24.22,
+      -22.461
+     ],
+     "reference_top1": 0.0,
+     "continuation_mean_logprob": -22.829
+    },
+    {
+     "convention": "shifted/codebooks k/grouped",
+     "reference_mean_logprob": -6.3655,
+     "reference_per_codebook": [
+      -5.164,
+      -6.434,
+      -6.626,
+      -6.546,
+      -6.584,
+      -6.708,
+      -6.645,
+      -6.22,
+      -6.363
+     ],
+     "reference_top1": 0.0222,
+     "continuation_mean_logprob": -6.9429
+    },
+    {
+     "convention": "shifted/codebooks k-1/grouped/q-gate swapped",
+     "reference_mean_logprob": -11.2015,
+     "reference_per_codebook": [
+      -7.939,
+      -10.193,
+      -10.883,
+      -11.845,
+      -9.912,
+      -11.569,
+      -12.434,
+      -13.258,
+      -12.779
+     ],
+     "reference_top1": 0.0011,
+     "continuation_mean_logprob": -10.7955
+    }
+   ],
+   "tower_rows": [
+    3,
+    52,
+    163,
+    164,
+    165,
+    186
+   ],
+   "tower_note": "FishOmniAudioDecoder.prefill(hidden = backbone/norm rows 0..R-2, positions, frames[r], next_frames = frames[r + 1]): row r runs the shared layers on code c0 of frame r + 1 (layer 0 adding the summed codebook 2-9 embeddings of frame r when frame r is semantic), then residual layer j on c_j of frame r + 1; head j on residual layer j's output predicts c_{j+1} of frame r + 1. Every tower layer attends over all rows 0..r, text rows included (their e is 0)",
+   "files": {
+    "frames": {
+     "file": "clone-fox/frames.i32",
+     "shape": [
+      188,
+      11
+     ],
+     "dtype": "i32",
+     "sha256": "545258135219da47db8784371142153d5c603054f5501607bbbdddcad247549c",
+     "note": "every row's frame, [row][main, c0..c9]"
+    },
+    "backbone/inputs": {
+     "file": "clone-fox/backbone/inputs.f32",
+     "shape": [
+      40,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "6295db4e9ccf9cdeece4e3a2131bd6bc16a1eb094fd9687fc1d8efe556702061",
+     "note": "embed_backbone: text rows token_embd[id]; semantic rows (token_embd[main] + codebook_embd[c1]) / sqrt(2)",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       156,
+       188
+      ]
+     ]
+    },
+    "backbone/layer.0": {
+     "file": "clone-fox/backbone/layer.0.f32",
+     "shape": [
+      40,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "839d80d9e4b4d27627b45f8b3d5a514f484bb395c40f33682ff21c4533727993",
+     "note": "the residual stream after layer 0 (linear_attention)",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       156,
+       188
+      ]
+     ]
+    },
+    "backbone/layer.3": {
+     "file": "clone-fox/backbone/layer.3.f32",
+     "shape": [
+      40,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "2e18ec774346a56a255db14e9835714d06b9b88baa31eab4c5744fdab65bbf76",
+     "note": "the residual stream after layer 3 (full_attention)",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       156,
+       188
+      ]
+     ]
+    },
+    "backbone/layer.19": {
+     "file": "clone-fox/backbone/layer.19.f32",
+     "shape": [
+      40,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "e221995d510c57dd184010dee32dd935ba7e26549dbae22c19e56eecb44f59d3",
+     "note": "the residual stream after layer 19 (full_attention)",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       156,
+       188
+      ]
+     ]
+    },
+    "backbone/layer.39": {
+     "file": "clone-fox/backbone/layer.39.f32",
+     "shape": [
+      40,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "1910da8079df3db1728c241e8a7408e0a54d6bdc683a2163535b0bd1b6f2c8ba",
+     "note": "the residual stream after layer 39 (full_attention)",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       156,
+       188
+      ]
+     ]
+    },
+    "backbone/norm": {
+     "file": "clone-fox/backbone/norm.f32",
+     "shape": [
+      40,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "4e7c9872e191be1160112ffae7a9c7a7b98b5a44862f5b342eff1fe1d7a21947",
+     "note": "after output_norm: the hidden the lm head and the tower read",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       156,
+       188
+      ]
+     ]
+    },
+    "backbone/logits": {
+     "file": "clone-fox/backbone/logits.f32",
+     "shape": [
+      40,
+      4097
+     ],
+     "dtype": "f32",
+     "sha256": "c71668b5813f21d102701912d48610918dbaec88ef9c451761345064a2a1d129",
+     "note": "the 4,097 `output` logits per pinned row (row r predicts row r + 1's main token)",
+     "rows": [
+      [
+       0,
+       8
+      ],
+      [
+       156,
+       188
+      ]
+     ]
+    },
+    "tower/shared": {
+     "file": "clone-fox/tower/shared.f32",
+     "shape": [
+      6,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "6ec9a529e5125aecdfa38d3a8a3880e03a3d74dd0a48d941aa48da1dafec3333",
+     "note": "the shared stack's output (after shared layer 3) at tower_rows",
+     "rows": [
+      [
+       3,
+       4
+      ],
+      [
+       52,
+       53
+      ],
+      [
+       163,
+       164
+      ],
+      [
+       164,
+       165
+      ],
+      [
+       165,
+       166
+      ],
+      [
+       186,
+       187
+      ]
+     ]
+    },
+    "tower/residual": {
+     "file": "clone-fox/tower/residual.f32",
+     "shape": [
+      6,
+      9,
+      2048
+     ],
+     "dtype": "f32",
+     "sha256": "a53000120546af09ba3e61dbfb0b4176eee4f6cf5668c0ca3f49f0087c792ff3",
+     "note": "[row][j] residual layer j's output at tower_rows",
+     "rows": [
+      [
+       3,
+       4
+      ],
+      [
+       52,
+       53
+      ],
+      [
+       163,
+       164
+      ],
+      [
+       164,
+       165
+      ],
+      [
+       165,
+       166
+      ],
+      [
+       186,
+       187
+      ]
+     ]
+    },
+    "tower/logits": {
+     "file": "clone-fox/tower/logits.f32",
+     "shape": [
+      6,
+      9,
+      4096
+     ],
+     "dtype": "f32",
+     "sha256": "be1db52bc7d6799135e8a4cc50a83a915d1b585d5291c1c0d57e335d73232383",
+     "note": "[row][j] codebook head j's 4,096 logits (code j + 1 of the next frame) at tower_rows",
+     "rows": [
+      [
+       3,
+       4
+      ],
+      [
+       52,
+       53
+      ],
+      [
+       163,
+       164
+      ],
+      [
+       164,
+       165
+      ],
+      [
+       165,
+       166
+      ],
+      [
+       186,
+       187
+      ]
+     ]
+    }
+   }
+  }
+ },
+ "$comment": "Written by scripts/speech-traces/drama3_trace.py; docs/models/drama3.md § The traces.",
+ "gguf": {
+  "repo": "sakasegawa/drama-3-GGUF",
+  "revision": "9a01354d04ab6eb521bc9cdfc56ab6824c474af2",
+  "file": "Drama-35B-A3B-v3-Q4_K.gguf",
+  "sha256": "2a57b14c9b208a2ff833ab7305b920ca8f154ad807004a52d96a86a90a55523e"
+ },
+ "package": "fishaudio/fish-speech",
+ "package_commit": "0f8a12e8a651062fdee9c33a894bdccd3a8513f1",
+ "torch": "2.14.1",
+ "tokenizers": "0.22.2",
+ "numpy": "2.5.4",
+ "device": "cpu",
+ "dtype": "float32 (every GGUF tensor dequantized to F32: Q4_K by ggml's formula, F16 widened)",
+ "conventions": "Each file is little-endian, row-major, time first. `rows` lists the [start, end) ranges of the whole stage's rows the file holds, in order; a file without `rows` is whole.",
+ "verdicts": {
+  "codec layout": {
+   "chosen": "tap-major/k-major/k,out,in/applied",
+   "measure": "encode then decode the reference clip: snr_db, log_spectral_l1",
+   "chosen_score": {
+    "layout": "tap-major/k-major/k,out,in/applied",
+    "snr_db": 10.595,
+    "log_spectral_l1": 1.0029
+   },
+   "best_rejected": {
+    "layout": "tap-major/k-major/k,in,out/reversed",
+    "snr_db": -0.117,
+    "log_spectral_l1": 2.6561
+   }
+  },
+  "backbone: norm shift (stored 1 + w)": {
+   "measure": "mean log-prob of the reference's own codes, teacher-forced",
+   "chosen": -4.4039,
+   "rejected": -28.0262,
+   "rejected_convention": "unshifted/codebooks k-1/grouped"
+  },
+  "backbone: codebook rows (k - 1) * 4096 + c": {
+   "measure": "mean log-prob of the reference's own codes, teacher-forced",
+   "chosen": -4.4039,
+   "rejected": -8.5106,
+   "rejected_convention": "shifted/codebooks k/grouped"
+  },
+  "backbone: query/gate split as named": {
+   "measure": "mean log-prob of the reference's own codes, teacher-forced",
+   "chosen": -4.4039,
+   "rejected": -9.2183,
+   "rejected_convention": "shifted/codebooks k-1/grouped/q-gate swapped"
+  },
+  "backbone: DeltaNet value heads grouped (Fish's order, no permutation)": {
+   "measure": "mean log-prob of the reference's own codes, teacher-forced",
+   "chosen": -4.4039,
+   "rejected": -11.1061,
+   "rejected_convention": "shifted/codebooks k-1/tiled"
+  },
+  "tower: norm shift (stored 1 + w)": {
+   "measure": "mean log-prob of the reference's own codes, teacher-forced",
+   "chosen": -5.2682,
+   "rejected": -23.223,
+   "rejected_convention": "unshifted/codebooks k-1/grouped"
+  },
+  "tower: codebook rows (k - 1) * 4096 + c": {
+   "measure": "mean log-prob of the reference's own codes, teacher-forced",
+   "chosen": -5.2682,
+   "rejected": -6.3655,
+   "rejected_convention": "shifted/codebooks k/grouped"
+  },
+  "tower: query/gate split as named": {
+   "measure": "mean log-prob of the reference's own codes, teacher-forced",
+   "chosen": -5.2682,
+   "rejected": -11.2015,
+   "rejected_convention": "shifted/codebooks k-1/grouped/q-gate swapped"
+  }
+ }
+}

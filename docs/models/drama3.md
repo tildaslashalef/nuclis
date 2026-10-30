@@ -86,8 +86,8 @@ these metadata groups:
   stored weight directly. This applies to `attn_norm`, `post_attn_norm`,
   `output_norm`, `attn_q_norm` and `attn_k_norm` in the backbone, and to
   every `ad.*` norm. `ssm_norm`, the DeltaNet's GatedRMSNorm, is a plain
-  weight and is not shifted. The traces confirm this by likelihood
-  (§ The traces).
+  weight and is not shifted. Confirmed by likelihood (§ Confirmed by
+  likelihood). The codec's RMS norms are plain weights too.
 - **The tower** (`ad.*`):
   - `ad.codebook_embd` [2048, 36864] is Fish's `codebook_embeddings`
     without codebook 0, whose rows Fish never reads. Codebook k ≥ 1, code c
@@ -99,8 +99,40 @@ these metadata groups:
     `attn_gate`, `attn_k`, and `attn_v`; the projections are completed by
     `attn_output` and `ffn_{gate, up, down}`.
   - `ad.head.N` [2048, 4096] is codebook head N, which predicts code N + 1.
+- **The DeltaNet value heads are in Fish's grouped order**: value head h
+  reads key head h / 2 (`repeat_interleave`). llama.cpp's own Qwen3.5
+  converter reorders them to the tiled order, where head h reads key head
+  h % 16, but speech.cpp did not. So `ssm_in_qkv`'s V rows, `ssm_in_z`,
+  `ssm_in_b`, `ssm_in_a`, `ssm_dt_bias`, `ssm_a_log`, the V channels of
+  `ssm_conv1d`, and `ssm_out`'s columns are read as stored, and q and k are
+  repeated to the value heads **interleaved** (k₀ k₀ k₁ k₁ …), not tiled.
+- `ssm_a_log` is Fish's raw `A_log`, with values of both signs; it is not
+  llama.cpp's −exp(A_log). `ssm_conv1d` [4, 8192] is [channel][tap].
 - **The codec** (`codec.*`) is F16 and F32 with the weight norm already
-  folded, as in Fish's `load_codec_model` (§ The codec).
+  folded, as in Fish's `load_codec_model` (§ The codec, § The GGUF's codec
+  layout).
+
+### Confirmed by likelihood
+
+The `clone-fox` trace (§ The traces) runs Fish's modules under each
+reading. It measures the mean log-probability of the reference clip's own
+100 codes, teacher-forced. For the backbone that is the main token over
+the 4,097-wide head; for the tower it is codes 1–9 over each 4,096-wide
+head. A uniform guess scores −8.3. The reading above wins every question,
+and each alternative collapses:
+
+| Question | Chosen | Backbone | Tower |
+| --- | --- | --- | --- |
+| zero-centred norms stored as 1 + w | yes | −4.40 (unshifted −28.03) | −5.27 (unshifted −23.22) |
+| `ad.codebook_embd` row (k − 1)·4096 + c | yes | −4.40 (rows k·4096 + c: −8.51) | −5.27 (−6.37) |
+| `attn_q` / `attn_gate` as named | yes | −4.40 (swapped −9.22) | −5.27 (swapped −11.20) |
+| DeltaNet value heads grouped, as stored | yes | −4.40 (tiled −11.11) | — |
+
+Under the chosen reading the backbone ranks the true code first 17 % of
+the time over the reference, and the continuation frames (the clip's
+opening, which the prompt already holds) score −2.01. The tower's
+continuation scores −3.43. Every wrong reading has top-1 0 % on the
+backbone.
 
 ## The backbone
 
@@ -123,7 +155,8 @@ the fp16 range, so it stays in fp32.
   - qkv passes through a causal depthwise conv (k = 4, from `ssm_conv1d`),
     then SiLU.
   - Heads: 16 key heads × 128 and 32 value heads × 128; q and k are
-    repeated to the 32 value heads.
+    repeated to the 32 value heads interleaved: value head h reads key
+    head h / 2.
   - q = l2norm(q)·128^-½ and k = l2norm(k).
   - β = sigmoid(b); g = −exp(a_log)·softplus(a + dt_bias). The state
     (32 × 128 × 128, fp32) decays by exp(g) and takes the delta update.
@@ -208,14 +241,14 @@ implemented.
 
 ## The prompt
 
-The `reference-bracket-v1` template. Each literal is tokenized on its own,
-and codes enter as frame rows:
+The `reference-bracket-v1` template (`build_drama3_prompt`). Each literal
+below is tokenized on its own, and codes enter as frame rows:
 
 ```
 <|im_start|>system\n
 convert the provided text to speech                       (no reference)
 convert the provided text to speech reference to the following:
-  per reference N (1-based): "\n\n[Reference N]\nText: " <|speaker:k|>transcript "\nSpeech: " <code rows>
+  per reference N (1-based): "\n\n[Reference N]\nText: <|speaker:k|> transcript\nSpeech: " <code rows>
 <|im_end|>\n
 history turns: <|im_start|>user\n <tagged text> <|im_end|>\n <|im_start|>assistant\n<|voice|> <code rows> <|im_end|>\n
 <|im_start|>user\n <tagged text> <|im_end|>\n <|im_start|>assistant\n<|voice|>
@@ -223,6 +256,14 @@ history turns: <|im_start|>user\n <tagged text> <|im_end|>\n <|im_start|>assista
 
 - *Tagged text* is the user's text, prefixed `<|speaker:0|> ` unless it
   already opens with a speaker tag.
+- A reference's block is **one** literal: Fish tokenizes
+  `f"\n\n[Reference {N}]\nText: {transcript}\nSpeech: "` whole, where the
+  transcript is tagged like the text (`<|speaker:0|> Every morning…`, the
+  space included) and leading white space is moved behind the tag. The
+  GGUF's `reference_open`, `reference_text` and `reference_speech` are the
+  pieces of that one string, not separate literals.
+- A text row's frame is [id, 0, …, 0]; a code row's is
+  [248099 + c0, c0, …, c9].
 - `<|speaker:0|>`…`<|speaker:15|>` are single added tokens.
 - Text may not contain the six `drama3.prompt.reserved` strings
   (`<|im_start|>`, `<|im_end|>`, `<|voice|>`, `<|text|>`, `<|interleave|>`,
@@ -262,8 +303,128 @@ The GGUF's `drama3.codec.*` carries its geometry:
 - decoder: dim 1,536, rates 8·8·4·2;
 - Snake activations throughout.
 
-The stage-by-stage contract is written when the codec is implemented
-(§ Open).
+Every stage is causal (`DAC(causal=True)`, the default the yaml keeps);
+Fish's own names are in parentheses. The traces pin each boundary below
+(§ The traces).
+
+### Building blocks
+
+- **Causal convolution** (`CausalConvNet`): kernel K, dilation d, stride s,
+  effective span K′ = (K − 1)·d + 1. The input gets K′ − s zeros on the left,
+  and on the right just enough zeros to complete the last stride, so a length
+  L becomes ⌈L / s⌉. For s = 1 that is K′ − 1 zeros on the left and none on
+  the right.
+- **Causal transposed convolution** (`CausalTransConvNet`): kernel 2s,
+  stride s; `ConvTranspose1d` gives (L + 1)·s samples, and the last s are cut,
+  leaving L·s.
+- **Snake** (`dac.nn.layers.snake`): y = x + sin²(α·x) / (α + 1e-9), α per
+  channel. The GGUF stores α and `inv_alpha`, which is bit-identical to the
+  F32 1 / (α + 1e-9).
+- **Residual unit** (`ResidualUnit`, dilation d): y = conv₁ₓ₁(snake(conv₇,d(snake(x)))),
+  out = x + y. The 7-tap conv has dilation d ∈ {1, 3, 9}, so 6d zeros on the
+  left.
+- **ConvNeXt** (`ConvNeXtBlock`): out = x + γ ⊙ pw2(GELU(pw1(LN(dw(x))))).
+  Here dw is a causal depthwise 7-tap conv (6 zeros on the left), LN a
+  LayerNorm over channels (eps 1e-6, with weight and bias), GELU the exact
+  erf form, pw1 1024 → 4096 and pw2 4096 → 1024 linears with biases, and γ
+  per channel.
+- **Windowed transformer** (`WindowLimitedTransformer`): dim 1024, 16 heads
+  × 64, plain multi-head attention (no GQA), no input or output projection.
+  - Each layer is h = x + γₐ ⊙ attn(rms(x)), then out = h + γ_f ⊙ ffn(rms(h)),
+    with a final RMS norm after the last layer. The norms are plain RMS
+    norms (weight × x̂, eps 1e-5, not zero-centred); γₐ and γ_f are the
+    `LayerScale`s (`attn_scale`, `ffn_scale`).
+  - ffn = w2(silu(w1·x) ⊙ w3·x), 1024 → 3072 → 1024, without biases.
+  - RoPE rotates **interleaved** pairs (2i, 2i + 1) over all 64 dims of each
+    head, base 1e4, angle t · 10000^(−2i/64). Fish rounds the cos and sin
+    tables to **bfloat16** (`precompute_freqs_cis`'s default dtype) before
+    rotating in F32. Positions restart at 0 for every call.
+  - The mask is causal and windowed: row t attends to columns
+    max(0, t − W + 1) … t. W is 512 in the encoder and 128 in the quantizer.
+    Attention is scaled by 1/8.
+
+### Encode (`encode_audio`, `DAC.encode`)
+
+1. Average the channels, then resample to 44.1 kHz with
+   `torchaudio.functional.resample`'s defaults (`sinc_interp_hann`, lowpass
+   width 6, rolloff 0.99). Pad the end with zeros to a multiple of 2,048
+   samples; frames = ⌈samples / 2048⌉.
+2. **Encoder** (`encoder.block`):
+   - `in_conv`: causal 7-tap conv, 1 → 64 channels.
+   - Four blocks (`EncoderBlock`) with output dims 128, 256, 512, 1024 and
+     strides 2, 4, 8, 8. Each block runs residual units with d = 1, 3, 9 at
+     half its dim, then Snake, then a causal conv with kernel 2s and stride
+     s. Block 3 then runs the 4-layer transformer with W = 512.
+   - Snake(1024), then `out_conv`, a causal 3-tap conv from 1024 to 1024
+     channels. This is z, at 1/512 of the sample rate.
+3. **Downsample** (`quantizer.downsample`): twice, a causal conv with
+   kernel 2 and stride 2 (1024 → 1024), then a ConvNeXt block. This reaches
+   the frame rate, 1/2048 of the sample rate.
+4. **Pre-transformer** (`quantizer.pre_module`): 8 layers, W = 128.
+5. **Vector quantizers** (`dac.nn.quantize`). There is the semantic one
+   (4,096 codes) and 9 residual ones (1,024 codes each), all with codebook
+   dim 8. Each works on its input r as follows:
+   - z_e = in_proj·r + b, a 1 × 1 conv from 1024 to 8;
+   - code = argmax_j n(z_e) · n(c_j), the cosine nearest codeword, with n
+     the L2 normalization (eps 1e-12);
+   - z_q = out_proj·c_code + b, from 8 to 1024. The raw codeword is used
+     here, not its normalized form.
+
+   The semantic VQ reads the pre-transformer's output z and gives code 0.
+   Residual VQ k reads r_k, where r₀ = z − z_q(semantic) and r_{k+1} =
+   r_k − z_q,k. This gives codes 1–9. A frame's codes are [semantic,
+   residual 0, …, residual 8].
+
+### Decode (`DAC.from_indices`)
+
+1. Clamp code 0 to ≤ 4095 and codes 1–9 to ≤ 1023 (the tower samples
+   residual codes over 4,096 columns).
+2. z = out_proj_sem(codebook_sem[c0]) + Σ_k out_proj_k(codebook_k[c_{k+1}]).
+3. **Post-transformer** (`quantizer.post_module`): 8 layers, W = 128.
+4. **Upsample** (`quantizer.upsample`): twice, a causal transposed conv
+   with kernel 2 and stride 2 (1024 → 1024), then a ConvNeXt block. This
+   gives 4 rows per frame.
+5. **Decoder** (`decoder.model`):
+   - `in_conv`: causal 7-tap conv, 1024 → 1536.
+   - Four blocks (`DecoderBlock`) with rates 8, 8, 4, 2 and dims
+     1536 → 768 → 384 → 192 → 96. Each block runs Snake, then a causal
+     transposed conv with kernel 2s and stride s that halves the channels,
+     then residual units with d = 1, 3, 9.
+   - Snake(96), a causal 7-tap conv from 96 to 1, then tanh.
+
+   The output is exactly frames × 2,048 samples.
+
+The yaml's `decoder_transformer_layers: [4, 0, 0, 0]` has no effect.
+`DecoderBlock` builds that transformer as a local variable, but the line
+that would put it into `self.block` is commented out (`# transformer_module,`).
+So it is never a submodule, never runs, and has no state-dict entry. Fish
+loads the codec `strict=True`, so the checkpoint has none either, and that
+is why the GGUF has no `codec.dec.*.tf` tensors.
+
+### The GGUF's codec layout
+
+Decided by reconstruction (§ The traces). Encoding then decoding the
+reference clip under each of the 16 readings the names and shapes leave
+open gives 10.6 dB SNR for the layout below. Every other reading gives
+−1.2 to −0.1 dB.
+
+- **Convolutions** (`*.weight` [ne0 = in, ne1 = out, ne2 = k]) are tap
+  matrices [k][out][in]. Output t takes tap k times x[t·s + k·d − (K′ − s)], with zeros outside the input. Transposed
+  convolutions (`dec.blk.N.up`, `q.up.N.conv`) are stored the same way,
+  [k][out][in]; Fish's `ConvTranspose1d` weight is [in][out][k].
+- **Stride convolutions as matrices**:
+  - `enc.blk.N.down.first` and `.second` [s·in, out] are the encoder conv
+    with kernel 2s cut in two: `first` holds taps 0…s−1 and `second` holds
+    taps s…2s−1, each tap-major (column k·in + i).
+  - So out[t] = first · x[(t−1)s … ts−1] + second · x[ts … ts+s−1] + bias.
+    Each slice is s frames of `in` channels flattened frame by frame, and
+    frame −1 is zero.
+  - `q.down.N.conv.weight` [2·in, out] is the whole stride-2 kernel in the
+    same tap-major order.
+- `q.up.N` is Fish's `upsample.N`, the N-th applied.
+- The ConvNeXt `dwconv.weight` [ne0 = C, ne1 = 7] is [k][C].
+- The `pw1` and `pw2` linears, VQ `in_proj` [8][1024], `out_proj`
+  [1024][8], and `codebook` [codes][8] are row-major [out][in].
 
 ## Stalls, and what nuclis adds
 
@@ -289,11 +450,51 @@ The stop on silent frames and the retry are designed with the sampler
 
 ## The traces
 
-Not yet pinned (§ Open).
+`scripts/speech-traces/drama3_trace.py` runs Fish's own modules (the
+`DecoderLayer`s, `FishOmniAudioDecoder`, the DAC built from
+`modded_dac_vq.yaml` through hydra, `build_drama3_prompt`) on the CPU in
+F32. The weights are dequantized from this GGUF: Q4_K by ggml's formula,
+F16 widened. The fixtures are under `tests/fixtures/drama3/`, 6.3 MB.
+`index.json` names every file's shape, dtype, SHA-256 and rows, and also
+holds the GGUF→Fish name map, every layout check with its numbers
+(`verdicts`), and the versions. Each array is little-endian and time
+first; `rows` gives the [start, end) ranges of the whole stage that a
+file holds.
+
+| Case | What is pinned |
+| --- | --- |
+| `tokenizer` | the ids and tokens of 12 strings (English, Egyptian Arabic, Chinese, Russian, numbers, `[sighs]` cues, `<whisper>` tags, speaker tags, newlines and CRLF, a decomposed `é`, runs of spaces and tabs, a chat turn). The tokenizer is built from `drama3.tokenizer.*` alone: NFC, the regex split isolated, byte level, BPE without `ignore_merges`, and the added ids matched whole |
+| `codec-reference` | the clip (Qwen3-TTS's pinned 24 kHz reference, 4.64 s) resampled to 44.1 kHz, whole (204,624 samples). Every encoder stage at its first and last rows; each VQ's 8-dim latent and the codes [100, 10], whole. Then `from_indices` on those codes: each stage at its first and last rows, and the first and last 2 frames of the 204,800 output samples (the whole's SHA-256 and RMS are in the index). Also the 16-way layout search (§ The GGUF's codec layout) |
+| `codec-window` | the clip twice over: 800 encoder-transformer rows and 200 frames, past both windows (512 and 128). The last 16 rows of the encoder transformer, the pre-transformer and the post-transformer, the codes, and the last 2 frames of samples |
+| `clone-fox` | a 164-row prompt with the clip as Reference 1 and the text `The quick brown fox jumps over the lazy dog.`, then the clip's first 24 frames teacher-forced (188 rows). Pinned: `frames` [188, 11] whole; the backbone's input rows, residual after layers 0, 3, 19 and 39, `output_norm`, and the 4,097 logits at rows 0–7 and 156–187; the tower's `prefill` at 6 rows (a text row, a reference row, the last prompt row, and three continuation rows): the shared stack's output, each residual layer's output, and each head's 4,096 logits. Also the likelihood checks (§ Confirmed by likelihood) |
+
+The clip's encoder transformer sees 400 rows and its quantizer
+transformers 100 frames, so only `codec-window` exercises the window
+masks. The backbone runs layer-streamed. It builds one Fish `DecoderLayer`
+at a time with all 256 experts dequantized (3 GB), runs all eight readings
+through it, and frees it. One teacher-forced prefill from position 0 is
+the same computation as the decode steps, since the model is causal. The
+whole run takes 5.6 minutes on the M4 Pro, with a peak resident size of
+32 GB that counts the GGUF's mapped pages. A second run reproduces every
+file byte for byte.
+
+To regenerate, use a throwaway venv. It needs `descript-audio-codec`
+installed `--no-deps`, since its training-only imports are not needed and
+the script stubs `audiotools`:
+
+```sh
+uv venv --python 3.12 .reference/venv-drama3
+VIRTUAL_ENV=.reference/venv-drama3 uv pip install torch==2.14.1 torchaudio==2.11.1 \
+  numpy==2.5.4 tokenizers==0.22.2 einops==0.8.2 loguru hydra-core omegaconf tqdm safetensors
+VIRTUAL_ENV=.reference/venv-drama3 uv pip install --no-deps descript-audio-codec==1.0.0
+.reference/venv-drama3/bin/python scripts/speech-traces/drama3_trace.py [--cases NAME,...]
+```
+
+The clip is read as `torchaudio.load` reads it (int16 / 32768); torchaudio
+2.11 needs torchcodec for `load`, so the script uses `wave`. Fish loads
+the codec in bfloat16 by default (`load_codec_model`), and the traces are
+F32.
 
 ## Open
 
-- The trace script, its fixtures, and the confirmation of the norm and
-  codebook conventions.
-- The codec's stage contract.
 - The silence stop and retry.
