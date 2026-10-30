@@ -41,6 +41,14 @@ pub const embeddinggemma_runtime = @import("embeddinggemma_runtime.zig");
 pub const qwen3_tts = @import("qwen3_tts.zig");
 pub const qwen3_tts_runtime = @import("qwen3_tts_runtime.zig");
 pub const qwen3_tts_metal = @import("qwen3_tts_metal.zig");
+/// Fish Audio Drama 3, the speech model: a hybrid MoE backbone and a
+/// codebook tower from one GGUF. Not a registry family: it decodes frames.
+pub const drama3 = @import("drama3.zig");
+pub const drama3_runtime = @import("drama3_runtime.zig");
+pub const drama3_metal = @import("drama3_metal.zig");
+pub const drama3_text = @import("drama3_text.zig");
+pub const drama3_sampler = @import("drama3_sampler.zig");
+pub const drama3_speech = @import("drama3_speech.zig");
 
 /// The registered families, in lookup order. Each registers itself through
 /// its `family` declaration.
@@ -125,6 +133,12 @@ test {
     _ = qwen3_tts;
     _ = qwen3_tts_runtime;
     _ = qwen3_tts_metal;
+    _ = drama3;
+    _ = drama3_runtime;
+    _ = drama3_metal;
+    _ = drama3_text;
+    _ = drama3_sampler;
+    _ = drama3_speech;
     _ = dflash;
     _ = dflash2;
     _ = dflash2_runtime;

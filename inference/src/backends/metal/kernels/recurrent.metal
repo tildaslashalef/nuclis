@@ -2,7 +2,9 @@
 // Scalar-gated DeltaNet: one SIMD group per (value head, value coordinate).
 // State is [value_head][value_coordinate][key_coordinate], updated in place.
 // Input layout: [Q: qheads*keys | K: qheads*keys | V: vheads*values].
-struct DeltaParams { uint qheads; uint vheads; uint keys; uint values; float scale; };
+// Value head h reads Q/K head h % qheads (tiled), or h / group when group
+// is nonzero (grouped: each Q/K head over `group` consecutive value heads).
+struct DeltaParams { uint qheads; uint vheads; uint keys; uint values; float scale; uint group; };
 kernel void nu_delta(device float * state [[buffer(0)]],
                      device const float * input [[buffer(1)]],
                      device const float * decay_log [[buffer(2)]],
@@ -11,7 +13,7 @@ kernel void nu_delta(device float * state [[buffer(0)]],
                      constant DeltaParams & p [[buffer(7)]],
                      uint row [[threadgroup_position_in_grid]],
                      uint lane [[thread_index_in_simdgroup]]) {
-    uint head = row / p.values, value = row % p.values, kh = head % p.qheads;
+    uint head = row / p.values, value = row % p.values, kh = p.group ? head / p.group : head % p.qheads;
     uint qsize = p.qheads * p.keys;
     float decay = exp(decay_log[head]);
     float beta = beta_gate[head];

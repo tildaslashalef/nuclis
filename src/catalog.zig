@@ -367,7 +367,7 @@ pub const embedding_entries = [_]EmbeddingEntry{
 
 /// A speech or transcription checkpoint: safetensors weights and the
 /// support files beside them, one directory `nuclis speak` or `nuclis
-/// transcribe` opens. Separate from `entries` so nothing that resolves a
+/// transcribe` opens, or one GGUF that holds everything (Drama 3). Separate from `entries` so nothing that resolves a
 /// text model can pick one.
 pub const AudioEntry = struct {
     name: []const u8,
@@ -375,7 +375,8 @@ pub const AudioEntry = struct {
     /// `speech` or `transcription`.
     kind: ModelKind,
     repo: []const u8,
-    /// The weights' Hub name; its directory is the checkpoint's.
+    /// The weights' Hub name; its directory is the checkpoint's, or, for a
+    /// `.gguf`, the file itself.
     file: []const u8,
     revision: []const u8,
     sha256: []const u8,
@@ -385,7 +386,8 @@ pub const AudioEntry = struct {
     /// Hub names the checkpoint needs beside the weights (plain git files).
     support: []const []const u8,
     /// The speech codec's weights, in `repo` at `revision`, pulled with the
-    /// checkpoint; `codec_support` are its own support files.
+    /// checkpoint (none when the GGUF holds them); `codec_support` are its
+    /// own support files.
     codec: ?Artifact = null,
     codec_support: []const []const u8 = &.{},
     /// The speakers a speech model voices, as its `config.json` names them.
@@ -538,6 +540,23 @@ pub const audio_entries = [_]AudioEntry{
         .codec_support = &qwen3_tts_codec_support,
         .instructions = true,
     },
+    // Fish Audio's Drama 3 (35B-A3B) as one Q4_K GGUF: backbone, codebook
+    // tower, Fish's codec, and the tokenizer; it clones a saved voice from
+    // its clip and transcript. Pinned 2026-10-30 (docs/models/drama3.md).
+    .{
+        .name = "drama-3",
+        .title = "Fish Audio Drama 3",
+        .kind = .speech,
+        .mode = .clone,
+        .repo = "sakasegawa/drama-3-GGUF",
+        .file = "Drama-35B-A3B-v3-Q4_K.gguf",
+        .revision = "9a01354d04ab6eb521bc9cdfc56ab6824c474af2",
+        .sha256 = "2a57b14c9b208a2ff833ab7305b920ca8f154ad807004a52d96a86a90a55523e",
+        .size = 20_787_264_352,
+        .architecture = "drama3",
+        .quantization = "Q4_K",
+        .support = &.{},
+    },
     // NVIDIA's Nemotron 3.5 ASR streaming 0.6B, F32 as published; pinned
     // 2026-10-27 by the pull (docs/models/nemotron-asr.md).
     .{
@@ -575,9 +594,10 @@ pub fn renamedAudio(name: []const u8) ?[]const u8 {
 }
 
 /// The checkpoint directory of an audio entry: the weights' directory under
-/// `<models>/<repo>/`.
+/// `<models>/<repo>/`; a `.gguf` entry's file.
 pub fn audioDirectory(alloc: Allocator, models_dir: []const u8, entry: *const AudioEntry) ![]u8 {
     const weights = try std.fs.path.join(alloc, &.{ models_dir, entry.repo, entry.file });
+    if (std.mem.endsWith(u8, entry.file, ".gguf")) return weights;
     defer alloc.free(weights);
     return alloc.dupe(u8, std.fs.path.dirname(weights).?);
 }
@@ -762,10 +782,12 @@ test "audio entries are well formed, of their two kinds, and share no name with 
         try std.testing.expectEqual(@as(usize, 64), e.sha256.len);
         try std.testing.expect(e.kind == .speech or e.kind == .transcription);
         try std.testing.expect(find(e.name) == null and findDecision(e.name) == null and findEmbedding(e.name) == null);
-        try std.testing.expect(std.mem.endsWith(u8, e.file, ".safetensors") and e.title.len > 0 and e.support.len > 0);
+        const gguf = std.mem.endsWith(u8, e.file, ".gguf");
+        try std.testing.expect((gguf or std.mem.endsWith(u8, e.file, ".safetensors")) and e.title.len > 0 and (gguf or e.support.len > 0));
         try std.testing.expectEqual(e.kind, kindOf(.{}, e.name));
-        // A speech model brings its codec from its own repository and commit.
-        try std.testing.expectEqual(e.kind == .speech, e.codec != null);
+        // A speech model brings its codec from its own repository and commit,
+        // unless its GGUF holds it.
+        try std.testing.expectEqual(e.kind == .speech and !gguf, e.codec != null);
         if (e.codec) |c| {
             try std.testing.expect(std.mem.eql(u8, c.repo, e.repo) and std.mem.eql(u8, c.revision, e.revision) and c.sha256.len == 64);
             const codec_dir = std.fs.path.dirnamePosix(c.file).?;
@@ -793,6 +815,9 @@ test "audio entries are well formed, of their two kinds, and share no name with 
     const dir = try audioDirectory(std.testing.allocator, "/m", findAudio("nemotron-asr-0.6b").?);
     defer std.testing.allocator.free(dir);
     try std.testing.expectEqualStrings("/m/nvidia/nemotron-3.5-asr-streaming-0.6b", dir);
+    const file = try audioDirectory(std.testing.allocator, "/m", findAudio("drama-3").?);
+    defer std.testing.allocator.free(file);
+    try std.testing.expectEqualStrings("/m/sakasegawa/drama-3-GGUF/Drama-35B-A3B-v3-Q4_K.gguf", file);
     try std.testing.expect(findAudio("laya") == null and findAudio("qwen3.8-27b") == null);
 }
 

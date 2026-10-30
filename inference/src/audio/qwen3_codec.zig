@@ -309,17 +309,17 @@ fn bindWith(b: *Binder, c: Config) Error!Binding {
 // ---- the CPU reference ----------------------------------------------------
 
 /// `y = W x (+ b)` with `w` [out][in].
-const Linear = struct { w: []const f32, b: ?[]const f32, in: usize, out: usize };
+pub const Linear = struct { w: []const f32, b: ?[]const f32, in: usize, out: usize };
 /// A causal convolution as one matrix over gathered rows: `w` is
 /// [out][kernel · in], tap-major, so each output is one dot product.
-const CausalConv = struct { w: []const f32, b: []const f32, in: usize, out: usize, kernel: usize, dilation: usize };
+pub const CausalConv = struct { w: []const f32, b: []const f32, in: usize, out: usize, kernel: usize, dilation: usize };
 /// A transposed convolution of kernel `taps · stride` as one matrix: input
 /// row m with the `taps − 1` before it gives the `stride` output rows
 /// m·stride … m·stride + stride − 1. `w` is [stride · out][taps · in].
-const TransConv = struct { w: []const f32, b: []const f32, in: usize, out: usize, stride: usize, taps: usize };
+pub const TransConv = struct { w: []const f32, b: []const f32, in: usize, out: usize, stride: usize, taps: usize };
 /// SnakeBeta with its logarithms already raised: x + inv · sin²(scale · x).
 pub const SnakeBeta = struct { scale: []const f32, inv: []const f32 };
-const NeXt = struct { dw: []const f32, dw_b: []const f32, ln_w: []const f32, ln_b: []const f32, gamma: []const f32, pw1: Linear, pw2: Linear };
+pub const NeXt = struct { dw: []const f32, dw_b: []const f32, ln_w: []const f32, ln_b: []const f32, gamma: []const f32, pw1: Linear, pw2: Linear };
 const AttnLayer = struct { input_norm: []const f32, post_norm: []const f32, q: Linear, k: Linear, v: Linear, o: Linear, gate: Linear, up: Linear, down: Linear, attn_scale: []const f32, mlp_scale: []const f32 };
 const UpStage = struct { trans: TransConv, next: NeXt };
 const Unit = struct { act1: SnakeBeta, conv1: CausalConv, act2: SnakeBeta, conv2: CausalConv };
@@ -583,7 +583,7 @@ const Loader = struct {
     }
 };
 
-fn linear(io: std.Io, m: Linear, x: []const f32, rows: usize, y: []f32) !void {
+pub fn linear(io: std.Io, m: Linear, x: []const f32, rows: usize, y: []f32) !void {
     try dense.matmul(io, .{ .rows = rows, .inner = m.in, .outputs = m.out, .x = x[0 .. rows * m.in], .w = m.w, .bias = m.b }, y[0 .. rows * m.out]);
 }
 
@@ -611,7 +611,7 @@ pub fn snakeBeta(s: SnakeBeta, x: []const f32, y: []f32) void {
 }
 
 /// `x / rms(x) · w`, per row of `w.len`.
-fn rmsRows(x: []const f32, w: []const f32, eps: f32, out: []f32) !void {
+pub fn rmsRows(x: []const f32, w: []const f32, eps: f32, out: []f32) !void {
     const width = w.len;
     for (0..x.len / width) |r| {
         const o = out[r * width ..][0..width];
@@ -622,12 +622,12 @@ fn rmsRows(x: []const f32, w: []const f32, eps: f32, out: []f32) !void {
 
 /// A convolution's left context: its last `rows` input rows, zero at the
 /// start (the authors' causal zero padding).
-const History = struct {
+pub const History = struct {
     rows: usize,
     data: []f32,
 
     /// The history then `x`, in a new buffer.
-    fn join(self: History, ws: Allocator, x: []const f32) ![]f32 {
+    pub fn join(self: History, ws: Allocator, x: []const f32) ![]f32 {
         const joined = try ws.alloc(f32, self.data.len + x.len);
         @memcpy(joined[0..self.data.len], self.data);
         @memcpy(joined[self.data.len..], x);
@@ -635,7 +635,7 @@ const History = struct {
     }
 
     /// Keeps the last rows of `joined`.
-    fn keep(self: History, joined: []const f32) void {
+    pub fn keep(self: History, joined: []const f32) void {
         @memcpy(self.data, joined[joined.len - self.data.len ..]);
     }
 };
@@ -830,13 +830,13 @@ pub const Stream = struct {
     }
 };
 
-fn history(a: Allocator, rows: usize, width: usize) !History {
+pub fn history(a: Allocator, rows: usize, width: usize) !History {
     return .{ .rows = rows, .data = try a.alloc(f32, rows * width) };
 }
-fn causalHistory(a: Allocator, conv: CausalConv) !History {
+pub fn causalHistory(a: Allocator, conv: CausalConv) !History {
     return history(a, (conv.kernel - 1) * conv.dilation, conv.in);
 }
-fn transHistory(a: Allocator, conv: TransConv) !History {
+pub fn transHistory(a: Allocator, conv: TransConv) !History {
     return history(a, conv.taps - 1, conv.in);
 }
 
@@ -891,7 +891,7 @@ pub fn gather(joined: []const f32, width: usize, taps: usize, base: usize, step:
 /// A causal convolution of `n` new rows (`[n][in]`) into `y` (`[n][out]`)
 /// through `h`'s left context, which it then advances. A kernel of 1 has
 /// no context (`h` null).
-fn causalConv(ws: Allocator, io: std.Io, conv: CausalConv, h: ?*History, x: []const f32, n: usize, y: []f32) !void {
+pub fn causalConv(ws: Allocator, io: std.Io, conv: CausalConv, h: ?*History, x: []const f32, n: usize, y: []f32) !void {
     if (conv.kernel == 1) return dense.matmul(io, .{ .rows = n, .inner = conv.in, .outputs = conv.out, .x = x, .w = conv.w, .bias = conv.b }, y);
     const joined = try h.?.join(ws, x);
     const inner = conv.kernel * conv.in;
@@ -909,7 +909,7 @@ fn causalConv(ws: Allocator, io: std.Io, conv: CausalConv, h: ?*History, x: []co
 
 /// A transposed convolution of `n` input rows into `n · stride` output
 /// rows, the authors' right trim already applied.
-fn transConv(ws: Allocator, io: std.Io, conv: TransConv, h: *History, x: []const f32, n: usize, y: []f32) !void {
+pub fn transConv(ws: Allocator, io: std.Io, conv: TransConv, h: *History, x: []const f32, n: usize, y: []f32) !void {
     const outputs = conv.stride * conv.out;
     if (conv.taps == 1) return dense.matmul(io, .{ .rows = n, .inner = conv.in, .outputs = outputs, .x = x, .w = conv.w, .bias = conv.b }, y);
     const joined = try h.join(ws, x);
@@ -928,7 +928,7 @@ fn transConv(ws: Allocator, io: std.Io, conv: TransConv, h: *History, x: []const
 
 /// The ConvNeXt block in place over `x` (`[rows][latent]`):
 /// x + γ ⊙ pw2(gelu(pw1(LayerNorm(dwconv(x))))).
-fn convNeXt(ws: Allocator, io: std.Io, next: NeXt, h: *History, x: []f32, rows: usize) !void {
+pub fn convNeXt(ws: Allocator, io: std.Io, next: NeXt, h: *History, x: []f32, rows: usize) !void {
     const channels = next.gamma.len;
     const joined = try h.join(ws, x);
     const d = try ws.alloc(f32, rows * channels);

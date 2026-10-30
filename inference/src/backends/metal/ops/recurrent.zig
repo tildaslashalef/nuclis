@@ -12,22 +12,25 @@ const enabled = root.enabled;
 const Shape = @import("../profile.zig").Shape;
 const perElement = Backend.perElement;
 
-pub const DeltaParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, scale: f32 };
-pub const DeltaShape = struct { qheads: usize, vheads: usize, keys: usize, values: usize, scale: f32 };
+pub const DeltaParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, scale: f32, group: u32 };
+/// `grouped`: value head h reads Q/K head h / (vheads / qheads) (Fish's
+/// `repeat_interleave`) instead of h % qheads (llama.cpp's tiled order).
+pub const DeltaShape = struct { qheads: usize, vheads: usize, keys: usize, values: usize, scale: f32, grouped: bool = false };
 /// Nontransactional in-place state update: a failed command buffer leaves
 /// partially updated state; the owning session must be reset.
 pub fn delta(self: *Backend, state: Buffer, qkv: Buffer, decay_log: Buffer, beta: Buffer, output: Buffer, s: DeltaShape) !void {
     if (s.qheads == 0 or s.vheads == 0 or s.keys == 0 or s.values == 0 or s.vheads % s.qheads != 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
     if (state.len < s.vheads * s.values * s.keys * 4 or qkv.len < (2 * s.qheads * s.keys + s.vheads * s.values) * 4 or decay_log.len < s.vheads * 4 or beta.len < s.vheads * 4 or output.len < s.vheads * s.values * 4) return error.InvalidShape;
-    const p: DeltaParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .scale = s.scale };
+    const p: DeltaParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .scale = s.scale, .group = if (s.grouped) @intCast(s.vheads / s.qheads) else 0 };
     try self.dispatch(.delta, &.{ state, qkv, decay_log, beta, output }, p, @intCast(s.vheads * s.values), 32, .{});
 }
-pub const DeltaChunkParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, count: u32, in_stride: u32, gate_stride: u32, out_stride: u32, scale: f32 };
+pub const DeltaChunkParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, count: u32, in_stride: u32, gate_stride: u32, out_stride: u32, scale: f32, group: u32 };
 /// `count` tokens of one layer: `qkv` rows `[token][in_stride]` laid out
 /// as `nu_delta`'s input (q, k, then v per head), `decay_log`/`beta` rows
 /// `[token][gate_stride]`, `output` rows `[token][out_stride]` at
 /// `head * values`. State `[head][value][key]` is updated in place.
-pub const DeltaChunkShape = struct { qheads: usize, vheads: usize, keys: usize, values: usize, count: usize, in_stride: usize, gate_stride: usize, out_stride: usize, scale: f32 };
+/// `grouped` as in `DeltaShape`.
+pub const DeltaChunkShape = struct { qheads: usize, vheads: usize, keys: usize, values: usize, count: usize, in_stride: usize, gate_stride: usize, out_stride: usize, scale: f32, grouped: bool = false };
 /// Rows the `qkv` buffer must hold for `count` tokens (the kernel walks
 /// 32-token sub-chunks; rows past `count` are masked, never read).
 pub fn deltaChunkRows(count: usize) usize {
@@ -45,7 +48,7 @@ pub fn deltaChunk(self: *Backend, state: Buffer, qkv: Buffer, decay_log: Buffer,
     const rows = deltaChunkRows(s.count);
     if (state.len < s.vheads * s.values * s.keys * 4) return error.InvalidShape;
     if (qkv.len < rows * s.in_stride * 4 or decay_log.len < s.count * s.gate_stride * 4 or beta.len < s.count * s.gate_stride * 4 or output.len < s.count * s.out_stride * 4) return error.InvalidShape;
-    const p: DeltaChunkParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .count = @intCast(s.count), .in_stride = @intCast(s.in_stride), .gate_stride = @intCast(s.gate_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale };
+    const p: DeltaChunkParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .count = @intCast(s.count), .in_stride = @intCast(s.in_stride), .gate_stride = @intCast(s.gate_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .group = if (s.grouped) @intCast(s.vheads / s.qheads) else 0 };
     try self.dispatch(.delta_chunk, &.{ state, qkv, decay_log, beta, output }, p, @intCast(s.vheads * (s.values / 32)), 128, .{});
 }
 /// A verify batch's rows for `deltaRows` and the tape `deltaReplay` reads:

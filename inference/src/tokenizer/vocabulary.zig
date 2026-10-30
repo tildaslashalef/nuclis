@@ -1,7 +1,8 @@
 //! Owned BPE vocabulary data loaded from a parsed GGUF directory: the GPT-2
 //! family (`tokenizer.ggml.model = "gpt2"`, byte-level alphabet, a `pre`
 //! key naming the splitter) and Gemma 4's SPM-style BPE (`"gemma4"`, raw
-//! UTF-8 with U+2581 for spaces, byte tokens `<0xNN>`; `pre` is implied).
+//! UTF-8 with U+2581 for spaces, byte tokens `<0xNN>`; `pre` is implied), or
+//! a byte-level vocabulary under a model's own keys (`loadKeys`).
 //! This module knows storage and ranks, not Unicode splitting or model layers.
 //! IDs are array indices; merge ranks are file order (lower ranks merge first).
 //! An arena owns strings, entries, and lookup tables, so the input Document and
@@ -79,13 +80,49 @@ pub fn load(gpa: std.mem.Allocator, doc: gguf.Document, directory: []const u8, l
     const types = try array(doc, "tokenizer.ggml.token_type", .int32);
     const merges = try array(doc, "tokenizer.ggml.merges", .string);
     if (words.count == 0 or types.count != words.count) return error.InvalidTokenizerMetadata;
+    const specials: Specials = .{
+        .bos = try special(doc, "tokenizer.ggml.bos_token_id", words.count),
+        .eos = try special(doc, "tokenizer.ggml.eos_token_id", words.count),
+        .padding = try special(doc, "tokenizer.ggml.padding_token_id", words.count),
+    };
+    return build(gpa, directory, words, .{ .types = types }, merges, pre, specials, limits);
+}
+
+/// Keys of a vocabulary stored under a model's own prefix rather than
+/// `tokenizer.ggml.*`: no token types, only the list of added-token ids, each
+/// typed `user_defined` (matched in text before splitting); the rest are normal.
+pub const Keys = struct {
+    tokens: []const u8,
+    merges: []const u8,
+    added_ids: []const u8,
+    /// The splitter label the encoder selects (`encode.Splitter`).
+    pre: []const u8,
+    eos: ?u32 = null,
+    padding: ?u32 = null,
+};
+
+/// Loads a byte-level BPE vocabulary from `keys` (see `Keys`).
+pub fn loadKeys(gpa: std.mem.Allocator, doc: gguf.Document, directory: []const u8, keys: Keys, limits: Limits) Error!Vocabulary {
+    if (directory.len != doc.directory_bytes) return error.InvalidTokenizerMetadata;
+    const words = try array(doc, keys.tokens, .string);
+    const added = try array(doc, keys.added_ids, .int32);
+    const merges = try array(doc, keys.merges, .string);
+    if (words.count == 0 or added.count > words.count) return error.InvalidTokenizerMetadata;
+    for ([_]?u32{ keys.eos, keys.padding }) |id| if (id) |n| if (n >= words.count) return error.InvalidSpecialToken;
+    return build(gpa, directory, words, .{ .added = added }, merges, keys.pre, .{ .bos = null, .eos = keys.eos, .padding = keys.padding }, limits);
+}
+
+const Specials = struct { bos: ?u32, eos: ?u32, padding: ?u32 };
+const Kinds = union(enum) { types: gguf.Array, added: gguf.Array };
+
+fn build(gpa: std.mem.Allocator, directory: []const u8, words: gguf.Array, kinds: Kinds, merges: gguf.Array, pre: []const u8, specials: Specials, limits: Limits) Error!Vocabulary {
     if (words.count > limits.tokens or merges.count > limits.merges) return error.LimitExceeded;
     var word_reader = try gguf.ArrayReader.init(words, directory, limits.gguf);
-    var type_reader = try gguf.ArrayReader.init(types, directory, limits.gguf);
+    var type_reader = switch (kinds) {
+        .types => |types| try gguf.ArrayReader.init(types, directory, limits.gguf),
+        .added => null,
+    };
     var merge_reader = try gguf.ArrayReader.init(merges, directory, limits.gguf);
-    const bos = try special(doc, "tokenizer.ggml.bos_token_id", words.count);
-    const eos = try special(doc, "tokenizer.ggml.eos_token_id", words.count);
-    const padding = try special(doc, "tokenizer.ggml.padding_token_id", words.count);
 
     var arena: std.heap.ArenaAllocator = .init(gpa);
     errdefer arena.deinit();
@@ -99,7 +136,10 @@ pub fn load(gpa: std.mem.Allocator, doc: gguf.Document, directory: []const u8, l
     for (tokens, 0..) |*token, id| {
         const text = (try word_reader.nextString()).?;
         if (text.len == 0 or !std.unicode.utf8ValidateSlice(text)) return error.InvalidToken;
-        const kind = std.enums.fromInt(TokenType, (try type_reader.nextInt32()).?) orelse return error.InvalidToken;
+        const kind: TokenType = if (type_reader) |*reader|
+            std.enums.fromInt(TokenType, (try reader.nextInt32()).?) orelse return error.InvalidToken
+        else
+            .normal;
         const owned = try copyText(alloc, text, &remaining);
         const entry = try ids.getOrPut(alloc, owned);
         if (entry.found_existing) return error.DuplicateToken;
@@ -110,6 +150,13 @@ pub fn load(gpa: std.mem.Allocator, doc: gguf.Document, directory: []const u8, l
     // vocabulary, so they match in plain text even with parse_special off.
     for ([_][]const u8{ "<|start|>", "<|message|>", "<|channel|>", "<|constrain|>" }) |text| {
         if (ids.get(text)) |id| tokens[id].kind = .user_defined;
+    }
+    if (kinds == .added) {
+        var added_reader = try gguf.ArrayReader.init(kinds.added, directory, limits.gguf);
+        while (try added_reader.nextInt32()) |id| {
+            if (id < 0 or id >= tokens.len) return error.InvalidToken;
+            tokens[@intCast(id)].kind = .user_defined;
+        }
     }
     var rank: u32 = 0;
     while (try merge_reader.nextString()) |text| : (rank += 1) {
@@ -123,7 +170,7 @@ pub fn load(gpa: std.mem.Allocator, doc: gguf.Document, directory: []const u8, l
         entry.value_ptr.* = rank;
     }
     const owned_pre = try alloc.dupe(u8, pre);
-    return .{ .storage = arena, .tokens = tokens, .pre = owned_pre, .bos = bos, .eos = eos, .padding = padding, .token_ids = ids, .merge_ranks = ranks };
+    return .{ .storage = arena, .tokens = tokens, .pre = owned_pre, .bos = specials.bos, .eos = specials.eos, .padding = specials.padding, .token_ids = ids, .merge_ranks = ranks };
 }
 
 fn copyText(alloc: std.mem.Allocator, text: []const u8, remaining: *usize) Error![]const u8 {

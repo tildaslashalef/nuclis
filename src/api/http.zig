@@ -378,10 +378,15 @@ const Exchange = struct {
         const keep_alive = !response.close and !http10 and request.head.keep_alive;
         var buffer: [4096]u8 = undefined;
         var bytes: usize = 0;
-        var headers: [4]std.http.Header = undefined;
+        var headers: [5]std.http.Header = undefined;
         headers[0] = .{ .name = "content-type", .value = response.content_type };
         headers[1] = .{ .name = "cache-control", .value = "no-cache" };
-        const n = 2 + self.idHeaders(headers[2..]);
+        var n: usize = 2;
+        if (response.extra_header) |h| {
+            headers[n] = h;
+            n += 1;
+        }
+        n += self.idHeaders(headers[n..]);
         const sent = if (request.respondStreaming(&buffer, .{ .respond_options = .{
             .version = request.head.version,
             .status = response.status,

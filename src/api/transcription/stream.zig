@@ -42,8 +42,9 @@ const max_outgoing = 1 << 20;
 const drain_ms = 5_000;
 const tick_ms = 250;
 const retry_ms = 20;
-/// The longest locale a client may name (`es-419`, `zh-CN`, `auto`).
-const max_locale = 32;
+/// The longest language a client may name: a locale (`es-419`, `auto`)
+/// or a list of them (`ar,en-US,auto`).
+const max_locale = 64;
 /// The longest text message: a command, never a transcript.
 const max_command = 8192;
 
@@ -81,7 +82,7 @@ fn parseQuery(request: http.Request, problem: *Problem) error{Refused}!Query {
         q.model = m;
     }
     if (request.param("language")) |l| {
-        if (l.len == 0 or l.len > max_locale or !plain(l)) return problem.refuse("language", "\"language\" is a locale (en-US, de-DE, fr) or auto");
+        if (!localeList(l)) return problem.refuse("language", language_message);
         if (!std.mem.eql(u8, l, "auto")) q.language = l;
     }
     if (request.param("lookahead")) |r| {
@@ -90,6 +91,15 @@ fn parseQuery(request: http.Request, problem: *Problem) error{Refused}!Query {
         q.lookahead = n;
     }
     return q;
+}
+
+const language_message = "\"language\" is a locale (en-US, de-DE, fr), auto, or a list of up to four (ar,en,auto)";
+
+fn localeList(s: []const u8) bool {
+    if (s.len == 0 or s.len > max_locale) return false;
+    var names = std.mem.splitScalar(u8, s, ',');
+    while (names.next()) |name| if (name.len == 0 or !plain(name)) return false;
+    return true;
 }
 
 fn plain(s: []const u8) bool {
@@ -200,9 +210,9 @@ fn parseCommand(gpa: std.mem.Allocator, text: []const u8, problem: *Problem) err
     if (kind == .language) {
         const locale = switch (o.get("language") orelse .null) {
             .string => |s| s,
-            else => return problem.refuse("language", "\"language\" is a locale (en-US, de-DE, fr) or auto"),
+            else => return problem.refuse("language", language_message),
         };
-        if (locale.len == 0 or locale.len > max_locale or !plain(locale)) return problem.refuse("language", "\"language\" is a locale (en-US, de-DE, fr) or auto");
+        if (!localeList(locale)) return problem.refuse("language", language_message);
         @memcpy(command.locale[0..locale.len], locale);
         command.locale_len = locale.len;
     }
@@ -718,8 +728,14 @@ const Session = struct {
         if (slot.held > 0 and !slot.isOpen(io, self.directory)) return error.ModelBusy;
         const acquired = try slot.acquire(io, self.directory, self.name, self.bytes);
         const model = acquired.model;
-        const prompt = if (self.language) |l| model.promptId(l) orelse return error.UnknownLanguage else model.default_prompt;
-        self.transcriber = try asr.Transcriber.init(self.gpa, model, self.lookahead, prompt, if (model.metal != null) .metal else .cpu);
+        var prompts: [asr.max_languages]usize = .{model.default_prompt} ++ @as([asr.max_languages - 1]usize, @splat(0));
+        const languages = if (self.language) |l| try model.languages(l, &prompts) else 1;
+        self.transcriber = try asr.Transcriber.init(self.gpa, model, self.lookahead, prompts[0], if (model.metal != null) .metal else .cpu);
+        if (languages > 1) self.transcriber.?.setLanguages(prompts[0..languages]) catch |err| {
+            self.transcriber.?.deinit();
+            self.transcriber = null;
+            return err;
+        };
         slot.hold(io, true);
         self.mutex.lockUncancelable(io);
         self.has_transcriber = true;
@@ -734,7 +750,7 @@ const Session = struct {
         var buffer: [256]u8 = undefined;
         const Failure = struct { code: []const u8, close: u16, message: []const u8 };
         const f: Failure = switch (err) {
-            error.UnknownLanguage => .{ .code = "invalid_language", .close = Code.policy, .message = std.fmt.bufPrint(&buffer, "{s} is not a locale of {s} (en-US, de-DE, fr, ..., auto)", .{ self.language.?, self.name }) catch "unknown locale" },
+            error.UnknownLanguage, error.TooManyLanguages, error.DuplicateLanguage, error.FallbackNotLast => .{ .code = "invalid_language", .close = Code.policy, .message = std.fmt.bufPrint(&buffer, "{s} is not a language of {s}: {s}", .{ self.language.?, self.name, languageProblem(err) }) catch "unknown locale" },
             error.ModelTooLarge => .{ .code = "model_too_large", .close = Code.internal, .message = std.fmt.bufPrint(&buffer, "{s} needs more than the server's memory budget leaves beside the pinned models", .{self.name}) catch "model too large" },
             error.Pinned, error.ModelBusy => .{ .code = "busy", .close = Code.try_again, .message = std.fmt.bufPrint(&buffer, "overloaded: the memory or the transcription slot {s} needs is in use; retry shortly", .{self.name}) catch "busy" },
             else => .{ .code = "model_failed", .close = Code.internal, .message = std.fmt.bufPrint(&buffer, "{s} did not open: {s}", .{ self.name, @errorName(err) }) catch "model failed" },
@@ -840,11 +856,12 @@ const Session = struct {
 
     fn setLanguage(self: *Session, io: std.Io, locale: []const u8) void {
         const t = &self.transcriber.?;
-        const prompt = if (std.mem.eql(u8, locale, "auto")) t.model.default_prompt else t.model.promptId(locale) orelse {
-            var buffer: [128]u8 = undefined;
-            return self.queueError(io, "invalid_language", std.fmt.bufPrint(&buffer, "{s} is not a locale of {s}; the language stays", .{ locale, self.name }) catch "unknown locale");
+        var prompts: [asr.max_languages]usize = undefined;
+        const n = t.model.languages(locale, &prompts) catch |err| {
+            var buffer: [192]u8 = undefined;
+            return self.queueError(io, "invalid_language", std.fmt.bufPrint(&buffer, "{s} is not a language of {s}: {s}; the language stays", .{ locale, self.name, languageProblem(err) }) catch "unknown locale");
         };
-        t.setPrompt(prompt) catch |err| return self.fail(io, err);
+        t.setLanguages(prompts[0..n]) catch |err| return self.fail(io, err);
     }
 
     /// From the next chunk on; the utterance and its state stay.
@@ -946,6 +963,15 @@ const Session = struct {
     }
 };
 
+fn languageProblem(err: anyerror) []const u8 {
+    return switch (err) {
+        error.TooManyLanguages => "at most four languages",
+        error.DuplicateLanguage => "a language named twice",
+        error.FallbackNotLast => "auto only last, as the fallback",
+        else => "a locale (en-US, de-DE, fr), auto, or a list of them (ar,en,auto)",
+    };
+}
+
 /// The final's words: the transcriber's tokens, specials left out.
 /// The utterance's words, grouped as a file's are; in `arena`.
 fn wordsOf(arena: std.mem.Allocator, t: *const asr.Transcriber) ![]const Word {
@@ -986,10 +1012,12 @@ test "the query: lookahead, language, model, each refused by name" {
     try std.testing.expectEqualStrings("nemotron-asr-0.6b", q.model.?);
     try std.testing.expectEqualStrings("de-DE", q.language.?);
     try std.testing.expectEqual(@as(usize, 13), q.lookahead);
+    const listed = try parseQuery(.{ .method = .GET, .path = path, .query = "language=ar,en-US,auto", .body = "" }, &problem);
+    try std.testing.expectEqualStrings("ar,en-US,auto", listed.language.?);
     const defaults = try parseQuery(.{ .method = .GET, .path = path, .query = "language=auto", .body = "" }, &problem);
     try std.testing.expect(defaults.language == null and defaults.model == null);
     try std.testing.expectEqual(@as(usize, 3), defaults.lookahead);
-    for ([_][2][]const u8{ .{ "lookahead=1", "lookahead" }, .{ "lookahead=x", "lookahead" }, .{ "language=", "language" }, .{ "language=de%2DDE", "language" }, .{ "model=../x", "model" } }) |case| {
+    for ([_][2][]const u8{ .{ "lookahead=1", "lookahead" }, .{ "lookahead=x", "lookahead" }, .{ "language=", "language" }, .{ "language=de%2DDE", "language" }, .{ "language=ar,,en", "language" }, .{ "language=ar,", "language" }, .{ "model=../x", "model" } }) |case| {
         try std.testing.expectError(error.Refused, parseQuery(.{ .method = .GET, .path = path, .query = case[0], .body = "" }, &problem));
         try std.testing.expectEqualStrings(case[1], problem.param.?);
     }

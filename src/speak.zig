@@ -5,7 +5,9 @@
 //! that model; on VoiceDesign the instruction describing the voice; a
 //! language or `auto`. On Metal by default when built with it;
 //! `--stream` writes each chunk of frames as it is decoded and reports the
-//! time to the first audio. docs/models/qwen3-tts.md.
+//! time to the first audio. docs/models/qwen3-tts.md. A Drama 3 GGUF
+//! (`drama-3`) speaks at 44.1 kHz, in a saved voice or its own, its
+//! delivery cued in the text (docs/models/drama3.md).
 const std = @import("std");
 const inference = @import("inference");
 const style = @import("tui/style.zig");
@@ -13,6 +15,7 @@ const config = @import("config.zig");
 const audio_catalog = @import("audio/catalog.zig");
 const paths = @import("paths.zig");
 const voices = @import("voices.zig");
+const speech_union = @import("audio/speech.zig");
 
 const tts = inference.models.qwen3_tts;
 const speech = inference.models.qwen3_tts_runtime;
@@ -186,6 +189,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
         return error.TextTooLong;
     }
     const dir = (try audio_catalog.locate(arena, io, root, loaded.config.models, options.model orelse loaded.config.speech.model, .speech, true, diag)).directory;
+    if (audio_catalog.isFile(dir)) return runDrama3(alloc, arena, io, root, &options, backend, text, dir, out, sty, diag);
     const seed = options.seed orelse 0;
     const language = options.language orelse "auto";
     const speaker = options.voice orelse loaded.config.speech.voice;
@@ -325,6 +329,97 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
     try out.writeByte('\n');
     if (synth.finish == .length) try out.print("{s}stopped at the length budget ({d} frames for {d} text tokens): the model did not end the speech{s}\n", .{ sty.on(.warning), synth.budget, prompt.text_tokens, sty.off() });
     if (voice.gpu) |*g| if (g.profile) |*p| try printProfile(arena, out, p, frames);
+}
+
+/// `run` for Drama 3: a saved voice only when `--voice` names one, the
+/// sentences generated a few frames at a time.
+fn runDrama3(alloc: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, options: *const Options, backend: Backend, text: []const u8, path: []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+    const drama = inference.models.drama3_speech;
+    const name = std.fs.path.basename(path);
+    if (options.instruct != null) {
+        diag.set("{s} takes its delivery from cues in the text ([whispering], <emphasis>…</emphasis>), not --instruct", .{name});
+        return error.InstructionUnsupported;
+    }
+    if (options.language) |l| if (!std.mem.eql(u8, l, "auto")) {
+        diag.set("{s} reads the language from the text; --language takes only auto", .{name});
+        return error.UnknownLanguage;
+    };
+    if (options.profile or options.split or options.host_sampling or options.first_chunk != null) {
+        diag.set("--profile, --split, --host-sampling, and --first-chunk are Qwen3-TTS's; {s} has none", .{name});
+        return error.InvalidOptionValue;
+    }
+    const seed = options.seed orelse 0;
+    const load_start = std.Io.Clock.awake.now(io);
+    const voice = drama.Voice.openWith(alloc, io, path, .{ .backend = switch (backend) {
+        .cpu => .cpu,
+        .metal => .metal,
+    } }) catch |err| {
+        diag.set("{s}", .{path});
+        return err;
+    };
+    defer voice.close();
+    try out.print("{s}{s}{s}, {s}{s}, seed {d}, {s}; loaded in {d:.1} s\n", .{ sty.on(.header), name, sty.off(), if (options.voice != null) "voice " else "its own voice", options.voice orelse "", seed, @tagName(backend), @as(f64, @floatFromInt(load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds())) / 1000 });
+    try out.flush();
+
+    var ready: ?voices.Ready = null;
+    defer if (ready) |*r| r.deinit(alloc);
+    var reference: [1]inference.models.drama3_text.Reference = undefined;
+    if (options.voice) |speaker| {
+        const store: voices.Store = .{ .io = io, .path = try paths.voicesPath(arena, root orelse return error.MissingHome) };
+        const ready_start = std.Io.Clock.awake.now(io);
+        ready = store.ensure(alloc, speaker, try voices.modelKeys(arena, io, path), voices.drama3Encoders(voice)) catch |err| {
+            if (err == error.TranscriptRequired)
+                diag.set("{s} has no transcript; {s} clones only from a clip and its words (`nuclis voice add {s} <clip> --text \"…\"`)", .{ speaker, name, speaker })
+            else
+                voices.explain(err, speaker, "", diag);
+            return err;
+        };
+        reference[0] = .{ .transcript = ready.?.reference_text.?, .codes = ready.?.rows(drama.Codes) };
+        try out.print("voice {s}: its clip and transcript; ready in {d} ms\n", .{ speaker, ready_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() });
+        try out.flush();
+    }
+
+    const start = std.Io.Clock.awake.now(io);
+    var synth = drama.Synthesizer.init(alloc, voice, .{ .text = text, .references = if (ready != null) &reference else &.{}, .seed = seed }) catch |err| {
+        if (speech_union.inputProblem(err)) |problem| diag.set("{s} cannot speak the text: {s}", .{ name, problem });
+        return err;
+    };
+    defer synth.deinit();
+    if (options.chunk) |c| synth.frames_per_read = c;
+
+    const file = std.Io.Dir.cwd().createFile(io, options.output.?, .{}) catch |err| {
+        diag.set("{s}", .{options.output.?});
+        return err;
+    };
+    defer file.close(io);
+    var file_buffer: [64 * 1024]u8 = undefined;
+    var writer = file.writerStreaming(io, &file_buffer);
+    try writer.interface.writeAll(&try wavHeader(0, drama.sample_rate));
+    const buffer = try arena.alloc(f32, 16 * drama.samples_per_frame);
+    var first_ms: ?f64 = null;
+    var samples: usize = 0;
+    while (true) {
+        const n = synth.read(buffer) catch |err| {
+            if (speech_union.inputProblem(err)) |problem| diag.set("{s} cannot speak the text: {s}", .{ name, problem });
+            return err;
+        };
+        if (n == 0) break;
+        if (first_ms == null) first_ms = @as(f64, @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toMicroseconds())) / 1000;
+        samples += n;
+        for (buffer[0..n]) |x| try writer.interface.writeInt(i16, pcm16(x), .little);
+        if (options.stream) try writer.interface.flush();
+    }
+    const seconds = @as(f64, @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toMicroseconds())) / 1e6;
+    try writer.interface.flush();
+    try file.writePositionalAll(io, &try wavHeader(samples, drama.sample_rate), 0);
+    const audio_seconds = @as(f64, @floatFromInt(samples)) / drama.sample_rate;
+    try out.print("wrote {s}: {d} frames in {d} sentence{s}, {d:.2} s of audio in {d:.2} s ({d:.2}× real time)\n", .{ options.output.?, synth.frames, synth.chunks.len, if (synth.chunks.len == 1) "" else "s", audio_seconds, seconds, if (seconds > 0) audio_seconds / seconds else 0 });
+    const t = synth.timing;
+    try out.print("prefill {d:.0} ms (the {d}-row prefix restored {d}, prefilled {d}); frames {d:.0} ms, codec {d:.0} ms", .{ @as(f64, @floatFromInt(t.prefill_ns)) / 1e6, t.prefix_rows, t.prefix_hits, t.prefix_misses, @as(f64, @floatFromInt(t.frames_ns)) / 1e6, @as(f64, @floatFromInt(t.codec_ns)) / 1e6 });
+    if (first_ms) |ms| try out.print("; first audio {d:.0} ms after the text", .{ms});
+    if (synth.retried > 0) try out.print("; {d} silent starts retried", .{synth.retried});
+    try out.writeByte('\n');
+    if (synth.stops[@backingInt(drama.Stop.length)] > 0) try out.print("{s}a sentence stopped at the length budget: the model did not end it{s}\n", .{ sty.on(.warning), sty.off() });
 }
 
 /// The profile's kernels by device time, each with its share and, for a

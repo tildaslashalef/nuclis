@@ -82,14 +82,22 @@ pub fn ttsWindowAttention(self: *Backend, q: Buffer, keys: Buffer, values: Buffe
     try self.dispatch(.tts_window_attention, &.{ q, keys, values, out }, p, @intCast(rows * heads), 32, .{});
 }
 
-pub const TtsConvOutParams = extern struct { rows: u32, width: u32, taps: u32 };
+pub const TtsConvOutParams = extern struct { rows: u32, width: u32, taps: u32, squash: u32 };
 /// A causal convolution to one channel, clamped to [−1, 1]: `out[r] =
 /// clamp(bias[0] + Σ_j Σ_i weight[j][i] · joined[r + j][i])`; `joined`
 /// holds `taps − 1` history rows of `width`, then the input.
 pub fn ttsConvOut(self: *Backend, joined: Buffer, weight: Buffer, bias: Buffer, out: Buffer, rows: usize, width: usize, taps: usize) !void {
+    return convOut(self, joined, weight, bias, out, rows, width, taps, 0);
+}
+/// `ttsConvOut` squashed by tanh instead of the clamp (Fish's codec).
+pub fn ttsConvOutTanh(self: *Backend, joined: Buffer, weight: Buffer, bias: Buffer, out: Buffer, rows: usize, width: usize, taps: usize) !void {
+    return convOut(self, joined, weight, bias, out, rows, width, taps, 1);
+}
+fn convOut(self: *Backend, joined: Buffer, weight: Buffer, bias: Buffer, out: Buffer, rows: usize, width: usize, taps: usize, squash: u32) !void {
     if (rows == 0 or width == 0 or taps == 0) return error.InvalidShape;
     if (!fits(joined, (rows + taps - 1) * width) or !fits(weight, taps * width) or !fits(bias, 1) or !fits(out, rows)) return error.InvalidShape;
-    try self.dispatch(.tts_conv_out, &.{ joined, weight, bias, out }, TtsConvOutParams{ .rows = @intCast(rows), .width = @intCast(width), .taps = @intCast(taps) }, perElement(rows), 256, .{});
+    const p: TtsConvOutParams = .{ .rows = @intCast(rows), .width = @intCast(width), .taps = @intCast(taps), .squash = squash };
+    try self.dispatch(.tts_conv_out, &.{ joined, weight, bias, out }, p, perElement(rows), 256, .{});
 }
 
 pub const TtsMatvecParams = extern struct { rows: u32, columns: u32, stride: u32 };

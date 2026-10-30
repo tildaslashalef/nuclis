@@ -305,7 +305,12 @@ pub const Run = struct {
             _ = try self.transcriber.finish();
             self.finished = true;
         }
-        return self.segmenter.update(self.transcriber.model, self.transcriber.tokens.items, self.transcriber.rowsDecoded(), self.finished);
+        // Several languages may write no tag: the one chosen is the language.
+        if (self.transcriber.languageCount() > 1) if (self.transcriber.language()) |l| {
+            self.segmenter.language = l;
+        };
+        const t = self.transcriber;
+        return self.segmenter.update(t.model, t.tokens.items[0..t.settled()], t.rowsDecoded(), self.finished);
     }
 
     /// The audio pushed so far, in seconds.

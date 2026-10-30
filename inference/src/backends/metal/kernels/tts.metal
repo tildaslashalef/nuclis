@@ -136,9 +136,9 @@ kernel void nu_tts_window_attention(device const float * q [[buffer(0)]],
 }
 
 // The decoder's last convolution, to one channel: out[r] = clamp(b +
-// Σ_j Σ_i w[j][i] · joined[r + j][i], −1, 1), joined holding the taps − 1
-// history rows first.
-struct TtsConvOutParams { uint rows; uint width; uint taps; };
+// Σ_j Σ_i w[j][i] · joined[r + j][i], −1, 1), or its tanh with `squash`
+// (Fish's codec), joined holding the taps − 1 history rows first.
+struct TtsConvOutParams { uint rows; uint width; uint taps; uint squash; };
 kernel void nu_tts_conv_out(device const float * joined [[buffer(0)]],
                             device const float * weight [[buffer(1)]],
                             device const float * bias [[buffer(2)]],
@@ -152,7 +152,8 @@ kernel void nu_tts_conv_out(device const float * joined [[buffer(0)]],
         device const float * w = weight + j * p.width;
         for (uint i = 0; i < p.width; ++i) acc = acc + w[i] * row[i];
     }
-    out[r] = min(max(acc + bias[0], -1.0f), 1.0f);
+    const float v = acc + bias[0];
+    out[r] = p.squash ? nu_tanh(v) : min(max(v, -1.0f), 1.0f);
 }
 
 // A BF16 matrix times an F32 vector, for the talker and predictor's decode

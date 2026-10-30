@@ -25,14 +25,18 @@ const slot_mod = @import("../slot.zig");
 const Pipe = @import("../pipe.zig").Pipe;
 const wire = @import("wire.zig");
 const voice_routes = @import("voices.zig");
+const contexts = @import("contexts.zig");
 const voice_store = @import("../../voices.zig");
 const paths = @import("../../paths.zig");
+const speech = @import("../../audio/speech.zig");
 
 const tts = inference.models.qwen3_tts;
 const runtime = inference.models.qwen3_tts_runtime;
 const ApiError = errors.ApiError;
 
-pub const Voice = runtime.Voice;
+const drama = inference.models.drama3_speech;
+
+pub const Voice = speech.Voice;
 pub const Slot = slot_mod.Slot(Voice, .speech);
 
 /// Speech requests waiting for the voice at once; one more is `busy`.
@@ -40,7 +44,6 @@ pub const max_waiting = 64;
 /// Bytes a stream may hold between the worker and the socket: about 5 s
 /// of PCM. A chunk waits (the job parks) rather than block the worker.
 const pipe_capacity = 256 * 1024;
-const samples_per_frame = 1920;
 /// Beside a generation, how far the audio may run ahead of its playback
 /// (which starts with its first byte) before speech yields to the generation.
 const lead_ms = 1000;
@@ -79,6 +82,8 @@ pub const Service = struct {
     /// Worker-only: the job speaking.
     active: ?*Job = null,
     routes: voice_routes.Routes,
+    /// Drama 3's last sentences, for a later request's `context`.
+    contexts: contexts.Store,
     item: gpu.Item = .{ .run = step, .short = true },
 
     /// `root` and `registry` are borrowed for the service's lifetime; the
@@ -94,6 +99,7 @@ pub const Service = struct {
             .settings = settings,
             .timeout_ns = timeout_ns,
             .routes = .{ .root = root },
+            .contexts = .init(gpa),
         };
     }
 
@@ -101,6 +107,7 @@ pub const Service = struct {
     pub fn deinit(self: *Service, io: std.Io) void {
         if (self.active) |job| self.finish(io, job);
         self.slot.deinit(io);
+        self.contexts.deinit();
     }
 
     pub fn register(self: *Service, gpa: std.mem.Allocator, router: *router_mod.Router, listing: *models.Models) !void {
@@ -153,6 +160,12 @@ pub const Service = struct {
         const mode = (audio_catalog.speechMode(arena, io, located.directory) catch return internal(arena)) orelse .speakers;
         fields.text("model", name);
         fields.text("voice_kind", @tagName(mode));
+        if (speech.engineOf(located.directory) == .drama3) {
+            if (parsed.instructions != null)
+                return refuse(arena, .bad_request, "instructions_unsupported", "instructions", "{s} takes its delivery from cues in the input ([whispering], <emphasis>…</emphasis>), not instructions", .{name});
+            if (parsed.language) |l| if (!std.mem.eql(u8, l, "auto"))
+                return refuse(arena, .bad_request, "invalid_request", "language", "{s} reads the language from the input; it takes only auto", .{name});
+        }
         if (parsed.instructions != null) {
             if (mode == .clone) return refuse(arena, .bad_request, "instructions_unsupported", "instructions", "{s} is a Base: it takes no instruction (qwen3-tts-1.7b-customvoice does)", .{name});
             if (located.entry) |entry| if (!entry.instructions)
@@ -193,6 +206,19 @@ pub const Service = struct {
             .peer = peer,
             .fields = fields,
         };
+        if (speech.engineOf(located.directory) == .drama3) {
+            job.context_id = request_log.uuid7(io);
+            fields.text("context_id", &job.context_id.?);
+            if (parsed.context) |id| {
+                const found = self.contexts.lookup(self.gpa, io, std.Io.Clock.awake.now(io), id, located.directory, voice_name) catch {
+                    job.pipe.deinit(self.gpa);
+                    job.dropVoice();
+                    return internal(arena);
+                };
+                fields.text("context", @tagName(found));
+                if (found == .hit) job.context_in = found.hit;
+            }
+        }
         self.submit(io, job) catch |err| {
             job.pipe.deinit(self.gpa);
             job.dropVoice();
@@ -219,6 +245,7 @@ pub const Service = struct {
         return .{
             .body = "",
             .content_type = wire.contentType(parsed),
+            .extra_header = if (job.context_id) |*id| .{ .name = "x-speech-context", .value = id } else null,
             .stream = .{ .context = job, .write = Job.writeStream, .note = Job.streamNote },
         };
     }
@@ -312,10 +339,10 @@ pub const Service = struct {
             // A generation waits for this run: a frame at a time, and only
             // while the listener could run out.
             if (job.ahead(io) >= lead_ms * std.time.ns_per_ms) return .again;
-            job.synth.?.chunk = 1;
-        } else job.synth.?.chunk = self.chunk;
+            job.synth.?.setChunk(1);
+        } else job.synth.?.setChunk(self.chunk);
         // Parked rather than blocked: the worker never waits on a client.
-        if (job.pipe.space(io) < wire.maxChunkBytes(@max(self.chunk, self.first_chunk), samples_per_frame, job.request.stream)) {
+        if (job.pipe.space(io) < wire.maxChunkBytes(@max(self.chunk, self.first_chunk), job.per_frame, job.request.stream)) {
             self.mutex.lockUncancelable(io);
             defer self.mutex.unlock(io);
             self.parked = true;
@@ -346,27 +373,46 @@ pub const Service = struct {
         const voice = acquired.model;
         self.slot.hold(io, true);
         job.holding = true;
-        // For the refusal's list, should the prompt name an unknown one.
-        job.speakers = voice.config.speakers;
-        job.languages = voice.config.languages;
-        const language = job.request.language orelse "auto";
-        var prompt = switch (job.mode) {
-            .clone => try voice.clonePrompt(self.gpa, job.request.input, job.saved.?.reference_text, language, job.saved.?.clone()),
-            .design => try voice.prompt(self.gpa, job.request.input, null, language, job.request.instructions),
-            .speakers => try voice.prompt(self.gpa, job.request.input, job.voice, language, job.request.instructions),
+        job.rate = acquired.model.sampleRate();
+        job.per_frame = acquired.model.samplesPerFrame();
+        var synth: speech.Synthesizer = switch (voice.model) {
+            .qwen3_tts => |v| qwen: {
+                // For the refusal's list, should the prompt name an unknown one.
+                job.speakers = v.config.speakers;
+                job.languages = v.config.languages;
+                const language = job.request.language orelse "auto";
+                var prompt = switch (job.mode) {
+                    .clone => try v.clonePrompt(self.gpa, job.request.input, job.saved.?.reference_text, language, job.saved.?.clone()),
+                    .design => try v.prompt(self.gpa, job.request.input, null, language, job.request.instructions),
+                    .speakers => try v.prompt(self.gpa, job.request.input, job.voice, language, job.request.instructions),
+                };
+                defer prompt.deinit(self.gpa);
+                job.prompt_rows = prompt.rows.len;
+                var s = try v.synthesizer(self.gpa, &prompt, job.request.seed orelse 0);
+                s.first_chunk = self.first_chunk;
+                break :qwen .{ .qwen3_tts = s };
+            },
+            .drama3 => |v| d: {
+                const saved = &job.saved.?;
+                job.reference = .{ .transcript = saved.reference_text.?, .codes = saved.rows(drama.Codes) };
+                // The synthesizer copies the context.
+                defer job.dropContext();
+                break :d .{ .drama3 = try drama.Synthesizer.init(self.gpa, v, .{
+                    .text = job.request.input,
+                    .references = (&job.reference)[0..1],
+                    .context = if (job.context_in) |c| .{ .text = c.text, .codes = c.codes } else null,
+                    .seed = job.request.seed orelse 0,
+                }) };
+            },
         };
-        defer prompt.deinit(self.gpa);
-        job.prompt_rows = prompt.rows.len;
-        var synth = try voice.synthesizer(self.gpa, &prompt, job.request.seed orelse 0);
         errdefer synth.deinit();
-        synth.first_chunk = self.first_chunk;
-        synth.chunk = self.chunk;
+        synth.setChunk(self.chunk);
         const frames = @max(self.chunk, self.first_chunk);
-        job.samples = try self.gpa.alloc(f32, frames * samples_per_frame);
+        job.samples = try self.gpa.alloc(f32, frames * job.per_frame);
         errdefer self.gpa.free(job.samples);
         // The raw bytes, then (for events) their framing.
-        const raw = wire.maxChunkBytes(frames, samples_per_frame, .audio);
-        const framed = if (job.request.stream == .sse) wire.maxChunkBytes(frames, samples_per_frame, .sse) else 0;
+        const raw = wire.maxChunkBytes(frames, job.per_frame, .audio);
+        const framed = if (job.request.stream == .sse) wire.maxChunkBytes(frames, job.per_frame, .sse) else 0;
         job.bytes_out = try self.gpa.alloc(u8, raw + framed);
         job.raw_len = raw;
         job.synth = synth;
@@ -376,7 +422,8 @@ pub const Service = struct {
     /// longer held, the stream closed, its waiter woken.
     fn finish(self: *Service, io: std.Io, job: *Job) void {
         if (job.synth) |*s| {
-            job.frames = s.frames;
+            job.frames = s.frames();
+            if (s.* == .drama3) job.prompt_rows = s.drama3.timing.prompt_rows;
             s.deinit();
         }
         job.synth = null;
@@ -440,6 +487,7 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
         try details.put(arena, "default", .{ .bool = std.mem.eql(u8, name, default_model) });
         switch (kind) {
             .speech => {
+                const drama3 = if (entry) |e| std.mem.eql(u8, e.architecture, "drama3") else audio_catalog.isFile(resolved.directory);
                 const speakers = if (described) |d| d.speakers else if (entry) |e| e.speakers else &.{};
                 // The checkpoint's own word once pulled, else the catalogue's; unknown for a registry entry not pulled.
                 const mode: ?audio_catalog.Mode = if (described) |d| d.mode else if (entry) |e| e.mode else null;
@@ -459,9 +507,9 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
                 try details.put(arena, "languages", .{ .array = try models.strings(arena, languages) });
                 const instructions: ?bool = if (entry) |e| e.instructions else if (described) |d| d.instructions else null;
                 try details.put(arena, "instructions", if (instructions) |b| .{ .bool = b } else .null);
-                try details.put(arena, "cloning", if (mode == .clone) try cloning(arena) else .null);
+                try details.put(arena, "cloning", if (mode == .clone) try cloning(arena, drama3) else .null);
                 try details.put(arena, "design", if (mode) |m| .{ .bool = m == .design } else .null);
-                try details.put(arena, "sample_rate", .{ .integer = wire.sample_rate });
+                try details.put(arena, "sample_rate", .{ .integer = if (drama3) drama.sample_rate else wire.sample_rate });
                 var formats: std.json.Array = .init(arena);
                 for (std.enums.values(wire.Format)) |f| try formats.append(.{ .string = @tagName(f) });
                 try details.put(arena, "formats", .{ .array = formats });
@@ -495,10 +543,11 @@ fn savedVoices(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8) !std.jso
     return names_list;
 }
 
-/// What a Base clones from: a clip alone, or a clip and its transcript.
-fn cloning(arena: std.mem.Allocator) !std.json.Value {
+/// What a cloning model clones from: a Base, a clip alone or a clip and its
+/// transcript; Drama 3 (`transcript_only`), the clip and its transcript.
+fn cloning(arena: std.mem.Allocator, transcript_only: bool) !std.json.Value {
     var o: std.json.ObjectMap = .empty;
-    try o.put(arena, "modes", .{ .array = try models.strings(arena, &.{ "audio", "audio_and_transcript" }) });
+    try o.put(arena, "modes", .{ .array = try models.strings(arena, if (transcript_only) &.{"audio_and_transcript"} else &.{ "audio", "audio_and_transcript" }) });
     try o.put(arena, "voices_route", .{ .string = router_mod.prefix ++ "/audio/voices" });
     return .{ .object = o };
 }
@@ -565,7 +614,12 @@ const Job = struct {
     message_buffer: []u8,
 
     // Worker-only, while it speaks.
-    synth: ?runtime.Synthesizer = null,
+    synth: ?speech.Synthesizer = null,
+    /// The voice's output rate and frame length, set once it is open.
+    rate: u32 = wire.sample_rate,
+    per_frame: usize = 1920,
+    /// Drama 3's reference, borrowing `saved`.
+    reference: inference.models.drama3_text.Reference = undefined,
     samples: []f32 = &.{},
     /// `raw_len` bytes for a chunk's audio, then room to frame it as an event.
     bytes_out: []u8 = &.{},
@@ -584,6 +638,14 @@ const Job = struct {
     finish_reason: []const u8 = "",
     /// The frames generated, kept once the synthesizer is freed.
     frames: usize = 0,
+    /// Drama 3's sentences, silent starts redrawn, sentences its silence
+    /// stop ended, and its prefill, kept like `frames`.
+    drama: ?struct { sentences: usize, redraws: usize, silence_stops: usize, prefill_ns: u64, prefix_hits: usize, prefix_misses: usize } = null,
+    /// Drama 3: the id its last sentence is kept under (`x-speech-context`),
+    /// and the earlier sentence its `context` found, owned until the
+    /// synthesizer took it.
+    context_id: ?contexts.Id = null,
+    context_in: ?contexts.Turn = null,
     /// The request's log fields, filled once the worker is done.
     fields: request_log.Fields = .{},
 
@@ -597,10 +659,23 @@ const Job = struct {
             return false;
         };
         if (n == 0) {
-            self.finish_reason = @tagName(synth.finish orelse .eos);
+            self.finish_reason = @tagName(synth.finish());
+            if (synth.* == .drama3) {
+                const d = &synth.drama3;
+                self.drama = .{
+                    .sentences = d.chunks.len,
+                    .redraws = d.retried,
+                    .silence_stops = d.stops[@backingInt(drama.Stop.silence)],
+                    .prefill_ns = d.timing.prefill_ns,
+                    .prefix_hits = d.timing.prefix_hits,
+                    .prefix_misses = d.timing.prefix_misses,
+                };
+                if (self.context_id) |id| if (d.lastTurn()) |last|
+                    self.service.contexts.put(io, std.Io.Clock.awake.now(io), id, self.directory, self.voice, last.text, last.codes) catch {};
+            }
             if (self.request.stream == .sse) {
                 var out: std.Io.Writer = .fixed(self.bytes_out[self.raw_len..]);
-                wire.writeDone(&out, .{ .input_tokens = self.prompt_rows, .output_tokens = synth.frames }, @tagName(synth.finish orelse .eos)) catch return false;
+                wire.writeDone(&out, .{ .input_tokens = self.prompt_rows, .output_tokens = synth.frames() }, @tagName(synth.finish())) catch return false;
                 self.pipe.write(io, out.buffered()) catch self.cancel.store(true, .release);
             }
             return false;
@@ -612,7 +687,7 @@ const Job = struct {
         }
         self.audio_samples += n;
         var raw: std.Io.Writer = .fixed(self.bytes_out[0..self.raw_len]);
-        if (self.request.format == .wav and !self.header_sent) raw.writeAll(&wire.streamingWavHeader()) catch return false;
+        if (self.request.format == .wav and !self.header_sent) raw.writeAll(&wire.streamingWavHeader(self.rate)) catch return false;
         self.header_sent = true;
         const pcm = wire.pcm16(self.samples[0..n], raw.unusedCapacitySlice());
         raw.advance(pcm.len);
@@ -635,7 +710,7 @@ const Job = struct {
     /// with the first audio and runs at real time; 0 before it.
     fn ahead(self: *const Job, io: std.Io) i64 {
         const first = self.first_audio_at orelse return 0;
-        const made: i64 = @intCast(self.audio_samples * std.time.ns_per_s / wire.sample_rate);
+        const made: i64 = @intCast(self.audio_samples * std.time.ns_per_s / self.rate);
         return made - @as(i64, @intCast(first.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds()));
     }
 
@@ -648,7 +723,7 @@ const Job = struct {
     }
 
     fn writeNote(self: *Job) void {
-        const seconds = @as(f64, @floatFromInt(self.audio_samples)) / wire.sample_rate;
+        const seconds = @as(f64, @floatFromInt(self.audio_samples)) / @as(f64, @floatFromInt(self.rate));
         self.note = if (self.failure) |f|
             std.fmt.bufPrint(self.note_buffer, "{s}: {s}", .{ f.code, f.message }) catch f.code
         else if (self.cancel.load(.acquire))
@@ -722,6 +797,12 @@ const Job = struct {
     fn dropVoice(self: *Job) void {
         if (self.saved) |*r| r.deinit(self.service.gpa);
         self.saved = null;
+        self.dropContext();
+    }
+
+    fn dropContext(self: *Job) void {
+        if (self.context_in) |*c| c.deinit(self.service.gpa);
+        self.context_in = null;
     }
 
     /// Waits until the worker can no longer touch the job (or takes it
@@ -752,7 +833,16 @@ const Job = struct {
         fields.text("stream_format", @tagName(self.request.stream));
         if (self.failure) |f| fields.fail(f);
         fields.int("frames", self.frames);
-        fields.float("audio_s", @as(f64, @floatFromInt(self.audio_samples)) / wire.sample_rate, 2);
+        fields.int("seed", self.request.seed orelse 0);
+        if (self.drama) |d| {
+            fields.int("sentences", d.sentences);
+            fields.int("redraws", d.redraws);
+            fields.int("silence_stops", d.silence_stops);
+            fields.ms("prefill_ms", d.prefill_ns);
+            fields.int("prefix_restored", d.prefix_hits);
+            fields.int("prefix_prefilled", d.prefix_misses);
+        }
+        fields.float("audio_s", @as(f64, @floatFromInt(self.audio_samples)) / @as(f64, @floatFromInt(self.rate)), 2);
         if (self.first_audio_ns) |ns| fields.ms("first_audio_ms", ns);
         if (self.load_ns > 0) fields.ms("open_ms", self.load_ns);
         const finish = if (self.cancel.load(.acquire)) "cancelled" else self.finish_reason;
@@ -772,7 +862,7 @@ fn readyVoice(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, root
         }
     }.with;
     voice_store.checkName(voice_name) catch |err| return switch (err) {
-        error.ReservedVoiceName => fail(refusal, arena, .bad_request, "invalid_request", "voice", "{s} is a speaker of the CustomVoice models; {s} is a Base and speaks in a saved voice (GET /v1/audio/voices)", .{ voice_name, name }),
+        error.ReservedVoiceName => fail(refusal, arena, .bad_request, "invalid_request", "voice", "{s} is a speaker of the CustomVoice models; {s} speaks in a saved voice (GET /v1/audio/voices)", .{ voice_name, name }),
         else => fail(refusal, arena, .not_found, "voice_not_found", "voice", "no saved voice named {s} (GET /v1/audio/voices)", .{voice_name}),
     };
     const home = root orelse return fail(refusal, arena, .internal_server_error, "no_home", "voice", "the server has no user root (HOME or NUCLIS_HOME) to keep voices in", .{});
@@ -782,6 +872,7 @@ fn readyVoice(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, root
     defer encoders.deinit();
     return store.ensure(gpa, voice_name, keys, encoders.encoders()) catch |err| switch (err) {
         error.VoiceNotFound => fail(refusal, arena, .not_found, "voice_not_found", "voice", "no saved voice named {s} (GET /v1/audio/voices)", .{voice_name}),
+        error.TranscriptRequired => fail(refusal, arena, .bad_request, "invalid_request", "voice", "{s} was saved without its transcript; {s} clones only from a clip and its words (save it again with reference_text)", .{ voice_name, name }),
         error.InvalidVoiceRecord => fail(refusal, arena, .internal_server_error, "voice_store_failed", "voice", "{s}: its saved files are damaged (DELETE /v1/audio/voices/{s}, then save it again)", .{ voice_name, voice_name }),
         else => fail(refusal, arena, .internal_server_error, "model_failed", "voice", "{s} could not be made ready: {s}", .{ voice_name, @errorName(err) }),
     };
@@ -790,6 +881,7 @@ fn readyVoice(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, root
 /// A failure before the first chunk, as the client reads it.
 fn startFailure(job: *Job, err: anyerror) ApiError {
     const arena_message = job.message_buffer;
+    if (speech.inputProblem(err)) |problem| return apiError(arena_message, .bad_request, "invalid_request", "input", "{s} cannot speak \"input\": {s} (docs/guide/api.md § Speech)", .{ job.name, problem });
     return switch (err) {
         error.UnknownSpeaker => apiError(arena_message, .bad_request, "invalid_request", "voice", "{s} is not a speaker of {s}: {f}", .{ job.voice, job.name, names(job.speakers) }),
         error.UnknownLanguage => apiError(arena_message, .bad_request, "invalid_request", "language", "{s} is not a language of {s}: auto, {f}", .{ job.request.language orelse "auto", job.name, names(job.languages) }),
@@ -834,7 +926,7 @@ const Opening = struct {
 };
 
 fn openVoice(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, options: Slot.Options) anyerror!*Voice {
-    return Voice.open(gpa, io, directory, null, .{ .backend = if (options.metal) .metal else .cpu });
+    return Voice.open(gpa, io, directory, null, if (options.metal) .metal else .cpu);
 }
 
 fn closeVoice(voice: *Voice, io: std.Io) void {
@@ -993,7 +1085,7 @@ test "speech: a voice that fails to open fails its request before the head, and 
     try std.testing.expect(!stats.speaking and stats.waiting == 0);
     try std.testing.expectEqual(@as(u64, 0), budget.resident(io));
 
-    // The listing names the five speech models, pulled or not, the default
+    // The listing names the six speech models, pulled or not, the default
     // marked; only CustomVoice has speakers.
     var listing: std.ArrayList(models.Entry) = .empty;
     try Service.list(&f.service, arena, io, &listing);
@@ -1001,7 +1093,9 @@ test "speech: a voice that fails to open fails its request before the head, and 
     for (listing.items) |e| {
         const d = e.details.object;
         try std.testing.expectEqualStrings("speech", d.get("kind").?.string);
-        try std.testing.expectEqualStrings("Qwen", e.owned_by);
+        const drama3 = std.mem.eql(u8, e.id, "drama-3");
+        try std.testing.expectEqualStrings(if (drama3) "sakasegawa" else "Qwen", e.owned_by);
+        try std.testing.expectEqual(@as(i64, if (drama3) 44100 else 24000), d.get("sample_rate").?.integer);
         const small = std.mem.eql(u8, e.id, "qwen3-tts-0.6b-customvoice");
         const speakers = std.mem.endsWith(u8, e.id, "-customvoice");
         // The fixture holds the 0.6B CustomVoice's files and the 0.6B Base's.
@@ -1010,12 +1104,12 @@ test "speech: a voice that fails to open fails its request before the head, and 
         try std.testing.expectEqual(std.mem.indexOf(u8, e.id, "1.7b-customvoice") != null or std.mem.endsWith(u8, e.id, "-voicedesign"), d.get("instructions").?.bool);
         try std.testing.expectEqual(@as(usize, if (speakers) 9 else 0), d.get("voices").?.array.items.len);
         // A Base clones (from a clip, or a clip and its words); VoiceDesign designs; both before the pull.
-        try std.testing.expectEqual(std.mem.endsWith(u8, e.id, "-base"), d.get("cloning").? != .null);
+        try std.testing.expectEqual(std.mem.endsWith(u8, e.id, "-base") or drama3, d.get("cloning").? != .null);
         try std.testing.expectEqual(std.mem.endsWith(u8, e.id, "-voicedesign"), d.get("design").?.bool);
-        if (std.mem.endsWith(u8, e.id, "-base")) try std.testing.expectEqual(@as(usize, 2), d.get("cloning").?.object.get("modes").?.array.items.len);
+        if (std.mem.endsWith(u8, e.id, "-base") or drama3) try std.testing.expectEqual(@as(usize, if (drama3) 1 else 2), d.get("cloning").?.object.get("modes").?.array.items.len);
         seen += 1;
     }
-    try std.testing.expectEqual(@as(usize, 5), seen);
+    try std.testing.expectEqual(@as(usize, 6), seen);
 }
 
 test "a speech model's voice has no default when speech.voice is not one of its speakers" {

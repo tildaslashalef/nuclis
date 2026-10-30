@@ -32,6 +32,9 @@ pub const Request = struct {
     seed: ?u64 = null,
     /// A language of the model, or `auto`; null is `auto`.
     language: ?[]const u8 = null,
+    /// Drama 3: an earlier response's `x-speech-context`, whose last
+    /// sentence this one continues.
+    context: ?[]const u8 = null,
 };
 
 /// Why a request was refused: a 400 with this code, message, and field.
@@ -106,6 +109,7 @@ pub fn parse(arena: Allocator, body: []const u8, problem: *Problem) Error!Reques
         else => return refuse(arena, problem, "invalid_request", "seed", "\"seed\" must be an integer", .{}),
     };
     request.language = try optionalString(arena, problem, o, "language");
+    request.context = try optionalString(arena, problem, o, "context");
     return request;
 }
 
@@ -132,10 +136,10 @@ pub fn contentType(request: Request) []const u8 {
     };
 }
 
-/// A WAV header for 16-bit mono at `sample_rate` whose length is not known
-/// when it is sent: both sizes are the largest a field holds, which players
-/// read as "until the end of the stream".
-pub fn streamingWavHeader() [44]u8 {
+/// A WAV header for 16-bit mono at `rate` whose length is not known when
+/// it is sent: both sizes are the largest a field holds, which players read
+/// as "until the end of the stream".
+pub fn streamingWavHeader(rate: u32) [44]u8 {
     var h: [44]u8 = undefined;
     @memcpy(h[0..4], "RIFF");
     std.mem.writeInt(u32, h[4..8], std.math.maxInt(u32), .little);
@@ -143,8 +147,8 @@ pub fn streamingWavHeader() [44]u8 {
     std.mem.writeInt(u32, h[16..20], 16, .little);
     std.mem.writeInt(u16, h[20..22], 1, .little); // PCM
     std.mem.writeInt(u16, h[22..24], 1, .little); // mono
-    std.mem.writeInt(u32, h[24..28], sample_rate, .little);
-    std.mem.writeInt(u32, h[28..32], sample_rate * 2, .little);
+    std.mem.writeInt(u32, h[24..28], rate, .little);
+    std.mem.writeInt(u32, h[28..32], rate * 2, .little);
     std.mem.writeInt(u16, h[32..34], 2, .little);
     std.mem.writeInt(u16, h[34..36], 16, .little);
     @memcpy(h[36..40], "data");
@@ -273,7 +277,7 @@ test "the speech request: every refusal names its code and field" {
 }
 
 test "the stream's bytes: PCM, a header for an unknown length, and the events" {
-    const h = streamingWavHeader();
+    const h = streamingWavHeader(sample_rate);
     try testing.expectEqualStrings("RIFF", h[0..4]);
     try testing.expectEqualStrings("WAVEfmt ", h[8..16]);
     try testing.expectEqual(@as(u32, 24000), std.mem.readInt(u32, h[24..28], .little));

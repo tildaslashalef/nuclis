@@ -36,6 +36,9 @@ comptime {
 /// Rows of joint logits per speculative batch: one prediction `g` scores
 /// them all, valid until the next emitted token changes it.
 pub const joint_rows = 16;
+/// Prompts one stream decodes at once: its own and `max_prompts − 1`
+/// alternates, each with its prompt block, projector rows and decoder.
+pub const max_prompts = 4;
 
 const Weight = struct { buffer: Buffer, matrix: cpu.Matrix };
 const Norm = struct { weight: Buffer, bias: Buffer };
@@ -197,11 +200,11 @@ pub const Plan = struct {
         self.attn = try self.created(rows * h);
         self.wide = try self.created(rows * @max(c.ffn, 2 * h));
         self.inner = try self.created(rows * c.prompt_hidden);
-        self.prompt_bias = try self.created(c.prompt_hidden);
+        self.prompt_bias = try self.created(max_prompts * c.prompt_hidden);
         self.enc = try self.created(rows * h);
         self.dw = try self.created((out_rows[1] * c.columns(2) + Backend.matmul_tile) * c.channels);
         self.sub = try self.created(@max((out_rows[2] * cols + Backend.matmul_tile) * c.channels, Backend.matmulPadded(out_rows[2]) * c.subWidth()));
-        self.e = try self.created(rows * t.hidden);
+        self.e = try self.created(max_prompts * rows * t.hidden);
         self.g = try self.created(t.hidden);
         self.jin = try self.created(Backend.matmulPadded(joint_rows) * t.hidden);
         self.logits = try self.created(Backend.matmulPadded(joint_rows) * t.vocab);
@@ -214,6 +217,12 @@ pub const Plan = struct {
         self.backend.deinit();
         alloc.free(self.blocks);
         alloc.destroy(self);
+    }
+
+    /// Prompt `which`'s projected rows: one of `e`'s `max_prompts` parts.
+    fn rowsOf(self: *const Plan, which: usize) Buffer {
+        const part = Backend.matmulPadded(max_rows) * self.transducer.config.hidden * 4;
+        return self.e.slice(which * part, part);
     }
 
     fn config(self: *const Plan) encoder.Config {
@@ -307,7 +316,24 @@ pub const Stream = struct {
     prompt_bias: []f32,
     /// The CPU prediction network: its state, `g`, and the rows decoded.
     decoder: rnnt.Decoder,
+    /// Other prompts decoded over the same encoder rows, at most
+    /// `max_prompts − 1`; their tokens stay in each `Alternate`.
+    alternates: std.ArrayList(Alternate) = .empty,
     finished: bool = false,
+
+    pub const Alternate = struct {
+        prompt: usize,
+        /// As `Stream.prompt_bias`, for this prompt.
+        bias: []f32,
+        decoder: rnnt.Decoder,
+        tokens: std.ArrayList(rnnt.Token) = .empty,
+
+        fn deinit(self: *Alternate, alloc: std.mem.Allocator) void {
+            alloc.free(self.bias);
+            self.decoder.deinit();
+            self.tokens.deinit(alloc);
+        }
+    };
 
     /// The most rows before its chunk a query sees that the cache holds.
     const max_left = 56;
@@ -368,17 +394,42 @@ pub const Stream = struct {
         for ([_]Buffer{ self.queues[0].buffer, self.queues[1].buffer, self.queues[2].buffer, self.pending, self.cache, self.history }) |buffer| b.release(buffer) catch {};
         self.alloc.free(self.prompt_bias);
         self.decoder.deinit();
+        for (self.alternates.items) |*a| a.deinit(self.alloc);
+        self.alternates.deinit(self.alloc);
         self.front.deinit(self.alloc);
         self.* = undefined;
     }
 
     /// The language prompt from the next chunk on; touches no encoder state.
     pub fn setPrompt(self: *Stream, prompt: usize) !void {
-        const c = self.plan.config();
-        if (prompt >= c.prompts) return error.UnsupportedPrompt;
-        const w = self.plan.encoder.weights.prompt_in;
+        if (prompt >= self.plan.config().prompts) return error.UnsupportedPrompt;
         self.prompt = prompt;
-        for (self.prompt_bias, 0..) |*v, o| v.* = w.bias.?[o] + w.weight[o * (c.hidden + c.prompts) + c.hidden + prompt];
+        self.promptBias(prompt, self.prompt_bias);
+    }
+
+    fn promptBias(self: *const Stream, prompt: usize, out: []f32) void {
+        const c = self.plan.config();
+        const w = self.plan.encoder.weights.prompt_in;
+        for (out, 0..) |*v, o| v.* = w.bias.?[o] + w.weight[o * (c.hidden + c.prompts) + c.hidden + prompt];
+    }
+
+    /// The alternate prompts from the next chunk on, replacing any before;
+    /// their decoders start at this stream's row with no tokens.
+    pub fn setAlternates(self: *Stream, prompts: []const usize) !void {
+        const c = self.plan.config();
+        if (prompts.len >= max_prompts) return error.TooManyPrompts;
+        for (prompts) |p| if (p >= c.prompts) return error.UnsupportedPrompt;
+        for (self.alternates.items) |*a| a.deinit(self.alloc);
+        self.alternates.clearRetainingCapacity();
+        for (prompts) |p| {
+            const bias = try self.alloc.alloc(f32, c.prompt_hidden);
+            errdefer self.alloc.free(bias);
+            self.promptBias(p, bias);
+            var decoder = try rnnt.Decoder.init(self.alloc, self.plan.io, self.plan.transducer);
+            errdefer decoder.deinit();
+            decoder.row = self.decoder.row;
+            try self.alternates.append(self.alloc, .{ .prompt = p, .bias = bias, .decoder = decoder });
+        }
     }
 
     /// A new utterance: empty caches, the decoder from its start. The
@@ -395,6 +446,10 @@ pub const Stream = struct {
         self.finished = false;
         self.stats = .{};
         try self.decoder.reset();
+        for (self.alternates.items) |*a| {
+            try a.decoder.reset();
+            a.tokens.clearRetainingCapacity();
+        }
     }
 
     /// Appends 16 kHz samples; the tokens of the rows whose chunk they
@@ -465,6 +520,7 @@ pub const Stream = struct {
         const chunk = self.lookahead + 1;
         // Bookkeeping first, so the command buffer is all recorded at once.
         @memcpy(plan.prompt_bias.floats()[0..c.prompt_hidden], self.prompt_bias);
+        for (self.alternates.items, 1..) |a, i| @memcpy(plan.prompt_bias.floats()[i * c.prompt_hidden ..][0..c.prompt_hidden], a.bias);
         @memcpy(plan.g.floats()[0..self.decoder.g.len], self.decoder.g);
         try b.begin();
         errdefer b.discard();
@@ -524,7 +580,7 @@ pub const Stream = struct {
             try b.copy(plan.x, self.pending, whole * h);
             try b.asrShift(self.pending, h, self.pending_rows - whole, whole, 1, 0);
             try self.recordBlocks(whole, taps);
-            try self.recordJoint(0, @min(joint_rows, whole));
+            try self.recordJoint(0, 0, @min(joint_rows, whole));
             recorded = true;
         }
         if (!recorded) return b.discard();
@@ -550,7 +606,8 @@ pub const Stream = struct {
         }
         if (whole == 0) return;
         if (self.rows_out) |list| try list.appendSlice(self.alloc, plan.enc.floats()[0 .. whole * h]);
-        try self.decode(whole, @min(joint_rows, whole), tokens);
+        try self.decode(0, &self.decoder, whole, @min(joint_rows, whole), tokens);
+        for (self.alternates.items, 1..) |*a, i| try self.decode(i, &a.decoder, whole, 0, &a.tokens);
     }
 
     /// `n` rows from `plan.x` through every block, the prompt block and the
@@ -617,14 +674,22 @@ pub const Stream = struct {
         try b.asrShift(self.cache, h, keep, total - keep, 2 * c.blocks, cache_rows * h);
         // And the last `kernel − 1` GLU rows.
         try b.asrShift(self.history, h, c.kernel - 1, n, c.blocks, historyRows(c) * h);
-        // The prompt block: linear_1 over the row, its one-hot column in the bias.
-        try plan.product(plan.prompt_in, plan.x, h, plan.inner, c.prompt_hidden, n, false);
-        try b.asrBiasRelu(plan.inner, plan.prompt_bias, c.prompt_hidden, n);
-        try plan.product(plan.prompt_out, plan.inner, c.prompt_hidden, plan.enc, h, n, false);
-        try b.addBiasRows(plan.enc, plan.prompt_out_bias, h, n, h);
+        // The prompt block per prompt, the alternates' first so that
+        // `plan.enc` ends holding this stream's own rows.
+        var i = self.alternates.items.len + 1;
+        while (i > 0) {
+            i -= 1;
+            // linear_1 over the row, its one-hot column in the bias.
+            const bias = plan.prompt_bias.slice(i * c.prompt_hidden * 4, c.prompt_hidden * 4);
+            try plan.product(plan.prompt_in, plan.x, h, plan.inner, c.prompt_hidden, n, false);
+            try b.asrBiasRelu(plan.inner, bias, c.prompt_hidden, n);
+            try plan.product(plan.prompt_out, plan.inner, c.prompt_hidden, plan.enc, h, n, false);
+            try b.addBiasRows(plan.enc, plan.prompt_out_bias, h, n, h);
+            const e = plan.rowsOf(i);
+            try plan.product(plan.projector, plan.enc, h, e, t.hidden, n, false);
+            try b.addBiasRows(e, plan.projector_bias, t.hidden, n, t.hidden);
+        }
         if (taps) |tap| try b.copy(tap.slice((1 + c.blocks) * max_rows * h * 4, max_rows * h * 4), plan.enc, n * h);
-        try plan.product(plan.projector, plan.enc, h, plan.e, t.hidden, n, false);
-        try b.addBiasRows(plan.e, plan.projector_bias, t.hidden, n, t.hidden);
     }
 
     /// x += ½ · W_out silu(W_in LN(x)) over `n` rows.
@@ -638,21 +703,23 @@ pub const Stream = struct {
         try plan.residual(w_out, plan.wide, c.ffn, n, 0.5);
     }
 
-    /// Records the joint of rows `first … first + n − 1` of `plan.e` under
-    /// the `g` in `plan.g`: `n` rows of logits in `plan.logits`.
-    fn recordJoint(self: *Stream, first: usize, n: usize) !void {
+    /// Records the joint of rows `first … first + n − 1` of prompt
+    /// `which`'s projected rows under the `g` in `plan.g`: `n` rows of
+    /// logits in `plan.logits`.
+    fn recordJoint(self: *Stream, which: usize, first: usize, n: usize) !void {
         const plan = self.plan;
         const b = &plan.backend;
         const t = plan.transducer.config;
-        try b.asrJoint(plan.e.slice(first * t.hidden * 4, n * t.hidden * 4), plan.g, plan.jin, t.hidden, n);
+        try b.asrJoint(plan.rowsOf(which).slice(first * t.hidden * 4, n * t.hidden * 4), plan.g, plan.jin, t.hidden, n);
         try plan.product(plan.head, plan.jin, t.hidden, plan.logits, t.vocab, n, false);
         try b.addBiasRows(plan.logits, plan.head_bias, t.vocab, n, t.vocab);
     }
 
-    /// Greedy decoding of the `n` rows in `plan.e`, whose first `ready`
-    /// rows of logits are already in `plan.logits` (`Decoder.decodeRow`'s
-    /// loop): the logits of one `g` serve every row until a token changes it.
-    fn decode(self: *Stream, n: usize, ready: usize, tokens: *std.ArrayList(rnnt.Token)) !void {
+    /// Greedy decoding by `decoder` of prompt `which`'s `n` projected rows,
+    /// whose first `ready` rows of logits are already in `plan.logits`
+    /// (`Decoder.decodeRow`'s loop): the logits of one `g` serve every row
+    /// until a token changes it.
+    fn decode(self: *Stream, which: usize, decoder: *rnnt.Decoder, n: usize, ready: usize, tokens: *std.ArrayList(rnnt.Token)) !void {
         const plan = self.plan;
         const t = plan.transducer.config;
         var lo: usize = 0;
@@ -664,26 +731,26 @@ pub const Stream = struct {
                 const started = std.Io.Clock.awake.now(plan.io);
                 lo = i;
                 count = @min(joint_rows, n - i);
-                @memcpy(plan.g.floats()[0..t.hidden], self.decoder.g);
+                @memcpy(plan.g.floats()[0..t.hidden], decoder.g);
                 try plan.backend.begin();
                 errdefer plan.backend.discard();
-                try self.recordJoint(lo, count);
+                try self.recordJoint(which, lo, count);
                 try plan.backend.commit();
                 self.stats.joint_batches += 1;
                 self.stats.joint_ns += lapse(plan.io, started);
             }
             const logits = plan.logits.floats()[(i - lo) * t.vocab ..][0..t.vocab];
-            const k = self.decoder.choose(logits);
-            if (self.decoder.observer) |o| o.record(o.context, .{ .row = self.decoder.row, .logits = logits, .token = k });
+            const k = decoder.pick(logits);
+            if (decoder.observer) |o| o.record(o.context, .{ .row = decoder.row, .logits = logits, .token = k });
             if (k == t.blank) {
                 i += 1;
-                self.decoder.row += 1;
+                decoder.row += 1;
                 symbols = 0;
                 continue;
             }
-            try tokens.append(self.alloc, .{ .id = k, .row = @intCast(self.decoder.row) });
+            try tokens.append(self.alloc, .{ .id = k, .row = @intCast(decoder.row) });
             const started = std.Io.Clock.awake.now(plan.io);
-            try self.decoder.predict(k);
+            try decoder.predict(k);
             self.stats.lstm_steps += 1;
             self.stats.lstm_ns += lapse(plan.io, started);
             // A new `g`: the logits from this row on are stale.
@@ -691,7 +758,7 @@ pub const Stream = struct {
             symbols += 1;
             if (symbols == t.max_symbols) {
                 i += 1;
-                self.decoder.row += 1;
+                decoder.row += 1;
                 symbols = 0;
             }
         }

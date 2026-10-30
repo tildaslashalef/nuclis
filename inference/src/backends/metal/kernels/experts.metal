@@ -118,6 +118,34 @@ kernel void nu_combine_experts(device const float * values [[buffer(0)]],
     output[ulong(row) * p.out_stride + c] = acc;
 }
 
+// A gated shared expert's add, one 256-thread group per row:
+// x[row][c] += sigmoid(gate · input[row]) · y[row][c], the gate a vector
+// of `width` (Qwen3.5-MoE's `ffn_gate_inp_shexp`).
+struct SharedExpertParams { uint width, rows, in_stride, stride; };
+kernel void nu_shared_expert_add(device float * x [[buffer(0)]],
+                                 device const float * y [[buffer(1)]],
+                                 device const float * gate [[buffer(2)]],
+                                 device const float * input [[buffer(3)]],
+                                 constant SharedExpertParams & p [[buffer(7)]],
+                                 uint row [[threadgroup_position_in_grid]],
+                                 uint tid [[thread_position_in_threadgroup]],
+                                 uint sg [[simdgroup_index_in_threadgroup]],
+                                 uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float partial[8];
+    device const float * in = input + ulong(row) * p.in_stride;
+    float sum = 0.0f;
+    for (uint c = tid; c < p.width; c += 256) sum = fma(gate[c], in[c], sum);
+    sum = simd_sum(sum);
+    if (lane == 0) partial[sg] = sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float total = 0.0f;
+    for (uint i = 0; i < 8; ++i) total += partial[i];
+    const float g = nu_sigmoid(total);
+    device float * out = x + ulong(row) * p.stride;
+    device const float * add = y + ulong(row) * p.stride;
+    for (uint c = tid; c < p.width; c += 256) out[c] = fma(g, add[c], out[c]);
+}
+
 // Gated GELU over `rows` strided rows: out[r][i] = gelu(gate[r][i]) · up[r][i]
 // (the up half of a fused gate-up row is `up` bound at its offset).
 struct GeluRowsParams { uint width, rows, gate_stride, up_stride, out_stride; };

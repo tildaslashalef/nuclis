@@ -281,7 +281,7 @@ pub const commands = [_]Command{
     .{ .name = "transcribe", .summary = "speech to text, by Nemotron 3.5 ASR", .actions = &.{.{ .positionals = &.{.file}, .flags = &.{
         .{ .name = "--stream", .summary = "80 ms pieces, partials as they change" },
         .{ .name = "--lookahead", .value = .{ .choice = &.{ "0", "3", "6", "13" } }, .summary = "rows of 80 ms the encoder waits for" },
-        .{ .name = "--language", .value = .text, .summary = "a locale, or auto" },
+        .{ .name = "--language", .value = .text, .summary = "a locale, auto, or a list (ar,en-US,auto)" },
         .{ .name = "--model", .value = .dir, .summary = "the checkpoint directory" },
         .{ .name = "--format", .value = .{ .choice = &.{ "text", "json", "srt", "vtt" } }, .summary = "the transcript, JSON, or subtitles" },
         .{ .name = "--segments", .summary = "the segments with their times" },
@@ -297,7 +297,7 @@ pub const commands = [_]Command{
         .{ .name = "--seed", .value = .number, .summary = "the sampler's seed" },
         backend,
     } }} },
-    .{ .name = "voice", .summary = "save a clip as a voice for Qwen3-TTS Base", .actions = &.{
+    .{ .name = "voice", .summary = "save a clip as a voice for Qwen3-TTS Base or Drama 3", .actions = &.{
         .{ .name = "add", .summary = "save a clip under a name", .positionals = &.{ .text, .file }, .flags = &.{
             .{ .name = "--text", .value = .text, .summary = "what the clip says" },
             json,

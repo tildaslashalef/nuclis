@@ -19,8 +19,8 @@
 // zero-filling masked loader (never read from the caller's padding) and
 // their U rows are zero, so they cannot reach the outputs or the carry.
 // Mirrors cpu.recurrent.deltaChunk; the Q/K head of value head h is
-// h % qheads, as in nu_delta.
-struct DeltaChunkParams { uint qheads; uint vheads; uint keys; uint values; uint count; uint in_stride; uint gate_stride; uint out_stride; float scale; };
+// h % qheads, or h / group when group is nonzero, as in nu_delta.
+struct DeltaChunkParams { uint qheads; uint vheads; uint keys; uint values; uint count; uint in_stride; uint gate_stride; uint out_stride; float scale; uint group; };
 #define NU_DELTA_SUB 32   // tokens per state carry
 #define NU_DELTA_ROWS 32  // value rows per threadgroup
 kernel void nu_delta_chunk(device float * state [[buffer(0)]],
@@ -43,7 +43,7 @@ kernel void nu_delta_chunk(device float * state [[buffer(0)]],
     threadgroup float stage[4][64];
     const uint blocks_per_head = p.values / NU_DELTA_ROWS;
     const uint head = group / blocks_per_head, r0 = (group % blocks_per_head) * NU_DELTA_ROWS;
-    const uint kh = head % p.qheads, qsize = p.qheads * p.keys;
+    const uint kh = p.group ? head / p.group : head % p.qheads, qsize = p.qheads * p.keys;
     device const float * q_base = input + kh * p.keys;
     device const float * k_base = input + qsize + kh * p.keys;
     device const float * v_base = input + 2 * qsize + head * p.values + r0;

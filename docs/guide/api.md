@@ -811,7 +811,9 @@ pass: about 460 ms an image at 280 tokens, 130 ms for 4.8 s of speech.
 OpenAI's speech call for the speech models `nuclis speak` runs, Qwen3-TTS
 in three kinds: CustomVoice (two sizes) speaks in nine built-in speakers,
 Base (two sizes) in a saved voice cloned from a clip ([voices](#voices)),
-and the 1.7B VoiceDesign in a voice its `instructions` describe. The
+and the 1.7B VoiceDesign in a voice its `instructions` describe; and
+Fish Audio's Drama 3 (`drama-3`, [below](#drama-3)), which clones a saved
+voice at 44.1 kHz with its delivery cued in the text. The
 audio streams as it is made: the first
 80 ms leave after one frame, then chunks of one, two, and four frames
 (320 ms), each no longer than the audio sent before it, so a listener
@@ -827,8 +829,9 @@ curl -s localhost:9000/v1/audio/speech -o hello.wav -d '{
 The response is `200`, `transfer-encoding: chunked`, `content-type:
 audio/wav`: a WAV header whose sizes are the largest a field holds (the
 length is not known when it is sent; players read to the end of the
-stream), then 24 kHz 16-bit mono samples. With `"response_format":
-"pcm"` it is the samples alone (`audio/pcm`, little-endian).
+stream), then 16-bit mono samples at the model's rate (24 kHz; 44.1 kHz
+for Drama 3, `sample_rate` in `GET /v1/models`). With `"response_format":
+"pcm"` it is the samples alone (`audio/pcm`, little-endian, at that rate).
 
 One speech model is open at a time beside the others; it opens on its
 first request (0.35 s for the 1.7B with its files in the page cache) or
@@ -841,14 +844,15 @@ sentence ends does.
 | Field | In nuclis |
 | --- | --- |
 | `input` | the text, UTF-8, at most 16 KiB (`400 request_too_large`) |
-| `model` | a registry entry of kind `speech` or a catalogue speech name (`qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice`, `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base`, `qwen3-tts-1.7b-voicedesign`); never a path. The names before 0.11.0 (`qwen3-tts-1.7b`, `qwen3-tts-0.6b`) are `404 model_not_found`, the message naming the new one. Absent: the open one, else `speech.model` (`qwen3-tts-1.7b-customvoice`). Another speech model replaces the open one; that request pays the open |
+| `model` | a registry entry of kind `speech` or a catalogue speech name (`qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice`, `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base`, `qwen3-tts-1.7b-voicedesign`, `drama-3`); never a path. The names before 0.11.0 (`qwen3-tts-1.7b`, `qwen3-tts-0.6b`) are `404 model_not_found`, the message naming the new one. Absent: the open one, else `speech.model` (`qwen3-tts-1.7b-customvoice`). Another speech model replaces the open one; that request pays the open |
 | `voice` | on CustomVoice one of its speakers: `aiden`, `dylan`, `eric`, `ono_anna`, `ryan`, `serena`, `sohee`, `uncle_fu`, `vivian` (OpenAI's voice names are not speakers here: `400 invalid_request`, listing them). On a Base a saved voice, by name or as OpenAI's custom voice `{"id": "<name>"}`: `404 voice_not_found` for one not saved, `400 invalid_request` for a speaker's name. On VoiceDesign ignored (OpenAI's clients always send one). A custom voice on CustomVoice or VoiceDesign is `400 voice_cloning_unsupported`. Absent: `speech.voice` (`ryan`) |
-| `instructions` | on the 1.7B CustomVoice how to say it (`"Speak with excited, breathless joy."`); on VoiceDesign the voice itself (`"A calm elderly man with a deep, gravelly voice."`), sampled anew each request; absent, the model's own choice. On the 0.6B CustomVoice and a Base, `400 instructions_unsupported` |
+| `instructions` | on the 1.7B CustomVoice how to say it (`"Speak with excited, breathless joy."`); on VoiceDesign the voice itself (`"A calm elderly man with a deep, gravelly voice."`), sampled anew each request; absent, the model's own choice. On the 0.6B CustomVoice, a Base, and Drama 3 (whose cues are in `input`), `400 instructions_unsupported` |
 | `response_format` | `wav` (the default; OpenAI's is `mp3`) or `pcm` |
 | `stream_format` | `audio` (the default): the bytes as they are made. `sse`: server-sent events, each `{"type": "speech.audio.delta", "audio": "<base64>"}` carrying the next bytes of the same stream (the WAV header in the first, for `wav`), then `{"type": "speech.audio.done", "usage": {"input_tokens", "output_tokens", "total_tokens"}, "finish_reason"}` (the prompt's rows in, the frames out; `eos` when the model ended the speech, `length` when [the frame budget](../models/qwen3-tts.md#the-frame-budget) stopped it, which a client may treat as a failed line) |
 | `speed` | `1` only (`400 unsupported_feature` otherwise): the model has no rate control |
 | `seed` | nuclis's: the sampler's seed, default 0. The same text, voice, and seed give the same samples, alone or beside a chat generation |
-| `language` | nuclis's: `auto` (the default), or one of the model's (`english`, `chinese`, `german`, …; `400 invalid_request` lists them) |
+| `language` | nuclis's: `auto` (the default), or one of the model's (`english`, `chinese`, `german`, …; `400 invalid_request` lists them). Drama 3 takes only `auto` |
+| `context` | nuclis's, Drama 3 only: an earlier response's `x-speech-context`, whose last sentence this request continues ([below](#drama-3)); ignored when unknown or expired |
 
 Other fields OpenAI defines are ignored. Refused with `400
 unsupported_feature`: `mp3`, `opus`, `aac`, and `flac` (no encoder here),
@@ -898,6 +902,66 @@ For a voice that stays the same, VoiceDesign's output can be saved: speak
 a line or two in a described voice, then save that audio with its text as
 a voice and speak in it on a Base (Qwen's *voice design then clone*).
 
+### Drama 3
+
+`drama-3` (Fish Audio's Drama 3, 35B-A3B, one 20.8 GB Q4_K GGUF;
+[models/drama3.md](../models/drama3.md)) speaks in a saved voice with its
+transcript: a voice saved without `reference_text` is `400
+invalid_request` (param `voice`), so save Drama 3's voices with their
+words. Any saved voice serves it and the Bases alike; a voice
+saved since Drama 3 also keeps its clip at 44.1 kHz, which Drama 3
+encodes (an older one is resampled from 24 kHz, losing the top of the
+band). Its first use encodes the clip on the CPU with Fish's codec.
+
+The delivery is cued in `input` itself:
+
+- free-form cues in brackets before the words they shape: `[whispering]
+  Don't wake him.`, `[laughs] No way.`, `[sighs]`;
+- paired tags around words: `<whisper>…</whisper>`, `<emphasis>`,
+  `<soft>`, `<fast>`, `<slow>`, `<stress>`, `<forceful>`;
+- speakers `<|speaker:0|>` to `<|speaker:15|>` before their lines;
+  untagged text is speaker 0, the saved voice.
+
+Refused with `400 invalid_request` (param `input`, the message naming
+the fault): a bracket left open or a cue inside a cue, an unclosed tag,
+a speaker tag outside 0–15, and any other `<|…|>` token. Line breaks are
+spaces. A request's text is split at sentence ends (Arabic's `؟` and `؛`
+included) and spoken sentence by sentence, each in the voice of the one
+before it. A sentence that has not started speaking within 1.5 s of audio
+(steady noise does not count as speaking) is drawn again with the next
+seed, twice at most. A sentence that falls silent for 1.5 s ends there,
+keeping 0.28 s of the silence: [drama3.md § Stalls, and what
+nuclis adds](../models/drama3.md#stalls-and-what-nuclis-adds).
+
+**One sentence a request.** Every Drama 3 response carries an
+`x-speech-context` header, an id for its last sentence. A later request
+in the same model and voice that passes it as `"context": "<id>"` takes
+that sentence (its text and the audio codes it was spoken with) as
+history. So it continues the earlier delivery, as a request's own
+sentences do. The sentence is kept for 5 minutes once its request ends,
+at most 32 of them. An id that is unknown, expired, or from another voice
+is ignored: the request is spoken without it, not refused, and the log's
+`context` says which (`hit`, `missing`, `expired`, `other_voice`). A
+request sent while the one it continues is still speaking waits behind
+it in the queue, so the sentence is kept by the time it starts.
+
+```sh
+curl -s -D head.txt -o one.pcm localhost:9000/v1/audio/speech -d '{"model": "drama-3",
+  "voice": {"id": "anna"}, "response_format": "pcm", "input": "[tired] يا عم ده إحنا بقالنا ساعة مستنيين."}'
+curl -s -o two.pcm localhost:9000/v1/audio/speech -d '{"model": "drama-3", "voice": {"id": "anna"},
+  "response_format": "pcm", "input": "والزحمة دي مش طبيعية.", "context": "'"$(grep -i x-speech-context head.txt | cut -d" " -f2 | tr -d "\r")"'"}'
+```
+
+Every prompt starts with the same rows for a voice: the system turn and
+the voice's clip with its transcript (328 rows for a 12 s clip). The model
+keeps the state after them for its 4 most recent voices. A request then
+prefills only its own text (and a context's sentence); the first in a
+voice since the model opened prefills both. On the M4 Pro with a 12 s
+clip, a one-sentence request's prefill went from 1,612 ms to 243 ms
+(first audio 393 ms), or 700 ms with a context (first audio 854 ms). The
+take is the same bit for bit either way:
+[drama3.md § The prompt's prefix](../models/drama3.md#the-prompts-prefix).
+
 ### Streaming and cancellation
 
 The head is sent once the prompt is prefilled; the samples follow chunk
@@ -940,7 +1004,8 @@ not read keeps at most about 5 s of audio queued on the server; the
 request then waits for it rather than hold the GPU.
 
 The speech models are listed by `GET /v1/models` (`kind` `speech`, with
-`voices`, `instructions`, `sample_rate` 24000, and `formats`), the
+`voices`, `instructions`, `sample_rate` (24000; 44100 for `drama-3`),
+and `formats`), the
 transcription models too (`kind` `transcription`, `sample_rate` 16000), each
 with `present`, `loaded`, `default`, `size_bytes` (weights and codec),
 `repo`, and `revision`. `GET /v1/health` gives the open `speech` and
@@ -970,7 +1035,7 @@ The session is set by the query:
 | Parameter | In nuclis |
 | --- | --- |
 | `model` | a registry entry of kind `transcription` or `nemotron-asr-0.6b`; never a path. Absent: the open one, else `transcribe.model` |
-| `language` | a locale of the model's prompt dictionary (`en-US`, `de-DE`, `fr`, `es-419`, …) or `auto` (the default: the model tags the language it heard) |
+| `language` | a locale of the model's prompt dictionary (`en-US`, `de-DE`, `fr`, `es-419`, …) or `auto` (the default: the model tags the language it heard), or a comma-separated list of up to four, `auto` only last ([several languages](#several-languages)) |
 | `lookahead` | `0`, `3` (the default), `6`, or `13` rows of 80 ms the encoder waits for: a chunk, and so a possible partial, every 80, 320, 560, or 1,120 ms of audio |
 
 A refusal before the upgrade is an ordinary HTTP response with the
@@ -990,7 +1055,7 @@ and text messages, each a JSON object:
 | --- | --- |
 | `{"type": "finish"}` | the utterance ended: the audio sent before it is transcribed to its end, a `final` follows, and the next audio begins a new utterance (the recognizer's state is reset) |
 | `{"type": "reset"}` | drop the utterance in progress and every sample not yet transcribed, without a `final` |
-| `{"type": "language", "language": "de-DE"}` | the language prompt from the next chunk on (`auto` the default's); an unknown locale is an `error` event and the language stays |
+| `{"type": "language", "language": "de-DE"}` | the language prompt from the next chunk on (`auto` the default's), or a list (`"ar,en,auto"`); an unknown locale is an `error` event and the language stays |
 | `{"type": "phrases", "phrases": ["Siobhan", "Dun Laoghaire"]}` | names or words to expect, from the next chunk on, until the next `phrases` (`[]` clears them); send it first to have them from the start. At most 64, each at most 48 bytes; more is an `error` event and the list stays ([phrases](#phrases-to-expect)) |
 
 A command applies after every sample sent before it. Pings are answered
@@ -1112,7 +1177,7 @@ one is a file (`phrases` may be 8 KiB).
 | --- | --- |
 | `file` | the recording: WAV, AIFF, MP3, M4A/AAC, FLAC, ALAC, or CAF (AudioToolbox, macOS), resampled to 16 kHz and mixed to mono; a 16 kHz mono WAV, 16-bit or float, is read directly on any platform |
 | `model` | a registry entry of kind `transcription` or `nemotron-asr-0.6b`; never a path. Absent: the open one, else `transcribe.model`. OpenAI's names (`whisper-1`, `gpt-4o-transcribe`) are `404 model_not_found` |
-| `language` | `auto` (the default), or a locale or two-letter code the model knows (`en-US`, `de-DE`, `fr`, …; 121 keys); an unknown one is `400 invalid_request` |
+| `language` | `auto` (the default), or a locale or two-letter code the model knows (`en-US`, `de-DE`, `fr`, …; 121 keys), or a comma-separated list of up to four, `auto` only last ([several languages](#several-languages)); an unknown one is `400 invalid_request` |
 | `response_format` | `json` (the default), `text`, `verbose_json`, `srt`, `vtt` |
 | `timestamp_granularities[]` | `segment`, `word`, or both (repeat the field); with `verbose_json` or `stream`. Absent: segments |
 | `stream` | `true`: server-sent events (below); not with `srt` or `vtt` |
@@ -1140,6 +1205,26 @@ name's first piece. Twenty unrelated names listed on the 60-clip speech
 corpus moved the word error rate from 6.11 % to 6.19 % (74 to 75 errors
 in 1,211 words).
 
+### Several languages
+
+A user who speaks more than one language lists them: `language:
+"ar,en,auto"` on either route (`nuclis transcribe --language
+ar,en-US,auto`). The audio is encoded once and decoded under each; each
+stretch of words up to a pause takes the language that wrote it,
+because a fixed locale writes nothing for most other languages. `auto`,
+only last, is the fallback: it is used when none of the others wrote, or
+when it wrote the same script better (Spanish that `en` spelled in
+English). The response's `language` (a final's on the live route) names
+the language chosen, from its tag or, without one, the locale. Partials
+may change language until the pause; segments and finals do not.
+
+On 40 short Egyptian Arabic clips and 13 English turns, `ar,en,auto`
+wrote every English turn as `auto` does and the Arabic with a mean
+character error of 0.229 (`auto` 0.252, with three in another script:
+Devanagari, Hangul, Latin; `ar` 0.230, with every English turn empty).
+Two languages cost about 8 % over one, three with `auto` about 33 %
+(0.021× real time). docs/models/nemotron-asr.md § Several languages.
+
 ### The file transcription response
 
 - `json` (`application/json`): `{"text", "usage": {"type": "duration",
@@ -1148,8 +1233,8 @@ in 1,211 words).
 - `verbose_json`: `{"task": "transcribe", "language", "duration",
   "text", "segments", "words", "usage"}`, `segments` and `words` as the
   granularities ask. `language` is the locale of the last language tag
-  the model emitted (`en-US`, `de-DE`), or the request's, where OpenAI
-  writes a name (`english`).
+  the model emitted (`en-US`, `de-DE`), or the request's, or with a list
+  the one chosen, where OpenAI writes a name (`english`).
 - `srt` (`text/plain`) and `vtt` (`text/vtt`): one cue per segment,
   `HH:MM:SS,mmm` and `HH:MM:SS.mmm`, numbered from 1 in SRT, under a
   `WEBVTT` header in VTT.
@@ -1494,7 +1579,7 @@ What each route adds to its `request.end`:
 | `POST /v1/chat/completions` | `model`, `effort`, `stream`, `prompt_tokens`, `cached_tokens`, `completion_tokens`, `finish_reason` (`stop`, `length`, `tool_calls`, `cancelled`), `web_calls`, `web_rounds`, `web_restored` |
 | `POST /v1/decisions`, `POST /v1/systemone` | `model`, `states`, `questions`, `input_tokens`, `batch_requests` (the requests that shared the pass), `open_ms` (when this request opened the model) |
 | `POST /v1/embeddings` | `model`, `inputs`, `input_tokens`, `passes`, `batch_requests`, `open_ms` |
-| `POST /v1/audio/speech` | `model`, `voice` (none for VoiceDesign), `voice_kind` (`speakers`, `clone`, `design`), `voice_ready_ms` (a saved voice read back, or encoded on its first use with the model), `format`, `stream_format`, `frames`, `audio_s`, `first_audio_ms`, `open_ms`, `finish_reason` (`eos`, `length`, `cancelled`) |
+| `POST /v1/audio/speech` | `model`, `voice` (none for VoiceDesign), `voice_kind` (`speakers`, `clone`, `design`), `voice_ready_ms` (a saved voice read back, or encoded on its first use with the model), `format`, `stream_format`, `frames`, `seed`, `audio_s`, `first_audio_ms`, `open_ms`, `finish_reason` (`eos`, `length`, `cancelled`); for Drama 3 also `sentences`, `redraws` (silent starts drawn again, each with the next seed), `silence_stops` (sentences its silence stop ended), `prefill_ms`, `prefix_restored` and `prefix_prefilled` (the takes whose voice prefix was kept or prefilled), `context_id` (the response's `x-speech-context`) and `context` (`hit`, `missing`, `expired`, `other_voice`, when the request named one) |
 | `POST`, `GET`, `DELETE /v1/audio/voices` | `voice`; a list's `voices` (its count); a create's `clip_s` and `transcript` (whether one came) |
 | `POST /v1/audio/transcriptions` | `model`, `stream`, `audio_s`, `real_time` (audio seconds per second), `segments`, `first_segment_ms`, `open_ms`, `finish_reason` (`done`, `cancelled`) |
 | `GET /v1/audio/transcriptions/stream` | `model`, `lookahead`, `audio_s`, `finals`, `closed_by` (`client`, `server`, `gone`), `close_code`, and the server's `close_reason` |

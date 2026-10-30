@@ -12,6 +12,10 @@ pub const qwen3_codec = @import("qwen3_codec.zig");
 pub const ecapa = @import("ecapa.zig");
 /// Qwen3-TTS's codec encoder: reference clips to codes, on the CPU.
 pub const qwen3_codec_encoder = @import("qwen3_codec_encoder.zig");
+pub const fish_codec = @import("fish_codec.zig");
+pub const fish_codec_encoder = @import("fish_codec_encoder.zig");
+/// Drama 3's codec decoder on Metal, with fish_codec's streaming contract.
+pub const fish_codec_metal = @import("fish_codec_metal.zig");
 /// The codec decoder on Metal, with the same streaming contract.
 pub const qwen3_codec_metal = @import("qwen3_codec_metal.zig");
 /// Nemotron 3.5 ASR's cache-aware encoder: speech in, mel rows to encoder rows.
@@ -32,6 +36,9 @@ test {
     _ = qwen3_codec;
     _ = ecapa;
     _ = qwen3_codec_encoder;
+    _ = fish_codec;
+    _ = fish_codec_encoder;
+    _ = fish_codec_metal;
     _ = qwen3_codec_metal;
     _ = nemotron_encoder;
     _ = nemotron_rnnt;

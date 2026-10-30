@@ -184,6 +184,9 @@ pub const Decoder = struct {
     g: []f32,
     /// Encoder rows decoded so far.
     row: usize = 0,
+    /// The greedy path's log probability since the last reset: every step's
+    /// chosen output, blanks included, under the plain logits.
+    score: f64 = 0,
     // Scratch, one step's worth.
     gates: []f32,
     recurrent: []f32,
@@ -226,6 +229,7 @@ pub const Decoder = struct {
         @memset(self.h, 0);
         @memset(self.c, 0);
         self.row = 0;
+        self.score = 0;
         self.boosting.reset();
         try self.predict(self.weights.config.blank);
     }
@@ -263,7 +267,7 @@ pub const Decoder = struct {
         const c = self.weights.config;
         jointInput(e, self.g, self.joint);
         try dense.matmul(self.io, .{ .rows = 1, .inner = c.hidden, .outputs = c.vocab, .x = self.joint, .w = self.weights.head.weight, .bias = self.weights.head.bias }, self.logits);
-        const k = self.choose(self.logits);
+        const k = self.pick(self.logits);
         if (self.observer) |o| o.record(o.context, .{ .row = self.row, .logits = self.logits, .token = k });
         return k;
     }
@@ -274,6 +278,13 @@ pub const Decoder = struct {
         const k: u32 = @intCast(argmax(logits));
         const b = self.boost orelse return k;
         return self.boosting.choose(b, logits, k);
+    }
+
+    /// `choose`, with the choice's log probability added to `score`.
+    pub fn pick(self: *Decoder, logits: []const f32) u32 {
+        const k = self.choose(logits);
+        self.score += logProbability(logits, k);
+        return k;
     }
 
     /// The prediction network on `token`: its embedding through every LSTM
@@ -295,6 +306,15 @@ pub const Decoder = struct {
         try dense.matmul(self.io, .{ .rows = 1, .inner = hd, .outputs = hd, .x = x, .w = self.weights.output.weight, .bias = self.weights.output.bias }, self.g);
     }
 };
+
+/// `log softmax(logits)[k]`.
+pub fn logProbability(logits: []const f32, k: usize) f64 {
+    var top: f32 = logits[0];
+    for (logits) |v| top = @max(top, v);
+    var sum: f64 = 0;
+    for (logits) |v| sum += @exp(@as(f64, v - top));
+    return @as(f64, logits[k] - top) - @log(sum);
+}
 
 /// The joint's input, `relu(e + g)`, one row.
 pub fn jointInput(e: []const f32, g: []const f32, out: []f32) void {

@@ -34,6 +34,8 @@ from a file, the sentence names the class or function.
 - [Front end and encoder against the trace (2026-10-27)](#front-end-and-encoder-against-the-trace-2026-10-27)
 - [Transducer against the trace, and word error rate (2026-10-27)](#transducer-against-the-trace-and-word-error-rate-2026-10-27)
 - [On Metal (2026-10-27)](#on-metal-2026-10-27)
+- [Phrase boosting (2026-10-28)](#phrase-boosting-2026-10-28)
+- [Several languages (2026-10-30)](#several-languages-2026-10-30)
 - [Decisions and open items](#decisions-and-open-items)
 
 ## Artifacts
@@ -882,6 +884,83 @@ alike, so 2 is kept. The third stays wrong: its word begins with a piece
 the name does not. Twenty unrelated names on the 60-clip corpus (Metal):
 6.11 % → 6.19 % WER (74 → 75 errors in 1,211 words; en-US 32 → 31,
 es-US 5 → 7).
+
+## Several languages (2026-10-30)
+
+A voice client whose user speaks two languages wants each utterance
+written in the one it is in. A single prompt cannot do it: a fixed locale
+transcribes its own language and returns **nothing** for most others, and
+`auto` guesses from a second or two of audio. Measured (Metal, r = 3, the
+same build) on 40 short Egyptian Arabic clips (ten lines, four Drama 3
+voices) and 13 recorded English turns of a voice assistant's user (they
+stay with their owner):
+
+| Prompt | Arabic clips: mean CER | empty | in another script | English turns |
+| --- | ---: | ---: | ---: | --- |
+| `auto` | 0.252 | 3 | 3 (Devanagari, Hangul, Latin) | right |
+| `ar` | 0.230 | 3 | 0 | all empty |
+| `en-US` | — | 40 | 0 | right |
+
+CER is per character after normalising alef, ta marbuta and ya, and is
+partly Drama 3's: a take that says less than its line counts against the
+recognizer.
+
+**One encoder pass, a decoder per language.** The prompt enters after
+the encoder ([The encoder](#the-encoder), its language prompt), so a list of up
+to `max_languages` = 4 prompts costs one encoder pass, then per language
+its prompt block, the projector, and greedy decoding
+(`nemotron_asr.Transcriber.setLanguages`; on the CPU the stream hands its
+rows out before the prompt block, `Stream.raw` and
+`Encoder.applyPrompt`; on Metal the stream records each prompt's block
+into its own part of `e` and decodes each with its own `Decoder`). Each
+`Decoder` keeps its greedy path's log probability, blanks included
+(`score`).
+
+**The choice.** The words come in stretches: a stretch ends 13 rows
+(1.04 s, the segmenter's pause) after the last text of the language it
+chose. Within the open stretch, at every push, the language is the one
+that wrote text with the highest score gain since the stretch opened; a
+language that wrote nothing does not compete, which is what a mismatched
+locale does. `auto` may only come last and is the fallback: it is chosen
+when no other wrote, or when it gained more than the best of them while
+writing the same script (its first letter's), so `auto`'s Latin guess
+cannot replace Arabic text, but its Spanish can replace `en-US`'s
+English spelling of it. Until the stretch settles its tokens may change;
+`Transcriber.settled` counts the ones that will not, and the file
+segmenter takes only those. When a stretch settles, every language's
+next one begins at its first word after `echo_rows` = 4 rows past the
+stretch's last text, since another language hears the same last word a
+row or two later. A single prompt takes the old path unchanged.
+
+`ar,en-US,auto` on the same clips: mean CER 0.229, two empty, one in
+another script (a 1.9 s take of a seven-word line: `ar` and `en-US`
+wrote nothing, so `auto`'s Devanagari stands); the 13 English turns as
+under `auto`. On 18 clips of nine other languages (Qwen3-TTS CustomVoice,
+two speakers each: French, German, Spanish, Russian, Italian,
+Portuguese, Japanese, Korean, English), 17 were exactly `auto`'s; on the
+eighteenth `en-US` wrote "Tu peux…" with a higher gain than `auto`'s
+fuller "Bonjour, tu peux…". The CPU and Metal gave the same tokens on 38
+of 38 clips.
+
+**Cost.** A 190.9 s recording of those 58 clips, whole-file, median of
+five (ReleaseSafe, M4 Pro):
+
+| Languages | Transcription | Real time |
+| --- | ---: | ---: |
+| `auto` | 3.0–3.1 s | 0.016× |
+| `ar,en-US` | 3.3 s | 0.017× |
+| `ar,en-US,auto` | 4.1 s | 0.021× |
+| `ar,en-US,fr,auto` | 4.5 s | 0.023× |
+
+A language that writes nothing is cheap (no LSTM step, few joint
+batches); `auto`, which writes everywhere, costs most.
+
+**Not solved by it.** A short name said into the word before it ("يا
+مون", heard as يمن or يمون) is the acoustics', not the language's: the
+greedy decoder's phrase boost cannot lift it without looping ("يا يا
+يا…" at a start bonus of 8), so it needs a beam. A short word after
+silence ("Hi") is lost under every prompt
+([Decisions and open items](#decisions-and-open-items)).
 
 ## Decisions and open items
 
