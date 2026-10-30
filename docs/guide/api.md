@@ -811,7 +811,9 @@ pass: about 460 ms an image at 280 tokens, 130 ms for 4.8 s of speech.
 OpenAI's speech call for the speech models `nuclis speak` runs, Qwen3-TTS
 in three kinds: CustomVoice (two sizes) speaks in nine built-in speakers,
 Base (two sizes) in a saved voice cloned from a clip ([voices](#voices)),
-and the 1.7B VoiceDesign in a voice its `instructions` describe. The
+and the 1.7B VoiceDesign in a voice its `instructions` describe; and
+Fish Audio's Drama 3 (`drama-3`, [below](#drama-3)), which clones a saved
+voice at 44.1 kHz with its delivery cued in the text. The
 audio streams as it is made: the first
 80 ms leave after one frame, then chunks of one, two, and four frames
 (320 ms), each no longer than the audio sent before it, so a listener
@@ -827,8 +829,9 @@ curl -s localhost:9000/v1/audio/speech -o hello.wav -d '{
 The response is `200`, `transfer-encoding: chunked`, `content-type:
 audio/wav`: a WAV header whose sizes are the largest a field holds (the
 length is not known when it is sent; players read to the end of the
-stream), then 24 kHz 16-bit mono samples. With `"response_format":
-"pcm"` it is the samples alone (`audio/pcm`, little-endian).
+stream), then 16-bit mono samples at the model's rate (24 kHz; 44.1 kHz
+for Drama 3, `sample_rate` in `GET /v1/models`). With `"response_format":
+"pcm"` it is the samples alone (`audio/pcm`, little-endian, at that rate).
 
 One speech model is open at a time beside the others; it opens on its
 first request (0.35 s for the 1.7B with its files in the page cache) or
@@ -841,14 +844,14 @@ sentence ends does.
 | Field | In nuclis |
 | --- | --- |
 | `input` | the text, UTF-8, at most 16 KiB (`400 request_too_large`) |
-| `model` | a registry entry of kind `speech` or a catalogue speech name (`qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice`, `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base`, `qwen3-tts-1.7b-voicedesign`); never a path. The names before 0.11.0 (`qwen3-tts-1.7b`, `qwen3-tts-0.6b`) are `404 model_not_found`, the message naming the new one. Absent: the open one, else `speech.model` (`qwen3-tts-1.7b-customvoice`). Another speech model replaces the open one; that request pays the open |
+| `model` | a registry entry of kind `speech` or a catalogue speech name (`qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice`, `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base`, `qwen3-tts-1.7b-voicedesign`, `drama-3`); never a path. The names before 0.11.0 (`qwen3-tts-1.7b`, `qwen3-tts-0.6b`) are `404 model_not_found`, the message naming the new one. Absent: the open one, else `speech.model` (`qwen3-tts-1.7b-customvoice`). Another speech model replaces the open one; that request pays the open |
 | `voice` | on CustomVoice one of its speakers: `aiden`, `dylan`, `eric`, `ono_anna`, `ryan`, `serena`, `sohee`, `uncle_fu`, `vivian` (OpenAI's voice names are not speakers here: `400 invalid_request`, listing them). On a Base a saved voice, by name or as OpenAI's custom voice `{"id": "<name>"}`: `404 voice_not_found` for one not saved, `400 invalid_request` for a speaker's name. On VoiceDesign ignored (OpenAI's clients always send one). A custom voice on CustomVoice or VoiceDesign is `400 voice_cloning_unsupported`. Absent: `speech.voice` (`ryan`) |
-| `instructions` | on the 1.7B CustomVoice how to say it (`"Speak with excited, breathless joy."`); on VoiceDesign the voice itself (`"A calm elderly man with a deep, gravelly voice."`), sampled anew each request; absent, the model's own choice. On the 0.6B CustomVoice and a Base, `400 instructions_unsupported` |
+| `instructions` | on the 1.7B CustomVoice how to say it (`"Speak with excited, breathless joy."`); on VoiceDesign the voice itself (`"A calm elderly man with a deep, gravelly voice."`), sampled anew each request; absent, the model's own choice. On the 0.6B CustomVoice, a Base, and Drama 3 (whose cues are in `input`), `400 instructions_unsupported` |
 | `response_format` | `wav` (the default; OpenAI's is `mp3`) or `pcm` |
 | `stream_format` | `audio` (the default): the bytes as they are made. `sse`: server-sent events, each `{"type": "speech.audio.delta", "audio": "<base64>"}` carrying the next bytes of the same stream (the WAV header in the first, for `wav`), then `{"type": "speech.audio.done", "usage": {"input_tokens", "output_tokens", "total_tokens"}, "finish_reason"}` (the prompt's rows in, the frames out; `eos` when the model ended the speech, `length` when [the frame budget](../models/qwen3-tts.md#the-frame-budget) stopped it, which a client may treat as a failed line) |
 | `speed` | `1` only (`400 unsupported_feature` otherwise): the model has no rate control |
 | `seed` | nuclis's: the sampler's seed, default 0. The same text, voice, and seed give the same samples, alone or beside a chat generation |
-| `language` | nuclis's: `auto` (the default), or one of the model's (`english`, `chinese`, `german`, …; `400 invalid_request` lists them) |
+| `language` | nuclis's: `auto` (the default), or one of the model's (`english`, `chinese`, `german`, …; `400 invalid_request` lists them). Drama 3 takes only `auto` |
 
 Other fields OpenAI defines are ignored. Refused with `400
 unsupported_feature`: `mp3`, `opus`, `aac`, and `flac` (no encoder here),
@@ -898,6 +901,36 @@ For a voice that stays the same, VoiceDesign's output can be saved: speak
 a line or two in a described voice, then save that audio with its text as
 a voice and speak in it on a Base (Qwen's *voice design then clone*).
 
+### Drama 3
+
+`drama-3` (Fish Audio's Drama 3, 35B-A3B, one 20.8 GB Q4_K GGUF;
+[models/drama3.md](../models/drama3.md)) speaks in a saved voice with its
+transcript: a voice saved without `reference_text` is `400
+invalid_request` (param `voice`), so save Drama 3's voices with their
+words. Any saved voice serves it and the Bases alike; a voice
+saved since Drama 3 also keeps its clip at 44.1 kHz, which Drama 3
+encodes (an older one is resampled from 24 kHz, losing the top of the
+band). Its first use encodes the clip on the CPU with Fish's codec.
+
+The delivery is cued in `input` itself:
+
+- free-form cues in brackets before the words they shape: `[whispering]
+  Don't wake him.`, `[laughs] No way.`, `[sighs]`;
+- paired tags around words: `<whisper>…</whisper>`, `<emphasis>`,
+  `<soft>`, `<fast>`, `<slow>`, `<stress>`, `<forceful>`;
+- speakers `<|speaker:0|>` to `<|speaker:15|>` before their lines;
+  untagged text is speaker 0, the saved voice.
+
+Refused with `400 invalid_request` (param `input`, the message naming
+the fault): a bracket left open or a cue inside a cue, an unclosed tag,
+a speaker tag outside 0–15, and any other `<|…|>` token. Line breaks are
+spaces. A request's text is split at sentence ends (Arabic's `؟` and `؛`
+included) and spoken sentence by sentence, each in the voice of the one
+before it. A sentence that has not started speaking within about 2 s of
+audio is drawn again with the next seed (twice at most), and a sentence
+that falls silent for 0.75 s ends there: [drama3.md § Stalls, and what
+nuclis adds](../models/drama3.md#stalls-and-what-nuclis-adds).
+
 ### Streaming and cancellation
 
 The head is sent once the prompt is prefilled; the samples follow chunk
@@ -940,7 +973,8 @@ not read keeps at most about 5 s of audio queued on the server; the
 request then waits for it rather than hold the GPU.
 
 The speech models are listed by `GET /v1/models` (`kind` `speech`, with
-`voices`, `instructions`, `sample_rate` 24000, and `formats`), the
+`voices`, `instructions`, `sample_rate` (24000; 44100 for `drama-3`),
+and `formats`), the
 transcription models too (`kind` `transcription`, `sample_rate` 16000), each
 with `present`, `loaded`, `default`, `size_bytes` (weights and codec),
 `repo`, and `revision`. `GET /v1/health` gives the open `speech` and

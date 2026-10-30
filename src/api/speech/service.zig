@@ -814,6 +814,7 @@ fn readyVoice(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, root
     defer encoders.deinit();
     return store.ensure(gpa, voice_name, keys, encoders.encoders()) catch |err| switch (err) {
         error.VoiceNotFound => fail(refusal, arena, .not_found, "voice_not_found", "voice", "no saved voice named {s} (GET /v1/audio/voices)", .{voice_name}),
+        error.TranscriptRequired => fail(refusal, arena, .bad_request, "invalid_request", "voice", "{s} was saved without its transcript; {s} clones only from a clip and its words (save it again with reference_text)", .{ voice_name, name }),
         error.InvalidVoiceRecord => fail(refusal, arena, .internal_server_error, "voice_store_failed", "voice", "{s}: its saved files are damaged (DELETE /v1/audio/voices/{s}, then save it again)", .{ voice_name, voice_name }),
         else => fail(refusal, arena, .internal_server_error, "model_failed", "voice", "{s} could not be made ready: {s}", .{ voice_name, @errorName(err) }),
     };

@@ -246,6 +246,20 @@ code from them is present in nuclis.
   `inference/src/tokenizer/cased.zig` is the one Transformers 4.57.3
   (Apache-2.0, `tokenization_utils_base.py`, `fix_mistral_regex`) installs
   on that tokenizer, implemented from the pattern, not copied.
+- **fish-speech** by Fish Audio (Fish Audio Community License 1.0,
+  <https://github.com/fishaudio/fish-speech> at commit `0f8a12e8`) with
+  PyTorch 2.14.1 and `descript-audio-codec` 1.0.0 — the definition of
+  Drama 3's backbone, codebook tower, prompt, chunking, sampler, and
+  codec. `scripts/speech-traces/drama3_trace.py` runs it in a venv under
+  `.reference/`; the fixtures under `tests/fixtures/drama3/` are outputs of
+  running it on weights dequantized from the pulled
+  `sakasegawa/drama-3-GGUF` file, not copies of it. The model's weights
+  are under the same licence, which allows no hosted service for third
+  parties without Fish Audio's agreement, requires the consent of anyone
+  whose voice is cloned, and asks redistributions to say "Built with Fish
+  Audio" (<https://huggingface.co/fishaudio/drama-3>). nuclis pulls them;
+  it ships none. speech.cpp's GGUF converter was read only as the
+  definition of the file's layout.
 - **transformers** by Hugging Face (Apache-2.0) at commit
   `c0d024fbc873ab0325e1b40fc1bd69069609de65` (5.21.0.dev0), with PyTorch
   2.14.1 and librosa 1.0.0 — the definition of Nemotron 3.5 ASR
