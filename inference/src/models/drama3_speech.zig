@@ -138,8 +138,9 @@ pub const Timing = struct {
     prompt_rows: usize = 0,
 };
 
-/// Generates `request` chunk by chunk; `read` hands out the samples.
-/// Borrows the voice and the request's text and references.
+/// Generates `request` chunk by chunk; `read` hands out the samples a few
+/// frames at a time. Borrows the voice and the request's text and
+/// references; must not move once `read` was called.
 pub const Synthesizer = struct {
     gpa: Allocator,
     voice: *Voice,
@@ -152,6 +153,10 @@ pub const Synthesizer = struct {
     state: runtime.State,
     sampler: sampler_mod.Sampler,
     stream: codec.Stream,
+    /// The take being generated, if one is.
+    take: ?Take = null,
+    /// Frames one `read` generates at most before handing out what it has.
+    frames_per_read: usize = 8,
     /// Samples ready to hand out, and how many of them were already read.
     ready: std.ArrayList(f32) = .empty,
     read_at: usize = 0,
@@ -192,6 +197,7 @@ pub const Synthesizer = struct {
     pub fn deinit(self: *Synthesizer) void {
         for (self.chunks) |c| self.gpa.free(c);
         self.gpa.free(self.chunks);
+        if (self.take) |*t| t.deinit(self.gpa);
         self.history.deinit();
         self.runtime.deinit();
         self.state.deinit();
@@ -201,13 +207,19 @@ pub const Synthesizer = struct {
         self.* = undefined;
     }
 
-    /// Up to `out.len` next samples; 0 once the text is spoken.
+    /// Up to `out.len` next samples; 0 once the text is spoken. A call
+    /// generates at most `frames_per_read` frames, more only while a take
+    /// has not started speaking (its silence is held back).
     pub fn read(self: *Synthesizer, out: []f32) !usize {
         while (self.read_at == self.ready.items.len) {
             self.ready.clearRetainingCapacity();
             self.read_at = 0;
-            if (self.next_chunk == self.chunks.len or self.frames >= self.request.max_frames) return 0;
-            try self.speakChunk();
+            if (self.take == null) {
+                if (self.next_chunk == self.chunks.len or self.frames >= self.request.max_frames) return 0;
+                self.next_chunk += 1;
+                try self.begin(0);
+            }
+            try self.advance();
         }
         const n = @min(out.len, self.ready.items.len - self.read_at);
         @memcpy(out[0..n], self.ready.items[self.read_at..][0..n]);
@@ -215,49 +227,48 @@ pub const Synthesizer = struct {
         return n;
     }
 
-    /// Generates the next chunk into `ready`, retrying a take that never
-    /// started speaking.
-    fn speakChunk(self: *Synthesizer) !void {
-        const chunk = self.chunks[self.next_chunk];
-        self.next_chunk += 1;
-        var attempt: usize = 0;
-        while (true) : (attempt += 1) {
-            var take = try self.generate(chunk, self.request.seed +% self.next_chunk *% 7919 +% attempt);
-            defer take.deinit(self.gpa);
-            if (!take.spoke and attempt < retries) {
-                self.retried += 1;
-                continue;
-            }
-            self.stops[@intFromEnum(take.stop)] += 1;
-            self.frames += take.codes.items.len;
-            try self.ready.appendSlice(self.gpa, take.samples.items);
-            if (take.codes.items.len > 0) try self.history.push(chunk, take.codes.items);
-            return;
-        }
+    /// The chunk the take speaks.
+    fn chunkText(self: *const Synthesizer) []const u8 {
+        return self.chunks[self.next_chunk - 1];
     }
 
+    /// A chunk's generation: its codes and decoded samples (those before
+    /// `released` already handed to `ready`), and where the loop stands.
     const Take = struct {
+        attempt: usize,
+        budget: usize,
         codes: std.ArrayList(Codes) = .empty,
         samples: std.ArrayList(f32) = .empty,
+        released: usize = 0,
+        decoded: usize = 0,
+        /// Unvoiced frames since the last voiced one.
+        silent: usize = 0,
         spoke: bool = false,
-        stop: Stop = .eos,
+        done: bool = false,
+        stop: Stop = .length,
+        /// The main tokens the repeat check looks back over.
+        recent: std.ArrayList(u32) = .empty,
+        input: runtime.Frame,
+        logits: [text_mod.codebook_size + 1]f32 = undefined,
 
         fn deinit(self: *Take, gpa: Allocator) void {
             self.codes.deinit(gpa);
             self.samples.deinit(gpa);
+            self.recent.deinit(gpa);
         }
     };
 
-    /// One take of `chunk` from a fresh state at `seed`.
-    fn generate(self: *Synthesizer, chunk: []const u8, seed: u64) !Take {
+    /// Starts a take of the current chunk from a fresh state: the longest
+    /// history whose prompt fits, prefilled, the tower teacher-forced.
+    fn begin(self: *Synthesizer, attempt: usize) !void {
         const gpa = self.gpa;
         const voice = self.voice;
         const io = voice.io;
-        self.sampler.rng = .init(seed);
+        const chunk = self.chunkText();
+        self.sampler.rng = .init(self.request.seed +% self.next_chunk *% 7919 +% attempt);
         self.state.reset();
         self.stream.reset();
 
-        // The longest history whose prompt fits.
         var buffer: [2]text_mod.Turn = undefined;
         var candidate: usize = 0;
         const rows = while (self.history.candidate(candidate, &buffer)) |history| : (candidate += 1) {
@@ -269,92 +280,133 @@ pub const Synthesizer = struct {
         defer gpa.free(rows);
         self.timing.prompt_rows = rows.len;
 
-        const frames = try gpa.alloc(runtime.Frame, rows.len + 1);
-        defer gpa.free(frames);
-        for (rows, frames[0..rows.len]) |r, *f| f.* = toFrame(r.main, r.codes);
-        const hidden = try gpa.alloc(f32, rows.len * adapter.hidden);
-        defer gpa.free(hidden);
-        var logits: [text_mod.codebook_size + 1]f32 = undefined;
-        const prefill_start = std.Io.Clock.awake.now(io);
-        try self.runtime.prefill(&self.state, frames[0..rows.len], hidden, &logits, null);
-        try self.runtime.towerPrefill(&self.state, hidden[0 .. (rows.len - 1) * adapter.hidden], frames[0..rows.len], null);
-        self.timing.prefill_ns += elapsed(io, prefill_start);
-
-        var recent: std.ArrayList(u32) = .empty;
-        defer recent.deinit(gpa);
-        for (rows[rows.len -| self.voice.repeat.window..]) |r| try recent.append(gpa, r.main);
-
-        var take: Take = .{};
-        errdefer take.deinit(gpa);
         var codepoints: usize = 0;
         var it: std.unicode.Utf8Iterator = .{ .bytes = chunk, .i = 0 };
         while (it.nextCodepoint()) |_| codepoints += 1;
-        const budget = @min(@min(chunk_frames, budget_floor_frames + frames_per_char * codepoints), self.request.max_frames -| self.frames);
-        var input = frames[rows.len - 1];
-        var silent: usize = 0;
-        var decoded: usize = 0;
+        self.take = .{
+            .attempt = attempt,
+            .budget = @min(@min(chunk_frames, budget_floor_frames + frames_per_char * codepoints), self.request.max_frames -| self.frames),
+            .input = undefined,
+        };
+        const take = &self.take.?;
+        errdefer {
+            take.deinit(gpa);
+            self.take = null;
+        }
+        const frames = try gpa.alloc(runtime.Frame, rows.len);
+        defer gpa.free(frames);
+        for (rows, frames) |r, *f| f.* = toFrame(r.main, r.codes);
+        const hidden = try gpa.alloc(f32, rows.len * adapter.hidden);
+        defer gpa.free(hidden);
+        const prefill_start = std.Io.Clock.awake.now(io);
+        try self.runtime.prefill(&self.state, frames, hidden, &take.logits, null);
+        try self.runtime.towerPrefill(&self.state, hidden[0 .. (rows.len - 1) * adapter.hidden], frames, null);
+        self.timing.prefill_ns += elapsed(io, prefill_start);
+        take.input = frames[rows.len - 1];
+        for (rows[rows.len -| voice.repeat.window..]) |r| try take.recent.append(gpa, r.main);
+    }
+
+    /// Generates the take's next frames, decodes them, hands out what is
+    /// settled, and ends the take when it is done (retrying one that never
+    /// started speaking).
+    fn advance(self: *Synthesizer) !void {
+        const take = &self.take.?;
+        var made: usize = 0;
+        while (!take.done and (made < self.frames_per_read or !take.spoke)) : (made += 1) try self.frame(take);
+        if (take.done and take.stop != .silence) _ = try self.decodePending(take);
+        if (take.spoke or take.done) {
+            // A trailing silent run past what a cut keeps may yet be cut.
+            const held = if (take.done or take.silent <= kept_silence) 0 else (take.silent - kept_silence) * samples_per_frame;
+            const end = take.samples.items.len - @min(held, take.samples.items.len);
+            if (end > take.released) {
+                if (take.spoke or take.attempt == retries) try self.ready.appendSlice(self.gpa, take.samples.items[take.released..end]);
+                take.released = end;
+            }
+        }
+        if (!take.done) return;
+        var finished = take.*;
+        self.take = null;
+        defer finished.deinit(self.gpa);
+        if (!finished.spoke and finished.attempt < retries) {
+            self.retried += 1;
+            return self.begin(finished.attempt + 1);
+        }
+        self.stops[@backingInt(finished.stop)] += 1;
+        self.frames += finished.codes.items.len;
+        if (finished.codes.items.len > 0) try self.history.push(self.chunkText(), finished.codes.items);
+    }
+
+    /// One frame: the main token (or the end), the tower's codes, the
+    /// decode as speech is judged, and the backbone's step for the next.
+    fn frame(self: *Synthesizer, take: *Take) !void {
+        const voice = self.voice;
+        const io = voice.io;
+        if (take.codes.items.len >= take.budget) {
+            take.done = true;
+            return;
+        }
+        const frame_start = std.Io.Clock.awake.now(io);
+        const column = try self.sampler.mainColumn(&take.logits, self.params, voice.repeat, take.recent.items, voice.text.semantic_start);
+        if (column == 0) {
+            take.stop = .eos;
+            take.done = true;
+            return;
+        }
+        const main = voice.text.semantic_start + column - 1;
         var pick_context: PickContext = .{ .sampler = &self.sampler, .params = self.params };
         const pick: runtime.Pick = .{ .context = &pick_context, .pick = PickContext.pick };
-        take.stop = .length;
-        while (take.codes.items.len < budget) {
-            const frame_start = std.Io.Clock.awake.now(io);
-            const column = try self.sampler.mainColumn(&logits, self.params, self.voice.repeat, recent.items, voice.text.semantic_start);
-            if (column == 0) {
-                take.stop = .eos;
-                break;
-            }
-            const main = voice.text.semantic_start + column - 1;
-            const frame = try self.runtime.step(&self.state, self.runtime.h, input, main, pick, null);
-            try recent.append(gpa, main);
-            var codes: Codes = undefined;
-            for (&codes, frame[1..]) |*c, v| c.* = @intCast(v);
-            try take.codes.append(gpa, codes);
-            input = frame;
-            self.timing.frames_ns += elapsed(io, frame_start);
+        const out = try self.runtime.step(&self.state, self.runtime.h, take.input, main, pick, null);
+        try take.recent.append(self.gpa, main);
+        var codes: Codes = undefined;
+        for (&codes, out[1..]) |*c, v| c.* = @intCast(v);
+        try take.codes.append(self.gpa, codes);
+        take.input = out;
+        self.timing.frames_ns += elapsed(io, frame_start);
 
-            // Decode what is pending: one frame at a time until the take has
-            // spoken (so a silent start can be judged), then in pushes.
-            const pending = take.codes.items.len - decoded;
-            if (!take.spoke or pending >= push_frames) {
-                if (try self.decodePending(&take, &decoded, &silent)) {
-                    take.stop = .silence;
-                    break;
-                }
+        // One frame at a time until the take has spoken (so a silent start
+        // can be judged), then in pushes.
+        if (!take.spoke or take.codes.items.len - take.decoded >= push_frames) {
+            if (try self.decodePending(take)) {
+                take.stop = .silence;
+                take.done = true;
+                return;
             }
-            if (!take.spoke and take.codes.items.len >= start_frames) break;
-            try self.runtime.decode(&self.state, frame, &logits, null);
         }
-        if (take.stop != .silence) _ = try self.decodePending(&take, &decoded, &silent);
-        return take;
+        if (!take.spoke and take.codes.items.len >= start_frames) {
+            take.done = true;
+            return;
+        }
+        if (take.codes.items.len < take.budget) try self.runtime.decode(&self.state, out, &take.logits, null);
     }
 
     /// Decodes the take's undecoded frames into its samples, tracking speech:
     /// returns true when a run of silence ends the take (the silence is cut).
-    fn decodePending(self: *Synthesizer, take: *Take, decoded: *usize, silent: *usize) !bool {
-        const n = take.codes.items.len - decoded.*;
+    fn decodePending(self: *Synthesizer, take: *Take) !bool {
+        const n = take.codes.items.len - take.decoded;
         if (n == 0) return false;
         const io = self.voice.io;
         const start = std.Io.Clock.awake.now(io);
         const at = take.samples.items.len;
         try take.samples.resize(self.gpa, at + n * samples_per_frame);
-        try self.stream.push(take.codes.items[decoded.*..][0..n], take.samples.items[at..]);
-        decoded.* += n;
+        try self.stream.push(take.codes.items[take.decoded..][0..n], take.samples.items[at..]);
+        take.decoded += n;
         self.timing.codec_ns += elapsed(io, start);
         for (0..n) |i| {
-            const frame = take.samples.items[at + i * samples_per_frame ..][0..samples_per_frame];
+            const samples = take.samples.items[at + i * samples_per_frame ..][0..samples_per_frame];
             var sum: f64 = 0;
-            for (frame) |v| sum += @as(f64, v) * v;
+            for (samples) |v| sum += @as(f64, v) * v;
             const voiced = @sqrt(sum / samples_per_frame) >= voiced_rms;
             if (voiced) {
                 take.spoke = true;
-                silent.* = 0;
+                take.silent = 0;
             } else if (take.spoke) {
-                silent.* += 1;
-                if (silent.* == silence_frames) {
+                take.silent += 1;
+                if (take.silent == silence_frames) {
                     const end = at + (i + 1) * samples_per_frame;
                     const cut = (silence_frames - kept_silence) * samples_per_frame;
                     take.samples.shrinkRetainingCapacity(end - cut);
                     take.codes.shrinkRetainingCapacity(take.codes.items.len - (n - i - 1) - (silence_frames - kept_silence));
+                    take.silent = kept_silence;
                     return true;
                 }
             }
