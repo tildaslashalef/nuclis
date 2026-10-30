@@ -126,7 +126,7 @@ each entry's `memory_bytes`, with `memory_source` saying how it knows:
 | --- | --- |
 | `open` | what it counts now, the number `/v1/health` reports |
 | `measured` | what it counted the last time it opened, with the same files and, for a language model, the same `ctx_size`, `kv_precision`, `cache.memory_bytes`, and speculative decoding; kept in `~/.nuclis/cache/memory.json` across starts |
-| `estimate` | what it counts before it opens. Exact for an embedding and a decision model; for a speech or transcription model its files, under the count by the device memory (none for Drama 3, 49 MiB for Nemotron ASR, 553 MiB for Qwen3-TTS 1.7B); for a language model its files and `cache.memory_bytes`, under the count by its attention cache and draft file |
+| `estimate` | what it counts before it opens. Exact for an embedding and a decision model; for a speech or transcription model its files, under the count by the device memory (none for Drama 3 and Qwen3-TTS, 49 MiB for Nemotron ASR); for a language model its files and `cache.memory_bytes`, under the count by its attention cache and draft file |
 
 A model opened once on this machine is `measured`, exact until its
 files or those settings change. Measured on the M4 Pro (2026-10-30)
@@ -134,7 +134,18 @@ with four models pinned at `--memory 47`, every listed number equalled
 `/v1/health`'s: the Gemma 4 26B-A4B with its draft 24,781,970,336 B
 (before its first open the estimate was 21,090,982,816 B, the file and the 4 GiB of saved states: 15 % under),
 drama-3 20,787,264,352 B, `nemotron-asr-0.6b` 2,603,784,672 B, and
-embeddinggemma-2 309,855,520 B.
+embeddinggemma-2 309,855,520 B. Opened once each, the others counted:
+
+| Model | Counted | Estimate before |
+| --- | ---: | ---: |
+| `qwen3.8-27b` | 23,583,635,232 | 20,759,407,520 |
+| `gemma-4-26b-a4b` | 22,235,001,920 | 18,544,014,400 |
+| `gemma-4-12b-qat` | 16,902,177,472 | 11,011,324,096 |
+| `gemma-4-e4b-qat` | 9,509,865,184 | 8,510,663,072 |
+| `qwen3-tts-1.7b-base` | 4,539,706,836 | the same |
+| `qwen3-tts-1.7b-customvoice`, `-voicedesign` | 4,515,695,644 | the same |
+| `qwen3-tts-0.6b-base` | 2,511,637,364 | the same |
+| `qwen3-tts-0.6b-customvoice` | 2,493,919,668 | the same |
 
 A model refused at start (`--model`, `--pin`) says the sizes, the
 needed and the free beside the models pinned before it:
