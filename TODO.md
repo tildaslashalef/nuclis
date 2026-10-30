@@ -27,13 +27,17 @@ backbone, tower, and codec on the CPU, each replayed against Fish's
 traces with its gate (`drama3-trace-cpu`, `drama3-codec-cpu`); the
 sampler, the text and cue checks, the chunker, and the streaming
 synthesizer with the silence stop and the retry; the backbone and tower
-on Metal (`drama3-metal`), taken by `nuclis speak` and the speech
-service; the round trip through Nemotron on Metal
-(`drama3-roundtrip-metal`, WER 1.05 %); and `drama-3` in the catalogue,
-`nuclis speak`, `/v1/audio/speech`, and the saved voices (a 44.1 kHz copy
-of the clip, Fish codes keyed by the GGUF). In flight: the codec decoder
-on Metal (`fish_codec_metal.zig`);
-the stall measurement is done (2 stalls in 64 takes, § Stalls); then the verify tiers and the pull request.
+on Metal (`drama3-metal`) and the codec decoder on Metal
+(`drama3-codec-metal`), taken by `nuclis speak` and the speech service
+(a take at about 0.65 × real time); the round trip through Nemotron on
+Metal (`drama3-roundtrip-metal`, WER 1.05 %); the stall measurement
+(§ Stalls); and `drama-3` in the catalogue, `nuclis speak`,
+`/v1/audio/speech` (whose log records the seed, redraws, and silence
+stops), and the saved voices (a 44.1 kHz copy of the clip, Fish codes
+keyed by the GGUF). In flight: answers to the Muon app's questions (cue
+placement against stalls; the silence stop made relative to the take's
+peak, since a fixed threshold cut whispers). Left: the verify tiers and
+the pull request.
 
 ## Fish Audio Drama 3
 
@@ -84,7 +88,7 @@ model's, not the quantization's.
 | Facts and pin | `docs/models/drama3.md`, inventory fixture, tokenizer check, pinned traces from Fish's code | done |
 | Backbone on the CPU | `drama3` adapter, binding, the Qwen3.5-MoE forward against the traces | done |
 | Tower, codec, sampler on the CPU | codebooks 1–9, the codec decoder and encoder, Fish's sampler, the first WAV | done |
-| Metal | the three networks on the GPU, gated against the CPU, speed recorded | backbone and tower done; the codec decoder in flight |
+| Metal | the three networks on the GPU, gated against the CPU, speed recorded | done (the encoder stays on the CPU, once per voice) |
 | Voices and the API | saved voices, speakers, cues, chunking, `speak`, `/v1/audio/speech`, catalogue, round-trip gates | done |
 
 ### Facts and pin

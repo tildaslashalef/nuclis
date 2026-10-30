@@ -448,12 +448,18 @@ nuclis therefore splits at every sentence end (`.!?` and Arabic `؟؛۔`,
 the clause mark `،` past the chunker's limit), not only past 300 bytes.
 `drama3_speech.Synthesizer` adds two more:
 
-- **The stop on silence.** A frame is silent when its decoded samples'
-  RMS is under 0.02. Once a take has spoken, 32 silent frames in a row
-  (1.5 s) end its chunk; 6 of them (0.28 s) are kept, the rest are cut
-  and never reach the caller.
-- **The retry.** A take's leading silence is held back. A take still
-  silent after 48 frames (2.2 s) is dropped and the chunk restarts on
+- **The stop on silence.** A take has spoken once a frame's RMS reaches
+  0.01 (−40 dBFS). After that, a frame is silent when its RMS is under a
+  tenth of the take's loudest frame, clamped to 0.003–0.02. 32 silent
+  frames in a row (1.5 s) end the chunk; 6 of them (0.28 s) are kept, and
+  the rest are cut and never reach the caller. The threshold was first a
+  fixed 0.02, which cut whispers: `<whisper>` peaks near 0.04 and runs at
+  0.003–0.01 between its words. Each of four seeds lost the clause after
+  "now," in `<whisper>I really think we should leave for the station now,
+  before the rain gets worse.</whisper>`. Relative to the peak, all four
+  are whole.
+- **The retry.** A take's leading silence is held back. A take that has
+  not spoken after 48 frames (2.2 s) is dropped and the chunk restarts on
   the next seed, at most twice; the third take is released as it is.
   `nuclis speak` reports the retries and how each chunk stopped (`eos`,
   `silence`, `length`).
