@@ -181,14 +181,40 @@ const Replay = struct {
 
 const Bounds = struct { relative_rms: f64 };
 
-/// One stage's comparison over the trace's rows, printed; whether it passed.
-fn stage(label: []const u8, got_all: []const f32, want: []const f32, width: usize, first: usize, bound: f64, logits: bool) bool {
+/// The rows of `values` (`[rows][width]`) a fixture entry holds, in its
+/// order: its `rows` ranges ([start, end) pairs, or one pair), its
+/// `positions`, or all of them; null when `values` lacks one.
+fn select(arena: std.mem.Allocator, values: []const f32, width: usize, object: std.json.ObjectMap) !?[]const f32 {
+    var picked: std.ArrayList(f32) = .empty;
+    const total = values.len / width;
+    if (object.get("positions")) |positions| {
+        for (positions.array.items) |p| {
+            const at: usize = @intCast(p.integer);
+            if (at >= total) return null;
+            try picked.appendSlice(arena, values[at * width ..][0..width]);
+        }
+        return picked.items;
+    }
+    const ranges = (object.get("rows") orelse return values).array.items;
+    // One [start, end) pair, or a list of them.
+    const single = ranges.len == 2 and ranges[0] == .integer;
+    for (0..if (single) 1 else ranges.len) |k| {
+        const pair = if (single) ranges else ranges[k].array.items;
+        const first: usize = @intCast(pair[0].integer);
+        const last: usize = @intCast(pair[1].integer);
+        if (last > total or first > last) return null;
+        try picked.appendSlice(arena, values[first * width .. last * width]);
+    }
+    return picked.items;
+}
+
+/// One stage's comparison, printed; whether it passed.
+fn stage(label: []const u8, got: []const f32, want: []const f32, width: usize, bound: f64, logits: bool) bool {
     const count = want.len / width;
-    if (want.len != count * width or got_all.len < (first + count) * width) {
-        std.debug.print("  {s:<20} {d} values against the trace's {d} rows of {d} from {d}: MISMATCH\n", .{ label, got_all.len, count, width, first });
+    if (want.len != count * width or got.len != want.len) {
+        std.debug.print("  {s:<20} {d} values against the trace's {d}: MISMATCH\n", .{ label, got.len, want.len });
         return false;
     }
-    const got = got_all[first * width ..][0 .. count * width];
     const s = compare(got, want);
     const rel = @sqrt(s.diff2 / s.ref2);
     const cosine = s.dot / @sqrt(s.got2 * s.ref2);
@@ -197,7 +223,7 @@ fn stage(label: []const u8, got_all: []const f32, want: []const f32, width: usiz
         same += @intFromBool(argmax(got[r * width ..][0..width]) == argmax(want[r * width ..][0..width]));
     };
     const ok = rel <= bound and (!logits or same == count);
-    std.debug.print("  {s:<20} {d:>4}–{d:<4} {e:>10.2} {e:>10.2} {e:>10.2} {d:>10.7}", .{ label, first, first + count, s.max_abs, s.max_ref, rel, cosine });
+    std.debug.print("  {s:<20} {d:>6} {e:>10.2} {e:>10.2} {e:>10.2} {d:>10.7}", .{ label, count, s.max_abs, s.max_ref, rel, cosine });
     if (logits) std.debug.print("  argmax {d}/{d}", .{ same, count });
     std.debug.print("{s}\n", .{if (ok) "" else "  OVER"});
     return ok;
@@ -211,13 +237,16 @@ fn trace(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, m: *const
     };
     const index = try std.json.parseFromSliceLeaky(std.json.Value, arena, index_text, .{});
     var passed = true;
+    var checked: usize = 0;
     var cases = index.object.get("cases").?.object.iterator();
     while (cases.next()) |case| {
         const meta = case.value_ptr.object;
         const files = meta.get("files").?.object;
-        std.debug.print("{s}:\n", .{case.key_ptr.*});
         // Frame rows, int32 [rows][11]: the prompt's, then the traced frames.
-        const frame_entry = files.get("frames").?;
+        // Cases without them (the codec's) are another check's.
+        const frame_entry = files.get("frames") orelse continue;
+        checked += 1;
+        std.debug.print("{s}:\n", .{case.key_ptr.*});
         const frame_bytes = try readFixture(arena, io, fixtures, frame_entry);
         const width = 1 + drama3.codebooks;
         const total = frame_bytes.len / (4 * width);
@@ -267,63 +296,58 @@ fn trace(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, m: *const
             const frame = try r.step(&state, norm_rows[row * drama3.hidden ..][0..drama3.hidden], frames[row], frames[row + 1][0], pick, tower.observer());
             tower_us += elapsedUs(io, start);
             codes_equal = codes_equal and std.mem.eql(u32, &frame, &frames[row + 1]);
-            if (row + 1 == rows) break;
             start = std.Io.Clock.awake.now(io);
             try r.decode(&state, frames[row + 1], null, backbone.observer());
             decode_us += elapsedUs(io, start);
             @memcpy(norm_rows[(row + 1) * drama3.hidden ..][0..drama3.hidden], r.h);
             try r.mainLogits(r.h, logits[(row + 1) * drama3.output_rows ..][0..drama3.output_rows]);
         }
-        // The last traced frame's backbone row is not run: no row follows it.
-        const backbone_rows = @min(rows, prompt_rows + generated -| 1 + 1);
         std.debug.print("  {d} prompt rows, {d} frames; prefill {d:.2} rows/s, tower prefill {d:.0} ms a row, tower {d:.0} ms a frame, decode {d:.0} ms a row\n", .{ prompt_rows, generated, @as(f64, @floatFromInt(prompt_rows)) * 1e6 / prefill_us, tower_prefill_us / 1000 / @as(f64, @floatFromInt(@max(prompt_rows - 1, 1))), tower_us / 1000 / @as(f64, @floatFromInt(@max(generated, 1))), decode_us / 1000 / @as(f64, @floatFromInt(@max(generated -| 1, 1))) });
         std.debug.print("  frames replayed through the tower: {s}\n", .{if (codes_equal) "equal" else "DIFFER"});
         if (!codes_equal) passed = false;
-        std.debug.print("  {s:<20} {s:>9} {s:>10} {s:>10} {s:>10} {s:>10}\n", .{ "stage", "rows", "max |Δ|", "max |ref|", "rel RMS", "cosine" });
+        std.debug.print("  {s:<20} {s:>6} {s:>10} {s:>10} {s:>10} {s:>10}\n", .{ "stage", "rows", "max |Δ|", "max |ref|", "rel RMS", "cosine" });
 
-        // Each pinned stage: `rows` [first, last) of a [rows][width] array, or
-        // `positions` naming the rows a sparse array holds.
+        // Each pinned stage of the backbone and the tower, `[rows][width]`.
         var stages = files.iterator();
         while (stages.next()) |entry| {
             const key = entry.key_ptr.*;
-            if (std.mem.eql(u8, key, "frames")) continue;
+            if (!std.mem.startsWith(u8, key, "backbone/") and !std.mem.startsWith(u8, key, "tower/")) continue;
             const object = entry.value_ptr.object;
             const shape = object.get("shape").?.array.items;
             const w: usize = @intCast(shape[shape.len - 1].integer);
-            const want = try floats(arena, try readFixture(arena, io, fixtures, entry.value_ptr.*));
-            const first: usize = if (object.get("rows")) |range| @intCast(range.array.items[0].integer) else 0;
-            const got: ?[]const f32 = blk: {
+            const values: []const f32 = blk: {
                 if (std.mem.eql(u8, key, "backbone/inputs")) break :blk inputs;
-                if (std.mem.eql(u8, key, "backbone/norm")) break :blk norm_rows[0 .. backbone_rows * drama3.hidden];
+                if (std.mem.eql(u8, key, "backbone/norm")) break :blk norm_rows;
+                if (std.mem.eql(u8, key, "backbone/logits")) break :blk logits;
                 if (std.mem.startsWith(u8, key, "backbone/layer.")) {
-                    const layer = try std.fmt.parseInt(usize, key["backbone/layer.".len..], 10);
-                    break :blk backbone.rows[layer].items;
+                    const layer = std.fmt.parseInt(usize, key["backbone/layer.".len..], 10) catch break :blk &.{};
+                    if (layer < backbone.rows.len) break :blk backbone.rows[layer].items;
                 }
                 if (std.mem.startsWith(u8, key, "tower/layer.")) {
-                    const layer = try std.fmt.parseInt(usize, key["tower/layer.".len..], 10);
-                    break :blk tower.rows[layer].items;
+                    const layer = std.fmt.parseInt(usize, key["tower/layer.".len..], 10) catch break :blk &.{};
+                    if (layer < tower.rows.len) break :blk tower.rows[layer].items;
                 }
                 if (std.mem.eql(u8, key, "tower/heads")) break :blk replay.logits.items;
-                if (std.mem.eql(u8, key, "backbone/logits")) break :blk logits;
-                break :blk null;
+                break :blk &.{};
             };
-            const values = got orelse {
-                std.debug.print("  {s:<20} not compared (unknown stage)\n", .{key});
+            if (values.len == 0 or w == 0) {
+                std.debug.print("  {s:<20} not compared (no such stage here)\n", .{key});
+                passed = false;
+                continue;
+            }
+            const want = try floats(arena, try readFixture(arena, io, fixtures, entry.value_ptr.*));
+            const got = try select(arena, values, w, object) orelse {
+                std.debug.print("  {s:<20} rows outside the {d} computed: MISMATCH\n", .{ key, values.len / w });
+                passed = false;
                 continue;
             };
             const is_logits = std.mem.endsWith(u8, key, "logits") or std.mem.eql(u8, key, "tower/heads");
-            if (object.get("positions")) |positions| {
-                // Gather the named rows into the trace's order.
-                const items = positions.array.items;
-                const gathered = try arena.alloc(f32, items.len * w);
-                for (items, 0..) |p, k| {
-                    const at: usize = @intCast(p.integer);
-                    if ((at + 1) * w > values.len) return error.FixtureMismatch;
-                    @memcpy(gathered[k * w ..][0..w], values[at * w ..][0..w]);
-                }
-                if (!stage(key, gathered, want, w, 0, bounds.relative_rms, is_logits)) passed = false;
-            } else if (!stage(key, values, want, w, first, bounds.relative_rms, is_logits)) passed = false;
+            if (!stage(key, got, want, w, bounds.relative_rms, is_logits)) passed = false;
         }
+    }
+    if (checked == 0) {
+        std.debug.print("{s}: no case pins frame rows (the backbone's trace is not pinned yet)\n", .{index_path});
+        return false;
     }
     std.debug.print("Bounds: relative RMS {e} per stage, logits argmax on every row: {s}.\n", .{ bounds.relative_rms, if (passed) "passed" else "FAILED" });
     return passed;
