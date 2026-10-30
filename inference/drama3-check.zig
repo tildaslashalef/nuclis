@@ -665,9 +665,11 @@ fn speak(gpa: std.mem.Allocator, io: std.Io, path: []const u8, text: []const u8,
     defer samples.deinit(gpa);
     var buffer: [8192]f32 = undefined;
     const start = std.Io.Clock.awake.now(io);
+    var first_audio_us: f64 = 0;
     while (true) {
         const n = try synth.read(&buffer);
         if (n == 0) break;
+        if (samples.items.len == 0) first_audio_us = elapsedUs(io, start);
         for (buffer[0..n]) |x| try samples.append(gpa, @intFromFloat(@round(std.math.clamp(x, -1, 1) * 32767)));
     }
     const file = try std.Io.Dir.cwd().createFile(io, out_path, .{});
@@ -689,12 +691,12 @@ fn speak(gpa: std.mem.Allocator, io: std.Io, path: []const u8, text: []const u8,
     try file.writePositionalAll(io, &header, 0);
     try file.writePositionalAll(io, std.mem.sliceAsBytes(samples.items), 44);
     const t = synth.timing;
-    std.debug.print("wrote {s}: {d} frames, {d:.2} s of audio in {d:.1} s; chunks {d}, retried {d}, stops eos/silence/length {any}; prefill {d:.1} s ({d} rows), frames {d:.1} s, codec {d:.1} s\n", .{
+    std.debug.print("wrote {s}: {d} frames, {d:.2} s of audio in {d:.1} s; chunks {d}, retried {d}, stops eos/silence/length {any}; prefill {d:.1} s ({d} rows), frames {d:.1} s, codec {d:.1} s; first audio after {d:.2} s\n", .{
         out_path,                                                        synth.frames,
         @as(f64, @floatFromInt(samples.items.len)) / speech.sample_rate, elapsedUs(io, start) / 1e6,
         synth.chunks.len,                                                synth.retried,
         synth.stops,                                                     @as(f64, @floatFromInt(t.prefill_ns)) / 1e9,
         t.prompt_rows,                                                   @as(f64, @floatFromInt(t.frames_ns)) / 1e9,
-        @as(f64, @floatFromInt(t.codec_ns)) / 1e9,
+        @as(f64, @floatFromInt(t.codec_ns)) / 1e9,                       first_audio_us / 1e6,
     });
 }
