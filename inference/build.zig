@@ -105,7 +105,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(drama3_check);
     const run_drama3 = b.addRunArtifact(drama3_check);
     run_drama3.addPassthruArgs();
-    b.step("test-drama3", "Check Drama 3's backbone and tower on the CPU (-- MODEL.gguf smoke|trace)").dependOn(&run_drama3.step);
+    b.step("test-drama3", "Check Drama 3 against Fish's traces, Metal against the CPU, or speak (-- MODEL.gguf smoke|trace|codec|metal|speak)").dependOn(&run_drama3.step);
     const nemotron_asr_check = b.addExecutable(.{
         .name = "nemotron-asr-check",
         .root_module = b.createModule(.{

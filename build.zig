@@ -102,7 +102,7 @@ pub fn build(b: *std.Build) void {
     b.step("test-qwen3-tts", "Check Qwen3-TTS against the authors' trace (-- MODEL_DIR codec|talker)").dependOn(&qwen3_tts_check.step);
     const drama3_check = b.addRunArtifact(inference.artifact("drama3-check"));
     drama3_check.addPassthruArgs();
-    b.step("test-drama3", "Check Drama 3's backbone and tower on the CPU (-- MODEL.gguf smoke|trace)").dependOn(&drama3_check.step);
+    b.step("test-drama3", "Check Drama 3 against Fish's traces, Metal against the CPU, or speak (-- MODEL.gguf smoke|trace|codec|metal|speak)").dependOn(&drama3_check.step);
     const nemotron_asr_check = b.addRunArtifact(inference.artifact("nemotron-asr-check"));
     nemotron_asr_check.addPassthruArgs();
     b.step("test-nemotron-asr", "Check Nemotron ASR's front end and encoder against the pinned trace (-- MODEL_DIR [FIXTURES])").dependOn(&nemotron_asr_check.step);

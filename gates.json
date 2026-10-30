@@ -4681,6 +4681,39 @@
    "evidence": "docs/models/drama3.md#the-traces"
   },
   {
+   "name": "drama3-codec-cpu",
+   "family": "drama3",
+   "tier": "verify-cpu",
+   "model": "drama3_q4_k",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/drama3-check.zig",
+    "inference/drama3_codec_check.zig",
+    "inference/src/audio/fish_codec*.zig",
+    "inference/src/audio/qwen3_codec.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/formats/gguf.zig",
+    "inference/src/runtime/weights.zig",
+    "tests/fixtures/drama3/codec-*/**",
+    "tests/fixtures/drama3/index.json"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-drama3",
+    "--",
+    "{model}",
+    "codec",
+    "--max-relative-rms",
+    "5e-4"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "Fish's codec cases on the CPU: the reference clip (100 frames) and the clip twice over (200, past both transformer windows) encoded, every code Fish's, each pinned encoder stage within the bound; Fish's codes decoded, each pinned decoder stage and the samples within it (first run: codes 3000/3000, stages 3.4e-5 at worst, samples 1.9e-4 on the window case's last frames, which are quiet)",
+   "evidence": "docs/models/drama3.md#the-traces"
+  },
+  {
    "name": "nemotron-asr-encoder-cpu",
    "family": "nemotron-asr",
    "tier": "verify-cpu",
