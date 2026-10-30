@@ -716,19 +716,40 @@ CPU reference on the same machine takes about 0.5 s a prefill row and
 context: about 1 GB of state and 230 MB of buffers per `Synthesizer`,
 released when it ends.
 
+The codec on Metal, timed by `drama3-check codec-metal` unobserved after
+its observed runs (2026-10-30, the revision of the pull request that
+brought it up), against the CPU decoder's 31 ms a frame inside a take:
+
+| Pushes of | `codec-reference` (100 frames) | `codec-window` (200 frames) |
+| --- | --- | --- |
+| 1 frame | 9.2 ms a frame | 9.2 ms a frame |
+| 4 frames (a speaking take's pushes) | 4.2 ms a frame | 4.2 ms a frame |
+| the whole (pieces of 8) | 3.4 ms a frame | 3.4 ms a frame |
+
+A piece pays about 6 ms whatever its frames (every weight read once, a
+few hundred dispatches), then about 3.5 ms a frame of convolution work.
+By a GPU profile of the 100 frames in pushes of 4 (493 ms): the
+convolutions' products 52 %, the transformer's 20 %, and the taps'
+gathers and the history joins' copies 23 %.
+
 `drama3-check speak --backend metal` (no reference voice, the sampler's
-defaults, `--frames 400`), load 0.9 s:
+defaults, `--frames 400`), load 0.7 s, the second of two runs each.
+First audio is when `Synthesizer.read` first returns samples:
 
-| Text, seed | Frames | Audio | Prompt | Frames (sample, tower, decode) | Codec (CPU) | Wall |
-| --- | --- | --- | --- | --- | --- | --- |
-| `The quick brown fox jumps over the lazy dog.`, 1 | 84 | 3.90 s | 0.5 s (31 rows) | 2.0 s (23.8 ms a frame) | 2.5 s | 5.1 s |
-| `Every morning the old fisherman walked down to the harbour, counted the boats, and waited for the tide to turn before he said a single word.`, 0 | 175 | 8.13 s | 0.6 s (51 rows) | 4.3 s (24.6 ms a frame) | 5.5 s | 10.5 s |
+| Text, seed | Frames | Audio | Prompt | Frames (sample, tower, decode) | Codec (Metal) | First audio | Wall |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `The quick brown fox jumps over the lazy dog.`, 1 | 84 | 3.90 s | 0.5 s (31 rows) | 1.7 s (20.2 ms a frame) | 0.4 s (4.8 ms a frame) | 0.72 s | 2.6 s |
+| `Every morning the old fisherman walked down to the harbour, counted the boats, and waited for the tide to turn before he said a single word.`, 0 | 175 | 8.13 s | 0.6 s (51 rows) | 3.6 s (20.6 ms a frame) | 0.8 s (4.6 ms a frame) | 0.84 s | 5.0 s |
 
-A frame is 46.4 ms of audio, so the backbone and the tower run at about
-half of real time (prompt included, 0.6), and the whole at 1.3 × real
-time, of which the CPU codec (about 31 ms a frame) is the larger half. Of
-the 24 ms a frame, the tower and the decode are about 18 ms; the rest is
-the host sampler, which sorts all 4,096 codes for each of the ten draws.
+A frame is 46.4 ms of audio, so a take runs at about 0.65 × real time,
+prompt included (it was 1.3 × with the codec on the CPU, about 31 ms a
+frame then). The same frames as with the CPU codec: the samples differ by
+1e-6, below what the speech judgement sees. Of the 20 ms a frame, the
+tower and the decode are about 18 ms. The host sampler is not the rest:
+a draw over 4,096 codes at top-k 30 takes 15 µs (62 µs on ascending
+logits, its partial selection's worst case), so ten draws are 0.2 to
+0.6 ms a frame. The frames are faster than with the CPU codec (23.8 ms):
+the GPU no longer idles 31 ms between them.
 
 ## The round trip
 
@@ -745,10 +766,10 @@ at 6 %, Qwen3-TTS's bound.
 
 ## Open
 
-- The codec on Metal, gated against the CPU codec: on the CPU it is the
-  larger half of a Metal take (§ On Metal).
-- The sampler's draw: a partial selection instead of sorting all 4,096
-  codes, ten times a frame.
+- The codec on Metal's fixed cost a piece: a take pushes one frame at a
+  time until it speaks, at 9 ms a frame. The taps' gathers and the joins'
+  copies (a quarter of the GPU time) could go into a convolution that
+  reads its history and input in place.
 - The tower's ten commits a frame: the picks could move to the device
   (the sampler's top-k and exp-sum kernels) so one frame is one command
   buffer.
