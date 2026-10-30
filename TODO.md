@@ -36,7 +36,11 @@ Metal (`drama3-roundtrip-metal`, WER 1.05 %); the stall measurement
 stops), and the saved voices (a 44.1 kHz copy of the clip, Fish codes
 keyed by the GGUF). Measured and recorded in docs/models/drama3.md: cue placement against
 stalls, cues written in Arabic, and Drama 3 resident beside a language
-model and a recognizer. Left: the verify tiers and the pull request.
+model and a recognizer. Asked for in the same session and on the same
+branch: Nemotron ASR listening for several languages at once
+(`language: "ar,en,auto"`, docs/models/nemotron-asr.md § Several
+languages), measured and documented. Left: the verify tiers and the pull
+request.
 
 ## Fish Audio Drama 3
 
@@ -89,6 +93,7 @@ model's, not the quantization's.
 | Tower, codec, sampler on the CPU | codebooks 1–9, the codec decoder and encoder, Fish's sampler, the first WAV | done |
 | Metal | the three networks on the GPU, gated against the CPU, speed recorded | done (the encoder stays on the CPU, once per voice) |
 | Voices and the API | saved voices, speakers, cues, chunking, `speak`, `/v1/audio/speech`, catalogue, round-trip gates | done |
+| Several languages in Nemotron ASR | a list of up to four prompts over one encoder pass, the choice per stretch, `auto` as the fallback; the CLI, the file and live routes | done |
 
 ### Facts and pin
 
@@ -191,6 +196,13 @@ Agreed and not scheduled; when one is picked up, it becomes a unit above.
   per batch (the gathered tile groups rows by expert, the per-token
   matvecs do not). llama.cpp is a speed comparison here, never a source to
   copy.
+
+- **A short name said into the word before it** (from the several
+  languages work, 2026-10-30): "يا مون" is heard as يمن or يمون under
+  every prompt, and the greedy phrase boost loops ("يا يا يا…") before
+  it lifts the name (docs/models/nemotron-asr.md § Several languages).
+  Candidate: a small beam with the phrases as a context graph; measure on
+  the 16 name clips of § Several languages.
 
 - **A short word after silence is lost** (from Muon's voice loop,
   2026-10-28): the checkpoint's own borderline call, the same on CPU and

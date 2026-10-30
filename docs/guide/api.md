@@ -1035,7 +1035,7 @@ The session is set by the query:
 | Parameter | In nuclis |
 | --- | --- |
 | `model` | a registry entry of kind `transcription` or `nemotron-asr-0.6b`; never a path. Absent: the open one, else `transcribe.model` |
-| `language` | a locale of the model's prompt dictionary (`en-US`, `de-DE`, `fr`, `es-419`, …) or `auto` (the default: the model tags the language it heard) |
+| `language` | a locale of the model's prompt dictionary (`en-US`, `de-DE`, `fr`, `es-419`, …) or `auto` (the default: the model tags the language it heard), or a comma-separated list of up to four, `auto` only last ([several languages](#several-languages)) |
 | `lookahead` | `0`, `3` (the default), `6`, or `13` rows of 80 ms the encoder waits for: a chunk, and so a possible partial, every 80, 320, 560, or 1,120 ms of audio |
 
 A refusal before the upgrade is an ordinary HTTP response with the
@@ -1055,7 +1055,7 @@ and text messages, each a JSON object:
 | --- | --- |
 | `{"type": "finish"}` | the utterance ended: the audio sent before it is transcribed to its end, a `final` follows, and the next audio begins a new utterance (the recognizer's state is reset) |
 | `{"type": "reset"}` | drop the utterance in progress and every sample not yet transcribed, without a `final` |
-| `{"type": "language", "language": "de-DE"}` | the language prompt from the next chunk on (`auto` the default's); an unknown locale is an `error` event and the language stays |
+| `{"type": "language", "language": "de-DE"}` | the language prompt from the next chunk on (`auto` the default's), or a list (`"ar,en,auto"`); an unknown locale is an `error` event and the language stays |
 | `{"type": "phrases", "phrases": ["Siobhan", "Dun Laoghaire"]}` | names or words to expect, from the next chunk on, until the next `phrases` (`[]` clears them); send it first to have them from the start. At most 64, each at most 48 bytes; more is an `error` event and the list stays ([phrases](#phrases-to-expect)) |
 
 A command applies after every sample sent before it. Pings are answered
@@ -1177,7 +1177,7 @@ one is a file (`phrases` may be 8 KiB).
 | --- | --- |
 | `file` | the recording: WAV, AIFF, MP3, M4A/AAC, FLAC, ALAC, or CAF (AudioToolbox, macOS), resampled to 16 kHz and mixed to mono; a 16 kHz mono WAV, 16-bit or float, is read directly on any platform |
 | `model` | a registry entry of kind `transcription` or `nemotron-asr-0.6b`; never a path. Absent: the open one, else `transcribe.model`. OpenAI's names (`whisper-1`, `gpt-4o-transcribe`) are `404 model_not_found` |
-| `language` | `auto` (the default), or a locale or two-letter code the model knows (`en-US`, `de-DE`, `fr`, …; 121 keys); an unknown one is `400 invalid_request` |
+| `language` | `auto` (the default), or a locale or two-letter code the model knows (`en-US`, `de-DE`, `fr`, …; 121 keys), or a comma-separated list of up to four, `auto` only last ([several languages](#several-languages)); an unknown one is `400 invalid_request` |
 | `response_format` | `json` (the default), `text`, `verbose_json`, `srt`, `vtt` |
 | `timestamp_granularities[]` | `segment`, `word`, or both (repeat the field); with `verbose_json` or `stream`. Absent: segments |
 | `stream` | `true`: server-sent events (below); not with `srt` or `vtt` |
@@ -1205,6 +1205,26 @@ name's first piece. Twenty unrelated names listed on the 60-clip speech
 corpus moved the word error rate from 6.11 % to 6.19 % (74 to 75 errors
 in 1,211 words).
 
+### Several languages
+
+A user who speaks more than one language lists them: `language:
+"ar,en,auto"` on either route (`nuclis transcribe --language
+ar,en-US,auto`). The audio is encoded once and decoded under each; each
+stretch of words up to a pause takes the language that wrote it,
+because a fixed locale writes nothing for most other languages. `auto`,
+only last, is the fallback: it is used when none of the others wrote, or
+when it wrote the same script better (Spanish that `en` spelled in
+English). The response's `language` (a final's on the live route) names
+the language chosen, from its tag or, without one, the locale. Partials
+may change language until the pause; segments and finals do not.
+
+On 40 short Egyptian Arabic clips and 13 English turns, `ar,en,auto`
+wrote every English turn as `auto` does and the Arabic with a mean
+character error of 0.229 (`auto` 0.252, with three in another script:
+Devanagari, Hangul, Latin; `ar` 0.230, with every English turn empty).
+Two languages cost about 8 % over one, three with `auto` about 33 %
+(0.021× real time). docs/models/nemotron-asr.md § Several languages.
+
 ### The file transcription response
 
 - `json` (`application/json`): `{"text", "usage": {"type": "duration",
@@ -1213,8 +1233,8 @@ in 1,211 words).
 - `verbose_json`: `{"task": "transcribe", "language", "duration",
   "text", "segments", "words", "usage"}`, `segments` and `words` as the
   granularities ask. `language` is the locale of the last language tag
-  the model emitted (`en-US`, `de-DE`), or the request's, where OpenAI
-  writes a name (`english`).
+  the model emitted (`en-US`, `de-DE`), or the request's, or with a list
+  the one chosen, where OpenAI writes a name (`english`).
 - `srt` (`text/plain`) and `vtt` (`text/vtt`): one cue per segment,
   `HH:MM:SS,mmm` and `HH:MM:SS.mmm`, numbered from 1 in SRT, under a
   `WEBVTT` header in VTT.

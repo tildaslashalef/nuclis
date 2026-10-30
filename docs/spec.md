@@ -146,7 +146,7 @@ support files by name (the codec's beside a voice's).
 | `qwen3-tts-0.6b-base` | the same at 0.6B | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | the same |
 | `qwen3-tts-1.7b-voicedesign` | Qwen3-TTS 12Hz VoiceDesign 1.7B: the 1.7B CustomVoice's networks | `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` | no speakers: the instruction describes the voice; ten languages |
 | `drama-3` | Fish Audio Drama 3 35B-A3B: a 40-layer DeltaNet/attention mixture-of-experts backbone, a 13-layer codebook tower, Fish's 10-codebook 44.1 kHz codec (decoder and encoder) | `sakasegawa/drama-3-GGUF` `Drama-35B-A3B-v3-Q4_K.gguf` (one file) | a saved voice cloned from its clip and transcript (or, in `nuclis speak`, a voice of its own); delivery cued inline (`[cues]`, paired tags, speaker tags 0–15); the text's own language |
-| `nemotron-asr-0.6b` | Nemotron 3.5 ASR streaming 0.6B: a cache-aware FastConformer, an RNN-T | `nvidia/nemotron-3.5-asr-streaming-0.6b` `model.safetensors` (F32) | lookaheads 0, 3, 6, 13 rows of 80 ms; a language prompt or `auto`; the default `transcribe.model` |
+| `nemotron-asr-0.6b` | Nemotron 3.5 ASR streaming 0.6B: a cache-aware FastConformer, an RNN-T | `nvidia/nemotron-3.5-asr-streaming-0.6b` `model.safetensors` (F32) | lookaheads 0, 3, 6, 13 rows of 80 ms; a language prompt or `auto`, or up to four decoded at once (`auto` last, the fallback); the default `transcribe.model` |
 
 A file outside the catalogue whose architecture has an adapter is
 *runnable*: `config init --discover` registers it (the profile by template
