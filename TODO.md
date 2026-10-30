@@ -14,11 +14,146 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-No unit is in progress. `serve-request-log-and-speech-budget` (the speech
-frame budget and `finish_reason`; the request log under `~/.nuclis/logs/`,
-request ids, and `in_flight` in `GET /v1/health`) is finished on its
-branch, unpushed: its pull request waits for the user's word, and its
-description is the record.
+Fish Audio Drama 3 is in progress on `fish-audio-drama3-support`. By the
+user's decision (2026-10-30), its five units below share that one branch
+and one pull request, an exception to one unit per branch. One session
+leads; it may run at most two subagents (the same model) at a time, on
+units or pieces that touch disjoint files. The user tested the artifact
+in the TTS lab (`~/Code/ttslab`, speech.cpp 0.9.2) and chose Q4_K. Next:
+**Facts and pin**.
+
+## Fish Audio Drama 3
+
+Base: `0f08226`. The model: [fishaudio/drama-3](https://huggingface.co/fishaudio/drama-3),
+a 35B-A3B text-to-speech model (a Qwen3.5-MoE-shaped backbone predicting
+the semantic codebook, a 4-layer shared plus 9-layer residual "audio
+tower" predicting codebooks 1–9, and Fish's 44.1 kHz DAC codec, 2,048
+samples a frame), 83 languages, `<|speaker:N|>` dialogue, free-form
+`[bracketed]` cues, cloning from a clip and its transcript. Fish Audio
+Community License 1.0: no hosted service for third parties without
+Fish's agreement, no cloning of a person without consent, "Built with
+Fish Audio" on redistribution.
+
+**The artifact.** `sakasegawa/drama-3-GGUF` `Drama-35B-A3B-v3-Q4_K.gguf`
+at `9a01354d04ab6eb521bc9cdfc56ab6824c474af2`, 20,787,264,352 bytes,
+SHA-256 `2a57b14c9b208a2ff833ab7305b920ca8f154ad807004a52d96a86a90a55523e`
+(pulled, sidecar beside it). speech.cpp's own GGUF layout, architecture
+`drama3`, 1,531 tensors: 522 Q4_K, 216 F16 (the codec), 793 F32; it
+embeds the tokenizer, the prompt strings (`drama3.prompt.*`), sampling
+and repeat-window defaults, chunking limits, and the codec geometry.
+Chosen over the MLX conversion because every encoding in it already
+executes on the CPU and Metal (no MLX affine unit), and speech.cpp
+reports its layout matching Fish's implementation at 96–133 dB. The
+mlx-audio port only matches PyTorch at 86 % semantic top-1, so it is not
+a trace source. Semantics come from Fish's code,
+`fishaudio/fish-speech` at `0f8a12e8a651062fdee9c33a894bdccd3a8513f1`,
+unpacked at `.reference/fish-speech-0f8a12e/` (`fish_speech/models/text2semantic/fish_omni/`,
+`fish_speech/models/dac/`, `fish_speech/content_sequence.py`); speech.cpp
+is read only as the definition of its GGUF layout (tensor names, the
+metadata it writes).
+
+**Measured in the lab (2026-10-30, M4 Pro, speech.cpp, Q4_K).** Load 9 s,
+20.0 GB footprint; 7.9 s of English in 6.4 s, first audio 0.56 s; an
+Egyptian clone 6.2 s in 6.0 s, first audio 1.3 s, its voice file made
+once in 6.6 s on the CPU. Stalls on short Egyptian phrases (Nemotron
+coverage < 60 % or > 1.5 s of trailing silence), 2 voices × 4 seeds:
+24 of 128 takes over 8 phrases at temperature 1, top-p 0.9 (top-k 30 or
+off alike); on the 4 worst phrases 13 of 32 whole, 13 of 32 at
+temperature 0.7/top-p 0.7, **5 of 32 split at sentence ends**. Two
+kinds: the model speaks the first sentence of "إزيك يا باشا؟ عامل إيه؟"
+then 10–28 s of silence (splitting fixes it), and a three-word phrase
+comes out empty or as silence (needs a stop on silence and a retry).
+bf16 stalls too (fcmeyer's 500-clip study: 4 % of clips), so it is the
+model's, not the quantization's.
+
+| Unit | Delivers | State |
+| --- | --- | --- |
+| Facts and pin | `docs/models/drama3.md`, inventory fixture, tokenizer check, pinned traces from Fish's code | next |
+| Backbone on the CPU | `drama3` adapter, binding, the Qwen3.5-MoE forward against the traces | |
+| Tower, codec, sampler on the CPU | codebooks 1–9, the codec decoder and encoder, Fish's sampler, the first WAV | |
+| Metal | the three networks on the GPU, gated against the CPU, speed recorded | |
+| Voices and the API | saved voices, speakers, cues, chunking, `speak`, `/v1/audio/speech`, catalogue, round-trip gates | |
+
+### Facts and pin
+
+Read the GGUF and Fish's code; write what the next units need, then
+rewrite their sections at the level of files and functions.
+
+- `scripts/gguf-inventory.py <file> --out inference/src/models/fixtures/drama3.json`
+  (the binder's fixture); the pin in `docs/models/catalogue.md` § Pinned
+  commits and digests.
+- `docs/models/drama3.md` (listed in `docs/models/README.md` and
+  `docs/README.md`): artifact, every metadata key the adapter reads,
+  tensors by role, and the forward pass in equations, each fact sourced
+  (file, or Fish's code by path): the backbone (Gated DeltaNet and gated
+  attention as Qwen3.8's, with partial RoPE on 64 of 256 dimensions; the
+  softmax top-8 router with normalized weights and the sigmoid-gated
+  shared expert; zero-centred norms, which the GGUF may store shifted);
+  the prompt (`reference-bracket-v1`: system, `[Reference N]` text and
+  speech blocks, the `<|voice|>` assistant turn, how VQ codes enter as
+  embeddings); the tower (`codebook_mtp_shared`: the 4 shared enrichment
+  layers, the 9 residual layers, `eh_proj` over the normed hidden and
+  embedding, heads); the codec (encoder rates 2·4·8·8, transformer
+  windows 512 and 128, the ×2×2 down/up-sampling, semantic codebook 4,096
+  and 9 residual codebooks of 1,024 at dimension 8, decoder rates
+  8·8·4·2, snake activations); sampling (Fish's top-k/top-p/temperature
+  and the repeat window: 16, top-p 0.95); chunking (300 bytes, 3
+  speakers, the first and the latest chunk as context); stop and length.
+- The tokenizer: the GGUF's vocabulary through nuclis's BPE (the
+  `drama3.tokenizer.pre_tokenizer` regex, the 4,172 added ids), checked
+  on a dozen adversarial strings against Fish's tokenizer output.
+- Traces: a script under `scripts/` (stdlib plus torch in a throwaway
+  venv under `.reference/`, never a dependency) that builds Fish's
+  modules one layer at a time with weights dequantized from the pinned
+  GGUF, and writes per-layer hidden states, the semantic logits, each
+  tower layer and head, and the codec's stages for one short prompt and
+  a 2 s clip, under `tests/fixtures/drama3-*/` with a row in
+  `tests/fixtures/provenance.md`.
+- The lab's stall harness, in the record: a `scripts/` port that drives
+  `nuclis speak` and Nemotron, so later units measure the same thing.
+
+### Backbone on the CPU
+
+`inference/src/models/drama3.zig` (the `family` namespace, registered in
+`models/root.zig`) binds the `drama3.text.*` keys and `blk.*` tensors;
+`drama3_runtime.zig` runs the forward over `cpu.*`, reusing Qwen3.8's
+DeltaNet (`backends/cpu/recurrent.zig`) and attention, and the experts
+path Gemma 4 26B-A4B brought (`backends/cpu/experts.zig`) with Qwen's
+router. Gates `drama3-backbone-trace-cpu` (tier `verify-cpu`). To be
+rewritten by the facts unit.
+
+### Tower, codec, sampler on the CPU
+
+`drama3_runtime.zig` gains the tower and `Synthesizer`;
+`inference/src/audio/fish_codec.zig` (decoder) and
+`fish_codec_encoder.zig`; the sampler, repeat window, and frame budget.
+The stall mitigations go here: split at sentence ends (as the chunker
+does), stop on a run of silent frames past the speech, and retry with
+the next seed when a chunk ends with no speech. Gates
+`drama3-tower-trace-cpu`, `drama3-codec-cpu`. To be rewritten by the
+facts unit.
+
+### Metal
+
+`drama3_metal.zig` from Qwen3.8's plan (DeltaNet, gated attention) and
+Gemma's expert kernels; the tower as dense 2,048-wide layers; the codec
+convolutions and transformers in `fish_codec_metal.zig`. Gates
+`drama3-trace-metal`, `drama3-codec-metal`, `drama3-roundtrip-metal`
+(Nemotron WER). Speed against the lab's speech.cpp numbers on the same
+machine. To be rewritten by the facts unit.
+
+### Voices and the API
+
+The speech path (`src/speak.zig`, `src/api/speech/service.zig`,
+`src/voices.zig`, `src/audio/catalog.zig`) is written against
+`qwen3_tts_runtime`; it becomes a union over the two families. Saved
+voices as for Qwen3-TTS Base (`/v1/audio/voices`, `voice` on
+`/v1/audio/speech`), the codes cached per model as the Base caches its
+encoding; `<|speaker:N|>` with one saved voice per speaker; cue checks
+(the six reserved strings refused, speakers 0–15, balanced brackets, no
+nesting, paired tags closed, line breaks as spaces); the catalogue entry
+`drama-3` with its license; `serve.memory_bytes` (at most 16 GiB today)
+against its ~21 GB. To be rewritten by the facts unit.
 
 ## Deferred
 
