@@ -804,7 +804,7 @@ fn readyVoice(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, root
         }
     }.with;
     voice_store.checkName(voice_name) catch |err| return switch (err) {
-        error.ReservedVoiceName => fail(refusal, arena, .bad_request, "invalid_request", "voice", "{s} is a speaker of the CustomVoice models; {s} is a Base and speaks in a saved voice (GET /v1/audio/voices)", .{ voice_name, name }),
+        error.ReservedVoiceName => fail(refusal, arena, .bad_request, "invalid_request", "voice", "{s} is a speaker of the CustomVoice models; {s} speaks in a saved voice (GET /v1/audio/voices)", .{ voice_name, name }),
         else => fail(refusal, arena, .not_found, "voice_not_found", "voice", "no saved voice named {s} (GET /v1/audio/voices)", .{voice_name}),
     };
     const home = root orelse return fail(refusal, arena, .internal_server_error, "no_home", "voice", "the server has no user root (HOME or NUCLIS_HOME) to keep voices in", .{});
