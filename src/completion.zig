@@ -297,7 +297,7 @@ pub const commands = [_]Command{
         .{ .name = "--seed", .value = .number, .summary = "the sampler's seed" },
         backend,
     } }} },
-    .{ .name = "voice", .summary = "save a clip as a voice for Qwen3-TTS Base", .actions = &.{
+    .{ .name = "voice", .summary = "save a clip as a voice for Qwen3-TTS Base or Drama 3", .actions = &.{
         .{ .name = "add", .summary = "save a clip under a name", .positionals = &.{ .text, .file }, .flags = &.{
             .{ .name = "--text", .value = .text, .summary = "what the clip says" },
             json,

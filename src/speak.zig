@@ -413,7 +413,7 @@ fn runDrama3(alloc: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, roo
     try writer.interface.flush();
     try file.writePositionalAll(io, &try wavHeader(samples, drama.sample_rate), 0);
     const audio_seconds = @as(f64, @floatFromInt(samples)) / drama.sample_rate;
-    try out.print("wrote {s}: {d} frames in {d} sentences, {d:.2} s of audio in {d:.2} s ({d:.2}× real time)\n", .{ options.output.?, synth.frames, synth.chunks.len, audio_seconds, seconds, if (seconds > 0) audio_seconds / seconds else 0 });
+    try out.print("wrote {s}: {d} frames in {d} sentence{s}, {d:.2} s of audio in {d:.2} s ({d:.2}× real time)\n", .{ options.output.?, synth.frames, synth.chunks.len, if (synth.chunks.len == 1) "" else "s", audio_seconds, seconds, if (seconds > 0) audio_seconds / seconds else 0 });
     const t = synth.timing;
     try out.print("prefill {d:.0} ms; frames {d:.0} ms, codec {d:.0} ms", .{ @as(f64, @floatFromInt(t.prefill_ns)) / 1e6, @as(f64, @floatFromInt(t.frames_ns)) / 1e6, @as(f64, @floatFromInt(t.codec_ns)) / 1e6 });
     if (first_ms) |ms| try out.print("; first audio {d:.0} ms after the text", .{ms});

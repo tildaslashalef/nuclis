@@ -594,7 +594,7 @@ fn speak(out: *std.Io.Writer, sty: style.Style) !void {
 }
 
 fn voice(out: *std.Io.Writer, sty: style.Style) !void {
-    try title(out, sty, "nuclis voice", "save a clip as a voice for Qwen3-TTS Base");
+    try title(out, sty, "nuclis voice", "save a clip as a voice for Qwen3-TTS Base or Drama 3");
     try heading(out, sty, "Usage:");
     try code(out, sty, "nuclis voice add <name> <audio> [--text <transcript>] [--json]");
     try code(out, sty, "nuclis voice list [--json]");
@@ -610,16 +610,18 @@ fn voice(out: *std.Io.Writer, sty: style.Style) !void {
     try heading(out, sty, "Options:");
     try row(out, sty, "--text <transcript>", "what the clip says, up to 2 KiB: the closest");
     try more(out, "likeness; without it, the speaker's timbre alone");
+    try more(out, "(Qwen3-TTS Base only: Drama 3 needs it)");
     try row(out, sty, "--json", "the voice, the list, or the removal as JSON");
 
     try heading(out, sty, "Examples:");
     try example(out, sty, "nuclis voice add anna anna.m4a --text \"Hello, it's Anna.\"", "clip and words");
     try example(out, sty, "nuclis speak --model qwen3-tts-1.7b-base --voice anna \"Hi.\" -o hi.wav", "use it");
+    try example(out, sty, "nuclis speak --model drama-3 --voice anna \"[warmly] Hi.\" -o hi.wav", "or with Drama 3");
     try example(out, sty, "nuclis voice rm anna", "forget it");
 
     try heading(out, sty, "Notes:");
-    try plain(out, "A voice is kept under ~/.nuclis/voices/<name>: the clip at 24 kHz and");
-    try plain(out, "what each Base made of it, made on its first use with that model. A");
+    try plain(out, "A voice is kept under ~/.nuclis/voices/<name>: the clip at 24 and 44.1 kHz");
+    try plain(out, "and what each model made of it, made on its first use with that model. A");
     try plain(out, "clean clip of a few sentences, with its exact words, clones best. Clone");
     try plain(out, "only a voice you have the right to use.");
     try out.writeByte('\n');
