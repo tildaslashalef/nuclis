@@ -5,13 +5,17 @@
 //! tower teacher-forced, then frame by frame), decoding as it goes. Beyond
 //! Fish: a take that has not started speaking is held back and retried with
 //! the next seed, and a long run of silent frames ends a chunk
-//! (docs/models/drama3.md § Stalls, and what nuclis adds).
+//! (docs/models/drama3.md § Stalls, and what nuclis adds). The backbone and
+//! the tower run on the CPU reference or the Metal plan (`Options.backend`);
+//! the codec stays on the CPU.
 const std = @import("std");
 const gguf = @import("../formats/gguf.zig");
 const weights = @import("../runtime/weights.zig");
 const text_mod = @import("drama3_text.zig");
 const sampler_mod = @import("drama3_sampler.zig");
 const runtime = @import("drama3_runtime.zig");
+const metal_plan = @import("drama3_metal.zig");
+const metal = @import("../backends/metal/root.zig");
 const adapter = @import("drama3.zig");
 const codec = @import("../audio/fish_codec.zig");
 const codec_encoder = @import("../audio/fish_codec_encoder.zig");
@@ -43,24 +47,38 @@ pub const retries = 2;
 /// Frames decoded per codec push once a chunk is speaking.
 pub const push_frames = 4;
 
+/// Where the backbone and the tower run.
+pub const Backend = enum { cpu, metal };
+pub const Options = struct { backend: Backend = .cpu };
+
 pub const Voice = struct {
     gpa: Allocator,
     io: std.Io,
     mapped: weights.Mapped,
     text: text_mod.Text,
     model: runtime.Model,
+    backend: Backend,
+    /// The device the synthesizers' plans run on, with `.metal`.
+    gpu: ?metal.Backend = null,
     codec: codec.Runtime,
     /// Built on the first `referenceCodes`.
     encoder: ?codec_encoder.Encoder = null,
     defaults: Params,
     repeat: Repeat,
 
+    /// `openWith` on the CPU.
     pub fn open(gpa: Allocator, io: std.Io, path: []const u8) !*Voice {
+        return openWith(gpa, io, path, .{});
+    }
+
+    pub fn openWith(gpa: Allocator, io: std.Io, path: []const u8, options: Options) !*Voice {
         const self = try gpa.create(Voice);
         errdefer gpa.destroy(self);
         self.gpa = gpa;
         self.io = io;
         self.encoder = null;
+        self.backend = options.backend;
+        self.gpu = null;
         self.mapped = try weights.Mapped.open(gpa, io, path);
         errdefer self.mapped.deinit(io);
         const doc = &self.mapped.document;
@@ -70,6 +88,11 @@ pub const Voice = struct {
         errdefer self.model.deinit();
         self.codec = try codec.Runtime.init(gpa, io, doc.*, self.mapped.view());
         errdefer self.codec.deinit();
+        if (options.backend == .metal) {
+            var message: [512]u8 = @splat(0);
+            self.gpu = try metal.Backend.init(gpa, &message);
+        }
+        errdefer if (self.gpu) |*g| g.deinit();
         self.defaults = .{
             .temperature = float(doc.*, "drama3.sampling.temperature") orelse 1.0,
             .top_p = float(doc.*, "drama3.sampling.top_p") orelse 0.9,
@@ -88,6 +111,7 @@ pub const Voice = struct {
 
     pub fn close(self: *Voice) void {
         if (self.encoder) |*e| e.deinit();
+        if (self.gpu) |*g| g.deinit();
         self.codec.deinit();
         self.model.deinit();
         self.text.deinit();
@@ -133,6 +157,7 @@ pub const Stop = enum { eos, silence, length };
 
 pub const Timing = struct {
     prefill_ns: u64 = 0,
+    /// The frames' sampling, tower steps, and backbone decodes.
     frames_ns: u64 = 0,
     codec_ns: u64 = 0,
     prompt_rows: usize = 0,
@@ -149,8 +174,7 @@ pub const Synthesizer = struct {
     chunks: [][]u8,
     next_chunk: usize = 0,
     history: text_mod.History,
-    runtime: runtime.Runtime,
-    state: runtime.State,
+    engine: Engine,
     sampler: sampler_mod.Sampler,
     stream: codec.Stream,
     /// The take being generated, if one is.
@@ -174,10 +198,8 @@ pub const Synthesizer = struct {
             gpa.free(chunks);
         }
         if (chunks.len == 0) return error.EmptyText;
-        var rt = try runtime.Runtime.init(gpa, &voice.model);
-        errdefer rt.deinit();
-        var state = try runtime.State.init(gpa, runtime.max_rows);
-        errdefer state.deinit();
+        var engine = try Engine.init(gpa, voice);
+        errdefer engine.deinit();
         var sampler = try sampler_mod.Sampler.init(gpa, request.seed, text_mod.codebook_size + 1);
         errdefer sampler.deinit(gpa);
         return .{
@@ -187,8 +209,7 @@ pub const Synthesizer = struct {
             .params = request.params orelse voice.defaults,
             .chunks = chunks,
             .history = .init(gpa, 1),
-            .runtime = rt,
-            .state = state,
+            .engine = engine,
             .sampler = sampler,
             .stream = try codec.Stream.init(gpa, &voice.codec),
         };
@@ -199,8 +220,7 @@ pub const Synthesizer = struct {
         self.gpa.free(self.chunks);
         if (self.take) |*t| t.deinit(self.gpa);
         self.history.deinit();
-        self.runtime.deinit();
-        self.state.deinit();
+        self.engine.deinit();
         self.sampler.deinit(self.gpa);
         self.stream.deinit();
         self.ready.deinit(self.gpa);
@@ -266,7 +286,7 @@ pub const Synthesizer = struct {
         const io = voice.io;
         const chunk = self.chunkText();
         self.sampler.rng = .init(self.request.seed +% self.next_chunk *% 7919 +% attempt);
-        self.state.reset();
+        self.engine.reset();
         self.stream.reset();
 
         var buffer: [2]text_mod.Turn = undefined;
@@ -299,8 +319,8 @@ pub const Synthesizer = struct {
         const hidden = try gpa.alloc(f32, rows.len * adapter.hidden);
         defer gpa.free(hidden);
         const prefill_start = std.Io.Clock.awake.now(io);
-        try self.runtime.prefill(&self.state, frames, hidden, &take.logits, null);
-        try self.runtime.towerPrefill(&self.state, hidden[0 .. (rows.len - 1) * adapter.hidden], frames, null);
+        try self.engine.prefill(frames, hidden, &take.logits);
+        try self.engine.towerPrefill(hidden[0 .. (rows.len - 1) * adapter.hidden], frames);
         self.timing.prefill_ns += elapsed(io, prefill_start);
         take.input = frames[rows.len - 1];
         for (rows[rows.len -| voice.repeat.window..]) |r| try take.recent.append(gpa, r.main);
@@ -355,7 +375,7 @@ pub const Synthesizer = struct {
         const main = voice.text.semantic_start + column - 1;
         var pick_context: PickContext = .{ .sampler = &self.sampler, .params = self.params };
         const pick: runtime.Pick = .{ .context = &pick_context, .pick = PickContext.pick };
-        const out = try self.runtime.step(&self.state, self.runtime.h, take.input, main, pick, null);
+        const out = try self.engine.step(take.input, main, pick);
         try take.recent.append(self.gpa, main);
         var codes: Codes = undefined;
         for (&codes, out[1..]) |*c, v| c.* = @intCast(v);
@@ -376,7 +396,11 @@ pub const Synthesizer = struct {
             take.done = true;
             return;
         }
-        if (take.codes.items.len < take.budget) try self.runtime.decode(&self.state, out, &take.logits, null);
+        if (take.codes.items.len < take.budget) {
+            const decode_start = std.Io.Clock.awake.now(io);
+            try self.engine.decode(out, &take.logits);
+            self.timing.frames_ns += elapsed(io, decode_start);
+        }
     }
 
     /// Decodes the take's undecoded frames into its samples, tracking speech:
@@ -412,6 +436,64 @@ pub const Synthesizer = struct {
             }
         }
         return false;
+    }
+};
+
+/// The backbone and tower a synthesizer drives: the CPU reference with its
+/// state, or the Metal plan, which owns its own.
+const Engine = union(Backend) {
+    cpu: struct { runtime: runtime.Runtime, state: runtime.State },
+    metal: metal_plan.Plan,
+
+    fn init(gpa: Allocator, voice: *Voice) !Engine {
+        switch (voice.backend) {
+            .cpu => {
+                var rt = try runtime.Runtime.init(gpa, &voice.model);
+                errdefer rt.deinit();
+                return .{ .cpu = .{ .runtime = rt, .state = try runtime.State.init(gpa, runtime.max_rows) } };
+            },
+            .metal => return .{ .metal = try metal_plan.Plan.init(gpa, &voice.gpu.?, &voice.model, runtime.max_rows, metal_plan.default_chunk) },
+        }
+    }
+    fn deinit(self: *Engine) void {
+        switch (self.*) {
+            .cpu => |*c| {
+                c.runtime.deinit();
+                c.state.deinit();
+            },
+            .metal => |*p| p.deinit(),
+        }
+    }
+    fn reset(self: *Engine) void {
+        switch (self.*) {
+            .cpu => |*c| c.state.reset(),
+            .metal => |*p| p.reset(),
+        }
+    }
+    fn prefill(self: *Engine, frames: []const runtime.Frame, hidden: []f32, logits: []f32) !void {
+        switch (self.*) {
+            .cpu => |*c| try c.runtime.prefill(&c.state, frames, hidden, logits, null),
+            .metal => |*p| try p.prefill(frames, hidden, logits),
+        }
+    }
+    fn towerPrefill(self: *Engine, hidden: []const f32, frames: []const runtime.Frame) !void {
+        switch (self.*) {
+            .cpu => |*c| try c.runtime.towerPrefill(&c.state, hidden, frames, null),
+            .metal => |*p| try p.towerPrefill(hidden, frames),
+        }
+    }
+    /// The tower at the backbone's last row, on its own hidden.
+    fn step(self: *Engine, input: runtime.Frame, main: u32, pick: runtime.Pick) !runtime.Frame {
+        return switch (self.*) {
+            .cpu => |*c| c.runtime.step(&c.state, c.runtime.h, input, main, pick, null),
+            .metal => |*p| p.step(p.h, input, main, pick),
+        };
+    }
+    fn decode(self: *Engine, frame: runtime.Frame, logits: []f32) !void {
+        switch (self.*) {
+            .cpu => |*c| try c.runtime.decode(&c.state, frame, logits, null),
+            .metal => |*p| try p.decode(frame, logits),
+        }
     }
 };
 

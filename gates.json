@@ -4614,6 +4614,39 @@
    "evidence": "docs/models/qwen3-tts.md#on-metal-2026-10-27"
   },
   {
+   "name": "drama3-metal",
+   "family": "drama3",
+   "tier": "verify",
+   "model": "drama3_q4_k",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/drama3-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/models/drama3.zig",
+    "inference/src/models/drama3_metal.zig",
+    "inference/src/models/drama3_runtime.zig",
+    "inference/src/runtime/session.zig",
+    "inference/src/runtime/weights.zig"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-drama3",
+    "--",
+    "{model}",
+    "metal",
+    "--frames",
+    "8",
+    "--max-relative-rms",
+    "1e-5"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "drama3-check metal: the smoke prompt (29 rows) and 8 argmax frames recorded through the CPU reference, then replayed through drama3_metal.Plan in prefill chunks of 24 rows (the gathered expert tiles and the verify attention), once with every kernel the generic decoder and once with the production kernels: the prefill hidden and logits, each decode row's hidden and logits, and each codebook head's 4,096 logits within 1e-5 relative RMS of the CPU's, every frame equal (first run 2026-10-30: prefill hidden 5.3e-6 in both runs, decode hidden 6.0e-7 / 7.8e-7, codebooks at most 6.6e-7 / 9.9e-7, every argmax equal)",
+   "evidence": "docs/models/drama3.md#on-metal-2026-10-30"
+  },
+  {
    "name": "drama3-trace-cpu",
    "family": "drama3",
    "tier": "verify-cpu",

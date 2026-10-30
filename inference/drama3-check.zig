@@ -1,4 +1,4 @@
-//! Explicit full-model check of Drama 3's backbone and tower on the CPU.
+//! Explicit full-model check of Drama 3's backbone and tower, on the CPU and on Metal.
 //! `smoke`: a short text prompt through the backbone and the tower's
 //! teacher-forced prefill, the 4,097 logits checked finite, then a few
 //! greedy frames (argmax main token and codes), each step timed.
@@ -12,16 +12,21 @@
 //!
 //!   drama3-check MODEL.gguf smoke [--frames N] [--value-order grouped|tiled] [--norm-offset X]
 //!   drama3-check MODEL.gguf trace [--max-relative-rms X] [--fixtures DIR] [--value-order ...] [--norm-offset X]
-//!   drama3-check MODEL.gguf speak --text T --out FILE.wav [--seed N] [--frames N]
-//! `speak` runs `drama3_speech.Synthesizer` on the CPU end to end (no
-//! reference voice) and writes a 44.1 kHz 16-bit WAV.
+//!   drama3-check MODEL.gguf metal [--frames N] [--chunk N] [--max-relative-rms X] [--value-order ...]
+//!   drama3-check MODEL.gguf speak --text T --out FILE.wav [--seed N] [--frames N] [--backend cpu|metal]
+//! `metal`: the smoke prompt and N argmax frames recorded on the CPU, then
+//! replayed through `drama3_metal.Plan` (prefill chunks of `--chunk` rows),
+//! once with every kernel the generic decoder and once with the production
+//! kernels, each within the bound (max relative RMS per stage); then timed.
+//! `speak` runs `drama3_speech.Synthesizer` end to end (no reference voice)
+//! and writes a 44.1 kHz 16-bit WAV.
 const std = @import("std");
 const inference = @import("inference");
 const drama3 = inference.models.drama3;
 const runtime = inference.models.drama3_runtime;
 const weights = inference.weights;
 
-const usage = "usage: drama3-check MODEL.gguf smoke|trace|speak [--text T] [--out FILE] [--seed N] [--frames N] [--max-relative-rms X] [--fixtures DIR] [--value-order grouped|tiled] [--norm-offset X]\n";
+const usage = "usage: drama3-check MODEL.gguf smoke|trace|metal|speak [--text T] [--out FILE] [--seed N] [--frames N] [--chunk N] [--backend cpu|metal] [--max-relative-rms X] [--fixtures DIR] [--value-order grouped|tiled] [--norm-offset X]\n";
 
 fn elapsedUs(io: std.Io, start: std.Io.Timestamp) f64 {
     return @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toMicroseconds());
@@ -389,12 +394,196 @@ fn trace(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, m: *const
     return passed;
 }
 
+// --- Metal against the CPU ---------------------------------------------
+
+/// Max relative RMS of one stage over the rows compared, and the rows whose
+/// argmax agreed (logits only).
+const Agreement = struct {
+    name: []const u8,
+    logits: bool,
+    worst: f64 = 0,
+    rows: usize = 0,
+    same: usize = 0,
+
+    fn add(self: *Agreement, got: []const f32, want: []const f32, width: usize) void {
+        for (0..got.len / width) |r| {
+            const s = compare(got[r * width ..][0..width], want[r * width ..][0..width]);
+            self.worst = @max(self.worst, @sqrt(s.diff2 / s.ref2));
+            self.rows += 1;
+            if (self.logits and argmax(got[r * width ..][0..width]) == argmax(want[r * width ..][0..width])) self.same += 1;
+        }
+    }
+};
+
+/// The CPU's run, recorded for the Metal runs to replay: the prefill's
+/// hidden rows and logits, then per frame the decode row's hidden and
+/// logits (from the second frame on) and each codebook head's logits.
+const Reference = struct {
+    hidden: []f32,
+    logits: [drama3.output_rows]f32 = undefined,
+    frames: std.ArrayList(runtime.Frame) = .empty,
+    decode_hidden: std.ArrayList(f32) = .empty,
+    decode_logits: std.ArrayList(f32) = .empty,
+    heads: std.ArrayList(f32) = .empty,
+    gpa: std.mem.Allocator,
+
+    /// The argmax pick, every codebook's logits kept.
+    fn pick(context: *anyopaque, codebook: usize, logits: []const f32) anyerror!u32 {
+        _ = codebook;
+        const self: *Reference = @ptrCast(@alignCast(context));
+        try self.heads.appendSlice(self.gpa, logits);
+        return @intCast(argmax(logits));
+    }
+};
+
+/// The Metal side of a tower step: compared against the CPU's logits of
+/// the same codebook, then the CPU's code, so both sides run the same frames.
+const Follower = struct {
+    reference: *const Reference,
+    frame: usize = 0,
+    heads: *[drama3.residual_layers]Agreement,
+    fn pick(context: *anyopaque, codebook: usize, logits: []const f32) anyerror!u32 {
+        const self: *Follower = @ptrCast(@alignCast(context));
+        const want = self.reference.heads.items[(self.frame * drama3.residual_layers + codebook - 1) * drama3.codebook_size ..][0..drama3.codebook_size];
+        self.heads[codebook - 1].add(logits, want, drama3.codebook_size);
+        return @intCast(argmax(want));
+    }
+};
+
+/// The smoke prompt and `frames` frames on the CPU, recorded with argmax
+/// picks (the main token from the CPU's logits).
+fn reference(gpa: std.mem.Allocator, m: *const runtime.Model, frames: usize, rows: []const runtime.Frame) !Reference {
+    var state = try runtime.State.init(gpa, rows.len + frames);
+    defer state.deinit();
+    var r = try runtime.Runtime.init(gpa, m);
+    defer r.deinit();
+    var out: Reference = .{ .gpa = gpa, .hidden = try gpa.alloc(f32, rows.len * drama3.hidden) };
+    try r.prefill(&state, rows, out.hidden, &out.logits, null);
+    try r.towerPrefill(&state, out.hidden[0 .. (rows.len - 1) * drama3.hidden], rows, null);
+    var logits = out.logits;
+    var input = rows[rows.len - 1];
+    while (out.frames.items.len < frames) {
+        const token = drama3.outputToken(argmax(&logits));
+        const frame = try r.step(&state, r.h, input, token, .{ .context = &out, .pick = Reference.pick }, null);
+        try out.frames.append(gpa, frame);
+        if (token == drama3.eos_token or out.frames.items.len == frames) break;
+        try r.decode(&state, frame, &logits, null);
+        try out.decode_hidden.appendSlice(gpa, r.h);
+        try out.decode_logits.appendSlice(gpa, &logits);
+        input = frame;
+    }
+    return out;
+}
+
+/// The recorded run replayed on Metal (`generic`: every kernel the generic
+/// decoder, `Backend.generic_only`): per-stage max relative RMS against
+/// `bound`, and the plan's times.
+fn metalRun(gpa: std.mem.Allocator, io: std.Io, gpu: *inference.metal.Backend, m: *const runtime.Model, ref: *const Reference, rows: []const runtime.Frame, chunk: usize, generic: bool, bound: f64) !bool {
+    gpu.generic_only = generic;
+    const frames = ref.frames.items.len;
+    var plan = try inference.models.drama3_metal.Plan.init(gpa, gpu, m, rows.len + frames, chunk);
+    defer plan.deinit();
+    std.debug.print("Metal, {s} kernels, chunk {d} ({d} MB of device buffers and state):\n", .{ if (generic) "generic" else "production", chunk, plan.bytes() / 1_000_000 });
+    var stages = [_]Agreement{
+        .{ .name = "prefill hidden", .logits = false },
+        .{ .name = "prefill logits", .logits = true },
+        .{ .name = "decode hidden", .logits = false },
+        .{ .name = "decode logits", .logits = true },
+    };
+    var heads: [drama3.residual_layers]Agreement = undefined;
+    const head_names = [_][]const u8{ "codebook 1 logits", "codebook 2 logits", "codebook 3 logits", "codebook 4 logits", "codebook 5 logits", "codebook 6 logits", "codebook 7 logits", "codebook 8 logits", "codebook 9 logits" };
+    for (&heads, head_names) |*a, name| a.* = .{ .name = name, .logits = true };
+
+    const hidden = try gpa.alloc(f32, rows.len * drama3.hidden);
+    defer gpa.free(hidden);
+    var logits: [drama3.output_rows]f32 = undefined;
+    try plan.prefill(rows, hidden, &logits);
+    stages[0].add(hidden, ref.hidden, drama3.hidden);
+    stages[1].add(&logits, &ref.logits, drama3.output_rows);
+    try plan.towerPrefill(hidden[0 .. (rows.len - 1) * drama3.hidden], rows);
+    var follower: Follower = .{ .reference = ref, .heads = &heads };
+    var input = rows[rows.len - 1];
+    var frames_equal = true;
+    for (ref.frames.items, 0..) |want, f| {
+        follower.frame = f;
+        const frame = try plan.step(plan.h, input, want[0], .{ .context = &follower, .pick = Follower.pick });
+        frames_equal = frames_equal and std.mem.eql(u32, &frame, &want);
+        if (f + 1 == frames) break;
+        try plan.decode(want, &logits);
+        stages[2].add(plan.h, ref.decode_hidden.items[f * drama3.hidden ..][0..drama3.hidden], drama3.hidden);
+        stages[3].add(&logits, ref.decode_logits.items[f * drama3.output_rows ..][0..drama3.output_rows], drama3.output_rows);
+        input = want;
+    }
+    var passed = frames_equal;
+    std.debug.print("  {s:<20} {s:>5} {s:>10} {s:>8}\n", .{ "stage", "rows", "rel RMS", "argmax" });
+    for (&stages ++ heads) |a| {
+        const ok = a.worst <= bound;
+        passed = passed and ok;
+        std.debug.print("  {s:<20} {d:>5} {e:>10.2}", .{ a.name, a.rows, a.worst });
+        if (a.logits) std.debug.print(" {d:>4}/{d}", .{ a.same, a.rows });
+        std.debug.print("{s}\n", .{if (ok) "" else "  OVER"});
+    }
+    std.debug.print("  frames {s}; bound {e}: {s}\n", .{ if (frames_equal) "equal" else "DIFFERENT", bound, if (passed) "passed" else "FAILED" });
+
+    // Times, on the warmed plan: the same prompt and frames again.
+    plan.reset();
+    var start = std.Io.Clock.awake.now(io);
+    try plan.prefill(rows, hidden, &logits);
+    const prefill_us = elapsedUs(io, start);
+    start = std.Io.Clock.awake.now(io);
+    try plan.towerPrefill(hidden[0 .. (rows.len - 1) * drama3.hidden], rows);
+    const tower_prefill_us = elapsedUs(io, start);
+    input = rows[rows.len - 1];
+    var step_us: f64 = 0;
+    var decode_us: f64 = 0;
+    for (ref.frames.items, 0..) |want, f| {
+        follower.frame = f;
+        start = std.Io.Clock.awake.now(io);
+        _ = try plan.step(plan.h, input, want[0], .{ .context = &follower, .pick = Follower.pick });
+        step_us += elapsedUs(io, start);
+        if (f + 1 == frames) break;
+        start = std.Io.Clock.awake.now(io);
+        try plan.decode(want, &logits);
+        decode_us += elapsedUs(io, start);
+        input = want;
+    }
+    const steps: f64 = @floatFromInt(frames);
+    std.debug.print("  times: prefill {d} rows {d:.1} ms ({d:.0} rows/s), tower prefill {d:.1} ms; tower {d:.1} ms a frame, backbone decode {d:.1} ms a row\n", .{ rows.len, prefill_us / 1000, @as(f64, @floatFromInt(rows.len)) * 1e6 / prefill_us, tower_prefill_us / 1000, step_us / 1000 / steps, decode_us / 1000 / @max(steps - 1, 1) });
+    return passed;
+}
+
+/// The smoke prompt and `frames` frames on the CPU and on Metal from one
+/// mapping, the CPU's argmax picks driving both: Metal with every kernel
+/// the generic decoder, then with the production kernels, each within `bound`.
+fn metalCheck(gpa: std.mem.Allocator, io: std.Io, m: *const runtime.Model, frames: usize, chunk: usize, bound: f64) !bool {
+    var rows: [smoke_prompt.len]runtime.Frame = undefined;
+    for (&rows, smoke_prompt) |*row, id| row.* = textFrame(id);
+    var ref = try reference(gpa, m, frames, &rows);
+    defer {
+        gpa.free(ref.hidden);
+        ref.frames.deinit(gpa);
+        ref.decode_hidden.deinit(gpa);
+        ref.decode_logits.deinit(gpa);
+        ref.heads.deinit(gpa);
+    }
+    std.debug.print("CPU reference: {d} prompt rows, {d} frames.\n", .{ rows.len, ref.frames.items.len });
+    var message: [512]u8 = @splat(0);
+    var gpu = inference.metal.Backend.init(gpa, &message) catch |err| {
+        std.debug.print("Metal: {s} {s}\n", .{ @errorName(err), std.mem.sliceTo(&message, 0) });
+        return err;
+    };
+    defer gpu.deinit();
+    const exact = try metalRun(gpa, io, &gpu, m, &ref, &rows, chunk, true, bound);
+    const production = try metalRun(gpa, io, &gpu, m, &ref, &rows, chunk, false, bound);
+    return exact and production;
+}
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
-    const Mode = enum { smoke, trace, speak };
+    const Mode = enum { smoke, trace, speak, metal };
     const mode = std.meta.stringToEnum(Mode, if (args.len >= 3) args[2] else "") orelse {
         std.debug.print(usage, .{});
         return error.InvalidArguments;
@@ -406,6 +595,8 @@ pub fn main(init: std.process.Init) !void {
     var text: []const u8 = "Hello, this is a test.";
     var out_path: []const u8 = "drama3.wav";
     var seed: u64 = 0;
+    var chunk: usize = 24;
+    var on_metal = false;
     var i: usize = 3;
     while (i + 1 < args.len) : (i += 2) {
         const value = args[i + 1];
@@ -425,13 +616,18 @@ pub fn main(init: std.process.Init) !void {
             seed = try std.fmt.parseInt(u64, value, 10);
         } else if (std.mem.eql(u8, args[i], "--norm-offset")) {
             options.norm_offset = try std.fmt.parseFloat(f32, value);
+        } else if (std.mem.eql(u8, args[i], "--chunk")) {
+            chunk = try std.fmt.parseInt(usize, value, 10);
+        } else if (std.mem.eql(u8, args[i], "--backend")) {
+            on_metal = std.mem.eql(u8, value, "metal");
+            if (!on_metal and !std.mem.eql(u8, value, "cpu")) return error.InvalidArguments;
         } else break;
     }
     if (i != args.len or frames == 0 or frames > drama3.max_frames) {
         std.debug.print(usage, .{});
         return error.InvalidArguments;
     }
-    if (mode == .speak) return speak(gpa, io, args[1], text, out_path, seed, frames);
+    if (mode == .speak) return speak(gpa, io, args[1], text, out_path, seed, frames, if (on_metal) .metal else .cpu);
     const load_start = std.Io.Clock.awake.now(io);
     var mapped = try weights.Mapped.open(gpa, io, args[1]);
     defer mapped.deinit(io);
@@ -441,15 +637,16 @@ pub fn main(init: std.process.Init) !void {
     const ok = switch (mode) {
         .smoke => try smoke(gpa, io, &m, frames),
         .trace => try trace(gpa, arena, io, &m, fixtures, bounds),
+        .metal => try metalCheck(gpa, io, &m, frames, chunk, bounds.relative_rms),
         .speak => unreachable,
     };
     if (!ok) std.process.exit(1);
 }
 
-fn speak(gpa: std.mem.Allocator, io: std.Io, path: []const u8, text: []const u8, out_path: []const u8, seed: u64, frames: usize) !void {
+fn speak(gpa: std.mem.Allocator, io: std.Io, path: []const u8, text: []const u8, out_path: []const u8, seed: u64, frames: usize, backend: inference.models.drama3_speech.Backend) !void {
     const speech = inference.models.drama3_speech;
     const load_start = std.Io.Clock.awake.now(io);
-    const voice = try speech.Voice.open(gpa, io, path);
+    const voice = try speech.Voice.openWith(gpa, io, path, .{ .backend = backend });
     defer voice.close();
     std.debug.print("loaded in {d:.0} ms\n", .{elapsedUs(io, load_start) / 1000});
     var synth = try speech.Synthesizer.init(gpa, voice, .{ .text = text, .seed = seed, .max_frames = @max(frames, 64) });

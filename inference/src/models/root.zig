@@ -45,6 +45,7 @@ pub const qwen3_tts_metal = @import("qwen3_tts_metal.zig");
 /// codebook tower from one GGUF. Not a registry family: it decodes frames.
 pub const drama3 = @import("drama3.zig");
 pub const drama3_runtime = @import("drama3_runtime.zig");
+pub const drama3_metal = @import("drama3_metal.zig");
 pub const drama3_text = @import("drama3_text.zig");
 pub const drama3_sampler = @import("drama3_sampler.zig");
 pub const drama3_speech = @import("drama3_speech.zig");
@@ -134,6 +135,7 @@ test {
     _ = qwen3_tts_metal;
     _ = drama3;
     _ = drama3_runtime;
+    _ = drama3_metal;
     _ = drama3_text;
     _ = drama3_sampler;
     _ = drama3_speech;
