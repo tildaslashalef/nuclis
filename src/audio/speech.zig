@@ -36,7 +36,10 @@ pub const Voice = struct {
         self.gpa = gpa;
         self.model = switch (engineOf(path)) {
             .qwen3_tts => .{ .qwen3_tts = try qwen.Voice.open(gpa, io, path, diag, .{ .backend = backend }) },
-            .drama3 => .{ .drama3 = try drama.Voice.open(gpa, io, path) },
+            .drama3 => .{ .drama3 = try drama.Voice.openWith(gpa, io, path, .{ .backend = switch (backend) {
+                .cpu => .cpu,
+                .metal => .metal,
+            } }) },
         };
         return self;
     }

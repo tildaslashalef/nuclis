@@ -189,7 +189,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
         return error.TextTooLong;
     }
     const dir = (try audio_catalog.locate(arena, io, root, loaded.config.models, options.model orelse loaded.config.speech.model, .speech, true, diag)).directory;
-    if (audio_catalog.isFile(dir)) return runDrama3(alloc, arena, io, root, &options, text, dir, out, sty, diag);
+    if (audio_catalog.isFile(dir)) return runDrama3(alloc, arena, io, root, &options, backend, text, dir, out, sty, diag);
     const seed = options.seed orelse 0;
     const language = options.language orelse "auto";
     const speaker = options.voice orelse loaded.config.speech.voice;
@@ -333,7 +333,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
 
 /// `run` for Drama 3: a saved voice only when `--voice` names one, the
 /// sentences generated a few frames at a time.
-fn runDrama3(alloc: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, options: *const Options, text: []const u8, path: []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+fn runDrama3(alloc: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, options: *const Options, backend: Backend, text: []const u8, path: []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
     const drama = inference.models.drama3_speech;
     const name = std.fs.path.basename(path);
     if (options.instruct != null) {
@@ -350,12 +350,15 @@ fn runDrama3(alloc: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, roo
     }
     const seed = options.seed orelse 0;
     const load_start = std.Io.Clock.awake.now(io);
-    const voice = drama.Voice.open(alloc, io, path) catch |err| {
+    const voice = drama.Voice.openWith(alloc, io, path, .{ .backend = switch (backend) {
+        .cpu => .cpu,
+        .metal => .metal,
+    } }) catch |err| {
         diag.set("{s}", .{path});
         return err;
     };
     defer voice.close();
-    try out.print("{s}{s}{s}, {s}{s}, seed {d}; loaded in {d:.1} s\n", .{ sty.on(.header), name, sty.off(), if (options.voice != null) "voice " else "its own voice", options.voice orelse "", seed, @as(f64, @floatFromInt(load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds())) / 1000 });
+    try out.print("{s}{s}{s}, {s}{s}, seed {d}, {s}; loaded in {d:.1} s\n", .{ sty.on(.header), name, sty.off(), if (options.voice != null) "voice " else "its own voice", options.voice orelse "", seed, @tagName(backend), @as(f64, @floatFromInt(load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds())) / 1000 });
     try out.flush();
 
     var ready: ?voices.Ready = null;
