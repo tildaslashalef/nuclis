@@ -45,6 +45,12 @@ pub fn prefixCachePath(alloc: Allocator, root_dir: []const u8) ![]u8 {
     return std.fs.path.join(alloc, &.{ root_dir, "cache", "prefix" });
 }
 
+/// `<root>/cache/memory.json`, what each model counted against `nuclis
+/// serve`'s budget once open (`api/memory.zig`). Caller-owned storage.
+pub fn memoryRecordPath(alloc: Allocator, root_dir: []const u8) ![]u8 {
+    return std.fs.path.join(alloc, &.{ root_dir, "cache", "memory.json" });
+}
+
 /// `<root>/voices`, the saved voices (`voices.zig`). Not created here.
 /// Caller-owned storage.
 pub fn voicesPath(alloc: Allocator, root_dir: []const u8) ![]u8 {

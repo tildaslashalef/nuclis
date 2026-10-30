@@ -164,6 +164,11 @@ pub const Service = struct {
         try details.put(arena, "size_bytes", .{ .integer = @intCast(about.size_bytes) });
         try details.put(arena, "present", .{ .bool = present });
         try details.put(arena, "loaded", .{ .bool = present and self.language.isOpen(io, name) });
+        const file_bytes: u64 = if (present) blk: {
+            const path = paths.modelPath(arena, name, "", self.language.root, loaded.config.models) catch break :blk about.size_bytes;
+            break :blk language_mod.fileSize(io, path);
+        } else about.size_bytes;
+        try models.putMemory(arena, io, details, self.language.budget, name, language_mod.basis(settings, file_bytes), language_mod.openingBytes(settings, file_bytes));
         try details.put(arena, "default", .{ .bool = std.mem.eql(u8, name, loaded.config.engine.model) });
         try details.put(arena, "source", .{ .string = if (registered) "registry" else "catalogue" });
         // What `nuclis model pull <name>` fetches: the model alone.

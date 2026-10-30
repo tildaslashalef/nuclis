@@ -75,7 +75,8 @@ pub const Language = struct {
         settings.max_tokens = wire.max_output_tokens;
         // Before opening: the weights and the states the cache may keep;
         // once open, the attention cache and the draft file are known.
-        var bytes = fileSize(io, path) + settings.cache.memory_bytes;
+        const file_bytes = fileSize(io, path);
+        var bytes = openingBytes(settings, file_bytes);
         self.needed = bytes;
         if (self.budget) |b| try b.reserve(io, bytes, null);
         self.open = try completer_mod.Open.init(self.gpa, io, path, settings);
@@ -108,9 +109,11 @@ pub const Language = struct {
             defer self.mutex.unlock(io);
             self.name = owned;
         }
+        self.needed = bytes;
         if (self.budget) |b| {
             try b.add(io, .language, name, name, 0, .{ .context = self, .close = closeKey });
             try b.resize(io, name, bytes);
+            b.measure(io, name, basis(settings, file_bytes), bytes);
         }
         self.footprint = bytes;
     }
@@ -268,7 +271,18 @@ pub const Language = struct {
     }
 };
 
-fn fileSize(io: std.Io, path: []const u8) u64 {
+/// What a language model's count depends on beside its code: its file and
+/// the settings that size its caches (`memory.Measured.basis`).
+pub fn basis(settings: config.Resolved, file_bytes: u64) u64 {
+    return memory.basis(&.{ file_bytes, settings.cache.memory_bytes, settings.ctx_size, @backingInt(settings.kv_precision), @intFromBool(settings.speculative) });
+}
+
+/// What a language model counts before it opens: its file and the states the cache may keep.
+pub fn openingBytes(settings: config.Resolved, file_bytes: u64) u64 {
+    return file_bytes + settings.cache.memory_bytes;
+}
+
+pub fn fileSize(io: std.Io, path: []const u8) u64 {
     const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch return 0;
     return stat.size;
 }

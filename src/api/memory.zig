@@ -25,6 +25,9 @@ pub const Error = error{
     Pinned,
 };
 
+/// The most a kept file of counts may be.
+const max_measured_bytes = 1 << 20;
+
 pub const Budget = struct {
     gpa: std.mem.Allocator,
     limit: u64,
@@ -34,6 +37,18 @@ pub const Budget = struct {
     tick: u64 = 0,
     /// Names of the models never closed to make room (`keep`); owned.
     kept: []const []const u8 = &.{},
+    /// What each model counted once open, by name (`measure`); keys owned.
+    measured: std.StringArrayHashMapUnmanaged(Measured) = .empty,
+    /// Where `measured` is kept across starts (`load`); borrowed. None: in memory only.
+    measured_path: ?[]const u8 = null,
+    /// The sizes behind the last `ModelTooLarge`, for the message a person reads.
+    refused: ?Refusal = null,
+
+    /// A model's count once open, and the `basis` (a hash of its files and
+    /// the settings that size it) it opened under: a changed basis is stale.
+    pub const Measured = struct { basis: u64, bytes: u64 };
+    /// What a refused model needed, and what the kept models left free.
+    pub const Refusal = struct { needed: u64, free: u64 };
 
     const Entry = struct {
         kind: Kind,
@@ -60,6 +75,63 @@ pub const Budget = struct {
         self.entries.deinit(self.gpa);
         for (self.kept) |n| self.gpa.free(n);
         self.gpa.free(self.kept);
+        for (self.measured.keys()) |k| self.gpa.free(k);
+        self.measured.deinit(self.gpa);
+    }
+
+    /// Reads the counts kept at `path` (borrowed for the budget's life) and
+    /// keeps later ones there. A missing or unreadable file starts empty.
+    pub fn load(self: *Budget, io: std.Io, path: []const u8) void {
+        self.measured_path = path;
+        const text = std.Io.Dir.cwd().readFileAlloc(io, path, self.gpa, .limited(max_measured_bytes)) catch return;
+        defer self.gpa.free(text);
+        const parsed = std.json.parseFromSlice(std.json.ArrayHashMap(Measured), self.gpa, text, .{}) catch return;
+        defer parsed.deinit();
+        var it = parsed.value.map.iterator();
+        while (it.next()) |e| self.putMeasured(e.key_ptr.*, e.value_ptr.*) catch return;
+    }
+
+    /// Records what `name` counts once open under `under` (a `basis`), and keeps it at
+    /// `measured_path`; a write that fails leaves the record in memory.
+    pub fn measure(self: *Budget, io: std.Io, name: []const u8, under: u64, bytes: u64) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        if (self.measured.get(name)) |m| if (m.basis == under and m.bytes == bytes) return;
+        self.putMeasured(name, .{ .basis = under, .bytes = bytes }) catch return;
+        const path = self.measured_path orelse return;
+        var out: std.Io.Writer.Allocating = .init(self.gpa);
+        defer out.deinit();
+        std.json.Stringify.value(std.json.ArrayHashMap(Measured){ .map = self.measured }, .{ .whitespace = .indent_2 }, &out.writer) catch return;
+        if (std.fs.path.dirname(path)) |dir| std.Io.Dir.cwd().createDirPath(io, dir) catch return;
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = out.written() }) catch {};
+    }
+
+    /// What `name` counted the last time it opened under `under`; null when
+    /// it never did, or did under another basis.
+    pub fn measuredBytes(self: *Budget, io: std.Io, name: []const u8, under: u64) ?u64 {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        const m = self.measured.get(name) orelse return null;
+        return if (m.basis == under) m.bytes else null;
+    }
+
+    /// Bytes the open model registered under `name` holds; null when none is.
+    pub fn openBytes(self: *Budget, io: std.Io, name: []const u8) ?u64 {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        for (self.entries.items) |e| if (std.mem.eql(u8, e.name, name)) return e.bytes;
+        return null;
+    }
+
+    fn putMeasured(self: *Budget, name: []const u8, m: Measured) !void {
+        const entry = try self.measured.getOrPut(self.gpa, name);
+        if (!entry.found_existing) {
+            entry.key_ptr.* = self.gpa.dupe(u8, name) catch |err| {
+                _ = self.measured.pop();
+                return err;
+            };
+        }
+        entry.value_ptr.* = m;
     }
 
     /// The models named `names` are never closed to make room, once open
@@ -83,16 +155,16 @@ pub const Budget = struct {
     /// Makes room for `bytes` more: closes the least recently used models,
     /// neither in use nor kept, other than `keep_key`, until they fit.
     pub fn reserve(self: *Budget, io: std.Io, bytes: u64, keep_key: ?[]const u8) Error!void {
-        if (bytes > self.limit) return error.ModelTooLarge;
         while (true) {
             self.mutex.lockUncancelable(io);
-            if (self.residentLocked() + bytes <= self.limit) {
+            if (bytes <= self.limit and self.residentLocked() + bytes <= self.limit) {
                 self.mutex.unlock(io);
                 return;
             }
-            if (self.keptLocked() + bytes > self.limit) {
-                self.mutex.unlock(io);
-                return error.ModelTooLarge;
+            if (bytes > self.limit or self.keptLocked() + bytes > self.limit) {
+                const own: u64 = if (keep_key) |k| if (self.findLocked(k)) |e| e.bytes else 0 else 0;
+                defer self.mutex.unlock(io);
+                return self.refuseLocked(bytes + own, keep_key);
             }
             const victim = self.victimLocked(keep_key) orelse {
                 self.mutex.unlock(io);
@@ -111,11 +183,10 @@ pub const Budget = struct {
     /// kept may be closed. No side effects, so a caller can ask before
     /// closing its own.
     pub fn canFit(self: *Budget, io: std.Io, bytes: u64) Error!void {
-        if (bytes > self.limit) return error.ModelTooLarge;
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         const kept = self.keptLocked();
-        if (kept + bytes > self.limit) return error.ModelTooLarge;
+        if (bytes > self.limit or kept + bytes > self.limit) return self.refuseLocked(bytes, null);
         var pinned: u64 = 0;
         for (self.entries.items) |e| if (e.pinned and !e.kept) {
             pinned += e.bytes;
@@ -142,10 +213,10 @@ pub const Budget = struct {
     /// projector loaded later); closes others as `reserve` does when that
     /// no longer fits.
     pub fn resize(self: *Budget, io: std.Io, key: []const u8, bytes: u64) Error!void {
-        if (bytes > self.limit) return error.ModelTooLarge;
         {
             self.mutex.lockUncancelable(io);
             defer self.mutex.unlock(io);
+            if (bytes > self.limit) return self.refuseLocked(bytes, key);
             const e = self.findLocked(key) orelse return;
             e.bytes = bytes;
         }
@@ -218,6 +289,23 @@ pub const Budget = struct {
         return total;
     }
 
+    /// The last refusal's sizes; null when nothing was refused as too large.
+    pub fn refusal(self: *Budget, io: std.Io) ?Refusal {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        return self.refused;
+    }
+
+    /// Records a refusal of `needed` bytes against the kept models other than `own`.
+    fn refuseLocked(self: *Budget, needed: u64, own: ?[]const u8) error{ModelTooLarge} {
+        var kept: u64 = 0;
+        for (self.entries.items) |e| if (e.kept and !(own != null and std.mem.eql(u8, e.key, own.?))) {
+            kept += e.bytes;
+        };
+        self.refused = .{ .needed = needed, .free = self.limit -| kept };
+        return error.ModelTooLarge;
+    }
+
     fn keptLocked(self: *const Budget) u64 {
         var total: u64 = 0;
         for (self.entries.items) |e| if (e.kept) {
@@ -246,6 +334,11 @@ pub const Budget = struct {
         self.gpa.free(e.name);
     }
 };
+
+/// A `Measured.basis` from what sizes a model: its files' bytes and the settings that change its count.
+pub fn basis(parts: []const u64) u64 {
+    return std.hash.Wyhash.hash(0x6d656d, std.mem.sliceAsBytes(parts));
+}
 
 /// The default limit: physical memory less a reserve for the system and
 /// other applications, a third of it up to 16 GiB (32 GiB on a 48 GiB
@@ -402,4 +495,37 @@ test "the default limit leaves a third, at most 16 GiB" {
     try std.testing.expectEqual(@as(u64, 112 << 30), limitFor(128 << 30));
     try std.testing.expectEqual(@as(u64, (4 << 30) - (4 << 30) / 3), limitFor(4 << 30));
     try std.testing.expect(defaultLimit(std.testing.io) > 0);
+}
+
+test "a refusal says what was needed and what the kept models left; counts are kept by basis" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ root, "cache", "memory.json" });
+    defer std.testing.allocator.free(path);
+    {
+        var budget: Budget = .init(std.testing.allocator, 100);
+        defer budget.deinit();
+        var fake: Fake = .{ .budget = &budget };
+        defer fake.deinit();
+        try budget.keep(&.{ "lm", "voice" });
+        budget.load(io, path);
+        try budget.add(io, .language, "lm", "lm", 60, fake.closer());
+        try std.testing.expectError(error.ModelTooLarge, budget.canFit(io, 45));
+        try std.testing.expectEqual(Budget.Refusal{ .needed = 45, .free = 40 }, budget.refusal(io).?);
+        // Grown past the room once open: the whole count is what it needed.
+        try budget.add(io, .speech, "/m/voice", "voice", 30, fake.closer());
+        try std.testing.expectError(error.ModelTooLarge, budget.resize(io, "/m/voice", 50));
+        try std.testing.expectEqual(Budget.Refusal{ .needed = 50, .free = 40 }, budget.refusal(io).?);
+        budget.measure(io, "lm", 7, 60);
+        try std.testing.expectEqual(@as(?u64, 60), budget.openBytes(io, "lm"));
+    }
+    var again: Budget = .init(std.testing.allocator, 100);
+    defer again.deinit();
+    again.load(io, path);
+    try std.testing.expectEqual(@as(?u64, 60), again.measuredBytes(io, "lm", 7));
+    try std.testing.expectEqual(@as(?u64, null), again.measuredBytes(io, "lm", 8));
+    try std.testing.expectEqual(@as(?u64, null), again.openBytes(io, "lm"));
 }

@@ -85,6 +85,7 @@ pub fn Slot(comptime Model: type, comptime kind: memory.Kind) type {
                     b.remove(io, directory);
                     return err;
                 };
+                b.measure(io, name, memory.basis(&.{bytes}), counted);
             }
             self.mutex.lockUncancelable(io);
             self.current = .{ .directory = owned_directory, .name = owned_name, .model = model, .bytes = counted };
