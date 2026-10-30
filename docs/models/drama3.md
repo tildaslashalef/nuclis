@@ -448,9 +448,14 @@ nuclis therefore splits at every sentence end (`.!?` and Arabic `؟؛۔`,
 the clause mark `،` past the chunker's limit), not only past 300 bytes.
 `drama3_speech.Synthesizer` adds two more:
 
-- **The stop on silence.** A take has spoken once a frame's RMS reaches
-  0.01 (−40 dBFS). After that, a frame is silent when its RMS is under a
-  tenth of the take's loudest frame, clamped to 0.003–0.02. 32 silent
+- **When a take has spoken.** Each decoded frame's RMS is a level. A take
+  has spoken once its last 16 levels (the codec's first frame left out)
+  peak at 0.01 (−40 dBFS) or more and at three times their quietest.
+  Speech rises and falls with its syllables. Steady noise does not: on the
+  `nda-v2-12s` voice the model sometimes makes a hiss at 0.01–0.025 that
+  never rises, and that never counts.
+- **The stop on silence.** After that, a frame is silent when its level
+  is under a tenth of the take's loudest, clamped to 0.003–0.02. 32 silent
   frames in a row (1.5 s) end the chunk; 6 of them (0.28 s) are kept, and
   the rest are cut and never reach the caller. The threshold was first a
   fixed 0.02, which cut whispers: `<whisper>` peaks near 0.04 and runs at
@@ -459,10 +464,17 @@ the clause mark `،` past the chunker's limit), not only past 300 bytes.
   before the rain gets worse.</whisper>`. Relative to the peak, all four
   are whole.
 - **The retry.** A take's leading silence is held back. A take that has
-  not spoken after 48 frames (2.2 s) is dropped and the chunk restarts on
+  not spoken after 32 frames (1.5 s) is dropped and the chunk restarts on
   the next seed, at most twice; the third take is released as it is.
-  `nuclis speak` reports the retries and how each chunk stopped (`eos`,
-  `silence`, `length`).
+  Over every take measured below, speech was found by frame 19 at the
+  latest. `nuclis speak` reports the retries and how each chunk stopped
+  (`eos`, `silence`, `length`).
+
+Steady noise *after* speech is not stopped. A whisper's level is nearly
+as flat as hiss: a test for flatness cut a whole, recognized
+`<whisper>` take after 28 frames, so it was dropped. Such a take ends at
+its frame budget, 64 frames plus 3 a character (about twice the speaking
+time).
 
 Held-back and cut samples are never streamed, so the API's first bytes
 come only once a take has spoken.
@@ -487,6 +499,50 @@ stalls are dropped words, not silence: `nda-v2-12s` seed 3 spoke only
 "طب استنى بس.". The mean character error rate over all 64 takes is
 15 %. Most of it is the recognizer's spelling of Egyptian Arabic, not
 missing speech.
+
+## The prompt's prefix
+
+Every prompt of a voice begins with the same rows: the system turn, the
+reference instruction, each reference (its transcript, then its codes),
+and the end of that turn (`Text.prefix`). Whatever follows (the history,
+the text) cannot change them. `drama3_speech` prefills that prefix apart
+from the rest, both for the backbone and for the tower's teacher-forced
+rows. The voice then keeps the state reached, for its `max_prefixes` (4)
+most recent prefixes:
+
+- the backbone's `Session.snapshot`: each attention layer's rows and each
+  DeltaNet layer's whole history and matrix;
+- the tower's, one row behind, since its last row needs the next frame;
+- the backbone's hidden at the prefix's last row, which the tower's
+  next row reads.
+
+A take whose prefix is kept restores it (`Session.restore`, a copy) and
+prefills only the rest. The prefix is prefilled apart even when it is
+not yet kept, so a restored take computes exactly what an unrestored
+one does: through the API, the same sentence at the same seed gave the
+same bytes, first prefilling the prefix and then restoring it. On the
+CPU and on Metal alike, the state lives in `runtime.State`, which Metal
+maps as shared buffers. A kept prefix is about 90 MB with a 12 s
+reference.
+
+Measured through `/v1/audio/speech` on Metal (2026-10-30, the M4 Pro,
+this file, the voice `doo-v4-12s`: a 12 s clip, a 328-row prefix). Each
+request is one short Egyptian sentence, with the model already open:
+
+| Request | Prefill | First audio |
+| --- | --- | --- |
+| the voice's first, prefix prefilled | 1,612 ms | 1,988 ms (2,712 ms with the model's 725 ms open) |
+| prefix restored | 243 ms | 393 ms |
+| prefix restored, with a `context` (the previous sentence's 79 frames) | 700 ms | 854 ms |
+
+A take whose prefix is not yet kept now prefills in two passes. That
+cost about 0.25 s more than one pass in a two-sentence `nuclis speak`
+run, since each pass reads the experts it routes to.
+
+The request's `context` (docs/guide/api.md § Drama 3) brings an earlier
+request's last sentence into this one's history, as
+`Request.context`. History pins its first turn, so the context stays in
+every chunk's prompt while it fits, beside the latest chunk.
 
 ## The traces
 

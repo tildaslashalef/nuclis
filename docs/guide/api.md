@@ -852,6 +852,7 @@ sentence ends does.
 | `speed` | `1` only (`400 unsupported_feature` otherwise): the model has no rate control |
 | `seed` | nuclis's: the sampler's seed, default 0. The same text, voice, and seed give the same samples, alone or beside a chat generation |
 | `language` | nuclis's: `auto` (the default), or one of the model's (`english`, `chinese`, `german`, …; `400 invalid_request` lists them). Drama 3 takes only `auto` |
+| `context` | nuclis's, Drama 3 only: an earlier response's `x-speech-context`, whose last sentence this request continues ([below](#drama-3)); ignored when unknown or expired |
 
 Other fields OpenAI defines are ignored. Refused with `400
 unsupported_feature`: `mp3`, `opus`, `aac`, and `flac` (no encoder here),
@@ -926,10 +927,40 @@ the fault): a bracket left open or a cue inside a cue, an unclosed tag,
 a speaker tag outside 0–15, and any other `<|…|>` token. Line breaks are
 spaces. A request's text is split at sentence ends (Arabic's `؟` and `؛`
 included) and spoken sentence by sentence, each in the voice of the one
-before it. A sentence that has not started speaking within about 2 s of
-audio is drawn again with the next seed (twice at most), and a sentence
-that falls silent for 1.5 s ends there, keeping 0.28 s of it: [drama3.md § Stalls, and what
+before it. A sentence that has not started speaking within 1.5 s of audio
+(steady noise does not count as speaking) is drawn again with the next
+seed, twice at most. A sentence that falls silent for 1.5 s ends there,
+keeping 0.28 s of the silence: [drama3.md § Stalls, and what
 nuclis adds](../models/drama3.md#stalls-and-what-nuclis-adds).
+
+**One sentence a request.** Every Drama 3 response carries an
+`x-speech-context` header, an id for its last sentence. A later request
+in the same model and voice that passes it as `"context": "<id>"` takes
+that sentence (its text and the audio codes it was spoken with) as
+history. So it continues the earlier delivery, as a request's own
+sentences do. The sentence is kept for 5 minutes once its request ends,
+at most 32 of them. An id that is unknown, expired, or from another voice
+is ignored: the request is spoken without it, not refused, and the log's
+`context` says which (`hit`, `missing`, `expired`, `other_voice`). A
+request sent while the one it continues is still speaking waits behind
+it in the queue, so the sentence is kept by the time it starts.
+
+```sh
+curl -s -D head.txt -o one.pcm localhost:9000/v1/audio/speech -d '{"model": "drama-3",
+  "voice": {"id": "doo"}, "response_format": "pcm", "input": "[tired] يا عم ده إحنا بقالنا ساعة مستنيين."}'
+curl -s -o two.pcm localhost:9000/v1/audio/speech -d '{"model": "drama-3", "voice": {"id": "doo"},
+  "response_format": "pcm", "input": "والزحمة دي مش طبيعية.", "context": "'"$(grep -i x-speech-context head.txt | cut -d" " -f2 | tr -d "\r")"'"}'
+```
+
+Every prompt starts with the same rows for a voice: the system turn and
+the voice's clip with its transcript (328 rows for a 12 s clip). The model
+keeps the state after them for its 4 most recent voices. A request then
+prefills only its own text (and a context's sentence); the first in a
+voice since the model opened prefills both. On the M4 Pro with a 12 s
+clip, a one-sentence request's prefill went from 1,612 ms to 243 ms
+(first audio 393 ms), or 700 ms with a context (first audio 854 ms). The
+take is the same bit for bit either way:
+[drama3.md § The prompt's prefix](../models/drama3.md#the-prompts-prefix).
 
 ### Streaming and cancellation
 
@@ -1528,7 +1559,7 @@ What each route adds to its `request.end`:
 | `POST /v1/chat/completions` | `model`, `effort`, `stream`, `prompt_tokens`, `cached_tokens`, `completion_tokens`, `finish_reason` (`stop`, `length`, `tool_calls`, `cancelled`), `web_calls`, `web_rounds`, `web_restored` |
 | `POST /v1/decisions`, `POST /v1/systemone` | `model`, `states`, `questions`, `input_tokens`, `batch_requests` (the requests that shared the pass), `open_ms` (when this request opened the model) |
 | `POST /v1/embeddings` | `model`, `inputs`, `input_tokens`, `passes`, `batch_requests`, `open_ms` |
-| `POST /v1/audio/speech` | `model`, `voice` (none for VoiceDesign), `voice_kind` (`speakers`, `clone`, `design`), `voice_ready_ms` (a saved voice read back, or encoded on its first use with the model), `format`, `stream_format`, `frames`, `seed`, `audio_s`, `first_audio_ms`, `open_ms`, `finish_reason` (`eos`, `length`, `cancelled`); for Drama 3 also `sentences`, `redraws` (silent starts drawn again, each with the next seed) and `silence_stops` (sentences its silence stop ended) |
+| `POST /v1/audio/speech` | `model`, `voice` (none for VoiceDesign), `voice_kind` (`speakers`, `clone`, `design`), `voice_ready_ms` (a saved voice read back, or encoded on its first use with the model), `format`, `stream_format`, `frames`, `seed`, `audio_s`, `first_audio_ms`, `open_ms`, `finish_reason` (`eos`, `length`, `cancelled`); for Drama 3 also `sentences`, `redraws` (silent starts drawn again, each with the next seed), `silence_stops` (sentences its silence stop ended), `prefill_ms`, `prefix_restored` and `prefix_prefilled` (the takes whose voice prefix was kept or prefilled), `context_id` (the response's `x-speech-context`) and `context` (`hit`, `missing`, `expired`, `other_voice`, when the request named one) |
 | `POST`, `GET`, `DELETE /v1/audio/voices` | `voice`; a list's `voices` (its count); a create's `clip_s` and `transcript` (whether one came) |
 | `POST /v1/audio/transcriptions` | `model`, `stream`, `audio_s`, `real_time` (audio seconds per second), `segments`, `first_segment_ms`, `open_ms`, `finish_reason` (`done`, `cancelled`) |
 | `GET /v1/audio/transcriptions/stream` | `model`, `lookahead`, `audio_s`, `finals`, `closed_by` (`client`, `server`, `gone`), `close_code`, and the server's `close_reason` |
