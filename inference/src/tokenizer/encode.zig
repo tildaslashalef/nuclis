@@ -28,7 +28,7 @@ pub const Encoder = struct {
     allocator: std.mem.Allocator,
     splitter: Splitter,
 
-    /// Owns only the special-ID index. At most 4,096 markers, each at most 256
+    /// Owns only the special-ID index. At most 8,192 markers (Drama 3 has 4,172), each at most 256
     /// bytes, are accepted. These are operational bounds, not model semantics.
     pub fn init(alloc: std.mem.Allocator, vocab: *const vocabulary.Vocabulary) Error!Encoder {
         const splitter: Splitter = if (std.mem.eql(u8, vocab.pre, "qwen35"))
@@ -44,7 +44,7 @@ pub const Encoder = struct {
         for (vocab.tokens, 0..) |token, id| {
             switch (token.kind) {
                 .control, .user_defined, .unknown => {
-                    if (ids.items.len == 4096 or token.text.len == 0 or token.text.len > 256) return error.LimitExceeded;
+                    if (ids.items.len == 8192 or token.text.len == 0 or token.text.len > 256) return error.LimitExceeded;
                     try ids.append(alloc, @intCast(id));
                 },
                 else => {},
