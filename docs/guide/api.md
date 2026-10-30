@@ -947,8 +947,8 @@ it in the queue, so the sentence is kept by the time it starts.
 
 ```sh
 curl -s -D head.txt -o one.pcm localhost:9000/v1/audio/speech -d '{"model": "drama-3",
-  "voice": {"id": "doo"}, "response_format": "pcm", "input": "[tired] يا عم ده إحنا بقالنا ساعة مستنيين."}'
-curl -s -o two.pcm localhost:9000/v1/audio/speech -d '{"model": "drama-3", "voice": {"id": "doo"},
+  "voice": {"id": "anna"}, "response_format": "pcm", "input": "[tired] يا عم ده إحنا بقالنا ساعة مستنيين."}'
+curl -s -o two.pcm localhost:9000/v1/audio/speech -d '{"model": "drama-3", "voice": {"id": "anna"},
   "response_format": "pcm", "input": "والزحمة دي مش طبيعية.", "context": "'"$(grep -i x-speech-context head.txt | cut -d" " -f2 | tr -d "\r")"'"}'
 ```
 

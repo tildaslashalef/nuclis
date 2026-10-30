@@ -19,7 +19,7 @@ user's decision (2026-10-30), its five units below share that one branch
 and one pull request, an exception to one unit per branch. One session
 leads; it may run at most two subagents (the same model) at a time, on
 units or pieces that touch disjoint files. The user tested the artifact
-in the TTS lab (`~/Code/ttslab`, speech.cpp 0.9.2) and chose Q4_K.
+in a local TTS lab (speech.cpp 0.9.2) and chose Q4_K.
 
 Delivered so far: the facts, the pin, and the Fish traces
 (`tests/fixtures/drama3/`, `scripts/speech-traces/drama3_trace.py`); the
@@ -34,7 +34,7 @@ Metal (`drama3-roundtrip-metal`, WER 1.05 %); the stall measurement
 (§ Stalls); and `drama-3` in the catalogue, `nuclis speak`,
 `/v1/audio/speech` (whose log records the seed, redraws, and silence
 stops), and the saved voices (a 44.1 kHz copy of the clip, Fish codes
-keyed by the GGUF). In flight: answers to the Muon app's questions (cue
+keyed by the GGUF). In flight: an application's questions (cue
 placement against stalls; the silence stop made relative to the take's
 peak, since a fixed threshold cut whispers). Left: the verify tiers and
 the pull request.

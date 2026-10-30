@@ -121,17 +121,17 @@ test "a kept sentence is found for its model and voice until it expires" {
     const t0: std.Io.Timestamp = .{ .nanoseconds = 1_000 };
     const id: Id = @splat('a');
     const codes = [_]Codes{@splat(7)};
-    try store.put(io, t0, id, "/m/drama", "doo", "يا عم.", &codes);
+    try store.put(io, t0, id, "/m/drama", "anna", "يا عم.", &codes);
 
-    var hit = try store.lookup(gpa, io, t0, &id, "/m/drama", "doo");
+    var hit = try store.lookup(gpa, io, t0, &id, "/m/drama", "anna");
     try std.testing.expectEqualStrings("يا عم.", hit.hit.text);
     try std.testing.expectEqual(@as(u16, 7), hit.hit.codes[0][3]);
     hit.hit.deinit(gpa);
 
-    try std.testing.expectEqual(Outcome.other_voice, try store.lookup(gpa, io, t0, &id, "/m/drama", "nda"));
-    try std.testing.expectEqual(Outcome.missing, try store.lookup(gpa, io, t0, &@as(Id, @splat('b')), "/m/drama", "doo"));
+    try std.testing.expectEqual(Outcome.other_voice, try store.lookup(gpa, io, t0, &id, "/m/drama", "ben"));
+    try std.testing.expectEqual(Outcome.missing, try store.lookup(gpa, io, t0, &@as(Id, @splat('b')), "/m/drama", "anna"));
     const later: std.Io.Timestamp = .{ .nanoseconds = t0.nanoseconds + ttl_ns + 1 };
-    try std.testing.expectEqual(Outcome.expired, try store.lookup(gpa, io, later, &id, "/m/drama", "doo"));
+    try std.testing.expectEqual(Outcome.expired, try store.lookup(gpa, io, later, &id, "/m/drama", "anna"));
 }
 
 test "the store keeps at most capacity, dropping the oldest" {

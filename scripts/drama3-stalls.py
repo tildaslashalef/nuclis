@@ -8,8 +8,8 @@ silence. `--cue` puts a [cue] into every phrase, first or after `--cue-after`
 words; the score is against the phrase alone. The method is docs/models/drama3.md
 § Stalls, and what nuclis adds.
 
-    python3 scripts/drama3-stalls.py --refs ~/Code/ttslab/voicerefs/doo-v4-12s \
-        --refs ~/Code/ttslab/voicerefs/nda-v2-12s --seeds 1 2 3 4 --out .zig-cache/stalls
+    python3 scripts/drama3-stalls.py --refs clips/voice-a --refs clips/voice-b \
+        --seeds 1 2 3 4 --out .zig-cache/stalls
 """
 
 import argparse

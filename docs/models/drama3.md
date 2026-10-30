@@ -452,7 +452,7 @@ the clause mark `،` past the chunker's limit), not only past 300 bytes.
   has spoken once its last 16 levels (the codec's first frame left out)
   peak at 0.01 (−40 dBFS) or more and at three times their quietest.
   Speech rises and falls with its syllables. Steady noise does not: on the
-  `nda-v2-12s` voice the model sometimes makes a hiss at 0.01–0.025 that
+  voice B (measured below) the model sometimes makes a hiss at 0.01–0.025 that
   never rises, and that never counts.
 - **The stop on silence.** After that, a frame is silent when its level
   is under a tenth of the take's loudest, clamped to 0.003–0.02. 32 silent
@@ -481,7 +481,7 @@ come only once a take has spoken.
 
 Measured through `nuclis speak` on Metal (2026-10-30, the M4 Pro, this
 file). `scripts/drama3-stalls.py` ran the lab's two Egyptian voices
-(`doo-v4-12s` and `nda-v2-12s`, each saved with its transcript) on
+(A and B, 12 s clips each saved with its transcript) on
 8 short phrases, the lab's four worst first, with seeds 1–4. Each take was
 heard by `nuclis transcribe --language ar`. A take counts as a stall when
 the recognizer hears under 60 % of the phrase's letters, or when the take
@@ -494,7 +494,7 @@ ends in more than 1.5 s of silence:
 
 No take ran past 4.0 s, and none ended in more than 1.3 s of silence, so
 the lab's 10–28 s silences are gone. None needed the retry. The two
-stalls are dropped words, not silence: `nda-v2-12s` seed 3 spoke only
+stalls are dropped words, not silence: voice B at seed 3 spoke only
 "عامل إيه" of "إزيك يا باشا؟ عامل إيه؟", and seed 2 spoke "طيب" for
 "طب استنى بس.". The mean character error rate over all 64 takes is
 15 %. Most of it is the recognizer's spelling of Egyptian Arabic, not
@@ -526,7 +526,7 @@ maps as shared buffers. A kept prefix is about 90 MB with a 12 s
 reference.
 
 Measured through `/v1/audio/speech` on Metal (2026-10-30, the M4 Pro,
-this file, the voice `doo-v4-12s`: a 12 s clip, a 328-row prefix). Each
+this file, voice A: a 12 s clip, a 328-row prefix). Each
 request is one short Egyptian sentence, with the model already open:
 
 | Request | Prefill | First audio |
