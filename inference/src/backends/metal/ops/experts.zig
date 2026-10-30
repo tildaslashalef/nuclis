@@ -82,6 +82,18 @@ pub fn combineExperts(self: *Backend, values: Buffer, weights: Buffer, indices: 
     try self.dispatch(.combine_experts, &.{ values, weights, indices, scales orelse weights, output }, p, perElement(s.columns * s.rows), 256, .{});
 }
 
+pub const SharedExpertParams = extern struct { width: u32, rows: u32, in_stride: u32, stride: u32 };
+/// A gated shared expert's add over `rows` rows of `width`:
+/// `x[r] += sigmoid(gate · input[r]) · y[r]`, `gate` a `width`-float
+/// vector, `input` rows at `in_stride`, `x` and `y` at `stride`.
+pub fn sharedExpertAdd(self: *Backend, x: Buffer, y: Buffer, gate: Buffer, input: Buffer, width: usize, rows: usize, in_stride: usize, stride: usize) !void {
+    if (width == 0 or rows == 0 or in_stride < width or stride < width or gate.len < width * 4) return error.InvalidShape;
+    const span = ((rows - 1) * stride + width) * 4;
+    if (x.len < span or y.len < span or input.len < ((rows - 1) * in_stride + width) * 4 or Buffer.overlaps(x, span, y, span)) return error.InvalidShape;
+    const p: SharedExpertParams = .{ .width = @intCast(width), .rows = @intCast(rows), .in_stride = @intCast(in_stride), .stride = @intCast(stride) };
+    try self.dispatch(.shared_expert_add, &.{ x, y, gate, input }, p, @intCast(rows), 256, .{});
+}
+
 pub const GeluRowsParams = extern struct { width: u32, rows: u32, gate_stride: u32, up_stride: u32, out_stride: u32 };
 /// `output[r][i] = gelu(gate[r][i]) · up[r][i]` over `rows` strided rows
 /// of `width`; with a fused gate-up row, `up` is the gate buffer sliced

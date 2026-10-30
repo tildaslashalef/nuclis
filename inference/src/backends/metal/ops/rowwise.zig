@@ -137,7 +137,10 @@ pub fn gatherRows(self: *Backend, dst: Buffer, src: Buffer, map: Buffer, width: 
     const p: GatherParams = .{ .width = @intCast(width), .groups = @intCast(groups), .rows = @intCast(rows), .in_stride = @intCast(in_stride), .out_stride = @intCast(out_stride) };
     try self.dispatch(.gather_rows, &.{ dst, src, map }, p, perElement(count), 256, .{});
 }
-pub const L2Params = extern struct { width: u32, stride: u32, eps: f32, rows: u32, heads: u32, row_stride: u32 };
+pub const L2Params = extern struct { width: u32, stride: u32, eps: f32, rows: u32, heads: u32, row_stride: u32, inside: u32 = 0 };
+/// Where `eps` enters an L2 norm: `clamp` divides by max(‖x‖, eps)
+/// (`cpu.l2Norm`), `inside` by sqrt(‖x‖² + eps) (Fish's `l2norm`).
+pub const L2Epsilon = enum(u32) { clamp, inside };
 pub fn l2Norm(self: *Backend, data: Buffer, rows: usize, width: usize, stride: usize, eps: f32) !void {
     if (rows == 0 or width == 0 or stride < width or !(eps > 0) or data.len < ((rows - 1) * stride + width) * 4) return error.InvalidShape;
     const p: L2Params = .{ .width = @intCast(width), .stride = @intCast(stride), .eps = eps, .rows = @intCast(rows), .heads = @intCast(rows), .row_stride = 0 };
@@ -146,9 +149,13 @@ pub fn l2Norm(self: *Backend, data: Buffer, rows: usize, width: usize, stride: u
 /// `l2Norm` over `rows` token rows of `row_stride`, each holding `heads`
 /// vectors of `width` at `stride`.
 pub fn l2NormRows(self: *Backend, data: Buffer, rows: usize, heads: usize, width: usize, stride: usize, row_stride: usize, eps: f32) !void {
+    return l2NormRowsWith(self, data, rows, heads, width, stride, row_stride, eps, .clamp);
+}
+/// `l2NormRows` with the epsilon's placement chosen.
+pub fn l2NormRowsWith(self: *Backend, data: Buffer, rows: usize, heads: usize, width: usize, stride: usize, row_stride: usize, eps: f32, epsilon: L2Epsilon) !void {
     if (rows == 0 or heads == 0 or width == 0 or stride < width or row_stride < (heads - 1) * stride + width or !(eps > 0)) return error.InvalidShape;
     if (data.len < ((rows - 1) * row_stride + (heads - 1) * stride + width) * 4) return error.InvalidShape;
-    const p: L2Params = .{ .width = @intCast(width), .stride = @intCast(stride), .eps = eps, .rows = @intCast(rows * heads), .heads = @intCast(heads), .row_stride = @intCast(row_stride) };
+    const p: L2Params = .{ .width = @intCast(width), .stride = @intCast(stride), .eps = eps, .rows = @intCast(rows * heads), .heads = @intCast(heads), .row_stride = @intCast(row_stride), .inside = @backingInt(epsilon) };
     try self.dispatch(.l2norm, &.{data}, p, @intCast(rows * heads), 32, .{});
 }
 /// Which two channels form rotation pair `i`: `cpu.rope.Pairing`.

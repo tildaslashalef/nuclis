@@ -345,4 +345,5 @@ pub const Kernel = enum(u32) {
     matmul_q5_1_f2,
     matmul_experts_q5_0,
     matmul_experts_q5_1,
+    shared_expert_add,
 };
