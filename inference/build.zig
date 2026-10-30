@@ -93,6 +93,19 @@ pub fn build(b: *std.Build) void {
     const run_qwen3_tts = b.addRunArtifact(qwen3_tts_check);
     run_qwen3_tts.addPassthruArgs();
     b.step("test-qwen3-tts", "Check Qwen3-TTS against the authors' trace (-- MODEL_DIR codec|talker)").dependOn(&run_qwen3_tts.step);
+    const drama3_check = b.addExecutable(.{
+        .name = "drama3-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("drama3-check.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "inference", .module = mod }},
+        }),
+    });
+    b.installArtifact(drama3_check);
+    const run_drama3 = b.addRunArtifact(drama3_check);
+    run_drama3.addPassthruArgs();
+    b.step("test-drama3", "Check Drama 3's backbone and tower on the CPU (-- MODEL.gguf smoke|trace)").dependOn(&run_drama3.step);
     const nemotron_asr_check = b.addExecutable(.{
         .name = "nemotron-asr-check",
         .root_module = b.createModule(.{
