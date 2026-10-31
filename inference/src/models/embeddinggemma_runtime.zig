@@ -130,7 +130,7 @@ pub const Runtime = struct {
             for (ws.x) |*v| v.* *= constants.output_scale;
             if (observer) |o| o.record(o.context, .{ .layer = il }, ws.x);
         }
-        try normRows(ws.x, ws.h, self.output_norm);
+        try eachRow(self.io, rows, NormRows{ .x = ws.x, .out = ws.h, .weight = self.output_norm });
         if (observer) |o| o.record(o.context, .final_norm, ws.h);
         try self.linear(self.binding.output, ws.h, rows, ws.projected);
         if (observer) |o| o.record(o.context, .projected, ws.projected);
@@ -145,25 +145,21 @@ pub const Runtime = struct {
         const q = ws.q[0 .. rows * qw];
         const k = ws.k[0 .. rows * kvw];
         const v = ws.v[0 .. rows * kvw];
-        try normRows(ws.x, ws.h, constants.attention_norm);
+        try eachRow(self.io, rows, NormRows{ .x = ws.x, .out = ws.h, .weight = constants.attention_norm });
         try self.linear(layer.query, ws.h, rows, q);
         try self.linear(layer.key, ws.h, rows, k);
         try self.linear(layer.value, ws.h, rows, v);
-        for (0..rows) |r| {
-            const rope: cpu.rope.Options = .{ .dimensions = hd, .base = layer.kind.ropeBase(), .position = @intCast(r) };
-            for (0..qw / hd) |h| {
-                const head = q[r * qw + h * hd ..][0..hd];
-                try normRow(head, head, constants.query_norm);
-                try cpu.rope.apply(head, head, rope);
-            }
-            for (0..kvw / hd) |h| {
-                const key = k[r * kvw + h * hd ..][0..hd];
-                try normRow(key, key, constants.key_norm);
-                try cpu.rope.apply(key, key, rope);
-                const value = v[r * kvw + h * hd ..][0..hd];
-                try cpu.rmsNorm(value, value, model.rms_epsilon);
-            }
-        }
+        try eachRow(self.io, rows, Heads{
+            .q = q,
+            .k = k,
+            .v = v,
+            .query_width = qw,
+            .kv_width = kvw,
+            .head_dim = hd,
+            .base = layer.kind.ropeBase(),
+            .query_norm = constants.query_norm,
+            .key_norm = constants.key_norm,
+        });
         const attended = ws.attended[0 .. rows * qw];
         try dense.attention(self.io, .{
             .tokens = rows,
@@ -179,16 +175,16 @@ pub const Runtime = struct {
             .v = v,
         }, attended, ws.scores);
         try self.linear(layer.output, attended, rows, ws.h);
-        try addNormed(ws.x, ws.h, constants.post_attention_norm);
+        try eachRow(self.io, rows, AddNormed{ .x = ws.x, .y = ws.h, .weight = constants.post_attention_norm });
     }
 
     fn feedForward(self: *Runtime, ws: *Workspace, layer: model.Layer, constants: LayerConstants) !void {
-        try normRows(ws.x, ws.h, constants.ffn_norm);
+        try eachRow(self.io, ws.rows, NormRows{ .x = ws.x, .out = ws.h, .weight = constants.ffn_norm });
         try self.linear(layer.ffn_gate, ws.h, ws.rows, ws.gate);
         try self.linear(layer.ffn_up, ws.h, ws.rows, ws.up);
-        for (ws.gate, ws.up) |*g, u| g.* = cpu.gelu(g.*) * u;
+        try eachRow(self.io, ws.rows, GeluGate{ .gate = ws.gate, .other = ws.up, .width = ff });
         try self.linear(layer.ffn_down, ws.gate, ws.rows, ws.h);
-        try addNormed(ws.x, ws.h, constants.post_ffn_norm);
+        try eachRow(self.io, ws.rows, AddNormed{ .x = ws.x, .y = ws.h, .weight = constants.post_ffn_norm });
     }
 
     /// x += rmsnorm(proj · (gelu(inp_gate · x) ⊙ ple[l])) · post_norm, where
@@ -197,12 +193,12 @@ pub const Runtime = struct {
         try self.linearRows(self.binding.per_layer_projection, il * w, w, ws.x0, ws.rows, ws.ple);
         const inv: f32 = 1 / @sqrt(@as(f32, d));
         for (ws.ple) |*v| v.* *= inv;
-        try normRows(ws.ple, ws.ple, self.per_layer_norm);
+        try eachRow(self.io, ws.rows, NormRows{ .x = ws.ple, .out = ws.ple, .weight = self.per_layer_norm });
         if (observer) |o| o.record(o.context, .{ .per_layer = il }, ws.ple);
         try self.linear(layer.per_layer_gate, ws.x, ws.rows, ws.pe);
-        for (ws.pe, ws.ple) |*g, e| g.* = cpu.gelu(g.*) * e;
+        try eachRow(self.io, ws.rows, GeluGate{ .gate = ws.pe, .other = ws.ple, .width = w });
         try self.linear(layer.per_layer_projection, ws.pe, ws.rows, ws.h);
-        try addNormed(ws.x, ws.h, constants.per_layer_post_norm);
+        try eachRow(self.io, ws.rows, AddNormed{ .x = ws.x, .y = ws.h, .weight = constants.per_layer_post_norm });
     }
 
     /// y = x · Wᵀ over every output row of `tensor`.
@@ -321,6 +317,96 @@ fn addNormed(x: []f32, y: []f32, weight: []const f32) !void {
     try normRows(y, y, weight);
     for (x, y) |*a, b| a.* += b;
 }
+
+/// Runs `stage.rows(lo, hi)` over `[0, rows)` split across `io` tasks. Every
+/// stage computes each row alone, so the split changes no value.
+fn eachRow(io: std.Io, rows: usize, stage: anytype) !void {
+    const S = @TypeOf(stage);
+    const tasks = @max(1, @min(rows / min_task_rows, std.Thread.getCpuCount() catch 1, max_row_tasks));
+    if (tasks == 1) return stage.rows(0, rows);
+    var failures: [max_row_tasks]?cpu.Error = @splat(null);
+    var group: std.Io.Group = .init;
+    for (0..tasks) |t| group.async(io, rowTask(S), .{ stage, rows * t / tasks, rows * (t + 1) / tasks, &failures[t] });
+    try group.await(io);
+    for (failures[0..tasks]) |failure| if (failure) |err| return err;
+}
+fn rowTask(comptime S: type) fn (S, usize, usize, *?cpu.Error) void {
+    return struct {
+        fn run(stage: S, lo: usize, hi: usize, failure: *?cpu.Error) void {
+            stage.rows(lo, hi) catch |err| {
+                failure.* = err;
+            };
+        }
+    }.run;
+}
+const max_row_tasks = 16;
+/// Fewer rows than this per task stay on the calling thread.
+const min_task_rows = 8;
+
+/// out = rmsnorm(x) · weight, `weight.len` values a row; `out` may alias `x`.
+const NormRows = struct {
+    x: []const f32,
+    out: []f32,
+    weight: []const f32,
+    fn rows(s: NormRows, lo: usize, hi: usize) cpu.Error!void {
+        const n = s.weight.len;
+        try normRows(s.x[lo * n .. hi * n], s.out[lo * n .. hi * n], s.weight);
+    }
+};
+
+/// x += rmsnorm(y) · weight, `weight.len` values a row; y is overwritten.
+const AddNormed = struct {
+    x: []f32,
+    y: []f32,
+    weight: []const f32,
+    fn rows(s: AddNormed, lo: usize, hi: usize) cpu.Error!void {
+        const n = s.weight.len;
+        try addNormed(s.x[lo * n .. hi * n], s.y[lo * n .. hi * n], s.weight);
+    }
+};
+
+/// gate = gelu(gate) ⊙ other, `width` values a row.
+const GeluGate = struct {
+    gate: []f32,
+    other: []const f32,
+    width: usize,
+    fn rows(s: GeluGate, lo: usize, hi: usize) cpu.Error!void {
+        const n = s.width;
+        for (s.gate[lo * n .. hi * n], s.other[lo * n .. hi * n]) |*g, u| g.* = cpu.gelu(g.*) * u;
+    }
+};
+
+/// Each row's query and key heads normed and rotated to the row's position,
+/// its value heads RMS-normed; rows are `query_width` and `kv_width` wide.
+const Heads = struct {
+    q: []f32,
+    k: []f32,
+    v: []f32,
+    query_width: usize,
+    kv_width: usize,
+    head_dim: usize,
+    base: f32,
+    query_norm: []const f32,
+    key_norm: []const f32,
+    fn rows(s: Heads, lo: usize, hi: usize) cpu.Error!void {
+        const hd = s.head_dim;
+        for (lo..hi) |r| {
+            const rope: cpu.rope.Options = .{ .dimensions = hd, .base = s.base, .position = @intCast(r) };
+            for (0..s.query_width / hd) |h| {
+                const head = s.q[r * s.query_width + h * hd ..][0..hd];
+                try normRow(head, head, s.query_norm);
+                try cpu.rope.apply(head, head, rope);
+            }
+            for (0..s.kv_width / hd) |h| {
+                const key = s.k[r * s.kv_width + h * hd ..][0..hd];
+                try normRow(key, key, s.key_norm);
+                try cpu.rope.apply(key, key, rope);
+                const value = s.v[r * s.kv_width + h * hd ..][0..hd];
+                try cpu.rmsNorm(value, value, model.rms_epsilon);
+            }
+        }
+    }
+};
 
 /// Decodes rows `[first, first + count)` of `m` into `out`, split across `io`
 /// tasks; the decode is exact per row, so the split changes no value.
