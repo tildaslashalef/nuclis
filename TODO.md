@@ -14,8 +14,34 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-Nothing is in progress. v0.11.0 is in its version pull request; the next
-theme is the user's to choose.
+`serve-cpu-cores` is in progress: CPU embeddings in `nuclis serve` used
+one core. The fix and the measurements are in; what remains is the record
+and the pull request, then a 0.11.1 patch release (the user's, 2026-10-31).
+
+| Unit | Branch | State |
+| --- | --- | --- |
+| Every core for CPU embeddings in `serve` | `serve-cpu-cores` | measured; docs and pull request remain |
+
+## Every core for CPU embeddings in `serve`
+
+Base: `dc128de`
+
+**Cause.** `std.Io.Threaded` counts tasks parked in `concurrent` (the
+accept loop, the executor, each connection) against the async limit
+(cores − 1); past it, `async` runs inline. On 4 vCPU the server's three
+parked tasks left every CPU kernel fan-out on the calling thread.
+`src/main.zig` lifts the async limit; the kernels bound their own fan-out
+by `std.Thread.getCpuCount()`.
+
+**Serial share.** `inference/src/models/embeddinggemma_runtime.zig` ran
+its row-wise stages (RMS norms, the per-head norm and rope, the GELU
+gates) on the calling thread; `eachRow` splits them by rows. Each row is
+computed alone, so the vectors are unchanged.
+
+**Remaining.** Record the numbers in `docs/models/embeddinggemma.md`
+§ On Linux, CPU only and the v4 verdict in `docs/development.md` § Linux;
+`make verify-auto`; the CPU tier's EmbeddingGemma gates; the pull request.
+Then the 0.11.1 version pull request (AGENTS.md § Versioning and releases).
 
 ## Deferred
 
