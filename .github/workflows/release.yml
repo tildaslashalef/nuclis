@@ -64,12 +64,20 @@ jobs:
       # digests come from the workflow's own revision, so a tag cut before
       # its compiler was pinned, or with a broken installer, can still be
       # published by dispatch. The source archive is `git archive` of the
-      # tag, untouched by these edits.
+      # tag, untouched by these edits. They are undone before the build: a
+      # binary built from a modified tree reports `X.Y.0-dev+<commit>.dirty`,
+      # which Package refuses.
       - name: Install the pinned Zig
         run: |
           git show "${{ github.sha }}:.github/install-zig.sh" > .github/install-zig.sh
           git show "${{ github.sha }}:.github/zig-toolchain" >> .github/zig-toolchain
           ./.github/install-zig.sh "$HOME/.local/zig"
+          git checkout -- .github/install-zig.sh .github/zig-toolchain
+          [ -z "$(git status --porcelain)" ] || {
+            git status --porcelain >&2
+            echo "refusing to publish: the checkout of the tag is not clean" >&2
+            exit 1
+          }
 
       - run: echo "$HOME/.local/zig" >> "$GITHUB_PATH"
 
