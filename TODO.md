@@ -15,12 +15,13 @@ it is empty, ask what to work on and write the agreed plan here.
 ## Where we are
 
 `serve-cpu-cores` is in progress: CPU embeddings in `nuclis serve` used
-one core. The fix and the measurements are in; what remains is the record
-and the pull request, then a 0.11.1 patch release (the user's, 2026-10-31).
+one core. The fix, the measurements, and the record are in; what remains
+is the pull request. It ships with the next release, not a patch release
+of its own (the user's, 2026-10-31).
 
 | Unit | Branch | State |
 | --- | --- | --- |
-| Every core for CPU embeddings in `serve` | `serve-cpu-cores` | measured; docs and pull request remain |
+| Every core for CPU embeddings in `serve` | `serve-cpu-cores` | committed; the pull request remains |
 
 ## Every core for CPU embeddings in `serve`
 
@@ -38,10 +39,10 @@ its row-wise stages (RMS norms, the per-head norm and rope, the GELU
 gates) on the calling thread; `eachRow` splits them by rows. Each row is
 computed alone, so the vectors are unchanged.
 
-**Remaining.** Record the numbers in `docs/models/embeddinggemma.md`
-§ On Linux, CPU only and the v4 verdict in `docs/development.md` § Linux;
-`make verify-auto`; the CPU tier's EmbeddingGemma gates; the pull request.
-Then the 0.11.1 version pull request (AGENTS.md § Versioning and releases).
+**Remaining.** The CPU tier's EmbeddingGemma gates
+(`make verify-changed BASE=dc128de ARGS='--tier verify-cpu'`), then the
+pull request. The numbers are in `docs/models/embeddinggemma.md` § Every
+core on Linux, the v4 verdict in `docs/development.md` § Linux.
 
 ## Deferred
 
