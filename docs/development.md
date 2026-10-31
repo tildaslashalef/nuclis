@@ -781,10 +781,13 @@ the CPU when Metal is not built).
 The release's Linux archive is built for the widest reach at little cost:
 `-Dtarget=x86_64-linux-gnu.2.35 -Dcpu=x86_64_v3`, so any x86-64 with AVX2
 (Intel since Haswell, AMD since Excavator) and glibc 2.35 or newer (Ubuntu
-22.04, Debian 12). On the Ryzen VM it embeds EmbeddingGemma 2's 13-text
-check in 19.6 s, against 18.0 s for the `x86_64_v4` build, with the same
-vectors ([models/embeddinggemma.md § On Linux, CPU
-only](models/embeddinggemma.md#on-linux-cpu-only-2026-10-18)). Its tarballs are
+22.04, Debian 12). On a 4-vCPU Ryzen 9 9955HX VM, a 17,788-token
+EmbeddingGemma 2 request to `serve` takes 49.6 s, against 44.3 s for an
+`x86_64_v4` build, with the same vectors
+([models/embeddinggemma.md § Every core on
+Linux](models/embeddinggemma.md#every-core-on-linux-2026-10-31)). No second
+archive is shipped for that 11 %: nothing would pick it for the user, and
+a host with AVX-512 can build its own with the command above. Its tarballs are
 written with `tar --no-xattrs`: macOS's tar otherwise records
 `com.apple.provenance`, which GNU tar warns about on unpacking.
 

@@ -23,6 +23,13 @@ pub fn main(init: std.process.Init) void {
 }
 
 fn run(init: std.process.Init, diag: *cli.Diagnostic) !void {
+    // The CPU kernels size their own fan-out to the core count. The default
+    // async limit (cores - 1) also counts tasks parked in `concurrent` (a
+    // server's accept loop, its executor, each connection), and past it
+    // `async` runs inline: `serve` on 4 cores ran every kernel on one.
+    // The juicy main's `io` is a `std.Io.Threaded`.
+    const threaded: *std.Io.Threaded = @ptrCast(@alignCast(init.io.userdata.?));
+    threaded.setAsyncLimit(.unlimited);
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     const options = try cli.parseArgs(args[1..]);
     var buffer: [4096]u8 = undefined;

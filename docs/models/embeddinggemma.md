@@ -36,6 +36,7 @@ reference rather than the file, the sentence says so.
 - [Images (2026-10-09)](#images-2026-10-09)
 - [Audio (2026-10-09)](#audio-2026-10-09)
 - [On Linux, CPU only (2026-10-18)](#on-linux-cpu-only-2026-10-18)
+- [Every core on Linux (2026-10-31)](#every-core-on-linux-2026-10-31)
 
 ## Artifacts
 
@@ -729,3 +730,46 @@ Proxmox VM (Ubuntu 26.04, 2 vCPU of a Ryzen 9 9955HX, 4 GiB):
 | `nuclis serve --model embeddinggemma-2`, two short texts | 181 ms, 768-wide vectors; budget 2.5 GiB |
 | `nuclis model pull embeddinggemma-2` | 309.9 MB in 7.2 s, digest as catalogued |
 | the release's build (`x86_64-linux-gnu.2.35`, `x86_64_v3`), the same 13 texts | bit-identical to the Mac too; 19.56 s |
+
+## Every core on Linux (2026-10-31)
+
+`nuclis serve` ran a CPU embedding on one core of four: in production, a
+32-input request of 15,713 tokens took 118.8 s (132 tokens/s) with one
+thread busy. Two causes, both fixed on the `serve-cpu-cores` branch:
+
+- **The async limit.** `std.Io.Threaded` counts the tasks parked in
+  `concurrent` (the server's accept loop, its executor, each connection)
+  against the async limit, one less than the cores, and past it `async`
+  runs the task inline. Three parked tasks on 4 vCPU put every kernel
+  fan-out on the calling thread. `nuclis embed` has none, so it was
+  multi-core. `src/main.zig` lifts the limit; the kernels bound their own
+  fan-out by the core count.
+- **The serial share.** The forward ran its row-wise stages on the
+  calling thread: RMS norms, the per-head norm and rope (F64 `pow`, `sin`
+  and `cos` per pair), the F64 `tanh` GELU gates. `eachRow` in
+  `embeddinggemma_runtime.zig` splits them by rows; every row is computed
+  alone, so no value changes.
+
+Measured with Zig 0.17.0, ReleaseSafe builds cross-compiled on the Mac, on
+a 4-vCPU Proxmox VM of a Ryzen 9 9955HX (Ubuntu 26.04, 4 GiB, AVX-512
+passed through). The input is 32 texts of 2,000 characters from
+`docs/spec.md` and `docs/architecture.md`, 17,788 tokens. `serve` gets
+them as one `/v1/embeddings` request on a quiet machine (11 passes) and
+`embed` as `--input-file … --json`; each figure is the wall time, two
+runs where two are given:
+
+| Build | `serve` | tokens/s | CPU | `embed` |
+| --- | --- | --- | --- | --- |
+| 0.11.0 release (`x86_64_v3`) | 134.3, 133.9 s | 133 | 100 %, one thread | 64.0, 64.1 s, 223 % |
+| the async limit alone, `x86_64_v3` | 73.4 s | 242 | 200 % | 74.0 s, 197 % |
+| both fixes, `x86_64_v3` (glibc 2.35, as released) | 49.8, 49.4 s | 359 | 270 % | 49.5, 49.6 s, 283 % |
+| both fixes, `x86_64_v4` (glibc 2.43) | 44.2, 44.4 s | 402 | 310 % | 43.8, 44.4 s, 280 % |
+
+The vectors are bit-identical across every row (all 32: cosine 1.0,
+largest difference 0) and against the M4 Pro's CPU path on the same
+inputs (`--backend cpu`, 39.7 s there). The `serve` speedup is 2.7× on
+`x86_64_v3`. `x86_64_v4` takes 11 % less time on top of the fix; it took
+8 % less before (§ On Linux, CPU only). The process holds 270–310 % of
+400 %; the rest, not measured apart, is what still runs on one thread (the
+residual scaling, the input rows, decodes of fewer than 64 weight rows)
+and the hand-offs between fan-outs.

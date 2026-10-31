@@ -14,8 +14,9 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-Nothing is in progress. v0.11.0 is in its version pull request; the next
-theme is the user's to choose.
+Nothing is in progress. Every core for CPU embeddings in `serve` is in its
+pull request and ships with the next release; the next theme is the
+user's to choose.
 
 ## Deferred
 
