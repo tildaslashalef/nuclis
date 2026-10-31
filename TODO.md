@@ -14,35 +14,9 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-`serve-cpu-cores` is in progress: CPU embeddings in `nuclis serve` used
-one core. The fix, the measurements, and the record are in; what remains
-is the pull request. It ships with the next release, not a patch release
-of its own (the user's, 2026-10-31).
-
-| Unit | Branch | State |
-| --- | --- | --- |
-| Every core for CPU embeddings in `serve` | `serve-cpu-cores` | committed; the pull request remains |
-
-## Every core for CPU embeddings in `serve`
-
-Base: `dc128de`
-
-**Cause.** `std.Io.Threaded` counts tasks parked in `concurrent` (the
-accept loop, the executor, each connection) against the async limit
-(cores − 1); past it, `async` runs inline. On 4 vCPU the server's three
-parked tasks left every CPU kernel fan-out on the calling thread.
-`src/main.zig` lifts the async limit; the kernels bound their own fan-out
-by `std.Thread.getCpuCount()`.
-
-**Serial share.** `inference/src/models/embeddinggemma_runtime.zig` ran
-its row-wise stages (RMS norms, the per-head norm and rope, the GELU
-gates) on the calling thread; `eachRow` splits them by rows. Each row is
-computed alone, so the vectors are unchanged.
-
-**Remaining.** The CPU tier's EmbeddingGemma gates
-(`make verify-changed BASE=dc128de ARGS='--tier verify-cpu'`), then the
-pull request. The numbers are in `docs/models/embeddinggemma.md` § Every
-core on Linux, the v4 verdict in `docs/development.md` § Linux.
+Nothing is in progress. Every core for CPU embeddings in `serve` is in its
+pull request and ships with the next release; the next theme is the
+user's to choose.
 
 ## Deferred
 
