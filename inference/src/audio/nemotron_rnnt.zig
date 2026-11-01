@@ -94,6 +94,17 @@ pub const Weights = struct {
     output: Linear,
     /// `joint.head`: hidden → vocab.
     head: Linear,
+    /// By id: the piece begins a word, from the tokenizer (`Model.open`);
+    /// empty, no token does.
+    word_start: []const bool = &.{},
+
+    /// `k` emitted again on the row that just emitted it ends the row: one
+    /// word twice within 80 ms is the joint failing to leave it (a stream's
+    /// last row at lookahead 3), where a piece inside a word ("s", "s")
+    /// may repeat.
+    pub fn endsRow(self: *const Weights, k: u32, previous: ?u32) bool {
+        return k == previous and k < self.word_start.len and self.word_start[k];
+    }
 };
 
 /// The bound tensors: views into the checkpoint's mapping, or copies where
@@ -248,15 +259,18 @@ pub const Decoder = struct {
         for (0..n) |i| try self.decodeRow(e[i * c.hidden ..][0..c.hidden], out);
     }
 
-    /// Greedy steps on one projected row until the blank or the cap.
+    /// Greedy steps on one projected row until the blank, a word just
+    /// emitted on it again (`Weights.endsRow`), or the cap.
     fn decodeRow(self: *Decoder, e: []const f32, out: *std.ArrayList(Token)) !void {
         const c = self.weights.config;
         var symbols: usize = 0;
+        var previous: ?u32 = null;
         while (symbols < c.max_symbols) {
             const k = try self.argmaxJoint(e);
-            if (k == c.blank) break;
+            if (k == c.blank or self.weights.endsRow(k, previous)) break;
             try out.append(self.alloc, .{ .id = k, .row = @intCast(self.row) });
             try self.predict(k);
+            previous = k;
             symbols += 1;
         }
         self.row += 1;
@@ -426,7 +440,7 @@ fn force(w: *Weights, storage_head: []f32, bias: []f32, token: u32) void {
     w.head = .{ .weight = storage_head, .bias = bias };
 }
 
-test "greedy decoding: the blank moves on, ten symbols at most per row" {
+test "greedy decoding: the blank moves on, so does a word repeated on its row, ten symbols at most" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     var synthetic = try Synthetic.init(gpa, tiny, 3);
@@ -445,7 +459,8 @@ test "greedy decoding: the blank moves on, ten symbols at most per row" {
     try std.testing.expectEqual(@as(usize, 0), tokens.items.len);
     try std.testing.expectEqual(@as(usize, 3), decoder.row);
 
-    // Never the blank: the cap emits `max_symbols` per row, then moves on.
+    // Never the blank, always a piece inside a word: the cap emits
+    // `max_symbols` per row, then moves on.
     force(&synthetic.weights, &head, &bias, 2);
     try decoder.reset();
     try decoder.push(&rows, &tokens);
@@ -454,6 +469,17 @@ test "greedy decoding: the blank moves on, ten symbols at most per row" {
         try std.testing.expectEqual(@as(u32, 2), t.id);
         try std.testing.expectEqual(@as(u32, @intCast(i / tiny.max_symbols)), t.row);
     }
+
+    // The same, a word: once per row.
+    var word_start: [tiny.vocab]bool = @splat(false);
+    word_start[2] = true;
+    synthetic.weights.word_start = &word_start;
+    defer synthetic.weights.word_start = &.{};
+    tokens.clearRetainingCapacity();
+    try decoder.reset();
+    try decoder.push(&rows, &tokens);
+    try std.testing.expectEqual(@as(usize, 3), tokens.items.len);
+    for (tokens.items, 0..) |t, i| try std.testing.expectEqual(@as(u32, @intCast(i)), t.row);
     try std.testing.expectError(error.InvalidShape, decoder.push(rows[0..5], &tokens));
 }
 

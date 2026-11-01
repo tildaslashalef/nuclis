@@ -82,6 +82,9 @@ pub const Model = struct {
         errdefer self.encoder_binding.deinit();
         self.transducer_binding = try rnnt.bind(alloc, &self.checkpoint, transducer_config);
         errdefer self.transducer_binding.deinit();
+        const word_start = try self.transducer_binding.arena.allocator().alloc(bool, transducer_config.vocab);
+        for (word_start, 0..) |*w, id| w.* = !self.table.isSpecial(@intCast(id)) and std.mem.startsWith(u8, self.table.piece(@intCast(id)) orelse "", self.table.replacement);
+        self.transducer_binding.weights.word_start = word_start;
         self.encoder = try encoder.Encoder.init(alloc, io, &self.encoder_binding.weights);
         self.metal = null;
         return self;

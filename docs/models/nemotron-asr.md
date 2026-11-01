@@ -394,6 +394,9 @@ while t < T:
         if n == 10: t += 1; n = 0             # the 10th symbol on one row forces an advance
 ```
 
+nuclis adds one rule: a word emitted again on the row that just
+emitted it advances too ([Decisions and open items](#decisions-and-open-items)).
+
 On a blank the prediction network is not run (the decoder's
 "all-blank fast path" returns the cached `g`). In streaming, the loop
 pulls the next chunk when `t` reaches the rows encoded so far, so the
@@ -980,6 +983,20 @@ Decided at the plan (2026-10-27); each is checked at bring-up:
 - **Default language `auto`** (101), the code's default; a client names a
   locale to fix it. Language tags are stripped from the text by id and
   reported beside it. (The card's pipeline note says `en-US`.)
+- **A word twice on one row ends the row** (2026-11-01), a departure
+  from the greedy loop above. A Muon turn, "What is two plus two?"
+  (1.92 s), gave "One is two plus" then " plus" ten times at lookahead
+  3: all ten on the last row, whose right context is the end-of-stream
+  padding, where the joint never picks the blank and the 10-symbol cap
+  ends the loop. CPU and Metal emit the same tokens. Now a token
+  that starts a word (its piece begins with U+2581), emitted again
+  on the row that just emitted it, ends the row as the blank would
+  (`Weights.endsRow`, in both greedy loops); a piece inside a word may
+  repeat (dropping that too turned "forgetfulness" and "miss" into
+  "forgetfulnes" and "mis" at lookahead 6). That clip now gives "One is
+  two plus" at lookahead 3. Over the speech corpus, every one of the 60
+  transcripts is the same at lookaheads 0, 3, 6 and 13 (Metal: 6.52,
+  6.11, 6.44, 6.36 % WER), and the transducer trace check passes.
 - **No dither**, as HF: transcription is deterministic. NeMo's config
   has `dither: 1.0e-05`; whether NeMo applies it at inference was not read.
 
