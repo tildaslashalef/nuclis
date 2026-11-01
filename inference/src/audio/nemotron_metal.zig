@@ -726,6 +726,7 @@ pub const Stream = struct {
         var count = ready;
         var i: usize = 0;
         var symbols: usize = 0;
+        var previous: ?u32 = null;
         while (i < n) {
             if (i < lo or i >= lo + count) {
                 const started = std.Io.Clock.awake.now(plan.io);
@@ -742,10 +743,11 @@ pub const Stream = struct {
             const logits = plan.logits.floats()[(i - lo) * t.vocab ..][0..t.vocab];
             const k = decoder.pick(logits);
             if (decoder.observer) |o| o.record(o.context, .{ .row = decoder.row, .logits = logits, .token = k });
-            if (k == t.blank) {
+            if (k == t.blank or plan.transducer.endsRow(k, previous)) {
                 i += 1;
                 decoder.row += 1;
                 symbols = 0;
+                previous = null;
                 continue;
             }
             try tokens.append(self.alloc, .{ .id = k, .row = @intCast(decoder.row) });
@@ -756,10 +758,12 @@ pub const Stream = struct {
             // A new `g`: the logits from this row on are stale.
             count = 0;
             symbols += 1;
+            previous = k;
             if (symbols == t.max_symbols) {
                 i += 1;
                 decoder.row += 1;
                 symbols = 0;
+                previous = null;
             }
         }
     }

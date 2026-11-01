@@ -328,7 +328,18 @@ pub const Mark = struct {
     position: usize,
     /// The token fed at `position - 1`, which a drafter is re-fed.
     last: u32,
+    /// The token fed at `position - 2`, when this step fed it (`Tail`).
+    before: ?u32,
     history: ?std.bit_set.Dynamic,
+};
+
+/// The last tokens of a prompt the session holds in full after moving back
+/// to its `Mark`: a request sent again re-runs `last` from `position - 1`
+/// for the next token's logits (`Completer.stepBack`).
+pub const Tail = struct {
+    position: usize,
+    last: u32,
+    before: ?u32,
 };
 
 /// The real `Model`: renders through the artifact's profile and completes one
@@ -380,6 +391,8 @@ pub const Completer = struct {
     /// Where the last step's prompt ended, when the next render cannot
     /// continue past it (`Mark`).
     mark: ?Mark = null,
+    /// Left by a move back to `mark`; cleared with it (`dropMark`).
+    tail: ?Tail = null,
     /// Cap the output budget at the space the prompt leaves instead of
     /// refusing it: a client sizes `max_tokens` from its own idea of the
     /// window. The agent keeps the whole budget or reports `ContextFull`.
@@ -676,11 +689,32 @@ pub const Completer = struct {
             }
         }
         self.seen.shrinkRetainingCapacity(m.bytes);
+        self.tail = .{ .position = m.position, .last = m.last, .before = m.before };
     }
 
     fn dropMark(self: *Completer) void {
         if (self.mark) |*m| if (m.history) |*b| b.deinit(self.alloc);
         self.mark = null;
+        self.tail = null;
+    }
+
+    /// Moves the session one token back from its `tail`, for a render that
+    /// adds nothing to `seen`; the token to feed again. On failure the
+    /// caller resets the session.
+    fn stepBack(self: *Completer) !u32 {
+        const t = self.tail orelse return error.NoTail;
+        if (self.eng.model.session().position != t.position or t.position < 2) return error.NoTail;
+        // Only a drafter is re-fed the token before.
+        const before = t.before orelse if (self.eng.model.drafter() == null) t.last else return error.NoTail;
+        try inference.engine.rewindSession(self.eng, t.position - 1, before);
+        return t.last;
+    }
+
+    /// The `Mark` of a step that re-ran `t.last` (`stepBack`): the same
+    /// prompt end, so the request can be sent again once more.
+    fn markStepped(self: *Completer, full: []const u8, t: Tail) !void {
+        const bits: ?std.bit_set.Dynamic = if (self.history) |h| try h.seen.clone(self.alloc) else null;
+        self.mark = .{ .bytes = full.len, .position = t.position, .last = t.last, .before = t.before, .history = bits };
     }
 
     /// Marks where this step's prompt ends (`Mark`) when the model can move
@@ -702,7 +736,7 @@ pub const Completer = struct {
         };
         var bits: ?std.bit_set.Dynamic = if (self.history) |h| try h.seen.clone(self.alloc) else null;
         if (bits) |*b| for (tokens[0..fed]) |token| if (token < b.bit_length) b.set(token);
-        self.mark = .{ .bytes = end, .position = reused + fed, .last = tokens[fed - 1], .history = bits };
+        self.mark = .{ .bytes = end, .position = reused + fed, .last = tokens[fed - 1], .before = if (fed >= 2) tokens[fed - 2] else null, .history = bits };
     }
 
     /// A state kept inside a step's prompt: the system block's end, the
@@ -758,7 +792,7 @@ pub const Completer = struct {
         defer self.alloc.free(rendered);
         const full = try keyedRender(self.alloc, rendered, profile.imagePlaceholder(), profile.audioPlaceholder(), media);
         defer self.alloc.free(full);
-        const remainder = blk: {
+        const rest = blk: {
             var continued: ?[]const u8 = if (self.seen.items.len > 0) increment(self.seen.items, full) else null;
             // A request sent again, or a step not followed by `checkpoint`
             // (an answer cut at its budget), finds the session past its mark.
@@ -807,9 +841,23 @@ pub const Completer = struct {
             if (cause) |c| replay = .{ .cause = c };
             break :blk full;
         };
+        // A render the session already holds in full (a request sent again
+        // after an answer at the render's end) re-runs its last token for
+        // the next token's logits; failing that, it is prefilled again.
+        const tail = self.tail;
+        var stepped: ?u32 = null;
+        const remainder = if (rest.len > 0) rest else if (self.stepBack()) |t| blk: {
+            stepped = t;
+            break :blk rest;
+        } else |_| blk: {
+            self.eng.model.reset();
+            if (self.history) |h| h.reset();
+            self.seen.clearRetainingCapacity();
+            break :blk full;
+        };
         self.cause = null;
         self.primed_len = @min(self.primed_len, self.seen.items.len);
-        const tokens = try self.encodeKeyed(remainder);
+        const tokens = if (stepped) |t| try self.alloc.dupe(u32, &.{t}) else try self.encodeKeyed(remainder);
         defer self.alloc.free(tokens);
         const session = self.eng.model.session();
         const reused = session.position;
@@ -829,7 +877,7 @@ pub const Completer = struct {
         // A save inside a prompt is a text prefill's (`InvalidSaves`).
         if (prefill == null) saving.plan(messages, definitions, tokens, reused) catch {};
         // Allocation is the only failure: no mark, a replay next turn.
-        self.markPromptEnd(full, tokens, reused) catch {};
+        if (stepped != null) self.markStepped(full, tail.?) catch {} else self.markPromptEnd(full, tokens, reused) catch {};
         errdefer self.dropMark();
         // The effort is the one this render used (Ctrl-T changes it between
         // turns): off, the completion never opens in reasoning.

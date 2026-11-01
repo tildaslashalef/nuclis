@@ -14,9 +14,10 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-Nothing is in progress. Every core for CPU embeddings in `serve` is in its
-pull request and ships with the next release; the next theme is the
-user's to choose.
+Nothing is in progress. Muon's three reports of 2026-11-01 (a fully
+cached prompt answered, no word looped at lookahead 3, `reasoning_effort`
+`minimal`) are in their pull request and ship with the next release; the
+next theme is the user's to choose.
 
 ## Deferred
 

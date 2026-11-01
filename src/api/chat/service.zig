@@ -220,7 +220,11 @@ fn requestOptions(arena: std.mem.Allocator, profile: inference.profiles.Profile,
     const chosen = profile.samplingOptions(effort, settings.sampling);
     var o: std.json.ObjectMap = .empty;
     var efforts: std.ArrayList([]const u8) = .empty;
-    for (profile.efforts()) |e| try efforts.append(arena, @tagName(e));
+    for (profile.efforts()) |e| {
+        // `low` with its reasoning cut short (`wire.minimal_share`).
+        if (e == .low) try efforts.append(arena, "minimal");
+        try efforts.append(arena, @tagName(e));
+    }
     try o.put(arena, "reasoning_effort", try (Option{ .type = .@"enum", .values = try models.strings(arena, efforts.items), .default = .{ .string = @tagName(effort) } }).value(arena));
     const Field = struct { name: []const u8, min: f32, max: ?f32 };
     const fields = [_]Field{
@@ -479,12 +483,13 @@ const Job = struct {
         const finish = wire.finishReason(outcome.stop, self.client_calls);
         const usage = self.usage;
         if (self.pipe != null and outcome.stop != .cancelled) self.emit(ChunkFinish{ .finish = finish, .usage = usage });
-        self.effort = @tagName(ran.effort);
+        const effort_name = if (ran.minimal and ran.effort == .low) "minimal" else @tagName(ran.effort);
+        self.effort = effort_name;
         self.finish_reason = if (outcome.stop == .cancelled) "cancelled" else @tagName(finish);
         self.web_rounds = round;
         self.note = self.arena.print("{s} {s}: {d} prompt ({d} reused), {d} generated, {s}{s}{s}{s}", .{
             self.name,
-            @tagName(ran.effort),
+            effort_name,
             usage.prompt,
             usage.cached,
             usage.completion,
