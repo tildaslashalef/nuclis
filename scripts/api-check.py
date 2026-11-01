@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Checks `nuclis serve`'s OpenAI-compatible routes against real models: the
 shapes the OpenAI SDKs parse, a conversation whose later requests reuse the
-earlier ones (`cached_tokens`), a tool round trip, an image, embeddings
+earlier ones (`cached_tokens`), a request sent again whose whole prompt
+is cached, a tool round trip, an image, embeddings
 (float and base64 alike, batches equal to single calls bit for bit), the
 saved voices (`--only voices`: OpenAI's custom-voice routes, a Base
 speaking in one by id, VoiceDesign speaking a described voice), the
@@ -141,6 +142,50 @@ def check_conversation(client: Client) -> None:
         print(f"  turn {i}: prompt {usage['prompt_tokens']}, cached {cached}, generated {usage['completion_tokens']}")
         previous = cast(int, usage["prompt_tokens"])
         messages.append({"role": "assistant", "content": message["content"]})
+
+
+def check_again(client: Client) -> None:
+    """The same request three times, one ending in a user message and one in
+    a tool result: every one answered, whatever the cache holds of it."""
+    call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "tasks_add", "arguments": '{"title": "Buy bread"}'},
+    }
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "tasks_add",
+                "description": "Add a task to the user's list.",
+                "parameters": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
+            },
+        }
+    ]
+    cases: list[tuple[str, Json]] = [
+        ("user", {"messages": [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "Say hi."}]}),
+        (
+            "tool",
+            {
+                "tools": tools,
+                "messages": [
+                    {"role": "system", "content": "Be brief."},
+                    {"role": "user", "content": "Remind me to buy bread."},
+                    {"role": "assistant", "content": None, "tool_calls": [call]},
+                    {"role": "tool", "tool_call_id": "call_1", "content": '{"ok": true}'},
+                ],
+            },
+        ),
+    ]
+    for last, body in cases:
+        seen: list[str] = []
+        for seed in range(3):
+            status, r = client.chat({**body, "reasoning_effort": "none", "max_tokens": 60, "seed": seed})
+            check(status == 200, f"a request ending in a {last} message, sent {seed + 1} times: {status} {r}")
+            completion_shape(r)
+            usage = cast(Json, r["usage"])
+            seen.append(f"{usage['prompt_tokens_details']['cached_tokens']}/{usage['prompt_tokens']}")
+        print(f"  again, ending in a {last} message: cached {', '.join(seen)}")
 
 
 def check_tools(client: Client) -> None:
@@ -718,6 +763,7 @@ def main() -> int:
         if only in ("all", "chat"):
             check_models(client)
             check_conversation(client)
+            check_again(client)
             check_tools(client)
             check_stream(client)
             check_image(client, cast(str | None, args.image_model) or client.model)
