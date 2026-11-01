@@ -158,6 +158,8 @@ pub const Language = struct {
     pub const Ran = struct {
         reply: completer_mod.Reply,
         effort: Profile.Effort,
+        /// The request asked for `minimal` (`wire.Request.minimal`).
+        minimal: bool,
         /// Tool calls the completion decoded.
         calls: usize,
     };
@@ -182,6 +184,9 @@ pub const Language = struct {
         const limit = @min(request.max_tokens orelse self.default_tokens, open.generated.len);
         self.completer.buffers.generated = open.generated[0..limit];
         self.completer.buffers.effort = effort;
+        // A budget of 0 is no cap, which `minimal` still needs.
+        const budget = self.settings.thinking_budget;
+        self.completer.thinking_budget = if (!request.minimal) budget else @max((if (budget == 0) config.default_thinking_budget else budget) / wire.minimal_share, 1);
 
         const m = self.completer.model();
         const media = try arena.alloc(completer_mod.Media, request.media.len);
@@ -223,7 +228,7 @@ pub const Language = struct {
         // A turn that ends in an answer is a boundary the next request's
         // render starts with; a turn of calls continues the live session.
         if (reply.outcome.stop == .eos and counting.calls == 0) _ = m.checkpoint(m.context);
-        return .{ .reply = reply, .effort = effort, .calls = counting.calls };
+        return .{ .reply = reply, .effort = effort, .minimal = request.minimal, .calls = counting.calls };
     }
 
     /// The tokens the open model's window holds.

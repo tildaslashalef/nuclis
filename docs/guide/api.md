@@ -491,7 +491,7 @@ GPU at a time, decisions included.
 | assistant `tool_calls`, tool `tool_call_id` | the calls and their results; a result must answer an earlier call |
 | `tools` | `type: "function"` with `name`, `description`, `parameters` (a JSON Schema); at most 64. The model's own template renders them. With `serve.web`, also `{"type": "web_search"}` and `{"type": "web_fetch"}`, which the server runs ([hosted web tools](#hosted-web-tools)) |
 | `tool_choice` | `auto` (the default) or `none`, which renders no tools |
-| `reasoning_effort` | `none` (no reasoning), `minimal` and `low`, `medium`, `high`, `xhigh` (`max` reads as `xhigh`); the model's nearest level. Absent: `agent.think` |
+| `reasoning_effort` | `none` (no reasoning), `minimal`, `low`, `medium`, `high`, `xhigh` (`max` reads as `xhigh`); the model's nearest level. `minimal` is `low` with its reasoning closed at half the budget (512 tokens at the default `agent.thinking_budget`, [below](#a-short-reasoning-minimal)). Absent: `agent.think` |
 | `max_completion_tokens`, `max_tokens` | the output budget, reasoning included; absent: the model's `max_tokens` setting. Larger values are capped at 16,384 and at what the window leaves after the prompt |
 | `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repetition_penalty` | each overrides one option of the model's sampling for the effort; `temperature: 0` is greedy |
 | `seed` | the sampler's seed for this request |
@@ -500,6 +500,32 @@ GPU at a time, decisions included.
 Accepted and ignored, because they change nothing here: `user`,
 `store`, `metadata`, `prompt_cache_key`, `service_tier`,
 `parallel_tool_calls`, and `frequency_penalty: 0`.
+
+#### A short reasoning: `minimal`
+
+`minimal` renders as `low` and closes the reasoning at half of `low`'s
+budget, as the budget always closes it: the model then answers or calls
+a tool. It is for a retry that needs some reasoning but not a long one,
+such as Muon's: with `none`, Gemma 4 26B-A4B answered "I've added that
+to your tasks" without calling the tool, and `low` fixes that slowly.
+Measured 2026-11-01 (M4 Pro, `gemma-4-26b-a4b`, Muon's real requests:
+a ~1,430- and a ~1,910-token prompt with seven tools, four prompts such
+as "Remind me to buy bread on the way home", four seeds each, every
+request after the same one at `none`); useful means it called
+`tasks_add` or asked back:
+
+| Effort | Useful | Median time | Reasoning closed by the budget |
+| --- | --- | --- | --- |
+| `low` (1,024) | 31 of 32 | 14–20 s | 13 times; 12 still called or asked |
+| `minimal` at 256 | 20 of 32 | 5.5 s | every time; 12 answered in text, claiming a change it never made |
+| `minimal` at 512 (shipped) | 28 of 32 | 10 s | 27 times; 4 answered in text |
+
+Closed early, the model mostly still makes the call it had settled on;
+the shorter the budget, the more often it writes the spoken answer
+instead. A switch between `none` and `low` (or `minimal`) misses the
+cache once: Gemma 4's template marks thinking at the start of the
+system turn, so the two prompts differ from the first token; after
+that, each effort restores its own system block.
 
 ### What is refused
 
@@ -574,7 +600,13 @@ reasoning off on the 12B and 26B-A4B, reasoning dropped once a user
 message follows), so there the session goes back to where the last
 prompt ended and continues from it: the answer as rendered and the new
 message are prefilled. A request sent again reuses the same point on
-Gemma 4 and Muse Glimmer. Images and clips count by their bytes: a
+Gemma 4 and Muse Glimmer. Where the last prompt ended in a tool result,
+that point is the whole prompt: the request sent again re-runs its last
+token for the next one's logits (Gemma 4 26B-A4B, 2026-11-01: 108 of 109
+tokens cached; on 0.11.0 it was `500 model_failed`, `EmptyPrompt`). A
+model with recurrent state (Qwen3.8) cannot move back a token, so there
+the last turn's prompt is prefilled again from the longest shorter state.
+Images and clips count by their bytes: a
 conversation resent with the same ones reuses its state, another image or
 clip in the same place does not (measured on the E4B with a 4.8 s clip:
 133 of 136 tokens cached for the same request again, 152 of 171 for a

@@ -44,6 +44,9 @@ pub const Request = struct {
     media_counts: []const usize,
     tools: []const Profile.ToolDefinition,
     effort: ?Profile.Effort = null,
+    /// `reasoning_effort` `minimal`: `low` (`effort`), its reasoning closed
+    /// at a share of the budget (`minimal_share`).
+    minimal: bool = false,
     sampling: inference.sampling.Overrides = .{},
     seed: ?u64 = null,
     max_tokens: ?usize = null,
@@ -204,8 +207,11 @@ pub fn parseWith(arena: Allocator, body: []const u8, problem: *Problem, options:
 
     if (o.get("reasoning_effort")) |e| switch (e) {
         .null => {},
-        .string => |s| request.effort = effortOf(s) orelse
-            return r.invalid("reasoning_effort", "\"reasoning_effort\" is none, minimal, low, medium, high, or xhigh, not \"{s}\"", .{s}),
+        .string => |s| {
+            request.effort = effortOf(s) orelse
+                return r.invalid("reasoning_effort", "\"reasoning_effort\" is none, minimal, low, medium, high, or xhigh, not \"{s}\"", .{s});
+            request.minimal = std.mem.eql(u8, s, "minimal");
+        },
         else => return r.invalid("reasoning_effort", "\"reasoning_effort\" must be a string", .{}),
     };
     request.sampling = .{
@@ -473,8 +479,14 @@ fn hostedDefinition(kind: []const u8) ?web.tools.Definition {
     return null;
 }
 
+/// The part of `agent.thinking_budget` a `minimal` request reasons for:
+/// 512 tokens at the default 1,024 (256 lost a third of Gemma's tool
+/// calls, docs/guide/api.md § The request).
+pub const minimal_share = 2;
+
 /// OpenAI's effort names onto the profile's: `none` is `off`, `minimal` is
-/// `low`, `max` is `xhigh`; the profile's own names pass.
+/// `low` (its budget cut, `Request.minimal`), `max` is `xhigh`; the
+/// profile's own names pass.
 pub fn effortOf(text: []const u8) ?Profile.Effort {
     if (std.mem.eql(u8, text, "none")) return .off;
     if (std.mem.eql(u8, text, "minimal")) return .low;
@@ -993,6 +1005,7 @@ test "a conversation as an agent sends it: roles, an image, calls and their resu
     try testing.expectEqualStrings("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}", request.tools[0].parameters);
     try testing.expectEqualStrings("{\"type\":\"object\",\"properties\":{}}", request.tools[1].parameters);
     try testing.expectEqual(@as(?Profile.Effort, .low), request.effort);
+    try testing.expect(request.minimal);
     try testing.expectEqual(@as(?usize, max_output_tokens), request.max_tokens);
     try testing.expectEqual(@as(?f32, 0.6), request.sampling.temperature);
     try testing.expectEqual(@as(?usize, 20), request.sampling.top_k);
