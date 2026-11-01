@@ -132,6 +132,7 @@ pub fn bind(gpa: std.mem.Allocator, checkpoint: *const safetensors.Checkpoint, c
     const h = c.hidden;
     var w: Weights = undefined;
     w.config = c;
+    w.word_start = &.{};
     w.projector = .{ .weight = try get(checkpoint, arena, "encoder_projector.weight", .{}, &.{ h, c.encoder }), .bias = try get(checkpoint, arena, "encoder_projector.bias", .{}, &.{h}) };
     w.embedding = try get(checkpoint, arena, "decoder.embedding.weight", .{}, &.{ c.vocab, h });
     const layers = try arena.alloc(Layer, c.layers);
@@ -392,6 +393,7 @@ const Synthetic = struct {
         var at: usize = 0;
         var w: Weights = undefined;
         w.config = c;
+        w.word_start = &.{};
         w.projector = .{ .weight = take(storage, &at, h * c.encoder), .bias = take(storage, &at, h) };
         const embedding = take(storage, &at, c.vocab * h);
         @memset(embedding[c.blank * h ..][0..h], 0);
