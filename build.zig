@@ -133,6 +133,9 @@ pub fn build(b: *std.Build) void {
     const metal_check = b.addRunArtifact(inference.artifact("metal-check"));
     metal_check.addPassthruArgs();
     b.step("test-metal", "Explicit Metal fixture checks (-Dmetal=true; -- --wide-rows ID: one encoding's matvec rows)").dependOn(&metal_check.step);
+    const tiny_check = b.addRunArtifact(inference.artifact("tiny-check"));
+    tiny_check.addPassthruArgs();
+    b.step("test-tiny", "Metal against the CPU reference on generated models, no download (-Dmetal=true; -- [variant] [seed])").dependOn(&tiny_check.step);
     const matvec_bench = b.addRunArtifact(inference.artifact("metal-check"));
     matvec_bench.addArg("--matvec-bench");
     matvec_bench.addPassthruArgs();

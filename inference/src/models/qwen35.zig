@@ -8,12 +8,15 @@
 //! The same adapter binds Bonsai 2 27B, the ternary re-encoding whose weights
 //! sit in a Hadamard-rotated basis (`Rotation`, docs/models/bonsai.md),
 //! with or without the auxiliary prediction block.
+//! `tiny_models` is the test-only build (docs/models/README.md § Tiny models):
+//! it shrinks the pinned vocabulary and rotated shape, nothing else.
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const gguf = @import("../formats/gguf.zig");
 const models = @import("root.zig");
 const weights = @import("../runtime/weights.zig");
 const dflash2 = @import("dflash2.zig");
+const tiny_models = @import("build_options").tiny_models;
 const Tensor = gguf.Tensor;
 
 pub const FullAttention = struct {
@@ -78,6 +81,8 @@ pub const DraftSource = struct {
 /// The `general.architecture` id this adapter binds.
 pub const architecture = "qwen35";
 
+pub const vocabulary = if (tiny_models) 1024 else 248320;
+
 /// One image span in a prompt (the shared vision contract's `Span`), used by
 /// the CPU runtime and the Metal plan.
 pub const VisionSpan = @import("../vision/root.zig").Span;
@@ -117,7 +122,7 @@ pub const Rotation = struct {
     value_grouped: bool,
 
     pub const Signs = struct { width: u32, values: []const gguf.Value };
-    pub const widths = [3]u32{ 5120, 6144, 17408 };
+    pub const widths: [3]u32 = if (tiny_models) .{ 1024, 6144, 2048 } else .{ 5120, 6144, 17408 };
     pub const block_size = 1024;
 
     pub fn signsFor(self: Rotation, width: u32) ?[]const gguf.Value {
@@ -176,7 +181,10 @@ pub const Shape = struct {
 };
 
 /// Qwen3.8-27B (and Bonsai 2 27B): the shape the rotation contract is pinned to.
-pub const qwen38_shape: Shape = .{ .hidden = 5120, .ffn = 17408, .heads = 24, .layers = 64, .value_heads = 48 };
+pub const qwen38_shape: Shape = if (tiny_models)
+    .{ .hidden = 1024, .ffn = 2048, .heads = 24, .layers = 4, .value_heads = 48 }
+else
+    .{ .hidden = 5120, .ffn = 17408, .heads = 24, .layers = 64, .value_heads = 48 };
 /// Qwen3.5-9B, clef-flash's backbone.
 pub const qwen35_9b_shape: Shape = .{ .hidden = 4096, .ffn = 12288, .heads = 16, .layers = 32, .value_heads = 32 };
 
@@ -321,7 +329,7 @@ fn validateMetadata(doc: *const gguf.Document) Error!struct { shape: Shape, auxi
         .array => |a| a,
         else => return error.InvalidMetadata,
     };
-    if (tokens.element_type != .string or tokens.count != 248320) return error.UnsupportedConfiguration;
+    if (tokens.element_type != .string or tokens.count != vocabulary) return error.UnsupportedConfiguration;
 
     // These keys can override the equations/schedule even when the scalar
     // dimensions still match. Supporting them requires a separate profile.
@@ -404,7 +412,7 @@ const rotation_keys = [_][]const u8{
 // projections, one entry each. 48 * 6 + 16 * 7 + 1 = 401 names.
 const delta_rotated = [_][]const u8{ "attn_qkv", "attn_gate", "ssm_out", "ffn_gate", "ffn_up", "ffn_down" };
 const attention_rotated = [_][]const u8{ "attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down" };
-const rotated_names = 48 * delta_rotated.len + 16 * attention_rotated.len + 1;
+const rotated_names = 3 * qwen38_shape.layers / 4 * delta_rotated.len + qwen38_shape.layers / 4 * attention_rotated.len + 1;
 
 /// The rotation contract as the fork's loader reads it, pinned to the one
 /// configuration the runtimes implement; anything else is refused rather
@@ -647,9 +655,9 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     }
     var result: Binding = undefined;
     result.shape = shape;
-    result.token_embedding = try binder.take("token_embd.weight", &.{ shape.hidden, 248320 }, .matrix);
+    result.token_embedding = try binder.take("token_embd.weight", &.{ shape.hidden, vocabulary }, .matrix);
     result.output_norm = try binder.take("output_norm.weight", &.{shape.hidden}, .f32);
-    result.output = try binder.take("output.weight", &.{ shape.hidden, 248320 }, .matrix);
+    result.output = try binder.take("output.weight", &.{ shape.hidden, vocabulary }, .matrix);
     for (result.layer_slots[0..shape.layers], 0..) |*layer, i| layer.* = try binder.layer(i, (i + 1) % 4 == 0);
     // Unbound slots are never read (`layers()` stops at the shape's count).
     for (result.layer_slots[shape.layers..]) |*layer| layer.* = undefined;

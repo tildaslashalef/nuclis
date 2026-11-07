@@ -747,6 +747,7 @@ The root build provides:
 ```sh
 zig build                   # Metal is on by default for macOS aarch64
 zig build test              # src/, inference/, huggingface/, and tools/gates unit tests
+zig build test-tiny -Dmetal=true  # generated models, Metal against the CPU reference
 zig build -Doptimize=ReleaseSafe
 zig build -Dmetal=false     # a CPU-only binary (the default off Apple Silicon)
 zig build test-hf           # the huggingface package's tests alone
