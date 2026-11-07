@@ -138,7 +138,7 @@ pub const Runtime = struct {
         inline for (.{ "q", "attention_gate", "mixed_out" }) |field| @field(result, field) = try a.alloc(f32, model.query_width);
         inline for (.{ "k", "v" }) |field| @field(result, field) = try a.alloc(f32, model.kv_width);
         // The matvec decode row holds the widest row any projection decodes.
-        result.row = try a.alloc(f32, cpu.matvecScratch(@max(model.feed_forward, model.embedding)));
+        result.row = try a.alloc(f32, cpu.matvecScratch(@max(model.feed_forward, model.embedding, model.query_width)));
         result.attention_scratch = try a.alloc(f64, capacity);
         result.output_norm = try view.vector(a, binding.output_norm);
         result.constants = try a.alloc(LayerConstants, model.layer_count);

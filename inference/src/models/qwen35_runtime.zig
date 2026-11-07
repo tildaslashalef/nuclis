@@ -178,7 +178,7 @@ pub const Runtime = struct {
         inline for (.{ "draft_enorm", "draft_hnorm_w", "draft_head_norm" }) |field| @field(result, field) = try a.alloc(f32, if (mtp) shape.hidden else 0);
         result.draft_concat = try a.alloc(f32, if (mtp) 2 * shape.hidden else 0);
         // `verifyGreedy` reads its rows here under either drafter.
-        result.draft_logits = try a.alloc(f32, if (draft) 248320 else 0);
+        result.draft_logits = try a.alloc(f32, if (draft) model.vocabulary else 0);
         result.draft_constants = null;
         result.flash = if (flash) try dflash2_runtime.Draft.init(a, io, binding.dflash.?) else null;
         result.capture = try a.alloc(f32, if (flash) dflash2.hidden_width else 0);
@@ -253,7 +253,7 @@ pub const Runtime = struct {
     /// It must otherwise hold exactly the vocabulary size. A successful step
     /// commits one token; a callback/error after begin requires reset.
     pub fn step(self: *Runtime, token: u32, logits: ?[]f32, observer: ?Observer) !void {
-        if (token >= 248320) return error.InvalidTokenId;
+        if (token >= model.vocabulary) return error.InvalidTokenId;
         return self.stepRow(.{ .token = token }, logits, observer);
     }
     /// Prefills a prompt with image spans, token by token: a span's rows are
@@ -314,7 +314,7 @@ pub const Runtime = struct {
     }
     const RowSource = union(enum) { token: u32, features: []const f32 };
     fn stepRow(self: *Runtime, source: RowSource, logits: ?[]f32, observer: ?Observer) !void {
-        if (logits) |out| if (out.len != 248320) return error.InvalidShape;
+        if (logits) |out| if (out.len != model.vocabulary) return error.InvalidShape;
         try self.state.begin();
         errdefer self.state.fail();
         switch (source) {
@@ -456,8 +456,8 @@ pub const Runtime = struct {
         const block = self.binding.draft orelse return error.NoDraftBlock;
         const constants = self.draft_constants orelse return error.NoDraftBlock;
         const hidden = self.binding.shape.hidden;
-        if (token >= 248320 or h_prev.len != hidden or position >= self.state.capacity) return error.InvalidShape;
-        if (logits) |out| if (out.len != 248320) return error.InvalidShape;
+        if (token >= model.vocabulary or h_prev.len != hidden or position >= self.state.capacity) return error.InvalidShape;
+        if (logits) |out| if (out.len != model.vocabulary) return error.InvalidShape;
         // [enorm(embed(x_p)); hnorm(h_{p-1})], projected by eh_proj.
         try self.view.row(self.binding.token_embedding, token, self.x);
         try norm(self.x, self.normalized, self.draft_enorm);
@@ -542,10 +542,10 @@ pub const Runtime = struct {
     /// when asked, the post-`output_norm` hidden the drafter's `commit` reads.
     pub fn verify(self: *Runtime, tokens: []const u32, rows: []f32, h_rows: ?[]f32, observer: ?Observer) !void {
         const hidden = self.commitRow().len;
-        if (rows.len != tokens.len * 248320) return error.InvalidShape;
+        if (rows.len != tokens.len * model.vocabulary) return error.InvalidShape;
         if (h_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
         for (tokens, 0..) |token, i| {
-            try self.step(token, rows[i * 248320 ..][0..248320], observer);
+            try self.step(token, rows[i * model.vocabulary ..][0..model.vocabulary], observer);
             if (h_rows) |h| @memcpy(h[i * hidden ..][0..hidden], self.commitRow());
         }
     }
@@ -639,7 +639,7 @@ pub const Runtime = struct {
     /// selector chain; at most `block_size - 1` drafts.
     pub fn flashPropose(self: *Runtime, token: u32, out: []u32, p_min: f32) !usize {
         const d = &(self.flash orelse return error.NoDraftBlock);
-        if (token >= 248320) return error.InvalidTokenId;
+        if (token >= model.vocabulary) return error.InvalidTokenId;
         if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
         const count: usize = @min(out.len, dflash2.block_size - 1);
         if (count == 0) return 0;
@@ -696,7 +696,7 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
             const binding: model.Binding = .{ .token_embedding = &tensor, .output_norm = &tensor, .output = &tensor, .layer_slots = @splat(layer), .shape = model.qwen38_shape, .summary = .{ .profile = "test", .decoder_layers = 64, .layer_kinds = &.{}, .text_tensors = 0, .auxiliary_tensors = 0, .text_tensor_bytes = 0, .auxiliary_tensor_bytes = 0 } };
             var runtime = try Runtime.init(alloc, std.testing.io, .{ .file = &.{}, .data_offset = 0 }, binding, 1, false, false);
             defer runtime.deinit();
-            try std.testing.expectError(error.InvalidTokenId, runtime.step(248320, null, null));
+            try std.testing.expectError(error.InvalidTokenId, runtime.step(model.vocabulary, null, null));
             try std.testing.expectEqual(.ready, runtime.state.status);
             try std.testing.expectError(error.InvalidShape, runtime.step(0, &.{}, null));
             try std.testing.expectEqual(.ready, runtime.state.status);

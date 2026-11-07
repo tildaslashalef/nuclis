@@ -14,13 +14,16 @@
 //! residual-stream norms per layer with two epsilons, a SiLU-gated FFN, an
 //! untied output head, a logit scale, and a tanh soft-cap at 20. The
 //! runtimes (`muse_glimmer_runtime.zig`, `muse_glimmer_metal.zig`) execute
-//! exactly this binding.
+//! exactly this binding. `tiny_models` is the test-only build
+//! (docs/models/README.md § Tiny models): it shrinks the pinned depth, widths,
+//! window, and vocabulary, and keeps the attention geometry.
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const gguf = @import("../formats/gguf.zig");
 const models = @import("root.zig");
 const weights = @import("../runtime/weights.zig");
 const dflash = @import("dflash.zig");
+const tiny_models = @import("build_options").tiny_models;
 const Tensor = gguf.Tensor;
 
 pub const architecture = "muse-glimmer";
@@ -33,16 +36,16 @@ pub const VisionSpan = @import("../vision/root.zig").Span;
 /// row plus up to 15 drafts, so a verify batch holds at most 16 rows.
 pub const max_draft_proposals = dflash.block_size - 1;
 
-pub const layer_count = 52;
-pub const embedding = 6656;
-pub const feed_forward = 19968;
+pub const layer_count = if (tiny_models) 4 else 52;
+pub const embedding = if (tiny_models) 256 else 6656;
+pub const feed_forward = if (tiny_models) 256 else 19968;
 pub const heads = 32;
 pub const kv_heads = 2;
 pub const head_size = 128;
 pub const query_width = heads * head_size;
 pub const kv_width = kv_heads * head_size;
-pub const vocabulary = 202048;
-pub const window = 2048;
+pub const vocabulary = if (tiny_models) 1024 else 202048;
+pub const window = if (tiny_models) 8 else 2048;
 pub const rope_base: f32 = 500_000;
 /// The pre norms' and the query/key norms' epsilon (the file's key).
 pub const rms_epsilon: f32 = 1e-5;
@@ -54,7 +57,7 @@ pub const final_softcap: f32 = 20.0;
 /// Scores are `q · k / sqrt(head_size)`.
 pub const attention_scale: f32 = 1.0 / @sqrt(@as(f32, head_size));
 pub const profile = "muse_glimmer_30b";
-pub const layer_kinds = [_]models.LayerKind{ .{ .kind = "sliding_attention", .count = 39 }, .{ .kind = "global_attention", .count = 13 } };
+pub const layer_kinds = [_]models.LayerKind{ .{ .kind = "sliding_attention", .count = 3 * layer_count / 4 }, .{ .kind = "global_attention", .count = layer_count / 4 } };
 
 /// The two layer kinds; the attention geometry is the same on both, only
 /// the visible window and the position encoding differ.

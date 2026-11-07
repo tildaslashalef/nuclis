@@ -26,6 +26,8 @@ pub const dflash = @import("dflash.zig");
 pub const dflash2 = @import("dflash2.zig");
 pub const dflash2_runtime = @import("dflash2_runtime.zig");
 pub const inventory = @import("inventory.zig");
+/// Generated random-weight models: test support for the `tiny_models` build.
+pub const tiny = @import("tiny.zig");
 /// Laya, the decision model: a ModernBERT encoder and a typed-decision head
 /// from a safetensors checkpoint. Not a registry family: it decodes nothing.
 pub const modernbert = @import("modernbert.zig");
@@ -115,6 +117,7 @@ test "validate through the registry reaches the second family" {
 test {
     _ = registry_module;
     _ = inventory;
+    _ = tiny;
     _ = qwen35;
     _ = qwen35_runtime;
     _ = gemma4;
