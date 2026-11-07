@@ -316,6 +316,13 @@ tensor order and metadata), add a row to `variants` in `tiny.zig`, a test to
 `tiny-check.zig`, its tiny constants behind `tiny_models` if the adapter pins
 them, and its bounds.
 
+`make test-tiny` also holds a family to what the server's scheduling rests
+on: `prefill` and `prefillVision` report progress after every chunk
+(`PrefillUnreported`), since speech and decisions run on those reports. The
+image span's branch has no tiny projector, so a new family checks that one by
+reading. A new vocabulary needs its tokens typed: anything but `normal` and
+`byte` is structure the stream decoder keeps out of the text.
+
 ## Mistakes already made once
 
 | Symptom | Cause | Where it is handled now |

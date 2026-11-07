@@ -30,6 +30,7 @@ const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const Utf8 = @import("../tokenizer/stream.zig").Stream;
 const ToolCall = @import("../events.zig").ToolCall;
+const Token = @import("../tokenizer/vocabulary.zig").Token;
 
 /// A template's native call grammar: the bracket tokens and the body parser.
 /// `parse` returns an owned call (the slices live until the caller frees
@@ -71,6 +72,18 @@ pub const Markers = struct {
     /// Present for the message-header grammar, which replaces the bracket
     /// grammar above (`open`/`close`/`tool` are then unused).
     channel: ?Channel = null,
+    /// The artifact's tokens: one that is neither `normal` nor `byte` is
+    /// structure, never text, wherever the model writes it. The markers above
+    /// keep their place in the grammar. Borrowed.
+    tokens: []const Token = &.{},
+
+    pub fn isHidden(self: *const Markers, token: u32) bool {
+        if (token >= self.tokens.len) return false;
+        return switch (self.tokens[token].kind) {
+            .normal, .byte => false,
+            else => true,
+        };
+    }
 };
 
 /// Whether a completion of `prompt` starts inside the reasoning channel: the
@@ -234,6 +247,17 @@ pub const Decoder = struct {
             self.trim_answer = false;
             return;
         }
+        // A control token the grammar has no place for here. Inside a channel
+        // header it voids the channel: nothing was opened.
+        if (self.markers.isHidden(token)) {
+            self.initial = false;
+            if (self.header) {
+                self.header = false;
+                self.matched = 0;
+                self.thinking = false;
+            }
+            return;
+        }
         self.initial = false;
         var bytes = piece;
         if (self.header) {
@@ -273,6 +297,7 @@ pub const Decoder = struct {
                 self.route(channel);
                 return;
             }
+            if (self.markers.isHidden(token)) return;
             try self.header_buf.appendSlice(self.alloc, piece);
             if (self.header_buf.items.len > header_limit) {
                 // Not a header after all: nothing stays hidden.
@@ -289,6 +314,7 @@ pub const Decoder = struct {
             self.header_buf.clearRetainingCapacity();
             return;
         }
+        if (self.markers.isHidden(token)) return;
         if (self.in_tool) return self.collectTool(piece, sink);
         try self.text(piece, sink);
     }
@@ -454,6 +480,65 @@ test "Gemma's ordinary channel header suffix can split at every byte" {
         try std.testing.expectEqualStrings("plan", r.thinking.written());
         try std.testing.expectEqualStrings("reply", r.answer.written());
     }
+}
+
+test "a control token with no place in the grammar is never text" {
+    const tokens = [_]Token{
+        .{ .text = "<unk>", .kind = .control },             .{ .text = "<|channel>", .kind = .user_defined },
+        .{ .text = "<channel|>", .kind = .user_defined },   .{ .text = "a", .kind = .normal },
+        .{ .text = "<tool_call|>", .kind = .user_defined },
+    };
+    const markers: Markers = .{ .open = 1, .close = 2, .open_suffix = "thought\n", .tokens = &tokens };
+    // Between answer text, the token is dropped.
+    {
+        var r = Recorder.init(std.testing.allocator);
+        defer r.deinit();
+        var d = Decoder.init(std.testing.allocator, markers, false);
+        defer d.deinit();
+        try d.feed(3, "a", &r);
+        try d.feed(4, "<tool_call|>", &r);
+        try d.feed(0, "<unk>", &r);
+        try d.feed(3, "b", &r);
+        try d.finish(&r);
+        try std.testing.expectEqualStrings("ab", r.answer.written());
+        try std.testing.expectEqualStrings("", r.thinking.written());
+    }
+    // Inside the channel's header, it voids the channel: what follows is the
+    // answer, and neither the header nor the token is reasoning.
+    {
+        var r = Recorder.init(std.testing.allocator);
+        defer r.deinit();
+        var d = Decoder.init(std.testing.allocator, markers, false);
+        defer d.deinit();
+        try d.feed(1, "<|channel>", &r);
+        try d.feed(3, "thought", &r);
+        try d.feed(4, "<tool_call|>", &r);
+        try d.feed(3, "reply", &r);
+        try d.finish(&r);
+        try std.testing.expectEqualStrings("", r.thinking.written());
+        try std.testing.expectEqualStrings("reply", r.answer.written());
+    }
+}
+
+test "the message-header grammar keeps control tokens out of the header and the body" {
+    const tokens = [_]Token{
+        .{ .text = "<|start|>", .kind = .control }, .{ .text = "<|message|>", .kind = .control },
+        .{ .text = "<|eom|>", .kind = .control },   .{ .text = "x", .kind = .normal },
+        .{ .text = "<|stray|>", .kind = .control },
+    };
+    var r = Recorder.init(std.testing.allocator);
+    defer r.deinit();
+    var d = Decoder.init(std.testing.allocator, .{ .open = 0, .close = 2, .channel = .{ .start = 0, .message = 1, .eom = 2 }, .tokens = &tokens }, false);
+    defer d.deinit();
+    try d.feed(3, "assistant", &r);
+    try d.feed(4, "<|stray|>", &r);
+    try d.feed(1, "<|message|>", &r);
+    try d.feed(3, "reply", &r);
+    try d.feed(4, "<|stray|>", &r);
+    try d.feed(3, " on", &r);
+    try d.finish(&r);
+    try std.testing.expectEqualStrings("reply on", r.answer.written());
+    try std.testing.expectEqualStrings("", r.thinking.written());
 }
 
 test "UTF-8 split at every byte, cancelled thought, and no cross-channel scalar" {

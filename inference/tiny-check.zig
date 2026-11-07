@@ -261,6 +261,25 @@ const Reference = struct {
     }
 };
 
+/// Counts a prefill's progress reports. Everything that shares the GPU with a
+/// generation runs on them, so every family's every prefill path must report.
+const Beats = struct {
+    reached: usize = 0,
+
+    fn observer(self: *Beats) inference.observer.Observer {
+        return .{ .context = self, .progress = progress };
+    }
+
+    fn progress(context: *anyopaque, p: inference.observer.Progress) anyerror!void {
+        const self: *Beats = @ptrCast(@alignCast(context));
+        self.reached = p.position;
+    }
+
+    fn expectReached(self: *const Beats, tokens: usize) !void {
+        if (self.reached != tokens) return error.PrefillUnreported;
+    }
+};
+
 const Run = struct { stepped: Deviation = .{}, chunked: Deviation = .{}, greedy_agrees: bool = true };
 
 /// The prompt on Metal, stepped and then chunked, against the reference. A
@@ -279,9 +298,18 @@ fn metalRun(gpa: Allocator, io: std.Io, path: []const u8, reference: Reference, 
         run.greedy_agrees = run.greedy_agrees and greedy == std.mem.indexOfMax(f32, reference.row(i));
     }
     engine.model.reset();
-    try engine.model.prefill(reference.tokens, logits, null, null, null, null, null);
+    var beats: Beats = .{};
+    try engine.model.prefill(reference.tokens, logits, null, null, null, null, beats.observer());
     try expectFinite(logits);
     run.chunked = .of(logits, reference.row(reference.tokens.len - 1));
+    try beats.expectReached(reference.tokens.len);
+    engine.model.reset();
+    beats = .{};
+    engine.model.prefillVision(reference.tokens, &.{}, &.{}, logits, null, null, null, beats.observer()) catch |err| switch (err) {
+        error.VisionUnsupported => return run,
+        else => return err,
+    };
+    try beats.expectReached(reference.tokens.len);
     return run;
 }
 

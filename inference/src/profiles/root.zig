@@ -146,6 +146,7 @@ pub const Profile = enum {
                     .open = vocab.tokenId(m.open) orelse return error.MissingReasoningToken,
                     .close = vocab.tokenId(m.close) orelse return error.MissingReasoningToken,
                     .open_suffix = m.open_suffix,
+                    .tokens = vocab.tokens,
                 };
                 if (m.tool_open) |open_text| {
                     markers.tool = .{

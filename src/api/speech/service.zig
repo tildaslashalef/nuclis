@@ -48,10 +48,32 @@ const pipe_capacity = 256 * 1024;
 /// Beside a generation, how far the audio may run ahead of its playback
 /// (which starts with its first byte) before speech yields to the generation.
 const lead_ms = 1000;
+/// A generation step this long or longer is a prefill chunk, not a token.
+const long_step_ms = 200;
+/// The longest step a run prepares for: a gap this long is not a step (a
+/// model opening), and the lead must not grow with it.
+const max_step_ms = 3000;
 /// How often a waiting request looks at its client; how long an event
 /// stream may stay silent before a keepalive comment.
 const poll_ms = 1000;
 const keepalive_ms = 10_000;
+
+/// What one run between a generation's steps may take: frames at a time, for
+/// at most `budget_ns`, while the audio is less than `lead_ns` ahead.
+pub const Pace = struct { lead_ns: i64, budget_ns: i64, frames: usize };
+
+/// The pace after a step of `step_ns`. A token's step is shorter than a
+/// frame, so one frame and a second in hand. A prefill chunk delays speech
+/// by hundreds of milliseconds: the lead must outlast it, and frames made in
+/// chunks cost less.
+pub fn paceBeside(step_ns: i64, chunk: usize) Pace {
+    const step = @min(step_ns, max_step_ms * std.time.ns_per_ms);
+    return .{
+        .lead_ns = @max(lead_ms * std.time.ns_per_ms, step + @divTrunc(step, 2)),
+        .budget_ns = step,
+        .frames = if (step >= long_step_ms * std.time.ns_per_ms) chunk else 1,
+    };
+}
 
 /// Requests queued behind the one speaking, whether one is, and the
 /// requests answered since the start.
@@ -336,12 +358,27 @@ pub const Service = struct {
             };
             job.ready.set(io);
         }
-        if (self.executor.betweenSteps()) {
-            // A generation waits for this run: a frame at a time, and only
-            // while the listener could run out.
-            if (job.ahead(io) >= lead_ms * std.time.ns_per_ms) return .again;
-            job.synth.?.setChunk(1);
-        } else job.synth.?.setChunk(self.chunk);
+        if (self.executor.betweenSteps()) return self.speakBeside(io, job);
+        job.synth.?.setChunk(self.chunk);
+        return self.advance(io, job) orelse .again;
+    }
+
+    /// A run between a generation's steps. The generation waits for it, so
+    /// it takes what the listener needs to last through the next step like
+    /// the one just gone, and never more of the GPU than that step had.
+    fn speakBeside(self: *Service, io: std.Io, job: *Job) gpu.Item.After {
+        const pace = paceBeside(self.executor.stepNanoseconds(), self.chunk);
+        const began = std.Io.Clock.awake.now(io);
+        while (job.ahead(io) < pace.lead_ns and !job.cancel.load(.acquire)) {
+            job.synth.?.setChunk(pace.frames);
+            if (self.advance(io, job)) |after| return after;
+            if (began.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds() >= pace.budget_ns) break;
+        }
+        return .again;
+    }
+
+    /// One chunk of the active job. Null while it has more to say.
+    fn advance(self: *Service, io: std.Io, job: *Job) ?gpu.Item.After {
         // Parked rather than blocked: the worker never waits on a client.
         if (job.pipe.space(io) < wire.maxChunkBytes(@max(self.chunk, self.first_chunk), job.per_frame, job.request.stream)) {
             self.mutex.lockUncancelable(io);
@@ -354,7 +391,7 @@ pub const Service = struct {
             self.finish(io, job);
             return self.afterJob(io);
         }
-        return .again;
+        return null;
     }
 
     /// After a job ended: `.again` while another waits.
@@ -1130,4 +1167,22 @@ test "a speech model's voice has no default when speech.voice is not one of its 
     try std.testing.expect(designed.get("voice") == null and designed.get("instructions") != null);
     try std.testing.expectEqualStrings("egyptian_speaker", own.get("voice").?.object.get("default").?.string);
     try std.testing.expect(own.get("instructions") == null);
+}
+
+test "the pace beside a generation: a frame after a token, a chunk's worth after a prefill chunk" {
+    const ms = std.time.ns_per_ms;
+    const token = paceBeside(20 * ms, 4);
+    try std.testing.expectEqual(@as(usize, 1), token.frames);
+    try std.testing.expectEqual(@as(i64, 1000 * ms), token.lead_ns);
+    try std.testing.expectEqual(@as(i64, 20 * ms), token.budget_ns);
+    const chunk = paceBeside(500 * ms, 4);
+    try std.testing.expectEqual(@as(usize, 4), chunk.frames);
+    try std.testing.expectEqual(@as(i64, 1000 * ms), chunk.lead_ns);
+    try std.testing.expectEqual(@as(i64, 500 * ms), chunk.budget_ns);
+    // The lead outlasts a step longer than the usual second.
+    try std.testing.expectEqual(@as(i64, 1800 * ms), paceBeside(1200 * ms, 4).lead_ns);
+    // A gap past the longest step asks no more than that step.
+    const gap = paceBeside(60_000 * ms, 4);
+    try std.testing.expectEqual(@as(i64, 4500 * ms), gap.lead_ns);
+    try std.testing.expectEqual(@as(i64, 3000 * ms), gap.budget_ns);
 }
