@@ -1,10 +1,13 @@
 //! Reusable inference modules. Container inspection is the first implemented layer.
 //! No CLI, user-directory policy, or architecture-specific behavior belongs here.
 pub const gguf = @import("formats/gguf.zig");
+/// Test support: generated models (`models/tiny.zig`).
+pub const gguf_writer = @import("formats/gguf_writer.zig");
 pub const safetensors = @import("formats/safetensors.zig");
 pub const encoding = @import("tensor/encoding.zig");
 pub const quant = @import("quant/decode.zig");
 pub const quant_encode = @import("quant/encode.zig");
+pub const quant_sample = @import("quant/sample.zig");
 pub const metal = @import("backends/metal/root.zig");
 pub const cpu = @import("backends/cpu/root.zig");
 pub const profiles = @import("profiles/root.zig");
@@ -37,10 +40,12 @@ pub const audio = @import("audio/root.zig");
 test {
     _ = audio;
     _ = gguf;
+    _ = gguf_writer;
     _ = safetensors;
     _ = encoding;
     _ = quant;
     _ = quant_encode;
+    _ = quant_sample;
     _ = cpu;
     _ = profiles;
     _ = vocabulary;
