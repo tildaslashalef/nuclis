@@ -5,7 +5,7 @@
 //! renders the tool definitions themselves; this text is what follows them.
 //!
 //! Every sentence here was measured on the playground task list
-//! (`scripts/agent-eval.py`, docs/development.md § The agent's task list):
+//! (`scripts/app/agent-eval.py`, docs/development.md § The agent's task list):
 //! change the text, run the list, compare. `--system-prompt <file>` replaces
 //! the built sections with a file's text for exactly that purpose; the
 //! project instructions still follow it.

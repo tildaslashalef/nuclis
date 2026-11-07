@@ -95,7 +95,7 @@ order, so results do not depend on the core count.
 
 ### Checked against the oracle
 
-`scripts/laya-reference.py` runs the `laya` 0.3.20 package (PyTorch 2.14.0,
+`scripts/oracle/laya-reference.py` runs the `laya` 0.3.20 package (PyTorch 2.14.0,
 Transformers 5.17.0) in F32 on the CPU and writes
 `inference/src/models/fixtures/laya/`: for 8 requests the ids, markers, raw
 logits, and answer, and in `activations.f32` rows of the residual stream
@@ -380,7 +380,7 @@ Nothing in the model code changed: the forward, the Metal plan, and the
 - **Budget.** 1,024 tokens per sequence, 256 for the question and options.
 
 Checked by the same tools on the oracle's 16 requests
-(`scripts/laya-reference.py --subfolder multilingual`,
+(`scripts/oracle/laya-reference.py --subfolder multilingual`,
 `fixtures/laya-multilingual/`): the root set's 8 shapes, where
 `long_text` and `long_list` now fill 1,024 tokens, then states in
 French, German, Spanish, Arabic, Chinese, and Hindi (questions in the

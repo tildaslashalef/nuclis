@@ -9,3 +9,4 @@ zig-out/
 .reference/
 .cloudflare/
 dist/
+AGENTS.local.md

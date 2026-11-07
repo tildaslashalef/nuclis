@@ -1632,7 +1632,7 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
 
 /// Writes the native prediction-block trace for the pinned `Hello,` tokens
 /// (`p0-h.f32`, `p1-h.f32`, `p1-hprev.f32`, `greedy.txt`) so
-/// `compare-generation.py --draft` can compare it against the reference's
+/// `nuclis-gates compare --draft` can compare it against the reference's
 /// captured rows. The target is stepped live for each position's hidden, so
 /// this is an independent capture, not a replay of the pinned `hprev`.
 /// The family's binding with a companion's prediction block bound in when
@@ -1642,7 +1642,7 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
 /// commit rows and committed, then one 8-row noise block from the prompt's
 /// greedy token writes every row's final hidden (`p{r}-h.f32`), and a
 /// proposal at `p_min` 0 writes the anchor and its 7 drafts (`greedy.txt`).
-/// Metal is compared against the CPU's rows (`compare-generation.py --draft
+/// Metal is compared against the CPU's rows (`nuclis-gates compare --draft
 /// --positions 8`).
 fn flashTrace(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, directory: []const u8, draft_model: []const u8) !void {
     const qwen35 = inference.models.qwen35;

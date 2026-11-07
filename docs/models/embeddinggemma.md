@@ -10,7 +10,7 @@ transformer with bidirectional attention; the vision and audio encoders
 are Gemma 4's, in one mmproj file.
 
 Everything here was read on 2026-10-08 and 2026-10-09 from these sources:
-the pinned files, through `scripts/gguf-inventory.py`; Google's repository
+the pinned files, through `scripts/fixtures/gguf-inventory.py`; Google's repository
 at the pinned revision (`config.json`, `config_sentence_transformers.json`,
 `processor_config.json`, the card); and the second llama.cpp checkout
 `b11514` (`de7fa0a3c`; `src/models/gemma-embedding2.cpp`, `conversion/gemma.py`,
@@ -388,7 +388,7 @@ represents them together and is comparable with a text-only one.
 - **sentence-transformers.** `google/embeddinggemma-2` at the pinned
   revision, in float32 on the CPU, through sentence-transformers 6.1.0,
   transformers 5.19.0 (the card was written against 5.18.0.dev0) and torch
-  2.14.1, in `.reference/venv-embed`, driven by `scripts/embedding-reference.py`.
+  2.14.1, in `.reference/venv-embed`, driven by `scripts/oracle/embedding-reference.py`.
   It is the end-to-end truth, input processing included (prefixes, image
   resizing, mel features).
 

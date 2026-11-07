@@ -16,7 +16,7 @@ replayed, the engine's layers animated, and the measured numbers below.
 in a small Python project, with speculative decoding on (21–27 tok/s on
 the status bar while it writes). Played back in real time, pauses over
 1.5 s shortened: after a 23 s warm-up the task took 36 s over seven
-steps. Recorded by `scripts/agent-demo.py`.*
+steps. Recorded by `scripts/app/agent-demo.py`.*
 
 ## Status
 

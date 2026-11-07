@@ -1,11 +1,13 @@
 # Muse Glimmer 30B: facts from the artifact and the reference
 
+**No gates.** This family left the gate registry when its file left the test machine. The `make gate` commands below name gates as of `v0.11.0`; the measurements stand as recorded.
+
 Meta's dense 30B chat model (`general.architecture = muse-glimmer`): a
 period-4 sliding/global layer pattern with NoPE on the global layers, an
 attention output gate, sandwich norms with two epsilons, a gpt-4o-family
 tokenizer, and the ATEM tool protocol in its template. Everything here was
 read on 2026-09-19 from the pulled UD-Q4_K_XL file with
-`scripts/gguf-inventory.py` (the committed inventory is
+`scripts/fixtures/gguf-inventory.py` (the committed inventory is
 [`fixtures/muse-glimmer-30b.json`](../../inference/src/models/fixtures/muse-glimmer-30b.json))
 and from the pinned llama.cpp reference `7620399`
 (`src/models/muse-glimmer.cpp`, `src/llama-hparams.cpp`,
@@ -283,7 +285,7 @@ F32 cache, one token per decode: 156 layer files (three positions × 52
 layers × 6,656 floats) and the 202,048 logits, greedy token 372.
 
 `make gate NAME=muse-trace-cpu` (`nuclis generate --backend cpu
---prompt-tokens …`, then `scripts/compare-generation.py` at the bring-up
+--prompt-tokens …`, then `nuclis-gates compare` at the bring-up
 thresholds, max abs 2e-3 and relative RMS 1e-4 per file), 2026-09-19:
 
 | Rows | Max abs | Max relative RMS | Greedy |

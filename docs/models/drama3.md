@@ -46,7 +46,7 @@ semantic top-1, so it cannot serve as a trace source.
 ## The file
 
 The inventory is `inference/src/models/fixtures/drama3-q4_k.json`
-(`scripts/gguf-inventory.py`). It holds 1,531 tensors: 522 Q4_K, 216 F16
+(`scripts/fixtures/gguf-inventory.py`). It holds 1,531 tensors: 522 Q4_K, 216 F16
 (the codec's convolutions and projections), and 793 F32 (norms, small
 projections, the DeltaNet parameters, the codebooks). It also carries
 these metadata groups:
@@ -480,7 +480,7 @@ Held-back and cut samples are never streamed, so the API's first bytes
 come only once a take has spoken.
 
 Measured through `nuclis speak` on Metal (2026-10-30, the M4 Pro, this
-file). `scripts/drama3-stalls.py` ran the lab's two Egyptian voices
+file). `scripts/bench/drama3-stalls.py` ran the lab's two Egyptian voices
 (A and B, 12 s clips each saved with its transcript) on
 8 short phrases, the lab's four worst first, with seeds 1–4. Each take was
 heard by `nuclis transcribe --language ar`. A take counts as a stall when
@@ -580,7 +580,7 @@ every chunk's prompt while it fits, beside the latest chunk.
 
 ## The traces
 
-`scripts/speech-traces/drama3_trace.py` runs Fish's own modules (the
+`scripts/oracle/speech-traces/drama3_trace.py` runs Fish's own modules (the
 `DecoderLayer`s, `FishOmniAudioDecoder`, the DAC built from
 `modded_dac_vq.yaml` through hydra, `build_drama3_prompt`) on the CPU in
 F32. The weights are dequantized from this GGUF: Q4_K by ggml's formula,
@@ -617,7 +617,7 @@ uv venv --python 3.12 .reference/venv-drama3
 VIRTUAL_ENV=.reference/venv-drama3 uv pip install torch==2.14.1 torchaudio==2.11.1 \
   numpy==2.5.4 tokenizers==0.22.2 einops==0.8.2 loguru hydra-core omegaconf tqdm safetensors
 VIRTUAL_ENV=.reference/venv-drama3 uv pip install --no-deps descript-audio-codec==1.0.0
-.reference/venv-drama3/bin/python scripts/speech-traces/drama3_trace.py [--cases NAME,...]
+.reference/venv-drama3/bin/python scripts/oracle/speech-traces/drama3_trace.py [--cases NAME,...]
 ```
 
 The clip is read as `torchaudio.load` reads it (int16 / 32768); torchaudio
@@ -862,7 +862,7 @@ the GPU no longer idles 31 ms between them.
 
 ## The round trip
 
-`scripts/wer.py --speak tests/fixtures/tts-roundtrip.json --own-voice`
+`scripts/gate/wer.py --speak tests/fixtures/tts-roundtrip.json --own-voice`
 speaks the 20 pinned English sentences shared with Qwen3-TTS through
 `nuclis speak --backend metal`, each with its own seed. There is no
 reference, so the voice is the model's own and the language comes from

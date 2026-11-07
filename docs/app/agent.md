@@ -175,7 +175,7 @@ fixtures rather than asserted universally.
 
 The data is the other half. Unicode properties are large tables; `uucode`
 exists to generate them, but adding a dependency for one table is a lot of
-surface for a project that keeps its build offline. `scripts/grapheme-table.py`
+surface for a project that keeps its build offline. `scripts/fixtures/grapheme-table.py`
 instead downloads a **pinned UCD** once, checks its digests, and emits one
 sorted interval table (`graphemes_table.zig`) that a binary search reads. The
 generator is committed, the artifact is committed, and the data layer sits

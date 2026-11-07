@@ -9,24 +9,32 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const metal = b.option(bool, "metal", "Enable macOS Metal projection backend") orelse false;
-    const options = b.addOptions();
-    options.addOption(bool, "metal", metal);
-    mod.addOptions("build_options", options);
-    if (metal) {
-        mod.addCSourceFile(.{ .file = b.path("src/backends/metal/bridge.m"), .flags = &.{"-fno-objc-arc"} });
-        mod.linkFramework("Foundation", .{});
-        mod.linkFramework("Metal", .{});
-        // The image decoder is the other macOS bridge (vision/image.zig).
-        mod.addCSourceFile(.{ .file = b.path("src/vision/image_bridge.m"), .flags = &.{"-fno-objc-arc"} });
-        mod.linkFramework("CoreGraphics", .{});
-        mod.linkFramework("ImageIO", .{});
-        // And the audio decoder (audio/audio.zig).
-        mod.addCSourceFile(.{ .file = b.path("src/audio/audio_bridge.m"), .flags = &.{"-fno-objc-arc"} });
-        mod.linkFramework("AudioToolbox", .{});
-        mod.link_libc = true;
-    }
+    configure(b, mod, metal, false);
     const tests = b.addTest(.{ .root_module = mod });
-    b.step("test", "Test inference library without GPU or model weights").dependOn(&b.addRunArtifact(tests).step);
+    const test_step = b.step("test", "Test inference library without GPU or model weights");
+    test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    // The same sources with the adapters' pinned shapes swapped for tiny ones
+    // (docs/models/README.md § Tiny models). Only tiny-check imports this
+    // module: nothing the application links can see those shapes.
+    const tiny_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    configure(b, tiny_mod, metal, true);
+    const tiny_root = b.createModule(.{
+        .root_source_file = b.path("tiny-check.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "inference", .module = tiny_mod }},
+    });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = tiny_root })).step);
+    const tiny_check = b.addExecutable(.{ .name = "tiny-check", .root_module = tiny_root });
+    b.installArtifact(tiny_check);
+    const run_tiny = b.addRunArtifact(tiny_check);
+    run_tiny.addPassthruArgs();
+    b.step("test-tiny", "Metal against the CPU reference on generated models, no download (-Dmetal=true)").dependOn(&run_tiny.step);
 
     const check = b.addExecutable(.{
         .name = "vocabulary-check",
@@ -168,4 +176,25 @@ pub fn build(b: *std.Build) void {
     const attention_bench = b.addRunArtifact(metal_check);
     attention_bench.addArg("--attention-bench");
     b.step("bench-attention", "Prefill chunk attention, row-split vs register-reuse at 4K-32K visible (-Dmetal=true)").dependOn(&attention_bench.step);
+}
+
+/// The build options and platform bridges of one instance of the module.
+fn configure(b: *std.Build, mod: *std.Build.Module, metal: bool, tiny_models: bool) void {
+    const options = b.addOptions();
+    options.addOption(bool, "metal", metal);
+    options.addOption(bool, "tiny_models", tiny_models);
+    mod.addOptions("build_options", options);
+    if (metal) {
+        mod.addCSourceFile(.{ .file = b.path("src/backends/metal/bridge.m"), .flags = &.{"-fno-objc-arc"} });
+        mod.linkFramework("Foundation", .{});
+        mod.linkFramework("Metal", .{});
+        // The image decoder is the other macOS bridge (vision/image.zig).
+        mod.addCSourceFile(.{ .file = b.path("src/vision/image_bridge.m"), .flags = &.{"-fno-objc-arc"} });
+        mod.linkFramework("CoreGraphics", .{});
+        mod.linkFramework("ImageIO", .{});
+        // And the audio decoder (audio/audio.zig).
+        mod.addCSourceFile(.{ .file = b.path("src/audio/audio_bridge.m"), .flags = &.{"-fno-objc-arc"} });
+        mod.linkFramework("AudioToolbox", .{});
+        mod.link_libc = true;
+    }
 }

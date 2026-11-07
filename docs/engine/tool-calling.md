@@ -46,7 +46,7 @@ Vocabulary inspection found `<tool_call>` / `</tool_call>` at 248058 / 248059
 and `<think>` / `</think>` at 248068 / 248069. The inner function/parameter
 delimiters are not standalone vocabulary entries. Exact outer token boundaries
 therefore help, but do not eliminate the need for a bounded incremental parser
-inside a call. These facts were read with `scripts/gguf-inventory.py` and a
+inside a call. These facts were read with `scripts/fixtures/gguf-inventory.py` and a
 standard-library reader over its recorded vocabulary offset, without weights.
 
 ## Gemma: calls and results inside a model turn

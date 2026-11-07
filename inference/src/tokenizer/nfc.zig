@@ -1,6 +1,6 @@
 //! Unicode Normalization Form C (UAX #15) of validated UTF-8: full canonical
 //! decomposition, canonical ordering, canonical composition. Data is the
-//! generated nfc_table.zig (scripts/tokenizer-nfc.py); Hangul is algorithmic.
+//! generated nfc_table.zig (scripts/fixtures/tokenizer-nfc.py); Hangul is algorithmic.
 //! Text with no scalar at or above U+0300 is already NFC and is not copied.
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
@@ -177,7 +177,7 @@ test "allocation failures leave nothing behind" {
 }
 
 // UAX #15 conformance: every NFC column of the pinned version's
-// NormalizationTest.txt, which scripts/tokenizer-nfc.py caches.
+// NormalizationTest.txt, which scripts/fixtures/tokenizer-nfc.py caches.
 test "NormalizationTest.txt conformance when cached" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;

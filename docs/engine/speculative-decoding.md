@@ -1,8 +1,7 @@
 # Speculative decoding: recovery contract, draft sources, measurements
 
 The reference document of the speculative-decoding theme. Its requirements
-are in the [spec](../spec.md#56-speculative-decoding); the units that fill it
-in are planned in [TODO.md](../../TODO.md); closed outcomes are cited from
+are in the [spec](../spec.md#56-speculative-decoding); closed outcomes are cited from
 the [worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md).
 
 As of 2026-10-01 every catalogue family with a draft source is measured
@@ -170,7 +169,7 @@ the same pinned trace the Metal rows match at 1.5e-5 max abs / 5.8e-7
 relative RMS at position 0 and 1.5e-5 / 7.2e-7 at position 1 (F32 cache);
 with the F16 cache the keys and values round within the family's recorded
 `half_*` bound (8.5e-3 / 3.1e-4 and 2.5e-3 / 2.4e-4). `make gate NAME='qwen38-draft-trace-*'` writes the native rows and
-runs `compare-generation.py --draft` against the pinned directory; both executors pass
+runs `nuclis-gates compare --draft` against the pinned directory; both executors pass
 on all three rows (block `h` at positions 0 and 1, and the target `hprev`).
 `draftRecoveryCheck` (generation-check, both executors) resets the block
 and takes a checkpoint/rewind across a block row: the hidden is
@@ -1004,7 +1003,7 @@ batch that emits E tokens on average and costs C milliseconds in all
 (propose, verify, recover, commit, the loop) reaches 20 tokens/s only when
 **C ≤ 50E**. Sum counts and times; never average per-batch rates. The
 verify budget is 50E less the batch's measured non-verify costs.
-`scripts/spec-matrix.py` prints C / 50E for every cell.
+`scripts/bench/spec-matrix.py` prints C / 50E for every cell.
 
 **Its last pricing** (2026-10-01, draft 7, cold chip, greedy / instruct,
 real runs on saved prefixes; [benchmarks § The re-priced speculative
@@ -1130,7 +1129,7 @@ thirty. On these short code prompts Saluki accepts at least as much as
 the Q4_K_M. These samples are small (31 positions at depth 0); the
 speculative matrix below measures prose at every context.
 
-**The speculative matrix** (2026-10-21, `scripts/spec-matrix.py --model
+**The speculative matrix** (2026-10-21, `scripts/bench/spec-matrix.py --model
 saluki --run run-2026-09-06 --contexts code,512,4096,16384,32639 --drafts
 3-7 --sampling greedy,instruct --cooldown 60`, Metal, F16 cache, 128
 tokens, three off/on pairs per cell, Qwen's instruct sampling; the full

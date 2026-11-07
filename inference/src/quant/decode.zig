@@ -596,7 +596,7 @@ test "codebook rows keep the values the cross-encoding-validated decoders gave" 
 }
 
 test "Q5_0 and Q5_1 rows match the values their formats' equations give" {
-    try checkFixture(@embedFile("fixtures/five-bit.json"), "nuclis: the formats' equations (scripts/five-bit-fixtures.py)");
+    try checkFixture(@embedFile("fixtures/five-bit.json"), "nuclis: the formats' equations (scripts/fixtures/five-bit-fixtures.py)");
 }
 
 test "ternary rows match the PrismML fork's decoder fixtures exactly" {

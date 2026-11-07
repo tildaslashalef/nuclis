@@ -81,6 +81,19 @@ pub fn build(b: *std.Build) void {
     // The package's standalone binary, installed on request only (`make hf-downloader`).
     b.step("hf-downloader", "Install the standalone Hugging Face downloader (zig-out/bin/hf-downloader)").dependOn(&b.addInstallArtifact(huggingface.artifact("hf-downloader"), .{}).step);
 
+    // The gate runner stands apart from the engine: it imports nothing of
+    // `inference`, and it calls `zig build` itself, so nothing here runs it.
+    const gates_tool = b.addExecutable(.{
+        .name = "nuclis-gates",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/gates/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    b.step("gates-tool", "Install the gate runner (zig-out/bin/nuclis-gates)").dependOn(&b.addInstallArtifact(gates_tool, .{}).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = gates_tool.root_module })).step);
+
     const run = b.addRunArtifact(exe);
     run.addPassthruArgs();
     b.step("run", "Run nuclis").dependOn(&run.step);
@@ -120,6 +133,9 @@ pub fn build(b: *std.Build) void {
     const metal_check = b.addRunArtifact(inference.artifact("metal-check"));
     metal_check.addPassthruArgs();
     b.step("test-metal", "Explicit Metal fixture checks (-Dmetal=true; -- --wide-rows ID: one encoding's matvec rows)").dependOn(&metal_check.step);
+    const tiny_check = b.addRunArtifact(inference.artifact("tiny-check"));
+    tiny_check.addPassthruArgs();
+    b.step("test-tiny", "Metal against the CPU reference on generated models, no download (-Dmetal=true; -- [variant] [seed])").dependOn(&tiny_check.step);
     const matvec_bench = b.addRunArtifact(inference.artifact("metal-check"));
     matvec_bench.addArg("--matvec-bench");
     matvec_bench.addPassthruArgs();

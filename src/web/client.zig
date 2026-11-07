@@ -144,7 +144,7 @@ pub fn Reply(comptime T: type) type {
 }
 
 /// `https`, or `http` on a loopback host (a local stand-in such as
-/// `scripts/search-gateway-stub.py`); a host, and no credentials, query, or
+/// `scripts/app/search-gateway-stub.py`); a host, and no credentials, query, or
 /// fragment. The configuration and the client apply the same rule.
 pub fn validBase(url: []const u8) bool {
     const uri = std.Uri.parse(url) catch return false;

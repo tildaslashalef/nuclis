@@ -50,7 +50,7 @@ the transcript will not survive.
 
 ## 1. Facts with provenance (`docs/models/<family>.md`)
 
-Read the file, not the model card. `scripts/gguf-inventory.py <file>
+Read the file, not the model card. `scripts/fixtures/gguf-inventory.py <file>
 --out inference/src/models/fixtures/<family>.json` is an independent
 header reader (standard library only): every metadata key, arrays up to
 64 elements, every tensor's name, shape, and encoding, and the chat
@@ -142,12 +142,12 @@ does not add BOS, so write `<bos>` in the prompt text. Run it once,
 commit the traces under `tests/fixtures/<family>-<prompt>/` with a row in
 [provenance.md](../../tests/fixtures/provenance.md), and add a
 `<family>-trace-cpu` gate to `gates.json` (tier `verify-cpu`, the family's
-source globs in `paths`; [development.md § Gates](../development.md#gates)):
+seed globs in `families`; [development.md § Gates](../development.md#gates)):
 
 ```sh
 nuclis generate --backend cpu --model <file> --prompt-tokens <ids.json> \
   --max-tokens 1 --ctx-size 8 --temperature 0 --logits <dir>/logits.f32 --trace-dir <dir>
-python3 scripts/compare-generation.py <dir> tests/fixtures/<family>-… \
+./zig-out/bin/nuclis-gates compare <dir> tests/fixtures/<family>-… \
   --positions 3 --embedding 3840 --layers 48 --vocab 262144
 ```
 
@@ -193,7 +193,7 @@ Extract the template (`gguf-inventory.py --max-string 30000`, then the
 the tree) and read it for the subset the playground renders: system and
 developer, user, assistant with separate reasoning, the thinking control.
 Then capture before implementing: start the reference server on the file
-and run `scripts/tokenizer-fixtures.py --profile <family>` (add the
+and run `scripts/fixtures/tokenizer-fixtures.py --profile <family>` (add the
 profile's digests, efforts, and template keyword arguments to its
 `PROFILES` table). The fixture shows what the reference actually sends
 the model, which is not always what the template or the card says: for
@@ -225,13 +225,13 @@ the reference's ids.
   same name shadows it.
 - `nuclis --help` names the profiles and their defaults; update it.
 - The acceptance record: the reference harness on the file
-  (`scripts/reference-baseline.py --family <family> --output-dir
+  (`scripts/bench/reference-baseline.py --family <family> --output-dir
   .reference/<family>-<date> --prompt-lengths
   512,4096,16384,32639` against the server started with the
   [reference recipe](../benchmarks/llama-cpp.md#run-the-workload) at 32K),
   its token arrays committed under `tests/fixtures/run-<date>-<family>/`,
   a `docs/benchmarks/reference-<date>-<family>.json` summary, then
-  `scripts/nuclis-baseline.py --run run-<date>-<family>
+  `scripts/bench/nuclis-baseline.py --run run-<date>-<family>
   --reference-records reference-<date>-<family>.json` (a `make
   baseline-<family>` target) and the table in
   [benchmarks](../benchmarks/README.md#acceptance-runs) with hardware, build, artifact,
@@ -248,6 +248,73 @@ unchanged; the new family's `<family>-trace-*` and `<family>-generation-metal`
 gates, one set per pinned file when the family has two, as Gemma's
 `gemma4-*` and `gemma4-qat-*`), and `make bench` (the first family's rate
 unchanged).
+
+## Tiny models
+
+Generated random-weight models run every language family's load and forward
+paths on every change, with no download. `inference/src/models/tiny.zig`
+builds a GGUF per variant at test time (`formats/gguf_writer.zig`,
+`quant/sample.zig`), seeded and deterministic, in a temporary directory.
+
+- **`zig build test`** (`inference/tiny-check.zig`, also `-Dmetal=false` on
+  Linux): each family through `Engine.open` on the CPU, two rows plus a
+  rerun, in each variant's first encoding: finite, the right shapes, same seed
+  same logits; tokenizer round trips, GPT-4o's cuts on Muse. Adds 2 s.
+- **`zig build test-tiny -Dmetal=true -- [variant] [seed]`**: every variant in
+  every encoding against the CPU reference, stepped and chunked, with the F16
+  and Q8_0 caches on the first encoding, and a control that corrupts 64 bytes
+  of one matrix and must leave the stepped bound. It takes 2.5 minutes.
+
+They prove the code paths, the plan's agreement with the reference, and the
+layouts; never accuracy, since these weights mean nothing. Blocks are random
+legal codes with a calibrated scale (`quant/sample.zig` says why), so an
+encoder round trip is decoding them: finite, centred, the right RMS, and each
+scale field linear. Drafters, DFlash, and vision are not covered.
+
+**The tiny shapes live in a test-only build.** The adapters pin their
+dimensions and the vocabulary (Muse all of them, Gemma three `Config` rows and
+262,144, Qwen 248,320, the rotation the 27B shape), so no tiny file can pass
+the production `bind`. The inference module is built a second time with the
+build option `tiny_models`, which only `tiny-check` imports: it swaps those
+constants for the smaller ones below. The validators are the same code; the
+production module takes no new shape and has no bypass, and two tests in
+`tiny.zig` hold that (the tiny Qwen shape passes production apart from the
+vocabulary, and production refuses a shape only the tiny build pins).
+
+| Variant | Shape (tiny build) | Encodings |
+| --- | --- | --- |
+| `qwen35` | 4 layers, 256 wide, DeltaNet and attention | F32, BF16, Q8_0, Q3_K to Q6_K, IQ3_S, IQ4_NL, IQ4_XS, PQ2_0, PTQ1_0 |
+| `saluki`, `saluki-mix` | the same, a file per encoding and a mixed file | Q2_K, IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS |
+| `bonsai` | 4 layers, 1024 wide, rotated with BF16 `ssm_alpha` and `ssm_beta` | PQ2_0, PTQ1_0 |
+| `muse-glimmer`, `muse-mix` | 4 layers, 256 wide, real attention geometry, GPT-4o tokenizer | F32, Q4_0, Q8_0, Q3_K to Q6_K, IQ3_S, IQ4_NL, IQ4_XS |
+| `gemma4-dense`, `gemma4-mix` | 6 layers | F32, Q4_0, Q5_0, Q5_1, Q8_0, Q3_K to Q6_K, IQ3_S, IQ4_NL, IQ4_XS |
+| `gemma4-experts` | 7 layers, 16 experts of 64 | the same, `ffn_down_exps` in Q5_0 under a 256-block file |
+| `gemma4-e4b` | 12 layers, per-layer embedding | the same, its projection BF16 under Q4_K |
+
+That is every encoding each adapter accepts. Bounds are about three times the
+worst of three seeds over every encoding on the M4 Pro, in absolute logit
+error and RMS relative to the reference's logits:
+
+| Family | Stepped | Chunked | F16 cache | Q8_0 cache |
+| --- | --- | --- | --- | --- |
+| Qwen, Saluki, Bonsai | 6e-5, 1.5e-5 | 4e-2, 1e-2 | 3e-2, 1e-2 | 4e-2, 1e-2 |
+| Muse Glimmer | 5e-6, 1e-5 | 3e-3, 5e-3 | 2e-3, 3e-3 | 3e-2, 5e-2 |
+| Gemma 4 | 1.5e-4, 3e-5 | 2e-2, 6e-3 | 3e-2, 6e-3 | 1.5e-1, 5e-2 |
+| Gemma 4 experts | 4e-4, 1.2e-4 | 2, 5e-1 | 2, 5e-1 | 2, 5e-1 |
+
+Stepped runs F32 activations on both sides, so what is left is F32 rounding,
+amplified by a random network. Chunked adds the half-operand tiles of the
+encodings that use them, and the caches add their own. The experts' row is
+wide because the router's top-k is discontinuous: rounding across a close
+pair swaps an expert, which moves the logits far more than the rounding did.
+The Gemma generator sets `attn_q_norm` near `1/sqrt(head)`, since its scores
+are unscaled and at unit gain the softmax is one-hot, which amplified rounding
+a thousandfold. A real model's numbers are the gates', never these.
+
+To add a family, write its emitter (what `bind` requires, in the file's
+tensor order and metadata), add a row to `variants` in `tiny.zig`, a test to
+`tiny-check.zig`, its tiny constants behind `tiny_models` if the adapter pins
+them, and its bounds.
 
 ## Mistakes already made once
 

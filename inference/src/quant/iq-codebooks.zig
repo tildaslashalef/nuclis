@@ -1,7 +1,7 @@
 //! IQ1_S/IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, and IQ3_XXS codebooks: GGML format
 //! constants from llama.cpp 7620399f58aebfd2196b74021f9581bcf7218cb9
 //! (ggml/src/ggml-common.h); see THIRD_PARTY_NOTICES.md. Regenerate with
-//! scripts/iq-codebooks.py. Low byte is component 0.
+//! scripts/fixtures/iq-codebooks.py. Low byte is component 0.
 
 /// 256 entries; each holds eight magnitudes in {8, 25, 43}.
 pub const iq2_xxs = [256]u64{

@@ -23,7 +23,7 @@ const Buffer = metal.Buffer;
 const Drafter = @import("../runtime/draft.zig").Drafter;
 const dflash2 = @import("dflash2.zig");
 
-pub const vocabulary = 248320;
+pub const vocabulary = model.vocabulary;
 /// Rows a single verify batch may hold: the largest draft block plus its
 /// seed token and bonus. Sizes the device buffers the output head reads back
 /// (about 16 MB of logits), not the layer activations, which are chunk-sized.

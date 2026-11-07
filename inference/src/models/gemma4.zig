@@ -16,13 +16,16 @@
 //! layers have their own value projection, the expert block (26B-A4B), and
 //! the E4B's per-layer embeddings and shared KV layers (`kvSource`). The
 //! runtimes (`gemma4_runtime.zig`, `gemma4_metal.zig`) execute exactly this
-//! binding.
+//! binding. `tiny_models` is the test-only build (docs/models/README.md
+//! § Tiny models): it replaces the pinned configurations with three small
+//! ones of the same shapes and shrinks the vocabulary.
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const gguf = @import("../formats/gguf.zig");
 const models = @import("root.zig");
 const weights = @import("../runtime/weights.zig");
 const gemma4_assistant = @import("gemma4_assistant.zig");
+const tiny_models = @import("build_options").tiny_models;
 const Tensor = gguf.Tensor;
 
 pub const architecture = "gemma4";
@@ -35,7 +38,7 @@ pub const max_draft_proposals = 7;
 
 /// The most query heads of any pinned configuration; buffers size by it.
 pub const max_heads = 16;
-pub const vocabulary = 262144;
+pub const vocabulary = if (tiny_models) 1024 else 262144;
 /// One image span in a prompt (the shared vision contract's `Span`), used by
 /// the CPU runtime and the Metal plan.
 pub const VisionSpan = @import("../vision/root.zig").Span;
@@ -156,8 +159,62 @@ pub const config_e4b: Config = .{
     .bidirectional_images = false,
     .layer_kinds = &.{ .{ .kind = "sliding_attention", .count = 35 }, .{ .kind = "global_attention", .count = 7 } },
 };
+/// The dense 12B's kinds at the smallest whole period.
+pub const config_tiny_dense: Config = .{
+    .profile = "gemma4_tiny_dense",
+    .layer_count = 6,
+    .embedding = 256,
+    .feed_forward = 256,
+    .heads = 16,
+    .window = 8,
+    .context_length = 262144,
+    .sliding_kv_heads = 8,
+    .global_kv_heads = 1,
+    .global_value = false,
+    .experts = null,
+    .kv_layers = 6,
+    .layer_kinds = &.{ .{ .kind = "sliding_attention", .count = 5 }, .{ .kind = "global_attention", .count = 1 } },
+};
+/// The 26B-A4B's kinds; seven layers so `gemma4.block_count` tells it apart.
+pub const config_tiny_experts: Config = .{
+    .profile = "gemma4_tiny_experts",
+    .layer_count = 7,
+    .embedding = 256,
+    .feed_forward = 256,
+    .heads = 16,
+    .window = 8,
+    .context_length = 262144,
+    .sliding_kv_heads = 8,
+    .global_kv_heads = 2,
+    .global_value = false,
+    .experts = .{ .count = 16, .used = 8, .feed_forward = 64 },
+    .kv_layers = 7,
+    .layer_kinds = &.{ .{ .kind = "sliding_attention", .count = 6 }, .{ .kind = "global_attention", .count = 1 } },
+};
+/// The E4B's kinds: per-layer embeddings, and the second period reading the
+/// caches of layers 4 (sliding) and 5 (global).
+pub const config_tiny_e4b: Config = .{
+    .profile = "gemma4_tiny_e4b",
+    .layer_count = 12,
+    .embedding = 256,
+    .feed_forward = 256,
+    .heads = 8,
+    .window = 8,
+    .context_length = 131072,
+    .sliding_kv_heads = 2,
+    .global_kv_heads = 2,
+    .global_value = true,
+    .experts = null,
+    .per_layer_input = 256,
+    .kv_layers = 6,
+    .bidirectional_images = false,
+    .layer_kinds = &.{ .{ .kind = "sliding_attention", .count = 10 }, .{ .kind = "global_attention", .count = 2 } },
+};
 /// The pinned configurations, selected by `gemma4.block_count`.
-pub const configs = [_]*const Config{ &config_12b, &config_26b_a4b, &config_e4b };
+pub const configs = if (tiny_models)
+    [_]*const Config{ &config_tiny_dense, &config_tiny_experts, &config_tiny_e4b }
+else
+    [_]*const Config{ &config_12b, &config_26b_a4b, &config_e4b };
 
 /// The two layer kinds and the attention geometry they share across
 /// configurations; the KV head count is the layer's (`Layer.kv_heads`).

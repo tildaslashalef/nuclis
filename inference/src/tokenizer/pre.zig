@@ -4,7 +4,7 @@
 //! combining marks and whitespace backtracking. Splits borrow the input bytes.
 //! The splitting rules are those declared by the model's `qwen35` tokenizer;
 //! the category table derives from Unicode data (see THIRD_PARTY_NOTICES.md).
-//! Regenerate it with scripts/tokenizer-unicode.py; no host Unicode database is consulted.
+//! Regenerate it with scripts/fixtures/tokenizer-unicode.py; no host Unicode database is consulted.
 const std = @import("std");
 const ranges = @embedFile("unicode-ranges.bin"); // records: little-endian u32 start, u8 flags
 

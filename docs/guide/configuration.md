@@ -145,7 +145,7 @@ says ([api.md § Hosted web tools](api.md#hosted-web-tools)).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `web.url` | `null` | the service's base URL: `https`, or `http` on a loopback host for a local stand-in (`scripts/search-gateway-stub.py`); no credentials, query, or fragment |
+| `web.url` | `null` | the service's base URL: `https`, or `http` on a loopback host for a local stand-in (`scripts/app/search-gateway-stub.py`); no credentials, query, or fragment |
 
 `web_context` needs a service with Brave: the agent offers it only when the
 service's health lists `/v1/context` at startup. Every limit, the context's budget and the six

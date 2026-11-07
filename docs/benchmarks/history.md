@@ -32,7 +32,7 @@ kernel's cost grows with the visible cache ([ENGN-05](https://github.com/tildasl
 tile at the reference's rate at 4K; [ENGN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-08--long-context-prefill-attention-2026-09-10) profiled the kernel at 30 % of
 the 16K prefill and found it latency-bound, not cache-bound:
 [metal-backend.md § Long-context prefill attention (2026-09-10, closed without a kernel change)](../engine/metal-backend.md#long-context-prefill-attention-2026-09-10-closed-without-a-kernel-change),
-[KERN-16](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-16--long-context-prefill-attention-register-level-reuse-measured-25--at-chunk-sizes-closed-negative-2026-09-21) in [TODO.md](../../TODO.md)). The 16K row is lower than the 66.5 / 8.92
+[KERN-16](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-16--long-context-prefill-attention-register-level-reuse-measured-25--at-chunk-sizes-closed-negative-2026-09-21)). The 16K row is lower than the 66.5 / 8.92
 measured after the 13,399-token docs prompt in [KERN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-08--flash-decoding-attention-2026-09-10) because the prompt is
 longer (the decode rate at 16K context is what this row states) and the
 run followed the 4K row without a cool-down.
@@ -339,7 +339,7 @@ context 2048, one warmup, three measured runs; decode ms/step is
 
 The instruct profile pays the pre-[KERN-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-06--gpu-partial-top-k-for-sampled-decoding-2026-09-08) cost on every token because its
 presence penalty must be applied to all 248,320 logits before the sort; a
-GPU penalty kernel is a measured follow-up ([KERN-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-13--a-gpu-penalty-kernel-the-token-history-applied-on-the-device-before-the-top-k-2026-09-20) in [TODO.md](../../TODO.md)). The
+GPU penalty kernel is a measured follow-up ([KERN-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-13--a-gpu-penalty-kernel-the-token-history-applied-on-the-device-before-the-top-k-2026-09-20)). The
 thinking profile stays on the GPU path. Prefill (34.7 tok/s) and first
 token (634 ms greedy, 654 ms instruct) are unchanged in definition; the
 greedy row was re-measured in the same session as the profiles (10.60 vs
@@ -802,8 +802,7 @@ charged to wired memory, so the headroom is a calculation: 48 GiB −
 The first measurement of speculative generation on Qwen3.8-27B with its
 embedded draft head, taken to decide the catalogue entry's default and to
 size the per-batch costs the performance units attack
-([speculative-decoding.md](../engine/speculative-decoding.md), the plan in
-[TODO.md](../../TODO.md)). `make workload NAME='qwen38/spec/*'`
+([speculative-decoding.md](../engine/speculative-decoding.md)). `make workload NAME='qwen38/spec/*'`
 (then `scripts/nuclis-speculative.py`, now the `qwen38/spec/*` workloads; the reports are under
 [benchmarks/speculative-2026-09-20/](speculative-2026-09-20/))
 ran twelve configurations, each as off/on pairs on one loaded model (the
@@ -867,7 +866,7 @@ with the drafter loaded but switched off" holds against the 2026-09-10
 record within the sequence's drift (10.43 against 10.62 tok/s at 512 with
 the drafter loaded, its cache and checkpoint region allocated) and gets an
 in-process baseline in [ENGN-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-17--the-speculative-verdict-qwen-and-gemma-off-muse-on-the-full-record-and-benchs-true-baseline-2026-09-21). The per-batch costs above are the plan's
-cost table; the targets are in `TODO.md`.
+cost table.
 
 ## The speculative verdict record (2026-09-21)
 
@@ -878,7 +877,7 @@ baselines are measured: the true baseline with the switch off — `bench` now
 opens `.none`, so no drafter weights, scratch, or draft cache are loaded —
 and the pair's loaded-but-off sample. `make workload NAME='qwen38/spec/*'`
 (then `scripts/nuclis-speculative.py --baseline`, now the `qwen38/spec/*`
-workloads of `workloads.json` with the table from `scripts/bench-report.py`; reports under
+workloads of `workloads.json` with the table from `scripts/bench/bench-report.py`; reports under
 [benchmarks/speculative-2026-09-21/](speculative-2026-09-21/))
 ran the twelve configurations of the [ENGN-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-12--batched-verification-speculative-generation-greedy-and-sampled-the-switch-and-the-draft-length-the-benchmark-record-2026-09-20-two-sessions) record as off/on pairs on one
 loaded model plus a no-drafter baseline pass per configuration: the
@@ -943,7 +942,7 @@ it) and `load_milliseconds` 790 → 1,247 ms. The sequence's baselines read
 10.1–10.6 tok/s; the [ENGN-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-12--batched-verification-speculative-generation-greedy-and-sampled-the-switch-and-the-draft-length-the-benchmark-record-2026-09-20-two-sessions) sequence read 10.43 early and 8.5 at 4K, so
 the path's rate improvement is real but partly a cooler sequence.
 
-**The cost table** of *Where we are* in [TODO.md](../../TODO.md) is
+**The cost table** of the plan at the time was
 refreshed from this record; the catalogue defaults it sets are Qwen off
 (this record), Gemma off
 ([§ The Gemma 4 draft pair](#the-gemma-4-draft-pair-2026-09-21)),
@@ -1015,7 +1014,7 @@ do not amortize a ~2.6-step batch. The sampled path still pays its host
 acceptance (55–77 ms, the full-vocabulary sorts), which is [ENGN-15](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-15--sampled-acceptance-on-the-gpu-top-k-readback-2026-09-20) and
 [KERN-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-13--a-gpu-penalty-kernel-the-token-history-applied-on-the-device-before-the-top-k-2026-09-20)'s target; the verify itself is the new [KERN-14](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-14--the-wide-328-small-batch-tile-measured-closed-negative-2026-09-20) (small-batch tile)
 and [KERN-16](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-16--long-context-prefill-attention-register-level-reuse-measured-25--at-chunk-sizes-closed-negative-2026-09-21) (long-context attention) territory. The plan was rewritten from
-this table: [TODO.md](../../TODO.md).
+this table.
 
 ## Gemma 4 12B QAT decode, first per-kernel profile (2026-09-12)
 
@@ -1270,7 +1269,7 @@ Ordinary decode on this workload is 25.2–25.4 tok/s (39.5 ms per token).
 | 7 | 2.735 | 4.971 | 3.735 | 136.2 | 9.8 | 0.2 | 0.001 | 0.002 | 0.000 | 25.16 → 25.60 | 1.017× |
 
 Reproduced on 2026-09-21 by `make workload NAME=gemma4-qat/prose512-draft`
-(draft 4; the table below is generated by `scripts/bench-report.py
+(draft 4; the table below is generated by `scripts/bench/bench-report.py
 --write-doc`, [REPO-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#repo-10--benchmark-workloads-as-data-and-generated-record-tables-2026-09-21)):
 
 <!-- bench:gemma4-qat-prose512-draft -->
@@ -1278,7 +1277,7 @@ Reproduced on 2026-09-21 by `make workload NAME=gemma4-qat/prose512-draft`
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | gemma4-qat-prose512-draft-2026-09-21 | 512 | greedy | 4 | 2.26 | 3.38 | 1.50 | 3.26 | 6.7 | 133.9 | 0.00 | 0.0 | 0.00 | 0.00 | 2.55 → 2.54 | — → 25.74 → 23.17 | 0.90× |
 
-Generated by `scripts/bench-report.py` from `docs/benchmarks/gemma4-qat-prose512-draft-2026-09-21.json` (metal, 32768 ctx / f16 KV / ReleaseSafe); means over the measured runs.
+Generated by `scripts/bench/bench-report.py` from `docs/benchmarks/gemma4-qat-prose512-draft-2026-09-21.json` (metal, 32768 ctx / f16 KV / ReleaseSafe); means over the measured runs.
 <!-- /bench:gemma4-qat-prose512-draft -->
 
 **Reading.** The drafter's proposals are accurate (55 % acceptance per
@@ -1588,7 +1587,7 @@ Plain decode is unchanged (10.57 / 10.20 / 9.25 / 8.30 tok/s, within
 
 Real speculation re-measured at the verify costs after [KERN-21](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-21--few-query-verify-attention-through-the-split-pass-2026-09-30), [KERN-24](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-24--the-register-fragment-verify-matmul-2026-10-01-closed-below-its-target),
 and [ENGN-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-19--the-deltanet-replay-tape-2026-10-01), to reset the catalogue's speculative defaults. `make
-spec-matrix` (`scripts/spec-matrix.py`): per cell one `nuclis bench
+spec-matrix` (`scripts/bench/spec-matrix.py`): per cell one `nuclis bench
 --speculative on --draft-length L --repeat 3 --warmup 0 --max-tokens 128
 --ctx-size 32768 --kv f16` process, three off/on pairs on one loaded model;
 numeric contexts restore the speed loop's saved prefix of the family's
@@ -2037,7 +2036,7 @@ Saluki 27B (`Underdog-Saluki-27B-1.0-IQ2-mix.gguf`) with Qwen's
 Apple M4 Pro (16 GPU cores), 48 GiB, macOS 27.0.1, Zig 0.17.0,
 ReleaseSafe, `301b26a` plus the documents. Method as
 [§ The re-priced speculative verdicts](#the-re-priced-speculative-verdicts-2026-10-01):
-`scripts/spec-matrix.py --model saluki --run run-2026-09-06 --contexts
+`scripts/bench/spec-matrix.py --model saluki --run run-2026-09-06 --contexts
 code,512,4096,16384,32639 --drafts 3-7 --sampling greedy,instruct
 --cooldown 60`. Each cell is three off/on pairs, 128 tokens, F16 cache, a
 32,768 context, and `p_min` 0.7. The numeric contexts restore saved
@@ -2116,7 +2115,7 @@ Qwen3.8-27B UD-Q4_K_M, two drafters on the same day:
 Setup: Apple M4 Pro (16 GPU cores), 48 GiB, macOS 27.0.1, Zig 0.17.0,
 ReleaseSafe, `7678bb3`.
 
-Method: `scripts/spec-matrix.py --run run-2026-09-06 --contexts
+Method: `scripts/bench/spec-matrix.py --run run-2026-09-06 --contexts
 code,512,4096,16384,32639 --sampling greedy,instruct --cooldown 60`, with
 `--model qwen38 --drafts 7` for MTP and `--model qwen38_dflash2_pair
 --drafts 5,7 --p-min 0,0.3` for DFlash2. The pair's entry, `qwen-dflash2`,

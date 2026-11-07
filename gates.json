@@ -1,5 +1,5 @@
 {
- "$comment": "The gate registry: docs/development.md \u00a7 Gates. Run with scripts/gates.py (make verify-auto, verify, verify-release, verify-cpu, verify-changed, gate).",
+ "$comment": "The gate registry: docs/development.md \u00a7 Gates. Run with tools/gates, zig-out/bin/nuclis-gates (make verify-auto, verify, verify-release, verify-long, verify-cpu, verify-changed, gate, sweep).",
  "build": {
   "metal_optimize": "ReleaseSafe",
   "cpu_optimize": "ReleaseFast",
@@ -32,17 +32,8 @@
    "entry": "muse-glimmer-30b",
    "mmproj": "~/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/mmproj-kquant.gguf"
   },
-  "muse_mtp": {
-   "path": "~/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/dflash-kquant.gguf",
-   "entry": "muse-glimmer-30b (mtp companion)"
-  },
   "bonsai": {
    "path": "~/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf"
-  },
-  "saluki": {
-   "path": "~/.nuclis/models/ConwayResearch/Underdog-Saluki-27B-1.0/Underdog-Saluki-27B-1.0-IQ2-mix.gguf",
-   "mmproj": "~/.nuclis/models/ConwayResearch/Underdog-Saluki-27B-1.0/mmproj-Underdog-Saluki-27B-1.0-Q8_0.gguf",
-   "entry": "saluki-27b"
   },
   "gemma4_e4b": {
    "path": "~/.nuclis/models/unsloth/gemma-4-E4B-it-qat-GGUF/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
@@ -161,6 +152,18 @@
    ]
   },
   {
+   "name": "test-tiny",
+   "command": [
+    "make",
+    "test-tiny"
+   ],
+   "paths": [
+    "inference/build.zig",
+    "inference/tiny-check.zig",
+    "inference/src/**"
+   ]
+  },
+  {
    "name": "manifests",
    "command": [
     "make",
@@ -170,9 +173,9 @@
    "paths": [
     "gates.json",
     "workloads.json",
-    "scripts/gates.py",
-    "scripts/workloads.py",
-    "scripts/reference-perplexity.py"
+    "tools/gates/**",
+    "scripts/bench/workloads.py",
+    "scripts/gate/reference-perplexity.py"
    ]
   },
   {
@@ -197,7 +200,7 @@
     "site/**",
     "gates.json",
     "workloads.json",
-    "scripts/docs-check.py"
+    "scripts/repo/docs-check.py"
    ]
   },
   {
@@ -208,7 +211,7 @@
    ],
    "paths": [
     "site/**",
-    "scripts/site-check.py",
+    "scripts/repo/site-check.py",
     "README.md",
     "build.zig.zon"
    ]
@@ -242,26 +245,112 @@
    "reason": "required when the change touches attention, the KV cache, or a windowed schedule; these files hold them among other things, so judge the diff"
   }
  ],
+ "families": {
+  "qwen38": [
+   "inference/generation-check.zig",
+   "inference/vocabulary-check.zig",
+   "inference/src/models/qwen35*.zig",
+   "inference/src/models/dflash2*.zig",
+   "inference/src/profiles/qwen38.zig",
+   "inference/src/vision/qwen3vl*.zig",
+   "tests/fixtures/qwen38-dflash2/**",
+   "tests/fixtures/perplexity/qwen38-*.json"
+  ],
+  "gemma4": [
+   "inference/generation-check.zig",
+   "inference/vocabulary-check.zig",
+   "inference/src/models/gemma4*.zig",
+   "inference/src/audio/gemma4a*.zig",
+   "inference/src/vision/gemma4*.zig",
+   "inference/src/profiles/gemma4*.zig",
+   "tests/fixtures/perplexity/gemma4-*.json"
+  ],
+  "laya": [
+   "inference/laya-check.zig",
+   "inference/vocabulary-check.zig",
+   "inference/src/models/laya*.zig",
+   "inference/src/models/modernbert*.zig",
+   "inference/src/profiles/laya.zig",
+   "inference/src/models/fixtures/laya/**",
+   "inference/src/models/fixtures/laya-multilingual/**"
+  ],
+  "clef": [
+   "inference/clef-check.zig",
+   "inference/src/models/clef.zig",
+   "inference/src/profiles/clef.zig",
+   "inference/src/profiles/decision.zig",
+   "inference/src/models/fixtures/clef/**"
+  ],
+  "embeddinggemma": [
+   "inference/embeddinggemma-check.zig",
+   "inference/src/embed.zig",
+   "inference/src/models/embeddinggemma*.zig",
+   "inference/src/audio/gemma4a*.zig",
+   "inference/src/vision/gemma4*.zig",
+   "inference/src/vision/image.zig",
+   "inference/src/vision/image_bridge.m",
+   "inference/src/vision/preprocess.zig",
+   "tests/fixtures/embeddinggemma-*/**"
+  ],
+  "qwen3-tts": [
+   "inference/qwen3-tts-check.zig",
+   "inference/tts-metal-check.zig",
+   "inference/src/models/qwen3_tts*.zig",
+   "inference/src/audio/qwen3_codec*.zig",
+   "inference/src/audio/ecapa.zig",
+   "tests/fixtures/qwen3-tts/**",
+   "tests/fixtures/tts-roundtrip.json"
+  ],
+  "drama3": [
+   "inference/drama3*.zig",
+   "inference/src/models/drama3*.zig",
+   "inference/src/audio/fish_codec*.zig",
+   "tests/fixtures/drama3/**",
+   "tests/fixtures/tts-roundtrip.json"
+  ],
+  "nemotron-asr": [
+   "inference/nemotron-asr-check.zig",
+   "inference/src/audio/nemotron_*.zig",
+   "tests/fixtures/nemotron-asr/**",
+   "tests/fixtures/speech-corpus.json"
+  ]
+ },
+ "aggregators": [
+  "inference/src/root.zig",
+  "inference/src/engine.zig",
+  "inference/src/models/registry.zig",
+  "inference/src/models/root.zig",
+  "inference/src/audio/root.zig",
+  "inference/src/vision/root.zig",
+  "inference/src/vision/projector.zig",
+  "inference/src/profiles/root.zig"
+ ],
+ "family_cutoff": 4,
+ "canaries": [
+  "qwen38-vocabulary",
+  "qwen38-trace-f16",
+  "qwen38-trace-q8_0",
+  "qwen38-draft-trace-metal",
+  "qwen38-dflash2-trace-metal",
+  "qwen38-vision-metal",
+  "qwen38-speculative-metal",
+  "gemma4-e4b-trace-f16",
+  "gemma4-e4b-draft-trace-metal",
+  "gemma4-e4b-vision-metal",
+  "gemma4-e4b-perplexity",
+  "gemma4-e4b-generation-metal",
+  "embeddinggemma-audio-metal",
+  "laya-metal",
+  "clef-sequences",
+  "qwen3-tts-0.6b-trace-metal",
+  "nemotron-asr-trace-metal"
+ ],
  "gates": [
   {
    "name": "qwen38-trace-f32",
    "family": "qwen38",
    "tier": "verify",
    "model": "qwen38",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{nuclis}",
     "generate",
@@ -299,20 +388,6 @@
    "family": "qwen38",
    "tier": "verify",
    "model": "qwen38",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{nuclis}",
     "generate",
@@ -350,20 +425,6 @@
    "family": "qwen38",
    "tier": "verify",
    "model": "qwen38",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{nuclis}",
     "generate",
@@ -401,23 +462,6 @@
    "family": "qwen38",
    "tier": "verify",
    "model": "qwen38",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/sampling/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -435,27 +479,6 @@
    "family": "qwen38",
    "tier": "verify-cpu",
    "model": "qwen38",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/recurrent.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/sampling/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-generation",
@@ -472,23 +495,6 @@
    "family": "qwen38",
    "tier": "verify",
    "model": "qwen38",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/profiles/qwen38.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "inference/src/vision/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -508,20 +514,6 @@
    "family": "qwen38",
    "tier": "verify-cpu",
    "model": "qwen38",
-   "paths": [
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/recurrent.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/engine.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/profiles/qwen38.zig",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/vision/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-generation",
@@ -540,23 +532,6 @@
    "family": "qwen38",
    "tier": "verify",
    "model": "qwen38",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/sampling/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -576,23 +551,6 @@
    "tier": "verify",
    "model": "qwen38",
    "mtp": "qwen38_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/sampling/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -617,23 +575,6 @@
    "tier": "verify",
    "model": "qwen38",
    "mtp": "qwen38_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/sampling/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -657,27 +598,6 @@
    "family": "qwen38",
    "tier": "verify-cpu",
    "model": "qwen38",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/recurrent.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/sampling/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-generation",
@@ -697,23 +617,6 @@
    "tier": "verify",
    "model": "qwen38",
    "mtp": "qwen38_dflash2",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/dflash2*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "tests/fixtures/qwen38-dflash2/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -745,27 +648,6 @@
    "tier": "verify-cpu",
    "model": "qwen38",
    "mtp": "qwen38_dflash2",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/recurrent.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/**",
-    "inference/src/models/dflash2*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "tests/fixtures/qwen38-dflash2/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-generation",
@@ -795,25 +677,6 @@
    "tier": "verify",
    "model": "qwen38",
    "mtp": "qwen38_dflash2",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/dflash2*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/sampling/**",
-    "inference/src/tensor/**",
-    "tests/fixtures/qwen38-dflash2/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -835,29 +698,6 @@
    "tier": "verify-cpu",
    "model": "qwen38",
    "mtp": "qwen38_dflash2",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/recurrent.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/dflash2*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/sampling/**",
-    "inference/src/tensor/**",
-    "tests/fixtures/qwen38-dflash2/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-generation",
@@ -877,21 +717,6 @@
    "family": "qwen38",
    "tier": "verify",
    "model": "qwen38",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -918,25 +743,6 @@
    "family": "qwen38",
    "tier": "verify-cpu",
    "model": "qwen38",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/recurrent.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-generation",
@@ -962,11 +768,6 @@
    "family": "qwen38",
    "tier": "verify-release",
    "model": "qwen38",
-   "paths": [
-    "inference/generation-check.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/qwen35_runtime.zig"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -986,11 +787,6 @@
    "family": "qwen38",
    "tier": "verify",
    "model": "qwen38",
-   "paths": [
-    "inference/src/profiles/**",
-    "inference/src/tokenizer/**",
-    "inference/vocabulary-check.zig"
-   ],
    "command": [
     "{zig-cpu}",
     "test-vocabulary",
@@ -1007,12 +803,6 @@
    "family": "laya",
    "tier": "verify",
    "model": "laya",
-   "paths": [
-    "inference/src/tokenizer/**",
-    "inference/src/profiles/laya.zig",
-    "inference/src/models/fixtures/laya/**",
-    "inference/vocabulary-check.zig"
-   ],
    "command": [
     "{zig-cpu}",
     "test-vocabulary",
@@ -1029,16 +819,6 @@
    "family": "laya",
    "tier": "verify",
    "model": "laya",
-   "paths": [
-    "inference/src/models/modernbert.zig",
-    "inference/src/models/modernbert_runtime.zig",
-    "inference/src/models/laya.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/safetensors.zig",
-    "inference/src/models/fixtures/laya/**",
-    "inference/laya-check.zig"
-   ],
    "command": [
     "{zig-cpu}",
     "test-laya",
@@ -1055,16 +835,6 @@
    "family": "laya",
    "tier": "verify",
    "model": "laya",
-   "paths": [
-    "inference/src/models/modernbert.zig",
-    "inference/src/models/modernbert_runtime.zig",
-    "inference/src/models/laya.zig",
-    "inference/src/models/laya_metal.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/safetensors.zig",
-    "inference/src/models/fixtures/laya/**",
-    "inference/laya-check.zig"
-   ],
    "command": [
     "{zig-metal}",
     "test-laya",
@@ -1083,12 +853,6 @@
    "family": "laya",
    "tier": "verify",
    "model": "laya_multilingual",
-   "paths": [
-    "inference/src/tokenizer/**",
-    "inference/src/profiles/laya.zig",
-    "inference/src/models/fixtures/laya-multilingual/**",
-    "inference/vocabulary-check.zig"
-   ],
    "command": [
     "{zig-cpu}",
     "test-vocabulary",
@@ -1105,16 +869,6 @@
    "family": "laya",
    "tier": "verify",
    "model": "laya_multilingual",
-   "paths": [
-    "inference/src/models/modernbert.zig",
-    "inference/src/models/modernbert_runtime.zig",
-    "inference/src/models/laya.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/safetensors.zig",
-    "inference/src/models/fixtures/laya-multilingual/**",
-    "inference/laya-check.zig"
-   ],
    "command": [
     "{zig-cpu}",
     "test-laya",
@@ -1131,16 +885,6 @@
    "family": "laya",
    "tier": "verify",
    "model": "laya_multilingual",
-   "paths": [
-    "inference/src/models/modernbert.zig",
-    "inference/src/models/modernbert_runtime.zig",
-    "inference/src/models/laya.zig",
-    "inference/src/models/laya_metal.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/safetensors.zig",
-    "inference/src/models/fixtures/laya-multilingual/**",
-    "inference/laya-check.zig"
-   ],
    "command": [
     "{zig-metal}",
     "test-laya",
@@ -1159,13 +903,6 @@
    "family": "clef",
    "tier": "verify",
    "model": "clef",
-   "paths": [
-    "inference/src/profiles/clef.zig",
-    "inference/src/profiles/decision.zig",
-    "inference/src/tokenizer/**",
-    "inference/src/models/fixtures/clef/sequences.json",
-    "inference/clef-check.zig"
-   ],
    "command": [
     "{zig-cpu}",
     "test-clef",
@@ -1183,18 +920,6 @@
    "family": "clef",
    "tier": "verify",
    "model": "clef",
-   "paths": [
-    "inference/src/profiles/clef.zig",
-    "inference/src/profiles/decision.zig",
-    "inference/src/models/clef.zig",
-    "inference/src/models/fixtures/clef/**",
-    "inference/clef-check.zig",
-    "inference/src/models/qwen35.zig",
-    "inference/src/tokenizer/**",
-    "inference/src/models/qwen35_metal.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/backends/cpu/dense.zig"
-   ],
    "command": [
     "{zig-metal}",
     "test-clef",
@@ -1216,17 +941,6 @@
    "family": "clef",
    "tier": "verify-cpu",
    "model": "clef",
-   "paths": [
-    "inference/src/profiles/clef.zig",
-    "inference/src/profiles/decision.zig",
-    "inference/src/models/clef.zig",
-    "inference/src/models/fixtures/clef/**",
-    "inference/clef-check.zig",
-    "inference/src/models/qwen35.zig",
-    "inference/src/tokenizer/**",
-    "inference/src/models/qwen35_runtime.zig",
-    "inference/src/backends/cpu/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-clef",
@@ -1248,24 +962,6 @@
    "family": "embeddinggemma",
    "tier": "verify-cpu",
    "model": "embeddinggemma",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/embeddinggemma-check.zig",
-    "inference/src/embed.zig",
-    "inference/src/models/embeddinggemma*.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/gguf.zig",
-    "inference/src/quant/**",
-    "inference/src/runtime/weights.zig",
-    "inference/src/tokenizer/**",
-    "tests/fixtures/embeddinggemma-inputs/**",
-    "tests/fixtures/embeddinggemma-vectors/**",
-    "tests/fixtures/embeddinggemma-north.raw/**",
-    "tests/fixtures/embeddinggemma-north.query/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-embeddinggemma",
@@ -1284,22 +980,6 @@
    "family": "embeddinggemma",
    "tier": "verify-cpu",
    "model": "embeddinggemma",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/embeddinggemma-check.zig",
-    "inference/src/embed.zig",
-    "inference/src/models/embeddinggemma*.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/gguf.zig",
-    "inference/src/quant/**",
-    "inference/src/runtime/weights.zig",
-    "inference/src/tokenizer/**",
-    "tests/fixtures/embeddinggemma-inputs/**",
-    "tests/fixtures/embeddinggemma-vectors/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-embeddinggemma",
@@ -1318,22 +998,6 @@
    "family": "embeddinggemma",
    "tier": "verify-cpu",
    "model": "embeddinggemma_bf16",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/embeddinggemma-check.zig",
-    "inference/src/embed.zig",
-    "inference/src/models/embeddinggemma*.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/gguf.zig",
-    "inference/src/quant/**",
-    "inference/src/runtime/weights.zig",
-    "inference/src/tokenizer/**",
-    "tests/fixtures/embeddinggemma-inputs/**",
-    "tests/fixtures/embeddinggemma-vectors/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-embeddinggemma",
@@ -1352,27 +1016,6 @@
    "family": "embeddinggemma",
    "tier": "verify-cpu",
    "model": "embeddinggemma_bf16",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/embeddinggemma-check.zig",
-    "inference/src/embed.zig",
-    "inference/src/models/embeddinggemma*.zig",
-    "inference/src/vision/gemma4*.zig",
-    "inference/src/vision/preprocess.zig",
-    "inference/src/backends/cpu/**",
-    "inference/src/vision/image.zig",
-    "inference/src/vision/image_bridge.m",
-    "inference/src/formats/gguf.zig",
-    "inference/src/quant/**",
-    "inference/src/runtime/weights.zig",
-    "inference/src/tokenizer/**",
-    "tests/fixtures/embeddinggemma-inputs/**",
-    "tests/fixtures/embeddinggemma-vectors/**",
-    "tests/fixtures/embeddinggemma-image.logo/**",
-    "tests/fixtures/embeddinggemma-mix.logo/**",
-    "docs/branding/nuclis.png"
-   ],
    "command": [
     "{zig-cpu}",
     "test-embeddinggemma",
@@ -1395,24 +1038,6 @@
    "family": "embeddinggemma",
    "tier": "verify-cpu",
    "model": "embeddinggemma_bf16",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/embeddinggemma-check.zig",
-    "inference/src/embed.zig",
-    "inference/src/models/embeddinggemma*.zig",
-    "inference/src/audio/**",
-    "inference/src/backends/cpu/**",
-    "inference/src/vision/gemma4.zig",
-    "inference/src/formats/gguf.zig",
-    "inference/src/quant/**",
-    "inference/src/runtime/weights.zig",
-    "inference/src/tokenizer/**",
-    "tests/fixtures/embeddinggemma-inputs/**",
-    "tests/fixtures/embeddinggemma-vectors/**",
-    "tests/fixtures/embeddinggemma-audio-features/**",
-    "tests/fixtures/embeddinggemma-audio.north/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-embeddinggemma",
@@ -1433,20 +1058,6 @@
    "family": "embeddinggemma",
    "tier": "verify",
    "model": "embeddinggemma",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/embeddinggemma-check.zig",
-    "inference/src/embed.zig",
-    "inference/src/models/embeddinggemma*.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/gguf.zig",
-    "inference/src/quant/**",
-    "inference/src/runtime/weights.zig",
-    "inference/src/tokenizer/**",
-    "tests/fixtures/embeddinggemma-inputs/**",
-    "tests/fixtures/embeddinggemma-vectors/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-embeddinggemma",
@@ -1467,20 +1078,6 @@
    "family": "embeddinggemma",
    "tier": "verify",
    "model": "embeddinggemma_bf16",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/embeddinggemma-check.zig",
-    "inference/src/embed.zig",
-    "inference/src/models/embeddinggemma*.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/gguf.zig",
-    "inference/src/quant/**",
-    "inference/src/runtime/weights.zig",
-    "inference/src/tokenizer/**",
-    "tests/fixtures/embeddinggemma-inputs/**",
-    "tests/fixtures/embeddinggemma-vectors/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-embeddinggemma",
@@ -1501,27 +1098,6 @@
    "family": "embeddinggemma",
    "tier": "verify",
    "model": "embeddinggemma_bf16",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/embeddinggemma-check.zig",
-    "inference/src/embed.zig",
-    "inference/src/models/embeddinggemma*.zig",
-    "inference/src/vision/gemma4*.zig",
-    "inference/src/vision/preprocess.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/vision/image.zig",
-    "inference/src/vision/image_bridge.m",
-    "inference/src/formats/gguf.zig",
-    "inference/src/quant/**",
-    "inference/src/runtime/weights.zig",
-    "inference/src/tokenizer/**",
-    "tests/fixtures/embeddinggemma-inputs/**",
-    "tests/fixtures/embeddinggemma-vectors/**",
-    "tests/fixtures/embeddinggemma-image.logo/**",
-    "tests/fixtures/embeddinggemma-mix.logo/**",
-    "docs/branding/nuclis.png"
-   ],
    "command": [
     "{zig-metal}",
     "test-embeddinggemma",
@@ -1544,24 +1120,6 @@
    "family": "embeddinggemma",
    "tier": "verify",
    "model": "embeddinggemma_bf16",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/embeddinggemma-check.zig",
-    "inference/src/embed.zig",
-    "inference/src/models/embeddinggemma*.zig",
-    "inference/src/audio/**",
-    "inference/src/backends/metal/**",
-    "inference/src/vision/gemma4.zig",
-    "inference/src/formats/gguf.zig",
-    "inference/src/quant/**",
-    "inference/src/runtime/weights.zig",
-    "inference/src/tokenizer/**",
-    "tests/fixtures/embeddinggemma-inputs/**",
-    "tests/fixtures/embeddinggemma-vectors/**",
-    "tests/fixtures/embeddinggemma-audio-features/**",
-    "tests/fixtures/embeddinggemma-audio.north/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-embeddinggemma",
@@ -1584,23 +1142,6 @@
    "family": "gemma4",
    "tier": "verify-release",
    "model": "gemma4_qat",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{nuclis-cpu}",
     "generate",
@@ -1640,20 +1181,6 @@
    "family": "gemma4",
    "tier": "verify-release",
    "model": "gemma4_qat",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{nuclis}",
     "generate",
@@ -1695,20 +1222,6 @@
    "family": "gemma4",
    "tier": "verify-release",
    "model": "gemma4_qat",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{nuclis}",
     "generate",
@@ -1750,21 +1263,6 @@
    "family": "gemma4",
    "tier": "verify-release",
    "model": "gemma4_qat",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -1782,24 +1280,6 @@
    "family": "gemma4",
    "tier": "verify-cpu",
    "model": "gemma4_26b_a4b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/experts.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{nuclis-cpu}",
     "generate",
@@ -1839,20 +1319,6 @@
    "family": "gemma4",
    "tier": "verify",
    "model": "gemma4_26b_a4b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{nuclis}",
     "generate",
@@ -1894,20 +1360,6 @@
    "family": "gemma4",
    "tier": "verify",
    "model": "gemma4_26b_a4b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{nuclis}",
     "generate",
@@ -1949,21 +1401,6 @@
    "family": "gemma4",
    "tier": "verify",
    "model": "gemma4_26b_a4b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -1981,23 +1418,6 @@
    "family": "gemma4",
    "tier": "verify",
    "model": "gemma4_26b_a4b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/profiles/gemma4.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "inference/src/vision/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -2017,20 +1437,6 @@
    "family": "gemma4",
    "tier": "verify-cpu",
    "model": "gemma4_26b_a4b",
-   "paths": [
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/experts.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/engine.zig",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/profiles/gemma4.zig",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/vision/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-generation",
@@ -2051,21 +1457,6 @@
    "tier": "verify-release",
    "model": "gemma4_qat",
    "mtp": "gemma4_qat_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -2089,24 +1480,6 @@
    "tier": "verify-release",
    "model": "gemma4_qat",
    "mtp": "gemma4_qat_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-generation",
@@ -2123,786 +1496,11 @@
    "evidence": "docs/engine/speculative-decoding.md#the-gemma-4-assistant-heads-2026-09-21"
   },
   {
-   "name": "muse-trace-cpu",
-   "family": "muse",
-   "tier": "verify-cpu",
-   "model": "muse",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/**",
-    "inference/src/models/dflash.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/muse_glimmer*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{nuclis-cpu}",
-    "generate",
-    "--backend",
-    "cpu",
-    "--model",
-    "{model}",
-    "--prompt-tokens",
-    "tests/fixtures/muse-glimmer-hello-comma/prompt-tokens.json",
-    "--max-tokens",
-    "1",
-    "--ctx-size",
-    "8",
-    "--temperature",
-    "0",
-    "--logits",
-    "{trace}/logits.f32",
-    "--trace-dir",
-    "{trace}"
-   ],
-   "comparator": {
-    "kind": "trace",
-    "reference": "tests/fixtures/muse-glimmer-hello-comma",
-    "positions": 3,
-    "embedding": 6656,
-    "layers": 52,
-    "vocab": 202048
-   },
-   "bounds": {
-    "max_absolute": 0.002,
-    "max_relative_rms": 0.0001
-   },
-   "evidence": "docs/models/muse-glimmer.md"
-  },
-  {
-   "name": "muse-trace-f32",
-   "family": "muse",
-   "tier": "verify",
-   "model": "muse",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/dflash.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/muse_glimmer*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{nuclis}",
-    "generate",
-    "--backend",
-    "metal",
-    "--model",
-    "{model}",
-    "--kv",
-    "f32",
-    "--prompt-tokens",
-    "tests/fixtures/muse-glimmer-hello-comma/prompt-tokens.json",
-    "--max-tokens",
-    "1",
-    "--ctx-size",
-    "8",
-    "--temperature",
-    "0",
-    "--logits",
-    "{trace}/logits.f32",
-    "--trace-dir",
-    "{trace}"
-   ],
-   "comparator": {
-    "kind": "trace",
-    "reference": "tests/fixtures/muse-glimmer-hello-comma",
-    "positions": 3,
-    "embedding": 6656,
-    "layers": 52,
-    "vocab": 202048
-   },
-   "bounds": {
-    "max_absolute": 0.002,
-    "max_relative_rms": 0.0001
-   },
-   "evidence": "docs/models/muse-glimmer.md"
-  },
-  {
-   "name": "muse-trace-f16",
-   "family": "muse",
-   "tier": "verify",
-   "model": "muse",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/dflash.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/muse_glimmer*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{nuclis}",
-    "generate",
-    "--backend",
-    "metal",
-    "--model",
-    "{model}",
-    "--kv",
-    "f16",
-    "--prompt-tokens",
-    "tests/fixtures/muse-glimmer-hello-comma/prompt-tokens.json",
-    "--max-tokens",
-    "1",
-    "--ctx-size",
-    "8",
-    "--temperature",
-    "0",
-    "--logits",
-    "{trace}/logits.f32",
-    "--trace-dir",
-    "{trace}"
-   ],
-   "comparator": {
-    "kind": "trace",
-    "reference": "tests/fixtures/muse-glimmer-hello-comma",
-    "positions": 3,
-    "embedding": 6656,
-    "layers": 52,
-    "vocab": 202048
-   },
-   "bounds": {
-    "max_absolute": 0.1,
-    "max_relative_rms": 0.0003
-   },
-   "evidence": "docs/models/muse-glimmer.md"
-  },
-  {
-   "name": "muse-generation-metal",
-   "family": "muse",
-   "tier": "verify",
-   "model": "muse",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/dflash.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/muse_glimmer*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{zig-metal}",
-    "test-generation",
-    "--",
-    "{model}",
-    "--metal"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "evidence": "docs/models/muse-glimmer.md"
-  },
-  {
-   "name": "muse-draft-trace-metal",
-   "family": "muse",
-   "tier": "verify",
-   "model": "muse",
-   "mtp": "muse_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/dflash.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/muse_glimmer*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{zig-metal}",
-    "test-generation",
-    "--",
-    "{model}",
-    "--metal",
-    "--draft-trace",
-    "{trace}",
-    "--draft-model",
-    "{mtp}"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "note": "the check compares its rows against inference/src/models/fixtures/muse-dflash itself",
-   "evidence": "docs/engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-2026-09-21"
-  },
-  {
-   "name": "muse-draft-trace-cpu",
-   "family": "muse",
-   "tier": "verify-cpu",
-   "model": "muse",
-   "mtp": "muse_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/**",
-    "inference/src/models/dflash.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/muse_glimmer*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{zig-cpu}",
-    "test-generation",
-    "--",
-    "{model}",
-    "--draft-trace",
-    "{trace}",
-    "--draft-model",
-    "{mtp}"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "evidence": "docs/engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-2026-09-21"
-  },
-  {
-   "name": "muse-vocabulary",
-   "family": "muse",
-   "tier": "verify",
-   "model": "muse",
-   "paths": [
-    "inference/src/profiles/**",
-    "inference/src/tokenizer/**",
-    "inference/vocabulary-check.zig"
-   ],
-   "command": [
-    "{zig-cpu}",
-    "test-vocabulary",
-    "--",
-    "{model}"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "evidence": "docs/engine/prompt-profile.md"
-  },
-  {
-   "name": "muse-vision-metal",
-   "family": "muse",
-   "tier": "verify",
-   "model": "muse",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/muse_glimmer*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/profiles/muse_glimmer.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "inference/src/vision/**"
-   ],
-   "command": [
-    "{zig-metal}",
-    "test-generation",
-    "--",
-    "{model}",
-    "--metal",
-    "--vision-check",
-    "{mmproj}"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "evidence": "docs/engine/vision.md#muse-glimmers-projector-2026-09-23"
-  },
-  {
-   "name": "muse-vision-cpu",
-   "family": "muse",
-   "tier": "verify-cpu",
-   "model": "muse",
-   "paths": [
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/engine.zig",
-    "inference/src/models/muse_glimmer*.zig",
-    "inference/src/profiles/muse_glimmer.zig",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/vision/**"
-   ],
-   "command": [
-    "{zig-cpu}",
-    "test-generation",
-    "--",
-    "{model}",
-    "--vision-check",
-    "{mmproj}"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "note": "about an hour (about 30 s per language-model token on the CPU)",
-   "evidence": "docs/engine/vision.md#muse-glimmers-projector-2026-09-23"
-  },
-  {
-   "name": "bonsai-trace-cpu",
-   "family": "bonsai",
-   "tier": "verify-cpu",
-   "model": "bonsai",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/hadamard.zig",
-    "inference/src/backends/cpu/recurrent.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{nuclis-cpu}",
-    "generate",
-    "--backend",
-    "cpu",
-    "--model",
-    "{model}",
-    "--raw",
-    "--prompt",
-    "Hello,",
-    "--max-tokens",
-    "1",
-    "--ctx-size",
-    "8",
-    "--logits",
-    "{trace}/logits.f32",
-    "--trace-dir",
-    "{trace}"
-   ],
-   "comparator": {
-    "kind": "trace",
-    "reference": "tests/fixtures/bonsai-hello-comma",
-    "positions": 2
-   },
-   "bounds": {
-    "max_absolute": 0.002,
-    "max_relative_rms": 0.0001
-   },
-   "evidence": "docs/models/bonsai.md"
-  },
-  {
-   "name": "bonsai-trace-f32",
-   "family": "bonsai",
-   "tier": "verify",
-   "model": "bonsai",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/cpu/hadamard.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{nuclis}",
-    "generate",
-    "--backend",
-    "metal",
-    "--model",
-    "{model}",
-    "--kv",
-    "f32",
-    "--raw",
-    "--prompt",
-    "Hello,",
-    "--max-tokens",
-    "1",
-    "--ctx-size",
-    "8",
-    "--logits",
-    "{trace}/logits.f32",
-    "--trace-dir",
-    "{trace}"
-   ],
-   "comparator": {
-    "kind": "trace",
-    "reference": "tests/fixtures/bonsai-hello-comma",
-    "positions": 2
-   },
-   "bounds": {
-    "max_absolute": 0.002,
-    "max_relative_rms": 0.0001
-   },
-   "evidence": "docs/models/bonsai.md"
-  },
-  {
-   "name": "bonsai-trace-f16",
-   "family": "bonsai",
-   "tier": "verify",
-   "model": "bonsai",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/cpu/hadamard.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{nuclis}",
-    "generate",
-    "--backend",
-    "metal",
-    "--model",
-    "{model}",
-    "--kv",
-    "f16",
-    "--raw",
-    "--prompt",
-    "Hello,",
-    "--max-tokens",
-    "1",
-    "--ctx-size",
-    "8",
-    "--logits",
-    "{trace}/logits.f32",
-    "--trace-dir",
-    "{trace}"
-   ],
-   "comparator": {
-    "kind": "trace",
-    "reference": "tests/fixtures/bonsai-hello-comma",
-    "positions": 2
-   },
-   "bounds": {
-    "max_absolute": 0.03,
-    "max_relative_rms": 0.0002
-   },
-   "evidence": "docs/models/bonsai.md"
-  },
-  {
-   "name": "bonsai-generation-metal",
-   "family": "bonsai",
-   "tier": "verify",
-   "model": "bonsai",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/hadamard.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{zig-metal}",
-    "test-generation",
-    "--",
-    "{model}",
-    "--metal",
-    "--half-tiles-only"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "evidence": "docs/models/bonsai.md"
-  },
-  {
-   "name": "saluki-cross-encoding",
-   "family": "saluki",
-   "tier": "verify",
-   "model": "saluki",
-   "baseline": "qwen38",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/cross-encoding-check.zig",
-    "inference/src/formats/**",
-    "inference/src/quant/**",
-    "inference/src/runtime/weights.zig",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{zig-cpu}",
-    "test-cross-encoding",
-    "--",
-    "{model}",
-    "{baseline}",
-    "--rows",
-    "16",
-    "--min-mean",
-    "IQ1_S=0.81",
-    "--min-mean",
-    "IQ1_M=0.81",
-    "--min-mean",
-    "IQ2_XXS=0.87",
-    "--min-mean",
-    "IQ2_XS=0.88",
-    "--min-mean",
-    "IQ2_S=0.88",
-    "--min-mean",
-    "IQ3_XXS=0.91",
-    "--min-mean",
-    "Q2_K=0.85"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "evidence": "docs/models/saluki.md"
-  },
-  {
-   "name": "saluki-trace-cpu",
-   "family": "saluki",
-   "tier": "verify-cpu",
-   "model": "saluki",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/recurrent.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{nuclis-cpu}",
-    "generate",
-    "--backend",
-    "cpu",
-    "--model",
-    "{model}",
-    "--raw",
-    "--prompt",
-    "Hello,",
-    "--max-tokens",
-    "1",
-    "--ctx-size",
-    "8",
-    "--logits",
-    "{trace}/logits.f32",
-    "--trace-dir",
-    "{trace}"
-   ],
-   "comparator": {
-    "kind": "trace",
-    "reference": "tests/fixtures/saluki-hello-comma",
-    "positions": 2
-   },
-   "bounds": {
-    "max_absolute": 0.002,
-    "max_relative_rms": 0.0001
-   },
-   "evidence": "docs/models/saluki.md"
-  },
-  {
-   "name": "saluki-trace-f32",
-   "family": "saluki",
-   "tier": "verify",
-   "model": "saluki",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{nuclis}",
-    "generate",
-    "--backend",
-    "metal",
-    "--model",
-    "{model}",
-    "--kv",
-    "f32",
-    "--raw",
-    "--prompt",
-    "Hello,",
-    "--max-tokens",
-    "1",
-    "--ctx-size",
-    "8",
-    "--logits",
-    "{trace}/logits.f32",
-    "--trace-dir",
-    "{trace}"
-   ],
-   "comparator": {
-    "kind": "trace",
-    "reference": "tests/fixtures/saluki-hello-comma",
-    "positions": 2
-   },
-   "bounds": {
-    "max_absolute": 0.002,
-    "max_relative_rms": 0.0001
-   },
-   "evidence": "docs/models/saluki.md"
-  },
-  {
-   "name": "saluki-trace-f16",
-   "family": "saluki",
-   "tier": "verify",
-   "model": "saluki",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{nuclis}",
-    "generate",
-    "--backend",
-    "metal",
-    "--model",
-    "{model}",
-    "--kv",
-    "f16",
-    "--raw",
-    "--prompt",
-    "Hello,",
-    "--max-tokens",
-    "1",
-    "--ctx-size",
-    "8",
-    "--logits",
-    "{trace}/logits.f32",
-    "--trace-dir",
-    "{trace}"
-   ],
-   "comparator": {
-    "kind": "trace",
-    "reference": "tests/fixtures/saluki-hello-comma",
-    "positions": 2
-   },
-   "bounds": {
-    "max_absolute": 0.03,
-    "max_relative_rms": 0.0004
-   },
-   "evidence": "docs/models/saluki.md"
-  },
-  {
    "name": "qwen38-mtp-companion-trace-metal",
    "family": "qwen38",
    "tier": "verify",
    "model": "qwen38",
    "mtp": "qwen38_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -2933,25 +1531,6 @@
    "tier": "verify-cpu",
    "model": "qwen38",
    "mtp": "qwen38_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/recurrent.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-generation",
@@ -2976,207 +1555,12 @@
    "evidence": "docs/engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
   },
   {
-   "name": "saluki-draft-trace-metal",
-   "family": "saluki",
-   "tier": "verify",
-   "model": "saluki",
-   "mtp": "qwen38_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "tests/fixtures/saluki-mtp/**"
-   ],
-   "command": [
-    "{zig-metal}",
-    "test-generation",
-    "--",
-    "{model}",
-    "--metal",
-    "--draft-trace",
-    "{trace}",
-    "--draft-model",
-    "{mtp}"
-   ],
-   "comparator": {
-    "kind": "trace",
-    "reference": "tests/fixtures/saluki-mtp",
-    "positions": 2,
-    "draft": true
-   },
-   "bounds": {
-    "max_absolute": 0.002,
-    "max_relative_rms": 0.0001
-   },
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
-  },
-  {
-   "name": "saluki-draft-trace-cpu",
-   "family": "saluki",
-   "tier": "verify-cpu",
-   "model": "saluki",
-   "mtp": "qwen38_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/recurrent.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "tests/fixtures/saluki-mtp/**"
-   ],
-   "command": [
-    "{zig-cpu}",
-    "test-generation",
-    "--",
-    "{model}",
-    "--draft-trace",
-    "{trace}",
-    "--draft-model",
-    "{mtp}"
-   ],
-   "comparator": {
-    "kind": "trace",
-    "reference": "tests/fixtures/saluki-mtp",
-    "positions": 2,
-    "draft": true
-   },
-   "bounds": {
-    "max_absolute": 0.002,
-    "max_relative_rms": 0.0001
-   },
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
-  },
-  {
-   "name": "saluki-speculative-metal",
-   "family": "saluki",
-   "tier": "verify",
-   "model": "saluki",
-   "mtp": "qwen38_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/sampling/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{zig-metal}",
-    "test-generation",
-    "--",
-    "{model}",
-    "--metal",
-    "--speculative-check",
-    "--draft-model",
-    "{mtp}",
-    "--prompt-profile",
-    "qwen38"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
-  },
-  {
-   "name": "saluki-speculative-cpu",
-   "family": "saluki",
-   "tier": "verify-cpu",
-   "model": "saluki",
-   "mtp": "qwen38_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/recurrent.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/sampling/**",
-    "inference/src/tensor/**"
-   ],
-   "command": [
-    "{zig-cpu}",
-    "test-generation",
-    "--",
-    "{model}",
-    "--speculative-check",
-    "--draft-model",
-    "{mtp}",
-    "--prompt-profile",
-    "qwen38"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
-  },
-  {
    "name": "qwen38-perplexity",
    "family": "qwen38",
    "tier": "verify",
    "model": "qwen38",
    "data": [
     "wikitext-2"
-   ],
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/profiles/**",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "inference/src/tokenizer/**",
-    "src/eval.zig",
-    "tests/fixtures/perplexity/qwen38-wikitext2-c512x8.json"
    ],
    "command": [
     "{nuclis}",
@@ -3205,25 +1589,6 @@
    "data": [
     "wikitext-2"
    ],
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/profiles/**",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "inference/src/tokenizer/**",
-    "src/eval.zig",
-    "tests/fixtures/perplexity/qwen38-wikitext2-c512x8.json"
-   ],
    "command": [
     "{nuclis}",
     "eval",
@@ -3249,25 +1614,6 @@
    "data": [
     "wikitext-2"
    ],
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/profiles/**",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "inference/src/tokenizer/**",
-    "src/eval.zig",
-    "tests/fixtures/perplexity/gemma4-26b-a4b-wikitext2-c512x8.json"
-   ],
    "command": [
     "{nuclis}",
     "eval",
@@ -3279,96 +1625,6 @@
     ".reference/eval/wikitext-2-raw/wiki.test.raw",
     "--reference",
     "tests/fixtures/perplexity/gemma4-26b-a4b-wikitext2-c512x8.json"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
-  },
-  {
-   "name": "muse-perplexity",
-   "family": "muse",
-   "tier": "verify",
-   "model": "muse",
-   "data": [
-    "wikitext-2"
-   ],
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/muse_glimmer*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/profiles/**",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "inference/src/tokenizer/**",
-    "src/eval.zig",
-    "tests/fixtures/perplexity/muse-glimmer-wikitext2-c512x8.json"
-   ],
-   "command": [
-    "{nuclis}",
-    "eval",
-    "--backend",
-    "metal",
-    "--model",
-    "{model}",
-    "--file",
-    ".reference/eval/wikitext-2-raw/wiki.test.raw",
-    "--reference",
-    "tests/fixtures/perplexity/muse-glimmer-wikitext2-c512x8.json",
-    "--chunks",
-    "2"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
-  },
-  {
-   "name": "muse-perplexity-full",
-   "family": "muse",
-   "tier": "verify-release",
-   "model": "muse",
-   "data": [
-    "wikitext-2"
-   ],
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/muse_glimmer*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/profiles/**",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "inference/src/tokenizer/**",
-    "src/eval.zig",
-    "tests/fixtures/perplexity/muse-glimmer-wikitext2-c512x8.json"
-   ],
-   "command": [
-    "{nuclis}",
-    "eval",
-    "--backend",
-    "metal",
-    "--model",
-    "{model}",
-    "--file",
-    ".reference/eval/wikitext-2-raw/wiki.test.raw",
-    "--reference",
-    "tests/fixtures/perplexity/muse-glimmer-wikitext2-c512x8.json"
    ],
    "comparator": {
     "kind": "exit"
@@ -3380,23 +1636,6 @@
    "family": "gemma4",
    "tier": "verify-cpu",
    "model": "gemma4_e4b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{nuclis-cpu}",
     "generate",
@@ -3436,20 +1675,6 @@
    "family": "gemma4",
    "tier": "verify",
    "model": "gemma4_e4b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{nuclis}",
     "generate",
@@ -3491,20 +1716,6 @@
    "family": "gemma4",
    "tier": "verify",
    "model": "gemma4_e4b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{nuclis}",
     "generate",
@@ -3547,21 +1758,6 @@
    "family": "gemma4",
    "tier": "verify",
    "model": "gemma4_e4b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -3579,24 +1775,6 @@
    "family": "gemma4",
    "tier": "verify-cpu",
    "model": "gemma4_e4b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-generation",
@@ -3614,23 +1792,6 @@
    "family": "gemma4",
    "tier": "verify",
    "model": "gemma4_e4b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/profiles/gemma4*.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "inference/src/vision/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -3650,19 +1811,6 @@
    "family": "gemma4",
    "tier": "verify-cpu",
    "model": "gemma4_e4b",
-   "paths": [
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/engine.zig",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/profiles/gemma4*.zig",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/vision/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-generation",
@@ -3683,25 +1831,6 @@
    "tier": "verify",
    "model": "gemma4_e4b",
    "baseline": "embeddinggemma_mmproj",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/audio/audio.zig",
-    "inference/src/audio/audio_bridge.m",
-    "inference/src/audio/mel.zig",
-    "inference/src/audio/gemma4a*.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/gguf.zig",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/profiles/gemma4*.zig",
-    "inference/src/profiles/root.zig",
-    "inference/src/quant/**",
-    "inference/src/runtime/**",
-    "inference/src/vision/gemma4.zig",
-    "tests/fixtures/embeddinggemma-inputs/*.wav"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -3733,30 +1862,9 @@
    "data": [
     "speech-corpus"
    ],
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/audio/audio.zig",
-    "inference/src/audio/audio_bridge.m",
-    "inference/src/audio/mel.zig",
-    "inference/src/audio/gemma4a*.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/gguf.zig",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/profiles/gemma4*.zig",
-    "inference/src/profiles/root.zig",
-    "inference/src/quant/**",
-    "inference/src/runtime/**",
-    "inference/src/vision/gemma4.zig",
-    "src/generate.zig",
-    "src/cli.zig",
-    "scripts/wer.py",
-    "tests/fixtures/speech-corpus.json"
-   ],
    "command": [
     "python3",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "--nuclis",
     "{nuclis}",
     "--chat",
@@ -3772,7 +1880,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "note": "nuclis generate --audio on the catalogue entry (its mmproj), greedy, one fixed prompt (scripts/wer.py CHAT_PROMPT), over six speech-corpus clips (make speech-corpus): three LibriSpeech test-clean, one FLEURS clip each in German, French and Spanish; the word error rate over all must stay at most 5 % (first run 2026-10-27: 1 error in 114 words, 0.88 %; the bound allows four more)",
+   "note": "nuclis generate --audio on the catalogue entry (its mmproj), greedy, one fixed prompt (scripts/gate/wer.py CHAT_PROMPT), over six speech-corpus clips (make speech-corpus): three LibriSpeech test-clean, one FLEURS clip each in German, French and Spanish; the word error rate over all must stay at most 5 % (first run 2026-10-27: 1 error in 114 words, 0.88 %; the bound allows four more)",
    "evidence": "docs/models/gemma4.md#audio-input-on-the-e4b-2026-10-27"
   },
   {
@@ -3781,21 +1889,6 @@
    "tier": "verify",
    "model": "gemma4_e4b",
    "mtp": "gemma4_e4b_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -3819,24 +1912,6 @@
    "tier": "verify-cpu",
    "model": "gemma4_e4b",
    "mtp": "gemma4_e4b_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/cpu/attention.zig",
-    "inference/src/backends/cpu/root.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-generation",
@@ -3857,11 +1932,6 @@
    "family": "gemma4",
    "tier": "verify",
    "model": "gemma4_e4b",
-   "paths": [
-    "inference/src/profiles/**",
-    "inference/src/tokenizer/**",
-    "inference/vocabulary-check.zig"
-   ],
    "command": [
     "{zig-cpu}",
     "test-vocabulary",
@@ -3880,25 +1950,6 @@
    "model": "gemma4_e4b",
    "data": [
     "wikitext-2"
-   ],
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/profiles/**",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "inference/src/tokenizer/**",
-    "src/eval.zig",
-    "tests/fixtures/perplexity/gemma4-e4b-wikitext2-c512x8.json"
    ],
    "command": [
     "{nuclis}",
@@ -3927,25 +1978,6 @@
    "data": [
     "wikitext-2"
    ],
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/profiles/**",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "inference/src/tokenizer/**",
-    "src/eval.zig",
-    "tests/fixtures/perplexity/gemma4-e4b-wikitext2-c512x8.json"
-   ],
    "command": [
     "{nuclis}",
     "eval",
@@ -3971,25 +2003,6 @@
    "data": [
     "wikitext-2"
    ],
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/gemma4*.zig",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/profiles/**",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/tensor/**",
-    "inference/src/tokenizer/**",
-    "src/eval.zig",
-    "tests/fixtures/perplexity/gemma4-e4b-wikitext2-c4096x4.json"
-   ],
    "command": [
     "{nuclis}",
     "eval",
@@ -4013,23 +2026,6 @@
    "tier": "verify-long",
    "model": "qwen38",
    "mtp": "qwen38_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/sampling/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -4054,23 +2050,6 @@
    "tier": "verify-long",
    "model": "qwen38",
    "mtp": "qwen38_mtp",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/generation-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/engine.zig",
-    "inference/src/formats/**",
-    "inference/src/models/inventory.zig",
-    "inference/src/models/qwen35*.zig",
-    "inference/src/models/registry.zig",
-    "inference/src/models/root.zig",
-    "inference/src/quant/**",
-    "inference/src/root.zig",
-    "inference/src/runtime/**",
-    "inference/src/sampling/**",
-    "inference/src/tensor/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-generation",
@@ -4094,17 +2073,6 @@
    "family": "qwen3-tts",
    "tier": "verify-cpu",
    "model": "qwen3_tts_06b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/qwen3-tts-check.zig",
-    "inference/src/audio/qwen3_codec*.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/safetensors.zig",
-    "tests/fixtures/qwen3-tts/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-qwen3-tts",
@@ -4127,23 +2095,6 @@
    "family": "qwen3-tts",
    "tier": "verify-cpu",
    "model": "qwen3_tts_06b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/qwen3-tts-check.zig",
-    "inference/src/models/qwen3_tts*.zig",
-    "inference/src/tokenizer/bpe.zig",
-    "inference/src/tokenizer/cased.zig",
-    "inference/src/tokenizer/hf_json.zig",
-    "inference/src/tokenizer/nfc*.zig",
-    "inference/src/tokenizer/pre.zig",
-    "inference/src/tokenizer/vocab_merges.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/safetensors.zig",
-    "tests/fixtures/qwen3-tts/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-qwen3-tts",
@@ -4164,23 +2115,6 @@
    "family": "qwen3-tts",
    "tier": "verify-cpu",
    "model": "qwen3_tts_06b_base",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/qwen3-tts-check.zig",
-    "inference/src/models/qwen3_tts*.zig",
-    "inference/src/tokenizer/bpe.zig",
-    "inference/src/tokenizer/cased.zig",
-    "inference/src/tokenizer/hf_json.zig",
-    "inference/src/tokenizer/nfc*.zig",
-    "inference/src/tokenizer/pre.zig",
-    "inference/src/tokenizer/vocab_merges.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/safetensors.zig",
-    "tests/fixtures/qwen3-tts/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-qwen3-tts",
@@ -4201,23 +2135,6 @@
    "family": "qwen3-tts",
    "tier": "verify-cpu",
    "model": "qwen3_tts_17b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/qwen3-tts-check.zig",
-    "inference/src/models/qwen3_tts*.zig",
-    "inference/src/tokenizer/bpe.zig",
-    "inference/src/tokenizer/cased.zig",
-    "inference/src/tokenizer/hf_json.zig",
-    "inference/src/tokenizer/nfc*.zig",
-    "inference/src/tokenizer/pre.zig",
-    "inference/src/tokenizer/vocab_merges.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/safetensors.zig",
-    "tests/fixtures/qwen3-tts/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-qwen3-tts",
@@ -4238,23 +2155,6 @@
    "family": "qwen3-tts",
    "tier": "verify-cpu",
    "model": "qwen3_tts_17b_design",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/qwen3-tts-check.zig",
-    "inference/src/models/qwen3_tts*.zig",
-    "inference/src/tokenizer/bpe.zig",
-    "inference/src/tokenizer/cased.zig",
-    "inference/src/tokenizer/hf_json.zig",
-    "inference/src/tokenizer/nfc*.zig",
-    "inference/src/tokenizer/pre.zig",
-    "inference/src/tokenizer/vocab_merges.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/safetensors.zig",
-    "tests/fixtures/qwen3-tts/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-qwen3-tts",
@@ -4275,23 +2175,6 @@
    "family": "qwen3-tts",
    "tier": "verify",
    "model": "qwen3_tts_06b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/qwen3-tts-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/safetensors.zig",
-    "inference/src/models/qwen3_tts*.zig",
-    "inference/src/runtime/session.zig",
-    "inference/src/sampling/root.zig",
-    "inference/src/tokenizer/bpe.zig",
-    "inference/src/tokenizer/cased.zig",
-    "inference/src/tokenizer/hf_json.zig",
-    "inference/src/tokenizer/nfc*.zig",
-    "inference/src/tokenizer/pre.zig",
-    "inference/src/tokenizer/vocab_merges.zig",
-    "tests/fixtures/qwen3-tts/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-qwen3-tts",
@@ -4316,22 +2199,6 @@
    "family": "qwen3-tts",
    "tier": "verify",
    "model": "qwen3_tts_06b_base",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/qwen3-tts-check.zig",
-    "inference/src/audio/audio.zig",
-    "inference/src/audio/ecapa.zig",
-    "inference/src/audio/mel.zig",
-    "inference/src/audio/qwen3_codec.zig",
-    "inference/src/audio/qwen3_codec_encoder.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/safetensors.zig",
-    "inference/src/models/qwen3_tts.zig",
-    "tests/fixtures/qwen3-tts/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-qwen3-tts",
@@ -4352,23 +2219,6 @@
    "family": "qwen3-tts",
    "tier": "verify",
    "model": "qwen3_tts_06b_base",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/qwen3-tts-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/safetensors.zig",
-    "inference/src/models/qwen3_tts*.zig",
-    "inference/src/runtime/session.zig",
-    "inference/src/sampling/root.zig",
-    "inference/src/tokenizer/bpe.zig",
-    "inference/src/tokenizer/cased.zig",
-    "inference/src/tokenizer/hf_json.zig",
-    "inference/src/tokenizer/nfc*.zig",
-    "inference/src/tokenizer/pre.zig",
-    "inference/src/tokenizer/vocab_merges.zig",
-    "tests/fixtures/qwen3-tts/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-qwen3-tts",
@@ -4393,23 +2243,6 @@
    "family": "qwen3-tts",
    "tier": "verify",
    "model": "qwen3_tts_17b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/qwen3-tts-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/safetensors.zig",
-    "inference/src/models/qwen3_tts*.zig",
-    "inference/src/runtime/session.zig",
-    "inference/src/sampling/root.zig",
-    "inference/src/tokenizer/bpe.zig",
-    "inference/src/tokenizer/cased.zig",
-    "inference/src/tokenizer/hf_json.zig",
-    "inference/src/tokenizer/nfc*.zig",
-    "inference/src/tokenizer/pre.zig",
-    "inference/src/tokenizer/vocab_merges.zig",
-    "tests/fixtures/qwen3-tts/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-qwen3-tts",
@@ -4434,23 +2267,6 @@
    "family": "qwen3-tts",
    "tier": "verify",
    "model": "qwen3_tts_17b_design",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/qwen3-tts-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/safetensors.zig",
-    "inference/src/models/qwen3_tts*.zig",
-    "inference/src/runtime/session.zig",
-    "inference/src/sampling/root.zig",
-    "inference/src/tokenizer/bpe.zig",
-    "inference/src/tokenizer/cased.zig",
-    "inference/src/tokenizer/hf_json.zig",
-    "inference/src/tokenizer/nfc*.zig",
-    "inference/src/tokenizer/pre.zig",
-    "inference/src/tokenizer/vocab_merges.zig",
-    "tests/fixtures/qwen3-tts/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-qwen3-tts",
@@ -4475,19 +2291,6 @@
    "family": "qwen3-tts",
    "tier": "verify",
    "model": "qwen3_tts_06b",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/qwen3-tts-check.zig",
-    "inference/src/audio/qwen3_codec*.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/safetensors.zig",
-    "inference/src/runtime/session.zig",
-    "tests/fixtures/qwen3-tts/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-qwen3-tts",
@@ -4511,37 +2314,9 @@
    "tier": "verify",
    "model": "qwen3_tts_06b",
    "baseline": "nemotron_asr",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/audio/audio.zig",
-    "inference/src/audio/audio_bridge.m",
-    "inference/src/audio/mel.zig",
-    "inference/src/audio/nemotron_*.zig",
-    "inference/src/audio/qwen3_codec*.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/safetensors.zig",
-    "inference/src/models/qwen3_tts*.zig",
-    "inference/src/runtime/session.zig",
-    "inference/src/sampling/root.zig",
-    "inference/src/tokenizer/bpe.zig",
-    "inference/src/tokenizer/cased.zig",
-    "inference/src/tokenizer/hf_json.zig",
-    "inference/src/tokenizer/nfc*.zig",
-    "inference/src/tokenizer/pieces.zig",
-    "inference/src/tokenizer/pre.zig",
-    "inference/src/tokenizer/vocab_merges.zig",
-    "scripts/wer.py",
-    "src/speak.zig",
-    "src/transcribe.zig",
-    "tests/fixtures/tts-roundtrip.json"
-   ],
    "command": [
     "python3",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "--nuclis",
     "{nuclis}",
     "--model",
@@ -4556,7 +2331,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal (speaker ryan, english, each its own seed), recognized by nuclis transcribe --backend cpu (the baseline model, Nemotron ASR), words scored against the text (scripts/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-27: 5 errors in 190 words, 2.63 %, mostly the recognizer's spelling, dr for doctor and heres for here is; the bound allows six more)",
+   "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal (speaker ryan, english, each its own seed), recognized by nuclis transcribe --backend cpu (the baseline model, Nemotron ASR), words scored against the text (scripts/gate/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-27: 5 errors in 190 words, 2.63 %, mostly the recognizer's spelling, dr for doctor and heres for here is; the bound allows six more)",
    "evidence": "docs/models/qwen3-tts.md#on-metal-2026-10-27"
   },
   {
@@ -4565,37 +2340,9 @@
    "tier": "verify",
    "model": "qwen3_tts_17b",
    "baseline": "nemotron_asr",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/audio/audio.zig",
-    "inference/src/audio/audio_bridge.m",
-    "inference/src/audio/mel.zig",
-    "inference/src/audio/nemotron_*.zig",
-    "inference/src/audio/qwen3_codec*.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/rope.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/safetensors.zig",
-    "inference/src/models/qwen3_tts*.zig",
-    "inference/src/runtime/session.zig",
-    "inference/src/sampling/root.zig",
-    "inference/src/tokenizer/bpe.zig",
-    "inference/src/tokenizer/cased.zig",
-    "inference/src/tokenizer/hf_json.zig",
-    "inference/src/tokenizer/nfc*.zig",
-    "inference/src/tokenizer/pieces.zig",
-    "inference/src/tokenizer/pre.zig",
-    "inference/src/tokenizer/vocab_merges.zig",
-    "scripts/wer.py",
-    "src/speak.zig",
-    "src/transcribe.zig",
-    "tests/fixtures/tts-roundtrip.json"
-   ],
    "command": [
     "python3",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "--nuclis",
     "{nuclis}",
     "--model",
@@ -4610,7 +2357,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal (speaker ryan, english, each its own seed), recognized by nuclis transcribe --backend cpu (the baseline model, Nemotron ASR), words scored against the text (scripts/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-27: 5 errors in 190 words, 2.63 %, mostly the recognizer's spelling, dr for doctor and heres for here is; the bound allows six more)",
+   "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal (speaker ryan, english, each its own seed), recognized by nuclis transcribe --backend cpu (the baseline model, Nemotron ASR), words scored against the text (scripts/gate/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-27: 5 errors in 190 words, 2.63 %, mostly the recognizer's spelling, dr for doctor and heres for here is; the bound allows six more)",
    "evidence": "docs/models/qwen3-tts.md#on-metal-2026-10-27"
   },
   {
@@ -4618,17 +2365,6 @@
    "family": "drama3",
    "tier": "verify",
    "model": "drama3_q4_k",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/drama3-check.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/models/drama3.zig",
-    "inference/src/models/drama3_metal.zig",
-    "inference/src/models/drama3_runtime.zig",
-    "inference/src/runtime/session.zig",
-    "inference/src/runtime/weights.zig"
-   ],
    "command": [
     "{zig-metal}",
     "test-drama3",
@@ -4651,20 +2387,6 @@
    "family": "drama3",
    "tier": "verify-cpu",
    "model": "drama3_q4_k",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/drama3-check.zig",
-    "inference/src/backends/cpu/**",
-    "inference/src/formats/gguf.zig",
-    "inference/src/models/drama3.zig",
-    "inference/src/models/drama3_runtime.zig",
-    "inference/src/quant/**",
-    "inference/src/runtime/session.zig",
-    "inference/src/runtime/weights.zig",
-    "tests/fixtures/drama3/clone-fox/**",
-    "tests/fixtures/drama3/index.json"
-   ],
    "command": [
     "{zig-cpu}",
     "test-drama3",
@@ -4686,32 +2408,9 @@
    "tier": "verify",
    "model": "drama3_q4_k",
    "baseline": "nemotron_asr",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/audio/audio.zig",
-    "inference/src/audio/audio_bridge.m",
-    "inference/src/audio/mel.zig",
-    "inference/src/audio/nemotron_*.zig",
-    "inference/src/audio/fish_codec*.zig",
-    "inference/src/backends/cpu/**",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/gguf.zig",
-    "inference/src/models/drama3*.zig",
-    "inference/src/quant/**",
-    "inference/src/runtime/session.zig",
-    "inference/src/runtime/weights.zig",
-    "inference/src/sampling/root.zig",
-    "inference/src/tokenizer/**",
-    "scripts/wer.py",
-    "src/audio/speech.zig",
-    "src/speak.zig",
-    "src/transcribe.zig",
-    "tests/fixtures/tts-roundtrip.json"
-   ],
    "command": [
     "python3",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "--nuclis",
     "{nuclis}",
     "--model",
@@ -4727,7 +2426,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal in the model's own voice (no reference, the language from the text, each its own seed), recognized by nuclis transcribe (the baseline model, Nemotron ASR), words scored against the text (scripts/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-30: 2 errors in 190 words, 1.05 %, both the recognizer's: dr for doctor, a dropped and)",
+   "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal in the model's own voice (no reference, the language from the text, each its own seed), recognized by nuclis transcribe (the baseline model, Nemotron ASR), words scored against the text (scripts/gate/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-30: 2 errors in 190 words, 1.05 %, both the recognizer's: dr for doctor, a dropped and)",
    "evidence": "docs/models/drama3.md#the-round-trip"
   },
   {
@@ -4735,19 +2434,6 @@
    "family": "drama3",
    "tier": "verify-cpu",
    "model": "drama3_q4_k",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/drama3-check.zig",
-    "inference/drama3_codec_check.zig",
-    "inference/src/audio/fish_codec*.zig",
-    "inference/src/audio/qwen3_codec.zig",
-    "inference/src/backends/cpu/**",
-    "inference/src/formats/gguf.zig",
-    "inference/src/runtime/weights.zig",
-    "tests/fixtures/drama3/codec-*/**",
-    "tests/fixtures/drama3/index.json"
-   ],
    "command": [
     "{zig-cpu}",
     "test-drama3",
@@ -4768,20 +2454,6 @@
    "family": "drama3",
    "tier": "verify",
    "model": "drama3_q4_k",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/drama3-check.zig",
-    "inference/drama3_codec_metal_check.zig",
-    "inference/src/audio/fish_codec*.zig",
-    "inference/src/audio/qwen3_codec.zig",
-    "inference/src/backends/cpu/**",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/gguf.zig",
-    "inference/src/runtime/weights.zig",
-    "tests/fixtures/drama3/codec-*/**",
-    "tests/fixtures/drama3/index.json"
-   ],
    "command": [
     "{zig-metal}",
     "test-drama3",
@@ -4802,18 +2474,6 @@
    "family": "nemotron-asr",
    "tier": "verify-cpu",
    "model": "nemotron_asr",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/nemotron-asr-check.zig",
-    "inference/src/audio/audio.zig",
-    "inference/src/audio/mel.zig",
-    "inference/src/audio/nemotron_encoder.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/safetensors.zig",
-    "tests/fixtures/nemotron-asr/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-nemotron-asr",
@@ -4831,19 +2491,6 @@
    "family": "nemotron-asr",
    "tier": "verify-cpu",
    "model": "nemotron_asr",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/nemotron-asr-check.zig",
-    "inference/src/audio/audio.zig",
-    "inference/src/audio/mel.zig",
-    "inference/src/audio/nemotron_*.zig",
-    "inference/src/tokenizer/pieces.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/safetensors.zig",
-    "tests/fixtures/nemotron-asr/**"
-   ],
    "command": [
     "{zig-cpu}",
     "test-nemotron-asr",
@@ -4865,24 +2512,9 @@
    "data": [
     "speech-corpus"
    ],
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/audio/audio.zig",
-    "inference/src/audio/audio_bridge.m",
-    "inference/src/audio/mel.zig",
-    "inference/src/audio/nemotron_*.zig",
-    "inference/src/tokenizer/pieces.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/formats/safetensors.zig",
-    "src/transcribe.zig",
-    "scripts/wer.py",
-    "tests/fixtures/speech-corpus.json"
-   ],
    "command": [
     "python3",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "--nuclis",
     "{nuclis}",
     "--model",
@@ -4903,20 +2535,6 @@
    "family": "nemotron-asr",
    "tier": "verify",
    "model": "nemotron_asr",
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/nemotron-asr-check.zig",
-    "inference/src/audio/audio.zig",
-    "inference/src/audio/mel.zig",
-    "inference/src/audio/nemotron_*.zig",
-    "inference/src/tokenizer/pieces.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/safetensors.zig",
-    "tests/fixtures/nemotron-asr/**"
-   ],
    "command": [
     "{zig-metal}",
     "test-nemotron-asr",
@@ -4938,25 +2556,9 @@
    "data": [
     "speech-corpus"
    ],
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/audio/audio.zig",
-    "inference/src/audio/audio_bridge.m",
-    "inference/src/audio/mel.zig",
-    "inference/src/audio/nemotron_*.zig",
-    "inference/src/tokenizer/pieces.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/safetensors.zig",
-    "src/transcribe.zig",
-    "scripts/wer.py",
-    "tests/fixtures/speech-corpus.json"
-   ],
    "command": [
     "python3",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "--nuclis",
     "{nuclis}",
     "--model",
@@ -4980,33 +2582,9 @@
    "data": [
     "speech-corpus"
    ],
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/audio/audio.zig",
-    "inference/src/audio/audio_bridge.m",
-    "inference/src/audio/mel.zig",
-    "inference/src/audio/nemotron_*.zig",
-    "inference/src/tokenizer/pieces.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/safetensors.zig",
-    "src/audio/transcript.zig",
-    "src/transcribe.zig",
-    "src/api/http.zig",
-    "src/api/multipart.zig",
-    "src/api/gpu.zig",
-    "src/api/slot.zig",
-    "src/api/pipe.zig",
-    "src/api/transcription/**",
-    "scripts/transcription-check.py",
-    "scripts/wer.py",
-    "tests/fixtures/speech-corpus.json"
-   ],
    "command": [
     "python3",
-    "scripts/transcription-check.py",
+    "scripts/gate/transcription-check.py",
     "route",
     "--nuclis",
     "{nuclis}",
@@ -5027,33 +2605,9 @@
    "data": [
     "speech-corpus"
    ],
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/audio/audio.zig",
-    "inference/src/audio/audio_bridge.m",
-    "inference/src/audio/mel.zig",
-    "inference/src/audio/nemotron_*.zig",
-    "inference/src/tokenizer/pieces.zig",
-    "inference/src/backends/cpu/dense.zig",
-    "inference/src/backends/cpu/vector.zig",
-    "inference/src/backends/metal/**",
-    "inference/src/formats/safetensors.zig",
-    "src/audio/transcript.zig",
-    "src/transcribe.zig",
-    "src/api/http.zig",
-    "src/api/multipart.zig",
-    "src/api/gpu.zig",
-    "src/api/slot.zig",
-    "src/api/pipe.zig",
-    "src/api/transcription/**",
-    "scripts/transcription-check.py",
-    "scripts/wer.py",
-    "tests/fixtures/speech-corpus.json"
-   ],
    "command": [
     "python3",
-    "scripts/transcription-check.py",
+    "scripts/gate/transcription-check.py",
     "long",
     "--nuclis",
     "{nuclis}",
@@ -5074,27 +2628,9 @@
    "data": [
     "speech-corpus"
    ],
-   "paths": [
-    "build.zig",
-    "inference/build.zig",
-    "inference/src/audio/audio.zig",
-    "inference/src/audio/audio_bridge.m",
-    "inference/src/audio/mel.zig",
-    "inference/src/audio/nemotron_*.zig",
-    "inference/src/tokenizer/pieces.zig",
-    "inference/src/backends/metal/**",
-    "src/transcribe.zig",
-    "src/api/http.zig",
-    "src/api/websocket.zig",
-    "src/api/gpu.zig",
-    "src/api/slot.zig",
-    "src/api/transcription/**",
-    "scripts/ws-transcribe.py",
-    "tests/fixtures/speech-corpus.json"
-   ],
    "command": [
     "python3",
-    "scripts/ws-transcribe.py",
+    "scripts/gate/ws-transcribe.py",
     "--check",
     "--nuclis",
     "{nuclis}",

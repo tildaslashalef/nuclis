@@ -21,56 +21,55 @@ the session protocol below.
 ## The session protocol
 
 Work arrives as **units**: one unit is one session, one branch, and one pull
-request, however many tasks it holds. Two places carry the state:
+request, however many tasks it holds. Two places carry the state. If
+`AGENTS.local.md` exists, read it: it names the tracker and overrides the
+queue rules here. Without it, ask the user what to work on.
 
 | Where | Holds | Changes when |
 | --- | --- | --- |
-| [TODO.md](TODO.md) | the queue: the units agreed and not yet merged, each with its design, and a *Where we are* hand-off note | a plan is written, a session ends, a unit merges |
+| the maintainer's tracker | the queue: the units agreed and not yet merged, each with its design, and a hand-off note | a plan is written, a session ends, a unit merges |
 | the unit's pull request | the record: what changed and why, the evidence, what remains (`.github/pull_request_template.md`) | the session opens it and keeps it current; the user merges it |
 
-**A fresh session is in one of two states.** Read `TODO.md` first; it
+**A fresh session is in one of two states.** Read the queue first; it
 tells you which.
 
-1. **It lists work.** Summarize *Where we are* and the next unit, ask how
+1. **It lists work.** Summarize the hand-off and the next unit, ask how
    the user wants to continue, then continue that unit. Do not replan.
 2. **It is empty.** Nothing is in progress. Ask what to work on, agree the
-   theme with the user, and write the plan into `TODO.md` in its format
-   (where-we-are note, unit table, unit designs) before touching code.
-   There is no roadmap and no issue tracker: the queue is `TODO.md`, and a
-   design that outlives its unit goes to the document under `docs/` that
-   owns it.
+   theme with the user, and write the plan into the tracker (the hand-off
+   note and the unit designs) before touching code. There is no roadmap,
+   and GitHub's issues, projects, and wiki are off: the queue is the
+   tracker, and a design that outlives its unit goes to the document under
+   `docs/` that owns it.
 
 **A unit starts on its own branch** from an up-to-date `main`, named for
-the work (`few-query-verify-attention`); its section in `TODO.md` records
-``Base: `<rev>` ``, the commit it branched from, so `make verify-auto`
-diffs the whole unit.
+the work (`few-query-verify-attention`); `make verify-auto` diffs from
+where the branch left `origin/main`, so it covers the whole unit.
 
-**A unit's section is written for whoever implements it next**, which may
+**A unit's design is written for whoever implements it next**, which may
 be another model: files, functions, numbers, and gate commands, not intent.
 Refer to code and documents by name and heading, never by line number. A
 unit whose design waits on facts (a file's header, a reference's driver)
-reads them first and rewrites its section at that level, committed before
-any code.
+reads them first and rewrites its design at that level before any code.
 
 **Finishing a unit**: the checks pass; the documents it changed are
-updated; its section and row leave `TODO.md` and *Where we are* names the
-next unit; then, on the user's word, the branch is pushed and the pull
+updated; the hand-off names the next unit; then, on the user's word, the branch is pushed and the pull
 request opened (or updated) with a Conventional Commit title and the
 record in its description. The user reviews and merges it; a squash
 merge makes the title the commit's subject and the description its body,
 so `git log main` is the history of the work. A session that ends before
-the unit is finished leaves the branch committed and the section saying
+the unit is finished leaves the branch committed and the hand-off saying
 what was delivered and what remains; whether it is pushed as a draft
 pull request is the user's call.
 
 **Nothing lands silently.** A side fix found inside a unit goes into that
 unit's pull request and its record. Work the user asks for during a
 session belongs to that session's unit: the same branch and pull
-request, named in its record and its `TODO.md` section, never a branch
+request, named in its record and its design, never a branch
 of its own. Only work outside any session's unit is a small unit of its
 own, with its own branch and pull request.
 
-**Durable knowledge never lives only in `TODO.md` or a pull request**:
+**Durable knowledge never lives only in the tracker or a pull request**:
 requirements go to `docs/spec.md`, environment facts to
 `docs/development.md`, designs and the decisions behind them to the
 document under `docs/` that owns them.
@@ -83,7 +82,7 @@ any measured numbers not yet written into the docs. Never let
 auto-compaction fire mid-measurement. Keep tool output out of the context:
 pipe builds and benchmarks through `grep`/`tail`, read documents by section,
 and write measurements into the docs as soon as they are taken so the
-transcript is not the only copy. The hand-off is `TODO.md` and the pull
+transcript is not the only copy. The hand-off is the tracker and the pull
 request, never the conversation.
 
 ## Working mode
@@ -124,6 +123,10 @@ stale guidance instead of maintaining competing sources of truth.
   `inference/`; its tests run under `zig build test`, its standalone binary
   under `make hf-downloader`). Build only from the root so the root's
   `.zig-cache` and `zig-out` are the only ones.
+- `tools/gates/` is the gate runner (`nuclis-gates`), a separate executable
+  that imports none of the three packages. `scripts/` holds the rest of the
+  tooling by purpose: `gate/`, `bench/`, `repo/`, `app/`, `fixtures/`,
+  `oracle/`.
 - Root `build.zig` and `build.zig.zon` compose them through path
   dependencies. Do not add fictitious dependencies for unimplemented packages.
 - Executable `main.zig` files only parse arguments and compose/dispatch
@@ -201,34 +204,27 @@ For code changes, once build scaffolding exists:
 3. Exercise the applicable happy path with the freshly built
    `./zig-out/bin/nuclis`, never an installed copy. A change to the chat
    surface (`src/tui/`, `src/agent/root.zig`) is exercised through the
-   screenshot harness, `make shot ARGS='<steps>'` (`scripts/tui-shot.py`):
+   screenshot harness, `make shot ARGS='<steps>'` (`scripts/app/tui-shot.py`):
    drive the keys, drops, and pastes in tmux, read the captures under
    `.zig-cache/tui/`, fix, repeat; the pull request cites the captures as evidence
    ([docs/development.md § Looking at the agent without a person at the
    keyboard](docs/development.md#looking-at-the-agent-without-a-person-at-the-keyboard)).
 4. Run broader checks when shared code or unresolved risks justify them.
-   The model-specific checks are gates in `gates.json`, tiered by cost and
-   selected by changed paths, see [docs/development.md § Gates](docs/development.md#gates).
-   While iterating and before each commit, `make verify-auto`: the
-   model-free checks and fast-tier gates the diff since the unit's `Base:`
-   selects, cheapest first, then the tiers the change requires; run
-   those it names unless the exemptions below apply. `make verify` (the
-   fast Metal tier: one representative file per family and the paths
-   only a variant has) once per unit that touched the inference
-   stack — judge by the work: a unit confined to the executable, the
-   documents, or the scripts changes no numerical behaviour and needs no
-   tier. The CPU tier (`make verify-cpu`, about 30 minutes) is not part of closing a
-   unit unless the unit changes what the CPU reference computes: the
-   arithmetic of an existing CPU kernel or quantized decoder, a family's
-   `*_runtime.zig` forward, or a projector's CPU `Runtime`, or it brings up
-   a family or a draft source. Additions nothing calls yet, refactors a
-   unit test pins, the check tool, and Metal code do not count. Otherwise
-   the CPU tier runs once before a release. The long-context tier (`make
-   verify-long`, 4K-token perplexity) runs when a unit changes
-   attention, the KV cache, or a windowed schedule, and once before a
-   release. The release tier (`make verify-release`: whole-file
-   acceptance, the 8-window perplexities and the variant files the fast
-   tier leaves out) runs once before a release.
+   The model-specific checks are gates in `gates.json`, in three lanes
+   ([docs/development.md § Gates](docs/development.md#gates)). Always:
+   `make check`. Focus: `make verify-auto` before a pull request; it
+   selects the families the change reaches, or the canaries for shared
+   code, skips passes it remembers, and selects nothing for work outside
+   the engine. Release: every tier, strict, before a tag. `make verify`
+   is not a requirement of a pull request.
+   Run a tier `make verify-auto` names only when it applies. The CPU tier
+   (`make verify-cpu`) when a unit changes what the CPU reference computes:
+   the arithmetic of an existing CPU kernel or quantized decoder, a
+   family's `*_runtime.zig` forward, or a projector's CPU `Runtime`, or it
+   brings up a family or a draft source. Additions nothing calls yet,
+   refactors a unit test pins, the check tool, and Metal code do not
+   count. The long-context tier (`make verify-long`, 4K-token perplexity)
+   when a unit changes attention, the KV cache, or a windowed schedule.
 5. A change to the agent's system prompt (`src/agent/system_prompt.zig`),
    a tool description, or the loop's behaviour is measured on the
    playground task list before and after (`make agent-eval VARIANT=…`,
@@ -352,8 +348,8 @@ updating its description; the branch stays local until the user says to
 push it.
 **Never:** pushing to `main` (the ruleset refuses it), merging a pull
 request (the user's review), force-pushing a branch others may have
-fetched, rewriting `main`'s history, or opening issues (the project uses
-none).
+fetched, rewriting `main`'s history, or opening issues on GitHub (they are
+off).
 
 ### Code comments
 

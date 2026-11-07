@@ -1,12 +1,14 @@
 # Bonsai 2 27B: facts from the artifact and the fork
 
+**No gates.** This family left the gate registry when its file left the test machine. The `make gate` commands below name gates as of `v0.11.0`; the measurements stand as recorded.
+
 Prism ML's ternary re-encoding of Qwen3.8-27B (`general.architecture =
 qwen35`): the pinned Qwen adapter, tokenizer, and runtime schedule apply
 unchanged, and the work sits below the adapter — two weight encodings, a
 BF16 pair per DeltaNet layer, and a Hadamard rotation of every projection
 input that the converter folded into the stored weights. Everything here
 was read on 2026-09-18 from the pulled PQ2_0 file with
-`scripts/gguf-inventory.py` (the committed inventory is
+`scripts/fixtures/gguf-inventory.py` (the committed inventory is
 [`fixtures/bonsai-2-27b.json`](../../inference/src/models/fixtures/bonsai-2-27b.json),
 rotation arrays included), from `nuclis model inspect`, and from the
 PrismML llama.cpp fork at its release `prism-b10687-5d80cff`
@@ -82,7 +84,7 @@ bit-identical to the fork's `dequantize_row_pq2_0` / `dequantize_row_ptq1_0`
 on the committed [`ternary.json`](../../inference/src/quant/fixtures/ternary.json)
 fixture (arbitrary payload bytes, so non-canonical codes reproduce the
 reference arithmetic too, plus all-zero, all-one, and canonical blocks;
-`scripts/quant-fixtures.py --prism-checkout`).
+`scripts/fixtures/quant-fixtures.py --prism-checkout`).
 
 - **PQ2_0** (id 142; the fork's file type `MOSTLY_PQ2_0` 128): 34 bytes —
   `ggml_half d` then `uint8_t qs[32]`. Element `j` is the two bits at
@@ -180,7 +182,7 @@ SHA-256 `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041`
 profile's (`12827f24…`, 9,993 bytes), which carries Unsloth's fixes
 (`developer` role, merged system messages, `high` mapped to `xhigh`,
 tool-argument type checks). The alias gate
-(`scripts/profile-alias-check.py --profile qwen38 --reference-revision
+(`scripts/fixtures/profile-alias-check.py --profile qwen38 --reference-revision
 5d80cff0…`, the fork's server holding the PQ2_0 file, 2026-09-18) replayed
 the pinned fixtures: **24 of 28 text prompt cases, all 20 tool cases, and
 all 20 token cases are byte-identical**; the 4 that differ are the
@@ -213,7 +215,7 @@ fork's server renders it.
 Built as the mainline recipe with `.reference/prism-llama.cpp`
 in place of the mainline checkout
 ([llama-cpp.md § The second oracle](../benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-2026-09-18)).
-Two pins, never one moving one: `scripts/quant-fixtures.py` carries
+Two pins, never one moving one: `scripts/fixtures/quant-fixtures.py` carries
 `PRISM_REVISION` beside `REVISION`, and `profile-alias-check.py` takes
 `--reference-revision`.
 
@@ -257,7 +259,7 @@ mixer), and `value_grouped` says the fold used the grouped order
 takes none of these paths.
 
 `make gate NAME=bonsai-trace-cpu` (`generate --backend cpu --raw --prompt 'Hello,'`
-on the PQ2_0 file, then `compare-generation.py` against
+on the PQ2_0 file, then `nuclis-gates compare` against
 `tests/fixtures/bonsai-hello-comma` at the bring-up thresholds 2e-3 /
 1e-4) **passes on the first run**: 129 files, max abs 2.44e-4 (at
 `token-1-layer-63`), max relative RMS 5.4e-6, greedy token 353 with the

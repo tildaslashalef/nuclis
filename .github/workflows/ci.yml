@@ -72,7 +72,7 @@ jobs:
           fetch-tags: true
           persist-credentials: false
       - name: Documentation, site, and manifests
-        run: make docs-check site-check gates-validate workloads-validate
+        run: make docs-check site-check workloads-validate
 
   check:
     needs: changes
@@ -85,7 +85,7 @@ jobs:
         include:
           - name: test
             run: |
-              zig fmt --check build.zig build.zig.zon src/ inference/ huggingface/
+              zig fmt --check build.zig build.zig.zon src/ inference/ huggingface/ tools/
               version=$(sed -n 's/.*\.version = "\([^"]*\)".*/\1/p' build.zig.zon)
               printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || {
                 echo "build.zig.zon .version '$version' is not MAJOR.MINOR.PATCH[-prerelease]" >&2
@@ -93,6 +93,7 @@ jobs:
               }
               echo "version $version"
               zig build test --summary all
+              make gates-validate
           - name: metal
             run: |
               zig build -Dmetal=true -Doptimize=ReleaseSafe

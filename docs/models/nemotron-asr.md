@@ -462,7 +462,7 @@ With synthetic weights, the unit tests show the authors' chunks
 (`1 + 8r`, then `8(r + 1)` frames, at r = 0 and 3), pieces of 7 frames,
 and samples in 80 ms pieces giving the whole clip's rows **bit for bit**.
 
-**The trace.** `scripts/speech-traces/nemotron_trace.py` ran the authors'
+**The trace.** `scripts/oracle/speech-traces/nemotron_trace.py` ran the authors'
 `Nemotron3_5AsrForRNNT` (transformers `c0d024fb`, torch 2.14.1, librosa
 1.0.0, CPU, F32) on two clips of the speech corpus, each cut to 80,880
 samples (505 mel frames, 64 rows): a LibriSpeech test-clean utterance
@@ -512,7 +512,7 @@ blocks. The bounds sit about five times above the worst: 1e-4 max and
 (`inference/nemotron-asr-check.zig`). A whole clip of 64 rows took 0.41 to
 0.45 s on the CPU reference (ReleaseFast, M4 Pro).
 
-**The speech corpus.** `make speech-corpus` (`scripts/speech-corpus.py`)
+**The speech corpus.** `make speech-corpus` (`scripts/fixtures/speech-corpus.py`)
 fetches the clips that `tests/fixtures/speech-corpus.json` pins into
 `.reference/speech/`:
 
@@ -565,7 +565,7 @@ tests with synthetic weights cover the gate order `[i | f | g | o]`, the
 blank and the ten-symbol cap, the start state, the tag pattern, and rows
 in pieces against one push.
 
-**The trace, extended.** `scripts/speech-traces/nemotron_trace.py` also
+**The trace, extended.** `scripts/oracle/speech-traces/nemotron_trace.py` also
 pins, for the same two cut clips at r = 0 and 3, whole and streamed: the
 `encoder_projector` rows (0–7, 56–63); every step of `generate`'s greedy
 decoding (the row read, and the joint's five largest logits with their
@@ -617,7 +617,7 @@ r = 0 (one-row chunks) and 0.73–0.75 s at r = 3. Through `nuclis
 transcribe` (the ReleaseSafe build, whole clips, r = 3) the 60-clip corpus,
 512.2 s of audio, transcribed in 64.5 s: 0.13× real time.
 
-**Word error rate.** `scripts/wer.py` runs the fresh binary's
+**Word error rate.** `scripts/gate/wer.py` runs the fresh binary's
 `transcribe --json --backend cpu` over corpus clips. Each clip runs under
 its locale, or `--auto`. Both sides are normalized the same way: NFKC,
 case folded, `ё` as `е`, apostrophes dropped, other punctuation a space.
@@ -726,7 +726,7 @@ were factored out for this, its rows bit for bit as before):
   (a whole clip) take the generic 32×32 F32 tile instead.
 
 **`nuclis transcribe`** runs on Metal by default when built with it, `--backend cpu` on the reference. `Transcriber.init` takes the engine (`Model.openMetal` builds the
-plan once), and both engines give the same tokens. `scripts/wer.py`
+plan once), and both engines give the same tokens. `scripts/gate/wer.py`
 passes `--backend` through. A file is decoded and fed in 2.56 s pieces
 (`src/audio/transcript.zig`, as the server's file route feeds it), so a
 recording of any length holds no decoded samples; on all 60 corpus clips
