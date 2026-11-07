@@ -22,7 +22,7 @@ BIN      := ./zig-out/bin/nuclis
 METAL    := -Dmetal=true -Doptimize=$(OPT)
 
 .DEFAULT_GOAL := build
-.PHONY: help build debug build-cpu metal install uninstall test test-metal check verify-auto verify verify-release verify-long verify-cpu verify-changed gate gates-list gates-validate \
+.PHONY: help build debug build-cpu metal install uninstall test test-metal check gates-tool verify-auto verify verify-release verify-long verify-cpu verify-changed sweep gate gates-list gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate speed speed-base spec-matrix \
         agent agent-eval api-check playground model-ls eval-corpus speech-corpus trace capture clean clean-cache distclean hf-downloader test-hf version release-draft release tag site-check site-serve docs-check
@@ -70,40 +70,48 @@ test-metal: ## GPU kernel fixture/lifecycle checks (needs a Metal device, no mod
 check: fmt-check test test-metal gates-validate workloads-validate ## Format check + unit tests + GPU fixtures + the two manifests (seconds)
 
 # ---- gates (gates.json; docs/development.md § Gates) ----------------------
-# Every model-specific numerical check is a gate in the manifest: a tier
-# (verify = Metal, minutes; verify-release = whole files, before a release;
-# verify-cpu = the CPU reference, hours) and the
-# source globs that make it relevant. `make verify-auto` runs what a change
-# needs: the model-free checks and gates its paths select, then names the
-# tiers it requires.
+# Every model-specific numerical check is a gate in the manifest, run by the
+# Zig runner in tools/gates: a tier (verify = Metal, minutes; verify-release =
+# whole files, before a release; verify-cpu = the CPU reference, hours), and
+# impact from the import graph, not hand-kept paths. `make verify-auto` runs
+# what a change needs: the model-free checks, the impacted gates, then names
+# the tiers it requires. A pass is remembered; ARGS=--no-cache runs it again.
+
+GATES := ./zig-out/bin/nuclis-gates
+
+gates-tool: ## Build the gate runner (zig-out/bin/nuclis-gates)
+	$(ZIG) build gates-tool -Doptimize=$(OPT)
 
 BASE ?= HEAD
-verify-auto: eval-corpus ## What a change needs: the model-free checks and fast-tier gates its paths select (cheapest first, stop at the first failure), then the tiers it requires; BASE= defaults to where the branch left origin/main
-	python3 scripts/gate/gates.py --auto $(if $(filter command line,$(origin BASE)),$(BASE)) $(ARGS)
+verify-auto: eval-corpus gates-tool ## What a change needs: the model-free checks its paths select, the gates its impact selects (cheapest first, stop at the first failure), then the tiers it requires; BASE= defaults to where the branch left origin/main
+	$(GATES) --auto $(if $(filter command line,$(origin BASE)),$(BASE)) $(ARGS)
 
-verify: eval-corpus ## The fast Metal tier: one representative file per family and the paths only a variant has (once per unit)
-	python3 scripts/gate/gates.py --tier verify $(ARGS)
+verify: eval-corpus gates-tool ## The fast Metal tier: one representative file per family and the paths only a variant has (once per unit)
+	$(GATES) --tier verify $(ARGS)
 
-verify-release: eval-corpus ## Whole-file acceptance before a release: 8-window perplexities, the Gemma 12B QAT file, draft statistics
-	python3 scripts/gate/gates.py --tier verify-release --strict $(ARGS)
+verify-release: eval-corpus gates-tool ## Whole-file acceptance before a release: 8-window perplexities, the Gemma 12B QAT file, draft statistics
+	$(GATES) --tier verify-release --strict $(ARGS)
 
-verify-long: eval-corpus ## The long-context tier: 4K-token perplexity (Gemma 4 E4B so far), when a unit touches attention, the caches, or a windowed schedule, and before a release
-	python3 scripts/gate/gates.py --tier verify-long $(ARGS)
+verify-long: eval-corpus gates-tool ## The long-context tier: 4K-token perplexity (Gemma 4 E4B so far), when a unit touches attention, the caches, or a windowed schedule, and before a release
+	$(GATES) --tier verify-long $(ARGS)
 
-verify-cpu: ## The CPU-reference tier (hours): when a unit changes what the CPU reference computes, and before a release
-	python3 scripts/gate/gates.py --tier verify-cpu $(ARGS)
+verify-cpu: gates-tool ## The CPU-reference tier (hours): when a unit changes what the CPU reference computes, and before a release
+	$(GATES) --tier verify-cpu $(ARGS)
 
-verify-changed: eval-corpus ## The Metal-tier gates whose paths match `git diff --name-only $(BASE)` plus untracked files (BASE=HEAD); ARGS='--tier verify-long' or '--tier verify-cpu' for those tiers'
-	python3 scripts/gate/gates.py --changed $(BASE) $(ARGS)
+verify-changed: eval-corpus gates-tool ## The gates the change from $(BASE) selects (BASE=HEAD, untracked files count); ARGS='--tier verify-long' or '--tier verify-cpu' for those tiers'
+	$(GATES) --changed $(BASE) $(ARGS)
 
-gate: eval-corpus ## Gates by name or glob: make gate NAME=gemma4-qat-trace-f16, NAME='qwen38-*' (ARGS=--dry-run prints the commands)
-	python3 scripts/gate/gates.py --gate $(NAME) $(ARGS)
+sweep: eval-corpus gates-tool ## Every tier's gates not already cached, cheapest first, with skips reported
+	$(GATES) --sweep $(ARGS)
 
-gates-list: ## Every gate with its tier, family, model, and evidence
-	python3 scripts/gate/gates.py --list
+gate: eval-corpus gates-tool ## Gates by name or pattern: make gate NAME=gemma4-qat-trace-f16, NAME='qwen38-*' (ARGS=--dry-run prints the commands)
+	$(GATES) --gate $(NAME) $(ARGS)
 
-gates-validate: ## Validate gates.json and run the runner's and the perplexity reference's self-tests (no model)
-	python3 scripts/gate/gates.py --validate
+gates-list: gates-tool ## Every gate with its tier, family, model, and evidence
+	$(GATES) --list
+
+gates-validate: gates-tool ## Validate gates.json against the tree, and run the perplexity reference's self-test (no model)
+	$(GATES) --validate
 	python3 scripts/gate/reference-perplexity.py --self-test
 
 # ---- workloads (workloads.json; docs/development.md § The record) ---------
@@ -139,10 +147,10 @@ spec-matrix: metal ## Real speculation, off/on pairs per cell: make spec-matrix 
 # ---- formatting ------------------------------------------------------------
 
 fmt: ## Format Zig sources and build files in place
-	$(ZIG) fmt build.zig build.zig.zon src/ inference/ huggingface/
+	$(ZIG) fmt build.zig build.zig.zon src/ inference/ huggingface/ tools/
 
 fmt-check: ## Fail if any Zig source is not formatted
-	$(ZIG) fmt --check build.zig build.zig.zon src/ inference/ huggingface/
+	$(ZIG) fmt --check build.zig build.zig.zon src/ inference/ huggingface/ tools/
 
 # The Python scripts' tools, pinned and fetched by uv (pyproject.toml).
 RUFF    := uvx ruff@0.14.11

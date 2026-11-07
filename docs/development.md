@@ -459,7 +459,7 @@ skip its concurrency layer.
   `Allocator.dupeZ` and `fmt.bufPrintZ` (→ the `Sentinel` variants),
   `EnumSet.initEmpty`, `ascii.indexOfIgnoreCase`, and `zig build
   --global-cache-dir` (→ `ZIG_GLOBAL_CACHE_DIR`, set by the Makefile and
-  `scripts/gate/gates.py`).
+  `tools/gates`).
 - **Deprecated in 0.17, migrated:** `fmt.allocPrint` (→ `Allocator.print`,
   157 sites), `@intFromEnum`/`@enumFromInt` (→ `@backingInt` /
   `@fromBackingInt`, rewritten by `zig fmt`), `DynamicBitSetUnmanaged`
@@ -687,8 +687,8 @@ tag, and checkouts keep `persist-credentials` off.
 | Job | Runs | What |
 | --- | --- | --- |
 | `changes` | always (ubuntu) | whether anything outside `docs/`, `site/`, and Markdown changed |
-| `docs` | always (ubuntu) | `make docs-check site-check gates-validate workloads-validate`, standard-library Python |
-| `test` | code changed (macOS) | `zig fmt --check`, a semver check on the manifest's version, `zig build test` |
+| `docs` | always (ubuntu) | `make docs-check site-check workloads-validate`, standard-library Python |
+| `test` | code changed (macOS) | `zig fmt --check`, a semver check on the manifest's version, `zig build test`, `make gates-validate` |
 | `metal` | code changed (macOS) | a `-Dmetal=true -Doptimize=ReleaseSafe` build, `--version` and `--help` on it |
 | `cpu` | code changed (macOS) | a Debug `-Dmetal=false` build, so the non-Metal path keeps linking |
 | `linux` | code changed (ubuntu) | `zig build test -Dmetal=false` and a Debug build, `--version` on it |
@@ -742,11 +742,12 @@ The root build provides:
 
 ```sh
 zig build                   # Metal is on by default for macOS aarch64
-zig build test              # src/, inference/, and huggingface/ unit tests
+zig build test              # src/, inference/, huggingface/, and tools/gates unit tests
 zig build -Doptimize=ReleaseSafe
 zig build -Dmetal=false     # a CPU-only binary (the default off Apple Silicon)
 zig build test-hf           # the huggingface package's tests alone
 zig build hf-downloader     # its standalone binary, zig-out/bin/hf-downloader
+zig build gates-tool        # the gate runner, zig-out/bin/nuclis-gates
 ```
 
 `-Dmetal` defaults to **on for macOS on aarch64** and off everywhere else
@@ -816,13 +817,13 @@ must not initialize a GPU, load full model weights, or reach the network.
 `zig build run -- inspect --json` runs nuclis directly.
 In a sandbox that cannot write Zig's default global cache, set
 `ZIG_GLOBAL_CACHE_DIR=/absolute/writable/cache` (Zig 0.17's `zig build` has no
-`--global-cache-dir`); the Makefile and `scripts/gate/gates.py` point it at the root
+`--global-cache-dir`); the Makefile and `tools/gates` point it at the root
 `.zig-cache/global` directory.
 
 Format changed Zig source and build files with `zig fmt`. The repository check is:
 
 ```sh
-zig fmt --check build.zig build.zig.zon src/ inference/ huggingface/
+zig fmt --check build.zig build.zig.zon src/ inference/ huggingface/ tools/
 ```
 
 Explicit Metal/full-model test commands must be documented when introduced.

@@ -16,5 +16,6 @@
         "inference",
         "huggingface",
         "scripts",
+        "tools",
     },
 }

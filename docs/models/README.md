@@ -142,12 +142,12 @@ does not add BOS, so write `<bos>` in the prompt text. Run it once,
 commit the traces under `tests/fixtures/<family>-<prompt>/` with a row in
 [provenance.md](../../tests/fixtures/provenance.md), and add a
 `<family>-trace-cpu` gate to `gates.json` (tier `verify-cpu`, the family's
-source globs in `paths`; [development.md § Gates](../development.md#gates)):
+seed globs in `families`; [development.md § Gates](../development.md#gates)):
 
 ```sh
 nuclis generate --backend cpu --model <file> --prompt-tokens <ids.json> \
   --max-tokens 1 --ctx-size 8 --temperature 0 --logits <dir>/logits.f32 --trace-dir <dir>
-python3 scripts/gate/compare-generation.py <dir> tests/fixtures/<family>-… \
+./zig-out/bin/nuclis-gates compare <dir> tests/fixtures/<family>-… \
   --positions 3 --embedding 3840 --layers 48 --vocab 262144
 ```
 
