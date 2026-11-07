@@ -1,5 +1,5 @@
 {
- "source": "scripts/laya-reference.py",
+ "source": "scripts/oracle/laya-reference.py",
  "repo": "convaiinnovations/laya",
  "commit": "55cf4c4e",
  "subfolder": "multilingual",
