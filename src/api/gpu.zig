@@ -38,6 +38,10 @@ pub const Executor = struct {
     completed: u64 = 0,
     /// Worker-only: set while `runShort` runs items between a long item's steps.
     between: bool = false,
+    /// Worker-only: when the running item's current step began.
+    step_began: ?std.Io.Clock.Timestamp = null,
+    /// Worker-only: how long the running item's last step took, in ns.
+    step_ns: i64 = 0,
 
     pub fn init(max_queued: usize) Executor {
         return .{ .max_queued = max_queued };
@@ -143,6 +147,8 @@ pub const Executor = struct {
             self.running = true;
             self.mutex.unlock(io);
 
+            self.step_began = std.Io.Clock.Timestamp.now(io, .awake);
+            self.step_ns = 0;
             const after = item.run(item, io);
             self.mutex.lockUncancelable(io);
             self.running = false;
@@ -155,6 +161,8 @@ pub const Executor = struct {
     /// queued at this moment, once, in arrival order. A long item calls it
     /// between its steps so short ones need not wait for it to end.
     pub fn runShort(self: *Executor, io: std.Io) void {
+        if (self.step_began) |began| self.step_ns = @intCast(began.durationTo(.now(io, .awake)).raw.toNanoseconds());
+        defer self.step_began = std.Io.Clock.Timestamp.now(io, .awake);
         var taken: [16]*Item = undefined;
         var count: usize = 0;
         self.mutex.lockUncancelable(io);
@@ -178,6 +186,13 @@ pub const Executor = struct {
     /// take no more of the GPU than it needs.
     pub fn betweenSteps(self: *const Executor) bool {
         return self.between;
+    }
+
+    /// On the worker, between a long item's steps: how long the step before
+    /// this one took, so a short item can size its turn to the gap it must
+    /// bridge (a prefill chunk is hundreds of times a generated token).
+    pub fn stepNanoseconds(self: *const Executor) i64 {
+        return self.step_ns;
     }
 
     /// After `item` ran: queued again at the tail, or finished and its
@@ -339,11 +354,14 @@ const Long = struct {
     order: *std.ArrayList(u32),
     started: std.Io.Event = .unset,
     gate: std.Io.Event = .unset,
+    /// How long the step before the boundary takes.
+    step_ms: i64 = 0,
 
     fn runLong(item: *Item, io: std.Io) Item.After {
         const self: *Long = @fieldParentPtr("item", item);
         self.started.set(io);
         self.gate.waitUncancelable(io);
+        io.sleep(.fromMilliseconds(self.step_ms), .awake) catch {};
         self.order.appendAssumeCapacity(100);
         // A step boundary: the short items queued meanwhile run here.
         self.executor.runShort(io);
@@ -376,4 +394,36 @@ test "short items run between a long item's steps; others wait for it" {
     // `.again` went to the tail, behind the item that was not short, and
     // ran on its own.
     try std.testing.expectEqualSlices(u32, &.{ 100, 11, 101, 2, 1 }, order.items);
+}
+
+const Timing = struct {
+    item: Item = .{ .run = runTiming, .short = true },
+    executor: *const Executor,
+    seen_ns: i64 = 0,
+
+    fn runTiming(item: *Item, io: std.Io) Item.After {
+        _ = io;
+        const self: *Timing = @fieldParentPtr("item", item);
+        self.seen_ns = self.executor.stepNanoseconds();
+        return .done;
+    }
+};
+
+test "a short item sees how long the step before it took" {
+    const io = std.testing.io;
+    var executor: Executor = .init(4);
+    var order: std.ArrayList(u32) = try .initCapacity(std.testing.allocator, 4);
+    defer order.deinit(std.testing.allocator);
+    var long: Long = .{ .executor = &executor, .order = &order, .step_ms = 30 };
+    var timing: Timing = .{ .executor = &executor };
+    try executor.submit(io, &long.item);
+    var worker = try io.concurrent(Executor.run, .{ &executor, io });
+    long.started.waitUncancelable(io);
+    try executor.submit(io, &timing.item);
+    long.gate.set(io);
+    try executor.wait(io, &long.item, deadlineIn(io, 5_000));
+    try executor.wait(io, &timing.item, deadlineIn(io, 5_000));
+    executor.stop(io);
+    worker.await(io);
+    try std.testing.expect(timing.seen_ns >= 30 * std.time.ns_per_ms);
 }

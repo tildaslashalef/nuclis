@@ -60,6 +60,8 @@ pub const Channel = struct {
 pub const header_limit = 256;
 /// A call body reports its size each time it grows past a multiple of this.
 pub const progress_step = 256;
+/// The most control tokens one profile keeps out of the text.
+pub const max_hidden = 12;
 
 pub const Markers = struct {
     open: u32,
@@ -71,6 +73,15 @@ pub const Markers = struct {
     /// Present for the message-header grammar, which replaces the bracket
     /// grammar above (`open`/`close`/`tool` are then unused).
     channel: ?Channel = null,
+    /// Control tokens that are never text, wherever the model writes them;
+    /// the first `hidden_count` are set. A token above that has a place in
+    /// the grammar keeps it there.
+    hidden: [max_hidden]u32 = undefined,
+    hidden_count: usize = 0,
+
+    pub fn isHidden(self: *const Markers, token: u32) bool {
+        return std.mem.indexOfScalar(u32, self.hidden[0..self.hidden_count], token) != null;
+    }
 };
 
 /// Whether a completion of `prompt` starts inside the reasoning channel: the
@@ -232,6 +243,17 @@ pub const Decoder = struct {
             self.header = self.markers.open_suffix.len != 0;
             self.matched = 0;
             self.trim_answer = false;
+            return;
+        }
+        // A control token the grammar has no place for here. Inside a channel
+        // header it voids the channel: nothing was opened.
+        if (self.markers.isHidden(token)) {
+            self.initial = false;
+            if (self.header) {
+                self.header = false;
+                self.matched = 0;
+                self.thinking = false;
+            }
             return;
         }
         self.initial = false;
@@ -452,6 +474,40 @@ test "Gemma's ordinary channel header suffix can split at every byte" {
         try d.feed(3, "reply", &r);
         try d.finish(&r);
         try std.testing.expectEqualStrings("plan", r.thinking.written());
+        try std.testing.expectEqualStrings("reply", r.answer.written());
+    }
+}
+
+test "a control token with no place in the grammar is never text" {
+    var hidden: [max_hidden]u32 = undefined;
+    hidden[0] = 9;
+    const markers: Markers = .{ .open = 1, .close = 2, .open_suffix = "thought\n", .hidden = hidden, .hidden_count = 1 };
+    // Between answer text, the token is dropped.
+    {
+        var r = Recorder.init(std.testing.allocator);
+        defer r.deinit();
+        var d = Decoder.init(std.testing.allocator, markers, false);
+        defer d.deinit();
+        try d.feed(3, "a", &r);
+        try d.feed(9, "<tool_call|>", &r);
+        try d.feed(3, "b", &r);
+        try d.finish(&r);
+        try std.testing.expectEqualStrings("ab", r.answer.written());
+        try std.testing.expectEqualStrings("", r.thinking.written());
+    }
+    // Inside the channel's header, it voids the channel: what follows is the
+    // answer, and neither the header nor the token is reasoning.
+    {
+        var r = Recorder.init(std.testing.allocator);
+        defer r.deinit();
+        var d = Decoder.init(std.testing.allocator, markers, false);
+        defer d.deinit();
+        try d.feed(1, "<|channel>", &r);
+        try d.feed(3, "thought", &r);
+        try d.feed(9, "<tool_call|>", &r);
+        try d.feed(3, "reply", &r);
+        try d.finish(&r);
+        try std.testing.expectEqualStrings("", r.thinking.written());
         try std.testing.expectEqualStrings("reply", r.answer.written());
     }
 }

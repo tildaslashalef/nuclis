@@ -940,6 +940,7 @@ pub const Plan = struct {
                 i += sp.count;
                 frow += sp.count;
                 si += 1;
+                if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .prefill, .position = i, .target = tokens.len });
             } else {
                 const run_end = if (si < spans.len) spans[si].start else tokens.len;
                 while (i < run_end) {
@@ -947,6 +948,7 @@ pub const Plan = struct {
                     const last = i + c == tokens.len;
                     try self.prefillChunk(tokens[i..][0..c], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, null, observer);
                     i += c;
+                    if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .prefill, .position = i, .target = tokens.len });
                 }
             }
         }

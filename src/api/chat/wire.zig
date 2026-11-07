@@ -58,6 +58,9 @@ pub const Request = struct {
     /// `web_fetch`, `web_context`);
     /// their definitions are in `tools`, and the server runs their calls.
     web: Hosted = .{},
+    /// `nuclis_web_text`: each finished hosted call reports what the model
+    /// read, for a client debugging an answer.
+    web_text: bool = false,
 };
 
 /// Whether the server answers a call named `name` itself rather than
@@ -236,6 +239,11 @@ pub fn parseWith(arena: Allocator, body: []const u8, problem: *Problem, options:
         .null => {},
         .bool => |b| request.stream = b,
         else => return r.invalid("stream", "\"stream\" must be a boolean", .{}),
+    };
+    if (o.get("nuclis_web_text")) |v| switch (v) {
+        .null => {},
+        .bool => |b| request.web_text = b,
+        else => return r.invalid("nuclis_web_text", "\"nuclis_web_text\" must be a boolean", .{}),
     };
     if (o.get("stream_options")) |v| if (v == .object) if (v.object.get("include_usage")) |u| {
         request.include_usage = u == .bool and u.bool;
@@ -544,6 +552,8 @@ pub const Collector = struct {
         summary: []const u8 = "",
         is_error: bool = false,
         status: Status = .finished,
+        /// What the model read, when the request asked (`nuclis_web_text`).
+        text: ?[]const u8 = null,
 
         pub const Status = enum { started, finished };
     };
@@ -561,7 +571,9 @@ pub const Collector = struct {
     }
 };
 
-pub const FinishReason = enum { stop, length, tool_calls };
+/// OpenAI's reasons, and `no_answer`: hosted calls ran and the model ended
+/// its turn without a word, twice.
+pub const FinishReason = enum { stop, length, tool_calls, no_answer };
 
 pub fn finishReason(stop: inference.engine.StopReason, calls: usize) FinishReason {
     if (calls > 0) return .tool_calls;
@@ -676,6 +688,10 @@ fn writeWebCall(s: *std.json.Stringify, arena: Allocator, call: Collector.WebCal
     try s.write(try validUtf8(arena, call.summary));
     try s.objectField("is_error");
     try s.write(call.is_error);
+    if (call.text) |text| {
+        try s.objectField("text");
+        try s.write(try validUtf8(arena, text));
+    }
     try s.endObject();
 }
 
@@ -1144,6 +1160,7 @@ test "hosted calls are reported in nuclis_web_calls, whole and streamed" {
     try std.testing.expect(message.get("tool_calls") == null);
 
     try std.testing.expect(call.get("status") == null);
+    try std.testing.expect(call.get("text") == null);
 
     var chunks: ChunkWriter = .{ .id = "chatcmpl-x", .created = 1, .model = "m", .include_usage = false };
     const Streamed = struct {
@@ -1168,6 +1185,22 @@ test "hosted calls are reported in nuclis_web_calls, whole and streamed" {
         try std.testing.expectEqualStrings("finished", finished.get("status").?.string);
         try std.testing.expect(finished.get("is_error").?.bool);
     }
+    // What the model read, only on a finished call that carries it.
+    const read = try Streamed.of(arena, &chunks, .{ .name = "web_search", .arguments = "{}", .summary = "1 result", .text = "1. Title (2026-09-01)" });
+    try std.testing.expectEqualStrings("1. Title (2026-09-01)", read.get("text").?.string);
+}
+
+test "nuclis_web_text asks for what the model read, and is a boolean" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var problem: Problem = .{};
+    const on = try parse(arena, "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"nuclis_web_text\":true}", &problem);
+    try std.testing.expect(on.web_text);
+    const off = try parse(arena, "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", &problem);
+    try std.testing.expect(!off.web_text);
+    try std.testing.expectError(error.Refused, parse(arena, "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"nuclis_web_text\":1}", &problem));
+    try std.testing.expectEqualStrings("nuclis_web_text", problem.param.?);
 }
 
 test "efforts by OpenAI's names and the profile's" {

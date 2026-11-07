@@ -495,6 +495,7 @@ GPU at a time, decisions included.
 | `max_completion_tokens`, `max_tokens` | the output budget, reasoning included; absent: the model's `max_tokens` setting. Larger values are capped at 16,384 and at what the window leaves after the prompt |
 | `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repetition_penalty` | each overrides one option of the model's sampling for the effort; `temperature: 0` is greedy |
 | `seed` | the sampler's seed for this request |
+| `nuclis_web_text` | `true`: each finished entry of `nuclis_web_calls` adds what the model read ([hosted web tools](#hosted-web-tools)) |
 | `stream`, `stream_options.include_usage` | server-sent events instead of one body ([streaming](#streaming)); with `include_usage`, a last chunk carries the usage |
 
 Accepted and ignored, because they change nothing here: `user`,
@@ -548,7 +549,8 @@ change the result and cannot be honoured:
 `message.tool_calls` the calls, each with a fresh `call_` id, its
 `arguments` a JSON object as text. `finish_reason` is `tool_calls` when
 the turn made calls, `length` when it reached the output budget or the
-window, `stop` otherwise. `usage.prompt_tokens` is the whole rendered
+window, `no_answer` when [hosted calls](#hosted-web-tools) ran and the model
+ended its turn without a word, `stop` otherwise. `usage.prompt_tokens` is the whole rendered
 conversation, `completion_tokens` everything generated (reasoning
 included, `reasoning_tokens` of it).
 
@@ -746,15 +748,24 @@ way rather than rewriting `nuclis.json`.
   outcome yet), then `finished` with the `summary` and `is_error`. A
   client can say it is searching from the first (a search takes a second
   or more); one that reads only finished entries skips `started`, and an
-  entry without `status` (not streamed) is finished.
+  entry without `status` (not streamed) is finished. With
+  `"nuclis_web_text": true` on the request, each finished entry adds
+  `text`: what the model read, its titles, URLs, published dates, and
+  snippets as rendered, or the page. It is for debugging an answer; the
+  request log never holds it.
 
   ```json
   {"delta": {"nuclis_web_calls": [{"index": 0, "status": "started", "name": "web_search", "arguments": "{\"query\":\"PEP 8 line length\"}"}]}}
   {"delta": {"nuclis_web_calls": [{"index": 0, "status": "finished", "name": "web_search", "arguments": "{\"query\":\"PEP 8 line length\"}", "summary": "8 results", "is_error": false}]}}
   ```
+- A round after hosted calls that ends the turn with no text and no call
+  runs once more on the same prompt (a `seed` moves on by one), which
+  reuses the conversation before the turn and reads the results again.
+  Still empty, the `finish_reason` is `no_answer`. Control tokens never reach `content` or
+  `reasoning_content`, wherever the model writes them.
 - The usage counts every completion; the log line adds `2 web calls in 3
-  rounds`, and `1 web exchange put back` when earlier hosted rounds were
-  restored. The model's state carries over between completions, so a round
+  rounds`, `1 web exchange put back` when earlier hosted rounds were
+  restored, and `empty answer retried`. The model's state carries over between completions, so a round
   reuses the conversation before it (measured: 1,257 of 2,084 prompt tokens
   over three rounds, Saluki, against the stub, 2026-10-16).
 - Text the model writes before a call (Muon's "Let me check.") is rendered
@@ -1055,14 +1066,18 @@ second later.
 Speech runs on the one GPU worker as short items: each run makes one
 chunk, so a chunk runs between the steps of a chat generation (and of
 its hosted tool waits) and speech never waits for a generation to end.
-Between a generation's steps speech takes only what playback needs: one
-frame a run (about 37 ms on the 1.7B), and none while the audio sent is
-a second or more ahead of its playback, counted from the request's
-first byte at real time. So beside a generation a request is made at
-playback speed with a second in hand, and the generation keeps the rest
-of the GPU (on the 1.7B about half its rate, on the 0.6B 60 %: § The
-voice loop below); alone, with nothing waiting, it runs at full speed in
-chunks of four. Opening a voice is the exception: a request whose voice
+Between a generation's steps speech takes only what playback needs: a
+run lasts at most as long as the step before it, at least one frame
+(about 37 ms on the 1.7B), and stops once the audio sent is ahead of its
+playback, counted from the request's first byte at real time, by a
+second or by 1.5 steps, whichever is more. After a generated token
+that is one frame; after a prefill chunk, hundreds of milliseconds of
+frames in chunks of four, so the voice outlasts the next chunk. So
+beside a generation a request is made at playback speed with a second
+in hand, and the generation keeps the rest of the GPU (on the 1.7B about
+half its rate, on the 0.6B 60 %: § The voice loop below; a prefill
+beside it the same, § Speech beside a prefill); alone, with nothing
+waiting, it runs at full speed in chunks of four. Opening a voice is the exception: a request whose voice
 is not open waits for the running generation to end, since opening may
 close the language model it runs on.
 
@@ -1650,7 +1665,7 @@ What each route adds to its `request.end`:
 
 | Route | Fields |
 | --- | --- |
-| `POST /v1/chat/completions` | `model`, `effort`, `stream`, `prompt_tokens`, `cached_tokens`, `completion_tokens`, `finish_reason` (`stop`, `length`, `tool_calls`, `cancelled`), `web_calls`, `web_rounds`, `web_restored` |
+| `POST /v1/chat/completions` | `model`, `effort`, `stream`, `prompt_tokens`, `cached_tokens`, `completion_tokens`, `finish_reason` (`stop`, `length`, `tool_calls`, `no_answer`, `cancelled`), `web_calls`, `web_rounds`, `web_restored` |
 | `POST /v1/decisions`, `POST /v1/systemone` | `model`, `states`, `questions`, `input_tokens`, `batch_requests` (the requests that shared the pass), `open_ms` (when this request opened the model) |
 | `POST /v1/embeddings` | `model`, `inputs`, `input_tokens`, `passes`, `batch_requests`, `open_ms` |
 | `POST /v1/audio/speech` | `model`, `voice` (none for VoiceDesign), `voice_kind` (`speakers`, `clone`, `design`), `voice_ready_ms` (a saved voice read back, or encoded on its first use with the model), `format`, `stream_format`, `frames`, `seed`, `audio_s`, `first_audio_ms`, `open_ms`, `finish_reason` (`eos`, `length`, `cancelled`); for Drama 3 also `sentences`, `redraws` (silent starts drawn again, each with the next seed), `silence_stops` (sentences its silence stop ended), `prefill_ms`, `prefix_restored` and `prefix_prefilled` (the takes whose voice prefix was kept or prefilled), `context_id` (the response's `x-speech-context`) and `context` (`hit`, `missing`, `expired`, `other_voice`, when the request named one) |
@@ -1932,3 +1947,32 @@ transcribe` does on the same file: a clip that ends within 100 ms of its
 last word leaves the encoder no right context, which a turn that ends in
 silence always has. The first speech request after the server starts is
 about 90 ms slower than the next (158 against 71 ms to the first byte).
+### Speech beside a prefill, 2026-11-07
+
+Apple M4 Pro (48 GB), ReleaseSafe, Zig 0.17.0, on the branch after
+`8960c8a`, `scripts/bench/speech-beside-chat.py`: a fresh `nuclis serve
+--pin <brain> --pin qwen3-tts-1.7b-customvoice --memory 40`; a chat with
+nothing cached, and 0.3 s later one sentence of 11.0 s of audio (`sohee`,
+seed 0) read as a stream; playback modelled from the first byte, a stall
+any moment it has nothing. Before is one frame a run (4 runs of each
+effort); after, the pace in § Scheduling (8 runs of each at 2,700 tokens,
+4 at 4,500, `none` only).
+
+| Prompt | Before: speech, stalls, silent, worst | After: speech, stalls | First token alone, before, after |
+| --- | --- | --- | --- |
+| E4B, 2,700 | 0.94–0.99×, 11, 5.1–5.5 s, 0.63 s | 0.91–0.93×, none in 16 runs | 6.2–6.5, 6.6–7.0, 10.7–13.9 s |
+| 26B-A4B, 2,700 | 1.03–1.31×, 6–7, 5.8–7.9 s, 2.0 s | 0.79–0.93×, none in 14 of 16 (0.04 s, 0.37 s) | 6.9–7.4, 7.8–10.6, 12.0–14.1 s |
+| E4B, 4,500 | 1.37–1.39×, 18, 9.7–9.8 s, 0.69 s | 0.91–0.97×, none in 3 of 4 (0.19 s) | 10.9–11.1, 11.7–13.6, 15.7–16.8 s |
+| 26B-A4B, 4,500 | not measured | 0.81–0.93×, none in 4 | 12.8–13.0, not measured, 18.1–21.2 s |
+
+Speech alone is unchanged (0.41×), as is speech beside a cached prompt
+(0.41–0.42×, no stall), and a chat's generation beside speech (24.4–25.5
+tokens/s, `voice-loop.py beside`). Each of the three stalls left is in a
+run whose first token came a second or more late, a step longer than the
+lead; what made those steps long is not known.
+
+The prefill pays with what speech needs, about 46 % of the GPU while it
+speaks, whichever way it is sliced: about 5 s here, for 11 s of speech,
+and less for a shorter sentence. Prefill chunks keep their size, since a
+shorter one would lose batching and speech would need the same share.
+

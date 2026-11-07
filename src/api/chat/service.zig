@@ -111,12 +111,12 @@ pub const Service = struct {
             .gone => return refuse(arena, .bad_request, "cancelled", "the client closed the connection", null),
         }
         job.logTo(request.fields);
-        const ran = switch (job.outcome) {
+        switch (job.outcome) {
             .pending => unreachable,
             .failed => |e| return .fromError(arena, e),
-            .done => |d| d,
-        };
-        return respond(arena, io, job, ran) catch refuse(arena, .internal_server_error, "internal", "out of memory", null);
+            .done => {},
+        }
+        return respond(arena, io, job) catch refuse(arena, .internal_server_error, "internal", "out of memory", null);
     }
 
     fn list(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, out: *std.ArrayList(models.Entry)) anyerror!void {
@@ -373,6 +373,8 @@ const Job = struct {
     /// For the request log, written by the worker with the note.
     effort: []const u8 = "",
     finish_reason: []const u8 = "",
+    /// The response's finish, once the worker is done.
+    finish: wire.FinishReason = .stop,
     web_rounds: usize = 0,
     /// The request's log fields, filled once the worker is done.
     fields: request_log.Fields = .{},
@@ -390,6 +392,8 @@ const Job = struct {
     round_calls: std.ArrayList(RoundCall) = .empty,
     /// The round dropped a call that was cut off or did not parse.
     round_cut: bool = false,
+    /// An empty round after hosted calls already ran once more.
+    retried: bool = false,
     client_calls: usize = 0,
     usage: wire.Usage = .{ .prompt = 0, .cached = 0, .completion = 0, .reasoning = 0 },
     web_calls: usize = 0,
@@ -450,6 +454,13 @@ const Job = struct {
             };
             const r = usageOf(ran);
             self.usage = .{ .prompt = self.usage.prompt + r.prompt, .cached = self.usage.cached + r.cached, .completion = self.usage.completion + r.completion, .reasoning = self.usage.reasoning + r.reasoning };
+            if (self.unanswered(ran) and !self.retried) {
+                // Same prompt: the session keeps what it can of the round.
+                self.retried = true;
+                if (self.request.seed) |seed| self.request.seed = seed +% 1;
+                round -= 1;
+                continue;
+            }
             if (ran.reply.outcome.stop != .eos or self.hosted.items.len == 0 or round == max_web_rounds) break ran;
             const results = self.runHosted() catch {
                 self.fail(.init(.internal_server_error, "internal", "out of memory"));
@@ -480,14 +491,15 @@ const Job = struct {
         self.outcome = .{ .done = ran };
         // Only a cache: a request whose exchange cannot be kept still answers.
         if (self.web_calls > 0 and outcome.stop != .cancelled) self.record() catch {};
-        const finish = wire.finishReason(outcome.stop, self.client_calls);
+        const finish: wire.FinishReason = if (self.unanswered(ran)) .no_answer else wire.finishReason(outcome.stop, self.client_calls);
+        self.finish = finish;
         const usage = self.usage;
         if (self.pipe != null and outcome.stop != .cancelled) self.emit(ChunkFinish{ .finish = finish, .usage = usage });
         const effort_name = if (ran.minimal and ran.effort == .low) "minimal" else @tagName(ran.effort);
         self.effort = effort_name;
         self.finish_reason = if (outcome.stop == .cancelled) "cancelled" else @tagName(finish);
         self.web_rounds = round;
-        self.note = self.arena.print("{s} {s}: {d} prompt ({d} reused), {d} generated, {s}{s}{s}{s}", .{
+        self.note = self.arena.print("{s} {s}: {d} prompt ({d} reused), {d} generated, {s}{s}{s}{s}{s}", .{
             self.name,
             effort_name,
             usage.prompt,
@@ -497,8 +509,22 @@ const Job = struct {
             if (self.pipe != null) ", streamed" else "",
             if (self.web_calls > 0) self.arena.print(", {d} web call{s} in {d} round{s}", .{ self.web_calls, if (self.web_calls == 1) "" else "s", round, if (round == 1) "" else "s" }) catch "" else "",
             if (self.spliced > 0) self.arena.print(", {d} web exchange{s} put back", .{ self.spliced, if (self.spliced == 1) "" else "s" }) catch "" else "",
+            if (self.retried) ", empty answer retried" else "",
         }) catch "";
         return .done;
+    }
+
+    /// Whether this round ended the model's turn with nothing after the
+    /// hosted calls it asked for.
+    fn unanswered(self: *const Job, ran: language_mod.Language.Ran) bool {
+        return emptyAfterHosted(.{
+            .stop = ran.reply.outcome.stop,
+            .web_calls = self.web_calls,
+            .hosted = self.hosted.items.len,
+            .client_calls = self.client_calls,
+            .cut = self.round_cut,
+            .answer = self.round_answer.items,
+        });
     }
 
     /// The conversation with the stashed exchanges its assistant messages
@@ -562,6 +588,7 @@ const Job = struct {
                 .arguments = call.arguments,
                 .summary = if (rendered.is_error) rendered.text else rendered.summary orelse "",
                 .is_error = rendered.is_error,
+                .text = if (self.request.web_text) rendered.text else null,
             };
             if (self.pipe != null) self.emit(report) else try self.collected.web_calls.append(self.arena, report);
             self.web_calls += 1;
@@ -762,6 +789,22 @@ const Job = struct {
     }
 };
 
+const Round = struct {
+    stop: inference.engine.StopReason,
+    web_calls: usize,
+    hosted: usize,
+    client_calls: usize,
+    cut: bool,
+    answer: []const u8,
+};
+
+/// A round that left the client with no answer after hosted calls ran: the
+/// model stopped of its own accord, with no text and no call to act on.
+fn emptyAfterHosted(round: Round) bool {
+    return round.stop == .eos and round.web_calls > 0 and round.hosted == 0 and round.client_calls == 0 and !round.cut and
+        std.mem.trim(u8, round.answer, " \t\r\n").len == 0;
+}
+
 /// A request's last round, as `keptExchange` reads it.
 const LastRound = struct {
     calls: []const Job.RoundCall,
@@ -875,8 +918,7 @@ const Opening = struct {
     }
 };
 
-fn respond(arena: std.mem.Allocator, io: std.Io, job: *const Job, ran: language_mod.Language.Ran) !http.Response {
-    const finish = wire.finishReason(ran.reply.outcome.stop, job.client_calls);
+fn respond(arena: std.mem.Allocator, io: std.Io, job: *const Job) !http.Response {
     const call_ids = try arena.alloc([]const u8, job.collected.calls.items.len);
     for (call_ids) |*id| id.* = try wire.newId(arena, io, "call_");
     var out: std.Io.Writer.Allocating = .init(arena);
@@ -884,7 +926,7 @@ fn respond(arena: std.mem.Allocator, io: std.Io, job: *const Job, ran: language_
         .id = job.id,
         .created = job.created,
         .model = job.name,
-        .finish = finish,
+        .finish = job.finish,
         .usage = job.usage,
         .call_ids = call_ids,
     });
@@ -973,6 +1015,29 @@ test "a file the catalogue pins is found by its place in the models directory" {
     try std.testing.expect(pinned(arena, "/r", companion) == null);
     try std.testing.expect(pinned(arena, "/r", "/elsewhere/x.gguf") == null);
     try std.testing.expect(pinned(arena, "/r", "/r/models/owner/repo/unknown.gguf") == null);
+}
+
+test "an empty round counts only after hosted calls, with nothing else to act on" {
+    const empty: Round = .{ .stop = .eos, .web_calls = 1, .hosted = 0, .client_calls = 0, .cut = false, .answer = " \n" };
+    try std.testing.expect(emptyAfterHosted(empty));
+    var other = empty;
+    other.web_calls = 0;
+    try std.testing.expect(!emptyAfterHosted(other));
+    other = empty;
+    other.answer = "It rained.";
+    try std.testing.expect(!emptyAfterHosted(other));
+    other = empty;
+    other.hosted = 1;
+    try std.testing.expect(!emptyAfterHosted(other));
+    other = empty;
+    other.client_calls = 1;
+    try std.testing.expect(!emptyAfterHosted(other));
+    other = empty;
+    other.cut = true;
+    try std.testing.expect(!emptyAfterHosted(other));
+    other = empty;
+    other.stop = .token_budget;
+    try std.testing.expect(!emptyAfterHosted(other));
 }
 
 test "a hosted round extends the conversation with its calls and results, numbered past the client's" {
