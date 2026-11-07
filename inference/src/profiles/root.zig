@@ -122,9 +122,6 @@ pub const StreamMarkers = struct {
     /// The message-header grammar's control texts (`stream.Channel`);
     /// `tool_parse` then reads a tool body. Replaces the bracket grammar.
     channel: ?struct { start: []const u8, message: []const u8, eom: []const u8 } = null,
-    /// Control texts a reader never sees, whatever the model does with them
-    /// (`stream.Markers.hidden`); one the artifact does not define is skipped.
-    hidden: []const []const u8 = &.{},
 };
 
 /// The profiles the tree implements. Each tag names a module with the same
@@ -149,6 +146,7 @@ pub const Profile = enum {
                     .open = vocab.tokenId(m.open) orelse return error.MissingReasoningToken,
                     .close = vocab.tokenId(m.close) orelse return error.MissingReasoningToken,
                     .open_suffix = m.open_suffix,
+                    .tokens = vocab.tokens,
                 };
                 if (m.tool_open) |open_text| {
                     markers.tool = .{
@@ -166,11 +164,6 @@ pub const Profile = enum {
                         .parse = m.tool_parse,
                     };
                 }
-                comptime std.debug.assert(m.hidden.len <= stream.max_hidden);
-                for (m.hidden) |text| if (vocab.tokenId(text)) |id| {
-                    markers.hidden[markers.hidden_count] = id;
-                    markers.hidden_count += 1;
-                };
                 break :blk stream.Decoder.init(alloc, markers, effort != .off and stream.opensInReasoning(markers, prompt));
             },
         };

@@ -761,8 +761,10 @@ way rather than rewriting `nuclis.json`.
 - A round after hosted calls that ends the turn with no text and no call
   runs once more on the same prompt (a `seed` moves on by one), which
   reuses the conversation before the turn and reads the results again.
-  Still empty, the `finish_reason` is `no_answer`. Control tokens never reach `content` or
-  `reasoning_content`, wherever the model writes them.
+  Still empty, the `finish_reason` is `no_answer`. A token the vocabulary marks as anything
+  but text never reaches `content` or `reasoning_content`, wherever the
+  model writes it; the exception is a Qwen3.8 call that does not parse,
+  released as the model wrote it.
 - The usage counts every completion; the log line adds `2 web calls in 3
   rounds`, `1 web exchange put back` when earlier hosted rounds were
   restored, and `empty answer retried`. The model's state carries over between completions, so a round

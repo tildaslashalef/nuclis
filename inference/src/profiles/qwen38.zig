@@ -60,7 +60,6 @@ pub const stream_markers: profiles.StreamMarkers = .{
     .tool_open = "<tool_call>",
     .tool_close = "</tool_call>",
     .tool_parse = parseTool,
-    .hidden = &.{ "<|im_start|>", "<think>", "</tool_call>", "<tool_response>", "</tool_response>" },
 };
 
 /// The tools-block header and its format explanation, and the framing around

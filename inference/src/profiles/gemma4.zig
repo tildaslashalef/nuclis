@@ -74,7 +74,6 @@ pub const stream_markers: profiles.StreamMarkers = .{
     // Its brackets are control tokens: a call that does not parse is no
     // answer text either.
     .tool_unparsed = .cut,
-    .hidden = &(markers ++ [_][]const u8{"<|turn>"}),
 };
 
 /// The DSL's string delimiter: strings are literal between two of these and
