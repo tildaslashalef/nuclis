@@ -50,7 +50,7 @@ the transcript will not survive.
 
 ## 1. Facts with provenance (`docs/models/<family>.md`)
 
-Read the file, not the model card. `scripts/gguf-inventory.py <file>
+Read the file, not the model card. `scripts/fixtures/gguf-inventory.py <file>
 --out inference/src/models/fixtures/<family>.json` is an independent
 header reader (standard library only): every metadata key, arrays up to
 64 elements, every tensor's name, shape, and encoding, and the chat
@@ -147,7 +147,7 @@ source globs in `paths`; [development.md § Gates](../development.md#gates)):
 ```sh
 nuclis generate --backend cpu --model <file> --prompt-tokens <ids.json> \
   --max-tokens 1 --ctx-size 8 --temperature 0 --logits <dir>/logits.f32 --trace-dir <dir>
-python3 scripts/compare-generation.py <dir> tests/fixtures/<family>-… \
+python3 scripts/gate/compare-generation.py <dir> tests/fixtures/<family>-… \
   --positions 3 --embedding 3840 --layers 48 --vocab 262144
 ```
 
@@ -193,7 +193,7 @@ Extract the template (`gguf-inventory.py --max-string 30000`, then the
 the tree) and read it for the subset the playground renders: system and
 developer, user, assistant with separate reasoning, the thinking control.
 Then capture before implementing: start the reference server on the file
-and run `scripts/tokenizer-fixtures.py --profile <family>` (add the
+and run `scripts/fixtures/tokenizer-fixtures.py --profile <family>` (add the
 profile's digests, efforts, and template keyword arguments to its
 `PROFILES` table). The fixture shows what the reference actually sends
 the model, which is not always what the template or the card says: for
@@ -225,13 +225,13 @@ the reference's ids.
   same name shadows it.
 - `nuclis --help` names the profiles and their defaults; update it.
 - The acceptance record: the reference harness on the file
-  (`scripts/reference-baseline.py --family <family> --output-dir
+  (`scripts/bench/reference-baseline.py --family <family> --output-dir
   .reference/<family>-<date> --prompt-lengths
   512,4096,16384,32639` against the server started with the
   [reference recipe](../benchmarks/llama-cpp.md#run-the-workload) at 32K),
   its token arrays committed under `tests/fixtures/run-<date>-<family>/`,
   a `docs/benchmarks/reference-<date>-<family>.json` summary, then
-  `scripts/nuclis-baseline.py --run run-<date>-<family>
+  `scripts/bench/nuclis-baseline.py --run run-<date>-<family>
   --reference-records reference-<date>-<family>.json` (a `make
   baseline-<family>` target) and the table in
   [benchmarks](../benchmarks/README.md#acceptance-runs) with hardware, build, artifact,

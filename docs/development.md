@@ -95,16 +95,16 @@ Facts every unit depends on; keep them here, not in the tracker.
   since then nuclis is its own reference and no new oracle is built.
   EmbeddingGemma 2's semantic oracle is sentence-transformers 6.1 in a venv
   at `.reference/venv-embed` (the recipe heads
-  `scripts/embedding-reference.py`), with Google's checkpoint in float32.
+  `scripts/oracle/embedding-reference.py`), with Google's checkpoint in float32.
   The decision model's oracle is the `laya` 0.3.20 Python package in a venv
   at `.reference/laya-venv` (Python 3.12 through `uv`; the recipe
-  heads `scripts/laya-reference.py`; `--subfolder multilingual` for the
+  heads `scripts/oracle/laya-reference.py`; `--subfolder multilingual` for the
   multilingual set), run on the CPU in F32 against the pulled checkpoint
   from a staged copy, because the package may rewrite
   `tokenizer_config.json` in place.
   clef-flash's oracle is Cloudflare's `joint_schema_model.py` at the
   pinned commit in a venv at `.reference/clef-venv` (torch 2.11.0,
-  transformers 5.10.2; the recipe heads `scripts/clef-reference.py`),
+  transformers 5.10.2; the recipe heads `scripts/oracle/clef-reference.py`),
   which never loads the backbone: `sequence` mode writes the reference's
   ids and spans, `head` mode runs the head on the rows `clef-check run
   --dump` writes from nuclis's backbone.
@@ -131,7 +131,7 @@ Facts every unit depends on; keep them here, not in the tracker.
 ## Gates
 
 Every model-specific numerical check is a *gate* in [`gates.json`](../gates.json),
-run by `scripts/gates.py`; bounds, model paths, and evidence anchors live
+run by `scripts/gate/gates.py`; bounds, model paths, and evidence anchors live
 there and nowhere else. A gate is one command (an argv with the
 placeholders `{nuclis}`, `{nuclis-cpu}`, `{zig-metal}`, `{zig-cpu}`,
 `{model}`, `{mtp}`, `{baseline}`, `{mmproj}`, `{trace}`) and a comparator: `exit` (the command's
@@ -139,7 +139,7 @@ status decides: the generation checks, the speculative checks, the Gemma
 and Muse draft checks that compare their own rows, `draft-stats`, the
 vocabulary checks, the perplexity checks, the cross-encoding check against
 its `baseline` file) or `trace` (the `{trace}` directory goes through
-`scripts/compare-generation.py` against the gate's `bounds`). A gate whose
+`scripts/gate/compare-generation.py` against the gate's `bounds`). A gate whose
 model files (`model`, `mtp`, `baseline`, or the `mmproj` its command names) are not on
 this machine is skipped, not failed: `SKIP <gate> no model: <path>`, a
 separate count in the summary, `skipped` in `--json`. So is a gate whose
@@ -209,7 +209,7 @@ verify` / `make verify-release` / `make verify-long` / `make verify-cpu`
 NAME=<name or glob>` (`gemma4-qat-trace-f16`, `'muse-*'`; `ARGS=--dry-run`
 prints the commands), `make gates-list`, and `make gates-validate` (part of
 `make check`: the manifest's schema and the runner's self-test, no model).
-`python3 scripts/gates.py --json` returns the results with the git
+`python3 scripts/gate/gates.py --json` returns the results with the git
 revision for a log entry, each with its output lines stamped by time
 since launch (`--timeline` prints them); the check tools behind
 `{zig-*}` are compiled first (`zig build check-tools`), so the builds'
@@ -228,7 +228,7 @@ their references are pinned under `tests/fixtures/perplexity/`
 
 ### What each gate protects
 
-Measured 2026-09-29 at `acce06a`, before the fast tier (M4 Pro, `python3 scripts/gates.py
+Measured 2026-09-29 at `acce06a`, before the fast tier (M4 Pro, `python3 scripts/gate/gates.py
 --tier verify --json`, whose per-gate `timeline` stamps every output
 line): the Metal tier took 704 s after 9 s of builds. Loading is not
 the cost: a model's first gate pays the cold page cache (2–8 s), every
@@ -290,7 +290,7 @@ the bring-up thresholds (max abs 2e-3, relative RMS 1e-4).
 ## The record
 
 Every benchmark workload is a named entry in [`workloads.json`](../workloads.json),
-run by `scripts/workloads.py` (`make workload NAME=<name or glob>`,
+run by `scripts/bench/workloads.py` (`make workload NAME=<name or glob>`,
 `make workloads-list`, `make workloads-validate` inside `make check`), and
 its model path is one lookup into `gates.json`'s `models`. A `bench`
 workload is one `nuclis bench --json` invocation: the prompt array
@@ -305,7 +305,7 @@ off, the no-drafter baseline. Reports are saved as
 git revision, `<n>` a sequence per revision); nothing under `.zig-cache`
 is committed, so a record's JSON is copied to `docs/benchmarks/` when the
 document cites it. An `acceptance` workload delegates to
-`scripts/nuclis-baseline.py` (the four-length arrays, `/usr/bin/time`,
+`scripts/bench/nuclis-baseline.py` (the four-length arrays, `/usr/bin/time`,
 hardware, the reference rows) and writes the dated record under
 `docs/benchmarks/` as before. The workloads: `qwen38/{prose512,
 prose4096, code}` and their `-draft` pairs, `qwen38/spec/*` (the twelve
@@ -314,7 +314,7 @@ configurations of the speculative record, pair plus baseline each),
 `gemma4-26b-a4b/prose512`, `muse/prose512{,-draft}`, `bonsai/prose512`,
 and one `<entry>/acceptance` per pinned file.
 
-`scripts/bench-report.py` turns saved reports into the documents' tables:
+`scripts/bench/bench-report.py` turns saved reports into the documents' tables:
 `--table FILE...` prints one row per report, the acceptance form (prefill
 and decode with sample standard deviation, first token, session, load) for
 plain runs and the record form (accepted and proposed per batch, the
@@ -361,7 +361,7 @@ about a minute per context instead of an eleven-minute 32K prefill:
   `./zig-out/bin/nuclis` (kernels embedded) with its revision and a dirty
   flag under `.zig-cache/speed/base/`. `make speed ARGS='--contexts
   512,4096,16384,32639 --verify-rows 1,4,8 --model qwen38'`
-  (`scripts/speed.py`) builds the tree and, per context and mode, runs
+  (`scripts/bench/speed.py`) builds the tree and, per context and mode, runs
   base and candidate `bench` processes in alternating order for
   `--pairs` (5) pairs of one run each (no warm-up: with the weights in the
   page cache a first run decodes at its second's rate), on the family's
@@ -378,7 +378,7 @@ about a minute per context instead of an eleven-minute 32K prefill:
 
 - **The speculative matrix.** `make spec-matrix ARGS='--model qwen38
   --contexts code,512,4096,16384,32639 --sampling greedy,instruct --drafts
-  2-7'` (`scripts/spec-matrix.py`) runs real speculation per cell (context,
+  2-7'` (`scripts/bench/spec-matrix.py`) runs real speculation per cell (context,
   sampling, draft length, and `--p-min` through `bench --draft-p-min`): one
   `bench --speculative on` process of three off/on pairs, on the same saved
   prefixes. It prints E, C and its parts, C / 50E, and the median pair
@@ -459,7 +459,7 @@ skip its concurrency layer.
   `Allocator.dupeZ` and `fmt.bufPrintZ` (→ the `Sentinel` variants),
   `EnumSet.initEmpty`, `ascii.indexOfIgnoreCase`, and `zig build
   --global-cache-dir` (→ `ZIG_GLOBAL_CACHE_DIR`, set by the Makefile and
-  `scripts/gates.py`).
+  `scripts/gate/gates.py`).
 - **Deprecated in 0.17, migrated:** `fmt.allocPrint` (→ `Allocator.print`,
   157 sites), `@intFromEnum`/`@enumFromInt` (→ `@backingInt` /
   `@fromBackingInt`, rewritten by `zig fmt`), `DynamicBitSetUnmanaged`
@@ -509,7 +509,7 @@ for a user is in [guide/](guide/), how its terminal works in
 
 ### Looking at the agent without a person at the keyboard
 
-`make shot ARGS='<steps>'` (`scripts/tui-shot.py`) starts `nuclis agent`
+`make shot ARGS='<steps>'` (`scripts/app/tui-shot.py`) starts `nuclis agent`
 in a detached tmux session (`tmux -L nuclis`, 160×45 by default, the status
 bar off so the pane is the whole window, `COLORTERM=truecolor` as Ghostty
 sets it so the theme resolves to the same palette) and runs the steps in
@@ -556,13 +556,13 @@ at by running `./zig-out/bin/nuclis agent` in Ghostty directly.
 
 ### The agent's task list
 
-`scripts/agent-eval.py` (`make agent-eval VARIANT=<name> ARGS='…'`) runs
+`scripts/app/agent-eval.py` (`make agent-eval VARIANT=<name> ARGS='…'`) runs
 thirteen small tasks against the playground: a tiny Python geometry package
-that `scripts/playground.py` generates on first use under
+that `scripts/app/playground.py` generates on first use under
 `.zig-cache/playground/` (`make playground` builds it and prints the path)
 and commits with `git init` as the baseline its own `make reset` returns
 to. Nothing of it is committed to nuclis; it holds only what the tasks and
-the README's GIF (`scripts/agent-demo.py`, which clones it) touch, from
+the README's GIF (`scripts/app/agent-demo.py`, which clones it) touch, from
 text and fixed seeds, so every machine gets the same baseline commit, and
 a version stamp in its `.git` rebuilds it when the generator changes
 (`--workspace <dir>` runs another project with `make reset` and `make
@@ -590,7 +590,7 @@ the means. This is how a change to the system prompt, a tool description,
 or the loop is judged: before and after, on the same list and seeds, and
 the log entry cites the table; the first record is
 [AGNT-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-13--the-system-prompt-as-sections-measured-the-playground-task-list-the-guidelines-that-changed-behaviour-the-instructions-file-2026-09-22).
-`scripts/agent-tokens.py <variant> [<variant> …]` says where a variant's
+`scripts/app/agent-tokens.py <variant> [<variant> …]` says where a variant's
 prefill went: per tool, the calls, the tokens their results added (counted
 by `nuclis tokenize --raw`, the engine's own tokenizer), and each tool's
 share, with the variants side by side when given several.
@@ -608,7 +608,7 @@ step and no dependency; what is in the folder is what is served.
 | `fonts/` | Archivo and JetBrains Mono, subset WOFF2 ([THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md#website-fonts)); a new subset gets a new file name, since `_headers` caches the folder as immutable |
 | `_headers` | Cloudflare's response headers: the CSP (no inline script or style anywhere), security headers, caching |
 | `wrangler.jsonc`, `.assetsignore` | the Worker that serves the folder: its name, the 404 page, the `engine.nuclis.dev` route |
-| `og.png` | the 1200×630 share card, rendered from `scripts/site-og.html` |
+| `og.png` | the 1200×630 share card, rendered from `scripts/repo/site-og.html` |
 | `robots.txt`, `sitemap.xml`, `site.webmanifest`, `llms.txt` | crawlers, installs, and language-model readers |
 
 **Figures are copied, never typed twice.** The `#bench` block holds the
@@ -816,7 +816,7 @@ must not initialize a GPU, load full model weights, or reach the network.
 `zig build run -- inspect --json` runs nuclis directly.
 In a sandbox that cannot write Zig's default global cache, set
 `ZIG_GLOBAL_CACHE_DIR=/absolute/writable/cache` (Zig 0.17's `zig build` has no
-`--global-cache-dir`); the Makefile and `scripts/gates.py` point it at the root
+`--global-cache-dir`); the Makefile and `scripts/gate/gates.py` point it at the root
 `.zig-cache/global` directory.
 
 Format changed Zig source and build files with `zig fmt`. The repository check is:
@@ -846,7 +846,7 @@ binary that does not report the plain version.
 - **SemVer with the 0.x convention.** Before 1.0 the minor number is the
   breaking axis: a release with breaking changes or features bumps the
   minor, one with only fixes the patch.
-- **Releasing** (`scripts/release.py`; an agent runs it on "release"):
+- **Releasing** (`scripts/repo/release.py`; an agent runs it on "release"):
 
   | Step | Command | What it does |
   | --- | --- | --- |
@@ -918,7 +918,7 @@ latency. Preserve raw measurements outside the source tree unless deliberately
 publishing a small, reviewed benchmark report; recorded artifacts live under
 [benchmarks/](benchmarks/). Comparable runs against the reference use its
 exact token arrays (`bench --prompt-tokens`; the `<entry>/acceptance`
-workloads run `scripts/nuclis-baseline.py` on them, [§ The record](#the-record)),
+workloads run `scripts/bench/nuclis-baseline.py` on them, [§ The record](#the-record)),
 never a re-tokenized rendering of them; `nuclis tokenize` shows what a text
 prompt becomes before a model runs.
 
@@ -951,7 +951,7 @@ nearly all as failed while every one is a 200: read the
 `Length:` breakdown and `Non-2xx responses`. Compare served responses
 with `nuclis decide --json` after masking `timings_ms`, and read the
 batching counters from `GET /v1/health` before and after a run.
-File transcription is measured by `python3 scripts/transcription-check.py
+File transcription is measured by `python3 scripts/gate/transcription-check.py
 long` (a fresh server per recording, RSS sampled, the first segment of a
 stream timed; `--chat <model>` streams a chat beside it), which the gate
 `nemotron-asr-long` also runs.
@@ -1018,7 +1018,7 @@ holds whole buffers.
 
 ### Memory of a running process
 
-`python3 scripts/nuclis_mem_usage.py` reports where a running `nuclis`
+`python3 scripts/bench/nuclis_mem_usage.py` reports where a running `nuclis`
 process's memory is (`--watch 2` samples until Ctrl-C and prints the peaks,
 `--json` for one machine-readable report). Run it outside a sandbox: it reads
 `footprint -j`, `vmmap -w`, and `mincore` over the mapped GGUF. The weights are

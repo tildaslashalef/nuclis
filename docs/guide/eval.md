@@ -36,7 +36,7 @@ compare with that tool's output on the same file:
    (`[1]4.3473,[2]6.1654,…`).
 
 `--reference <json>` reads a pinned reference run
-(`scripts/reference-perplexity.py`). It takes that run's `ctx` and window
+(`scripts/gate/reference-perplexity.py`). It takes that run's `ctx` and window
 count unless the flags state them (another `ctx`, or more windows than
 it ran, is `ReferenceMismatch`; fewer compare against its running value
 after that window, `chunk_ppl`, which the fast gates use), refuses a file whose SHA-256 differs from the one the reference ran, and
@@ -200,7 +200,7 @@ routing noise: it looks systematic and growing with context, not noise.
   (carrying the 512 record's 1 % routing bound) is kept as the evidence.
 
 The per-token references for Qwen3.8 and Muse (about 25 minutes each) were
-stopped before they finished. `scripts/reference-perplexity.py --ctx 4096
+stopped before they finished. `scripts/gate/reference-perplexity.py --ctx 4096
 --chunks 4 --ubatch 1` produces them, and each then gets a
 `*-perplexity-4k` gate in `gates.json`.
 
@@ -217,7 +217,7 @@ speculative acceptance on Gemma drew from uncapped logits (row 0 of
 ```sh
 make eval-corpus
 cmake --build .reference/llama.cpp/build --target llama-perplexity --parallel 8
-python3 scripts/reference-perplexity.py --model <file.gguf> \
+python3 scripts/gate/reference-perplexity.py --model <file.gguf> \
   --text .reference/eval/wikitext-2-raw/wiki.test.raw --ctx 512 --chunks 8 \
   --ubatch 1 --output tests/fixtures/perplexity/<family>-wikitext2-c512x8.json
 ```

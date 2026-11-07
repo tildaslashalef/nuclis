@@ -125,7 +125,7 @@ come from llama.cpp `7620399f58aebfd2196b74021f9581bcf7218cb9`, its matching loc
 Release build, and one CPU thread. Reproduce them without a model or GPU:
 
 ```sh
-python3 scripts/cpu-vector-fixtures.py
+python3 scripts/fixtures/cpu-vector-fixtures.py
 ```
 
 The script uses the local C ABI to build and compute small graphs. Four L2 cases
@@ -205,7 +205,7 @@ KV head, key width three, value width two, and visible prefixes one, two, or fou
 The reference composes `ggml_mul_mat`, `ggml_soft_max_ext`, and `ggml_mul_mat`,
 materializing only the visible KV prefix. Absolute tolerance is `2e-6` for these
 small cases; this is not an end-to-end attention-layer or future GPU tolerance.
-Regenerate them with the same `scripts/cpu-vector-fixtures.py` command above.
+Regenerate them with the same `scripts/fixtures/cpu-vector-fixtures.py` command above.
 No model or GPU is needed to generate or run these fixtures.
 
 ## Causal convolution and DeltaNet state
@@ -264,7 +264,7 @@ history shifts match exactly. The fixture generator calls `ggml_ssm_conv` and
 `ggml_gated_delta_net` on the pinned one-thread CPU backend; the latter exports
 both output and final state. Expected convolution history is the explicit window
 shift, not an output of `ggml_ssm_conv`. Regenerate with
-`scripts/cpu-vector-fixtures.py`; no model or GPU is needed.
+`scripts/fixtures/cpu-vector-fixtures.py`; no model or GPU is needed.
 
 ### Chunkwise DeltaNet (2026-09-09, stage 1)
 

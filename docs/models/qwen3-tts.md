@@ -1035,7 +1035,7 @@ rows of keys (after RoPE) and values per layer, and the frame count as
 the RoPE position. Attention scores and sums are F64, norms take F64
 statistics; everything else is F32.
 
-**The trace.** `scripts/speech-traces/qwen3_tts_trace.py` runs the
+**The trace.** `scripts/oracle/speech-traces/qwen3_tts_trace.py` runs the
 authors' package (`022e286b`) in `.reference/venv-qwen3-tts/` (Python
 3.12.15, `torch` 2.14.1 CPU, `transformers` 4.57.3, `numpy` 2.5.4) on the
 0.6B in F32 at seed 0, speaker `ryan`, language `english`, with the
@@ -1271,7 +1271,7 @@ at 1.5e-5.
 
 ### The round trip
 
-`scripts/wer.py --speak tests/fixtures/tts-roundtrip.json` speaks 20
+`scripts/gate/wer.py --speak tests/fixtures/tts-roundtrip.json` speaks 20
 pinned sentences (a question, names, a time, prices, counts spelled as
 they are said; speaker `ryan`, English, each its own seed) with `nuclis
 speak` on Metal and hears them with `nuclis transcribe --backend cpu`,

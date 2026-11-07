@@ -1,5 +1,5 @@
 {
-  "$comment": "The benchmark workloads: docs/development.md \u00a7 The record. Run with scripts/workloads.py (make workload NAME=\u2026); model paths come from gates.json.",
+  "$comment": "The benchmark workloads: docs/development.md \u00a7 The record. Run with scripts/bench/workloads.py (make workload NAME=\u2026); model paths come from gates.json.",
   "defaults": {
     "backend": "metal"
   },
@@ -351,7 +351,7 @@
       "run": "run-2026-09-06",
       "reference_records": "reference-2026-10-04-qwen38.json",
       "record_suffix": "",
-      "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
+      "note": "scripts/bench/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
       "evidence": "docs/benchmarks/README.md#acceptance-runs"
     },
     "gemma4-qat/acceptance": {
@@ -360,7 +360,7 @@
       "run": "run-2026-09-12-gemma4-qat",
       "reference_records": "reference-2026-10-04-gemma4-qat.json",
       "record_suffix": "gemma4-qat",
-      "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
+      "note": "scripts/bench/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
       "evidence": "docs/benchmarks/history.md#gemma-4-12b-acceptance-record-qat-file-2026-09-12"
     },
     "gemma4-26b-a4b/acceptance": {
@@ -369,7 +369,7 @@
       "run": "run-2026-09-18-gemma4-26b-a4b",
       "reference_records": "reference-2026-10-04-gemma4-26b-a4b.json",
       "record_suffix": "gemma4-26b-a4b",
-      "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
+      "note": "scripts/bench/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
       "evidence": "docs/benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-2026-09-18"
     },
     "gemma4-e4b/acceptance": {
@@ -378,7 +378,7 @@
       "run": "run-2026-10-04-gemma4-e4b",
       "reference_records": "reference-2026-10-04-gemma4-e4b.json",
       "record_suffix": "gemma4-e4b",
-      "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
+      "note": "scripts/bench/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
       "evidence": "docs/benchmarks/README.md"
     },
     "muse/acceptance": {
@@ -387,7 +387,7 @@
       "run": "run-2026-09-19-muse-glimmer",
       "reference_records": "reference-2026-10-04-muse-glimmer-4k.json,reference-2026-10-04-muse-glimmer.json",
       "record_suffix": "muse-glimmer",
-      "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
+      "note": "scripts/bench/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
       "evidence": "docs/benchmarks/history.md#muse-glimmer-30b-acceptance-record-2026-09-19"
     },
     "bonsai/acceptance": {
@@ -396,7 +396,7 @@
       "run": "run-2026-09-18-bonsai",
       "reference_records": "reference-2026-09-18-bonsai.json",
       "record_suffix": "bonsai",
-      "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
+      "note": "scripts/bench/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
       "evidence": "docs/benchmarks/history.md#bonsai-2-27b-acceptance-record-2026-09-18"
     }
   }

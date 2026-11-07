@@ -9,7 +9,7 @@ work sits below the adapter, in seven weight encodings nuclis did not
 implement. It is the first model brought up without an external oracle:
 its validation is nuclis's own (§ [Validation](#validation-without-an-external-reference)).
 Everything here was read on 2026-10-14 from the pulled file with
-`scripts/gguf-inventory.py` (the committed inventory is
+`scripts/fixtures/gguf-inventory.py` (the committed inventory is
 [`fixtures/saluki-27b.json`](../../inference/src/models/fixtures/saluki-27b.json))
 and by range reads of the comparison files' headers and tensors.
 
@@ -323,7 +323,7 @@ Prefill is unchanged (67.0 and 50.3). Those runs were back to back and
 heat cost them part of the gain; the interleaved A/B below replaces
 them.
 
-**Measured without heat bias** (`make speed`, `scripts/speed.py
+**Measured without heat bias** (`make speed`, `scripts/bench/speed.py
 --contexts 16384,32639 --tokens 128 --pairs 5 --run run-2026-09-06`,
 2026-10-15): `fcebd2b` (the commit before the head split) against
 `115cbf7`, five pairs alternating the two binaries on a restored

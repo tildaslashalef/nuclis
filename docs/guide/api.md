@@ -864,7 +864,7 @@ fit continues in the next pass, ahead of later ones, and an input longer
 than a pass runs alone. A pass runs between a chat generation's steps
 (about 0.2 s at 2,048 rows), so a generation and an indexing job share
 the GPU. An input's vector does not depend on what shares its pass:
-batching changes timing, never vectors (`scripts/api-check.py --only
+batching changes timing, never vectors (`scripts/app/api-check.py --only
 embeddings` checks it bit for bit).
 
 One embedding model is open at a time; it opens on its first request
@@ -1095,7 +1095,7 @@ runs Nemotron 3.5 ASR streaming 0.6B, the model `nuclis transcribe`
 runs ([nemotron-asr.md](../models/nemotron-asr.md)).
 
 ```sh
-python3 scripts/ws-transcribe.py clip.wav --language en-US   # a client in the standard library
+python3 scripts/gate/ws-transcribe.py clip.wav --language en-US   # a client in the standard library
 ```
 
 The handshake is a `GET` with `upgrade: websocket`, `connection:
@@ -1802,7 +1802,7 @@ nemotron-asr-0.6b` on Metal (`unsloth/gemma-4-E4B-it-qat-GGUF` at
 at `ea30d66d`). **The machine was not quiet**: another worktree's
 `nuclis serve` and `nuclis transcribe` (file transcription on the same
 GPU) ran for about 80 % of each run, sampled once a second, and its
-compiler for some of it. `python3 scripts/ws-transcribe.py --measure
+compiler for some of it. `python3 scripts/gate/ws-transcribe.py --measure
 --clips librispeech-6829-68769-0000,fleurs-de_de-1660 --beside-chat
 gemma-4-e4b-qat --rounds 3`: one connection, lookahead 3, each clip under
 its locale, sent in 20 ms messages each when its audio has ended at real
@@ -1840,7 +1840,7 @@ route (then `4390fa8`); a fresh `nuclis serve` with `nemotron-asr-0.6b`
 open on Metal (`nvidia/nemotron-3.5-asr-streaming-0.6b` at `ea30d66d`), lookahead 3,
 `auto`. **The machine was shared**: another session's builds and tests
 held it (load average 2–7), and the same run measured 42–64× real time
-from one run to the next. The recording is `scripts/transcription-check.py
+from one run to the next. The recording is `scripts/gate/transcription-check.py
 long`'s: the 40 LibriSpeech clips of the speech corpus in a seeded order,
 each followed by 1.5–3 s of silence, 16-bit 16 kHz mono WAV (30 minutes:
 1,802.3 s, 55.0 MiB). Rate is the audio's length over the request's
@@ -1881,8 +1881,8 @@ that replaced this.
 Apple M4 Pro (48 GB), ReleaseSafe (`make build`), Zig 0.17.0, macOS
 27.0, a quiet machine (no other GPU job; load average 3–4 from the
 desktop); `nuclis serve --quiet --model gemma-4-e4b-qat --pin <voice>
---pin nemotron-asr-0.6b` on Metal, through `scripts/voice-loop.py` and
-`scripts/ws-transcribe.py --measure`, `scripts/transcription-check.py
+--pin nemotron-asr-0.6b` on Metal, through `scripts/app/voice-loop.py` and
+`scripts/gate/ws-transcribe.py --measure`, `scripts/gate/transcription-check.py
 long --chat`. Chat rates are streamed content chunks per second as in
 the records above (`reasoning_effort` `none`, temperature 0, 1,200
 tokens of a story). Playback is modelled: audio plays at real time from

@@ -4,7 +4,7 @@ The second architecture through the adapter seam ([MODL-04](https://github.com/t
 since [MODL-09](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-09--gemma-4-26b-a4b-artifact-pin-facts-adapter-cpu-reference-metal-plan-2026-09-18-two-sessions) also the 26B-A4B mixture of experts
 ([§ Gemma 4 26B-A4B](#gemma-4-26b-a4b-the-expert-configuration-2026-09-18)),
 bound by the same adapter as a second pinned configuration. Everything here was
-read on 2026-09-11 from the pinned files with `scripts/gguf-inventory.py`
+read on 2026-09-11 from the pinned files with `scripts/fixtures/gguf-inventory.py`
 (an independent header reader, no weights), from `nuclis model inspect`,
 and from the pinned llama.cpp reference `7620399` (`src/models/gemma4.cpp`,
 `src/llama-vocab.cpp`, `conversion/gemma.py`, `ggml-cpu/ops.cpp`), which
@@ -442,7 +442,7 @@ tree gained, each pinned by the reference's own fixture:
 
 - `quant.row` id 2 and the eight-block Q4_0 row in
   `quant/fixtures/simple.json` from the pinned C decoder
-  (`scripts/quant-fixtures.py`; the same payload bytes as the IQ4_NL row,
+  (`scripts/fixtures/quant-fixtures.py`; the same payload bytes as the IQ4_NL row,
   so the two decoders pin each other's nibble order).
 - `dequant.metal` `nu_dequant_q4_0` for the generic kernels
   (`nu_matvec`, `nu_embed`, the generic tile), bit-identical to the CPU
@@ -512,7 +512,7 @@ record on the QAT file is in
 
 ## Gemma 4 26B-A4B: the expert configuration (2026-09-18)
 
-Read on 2026-09-18 from the pulled file with `scripts/gguf-inventory.py`
+Read on 2026-09-18 from the pulled file with `scripts/fixtures/gguf-inventory.py`
 (the fixture `inference/src/models/fixtures/gemma4-26b-a4b.json`) and from
 the pinned reference's `src/models/gemma4.cpp` and the `build_moe_ffn`
 helper of `src/llama-graph.cpp`.
@@ -836,7 +836,7 @@ for EmbeddingGemma 2 ([audio.md](../engine/audio.md)); the E4B brings only
 its own projection.
 
 **The weights** (the pinned `mmproj-BF16.gguf`, 991,552,320 B, read with
-`scripts/gguf-inventory.py` and by tensor digests):
+`scripts/fixtures/gguf-inventory.py` and by tensor digests):
 
 - 752 audio tensors, `a.*` and `mm.a.*`, with the names, shapes and
   encodings of EmbeddingGemma 2's companion (618 F32, 134 BF16; 620 MB). 751
@@ -891,7 +891,7 @@ encoder needs it first.
 | `north` clip in a chat prompt, 11 greedy steps against one prefill | 7.2e-3 max abs; greedy "The Northern Lights are caused by charged particles from the sun striking" |
 | transcription, six corpus clips, greedy, one fixed prompt | 1 error in 114 words, **0.88 %** WER (English 0/55, German 0/18, French 1/21, Spanish 0/20) |
 
-The transcription prompt is `scripts/wer.py`'s `CHAT_PROMPT` ("Transcribe
+The transcription prompt is `scripts/gate/wer.py`'s `CHAT_PROMPT` ("Transcribe
 this audio in the language it is spoken in. Write only the transcript."),
 the clips `librispeech-61-70968-0000`, `-672-122797-0000`,
 `-1089-134686-0000`, `fleurs-de_de-1661`, `fleurs-fr_fr-1662`,
@@ -901,7 +901,7 @@ went through `POST /v1/chat/completions` (wav and AAC m4a parts).
 | Gate | Tier | Runs |
 | --- | --- | --- |
 | `gemma4-e4b-audio-metal` | `verify` | the rows above, bounds 2e-3 / 4e-5 on Metal, bit equality with EmbeddingGemma 2's encoder, 2e-2 on decode after the clip (12 s) |
-| `gemma4-e4b-audio-asr` | `verify` | `scripts/wer.py --chat` over the six clips, WER at most 5 % (11 s) |
+| `gemma4-e4b-audio-asr` | `verify` | `scripts/gate/wer.py --chat` over the six clips, WER at most 5 % (11 s) |
 
 **The cache.** A conversation with a clip in it is reused like any other:
 the completer keys what the session consumed with each image and clip's

@@ -1,5 +1,5 @@
 //! Hydrates a directory inventory fixture (`fixtures/*.json`, captured by
-//! `scripts/gguf-inventory.py` from the real artifact) into a
+//! `scripts/fixtures/gguf-inventory.py` from the real artifact) into a
 //! `gguf.Document`, so adapter tests bind the pinned file's exact metadata
 //! and tensor list without a model download. No weights exist: tensor
 //! offsets are laid out as the file would, and any attempt to read data

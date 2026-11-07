@@ -150,7 +150,7 @@ slices to exercise unaligned input; invalid-size tests cover both new encodings.
 
 The [ternary fixture](../../inference/src/quant/fixtures/ternary.json) is
 produced by the fork's own `dequantize_row_pq2_0` and `dequantize_row_ptq1_0`
-(`scripts/quant-fixtures.py --prism-checkout`, its `revision` the fork's
+(`scripts/fixtures/quant-fixtures.py --prism-checkout`, its `revision` the fork's
 pin): eight blocks of each with arbitrary payload bytes and the eight scales
 above, so non-canonical codes reproduce the reference's fixed-point
 arithmetic too, plus all-zero and all-one blocks, an every-code PQ2_0 block,
@@ -166,7 +166,7 @@ the 7-bit sign indices with parity as the eighth sign, the IQ1 shift of ±1/8
 and its sign, IQ1_M's scale rebuilt from four nibbles), and the
 cross-encoding check compares whole models' rows with an already-validated
 encoding of the same weights ([saluki.md § Validation](../models/saluki.md#validation-without-an-external-reference)).
-Their codebooks come from `scripts/iq-codebooks.py`. The
+Their codebooks come from `scripts/fixtures/iq-codebooks.py`. The
 [codebook fixture](../../inference/src/quant/fixtures/codebook.json) holds
 two real blocks of each from Saluki 27B, written by `zig build
 test-cross-encoding -- --fixture <out> <saluki.gguf>` with the CPU
@@ -177,7 +177,7 @@ Q5_0 and Q5_1 (2026-10-28) were validated without an external decoder and
 without the cross-encoding check. Hand-calculated tests pin both halves of
 the plane, every code on each half-row, the bias of 16 and Q5_1's offset.
 The [five-bit fixture](../../inference/src/quant/fixtures/five-bit.json)
-(eight blocks of each, written by `scripts/five-bit-fixtures.py` from the
+(eight blocks of each, written by `scripts/fixtures/five-bit-fixtures.py` from the
 equations above, with negative, subnormal and large scales) holds the CPU
 decoder and `metal-check` holds the GPU to it: exact decode through every
 matvec and matmul path, and the 26B-A4B expert chains with a Q5_0 or Q5_1
@@ -197,7 +197,7 @@ To regenerate on macOS, build the pinned reference following
 [llama-cpp.md](../benchmarks/llama-cpp.md), then run:
 
 ```sh
-python3 scripts/quant-fixtures.py
+python3 scripts/fixtures/quant-fixtures.py
 ```
 
 The default checkout is `.reference/llama.cpp`, resolved relative to

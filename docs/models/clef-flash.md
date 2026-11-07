@@ -17,7 +17,7 @@ States run up to 16,384 tokens. nuclis runs it in these parts:
 | Head (CPU, F32), the model | `inference/src/models/clef.zig` |
 | Projector (the Qwen3-VL merger at width 4,096) | `inference/src/vision/qwen3vl.zig`, `qwen3vl_metal.zig`, `projector.zig` |
 | The family seam, `nuclis decide`, `nuclis serve` | `inference/src/decide.zig`, `src/decide.zig`, `src/decision/`, `src/api/decisions/` |
-| Oracle and checks | `scripts/clef-reference.py`, `inference/clef-check.zig`, `inference/src/models/fixtures/clef/` |
+| Oracle and checks | `scripts/oracle/clef-reference.py`, `inference/clef-check.zig`, `inference/src/models/fixtures/clef/` |
 
 ## The artifacts
 

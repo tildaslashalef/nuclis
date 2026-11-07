@@ -284,7 +284,7 @@ failure point.
 
 The tool fixtures
 ([qwen38-tools.json](../../inference/src/profiles/fixtures/qwen38-tools.json),
-captured by `scripts/profile-tools-fixtures.py`) add 20 Qwen cases across the
+captured by `scripts/fixtures/profile-tools-fixtures.py`) add 20 Qwen cases across the
 four efforts: a tools block alone; one call with content and reasoning; two
 calls in one assistant message; a call with empty arguments; and a call whose
 string argument contains a newline and a quote. Each carries the same tools
@@ -332,8 +332,8 @@ and does not affect `/apply-template`):
 In another terminal:
 
 ```sh
-python3 scripts/tokenizer-fixtures.py --profile gemma4   # or --profile qwen38, --profile muse_glimmer
-python3 scripts/profile-tools-fixtures.py --profile gemma4   # or --profile qwen38 (default)
+python3 scripts/fixtures/tokenizer-fixtures.py --profile gemma4   # or --profile qwen38, --profile muse_glimmer
+python3 scripts/fixtures/profile-tools-fixtures.py --profile gemma4   # or --profile qwen38 (default)
 zig build test
 ```
 
@@ -357,7 +357,7 @@ The templates are adapted, not copied; their origins and licenses are in
 
 **Other template revisions.** A file converted with another revision of a
 profile's template (a finetune, an older converter) carries another
-digest and is refused. `scripts/profile-alias-check.py --profile <p>`
+digest and is refused. `scripts/fixtures/profile-alias-check.py --profile <p>`
 is the gate for accepting one: with the reference server holding that
 file, it replays every pinned text, tool, and token case through
 `/apply-template` and `/tokenize` and, only when every prompt and token

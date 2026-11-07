@@ -1,5 +1,7 @@
 # Pinned Metal reference baseline
 
+**Retired.** The llama.cpp drivers named across these documents (`scripts/reference-generation.cpp`, `-embedding.cpp`, `-embedding-bench.cpp`, `-split.cpp`, `-vision.cpp`, `reference-record.py`, `compare-embedding.py`, `gguf-widen-f32.py`) left the tree when nuclis became its own reference; read them with `git show v0.11.0:scripts/<name>`. The fixtures they pinned stay.
+
 The pinned llama.cpp is nuclis's numerical oracle and its speed reference:
 how to build it, how the harness drives its server on the same token arrays
 nuclis runs, and how a run becomes a record. Every family's reference runs
@@ -197,14 +199,14 @@ mkdir -p .reference
 Then run the opt-in development harness from this repository:
 
 ```sh
-python3 scripts/reference-baseline.py \
+python3 scripts/bench/reference-baseline.py \
   --output-dir .reference/warm-new-run
 ```
 
 Run the near-capacity check separately, leaving one token of boundary margin:
 
 ```sh
-python3 scripts/reference-baseline.py \
+python3 scripts/bench/reference-baseline.py \
   --output-dir .reference/boundary-new-run \
   --prompt-lengths 32639 --repetitions 1 --server-pid <pid>
 ```

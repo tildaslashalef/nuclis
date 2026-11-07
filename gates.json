@@ -1,5 +1,5 @@
 {
- "$comment": "The gate registry: docs/development.md \u00a7 Gates. Run with scripts/gates.py (make verify-auto, verify, verify-release, verify-cpu, verify-changed, gate).",
+ "$comment": "The gate registry: docs/development.md \u00a7 Gates. Run with scripts/gate/gates.py (make verify-auto, verify, verify-release, verify-cpu, verify-changed, gate).",
  "build": {
   "metal_optimize": "ReleaseSafe",
   "cpu_optimize": "ReleaseFast",
@@ -161,9 +161,9 @@
    "paths": [
     "gates.json",
     "workloads.json",
-    "scripts/gates.py",
-    "scripts/workloads.py",
-    "scripts/reference-perplexity.py"
+    "scripts/gate/gates.py",
+    "scripts/bench/workloads.py",
+    "scripts/gate/reference-perplexity.py"
    ]
   },
   {
@@ -188,7 +188,7 @@
     "site/**",
     "gates.json",
     "workloads.json",
-    "scripts/docs-check.py"
+    "scripts/repo/docs-check.py"
    ]
   },
   {
@@ -199,7 +199,7 @@
    ],
    "paths": [
     "site/**",
-    "scripts/site-check.py",
+    "scripts/repo/site-check.py",
     "README.md",
     "build.zig.zon"
    ]
@@ -2716,12 +2716,12 @@
     "inference/src/vision/gemma4.zig",
     "src/generate.zig",
     "src/cli.zig",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "tests/fixtures/speech-corpus.json"
    ],
    "command": [
     "python3",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "--nuclis",
     "{nuclis}",
     "--chat",
@@ -2737,7 +2737,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "note": "nuclis generate --audio on the catalogue entry (its mmproj), greedy, one fixed prompt (scripts/wer.py CHAT_PROMPT), over six speech-corpus clips (make speech-corpus): three LibriSpeech test-clean, one FLEURS clip each in German, French and Spanish; the word error rate over all must stay at most 5 % (first run 2026-10-27: 1 error in 114 words, 0.88 %; the bound allows four more)",
+   "note": "nuclis generate --audio on the catalogue entry (its mmproj), greedy, one fixed prompt (scripts/gate/wer.py CHAT_PROMPT), over six speech-corpus clips (make speech-corpus): three LibriSpeech test-clean, one FLEURS clip each in German, French and Spanish; the word error rate over all must stay at most 5 % (first run 2026-10-27: 1 error in 114 words, 0.88 %; the bound allows four more)",
    "evidence": "docs/models/gemma4.md#audio-input-on-the-e4b-2026-10-27"
   },
   {
@@ -3499,14 +3499,14 @@
     "inference/src/tokenizer/pieces.zig",
     "inference/src/tokenizer/pre.zig",
     "inference/src/tokenizer/vocab_merges.zig",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "src/speak.zig",
     "src/transcribe.zig",
     "tests/fixtures/tts-roundtrip.json"
    ],
    "command": [
     "python3",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "--nuclis",
     "{nuclis}",
     "--model",
@@ -3521,7 +3521,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal (speaker ryan, english, each its own seed), recognized by nuclis transcribe --backend cpu (the baseline model, Nemotron ASR), words scored against the text (scripts/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-27: 5 errors in 190 words, 2.63 %, mostly the recognizer's spelling, dr for doctor and heres for here is; the bound allows six more)",
+   "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal (speaker ryan, english, each its own seed), recognized by nuclis transcribe --backend cpu (the baseline model, Nemotron ASR), words scored against the text (scripts/gate/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-27: 5 errors in 190 words, 2.63 %, mostly the recognizer's spelling, dr for doctor and heres for here is; the bound allows six more)",
    "evidence": "docs/models/qwen3-tts.md#on-metal-2026-10-27"
   },
   {
@@ -3553,14 +3553,14 @@
     "inference/src/tokenizer/pieces.zig",
     "inference/src/tokenizer/pre.zig",
     "inference/src/tokenizer/vocab_merges.zig",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "src/speak.zig",
     "src/transcribe.zig",
     "tests/fixtures/tts-roundtrip.json"
    ],
    "command": [
     "python3",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "--nuclis",
     "{nuclis}",
     "--model",
@@ -3575,7 +3575,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal (speaker ryan, english, each its own seed), recognized by nuclis transcribe --backend cpu (the baseline model, Nemotron ASR), words scored against the text (scripts/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-27: 5 errors in 190 words, 2.63 %, mostly the recognizer's spelling, dr for doctor and heres for here is; the bound allows six more)",
+   "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal (speaker ryan, english, each its own seed), recognized by nuclis transcribe --backend cpu (the baseline model, Nemotron ASR), words scored against the text (scripts/gate/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-27: 5 errors in 190 words, 2.63 %, mostly the recognizer's spelling, dr for doctor and heres for here is; the bound allows six more)",
    "evidence": "docs/models/qwen3-tts.md#on-metal-2026-10-27"
   },
   {
@@ -3668,7 +3668,7 @@
     "inference/src/runtime/weights.zig",
     "inference/src/sampling/root.zig",
     "inference/src/tokenizer/**",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "src/audio/speech.zig",
     "src/speak.zig",
     "src/transcribe.zig",
@@ -3676,7 +3676,7 @@
    ],
    "command": [
     "python3",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "--nuclis",
     "{nuclis}",
     "--model",
@@ -3692,7 +3692,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal in the model's own voice (no reference, the language from the text, each its own seed), recognized by nuclis transcribe (the baseline model, Nemotron ASR), words scored against the text (scripts/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-30: 2 errors in 190 words, 1.05 %, both the recognizer's: dr for doctor, a dropped and)",
+   "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal in the model's own voice (no reference, the language from the text, each its own seed), recognized by nuclis transcribe (the baseline model, Nemotron ASR), words scored against the text (scripts/gate/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-30: 2 errors in 190 words, 1.05 %, both the recognizer's: dr for doctor, a dropped and)",
    "evidence": "docs/models/drama3.md#the-round-trip"
   },
   {
@@ -3842,12 +3842,12 @@
     "inference/src/backends/cpu/vector.zig",
     "inference/src/formats/safetensors.zig",
     "src/transcribe.zig",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "tests/fixtures/speech-corpus.json"
    ],
    "command": [
     "python3",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "--nuclis",
     "{nuclis}",
     "--model",
@@ -3916,12 +3916,12 @@
     "inference/src/backends/metal/**",
     "inference/src/formats/safetensors.zig",
     "src/transcribe.zig",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "tests/fixtures/speech-corpus.json"
    ],
    "command": [
     "python3",
-    "scripts/wer.py",
+    "scripts/gate/wer.py",
     "--nuclis",
     "{nuclis}",
     "--model",
@@ -3965,13 +3965,13 @@
     "src/api/slot.zig",
     "src/api/pipe.zig",
     "src/api/transcription/**",
-    "scripts/transcription-check.py",
-    "scripts/wer.py",
+    "scripts/gate/transcription-check.py",
+    "scripts/gate/wer.py",
     "tests/fixtures/speech-corpus.json"
    ],
    "command": [
     "python3",
-    "scripts/transcription-check.py",
+    "scripts/gate/transcription-check.py",
     "route",
     "--nuclis",
     "{nuclis}",
@@ -4012,13 +4012,13 @@
     "src/api/slot.zig",
     "src/api/pipe.zig",
     "src/api/transcription/**",
-    "scripts/transcription-check.py",
-    "scripts/wer.py",
+    "scripts/gate/transcription-check.py",
+    "scripts/gate/wer.py",
     "tests/fixtures/speech-corpus.json"
    ],
    "command": [
     "python3",
-    "scripts/transcription-check.py",
+    "scripts/gate/transcription-check.py",
     "long",
     "--nuclis",
     "{nuclis}",
@@ -4054,12 +4054,12 @@
     "src/api/gpu.zig",
     "src/api/slot.zig",
     "src/api/transcription/**",
-    "scripts/ws-transcribe.py",
+    "scripts/gate/ws-transcribe.py",
     "tests/fixtures/speech-corpus.json"
    ],
    "command": [
     "python3",
-    "scripts/ws-transcribe.py",
+    "scripts/gate/ws-transcribe.py",
     "--check",
     "--nuclis",
     "{nuclis}",

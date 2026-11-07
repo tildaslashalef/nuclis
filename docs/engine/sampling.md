@@ -271,7 +271,7 @@ mkdir -p .zig-cache/generation/native-check .zig-cache/generation/reference-chec
 .zig-cache/generation/reference-generation \
   "$HOME/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf" 'Hello,' \
   .zig-cache/generation/reference-check
-python3 scripts/compare-generation.py \
+python3 scripts/gate/compare-generation.py \
   .zig-cache/generation/native-check .zig-cache/generation/reference-check --positions 2
 ```
 

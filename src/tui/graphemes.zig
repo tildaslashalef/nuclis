@@ -9,7 +9,7 @@
 //! `editor.zig` can stay about layout.
 //!
 //! The property data is [`graphemes_table.zig`](graphemes_table.zig), generated
-//! from a pinned UCD by `scripts/grapheme-table.py`. Nothing outside this file
+//! from a pinned UCD by `scripts/fixtures/grapheme-table.py`. Nothing outside this file
 //! reads the table, so replacing the data layer is a local change.
 //!
 //! Width policy, pinned by the tests: a cluster that carries VS15 is one cell;

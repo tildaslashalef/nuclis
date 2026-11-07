@@ -1,0 +1,464 @@
+#!/usr/bin/env python3
+"""Every documentation link resolves, and documents move without breaking one.
+
+Check (the default): each relative Markdown link and its `#anchor` in the
+tracked `*.md` files; each `docs/….md[#anchor]` path named in `*.json`,
+`*.py`, `*.zig`, `Makefile`, and `.github/`; each `blob/main/…` link in
+`site/`. Anchors follow GitHub's rule (lowercase, punctuation but `-` and
+`_` dropped, spaces to hyphens, `-1`, `-2` for repeats) plus explicit
+`<a id>`/`<a name>`.
+
+Move (`--move old=new[,old=new…]`): `git mv` the files, then rewrite every
+reference above, re-relativizing Markdown links from each file's own
+directory (a moved file's outgoing links too). `old.md#a=new.md#b` moves a
+section's anchor. Standard library only; reads tracked files, no network.
+"""
+
+import argparse
+import os
+import posixpath
+import re
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+REPO = "tildaslashalef/nuclis"
+# Files whose `docs/…` strings are this script's own test data.
+NO_REWRITE = {"scripts/repo/docs-check.py"}
+LINK = re.compile(r"(!?\[(?:[^\]\[]|\[[^\]]*\])*\]\()([^)\s]+)((?:\s+\"[^\"]*\")?\))")
+REF_DEF = re.compile(r"^( {0,3}\[[^\]]+\]:\s+)(\S+)", re.MULTILINE)
+# A code span: a run of backticks, then text without that run or a blank line
+# (spans may wrap lines), then the same run.
+CODE_SPAN = re.compile(r"(`+)((?:(?!\n[ \t]*\n)(?!\1)[\s\S])*?)\1")
+HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+HTML_ID = re.compile(r"<a\s+(?:id|name)=\"([^\"]+)\"")
+ROOT_PATH = re.compile(r"(?<![\w./-])(docs/[\w./-]+\.md)(#[\w-]+)?")
+# A link into a tagged revision of this repository, checked against that tag.
+TAG_LINK = re.compile(rf"^https://github\.com/{REPO}/blob/(v[\w.-]+)/([\w./-]+?)(?:#([\w-]+))?$")
+SITE_LINK = re.compile(rf"https://github\.com/{REPO}/(?:blob|tree)/main/([\w./-]+?)(#[\w-]+)?(?=[\"'\s)<]|$)")
+TEXT_SUFFIXES = (".json", ".py", ".zig", ".metal", ".cpp", ".m", ".h", ".sh")
+# Paths that tests and examples in code name as data, not as documents.
+CODE_DATA_PATHS = {"docs/x.md", "docs/a.md", "docs/faq.md", "docs/design.md", "docs/history.md", "docs/fix_a_queue.md"}
+
+
+# ---- pure functions (covered by --self-test) --------------------------------
+
+
+def slug(heading):
+    """GitHub's anchor for a heading's text (inline Markdown reduced to its text)."""
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", heading)
+    text = text.replace("`", "").replace("*", "")
+    text = re.sub(r"[^\w\- ]", "", text.lower())
+    return text.replace(" ", "-")
+
+
+def anchors(markdown):
+    """Every anchor a Markdown document defines."""
+    seen, out = {}, set()
+    fence = None
+    for line in markdown.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            marker = stripped[:3]
+            fence = None if fence == marker else (fence or marker)
+            continue
+        if fence:
+            continue
+        out.update(HTML_ID.findall(line))
+        m = HEADING.match(line)
+        if m:
+            base = slug(m[2])
+            n = seen.get(base, 0)
+            seen[base] = n + 1
+            out.add(base if n == 0 else f"{base}-{n}")
+    return out
+
+
+def mask_code(markdown):
+    """`markdown` with fenced blocks and code spans blanked, offsets kept."""
+    out, fence = [], None
+    for line in markdown.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            marker = stripped[:3]
+            fence = None if fence == marker else (fence or marker)
+            out.append(re.sub(r"[^\n]", " ", line))
+        elif fence:
+            out.append(re.sub(r"[^\n]", " ", line))
+        else:
+            out.append(line)
+    return CODE_SPAN.sub(lambda m: re.sub(r"[^\n]", "x", m[0]), "".join(out))
+
+
+def links(markdown):
+    """(start, end, target, text span or None) of each link outside code, in document order.
+
+    Link text may wrap onto following lines, as Markdown allows.
+    """
+    masked = mask_code(markdown)
+    out = []
+    for m in LINK.finditer(masked):
+        if "\n\n" in m[1]:
+            continue
+        lead = 2 if m[1].startswith("!") else 1
+        out.append((m.start(2), m.end(2), markdown[m.start(2) : m.end(2)], (m.start(1) + lead, m.end(1) - 2)))
+    for m in REF_DEF.finditer(masked):
+        out.append((m.start(2), m.end(2), markdown[m.start(2) : m.end(2)], None))
+    return sorted(out)
+
+
+def is_external(target):
+    return re.match(r"^[a-z][a-z0-9+.-]*:", target) is not None
+
+
+def split_target(target):
+    path, _, anchor = target.partition("#")
+    return path, anchor
+
+
+def resolve(source, target):
+    """The repository path a relative link in `source` points at ('' for the file itself)."""
+    path, _ = split_target(target)
+    if not path:
+        return source
+    if path.startswith("/"):
+        return posixpath.normpath(path.lstrip("/"))
+    return posixpath.normpath(posixpath.join(posixpath.dirname(source), path))
+
+
+def relative(source, target_path):
+    """The link from `source` to `target_path`, both repository paths."""
+    rel = posixpath.relpath(target_path, posixpath.dirname(source) or ".")
+    return rel
+
+
+def display(path):
+    """How link text names a document: its path under docs/, a folder for its README."""
+    rel = path.removeprefix("docs/")
+    return posixpath.dirname(rel) if posixpath.basename(rel) == "README.md" else rel
+
+
+def rename_text(label, old, new, written=None):
+    """Link text naming `old` (by root path, docs path, file name, or the link's own
+    relative path `written` -> its rewritten form) renamed to `new`."""
+    forms = [
+        *([written] if written else []),
+        (old, "docs/" + display(new)),
+        (old.removeprefix("docs/"), display(new)),
+        (posixpath.basename(old), posixpath.basename(display(new)) or display(new)),
+    ]
+    forms = sorted({f for f in forms if f[0] != f[1]}, key=lambda f: -len(f[0]))
+    if not forms:
+        return label
+    pattern = re.compile(r"(?<![\w./-])(" + "|".join(re.escape(o) for o, _ in forms) + r")(?![\w/-])")
+    lookup = dict(forms)
+    return pattern.sub(lambda m: lookup[m[1]], label)
+
+
+def rewrite_markdown(text, old_source, new_source, moves, anchor_moves):
+    """`text` with each relative link re-pointed after `moves` ({old: new} paths).
+
+    Links are read from `old_source`'s directory and written from `new_source`'s;
+    link text that names a moved document is renamed with it.
+    """
+    parts, last = [], 0
+    for start, end, target, span in links(text):
+        if is_external(target):
+            continue
+        path, anchor = split_target(target)
+        old_target = resolve(old_source, target)
+        new_target = moves.get(old_target, old_target)
+        key = (old_target, anchor)
+        if anchor and key in anchor_moves:
+            new_target, anchor = anchor_moves[key]
+        if not path:
+            same = new_target == new_source or new_target == old_source
+            new = f"#{anchor}" if same else relative(new_source, new_target) + (f"#{anchor}" if anchor else "")
+        else:
+            trailing = "/" if path.endswith("/") and not new_target.endswith("/") else ""
+            new = relative(new_source, new_target) + trailing + (f"#{anchor}" if anchor else "")
+        if new != target and (new_target != old_target or new_source != old_source or key in anchor_moves):
+            if span and new_target != old_target:
+                label = text[span[0] : span[1]]
+                parts.append(text[last : span[0]])
+                parts.append(rename_text(label, old_target, new_target, (path, split_target(new)[0])))
+                last = span[1]
+            parts.append(text[last:start])
+            parts.append(new)
+            last = end
+    parts.append(text[last:])
+    return "".join(parts)
+
+
+def rewrite_paths(text, moves, anchor_moves):
+    """Root-relative `docs/….md[#a]` paths and site blob links re-pointed."""
+
+    def swap(path, anchor):
+        anchor = (anchor or "").lstrip("#")
+        if anchor and (path, anchor) in anchor_moves:
+            path, anchor = anchor_moves[(path, anchor)]
+        else:
+            path = moves.get(path, path)
+        return path + (f"#{anchor}" if anchor else "")
+
+    text = ROOT_PATH.sub(lambda m: swap(m[1], m[2]), text)
+    return SITE_LINK.sub(lambda m: m[0].replace(m[1] + (m[2] or ""), swap(m[1], m[2]), 1), text)
+
+
+def parse_moves(spec):
+    """`old=new,…` -> ({old: new} file moves, {(old, anchor): (new, anchor)})."""
+    moves, anchor_moves = {}, {}
+    for item in filter(None, (s.strip() for s in spec.split(","))):
+        old, _, new = item.partition("=")
+        if not new:
+            raise ValueError(f"--move {item!r}: expected old=new")
+        if "#" in old:
+            op, oa = split_target(old)
+            np, na = split_target(new)
+            anchor_moves[(op, oa)] = (np, na or oa)
+        else:
+            moves[old] = new
+    return moves, anchor_moves
+
+
+# ---- the repository ------------------------------------------------------------
+
+
+def tracked():
+    out = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    return [p for p in out.splitlines() if (ROOT / p).is_file()]
+
+
+# The one document among the test fixtures; the rest are data.
+FIXTURE_DOCS = {"tests/fixtures/provenance.md"}
+
+
+def is_markdown(path):
+    return path.endswith(".md") and ("/fixtures/" not in path or path in FIXTURE_DOCS)
+
+
+def is_other_text(path):
+    return (
+        path.endswith(TEXT_SUFFIXES)
+        or path == "Makefile"
+        or path.startswith((".github/", "site/"))
+        and not path.endswith((".png", ".woff2", ".gif"))
+    ) and "/fixtures/" not in path
+
+
+def at_tag(tag, path):
+    """The text of `path` at `tag`, or None when the tag or the path is absent."""
+    out = subprocess.run(["git", "show", f"{tag}:{path}"], cwd=ROOT, capture_output=True, text=True)
+    return out.stdout if out.returncode == 0 else None
+
+
+def check(files):
+    problems = []
+    cache = {}
+    tagged = {}
+
+    def judge_tagged(where, tag, path, anchor):
+        if (tag, path) not in tagged:
+            text = at_tag(tag, path)
+            tagged[(tag, path)] = None if text is None else anchors(text)
+        found = tagged[(tag, path)]
+        if found is None:
+            if (
+                at_tag(tag, ".") is None
+                and subprocess.run(
+                    ["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}"], cwd=ROOT, capture_output=True
+                ).returncode
+            ):
+                return f"{where}: tag {tag} is not in this clone (git fetch --tags)"
+            return f"{where}: {path} does not exist at {tag}"
+        if anchor and anchor not in found:
+            return f"{where}: {path} at {tag} has no #{anchor}"
+        return None
+
+    def anchors_of(path):
+        if path not in cache:
+            cache[path] = anchors((ROOT / path).read_text())
+        return cache[path]
+
+    def judge(where, path, anchor):
+        target = ROOT / path
+        if not target.exists():
+            return f"{where}: {path} does not exist"
+        if anchor and path.endswith(".md") and target.is_file() and anchor not in anchors_of(path):
+            return f"{where}: {path} has no #{anchor}"
+        return None
+
+    for path in files:
+        if path in NO_REWRITE:
+            continue
+        if is_markdown(path):
+            text = (ROOT / path).read_text()
+            for start, _, target, _ in links(text):
+                line = text.count("\n", 0, start) + 1
+                tagged_link = TAG_LINK.match(target)
+                if tagged_link:
+                    problem = judge_tagged(f"{path}:{line}", *tagged_link.groups())
+                    if problem:
+                        problems.append(problem)
+                    continue
+                if is_external(target):
+                    continue
+                problem = judge(f"{path}:{line}", resolve(path, target), split_target(target)[1])
+                if problem:
+                    problems.append(problem)
+        elif is_other_text(path):
+            text = (ROOT / path).read_text(errors="replace")
+            for pattern in (ROOT_PATH, SITE_LINK) if path.startswith("site/") else (ROOT_PATH,):
+                for m in pattern.finditer(text):
+                    if m[1] in CODE_DATA_PATHS:
+                        continue
+                    line = text.count("\n", 0, m.start()) + 1
+                    problem = judge(f"{path}:{line}", m[1].rstrip("/"), (m[2] or "").lstrip("#"))
+                    if problem:
+                        problems.append(problem)
+    return problems
+
+
+def move(spec):
+    moves, anchor_moves = parse_moves(spec)
+    files = tracked()
+    moved_now = {}
+    for old, new in moves.items():
+        if old in files:
+            os.makedirs(ROOT / posixpath.dirname(new), exist_ok=True)
+            subprocess.run(["git", "mv", old, new], cwd=ROOT, check=True)
+            moved_now[new] = old
+        elif new not in files:
+            raise SystemExit(f"docs-check: {old} is not a tracked file")
+    # A resumed move: a file moved by an earlier run is already rewritten from
+    # its new place, so only this run's moves are read from their old one.
+    files = [moved_now.get(p, p) for p in tracked()]
+    changed = 0
+    for old_path in files:
+        if old_path in NO_REWRITE:
+            continue
+        new_path = moves.get(old_path, old_path) if old_path in moved_now.values() else old_path
+        file = ROOT / new_path
+        if is_markdown(old_path):
+            text = file.read_text()
+            out = rewrite_markdown(text, old_path, new_path, moves, anchor_moves)
+            out = rewrite_paths(out, moves, anchor_moves)
+        elif is_other_text(old_path):
+            try:
+                text = file.read_text()
+            except UnicodeDecodeError:
+                continue
+            out = rewrite_paths(text, moves, anchor_moves)
+        else:
+            continue
+        if out != text:
+            file.write_text(out)
+            changed += 1
+    print(f"docs-check: moved {len(moves)} file(s), {len(anchor_moves)} anchor(s); rewrote {changed} file(s)")
+
+
+def run():
+    problems = check(tracked())
+    for p in problems:
+        print(f"docs-check: {p}", file=sys.stderr)
+    if problems:
+        print(f"docs-check: {len(problems)} problem(s)", file=sys.stderr)
+        return 1
+    print("docs-check: ok")
+    return 0
+
+
+# ---- self-test ---------------------------------------------------------------
+
+
+class SelfTest(unittest.TestCase):
+    def test_slug(self):
+        self.assertEqual(
+            slug("The benchmarks on macOS 27 (ENGN-21, 2026-10-04)"), "the-benchmarks-on-macos-27-engn-21-2026-10-04"
+        )
+        self.assertEqual(slug("ENGN-21 — The benchmarks"), "engn-21--the-benchmarks")
+        self.assertEqual(slug("The `--replay` option"), "the---replay-option")
+        self.assertEqual(slug("See [bench](bench.md) here"), "see-bench-here")
+
+    def test_anchors_repeat_and_skip_code(self):
+        doc = '# A\n## A\n```\n# B\n```\n<a id="x"></a>\n'
+        self.assertEqual(anchors(doc), {"a", "a-1", "x"})
+
+    def test_code_spans_wrap_lines(self):
+        doc = "see `git show\nv0.6.0:x` (`| [ID](#anchor) |`) and [real](y.md)\n"
+        self.assertEqual([t for _, _, t, _ in links(doc)], ["y.md"])
+
+    def test_links_skip_code(self):
+        doc = "[a](x.md) `[b](y.md)` [`c`](z.md#q)\n```\n[d](w.md)\n```\n[r]: ref.md\n"
+        self.assertEqual([t for _, _, t, _ in links(doc)], ["x.md", "z.md#q", "ref.md"])
+
+    def test_resolve_and_relative(self):
+        self.assertEqual(resolve("docs/reference/a.md", "../spec.md#x"), "docs/spec.md")
+        self.assertEqual(resolve("docs/a.md", "#x"), "docs/a.md")
+        self.assertEqual(relative("docs/models/gemma4.md", "docs/engine/gguf.md"), "../engine/gguf.md")
+
+    def test_rewrite_target_moved(self):
+        moves = {"docs/reference/bench.md": "docs/benchmarks/README.md"}
+        out = rewrite_markdown("see [b](reference/bench.md#acceptance-runs)", "docs/spec.md", "docs/spec.md", moves, {})
+        self.assertEqual(out, "see [b](benchmarks/README.md#acceptance-runs)")
+
+    def test_rewrite_source_moved(self):
+        moves = {"docs/reference/gemma4.md": "docs/models/gemma4.md"}
+        text = "[s](../spec.md) [g](gguf.md#a) [self](#x)"
+        out = rewrite_markdown(text, "docs/reference/gemma4.md", "docs/models/gemma4.md", moves, {})
+        self.assertEqual(out, "[s](../spec.md) [g](../reference/gguf.md#a) [self](#x)")
+
+    def test_link_text_follows_the_move(self):
+        moves = {
+            "docs/reference/bench.md": "docs/benchmarks/README.md",
+            "docs/reference/clef.md": "docs/models/clef-flash.md",
+        }
+        text = "[bench.md § Runs](reference/bench.md#runs) [reference/clef.md](reference/clef.md) [the clef](reference/clef.md)"
+        out = rewrite_markdown(text, "docs/spec.md", "docs/spec.md", moves, {})
+        self.assertEqual(
+            out,
+            "[benchmarks § Runs](benchmarks/README.md#runs) [models/clef-flash.md](models/clef-flash.md) [the clef](models/clef-flash.md)",
+        )
+
+    def test_rewrite_anchor_moved(self):
+        am = {("docs/development.md", "config"): ("docs/guide/configuration.md", "config")}
+        out = rewrite_markdown("[c](development.md#config) [d](development.md#gates)", "docs/a.md", "docs/a.md", {}, am)
+        self.assertEqual(out, "[c](guide/configuration.md#config) [d](development.md#gates)")
+
+    def test_rewrite_paths(self):
+        moves = {"docs/engineering-log.md": "docs/worklog.md"}
+        text = '"evidence": "docs/engineering-log.md#repo-07" and https://github.com/tildaslashalef/nuclis/blob/main/docs/engineering-log.md"'
+        out = rewrite_paths(text, moves, {})
+        self.assertIn('"docs/worklog.md#repo-07"', out)
+        self.assertIn('blob/main/docs/worklog.md"', out)
+
+    def test_tag_link(self):
+        m = TAG_LINK.match("https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-21--x")
+        assert m is not None
+        self.assertEqual(m.groups(), ("v0.6.0", "docs/worklog.md", "kern-21--x"))
+        self.assertIsNone(TAG_LINK.match("https://github.com/tildaslashalef/nuclis/blob/main/docs/x.md"))
+
+    def test_parse_moves(self):
+        moves, am = parse_moves("a.md=b.md, c.md#x=d.md")
+        self.assertEqual(moves, {"a.md": "b.md"})
+        self.assertEqual(am, {("c.md", "x"): ("d.md", "x")})
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--move", help="old=new[,old=new…] files, or old.md#a=new.md[#b] sections, then rewrite references")
+    ap.add_argument("--self-test", action="store_true", help="run the unit tests of the pure functions")
+    args = ap.parse_args()
+    if args.self_test:
+        sys.argv = sys.argv[:1]
+        unittest.main(module=__name__, verbosity=1)
+    if args.move:
+        move(args.move)
+        return run()
+    return run()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

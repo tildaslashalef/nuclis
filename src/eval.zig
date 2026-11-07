@@ -31,7 +31,7 @@ pub const max_text_bytes = 16 * 1024 * 1024;
 /// its own.
 pub const tolerance = 0.005;
 
-/// A pinned reference run, as `scripts/reference-perplexity.py` writes it.
+/// A pinned reference run, as `scripts/gate/reference-perplexity.py` writes it.
 pub const Reference = struct {
     tool: []const u8,
     revision: []const u8,

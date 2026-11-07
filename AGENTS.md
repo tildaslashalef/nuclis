@@ -200,7 +200,7 @@ For code changes, once build scaffolding exists:
 3. Exercise the applicable happy path with the freshly built
    `./zig-out/bin/nuclis`, never an installed copy. A change to the chat
    surface (`src/tui/`, `src/agent/root.zig`) is exercised through the
-   screenshot harness, `make shot ARGS='<steps>'` (`scripts/tui-shot.py`):
+   screenshot harness, `make shot ARGS='<steps>'` (`scripts/app/tui-shot.py`):
    drive the keys, drops, and pastes in tmux, read the captures under
    `.zig-cache/tui/`, fix, repeat; the pull request cites the captures as evidence
    ([docs/development.md § Looking at the agent without a person at the
