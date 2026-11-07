@@ -87,7 +87,7 @@ The JSON records sit beside them in [benchmarks/](benchmarks/), mostly
 ## Elsewhere
 
 There is no roadmap and no decision-record folder: what comes next is
-agreed in session and written into [../TODO.md](../TODO.md), a unit's
+agreed in session and written into the maintainer's tracker, a unit's
 record is its pull request, and a design that outlives its unit goes to
 the document above that owns it. Agent working instructions:
 [../AGENTS.md](../AGENTS.md). Third-party material:

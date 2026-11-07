@@ -1,8 +1,7 @@
 # Speculative decoding: recovery contract, draft sources, measurements
 
 The reference document of the speculative-decoding theme. Its requirements
-are in the [spec](../spec.md#56-speculative-decoding); the units that fill it
-in are planned in [TODO.md](../../TODO.md); closed outcomes are cited from
+are in the [spec](../spec.md#56-speculative-decoding); closed outcomes are cited from
 the [worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md).
 
 As of 2026-10-01 every catalogue family with a draft source is measured

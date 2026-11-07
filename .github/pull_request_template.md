@@ -20,4 +20,3 @@ record files under docs/benchmarks/, screenshots for the site or the agent. -->
 
 - [ ] `make verify-auto` passes from the branch's base, and the tiers it names ran or are exempt (say which and why)
 - [ ] Documents that describe the change are updated; `make docs-check` passes
-- [ ] The section of `TODO.md` this work came from is removed or updated

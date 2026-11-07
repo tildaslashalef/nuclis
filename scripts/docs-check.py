@@ -27,8 +27,6 @@ ROOT = Path(__file__).resolve().parent.parent
 REPO = "tildaslashalef/nuclis"
 # Files whose `docs/…` strings are this script's own test data.
 NO_REWRITE = {"scripts/docs-check.py"}
-# The plan names old paths on purpose; only its Markdown links follow a move.
-LINKS_ONLY = {"TODO.md"}
 LINK = re.compile(r"(!?\[(?:[^\]\[]|\[[^\]]*\])*\]\()([^)\s]+)((?:\s+\"[^\"]*\")?\))")
 REF_DEF = re.compile(r"^( {0,3}\[[^\]]+\]:\s+)(\S+)", re.MULTILINE)
 # A code span: a run of backticks, then text without that run or a blank line
@@ -346,8 +344,7 @@ def move(spec):
         if is_markdown(old_path):
             text = file.read_text()
             out = rewrite_markdown(text, old_path, new_path, moves, anchor_moves)
-            if old_path not in LINKS_ONLY:
-                out = rewrite_paths(out, moves, anchor_moves)
+            out = rewrite_paths(out, moves, anchor_moves)
         elif is_other_text(old_path):
             try:
                 text = file.read_text()

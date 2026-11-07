@@ -28,7 +28,7 @@ instructions belong in [../AGENTS.md](../AGENTS.md).
 Every command in `nuclis --help` works: `agent`, `generate`, `bench`,
 `tokenize`, `eval`, `inspect`, `validate`, `model`, `cache`, `decide`,
 `serve`, `config`, and `completion`. The engine runs on the CPU reference
-and, built with `-Dmetal=true`, on the Metal backend. [../TODO.md](../TODO.md) says what is in progress, the
+and, built with `-Dmetal=true`, on the Metal backend. The
 [merged pull requests](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) what changed and why, and
 [worklog.md](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md) the work before v0.6.0.
 
@@ -48,7 +48,6 @@ huggingface/         Hub download library (Xet) and its standalone binary;
                      imported by src/ only
 docs/                the hub README.md: guide/, models/, engine/, app/, benchmarks/
 site/                the engine.nuclis.dev website: static HTML, CSS, JS, no build
-TODO.md              active plan: unfinished units only
 build.zig            build
 build.zig.zon        manifest; single source of the version
 ```
@@ -58,7 +57,7 @@ the root build. Keep kernels with the inference library that owns them.
 
 ## Environment
 
-Facts every unit depends on; keep them here, not in `TODO.md`.
+Facts every unit depends on; keep them here, not in the tracker.
 
 - Zig 0.17.0 (on the author's machine under `~/.local/opt/zig/stable`, managed
   by `zigup`; any install of that version works); consult its installed std source for API
@@ -178,7 +177,7 @@ first to −1.2 % after the fourth before settling at −0.53 %, so its 1 %
 bound holds only for the whole run.
 
 **`make verify-auto`** is the one command while working: it diffs from
-the `Base:` line of the unit in progress in `TODO.md` (or `BASE=<rev>`),
+where the branch left `origin/main` (or `BASE=<rev>`),
 runs the model-free `checks` of `gates.json` the changed paths select
 (`fmt` over the changed Zig files, `unit` = `make test`, `test-metal`,
 `manifests`, `python`, `site`), then the matched `verify` gates cheapest first, one model
@@ -395,7 +394,7 @@ about a minute per context instead of an eleven-minute 32K prefill:
   catalogue verdict is set
   ([benchmarks § The re-priced speculative verdicts](benchmarks/history.md#the-re-priced-speculative-verdicts-2026-10-01)).
 
-**The keep rule** ([TODO.md](../TODO.md) while the decode-speed theme
+**The keep rule** (while the decode-speed theme
 runs): keep a change when its median decode, or for a verify lever the
 batch cost C at the unit's row counts, improves by ≥ 2 % at one context or
 more and no context regresses by more than 1 %, over ≥ 5 interleaved
@@ -883,8 +882,8 @@ binary that does not report the plain version.
 ## Commits, progress, and code explanations
 
 Follow the commit, branch, and pull request conventions in
-[../AGENTS.md](../AGENTS.md). A unit's tests, documentation, and its
-[../TODO.md](../TODO.md) update travel in its pull request, whose
+[../AGENTS.md](../AGENTS.md). A unit's tests and documentation
+travel in its pull request, whose
 description is the record of the work.
 
 The project is also intended to deepen the user's understanding of Zig. Add
@@ -1058,7 +1057,7 @@ license texts on the web. Do not commit license text files.
 ## Documentation conventions
 
 - Keep product requirements and acceptance criteria in [spec.md](spec.md); the
-  the active plan lives in [../TODO.md](../TODO.md) and each finished
+  the active plan lives in the maintainer's tracker and each finished
   unit's record in its pull request.
 - Add a document under `docs/` when there is concrete information to record,
   in the folder whose rule it fits, and give it a line in

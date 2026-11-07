@@ -99,7 +99,6 @@ After the merge: `make tag V={version}`.
 
 - [x] `make verify-auto` passes from the branch's base, and the tiers it names ran or are exempt (version strings only)
 - [x] Documents that describe the change are updated; `make docs-check` passes
-- [x] The section of `TODO.md` this work came from is removed or updated
 """
 
 

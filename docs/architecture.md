@@ -605,8 +605,8 @@ entries speculate by default.
 [engine/metal-backend.md](engine/metal-backend.md),
 [engine/apple-gpu.md](engine/apple-gpu.md) (the GPU's counters on our kernels),
 [llm-guide.md § 13](llm-guide.md#13-the-matvec-that-reads-16-gb) and
-[§ 23](llm-guide.md#23-guessing-ahead-and-paying-to-check),
-[../TODO.md](../TODO.md) for what is next.
+and
+[§ 23](llm-guide.md#23-guessing-ahead-and-paying-to-check).
 
 ## 12. Structural facts the code relies on
 

@@ -78,7 +78,7 @@ check: fmt-check test test-metal gates-validate workloads-validate ## Format che
 # tiers it requires.
 
 BASE ?= HEAD
-verify-auto: eval-corpus ## What a change needs: the model-free checks and fast-tier gates its paths select (cheapest first, stop at the first failure), then the tiers it requires; BASE= defaults to TODO.md's `Base:` line
+verify-auto: eval-corpus ## What a change needs: the model-free checks and fast-tier gates its paths select (cheapest first, stop at the first failure), then the tiers it requires; BASE= defaults to where the branch left origin/main
 	python3 scripts/gates.py --auto $(if $(filter command line,$(origin BASE)),$(BASE)) $(ARGS)
 
 verify: eval-corpus ## The fast Metal tier: one representative file per family and the paths only a variant has (once per unit)

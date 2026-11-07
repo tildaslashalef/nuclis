@@ -5,7 +5,7 @@ GGUF: `nuclis model pull` fetches a set with its configuration and
 tokenizer files ([catalogue.md § Safetensors artifacts](../models/catalogue.md#safetensors-artifacts)),
 and `inference/src/formats/safetensors.zig` reads and maps it. No model
 family runs one yet; this is the container layer an experimental family
-(Laya, a typed-decision encoder, planned in `TODO.md`) would bind to. There is no llama.cpp oracle here: the format contract and
+(Laya, a typed-decision encoder) would bind to. There is no llama.cpp oracle here: the format contract and
 independent reads of real files are the checks.
 
 ## The format

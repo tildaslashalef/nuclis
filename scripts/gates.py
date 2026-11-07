@@ -49,7 +49,6 @@ PLACEHOLDERS = (
 TRACE_ROOT = ".zig-cache/gates/trace"
 CPU_PREFIX = ".zig-cache/gates/cpu"
 TIMES = ROOT / ".zig-cache/gates/times.json"
-TODO = ROOT / "TODO.md"
 # A gate never measured sorts after the cheap ones.
 UNKNOWN_SECONDS = 60.0
 
@@ -205,10 +204,10 @@ def by_cost(gates, times):
     return sorted(gates, key=lambda g: (first[g.get("model")], g.get("model") or "", cost(g)))
 
 
-def unit_base(todo_text):
-    """The `Base:` revision of the first unit in TODO.md (the one in progress), or None."""
-    m = re.search(r"^Base: `([0-9a-f]{7,40})`", todo_text, re.M)
-    return m.group(1) if m else None
+def unit_base(cwd=ROOT):
+    """The commit this branch left `origin/main` at, or None without that ref."""
+    proc = subprocess.run(["git", "merge-base", "origin/main", "HEAD"], cwd=cwd, capture_output=True, text=True)
+    return proc.stdout.strip() or None
 
 
 def check_argv(check, changed):
@@ -510,7 +509,7 @@ def main():
         nargs="?",
         const="",
         metavar="REV",
-        help="what a change needs: the model-free checks and verify gates its paths select, cheapest first until one fails, then the tiers it requires; REV defaults to TODO.md's `Base:` line",
+        help="what a change needs: the model-free checks and verify gates its paths select, cheapest first until one fails, then the tiers it requires; REV defaults to where the branch left origin/main",
     )
     ap.add_argument("--keep-going", action="store_true", help="with --auto, run everything selected after a failure")
     ap.add_argument(
@@ -632,10 +631,10 @@ def main():
 
 def auto(doc, args):
     """`--auto`: checks, then gates cheapest first, then the required tiers; returns the exit status."""
-    base = args.auto or unit_base(TODO.read_text() if TODO.exists() else "")
+    base = args.auto or unit_base()
     if base is None:
         print(
-            "warning: no REV and no `Base:` line in TODO.md; diffing against HEAD (committed work is not seen)",
+            "warning: no REV and no origin/main; diffing against HEAD (committed work is not seen)",
             file=sys.stderr,
         )
         base = "HEAD"
@@ -907,10 +906,20 @@ class SelfTest(unittest.TestCase):
         times = {"a-big": 50.0, "a-small": 2.0, "b-small": 0.5, "b-big": 9.0}
         self.assertEqual([g["name"] for g in by_cost(gates, times)], ["b-small", "b-big", "a-small", "a-big"])
 
-    def test_unit_base_reads_the_first_unit(self):
-        text = "## A\n\nBase: `acce06a` (the commit)\n\n## B\n\nBase: `1234567`\n"
-        self.assertEqual(unit_base(text), "acce06a")
-        self.assertIsNone(unit_base("no base here, Base: `acce06a` inline"))
+    def test_unit_base_is_where_the_branch_left_origin_main(self):
+        with tempfile.TemporaryDirectory() as tmp:
+
+            def git(*args):
+                argv = ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args]
+                return subprocess.run(argv, cwd=tmp, capture_output=True, text=True, check=True).stdout.strip()
+
+            git("init", "-q")
+            git("commit", "-q", "--allow-empty", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            self.assertIsNone(unit_base(Path(tmp)))
+            git("update-ref", "refs/remotes/origin/main", base)
+            git("commit", "-q", "--allow-empty", "-m", "on the branch")
+            self.assertEqual(unit_base(Path(tmp)), base)
 
     def test_validation_names_bad_checks_and_rules(self):
         doc = sample_doc()
