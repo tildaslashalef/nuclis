@@ -1970,8 +1970,9 @@ effort); after, the pace in § Scheduling (8 runs of each at 2,700 tokens,
 Speech alone is unchanged (0.41×), as is speech beside a cached prompt
 (0.41–0.42×, no stall), and a chat's generation beside speech (24.4–25.5
 tokens/s, `voice-loop.py beside`). Each of the three stalls left is in a
-run whose first token came a second or more late, a step longer than the
-lead; what made those steps long is not known.
+run whose first token came late, by 0.6 s for the 0.04 s stall and a
+second or more for the others: a step longer than the lead. What made
+those steps long is not known.
 
 The prefill pays with what speech needs, about 46 % of the GPU while it
 speaks, whichever way it is sliced: about 5 s here, for 11 s of speech,
