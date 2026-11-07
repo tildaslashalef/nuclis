@@ -96,7 +96,7 @@ verify-cpu: ## The CPU-reference tier (hours): when a unit changes what the CPU 
 verify-changed: eval-corpus ## The Metal-tier gates whose paths match `git diff --name-only $(BASE)` plus untracked files (BASE=HEAD); ARGS='--tier verify-long' or '--tier verify-cpu' for those tiers'
 	python3 scripts/gates.py --changed $(BASE) $(ARGS)
 
-gate: eval-corpus ## Gates by name or glob: make gate NAME=gemma4-qat-trace-f16, NAME='muse-*' (ARGS=--dry-run prints the commands)
+gate: eval-corpus ## Gates by name or glob: make gate NAME=gemma4-qat-trace-f16, NAME='qwen38-*' (ARGS=--dry-run prints the commands)
 	python3 scripts/gates.py --gate $(NAME) $(ARGS)
 
 gates-list: ## Every gate with its tier, family, model, and evidence

@@ -165,12 +165,9 @@ make the registry cheaper than the recipes it replaced:
 The fast tier trims what its gates repeat, not what they cover: a Metal
 draft trace runs the plan alone (its CPU half is the `*-draft-trace-cpu`
 gate), `checkChunkedPrefill` takes its F32-tile and `prefillRows`
-comparisons over 40 tokens (chunk 32 still splits),
-`bonsai-generation-metal` passes `--half-tiles-only` (the F32-tile and
-F16-cache comparisons check the Qwen 3.5 plan's schedule, which
-`qwen38-generation-metal` covers), and the Qwen, Muse, and E4B
+comparisons over 40 tokens (chunk 32 still splits), and the Qwen and E4B
 `*-perplexity` gates run `--chunks 2` against the reference's running
-value after the second window (`chunk_ppl`; −0.005 %, −0.001 %, −0.019 %
+value after the second window (`chunk_ppl`; −0.005 %, −0.019 %
 at `f5982c4`), the whole run being `*-perplexity-full`. The 26B-A4B keeps
 all eight windows: its running difference swings from −4.1 % after the
 first to −1.2 % after the fourth before settling at −0.53 %, so its 1 %
@@ -262,10 +259,10 @@ What can break independently, and what protects it. *Model-free* means
 | Gemma 4: shared KV, per-layer embeddings, own V on global layers, window 512 | — | `gemma4-e4b-*` |
 | Gemma 4: K=V global layers, window 1024, the `gemma4` profile | — | `gemma4-26b-a4b-*` (and the 12B QAT) |
 | Gemma 4: one global KV head (16:1), 48 layers | the 16:1 attention geometry | the 12B QAT, release tier (a shape, through the same code as the 26B's 8:1) |
-| Muse Glimmer plan | — | `muse-*` |
+| Muse Glimmer plan | — | none |
 | session layout: recurrent with the verify tape (Metal, drafter) | session unit tests | `qwen38-generation-metal` |
-| session layout: recurrent without a tape (rewind, replay) | session unit tests | `bonsai-generation-metal`; every CPU generation gate |
-| session layout: attention only (truncate) | session unit tests | any Gemma or Muse generation gate |
+| session layout: recurrent without a tape (rewind, replay) | session unit tests | every CPU generation gate |
+| session layout: attention only (truncate) | session unit tests | any Gemma generation gate |
 | engine loop: EOS, budget, context, cancellation, speculative loop, penalties, top-k readback | none (`engine.zig` has no tests) | `qwen38-speculative-metal` |
 | draft sources: Qwen MTP, Gemma assistant, Muse DFlash | — | `qwen38-draft-trace-*`, `gemma4-{e4b,qat}-draft-trace-*` (the same code, two shapes), `muse-draft-trace-*` |
 | tokenizers: Qwen BPE, Muse (GPT-4o splitter), Gemma SPM, Laya byte-level and Metaspace | the Metaspace rules and rejections on a synthetic vocabulary | one vocabulary gate each (the 12B QAT file carries E4B's tokenizer) |

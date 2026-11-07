@@ -1,5 +1,7 @@
 # Bonsai 2 27B: facts from the artifact and the fork
 
+**No gates.** This family left the gate registry when its file left the test machine. The `make gate` commands below name gates as of `v0.11.0`; the measurements stand as recorded.
+
 Prism ML's ternary re-encoding of Qwen3.8-27B (`general.architecture =
 qwen35`): the pinned Qwen adapter, tokenizer, and runtime schedule apply
 unchanged, and the work sits below the adapter — two weight encodings, a

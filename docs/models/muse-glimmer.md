@@ -1,5 +1,7 @@
 # Muse Glimmer 30B: facts from the artifact and the reference
 
+**No gates.** This family left the gate registry when its file left the test machine. The `make gate` commands below name gates as of `v0.11.0`; the measurements stand as recorded.
+
 Meta's dense 30B chat model (`general.architecture = muse-glimmer`): a
 period-4 sliding/global layer pattern with NoPE on the global layers, an
 attention output gate, sandwich norms with two epsilons, a gpt-4o-family

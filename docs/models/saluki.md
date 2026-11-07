@@ -1,5 +1,7 @@
 # Underdog Saluki 27B: Qwen3.8-27B in 2.26 bits per weight
 
+**No gates.** This family left the gate registry when its file left the test machine. The `make gate` commands below name gates as of `v0.11.0`; the measurements stand as recorded.
+
 Underdog's 2-bit re-encoding of Qwen3.8-27B (`general.architecture =
 qwen35`), built on ISTA DASLab's GSQ-RCO quantization. The pinned Qwen
 adapter, tokenizer, template, and runtime schedule apply unchanged; the

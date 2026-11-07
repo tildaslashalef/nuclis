@@ -502,7 +502,7 @@ def main():
         "--gate",
         action="append",
         metavar="NAME",
-        help="run gates by name or glob (repeatable): gemma4-qat-trace-f16, 'muse-*'",
+        help="run gates by name or glob (repeatable): gemma4-qat-trace-f16, 'qwen38-*'",
     )
     ap.add_argument(
         "--auto",
