@@ -283,6 +283,8 @@ fn dispatch(init: std.process.Init, args: []const []const u8, out: *std.Io.Write
         }
         return 0;
     }
+    // A check's `make` must not inherit this run's `ARGS=...`.
+    for ([_][]const u8{ "MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES" }) |name| _ = init.environ_map.swapRemove(name);
     var session: run.Session = .{
         .arena = arena,
         .gpa = init.gpa,
