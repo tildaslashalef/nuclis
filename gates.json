@@ -152,6 +152,18 @@
    ]
   },
   {
+   "name": "test-tiny",
+   "command": [
+    "make",
+    "test-tiny"
+   ],
+   "paths": [
+    "inference/build.zig",
+    "inference/tiny-check.zig",
+    "inference/src/**"
+   ]
+  },
+  {
    "name": "manifests",
    "command": [
     "make",

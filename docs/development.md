@@ -117,7 +117,7 @@ Facts every unit depends on; keep them here, not in the tracker.
   method is [benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs),
   the reference's harness [llama-cpp.md](benchmarks/llama-cpp.md).
 - `make help` lists all tasks. Per-commit: `make check` (fmt-check, unit
-  tests, `test-metal`, the gate manifest's validation; about 75 s). Before a
+  tests, `test-metal`, `test-tiny`, the gate manifest's validation). Before a
   pull request: `make verify-auto`, the Focus lane of the gate registry
   ([§ Gates](#gates)); `make verify-cpu` only when the unit changes what
   the CPU reference computes (AGENTS.md § Validation). `make bench` when performance is claimed; a
@@ -246,7 +246,7 @@ later one maps it in 0.3–1 s. The cost is in four places:
 | the Gemma 12B QAT file's five gates | 74 | a third Gemma file, covering only its dimensions (below) |
 
 What can break independently, and what protects it. *Model-free* means
-`make check` (unit tests and `test-metal`, no weights):
+`make check` (unit tests, `test-metal`, and `test-tiny`, no weights):
 
 | Axis | Model-free | Gates that alone cover it |
 | --- | --- | --- |
