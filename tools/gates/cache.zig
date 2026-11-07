@@ -344,7 +344,7 @@ test "the key follows the model, the definition, and the optimize mode, not the 
     var gate = gate_a.*;
     var raw = try gate.raw.object.clone(a);
     try raw.put(a, "note", .{ .string = "reworded" });
-    try raw.put(a, "evidence", .{ .string = "docs/elsewhere.md" });
+    try raw.put(a, "evidence", .{ .string = "notes/elsewhere.md" });
     gate.raw = .{ .object = raw };
     try testing.expectEqualStrings(&base, &try keyOf(&scene, &gate, "m"));
     try raw.put(a, "tier", .{ .string = "verify-long" });

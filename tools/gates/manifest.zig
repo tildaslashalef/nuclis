@@ -492,7 +492,7 @@ pub const sample =
     \\   "comparator": {"kind": "exit"}, "evidence": "docs/a.md"},
     \\  {"name": "b-metal", "family": "b", "tier": "verify", "model": "a",
     \\   "command": ["{nuclis}", "--model", "{model}"],
-    \\   "comparator": {"kind": "exit"}, "evidence": "docs/b.md"}
+    \\   "comparator": {"kind": "exit"}, "evidence": "notes/b.md"}
     \\ ],
     \\ "checks": [
     \\  {"name": "fmt", "command": ["zig", "fmt", "--check", "{zig-files}"], "paths": ["**/*.zig"]},

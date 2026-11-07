@@ -123,6 +123,10 @@ stale guidance instead of maintaining competing sources of truth.
   `inference/`; its tests run under `zig build test`, its standalone binary
   under `make hf-downloader`). Build only from the root so the root's
   `.zig-cache` and `zig-out` are the only ones.
+- `tools/gates/` is the gate runner (`nuclis-gates`), a separate executable
+  that imports none of the three packages. `scripts/` holds the rest of the
+  tooling by purpose: `gate/`, `bench/`, `repo/`, `app/`, `fixtures/`,
+  `oracle/`.
 - Root `build.zig` and `build.zig.zon` compose them through path
   dependencies. Do not add fictitious dependencies for unimplemented packages.
 - Executable `main.zig` files only parse arguments and compose/dispatch
@@ -206,28 +210,21 @@ For code changes, once build scaffolding exists:
    ([docs/development.md § Looking at the agent without a person at the
    keyboard](docs/development.md#looking-at-the-agent-without-a-person-at-the-keyboard)).
 4. Run broader checks when shared code or unresolved risks justify them.
-   The model-specific checks are gates in `gates.json`, tiered by cost and
-   selected by changed paths, see [docs/development.md § Gates](docs/development.md#gates).
-   While iterating and before each commit, `make verify-auto`: the
-   model-free checks and fast-tier gates the diff since the unit's `Base:`
-   selects, cheapest first, then the tiers the change requires; run
-   those it names unless the exemptions below apply. `make verify` (the
-   fast Metal tier: one representative file per family and the paths
-   only a variant has) once per unit that touched the inference
-   stack — judge by the work: a unit confined to the executable, the
-   documents, or the scripts changes no numerical behaviour and needs no
-   tier. The CPU tier (`make verify-cpu`, about 30 minutes) is not part of closing a
-   unit unless the unit changes what the CPU reference computes: the
-   arithmetic of an existing CPU kernel or quantized decoder, a family's
-   `*_runtime.zig` forward, or a projector's CPU `Runtime`, or it brings up
-   a family or a draft source. Additions nothing calls yet, refactors a
-   unit test pins, the check tool, and Metal code do not count. Otherwise
-   the CPU tier runs once before a release. The long-context tier (`make
-   verify-long`, 4K-token perplexity) runs when a unit changes
-   attention, the KV cache, or a windowed schedule, and once before a
-   release. The release tier (`make verify-release`: whole-file
-   acceptance, the 8-window perplexities and the variant files the fast
-   tier leaves out) runs once before a release.
+   The model-specific checks are gates in `gates.json`, in three lanes
+   ([docs/development.md § Gates](docs/development.md#gates)). Always:
+   `make check`. Focus: `make verify-auto` before a pull request; it
+   selects the families the change reaches, or the canaries for shared
+   code, skips passes it remembers, and selects nothing for work outside
+   the engine. Release: every tier, strict, before a tag. `make verify`
+   is not a requirement of a pull request.
+   Run a tier `make verify-auto` names only when it applies. The CPU tier
+   (`make verify-cpu`) when a unit changes what the CPU reference computes:
+   the arithmetic of an existing CPU kernel or quantized decoder, a
+   family's `*_runtime.zig` forward, or a projector's CPU `Runtime`, or it
+   brings up a family or a draft source. Additions nothing calls yet,
+   refactors a unit test pins, the check tool, and Metal code do not
+   count. The long-context tier (`make verify-long`, 4K-token perplexity)
+   when a unit changes attention, the KV cache, or a windowed schedule.
 5. A change to the agent's system prompt (`src/agent/system_prompt.zig`),
    a tool description, or the loop's behaviour is measured on the
    playground task list before and after (`make agent-eval VARIANT=…`,

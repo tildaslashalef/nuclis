@@ -46,6 +46,8 @@ inference/           engine library: runtime, quantization, tokenizer,
                      sampling, backends, profiles
 huggingface/         Hub download library (Xet) and its standalone binary;
                      imported by src/ only
+tools/gates/         the gate runner, nuclis-gates; imports no package
+scripts/             gate/, bench/, repo/, app/, fixtures/, oracle/
 docs/                the hub README.md: guide/, models/, engine/, app/, benchmarks/
 site/                the engine.nuclis.dev website: static HTML, CSS, JS, no build
 build.zig            build
@@ -115,11 +117,10 @@ Facts every unit depends on; keep them here, not in the tracker.
   method is [benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs),
   the reference's harness [llama-cpp.md](benchmarks/llama-cpp.md).
 - `make help` lists all tasks. Per-commit: `make check` (fmt-check, unit
-  tests, `test-metal`, the gate manifest's validation; about 75 s). Per
-  unit: `make verify`, the Metal tier of the gate registry
+  tests, `test-metal`, the gate manifest's validation; about 75 s). Before a
+  pull request: `make verify-auto`, the Focus lane of the gate registry
   ([§ Gates](#gates)); `make verify-cpu` only when the unit changes what
-  the CPU reference computes, and once before a release (AGENTS.md §
-  Validation). `make bench` when performance is claimed; a
+  the CPU reference computes (AGENTS.md § Validation). `make bench` when performance is claimed; a
   workload of [§ The record](#the-record) (`make workload NAME=…`) when a
   record is claimed. The kernel micro-benchmarks (`bench-kernels`,
   `bench-matmul` with `ARGS=<tokens>`, `bench-matvec-split`,
@@ -131,7 +132,7 @@ Facts every unit depends on; keep them here, not in the tracker.
 ## Gates
 
 Every model-specific numerical check is a *gate* in [`gates.json`](../gates.json),
-run by `scripts/gate/gates.py`; bounds, model paths, and evidence anchors live
+run by `nuclis-gates` (`tools/gates`); bounds, model paths, and evidence anchors live
 there and nowhere else. A gate is one command (an argv with the
 placeholders `{nuclis}`, `{nuclis-cpu}`, `{zig-metal}`, `{zig-cpu}`,
 `{model}`, `{mtp}`, `{baseline}`, `{mmproj}`, `{trace}`) and a comparator: `exit` (the command's
@@ -139,7 +140,7 @@ status decides: the generation checks, the speculative checks, the Gemma
 and Muse draft checks that compare their own rows, `draft-stats`, the
 vocabulary checks, the perplexity checks, the cross-encoding check against
 its `baseline` file) or `trace` (the `{trace}` directory goes through
-`scripts/gate/compare-generation.py` against the gate's `bounds`). A gate whose
+`nuclis-gates compare` against the gate's `bounds`). A gate whose
 model files (`model`, `mtp`, `baseline`, or the `mmproj` its command names) are not on
 this machine is skipped, not failed: `SKIP <gate> no model: <path>`, a
 separate count in the summary, `skipped` in `--json`. So is a gate whose
@@ -158,9 +159,9 @@ make the registry cheaper than the recipes it replaced:
 | --- | --- | --- | --- | --- |
 | executor | the Metal plan (and the tokenizer) | the Metal plan, and the 12B QAT file's CPU gates | the Metal plan | the CPU reference |
 | covers | one representative file per family and the paths only a variant has (§ What each gate protects) | whole-file acceptance: the 8-window perplexities (`*-perplexity-full`), the Gemma 12B QAT file, `qwen38-draft-stats` | positions past 512 and the sliding windows | the CPU reference of every family, projector, and draft source |
-| cost | minutes (40 gates in 311 s measured 2026-10-02 with `clef-sequences` and `clef-metal`, [MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one); 38 gates; 258 s measured 2026-09-29 for 36 with the three `laya-multilingual-*`, 254 s for the 33 before them, down from 38 gates in 704 s; worklog, [REPO-20](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#repo-20--fast-verification-gates-re-derived-from-code-paths-a-release-tier-make-verify-auto-2026-09-29), [MODL-31](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-31--laya-on-metal-packed-batches-bidirectional-windowed-attention-over-sequence-bounds-2026-09-29), [MODL-33](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-33--laya-multilingual-the-metaspace-tokenizer-the-checkpoints-own-special-tokens-checked-on-both-backends-2026-09-29); then `qwen38-verify-depth-512` and `-4k`, 3–4 s each from saved prefixes) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 3 and 11 min; the other families wait for their references) | 30 min (18 gates: 1,523 s for 15 measured 2026-10-02 with `clef-cpu`, 368 s, then `embeddinggemma-google-cpu` 134 s, `-vectors-cpu` 128 s and `-trace-cpu` 0.5 s on 2026-10-09; 14 gates in 1,327 s on 2026-09-30 with the reference's `matvec` on every core, from hours; `muse-vision-cpu` 447 s and `qwen38-speculative-cpu` 308 s the longest; engineering log, [KERN-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-19--a-threaded-cpu-reference-bit-identical-the-cpu-tier-in-22-minutes-2026-09-30), [MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one)) |
+| cost | minutes (51 gates in 597 s after 185 s of builds, measured 2026-11-07 at `56162a1`, M4 Pro; the canaries about 50 s) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 3 and 11 min; the other families wait for their references) | 30 min (18 gates: 1,523 s for 15 measured 2026-10-02 with `clef-cpu`, 368 s, then `embeddinggemma-google-cpu` 134 s, `-vectors-cpu` 128 s and `-trace-cpu` 0.5 s on 2026-10-09; 14 gates in 1,327 s on 2026-09-30 with the reference's `matvec` on every core, from hours; `muse-vision-cpu` 447 s and `qwen38-speculative-cpu` 308 s the longest; engineering log, [KERN-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-19--a-threaded-cpu-reference-bit-identical-the-cpu-tier-in-22-minutes-2026-09-30), [MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one)) |
 | build | `ReleaseSafe`, `./zig-out/bin/nuclis` | the same (CPU gates as `verify-cpu`) | the same | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
-| when | every unit that touched the inference stack | once before a release | when a unit changes attention, the KV cache, or a windowed schedule (what only positions past 512 and past the 1,024/2,048-token windows exercise), and once before a release | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
+| when | selected by `make verify-auto`; all of it before a release | once before a release | when a unit changes attention, the KV cache, or a windowed schedule (what only positions past 512 and past the 1,024/2,048-token windows exercise), and once before a release | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
 
 The fast tier trims what its gates repeat, not what they cover: a Metal
 draft trace runs the plan alone (its CPU half is the `*-draft-trace-cpu`
@@ -173,48 +174,52 @@ all eight windows: its running difference swings from −4.1 % after the
 first to −1.2 % after the fourth before settling at −0.53 %, so its 1 %
 bound holds only for the whole run.
 
-**`make verify-auto`** is the one command while working: it diffs from
-where the branch left `origin/main` (or `BASE=<rev>`),
-runs the model-free `checks` of `gates.json` the changed paths select
-(`fmt` over the changed Zig files, `unit` = `make test`, `test-metal`,
-`manifests`, `python`, `site`), then the matched `verify` gates cheapest first, one model
-at a time (the pinned files together outgrow the 48 GB, so interleaving
-models reloads each from disk: the same 27 gates took 298 s interleaved,
-220 s grouped; models
-go in the order of their cheapest gate, each gate by its last measured
-seconds, kept in `.zig-cache/gates/times.json` by every run) until one
-fails (`ARGS=--keep-going` runs the rest), and ends
-by naming the tiers the change requires but that did not run, from the
-manifest's `requires` rules, with the file that matched and the rule's
-reason (`verify-cpu` for the CPU kernels, decoders, `*_runtime.zig`
-forwards, and CPU projectors; `verify-long` for the files that hold
-attention, the KV cache, and the windowed schedules). The rules name
-files, not intent: an addition nothing calls yet or a refactor a unit
-test pins still skips the CPU tier (the table above), and the long rule
-matches files that hold more than attention, so its line asks for a
-judgment of the diff. `ARGS=--dry-run` prints the plan.
+**Three lanes.** Always: `make check`, on every commit, and `zig build
+test` in CI. Focus: `make verify-auto`, before a pull request, when the
+engine changed. Release: `make verify-release` and the other tiers, strict,
+before a tag. No scheduled job runs them; `make sweep` runs every gate not
+already remembered, whenever the Mac is free, and those passes count
+towards the release.
 
-Each gate lists the source globs (`paths`) that make it relevant, so
-`make verify-changed BASE=<rev>` runs the Metal-tier gates whose paths
-match `git diff --name-only <rev>` plus untracked files: a commit under
-`src/tui/` selects nothing, one under `inference/src/models/gemma4*.zig`
-the Gemma gates; a CPU kernel file selects only the families that call it
-(`backends/cpu/experts.zig` the 26B-A4B, `hadamard.zig` Bonsai,
-`recurrent.zig` Qwen and Bonsai). The other tiers' gates that match are
-listed, not run; `make verify-changed BASE=<rev> ARGS='--tier
-verify-long'` (or `verify-cpu`, `verify-release`) runs them when the
-change calls for that tier (the table above). The other commands: `make
-verify` / `make verify-release` / `make verify-long` / `make verify-cpu`
-(a tier), `make gate
-NAME=<name or glob>` (`gemma4-qat-trace-f16`, `'muse-*'`; `ARGS=--dry-run`
+**`make verify-auto`** diffs from where the branch left `origin/main` (or
+`BASE=<rev>`). It runs the model-free `checks` the changed paths select,
+then the selected `verify` gates cheapest first, one model at a time (the
+pinned files together outgrow the 48 GB, so interleaving models reloads
+each from disk: the same 27 gates took 298 s interleaved, 220 s grouped)
+until one fails (`ARGS=--keep-going` runs the rest), and ends by naming the
+tiers the manifest's `requires` rules ask for. Those rules name files, not
+intent: an addition nothing calls yet or a refactor a unit test pins still
+skips the CPU tier, and the long rule's line asks for a judgment of the
+diff. `ARGS=--dry-run` prints the plan, and says why each gate was chosen.
+
+**Selection.** `tools/gates` (`nuclis-gates`) fingerprints each engine file:
+a Zig file by its tokens, so comments and spacing do not count, anything
+else by its bytes. The root `build.zig` is left out on purpose. It walks
+`@import` and `@embedFile` forward from each of the manifest's `families`
+seeds, stopping at `aggregators`. A changed file reached by one or a few
+families selects those families' gates; a file no family reaches alone, or
+more than `family_cutoff` reach, selects the `canaries`, 17 cheap gates
+that cover the shared plans in about 50 s. Other tiers are not run unless
+asked: `make verify-changed BASE=<rev> ARGS='--tier verify-long'`.
+
+**Remembered passes.** A pass is keyed by the gate's definition, the
+fingerprints of every engine file except those exclusive to other families,
+each model file's path, size, and modification time, and the optimize
+mode. Passes live in `$NUCLIS_HOME/gates/`, so they outlast a cleared
+`.zig-cache` and are shared by worktrees. A skip is not a pass.
+`ARGS=--no-cache` runs a gate anyway.
+
+The other commands: `make verify` / `make verify-release` / `make
+verify-long` / `make verify-cpu` (a tier), `make sweep`, `make gate
+NAME=<name or glob>` (`gemma4-qat-trace-f16`, `'qwen38-*'`; `ARGS=--dry-run`
 prints the commands), `make gates-list`, and `make gates-validate` (part of
-`make check`: the manifest's schema and the runner's self-test, no model).
-`python3 scripts/gate/gates.py --json` returns the results with the git
+`make check`: the manifest's schema, no model).
+`nuclis-gates --json` returns the results with the git
 revision for a log entry, each with its output lines stamped by time
 since launch (`--timeline` prints them); the check tools behind
 `{zig-*}` are compiled first (`zig build check-tools`), so the builds'
 seconds are reported apart from the gates'. Gate names are `<entry>-<check>-<executor>`:
-`qwen38`, `gemma4`, `gemma4-qat`, `gemma4-26b-a4b`, `muse`, `bonsai`;
+`qwen38`, `gemma4`, `gemma4-qat`, `gemma4-26b-a4b`;
 `trace-{cpu,f32,f16}`, `generation-{cpu,metal}`, `speculative-{cpu,metal}`,
 `draft-trace-{cpu,metal}`, `draft-stats`, `vocabulary`, `perplexity` (two
 windows), `perplexity-full`, `perplexity-4k`. A
@@ -228,8 +233,7 @@ their references are pinned under `tests/fixtures/perplexity/`
 
 ### What each gate protects
 
-Measured 2026-09-29 at `acce06a`, before the fast tier (M4 Pro, `python3 scripts/gate/gates.py
---tier verify --json`, whose per-gate `timeline` stamps every output
+Measured 2026-09-29 at `acce06a`, before the fast tier (M4 Pro, `--tier verify --json`, whose per-gate `timeline` stamps every output
 line): the Metal tier took 704 s after 9 s of builds. Loading is not
 the cost: a model's first gate pays the cold page cache (2–8 s), every
 later one maps it in 0.3–1 s. The cost is in four places:
@@ -853,7 +857,7 @@ binary that does not report the plain version.
   | --- | --- | --- |
   | Gather | `make release-draft` | the pull requests merged since the last tag, each with the first paragraph of its *What and why*; the suggested version; where the highlights go |
   | Write | (the agent) | the highlights, in `.zig-cache/highlights-vX.Y.Z.txt` |
-  | Verify | `make verify`, `verify-cpu`, `verify-long`, `verify-release` | the release tiers on `main` (the pinned models, about an hour); skipped when no engine code changed |
+  | Verify | `make verify`, `verify-cpu`, `verify-long`, `verify-release` | the release tiers on `main` (the pinned models, about an hour; passes already remembered do not rerun); skipped when no engine code changed |
   | Propose | `make release V=X.Y.Z TIERS='…'` | from an up-to-date `main`: the branch, `make version`, the commit, the push, and the pull request `chore(release): vX.Y.Z` with the highlights and the tiers in its description |
   | Merge | the user | |
   | Tag | `make tag V=X.Y.Z` | on `main` at `origin/main` with the manifest at `X.Y.Z`: the annotated tag with the highlights as its message, signed when git signs tags (`tag.gpgSign`), pushed; `release.yml` publishes |
