@@ -285,7 +285,7 @@ F32 cache, one token per decode: 156 layer files (three positions × 52
 layers × 6,656 floats) and the 202,048 logits, greedy token 372.
 
 `make gate NAME=muse-trace-cpu` (`nuclis generate --backend cpu
---prompt-tokens …`, then `scripts/gate/compare-generation.py` at the bring-up
+--prompt-tokens …`, then `nuclis-gates compare` at the bring-up
 thresholds, max abs 2e-3 and relative RMS 1e-4 per file), 2026-09-19:
 
 | Rows | Max abs | Max relative RMS | Greedy |

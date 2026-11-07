@@ -169,7 +169,7 @@ the same pinned trace the Metal rows match at 1.5e-5 max abs / 5.8e-7
 relative RMS at position 0 and 1.5e-5 / 7.2e-7 at position 1 (F32 cache);
 with the F16 cache the keys and values round within the family's recorded
 `half_*` bound (8.5e-3 / 3.1e-4 and 2.5e-3 / 2.4e-4). `make gate NAME='qwen38-draft-trace-*'` writes the native rows and
-runs `compare-generation.py --draft` against the pinned directory; both executors pass
+runs `nuclis-gates compare --draft` against the pinned directory; both executors pass
 on all three rows (block `h` at positions 0 and 1, and the target `hprev`).
 `draftRecoveryCheck` (generation-check, both executors) resets the block
 and takes a checkpoint/rewind across a block row: the hidden is

@@ -321,7 +321,7 @@ Recipe (the harness compiled as in
 <file> '<bos>Hello,' <dir>` (the harness does not add BOS; `parse_special`
 is on, so the marker in the text supplies it), then `nuclis generate
 --backend cpu --prompt-tokens <ids.json> --max-tokens 1 --ctx-size 8
---logits … --trace-dir …`, then `compare-generation.py --positions 3
+--logits … --trace-dir …`, then `nuclis-gates compare --positions 3
 --embedding 3840 --layers 48 --vocab 262144`.
 
 **Shared math reused, and what was added.** `cpu.rmsNorm`, `cpu.matvec`

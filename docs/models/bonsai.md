@@ -259,7 +259,7 @@ mixer), and `value_grouped` says the fold used the grouped order
 takes none of these paths.
 
 `make gate NAME=bonsai-trace-cpu` (`generate --backend cpu --raw --prompt 'Hello,'`
-on the PQ2_0 file, then `compare-generation.py` against
+on the PQ2_0 file, then `nuclis-gates compare` against
 `tests/fixtures/bonsai-hello-comma` at the bring-up thresholds 2e-3 /
 1e-4) **passes on the first run**: 129 files, max abs 2.44e-4 (at
 `token-1-layer-63`), max relative RMS 5.4e-6, greedy token 353 with the

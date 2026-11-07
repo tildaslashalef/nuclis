@@ -271,7 +271,7 @@ mkdir -p .zig-cache/generation/native-check .zig-cache/generation/reference-chec
 .zig-cache/generation/reference-generation \
   "$HOME/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf" 'Hello,' \
   .zig-cache/generation/reference-check
-python3 scripts/gate/compare-generation.py \
+./zig-out/bin/nuclis-gates compare \
   .zig-cache/generation/native-check .zig-cache/generation/reference-check --positions 2
 ```
 
@@ -291,7 +291,7 @@ is not what the block consumes: its `h` input is the target's
 `generation-check` can write the same rows natively: `--draft-trace DIR`
 steps the pinned `Hello,` tokens through the block on the CPU reference or
 the Metal plan (`--metal`) and writes `p0-h.f32`, `p1-h.f32`,
-`p1-hprev.f32`, and `greedy.txt`. `compare-generation.py --draft` compares
+`p1-hprev.f32`, and `greedy.txt`. `nuclis-gates compare --draft` compares
 those rows and the greedy tokens against the pinned directory
 (`make gate NAME=qwen38-draft-trace-metal`, both backends). `--draft-stats` instead reports the
 per-depth acceptance statistic and draft latency
