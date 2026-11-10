@@ -22,7 +22,7 @@ BIN      := ./zig-out/bin/nuclis
 METAL    := -Dmetal=true -Doptimize=$(OPT)
 
 .DEFAULT_GOAL := build
-.PHONY: help build debug build-cpu metal install uninstall test test-metal test-tiny check gates-tool verify-auto verify verify-release verify-long verify-cpu verify-changed sweep gate gates-list gates-validate \
+.PHONY: help build debug build-cpu build-linux metal install uninstall test test-metal test-tiny check gates-tool verify-auto verify verify-release verify-long verify-cpu verify-changed sweep gate gates-list gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate speed speed-base spec-matrix \
         agent agent-eval api-check playground model-ls eval-corpus speech-corpus trace capture clean clean-cache distclean hf-downloader test-hf version release-draft release tag site-check site-serve docs-check
@@ -41,6 +41,12 @@ debug: ## Debug build
 
 build-cpu: ## Release build without the Metal backend (-Dmetal=false)
 	$(ZIG) build -Doptimize=$(OPT) -Dmetal=false
+
+# The release's Linux target, into its own prefix so ./zig-out keeps this
+# machine's binary. It proves the tree compiles for Linux; the Linux tests
+# run in CI.
+build-linux: ## Cross-compile the CPU-only Linux build into .zig-cache/linux (compiles only; CI runs its tests)
+	$(ZIG) build -Dmetal=false -Dtarget=x86_64-linux-gnu.2.35 -Dcpu=x86_64_v3 --prefix .zig-cache/linux
 
 metal: ## Release build with the Metal backend stated explicitly
 	$(ZIG) build $(METAL)

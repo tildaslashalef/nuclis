@@ -20,15 +20,16 @@ the session protocol below.
 
 ## The session protocol
 
-Work arrives as **units**: one unit is one session, one branch, and one pull
-request, however many tasks it holds. Two places carry the state. If
+Work arrives as **units**, grouped into **milestones**: one unit is one
+session and one commit, however many tasks it holds; one milestone is one
+branch and one pull request. Two places carry the state. If
 `AGENTS.local.md` exists, read it: it names the tracker and overrides the
 queue rules here. Without it, ask the user what to work on.
 
 | Where | Holds | Changes when |
 | --- | --- | --- |
 | the maintainer's tracker | the queue: the units agreed and not yet merged, each with its design, and a hand-off note | a plan is written, a session ends, a unit merges |
-| the unit's pull request | the record: what changed and why, the evidence, what remains (`.github/pull_request_template.md`) | the session opens it and keeps it current; the user merges it |
+| the unit's commit, and its milestone's pull request | the record: what changed and why, the evidence, what remains (`.github/pull_request_template.md`), as the commit's body; the pull request lists its units | the session commits it; the pull request opens after the milestone's last unit; the user merges it |
 
 **A fresh session is in one of two states.** Read the queue first; it
 tells you which.
@@ -42,9 +43,12 @@ tells you which.
    tracker, and a design that outlives its unit goes to the document under
    `docs/` that owns it.
 
-**A unit starts on its own branch** from an up-to-date `main`, named for
-the work (`few-query-verify-attention`); `make verify-auto` diffs from
-where the branch left `origin/main`, so it covers the whole unit.
+**A milestone has one branch**, named for its theme (`hostile-input`),
+from an up-to-date `main`, or from the previous milestone's branch when
+that one has not merged yet (rebased onto `main` before its pull request).
+A unit starts on it as soon as the unit before it is committed: nothing
+waits for a merge or for CI. `make verify-auto` diffs from where the
+branch left `origin/main`, so it covers the milestone so far.
 
 **A unit's design is written for whoever implements it next**, which may
 be another model: files, functions, numbers, and gate commands, not intent.
@@ -52,22 +56,27 @@ Refer to code and documents by name and heading, never by line number. A
 unit whose design waits on facts (a file's header, a reference's driver)
 reads them first and rewrites its design at that level before any code.
 
-**Finishing a unit**: the checks pass; the documents it changed are
-updated; the hand-off names the next unit; then, on the user's word, the branch is pushed and the pull
-request opened (or updated) with a Conventional Commit title and the
-record in its description. The user reviews and merges it; a squash
-merge makes the title the commit's subject and the description its body,
-so `git log main` is the history of the work. A session that ends before
-the unit is finished leaves the branch committed and the hand-off saying
-what was delivered and what remains; whether it is pushed as a draft
-pull request is the user's call.
+**Finishing a unit**: the checks pass, here and for Linux (`make
+build-linux`: CI's Linux job runs once per milestone, so each unit at
+least proves it compiles there); the documents
+it changed are updated; the unit is one commit with a Conventional Commit
+subject and the record as its body; the hand-off names the next unit. A
+session that ends before the unit is finished leaves its work committed
+and the hand-off saying what was delivered and what remains; the next
+session folds that into the unit's one commit.
+
+**Finishing a milestone**: after its last unit, on the user's word, the
+branch is pushed and one pull request opened, titled for the milestone,
+its description listing the units. The user reviews and merges it by
+rebase, so each unit stays one commit and `git log main` is the history
+of the work.
 
 **Nothing lands silently.** A side fix found inside a unit goes into that
-unit's pull request and its record. Work the user asks for during a
-session belongs to that session's unit: the same branch and pull
-request, named in its record and its design, never a branch
-of its own. Only work outside any session's unit is a small unit of its
-own, with its own branch and pull request.
+unit's commit and its record. Work the user asks for during a
+session belongs to that session's unit: the same commit, named in its
+record and its design, never a branch of its own. Only work outside any
+milestone is a small unit of its own, with its own branch and pull
+request, merged by squash.
 
 **Durable knowledge never lives only in the tracker or a pull request**:
 requirements go to `docs/spec.md`, environment facts to
@@ -212,7 +221,7 @@ For code changes, once build scaffolding exists:
 4. Run broader checks when shared code or unresolved risks justify them.
    The model-specific checks are gates in `gates.json`, in three lanes
    ([docs/development.md § Gates](docs/development.md#gates)). Always:
-   `make check`. Focus: `make verify-auto` before a pull request; it
+   `make check`. Focus: `make verify-auto` before a unit's commit; it
    selects the families the change reaches, or the canaries for shared
    code, skips passes it remembers, and selects nothing for work outside
    the engine. Release: every tier, strict, before a tag. `make verify`
@@ -332,17 +341,18 @@ Use [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/#
 bug fixes, and `docs`, `build`, `test`, `refactor`, `perf`, `ci`, or `chore`
 when those better describe the change. Scopes such as `nuclis`,
 `inference`, `metal`, and `gguf` are optional. Mark breaking changes with
-`!` or a `BREAKING CHANGE:` footer. The pull request's title follows the
-same form: it is what the release notes list.
+`!` or a `BREAKING CHANGE:` footer. A unit's commit subject and a pull
+request's title follow the same form: they are what the history and the
+release notes list.
 
-Commit each coherent, verified step on the unit's branch: a feature with its
-tests and docs, a focused fix, or a self-contained documentation update.
-Do not commit every small edit. Inspect the staged diff and run applicable
-checks before committing. Use short subjects; add a body only when it
-explains a useful reason or tradeoff. Do not add `Co-Authored-By:` or any
+Commit each coherent, verified step while a unit is in progress (a feature
+with its tests and docs, a focused fix); when the unit is finished, fold
+its steps into the unit's one commit, whose body is the record. Do not
+commit every small edit. Inspect the staged diff and run applicable
+checks before committing. Use short subjects. Do not add `Co-Authored-By:` or any
 other co-author/attribution trailer to commits or pull requests.
 
-**Authorized without asking:** commits on the unit's branch. **Ask first,
+**Authorized without asking:** commits on the milestone's branch. **Ask first,
 every time:** pushing the branch, opening the unit's pull request, and
 updating its description; the branch stays local until the user says to
 push it.
