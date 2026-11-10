@@ -65,7 +65,7 @@ Facts every unit depends on; keep them here, not in the tracker.
   by `zigup`; any install of that version works); consult its installed std source for API
   details. Apple M4 Pro, 48 GiB, macOS 27. Metal compiles
   shaders at runtime from the Command Line Tools; Xcode-only tools are reached
-  per process (see [../AGENTS.md § Local toolchain notes](../AGENTS.md#local-toolchain-notes)).
+  per process (see [../AGENTS.md § Local toolchain](../AGENTS.md#local-toolchain); `make trace` holds the full `xctrace` invocation).
 - Model `~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf`
   (catalogue name `qwen3.8-27b`, the default `engine.model`), SHA-256
   `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`,

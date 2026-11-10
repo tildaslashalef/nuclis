@@ -5,409 +5,308 @@ Instructions for coding agents working in this repository.
 ## Project and sources of truth
 
 nuclis is a modular local inference engine and evaluation CLI built with
-Zig 0.17, initially targeting Qwen3.8-27B on an Apple M4 Pro with 48 GB
-unified memory. A lean agent loop embedded in `nuclis chat` (see the agent
-section of [docs/spec.md](docs/spec.md)) gives the playground small coding
-task abilities; it is not a second product.
+Zig 0.17, for open-weight models on an Apple M4 Pro with 48 GB of unified
+memory. A lean agent loop embedded in `nuclis agent` (see the agent section
+of [docs/spec.md](docs/spec.md)) gives the playground small coding task
+abilities; it is not a second product.
 
 Read [docs/architecture.md](docs/architecture.md) for the stack overview and
-[docs/spec.md](docs/spec.md) for scope and acceptance criteria. Shared
-workflow and toolchain conventions live in
-[docs/development.md](docs/development.md); every other document is listed
-in [docs/README.md](docs/README.md), one folder per kind (`guide/`,
-`models/`, `engine/`, `app/`, `benchmarks/`). The plan and the record are described in
-the session protocol below.
+[docs/spec.md](docs/spec.md) for scope and acceptance criteria. Workflow and
+toolchain conventions live in [docs/development.md](docs/development.md);
+every other document is listed in [docs/README.md](docs/README.md), one
+folder per kind (`guide/`, `models/`, `engine/`, `app/`, `benchmarks/`).
 
 ## The session protocol
 
 Work arrives as **units**, grouped into **milestones**: one unit is one
 session and one commit, however many tasks it holds; one milestone is one
-branch and one pull request. Two places carry the state. If
-`AGENTS.local.md` exists, read it: it names the tracker and overrides the
-queue rules here. Without it, ask the user what to work on.
+branch and one pull request. If `AGENTS.local.md` exists, read it: it names
+the tracker and overrides the queue rules here. Without it, ask the user
+what to work on.
 
-| Where | Holds | Changes when |
-| --- | --- | --- |
-| the maintainer's tracker | the queue: the units agreed and not yet merged, each with its design, and a hand-off note | a plan is written, a session ends, a unit merges |
-| the unit's commit, and its milestone's pull request | the record: what changed and why, the evidence, what remains (`.github/pull_request_template.md`), as the commit's body; the pull request lists its units | the session commits it; the pull request opens after the milestone's last unit; the user merges it |
+| Where | Holds |
+| --- | --- |
+| the maintainer's tracker | the queue: the units agreed and not yet done, each with its design, in order, and a hand-off note |
+| the unit's commit | the record, as its body: what changed and why, the evidence, what remains (`.github/pull_request_template.md` gives the shape) |
+| the milestone's pull request | the list of its units; the user reviews and merges it |
 
-**A fresh session is in one of two states.** Read the queue first; it
-tells you which.
-
-1. **It lists work.** Summarize the hand-off and the next unit, ask how
-   the user wants to continue, then continue that unit. Do not replan.
-2. **It is empty.** Nothing is in progress. Ask what to work on, agree the
-   theme with the user, and write the plan into the tracker (the hand-off
-   note and the unit designs) before touching code. There is no roadmap,
-   and GitHub's issues, projects, and wiki are off: the queue is the
-   tracker, and a design that outlives its unit goes to the document under
-   `docs/` that owns it.
-
-**A milestone has one branch**, named for its theme (`hostile-input`),
-from an up-to-date `main`, or from the previous milestone's branch when
-that one has not merged yet (rebased onto `main` before its pull request).
-A unit starts on it as soon as the unit before it is committed: nothing
-waits for a merge or for CI. `make verify-auto` diffs from where the
-branch left `origin/main`, so it covers the milestone so far.
+**A fresh session reads the queue first.** If it lists work, summarize the
+hand-off and the next unit, ask how the user wants to continue, then
+continue that unit; do not replan. If it is empty, ask what to work on,
+agree the theme, and write the plan into the tracker before touching code.
+There is no roadmap, and GitHub's issues, projects, and wiki are off.
 
 **A unit's design is written for whoever implements it next**, which may
 be another model: files, functions, numbers, and gate commands, not intent.
 Refer to code and documents by name and heading, never by line number. A
-unit whose design waits on facts (a file's header, a reference's driver)
-reads them first and rewrites its design at that level before any code.
+unit whose design waits on facts reads them first and rewrites its design
+at that level before any code.
+
+**A milestone has one branch**, named for its theme (`hostile-input`), from
+an up-to-date `main`, or from the previous milestone's branch when that one
+has not merged yet (rebased onto `main` before its pull request). A unit
+starts as soon as the unit before it is committed: nothing waits for a
+merge or for CI.
 
 **Finishing a unit**: the checks pass, here and for Linux (`make
-build-linux`: CI's Linux job runs once per milestone, so each unit at
-least proves it compiles there); the documents
-it changed are updated; the unit is one commit with a Conventional Commit
+build-linux`; CI's Linux job runs once per milestone); the documents it
+changed are updated; the unit is one commit with a Conventional Commit
 subject and the record as its body; the hand-off names the next unit. A
-session that ends before the unit is finished leaves its work committed
-and the hand-off saying what was delivered and what remains; the next
-session folds that into the unit's one commit.
+session that ends early leaves its work committed and the hand-off saying
+what was delivered and what remains; the next session folds that into the
+unit's one commit.
 
 **Finishing a milestone**: after its last unit, on the user's word, the
 branch is pushed and one pull request opened, titled for the milestone,
-its description listing the units. The user reviews and merges it by
-rebase, so each unit stays one commit and `git log main` is the history
-of the work.
+its description listing the units. The user merges it by rebase, so each
+unit stays one commit and `git log main` is the history of the work.
 
-**Nothing lands silently.** A side fix found inside a unit goes into that
-unit's commit and its record. Work the user asks for during a
-session belongs to that session's unit: the same commit, named in its
-record and its design, never a branch of its own. Only work outside any
-milestone is a small unit of its own, with its own branch and pull
-request, merged by squash.
+**Nothing lands silently.** A side fix found inside a unit, and work the
+user asks for during a session, belong to that unit's commit and its
+record. Only work outside any milestone is a small unit of its own, with
+its own branch and a squash-merged pull request.
 
-**Durable knowledge never lives only in the tracker or a pull request**:
+**Durable knowledge never lives only in the tracker or a commit message**:
 requirements go to `docs/spec.md`, environment facts to
 `docs/development.md`, designs and the decisions behind them to the
 document under `docs/` that owns them.
 
-## Session hygiene
-
-One session per unit. Compact only between tasks (after a commit) with a
-note of what to keep: the unit, the changed files, the gate commands, and
-any measured numbers not yet written into the docs. Never let
-auto-compaction fire mid-measurement. Keep tool output out of the context:
-pipe builds and benchmarks through `grep`/`tail`, read documents by section,
-and write measurements into the docs as soon as they are taken so the
-transcript is not the only copy. The hand-off is the tracker and the pull
-request, never the conversation.
+**Session hygiene.** One session per unit. Compact only between units,
+with a note of what to keep: the unit, the changed files, the gate
+commands, and measured numbers not yet written into the docs. Never let
+auto-compaction fire mid-measurement. Keep tool output out of the context
+(pipe builds and benchmarks through `grep`/`tail`, read documents by
+section) and write measurements into the docs as soon as they are taken.
 
 ## Working mode
 
 Act as an implementation collaborator: design, implement, test, review, and
 document the requested work. Complete authorized work without unnecessary
-confirmation. Respect requests to discuss or draft before implementation.
+confirmation; respect requests to discuss or draft first. Resolve routine
+choices within the task; raise material ambiguity with a concrete
+recommendation. Inspect files and diffs before changing them, and preserve
+unrelated user work.
 
-This project is also the user's way to understand Zig deeply. Write clear but
-terse module docs and comments (see *Code comments*): ownership, invariants,
-and non-obvious constructs, not prose. Keep documentation current with each
-completed increment. Teach in chat, not in code comments; the agent is
-authorized to write complete code, without a lesson or exercise workflow.
-Periodically explain the component being built and its role in the inference
-stack in chat, building on previous explanations.
+This project is also the user's way to understand Zig deeply. Teach in
+chat, not in code comments: periodically explain the component being built
+and its role in the inference stack, building on earlier explanations. The
+agent writes complete code; there is no lesson or exercise workflow.
 
 [docs/llm-guide.md](docs/llm-guide.md) is the user's companion on the
-inference stack itself (kernels, quantization, the runtime, model
-architectures), not on the application or the agent. **Extend it only when
-the user asks**, never as a routine part of finishing a unit; when they do,
-keep examples grounded in actual implementation status, and read the guide
-before repeating or extending an explanation.
+inference stack. **Extend it only when the user asks**; then read it first
+and keep its examples grounded in what is implemented.
 
 Use [docs/spec.md](docs/spec.md) to control scope. Distinguish accepted
-decisions, proposed targets, and measured results. Resolve routine choices
-within the task; raise material ambiguity with a concrete recommendation.
-
-Inspect existing files and diffs before changing them. Preserve unrelated user
-work. Update documentation when behavior or architecture changes, and remove
-stale guidance instead of maintaining competing sources of truth.
+decisions, proposed targets, and measured results. Update documentation
+when behavior or architecture changes, and remove stale guidance instead of
+keeping competing sources of truth.
 
 ## Repository architecture
 
-- Three packages compose the build: `src/` (the executable: CLI, chat, agent
-  loop, tools, `nuclis model`), `inference/` (the engine: runtime,
-  quantization, tokenizer, sampling, backends, and its kernels), and
-  `huggingface/` (Hub downloads over Xet; imported by `src/` only, never by
-  `inference/`; its tests run under `zig build test`, its standalone binary
-  under `make hf-downloader`). Build only from the root so the root's
-  `.zig-cache` and `zig-out` are the only ones.
+- Three packages compose the build: `src/` (the executable: CLI, agent
+  loop, tools, server, `nuclis model`), `inference/` (the engine: runtime,
+  quantization, tokenizer, sampling, backends, kernels), and `huggingface/`
+  (Hub downloads over Xet; imported by `src/` only, never by `inference/`).
+  Build only from the root, so the root's `.zig-cache` and `zig-out` are
+  the only ones.
 - `tools/gates/` is the gate runner (`nuclis-gates`), a separate executable
   that imports none of the three packages. `scripts/` holds the rest of the
   tooling by purpose: `gate/`, `bench/`, `repo/`, `app/`, `fixtures/`,
   `oracle/`.
-- Root `build.zig` and `build.zig.zon` compose them through path
-  dependencies. Do not add fictitious dependencies for unimplemented packages.
-- Executable `main.zig` files only parse arguments and compose/dispatch
-  modules.
-- Keep application-specific utilities inside `src/` until reuse justifies
-  moving them to `inference/`.
-- The tool name `nuclis` and the package name `.nuclis` are decided.
-- `site/` is the engine.nuclis.dev website: static files, no build, deployed by
-  Cloudflare (Workers static assets) from `main`
+- Root `build.zig` and `build.zig.zon` compose the packages through path
+  dependencies. Do not add fictitious dependencies for unimplemented
+  packages.
+- Executable `main.zig` files only parse arguments and dispatch.
+- Keep application utilities inside `src/` until reuse justifies moving
+  them to `inference/`.
+- `site/` is the engine.nuclis.dev website: static files, no build,
+  deployed from `main`
   ([docs/development.md § The website](docs/development.md#the-website)).
-  Its figures are copies of the README's tables that `make site-check`
-  holds equal; a change to it is looked at in screenshots, not gates.
+  Its figures are copies of the README's that `make site-check` holds
+  equal; a change to it is looked at in screenshots, not gates.
 
-## Shared engineering rules
+## Engineering rules
 
-- Pass allocators explicitly; no global allocator. Document ownership and
-  borrowed lifetimes, and clean up partially initialized state.
-- Pass Io explicitly to I/O-capable code. Keep pure logic independent of I/O.
-- Prefer small interfaces that hide substantial implementation detail.
-  Add abstractions around concrete variation rather than hypothetical plugins.
-- Validate untrusted input and bound allocations, output, and execution time.
-- Use typed errors/results for expected failures; do not panic on bad input.
-- Human-readable and machine-readable output derive from the same result types.
-- nuclis is its own reference (since 2026-10-14). Implement from the format
-  or mathematical contract; validate new work against nuclis's
-  already-validated paths: the CPU reference, Metal against it, and the same
-  model in an encoding already validated (the cross-encoding check,
-  [docs/models/README.md § 4](docs/models/README.md#4-validate-against-nuclis-itself)).
-  External implementations (llama.cpp, ds4, ...) are never sources to copy
-  and no longer oracles; read one only as the definition of a format that
-  has no other. Fixtures and traces already pinned from them stay.
-  Format-defining constants and any third-party material that must exist in
-  the tree are recorded in `THIRD_PARTY_NOTICES.md`, which links license
-  texts on the web. Do not add per-directory license files.
+- Pass allocators and Io explicitly; no global allocator. Document
+  ownership and borrowed lifetimes, and clean up partially initialized
+  state. Keep pure logic independent of I/O.
+- Prefer small interfaces that hide substantial implementation. Add
+  abstractions around concrete variation, not hypothetical plugins.
+- Validate untrusted input (files, sockets, model output) and bound
+  allocations, output, and execution time. Use typed errors for expected
+  failures; never panic on bad input.
+- Human-readable and machine-readable output derive from the same result
+  types.
+- **nuclis is its own reference.** Implement from the format or the
+  mathematical contract, and validate new work against nuclis's
+  already-validated paths: the CPU reference, Metal against it, and the
+  same model in an encoding already validated
+  ([docs/models/README.md § 4](docs/models/README.md#4-validate-against-nuclis-itself)).
+  External implementations are never sources to copy and are not oracles;
+  read one only as the definition of a format that has no other. Fixtures
+  pinned from them earlier stay. Third-party material that must be in the
+  tree is recorded in `THIRD_PARTY_NOTICES.md`, with no per-directory
+  license files.
 
-## Inference engine rules
+### The inference engine
 
-- Zig owns model semantics and execution planning.
-- Objective-C exposes a C-compatible Metal interface; Metal Shading Language
-  implements GPU kernels. Keep platform objects behind opaque handles.
-- Shared runtime, tensor/quantization, tokenizer, sampling, and backend modules
-  must not embed Qwen-specific layer schedules or prompt assumptions.
-- Model adapters own weight mapping, graph construction, and state layout.
-  Prompt profiles are separate from numerical architecture.
-- Keep immutable weights separate from mutable session state. Recurrent state
-  cannot be reset or rewound merely by truncating an attention KV cache.
+- Zig owns model semantics and execution planning. Objective-C exposes a
+  C-compatible Metal interface behind opaque handles; Metal Shading
+  Language implements the GPU kernels.
+- Shared runtime, quantization, tokenizer, sampling, and backend modules
+  must not embed a family's layer schedule or prompt assumptions. Model
+  adapters own weight mapping, graph construction, and state layout; prompt
+  profiles are separate from numerical architecture.
+- Keep immutable weights separate from mutable session state. Recurrent
+  state cannot be reset or rewound by truncating an attention KV cache.
 - Validate GGUF metadata, dimensions, offsets, and actual tensor encodings.
-  Reject unsupported combinations explicitly; do not silently requantize.
+  Reject unsupported combinations explicitly; never requantize silently.
 - Numerical correctness precedes optimization. Measure prefill and decode
-  separately against nuclis's own previous record on the same machine and
+  separately, against nuclis's own previous record on the same machine and
   method.
-- GPU resources must outlive submitted work. Test synchronization, cancellation,
-  and cleanup separately from Zig allocator leak checks.
-- Benchmarks must identify hardware, build, artifact, context, and methodology.
-  Do not present estimates as measurements.
+- GPU resources must outlive submitted work. Test synchronization,
+  cancellation, and cleanup separately from allocator leak checks.
+- Benchmarks identify hardware, build, artifact, context, and method, and
+  cite the git revision (the release tag once one exists). Never present an
+  estimate as a measurement.
 
-## Embedded agent rules
+### The embedded agent
 
-The agent in `nuclis chat` is a bounded playground loop, not a platform:
+The agent in `nuclis agent` is a bounded playground loop, not a platform.
+
 - Native tool-call conversion (encode and streaming decode) belongs to the
   model profile in `inference/`; execution belongs to the agent.
 - Few, strong tools; bounded output sizes, result counts, and step budgets;
-  truncation is always marked. Exceeding a limit is a typed tool result, not
-  an abort. Failures are results; only inference-transport failure ends a turn.
-- The workspace is the process's working directory; limits are host constants,
-  never model-supplied.
+  truncation is always marked. Exceeding a limit is a typed tool result,
+  not an abort. Failures are results; only inference-transport failure ends
+  a turn.
+- The workspace is the process's working directory; limits are host
+  constants, never model-supplied.
 
 ## Validation and definition of done
 
-For code changes, once build scaffolding exists:
-
-1. Build the affected package and run relevant tests, including error paths.
-2. Format/check changed Zig sources and build files, and changed Python
-   scripts (`make lint-py`).
-3. Exercise the applicable happy path with the freshly built
-   `./zig-out/bin/nuclis`, never an installed copy. A change to the chat
-   surface (`src/tui/`, `src/agent/root.zig`) is exercised through the
-   screenshot harness, `make shot ARGS='<steps>'` (`scripts/app/tui-shot.py`):
-   drive the keys, drops, and pastes in tmux, read the captures under
-   `.zig-cache/tui/`, fix, repeat; the pull request cites the captures as evidence
+1. Build the affected package and run the relevant tests, error paths
+   included. Unit tests live beside the source in `test` blocks and use
+   `std.testing.allocator`; default tests need no network, credentials,
+   GPU, or model download.
+2. Format changed Zig sources and build files; lint changed Python
+   (`make lint-py`).
+3. Exercise the happy path with the freshly built `./zig-out/bin/nuclis`,
+   never an installed copy. A change to the chat surface (`src/tui/`,
+   `src/agent/root.zig`) is exercised through the screenshot harness,
+   `make shot ARGS='<steps>'`, and the record cites the captures
    ([docs/development.md § Looking at the agent without a person at the
    keyboard](docs/development.md#looking-at-the-agent-without-a-person-at-the-keyboard)).
-4. Run broader checks when shared code or unresolved risks justify them.
-   The model-specific checks are gates in `gates.json`, in three lanes
-   ([docs/development.md § Gates](docs/development.md#gates)). Always:
-   `make check`. Focus: `make verify-auto` before a unit's commit; it
-   selects the families the change reaches, or the canaries for shared
-   code, skips passes it remembers, and selects nothing for work outside
-   the engine. Release: every tier, strict, before a tag. `make verify`
-   is not a requirement of a pull request.
-   Run a tier `make verify-auto` names only when it applies. The CPU tier
-   (`make verify-cpu`) when a unit changes what the CPU reference computes:
-   the arithmetic of an existing CPU kernel or quantized decoder, a
-   family's `*_runtime.zig` forward, or a projector's CPU `Runtime`, or it
-   brings up a family or a draft source. Additions nothing calls yet,
-   refactors a unit test pins, the check tool, and Metal code do not
-   count. The long-context tier (`make verify-long`, 4K-token perplexity)
-   when a unit changes attention, the KV cache, or a windowed schedule.
-5. A change to the agent's system prompt (`src/agent/system_prompt.zig`),
-   a tool description, or the loop's behaviour is measured on the
-   playground task list before and after (`make agent-eval VARIANT=…`,
+4. Run the gates ([docs/development.md § Gates](docs/development.md#gates)).
+   Always: `make check` and `make build-linux`. Before a unit's commit:
+   `make verify-auto`, which selects the families the change reaches (the
+   canaries for shared code, nothing outside the engine) and names any
+   further tier. Run a named tier only when it applies: `make verify-cpu`
+   when a unit changes what the CPU reference computes (an existing CPU
+   kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a
+   projector's CPU `Runtime`) or brings up a family or draft source;
+   `make verify-long` when it changes attention, the KV cache, or a
+   windowed schedule. Every tier, strict, before a tag.
+5. A change to the agent's system prompt, a tool description, or the
+   loop's behaviour is measured on the task list before and after
+   (`make agent-eval VARIANT=…`,
    [docs/development.md § The agent's task list](docs/development.md#the-agents-task-list));
-   the pinned prompt text is re-pinned only with the new table.
-6. Update relevant specifications, command help, and operational documentation.
-7. Report what changed, validation performed, and material remaining limitations.
+   the pinned prompt is re-pinned only with the new table.
+6. Update the specifications, command help, and guides the change touches.
+   For documentation-only work, `make docs-check`; do not claim a build or
+   test that did not run.
+7. Report what changed, what was validated, and what remains.
 
-Unit tests live alongside source in `test` blocks and use
-`std.testing.allocator`. Default tests must not require live network, real
-credentials, GPU hardware, or large model downloads; full-model and Metal
-tests are explicit targets using external artifacts.
+## Local toolchain
 
-For documentation-only changes, validate links, consistency, and removal of
-stale references. Do not claim build/test execution when no code or build exists.
-
-## Local toolchain notes
-
-- The project's Zig is `~/.local/opt/zig/stable` (a symlink to
-  `zig-aarch64-macos-<version>/`), managed by the user's fish function
-  `zigup`. Read the standard library at `stable/lib/std/` and the language
-  reference at `stable/doc/langref.html`, never from the web; only the
-  release notes are online. Do not rely on `current`: `~/.local/bin/zig`
-  links to `current/zig`, which the user may point at `nightly` for a
-  while, so check `zig version` against `stable/zig version` before
-  building and say so if they differ.
-- Zig 0.17 has no `**` array-repetition operator (`"ab" ** 2` fails to
-  parse: "binary operator '*' has whitespace on one side"). Repeat with
-  `@splat`, e.g. `&@as([64]u8, @splat('m'))` for a string; `++` still
-  concatenates. Check a construct remembered from older Zig against
-  `stable/doc/langref.html` before writing it. `zigup install x.y.z` fetches another
-  version (sha256 verified) without switching, at
-  `~/.local/opt/zig/zig-aarch64-macos-x.y.z/zig`, for A/B builds; `zigup gc`
-  deletes versions no link references. Switching links is the user's call.
-- The active developer directory is the Command Line Tools
-  (`xcode-select -p`), which is what `zig build` uses for the Objective-C
-  bridge. Do not switch it globally. Tools that only ship with Xcode
-  (`xctrace`, Instruments) are reached per process through the environment:
-
-  ```sh
-  DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun xctrace record \
-    --template 'Metal System Trace' --instrument 'Metal GPU Counters' \
-    --output .zig-cache/trace/run.trace --no-prompt --launch -- <binary> <args>
-  DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun xctrace export \
-    --input .zig-cache/trace/run.trace --toc
-  ```
-
-  `make trace` wraps this for `bench`. On the M4 Pro the GPU limiter counter
-  profile is reported unsupported and its tables export empty; the GPU
-  timeline (`metal-gpu-intervals`) does record. For counters, `make
-  capture` writes a Metal `.gputrace` of one decode step (needs
-  `MTL_CAPTURE_ENABLED=1`, which the target sets; about 15 GB with the
-  weights; `CAPTURE=` on the micro-benchmarks makes ~1 GB kernel captures)
-  that only Xcode's GUI replays. Xcode 27's agent tools (`xcrun mcpbridge`,
-  an MCP server; `mcp-server` manages it) cover builds, tests, previews,
-  and devices, not GPU captures. Profiling a replay needs Xcode's separate
-  Metal Toolchain component (Xcode offers the download on first use); our
-  builds do not, since the kernels compile at run time ([docs/development.md § GPU
-  counters by capture](docs/development.md#gpu-counters-by-capture)). Keep traces under
-  `.zig-cache/trace/`; never commit them.
+- The project's Zig is `~/.local/opt/zig/stable`, managed by the user's
+  fish function `zigup`. Read the standard library at `stable/lib/std/` and
+  the language reference at `stable/doc/langref.html`, never from the web.
+  `~/.local/bin/zig` follows `current`, which the user may point elsewhere:
+  check `zig version` against `stable/zig version` before building and say
+  so if they differ. Switching links is the user's call; `zigup install
+  x.y.z` fetches another version without switching, for A/B builds.
+- Zig 0.17 has no `**` array-repetition operator: repeat with `@splat`
+  (`&@as([64]u8, @splat('m'))`); `++` still concatenates. Check any
+  construct remembered from older Zig against the langref before writing it.
+- The active developer directory is the Command Line Tools, which is what
+  `zig build` uses for the Objective-C bridge. Do not switch it globally.
+  Tools that ship only with Xcode are reached per process
+  (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun …`);
+  `make trace` and `make capture` wrap them
+  ([docs/development.md § GPU counters by capture](docs/development.md#gpu-counters-by-capture)).
+  Keep traces under `.zig-cache/trace/`; never commit them.
 
 ## Versioning and releases
 
-- The root `build.zig.zon` `.version` is the single source of truth, the
-  last released version. The manifests under `inference/` and
-  `huggingface/` carry the same version because the Zig package format
-  requires one; `make version V=X.Y.Z` sets all three and the site's
-  download (`make site-check` holds it equal). The executable
-  reports it as `nuclis --version`, fed from the root manifest through
-  build options; a build that is not a clean checkout of the release tag
-  reports the next minor as `X.Y.0-dev+<commit>`.
-- [Semantic Versioning](https://semver.org/) with the 0.x convention: while
-  `0.y.z`, the **minor** is the breaking axis; a release with features
-  bumps the minor, one with only fixes the patch.
-- **A release is a version pull request and an annotated tag**
-  ([docs/development.md § Versioning](docs/development.md#versioning)).
-  When the user says "release", an agent:
-  1. runs `make release-draft` and writes the highlights from it to
-     `.zig-cache/highlights-vX.Y.Z.txt`, at the version it suggests unless
-     the user names one;
-  2. runs the release tiers the user wants (`make verify`, `make
-     verify-cpu`, `make verify-long`, `make verify-release`; all may be
-     skipped when no engine code changed, and the record says so);
-  3. shows the user the highlights, then opens the version pull request
-     with `make release V=X.Y.Z TIERS='<what ran>'`, and stops.
+The root `build.zig.zon` `.version` is the last released version;
+`make version V=X.Y.Z` sets it everywhere it must agree. Semantic
+Versioning with the 0.x convention: the minor is the breaking axis. Tags
+never move. The Zig toolchain is its own axis, and a Zig upgrade is its own
+unit ([docs/development.md § Versioning](docs/development.md#versioning)).
 
-  Merging it and `make tag V=X.Y.Z` (the signed, annotated tag whose
-  message is the highlights, pushed) happen only on the user's word for
-  that release; `release.yml` then builds, attests, and publishes, the
-  notes being the highlights and GitHub's list of the pull requests merged
-  since the previous release.
-- Tags never move and are never added retroactively (a ruleset refuses
-  updating or deleting a `v*` tag). Benchmarks and test records cite the git
-  revision, and published numbers cite the release tag once one exists.
-- The Zig toolchain is a separate axis: `minimum_zig_version` pins source
-  compatibility, the exact compiler used is recorded in every benchmark
-  record, and a Zig upgrade is its own unit of work.
+When the user says "release", an agent:
+
+1. runs `make release-draft` and writes the highlights to
+   `.zig-cache/highlights-vX.Y.Z.txt`, at the version it suggests unless
+   the user names one;
+2. runs the release tiers the user wants (`make verify`, `make verify-cpu`,
+   `make verify-long`, `make verify-release`; all may be skipped when no
+   engine code changed, and the record says so);
+3. shows the user the highlights, opens the version pull request with
+   `make release V=X.Y.Z TIERS='<what ran>'`, and stops.
+
+Merging it and `make tag V=X.Y.Z` happen only on the user's word for that
+release; `release.yml` then builds, attests, and publishes.
 
 ## Repository hygiene
 
-### Commits, branches, and pull requests
+### Commits and pull requests
 
-Use [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/#specification):
-`type(optional-scope): short description`. Use `feat` for features, `fix` for
-bug fixes, and `docs`, `build`, `test`, `refactor`, `perf`, `ci`, or `chore`
-when those better describe the change. Scopes such as `nuclis`,
-`inference`, `metal`, and `gguf` are optional. Mark breaking changes with
-`!` or a `BREAKING CHANGE:` footer. A unit's commit subject and a pull
-request's title follow the same form: they are what the history and the
-release notes list.
+[Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/#specification):
+`type(optional-scope): short description`, with `feat`, `fix`, `docs`,
+`build`, `test`, `refactor`, `perf`, `ci`, or `chore`, and `!` or a
+`BREAKING CHANGE:` footer for a breaking change. A unit's commit subject
+and a pull request's title follow the same form. Work is named by what it
+does, never by an invented identifier.
 
-Commit each coherent, verified step while a unit is in progress (a feature
-with its tests and docs, a focused fix); when the unit is finished, fold
-its steps into the unit's one commit, whose body is the record. Do not
-commit every small edit. Inspect the staged diff and run applicable
-checks before committing. Use short subjects. Do not add `Co-Authored-By:` or any
-other co-author/attribution trailer to commits or pull requests.
+Commit each coherent, verified step while a unit is in progress; when it is
+finished, fold the steps into the unit's one commit. Inspect the staged
+diff and run the applicable checks before committing.
 
-**Authorized without asking:** commits on the milestone's branch. **Ask first,
-every time:** pushing the branch, opening the unit's pull request, and
-updating its description; the branch stays local until the user says to
-push it.
-**Never:** pushing to `main` (the ruleset refuses it), merging a pull
-request (the user's review), force-pushing a branch others may have
-fetched, rewriting `main`'s history, or opening issues on GitHub (they are
-off).
+**Authorized without asking:** commits on the milestone's branch. **Ask
+first, every time:** pushing a branch, opening a pull request, updating its
+description. **Never:** pushing to `main`, merging a pull request,
+force-pushing a branch others may have fetched, rewriting `main`'s history,
+or opening issues on GitHub.
 
 ### Code comments
 
 A comment earns its place by saying what the code cannot: an invariant, an
-ownership rule, a non-obvious reason, a hazard. Write the fewest words that
-save the next reader the most time.
+ownership rule, a non-obvious reason, a hazard.
 
-- **Module doc (`//!`): a short orientation.** What the module is, where it
-  sits, and the one or two facts needed to use or change it safely — roughly a
-  dozen lines. Design history, format specifications, and teaching belong in
-  a document under `docs/` (see [docs/README.md](docs/README.md)) or `docs/llm-guide.md`; summarize and link, do not restate.
-- **Declarations (`///`): the contract.** One or two sentences: what it does,
-  what it owns, what it may return. Rationale only where it is surprising.
-- **Inline (`//`): the non-obvious why, never the what.** If a comment restates
-  the next line, fix the code or delete the comment.
-- **No history or plan narration.** Do not write "was X, now Y", "step 7", or a
-  unit identifier as the subject of a sentence (see *No unit identifiers*). A
+- **Module doc (`//!`):** what the module is, where it sits, and the one or
+  two facts needed to use or change it safely; about a dozen lines. Design
+  history and format specifications belong in a document under `docs/`:
+  summarize and link.
+- **Declarations (`///`):** the contract in one or two sentences: what it
+  does, what it owns, what it may return.
+- **Inline (`//`):** the non-obvious why, never the what.
+- **No history or plan narration** ("was X, now Y", "step 7", "phase 2"): a
   comment must stay true after the plan is gone.
-- **No duplicated specifications.** If the text lives in `docs/`, the comment
-  is one line and a link.
-- Prefer one to three lines. A paragraph is a smell; a multi-paragraph comment
-  block almost always belongs in a document.
+- Prefer one to three lines. A paragraph almost always belongs in a
+  document.
 
-### No unit identifiers
+### User data and documents
 
-Units are named by what they do, and referenced by their pull request.
-The `AREA-NN` identifiers of the work before v0.6.0 ([KERN-21](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-21--few-query-verify-attention-through-the-split-pass-2026-09-30), [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12))
-are history: they resolve in [the worklog archived at the `v0.6.0`
-tag](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md), and every one left in the documents links its entry there. Never add a new one. Where an old one remains in a heading, a comment,
-or the gate manifests, the sentence must read correctly without it; code
-comments never need one.
+`~/.nuclis` is the user's configuration and data root (`NUCLIS_HOME`, an
+absolute path, overrides it): models under `models/`, settings and sessions
+in tool-specific subdirectories. Do not commit build caches, binaries,
+model weights, downloaded datasets, credentials, or session data. Use
+small, attributable test fixtures.
 
-### User data
-
-`~/.nuclis` is the user configuration/data root. `NUCLIS_HOME` may override
-it with an absolute path. Models live under `~/.nuclis/models`; settings and
-sessions live in tool-specific subdirectories beneath it.
-
-Do not commit build caches, binaries, model weights, downloaded datasets,
-benchmark artifacts containing private data, API keys, or user session data.
-Use small, attributable test fixtures. Keep model files outside the repository.
-
-`docs/` is the project documentation hub. Keep exactly one authoritative spec
+`docs/` holds exactly one authoritative spec
 ([docs/spec.md](docs/spec.md)). Every document is listed in
-[docs/README.md](docs/README.md) and lives in the folder its rule names:
-`guide/` (using nuclis), `models/` (one file per family), `engine/` (the
-`inference/` package, one file per subsystem), `app/` (the `src/` package),
-`benchmarks/` (the method and the records). A new document gets its line
-there; `make docs-check` holds every link, and `make docs-check
-ARGS='--move old=new'` moves a document with its references. Do not
-require an external project checkout to work here.
+[docs/README.md](docs/README.md) and lives in the folder its kind names.
+`make docs-check` holds every link; `make docs-check ARGS='--move old=new'`
+moves a document with its references.
