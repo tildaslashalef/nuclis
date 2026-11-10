@@ -2,7 +2,7 @@
 
 nuclis is written independently. External implementations are used as
 **references and validation oracles**, not as sources to copy: see the policy in
-[AGENTS.md](AGENTS.md#shared-engineering-rules). This file records every piece of
+[AGENTS.md](AGENTS.md#engineering-rules). This file records every piece of
 third-party material that is actually present in the repository, with its
 origin and license, and lists the references that were consulted but not copied.
 License texts are linked on the web; no separate license text files live in the

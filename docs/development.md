@@ -65,7 +65,7 @@ Facts every unit depends on; keep them here, not in the tracker.
   by `zigup`; any install of that version works); consult its installed std source for API
   details. Apple M4 Pro, 48 GiB, macOS 27. Metal compiles
   shaders at runtime from the Command Line Tools; Xcode-only tools are reached
-  per process (see [../AGENTS.md § Local toolchain notes](../AGENTS.md#local-toolchain-notes)).
+  per process (see [../AGENTS.md § Local toolchain](../AGENTS.md#local-toolchain); `make trace` holds the full `xctrace` invocation).
 - Model `~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf`
   (catalogue name `qwen3.8-27b`, the default `engine.model`), SHA-256
   `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`,
@@ -670,11 +670,20 @@ uploading.
 
 ## Continuous integration and releases
 
-Work reaches `main` only through pull requests, squash-merged by the user
-(a ruleset on `main` requires a pull request and the `ok` check, and
-refuses force pushes and deletion). The pull request's title, a Conventional
-Commit, becomes the squash commit's subject, and its description, the
-record of the work (`.github/pull_request_template.md`), becomes the body.
+Work reaches `main` only through pull requests, merged by the user (a
+ruleset on `main` requires a pull request and the `ok` check, allows
+rebase and squash merges, and refuses force pushes and deletion;
+`.github/ruleset-main.json` is its tracked copy). A milestone's pull
+request is merged by rebase: each of its commits is one unit, a
+Conventional Commit whose body is the record of that unit
+(`.github/pull_request_template.md` gives the record's shape). A small
+unit outside any milestone is one pull request merged by squash, its title
+the commit's subject and its description the body. CI therefore runs once
+per milestone, and the gate between units is local: `make check`,
+`make verify-auto`, and `make build-linux`, the release's Linux target
+cross-compiled into `.zig-cache/linux` (it proves the tree compiles there;
+the Linux tests are CI's)
+([AGENTS.md § The session protocol](../AGENTS.md#the-session-protocol)).
 
 Two workflows under `.github/workflows/`. The build jobs install the
 compiler with `.github/install-zig.sh`: the version comes from
