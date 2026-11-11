@@ -277,8 +277,8 @@ adjacent-pair mode on `cpu.rope` (`Pairing.adjacent`, the GGUF "normal"
 rope type; Qwen and Gemma rotate split-half). The Metal plan is
 [§ Metal plan](#metal-plan-2026-09-19).
 
-The oracle traces are `tests/fixtures/muse-glimmer-hello-comma/`
-([provenance](../../tests/fixtures/provenance.md)): the pinned reference
+The oracle traces were `tests/fixtures/muse-glimmer-hello-comma/`, held
+through `v0.11.0` ([provenance](../../tests/fixtures/provenance.md)): the pinned reference
 on `<|begin_of_text|>Hello,` (ids `[200000, 19873, 24]`; the harness
 tokenizes with special tokens parsed, so BOS is the text marker), Metal,
 F32 cache, one token per decode: 156 layer files (three positions × 52

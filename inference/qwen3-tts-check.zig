@@ -24,6 +24,7 @@
 //!   qwen3-tts-check MODEL_DIR clone [--max-relative-rms X] [--fixtures DIR]
 const std = @import("std");
 const inference = @import("inference");
+const check_stats = @import("check_stats.zig");
 const codec = inference.audio.qwen3_codec;
 const ecapa = inference.audio.ecapa;
 const codec_encoder = inference.audio.qwen3_codec_encoder;
@@ -37,14 +38,24 @@ const metal = inference.metal;
 
 const usage = "usage: qwen3-tts-check MODEL_DIR codec|talker|codec-metal|talker-metal|clone [--max-relative-rms X] [--max-absolute X] [--kv f32|f16|both] [--max-relative-rms-f16 X] [--fixtures DIR]\n";
 
-const Stats = struct { max_abs: f64 = 0, max_ref: f64 = 0, diff2: f64 = 0, ref2: f64 = 0 };
+const Stats = struct {
+    diff: check_stats.Worst = .{},
+    reference: check_stats.Worst = .{},
+    diff2: f64 = 0,
+    ref2: f64 = 0,
+
+    /// The difference's RMS over the reference's; NaN when nothing was compared.
+    fn rel(s: Stats) f64 {
+        return @sqrt(s.diff2 / s.ref2);
+    }
+};
 
 fn compare(got: []const f32, want: []const f32) Stats {
     var s: Stats = .{};
     for (got, want) |g, w| {
         const d = @as(f64, g) - w;
-        s.max_abs = @max(s.max_abs, @abs(d));
-        s.max_ref = @max(s.max_ref, @abs(@as(f64, w)));
+        s.diff.observe(d);
+        s.reference.observe(w);
         s.diff2 += d * d;
         s.ref2 += @as(f64, w) * w;
     }
@@ -118,11 +129,13 @@ fn checkCodec(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mode
         null;
 
     var passed = true;
+    var checked: usize = 0;
     var cases = index.object.get("cases").?.object.iterator();
     while (cases.next()) |case| {
         const meta = case.value_ptr.object;
         const files = meta.get("files").?.object;
         if (files.get("codec/samples") == null) continue;
+        checked += 1;
         if (sidecar) |s| if (!std.mem.eql(u8, s.object.get("sha256").?.string, meta.get("codec_sha256").?.string)) {
             std.debug.print("{s}: the codec file is not the one traced\n", .{case.key_ptr.*});
             return error.ArtifactMismatch;
@@ -167,10 +180,10 @@ fn checkCodec(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mode
                 return error.FixtureMismatch;
             }
             const s = compare(got_all[first * width ..], want);
-            const rel = @sqrt(s.diff2 / s.ref2);
-            const over = rel > bounds.relative_rms or (is_samples and s.max_abs > bounds.absolute);
+            const rel = s.rel();
+            const over = check_stats.exceeds(rel, bounds.relative_rms) or (is_samples and !s.diff.within(bounds.absolute));
             if (over) passed = false;
-            std.debug.print("  {s:<12} {d:>6}–{d:<6} {e:>10.2} {e:>10.2} {e:>10.2}{s}\n", .{ label, first, last, s.max_abs, s.max_ref, rel, if (over) "  OVER" else "" });
+            std.debug.print("  {s:<12} {d:>6}–{d:<6} {e:>10.2} {e:>10.2} {e:>10.2}{s}\n", .{ label, first, last, s.diff.shown(), s.reference.shown(), rel, if (over) "  OVER" else "" });
         }
 
         // The same frames through a stream, five at a time.
@@ -186,6 +199,11 @@ fn checkCodec(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mode
         if (!same) passed = false;
         std.debug.print("  streamed in pieces of 5: {s}\n", .{if (same) "the decode's samples bit for bit" else "DIFFERS from the decode"});
     }
+    if (checked == 0) {
+        std.debug.print("No codec case in {s}.\n", .{fixtures});
+        return false;
+    }
+    std.debug.print("{d} codec cases.\n", .{checked});
     std.debug.print("Bounds: relative RMS {e} per stage, samples max |Δ| {e}: {s}.\n", .{ bounds.relative_rms, bounds.absolute, if (passed) "passed" else "FAILED" });
     return passed;
 }
@@ -227,6 +245,7 @@ fn checkCodecMetal(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io,
     const per = runtime.config.samplesPerFrame();
 
     var passed = true;
+    var checked: usize = 0;
     var cases = index.object.get("cases").?.object.iterator();
     while (cases.next()) |case| {
         const meta = case.value_ptr.object;
@@ -234,6 +253,7 @@ fn checkCodecMetal(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io,
         const sampled = meta.get("frames_generated") orelse continue;
         const frames: usize = @intCast(sampled.integer);
         const codes = try readCodes(arena, io, fixtures, files.get("codes") orelse continue, frames);
+        checked += 1;
         const want = try arena.alloc(f32, frames * per);
         const cpu_start = std.Io.Clock.awake.now(io);
         try runtime.decode(gpa, codes, want);
@@ -245,11 +265,11 @@ fn checkCodecMetal(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io,
         try stream.push(codes, whole);
         const metal_us = start.durationTo(std.Io.Clock.awake.now(io)).toMicroseconds();
         const s = compare(whole, want);
-        const rel = @sqrt(s.diff2 / s.ref2);
-        const over = !(rel <= bounds.relative_rms and s.max_abs <= bounds.absolute);
+        const rel = s.rel();
+        const over = check_stats.exceeds(rel, bounds.relative_rms) or !s.diff.within(bounds.absolute);
         if (over) passed = false;
         std.debug.print("{s}: {d} frames, Metal {d:.1} ms ({d:.2} ms a frame; the CPU {d} ms)\n", .{ case.key_ptr.*, frames, @as(f64, @floatFromInt(metal_us)) / 1000, @as(f64, @floatFromInt(metal_us)) / 1000 / @as(f64, @floatFromInt(frames)), cpu_ms });
-        std.debug.print("  {s:<26} max |Δ| {e:.2}  max |ref| {e:.2}  rel RMS {e:.2}{s}\n", .{ "samples vs the CPU decode", s.max_abs, s.max_ref, rel, if (over) "  OVER" else "" });
+        std.debug.print("  {s:<26} max |Δ| {e:.2}  max |ref| {e:.2}  rel RMS {e:.2}{s}\n", .{ "samples vs the CPU decode", s.diff.shown(), s.reference.shown(), rel, if (over) "  OVER" else "" });
         if (files.get("codec/samples")) |entry| {
             const traced = try floats(arena, try readFixture(arena, io, fixtures, entry));
             const rows = entry.object.get("rows").?.array.items;
@@ -257,10 +277,10 @@ fn checkCodecMetal(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io,
             const last: usize = @intCast(rows[1].integer);
             if (last > whole.len or traced.len != last - first) return error.FixtureMismatch;
             const t = compare(whole[first..last], traced);
-            const trel = @sqrt(t.diff2 / t.ref2);
-            const tover = !(trel <= bounds.relative_rms and t.max_abs <= bounds.absolute);
+            const trel = t.rel();
+            const tover = check_stats.exceeds(trel, bounds.relative_rms) or !t.diff.within(bounds.absolute);
             if (tover) passed = false;
-            std.debug.print("  {s:<26} max |Δ| {e:.2}  max |ref| {e:.2}  rel RMS {e:.2}{s}\n", .{ "samples vs the trace", t.max_abs, t.max_ref, trel, if (tover) "  OVER" else "" });
+            std.debug.print("  {s:<26} max |Δ| {e:.2}  max |ref| {e:.2}  rel RMS {e:.2}{s}\n", .{ "samples vs the trace", t.diff.shown(), t.reference.shown(), trel, if (tover) "  OVER" else "" });
         }
         for ([_]usize{ 1, 3, 7 }) |piece| {
             stream.reset();
@@ -275,6 +295,11 @@ fn checkCodecMetal(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io,
             std.debug.print("  streamed in pieces of {d}: {s}\n", .{ piece, if (same) "the Metal decode bit for bit" else "DIFFERS from the Metal decode" });
         }
     }
+    if (checked == 0) {
+        std.debug.print("No case with sampled codes in {s}.\n", .{fixtures});
+        return false;
+    }
+    std.debug.print("{d} cases decoded on Metal.\n", .{checked});
     std.debug.print("Bounds: relative RMS {e}, max |Δ| {e}: {s}.\n", .{ bounds.relative_rms, bounds.absolute, if (passed) "passed" else "FAILED" });
     return passed;
 }
@@ -319,9 +344,9 @@ fn integers(arena: std.mem.Allocator, value: ?std.json.Value) ![]u32 {
 /// One stage's comparison, printed; whether it is within `bound`.
 fn report(label: []const u8, first: usize, last: usize, got: []const f32, want: []const f32, bound: f64) bool {
     const s = compare(got, want);
-    const rel = @sqrt(s.diff2 / s.ref2);
+    const rel = s.rel();
     const over = !(rel <= bound);
-    std.debug.print("  {s:<18} {d:>4}–{d:<4} {e:>10.2} {e:>10.2} {e:>10.2}{s}\n", .{ label, first, last, s.max_abs, s.max_ref, rel, if (over) "  OVER" else "" });
+    std.debug.print("  {s:<18} {d:>4}–{d:<4} {e:>10.2} {e:>10.2} {e:>10.2}{s}\n", .{ label, first, last, s.diff.shown(), s.reference.shown(), rel, if (over) "  OVER" else "" });
     return !over;
 }
 
@@ -628,11 +653,13 @@ fn checkTalker(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mod
 fn checkPrimedDecode(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, index: std.json.Value, reference: []const u8, decoder: *const codec.Runtime, primer: []const codec.Frame, fixtures: []const u8, bound: f64) !bool {
     const per = decoder.config.samplesPerFrame();
     var passed = true;
+    var checked: usize = 0;
     var cases = index.object.get("cases").?.object.iterator();
     while (cases.next()) |case| {
         const meta = case.value_ptr.object;
         const of = meta.get("reference") orelse continue;
         if (!std.mem.eql(u8, of.string, reference)) continue;
+        checked += 1;
         const files = meta.get("files").?.object;
         const frames: usize = @intCast(files.get("codes").?.object.get("shape").?.array.items[0].integer);
         const codes = try readCodes(arena, io, fixtures, files.get("codes").?, frames);
@@ -650,11 +677,15 @@ fn checkPrimedDecode(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.I
             const want = try floats(arena, try readFixture(arena, io, fixtures, files.get(key).?));
             const got = if (std.mem.endsWith(u8, key, "head")) samples[0..want.len] else samples[samples.len - want.len ..];
             const s = compare(got, want);
-            const rel = @sqrt(s.diff2 / s.ref2);
-            const over = rel > bound;
+            const rel = s.rel();
+            const over = check_stats.exceeds(rel, bound);
             if (over) passed = false;
-            std.debug.print("    {s:<12} {d:>6} {e:>10.2} {e:>10.2} {e:>10.2}{s}\n", .{ key, want.len, s.max_abs, s.max_ref, rel, if (over) "  OVER" else "" });
+            std.debug.print("    {s:<12} {d:>6} {e:>10.2} {e:>10.2} {e:>10.2}{s}\n", .{ key, want.len, s.diff.shown(), s.reference.shown(), rel, if (over) "  OVER" else "" });
         }
+    }
+    if (checked == 0) {
+        std.debug.print("  no clone case of {s}\n", .{reference});
+        return false;
     }
     return passed;
 }
@@ -785,10 +816,10 @@ fn checkClone(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mode
                 return error.FixtureMismatch;
             }
             const s = compare(got_all[first * width ..], want);
-            const rel = @sqrt(s.diff2 / s.ref2);
-            const over = rel > bound;
+            const rel = s.rel();
+            const over = check_stats.exceeds(rel, bound);
             if (over) passed = false;
-            std.debug.print("  {s:<12} {d:>6}–{d:<6} {e:>10.2} {e:>10.2} {e:>10.2}{s}\n", .{ label, first, last, s.max_abs, s.max_ref, rel, if (over) "  OVER" else "" });
+            std.debug.print("  {s:<12} {d:>6}–{d:<6} {e:>10.2} {e:>10.2} {e:>10.2}{s}\n", .{ label, first, last, s.diff.shown(), s.reference.shown(), rel, if (over) "  OVER" else "" });
         }
         // Codes are integers: equal, frame by frame and group by group.
         const want_frames: usize = @intCast(files.get("codes").?.object.get("shape").?.array.items[0].integer);

@@ -16,6 +16,7 @@
 //! § Transducer against the trace, and word error rate, § On Metal.
 const std = @import("std");
 const inference = @import("inference");
+const check_stats = @import("check_stats.zig");
 const safetensors = inference.safetensors;
 const audio = inference.audio;
 const mel = audio.mel;
@@ -48,23 +49,25 @@ const Clip = struct {
 const Index = struct { clips: []const Clip };
 
 const Stats = struct {
-    max_abs: f64 = 0,
-    max_ref: f64 = 0,
+    diff: check_stats.Worst = .{},
+    reference: check_stats.Worst = .{},
     diff2: f64 = 0,
     ref2: f64 = 0,
 
     fn add(self: *Stats, got: []const f32, want: []const f32) void {
         for (got, want) |g, w| {
             const d = @as(f64, g) - w;
-            self.max_abs = @max(self.max_abs, @abs(d));
-            self.max_ref = @max(self.max_ref, @abs(@as(f64, w)));
+            self.diff.observe(d);
+            self.reference.observe(w);
             self.diff2 += d * d;
             self.ref2 += @as(f64, w) * w;
         }
     }
 
+    /// NaN when a value was not finite or nothing was added.
     fn scaled(self: Stats) f64 {
-        return self.max_abs / self.max_ref;
+        if (self.diff.non_finite or self.reference.non_finite or self.diff.count == 0) return std.math.nan(f64);
+        return self.diff.value / self.reference.value;
     }
 
     fn rms(self: Stats) f64 {
@@ -98,9 +101,9 @@ const Check = struct {
     }
 
     fn report(self: *Check, label: []const u8, stats: Stats, bound: Bound) void {
-        const bad = stats.scaled() > bound.max or stats.rms() > bound.rms;
+        const bad = check_stats.exceeds(stats.scaled(), bound.max) or check_stats.exceeds(stats.rms(), bound.rms);
         if (bad) self.failed = true;
-        std.debug.print("  {s:<26} max |Δ| {e:.2} of max |ref| {e:.2} ({e:.2}, bound {e:.0})  rel RMS {e:.2} (bound {e:.0}){s}\n", .{ label, stats.max_abs, stats.max_ref, stats.scaled(), bound.max, stats.rms(), bound.rms, if (bad) "  OVER" else "" });
+        std.debug.print("  {s:<26} max |Δ| {e:.2} of max |ref| {e:.2} ({e:.2}, bound {e:.0})  rel RMS {e:.2} (bound {e:.0}){s}\n", .{ label, stats.diff.shown(), stats.reference.shown(), stats.scaled(), bound.max, stats.rms(), bound.rms, if (bad) "  OVER" else "" });
     }
 };
 
@@ -208,6 +211,7 @@ pub fn main(init: std.process.Init) !void {
     const index = try std.json.parseFromSliceLeaky(Index, arena, index_text, .{ .ignore_unknown_fields = true });
     var check: Check = .{ .gpa = gpa, .arena = arena, .io = io, .fixtures = fixtures };
     const h = config.hidden;
+    if (index.clips.len == 0) return error.NoClips;
 
     for (index.clips) |clip| {
         std.debug.print("{s}: {d} samples, {d} mel frames, {d} rows, prompt {d}\n", .{ clip.name, clip.samples, clip.frames, clip.rows, clip.prompt_id });
@@ -281,7 +285,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     if (check.failed) return error.OutsideTolerance;
-    std.debug.print("Nemotron ASR encoder check passed.\n", .{});
+    std.debug.print("Nemotron ASR encoder check passed ({d} clips).\n", .{index.clips.len});
 }
 
 fn compare(check: *Check, recorder: *Recorder, clip: Clip, fixture: []const u8, stage: []const u8, label: []const u8, bound: Bound) !void {
@@ -347,6 +351,7 @@ fn checkTransducer(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator,
     const index_text = try std.Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ fixtures, "index.json" }), arena, .limited(1 << 20));
     const index = try std.json.parseFromSliceLeaky(Index, arena, index_text, .{ .ignore_unknown_fields = true });
     const h = model.encoder.weights.config.hidden;
+    if (index.clips.len == 0) return error.NoClips;
 
     for (index.clips, 0..) |clip, n| {
         std.debug.print("{s}: {d} rows, prompt {d}\n", .{ clip.name, clip.rows, clip.prompt_id });
@@ -445,7 +450,7 @@ fn checkTransducer(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator,
         }
     }
     if (check.failed) return error.OutsideTolerance;
-    std.debug.print("Nemotron ASR transducer check passed ({s}).\n", .{@tagName(engine)});
+    std.debug.print("Nemotron ASR transducer check passed ({s}, {d} clips).\n", .{ @tagName(engine), index.clips.len });
 }
 
 // ---- --bench: time per chunk, real-time factors, the final delay ----
@@ -619,6 +624,7 @@ fn compareSteps(check: *Check, clip: Clip, run: []const u8, steps: *const Steps,
     const step_rows = try check.readAs(i32, "i32", try find(clip, try std.fmt.bufPrint(&name, "{s}/step_rows", .{run})));
     const top_ids = try check.readAs(i32, "i32", try find(clip, try std.fmt.bufPrint(&name, "{s}/top_ids", .{run})));
     const top_logits = try check.read(try find(clip, try std.fmt.bufPrint(&name, "{s}/top_logits", .{run})));
+    if (step_rows.len == 0) return error.UnsupportedFixture;
     const top = top_ids.len / step_rows.len;
     if (steps.rows.items.len != step_rows.len or step_rows.len != want.steps) {
         std.debug.print("  {s}: {d} steps, the trace {d}  OVER\n", .{ run, steps.rows.items.len, step_rows.len });
@@ -627,9 +633,9 @@ fn compareSteps(check: *Check, clip: Clip, run: []const u8, steps: *const Steps,
     }
     var stats: Stats = .{};
     var mismatched: usize = 0;
-    var ours_smallest: f64 = std.math.inf(f64);
-    var theirs_smallest: f64 = std.math.inf(f64);
-    var margin_gap: f64 = 0;
+    var ours_smallest: check_stats.Least = .{};
+    var theirs_smallest: check_stats.Least = .{};
+    var margin_gap: check_stats.Worst = .{};
     for (0..step_rows.len) |s| {
         const logits = steps.logits.items[s];
         if (steps.rows.items[s] != step_rows[s] or steps.tokens.items[s] != top_ids[s * top]) mismatched += 1;
@@ -638,20 +644,21 @@ fn compareSteps(check: *Check, clip: Clip, run: []const u8, steps: *const Steps,
         const best = rnnt.argmax(logits);
         var second: f32 = -std.math.inf(f32);
         for (logits, 0..) |v, i| if (i != best) {
-            second = @max(second, v);
+            // A NaN anywhere poisons the margin rather than being skipped.
+            second = if (std.math.isNan(v) or std.math.isNan(second)) std.math.nan(f32) else @max(second, v);
         };
         const ours = @as(f64, logits[best]) - second;
         const theirs = @as(f64, top_logits[s * top]) - top_logits[s * top + 1];
-        ours_smallest = @min(ours_smallest, ours);
-        theirs_smallest = @min(theirs_smallest, theirs);
-        margin_gap = @max(margin_gap, @abs(ours - theirs));
+        ours_smallest.observe(ours);
+        theirs_smallest.observe(theirs);
+        margin_gap.observe(ours - theirs);
     }
     var label: [64]u8 = undefined;
     check.report(try std.fmt.bufPrint(&label, "{s} top-{d} logits", .{ run, top }), stats, logit_bound);
     // Margins agree with the trace's, and the smallest exceeds their
     // disagreement: no argmax matched by luck.
-    const sane = margin_gap <= margin_bound and ours_smallest > margin_gap;
-    std.debug.print("  {s}: {d} steps, {d} differ; smallest margin {d:.4} (trace {d:.4}), margins within {e:.2} (bound {e:.0}){s}\n", .{ run, step_rows.len, mismatched, ours_smallest, theirs_smallest, margin_gap, margin_bound, if (mismatched > 0 or !sane) "  OVER" else "" });
+    const sane = margin_gap.within(margin_bound) and !ours_smallest.non_finite and ours_smallest.value > margin_gap.value;
+    std.debug.print("  {s}: {d} steps, {d} differ; smallest margin {d:.4} (trace {d:.4}), margins within {e:.2} (bound {e:.0}){s}\n", .{ run, step_rows.len, mismatched, ours_smallest.shown(), theirs_smallest.shown(), margin_gap.shown(), margin_bound, if (mismatched > 0 or !sane) "  OVER" else "" });
     if (mismatched > 0 or !sane) check.failed = true;
 
     var same = tokens.len == want.ids.len;

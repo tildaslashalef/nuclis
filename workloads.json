@@ -1,8 +1,5 @@
 {
   "$comment": "The benchmark workloads: docs/development.md \u00a7 The record. Run with scripts/bench/workloads.py (make workload NAME=\u2026); model paths come from gates.json.",
-  "defaults": {
-    "backend": "metal"
-  },
   "workloads": {
     "qwen38/prose512": {
       "kind": "bench",

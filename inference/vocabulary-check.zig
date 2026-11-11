@@ -5,6 +5,7 @@
 //! `tokenizer/tokenizer.json` is checked against the oracle's fixtures.
 const std = @import("std");
 const inference = @import("inference");
+const check_stats = @import("check_stats.zig");
 
 const Expect = struct {
     tokens: usize,
@@ -23,23 +24,15 @@ const Expect = struct {
 
 const Selection = struct { name: []const u8, expect: Expect, profile: inference.profiles.Profile };
 
-fn select(doc: inference.gguf.Document) ?Selection {
-    const profile = inference.profiles.forDocument(doc) orelse return null;
-    return .{ .name = @tagName(profile), .expect = expectations(profile), .profile = profile };
+fn select(doc: inference.gguf.Document) error{ UnsupportedPromptTemplate, UnsupportedProfile }!Selection {
+    const profile = inference.profiles.forDocument(doc) orelse return error.UnsupportedPromptTemplate;
+    return .{ .name = @tagName(profile), .expect = try expectations(profile), .profile = profile };
 }
 
-fn expectations(profile: inference.profiles.Profile) Expect {
+/// The pinned facts of a gated profile; one with no pinned file is
+/// `error.UnsupportedProfile`.
+fn expectations(profile: inference.profiles.Profile) error{UnsupportedProfile}!Expect {
     return switch (profile) {
-        .muse_glimmer => .{
-            .tokens = 202_048,
-            .merges = 439_802,
-            .bos = 200000,
-            .eos = &.{200001},
-            .texts = &.{ "<|begin_of_text|>", "<|end_of_text|>", "<|eom|>", "<|eot|>", "<|finetune_right_pad|>", "<|start|>", "<|message|>", "system", "user", "assistant", "tool" },
-            .ids = &.{ 200000, 200001, 200007, 200008, 200018, 200022, 200023, 15651, 1556, 140680, 21188 },
-            .fixture = @embedFile("src/profiles/fixtures/muse_glimmer-text.json"),
-            .byte_level = true,
-        },
         .qwen38 => .{
             .tokens = 248_320,
             .merges = 247_587,
@@ -60,6 +53,7 @@ fn expectations(profile: inference.profiles.Profile) Expect {
             .fixture = if (profile == .gemma4_e) @embedFile("src/profiles/fixtures/gemma4_e-text.json") else @embedFile("src/profiles/fixtures/gemma4-text.json"),
             .byte_level = false,
         },
+        .muse_glimmer => error.UnsupportedProfile,
     };
 }
 
@@ -72,7 +66,7 @@ pub fn main(init: std.process.Init) !void {
     defer model.deinit(init.io);
     const doc = model.document;
     const directory = model.mapping.memory[0..@intCast(doc.directory_bytes)];
-    const selection = select(doc) orelse return error.UnsupportedPromptTemplate;
+    const selection = try select(doc);
     const expect = selection.expect;
     var vocab = try inference.vocabulary.load(init.gpa, doc, directory, .{});
     defer vocab.deinit();
@@ -93,6 +87,7 @@ fn checkFixtures(alloc: std.mem.Allocator, vocab: *const inference.vocabulary.Vo
     const Fixture = struct { token_cases: []const Case, prompt_cases: []const Prompt };
     const fixtures = try std.json.parseFromSlice(Fixture, alloc, expect.fixture, .{ .ignore_unknown_fields = true });
     defer fixtures.deinit();
+    if (fixtures.value.token_cases.len == 0 or fixtures.value.prompt_cases.len == 0) return error.EmptyFixture;
     var encoder = try inference.tokenizer.Encoder.init(alloc, vocab);
     defer encoder.deinit();
     const seen = try alloc.alloc(bool, vocab.tokens.len);
@@ -222,6 +217,7 @@ fn checkLaya(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !void {
     const Request = struct { name: []const u8, ids: []const u32, markers: []const usize, head_text: []const u8, options: []const []const u8, state_text: []const u8, truncate_left: bool };
     const requests = try std.json.parseFromSlice(struct { requests: []const Request }, gpa, set.requests_json, .{ .ignore_unknown_fields = true });
     defer requests.deinit();
+    if (cases.value.token_cases.len == 0 or requests.value.requests.len == 0) return error.EmptyFixture;
     const sep = specials.sep;
     for (requests.value.requests) |r| {
         const first = r.markers[0];
@@ -238,8 +234,8 @@ fn checkLaya(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !void {
         const state = r.ids[state_start .. r.ids.len - 1];
         const all = try tokenizer.encode(gpa, r.state_text, .{});
         defer gpa.free(all);
-        const kept = if (r.truncate_left) all[all.len - state.len ..] else all[0..state.len];
-        if (state.len > all.len or !std.mem.eql(u32, kept, state)) {
+        const kept = if (state.len > all.len) null else if (r.truncate_left) all[all.len - state.len ..] else all[0..state.len];
+        if (kept == null or !std.mem.eql(u32, kept.?, state)) {
             std.debug.print("{s}: state tokens differ\n", .{r.name});
             return error.TokenizationMismatch;
         }
@@ -259,7 +255,8 @@ fn checkLayaProfile(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, tokeniz
     const config_path = try std.fs.path.join(arena, &.{ dir, "rl_agent_config.json" });
     const config = try profile.parseAgentConfig(arena, try std.Io.Dir.cwd().readFileAlloc(io, config_path, arena, .limited(1024 * 1024)));
     const root = try std.json.parseFromSliceLeaky(std.json.Value, arena, requests_json, .{});
-    var worst: f64 = 0;
+    if (root.object.get("requests").?.array.items.len == 0) return error.EmptyFixture;
+    var worst: check_stats.Worst = .{};
     for (root.object.get("requests").?.array.items) |request| {
         const r = request.object;
         const name = r.get("name").?.string;
@@ -308,14 +305,14 @@ fn checkLayaProfile(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, tokeniz
         }
         for (got.items, expected.items) |g, e| {
             const d = @abs(profile.round4(g) - e);
-            worst = @max(worst, d);
-            if (d > 1.5e-4) {
+            worst.observe(d);
+            if (check_stats.exceeds(d, 1.5e-4)) {
                 std.debug.print("{s}: answer {d} against the package's {d}\n", .{ name, profile.round4(g), e });
                 return error.AnswerMismatch;
             }
         }
     }
-    std.debug.print("Laya profile check passed: {d} requests rebuilt exactly; answers within {e:.1} of the package's (4-place rounding).\n", .{ root.object.get("requests").?.array.items.len, worst });
+    std.debug.print("Laya profile check passed: {d} requests rebuilt exactly; answers within {e:.1} of the package's (4-place rounding).\n", .{ root.object.get("requests").?.array.items.len, worst.shown() });
 }
 
 fn jsonNumber(value: std.json.Value) f64 {

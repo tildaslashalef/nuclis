@@ -21,18 +21,19 @@
 //! once with every kernel the generic decoder and once with the production
 //! kernels, each within the bound (max relative RMS per stage); then timed.
 //! `codec`: Fish's codec cases through the CPU encoder and decoder
-//! (drama3_codec_check.zig). `codec-metal`: Fish's pinned codes through the
+//! (drama3-codec-check.zig). `codec-metal`: Fish's pinned codes through the
 //! Metal decoder against the CPU one, streamed in pushes of 1, 4 and the
-//! whole (drama3_codec_metal_check.zig).
+//! whole (drama3-codec-metal-check.zig).
 //! `speak` runs `drama3_speech.Synthesizer` end to end (no reference voice)
 //! and writes a 44.1 kHz 16-bit WAV.
 const std = @import("std");
 const inference = @import("inference");
+const check_stats = @import("check_stats.zig");
 const drama3 = inference.models.drama3;
 const runtime = inference.models.drama3_runtime;
 const weights = inference.weights;
-const codec_check = @import("drama3_codec_check.zig");
-const codec_metal_check = @import("drama3_codec_metal_check.zig");
+const codec_check = @import("drama3-codec-check.zig");
+const codec_metal_check = @import("drama3-codec-metal-check.zig");
 
 const usage = "usage: drama3-check MODEL.gguf smoke|trace|codec|codec-metal|metal|speak [--text T] [--out FILE] [--seed N] [--frames N] [--chunk N] [--backend cpu|metal] [--max-relative-rms X] [--fixtures DIR] [--value-order grouped|tiled] [--norm-offset X]\n";
 
@@ -127,14 +128,14 @@ fn smoke(gpa: std.mem.Allocator, io: std.Io, m: *const runtime.Model, frames: us
 
 // --- the trace ---------------------------------------------------------
 
-const Stats = struct { max_abs: f64 = 0, max_ref: f64 = 0, diff2: f64 = 0, ref2: f64 = 0, dot: f64 = 0, got2: f64 = 0 };
+const Stats = struct { diff: check_stats.Worst = .{}, reference: check_stats.Worst = .{}, diff2: f64 = 0, ref2: f64 = 0, dot: f64 = 0, got2: f64 = 0 };
 
 fn compare(got: []const f32, want: []const f32) Stats {
     var s: Stats = .{};
     for (got, want) |g, w| {
         const d = @as(f64, g) - w;
-        s.max_abs = @max(s.max_abs, @abs(d));
-        s.max_ref = @max(s.max_ref, @abs(@as(f64, w)));
+        s.diff.observe(d);
+        s.reference.observe(w);
         s.diff2 += d * d;
         s.ref2 += @as(f64, w) * w;
         s.dot += @as(f64, g) * w;
@@ -238,8 +239,8 @@ fn stage(label: []const u8, got: []const f32, want: []const f32, width: usize, b
     if (logits) for (0..count) |r| {
         same += @intFromBool(argmax(got[r * width ..][0..width]) == argmax(want[r * width ..][0..width]));
     };
-    const ok = rel <= bound and (!logits or same == count);
-    std.debug.print("  {s:<20} {d:>6} {e:>10.2} {e:>10.2} {e:>10.2} {d:>10.7}", .{ label, count, s.max_abs, s.max_ref, rel, cosine });
+    const ok = !check_stats.exceeds(rel, bound) and !s.diff.non_finite and (!logits or same == count);
+    std.debug.print("  {s:<20} {d:>6} {e:>10.2} {e:>10.2} {e:>10.2} {d:>10.7}", .{ label, count, s.diff.shown(), s.reference.shown(), rel, cosine });
     if (logits) std.debug.print("  argmax {d}/{d}", .{ same, count });
     std.debug.print("{s}\n", .{if (ok) "" else "  OVER"});
     if (!ok) {
@@ -252,7 +253,7 @@ fn stage(label: []const u8, got: []const f32, want: []const f32, width: usize, b
                 if (std.mem.indexOfScalar(usize, &shown, i) != null) continue;
                 const t = compare(got[i * width ..][0..width], want[i * width ..][0..width]);
                 const e = @sqrt(t.diff2 / t.ref2);
-                if (e > worst) {
+                if (!(e <= worst)) {
                     worst = e;
                     slot.* = i;
                 }
@@ -358,6 +359,7 @@ fn trace(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, m: *const
 
         // Each pinned stage, `[rows][...][width]`; `rows` index the first axis.
         var stages = files.iterator();
+        var compared: usize = 0;
         while (stages.next()) |entry| {
             const key = entry.key_ptr.*;
             if (!std.mem.startsWith(u8, key, "backbone/") and !std.mem.startsWith(u8, key, "tower/")) continue;
@@ -391,8 +393,11 @@ fn trace(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, m: *const
                 passed = false;
                 continue;
             };
+            compared += 1;
             if (!stage(key, got, want, w, bounds.relative_rms, std.mem.endsWith(u8, key, "logits"))) passed = false;
         }
+        std.debug.print("  {d} stages compared\n", .{compared});
+        if (compared == 0) passed = false;
     }
     if (checked == 0) {
         std.debug.print("{s}: no case pins frame rows (the backbone's trace is not pinned yet)\n", .{index_path});
@@ -409,14 +414,14 @@ fn trace(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, m: *const
 const Agreement = struct {
     name: []const u8,
     logits: bool,
-    worst: f64 = 0,
+    worst: check_stats.Worst = .{},
     rows: usize = 0,
     same: usize = 0,
 
     fn add(self: *Agreement, got: []const f32, want: []const f32, width: usize) void {
         for (0..got.len / width) |r| {
             const s = compare(got[r * width ..][0..width], want[r * width ..][0..width]);
-            self.worst = @max(self.worst, @sqrt(s.diff2 / s.ref2));
+            self.worst.observe(@sqrt(s.diff2 / s.ref2));
             self.rows += 1;
             if (self.logits and argmax(got[r * width ..][0..width]) == argmax(want[r * width ..][0..width])) self.same += 1;
         }
@@ -525,9 +530,12 @@ fn metalRun(gpa: std.mem.Allocator, io: std.Io, gpu: *inference.metal.Backend, m
     var passed = frames_equal;
     std.debug.print("  {s:<20} {s:>5} {s:>10} {s:>8}\n", .{ "stage", "rows", "rel RMS", "argmax" });
     for (&stages ++ heads) |a| {
-        const ok = a.worst <= bound;
+        // The decode stages are empty only when the first frame ends the run.
+        const compared = a.rows > 0 or (frames <= 1 and std.mem.startsWith(u8, a.name, "decode"));
+        // A logits stage also needs every row's argmax equal to the CPU's.
+        const ok = compared and a.worst.within(bound) and (!a.logits or a.same == a.rows);
         passed = passed and ok;
-        std.debug.print("  {s:<20} {d:>5} {e:>10.2}", .{ a.name, a.rows, a.worst });
+        std.debug.print("  {s:<20} {d:>5} {e:>10.2}", .{ a.name, a.rows, a.worst.shown() });
         if (a.logits) std.debug.print(" {d:>4}/{d}", .{ a.same, a.rows });
         std.debug.print("{s}\n", .{if (ok) "" else "  OVER"});
     }

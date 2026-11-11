@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const metal = b.option(bool, "metal", "Enable macOS Metal projection backend") orelse false;
+    const metal = b.option(bool, "metal", "Build the Metal backend (the root build sets it)") orelse false;
     configure(b, mod, metal, false);
     const tests = b.addTest(.{ .root_module = mod });
     const test_step = b.step("test", "Test inference library without GPU or model weights");
@@ -32,150 +32,26 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = tiny_root })).step);
     const tiny_check = b.addExecutable(.{ .name = "tiny-check", .root_module = tiny_root });
     b.installArtifact(tiny_check);
-    const run_tiny = b.addRunArtifact(tiny_check);
-    run_tiny.addPassthruArgs();
-    b.step("test-tiny", "Metal against the CPU reference on generated models, no download (-Dmetal=true)").dependOn(&run_tiny.step);
 
-    const check = b.addExecutable(.{
-        .name = "vocabulary-check",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("vocabulary-check.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "inference", .module = mod }},
-        }),
-    });
-    b.installArtifact(check);
-    const run_check = b.addRunArtifact(check);
-    run_check.addPassthruArgs();
-    b.step("test-vocabulary", "Check the pinned vocabulary and tokenizer (-- MODEL_PATH)").dependOn(&run_check.step);
-    const laya_check = b.addExecutable(.{
-        .name = "laya-check",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("laya-check.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "inference", .module = mod }},
-        }),
-    });
-    b.installArtifact(laya_check);
-    const run_laya = b.addRunArtifact(laya_check);
-    run_laya.addPassthruArgs();
-    b.step("test-laya", "Check Laya's CPU forward against the oracle's fixtures (-- LAYA_DIR)").dependOn(&run_laya.step);
-    const clef_check = b.addExecutable(.{
-        .name = "clef-check",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("clef-check.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "inference", .module = mod }},
-        }),
-    });
-    b.installArtifact(clef_check);
-    const run_clef = b.addRunArtifact(clef_check);
-    run_clef.addPassthruArgs();
-    b.step("test-clef", "Check clef-flash against the oracle's fixtures (-- sequences|head CLEF_DIR ...)").dependOn(&run_clef.step);
-    const embeddinggemma_check = b.addExecutable(.{
-        .name = "embeddinggemma-check",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("embeddinggemma-check.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "inference", .module = mod }},
-        }),
-    });
-    b.installArtifact(embeddinggemma_check);
-    const run_embeddinggemma = b.addRunArtifact(embeddinggemma_check);
-    run_embeddinggemma.addPassthruArgs();
-    b.step("test-embeddinggemma", "Check EmbeddingGemma 2 against the oracles, or time it (-- MODEL traces|vectors|google|bench [--backend cpu|metal])").dependOn(&run_embeddinggemma.step);
-    const qwen3_tts_check = b.addExecutable(.{
-        .name = "qwen3-tts-check",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("qwen3-tts-check.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "inference", .module = mod }},
-        }),
-    });
-    b.installArtifact(qwen3_tts_check);
-    const run_qwen3_tts = b.addRunArtifact(qwen3_tts_check);
-    run_qwen3_tts.addPassthruArgs();
-    b.step("test-qwen3-tts", "Check Qwen3-TTS against the authors' trace (-- MODEL_DIR codec|talker)").dependOn(&run_qwen3_tts.step);
-    const drama3_check = b.addExecutable(.{
-        .name = "drama3-check",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("drama3-check.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "inference", .module = mod }},
-        }),
-    });
-    b.installArtifact(drama3_check);
-    const run_drama3 = b.addRunArtifact(drama3_check);
-    run_drama3.addPassthruArgs();
-    b.step("test-drama3", "Check Drama 3 against Fish's traces, Metal against the CPU, or speak (-- MODEL.gguf smoke|trace|codec|metal|speak)").dependOn(&run_drama3.step);
-    const nemotron_asr_check = b.addExecutable(.{
-        .name = "nemotron-asr-check",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("nemotron-asr-check.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "inference", .module = mod }},
-        }),
-    });
-    b.installArtifact(nemotron_asr_check);
-    const run_nemotron_asr = b.addRunArtifact(nemotron_asr_check);
-    run_nemotron_asr.addPassthruArgs();
-    b.step("test-nemotron-asr", "Check Nemotron ASR's front end and encoder against the pinned trace (-- MODEL_DIR [FIXTURES])").dependOn(&run_nemotron_asr.step);
-    const generation_check = b.addExecutable(.{
-        .name = "generation-check",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("generation-check.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "inference", .module = mod }},
-        }),
-    });
-    b.installArtifact(generation_check);
-    const run_generation = b.addRunArtifact(generation_check);
-    run_generation.addPassthruArgs();
-    b.step("test-generation", "Check CPU full-model session isolation/reset (-- MODEL_PATH)").dependOn(&run_generation.step);
-    const cross_encoding_check = b.addExecutable(.{
-        .name = "cross-encoding-check",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("cross-encoding-check.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "inference", .module = mod }},
-        }),
-    });
-    b.installArtifact(cross_encoding_check);
-    const run_cross_encoding = b.addRunArtifact(cross_encoding_check);
-    run_cross_encoding.addPassthruArgs();
-    b.step("test-cross-encoding", "Compare one model's matrices across two files' encodings (-- NEW VALIDATED [--rows n] [--min-cosine x])").dependOn(&run_cross_encoding.step);
-    const metal_check = b.addExecutable(.{
-        .name = "metal-check",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("metal-check.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "inference", .module = mod }},
-        }),
-    });
-    b.installArtifact(metal_check);
-    b.step("test-metal", "Explicit Metal fixtures and lifecycle checks (-Dmetal=true)").dependOn(&b.addRunArtifact(metal_check).step);
-    const matvec_bench = b.addRunArtifact(metal_check);
-    matvec_bench.addArg("--matvec-bench");
-    b.step("bench-kernels", "Achieved weight bandwidth of the matvec kernels (-Dmetal=true)").dependOn(&matvec_bench.step);
-    const matmul_bench = b.addRunArtifact(metal_check);
-    matmul_bench.addArg("--matmul-bench");
-    b.step("bench-matmul", "Throughput of the batched prefill matmul on model shapes (-Dmetal=true)").dependOn(&matmul_bench.step);
-    const experts_bench = b.addRunArtifact(metal_check);
-    experts_bench.addArg("--experts-bench");
-    b.step("bench-experts", "Bandwidth of the gathered expert kernels on the 26B-A4B shape (-Dmetal=true)").dependOn(&experts_bench.step);
-    const attention_bench = b.addRunArtifact(metal_check);
-    attention_bench.addArg("--attention-bench");
-    b.step("bench-attention", "Prefill chunk attention, row-split vs register-reuse at 4K-32K visible (-Dmetal=true)").dependOn(&attention_bench.step);
+    // The check executables. The root declares every step that runs them
+    // (AGENTS.md § Repository architecture); this file only builds them.
+    const checks = [_][]const u8{
+        "vocabulary-check",     "laya-check",       "clef-check",
+        "embeddinggemma-check", "qwen3-tts-check",  "drama3-check",
+        "nemotron-asr-check",   "generation-check", "cross-encoding-check",
+        "metal-check",
+    };
+    for (checks) |name| {
+        b.installArtifact(b.addExecutable(.{
+            .name = name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(b.fmt("{s}.zig", .{name})),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "inference", .module = mod }},
+            }),
+        }));
+    }
 }
 
 /// The build options and platform bridges of one instance of the module.

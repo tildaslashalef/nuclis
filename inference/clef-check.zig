@@ -15,6 +15,7 @@
 //! CLEF_DIR's repository (`<models>/bartowski/...`).
 const std = @import("std");
 const inference = @import("inference");
+const check_stats = @import("check_stats.zig");
 const clef = inference.profiles.clef;
 const Encoder = inference.tokenizer.Encoder;
 
@@ -52,6 +53,7 @@ pub fn main(init: std.process.Init) !void {
     defer tokenizer.deinit();
     const file = try std.json.parseFromSliceLeaky(File, arena, sequences_json, .{ .ignore_unknown_fields = true });
     const frame = try clef.Frame.init(arena, &tokenizer);
+    if (file.requests.len == 0) return error.NoRequests;
     var failed = false;
     for (file.requests) |entry| {
         const built = try sequenceFor(arena, &tokenizer, frame, entry);
@@ -74,7 +76,7 @@ pub fn main(init: std.process.Init) !void {
         };
     }
     if (failed) return error.SequenceMismatch;
-    std.debug.print("every sequence equals the reference's\n", .{});
+    std.debug.print("every sequence equals the reference's ({d} requests)\n", .{file.requests.len});
 }
 
 /// A fixture request through the profile, images as the reference's token
@@ -113,7 +115,8 @@ fn checkHead(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, clef_
     const file = try std.json.parseFromSliceLeaky(File, arena, sequences_json, .{ .ignore_unknown_fields = true });
     const expected_bytes = try std.Io.Dir.cwd().readFileAlloc(io, head_json, arena, .limited(16 << 20));
     const expected = try std.json.parseFromSliceLeaky(HeadFile, arena, expected_bytes, .{ .ignore_unknown_fields = true });
-    var worst: f64 = 0;
+    if (expected.results.len == 0) return error.NoRequests;
+    var worst: check_stats.Worst = .{};
     for (expected.results) |result| {
         const entry = for (file.requests) |e| {
             if (std.mem.eql(u8, e.name, result.name)) break e;
@@ -126,15 +129,18 @@ fn checkHead(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, clef_
         const start = std.Io.Clock.awake.now(io);
         try head.forward(gpa, io, hidden, sequence, lexical, logits);
         const ms = start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds();
-        var request_worst: f64 = 0;
+        var request_worst: check_stats.Worst = .{};
         for (logits, result.logits) |got, want| for (got, want) |g, x| {
-            request_worst = @max(request_worst, @abs(g - x) / @max(1.0, @abs(x)));
+            request_worst.observe(@abs(g - x) / @max(1.0, @abs(x)));
         };
-        worst = @max(worst, request_worst);
-        std.debug.print("{s}: {d} tokens, head {d} ms, worst logit difference {e:.2}\n", .{ entry.name, sequence.ids.len, ms, request_worst });
+        worst.merge(request_worst);
+        std.debug.print("{s}: {d} tokens, head {d} ms, worst logit difference {e:.2}\n", .{ entry.name, sequence.ids.len, ms, request_worst.shown() });
     }
-    if (worst > logit_bound) return error.HeadMismatch;
-    std.debug.print("the head's logits equal the reference's within {e}\n", .{logit_bound});
+    if (worst.count == 0 or !worst.within(logit_bound)) {
+        std.debug.print("{d} logits compared, worst difference {e:.2}, bound {e}\n", .{ worst.count, worst.shown(), logit_bound });
+        return error.HeadMismatch;
+    }
+    std.debug.print("the head's logits equal the reference's within {e} ({d} requests, {d} logits)\n", .{ logit_bound, expected.results.len, worst.count });
 }
 
 /// A fixture request's sequence from its recorded ids and spans.
@@ -188,18 +194,21 @@ fn checkRun(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, clef_d
     defer model.deinit(io);
     std.debug.print("clef-flash loaded on the {s} in {d} ms\n", .{ @tagName(backend), load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() });
     const file = try std.json.parseFromSliceLeaky(File, arena, sequences_json, .{ .ignore_unknown_fields = true });
-    const expected = std.json.parseFromSliceLeaky(HeadFile, arena, head_fixture, .{ .ignore_unknown_fields = true }) catch HeadFile{ .results = &.{} };
+    const expected = try std.json.parseFromSliceLeaky(HeadFile, arena, head_fixture, .{ .ignore_unknown_fields = true });
     if (dump) |d| try std.Io.Dir.cwd().createDirPath(io, d);
     // The fixture is the Metal run's; the CPU reference's F32 cache and
     // kernels move the logits by about 1e-4 (8.5e-5 on card_invoice).
     const bound: f64 = if (backend == .metal) 1e-3 else 2e-3;
-    var worst: f64 = 0;
+    var worst: check_stats.Worst = .{};
     var wrong: usize = 0;
+    var ran: usize = 0;
+    var unpinned: usize = 0;
     const h = model.hiddenSize();
     for (file.requests) |entry| {
         if (entry.media != null and mmproj == null) continue;
         if (entry.input_ids.len > max_tokens) continue;
         if (only) |name| if (!std.mem.eql(u8, name, entry.name)) continue;
+        ran += 1;
         const sequence = try fixtureSequence(arena, entry);
         const hidden = try gpa.alloc(f32, sequence.ids.len * h);
         defer gpa.free(hidden);
@@ -241,20 +250,22 @@ fn checkRun(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, clef_d
         }
         var difference: ?f64 = null;
         for (expected.results) |r| if (std.mem.eql(u8, r.name, entry.name)) {
-            var d: f64 = 0;
+            var d: check_stats.Worst = .{};
             for (logits, r.logits) |got, want| for (got, want) |g, x| {
-                d = @max(d, @abs(g - x) / @max(1.0, @abs(x)));
+                d.observe(@abs(g - x) / @max(1.0, @abs(x)));
             };
-            difference = d;
-            worst = @max(worst, d);
+            difference = d.shown();
+            worst.merge(d);
         };
+        if (difference == null) unpinned += 1;
         var picks: std.Io.Writer.Allocating = .init(arena);
         for (entry.questions, logits) |q, l| {
             const best = std.mem.indexOfMax(f32, l);
             const want = if (entry.expect.object.get(q.id)) |v| v.string else null;
             const ok = if (want) |w| std.mem.eql(u8, w, q.option_ids[best]) else true;
             if (!ok) wrong += 1;
-            try picks.writer.print(" {s}={s}{s}", .{ q.id, q.option_ids[best], if (ok) "" else " (expected " ++ "other)" });
+            try picks.writer.print(" {s}={s}", .{ q.id, q.option_ids[best] });
+            if (!ok) try picks.writer.print(" (expected {s})", .{want.?});
         }
         const tokens_per_s = @as(f64, @floatFromInt(sequence.ids.len)) * 1000 / @as(f64, @floatFromInt(@max(1, backbone_ms)));
         if (difference) |d|
@@ -262,12 +273,17 @@ fn checkRun(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, clef_d
         else
             std.debug.print("{s}: {d} tokens, backbone {d} ms ({d:.0} tok/s), head {d} ms;{s}\n", .{ entry.name, sequence.ids.len, backbone_ms, tokens_per_s, head_ms, picks.written() });
     }
+    std.debug.print("{d} requests run, {d} logits compared with the fixture, {d} requests the fixture does not pin\n", .{ ran, worst.count, unpinned });
+    if (ran == 0) {
+        std.debug.print("no request selected (--only, --max-tokens, --mmproj)\n", .{});
+        return error.NothingCompared;
+    }
     if (wrong > 0) {
         std.debug.print("{d} sanity answers differ from the expected options\n", .{wrong});
         return error.SanityMismatch;
     }
-    if (worst > bound) {
-        std.debug.print("logits differ from the fixture by {e:.2}, over {e}\n", .{ worst, bound });
+    if (worst.count == 0 or !worst.within(bound)) {
+        std.debug.print("logits differ from the fixture by {e:.2}, over {e}\n", .{ worst.shown(), bound });
         return error.LogitMismatch;
     }
     std.debug.print("every sanity answer is the expected option; logits within {e} of the fixture\n", .{bound});

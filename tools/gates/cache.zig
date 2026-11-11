@@ -1,7 +1,9 @@
 //! Remembered gates. A pass is stored under `$NUCLIS_HOME/gates/passes.json`
 //! (default `~/.nuclis`) by a key over what the gate's result depends on: its
 //! definition, the fingerprints of every engine file not exclusive to other
-//! families, its model files' identity, and the optimize mode. Only passes
+//! families, the build files, the application when the gate runs the binary,
+//! its model files' identity, the manifest's build block, and the compiler's
+//! version. Only passes
 //! are stored; a failure or a skip always runs again. `times.json` beside it
 //! holds each gate's last seconds, which `select.byCost` orders by.
 const std = @import("std");
@@ -66,6 +68,14 @@ pub fn canonicalGate(arena: Allocator, gate: *const Gate) Allocator.Error![]cons
     return out.written();
 }
 
+/// True when the gate runs the `nuclis` binary, which links the application.
+pub fn runsBinary(gate: *const Gate) bool {
+    for (gate.command) |arg| {
+        if (std.mem.indexOf(u8, arg, "{nuclis") != null) return true;
+    }
+    return false;
+}
+
 /// The optimize mode of the build a gate runs.
 pub fn optimizeOf(m: *const manifest.Manifest, gate: *const Gate) []const u8 {
     for (gate.command) |arg| {
@@ -74,12 +84,14 @@ pub fn optimizeOf(m: *const manifest.Manifest, gate: *const Gate) []const u8 {
     return m.metal_optimize;
 }
 
+/// `toolchain` is the compiler's `zig version`.
 pub fn key(
     arena: Allocator,
     m: *const manifest.Manifest,
     tree: *const tree_module.Tree,
     gate: *const Gate,
     model_identity: []const u8,
+    toolchain: []const u8,
 ) Allocator.Error!Key {
     const bit = @as(u64, 1) << (m.familyIndex(gate.family) orelse 0);
     var hasher = Sha256.init(.{});
@@ -87,8 +99,19 @@ pub fn key(
     hasher.update(&.{0});
     hasher.update(optimizeOf(m, gate));
     hasher.update(&.{0});
+    for ([_][]const u8{ m.metal_optimize, m.cpu_optimize, m.cache, toolchain }) |part| {
+        hasher.update(part);
+        hasher.update(&.{0});
+    }
     for (tree.files) |file| {
         if (file.families != 0 and file.families & bit == 0) continue;
+        hasher.update(file.path);
+        hasher.update(&.{0});
+        hasher.update(&file.digest);
+    }
+    const binary = runsBinary(gate);
+    for (tree.context) |file| {
+        if (file.scope == .application and !binary) continue;
         hasher.update(file.path);
         hasher.update(&.{0});
         hasher.update(&file.digest);
@@ -299,7 +322,7 @@ const Scene = struct {
 };
 
 fn keyOf(scene: *Scene, gate: *const Gate, identity: []const u8) !Key {
-    return key(scene.state.allocator(), &scene.m, &scene.tree, gate, identity);
+    return key(scene.state.allocator(), &scene.m, &scene.tree, gate, identity, "0.17.1");
 }
 
 /// The sample repository with one file's contents replaced.
@@ -330,6 +353,48 @@ test "the key ignores other families' files and comments, and follows shared cod
 
     try scene.scan(try edited(a, "inference/src/root.zig", "const added = 1;\n"));
     try testing.expect(!std.mem.eql(u8, &base, &try keyOf(&scene, gate_a, "m")));
+}
+
+test "the application reaches only gates that run the binary; the build files and the compiler reach all" {
+    var scene: Scene = try .init();
+    defer scene.deinit();
+    const a = scene.state.allocator();
+    const binary = &scene.m.gates[0];
+    const check = &scene.m.gates[1];
+    try testing.expect(runsBinary(binary) and !runsBinary(check));
+    try scene.scan(tree_module.sample_repository);
+    const binary_base = try keyOf(&scene, binary, "m");
+    const check_base = try keyOf(&scene, check, "m");
+
+    try scene.scan(try edited(a, "src/main.zig", "pub fn main() void {}\nconst changed = 1;\n"));
+    try testing.expect(!std.mem.eql(u8, &binary_base, &try keyOf(&scene, binary, "m")));
+    try testing.expectEqualStrings(&check_base, &try keyOf(&scene, check, "m"));
+
+    try scene.scan(try edited(a, "build.zig", "const changed = 1;\n"));
+    try testing.expect(!std.mem.eql(u8, &binary_base, &try keyOf(&scene, binary, "m")));
+    try testing.expect(!std.mem.eql(u8, &check_base, &try keyOf(&scene, check, "m")));
+
+    try scene.scan(tree_module.sample_repository);
+    const other = try key(a, &scene.m, &scene.tree, check, "m", "0.18.0");
+    try testing.expect(!std.mem.eql(u8, &check_base, &other));
+    scene.m.cache = ".zig-cache/elsewhere";
+    try testing.expect(!std.mem.eql(u8, &check_base, &try keyOf(&scene, check, "m")));
+}
+
+test "a gate script's change reaches its family's gates" {
+    var scene: Scene = try .init();
+    defer scene.deinit();
+    const a = scene.state.allocator();
+    const gates = try a.dupe(Gate, scene.m.gates);
+    gates[2].command = &.{ "python3", "scripts/gate/check.py", "--nuclis", "{nuclis}" };
+    scene.m.gates = gates;
+    const gate = &gates[2];
+    try scene.scan(tree_module.sample_repository);
+    const base = try keyOf(&scene, gate, "m");
+    // `check.py` imports `helper.py`: a script takes its folder.
+    try testing.expect(scene.tree.get("scripts/gate/helper.py") != null);
+    try scene.scan(try edited(a, "scripts/gate/helper.py", "changed = 1\n"));
+    try testing.expect(!std.mem.eql(u8, &base, &try keyOf(&scene, gate, "m")));
 }
 
 test "the key follows the model, the definition, and the optimize mode, not the prose" {

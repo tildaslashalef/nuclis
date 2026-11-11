@@ -14,16 +14,18 @@
 //! GPU decoders to.
 const std = @import("std");
 const inference = @import("inference");
+const check_stats = @import("check_stats.zig");
 
 const usage = "usage: cross-encoding-check <new.gguf> <validated.gguf> [--rows n] [--min-mean ENC=x]...\n";
 
 const Stats = struct {
     tensors: u32 = 0,
-    min_cosine: f64 = 1,
+    min_cosine: check_stats.Least = .{},
+    /// NaN once any tensor's worst row is not finite.
     sum_cosine: f64 = 0,
-    max_relative_rms: f64 = 0,
+    max_relative_rms: check_stats.Worst = .{},
     /// Largest |cosine| of a row against a distant row: the no-signal floor.
-    max_control: f64 = 0,
+    max_control: check_stats.Worst = .{},
 };
 
 const Worst = struct { name: []const u8, new: u32, validated: u32, cosine: f64 };
@@ -72,9 +74,9 @@ pub fn main(init: std.process.Init) !void {
         const a = try arena.alloc(f32, width);
         const b = try arena.alloc(f32, width);
         const distant = try arena.alloc(f32, width);
-        var tensor_min: f64 = 1;
-        var tensor_rms: f64 = 0;
-        var tensor_control: f64 = 0;
+        var tensor_min: check_stats.Least = .{};
+        var tensor_rms: check_stats.Worst = .{};
+        var tensor_control: check_stats.Worst = .{};
         const count = @min(sample_rows, rows);
         for (0..count) |k| {
             const r = if (count > 1) k * (rows - 1) / (count - 1) else 0;
@@ -82,30 +84,36 @@ pub fn main(init: std.process.Init) !void {
             try validated_view.row(other, r, b);
             try validated_view.row(other, (r + rows / 2) % rows, distant);
             const cosine = similarity(a, b);
-            tensor_min = @min(tensor_min, cosine);
-            tensor_rms = @max(tensor_rms, relativeRms(a, b));
-            tensor_control = @max(tensor_control, @abs(similarity(a, distant)));
+            tensor_min.observe(cosine);
+            tensor_rms.observe(relativeRms(a, b));
+            tensor_control.observe(similarity(a, distant));
         }
         const entry = try by_encoding.getOrPut(arena, tensor.encoding_id);
         if (!entry.found_existing) entry.value_ptr.* = .{};
         const s = entry.value_ptr;
         s.tensors += 1;
-        s.min_cosine = @min(s.min_cosine, tensor_min);
-        s.sum_cosine += tensor_min;
-        s.max_relative_rms = @max(s.max_relative_rms, tensor_rms);
-        s.max_control = @max(s.max_control, tensor_control);
-        try worst.append(arena, .{ .name = tensor.name, .new = tensor.encoding_id, .validated = other.encoding_id, .cosine = tensor_min });
+        s.min_cosine.merge(tensor_min);
+        s.sum_cosine += tensor_min.shown();
+        s.max_relative_rms.merge(tensor_rms);
+        s.max_control.merge(tensor_control);
+        try worst.append(arena, .{ .name = tensor.name, .new = tensor.encoding_id, .validated = other.encoding_id, .cosine = tensor_min.shown() });
     }
 
+    if (worst.items.len == 0) {
+        std.debug.print("the files share no matrix of the same name and dimensions\n", .{});
+        return error.NothingCompared;
+    }
+    std.debug.print("{d} shared matrices compared\n", .{worst.items.len});
     std.debug.print("{s:<9} {s:>7} {s:>10} {s:>10} {s:>11} {s:>9}\n", .{ "encoding", "tensors", "min cos", "mean cos", "max relRMS", "control" });
     for (by_encoding.keys(), by_encoding.values()) |id, s| {
         std.debug.print("{s:<9} {d:>7} {d:>10.5} {d:>10.5} {d:>11.4} {d:>9.4}\n", .{
-            name(id), s.tensors, s.min_cosine, s.sum_cosine / @as(f64, @floatFromInt(s.tensors)), s.max_relative_rms, s.max_control,
+            name(id), s.tensors, s.min_cosine.shown(), s.sum_cosine / @as(f64, @floatFromInt(s.tensors)), s.max_relative_rms.shown(), s.max_control.shown(),
         });
     }
     std.mem.sort(Worst, worst.items, {}, struct {
         fn less(_: void, x: Worst, y: Worst) bool {
-            return x.cosine < y.cosine;
+            // NaN first: the worst rows lead.
+            return (std.math.isNan(x.cosine) and !std.math.isNan(y.cosine)) or x.cosine < y.cosine;
         }
     }.less);
     std.debug.print("\nlowest (min cosine over {d} sampled rows):\n", .{sample_rows});
@@ -119,7 +127,7 @@ pub fn main(init: std.process.Init) !void {
             continue;
         };
         const mean = s.sum_cosine / @as(f64, @floatFromInt(s.tensors));
-        if (mean < t.mean) {
+        if (check_stats.below(mean, t.mean)) {
             std.debug.print("{s}: mean cosine {d:.5} below {d}\n", .{ name(t.id), mean, t.mean });
             failures += 1;
         }

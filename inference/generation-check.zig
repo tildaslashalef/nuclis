@@ -2,10 +2,12 @@
 //! intentionally slow reference work; `--metal` runs the same protocol on the
 //! GPU-resident plan, where results must also be bit-identical run to run.
 //! The family is selected from the file's `general.architecture`: the
-//! protocol is the same for every registered adapter, only the pinned token
-//! ids and the recorded tolerances differ.
+//! protocol is the same for every gated adapter, only the pinned token ids
+//! and the recorded tolerances differ; an ungated family (Muse Glimmer) is
+//! `error.UnsupportedFamily`.
 const std = @import("std");
 const inference = @import("inference");
+const check_stats = @import("check_stats.zig");
 const Observer = inference.observer.Observer;
 
 /// What the protocol needs from a family: its adapter types, two pinned
@@ -59,16 +61,6 @@ const gemma4_spec: Spec = .{
     .bounds = .{ .chunk_max_abs = 6e-1, .chunk_rel_rms = 2e-2, .half_max_abs = 2.0, .half_rel_rms = 6e-2, .q8 = .{ .max_abs = 1.2e1, .rel_rms = 3.5e-1 } },
     .expert_bounds = .{ .chunk_max_abs = 2e1, .chunk_rel_rms = 5e-1, .half_max_abs = 2e1, .half_rel_rms = 5e-1, .q8 = null },
 };
-// Muse Glimmer: `Hello` then `,` (the pinned trace's tokens). The half
-// tiles' rounding measured 1.4e-2 / 4.5e-3 on the 70-token prefill and
-// the F16 cache 5.0e-3 / 6.0e-4 (muse-glimmer.md § Metal plan); the
-// F32-tile comparison at its unchanged bound proves the schedule.
-const muse_glimmer_spec: Spec = .{
-    .Family = inference.models.muse_glimmer.family,
-    .vocabulary = inference.models.muse_glimmer.vocabulary,
-    .tokens = .{ 19873, 24 },
-    .bounds = .{ .chunk_max_abs = 5e-2, .chunk_rel_rms = 1e-2, .half_max_abs = 2e-2, .half_rel_rms = 2e-3, .q8 = .{ .max_abs = 5e-1, .rel_rms = 1e-1 } },
-};
 /// The bounds of the bound configuration: the expert ones when the family
 /// declares them and the file is an expert configuration.
 fn boundsOf(comptime spec: Spec, binding: spec.Family.Binding) Bounds {
@@ -97,7 +89,6 @@ pub fn main(init: std.process.Init) !void {
     var use_metal = false;
     var draft_stats = false;
     var speculative_check = false;
-    var half_tiles_only = false;
     var draft_trace: ?[]const u8 = null;
     var draft_model: ?[]const u8 = null;
     var prompt_profile: ?inference.profiles.Profile = null;
@@ -111,7 +102,6 @@ pub fn main(init: std.process.Init) !void {
     defer audio_clips.deinit(alloc);
     var verify_depth: ?[]const u8 = null;
     var prefix_dir: ?[]const u8 = null;
-    var hidden_rows = false;
     var path: ?[]const u8 = null;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -122,8 +112,6 @@ pub fn main(init: std.process.Init) !void {
             draft_stats = true;
         } else if (std.mem.eql(u8, arg, "--speculative-check")) {
             speculative_check = true;
-        } else if (std.mem.eql(u8, arg, "--half-tiles-only")) {
-            half_tiles_only = true;
         } else if (std.mem.eql(u8, arg, "--draft-trace")) {
             i += 1;
             if (i >= args.len) return error.ExpectedTraceDirectory;
@@ -168,8 +156,6 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedPrefixDirectory;
             prefix_dir = args[i];
-        } else if (std.mem.eql(u8, arg, "--hidden-rows")) {
-            hidden_rows = true;
         } else if (std.mem.eql(u8, arg, "--vision-profile")) {
             vision_profile = true;
         } else if (std.mem.eql(u8, arg, "--vision-oracle")) {
@@ -189,9 +175,7 @@ pub fn main(init: std.process.Init) !void {
     defer mapped.deinit(init.io);
     const architecture = mapped.document.string("general.architecture") orelse return error.MissingMetadata;
     switch (try inference.models.select(architecture)) {
-        .qwen35 => if (hidden_rows)
-            try hiddenRowsCheck(alloc, init.io, &mapped)
-        else if (vision_check) |projector|
+        .qwen35 => if (vision_check) |projector|
             if (vision_image) |image|
                 try visionCompare(alloc, init.io, projector, image, vision_oracle, use_metal, model_path)
             else
@@ -205,7 +189,7 @@ pub fn main(init: std.process.Init) !void {
         else if (speculative_check)
             try speculativeCheck(qwen35_spec, alloc, init.io, &mapped, model_path, use_metal, draft_model, prompt_profile)
         else
-            try run(qwen35_spec, alloc, init.io, &mapped, use_metal, half_tiles_only),
+            try run(qwen35_spec, alloc, init.io, &mapped, use_metal),
         .gemma4 => if (audio_check) |projector|
             try audioCheck(alloc, init.io, model_path, projector, audio_twin, audio_clips.items, use_metal)
         else if (vision_check) |projector|
@@ -213,21 +197,15 @@ pub fn main(init: std.process.Init) !void {
                 try visionCompare(alloc, init.io, projector, image, vision_oracle, use_metal, model_path)
             else
                 try visionCheck(alloc, init.io, model_path, projector, use_metal)
-        else if (draft_trace != null)
-            try gemmaDraftTrace(alloc, init.io, model_path, draft_model orelse return error.ExpectedDraftModel, use_metal)
-        else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal, half_tiles_only),
-        .@"muse-glimmer" => if (vision_check) |projector|
-            if (vision_image) |image|
-                try visionCompare(alloc, init.io, projector, image, vision_oracle, use_metal, model_path)
-            else
-                try visionCheck(alloc, init.io, model_path, projector, use_metal)
         else if (draft_trace) |dir|
-            try museDraftTrace(alloc, init.io, model_path, draft_model orelse return error.ExpectedDraftModel, use_metal, dir)
-        else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(muse_glimmer_spec, alloc, init.io, &mapped, use_metal, half_tiles_only),
+            try gemmaDraftTrace(alloc, init.io, model_path, draft_model orelse return error.ExpectedDraftModel, use_metal, dir)
+        else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
+        // No Muse Glimmer model file is gated, so none is checked.
+        .@"muse-glimmer" => return error.UnsupportedFamily,
     }
     // The ordinary run's engine-level addition, backend-independent like
     // `speculativeLoop`, so the Metal run covers it.
-    const ordinary = !hidden_rows and vision_check == null and audio_check == null and draft_trace == null and flash_trace == null and !draft_stats and !speculative_check and !half_tiles_only;
+    const ordinary = vision_check == null and audio_check == null and draft_trace == null and flash_trace == null and !draft_stats and !speculative_check;
     if (ordinary and use_metal) try promptSavesCheck(alloc, init.io, model_path);
 }
 
@@ -253,6 +231,8 @@ fn promptSavesCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8
     try eng.model.prefill(prompt[0..k], null, null, null, null, null, null);
     const reference = try engine.runLoop(&eng, prompt[k..], generated, &sampler, null, .{}, null, logits, &.{}, &streams[0], null, null);
     const expected = streams[0][0..reference.timing.generated_tokens];
+    // Equal empty streams would prove nothing.
+    if (expected.len == 0) return error.PromptSavesNothingGenerated;
 
     const Saver = struct {
         eng: *engine.Engine,
@@ -289,61 +269,7 @@ fn promptSavesCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8
     std.debug.print("Prompt saves passed: saving after {d} of {d} prompt tokens, restoring{s} emit the same {d} tokens.\n", .{ k, prompt.len, if (recurrent) " the save" else ", and rewinding to it", expected.len });
 }
 
-/// A decision head's input on both backends: every row's post-`output_norm`
-/// hidden from the CPU reference (`Runtime.hiddenRows`) against the Metal
-/// chunked prefill (`Plan.prefillHidden`) over 40 tokens, one chunk boundary
-/// inside, then the Metal path timed at 512 and 2,000 tokens. Any qwen35
-/// shape; no draft block needed.
-fn hiddenRowsCheck(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped) !void {
-    const qwen35 = inference.models.qwen35;
-    const binding = try qwen35.bind(alloc, &mapped.document);
-    const hidden = binding.shape.hidden;
-    var diagnostic: [8192]u8 = @splat(0);
-    var backend = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
-        std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
-        return err;
-    };
-    defer backend.deinit();
-    var tokens: [2000]u32 = undefined;
-    // Deterministic ids spread over the ordinary vocabulary.
-    for (&tokens, 0..) |*t, i| t.* = @intCast(1000 + (i * 7919) % 150_000);
-    const count = 40;
-    const cpu_rows = try alloc.alloc(f32, count * hidden);
-    defer alloc.free(cpu_rows);
-    const gpu_rows = try alloc.alloc(f32, tokens.len * hidden);
-    defer alloc.free(gpu_rows);
-    {
-        var runtime = try qwen35.family.Runtime.init(alloc, io, mapped.view(), binding, count, false, false);
-        defer runtime.deinit();
-        try runtime.hiddenRows(tokens[0..count], &.{}, &.{}, cpu_rows);
-    }
-    var plan = try qwen35.family.Plan.init(alloc, &backend, mapped.view(), binding, tokens.len, 32, .f32, false, false);
-    defer plan.deinit();
-    try plan.prefillHidden(tokens[0..count], &.{}, &.{}, gpu_rows[0 .. count * hidden]);
-    var max_abs: f64 = 0;
-    var diff_sq: f64 = 0;
-    var ref_sq: f64 = 0;
-    for (cpu_rows, gpu_rows[0 .. count * hidden]) |e, a| {
-        const d = @abs(@as(f64, e) - a);
-        max_abs = @max(max_abs, d);
-        diff_sq += d * d;
-        ref_sq += @as(f64, e) * e;
-    }
-    const rel_rms = @sqrt(diff_sq / ref_sq);
-    std.debug.print("Hidden rows, CPU vs Metal ({d} rows of {d}): max abs {e:.3}, relative RMS {e:.3} (bounds 5e-2 / 2e-3)\n", .{ count, hidden, max_abs, rel_rms });
-    if (!(max_abs <= 5e-2) or !(rel_rms <= 2e-3)) return error.HiddenRowsMismatch;
-    var timed = try qwen35.family.Plan.init(alloc, &backend, mapped.view(), binding, tokens.len, 512, .f16, false, false);
-    defer timed.deinit();
-    for ([_]usize{ 512, 2000 }) |n| {
-        try timed.prefillHidden(tokens[0..n], &.{}, &.{}, gpu_rows[0 .. n * hidden]); // warm
-        const start = std.Io.Clock.awake.now(io);
-        try timed.prefillHidden(tokens[0..n], &.{}, &.{}, gpu_rows[0 .. n * hidden]);
-        const ns: f64 = @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds());
-        std.debug.print("Metal prefillHidden: {d} tokens in {d:.1} ms ({d:.0} tokens/s, chunk 512, f16 cache)\n", .{ n, ns / 1e6, @as(f64, @floatFromInt(n)) / (ns / 1e9) });
-    }
-}
-
-fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, half_tiles_only: bool) !void {
+fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool) !void {
     const Family = spec.Family;
     const Runtime = Family.Runtime;
     const Plan = Family.Plan;
@@ -513,7 +439,7 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
     } else std.debug.print("Draft block checks skipped: the file carries no embedded block.\n", .{});
     try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 4, use_metal, boundsOf(spec, binding));
     if (use_metal) try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 8, true, boundsOf(spec, binding));
-    if (backend) |*b| try checkChunkedPrefill(spec, alloc, b, mapped.view(), binding, expected, actual, half_tiles_only);
+    if (backend) |*b| try checkChunkedPrefill(spec, alloc, b, mapped.view(), binding, expected, actual);
 }
 
 /// Step token 1, snapshot, step token 2 → logits A; restore, step
@@ -726,10 +652,13 @@ fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, view: i
         var verified = try Plan.init(alloc, b, view, binding, 4, 4, .f32, false, true);
         defer verified.deinit();
         try verified.verify(&draft.tokens, verify_rows, null, verify_hidden, null);
-        var hidden_max_abs: f64 = 0;
-        for (verify_hidden, prefill_hidden) |e, a| hidden_max_abs = @max(hidden_max_abs, @abs(@as(f64, e) - a));
-        std.debug.print("Prefill hidden check passed: {d} rows match verify (max abs {e:.3}).\n", .{ rows, hidden_max_abs });
-        if (hidden_max_abs > 1e-3) return error.PrefillHiddenMismatch;
+        var hidden_max_abs: check_stats.Worst = .{};
+        for (verify_hidden, prefill_hidden) |e, a| hidden_max_abs.observe(@abs(@as(f64, e) - a));
+        if (!hidden_max_abs.within(1e-3)) {
+            std.debug.print("Prefill hidden rows differ from verify's: max abs {e:.3} (bound 1e-3).\n", .{hidden_max_abs.shown()});
+            return error.PrefillHiddenMismatch;
+        }
+        std.debug.print("Prefill hidden check passed: {d} rows match verify (max abs {e:.3}).\n", .{ rows, hidden_max_abs.shown() });
     }
     std.debug.print("Draft block check passed ({s}): positions 0 and 1 match the pinned trace; greedy tokens {d} and {d}.\n", .{ if (backend != null) "metal" else "cpu", draft.greedy[0], draft.greedy[1] });
 }
@@ -1049,7 +978,7 @@ fn verifyAtDepth(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, d
     for (0..rows) |i| {
         const d = Difference.of(stepped[i * vocabulary ..][0..vocabulary], verified[i * vocabulary ..][0..vocabulary]);
         failed = failed or !d.within(max_abs_bound, rel_rms_bound);
-        if (i == 0 or d.rel_rms > worst.rel_rms or !d.within(max_abs_bound, rel_rms_bound)) {
+        if (i == 0 or !(d.rel_rms <= worst.rel_rms) or !d.within(max_abs_bound, rel_rms_bound)) {
             worst = d;
             worst_row = i;
         }
@@ -1551,7 +1480,7 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
         const bin_of_draft = try alloc.alloc(u8, draft_generated * max_drafts);
         defer alloc.free(bin_of_draft);
         @memset(bin_of_draft, 0);
-        var pmax_worst: f64 = 0;
+        var pmax_worst: check_stats.Worst = .{};
 
         // The prompt, then the greedy continuation; every step's target
         // hidden is kept for the drafter's `commit`.
@@ -1580,7 +1509,7 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
                 var device_pmax: f32 = 0;
                 try runner.forward(h_prev, next_draft, len + k, logits, &device_pmax);
                 const pmax = draftPmax(logits);
-                pmax_worst = @max(pmax_worst, @abs(@as(f64, device_pmax) - pmax));
+                pmax_worst.observe(@abs(@as(f64, device_pmax) - pmax));
                 const draft = argmax(logits);
                 drafts[j * max_drafts + k] = draft;
                 bin_of_draft[j * max_drafts + k] = pmaxBin(pmax);
@@ -1626,18 +1555,10 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
             std.debug.print("    {s:<8} {d}/{d} = {d:.1} %\n", .{ bin_name, a, t, rate * 100 });
         }
         const millis = @as(f64, @floatFromInt(propose_ns)) / std.time.ns_per_ms;
-        std.debug.print("  drafts {d}, propose {d:.3} ms total, {d:.3} ms/position; device vs host p_max worst |diff| {e:.2}; block workspace {d} bytes.\n", .{ proposed, millis, millis / @as(f64, @floatFromInt(@max(proposed, 1))), pmax_worst, runner.bytes() });
+        std.debug.print("  drafts {d}, propose {d:.3} ms total, {d:.3} ms/position; device vs host p_max worst |diff| {e:.2}; block workspace {d} bytes.\n", .{ proposed, millis, millis / @as(f64, @floatFromInt(@max(proposed, 1))), pmax_worst.shown(), runner.bytes() });
     }
 }
 
-/// Writes the native prediction-block trace for the pinned `Hello,` tokens
-/// (`p0-h.f32`, `p1-h.f32`, `p1-hprev.f32`, `greedy.txt`) so
-/// `nuclis-gates compare --draft` can compare it against the reference's
-/// captured rows. The target is stepped live for each position's hidden, so
-/// this is an independent capture, not a replay of the pinned `hprev`.
-/// The family's binding with a companion's prediction block bound in when
-/// `draft_model` names one, replacing an embedded block. `companion` holds
-/// the companion's mapping, which must outlive the binding.
 /// The DFlash2 drafter's trace on `Hello,`: the prompt is prefilled with its
 /// commit rows and committed, then one 8-row noise block from the prompt's
 /// greedy token writes every row's final hidden (`p{r}-h.f32`), and a
@@ -1699,6 +1620,9 @@ fn flashTrace(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.M
     std.debug.print("DFlash2 trace ({s}) written to {s}: anchor {d}, drafts {any}.\n", .{ if (use_metal) "metal" else "cpu", directory, anchor, drafts });
 }
 
+/// The family's binding with a companion's prediction block bound in when
+/// `draft_model` names one, replacing an embedded block. `companion` holds
+/// the companion's mapping, which must outlive the binding.
 fn bindDraftSource(comptime Family: type, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, draft_model: ?[]const u8, companion: *?inference.weights.Mapped) !Family.Binding {
     var binding = try Family.bind(alloc, &mapped.document);
     const path = draft_model orelse return binding;
@@ -1708,6 +1632,11 @@ fn bindDraftSource(comptime Family: type, alloc: std.mem.Allocator, io: std.Io, 
     return binding;
 }
 
+/// Writes the native prediction-block trace for the pinned `Hello,` tokens
+/// (`p0-h.f32`, `p1-h.f32`, `p1-hprev.f32`, `greedy.txt`) so
+/// `nuclis-gates compare --draft` can compare it against the reference's
+/// captured rows. The target is stepped live for each position's hidden, so
+/// this is an independent capture, not a replay of the pinned `hprev`.
 fn draftTrace(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, directory: []const u8, draft_model: ?[]const u8) !void {
     const Family = spec.Family;
     const hidden = 5120;
@@ -1773,20 +1702,33 @@ fn writeFloats(io: std.Io, directory: []const u8, name: []const u8, values: []co
     try writer.interface.flush();
 }
 
+/// `ids` space-separated on one line, as `directory/name`.
+fn writeIds(io: std.Io, directory: []const u8, name: []const u8, ids: []const u32) !void {
+    var path: [4096]u8 = undefined;
+    const full = try std.fmt.bufPrint(&path, "{s}/{s}", .{ directory, name });
+    const file = try std.Io.Dir.cwd().createFile(io, full, .{});
+    defer file.close(io);
+    var buffer: [256]u8 = undefined;
+    var writer = file.writer(io, &buffer);
+    for (ids, 0..) |id, i| try writer.interface.print("{s}{d}", .{ if (i == 0) "" else " ", id });
+    try writer.interface.writeByte('\n');
+    try writer.interface.flush();
+}
+
 fn compareDraft(label: []const u8, expected: []const u8, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64) !void {
-    var max_abs: f64 = 0;
+    var max_abs: check_stats.Worst = .{};
     var sum_sq: f64 = 0;
     var ref_sq: f64 = 0;
     for (actual, 0..) |a, i| {
         const e: f32 = std.mem.bytesToValue(f32, expected[i * 4 ..][0..4]);
         const d = @abs(@as(f64, e) - a);
-        max_abs = @max(max_abs, d);
+        max_abs.observe(d);
         sum_sq += d * d;
         ref_sq += @as(f64, e) * e;
     }
     const rel_rms = @sqrt(sum_sq / ref_sq);
-    std.debug.print("Draft block ({s}): max abs {e:.3}, relative RMS {e:.3} (bounds {e:.0} / {e:.0})\n", .{ label, max_abs, rel_rms, max_abs_bound, rel_rms_bound });
-    if (!(max_abs <= max_abs_bound) or !(rel_rms <= rel_rms_bound)) return error.DraftBlockMismatch;
+    std.debug.print("Draft block ({s}): max abs {e:.3}, relative RMS {e:.3} (bounds {e:.0} / {e:.0})\n", .{ label, max_abs.shown(), rel_rms, max_abs_bound, rel_rms_bound });
+    if (!max_abs.within(max_abs_bound) or !(rel_rms <= rel_rms_bound)) return error.DraftBlockMismatch;
 }
 
 /// The Gemma 4 assistant head against the pinned trace: the target consumes
@@ -1795,7 +1737,9 @@ fn compareDraft(label: []const u8, expected: []const u8, actual: []const f32, ma
 /// position's target hidden (the pinned `hprev` rows). Both the head's
 /// `h_next` and its greedy token must match, and a `propose` seeded from the
 /// committed prefix must return the pinned draft. The pinned rows are the
-/// target's: the 12B QAT file's or the E4B's.
+/// target's: the 12B QAT file's or the E4B's. The run's own rows go to
+/// `directory` under the fixture's names, with its greedy ids in
+/// `greedy.txt`, before they are compared.
 const GemmaDraftFixture = struct { greedy: [2]u32, hprev: [2][]const u8, h: [2][]const u8 };
 const gemma_draft_12b: GemmaDraftFixture = .{
     .greedy = .{ 2613, 236764 },
@@ -1807,7 +1751,7 @@ const gemma_draft_e4b: GemmaDraftFixture = .{
     .hprev = .{ @embedFile("src/models/fixtures/gemma4-mtp-e4b/token-1-mtp-hprev.f32"), @embedFile("src/models/fixtures/gemma4-mtp-e4b/token-2-mtp-hprev.f32") },
     .h = .{ @embedFile("src/models/fixtures/gemma4-mtp-e4b/token-1-mtp-h.f32"), @embedFile("src/models/fixtures/gemma4-mtp-e4b/token-2-mtp-h.f32") },
 };
-fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, draft_path: []const u8, use_metal: bool) !void {
+fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, draft_path: []const u8, use_metal: bool, directory: []const u8) !void {
     const Family = inference.models.gemma4.family;
     var mapped = try inference.weights.Mapped.open(alloc, io, model_path);
     defer mapped.deinit(io);
@@ -1824,8 +1768,9 @@ fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     if (hprev_files[0].len != hidden * 4) return error.DraftFixtureMismatch;
     const h_prev = try alloc.alloc(f32, hidden);
     defer alloc.free(h_prev);
-    const h_out = try alloc.alloc(f32, hidden);
-    defer alloc.free(h_out);
+    const h_rows = try alloc.alloc(f32, 2 * hidden);
+    defer alloc.free(h_rows);
+    var drafted: [2]u32 = .{ 0, 0 };
     // One executor per run: the CPU reference, or with `--metal` the plan
     // alone (the CPU half is the CPU tier's gate).
     var runtime: ?Family.Runtime = if (use_metal) null else try Family.Runtime.init(alloc, io, mapped.view(), binding, 32, false, true);
@@ -1850,23 +1795,27 @@ fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     }
     for (0..2) |row| {
         for (h_prev, 0..) |*v, j| v.* = std.mem.bytesToValue(f32, hprev_files[row][j * 4 ..][0..4]);
+        const h_out = h_rows[row * hidden ..][0..hidden];
         // The row's proposal position is `row + 1`, so the target consumes
         // tokens `0 .. row` first: its cache must hold those rows, exactly as
         // it does in the driver when `draft()` runs.
         if (runtime) |*r| {
             try r.step(tokens[row], null, null);
-            var token_greedy: u32 = 0;
-            try r.draftForwardTrace(h_prev, tokens[row + 1], row + 1, h_out, &token_greedy, null);
-            try compareDraft(if (row == 0) "gemma cpu position 1" else "gemma cpu position 2", h_files[row], h_out, 1e-2, 1e-4);
-            if (token_greedy != greedy[row]) return error.DraftGreedyMismatch;
+            try r.draftForwardTrace(h_prev, tokens[row + 1], row + 1, h_out, &drafted[row], null);
         }
         if (plan) |*p| {
             try p.step(tokens[row], null, null, null, null, null);
-            var metal_greedy: u32 = 0;
-            try p.draftForwardTrace(h_prev, tokens[row + 1], row + 1, h_out, &metal_greedy, null);
-            try compareDraft(if (row == 0) "gemma metal position 1" else "gemma metal position 2", h_files[row], h_out, 1e-2, 1e-4);
-            if (metal_greedy != greedy[row]) return error.DraftGreedyMismatch;
+            try p.draftForwardTrace(h_prev, tokens[row + 1], row + 1, h_out, &drafted[row], null);
         }
+        var name: [32]u8 = undefined;
+        try writeFloats(io, directory, try std.fmt.bufPrint(&name, "token-{d}-mtp-hprev.f32", .{row + 1}), h_prev);
+        try writeFloats(io, directory, try std.fmt.bufPrint(&name, "token-{d}-mtp-h.f32", .{row + 1}), h_out);
+    }
+    try writeIds(io, directory, "greedy.txt", &drafted);
+    const labels: [2][]const u8 = if (use_metal) .{ "gemma metal position 1", "gemma metal position 2" } else .{ "gemma cpu position 1", "gemma cpu position 2" };
+    for (0..2) |row| {
+        try compareDraft(labels[row], h_files[row], h_rows[row * hidden ..][0..hidden], 1e-2, 1e-4);
+        if (drafted[row] != greedy[row]) return error.DraftGreedyMismatch;
     }
     // `verify`'s rows are the distributions sampled acceptance draws from:
     // each must be the stepped logits at its position, soft-cap included,
@@ -1923,249 +1872,6 @@ fn argmax(values: []const f32) u32 {
     return @intCast(best);
 }
 
-/// The Muse Glimmer DFlash drafter against the pinned trace: the target
-/// consumes `The capital of France is` (954, 7963, 323, 11698, 373) one token
-/// at a time, the drafter's encoder injects every position's five target
-/// layer-input residuals, and at each of positions 1 and 2 a 16-row noise
-/// block is decoded. The five residual rows, the encoder output of positions
-/// 0 and 1, the first four rows of each block's final hidden, and the greedy
-/// draft of every row must match the reference (`--dflash-draft` in
-/// scripts/reference-generation.cpp).
-fn museDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, draft_path: []const u8, use_metal: bool, directory: []const u8) !void {
-    const Family = inference.models.muse_glimmer.family;
-    const D = inference.models.dflash;
-    var mapped = try inference.weights.Mapped.open(alloc, io, model_path);
-    defer mapped.deinit(io);
-    var draft_mapped = try inference.weights.Mapped.open(alloc, io, draft_path);
-    defer draft_mapped.deinit(io);
-    var binding = try Family.bind(alloc, &mapped.document);
-    binding.draft = try Family.bindDraft(alloc, &draft_mapped.document, draft_mapped.view(), mapped.view(), &binding);
-    // The reference's proposal never removed its block rows from the cache
-    // between the two positions under test, so a capacity past them keeps
-    // the same visible set.
-    const capacity = 32;
-    // One executor per run: the CPU reference, or with `--metal` the plan
-    // alone (the CPU half is the CPU tier's gate), each against the pinned
-    // rows. The plan runs F32 caches, the precision of the reference trace.
-    var runtime: ?Family.Runtime = if (use_metal) null else try Family.Runtime.init(alloc, io, mapped.view(), binding, capacity, false, true);
-    defer if (runtime) |*r| r.deinit();
-    var gpu: ?*inference.metal.Backend = null;
-    defer if (gpu) |b| {
-        b.deinit();
-        alloc.destroy(b);
-    };
-    var plan: ?Family.Plan = null;
-    defer if (plan) |*p| p.deinit();
-    if (use_metal) {
-        var diagnostic: [8192]u8 = @splat(0);
-        gpu = try alloc.create(inference.metal.Backend);
-        gpu.?.* = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
-            std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
-            return err;
-        };
-        plan = try Family.Plan.init(alloc, gpu.?, mapped.view(), binding, capacity, 32, .f32, false, true);
-    }
-    const tokens = [5]u32{ 954, 7963, 323, 11698, 373 };
-    const hidden = try alloc.alloc(f32, D.hidden_width);
-    defer alloc.free(hidden);
-    const encoder = try alloc.alloc(f32, D.embedding);
-    defer alloc.free(encoder);
-    const pinned_row = try alloc.alloc(f32, D.hidden_width);
-    defer alloc.free(pinned_row);
-    const block = try alloc.alloc(f32, D.block_size * D.embedding);
-    defer alloc.free(block);
-    var greedy: [D.block_size]u32 = undefined;
-    var label_buffer: [96]u8 = undefined;
-    // The Metal capture runs the generic F32 tile, whose accumulation order
-    // differs from the reference decode; its relative RMS still pins the
-    // slots (measured ~1.4e-6 against the CPU's ~4.9e-7), and the relaxed
-    // max-abs bound covers the residual stream's magnitudes of hundreds.
-    const residual_max_abs: f64 = if (use_metal) 5e-3 else 1e-3;
-    const residual_rel_rms: f64 = 1e-5;
-    // The encoder's `fc` runs the shipped half-operand tile over residual
-    // rows of magnitudes in the hundreds, so its F16 input rounding sits an
-    // order above the CPU reference (measured 1.4e-4 relative RMS on Metal
-    // against 2.6e-7 on the CPU); the bound still catches a wiring error,
-    // and the greedy rows pin the behaviour.
-    const encoder_rel_rms: f64 = if (use_metal) 2e-3 else 1e-4;
-
-    const residual_files = [2][D.block_count][]const u8{
-        .{
-            @embedFile("src/models/fixtures/muse-dflash/token-0-inp-0.f32"),
-            @embedFile("src/models/fixtures/muse-dflash/token-0-inp-1.f32"),
-            @embedFile("src/models/fixtures/muse-dflash/token-0-inp-2.f32"),
-            @embedFile("src/models/fixtures/muse-dflash/token-0-inp-3.f32"),
-            @embedFile("src/models/fixtures/muse-dflash/token-0-inp-4.f32"),
-        },
-        .{
-            @embedFile("src/models/fixtures/muse-dflash/token-1-inp-0.f32"),
-            @embedFile("src/models/fixtures/muse-dflash/token-1-inp-1.f32"),
-            @embedFile("src/models/fixtures/muse-dflash/token-1-inp-2.f32"),
-            @embedFile("src/models/fixtures/muse-dflash/token-1-inp-3.f32"),
-            @embedFile("src/models/fixtures/muse-dflash/token-1-inp-4.f32"),
-        },
-    };
-    const encoder_files = [2][]const u8{
-        @embedFile("src/models/fixtures/muse-dflash/token-0-encoder.f32"),
-        @embedFile("src/models/fixtures/muse-dflash/token-1-encoder.f32"),
-    };
-    const block_files = [2][]const u8{
-        @embedFile("src/models/fixtures/muse-dflash/token-1-block-h.f32"),
-        @embedFile("src/models/fixtures/muse-dflash/token-2-block-h.f32"),
-    };
-    const pinned_greedy = @embedFile("src/models/fixtures/muse-dflash/dflash-greedy.txt");
-
-    // Position 0: the target's residual capture, then the encoder over the
-    // same pinned rows (so a capture error is not charged to the encoder).
-    if (runtime) |*r| {
-        try r.prefill(tokens[0..1], null, hidden, null);
-        try compareResiduals("cpu residuals position 0", residual_files[0], hidden, residual_max_abs, residual_rel_rms);
-    }
-    if (plan) |*p| {
-        try museStepCapture(p, gpu.?, tokens[0..1], hidden);
-        try compareResiduals("metal residuals position 0", residual_files[0], hidden, residual_max_abs, residual_rel_rms);
-    }
-    try assemblePinned(residual_files[0], pinned_row);
-    if (runtime) |*r| {
-        try r.draftEncodeTrace(pinned_row, encoder);
-        try compareDraft("cpu encoder position 0", encoder_files[0], encoder, 1e-2, encoder_rel_rms);
-    }
-    if (plan) |*p| {
-        try p.draftEncodeTrace(pinned_row, encoder);
-        try compareDraft("metal encoder position 0", encoder_files[0], encoder, 1e-2, encoder_rel_rms);
-    }
-    try writeFloats(io, directory, "token-0-encoder.f32", encoder);
-    if (runtime) |*r| try r.commit(tokens[0..1], hidden);
-    if (plan) |*p| try p.commit(tokens[0..1], hidden);
-
-    for (0..2) |row| {
-        const label_position = row + 1;
-        const block_label: []const u8 = if (row == 0) "block position 1" else "block position 2";
-        const greedy_label: []const u8 = if (row == 0) "greedy position 1" else "greedy position 2";
-        // The block's residual stream magnifies the reference backends' own
-        // spread (its CPU quantizes activations, its Metal does not; the two
-        // differ by 2-5 % per layer here). The native rows sit 4.4e-3 from
-        // the pinned Metal ones, inside that spread; the 30 greedy rows pin
-        // the block's behaviour exactly.
-        if (runtime) |*r| {
-            try r.draftBlockTrace(tokens[label_position], D.block_size, block, &greedy, null);
-            try compareDraft(
-                try std.fmt.bufPrint(&label_buffer, "cpu {s}", .{block_label}),
-                block_files[row],
-                block[0 .. 4 * D.embedding],
-                2e-2,
-                1e-2,
-            );
-            try compareGreedy(
-                try std.fmt.bufPrint(&label_buffer, "cpu {s}", .{greedy_label}),
-                pinned_greedy,
-                row,
-                greedy[1..D.block_size],
-            );
-        }
-        if (plan) |*p| {
-            try p.draftBlockTrace(tokens[label_position], D.block_size, block, &greedy, null);
-            {
-                var name: [64]u8 = undefined;
-                const text = try std.fmt.bufPrint(&name, "token-{d}-block-h.f32", .{label_position});
-                try writeFloats(io, directory, text, block[0 .. 4 * D.embedding]);
-            }
-            try compareDraft(
-                try std.fmt.bufPrint(&label_buffer, "metal {s}", .{block_label}),
-                block_files[row],
-                block[0 .. 4 * D.embedding],
-                2e-2,
-                1e-2,
-            );
-            try compareGreedy(
-                try std.fmt.bufPrint(&label_buffer, "metal {s}", .{greedy_label}),
-                pinned_greedy,
-                row,
-                greedy[1..D.block_size],
-            );
-        } else {
-            var name: [64]u8 = undefined;
-            const text = try std.fmt.bufPrint(&name, "token-{d}-block-h.f32", .{label_position});
-            try writeFloats(io, directory, text, block[0 .. 4 * D.embedding]);
-        }
-        if (row == 0) {
-            // The next position: capture token 1's residuals and inject them,
-            // then the second proposal reads both injected rows.
-            if (runtime) |*r| {
-                try r.prefill(tokens[1..2], null, hidden, null);
-                try compareResiduals("cpu residuals position 1", residual_files[1], hidden, residual_max_abs, residual_rel_rms);
-            }
-            if (plan) |*p| {
-                try museStepCapture(p, gpu.?, tokens[1..2], hidden);
-                try compareResiduals("metal residuals position 1", residual_files[1], hidden, residual_max_abs, residual_rel_rms);
-            }
-            try writeFloats(io, directory, "token-1-residuals.f32", hidden);
-            try assemblePinned(residual_files[1], pinned_row);
-            if (runtime) |*r| {
-                try r.draftEncodeTrace(pinned_row, encoder);
-                try compareDraft("cpu encoder position 1", encoder_files[1], encoder, 1e-2, encoder_rel_rms);
-            }
-            if (plan) |*p| {
-                try p.draftEncodeTrace(pinned_row, encoder);
-                try compareDraft("metal encoder position 1", encoder_files[1], encoder, 1e-2, encoder_rel_rms);
-            }
-            if (runtime) |*r| try r.commit(tokens[1..2], hidden);
-            if (plan) |*p| try p.commit(tokens[1..2], hidden);
-        }
-    }
-    std.debug.print("Muse DFlash draft check passed ({s}): residuals, encoder, two blocks, and {d} greedy rows match the pinned trace.\n", .{ if (use_metal) "metal" else "cpu", 2 * (D.block_size - 1) });
-}
-
-/// The pinned residual rows are the reference's per-token target decode; the
-/// chunked path's half-operand tiles round their inputs to F16 and would mask
-/// the drafter's own numerics, so the trace's capture runs the same schedule
-/// and capture path through the generic F32 tile.
-fn museStepCapture(plan: anytype, gpu: *inference.metal.Backend, tokens: []const u32, hidden: []f32) !void {
-    gpu.generic_only = true;
-    defer gpu.generic_only = false;
-    try plan.prefill(tokens, null, null, null, null, hidden, null);
-}
-
-/// Concatenates the five pinned residual rows into one `commit` row.
-fn assemblePinned(files: [inference.models.dflash.block_count][]const u8, out: []f32) !void {
-    const width = inference.models.dflash.embedding;
-    if (out.len != files.len * width) return error.InvalidShape;
-    for (files, 0..) |file, slot| {
-        for (out[slot * width ..][0..width], 0..) |*value, i| {
-            value.* = std.mem.bytesToValue(f32, file[i * 4 ..][0..4]);
-        }
-    }
-}
-
-/// The captured residual row is `block_count` slots of `embedding` values in
-/// `target_layers` order; each is pinned as its own file.
-fn compareResiduals(label: []const u8, files: [inference.models.dflash.block_count][]const u8, row: []const f32, max_abs: f64, rel_rms: f64) !void {
-    const width = inference.models.dflash.embedding;
-    for (files, 0..) |file, slot| {
-        var name: [96]u8 = undefined;
-        const text = try std.fmt.bufPrint(&name, "{s} slot {d}", .{ label, slot });
-        try compareDraft(text, file, row[slot * width ..][0..width], max_abs, rel_rms);
-    }
-}
-
-/// `rows` greedy draft tokens starting at proposal `proposal` of the pinned
-/// file (one line per block row, `block_size - 1` rows per proposal).
-fn compareGreedy(label: []const u8, pinned: []const u8, proposal: usize, actual: []const u32) !void {
-    const per_proposal = inference.models.dflash.block_size - 1;
-    var lines = std.mem.tokenizeScalar(u8, pinned, '\n');
-    var index: usize = 0;
-    while (lines.next()) |line| : (index += 1) {
-        if (index < proposal * per_proposal or index >= (proposal + 1) * per_proposal) continue;
-        const expected = try std.fmt.parseInt(u32, std.mem.trim(u8, line, " \r"), 10);
-        const row = index - proposal * per_proposal;
-        if (actual[row] != expected) {
-            std.debug.print("{s}: row {d} greedy {d}, expected {d}\n", .{ label, row, actual[row], expected });
-            return error.DraftGreedyMismatch;
-        }
-    }
-    std.debug.print("{s}: {d} greedy rows match.\n", .{ label, per_proposal });
-}
-
 /// A 70-token prompt through per-token steps and through `prefill` with
 /// 32-token chunks (two full chunks and a partial one, crossing chunk
 /// boundaries inside attention and any recurrent state) must agree on the
@@ -2175,10 +1881,8 @@ fn compareGreedy(label: []const u8, pinned: []const u8, proposal: usize, actual:
 /// half, so bit-identity is not expected; the observed maximum is printed
 /// for the record. Chunks of 48 and 64 repeat the comparison through the
 /// 64×64 tiles (a partial and a full token tile); chunks of at most 32
-/// tokens take the 32×32 tiles. `half_tiles_only` stops after those: the
-/// F32-tile and F16-cache comparisons check the family's schedule, which
-/// a file sharing it with another gated file need not repeat.
-fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *inference.metal.Backend, view: inference.weights.View, binding: spec.Family.Binding, expected: []f32, actual: []f32, half_tiles_only: bool) !void {
+/// tokens take the 32×32 tiles.
+fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *inference.metal.Backend, view: inference.weights.View, binding: spec.Family.Binding, expected: []f32, actual: []f32) !void {
     const Plan = spec.Family.Plan;
     var tokens: [70]u32 = undefined;
     var seed: u32 = 12345;
@@ -2201,7 +1905,7 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
     try chunked.prefill(&tokens, actual, null, null, null, null, null);
     if (chunked.state.position != tokens.len or stepped.state.position != tokens.len) return error.PositionMismatch;
     try compareChunked("chunk", 32, tokens.len, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
-    if (!half_tiles_only) {
+    {
         // The same comparison through the generic F32 tiles and matvecs
         // (`generic_only`): what remains is summation order alone, so this
         // separates the half-operand rounding of the specialized tiles (the
@@ -2236,30 +1940,28 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
             try compareLogitRows("prefillRows (40 tokens, F32 tiles, chunk 32)", spec.vocabulary, every_expected, every_actual, 5e-3, 2e-4);
         }
     }
-    if (!half_tiles_only) {
-        // The same 70 tokens through an F16 cache, stepped and chunked,
-        // against the F32 stepped logits (the session holds half the bytes).
-        var half_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false, false);
-        defer half_stepped.deinit();
-        if (half_stepped.state.bytes() >= stepped.state.bytes()) return error.HalfCacheNotSmaller;
-        for (tokens, 0..) |t, i| try half_stepped.step(t, if (i + 1 == tokens.len) actual else null, null, null, null, null);
-        try compareChunked("F16 KV stepped", 1, tokens.len, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
-        var half_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false, false);
-        defer half_chunked.deinit();
-        try half_chunked.prefill(&tokens, actual, null, null, null, null, null);
-        try compareChunked("F16 KV chunk", 32, tokens.len, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
-        // And through a Q8_0 cache: decode reads the blocks, the chunk an F16
-        // expansion of them (the session holds about half the F16 bytes).
-        var q8_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .q8_0, false, false);
-        defer q8_stepped.deinit();
-        if (q8_stepped.state.bytes() >= half_stepped.state.bytes()) return error.Q8CacheNotSmaller;
-        for (tokens, 0..) |t, i| try q8_stepped.step(t, if (i + 1 == tokens.len) actual else null, null, null, null, null);
-        try compareQ8("Q8_0 KV stepped", 1, tokens.len, expected, actual, bounds);
-        var q8_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .q8_0, false, false);
-        defer q8_chunked.deinit();
-        try q8_chunked.prefill(&tokens, actual, null, null, null, null, null);
-        try compareQ8("Q8_0 KV chunk", 32, tokens.len, expected, actual, bounds);
-    }
+    // The same 70 tokens through an F16 cache, stepped and chunked,
+    // against the F32 stepped logits (the session holds half the bytes).
+    var half_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false, false);
+    defer half_stepped.deinit();
+    if (half_stepped.state.bytes() >= stepped.state.bytes()) return error.HalfCacheNotSmaller;
+    for (tokens, 0..) |t, i| try half_stepped.step(t, if (i + 1 == tokens.len) actual else null, null, null, null, null);
+    try compareChunked("F16 KV stepped", 1, tokens.len, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
+    var half_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false, false);
+    defer half_chunked.deinit();
+    try half_chunked.prefill(&tokens, actual, null, null, null, null, null);
+    try compareChunked("F16 KV chunk", 32, tokens.len, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
+    // And through a Q8_0 cache: decode reads the blocks, the chunk an F16
+    // expansion of them (the session holds about half the F16 bytes).
+    var q8_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .q8_0, false, false);
+    defer q8_stepped.deinit();
+    if (q8_stepped.state.bytes() >= half_stepped.state.bytes()) return error.Q8CacheNotSmaller;
+    for (tokens, 0..) |t, i| try q8_stepped.step(t, if (i + 1 == tokens.len) actual else null, null, null, null, null);
+    try compareQ8("Q8_0 KV stepped", 1, tokens.len, expected, actual, bounds);
+    var q8_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .q8_0, false, false);
+    defer q8_chunked.deinit();
+    try q8_chunked.prefill(&tokens, actual, null, null, null, null, null);
+    try compareQ8("Q8_0 KV chunk", 32, tokens.len, expected, actual, bounds);
     // 60 more tokens do not fit the remaining 58 positions: refused before any work.
     if (chunked.prefill(tokens[0..60], null, null, null, null, null, null)) |_| return error.ExpectedContextFull else |err| if (err != error.ContextFull) return err;
     if (chunked.state.position != tokens.len) return error.PositionMismatch;
@@ -2279,12 +1981,12 @@ const Difference = struct {
     arg_actual: usize,
 
     fn of(expected: []const f32, actual: []const f32) Difference {
-        var max_abs: f64 = 0;
+        var max_abs: check_stats.Worst = .{};
         var sum_sq: f64 = 0;
         var ref_sq: f64 = 0;
         for (expected, actual) |e, a| {
             const d = @abs(@as(f64, e) - a);
-            max_abs = @max(max_abs, d);
+            max_abs.observe(d);
             sum_sq += d * d;
             ref_sq += @as(f64, e) * e;
         }
@@ -2296,7 +1998,7 @@ const Difference = struct {
         for (actual, 0..) |v, i| if (v > actual[arg_actual]) {
             arg_actual = i;
         };
-        return .{ .max_abs = max_abs, .rel_rms = @sqrt(sum_sq / ref_sq), .arg_expected = arg_expected, .arg_actual = arg_actual };
+        return .{ .max_abs = max_abs.shown(), .rel_rms = @sqrt(sum_sq / ref_sq), .arg_expected = arg_expected, .arg_actual = arg_actual };
     }
     fn within(self: Difference, max_abs_bound: f64, rel_rms_bound: f64) bool {
         return self.max_abs <= max_abs_bound and self.rel_rms <= rel_rms_bound and self.arg_expected == self.arg_actual;
@@ -2332,7 +2034,7 @@ fn compareLogitRows(label: []const u8, vocabulary: usize, expected: []const f32,
             std.debug.print("{s}: row {d} max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (bounds {e:.0} / {e:.0})\n", .{ label, i, d.max_abs, d.rel_rms, d.arg_expected, d.arg_actual, max_abs_bound, rel_rms_bound });
             return error.RowsMismatch;
         }
-        if (d.rel_rms > worst.rel_rms) {
+        if (!(d.rel_rms <= worst.rel_rms)) {
             worst = d;
             worst_row = i;
         }
@@ -2365,17 +2067,9 @@ const VisionFixture = struct {
     logits_max_abs: f64 = 0,
     max_abs: f64,
     rel_rms: f64,
-    /// Whether the rows' bounds gate; false reports them only (Muse: the
-    /// reference's own encoders part at block 33, where sink patches form).
-    gate_rows: bool = true,
-    /// The oracle's encoder residual after `residual_blocks` blocks (window
-    /// order), compared within `residual_rel_rms`.
-    residual: ?[]const u8 = null,
-    residual_blocks: usize = 0,
-    residual_rel_rms: f64 = 0,
 };
 
-fn visionFixture(projector: *const inference.vision.Projector) VisionFixture {
+fn visionFixture(projector: *const inference.vision.Projector) error{UnsupportedFamily}!VisionFixture {
     return switch (projector.family) {
         // The reference's own CPU and Metal projectors differ by 0.36 max
         // abs / 4.6e-3 relative RMS on this fixture (vision.md).
@@ -2389,10 +2083,7 @@ fn visionFixture(projector: *const inference.vision.Projector) VisionFixture {
             else
                 .{ .features = @embedFile("src/vision/fixtures/gemma4v-synthetic/features.f32"), .greedy = @embedFile("src/vision/fixtures/gemma4v-synthetic/greedy.txt"), .prompt_tokens = @embedFile("src/vision/fixtures/gemma4v-synthetic/prompt-tokens.json"), .top_logits = @embedFile("src/vision/fixtures/gemma4v-synthetic/top-logits.txt"), .min_tokens = 4, .logits_max_abs = 0.1, .max_abs = 0.2, .rel_rms = 2.5e-2 },
         },
-        // 3×2 tokens at the reference's bounds. Its own CPU and Metal
-        // encoders differ by 1.8e-2 relative RMS after block 30 and 0.26 on
-        // the rows (vision.md § Muse Glimmer's projector).
-        .muse => .{ .features = @embedFile("src/vision/fixtures/muse-glimmer-synthetic/features.f32"), .greedy = @embedFile("src/vision/fixtures/muse-glimmer-synthetic/greedy.txt"), .prompt_tokens = @embedFile("src/vision/fixtures/muse-glimmer-synthetic/prompt-tokens.json"), .top_logits = @embedFile("src/vision/fixtures/muse-glimmer-synthetic/top-logits.txt"), .logits_max_abs = 2e-2, .max_abs = 0, .rel_rms = 0, .gate_rows = false, .residual = @embedFile("src/vision/fixtures/muse-glimmer-synthetic/layer-out-30.f32"), .residual_blocks = 31, .residual_rel_rms = 2e-2 },
+        .muse => error.UnsupportedFamily,
     };
 }
 
@@ -2482,7 +2173,7 @@ fn visionCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, pro
     var loaded: LoadedProjector = undefined;
     try loaded.open(alloc, io, projector_path, use_metal);
     defer loaded.close(alloc, io);
-    const fixture = visionFixture(&loaded.projector);
+    const fixture = try visionFixture(&loaded.projector);
     if (fixture.min_tokens) |m| loaded.projector.min_tokens = m;
     var source = try vision.image.decodePpm(alloc, @embedFile("src/vision/fixtures/synthetic-96x64.ppm"));
     defer source.deinit(alloc);
@@ -2492,18 +2183,7 @@ fn visionCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, pro
     if (fixture.features.len != rows * width * 4) return error.FixtureMismatch;
     const features = try loaded.encode(alloc, io, source, grid);
     defer alloc.free(features);
-    if (fixture.gate_rows)
-        try compareRows("projector rows", fixture.features, features, fixture.max_abs, fixture.rel_rms)
-    else
-        compareRows("projector rows (reported)", fixture.features, features, 0, 0) catch {};
-    if (fixture.residual) |expected| {
-        var patches = try loaded.projector.prepare(alloc, source, grid);
-        defer patches.deinit(alloc);
-        const residual = try alloc.alloc(f32, expected.len / 4);
-        defer alloc.free(residual);
-        try loaded.projector.encodeResidual(patches, grid, fixture.residual_blocks, residual);
-        try compareRows("encoder residual after the pinned blocks", expected, residual, std.math.inf(f64), fixture.residual_rel_rms);
-    }
+    try compareRows("projector rows", fixture.features, features, fixture.max_abs, fixture.rel_rms);
 
     const pinned = try alloc.alloc(f32, rows * width);
     defer alloc.free(pinned);
@@ -2539,17 +2219,17 @@ fn visionCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, pro
     try eng.model.prefillVision(tokens, spans, pinned, stepped, null, null, null, null);
     if (fixture.top_logits) |text| {
         var lines = std.mem.tokenizeScalar(u8, text, '\n');
-        var max_abs: f64 = 0;
+        var max_abs: check_stats.Worst = .{};
         var first: ?u32 = null;
         while (lines.next()) |line| {
             var fields = std.mem.tokenizeScalar(u8, line, ' ');
             const id = try std.fmt.parseInt(u32, fields.next() orelse return error.FixtureMismatch, 10);
             const want = try std.fmt.parseFloat(f64, fields.next() orelse return error.FixtureMismatch);
             if (first == null) first = id;
-            max_abs = @max(max_abs, @abs(want - stepped[id]));
+            max_abs.observe(@abs(want - stepped[id]));
         }
-        std.debug.print("Last-position logits on the pinned rows: max abs {e:.3} over the oracle's best 16 (bound {e:.1}), argmax {d} vs {d}\n", .{ max_abs, fixture.logits_max_abs, argmaxOf(stepped), first.? });
-        if (!(max_abs <= fixture.logits_max_abs)) return error.VisionLogitsMismatch;
+        std.debug.print("Last-position logits on the pinned rows: max abs {e:.3} over the oracle's best 16 (bound {e:.1}), argmax {d} vs {d}\n", .{ max_abs.shown(), fixture.logits_max_abs, argmaxOf(stepped), first.? });
+        if (!max_abs.within(fixture.logits_max_abs)) return error.VisionLogitsMismatch;
     }
     for (&generated, 0..) |*g, k| {
         if (k > 0) try eng.model.step(generated[k - 1], stepped, null, null, null, null);
@@ -2576,10 +2256,10 @@ fn visionCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, pro
     try extended.appendSlice(alloc, generated[0 .. count - 1]);
     eng.model.reset();
     try eng.model.prefillVision(extended.items, spans, pinned, logits, null, null, null, null);
-    var max_abs: f64 = 0;
-    for (stepped, logits) |a, b| max_abs = @max(max_abs, @abs(@as(f64, a) - b));
-    std.debug.print("Decode after the image, {d} steps vs one prefill: max abs {e:.3} (bound 2e-2)\n", .{ count - 1, max_abs });
-    if (!(max_abs <= 2e-2)) return error.VisionDecodeMismatch;
+    var max_abs: check_stats.Worst = .{};
+    for (stepped, logits) |a, b| max_abs.observe(@abs(@as(f64, a) - b));
+    std.debug.print("Decode after the image, {d} steps vs one prefill: max abs {e:.3} (bound 2e-2)\n", .{ count - 1, max_abs.shown() });
+    if (!max_abs.within(2e-2)) return error.VisionDecodeMismatch;
 
     // The engine's loop over the same prompt, with the device's greedy
     // selection on Metal (the chat's path), must choose the same tokens.
@@ -2702,10 +2382,10 @@ fn audioCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, proj
     try extended.appendSlice(alloc, generated[0 .. count - 1]);
     eng.model.reset();
     try eng.model.prefillVision(extended.items, prefill.spans, prefill.features, logits, null, null, null, null);
-    var max_abs: f64 = 0;
-    for (stepped, logits) |x, y| max_abs = @max(max_abs, @abs(@as(f64, x) - y));
-    std.debug.print("Decode after the clip, {d} steps vs one prefill: max abs {e:.3} (bound 2e-2)\n", .{ count - 1, max_abs });
-    if (!(max_abs <= 2e-2)) return error.AudioDecodeMismatch;
+    var max_abs: check_stats.Worst = .{};
+    for (stepped, logits) |x, y| max_abs.observe(@abs(@as(f64, x) - y));
+    std.debug.print("Decode after the clip, {d} steps vs one prefill: max abs {e:.3} (bound 2e-2)\n", .{ count - 1, max_abs.shown() });
+    if (!max_abs.within(2e-2)) return error.AudioDecodeMismatch;
 }
 
 /// Keeps a copy of one stage's rows from a `gemma4a` observer.
@@ -2730,16 +2410,16 @@ const Capture = struct {
 const Differences = struct { max_abs: f64, rel_rms: f64 };
 
 fn differences(expected: []const f32, actual: []const f32) Differences {
-    var max_abs: f64 = 0;
+    var max_abs: check_stats.Worst = .{};
     var sum_sq: f64 = 0;
     var ref_sq: f64 = 0;
     for (expected, actual) |e, x| {
         const d = @abs(@as(f64, e) - x);
-        max_abs = @max(max_abs, d);
+        max_abs.observe(d);
         sum_sq += d * d;
         ref_sq += @as(f64, e) * e;
     }
-    return .{ .max_abs = max_abs, .rel_rms = @sqrt(sum_sq / ref_sq) };
+    return .{ .max_abs = max_abs.shown(), .rel_rms = @sqrt(sum_sq / ref_sq) };
 }
 
 fn argmaxOf(values: []const f32) u32 {
@@ -2826,52 +2506,10 @@ fn visionCompare(alloc: std.mem.Allocator, io: std.Io, projector_path: []const u
         }
         std.debug.print("\n", .{});
     }
-    if (loaded.projector.family == .muse) try museTraces(alloc, io, &loaded, source, grid, oracle);
     if (model_path) |mp| {
         try visionLanguageCompare(alloc, io, mp, oracle, std.mem.bytesAsSlice(f32, expected), grid, use_metal, "the oracle's rows");
         try visionLanguageCompare(alloc, io, mp, oracle, features, grid, use_metal, "our rows");
     }
-}
-
-/// Muse Glimmer's encoder against whichever reference traces the oracle
-/// directory holds (`reference-vision --trace`): the im2col patches
-/// (`node_0`, raster), then the residual after `pre_ln` and after block K
-/// (`layer_out-K`, window order). Reports; never gates.
-fn museTraces(alloc: std.mem.Allocator, io: std.Io, loaded: *LoadedProjector, source: inference.vision.image.Rgb8, grid: inference.vision.Grid, oracle: []const u8) !void {
-    var patches = try loaded.projector.prepare(alloc, source, grid);
-    defer patches.deinit(alloc);
-    const traces = [_]struct { name: []const u8, blocks: usize }{
-        .{ .name = "pre_ln", .blocks = 0 },        .{ .name = "layer_out-2", .blocks = 3 },   .{ .name = "layer_out-3", .blocks = 4 },
-        .{ .name = "layer_out-30", .blocks = 31 }, .{ .name = "layer_out-32", .blocks = 33 }, .{ .name = "layer_out-33", .blocks = 34 },
-    };
-    var name_buffer: [64]u8 = undefined;
-    if (readOracle(alloc, io, oracle, "node_0.f32")) |expected| {
-        defer alloc.free(expected);
-        if (expected.len == patches.values.len * 4) {
-            var differ: usize = 0;
-            for (patches.values, 0..) |v, i| {
-                if (v != std.mem.bytesToValue(f32, expected[i * 4 ..][0..4])) differ += 1;
-            }
-            std.debug.print("patches vs the oracle's im2col: {d} of {d} values differ\n", .{ differ, patches.values.len });
-            compareRows("patches", expected, patches.values, 0, 0) catch {};
-        }
-    } else |_| {}
-    for (traces) |t| {
-        const file = try std.fmt.bufPrint(&name_buffer, "{s}.f32", .{t.name});
-        const expected = readOracle(alloc, io, oracle, file) catch continue;
-        defer alloc.free(expected);
-        const rows = try alloc.alloc(f32, expected.len / 4);
-        defer alloc.free(rows);
-        try loaded.projector.encodeResidual(patches, grid, t.blocks, rows);
-        const label = try std.fmt.bufPrint(&name_buffer, "residual vs {s}", .{t.name});
-        compareRows(label, expected, rows, 0, 0) catch {};
-    }
-}
-
-fn readOracle(alloc: std.mem.Allocator, io: std.Io, oracle: []const u8, name: []const u8) ![]u8 {
-    const path = try std.fs.path.join(alloc, &.{ oracle, name });
-    defer alloc.free(path);
-    return std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(256 << 20));
 }
 
 /// The language model on the oracle's own prompt tokens and the given
@@ -2907,16 +2545,16 @@ fn visionLanguageCompare(alloc: std.mem.Allocator, io: std.Io, model_path: []con
     defer alloc.free(logits_path);
     const want = try std.Io.Dir.cwd().readFileAlloc(io, logits_path, alloc, .limited(16 << 20));
     defer alloc.free(want);
-    var max_abs: f64 = 0;
+    var max_abs: check_stats.Worst = .{};
     var best_ours: usize = 0;
     var best_ref: usize = 0;
     for (logits, 0..) |got, i| {
         const w = std.mem.bytesToValue(f32, want[i * 4 ..][0..4]);
-        max_abs = @max(max_abs, @abs(@as(f64, w) - got));
+        max_abs.observe(@abs(@as(f64, w) - got));
         if (got > logits[best_ours]) best_ours = i;
         if (w > std.mem.bytesToValue(f32, want[best_ref * 4 ..][0..4])) best_ref = i;
     }
-    std.debug.print("Last-position logits on the oracle's rows ({d} tokens): max abs {e:.3}, argmax {d}/{d}\n", .{ tokens.len, max_abs, best_ours, best_ref });
+    std.debug.print("Last-position logits on the oracle's rows ({d} tokens): max abs {e:.3}, argmax {d}/{d}\n", .{ tokens.len, max_abs.shown(), best_ours, best_ref });
     eng.model.reset();
     const generated = try alloc.alloc(u32, 16);
     defer alloc.free(generated);
@@ -2952,17 +2590,17 @@ fn visionLanguageCompare(alloc: std.mem.Allocator, io: std.Io, model_path: []con
 }
 
 fn compareRows(label: []const u8, expected: []const u8, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64) !void {
-    var max_abs: f64 = 0;
+    var max_abs: check_stats.Worst = .{};
     var sum_sq: f64 = 0;
     var ref_sq: f64 = 0;
     for (actual, 0..) |a, i| {
         const e: f32 = std.mem.bytesToValue(f32, expected[i * 4 ..][0..4]);
         const d = @abs(@as(f64, e) - a);
-        max_abs = @max(max_abs, d);
+        max_abs.observe(d);
         sum_sq += d * d;
         ref_sq += @as(f64, e) * e;
     }
     const rel_rms = @sqrt(sum_sq / ref_sq);
-    std.debug.print("{s}: max abs {e:.3}, relative RMS {e:.3} (bounds {e:.0} / {e:.0})\n", .{ label, max_abs, rel_rms, max_abs_bound, rel_rms_bound });
-    if (!(max_abs <= max_abs_bound) or !(rel_rms <= rel_rms_bound)) return error.VisionMismatch;
+    std.debug.print("{s}: max abs {e:.3}, relative RMS {e:.3} (bounds {e:.0} / {e:.0})\n", .{ label, max_abs.shown(), rel_rms, max_abs_bound, rel_rms_bound });
+    if (!max_abs.within(max_abs_bound) or !(rel_rms <= rel_rms_bound)) return error.VisionMismatch;
 }

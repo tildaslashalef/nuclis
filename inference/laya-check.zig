@@ -10,6 +10,7 @@
 //! request and of all the requests packed.
 const std = @import("std");
 const inference = @import("inference");
+const check_stats = @import("check_stats.zig");
 const laya = inference.models.laya;
 const metal = inference.metal;
 
@@ -31,7 +32,7 @@ const logit_bound = 1e-4;
 const Tensor = struct { name: []const u8, rows: []const usize, offset: usize };
 const Request = struct { name: []const u8, qtype: u2, ids: []const u32, markers: []const usize, logits: []const f32, tensors: []const Tensor };
 
-const Stats = struct { max_abs: f64 = 0, max_ref: f64 = 0, diff2: f64 = 0, ref2: f64 = 0, seen: bool = false };
+const Stats = struct { diff: check_stats.Worst = .{}, reference: check_stats.Worst = .{}, diff2: f64 = 0, ref2: f64 = 0, seen: bool = false };
 
 const Compare = struct {
     request: *const Request,
@@ -53,8 +54,8 @@ const Compare = struct {
             for (t.rows, 0..) |row, r| for (0..self.hidden) |c| {
                 const want: f64 = reference(self.activations, t.offset + r * self.hidden + c);
                 const d = states[row * self.hidden + c] - want;
-                s.max_abs = @max(s.max_abs, @abs(d));
-                s.max_ref = @max(s.max_ref, @abs(want));
+                s.diff.observe(d);
+                s.reference.observe(want);
                 s.diff2 += d * d;
                 s.ref2 += want * want;
             };
@@ -87,9 +88,10 @@ pub fn main(init: std.process.Init) !void {
     defer parsed.deinit();
     std.debug.print("Laya loaded on the {s} in {d} ms: {d} encoder layers, {d} head layers.\n", .{ @tagName(backend), load_ms, model.config.layers, model.head_layers });
 
-    var worst_max: f64 = 0;
-    var worst_rms: f64 = 0;
-    var worst_logit: f64 = 0;
+    if (parsed.value.requests.len == 0) return error.NoRequests;
+    var worst_max: check_stats.Worst = .{};
+    var worst_rms: check_stats.Worst = .{};
+    var worst_logit: check_stats.Worst = .{};
     var failed = false;
     for (parsed.value.requests) |*r| {
         const stats = try gpa.alloc(Stats, r.tensors.len);
@@ -101,23 +103,23 @@ pub fn main(init: std.process.Init) !void {
         const start = std.Io.Clock.awake.now(io);
         try model.logits(io, gpa, r.ids, r.markers, @fromBackingInt(@intCast(r.qtype)), logits, .{ .context = &compare, .record = Compare.record });
         const ms = start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds();
-        var logit_error: f64 = 0;
-        for (logits, r.logits) |got, want| logit_error = @max(logit_error, @abs(@as(f64, got) - want) / @max(1, @abs(want)));
-        worst_logit = @max(worst_logit, logit_error);
-        std.debug.print("{s}: {d} tokens, {d} options, {d} ms; logits scaled |Δ| {e:.2}\n", .{ r.name, r.ids.len, r.markers.len, ms, logit_error });
-        if (logit_error > logit_bound) failed = true;
+        var logit_error: check_stats.Worst = .{};
+        for (logits, r.logits) |got, want| logit_error.observe(@abs(@as(f64, got) - want) / @max(1, @abs(want)));
+        worst_logit.merge(logit_error);
+        std.debug.print("{s}: {d} tokens, {d} options, {d} ms; logits scaled |Δ| {e:.2}\n", .{ r.name, r.ids.len, r.markers.len, ms, logit_error.shown() });
+        if (logit_error.count == 0 or !logit_error.within(logit_bound)) failed = true;
         for (r.tensors, stats) |t, s| {
             if (!s.seen) return error.StageNotTraced;
-            const scaled = s.max_abs / s.max_ref;
+            const scaled = s.diff.shown() / s.reference.shown();
             const rms = @sqrt(s.diff2 / s.ref2);
-            worst_max = @max(worst_max, scaled);
-            worst_rms = @max(worst_rms, rms);
-            const bad = scaled > max_bound or rms > rms_bound;
+            worst_max.observe(scaled);
+            worst_rms.observe(rms);
+            const bad = check_stats.exceeds(scaled, max_bound) or check_stats.exceeds(rms, rms_bound);
             if (bad) failed = true;
-            std.debug.print("  {s:<10} max |Δ| {e:.2} of max |ref| {e:.2} ({e:.2})  rel RMS {e:.2}{s}\n", .{ t.name, s.max_abs, s.max_ref, scaled, rms, if (bad) "  OVER" else "" });
+            std.debug.print("  {s:<10} max |Δ| {e:.2} of max |ref| {e:.2} ({e:.2})  rel RMS {e:.2}{s}\n", .{ t.name, s.diff.shown(), s.reference.shown(), scaled, rms, if (bad) "  OVER" else "" });
         }
     }
-    std.debug.print("Worst over {d} requests: scaled max |Δ| {e:.2} (bound {e:.0}), rel RMS {e:.2} (bound {e:.0}), scaled logit |Δ| {e:.2} (bound {e:.0}).\n", .{ parsed.value.requests.len, worst_max, max_bound, worst_rms, rms_bound, worst_logit, logit_bound });
+    std.debug.print("Worst over {d} requests: scaled max |Δ| {e:.2} (bound {e:.0}), rel RMS {e:.2} (bound {e:.0}), scaled logit |Δ| {e:.2} (bound {e:.0}).\n", .{ parsed.value.requests.len, worst_max.shown(), max_bound, worst_rms.shown(), rms_bound, worst_logit.shown(), logit_bound });
     if (failed) return error.OutsideTolerance;
     if (backend == .metal) {
         try checkBatch(gpa, io, &model, parsed.value.requests);

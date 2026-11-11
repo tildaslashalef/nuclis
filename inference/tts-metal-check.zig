@@ -4,6 +4,7 @@
 //! the generic matvec on the talker's and predictor's shapes.
 const std = @import("std");
 const inference = @import("inference");
+const check_stats = @import("check_stats.zig");
 const Backend = inference.metal.Backend;
 const Buffer = inference.metal.Buffer;
 const codec = inference.audio.qwen3_codec;
@@ -18,20 +19,20 @@ fn fill(random: std.Random, values: []f32, scale: f32) void {
     for (values) |*v| v.* = (random.float(f32) * 2 - 1) * scale;
 }
 
-/// Largest |got − want| over max(|want|, floor).
-fn worst(got: []const f32, want: []const f32, floor: f32) f32 {
-    var w: f32 = 0;
-    for (got, want) |g, x| w = @max(w, @abs(g - x) / @max(@abs(x), floor));
+/// Largest |got − want| over max(|want|, floor), latching NaN and inf.
+fn worst(got: []const f32, want: []const f32, floor: f32) check_stats.Worst {
+    var w: check_stats.Worst = .{};
+    for (got, want) |g, x| w.observe(@abs(g - x) / @max(@abs(x), floor));
     return w;
 }
 
-fn expectWithin(name: []const u8, got: []const f32, want: []const f32, floor: f32, bound: f32) !f32 {
+fn expectWithin(name: []const u8, got: []const f32, want: []const f32, floor: f32, bound: f32) !f64 {
     const w = worst(got, want, floor);
-    if (!(w <= bound)) {
-        std.debug.print("{s}: worst relative difference {e} over the bound {e}\n", .{ name, w, bound });
+    if (!w.within(bound)) {
+        std.debug.print("{s}: worst relative difference {e} over the bound {e}\n", .{ name, w.shown(), bound });
         return error.MetalMismatch;
     }
-    return w;
+    return w.value;
 }
 
 fn expectEqual(name: []const u8, got: []const f32, want: []const f32) !void {
@@ -135,8 +136,6 @@ pub fn check(alloc: std.mem.Allocator, b: *Backend) !void {
         s.* = @exp((random.float(f32) * 2 - 1) * 1.5);
         i.* = 1 / (@exp((random.float(f32) * 2 - 1) * 1.5) + 1e-9);
     }
-    const snake_want = try a.alloc(f32, dw_want.len);
-    codec.snakeBeta(.{ .scale = scale, .inv = inv }, dw_want, snake_want);
     const snake_out = try Up.zeros(b, &created, alloc, dw_want.len);
     try b.begin();
     try b.ttsSnake(dw_out, try Up.load(b, &created, alloc, scale), try Up.load(b, &created, alloc, inv), snake_out, dw_want.len, channels);
@@ -159,7 +158,7 @@ pub fn check(alloc: std.mem.Allocator, b: *Backend) !void {
     const heads = 4;
     const stride = heads * 64;
     const window = 72;
-    var attention_worst: f32 = 0;
+    var attention_worst: check_stats.Worst = .{};
     for ([_][2]usize{ .{ 71, 90 }, .{ 3, 5 }, .{ 0, 1 } }) |shape| {
         const past = shape[0];
         const n = shape[1];
@@ -176,7 +175,7 @@ pub fn check(alloc: std.mem.Allocator, b: *Backend) !void {
         try b.begin();
         try b.ttsWindowAttention(try Up.load(b, &created, alloc, q), try Up.load(b, &created, alloc, keys), try Up.load(b, &created, alloc, values), out, n, past, heads, window, 0.125);
         try b.commit();
-        attention_worst = @max(attention_worst, try expectWithin("tts_window_attention", out.floats()[0 .. n * stride], want, 1e-2, 2e-5));
+        attention_worst.observe(try expectWithin("tts_window_attention", out.floats()[0 .. n * stride], want, 1e-2, 2e-5));
     }
 
     // The output convolution: 7 taps of 96 channels to one, clamped.
@@ -224,13 +223,13 @@ pub fn check(alloc: std.mem.Allocator, b: *Backend) !void {
     const weights = all.slice(2, m_rows * m_columns * 2);
     const matrix: inference.cpu.Matrix = .{ .encoding = 30, .rows = m_rows, .columns = m_columns, .bytes = weights.host[0 .. m_rows * m_columns * 2] };
     const in = try Up.load(b, &created, alloc, input);
-    var matvec_worst: f32 = 0;
+    var matvec_worst: check_stats.Worst = .{};
     for ([_]usize{ 1, 2, 4 }) |r| {
         const out = try Up.zeros(b, &created, alloc, m_rows);
         try b.begin();
         try b.ttsMatvecBf16(weights, matrix, in, out, r);
         try b.commit();
-        matvec_worst = @max(matvec_worst, try expectWithin("tts_matvec_bf16", out.floats()[0..m_rows], mv_want, 1e-1, 2e-5));
+        matvec_worst.observe(try expectWithin("tts_matvec_bf16", out.floats()[0..m_rows], mv_want, 1e-1, 2e-5));
     }
 
     // Three matrices in one dispatch, and gate·up with SiLU: each row summed
@@ -336,7 +335,7 @@ pub fn check(alloc: std.mem.Allocator, b: *Backend) !void {
         }
         trials += 1;
     };
-    std.debug.print("Qwen3-TTS kernels vs the CPU: codebook sum, gather, row gather, the fused q/k/v and gate·up matvecs (against the single one), and the BF16 tile (against the generic tile) bit for bit; scaled add {e:.2}, depthwise {e:.2}, SnakeBeta {e:.2}, window attention {e:.2} (F64 scores), output convolution {e:.2}, BF16 matvec {e:.2} (worst relative); the device sampler chose the CPU sampler's id in {d} of {d} draws\n", .{ add_worst, dw_worst, snake_worst, attention_worst, conv_worst, matvec_worst, trials, trials });
+    std.debug.print("Qwen3-TTS kernels vs the CPU: codebook sum, gather, row gather, the fused q/k/v and gate·up matvecs (against the single one), and the BF16 tile (against the generic tile) bit for bit; scaled add {e:.2}, depthwise {e:.2}, SnakeBeta {e:.2}, window attention {e:.2} (F64 scores), output convolution {e:.2}, BF16 matvec {e:.2} (worst relative); the device sampler chose the CPU sampler's id in {d} of {d} draws\n", .{ add_worst, dw_worst, snake_worst, attention_worst.shown(), conv_worst, matvec_worst.shown(), trials, trials });
 }
 
 /// The BF16 matvec against the generic one on the TTS shapes: GB/s of

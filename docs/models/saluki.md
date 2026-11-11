@@ -225,7 +225,7 @@ within their usual bounds.
 
 **The forward.** It is the Qwen3.8 schedule, unchanged. nuclis's CPU
 reference recorded `tests/fixtures/saluki-hello-comma` (`Hello,`, greedy
-token 353); the gates hold Metal to it:
+token 353, held through `v0.11.0`); the gates held Metal to it:
 
 | Gate | Max abs | Rel. RMS | Bound |
 | --- | ---: | ---: | --- |

@@ -35,8 +35,8 @@ const usage =
     \\  --strict            a gate whose model or data is missing fails
     \\
     \\compare options:
-    \\  --positions N --max-absolute X --max-relative-rms X --embedding N
-    \\  --layers N --vocab N --draft
+    \\  --positions N --embedding N [--max-absolute X] [--max-relative-rms X]
+    \\  then --layers N --vocab N, or --draft
     \\
 ;
 
@@ -198,6 +198,10 @@ fn parseCompare(args: []const []const u8, diag: *Diagnostic) error{Usage}!struct
     if (count != 2) return fail(diag, "compare takes NATIVE and REFERENCE");
     if (options.positions < 1 or options.positions > compare.max_positions) {
         return fail(diag, "positions must be between 1 and 32768");
+    }
+    if (options.embedding == 0) return fail(diag, "compare: --embedding is required");
+    if (!options.draft and (options.layers == 0 or options.vocab < 2)) {
+        return fail(diag, "compare: --layers and --vocab are required without --draft");
     }
     return .{ directories[0], directories[1], options };
 }
@@ -392,7 +396,7 @@ test "names, a change, and a tier take precedence in that order" {
 
 test "compare parses as its documented flags" {
     var diag: Diagnostic = .{};
-    const native, const reference, const options = try parseCompare(&.{ "n", "r", "--positions", "2", "--max-absolute", "0.5", "--draft", "--vocab", "7" }, &diag);
+    const native, const reference, const options = try parseCompare(&.{ "n", "r", "--positions", "2", "--max-absolute", "0.5", "--draft", "--embedding", "4", "--vocab", "7" }, &diag);
     try testing.expectEqualStrings("n", native);
     try testing.expectEqualStrings("r", reference);
     try testing.expectEqual(@as(u32, 2), options.positions);
@@ -402,4 +406,6 @@ test "compare parses as its documented flags" {
     try testing.expectError(error.Usage, parseCompare(&.{ "n", "r" }, &diag));
     try testing.expectError(error.Usage, parseCompare(&.{ "n", "--positions", "1" }, &diag));
     try testing.expectError(error.Usage, parseCompare(&.{ "n", "r", "--positions", "40000" }, &diag));
+    try testing.expectError(error.Usage, parseCompare(&.{ "n", "r", "--positions", "1", "--draft" }, &diag));
+    try testing.expectError(error.Usage, parseCompare(&.{ "n", "r", "--positions", "1", "--embedding", "4", "--vocab", "7" }, &diag));
 }

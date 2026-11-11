@@ -1091,7 +1091,7 @@ const Stub = struct {
     /// its output would.
     late_thinking: []const []const u8 = &.{},
     /// Stops a step as the engine does when the interrupt is requested
-    /// after its reasoning: cancelled, no answer, no calls.
+    /// after its reasoning, early or late: cancelled, no calls.
     honor_interrupt: bool = false,
     /// Presses Ctrl-C on this agent right after the step's reasoning.
     cancel_agent: ?*Agent = null,
@@ -1142,7 +1142,13 @@ const Stub = struct {
             try sink.send(.{ .answer = text[0..half] });
             try sink.send(.{ .answer = text[half..] });
         }
-        if (i < self.late_thinking.len and self.late_thinking[i].len > 0) try sink.send(.{ .thinking = self.late_thinking[i] });
+        if (i < self.late_thinking.len and self.late_thinking[i].len > 0) {
+            try sink.send(.{ .thinking = self.late_thinking[i] });
+            if (self.honor_interrupt and interrupt.requested()) return .{ .outcome = .{
+                .stop = .cancelled,
+                .timing = .{ .prompt_tokens = 1, .generated_tokens = 1 },
+            } };
+        }
         if (i < self.calls.len) {
             for (self.calls[i]) |call| try sink.send(.{ .tool_call = call });
         }
@@ -1165,6 +1171,9 @@ const Capture = struct {
     compactions: usize = 0,
     notices: usize = 0,
     thinking_ends: usize = 0,
+    /// `E` per thinking end, `A` per run of answer text, `C` per call: the
+    /// order a block closes in relative to what follows it.
+    order: std.ArrayList(u8) = .empty,
     answers: std.Io.Writer.Allocating,
     results: std.ArrayList([]u8) = .empty,
     calls: usize = 0,
@@ -1177,6 +1186,7 @@ const Capture = struct {
     }
     fn deinit(self: *Capture) void {
         self.answers.deinit();
+        self.order.deinit(self.alloc);
         for (self.results.items) |text| self.alloc.free(text);
         self.results.deinit(self.alloc);
     }
@@ -1186,8 +1196,15 @@ const Capture = struct {
     fn send(context: *anyopaque, e: Event) anyerror!void {
         const self: *Capture = @ptrCast(@alignCast(context));
         switch (e) {
-            .answer_delta => |text| try self.answers.writer.writeAll(text),
-            .tool_call => self.calls += 1,
+            .answer_delta => |text| {
+                try self.answers.writer.writeAll(text);
+                const last = self.order.getLastOrNull();
+                if (last == null or last.? != 'A') try self.order.append(self.alloc, 'A');
+            },
+            .tool_call => {
+                self.calls += 1;
+                try self.order.append(self.alloc, 'C');
+            },
             .tool_result => |result| try self.results.append(self.alloc, try self.alloc.dupe(u8, result.text)),
             .diff => self.diffs += 1,
             .turn_end => |end| {
@@ -1195,7 +1212,10 @@ const Capture = struct {
                 self.last_turn_stop = end.stop;
             },
             .notice => self.notices += 1,
-            .thinking_end => self.thinking_ends += 1,
+            .thinking_end => {
+                self.thinking_ends += 1;
+                try self.order.append(self.alloc, 'E');
+            },
             else => {},
         }
     }
@@ -1524,6 +1544,11 @@ test "a result over the context budget is cut at a line and told how to continue
     try testing.expect(std.mem.startsWith(u8, shown, "line 0011\n"));
     // The note counts from the call's own offset.
     const kept = countLines(shown[0..note_at]);
+    // Whole lines: the last kept one is `line` and the number it should be.
+    var last_line: [9]u8 = undefined;
+    const want_last = try std.fmt.bufPrint(&last_line, "line {d:0>4}", .{10 + kept});
+    try testing.expect(std.mem.endsWith(u8, shown[0..note_at], want_last));
+    try testing.expect(note_at == want_last.len or shown[note_at - want_last.len - 1] == '\n');
     var expected: [64]u8 = undefined;
     const hint = try std.fmt.bufPrint(&expected, "{d} of 90 lines shown; continue with read_file offset={d},", .{ kept, 11 + kept });
     try testing.expect(std.mem.indexOf(u8, shown, hint) != null);
@@ -1571,8 +1596,7 @@ test "the step budget stops a model that keeps calling" {
     try testing.expectEqual(@as(usize, 2), capture.calls); // two completions, each one call
     try testing.expectEqual(@as(usize, 2), capture.results.items.len);
     // The status bar reads this against the budget.
-    try testing.expectEqual(@as(usize, 2), agent.steps_done);
-    try testing.expectEqual(@as(usize, 2), agent.budget);
+    try testing.expectEqual(agent.budget, agent.steps_done);
 }
 
 test "a steer during reasoning restarts the step with the message in view" {
@@ -1770,6 +1794,7 @@ test "every step that reasoned closes its own thinking block" {
     try testing.expectEqual(Stop.done, try agent.turn("go", &.{}));
     try testing.expectEqual(@as(usize, 3), capture.thinking_ends);
     try testing.expectEqual(@as(usize, 3), capture.assistant_records);
+    try testing.expectEqualStrings("ECECEA", capture.order.items);
 
     // The turn's stop is the answering step's: a step that ran out of
     // output budget says so at the end of the turn.
