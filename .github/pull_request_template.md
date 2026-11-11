@@ -1,11 +1,12 @@
-<!-- A milestone's pull request (merged by rebase): title it for the
-milestone, list its units below, and leave each unit's record in its
-commit body; the sections after "Units" then summarize the milestone.
+<!-- Every pull request is merged by rebase, so each unit's record lives
+in its commit body, never only here.
 
-A single unit outside a milestone (merged by squash): the title is a
-Conventional Commit (`feat(metal): few-query verify attention`) and becomes
-the commit's subject; this description becomes its body, the record of the
-work. Delete the "Units" section. -->
+A milestone's pull request: title it for the milestone, list its units
+below; the sections after "Units" then summarize the milestone.
+
+A single unit outside a milestone: one commit; the title is that commit's
+Conventional Commit subject (`feat(metal): few-query verify attention`) and
+the sections after "Units" repeat its record. Delete the "Units" section. -->
 
 ## Units
 
