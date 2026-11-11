@@ -64,7 +64,8 @@ unit stays one commit and `git log main` is the history of the work.
 **Nothing lands silently.** A side fix found inside a unit, and work the
 user asks for during a session, belong to that unit's commit and its
 record. Only work outside any milestone is a small unit of its own, with
-its own branch and a squash-merged pull request.
+its own branch and a pull request of that one commit. Every pull request
+is merged by rebase; GitHub allows no other method.
 
 **Durable knowledge never lives only in the tracker or a commit message**:
 requirements go to `docs/spec.md`, environment facts to

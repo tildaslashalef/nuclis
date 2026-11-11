@@ -687,13 +687,14 @@ uploading.
 
 Work reaches `main` only through pull requests, merged by the user (a
 ruleset on `main` requires a pull request and the `ok` check, allows
-rebase and squash merges, and refuses force pushes and deletion;
-`.github/ruleset-main.json` is its tracked copy). A milestone's pull
-request is merged by rebase: each of its commits is one unit, a
-Conventional Commit whose body is the record of that unit
-(`.github/pull_request_template.md` gives the record's shape). A small
-unit outside any milestone is one pull request merged by squash, its title
-the commit's subject and its description the body. CI therefore runs once
+only rebase merges, and refuses force pushes and deletion;
+`.github/ruleset-main.json` is its tracked copy, and the repository's
+settings allow no squash or merge commits either). Every pull request is
+merged by rebase: each of its commits is one unit, a Conventional Commit
+whose body is the record of that unit
+(`.github/pull_request_template.md` gives the record's shape), so `git log
+main` holds every record. A small unit outside any milestone is a pull
+request of its one commit. CI therefore runs once
 per milestone, and the gate between units is local: `make check`,
 `make verify-auto`, and `make build-linux`, the release's Linux target
 cross-compiled into `.zig-cache/linux` (it proves the tree compiles there;
