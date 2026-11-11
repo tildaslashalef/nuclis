@@ -423,11 +423,12 @@ still proposed, then the chain stops).
 `The capital of France is` (954, 7963, 323, 11698, 373), Metal target, F32
 caches, one target token per decode, dumping each position's residual rows
 and the block before the target decodes the next token — the driver's
-`draft()` moment. The rows are pinned under
-`inference/src/models/fixtures/muse-dflash/` and checked by
-`make gate NAME=muse-draft-trace-cpu` and `make gate NAME=muse-draft-trace-metal` (the
-`museDraftTrace` pass in `generation-check`; the `--metal` run also runs
-the CPU reference over the same rows, so one invocation checks both):
+`draft()` moment. The rows were pinned under
+`inference/src/models/fixtures/muse-dflash/` and checked by the
+`muse-draft-trace-{cpu,metal}` gates (the `museDraftTrace` pass in
+`generation-check`; the `--metal` run also ran the CPU reference over the
+same rows); the gates, the pass, and the rows left with the family's
+gates, and `v0.11.0` is the last tag that holds them:
 
 | rows | CPU max abs / rel RMS | Metal max abs / rel RMS |
 | --- | ---: | ---: |
@@ -1103,13 +1104,15 @@ companion for the Qwen draft trace, `--draft-stats`, and
   1, which is what the Q4_K error predicts. The greedy drafts are equal
   (9419, 271). Gate: `qwen38-mtp-companion-trace-{metal,cpu}`.
 - **Saluki with the companion.** Metal against the CPU reference: 8.1e-6
-  max abs and 5.5e-7 relative RMS. The CPU rows are pinned under
-  `tests/fixtures/saluki-mtp`. Gate: `saluki-draft-trace-{metal,cpu}`.
-- **Greedy equivalence.** `saluki-speculative-metal`: speculative greedy
-  equals plain greedy on the runner and through `engine.runLoop`, and the
-  forced-token, budget, EOS, cancellation, and context checks pass
-  (`saluki-speculative-cpu`, the runner-level half, runs in the CPU tier). The check needs `--prompt-profile qwen38`, because Saluki's
-  template is not pinned.
+  max abs and 5.5e-7 relative RMS. The CPU rows were pinned under
+  `tests/fixtures/saluki-mtp` (held through `v0.11.0`); gate
+  `saluki-draft-trace-{metal,cpu}`, retired with the family.
+- **Greedy equivalence.** `saluki-speculative-metal`, retired with the
+  family: speculative greedy equalled plain greedy on the runner and
+  through `engine.runLoop`, and the forced-token, budget, EOS,
+  cancellation, and context checks passed (`saluki-speculative-cpu` was
+  the runner-level half). The check took `--prompt-profile qwen38`,
+  because Saluki's template is not pinned.
 
 Saluki's final hidden after `Hello` differs from the Q4_K_M's by 42 %
 relative RMS (the companion was trained on the full-precision model's).

@@ -7,6 +7,7 @@
 //! the CPU decoders exactly: both index the same bytes with the same equations.
 const std = @import("std");
 const inference = @import("inference");
+const check_stats = @import("check_stats.zig");
 const Backend = inference.metal.Backend;
 const Buffer = inference.metal.Buffer;
 
@@ -56,10 +57,10 @@ fn checkAudioKernels(alloc: std.mem.Allocator, b: *Backend) !void {
     try b.begin();
     try b.audioAttention(try upload(b, q), try upload(b, k), try upload(b, v), try upload(b, relk), try upload(b, &scale), out, rows, a.key_scale, a.logit_cap);
     try b.commit();
-    var worst: f32 = 0;
-    for (out.floats()[0 .. rows * a.hidden], want) |got, w| worst = @max(worst, @abs(got - w) / @max(1, @abs(w)));
-    if (worst > 2e-5) {
-        std.debug.print("audio_attention: worst relative difference {e}\n", .{worst});
+    var worst: check_stats.Worst = .{};
+    for (out.floats()[0 .. rows * a.hidden], want) |got, w| worst.observe(@abs(got - w) / @max(1, @abs(w)));
+    if (!worst.within(2e-5)) {
+        std.debug.print("audio_attention: worst relative difference {e}\n", .{worst.shown()});
         return error.MetalMismatch;
     }
     const start = try alloc.alloc(f32, rows * 2 * a.hidden);
@@ -73,7 +74,7 @@ fn checkAudioKernels(alloc: std.mem.Allocator, b: *Backend) !void {
     try b.gluConv(try upload(b, start), try upload(b, dw), out, rows, a.hidden);
     try b.commit();
     for (out.floats()[0 .. rows * a.hidden], want) |got, w| try expectClose("glu_conv", got, w, 1e-5 * @max(1, @abs(w)));
-    std.debug.print("audio attention (40 rows across four chunks) and the GLU depthwise convolution vs the CPU reference: attention worst relative {e:.2} (bound 2e-5)\n", .{worst});
+    std.debug.print("audio attention (40 rows across four chunks) and the GLU depthwise convolution vs the CPU reference: attention worst relative {e:.2} (bound 2e-5)\n", .{worst.shown()});
 }
 
 /// Nemotron ASR's kernels against the CPU reference's functions
@@ -97,7 +98,7 @@ fn checkAsrKernels(alloc: std.mem.Allocator, b: *Backend) !void {
             return out;
         }
     };
-    var worst: f32 = 0;
+    var worst: check_stats.Worst = .{};
 
     // Subsampling: input rows 4 … 9 held (first 4, count 10), outputs 3 … 5;
     // output 5 reads row 10, the pad.
@@ -142,10 +143,10 @@ fn checkAsrKernels(alloc: std.mem.Allocator, b: *Backend) !void {
         try b.begin();
         try b.asrAttention(try upload(b, q), try upload(b, keys), try upload(b, values), try upload(b, relk), try upload(b, bias_u), try upload(b, bias_v), out, .{ .rows = case.rows, .held = case.held, .first = case.first, .chunk = chunk, .reach = config.left / chunk, .width = h, .offset = ne.max_lookahead, .positions = config.positions() });
         try b.commit();
-        for (out.floats()[0..want.len], want) |got, w| worst = @max(worst, @abs(got - w) / @max(1, @abs(w)));
+        for (out.floats()[0..want.len], want) |got, w| worst.observe(@abs(got - w) / @max(1, @abs(w)));
     }
-    if (worst > 2e-5) {
-        std.debug.print("asr_attention: worst relative difference {e}\n", .{worst});
+    if (!worst.within(2e-5)) {
+        std.debug.print("asr_attention: worst relative difference {e}\n", .{worst.shown()});
         return error.MetalMismatch;
     }
 
@@ -195,7 +196,7 @@ fn checkAsrKernels(alloc: std.mem.Allocator, b: *Backend) !void {
     };
     // The few-rows F32 product: three matrices at once, each epilogue, 1–8
     // rows (3 and 5 run the next power of two over scratch rows), against F64.
-    var product_worst: f64 = 0;
+    var product_worst: check_stats.Worst = .{};
     {
         const rows = 48;
         const columns = 256;
@@ -232,15 +233,15 @@ fn checkAsrKernels(alloc: std.mem.Allocator, b: *Backend) !void {
                     .glu => s / (1 + @exp(-dot[1])),
                 };
                 const got = products[m].output.floats()[t * width + r];
-                product_worst = @max(product_worst, @abs(got - w) / @max(1, @abs(w)));
+                product_worst.observe(@abs(got - w) / @max(1, @abs(w)));
             };
         };
     }
-    if (product_worst > 1e-5) {
-        std.debug.print("asr_matmul_rows: worst relative difference {e}\n", .{product_worst});
+    if (!product_worst.within(1e-5)) {
+        std.debug.print("asr_matmul_rows: worst relative difference {e}\n", .{product_worst.shown()});
         return error.MetalMismatch;
     }
-    std.debug.print("Nemotron ASR kernels vs the CPU reference: subsampling convolutions, GLU, depthwise convolution within 1e-5; attention worst relative {e:.2} (bound 2e-5); the few-rows product (three matrices, every epilogue, 1-8 rows) vs F64 {e:.2} (bound 1e-5); joint input, half step, bias and ReLU, row shifts exact\n", .{ worst, product_worst });
+    std.debug.print("Nemotron ASR kernels vs the CPU reference: subsampling convolutions, GLU, depthwise convolution within 1e-5; attention worst relative {e:.2} (bound 2e-5); the few-rows product (three matrices, every epilogue, 1-8 rows) vs F64 {e:.2} (bound 1e-5); joint input, half step, bias and ReLU, row shifts exact\n", .{ worst.shown(), product_worst.shown() });
 }
 
 fn openBackend(alloc: std.mem.Allocator) !Backend {
@@ -879,16 +880,20 @@ fn checkDflashConv(alloc: std.mem.Allocator) !void {
     for (input.floats()) |*v| v.* = random.float(f32) * 4 - 2;
     const expected = try alloc.alloc(f32, rows * width);
     defer alloc.free(expected);
-    var worst: f32 = 0;
+    var worst: check_stats.Worst = .{};
     for (1..rows + 1) |count| for (0..2) |half| {
         dflash2.convolve(half, base.floats()[0 .. 4 * width], taps.floats(), input.floats(), expected, count);
         try b.begin();
         try b.dflashConv(base, taps, input, output, count, width, half, dflash2.conv_group, dflash2.conv_projection);
         try b.commit();
-        for (output.floats()[0 .. count * width], expected[0 .. count * width]) |got, want| worst = @max(worst, @abs(got - want));
+        if (inject_nan and count == rows and half == 1) output.floats()[width / 2] = std.math.nan(f32);
+        for (output.floats()[0 .. count * width], expected[0 .. count * width]) |got, want| worst.observe(@abs(got - want));
     };
-    if (worst > 1e-5) return error.MetalMismatch;
-    std.debug.print("DFlash2 convolution vs CPU on 1-8 rows, both halves: max abs {e:.3} (bound 1e-5)\n", .{worst});
+    if (!worst.within(1e-5)) {
+        std.debug.print("dflash_conv: max abs {e} (bound 1e-5)\n", .{worst.shown()});
+        return error.MetalMismatch;
+    }
+    std.debug.print("DFlash2 convolution vs CPU on 1-8 rows, both halves: max abs {e:.3} (bound 1e-5)\n", .{worst.shown()});
 
     // Q8_0's fragment tile (the drafter calls it by name) against the CPU
     // matvec of each token row, 1-24 tokens; weights are rounded to half in
@@ -916,7 +921,7 @@ fn checkDflashConv(alloc: std.mem.Allocator) !void {
     defer alloc.free(row_scratch);
     const decoded = try alloc.alloc(f32, columns);
     defer alloc.free(decoded);
-    var worst_q8: f64 = 0;
+    var worst_q8: check_stats.Worst = .{};
     for (1..tokens_max + 1) |tokens| {
         try b.begin();
         try b.matmulKernel(.matmul_q8_0_f2, weights_q8, matrix, x, columns, y, rows_q8, tokens);
@@ -931,12 +936,12 @@ fn checkDflashConv(alloc: std.mem.Allocator) !void {
                     sum += @as(f64, w) * v;
                     mass += @abs(@as(f64, w) * v);
                 }
-                worst_q8 = @max(worst_q8, @abs(y.floats()[t * rows_q8 + r] - sum) / (mass + 1e-6));
+                worst_q8.observe(@abs(y.floats()[t * rows_q8 + r] - sum) / (mass + 1e-6));
             }
         }
     }
-    if (worst_q8 > 2e-4) return error.MetalMismatch;
-    std.debug.print("Q8_0 fragment tile vs CPU on 1-24 tokens: worst |difference| / mass {e:.3} (bound 2e-4, half weights)\n", .{worst_q8});
+    if (!worst_q8.within(2e-4)) return error.MetalMismatch;
+    std.debug.print("Q8_0 fragment tile vs CPU on 1-24 tokens: worst |difference| / mass {e:.3} (bound 2e-4, half weights)\n", .{worst_q8.shown()});
 }
 
 /// The `simdgroup_matrix` lane layout the register-fragment tiles assume:
@@ -1299,7 +1304,7 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
         try b.commit();
         var expected_indices: [8]u32 = undefined;
         var expected_weights: [8]f32 = undefined;
-        var worst: f64 = 0;
+        var worst: check_stats.Worst = .{};
         for (0..rows) |r| {
             try inference.cpu.experts.route(l[r * in_stride ..][0..experts], &expected_indices, &expected_weights);
             const got_indices = @as([*]const u32, @ptrCast(@alignCast(indices.host)))[r * k ..][0..k];
@@ -1308,7 +1313,7 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
                 return error.MetalMismatch;
             }
             for (weights.floats()[r * k ..][0..k], expected_weights) |got, want| {
-                worst = @max(worst, @abs(@as(f64, got) - want));
+                worst.observe(@abs(@as(f64, got) - want));
                 try expectClose("route weight", got, want, 1e-6);
             }
         }
@@ -1323,7 +1328,7 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
         try b.commit();
         try std.testing.expectEqualSlices(u32, &small_indices, @as([*]const u32, @ptrCast(@alignCast(indices.host)))[0..5]);
         for (weights.floats()[0..5], small_weights) |got, want| try expectClose("route weight (37 experts)", got, want, 1e-6);
-        std.debug.print("Router vs CPU F64 on 128 and 37 experts with ties: indices exact, weights max abs {e:.3} (bound 1e-6)\n", .{worst});
+        std.debug.print("Router vs CPU F64 on 128 and 37 experts with ties: indices exact, weights max abs {e:.3} (bound 1e-6)\n", .{worst.shown()});
         if (b.route(logits, experts, 129, 1, in_stride, indices, weights)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
         if (b.route(logits, 257, 8, 1, 257, indices, weights)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
         if (b.route(logits, 64, 8, rows, 63, indices, weights)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
@@ -1475,7 +1480,7 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
         defer alloc.free(acc);
         const expected = try alloc.alloc(f32, width);
         defer alloc.free(expected);
-        var worst: f64 = 0;
+        var worst: check_stats.Worst = .{};
         for ([_]bool{ true, false }) |scaled| {
             try b.begin();
             try b.route(logits, experts, k, tokens, experts, indices, weights);
@@ -1498,7 +1503,7 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
                 for (expected) |v| magnitude = @max(magnitude, @abs(v));
                 const tolerance: f64 = 2e-5 * (1 + magnitude);
                 for (out.floats()[t * width ..][0..width], expected) |got, want| {
-                    worst = @max(worst, @abs(@as(f64, got) - want) / (1 + magnitude));
+                    worst.observe(@abs(@as(f64, got) - want) / (1 + magnitude));
                     expectClose("expert chain", got, want, @floatCast(tolerance)) catch |err| {
                         std.debug.print("  token {d}, scaled {}\n", .{ t, scaled });
                         return err;
@@ -1506,7 +1511,7 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
                 }
             }
         }
-        std.debug.print("Expert decode chain (route, gathered gate-up, gelu rows, gathered down {s}, combine) vs CPU F64 over 3 tokens: worst |difference| / (1 + max|y|) {e:.3} (bound 2e-5)\n", .{ inference.encoding.layout(down_encoding).?.name, worst });
+        std.debug.print("Expert decode chain (route, gathered gate-up, gelu rows, gathered down {s}, combine) vs CPU F64 over 3 tokens: worst |difference| / (1 + max|y|) {e:.3} (bound 2e-5)\n", .{ inference.encoding.layout(down_encoding).?.name, worst.shown() });
         // Contract: the pair output must not alias its inputs; combine needs every slot's weight.
         if (b.geluMulRows(gu_out, gu_out.slice(ff * 4, gu_out.len - ff * 4), gu_out, ff, tokens * k, 2 * ff, 2 * ff, ff)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
         if (b.combineExperts(y, weights.slice(0, 8), indices, null, out, .{ .columns = width, .slots = k, .rows = tokens, .experts = experts, .in_stride = width, .out_stride = width })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
@@ -1580,8 +1585,8 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
             for (expected) |v| chunk_max = @max(chunk_max, @abs(v));
         }
         const words = @as([*]u32, @ptrCast(@alignCast(lists.host)))[0..layout.words];
-        var worst_cpu: [2]f64 = .{ 0, 0 };
-        var worst_decode: [2]f64 = .{ 0, 0 };
+        var worst_cpu: [2]check_stats.Worst = .{ .{}, .{} };
+        var worst_decode: [2]check_stats.Worst = .{ .{}, .{} };
         for ([_]bool{ false, true }, 0..) |generic, which| {
             b.generic_only = generic;
             for (out.floats()) |*v| v.* = std.math.nan(f32);
@@ -1624,15 +1629,15 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
             // the half tiles round both operands of both projections.
             const bound: f64 = if (generic) 2e-5 else 2e-3;
             for (out.floats(), expected, decode_out.floats(), 0..) |got, want, dec, i| {
-                worst_cpu[which] = @max(worst_cpu[which], @abs(@as(f64, got) - want) / chunk_max);
-                worst_decode[which] = @max(worst_decode[which], @abs(@as(f64, got) - dec) / chunk_max);
+                worst_cpu[which].observe(@abs(@as(f64, got) - want) / chunk_max);
+                worst_decode[which].observe(@abs(@as(f64, got) - dec) / chunk_max);
                 expectClose(if (generic) "expert prefill (generic tile)" else "expert prefill (half tile)", got, want, @floatCast(bound * chunk_max)) catch |err| {
                     std.debug.print("  token {d}, column {d}\n", .{ i / width, i % width });
                     return err;
                 };
             }
         }
-        std.debug.print("Expert prefill chain (lists, gathered gate-up and {s} down tiles) over 45 tokens vs CPU F64: worst |difference| / max|y| F32 tile {e:.3} (bound 2e-5), half tile {e:.3} (bound 2e-3); vs the decode path {e:.3} and {e:.3}\n", .{ inference.encoding.layout(down_encoding).?.name, worst_cpu[1], worst_cpu[0], worst_decode[1], worst_decode[0] });
+        std.debug.print("Expert prefill chain (lists, gathered gate-up and {s} down tiles) over 45 tokens vs CPU F64: worst |difference| / max|y| F32 tile {e:.3} (bound 2e-5), half tile {e:.3} (bound 2e-3); vs the decode path {e:.3} and {e:.3}\n", .{ inference.encoding.layout(down_encoding).?.name, worst_cpu[1].shown(), worst_cpu[0].shown(), worst_decode[1].shown(), worst_decode[0].shown() });
         // A chunk of one token: three slot rows, every tile partial; the
         // same token as row 0 of the chunk above.
         {
@@ -2077,7 +2082,7 @@ fn checkHadamard(alloc: std.mem.Allocator) !void {
     var prng = std.Random.DefaultPrng.init(0x4ada);
     const random = prng.random();
     const rows: usize = 3;
-    var worst: f64 = 0;
+    var worst: check_stats.Worst = .{};
     for ([_]usize{ 5120, 6144, 17408 }) |width| {
         const stride = width + 64;
         const signs = try alloc.alloc(f32, width);
@@ -2098,7 +2103,7 @@ fn checkHadamard(alloc: std.mem.Allocator) !void {
             const got = data.floats()[r * stride + c];
             const want = expected[r * stride + c];
             // Ten F32 butterfly stages over values up to 2 in magnitude, against F64.
-            if (c < width) worst = @max(worst, @abs(@as(f64, got) - want));
+            if (c < width) worst.observe(@abs(@as(f64, got) - want));
             try expectClose("hadamard forward", got, want, 3e-5);
         };
         try b.begin();
@@ -2117,7 +2122,7 @@ fn checkHadamard(alloc: std.mem.Allocator) !void {
         if (b.hadamard(data, sign_buffer, width - 64, rows, stride, false)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
         if (b.hadamard(data.slice(4, data.len - 4), sign_buffer, width, rows, stride, false)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
     }
-    std.debug.print("Hadamard transform vs cpu.hadamard on 5,120 / 6,144 / 17,408 over strided rows, forward, inverse, and the round trip: max abs {e:.3} (bound 3e-5)\n", .{worst});
+    std.debug.print("Hadamard transform vs cpu.hadamard on 5,120 / 6,144 / 17,408 over strided rows, forward, inverse, and the round trip: max abs {e:.3} (bound 3e-5)\n", .{worst.shown()});
 }
 
 /// The row gather on the Bonsai value-head regrouping (48 heads of 128,
@@ -2197,7 +2202,7 @@ fn checkWindowAttention(alloc: std.mem.Allocator, b: *Backend) !void {
             try b.attentionFull(q.slice(offset, len), k.slice(offset, len), v.slice(offset, len), out.slice(offset, len), .{ .heads = heads, .width = width, .rows = count, .q_stride = stride, .kv_stride = stride, .out_stride = stride, .scale = scale });
         try b.commit();
         const padding_end = begin + if (chunk) Backend.attentionChunkRows(count) else count;
-        var worst: f64 = 0;
+        var worst: check_stats.Worst = .{};
         for (0..total) |row| for (0..heads) |h| {
             const got = out.floats()[row * stride + h * width ..][0..width];
             if (row < begin or row >= padding_end) {
@@ -2220,14 +2225,14 @@ fn checkWindowAttention(alloc: std.mem.Allocator, b: *Backend) !void {
             for (got, 0..) |x, d| {
                 var want: f64 = 0;
                 for (0..count) |j| want += scores[j] * host[2][(begin + j) * stride + h * width + d];
-                worst = @max(worst, @abs(want / sum - x));
+                worst.observe(@abs(want / sum - x));
             }
         };
-        if (!(worst <= 1e-5)) {
-            std.debug.print("window attention ({s}): worst |difference| {e:.3}\n", .{ if (chunk) "chunk" else "full", worst });
+        if (!worst.within(1e-5)) {
+            std.debug.print("window attention ({s}): worst |difference| {e:.3}\n", .{ if (chunk) "chunk" else "full", worst.shown() });
             return error.MetalMismatch;
         }
-        std.debug.print("window attention ({s}) on a {d}-row slice of 96-wide heads, NaN outside it, vs F64: worst |difference| {e:.3} (bound 1e-5); rows outside untouched\n", .{ if (chunk) "chunk span" else "full", count, worst });
+        std.debug.print("window attention ({s}) on a {d}-row slice of 96-wide heads, NaN outside it, vs F64: worst |difference| {e:.3} (bound 1e-5); rows outside untouched\n", .{ if (chunk) "chunk span" else "full", count, worst.shown() });
     }
 }
 
@@ -2268,7 +2273,7 @@ fn checkSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
         try b.begin();
         try b.attentionSegments(qkv, qkv.slice(row_floats * 4, qkv.len - row_floats * 4), qkv.slice(2 * row_floats * 4, qkv.len - 2 * row_floats * 4), out, bounds, .{ .heads = heads, .width = width, .rows = rows, .q_stride = stride, .kv_stride = stride, .out_stride = row_floats, .scale = scale, .window = window });
         try b.commit();
-        var worst: f64 = 0;
+        var worst: check_stats.Worst = .{};
         for (0..total) |i| for (0..heads) |h| {
             const got = out.floats()[i * row_floats + h * width ..][0..width];
             if (i >= rows) {
@@ -2292,14 +2297,14 @@ fn checkSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
             for (got, 0..) |x, d| {
                 var want: f64 = 0;
                 for (lo..hi) |j| want += scores[j] * host[j * stride + 2 * row_floats + h * width + d];
-                worst = @max(worst, @abs(want / sum - x));
+                worst.observe(@abs(want / sum - x));
             }
         };
-        if (!(worst <= 1e-5)) {
-            std.debug.print("segment attention (window {?d}): worst |difference| {e:.3}\n", .{ window, worst });
+        if (!worst.within(1e-5)) {
+            std.debug.print("segment attention (window {?d}): worst |difference| {e:.3}\n", .{ window, worst.shown() });
             return error.MetalMismatch;
         }
-        std.debug.print("segment attention over packed sequences of 1/37/90 rows, window {?d}, NaN past the batch, vs F64: worst |difference| {e:.3} (bound 1e-5)\n", .{ window, worst });
+        std.debug.print("segment attention over packed sequences of 1/37/90 rows, window {?d}, NaN past the batch, vs F64: worst |difference| {e:.3} (bound 1e-5)\n", .{ window, worst.shown() });
     }
     if (b.attentionSegments(qkv, qkv, qkv, out, bounds.slice(0, 8), .{ .heads = heads, .width = width, .rows = rows, .q_stride = stride, .kv_stride = stride, .out_stride = row_floats, .scale = scale })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
 }
@@ -2382,7 +2387,7 @@ fn checkGroupedSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
         const step: usize = if (rows > 2048) 61 else 1;
         const scores = try alloc.alloc(f64, rows);
         defer alloc.free(scores);
-        var worst: f64 = 0;
+        var worst: check_stats.Worst = .{};
         var seq_begin: usize = 0;
         var seq_end: usize = case.lengths[0];
         var seq: usize = 0;
@@ -2414,15 +2419,15 @@ fn checkGroupedSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
                 for (out.floats()[i * q_floats + h * g.width ..][0..g.width], 0..) |got, d| {
                     var want: f64 = 0;
                     for (lo..hi) |j| want += scores[j] * v[j * kv_floats + kvh * g.width + d];
-                    worst = @max(worst, @abs(want / sum - got));
+                    worst.observe(@abs(want / sum - got));
                 }
             }
         }
-        if (!(worst <= 2e-4)) {
-            std.debug.print("grouped segment attention ({d} KV heads of {d}, lengths {any}): worst |difference| {e:.3}\n", .{ g.kv_heads, g.width, case.lengths, worst });
+        if (!worst.within(2e-4)) {
+            std.debug.print("grouped segment attention ({d} KV heads of {d}, lengths {any}): worst |difference| {e:.3}\n", .{ g.kv_heads, g.width, case.lengths, worst.shown() });
             return error.MetalMismatch;
         }
-        std.debug.print("grouped segment attention, {d} KV heads of {d}, window {?d}, lengths {any}, {d} chunks, vs F64 (every {d}th row): worst |difference| {e:.3} (bound 2e-4)\n", .{ g.kv_heads, g.width, g.window, case.lengths, chunk_count, step, worst });
+        std.debug.print("grouped segment attention, {d} KV heads of {d}, window {?d}, lengths {any}, {d} chunks, vs F64 (every {d}th row): worst |difference| {e:.3} (bound 2e-4)\n", .{ g.kv_heads, g.width, g.window, case.lengths, chunk_count, step, worst.shown() });
         for ([_]Buffer{ qb, kb, vb, out, bounds, tiles, strips }) |buffer| try b.release(buffer);
     }
     // Bad shapes and a tile list whose tiles overlap are refused.
@@ -2503,7 +2508,7 @@ fn checkVisionSpanAttention(alloc: std.mem.Allocator, b: *Backend) !void {
         };
         const scores = try alloc.alloc(f64, case.rows);
         defer alloc.free(scores);
-        var worst: f64 = 0;
+        var worst: check_stats.Worst = .{};
         var i: usize = 0;
         while (i < case.rows) : (i += case.step) {
             var lo: usize = 0;
@@ -2529,15 +2534,15 @@ fn checkVisionSpanAttention(alloc: std.mem.Allocator, b: *Backend) !void {
                 for (got[i * row_floats + h * case.width ..][0..case.width], 0..) |x, d| {
                     var want: f64 = 0;
                     for (lo..hi) |j| want += scores[j] * v[j * row_floats + h * case.width + d];
-                    worst = @max(worst, @abs(want / sum - x));
+                    worst.observe(@abs(want / sum - x));
                 }
             }
         }
-        if (!(worst <= 2e-4)) {
-            std.debug.print("vision span attention ({d} heads of {d}, {d} rows, {d} windows): worst |difference| {e:.3}\n", .{ case.heads, case.width, case.rows, case.windows.len, worst });
+        if (!worst.within(2e-4)) {
+            std.debug.print("vision span attention ({d} heads of {d}, {d} rows, {d} windows): worst |difference| {e:.3}\n", .{ case.heads, case.width, case.rows, case.windows.len, worst.shown() });
             return error.MetalMismatch;
         }
-        std.debug.print("vision span attention, {d} heads of {d}, {d} rows in {d} windows, {d} chunks, vs F64 (every {d}th row): worst |difference| {e:.3} (bound 2e-4), padding rows zero\n", .{ case.heads, case.width, case.rows, case.windows.len, spans.chunk_count, case.step, worst });
+        std.debug.print("vision span attention, {d} heads of {d}, {d} rows in {d} windows, {d} chunks, vs F64 (every {d}th row): worst |difference| {e:.3} (bound 2e-4), padding rows zero\n", .{ case.heads, case.width, case.rows, case.windows.len, spans.chunk_count, case.step, worst.shown() });
         for ([_]Buffer{ qb, kb, vb, out }) |buffer| try b.release(buffer);
     }
     // Windows that leave a gap or overrun the rows are refused.
@@ -2611,8 +2616,8 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: b
         .{ .g = global_two, .position = 7, .count = 41, .window = 0, .half = false },
         .{ .g = global_two, .position = 300, .count = 40, .window = 0, .half = true },
     };
-    var worst_f32: f32 = 0;
-    var worst_f16: f32 = 0;
+    var worst_f32: check_stats.Worst = .{};
+    var worst_f16: check_stats.Worst = .{};
     var span_rows: usize = 0;
     for (cases) |case| {
         if (reuse and case.span.end != 0) continue;
@@ -2672,7 +2677,7 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: b
             try inference.cpu.attention.apply(.{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .tokens = visible, .visible_tokens = visible, .scale = 1.0, .queries = q32.floats()[t * qw ..][0..qw], .keys = k32.floats()[lo * kvw ..][0 .. visible * kvw], .values = v32.floats()[lo * kvw ..][0 .. visible * kvw] }, expected, scratch);
             for (expected, out.floats()[t * qw ..][0..qw]) |e, a| {
                 const d = @abs(a - e);
-                if (case.half) worst_f16 = @max(worst_f16, d) else worst_f32 = @max(worst_f32, d);
+                if (case.half) worst_f16.observe(d) else worst_f32.observe(d);
                 // Relative past 1: rows after a span average the poisoned values.
                 expectClose(if (case.half) "windowed/wide half chunk attention" else "windowed/wide chunk attention", a, e, if (case.half) 2e-3 else 1e-5 * @max(1, @abs(e))) catch |err| {
                     std.debug.print("  geometry {d}/{d}/{d}, position {d}, count {d}, window {d}, span {d}..{d}, row {d}\n", .{ g.qh, g.kvh, g.hd, case.position, case.count, case.window, case.span.begin, case.span.end, t });
@@ -2681,7 +2686,7 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: b
             }
         }
     }
-    std.debug.print("Windowed and wide chunk attention ({s} body) vs CPU F64 per row: F32 max abs {e:.3} (bound 1e-5, relative past 1), F16 over the rounded operands {e:.3} (bound 2e-3); {d} rows in bidirectional spans\n", .{ if (reuse) "register-reuse" else "row-split", worst_f32, worst_f16, span_rows });
+    std.debug.print("Windowed and wide chunk attention ({s} body) vs CPU F64 per row: F32 max abs {e:.3} (bound 1e-5, relative past 1), F16 over the rounded operands {e:.3} (bound 2e-3); {d} rows in bidirectional spans\n", .{ if (reuse) "register-reuse" else "row-split", worst_f32.shown(), worst_f16.shown(), span_rows });
     if (!reuse) {
         // Contract: a span past the chunk, inverted, or on the reuse body is refused.
         const any = try b.create(1 << 20);
@@ -2703,7 +2708,7 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: b
     const muse: Geometry = .{ .qh = 32, .kvh = 2, .hd = 128 };
     const general: Geometry = .{ .qh = 12, .kvh = 4, .hd = 96 };
     const partials = try b.create(Backend.attentionDecodePartials(32, 512) * 4);
-    var worst_decode: f32 = 0;
+    var worst_decode: check_stats.Worst = .{};
     for ([_]Geometry{ global, global_two, sliding, muse, general }) |g| for ([_]usize{ 257, 1021 }) |visible| {
         const qw = g.qh * g.hd;
         const kvw = g.kvh * g.hd;
@@ -2738,7 +2743,7 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: b
             try b.attentionDecode(k, v, queries, partials, out, .{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .visible = visible, .scale = 1.0, .precision = if (half) .f16 else .f32 });
             try b.commit();
             for (expected, out.floats()) |e, a| {
-                worst_decode = @max(worst_decode, @abs(a - e));
+                worst_decode.observe(@abs(a - e));
                 expectClose("wide decode attention", a, e, 5e-5) catch |err| {
                     std.debug.print("  geometry {d}/{d}/{d}, visible {d}, half {}\n", .{ g.qh, g.kvh, g.hd, visible, half });
                     return err;
@@ -2746,7 +2751,7 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: b
             }
         }
     };
-    std.debug.print("Wide and grouped decode attention vs CPU F64, 257 and 1,021 visible, both precisions: max abs {e:.3} (bound 5e-5)\n", .{worst_decode});
+    std.debug.print("Wide and grouped decode attention vs CPU F64, 257 and 1,021 visible, both precisions: max abs {e:.3} (bound 5e-5)\n", .{worst_decode.shown()});
     // Contract: widths above 512 are refused in both kernels.
     const small = try b.create(64);
     try std.testing.expectError(error.InvalidShape, b.attentionDecode(small, small, small, partials, small, .{ .query_heads = 16, .kv_heads = 1, .key_width = 520, .value_width = 520, .visible = 1, .scale = 1.0 }));
@@ -2777,8 +2782,8 @@ fn checkChunkAttentionReuse(alloc: std.mem.Allocator, b: *Backend) !void {
         .{ .position = 1792, .count = 256 },
         .{ .position = 16376, .count = 8 },
     };
-    var worst_f32: f32 = 0;
-    var worst_f16: f32 = 0;
+    var worst_f32: check_stats.Worst = .{};
+    var worst_f16: check_stats.Worst = .{};
     for ([_]bool{ false, true }) |reuse| {
         for ([_]bool{ false, true }) |half| {
             for (cases) |case| {
@@ -2827,7 +2832,7 @@ fn checkChunkAttentionReuse(alloc: std.mem.Allocator, b: *Backend) !void {
                     try inference.cpu.attention.apply(input, &expected, scratch);
                     for (expected, out.floats()[t * 6144 ..][0 .. 24 * 256]) |e, a| {
                         const d = @abs(a - e);
-                        if (half) worst_f16 = @max(worst_f16, d) else worst_f32 = @max(worst_f32, d);
+                        if (half) worst_f16.observe(d) else worst_f32.observe(d);
                         expectClose(if (half) "poisoned half chunk attention" else "poisoned chunk attention", a, e, if (half) 1e-3 else 1e-5) catch |err| {
                             std.debug.print("  {s} body, half {}, position {d}, count {d}, row {d}\n", .{ if (reuse) "register-reuse" else "row-split", half, case.position, case.count, t });
                             return err;
@@ -2837,7 +2842,7 @@ fn checkChunkAttentionReuse(alloc: std.mem.Allocator, b: *Backend) !void {
             }
         }
     }
-    std.debug.print("Chunk attention over a poisoned future range, both bodies, model geometry, up to 256-row chunks: F32 max abs {e:.3} (bound 1e-5), F16 over the rounded operands {e:.3} (bound 1e-3)\n", .{ worst_f32, worst_f16 });
+    std.debug.print("Chunk attention over a poisoned future range, both bodies, model geometry, up to 256-row chunks: F32 max abs {e:.3} (bound 1e-5), F16 over the rounded operands {e:.3} (bound 1e-3)\n", .{ worst_f32.shown(), worst_f16.shown() });
 }
 
 /// Few-query verify attention against the F64 CPU attention of each row's
@@ -2860,8 +2865,8 @@ fn checkAttentionVerify(alloc: std.mem.Allocator, b: *Backend) !void {
         .{ .position = 32639, .count = 4 },
         .{ .position = 32760, .count = 8 },
     };
-    var worst_f32: f32 = 0;
-    var worst_f16: f32 = 0;
+    var worst_f32: check_stats.Worst = .{};
+    var worst_f16: check_stats.Worst = .{};
     for ([_]bool{ false, true }) |half| {
         for (cases) |case| {
             const total = case.position + case.count;
@@ -2912,7 +2917,7 @@ fn checkAttentionVerify(alloc: std.mem.Allocator, b: *Backend) !void {
                 try inference.cpu.attention.apply(input, &expected, scratch);
                 for (expected, out.floats()[t * 6144 ..][0 .. 24 * 256]) |e, a| {
                     const d = @abs(a - e);
-                    if (half) worst_f16 = @max(worst_f16, d) else worst_f32 = @max(worst_f32, d);
+                    if (half) worst_f16.observe(d) else worst_f32.observe(d);
                     expectClose("poisoned verify attention", a, e, 1e-5) catch |err| {
                         std.debug.print("  half {}, position {d}, count {d}, row {d}\n", .{ half, case.position, case.count, t });
                         return err;
@@ -2930,14 +2935,14 @@ fn checkAttentionVerify(alloc: std.mem.Allocator, b: *Backend) !void {
     spanned.span = .{ .begin = 0, .end = 2 };
     try std.testing.expectError(error.InvalidShape, b.attentionVerify(any, any, any, any, any, spanned));
     const windowed = try checkAttentionVerifyWindowed(alloc, b);
-    std.debug.print("Verify attention over a poisoned future range, model geometry, 1-16 rows to the 32K cache: F32 max abs {e:.3}, F16 cache over the rounded operands {e:.3}; windowed and wide geometries {e:.3} (bound 1e-5, F32 queries)\n", .{ worst_f32, worst_f16, windowed });
+    std.debug.print("Verify attention over a poisoned future range, model geometry, 1-16 rows to the 32K cache: F32 max abs {e:.3}, F16 cache over the rounded operands {e:.3}; windowed and wide geometries {e:.3} (bound 1e-5, F32 queries)\n", .{ worst_f32.shown(), worst_f16.shown(), windowed.shown() });
 }
 
 /// `attentionVerify` on Gemma's and Muse's geometries: sliding windows that
 /// open inside the batch or hide most of the cache, and the 512-wide heads
 /// through the wide instantiation, each row against the CPU over its own
 /// window. Returns the worst absolute difference.
-fn checkAttentionVerifyWindowed(alloc: std.mem.Allocator, b: *Backend) !f32 {
+fn checkAttentionVerifyWindowed(alloc: std.mem.Allocator, b: *Backend) !check_stats.Worst {
     var prng = std.Random.DefaultPrng.init(0x21a8);
     const random = prng.random();
     const Geometry = struct { qh: usize, kvh: usize, hd: usize };
@@ -2954,7 +2959,7 @@ fn checkAttentionVerifyWindowed(alloc: std.mem.Allocator, b: *Backend) !f32 {
         .{ .g = global, .position = 4000, .count = 4, .window = 0, .half = true },
         .{ .g = global_two, .position = 7, .count = 5, .window = 0, .half = false },
     };
-    var worst: f32 = 0;
+    var worst: check_stats.Worst = .{};
     for (cases) |case| {
         const g = case.g;
         const qw = g.qh * g.hd;
@@ -3005,7 +3010,7 @@ fn checkAttentionVerifyWindowed(alloc: std.mem.Allocator, b: *Backend) !f32 {
             const visible = pos + 1 - lo;
             try inference.cpu.attention.apply(.{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .tokens = visible, .visible_tokens = visible, .scale = 1.0, .queries = q32.floats()[t * qw ..][0..qw], .keys = k32.floats()[lo * kvw ..][0 .. visible * kvw], .values = v32.floats()[lo * kvw ..][0 .. visible * kvw] }, expected, scratch);
             for (expected, out.floats()[t * qw ..][0..qw]) |e, a| {
-                worst = @max(worst, @abs(a - e));
+                worst.observe(@abs(a - e));
                 expectClose("windowed/wide verify attention", a, e, 1e-5 * @max(1, @abs(e))) catch |err| {
                     std.debug.print("  geometry {d}/{d}/{d}, position {d}, count {d}, window {d}, row {d}\n", .{ g.qh, g.kvh, g.hd, case.position, case.count, case.window, t });
                     return err;
@@ -3028,8 +3033,8 @@ fn checkFusedNorms(alloc: std.mem.Allocator, b: *Backend) !void {
     const saved = b.fused_norms;
     defer b.fused_norms = saved;
     const positions: usize = 32768;
-    var worst_fused: f32 = 0;
-    var worst_cpu: f32 = 0;
+    var worst_fused: check_stats.Worst = .{};
+    var worst_cpu: check_stats.Worst = .{};
 
     // rmsNormAdd: the post-norm pattern `(destination + norm(input)·w) ·
     // scale`, over the 5,120-wide hidden with a scale, then a strided
@@ -3062,8 +3067,8 @@ fn checkFusedNorms(alloc: std.mem.Allocator, b: *Backend) !void {
         try b.commit();
         b.fused_norms = saved;
         for (fused.floats(), unfused.floats(), expected) |f, u, e| {
-            worst_fused = @max(worst_fused, @abs(f - u));
-            worst_cpu = @max(worst_cpu, @abs(f - e));
+            worst_fused.observe(@abs(f - u));
+            worst_cpu.observe(@abs(f - e));
         }
     }
     {
@@ -3101,8 +3106,8 @@ fn checkFusedNorms(alloc: std.mem.Allocator, b: *Backend) !void {
         try b.commit();
         b.fused_norms = saved;
         for (fused.floats(), unfused.floats(), expected) |f, u, e| {
-            worst_fused = @max(worst_fused, @abs(f - u));
-            worst_cpu = @max(worst_cpu, @abs(f - e));
+            worst_fused.observe(@abs(f - u));
+            worst_cpu.observe(@abs(f - e));
         }
     }
     // addRmsNorm: `residual += input` then `output = norm(residual)·w`, over
@@ -3139,10 +3144,10 @@ fn checkFusedNorms(alloc: std.mem.Allocator, b: *Backend) !void {
         try b.addRmsNorm(residual, input, weight, unfused_out, spec);
         try b.commit();
         b.fused_norms = saved;
-        for (fused_residual, residual.floats()) |f, u| worst_fused = @max(worst_fused, @abs(f - u));
+        for (fused_residual, residual.floats()) |f, u| worst_fused.observe(@abs(f - u));
         for (fused_out.floats(), unfused_out.floats(), expected) |f, u, e| {
-            worst_fused = @max(worst_fused, @abs(f - u));
-            worst_cpu = @max(worst_cpu, @abs(f - e));
+            worst_fused.observe(@abs(f - u));
+            worst_cpu.observe(@abs(f - e));
         }
     }
     {
@@ -3169,7 +3174,7 @@ fn checkFusedNorms(alloc: std.mem.Allocator, b: *Backend) !void {
         try b.addRmsNorm(residual, input, weight, out, spec);
         try b.commit();
         b.fused_norms = saved;
-        for (out.floats(), expected) |f, e| worst_cpu = @max(worst_cpu, @abs(f - e));
+        for (out.floats(), expected) |f, e| worst_cpu.observe(@abs(f - e));
     }
     // rmsNormRope: the Qwen query geometry (24 heads packed with gates,
     // stride 512 -> 256, 64 rotated channels) and an in-place adjacent
@@ -3205,8 +3210,8 @@ fn checkFusedNorms(alloc: std.mem.Allocator, b: *Backend) !void {
         try b.commit();
         b.fused_norms = saved;
         for (out_fused.floats(), out_unfused.floats(), expected) |f, u, e| {
-            worst_fused = @max(worst_fused, @abs(f - u));
-            worst_cpu = @max(worst_cpu, @abs(f - e));
+            worst_fused.observe(@abs(f - u));
+            worst_cpu.observe(@abs(f - e));
         }
     }
     {
@@ -3232,7 +3237,7 @@ fn checkFusedNorms(alloc: std.mem.Allocator, b: *Backend) !void {
         try b.rmsNormRope(data, weight, table, data, spec, 128, 100, .adjacent);
         try b.commit();
         b.fused_norms = saved;
-        for (data.floats(), expected) |f, e| worst_cpu = @max(worst_cpu, @abs(f - e));
+        for (data.floats(), expected) |f, e| worst_cpu.observe(@abs(f - e));
     }
     // Contract: shapes the fused kernels cannot take are refused.
     const small = try b.create(4096);
@@ -3240,11 +3245,11 @@ fn checkFusedNorms(alloc: std.mem.Allocator, b: *Backend) !void {
     try std.testing.expectError(error.InvalidShape, b.rmsNormRope(small, small, small, small, .{ .rows = 1, .width = 256, .in_stride = 256, .out_stride = 256 }, 300, 0, .split_half));
     try std.testing.expectError(error.InvalidShape, b.rmsNormAdd(small, small, small, std.math.nan(f32), .{ .rows = 1, .width = 256, .in_stride = 256, .out_stride = 256 }));
     b.fused_norms = saved;
-    if (worst_fused > 2e-5 or worst_cpu > 2e-4) {
-        std.debug.print("fused norm bounds missed: fused {e:.3}, cpu {e:.3}\n", .{ worst_fused, worst_cpu });
+    if (!worst_fused.within(2e-5) or !worst_cpu.within(2e-4)) {
+        std.debug.print("fused norm bounds missed: fused {e:.3}, cpu {e:.3}\n", .{ worst_fused.shown(), worst_cpu.shown() });
         return error.MetalMismatch;
     }
-    std.debug.print("Fused norms vs the unfused pair and the CPU: max abs fused-vs-unfused {e:.3} (bound 2e-5), vs CPU {e:.3} (bound 2e-4)\n", .{ worst_fused, worst_cpu });
+    std.debug.print("Fused norms vs the unfused pair and the CPU: max abs fused-vs-unfused {e:.3} (bound 2e-5), vs CPU {e:.3} (bound 2e-4)\n", .{ worst_fused.shown(), worst_cpu.shown() });
 }
 
 /// The dense encodings the quant fixtures lack (F32, F16, BF16: Bonsai's
@@ -3258,7 +3263,7 @@ fn checkDenseEncodings(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void 
     const rows: usize = 40;
     const token_counts = [_]usize{ 37, 20, 9, 1 };
     const padded = Backend.matmulPadded(37);
-    var worst: f64 = 0;
+    var worst: check_stats.Worst = .{};
     for ([_]u32{ 0, 1, 30 }) |encoding| for ([_]usize{ 1280, 5120 }) |columns| {
         const width: usize = if (encoding == 0) 4 else 2;
         const region = try alloc.alloc(u8, rows * columns * width);
@@ -3297,7 +3302,7 @@ fn checkDenseEncodings(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void 
                     for (decoded, x) |w, xv| mass += @abs(@as(f64, w) * xv);
                     masses[r] = mass;
                     const got = out.floats()[t * rows + r];
-                    if (mass > 0) worst = @max(worst, @abs(@as(f64, got) - expected[r]) / mass);
+                    if (mass > 0) worst.observe(@abs(@as(f64, got) - expected[r]) / mass);
                     expectClose("dense matmul token row", got, expected[r], @floatCast(mass * @as(f64, if (half) 2e-4 else 4e-6) + 1e-6)) catch |err| {
                         std.debug.print("  encoding {d}, columns {d}, tokens {d}, token {d}, row {d}\n", .{ encoding, columns, tokens, t, r });
                         return err;
@@ -3315,7 +3320,7 @@ fn checkDenseEncodings(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void 
             }
         }
     };
-    std.debug.print("Dense F32/F16/BF16 matvec and matmul tiles vs CPU F64: worst |difference| / Σ|w·x| {e:.2}\n", .{worst});
+    std.debug.print("Dense F32/F16/BF16 matvec and matmul tiles vs CPU F64: worst |difference| / Σ|w·x| {e:.2}\n", .{worst.shown()});
 }
 
 /// The vision towers' LayerNorm (weight and bias, strided rows, in place)
@@ -3345,7 +3350,7 @@ fn checkVisionNorms(alloc: std.mem.Allocator, b: *Backend) !void {
     try b.layerNorm(input, weight, bias, input, .{ .rows = rows, .width = width, .in_stride = stride, .out_stride = stride, .eps = 1e-6 });
     try b.addBiasRows(input, bias, width, rows, stride);
     try b.commit();
-    var worst: f32 = 0;
+    var worst: check_stats.Worst = .{};
     for (0..rows) |r| for (0..stride) |c| {
         const i = r * stride + c;
         const got = input.floats()[i];
@@ -3354,10 +3359,10 @@ fn checkVisionNorms(alloc: std.mem.Allocator, b: *Backend) !void {
             if (@as(u32, @bitCast(got)) != @as(u32, @bitCast(expected[i]))) return error.MetalMismatch;
             continue;
         }
-        worst = @max(worst, @abs(got - expected[i]));
+        worst.observe(@abs(got - expected[i]));
         try expectClose("layerNorm then addBiasRows", got, expected[i], 1e-5 * @max(1, @abs(expected[i])));
     };
-    std.debug.print("LayerNorm and per-row bias vs CPU, {d} strided rows of {d}: max abs {e:.3} (bound 1e-5, relative past 1)\n", .{ rows, width, worst });
+    std.debug.print("LayerNorm and per-row bias vs CPU, {d} strided rows of {d}: max abs {e:.3} (bound 1e-5, relative past 1)\n", .{ rows, width, worst.shown() });
 }
 
 /// `NUCLIS_CAPTURE=<substring>`: the benchmarks record the last warm-up
@@ -3366,6 +3371,10 @@ fn checkVisionNorms(alloc: std.mem.Allocator, b: *Backend) !void {
 /// directory must exist and the process needs `MTL_CAPTURE_ENABLED=1`;
 /// `make bench-* CAPTURE=…` provides both.
 var capture_match: ?[]const u8 = null;
+
+/// `NUCLIS_CHECK_INJECT_NAN=1`: a self-test of the comparisons, which poisons
+/// one element of the DFlash2 convolution's output; the run must then fail.
+var inject_nan = false;
 
 /// Opens a capture for the next command buffer when `label` matches.
 fn captureCase(b: *Backend, label: []const u8) !void {
@@ -3505,7 +3514,7 @@ fn checkQ8Cache(alloc: std.mem.Allocator, b: *Backend) !void {
         try std.testing.expectEqual(@as(f32, 0), back[70]);
         for (want[3 * 34 + 2 .. 4 * 34]) |code| try std.testing.expectEqual(@as(u8, 0), code); // infinite scale: zero codes
     }
-    var worst_cost: f32 = 0;
+    var worst_cost: check_stats.Worst = .{};
     for (geometries) |g| {
         const kvw = g.kvh * g.hd;
         const n = g.visible * kvw;
@@ -3582,27 +3591,27 @@ fn checkQ8Cache(alloc: std.mem.Allocator, b: *Backend) !void {
         const expected = try alloc.alloc(f32, qw);
         defer alloc.free(expected);
         const bound: f32 = if (g.visible <= 1021) 2e-5 else 1e-4;
-        var own: f32 = 0;
+        var own: check_stats.Worst = .{};
         for (0..g.rows) |r| {
             const seen = g.visible - (g.rows - 1 - r);
             try inference.cpu.attention.apply(.{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .tokens = g.visible, .visible_tokens = seen, .scale = scale, .queries = queries.floats()[r * qw ..][0..qw], .keys = k32.floats(), .values = v32.floats() }, expected, scratch);
             for (expected, out8.floats()[r * qw ..][0..qw]) |e, a| {
-                own = @max(own, @abs(a - e));
+                own.observe(@abs(a - e));
                 try expectClose("q8_0 split pass vs CPU over the dequantized rows", a, e, bound);
             }
         }
         // The cost: the CPU F64 reference over the original floats, last row.
         const last = g.rows - 1;
         try inference.cpu.attention.apply(.{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .tokens = g.visible, .visible_tokens = g.visible, .scale = scale, .queries = queries.floats()[last * qw ..][0..qw], .keys = originals[0..n], .values = originals[n..] }, expected, scratch);
-        var worst: f32 = 0;
+        var worst: check_stats.Worst = .{};
         for (expected, out8.floats()[last * qw ..][0..qw]) |e, a| {
-            worst = @max(worst, @abs(a - e));
+            worst.observe(@abs(a - e));
             try expectClose("q8_0 decode attention vs the original floats", a, e, 2e-3);
         }
-        worst_cost = @max(worst_cost, worst);
-        std.debug.print("Q8_0 KV split pass, {d}×{d} heads of {d}, {d} visible, {d} row(s): vs CPU F64 over the dequantized rows {e:.3} (bound {e:.0}), over the original floats {e:.3}\n", .{ g.qh, g.kvh, g.hd, g.visible, g.rows, own, bound, worst });
+        worst_cost.merge(worst);
+        std.debug.print("Q8_0 KV split pass, {d}×{d} heads of {d}, {d} visible, {d} row(s): vs CPU F64 over the dequantized rows {e:.3} (bound {e:.0}), over the original floats {e:.3}\n", .{ g.qh, g.kvh, g.hd, g.visible, g.rows, own.shown(), bound, worst.shown() });
     }
-    std.debug.print("Q8_0 pack bit-identical to q8_0Row, unpack to the CPU decoder rounded to half; worst cost {e:.3} (bound 2e-3)\n", .{worst_cost});
+    std.debug.print("Q8_0 pack bit-identical to q8_0Row, unpack to the CPU decoder rounded to half; worst cost {e:.3} (bound 2e-3)\n", .{worst_cost.shown()});
     // Contract: block multiples, widths of whole blocks, alignment, overlap,
     // and the chunk bodies' refusal.
     const small = try b.create(256);
@@ -3624,6 +3633,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     capture_match = init.environ_map.get("NUCLIS_CAPTURE");
+    inject_nan = if (init.environ_map.get("NUCLIS_CHECK_INJECT_NAN")) |v| std.mem.eql(u8, v, "1") else false;
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-bench")) return matvecBench(alloc, if (args.len > 2) args[2] else null, if (args.len > 3) args[3] else null);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-split")) return matvecSplitBench(alloc, if (args.len > 2) args[2] else null);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matmul-bench")) return matmulBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
@@ -3824,8 +3834,8 @@ pub fn main(init: std.process.Init) !void {
             const padded = Backend.matmulPadded(37);
             const mm_expected = try alloc.alloc(f32, mm_rows);
             defer alloc.free(mm_expected);
-            var mm_worst: f64 = 0;
-            var frag_worst: f64 = 0;
+            var mm_worst: check_stats.Worst = .{};
+            var frag_worst: check_stats.Worst = .{};
             for ([_]usize{ 1280, 5120 }) |columns| {
                 const activations = try b.create(padded * columns * 4);
                 for (activations.floats()) |*x| x.* = random.float(f32) * 2 - 1;
@@ -3882,7 +3892,7 @@ pub fn main(init: std.process.Init) !void {
                                     if (specialized_kernel != null) {
                                         const generic = generic_out.floats()[t * mm_rows + r];
                                         if (half) {
-                                            if (mass > 0) mm_worst = @max(mm_worst, @abs(@as(f64, got) - generic) / mass);
+                                            if (mass > 0) mm_worst.observe(@abs(@as(f64, got) - generic) / mass);
                                             try expectClose("matmul half tile vs generic F32 tile", got, generic, @floatCast(mass * 2e-4 + 1e-6));
                                         } else if (@as(u32, @bitCast(got)) != @as(u32, @bitCast(generic))) {
                                             std.debug.print("matmul specialized tile differs from generic (encoding {d}, token {d}, row {d}): {d} vs {d}\n", .{ sample.encoding, t, r, got, generic });
@@ -3907,7 +3917,7 @@ pub fn main(init: std.process.Init) !void {
                                             var mass: f64 = 0;
                                             for (decoded, x) |w, xv| mass += @abs(@as(f64, w) * xv);
                                             const got = out.floats()[t * mm_rows + r];
-                                            if (mass > 0) frag_worst = @max(frag_worst, @abs(@as(f64, got) - generic_out.floats()[t * mm_rows + r]) / mass);
+                                            if (mass > 0) frag_worst.observe(@abs(@as(f64, got) - generic_out.floats()[t * mm_rows + r]) / mass);
                                             expectClose("matmul fragment tile vs generic F32 tile", got, generic_out.floats()[t * mm_rows + r], @floatCast(mass * 2e-4 + 1e-6)) catch |err| {
                                                 std.debug.print("  {s}, token {d}/{d}, row {d}, columns {d}\n", .{ @tagName(kernel), t, mm_tokens, r, columns });
                                                 return err;
@@ -3938,8 +3948,8 @@ pub fn main(init: std.process.Init) !void {
                     }
                 }
             }
-            std.debug.print("Matmul half tiles vs the generic F32 tile: worst |difference| / Σ|w·x| {e:.2} (bound 2e-4)\n", .{mm_worst});
-            std.debug.print("Matmul fragment tiles vs the generic F32 tile: worst |difference| / Σ|w·x| {e:.2} (bound 2e-4)\n", .{frag_worst});
+            std.debug.print("Matmul half tiles vs the generic F32 tile: worst |difference| / Σ|w·x| {e:.2} (bound 2e-4)\n", .{mm_worst.shown()});
+            std.debug.print("Matmul fragment tiles vs the generic F32 tile: worst |difference| / Σ|w·x| {e:.2} (bound 2e-4)\n", .{frag_worst.shown()});
             // Shape rules: rows must be a multiple of 8, columns of 64, and the
             // buffers must hold the padded token rows.
             const small = try b.create(32 * 64 * 4);
@@ -4016,7 +4026,7 @@ pub fn main(init: std.process.Init) !void {
         // matvec, so the same relative-to-mass bound applies; the routing is
         // pinned below.
         {
-            var rows_worst: f64 = 0;
+            var rows_worst: check_stats.Worst = .{};
             for ([_]usize{ 2, 5, 8 }) |row_tokens| {
                 for ([_]usize{ 704, 1280, 5120 }) |columns| {
                     const activations = try b.create(row_tokens * columns * 4);
@@ -4052,7 +4062,7 @@ pub fn main(init: std.process.Init) !void {
                                         for (decoded, x) |w, xv| mass += @abs(@as(f64, w) * xv);
                                         const got = out.floats()[t * rows + r];
                                         const bound = @as(f64, mass * 4e-6 + 1e-6);
-                                        if (mass > 0) rows_worst = @max(rows_worst, @abs(@as(f64, got) - expected[r]) / mass);
+                                        if (mass > 0) rows_worst.observe(@abs(@as(f64, got) - expected[r]) / mass);
                                         expectClose(if (generic) "matvec rows (generic)" else "matvec rows", got, expected[r], @floatCast(bound)) catch |err| {
                                             std.debug.print("  encoding {d}, tokens {d}, row {d}\n", .{ sample.encoding, row_tokens, r });
                                             return err;
@@ -4064,7 +4074,7 @@ pub fn main(init: std.process.Init) !void {
                     }
                 }
             }
-            std.debug.print("Multi-row matvec vs CPU (2/5/8 rows): worst |difference| / Σ|w·x| {e:.2} (bound 4e-6)\n", .{rows_worst});
+            std.debug.print("Multi-row matvec vs CPU (2/5/8 rows): worst |difference| / Σ|w·x| {e:.2} (bound 4e-6)\n", .{rows_worst.shown()});
             // Selection: `matmul` routes 2-row batches to the multi-row matvec,
             // 3-row ones for the K-quants only; one row, more rows, or the
             // end of the instantiated range stay on the tile
@@ -4335,7 +4345,7 @@ pub fn main(init: std.process.Init) !void {
         const random = prng.random();
         const Case = struct { position: usize, count: usize, poison_after: ?usize };
         const cases = [_]Case{ .{ .position = 1792, .count = 256, .poison_after = null }, .{ .position = 5, .count = 37, .poison_after = 20 }, .{ .position = 0, .count = 1, .poison_after = null }, .{ .position = 0, .count = 3, .poison_after = null }, .{ .position = 16376, .count = 8, .poison_after = null } };
-        var worst: f32 = 0;
+        var worst: check_stats.Worst = .{};
         for (cases) |case| {
             const total = case.position + case.count;
             const rows = Backend.attentionChunkRows(case.count);
@@ -4361,13 +4371,13 @@ pub fn main(init: std.process.Init) !void {
                 const input: inference.cpu.attention.Input = .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .tokens = total, .visible_tokens = case.position + t + 1, .scale = 1.0 / 16.0, .queries = queries.floats()[t * 24 * 256 ..][0 .. 24 * 256], .keys = keys.floats(), .values = values.floats() };
                 try inference.cpu.attention.apply(input, &expected, scratch);
                 for (expected, out.floats()[t * 6144 ..][0 .. 24 * 256]) |e, a| {
-                    worst = @max(worst, @abs(a - e));
+                    worst.observe(@abs(a - e));
                     try expectClose("chunk attention", a, e, 1e-5);
                 }
             }
             for (out.floats()[checked_rows * 6144 .. case.count * 6144]) |a| if (!std.math.isFinite(a)) return error.NonFiniteOutput;
         }
-        std.debug.print("Chunk attention vs CPU F64 per row, up to 16,384 visible: max abs {e:.3} (bound 1e-5)\n", .{worst});
+        std.debug.print("Chunk attention vs CPU F64 per row, up to 16,384 visible: max abs {e:.3} (bound 1e-5)\n", .{worst.shown()});
         // Contract: padded rows, widths, and cache coverage are validated before dispatch.
         const small = try b.create(8 * 4);
         try b.begin();
@@ -4429,24 +4439,24 @@ pub fn main(init: std.process.Init) !void {
         try b.begin();
         try b.attention(keys_h, values_h, queries, scores, out, .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .visible = visible, .scale = 1.0 / 16.0, .precision = .f16 });
         try b.commit();
-        var worst_exact: f32 = 0;
-        var worst_rounded: f32 = 0;
+        var worst_exact: check_stats.Worst = .{};
+        var worst_rounded: check_stats.Worst = .{};
         var sum_sq: f64 = 0;
         var ref_sq: f64 = 0;
         for (expected_rounded, expected_exact, out.floats()) |r, e, a| {
             try expectClose("half attention", a, r, 2e-5);
-            worst_rounded = @max(worst_rounded, @abs(a - r));
-            worst_exact = @max(worst_exact, @abs(a - e));
+            worst_rounded.observe(@abs(a - r));
+            worst_exact.observe(@abs(a - e));
             sum_sq += @as(f64, a - e) * (a - e);
             ref_sq += @as(f64, e) * e;
         }
-        std.debug.print("F16 KV decode attention, 1,021 visible: vs CPU over the rounded cache max abs {e:.3} (bound 2e-5); vs CPU over the F32 cache max abs {e:.3}, relative RMS {e:.3}\n", .{ worst_rounded, worst_exact, @sqrt(sum_sq / ref_sq) });
+        std.debug.print("F16 KV decode attention, 1,021 visible: vs CPU over the rounded cache max abs {e:.3} (bound 2e-5); vs CPU over the F32 cache max abs {e:.3}, relative RMS {e:.3}\n", .{ worst_rounded.shown(), worst_exact.shown(), @sqrt(sum_sq / ref_sq) });
 
         // Half chunk attention on the cases, against the CPU reference over
         // the rounded keys, values, and queries.
         const Case = struct { position: usize, count: usize, poison_after: ?usize };
         const cases = [_]Case{ .{ .position = 1792, .count = 256, .poison_after = null }, .{ .position = 5, .count = 37, .poison_after = 20 }, .{ .position = 0, .count = 1, .poison_after = null }, .{ .position = 0, .count = 3, .poison_after = null }, .{ .position = 16376, .count = 8, .poison_after = null } };
-        var worst_chunk: f32 = 0;
+        var worst_chunk: check_stats.Worst = .{};
         for (cases) |case| {
             const total = case.position + case.count;
             const rows = Backend.attentionChunkRows(case.count);
@@ -4481,13 +4491,13 @@ pub fn main(init: std.process.Init) !void {
             for (0..checked_rows) |t| {
                 try inference.cpu.attention.apply(.{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .tokens = total, .visible_tokens = case.position + t + 1, .scale = 1.0 / 16.0, .queries = q32.floats()[t * 24 * 256 ..][0 .. 24 * 256], .keys = k32.floats(), .values = v32.floats() }, &expected, chunk_scratch);
                 for (expected, out_c.floats()[t * 6144 ..][0 .. 24 * 256]) |e, a| {
-                    worst_chunk = @max(worst_chunk, @abs(a - e));
+                    worst_chunk.observe(@abs(a - e));
                     try expectClose("half chunk attention", a, e, 1e-3);
                 }
             }
             for (out_c.floats()[checked_rows * 6144 .. case.count * 6144]) |a| if (!std.math.isFinite(a)) return error.NonFiniteOutput;
         }
-        std.debug.print("F16 KV chunk attention vs CPU over the rounded operands per row: max abs {e:.3} (bound 1e-3)\n", .{worst_chunk});
+        std.debug.print("F16 KV chunk attention vs CPU over the rounded operands per row: max abs {e:.3} (bound 1e-3)\n", .{worst_chunk.shown()});
         // Contract: pair count, zero count, overlap, and half alignment are refused before dispatch.
         const small = try b.create(64);
         try b.begin();
@@ -4542,9 +4552,9 @@ pub fn main(init: std.process.Init) !void {
             try b.begin();
             try b.attentionDecode(keys, values, queries, partials, out, .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .visible = tokens, .scale = 1.0 / 16.0 });
             try b.commit();
-            var worst: f32 = 0;
+            var worst: check_stats.Worst = .{};
             for (expected, out.floats()) |e, a| {
-                worst = @max(worst, @abs(a - e));
+                worst.observe(@abs(a - e));
                 try expectClose("decode attention f32", a, e, case.bound);
             }
             // The same rows rounded to half, the reference over the rounded values.
@@ -4561,12 +4571,12 @@ pub fn main(init: std.process.Init) !void {
             try b.begin();
             try b.attentionDecode(keys_h, values_h, queries, partials, out, .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .visible = tokens, .scale = 1.0 / 16.0, .precision = .f16 });
             try b.commit();
-            var worst_h: f32 = 0;
+            var worst_h: check_stats.Worst = .{};
             for (expected, out.floats()) |e, a| {
-                worst_h = @max(worst_h, @abs(a - e));
+                worst_h.observe(@abs(a - e));
                 try expectClose("decode attention f16", a, e, case.bound);
             }
-            std.debug.print("Flash-decoding attention, {d} visible ({d} splits) vs CPU F64: F32 cache max abs {e:.3}, F16 cache over the rounded rows {e:.3} (bound {e:.0})\n", .{ tokens, Backend.attentionDecodeSplits(tokens), worst, worst_h, case.bound });
+            std.debug.print("Flash-decoding attention, {d} visible ({d} splits) vs CPU F64: F32 cache max abs {e:.3}, F16 cache over the rounded rows {e:.3} (bound {e:.0})\n", .{ tokens, Backend.attentionDecodeSplits(tokens), worst.shown(), worst_h.shown(), case.bound });
         }
         // Contract: group size, widths, partial and cache coverage are refused before dispatch.
         const small = try b.create(64);
@@ -4657,9 +4667,9 @@ pub fn main(init: std.process.Init) !void {
         defer alloc.free(seq_out);
         const step_scratch = try alloc.alloc(f64, 128 * 128 + 128);
         defer alloc.free(step_scratch);
-        var worst_out: f32 = 0;
-        var worst_state: f32 = 0;
-        var worst_seq: f32 = 0;
+        var worst_out: check_stats.Worst = .{};
+        var worst_state: check_stats.Worst = .{};
+        var worst_seq: check_stats.Worst = .{};
         for (0..48) |h| {
             const kh = h % 16;
             for (0..count) |t| {
@@ -4678,20 +4688,20 @@ pub fn main(init: std.process.Init) !void {
             @memcpy(seq_state, start[h * 128 * 128 ..][0 .. 128 * 128]);
             for (0..count) |t| {
                 try inference.cpu.recurrent.delta(.{ .query = q[t * 128 ..][0..128], .key = k[t * 128 ..][0..128], .value = v[t * 128 ..][0..128], .log_decay = ld[t], .beta = bt[t], .scale = scale }, seq_state, seq_state, seq_out, step_scratch);
-                for (seq_out, out.floats()[t * 6144 + h * 128 ..][0..128]) |want, got| worst_seq = @max(worst_seq, @abs(got - want));
+                for (seq_out, out.floats()[t * 6144 + h * 128 ..][0..128]) |want, got| worst_seq.observe(@abs(got - want));
             }
             for (0..count) |t| for (chunk_out[t * 128 ..][0..128], out.floats()[t * 6144 + h * 128 ..][0..128]) |want, got| {
-                worst_out = @max(worst_out, @abs(got - want));
+                worst_out.observe(@abs(got - want));
                 try expectClose("delta chunk output", got, want, 1e-5);
             };
             for (chunk_state, state.floats()[h * 128 * 128 ..][0 .. 128 * 128]) |want, got| {
-                worst_state = @max(worst_state, @abs(got - want));
+                worst_state.observe(@abs(got - want));
                 try expectClose("delta chunk state", got, want, 1e-4);
             }
-            for (seq_state, state.floats()[h * 128 * 128 ..][0 .. 128 * 128]) |want, got| worst_seq = @max(worst_seq, @abs(got - want));
+            for (seq_state, state.floats()[h * 128 * 128 ..][0 .. 128 * 128]) |want, got| worst_seq.observe(@abs(got - want));
         }
-        if (worst_seq > 1e-4) return error.DeltaChunkSequentialMismatch;
-        std.debug.print("Chunk DeltaNet vs CPU chunkwise F64: output max abs {e:.3} (bound 1e-5), state {e:.3} (bound 1e-4); vs 70 sequential CPU steps: {e:.3} (bound 1e-4)\n", .{ worst_out, worst_state, worst_seq });
+        if (!worst_seq.within(1e-4)) return error.DeltaChunkSequentialMismatch;
+        std.debug.print("Chunk DeltaNet vs CPU chunkwise F64: output max abs {e:.3} (bound 1e-5), state {e:.3} (bound 1e-4); vs 70 sequential CPU steps: {e:.3} (bound 1e-4)\n", .{ worst_out.shown(), worst_state.shown(), worst_seq.shown() });
         // Verify rows and their replay against `delta` stepped on the GPU, bit
         // for bit: the rows' outputs equal the steps', the state is untouched,
         // and replaying the tape's first a rows equals a steps, for every a.

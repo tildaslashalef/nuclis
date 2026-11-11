@@ -300,8 +300,8 @@ and the real file: 667 tensors, 7,350,597,824 bytes, 40 sliding and 8
 global layers) and `gemma4_runtime.zig` executes the forward pass above on
 the CPU. Compared against the reference's per-layer outputs on
 `<bos>Hello,` (tokens `[2, 9259, 236764]`, three positions, the traces
-pinned under `tests/fixtures/gemma4-hello-comma/`; since [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12) that target
-is `make gate NAME='gemma4-trace-f*'`):
+pinned under `tests/fixtures/gemma4-hello-comma/` through `v0.11.0`; since [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12) that target
+was `make gate NAME='gemma4-trace-f*'`, retired with the K-quant file on 2026-09-29; the QAT file's are `gemma4-qat-trace-*`):
 
 | Comparison | Measured | Threshold |
 | --- | --- | --- |

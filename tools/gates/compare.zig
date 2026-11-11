@@ -8,12 +8,13 @@ pub const Options = struct {
     positions: u32,
     max_absolute: f64 = 0.002,
     max_relative_rms: f64 = 0.0001,
-    /// Residual width per layer file.
-    embedding: u32 = 5120,
-    /// Decoder layers traced.
-    layers: u32 = 64,
-    /// Logit count.
-    vocab: u32 = 248320,
+    /// Residual width per layer file; required. The shapes have no default:
+    /// they come from the gate (docs/development.md § Gates).
+    embedding: u32 = 0,
+    /// Decoder layers traced; required in layer mode.
+    layers: u32 = 0,
+    /// Logit count; required in layer mode.
+    vocab: u32 = 0,
     /// Compare `p0-h.f32`, `p1-h.f32`, `p1-hprev.f32`, and `greedy.txt`.
     draft: bool = false,
 };
@@ -86,7 +87,8 @@ pub fn compare(
     diag: *Diagnostic,
 ) Error!Report {
     if (options.positions < 1 or options.positions > max_positions) return error.InvalidOptions;
-    if (options.embedding == 0 or options.vocab < 2) return error.InvalidOptions;
+    if (options.embedding == 0) return error.InvalidOptions;
+    if (!options.draft and (options.layers == 0 or options.vocab < 2)) return error.InvalidOptions;
     var rows: std.ArrayList(Row) = .empty;
     if (options.draft) {
         for (0..options.positions) |p| {
@@ -135,7 +137,7 @@ pub fn compare(
 
 fn within(rows: []const Row, options: Options) bool {
     for (rows) |row| {
-        if (row.max_absolute > options.max_absolute or row.relative_rms > options.max_relative_rms) return false;
+        if (!(row.max_absolute <= options.max_absolute and row.relative_rms <= options.max_relative_rms)) return false;
     }
     return true;
 }
@@ -151,16 +153,15 @@ fn appendOptional(
     size: u32,
     diag: *Diagnostic,
 ) Error!void {
-    const a = readSamples(arena, gpa, io, native, name, size, diag) catch |err| switch (err) {
-        error.MissingFile => return,
-        else => |e| return e,
-    };
-    defer gpa.free(a);
+    // Optional means the reference may lack the row (`dflash2` has no
+    // `p1-hprev`); a row the reference has must exist in the run.
     const b = readSamples(arena, gpa, io, reference, name, size, diag) catch |err| switch (err) {
         error.MissingFile => return,
         else => |e| return e,
     };
     defer gpa.free(b);
+    const a = try readSamples(arena, gpa, io, native, name, size, diag);
+    defer gpa.free(a);
     try rows.append(arena, metric(name, a, b));
 }
 
@@ -337,7 +338,7 @@ test "a value past either bound fails the report" {
     try testing.expectApproxEqAbs(@as(f64, 0.5), report.maxAbsolute(), 1e-9);
 }
 
-test "draft mode skips absent rows and compares the greedy tokens" {
+test "draft mode skips rows the reference lacks and compares the greedy tokens" {
     var f: Fixture = try .init();
     defer f.deinit();
     const a = f.arena.allocator();
@@ -359,6 +360,11 @@ test "draft mode skips absent rows and compares the greedy tokens" {
     try d.writeFile(testing.io, .{ .sub_path = "greedy.txt", .data = "5 7 8\n" });
     report = try compare(a, testing.allocator, testing.io, f.native, f.reference, options, &diag);
     try testing.expect(!report.passed);
+
+    // A row only the reference has is a run that stopped writing it.
+    try f.write("r", "p1-h.f32", &.{ 3, 4 });
+    try testing.expectError(error.MissingFile, compare(a, testing.allocator, testing.io, f.native, f.reference, options, &diag));
+    try testing.expect(std.mem.endsWith(u8, diag.path, "n/p1-h.f32"));
 }
 
 test "wrong sizes, non-finite values, and missing files are typed" {
@@ -373,7 +379,9 @@ test "wrong sizes, non-finite values, and missing files are typed" {
     try f.write("n", "token-0-layer-0.f32", &.{ 1, std.math.inf(f32) });
     try testing.expectError(error.Nonfinite, compare(a, testing.allocator, testing.io, f.native, f.reference, options, &diag));
     try testing.expectError(error.InvalidOptions, compare(a, testing.allocator, testing.io, f.native, f.reference, .{ .positions = 0 }, &diag));
-    try testing.expectError(error.NoDraftRows, compare(a, testing.allocator, testing.io, f.native, f.reference, .{ .positions = 1, .draft = true }, &diag));
+    try testing.expectError(error.NoDraftRows, compare(a, testing.allocator, testing.io, f.native, f.reference, .{ .positions = 1, .embedding = 2, .draft = true }, &diag));
+    try testing.expectError(error.InvalidOptions, compare(a, testing.allocator, testing.io, f.native, f.reference, .{ .positions = 1, .draft = true }, &diag));
+    try testing.expectError(error.InvalidOptions, compare(a, testing.allocator, testing.io, f.native, f.reference, .{ .positions = 1, .embedding = 2, .vocab = 2 }, &diag));
 }
 
 test "top five keeps the lower index on a tie and the report's JSON omits absent fields" {

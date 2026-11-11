@@ -135,7 +135,7 @@ Every model-specific numerical check is a *gate* in [`gates.json`](../gates.json
 run by `nuclis-gates` (`tools/gates`); bounds, model paths, and evidence anchors live
 there and nowhere else. A gate is one command (an argv with the
 placeholders `{nuclis}`, `{nuclis-cpu}`, `{zig-metal}`, `{zig-cpu}`,
-`{model}`, `{mtp}`, `{baseline}`, `{mmproj}`, `{trace}`) and a comparator: `exit` (the command's
+`{model}`, `{mtp}`, `{baseline}`, `{mmproj}`, `{entry}`, `{trace}`) and a comparator: `exit` (the command's
 status decides: the generation checks, the speculative checks, the Gemma
 and Muse draft checks that compare their own rows, `draft-stats`, the
 vocabulary checks, the perplexity checks, the cross-encoding check against
@@ -204,8 +204,11 @@ asked: `make verify-changed BASE=<rev> ARGS='--tier verify-long'`.
 
 **Remembered passes.** A pass is keyed by the gate's definition, the
 fingerprints of every engine file except those exclusive to other families,
-each model file's path, size, and modification time, and the optimize
-mode. Passes live in `$NUCLIS_HOME/gates/`, so they outlast a cleared
+the build files (`build.zig`, `build.zig.zon`, `inference/build.zig.zon`),
+the application (`src/`, `huggingface/`) when the command runs `{nuclis}`
+or `{nuclis-cpu}`, the folder `scripts/gate/` when the command runs one of
+its scripts, each model file's path, size, and modification time, the
+manifest's `build` block, and `zig version`. Passes live in `$NUCLIS_HOME/gates/`, so they outlast a cleared
 `.zig-cache` and are shared by worktrees. A skip is not a pass.
 `ARGS=--no-cache` runs a gate anyway.
 
@@ -223,7 +226,12 @@ seconds are reported apart from the gates'. Gate names are `<entry>-<check>-<exe
 `trace-{cpu,f32,f16}`, `generation-{cpu,metal}`, `speculative-{cpu,metal}`,
 `draft-trace-{cpu,metal}`, `draft-stats`, `vocabulary`, `perplexity` (two
 windows), `perplexity-full`, `perplexity-4k`. A
-model path is overridden per key by `<KEY>_MODEL` (`GEMMA4_QAT_MODEL=…`).
+model path is overridden per key by `<KEY>_MODEL` (`GEMMA4_QAT_MODEL=…`),
+except in a command that names `{entry}`, the model's catalogue name: that
+gate runs the pinned files the catalogue resolves (an audio or vision gate
+through `nuclis generate`, which finds the projector by entry). A `trace`
+comparator names the model's shapes (`embedding`, and `layers` and `vocab`
+outside `draft` mode); nothing defaults them.
 Traces are written under `.zig-cache/gates/trace/<gate>/`. The perplexity
 gates read wikitext-2-raw's test text, fetched into `.reference/eval/` and
 checked against its SHA-256 by `make eval-corpus`, which `verify`,
@@ -244,6 +252,13 @@ later one maps it in 0.3–1 s. The cost is in four places:
 | `checkChunkedPrefill`'s F32 tiles and `prefillRows`, 70 tokens | 25–31 per 27–30B file | the generic F32 tile kernels, slowest path by design |
 | perplexity, 8 windows of 512 | 56 (Qwen), 53 (Muse), 19 (26B-A4B), 12 (E4B) | the references store the cumulative value per window (`chunk_ppl`), so fewer windows compare against the same file |
 | the Gemma 12B QAT file's five gates | 74 | a third Gemma file, covering only its dimensions (below) |
+
+Every check executable aggregates its differences through
+`inference/check_stats.zig`, whose maxima and minima latch a NaN or an
+infinity instead of dropping it, and fails when it compared nothing (an
+unknown `test-tiny` variant, an empty fixture, a filter that matched no
+case). `NUCLIS_CHECK_INJECT_NAN=1 make test-metal` poisons one kernel
+output and must fail: the self-test of that rule.
 
 What can break independently, and what protects it. *Model-free* means
 `make check` (unit tests, `test-metal`, and `test-tiny`, no weights):

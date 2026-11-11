@@ -8,6 +8,11 @@
 //! reach walks forward from its seeds and neither enters nor counts an
 //! aggregator, so an aggregator belongs to no family: changing one reaches
 //! everything, which is what no family means to `select`.
+//!
+//! Outside the engine, the tree keeps the context a remembered pass also
+//! depends on: the build files, which every gate's build reads, and the
+//! application (`src/`, `huggingface/`), which only a `{nuclis}` binary
+//! contains. Context is never an engine change, so `select` ignores it.
 const std = @import("std");
 const glob = @import("glob.zig");
 const fingerprint = @import("fingerprint.zig");
@@ -28,6 +33,25 @@ pub fn isSource(path: []const u8) bool {
     return false;
 }
 
+/// What a context file reaches: every gate, or the gates that run the binary.
+pub const Scope = enum { build, application };
+
+/// The scope of a path outside the engine, or null for an engine path.
+pub fn contextScope(path: []const u8) ?Scope {
+    const build_files = [_][]const u8{ "build.zig", "build.zig.zon", "inference/build.zig.zon" };
+    for (build_files) |name| {
+        if (std.mem.eql(u8, path, name)) return .build;
+    }
+    if (std.mem.startsWith(u8, path, "src/") or std.mem.startsWith(u8, path, "huggingface/")) return .application;
+    return null;
+}
+
+pub const Context = struct {
+    path: []const u8,
+    digest: fingerprint.Digest,
+    scope: Scope,
+};
+
 pub const File = struct {
     path: []const u8,
     digest: fingerprint.Digest,
@@ -39,6 +63,8 @@ pub const File = struct {
 pub const Tree = struct {
     /// Sorted by path.
     files: []File,
+    /// Sorted by path; never an engine input.
+    context: []const Context = &.{},
 
     pub fn get(tree: *const Tree, path: []const u8) ?*const File {
         var low: usize = 0;
@@ -114,6 +140,8 @@ pub fn edgesOf(arena: Allocator, path: []const u8, source: [:0]const u8) Allocat
     return out.items;
 }
 
+const gate_scripts = "scripts/gate";
+
 /// The files of `universe` a gate names in its arguments, its reference, or a
 /// data set's listing: exact paths, or everything under a named directory.
 fn namedBy(arena: Allocator, m: *const Manifest, gate: *const manifest.Gate, universe: []const []const u8) Allocator.Error![]const []const u8 {
@@ -125,19 +153,22 @@ fn namedBy(arena: Allocator, m: *const Manifest, gate: *const manifest.Gate, uni
         if (set.listed_in) |listing| try names.append(arena, listing);
     }
     var out: std.ArrayList([]const u8) = .empty;
-    for (names.items) |name| {
+    for (names.items) |argument| {
+        // A gate script takes its siblings, which import one another.
+        const name = if (std.mem.startsWith(u8, argument, gate_scripts ++ "/")) gate_scripts else argument;
         if (name.len == 0 or name[0] == '-' or name[0] == '{') continue;
         for (universe) |path| {
-            if (!std.mem.startsWith(u8, path, name)) continue;
+            if (contextScope(path) != null or !std.mem.startsWith(u8, path, name)) continue;
             if (path.len == name.len or path[name.len] == '/') try out.append(arena, path);
         }
     }
     return out.items;
 }
 
-/// Builds the tree from `universe` (sorted paths under `inference/` and
-/// `tests/fixtures/`) through `reader.read(path)`, whose bytes need last only
-/// until the next read. `arena` owns the result.
+/// Builds the tree from `universe` (sorted paths under `inference/`,
+/// `tests/fixtures/`, `scripts/gate/`, and the context) through
+/// `reader.read(path)`, whose bytes need last only until the next read.
+/// `arena` owns the result.
 pub fn build(arena: Allocator, gpa: Allocator, m: *const Manifest, universe: []const []const u8, reader: anytype) !Tree {
     var known: std.StringHashMapUnmanaged(void) = .empty;
     for (universe) |path| try known.put(arena, path, {});
@@ -154,7 +185,12 @@ pub fn build(arena: Allocator, gpa: Allocator, m: *const Manifest, universe: []c
         }
     }.call;
 
+    var context: std.ArrayList(Context) = .empty;
     for (universe) |path| {
+        if (contextScope(path)) |scope| {
+            try context.append(arena, .{ .path = path, .digest = try fingerprint.ofFile(gpa, path, try reader.read(path)), .scope = scope });
+            continue;
+        }
         if (isSource(path) or seedFamilies(m, path) != 0) try enqueue(arena, &queue, &seen, path);
     }
     var named: std.StringHashMapUnmanaged(u64) = .empty;
@@ -211,7 +247,7 @@ pub fn build(arena: Allocator, gpa: Allocator, m: *const Manifest, universe: []c
             return std.mem.lessThan(u8, a.path, b.path);
         }
     }.lessThan);
-    return .{ .files = files.items };
+    return .{ .files = files.items, .context = context.items };
 }
 
 /// Problems only the real tree can show: a seed or an aggregator that matches
@@ -279,6 +315,10 @@ pub const sample_repository: Memory = .{ .files = &.{
     .{ "inference/src/lonely.zig", "// nothing imports this\n" },
     .{ "tests/fixtures/a/x.f32", "abcd" },
     .{ "tests/fixtures/unused/y.f32", "abcd" },
+    .{ "scripts/gate/check.py", "import helper\n" },
+    .{ "scripts/gate/helper.py", "x = 1\n" },
+    .{ "src/main.zig", "pub fn main() void {}\n" },
+    .{ "build.zig", "const std = @import(\"std\");\n" },
 } };
 
 fn sampleManifest(arena: Allocator) !Manifest {

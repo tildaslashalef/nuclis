@@ -19,8 +19,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "huggingface", .module = mod }},
         }),
     });
+    // The root installs it on request (`make hf-downloader`) and declares
+    // every step; this file only builds the module, its tests, and the binary.
     b.installArtifact(exe);
-    const run = b.addRunArtifact(exe);
-    run.addPassthruArgs();
-    b.step("run", "Run the standalone downloader (-- REPO [flags])").dependOn(&run.step);
 }

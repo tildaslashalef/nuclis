@@ -5,9 +5,8 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     // Metal is the reason this engine exists on Apple Silicon, so it is on
     // by default wherever it can be built and off everywhere else; a CPU-only
-    // build is `-Dmetal=false`. Before this, a plain `zig build` produced a
-    // binary that failed at run time against the default configuration's
-    // `backend: metal` (reported 2026-09-12).
+    // build is `-Dmetal=false`. The default configuration's `backend: metal`
+    // needs it.
     const metal_default = target.result.os.tag == .macos and target.result.cpu.arch == .aarch64;
     const metal = b.option(bool, "metal", "Build the Metal backend (default: on for macOS aarch64)") orelse metal_default;
 
@@ -103,28 +102,28 @@ pub fn build(b: *std.Build) void {
     b.step("test-vocabulary", "Check the pinned vocabulary and tokenizer (-- MODEL_PATH)").dependOn(&vocabulary_check.step);
     const laya_check = b.addRunArtifact(inference.artifact("laya-check"));
     laya_check.addPassthruArgs();
-    b.step("test-laya", "Check Laya's CPU forward against the oracle's fixtures (-- LAYA_DIR)").dependOn(&laya_check.step);
+    b.step("test-laya", "Check Laya's forward against the oracle's fixtures (-- LAYA_DIR [--backend cpu|metal] [--profile])").dependOn(&laya_check.step);
     const clef_check = b.addRunArtifact(inference.artifact("clef-check"));
     clef_check.addPassthruArgs();
-    b.step("test-clef", "Check clef-flash against the oracle's fixtures (-- sequences|head CLEF_DIR ...)").dependOn(&clef_check.step);
+    b.step("test-clef", "Check clef-flash against the oracle's fixtures, or run it whole (-- sequences|head|run CLEF_DIR ...)").dependOn(&clef_check.step);
     const embeddinggemma_check = b.addRunArtifact(inference.artifact("embeddinggemma-check"));
     embeddinggemma_check.addPassthruArgs();
-    b.step("test-embeddinggemma", "Check EmbeddingGemma 2 against the oracles, or time it (-- MODEL traces|vectors|google|bench [--backend cpu|metal])").dependOn(&embeddinggemma_check.step);
+    b.step("test-embeddinggemma", "Check EmbeddingGemma 2 against the oracles, or time it (-- MODEL traces|vectors|google|images|audio|bench [--backend cpu|metal] [--mmproj MMPROJ] [--only CASE])").dependOn(&embeddinggemma_check.step);
     const qwen3_tts_check = b.addRunArtifact(inference.artifact("qwen3-tts-check"));
     qwen3_tts_check.addPassthruArgs();
-    b.step("test-qwen3-tts", "Check Qwen3-TTS against the authors' trace (-- MODEL_DIR codec|talker)").dependOn(&qwen3_tts_check.step);
+    b.step("test-qwen3-tts", "Check Qwen3-TTS against the authors' trace (-- MODEL_DIR codec|codec-metal|talker|talker-metal|clone)").dependOn(&qwen3_tts_check.step);
     const drama3_check = b.addRunArtifact(inference.artifact("drama3-check"));
     drama3_check.addPassthruArgs();
-    b.step("test-drama3", "Check Drama 3 against Fish's traces, Metal against the CPU, or speak (-- MODEL.gguf smoke|trace|codec|metal|speak)").dependOn(&drama3_check.step);
+    b.step("test-drama3", "Check Drama 3 against Fish's traces, Metal against the CPU, or speak (-- MODEL.gguf smoke|trace|codec|codec-metal|metal|speak)").dependOn(&drama3_check.step);
     const nemotron_asr_check = b.addRunArtifact(inference.artifact("nemotron-asr-check"));
     nemotron_asr_check.addPassthruArgs();
-    b.step("test-nemotron-asr", "Check Nemotron ASR's front end and encoder against the pinned trace (-- MODEL_DIR [FIXTURES])").dependOn(&nemotron_asr_check.step);
+    b.step("test-nemotron-asr", "Check Nemotron ASR against the pinned trace, or time it (-- MODEL_DIR [FIXTURES] [--transducer] [--metal] [--bench] [--clip ID])").dependOn(&nemotron_asr_check.step);
     const generation_check = b.addRunArtifact(inference.artifact("generation-check"));
     generation_check.addPassthruArgs();
-    b.step("test-generation", "Check CPU full-model session isolation/reset (-- MODEL_PATH)").dependOn(&generation_check.step);
+    b.step("test-generation", "Check a model's sessions, drafts, vision, and audio on the CPU or Metal (-- MODEL_PATH [--metal] [--draft-model F] [--vision-check MMPROJ] ...)").dependOn(&generation_check.step);
     const cross_encoding_check = b.addRunArtifact(inference.artifact("cross-encoding-check"));
     cross_encoding_check.addPassthruArgs();
-    b.step("test-cross-encoding", "Compare one model's matrices across two files' encodings (-- NEW VALIDATED [--rows n] [--min-cosine x])").dependOn(&cross_encoding_check.step);
+    b.step("test-cross-encoding", "Compare one model's matrices across two files' encodings (-- NEW VALIDATED [--rows n] [--min-mean ENC=x])").dependOn(&cross_encoding_check.step);
     // Compiles the check tools without running them, so the gate runner
     // can time the build apart from the checks.
     const check_tools = b.step("check-tools", "Install the vocabulary, Laya, clef, EmbeddingGemma, Qwen3-TTS, Drama 3, Nemotron ASR, generation, and cross-encoding check tools");

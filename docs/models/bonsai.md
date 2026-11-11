@@ -230,7 +230,8 @@ Runs on 2026-09-18 (M4 Pro, Metal, the PQ2_0 file):
 - `scripts/reference-generation.cpp` built against the fork
   (`.zig-cache/generation/prism-reference-generation`, the same source, the
   fork's headers and libraries) on `Hello,`: 129 files in
-  [`tests/fixtures/bonsai-hello-comma/`](../../tests/fixtures/bonsai-hello-comma/)
+  [`tests/fixtures/bonsai-hello-comma/`](https://github.com/tildaslashalef/nuclis/tree/v0.11.0/tests/fixtures/bonsai-hello-comma)
+  (held through `v0.11.0`)
   (two positions × 64 layers × 5,120 F32, `logits.f32` of 248,320),
   greedy token 353 (` I`) — the same token the Qwen3.8 oracle picks, with
   logit 11.51 against Qwen's 12.41; the layer-63 residual at position 1

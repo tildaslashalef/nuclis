@@ -32,6 +32,7 @@
 //! FIXTURES_DIR defaults to `tests/fixtures`, read at run time.
 const std = @import("std");
 const inference = @import("inference");
+const check_stats = @import("check_stats.zig");
 const embed = inference.embed;
 
 /// Per stage: the largest difference over the largest reference value, and
@@ -113,8 +114,8 @@ const Trace = struct {
     io: std.Io,
     directory: []const u8,
     rows: usize,
-    worst_max: f64 = 0,
-    worst_rel: f64 = 0,
+    worst_max: check_stats.Worst = .{},
+    worst_rel: check_stats.Worst = .{},
     worst: []const u8 = "",
     failed: bool = false,
     missing: bool = false,
@@ -147,8 +148,8 @@ const Trace = struct {
         const columns = rows.len / self.rows;
         var diff2: f64 = 0;
         var ref2: f64 = 0;
-        var worst: f64 = 0;
-        var largest: f64 = 0;
+        var worst: check_stats.Worst = .{};
+        var largest: check_stats.Worst = .{};
         for (0..self.rows) |r| for (0..columns) |c| {
             const at = r * stride + offset + c;
             if ((at + 1) * 4 > bytes.len) {
@@ -157,26 +158,24 @@ const Trace = struct {
             }
             const want: f64 = @as(f32, @bitCast(std.mem.readInt(u32, bytes[at * 4 ..][0..4], .little)));
             const delta = rows[r * columns + c] - want;
-            worst = @max(worst, @abs(delta));
-            largest = @max(largest, @abs(want));
+            worst.observe(delta);
+            largest.observe(want);
             diff2 += delta * delta;
             ref2 += want * want;
         };
         const rel = @sqrt(diff2 / @max(ref2, 1e-30));
-        const max_rel = worst / @max(largest, 1e-30);
+        const max_rel = worst.shown() / @max(largest.shown(), 1e-30);
         const label = switch (stage) {
             .per_layer => |l| std.fmt.allocPrint(self.arena, "inp_per_layer[{d}]", .{l}) catch "inp_per_layer",
             else => self.arena.dupe(u8, name) catch name,
         };
-        if (max_rel > max_relative or rel > max_relative_rms) {
+        if (check_stats.exceeds(max_rel, max_relative) or check_stats.exceeds(rel, max_relative_rms)) {
             self.failed = true;
             std.debug.print("  {s}: relative max {e:.3}, relative RMS {e:.3} (bounds {e}, {e})\n", .{ label, max_rel, rel, max_relative, max_relative_rms });
         }
-        if (rel > self.worst_rel) {
-            self.worst_rel = rel;
-            self.worst = label;
-        }
-        self.worst_max = @max(self.worst_max, max_rel);
+        if (!(rel <= self.worst_rel.value)) self.worst = label;
+        self.worst_rel.observe(rel);
+        self.worst_max.observe(max_rel);
     }
 };
 
@@ -308,20 +307,20 @@ fn readF32(arena: std.mem.Allocator, io: std.Io, path: []const u8) ![]f32 {
     return out;
 }
 
-/// Relative max and relative RMS of `got` against `want`.
+/// Relative max and relative RMS of `got` against `want`; NaN when a value is not finite.
 fn relative(got: []const f32, want: []const f32) struct { max: f64, rms: f64 } {
     var diff2: f64 = 0;
     var ref2: f64 = 0;
-    var worst: f64 = 0;
-    var largest: f64 = 0;
+    var worst: check_stats.Worst = .{};
+    var largest: check_stats.Worst = .{};
     for (got, want) |g, w| {
         const delta = @as(f64, g) - w;
-        worst = @max(worst, @abs(delta));
-        largest = @max(largest, @abs(@as(f64, w)));
+        worst.observe(delta);
+        largest.observe(w);
         diff2 += delta * delta;
         ref2 += @as(f64, w) * w;
     }
-    return .{ .max = worst / @max(largest, 1e-30), .rms = @sqrt(diff2 / @max(ref2, 1e-30)) };
+    return .{ .max = worst.shown() / @max(largest.shown(), 1e-30), .rms = @sqrt(diff2 / @max(ref2, 1e-30)) };
 }
 
 fn images(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder: *embed.Embedder, fixtures: []const u8, only: ?[]const u8) !void {
@@ -332,6 +331,7 @@ fn images(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder
     if (only) |id| cases = for (cases, 0..) |c, i| {
         if (std.mem.eql(u8, c.id, id)) break cases[i..][0..1];
     } else return error.UnknownCase;
+    if (cases.len == 0) return error.NoCases;
     const projector = &embedder.projector.?;
     var checked: std.ArrayList([]const u8) = .empty;
     var failures: usize = 0;
@@ -339,7 +339,10 @@ fn images(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder
 
     for (cases) |case| {
         const directory = try std.fmt.allocPrint(arena, "{s}/embeddinggemma-{s}", .{ fixtures, case.id });
-        const want_rows = readF32(arena, io, try std.fmt.allocPrint(arena, "{s}/media-0.f32", .{directory})) catch continue;
+        const want_rows = readF32(arena, io, try std.fmt.allocPrint(arena, "{s}/media-0.f32", .{directory})) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            else => return err,
+        };
         // The reference's pipeline: its smart size, letterboxed Pillow bicubic, F16 patches, gelu_quick.
         const bytes = for (case.parts) |p| switch (p) {
             .image => |b| break b,
@@ -364,16 +367,22 @@ fn images(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder
         projector.binding.activation = .gelu_tanh;
         if (rows.len != want_rows.len) return error.InvalidFixture;
         const r = relative(rows, want_rows);
-        const rows_ok = r.max <= max_relative_media and r.rms <= max_relative_rms_media;
+        const rows_ok = !check_stats.exceeds(r.max, max_relative_media) and !check_stats.exceeds(r.rms, max_relative_rms_media);
         if (!rows_ok) failures += 1;
         std.debug.print("{s}: projector rows from the reference's pixels, {d} rows: relative max {e:.3}, relative RMS {e:.3} (bounds {e}, {e})\n", .{ case.id, grid.tokens(), r.max, r.rms, max_relative_media, max_relative_rms_media });
+    }
+
+    std.debug.print("{d} images' projector rows compared\n", .{checked.items.len});
+    if (checked.items.len == 0 and only == null) {
+        std.debug.print("no image case has pinned projector rows (media-0.f32)\n", .{});
+        failures += 1;
     }
 
     // Google's pipeline end to end.
     // Google's float32 on the BF16 file (encoding 30), as the text gate; the Q8_0 file's
     // own cost (about 5e-5 of cosine on text) on the other.
     const floor: f64 = if (embedder.binding.token_embedding.encoding_id == 30) min_cosine_google else min_cosine_images_q8;
-    var low: f64 = 1;
+    var low: check_stats.Least = .{};
     const prepared_all = try arena.alloc(embed.Prepared, cases.len);
     const singles = try arena.alloc([embed.dimensions]f32, cases.len);
     for (cases, prepared_all, singles) |case, *prepared, *single| {
@@ -388,11 +397,11 @@ fn images(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder
         try embedder.embed(prepared.*, &vector, null);
         single.* = vector;
         const c = cosine(&vector, google.values.get(case.id).?);
-        low = @min(low, c);
-        if (c < floor) failures += 1;
+        low.observe(c);
+        if (check_stats.below(c, floor)) failures += 1;
         std.debug.print("{s}: {d} tokens, prepared in {d} ms, cosine against Google's f32 {d:.7} (1 - c = {e:.2})\n", .{ case.id, prepared.tokens.len, prepare_ms, c, 1 - c });
     }
-    std.debug.print("{d} image cases: min cosine against Google's f32 {d:.7} (floor {d}); the vision encoder holds {d} MB\n", .{ cases.len, low, floor, embedder.mediaBytes() / 1_000_000 });
+    std.debug.print("{d} image cases: min cosine against Google's f32 {d:.7} (floor {d}); the vision encoder holds {d} MB\n", .{ cases.len, low.shown(), floor, embedder.mediaBytes() / 1_000_000 });
     if (embedder.engine == .metal and failures == 0) {
         // Batching changes timing, never answers, with media rows as with text.
         const outs = try arena.alloc([]f32, cases.len);
@@ -428,7 +437,9 @@ fn clips(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder:
     if (only) |id| cases = for (cases, 0..) |c, i| {
         if (std.mem.eql(u8, c.id, id)) break cases[i..][0..1];
     } else return error.UnknownCase;
+    if (cases.len == 0) return error.NoCases;
     var failures: usize = 0;
+    var rows_compared: usize = 0;
     var vector: [embed.dimensions]f32 = undefined;
     const bank = try arena.create(audio.mel.Bank);
     bank.init(.gemma);
@@ -449,25 +460,34 @@ fn clips(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder:
             std.debug.print("{s}: {d} mel frames, Google's {d}\n", .{ case.id, frames, want.len / audio.mel.filters });
             continue;
         }
-        var worst: f32 = 0;
-        for (features, want) |a, b| worst = @max(worst, @abs(a - b));
-        if (worst > max_feature_difference) failures += 1;
-        std.debug.print("{s}: {d} mel frames, max |difference| against Google's {e:.3} (bound {e})\n", .{ case.id, frames, worst, max_feature_difference });
+        var worst: check_stats.Worst = .{};
+        for (features, want) |a, b| worst.observe(a - b);
+        if (!worst.within(max_feature_difference)) failures += 1;
+        std.debug.print("{s}: {d} mel frames, max |difference| against Google's {e:.3} (bound {e})\n", .{ case.id, frames, worst.shown(), max_feature_difference });
 
         const directory = try std.fmt.allocPrint(arena, "{s}/embeddinggemma-{s}", .{ fixtures, case.id });
-        const want_rows = readF32(arena, io, try std.fmt.allocPrint(arena, "{s}/media-0.f32", .{directory})) catch continue;
+        const want_rows = readF32(arena, io, try std.fmt.allocPrint(arena, "{s}/media-0.f32", .{directory})) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            else => return err,
+        };
         const rows = try arena.alloc(f32, inference.audio.gemma4a.tokensFor(frames) * width);
         try embedder.encodeFeatures(features, frames, rows);
         if (rows.len != want_rows.len) return error.InvalidFixture;
+        rows_compared += 1;
         const r = relative(rows, want_rows);
-        if (r.max > max_relative_audio or r.rms > max_relative_rms_audio) failures += 1;
+        if (check_stats.exceeds(r.max, max_relative_audio) or check_stats.exceeds(r.rms, max_relative_rms_audio)) failures += 1;
         // A dump of Google's stages (a debugging aid, not a fixture) is traced against.
         if (std.Io.Dir.cwd().access(io, ".zig-cache/audio-trace/subsample.f32", .{})) |_| try traceAudio(gpa, arena, io, embedder, features, frames) else |_| {}
         std.debug.print("{s}: projector rows, {d} rows: relative max {e:.3}, relative RMS {e:.3} (bounds {e}, {e})\n", .{ case.id, rows.len / width, r.max, r.rms, max_relative_audio, max_relative_rms_audio });
     }
 
+    std.debug.print("{d} clips' projector rows compared\n", .{rows_compared});
+    if (rows_compared == 0 and only == null) {
+        std.debug.print("no audio case has pinned projector rows (media-0.f32)\n", .{});
+        failures += 1;
+    }
     const floor: f64 = if (embedder.binding.token_embedding.encoding_id == 30) min_cosine_google else min_cosine_images_q8;
-    var low: f64 = 1;
+    var low: check_stats.Least = .{};
     const prepared_all = try arena.alloc(embed.Prepared, cases.len);
     const singles = try arena.alloc([embed.dimensions]f32, cases.len);
     for (cases, prepared_all, singles) |case, *prepared, *single| {
@@ -482,11 +502,11 @@ fn clips(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder:
         try embedder.embed(prepared.*, &vector, null);
         single.* = vector;
         const c = cosine(&vector, google.values.get(case.id).?);
-        low = @min(low, c);
-        if (c < floor) failures += 1;
+        low.observe(c);
+        if (check_stats.below(c, floor)) failures += 1;
         std.debug.print("{s}: {d} tokens, prepared in {d} ms, cosine against Google's f32 {d:.7} (1 - c = {e:.2})\n", .{ case.id, prepared.tokens.len, prepare_ms, c, 1 - c });
     }
-    std.debug.print("{d} audio cases: min cosine against Google's f32 {d:.7} (floor {d}); the media encoders hold {d} MB\n", .{ cases.len, low, floor, embedder.mediaBytes() / 1_000_000 });
+    std.debug.print("{d} audio cases: min cosine against Google's f32 {d:.7} (floor {d}); the media encoders hold {d} MB\n", .{ cases.len, low.shown(), floor, embedder.mediaBytes() / 1_000_000 });
     if (embedder.engine == .metal and failures == 0) {
         const outs = try arena.alloc([]f32, cases.len);
         const batched = try arena.alloc([embed.dimensions]f32, cases.len);
@@ -611,11 +631,11 @@ pub fn main(init: std.process.Init) !void {
             try embedder.embed(prepared, &vector, .{ .context = &trace, .record = Trace.record });
             const c = cosine(&vector, reference.values.get(id).?);
             if (trace.missing) return error.MissingTrace;
-            if (trace.failed or c < floor) failures += 1;
-            std.debug.print("{s}: {d} rows, worst stage {s} (relative RMS {e:.3}), worst relative max {e:.3}, cosine {d:.7}\n", .{ id, trace.rows, trace.worst, trace.worst_rel, trace.worst_max, c });
+            if (trace.failed or check_stats.below(c, floor)) failures += 1;
+            std.debug.print("{s}: {d} rows, worst stage {s} (relative RMS {e:.3}), worst relative max {e:.3}, cosine {d:.7}\n", .{ id, trace.rows, trace.worst, trace.worst_rel.shown(), trace.worst_max.shown(), c });
         }
     } else {
-        var low: f64 = 1;
+        var low: check_stats.Least = .{};
         var sum: f64 = 0;
         var counted: usize = 0;
         // Each case's prepared input and its one-at-a-time vector, for the batch check.
@@ -643,7 +663,7 @@ pub fn main(init: std.process.Init) !void {
                 try embedder.embed(prepared, &vector, null);
                 single.* = vector;
                 std.debug.print("{s}: {d} literal tokens, cosine {d:.7}; specials parsed as the oracle does, {d} tokens, cosine {d:.7}\n", .{ case.id, prepared.tokens.len, cosine(&vector, want), oracle_way.len, parsed_cosine });
-                if (parsed_cosine < floor) failures += 1;
+                if (check_stats.below(parsed_cosine, floor)) failures += 1;
                 continue;
             }
             if (!std.mem.eql(u32, prepared.tokens, want_ids)) {
@@ -654,15 +674,19 @@ pub fn main(init: std.process.Init) !void {
             try embedder.embed(prepared, &vector, null);
             single.* = vector;
             const c = cosine(&vector, want);
-            low = @min(low, c);
+            low.observe(c);
             sum += c;
             counted += 1;
-            if (c < floor) {
+            if (check_stats.below(c, floor)) {
                 failures += 1;
                 std.debug.print("{s}: cosine {d:.7} ({d} tokens)\n", .{ case.id, c, prepared.tokens.len });
             }
         }
-        std.debug.print("{d} text cases with the oracle's ids ({s}): cosine against {s} min {d:.7} (1 - min = {e:.2}), mean {d:.7} (floor {d})\n", .{ counted, @tagName(backend), if (google_mode) "Google f32" else "llama.cpp Q8_0", low, 1 - low, sum / @as(f64, @floatFromInt(counted)), floor });
+        std.debug.print("{d} text cases with the oracle's ids ({s}): cosine against {s} min {d:.7} (1 - min = {e:.2}), mean {d:.7} (floor {d})\n", .{ counted, @tagName(backend), if (google_mode) "Google f32" else "llama.cpp Q8_0", low.shown(), 1 - low.shown(), sum / @as(f64, @floatFromInt(counted)), floor });
+        if (counted == 0) {
+            std.debug.print("no text case compared\n", .{});
+            failures += 1;
+        }
         if (backend == .metal) {
             // Batching changes timing, never answers.
             const batched = try arena.alloc([embed.dimensions]f32, cases.len);
@@ -670,12 +694,12 @@ pub fn main(init: std.process.Init) !void {
             for (outs, batched) |*o, *b| o.* = b;
             try embedder.embedBatch(prepared_all, outs);
             var differing: usize = 0;
-            var worst: f32 = 0;
+            var worst: check_stats.Worst = .{};
             for (singles, batched) |a, b| {
                 if (!std.mem.eql(u8, std.mem.asBytes(&a), std.mem.asBytes(&b))) differing += 1;
-                for (a, b) |x, y| worst = @max(worst, @abs(x - y));
+                for (a, b) |x, y| worst.observe(x - y);
             }
-            std.debug.print("{d} cases in packed batches: {d} vectors differ from one at a time, worst |difference| {e:.3}\n", .{ cases.len, differing, worst });
+            std.debug.print("{d} cases in packed batches: {d} vectors differ from one at a time, worst |difference| {e:.3}\n", .{ cases.len, differing, worst.shown() });
             if (differing != 0) failures += 1;
         }
     }

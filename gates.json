@@ -84,9 +84,6 @@
   "qwen3_tts_06b_base": {
    "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-0.6B-Base"
   },
-  "qwen3_tts_17b_base": {
-   "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-  },
   "qwen3_tts_17b_design": {
    "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
   },
@@ -146,6 +143,8 @@
     "build.zig",
     "inference/build.zig",
     "inference/metal-check.zig",
+    "inference/tts-metal-check.zig",
+    "inference/check_stats.zig",
     "inference/src/backends/**",
     "inference/src/quant/**",
     "inference/src/tensor/**"
@@ -160,6 +159,7 @@
    "paths": [
     "inference/build.zig",
     "inference/tiny-check.zig",
+    "inference/check_stats.zig",
     "inference/src/**"
    ]
   },
@@ -174,7 +174,7 @@
     "gates.json",
     "workloads.json",
     "tools/gates/**",
-    "scripts/bench/workloads.py",
+    "scripts/bench/**",
     "scripts/gate/reference-perplexity.py"
    ]
   },
@@ -375,7 +375,10 @@
    "comparator": {
     "kind": "trace",
     "reference": "tests/fixtures/reference-hello-comma",
-    "positions": 2
+    "positions": 2,
+    "embedding": 5120,
+    "layers": 64,
+    "vocab": 248320
    },
    "bounds": {
     "max_absolute": 0.002,
@@ -412,7 +415,10 @@
    "comparator": {
     "kind": "trace",
     "reference": "tests/fixtures/reference-hello-comma",
-    "positions": 2
+    "positions": 2,
+    "embedding": 5120,
+    "layers": 64,
+    "vocab": 248320
    },
    "bounds": {
     "max_absolute": 0.03,
@@ -449,7 +455,10 @@
    "comparator": {
     "kind": "trace",
     "reference": "tests/fixtures/reference-hello-comma",
-    "positions": 2
+    "positions": 2,
+    "embedding": 5120,
+    "layers": 64,
+    "vocab": 248320
    },
    "bounds": {
     "max_absolute": 1.0,
@@ -730,7 +739,8 @@
     "kind": "trace",
     "reference": "inference/src/models/fixtures/qwen35-mtp",
     "positions": 2,
-    "draft": true
+    "draft": true,
+    "embedding": 5120
    },
    "bounds": {
     "max_absolute": 0.002,
@@ -755,7 +765,8 @@
     "kind": "trace",
     "reference": "inference/src/models/fixtures/qwen35-mtp",
     "positions": 2,
-    "draft": true
+    "draft": true,
+    "embedding": 5120
    },
    "bounds": {
     "max_absolute": 0.002,
@@ -1516,7 +1527,8 @@
     "kind": "trace",
     "reference": "inference/src/models/fixtures/qwen35-mtp",
     "positions": 2,
-    "draft": true
+    "draft": true,
+    "embedding": 5120
    },
    "bounds": {
     "max_absolute": 2.0,
@@ -1545,7 +1557,8 @@
     "kind": "trace",
     "reference": "inference/src/models/fixtures/qwen35-mtp",
     "positions": 2,
-    "draft": true
+    "draft": true,
+    "embedding": 5120
    },
    "bounds": {
     "max_absolute": 2.0,
@@ -1869,7 +1882,7 @@
     "{nuclis}",
     "--chat",
     "--model",
-    "gemma-4-e4b-qat",
+    "{entry}",
     "--backend",
     "metal",
     "--clips",

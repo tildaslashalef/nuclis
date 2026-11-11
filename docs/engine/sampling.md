@@ -272,7 +272,8 @@ mkdir -p .zig-cache/generation/native-check .zig-cache/generation/reference-chec
   "$HOME/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf" 'Hello,' \
   .zig-cache/generation/reference-check
 ./zig-out/bin/nuclis-gates compare \
-  .zig-cache/generation/native-check .zig-cache/generation/reference-check --positions 2
+  .zig-cache/generation/native-check .zig-cache/generation/reference-check --positions 2 \
+  --embedding 5120 --layers 64 --vocab 248320
 ```
 
 The same helper takes `--mtp-draft` after the trace directory. It then
@@ -306,10 +307,10 @@ and injected through the drafter's encoder at `i`; then a 16-row noise block
 final hidden and greedy token are read back from `llama_get_embeddings_ith`
 and `llama_get_logits_ith`. The noise rows are removed afterwards
 (`llama_memory_seq_rm`), as the driver's checkpoint reset does. The
-`museDraftTrace` pass of `generation-check` checks the rows against the
-pinned `inference/src/models/fixtures/muse-dflash/`
-(`make gate NAME=muse-draft-trace-cpu`) and writes its native rows and greedy ids
-into the trace directory. Two environment variables aid the diagnosis of a
+`museDraftTrace` pass of `generation-check` checked the rows against the
+pinned `inference/src/models/fixtures/muse-dflash/` and wrote its native
+rows and greedy ids into the trace directory; both left with the Muse gates
+(the last tag that held them is `v0.11.0`). Two environment variables aid the diagnosis of a
 mismatch: `DFLASH_DRAFT_CPU=1` leaves the drafter's model off the GPU, and
 `DFLASH_DUMP_LAYERS=1` also writes the decoder graph's `l_out-N` rows per
 proposal. Neither is needed for the committed trace; they are how its
@@ -326,8 +327,7 @@ files with the logits inside the bring-up numbers (`make gate NAME=qwen38-trace-
 [metal-backend.md § F16 KV cache](metal-backend.md#f16-kv-cache-2026-09-10)).
 
 The accepted outputs of this procedure are committed as fixtures under
-[tests/fixtures/](../../tests/fixtures/) (`reference-hello-comma/` and
-`reference-chat/`, with provenance in
+[tests/fixtures/](../../tests/fixtures/) (`reference-hello-comma/`, with provenance in
 [tests/fixtures/provenance.md](../../tests/fixtures/provenance.md)); `make
 compare` runs the same comparison against `tests/fixtures/reference-hello-comma`
 without regenerating anything. The `.zig-cache/generation/` paths above are the

@@ -11,7 +11,7 @@ const Allocator = std.mem.Allocator;
 pub const tiers = [_][]const u8{ "verify", "verify-release", "verify-long", "verify-cpu" };
 pub const placeholders = [_][]const u8{
     "{nuclis}", "{nuclis-cpu}", "{zig-metal}", "{zig-cpu}", "{model}",
-    "{mtp}",    "{baseline}",   "{mmproj}",    "{trace}",
+    "{mtp}",    "{baseline}",   "{mmproj}",    "{entry}",   "{trace}",
 };
 /// The family masks are one `u64`.
 pub const max_families = 64;
@@ -22,6 +22,8 @@ pub const Model = struct {
     key: []const u8,
     path: []const u8,
     mmproj: ?[]const u8,
+    /// The catalogue name of `path`, for a command that must run the entry.
+    entry: ?[]const u8 = null,
 };
 
 pub const DataSet = struct {
@@ -36,9 +38,10 @@ pub const DataSet = struct {
 pub const Trace = struct {
     reference: []const u8,
     positions: u32,
-    embedding: ?u32,
-    layers: ?u32,
-    vocab: ?u32,
+    embedding: u32,
+    /// Zero in draft mode, which reads no layer files or logits.
+    layers: u32,
+    vocab: u32,
     draft: bool,
     max_absolute: f64,
     max_relative_rms: f64,
@@ -324,6 +327,12 @@ fn validateGate(p: *Problems, gate: Value, name: []const u8, models: Value, data
         if (commandUses(argv, "{baseline}") and !objectHas(gate, "baseline")) {
             try p.add("{s}: command uses {{baseline}} but the gate names no baseline", .{name});
         }
+        if (commandUses(argv, "{entry}")) {
+            const model_key = stringField(gate, "model") orelse "";
+            if (!objectHas(field(models, model_key) orelse Value.null, "entry")) {
+                try p.add("{s}: command uses {{entry}} but model \"{s}\" names no entry", .{ name, model_key });
+            }
+        }
         if (commandUses(argv, "{mmproj}")) {
             const model_key = stringField(gate, "model") orelse "";
             const entry = field(models, model_key) orelse Value.null;
@@ -337,6 +346,13 @@ fn validateGate(p: *Problems, gate: Value, name: []const u8, models: Value, data
     if (std.mem.eql(u8, kind, "trace")) {
         if (stringField(comparator, "reference") == null) try p.add("{s}: trace comparator needs a reference directory", .{name});
         if (intField(comparator, "positions") == null) try p.add("{s}: trace comparator needs integer positions", .{name});
+        // The shapes are the model's; a default would be one family's.
+        const draft = if (field(comparator, "draft")) |d| d == .bool and d.bool else false;
+        const shapes: []const []const u8 = if (draft) &.{"embedding"} else &.{ "embedding", "layers", "vocab" };
+        for (shapes) |shape| {
+            const value = intField(comparator, shape);
+            if (value == null or value.? < 1) try p.add("{s}: trace comparator needs a positive integer {s}", .{ name, shape });
+        }
         const bounds = field(gate, "bounds");
         const well_formed = bounds != null and bounds.? == .object and bounds.?.object.count() == 2 and
             number(field(bounds.?, "max_absolute") orelse Value.null) != null and
@@ -387,7 +403,7 @@ pub fn load(arena: Allocator, doc: Value) Allocator.Error!Manifest {
     const models_object = field(doc, "models").?.object;
     const models = try arena.alloc(Model, models_object.count());
     for (models, models_object.keys(), models_object.values()) |*slot, key, entry| {
-        slot.* = .{ .key = key, .path = stringField(entry, "path").?, .mmproj = stringField(entry, "mmproj") };
+        slot.* = .{ .key = key, .path = stringField(entry, "path").?, .mmproj = stringField(entry, "mmproj"), .entry = stringField(entry, "entry") };
     }
     const data_object = if (field(doc, "data")) |d| d.object else json.ObjectMap.empty;
     const data = try arena.alloc(DataSet, data_object.count());
@@ -439,9 +455,9 @@ pub fn load(arena: Allocator, doc: Value) Allocator.Error!Manifest {
             .comparator = if (std.mem.eql(u8, stringField(comparator, "kind").?, "exit")) .exit else .{ .trace = .{
                 .reference = stringField(comparator, "reference").?,
                 .positions = optionalU32(comparator, "positions") orelse 0,
-                .embedding = optionalU32(comparator, "embedding"),
-                .layers = optionalU32(comparator, "layers"),
-                .vocab = optionalU32(comparator, "vocab"),
+                .embedding = optionalU32(comparator, "embedding") orelse 0,
+                .layers = optionalU32(comparator, "layers") orelse 0,
+                .vocab = optionalU32(comparator, "vocab") orelse 0,
                 .draft = if (field(comparator, "draft")) |d| d == .bool and d.bool else false,
                 .max_absolute = number(field(field(gate, "bounds").?, "max_absolute").?).?,
                 .max_relative_rms = number(field(field(gate, "bounds").?, "max_relative_rms").?).?,
@@ -482,7 +498,7 @@ pub const sample =
     \\ "gates": [
     \\  {"name": "a-trace", "family": "a", "tier": "verify", "model": "a",
     \\   "command": ["{nuclis}", "generate", "--model", "{model}", "--trace-dir", "{trace}"],
-    \\   "comparator": {"kind": "trace", "reference": "tests/fixtures/a", "positions": 2},
+    \\   "comparator": {"kind": "trace", "reference": "tests/fixtures/a", "positions": 2, "embedding": 8, "layers": 2, "vocab": 16},
     \\   "bounds": {"max_absolute": 0.002, "max_relative_rms": 0.0001}, "evidence": "docs/a.md", "note": "n"},
     \\  {"name": "a-draft-cpu", "family": "a", "tier": "verify-cpu", "model": "a", "mtp": "a_mtp",
     \\   "command": ["{zig-cpu}", "test-generation", "--", "{model}", "--draft-model", "{mtp}"],

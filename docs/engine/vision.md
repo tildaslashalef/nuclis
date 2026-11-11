@@ -574,9 +574,10 @@ score matrix), and `--n-batch N`. Prompt: our rendering with thinking off
 assistant.\nKnowledge cutoff: 2026-01-04.\n\nReasoning strength:
 low.\n\n# Valid recipients: "self", "user".<|eot|><|start|>user<|message|><__media__>describe
 this image<|eot|><|start|>assistant`. `fixtures/muse-glimmer-synthetic/`
-holds the reference's Metal rows, `patches.f32` (its im2col),
-`layer-out-30.f32` (the residual after block 30, window order), the prompt
-tokens, the one-row run's best 16 logits, and 8 greedy tokens.
+holds `patches.f32` (the reference's im2col, which a unit test of the
+patch embedding reads); the reference's Metal rows, `layer-out-30.f32`,
+the prompt tokens, the best 16 logits, and the greedy tokens left with the
+Muse gates (the last tag that holds them is `v0.11.0`).
 
 **Measured** (M4 Pro, 2026-09-23; `muse-vision-metal`, one CPU run before
 the logits were re-pinned to the one-row run (26.9 s for the projector,

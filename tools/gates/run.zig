@@ -64,14 +64,17 @@ fn usesPlaceholder(gate: *const Gate, token: []const u8) bool {
 }
 
 /// The model files a gate reads: `model`, `mtp`, `baseline`, and the entry's
-/// `mmproj` when its command names it.
+/// `mmproj` when its command names it. A command that runs `{entry}` reads
+/// the pinned files the catalogue resolves, so no override applies to it.
 pub fn modelFiles(arena: Allocator, m: *const Manifest, gate: *const Gate, env: *const Environ.Map) Allocator.Error![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
-    try out.append(arena, try modelPath(arena, m, gate.model, env));
+    const by_entry = usesPlaceholder(gate, "{entry}");
+    const model = m.model(gate.model).?;
+    try out.append(arena, if (by_entry) try expandUser(arena, model.path, env) else try modelPath(arena, m, gate.model, env));
     if (gate.mtp) |key| try out.append(arena, try modelPath(arena, m, key, env));
     if (gate.baseline) |key| try out.append(arena, try modelPath(arena, m, key, env));
-    if (m.model(gate.model).?.mmproj) |mmproj| {
-        if (usesPlaceholder(gate, "{mmproj}")) try out.append(arena, try expandUser(arena, mmproj, env));
+    if (model.mmproj) |mmproj| {
+        if (by_entry or usesPlaceholder(gate, "{mmproj}")) try out.append(arena, try expandUser(arena, mmproj, env));
     }
     return out.items;
 }
@@ -97,6 +100,7 @@ pub fn expand(arena: Allocator, m: *const Manifest, gate: *const Gate, env: *con
         .{ "{mtp}", if (gate.mtp) |key| try modelPath(arena, m, key, env) else null },
         .{ "{baseline}", if (gate.baseline) |key| try modelPath(arena, m, key, env) else null },
         .{ "{mmproj}", if (entry.mmproj) |path| try expandUser(arena, path, env) else null },
+        .{ "{entry}", entry.entry },
     };
     var out: std.ArrayList([]const u8) = .empty;
     for (gate.command) |arg| {
@@ -210,14 +214,33 @@ fn listFiles(arena: Allocator, io: Io, root: []const u8, out: *std.ArrayList([]c
 /// Every file the tree may hold, sorted.
 fn universeOnDisk(arena: Allocator, io: Io) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
-    try listFiles(arena, io, "inference", &out);
-    try listFiles(arena, io, "tests/fixtures", &out);
+    for ([_][]const u8{ "inference", "tests/fixtures", "scripts/gate", "src", "huggingface" }) |root| {
+        try listFiles(arena, io, root, &out);
+    }
+    for ([_][]const u8{ "build.zig", "build.zig.zon" }) |path| {
+        if (exists(io, path)) try out.append(arena, path);
+    }
     std.mem.sort([]const u8, out.items, {}, struct {
         fn lessThan(_: void, a: []const u8, b: []const u8) bool {
             return std.mem.lessThan(u8, a, b);
         }
     }.lessThan);
     return out.items;
+}
+
+/// The compiler the gates' builds run, or "unknown"; a pass outlives no upgrade.
+fn zigVersion(arena: Allocator, io: Io, env: *const Environ.Map) Allocator.Error![]const u8 {
+    const result = std.process.run(arena, io, .{
+        .argv = &.{ "zig", "version" },
+        .environ_map = env,
+        .stdout_limit = .limited(1 << 10),
+        .stderr_limit = .limited(1 << 10),
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return "unknown",
+    };
+    if (result.term != .exited or result.term.exited != 0) return "unknown";
+    return std.mem.trim(u8, result.stdout, " \n");
 }
 
 // ---- results ----------------------------------------------------------------
@@ -289,6 +312,8 @@ pub const Session = struct {
     passes: cache.Passes = undefined,
     times: cache.TimesFile = undefined,
     revision: []const u8 = "unknown",
+    /// `zig version`, part of every key.
+    toolchain: []const u8 = "unknown",
     builds: Builds = .{},
     results: std.ArrayList(Result) = .empty,
 
@@ -302,6 +327,7 @@ pub const Session = struct {
         s.passes = try cache.Passes.load(s.arena, s.io, dir);
         s.times = try cache.TimesFile.load(s.arena, s.io, dir);
         s.revision = try git.revision(s.arena, s.io);
+        s.toolchain = try zigVersion(s.arena, s.io, s.env);
     }
 
     fn say(s: *Session, comptime format: []const u8, args: anytype) !void {
@@ -422,7 +448,7 @@ pub const Session = struct {
                 entry.state = .skipped;
                 continue;
             }
-            entry.key = try cache.key(s.arena, s.m, &s.tree, gate, try cache.modelIdentity(s.arena, s.io, files));
+            entry.key = try cache.key(s.arena, s.m, &s.tree, gate, try cache.modelIdentity(s.arena, s.io, files), s.toolchain);
             if (s.options.no_cache) continue;
             if (s.passes.get(&entry.key)) |pass| {
                 entry.result.passed = true;
@@ -494,7 +520,11 @@ pub const Session = struct {
                 try s.say("{s}: {s}", .{ gate.name, try s.join(entry.result.command, " ") });
                 if (gate.comparator == .trace) {
                     const t = gate.comparator.trace;
-                    try s.say("  then nuclis-gates compare {s}/{s} {s} --max-absolute {d} --max-relative-rms {d}", .{ trace_root, gate.name, t.reference, t.max_absolute, t.max_relative_rms });
+                    const shape = if (t.draft)
+                        try s.arena.print("--draft --embedding {d}", .{t.embedding})
+                    else
+                        try s.arena.print("--embedding {d} --layers {d} --vocab {d}", .{ t.embedding, t.layers, t.vocab });
+                    try s.say("  then nuclis-gates compare {s}/{s} {s} --positions {d} {s} --max-absolute {d} --max-relative-rms {d}", .{ trace_root, gate.name, t.reference, t.positions, shape, t.max_absolute, t.max_relative_rms });
                 }
             },
         }
@@ -532,9 +562,9 @@ pub const Session = struct {
                     .positions = t.positions,
                     .max_absolute = t.max_absolute,
                     .max_relative_rms = t.max_relative_rms,
-                    .embedding = t.embedding orelse 5120,
-                    .layers = t.layers orelse 64,
-                    .vocab = t.vocab orelse 248320,
+                    .embedding = t.embedding,
+                    .layers = t.layers,
+                    .vocab = t.vocab,
                     .draft = t.draft,
                 }, &diag) catch |err| {
                     result.seconds = secondsSince(s.io, started);
@@ -968,6 +998,28 @@ test "a gate lists every model file it reads, overrides included" {
     try testing.expectEqualStrings("/nowhere/a.gguf", files[0]);
     try testing.expectEqualStrings("/nowhere/mtp.gguf", files[1]);
     try testing.expect(!exists(testing.io, files[0]));
+}
+
+test "an {entry} gate runs the catalogue name and keys on the pinned files" {
+    var state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer state.deinit();
+    const a = state.allocator();
+    var m = try sample(a);
+    const models = try a.dupe(manifest.Model, m.models);
+    models[0].entry = "a-entry";
+    models[0].mmproj = "~/m/a-mmproj.gguf";
+    m.models = models;
+    var gate = m.gates[0];
+    gate.command = &.{ "{nuclis}", "generate", "--model", "{entry}" };
+    var env: Environ.Map = .init(a);
+    try env.put("HOME", "/h");
+    try env.put("A_MODEL", "/elsewhere/a.gguf");
+    const argv = try expand(a, &m, &gate, &env);
+    try testing.expectEqualStrings("a-entry", argv[3]);
+    const files = try modelFiles(a, &m, &gate, &env);
+    try testing.expectEqual(@as(usize, 2), files.len);
+    try testing.expectEqualStrings("/h/m/a.gguf", files[0]);
+    try testing.expectEqualStrings("/h/m/a-mmproj.gguf", files[1]);
 }
 
 test "missing data names the set and its fetch" {

@@ -9,6 +9,7 @@
 //! reference, with a negative control per variant.
 const std = @import("std");
 const inference = @import("inference");
+const check_stats = @import("check_stats.zig");
 const tiny = inference.models.tiny;
 const Engine = inference.engine.Engine;
 const Precision = inference.session.Precision;
@@ -62,6 +63,10 @@ fn cpuRun(gpa: Allocator, io: std.Io, path: []const u8) !void {
     engine.model.reset();
     try engine.model.step(tokens[0], next, null, null, null, null);
     if (!same(logits, next)) return error.NondeterministicForward;
+}
+
+test {
+    _ = check_stats;
 }
 
 test "each family loads on the CPU, and its forward is finite and deterministic" {
@@ -174,19 +179,26 @@ const Deviation = struct {
     rel_rms: f64 = 0,
 
     fn of(actual: []const f32, reference: []const f32) Deviation {
-        var largest: f64 = 0;
+        var largest: check_stats.Worst = .{};
         var error_energy: f64 = 0;
         var energy: f64 = 0;
         for (actual, reference) |a, r| {
             const difference = @as(f64, a) - r;
-            largest = @max(largest, @abs(difference));
+            largest.observe(difference);
             error_energy += difference * difference;
             energy += @as(f64, r) * r;
         }
-        return .{ .max_abs = largest, .rel_rms = @sqrt(error_energy / @max(energy, 1e-30)) };
+        return .{ .max_abs = largest.shown(), .rel_rms = @sqrt(error_energy / @max(energy, 1e-30)) };
     }
+    /// The worse of each field; NaN stays NaN.
     fn merge(a: Deviation, b: Deviation) Deviation {
-        return .{ .max_abs = @max(a.max_abs, b.max_abs), .rel_rms = @max(a.rel_rms, b.rel_rms) };
+        var max_abs: check_stats.Worst = .{};
+        var rel_rms: check_stats.Worst = .{};
+        for ([_]Deviation{ a, b }) |d| {
+            max_abs.observe(d.max_abs);
+            rel_rms.observe(d.rel_rms);
+        }
+        return .{ .max_abs = max_abs.shown(), .rel_rms = rel_rms.shown() };
     }
     fn within(self: Deviation, bound: Deviation) bool {
         return self.max_abs <= bound.max_abs and self.rel_rms <= bound.rel_rms;
@@ -383,14 +395,27 @@ pub fn main(init: std.process.Init) !void {
     defer dir.close(io);
     defer cwd.deleteTree(io, prefix) catch {};
     var buffer: [4096]u8 = undefined;
-    var stdout = std.Io.File.stdout().writer(io, &buffer);
+    var stdout = std.Io.File.stdout().writerStreaming(io, &buffer);
     const out = &stdout.interface;
+    const known = for (&tiny.variants) |*variant| {
+        if (only == null or std.mem.eql(u8, only.?, "all") or std.mem.eql(u8, only.?, variant.name)) break true;
+    } else false;
+    if (!known) {
+        try out.print("no variant named {s}; the variants are all", .{only.?});
+        for (&tiny.variants) |*variant| try out.print(", {s}", .{variant.name});
+        try out.print("\n", .{});
+        try out.flush();
+        return error.UnknownVariant;
+    }
     try out.print("{s:<16} {s:>8} {s:>9} {s:>9} {s:>9} {s:>9}\n", .{ "variant", "encoding", "step abs", "step rms", "chunk abs", "chunk rms" });
     var passed = true;
+    var checked: usize = 0;
     for (&tiny.variants) |*variant| {
         if (only) |name| if (!std.mem.eql(u8, name, "all") and !std.mem.eql(u8, name, variant.name)) continue;
+        checked += 1;
         passed = try checkVariant(gpa, io, out, dir, prefix, variant, seed) and passed;
     }
+    try out.print("{d} variants checked\n", .{checked});
     try out.flush();
     if (!passed) return error.TinyCheckFailed;
 }
