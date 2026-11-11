@@ -644,7 +644,8 @@ fn compareSteps(check: *Check, clip: Clip, run: []const u8, steps: *const Steps,
         const best = rnnt.argmax(logits);
         var second: f32 = -std.math.inf(f32);
         for (logits, 0..) |v, i| if (i != best) {
-            second = @max(second, v);
+            // A NaN anywhere poisons the margin rather than being skipped.
+            second = if (std.math.isNan(v) or std.math.isNan(second)) std.math.nan(f32) else @max(second, v);
         };
         const ours = @as(f64, logits[best]) - second;
         const theirs = @as(f64, top_logits[s * top]) - top_logits[s * top + 1];

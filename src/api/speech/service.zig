@@ -1035,6 +1035,17 @@ const Fixture = struct {
     }
 };
 
+/// The worker's stats once it has gone idle: an answer can return before
+/// the worker leaves the job it answered. Fails after five seconds.
+fn idleStats(service: *Service, io: std.Io) !Stats {
+    for (0..5000) |_| {
+        const stats = service.stats(io);
+        if (!stats.speaking) return stats;
+        try io.sleep(.fromMilliseconds(1), .awake);
+    }
+    return error.WorkerNeverIdle;
+}
+
 fn expectError(r: http.Response, status: std.http.Status, code: []const u8, param: ?[]const u8) !void {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -1120,9 +1131,9 @@ test "speech: a voice that fails to open fails its request before the head, and 
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     for (0..2) |_| try expectError(f.service.answer(arena, io, "{\"input\": \"Hi.\", \"response_format\": \"pcm\"}", null, .{}), .internal_server_error, "model_failed", "model");
-    const stats = f.service.stats(io);
+    const stats = try idleStats(&f.service, io);
     try std.testing.expectEqual(@as(u64, 2), stats.requests);
-    try std.testing.expect(!stats.speaking and stats.waiting == 0);
+    try std.testing.expectEqual(@as(usize, 0), stats.waiting);
     try std.testing.expectEqual(@as(u64, 0), budget.resident(io));
 
     // The listing names the six speech models, pulled or not, the default

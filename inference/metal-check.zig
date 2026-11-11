@@ -3417,6 +3417,7 @@ fn checkWideRows(alloc: std.mem.Allocator, io: std.Io, b: *Backend, random: std.
     defer alloc.free(expected);
     const actual = try alloc.alloc(f32, rows);
     defer alloc.free(actual);
+    var checked: usize = 0;
     for ([_]usize{ 704, 1280, 5120, 17408 }) |columns| {
         const input = try alloc.alloc(f32, columns);
         defer alloc.free(input);
@@ -3453,12 +3454,17 @@ fn checkWideRows(alloc: std.mem.Allocator, io: std.Io, b: *Backend, random: std.
                             var mass: f64 = 0;
                             for (decoded, input) |w, x| mass += @abs(@as(f64, w) * x);
                             try expectClose(if (generic) "wide row (generic)" else "wide row", actual[r], expected[r], @floatCast(mass * 4e-6 + 1e-6));
+                            checked += 1;
                         }
                     }
                     b.generic_only = false;
                 }
             }
         }
+    }
+    if (checked == 0) {
+        std.debug.print("wide rows: no fixture row has encoding {?d}\n", .{only});
+        return error.NothingCompared;
     }
 }
 
@@ -5323,5 +5329,5 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, grouped value heads through the step and the chunk, the gated shared-expert add, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, the verify rows and their tape replay bit-identical to decode steps, the convolution history after every prefix, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, attention over packed sequences with and without windows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate, the exact erf GELU, and its gate over fused rows among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, Gemma 4's audio attention and light convolution against the CPU, Nemotron ASR's kernels against the CPU functions, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, grouped value heads through the step and the chunk, the gated shared-expert add, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, the verify rows and their tape replay bit-identical to decode steps, the convolution history after every prefix, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, attention over packed sequences with and without windows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate, the exact erf GELU, and its gate over fused rows among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2 and 4 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, Gemma 4's audio attention and light convolution against the CPU, Nemotron ASR's kernels against the CPU functions, and per-dispatch profiling with capacity overflow.\n", .{});
 }

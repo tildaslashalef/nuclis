@@ -532,7 +532,8 @@ fn metalRun(gpa: std.mem.Allocator, io: std.Io, gpu: *inference.metal.Backend, m
     for (&stages ++ heads) |a| {
         // The decode stages are empty only when the first frame ends the run.
         const compared = a.rows > 0 or (frames <= 1 and std.mem.startsWith(u8, a.name, "decode"));
-        const ok = compared and a.worst.within(bound);
+        // A logits stage also needs every row's argmax equal to the CPU's.
+        const ok = compared and a.worst.within(bound) and (!a.logits or a.same == a.rows);
         passed = passed and ok;
         std.debug.print("  {s:<20} {d:>5} {e:>10.2}", .{ a.name, a.rows, a.worst.shown() });
         if (a.logits) std.debug.print(" {d:>4}/{d}", .{ a.same, a.rows });

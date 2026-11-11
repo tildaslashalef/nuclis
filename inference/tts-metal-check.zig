@@ -136,8 +136,6 @@ pub fn check(alloc: std.mem.Allocator, b: *Backend) !void {
         s.* = @exp((random.float(f32) * 2 - 1) * 1.5);
         i.* = 1 / (@exp((random.float(f32) * 2 - 1) * 1.5) + 1e-9);
     }
-    const snake_want = try a.alloc(f32, dw_want.len);
-    codec.snakeBeta(.{ .scale = scale, .inv = inv }, dw_want, snake_want);
     const snake_out = try Up.zeros(b, &created, alloc, dw_want.len);
     try b.begin();
     try b.ttsSnake(dw_out, try Up.load(b, &created, alloc, scale), try Up.load(b, &created, alloc, inv), snake_out, dw_want.len, channels);

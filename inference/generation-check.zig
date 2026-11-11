@@ -231,6 +231,8 @@ fn promptSavesCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8
     try eng.model.prefill(prompt[0..k], null, null, null, null, null, null);
     const reference = try engine.runLoop(&eng, prompt[k..], generated, &sampler, null, .{}, null, logits, &.{}, &streams[0], null, null);
     const expected = streams[0][0..reference.timing.generated_tokens];
+    // Equal empty streams would prove nothing.
+    if (expected.len == 0) return error.PromptSavesNothingGenerated;
 
     const Saver = struct {
         eng: *engine.Engine,
@@ -1557,14 +1559,6 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
     }
 }
 
-/// Writes the native prediction-block trace for the pinned `Hello,` tokens
-/// (`p0-h.f32`, `p1-h.f32`, `p1-hprev.f32`, `greedy.txt`) so
-/// `nuclis-gates compare --draft` can compare it against the reference's
-/// captured rows. The target is stepped live for each position's hidden, so
-/// this is an independent capture, not a replay of the pinned `hprev`.
-/// The family's binding with a companion's prediction block bound in when
-/// `draft_model` names one, replacing an embedded block. `companion` holds
-/// the companion's mapping, which must outlive the binding.
 /// The DFlash2 drafter's trace on `Hello,`: the prompt is prefilled with its
 /// commit rows and committed, then one 8-row noise block from the prompt's
 /// greedy token writes every row's final hidden (`p{r}-h.f32`), and a
@@ -1626,6 +1620,9 @@ fn flashTrace(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.M
     std.debug.print("DFlash2 trace ({s}) written to {s}: anchor {d}, drafts {any}.\n", .{ if (use_metal) "metal" else "cpu", directory, anchor, drafts });
 }
 
+/// The family's binding with a companion's prediction block bound in when
+/// `draft_model` names one, replacing an embedded block. `companion` holds
+/// the companion's mapping, which must outlive the binding.
 fn bindDraftSource(comptime Family: type, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, draft_model: ?[]const u8, companion: *?inference.weights.Mapped) !Family.Binding {
     var binding = try Family.bind(alloc, &mapped.document);
     const path = draft_model orelse return binding;
@@ -1635,6 +1632,11 @@ fn bindDraftSource(comptime Family: type, alloc: std.mem.Allocator, io: std.Io, 
     return binding;
 }
 
+/// Writes the native prediction-block trace for the pinned `Hello,` tokens
+/// (`p0-h.f32`, `p1-h.f32`, `p1-hprev.f32`, `greedy.txt`) so
+/// `nuclis-gates compare --draft` can compare it against the reference's
+/// captured rows. The target is stepped live for each position's hidden, so
+/// this is an independent capture, not a replay of the pinned `hprev`.
 fn draftTrace(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, directory: []const u8, draft_model: ?[]const u8) !void {
     const Family = spec.Family;
     const hidden = 5120;
