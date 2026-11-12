@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """The release, in three steps an agent runs when the user says "release".
 
-    release.py draft                       what merged since the last tag, for the highlights
+    release.py draft                       what landed since the last tag, for the highlights
     release.py open X.Y.Z --tiers TEXT     the version pull request, highlights in its description
     release.py tag X.Y.Z                   the annotated (signed) tag on main, pushed
+    release.py notes vX.Y.Z                the release notes' list of changes (release.yml)
+
+Milestones merge by rebase, one commit per unit, so what a release holds is
+the Conventional Commit subjects on main since the last tag, grouped by type.
 
 The highlights are a file, `.zig-cache/highlights-vX.Y.Z.txt`: the agent
 writes it from `draft`'s output, the user reads it, `open` puts it in the
@@ -14,7 +18,6 @@ Every step checks before it changes anything. Standard library; `git` and
 """
 
 import argparse
-import json
 import pathlib
 import re
 import subprocess
@@ -50,10 +53,13 @@ def suggest_version(current, titles):
 
 
 def what_and_why(body):
-    """The first paragraph of a pull request description's *What and why*,
-    or of the description itself when it has no such section."""
+    """The first paragraph of a commit record's or pull request
+    description's *What and why* (a `## ` heading or a bare line), or of the
+    text itself when it has no such section."""
     text = re.sub(r"<!--.*?-->", "", body or "", flags=re.S)
-    m = re.search(r"^## What and why\s*\n(.*?)(?=^## |\Z)", text, flags=re.S | re.M)
+    m = re.search(
+        r"^(?:## )?What and why\s*\n(.*?)(?=^## |^(?:Evidence|Remaining|Checklist)\s*$|\Z)", text, flags=re.S | re.M
+    )
     section = m[1] if m else text
     for para in re.split(r"\n\s*\n", section.strip()):
         if para.strip() and not para.lstrip().startswith("#"):
@@ -61,15 +67,34 @@ def what_and_why(body):
     return ""
 
 
-def merged_since(prs, commits):
-    """The pull requests whose merge commit is in `commits`, oldest first; a
-    release's own version pull request is not part of what it releases."""
-    inside = [
-        p
-        for p in prs
-        if (p.get("mergeCommit") or {}).get("oid") in commits and not p.get("title", "").startswith("chore(release):")
-    ]
-    return sorted(inside, key=lambda p: p.get("mergedAt") or "")
+GROUPS = (
+    ("feat", "Features"),
+    ("fix", "Fixes"),
+    ("perf", "Performance"),
+    ("refactor", "Refactoring"),
+    ("docs", "Documentation"),
+    ("test", "Tests"),
+    ("build", "Build"),
+    ("ci", "CI"),
+    ("chore", "Chores"),
+)
+
+
+def grouped(subjects):
+    """Commit subjects as Markdown sections by Conventional Commit type, in
+    `GROUPS` order (anything else last); breaking ones marked; the version
+    bump left out."""
+    sections = {}
+    for subject in subjects:
+        if subject.startswith("chore(release):"):
+            continue
+        m = TITLE.match(subject)
+        kind = m["type"] if m and m["type"] in dict(GROUPS) else None
+        mark = " **(breaking)**" if m and m["breaking"] else ""
+        sections.setdefault(kind, []).append(f"- {subject}{mark}")
+    order = [k for k, _ in GROUPS] + [None]
+    names = dict(GROUPS) | {None: "Other"}
+    return "\n\n".join(f"### {names[k]}\n\n" + "\n".join(sections[k]) for k in order if k in sections)
 
 
 def highlights_path(version):
@@ -79,7 +104,7 @@ def highlights_path(version):
 def pr_body(version, highlights, tiers):
     return f"""## What and why
 
-The v{version} version bump: `make version V={version}` in the three `build.zig.zon`. After this merges, the release is the annotated tag `v{version}` on the merge commit, with the highlights below as its message (`make tag V={version}`).
+The v{version} version bump: `make version V={version}` in the three `build.zig.zon` and `site/index.html`. After this merges, the release is the annotated tag `v{version}` on the merge commit, with the highlights below as its message (`make tag V={version}`).
 
 ### Highlights (the tag's message)
 
@@ -97,8 +122,8 @@ After the merge: `make tag V={version}`.
 
 ## Checklist
 
-- [x] `make verify-auto` passes from the branch's base, and the tiers it names ran or are exempt (version strings only)
-- [x] Documents that describe the change are updated; `make docs-check` passes
+- [ ] `make verify-auto` passes from the branch's base, and the tiers it names ran or are exempt (version strings only)
+- [ ] Documents that describe the change are updated; `make docs-check` passes
 """
 
 
@@ -130,48 +155,39 @@ def fetch():
     run("git", "fetch", "--quiet", "--tags", "origin", "main")
 
 
+def commits_between(start, end):
+    """(subject, body) of each commit after `start` up to `end`, oldest first."""
+    log = run("git", "log", "--reverse", "--format=%s%x1f%b%x1e", f"{start}..{end}")
+    return [tuple(entry.strip("\n").split("\x1f", 1)) for entry in log.split("\x1e") if entry.strip()]
+
+
 def draft(args):
     fetch()
     tag = args.since or last_tag()
-    commits = set(run("git", "rev-list", f"{tag}..origin/main").split())
-    listing = run(
-        "gh",
-        "pr",
-        "list",
-        "--state",
-        "merged",
-        "--base",
-        "main",
-        "--limit",
-        "300",
-        "--json",
-        "number,title,body,mergedAt,mergeCommit,url",
-    )
-    every = json.loads(listing or "[]")
-    prs = merged_since(every, commits)
-    merges = {(p.get("mergeCommit") or {}).get("oid") for p in every}
-    # Commits that reached main without a pull request (before the ruleset).
-    direct = [
-        line.split(" ", 1)[1]
-        for line in run("git", "log", "--format=%H %s", f"{tag}..origin/main").splitlines()
-        if line.split(" ", 1)[0] not in merges and " " in line
-    ]
+    commits = commits_between(tag, "origin/main")
+    subjects = [subject for subject, _ in commits]
     current = parse_version(tag.lstrip("v")) or refuse(f"{tag} is not semver")
-    nxt = ".".join(map(str, suggest_version(current, [p["title"] for p in prs] + direct)))
-    print(f"# Since {tag}: {len(prs)} merged pull request(s), {len(commits)} commit(s)\n")
+    nxt = ".".join(map(str, suggest_version(current, subjects)))
+    print(f"# Since {tag}: {len(commits)} commit(s)\n")
     if not commits:
-        print("Nothing merged since the last tag: nothing to release.")
+        print("Nothing landed since the last tag: nothing to release.")
         return
-    for p in prs:
-        print(f"## #{p['number']} {p['title']}\n")
-        summary = what_and_why(p.get("body", ""))
-        print(f"{summary}\n" if summary else "(no description)\n")
-    if direct:
-        print(f"## {len(direct)} commit(s) outside pull requests\n")
-        print("\n".join(f"- {s}" for s in direct) + "\n")
+    for subject, body in commits:
+        if subject.startswith("chore(release):"):
+            continue
+        print(f"## {subject}\n")
+        summary = what_and_why(body)
+        print(f"{summary}\n" if summary else "(no record)\n")
     print(f"Suggested version: {nxt}")
     print(f"Highlights go to: {highlights_path(nxt).relative_to(ROOT)}")
     print("Highlights: two to four sentences for a user; what changed for them first; measured numbers only.")
+
+
+def notes(args):
+    previous = run("git", "describe", "--tags", "--abbrev=0", "--match", "v*", f"{args.tag}^", check=False)
+    start = previous or run("git", "rev-list", "--max-parents=0", args.tag).splitlines()[0]
+    print(f"## Changes since {previous or 'the first commit'}\n")
+    print(grouped([subject for subject, _ in commits_between(start, args.tag)]))
 
 
 def open_pr(args):
@@ -256,20 +272,16 @@ class SelfTest(unittest.TestCase):
         self.assertEqual(what_and_why("Plain description.\n\nMore."), "Plain description.")
         self.assertEqual(what_and_why(""), "")
 
-    def test_merged_since(self):
-        prs = [
-            {"number": 2, "mergeCommit": {"oid": "b"}, "mergedAt": "2026-10-05T02:00:00Z"},
-            {"number": 1, "mergeCommit": {"oid": "a"}, "mergedAt": "2026-10-05T01:00:00Z"},
-            {"number": 3, "mergeCommit": {"oid": "z"}, "mergedAt": "2026-09-01T00:00:00Z"},
-            {"number": 4, "mergeCommit": None, "mergedAt": None},
-            {
-                "number": 5,
-                "title": "chore(release): v0.7.0",
-                "mergeCommit": {"oid": "c"},
-                "mergedAt": "2026-10-05T03:00:00Z",
-            },
-        ]
-        self.assertEqual([p["number"] for p in merged_since(prs, {"a", "b", "c"})], [1, 2])
+    def test_what_and_why_reads_a_commit_record(self):
+        body = "What and why\n\n- A fix\n  in two lines.\n- Another.\n\nEvidence\n\n- tests\n"
+        self.assertEqual(what_and_why(body), "- A fix in two lines. - Another.")
+
+    def test_grouped(self):
+        text = grouped(["fix(cli): a", "feat!: b", "chore(release): v0.7.0", "wip c", "feat(x): d"])
+        self.assertEqual(
+            text,
+            "### Features\n\n- feat!: b **(breaking)**\n- feat(x): d\n\n### Fixes\n\n- fix(cli): a\n\n### Other\n\n- wip c",
+        )
 
     def test_pr_body_carries_the_highlights(self):
         body = pr_body("0.7.0", "Faster.\n", "skipped: docs only")
@@ -294,6 +306,9 @@ def main():
     t = sub.add_parser("tag", help="the annotated tag on main, pushed")
     t.add_argument("version")
     t.set_defaults(fn=tag)
+    n = sub.add_parser("notes", help="the release notes' list of changes, from the previous tag to TAG")
+    n.add_argument("tag")
+    n.set_defaults(fn=notes)
     args = ap.parse_args()
     args.fn(args)
 

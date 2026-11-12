@@ -790,7 +790,7 @@ x-vector-only mode nothing is prepended.
 
 ### The trace (2026-10-29)
 
-`qwen3_tts_trace.py --clone` runs in the same venv (Python 3.12.15,
+`qwen3_tts_trace.py --clone` ran in the same venv (Python 3.12.15,
 `torch` 2.14.1 CPU, `transformers` 4.57.3, `numpy` 2.5.4), F32, seed 0,
 and adds three cases under `tests/fixtures/qwen3-tts/` (1.7 MB):
 
@@ -1035,8 +1035,8 @@ rows of keys (after RoPE) and values per layer, and the frame count as
 the RoPE position. Attention scores and sums are F64, norms take F64
 statistics; everything else is F32.
 
-**The trace.** `scripts/oracle/speech-traces/qwen3_tts_trace.py` runs the
-authors' package (`022e286b`) in `.reference/venv-qwen3-tts/` (Python
+**The trace.** `scripts/speech-traces/qwen3_tts_trace.py` (retired; at
+tag `v0.11.0`) ran the authors' package (`022e286b`) in `.reference/venv-qwen3-tts/` (Python
 3.12.15, `torch` 2.14.1 CPU, `transformers` 4.57.3, `numpy` 2.5.4) on the
 0.6B in F32 at seed 0, speaker `ryan`, language `english`, with the
 codec's default `sdpa` attention, and pins its outputs under
@@ -1122,7 +1122,7 @@ k-th and (k+1)-th logits tie exactly, `TopKLogitsWarper` keeps both and
 nuclis keeps the lower id. torch's generator is not reproduced: a seed
 gives nuclis's own stream of draws.
 
-**The trace.** `qwen3_tts_trace.py`'s `talker` section hooks one
+**The trace.** `qwen3_tts_trace.py`'s `talker` section hooked one
 `generate_custom_voice` run (the run that samples the codes): the
 processor's token ids, the talker's input rows (`inputs_embeds` of each
 call), its residual stream after layers 0, 13, 27 and after the final

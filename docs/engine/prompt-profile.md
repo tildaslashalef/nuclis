@@ -304,7 +304,7 @@ failure point.
 
 The tool fixtures
 ([qwen38-tools.json](../../inference/src/profiles/fixtures/qwen38-tools.json),
-captured by `scripts/fixtures/profile-tools-fixtures.py`) add 20 Qwen cases across the
+captured by `scripts/profile-tools-fixtures.py`, retired; at tag `v0.11.0`) add 20 Qwen cases across the
 four efforts: a tools block alone; one call with content and reasoning; two
 calls in one assistant message; a call with empty arguments; and a call whose
 string argument contains a newline and a quote. Each carries the same tools
@@ -337,35 +337,19 @@ encodes every captured string and prompt to the reference's ids (Qwen3.8:
 Gemma 4: 20 and 14; Muse Glimmer: 20 and 28). Default tests exercise committed fixtures and
 synthetic vocabularies only.
 
-Capture, with the reference built as in
-[llama-cpp.md](../benchmarks/llama-cpp.md): start the server on the
-artifact from the repository root (`--reasoning off` is the Qwen recipe's
-and does not affect `/apply-template`):
+The captures were taken by `scripts/tokenizer-fixtures.py` and
+`scripts/profile-tools-fixtures.py` (retired; at tag `v0.11.0`) against the
+reference server built as in [llama-cpp.md](../benchmarks/llama-cpp.md);
+a re-pinned file's fixtures are made by nuclis
+([models § Which executor makes which fixture](../models/README.md#which-executor-makes-which-fixture)).
 
-```sh
-.reference/llama.cpp/build/bin/llama-server \
-  --model "$HOME/.nuclis/models/unsloth/gemma-4-12b-it-GGUF/gemma-4-12b-it-UD-Q4_K_XL.gguf" \
-  --ctx-size 2048 --parallel 1 --device MTL0 --n-gpu-layers 99 \
-  --host 127.0.0.1 --port 18087 --no-webui
-```
-
-In another terminal:
-
-```sh
-python3 scripts/fixtures/tokenizer-fixtures.py --profile gemma4   # or --profile qwen38, --profile muse_glimmer
-python3 scripts/fixtures/profile-tools-fixtures.py --profile gemma4   # or --profile qwen38 (default)
-zig build test
-```
-
-The script accepts loopback only, ignores proxy configuration, verifies
-the model's full checksum, size, and template digest (the server reports
-the template without the file's trailing newline; both forms are
-accepted), and checks the reference build id. It passes the thinking
-settings per request as the template's own keyword arguments
+The script verified the model's full checksum, size, and template digest
+(the server reports the template without the file's trailing newline;
+both forms were accepted) and the reference build id. It passed the
+thinking settings per request as the template's own keyword arguments
 (`enable_thinking` and, for Qwen3.8, `reasoning_effort` and
-`preserve_thinking`) and uses `/apply-template`, `/tokenize`, and
-`/detokenize`. It sends only synthetic content and performs no
-generation. Stop the server afterward.
+`preserve_thinking`) and used `/apply-template`, `/tokenize`, and
+`/detokenize`, with synthetic content only and no generation.
 
 Captures: Qwen3.8 on 2026-09-07 (re-captured 2026-09-12 with the seven
 conversations, 2026-09-19 with `high`), Gemma 4 on 2026-09-12, Muse
@@ -377,8 +361,8 @@ The templates are adapted, not copied; their origins and licenses are in
 
 **Other template revisions.** A file converted with another revision of a
 profile's template (a finetune, an older converter) carries another
-digest and is refused. `scripts/fixtures/profile-alias-check.py --profile <p>`
-is the gate for accepting one: with the reference server holding that
+digest and is refused. `scripts/profile-alias-check.py --profile <p>`
+(retired; at tag `v0.11.0`) was the gate for accepting one: with the reference server holding that
 file, it replays every pinned text, tool, and token case through
 `/apply-template` and `/tokenize` and, only when every prompt and token
 stream is byte-identical, records the digest with the file's identity in

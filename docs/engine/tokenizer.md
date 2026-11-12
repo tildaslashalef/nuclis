@@ -100,13 +100,8 @@ Category data comes from pinned llama.cpp `unicode-data.cpp`, not the host's
 Unicode library. The compact checked-in table contains 1,921 five-byte range
 records (9,605 bytes) for letter, mark, number, and whitespace membership.
 The table's provenance is recorded in [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).
-To reproduce the table with the pinned reference checkout available:
-
-```sh
-python3 scripts/fixtures/tokenizer-unicode.py
-```
-
-The script verifies source SHA-256
+The table was written by `scripts/tokenizer-unicode.py` (retired; at
+tag `v0.11.0`), which verified source SHA-256
 `95170cd1c105a5b41a1b2dce73b0fae8ce8011ef7897600828bb2babe8b26e5d`.
 The generated table SHA-256 is
 `462abaa4ae40898a30bdde54e46ea081a917c77ec7c786a0a7f7cdcc74c26ebd`.
@@ -358,7 +353,8 @@ Thai, code points outside the vocabulary for byte fallback, `<mask>` and
 `[MASK]` in text, turn markers, HTML tags, tab and newline runs, a literal
 `▁`, and spaces at every position) plus the 16 requests of
 `fixtures/laya-multilingual/`. The fixtures come from
-`scripts/oracle/laya-reference.py [--subfolder multilingual]` (the `laya` 0.3.20
+`scripts/laya-reference.py [--subfolder multilingual]` (retired; at
+tag `v0.11.0`; the `laya` 0.3.20
 package and its `tokenizers` 0.23.2). The NFC tables
 pass every NFC column of UCD 17.0.0's `NormalizationTest.txt` whenever
 `scripts/fixtures/tokenizer-nfc.py` has cached it.

@@ -36,7 +36,7 @@ compare with that tool's output on the same file:
    (`[1]4.3473,[2]6.1654,…`).
 
 `--reference <json>` reads a pinned reference run
-(`scripts/gate/reference-perplexity.py`). It takes that run's `ctx` and window
+([§ The reference file](#the-reference-file)). It takes that run's `ctx` and window
 count unless the flags state them (another `ctx`, or more windows than
 it ran, is `ReferenceMismatch`; fewer compare against its running value
 after that window, `chunk_ppl`, which the fast gates use), refuses a file whose SHA-256 differs from the one the reference ran, and
@@ -200,9 +200,9 @@ routing noise: it looks systematic and growing with context, not noise.
   (carrying the 512 record's 1 % routing bound) is kept as the evidence.
 
 The per-token references for Qwen3.8 and Muse (about 25 minutes each) were
-stopped before they finished. `scripts/gate/reference-perplexity.py --ctx 4096
---chunks 4 --ubatch 1` produces them, and each then gets a
-`*-perplexity-4k` gate in `gates.json`.
+stopped before they finished. They are now made by nuclis
+([§ Regenerating a reference](#regenerating-a-reference), `--ctx-size 4096
+--chunks 4`), and each then gets a `*-perplexity-4k` gate in `gates.json`.
 
 ## Gemma 4's verify rows (2026-09-24)
 
@@ -212,31 +212,49 @@ speculative acceptance on Gemma drew from uncapped logits (row 0 of
 `<bos>Hello,` 27.8 from the stepped logits). Fixed and gated; the facts are in
 [speculative-decoding.md § The Gemma 4 assistant heads](../engine/speculative-decoding.md#the-gemma-4-assistant-heads-2026-09-21).
 
+## The reference file
+
+A reference is one JSON object; `--reference` reads these fields and
+ignores the rest:
+
+| Field | Meaning |
+| --- | --- |
+| `tool`, `revision` | what ran it: `nuclis eval` at a nuclis revision, or `llama-perplexity` at a llama.cpp revision |
+| `text_sha256` | the text's digest; another file is refused |
+| `ctx`, `chunks` | the window and the windows run |
+| `ppl`, `ppl_error` | the perplexity after every window and its standard error |
+| `chunk_ppl` | the running perplexity after each window (4 decimals), so fewer windows compare |
+| `tolerance` | optional: a bound wider than 0.5 % for a file whose reference disagrees with itself |
+
+`nuclis eval --write-reference <file>` writes one, never over an existing
+file, adding the provenance a pinned file carries: `schema_version`,
+`executor` and `kv`, `model_file`, `model_bytes`, and `model_sha256` (the
+sidecar's when it records this size, else hashed), `text_file`, the
+`flags`, and the `date`. `cross_check` and `note` are written by hand.
+
 ## Regenerating a reference
 
 A re-pinned file's reference is nuclis's own: Metal's eight windows,
 cross-checked by one CPU window
 ([models/README.md § Re-pinning a file](../models/README.md#re-pinning-a-file));
 `tests/fixtures/perplexity/qwen38-wikitext2-c512x8.json` is the first.
-The llama.cpp references of the other files were made this way, which is
-kept for them:
 
 ```sh
 make eval-corpus
-cmake --build .reference/llama.cpp/build --target llama-perplexity --parallel 8
-python3 scripts/gate/reference-perplexity.py --model <file.gguf> \
-  --text .reference/eval/wikitext-2-raw/wiki.test.raw --ctx 512 --chunks 8 \
-  --ubatch 1 --output tests/fixtures/perplexity/<family>-wikitext2-c512x8.json
+./zig-out/bin/nuclis eval --model <name> --backend metal \
+  --file .reference/eval/wikitext-2-raw/wiki.test.raw --chunks 8 \
+  --write-reference tests/fixtures/perplexity/<family>-wikitext2-c512x8.json
+./zig-out/bin/nuclis eval --model <name> --backend cpu --kv f32 \
+  --file .reference/eval/wikitext-2-raw/wiki.test.raw \
+  --reference tests/fixtures/perplexity/<family>-wikitext2-c512x8.json --chunks 1
 ```
 
-The JSON records the tool, revision, flags, model file name and size, the
-text's name and SHA-256, the windows, the perplexity, its error, and the
-running estimates. To compare per token, the same binary with
-`--kl-divergence-base <file>` writes the token array (`_logits_`, `n_ctx`,
-`n_vocab`, `n_chunk`, then `n_chunk · n_ctx` int32 ids) followed by every
-scored row's log-probabilities as uint16 steps above
-`max − 16`. A target below that floor reads as the floor, so compare only
-unclamped rows.
+The second line is the cross-check; its result goes into `cross_check`.
+The Gemma 4 references are still `llama-perplexity` runs (`--ubatch 1`,
+[§ The reference and its two paths](#the-reference-and-its-two-paths)),
+pinned before nuclis became its own reference; they stay until their file
+is re-pinned. Their generator is retired (tag `v0.11.0`,
+`scripts/reference-perplexity.py`).
 
 ## Limitations
 

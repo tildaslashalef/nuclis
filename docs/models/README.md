@@ -229,11 +229,11 @@ Extract the template (`gguf-inventory.py --max-string 30000`, then the
 `tokenizer.chat_template` value; keep it under `.zig-cache/`, never in
 the tree) and read it for the subset the playground renders: system and
 developer, user, assistant with separate reasoning, the thinking control.
-Then capture before implementing: start the reference server on the file
-and run `scripts/fixtures/tokenizer-fixtures.py --profile <family>` (add the
-profile's digests, efforts, and template keyword arguments to its
-`PROFILES` table). The fixture shows what the reference actually sends
-the model, which is not always what the template or the card says: for
+The validated profiles' fixtures were captured from the reference server
+by `scripts/tokenizer-fixtures.py` (retired; at tag `v0.11.0`); a new file's
+fixtures are made by nuclis
+([§ Which executor makes which fixture](#which-executor-makes-which-fixture)).
+Those captures showed what the reference actually sends the model, which is not always what the template or the card says: for
 Gemma, no `<bos>` in the server's output (its tokenizer adds one),
 `developer` as `system`, consecutive assistant messages merged, reasoning
 never rendered before the last user turn.
@@ -262,9 +262,8 @@ the reference's ids.
   same name shadows it.
 - `nuclis --help` names the profiles and their defaults; update it.
 - The acceptance record: the reference harness on the file
-  (`scripts/bench/reference-baseline.py --family <family> --output-dir
-  .reference/<family>-<date> --prompt-lengths
-  512,4096,16384,32639` against the server started with the
+  (`scripts/reference-baseline.py`, retired; at tag `v0.11.0`; it ran with
+  `--prompt-lengths 512,4096,16384,32639` against the server started with the
   [reference recipe](../benchmarks/llama-cpp.md#run-the-workload) at 32K),
   its token arrays committed under `tests/fixtures/run-<date>-<family>/`,
   a `docs/benchmarks/reference-<date>-<family>.json` summary, then

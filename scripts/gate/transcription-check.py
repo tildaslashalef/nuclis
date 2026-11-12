@@ -48,7 +48,6 @@ import os
 import pathlib
 import random
 import shutil
-import socket
 import struct
 import subprocess
 import sys
@@ -60,6 +59,8 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
+import serve  # noqa: E402
 import wer  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -70,21 +71,15 @@ ENTRY = "transcription-check"
 Json = dict[str, Any]
 
 
-class Failure(Exception):
-    pass
+# A server that does not start fails the same way as everything else here.
+Failure = serve.Failed
 
 
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return cast(int, s.getsockname()[1])
-
-
-class Server:
-    """A fresh `nuclis serve` on a free port, the transcription model open."""
+class Server(serve.Server):
+    """A fresh `nuclis serve` with the transcription model open: alone under
+    a temporary root that registers it, or beside `chat` under the user's."""
 
     def __init__(self, nuclis: str, model: str, chat: str | None = None) -> None:
-        self.port = free_port()
         env = dict(os.environ)
         self.home: tempfile.TemporaryDirectory[str] | None = None
         if chat is None:
@@ -92,53 +87,21 @@ class Server:
             config = {"schema_version": 1, "models": {ENTRY: {"kind": "transcription", "path": model}}}
             pathlib.Path(self.home.name, "nuclis.json").write_text(json.dumps(config))
             env["NUCLIS_HOME"] = self.home.name
-            command = [nuclis, "serve", "--port", str(self.port), "--quiet", "--model", ENTRY]
+            args = ["--model", ENTRY]
             self.model = ENTRY
         else:
-            command = [nuclis, "serve", "--port", str(self.port), "--quiet", "--model", model, "--model", chat]
+            args = ["--model", model, "--model", chat]
             self.model = model
-        self.process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
-        deadline = time.monotonic() + 600
-        while True:
-            try:
-                connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=2)
-                connection.request("GET", "/v1/health")
-                connection.getresponse().read()
-                connection.close()
-                return
-            except OSError:
-                if self.process.poll() is not None or time.monotonic() > deadline:
-                    stderr = self.process.stderr.read().decode() if self.process.stderr else ""
-                    raise Failure(f"serve did not start: {stderr}") from None
-                time.sleep(0.2)
-
-    def rss(self) -> int:
-        """The server's resident set, in bytes."""
-        done = subprocess.run(["ps", "-o", "rss=", "-p", str(self.process.pid)], capture_output=True, text=True)
-        return int(done.stdout.strip() or 0) * 1024
+        super().__init__(nuclis, args, env=env)
 
     def close(self) -> None:
-        self.process.send_signal(2)
-        try:
-            self.process.wait(timeout=60)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
+        self.stop()
         if self.home is not None:
             self.home.cleanup()
 
 
 def multipart(fields: list[tuple[str, str]], audio: bytes, filename: str) -> tuple[bytes, str]:
-    boundary = "nuclis-check-6f1d2b"
-    parts: list[bytes] = []
-    for name, value in fields:
-        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
-    parts.append(
-        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-        "Content-Type: application/octet-stream\r\n\r\n".encode()
-    )
-    parts.append(audio)
-    parts.append(f"\r\n--{boundary}--\r\n".encode())
-    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+    return serve.multipart(fields, "file", filename, "application/octet-stream", audio)
 
 
 def transcribe_http(port: int, fields: list[tuple[str, str]], audio: bytes, filename: str) -> Json:
@@ -422,26 +385,16 @@ def chat_rate(port: int, model: str, stop: threading.Event | None, out: list[flo
     """Streams a long chat answer; appends its content chunks per second (while `stop` is unset, if given)."""
     body = {
         "model": model,
-        "stream": True,
         "temperature": 0,
         "max_tokens": 1200,
         "reasoning_effort": "none",
         "messages": [{"role": "user", "content": "Tell a long story about a lighthouse keeper, in plain prose."}],
     }
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3600)
-    connection.request("POST", "/v1/chat/completions", json.dumps(body), {"content-type": "application/json"})
-    response = connection.getresponse()
-    times: list[float] = []
-    for raw in response:
-        line = raw.decode().strip()
-        if not line.startswith("data: ") or line == "data: [DONE]":
-            continue
-        chunk = cast(Json, json.loads(line[6:]))
-        choices = cast(list[Json], chunk.get("choices") or [])
-        if choices and cast(Json, choices[0].get("delta", {})).get("content"):
-            if stop is None or not stop.is_set():
-                times.append(time.monotonic())
-    connection.close()
+    times = [
+        at
+        for at, chunk in serve.chat_stream(port, body, timeout=3600)
+        if serve.content(chunk) and (stop is None or not stop.is_set())
+    ]
     if len(times) > 1:
         out.append((len(times) - 1) / (times[-1] - times[0]))
 
@@ -537,12 +490,6 @@ def long(args: argparse.Namespace) -> int:
 
 
 class Tests(unittest.TestCase):
-    def test_multipart(self) -> None:
-        body, content_type = multipart([("model", "m")], b"RIFF", "a.wav")
-        self.assertTrue(content_type.endswith("boundary=nuclis-check-6f1d2b"))
-        self.assertIn(b'name="model"\r\n\r\nm\r\n', body)
-        self.assertTrue(body.endswith(b"RIFF\r\n--nuclis-check-6f1d2b--\r\n"))
-
     def test_wav(self) -> None:
         pcm = struct.pack("<3h", 0, 16384, -32768)
         self.assertEqual(read_wav(wav16(pcm)), pcm)

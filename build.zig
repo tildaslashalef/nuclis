@@ -87,6 +87,13 @@ pub fn build(b: *std.Build) void {
     for ([_]*std.Build.Module{ exe.root_module, inference.module("inference") }) |module| {
         fuzz_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module, .filters = fuzz_filters })).step);
     }
+    // Compile errors only: artifacts nothing installs or runs, so the build
+    // runner passes -fno-emit-bin and `-fincremental --watch` recompiles in
+    // a fraction of a second (`make watch`, docs/development.md § Zig 0.17 usage audit).
+    const check_step = b.step("check", "Compile errors only, no binary (use with -fincremental --watch)");
+    check_step.dependOn(&b.addExecutable(.{ .name = "nuclis", .root_module = exe.root_module }).step);
+    for ([_]*std.Build.Module{ exe.root_module, inference.module("inference"), huggingface.module("huggingface") }) |module|
+        check_step.dependOn(&b.addTest(.{ .root_module = module }).step);
     // The package's standalone binary, installed on request only (`make hf-downloader`).
     b.step("hf-downloader", "Install the standalone Hugging Face downloader (zig-out/bin/hf-downloader)").dependOn(&b.addInstallArtifact(huggingface.artifact("hf-downloader"), .{}).step);
 

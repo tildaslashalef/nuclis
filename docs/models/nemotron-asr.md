@@ -462,7 +462,8 @@ With synthetic weights, the unit tests show the authors' chunks
 (`1 + 8r`, then `8(r + 1)` frames, at r = 0 and 3), pieces of 7 frames,
 and samples in 80 ms pieces giving the whole clip's rows **bit for bit**.
 
-**The trace.** `scripts/oracle/speech-traces/nemotron_trace.py` ran the authors'
+**The trace.** `scripts/speech-traces/nemotron_trace.py` (retired; at
+tag `v0.11.0`) ran the authors'
 `Nemotron3_5AsrForRNNT` (transformers `c0d024fb`, torch 2.14.1, librosa
 1.0.0, CPU, F32) on two clips of the speech corpus, each cut to 80,880
 samples (505 mel frames, 64 rows): a LibriSpeech test-clean utterance
@@ -565,8 +566,8 @@ tests with synthetic weights cover the gate order `[i | f | g | o]`, the
 blank and the ten-symbol cap, the start state, the tag pattern, and rows
 in pieces against one push.
 
-**The trace, extended.** `scripts/oracle/speech-traces/nemotron_trace.py` also
-pins, for the same two cut clips at r = 0 and 3, whole and streamed: the
+**The trace, extended.** The same script also
+pinned, for the same two cut clips at r = 0 and 3, whole and streamed: the
 `encoder_projector` rows (0–7, 56–63); every step of `generate`'s greedy
 decoding (the row read, and the joint's five largest logits with their
 ids); the prediction network's output for the start blank; and each run's

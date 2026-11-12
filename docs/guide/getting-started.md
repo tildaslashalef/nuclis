@@ -28,7 +28,7 @@ On Linux, the same with `x86_64-linux` in the name and no `xattr` line.
 Each tarball carries a build provenance attestation (the first line shows
 the workflow that built it) and is listed in the release's `SHA256SUMS`.
 
-**From source.** Zig 0.17.0 and the Command Line Tools:
+**From source.** Zig 0.17.1 and the Command Line Tools:
 
 ```sh
 git clone https://github.com/tildaslashalef/nuclis

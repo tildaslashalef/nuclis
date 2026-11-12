@@ -122,13 +122,11 @@ absolute tolerance `5e-7`; norm preservation uses relative tolerance `2e-7`.
 
 The committed [fixtures](../../inference/src/backends/cpu/fixtures/vector.json)
 come from llama.cpp `7620399f58aebfd2196b74021f9581bcf7218cb9`, its matching local
-Release build, and one CPU thread. Reproduce them without a model or GPU:
+Release build, and one CPU thread, written by `scripts/cpu-vector-fixtures.py`
+(retired; at tag `v0.11.0`); a re-pinned file's fixtures are made by nuclis
+([models § Which executor makes which fixture](../models/README.md#which-executor-makes-which-fixture)).
 
-```sh
-python3 scripts/fixtures/cpu-vector-fixtures.py
-```
-
-The script uses the local C ABI to build and compute small graphs. Four L2 cases
+The script used the local C ABI to build and compute small graphs. Four L2 cases
 cover a 3–4 vector, denominator clamping, zero, and tiny values. Four RoPE cases
 use a synthetic 256-channel head at positions 0, 1, 127, and 32,767, with rotary
 width 64, base 10,000,000, IMRoPE mode 40, sections `[11,11,10,0]`, positions
@@ -205,8 +203,7 @@ KV head, key width three, value width two, and visible prefixes one, two, or fou
 The reference composes `ggml_mul_mat`, `ggml_soft_max_ext`, and `ggml_mul_mat`,
 materializing only the visible KV prefix. Absolute tolerance is `2e-6` for these
 small cases; this is not an end-to-end attention-layer or future GPU tolerance.
-Regenerate them with the same `scripts/fixtures/cpu-vector-fixtures.py` command above.
-No model or GPU is needed to generate or run these fixtures.
+The same retired generator wrote them; no model or GPU is needed to run them.
 
 ## Causal convolution and DeltaNet state
 
@@ -263,8 +260,9 @@ absolute tolerance `1e-6`; the exactly representable convolution examples and
 history shifts match exactly. The fixture generator calls `ggml_ssm_conv` and
 `ggml_gated_delta_net` on the pinned one-thread CPU backend; the latter exports
 both output and final state. Expected convolution history is the explicit window
-shift, not an output of `ggml_ssm_conv`. Regenerate with
-`scripts/fixtures/cpu-vector-fixtures.py`; no model or GPU is needed.
+shift, not an output of `ggml_ssm_conv`. The generator is
+`scripts/cpu-vector-fixtures.py` (retired; at tag `v0.11.0`); no model or GPU is needed
+to run them.
 
 ### Chunkwise DeltaNet (2026-09-09, stage 1)
 

@@ -1,4 +1,4 @@
-# An annotated `v*` tag publishes a release: the same checks as CI, a
+# An annotated `v*` tag publishes a release: CI's checks (`make ci-test`), a
 # ReleaseSafe build with the Metal backend, a CPU-only Linux build
 # cross-compiled beside it, a binary tarball for each and one source
 # tarball, a `SHA256SUMS` that covers them, and a build provenance
@@ -9,8 +9,9 @@
 # The tag is the trigger and `build.zig.zon` is the truth: the job refuses a
 # malformed tag, a lightweight tag, a tag that disagrees with the manifest,
 # or a tag already published, all before it builds anything. The notes are
-# the tag's message (the release's highlights), GitHub's generated list of
-# the pull requests merged since the previous release, and
+# the tag's message (the release's highlights), the Conventional Commit
+# subjects since the previous tag grouped by type (`release.py notes`;
+# milestones merge by rebase, one commit per unit), and
 # `.github/release-footer.md`. Dispatch re-runs it for a tag whose release
 # is still a draft.
 name: release
@@ -45,8 +46,10 @@ jobs:
 
       - name: The tag is semver and the manifest agrees
         id: version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          tag="${{ inputs.tag || github.ref_name }}"
+          tag="$TAG"
           if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
             echo "refusing to publish: $tag is not vMAJOR.MINOR.PATCH[-prerelease]" >&2
             exit 1
@@ -92,15 +95,14 @@ jobs:
           }
 
       - name: The gate, minus what needs a GPU or a model
-        run: |
-          zig fmt --check build.zig build.zig.zon src/ inference/ huggingface/
-          zig build test --summary all
+        run: make ci-test
 
       - name: The notes exist before anything is built
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          tag="${{ steps.version.outputs.tag }}"
+          tag="$TAG"
           mkdir -p dist
           # The tag object itself, not a lightweight copy of it.
           git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
@@ -117,23 +119,26 @@ jobs:
             echo "refusing to publish: $tag is already published; a tag never moves, the fix is the next version" >&2
             exit 1
           fi
-          gh api "repos/${{ github.repository }}/releases/generate-notes" -f tag_name="$tag" --jq .body > dist/generated.md
-          { cat dist/highlights.md; echo; cat dist/generated.md; echo; cat .github/release-footer.md; } > dist/notes.md
+          # The workflow's own script, so a tag cut before it can still publish.
+          git show "${{ github.sha }}:scripts/repo/release.py" > "$RUNNER_TEMP/release.py"
+          python3 "$RUNNER_TEMP/release.py" notes "$tag" > dist/changes.md
+          { cat dist/highlights.md; echo; cat dist/changes.md; echo; cat .github/release-footer.md; } > dist/notes.md
           cat dist/notes.md
 
       - name: Build
         run: |
           zig build -Dmetal=true -Doptimize=ReleaseSafe
-          # CPU only, for x86-64 with AVX2 (x86_64_v3) and glibc 2.35 or newer
-          # (Ubuntu 22.04, Debian 12): docs/development.md § Linux.
-          zig build -Dmetal=false -Doptimize=ReleaseSafe \
-            -Dtarget=x86_64-linux-gnu.2.35 -Dcpu=x86_64_v3 --prefix zig-out/linux
+          # The Makefile names the Linux target and CPU (docs/development.md § Linux).
+          make build-linux LINUX_OPT=ReleaseSafe LINUX_PREFIX=zig-out/linux
 
       - name: Package
         id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          version="${{ steps.version.outputs.version }}"
-          tag="${{ steps.version.outputs.tag }}"
+          version="$VERSION"
+          tag="$TAG"
           # A licence is the owner's decision, not this workflow's: ship one
           # when the tree has one, and say so plainly when it does not rather
           # than failing the release over a file that was never written.
@@ -176,16 +181,18 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           # A pre-release is one whose version carries a suffix — 0.2.0-rc1,
           # 0.3.0-dev. A 0.x release is not a pre-release, it is an early
           # one, and marking it as such hides it from the repository sidebar,
           # which only ever shows the latest *full* release.
-          case "${{ steps.version.outputs.version }}" in
+          case "$VERSION" in
             *-*) kind="--prerelease" ;;
             *) kind="--latest" ;;
           esac
-          tag="${{ steps.version.outputs.tag }}"
+          tag="$TAG"
           assets_files="dist/nuclis-$tag-aarch64-macos.tar.gz dist/nuclis-$tag-x86_64-linux.tar.gz dist/nuclis-$tag-src.tar.gz dist/SHA256SUMS"
           if gh release view "$tag" > /dev/null 2>&1; then
             # A dispatch re-run: the draft gets fresh assets and notes.

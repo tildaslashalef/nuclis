@@ -1,5 +1,5 @@
 //! Explicit full-model check of Laya's forward against the oracle's fixtures
-//! (scripts/oracle/laya-reference.py), the set whose hidden size is the
+//! (scripts/laya-reference.py at tag v0.11.0), the set whose hidden size is the
 //! checkpoint's (root or multilingual): every request of `requests.json` runs
 //! through the encoder and head, and each stage the fixture holds is
 //! compared row by row with `activations.f32`, then the logits. Needs the

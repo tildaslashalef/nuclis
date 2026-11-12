@@ -1,7 +1,7 @@
 //! IQ3_S codebook: a GGML format constant obtained from llama.cpp
 //! 7620399f58aebfd2196b74021f9581bcf7218cb9 (ggml/src/ggml-common.h); see
-//! THIRD_PARTY_NOTICES.md. Regenerate with scripts/fixtures/quant-fixtures.py. Low byte
-//! is component 0. The Metal backend emits this same table into its shader.
+//! THIRD_PARTY_NOTICES.md. Written by scripts/quant-fixtures.py at tag v0.11.0.
+//! Low byte is component 0. The Metal backend emits this same table into its shader.
 pub const values = [512]u32{
     0x01010101, 0x01010103, 0x01010105, 0x0101010b, 0x0101010f, 0x01010301, 0x01010303, 0x01010305,
     0x01010309, 0x0101030d, 0x01010501, 0x01010503, 0x0101050b, 0x01010707, 0x01010901, 0x01010905,

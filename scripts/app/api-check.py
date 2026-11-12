@@ -26,20 +26,20 @@ import base64
 import json
 import math
 import os
-import socket
 import struct
-import subprocess
 import sys
 import re
 import tempfile
 import threading
-import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts/lib"))
+import serve  # noqa: E402
+
 Json = dict[str, Any]
 
 
@@ -564,16 +564,6 @@ VOICE_CLIP = ROOT / "tests/fixtures/qwen3-tts/0.6b-clone-reference/reference.wav
 VOICE_TEXT = "Every morning I walk along the river and listen to the birds."
 
 
-def multipart(fields: dict[str, str], clip: bytes) -> tuple[bytes, str]:
-    boundary = "nuclis-api-check"
-    out = b""
-    for name, value in fields.items():
-        out += f'--{boundary}\r\ncontent-disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
-    out += f'--{boundary}\r\ncontent-disposition: form-data; name="audio_sample"; filename="clip.wav"\r\n'.encode()
-    out += b"content-type: audio/wav\r\n\r\n" + clip + f"\r\n--{boundary}--\r\n".encode()
-    return out, f"multipart/form-data; boundary={boundary}"
-
-
 def speak(client: Client, body: Json) -> tuple[int, bytes]:
     request = urllib.request.Request(
         client.url + "/audio/speech", json.dumps(body).encode(), {"content-type": "application/json"}
@@ -586,7 +576,13 @@ def speak(client: Client, body: Json) -> tuple[int, bytes]:
 
 
 def check_voices(client: Client) -> None:
-    body, content_type = multipart({"name": "api-check", "reference_text": VOICE_TEXT}, VOICE_CLIP.read_bytes())
+    body, content_type = serve.multipart(
+        [("name", "api-check"), ("reference_text", VOICE_TEXT)],
+        "audio_sample",
+        "clip.wav",
+        "audio/wav",
+        VOICE_CLIP.read_bytes(),
+    )
     request = urllib.request.Request(client.url + "/audio/voices", body, {"content-type": content_type})
     with urllib.request.urlopen(request, timeout=60) as response:
         check(response.status == 201, f"create: {response.status}")
@@ -711,12 +707,6 @@ def check_ids(client: Client, logs: Path | None) -> None:
         check(status == 200 or end.get("error") == "model_not_found", f"end error {end}")
 
 
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return cast(int, s.getsockname()[1])
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--url", help="a running server's /v1 URL; without it, one is started")
@@ -729,14 +719,11 @@ def main() -> int:
     parser.add_argument("--binary", default=str(ROOT / "zig-out/bin/nuclis"))
     args = parser.parse_args()
 
-    server: subprocess.Popen[bytes] | None = None
+    server: serve.Server | None = None
     url = cast(str | None, args.url)
     home: tempfile.TemporaryDirectory[str] | None = None
     if url is None:
-        port = free_port()
-        command = [args.binary, "serve", "--port", str(port), "--quiet"]
-        if args.model:
-            command += ["--model", args.model]
+        command = ["--model", args.model] if args.model else []
         environment = dict(os.environ)
         if cast(str, args.only) == "voices":
             # Voices are saved under the server's root: a temporary one, the models linked in.
@@ -744,18 +731,13 @@ def main() -> int:
             real = Path(os.environ.get("NUCLIS_HOME") or Path.home() / ".nuclis")
             os.symlink(real / "models", Path(home.name) / "models")
             environment["NUCLIS_HOME"] = home.name
-        server = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=environment)
-        url = f"http://127.0.0.1:{port}/v1"
-        deadline = time.time() + 600
-        while True:
-            try:
-                urllib.request.urlopen(url + "/health", timeout=2).close()
-                break
-            except OSError:
-                if server.poll() is not None or time.time() > deadline:
-                    print(f"serve did not start: {server.stderr.read().decode() if server.stderr else ''}")
-                    return 1
-                time.sleep(0.5)
+        try:
+            started = serve.Server(args.binary, command, env=environment)
+        except serve.Failed as failure:
+            print(f"api-check: {failure}")
+            return 1
+        server = started
+        url = started.url
     client = Client(url, cast(str | None, args.model), cast(str | None, args.embedding_model))
     only = cast(str, args.only)
     try:
@@ -780,8 +762,7 @@ def main() -> int:
         return 1
     finally:
         if server is not None:
-            server.send_signal(2)
-            server.wait(timeout=60)
+            server.stop()
         if home is not None:
             home.cleanup()
 

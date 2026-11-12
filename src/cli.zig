@@ -291,6 +291,9 @@ pub fn parseArgs(args: []const []const u8) !Options {
             } else if (std.mem.eql(u8, flag, "--reference")) {
                 if (e.reference != null) return error.DuplicateOption;
                 e.reference = value;
+            } else if (std.mem.eql(u8, flag, "--write-reference")) {
+                if (e.write_reference != null) return error.DuplicateOption;
+                e.write_reference = value;
             } else if (std.mem.eql(u8, flag, "--ctx-size")) {
                 // The window, not the configuration's context: an evaluation
                 // is comparable from its command line alone.
@@ -1596,12 +1599,13 @@ test "generation parses bounds and rejects duplicate or malformed options" {
 }
 
 test "eval takes a text file, its window, and the engine's precision flags" {
-    const options = try parseArgs(&.{ "eval", "--file", "wiki.test.raw", "--ctx-size", "512", "--chunks", "8", "--reference", "r.json", "--backend", "metal", "--kv", "f32", "--model", "m.gguf", "--json" });
+    const options = try parseArgs(&.{ "eval", "--file", "wiki.test.raw", "--ctx-size", "512", "--chunks", "8", "--reference", "r.json", "--write-reference", "w.json", "--backend", "metal", "--kv", "f32", "--model", "m.gguf", "--json" });
     try std.testing.expectEqual(.eval, options.command);
     try std.testing.expectEqualStrings("wiki.test.raw", options.evaluation.file.?);
     try std.testing.expectEqual(@as(usize, 512), options.evaluation.ctx.?);
     try std.testing.expectEqual(@as(usize, 8), options.evaluation.chunks.?);
     try std.testing.expectEqualStrings("r.json", options.evaluation.reference.?);
+    try std.testing.expectEqualStrings("w.json", options.evaluation.write_reference.?);
     try std.testing.expectEqual(.f32, options.flags.kv.?);
     // The window is the command's own, never the configuration's context.
     try std.testing.expect(options.flags.ctx_size == null);

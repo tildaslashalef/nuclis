@@ -90,8 +90,8 @@ def validate(workloads, models):
             for key in ("max_tokens", "ctx", "warmup", "repeat"):
                 if not isinstance(w.get(key), int) or w[key] < 0:
                     problems.append(f"{name}: {key} must be a non-negative integer")
-            if w.get("kv") not in ("f16", "f32"):
-                problems.append(f"{name}: kv must be f16 or f32")
+            if w.get("kv") not in manifest.KV_PRECISIONS:
+                problems.append(f"{name}: kv must be one of {', '.join(manifest.KV_PRECISIONS)}")
             if w.get("pair") and not isinstance(w.get("draft_length"), int):
                 problems.append(f"{name}: a pair needs draft_length")
             if w.get("baseline") and not w.get("pair"):
@@ -175,15 +175,21 @@ def select(names, patterns):
     return out
 
 
-def next_path(directory, rev, suffix=""):
-    """`<rev>-<n><suffix>.json`, n one past the highest sequence already saved for this revision."""
+def next_sequence(directory, rev):
+    """One past the highest sequence already saved for this revision."""
     n = 0
     for p in Path(directory).glob(f"{rev}-*.json"):
         stem = p.name[len(rev) + 1 : -5]
         digits = stem.split("-")[0]
         if digits.isdigit():
             n = max(n, int(digits))
-    return Path(directory) / f"{rev}-{n + 1}{suffix}.json"
+    return n + 1
+
+
+def record_path(directory, rev, n, suffix=""):
+    """`<rev>-<n><suffix>.json`: a pair's baseline shares its record's `n`,
+    which is how bench-report.py finds it."""
+    return Path(directory) / f"{rev}-{n}{suffix}.json"
 
 
 # ---- execution ----------------------------------------------------------------
@@ -238,12 +244,15 @@ def run_workload(name, w, gdoc, args):
     if w.get("baseline"):
         runs.append(("-baseline", bench_argv(w, model, speculative=False)))
     ok = True
+    sequence = None
     for suffix, argv in runs:
         print(f"{name}{suffix}: {' '.join(argv)}", flush=True)
         if args.dry_run:
             continue
         save_dir.mkdir(parents=True, exist_ok=True)
-        out = next_path(save_dir, rev, suffix)
+        if sequence is None:
+            sequence = next_sequence(save_dir, rev)
+        out = record_path(save_dir, rev, sequence, suffix)
         started = time.monotonic()
         proc = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
         seconds = time.monotonic() - started
@@ -319,7 +328,7 @@ def main():
     except KeyError as e:
         sys.exit(f"no workload matches {e.args[0]!r}; --list shows them")
     if not args.no_build and not args.dry_run:
-        manifest.build(gdoc, "metal", False)
+        manifest.build(gdoc, False)
     failed = [n for n in names if not run_workload(n, workloads[n], gdoc, args)]
     if failed:
         sys.exit("failed: " + ", ".join(failed))
@@ -479,7 +488,7 @@ class SelfTest(unittest.TestCase):
         self.assertEqual(argv[-1], "docs/benchmarks/nuclis-2026-01-02-a.json")
         self.assertEqual(argv[argv.index("--run") + 1], "run-x")
 
-    def test_select_and_next_path(self):
+    def test_select_and_record_paths(self):
         names = ["a/prose", "a/code-draft", "b/prose"]
         self.assertEqual(select(names, ["a/*"]), ["a/prose", "a/code-draft"])
         self.assertEqual(select(names, ["*/prose", "a/prose"]), ["a/prose", "b/prose"])
@@ -488,12 +497,15 @@ class SelfTest(unittest.TestCase):
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(next_path(d, "abc1234").name, "abc1234-1.json")
+            self.assertEqual(next_sequence(d, "abc1234"), 1)
             (Path(d) / "abc1234-1.json").write_text("{}")
             (Path(d) / "abc1234-1-baseline.json").write_text("{}")
             (Path(d) / "abc1234-3.json").write_text("{}")
-            self.assertEqual(next_path(d, "abc1234", "-baseline").name, "abc1234-4-baseline.json")
-            self.assertEqual(next_path(d, "zzz9999").name, "zzz9999-1.json")
+            n = next_sequence(d, "abc1234")
+            self.assertEqual(record_path(d, "abc1234", n).name, "abc1234-4.json")
+            # The baseline pairs with its record, whatever was saved between.
+            self.assertEqual(record_path(d, "abc1234", n, "-baseline").name, "abc1234-4-baseline.json")
+            self.assertEqual(next_sequence(d, "zzz9999"), 1)
 
 
 def self_test():

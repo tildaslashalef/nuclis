@@ -50,6 +50,9 @@ from typing import Any
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CACHE = ROOT / ".zig-cache/voice-loop"
 SPEECH_RATE = 24000
+sys.path.insert(0, str(ROOT / "scripts/lib"))
+import serve  # noqa: E402
+
 
 _spec = importlib.util.spec_from_file_location("ws_transcribe", ROOT / "scripts/gate/ws-transcribe.py")
 assert _spec and _spec.loader
@@ -86,24 +89,15 @@ class Speech:
 
 def speak(port: int, model: str, voice: str, text: str, out: Speech) -> None:
     body = {"model": model, "input": text, "voice": voice, "response_format": "pcm", "seed": 1}
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=600)
+    out.sent = time.monotonic()
+    odd = 0
     try:
-        out.sent = time.monotonic()
-        connection.request("POST", "/v1/audio/speech", json.dumps(body), {"content-type": "application/json"})
-        response = connection.getresponse()
-        if response.status != 200:
-            out.error = f"{response.status} {response.read().decode(errors='replace')}"
-            return
-        odd = 0
-        while True:
-            data = response.read1(65536)
-            if not data:
-                break
+        for at, data in serve.speech_request(port, body):
             whole = (odd + len(data)) // 2
             odd = (odd + len(data)) % 2
-            out.chunks.append((time.monotonic(), whole / SPEECH_RATE))
-    finally:
-        connection.close()
+            out.chunks.append((at, whole / SPEECH_RATE))
+    except serve.Failed as failure:
+        out.error = str(failure)
 
 
 @dataclass
@@ -163,28 +157,15 @@ def speak_all(port: int, args: argparse.Namespace, texts: list[str]) -> list[Spe
 def chat(port: int, model: str, messages: list[dict[str, str]], max_tokens: int, on_text: Any) -> None:
     body = {
         "model": model,
-        "stream": True,
         "temperature": 0,
         "max_tokens": max_tokens,
         "reasoning_effort": "none",
         "messages": messages,
     }
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=600)
-    try:
-        connection.request("POST", "/v1/chat/completions", json.dumps(body), {"content-type": "application/json"})
-        response = connection.getresponse()
-        if response.status != 200:
-            raise ws.Failure(f"chat: {response.status} {response.read().decode(errors='replace')}")
-        for raw in response:
-            line = raw.decode().strip()
-            if not line.startswith("data: ") or line == "data: [DONE]":
-                continue
-            choices = json.loads(line[6:]).get("choices") or []
-            text = (choices[0].get("delta") or {}).get("content") if choices else None
-            if text:
-                on_text(time.monotonic(), text)
-    finally:
-        connection.close()
+    for at, chunk in serve.chat_stream(port, body):
+        text = serve.content(chunk)
+        if text:
+            on_text(at, text)
 
 
 def chat_rate(port: int, args: argparse.Namespace) -> Any:

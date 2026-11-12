@@ -1,5 +1,5 @@
 //! Explicit full-model check of Qwen3-TTS against the authors' bring-up
-//! trace (`scripts/oracle/speech-traces/qwen3_tts_trace.py`, pinned under
+//! trace (`scripts/speech-traces/qwen3_tts_trace.py` at tag v0.11.0, pinned under
 //! `tests/fixtures/qwen3-tts/`). `codec`: each case's codes through the
 //! codec decoder's `decode`, every stage the fixture holds compared with
 //! its rows, then the samples; then the same frames pushed through a

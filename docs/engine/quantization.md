@@ -150,8 +150,8 @@ slices to exercise unaligned input; invalid-size tests cover both new encodings.
 
 The [ternary fixture](../../inference/src/quant/fixtures/ternary.json) is
 produced by the fork's own `dequantize_row_pq2_0` and `dequantize_row_ptq1_0`
-(`scripts/fixtures/quant-fixtures.py --prism-checkout`, its `revision` the fork's
-pin): eight blocks of each with arbitrary payload bytes and the eight scales
+(`scripts/quant-fixtures.py --prism-checkout`, retired; at tag `v0.11.0`; its
+`revision` the fork's pin): eight blocks of each with arbitrary payload bytes and the eight scales
 above, so non-canonical codes reproduce the reference's fixed-point
 arithmetic too, plus all-zero and all-one blocks, an every-code PQ2_0 block,
 and a canonically packed PTQ1_0 block. Hand-calculated tests cover PQ2_0's
@@ -166,7 +166,7 @@ the 7-bit sign indices with parity as the eighth sign, the IQ1 shift of ±1/8
 and its sign, IQ1_M's scale rebuilt from four nibbles), and the
 cross-encoding check compares whole models' rows with an already-validated
 encoding of the same weights ([saluki.md § Validation](../models/saluki.md#validation-without-an-external-reference)).
-Their codebooks come from `scripts/fixtures/iq-codebooks.py`. The
+Their codebooks were written by `scripts/iq-codebooks.py` (retired; at tag `v0.11.0`). The
 [codebook fixture](../../inference/src/quant/fixtures/codebook.json) holds
 two real blocks of each from Saluki 27B, written by `zig build
 test-cross-encoding -- --fixture <out> <saluki.gguf>` with the CPU
@@ -193,16 +193,8 @@ Default tests consume only the committed fixtures and need no external checkout 
 zig build test
 ```
 
-To regenerate on macOS, build the pinned reference following
-[llama-cpp.md](../benchmarks/llama-cpp.md), then run:
-
-```sh
-python3 scripts/fixtures/quant-fixtures.py
-```
-
-The default checkout is `.reference/llama.cpp`, resolved relative to
-the repository rather than the working directory. An optional positional path
-selects another checkout. The generator checks the checkout revision and calls
-the built `libggml-base` CPU functions through Python `ctypes`; it does not load a model or initialize
-Metal. Rebuild that library from the pinned checkout before regeneration; a Git
-revision check cannot prove the provenance of a stale local binary.
+The llama.cpp-made fixtures were written by `scripts/quant-fixtures.py`
+(retired; at tag `v0.11.0`), which checked the pinned checkout's revision and called
+its built `libggml-base` CPU functions through Python `ctypes`, loading no
+model. A re-pinned file's fixtures are made by nuclis
+([models § Which executor makes which fixture](../models/README.md#which-executor-makes-which-fixture)).

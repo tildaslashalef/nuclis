@@ -82,7 +82,8 @@ same numbers. They were extracted from llama.cpp revision
 - the IQ2_XXS (256), IQ2_XS (512), IQ2_S (1,024), IQ3_XXS (256), and
   IQ1_S (2,048; IQ1_M shares it) codebooks,
   `inference/src/quant/iq-codebooks.zig`, written by
-  `scripts/fixtures/iq-codebooks.py` (the IQ2 sign table is computed, not copied);
+  `scripts/iq-codebooks.py` (retired; at tag `v0.11.0`; the IQ2 sign table is
+  computed, not copied);
 - the 16-entry IQ4_NL value table in `inference/src/quant/decode.zig` and
   `inference/src/backends/metal/dequant.metal`.
 
@@ -122,7 +123,7 @@ vocabulary format; the merge algorithm is independently implemented.
 `inference/src/tokenizer/unicode-ranges.bin` is a compact table of letter,
 mark, number, and whitespace membership derived from the Unicode Character
 Database, obtained through llama.cpp's generated `unicode-data.cpp` at the
-revision above (`scripts/fixtures/tokenizer-unicode.py`). Unicode data is
+revision above (by `scripts/tokenizer-unicode.py`, retired; at tag `v0.11.0`). Unicode data is
 Copyright © Unicode, Inc., licensed under the Unicode License
 (<https://www.unicode.org/license.txt>). The pre-tokenizers in
 `inference/src/tokenizer/pre.zig` (`qwen35`),
@@ -228,21 +229,22 @@ code from them is present in nuclis.
   <https://github.com/NandhaKishorM/laya>) with PyTorch 2.14.0, Transformers
   5.17.0, and Tokenizers 0.23.2 — the decision model's input contract,
   forward, calibration, and tokenizer behaviour.
-  `scripts/oracle/laya-reference.py` runs it in a venv under `.reference/`;
+  `scripts/laya-reference.py` (retired; at tag `v0.11.0`) ran it in a venv under
+  `.reference/`;
   the fixtures under `inference/src/models/fixtures/laya/` and
   `laya-multilingual/` are outputs of running it on the pulled
   checkpoints, not copies of them.
 - **clef-flash**'s `joint_schema_model.py` by Cloudflare (Apache-2.0, at
   commit `17f0b0ad`) with PyTorch 2.11.0 and Transformers 5.10.2 — the
-  oracle for the sequence and the head. `scripts/oracle/clef-reference.py` runs
-  it in a venv under `.reference/`; the fixtures under
+  oracle for the sequence and the head. `scripts/clef-reference.py`
+  (retired; at tag `v0.11.0`) ran it in a venv under `.reference/`; the fixtures under
   `inference/src/models/fixtures/clef/` are outputs of running it, not
   copies of it.
 - **Qwen3-TTS** (`qwen-tts` 0.1.1) by the Qwen team (Apache-2.0,
   <https://github.com/QwenLM/Qwen3-TTS> at commit `022e286b`) with PyTorch
   2.14.1 and Transformers 4.57.3 — the definition of the talker, the code
-  predictor, and the codec decoder. `scripts/oracle/speech-traces/qwen3_tts_trace.py`
-  runs it in a venv under `.reference/`; the fixtures under
+  predictor, and the codec decoder. `scripts/speech-traces/qwen3_tts_trace.py`
+  (retired; at tag `v0.11.0`) ran it in a venv under `.reference/`; the fixtures under
   `tests/fixtures/qwen3-tts/` are outputs of running it on the pulled
   `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` and `-1.7B-CustomVoice`
   checkpoints, not copies of them. The split pattern of
@@ -253,7 +255,8 @@ code from them is present in nuclis.
   <https://github.com/fishaudio/fish-speech> at commit `0f8a12e8`) with
   PyTorch 2.14.1 and `descript-audio-codec` 1.0.0 — the definition of
   Drama 3's backbone, codebook tower, prompt, chunking, sampler, and
-  codec. `scripts/oracle/speech-traces/drama3_trace.py` runs it in a venv under
+  codec. `scripts/speech-traces/drama3_trace.py` (retired; at tag `v0.11.0`) ran it
+  in a venv under
   `.reference/`; the fixtures under `tests/fixtures/drama3/` are outputs of
   running it on weights dequantized from the pulled
   `sakasegawa/drama-3-GGUF` file, not copies of it. The model's weights
@@ -268,7 +271,8 @@ code from them is present in nuclis.
   2.14.1 and librosa 1.0.0 — the definition of Nemotron 3.5 ASR
   (`nemotron3_5_asr/`, `nemotron_asr_streaming/`, `parakeet/`): its
   feature extractor, encoder, cache-aware streaming, and transducer.
-  `scripts/oracle/speech-traces/nemotron_trace.py` runs it in a venv under
+  `scripts/speech-traces/nemotron_trace.py` (retired; at tag `v0.11.0`) ran it in a
+  venv under
   `.reference/`; the fixtures under `tests/fixtures/nemotron-asr/` are
   outputs of running it, not copies of it.
 - Model documentation: the Qwen3.8 and Gemma 4 model cards and configuration

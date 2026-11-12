@@ -61,7 +61,7 @@ the root build. Keep kernels with the inference library that owns them.
 
 Facts every unit depends on; keep them here, not in the tracker.
 
-- Zig 0.17.0 (on the author's machine under `~/.local/opt/zig/stable`, managed
+- Zig 0.17.1 (on the author's machine under `~/.local/opt/zig/stable`, managed
   by `zigup`; any install of that version works); consult its installed std source for API
   details. Apple M4 Pro, 48 GiB, macOS 27. Metal compiles
   shaders at runtime from the Command Line Tools; Xcode-only tools are reached
@@ -100,17 +100,17 @@ Facts every unit depends on; keep them here, not in the tracker.
   took the last external record ([saluki.md](models/saluki.md#the-llamacpp-record-2026-10-14));
   since then nuclis is its own reference and no new oracle is built.
   EmbeddingGemma 2's semantic oracle is sentence-transformers 6.1 in a venv
-  at `.reference/venv-embed` (the recipe heads
-  `scripts/oracle/embedding-reference.py`), with Google's checkpoint in float32.
+  at `.reference/venv-embed` (the recipe headed
+  `scripts/embedding-reference.py`, retired; at tag `v0.11.0`), with Google's checkpoint in float32.
   The decision model's oracle is the `laya` 0.3.20 Python package in a venv
   at `.reference/laya-venv` (Python 3.12 through `uv`; the recipe
-  heads `scripts/oracle/laya-reference.py`; `--subfolder multilingual` for the
-  multilingual set), run on the CPU in F32 against the pulled checkpoint
+  headed `scripts/laya-reference.py`, retired; at tag `v0.11.0`; `--subfolder
+  multilingual` for the multilingual set), run on the CPU in F32 against the pulled checkpoint
   from a staged copy, because the package may rewrite
   `tokenizer_config.json` in place.
   clef-flash's oracle is Cloudflare's `joint_schema_model.py` at the
   pinned commit in a venv at `.reference/clef-venv` (torch 2.11.0,
-  transformers 5.10.2; the recipe heads `scripts/oracle/clef-reference.py`),
+  transformers 5.10.2; the recipe headed `scripts/clef-reference.py`, retired; at tag `v0.11.0`),
   which never loads the backbone: `sequence` mode writes the reference's
   ids and spans, `head` mode runs the head on the rows `clef-check run
   --dump` writes from nuclis's backbone.
@@ -120,7 +120,9 @@ Facts every unit depends on; keep them here, not in the tracker.
   same token arrays are the README's [Results](../README.md#results); the
   method is [benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs),
   the reference's harness [llama-cpp.md](benchmarks/llama-cpp.md).
-- `make help` lists all tasks. Per-commit: `make check` (fmt-check, the
+- `make help` lists all tasks. While editing: `make watch` reports
+  compile errors about a quarter of a second after each save
+  ([§ Zig 0.17 usage audit](#zig-017-usage-audit)). Per-commit: `make check` (fmt-check, the
   input-safety check, unit tests with the fuzz corpora, `test-metal`,
   `test-tiny`, the gate manifest's validation). Before a
   pull request: `make verify-auto`, the Focus lane of the gate registry
@@ -469,8 +471,9 @@ attention or cache changes), commit `perf(inference): …` with the rows in the 
 
 ## Toolchain
 
-The tested compiler is Zig 0.17.0; the three manifests require at least
-0.17.0 ([release notes](https://ziglang.org/download/0.17.0/release-notes.html)).
+The tested compiler is Zig 0.17.1; the three manifests require at least
+0.17.1 (a patch release of 0.17.0,
+[release notes](https://ziglang.org/download/0.17.0/release-notes.html)).
 Verify standard-library calls against that toolchain's installed source and
 language reference rather than assuming older Zig examples still apply.
 ZLS does not work with 0.17 yet: the release split `zig build` into a
@@ -547,8 +550,26 @@ skip its concurrency layer.
   `std.testing.checkAllAllocationFailures` over it sees run-dependent
   allocation counts; the inference package checks through
   `inference.alloc_check`, which refuses in-place growth.
-- **Not applicable:** incremental compilation and the self-hosted aarch64
-  backend (Mach-O is not ready), `std.zon.parse` (the version line is the
+- **Incremental compilation, for compile errors only.** `zig build check`
+  compiles the executable and the three packages' test roots without
+  emitting a binary, and `make watch` runs it under `-fincremental
+  --watch`. Measured 2026-11-12, Zig 0.17.1, M4 Pro, a one-line edit to
+  `src/agent/root.zig`:
+
+  | Build | Time after the edit |
+  | --- | ---: |
+  | `zig build` (analysis, codegen, link) | 24.3 s |
+  | check-only build (`-fno-emit-bin`), not incremental | 14.3 s |
+  | check-only build, `-fincremental --watch` | 0.24 s per edit (first build 23.6 s) |
+
+  The build runner keeps the compiler process alive only under `--watch`
+  (or `--webui`); without either, `-fincremental` changes nothing.
+  Binaries cannot be built incrementally on aarch64-macos in 0.17.1: even
+  a hello-world panics in the Mach-O linker (`TODO(MachO2): load
+  archive`), with either backend. So `make check`, the tests, and the
+  gates keep their full builds.
+- **Not applicable:** the self-hosted aarch64 backend (Mach-O is not
+  ready), `std.zon.parse` (the version line is the
   only ZON the build reads), `@SpirvType`, translate-c (no `@cImport`; the
   bridge is Objective-C through `addCSourceFile`), the Build Server
   Protocol (no tool here consumes it), `Io.Semaphore.waitTimeout` (the
@@ -789,9 +810,10 @@ builds anything, unless:
 
 The Zig version is the tag's, but `install-zig.sh` is the workflow
 revision's and the digests are the tag's `.github/zig-toolchain` plus the
-workflow revision's (the first matching line wins). It runs the same gate,
-builds `-Dmetal=true -Doptimize=ReleaseSafe` and, cross-compiled beside
-it, the CPU-only Linux binary ([Linux](#linux)), asserts the macOS binary
+workflow revision's (the first matching line wins). It runs CI's gate
+(`make ci-test`, the target CI's test job runs), builds `-Dmetal=true
+-Doptimize=ReleaseSafe` and, cross-compiled beside it, the CPU-only Linux
+binary (`make build-linux LINUX_OPT=ReleaseSafe`, [Linux](#linux)), asserts the macOS binary
 reports the tag's version and the Linux one carries the same `nuclis
 X.Y.Z` string (it cannot run on the runner), attests the tarballs
 (`actions/attest-build-provenance`; check one with `gh attestation verify
@@ -800,9 +822,11 @@ assets:
 the binary tarballs (`nuclis-vX.Y.Z-aarch64-macos.tar.gz`,
 `nuclis-vX.Y.Z-x86_64-linux.tar.gz`), a source
 tarball (`nuclis-vX.Y.Z-src.tar.gz`, `git archive` of the tag), and a
-`SHA256SUMS` covering them. The notes are the tag's message, GitHub's
-generated list of the pull requests merged since the previous release
-(`releases/generate-notes`), and `.github/release-footer.md`. It publishes
+`SHA256SUMS` covering them. The notes are the tag's message, the
+Conventional Commit subjects since the previous tag grouped by type
+(`scripts/repo/release.py notes`, the workflow revision's copy: milestones
+merge by rebase, so each unit is one subject), and
+`.github/release-footer.md`. It publishes
 only once the asset count checks, so a failed upload never leaves a public
 release missing files.
 
@@ -824,6 +848,7 @@ zig build -Dmetal=false     # a CPU-only binary (the default off Apple Silicon)
 zig build test-hf           # the huggingface package's tests alone
 zig build hf-downloader     # its standalone binary, zig-out/bin/hf-downloader
 zig build gates-tool        # the gate runner, zig-out/bin/nuclis-gates
+zig build check             # compile errors only, no binary (make watch: incremental)
 ```
 
 `-Dmetal` defaults to **on for macOS on aarch64** and off everywhere else
@@ -852,7 +877,9 @@ then `nuclis model pull <name>` there and `nuclis serve` (the backend is
 the CPU when Metal is not built).
 
 The release's Linux archive is built for the widest reach at little cost:
-`-Dtarget=x86_64-linux-gnu.2.35 -Dcpu=x86_64_v3`, so any x86-64 with AVX2
+`-Dtarget=x86_64-linux-gnu.2.35 -Dcpu=x86_64_v3` (the Makefile's
+`LINUX_TARGET` and `LINUX_CPU`; `make build-linux` and `release.yml` both
+build through it), so any x86-64 with AVX2
 (Intel since Haswell, AMD since Excavator) and glibc 2.35 or newer (Ubuntu
 22.04, Debian 12). On a 4-vCPU Ryzen 9 9955HX VM, a 17,788-token
 EmbeddingGemma 2 request to `serve` takes 49.6 s, against 44.3 s for an
@@ -927,7 +954,7 @@ binary that does not report the plain version.
 
   | Step | Command | What it does |
   | --- | --- | --- |
-  | Gather | `make release-draft` | the pull requests merged since the last tag, each with the first paragraph of its *What and why*; the suggested version; where the highlights go |
+  | Gather | `make release-draft` | the commits on `main` since the last tag, each with the first paragraph of its record's *What and why*; the suggested version; where the highlights go |
   | Write | (the agent) | the highlights, in `.zig-cache/highlights-vX.Y.Z.txt` |
   | Verify | `make verify`, `verify-cpu`, `verify-long`, `verify-release` | the release tiers on `main` (the pinned models, about an hour; passes already remembered do not rerun); skipped when no engine code changed |
   | Propose | `make release V=X.Y.Z TIERS='…'` | from an up-to-date `main`: the branch, `make version`, the commit, the push, and the pull request `chore(release): vX.Y.Z` with the highlights and the tiers in its description |
@@ -940,7 +967,7 @@ binary that does not report the plain version.
   someone who uses nuclis: what changed for them first (a model, a speed, a
   command), measured numbers only, each one in the benchmark record; no
   internal names, unit jargon, or file paths. They head the release notes,
-  above the generated list of pull requests.
+  above the list of commit subjects.
 - **A tag that exists on the remote never moves.** A ruleset refuses
   updating or deleting a `v*` tag; the fix is the next number.
 - The [Releases page](https://github.com/tildaslashalef/nuclis/releases)
