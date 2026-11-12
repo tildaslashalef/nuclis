@@ -1,6 +1,16 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const style = @import("tui/style.zig");
+const terminal = @import("tui/terminal.zig");
+
+/// A panic puts a leased terminal back before the default report, so the
+/// shell is usable to read it.
+pub const panic = std.debug.FullPanic(onPanic);
+
+fn onPanic(message: []const u8, first_trace_address: ?usize) noreturn {
+    terminal.emergencyRestore();
+    std.debug.defaultPanic(message, first_trace_address);
+}
 
 pub fn main(init: std.process.Init) void {
     var diag: cli.Diagnostic = .{};

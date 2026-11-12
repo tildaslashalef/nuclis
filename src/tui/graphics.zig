@@ -9,10 +9,26 @@
 //! passed-through image would stay put over the text. Never part of the
 //! golden tests.
 const std = @import("std");
-const inference = @import("inference");
 
-const Rgb8 = inference.vision.image.Rgb8;
 const Allocator = std.mem.Allocator;
+
+/// An RGB image as the agent decoded it: `width * height * 3` bytes,
+/// row-major. A copy `scaleDown` returns is owned.
+pub const Rgb8 = struct {
+    width: u32,
+    height: u32,
+    pixels: []u8,
+
+    pub fn deinit(self: *Rgb8, alloc: Allocator) void {
+        alloc.free(self.pixels);
+        self.* = undefined;
+    }
+
+    fn at(self: Rgb8, x: usize, y: usize) [3]u8 {
+        const i = (y * self.width + x) * 3;
+        return self.pixels[i..][0..3].*;
+    }
+};
 
 /// The longest side of the transmitted copy, in pixels.
 pub const max_side: u32 = 512;

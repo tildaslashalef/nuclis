@@ -26,10 +26,7 @@
 const std = @import("std");
 const table = @import("graphemes_table.zig");
 
-pub const Gcb = table.Gcb;
-pub const Incb = table.Incb;
 pub const Props = table.Props;
-pub const unicode_version = table.unicode_version;
 
 /// The properties of one code point, by binary search over the interval table.
 pub fn props(cp: u21) Props {

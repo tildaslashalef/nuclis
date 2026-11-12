@@ -177,10 +177,48 @@ pub const Disk = struct {
     /// The most bytes the files may hold; 0 is a disabled tier, never opened.
     budget: u64,
 
-    /// Opens, creating it when absent, the directory at `path`.
+    /// Opens, creating it when absent, the directory at `path`, and deletes
+    /// the temporaries saves killed midway left (`sweep`).
     pub fn open(io: std.Io, path: []const u8, model: u64, budget: u64) !Disk {
         const dir = try std.Io.Dir.cwd().createDirPathOpen(io, path, .{ .open_options = .{ .iterate = true } });
-        return .{ .io = io, .dir = dir, .model = model, .budget = budget };
+        var disk: Disk = .{ .io = io, .dir = dir, .model = model, .budget = budget };
+        disk.sweep(std.Io.Clock.real.now(io));
+        return disk;
+    }
+
+    /// A temporary younger than this may be another process's save in
+    /// progress; an older one is a save that never finished.
+    const stale_ns: i96 = 10 * std.time.ns_per_min;
+
+    /// Deletes stale temporaries: a save writes a file named by 16 hex
+    /// digits (`createFileAtomic`) and renames it into place, so a process
+    /// killed between leaves one that `list` never counts or evicts.
+    fn sweep(self: *Disk, now: std.Io.Timestamp) void {
+        var stale: [64][16]u8 = undefined;
+        while (true) {
+            var count: usize = 0;
+            var it = self.dir.iterate();
+            while (it.next(self.io) catch null) |entry| {
+                if (count == stale.len) break;
+                if (entry.kind != .file or !isTemporary(entry.name)) continue;
+                const stat = self.dir.statFile(self.io, entry.name, .{}) catch continue;
+                if (now.nanoseconds - stat.mtime.nanoseconds < stale_ns) continue;
+                @memcpy(&stale[count], entry.name);
+                count += 1;
+            }
+            var removed: usize = 0;
+            for (stale[0..count]) |*name| {
+                self.dir.deleteFile(self.io, name) catch continue;
+                removed += 1;
+            }
+            if (count < stale.len or removed == 0) return;
+        }
+    }
+
+    fn isTemporary(name: []const u8) bool {
+        if (name.len != 16) return false;
+        for (name) |c| if (!std.ascii.isHex(c)) return false;
+        return true;
     }
 
     pub fn close(self: *Disk) void {
@@ -284,24 +322,29 @@ pub fn removeDigest(io: std.Io, dir_path: []const u8, digest: u64) usize {
     var middle: [18]u8 = undefined;
     const needle = std.fmt.bufPrint(&middle, "-{x:0>16}-", .{digest}) catch unreachable;
     var removed: usize = 0;
-    // Names are collected first: deleting while iterating may skip entries.
+    // Names are collected first, a batch at a time: deleting while
+    // iterating may skip entries. A batch that deletes nothing ends it.
     var names: [64][64]u8 = undefined;
     var lens: [64]usize = undefined;
-    var count: usize = 0;
-    var it = dir.iterate();
-    while (it.next(io) catch null) |entry| {
-        if (count == names.len) break;
-        if (entry.kind != .file or entry.name.len > 64 or !std.mem.endsWith(u8, entry.name, ".snap")) continue;
-        if (std.mem.indexOf(u8, entry.name, needle) == null) continue;
-        @memcpy(names[count][0..entry.name.len], entry.name);
-        lens[count] = entry.name.len;
-        count += 1;
+    while (true) {
+        var count: usize = 0;
+        var it = dir.iterate();
+        while (it.next(io) catch null) |entry| {
+            if (count == names.len) break;
+            if (entry.kind != .file or entry.name.len > 64 or !std.mem.endsWith(u8, entry.name, ".snap")) continue;
+            if (std.mem.indexOf(u8, entry.name, needle) == null) continue;
+            @memcpy(names[count][0..entry.name.len], entry.name);
+            lens[count] = entry.name.len;
+            count += 1;
+        }
+        var batch: usize = 0;
+        for (names[0..count], lens[0..count]) |*name, len| {
+            dir.deleteFile(io, name[0..len]) catch continue;
+            batch += 1;
+        }
+        removed += batch;
+        if (count < names.len or batch == 0) return removed;
     }
-    for (names[0..count], lens[0..count]) |*name, len| {
-        dir.deleteFile(io, name[0..len]) catch continue;
-        removed += 1;
-    }
-    return removed;
 }
 
 /// `nuclis cache ls`: the saved states as JSON reads them; the text form
@@ -575,6 +618,38 @@ test "cache ls lists the states newest first and clear removes them" {
     try clear(alloc, io, root, &out.writer, .{});
     try testing.expect(std.mem.indexOf(u8, out.written(), "removed 2 states, 5 B") != null);
     try testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "cache/prefix/a.snap", .{}));
+}
+
+test "opening the disk tier deletes stale save temporaries and nothing else" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    for ([_][]const u8{ "00112233445566aa", "ffeeddccbbaa9988", "notatemporary000", "a.snap" }) |name| try tmp.dir.writeFile(io, .{ .sub_path = name, .data = "x" });
+    // The first is old: a save killed long ago. The second is fresh: another
+    // process may be writing it.
+    try tmp.dir.setTimestamps(io, "00112233445566aa", .{ .modify_timestamp = .{ .new = .{ .nanoseconds = std.time.ns_per_s } } });
+    const path = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(path);
+    var disk = try Disk.open(io, path, 5, 1 << 20);
+    defer disk.close();
+    try testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "00112233445566aa", .{}));
+    for ([_][]const u8{ "ffeeddccbbaa9988", "notatemporary000", "a.snap" }) |name| _ = try tmp.dir.statFile(io, name, .{});
+}
+
+test "removing a digest's states takes every one, past one batch" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var name: [64]u8 = undefined;
+    for (0..150) |i| {
+        const file = try std.fmt.bufPrint(&name, "{x:0>16}-{x:0>16}-{x:0>16}.snap", .{ i, @as(u64, 42), @as(u64, 7) });
+        try tmp.dir.writeFile(io, .{ .sub_path = file, .data = "x" });
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "0000000000000001-0000000000000043-0000000000000007.snap", .data = "x" });
+    const path = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(path);
+    try testing.expectEqual(@as(usize, 150), removeDigest(io, path, 42));
+    _ = try tmp.dir.statFile(io, "0000000000000001-0000000000000043-0000000000000007.snap", .{});
 }
 
 test "the disk budget deletes the least recently used files first" {

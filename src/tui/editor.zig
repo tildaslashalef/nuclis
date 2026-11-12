@@ -240,11 +240,20 @@ pub const Editor = struct {
     /// Bytes of a bracketed paste in progress; committed by `endPaste`.
     pending: std.ArrayList(u8) = .empty,
     pasting: bool = false,
+    /// The paste in progress passed `max_input`: the rest of it is dropped
+    /// as it arrives, and the whole paste is refused at its end.
+    paste_overflow: bool = false,
+    /// A paste was refused for its size since the driver last asked
+    /// (`takeRefusedPaste`).
+    refused_paste: bool = false,
     /// Submitted prompts, oldest first; `index` is null when not browsing
-    /// and `draft` holds the input the first recall displaced.
+    /// and the draft holds the input the first recall displaced: its bytes,
+    /// its chips, and its attachments (owned, moved back when it returns).
     history: std.ArrayList([]const u8) = .empty,
     index: ?usize = null,
     draft: std.ArrayList(u8) = .empty,
+    draft_chips: std.ArrayList(Chip) = .empty,
+    draft_attachments: std.ArrayList(Attachment) = .empty,
     /// First visible row of the wrapped buffer.
     scroll: usize = 0,
     /// Text width of the last `layout`, so vertical motion knows where the
@@ -260,6 +269,14 @@ pub const Editor = struct {
         for (self.history.items) |item| self.alloc.free(item);
         self.history.deinit(self.alloc);
         self.draft.deinit(self.alloc);
+        self.draft_chips.deinit(self.alloc);
+        self.dropDraftAttachments();
+        self.draft_attachments.deinit(self.alloc);
+    }
+
+    fn dropDraftAttachments(self: *Editor) void {
+        for (self.draft_attachments.items) |att| self.alloc.free(att.path);
+        self.draft_attachments.clearRetainingCapacity();
     }
 
     /// The text a turn would send: the buffer as typed, chips expanded,
@@ -276,6 +293,8 @@ pub const Editor = struct {
         self.buffer.clearRetainingCapacity();
         self.chips.clearRetainingCapacity();
         self.dropAttachments();
+        // A draft displaced by a recalled prompt that was sent is gone.
+        self.dropDraftAttachments();
         self.cursor = 0;
         self.index = null;
         self.scroll = 0;
@@ -467,6 +486,7 @@ pub const Editor = struct {
         switch (key) {
             .paste_begin => {
                 self.pasting = true;
+                self.paste_overflow = false;
                 self.pending.clearRetainingCapacity();
                 return .none;
             },
@@ -477,13 +497,16 @@ pub const Editor = struct {
             else => {},
         }
         if (self.pasting) {
-            switch (key) {
-                .text => |t| try self.pending.appendSlice(self.alloc, t),
-                .enter, .newline => try self.pending.append(self.alloc, '\n'),
+            const piece: []const u8 = switch (key) {
+                .text => |t| t,
+                .enter, .newline => "\n",
                 // No tab width here; four spaces keep the cursor honest.
-                .tab => try self.pending.appendSlice(self.alloc, "    "),
-                else => {},
-            }
+                .tab => "    ",
+                else => "",
+            };
+            if (self.pending.items.len + piece.len > max_input) {
+                self.paste_overflow = true;
+            } else if (!self.paste_overflow) try self.pending.appendSlice(self.alloc, piece);
             return .none;
         }
         switch (key) {
@@ -526,10 +549,13 @@ pub const Editor = struct {
     fn endPaste(self: *Editor) !void {
         self.pasting = false;
         const pasted = self.pending.items;
-        if (pasted.len == 0 or self.buffer.items.len + pasted.len > max_input) {
+        if (self.paste_overflow or self.buffer.items.len + pasted.len > max_input) {
+            self.paste_overflow = false;
+            self.refused_paste = true;
             self.pending.clearRetainingCapacity();
             return;
         }
+        if (pasted.len == 0) return;
         // A drop: one path, which the probe turns into an image, audio, or
         // file chip. Anything it does not recognize is pasted as typed.
         if (self.probe) |probe| if (try droppedPath(self.alloc, pasted)) |path| {
@@ -566,6 +592,20 @@ pub const Editor = struct {
         self.cursor = start + pasted.len;
         self.index = null;
         self.pending.clearRetainingCapacity();
+    }
+
+    /// Drops a paste in progress, for a paste whose end marker never came:
+    /// until then it takes every key as text.
+    pub fn abandonPaste(self: *Editor) void {
+        self.pasting = false;
+        self.paste_overflow = false;
+        self.pending.clearRetainingCapacity();
+    }
+
+    /// Whether a paste was refused for its size since the last call.
+    pub fn takeRefusedPaste(self: *Editor) bool {
+        defer self.refused_paste = false;
+        return self.refused_paste;
     }
 
     fn lessThan(_: void, a: Chip, b: Chip) bool {
@@ -747,10 +787,6 @@ pub const Editor = struct {
         for (items) |item| try self.remember(item);
     }
 
-    pub fn historyItems(self: *const Editor) []const []const u8 {
-        return self.history.items;
-    }
-
     /// Up from the first row and Down from the last reach the history;
     /// anywhere else they move the cursor by one display row.
     fn vertical(self: *Editor, direction: enum { up, down }) !void {
@@ -780,6 +816,10 @@ pub const Editor = struct {
             if (which == .newer) return;
             self.draft.clearRetainingCapacity();
             try self.draft.appendSlice(self.alloc, self.buffer.items);
+            self.draft_chips.clearRetainingCapacity();
+            try self.draft_chips.appendSlice(self.alloc, self.chips.items);
+            self.dropDraftAttachments();
+            std.mem.swap(std.ArrayList(Attachment), &self.draft_attachments, &self.attachments);
             break :blk self.history.items.len;
         };
         const target: ?usize = switch (which) {
@@ -792,6 +832,10 @@ pub const Editor = struct {
         self.buffer.clearRetainingCapacity();
         self.chips.clearRetainingCapacity();
         self.dropAttachments();
+        if (target == null) {
+            try self.chips.appendSlice(self.alloc, self.draft_chips.items);
+            std.mem.swap(std.ArrayList(Attachment), &self.draft_attachments, &self.attachments);
+        }
         try self.buffer.appendSlice(self.alloc, t);
         self.cursor = self.buffer.items.len;
         self.scroll = 0;
@@ -1051,12 +1095,6 @@ fn paste(e: *Editor, t: []const u8) !void {
     _ = try e.handleKey(.paste_end);
 }
 
-fn rowTexts(layout: Layout, a: Allocator) ![][]const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    for (layout.rows) |row| try out.append(a, row.text);
-    return out.toOwnedSlice(a);
-}
-
 test "rows break at the last space that fits, not mid-word" {
     var e = editor();
     defer e.deinit();
@@ -1277,19 +1315,41 @@ test "Up and Down move inside the input and reach the history only at the edges"
     try testing.expectEqualStrings("one\ntwo\nthree", e.text());
 }
 
+test "a recall and back restores the draft's chips and attachments" {
+    var e = editor();
+    defer e.deinit();
+    try e.remember("older");
+    try e.attachImage("/tmp/a.png");
+    _ = try e.handleKey(.paste_begin);
+    _ = try e.handleKey(.{ .text = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12" });
+    _ = try e.handleKey(.paste_end);
+    const chips = e.chips.items.len;
+    const typed = try testing.allocator.dupe(u8, e.text());
+    defer testing.allocator.free(typed);
+    try testing.expect(chips >= 2);
+    _ = try e.handleKey(.up);
+    try testing.expectEqualStrings("older", e.text());
+    try testing.expectEqual(@as(usize, 0), e.attachments.items.len);
+    _ = try e.handleKey(.down);
+    try testing.expectEqualStrings(typed, e.text());
+    try testing.expectEqual(chips, e.chips.items.len);
+    try testing.expectEqual(@as(usize, 1), e.attachments.items.len);
+    try testing.expectEqualStrings("/tmp/a.png", e.attachments.items[0].path);
+}
+
 test "history keeps its bound and does not repeat the newest entry" {
     var e = editor();
     defer e.deinit();
     try e.remember("a");
     try e.remember("a");
-    try testing.expectEqual(@as(usize, 1), e.historyItems().len);
+    try testing.expectEqual(@as(usize, 1), e.history.items.len);
     var i: usize = 0;
     var buffer: [8]u8 = undefined;
     while (i < max_history + 10) : (i += 1) {
         try e.remember(try std.fmt.bufPrint(&buffer, "p{d}", .{i}));
     }
-    try testing.expectEqual(max_history, e.historyItems().len);
-    try testing.expectEqualStrings("p209", e.historyItems()[max_history - 1]);
+    try testing.expectEqual(max_history, e.history.items.len);
+    try testing.expectEqualStrings("p209", e.history.items[max_history - 1]);
 }
 
 test "input past the limit is refused whole" {
@@ -1304,6 +1364,35 @@ test "input past the limit is refused whole" {
     try testing.expectEqual(max_input - 4, e.text().len);
     try e.insert("1234");
     try testing.expectEqual(max_input, e.text().len);
+}
+
+test "a paste past the limit holds no more than the limit and is refused at its end" {
+    var e = editor();
+    defer e.deinit();
+    const chunk: [4096]u8 = @splat('x');
+    _ = try e.handleKey(.paste_begin);
+    for (0..(max_input / chunk.len) * 4) |_| _ = try e.handleKey(.{ .text = &chunk });
+    try testing.expect(e.pending.items.len <= max_input);
+    _ = try e.handleKey(.paste_end);
+    try testing.expectEqual(@as(usize, 0), e.text().len);
+    try testing.expect(e.takeRefusedPaste());
+    try testing.expect(!e.takeRefusedPaste());
+    // The next paste starts clean.
+    _ = try e.handleKey(.paste_begin);
+    _ = try e.handleKey(.{ .text = "ok" });
+    _ = try e.handleKey(.paste_end);
+    try testing.expectEqualStrings("ok", e.text());
+}
+
+test "an abandoned paste leaves nothing, and keys are keys again" {
+    var e = editor();
+    defer e.deinit();
+    _ = try e.handleKey(.paste_begin);
+    _ = try e.handleKey(.{ .text = "half a paste" });
+    e.abandonPaste();
+    try testing.expect(!e.pasting);
+    _ = try e.handleKey(.{ .text = "typed" });
+    try testing.expectEqualStrings("typed", e.text());
 }
 
 test "the word before the cursor is what a completion replaces" {

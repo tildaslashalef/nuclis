@@ -37,7 +37,8 @@ pub const Kind = enum { context, add, remove };
 /// removal and addition. Absent when the whole line is new or gone.
 pub const Span = struct { start: usize, len: usize };
 
-/// One line of the diff. The text never includes the line's `\n` (or `\r`).
+/// One line of the diff. The text never includes the line's `\n`; a CRLF
+/// line keeps its `\r`.
 pub const Row = struct {
     /// 1-based line in the old content; null for a pure addition.
     old_line: ?usize = null,
@@ -92,8 +93,8 @@ pub const context_lines: usize = 3;
 /// line placing it is enough, and every line is prefill it pays for.
 pub const unified_context_lines: usize = 1;
 /// Largest LCS middle (cells) before degrading to a whole-middle replacement.
-/// Bounds the diff of two large, wholly different files. At 8 bytes a cell
-/// this is 8 MiB, paid only for a genuinely large edit.
+/// Bounds the diff of two large, wholly different files. At 4 bytes a cell
+/// (`u32`) this is 4 MiB, paid only for a genuinely large edit.
 const max_cells: usize = 1_000_000;
 
 /// Diffs `old` against `new`. The result owns its bytes; free it with
