@@ -367,12 +367,24 @@ fn flushTable(alloc: std.mem.Allocator, table: *std.ArrayList([]const u8), rows:
         for (grid.items) |row_cells| alloc.free(row_cells);
         grid.deinit(alloc);
     }
-    for (table.items, 0..) |l, index| {
-        if (index == 1) continue; // divider row
-        try grid.append(alloc, try splitCells(alloc, l));
+    // Every row is cut or padded to the header's cell count here, so no
+    // later index needs a guard.
+    const header_cells = try splitCells(alloc, table.items[0]);
+    const ncols = header_cells.len;
+    {
+        errdefer alloc.free(header_cells);
+        try grid.ensureUnusedCapacity(alloc, table.items.len - 1);
     }
-    if (grid.items.len == 0) return;
-    const ncols = grid.items[0].len;
+    grid.appendAssumeCapacity(header_cells);
+    for (table.items[2..]) |l| {
+        const given = try splitCells(alloc, l);
+        defer alloc.free(given);
+        const cells = try alloc.alloc([]const u8, ncols);
+        const kept = @min(given.len, ncols);
+        @memcpy(cells[0..kept], given[0..kept]);
+        @memset(cells[kept..], "");
+        grid.appendAssumeCapacity(cells);
+    }
     // The divider row carries the alignment of every column (`:---`, `---:`,
     // `:---:`); a column it does not mention is left-aligned.
     const alignments = try splitCells(alloc, table.items[1]);
@@ -381,9 +393,7 @@ fn flushTable(alloc: std.mem.Allocator, table: *std.ArrayList([]const u8), rows:
     defer alloc.free(widths);
     @memset(widths, 1);
     for (grid.items) |row_cells| {
-        for (row_cells, 0..) |cell, i| {
-            if (i < ncols) widths[i] = @max(widths[i], view.width(cell));
-        }
+        for (row_cells, 0..) |cell, i| widths[i] = @max(widths[i], view.width(cell));
     }
     // Shrink columns when the table cannot fit; cells wrap inside their
     // column instead of widening the table past the terminal.
@@ -406,7 +416,7 @@ fn flushTable(alloc: std.mem.Allocator, table: *std.ArrayList([]const u8), rows:
             wrapped_cells.deinit(alloc);
         }
         for (row_cells, 0..) |cell, i| {
-            const w = if (i < ncols) widths[i] else widths[ncols - 1];
+            const w = widths[i];
             const styled_cell = if (header)
                 try spanRow(alloc, th, th.paint(.heading), cell)
             else
@@ -516,6 +526,7 @@ fn splitCells(alloc: std.mem.Allocator, line: []const u8) ![][]const u8 {
 /// Renders inline markdown into `out` (unclosed markers stay literal).
 /// `depth` bounds nesting; control bytes are stripped from all literal text.
 fn inlineSpan(alloc: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8, th: theme_mod.Theme, depth: usize) !void {
+    var brackets: Brackets = .{};
     var i: usize = 0;
     while (i < text.len) {
         const b = text[i];
@@ -534,7 +545,7 @@ fn inlineSpan(alloc: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u
             }
         }
         if (b == '[') {
-            if (linkEnd(text, i)) |end| {
+            if (linkEnd(text, i, &brackets)) |end| {
                 // An http(s) target becomes a real hyperlink (OSC 8); any other
                 // target keeps the label styled but is not made clickable, so a
                 // model cannot smuggle an arbitrary scheme into the terminal.
@@ -594,6 +605,10 @@ fn inlineSpan(alloc: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u
                 }
             }
         }
+        if (view.isC1(text[i..])) {
+            i += 2;
+            continue;
+        }
         try putSanitizedByte(alloc, out, b);
         i += 1;
     }
@@ -603,10 +618,28 @@ const LinkEnd = struct { label_close: usize, target_start: usize, target_end: us
 
 /// `[label](target)` starting at `open`. The label is rendered; the target is
 /// kept so an http(s) one can become an OSC 8 hyperlink.
-fn linkEnd(text: []const u8, open: usize) ?LinkEnd {
-    const label_close = std.mem.indexOfScalarPos(u8, text, open + 1, ']') orelse return null;
+/// The `]` and `)` the last `linkEnd` found. Opens are tried left to right,
+/// so the first `]` after one is still the first after the next while that
+/// one comes before it: a run of `[` scans the text once, not once each.
+const Brackets = struct {
+    scanned: bool = false,
+    /// The first `]` after the open the scan started from; `text.len` for none.
+    close: usize = 0,
+    /// The first `)` after `close`'s `(`, once looked for.
+    paren: ?usize = null,
+};
+
+fn linkEnd(text: []const u8, open: usize, cache: *Brackets) ?LinkEnd {
+    if (!cache.scanned or cache.close < open + 1) {
+        cache.close = std.mem.indexOfScalarPos(u8, text, open + 1, ']') orelse text.len;
+        cache.paren = null;
+        cache.scanned = true;
+    }
+    const label_close = cache.close;
     if (label_close + 1 >= text.len or text[label_close + 1] != '(') return null;
-    const target_close = std.mem.indexOfScalarPos(u8, text, label_close + 2, ')') orelse return null;
+    if (cache.paren == null) cache.paren = std.mem.indexOfScalarPos(u8, text, label_close + 2, ')') orelse text.len;
+    const target_close = cache.paren.?;
+    if (target_close >= text.len) return null;
     return .{ .label_close = label_close, .target_start = label_close + 2, .target_end = target_close, .consumed = target_close + 1 };
 }
 
@@ -617,8 +650,8 @@ fn isHyperlink(target: []const u8) bool {
     if (target.len == 0 or target.len > 2048) return false;
     if (!std.ascii.startsWithIgnoreCase(target, "http://") and
         !std.ascii.startsWithIgnoreCase(target, "https://")) return false;
-    for (target) |c| {
-        if (c < 0x20 or c == 0x7f) return false;
+    for (target, 0..) |c, i| {
+        if (c < 0x20 or c == 0x7f or view.isC1(target[i..])) return false;
     }
     return true;
 }
@@ -637,12 +670,25 @@ fn findSingle(text: []const u8, from: usize, c: u8) ?usize {
 }
 
 fn putSanitized(alloc: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !void {
-    for (text) |b| try putSanitizedByte(alloc, out, b);
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (view.isC1(text[i..])) {
+            i += 1;
+            continue;
+        }
+        try putSanitizedByte(alloc, out, text[i]);
+    }
 }
 
 /// Every control byte but the line break is dropped: the break is the one
 /// the paragraph kept on purpose, and the wrapper turns it into a row.
 fn putSanitizedByte(alloc: std.mem.Allocator, out: *std.ArrayList(u8), b: u8) !void {
+    if (b == '\t') {
+        // To the next multiple of four cells of the row so far.
+        const row_start = if (std.mem.lastIndexOfScalar(u8, out.items, '\n')) |n| n + 1 else 0;
+        const column = view.styledWidth(out.items[row_start..]);
+        return out.appendNTimes(alloc, ' ', view.tab_width - column % view.tab_width);
+    }
     if ((b >= 32 and b != 127) or b == '\n') try out.append(alloc, b);
 }
 
@@ -795,6 +841,37 @@ test "table columns follow the alignment of the divider row" {
     defer alloc.free(s);
     // Column widths are 4, 3, 5; the single letters sit at the three sides.
     try std.testing.expect(std.mem.indexOf(u8, s, " a    │  b  │     c ") != null);
+}
+
+test "a tab reaches the next stop in code and prose; C1 controls are dropped" {
+    const alloc = std.testing.allocator;
+    const th = theme_mod.Theme{ .kind = .plain };
+    const s = try joined(alloc, "```\nif x:\n\treturn 1\n```\n\na\tb \u{9b}31m", 40, th);
+    defer alloc.free(s);
+    try std.testing.expect(std.mem.indexOf(u8, s, "    return 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "a   b") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\u{9b}") == null);
+}
+
+test "a row wider or narrower than the header is cut or padded to it" {
+    const alloc = std.testing.allocator;
+    const th = theme_mod.Theme{ .kind = .plain };
+    const s = try joined(alloc,
+        \\| a |
+        \\| --- |
+        \\| 1 | 2 | 3 |
+        \\| x | y |
+    , 40, th);
+    defer alloc.free(s);
+    try std.testing.expect(std.mem.indexOf(u8, s, "2") == null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "y") == null);
+    const narrow = try joined(alloc,
+        \\| a | b | c |
+        \\| --- | --- | --- |
+        \\| 1 |
+    , 40, th);
+    defer alloc.free(narrow);
+    try std.testing.expect(std.mem.indexOf(u8, narrow, " 1 │   │   ") != null);
 }
 
 test "the ASCII glyph set replaces every decoration" {

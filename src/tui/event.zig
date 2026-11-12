@@ -1,18 +1,16 @@
 //! The typed events a turn is made of — the seam between what produces a
 //! conversation and what shows it (docs/spec.md § Transcript and status).
 //!
-//! Today the producer is the agent's generation loop; in phase 2 it is the
-//! engine's event stream and the tool loop, and the consumers are the
-//! transcript, the session file, and print mode. All three read the same
-//! union, which is why it lives here rather than in `src/agent/`: the
+//! The producer is the agent's loop (generation and tools); the consumers
+//! are the transcript, the session file, and print mode. All three read the
+//! same union, which is why it lives here rather than in `src/agent/`: the
 //! terminal surface owns the vocabulary, and it knows nothing about tokens,
 //! models, or files.
 //!
-//! **Ownership deviates from the specification, deliberately.** The spec said
-//! strings are owned by the event and freed by the consumer. An `answer_delta`
-//! is produced once per generated token, so owning its bytes would mean an
-//! allocation and a free per token for text the transcript immediately copies
-//! into its own buffer. Here an event **borrows** its strings for the duration
+//! **Strings are borrowed for the call, not owned by the event.** An
+//! `answer_delta` is produced once per generated token, so owning its bytes
+//! would mean an allocation and a free per token for text the transcript
+//! immediately copies into its own buffer. Here an event **borrows** its strings for the duration
 //! of the call: the producer keeps them alive until `apply` returns, and a
 //! consumer that keeps text copies it. The one consumer that stores events —
 //! the session writer — serializes them immediately, so nothing outlives the
@@ -20,8 +18,8 @@
 const std = @import("std");
 const diff = @import("diff.zig");
 
-/// Identifies a tool call so its result can be matched to it. Phase 2 assigns
-/// them; phase 1 only carries them through.
+/// Identifies a tool call so its result can be matched to it; the agent
+/// assigns them.
 pub const Id = u32;
 
 /// Which half of a turn a status beat describes. The engine has the same two
@@ -102,9 +100,8 @@ pub const Event = union(enum) {
     notice: []const u8,
     /// What a command *answered*, as opposed to what it remarked. `/help` is
     /// the first: a page a reader reads, not an aside beside a turn, so it is
-    /// rendered at the terminal's own foreground rather than dimmed
-    /// (2026-09-12, after the dim help block proved unreadable on a
-    /// translucent terminal).
+    /// rendered at the terminal's own foreground rather than dimmed: a dim
+    /// block is unreadable on a translucent terminal.
     info: []const u8,
 
     /// One event as one JSON object, for `nuclis agent --print --json`: the

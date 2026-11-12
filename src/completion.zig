@@ -451,7 +451,9 @@ pub fn candidates(arena: Allocator, target: Target, current: []const u8, state: 
                 try list.appendSlice(arena, state.models);
             },
             .served => {
-                if (isPathLike(current)) return .dir;
+                // A checkpoint directory or a GGUF file: file completion
+                // offers both.
+                if (isPathLike(current)) return .file;
                 try list.appendSlice(arena, state.served);
             },
             .present => try list.appendSlice(arena, state.present),
@@ -852,6 +854,7 @@ test "paths go to the shell, and the user's state fills models, sessions, and ke
     try testing.expect(try answerFor(a, &.{ "agent", "--prompt-file", "" }, .{}) == .file);
     try testing.expect(try answerFor(a, &.{ "generate", "--trace-dir", "o" }, .{}) == .dir);
     try testing.expect(try answerFor(a, &.{ "agent", "--model", "./m" }, .{}) == .file);
+    try testing.expect(try answerFor(a, &.{ "serve", "--model", "./m" }, .{}) == .file);
     const state: State = .{
         .models = &.{ .{ .text = "mine", .description = "o/r/f.gguf" }, .{ .text = "qwen3.8-27b" } },
         .registry = &.{"mine"},

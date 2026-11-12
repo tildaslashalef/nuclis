@@ -5,7 +5,7 @@
 //! about tokens, sessions, models, or prompts. `src/agent/` owns those and
 //! drives the surface.
 //!
-//! What lives here today:
+//! What lives here:
 //!
 //! | Module | Role |
 //! | --- | --- |
@@ -21,7 +21,11 @@
 //! | `keys` | pure decoding of input bytes into `Key` values |
 //! | `view` | display width, wrapping, escape-aware truncation, control-byte sanitization |
 //! | `markdown` | small markdown into pre-styled, pre-wrapped rows |
+//! | `graphemes` | grapheme clusters and their display width |
 //! | `highlight` | the heuristic code highlighter `markdown` calls |
+//! | `diff` | a change as structured rows, side by side or unified |
+//! | `graphics` | inline image previews through the kitty graphics protocol |
+//! | `banner` | the welcome: wordmark and what the session runs with |
 //! | `theme` | named palettes behind a semantic style enum |
 //! | `style` | the same palette applied to one-shot command reports |
 //!

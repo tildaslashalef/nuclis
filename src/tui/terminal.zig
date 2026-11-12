@@ -18,13 +18,50 @@ pub const Size = struct { rows: usize = 24, columns: usize = 80 };
 /// Kitty "disambiguate", bracketed paste, and focus in/out reports so a
 /// finished turn can notify when the window is elsewhere.
 const enter_modes = "\x1b[>1u\x1b[?2004h\x1b[?1004h";
-const leave_modes = "\x1b[?1004l\x1b[?2004l\x1b[<u\x1b[0m\x1b[?25h";
+/// Also ends a synchronized frame and resets the scroll region (between a
+/// cursor save and restore: the reset homes the cursor), which a failure
+/// mid-paint leaves set.
+const leave_modes = "\x1b[?2026l\x1b7\x1b[r\x1b8\x1b[?1004l\x1b[?2004l\x1b[<u\x1b[0m\x1b[?25h";
+
+/// The termios of a lease in force, for `emergencyRestore`; a panic or a
+/// fatal signal has no other way to reach it.
+var leased: std.atomic.Value(bool) = .init(false);
+var leased_saved: std.posix.termios = undefined;
+
+/// Puts the terminal back as a lease found it, from a panic or a signal
+/// handler: only `write` and `tcsetattr`, both async-signal-safe. Does
+/// nothing when no lease is in force.
+pub fn emergencyRestore() void {
+    if (!leased.swap(false, .seq_cst)) return;
+    _ = std.posix.system.write(1, leave_modes ++ "\r\n", leave_modes.len + 2);
+    std.posix.tcsetattr(0, .FLUSH, leased_saved) catch {};
+}
+
+/// SIGTERM and SIGHUP restore the terminal, then end the process as their
+/// default would: the agent can be blocked in a model step for seconds.
+pub fn restoreOnTermination() void {
+    for ([_]std.posix.SIG{ .TERM, .HUP }) |sig| {
+        const act: std.posix.Sigaction = .{
+            .handler = .{ .handler = onTermination },
+            .mask = std.posix.sigemptyset(),
+            .flags = std.posix.SA.RESETHAND,
+        };
+        std.posix.sigaction(sig, &act, null);
+    }
+}
+
+fn onTermination(sig: std.posix.SIG) callconv(.c) void {
+    emergencyRestore();
+    // RESETHAND restored the default action, so this ends the process.
+    _ = std.posix.system.kill(std.posix.system.getpid(), sig);
+}
 
 pub const Terminal = struct {
     io: std.Io,
     saved: std.posix.termios,
     raw: std.posix.termios,
     out: *std.Io.Writer,
+    done: bool = false,
     pub fn init(io: std.Io, out: *std.Io.Writer) !Terminal {
         if (!try std.Io.File.stdin().isTty(io) or !try std.Io.File.stdout().isTty(io)) return error.ChatRequiresTerminal;
         const saved = try std.posix.tcgetattr(0);
@@ -41,7 +78,12 @@ pub const Terminal = struct {
         try term.acquire();
         return term;
     }
+    /// Idempotent: a `defer` right after `init` covers every failure, and an
+    /// inner one can order the restore before other teardown.
     pub fn deinit(self: *Terminal) void {
+        if (self.done) return;
+        self.done = true;
+        leased.store(false, .seq_cst);
         // The trailing CRLF puts the shell prompt on a fresh line: the drawer
         // leaves the cursor at the end of the status bar, mid-row.
         self.out.writeAll(leave_modes ++ "\r\n") catch {};
@@ -52,6 +94,9 @@ pub const Terminal = struct {
     /// Raw mode and the modes above, on. Also how the lease is taken back
     /// after `release`.
     pub fn acquire(self: *Terminal) !void {
+        leased_saved = self.saved;
+        leased.store(true, .seq_cst);
+        errdefer leased.store(false, .seq_cst);
         try std.posix.tcsetattr(0, .FLUSH, self.raw);
         errdefer std.posix.tcsetattr(0, .FLUSH, self.saved) catch {};
         try self.out.writeAll(enter_modes);
@@ -61,6 +106,7 @@ pub const Terminal = struct {
     /// Hands the terminal to a child (an external editor) as it was found:
     /// cooked mode, no protocol modes. `acquire` takes it back.
     pub fn release(self: *Terminal) !void {
+        leased.store(false, .seq_cst);
         try self.out.writeAll(leave_modes);
         try self.out.flush();
         try std.posix.tcsetattr(0, .FLUSH, self.saved);
@@ -196,12 +242,13 @@ pub fn editExternally(alloc: std.mem.Allocator, io: std.Io, environ: *const std.
     const tmp = environ.get("TMPDIR") orelse "/tmp";
     const path = try alloc.printSentinel("{s}/nuclis-edit-{x}.md", .{ std.mem.trimEnd(u8, tmp, "/"), &random }, 0);
     defer alloc.free(path);
+    // A new file only the user can read: `TMPDIR` may be shared.
+    const file = try std.Io.Dir.createFileAbsolute(io, path, .{ .exclusive = true, .permissions = .fromMode(0o600) });
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
     {
-        const file = try std.Io.Dir.createFileAbsolute(io, path, .{});
         defer file.close(io);
         try file.writeStreamingAll(io, text);
     }
-    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
     // `$0` is the file: the value may carry its own arguments (`code -w`).
     const script = try alloc.print("{s} \"$0\"", .{command});
     defer alloc.free(script);
@@ -220,7 +267,8 @@ pub fn editExternally(alloc: std.mem.Allocator, io: std.Io, environ: *const std.
         else => return error.EditorFailed,
     }
     const edited = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(max_external_edit));
-    if (edited.len > 0 and edited[edited.len - 1] == '\n') return alloc.realloc(edited, edited.len - 1);
+    errdefer alloc.free(edited);
+    if (edited.len > 0 and edited[edited.len - 1] == '\n') return try alloc.realloc(edited, edited.len - 1);
     return edited;
 }
 

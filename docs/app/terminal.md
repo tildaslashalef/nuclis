@@ -60,6 +60,16 @@ cursor-up rewrite fallback for a terminal that mishandles `DECSTBM`, and a
 `dumb` or unset `TERM` turns both capabilities off. The escape stream of
 every operation is pinned by golden tests that need no TTY.
 
+The lease is given back on every way out. A `defer` right after the lease
+is taken covers any startup failure; a panic restores the terminal before
+the default report (the root `panic` in `src/main.zig`), and `SIGTERM` and
+`SIGHUP` restore it and then end the process as their default would, since
+a model step can hold the loop for seconds. The restore also ends a
+synchronized frame and resets the scroll region, both of which a failure
+in the middle of a paint leaves set. A bracketed paste holds at most the
+editor's 128 KiB: past that it stops growing and is refused at its end
+marker, with a notice.
+
 ## The agent's transcript
 
 Between the renderer and the screen sits `src/tui/transcript.zig`, the
@@ -160,6 +170,16 @@ test streams a document byte by byte and counts the renders — one per
 block boundary, never one per token — and a prefix fuzz feeds every byte
 prefix of every fixture through `split` and `render`, asserting no error,
 no control byte, a bounded row count, and no row wider than the width.
+
+Text from the model, a tool, or a model file is drawn as data. Control
+bytes are dropped, the UTF-8 encoded C1 controls (`U+0080`–`U+009F`, which
+a terminal may read as CSI or ST) included, and a tab becomes spaces to the
+next stop of four cells before the text is wrapped, so a tab-indented code
+block keeps its shape. The status bar is a raw row, so its free text (the
+status word, and a model's name, which comes from the file's own metadata)
+is cleaned before it is painted. A table row is cut or padded to its
+header's cell count, and a link target is looked for once per run of `[`,
+so neither a ragged table nor a page of brackets can stall or stop a frame.
 
 ## The agent without a terminal
 

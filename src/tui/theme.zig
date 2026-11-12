@@ -29,7 +29,6 @@ pub const Kind = enum { truecolor, c256, c16, plain };
 pub const Style = enum {
     header,
     user,
-    assistant,
     thinking,
     thinking_header,
     italic,
@@ -41,8 +40,6 @@ pub const Style = enum {
     link,
     bullet,
     quote,
-    status,
-    status_busy,
     status_bg,
     editor_bg,
     accent,
@@ -374,16 +371,14 @@ fn role(style: Style) Role {
     return switch (style) {
         .header => .{ .fg = .aqua, .attrs = .{ .bold = true } },
         .user => .{ .fg = .orange, .attrs = .{ .bold = true } },
-        .assistant => .{ .fg = .aqua, .attrs = .{ .bold = true } },
         .thinking => .{ .fg = .fg4, .attrs = .{ .italic = true } },
         .thinking_header => .{ .fg = .green },
         .italic => .{ .attrs = .{ .italic = true } },
         // Dim means *this colour*, not this colour faded. Gruvbox's gray is
         // already a low-contrast foreground; stacking the SGR dim attribute
-        // on top of it halves the intensity again and left the help block and
-        // every notice barely legible on a dark background (reported
-        // 2026-09-12). The attribute now appears only where there is no
-        // colour to carry the meaning.
+        // on top of it halves the intensity again, past legible on a dark
+        // background. The attribute appears only where there is no colour
+        // to carry the meaning.
         .dim => .{ .fg = .gray, .plain = .{ .dim = true } },
         .bold => .{ .attrs = .{ .bold = true } },
         .code => .{ .fg = .aqua, .plain = .{ .underline = true } },
@@ -392,8 +387,6 @@ fn role(style: Style) Role {
         .link => .{ .fg = .blue, .attrs = .{ .underline = true } },
         .bullet => .{ .fg = .orange, .attrs = .{ .bold = true } },
         .quote => .{ .fg = .purple, .attrs = .{ .italic = true } },
-        .status => .{ .fg = .fg1 },
-        .status_busy => .{ .fg = .aqua, .attrs = .{ .bold = true } },
         .status_bg => .{ .bg = .bg1, .plain = .{ .reverse = true } },
         .editor_bg => .{ .bg = .bg0_s, .plain = .{ .reverse = true } },
         .accent => .{ .fg = .green },

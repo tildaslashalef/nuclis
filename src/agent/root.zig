@@ -569,7 +569,7 @@ const Ui = struct {
         const bytes = try engine.readImage(a, self.io, path);
         var decoded = try inference.vision.image.decode(a, bytes);
         defer decoded.deinit(a);
-        var small = try tui.graphics.scaleDown(a, decoded);
+        var small = try tui.graphics.scaleDown(a, .{ .width = decoded.width, .height = decoded.height, .pixels = decoded.pixels });
         defer small.deinit(a);
         // The picture must fit above the region it is written over.
         const above = if (self.scr.region_top > 0) self.scr.region_top -| 2 else self.scr.size.rows / 3;
@@ -735,7 +735,15 @@ const Ui = struct {
         var i: usize = 0;
         while (i < n) {
             const decoded = keys.next(bytes[i..n]) orelse break;
+            const raw = bytes[i .. i + decoded.consumed];
             i += decoded.consumed;
+            // A pressed Ctrl-C ends a paste whose end marker never came; a
+            // pasted 0x03 stays text.
+            if (self.ed.pasting and keys.reportedInterrupt(decoded, raw)) {
+                self.ed.abandonPaste();
+                try self.emit(.{ .notice = "  — paste abandoned: its end never arrived" });
+                continue;
+            }
             try self.handle(decoded.key);
         }
         // Keep one incomplete sequence for the next read; anything longer
@@ -818,7 +826,9 @@ const Ui = struct {
                 try self.queue();
                 return;
             }
-            switch (try self.ed.handleKey(key)) {
+            const acted = try self.ed.handleKey(key);
+            try self.notePasteRefused();
+            switch (acted) {
                 .submit => try self.steer(),
                 .none => {},
                 // The folds apply to what is rendered next; the rows already
@@ -845,7 +855,9 @@ const Ui = struct {
                 else => {},
             }
         }
-        switch (try self.ed.handleKey(key)) {
+        const acted = try self.ed.handleKey(key);
+        try self.notePasteRefused();
+        switch (acted) {
             .none => return self.refreshCompletion(),
             .submit => {
                 self.submit = true;
@@ -892,6 +904,12 @@ const Ui = struct {
             },
             else => {},
         }
+    }
+
+    fn notePasteRefused(self: *Ui) !void {
+        if (!self.ed.takeRefusedPaste()) return;
+        var note: [96]u8 = undefined;
+        try self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — paste refused: the input holds at most {d} KiB", .{editor.max_input >> 10}) catch "  — paste refused" });
     }
 
     /// Ctrl-X: the last answer, as the model wrote it, onto the clipboard.
@@ -2119,6 +2137,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     defer log.deinit();
 
     var term = try terminal.Terminal.init(io, out);
+    // Every failure from here on restores the terminal; the inner `defer`
+    // below orders the normal restore after the live region is erased.
+    defer term.deinit();
+    terminal.restoreOnTermination();
     const th = theme.Theme.detectNamed(environ, settings.theme);
     var scr: screen.Screen = .{ .out = out, .th = th, .caps = screen.Caps.detect(environ), .size = term.size() };
     var tr: transcript.Transcript = .{ .alloc = alloc, .expanded = !settings.fold_thinking };

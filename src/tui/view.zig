@@ -59,8 +59,10 @@ pub fn lines(alloc: std.mem.Allocator, text: []const u8, columns: usize, wrap: W
         // break the row: it becomes the next break point, so a word ending
         // exactly at the last column keeps its row.
         const is_space = cluster.len == 1 and cluster[0] == ' ';
-        if (used + w > columns and !(wrap == .word and is_space)) {
-            const wrapped = wrap == .word and used > 0;
+        // A cluster wider than the row starts it anyway: an empty row first
+        // would never end.
+        if (used + w > columns and used > 0 and !(wrap == .word and is_space)) {
+            const wrapped = wrap == .word;
             try result.append(alloc, text[start..if (wrapped) rowEnd(text, break_at, offset) else offset]);
             start = if (wrapped) break_at orelse offset else offset;
             used = if (wrapped and break_at != null) since_break else 0;
@@ -204,9 +206,66 @@ pub fn styledWidth(text: []const u8) usize {
     return total;
 }
 
+/// Writes `text` without control characters: C0 but newline, DEL, and the
+/// C1 controls (`U+0080`–`U+009F`, which a terminal may read as CSI or ST).
+/// A tab is dropped here; text that keeps its tabs goes through
+/// `expandTabs` before it is wrapped.
 pub fn safe(out: *std.Io.Writer, text: []const u8) !void {
-    for (text) |b| if (b >= 32 and b != 127) try out.writeByte(b) else if (b == '\n') try out.writeByte('\n');
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const b = text[i];
+        if (isC1(text[i..])) {
+            i += 1;
+        } else if ((b >= 32 and b != 127) or b == '\n') try out.writeByte(b);
+    }
 }
+
+/// Whether `text` starts with a UTF-8 encoded C1 control.
+pub fn isC1(text: []const u8) bool {
+    return text.len >= 2 and text[0] == 0xc2 and text[1] >= 0x80 and text[1] <= 0x9f;
+}
+
+/// Tab stops are every `tab_width` cells.
+pub const tab_width = 4;
+
+/// `text` with each tab replaced by spaces to the next tab stop of its line,
+/// counted in cells; `text` itself when it holds no tab. Otherwise allocated
+/// in `a`, which should be an arena: the caller cannot tell which it got.
+pub fn expandTabs(a: std.mem.Allocator, text: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, text, '\t') == null) return text;
+    var out: std.ArrayList(u8) = .empty;
+    var line_start: usize = 0;
+    for (text) |b| {
+        if (b == '\t') {
+            const column = width(out.items[line_start..]);
+            try out.appendNTimes(a, ' ', tab_width - column % tab_width);
+            continue;
+        }
+        try out.append(a, b);
+        if (b == '\n') line_start = out.items.len;
+    }
+    return out.items;
+}
+test "a cluster wider than the row takes a row of its own, with no empty one" {
+    for ([_]Wrap{ .character, .word }) |mode| {
+        const rows = try lines(std.testing.allocator, "中a", 1, mode);
+        defer std.testing.allocator.free(rows);
+        try std.testing.expectEqual(@as(usize, 2), rows.len);
+        try std.testing.expectEqualStrings("中", rows[0]);
+        try std.testing.expectEqualStrings("a", rows[1]);
+    }
+}
+
+test "C1 controls are dropped and tabs reach the next stop" {
+    var buffer: [64]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try safe(&writer, "a\u{9b}31mb\u{9c}c\u{a0}d");
+    try std.testing.expectEqualStrings("a31mbc\u{a0}d", writer.buffered());
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("a   b\n    c\nab中    d", try expandTabs(arena.allocator(), "a\tb\n\tc\nab中\td"));
+}
+
 test "presentation strips escapes and wraps text" {
     var buffer: [100]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buffer);

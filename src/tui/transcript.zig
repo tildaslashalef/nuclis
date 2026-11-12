@@ -353,6 +353,13 @@ pub const Transcript = struct {
                 for (self.blocks.items) |*block| switch (block.*) {
                     .thinking => |*t| t.closed = true,
                     .answer => |*a| a.closed = true,
+                    // A call no result answered (the turn failed between
+                    // them) settles as failed, or it would hold back every
+                    // row after it, the failure's notice included.
+                    .tool_call => |*c| if (c.running) {
+                        c.running = false;
+                        c.failed = true;
+                    },
                     else => {},
                 };
                 try self.summarizeOps();
@@ -818,13 +825,13 @@ fn pushDetail(a: Allocator, out: *std.ArrayList(Row), gl: theme.Glyphs, text: []
 fn pushOutput(a: Allocator, out: *std.ArrayList(Row), gl: theme.Glyphs, text: []const u8, width: usize) !void {
     const body = std.mem.trimEnd(u8, text, "\n");
     if (body.len == 0) return;
-    const rows = try view.lines(a, body, width -| 2, .word);
+    const rows = try view.lines(a, try view.expandTabs(a, body), width -| 2, .word);
     for (rows[0..@min(rows.len, max_output_rows)]) |line| try out.append(a, .{ .text = try a.print("  {s}", .{line}), .style = .dim });
     if (rows.len > max_output_rows) try out.append(a, .{ .text = try a.print("  {s} {d} more lines", .{ gl.ellipsis, rows.len - max_output_rows }), .style = .dim });
 }
 
 fn pushWrapped(a: Allocator, out: *std.ArrayList(Row), text: []const u8, width: usize, style: ?theme.Style) !void {
-    for (try view.lines(a, text, width, .word)) |line| try out.append(a, .{ .text = line, .style = style });
+    for (try view.lines(a, try view.expandTabs(a, text), width, .word)) |line| try out.append(a, .{ .text = line, .style = style });
 }
 
 fn pushRaw(a: Allocator, out: *std.ArrayList(Row), text: []const u8, width: usize) !void {
@@ -988,7 +995,7 @@ test "a flushed answer replays as one render of the same bytes" {
     try testing.expect(std.mem.indexOf(u8, one, "x = ") != null);
 }
 
-test "every block kind renders, including the ones phase 2 produces" {
+test "every block kind renders, tool calls, results, and diffs included" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1033,6 +1040,26 @@ test "every block kind renders, including the ones phase 2 produces" {
     for (rows) |row| if (row.style) |style| try styles.append(a, style);
     try testing.expect(std.mem.indexOfScalar(theme.Style, styles.items, .diff_header) != null);
     try testing.expect(std.mem.indexOfScalar(theme.Style, styles.items, .error_text) != null);
+}
+
+test "a turn that ends while a call runs settles the call and writes what follows" {
+    var tr: Transcript = .{ .alloc = testing.allocator };
+    defer tr.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const options: Render = .{ .width = 80, .th = .{ .kind = .plain } };
+    try tr.apply(.{ .user = "go" });
+    try tr.apply(.{ .tool_call = .{ .id = 1, .name = "bash", .summary = "Bash(ls)" } });
+    try tr.apply(.{ .notice = "  — WriteFailed" });
+    try tr.apply(.{ .turn_end = .{ .stop = .failure } });
+    var text: std.ArrayList(u8) = .empty;
+    for (try tr.takeClosed(a, options)) |row| {
+        try text.appendSlice(a, row.text);
+        try text.append(a, '\n');
+    }
+    try testing.expect(std.mem.indexOf(u8, text.items, "WriteFailed") != null);
+    try testing.expectEqual(tr.blocks.items.len, tr.written);
 }
 
 test "a running call's dot pulses in the region and settles to the state's colour" {

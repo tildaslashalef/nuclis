@@ -112,12 +112,23 @@ pub const Status = struct {
         return per_token * @as(f64, @floatFromInt(self.target - self.position));
     }
 
+    /// `text` without control characters, a newline as a space: one row.
+    fn plain(a: std.mem.Allocator, text: []const u8) ![]const u8 {
+        var out: std.Io.Writer.Allocating = .init(a);
+        try view.safe(&out.writer, text);
+        const cleaned = out.written();
+        std.mem.replaceScalar(u8, cleaned, '\n', ' ');
+        return cleaned;
+    }
+
     pub fn paint(self: Status, a: std.mem.Allocator, options: Paint) ![]const u8 {
         const th = options.th;
         const gl = th.glyphs();
         var left: std.Io.Writer.Allocating = .init(a);
         const spin: []const u8 = if (self.busy) gl.spinner[options.frame % gl.spinner.len] else gl.idle;
-        try left.writer.print(" {s} {s}", .{ spin, self.message });
+        // The bar is a raw row: its free text (the model's name comes from
+        // the file) is cleaned here.
+        try left.writer.print(" {s} {s}", .{ spin, try plain(a, self.message) });
         if (self.busy and self.phase == .prefill and self.target > 0 and self.position < self.target) {
             try left.writer.print(" {s}{d}/{d}{s}", .{ th.paint(.progress), self.position, self.target, theme.fg_default });
             if (self.eta(options.elapsed_seconds)) |seconds_left| try left.writer.print(" ~{d:.0}s", .{seconds_left});
@@ -153,7 +164,7 @@ pub const Status = struct {
         } else try cells.append(a, "speculative off");
         if (self.kv.len != 0) try cells.append(a, try a.print("kv {s}", .{self.kv}));
         if (self.backend.len != 0) try cells.append(a, self.backend);
-        if (self.model.len != 0) try cells.append(a, self.model);
+        if (self.model.len != 0) try cells.append(a, try plain(a, self.model));
 
         const left_width = view.styledWidth(left.written());
         var keep = cells.items.len;
@@ -278,6 +289,20 @@ test "a narrow bar drops settings from the right, then truncates the measurement
     for ([_]usize{ 200, 100, 80, 60, 40, 20 }) |width| {
         try testing.expectEqual(width, view.styledWidth(try status.paint(a, .{ .width = width, .th = .{ .kind = .truecolor } })));
     }
+}
+
+test "a model name or message from a file cannot write escapes on the raw bar" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const status: Status = .{ .message = "bad\x1b]0;x\x07\nnews", .model = "evil\x1b[2J\u{9b}2Jname" };
+    const row = try status.paint(a, .{ .width = 200, .th = .{ .kind = .plain } });
+    try testing.expect(std.mem.indexOfScalar(u8, row, 0x07) == null);
+    try testing.expect(std.mem.indexOf(u8, row, "\x1b]") == null);
+    try testing.expect(std.mem.indexOf(u8, row, "\x1b[2J") == null);
+    try testing.expect(std.mem.indexOf(u8, row, "\u{9b}") == null);
+    try testing.expect(std.mem.indexOfScalar(u8, row, '\n') == null);
+    try testing.expect(std.mem.indexOf(u8, row, "evil[2J2Jname") != null);
 }
 
 test "a prefilling bar counts tokens and marks its estimate" {

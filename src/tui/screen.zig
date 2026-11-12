@@ -262,7 +262,7 @@ pub const Screen = struct {
     /// the agent's signal to rebuild its rows at the new width: after a
     /// reflow the recorded geometry describes rows the terminal has already
     /// moved, so only relative motion (the rewrite path) is trustworthy.
-    /// moved. A painted region is erased where it stood and its bottom
+    /// A painted region is erased where it stood and its bottom
     /// walked to the new last row, so the next paint rebuilds it there.
     /// `cursor` is the terminal's own answer to where the cursor is now (a
     /// resize moves it: a shorter terminal trims its top to keep the cursor's
@@ -321,17 +321,13 @@ pub const Screen = struct {
 
     // ----- internals -----
 
-    /// Writes rows starting at the top of the live region (or at the cursor
-    /// when no region is pending), then clears whatever remains below: the
-    /// next paint starts right after the written rows. The walk crosses the
-    /// slack above the region as well, so the rows land right after the
-    /// transcript; `extra` moves the start further up, over rows that are
-    /// being replaced.
-    /// The cursor-up rewrite: over the region, the slack, and the `extra`
-    /// rows being replaced; the new rows, then the slack again so the region
-    /// keeps its place. Rows the block grew by come out of the slack (the
-    /// region scrolls only past it); rows it shrank by join it, so a fold
-    /// never lifts the editor off the bottom of the screen.
+    /// The cursor-up rewrite: walks up over the region, the slack above it,
+    /// and the `extra` rows being replaced (from the cursor when no region
+    /// is pending), writes `rows`, then the slack again so the region keeps
+    /// its place, and clears what remains below for the next paint. Rows the
+    /// block grew by come out of the slack (the region scrolls only past
+    /// it); rows it shrank by join it, so a fold never lifts the editor off
+    /// the bottom of the screen.
     fn rewriteAbove(self: *Screen, rows: []const Row, extra: usize) !void {
         const out = self.out;
         try self.beginFrame();

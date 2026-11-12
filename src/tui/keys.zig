@@ -47,6 +47,14 @@ pub const Key = union(enum) {
 
 pub const Decoded = struct { key: Key, consumed: usize };
 
+/// Whether `raw`, the bytes `next` decoded, is a Ctrl-C the terminal
+/// reported as a key press (kitty's `CSI 99;5u`). A paste delivers its bytes
+/// verbatim, so a press reported this way is never pasted text, while a raw
+/// `0x03` can be.
+pub fn reportedInterrupt(decoded: Decoded, raw: []const u8) bool {
+    return decoded.key == .ctrl and decoded.key.ctrl == 'c' and raw.len > 1 and raw[0] == 27;
+}
+
 /// Decodes the first key in `bytes`; returns null when the buffer holds an
 /// incomplete sequence (caller should read more). `bytes` must be nonempty.
 pub fn next(bytes: []const u8) ?Decoded {
@@ -195,6 +203,14 @@ test "esc is kitty's code 27, and a lone byte waits for the reader to decide" {
     try std.testing.expect(next("\x1b") == null);
     try std.testing.expect(loneEscape("\x1b"));
     try std.testing.expect(!loneEscape("\x1b["));
+}
+
+test "only a reported Ctrl-C press is told apart from a pasted 0x03" {
+    const pressed = "\x1b[99;5u";
+    try std.testing.expect(reportedInterrupt(next(pressed).?, pressed));
+    try std.testing.expect(!reportedInterrupt(next("\x03").?, "\x03"));
+    const other = "\x1b[100;5u";
+    try std.testing.expect(!reportedInterrupt(next(other).?, other));
 }
 
 test "kitty protocol distinguishes shift+enter and encodes ctrl letters" {
