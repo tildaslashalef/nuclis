@@ -19,8 +19,9 @@ fn handleTerminate(_: std.posix.SIG) callconv(.c) void {
     requested_flag.store(true, .seq_cst);
 }
 
-/// Installs the SIGINT handler for the rest of the process. Safe to call once;
-/// there is no process state to restore because the handler is one-shot.
+/// Installs a one-shot SIGINT handler: the first Ctrl-C requests
+/// cancellation and restores the default, so a second one ends the process
+/// unless `install()` is called again (after `clear()`).
 pub fn install() void {
     oneShot(.INT, handle);
 }

@@ -35,7 +35,9 @@ const usage =
 fn run(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     var buffer: [4096]u8 = undefined;
-    var output = std.Io.File.stdout().writer(init.io, &buffer);
+    // Streaming, not positional: the positional writer counts from offset
+    // zero and overwrites a file opened with `>>`.
+    var output = std.Io.File.stdout().writerStreaming(init.io, &buffer);
     const out = &output.interface;
     defer out.flush() catch {};
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {

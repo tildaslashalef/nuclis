@@ -49,9 +49,8 @@ pub const max_context = 32768;
 /// reasoning modes think for thousands of tokens before answering, so the
 /// cap is the context's half and the default one completion's worth.
 pub const max_output_tokens = 16384;
-/// The largest draft block: the verify matmul's 8-row token tile less the
-/// seed row.
-/// One host constant, the engine's.
+/// The largest draft block, the engine's host constant: the largest
+/// proposal count any shipped drafter declares.
 pub const max_draft_length = inference.engine.max_draft_length;
 /// The largest image token cap a setting may name.
 pub const max_image_tokens = inference.vision.max_image_tokens;
@@ -245,8 +244,8 @@ pub const Config = struct {
         /// The request log's JSON lines under `<root>/logs/`
         /// (docs/guide/api.md § The request log).
         request_log: bool = true,
-        /// Seconds a decision request may wait for the GPU before `529
-        /// timeout`; a clef-flash request alone can hold it for minutes.
+        /// Seconds a request on any route may wait for the GPU before `529
+        /// timeout`; a clef-flash decision alone can hold it for minutes.
         timeout: u32 = 300,
         /// The memory every open model may hold together, decision and
         /// language alike; null is physical memory less a third, at most 16 GiB.
@@ -397,6 +396,10 @@ pub const leaf_count = leafCount(Config);
 /// One `Source` per key, in the walk order of `Config`.
 pub const Origin = [leaf_count]Source;
 
+/// What a speech, transcription, embedding, or decision command says when
+/// Metal is asked of a build without it.
+pub const no_metal_message = "this build has no Metal backend; run with --backend cpu";
+
 /// Carries the human-readable reason for a typed error (the key path, the
 /// expected type or range) since Zig errors carry no payload.
 pub const Diagnostic = struct {
@@ -511,11 +514,7 @@ fn applySection(comptime T: type, target: *T, object: std.json.ObjectMap, prefix
     var it = object.iterator();
     while (it.next()) |entry| {
         if (!hasField(T, entry.key_ptr.*)) {
-            // The section was `chat` until 2026-09-11; same keys, new name.
-            if (hasField(T, "agent") and std.mem.eql(u8, entry.key_ptr.*, "chat"))
-                diag.set("unknown key {s}chat: the section is now agent (rename it; its keys are unchanged)", .{prefix})
-            else
-                diag.set("unknown key {s}{s}", .{ prefix, entry.key_ptr.* });
+            diag.set("unknown key {s}{s}", .{ prefix, entry.key_ptr.* });
             return error.UnknownConfigKey;
         }
     }
@@ -1478,6 +1477,8 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
         try s.write(view.transcribe);
         try s.objectField("serve");
         try s.write(view.serve);
+        try s.objectField("web");
+        try s.write(view.web);
         try s.objectField("cache");
         try s.write(view.cache);
         try s.endObject();
@@ -1753,7 +1754,6 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"image_max_tokens\": 0 } }", .err = error.InvalidConfigValue, .needle = "generation.image_max_tokens must be 1..4096 (found 0)" },
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"image_max_tokens\": \"most\" } }", .err = error.InvalidConfigValue, .needle = "generation.image_max_tokens must be \"auto\" or a positive integer" },
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"image_max_tokens\": 5000 } }", .err = error.InvalidConfigValue, .needle = "generation.image_max_tokens must be 1..4096" },
-        .{ .text = "{ \"schema_version\": 1, \"chat\": { \"think\": \"low\" } }", .err = error.UnknownConfigKey, .needle = "unknown key chat: the section is now agent" },
         .{ .text = "{ \"schema_version\": 1, \"agent\": { \"theme\": \"solarized\" } }", .err = error.InvalidConfigValue, .needle = "agent.theme must be one of gruvbox-dark" },
         .{ .text = "{ \"schema_version\": 1, \"serve\": { \"port\": 70000 } }", .err = error.InvalidConfigValue, .needle = "serve.port must be an integer 0..65535" },
         .{ .text = "{ \"schema_version\": 1, \"serve\": { \"host\": \"\" } }", .err = error.InvalidConfigValue, .needle = "serve.host must not be empty" },

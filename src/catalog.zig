@@ -222,7 +222,7 @@ pub const artifacts = [_]Artifact{
         },
     },
     // Google's quantization-aware-trained 12B: every matrix Q4_0, the
-    // encoding it was trained for. Legacy since 2026-11-10.
+    // encoding it was trained for. Legacy.
     .{
         .name = "gemma-4-12b-qat",
         .title = "Gemma 4 12B QAT",
@@ -283,8 +283,8 @@ pub const artifacts = [_]Artifact{
             .{ .role = .draft, .path = "MTP/mtp-gemma-4-E4B-it-Q4_0.gguf", .size = 59_678_016, .sha256 = "423074e537504b4f9ec5eafed5c639fac82c96631626efccacdd3c4039b20605", .used_for = "speculative decoding", .verdict = .{ .speculative = true, .draft_length = 6 } },
         },
     },
-    // Meta's dense agentic model with its DFlash drafter. Legacy since
-    // 2026-11-10: its check paths left with the gates rework.
+    // Meta's dense agentic model with its DFlash drafter. Legacy: no gate
+    // checks it.
     .{
         .name = "muse-glimmer-30b",
         .title = "Muse Glimmer 30B",

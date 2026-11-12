@@ -84,7 +84,7 @@ pub fn kernelStats(alloc: std.mem.Allocator, json: bool, writer: *std.Io.Writer,
     }
 }
 
-/// Dispatches a Qwen token records (~1,240) with margin; the plan is not asked
+/// The dispatches one Qwen token records (~1,240), with margin; the plan is not asked
 /// because the bench does not know the model, only the backend.
 const profile_dispatch_capacity = 4096;
 
@@ -543,6 +543,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         break :blk try eng.encode(prompt);
     };
     defer alloc.free(tokens);
+    // The timed decode seeds from the last prompt token.
+    if (tokens.len == 0) return error.EmptyPrompt;
     if (tokens.len > capacity or limit > capacity - tokens.len) return error.ContextFull;
     const logits = try alloc.alloc(f32, eng.vocab.tokens.len);
     defer alloc.free(logits);

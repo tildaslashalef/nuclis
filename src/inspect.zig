@@ -113,7 +113,7 @@ pub const SafetensorsSnapshot = struct {
         for (self.dtypes) |d| {
             try out.print("{s}{s: <8}{s}  {s}{d: >7}{s}  {s}{d: >14}{s}  {s}{d: >13}{s}\n", .{ sty.on(.code), d.dtype, off, number, d.tensors, off, number, d.elements, off, number, d.bytes, off });
         }
-        try out.print("\n{s}Header and byte buffer validated; no model family runs safetensors yet.{s}\n", .{ sty.on(.dim), off });
+        try out.print("\n{s}Header and byte buffer validated. No text-generation family runs safetensors; `decide`, `speak`, and `transcribe` do.{s}\n", .{ sty.on(.dim), off });
     }
 };
 

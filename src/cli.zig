@@ -87,6 +87,15 @@ pub const Options = struct {
     json: bool = false,
 };
 
+/// The flags `generate`, `bench`, `agent`, and `tokenize` read with a value;
+/// which command accepts which is decided where the value is read.
+const value_flags = [_][]const u8{ "--accept", "--audio", "--backend", "--capture", "--ctx-size", "--draft", "--draft-length", "--draft-p-min", "--image", "--image-max-tokens", "--kv", "--logits", "--max-tokens", "--min-p", "--prefix-cache", "--presence-penalty", "--prompt", "--prompt-file", "--prompt-profile", "--prompt-tokens", "--repeat", "--repetition-penalty", "--seed", "--speculative", "--temperature", "--think", "--thinking-budget", "--top-k", "--top-p", "--trace-dir", "--verify-rows", "--warmup" };
+
+fn isValueFlag(flag: []const u8) bool {
+    for (value_flags) |known| if (std.mem.eql(u8, flag, known)) return true;
+    return false;
+}
+
 pub fn parseArgs(args: []const []const u8) !Options {
     if (args.len == 0) return .{ .command = .help };
     if (args.len == 1 and (std.mem.eql(u8, args[0], "--help") or std.mem.eql(u8, args[0], "-h")))
@@ -178,7 +187,8 @@ pub fn parseArgs(args: []const []const u8) !Options {
         i = 2;
     }
     if (command == .config) {
-        // The action is positional and required: `config init` | `config show`.
+        // The action is positional and required: `config init`, `sync`,
+        // `show`, or `set`.
         if (args.len < 2) return error.MissingConfigAction;
         options.config_action = std.meta.stringToEnum(@FieldType(Options, "config_action"), args[1]) orelse return error.UnknownConfigAction;
         i = 2;
@@ -303,6 +313,8 @@ pub fn parseArgs(args: []const []const u8) !Options {
             } else return error.UnknownOption;
         } else if (generates or command == .tokenize) {
             const flag = args[i];
+            // A flag no command here takes is unknown, not missing its value.
+            if (!isValueFlag(flag)) return error.UnknownOption;
             i += 1;
             if (i == args.len) return error.MissingOptionValue;
             const value = args[i];
@@ -849,7 +861,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         .inspect, .validate => blk: {
             if (try isSafetensors(io, path)) {
                 if (options.command == .validate) {
-                    diag.set("{s}: a safetensors checkpoint; no model family runs safetensors yet (`nuclis inspect --model` reads it)", .{path});
+                    diag.set("{s}: a safetensors checkpoint; no text-generation family runs one (`decide`, `speak`, and `transcribe` do; `nuclis inspect --model` reads it)", .{path});
                     break :blk error.NotRunnable;
                 }
                 var checkpoint = inference.safetensors.Checkpoint.open(alloc, io, path, .{}) catch |err| {
@@ -922,10 +934,6 @@ fn isSafetensors(io: std.Io, path: []const u8) !bool {
     return stat.kind == .directory;
 }
 
-/// The registry's ids as one comma-separated list, joined at compile time
-/// for the diagnostics above.
-/// `decide`: its own flags, a checkpoint directory rather than a GGUF file,
-/// and none of the engine's keys.
 /// `nuclis agent rm <id>`: deletes the workspace's session `query` names
 /// (a whole id or a prefix of exactly one) and its token-cache states.
 fn removeSession(alloc: std.mem.Allocator, io: std.Io, root: []const u8, cwd: []const u8, query: []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
@@ -983,6 +991,8 @@ fn exportSession(alloc: std.mem.Allocator, io: std.Io, root: []const u8, cwd: []
     try out.print("{s}exported{s} {s}{s}{s} to {s}{s}{s}\n", .{ sty.on(.label), sty.off(), sty.on(.keyword), summary.id, sty.off(), sty.on(.code), target, sty.off() });
 }
 
+/// `decide`: its own flags, a checkpoint directory rather than a GGUF file,
+/// and none of the engine's keys.
 fn runDecide(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty_detected: style.Style, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
@@ -1034,6 +1044,8 @@ fn runServe(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path
     return api.serve(alloc, io, .{ .root = root, .loaded = &loaded, .registry = loaded.config.models, .default_model = loaded.config.decide.model, .version = version }, options, out, sty, diag);
 }
 
+/// The registry's architectures as one comma-separated list, joined at
+/// compile time for the adapter diagnostics.
 const known_architectures = blk: {
     var list: []const u8 = "";
     for (inference.models.known, 0..) |name, i| list = list ++ (if (i > 0) ", " else "") ++ name;
@@ -1175,6 +1187,10 @@ test "agent parses sampling and effort flags without a prompt" {
     try std.testing.expectEqual(@as(usize, 8), options.flags.max_tokens.?);
     try std.testing.expect(options.flags.ctx_size == null);
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "agent", "--think", "loud" }));
+    // A flag the agent does not take is unknown, last or not; a known one without its value is missing it.
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "agent", "--raw" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--bogus" }));
+    try std.testing.expectError(error.MissingOptionValue, parseArgs(&.{ "agent", "--think" }));
     // A forced prompt profile is a common option of every command that renders.
     try std.testing.expectEqual(.gemma4, (try parseArgs(&.{ "agent", "--prompt-profile", "gemma4" })).flags.prompt_profile.?);
     try std.testing.expectEqual(.gemma4, (try parseArgs(&.{ "tokenize", "--prompt", "a", "--prompt-profile", "gemma4" })).flags.prompt_profile.?);
@@ -1309,6 +1325,11 @@ test "config init and show run against NUCLIS_HOME without touching the real roo
     defer parsed.deinit();
     try std.testing.expect(parsed.value.object.get("found").?.bool);
     try std.testing.expectEqualStrings("file", parsed.value.object.get("sources").?.object.get("engine.model").?.string);
+    // The effective view carries every section the file can hold.
+    inline for (@typeInfo(config.Config).@"struct".field_names) |name| {
+        if (comptime std.mem.eql(u8, name, "schema_version") or std.mem.eql(u8, name, "models")) continue;
+        try std.testing.expect(parsed.value.object.get("effective").?.object.get(name) != null);
+    }
     // A broken file stops every model command with the key named, before any model is opened.
     try tmp.dir.writeFile(io, .{ .sub_path = "nuclis.json", .data = "{ \"schema_version\": 1, \"engine\": { \"ctx\": 1 } }" });
     try std.testing.expectError(error.UnknownConfigKey, run(alloc, io, &environ, try parseArgs(&.{ "generate", "--prompt", "hi" }), &out.writer, &diag));

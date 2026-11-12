@@ -11,11 +11,12 @@ pub const Model = inference.engine.Model;
 pub const Engine = inference.engine.Engine;
 
 /// Reads the prompt text from `--prompt` or `--prompt-file`. Inline prompts are
-/// limited to 64 KiB, files to 4 MiB; neither is ever truncated. Caller owns
-/// the result.
+/// limited to 64 KiB, files to 4 MiB; neither is ever truncated, and neither
+/// may be empty. Caller owns the result.
 pub fn readPrompt(alloc: std.mem.Allocator, io: std.Io, inline_prompt: ?[]const u8, file_path: ?[]const u8) ![]u8 {
     if (inline_prompt != null and file_path != null) return error.ConflictingPromptSources;
     if (inline_prompt) |text| {
+        if (text.len == 0) return error.EmptyPrompt;
         if (text.len > 64 * 1024) return error.LimitExceeded;
         return alloc.dupe(u8, text);
     }
@@ -80,6 +81,7 @@ test "prompt sources are exclusive and inline prompts are bounded" {
     const alloc = std.testing.allocator;
     try std.testing.expectError(error.MissingPrompt, readPrompt(alloc, std.testing.io, null, null));
     try std.testing.expectError(error.ConflictingPromptSources, readPrompt(alloc, std.testing.io, "a", "b"));
+    try std.testing.expectError(error.EmptyPrompt, readPrompt(alloc, std.testing.io, "", null));
     const text = try readPrompt(alloc, std.testing.io, "hello", null);
     defer alloc.free(text);
     try std.testing.expectEqualStrings("hello", text);

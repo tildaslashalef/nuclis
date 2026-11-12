@@ -13,9 +13,7 @@
 //! them. `Plan` dedups the units and records each one's last user; `execute`
 //! fetches every unit exactly once through a sliding window of concurrent
 //! futures and decodes chunks straight into the sink in file order, skipping
-//! chunks outside the term by their headers. Fetching per output window
-//! instead (the previous design) pulled every unit that a window touched and
-//! the next window pulled it again: 1.5× the file in CDN traffic.
+//! chunks outside the term by their headers.
 //!
 //! Work is bounded by `concurrency` units in flight (each up to 64 MiB of
 //! xorb bytes, typically ~8 MB) plus units held for a later term, and two
@@ -132,7 +130,8 @@ fn transient(err: anyerror) bool {
 }
 
 /// Streams bytes [start, start + count) of the file into `sink.write(bytes)`
-/// in order, `concurrency` fetches at a time. A transient failure (rate
+/// in order: a Xet file `concurrency` fetches at a time, a file served by
+/// plain HTTPS one range request at a time. A transient failure (rate
 /// limit, 5xx, timeout, expired token or signed URL) resumes from the last
 /// byte delivered with fresh authorization, up to three attempts in a row.
 /// The sink sees whole chunks only; bytes are never delivered twice.

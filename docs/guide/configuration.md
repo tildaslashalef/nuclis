@@ -268,5 +268,3 @@ flags it ran with.
 - A `schema_version` other than 1 is an error that states the migration:
   move the file aside, run `config init`, copy your settings back. A new
   key with a default does not change the version.
-- A file with a `chat` section (the old name of `agent`) is refused with a
-  message saying to rename it.

@@ -385,7 +385,8 @@ pub fn selectFiles(arena: Allocator, a: *const catalog.Artifact, options: PullOp
 /// revision, prints the pinned commit, downloads or verifies each file,
 /// and writes the sidecars. An index artifact whose files come from
 /// several repositories pulls one repository at a time, each with its own
-/// report. `diag` carries the reason of every typed failure.
+/// report (under `json`, one array of them). `diag` carries the reason of
+/// every typed failure.
 pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
     const a = catalog.find(options.repo) orelse return pullOne(gpa, io, environ, root, options, null, json, out, sty, diag);
     if (options.file != null or options.revision != null) {
@@ -400,9 +401,22 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
         diag.set("{s} pulls from {d} repositories; register it with `nuclis config sync` after the pull", .{ a.name, groups.len });
         return error.ConflictingOptions;
     }
-    // The other repositories first, so the artifact's own report is last.
-    for (groups[1..]) |g| try pullOne(gpa, io, environ, root, options, g, json, out, sty, diag);
-    return pullOne(gpa, io, environ, root, options, groups[0], json, out, sty, diag);
+    if (!json or groups.len == 1) {
+        // The other repositories first, so the artifact's own report is last.
+        for (groups[1..]) |g| try pullOne(gpa, io, environ, root, options, g, json, out, sty, diag);
+        return pullOne(gpa, io, environ, root, options, groups[0], json, out, sty, diag);
+    }
+    // Several repositories under --json: one array, one report per
+    // repository, written only once every pull succeeded.
+    var reports: std.Io.Writer.Allocating = .init(arena);
+    try reports.writer.writeAll("[\n");
+    for (groups[1..]) |g| {
+        try pullOne(gpa, io, environ, root, options, g, json, &reports.writer, sty, diag);
+        try reports.writer.writeAll(",\n");
+    }
+    try pullOne(gpa, io, environ, root, options, groups[0], json, &reports.writer, sty, diag);
+    try reports.writer.writeAll("]\n");
+    return out.writeAll(reports.written());
 }
 
 /// `files` as one plan per origin (repository and commit), in first-seen
