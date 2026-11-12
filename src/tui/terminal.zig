@@ -76,6 +76,7 @@ pub const Terminal = struct {
         raw.cc[@backingInt(std.posix.V.TIME)] = 0;
         var term: Terminal = .{ .io = io, .saved = saved, .raw = raw, .out = out };
         try term.acquire();
+        @import("../panic_hook.zig").at("terminal");
         return term;
     }
     /// Idempotent: a `defer` right after `init` covers every failure, and an
@@ -188,6 +189,7 @@ pub const Terminal = struct {
 pub const CursorReport = struct { row: usize, column: usize };
 
 /// The first `CSI row ; col R` in `bytes`, with where it sits, or null.
+/// A number too long for `usize` saturates: the bytes are the terminal's.
 pub fn findCursorReport(bytes: []const u8) ?struct { report: CursorReport, start: usize, end: usize } {
     var start: usize = 0;
     while (std.mem.indexOfPos(u8, bytes, start, "\x1b[")) |at| : (start = at + 1) {
@@ -196,14 +198,14 @@ pub fn findCursorReport(bytes: []const u8) ?struct { report: CursorReport, start
         var col: usize = 0;
         var digits: usize = 0;
         while (i < bytes.len and std.ascii.isDigit(bytes[i])) : (i += 1) {
-            row = row * 10 + (bytes[i] - '0');
+            row = row *| 10 +| (bytes[i] - '0');
             digits += 1;
         }
         if (digits == 0 or i >= bytes.len or bytes[i] != ';') continue;
         i += 1;
         digits = 0;
         while (i < bytes.len and std.ascii.isDigit(bytes[i])) : (i += 1) {
-            col = col * 10 + (bytes[i] - '0');
+            col = col *| 10 +| (bytes[i] - '0');
             digits += 1;
         }
         if (digits == 0 or i >= bytes.len or bytes[i] != 'R') continue;
@@ -315,6 +317,9 @@ test "a cursor report is found among other bytes, and a key sequence is not one"
     try testing.expect(findCursorReport("\x1b[1;5A") == null); // Ctrl-Up, not a report
     try testing.expect(findCursorReport("\x1b[38;") == null); // still arriving
     try testing.expect(findCursorReport("plain") == null);
+    const huge = findCursorReport("\x1b[99999999999999999999999;7R").?;
+    try testing.expectEqual(@as(usize, std.math.maxInt(usize)), huge.report.row);
+    try testing.expectEqual(@as(usize, 7), huge.report.column);
 }
 
 test "the clipboard sequence is OSC 52 with the text in base64" {

@@ -63,7 +63,7 @@ pub const Service = struct {
         try speech.listAudio(arena, io, self.root, self.registry, .transcription, self.default_model, null, &self.slot, out);
         for (out.items[first..]) |*e| {
             const details = &e.details.object;
-            if (details.getPtr("limits")) |l| try l.object.put(arena, "max_file_bytes", .{ .integer = @intCast(self.files.max_bytes) });
+            if (details.getPtr("limits")) |l| try l.object.put(arena, "max_file_bytes", .{ .integer = @intCast(self.files.max_bytes) }); // checked: a host limit
             var diag: config.Diagnostic = .{};
             const resolved = audio_catalog.resolve(arena, self.root, self.registry, e.id, .transcription, false, &diag) catch continue;
             const languages = (try audio_catalog.transcriptionLanguages(arena, io, resolved.directory)) orelse &.{};
@@ -121,7 +121,7 @@ fn requestOptions(arena: std.mem.Allocator, languages: []const []const u8) !std.
     try o.put(arena, "response_format", try (Option{ .type = .@"enum", .values = try models.strings(arena, formats.items), .default = .{ .string = @tagName(defaults.format) } }).value(arena));
     try o.put(arena, "timestamp_granularities", try (Option{ .type = .enum_list, .values = try models.strings(arena, &.{ "segment", "word" }), .default = .{ .array = try models.strings(arena, &.{"segment"}) } }).value(arena));
     try o.put(arena, "stream", try (Option{ .type = .boolean, .default = .{ .bool = defaults.stream } }).value(arena));
-    try o.put(arena, "lookahead", try (Option{ .type = .@"enum", .values = try models.integers(arena, inference.audio.nemotron_encoder.lookaheads), .default = .{ .integer = @intCast(defaults.lookahead) } }).value(arena));
+    try o.put(arena, "lookahead", try (Option{ .type = .@"enum", .values = try models.integers(arena, inference.audio.nemotron_encoder.lookaheads), .default = .{ .integer = @intCast(defaults.lookahead) } }).value(arena)); // checked: a constant
     try o.put(arena, "phrases", try (Option{ .type = .string_list, .max_items = inference.audio.boost.max_phrases, .max_bytes = inference.audio.boost.max_phrase_bytes, .default = .{ .array = .init(arena) } }).value(arena));
     return o;
 }

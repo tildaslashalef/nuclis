@@ -22,7 +22,7 @@ BIN      := ./zig-out/bin/nuclis
 METAL    := -Dmetal=true -Doptimize=$(OPT)
 
 .DEFAULT_GOAL := build
-.PHONY: help build debug build-cpu build-linux metal install uninstall test test-metal test-tiny check gates-tool verify-auto verify verify-release verify-long verify-cpu verify-changed sweep gate gates-list gates-validate \
+.PHONY: help build debug build-cpu build-linux metal install uninstall test test-metal test-tiny fuzz input-safety check gates-tool verify-auto verify verify-release verify-long verify-cpu verify-changed sweep gate gates-list gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate speed speed-base spec-matrix \
         agent agent-eval api-check playground model-ls eval-corpus speech-corpus trace capture clean clean-cache distclean hf-downloader test-hf version release-draft release tag site-check site-serve docs-check
@@ -76,7 +76,14 @@ test-metal: ## GPU kernel fixture/lifecycle checks (needs a Metal device, no mod
 test-tiny: ## Metal against the CPU reference on generated models (needs a Metal device, no download)
 	$(ZIG) build test-tiny $(METAL)
 
-check: fmt-check test test-metal test-tiny gates-validate workloads-validate ## Format check + unit tests + GPU fixtures + the two manifests (seconds)
+fuzz: ## One fuzz test under the fuzzer for SECONDS (default 60): TARGET=NAME; without TARGET, the list (docs/development.md § Hostile input)
+	python3 scripts/gate/fuzz.py $(if $(TARGET),--target $(TARGET) --seconds $(or $(SECONDS),60),--list)
+
+input-safety: ## No panic, assert, unchecked cast, or forced optional on outside input without a `// checked:` reason
+	python3 scripts/repo/input-safety-check.py --self-test
+	python3 scripts/repo/input-safety-check.py
+
+check: fmt-check input-safety test test-metal test-tiny gates-validate workloads-validate ## Format check + the input-safety check + unit tests (fuzz corpora included) + GPU fixtures + the two manifests (seconds)
 
 # ---- gates (gates.json; docs/development.md § Gates) ----------------------
 # Every model-specific numerical check is a gate in the manifest, run by the

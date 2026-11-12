@@ -70,7 +70,7 @@ pub const Pool = struct {
         self.mutex.lockUncancelable(io);
         self.slot = .{ .path = owned_path, .name = owned_name, .embedder = embedder, .bytes = bytes };
         self.mutex.unlock(io);
-        const load_ns: u64 = @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds()));
+        const load_ns: u64 = @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())); // checked: clamped non-negative; one load, below 584 years
         return .{ .embedder = embedder, .load_ns = load_ns };
     }
 

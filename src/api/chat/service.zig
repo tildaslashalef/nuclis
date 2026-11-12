@@ -112,7 +112,7 @@ pub const Service = struct {
         }
         job.logTo(request.fields);
         switch (job.outcome) {
-            .pending => unreachable,
+            .pending => unreachable, // checked: `waitWhole` returned `.done`: the run set the outcome
             .failed => |e| return .fromError(arena, e),
             .done => {},
         }
@@ -152,8 +152,8 @@ pub const Service = struct {
         const mmproj = if (settings.entry) |entry| entry.mmproj else if (pinned_entry) |entry| if (entry.companion(.mmproj)) |c| c.file else null else null;
         const projector = mmproj != null;
         // A registry entry naming a catalogue file pulls what the catalogue pins.
-        const catalogue_file = if (settings.entry) |e| if (e.repo != null and e.file != null) catalog.findFile(e.repo.?, e.file.?) else null else null;
-        const download: ?u64 = if (pinned_entry != null and !registered) pinned_entry.?.size else if (catalogue_file) |m| if (m.role == .main) m.entry.size else null else null;
+        const catalogue_file = if (settings.entry) |e| if (e.repo != null and e.file != null) catalog.findFile(e.repo.?, e.file.?) else null else null; // checked: both checked non-null in the same line
+        const download: ?u64 = if (pinned_entry != null and !registered) pinned_entry.?.size else if (catalogue_file) |m| if (m.role == .main) m.entry.size else null else null; // checked: checked non-null in the same line
         const details = try arena.create(std.json.ObjectMap);
         details.* = .empty;
         try details.put(arena, "kind", .{ .string = "language" });
@@ -161,7 +161,7 @@ pub const Service = struct {
         try details.put(arena, "architecture", if (about.architecture) |a| .{ .string = a } else .null);
         try details.put(arena, "profile", .{ .string = @tagName(profile) });
         try details.put(arena, "quantization", if (about.quantization) |q| .{ .string = q } else .null);
-        try details.put(arena, "size_bytes", .{ .integer = @intCast(about.size_bytes) });
+        try details.put(arena, "size_bytes", .{ .integer = @intCast(about.size_bytes) }); // checked: a file's size, below 2^63
         try details.put(arena, "present", .{ .bool = present });
         try details.put(arena, "loaded", .{ .bool = present and self.language.isOpen(io, name) });
         const file_bytes: u64 = if (present) blk: {
@@ -172,10 +172,10 @@ pub const Service = struct {
         try details.put(arena, "default", .{ .bool = std.mem.eql(u8, name, loaded.config.engine.model) });
         try details.put(arena, "source", .{ .string = if (registered) "registry" else "catalogue" });
         // What `nuclis model pull <name>` fetches: the model alone.
-        try details.put(arena, "download_bytes", if (download) |b| .{ .integer = @intCast(b) } else .null);
-        try details.put(arena, "context_length", .{ .integer = @intCast(settings.ctx_size) });
+        try details.put(arena, "download_bytes", if (download) |b| .{ .integer = @intCast(b) } else .null); // checked: a catalogue size, compiled in
+        try details.put(arena, "context_length", .{ .integer = @intCast(settings.ctx_size) }); // checked: a catalogue size, compiled in
         try details.put(arena, "images", .{ .bool = projector });
-        try details.put(arena, "audio", .{ .bool = present and profile.audioPlaceholder() != null and hearsAudio(arena, io, self.language.root.?, loaded.config.models, name, mmproj) });
+        try details.put(arena, "audio", .{ .bool = present and profile.audioPlaceholder() != null and hearsAudio(arena, io, self.language.root.?, loaded.config.models, name, mmproj) }); // checked: a `u32`
         try details.put(arena, "efforts", .{ .array = efforts });
         var features: std.json.ObjectMap = .empty;
         // Every prompt profile renders native tool calls.
@@ -194,7 +194,7 @@ pub const Service = struct {
         try details.put(arena, "features", .{ .object = features });
         var limits: std.json.ObjectMap = .empty;
         try limits.put(arena, "max_output_tokens", .{ .integer = wire.max_output_tokens });
-        try limits.put(arena, "max_tools", .{ .integer = @intCast((inference.profiles.Limits{}).tools) });
+        try limits.put(arena, "max_tools", .{ .integer = @intCast((inference.profiles.Limits{}).tools) }); // checked: a constant
         try limits.put(arena, "max_images", .{ .integer = wire.max_images });
         try limits.put(arena, "max_image_bytes", .{ .integer = wire.max_image_bytes });
         try limits.put(arena, "max_audio_clips", .{ .integer = wire.max_clips });
@@ -240,7 +240,7 @@ fn requestOptions(arena: std.mem.Allocator, profile: inference.profiles.Profile,
         const is_int = comptime std.mem.eql(u8, f.name, "top_k");
         const of = struct {
             fn value(a: std.mem.Allocator, s: inference.sampling.Options) !std.json.Value {
-                return if (is_int) .{ .integer = @intCast(@field(s, f.name)) } else models.number(a, @field(s, f.name));
+                return if (is_int) .{ .integer = @intCast(@field(s, f.name)) } else models.number(a, @field(s, f.name)); // checked: a `u32` option
             }
         }.value;
         var by_effort: std.json.ObjectMap = .empty;
@@ -257,7 +257,7 @@ fn requestOptions(arena: std.mem.Allocator, profile: inference.profiles.Profile,
             .by_effort = by_effort,
         }).value(arena));
     }
-    try o.put(arena, "max_tokens", try (Option{ .type = .integer, .min = .{ .integer = 1 }, .max = .{ .integer = wire.max_output_tokens }, .default = .{ .integer = @intCast(@min(settings.max_tokens, wire.max_output_tokens)) } }).value(arena));
+    try o.put(arena, "max_tokens", try (Option{ .type = .integer, .min = .{ .integer = 1 }, .max = .{ .integer = wire.max_output_tokens }, .default = .{ .integer = @intCast(@min(settings.max_tokens, wire.max_output_tokens)) } }).value(arena)); // checked: bounded by `wire.max_output_tokens`
     try o.put(arena, "seed", try (Option{ .type = .integer, .min = .{ .integer = 0 } }).value(arena));
     try o.put(arena, "tool_choice", try (Option{ .type = .@"enum", .values = try models.strings(arena, &.{ "auto", "none" }), .default = .{ .string = "auto" } }).value(arena));
     var tool_types: std.ArrayList([]const u8) = .empty;
@@ -431,7 +431,7 @@ const Job = struct {
         // Held across every hosted round: a drain between rounds may not close it.
         language.hold(io, true);
         defer language.hold(io, false);
-        self.name = self.arena.dupe(u8, language.name.?) catch "";
+        self.name = self.arena.dupe(u8, language.name.?) catch ""; // checked: `ensure` above succeeded, which names the loaded model
         var sink: completer_mod.Sink = .{ .context = self, .call = route };
         if (self.pipe != null) {
             self.chunks = .{ .id = self.id, .created = self.created, .model = self.name, .include_usage = self.request.include_usage };
@@ -576,14 +576,14 @@ const Job = struct {
     /// finishes. The wait lets queued short GPU items run and stops for a
     /// client that left. Returns the text each call's tool message carries.
     fn runHosted(self: *Job) std.mem.Allocator.Error![]const []const u8 {
-        const service = self.service.web.?;
+        const service = self.service.web.?; // checked: hosted calls run only when the request enabled them, which needs the service
         const texts = try self.arena.alloc([]const u8, self.hosted.items.len);
         const beat: web.Beat = .{ .context = self, .call = webBeat };
         for (self.hosted.items, texts) |call, *text| {
             // Streamed, the client hears of the call before its wait.
             if (self.pipe != null) self.emit(wire.Collector.WebCall{ .name = call.name, .arguments = call.arguments, .status = .started });
             const rendered: web.tools.Rendered = if (self.request.web.runs(call.name))
-                (try web.tools.run(service, self.arena, call.name, call.arguments, self.request.web.context, beat)).?
+                (try web.tools.run(service, self.arena, call.name, call.arguments, self.request.web.context, beat)).? // checked: `runs` admits only the hosted tools' names, which `run` always answers
             else
                 .{ .text = try self.arena.print("{s} is not a tool in this request; use the tools listed", .{call.name}), .is_error = true };
             text.* = rendered.text;
@@ -668,7 +668,7 @@ const Job = struct {
         };
         encoded catch return;
         if (out.written().len == 0) return;
-        self.pipe.?.write(self.io, out.written()) catch self.cancel.store(true, .release);
+        self.pipe.?.write(self.io, out.written()) catch self.cancel.store(true, .release); // checked: every `emit` call checks `pipe` first
     }
 
     fn check(context: *anyopaque) anyerror!void {
@@ -714,7 +714,7 @@ const Job = struct {
         var quiet_since = std.Io.Clock.awake.now(io);
         while (true) {
             if (self.peer) |peer| if (peer.gone()) return self.abandon(io);
-            const taken = self.pipe.?.take(io, &buffer, fromNow(io, poll_ms)) catch return self.abandon(io);
+            const taken = self.pipe.?.take(io, &buffer, fromNow(io, poll_ms)) catch return self.abandon(io); // checked: `writeStream` is installed only for a streamed job, which has a pipe
             switch (taken) {
                 .closed => return true,
                 .data => |bytes| {
@@ -753,7 +753,7 @@ const Job = struct {
 
     fn abandon(self: *Job, io: std.Io) bool {
         self.cancel.store(true, .release);
-        self.pipe.?.abandon(io);
+        self.pipe.?.abandon(io); // checked: called only from `writeStream`
         if (self.note.len == 0) self.note = "cancelled: the client closed the connection";
         return false;
     }
@@ -765,7 +765,7 @@ const Job = struct {
         if (!executor.withdraw(io, &self.item)) {
             while (!executor.poll(io, &self.item, fromNow(io, poll_ms))) {}
         }
-        self.pipe.?.deinit(self.service.language.gpa);
+        self.pipe.?.deinit(self.service.language.gpa); // checked: called only from `writeStream`
     }
 
     fn streamNote(context: *anyopaque) []const u8 {
@@ -868,7 +868,7 @@ fn extendForHosted(arena: std.mem.Allocator, request: *wire.Request, hosted: []c
     const old = request.messages;
     const next_id = nextId(old);
     const calls = try arena.alloc(Profile.ToolCall, hosted.len);
-    for (hosted, calls, 0..) |call, *numbered, i| numbered.* = .{ .id = next_id + @as(u32, @intCast(i)), .name = call.name, .arguments = call.arguments };
+    for (hosted, calls, 0..) |call, *numbered, i| numbered.* = .{ .id = next_id + @as(u32, @intCast(i)), .name = call.name, .arguments = call.arguments }; // checked: at most the hosted calls of one turn
     const messages = try arena.alloc(Profile.Message, old.len + 1 + calls.len);
     @memcpy(messages[0..old.len], old);
     messages[old.len] = .{ .role = .assistant, .content = try arena.dupe(u8, answer), .reasoning_content = try arena.dupe(u8, reasoning), .tool_calls = calls };

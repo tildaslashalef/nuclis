@@ -19,7 +19,7 @@ pub const Pipe = struct {
     abandoned: bool = false,
 
     pub fn init(gpa: std.mem.Allocator, capacity: usize) !Pipe {
-        std.debug.assert(capacity > 0);
+        std.debug.assert(capacity > 0); // checked: every caller passes a constant capacity
         return .{ .buffer = try gpa.alloc(u8, capacity) };
     }
 
@@ -32,7 +32,7 @@ pub const Pipe = struct {
     /// while the queue is full. `Abandoned` once the consumer has gone; what
     /// was not yet queued is dropped.
     pub fn write(self: *Pipe, io: std.Io, bytes: []const u8) error{Abandoned}!void {
-        std.debug.assert(!self.closed);
+        std.debug.assert(!self.closed); // checked: the producer closes the pipe after its last write
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         var rest = bytes;
@@ -89,7 +89,7 @@ pub const Pipe = struct {
     /// Waits until bytes are queued, the producer closes, or `deadline`
     /// passes, then moves up to `out.len` queued bytes into `out`.
     pub fn take(self: *Pipe, io: std.Io, out: []u8, deadline: std.Io.Clock.Timestamp) error{Canceled}!Taken {
-        std.debug.assert(out.len > 0);
+        std.debug.assert(out.len > 0); // checked: every caller passes a fixed buffer
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         while (self.len == 0) {

@@ -1695,6 +1695,19 @@ An error a stream reports after its `200` is the end line's `error` and
 `message` beside the `200`. `GET /v1/health` lists the requests in flight, each with
 its fields so far (`GET /v1/health` above).
 
+**A panic.** A panic means the server's state cannot be trusted, so the
+process ends: every connection drops, and the models it held close. Its
+last line is a `server.panic`: `id`, the request the panicking thread was
+serving (null when it was the GPU worker's), `in_flight`, the id of every
+request still running, and `message`, the panic's. Run `nuclis serve`
+under a supervisor that restarts it (launchd's `KeepAlive`, systemd's
+`Restart=on-failure`); a client sees its connection close without a
+response and retries.
+
+```json
+{"time":"2026-11-12T09:00:33.688Z","schema":1,"event":"server.panic","id":"01a1cefc-c218-7957-80b5-152e361eb8ab","in_flight":["01a1cefc-c218-7957-80b5-152e361eb8ab"],"message":"integer overflow"}
+```
+
 ## Measured rates
 
 Apple M4 Pro (48 GB), ReleaseFast, Zig 0.16.0, macOS 27.0; `nuclis serve

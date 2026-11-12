@@ -314,3 +314,25 @@ test "refusals: no delimiter, truncated, bad headers, too many parts or files, o
     defer arena_state.deinit();
     try std.testing.expectError(error.NotMultipart, parse(arena_state.allocator(), part, "application/x-www-form-urlencoded", .{}));
 }
+
+test "fuzz multipart: any body under any content type is a form or a typed error" {
+    const fuzz = @import("inference").fuzz;
+    const Case = struct {
+        /// The content type, a NUL, then the body.
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [fuzz.max_input]u8 = undefined;
+            const input = fuzz.bytes(smith, &buf);
+            const cut = std.mem.indexOfScalar(u8, input, 0) orelse input.len;
+            var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+            defer arena.deinit();
+            const form = parse(arena.allocator(), input[@min(cut + 1, input.len)..], input[0..cut], .{ .parts = 8, .header_bytes = 256 }) catch return;
+            for (form.parts) |part| try std.testing.expect(part.data.len <= input.len);
+        }
+    };
+    try std.testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&.{
+        "multipart/form-data; boundary=XyZ\x00--XyZ\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nm\r\n--XyZ\r\ncontent-disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\r\n--XyZ--\r\n",
+        "multipart/form-data; boundary=\"a\"\x00--a\r\n\r\n--a--",
+        "multipart/form-data\x00--XyZ\r\n",
+        "multipart/form-data; boundary=a\x00preamble\r\n--a  \r\ncontent-disposition: form-data; name=x\r\n\r\n--a\r\n--a--epilogue",
+    }) });
+}

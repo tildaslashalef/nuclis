@@ -167,7 +167,7 @@ pub const Decoder = struct {
         if (eos and self.markers.channel != null) return self.finishChannelTool(sink);
         defer self.tool_buf.clearRetainingCapacity();
         if (eos) {
-            if (try self.markers.tool.?.parse(self.alloc, self.tool_buf.items)) |call| {
+            if (try self.markers.tool.?.parse(self.alloc, self.tool_buf.items)) |call| { // checked: `in_tool` is set without a channel only under `markers.tool`
                 defer {
                     self.alloc.free(call.name);
                     self.alloc.free(call.arguments);
@@ -357,7 +357,7 @@ pub const Decoder = struct {
 
     /// Parse and emit the collected tool body, or release it as answer text.
     fn finishChannelTool(self: *Decoder, sink: anytype) !void {
-        const parse = self.markers.channel.?.parse.?;
+        const parse = self.markers.channel.?.parse.?; // checked: `in_tool` is set under the channel grammar only when `channel.parse` is
         const parsed = try parse(self.alloc, self.tool_buf.items);
         if (parsed) |call| {
             defer {
@@ -375,7 +375,7 @@ pub const Decoder = struct {
     /// One complete call: parse the collected body and emit it; otherwise
     /// release it as answer text or drop it, as `Tool.unparsed` says.
     fn finishTool(self: *Decoder, sink: anytype) !void {
-        const tool = self.markers.tool.?;
+        const tool = self.markers.tool.?; // checked: reached only from the `markers.tool` branch of `feed` and from `endTool` under it
         const parsed = try tool.parse(self.alloc, self.tool_buf.items);
         if (parsed) |call| {
             defer {
@@ -987,4 +987,65 @@ test "stubbed completions flush text then emit one stop with unchanged metrics" 
             try std.testing.expectEqual(@as(usize, 1), sink.stops);
         }
     }
+}
+
+/// Takes every event and reads every byte it carries, so a slice the decoder
+/// freed or never filled shows up under the testing allocator.
+const FuzzSink = struct {
+    seen: usize = 0,
+
+    fn send(self: *FuzzSink, event: Event) !void {
+        switch (event) {
+            inline .thinking, .answer => |text| for (text) |byte| {
+                self.seen +%= byte;
+            },
+            .tool_call => |call| self.seen +%= call.name.len + call.arguments.len,
+            else => self.seen +%= 1,
+        }
+    }
+};
+
+test "fuzz decoder: any token sequence under either grammar decodes without a panic or a leak" {
+    const fuzz = @import("../fuzz.zig");
+    const Case = struct {
+        /// The first byte picks the grammar (bit 0), thinking (bit 1), the
+        /// unparsed rule (bit 2), and the stop (bit 3); then each step is a
+        /// byte, its low nibble the token id and its high nibble the piece's
+        /// length, followed by the piece.
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [4096]u8 = undefined;
+            const input = fuzz.bytes(smith, &buf);
+            if (input.len == 0) return;
+            const flags = input[0];
+            var tokens: [16]Token = @splat(.{ .text = "x", .kind = .normal });
+            for ([_]u32{ 0, 1, 2, 3, 4, 9 }) |id| tokens[id].kind = .control;
+            tokens[12].kind = .byte;
+            const markers: Markers = if (flags & 1 == 0) .{
+                .open = 1,
+                .close = 2,
+                .open_suffix = "thought\n",
+                .tool = .{ .open = 3, .close = 4, .parse = ToolFixture.parse, .unparsed = if (flags & 4 == 0) .text else .cut },
+                .tokens = &tokens,
+            } else .{ .open = 0, .close = 2, .channel = .{ .start = 0, .message = 1, .eom = 2, .parse = ToolFixture.parse }, .tokens = &tokens };
+            var d = Decoder.init(std.testing.allocator, markers, flags & 2 != 0);
+            defer d.deinit();
+            var sink: FuzzSink = .{};
+            var rest = input[1..];
+            while (rest.len > 0) {
+                const step = rest[0];
+                const len = @min(step >> 4, rest.len - 1);
+                try d.feed(step & 0x0f, rest[1..][0..len], &sink);
+                rest = rest[1 + len ..];
+            }
+            try d.end(.{ .stop = if (flags & 8 == 0) .eos else .token_budget, .timing = .{} }, &sink);
+        }
+    };
+    try std.testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&.{
+        "\x00\x8ahello \x03\x4bBODY\x04\x0a",
+        "\x00\x03\x4bBODY\x03\x4bBODY\x04",
+        "\x04\x03\x2bab\x01\x03",
+        "\x02\x01\x8bthought\n\x5bdeep \x02\x3aend",
+        "\x01\x9bassistant\x01\x5breply\x09\x02\x00",
+        "\x03\x00\x01\x01\x02\x02",
+    }) });
 }

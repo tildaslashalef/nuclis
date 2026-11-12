@@ -156,6 +156,68 @@ pub const End = struct {
     bytes_out: usize = 0,
 };
 
+/// The book a panic reports to while `serve` runs (`armPanic`).
+var panic_book: std.atomic.Value(?*Book) = .init(null);
+/// The record this thread serves, from `begin` to `finish`: a panic on a
+/// connection's thread names it.
+threadlocal var serving: ?*Record = null;
+
+/// Makes `book` the one `writePanic` reports to; null disarms it.
+pub fn armPanic(book: ?*Book) void {
+    panic_book.store(book, .release);
+}
+
+/// From the panic handler: one `server.panic` line naming the request this
+/// thread was serving (null on a worker's thread) and every request in
+/// flight, so the crash is attributable. No allocation and no wait: the
+/// list is read only when its mutex is free, and the line is one `write`.
+pub fn writePanic(message: []const u8) void {
+    const book = panic_book.swap(null, .acq_rel) orelse return;
+    const listed = book.mutex.tryLock();
+    const fd = if (book.file) |f| f.fd else -1;
+    if (fd < 0) return;
+    var ts: std.c.timespec = undefined;
+    const now: std.Io.Timestamp = if (std.c.clock_gettime(.REALTIME, &ts) == 0)
+        .{ .nanoseconds = @as(i96, ts.sec) * std.time.ns_per_s + ts.nsec }
+    else
+        .{ .nanoseconds = 0 };
+    var buffer: [max_line]u8 = undefined;
+    const line = panicLine(&buffer, if (listed) book.head else null, serving, message, now);
+    _ = std.c.write(fd, line.ptr, line.len);
+}
+
+/// The panic line, without the in-flight list when it does not fit.
+fn panicLine(buffer: []u8, head: ?*const Record, current: ?*const Record, message: []const u8, now: std.Io.Timestamp) []const u8 {
+    var out: std.Io.Writer = .fixed(buffer);
+    if (writePanicLine(&out, head, current, message, now)) |_| return out.buffered() else |_| {}
+    out = .fixed(buffer);
+    writePanicLine(&out, null, current, message[0..@min(message.len, max_text)], now) catch unreachable; // checked: a cut message, an id, and a time fit in 4,096 bytes
+    return out.buffered();
+}
+
+fn writePanicLine(out: *std.Io.Writer, head: ?*const Record, current: ?*const Record, message: []const u8, now: std.Io.Timestamp) std.Io.Writer.Error!void {
+    var s: std.json.Stringify = .{ .writer = out };
+    var time_buffer: [24]u8 = undefined;
+    try s.beginObject();
+    try s.objectField("time");
+    try s.write(rfc3339(&time_buffer, now));
+    try s.objectField("schema");
+    try s.write(schema);
+    try s.objectField("event");
+    try s.write("server.panic");
+    try s.objectField("id");
+    if (current) |r| try s.write(&r.id) else try s.write(null);
+    try s.objectField("in_flight");
+    try s.beginArray();
+    var it = head;
+    while (it) |r| : (it = r.next) try s.write(&r.id);
+    try s.endArray();
+    try s.objectField("message");
+    try s.write(message);
+    try s.endObject();
+    try out.writeByte('\n');
+}
+
 /// The in-flight list and, when opened, the day's file.
 pub const Book = struct {
     mutex: std.Io.Mutex = .init,
@@ -195,6 +257,7 @@ pub const Book = struct {
         record.prev = null;
         if (self.head) |h| h.prev = record;
         self.head = record;
+        serving = record;
         if (self.file) |*f| {
             var buffer: [max_line]u8 = undefined;
             f.append(io, startLine(&buffer, record, std.Io.Clock.real.now(io)));
@@ -210,6 +273,7 @@ pub const Book = struct {
         if (record.next) |n| n.prev = record.prev;
         record.prev = null;
         record.next = null;
+        if (serving == record) serving = null;
         if (self.file) |*f| {
             var buffer: [max_line]u8 = undefined;
             f.append(io, endLine(&buffer, record, end, duration_ns, std.Io.Clock.real.now(io)));
@@ -291,7 +355,7 @@ const File = struct {
         }
         if (self.fd < 0) return;
         const n = std.c.write(self.fd, line.ptr, line.len);
-        if (n > 0) self.size += @intCast(n);
+        if (n > 0) self.size += @intCast(n); // checked: positive
     }
 
     /// The first part from `self.part` with room, as another server may
@@ -327,7 +391,7 @@ fn startLine(buffer: []u8, record: *const Record, now: std.Io.Timestamp) []const
 /// about 200 bytes against `max_line`, marked `fields_dropped`.
 fn minimalLine(buffer: []u8, record: *const Record, event: []const u8, now: std.Io.Timestamp) []const u8 {
     var out: std.Io.Writer = .fixed(buffer);
-    writeMinimal(&out, record, event, now) catch unreachable; // nothing in it is client-sized
+    writeMinimal(&out, record, event, now) catch unreachable; // checked: nothing in it is client-sized
     return out.buffered();
 }
 
@@ -445,7 +509,7 @@ pub fn validClientId(value: []const u8) bool {
 pub fn uuid7(io: std.Io) [36]u8 {
     var random: [10]u8 = undefined;
     io.random(&random);
-    const unix_ms: u64 = @intCast(@max(0, @divFloor(std.Io.Clock.real.now(io).nanoseconds, std.time.ns_per_ms)));
+    const unix_ms: u64 = @intCast(@max(0, @divFloor(std.Io.Clock.real.now(io).nanoseconds, std.time.ns_per_ms))); // checked: non-negative; the system clock, not a client's
     return formatUuid7(unix_ms, random);
 }
 
@@ -472,7 +536,7 @@ fn formatUuid7(unix_ms: u64, random: [10]u8) [36]u8 {
 
 /// `2026-10-30T09:12:04.318Z`.
 fn rfc3339(buffer: *[24]u8, now: std.Io.Timestamp) []const u8 {
-    const unix_ms: u64 = @intCast(@max(0, @divFloor(now.nanoseconds, std.time.ns_per_ms)));
+    const unix_ms: u64 = @intCast(@max(0, @divFloor(now.nanoseconds, std.time.ns_per_ms))); // checked: non-negative; the system clock, not a client's
     const seconds: std.time.epoch.EpochSeconds = .{ .secs = unix_ms / 1000 };
     const year_day = seconds.getEpochDay().calculateYearDay();
     const month_day = year_day.calculateMonthDay();
@@ -485,22 +549,22 @@ fn rfc3339(buffer: *[24]u8, now: std.Io.Timestamp) []const u8 {
         day_seconds.getMinutesIntoHour(),
         day_seconds.getSecondsIntoMinute(),
         unix_ms % 1000,
-    }) catch unreachable;
+    }) catch unreachable; // checked: 24 bytes hold a four-digit year's stamp; the system clock, not a client's
 }
 
 fn epochDay(now: std.Io.Timestamp) i64 {
-    return @intCast(@divFloor(now.nanoseconds, std.time.ns_per_day));
+    return @intCast(@divFloor(now.nanoseconds, std.time.ns_per_day)); // checked: the system clock, not a client's
 }
 
 /// `serve-2026-10-30.jsonl`, or `serve-2026-10-30.<part>.jsonl`.
 fn partName(buffer: []u8, day: i64, part: u32) []const u8 {
-    const year_day = (std.time.epoch.EpochDay{ .day = @intCast(day) }).calculateYearDay();
+    const year_day = (std.time.epoch.EpochDay{ .day = @intCast(day) }).calculateYearDay(); // checked: the system clock, after 1970
     const month_day = year_day.calculateMonthDay();
     const date = .{ year_day.year, month_day.month.numeric(), @as(u32, month_day.day_index) + 1 };
     return if (part == 0)
-        std.fmt.bufPrint(buffer, "serve-{d:0>4}-{d:0>2}-{d:0>2}.jsonl", date) catch unreachable
+        std.fmt.bufPrint(buffer, "serve-{d:0>4}-{d:0>2}-{d:0>2}.jsonl", date) catch unreachable // checked: 64 bytes hold the longest name
     else
-        std.fmt.bufPrint(buffer, "serve-{d:0>4}-{d:0>2}-{d:0>2}.{d}.jsonl", date ++ .{part}) catch unreachable;
+        std.fmt.bufPrint(buffer, "serve-{d:0>4}-{d:0>2}-{d:0>2}.{d}.jsonl", date ++ .{part}) catch unreachable; // checked: 64 bytes hold the longest name
 }
 
 const Part = struct { day: i64, part: u32 };
@@ -758,4 +822,68 @@ test "a book: the in-flight list, the day's file, and retention" {
     try testing.expect(std.mem.indexOf(u8, written, try std.fmt.bufPrint(&expected, "\"event\":\"request.end\",\"id\":\"{s}\"", .{&a.id})) != null);
     const st = try tmp.dir.statFile(io, path, .{});
     try testing.expectEqual(@as(u32, 0o600), @as(u32, @intCast(st.permissions.toMode())) & 0o777);
+}
+
+test "a panic writes one last line naming the request its thread served and every one in flight" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = testing.io;
+    const root = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var book: Book = .{};
+    try book.open(testing.allocator, io, root);
+    defer book.deinit(testing.allocator);
+    var a: Record = .init(io);
+    var b: Record = .init(io);
+    book.begin(io, &a);
+    book.begin(io, &b);
+    book.finish(io, &b, .{ .status = .ok });
+    var c: Record = .init(io);
+    book.begin(io, &c);
+    // Disarmed, a panic writes nothing; armed, it writes once and disarms.
+    writePanic("unseen");
+    armPanic(&book);
+    writePanic("integer overflow");
+    writePanic("again");
+    // The handler takes the mutex and never gives it back: the process ends.
+    book.mutex = .init;
+    book.finish(io, &c, .{ .status = .ok });
+    book.finish(io, &a, .{ .status = .ok });
+
+    const today = epochDay(std.Io.Clock.real.now(io));
+    var name: [64]u8 = undefined;
+    var file: [80]u8 = undefined;
+    const written = try tmp.dir.readFileAlloc(io, try std.fmt.bufPrint(&file, "logs/{s}", .{partName(&name, today, 0)}), testing.allocator, .limited(1 << 16));
+    defer testing.allocator.free(written);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, written, "server.panic"));
+    try testing.expect(std.mem.indexOf(u8, written, "unseen") == null);
+    var lines = std.mem.splitScalar(u8, written, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, "server.panic") == null) continue;
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, line, .{});
+        defer parsed.deinit();
+        const o = parsed.value.object;
+        try testing.expectEqualStrings(&c.id, o.get("id").?.string);
+        try testing.expectEqualStrings("integer overflow", o.get("message").?.string);
+        const flying = o.get("in_flight").?.array.items;
+        try testing.expectEqual(@as(usize, 2), flying.len);
+        try testing.expectEqualStrings(&c.id, flying[0].string);
+        try testing.expectEqualStrings(&a.id, flying[1].string);
+    }
+}
+
+test "a panic line too long for its list drops the list, not the line" {
+    const io = testing.io;
+    var records: [200]Record = undefined;
+    for (&records, 0..) |*r, i| {
+        r.* = .init(io);
+        r.next = if (i + 1 < records.len) &records[i + 1] else null;
+    }
+    var buffer: [max_line]u8 = undefined;
+    const line = panicLine(&buffer, &records[0], null, &@as([4000]u8, @splat('x')), .{ .nanoseconds = 0 });
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, line, .{});
+    defer parsed.deinit();
+    try testing.expectEqual(@as(usize, 0), parsed.value.object.get("in_flight").?.array.items.len);
+    try testing.expect(parsed.value.object.get("id").? == .null);
+    try testing.expectEqual(@as(usize, max_text), parsed.value.object.get("message").?.string.len);
 }

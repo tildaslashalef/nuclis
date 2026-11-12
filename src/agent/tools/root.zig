@@ -249,17 +249,17 @@ pub fn checkArguments(alloc: Allocator, tool: Tool, arguments: []const u8) Alloc
     if (parsed.value != .object) return try fail(alloc, "{s}: the arguments must be a JSON object; nothing was done", .{tool.name});
     const schema = std.json.parseFromSlice(std.json.Value, alloc, tool.parameters, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => unreachable, // the registry's schemas are tested to parse
+        else => unreachable, // checked: the registry's schemas are tested to parse
     };
     defer schema.deinit();
-    const properties = schema.value.object.get("properties").?.object;
+    const properties = schema.value.object.get("properties").?.object; // checked: the registry's schemas are tested: each has properties, each with a type
     if (schema.value.object.get("required")) |required| for (required.array.items) |key| {
         if (parsed.value.object.get(key.string) == null) return try fail(alloc, "{s}: the required argument \"{s}\" is missing; nothing was done", .{ tool.name, key.string });
     };
     var it = parsed.value.object.iterator();
     while (it.next()) |entry| {
         const property = properties.get(entry.key_ptr.*) orelse continue;
-        const want = property.object.get("type").?.string;
+        const want = property.object.get("type").?.string; // checked: the registry's schemas are tested: each has properties, each with a type
         const ok = switch (entry.value_ptr.*) {
             .string => std.mem.eql(u8, want, "string"),
             .integer => std.mem.eql(u8, want, "integer") or std.mem.eql(u8, want, "number"),
@@ -468,4 +468,74 @@ test "resolve refuses dot-dot, absolute paths, and a symlink out of the tree" {
     const ok = try workspace.resolve(alloc, "ok.txt");
     defer alloc.free(ok);
     try std.testing.expect(std.mem.endsWith(u8, ok, "ok.txt"));
+}
+
+test "fuzz tools: any arguments to a file tool give a result, and nothing outside the workspace is read or written" {
+    const fuzz = @import("inference").fuzz;
+    const Case = struct {
+        /// The first byte picks the tool (`bash` and the web tools are not
+        /// run: they reach the shell and the network by design); the rest is
+        /// its arguments, and also a path for `resolve` and `resolveTarget`.
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            const alloc = std.testing.allocator;
+            const io = std.testing.io;
+            var buf: [4096]u8 = undefined;
+            const input = fuzz.bytes(smith, &buf);
+            if (input.len == 0) return;
+            var inside = std.testing.tmpDir(.{});
+            defer inside.cleanup();
+            var outside = std.testing.tmpDir(.{ .iterate = true });
+            defer outside.cleanup();
+            const root = try inside.dir.realPathFileAlloc(io, ".", alloc);
+            defer alloc.free(root);
+            const outside_path = try outside.dir.realPathFileAlloc(io, ".", alloc);
+            defer alloc.free(outside_path);
+            const secret = "SECRET-OUTSIDE";
+            try outside.dir.writeFile(io, .{ .sub_path = "secret.txt", .data = secret });
+            try inside.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "alpha\nbeta\n" });
+            try inside.dir.createDirPath(io, "sub");
+            try inside.dir.writeFile(io, .{ .sub_path = "sub/b.zig", .data = "const x = 1;\n" });
+            try inside.dir.symLink(io, outside_path, "link", .{});
+            const workspace: Workspace = .{ .io = io, .dir = inside.dir, .root = root };
+
+            const files = [_]Tool{ read_file.tool, glob.tool, grep.tool, write_file.tool, edit_file.tool };
+            const tool = files[input[0] % files.len];
+            const arguments = input[1..];
+            if (try checkArguments(alloc, tool, arguments)) |refused| {
+                var r = refused;
+                r.deinit(alloc);
+            } else {
+                var result = try tool.run(workspace, alloc, arguments);
+                defer result.deinit(alloc);
+                try std.testing.expect(std.mem.indexOf(u8, result.text, secret) == null);
+            }
+            if (workspace.resolve(alloc, arguments)) |abs| {
+                defer alloc.free(abs);
+                try std.testing.expect(within(root, abs));
+            } else |_| {}
+            if (workspace.resolveTarget(alloc, arguments)) |target| {
+                defer alloc.free(target.abs);
+                try std.testing.expect(within(root, target.abs));
+            } else |_| {}
+
+            var it = outside.dir.iterate();
+            var entries: usize = 0;
+            while (try it.next(io)) |_| entries += 1;
+            try std.testing.expectEqual(@as(usize, 1), entries);
+            var kept: [64]u8 = undefined;
+            try std.testing.expectEqualStrings(secret, try outside.dir.readFile(io, "secret.txt", &kept));
+        }
+    };
+    try std.testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&.{
+        "\x00{\"path\":\"link/secret.txt\"}",
+        "\x00{\"path\":\"../\",\"offset\":-1,\"count\":9223372036854775807}",
+        "\x01{\"pattern\":\"link/**\"}",
+        "\x01{\"pattern\":\"../*/*\"}",
+        "\x02{\"pattern\":\"SECRET\",\"path\":\"link\",\"context\":-5}",
+        "\x02{\"pattern\":\"(((\",\"path\":\"/\"}",
+        "\x03{\"path\":\"link/new.txt\",\"content\":\"x\"}",
+        "\x03{\"path\":\"sub/../../escape.txt\",\"content\":\"x\"}",
+        "\x04{\"path\":\"link/secret.txt\",\"old_string\":\"SECRET\",\"new_string\":\"x\"}",
+        "\x04{\"path\":\"a.txt\",\"old_string\":\"\",\"new_string\":\"x\"}",
+    }) });
 }

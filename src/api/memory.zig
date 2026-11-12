@@ -312,7 +312,7 @@ pub const Budget = struct {
     /// Records a refusal of `needed` bytes against the kept models other than `own`.
     fn refuseLocked(self: *Budget, needed: u64, own: ?[]const u8) error{ModelTooLarge} {
         var kept: u64 = 0;
-        for (self.entries.items) |e| if (e.kept and !(own != null and std.mem.eql(u8, e.key, own.?))) {
+        for (self.entries.items) |e| if (e.kept and !(own != null and std.mem.eql(u8, e.key, own.?))) { // checked: checked non-null in the same line
             kept += e.bytes;
         };
         self.refused = .{ .needed = needed, .free = self.limit -| kept };
@@ -337,7 +337,7 @@ pub const Budget = struct {
         for (self.entries.items) |*e| {
             if (e.pinned or e.kept) continue;
             if (keep_key) |k| if (std.mem.eql(u8, e.key, k)) continue;
-            if (best == null or e.used < best.?.used) best = e;
+            if (best == null or e.used < best.?.used) best = e; // checked: checked non-null in the same line
         }
         return best;
     }

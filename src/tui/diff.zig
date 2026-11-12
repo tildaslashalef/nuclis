@@ -510,3 +510,23 @@ test "cloneRows owns its text and freeRows releases it" {
     try testing.expectEqualStrings("a", owned[0].text);
     freeRows(testing.allocator, owned);
 }
+
+test "fuzz diff: any two texts diff without a panic or a leak" {
+    const fuzz = @import("inference").fuzz;
+    const Case = struct {
+        /// The old text, a NUL, then the new.
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [8192]u8 = undefined;
+            const input = fuzz.bytes(smith, &buf);
+            const cut = std.mem.indexOfScalar(u8, input, 0) orelse input.len;
+            var d = try compute(std.testing.allocator, input[0..cut], input[@min(cut + 1, input.len)..]);
+            d.deinit(std.testing.allocator);
+        }
+    };
+    try std.testing.fuzz({}, Case.one, .{ .corpus = @import("inference").fuzz.corpus(&.{
+        "a\nb\nc\n\x00a\nB\nc\nd",
+        "x\r\ny\r\n\x00x\r\ny\r\n",
+        "\x00only new\n",
+        "same\x00same",
+    }) });
+}

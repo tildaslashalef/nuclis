@@ -200,9 +200,9 @@ pub fn localize(arena: Allocator, exchange: []const Profile.Message) Allocator.E
 }
 
 fn localId(arena: Allocator, seen: *std.ArrayList(u32), id: u32) Allocator.Error!u32 {
-    for (seen.items, 1..) |known, local| if (known == id) return @intCast(local);
+    for (seen.items, 1..) |known, local| if (known == id) return @intCast(local); // checked: ids of one bounded conversation
     try seen.append(arena, id);
-    return @intCast(seen.items.len);
+    return @intCast(seen.items.len); // checked: ids of one bounded conversation
 }
 
 /// Keeps `exchange` under the client's conversation (`chain`, from
@@ -302,7 +302,7 @@ fn fits(exchange: []const Profile.Message, message: Profile.Message, results: []
 fn splice(arena: Allocator, out: *std.ArrayList(Profile.Message), stored_exchange: []const Profile.Message, message: Profile.Message, results: []const Profile.Message, next_id: u32) Allocator.Error!u32 {
     // The request's copy: a later `put` may free the entry.
     const exchange = try copyMessages(arena, stored_exchange);
-    const last = lastAssistant(exchange).?;
+    const last = lastAssistant(exchange).?; // checked: `splice` runs only after `fits`, which found one
     var hosted: u32 = 0;
     var client: usize = 0;
     var final_calls: []const Profile.ToolCall = &.{};
@@ -328,9 +328,9 @@ fn splice(arena: Allocator, out: *std.ArrayList(Profile.Message), stored_exchang
     client = 0;
     for (exchange[last].tool_calls, final_calls) |stored, call| {
         if (stored.id == 0) {
-            try out.append(arena, resultFor(results, call.id).?);
+            try out.append(arena, resultFor(results, call.id).?); // checked: `fits` found a result for each client call
         } else {
-            var result = resultFor(exchange[last + 1 ..], stored.id).?;
+            var result = resultFor(exchange[last + 1 ..], stored.id).?; // checked: the stash stores each hosted call with its result after it
             result.tool_call_id = call.id;
             try out.append(arena, result);
         }

@@ -55,7 +55,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     if (pattern.len == 0) return root.fail(alloc, "grep: pattern is empty", .{});
     if (!std.unicode.utf8ValidateSlice(pattern)) return root.fail(alloc, "grep: pattern is not valid UTF-8", .{});
     if (std.mem.indexOfScalar(u8, pattern, '\n') != null) return root.fail(alloc, "grep: pattern spans lines; search for one line of it", .{});
-    const context: usize = @intCast(std.math.clamp(parsed.value.context orelse 0, 0, max_context));
+    const context: usize = @intCast(std.math.clamp(parsed.value.context orelse 0, 0, max_context)); // checked: clamped to `[0, max_context]`
 
     var walker: Walker = .{ .alloc = alloc, .io = workspace.io, .dir = workspace.dir, .pattern = pattern, .context = context, .rules = .{ .alloc = alloc } };
     defer walker.deinit();
@@ -68,7 +68,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         const filter = if (std.mem.startsWith(u8, scope, "./")) scope[2..] else scope;
         if (std.fs.path.isAbsolute(filter) or climbs(filter)) return root.fail(alloc, "grep: {s} is outside the workspace", .{scope});
         walker.filter = filter;
-        const meta = std.mem.indexOfAny(u8, filter, "*?[").?;
+        const meta = std.mem.indexOfAny(u8, filter, "*?[").?; // checked: this branch is taken when the scope has one, and `./` is not one
         const start = if (std.mem.lastIndexOfScalar(u8, filter[0..meta], '/')) |slash| filter[0..slash] else "";
         // The literal prefix may be a link out of the tree: it must resolve inside.
         if (start.len > 0) {
@@ -209,7 +209,7 @@ const Walker = struct {
             if (self.rules.ignored(path, is_dir)) continue;
             if (is_dir) {
                 if (!skipped(entry.name)) try self.walk(path);
-            } else if (self.filter == null or glob.matchPattern(self.filter.?, path)) {
+            } else if (self.filter == null or glob.matchPattern(self.filter.?, path)) { // checked: checked non-null in the same line
                 try self.search(path);
             }
         }

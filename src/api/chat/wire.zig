@@ -141,13 +141,13 @@ const Reader = struct {
     }
 
     fn callId(self: *Reader, text: []const u8) Error!u32 {
-        for (self.call_ids.items, 1..) |known, id| if (std.mem.eql(u8, known, text)) return @intCast(id);
+        for (self.call_ids.items, 1..) |known, id| if (std.mem.eql(u8, known, text)) return @intCast(id); // checked: ids are bounded by the request body, far below 2^32
         try self.call_ids.append(self.arena, text);
-        return @intCast(self.call_ids.items.len);
+        return @intCast(self.call_ids.items.len); // checked: ids are bounded by the request body, far below 2^32
     }
 
     fn knownCallId(self: *Reader, text: []const u8) ?u32 {
-        for (self.call_ids.items, 1..) |known, id| if (std.mem.eql(u8, known, text)) return @intCast(id);
+        for (self.call_ids.items, 1..) |known, id| if (std.mem.eql(u8, known, text)) return @intCast(id); // checked: ids are bounded by the request body, far below 2^32
         return null;
     }
 };
@@ -375,10 +375,10 @@ fn readAudio(r: *Reader, value: Value, param: []const u8) Error!void {
     const format = if (object.get("format")) |f| if (f == .string) f.string else null else null;
     if (data == null or format == null) return r.invalid(param, "{s}.input_audio needs \"data\" (base64) and \"format\"", .{param});
     for (audio_formats) |name| {
-        if (std.mem.eql(u8, name, format.?)) break;
-    } else return r.unsupported(param, "{s}: an audio format is wav, mp3, aiff, flac, or m4a, not \"{s}\"", .{ param, format.? });
+        if (std.mem.eql(u8, name, format.?)) break; // checked: both checked non-null above
+    } else return r.unsupported(param, "{s}: an audio format is wav, mp3, aiff, flac, or m4a, not \"{s}\"", .{ param, format.? }); // checked: both checked non-null above
     if (r.clip_total == max_clips) return r.invalid(param, "at most {d} clips per request", .{max_clips});
-    const encoded = data_url.payload(data.?) orelse return r.invalid(param, "{s}: a data URL must be base64 (data:<type>;base64,…)", .{param});
+    const encoded = data_url.payload(data.?) orelse return r.invalid(param, "{s}: a data URL must be base64 (data:<type>;base64,…)", .{param}); // checked: both checked non-null above
     const bytes = data_url.decode(r.arena, encoded, max_audio_bytes) catch |err| switch (err) {
         error.NotBase64 => return r.invalid(param, "{s}: not base64", .{param}),
         error.TooLarge => return r.invalid(param, "{s}: a clip is at most {d} bytes", .{ param, max_audio_bytes }),
@@ -468,14 +468,14 @@ fn readTools(r: *Reader, value: Value, limit: usize, options: Options, hosted: *
         };
         const parameters = switch (function.get("parameters") orelse .null) {
             .null => "{\"type\":\"object\",\"properties\":{}}",
-            .object => try std.json.Stringify.valueAlloc(r.arena, function.get("parameters").?, .{}),
+            .object => try std.json.Stringify.valueAlloc(r.arena, function.get("parameters").?, .{}), // checked: the switch's own operand
             else => return r.invalid(param, "{s}.function.parameters must be a JSON schema object", .{param}),
         };
         tool.* = .{ .name = name, .description = description, .parameters = parameters };
     }
     // A function of the same name would make the server's calls ambiguous.
     for (items, tools, 0..) |item, tool, i| {
-        const kind = item.object.get("type").?;
+        const kind = item.object.get("type").?; // checked: the loop above refuses an item without a string `type`
         if (std.mem.eql(u8, kind.string, "function") and hosted.runs(tool.name))
             return r.invalid(try r.arena.print("tools[{d}]", .{i}), "tools[{d}]: a function named {s} clashes with the hosted tool of that name", .{ i, tool.name });
     }
@@ -524,7 +524,7 @@ fn integer(r: *Reader, o: std.json.ObjectMap, field: []const u8, low: i64, high:
         .null => return null,
         .integer => |n| {
             if (n < low or n > high) return r.invalid(field, "\"{s}\" must be from {d} to {d}", .{ field, low, high });
-            return @intCast(n);
+            return @intCast(n); // checked: between `low` and `high`, the line above
         },
         else => return r.invalid(field, "\"{s}\" must be an integer", .{field}),
     }
@@ -603,7 +603,7 @@ pub const Meta = struct {
 
 /// The `chat.completion` object.
 pub fn writeResponse(out: *std.Io.Writer, arena: Allocator, collected: *const Collector, meta: Meta) !void {
-    std.debug.assert(meta.call_ids.len == collected.calls.items.len);
+    std.debug.assert(meta.call_ids.len == collected.calls.items.len); // checked: the service builds both from one call list
     var s: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
     try s.objectField("id");
@@ -1335,4 +1335,35 @@ test "an error inside a stream is one data line" {
     try writeStreamError(&out.writer, .init(.internal_server_error, "model_failed", "x"));
     try testing.expect(std.mem.startsWith(u8, out.written(), "data: {\"error\":{\"code\":\"model_failed\""));
     try testing.expect(std.mem.endsWith(u8, out.written(), "}}\n\n"));
+}
+
+test "fuzz chat: any body is a request or a refusal" {
+    const fuzz = @import("inference").fuzz;
+    const Case = struct {
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [fuzz.max_input]u8 = undefined;
+            const body = fuzz.bytes(smith, &buf);
+            var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+            defer arena.deinit();
+            var problem: Problem = .{};
+            _ = parseWith(arena.allocator(), body, &problem, .{ .web = body.len % 2 == 0 }) catch |err| switch (err) {
+                error.Refused => try testing.expect(problem.code.len > 0),
+                error.OutOfMemory => return err,
+            };
+        }
+    };
+    try testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&.{
+        \\{"model":"m","stream":true,"stream_options":{"include_usage":true},"max_completion_tokens":4294967296,"temperature":-1,"top_p":2,"seed":-9223372036854775808,
+        \\ "messages":[{"role":"developer","content":"terse"},{"role":"user","content":[{"type":"text","text":"a"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGk="}},{"type":"input_audio","input_audio":{"data":"aGk=","format":"wav"}}]},
+        \\  {"role":"assistant","content":null,"reasoning_content":"r","tool_calls":[{"id":"c|1","type":"function","function":{"name":"read","arguments":"{\"path\":\"x\"}"}}]},
+        \\  {"role":"tool","tool_call_id":"c|1","content":"hello"}],
+        \\ "tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object"}}},{"type":"web_search"}],"tool_choice":"auto","reasoning_effort":"high"}
+        ,
+        \\{"messages":[{"role":"tool","tool_call_id":"nope","content":[]}],"n":2,"logprobs":true,"stop":["a","b","c","d","e"]}
+        ,
+        \\{"messages":[],"tools":[{"type":"function","function":{"name":"","parameters":[]}}],"tool_choice":{"type":"function","function":{"name":"x"}}}
+        ,
+        "[1,2",
+        "{\"messages\":[{\"role\":\"user\",\"content\":\"\\ud800\"}]}",
+    }) });
 }

@@ -47,6 +47,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption([]const u8, "version", version);
     build_options.addOption([]const u8, "revision", revision);
     build_options.addOption(bool, "dirty", dirty);
+    build_options.addOption(bool, "panic_hook", b.option(bool, "panic-hook", "Test builds: NUCLIS_PANIC_HOOK=serve|terminal panics on purpose") orelse false);
 
     const inference = b.dependency("inference", .{ .target = target, .optimize = optimize, .metal = metal });
     // The Hub downloader is imported by the executable only (`nuclis model`);
@@ -77,6 +78,15 @@ pub fn build(b: *std.Build) void {
     const hf_tests = &huggingface.builder.top_level_steps.get("test").?.step;
     test_step.dependOn(hf_tests);
     b.step("test-hf", "Offline tests of the huggingface package only").dependOn(hf_tests);
+    // One fuzz test, `test "fuzz <target>: …"`, from either package that
+    // holds them; `--fuzz` runs it under the fuzzer (`make fuzz`,
+    // docs/development.md § Hostile input).
+    const fuzz_target = b.option([]const u8, "fuzz-target", "The fuzz test to build, by target name (make fuzz)") orelse "";
+    const fuzz_step = b.step("fuzz", "One fuzz test over its corpus, or under the fuzzer with --fuzz (-Dfuzz-target=NAME)");
+    const fuzz_filters: []const []const u8 = &.{b.fmt("fuzz {s}:", .{fuzz_target})};
+    for ([_]*std.Build.Module{ exe.root_module, inference.module("inference") }) |module| {
+        fuzz_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module, .filters = fuzz_filters })).step);
+    }
     // The package's standalone binary, installed on request only (`make hf-downloader`).
     b.step("hf-downloader", "Install the standalone Hugging Face downloader (zig-out/bin/hf-downloader)").dependOn(&b.addInstallArtifact(huggingface.artifact("hf-downloader"), .{}).step);
 

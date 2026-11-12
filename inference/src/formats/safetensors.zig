@@ -59,7 +59,7 @@ pub const Dtype = enum {
     /// The spelling the format uses (`BF16`).
     pub fn name(self: Dtype) []const u8 {
         for (wire) |entry| if (entry[1] == self) return entry[0];
-        unreachable;
+        unreachable; // checked: `wire` lists every `Dtype`
     }
 
     pub fn size(self: Dtype) u8 {
@@ -124,7 +124,7 @@ pub fn parse(gpa: Allocator, reader: *std.Io.Reader, file_bytes: u64, limits: Li
     // Checked before allocating: a hostile length never reaches the allocator.
     if (header_bytes > limits.header_bytes) return error.LimitExceeded;
     if (header_bytes < 2 or header_bytes > file_bytes - 8) return error.InvalidHeader;
-    const header = try gpa.alloc(u8, @intCast(header_bytes));
+    const header = try gpa.alloc(u8, @intCast(header_bytes)); // checked: at most `limits.header_bytes`, the lines above
     defer gpa.free(header);
     try reader.readSliceAll(header);
     return parseHeader(gpa, header, file_bytes, limits);
@@ -317,7 +317,7 @@ pub const Ref = struct {
         const t = self.tensor;
         if (first > t.elements or out.len > t.elements - first) return error.TensorOutOfBounds;
         const width = t.dtype.size();
-        const start: usize = @intCast(first * width);
+        const start: usize = @intCast(first * width); // checked: `first` is at most `elements`, and `parse` holds elements × width inside the file
         switch (t.dtype) {
             .f32 => for (out, 0..) |*x, i| {
                 x.* = @bitCast(std.mem.readInt(u32, self.bytes[start + i * 4 ..][0..4], .little));
@@ -386,7 +386,7 @@ pub const Checkpoint = struct {
                 }
                 const inserted = try self.locations.getOrPut(arena, t.name);
                 if (inserted.found_existing) return error.DuplicateTensor;
-                inserted.value_ptr.* = .{ .shard = @intCast(i), .tensor = @intCast(j) };
+                inserted.value_ptr.* = .{ .shard = @intCast(i), .tensor = @intCast(j) }; // checked: at most `limits.shard_count` and `limits.tensor_count`
             }
         }
         // Every tensor the index names was found in its shard.
@@ -408,8 +408,8 @@ pub const Checkpoint = struct {
         const at = self.locations.get(name) orelse return null;
         const shard = &self.shards[at.shard];
         const t = &shard.document.tensors[at.tensor];
-        const start: usize = @intCast(shard.document.data_offset + t.offset);
-        return .{ .tensor = t, .bytes = shard.mapping.memory[start..][0..@intCast(t.bytes)] };
+        const start: usize = @intCast(shard.document.data_offset + t.offset); // checked: `parse` holds every tensor inside the mapped file
+        return .{ .tensor = t, .bytes = shard.mapping.memory[start..][0..@intCast(t.bytes)] }; // checked: `parse` holds every tensor inside the mapped file
     }
 };
 
@@ -461,13 +461,13 @@ fn resolve(arena: Allocator, io: std.Io, path: []const u8) ![]const u8 {
             single = try arena.dupe(u8, entry.name);
         }
     }
-    const name = if (indexes == 1) index.? else if (indexes == 0 and singles == 1) single.? else if (indexes + singles == 0) return error.NoCheckpoint else return error.AmbiguousCheckpoint;
+    const name = if (indexes == 1) index.? else if (indexes == 0 and singles == 1) single.? else if (indexes + singles == 0) return error.NoCheckpoint else return error.AmbiguousCheckpoint; // checked: each set when its count is one
     return std.fs.path.join(arena, &.{ path, name });
 }
 
 /// The index's `weight_map` (tensor name → shard file name).
 fn readIndex(arena: Allocator, io: std.Io, path: []const u8, limits: Limits) !std.json.ArrayHashMap([]const u8) {
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(@intCast(limits.index_bytes))) catch |err| switch (err) {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(@intCast(limits.index_bytes))) catch |err| switch (err) { // checked: a host limit
         error.StreamTooLong => return error.LimitExceeded,
         else => return err,
     };
@@ -726,4 +726,19 @@ test "an index maps its shards and must agree with them exactly" {
     // Two sets in one directory without an index: the caller must name one.
     try tmp.dir.deleteFile(io, "model.safetensors.index.json");
     try std.testing.expectError(error.AmbiguousCheckpoint, Checkpoint.open(gpa, io, dir, .{}));
+}
+
+test "fuzz safetensors: any file is a document or a typed error" {
+    const fuzz = @import("../fuzz.zig");
+    const json = "{\"__metadata__\":{\"format\":\"pt\"},\"w\":{\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[0,4]}}";
+    const seed = comptime std.mem.toBytes(std.mem.nativeToLittle(u64, json.len)) ++ json ++ "\x00\x00\x80\x3f";
+    const Case = struct {
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [fuzz.max_input]u8 = undefined;
+            const bytes = fuzz.bytes(smith, &buf);
+            parseAny(bytes, bytes.len);
+            parseAny(bytes, std.math.maxInt(u64));
+        }
+    };
+    try std.testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&.{ seed, seed[0..8] }) });
 }

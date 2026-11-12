@@ -47,7 +47,7 @@ pub fn lines(alloc: std.mem.Allocator, text: []const u8, columns: usize, wrap: W
         const cluster = text[offset..end];
         const w = graphemes.clusterWidth(cluster);
         if (cluster.len == 1 and cluster[0] == '\n') {
-            try result.append(alloc, text[start..offset]);
+            try result.append(alloc, text[start..if (used > columns) offset - 1 else offset]);
             start = end;
             used = 0;
             break_at = null;
@@ -55,13 +55,14 @@ pub fn lines(alloc: std.mem.Allocator, text: []const u8, columns: usize, wrap: W
             offset = end;
             continue;
         }
-        // A space that lands past the edge is not drawn there and does not
+        // One space that lands past the edge is not drawn there and does not
         // break the row: it becomes the next break point, so a word ending
-        // exactly at the last column keeps its row.
+        // exactly at the last column keeps its row. A second breaks it, so a
+        // run of spaces never hangs over the edge.
         const is_space = cluster.len == 1 and cluster[0] == ' ';
         // A cluster wider than the row starts it anyway: an empty row first
         // would never end.
-        if (used + w > columns and used > 0 and !(wrap == .word and is_space)) {
+        if (used + w > columns and used > 0 and !(wrap == .word and is_space and used <= columns)) {
             const wrapped = wrap == .word;
             try result.append(alloc, text[start..if (wrapped) rowEnd(text, break_at, offset) else offset]);
             start = if (wrapped) break_at orelse offset else offset;
@@ -77,7 +78,8 @@ pub fn lines(alloc: std.mem.Allocator, text: []const u8, columns: usize, wrap: W
             since_break = 0;
         }
     }
-    try result.append(alloc, text[start..]);
+    // A row can end in the one space it hid past the edge; it is not drawn.
+    try result.append(alloc, text[start..if (used > columns) text.len - 1 else text.len]);
     return result.toOwnedSlice(alloc);
 }
 /// The longest prefix of `text` that fits in `columns` cells, cut on a cluster
@@ -106,6 +108,8 @@ pub fn wrapStyled(alloc: std.mem.Allocator, text: []const u8, columns: usize, wr
     // space, so a break splits the buffer there and carries the tail over.
     var break_bytes: ?usize = null;
     var since_break: usize = 0;
+    // Where in `line` the one space hidden past the edge sits, if one does.
+    var hidden: ?usize = null;
     while (offset < text.len) {
         if (escapeSpan(text, offset)) |end| {
             try line.appendSlice(alloc, text[offset..end]);
@@ -116,8 +120,9 @@ pub fn wrapStyled(alloc: std.mem.Allocator, text: []const u8, columns: usize, wr
         const cluster = text[offset..end];
         const w = graphemes.clusterWidth(cluster);
         if (cluster.len == 1 and cluster[0] == '\n') {
-            try rows.append(alloc, try alloc.dupe(u8, line.items));
+            try rows.append(alloc, try dupeRow(alloc, line.items, hidden));
             line.clearRetainingCapacity();
+            hidden = null;
             used = 0;
             break_bytes = null;
             since_break = 0;
@@ -125,7 +130,7 @@ pub fn wrapStyled(alloc: std.mem.Allocator, text: []const u8, columns: usize, wr
             continue;
         }
         const is_space = cluster.len == 1 and cluster[0] == ' ';
-        if (used + w > columns and used > 0 and !(wrap == .word and is_space)) {
+        if (used + w > columns and used > 0 and !(wrap == .word and is_space and used <= columns)) {
             if (wrap == .word and break_bytes != null) {
                 // Cut before the space the row broke on and carry the rest of
                 // the word — escapes included — to the next row.
@@ -143,7 +148,9 @@ pub fn wrapStyled(alloc: std.mem.Allocator, text: []const u8, columns: usize, wr
             }
             break_bytes = null;
             since_break = 0;
+            hidden = null;
         }
+        if (is_space and used + w > columns) hidden = line.items.len;
         try line.appendSlice(alloc, cluster);
         used += w;
         since_break += w;
@@ -153,8 +160,15 @@ pub fn wrapStyled(alloc: std.mem.Allocator, text: []const u8, columns: usize, wr
             since_break = 0;
         }
     }
-    try rows.append(alloc, try alloc.dupe(u8, line.items));
+    try rows.append(alloc, try dupeRow(alloc, line.items, hidden));
     return rows.toOwnedSlice(alloc);
+}
+
+/// A styled row without the one space it hid past the edge at `hidden`,
+/// escapes after it kept. Caller owns the copy.
+fn dupeRow(alloc: std.mem.Allocator, row: []const u8, hidden: ?usize) ![]const u8 {
+    const at = hidden orelse return alloc.dupe(u8, row);
+    return std.mem.concat(alloc, u8, &.{ row[0..at], row[at + 1 ..] });
 }
 
 /// The end offset of an ANSI escape sequence that starts at `offset` (an ESC),
@@ -330,6 +344,34 @@ test "word wrapping breaks at the last space that fits, in plain and styled text
         a.free(tight);
     }
     try std.testing.expectEqualStrings("keep toget", tight[0]);
+}
+
+test "spaces past the edge break the row instead of hanging over it" {
+    const a = std.testing.allocator;
+    for ([_]struct { text: []const u8, columns: usize }{
+        .{ .text = "m   x", .columns = 1 },
+        .{ .text = "ab    \x1b[0m", .columns = 2 },
+        .{ .text = "a    \nb", .columns = 3 },
+        .{ .text = "ab ", .columns = 2 },
+        .{ .text = "say ok" ++ &@as([40]u8, @splat(' ')) ++ "then   stop", .columns = 26 },
+    }) |case| {
+        errdefer std.debug.print("case: \"{s}\" at {d}\n", .{ case.text, case.columns });
+        const rows = try wrapStyled(a, case.text, case.columns, .word);
+        defer {
+            for (rows) |row| a.free(row);
+            a.free(rows);
+        }
+        for (rows) |row| try std.testing.expect(styledWidth(row) <= case.columns);
+        const plain = try lines(a, case.text, case.columns, .word);
+        defer a.free(plain);
+        for (plain) |row| try std.testing.expect(styledWidth(row) <= case.columns);
+    }
+    // A word that ends at the last column keeps its row, the space after it hidden.
+    const exact = try lines(a, "abc def", 3, .word);
+    defer a.free(exact);
+    try std.testing.expectEqual(@as(usize, 2), exact.len);
+    try std.testing.expectEqualStrings("abc", exact[0]);
+    try std.testing.expectEqualStrings("def", exact[1]);
 }
 
 test "an OSC sequence is zero width and survives a wrap" {

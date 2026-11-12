@@ -141,12 +141,12 @@ pub const Service = struct {
         self.batcher.wait(io, &job, deadline) catch
             return refuse(arena, http.overloaded, "timeout", null, "waited {d} s for the GPU without starting", .{self.timeout_ns / std.time.ns_per_s});
         switch (job.outcome) {
-            .pending => unreachable,
+            .pending => unreachable, // checked: `wait` returned without a timeout: the batcher set the outcome
             .failed => |e| return .fromError(arena, e),
             .done => {},
         }
         const vectors = arena.alloc(response.Vector, inputs.len) catch return internal(arena);
-        for (vectors, job.vectors, job.prepared.?) |*v, values, p| v.* = .{
+        for (vectors, job.vectors, job.prepared.?) |*v, values, p| v.* = .{ // checked: a done job was prepared
             .values = if (request.dimensions == embed.dimensions) values else embed.truncate(values, request.dimensions) catch |err|
                 return refuse(arena, .internal_server_error, "internal", null, "{s}", .{@errorName(err)}),
             .tokens = p.tokens.len,
@@ -208,7 +208,7 @@ pub const Service = struct {
         var tasks: std.json.Array = .init(arena);
         for (std.enums.values(wire.Task)) |t| try tasks.append(.{ .string = @tagName(t) });
         var widths: std.json.Array = .init(arena);
-        for (embed.widths) |w| try widths.append(.{ .integer = @intCast(w) });
+        for (embed.widths) |w| try widths.append(.{ .integer = @intCast(w) }); // checked: a constant
         for (listed.items) |name| {
             var diag: config.Diagnostic = .{};
             const resolved = names.resolve(arena, self.root, self.registry, name, &diag) catch continue;
@@ -222,11 +222,11 @@ pub const Service = struct {
             try details.put(arena, "name", .{ .string = if (pinned) |p| p.title else name });
             try details.put(arena, "architecture", .{ .string = if (pinned) |p| p.architecture else embed.architecture });
             try details.put(arena, "quantization", if (pinned) |p| .{ .string = p.quantization } else .null);
-            try details.put(arena, "size_bytes", .{ .integer = @intCast(if (stat) |s| s.size else if (pinned) |p| p.size else 0) });
+            try details.put(arena, "size_bytes", .{ .integer = @intCast(if (stat) |s| s.size else if (pinned) |p| p.size else 0) }); // checked: a file's size or a catalogue size, below 2^63
             try details.put(arena, "present", .{ .bool = stat != null });
             try details.put(arena, "source", .{ .string = if (registered != null) "registry" else "catalogue" });
             // What `nuclis model pull <name>` fetches: the model, not its projector.
-            try details.put(arena, "download_bytes", if (registered == null) if (resolved.entry) |e| .{ .integer = @intCast(e.size) } else .null else .null);
+            try details.put(arena, "download_bytes", if (registered == null) if (resolved.entry) |e| .{ .integer = @intCast(e.size) } else .null else .null); // checked: a catalogue size, compiled in
             try details.put(arena, "loaded", .{ .bool = self.pool.isOpen(io, resolved.path) });
             // It counts its file once open, and its media encoders once a request needs them.
             try models.putMemory(arena, io, &details, self.pool.budget, name, 0, if (stat) |st| st.size else if (pinned) |p| p.size else null);
@@ -437,7 +437,7 @@ fn requestOptions(arena: std.mem.Allocator) !std.json.ObjectMap {
     const Option = models.Option;
     const defaults: wire.Request = .{ .inputs = &.{} };
     var o: std.json.ObjectMap = .empty;
-    try o.put(arena, "dimensions", try (Option{ .type = .@"enum", .values = try models.integers(arena, embed.widths), .default = .{ .integer = @intCast(defaults.dimensions) } }).value(arena));
+    try o.put(arena, "dimensions", try (Option{ .type = .@"enum", .values = try models.integers(arena, embed.widths), .default = .{ .integer = @intCast(defaults.dimensions) } }).value(arena)); // checked: a constant
     var tasks: std.ArrayList([]const u8) = .empty;
     for (std.enums.values(wire.Task)) |t| try tasks.append(arena, @tagName(t));
     try o.put(arena, "task", try (Option{ .type = .@"enum", .values = try models.strings(arena, tasks.items) }).value(arena));

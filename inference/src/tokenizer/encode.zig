@@ -404,3 +404,43 @@ test "encoder initialization and encoding clean up all allocation failures" {
     defer vocab.deinit();
     try alloc_check.checkAll(std.testing.allocator, allocationCheck, .{&vocab});
 }
+
+test "fuzz tokenizer: any bytes encode, and any ids decode and stream, to a value or a typed error" {
+    const fuzz = @import("../fuzz.zig");
+    const Case = struct {
+        /// The first byte picks the splitter (bit 0) and special parsing
+        /// (bit 1); the rest is encoded as text, then read as token ids.
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [4096]u8 = undefined;
+            const input = fuzz.bytes(smith, &buf);
+            if (input.len == 0) return;
+            var vocab = try fixture();
+            defer vocab.deinit();
+            if (input[0] & 1 != 0) vocab.pre = "gemma4";
+            var encoder = Encoder.init(std.testing.allocator, &vocab) catch return;
+            defer encoder.deinit();
+            const text = input[1..];
+            const limits: Limits = .{ .input_bytes = 2048, .output_tokens = 2048 };
+            if (encoder.encode(std.testing.allocator, text, input[0] & 2 != 0, limits)) |ids| {
+                defer std.testing.allocator.free(ids);
+                for (ids) |id| try std.testing.expect(id < vocab.tokens.len);
+            } else |_| {}
+            var ids: [4096]u32 = undefined;
+            for (text, ids[0..text.len]) |byte, *id| id.* = if (byte >= 0xf0) std.math.maxInt(u32) - @as(u32, byte) else byte % 20;
+            const decoded = bpe.decode(std.testing.allocator, &vocab, ids[0..text.len], input[0] & 2 != 0, .{ .output_bytes = 1 << 16 }) catch return;
+            defer std.testing.allocator.free(decoded);
+            var out_buf: [1 << 18]u8 = undefined;
+            var out: std.Io.Writer = .fixed(&out_buf);
+            var stream: @import("stream.zig").Stream = .{};
+            for (0..decoded.len) |i| try stream.write(decoded[i..][0..1], &out);
+            try stream.finish(&out);
+            try std.testing.expect(std.unicode.utf8ValidateSlice(out.buffered()));
+        }
+    };
+    try std.testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&.{
+        "\x02a<x>b<u>ab12ab",
+        "\x03a\xfe<x>\xfdb\xfd<u>",
+        "\x00\xc3\x28\xa0\xa1\xe2\x82\xf0\x90\x80",
+        "\x01ab12\xff\xfe\x80\xbf",
+    }) });
+}

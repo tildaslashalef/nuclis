@@ -97,7 +97,7 @@ pub const Batcher = struct {
     pub fn submit(self: *Batcher, io: std.Io, job: *Job) error{ Busy, Stopped }!void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
-        std.debug.assert(job.state == .idle);
+        std.debug.assert(job.state == .idle); // checked: a job is submitted once, by its handler
         if (self.waiting >= self.max_waiting) return error.Busy;
         self.link(job);
         if (!self.scheduled) {
@@ -160,7 +160,7 @@ pub const Batcher = struct {
             self.waiting -= 1;
             return;
         }
-        unreachable;
+        unreachable; // checked: `unlink` is called under the mutex for a job that is still pending, so in the list
     }
 
     /// The executor item: one pass, then again while jobs wait.
@@ -233,7 +233,7 @@ pub const Batcher = struct {
                 };
                 job.timings.tokenize_ns += lap(io, &clock);
             }
-            const prepared = job.prepared.?[0..job.ready];
+            const prepared = job.prepared.?[0..job.ready]; // checked: `prepare` above succeeded, which sets it
             // A first image built the vision encoder: the budget counts it.
             self.pool.account(io) catch |err| {
                 if (err == error.Pinned) {
@@ -320,7 +320,7 @@ fn prepare(embedder: *embed.Embedder, job: *Job, used: usize, max_rows: usize) !
         job.vectors = vectors;
         job.prepared = try job.arena.alloc(embed.Prepared, job.inputs.len);
     }
-    const prepared = job.prepared.?;
+    const prepared = job.prepared.?; // checked: set above when null
     var rows = used;
     for (prepared[job.cursor..job.ready]) |p| rows += batchRows(p);
     while (job.ready < job.inputs.len and (rows < max_rows or job.ready == job.cursor)) : (job.ready += 1) {
@@ -371,7 +371,7 @@ pub fn fit(prepared: []const embed.Prepared, start: usize, used: usize, max_rows
 
 fn lap(io: std.Io, clock: *std.Io.Timestamp) u64 {
     const now = std.Io.Clock.awake.now(io);
-    const elapsed: u64 = @intCast(@max(0, clock.durationTo(now).toNanoseconds()));
+    const elapsed: u64 = @intCast(@max(0, clock.durationTo(now).toNanoseconds())); // checked: clamped non-negative; one step, below 584 years
     clock.* = now;
     return elapsed;
 }

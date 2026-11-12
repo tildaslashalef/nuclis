@@ -116,8 +116,9 @@ Facts every unit depends on; keep them here, not in the tracker.
   same token arrays are the README's [Results](../README.md#results); the
   method is [benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs),
   the reference's harness [llama-cpp.md](benchmarks/llama-cpp.md).
-- `make help` lists all tasks. Per-commit: `make check` (fmt-check, unit
-  tests, `test-metal`, `test-tiny`, the gate manifest's validation). Before a
+- `make help` lists all tasks. Per-commit: `make check` (fmt-check, the
+  input-safety check, unit tests with the fuzz corpora, `test-metal`,
+  `test-tiny`, the gate manifest's validation). Before a
   pull request: `make verify-auto`, the Focus lane of the gate registry
   ([§ Gates](#gates)); `make verify-cpu` only when the unit changes what
   the CPU reference computes (AGENTS.md § Validation). `make bench` when performance is claimed; a
@@ -717,7 +718,7 @@ tag, and checkouts keep `persist-credentials` off.
 | --- | --- | --- |
 | `changes` | always (ubuntu) | whether anything outside `docs/`, `site/`, and Markdown changed |
 | `docs` | always (ubuntu) | `make docs-check site-check workloads-validate`, standard-library Python |
-| `test` | code changed (macOS) | `zig fmt --check`, a semver check on the manifest's version, `zig build test`, `make gates-validate` |
+| `test` | code changed (macOS) | `zig fmt --check`, a semver check on the manifest's version, `make input-safety`, `zig build test` (the fuzz corpora included), `make gates-validate` |
 | `metal` | code changed (macOS) | a `-Dmetal=true -Doptimize=ReleaseSafe` build, `--version` and `--help` on it |
 | `cpu` | code changed (macOS) | a Debug `-Dmetal=false` build, so the non-Metal path keeps linking |
 | `linux` | code changed (ubuntu) | `zig build test -Dmetal=false` and a Debug build, `--version` on it |
@@ -939,6 +940,72 @@ walkthroughs as modules become stable, grounded in the working code.
 Use focused checks while implementing. Expand validation for shared-module
 changes and unresolved concerns. Documentation-only changes need link and
 consistency checks rather than unrelated code tests.
+
+## Hostile input
+
+Every byte from outside the process (a request, a session file, a tool's
+arguments, the terminal, a model's output, a model, audio, or image file)
+either becomes a value or a typed error: never a panic, an out-of-bounds
+read, or a leak (AGENTS.md § Engineering rules). Two checks hold it.
+
+**Fuzz tests.** Each parser of outside bytes has one test named
+`fuzz <target>: …` beside its source, calling `std.testing.fuzz` with a seed
+corpus; `make fuzz` lists them. Its body draws one byte string
+(`inference.fuzz.bytes`) and lays any structure over it itself (a first
+byte that picks a profile, a NUL between two parts, a nibble per token), so
+a corpus entry is readable: `inference.fuzz.corpus` encodes plain strings
+as the length-prefixed form the `Smith` reads. It asserts what holds for
+every input, under `std.testing.allocator`: a value or a typed error, and,
+where the surface promises more, that too (a WebSocket text is UTF-8, a
+markdown row fits the width, a file tool reads and writes nothing outside
+the workspace).
+
+| Target | Entry point |
+| --- | --- |
+| `http` | `src/api/http.zig` `serve` over an in-memory connection, WebSocket upgrade included |
+| `multipart` | `src/api/multipart.zig` `parse` |
+| `websocket` | `src/api/websocket.zig` `Reader.next` |
+| `chat` | `src/api/chat/wire.zig` `parseWith` |
+| `session` | `src/agent/session.zig` `parseText` and `parseHeader`, then `src/agent/resume.zig` `conversation` and the export |
+| `tools` | `read_file`, `glob`, `grep`, `write_file`, `edit_file`, `Workspace.resolve`, and `resolveTarget` in a temporary workspace with a link out of it |
+| `keys` | `src/tui/keys.zig` `next` key by key, and `terminal.findCursorReport` |
+| `markdown` | `src/tui/markdown.zig` `split` and `render` at widths 1 to 64 |
+| `diff` | `src/tui/diff.zig` `compute` |
+| `decoder` | `inference/src/profiles/stream.zig` `Decoder`, either grammar, over a 16-token vocabulary |
+| `render` | every profile's `render` with arbitrary content, names, arguments, and schemas |
+| `tokenizer` | `Encoder.encode` on any bytes, `bpe.decode` on any ids, the UTF-8 `Stream` |
+| `gguf`, `safetensors` | `inference/src/formats/*.zig` `parse` |
+| `wav`, `ppm` | `audio.decodeWavAt`, `image.decodePpm` |
+
+`zig build test`, and so `make check`, runs each over its corpus.
+`make fuzz TARGET=<name> SECONDS=60` runs one under Zig's fuzzer, which
+works on macOS on Apple Silicon as on Linux, in a cache of its own
+(`.zig-cache/fuzz/<name>`) where the corpus it grows carries over between
+runs. A failure stops it and saves the input to
+`.zig-cache/fuzz/<name>/f/crash`, in the corpus's own form: minimise it,
+add it to the test's corpus (or a file under the module's `fixtures/`
+through `@embedFile`), and fix the code in the same unit. To add a parser,
+write its test beside it, add it to the table above, and add its file to
+the check below.
+
+**The input-safety check.** `scripts/repo/input-safety-check.py`
+(`make input-safety`, part of `make check`) reads the input-facing files
+its `FILES` lists (`src/api/`, the session and resume, the agent's tools,
+the terminal's keys, terminal, and markdown, the formats, the stream
+decoder, audio, and image) and fails on `catch unreachable`,
+`unreachable`, `@intCast(`, `std.debug.assert(`, and `.?` unless the line
+ends in `// checked: <where>`, naming the guard that keeps it from firing.
+Tests, and declarations only tests reach, are skipped. The comment is the
+review: a reason that does not hold is a bug, and a construct with no
+reason is either given one or removed.
+
+**A panic.** The root panic handler (`src/main.zig`) puts a leased terminal
+back and, under `nuclis serve`, writes the request log's `server.panic` line
+before the default report ([api.md § The request log](guide/api.md#the-request-log)).
+`zig build -Dpanic-hook=true` builds a binary that panics on purpose when
+`NUCLIS_PANIC_HOOK` names a place (`serve`: a request to
+`/v1/debug/panic`; `terminal`: once the chat surface holds the terminal),
+so a check can watch both; no other build has the hooks.
 
 ## Measurements and artifacts
 
