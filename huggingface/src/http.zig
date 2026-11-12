@@ -1,4 +1,4 @@
-//! Bounded HTTPS requests using injected Zig 0.16 Io on a shared, pooled
+//! Bounded HTTPS requests using injected Zig 0.17 Io on a shared, pooled
 //! `std.http.Client`. Connections are keep-alive and reused across concurrent
 //! tasks (the pool is mutex-protected; individual requests are per task), which
 //! is what turns a download of thousands of ranges from a TLS handshake per

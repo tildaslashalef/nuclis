@@ -254,8 +254,9 @@ with the current span is the next step. Concurrency 12 or 16 did not beat 8.
   plus a header-only skip.
 - `root.zig`: the sink that checks the container's first bytes (GGUF magic;
   a safetensors header length that fits the file, then `{`), hashes in file
-  order, appends to an atomic file, and reports progress; publication through
-  `Io.Dir.createFileAtomic`/`File.Atomic.link`.
+  order, appends to `<path>.partial` under an exclusive lock, and reports
+  progress; publication by renaming the verified partial into place
+  ([Partial files and resuming](#partial-files-and-resuming)).
 
 Limits are explicit: 4 MiB metadata, 10,000 catalog entries, 512 GiB per artifact,
 65,536 terms per span, 65 MiB per unit (a 64 MiB xorb plus its framing),
@@ -268,8 +269,9 @@ Transient HTTP 429/500/502/503/504 and timeouts are retried per unit with
 bounded backoff; an expired token or signed URL (401/403) re-plans the rest of
 the span with fresh authorization; three attempts in a row before giving up.
 Bytes are never delivered twice. There is no persistent chunk cache,
-cross-span prefetch, adaptive concurrency, or persistent interrupted-download
-resume yet.
+cross-span prefetch, or adaptive concurrency; an interrupted download resumes
+only from a partial kept by `error.Paused`
+([Partial files and resuming](#partial-files-and-resuming)).
 
 The full digest and the container's first bytes are checked before
 publication: the Hub's SHA-256 for LFS/Xet files, or for a plain git file

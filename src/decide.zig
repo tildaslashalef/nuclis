@@ -230,7 +230,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, location: inference.decide.Locati
     const started = std.Io.Clock.awake.now(io);
     var decider = Decider.open(gpa, io, location, o.backend orelse inference.decide.default_backend) catch |err| {
         if (err == error.MetalNotEnabled)
-            diag.set("this build has no Metal backend; run with --backend cpu", .{})
+            diag.set(config.no_metal_message, .{})
         else
             diag.set("{s}: not a decision checkpoint nuclis can run ({s})", .{ directory, @errorName(err) });
         return err;

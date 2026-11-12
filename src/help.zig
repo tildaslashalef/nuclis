@@ -12,6 +12,7 @@
 //! 80 columns (a test holds that).
 const std = @import("std");
 const style = @import("tui/style.zig");
+const config_schema = @import("config.zig");
 /// What `--backend` defaults to: the CPU in a build without Metal.
 const default_backend = if (@import("inference").metal.enabled) "default metal" else "default cpu";
 
@@ -93,6 +94,53 @@ fn example(out: *std.Io.Writer, sty: style.Style, line: []const u8, comment: []c
 
 fn plain(out: *std.Io.Writer, text: []const u8) !void {
     try out.print("  {s}\n", .{text});
+}
+
+/// One row per section of the configuration file, its keys read from the
+/// schema itself so the page cannot miss one; nested groups print as
+/// `group.{a,b}`. The registry (`models`) has its own row.
+fn configKeys(out: *std.Io.Writer, sty: style.Style) !void {
+    const info = @typeInfo(config_schema.Config).@"struct";
+    inline for (info.field_names, info.field_types) |name, Section| {
+        if (comptime @typeInfo(Section) != .@"struct" or Section == config_schema.Models) continue;
+        const keys = comptime keyList(Section);
+        // Wrapped at commas to the description column's width.
+        const width = 80 - continuation.len;
+        var line: [80]u8 = undefined;
+        var len: usize = 0;
+        var first = true;
+        var words = std.mem.splitSequence(u8, keys, ", ");
+        while (words.next()) |word| {
+            if (len > 0 and len + ", ".len + word.len + ",".len > width) {
+                line[len] = ',';
+                if (first) try row(out, sty, name ++ ".*", line[0 .. len + 1]) else try more(out, line[0 .. len + 1]);
+                first = false;
+                len = 0;
+            } else if (len > 0) {
+                @memcpy(line[len..][0..2], ", ");
+                len += 2;
+            }
+            @memcpy(line[len..][0..word.len], word);
+            len += word.len;
+        }
+        if (first) try row(out, sty, name ++ ".*", line[0..len]) else try more(out, line[0..len]);
+    }
+}
+
+fn keyList(comptime T: type) []const u8 {
+    const info = @typeInfo(T).@"struct";
+    comptime var text: []const u8 = "";
+    inline for (info.field_names, info.field_types, 0..) |name, Field, i| {
+        text = text ++ (if (i == 0) "" else ", ") ++ name;
+        if (@typeInfo(Field) == .@"struct") text = text ++ ".{" ++ innerList(Field) ++ "}";
+    }
+    return text;
+}
+
+fn innerList(comptime T: type) []const u8 {
+    comptime var text: []const u8 = "";
+    inline for (@typeInfo(T).@"struct".field_names, 0..) |name, i| text = text ++ (if (i == 0) "" else ", ") ++ name;
+    return text;
 }
 
 /// The options `generate`, `bench`, and `agent` share (the engine's).
@@ -517,7 +565,7 @@ fn transcribe(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--model <name|dir>", "nemotron-asr-0.6b, a transcription registry");
     try more(out, "entry, or a checkpoint directory; default");
     try more(out, "transcribe.model (nemotron-asr-0.6b)");
-    try row(out, sty, "--backend cpu|metal", "default metal when built with it, else cpu");
+    try row(out, sty, "--backend cpu|metal", default_backend);
     try row(out, sty, "--format <f>", "text (default); json: the text, language, tokens");
     try more(out, "with times, timings; srt or vtt: subtitles");
     try row(out, sty, "--segments", "the segments: sentences, or speech between");
@@ -540,6 +588,7 @@ fn transcribe(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "as `nuclis serve` does, so memory does not grow with its length (files");
     try plain(out, "up to 256 MB). Pull the model with `nuclis model pull");
     try plain(out, "nemotron-asr-0.6b`.");
+    try out.writeByte('\n');
 }
 
 fn speak(out: *std.Io.Writer, sty: style.Style) !void {
@@ -701,6 +750,7 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "fitting HTTP status.");
     try plain(out, "Ctrl-C stops accepting, finishes queued decisions and embeddings (up to");
     try plain(out, "10 s), and exits; a second Ctrl-C ends the process at once.");
+    try out.writeByte('\n');
 }
 fn inspect(out: *std.Io.Writer, sty: style.Style) !void {
     try title(out, sty, "nuclis inspect", "what an artifact is");
@@ -724,7 +774,8 @@ fn inspect(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "and offsets are validated; weight values are not read. Little-endian GGUF");
     try plain(out, "v3 only; an unknown tensor layout is an error rather than a guess.");
     try plain(out, "A safetensors checkpoint gets its header, shards, and dtype histogram,");
-    try plain(out, "with the byte buffer's tiling checked; no family runs one yet.");
+    try plain(out, "with the byte buffer's tiling checked. No text-generation family runs");
+    try plain(out, "one; `decide`, `speak`, and `transcribe` do.");
     try out.writeByte('\n');
 }
 
@@ -784,9 +835,8 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "its path, and the defaults the model runs with");
     try row(out, sty, "--available", "ls: the index, pulled or not; --all adds legacy");
     try row(out, sty, "--with mmproj,draft", "also fetch (rm: also delete) those companions;");
-    try more(out, "draft=<variant> picks a drafter other than the");
-    try more(out, "default (qwen3.8-27b: mtp, dflash2); mtp is the old");
-    try more(out, "name of draft");
+    try more(out, "draft=<variant> picks another drafter (qwen3.8-27b:");
+    try more(out, "mtp, dflash2); mtp is the old name of draft");
     try row(out, sty, "--all", "every companion the entry names, one per role;");
     try more(out, "with --variants, every draft variant");
     try row(out, sty, "--file <name>", "which weight file (.gguf, .safetensors); required");
@@ -801,6 +851,7 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "new copy verifies (the old one stays until then);");
     try more(out, "adopt: replace a sidecar already there");
     try row(out, sty, "--json", "the listing, pull, verdict, or removal as JSON");
+    try more(out, "(a pull from several repositories: an array)");
 
     try heading(out, sty, "Examples:");
     try example(out, sty, "nuclis model pull gemma-4-26b-a4b --all", "the default model with its projector");
@@ -852,19 +903,15 @@ fn config(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--discover", "init: the old spelling of what init now does");
 
     try heading(out, sty, "Keys:");
-    try row(out, sty, "engine.*", "model, backend, ctx_size, kv_precision");
-    try row(out, sty, "generation.*", "max_tokens, think, speculative, draft, draft_length,");
-    try more(out, "sampling.{temperature,top_k,top_p,min_p,");
-    try more(out, "presence_penalty,repetition_penalty}; null takes");
-    try more(out, "the profile's value; draft names an index model's");
-    try more(out, "draft variant (qwen3.8-27b: mtp, dflash2)");
-    try row(out, sty, "agent.*", "think, fold_thinking, theme, instructions (auto:");
-    try more(out, "AGENTS.md then CLAUDE.md; off; or a path)");
+    try configKeys(out, sty);
     try row(out, sty, "models.<name>.*", "path, or repo + file + revision; mmproj, draft (a");
     try more(out, "file; mtp is its old name), profile, ctx_size,");
-    try more(out, "generation.*, agent.* for that model only. Entries");
-    try more(out, "are created by init, sync, and model pull --register,");
-    try more(out, "never by set.");
+    try more(out, "generation.*, agent.* for that model only, and");
+    try more(out, "generation.draft: an index model's draft variant");
+    try more(out, "(qwen3.8-27b: mtp, dflash2). Entries are created by");
+    try more(out, "init, sync, and model pull --register, never by set.");
+    try plain(out, "A null sampling key takes the profile's value. agent.instructions is");
+    try plain(out, "auto (AGENTS.md then CLAUDE.md), off, or a path.");
 
     try heading(out, sty, "Examples:");
     try example(out, sty, "nuclis config sync --dry-run", "what a sync would add");
@@ -972,6 +1019,8 @@ test "every page is self-contained, has the standard sections, and fits 80 colum
             try testing.expect(std.unicode.utf8CountCodepoints(line) catch line.len <= 80);
         }
         try testing.expect(count > 8 and count <= 80);
+        // Every page ends on a blank line, as the overview does.
+        try testing.expect(std.mem.endsWith(u8, text, "\n\n"));
     }
 }
 

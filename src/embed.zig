@@ -175,7 +175,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]cons
     }
     const embedder = embed.Embedder.open(gpa, io, path, backend, .{ .projector = if (media) mmproj else null }) catch |err| {
         if (err == error.MetalNotEnabled)
-            diag.set("this build has no Metal backend; run with --backend cpu", .{})
+            diag.set(config.no_metal_message, .{})
         else if (err == error.NotAnEmbeddingModel)
             diag.set("{s}: not an embedding model (its general.architecture is not {s})", .{ path, embed.architecture })
         else

@@ -160,6 +160,53 @@ const Presenter = struct {
     }
 };
 
+/// Encodes inputs `0..count` in order through `encoder.encode(idx)` into a
+/// slice the caller owns, features included. On an error it frees what it
+/// encoded, so a caller only ever holds a complete result or nothing.
+fn encodeAll(alloc: std.mem.Allocator, count: usize, encoder: anytype) ![]inference.engine.PreparedImage {
+    const out = try alloc.alloc(inference.engine.PreparedImage, count);
+    var loaded: usize = 0;
+    errdefer {
+        for (out[0..loaded]) |p| alloc.free(p.features);
+        alloc.free(out);
+    }
+    while (loaded < count) : (loaded += 1) out[loaded] = try encoder.encode(loaded);
+    return out;
+}
+
+const ImageEncoder = struct {
+    eng: *engine.Engine,
+    paths: []const []const u8,
+    fn encode(self: *ImageEncoder, idx: usize) !inference.engine.PreparedImage {
+        const alloc = self.eng.alloc;
+        const bytes = engine.readImage(alloc, self.eng.io, self.paths[idx]) catch |err| {
+            std.log.err("could not read image {d} ({s}): {s}", .{ idx + 1, self.paths[idx], @errorName(err) });
+            return err;
+        };
+        defer alloc.free(bytes);
+        return self.eng.encodeImage(bytes);
+    }
+};
+
+const ClipEncoder = struct {
+    eng: *engine.Engine,
+    paths: []const []const u8,
+    fn encode(self: *ClipEncoder, idx: usize) !inference.engine.PreparedImage {
+        const alloc = self.eng.alloc;
+        const path = self.paths[idx];
+        const bytes = std.Io.Dir.cwd().readFileAlloc(self.eng.io, path, alloc, .limited(inference.audio.audio.max_bytes)) catch |err| {
+            std.log.err("could not read audio {d} ({s}): {s}", .{ idx + 1, path, @errorName(err) });
+            return err;
+        };
+        defer alloc.free(bytes);
+        const clip = self.eng.encodeAudio(bytes) catch |err| {
+            std.log.err("could not hear audio {d} ({s}): {s}", .{ idx + 1, path, @errorName(err) });
+            return err;
+        };
+        return .{ .width_tokens = clip.tokens, .height_tokens = 1, .features = clip.features };
+    }
+};
+
 pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, settings: config.Resolved, options: Options, json: bool, writer: *std.Io.Writer) !void {
     const user: ?[]u8 = if (options.prompt_tokens == null) try engine.readPrompt(alloc, io, options.prompt, options.prompt_file) else null;
     defer if (user) |u| alloc.free(u);
@@ -209,43 +256,19 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         const projector = try engine.visionPath(alloc, model_path, if (settings.entry) |entry| entry.mmproj else null) orelse return error.NoProjector;
         defer alloc.free(projector);
         try eng.loadVision(projector, settings.image_max_tokens.count());
-        prepared = try alloc.alloc(inference.engine.PreparedImage, options.image_count);
-        var loaded: usize = 0;
-        errdefer for (prepared[0..loaded]) |p| alloc.free(p.features);
         const encode_started = std.Io.Clock.awake.now(io);
         defer image_encode = encode_started.durationTo(std.Io.Clock.awake.now(io));
-        for (options.images[0..options.image_count], 0..) |path, idx| {
-            const bytes = engine.readImage(alloc, io, path) catch |err| {
-                std.log.err("could not read image {d} ({s}): {s}", .{ idx + 1, path, @errorName(err) });
-                return err;
-            };
-            defer alloc.free(bytes);
-            prepared[idx] = try eng.encodeImage(bytes);
-            loaded += 1;
-        }
+        var images: ImageEncoder = .{ .eng = &eng, .paths = options.images[0..options.image_count] };
+        prepared = try encodeAll(alloc, options.image_count, &images);
     }
     if (options.clip_count > 0) {
         const projector = try engine.visionPath(alloc, model_path, if (settings.entry) |entry| entry.mmproj else null) orelse return error.NoProjector;
         defer alloc.free(projector);
         try eng.loadAudio(projector);
-        heard = try alloc.alloc(inference.engine.PreparedImage, options.clip_count);
-        var loaded: usize = 0;
-        errdefer for (heard[0..loaded]) |p| alloc.free(p.features);
         const encode_started = std.Io.Clock.awake.now(io);
         defer audio_encode = encode_started.durationTo(std.Io.Clock.awake.now(io));
-        for (options.clips[0..options.clip_count], 0..) |path, idx| {
-            const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(inference.audio.audio.max_bytes)) catch |err| {
-                std.log.err("could not read audio {d} ({s}): {s}", .{ idx + 1, path, @errorName(err) });
-                return err;
-            };
-            defer alloc.free(bytes);
-            const clip = eng.encodeAudio(bytes) catch |err| {
-                std.log.err("could not hear audio {d} ({s}): {s}", .{ idx + 1, path, @errorName(err) });
-                return err;
-            };
-            heard[idx] = .{ .width_tokens = clip.tokens, .height_tokens = 1, .features = clip.features };
-            loaded += 1;
-        }
+        var clips: ClipEncoder = .{ .eng = &eng, .paths = options.clips[0..options.clip_count] };
+        heard = try encodeAll(alloc, options.clip_count, &clips);
     }
     const tokens = if (options.prompt_tokens) |path| try engine.readPromptTokens(alloc, io, path, eng.vocab.tokens.len) else if (prepared.len + heard.len > 0) blk: {
         const refs = try alloc.alloc(inference.profiles.ImageRef, prepared.len);
@@ -362,4 +385,27 @@ test "the trace observer carries progress only when a caller asks for it" {
     try std.testing.expectEqual(@as(usize, 2), counter.seen);
     try std.testing.expectEqual(inference.observer.Phase.decode, counter.last.phase);
     try std.testing.expectEqual(@as(usize, 3), counter.last.position);
+}
+
+test "a failing input frees what was encoded once and leaves the caller nothing" {
+    const Failing = struct {
+        alloc: std.mem.Allocator,
+        fail_at: usize,
+        fn encode(self: *@This(), idx: usize) !inference.engine.PreparedImage {
+            if (idx == self.fail_at) return error.FileNotFound;
+            return .{ .width_tokens = 1, .height_tokens = 1, .features = try self.alloc.alloc(f32, 4) };
+        }
+    };
+    const alloc = std.testing.allocator;
+    var second: Failing = .{ .alloc = alloc, .fail_at = 1 };
+    try std.testing.expectError(error.FileNotFound, encodeAll(alloc, 3, &second));
+    var first: Failing = .{ .alloc = alloc, .fail_at = 0 };
+    try std.testing.expectError(error.FileNotFound, encodeAll(alloc, 2, &first));
+    var none: Failing = .{ .alloc = alloc, .fail_at = 9 };
+    const all = try encodeAll(alloc, 2, &none);
+    defer {
+        for (all) |p| alloc.free(p.features);
+        alloc.free(all);
+    }
+    try std.testing.expectEqual(@as(usize, 2), all.len);
 }

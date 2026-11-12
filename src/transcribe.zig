@@ -193,7 +193,7 @@ const Timings = struct {
 /// Transcribes `o.file` with the checkpoint directory `directory`.
 pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
     if (o.backend == .metal and !inference.metal.enabled) {
-        diag.set("this nuclis was built without Metal; run with --backend cpu", .{});
+        diag.set(config.no_metal_message, .{});
         return error.MetalNotEnabled;
     }
     var arena_state: std.heap.ArenaAllocator = .init(gpa);

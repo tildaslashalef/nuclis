@@ -64,20 +64,21 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
             literal = true;
             continue;
         }
-        if (std.mem.eql(u8, word, "--stream")) {
-            o.stream = true;
-            continue;
-        }
-        if (std.mem.eql(u8, word, "--profile")) {
-            o.profile = true;
-            continue;
-        }
-        if (std.mem.eql(u8, word, "--split")) {
-            o.split = true;
-            continue;
-        }
-        if (std.mem.eql(u8, word, "--host-sampling")) {
-            o.host_sampling = true;
+        const switches = [_]struct { []const u8, *bool }{
+            .{ "--stream", &o.stream },
+            .{ "--profile", &o.profile },
+            .{ "--split", &o.split },
+            .{ "--host-sampling", &o.host_sampling },
+        };
+        const switch_slot = for (switches) |entry| {
+            if (std.mem.eql(u8, word, entry[0])) break entry[1];
+        } else null;
+        if (switch_slot) |slot| {
+            if (slot.*) {
+                diag.set("{s} is given twice", .{word});
+                return error.DuplicateOption;
+            }
+            slot.* = true;
             continue;
         }
         const known = [_][]const u8{ "--voice", "--language", "--instruct", "--model", "--seed", "--backend", "--output", "-o", "--chunk", "--first-chunk" };
@@ -180,7 +181,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
     const options = try parseArgs(arena, words, diag);
     const backend = options.backend orelse if (inference.metal.enabled) Backend.metal else .cpu;
     if (backend == .metal and !inference.metal.enabled) {
-        diag.set("this build has no Metal backend; --backend cpu", .{});
+        diag.set(config.no_metal_message, .{});
         return error.MetalNotEnabled;
     }
     const text = try std.mem.join(arena, " ", options.words.items);
@@ -474,6 +475,9 @@ test "speak's arguments: the text joined, the output required, the chunk bounded
     try std.testing.expectError(error.MissingInput, parseArgs(arena, &.{ "-o", "x.wav" }, &diag));
     try std.testing.expectError(error.UnknownOption, parseArgs(arena, &.{ "Hi", "--speed", "2" }, &diag));
     try std.testing.expectError(error.DuplicateOption, parseArgs(arena, &.{ "Hi", "-o", "a.wav", "--output", "b.wav" }, &diag));
+    inline for (.{ "--stream", "--profile", "--split", "--host-sampling" }) |flag| {
+        try std.testing.expectError(error.DuplicateOption, parseArgs(arena, &.{ "Hi", "-o", "a.wav", flag, flag }, &diag));
+    }
     try std.testing.expectError(error.InvalidOptionValue, parseArgs(arena, &.{ "Hi", "--backend", "gpu" }, &diag));
 }
 
