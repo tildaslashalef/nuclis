@@ -86,7 +86,7 @@ pub const Language = struct {
         self.close(io);
         if (self.budget) |b| try b.reserve(io, bytes, null);
         self.open = try completer_mod.Open.init(self.gpa, io, path, settings);
-        const open = &self.open.?;
+        const open = &self.open.?; // checked: assigned on the line above
         const profile = open.profile();
         const effort = profile.nearestEffort(settings.think);
         // Assigned before anything else can fail, so `close` finds it whole.
@@ -143,7 +143,7 @@ pub const Language = struct {
 
     /// Closes the open model, if any; on the worker, or after it stopped.
     pub fn close(self: *Language, io: std.Io) void {
-        std.debug.assert(self.holds == 0);
+        std.debug.assert(self.holds == 0); // checked: a held model is pinned, which the budget never closes, and `ensure` refuses to replace it
         if (self.budget) |b| if (self.name) |n| b.remove(io, n);
         self.footprint = 0;
         self.companion_counted = false;
@@ -183,9 +183,9 @@ pub const Language = struct {
     /// `observer` sees every layer boundary and step (cancellation,
     /// progress). Everything the request needs lives in `arena`.
     pub fn run(self: *Language, io: std.Io, arena: Allocator, request: wire.Request, sink: *completer_mod.Sink, observer: ?inference.observer.Observer) !Ran {
-        const open = &self.open.?;
+        const open = &self.open.?; // checked: the job calls `run` only after `ensure` succeeded and while it holds the model
         // In use: a decision run between its steps may not close it.
-        if (self.budget) |b| b.touch(io, self.name.?);
+        if (self.budget) |b| b.touch(io, self.name.?); // checked: `ensure` names the model it opens
         self.hold(io, true);
         defer self.hold(io, false);
         const profile = open.profile();
@@ -245,7 +245,7 @@ pub const Language = struct {
     }
 
     fn loadVision(self: *Language, io: std.Io) !void {
-        const open = &self.open.?;
+        const open = &self.open.?; // checked: called from `run`, which has the open model
         if (open.eng.vision != null) return;
         const path = try self.companion(io, error.ImagesUnsupported);
         defer self.gpa.free(path);
@@ -254,7 +254,7 @@ pub const Language = struct {
 
     /// The companion's audio encoder, loaded on the first clip.
     fn loadAudio(self: *Language, io: std.Io) !void {
-        const open = &self.open.?;
+        const open = &self.open.?; // checked: called from `run`, which has the open model
         if (open.eng.audio != null) return;
         if (open.eng.audioPadId() == null) return error.AudioUnsupported;
         const path = try self.companion(io, error.AudioUnsupported);
@@ -268,8 +268,8 @@ pub const Language = struct {
     /// The open model's companion file (owned), counted against the budget
     /// the first time either encoder needs it; `missing` when it has none.
     fn companion(self: *Language, io: std.Io, missing: Error) ![]u8 {
-        const open = &self.open.?;
-        const name = self.name.?;
+        const open = &self.open.?; // checked: called from the loaders, under `run`
+        const name = self.name.?; // checked: `ensure` names the model it opens
         const mmproj = if (self.settings.entry) |entry| entry.mmproj else if (catalog.find(name)) |entry| if (entry.companion(.mmproj)) |c| c.file else null else null;
         const path = (try engine.visionPath(self.gpa, open.model_path, mmproj)) orelse return missing;
         errdefer self.gpa.free(path);

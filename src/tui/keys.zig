@@ -148,8 +148,8 @@ fn kitty(code: u32, modifiers: u32) Key {
     const plain = modifiers & ~(shift | ctrl) == 0;
     if (!plain) return .ignored; // alt/super/hyper/meta combinations
     if (modifiers & ctrl != 0) {
-        if (code >= 'a' and code <= 'z') return .{ .ctrl = @intCast(code) };
-        if (code >= 'A' and code <= 'Z') return .{ .ctrl = @intCast(code + 32) };
+        if (code >= 'a' and code <= 'z') return .{ .ctrl = @intCast(code) }; // checked: between 'a' and 'z'
+        if (code >= 'A' and code <= 'Z') return .{ .ctrl = @intCast(code + 32) }; // checked: between 'A' and 'Z'
         return .ignored;
     }
     return switch (code) {
@@ -254,4 +254,31 @@ test "cursor keys decode plain presses, modifiers stay unused" {
     try std.testing.expect(next("\x1b") == null);
     try std.testing.expect(next("\x1b[1;5") == null);
     try std.testing.expectEqual(@as(usize, 2), next("\x1bf").?.consumed); // alt-f
+}
+
+test "fuzz keys: any input decodes key by key, each consuming at least one byte it was given" {
+    const fuzz = @import("inference").fuzz;
+    const terminal = @import("terminal.zig");
+    const Case = struct {
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [4096]u8 = undefined;
+            const input = fuzz.bytes(smith, &buf);
+            if (terminal.findCursorReport(input)) |found| try std.testing.expect(found.start < found.end and found.end <= input.len);
+            var rest = input;
+            while (rest.len > 0) {
+                _ = loneEscape(rest);
+                const decoded = next(rest) orelse break;
+                try std.testing.expect(decoded.consumed >= 1 and decoded.consumed <= rest.len);
+                _ = reportedInterrupt(decoded, rest[0..decoded.consumed]);
+                rest = rest[decoded.consumed..];
+            }
+        }
+    };
+    try std.testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&.{
+        "a\r\x1b[13;2u\x1b[99;5u\x1b[I\x1b[O\x1b[A\x1b[1;5C",
+        "\x1b[200~pasted\x03\x1b[201~",
+        "\x1b[999999999999999999999;99999999999u\x1b]52;c;\x07\x1bP+q\x1b\\",
+        "\x1b[12;40R\xe4\xb8\xad\xf0\x9f\x99",
+        "\x1b[\x1b]\x1bP\x1b",
+    }) });
 }

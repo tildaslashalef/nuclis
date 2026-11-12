@@ -314,7 +314,7 @@ fn slice(owned: []const u8, at: *usize, len: usize) []const u8 {
 pub fn newId(io: std.Io, buffer: *[32]u8) []const u8 {
     var raw: [16]u8 = undefined;
     io.randomSecure(&raw) catch io.random(&raw);
-    return std.fmt.bufPrint(buffer, "{x}", .{&raw}) catch unreachable;
+    return std.fmt.bufPrint(buffer, "{x}", .{&raw}) catch unreachable; // checked: 32 bytes hold 16 bytes in hex
 }
 
 /// `<root>/agent/sessions/<cwd-slug>/<stamp>_<id>.jsonl`. The slug keeps

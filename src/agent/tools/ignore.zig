@@ -63,7 +63,7 @@ pub const Rules = struct {
     }
 
     pub fn pop(self: *Rules) void {
-        const set = self.sets.pop().?;
+        const set = self.sets.pop().?; // checked: each walker pops only what its push added
         self.alloc.free(set.base);
         self.alloc.free(set.text);
         self.alloc.free(set.patterns);

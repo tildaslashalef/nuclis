@@ -396,7 +396,7 @@ pub const Files = struct {
             return self.afterJob(io);
         }
         if (self.service.executor.betweenSteps()) if (self.last_end) |end| {
-            const since: u64 = @intCast(@max(0, end.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds()));
+            const since: u64 = @intCast(@max(0, end.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())); // checked: non-negative, and a pause lasts less than 584 years
             if (since < (beside_share - 1) * self.last_ns) return .again;
         };
         const started = std.Io.Clock.awake.now(io);
@@ -435,19 +435,19 @@ pub const Files = struct {
         }
         job.transcriber = try asr.Transcriber.init(gpa, model, job.request.lookahead, prompts[0], if (model.metal != null) .metal else .cpu);
         errdefer {
-            job.transcriber.?.deinit();
+            job.transcriber.?.deinit(); // checked: this errdefer follows its assignment
             job.transcriber = null;
         }
-        if (languages > 1) try job.transcriber.?.setLanguages(prompts[0..languages]);
+        if (languages > 1) try job.transcriber.?.setLanguages(prompts[0..languages]); // checked: assigned above
         if (job.request.phrases.len > 0) {
             job.phrases = try model.boost(gpa, job.request.phrases, boost.default_bonus, boost.default_follow);
-            job.transcriber.?.setBoost(&job.phrases.?);
+            job.transcriber.?.setBoost(&job.phrases.?); // checked: both assigned above
         }
         errdefer if (job.phrases) |*p| {
             p.deinit();
             job.phrases = null;
         };
-        job.run = try transcript.Run.init(gpa, &job.reader, &job.transcriber.?, &job.segmenter);
+        job.run = try transcript.Run.init(gpa, &job.reader, &job.transcriber.?, &job.segmenter); // checked: assigned above
     }
 
     /// The job is over: its transcriber freed, the model no longer held,
@@ -535,7 +535,7 @@ const Job = struct {
     /// One piece: decoded, transcribed, segmented, and, for a stream, the
     /// events of the segments it finalized queued.
     fn advance(self: *Job, io: std.Io) void {
-        const run = &self.run.?;
+        const run = &self.run.?; // checked: `start` set it before the first step; `finish` clears it only as the job leaves
         const finalized = run.step() catch |err| {
             self.failure = switch (err) {
                 error.UnsupportedAudioFormat => self.apiError(.bad_request, "invalid_audio", "file", "the audio stops decoding after {d:.1} s", .{run.seconds()}),
@@ -584,7 +584,7 @@ const Job = struct {
             try w.writeAll("\n\n");
         }
         self.emitted = segments.len;
-        const run = &self.run.?;
+        const run = &self.run.?; // checked: called from `advance`, after `start` set the run
         if (self.over) {
             try w.writeAll("data: ");
             var json: std.json.Stringify = .{ .writer = w };
@@ -615,7 +615,7 @@ const Job = struct {
         var out: std.Io.Writer.Allocating = .fromArrayList(gpa, &self.pending);
         defer self.pending = out.toArrayList();
         out.writer.writeAll("data: ") catch return;
-        errors.write(&out.writer, self.failure.?) catch return;
+        errors.write(&out.writer, self.failure.?) catch return; // checked: its one caller sets `failure` first
         out.writer.writeAll("\n") catch return;
     }
 
@@ -701,11 +701,11 @@ const Job = struct {
 
     fn startFailure(self: *Job, err: anyerror) ApiError {
         return switch (err) {
-            error.UnknownLanguage => self.apiError(.bad_request, "invalid_request", "language", "{s} is not a language of {s}: a locale (en-US, de-DE, fr-FR, es-US, …), a two-letter code (en, de, fr, …), or auto, or a list of them (ar,en,auto)", .{ self.request.language.?, self.name }),
-            error.TooManyLanguages => self.apiError(.bad_request, "invalid_request", "language", "{s} names more than {d} languages", .{ self.request.language.?, asr.max_languages }),
-            error.DuplicateLanguage => self.apiError(.bad_request, "invalid_request", "language", "{s} names a language twice", .{self.request.language.?}),
-            error.FallbackNotLast => self.apiError(.bad_request, "invalid_request", "language", "{s}: auto may only come last, as the fallback", .{self.request.language.?}),
-            error.ModelTooLarge => self.apiError(.bad_request, "model_too_large", "model", "{s} needs {d:.1} GiB, more than the server's budget leaves beside the pinned models (serve.memory_bytes, --memory, --pin)", .{ self.name, @as(f64, @floatFromInt(self.bytes)) / (1 << 30) }),
+            error.UnknownLanguage => self.apiError(.bad_request, "invalid_request", "language", "{s} is not a language of {s}: a locale (en-US, de-DE, fr-FR, es-US, …), a two-letter code (en, de, fr, …), or auto, or a list of them (ar,en,auto)", .{ self.request.language.?, self.name }), // checked: the language errors come only from parsing `request.language`
+            error.TooManyLanguages => self.apiError(.bad_request, "invalid_request", "language", "{s} names more than {d} languages", .{ self.request.language.?, asr.max_languages }), // checked: the language errors come only from parsing `request.language`
+            error.DuplicateLanguage => self.apiError(.bad_request, "invalid_request", "language", "{s} names a language twice", .{self.request.language.?}), // checked: the language errors come only from parsing `request.language`
+            error.FallbackNotLast => self.apiError(.bad_request, "invalid_request", "language", "{s}: auto may only come last, as the fallback", .{self.request.language.?}), // checked: the language errors come only from parsing `request.language`
+            error.ModelTooLarge => self.apiError(.bad_request, "model_too_large", "model", "{s} needs {d:.1} GiB, more than the server's budget leaves beside the pinned models (serve.memory_bytes, --memory, --pin)", .{ self.name, @as(f64, @floatFromInt(self.bytes)) / (1 << 30) }), // checked: the language errors come only from parsing `request.language`
             error.Pinned => self.apiError(http.overloaded, "busy", "model", "overloaded: {s} needs the transcriber another request holds; retry shortly", .{self.name}),
             else => self.apiError(.internal_server_error, "model_failed", "model", "{s} did not transcribe: {s}", .{ self.name, @errorName(err) }),
         };
@@ -762,7 +762,7 @@ const Job = struct {
     fn writeStream(context: *anyopaque, io: std.Io, body: *http.Body) bool {
         const self: *Job = @ptrCast(@alignCast(context));
         defer self.release(io);
-        const pipe = &self.pipe.?;
+        const pipe = &self.pipe.?; // checked: `writeStream` is installed only for a streamed job, which has a pipe
         var buffer: [16 * 1024]u8 = undefined;
         var quiet_since = std.Io.Clock.awake.now(io);
         while (true) {
@@ -785,7 +785,7 @@ const Job = struct {
 
     fn abandon(self: *Job, io: std.Io) bool {
         self.cancel.store(true, .release);
-        self.pipe.?.abandon(io);
+        self.pipe.?.abandon(io); // checked: called only from `writeStream`
         self.files.unpark(io);
         return false;
     }
@@ -847,7 +847,7 @@ pub fn contentType(format: Format) []const u8 {
 }
 
 fn nanos(from: std.Io.Timestamp, to: std.Io.Timestamp) u64 {
-    return @intCast(@max(0, from.durationTo(to).toNanoseconds()));
+    return @intCast(@max(0, from.durationTo(to).toNanoseconds())); // checked: clamped non-negative; spans of one request, below 584 years
 }
 
 fn fromNow(io: std.Io, ms: i64) std.Io.Clock.Timestamp {

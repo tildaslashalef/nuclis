@@ -2,13 +2,16 @@ const std = @import("std");
 const cli = @import("cli.zig");
 const style = @import("tui/style.zig");
 const terminal = @import("tui/terminal.zig");
+const request_log = @import("api/request_log.zig");
 
-/// A panic puts a leased terminal back before the default report, so the
-/// shell is usable to read it.
+/// A panic puts a leased terminal back and, under `serve`, writes the
+/// request log's last line before the default report: the shell is usable
+/// to read it, and the crash names its request.
 pub const panic = std.debug.FullPanic(onPanic);
 
 fn onPanic(message: []const u8, first_trace_address: ?usize) noreturn {
     terminal.emergencyRestore();
+    request_log.writePanic(message);
     std.debug.defaultPanic(message, first_trace_address);
 }
 

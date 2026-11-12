@@ -98,7 +98,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         if (child_live) stop(&child, workspace.io);
     }
     var storage: std.Io.File.MultiReader.Buffer(2) = undefined;
-    reader.init(alloc, workspace.io, storage.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    reader.init(alloc, workspace.io, storage.toStreams(), &.{ child.stdout.?, child.stderr.? }); // checked: both spawned as pipes
     reader_ready = true;
 
     const started = std.Io.Clock.awake.now(workspace.io);
@@ -238,7 +238,7 @@ fn exited(pid: std.posix.pid_t) bool {
     // <sys/wait.h>'s values, which std.c names only for Linux.
     const nowait: c_int = if (builtin.os.tag.isDarwin()) 0x20 else 0x01000000;
     const options: c_int = 4 | 1 | nowait; // WEXITED | WNOHANG | WNOWAIT
-    if (waitid(p_pid, @intCast(pid), &info, options) != 0) return true;
+    if (waitid(p_pid, @intCast(pid), &info, options) != 0) return true; // checked: a child's pid, positive
     // With WNOHANG and nothing to report the kernel fills nothing; `si_signo` leads on both.
     const signo: *const c_int = @ptrCast(@alignCast(&info));
     return signo.* == @backingInt(std.posix.SIG.CHLD);
@@ -247,14 +247,14 @@ fn exited(pid: std.posix.pid_t) bool {
 fn elide(alloc: std.mem.Allocator, text: *std.ArrayList(u8), lines: usize) std.mem.Allocator.Error!void {
     if (lines <= head_lines + tail_lines) return;
     var head_end: usize = 0;
-    for (0..head_lines) |_| head_end = std.mem.indexOfScalarPos(u8, text.items, head_end, '\n').? + 1;
+    for (0..head_lines) |_| head_end = std.mem.indexOfScalarPos(u8, text.items, head_end, '\n').? + 1; // checked: `lines` counts this text's lines, more than head and tail together
     // The tail starts after the newline that ends line `lines - tail_lines`.
     var tail_start = text.items.len;
     if (text.items[tail_start - 1] == '\n') tail_start -= 1;
-    for (0..tail_lines) |_| tail_start = std.mem.lastIndexOfScalar(u8, text.items[0..tail_start], '\n').?;
+    for (0..tail_lines) |_| tail_start = std.mem.lastIndexOfScalar(u8, text.items[0..tail_start], '\n').?; // checked: `lines` counts this text's lines, more than head and tail together
     tail_start += 1;
     var note: [48]u8 = undefined;
-    const marker = std.fmt.bufPrint(&note, "[bash: {d} lines omitted]\n", .{lines - head_lines - tail_lines}) catch unreachable;
+    const marker = std.fmt.bufPrint(&note, "[bash: {d} lines omitted]\n", .{lines - head_lines - tail_lines}) catch unreachable; // checked: 48 bytes hold the note for any count
     try text.replaceRange(alloc, head_end, tail_start - head_end, marker);
 }
 

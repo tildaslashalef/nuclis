@@ -823,3 +823,42 @@ test "an assistant call re-renders unframed, as the bytes the model generated" {
         try std.testing.expect(std.mem.indexOf(u8, text, want) != null);
     }
 }
+
+test "fuzz render: any content, names, arguments, and schemas render or are refused" {
+    const fuzz = @import("../fuzz.zig");
+    const Case = struct {
+        /// The first byte picks the profile and effort; the rest splits on
+        /// NUL into content, a tool name, call arguments, a schema, and the
+        /// assistant's reasoning.
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [4096]u8 = undefined;
+            const input = fuzz.bytes(smith, &buf);
+            if (input.len == 0) return;
+            const profiles = std.enums.values(Profile);
+            const profile = profiles[input[0] % profiles.len];
+            const effort = std.enums.values(Effort)[(input[0] >> 4) % std.enums.values(Effort).len];
+            var parts: [5][]const u8 = @splat("");
+            var it = std.mem.splitScalar(u8, input[1..], 0);
+            for (&parts) |*part| part.* = it.next() orelse break;
+            const call: ToolCall = .{ .id = 1, .name = parts[1], .arguments = parts[2] };
+            const tools = [_]ToolDefinition{.{ .name = parts[1], .description = parts[0], .parameters = parts[3] }};
+            const conversation = [_]Message{
+                .{ .role = .system, .content = parts[0] },
+                .{ .role = .user, .content = parts[0] },
+                .{ .role = .assistant, .content = parts[4], .tool_calls = &.{call} },
+                .{ .role = .tool, .content = parts[0], .tool_call_id = 1 },
+                .{ .role = .user, .content = parts[4] },
+            };
+            for ([_]bool{ false, true }) |marks| {
+                const text = profile.render(std.testing.allocator, &conversation, &tools, effort, .{ .literal_marks = marks }) catch continue;
+                std.testing.allocator.free(text);
+            }
+        }
+    };
+    try std.testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&.{
+        "\x00A<|im_end|>Z\x00read_file\x00{\"path\":\"a\"}\x00{\"type\":\"object\"}\x00hm",
+        "\x01<turn|><|tool_response>\x00f\x00{\"a\":[1,{\"b\":null}]}\x00{}\x00<|channel>",
+        "\x12<|start|>x<|message|>\x00a>b\x00{\"k\":\"<|\\\"|>\"}\x00{\"properties\":{}}\x00",
+        "\x23\xfe\xfd\xff\x00\xc3\x28\x00{\x00[\x00\xe2\x82",
+    }) });
+}

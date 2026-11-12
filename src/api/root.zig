@@ -72,7 +72,7 @@ pub const Options = struct {
     /// The search service's base URL, or null when the tools are off.
     pub fn webUrl(self: Options, cfg: *const config.Config) ?[]const u8 {
         return switch (self.web) {
-            .configured => if (cfg.serve.web) cfg.web.url.? else null,
+            .configured => if (cfg.serve.web) cfg.web.url.? else null, // checked: configuration refuses `serve.web` without `web.url`
             .off => null,
             .url => |url| url,
         };
@@ -652,6 +652,8 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     defer server.book.deinit(gpa);
     if (options.request_log) if (context.root) |root| server.book.open(gpa, io, root) catch |err|
         try out.print("{s}warning:{s} no request log under {s}/logs: {s}\n", .{ sty.on(.warning), sty.off(), root, @errorName(err) });
+    request_log.armPanic(&server.book);
+    defer request_log.armPanic(null);
 
     var listener = listen_address.listen(io, .{ .reuse_address = true, .kernel_backlog = 128 }) catch |err| {
         diag.set("cannot listen on {f}: {s}", .{ listen_address, @errorName(err) });

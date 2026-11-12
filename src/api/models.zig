@@ -89,8 +89,8 @@ pub const Option = struct {
         if (self.values) |v| try o.put(arena, "values", .{ .array = v });
         if (self.min) |v| try o.put(arena, "min", v);
         if (self.max) |v| try o.put(arena, "max", v);
-        if (self.max_items) |v| try o.put(arena, "max_items", .{ .integer = @intCast(v) });
-        if (self.max_bytes) |v| try o.put(arena, "max_bytes", .{ .integer = @intCast(v) });
+        if (self.max_items) |v| try o.put(arena, "max_items", .{ .integer = @intCast(v) }); // checked: a host limit
+        if (self.max_bytes) |v| try o.put(arena, "max_bytes", .{ .integer = @intCast(v) }); // checked: a host limit
         try o.put(arena, "default", self.default);
         if (self.by_effort) |b| if (b.count() > 0) try o.put(arena, "by_effort", .{ .object = b });
         return .{ .object = o };
@@ -109,11 +109,11 @@ pub fn number(arena: std.mem.Allocator, x: f32) !std.json.Value {
 /// ("estimate", null when unknown). docs/guide/api.md § Memory.
 pub fn putMemory(arena: std.mem.Allocator, io: std.Io, details: *std.json.ObjectMap, budget: ?*memory.Budget, name: []const u8, basis: u64, floor: ?u64) !void {
     const b = budget orelse {
-        try details.put(arena, "memory_bytes", if (floor) |f| .{ .integer = @intCast(f) } else .null);
+        try details.put(arena, "memory_bytes", if (floor) |f| .{ .integer = @intCast(f) } else .null); // checked: a byte count below 2^63
         return details.put(arena, "memory_source", .{ .string = "estimate" });
     };
     const bytes: ?u64, const source: []const u8 = if (b.openBytes(io, name)) |n| .{ n, "open" } else if (b.measuredBytes(io, name, basis)) |n| .{ n, "measured" } else .{ floor, "estimate" };
-    try details.put(arena, "memory_bytes", if (bytes) |n| .{ .integer = @intCast(n) } else .null);
+    try details.put(arena, "memory_bytes", if (bytes) |n| .{ .integer = @intCast(n) } else .null); // checked: a byte count below 2^63
     try details.put(arena, "memory_source", .{ .string = source });
 }
 
@@ -127,7 +127,7 @@ pub fn strings(arena: std.mem.Allocator, items: []const []const u8) !std.json.Ar
 /// Integer values as a JSON array.
 pub fn integers(arena: std.mem.Allocator, items: anytype) !std.json.Array {
     var out: std.json.Array = .init(arena);
-    for (items) |i| try out.append(.{ .integer = @intCast(i) });
+    for (items) |i| try out.append(.{ .integer = @intCast(i) }); // checked: limits and sizes the server sets, below 2^63
     return out;
 }
 
@@ -214,7 +214,7 @@ fn detailOf(arena: std.mem.Allocator, d: std.json.ObjectMap) ![]const u8 {
     if (d.get("architecture")) |v| if (v == .string) try parts.append(arena, v.string);
     if (d.get("quantization")) |v| if (v == .string) try parts.append(arena, v.string);
     var buffer: [16]u8 = undefined;
-    if (d.get("size_bytes")) |v| if (v == .integer and v.integer > 0) try parts.append(arena, try arena.dupe(u8, model_files.humanSize(&buffer, @intCast(v.integer))));
+    if (d.get("size_bytes")) |v| if (v == .integer and v.integer > 0) try parts.append(arena, try arena.dupe(u8, model_files.humanSize(&buffer, @intCast(v.integer)))); // checked: positive, checked in the same line
     return std.mem.join(arena, " · ", parts.items);
 }
 

@@ -148,7 +148,7 @@ pub const Reader = struct {
             if (b0 & 0x70 != 0) return error.ProtocolError;
             // § 5.1: a server closes on a frame its client did not mask.
             if (b1 & 0x80 == 0) return error.ProtocolError;
-            const opcode: Opcode = @fromBackingInt(@intCast(@as(u4, @truncate(b0))));
+            const opcode: Opcode = @fromBackingInt(@intCast(@as(u4, @truncate(b0)))); // checked: a 4-bit value into a 4-bit enum
             var len: u64 = b1 & 0x7f;
             if (len == 126) {
                 len = try self.in.takeInt(u16, .big);
@@ -160,7 +160,7 @@ pub const Reader = struct {
             switch (opcode) {
                 .ping, .pong, .close => {
                     if (!fin or len > self.control.len) return error.ProtocolError;
-                    const payload = self.control[0..@intCast(len)];
+                    const payload = self.control[0..@intCast(len)]; // checked: at most 125, the line above
                     try self.in.readSliceAll(payload);
                     unmask(payload, key);
                     return switch (opcode) {
@@ -188,7 +188,7 @@ pub const Reader = struct {
 
     fn appendPayload(self: *Reader, gpa: std.mem.Allocator, len: u64, key: [4]u8) ReadError!void {
         if (len > self.max_message - self.message.items.len) return error.TooBig;
-        const n: usize = @intCast(len);
+        const n: usize = @intCast(len); // checked: at most `max_message`, the line above
         const start = self.message.items.len;
         try self.message.ensureUnusedCapacity(gpa, n);
         const payload = self.message.unusedCapacitySlice()[0..n];
@@ -199,7 +199,7 @@ pub const Reader = struct {
     }
 
     fn complete(self: *Reader) ReadError!Message {
-        const opcode = self.partial.?;
+        const opcode = self.partial.?; // checked: `next` sets `partial` before every call
         self.partial = null;
         const bytes = self.message.items;
         if (opcode == .text) {
@@ -233,10 +233,10 @@ pub fn writeFrame(out: *std.Io.Writer, opcode: Opcode, payload: []const u8) std.
     head[0] = 0x80 | @as(u8, @backingInt(opcode));
     var n: usize = 2;
     if (payload.len < 126) {
-        head[1] = @intCast(payload.len);
+        head[1] = @intCast(payload.len); // checked: below 126
     } else if (payload.len <= std.math.maxInt(u16)) {
         head[1] = 126;
-        std.mem.writeInt(u16, head[2..4], @intCast(payload.len), .big);
+        std.mem.writeInt(u16, head[2..4], @intCast(payload.len), .big); // checked: at most `maxInt(u16)`
         n = 4;
     } else {
         head[1] = 127;
@@ -433,4 +433,34 @@ test "server frames: the three length forms, unmasked, and a close with its code
     out.end = 0;
     try writeClose(&out, null, "");
     try std.testing.expectEqualSlices(u8, "\x88\x00", out.buffered());
+}
+
+test "fuzz websocket: any client bytes are messages, then a typed error" {
+    const fuzz = @import("inference").fuzz;
+    const Case = struct {
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [fuzz.max_input]u8 = undefined;
+            var in: std.Io.Reader = .fixed(fuzz.bytes(smith, &buf));
+            var reader: Reader = .{ .in = &in, .max_message = 256 };
+            defer reader.deinit(std.testing.allocator);
+            while (true) {
+                const message = reader.next(std.testing.allocator) catch |err| {
+                    _ = closeCode(err);
+                    return;
+                };
+                switch (message) {
+                    .text => |text| try std.testing.expect(std.unicode.utf8ValidateSlice(text)),
+                    else => {},
+                }
+            }
+        }
+    };
+    try std.testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&.{
+        "\x81\x85\x00\x00\x00\x00hello",
+        "\x01\x83\x01\x02\x03\x04Igo\x89\x80\x00\x00\x00\x00\x80\x82\x00\x00\x00\x00lo",
+        "\x82\xff\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00",
+        "\x82\xfe\x01\x00\x00\x00\x00\x00",
+        "\x88\x82\x00\x00\x00\x00\x03\xe8\x8b\x80\x00\x00\x00\x00",
+        "\x81\x05hello",
+    }) });
 }

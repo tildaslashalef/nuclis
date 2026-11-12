@@ -120,7 +120,7 @@ pub const Service = struct {
         self.batcher.wait(io, &job, deadline) catch
             return fail(arena, http.overloaded, "timeout", arena.print("waited {d} s for the GPU without starting", .{self.timeout_ns / std.time.ns_per_s}) catch "timeout");
         const done = switch (job.outcome) {
-            .pending => unreachable,
+            .pending => unreachable, // checked: `wait` returned without a timeout: the batcher set the outcome
             .failed => |e| return .fromError(arena, e),
             .done => |d| d,
         };
@@ -172,10 +172,10 @@ pub const Service = struct {
             try details.put(arena, "name", .{ .string = l.name });
             try details.put(arena, "architecture", if (pinned) |p| .{ .string = p.architecture } else .null);
             try details.put(arena, "quantization", if (pinned) |p| .{ .string = p.quantization } else .null);
-            try details.put(arena, "size_bytes", if (pinned) |p| .{ .integer = @intCast(p.totalSize()) } else .null);
+            try details.put(arena, "size_bytes", if (pinned) |p| .{ .integer = @intCast(p.totalSize()) } else .null); // checked: a catalogue size, compiled in
             try details.put(arena, "source", .{ .string = if (registered) "registry" else "catalogue" });
             // What `nuclis model pull <name>` fetches: the weights and a backbone, not the projector.
-            try details.put(arena, "download_bytes", if (pinned) |p| .{ .integer = @intCast(p.totalSize()) } else .null);
+            try details.put(arena, "download_bytes", if (pinned) |p| .{ .integer = @intCast(p.totalSize()) } else .null); // checked: a catalogue size, compiled in
             try details.put(arena, "present", .{ .bool = l.present });
             try details.put(arena, "loaded", .{ .bool = if (l.directory) |d| self.pool.isOpen(io, d) else false });
             try models.putMemory(arena, io, &details, self.pool.budget, l.name, 0, if (pinned) |p| p.totalSize() else null);
@@ -184,8 +184,8 @@ pub const Service = struct {
             try details.put(arena, "packs", .{ .bool = l.family.packs() });
             try details.put(arena, "images", .{ .bool = l.images });
             const clef_budget: ?std.json.Value = if (l.family == .clef) .{ .integer = inference.profiles.clef.max_length } else null;
-            try details.put(arena, "max_len", clef_budget orelse if (l.budget) |b| .{ .integer = @intCast(b.max_len) } else .null);
-            try details.put(arena, "head_max_len", if (l.budget) |b| .{ .integer = @intCast(b.head_max_len) } else .null);
+            try details.put(arena, "max_len", clef_budget orelse if (l.budget) |b| .{ .integer = @intCast(b.max_len) } else .null); // checked: a model's own bound, a `u32`
+            try details.put(arena, "head_max_len", if (l.budget) |b| .{ .integer = @intCast(b.head_max_len) } else .null); // checked: a model's own bound, a `u32`
             // A decision request's fields describe the task, not the model: none to choose.
             try details.put(arena, "options", .{ .object = .empty });
             try details.put(arena, "repo", if (l.repo) |r| .{ .string = r } else .null);

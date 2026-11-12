@@ -124,8 +124,8 @@ pub const Pool = struct {
         self.mutex.lockUncancelable(io);
         self.slots[index] = .{ .directory = owned_directory, .name = owned_name, .decider = decider, .used = self.tick };
         self.mutex.unlock(io);
-        const load_ns: u64 = @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds()));
-        return .{ .decider = &self.slots[index].?.decider, .load_ns = load_ns };
+        const load_ns: u64 = @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())); // checked: clamped non-negative; one load, below 584 years
+        return .{ .decider = &self.slots[index].?.decider, .load_ns = load_ns }; // checked: assigned two lines above
     }
 
     /// GPU worker only: closes slot `index`, if open, and leaves the budget.
@@ -153,7 +153,7 @@ pub const Pool = struct {
         var best: usize = 0;
         for (self.slots, 0..) |slot, i| {
             const s = slot orelse return i;
-            if (s.used < self.slots[best].?.used) best = i;
+            if (s.used < self.slots[best].?.used) best = i; // checked: a null slot before `i` returned, so every slot up to `i` is open
         }
         return best;
     }

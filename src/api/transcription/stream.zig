@@ -62,7 +62,7 @@ pub fn register(service: *Service, gpa: std.mem.Allocator, router: *router_mod.R
 /// last row reads mel frame `8·row` (nemotron-asr.md § Cache-aware streaming).
 pub fn chunkEnd(lookahead: usize, chunk: u64) u64 {
     const last_row = (chunk + 1) * (lookahead + 1) - 1;
-    return mel.Spec.nemotron.frameEnd(@intCast(8 * last_row));
+    return mel.Spec.nemotron.frameEnd(@intCast(8 * last_row)); // checked: chunks of one utterance; `usize` is 64 bits on every target
 }
 
 // ----- the handshake -----
@@ -676,7 +676,7 @@ const Session = struct {
         const head: ?Command = if (self.commands.items.len > 0) self.commands.items[0] else null;
         const limit = if (head) |c| c.at else self.received;
         const boundary = self.nextBoundary();
-        if (head != null and head.?.kind == .reset) {
+        if (head != null and head.?.kind == .reset) { // checked: checked non-null in the same line
             // Nothing before a reset is worth pushing.
             action = .{ .command = self.commands.orderedRemove(0) };
         } else if (boundary <= limit) {
@@ -691,7 +691,7 @@ const Session = struct {
             .command => |c| if (c.kind == .finish) c.at - self.consumed else 0,
         };
         self.scratch.clearRetainingCapacity();
-        const copied = if (self.scratch.appendSlice(self.gpa, self.pending.items[0..@intCast(take)])) |_| true else |_| false;
+        const copied = if (self.scratch.appendSlice(self.gpa, self.pending.items[0..@intCast(take)])) |_| true else |_| false; // checked: a command is recorded at `received` and chunks stop at the first, so `take` is within `pending`
         self.mutex.unlock(io);
         if (!copied) {
             self.fail(io, error.OutOfMemory);
@@ -706,7 +706,7 @@ const Session = struct {
                     .finish => self.finishUtterance(io, c.at),
                     .reset => self.resetUtterance(io, c.at),
                     .language => self.setLanguage(io, c.localeName()),
-                    .phrases => self.setPhrases(io, c.phrases.?),
+                    .phrases => self.setPhrases(io, c.phrases.?), // checked: a phrases command always carries its list
                 }
             },
         }
@@ -731,8 +731,8 @@ const Session = struct {
         var prompts: [asr.max_languages]usize = .{model.default_prompt} ++ @as([asr.max_languages - 1]usize, @splat(0));
         const languages = if (self.language) |l| try model.languages(l, &prompts) else 1;
         self.transcriber = try asr.Transcriber.init(self.gpa, model, self.lookahead, prompts[0], if (model.metal != null) .metal else .cpu);
-        if (languages > 1) self.transcriber.?.setLanguages(prompts[0..languages]) catch |err| {
-            self.transcriber.?.deinit();
+        if (languages > 1) self.transcriber.?.setLanguages(prompts[0..languages]) catch |err| { // checked: assigned on the line above
+            self.transcriber.?.deinit(); // checked: assigned above
             self.transcriber = null;
             return err;
         };
@@ -750,7 +750,7 @@ const Session = struct {
         var buffer: [256]u8 = undefined;
         const Failure = struct { code: []const u8, close: u16, message: []const u8 };
         const f: Failure = switch (err) {
-            error.UnknownLanguage, error.TooManyLanguages, error.DuplicateLanguage, error.FallbackNotLast => .{ .code = "invalid_language", .close = Code.policy, .message = std.fmt.bufPrint(&buffer, "{s} is not a language of {s}: {s}", .{ self.language.?, self.name, languageProblem(err) }) catch "unknown locale" },
+            error.UnknownLanguage, error.TooManyLanguages, error.DuplicateLanguage, error.FallbackNotLast => .{ .code = "invalid_language", .close = Code.policy, .message = std.fmt.bufPrint(&buffer, "{s} is not a language of {s}: {s}", .{ self.language orelse "the language", self.name, languageProblem(err) }) catch "unknown locale" },
             error.ModelTooLarge => .{ .code = "model_too_large", .close = Code.internal, .message = std.fmt.bufPrint(&buffer, "{s} needs more than the server's memory budget leaves beside the pinned models", .{self.name}) catch "model too large" },
             error.Pinned, error.ModelBusy => .{ .code = "busy", .close = Code.try_again, .message = std.fmt.bufPrint(&buffer, "overloaded: the memory or the transcription slot {s} needs is in use; retry shortly", .{self.name}) catch "busy" },
             else => .{ .code = "model_failed", .close = Code.internal, .message = std.fmt.bufPrint(&buffer, "{s} did not open: {s}", .{ self.name, @errorName(err) }) catch "model failed" },
@@ -765,7 +765,7 @@ const Session = struct {
 
     /// Pushes one chunk (`scratch`), which completes at sample `boundary`.
     fn pushChunk(self: *Session, io: std.Io, boundary: u64) void {
-        const t = &self.transcriber.?;
+        const t = &self.transcriber.?; // checked: `step` returns before any push while the transcriber is null
         const emitted = t.push(self.scratch.items) catch |err| return self.pushFailed(io, err);
         self.mutex.lockUncancelable(io);
         self.drop(boundary);
@@ -788,7 +788,7 @@ const Session = struct {
 
     /// Mutex held: the samples up to `to` were pushed or dropped.
     fn drop(self: *Session, to: u64) void {
-        const n: usize = @intCast(to - self.consumed);
+        const n: usize = @intCast(to - self.consumed); // checked: `to` is past `consumed`, within `pending`
         std.mem.copyForwards(f32, self.pending.items, self.pending.items[n..]);
         self.pending.shrinkRetainingCapacity(self.pending.items.len - n);
         self.consumed = to;
@@ -806,7 +806,7 @@ const Session = struct {
     fn pushFailed(self: *Session, io: std.Io, err: anyerror) void {
         var buffer: [128]u8 = undefined;
         self.queueError(io, "model_failed", std.fmt.bufPrint(&buffer, "the transcription failed ({s}); the utterance is dropped", .{@errorName(err)}) catch "the transcription failed");
-        self.transcriber.?.reset() catch |e| return self.fail(io, e);
+        self.transcriber.?.reset() catch |e| return self.fail(io, e); // checked: `step` returns before any push while the transcriber is null
         self.shown.clearRetainingCapacity();
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
@@ -816,7 +816,7 @@ const Session = struct {
     /// Ends the utterance at sample `at` (`scratch` holds what is left of
     /// it), sends its final, and starts the next.
     fn finishUtterance(self: *Session, io: std.Io, at: u64) void {
-        const t = &self.transcriber.?;
+        const t = &self.transcriber.?; // checked: `step` returns before any command while the transcriber is null
         self.mutex.lockUncancelable(io);
         const start = self.utterance_start;
         self.mutex.unlock(io);
@@ -847,7 +847,7 @@ const Session = struct {
     }
 
     fn resetUtterance(self: *Session, io: std.Io, at: u64) void {
-        self.transcriber.?.reset() catch |err| return self.fail(io, err);
+        self.transcriber.?.reset() catch |err| return self.fail(io, err); // checked: `step` returns before any command while the transcriber is null
         self.shown.clearRetainingCapacity();
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
@@ -855,7 +855,7 @@ const Session = struct {
     }
 
     fn setLanguage(self: *Session, io: std.Io, locale: []const u8) void {
-        const t = &self.transcriber.?;
+        const t = &self.transcriber.?; // checked: `step` returns before any command while the transcriber is null
         var prompts: [asr.max_languages]usize = undefined;
         const n = t.model.languages(locale, &prompts) catch |err| {
             var buffer: [192]u8 = undefined;
@@ -866,7 +866,7 @@ const Session = struct {
 
     /// From the next chunk on; the utterance and its state stay.
     fn setPhrases(self: *Session, io: std.Io, list: []const []const u8) void {
-        const t = &self.transcriber.?;
+        const t = &self.transcriber.?; // checked: `step` returns before any command while the transcriber is null
         const next: ?boost.Boost = if (list.len == 0) null else t.model.boost(self.gpa, list, boost.default_bonus, boost.default_follow) catch |err| switch (err) {
             error.InvalidPhrase => return self.queueError(io, "invalid_message", phrases_message),
             error.OutOfMemory => return self.fail(io, err),

@@ -54,7 +54,7 @@ pub const Executor = struct {
     pub fn submit(self: *Executor, io: std.Io, item: *Item) error{ Busy, Stopped }!void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
-        std.debug.assert(item.state != .queued);
+        std.debug.assert(item.state != .queued); // checked: an item is submitted again only after it ran
         if (self.stopping) return error.Stopped;
         if (item.state == .running) {
             item.rerun = true;
@@ -127,7 +127,7 @@ pub const Executor = struct {
             self.queued -= 1;
             return;
         }
-        unreachable;
+        unreachable; // checked: `withdraw` unlinks only an item it found queued, under the mutex
     }
 
     /// The worker: runs items until `stop`, then returns with the queue
@@ -161,7 +161,7 @@ pub const Executor = struct {
     /// queued at this moment, once, in arrival order. A long item calls it
     /// between its steps so short ones need not wait for it to end.
     pub fn runShort(self: *Executor, io: std.Io) void {
-        if (self.step_began) |began| self.step_ns = @intCast(began.durationTo(.now(io, .awake)).raw.toNanoseconds());
+        if (self.step_began) |began| self.step_ns = @intCast(began.durationTo(.now(io, .awake)).raw.toNanoseconds()); // checked: the awake clock is monotonic
         defer self.step_began = std.Io.Clock.Timestamp.now(io, .awake);
         var taken: [16]*Item = undefined;
         var count: usize = 0;

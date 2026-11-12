@@ -27,7 +27,7 @@ pub const Log = struct {
     offset_s: i64,
 
     pub fn init(out: *std.Io.Writer, sty: style.Style, io: std.Io) Log {
-        const now: i64 = @intCast(@divFloor(std.Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s));
+        const now: i64 = @intCast(@divFloor(std.Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s)); // checked: the system clock, not a client's
         return .{ .out = out, .sty = sty, .offset_s = utcOffset(now) };
     }
 
@@ -35,7 +35,7 @@ pub const Log = struct {
         var buffer: [1024]u8 = undefined;
         var line: std.Io.Writer = .fixed(&buffer);
         const ns = std.Io.Clock.real.now(io).nanoseconds;
-        format(&line, self.sty, entry, @intCast(@divFloor(ns, std.time.ns_per_ms) + self.offset_s * std.time.ms_per_s)) catch {
+        format(&line, self.sty, entry, @intCast(@divFloor(ns, std.time.ns_per_ms) + self.offset_s * std.time.ms_per_s)) catch { // checked: the system clock, not a client's
             // A note too long for the line: end it there.
             line.end = buffer.len - 4;
             line.writeAll("…\n") catch {};
@@ -108,7 +108,7 @@ extern "c" fn localtime_r(time: *const c_long, result: *Tm) ?*Tm;
 fn utcOffset(now: i64) i64 {
     if (!builtin.target.os.tag.isDarwin()) return 0;
     var tm: Tm = undefined;
-    const t: c_long = @intCast(now);
+    const t: c_long = @intCast(now); // checked: the system clock, not a client's
     return if (localtime_r(&t, &tm) != null) tm.gmtoff else 0;
 }
 

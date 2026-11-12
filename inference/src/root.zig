@@ -23,6 +23,8 @@ pub const draft = @import("runtime/draft.zig");
 pub const observer = @import("runtime/observer.zig");
 pub const events = @import("events.zig");
 pub const alloc_check = @import("alloc_check.zig");
+/// Test support: fuzz-test inputs and corpora (`fuzz.zig`).
+pub const fuzz = @import("fuzz.zig");
 pub const engine = @import("engine.zig");
 /// The decision path: a Laya checkpoint answering typed questions.
 pub const decide = @import("decide.zig");
@@ -31,6 +33,7 @@ pub const vision = @import("vision/root.zig");
 pub const audio = @import("audio/root.zig");
 
 test {
+    _ = fuzz;
     _ = audio;
     _ = gguf;
     // Reached only through the modules that import them; their tests here.

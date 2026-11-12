@@ -253,6 +253,7 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
         exchange.book = b;
         parsed.fields = .{ .record = record, .book = b, .io = io };
     };
+    if (@import("../panic_hook.zig").enabled and std.mem.eql(u8, parsed.path, "/v1/debug/panic")) @import("../panic_hook.zig").at("serve");
     if (request.head.method == .GET or request.head.method == .HEAD) {
         var headers = request.iterateHeaders();
         parsed.websocket = websocket.readHandshake(arena, &headers) catch return exchange.fail(.init(.internal_server_error, "internal", "out of memory"));
@@ -285,7 +286,7 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
         // A known length is read into one allocation: a growing one would
         // leave its earlier copies in the arena, several times a large body.
         if (request.head.content_length) |length| {
-            const body = arena.alloc(u8, @intCast(length)) catch return exchange.fail(.init(.internal_server_error, "internal", "out of memory"));
+            const body = arena.alloc(u8, @intCast(length)) catch return exchange.fail(.init(.internal_server_error, "internal", "out of memory")); // checked: at most `max_body`, checked above
             body_reader.readSliceAll(body) catch return false;
             parsed.body = body;
         } else parsed.body = body_reader.allocRemaining(arena, .limited(max_body)) catch |err| return switch (err) {
@@ -328,7 +329,7 @@ const Exchange = struct {
     /// The end line, once the response, its stream, or its session is done.
     fn finish(self: *Exchange, status: std.http.Status, failure: ?errors.ApiError, bytes_out: usize) void {
         const record = self.record orelse return;
-        const book = self.book.?;
+        const book = self.book.?; // checked: `record` is set only with a book
         if (failure) |f| (request_log.Fields{ .record = record, .book = book, .io = self.io }).fail(f);
         book.finish(self.io, record, .{ .status = status, .bytes_in = self.bytes_in, .bytes_out = bytes_out });
         self.record = null;
@@ -369,7 +370,7 @@ const Exchange = struct {
             .method = self.method,
             .path = self.path,
             .status = response.status,
-            .duration_ns = @intCast(@max(0, self.started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds())),
+            .duration_ns = @intCast(@max(0, self.started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds())), // checked: non-negative, and an exchange lasts less than 584 years
             .bytes_out = response.body.len,
             .note = response.note,
         });
@@ -391,7 +392,7 @@ const Exchange = struct {
             .method = self.method,
             .path = self.path,
             .status = .switching_protocols,
-            .duration_ns = @intCast(@max(0, self.started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds())),
+            .duration_ns = @intCast(@max(0, self.started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds())), // checked: non-negative, and an exchange lasts less than 584 years
             .bytes_out = 0,
             .note = if (!sent) "the 101 could not be sent" else if (upgrade.note) |note| note(upgrade.context) else response.note,
         });
@@ -442,7 +443,7 @@ const Exchange = struct {
             .method = self.method,
             .path = self.path,
             .status = response.status,
-            .duration_ns = @intCast(@max(0, self.started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds())),
+            .duration_ns = @intCast(@max(0, self.started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds())), // checked: non-negative, and an exchange lasts less than 584 years
             .bytes_out = bytes,
             .note = if (stream.note) |note| note(stream.context) else response.note,
         });
@@ -788,4 +789,25 @@ test "query parameters" {
 
 test {
     _ = websocket;
+}
+
+test "fuzz http: any bytes on a connection are answered or end it, and the server lives" {
+    const fuzz = @import("inference").fuzz;
+    const Case = struct {
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [8192]u8 = undefined;
+            var echo: Echo = .{};
+            const output = try roundTrip(fuzz.bytes(smith, &buf), .{ .max_head = 256, .max_body = 100 }, &echo);
+            defer std.testing.allocator.free(output);
+            try std.testing.expect(output.len == 0 or std.mem.startsWith(u8, output, "HTTP/1."));
+        }
+    };
+    try std.testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&.{
+        "GET /v1/health?explain=1 HTTP/1.1\r\nhost: x\r\n\r\nPOST /a HTTP/1.1\r\ncontent-length: 5\r\n\r\nhello",
+        "POST /a HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+        "GET /\x01\x02\x7f HTTP/1.1\r\n\r\nGET /after HTTP/1.0\r\nconnection: keep-alive\r\n\r\n",
+        "POST / HTTP/1.1\r\nexpect: 100-continue\r\ncontent-length: 3\r\n\r\nabc",
+        "GET /ws HTTP/1.1\r\nconnection: upgrade\r\nupgrade: websocket\r\nsec-websocket-version: 13\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n\x81\x85\x00\x00\x00\x00hello",
+        "GET /stream HTTP/1.1\r\n\r\n",
+    }) });
 }

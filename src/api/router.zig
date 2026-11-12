@@ -38,8 +38,8 @@ pub const Router = struct {
 
     /// `add` with its own body limit, null for the transport's.
     pub fn addLimited(self: *Router, gpa: std.mem.Allocator, method: std.http.Method, path: []const u8, route: http.Handler, max_body: ?usize) !void {
-        std.debug.assert(std.mem.startsWith(u8, path, prefix));
-        for (self.routes.items) |r| std.debug.assert(!(r.method == method and std.mem.eql(u8, r.path, path)));
+        std.debug.assert(std.mem.startsWith(u8, path, prefix)); // checked: routes are the server's own, registered at start
+        for (self.routes.items) |r| std.debug.assert(!(r.method == method and std.mem.eql(u8, r.path, path))); // checked: routes are the server's own, registered at start
         try self.routes.append(gpa, .{ .method = method, .path = path, .handler = route, .max_body = max_body });
     }
 

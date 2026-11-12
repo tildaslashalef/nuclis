@@ -885,10 +885,12 @@ pub const Editor = struct {
                 continue;
             }
             const is_space = cluster.len == 1 and cluster[0] == ' ';
-            // A space past the edge is never drawn there: it becomes the next
-            // break point instead of breaking the row, so a word that ends
-            // exactly at the last column keeps it (same rule as `view.lines`).
-            if (used + w > columns and used > 0 and !is_space) {
+            // One space past the edge is never drawn there: it becomes the
+            // next break point instead of breaking the row, so a word that
+            // ends exactly at the last column keeps it; a second breaks the
+            // row, so a run of spaces never hangs over the box (same rule as
+            // `view.lines`).
+            if (used + w > columns and used > 0 and !(is_space and used <= columns)) {
                 try spans.append(a, .{ .start = start, .end = breakEnd(items, break_at, offset) });
                 start = break_at orelse offset;
                 used = if (break_at != null) since_break else 0;

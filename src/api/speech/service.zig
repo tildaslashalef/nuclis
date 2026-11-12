@@ -204,7 +204,7 @@ pub const Service = struct {
             var refusal: ApiError = undefined;
             const started = std.Io.Clock.awake.now(io);
             ready = readyVoice(self.gpa, arena, io, self.root, located.directory, name, voice_name, &refusal) catch return .fromError(arena, refusal);
-            fields.ms("voice_ready_ms", @intCast(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds()));
+            fields.ms("voice_ready_ms", @intCast(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())); // checked: the awake clock is monotonic
         }
 
         // Everything from the arena first: once the pipe exists, a failure must free it.
@@ -215,7 +215,7 @@ pub const Service = struct {
             if (ready) |*r| r.deinit(self.gpa);
             return internal(arena);
         }
-        const job = created.?;
+        const job = created.?; // checked: checked non-null above
         job.* = .{
             .service = self,
             .request = parsed,
@@ -229,14 +229,14 @@ pub const Service = struct {
                 if (ready) |*r| r.deinit(self.gpa);
                 return internal(arena);
             },
-            .note_buffer = note_buffer.?,
-            .message_buffer = message_buffer.?,
+            .note_buffer = note_buffer.?, // checked: checked non-null above
+            .message_buffer = message_buffer.?, // checked: checked non-null above
             .peer = peer,
             .fields = fields,
         };
         if (speech.engineOf(located.directory) == .drama3) {
             job.context_id = request_log.uuid7(io);
-            fields.text("context_id", &job.context_id.?);
+            fields.text("context_id", &job.context_id.?); // checked: set on the line above
             if (parsed.context) |id| {
                 const found = self.contexts.lookup(self.gpa, io, std.Io.Clock.awake.now(io), id, located.directory, voice_name) catch {
                     job.pipe.deinit(self.gpa);
@@ -364,7 +364,7 @@ pub const Service = struct {
             job.ready.set(io);
         }
         if (self.executor.betweenSteps()) return self.speakBeside(io, job);
-        job.synth.?.setChunk(self.chunk);
+        job.synth.?.setChunk(self.chunk); // checked: `start` above set it; `finish` clears it only as the job leaves
         return self.advance(io, job) orelse .again;
     }
 
@@ -375,7 +375,7 @@ pub const Service = struct {
         const pace = paceBeside(self.executor.stepNanoseconds(), self.chunk);
         const began = std.Io.Clock.awake.now(io);
         while (job.ahead(io) < pace.lead_ns and !job.cancel.load(.acquire)) {
-            job.synth.?.setChunk(pace.frames);
+            job.synth.?.setChunk(pace.frames); // checked: `start` set it before the first step; `finish` clears it only as the job leaves
             if (self.advance(io, job)) |after| return after;
             if (began.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds() >= pace.budget_ns) break;
         }
@@ -425,7 +425,7 @@ pub const Service = struct {
                 job.languages = v.config.languages;
                 const language = job.request.language orelse "auto";
                 var prompt = switch (job.mode) {
-                    .clone => try v.clonePrompt(self.gpa, job.request.input, job.saved.?.reference_text, language, job.saved.?.clone()),
+                    .clone => try v.clonePrompt(self.gpa, job.request.input, job.saved.?.reference_text, language, job.saved.?.clone()), // checked: clone mode readied the saved voice before the job was made
                     .design => try v.prompt(self.gpa, job.request.input, null, language, job.request.instructions),
                     .speakers => try v.prompt(self.gpa, job.request.input, job.voice, language, job.request.instructions),
                 };
@@ -436,8 +436,8 @@ pub const Service = struct {
                 break :qwen .{ .qwen3_tts = s };
             },
             .drama3 => |v| d: {
-                const saved = &job.saved.?;
-                job.reference = .{ .transcript = saved.reference_text.?, .codes = saved.rows(drama.Codes) };
+                const saved = &job.saved.?; // checked: a Drama 3 file is clone mode, so the saved voice was readied
+                job.reference = .{ .transcript = saved.reference_text.?, .codes = saved.rows(drama.Codes) }; // checked: without a speaker embedding (Drama 3) `ensure` refuses a voice without its transcript
                 // The synthesizer copies the context.
                 defer job.dropContext();
                 break :d .{ .drama3 = try drama.Synthesizer.init(self.gpa, v, .{
@@ -521,11 +521,11 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
         try details.put(arena, "name", .{ .string = title });
         try details.put(arena, "architecture", if (entry) |e| .{ .string = e.architecture } else if (described != null) .{ .string = "qwen3_tts" } else .null);
         try details.put(arena, "quantization", if (entry) |e| .{ .string = e.quantization } else if (described) |d| .{ .string = d.quantization } else .null);
-        try details.put(arena, "size_bytes", .{ .integer = @intCast(if (entry) |e| e.totalSize() else if (located) |l| l.bytes else 0) });
+        try details.put(arena, "size_bytes", .{ .integer = @intCast(if (entry) |e| e.totalSize() else if (located) |l| l.bytes else 0) }); // checked: a catalogue size or a file's, below 2^63
         try details.put(arena, "present", .{ .bool = present });
         try details.put(arena, "source", .{ .string = if (registered != null) "registry" else "catalogue" });
         // What `nuclis model pull <name>` fetches: the weights and, for speech, the codec.
-        try details.put(arena, "download_bytes", if (registered == null) if (entry) |e| .{ .integer = @intCast(e.totalSize()) } else .null else .null);
+        try details.put(arena, "download_bytes", if (registered == null) if (entry) |e| .{ .integer = @intCast(e.totalSize()) } else .null else .null); // checked: a catalogue size, compiled in
         try details.put(arena, "loaded", .{ .bool = slot.isOpen(io, resolved.directory) });
         const files: ?u64 = if (located) |l| l.bytes else if (entry) |e| e.totalSize() else null;
         try models.putMemory(arena, io, &details, slot.budget, name, memory.basis(&.{files orelse 0}), files);
@@ -697,7 +697,7 @@ const Job = struct {
     /// One chunk: synthesized, encoded, queued for the client. False once
     /// the utterance ended, the client left, or the device failed.
     fn speak(self: *Job, io: std.Io) bool {
-        const synth = &self.synth.?;
+        const synth = &self.synth.?; // checked: `start` set it before the first step; `finish` clears it only as the job leaves
         const n = synth.read(self.samples) catch |err| {
             self.failure = apiError(self.message_buffer, .internal_server_error, "model_failed", null, "the synthesis failed: {s}", .{@errorName(err)});
             if (self.request.stream == .sse) self.emitError(io);
@@ -728,7 +728,7 @@ const Job = struct {
         if (self.first_audio_at == null) {
             const now = std.Io.Clock.awake.now(io);
             self.first_audio_at = now;
-            self.first_audio_ns = @intCast(@max(0, self.started.durationTo(now).toNanoseconds()));
+            self.first_audio_ns = @intCast(@max(0, self.started.durationTo(now).toNanoseconds())); // checked: non-negative, and an utterance lasts less than 292 years
         }
         self.audio_samples += n;
         var raw: std.Io.Writer = .fixed(self.bytes_out[0..self.raw_len]);
@@ -755,15 +755,15 @@ const Job = struct {
     /// with the first audio and runs at real time; 0 before it.
     fn ahead(self: *const Job, io: std.Io) i64 {
         const first = self.first_audio_at orelse return 0;
-        const made: i64 = @intCast(self.audio_samples * std.time.ns_per_s / self.rate);
-        return made - @as(i64, @intCast(first.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds()));
+        const made: i64 = @intCast(self.audio_samples * std.time.ns_per_s / self.rate); // checked: samples of one bounded utterance
+        return made - @as(i64, @intCast(first.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())); // checked: the awake clock, from the first audio
     }
 
     /// An SSE error line after the stream began.
     fn emitError(self: *Job, io: std.Io) void {
         var line: [512]u8 = undefined;
         var out: std.Io.Writer = .fixed(&line);
-        wire.writeStreamError(&out, self.failure.?) catch return;
+        wire.writeStreamError(&out, self.failure.?) catch return; // checked: set on the line before the only call
         self.pipe.write(io, out.buffered()) catch {};
     }
 

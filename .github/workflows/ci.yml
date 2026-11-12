@@ -92,6 +92,7 @@ jobs:
                 exit 1
               }
               echo "version $version"
+              make input-safety
               zig build test --summary all
               make gates-validate
           - name: metal

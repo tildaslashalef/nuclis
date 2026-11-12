@@ -168,7 +168,7 @@ pub fn Watch(comptime capacity: usize) type {
 }
 
 fn now(io: std.Io) i64 {
-    return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+    return @intCast(std.Io.Clock.awake.now(io).nanoseconds); // checked: the awake clock, below 292 years of uptime
 }
 
 // ----- tests -----

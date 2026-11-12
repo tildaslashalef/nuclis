@@ -614,3 +614,30 @@ test "an id prefix names one session or says which it could mean, and delete tak
 test {
     _ = inference;
 }
+
+test "fuzz session: any file loads, rebuilds, and exports, or is a typed error" {
+    const fuzz = inference.fuzz;
+    const Case = struct {
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [fuzz.max_input]u8 = undefined;
+            const source = fuzz.bytes(smith, &buf);
+            if (session.parseHeader(testing.allocator, source)) |header| header.deinit(testing.allocator) else |_| {}
+            const loaded = session.parseText(testing.allocator, source, null) catch return;
+            defer loaded.deinit();
+            _ = lastBoundary(loaded);
+            if (conversation(testing.allocator, loaded)) |c| c.deinit(testing.allocator) else |_| {}
+            var discard: std.Io.Writer.Discarding = .init(&.{});
+            session.exportMarkdown(loaded, &discard.writer) catch {};
+        }
+    };
+    const header = "{\"type\":\"session\",\"version\":1,\"id\":\"a\",\"time\":\"t\",\"cwd\":\"/w\",\"model\":{\"path\":\"/m\"},\"effort\":\"off\",\"ctx_size\":8}\n";
+    try testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&.{
+        header ++ "{\"type\":\"user\",\"id\":1,\"parent\":null,\"time\":\"t\",\"text\":\"hi\"}\n" ++
+            "{\"type\":\"assistant\",\"id\":2,\"parent\":1,\"time\":\"t\",\"text\":\"ok\",\"tool_calls\":[{\"id\":1,\"name\":\"read_file\",\"arguments\":\"{}\"}]}\n" ++
+            "{\"type\":\"tool\",\"id\":3,\"parent\":2,\"time\":\"t\",\"tool_call_id\":1,\"text\":\"x\"}\n" ++
+            "{\"type\":\"compaction\",\"id\":4,\"parent\":3,\"time\":\"t\",\"first_kept\":2,\"reason\":\"context_full\"}\n",
+        header ++ "{\"type\":\"user\",\"id\":1,\"parent\":4294967296,\"time\":\"t\",\"text\":\"x\"}\n{}\n",
+        header ++ "{\"type\":\"user\",\"id\":1,\"parent\":null,\"time\":\"t\",\"text\":\"x\",\"images\":[{\"path\":\"p\",\"width\":1099511627776}]}\n{",
+        header ++ "{\"type\":\"compaction\",\"id\":1,\"parent\":null,\"time\":\"t\",\"first_kept\":99,\"reason\":\"x\"}\n",
+    }) });
+}

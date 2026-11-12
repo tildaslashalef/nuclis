@@ -47,7 +47,7 @@ pub fn decode(alloc: std.mem.Allocator, bytes: []const u8) Error!Rgb8 {
     var width: u32 = 0;
     var height: u32 = 0;
     var pixels: [*]u8 = undefined;
-    switch (nu_image_decode(bytes.ptr, bytes.len, @intCast(max_pixels), &width, &height, &pixels)) {
+    switch (nu_image_decode(bytes.ptr, bytes.len, @intCast(max_pixels), &width, &height, &pixels)) { // checked: `max_pixels` is a constant below `maxInt(u32)`
         0 => {},
         1 => return error.UnsupportedImageFormat,
         2 => return error.ImageTooLarge,
@@ -147,4 +147,21 @@ test "the bridge decodes a PNG and rejects junk" {
     try std.testing.expectEqual([3]u8{ 255, 0, 0 }, image.at(0, 0));
     try std.testing.expectEqual([3]u8{ 0, 255, 0 }, image.at(1, 0));
     try std.testing.expectError(error.UnsupportedImageFormat, decode(std.testing.allocator, "not an image at all"));
+}
+
+test "fuzz ppm: any bytes are an image or a typed error" {
+    const fuzz = @import("../fuzz.zig");
+    const Case = struct {
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [fuzz.max_input]u8 = undefined;
+            var image = decodePpm(std.testing.allocator, fuzz.bytes(smith, &buf)) catch return;
+            image.deinit(std.testing.allocator);
+        }
+    };
+    try std.testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&.{
+        "P6\n# a comment\n2 1\n255\n\x01\x02\x03\x04\x05\x06",
+        "P6\n0 0\n255\n",
+        "P6\n99999 99999\n255\n",
+        "P6\n4294967295 2\n255\n",
+    }) });
 }

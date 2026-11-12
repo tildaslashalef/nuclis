@@ -63,7 +63,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         return root.fail(alloc, "read_file: {s}: {s}", .{ path, @errorName(err) });
     };
     if (stat.kind == .directory) return root.fail(alloc, "read_file: {s} is a directory", .{path});
-    const size: usize = @intCast(stat.size);
+    const size: usize = @intCast(stat.size); // checked: a file's size; `usize` is 64 bits on every target
     const byte_truncated = size > max_bytes;
     const bytes = try alloc.alloc(u8, @min(size, max_bytes));
     defer alloc.free(bytes);
@@ -181,7 +181,7 @@ fn outline(alloc: std.mem.Allocator, body: []const u8, total: usize, syntax: Syn
             // A heading inside a fenced block is code, not structure.
             const lead = std.mem.trimStart(u8, text, " ");
             if (std.mem.startsWith(u8, lead, "```") or std.mem.startsWith(u8, lead, "~~~")) {
-                if (fence == null) fence = lead[0] else if (fence.? == lead[0]) fence = null;
+                if (fence == null) fence = lead[0] else if (fence.? == lead[0]) fence = null; // checked: checked non-null in the same line
                 continue;
             }
             if (fence != null) continue;

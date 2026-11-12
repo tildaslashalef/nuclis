@@ -47,7 +47,7 @@ pub fn decode(alloc: std.mem.Allocator, bytes: []const u8, max_samples: u32) Err
 /// mono 16-bit or float WAV at that rate directly, anything else through
 /// the bridge.
 pub fn decodeAt(alloc: std.mem.Allocator, bytes: []const u8, max_samples: u32, rate: u32) Error!Pcm {
-    std.debug.assert(rate >= 8000 and rate <= 192000);
+    std.debug.assert(rate >= 8000 and rate <= 192000); // checked: a model's codec rate, never a request's
     if (bytes.len > max_bytes) return error.AudioTooLarge;
     if (decodeWavAt(alloc, bytes, max_samples, rate)) |pcm| return pcm else |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -176,7 +176,7 @@ pub const Reader = struct {
         switch (self.source) {
             .wav => {},
             // Never built without the bridge: `open` cannot make one.
-            .bridge => |handle| if (bridge_enabled) nu_audio_close(handle) else unreachable,
+            .bridge => |handle| if (bridge_enabled) nu_audio_close(handle) else unreachable, // checked: `open` makes a bridge source only when the bridge is built
         }
         self.* = undefined;
     }
@@ -192,9 +192,9 @@ pub const Reader = struct {
                 return n;
             },
             .bridge => |handle| {
-                if (!bridge_enabled) unreachable;
+                if (!bridge_enabled) unreachable; // checked: `open` makes a bridge source only when the bridge is built
                 var n: u32 = 0;
-                if (nu_audio_read(handle, out.ptr, @intCast(@min(out.len, std.math.maxInt(u32))), &n) != 0) return error.UnsupportedAudioFormat;
+                if (nu_audio_read(handle, out.ptr, @intCast(@min(out.len, std.math.maxInt(u32))), &n) != 0) return error.UnsupportedAudioFormat; // checked: `@min` bounds it to `u32`
                 return n;
             },
         }
@@ -420,4 +420,19 @@ test "the bridge's reader gives its whole decode, in pieces" {
     }
     try std.testing.expectEqualSlices(f32, whole.samples, got.items);
     try std.testing.expectError(error.UnsupportedAudioFormat, Reader.open("not audio at all, not even close"));
+}
+
+test "fuzz wav: any bytes are samples or a typed error" {
+    const fuzz = @import("../fuzz.zig");
+    const seed = "RIFF\x28\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80\x3e\x00\x00\x00\x7d\x00\x00\x02\x00\x10\x00data\x04\x00\x00\x00\x00\x40\x00\xc0";
+    const float = "RIFF\x2c\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x03\x00\x01\x00\x80\x3e\x00\x00\x00\xfa\x00\x00\x04\x00\x20\x00data\x08\x00\x00\x00\x00\x00\xc0\x7f\x00\x00\x80\x3f";
+    const Case = struct {
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [fuzz.max_input]u8 = undefined;
+            const bytes = fuzz.bytes(smith, &buf);
+            var pcm = decodeWavAt(std.testing.allocator, bytes, 1 << 16, sample_rate) catch return;
+            pcm.deinit(std.testing.allocator);
+        }
+    };
+    try std.testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&.{ seed, float, seed[0..20] }) });
 }

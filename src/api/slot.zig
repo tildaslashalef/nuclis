@@ -90,7 +90,7 @@ pub fn Slot(comptime Model: type, comptime kind: memory.Kind) type {
             self.mutex.lockUncancelable(io);
             self.current = .{ .directory = owned_directory, .name = owned_name, .model = model, .bytes = counted };
             self.mutex.unlock(io);
-            return .{ .model = model, .load_ns = @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) };
+            return .{ .model = model, .load_ns = @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) }; // checked: clamped non-negative; one load, below 584 years
         }
 
         /// GPU worker only: one more request uses the open model across
@@ -109,7 +109,7 @@ pub fn Slot(comptime Model: type, comptime kind: memory.Kind) type {
             self.current = null;
             self.mutex.unlock(io);
             const c = current orelse return;
-            std.debug.assert(self.held == 0);
+            std.debug.assert(self.held == 0); // checked: a held model is pinned, which the budget never closes
             if (self.budget) |b| b.remove(io, c.directory);
             self.close_fn(c.model, io);
             self.gpa.free(c.directory);

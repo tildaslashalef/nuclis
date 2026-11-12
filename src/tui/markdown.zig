@@ -638,7 +638,7 @@ fn linkEnd(text: []const u8, open: usize, cache: *Brackets) ?LinkEnd {
     const label_close = cache.close;
     if (label_close + 1 >= text.len or text[label_close + 1] != '(') return null;
     if (cache.paren == null) cache.paren = std.mem.indexOfScalarPos(u8, text, label_close + 2, ')') orelse text.len;
-    const target_close = cache.paren.?;
+    const target_close = cache.paren.?; // checked: set on the line above
     if (target_close >= text.len) return null;
     return .{ .label_close = label_close, .target_start = label_close + 2, .target_end = target_close, .consumed = target_close + 1 };
 }
@@ -1145,4 +1145,36 @@ test "every prefix of every fixture renders: no error, no control byte, bounded 
             }
         }
     }
+}
+
+test "fuzz markdown: any text renders at any width with no control byte and no row past the edge" {
+    const fuzz = @import("inference").fuzz;
+    const Case = struct {
+        /// The first byte picks the width (1 to 64), the colour level, and
+        /// the glyph set; the rest is the document.
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [8192]u8 = undefined;
+            const input = fuzz.bytes(smith, &buf);
+            if (input.len == 0) return;
+            const columns: usize = (input[0] & 0x3f) + 1;
+            const kinds = std.enums.values(theme_mod.Kind);
+            const th: theme_mod.Theme = .{ .kind = kinds[(input[0] >> 6) % kinds.len], .glyph_set = if (input[0] & 0x80 != 0) .ascii else .unicode };
+            const text = input[1..];
+            const parts = split(text);
+            try std.testing.expectEqual(text.len, parts.closed.len + parts.open.len);
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const rows = try render(arena.allocator(), text, columns, th);
+            for (rows) |r| {
+                try expectNoControlBytes(r);
+                try std.testing.expect(view.styledWidth(r) <= columns);
+            }
+        }
+    };
+    try std.testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&(.{
+        "\x00| a | b |\n|:-|-:|\n| 1 | 2 | 3 |\n| x |\n",
+        "\x05> > > - [ ] **_deep_** `code`\n>>>>>>>> 1. x\n```zig\nopen fence",
+        "\x80# h\x1b[31m\t\xc2\x9b\x07\r\n[link](http://x\x00)\\*\n\n---\n",
+        "\x3f" ++ fixtures[0],
+    })) });
 }

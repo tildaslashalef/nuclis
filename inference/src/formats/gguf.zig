@@ -72,7 +72,7 @@ pub const ArrayReader = struct {
         if (array.element_type != .string and array.element_type != .int32)
             return error.InvalidMetadataType;
         if (array.file_offset > directory.len) return error.EndOfStream;
-        const bytes = directory[@intCast(array.file_offset)..];
+        const bytes = directory[@intCast(array.file_offset)..]; // checked: at most `directory.len`, the line above
         const minimum: u64 = if (array.element_type == .string) 8 else 4;
         if (array.count > bytes.len / minimum) return error.EndOfStream;
         return .{ .bytes = bytes, .remaining = array.count, .kind = array.element_type, .string_bytes = limits.string_bytes };
@@ -85,7 +85,7 @@ pub const ArrayReader = struct {
         const len = std.mem.readInt(u64, self.bytes[0..8], .little);
         if (len > self.string_bytes) return error.LimitExceeded;
         if (len > self.bytes.len - 8) return error.EndOfStream;
-        const end = 8 + @as(usize, @intCast(len));
+        const end = 8 + @as(usize, @intCast(len)); // checked: at most `bytes.len - 8`, the line above
         const value = self.bytes[8..end];
         self.bytes = self.bytes[end..];
         self.remaining -= 1;
@@ -236,17 +236,17 @@ const Cursor = struct {
                 var array: Array = .{ .element_type = element_type, .count = count, .file_offset = self.position };
                 if (retain and count > retained_prefixed_items) return error.LimitExceeded;
                 if (retain or (element_type != .string and count <= retained_array_items)) {
-                    const values = try alloc.alloc(Value, @intCast(count));
+                    const values = try alloc.alloc(Value, @intCast(count)); // checked: at most `retained_array_items` or `retained_prefixed_items`
                     for (values) |*item| item.* = try self.value(alloc, element_type, false);
                     array.values = values;
                 } else if (element_type == .string) {
-                    for (0..@intCast(count)) |_| {
+                    for (0..@intCast(count)) |_| { // checked: at most `limits.array_items`
                         const len = try self.int(u64);
                         if (len > self.limits.string_bytes) return error.LimitExceeded;
                         try self.skip(len);
                     }
                 } else if (element_type == .boolean) {
-                    for (0..@intCast(count)) |_| {
+                    for (0..@intCast(count)) |_| { // checked: at most `limits.array_items`
                         if (try self.int(u8) > 1) return error.InvalidBoolean;
                     }
                 } else {
@@ -255,7 +255,7 @@ const Cursor = struct {
                         .uint16, .int16 => 2,
                         .uint32, .int32, .float32 => 4,
                         .uint64, .int64, .float64 => 8,
-                        else => unreachable,
+                        else => unreachable, // checked: string, boolean, and array are handled above
                     };
                     try self.skip(try std.math.mul(u64, count, size));
                 }
@@ -333,7 +333,7 @@ pub fn parseDiagnosed(gpa: Allocator, reader: *std.Io.Reader, file_bytes: u64, l
         entry.* = .{ .key = key, .kind = tag, .value = value };
         if (std.mem.eql(u8, key, "general.alignment")) {
             if (tag != .uint32) return error.InvalidAlignment;
-            alignment = @intCast(value.unsigned);
+            alignment = @intCast(value.unsigned); // checked: the tag is `uint32`, the line above
             if (alignment == 0 or !std.math.isPowerOfTwo(alignment)) return error.InvalidAlignment;
         }
     }
@@ -742,4 +742,31 @@ test "arrays under a retained key prefix keep every value, strings included" {
     const names = doc.get("prism.hadamard.weight_names").?.array.values.?;
     try std.testing.expectEqualStrings("blk.0.ffn_up.weight", names[1].string);
     try std.testing.expect(doc.get("other.names").?.array.values == null);
+}
+
+/// `values` as one little-endian byte string, for a hand-built seed file.
+fn seedBytes(comptime values: anytype) []const u8 {
+    return comptime blk: {
+        var out: []const u8 = "";
+        for (values) |v| out = out ++ if (@typeInfo(@TypeOf(v)) == .pointer) v else &std.mem.toBytes(std.mem.nativeToLittle(@TypeOf(v), v));
+        break :blk out;
+    };
+}
+
+test "fuzz gguf: any file is a document or a typed error" {
+    const fuzz = @import("../fuzz.zig");
+    const header = comptime seedBytes(.{ "GGUF", @as(u32, 3), @as(u64, 1), @as(u64, 1) });
+    const kv = comptime seedBytes(.{ @as(u64, 17), "general.alignment", @as(u32, 4), @as(u32, 32) });
+    const info = comptime seedBytes(.{ @as(u64, 1), "w", @as(u32, 1), @as(u64, 4), @as(u32, 0), @as(u64, 0) });
+    const seed = comptime header ++ kv ++ info ++ &@as([6]u8, @splat(0)) ++ &@as([16]u8, @splat(0x3f));
+    const Case = struct {
+        fn one(_: void, smith: *fuzz.Smith) !void {
+            var buf: [fuzz.max_input]u8 = undefined;
+            const bytes = fuzz.bytes(smith, &buf);
+            var reader: std.Io.Reader = .fixed(bytes);
+            var doc = parse(std.testing.allocator, &reader, bytes.len, .{ .directory_bytes = 1 << 20, .array_items = 1 << 16 }) catch return;
+            doc.deinit();
+        }
+    };
+    try std.testing.fuzz({}, Case.one, .{ .corpus = fuzz.corpus(&.{ seed, header, "GGUF" }) });
 }

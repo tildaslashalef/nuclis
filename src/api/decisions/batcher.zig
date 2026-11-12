@@ -89,7 +89,7 @@ pub const Batcher = struct {
     pub fn submit(self: *Batcher, io: std.Io, job: *Job) error{ Busy, Stopped }!void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
-        std.debug.assert(job.state == .idle);
+        std.debug.assert(job.state == .idle); // checked: a job is submitted once, by its handler
         if (self.waiting >= self.max_waiting) return error.Busy;
         self.link(job);
         if (!self.scheduled) {
@@ -151,7 +151,7 @@ pub const Batcher = struct {
             self.waiting -= 1;
             return;
         }
-        unreachable;
+        unreachable; // checked: `unlink` is called under the mutex for a job that is still pending, so in the list
     }
 
     /// The executor item: one batch, then again while jobs wait.
@@ -223,12 +223,12 @@ pub const Batcher = struct {
                 };
                 job.prepare_ns = lap(io, &clock);
             }
-            const job_rows = job.prepared.?.rows;
+            const job_rows = job.prepared.?.rows; // checked: prepared above, or the loop continued
             if (count > 0 and rows + job_rows > @min(self.max_rows, acquired.decider.batchRows())) {
                 rest = taken[i..];
                 break;
             }
-            batch[count] = &job.prepared.?;
+            batch[count] = &job.prepared.?; // checked: prepared above, or the loop continued
             owners[count] = job;
             count += 1;
             rows += job_rows;
@@ -243,12 +243,14 @@ pub const Batcher = struct {
         self.batches += 1;
         self.jobs += count;
         self.mutex.unlock(io);
-        for (owners[0..count]) |job| self.finish(io, job, .{ .done = .{
-            .results = job.prepared.?.results,
-            .load_ns = acquired.load_ns,
-            .timings = .{ .tokenize_ns = job.prepare_ns, .encode_ns = timings.encode_ns },
-            .batch_jobs = count,
-        } });
+        for (owners[0..count]) |job| self.finish(io, job, .{
+            .done = .{
+                .results = job.prepared.?.results, // checked: every owner was prepared
+                .load_ns = acquired.load_ns,
+                .timings = .{ .tokenize_ns = job.prepare_ns, .encode_ns = timings.encode_ns },
+                .batch_jobs = count,
+            },
+        });
         return rest;
     }
 
@@ -263,7 +265,7 @@ pub const Batcher = struct {
 
 fn lap(io: std.Io, clock: *std.Io.Timestamp) u64 {
     const now = std.Io.Clock.awake.now(io);
-    const elapsed: u64 = @intCast(@max(0, clock.durationTo(now).toNanoseconds()));
+    const elapsed: u64 = @intCast(@max(0, clock.durationTo(now).toNanoseconds())); // checked: clamped non-negative; one step, below 584 years
     clock.* = now;
     return elapsed;
 }
