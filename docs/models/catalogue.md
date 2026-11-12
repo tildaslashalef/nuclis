@@ -303,7 +303,11 @@ inspect` reads GGUF directories only.
 ### The catalogue
 
 `src/catalog.zig` is the *index*: one table, `artifacts`, of one type
-(`catalog.Artifact`), and the only source of "supported". What is
+(`catalog.Artifact`), and the only source of "supported". Its data copy,
+`src/catalog.json`, is what the gate runner and the bench scripts read
+(they import none of nuclis); `make index` rewrites it after an edit to
+the table, and a unit test fails until it does
+([development.md § Gates](../development.md#gates)). What is
 *installed* is what the sidecars under `models/` say; what is *known* is
 the index, consulted to pull, to verify, and to supply defaults. A file is
 *runnable* when its architecture id has an adapter, *supported* only when

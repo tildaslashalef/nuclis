@@ -243,7 +243,8 @@ at width 2816 (`pre_projection` [5632 → 1024], `post_projection`
 its own config. Traces were captured with the harness's new
 `--assistant-draft` mode (below) on `Hello, world` (9259, 236764, 1902),
 one row per proposal position *before* the target decoded it: the rows are
-pinned under `inference/src/models/fixtures/gemma4-mtp/`, and the
+pinned under `inference/src/models/fixtures/gemma4-mtp/` (removed with
+the 12B's gates on 2026-11-12, when the file became legacy), and the
 reference's greedy drafts are 2613 (position 1) and 236764 (position 2).
 The reference driver's own run on `Hello,` at `--spec-draft-n-max 4`
 drafted 26 tokens and accepted 4 over 12 generated tokens.
@@ -278,7 +279,9 @@ decodes that position, which is the driver's `draft()` moment; `Hello,
 world` (9259, 236764, 1902) pinned two rows under
 `inference/src/models/fixtures/gemma4-mtp/` with greedy drafts 2613 and
 236764 (the 26B head is bound and width-checked by the same tests but not
-traced). `make gate NAME=gemma4-qat-draft-trace-metal` checks them on both backends:
+traced). The `gemma4-qat-draft-trace-metal` gate checked them on both
+backends until the 12B became legacy (2026-11-12); the E4B's
+`gemma4-e4b-draft-trace-metal` is the Gemma 4 draft gate now:
 
 | backend | position | max abs | relative RMS | greedy |
 | --- | ---: | ---: | ---: | ---: |
@@ -646,7 +649,7 @@ acceptance*): the target-draw rule replaces `min(1, p/q)`, and the draft
 contract lost its logits rows. `Timing.accept` isolates the host decision.
 
 **The record** is in [benchmarks § Speculative decoding record](../benchmarks/history.md#speculative-decoding-record-2026-09-20)
-(`make workload NAME='qwen38/spec/*'`): off by default for the Qwen entry; the
+(then `make workload NAME='qwen38/spec/*'`, now `make spec-matrix ... --baseline`): off by default for the Qwen entry; the
 per-batch costs — verify 225–250 ms at 512 and ≈ 342 ms at 4K, recovery
 99–272 ms on rejection, the sampled decision 46–78 ms, proposal 6.2 ms per
 draft, commit 6.2 ms per token, the prefill at 2.9–3.3× — are the cost

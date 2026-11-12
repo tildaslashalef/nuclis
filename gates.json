@@ -7,93 +7,76 @@
  },
  "models": {
   "qwen38": {
-   "path": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
-   "entry": "qwen3.8-27b",
-   "mmproj": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/mmproj-BF16.gguf"
+   "artifact": "qwen3.8-27b"
   },
   "qwen38_mtp": {
-   "path": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/MTP/mtp-Qwen3.8-27B-Q4_0.gguf"
-  },
-  "gemma4_qat": {
-   "path": "~/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
-   "entry": "gemma-4-12b-qat"
-  },
-  "gemma4_qat_mtp": {
-   "path": "~/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/mtp-gemma-4-12B-it.gguf",
-   "entry": "gemma-4-12b-qat (mtp companion)"
+   "artifact": "qwen3.8-27b",
+   "file": "draft:mtp"
   },
   "gemma4_26b_a4b": {
-   "path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
-   "entry": "gemma-4-26b-a4b",
-   "mmproj": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/mmproj-BF16.gguf"
-  },
-  "muse": {
-   "path": "~/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
-   "entry": "muse-glimmer-30b",
-   "mmproj": "~/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/mmproj-kquant.gguf"
-  },
-  "bonsai": {
-   "path": "~/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf"
+   "artifact": "gemma-4-26b-a4b"
   },
   "gemma4_e4b": {
-   "path": "~/.nuclis/models/unsloth/gemma-4-E4B-it-qat-GGUF/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
-   "entry": "gemma-4-e4b-qat",
-   "mmproj": "~/.nuclis/models/unsloth/gemma-4-E4B-it-qat-GGUF/mmproj-BF16.gguf"
+   "artifact": "gemma-4-e4b-qat"
   },
   "gemma4_e4b_mtp": {
-   "path": "~/.nuclis/models/unsloth/gemma-4-E4B-it-qat-GGUF/MTP/mtp-gemma-4-E4B-it-Q4_0.gguf",
-   "entry": "gemma-4-e4b-qat (mtp companion)"
+   "artifact": "gemma-4-e4b-qat",
+   "file": "draft"
   },
   "laya": {
-   "path": "~/.nuclis/models/convaiinnovations/laya",
-   "entry": "laya"
+   "artifact": "laya",
+   "file": "directory"
   },
   "laya_multilingual": {
-   "path": "~/.nuclis/models/convaiinnovations/laya/multilingual",
-   "entry": "laya-multilingual"
+   "artifact": "laya-multilingual",
+   "file": "directory"
   },
   "clef": {
-   "path": "~/.nuclis/models/Cloudflare/clef-flash",
-   "entry": "clef-flash",
-   "mmproj": "~/.nuclis/models/bartowski/Cloudflare_clef-flash-GGUF/mmproj-Cloudflare_clef-flash-bf16.gguf"
+   "artifact": "clef-flash",
+   "file": "directory"
   },
   "embeddinggemma": {
-   "path": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/embeddinggemma-2-Q8_0.gguf",
-   "mmproj": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/mmproj-BF16.gguf"
+   "artifact": "embeddinggemma-2"
   },
   "embeddinggemma_bf16": {
    "path": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/embeddinggemma-2-BF16.gguf",
-   "mmproj": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/mmproj-BF16.gguf"
+   "mmproj": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/mmproj-BF16.gguf",
+   "note": "the BF16 encoding of embeddinggemma-2, which the index does not pin: the per-layer projection's F32 path runs only on it"
   },
   "embeddinggemma_mmproj": {
-   "path": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/mmproj-BF16.gguf"
+   "artifact": "embeddinggemma-2",
+   "file": "mmproj"
   },
   "qwen38_dflash2": {
-   "path": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf",
-   "entry": "qwen3.8-27b (dflash2 draft)"
+   "artifact": "qwen3.8-27b",
+   "file": "draft:dflash2"
   },
   "qwen38_dflash2_pair": {
-   "path": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
-   "entry": "qwen3.8-27b",
+   "artifact": "qwen3.8-27b",
    "draft": "dflash2"
   },
   "qwen3_tts_06b": {
-   "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+   "artifact": "qwen3-tts-0.6b-customvoice",
+   "file": "directory"
   },
   "qwen3_tts_17b": {
-   "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+   "artifact": "qwen3-tts-1.7b-customvoice",
+   "file": "directory"
   },
   "qwen3_tts_06b_base": {
-   "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+   "artifact": "qwen3-tts-0.6b-base",
+   "file": "directory"
   },
   "qwen3_tts_17b_design": {
-   "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+   "artifact": "qwen3-tts-1.7b-voicedesign",
+   "file": "directory"
   },
   "drama3_q4_k": {
-   "path": "~/.nuclis/models/sakasegawa/drama-3-GGUF/Drama-35B-A3B-v3-Q4_K.gguf"
+   "artifact": "drama-3"
   },
   "nemotron_asr": {
-   "path": "~/.nuclis/models/nvidia/nemotron-3.5-asr-streaming-0.6b"
+   "artifact": "nemotron-asr-0.6b",
+   "file": "directory"
   }
  },
  "data": {
@@ -347,6 +330,18 @@
   "qwen3-tts-0.6b-trace-metal",
   "nemotron-asr-trace-metal"
  ],
+ "retired": [
+  "gemma4-qat",
+  "run-2026-09-12-gemma4",
+  "run-2026-09-18-bonsai",
+  "run-2026-09-19-muse-glimmer"
+ ],
+ "budgets": {
+  "verify": 480,
+  "verify-release": 300,
+  "verify-long": 120,
+  "canaries": 60
+ },
  "gates": [
   {
    "name": "qwen38-trace-f32",
@@ -880,7 +875,7 @@
   {
    "name": "laya-multilingual-cpu",
    "family": "laya",
-   "tier": "verify",
+   "tier": "verify-release",
    "model": "laya_multilingual",
    "command": [
     "{zig-cpu}",
@@ -896,7 +891,7 @@
   {
    "name": "laya-multilingual-metal",
    "family": "laya",
-   "tier": "verify",
+   "tier": "verify-release",
    "model": "laya_multilingual",
    "command": [
     "{zig-metal}",
@@ -1151,144 +1146,6 @@
    "evidence": "docs/models/embeddinggemma.md"
   },
   {
-   "name": "gemma4-qat-trace-cpu",
-   "family": "gemma4",
-   "tier": "verify-release",
-   "model": "gemma4_qat",
-   "command": [
-    "{nuclis-cpu}",
-    "generate",
-    "--backend",
-    "cpu",
-    "--model",
-    "{model}",
-    "--prompt-tokens",
-    "tests/fixtures/gemma4-qat-hello-comma/prompt-tokens.json",
-    "--max-tokens",
-    "1",
-    "--ctx-size",
-    "8",
-    "--temperature",
-    "0",
-    "--logits",
-    "{trace}/logits.f32",
-    "--trace-dir",
-    "{trace}"
-   ],
-   "comparator": {
-    "kind": "trace",
-    "reference": "tests/fixtures/gemma4-qat-hello-comma",
-    "positions": 3,
-    "embedding": 3840,
-    "layers": 48,
-    "vocab": 262144
-   },
-   "bounds": {
-    "max_absolute": 0.002,
-    "max_relative_rms": 0.0001
-   },
-   "evidence": "docs/models/gemma4.md"
-  },
-  {
-   "name": "gemma4-qat-trace-f32",
-   "family": "gemma4",
-   "tier": "verify-release",
-   "model": "gemma4_qat",
-   "command": [
-    "{nuclis}",
-    "generate",
-    "--backend",
-    "metal",
-    "--model",
-    "{model}",
-    "--kv",
-    "f32",
-    "--prompt-tokens",
-    "tests/fixtures/gemma4-qat-hello-comma/prompt-tokens.json",
-    "--max-tokens",
-    "1",
-    "--ctx-size",
-    "8",
-    "--temperature",
-    "0",
-    "--logits",
-    "{trace}/logits.f32",
-    "--trace-dir",
-    "{trace}"
-   ],
-   "comparator": {
-    "kind": "trace",
-    "reference": "tests/fixtures/gemma4-qat-hello-comma",
-    "positions": 3,
-    "embedding": 3840,
-    "layers": 48,
-    "vocab": 262144
-   },
-   "bounds": {
-    "max_absolute": 0.002,
-    "max_relative_rms": 0.0001
-   },
-   "evidence": "docs/models/gemma4.md"
-  },
-  {
-   "name": "gemma4-qat-trace-f16",
-   "family": "gemma4",
-   "tier": "verify-release",
-   "model": "gemma4_qat",
-   "command": [
-    "{nuclis}",
-    "generate",
-    "--backend",
-    "metal",
-    "--model",
-    "{model}",
-    "--kv",
-    "f16",
-    "--prompt-tokens",
-    "tests/fixtures/gemma4-qat-hello-comma/prompt-tokens.json",
-    "--max-tokens",
-    "1",
-    "--ctx-size",
-    "8",
-    "--temperature",
-    "0",
-    "--logits",
-    "{trace}/logits.f32",
-    "--trace-dir",
-    "{trace}"
-   ],
-   "comparator": {
-    "kind": "trace",
-    "reference": "tests/fixtures/gemma4-qat-hello-comma",
-    "positions": 3,
-    "embedding": 3840,
-    "layers": 48,
-    "vocab": 262144
-   },
-   "bounds": {
-    "max_absolute": 1.0,
-    "max_relative_rms": 0.05
-   },
-   "evidence": "docs/models/gemma4.md"
-  },
-  {
-   "name": "gemma4-qat-generation-metal",
-   "family": "gemma4",
-   "tier": "verify-release",
-   "model": "gemma4_qat",
-   "command": [
-    "{zig-metal}",
-    "test-generation",
-    "--",
-    "{model}",
-    "--metal"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "evidence": "docs/models/gemma4.md"
-  },
-  {
    "name": "gemma4-26b-a4b-trace-cpu",
    "family": "gemma4",
    "tier": "verify-cpu",
@@ -1330,7 +1187,7 @@
   {
    "name": "gemma4-26b-a4b-trace-f32",
    "family": "gemma4",
-   "tier": "verify",
+   "tier": "verify-release",
    "model": "gemma4_26b_a4b",
    "command": [
     "{nuclis}",
@@ -1465,50 +1322,6 @@
    "evidence": "docs/engine/vision.md#gemma-4s-projectors-2026-09-23"
   },
   {
-   "name": "gemma4-qat-draft-trace-metal",
-   "family": "gemma4",
-   "tier": "verify-release",
-   "model": "gemma4_qat",
-   "mtp": "gemma4_qat_mtp",
-   "command": [
-    "{zig-metal}",
-    "test-generation",
-    "--",
-    "{model}",
-    "--metal",
-    "--draft-trace",
-    "{trace}",
-    "--draft-model",
-    "{mtp}"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "note": "the check compares its rows against inference/src/models/fixtures/gemma4-mtp itself",
-   "evidence": "docs/engine/speculative-decoding.md#the-gemma-4-assistant-heads-2026-09-21"
-  },
-  {
-   "name": "gemma4-qat-draft-trace-cpu",
-   "family": "gemma4",
-   "tier": "verify-release",
-   "model": "gemma4_qat",
-   "mtp": "gemma4_qat_mtp",
-   "command": [
-    "{zig-cpu}",
-    "test-generation",
-    "--",
-    "{model}",
-    "--draft-trace",
-    "{trace}",
-    "--draft-model",
-    "{mtp}"
-   ],
-   "comparator": {
-    "kind": "exit"
-   },
-   "evidence": "docs/engine/speculative-decoding.md#the-gemma-4-assistant-heads-2026-09-21"
-  },
-  {
    "name": "qwen38-mtp-companion-trace-metal",
    "family": "qwen38",
    "tier": "verify",
@@ -1622,7 +1435,7 @@
    "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
   },
   {
-   "name": "gemma4-26b-a4b-perplexity",
+   "name": "gemma4-26b-a4b-perplexity-full",
    "family": "gemma4",
    "tier": "verify",
    "model": "gemma4_26b_a4b",
@@ -2352,7 +2165,7 @@
   {
    "name": "qwen3-tts-1.7b-roundtrip-metal",
    "family": "qwen3-tts",
-   "tier": "verify",
+   "tier": "verify-release",
    "model": "qwen3_tts_17b",
    "baseline": "nemotron_asr",
    "command": [

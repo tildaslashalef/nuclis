@@ -22,7 +22,7 @@ BIN      := ./zig-out/bin/nuclis
 METAL    := -Dmetal=true -Doptimize=$(OPT)
 
 .DEFAULT_GOAL := build
-.PHONY: help build debug build-cpu build-linux metal install uninstall test test-metal test-tiny fuzz input-safety check gates-tool verify-auto verify verify-release verify-long verify-cpu verify-changed sweep gate gates-list gates-validate \
+.PHONY: help build index debug build-cpu build-linux metal install uninstall test test-metal test-tiny fuzz input-safety check gates-tool verify-auto verify verify-release verify-long verify-cpu verify-changed sweep gate gates-list gates-costs gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate speed speed-base spec-matrix \
         agent agent-eval api-check playground model-ls eval-corpus speech-corpus trace capture clean clean-cache distclean hf-downloader test-hf version release-draft release tag site-check site-serve docs-check
@@ -105,7 +105,7 @@ verify-auto: eval-corpus gates-tool ## What a change needs: the model-free check
 verify: eval-corpus gates-tool ## The fast Metal tier: one representative file per family and the paths only a variant has (once per unit)
 	$(GATES) --tier verify $(ARGS)
 
-verify-release: eval-corpus gates-tool ## Whole-file acceptance before a release: 8-window perplexities, the Gemma 12B QAT file, draft statistics
+verify-release: eval-corpus gates-tool ## Whole-file acceptance before a release: 8-window perplexities, draft statistics, second sizes of a verify path
 	$(GATES) --tier verify-release --strict $(ARGS)
 
 verify-long: eval-corpus gates-tool ## The long-context tier: 4K-token perplexity (Gemma 4 E4B so far), when a unit touches attention, the caches, or a windowed schedule, and before a release
@@ -120,11 +120,14 @@ verify-changed: eval-corpus gates-tool ## The gates the change from $(BASE) sele
 sweep: eval-corpus gates-tool ## Every tier's gates not already cached, cheapest first, with skips reported
 	$(GATES) --sweep $(ARGS)
 
-gate: eval-corpus gates-tool ## Gates by name or pattern: make gate NAME=gemma4-qat-trace-f16, NAME='qwen38-*' (ARGS=--dry-run prints the commands)
+gate: eval-corpus gates-tool ## Gates by name or pattern: make gate NAME=gemma4-e4b-trace-f16, NAME='qwen38-*' (ARGS=--dry-run prints the commands)
 	$(GATES) --gate $(NAME) $(ARGS)
 
-gates-list: gates-tool ## Every gate with its tier, family, model, and evidence
+gates-list: gates-tool ## Every gate with its tier, family, model, evidence, and last seconds
 	$(GATES) --list
+
+gates-costs: gates-tool ## Each tier's and the canaries' last passing seconds against their budgets, as Markdown
+	$(GATES) --costs
 
 gates-validate: gates-tool ## Validate gates.json against the tree, and run the perplexity reference's self-test (no model)
 	$(GATES) --validate
@@ -135,7 +138,7 @@ gates-validate: gates-tool ## Validate gates.json against the tree, and run the 
 # acceptance script) with its model from gates.json; reports are saved under
 # .zig-cache/bench/<workload>/ and scripts/bench/bench-report.py makes the tables.
 
-workload: ## Run workloads by name or glob: make workload NAME=gemma4-qat/prose512-draft, NAME='qwen38/spec/*' (ARGS=--dry-run)
+workload: ## Run workloads by name or glob: make workload NAME=qwen38/prose512-draft, NAME='gemma4-e4b/*' (ARGS=--dry-run)
 	python3 scripts/bench/workloads.py --run $(NAME) $(ARGS)
 
 workloads-list: ## Every workload with its model's status, shape, and evidence
@@ -251,6 +254,9 @@ shot: metal ## Drive `nuclis agent` in tmux and capture its screen: make shot AR
 
 model-ls: build ## List the model files (GGUF, safetensors) under <root>/models with their provenance sidecars
 	$(BIN) model ls $(ARGS)
+
+index: build ## Write src/catalog.json, the index as data for the gate runner and the bench scripts
+	$(BIN) __index > src/catalog.json
 
 # ---- the perplexity gates' text (docs/guide/eval.md) --------------------
 # Fetched, never committed; the pinned references name its SHA-256 and

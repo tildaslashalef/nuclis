@@ -79,6 +79,8 @@ pub const Rule = struct {
     reason: []const u8,
 };
 
+pub const Budget = struct { name: []const u8, seconds: f64 };
+
 pub const Family = struct {
     name: []const u8,
     seeds: []const []const u8,
@@ -96,7 +98,20 @@ pub const Manifest = struct {
     aggregators: []const []const u8,
     family_cutoff: u32,
     canaries: []const []const u8,
+    /// Fixture-name prefixes of retired models: `--validate` names any tracked
+    /// path under `tests/fixtures/<prefix>`.
+    retired: []const []const u8 = &.{},
+    /// Seconds a tier (or the canaries) may take; over it a run warns, and
+    /// under `--strict` fails.
+    budgets: []const Budget = &.{},
     gates: []const Gate,
+
+    pub fn budget(m: *const Manifest, name: []const u8) ?f64 {
+        for (m.budgets) |b| {
+            if (std.mem.eql(u8, b.name, name)) return b.seconds;
+        }
+        return null;
+    }
 
     pub fn model(m: *const Manifest, key: []const u8) ?*const Model {
         for (m.models) |*entry| {
@@ -231,6 +246,16 @@ pub fn validate(arena: Allocator, doc: Value) Allocator.Error![]const []const u8
         }
     }
     try validateImpact(&p, doc);
+    if (field(doc, "retired")) |retired| if (!isStringList(retired)) try p.add("retired: must be a non-empty list of fixture-name prefixes", .{});
+    if (field(doc, "budgets")) |budgets| {
+        if (budgets != .object) {
+            try p.add("budgets: must map a tier or \"canaries\" to seconds", .{});
+        } else for (budgets.object.keys(), budgets.object.values()) |name, seconds| {
+            if (!isTier(name) and !std.mem.eql(u8, name, "canaries")) try p.add("budgets.{s}: not a tier or \"canaries\"", .{name});
+            const n = number(seconds);
+            if (n == null or n.? <= 0) try p.add("budgets.{s}: must be a positive number of seconds", .{name});
+        }
+    }
     const gates = field(doc, "gates") orelse Value{ .array = .init(arena) };
     if (gates == .array) {
         var seen: std.StringHashMapUnmanaged(void) = .empty;
@@ -466,6 +491,9 @@ pub fn load(arena: Allocator, doc: Value) Allocator.Error!Manifest {
             .raw = gate,
         };
     }
+    const budgets_object = if (field(doc, "budgets")) |b| b.object else json.ObjectMap.empty;
+    const budgets = try arena.alloc(Budget, budgets_object.count());
+    for (budgets, budgets_object.keys(), budgets_object.values()) |*slot, name, seconds| slot.* = .{ .name = name, .seconds = number(seconds).? };
     return .{
         .metal_optimize = stringField(build, "metal_optimize").?,
         .cpu_optimize = stringField(build, "cpu_optimize").?,
@@ -478,6 +506,8 @@ pub fn load(arena: Allocator, doc: Value) Allocator.Error!Manifest {
         .aggregators = try strings(arena, field(doc, "aggregators")),
         .family_cutoff = @intCast(intField(doc, "family_cutoff").?),
         .canaries = try strings(arena, field(doc, "canaries")),
+        .retired = try strings(arena, field(doc, "retired")),
+        .budgets = budgets,
         .gates = gates,
     };
 }
@@ -662,6 +692,28 @@ test "validation names impact problems" {
     try t.expectProblem("no gate named nothing");
     try t.expectProblem("a-trace: family must be a key of families");
     try t.expectProblem("a-draft-cpu: a gate carries no paths");
+}
+
+test "retired prefixes and budgets are checked and load" {
+    var t: Test = try .init();
+    defer t.deinit();
+    const a = t.arena.allocator();
+    var retired: json.Array = .init(a);
+    try retired.append(.{ .string = "old" });
+    try t.set(&t.doc, "retired", .{ .array = retired });
+    var budgets: json.ObjectMap = .empty;
+    try budgets.put(a, "verify", .{ .integer = 480 });
+    try budgets.put(a, "canaries", .{ .float = 60.5 });
+    try t.set(&t.doc, "budgets", .{ .object = budgets });
+    try testing.expectEqual(@as(usize, 0), (try validate(a, t.doc)).len);
+    const m = try load(a, t.doc);
+    try testing.expectEqualStrings("old", m.retired[0]);
+    try testing.expectEqual(@as(?f64, 60.5), m.budget("canaries"));
+    try testing.expect(m.budget("verify-long") == null);
+    try budgets.put(a, "cheap", .{ .integer = 0 });
+    try t.set(&t.doc, "budgets", .{ .object = budgets });
+    try t.expectProblem("budgets.cheap: not a tier");
+    try t.expectProblem("budgets.cheap: must be a positive number");
 }
 
 test "placeholders the gate cannot fill are refused" {

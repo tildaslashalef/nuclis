@@ -274,6 +274,13 @@ pub fn lint(arena: Allocator, m: *const Manifest, tree: *const Tree, universe: [
         if (!std.mem.endsWith(u8, path, ".metal") or targets.contains(path)) continue;
         try problems.append(arena, try arena.print("{s}: no source reaches this kernel", .{path}));
     }
+    // A retired model's fixtures go with it.
+    for (m.retired) |prefix| {
+        const root = try std.mem.concat(arena, u8, &.{ "tests/fixtures/", prefix });
+        for (universe) |path| {
+            if (std.mem.startsWith(u8, path, root)) try problems.append(arena, try arena.print("{s}: a fixture of the retired \"{s}\"; delete it", .{ path, prefix }));
+        }
+    }
     return problems.items;
 }
 
@@ -381,6 +388,12 @@ test "lint names a dead seed, a dead aggregator, and an unreached kernel" {
     const orphan = try std.mem.concat(a, []const u8, &.{ extended, &.{"inference/src/orphan.metal"} });
     const problems = try lint(a, &m, &tree, orphan);
     try testing.expectEqual(@as(usize, 3), problems.len);
+
+    var clean = try sampleManifest(a);
+    clean.retired = &.{"unused"};
+    const retired = try lint(a, &clean, &tree, universe);
+    try testing.expectEqual(@as(usize, 1), retired.len);
+    try testing.expect(std.mem.indexOf(u8, retired[0], "tests/fixtures/unused/y.f32: a fixture of the retired") != null);
 }
 
 test "a removed file answers by its seeds" {

@@ -1737,15 +1737,10 @@ fn compareDraft(label: []const u8, expected: []const u8, actual: []const f32, ma
 /// position's target hidden (the pinned `hprev` rows). Both the head's
 /// `h_next` and its greedy token must match, and a `propose` seeded from the
 /// committed prefix must return the pinned draft. The pinned rows are the
-/// target's: the 12B QAT file's or the E4B's. The run's own rows go to
+/// E4B's, the one Gemma 4 target with a draft gate. The run's own rows go to
 /// `directory` under the fixture's names, with its greedy ids in
 /// `greedy.txt`, before they are compared.
 const GemmaDraftFixture = struct { greedy: [2]u32, hprev: [2][]const u8, h: [2][]const u8 };
-const gemma_draft_12b: GemmaDraftFixture = .{
-    .greedy = .{ 2613, 236764 },
-    .hprev = .{ @embedFile("src/models/fixtures/gemma4-mtp/token-1-mtp-hprev.f32"), @embedFile("src/models/fixtures/gemma4-mtp/token-2-mtp-hprev.f32") },
-    .h = .{ @embedFile("src/models/fixtures/gemma4-mtp/token-1-mtp-h.f32"), @embedFile("src/models/fixtures/gemma4-mtp/token-2-mtp-h.f32") },
-};
 const gemma_draft_e4b: GemmaDraftFixture = .{
     .greedy = .{ 26352, 236764 },
     .hprev = .{ @embedFile("src/models/fixtures/gemma4-mtp-e4b/token-1-mtp-hprev.f32"), @embedFile("src/models/fixtures/gemma4-mtp-e4b/token-2-mtp-hprev.f32") },
@@ -1760,7 +1755,8 @@ fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     var binding = try Family.bind(alloc, &mapped.document);
     binding.draft = try Family.bindDraft(alloc, &draft_mapped.document, draft_mapped.view(), mapped.view(), &binding);
     const tokens = [3]u32{ 9259, 236764, 1902 };
-    const fixture = if (binding.config == &inference.models.gemma4.config_e4b) gemma_draft_e4b else gemma_draft_12b;
+    if (binding.config != &inference.models.gemma4.config_e4b) return error.DraftFixtureMismatch;
+    const fixture = gemma_draft_e4b;
     const greedy = fixture.greedy;
     const hprev_files = fixture.hprev;
     const h_files = fixture.h;

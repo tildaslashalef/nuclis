@@ -33,7 +33,7 @@ const api = @import("api/root.zig");
 pub const version = @import("build_options").version;
 pub const Diagnostic = config.Diagnostic;
 pub const Options = struct {
-    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, transcribe, speak, voice, serve, completion, complete },
+    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, transcribe, speak, voice, serve, completion, complete, index },
     /// `completion <shell>`: which script to print.
     shell: completion.Shell = .fish,
     /// `__complete <words…>`: the words after `nuclis`, the last one being
@@ -94,6 +94,8 @@ pub fn parseArgs(args: []const []const u8) !Options {
     if (args.len == 1 and std.mem.eql(u8, args[0], "--version"))
         return .{ .command = .version };
     if (std.mem.eql(u8, args[0], "__complete")) return .{ .command = .complete, .words = args[1..] };
+    // `__index`: the index as JSON, for `make index` (src/catalog.json).
+    if (args.len == 1 and std.mem.eql(u8, args[0], "__index")) return .{ .command = .index };
     const command: @FieldType(Options, "command") = if (std.mem.eql(u8, args[0], "inspect"))
         .inspect
     else if (std.mem.eql(u8, args[0], "validate"))
@@ -587,6 +589,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     switch (options.command) {
         // Before anything that probes the terminal: a Tab waits on this.
         .complete => return completion.run(alloc, io, environ, options.words, out),
+        .index => {
+            try catalog.writeJson(out);
+            return;
+        },
         .completion => return out.writeAll(completion.script(options.shell)),
         else => {},
     }
@@ -828,7 +834,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // error; the reason (which ids the tree has) is added here, where the
     // diagnostic lives.
     (switch (options.command) {
-        .help, .version, .config, .model, .cache, .decide, .embed, .transcribe, .speak, .voice, .serve, .completion, .complete => unreachable,
+        .help, .version, .config, .model, .cache, .decide, .embed, .transcribe, .speak, .voice, .serve, .completion, .complete, .index => unreachable,
         .generate => generate.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .generate), options.generation, options.json, out),
         .bench => bench.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .bench), options.benchmark, options.json, out, sty),
         .tokenize => blk: {

@@ -876,9 +876,11 @@ catalogue entries' defaults and to close the performance theme's plan. Two
 baselines are measured: the true baseline with the switch off — `bench` now
 opens `.none`, so no drafter weights, scratch, or draft cache are loaded —
 and the pair's loaded-but-off sample. `make workload NAME='qwen38/spec/*'`
-(then `scripts/nuclis-speculative.py --baseline`, now the `qwen38/spec/*`
-workloads of `workloads.json` with the table from `scripts/bench/bench-report.py`; reports under
-[benchmarks/speculative-2026-09-21/](speculative-2026-09-21/))
+(then `scripts/nuclis-speculative.py --baseline`; reports under
+[benchmarks/speculative-2026-09-21/](speculative-2026-09-21/); re-run since
+2026-11-12 with `make spec-matrix ARGS='--model qwen38 --contexts
+512,4096,code --sampling greedy,instruct --drafts 2,4,7 --baseline'`, which
+also covers the six cells the record did not take)
 ran the twelve configurations of the [ENGN-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-12--batched-verification-speculative-generation-greedy-and-sampled-the-switch-and-the-draft-length-the-benchmark-record-2026-09-20-two-sessions) record as off/on pairs on one
 loaded model plus a no-drafter baseline pass per configuration: the
 reference corpus arrays at 512 and 4,096 tokens and the fixed code prompt

@@ -33,9 +33,8 @@ engine and reset the session between runs; the first run therefore pays
 first-touch page-in of the mapped weights and is normally the warmup.
 
 The workloads this document records are data: [`workloads.json`](../../workloads.json)
-names each one (`qwen38/prose512`, `gemma4-qat/prose512-draft`,
-`muse/acceptance`, the twelve `qwen38/spec/*` configurations of the
-speculative record) with its prompt array, budget, context, cache
+names each one as a model row and a shape (`qwen38/prose512`,
+`qwen38/prose512-draft`, `gemma4-e4b/acceptance`) with its prompt array, budget, context, cache
 precision, sampling, and off/on pair, and `make workload NAME=…` runs it
 and saves the report under `.zig-cache/bench/<workload>/<rev>-<n>.json`;
 `scripts/bench/bench-report.py --table` renders the records' rows from saved

@@ -182,7 +182,7 @@ def acceptance_run(workloads, model_key):
 
 
 def family_run(model_key):
-    workloads = json.loads((ROOT / "workloads.json").read_text())["workloads"]
+    workloads = manifest.workloads()
     run = acceptance_run(workloads, model_key)
     if run is None:
         sys.exit(f"no acceptance workload names {model_key}'s token arrays")
@@ -240,7 +240,7 @@ def main():
     if not base.exists():
         sys.exit("no base binary: run `make speed-base` at the revision to compare against")
     info = json.loads((BASE_DIR / "base.json").read_text())
-    gdoc = json.loads((ROOT / "gates.json").read_text())
+    gdoc = manifest.load()
     if args.model not in gdoc["models"]:
         sys.exit(f"unknown model {args.model}; gates.json has {', '.join(gdoc['models'])}")
     model = gdoc["models"][args.model].get("entry") or manifest.model_path(gdoc, args.model)
