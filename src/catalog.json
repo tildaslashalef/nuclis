@@ -8,7 +8,7 @@
    "kind": "generation",
    "status": "current",
    "repo": "unsloth/Qwen3.8-27B-GGUF",
-   "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
+   "revision": "ce331efc48d5722b4b8041f72793e530eae18d9b",
    "architecture": "qwen35",
    "quantization": "UD-Q4_K_M",
    "defaults": {
@@ -20,8 +20,8 @@
      "role": "main",
      "variant": null,
      "local": "unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
-     "size": 16464440224,
-     "sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "size": 16564259744,
+     "sha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "verdict": null
     },
     {

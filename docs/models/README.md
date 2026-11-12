@@ -132,8 +132,45 @@ For a new file or encoding of a family nuclis already runs
 3. **Quality.** `nuclis eval` perplexity of the new file next to the
    validated file's, both on nuclis.
 
+### Which executor makes which fixture
+
+| Fixture | Made by | Why |
+| --- | --- | --- |
+| layer and logit traces, draft rows (MTP, DFlash), projector rows, greedy tokens | the CPU reference only (`ReleaseFast`) | they prove Metal right; a Metal-made row would agree with Metal's own mistake. Minutes at most |
+| perplexity and other corpus statistics (`*-draft-stats`) | Metal, only once the file's CPU and Metal trace gates pass at that revision | the CPU runs `eval` a token at a time (one window of a 27B takes 28 min); these pins catch regressions, the traces judge correctness |
+| speed and memory records | Metal | a new file starts a new baseline; never a difference against another file's record |
+
+Fixtures pinned from llama.cpp earlier stay until their file is
+re-pinned, and are then replaced by these, never re-made by an outside
+tool. A pin nuclis made is re-made only when the file changes, never to
+absorb an engine change.
+
+### Re-pinning a file
+
+For a new file of a model nuclis runs (Qwen3.8's re-made UD-Q4_K_M,
+2026-11-12, is the first; [qwen3.8.md § The re-made file](qwen3.8.md#the-re-made-file-2026-11-12)):
+
+1. Pull it, check the tokenizer gate and the chat template's SHA-256
+   against the profile's, and run the cross-encoding check if the
+   validated file is on the machine (record it as not run otherwise).
+2. Record the CPU fixtures: `nuclis generate --backend cpu … --trace-dir`,
+   `zig build -Doptimize=ReleaseFast test-generation -- <file>
+   --draft-trace DIR` (and `--flash-trace DIR --draft-model <drafter>`),
+   and `--vision-check <mmproj>`; replace the fixtures in place, with
+   their `provenance.md` rows.
+3. Run the family's Metal and CPU gates against them.
+4. Pin Metal's eight-window perplexity (`nuclis eval --backend metal
+   --chunks 8 --json`, written as the reference with `tool`, `executor`,
+   `kv`, `revision`, `model_sha256`, and `cross_check`), then run one
+   window on the CPU against it (`eval --backend cpu --reference <it>
+   --chunks 1`): more than about 0.05 % apart is a Metal bug, not a pin.
+   The CPU window is the only independent check of batched prefill and
+   the F16 cache on real prose for the new weights.
+5. Record the new perplexity beside the old file's, measure speed as a
+   new baseline, and run `make verify-long` once.
+
 The trace procedure the earlier families used against llama.cpp, kept
-for them:
+for the fixtures it made (not for new ones):
 
 `scripts/reference-generation.cpp` (built as in
 [sampling.md § Numerical traces](../engine/sampling.md#numerical-traces))

@@ -2376,7 +2376,7 @@ test "sidecar round trip, absence, and rejection of what nuclis did not write" {
         .repo = "unsloth/Qwen3.8-27B-GGUF",
         .file = "model.gguf",
         .revision = "0123456789abcdef0123456789abcdef01234567",
-        .sha256 = "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+        .sha256 = "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
         .size = 16,
         .role = .draft,
         .artifact = "qwen3.8-27b",
@@ -2410,7 +2410,7 @@ test "sidecar round trip, absence, and rejection of what nuclis did not write" {
     try writeSidecar(arena, io, tmp.dir, name, again);
     try std.testing.expectEqualStrings(again.revision.?, (try readSidecar(arena, io, tmp.dir, name)).?.revision.?);
     // A schema 1 sidecar still reads, its `mtp` role as `draft`.
-    try tmp.dir.writeFile(io, .{ .sub_path = name, .data = "{\"schema_version\":1,\"repo\":\"a/b\",\"file\":\"m\",\"revision\":\"0123456789abcdef0123456789abcdef01234567\",\"sha256\":\"322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482\",\"size\":1,\"role\":\"mtp\",\"downloaded_at\":\"2026-09-11T00:00:00Z\",\"nuclis_version\":\"0.1.0\"}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = name, .data = "{\"schema_version\":1,\"repo\":\"a/b\",\"file\":\"m\",\"revision\":\"0123456789abcdef0123456789abcdef01234567\",\"sha256\":\"1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529\",\"size\":1,\"role\":\"mtp\",\"downloaded_at\":\"2026-09-11T00:00:00Z\",\"nuclis_version\":\"0.1.0\"}" });
     const old = (try readSidecar(arena, io, tmp.dir, name)).?;
     try std.testing.expectEqual(Role.draft, old.role);
     try std.testing.expect(old.variant == null and old.adopted_at == null);
@@ -2509,7 +2509,7 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
         .repo = "unsloth/Repo-GGUF",
         .file = "Repo-Q4.gguf",
         .revision = "0123456789abcdef0123456789abcdef01234567",
-        .sha256 = "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+        .sha256 = "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
         .size = 8,
         .role = .main,
         .downloaded_at = "2026-09-11T00:00:00Z",
@@ -2596,10 +2596,10 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
     try std.testing.expect(std.mem.indexOf(u8, text, "more in the index: nuclis model ls --available") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "2 model file(s) outside") != null);
     // No digest without -l; with it, 12 characters of each and the defaults.
-    try std.testing.expect(std.mem.indexOf(u8, text, "322e194ff797") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "1bce504dfecd") == null);
     out.clearRetainingCapacity();
     try listing.render(&out.writer, .{ .long = true }, false, .none);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "commit 4ca720788d1e  sha256 322e194ff797  unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "commit ce331efc48d5  sha256 1bce504dfecd  unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "draft:dflash2  commit -             sha256 -             unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf  unverified\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "runs with: speculative on (draft mtp, length 7), think low, thinking budget 1024, profile qwen38\n") != null);
     out.clearRetainingCapacity();
@@ -2845,8 +2845,8 @@ test "inspect judges the pinned directory supported, runnable, or not, from the 
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     try renderInspect(&out.writer, supported, false, .none);
-    try std.testing.expect(std.mem.startsWith(u8, out.written(), "unsloth/Qwen3.8-27B-GGUF @ main: commit 4ca720788d1e01f1bff70c033e0d0028fd02e502\nQwen3.8-27B-UD-Q4_K_M.gguf: "));
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), " bytes, sha256 322e194f") != null);
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "unsloth/Qwen3.8-27B-GGUF @ main: commit ce331efc48d5722b4b8041f72793e530eae18d9b\nQwen3.8-27B-UD-Q4_K_M.gguf: "));
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), " bytes, sha256 1bce504d") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nArchitecture: \"qwen35\"\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nVerdict: supported: index entry qwen3.8-27b") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "no weights downloaded") != null);

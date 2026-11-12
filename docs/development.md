@@ -69,10 +69,13 @@ Facts every unit depends on; keep them here, not in the tracker.
 - Model `~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf`
   (catalogue name `qwen3.8-27b`; the default `engine.model` and the
   Makefile's `MODEL` are `gemma-4-26b-a4b` since 2026-11-12), SHA-256
-  `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`,
+  `1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529`,
   from [unsloth/Qwen3.8-27B-GGUF](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF)
-  at commit `4ca720788d1e01f1bff70c033e0d0028fd02e502`, pulled from a
-  clean state by `nuclis model pull qwen3.8-27b --all` on 2026-09-11 ([MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-03--models-directory-catalogue-and-registry-2026-09-11)).
+  at commit `ce331efc48d5722b4b8041f72793e530eae18d9b` (Unsloth's re-made
+  file of 2026-11-11), pulled by `nuclis model pull qwen3.8-27b --all
+  --variants` on 2026-11-12. Records before that date name the first pin,
+  `322e194f…` at `4ca72078`
+  ([models/qwen3.8.md § The re-made file](models/qwen3.8.md#the-re-made-file-2026-11-12)).
   Its companions `mmproj-BF16.gguf` and `MTP/mtp-Qwen3.8-27B-Q4_0.gguf`
   sit beside it, verified and not executed
   ([models/catalogue.md](models/catalogue.md#pinned-commits-and-digests-2026-09-11),
@@ -1181,8 +1184,10 @@ is what makes the next load 20 s instead of a cold read.
 ## Reference implementations and third-party material
 
 llama.cpp and other engines are references: read them to understand a format or
-algorithm, run them to produce pinned fixtures and comparison traces, and measure
-them as baselines. Do not copy their code into nuclis. New kernels and decoders
+algorithm, and measure them as speed baselines. They no longer make
+fixtures: nuclis's CPU reference does
+([models/README.md § Which executor makes which fixture](models/README.md#which-executor-makes-which-fixture));
+the fixtures they made earlier stay until their file is re-pinned. Do not copy their code into nuclis. New kernels and decoders
 are written from the format contract and our own CPU references, then proven
 equivalent by fixtures (bit-exact where the operation is exact, stated tolerances
 otherwise). Outputs of running a reference are ours to commit as fixtures with

@@ -89,7 +89,9 @@ pub const Client = struct {
     /// Where `download` would place a file of `repo_id`: `<models dir>/<repo_id>/<filename>`.
     /// Caller owns the result. Does not touch the network or the filesystem.
     pub fn localPath(c: Client, request: Request, filename: []const u8) ![]const u8 {
-        try hub.validate(request);
+        var named = request;
+        named.filename = filename;
+        try hub.validate(named);
         if (!hub.validPath(filename)) return error.InvalidFilename;
         if (request.destination) |d| return c.allocator.dupe(u8, d);
         const base = try hub.directory(c.allocator, request.local_dir, c.nuclis_home, c.home);
@@ -736,6 +738,11 @@ test "local path mirrors the Hub path without the revision" {
     const placed = try c.localPath(.{ .repo_id = "z-lab/D-GGUF", .filename = "d.gguf", .exact = true, .destination = "/data/nuclis/models/o/r/MTP/d.gguf" }, "d.gguf");
     defer std.testing.allocator.free(placed);
     try std.testing.expectEqualStrings("/data/nuclis/models/o/r/MTP/d.gguf", placed);
+    // The name comes from the argument: a pull checks each job's destination
+    // before it sets the request's filename.
+    const unnamed = try c.localPath(.{ .repo_id = "z-lab/D-GGUF", .exact = true, .destination = "/data/nuclis/models/o/r/MTP/d.gguf" }, "d.gguf");
+    defer std.testing.allocator.free(unnamed);
+    try std.testing.expectEqualStrings(placed, unnamed);
 }
 
 test "progress can cancel before any network or file operation" {

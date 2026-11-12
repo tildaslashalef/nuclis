@@ -25,7 +25,10 @@ reasoning-preserving subset of the chat template embedded in
 `inference/src/profiles/fixtures/qwen38-text.json` and `qwen38-tools.json` were
 rendered from that template. Source:
 <https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/tree/4ca720788d1e01f1bff70c033e0d0028fd02e502>,
-model SHA-256 `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`.
+model SHA-256 `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`. Unsloth's re-made file at
+`ce331efc48d5722b4b8041f72793e530eae18d9b` (SHA-256 `1bce504d…`), the
+pinned one since 2026-11-12, carries the same template (SHA-256
+`12827f24…`).
 Modifications: explicit size limits, ownership, UTF-8 checks, and narrower typed
 inputs; multimodal rendering and assistant prefill are not implemented.
 License: [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0.txt).
