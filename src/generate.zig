@@ -177,7 +177,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     // is on, and a missing source then reports `DraftSourceMissing` rather
     // than running silently. The entry's preference is its own embedded block
     // (Qwen) or the companion it names (Gemma 4, Muse Glimmer).
-    const draft_path = try engine.draftPath(alloc, model_path, if (settings.entry) |entry| entry.mtp else null);
+    const draft_path = try engine.draftPath(alloc, model_path, try settings.draftFile());
     defer if (draft_path) |path| alloc.free(path);
     const draft: inference.engine.DraftRequest = if (settings.speculative) .{ .preferred = draft_path } else .none;
     var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile, draft);

@@ -268,7 +268,8 @@ cache rows, `nextn.post_projection` for chaining, and the head's own tied
 `token_embd` for the greedy candidate; `commit` copies the last target
 hidden into `pending_h` and owns no cache, so recovery is the attention
 rewind alone (`recover` measured 1 µs per batch). `generate`/`agent`/`bench`
-resolve `.preferred` from the entry's `models.<name>.mtp`; a family with an
+resolve `.preferred` from the entry's `models.<name>.draft` (or an index
+draft variant, `--draft`); a family with an
 embedded block (Qwen) keeps its own.
 
 **Trace.** The harness's `--assistant-draft DRAFT_MODEL` mode
@@ -1216,7 +1217,9 @@ z-lab's DFlash2 is a block drafter trained against Qwen3.8-27B.
 
 **The file.** `z-lab/Qwen3.8-27B-DFlash2-GGUF` at `2d9571f8`,
 `Qwen3.8-27B-DFlash2-Q8_0.gguf`: 2,056,414,816 B, SHA-256 `c18e800d…`,
-Apache-2.0, pulled with role `mtp`. Its keys come from llama.cpp PR
+Apache-2.0, pulled with role `mtp` (since 2026-11-12 the index's
+`qwen3.8-27b` draft variant `dflash2`, `--with draft=dflash2`, placed at
+`unsloth/Qwen3.8-27B-GGUF/MTP/` beside the model it drafts for). Its keys come from llama.cpp PR
 #27342's converter. The architecture id is `dflash`, Muse's, so the
 selector keys are what tell the two apart.
 

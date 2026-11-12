@@ -191,7 +191,7 @@ pub const Service = struct {
         }
         if (parsed.instructions != null) {
             if (mode == .clone) return refuse(arena, .bad_request, "instructions_unsupported", "instructions", "{s} is a Base: it takes no instruction (qwen3-tts-1.7b-customvoice does)", .{name});
-            if (located.entry) |entry| if (!entry.instructions)
+            if (located.entry) |entry| if (!entry.traits.instructions)
                 return refuse(arena, .bad_request, "instructions_unsupported", "instructions", "{s} performs no instruction; qwen3-tts-1.7b-customvoice does", .{name});
         }
         if (parsed.voice_by_id and mode != .clone)
@@ -503,7 +503,7 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
         .speech => .speech,
         .transcription => .transcription,
     };
-    for (&catalog.audio_entries) |*e| if (e.kind == wanted and registry.find(e.name) == null) try listed.append(arena, e.name);
+    for (&catalog.artifacts) |*e| if (e.kind == wanted and registry.find(e.name) == null) try listed.append(arena, e.name);
     for (registry.entries) |named| if (named.entry.kind == wanted) try listed.append(arena, named.name);
     for (listed.items) |name| {
         var diag: config.Diagnostic = .{};
@@ -533,9 +533,9 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
         switch (kind) {
             .speech => {
                 const drama3 = if (entry) |e| std.mem.eql(u8, e.architecture, "drama3") else audio_catalog.isFile(resolved.directory);
-                const speakers = if (described) |d| d.speakers else if (entry) |e| e.speakers else &.{};
+                const speakers = if (described) |d| d.speakers else if (entry) |e| e.traits.speakers else &.{};
                 // The checkpoint's own word once pulled, else the catalogue's; unknown for a registry entry not pulled.
-                const mode: ?audio_catalog.Mode = if (described) |d| d.mode else if (entry) |e| e.mode else null;
+                const mode: ?audio_catalog.Mode = if (described) |d| d.mode else if (entry) |e| e.traits.mode else null;
                 // A Base's voices are the saved ones, VoiceDesign's none.
                 const voices = if (mode == .clone) try savedVoices(arena, io, root) else try models.strings(arena, speakers);
                 try details.put(arena, "voices", .{ .array = voices });
@@ -550,7 +550,7 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
                 try details.put(arena, "speakers", .{ .array = objects });
                 const languages = if (described) |d| d.languages else &.{};
                 try details.put(arena, "languages", .{ .array = try models.strings(arena, languages) });
-                const instructions: ?bool = if (entry) |e| e.instructions else if (described) |d| d.instructions else null;
+                const instructions: ?bool = if (entry) |e| e.traits.instructions else if (described) |d| d.instructions else null;
                 try details.put(arena, "instructions", if (instructions) |b| .{ .bool = b } else .null);
                 try details.put(arena, "cloning", if (mode == .clone) try cloning(arena, drama3) else .null);
                 try details.put(arena, "design", if (mode) |m| .{ .bool = m == .design } else .null);

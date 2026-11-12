@@ -30,10 +30,9 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
         // A path to the weights names their directory.
         return if (std.mem.endsWith(u8, full, ".safetensors")) std.fs.path.dirname(full) orelse full else full;
     }
-    if (catalog.findDecision(name)) |entry| return catalog.decisionDirectory(arena, try catalog.underModels(arena, root, "", diag), entry);
-    if (catalog.find(name) != null or catalog.findEmbedding(name) != null or catalog.findAudio(name) != null) {
-        const what = if (catalog.find(name) != null) "a text model" else if (catalog.findEmbedding(name) != null) "an embedding model" else if (catalog.findAudio(name).?.kind == .speech) "a speech model" else "a transcription model";
-        diag.set("{s} is {s} of the catalogue; `nuclis decide` opens a decision checkpoint (laya)", .{ name, what });
+    if (catalog.find(name)) |entry| {
+        if (entry.kind == .decision) return catalog.checkpointDirectory(arena, try catalog.underModels(arena, root, "", diag), entry);
+        diag.set("{s} is a {s} model of the catalogue; `nuclis decide` opens a decision checkpoint (laya)", .{ name, catalog.kindName(entry.kind) });
         return error.NotADecisionModel;
     }
     if (!paths) {
@@ -60,10 +59,11 @@ pub const Located = struct {
 /// pull that fetches them) and their provenance from the pull's sidecar.
 pub fn locate(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: config.Models, name: []const u8, paths: bool, diag: *config.Diagnostic) !Located {
     const directory = try resolve(arena, root, registry, name, paths, diag);
-    const entry = if (registry.find(name) == null) catalog.findDecision(name) else null;
-    const weights_name = if (entry) |e| std.fs.path.basename(e.file) else if (inference.decide.Family.of(io, directory) == .clef) inference.models.clef.head_file else "model.safetensors";
+    const entry = if (registry.find(name) == null) catalog.findKind(name, .decision) else null;
+    const models = try catalog.underModels(arena, root, "", diag);
+    const weights_name = if (entry) |e| std.fs.path.basename(e.main().path) else if (inference.decide.Family.of(io, directory) == .clef) inference.models.clef.head_file else "model.safetensors";
     const weights = try std.fs.path.join(arena, &.{ directory, weights_name });
-    const backbone = if (entry) |e| if (e.backbone) |b| try std.fs.path.join(arena, &.{ try catalog.underModels(arena, root, "", diag), b.repo, b.file }) else null else null;
+    const backbone = if (entry) |e| if (e.companion(.backbone)) |b| try catalog.localPath(arena, models, e, b) else null else null;
     for ([_]?[]const u8{ weights, backbone }) |path| if (path) |p| std.Io.Dir.cwd().access(io, p, .{}) catch {
         if (entry) |e|
             diag.set("{s}: not pulled yet (`nuclis model pull {s}` fetches it, {d} MB)", .{ name, e.name, e.totalSize() / 1_000_000 })
@@ -77,7 +77,7 @@ pub fn locate(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry:
         identity.revision = sidecar.revision;
     }
     // The projector is optional: without it a request with images is refused.
-    const mmproj = if (entry) |e| if (e.mmproj) |m| try std.fs.path.join(arena, &.{ try catalog.underModels(arena, root, "", diag), m.repo, m.file }) else null else null;
+    const mmproj = if (entry) |e| if (e.companion(.mmproj)) |m| try catalog.localPath(arena, models, e, m) else null else null;
     const pulled_mmproj = if (mmproj) |p| if (std.Io.Dir.cwd().access(io, p, .{})) |_| p else |_| null else null;
     return .{ .directory = directory, .identity = identity, .backbone = backbone, .mmproj = pulled_mmproj };
 }
@@ -104,8 +104,8 @@ pub const Listed = struct {
 /// `resolve`. `arena` owns everything.
 pub fn list(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: config.Models) ![]Listed {
     var out: std.ArrayList(Listed) = .empty;
-    for (&catalog.decision_entries) |*entry| {
-        if (registry.find(entry.name) != null) continue;
+    for (&catalog.artifacts) |*entry| {
+        if (entry.kind != .decision or registry.find(entry.name) != null) continue;
         try out.append(arena, try describe(arena, io, root, registry, entry.name, entry.repo, entry.revision));
     }
     for (registry.entries) |named| {
@@ -118,7 +118,7 @@ pub fn list(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: c
 fn describe(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: config.Models, name: []const u8, repo: ?[]const u8, revision: ?[]const u8) !Listed {
     var listed: Listed = .{ .name = name, .repo = repo, .revision = revision, .directory = null, .present = false, .budget = null };
     // Known before anything is pulled, so a client plans for it either way.
-    if (registry.find(name) == null) if (catalog.findDecision(name)) |e| if (e.backbone != null) {
+    if (registry.find(name) == null) if (catalog.findKind(name, .decision)) |e| if (e.companion(.backbone) != null) {
         listed.family = .clef;
     };
     var diag: config.Diagnostic = .{};
@@ -181,7 +181,9 @@ test "the listing: catalogue then registry, nothing pulled under an empty root" 
         .{ .name = "qwen", .entry = .{ .repo = "unsloth/Qwen3.8-27B-GGUF", .file = "q.gguf" } },
     } };
     const listed = try list(arena, std.testing.io, root, registry);
-    try std.testing.expectEqual(@as(usize, catalog.decision_entries.len), listed.len);
+    var decisions: usize = 0;
+    for (&catalog.artifacts) |*a| decisions += @intFromBool(a.kind == .decision);
+    try std.testing.expectEqual(decisions, listed.len);
     try std.testing.expectEqualStrings("laya-multilingual", listed[0].name);
     try std.testing.expectEqualStrings("laya", listed[listed.len - 1].name);
     try std.testing.expectEqualStrings("/nowhere/laya", listed[listed.len - 1].directory.?);

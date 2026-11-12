@@ -88,7 +88,7 @@ pub fn modelPath(alloc: Allocator, explicit: ?[]const u8, configured: []const u8
         const dir = root_dir orelse return error.MissingHome;
         const models = try std.fs.path.join(alloc, &.{ dir, "models" });
         defer alloc.free(models);
-        return catalog.localPath(alloc, models, entry, entry.file);
+        return catalog.localPath(alloc, models, entry, entry.main());
     }
     if (explicit != null or std.fs.path.isAbsolute(value)) return alloc.dupe(u8, value);
     const dir = root_dir orelse return error.MissingHome;

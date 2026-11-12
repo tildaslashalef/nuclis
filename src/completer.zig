@@ -98,7 +98,7 @@ pub const Open = struct {
         if (settings.ctx_size == 0 or settings.ctx_size > config.max_context or settings.max_tokens == 0 or settings.max_tokens > config.max_output_tokens) return error.InvalidGenerationBudget;
         const path = try alloc.dupe(u8, model_path);
         errdefer alloc.free(path);
-        const draft_path = try engine.draftPath(alloc, path, if (settings.entry) |entry| entry.mtp else null);
+        const draft_path = try engine.draftPath(alloc, path, try settings.draftFile());
         errdefer if (draft_path) |d| alloc.free(d);
         const draft: inference.engine.DraftRequest = if (settings.speculative) .{ .preferred = draft_path } else .none;
         var eng = try engine.Engine.open(alloc, io, path, settings.backend, settings.ctx_size, settings.kv_precision, settings.forced_profile, draft);

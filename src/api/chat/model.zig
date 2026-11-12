@@ -65,9 +65,9 @@ pub const Language = struct {
         const registry = self.loaded.config.models;
         if (registry.find(name)) |entry| {
             if ((entry.kind orelse .generation) != .generation) return error.NotALanguageModel;
-        } else if (catalog.find(name) == null) {
-            return if (catalog.findDecision(name) != null or catalog.findEmbedding(name) != null or catalog.findAudio(name) != null) error.NotALanguageModel else error.ModelNotFound;
-        }
+        } else if (catalog.find(name)) |a| {
+            if (a.kind != .generation) return error.NotALanguageModel;
+        } else return error.ModelNotFound;
         const path = try paths.modelPath(self.gpa, name, "", self.root, registry);
         defer self.gpa.free(path);
         std.Io.Dir.cwd().access(io, path, .{}) catch return error.ModelNotFound;
@@ -270,7 +270,7 @@ pub const Language = struct {
     fn companion(self: *Language, io: std.Io, missing: Error) ![]u8 {
         const open = &self.open.?; // checked: called from the loaders, under `run`
         const name = self.name.?; // checked: `ensure` names the model it opens
-        const mmproj = if (self.settings.entry) |entry| entry.mmproj else if (catalog.find(name)) |entry| if (entry.companion(.mmproj)) |c| c.file else null else null;
+        const mmproj = if (self.settings.entry) |entry| entry.mmproj else if (catalog.find(name)) |entry| if (entry.companion(.mmproj)) |c| c.path else null else null;
         const path = (try engine.visionPath(self.gpa, open.model_path, mmproj)) orelse return missing;
         errdefer self.gpa.free(path);
         std.Io.Dir.cwd().access(io, path, .{}) catch return missing;

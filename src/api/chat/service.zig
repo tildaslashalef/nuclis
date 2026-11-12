@@ -123,7 +123,7 @@ pub const Service = struct {
         const self: *Service = @ptrCast(@alignCast(context));
         const root = self.language.root orelse return;
         const loaded = self.language.loaded;
-        const listing = try model_ls.list(arena, io, root, loaded.config.models);
+        const listing = try model_ls.list(arena, io, root, loaded.config.models, loaded.config.engine.model);
         for (try model_ls.runnableModels(arena, listing, loaded.config.models)) |runnable| {
             const about = describe(arena, io, root, loaded.config.models, runnable.name);
             const details = try self.languageDetails(arena, io, runnable.name, about, true);
@@ -131,12 +131,11 @@ pub const Service = struct {
             try out.append(arena, .{ .id = runnable.name, .owned_by = "nuclis", .details = .{ .object = details.* } });
         }
         // The catalogue's language models not on disk, so a client can offer the pull.
-        for (listing.catalog) |row| {
-            if (row.kind != .generation or row.status != .absent or loaded.config.models.find(row.name) != null) continue;
-            const entry = catalog.find(row.name) orelse continue;
-            const about: About = .{ .name = entry.title, .architecture = entry.architecture, .quantization = entry.quantization, .size_bytes = entry.size };
-            const details = try self.languageDetails(arena, io, row.name, about, false);
-            try out.append(arena, .{ .id = row.name, .owned_by = "nuclis", .details = .{ .object = details.* } });
+        for (&catalog.artifacts) |*entry| {
+            if (entry.kind != .generation or entry.status == .legacy or listing.find(entry.name) != null or loaded.config.models.find(entry.name) != null) continue;
+            const about: About = .{ .name = entry.title, .architecture = entry.architecture, .quantization = entry.quantization, .size_bytes = entry.main().size };
+            const details = try self.languageDetails(arena, io, entry.name, about, false);
+            try out.append(arena, .{ .id = entry.name, .owned_by = "nuclis", .details = .{ .object = details.* } });
         }
     }
 
@@ -149,11 +148,11 @@ pub const Service = struct {
         const registered = settings.entry != null;
         var efforts: std.json.Array = .init(arena);
         for (profile.efforts()) |e| try efforts.append(.{ .string = @tagName(e) });
-        const mmproj = if (settings.entry) |entry| entry.mmproj else if (pinned_entry) |entry| if (entry.companion(.mmproj)) |c| c.file else null else null;
+        const mmproj = if (settings.entry) |entry| entry.mmproj else if (pinned_entry) |entry| if (entry.companion(.mmproj)) |c| c.path else null else null;
         const projector = mmproj != null;
         // A registry entry naming a catalogue file pulls what the catalogue pins.
         const catalogue_file = if (settings.entry) |e| if (e.repo != null and e.file != null) catalog.findFile(e.repo.?, e.file.?) else null else null; // checked: both checked non-null in the same line
-        const download: ?u64 = if (pinned_entry != null and !registered) pinned_entry.?.size else if (catalogue_file) |m| if (m.role == .main) m.entry.size else null else null; // checked: checked non-null in the same line
+        const download: ?u64 = if (pinned_entry != null and !registered) pinned_entry.?.main().size else if (catalogue_file) |m| if (m.file.role == .main) m.file.size else null else null; // checked: checked non-null in the same line
         const details = try arena.create(std.json.ObjectMap);
         details.* = .empty;
         try details.put(arena, "kind", .{ .string = "language" });
@@ -331,14 +330,14 @@ fn describe(arena: std.mem.Allocator, io: std.Io, root: []const u8, registry: co
 
 /// The catalogue entry whose main file sits at `path`, read as
 /// `<root>/models/<owner>/<repo>/<file>`.
-fn pinned(arena: std.mem.Allocator, root: []const u8, path: []const u8) ?*const catalog.Entry {
+fn pinned(arena: std.mem.Allocator, root: []const u8, path: []const u8) ?*const catalog.Artifact {
     const dir = std.fs.path.join(arena, &.{ root, "models" }) catch return null;
     if (!std.mem.startsWith(u8, path, dir) or path.len <= dir.len + 1) return null;
     const relative = path[dir.len + 1 ..];
     const owner_end = std.mem.indexOfScalar(u8, relative, '/') orelse return null;
     const repo_end = owner_end + 1 + (std.mem.indexOfScalar(u8, relative[owner_end + 1 ..], '/') orelse return null);
     const match = catalog.findFile(relative[0..repo_end], relative[repo_end + 1 ..]) orelse return null;
-    return if (match.role == .main) match.entry else null;
+    return if (match.file.role == .main) match.artifact else null;
 }
 
 /// One request on the worker: open the model if needed, complete, and
@@ -956,8 +955,7 @@ fn apiError(arena: std.mem.Allocator, status: std.http.Status, code: []const u8,
 /// The kind of a model that is not a language model, from the registry or the catalogue.
 fn kindOf(language: *const language_mod.Language, name: []const u8) catalog.ModelKind {
     if (language.loaded.config.models.find(name)) |entry| return entry.kind orelse .generation;
-    if (catalog.findEmbedding(name) != null) return .embedding;
-    if (catalog.findAudio(name)) |entry| return entry.kind;
+    if (catalog.find(name)) |entry| return entry.kind;
     return .decision;
 }
 
@@ -1013,9 +1011,9 @@ test "a file the catalogue pins is found by its place in the models directory" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const qwen = catalog.find("qwen3.8-27b").?;
-    const main = try std.fs.path.join(arena, &.{ "/r/models", qwen.repo, qwen.file });
+    const main = try std.fs.path.join(arena, &.{ "/r/models", qwen.repo, qwen.main().path });
     try std.testing.expectEqual(qwen, pinned(arena, "/r", main).?);
-    const companion = try std.fs.path.join(arena, &.{ "/r/models", qwen.repo, qwen.companion(.mmproj).?.file });
+    const companion = try std.fs.path.join(arena, &.{ "/r/models", qwen.repo, qwen.companion(.mmproj).?.path });
     try std.testing.expect(pinned(arena, "/r", companion) == null);
     try std.testing.expect(pinned(arena, "/r", "/elsewhere/x.gguf") == null);
     try std.testing.expect(pinned(arena, "/r", "/r/models/owner/repo/unknown.gguf") == null);

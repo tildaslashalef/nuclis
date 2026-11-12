@@ -8,14 +8,14 @@ The schema and its defaults are `src/config.zig`.
 ## Configuration file
 
 ```sh
-nuclis config init               # write the file: defaults, every catalogue model registered
-nuclis config init --discover    # also register the models you downloaded yourself
+nuclis config init               # write the file: defaults, every installed model registered
+nuclis config sync               # register what was installed since (--prune drops what is gone)
 nuclis config show               # every setting in effect, and where it came from
 nuclis config set <key> <value>  # change one setting by its dotted name
 ```
 
-`init` keeps a file that already exists, and ends by saying which model to
-pull next. The file has one section per scope, not per command:
+`init` refuses a file that already exists (`sync` updates it), and ends by
+saying what to run next, or which model to pull when none is installed. The file has one section per scope, not per command:
 
 | Section | Holds | Read by |
 | --- | --- | --- |
@@ -35,7 +35,7 @@ A file as `init` writes it:
 ```json
 {
   "schema_version": 1,
-  "engine":   { "model": "qwen3.8-27b", "backend": "metal", "ctx_size": 16384,
+  "engine":   { "model": "gemma-4-26b-a4b", "backend": "metal", "ctx_size": 16384,
                 "kv_precision": "f16" },
   "generation": { "max_tokens": 8192, "think": "off", "speculative": false, "draft_length": 4,
                 "image_max_tokens": "auto",
@@ -47,13 +47,13 @@ A file as `init` writes it:
   "embed":    { "model": "embeddinggemma-2" },
   "serve":    { "host": "127.0.0.1", "port": 9000, "log": true },
   "cache":    { "memory_bytes": 4294967296, "disk_bytes": 8589934592 },
-  "models":   { "qwen3.8-27b": { "kind": null, "path": null,
-                                 "repo": "unsloth/Qwen3.8-27B-GGUF", "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
-                                 "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
-                                 "mmproj": "mmproj-BF16.gguf", "mtp": "MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
+  "models":   { "gemma-4-26b-a4b": { "kind": null, "path": null,
+                                 "repo": "unsloth/gemma-4-26B-A4B-it-qat-GGUF", "file": "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+                                 "revision": "7b92b5b28818151e8669af2e45e88d6086f490dd",
+                                 "mmproj": "mmproj-BF16.gguf", "draft": "MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf",
                                  "profile": null, "ctx_size": null,
-                                 "generation": { "max_tokens": null, "think": null, "speculative": false, "draft_length": 4, "image_max_tokens": null, "sampling": { "…": null } },
-                                 "agent": { "think": null, "fold_thinking": null } } }
+                                 "generation": { "max_tokens": null, "think": null, "speculative": false, "draft": null, "draft_length": 4, "image_max_tokens": null, "sampling": { "…": null } },
+                                 "agent": { "think": "low", "fold_thinking": null, "thinking_budget": 1024 } } }
 }
 ```
 
@@ -76,7 +76,7 @@ There are no per-key environment variables and no per-project files;
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `model` | `qwen3.8-27b` | a registry entry, a catalogue name, or a path (under `~/.nuclis/models` unless absolute), tried in that order; flag `--model` |
+| `model` | `gemma-4-26b-a4b` (`config init` writes the first installed chat model when that one is absent) | a registry entry, an index name, or a path (under `~/.nuclis/models` unless absolute), tried in that order; flag `--model` |
 | `backend` | `metal` (`cpu` in a build without Metal) | where the model runs |
 | `ctx_size` | `16384` | the context window in tokens, 1..32,768 |
 | `kv_precision` | `f16` | the attention cache on the GPU: `f16` halves its memory and the bytes read per token; `q8_0` (blocks of 32 eight-bit codes and an F16 scale) about halves them again, for long contexts; `f32` otherwise. The CPU always keeps F32. Flag `--kv` |
@@ -96,11 +96,15 @@ There are no per-key environment variables and no per-project files;
 ([engine/sampling.md](../engine/sampling.md#sampling-profiles-and-the-selection-chain-2026-09-08)),
 so the file never freezes a model's recommended settings.
 
-Speculation is decided per model: each catalogue entry `init` writes
-carries its family's measured verdict in its own `generation.speculative`
+Speculation is decided per model: each index entry `init` writes carries
+its default draft's measured verdict in its own `generation.speculative`
 and `draft_length` (on where it pays, off where it does not;
 [benchmarks/README.md](../benchmarks/README.md#speculation-pairs)). The
-global `generation.speculative` applies to models without an entry.
+global `generation.speculative` applies to models without an entry. A
+model with several draft variants (`qwen3.8-27b`: `mtp`, `dflash2`) runs
+its default unless `--draft <variant>` or the entry's `generation.draft`
+names another; `--draft` brings that variant's verdict over the entry's,
+and `--speculative` or `--draft-length` still beat both.
 
 ### `agent`
 
@@ -165,17 +169,17 @@ fetches to that service, which passes them to search engines and sites
 ## Naming your models: the registry
 
 `models` maps a name to a model, so `--model <name>` and `engine.model`
-can use it. Entries are optional for catalogue models (a catalogue name
-works without one) and are written by `config init` (the catalogue's),
-`config init --discover`, and `model pull --register`, never by `config set`.
+can use it. Entries are optional for index models (an index name works
+without one) and are written by `config init`, `config sync`, and `model
+pull --register`, never by `config set`.
 
 | Field | Meaning |
 | --- | --- |
 | `repo` + `file` (+ `revision`) | a downloaded model in the layout `model pull` writes, `~/.nuclis/models/<repo>/<file>` |
 | `path` | instead, a file anywhere (under `~/.nuclis/models` unless absolute) |
-| `mmproj`, `mtp` | companion files: the vision projector and the drafter, relative to the model file's folder or absolute. A Qwen3.8 file without its own prediction block (Saluki) can name Qwen's `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` from another repository's folder |
+| `mmproj`, `draft` | companion files: the vision projector and the drafter (`mtp` is the old spelling of `draft`; `model ls`, `config show`, and `config sync` print a notice), relative to the model file's folder or absolute. A Qwen3.8 file without its own prediction block (Saluki) can name Qwen's `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` from another repository's folder |
 | `profile` | force a prompt profile (`qwen38`, `gemma4`, …) whatever the file's template |
-| `ctx_size`, `generation`, `agent` | overrides that apply only while this model is in use; `null` means the global value |
+| `ctx_size`, `generation`, `agent` | overrides that apply only while this model is in use; `null` means the global value. `generation.draft` names an index draft variant (`mtp`, `dflash2`) instead of the default |
 | `kind` | `"decision"` for a decision model (`nuclis decide` opens it), `"embedding"` for an embedding model (`nuclis embed` opens it), `"speech"` for a speech model (`nuclis speak` opens it), `"transcription"` for a transcription model; text commands refuse all four |
 
 - **Names** are 1..64 printable characters, no `/`, not ending in `.gguf`.
@@ -189,35 +193,45 @@ works without one) and are written by `config init` (the catalogue's),
   ([engine/prompt-profile.md](../engine/prompt-profile.md#evidence-and-reproduction)).
   `--prompt-profile` does the same for one run.
 
-## Registering what you already downloaded
+## Registering what is installed
 
-`nuclis config init --discover [--dry-run] [--json]` walks
-`~/.nuclis/models` and writes an entry for every runnable model file that
-neither the catalogue nor an existing entry covers:
+`nuclis config init [--dry-run] [--json]` writes the file from what
+`nuclis model ls` lists; `nuclis config sync [--prune] [--dry-run]
+[--json]` brings an existing file up to date the same way:
 
-- **Skipped:** files an entry already locates, and companions (by sidecar
-  role, or a name carrying `mmproj`, `mtp`, or `dflash`).
-- **Judged** as `nuclis model inspect` judges: an adapter for the
-  architecture, every tensor in the executable set, the binding. Every
-  skipped file is reported with its reason.
+- **Index models:** every installed current chat model gets its index
+  entry (repository, file, commit, companions, the index's speculation
+  verdict). Legacy models and the other kinds need no entry: their names
+  resolve through the index.
+- **Skipped:** files an entry already locates, and companions (the files
+  `model ls` lists under a model: by sidecar role, or a name carrying
+  `mmproj`, `mtp`, or `dflash`). Every other skipped file is reported with
+  its reason.
+- **Judged**, for a file outside the index, as `nuclis model inspect` judges: an adapter for the
+  architecture, every tensor in the executable set, the binding.
 - **Named** after the repository's last path segment, lower-cased, `-gguf`
   dropped; a taken name gains the quantization, then a counter. Never a
   catalogue name.
 - **Filled:** `repo`, `file`, and `revision` from the sidecar (or `path`
-  without one); companions beside the file as `mmproj` and `mtp`; the
+  without one); companions listed with the file as `mmproj` and `draft`; the
   family's `profile` when the template matches none (a finetune); the
   speculation verdict of the catalogue entry with the same architecture
   and, where the catalogue records one, the same layer count (a Gemma 4
   26B-A4B finetune takes the 26B-A4B's verdict, off, not the 12B's).
-- `--dry-run` reports without writing; the file is created if absent and
-  otherwise kept.
+- **Pruned**, with `sync --prune`: entries whose files are gone (the ones
+  `model ls` lists without a file).
+- `engine.model`: `init` keeps the default when it is installed and
+  otherwise names the first installed chat model; `sync` never changes it
+  and says so when it names a model that is not installed.
+- `--dry-run` reports without writing. `config init --discover` is the
+  old spelling of `config init` and prints a notice.
 
 ## Changing one setting
 
 ```sh
-nuclis config set engine.model gemma-4-12b-qat
+nuclis config set engine.model gemma-4-e4b-qat
 nuclis config set generation.sampling.temperature 0.7
-nuclis config set models.gemma-4-12b-qat.ctx_size 32768
+nuclis config set models.gemma-4-e4b-qat.ctx_size 32768
 nuclis config set generation.sampling.top_k null     # clear an override
 ```
 

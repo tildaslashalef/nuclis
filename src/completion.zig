@@ -126,6 +126,18 @@ const ctx_size: Flag = .{ .name = "--ctx-size", .value = .number, .summary = "co
 const kv: Flag = .{ .name = "--kv", .value = .{ .choice = names(config.KvPrecision) }, .summary = "attention cache precision" };
 const prompt_profile: Flag = .{ .name = "--prompt-profile", .value = .{ .choice = names(inference.profiles.Profile) }, .summary = "force a prompt profile" };
 
+/// Every draft variant the index names, once each.
+const draft_variants: []const []const u8 = blk: {
+    var list: []const []const u8 = &.{};
+    for (&catalog.artifacts) |*a| for (a.files) |f| if (f.role == .draft) if (f.variant) |v| {
+        const seen = for (list) |l| {
+            if (std.mem.eql(u8, l, v)) break true;
+        } else false;
+        if (!seen) list = list ++ &[_][]const u8{v};
+    };
+    break :blk list;
+};
+
 /// The engine and sampling options `generate`, `bench`, and `agent` share.
 const engine_flags = [_]Flag{
     model_flag,
@@ -134,6 +146,7 @@ const engine_flags = [_]Flag{
     kv,
     .{ .name = "--max-tokens", .value = .number, .summary = "output budget" },
     .{ .name = "--speculative", .value = .{ .choice = &.{ "on", "off" } }, .summary = "verify drafts from the draft source" },
+    .{ .name = "--draft", .value = .{ .choice = draft_variants }, .summary = "an index model's draft variant" },
     .{ .name = "--draft-length", .value = .number, .summary = "drafts per verify batch" },
     prompt_profile,
     .{ .name = "--seed", .value = .number, .summary = "sampler seed" },
@@ -224,10 +237,16 @@ pub const commands = [_]Command{
     } }} },
     .{ .name = "validate", .summary = "whether a file binds to its adapter", .actions = &.{.{ .flags = &.{ model_flag, json } }} },
     .{ .name = "model", .summary = "pull, list, judge, and remove Hub artifacts", .actions = &.{
-        .{ .name = "ls", .summary = "the catalogue and every local file", .flags = &.{json} },
+        .{ .name = "ls", .summary = "what is installed, by kind", .flags = &.{
+            .{ .name = "--long", .short = "-l", .summary = "each file's commit, digest, and path" },
+            .{ .name = "--available", .summary = "the index instead" },
+            .{ .name = "--all", .summary = "with --available: legacy artifacts too" },
+            json,
+        } },
         .{ .name = "pull", .summary = "fetch a model, verified by digest", .positionals = &.{.repo}, .flags = &.{
             .{ .name = "--with", .value = .roles, .summary = "also fetch these companions" },
             .{ .name = "--all", .summary = "every companion the entry names" },
+            .{ .name = "--variants", .summary = "with --all: every draft variant" },
             .{ .name = "--file", .value = .text, .summary = "which file of the repository" },
             .{ .name = "--revision", .value = .text, .summary = "a branch, tag, or commit" },
             .{ .name = "--role", .value = .{ .choice = names(model.Role) }, .summary = "the file's role" },
@@ -244,6 +263,10 @@ pub const commands = [_]Command{
         .{ .name = "rm", .summary = "delete a model's files", .positionals = &.{.present}, .flags = &.{
             .{ .name = "--with", .value = .roles, .summary = "also delete these companions" },
             .{ .name = "--all", .summary = "every companion the entry names" },
+            json,
+        } },
+        .{ .name = "adopt", .summary = "verify a file placed by hand and write its sidecar", .positionals = &.{.file}, .flags = &.{
+            .{ .name = "--force", .summary = "replace a sidecar already there" },
             json,
         } },
     } },
@@ -318,9 +341,14 @@ pub const commands = [_]Command{
         .{ .name = "--quiet", .summary = "no line per request" },
     } }} },
     .{ .name = "config", .summary = "write, show, or set a key of the config file", .actions = &.{
-        .{ .name = "init", .summary = "write the file with the defaults", .flags = &.{
-            .{ .name = "--discover", .summary = "also register the files found" },
-            .{ .name = "--dry-run", .summary = "what --discover would register" },
+        .{ .name = "init", .summary = "write the file from what is installed", .flags = &.{
+            .{ .name = "--dry-run", .summary = "what it would write" },
+            .{ .name = "--discover", .summary = "the old spelling; init does it" },
+            json,
+        } },
+        .{ .name = "sync", .summary = "register what is installed and has no entry", .flags = &.{
+            .{ .name = "--prune", .summary = "also remove entries whose file is gone" },
+            .{ .name = "--dry-run", .summary = "what it would change" },
             json,
         } },
         .{ .name = "show", .summary = "every key's value and its source", .flags = &.{json} },
@@ -460,7 +488,7 @@ pub fn candidates(arena: Allocator, target: Target, current: []const u8, state: 
             .session => try list.appendSlice(arena, state.sessions),
             .voice => {
                 // Both CustomVoice sizes name the same speakers: each once.
-                for (catalog.audio_entries) |e| for (e.speakers) |speaker| {
+                for (catalog.artifacts) |e| for (e.traits.speakers) |speaker| {
                     const seen = for (list.items) |c| {
                         if (std.mem.eql(u8, c.text, speaker)) break true;
                     } else false;
@@ -487,9 +515,10 @@ pub fn candidates(arena: Allocator, target: Target, current: []const u8, state: 
                 const cut = if (std.mem.lastIndexOfScalar(u8, current, ',')) |c| c + 1 else 0;
                 const typed = current[0..cut];
                 for (names(model.Role)) |role| {
-                    if (std.mem.eql(u8, role, "main") or std.mem.eql(u8, role, "support") or std.mem.eql(u8, role, "codec")) continue;
+                    if (std.mem.eql(u8, role, "main") or std.mem.eql(u8, role, "support") or std.mem.eql(u8, role, "codec") or std.mem.eql(u8, role, "backbone")) continue;
                     if (listed(typed, role)) continue;
                     try list.append(arena, .{ .text = try std.mem.concat(arena, u8, &.{ typed, role }) });
+                    if (std.mem.eql(u8, role, "draft")) for (draft_variants) |variant| try list.append(arena, .{ .text = try std.mem.concat(arena, u8, &.{ typed, "draft=", variant }) });
                 }
             },
         },
@@ -632,10 +661,10 @@ fn models(arena: Allocator, io: std.Io, root: []const u8, registry: config.Model
         try list.append(arena, .{ .text = named.name, .description = where });
     }
     const dir = try model.modelsDir(arena, root);
-    for (&catalog.entries) |*e| {
-        if (registry.find(e.name) != null) continue;
-        const path = try catalog.localPath(arena, dir, e, e.file);
-        const status = catalog.status(arena, io, path, e.sha256, e.size) catch .absent;
+    for (&catalog.artifacts) |*e| {
+        if (e.kind != .generation or registry.find(e.name) != null) continue;
+        const path = try catalog.localPath(arena, dir, e, e.main());
+        const status = catalog.status(arena, io, path, e.main().sha256, e.main().size) catch .absent;
         try list.append(arena, .{ .text = e.name, .description = try arena.print("{s} · {s} · {s}", .{ e.architecture, e.quantization, @tagName(status) }) });
     }
     return list.items;
@@ -651,35 +680,28 @@ fn served(arena: Allocator, io: std.Io, root: []const u8, registry: config.Model
         try list.append(arena, .{ .text = named.name, .description = try arena.print("{s} · {s}", .{ servedKind(e.kind orelse .generation), where }) });
     }
     const dir = try model.modelsDir(arena, root);
-    for (&catalog.decision_entries) |*e| {
-        if (registry.find(e.name) != null) continue;
-        const path = try catalog.decisionDirectory(arena, dir, e);
-        const present = if (std.Io.Dir.cwd().access(io, path, .{})) true else |_| false;
-        try list.append(arena, .{ .text = e.name, .description = try arena.print("decision · {s} · {s}", .{ e.architecture, if (present) "present" else "absent" }) });
-    }
-    for (&catalog.entries) |*e| {
-        if (registry.find(e.name) != null) continue;
-        const path = try catalog.localPath(arena, dir, e, e.file);
-        const status = catalog.status(arena, io, path, e.sha256, e.size) catch .absent;
-        try list.append(arena, .{ .text = e.name, .description = try arena.print("chat · {s} · {s} · {s}", .{ e.architecture, e.quantization, @tagName(status) }) });
-    }
-    for (&catalog.embedding_entries) |*e| {
-        if (registry.find(e.name) != null) continue;
-        const path = try std.fs.path.join(arena, &.{ dir, e.repo, e.file });
-        const status = catalog.status(arena, io, path, e.sha256, e.size) catch .absent;
-        try list.append(arena, .{ .text = e.name, .description = try arena.print("embedding · {s} · {s}", .{ e.quantization, @tagName(status) }) });
-    }
+    for ([_]catalog.ModelKind{ .decision, .generation, .embedding }) |kind| for (&catalog.artifacts) |*e| {
+        if (e.kind != kind or registry.find(e.name) != null) continue;
+        const path = try catalog.localPath(arena, dir, e, e.main());
+        const status = catalog.status(arena, io, path, e.main().sha256, e.main().size) catch .absent;
+        const description = switch (kind) {
+            .decision => try arena.print("decision · {s} · {s}", .{ e.architecture, if (status == .absent) "absent" else "present" }),
+            .generation => try arena.print("chat · {s} · {s} · {s}", .{ e.architecture, e.quantization, @tagName(status) }),
+            else => try arena.print("embedding · {s} · {s}", .{ e.quantization, @tagName(status) }),
+        };
+        try list.append(arena, .{ .text = e.name, .description = description });
+    };
     return list.items;
 }
 
 /// What `model rm` can remove, as `model ls` finds it: catalogue entries
 /// whose main file is there, then registry entries whose file is.
 fn onDisk(arena: Allocator, io: std.Io, root: []const u8, registry: config.Models) ![]const Candidate {
-    const listing = try model.list(arena, io, root, registry);
+    const listing = try model.list(arena, io, root, registry, null);
     var list: std.ArrayList(Candidate) = .empty;
-    for (listing.catalog) |row| {
-        if (row.status == .absent) continue;
-        try list.append(arena, .{ .text = row.name, .description = try arena.print("{s} · {s}", .{ servedKind(row.kind), row.path }) });
+    for (listing.installed) |row| {
+        const name = row.artifact orelse continue;
+        try list.append(arena, .{ .text = name, .description = try arena.print("{s} · {s}", .{ servedKind(row.kind orelse .generation), row.files[0].path }) });
     }
     entries: for (registry.entries) |named| {
         if (named.entry.path == null and (named.entry.repo == null or named.entry.file == null)) continue;
@@ -825,7 +847,7 @@ test "commands, actions, flags, and fixed values complete from the table" {
     const a = arena_state.allocator();
     try expectTexts(a, &.{"ag"}, .{}, &.{"agent"});
     try expectTexts(a, &.{"--v"}, .{}, &.{"--version"});
-    try expectTexts(a, &.{ "config", "" }, .{}, &.{ "init", "show", "set" });
+    try expectTexts(a, &.{ "config", "" }, .{}, &.{ "init", "sync", "show", "set" });
     try expectTexts(a, &.{ "model", "p" }, .{}, &.{"pull"});
     // An optional action comes with the default action's flags.
     try expectTexts(a, &.{ "agent", "l" }, .{}, &.{"ls"});
@@ -866,7 +888,8 @@ test "paths go to the shell, and the user's state fills models, sessions, and ke
     const pulled: State = .{ .models = state.models, .present = &.{.{ .text = "laya", .description = "decision · convaiinnovations/laya/model.safetensors" }} };
     try expectTexts(a, &.{ "model", "rm", "" }, pulled, &.{"laya"});
     try expectTexts(a, &.{ "model", "rm", "laya", "--" }, pulled, &.{ "--with", "--all", "--json" });
-    try expectTexts(a, &.{ "model", "rm", "laya", "--with", "m" }, pulled, &.{ "mmproj", "mtp" });
+    try expectTexts(a, &.{ "model", "rm", "laya", "--with", "m" }, pulled, &.{"mmproj"});
+    try expectTexts(a, &.{ "model", "pull", "qwen3.8-27b", "--with", "d" }, pulled, &.{ "draft", "draft=mtp", "draft=dflash2" });
     try expectTexts(a, &.{ "agent", "--resume", "" }, state, &.{ "abc123", "def456" });
     try expectTexts(a, &.{ "agent", "export", "a" }, state, &.{"abc123"});
     try testing.expect(try answerFor(a, &.{ "agent", "export", "abc123", "" }, state) == .file);
@@ -878,7 +901,7 @@ test "paths go to the shell, and the user's state fills models, sessions, and ke
     try expectTexts(a, &.{ "config", "set", "agent.think", "h" }, state, &.{"high"});
     try expectTexts(a, &.{ "config", "set", "engine.model", "m" }, state, &.{"mine"});
     try expectTexts(a, &.{ "config", "set", "models.mine.profile", "gemma4_" }, state, &.{"gemma4_e"});
-    try expectTexts(a, &.{ "model", "pull", "x", "--with", "mmproj," }, state, &.{ "mmproj,mtp", "mmproj,imatrix" });
+    try expectTexts(a, &.{ "model", "pull", "x", "--with", "mmproj," }, state, &.{ "mmproj,draft", "mmproj,draft=mtp", "mmproj,draft=dflash2", "mmproj,imatrix" });
     // `speak --voice` offers each speaker once and the saved voices; `voice rm` the saved alone.
     const saved: State = .{ .voices = &.{ .{ .text = "anna" }, .{ .text = "sam" } } };
     try expectTexts(a, &.{ "speak", "--voice", "s" }, saved, &.{ "serena", "sohee", "sam" });
@@ -927,8 +950,9 @@ test "every flag in the table is one the parser takes for that command" {
         if (contains(&.{ "generate", "bench", "tokenize" }, command.name) and !contains(&sources, f.name) and !std.mem.eql(u8, f.name, "--kernel-stats")) try args.appendSlice(a, &.{ "--prompt", "x" });
         if (std.mem.eql(u8, command.name, "eval") and !std.mem.eql(u8, f.name, "--file")) try args.appendSlice(a, &.{ "--file", "x" });
         if (std.mem.eql(u8, command.name, "agent") and action.name.len == 0 and contains(&.{ "--json", "--session", "--print" }, f.name)) try args.appendSlice(a, &.{ "-p", "x" });
-        if (std.mem.eql(u8, action.name, "init") and !std.mem.eql(u8, f.name, "--discover")) try args.append(a, "--discover");
         if (std.mem.eql(u8, f.name, "--profile") and std.mem.eql(u8, action.name, "pull")) try args.appendSlice(a, &.{ "--register", "x" });
+        if (std.mem.eql(u8, f.name, "--variants") and std.mem.eql(u8, action.name, "pull")) try args.append(a, "--all");
+        if (std.mem.eql(u8, f.name, "--all") and std.mem.eql(u8, action.name, "ls")) try args.append(a, "--available");
         _ = cli.parseArgs(args.items) catch |err| {
             std.debug.print("{s}: {s}\n", .{ try std.mem.join(a, " ", args.items), @errorName(err) });
             return err;

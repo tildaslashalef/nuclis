@@ -67,7 +67,8 @@ Facts every unit depends on; keep them here, not in the tracker.
   shaders at runtime from the Command Line Tools; Xcode-only tools are reached
   per process (see [../AGENTS.md § Local toolchain](../AGENTS.md#local-toolchain); `make trace` holds the full `xctrace` invocation).
 - Model `~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf`
-  (catalogue name `qwen3.8-27b`, the default `engine.model`), SHA-256
+  (catalogue name `qwen3.8-27b`; the default `engine.model` and the
+  Makefile's `MODEL` are `gemma-4-26b-a4b` since 2026-11-12), SHA-256
   `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`,
   from [unsloth/Qwen3.8-27B-GGUF](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF)
   at commit `4ca720788d1e01f1bff70c033e0d0028fd02e502`, pulled from a

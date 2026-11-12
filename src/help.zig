@@ -98,18 +98,18 @@ fn plain(out: *std.Io.Writer, text: []const u8) !void {
 /// The options `generate`, `bench`, and `agent` share (the engine's).
 fn engineOptions(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--model <name|path>", "registry entry, catalogue name, or path; default");
-    try more(out, "engine.model of the config file (qwen3.8-27b)");
+    try more(out, "engine.model of the config file (gemma-4-26b-a4b)");
     try row(out, sty, "--backend cpu|metal", default_backend);
     try row(out, sty, "--ctx-size <n>", "context window in tokens, 1..32768; default 16384");
     try row(out, sty, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16");
     try row(out, sty, "--max-tokens <n>", "output budget, 1..16384; default 8192 (bench: 32)");
     try row(out, sty, "--speculative on|off", "verify drafts from the model's draft source; the");
     try more(out, "default is the model entry's verdict, else off");
+    try row(out, sty, "--draft <variant>", "another drafter of an index model (qwen: dflash2)");
     try row(out, sty, "--draft-length <n>", "drafts per verify batch, 1..15, capped by the");
     try more(out, "draft source; default the model entry's, else 4");
     try row(out, sty, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e, or muse_glimmer");
-    try more(out, "on a file whose chat template is not a pinned one");
-    try more(out, "(a finetune)");
+    try more(out, "on a finetune whose chat template is not pinned");
     try row(out, sty, "--seed <n>", "sampler seed; default 0");
 }
 
@@ -156,10 +156,10 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "--json", "machine-readable output, where a command reports");
 
     try heading(out, sty, "Examples:");
-    try example(out, sty, "nuclis config init", "the config file with every catalogue model registered");
-    try example(out, sty, "nuclis model pull qwen3.8-27b --all", "fetch the default model and its companions");
+    try example(out, sty, "nuclis model pull gemma-4-26b-a4b --all", "fetch the default model and its companions");
+    try example(out, sty, "nuclis config init", "the config file, from what is installed");
     try example(out, sty, "nuclis agent", "chat with the configured model");
-    try example(out, sty, "nuclis generate --model gemma-4-12b-qat --prompt \"Explain RoPE\"", "one answer, another model");
+    try example(out, sty, "nuclis generate --model qwen3.8-27b --prompt \"Explain RoPE\"", "one answer, another model");
 
     try heading(out, sty, "Files:");
     try row(out, sty, "~/.nuclis/nuclis.json", "engine, generation, agent settings; the registry");
@@ -217,7 +217,7 @@ fn agent(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "/help", "keys and commands, inside the surface");
 
     try heading(out, sty, "Examples:");
-    try example(out, sty, "nuclis agent --model gemma-4-12b-qat --think medium", "chat with another model at more effort");
+    try example(out, sty, "nuclis agent --model qwen3.8-27b --think medium", "chat with another model at more effort");
     try example(out, sty, "nuclis agent -p \"Summarize README.md\" --json", "one scripted turn, events as JSON lines");
     try example(out, sty, "nuclis agent ls", "the sessions saved for this directory");
 
@@ -341,7 +341,7 @@ fn eval(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--reference <json>", "a pinned llama-perplexity run on the same file;");
     try more(out, "fails beyond 0.5 % of its perplexity, or its bound");
     try row(out, sty, "--model <name|path>", "registry entry, catalogue name, or path; default");
-    try more(out, "engine.model of the config file (qwen3.8-27b)");
+    try more(out, "engine.model of the config file (gemma-4-26b-a4b)");
     try row(out, sty, "--backend cpu|metal", default_backend);
     try row(out, sty, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16");
     try row(out, sty, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e, or muse_glimmer");
@@ -738,7 +738,7 @@ fn validate(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--json", "the verdict as JSON");
 
     try heading(out, sty, "Examples:");
-    try example(out, sty, "nuclis validate --model gemma-4-12b-qat", "bind a catalogue model's weights");
+    try example(out, sty, "nuclis validate --model gemma-4-e4b-qat", "bind an index model's weights");
 
     try heading(out, sty, "Notes:");
     try plain(out, "Checks the file against its architecture's adapter (qwen35, gemma4,");
@@ -751,52 +751,67 @@ fn validate(out: *std.Io.Writer, sty: style.Style) !void {
 fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try title(out, sty, "nuclis model", "artifacts from the Hugging Face Hub");
     try heading(out, sty, "Usage:");
-    try code(out, sty, "nuclis model ls [--json]");
-    try code(out, sty, "nuclis model pull <name> [--with mmproj,mtp | --all] [--force] [--json]");
+    try code(out, sty, "nuclis model ls [-l] [--available [--all]] [--json]");
+    try code(out, sty, "nuclis model pull <name> [--with mmproj,draft[=<v>] | --all [--variants]]");
+    try code(out, sty, "                  [--force] [--json]");
     try code(out, sty, "nuclis model pull <owner/repo> [--file <name>] [--revision <rev>] [--role <r>]");
     try code(out, sty, "                  [--register <name> [--profile <p>]] [--force] [--json]");
     try code(out, sty, "nuclis model inspect <name> [--json]");
     try code(out, sty, "nuclis model inspect <owner/repo> --file <name> [--revision <rev>] [--json]");
-    try code(out, sty, "nuclis model rm <name> [--with mmproj,mtp | --all] [--json]");
+    try code(out, sty, "nuclis model adopt <path> [--force] [--json]");
+    try code(out, sty, "nuclis model rm <name> [--with mmproj,draft | --all] [--json]");
 
     try heading(out, sty, "Commands:");
-    try row(out, sty, "ls", "the catalogue with each entry's local status, then");
-    try more(out, "every other GGUF or safetensors file under");
-    try more(out, "~/.nuclis/models");
-    try row(out, sty, "pull", "fetch a catalogue entry, a registry entry, or any");
+    try row(out, sty, "ls", "what is installed under ~/.nuclis/models, one line");
+    try more(out, "a model, by kind; a file outside the index is a row");
+    try more(out, "of its own; --available lists the index instead");
+    try row(out, sty, "pull", "fetch an index model, a registry entry, or any");
     try more(out, "artifact of a repository, verified by digest and");
     try more(out, "published atomically; a safetensors artifact brings");
     try more(out, "its config, tokenizer, and index files");
     try row(out, sty, "inspect", "read a remote file's header (at most 64 MiB, no");
     try more(out, "weights) and say whether it would run: supported,");
     try more(out, "runnable, or not");
-    try row(out, sty, "rm", "delete a catalogue or registry entry's files and");
+    try row(out, sty, "adopt", "hash a file placed by hand, match it to the index's");
+    try more(out, "pinned file of that size and digest, and write its");
+    try more(out, "sidecar; an unmatched file keeps its local digest");
+    try row(out, sty, "rm", "delete an index or registry entry's files and");
     try more(out, "sidecars; a file another present entry uses stays,");
     try more(out, "and the registry entry is not edited");
 
     try heading(out, sty, "Options:");
-    try row(out, sty, "--with mmproj,mtp", "also fetch (rm: also delete) those companions");
-    try row(out, sty, "--all", "every companion the entry names");
+    try row(out, sty, "-l, --long", "ls: each file's commit and digest (12 characters),");
+    try more(out, "its path, and the defaults the model runs with");
+    try row(out, sty, "--available", "ls: the index, pulled or not; --all adds legacy");
+    try row(out, sty, "--with mmproj,draft", "also fetch (rm: also delete) those companions;");
+    try more(out, "draft=<variant> picks a drafter other than the");
+    try more(out, "default (qwen3.8-27b: mtp, dflash2); mtp is the old");
+    try more(out, "name of draft");
+    try row(out, sty, "--all", "every companion the entry names, one per role;");
+    try more(out, "with --variants, every draft variant");
     try row(out, sty, "--file <name>", "which weight file (.gguf, .safetensors); required");
     try more(out, "when several; its support files come with it");
     try row(out, sty, "--revision <rev>", "a branch, tag, or commit; default main");
-    try row(out, sty, "--role <r>", "main, mmproj, mtp, or imatrix; default by content");
+    try row(out, sty, "--role <r>", "main, mmproj, draft, or imatrix; default by content");
     try row(out, sty, "--register <name>", "once verified, write the pull as a registry entry");
     try more(out, "(repo, file, commit); a companion fills the same entry");
     try row(out, sty, "--profile <p>", "with --register: force qwen38, gemma4,");
     try more(out, "gemma4_e, or muse_glimmer");
     try row(out, sty, "--force", "download every file again, replacing each once the");
-    try more(out, "new copy verifies (the old one stays until then)");
+    try more(out, "new copy verifies (the old one stays until then);");
+    try more(out, "adopt: replace a sidecar already there");
     try row(out, sty, "--json", "the listing, pull, verdict, or removal as JSON");
 
     try heading(out, sty, "Examples:");
-    try example(out, sty, "nuclis model pull qwen3.8-27b --all", "the default model with its projector and draft head");
+    try example(out, sty, "nuclis model pull gemma-4-26b-a4b --all", "the default model with its projector");
+    try example(out, sty, "nuclis model pull qwen3.8-27b --with draft=dflash2", "Qwen's DFlash2 drafter, beside the model");
     try code(out, sty, "nuclis model pull unsloth/gemma-4-12b-it-GGUF \\");
     try example(out, sty, "    --file gemma-4-12b-it-UD-Q4_K_XL.gguf --register gemma-fast", "any file of a repository, under a name");
     try code(out, sty, "nuclis model pull convaiinnovations/laya --file model.safetensors");
     try more(out, "a safetensors set with its config and tokenizer");
     try example(out, sty, "nuclis model inspect unsloth/Muse-Glimmer-30B-GGUF --file dflash-kquant.gguf", "will it run, before the download");
-    try example(out, sty, "nuclis model rm qwen3.8-27b --all", "the model, its projector and draft head");
+    try example(out, sty, "nuclis model adopt unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", "a copy placed by hand");
+    try example(out, sty, "nuclis model rm qwen3.8-27b --all", "the model, its projector and drafters");
 
     try heading(out, sty, "Notes:");
     try plain(out, "Downloads go over Xet, verify the digest, publish atomically, and leave a");
@@ -811,14 +826,19 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
 fn config(out: *std.Io.Writer, sty: style.Style) !void {
     try title(out, sty, "nuclis config", "the file every command reads (~/.nuclis/nuclis.json)");
     try heading(out, sty, "Usage:");
-    try code(out, sty, "nuclis config init [--discover [--dry-run] [--json]]");
+    try code(out, sty, "nuclis config init [--dry-run] [--json]");
+    try code(out, sty, "nuclis config sync [--prune] [--dry-run] [--json]");
     try code(out, sty, "nuclis config show [--json]");
     try code(out, sty, "nuclis config set <key> <value>");
 
     try heading(out, sty, "Commands:");
-    try row(out, sty, "init", "write the file with the defaults and every catalogue");
-    try more(out, "model registered, then say what to pull next; an");
+    try row(out, sty, "init", "write the file from what is installed: the defaults,");
+    try more(out, "an entry for each installed model that needs one, and");
+    try more(out, "engine.model the default (gemma-4-26b-a4b) or, when it");
+    try more(out, "is not installed, the first installed chat model; an");
     try more(out, "existing file is kept");
+    try row(out, sty, "sync", "add entries for installed models that have none and");
+    try more(out, "report the entries whose file is gone");
     try row(out, sty, "show", "every key's effective value and where it came from:");
     try more(out, "default, profile, file, model entry, or flag");
     try row(out, sty, "set", "change one key by its dotted name; the file is");
@@ -826,31 +846,30 @@ fn config(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "on a refused value");
 
     try heading(out, sty, "Options:");
-    try row(out, sty, "--discover", "register the runnable GGUF files under");
-    try more(out, "~/.nuclis/models that neither the catalogue nor the");
-    try more(out, "file names (a finetune pulled by repository): the");
-    try more(out, "adapter is read from the header, the profile is");
-    try more(out, "forced when the chat template is not a pinned one,");
-    try more(out, "and companions beside the file fill mmproj and mtp");
-    try row(out, sty, "--dry-run", "print what --discover would register; write nothing");
-    try row(out, sty, "--json", "show, or the discovery report, as JSON");
+    try row(out, sty, "--prune", "sync: also remove the entries whose file is gone");
+    try row(out, sty, "--dry-run", "print what init or sync would write; write nothing");
+    try row(out, sty, "--json", "show, or the init or sync report, as JSON");
+    try row(out, sty, "--discover", "init: the old spelling of what init now does");
 
     try heading(out, sty, "Keys:");
     try row(out, sty, "engine.*", "model, backend, ctx_size, kv_precision");
-    try row(out, sty, "generation.*", "max_tokens, think, speculative, draft_length,");
+    try row(out, sty, "generation.*", "max_tokens, think, speculative, draft, draft_length,");
     try more(out, "sampling.{temperature,top_k,top_p,min_p,");
     try more(out, "presence_penalty,repetition_penalty}; null takes");
-    try more(out, "the profile's value");
+    try more(out, "the profile's value; draft names an index model's");
+    try more(out, "draft variant (qwen3.8-27b: mtp, dflash2)");
     try row(out, sty, "agent.*", "think, fold_thinking, theme, instructions (auto:");
     try more(out, "AGENTS.md then CLAUDE.md; off; or a path)");
-    try row(out, sty, "models.<name>.*", "path, or repo + file + revision; mmproj, mtp, profile,");
-    try more(out, "ctx_size, generation.*, agent.* for that model only.");
-    try more(out, "Entries are created by init --discover and model pull");
-    try more(out, "--register, never by set.");
+    try row(out, sty, "models.<name>.*", "path, or repo + file + revision; mmproj, draft (a");
+    try more(out, "file; mtp is its old name), profile, ctx_size,");
+    try more(out, "generation.*, agent.* for that model only. Entries");
+    try more(out, "are created by init, sync, and model pull --register,");
+    try more(out, "never by set.");
 
     try heading(out, sty, "Examples:");
-    try example(out, sty, "nuclis config init --discover --dry-run", "what a discovery would add");
-    try example(out, sty, "nuclis config set engine.model gemma-4-12b-qat", "the default model");
+    try example(out, sty, "nuclis config sync --dry-run", "what a sync would add");
+    try example(out, sty, "nuclis config set engine.model qwen3.8-27b", "the default model");
+    try example(out, sty, "nuclis config set models.qwen3.8-27b.generation.draft dflash2", "another drafter for one model");
     try example(out, sty, "nuclis config set generation.sampling.temperature 0.7", "a sampling override");
     try example(out, sty, "nuclis config set models.mine.profile gemma4", "force a profile on one entry");
     try example(out, sty, "nuclis config set generation.think null", "clear an override");

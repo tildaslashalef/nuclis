@@ -87,7 +87,7 @@ pub fn run(
     var sampler = try inference.sampling.Sampler.init(options.seed orelse 0, settings.samplingOptions());
     // The drafter as the terminal agent loads it, so a scripted turn decodes
     // at the configured speculative setting.
-    const draft_path = try engine.draftPath(alloc, model_path, if (settings.entry) |entry| entry.mtp else null);
+    const draft_path = try engine.draftPath(alloc, model_path, try settings.draftFile());
     defer if (draft_path) |path| alloc.free(path);
     const draft: inference.engine.DraftRequest = if (settings.speculative) .{ .preferred = draft_path } else .none;
     var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile, draft);

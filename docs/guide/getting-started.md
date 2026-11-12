@@ -41,8 +41,8 @@ make install                  # optional: ~/.local/bin (PREFIX= elsewhere)
 ## A first run
 
 ```sh
-nuclis model pull qwen3.8-27b --all    # pinned commit, SHA-256 verified, with its companions
-nuclis config init --discover          # ~/.nuclis/nuclis.json, every model found
+nuclis model pull gemma-4-26b-a4b --all  # pinned commit, SHA-256 verified, with its companions
+nuclis config init                     # ~/.nuclis/nuclis.json, every model installed
 nuclis agent                           # the chat, with tools, in this directory
 ```
 
@@ -104,16 +104,15 @@ saved states in [engine/session.md § The agent's token cache](../engine/session
 
 ### Pull a model nuclis supports
 
-The catalogue is the list of models nuclis ships support for, each pinned
-to an exact commit and SHA-256 digest:
+The index is the list of models nuclis ships support for, each pinned
+to an exact commit and SHA-256 digest (`nuclis model ls --available`
+lists the ones not installed):
 
 | Name | What it is |
 | --- | --- |
-| `qwen3.8-27b` | Qwen3.8-27B, the default model (16.5 GB) |
-| `gemma-4-12b-qat` | Gemma 4 12B, quantization-aware (6.7 GB) |
-| `gemma-4-26b-a4b` | Gemma 4 26B-A4B, a mixture of experts (14.3 GB) |
+| `gemma-4-26b-a4b` | Gemma 4 26B-A4B, a mixture of experts, the default model (14.3 GB) |
 | `gemma-4-e4b-qat` | Gemma 4 E4B, the small one (4.2 GB) |
-| `muse-glimmer-30b` | Muse Glimmer 30B (15.9 GB) |
+| `qwen3.8-27b` | Qwen3.8-27B (16.5 GB), with two drafts: `mtp` and `dflash2` |
 | `laya`, `laya-multilingual` | decision encoders for `nuclis decide` |
 | `clef-flash` | Cloudflare's decision model for `nuclis decide` |
 | `embeddinggemma-2` | EmbeddingGemma 2, text, images and audio into vectors for `nuclis embed` (310 MB) |
@@ -122,11 +121,17 @@ to an exact commit and SHA-256 digest:
 | `qwen3-tts-1.7b-voicedesign` | Qwen3-TTS VoiceDesign, text into speech in a voice described with `--instruct` (4.5 GB with the codec) |
 | `nemotron-asr-0.6b` | Nemotron 3.5 ASR streaming, speech into text for `nuclis transcribe` (2.6 GB) |
 
+`gemma-4-12b-qat` (Gemma 4 12B, quantization-aware, 6.7 GB) and
+`muse-glimmer-30b` (15.9 GB) are *legacy*: they pull, verify, and run by
+name, but `config init` does not register them and `model ls --available`
+shows them only with `--all`.
+
 ```sh
-nuclis model pull qwen3.8-27b             # the model alone
-nuclis model pull qwen3.8-27b --all       # with its drafter and vision companions
-nuclis model pull qwen3.8-27b --with mtp  # or pick them: mmproj, mtp
-nuclis model ls                           # what is here, and whether it verifies
+nuclis model pull qwen3.8-27b                     # the model alone
+nuclis model pull qwen3.8-27b --all               # with its default draft and vision companions
+nuclis model pull qwen3.8-27b --with draft=dflash2  # or pick them: mmproj, draft[=variant]
+nuclis model pull qwen3.8-27b --all --variants    # every draft variant too
+nuclis model ls                                   # what is here
 ```
 
 Files land in `~/.nuclis/models/<owner>/<repo>/<file>`, each SHA-256
@@ -148,11 +153,12 @@ nuclis model pull <owner/repo> --file <name> --register mymodel   # and name it
   included: `--file MTP/mtp-Qwen3.8-27B-Q4_0.gguf`.
 - A safetensors set comes with its config and tokenizer files
   ([models/catalogue.md § Safetensors artifacts](../models/catalogue.md#safetensors-artifacts)).
-- `--role mmproj|mtp|imatrix` marks a companion file.
+- `--role mmproj|draft|imatrix` marks a companion file (`mtp` is the old
+  spelling of `draft`).
 - `--register <name> [--profile <p>]` writes the pull into `nuclis.json` as a
   named model once every file verifies, so `--model <name>` and `nuclis
   config set engine.model <name>` work from then on; a companion `--role`
-  fills the same entry's `mmproj` or `mtp`. A name that already locates
+  fills the same entry's `mmproj` or `draft`. A name that already locates
   other content is refused, and so is a catalogue name unless the pull is
   that catalogue entry's own file.
 - A Qwen3-TTS CustomVoice fine-tune registers as a speech model
@@ -245,19 +251,28 @@ the GGUF directory parses (a few seconds; nothing is written), prints what
 
 ### What is on disk
 
-`nuclis model ls [--json]` (or `make model-ls`) lists the catalogue with each
-model's status (`present`, `absent`, `mismatch`, or `unverified` when the
-file has no sidecar) and its companions, then every other model file in the
-folder with its facts, and marks the files your settings name (`registered
-as <name>`). `--model` and `engine.model` accept a settings entry, a
-catalogue name, or a path; a missing file fails before anything loads,
-naming the path it looked for.
+`nuclis model ls [--json]` (or `make model-ls`) lists what is installed,
+grouped by kind (chat, speech, transcription, decision, embedding), one
+row per model with its quantization, size, and companions (`+mmproj
++draft`); a file the index does not pin is marked `not in the index`, and
+the default model `default`. `-l` adds every file with its commit, digest,
+path, and status (`present`, `absent`, `mismatch`, or `unverified` when it
+has no sidecar). `--available` lists the index entries not installed,
+`--available --all` the legacy ones too. `--model` and `engine.model`
+accept a settings entry, an index name, or a path; a missing file fails
+before anything loads, naming the path it looked for.
+
+A file copied into `~/.nuclis/models` by hand has no sidecar, so it lists
+as `unverified`. `nuclis model adopt <path> [--force]` hashes it, matches
+it to an index file by size and SHA-256, and writes the sidecar a pull
+would have written; a GGUF the index does not know gets a sidecar with no
+commit, and a file that is not a model is refused.
 
 ### Remove a model
 
 ```sh
 nuclis model rm qwen3.8-27b               # the model file alone
-nuclis model rm qwen3.8-27b --with mmproj # and the companions named: mmproj, mtp
+nuclis model rm qwen3.8-27b --with mmproj # and the companions named: mmproj, draft
 nuclis model rm qwen3.8-27b --all         # and every companion
 nuclis model rm laya --json               # the report as one JSON object
 ```
@@ -267,13 +282,13 @@ deletes its files with their `.nuclis.json` sidecars: a catalogue entry's
 main file, its support files (configuration, tokenizer), a speech model's
 codec, and clef-flash's backbone; companions only with `--with` or `--all`,
 as `pull` takes them. A settings entry removes its file and, asked, the
-`mmproj` and `mtp` it names; a file outside `~/.nuclis/models` is never
+`mmproj` and `draft` it names; a file outside `~/.nuclis/models` is never
 touched. The directories the removal leaves empty go too.
 
 A file another model still uses stays, and the report names that model: a
 catalogue entry whose file is present, or a settings entry of another name
 pointing at the file. The settings entry of the same name that `config
-init` writes for every catalogue model is the same model, not another user.
+init` writes for an installed index model is the same model, not another user.
 Your settings are not edited: `nuclis model ls` then lists the entry among
 those without a file. A name with nothing on disk is an error
 (`NotPulled`); an entry only partly present loses what is there.

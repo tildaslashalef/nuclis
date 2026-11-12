@@ -217,25 +217,31 @@ Hub collides):
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "repo": "unsloth/Qwen3.8-27B-GGUF",
   "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
   "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
   "sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
   "size": 16464442496,
   "role": "main",
+  "artifact": "qwen3.8-27b",
   "downloaded_at": "2026-09-11T09:12:33Z",
   "nuclis_version": "0.1.0-dev"
 }
 ```
 
+- Schema 2 (2026-11-12) adds `artifact` and `variant` (the index
+  artifact and draft variant the file belongs to) and `adopted_at`;
+  schema 1 sidecars read the same, their `mtp` role as `draft`.
 - `revision` is always the resolved 40-character commit, whatever
   `--revision` said (`main`, a tag, a commit), which is what makes the
   SHA-256 beside it meaningful; the [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-03--models-directory-catalogue-and-registry-2026-09-11) catalogue and every benchmark record
-  cite commits the same way.
-- `role` is `main`, `mmproj`, `mtp`, `imatrix`, or `support`: from the
+  cite commits the same way. Only an adopted file that matched no index
+  file has none (`null`).
+- `role` is `main`, `mmproj`, `draft`, `imatrix`, `support`, `codec`, or
+  `backbone`: from the
   header when it says so (`general.type` `imatrix` or `mmproj`, or a `clip`
-  architecture; the main model and the separate MTP head both say `model`),
+  architecture; the main model and a separate draft file both say `model`),
   else from `--role` (the [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-03--models-directory-catalogue-and-registry-2026-09-11) catalogue later), else `main`. A flag that
   contradicts the header is `RoleMismatch`. Safetensors weights are `main`;
   the configuration, tokenizer, and index files a safetensors artifact
@@ -247,9 +253,10 @@ Hub collides):
   same.
 - Written only after the package's atomic publication, or its full-hash
   verification of a file already in place, succeeded: a sidecar's presence
-  means the file beside it was checked against the Hub's catalog. Nothing
-  is written for a file the user copied in by hand until a `pull` verifies
-  it. A sidecar recording other content makes `pull` refuse
+  means the file beside it was checked against the Hub's catalog. A file
+  the user copied in by hand gets one from `pull`, which verifies it, or
+  from `model adopt`, which hashes it and records `adopted_at` instead of
+  `downloaded_at`. A sidecar recording other content makes `pull` refuse
   (`ExistingFileMismatch`) unless `--force`, which downloads the file
   again and replaces it, then its sidecar, once the new copy verifies.
 - `size` lets `model ls` flag a file that changed underneath its sidecar.
@@ -289,25 +296,74 @@ verified) it writes `"kind": "speech"`; the codec is the separate
 `--file speech_tokenizer/model.safetensors` pull. Text commands refuse
 both kinds. Any other safetensors artifact is `NotRunnable`, before the
 download when no `config.json` comes with it, after it (the files kept,
-nothing registered) when its `config.json` is not one of these. `config init --discover` skips safetensors; remote `model
+nothing registered) when its `config.json` is not one of these. `config init` and `config sync` register a safetensors artifact outside the index
+only in these two layouts, with its kind; remote `model
 inspect` reads GGUF directories only.
 
 ### The catalogue
 
-`src/catalog.zig` is the only source of "supported": a file under
-`models/` is *runnable* when its architecture id has an adapter,
-*supported* only when the catalogue pins it (name, title, repository, file,
-commit, SHA-256, size, quantization, architecture, sampling profile, and
-companions with what they are for: `mmproj` for image input, and audio
-input on the one entry marked `hears` (Gemma 4 E4B), `mtp` for
-speculative decoding). Entries are named after the model (`qwen3.8-27b`), not the
-quantization. `nuclis model pull <name> [--with mmproj,mtp | --all]`
-fetches through it, `--model` and `engine.model` resolve names through it,
-and `model ls` reports every entry's status from sidecars (`present`,
-`absent`, `mismatch`, `unverified`) with the other model files (GGUF,
-safetensors) in the layout beneath. The Qwen entry was proven from a clean state on
-2026-09-11: the old `models/qwen/` directory was deleted and
-`nuclis model pull qwen3.8-27b --all` rebuilt the model directory ([MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-03--models-directory-catalogue-and-registry-2026-09-11)).
+`src/catalog.zig` is the *index*: one table, `artifacts`, of one type
+(`catalog.Artifact`), and the only source of "supported". What is
+*installed* is what the sidecars under `models/` say; what is *known* is
+the index, consulted to pull, to verify, and to supply defaults. A file is
+*runnable* when its architecture id has an adapter, *supported* only when
+it is a `File` of the index with a pinned commit and SHA-256. Each artifact
+has a name (after the model, `qwen3.8-27b`, not the quantization), a kind
+(`generation`, shown as "chat", `decision`, `embedding`, `speech`,
+`transcription`), a lifecycle, and its files: the main file first, then
+its companions by role (`mmproj` for image input, and audio input on the
+one artifact marked `hears`, Gemma 4 E4B; `draft` for speculative
+decoding; `backbone` and `codec` for the decision and speech models), each
+with its own repository and commit when it is not the artifact's.
+
+- **Lifecycle.** `current` artifacts are looked after: they have gates and
+  `config init` writes them. A `legacy` artifact (`gemma-4-12b-qat`,
+  `muse-glimmer-30b`, decided 2026-11-10) still pulls, verifies, and runs by
+  name, but `config init` never writes it, `model ls --available` hides it
+  without `--all`, and nothing gates it.
+- **Draft variants.** An artifact may carry several draft files, each with
+  a variant name and its own speculative verdict (on or off, draft
+  length). `qwen3.8-27b` has `mtp` (Unsloth's head, the default) and
+  `dflash2` (`z-lab/Qwen3.8-27B-DFlash2-GGUF` at
+  `2d9571f8ce46e151f61c6499c99dee6079e1d610`,
+  `Qwen3.8-27B-DFlash2-Q8_0.gguf`, 2,056,414,816 B, SHA-256
+  `c18e800daedc59ca68fd13b6a856d795746af6d399a9279ac6a277d1d422f87e`;
+  on, draft 7, from
+  [engine/speculative-decoding.md](../engine/speculative-decoding.md)). A
+  file fetched from another repository at a Hub name of its own lands
+  where the index places it, beside its parent: the DFlash2 file is
+  `unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf`.
+  `--draft <variant>` (or `generation.draft` in a registry entry) picks
+  one at run time; `--with draft=<variant>` pulls one, `--all` takes the
+  default variant of each role, `--all --variants` every variant.
+  `--with mtp` and a registry entry's `mtp` key are the old spellings of
+  `draft` and print a notice.
+- **Installed first.** `nuclis model ls` lists what is installed, grouped
+  by kind, one row per artifact (`-l` adds the files, sizes, commits, and
+  status); `--available` lists the current index entries that are not
+  installed, `--available --all` the legacy ones too. The JSON listing is
+  schema 7. `nuclis model adopt <path>` hashes a file the user placed
+  under `models/` by hand, matches it to an index file by size and
+  digest, and writes the sidecar a pull would have; an unmatched GGUF that
+  parses gets a sidecar with no commit, and anything else is refused
+  (`NotAModelFile`).
+- **The configuration follows.** `nuclis config init` writes a registry
+  entry for every installed current chat artifact and judges every other
+  installed GGUF by its adapter; `nuclis config sync [--prune] [--dry-run]`
+  adds what was installed since and, with `--prune`, drops entries whose
+  files are gone ([guide/configuration.md](../guide/configuration.md)).
+  `engine.model` defaults to `gemma-4-26b-a4b`, the fastest current chat
+  model with a draft that pays on this machine; `config init` names the
+  first installed chat model instead when that one is absent.
+
+`nuclis model pull <name> [--with mmproj,draft | --all]` fetches through
+the index, and `--model` and `engine.model` resolve names through it.
+Status (`present`, `absent`, `mismatch`, `unverified`) is read from
+sidecars, never by hashing, so a listing is instant. The rest of this
+section is the history of the entries and their pins. The Qwen entry was
+proven from a clean state on 2026-09-11: the old `models/qwen/` directory
+was deleted and `nuclis model pull qwen3.8-27b --all` rebuilt the model
+directory ([MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-03--models-directory-catalogue-and-registry-2026-09-11)).
 Gemma 4 12B entered the catalogue as `gemma-4-12b` with its profile on
 2026-09-12 ([MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12)) naming the K-quant file with `mmproj-BF16.gguf`
 (175,115,840 B, SHA-256 `2e269f906eb15169ee9ce880ea649bd6d42d4964c21f8ede10d0d0efc738bcbb`)
@@ -336,11 +392,11 @@ with per-model overrides, pinning no digest
 `muse-glimmer-30b` — and `gemma-4-12b` (the K-quant release) and
 `bonsai-2-27b` left it. Their pins above stay as the record their traces
 and acceptance runs cite; the files run as any other runnable GGUF:
-`nuclis model pull <owner/repo> --file <f>`, then `nuclis config init
---discover` registers them (Bonsai's template is not a pinned one, so it
+`nuclis model pull <owner/repo> --file <f>`, then `nuclis config sync`
+registers them (Bonsai's template is not a pinned one, so it
 takes its family's `qwen38` profile by force, as the entry did).
 
-A second table, `decision_entries`, pins decision checkpoints, which only
+The decision artifacts (once a table of their own, `decision_entries`) pin checkpoints, which only
 `nuclis decide` opens ([MODL-30](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-30--laya-on-the-cpu-end-to-end-the-oracle-tokenizerjson-modernbert-and-the-decision-head-nuclis-decide-2026-09-29)): `laya`, `convaiinnovations/laya` at
 commit `55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851`, weights
 `model.safetensors` (842,609,210 B, SHA-256
@@ -354,9 +410,9 @@ git files, whose Hub identity is a blob id); and `laya-multilingual`
 with the same four support files under `multilingual/`, which lands in
 `~/.nuclis/models/convaiinnovations/laya/multilingual/`. `nuclis model
 pull laya` (or `laya-multilingual`) fetches the set at that commit and refuses it if the Hub's weights digest
-or a named support file differs; `model ls` lists it after the text
-models, marked `(nuclis decide)`, and its JSON rows carry `kind`
-(listing schema 6 since the `speech` and `transcription` kinds joined it, with the companion role `codec`). `decide.model` defaults to `laya`; the name is not a
+or a named support file differs; `model ls` lists it under
+`decision`, and its JSON rows carry `kind`
+(the listing is schema 7 since the index became one table). `decide.model` defaults to `laya`; the name is not a
 text model's, so `generate --model laya` is refused by name.
 
 `clef-flash` ([MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one)) spans two repositories: its head
@@ -379,7 +435,7 @@ directory, and a backbone or projector whose pulled digest is not the
 catalogue's fails the pull (`CatalogMismatch`). `nuclis decide` finds the
 backbone and, when it is pulled, the projector from the entry.
 
-A third table, `embedding_entries`, pins embedding models, which only
+The embedding artifacts pin models, which only
 `nuclis embed` opens (2026-10-09): `embeddinggemma-2`,
 `unsloth/embeddinggemma-2-GGUF` at commit
 `031f0d4b35536f69ab3509d4893c923264fcf253`, the text model
@@ -391,14 +447,14 @@ which `--with mmproj` adds (the vision and audio encoders; text needs only
 the main file). The entry also carries the trained widths (768, 512, 256,
 128) and the modalities its files read. Why Q8_0 with a BF16 projector is
 in [embeddinggemma.md § Artifacts](embeddinggemma.md#artifacts). `model
-ls` marks the row `(nuclis embed)` with the projector beneath it;
+ls` lists it under `embedding`, `+mmproj` when the projector is there;
 `embed.model` defaults to `embeddinggemma-2`, and text and decision
 commands refuse the name. `model pull <owner/repo> --register <name>`
 records a GGUF whose header says `gemma-embedding2` as `"kind":
 "embedding"` and names `embed.model` as the key that makes it the
 default.
 
-A fourth table, `audio_entries`, pins the speech and transcription
+The audio artifacts pin the speech and transcription
 checkpoints: `qwen3-tts-1.7b-customvoice` and `qwen3-tts-0.6b-customvoice`
 (2026-10-27), `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base`, and
 `qwen3-tts-1.7b-voicedesign` (2026-10-29), kind `speech` (`nuclis
@@ -418,8 +474,8 @@ digest checked against the catalogue before anything downloads
 (`CatalogMismatch`) and a named support file missing at the commit
 refused the same way. The codec's sidecar records the role `codec`. `--with`, `--all`, `--file`,
 `--revision`, and `--register` are refused for these names. `model ls`
-lists them last, marked `(nuclis speak)` or `(nuclis transcribe)`, the
-codec beneath its voice; `model inspect <name>` compares the Hub's
+lists them under `speech` or `transcription`, `+codec` when a voice's
+codec is there; `model inspect <name>` compares the Hub's
 digests with the catalogue's (a safetensors file has no directory to read
 remotely). `speech.model` defaults to `qwen3-tts-1.7b-customvoice` (the only one that
 takes a delivery instruction), `transcribe.model` to `nemotron-asr-0.6b`;

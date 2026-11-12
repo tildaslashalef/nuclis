@@ -166,7 +166,7 @@ pub const Service = struct {
         const self: *Service = @ptrCast(@alignCast(context));
         for (try catalog.list(arena, io, self.root, self.registry)) |l| {
             const registered = self.registry.find(l.name) != null;
-            const pinned = if (registered) null else catalog_table.findDecision(l.name);
+            const pinned = if (registered) null else catalog_table.findKind(l.name, .decision);
             var details: std.json.ObjectMap = .empty;
             try details.put(arena, "kind", .{ .string = "decision" });
             try details.put(arena, "name", .{ .string = l.name });

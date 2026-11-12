@@ -32,8 +32,8 @@ Requires macOS on Apple Silicon, Zig 0.17.0, and the Command Line Tools.
 
 ```sh
 make metal                                      # release build, Metal backend
-./zig-out/bin/nuclis model pull qwen3.8-27b --all   # pinned commit, SHA-256 verified
-./zig-out/bin/nuclis config init --discover     # ~/.nuclis/nuclis.json, every model found
+./zig-out/bin/nuclis model pull gemma-4-26b-a4b --all   # pinned commit, SHA-256 verified
+./zig-out/bin/nuclis config init                # ~/.nuclis/nuclis.json, every model installed
 ./zig-out/bin/nuclis agent                      # the chat, with tools, in this directory
 ```
 
@@ -51,18 +51,24 @@ echo 'source <(nuclis completion bash)' >> ~/.bashrc
 
 ## Models
 
-The catalogue pins each model's repository, commit, and SHA-256, so
+The index pins each model's repository, commit, and SHA-256, so
 `nuclis model pull <name>` fetches exactly the bytes that were measured.
-Every entry reads images and carries a draft source for speculative
-decoding, switched on where it measured faster.
+`nuclis model ls` lists what is installed and `nuclis model ls
+--available` what the index offers besides. Every chat model reads images
+and carries a draft source for speculative decoding, switched on where it
+measured faster; `qwen3.8-27b` has two, `mtp` and `dflash2`
+(`--draft dflash2`).
 
 | Family | Name | What is distinctive | Size |
 | --- | --- | --- | ---: |
-| Qwen3.8 | `qwen3.8-27b` | hybrid attention: 16 attention and 48 DeltaNet layers | 16.5 GB |
-| Gemma 4 | `gemma-4-12b-qat` | dense, quantization-aware trained: every matrix Q4_0 | 6.7 GB |
-| | `gemma-4-26b-a4b` | mixture of experts, 8 of 128 per token | 14.2 GB |
+| Gemma 4 | `gemma-4-26b-a4b` | mixture of experts, 8 of 128 per token; the default | 14.2 GB |
 | | `gemma-4-e4b-qat` | on-device size: per-layer embeddings, shared KV layers | 4.2 GB |
-| Muse Glimmer | `muse-glimmer-30b` | dense 30B with a DFlash block drafter | 15.9 GB |
+| Qwen3.8 | `qwen3.8-27b` | hybrid attention: 16 attention and 48 DeltaNet layers | 16.5 GB |
+
+Two older entries are *legacy*: `gemma-4-12b-qat` (dense, every matrix
+Q4_0, 6.7 GB) and `muse-glimmer-30b` (dense 30B with a DFlash block
+drafter, 15.9 GB) still pull, verify, and run by name, but no gate covers
+them and `config init` does not register them.
 
 Decision models, which answer typed questions instead of writing text,
 have their own entries: `laya`, `laya-multilingual`, and `clef-flash`
@@ -78,12 +84,12 @@ and `nemotron-asr-0.6b`.
 **Anything else** runs when its architecture has an adapter (Qwen3.8,
 Gemma 4, Muse Glimmer): finetunes, other quantizations, Gemma 4's K-quant
 release, Prism ML's ternary Bonsai 2. Judge a file before downloading it,
-pull it by repository, and let discovery register it:
+pull it by repository, and let the configuration catch up:
 
 ```sh
 nuclis model inspect prism-ml/Ternary-Bonsai-2-27B-gguf --file Ternary-Bonsai-2-27B-PTQ1_0.gguf
 nuclis model pull prism-ml/Ternary-Bonsai-2-27B-gguf --file Ternary-Bonsai-2-27B-PTQ1_0.gguf
-nuclis config init --discover   # names it, picks its prompt profile, finds its companions
+nuclis config sync   # names it, picks its prompt profile, finds its companions
 ```
 
 ## Results
