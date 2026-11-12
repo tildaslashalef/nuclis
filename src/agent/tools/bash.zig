@@ -3,10 +3,12 @@
 //! One command string through `/bin/sh -c`, with host-constant bounds on the
 //! combined output (1 MiB) and wall time (300 s). The command's stderr is
 //! folded into its stdout at the shell level (`exec 2>&1`), so the model reads
-//! one ordered stream rather than two interleaved approximations. Cancellation
-//! and the timeout both kill and reap the child, so an interrupted command
-//! leaves nothing behind; exceeding the output bound stops reading, kills the
-//! child, and returns the prefix with `truncated` set. An output longer than
+//! one ordered stream rather than two interleaved approximations. The shell
+//! leads its own process group: cancellation, the timeout, and the output
+//! bound end the whole group (`stop`: TERM, a grace, then KILL) and reap the
+//! shell, so a command that ignores TERM, a pipeline, or a `&` job cannot
+//! outlive them. Exceeding the output bound returns the prefix with
+//! `truncated` set. An output longer than
 //! `head_lines + tail_lines` reaches the model as its head and tail with the
 //! omitted count marked between them.
 //!
@@ -16,6 +18,7 @@
 //! the model's commands. `expand_arg0` is off: `/bin/sh` is an absolute path,
 //! never resolved through the child environment.
 const std = @import("std");
+const builtin = @import("builtin");
 const root = @import("root.zig");
 const interrupt = @import("../../interrupt.zig");
 
@@ -38,6 +41,8 @@ const tail_lines: usize = 80;
 const max_command: usize = 32 * 1024;
 const timeout_ns: i96 = 300 * std.time.ns_per_s;
 const poll_ms: i64 = 100;
+/// How long a stopped command's group has to exit on TERM before KILL.
+const grace_ms: i64 = 2000;
 /// Only these names cross into the child; everything else is dropped.
 const forward_env = [_][]const u8{ "PATH", "HOME", "LANG", "TERM", "TMPDIR" };
 const fallback_path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
@@ -81,6 +86,8 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         .stdout = .pipe,
         .stderr = .pipe,
         .expand_arg0 = .no_expand,
+        // Its own group, so `stop` reaches every process the command starts.
+        .pgid = 0,
     }) catch |err| return root.fail(alloc, "bash: could not start a shell: {s}", .{@errorName(err)});
 
     var reader: std.Io.File.MultiReader = undefined;
@@ -88,7 +95,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     var child_live = true;
     defer {
         if (reader_ready) reader.deinit();
-        if (child_live) child.kill(workspace.io);
+        if (child_live) stop(&child, workspace.io);
     }
     var storage: std.Io.File.MultiReader.Buffer(2) = undefined;
     reader.init(alloc, workspace.io, storage.toStreams(), &.{ child.stdout.?, child.stderr.? });
@@ -138,7 +145,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         term = child.wait(workspace.io) catch |err| return root.fail(alloc, "bash: could not reap the command: {s}", .{@errorName(err)});
         child_live = false;
     } else {
-        child.kill(workspace.io);
+        stop(&child, workspace.io);
         child_live = false;
     }
 
@@ -207,6 +214,36 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
 
 /// Keeps the first `head_lines` and last `tail_lines` of an output longer
 /// than both, with a marked count of the lines between.
+/// Ends the command's process group: TERM to all of it, up to `grace_ms`
+/// for the shell to exit, KILL to whatever is left, then the shell's reap.
+fn stop(child: *std.process.Child, io: std.Io) void {
+    const pid = child.id orelse return;
+    std.posix.kill(-pid, .TERM) catch {};
+    // The grace is read off the clock: a loaded machine stretches each sleep.
+    const termed = std.Io.Clock.awake.now(io);
+    while (!exited(pid) and termed.durationTo(std.Io.Clock.awake.now(io)).nanoseconds < grace_ms * std.time.ns_per_ms) {
+        io.sleep(.fromMilliseconds(10), .awake) catch break;
+    }
+    std.posix.kill(-pid, .KILL) catch {};
+    _ = child.wait(io) catch {};
+}
+
+extern "c" fn waitid(idtype: c_int, id: c_uint, info: *std.c.siginfo_t, options: c_int) c_int;
+
+/// Whether `pid` has exited, without reaping it (`WNOWAIT`): `Child.wait`
+/// still reaps it and frees its pipes.
+fn exited(pid: std.posix.pid_t) bool {
+    const p_pid: c_int = 1; // P_PID on Linux and Darwin
+    var info = std.mem.zeroes(std.c.siginfo_t);
+    // <sys/wait.h>'s values, which std.c names only for Linux.
+    const nowait: c_int = if (builtin.os.tag.isDarwin()) 0x20 else 0x01000000;
+    const options: c_int = 4 | 1 | nowait; // WEXITED | WNOHANG | WNOWAIT
+    if (waitid(p_pid, @intCast(pid), &info, options) != 0) return true;
+    // With WNOHANG and nothing to report the kernel fills nothing; `si_signo` leads on both.
+    const signo: *const c_int = @ptrCast(@alignCast(&info));
+    return signo.* == @backingInt(std.posix.SIG.CHLD);
+}
+
 fn elide(alloc: std.mem.Allocator, text: *std.ArrayList(u8), lines: usize) std.mem.Allocator.Error!void {
     if (lines <= head_lines + tail_lines) return;
     var head_end: usize = 0;
@@ -379,6 +416,50 @@ test "a requested cancellation stops the command and reaps the child" {
     try testing.expect(std.mem.indexOf(u8, result.text, "cancelled") != null);
     // If the child were not killed, this would wait for the full sleep.
     try testing.expect(elapsed_ns < 10 * std.time.ns_per_s);
+}
+
+test "a cancelled command that ignores TERM, and its background job, are gone within the grace" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    defer interrupt.clear();
+    // Cancels once the background job's pid is on disk, so the job exists,
+    // and notes when: the grace runs from the cancel, not from the shell's
+    // start, which a loaded machine can delay by seconds.
+    const Ticker = struct {
+        dir: std.Io.Dir,
+        cancelled: ?std.Io.Timestamp = null,
+        fn tick(context: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.cancelled != null) return;
+            const st = self.dir.statFile(testing.io, "bg.pid", .{}) catch return;
+            if (st.size == 0) return;
+            self.cancelled = std.Io.Clock.awake.now(testing.io);
+            interrupt.request();
+        }
+    };
+    var ticker: Ticker = .{ .dir = fixture.tmp.dir };
+    var ws = fixture.ws;
+    ws.tick = .{ .context = &ticker, .call = Ticker.tick };
+    var result = try run(ws, alloc, "{\"command\":\"trap '' TERM; sleep 100 & echo $! > bg.pid; sleep 1000\"}");
+    defer result.deinit(alloc);
+    try testing.expect(std.mem.indexOf(u8, result.text, "cancelled") != null);
+    const cancelled = ticker.cancelled orelse return error.TestUnexpectedResult;
+    const elapsed_ns = cancelled.durationTo(std.Io.Clock.awake.now(testing.io)).nanoseconds;
+    try testing.expect(elapsed_ns < (grace_ms + 3000) * std.time.ns_per_ms);
+    const text = try fixture.tmp.dir.readFileAlloc(testing.io, "bg.pid", alloc, .limited(32));
+    defer alloc.free(text);
+    const job = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, text, " \n"), 10);
+    // KILL is delivered at once; its reap by init may lag, so wait for it, bounded.
+    var gone = false;
+    for (0..200) |_| {
+        std.posix.kill(job, @fromBackingInt(@intCast(0))) catch {
+            gone = true;
+            break;
+        };
+        testing.io.sleep(.fromMilliseconds(10), .awake) catch {};
+    }
+    try testing.expect(gone);
 }
 
 test "the tick can request cancellation mid-command" {

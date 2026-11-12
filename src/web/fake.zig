@@ -18,6 +18,7 @@ pub const Fake = struct {
     target_lens: [max_answers]usize = @splat(0),
     agent: [64]u8 = undefined,
     agent_len: usize = 0,
+    /// Answers taken: requests whose head was read, and failed accepts.
     served: std.atomic.Value(usize) = .init(0),
 
     pub const max_answers = 12;
@@ -38,8 +39,9 @@ pub const Fake = struct {
 
     pub fn serve(self: *Fake, io: Io) void {
         for (self.answers, 0..) |answer, i| {
-            self.answerOne(io, i, answer) catch {};
-            _ = self.served.fetchAdd(1, .release);
+            var counted = false;
+            self.answerOne(io, i, answer, &counted) catch {};
+            if (!counted) _ = self.served.fetchAdd(1, .release);
         }
     }
 
@@ -53,7 +55,9 @@ pub const Fake = struct {
         self.server.deinit(io);
     }
 
-    fn answerOne(self: *Fake, io: Io, i: usize, answer: Answer) !void {
+    /// Counts the request as served once its head is read, before the reply:
+    /// a client that has its answer may read `served` at once.
+    fn answerOne(self: *Fake, io: Io, i: usize, answer: Answer, counted: *bool) !void {
         const stream = try self.server.accept(io);
         defer stream.close(io);
         var read_buffer: [4096]u8 = undefined;
@@ -77,6 +81,8 @@ pub const Fake = struct {
                 self.agent_len = n;
             }
         }
+        _ = self.served.fetchAdd(1, .release);
+        counted.* = true;
         if (answer.delay_ms > 0) try io.sleep(.fromMilliseconds(@intCast(answer.delay_ms)), .awake);
         var write_buffer: [1024]u8 = undefined;
         var writer = std.Io.net.Stream.Writer.init(stream, io, &write_buffer);

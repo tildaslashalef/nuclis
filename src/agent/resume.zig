@@ -14,6 +14,7 @@ const tui = @import("../tui/root.zig");
 const session = @import("session.zig");
 const cache = @import("../completer/cache.zig");
 const tools = @import("tools/root.zig");
+const loop = @import("loop.zig");
 const style = @import("../tui/style.zig");
 
 const Allocator = std.mem.Allocator;
@@ -21,13 +22,13 @@ const Profile = inference.profiles;
 const transcript = tui.transcript;
 const screen = tui.screen;
 
-/// One saved conversation, as a picker sees it: the header's facts plus the
-/// path to load. Owned strings.
 /// The id `find` resolves to the newest session of the workspace, for
 /// `--resume` with no id. A real id is 32 hex digits, so the word cannot
 /// collide.
 pub const latest = "latest";
 
+/// One saved conversation, as a picker sees it: the header's facts plus the
+/// path to load. Owned strings.
 pub const Summary = struct {
     id: []u8,
     time: []u8,
@@ -229,7 +230,7 @@ pub fn match(alloc: Allocator, io: std.Io, root_dir: []const u8, cwd: []const u8
 }
 
 /// Deletes the session file at `path` and the token-cache states its turn
-/// boundaries name under `<root>/cache/prefix/` (`/save` exports stay).
+/// boundaries name under `<root>/cache/prefix/` (exports stay).
 /// Returns the states removed. A file that cannot be read is still deleted.
 pub fn delete(alloc: Allocator, io: std.Io, root_dir: []const u8, path: []const u8) !usize {
     var removed: usize = 0;
@@ -263,53 +264,95 @@ pub fn lastBoundary(loaded: session.Loaded) ?cache.Boundary {
     return null;
 }
 
-/// The `/list` rows: one per session, newest first, `current` (an id)
-/// marked. Strings in `alloc` (an arena, in the agent).
-pub fn listRows(alloc: Allocator, sessions: []const Summary, current: []const u8, ascii: bool) ![]const []const u8 {
-    var rows: std.ArrayList([]const u8) = .empty;
-    if (sessions.len == 0) {
-        try rows.append(alloc, "  no saved sessions for this workspace");
-        return rows.toOwnedSlice(alloc);
-    }
-    try rows.append(alloc, "  saved sessions, newest first (/resume continues one, /delete removes one)");
-    for (sessions) |s| {
-        const short = if (s.id.len > 8) s.id[0..8] else s.id;
-        const marker: []const u8 = if (std.mem.eql(u8, s.id, current)) (if (ascii) "*" else "●") else " ";
-        try rows.append(alloc, try alloc.print("  {s} {s}  {s}  {s: <6} ctx {d: <5}  {s}", .{ marker, short, s.time, s.effort, s.ctx_size, s.first_prompt }));
-    }
-    return rows.toOwnedSlice(alloc);
-}
-
 fn sessionsPath(alloc: Allocator, root_dir: []const u8, cwd: []const u8) ![]u8 {
     const slug = try session.cwdSlug(alloc, cwd);
     defer alloc.free(slug);
     return std.fs.path.join(alloc, &.{ root_dir, paths.agent_dir, paths.sessions_dir, slug });
 }
 
-/// The conversation the loop renders, in order. Non-conversation entries
-/// (effort, context, compaction, notice) are skipped: they are session facts,
-/// not messages. Slices borrow `loaded`.
-pub fn messages(alloc: Allocator, loaded: session.Loaded) ![]Profile.Message {
+/// The conversation the model saw when the session was written: its
+/// messages in order, and for each the index in `loaded.records` it came
+/// from, so the caller can attach a user entry's media.
+pub const Conversation = struct {
+    messages: []Profile.Message,
+    records: []usize,
+    /// The elision stubs some messages' content points at; owned.
+    stubs: [][]u8,
+
+    pub fn deinit(self: Conversation, alloc: Allocator) void {
+        for (self.stubs) |stub| alloc.free(stub);
+        alloc.free(self.stubs);
+        alloc.free(self.records);
+        alloc.free(self.messages);
+    }
+};
+
+/// Rebuilds what the live loop held: a cancelled step never reached the
+/// history, and each compaction (`loop.Compaction`) is applied where it was
+/// recorded. Non-conversation entries (effort, context, notice) are session
+/// facts, not messages. Slices other than the stubs borrow `loaded`.
+pub fn conversation(alloc: Allocator, loaded: session.Loaded) !Conversation {
     var out: std.ArrayList(Profile.Message) = .empty;
-    errdefer out.deinit(alloc);
-    for (loaded.records) |record| {
-        switch (record.entry) {
-            .user => |u| try out.append(alloc, .{ .role = .user, .content = u.text }),
-            .assistant => |a| try out.append(alloc, .{
+    defer out.deinit(alloc);
+    var at: std.ArrayList(usize) = .empty;
+    defer at.deinit(alloc);
+    var stubs: std.ArrayList([]u8) = .empty;
+    defer {
+        for (stubs.items) |stub| alloc.free(stub);
+        stubs.deinit(alloc);
+    }
+    // Where the turn in progress begins in `out`, as the loop's `turn_start`.
+    var turn_start: usize = 0;
+    for (loaded.records, 0..) |record, index| {
+        const message: Profile.Message = switch (record.entry) {
+            .user => |u| blk: {
+                turn_start = out.items.len;
+                break :blk .{ .role = .user, .content = u.text };
+            },
+            .assistant => |a| if (std.mem.eql(u8, a.stop, "cancelled")) continue else .{
                 .role = .assistant,
                 .content = a.answer,
                 .reasoning_content = a.thinking,
                 .tool_calls = a.tool_calls,
-            }),
-            .tool_result => |r| try out.append(alloc, .{
+            },
+            .tool_result => |r| .{
                 .role = .tool,
                 .content = r.text,
                 .tool_call_id = std.fmt.parseInt(u32, r.call, 10) catch null,
-            }),
-            else => {},
-        }
+            },
+            .compaction => |c| {
+                const kept = @min(c.first_kept, out.items.len);
+                if (std.mem.eql(u8, c.reason, "context_full")) {
+                    out.replaceRangeAssumeCapacity(0, kept, &.{});
+                    at.replaceRangeAssumeCapacity(0, kept, &.{});
+                    turn_start -|= kept;
+                } else if (std.mem.eql(u8, c.reason, "results_elided")) {
+                    for (out.items[@min(turn_start, kept)..kept]) |*m| {
+                        if (m.role != .tool or std.mem.startsWith(u8, m.content, loop.elided_prefix)) continue;
+                        try stubs.ensureUnusedCapacity(alloc, 1);
+                        const stub = try loop.elisionStub(alloc, loop.callName(out.items, m.tool_call_id), m.content);
+                        stubs.appendAssumeCapacity(stub);
+                        m.content = stub;
+                    }
+                } else if (std.mem.eql(u8, c.reason, "turn_aborted")) {
+                    out.shrinkRetainingCapacity(kept);
+                    at.shrinkRetainingCapacity(kept);
+                    turn_start = @min(turn_start, kept);
+                }
+                continue;
+            },
+            else => continue,
+        };
+        try out.ensureUnusedCapacity(alloc, 1);
+        try at.ensureUnusedCapacity(alloc, 1);
+        out.appendAssumeCapacity(message);
+        at.appendAssumeCapacity(index);
     }
-    return out.toOwnedSlice(alloc);
+    const messages = try out.toOwnedSlice(alloc);
+    errdefer alloc.free(messages);
+    const records = try at.toOwnedSlice(alloc);
+    errdefer alloc.free(records);
+    return .{ .messages = messages, .records = records, .stubs = try stubs.toOwnedSlice(alloc) };
 }
 
 /// Applies a stored conversation to a transcript and returns the rows it
@@ -385,9 +428,11 @@ test "the conversation is rebuilt from the entries, tool exchange included" {
     const alloc = testing.allocator;
     const loaded = try sampleSession(alloc);
     defer loaded.deinit();
-    const built = try messages(alloc, loaded);
-    defer alloc.free(built);
+    const conv = try conversation(alloc, loaded);
+    defer conv.deinit(alloc);
+    const built = conv.messages;
     try testing.expectEqual(@as(usize, 4), built.len);
+    try testing.expectEqualSlices(usize, &.{ 0, 1, 2, 3 }, conv.records);
     try testing.expectEqual(Profile.Role.user, built[0].role);
     try testing.expectEqual(Profile.Role.assistant, built[1].role);
     try testing.expectEqual(@as(usize, 1), built[1].tool_calls.len);
@@ -398,6 +443,43 @@ test "the conversation is rebuilt from the entries, tool exchange included" {
     try testing.expectEqualStrings("Added it.\n", built[3].content);
     // Non-conversation entries never become messages.
     try testing.expectEqual(@as(usize, 0), built[3].tool_calls.len);
+}
+
+test "a resume sees what the model saw: no cancelled step, every compaction applied" {
+    const alloc = testing.allocator;
+    const head = "{\"type\":\"session\",\"version\":1,\"id\":\"abc\",\"time\":\"t\",\"cwd\":\"/w\",\"model\":{\"path\":\"/m.gguf\"},\"effort\":\"low\",\"ctx_size\":8192}\n";
+    const text = head ++
+        // Turn one, then a cancelled step of turn two: the history never held it.
+        "{\"type\":\"user\",\"id\":1,\"parent\":null,\"time\":\"t\",\"text\":\"one\"}\n" ++
+        "{\"type\":\"assistant\",\"id\":2,\"parent\":1,\"time\":\"t\",\"answer\":\"first\",\"stop\":\"eos\"}\n" ++
+        "{\"type\":\"user\",\"id\":3,\"parent\":2,\"time\":\"t\",\"text\":\"two\"}\n" ++
+        "{\"type\":\"assistant\",\"id\":4,\"parent\":3,\"time\":\"t\",\"answer\":\"half\",\"stop\":\"cancelled\"}\n" ++
+        // Turn three reads twice; turn one is dropped, then the first read elided.
+        "{\"type\":\"user\",\"id\":5,\"parent\":4,\"time\":\"t\",\"text\":\"three\"}\n" ++
+        "{\"type\":\"assistant\",\"id\":6,\"parent\":5,\"time\":\"t\",\"answer\":\"\",\"tool_calls\":[{\"id\":7,\"name\":\"read_file\",\"arguments\":\"{}\"},{\"id\":8,\"name\":\"grep\",\"arguments\":\"{}\"}],\"stop\":\"eos\"}\n" ++
+        "{\"type\":\"tool_result\",\"id\":7,\"parent\":6,\"time\":\"t\",\"call\":\"7\",\"text\":\"a\\nb\\nc\",\"truncated\":false,\"is_error\":false}\n" ++
+        "{\"type\":\"tool_result\",\"id\":8,\"parent\":6,\"time\":\"t\",\"call\":\"8\",\"text\":\"hit\",\"truncated\":false,\"is_error\":false}\n" ++
+        // History then: one, first, two, three, calls, r7, r8.
+        "{\"type\":\"compaction\",\"id\":9,\"parent\":8,\"time\":\"t\",\"first_kept\":2,\"reason\":\"context_full\"}\n" ++
+        // Now: two, three, calls, r7, r8; turn three starts at 1.
+        "{\"type\":\"compaction\",\"id\":10,\"parent\":9,\"time\":\"t\",\"first_kept\":4,\"reason\":\"results_elided\"}\n" ++
+        "{\"type\":\"assistant\",\"id\":11,\"parent\":10,\"time\":\"t\",\"answer\":\"done\",\"stop\":\"eos\"}\n" ++
+        // A failed fourth turn, cut from the history.
+        "{\"type\":\"user\",\"id\":12,\"parent\":11,\"time\":\"t\",\"text\":\"four\"}\n" ++
+        "{\"type\":\"compaction\",\"id\":13,\"parent\":12,\"time\":\"t\",\"first_kept\":6,\"reason\":\"turn_aborted\"}\n";
+    const loaded = try session.parseText(alloc, text, null);
+    defer loaded.deinit();
+    const conv = try conversation(alloc, loaded);
+    defer conv.deinit(alloc);
+    const m = conv.messages;
+    try testing.expectEqual(@as(usize, 6), m.len);
+    try testing.expectEqualStrings("two", m[0].content);
+    try testing.expectEqualStrings("three", m[1].content);
+    try testing.expectEqualStrings("[result elided to fit the context: read_file, 3 lines]", m[3].content);
+    try testing.expectEqualStrings("hit", m[4].content);
+    try testing.expectEqualStrings("done", m[5].content);
+    // The fourth record of the file is the cancelled step: no message is from it.
+    try testing.expectEqualSlices(usize, &.{ 2, 4, 5, 6, 7, 10 }, conv.records);
 }
 
 test "the replay renders the saved conversation, tool call and result included" {
@@ -527,13 +609,6 @@ test "an id prefix names one session or says which it could mean, and delete tak
     defer freeList(alloc, left);
     try testing.expectEqual(@as(usize, 2), left.len);
     try tmp.dir.access(io, "cache/prefix/0000000000000001-000000000000002b-0000000000000007.snap", .{});
-
-    var arena = std.heap.ArenaAllocator.init(alloc);
-    defer arena.deinit();
-    const rows = try listRows(arena.allocator(), left, "ab12", false);
-    try testing.expectEqual(@as(usize, 3), rows.len);
-    try testing.expect(std.mem.indexOf(u8, rows[2], "● ab12") != null);
-    try testing.expect(std.mem.indexOf(u8, rows[1], "  ab34") != null);
 }
 
 test {

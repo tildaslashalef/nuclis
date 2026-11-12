@@ -74,7 +74,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     };
     var content = bytes[0..read_len];
     // A cut inside a scalar is the bound's doing, not the file's.
-    if (byte_truncated) content = content[0 .. std.mem.lastIndexOfScalar(u8, content, '\n') orelse content.len];
+    if (byte_truncated) content = if (std.mem.lastIndexOfScalar(u8, content, '\n')) |newline| content[0..newline] else scalarPrefix(content);
     if (!std.unicode.utf8ValidateSlice(content)) {
         return root.fail(alloc, "read_file: {s} is not valid UTF-8 text", .{path});
     }
@@ -243,9 +243,43 @@ fn zigContainer(lead: []const u8) bool {
     return startsWithAny(value, &.{ "struct", "enum", "union", "opaque", "extern struct", "packed struct", "extern union", "packed union" });
 }
 
+/// `content` without a scalar the read bound cut in two: a last sequence
+/// shorter than its lead byte says is dropped; anything else is kept.
+fn scalarPrefix(content: []u8) []u8 {
+    var i = content.len;
+    while (i > 0 and content.len - i < 4) {
+        i -= 1;
+        if (content[i] & 0xc0 == 0x80) continue;
+        const len = std.unicode.utf8ByteSequenceLength(content[i]) catch return content;
+        return if (i + len > content.len) content[0..i] else content;
+    }
+    return content;
+}
+
 // ----- tests -----
 
 const testing = std.testing;
+
+test "a file over the bound with no newline is cut on a scalar boundary" {
+    const alloc = testing.allocator;
+    var f = testWorkspace();
+    defer alloc.free(f.root_path);
+    defer f.tmp.cleanup();
+    // "é" is two bytes; one byte of padding puts a scalar across the bound.
+    var data: std.ArrayList(u8) = .empty;
+    defer data.deinit(alloc);
+    try data.append(alloc, 'x');
+    while (data.items.len < max_bytes + 4) try data.appendSlice(alloc, "é");
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = "one-line.txt", .data = data.items });
+    var result = try tool.run(f.ws, alloc, "{\"path\":\"one-line.txt\"}");
+    defer result.deinit(alloc);
+    try testing.expect(!result.is_error);
+    try testing.expect(result.truncated);
+    var cut = "é\xc3".*;
+    try testing.expectEqualStrings("é", scalarPrefix(&cut));
+    var bad = "a\xffb".*;
+    try testing.expectEqualStrings("a\xffb", scalarPrefix(&bad));
+}
 
 fn testWorkspace() struct { tmp: testing.TmpDir, ws: root.Workspace, root_path: [:0]u8 } {
     var tmp = testing.tmpDir(.{});

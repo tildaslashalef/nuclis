@@ -6,7 +6,7 @@
 //! conversation, the session log, and the tool loop, and drives the
 //! engine-free terminal surface in `src/tui/`. The boundary is one-way —
 //! `src/tui/` never imports `inference` — which lets the surface be tested
-//! without a model and the engine without a terminal. Phase 2's design is in
+//! without a model and the engine without a terminal. The design is in
 //! docs/spec.md § The agent.
 //!
 //! Rendering model: the agent does not own a full-screen cell grid. Startup
@@ -44,6 +44,7 @@ const Open = completer_mod.Open;
 const terminal = tui.terminal;
 const screen = tui.screen;
 const editor = tui.editor;
+const record_entry = @import("record.zig");
 const transcript = tui.transcript;
 const status_bar = tui.status;
 const view = tui.view;
@@ -72,13 +73,6 @@ const Stats = struct {
     generated: usize = 0,
     prefill_seconds: f64 = 0,
     decode_seconds: f64 = 0,
-
-    fn prefillRate(self: Stats) ?f64 {
-        return if (self.prompt_tokens > 0 and self.prefill_seconds > 0) @as(f64, @floatFromInt(self.prompt_tokens)) / self.prefill_seconds else null;
-    }
-    fn decodeRate(self: Stats) ?f64 {
-        return if (self.generated > 1 and self.decode_seconds > 0) @as(f64, @floatFromInt(self.generated - 1)) / self.decode_seconds else null;
-    }
 };
 
 const Ui = struct {
@@ -407,9 +401,8 @@ const Ui = struct {
         if (self.busy) self.frame += 1;
         // The cursor is parked after the editor's insertion point (two cells
         // of prompt plus one for the 1-based column) whether or not a turn is
-        // running: since step 9 the editor stays live while the model works,
-        // so hiding the cursor would hide where the next message is being
-        // typed.
+        // running: the editor stays live while the model works, so hiding
+        // the cursor would hide where the next message is being typed.
         const unchanged = if (resized) 0 else self.unchangedPrefix(rows.items);
         try self.rememberFrame(rows.items);
         try self.scr.paintFrom(rows.items, .{
@@ -464,8 +457,8 @@ const Ui = struct {
     /// A rewrite can only reach rows that are still on the screen, so a turn
     /// taller than the space above the region is left alone rather than
     /// half-rewritten — the fold state still applies to whatever is printed
-    /// next; before this rule the walk was silently clamped at the top
-    /// row and the rewrite landed on the wrong lines.
+    /// next. Clamping the walk at the top row would land the rewrite on the
+    /// wrong lines.
     fn replayTurn(self: *Ui, a: std.mem.Allocator) !void {
         const replacing = self.tr.rows;
         if (replacing == 0) return;
@@ -503,9 +496,18 @@ const Ui = struct {
         self.log.append(entry, now) catch |err| {
             if (self.log_failed) return;
             self.log_failed = true;
-            var note: [128]u8 = undefined;
-            self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — session not recorded: {s}", .{@errorName(err)}) catch "  — session not recorded" }) catch {};
+            var note: [160]u8 = undefined;
+            const text = if (err == error.SessionFileFull)
+                std.fmt.bufPrint(&note, "  — session file reached {d} MiB, the most a resume reads: nothing more is recorded", .{session_log.max_file_bytes >> 20}) catch "  — session file full"
+            else
+                std.fmt.bufPrint(&note, "  — session not recorded: {s}", .{@errorName(err)}) catch "  — session not recorded";
+            self.emit(.{ .notice = text }) catch {};
+            return;
         };
+        if (self.log.takeNearFull()) {
+            var note: [160]u8 = undefined;
+            self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — session file is past {d} MiB; at {d} MiB recording stops (/clear starts another)", .{ session_log.warn_bytes >> 20, session_log.max_file_bytes >> 20 }) catch "  — session file nearly full" }) catch {};
+        }
     }
 
     /// The sink the loop drives.
@@ -701,41 +703,8 @@ const Ui = struct {
     /// The loop's session sink: one `Record` becomes one append-only entry.
     fn eventRecord(context: *anyopaque, entry: loop.Record) anyerror!void {
         const self: *Ui = @ptrCast(@alignCast(context));
-        var call: [16]u8 = undefined;
-        var images: [editor.max_images]session_log.ImageEntry = undefined;
-        var clips: [editor.max_clips]session_log.AudioEntry = undefined;
-        var digests: [editor.max_clips][64]u8 = undefined;
-        const mapped: session_log.Entry = switch (entry) {
-            .user => |u| .{ .user = .{ .text = u.text, .images = imageEntries(&images, u.images), .audio = audioEntries(&clips, &digests, u.images) } },
-            .assistant => |step| .{ .assistant = .{
-                .thinking = step.thinking,
-                .answer = step.answer,
-                .tool_calls = step.calls,
-                .stop = @tagName(step.stop),
-                .stats = .{
-                    .prompt_tokens = step.prompt_tokens,
-                    .generated = step.generated,
-                    .prefill_seconds = step.prefill_seconds,
-                    .decode_seconds = step.decode_seconds,
-                    .thinking_seconds = step.thinking_seconds,
-                    .replayed = step.replay != null,
-                    .replay = if (step.replay) |r| @tagName(r.cause) else "",
-                    .restored_tokens = if (step.replay) |r| r.restored else 0,
-                    .reasoning_cut = step.reasoning_cut,
-                    .reasoning_tokens = step.reasoning_tokens,
-                },
-                .boundary = if (step.boundary) |b| .{ .bytes = b.bytes, .digest = b.digest } else null,
-            } },
-            .compaction => |c| .{ .compaction = .{ .first_kept = c.first_kept, .reason = c.reason } },
-            .tool_result => |result| .{ .tool_result = .{
-                .call = std.fmt.bufPrint(&call, "{d}", .{result.call}) catch "?",
-                .text = result.text,
-                .truncated = result.truncated,
-                .is_error = result.is_error,
-                .summary = result.summary,
-            } },
-        };
-        self.record(mapped);
+        var scratch: record_entry.Scratch = .{};
+        self.record(record_entry.entry(&scratch, entry));
     }
 
     // ----- input -----
@@ -1393,11 +1362,9 @@ const Ui = struct {
 
     // ----- generation hooks -----
 
-    /// The engine's turn beat: after every prefill chunk and
-    /// every generated token. It replaces the loop's per-token `step` hook,
-    /// which fired once for a whole chunked prefill and left the spinner
-    /// frozen through a 15-second prompt while a counter guessed one token
-    /// per call. The position here is measured, not counted.
+    /// The engine's turn beat: after every prefill chunk and every generated
+    /// token, so the spinner moves through a long chunked prefill. The
+    /// position here is measured, not counted.
     fn onProgress(context: *anyopaque, value: inference.observer.Progress) !void {
         const self: *Ui = @ptrCast(@alignCast(context));
         const now = std.Io.Clock.awake.now(self.io);
@@ -1692,36 +1659,6 @@ fn mediaKind(kind: editor.Attachment.Kind) ?completer_mod.Media.Kind {
     };
 }
 
-/// The session file's view of a turn's images (at most the editor's bound).
-fn imageEntries(buffer: *[editor.max_images]session_log.ImageEntry, media: []const loop.Image) []const session_log.ImageEntry {
-    var n: usize = 0;
-    for (media) |image| {
-        if (image.kind != .image or n == buffer.len) continue;
-        buffer[n] = .{
-            .path = image.path,
-            .width = image.prepared.width,
-            .height = image.prepared.height,
-            .width_tokens = image.prepared.width_tokens,
-            .height_tokens = image.prepared.height_tokens,
-        };
-        n += 1;
-    }
-    return buffer[0..n];
-}
-
-/// The session file's view of a turn's clips: path, digest (hex, written
-/// into `digests`), length, and rows (at most the editor's bound).
-fn audioEntries(buffer: *[editor.max_clips]session_log.AudioEntry, digests: *[editor.max_clips][64]u8, media: []const loop.Image) []const session_log.AudioEntry {
-    var n: usize = 0;
-    for (media) |item| {
-        if (item.kind != .audio or n == buffer.len) continue;
-        digests[n] = std.fmt.bytesToHex(item.digest, .lower);
-        buffer[n] = .{ .path = item.path, .sha256 = &digests[n], .samples = item.prepared.width, .tokens = item.prepared.width_tokens };
-        n += 1;
-    }
-    return buffer[0..n];
-}
-
 /// A leading `~` as the home directory; anything else copied as is.
 fn expandHome(alloc: std.mem.Allocator, environ: *const std.process.Environ.Map, path: []const u8) ![]u8 {
     if (path.len > 0 and path[0] == '~' and (path.len == 1 or path[1] == '/')) {
@@ -1883,12 +1820,21 @@ fn performResume(ui: *Ui, alloc: std.mem.Allocator, io: std.Io, path: []const u8
         try ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — {s} opening a session for the replay", .{@errorName(err)}) catch "  — could not open a session" });
         return;
     };
+    // A seed that fails leaves the new file short: say so once, as `record` does, and log no more.
+    var seed_failed: ?anyerror = null;
     for (loaded.records) |record| {
-        fresh.append(record.entry, if (record.time.len > 0) record.time else loaded.header.time) catch break;
+        fresh.append(record.entry, if (record.time.len > 0) record.time else loaded.header.time) catch |err| {
+            seed_failed = err;
+            break;
+        };
     }
     log.deinit();
     log.* = fresh;
-    ui.log_failed = false;
+    ui.log_failed = seed_failed != null;
+    if (seed_failed) |err| {
+        var note: [128]u8 = undefined;
+        try ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — session not recorded: {s}", .{@errorName(err)}) catch "  — session not recorded" });
+    }
     // Forget the running session: the resumed conversation is rendered from
     // the stored entries and prefilled on the next turn.
     ui.eng.model.reset();
@@ -1896,9 +1842,10 @@ fn performResume(ui: *Ui, alloc: std.mem.Allocator, io: std.Io, path: []const u8
     ui.completer.resumeFrom(resume_mod.lastBoundary(loaded));
     ui.agent.resetConversation();
     ui.effort = effort;
-    const built = try resume_mod.messages(a, loaded);
-    const images = try resumeMedia(ui, loaded);
-    try ui.agent.restore(built, images);
+    const built = try resume_mod.conversation(a, loaded);
+    const images = try resumeMedia(ui, loaded, built.records);
+    defer ui.alloc.free(images);
+    try ui.agent.restore(built.messages, images);
     ui.tr.reset();
     const rows = try resume_mod.replay(a, ui.tr, loaded, .{ .width = ui.columnsFor(), .th = ui.th });
     if (rows.len > 0) try ui.scr.insertAbove(rows);
@@ -1914,20 +1861,35 @@ fn sessionId(path: []const u8) []const u8 {
 }
 
 /// The attachments of each conversation entry of a stored session, parallel
-/// to `resume.messages`, decoded and encoded again from their paths: the
-/// file holds no pixels or samples. One that cannot be read (gone, or a
-/// model that does not hear) is a notice and is left out of the model's view
-/// (the text keeps its marker); a clip whose file changed since is read as
+/// to `resume.conversation`'s messages (`records` names each one's entry),
+/// decoded and encoded again from their paths: the file holds no pixels or
+/// samples. One that cannot be read (gone, or a model that does not hear)
+/// is a notice and is left out of the model's view (the text keeps its
+/// marker); a clip whose file changed since is read as
 /// it is now, with a notice. Owned by the caller.
-fn resumeMedia(ui: *Ui, loaded: session_log.Loaded) ![]const []loop.Image {
+fn resumeMedia(ui: *Ui, loaded: session_log.Loaded, records: []const usize) ![]const []loop.Image {
     var out: std.ArrayList([]loop.Image) = .empty;
-    errdefer out.deinit(ui.alloc);
+    errdefer {
+        for (out.items) |images| loop.freeImages(ui.alloc, images);
+        out.deinit(ui.alloc);
+    }
+    // Turns are numbered over the whole file, dropped ones included, as the
+    // transcript shows them.
     var turn: usize = 0;
-    for (loaded.records) |record| {
-        switch (record.entry) {
+    var counted: usize = 0;
+    for (records) |index| {
+        for (loaded.records[counted..index]) |r| if (r.entry == .user) {
+            turn += 1;
+        };
+        counted = index + 1;
+        switch (loaded.records[index].entry) {
             .user => |u| {
                 turn += 1;
                 var images: std.ArrayList(loop.Image) = .empty;
+                errdefer {
+                    for (images.items) |*image| image.deinit(ui.alloc);
+                    images.deinit(ui.alloc);
+                }
                 for (u.images, 1..) |entry, n| {
                     const image = loadImage(ui, entry.path) catch |err| {
                         var note: [256]u8 = undefined;
@@ -1949,8 +1911,7 @@ fn resumeMedia(ui: *Ui, loaded: session_log.Loaded) ![]const []loop.Image {
                 }
                 try out.append(ui.alloc, try images.toOwnedSlice(ui.alloc));
             },
-            .assistant, .tool_result => try out.append(ui.alloc, &.{}),
-            else => {},
+            else => try out.append(ui.alloc, &.{}),
         }
     }
     return out.toOwnedSlice(ui.alloc);
@@ -2430,4 +2391,5 @@ test {
     _ = loop.cache;
     _ = ahead_mod;
     _ = clip_mod;
+    _ = record_entry;
 }

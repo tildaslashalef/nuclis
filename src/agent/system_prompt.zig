@@ -32,7 +32,6 @@ pub const Instructions = struct {
     name: []u8,
     /// The file's text, cut to `max_instructions_bytes` with a marker.
     text: []u8,
-    cut: bool,
 
     pub fn deinit(self: *Instructions, alloc: Allocator) void {
         alloc.free(self.name);
@@ -82,7 +81,7 @@ fn read(alloc: Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8) !Instru
     const owned_name = try alloc.dupe(u8, name);
     errdefer alloc.free(owned_name);
     const text = try clip(alloc, buffer[0..len]);
-    return .{ .name = owned_name, .text = text, .cut = len > max_instructions_bytes };
+    return .{ .name = owned_name, .text = text };
 }
 
 /// The text up to the cap, cut at its last line boundary and marked; the
@@ -203,7 +202,7 @@ test "the sections come in order and every tool with a guideline is listed under
 
 test "the instructions section follows, tagged with the file's name; an override replaces the rest" {
     const alloc = testing.allocator;
-    const ins: Instructions = .{ .name = try alloc.dupe(u8, "AGENTS.md"), .text = try alloc.dupe(u8, "Keep it pure."), .cut = false };
+    const ins: Instructions = .{ .name = try alloc.dupe(u8, "AGENTS.md"), .text = try alloc.dupe(u8, "Keep it pure.") };
     var owned = ins;
     defer owned.deinit(alloc);
     const text = try build(alloc, .{ .root = "/w", .instructions = ins });
@@ -252,7 +251,6 @@ test "load: off is none, auto takes AGENTS.md then CLAUDE.md, a named file is re
     var first = (try load(alloc, testing.io, tmp.dir, instructions_auto)).?;
     defer first.deinit(alloc);
     try testing.expectEqualStrings("AGENTS.md", first.name);
-    try testing.expect(!first.cut);
 
     try tmp.dir.createDirPath(testing.io, "docs");
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "docs/x.md", .data = "named\n" });

@@ -82,8 +82,10 @@ pub const UserRecord = struct { text: []const u8, images: []const Image = &.{} }
 pub const Compaction = struct {
     /// History index of the first item kept as it was.
     first_kept: usize,
-    /// `context_full` for a dropped earlier turn, `results_elided` for tool
-    /// results of the turn in progress replaced by stubs.
+    /// `context_full` for a dropped earlier turn (`[0, first_kept)` goes),
+    /// `results_elided` for tool results of the turn in progress before
+    /// `first_kept` replaced by stubs, `turn_aborted` for a failed turn
+    /// (`[first_kept, end)` goes). `resume.conversation` replays them.
     reason: []const u8,
 };
 
@@ -191,6 +193,9 @@ pub const Agent = struct {
     /// Where the turn in progress begins in `history`; only earlier items may
     /// be dropped by compaction.
     turn_start: usize = 0,
+    /// Set from the start of a turn until it returns: only then has
+    /// `abortTurn` a turn to drop.
+    in_turn: bool = false,
     /// The turn's line-addressed reads, so a repeat of an unchanged range is
     /// answered with a pointer to the result still in the context. Cleared
     /// with every turn.
@@ -329,6 +334,7 @@ pub const Agent = struct {
     pub fn resetConversation(self: *Agent) void {
         self.clearHistory();
         self.turn_start = 0;
+        self.in_turn = false;
         self.clearCalls();
         self.clearReads();
     }
@@ -340,9 +346,12 @@ pub const Agent = struct {
     /// this is a replay, never a state restore.
     /// `images[i]`, when present, are the attachments of `messages[i]` (owned
     /// from here on, even on failure); the messages' own refs are ignored.
+    /// Takes every slice of `images`, whatever happens; the outer slice stays the caller's.
     pub fn restore(self: *Agent, messages: []const Profile.Message, images: []const []Image) !void {
         var highest: u32 = 0;
         for (messages, 0..) |message, i| {
+            // `appendItem` frees its own on failure; the later ones are freed here.
+            errdefer for (images[@min(i + 1, images.len)..]) |rest| freeImages(self.alloc, rest);
             try self.appendItem(message.role, message.content, message.reasoning_content, message.tool_calls, message.tool_call_id, if (i < images.len) images[i] else &.{});
             for (message.tool_calls) |call| highest = @max(highest, call.id);
             if (message.tool_call_id) |id| highest = @max(highest, id);
@@ -443,10 +452,16 @@ pub const Agent = struct {
 
     /// Drops the turn in progress after a failure, leaving the earlier
     /// conversation intact. The driver has already shown the prompt; the model
-    /// never saw a completed answer, so nothing of it is kept.
+    /// never saw a completed answer, so nothing of it is kept, and the session
+    /// records the cut so a resume leaves it out too. Does nothing when no
+    /// turn is in progress (a failed command).
     pub fn abortTurn(self: *Agent) void {
+        if (!self.in_turn) return;
+        self.in_turn = false;
         for (self.history.items[self.turn_start..]) |item| self.freeItem(item);
         self.history.shrinkRetainingCapacity(self.turn_start);
+        // The driver's recorder reports its own failure; an abort has none of its own.
+        self.events.record(self.events.context, .{ .compaction = .{ .first_kept = self.turn_start, .reason = "turn_aborted" } }) catch {};
     }
 
     /// Runs one user turn to a stop. Emits the user event and every step's
@@ -477,8 +492,10 @@ pub const Agent = struct {
         self.agg_replay = null;
         self.agg_replay_prefilled = 0;
 
+        self.in_turn = true;
         const stop = try self.steps();
         try self.emitTurnEnd(stop);
+        self.in_turn = false;
         return stop;
     }
 
@@ -587,7 +604,6 @@ pub const Agent = struct {
     /// Tool results of the turn in progress kept verbatim when the rest are
     /// elided: the freshest are what the next step reads.
     const keep_results: usize = 2;
-    const elided_prefix = "[result elided to fit the context: ";
 
     /// Replaces every tool result of the turn in progress but the last
     /// `keep_results` with a one-line stub naming the call and its size, in
@@ -608,8 +624,7 @@ pub const Agent = struct {
                 first_kept = index;
                 break;
             }
-            const name = self.callName(item.tool_call_id) orelse "tool";
-            const stub = try self.alloc.print("{s}{s}, {d} lines]", .{ elided_prefix, name, countLines(item.content) });
+            const stub = try elisionStub(self.alloc, callName(self.history.items, item.tool_call_id), item.content);
             self.alloc.free(item.content);
             item.content = stub;
             to_elide -= 1;
@@ -618,16 +633,6 @@ pub const Agent = struct {
         try self.events.send(self.events.context, .{ .notice = std.fmt.bufPrint(&note, "  — {d} earlier tool results of this turn elided from context to fit", .{verbatim - keep_results}) catch "  — earlier tool results elided from context to fit" });
         try self.events.record(self.events.context, .{ .compaction = .{ .first_kept = first_kept, .reason = "results_elided" } });
         return true;
-    }
-
-    /// The tool a result answered, from the assistant call that carries its
-    /// id; null when the history does not hold it.
-    fn callName(self: *const Agent, id: ?u32) ?[]const u8 {
-        const wanted = id orelse return null;
-        for (self.history.items) |item| {
-            for (item.tool_calls) |call| if (call.id == wanted) return call.name;
-        }
-        return null;
     }
 
     fn beginStep(self: *Agent) void {
@@ -672,8 +677,14 @@ pub const Agent = struct {
     /// message. The results the model and the session read carry the unified
     /// diff for a mutation, so both see exactly what changed.
     fn execute(self: *Agent, calls: []const Profile.ToolCall) !void {
-        for (calls) |call| {
+        for (calls, 0..) |call, index| {
             const id = call.id;
+            // A cancel between calls answers the rest without running them:
+            // every call still has its result, so the session stays loadable.
+            if (index > 0 and interrupt.requested()) {
+                try self.answerUnrun(call);
+                continue;
+            }
             // The model names the tools; the transcript shows a humanized row.
             var described = try tools.describe(self.alloc, call.name, call.arguments);
             defer described.deinit(self.alloc);
@@ -745,6 +756,17 @@ pub const Agent = struct {
             } });
             try self.appendItem(.tool, model_text, "", &.{}, id, &.{});
         }
+    }
+
+    /// The typed result of a call the user cancelled before it ran.
+    fn answerUnrun(self: *Agent, call: Profile.ToolCall) !void {
+        const text = "[not run: the user cancelled the turn]";
+        var described = try tools.describe(self.alloc, call.name, call.arguments);
+        defer described.deinit(self.alloc);
+        try self.events.send(self.events.context, .{ .tool_call = .{ .id = call.id, .name = call.name, .summary = described.summary, .detail = described.detail } });
+        try self.events.send(self.events.context, .{ .tool_result = .{ .id = call.id, .text = text, .truncated = false, .is_error = true, .summary = "cancelled" } });
+        try self.events.record(self.events.context, .{ .tool_result = .{ .call = call.id, .name = call.name, .text = text, .truncated = false, .is_error = true, .summary = "cancelled" } });
+        try self.appendItem(.tool, text, "", &.{}, call.id, &.{});
     }
 
     /// One line-addressed read of the turn in progress.
@@ -1041,6 +1063,24 @@ fn toolDefs(alloc: Allocator, tier: tools.Web) Allocator.Error![]Profile.ToolDef
         defs[i] = .{ .name = tool.name, .description = tool.description, .parameters = tool.parameters };
     }
     return defs;
+}
+
+/// What an elided tool result becomes: one line naming the call and the
+/// result's size. Shared with `resume`, which replays elisions.
+pub const elided_prefix = "[result elided to fit the context: ";
+
+pub fn elisionStub(alloc: Allocator, name: []const u8, content: []const u8) Allocator.Error![]u8 {
+    return alloc.print("{s}{s}, {d} lines]", .{ elided_prefix, name, countLines(content) });
+}
+
+/// The tool a result answered, from the assistant call in `items` that
+/// carries its id; "tool" when they do not hold it.
+pub fn callName(items: anytype, id: ?u32) []const u8 {
+    const wanted = id orelse return "tool";
+    for (items) |item| {
+        for (item.tool_calls) |call| if (call.id == wanted) return call.name;
+    }
+    return "tool";
 }
 
 fn countLines(text: []const u8) usize {
@@ -1699,6 +1739,52 @@ test "a cancelled step stops the loop before any call runs" {
     try testing.expectEqual(@as(usize, 0), capture.calls);
     try testing.expectEqual(@as(usize, 0), capture.results.items.len);
     try testing.expectEqual(@as(usize, 0), stub.checkpoints);
+}
+
+test "a cancel between calls answers the rest without running them" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "a" });
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "hello.txt", .data = "hi there" });
+    var stub: Stub = .{
+        .answers = &.{ "", "Done." },
+        .calls = &.{&.{ read_a, read_hello }},
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+    defer interrupt.clear();
+    // Pending before the calls run, as a Ctrl-C during the first would be.
+    interrupt.request();
+    _ = try agent.turn("read both", &.{});
+    try testing.expectEqual(@as(usize, 2), capture.results.items.len);
+    try testing.expect(std.mem.indexOf(u8, capture.results.items[0], "a") != null);
+    try testing.expectEqualStrings("[not run: the user cancelled the turn]", capture.results.items[1]);
+    // Every call has its result in the history, so the next render is valid.
+    try testing.expectEqual(Profile.Role.tool, agent.history.items[3].role);
+}
+
+test "an abort drops only a turn in progress, and is recorded" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var stub: Stub = .{ .answers = &.{"first"} };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+    try testing.expectEqual(Stop.done, try agent.turn("one", &.{}));
+    // A failed command after a finished turn: nothing is in progress.
+    agent.abortTurn();
+    try testing.expectEqual(@as(usize, 2), agent.history.items.len);
+    try testing.expectEqual(@as(usize, 0), capture.compactions);
+    // A turn that fails (the stub has no second answer) is dropped.
+    try testing.expectError(error.NoScript, agent.turn("two", &.{}));
+    agent.abortTurn();
+    try testing.expectEqual(@as(usize, 2), agent.history.items.len);
+    try testing.expectEqual(@as(usize, 1), capture.compactions);
 }
 
 test "an unknown tool is an error result the model reads, not a failure" {

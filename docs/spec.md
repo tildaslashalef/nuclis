@@ -767,14 +767,18 @@ one command; the evaluation CLI stays separate.
   `effort`, `context`, `model` (a `/model` switch: the name, file, digest,
   context, and effort the conversation continued on; readers older than
   the entry refuse the file, as any unknown type), `compaction`, `notice`.
-- Append-only, created at the first entry. A truncated last line is
+- Append-only, created at the first entry; a resumed file's ids continue
+  past its last. A file stops recording at 64 MiB, the most a resume
+  reads, with a notice past 51 MiB naming `/clear`. A truncated last line is
   dropped on load; any other unparsable line or unknown entry type is a
   typed error naming the line; a newer format version is refused.
 - Entries store what the model saw and produced, never terminal styling.
   `nuclis agent export` derives markdown from the same entries. A failed write is a dim
   notice, never a lost turn.
 - Resuming (`/resume`, `--resume [<id>]`, `latest` by default) renders
-  the kept conversation through the profile into a fresh session. When the
+  the conversation the model last saw through the profile into a fresh
+  session: cancelled steps left out and every `compaction` applied where
+  it was written (`context_full`, `results_elided`, `turn_aborted`). When the
   file's last `boundary` starts that render and its state is on disk (same
   model files, backend, context size, and build), the state is restored and
   only the rest is prefilled; otherwise the whole conversation is
@@ -799,7 +803,8 @@ A turn is a loop over steps, at most 16 per turn:
    registry, run, append the typed result to history and the session.
 4. Send the results back, or finish when the response holds no calls.
 5. Stop on cancellation, an unrecoverable failure, or the step budget,
-   and publish the reason.
+   and publish the reason. A cancellation between the calls of one step
+   answers the calls not yet run with a typed `not run` result.
 
 - The system block is built from sections (`src/agent/system_prompt.zig`):
   identity and workspace, the working rules, one guideline per tool under
@@ -824,7 +829,8 @@ A turn is a loop over steps, at most 16 per turn:
   window in tokens (never below 256); it is cut at a line boundary with a
   note saying how to ask for the rest. When a step still does not fit,
   older results of the turn become one-line stubs, then whole earlier
-  turns leave the model's view, each recorded as a `compaction` entry;
+  turns leave the model's view, each recorded as a `compaction` entry
+  (a failed turn leaves it too, recorded the same way);
   only then does the turn end with a message naming the tokens needed
   and how to raise the window. A turn that alone cannot fit fails with a
   named reason.
@@ -860,12 +866,12 @@ marked; exceeding a limit is a typed result, not an abort.
 
 | Tool | Contract |
 | --- | --- |
-| `read_file` | a line-addressed region: offset and count, 120 lines by default, at most 2,000 lines; a partial page ends with a note the model reads (its range, the total, where to continue), a whole file with none; a file over 1 MiB serves its first MiB with the size stated and the shell named for the rest; `outline` lists a markdown file's headings or a source file's definitions (Python, Zig, JS/TS, Go, Rust, C-family, shell) with line numbers, at most 400; non-UTF-8 is a typed error |
-| `write_file` | create or replace a UTF-8 text file, at most 1 MiB, by atomic replacement; the model reads a replacement's diff, a new file's line count only |
-| `edit_file` | replace one exact, unique, non-empty sequence; zero or several matches change nothing; the model reads the diff with one line of context (the transcript shows three) |
-| `glob` | one pattern (`*`, `?`, classes, `**`); hidden entries only when named; at most 200 results in stable order |
-| `grep` | literal, case-sensitive; `path` narrows it to a directory, a file, or a glob, `context` adds 0–5 lines around a match; grouped by file in path order; at most 50 matches with the total stated; skips hidden entries, symlinks, binary-looking files, generated trees, and what each directory's `.gitignore` excludes (a subset: negation, directory-only, anchoring, the glob wildcards) |
-| `bash` | one command with a minimal environment; combined output at most 1 MiB; 300 s; cancellation, the timeout, and the output bound kill and reap the child; an output over 120 lines reaches the model as its first 40 and last 80 with the omitted count between |
+| `read_file` | a line-addressed region: offset and count, 120 lines by default, at most 2,000 lines; a partial page ends with a note the model reads (its range, the total, where to continue), a whole file with none; a file over 1 MiB serves its first MiB, whole code points only, with the size stated and the shell named for the rest; `outline` lists a markdown file's headings or a source file's definitions (Python, Zig, JS/TS, Go, Rust, C-family, shell) with line numbers, at most 400; non-UTF-8 is a typed error |
+| `write_file` | create or replace a UTF-8 text file, at most 1 MiB, by atomic replacement that keeps a replaced file's mode; the model reads a replacement's diff, a new file's line count only |
+| `edit_file` | replace one exact, unique, non-empty sequence; zero or several matches change nothing, nor does a result over 1 MiB; the file's mode is kept; the model reads the diff with one line of context (the transcript shows three) |
+| `glob` | one pattern (`*`, `?`, classes, `**`); hidden entries only when named; at most 200 results in stable order, of at most 10,000 collected; more, or unreadable directories, are marked |
+| `grep` | literal, case-sensitive; `path` narrows it to a directory, a file, or a glob inside the workspace, `context` adds 0–5 lines around a match; grouped by file in path order; at most 50 matches with the total stated; at most 20,000 files and 10 s a search, a stop stated; skips hidden entries, symlinks, binary-looking files, generated trees, and what each directory's `.gitignore` excludes (a subset: negation, directory-only, anchoring, the glob wildcards) |
+| `bash` | one command with a minimal environment; combined output at most 1 MiB; 300 s; cancellation, the timeout, and the output bound stop the command's process group (`SIGTERM`, then `SIGKILL` after 2 s) and reap the child; an output over 120 lines reaches the model as its first 40 and last 80 with the omitted count between |
 | `web_search` | offered only with `agent.web` and `web.url`; one query (≤ 400 bytes) to the user's search service, optionally limited by `freshness` (`day`, `week`, `month`, `year`); at most 8 results, each title, URL, and snippet, up to two more snippets under the first three, the corrected query and the engines that failed noted; 15 s; Ctrl-C cancels |
 | `web_fetch` | offered as `web_search`; one `http`/`https` URL (≤ 2,048 bytes) fetched by the service, which refuses non-public addresses; its Markdown text 16,000 code points at a time, the range noted with the `offset` that continues it; a page behind a bot challenge named as such; 30 s; Ctrl-C cancels |
 | `web_context` | offered as `web_search` when the service's health lists `/v1/context` (it has Brave), probed once at startup; one query and optional `freshness`; passages from at most 8 pages, a 2,048-token budget, each source's title, URL, and date above its passages, at most 12,000 characters cut at a source boundary; 25 s; Ctrl-C cancels |
