@@ -95,9 +95,12 @@ pub const NormRopeParams = extern struct { width: u32, in_stride: u32, out_strid
 /// `output = norm(input)·w` over `rows` rows followed by the rotation of
 /// the leading `dims` channels at `position`, in one dispatch where the
 /// plans would run `rmsNorm` + `rope`. `output` may alias `input`.
+/// At most `norm_rope_max_dims` channels: the kernel rotates one pair per
+/// thread of its 256-thread group.
+pub const norm_rope_max_dims = 512;
 pub fn rmsNormRope(self: *Backend, input: Buffer, weight: Buffer, table: Buffer, output: Buffer, spec: Norm, dims: usize, position: usize, pairing: Pairing) !void {
     if (spec.rows == 0 or spec.width == 0 or spec.in_stride < spec.width or spec.out_stride < spec.width or !(spec.eps > 0)) return error.InvalidShape;
-    if (dims == 0 or dims % 2 != 0 or dims > spec.width) return error.InvalidShape;
+    if (dims == 0 or dims % 2 != 0 or dims > spec.width or dims > norm_rope_max_dims) return error.InvalidShape;
     if (input.len < ((spec.rows - 1) * spec.in_stride + spec.width) * 4 or output.len < ((spec.rows - 1) * spec.out_stride + spec.width) * 4 or weight.len < spec.width * 4) return error.InvalidShape;
     if (table.len < (position + 1) * (dims / 2) * 8) return error.InvalidShape;
     if (!self.fused_norms) {

@@ -226,7 +226,7 @@ test "invalid matrix descriptors and buffers leave writable slices untouched" {
     try std.testing.expectError(error.InvalidRowLength, matvec(std.testing.io, bad, input[0..16], &output, &scratch));
     bad = valid;
     bad.encoding = 999;
-    try std.testing.expectError(error.UnsupportedEncoding, matvec(std.testing.io, bad, input[0..32], &output, &scratch));
+    try std.testing.expectError(error.UnsupportedTensorEncoding, matvec(std.testing.io, bad, input[0..32], &output, &scratch));
     bad = valid;
     bad.rows = std.math.maxInt(usize);
     bad.columns = std.math.maxInt(usize);

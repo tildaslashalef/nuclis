@@ -13,7 +13,6 @@ pub const max_image_tokens = 4096;
 pub const image = @import("image.zig");
 pub const preprocess = @import("preprocess.zig");
 pub const qwen3vl = @import("qwen3vl.zig");
-pub const qwen3vl_metal = @import("qwen3vl_metal.zig");
 pub const attention_metal = @import("attention_metal.zig");
 pub const gemma4 = @import("gemma4.zig");
 pub const muse_glimmer = @import("muse_glimmer.zig");

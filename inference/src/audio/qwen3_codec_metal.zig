@@ -25,7 +25,7 @@ const groups = codec.groups;
 /// which changes no sample (the decode does not depend on the pieces).
 pub const max_frames = 8;
 /// RoPE positions the transformer's table covers: a stream's frames at most.
-pub const max_positions = 16384;
+pub const max_positions = codec.max_positions;
 const residual_kernel = 7;
 const dwconv_kernel = 7;
 const layer_norm_eps = 1e-6;
@@ -375,7 +375,8 @@ pub const Stream = struct {
 
     /// Decodes the next `codes` into `out` (`codes.len · samplesPerFrame()`
     /// samples). A code past the codebook is `error.InvalidCode`, before any
-    /// state changes.
+    /// state changes. After any error, `reset` before pushing again: a failed push may leave
+    /// the stream partly advanced.
     pub fn push(self: *Stream, codes: []const Frame, out: []f32) !void {
         const c = self.decoder.config;
         const per = c.samplesPerFrame();

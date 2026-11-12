@@ -37,6 +37,15 @@ pub fn smartSize(size: Size, options: SizeOptions) Size {
         h_bar = ceilBy(height * beta, f);
         w_bar = ceilBy(width * beta, f);
     }
+    // A side held at `align_size` cannot shrink with the other: cut the long
+    // side to the bound, so the result never exceeds `max_pixels` (when
+    // `align_size²` fits it).
+    const a = options.align_size;
+    const long: *u32, const short: *u32 = if (w_bar >= h_bar) .{ &w_bar, &h_bar } else .{ &h_bar, &w_bar };
+    for ([_]*u32{ long, short }, [_]*u32{ short, long }) |cut, other| {
+        if (options.max_pixels == 0 or @as(u64, h_bar) * w_bar <= options.max_pixels) break;
+        cut.* = @max(a, options.max_pixels / other.* / a * a);
+    }
     return .{ .width = w_bar, .height = h_bar };
 }
 fn roundBy(x: f32, f: f32) u32 {
@@ -354,6 +363,16 @@ test "the smart size rounds to the grid, then reaches the pixel bounds" {
     const big = smartSize(.{ .width = 4000, .height = 3000 }, o);
     try std.testing.expect(@as(u64, big.width) * big.height <= 4194304 and big.width % 32 == 0 and big.height % 32 == 0);
     try std.testing.expectEqual(Size{ .width = 2336, .height = 1760 }, big);
+}
+
+test "an extreme aspect ratio never passes the pixel bound" {
+    const o: SizeOptions = .{ .align_size = 32, .min_pixels = 0, .max_pixels = 32 * 32 * 32 };
+    try std.testing.expectEqual(Size{ .width = 1024, .height = 32 }, smartSize(.{ .width = 100000, .height = 10 }, o));
+    try std.testing.expectEqual(Size{ .width = 32, .height = 1024 }, smartSize(.{ .width = 3, .height = 60000 }, o));
+    // A minimum that only an over-long side reaches is held to the maximum.
+    const both: SizeOptions = .{ .align_size = 32, .min_pixels = 16 * 32 * 32, .max_pixels = 32 * 32 * 32 };
+    const s = smartSize(.{ .width = 1, .height = 400 }, both);
+    try std.testing.expect(@as(u64, s.width) * s.height <= both.max_pixels and s.width % 32 == 0 and s.height % 32 == 0);
 }
 
 test "the letterboxed bicubic resize of the fixture matches the reference's pixels" {

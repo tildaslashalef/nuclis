@@ -372,7 +372,7 @@ pub const Binding = struct {
 pub const Error = models.BindError;
 /// `bindDraft` adds the companion's mismatch, the typed error `Engine.open`
 /// surfaces.
-pub const DraftError = models.BindError || error{ DraftSourceMismatch, InvalidShape, TensorOutOfBounds };
+pub const DraftError = models.BindError || error{DraftSourceMismatch};
 
 /// The registry entry (`models.table`).
 pub const family = struct {
@@ -387,15 +387,13 @@ pub const family = struct {
     pub const bindDraft = @import("gemma4.zig").bindDraft;
 };
 
-/// The companion head for a bound target: the head's architecture and
-/// target-width checks already ran in `Engine.open`; this binds the file and
-/// refuses a head whose width is not the target's.
-/// The companion head for a bound target: `view` is the companion file's byte
-/// source, `target_view` the target's. A head of another width is refused, and
-/// so is one whose global-layer RoPE factors differ from the target's — the
-/// Metal plan reuses the target's rope tables.
+/// The companion head for a bound target (its architecture and width checks
+/// already ran in `Engine.open`): `view` is the companion file's byte source,
+/// `target_view` the target's. A head of another width is refused, and so is
+/// one whose global-layer RoPE factors differ from the target's — the Metal
+/// plan reuses the target's rope tables.
 pub fn bindDraft(alloc: std.mem.Allocator, doc: *const gguf.Document, view: weights.View, target_view: weights.View, target: *const Binding) DraftError!gemma4_assistant.Binding {
-    var head = gemma4_assistant.bind(alloc, doc) catch |err| switch (err) {
+    const head = gemma4_assistant.bind(alloc, doc, view) catch |err| switch (err) {
         error.UnsupportedArchitecture, error.UnsupportedConfiguration, error.MissingMetadata, error.InvalidMetadata => return error.DraftSourceMismatch,
         else => return err,
     };
@@ -404,12 +402,18 @@ pub fn bindDraft(alloc: std.mem.Allocator, doc: *const gguf.Document, view: weig
     if (head.config.sliding_kv_heads != target.config.sliding_kv_heads or
         head.config.global_kv_heads != target.config.global_kv_heads or
         head.config.window != target.config.window) return error.DraftSourceMismatch;
-    const head_factors = view.vector(alloc, head.rope_factors) catch return error.DraftSourceMismatch;
+    const head_factors = view.vector(alloc, head.rope_factors) catch |err| switch (err) {
+        // A factor tensor that is not readable F32 is the companion's mismatch.
+        error.InvalidShape, error.TensorOutOfBounds => return error.DraftSourceMismatch,
+        else => |e| return e,
+    };
     defer alloc.free(head_factors);
-    const target_factors = target_view.vector(alloc, target.rope_factors) catch return error.DraftSourceMismatch;
+    const target_factors = target_view.vector(alloc, target.rope_factors) catch |err| switch (err) {
+        error.InvalidShape, error.TensorOutOfBounds => return error.DraftSourceMismatch,
+        else => |e| return e,
+    };
     defer alloc.free(target_factors);
     if (!std.mem.eql(f32, head_factors, target_factors)) return error.DraftSourceMismatch;
-    head.view = view;
     return head;
 }
 
@@ -465,6 +469,7 @@ fn validateMetadata(doc: *const gguf.Document) Error!*const Config {
     const arch = doc.string("general.architecture") orelse return error.MissingMetadata;
     if (!std.mem.eql(u8, arch, architecture)) return error.UnsupportedArchitecture;
     const config = try configFor(doc);
+    try expectInteger(doc, "general.quantization_version", 2);
     for (shared_integer_settings) |setting| try expectInteger(doc, setting.key, setting.value);
     try expectInteger(doc, per_config_keys[0], config.context_length);
     try expectInteger(doc, per_config_keys[1], config.heads);
@@ -883,6 +888,8 @@ test "deviations from the pinned configurations are typed rejections" {
         .{ .mutation = .{ .flip_pattern = 5 }, .expected = error.UnsupportedConfiguration },
         .{ .mutation = .{ .flip_pattern = 0 }, .expected = error.UnsupportedConfiguration },
         .{ .mutation = .{ .drop_key = "gemma4.final_logit_softcapping" }, .expected = error.MissingMetadata },
+        .{ .mutation = .{ .drop_key = "general.quantization_version" }, .expected = error.MissingMetadata },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "general.quantization_version", .value = 1 } }, .expected = error.UnsupportedConfiguration },
         .{ .mutation = .{ .drop_key = "gemma4.attention.head_count_kv" }, .expected = error.MissingMetadata },
         .{ .mutation = .{ .add_key = "gemma4.attention.logit_softcapping" }, .expected = error.UnsupportedConfiguration },
         // Expert keys are known only to the expert configuration.

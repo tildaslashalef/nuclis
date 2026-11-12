@@ -542,9 +542,6 @@ pub const default_chunk = 4;
 /// Frames the first `read` decodes by default: the first audio leaves after
 /// one frame (80 ms), the rest in `chunk`s. The pieces change no sample.
 pub const default_first_chunk = 1;
-/// After the first, a chunk is at most the frames made before it (1, 1, 2,
-/// 4, …): faster than real time, each chunk is made before the audio
-/// before it has played.
 /// The most frames one `read` decodes.
 pub const max_chunk = 32;
 
@@ -815,7 +812,8 @@ pub const Synthesizer = struct {
     /// Generates up to `chunk` frames (`first_chunk` in the first call, no
     /// more than were made before, and no more than `out` holds)
     /// and decodes them into `out`; returns the samples written, 0 once the
-    /// utterance ended. Needs a decoder.
+    /// utterance ended. Needs a decoder. Chunks grow 1, 1, 2, 4, …: faster
+    /// than real time, each is made before the audio before it has played.
     pub fn read(self: *Synthesizer, out: []f32) !usize {
         const per = switch (self.stream) {
             .none => return error.NoCodec,

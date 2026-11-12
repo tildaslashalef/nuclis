@@ -169,9 +169,10 @@ pub const Plan = struct {
         @memcpy(self.input.floats()[0 .. n * model.patch_values], patches.values);
         try model.positionRows(self.view, self.binding.position_embedding, grid, self.pos.floats(), self.scratch);
         try model.ropeTable(self.rope.floats(), grid);
-        // The tile reads the padded rows past `n`; leave them finite.
-        @memset(self.x.floats(), 0);
-        @memset(self.h.floats(), 0);
+        // The tile reads the padded rows past `n`; leave them finite. Rows
+        // below `n` are written before they are read.
+        const rows: usize = @min(Backend.matmulPadded(n), max_patches);
+        for ([_]Buffer{ self.x, self.h }) |buffer| @memset(buffer.floats()[n * hidden .. rows * hidden], 0);
         try self.spans.plan(&[_]attention.Window{.{ .begin = 0, .count = @intCast(n) }}, n, model.heads);
 
         try b.begin();

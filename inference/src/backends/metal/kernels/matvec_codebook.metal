@@ -307,7 +307,7 @@ kernel void nu_matvec_iq2_xs(device const uchar * weights [[buffer(0)]], device 
     if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
         nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane);
 }
-// Sixteen SIMD groups share one grid copy (`matvecSimdgroups` in root.zig);
+// Sixteen SIMD groups share one grid copy (`matvecSimdgroups` in ops/matvec.zig);
 // the virtual group/sg pair keeps the body's four-group row arithmetic.
 #define NU_IQ2_S_SIMDGROUPS 16
 template <uint ROWS>

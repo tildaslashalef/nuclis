@@ -646,6 +646,10 @@ const Cache = struct { keys: []f32, values: []f32, count: usize };
 const UpState = struct { trans: History, dw: History };
 const BlockState = struct { trans: History, units: [3]History };
 
+/// RoPE positions a stream covers, its frames at most: the Metal stream's
+/// table, and the bound both executors refuse past (`StreamTooLong`).
+pub const max_positions = 16384;
+
 /// A decode in progress: push frames as they come and get their samples.
 /// Borrows the runtime, which must outlive it.
 pub const Stream = struct {
@@ -715,6 +719,8 @@ pub const Stream = struct {
 
     /// Decodes the next `codes` into `out` (`codes.len · samplesPerFrame()`).
     /// A code past the codebook is `error.InvalidCode`, before any state changes.
+    /// After any error, `reset` before pushing again: a failed push may leave
+    /// the stream partly advanced.
     pub fn pushObserved(self: *Stream, codes: []const Frame, out: []f32, observer: ?Observer) !void {
         const rt = self.runtime;
         const c = rt.config;
@@ -722,7 +728,7 @@ pub const Stream = struct {
         if (out.len != n * c.samplesPerFrame()) return error.InvalidShape;
         if (n == 0) return;
         for (codes) |frame| for (frame) |code| if (code >= c.codebook_size) return error.InvalidCode;
-        if (self.position + n > std.math.maxInt(i32)) return error.StreamTooLong;
+        if (self.position + n > max_positions) return error.StreamTooLong;
         var arena: std.heap.ArenaAllocator = .init(self.gpa);
         defer arena.deinit();
         const ws = arena.allocator();
@@ -1129,6 +1135,13 @@ test "streaming in pieces of 1, 3, and 7 frames gives one decode's samples bit f
     bad[0][3] = @intCast(tiny.codebook_size);
     try std.testing.expectError(error.InvalidCode, stream.push(&bad, prefix[0..per]));
     try std.testing.expectError(error.InvalidShape, stream.push(codes[0..2], prefix[0..per]));
+    stream.position = max_positions;
+    try std.testing.expectError(error.StreamTooLong, stream.push(codes[0..1], prefix[0..per]));
+    // After an error, a reset stream decodes as a fresh one.
+    stream.reset();
+    var again: [whole.len]f32 = undefined;
+    try stream.push(&codes, &again);
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&whole), std.mem.sliceAsBytes(&again));
 }
 
 test "bind refuses a missing, misshapen, or unknown tensor by name and skips the encoder's" {

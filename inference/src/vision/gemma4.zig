@@ -3,7 +3,7 @@
 //! does the vision work); `gemma4v` is a SigLIP encoder with 2-D NEOX RoPE
 //! and a 3×3 average pool, 27 blocks on the 26B-A4B (with a
 //! standardization) and 16 narrower blocks on the E4B (whose matrices clamp
-//! their inputs and outputs, `Clamp`).
+//! their inputs and outputs, `Clamp`) and on EmbeddingGemma 2 (no clamps).
 //! Both place one token per 48×48 pixels, raster order. `bind` validates the
 //! companion file; `Runtime` is the CPU reference (F64 accumulation), and
 //! the host-side tables are shared with the Metal plan
@@ -27,7 +27,8 @@ pub const Plan = @import("gemma4_metal.zig").Plan;
 pub const Kind = enum {
     /// `gemma4uv`: the unified embedder of the dense 12B.
     unified,
-    /// `gemma4v`: the SigLIP encoder of the 26B-A4B.
+    /// `gemma4v`: the SigLIP encoder of the 26B-A4B, the E4B, and
+    /// EmbeddingGemma 2 (`siglip.large` or `siglip.small`).
     siglip,
 };
 

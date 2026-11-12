@@ -221,8 +221,9 @@ const Binder = struct {
 
 /// doc must come from successful GGUF parsing. Allocations are temporary
 /// lookup storage, freed before return; only the returned tensor references
-/// borrow doc. Every tensor in the file must be claimed.
-pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
+/// borrow doc. Every tensor in the file must be claimed. `view` is the
+/// companion's mapping, recorded on the binding.
+pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document, view: weights.View) Error!Binding {
     try validateMetadata(doc);
     var binder: Binder = .{ .remaining = .init(alloc) };
     defer binder.remaining.deinit();
@@ -231,6 +232,7 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
         if (previous != null) return error.DuplicateTensor;
     }
     var result: Binding = undefined;
+    result.view = view;
     result.fc = try binder.take("fc.weight", &.{ hidden_width, embedding }, .matrix);
     result.encoder_norm = try binder.take("enc.output_norm.weight", &.{embedding}, .f32);
     result.output_norm = try binder.take("output_norm.weight", &.{embedding}, .f32);
@@ -253,10 +255,12 @@ pub fn inventoryDocument(gpa: std.mem.Allocator) !gguf.Document {
     return @import("inventory.zig").document(gpa, @embedFile("fixtures/dflash-kquant.json"));
 }
 
+const test_view: weights.View = .{ .file = &.{}, .data_offset = 0 };
+
 test "the pinned DFlash drafter binds: 58 tensors, five sliding blocks, the five residuals" {
     var doc = try inventoryDocument(std.testing.allocator);
     defer doc.deinit();
-    const binding = try bind(std.testing.allocator, &doc);
+    const binding = try bind(std.testing.allocator, &doc, test_view);
     try std.testing.expectEqual(@as(u32, 58), binding.summary.text_tensors);
     try std.testing.expectEqualStrings("muse_glimmer_dflash", binding.summary.profile);
     try std.testing.expectEqual(@as(u64, 33280), binding.fc.dimensions[0]);
@@ -352,7 +356,7 @@ test "deviations from the pinned drafter are typed rejections" {
                 doc.metadata = more;
             },
         }
-        try std.testing.expectError(case.expected, bind(std.testing.allocator, &doc));
+        try std.testing.expectError(case.expected, bind(std.testing.allocator, &doc, test_view));
     }
 }
 
@@ -361,7 +365,7 @@ test "binding survives allocation failure without leaks" {
     defer doc.deinit();
     try alloc_check.checkAll(std.testing.allocator, struct {
         fn check(alloc: std.mem.Allocator, d: *const gguf.Document) !void {
-            _ = try bind(alloc, d);
+            _ = try bind(alloc, d, test_view);
         }
     }.check, .{&doc});
 }

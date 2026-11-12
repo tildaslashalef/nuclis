@@ -838,7 +838,7 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
     const input = try b.create(Backend.matmulPadded(max_rows) * 17408 * 4);
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(Backend.matmulPadded(max_rows) * (if (with_head) head_shape.rows else 17408) * 4);
-    std.debug.print("{s:<8} {s:<13} {s:>5} {s:>10} {s:>8} {s:>10} {s:>8} {s:>10} {s:>8} {s:>10} {s:>8}  ms/dispatch, GB/s ({d} rounds, {d}/round)\n", .{ "encoding", "shape", "rows", "16x8 ms", "16x8 GB/s", "32x8 ms", "32x8 GB/s", "frag ms", "frag GB/s", "rows ms", "rows GB/s", rounds, repeats });
+    std.debug.print("{s:<8} {s:<13} {s:>5} {s:>10} {s:>8} {s:>10} {s:>8} {s:>10} {s:>8}  ms/dispatch, GB/s ({d} rounds, {d}/round)\n", .{ "encoding", "shape", "rows", "16x8 ms", "16x8 GB/s", "frag ms", "frag GB/s", "rows ms", "rows GB/s", rounds, repeats });
     inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary", "codebook", "five-bit" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
@@ -1006,7 +1006,7 @@ fn fragBench(alloc: std.mem.Allocator, max_rows: usize) !void {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, json, .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
         const frag = Backend.specializedMatmulFrag(case.id, 0, 0, 1) orelse return error.UnknownEncoding;
-        const kernels: []const Kernel = if (case.id == 12) &.{ .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q4_k_f4 } else &.{frag};
+        const kernels: []const Kernel = &.{frag};
         var sample_bytes: ?[]const u8 = null;
         for (fixtures.value.rows) |sample| if (sample.encoding == case.id) {
             sample_bytes = sample.bytes;
@@ -1068,17 +1068,6 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
             if (i == 0) continue;
             tile_ms = @min(tile_ms, ms);
         }
-        var wide_ms: f64 = std.math.nan(f64);
-        if (Backend.specializedMatmulWide(encoding, weights.offset, region.len / shape.rows, tokens) != null) for (0..rounds + 1) |i| {
-            if (i == 0) try captureRows(b, "wide", name, shape.name, tokens);
-            const before = b.gpuSeconds();
-            try b.begin();
-            for (0..repeats) |_| try b.matmulTile32(weights, matrix, input, shape.columns, output, shape.rows, tokens);
-            try b.commit();
-            const ms = (b.gpuSeconds() - before) * 1e3 / @as(f64, @floatFromInt(repeats));
-            if (i == 0) continue;
-            wide_ms = if (i == 1) ms else @min(wide_ms, ms);
-        };
         // The fragment tile, what `matmul` runs for a 4–8-row verify batch.
         var frag_ms: f64 = std.math.nan(f64);
         if (Backend.specializedMatmulFrag(encoding, weights.offset, region.len / shape.rows, tokens)) |kernel| for (0..rounds + 1) |i| {
@@ -1102,7 +1091,6 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
             rows_ms = if (i == 1) ms else @min(rows_ms, ms);
         };
         std.debug.print("{s:<8} {s:<13} {d:>5} {d:>10.2} {d:>8.1} ", .{ name, shape.name, tokens, tile_ms, bytes_mb / tile_ms });
-        if (std.math.isNan(wide_ms)) std.debug.print("{s:>10} {s:>8} ", .{ "—", "—" }) else std.debug.print("{d:>10.2} {d:>8.1} ", .{ wide_ms, bytes_mb / wide_ms });
         if (std.math.isNan(frag_ms)) std.debug.print("{s:>10} {s:>8} ", .{ "—", "—" }) else std.debug.print("{d:>10.2} {d:>8.1} ", .{ frag_ms, bytes_mb / frag_ms });
         if (tokens >= 2) std.debug.print("{d:>10.2} {d:>8.1}\n", .{ rows_ms, bytes_mb / rows_ms }) else std.debug.print("{s:>10} {s:>8}\n", .{ "—", "—" });
     }
@@ -1811,6 +1799,34 @@ fn expertsBench(alloc: std.mem.Allocator, chunk: usize) !void {
 /// A discarded recording runs none of its dispatches, leaves the backend
 /// able to record again, and drops its profile entries; a backend destroyed
 /// mid-recording returns instead of waiting on a buffer never committed.
+/// `unwrap` releases the bridge's no-copy buffer: a stale handle to the
+/// range fails its dispatch, the map forgets it, and the range wraps again
+/// (at another length) for as many rounds as a long-lived server re-plans.
+fn checkUnwrap(alloc: std.mem.Allocator) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    const page = std.heap.pageSize();
+    const memory = try std.heap.page_allocator.alloc(u8, 4 * page);
+    defer std.heap.page_allocator.free(memory);
+    @memset(memory, 0);
+    const other = try b.create(page);
+    const rounds = 1000;
+    var last: ?Buffer = null;
+    for (0..rounds) |i| {
+        const bytes = memory[0 .. page * (1 + i % 3)];
+        const wrapped = try b.wrap(bytes);
+        if (last) |stale| if (stale.id == wrapped.id) return error.WrappedIdReused;
+        b.unwrap(bytes);
+        last = wrapped;
+    }
+    if (b.wrapped.count() != 0) return error.UnwrapKeptEntry;
+    try b.begin();
+    if (b.copy(other, last.?, page / 4)) |_| return error.UnwrappedBufferStillBound else |err| if (err != error.MetalExecutionFailed) return err;
+    b.discard();
+    std.debug.print("wrap/unwrap x{d}: each round's no-copy buffer released, a stale handle refused\n", .{rounds});
+}
+
 fn checkDiscard(alloc: std.mem.Allocator) !void {
     const count = 1024;
     for ([_]bool{ false, true }) |profiled| {
@@ -3209,6 +3225,15 @@ fn checkFusedNorms(alloc: std.mem.Allocator, b: *Backend) !void {
         try b.rmsNormRope(input, weight, table, out_unfused, spec, 64, 32767, .split_half);
         try b.commit();
         b.fused_norms = saved;
+        // The fused kernel rotates one pair per thread of 256: wider is refused.
+        {
+            const wide = try b.create(1024 * 4);
+            const wide_table = try b.create(257 * 8);
+            const wide_spec: Backend.Norm = .{ .rows = 1, .width = 1024, .in_stride = 1024, .out_stride = 1024 };
+            try std.testing.expectError(error.InvalidShape, b.rmsNormRope(wide, wide, wide_table, wide, wide_spec, Backend.norm_rope_max_dims + 2, 0, .split_half));
+            try b.release(wide);
+            try b.release(wide_table);
+        }
         for (out_fused.floats(), out_unfused.floats(), expected) |f, u, e| {
             worst_fused.observe(@abs(f - u));
             worst_cpu.observe(@abs(f - e));
@@ -3662,6 +3687,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (args.len != 1) return error.UnknownOption;
     try checkFragmentLayout(alloc);
+    try checkUnwrap(alloc);
     try checkDflashConv(alloc);
     try checkDiscard(alloc);
     try checkTick(alloc);
@@ -3910,8 +3936,7 @@ pub fn main(init: std.process.Init) !void {
                             // The register-fragment tiles: the same rows within
                             // the half-tile bound, every variant of the encoding.
                             if (Backend.specializedMatmulFrag(sample.encoding, weights.offset, stride, mm_tokens)) |frag| {
-                                const variants: []const inference.metal.Kernel = if (frag == .matmul_q4_k_f2) &.{ .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q4_k_f4 } else &.{frag};
-                                for (variants) |kernel| {
+                                for ([_]inference.metal.Kernel{frag}) |kernel| {
                                     for (out.floats()) |*v| v.* = std.math.nan(f32);
                                     try b.begin();
                                     try b.matmulKernel(kernel, weights, matrix, activations, columns, out, mm_rows, mm_tokens);
@@ -3929,24 +3954,6 @@ pub fn main(init: std.process.Init) !void {
                                                 return err;
                                             };
                                         }
-                                    }
-                                }
-                            }
-                            // The wide 32×8 tile must land on the
-                            // same rows within the half-tile bound; it is an
-                            // experiment, so nothing routes to it.
-                            if (Backend.specializedMatmulWide(sample.encoding, weights.offset, stride, mm_tokens) != null) {
-                                for (out.floats()) |*v| v.* = std.math.nan(f32);
-                                try b.begin();
-                                try b.matmulTile32(weights, matrix, activations, columns, out, mm_rows, mm_tokens);
-                                try b.commit();
-                                for (0..mm_tokens) |t| {
-                                    const x = activations.floats()[t * columns ..][0..columns];
-                                    for (0..mm_rows) |r| {
-                                        try inference.quant.row(sample.encoding, region[r * stride ..][0..stride], decoded);
-                                        var mass: f64 = 0;
-                                        for (decoded, x) |w, xv| mass += @abs(@as(f64, w) * xv);
-                                        try expectClose("matmul wide tile vs generic F32 tile", out.floats()[t * mm_rows + r], generic_out.floats()[t * mm_rows + r], @floatCast(mass * 2e-4 + 1e-6));
                                     }
                                 }
                             }
@@ -4710,10 +4717,11 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Chunk DeltaNet vs CPU chunkwise F64: output max abs {e:.3} (bound 1e-5), state {e:.3} (bound 1e-4); vs 70 sequential CPU steps: {e:.3} (bound 1e-4)\n", .{ worst_out.shown(), worst_state.shown(), worst_seq.shown() });
         // Verify rows and their replay against `delta` stepped on the GPU, bit
         // for bit: the rows' outputs equal the steps', the state is untouched,
-        // and replaying the tape's first a rows equals a steps, for every a.
-        {
+        // and replaying the tape's first a rows equals a steps, for every a;
+        // tiled and grouped value heads alike.
+        for ([_]bool{ false, true }) |grouped| {
             const tape_rows: usize = 8;
-            const shape: Backend.DeltaRowsShape = .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .count = tape_rows, .capacity = tape_rows, .in_stride = in_stride, .gate_stride = 48, .out_stride = 6144, .scale = scale };
+            const shape: Backend.DeltaRowsShape = .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .count = tape_rows, .capacity = tape_rows, .in_stride = in_stride, .gate_stride = 48, .out_stride = 6144, .scale = scale, .grouped = grouped };
             const tape = try b.create(Backend.deltaTapeFloats(shape) * 4);
             const stepped = try b.create(tape_rows * 48 * 128 * 128 * 4);
             const step_out = try b.create(tape_rows * 6144 * 4);
@@ -4725,7 +4733,7 @@ pub fn main(init: std.process.Init) !void {
             for (0..tape_rows) |t| {
                 const after = stepped.slice(t * 48 * 128 * 128 * 4, 48 * 128 * 128 * 4);
                 try b.copy(after, if (t == 0) replayed else stepped.slice((t - 1) * 48 * 128 * 128 * 4, 48 * 128 * 128 * 4), 48 * 128 * 128);
-                try b.delta(after, qkv.slice(t * in_stride * 4, in_stride * 4), decays.slice(t * 48 * 4, 48 * 4), betas.slice(t * 48 * 4, 48 * 4), step_out.slice(t * 6144 * 4, 6144 * 4), .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .scale = scale });
+                try b.delta(after, qkv.slice(t * in_stride * 4, in_stride * 4), decays.slice(t * 48 * 4, 48 * 4), betas.slice(t * 48 * 4, 48 * 4), step_out.slice(t * 6144 * 4, 6144 * 4), .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .scale = scale, .grouped = grouped });
             }
             try b.deltaRows(state, qkv, decays, betas, out, tape, shape);
             try b.commit();
@@ -4748,7 +4756,7 @@ pub fn main(init: std.process.Init) !void {
             over.count = 0;
             if (b.deltaReplay(state, tape, over)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
             try b.commit();
-            std.debug.print("DeltaNet verify rows and tape replay vs {d} GPU decode steps: outputs and every prefix state bit-identical, state untouched\n", .{tape_rows});
+            std.debug.print("DeltaNet verify rows and tape replay ({s} value heads) vs {d} GPU decode steps: outputs and every prefix state bit-identical, state untouched\n", .{ if (grouped) "grouped" else "tiled", tape_rows });
         }
         const small = try b.create(8 * 4);
         try b.begin();
@@ -4999,6 +5007,21 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("argmax chose {d}\n", .{chosen});
             return error.MetalArgmaxMismatch;
         }
+        // A NaN or an infinity anywhere is reported, not chosen: the result is
+        // `argmax_nonfinite`, which every caller turns into NonFiniteResult.
+        for ([_]f32{ std.math.nan(f32), std.math.inf(f32), -std.math.inf(f32) }) |bad| {
+            const kept = logits.floats()[777];
+            logits.floats()[777] = bad;
+            try b.begin();
+            try b.argmax(logits, 248320, values, indices, result);
+            try b.commit();
+            logits.floats()[777] = kept;
+            const got = @as(*const u32, @ptrCast(@alignCast(result.host))).*;
+            if (got != Backend.argmax_nonfinite) {
+                std.debug.print("argmax over a {d} logit chose {d}\n", .{ bad, got });
+                return error.MetalArgmaxMismatch;
+            }
+        }
         // Partial top-k over the same vocabulary-sized vector, with the
         // two-way tie at the top and a run of equal values further down: the
         // 256 (value, index) pairs must equal the CPU sort's first 256 by
@@ -5059,6 +5082,7 @@ pub fn main(init: std.process.Init) !void {
         if (b.topk(logits, Backend.topk_max_count + 1, k, temperature, scratch)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
         if (b.topk(logits, 248320, 0, temperature, scratch)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
         if (b.topk(logits, 248320, k, 0, scratch)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        if (b.topk(logits, k - 1, k, temperature, scratch)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
     }
 
     // 9c. The history penalties on the device: the kernel's vector equals
@@ -5329,5 +5353,5 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, grouped value heads through the step and the chunk, the gated shared-expert add, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, the verify rows and their tape replay bit-identical to decode steps, the convolution history after every prefix, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, attention over packed sequences with and without windows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate, the exact erf GELU, and its gate over fused rows among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2 and 4 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, Gemma 4's audio attention and light convolution against the CPU, Nemotron ASR's kernels against the CPU functions, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, grouped value heads through the step and the chunk, the gated shared-expert add, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, the verify rows and their tape replay bit-identical to decode steps, the convolution history after every prefix, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, attention over packed sequences with and without windows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate, the exact erf GELU, and its gate over fused rows among them) and the epilogues, buffer release, wrap/unwrap releasing the bridge's buffers, gates, argmax reporting non-finite logits, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2 and 4 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, Gemma 4's audio attention and light convolution against the CPU, Nemotron ASR's kernels against the CPU functions, and per-dispatch profiling with capacity overflow.\n", .{});
 }

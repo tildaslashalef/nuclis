@@ -167,12 +167,13 @@ pub const Head = struct {
         const w = self.config.width;
         const tokens = sequence.ids.len;
         const fields = sequence.fields;
+        if (tokens == 0 or fields.len == 0 or logits.len != fields.len) return error.InvalidShape;
         var options: usize = 0;
         for (fields, logits) |f, l| {
             if (l.len != f.options.len) return error.InvalidShape;
             options += f.options.len;
         }
-        if (hidden.len != tokens * h or lexical.len != options * h or logits.len != fields.len or fields.len == 0) return error.InvalidShape;
+        if (hidden.len != tokens * h or lexical.len != options * h) return error.InvalidShape;
 
         var scratch_state: std.heap.ArenaAllocator = .init(gpa);
         defer scratch_state.deinit();
@@ -427,7 +428,10 @@ fn normalize(x: []f32) void {
 /// `lexical[o]` = the mean of `output.weight`'s rows over option `o`'s span
 /// tokens, in field order: `row(id, out)` writes one row of `hidden` values.
 pub fn lexicalRows(sequence: profile.Sequence, hidden: usize, context: anytype, comptime row: fn (@TypeOf(context), u32, []f32) anyerror!void, scratch: []f32, out: []f32) !void {
-    if (scratch.len != hidden) return error.InvalidShape;
+    if (scratch.len != hidden or out.len != optionCount(sequence) * hidden) return error.InvalidShape;
+    for (sequence.fields) |f| for (f.options) |span| {
+        if (span.end <= span.start or span.end > sequence.ids.len) return error.InvalidShape;
+    };
     var o: usize = 0;
     for (sequence.fields) |f| for (f.options) |span| {
         const mean = out[o * hidden ..][0..hidden];
@@ -666,4 +670,43 @@ fn findBackbone(arena: std.mem.Allocator, io: std.Io, directory: []const u8) ![]
         return std.fs.path.join(arena, &.{ directory, entry.name });
     }
     return error.MissingBackbone;
+}
+
+test "the head refuses a sequence it cannot score before reading a weight" {
+    // Only `config` is read before the shape checks.
+    var head: Head = undefined;
+    head.config = released;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const hidden = try gpa.alloc(f32, released.hidden_size);
+    defer gpa.free(hidden);
+    const span: profile.Span = .{ .start = 0, .end = 1 };
+    const fields = [_]profile.Field{.{ .kind = .choice, .span = span, .options = &.{span} }};
+    var one: [1]f32 = undefined;
+    const logits = [_][]f32{&one};
+    const empty: profile.Sequence = .{ .ids = &.{}, .fields = &fields, .state_offset = 0, .state_tokens = 0, .truncated = false };
+    try std.testing.expectError(error.InvalidShape, head.forward(gpa, io, &.{}, empty, hidden, &logits));
+    const sequence: profile.Sequence = .{ .ids = &.{7}, .fields = &fields, .state_offset = 0, .state_tokens = 1, .truncated = false };
+    try std.testing.expectError(error.InvalidShape, head.forward(gpa, io, hidden, sequence, hidden, &.{}));
+    try std.testing.expectError(error.InvalidShape, head.forward(gpa, io, hidden, sequence, hidden, &.{ &one, &one }));
+    const no_fields: profile.Sequence = .{ .ids = &.{7}, .fields = &.{}, .state_offset = 0, .state_tokens = 1, .truncated = false };
+    try std.testing.expectError(error.InvalidShape, head.forward(gpa, io, hidden, no_fields, &.{}, &.{}));
+}
+
+test "lexical rows refuse spans outside the sequence" {
+    const Rows = struct {
+        fn row(_: void, id: u32, out: []f32) anyerror!void {
+            @memset(out, @floatFromInt(id));
+        }
+    };
+    var scratch: [2]f32 = undefined;
+    var out: [2]f32 = undefined;
+    const inside = [_]profile.Field{.{ .kind = .choice, .span = .{ .start = 0, .end = 1 }, .options = &.{.{ .start = 0, .end = 2 }} }};
+    try lexicalRows(.{ .ids = &.{ 2, 4 }, .fields = &inside, .state_offset = 0, .state_tokens = 2, .truncated = false }, 2, {}, Rows.row, &scratch, &out);
+    try std.testing.expectEqual(@as(f32, 3), out[0]);
+    try std.testing.expectError(error.InvalidShape, lexicalRows(.{ .ids = &.{2}, .fields = &inside, .state_offset = 0, .state_tokens = 1, .truncated = false }, 2, {}, Rows.row, &scratch, &out));
+    const empty_span = [_]profile.Field{.{ .kind = .choice, .span = .{ .start = 0, .end = 1 }, .options = &.{.{ .start = 1, .end = 1 }} }};
+    try std.testing.expectError(error.InvalidShape, lexicalRows(.{ .ids = &.{ 2, 4 }, .fields = &empty_span, .state_offset = 0, .state_tokens = 2, .truncated = false }, 2, {}, Rows.row, &scratch, &out));
+    var short: [1]f32 = undefined;
+    try std.testing.expectError(error.InvalidShape, lexicalRows(.{ .ids = &.{ 2, 4 }, .fields = &inside, .state_offset = 0, .state_tokens = 2, .truncated = false }, 2, {}, Rows.row, &scratch, &short));
 }

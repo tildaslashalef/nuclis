@@ -44,7 +44,7 @@ pub const schema_version: u32 = 1;
 pub const max_file_bytes = 64 * 1024;
 /// Range rules shared with the command-line flags (`generate`, `bench`, and
 /// the chat check their resolved values against the same bounds).
-pub const max_context = 32768;
+pub const max_context = inference.max_capacity;
 /// The output budget is a stop against runaway decode, not a quality knob:
 /// reasoning modes think for thousands of tokens before answering, so the
 /// cap is the context's half and the default one completion's worth.

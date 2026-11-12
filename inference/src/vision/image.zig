@@ -98,15 +98,6 @@ fn ppmField(bytes: []const u8, cursor: *usize) Error!u32 {
     return std.fmt.parseInt(u32, bytes[start..i], 10) catch return error.MalformedImage;
 }
 
-/// Writes `image` as P6 (tests and fixtures).
-pub fn encodePpm(alloc: std.mem.Allocator, image: Rgb8) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(alloc);
-    try out.print(alloc, "P6\n{d} {d}\n255\n", .{ image.width, image.height });
-    try out.appendSlice(alloc, image.pixels);
-    return out.toOwnedSlice(alloc);
-}
-
 test "P6 parses fields, comments, and the single separator byte" {
     const bytes = "P6\n# a comment\n2 1\n255\n\x01\x02\x03\x04\x05\x06";
     var image = try decodePpm(std.testing.allocator, bytes);
@@ -114,9 +105,7 @@ test "P6 parses fields, comments, and the single separator byte" {
     try std.testing.expectEqual(@as(u32, 2), image.width);
     try std.testing.expectEqual(@as(u32, 1), image.height);
     try std.testing.expectEqual([3]u8{ 4, 5, 6 }, image.at(1, 0));
-    const round = try encodePpm(std.testing.allocator, image);
-    defer std.testing.allocator.free(round);
-    var again = try decode(std.testing.allocator, round);
+    var again = try decode(std.testing.allocator, bytes);
     defer again.deinit(std.testing.allocator);
     try std.testing.expectEqualSlices(u8, image.pixels, again.pixels);
 }

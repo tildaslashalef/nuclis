@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // Multi-row matvec: the same per-lane decode as the matvec above, but each
-// weight block is decoded once and multiplied against `tokens ≤ NU_ROWS_MAX`
+// weight block is decoded once and multiplied against `tokens ≤ NU_MATVEC_ROWS_MAX`
 // activation rows, so the weight bytes are read once per batch instead of once
 // per token. That is the floor for a small batch (2–8 rows): one weight pass,
 // where the 16×8 split-K tile reads them once per token tile. Each 8-lane
@@ -298,9 +298,9 @@ kernel void nu_matvec_rows(device const uchar * weights [[buffer(0)]],
 }
 
 // One instantiation per token count so the accumulator loops are compile-time
-// bound; `matvec_rows_max` in root.zig is the largest count. ROWS must match
-// `rows_per_simdgroup` there.
-#define NU_ROWS_PER_SIMDGROUP 2 // rows per 8-lane group; four groups give matvec_rows_per_simdgroup in root.zig
+// bound; `matvec_rows_max` in ops/matvec.zig is the largest count. ROWS times
+// the four 8-lane groups must equal `matvec_rows_per_simdgroup` there.
+#define NU_ROWS_PER_SIMDGROUP 2 // rows per 8-lane group
 #define NU_MATVEC_ROWS_INSTANCE(NAME, TOK) \
     template [[host_name("nu_matvec_rows_" #NAME "_t" #TOK)]] kernel void nu_matvec_rows_##NAME<NU_ROWS_PER_SIMDGROUP, TOK>(device const uchar *, device const float *, device float *, constant MatvecRowsParams &, uint, uint, uint);
 #define NU_MATVEC_ROWS_ALL(NAME) \

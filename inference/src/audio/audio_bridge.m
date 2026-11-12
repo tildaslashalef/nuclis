@@ -84,9 +84,9 @@ fail:
 }
 
 // Returns 0 with `samples` at `rate` (malloc'd, `count` of them, at most
-// `max_samples`) and `total`, the clip's length at `rate` before the bound,
-// on success; 1 when the bytes are not decodable audio; 3 on an allocation
-// failure.
+// `max_samples`) and `total`, the clip's length at `rate` before the bound
+// (above `count` whenever frames remained past it), on success; 1 when the
+// bytes are not decodable audio; 3 on an allocation failure.
 int nu_audio_decode(const uint8_t * bytes, size_t len, uint32_t rate, uint32_t max_samples, float ** samples, uint32_t * count, uint64_t * total) {
     Source source = {bytes, len};
     AudioFileID file = NULL;
@@ -95,10 +95,11 @@ int nu_audio_decode(const uint8_t * bytes, size_t len, uint32_t rate, uint32_t m
     if (open_ext(&source, rate, &file, &ext, &channels, total) != 0) return 1;
     int result = 1;
     {
-        uint64_t capacity = *total < max_samples ? *total : max_samples;
-        // The estimate may be a frame short after conversion; leave room.
-        capacity += 64;
-        if (capacity > (uint64_t) max_samples + 64) capacity = (uint64_t) max_samples + 64;
+        // The estimate may be off after conversion: start from it and grow
+        // up to `max_samples`, so a cut happens only at the caller's bound.
+        uint64_t capacity = (*total < max_samples ? *total : max_samples) + 64;
+        if (capacity > max_samples) capacity = max_samples;
+        if (capacity == 0) capacity = 1;
         float * mono = malloc((size_t) capacity * sizeof(float));
         float * chunk = malloc((size_t) 4096 * channels * sizeof(float));
         if (!mono || !chunk) {
@@ -108,7 +109,9 @@ int nu_audio_decode(const uint8_t * bytes, size_t len, uint32_t rate, uint32_t m
             goto done;
         }
         uint32_t written = 0;
-        while (written < max_samples) {
+        // Frames read past `max_samples`: nonzero means the clip was cut.
+        uint64_t beyond = 0;
+        while (written < max_samples || beyond == 0) {
             UInt32 want = 4096;
             AudioBufferList list;
             list.mNumberBuffers = 1;
@@ -121,15 +124,28 @@ int nu_audio_decode(const uint8_t * bytes, size_t len, uint32_t rate, uint32_t m
                 goto done;
             }
             if (want == 0) break;
-            for (UInt32 i = 0; i < want && written < max_samples && written < capacity; i++) {
+            UInt32 i = 0;
+            for (; i < want && written < max_samples; i++) {
+                if (written == capacity) {
+                    uint64_t grown = capacity * 2 < max_samples ? capacity * 2 : max_samples;
+                    float * more = realloc(mono, (size_t) grown * sizeof(float));
+                    if (!more) {
+                        free(mono);
+                        free(chunk);
+                        result = 3;
+                        goto done;
+                    }
+                    mono = more;
+                    capacity = grown;
+                }
                 float sum = 0;
                 for (UInt32 c = 0; c < channels; c++) sum += chunk[i * channels + c];
                 mono[written++] = channels == 1 ? sum : sum / (float) channels;
             }
-            if (written >= capacity) break;
+            beyond += want - i;
         }
         free(chunk);
-        if (written > *total) *total = written;
+        if (written + beyond > *total) *total = written + beyond;
         *samples = mono;
         *count = written;
         result = 0;

@@ -34,7 +34,9 @@ as a cross-check, never copied.
   16-bit PCM or 32-bit IEEE float (plain or `WAVE_FORMAT_EXTENSIBLE`;
   FLEURS's clips are float) on any platform, and refuses a float file
   holding a NaN or an infinity. Everything else goes through `audio_bridge.m`, built
-  with the Metal bridge. Encoded bytes are bounded at 64 MiB.
+  with the Metal bridge, whose samples are held to the same check; a clip
+  cut at the caller's bound reports a length past it, whatever the
+  format's length estimate said. Encoded bytes are bounded at 64 MiB.
 - `mel.zig`: `Spec` (what one extractor's front end is: Gemma's and
   Nemotron's), `Bank` (the window, the filter bank, the FFT twiddles),
   `features`, and `frames`, which computes frames from a span of a clip
@@ -48,6 +50,9 @@ as a cross-check, never copied.
   `bind`, `Runtime.decode`, and `Stream`, which carries every
   convolution's left context and 71 rows of K/V per layer, so pieces of any
   size give `decode`'s samples bit for bit ([qwen3-tts.md](../models/qwen3-tts.md)).
+  A stream holds at most `max_positions` (16,384) frames on either
+  executor, the Metal rope table's rows, and Fish's codec the same; after
+  any error a stream is reset before it is pushed again.
 - `qwen3_codec_metal.zig`: `Decoder`, the codec's stream on the device,
   checked against `qwen3_codec.zig` on the same codes (gate
   `qwen3-tts-codec-metal`); the voice's talker and predictor are

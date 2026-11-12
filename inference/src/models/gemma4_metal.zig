@@ -32,6 +32,7 @@
 //! included (the reference does the same); a ring layout for the windowed
 //! layers is a session-layout change of its own.
 const std = @import("std");
+const models = @import("root.zig");
 const model = @import("gemma4.zig");
 const assistant = @import("gemma4_assistant.zig");
 const weights = @import("../runtime/weights.zig");
@@ -98,6 +99,8 @@ const ExpertBuffers = struct {
     down_c: Buffer, // padded·k × hidden
     out_c: Buffer, // padded × hidden
 };
+/// `ExpertBuffers`' fields in `expertBuffers`' creation order.
+const expert_fields = .{ "router_logits", "indices", "route_weights", "gate_up", "hidden", "down", "out", "router_logits_c", "indices_c", "route_weights_c", "lists", "gate_up_c", "hidden_c", "down_c", "out_c" };
 
 /// One draft block's device constants.
 const HeadConstants = struct {
@@ -154,27 +157,26 @@ const Head = struct {
             };
             if (!std.math.isFinite(c.output_scale)) return error.InvalidShape;
         }
-        const b = plan.backend;
         result.output_norm = try Head.constant(plan, binding.view, binding.output_norm);
-        result.row = try b.create(out * 4);
+        result.row = try plan.create(out * 4);
         const width = binding.config.embedding;
-        result.x = try b.create(width * 4);
-        result.normalized = try b.create(width * 4);
-        result.concat = try b.create(2 * out * 4);
-        result.projected = try b.create(width * 4);
-        result.q = try b.create(assistant.Kind.global.queryWidth() * 4);
-        result.mixed = try b.create(assistant.Kind.global.queryWidth() * 4);
-        result.gate = try b.create(binding.config.feed_forward * 4);
-        result.up = try b.create(binding.config.feed_forward * 4);
-        result.logits = try b.create(vocabulary * 4);
-        result.h_next = try b.create(out * 4);
-        result.chain = try b.create(out * 4);
-        result.pending_h = try b.create(out * 4);
-        result.partials = try b.create(metal.Backend.attentionDecodePartials(assistant.max_heads, assistant.Kind.global.headSize()) * 4);
-        result.topk = try b.topkBuffers(1);
-        result.argmax_values = try b.create(metal.Backend.argmax_partials * 4);
-        result.argmax_indices = try b.create(metal.Backend.argmax_partials * 4);
-        result.argmax_result = try b.create(4);
+        result.x = try plan.create(width * 4);
+        result.normalized = try plan.create(width * 4);
+        result.concat = try plan.create(2 * out * 4);
+        result.projected = try plan.create(width * 4);
+        result.q = try plan.create(assistant.Kind.global.queryWidth() * 4);
+        result.mixed = try plan.create(assistant.Kind.global.queryWidth() * 4);
+        result.gate = try plan.create(binding.config.feed_forward * 4);
+        result.up = try plan.create(binding.config.feed_forward * 4);
+        result.logits = try plan.create(vocabulary * 4);
+        result.h_next = try plan.create(out * 4);
+        result.chain = try plan.create(out * 4);
+        result.pending_h = try plan.create(out * 4);
+        result.partials = try plan.create(metal.Backend.attentionDecodePartials(assistant.max_heads, assistant.Kind.global.headSize()) * 4);
+        result.topk = try plan.topkBuffers(1);
+        result.argmax_values = try plan.create(metal.Backend.argmax_partials * 4);
+        result.argmax_indices = try plan.create(metal.Backend.argmax_partials * 4);
+        result.argmax_result = try plan.create(4);
         @memset(result.pending_h.floats(), 0);
         return result;
     }
@@ -185,7 +187,7 @@ const Head = struct {
         const values = try view.vector(plan.alloc, tensor);
         defer plan.alloc.free(values);
         if (values.len == 0) return error.InvalidShape;
-        const buffer = try plan.backend.create(values.len * 4);
+        const buffer = try plan.create(values.len * 4);
         @memcpy(buffer.floats(), values);
         return buffer;
     }
@@ -219,6 +221,9 @@ const ExpertWeight = struct { buffer: Buffer, tensor: cpu.ExpertMatrix };
 pub const Plan = struct {
     alloc: std.mem.Allocator,
     backend: *metal.Backend,
+    /// `init`'s record of the buffers it made, released if it fails; null
+    /// after it returns (later buffers are the backend's, as are the plan's).
+    init_buffers: ?*std.ArrayList(Buffer),
     view: weights.View,
     binding: model.Binding,
     state: session.Session,
@@ -344,11 +349,16 @@ pub const Plan = struct {
         var self: Plan = undefined;
         self.alloc = alloc;
         self.backend = backend;
+        var created: std.ArrayList(Buffer) = .empty;
+        defer created.deinit(alloc);
+        errdefer for (created.items) |buffer| backend.release(buffer) catch {};
+        self.init_buffers = &created;
         self.view = view;
         self.binding = binding;
         self.state = state;
         self.constants = constants;
         self.state_buffer = try backend.wrap(state.memory);
+        errdefer backend.unwrap(state.memory);
         for (binding.active(), constants) |layer, *c| {
             c.* = .{
                 .attention_norm = try self.constant(layer.attention_norm),
@@ -370,69 +380,78 @@ pub const Plan = struct {
             if (!std.math.isFinite(c.output_scale)) return error.InvalidShape;
         }
         self.output_norm = try self.constant(binding.output_norm);
-        self.ones = try backend.create(head_max * 4);
+        self.ones = try self.create(head_max * 4);
         @memset(self.ones.floats(), 1);
         const sliding_dims = model.Kind.sliding.headSize();
         const global_dims = model.Kind.global.headSize();
-        self.rope_sliding = try backend.create(capacity * (sliding_dims / 2) * 8);
+        self.rope_sliding = try self.create(capacity * (sliding_dims / 2) * 8);
         try metal.Backend.ropeTable(self.rope_sliding, capacity, sliding_dims, model.Kind.sliding.ropeBase(), null);
         const factors = try view.vector(alloc, binding.rope_factors);
         defer alloc.free(factors);
-        self.rope_global = try backend.create(capacity * (global_dims / 2) * 8);
+        self.rope_global = try self.create(capacity * (global_dims / 2) * 8);
         try metal.Backend.ropeTable(self.rope_global, capacity, global_dims, model.Kind.global.ropeBase(), factors);
-        self.x = try backend.create(hidden * 4);
-        self.normalized = try backend.create(hidden * 4);
-        self.projected = try backend.create(hidden * 4);
-        self.gate = try backend.create(ffn * 4);
-        self.up = try backend.create(ffn * 4);
-        self.q = try backend.create(q_width * 4);
-        self.k = try backend.create(kv_width * 4);
-        self.v = try backend.create(kv_width * 4);
-        self.mixed_out = try backend.create(q_width * 4);
-        self.kv_stage = if (kv == .q8_0) try backend.create(2 * capacity * kv_width * 2) else null;
+        self.x = try self.create(hidden * 4);
+        self.normalized = try self.create(hidden * 4);
+        self.projected = try self.create(hidden * 4);
+        self.gate = try self.create(ffn * 4);
+        self.up = try self.create(ffn * 4);
+        self.q = try self.create(q_width * 4);
+        self.k = try self.create(kv_width * 4);
+        self.v = try self.create(kv_width * 4);
+        self.mixed_out = try self.create(q_width * 4);
+        self.kv_stage = if (kv == .q8_0) try self.create(2 * capacity * kv_width * 2) else null;
         // Up to `verify_max_rows` rows for a verify batch's split pass.
-        self.partials = try backend.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, model.max_heads, head_max) * 4);
+        self.partials = try self.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, model.max_heads, head_max) * 4);
         const pl_width = config.per_layer_input * config.layer_count;
-        self.pl = try backend.create(@max(pl_width, 1) * 4);
-        self.pl_sel = try backend.create(@max(pl_width, 1) * 4);
-        self.pl_gate = try backend.create(@max(config.per_layer_input, 1) * 4);
+        self.pl = try self.create(@max(pl_width, 1) * 4);
+        self.pl_sel = try self.create(@max(pl_width, 1) * 4);
+        self.pl_gate = try self.create(@max(config.per_layer_input, 1) * 4);
         if (binding.per_layer) |ple| {
             self.pl_norm = try self.constant(ple.projection_norm);
         } else {
-            self.pl_norm = try backend.create(4);
+            self.pl_norm = try self.create(4);
         }
-        self.logits = try backend.create(vocabulary * 4);
-        self.argmax_values = try backend.create(metal.Backend.argmax_partials * 4);
-        self.argmax_indices = try backend.create(metal.Backend.argmax_partials * 4);
-        self.argmax_result = try backend.create(4);
-        self.topk = try backend.topkBuffers(sampling.TopK.capacity);
-        self.penalty_history = try backend.create(@divCeil(vocabulary, 32) * 4);
+        self.logits = try self.create(vocabulary * 4);
+        self.argmax_values = try self.create(metal.Backend.argmax_partials * 4);
+        self.argmax_indices = try self.create(metal.Backend.argmax_partials * 4);
+        self.argmax_result = try self.create(4);
+        self.topk = try self.topkBuffers(sampling.TopK.capacity);
+        self.penalty_history = try self.create(@divCeil(vocabulary, 32) * 4);
         self.penalty_revision = std.math.maxInt(u64);
         self.chunk = chunk;
         self.span_rows = 0;
         self.image_scratch = null;
         self.image_rows = null;
         self.rows_logits = null;
+        try created.ensureUnusedCapacity(alloc, chunk_fields.len);
         try self.chunkBuffers(chunk);
-        self.experts = if (config.experts) |spec| try self.expertBuffers(spec) else null;
+        inline for (chunk_fields) |field| created.appendAssumeCapacity(@field(self, field));
+        self.experts = null;
+        if (config.experts) |spec| {
+            try created.ensureUnusedCapacity(alloc, expert_fields.len);
+            const set = try self.expertBuffers(spec);
+            inline for (expert_fields) |field| created.appendAssumeCapacity(@field(set, field));
+            self.experts = set;
+        }
         self.has_draft = draft and binding.draft != null;
         if (self.has_draft) {
             // The verify scratch exists only with a drafter (the loop's only
             // caller); `matmul` writes `matmulPadded(tokens)` output rows, so
             // the logits buffer is sized by the tile, not the batch.
-            self.verify_logits = try backend.create(metal.Backend.matmulPadded(max_verify_rows) * vocabulary * 4);
-            self.verify_argmax = try backend.create(max_verify_rows * 4);
-            self.verify_hidden = try backend.create(max_verify_rows * hidden * 4);
-            for (&self.topk_rows) |*scratch| scratch.* = try backend.topkBuffers(sampling.TopK.capacity);
-            self.prefill_hidden = try backend.create(chunk * hidden * 4);
+            self.verify_logits = try self.create(metal.Backend.matmulPadded(max_verify_rows) * vocabulary * 4);
+            self.verify_argmax = try self.create(max_verify_rows * 4);
+            self.verify_hidden = try self.create(max_verify_rows * hidden * 4);
+            for (&self.topk_rows) |*scratch| scratch.* = try self.topkBuffers(sampling.TopK.capacity);
+            self.prefill_hidden = try self.create(chunk * hidden * 4);
             self.draft = try Head.init(&self, binding.draft.?);
         } else {
-            self.verify_logits = try backend.create(4);
-            self.verify_argmax = try backend.create(4);
-            self.verify_hidden = try backend.create(4);
-            self.prefill_hidden = try backend.create(4);
+            self.verify_logits = try self.create(4);
+            self.verify_argmax = try self.create(4);
+            self.verify_hidden = try self.create(4);
+            self.prefill_hidden = try self.create(4);
             self.draft = null;
         }
+        self.init_buffers = null;
         return self;
     }
     /// The `_c` buffers for chunks of up to `rows` rows (the expert block's
@@ -514,29 +533,43 @@ pub const Plan = struct {
         self.span_rows = target;
     }
 
+    /// Creates a full set, releasing what it made if any creation fails.
     fn expertBuffers(self: *Plan, spec: model.Experts) !ExpertBuffers {
         const b = self.backend;
         const hidden = self.binding.config.embedding;
         const k = spec.used;
         const ff = spec.feed_forward;
         const n = self.padded * k;
-        return .{
-            .router_logits = try b.create(spec.count * 4),
-            .indices = try b.create(k * 4),
-            .route_weights = try b.create(k * 4),
-            .gate_up = try b.create(k * 2 * ff * 4),
-            .hidden = try b.create(k * ff * 4),
-            .down = try b.create(k * hidden * 4),
-            .out = try b.create(hidden * 4),
-            .router_logits_c = try b.create(self.padded * spec.count * 4),
-            .indices_c = try b.create(n * 4),
-            .route_weights_c = try b.create(n * 4),
-            .lists = try b.create(metal.Backend.expertListsLayout(n, spec.count).words * 4),
-            .gate_up_c = try b.create(n * 2 * ff * 4),
-            .hidden_c = try b.create(n * ff * 4),
-            .down_c = try b.create(n * hidden * 4),
-            .out_c = try b.create(self.padded * hidden * 4),
+        const sizes = [expert_fields.len]usize{
+            spec.count * 4,               k * 4, k * 4, k * 2 * ff * 4,                                           k * ff * 4,     k * hidden * 4, hidden * 4,
+            self.padded * spec.count * 4, n * 4, n * 4, metal.Backend.expertListsLayout(n, spec.count).words * 4, n * 2 * ff * 4, n * ff * 4,     n * hidden * 4,
+            self.padded * hidden * 4,
         };
+        var made: [sizes.len]Buffer = undefined;
+        var count: usize = 0;
+        errdefer for (made[0..count]) |buffer| b.release(buffer) catch {};
+        for (sizes, &made) |size, *buffer| {
+            buffer.* = try b.create(size);
+            count += 1;
+        }
+        var set: ExpertBuffers = undefined;
+        inline for (expert_fields, 0..) |field, i| @field(set, field) = made[i];
+        return set;
+    }
+    /// A zero-filled buffer, recorded while `init` runs.
+    fn create(self: *Plan, len: usize) !Buffer {
+        const list = self.init_buffers orelse return self.backend.create(len);
+        try list.ensureUnusedCapacity(self.alloc, 1);
+        const buffer = try self.backend.create(len);
+        list.appendAssumeCapacity(buffer);
+        return buffer;
+    }
+    /// `Backend.topkBuffers`, its buffers recorded while `init` runs.
+    fn topkBuffers(self: *Plan, k: usize) !metal.Backend.TopKBuffers {
+        if (self.init_buffers) |list| try list.ensureUnusedCapacity(self.alloc, 6);
+        const t = try self.backend.topkBuffers(k);
+        if (self.init_buffers) |list| list.appendSliceAssumeCapacity(&.{ t.partial_values, t.partial_indices, t.values, t.indices, t.sums, t.flags });
+        return t;
     }
     pub fn deinit(self: *Plan) void {
         // GPU buffers are released with the backend; the session and the
@@ -556,7 +589,7 @@ pub const Plan = struct {
         const values = try self.view.vector(self.alloc, tensor);
         defer self.alloc.free(values);
         if (values.len == 0) return error.InvalidShape;
-        const buffer = try self.backend.create(values.len * 4);
+        const buffer = try self.create(values.len * 4);
         @memcpy(buffer.floats(), values);
         return buffer;
     }
@@ -918,9 +951,11 @@ pub const Plan = struct {
     pub fn prefillVision(self: *Plan, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, observer: ?Observer) !void {
         const hidden = self.binding.config.embedding;
         if (tokens.len == 0) return error.InvalidShape;
+        try models.checkSpans(tokens.len, spans);
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
         for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
         if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
+        if (topk) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
         if (self.state.status != .ready) return error.SessionNotReady;
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
         for (spans) |sp| if (sp.count > self.span_rows) try self.reserveRows(sp.count);
@@ -1249,7 +1284,7 @@ pub const Plan = struct {
     pub fn draftForward(self: *Plan, h_prev: Buffer, token: u32, position: usize, greedy: ?*u32, pmax: ?*f32, logits: ?[]f32) !void {
         const head = &(self.draft orelse return error.NoDraftBlock);
         const out = head.binding.config.embedding_out;
-        if (token >= vocabulary or position == 0 or position > self.state.capacity) return error.InvalidShape;
+        if (token >= vocabulary or position == 0 or position >= self.state.capacity) return error.InvalidShape;
         if (h_prev.len < out * 4) return error.InvalidShape;
         if (logits) |values| if (values.len != vocabulary) return error.InvalidShape;
         const b = self.backend;

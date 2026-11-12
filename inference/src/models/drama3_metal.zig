@@ -134,10 +134,10 @@ pub const Plan = struct {
         errdefer backend.unwrap(state.backbone.memory);
         self.tower_memory = try backend.wrap(state.tower.memory);
         errdefer backend.unwrap(state.tower.memory);
-        self.scratch = try alloc.alloc(f32, 2 * hidden);
-        errdefer alloc.free(self.scratch);
-        self.shared_input = self.scratch[hidden..];
-        self.scratch = self.scratch[0..hidden];
+        const scratch = try alloc.alloc(f32, 2 * hidden);
+        errdefer alloc.free(scratch);
+        self.shared_input = scratch[hidden..];
+        self.scratch = scratch[0..hidden];
 
         const view = m.view;
         self.output_norm = try self.upload(m.output_norm);

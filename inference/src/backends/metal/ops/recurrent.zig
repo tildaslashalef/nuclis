@@ -53,20 +53,21 @@ pub fn deltaChunk(self: *Backend, state: Buffer, qkv: Buffer, decay_log: Buffer,
 }
 /// A verify batch's rows for `deltaRows` and the tape `deltaReplay` reads:
 /// `count` rows written, `capacity` the rows the tape holds. The other
-/// fields are `deltaChunk`'s.
-pub const DeltaRowsShape = struct { qheads: usize, vheads: usize, keys: usize, values: usize, count: usize, capacity: usize, in_stride: usize = 0, gate_stride: usize = 0, out_stride: usize = 0, scale: f32 = 1 };
-pub const DeltaRowsParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, count: u32, in_stride: u32, gate_stride: u32, out_stride: u32, key_stride: u32, corr_offset: u32, scale: f32 };
-pub const DeltaReplayParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, count: u32, key_stride: u32, corr_offset: u32 };
+/// fields are `deltaChunk`'s (`grouped` as in `DeltaShape`; a replay passes
+/// the value its rows were written with).
+pub const DeltaRowsShape = struct { qheads: usize, vheads: usize, keys: usize, values: usize, count: usize, capacity: usize, in_stride: usize = 0, gate_stride: usize = 0, out_stride: usize = 0, scale: f32 = 1, grouped: bool = false };
+pub const DeltaRowsParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, count: u32, in_stride: u32, gate_stride: u32, out_stride: u32, key_stride: u32, corr_offset: u32, scale: f32, group: u32 };
+pub const DeltaReplayParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, count: u32, key_stride: u32, corr_offset: u32, group: u32 };
 /// Floats a one-layer tape of `capacity` rows takes: per row the
 /// normalized keys and the decays, then per row the corrections.
 pub fn deltaTapeFloats(s: DeltaRowsShape) usize {
     return s.capacity * (s.qheads * s.keys + s.vheads + s.vheads * s.values);
 }
-fn deltaTapeShape(s: DeltaRowsShape, tape: Buffer) !struct { key_stride: u32, corr_offset: u32 } {
+fn deltaTapeShape(s: DeltaRowsShape, tape: Buffer) !struct { key_stride: u32, corr_offset: u32, group: u32 } {
     if (s.qheads == 0 or s.vheads == 0 or s.keys == 0 or s.values == 0 or s.vheads % s.qheads != 0) return error.InvalidShape;
     if (s.keys % 32 != 0 or s.keys > 128 or s.count > s.capacity or tape.len < deltaTapeFloats(s) * 4) return error.InvalidShape;
     const key_stride = s.qheads * s.keys + s.vheads;
-    return .{ .key_stride = @intCast(key_stride), .corr_offset = @intCast(s.capacity * key_stride) };
+    return .{ .key_stride = @intCast(key_stride), .corr_offset = @intCast(s.capacity * key_stride), .group = if (s.grouped) @intCast(s.vheads / s.qheads) else 0 };
 }
 /// Verify rows token by token without writing `state`: `nu_delta`'s
 /// arithmetic per row, outputs as `deltaChunk` lays them out, and the
@@ -76,7 +77,7 @@ pub fn deltaRows(self: *Backend, state: Buffer, qkv: Buffer, decay_log: Buffer, 
     if (s.count == 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
     if (s.in_stride < 2 * s.qheads * s.keys + s.vheads * s.values or s.gate_stride < s.vheads or s.out_stride < s.vheads * s.values) return error.InvalidShape;
     if (state.len < s.vheads * s.values * s.keys * 4 or qkv.len < s.count * s.in_stride * 4 or decay_log.len < s.count * s.gate_stride * 4 or beta.len < s.count * s.gate_stride * 4 or output.len < s.count * s.out_stride * 4) return error.InvalidShape;
-    const p: DeltaRowsParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .count = @intCast(s.count), .in_stride = @intCast(s.in_stride), .gate_stride = @intCast(s.gate_stride), .out_stride = @intCast(s.out_stride), .key_stride = t.key_stride, .corr_offset = t.corr_offset, .scale = s.scale };
+    const p: DeltaRowsParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .count = @intCast(s.count), .in_stride = @intCast(s.in_stride), .gate_stride = @intCast(s.gate_stride), .out_stride = @intCast(s.out_stride), .key_stride = t.key_stride, .corr_offset = t.corr_offset, .scale = s.scale, .group = t.group };
     try self.dispatch(.delta_rows, &.{ state, qkv, decay_log, beta, output, tape }, p, @intCast(s.vheads * s.values), 32, .{});
 }
 /// Applies a `deltaRows` tape's first `count` rows to `state` in place:
@@ -84,7 +85,7 @@ pub fn deltaRows(self: *Backend, state: Buffer, qkv: Buffer, decay_log: Buffer, 
 pub fn deltaReplay(self: *Backend, state: Buffer, tape: Buffer, s: DeltaRowsShape) !void {
     const t = try deltaTapeShape(s, tape);
     if (s.count == 0 or state.len < s.vheads * s.values * s.keys * 4) return error.InvalidShape;
-    const p: DeltaReplayParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .count = @intCast(s.count), .key_stride = t.key_stride, .corr_offset = t.corr_offset };
+    const p: DeltaReplayParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .count = @intCast(s.count), .key_stride = t.key_stride, .corr_offset = t.corr_offset, .group = t.group };
     try self.dispatch(.delta_replay, &.{ state, tape }, p, @intCast(s.vheads * s.values), 32, .{});
 }
 pub const ConvParams = extern struct { channels: u32, taps: u32 };

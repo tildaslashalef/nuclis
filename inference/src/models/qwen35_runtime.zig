@@ -1,11 +1,14 @@
 //! CPU execution of the qwen35 schedule at the binding's shape. Immutable weight views
 //! and bindings borrow the loaded model; this runtime owns session and workspace.
-//! A failed step poisons the session. No MTP, multimodal positions, or rewinding.
+//! A failed step poisons the session; rewinding is the session's checkpoint.
+//! Image spans take M-RoPE positions (`prefillVision`), and a bound MTP
+//! block or DFlash2 drafter runs here too (`draftForward`, `flash*`).
 //! This is the numerical reference; `qwen35_metal.zig` runs the same schedule
 //! on the GPU and is compared against it. On a rotated (Bonsai) file every
 //! projection except `ssm_alpha` / `ssm_beta` reads its input through the
 //! Hadamard transform and the embedding row is un-rotated after lookup.
 const std = @import("std");
+const models = @import("root.zig");
 const alloc_check = @import("../alloc_check.zig");
 const model = @import("qwen35.zig");
 const weights = @import("../runtime/weights.zig");
@@ -269,6 +272,7 @@ pub const Runtime = struct {
     fn prefillSpans(self: *Runtime, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, hidden_rows: ?[]f32, observer: ?Observer) !void {
         const hidden = self.binding.shape.hidden;
         if (tokens.len == 0) return error.InvalidShape;
+        try models.checkSpans(tokens.len, spans);
         if (hidden_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
         var i: usize = 0;
@@ -561,6 +565,7 @@ pub const Runtime = struct {
     /// (`tokens.len` commit rows), when given, receives each row's
     /// `commitRow` for the prompt commit.
     pub fn prefill(self: *Runtime, tokens: []const u32, logits: ?[]f32, hidden: ?[]f32, observer: ?Observer) !void {
+        if (tokens.len == 0) return error.InvalidShape;
         const width = self.commitRow().len;
         if (hidden) |out| if (out.len != tokens.len * width) return error.InvalidShape;
         for (tokens, 0..) |token, i| {
@@ -699,6 +704,10 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
             try std.testing.expectError(error.InvalidTokenId, runtime.step(model.vocabulary, null, null));
             try std.testing.expectEqual(.ready, runtime.state.status);
             try std.testing.expectError(error.InvalidShape, runtime.step(0, &.{}, null));
+            try std.testing.expectEqual(.ready, runtime.state.status);
+            try std.testing.expectError(error.InvalidShape, runtime.prefill(&.{}, null, null, null));
+            const overrun = [_]model.VisionSpan{.{ .start = 0, .count = 2, .width_tokens = 2, .height_tokens = 1 }};
+            try std.testing.expectError(error.InvalidShape, runtime.prefillVision(&.{0}, &overrun, &.{}, null, null));
             try std.testing.expectEqual(.ready, runtime.state.status);
             if (runtime.step(0, null, null)) |_| return error.ExpectedInvalidEmbedding else |_| {}
             try std.testing.expectEqual(.failed, runtime.state.status);

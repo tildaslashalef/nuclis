@@ -75,7 +75,7 @@ pub fn rowsFor(frames: usize) usize {
     return halve(halve(halve(frames)));
 }
 
-pub const ConfigError = error{ InvalidConfig, UnsupportedConfig, OutOfMemory };
+pub const ConfigError = error{ InvalidConfig, UnsupportedConfiguration, OutOfMemory };
 
 /// Reads `config.json` (`Nemotron3_5AsrForRNNT`): the encoder's widths and
 /// the prompt block's, refusing what this encoder does not implement.
@@ -109,8 +109,8 @@ pub fn parseConfig(gpa: std.mem.Allocator, text: []const u8) ConfigError!Config 
     const e = j.encoder_config;
     if (!std.mem.eql(u8, e.hidden_act, "silu") or e.attention_bias or e.convolution_bias or e.scale_input or
         e.subsampling_factor != 8 or e.subsampling_conv_kernel_size != taps or e.subsampling_conv_stride != 2 or
-        e.num_key_value_heads != e.num_attention_heads) return error.UnsupportedConfig;
-    for (e.supported_num_lookahead_tokens) |r| if (std.mem.indexOfScalar(usize, &lookaheads, r) == null) return error.UnsupportedConfig;
+        e.num_key_value_heads != e.num_attention_heads) return error.UnsupportedConfiguration;
+    for (e.supported_num_lookahead_tokens) |r| if (std.mem.indexOfScalar(usize, &lookaheads, r) == null) return error.UnsupportedConfiguration;
     if (e.num_attention_heads == 0 or e.hidden_size % e.num_attention_heads != 0 or e.hidden_size > 16384 or
         e.intermediate_size == 0 or e.intermediate_size > 65536 or e.num_hidden_layers == 0 or e.num_hidden_layers > 256 or
         e.subsampling_conv_channels == 0 or e.subsampling_conv_channels > 4096 or e.num_mel_bins == 0 or e.num_mel_bins > 1024 or
@@ -333,8 +333,6 @@ pub const Encoder = struct {
         self.* = undefined;
     }
 
-    /// The whole-clip pass over `features` (`frames × mels`): one stream fed
-    /// at once. Returns `rowsFor(frames) × hidden` rows, owned by `alloc`.
     /// The prompt block over the rows `x` (`n × hidden`, the blocks' output):
     /// `[row ; one-hot(prompt)] → prompt_hidden → hidden` into `out`.
     /// `scratch` holds its intermediates.
@@ -359,6 +357,8 @@ pub const Encoder = struct {
         try dense.matmul(self.io, .{ .rows = n, .inner = c.prompt_hidden, .outputs = h, .x = inner, .w = w.prompt_out.weight, .bias = w.prompt_out.bias }, out);
     }
 
+    /// The whole-clip pass over `features` (`frames × mels`): one stream fed
+    /// at once. Returns `rowsFor(frames) × hidden` rows, owned by `alloc`.
     pub fn encode(self: *const Encoder, alloc: std.mem.Allocator, features: []const f32, lookahead: usize, prompt: usize, observer: ?Observer) ![]f32 {
         var stream = try Stream.init(alloc, self, lookahead, prompt);
         defer stream.deinit();
@@ -1147,10 +1147,10 @@ test "config.json: the checkpoint's values, and what is refused" {
     ;
     try std.testing.expectEqual(Config.nemotron, try parseConfig(gpa, text));
     const cases = [_]struct { []const u8, []const u8, anyerror }{
-        .{ "\"silu\"", "\"gelu\"", error.UnsupportedConfig },
-        .{ "\"scale_input\":false", "\"scale_input\":true", error.UnsupportedConfig },
-        .{ "[3,0,6,13]", "[3,0,1,13]", error.UnsupportedConfig },
-        .{ "\"num_key_value_heads\":8", "\"num_key_value_heads\":4", error.UnsupportedConfig },
+        .{ "\"silu\"", "\"gelu\"", error.UnsupportedConfiguration },
+        .{ "\"scale_input\":false", "\"scale_input\":true", error.UnsupportedConfiguration },
+        .{ "[3,0,6,13]", "[3,0,1,13]", error.UnsupportedConfiguration },
+        .{ "\"num_key_value_heads\":8", "\"num_key_value_heads\":4", error.UnsupportedConfiguration },
         .{ "\"hidden_size\":1024", "\"hidden_size\":1020", error.InvalidConfig },
         .{ "\"sliding_window\":57", "\"sliding_window\":0", error.InvalidConfig },
         .{ "\"num_prompts\":128", "\"num_prompts\":\"x\"", error.InvalidConfig },

@@ -201,8 +201,8 @@ pub const Plan = struct {
     }
     fn matrix(self: *Plan, tensor: *const gguf.Tensor) !Weight {
         const m = try self.view.matrix(tensor);
-        if (!model.executableEncoding(m.encoding)) return error.UnsupportedEncoding;
-        if (m.rows % 8 != 0 or m.columns % 64 != 0) return error.UnsupportedConfig;
+        if (!model.executableEncoding(m.encoding)) return error.UnsupportedTensorEncoding;
+        if (m.rows % 8 != 0 or m.columns % 64 != 0) return error.UnsupportedConfiguration;
         return .{ .buffer = try self.backend.wrap(m.bytes), .matrix = m };
     }
 

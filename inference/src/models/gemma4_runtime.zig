@@ -34,6 +34,7 @@
 //!   sliding and last global layer, write none, and chain only its `h_next`;
 //!   `commit` is a copy of the last target hidden into `pending_h`.
 const std = @import("std");
+const models = @import("root.zig");
 const alloc_check = @import("../alloc_check.zig");
 const model = @import("gemma4.zig");
 const assistant = @import("gemma4_assistant.zig");
@@ -262,6 +263,7 @@ pub const Runtime = struct {
 
     pub fn reset(self: *Runtime) void {
         self.state.reset();
+        if (self.draft) |*head| @memset(head.pending_h, 0);
     }
 
     fn mm(self: *Runtime, tensor: *const Tensor, input: []const f32, output: []f32) !void {
@@ -471,6 +473,7 @@ pub const Runtime = struct {
     pub fn prefillVision(self: *Runtime, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, observer: ?Observer) !void {
         const width = self.binding.config.embedding;
         if (tokens.len == 0) return error.InvalidShape;
+        try models.checkSpans(tokens.len, spans);
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
         var i: usize = 0;
         var si: usize = 0;
@@ -553,6 +556,7 @@ pub const Runtime = struct {
     /// (`tokens.len × embedding`), receives every row's post-`output_norm`
     /// hidden — the rows the drafter's `commit` consumes.
     pub fn prefill(self: *Runtime, tokens: []const u32, logits: ?[]f32, hidden: ?[]f32, observer: ?Observer) !void {
+        if (tokens.len == 0) return error.InvalidShape;
         const width = self.binding.config.embedding;
         if (hidden) |h| if (h.len != tokens.len * width) return error.InvalidShape;
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
@@ -582,7 +586,7 @@ pub const Runtime = struct {
     fn headForward(self: *Runtime, h_prev: []const f32, token: u32, position: usize, logits: ?[]f32) !void {
         const head = &(self.draft orelse return error.NoDraftBlock);
         const out = head.binding.config.embedding_out;
-        if (token >= model.vocabulary or position == 0 or position > self.state.capacity) return error.InvalidShape;
+        if (token >= model.vocabulary or position == 0 or position >= self.state.capacity) return error.InvalidShape;
         if (logits) |values| if (values.len != model.vocabulary) return error.InvalidShape;
         // [sqrt(w)·embed_target(x_p); h_{p-1}] with no norm on either half.
         try self.view.row(self.binding.token_embedding, token, head.row);
@@ -815,6 +819,10 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
                 try std.testing.expectError(error.InvalidTokenId, runtime.step(model.vocabulary, null, null));
                 try std.testing.expectEqual(.ready, runtime.state.status);
                 try std.testing.expectError(error.InvalidShape, runtime.step(0, &.{}, null));
+                try std.testing.expectEqual(.ready, runtime.state.status);
+                try std.testing.expectError(error.InvalidShape, runtime.prefill(&.{}, null, null, null));
+                const overrun = [_]model.VisionSpan{.{ .start = 0, .count = 2, .width_tokens = 2, .height_tokens = 1 }};
+                try std.testing.expectError(error.InvalidShape, runtime.prefillVision(&.{0}, &overrun, &.{}, null, null));
                 try std.testing.expectEqual(.ready, runtime.state.status);
                 try std.testing.expect(runtime.step(0, null, null) != error.InvalidTokenId);
                 try std.testing.expectEqual(.failed, runtime.state.status);

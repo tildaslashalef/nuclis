@@ -37,7 +37,8 @@ kernel void nu_delta(device float * state [[buffer(0)]],
 // row t's normalized key per Q/K head and decay per value head at
 // tape[t·key_stride], its correction per (value head, value) at
 // tape[corr_offset + t·vheads·values]. keys is a multiple of 32, at most 128.
-struct DeltaRowsParams { uint qheads; uint vheads; uint keys; uint values; uint count; uint in_stride; uint gate_stride; uint out_stride; uint key_stride; uint corr_offset; float scale; };
+// Value head h reads Q/K head h % qheads, or h / group, as in nu_delta.
+struct DeltaRowsParams { uint qheads; uint vheads; uint keys; uint values; uint count; uint in_stride; uint gate_stride; uint out_stride; uint key_stride; uint corr_offset; float scale; uint group; };
 #define NU_DELTA_LANE_KEYS 4
 kernel void nu_delta_rows(device const float * state [[buffer(0)]],
                           device const float * input [[buffer(1)]],
@@ -48,7 +49,7 @@ kernel void nu_delta_rows(device const float * state [[buffer(0)]],
                           constant DeltaRowsParams & p [[buffer(7)]],
                           uint row [[threadgroup_position_in_grid]],
                           uint lane [[thread_index_in_simdgroup]]) {
-    uint head = row / p.values, value = row % p.values, kh = head % p.qheads;
+    uint head = row / p.values, value = row % p.values, kh = p.group ? head / p.group : head % p.qheads;
     uint qsize = p.qheads * p.keys, n = p.keys / 32;
     float s[NU_DELTA_LANE_KEYS];
     for (uint i = 0; i < n; ++i) s[i] = state[row*p.keys + lane + 32*i];
@@ -83,13 +84,13 @@ kernel void nu_delta_rows(device const float * state [[buffer(0)]],
 // Applies the first `count` rows of a nu_delta_rows tape to the state:
 // nu_delta's update with the recorded decay, key, and correction, so the
 // state equals `count` decode steps. One SIMD group per (value head, value).
-struct DeltaReplayParams { uint qheads; uint vheads; uint keys; uint values; uint count; uint key_stride; uint corr_offset; };
+struct DeltaReplayParams { uint qheads; uint vheads; uint keys; uint values; uint count; uint key_stride; uint corr_offset; uint group; };
 kernel void nu_delta_replay(device float * state [[buffer(0)]],
                             device const float * tape [[buffer(1)]],
                             constant DeltaReplayParams & p [[buffer(7)]],
                             uint row [[threadgroup_position_in_grid]],
                             uint lane [[thread_index_in_simdgroup]]) {
-    uint head = row / p.values, kh = head % p.qheads;
+    uint head = row / p.values, kh = p.group ? head / p.group : head % p.qheads;
     uint qsize = p.qheads * p.keys, n = p.keys / 32;
     float s[NU_DELTA_LANE_KEYS];
     for (uint i = 0; i < n; ++i) s[i] = state[row*p.keys + lane + 32*i];

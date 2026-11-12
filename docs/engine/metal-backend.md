@@ -68,7 +68,7 @@ same `--logits`/`--trace-dir` oracle as the CPU backend ([sampling.md](sampling.
 | `backends/metal/kernels.zig`, `profile.zig` | The MSL source's assembly and the `Kernel` table (`kernel_files`, the codebooks as MSL constants); per-dispatch timing types. |
 | `backends/metal/ops/*.zig` | The typed encoders, one file per `kernels/*.metal` file (`matvec`, `matmul`, `experts`, `rowwise`, `encoders`, `recurrent`, `attention`, `sampling`, `audio`, `asr`, `tts`): functions of `*Backend` that `root.zig` aliases as methods, so callers write `backend.matvec(…)`. |
 | `backends/metal/dequant.metal` | GGUF block decoders, ported line by line from `quant/decode.zig`. Bit-exact with the CPU decoders. |
-| `backends/metal/kernels/*.metal` | Compute kernels, one file per kind of operation (`common`, `matvec`, `matvec_codebook`, `matvec_split`, `matvec_rows`, `experts`, `matmul`, `rowwise`, `recurrent`, `attention`, `recurrent_chunk`, `sampling`, `encoders`, `audio`, `asr`, `tts`), joined in that order (`kernel_files` in `root.zig`; later files use earlier helpers): generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0/Q5_0/Q5_1, merged projections (plain, SiLU pair, GELU pair) and their forced split-K twins, embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, quick-gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window, bidirectional span, and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing; Nemotron ASR's subsampling convolutions, chunk-masked relative attention over a cached window, GLU, depthwise convolution, row shifts, joint input, and a few-rows F32 product with epilogues. |
+| `backends/metal/kernels/*.metal` | Compute kernels, one file per kind of operation (`common`, `matvec`, `matvec_codebook`, `matvec_split`, `matvec_rows`, `experts`, `matmul`, `rowwise`, `recurrent`, `attention`, `recurrent_chunk`, `sampling`, `encoders`, `audio`, `asr`, `tts`), joined in that order (`kernel_files` in `kernels.zig`; later files use earlier helpers), then `matvec_split_k` (the split-K matvecs and the fragment layout pin) in the `bench_kernels` build `metal-check` imports only: generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0/Q5_0/Q5_1, merged projections (plain, SiLU pair, GELU pair) and their forced split-K twins (benchmark builds), embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, quick-gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window, bidirectional span, and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing; Nemotron ASR's subsampling convolutions, chunk-masked relative attention over a cached window, GLU, depthwise convolution, row shifts, joint input, and a few-rows F32 product with epilogues. |
 | `models/qwen35_metal.zig` | `Plan`: the Qwen schedule expressed as encoder calls. Owns the session and activation buffers; borrows weights and the backend. |
 | `models/gemma4_metal.zig` | `Plan`: the Gemma 4 12B schedule ([MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11)) on the same encoders; sliding-window slices, two RoPE tables, the wide global-layer attention ([gemma4.md § Metal plan](../models/gemma4.md#metal-plan-2026-09-11)). |
 | `models/muse_glimmer_metal.zig` | `Plan`: the Muse Glimmer 30B schedule ([MODL-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-12--muse-glimmer-30b-metal-plan-2026-09-19)) on the same encoders; adjacent-pair RoPE on sliding layers only, the sigmoid attention gate, the untied scaled head ([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-2026-09-19)). |
@@ -79,16 +79,28 @@ same `--logits`/`--trace-dir` oracle as the CPU backend ([sampling.md](sampling.
 The MSL source is assembled at compile time: the IQ3_S codebook is emitted from
 the single Zig definition, then `dequant.metal` and the `kernels/` files, in `kernel_files` order, are embedded.
 The shader compiles at backend creation with `MTLMathModeSafe`, so no
-reassociation or contraction is applied. Metal's per-user shader cache
-keeps that cheap: measured on the M4 Pro (2026-10-02, 159 pipelines,
-`nuclis bench --kernel-stats` and a standalone harness), a warm start costs
-26 ms for the whole process; after a shader edit the library recompiles
-(about 0.6 s) while unchanged functions keep their cached pipelines; fully
-cold (a new OS or driver, a purged cache) it is 0.82 s of library and
-3.94 s of pipelines. 56 of the pipelines (the `_t3..t8` multi-row bodies,
-the `_8` and `_w8` tiles, split-K, `f2hh`/`f4`, the three-pass attention,
-single-row `rope`, `fragment_layout`) serve only checks and benchmarks;
-they are 1.70 s of the cold 3.94 s.
+reassociation or contraction is applied, and every `Kernel` tag's pipeline
+is compiled there. Metal's per-user shader cache keeps that cheap. Measured
+on the M4 Pro (2026-11-12, macOS 27.2.1, Zig 0.17.1, ReleaseSafe, `0dfa0b4`
+before and after the change that deleted the lost matmul variants and moved
+the split-K set behind `bench_kernels`): wall time of the whole
+`nuclis bench --kernel-stats` process, three probes each, a probe being a
+one-line comment appended to the shader source and a rebuild, then one
+cold-ish run (the library recompiles, unchanged functions keep their cached
+pipelines) and five warm runs.
+
+| Tree | Pipelines | Cold-ish (library recompile) | Warm |
+| --- | --- | --- | --- |
+| before | 261 | 1.48, 1.57, 1.41 s | 46–53 ms |
+| after | 244 | 2.42, 1.53, 1.38 s | 47–55 ms |
+
+The after tree's first probe also compiled the four kernels the change
+edited (argmax, the verify DeltaNet rows); the other probes and the warm
+runs are within noise of the before tree. Seventeen fewer pipelines do not
+show in a warm or library-only start; they would in a fully cold one (a new
+OS or driver, a purged cache), which was 0.82 s of library and 3.94 s of
+pipelines for 159 pipelines on 2026-10-02 and was not measured again. The
+`bench_kernels` build `metal-check` imports adds back six (250).
 
 ## Execution model
 
@@ -580,9 +592,12 @@ kernel's ~0.9 ns per 256-value block (144 bytes) against Q5_K's 176, not
 the row count: the remaining lever is per-block arithmetic, not more K
 parallelism. Production keeps the single-pass kernels; the split kernels,
 the scratch, and the forcing API (`Backend.matvecSplits` /
-`matvecSegmentsSplits`, strict about split-capable encodings) stay as the
+`matvecSegmentsSplits`, strict about split-capable encodings) are the
 measured fixture, the exactness of which `make test-metal` holds at 2/4/8
-splits against the F64 CPU reference. The sweep and its reading are in
+splits against the F64 CPU reference. Since 2026-11-12 they compile only
+into the `bench_kernels` instance of the engine module that `metal-check`
+imports (`kernels/matvec_split_k.metal`, the extra `Kernel` tags at the end
+of the enum); the application neither embeds nor compiles them. The sweep and its reading are in
 [benchmarks § Split-K matvec sweep](../benchmarks/history.md#split-k-matvec-sweep-2026-09-21);
 the family-facing note in
 [muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-2026-09-19).
@@ -1327,10 +1342,12 @@ The verify batch's small-batch tile was the plan's largest single lever
 128-thread group (`nu_matmul_wide_body`, the `_w8` instantiations), where
 each lane owns a row and four 8-row accumulator blocks share one B load per
 K step, halving the gathered activation traffic per weight byte. Nothing
-routes to it in production; `Backend.matmulTile32` measures it against
+routed to it in production; `Backend.matmulTile32` measured it against
 `Backend.matmulTile`'s 16×8 control in `make bench-matvec-rows`, and
-`test-metal` exactness-gates it against the generic F32 tile at the
-half-tile bound.
+`test-metal` exactness-gated it against the generic F32 tile at the
+half-tile bound. The kernels, `matmulTile32`, and
+`specializedMatmulWide` were deleted on 2026-11-12, after this
+measurement; the record below is what remains of them.
 
 `make bench-matvec-rows ARGS="8 head"`, Apple M4 Pro (48 GiB), Zig 0.16.0,
 ReleaseSafe, `d31c5cd` plus this unit's change, minimum of three measured
@@ -1366,7 +1383,8 @@ The 16×8 tile decodes weights into threadgroup memory and reloads them as
 bound on per-element work, not bytes. `nu_matmul_frag_body` keeps the
 geometry and the four-way K split but stages nothing: a lane holds
 elements (r, c) and (r, c + 1) of each `simdgroup_matrix`
-(`nu_fragment_row/col`, pinned by `nu_fragment_layout` in `test-metal`),
+(`nu_fragment_row/col`, pinned by `nu_fragment_layout` in `test-metal`, a
+kernel only the `bench_kernels` build compiles),
 and inside a 64-column step column c = 2q + e of fragment j holds step
 column 16q + 8e + j, identically for both operands. The lane then needs
 segment q of its own weight row (the existing `nu_tile_segment` decoders,
@@ -1407,8 +1425,9 @@ headers), 8 or 32 rows per group, a software-pipelined decode, and a
 scaled variant (the multiplies on the integer codes, the group scale
 applied once) all measured within noise or worse (the log's ledger).
 The unit's 150 GB/s bar is met only by Q6_K's gate shape.
-`matmulKernel` forces any instantiation for measurement; `_f2hh` and
-`_f4` stay as measured variants.
+`matmulKernel` forces any instantiation for measurement. The `_f2hh`
+(half × half) and `_f4` (32-row) Q4_K variants measured no faster and were
+deleted on 2026-11-12.
 
 ## Merged projections (2026-09-08)
 

@@ -1,5 +1,8 @@
-//! Matrix-vector products: the generic and specialized kernels, split-K, multi-row, and segments: the host side of `kernels/matvec.metal`. Methods of `Backend`,
-//! which `root.zig` aliases so callers write `backend.matvec(…)`.
+//! Matrix-vector products: the generic and specialized kernels, multi-row,
+//! and segments: the host side of `kernels/matvec*.metal`. Methods of
+//! `Backend`, which `root.zig` aliases so callers write `backend.matvec(…)`.
+//! The forced split-K forms (`matvecSplits`, `matvecSegmentsSplits`) exist
+//! only in the `bench_kernels` build that `metal-check` imports.
 const std = @import("std");
 const root = @import("../root.zig");
 const cpu = @import("../../cpu/root.zig");
@@ -12,6 +15,7 @@ const enabled = root.enabled;
 const Shape = @import("../profile.zig").Shape;
 const perElement = Backend.perElement;
 const blockAligned = @import("matmul.zig").blockAligned;
+const bench_kernels = root.bench_kernels;
 
 // ----- Kernel encoders. Each validates shapes before recording. -----
 
@@ -32,9 +36,9 @@ pub fn matvec(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer
 /// 1 is the single-pass kernel). Only the specialized encodings with a
 /// split body are served. No production shape routes here: the 2026-09-21
 /// sweep measured the split path behind the single pass on every row
-/// bucket, so the kernels stay as the measured fixture and the
-/// single pass is what `matvec` records.
-pub fn matvecSplits(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, output: Buffer, splits: usize) !void {
+/// bucket. Benchmark builds only.
+pub const matvecSplits = if (bench_kernels) matvecSplitsImpl else @compileError("matvecSplits needs the bench_kernels build");
+fn matvecSplitsImpl(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, output: Buffer, splits: usize) !void {
     if (splits == 0 or splits > split_k_max) return error.InvalidShape;
     return matvecImpl(self, weights, matrix, input, output, splits);
 }
@@ -59,8 +63,10 @@ pub fn matvecSimdgroups(kernel: Kernel) usize {
 pub const split_k_max = 8;
 /// Most rows the row-partial scratch holds per split (512 KB at 8 splits).
 pub const split_k_rows = 16_384;
-/// The split body of a specialized matvec, when one exists.
-pub fn matvecSplitKernel(kernel: Kernel) ?Kernel {
+/// The split body of a specialized matvec, when one exists. Benchmark
+/// builds only.
+pub const matvecSplitKernel = if (bench_kernels) splitKernel else @compileError("matvecSplitKernel needs the bench_kernels build");
+fn splitKernel(kernel: Kernel) ?Kernel {
     return switch (kernel) {
         .matvec_q4_k => .matvec_q4_k_split,
         .matvec_q5_k => .matvec_q5_k_split,
@@ -68,7 +74,8 @@ pub fn matvecSplitKernel(kernel: Kernel) ?Kernel {
     };
 }
 /// Row-partial scratch, created on first use: `split_k_rows` rows per
-/// split; the forced path validates the row count against it.
+/// split; the forced path validates the row count against it. Benchmark
+/// builds only (the field is `void` otherwise).
 fn splitScratch(self: *Backend) !Buffer {
     if (self.split_scratch) |b| return b;
     const b = try self.create(split_k_rows * split_k_max * 4);
@@ -84,8 +91,8 @@ fn matvecImpl(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer
     const shape: Shape = .{ .encoding = matrix.encoding, .rows = @intCast(matrix.rows), .columns = @intCast(matrix.columns), .bytes = matrix.bytes.len };
     const rows_per_group = rows_per_simdgroup * simdgroups_per_matvec_group;
     if (!self.generic_only) if (specializedMatvec(matrix.encoding, weights.offset, stride, input.offset)) |kernel| {
-        if (splits > 1) {
-            const split_kernel = matvecSplitKernel(kernel) orelse return error.InvalidShape;
+        if (splits > 1) if (bench_kernels) {
+            const split_kernel = splitKernel(kernel) orelse return error.InvalidShape;
             const scratch = try splitScratch(self);
             if (matrix.rows * splits * 4 > scratch.len) return error.InvalidShape;
             const blocks = matrix.columns / 256;
@@ -96,7 +103,7 @@ fn matvecImpl(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer
             const rp: ReduceSplitsParams = .{ .rows = @intCast(matrix.rows), .splits = @intCast(splits) };
             try self.dispatch(.reduce_splits, &.{ scratch, output }, rp, perElement(matrix.rows), 256, .{});
             return;
-        }
+        } else return error.InvalidShape;
         const p: MatvecBlockParams = .{ .columns = @intCast(matrix.columns), .stride = @intCast(stride), .rows = @intCast(matrix.rows), .blocks = @intCast(matrix.columns / 256) };
         const simdgroups = matvecSimdgroups(kernel);
         const group_rows = matvecRowsPerSimdgroup(kernel) * simdgroups;
@@ -116,10 +123,6 @@ pub const MatvecRowsParams = extern struct { columns: u32, encoding: u32, stride
 /// 3, against the fragment tile's 104–151; IQ4_XS at 3 and every
 /// encoding from 4 lose to the tile (`--matvec-rows-bench`, 2026-10-03).
 pub const small_batch_rows = 3;
-/// Whether `matmul` routes the multi-row matvec at all. Verify batches
-/// of 2 and 3 rows are common: the drafter stops its chain at a
-/// low-probability proposal.
-pub const route_small_batch = true;
 /// Largest token count the multi-row kernels are instantiated for; the
 /// sweep measures every count to `matvec_rows_max` even though `matmul`
 /// routes only to `small_batch_rows`.
@@ -132,7 +135,7 @@ pub fn usesMatvecRows(encoding: u32, tokens: usize) bool {
         12, 13, 14 => small_batch_rows,
         else => 2,
     };
-    return route_small_batch and tokens >= 2 and tokens <= limit;
+    return tokens >= 2 and tokens <= limit;
 }
 /// output[t][r] = Σ_c weights[r,c] · input[t,c] for `1 < tokens ≤
 /// matvec_rows_max` activation rows. Each weight block is decoded once
@@ -147,7 +150,7 @@ pub fn matvecRows(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Bu
     if (matrix.rows == 0 or matrix.columns == 0 or matrix.columns % 16 != 0 or matrix.bytes.len % matrix.rows != 0) return error.InvalidShape;
     const stride = matrix.bytes.len / matrix.rows;
     try quant.validateRow(matrix.encoding, stride, matrix.columns);
-    if (tokens < 2 or tokens > matvec_rows_max or tokens > 64) return error.InvalidShape;
+    if (tokens < 2 or tokens > matvec_rows_max) return error.InvalidShape;
     if (in_stride < matrix.columns or out_stride < matrix.rows) return error.InvalidShape;
     if (weights.len < matrix.bytes.len or input.len < ((tokens - 1) * in_stride + matrix.columns) * 4 or output.len < ((tokens - 1) * out_stride + matrix.rows) * 4) return error.InvalidShape;
     if (input.offset % 16 != 0 or in_stride % 4 != 0 or output.offset % 4 != 0) return error.InvalidShape;
@@ -160,8 +163,9 @@ pub fn matvecRows(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Bu
     };
     try self.dispatch(.matvec_rows, &.{ weights, input, output }, p, @intCast(matrix.rows), 32, shape);
 }
-/// The multi-row bodies that exist (Q4_K, Q5_K, Q6_K, IQ4_XS), one per token
-/// count 2..8; every other encoding takes the generic `nu_matvec_rows` above.
+/// The multi-row bodies that exist (Q4_K, Q5_K, Q6_K, IQ4_XS, IQ2_XXS: see
+/// the switch), one per token count 2..8; every other encoding takes the
+/// generic `nu_matvec_rows` above.
 /// The token count is a template parameter so the body's accumulator loops
 /// are compile-time bound (see kernels/).
 pub fn specializedMatvecRows(encoding: u32, tokens: usize, weight_offset: usize, stride: usize, input_offset: usize) ?Kernel {
@@ -184,7 +188,8 @@ fn matvecRowsBodies(comptime name: []const u8) [matvec_rows_max - 1]Kernel {
 }
 /// Picks a specialized matvec when its vector loads are aligned
 /// (`blockAligned`) and the input vector is float4-aligned. Otherwise
-/// `null`: generic path. The K-quant kernels walk 256-value strides;
+/// `null`: generic path. Every encoding `blockAligned` accepts has one (see
+/// the switch). The K-quant and codebook kernels walk 256-value strides;
 /// the Q4_0, Q5_0, and Q5_1 kernels walk 32-value blocks and the ternary
 /// kernels 128-value blocks (lanes past the last block idle), so any
 /// whole-block row serves those five.
@@ -254,8 +259,9 @@ pub fn mergeDeclined(kernel: Kernel) bool {
 /// the single-pass kernel). Only plain-mode merges whose every segment has
 /// a specialized split body (Q4_K/Q5_K) are served. As with
 /// `matvecSplits`, no production merge routes here (the split measured
-/// behind the single pass); the segment split kernels stay as the measured fixture.
-pub fn matvecSegmentsSplits(self: *Backend, segments: []const Segment, input: Buffer, mode: SegmentMode, splits: usize) !void {
+/// behind the single pass). Benchmark builds only.
+pub const matvecSegmentsSplits = if (bench_kernels) matvecSegmentsSplitsImpl else @compileError("matvecSegmentsSplits needs the bench_kernels build");
+fn matvecSegmentsSplitsImpl(self: *Backend, segments: []const Segment, input: Buffer, mode: SegmentMode, splits: usize) !void {
     if (splits == 0 or splits > split_k_max) return error.InvalidShape;
     return matvecSegmentsImpl(self, segments, input, mode, splits);
 }
@@ -304,7 +310,7 @@ fn matvecSegmentsImpl(self: *Backend, segments: []const Segment, input: Buffer, 
         bytes = std.math.add(u64, bytes, m.bytes.len) catch return error.InvalidShape;
         const kernel = if (self.generic_only) null else specializedMatvec(m.encoding, s.weights.offset, stride, input.offset);
         const specialized = kernel != null;
-        all_split_capable = all_split_capable and (if (kernel) |k| matvecSplitKernel(k) != null else false);
+        if (bench_kernels) all_split_capable = all_split_capable and (if (kernel) |k| splitKernel(k) != null else false);
         p.segments[i] = .{
             .rows = @intCast(m.rows),
             .weight_slot = try segmentSlot(&bindings, &used, s.weights),
@@ -318,7 +324,7 @@ fn matvecSegmentsImpl(self: *Backend, segments: []const Segment, input: Buffer, 
     // Unused slots bind the valid input buffer, because the kernel signature
     // declares all seven. No dispatch is recorded before all validation passes.
     const splits = splits_override orelse 1;
-    if (splits > 1) {
+    if (splits > 1) if (bench_kernels) {
         if (!all_split_capable or used >= bindings.len) return error.InvalidShape;
         const scratch = try splitScratch(self);
         if (total_rows * splits * 4 > scratch.len) return error.InvalidShape;
@@ -331,7 +337,7 @@ fn matvecSegmentsImpl(self: *Backend, segments: []const Segment, input: Buffer, 
         try self.dispatch(.matvec_segments_split, &bindings, p, groups, 128, .{ .rows = total_rows, .columns = p.columns, .bytes = bytes * splits });
         try self.dispatch(.segment_reduce_splits, &bindings, p, perElement(total_rows), 256, .{});
         return;
-    }
+    } else return error.InvalidShape;
     const groups = if (mode == .plain) total_rows / 16 else p.segments[0].rows / 8;
     try self.dispatch(.matvec_segments, &bindings, p, groups, 128, .{ .rows = total_rows, .columns = p.columns, .bytes = bytes });
 }

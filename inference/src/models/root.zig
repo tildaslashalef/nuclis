@@ -70,6 +70,25 @@ pub const known = registry.known;
 pub const adapterFor = registry.adapterFor;
 pub const select = registry.select;
 
+/// Refuses image spans a prefill cannot walk: each must hold at least one
+/// row, start at or after the previous one's end, and end within `tokens`.
+pub fn checkSpans(tokens: usize, spans: []const @import("../vision/root.zig").Span) error{InvalidShape}!void {
+    var end: usize = 0;
+    for (spans) |sp| {
+        if (sp.count == 0 or sp.start < end or sp.start > tokens or sp.count > tokens - sp.start) return error.InvalidShape;
+        end = sp.start + sp.count;
+    }
+}
+
+test "image spans must be ordered, non-empty, and inside the prompt" {
+    const S = @import("../vision/root.zig").Span;
+    try checkSpans(8, &[_]S{ .{ .start = 1, .count = 3, .width_tokens = 3, .height_tokens = 1 }, .{ .start = 4, .count = 4, .width_tokens = 2, .height_tokens = 2 } });
+    try std.testing.expectError(error.InvalidShape, checkSpans(8, &[_]S{.{ .start = 6, .count = 3, .width_tokens = 3, .height_tokens = 1 }}));
+    try std.testing.expectError(error.InvalidShape, checkSpans(8, &[_]S{.{ .start = 9, .count = 0, .width_tokens = 0, .height_tokens = 0 }}));
+    try std.testing.expectError(error.InvalidShape, checkSpans(8, &[_]S{.{ .start = 2, .count = 0, .width_tokens = 0, .height_tokens = 0 }}));
+    try std.testing.expectError(error.InvalidShape, checkSpans(8, &[_]S{ .{ .start = 4, .count = 2, .width_tokens = 2, .height_tokens = 1 }, .{ .start = 1, .count = 2, .width_tokens = 2, .height_tokens = 1 } }));
+}
+
 test "adapters are looked up by architecture id" {
     try std.testing.expectEqual(Adapter.qwen35, adapterFor("qwen35").?);
     try std.testing.expect(adapterFor("clip") == null);

@@ -43,10 +43,8 @@ pub fn matmulGeometry(kernel: Kernel) MatmulGeometry {
         .matmul_q2_k, .matmul_iq2_xxs, .matmul_iq2_xs, .matmul_iq3_xxs, .matmul_iq1_s, .matmul_iq2_s, .matmul_iq1_m => .{ .rows = 64, .tokens = 64, .half = true },
         .matmul_q3_k_8, .matmul_q4_k_8, .matmul_q5_k_8, .matmul_q6_k_8, .matmul_iq3_s_8, .matmul_iq4_xs_8, .matmul_q4_0_8, .matmul_q5_0_8, .matmul_q5_1_8, .matmul_pq2_0_8, .matmul_ptq1_0_8 => .{ .rows = 16, .tokens = 8, .half = true },
         .matmul_q2_k_8, .matmul_iq2_xxs_8, .matmul_iq2_xs_8, .matmul_iq3_xxs_8, .matmul_iq1_s_8, .matmul_iq2_s_8, .matmul_iq1_m_8 => .{ .rows = 16, .tokens = 8, .half = true },
-        .matmul_q3_k_w8, .matmul_q4_k_w8, .matmul_q5_k_w8, .matmul_q6_k_w8, .matmul_iq3_s_w8, .matmul_iq4_xs_w8, .matmul_q4_0_w8, .matmul_pq2_0_w8, .matmul_ptq1_0_w8 => .{ .rows = 32, .tokens = 8, .half = true },
-        .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q5_k_f2, .matmul_q6_k_f2, .matmul_iq4_xs_f2, .matmul_q3_k_f2, .matmul_iq3_s_f2, .matmul_q4_0_f2, .matmul_q5_0_f2, .matmul_q5_1_f2, .matmul_q8_0_f2, .matmul_pq2_0_f2, .matmul_ptq1_0_f2, .matmul_iq4_nl_f2 => .{ .rows = 16, .tokens = 8, .half = true },
+        .matmul_q4_k_f2, .matmul_q5_k_f2, .matmul_q6_k_f2, .matmul_iq4_xs_f2, .matmul_q3_k_f2, .matmul_iq3_s_f2, .matmul_q4_0_f2, .matmul_q5_0_f2, .matmul_q5_1_f2, .matmul_q8_0_f2, .matmul_pq2_0_f2, .matmul_ptq1_0_f2, .matmul_iq4_nl_f2 => .{ .rows = 16, .tokens = 8, .half = true },
         .matmul_q2_k_f2, .matmul_iq2_xxs_f2, .matmul_iq2_xs_f2, .matmul_iq3_xxs_f2, .matmul_iq1_s_f2, .matmul_iq2_s_f2, .matmul_iq1_m_f2 => .{ .rows = 16, .tokens = 8, .half = true },
-        .matmul_q4_k_f4 => .{ .rows = 32, .tokens = 8, .half = true },
         else => .{ .rows = 32, .tokens = 32, .half = true },
     };
 }
@@ -55,12 +53,12 @@ pub fn matmulGeometry(kernel: Kernel) MatmulGeometry {
 /// `in_stride` floats and `output` as many rows of `out_stride`; rows past
 /// `tokens` are scratch the caller must ignore. Requires columns % 64 == 0,
 /// rows % 8 == 0, and a float4-aligned input (offset and stride). Weights
-/// are read once per token tile. Q3_K, Q4_K, Q5_K, Q6_K, IQ3_S, IQ4_XS,
-/// Q4_0, Q5_0, and Q5_1 go through their specialized half-operand tile when the weight
-/// range is aligned (`specializedMatmul`; Q4_K, Q5_K, Q6_K, and IQ4_XS
-/// through the register-fragment tile up to `small_chunk_tokens`,
-/// `specializedMatmulFrag`), every other case through the generic F32
-/// tile (`matmulGeometry`).
+/// are read once per token tile. A 2–3-row batch of an encoding with a
+/// multi-row body runs `matvecRows` (`usesMatvecRows`); otherwise an
+/// encoding with a specialized tile (see the switches of
+/// `specializedMatmulFrag` and `specializedMatmul`) runs it when the weight
+/// range is aligned, the register-fragment tile up to `small_chunk_tokens`
+/// tokens, and every other case the generic F32 tile (`matmulGeometry`).
 pub fn matmul(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
     return matmulImpl(self, weights, matrix, input, in_stride, output, out_stride, tokens, .auto);
 }
@@ -69,19 +67,12 @@ pub fn matmul(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer
 pub fn matmulTile(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
     return matmulImpl(self, weights, matrix, input, in_stride, output, out_stride, tokens, .tile);
 }
-/// Same contract, forcing the wide 32×8 split-K tile (a measured
-/// candidate, against `matmulTile`'s 16×8 control). Rejected
-/// when the encoding or alignment has no wide body, or past its 8-token
-/// tile.
-pub fn matmulTile32(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
-    return matmulImpl(self, weights, matrix, input, in_stride, output, out_stride, tokens, .wide);
-}
 /// Same contract, through `kernel`, a matmul instantiation for this
 /// encoding and token count the caller has checked (a measurement aid).
 pub fn matmulKernel(self: *Backend, kernel: Kernel, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
     return matmulImpl(self, weights, matrix, input, in_stride, output, out_stride, tokens, .{ .forced = kernel });
 }
-const MatmulPolicy = union(enum) { auto, tile, wide, forced: Kernel };
+const MatmulPolicy = union(enum) { auto, tile, forced: Kernel };
 fn matmulImpl(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize, policy: MatmulPolicy) !void {
     if (matrix.rows == 0 or matrix.rows % 8 != 0 or matrix.columns == 0 or matrix.columns % 64 != 0 or matrix.bytes.len % matrix.rows != 0) return error.InvalidShape;
     if (tokens == 0 or in_stride < matrix.columns or out_stride < matrix.rows) return error.InvalidShape;
@@ -104,12 +95,8 @@ fn matmulImpl(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer
     const kernel = (if (self.generic_only) null else switch (policy) {
         .auto => specialized,
         .tile => specializedMatmul(matrix.encoding, weights.offset, stride, tokens),
-        .wide => specializedMatmulWide(matrix.encoding, weights.offset, stride, tokens),
         .forced => |k| k,
-    }) orelse blk: {
-        if (policy == .wide) return error.InvalidShape;
-        break :blk .matmul;
-    };
+    }) orelse .matmul;
     const geometry = matmulGeometry(kernel);
     const row_tiles = @divCeil(matrix.rows, geometry.rows);
     // The buffers hold `padded` rows, a multiple of every token tile.
@@ -120,8 +107,8 @@ fn matmulImpl(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer
     try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast(row_tiles * token_tiles), 128, shape);
 }
 /// Whether the row start (buffer offset) and the row stride are multiples
-/// of the vector-load width the encoding's block size allows (Q4_K/Q5_K
-/// 16, IQ4_XS 8, Q3_K/Q6_K/IQ3_S/Q4_0/Q5_0/Q5_1/IQ2_XXS 2). False for encodings
+/// of the vector-load width the encoding's block size allows (see the
+/// switch: Q4_K/Q5_K 16, IQ4_XS/IQ1_M 8, Q2_K/PTQ1_0 4, the rest 2). False for encodings
 /// without a specialized matvec; an encoding may have a matvec and no
 /// matmul tile, so each picker below answers null for its own gaps.
 pub fn blockAligned(encoding: u32, weight_offset: usize, stride: usize) bool {
@@ -133,24 +120,6 @@ pub fn blockAligned(encoding: u32, weight_offset: usize, stride: usize) bool {
         else => return false,
     };
     return weight_offset % alignment == 0 and stride % alignment == 0;
-}
-/// Picks the wide 32×8 split-K tile for the specialized encodings, up to
-/// its 8-token tile. A measured candidate that lost to the 16×8 tile;
-/// nothing routes to it in production.
-pub fn specializedMatmulWide(encoding: u32, weight_offset: usize, stride: usize, tokens: usize) ?Kernel {
-    if (tokens == 0 or tokens > 8 or !blockAligned(encoding, weight_offset, stride)) return null;
-    return switch (encoding) {
-        2 => .matmul_q4_0_w8,
-        142 => .matmul_pq2_0_w8,
-        143 => .matmul_ptq1_0_w8,
-        11 => .matmul_q3_k_w8,
-        21 => .matmul_iq3_s_w8,
-        12 => .matmul_q4_k_w8,
-        13 => .matmul_q5_k_w8,
-        14 => .matmul_q6_k_w8,
-        23 => .matmul_iq4_xs_w8,
-        else => null,
-    };
 }
 /// The specialized tile production `matmul` records for this shape: the
 /// fragment tile, else `specializedMatmul`'s; `null` means the generic
@@ -187,13 +156,6 @@ pub fn specializedMatmulFrag(encoding: u32, weight_offset: usize, stride: usize,
         29 => .matmul_iq1_m_f2,
         else => null,
     };
-}
-/// Writes element (r, c) of an 8×8 `simdgroup_matrix` filled through
-/// `thread_elements()` as 2·lane + i into `out[8r + c]` (64 floats): the
-/// lane layout the register-fragment tiles assume.
-pub fn fragmentLayout(self: *Backend, out: Buffer) !void {
-    if (out.len < 64 * 4) return error.InvalidShape;
-    try self.dispatch(.fragment_layout, &.{out}, @as(u32, 0), 1, 32, .{ .encoding = null, .rows = 8, .columns = 8, .bytes = 0 });
 }
 /// Picks a specialized matmul tile under the same weight alignment
 /// rules (the activation tile is staged through float4 loads, which
@@ -264,4 +226,12 @@ pub fn specializedMatmul(encoding: u32, weight_offset: usize, stride: usize, tok
         29 => .matmul_iq1_m,
         else => null,
     };
+}
+/// Writes element (r, c) of an 8×8 `simdgroup_matrix` filled through
+/// `thread_elements()` as 2·lane + i into `out[8r + c]` (64 floats): the
+/// lane layout the register-fragment tiles assume. Benchmark builds only.
+pub const fragmentLayout = if (root.bench_kernels) fragmentLayoutImpl else @compileError("fragmentLayout needs the bench_kernels build");
+fn fragmentLayoutImpl(self: *Backend, out: Buffer) !void {
+    if (out.len < 64 * 4) return error.InvalidShape;
+    try self.dispatch(.fragment_layout, &.{out}, @as(u32, 0), 1, 32, .{ .encoding = null, .rows = 8, .columns = 8, .bytes = 0 });
 }

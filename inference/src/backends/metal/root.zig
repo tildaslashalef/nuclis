@@ -5,7 +5,7 @@
 //! model adapters that call these encoders.
 //!
 //! Ownership: created buffers live until `deinit`. Wrapped buffers borrow the
-//! caller's page-backed memory, which must outlive the backend. `commit()`
+//! caller's page-backed memory, which must outlive the backend or its `unwrap`. `commit()`
 //! waits for completion, so CPU access to any buffer after it is race-free;
 //! `discard()` drops a recording on an error path without running it.
 //!
@@ -30,7 +30,6 @@ extern fn nu_metal_create([*]const u8, usize, [*]u8, usize) ?*anyopaque;
 extern fn nu_metal_destroy(*anyopaque) void;
 extern fn nu_metal_pipeline(*anyopaque, [*:0]const u8, *u32, [*]u8, usize) c_int;
 extern fn nu_metal_pipeline_stats(*anyopaque, u32, *[3]u32) c_int;
-extern fn nu_metal_max_buffer_length(*anyopaque) usize;
 extern fn nu_metal_buffer_create(*anyopaque, usize, *u32) c_int;
 extern fn nu_metal_buffer_wrap(*anyopaque, [*]const u8, usize, *u32, *usize) c_int;
 extern fn nu_metal_buffer_contents(*anyopaque, u32) ?[*]u8;
@@ -48,6 +47,9 @@ const kernels = @import("kernels.zig");
 const source = kernels.source;
 const kernel_names = kernels.kernel_names;
 pub const Kernel = kernels.Kernel;
+/// Whether this module instance compiles the benchmark-only kernels
+/// (`kernels.bench_kernels`); only `metal-check`'s does.
+pub const bench_kernels = kernels.bench_kernels;
 const profile_mod = @import("profile.zig");
 pub const Profile = profile_mod.Profile;
 pub const Tick = profile_mod.Tick;
@@ -88,8 +90,9 @@ pub const Backend = struct {
     tick: ?Tick = null,
     pipelines: [kernel_names.len]u32,
     wrapped: std.AutoHashMapUnmanaged(usize, Buffer) = .empty,
-    /// Row-partial buffer of the split-K matvec, created on first use.
-    split_scratch: ?Buffer = null,
+    /// Row-partial buffer of the split-K matvec, created on first use;
+    /// benchmark builds only.
+    split_scratch: if (bench_kernels) ?Buffer else void = if (bench_kernels) null else {},
     recording: bool = false,
     /// Diagnostic: record the generic `nu_matvec` / `nu_matmul` even when a
     /// specialized kernel applies. `metal-check` compares both paths;
@@ -155,8 +158,10 @@ pub const Backend = struct {
     }
     /// Pairs the bridge's per-dispatch durations with the recorded kernels.
     /// Runs after every commit while profiling, including failed ones, so the
-    /// pending list never leaks into the next command buffer.
-    fn account(self: *Backend, gpu_before: f64, completed: bool) !void {
+    /// pending list never leaks into the next command buffer. Cannot fail a
+    /// finished command buffer: a sample that finds no memory for its key is
+    /// counted as unsampled.
+    fn account(self: *Backend, gpu_before: f64, completed: bool) void {
         const p = &self.profile.?;
         defer p.pending.clearRetainingCapacity();
         if (!completed or p.paused or p.pending.items.len == 0) return;
@@ -168,7 +173,10 @@ pub const Backend = struct {
                 p.unsampled += 1;
                 continue;
             }
-            const entry = try p.totals.getOrPutValue(self.alloc, item.key, .{});
+            const entry = p.totals.getOrPutValue(self.alloc, item.key, .{}) catch {
+                p.unsampled += 1;
+                continue;
+            };
             entry.value_ptr.dispatches += 1;
             entry.value_ptr.seconds += p.durations[i];
             entry.value_ptr.bytes += item.bytes;
@@ -182,10 +190,6 @@ pub const Backend = struct {
         var out: [3]u32 = undefined;
         if (nu_metal_pipeline_stats(self.handle, self.pipelines[index], &out) != 0) unreachable;
         return .{ .name = kernel_names[index], .max_threads = out[0], .execution_width = out[1], .threadgroup_memory = out[2] };
-    }
-    pub fn maxBufferLength(self: *const Backend) usize {
-        if (!enabled) return 0;
-        return nu_metal_max_buffer_length(self.handle);
     }
 
     /// Zero-filled GPU buffer owned by the backend.
@@ -223,12 +227,16 @@ pub const Backend = struct {
         return entry.value_ptr.*;
     }
     /// Forgets a wrapped range so its memory can be freed and later wrapped
-    /// again at another length (a plan's session on `deinit`). Only
-    /// valid after the last `commit` that used it, which the synchronous
-    /// backend guarantees. The bridge keeps its `MTLBuffer` object (a no-copy
-    /// view that owns nothing) until the backend is destroyed.
+    /// again at another length (a plan's session on `deinit`), and releases
+    /// the bridge's no-copy `MTLBuffer` for it. Only valid after the last
+    /// `commit` that used it, which the synchronous backend guarantees; while
+    /// recording, the bridge refuses the release and keeps the object until
+    /// `deinit`. The released id is never reused, so a stale `Buffer` fails
+    /// its dispatch instead of aliasing another range.
     pub fn unwrap(self: *Backend, bytes: []const u8) void {
-        _ = self.wrapped.remove(@intFromPtr(bytes.ptr));
+        const entry = self.wrapped.fetchRemove(@intFromPtr(bytes.ptr)) orelse return;
+        // `release` refuses offset views, and a wrapped range usually has one.
+        if (enabled) _ = nu_metal_buffer_release(self.handle, entry.value.id);
     }
 
     pub fn begin(self: *Backend) !void {
@@ -244,7 +252,7 @@ pub const Backend = struct {
         self.recording = false;
         const gpu_before = nu_metal_gpu_seconds(self.handle);
         const completed = nu_metal_commit(self.handle, if (self.tick != null) tickTrampoline else null, self) == 0;
-        if (self.profile != null) try self.account(gpu_before, completed);
+        if (self.profile != null) self.account(gpu_before, completed);
         if (!completed) return error.MetalExecutionFailed;
     }
 
@@ -271,10 +279,13 @@ pub const Backend = struct {
         var bindings: [7]Binding = undefined;
         if (buffers.len > bindings.len) return error.InvalidShape;
         for (buffers, bindings[0..buffers.len]) |b, *out| out.* = b.binding();
+        // Reserved before encoding, so no allocation failure can follow a
+        // dispatch the GPU will run and time.
+        if (self.profile) |*p| try p.pending.ensureUnusedCapacity(self.alloc, 1);
         if (nu_metal_dispatch(self.handle, self.pipelines[@backingInt(kernel)], &bindings, @intCast(buffers.len), @ptrCast(&params), @sizeOf(@TypeOf(params)), groups, 1, threads, 1) != 0) return error.MetalExecutionFailed;
         // Recorded only after the bridge accepted the dispatch, so pending[i]
         // is the i-th dispatch the GPU will time.
-        if (self.profile) |*p| try p.pending.append(self.alloc, .{ .key = .{ .kernel = kernel, .encoding = shape.encoding, .rows = shape.rows, .columns = shape.columns }, .bytes = shape.bytes });
+        if (self.profile) |*p| p.pending.appendAssumeCapacity(.{ .key = .{ .kernel = kernel, .encoding = shape.encoding, .rows = shape.rows, .columns = shape.columns }, .bytes = shape.bytes });
     }
     /// `dispatch` over a two-dimensional grid of threadgroups; for `ops/` too.
     pub fn dispatch2(self: *Backend, kernel: Kernel, buffers: []const Buffer, params: anytype, groups_x: u32, groups_y: u32, threads: u32) !void {
@@ -283,8 +294,9 @@ pub const Backend = struct {
         var bindings: [7]Binding = undefined;
         if (buffers.len > bindings.len) return error.InvalidShape;
         for (buffers, bindings[0..buffers.len]) |b, *out| out.* = b.binding();
+        if (self.profile) |*p| try p.pending.ensureUnusedCapacity(self.alloc, 1);
         if (nu_metal_dispatch(self.handle, self.pipelines[@backingInt(kernel)], &bindings, @intCast(buffers.len), @ptrCast(&params), @sizeOf(@TypeOf(params)), groups_x, groups_y, threads, 1) != 0) return error.MetalExecutionFailed;
-        if (self.profile) |*p| try p.pending.append(self.alloc, .{ .key = .{ .kernel = kernel, .encoding = null, .rows = 0, .columns = 0 }, .bytes = 0 });
+        if (self.profile) |*p| p.pending.appendAssumeCapacity(.{ .key = .{ .kernel = kernel, .encoding = null, .rows = 0, .columns = 0 }, .bytes = 0 });
     }
     /// Threadgroups of 256 covering `count` elements.
     pub fn perElement(count: usize) u32 {
@@ -317,7 +329,6 @@ pub const Backend = struct {
     pub const ReduceSplitsParams = matvec_ops.ReduceSplitsParams;
     pub const MatvecRowsParams = matvec_ops.MatvecRowsParams;
     pub const small_batch_rows = matvec_ops.small_batch_rows;
-    pub const route_small_batch = matvec_ops.route_small_batch;
     pub const matvec_rows_max = matvec_ops.matvec_rows_max;
     pub const matvec_rows_per_simdgroup = matvec_ops.matvec_rows_per_simdgroup;
     pub const usesMatvecRows = matvec_ops.usesMatvecRows;
@@ -338,9 +349,7 @@ pub const Backend = struct {
     pub const matmulGeometry = matmul_ops.matmulGeometry;
     pub const matmul = matmul_ops.matmul;
     pub const matmulTile = matmul_ops.matmulTile;
-    pub const matmulTile32 = matmul_ops.matmulTile32;
     pub const matmulKernel = matmul_ops.matmulKernel;
-    pub const specializedMatmulWide = matmul_ops.specializedMatmulWide;
     pub const specializedTile = matmul_ops.specializedTile;
     pub const specializedMatmulFrag = matmul_ops.specializedMatmulFrag;
     pub const fragmentLayout = matmul_ops.fragmentLayout;
@@ -376,6 +385,7 @@ pub const Backend = struct {
     pub const AddNormParams = rowwise_ops.AddNormParams;
     pub const addRmsNorm = rowwise_ops.addRmsNorm;
     pub const NormRopeParams = rowwise_ops.NormRopeParams;
+    pub const norm_rope_max_dims = rowwise_ops.norm_rope_max_dims;
     pub const rmsNormRope = rowwise_ops.rmsNormRope;
     pub const HadamardParams = rowwise_ops.HadamardParams;
     pub const hadamard_block = rowwise_ops.hadamard_block;
@@ -512,6 +522,7 @@ pub const Backend = struct {
     pub const penalize = sampling_ops.penalize;
     pub const ArgmaxParams = sampling_ops.ArgmaxParams;
     pub const argmax_partials = sampling_ops.argmax_partials;
+    pub const argmax_nonfinite = sampling_ops.argmax_nonfinite;
     pub const argmax = sampling_ops.argmax;
     pub const TtsCodebookParams = tts_ops.TtsCodebookParams;
     pub const ttsCodebookSum = tts_ops.ttsCodebookSum;

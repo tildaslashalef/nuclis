@@ -155,7 +155,7 @@ pub const Plan = struct {
     }
     fn plain(self: *Plan, tensor: *const gguf.Tensor) !Weight {
         const m = try self.view.matrix(tensor);
-        if (m.rows % 8 != 0 or m.columns % 64 != 0) return error.UnsupportedConfig;
+        if (m.rows % 8 != 0 or m.columns % 64 != 0) return error.UnsupportedConfiguration;
         return .{ .buffer = try self.backend.wrap(m.bytes), .matrix = m };
     }
     fn weight(self: *Plan, layer: model.Block, which: model.Linear) !Weight {

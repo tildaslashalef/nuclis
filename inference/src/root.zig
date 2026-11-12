@@ -18,6 +18,8 @@ pub const weights = @import("runtime/weights.zig");
 pub const sampling = @import("sampling/root.zig");
 pub const speculative = @import("sampling/speculative.zig");
 pub const session = @import("runtime/session.zig");
+/// The most tokens a session holds: every context size is checked against it.
+pub const max_capacity = session.max_capacity;
 pub const prefix_cache = @import("runtime/prefix_cache.zig");
 pub const draft = @import("runtime/draft.zig");
 pub const observer = @import("runtime/observer.zig");

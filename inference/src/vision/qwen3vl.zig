@@ -336,12 +336,6 @@ pub fn patchKernel(alloc: std.mem.Allocator, view: weights.View, binding: *const
     return out;
 }
 
-/// Sizes of the working buffers `encode` needs for `n` patches, shared with
-/// the Metal plan's allocation.
-pub fn scratchFloats(n: usize) usize {
-    return n * (hidden * 3 + qkv_width + ffn) + n * n;
-}
-
 /// The CPU reference: every matrix product through `cpu.matvec` (F64
 /// accumulation), LayerNorm and attention in F64, GELU the tanh form.
 pub const Runtime = struct {

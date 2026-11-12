@@ -9,10 +9,11 @@
 //! Fixture value forms: JSON integers become unsigned metadata, floats
 //! `float32`, booleans `boolean`, strings `string`; an object with `type`
 //! and `count` is an array descriptor whose optional `values` are retained
-//! (integers as `signed`, booleans as `boolean`, strings as `string`,
+//! (integers of an unsigned element type as `unsigned`, other integers as
+//! `signed`, floats as `float`, booleans as `boolean`, strings as `string`,
 //! matching what the parser keeps for the same element types); an object
-//! with `sha256` describes a
-//! long string the fixture omits, and is skipped (no key). Tensors are
+//! with `sha256` describes a long string the fixture omits, and is skipped
+//! (no key). Tensors are
 //! `[name, dimensions, encoding_id]`.
 const std = @import("std");
 const gguf = @import("../formats/gguf.zig");

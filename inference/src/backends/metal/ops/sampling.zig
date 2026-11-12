@@ -43,7 +43,7 @@ pub fn topkBuffers(self: *Backend, k: usize) !TopKBuffers {
 /// The CPU adds the partials in F64 (see `sampling.TopK`). Three dispatches.
 pub fn topk(self: *Backend, logits: Buffer, count: usize, k: usize, temperature: f32, scratch: TopKBuffers) !void {
     if (!enabled) return error.MetalNotEnabled;
-    if (count == 0 or count > topk_max_count or k == 0 or k > 256 or logits.len < count * 4) return error.InvalidShape;
+    if (count == 0 or count > topk_max_count or k == 0 or k > 256 or k > count or logits.len < count * 4) return error.InvalidShape;
     if (!std.math.isFinite(temperature) or temperature <= 0) return error.InvalidShape;
     if (scratch.partial_values.len < topk_partials * k * 4 or scratch.partial_indices.len < topk_partials * k * 4 or
         scratch.values.len < k * 4 or scratch.indices.len < k * 4 or scratch.sums.len < topk_partials * 4 or scratch.flags.len < topk_partials * 4) return error.InvalidShape;
@@ -71,10 +71,15 @@ pub fn penalize(self: *Backend, logits: Buffer, count: usize, history: Buffer, r
 
 pub const ArgmaxParams = extern struct { count: u32, partials: u32 };
 pub const argmax_partials = 64;
+/// What `argmax` writes when any of the logits is NaN or infinite: an index
+/// no vocabulary reaches, which callers report as `error.NonFiniteResult`
+/// (the CPU `Sampler.select` contract).
+pub const argmax_nonfinite: u32 = std.math.maxInt(u32);
 /// Two-pass greedy selection with lowest-index tie breaking. `values` and
-/// `indices` hold `argmax_partials` scratch entries; `result` receives one u32.
+/// `indices` hold `argmax_partials` scratch entries; `result` receives one
+/// u32, the index or `argmax_nonfinite`. `count` must stay below it.
 pub fn argmax(self: *Backend, logits: Buffer, count: usize, values: Buffer, indices: Buffer, result: Buffer) !void {
-    if (count == 0 or logits.len < count * 4 or values.len < argmax_partials * 4 or indices.len < argmax_partials * 4 or result.len < 4) return error.InvalidShape;
+    if (count == 0 or count >= argmax_nonfinite or logits.len < count * 4 or values.len < argmax_partials * 4 or indices.len < argmax_partials * 4 or result.len < 4) return error.InvalidShape;
     const p: ArgmaxParams = .{ .count = @intCast(count), .partials = argmax_partials };
     try self.dispatch(.argmax_partial, &.{ logits, values, indices }, p, argmax_partials, 256, .{});
     try self.dispatch(.argmax_final, &.{ values, indices, result }, p, 1, 32, .{});

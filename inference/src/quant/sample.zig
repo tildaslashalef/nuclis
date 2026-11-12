@@ -73,7 +73,7 @@ const calibration_blocks = 16;
 /// The scale of a row of `id` decoding to about `rms`; for a plain layout,
 /// the standard deviation itself.
 fn scaleFor(id: u32, rms: f32) Error!f32 {
-    const layout = encoding.layout(id) orelse return error.UnsupportedEncoding;
+    const layout = encoding.layout(id) orelse return error.UnsupportedTensorEncoding;
     if (layout.elements_per_block == 1) return rms;
     var bytes: [calibration_blocks * 256]u8 = undefined;
     var values: [calibration_blocks * 256]f32 = undefined;
@@ -89,10 +89,10 @@ fn scaleFor(id: u32, rms: f32) Error!f32 {
 
 /// Fills `bytes`, whole blocks of `id`, deterministically from `random`.
 pub fn row(id: u32, random: std.Random, rms: f32, bytes: []u8) Error!void {
-    const layout = encoding.layout(id) orelse return error.UnsupportedEncoding;
+    const layout = encoding.layout(id) orelse return error.UnsupportedTensorEncoding;
     const width = layout.bytes_per_block;
     if (bytes.len == 0 or bytes.len % width != 0) return error.InvalidByteLength;
-    if (layout.elements_per_block != 1 and id != 29 and fields(id) == null) return error.UnsupportedEncoding;
+    if (layout.elements_per_block != 1 and id != 29 and fields(id) == null) return error.UnsupportedTensorEncoding;
     const d = try scaleFor(id, rms);
     var offset: usize = 0;
     while (offset < bytes.len) : (offset += width) {
@@ -199,6 +199,6 @@ test "the writers' restrictions hold and bad requests are refused" {
         const shift: u3 = @intCast(2 * k);
         try std.testing.expect((codes >> shift) & 3 != 3);
     };
-    try std.testing.expectError(error.UnsupportedEncoding, row(999, prng.random(), 0.1, &bytes));
+    try std.testing.expectError(error.UnsupportedTensorEncoding, row(999, prng.random(), 0.1, &bytes));
     try std.testing.expectError(error.InvalidByteLength, row(8, prng.random(), 0.1, bytes[0..33]));
 }

@@ -17,6 +17,8 @@ kernel void nu_penalize(device float * logits [[buffer(0)]],
 
 // Greedy selection: one threadgroup reduces a strided slice to (value, index);
 // a second pass with one group merges partials. Ties select the lowest index.
+// A partition that read a NaN or an infinity stores NaN as its value, and the
+// final pass then writes index 0xffffffff, which no vocabulary reaches.
 struct ArgmaxParams { uint count; uint partials; };
 kernel void nu_argmax_partial(device const float * logits [[buffer(0)]],
                               device float * best_value [[buffer(1)]],
@@ -28,20 +30,27 @@ kernel void nu_argmax_partial(device const float * logits [[buffer(0)]],
                               uint sg [[simdgroup_index_in_threadgroup]]) {
     threadgroup float values[8];
     threadgroup uint indices[8];
+    threadgroup bool nonfinite[8];
     float v = -INFINITY; uint idx = 0xffffffffu;
+    bool bad = false;
     for (uint i = group * 256 + tid; i < p.count; i += p.partials * 256) {
         float x = logits[i];
+        bad = bad || !isfinite(x);
         if (x > v || (x == v && i < idx)) { v = x; idx = i; }
     }
+    bad = simd_any(bad);
     for (uint offset = 16; offset > 0; offset >>= 1) {
         float ov = simd_shuffle_down(v, offset); uint oi = simd_shuffle_down(idx, offset);
         if (ov > v || (ov == v && oi < idx)) { v = ov; idx = oi; }
     }
-    if (lane == 0) { values[sg] = v; indices[sg] = idx; }
+    if (lane == 0) { values[sg] = v; indices[sg] = idx; nonfinite[sg] = bad; }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (tid == 0) {
-        for (uint i = 1; i < 8; ++i) if (values[i] > v || (values[i] == v && indices[i] < idx)) { v = values[i]; idx = indices[i]; }
-        best_value[group] = v; best_index[group] = idx;
+        for (uint i = 1; i < 8; ++i) {
+            bad = bad || nonfinite[i];
+            if (values[i] > v || (values[i] == v && indices[i] < idx)) { v = values[i]; idx = indices[i]; }
+        }
+        best_value[group] = bad ? NAN : v; best_index[group] = idx;
     }
 }
 // Partial top-k for sampled decoding: the k best logits by (value desc,
@@ -167,7 +176,10 @@ kernel void nu_argmax_final(device const float * values [[buffer(0)]],
                             uint tid [[thread_position_in_threadgroup]]) {
     if (tid != 0) return;
     float v = -INFINITY; uint idx = 0xffffffffu;
-    for (uint i = 0; i < p.partials; ++i) if (values[i] > v || (values[i] == v && indices[i] < idx)) { v = values[i]; idx = indices[i]; }
+    for (uint i = 0; i < p.partials; ++i) {
+        if (isnan(values[i])) { result[0] = 0xffffffffu; return; }
+        if (values[i] > v || (values[i] == v && indices[i] < idx)) { v = values[i]; idx = indices[i]; }
+    }
     result[0] = idx;
 }
 

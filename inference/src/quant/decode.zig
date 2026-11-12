@@ -19,7 +19,7 @@ const encoding = @import("../tensor/encoding.zig");
 const iq3_grid = @import("iq3-grid.zig").values;
 const codebooks = @import("iq-codebooks.zig");
 
-pub const Error = error{ UnsupportedEncoding, InvalidRowLength, InvalidByteLength };
+pub const Error = error{ UnsupportedTensorEncoding, InvalidRowLength, InvalidByteLength };
 
 /// Decode one nonempty contiguous row. `output.len` is its element count and
 /// must contain whole storage blocks; `bytes` must be exactly that row's size.
@@ -108,7 +108,7 @@ pub fn row(id: u32, bytes: []const u8, output: []f32) Error!void {
 pub fn validateRow(id: u32, byte_count: usize, element_count: usize) Error!void {
     switch (id) {
         0, 1, 2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 29, 30, 142, 143 => {},
-        else => return error.UnsupportedEncoding,
+        else => return error.UnsupportedTensorEncoding,
     }
     const layout = encoding.layout(id).?;
     const elements = layout.elements_per_block;
@@ -579,8 +579,8 @@ test "invalid encodings and row sizes leave caller output untouched" {
     }
     try std.testing.expectError(error.InvalidRowLength, row(8, bytes[0..34], output[0..31]));
     try std.testing.expectError(error.InvalidRowLength, row(20, bytes[0..18], output[0..33]));
-    try std.testing.expectError(error.UnsupportedEncoding, row(999, &.{}, &output));
-    try std.testing.expectError(error.UnsupportedEncoding, row(34, &.{}, &output)); // mainline TQ1_0: group 256, not stored
+    try std.testing.expectError(error.UnsupportedTensorEncoding, row(999, &.{}, &output));
+    try std.testing.expectError(error.UnsupportedTensorEncoding, row(34, &.{}, &output)); // mainline TQ1_0: group 256, not stored
     for (output) |value| try std.testing.expectEqual(@as(f32, 123), value);
 }
 

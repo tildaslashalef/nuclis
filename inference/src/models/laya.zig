@@ -252,7 +252,7 @@ pub const Laya = struct {
         const config_bytes = try std.Io.Dir.cwd().readFileAlloc(io, config_path, gpa, .limited(1024 * 1024));
         defer gpa.free(config_bytes);
         const config = try modernbert.parseConfig(gpa, config_bytes);
-        if (config.hidden % head_width != 0) return error.UnsupportedConfig;
+        if (config.hidden % head_width != 0) return error.UnsupportedConfiguration;
         const weights_path = try std.fs.path.join(gpa, &.{ dir, "model.safetensors" });
         defer gpa.free(weights_path);
         var checkpoint = try safetensors.Checkpoint.open(gpa, io, weights_path, .{});

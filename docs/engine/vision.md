@@ -38,7 +38,8 @@ The package (`inference/src/vision/root.zig`):
   values). Other layouts are drawn into an RGBA8 context. Bounds are host
   constants: image bytes ≤ 32 MiB, decoded pixels ≤ 64 M.
 - `preprocess.zig` — the reference's smart size (`smartSize`: round each side
-  to the patch·merge grid, then scale to the pixel bounds), a
+  to the patch·merge grid, then scale to the pixel bounds; a side held at
+  one grid cell cuts the other, so the result never passes `max_pixels`), a
   Pillow-compatible separable resize in 22-bit fixed point with the
   **bicubic** or the **Lanczos** filter (`resize`, `resizeBicubic`,
   `resizeLanczos`; `resizeLetterbox` for the `PAD_CEIL` letterbox;
