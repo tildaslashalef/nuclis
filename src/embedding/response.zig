@@ -241,7 +241,7 @@ test "the space names the catalogue checkpoint by digest, else the caller's name
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const pinned = catalog.findEmbedding("embeddinggemma-2").?;
+    const pinned = catalog.findKind("embeddinggemma-2", .embedding).?.main();
     try std.testing.expectEqualStrings("embeddinggemma-2@6f1bd4ac6c5d/256", try space(arena, .{ .name = "my-entry", .sha256 = pinned.sha256 }, 256));
     try std.testing.expectEqualStrings("bf16@f315cbbb30dd/768", try space(arena, .{ .name = "bf16", .sha256 = "f315cbbb30dd487e44d501c8902abe88808755e43753a96beed1964f0a48aa4f" }, 768));
 }

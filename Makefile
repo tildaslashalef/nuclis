@@ -12,7 +12,7 @@ ZIG      ?= zig
 # `zig build` reads the global cache location from the environment only.
 export ZIG_GLOBAL_CACHE_DIR ?= $(CURDIR)/.zig-cache/global
 OPT      ?= ReleaseSafe
-MODEL    ?= $(HOME)/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf
+MODEL    ?= $(HOME)/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf
 BACKEND  ?= metal
 VARIANT  ?= baseline
 PROMPT   ?= Write a Zig function that reverses a string.

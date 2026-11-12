@@ -160,8 +160,9 @@ pub const Config = struct {
     pub const Engine = struct {
         /// A registry entry name, a catalogue name (`src/catalog.zig`), or a
         /// path relative to `<root>/models` unless absolute, in that order
-        /// (`paths.modelPath`).
-        model: []const u8 = "qwen3.8-27b",
+        /// (`paths.modelPath`). The mixture of experts: a dense 27B model is
+        /// too slow on the target machine to be the first thing run.
+        model: []const u8 = "gemma-4-26b-a4b",
         backend: Backend = if (inference.metal.enabled) .metal else .cpu,
         /// 16K: room for an agent turn's system prompt, tools, and a few
         /// results on top of the prompt (8K ran out in ordinary use).
@@ -284,8 +285,10 @@ pub const default_thinking_budget: usize = 1024;
 /// model only. `path` (relative to `<root>/models` unless absolute) or
 /// `repo` + `file` (the layout `model pull` writes, `<root>/models/<repo>/<file>`)
 /// locate it; `revision` pins the commit `model pull <name>` fetches;
-/// `mmproj` and `mtp` name companion files in the same directory for the
-/// consumers and for `model pull <name> --with`.
+/// `mmproj` and `draft` name companion files relative to the main file's
+/// directory, for the consumers and for `model pull <name> --with`; `mtp`
+/// is read as `draft` for one minor release (`Models.old_mtp` names the
+/// entries that still say it).
 /// Every other key is `null` by default, meaning "the file's global value".
 pub const ModelEntry = struct {
     /// Null is `generation`; `decision` entries are Laya checkpoints, which
@@ -297,7 +300,7 @@ pub const ModelEntry = struct {
     file: ?[]const u8 = null,
     revision: ?[]const u8 = null,
     mmproj: ?[]const u8 = null,
-    mtp: ?[]const u8 = null,
+    draft: ?[]const u8 = null,
     /// Forces the prompt profile on a file whose template is not pinned (a
     /// finetune converted with another template revision); null selects by
     /// the file's template digest.
@@ -310,6 +313,9 @@ pub const ModelEntry = struct {
         max_tokens: ?usize = null,
         think: ?Effort = null,
         speculative: ?bool = null,
+        /// The index artifact's draft variant (`mtp`, `dflash2`) to run
+        /// with instead of its default; `draft` names a file instead.
+        draft: ?[]const u8 = null,
         draft_length: ?usize = null,
         image_max_tokens: ?ImageMaxTokens = null,
         sampling: Overrides = .{},
@@ -328,6 +334,8 @@ pub const NamedModel = struct { name: []const u8, entry: ModelEntry };
 /// contain `/` or end in `.gguf`, so a path is never taken for one.
 pub const Models = struct {
     entries: []const NamedModel = &.{},
+    /// Entries read with the old `mtp` key, for the notice that names them.
+    old_mtp: []const []const u8 = &.{},
 
     pub fn find(self: Models, name: []const u8) ?*const ModelEntry {
         for (self.entries) |*named| if (std.mem.eql(u8, named.name, name)) return &named.entry;
@@ -556,6 +564,7 @@ fn printable(text: []const u8) bool {
 /// parsed like a section under `models.<name>.`.
 fn parseModels(map: std.json.ObjectMap, arena: Allocator, diag: *Diagnostic) !Models {
     const entries = try arena.alloc(NamedModel, map.count());
+    var old_mtp: std.ArrayList([]const u8) = try .initCapacity(arena, map.count());
     var it = map.iterator();
     var index: usize = 0;
     while (it.next()) |kv| : (index += 1) {
@@ -573,11 +582,23 @@ fn parseModels(map: std.json.ObjectMap, arena: Allocator, diag: *Diagnostic) !Mo
                 return error.InvalidConfigValue;
             },
         };
+        var entry_object = object;
+        if (object.get("mtp") != null) {
+            if (object.get("draft") != null) {
+                diag.set("models.{s}: mtp is the old name of draft; give only draft", .{name});
+                return error.InvalidConfigValue;
+            }
+            // A copy with the key renamed; the parsed tree stays as read.
+            entry_object = .empty;
+            var keys = object.iterator();
+            while (keys.next()) |kv2| try entry_object.put(arena, if (std.mem.eql(u8, kv2.key_ptr.*, "mtp")) "draft" else kv2.key_ptr.*, kv2.value_ptr.*);
+            old_mtp.appendAssumeCapacity(try arena.dupe(u8, name));
+        }
         var entry: ModelEntry = .{};
-        try applySection(ModelEntry, &entry, object, prefix, null, null, arena, diag);
+        try applySection(ModelEntry, &entry, entry_object, prefix, null, null, arena, diag);
         entries[index] = .{ .name = try arena.dupe(u8, name), .entry = entry };
     }
-    return .{ .entries = entries };
+    return .{ .entries = entries, .old_mtp = old_mtp.items };
 }
 
 /// What a key of type `T` accepts, for error messages.
@@ -691,9 +712,9 @@ fn validate(cfg: *const Config, diag: *Diagnostic) !void {
         // tries the registry first), so it may only restate the catalogue's
         // location; another file wants another name.
         if (catalog.find(named.name)) |c| {
-            const same = e.path == null and e.repo != null and e.file != null and std.mem.eql(u8, e.repo.?, c.repo) and std.mem.eql(u8, e.file.?, c.file);
+            const same = e.path == null and e.repo != null and e.file != null and std.mem.eql(u8, e.repo.?, c.repo) and std.mem.eql(u8, e.file.?, c.main().path);
             if (!same) {
-                diag.set("{s}: {s} is a catalogue name pinned to {s}/{s}; an entry under it may not locate another file (choose another name)", .{ prefix, named.name, c.repo, c.file });
+                diag.set("{s}: {s} is a catalogue name pinned to {s}/{s}; an entry under it may not locate another file (choose another name)", .{ prefix, named.name, c.repo, c.main().path });
                 return error.InvalidConfigValue;
             }
         }
@@ -744,6 +765,8 @@ pub const Flags = struct {
     max_tokens: ?usize = null,
     think: ?Effort = null,
     speculative: ?bool = null,
+    /// `--draft <variant>`: see `ModelEntry.Generation.draft`.
+    draft: ?[]const u8 = null,
     draft_length: ?usize = null,
     image_max_tokens: ?ImageMaxTokens = null,
     /// `--thinking-budget`, the agent's only.
@@ -777,6 +800,11 @@ pub const Resolved = struct {
     /// Speculative decoding on this run, and the drafts proposed per step.
     speculative: bool,
     draft_length: usize,
+    /// The draft variant asked for (`--draft`, else the entry's
+    /// `generation.draft`), and the index file it chose: the variant's, else
+    /// the artifact's default when the entry names no draft file.
+    draft: ?[]const u8 = null,
+    draft_choice: ?*const catalog.File = null,
     /// The image token cap the projector loads with.
     image_max_tokens: ImageMaxTokens,
     /// Overrides over the reasoning mode's profile (`generate`, the agent);
@@ -802,6 +830,19 @@ pub const Resolved = struct {
 
     pub fn source(self: *const Resolved, comptime path: []const u8) Source {
         return self.origin[comptime leafIndex(Config, path)];
+    }
+
+    /// The drafter to attach, relative to the model file's directory (or
+    /// absolute): the asked variant's index file, else the entry's `draft`,
+    /// else the artifact's default. `NoSuchDraft` (said in `diag`) when the
+    /// variant names nothing.
+    pub fn draftFile(self: *const Resolved) error{NoSuchDraft}!?[]const u8 {
+        if (self.draft != null) {
+            const c = self.draft_choice orelse return error.NoSuchDraft;
+            return c.path;
+        }
+        if (self.entry) |e| if (e.draft) |f| return f;
+        return if (self.draft_choice) |c| c.path else null;
     }
 
     /// The reasoning mode's profile with the overrides applied: the
@@ -835,7 +876,18 @@ pub fn thinkingBudget(budget: usize, effort: Effort, max_tokens: usize) ?usize {
 /// (Bonsai renders the Qwen3.8 protocol) still renders; a file whose digest
 /// is pinned detects the same profile anyway, so nothing is reported forced.
 fn pinnedProfile(model: []const u8) ?Profile {
-    return if (catalog.find(model)) |entry| entry.profile else null;
+    return if (catalog.find(model)) |entry| entry.defaults.profile else null;
+}
+
+/// The index artifact `name` is, or the one whose main file the registry
+/// entry locates.
+pub fn artifactOf(name: []const u8, entry: ?*const ModelEntry) ?*const catalog.Artifact {
+    if (entry) |e| {
+        const repo = e.repo orelse return null;
+        const m = catalog.findFile(repo, e.file orelse return null) orelse return null;
+        return if (m.file.role == .main) m.artifact else null;
+    }
+    return catalog.find(name);
 }
 
 /// Applies defaults < profile < file < entry < flags for one command. The
@@ -848,6 +900,13 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
     const entry = cfg.models.find(name);
     const e: ModelEntry = if (entry) |p| p.* else .{};
     const bench = command == .bench;
+    // The index artifact the name or the entry's file is, and its drafter.
+    const artifact = artifactOf(name, entry);
+    const variant = flags.draft orelse e.generation.draft;
+    const choice: ?*const catalog.File = if (artifact) |a| if (variant) |v| a.draft(v) else if (e.draft == null) a.draft(null) else null else null;
+    // An entry's verdict is the default variant's, copied when it was
+    // written; a variant asked for on the command line brings its own.
+    const asked: ?catalog.Verdict = if (flags.draft != null) if (choice) |c| c.verdict else null else null;
     var r: Resolved = .{
         .model = name,
         .entry = entry,
@@ -862,8 +921,10 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
             .agent => e.agent.think orelse cfg.agent.think,
             .bench => .off,
         },
-        .speculative = flags.speculative orelse e.generation.speculative orelse cfg.generation.speculative,
-        .draft_length = flags.draft_length orelse e.generation.draft_length orelse cfg.generation.draft_length,
+        .speculative = flags.speculative orelse if (asked) |v| v.speculative else e.generation.speculative orelse if (choice) |c| c.verdict.?.speculative else cfg.generation.speculative,
+        .draft_length = flags.draft_length orelse if (asked) |v| v.draft_length else e.generation.draft_length orelse if (choice) |c| c.verdict.?.draft_length else cfg.generation.draft_length,
+        .draft = variant,
+        .draft_choice = choice,
         .image_max_tokens = flags.image_max_tokens orelse e.generation.image_max_tokens orelse cfg.generation.image_max_tokens,
         .sampling = if (bench) flags.sampling else cfg.generation.sampling.merge(e.generation.sampling).merge(flags.sampling),
         .fold_thinking = e.agent.fold_thinking orelse cfg.agent.fold_thinking,
@@ -890,6 +951,10 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
     if (e.agent.fold_thinking != null) o[comptime leafIndex(Config, "agent.fold_thinking")] = .model;
     const cap = comptime leafIndex(Config, "agent.thinking_budget");
     if (flags.thinking_budget != null) o[cap] = .flag else if (e.agent.thinking_budget != null) o[cap] = .model;
+    if (choice != null) {
+        o[comptime leafIndex(Config, "generation.speculative")] = .model;
+        o[comptime leafIndex(Config, "generation.draft_length")] = .model;
+    }
     if (e.generation.speculative != null) o[comptime leafIndex(Config, "generation.speculative")] = .model;
     if (flags.speculative != null) o[comptime leafIndex(Config, "generation.speculative")] = .flag;
     if (e.generation.draft_length != null) o[comptime leafIndex(Config, "generation.draft_length")] = .model;
@@ -905,43 +970,38 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
 
 pub const InitResult = enum { created, exists };
 
-/// What `config init` writes: the defaults plus every catalogue model as
-/// a registry entry, so the file shows the entry shape with the
-/// catalogue's facts rather than an empty map (the entries are optional:
-/// a catalogue name resolves without one).
-pub fn initial() Config {
-    return .{ .models = .{ .entries = &initial_models } };
+/// What `config init` writes: the defaults with `engine.model` set, and
+/// one registry entry per installed model that needs one (`entries`, from
+/// `discover.plan`); an index name resolves without an entry, so the
+/// entries only show the pinned files and measured defaults beside the
+/// global sections.
+pub fn initial(entries: []const NamedModel, model: []const u8) Config {
+    var cfg: Config = .{ .models = .{ .entries = entries } };
+    cfg.engine.model = model;
+    return cfg;
 }
 
-const initial_models = blk: {
-    var list: [catalog.entries.len]NamedModel = undefined;
-    for (&catalog.entries, 0..) |*entry, i| list[i] = .{ .name = entry.name, .entry = registryEntry(entry) };
-    std.mem.sort(NamedModel, &list, {}, struct {
-        fn lessThan(_: void, a: NamedModel, b: NamedModel) bool {
-            return std.mem.lessThan(u8, a.name, b.name);
-        }
-    }.lessThan);
-    break :blk list;
-};
-
-/// A catalogue entry as a registry entry: repository, file, pinned commit,
-/// companion file names, and the entry's speculative verdict (its measured
-/// default); every other override left to the global sections.
-pub fn registryEntry(entry: *const catalog.Entry) ModelEntry {
+/// An index artifact as a registry entry: repository, main file, pinned
+/// commit, companion file names, and its measured defaults (the default
+/// draft's verdict, the agent's think settings); every other override left
+/// to the global sections.
+pub fn registryEntry(a: *const catalog.Artifact) ModelEntry {
+    const main = a.main();
+    const verdict = a.verdict();
     return .{
-        .repo = entry.repo,
-        .file = entry.file,
-        .revision = entry.revision,
-        .mmproj = if (entry.companion(.mmproj)) |c| c.file else null,
-        .mtp = if (entry.companion(.mtp)) |c| c.file else null,
-        .generation = .{ .speculative = entry.speculative, .draft_length = entry.draft_length },
-        .agent = .{ .think = entry.think, .thinking_budget = entry.thinking_budget },
+        .repo = a.repo,
+        .file = main.path,
+        .revision = a.revision,
+        .mmproj = if (a.companion(.mmproj)) |c| c.path else null,
+        .draft = if (a.draft(null)) |c| c.path else null,
+        .generation = if (a.kind == .generation) .{ .speculative = verdict.speculative, .draft_length = verdict.draft_length } else .{},
+        .agent = .{ .think = a.defaults.think, .thinking_budget = a.defaults.thinking_budget },
     };
 }
 
-/// Writes `initial()` to `path` (creating its directories) unless a file
-/// is already there, which is left untouched.
-pub fn init(io: std.Io, dir: std.Io.Dir, path: []const u8) !InitResult {
+/// Writes `cfg` to `path` (creating its directories) unless a file is
+/// already there, which is left untouched.
+pub fn init(io: std.Io, dir: std.Io.Dir, path: []const u8, cfg: Config) !InitResult {
     if (std.fs.path.dirname(path)) |parent| try dir.createDirPath(io, parent);
     const file = dir.createFile(io, path, .{ .exclusive = true }) catch |err| switch (err) {
         error.PathAlreadyExists => return .exists,
@@ -950,14 +1010,21 @@ pub fn init(io: std.Io, dir: std.Io.Dir, path: []const u8) !InitResult {
     defer file.close(io);
     var buffer: [4096]u8 = undefined;
     var writer = file.writer(io, &buffer);
-    try writeInitial(&writer.interface);
+    try writeConfig(&writer.interface, cfg);
     try writer.interface.flush();
     return .created;
 }
 
-pub fn writeInitial(out: *std.Io.Writer) !void {
-    try std.json.Stringify.value(initial(), .{ .whitespace = .indent_2 }, out);
+/// `cfg` as the file's text: every key spelled out, so the file shows the
+/// shape of what can be set.
+pub fn writeConfig(out: *std.Io.Writer, cfg: Config) !void {
+    try std.json.Stringify.value(cfg, .{ .whitespace = .indent_2 }, out);
     try out.writeByte('\n');
+}
+
+/// The text an edit starts from when there is no file yet.
+pub fn writeInitial(out: *std.Io.Writer) !void {
+    try writeConfig(out, initial(&.{}, (Config.Engine{}).model));
 }
 
 // ----- editing the file: `config set`, `model pull --register` -----
@@ -1185,7 +1252,7 @@ pub const Registration = struct {
     file: ?[]const u8,
     /// Companion Hub names, filling the entry's keys of the same name.
     mmproj: ?[]const u8 = null,
-    mtp: ?[]const u8 = null,
+    draft: ?[]const u8 = null,
     profile: ?Profile = null,
     kind: ?catalog.ModelKind = null,
 };
@@ -1216,55 +1283,48 @@ pub fn register(gpa: Allocator, current: ?[]const u8, path: []const u8, name: []
     if (reg.file) |file| try entry.put(arena, "file", .{ .string = try arena.dupe(u8, file) });
     try entry.put(arena, "revision", .{ .string = try arena.dupe(u8, reg.revision) });
     if (reg.mmproj) |file| try entry.put(arena, "mmproj", .{ .string = try arena.dupe(u8, file) });
-    if (reg.mtp) |file| try entry.put(arena, "mtp", .{ .string = try arena.dupe(u8, file) });
+    if (reg.draft) |file| {
+        _ = entry.orderedRemove("mtp");
+        try entry.put(arena, "draft", .{ .string = try arena.dupe(u8, file) });
+    }
     if (reg.profile) |profile| try entry.put(arena, "profile", .{ .string = @tagName(profile) });
     if (reg.kind) |kind| try entry.put(arena, "kind", .{ .string = @tagName(kind) });
     return doc.finish(gpa, path, diag);
 }
 
-/// One entry `config init --discover` writes: a `path`, or the pull's
-/// `repo` + `file` + `revision`; only the keys stated here are written.
-pub const Discovered = struct {
-    name: []const u8,
-    path: ?[]const u8 = null,
-    repo: ?[]const u8 = null,
-    file: ?[]const u8 = null,
-    revision: ?[]const u8 = null,
-    mmproj: ?[]const u8 = null,
-    mtp: ?[]const u8 = null,
-    profile: ?Profile = null,
-    speculative: ?bool = null,
-    draft_length: ?usize = null,
-};
-
-/// Writes the discovered entries into the registry of the file's current
-/// text (`null`: no file yet), each under a name nothing uses; the result
-/// is validated before it is returned, as every edit is.
-pub fn registerDiscovered(gpa: Allocator, current: ?[]const u8, path: []const u8, entries: []const Discovered, diag: *Diagnostic) ![]u8 {
+/// Writes `entries` into the registry of the file's current text (`null`:
+/// no file yet), each under a name nothing uses, and removes the entries
+/// named in `prune` (`config sync --prune`). Only the keys an entry states
+/// are written. The result is validated before it is returned, as every
+/// edit is.
+pub fn registerEntries(gpa: Allocator, current: ?[]const u8, path: []const u8, entries: []const NamedModel, prune: []const []const u8, diag: *Diagnostic) ![]u8 {
     var doc = try Document.open(gpa, current, path, diag);
     defer doc.deinit();
     const arena = doc.arena.allocator();
-    for (entries) |d| {
-        const models = try doc.objectAt(&.{"models"}, diag);
-        if (models.get(d.name) != null or catalog.find(d.name) != null) {
-            diag.set("{s} is already a registry or catalogue name", .{d.name});
+    const models = try doc.objectAt(&.{"models"}, diag);
+    for (prune) |name| _ = models.orderedRemove(name);
+    for (entries) |named| {
+        if (models.get(named.name) != null) {
+            diag.set("{s} is already a registry name", .{named.name});
             return error.RegistryConflict;
         }
-        const entry = try doc.objectAt(&.{ "models", d.name }, diag);
-        if (d.path) |v| try entry.put(arena, "path", .{ .string = try arena.dupe(u8, v) });
-        if (d.repo) |v| try entry.put(arena, "repo", .{ .string = try arena.dupe(u8, v) });
-        if (d.file) |v| try entry.put(arena, "file", .{ .string = try arena.dupe(u8, v) });
-        if (d.revision) |v| try entry.put(arena, "revision", .{ .string = try arena.dupe(u8, v) });
-        if (d.mmproj) |v| try entry.put(arena, "mmproj", .{ .string = try arena.dupe(u8, v) });
-        if (d.mtp) |v| try entry.put(arena, "mtp", .{ .string = try arena.dupe(u8, v) });
-        if (d.profile) |v| try entry.put(arena, "profile", .{ .string = @tagName(v) });
-        if (d.speculative != null or d.draft_length != null) {
-            const generation = try doc.objectAt(&.{ "models", d.name, "generation" }, diag);
-            if (d.speculative) |v| try generation.put(arena, "speculative", .{ .bool = v });
-            if (d.draft_length) |v| try generation.put(arena, "draft_length", .{ .integer = @intCast(v) });
-        }
+        const text = try std.json.Stringify.valueAlloc(arena, named.entry, .{ .emit_null_optional_fields = false });
+        var value = try std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{});
+        dropEmpty(&value);
+        try models.put(arena, try arena.dupe(u8, named.name), value);
     }
     return doc.finish(gpa, path, diag);
+}
+
+/// Removes the empty objects a struct with every key unset serializes to.
+fn dropEmpty(value: *std.json.Value) void {
+    if (value.* != .object) return;
+    var i: usize = 0;
+    while (i < value.object.count()) {
+        const child = &value.object.values()[i];
+        dropEmpty(child);
+        if (child.* == .object and child.object.count() == 0) value.object.orderedRemoveAt(i) else i += 1;
+    }
 }
 
 /// Whether `name` may register `repo`/`file`: a catalogue name resolves
@@ -1272,8 +1332,8 @@ pub fn registerDiscovered(gpa: Allocator, current: ?[]const u8, path: []const u8
 /// catalogue says. Checked before a transfer as well, so a wrong name
 /// costs no download.
 pub fn registrable(name: []const u8, repo: []const u8, file: ?[]const u8, diag: *Diagnostic) !void {
-    if (catalog.find(name)) |c| if (!std.mem.eql(u8, c.repo, repo) or (file != null and !std.mem.eql(u8, c.file, file.?))) {
-        diag.set("{s} is a catalogue name pinned to {s}/{s}; choose another name", .{ name, c.repo, c.file });
+    if (catalog.find(name)) |c| if (!std.mem.eql(u8, c.repo, repo) or (file != null and !std.mem.eql(u8, c.main().path, file.?))) {
+        diag.set("{s} is a catalogue name pinned to {s}/{s}; choose another name", .{ name, c.repo, c.main().path });
         return error.RegistryConflict;
     };
 }
@@ -1513,13 +1573,15 @@ test "defaults round-trip through init and load, and a missing file never writes
     try std.testing.expectEqualStrings("sub/nuclis.json", missing.path);
     try std.testing.expectEqualDeep(Config{}, missing.config);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "sub", .{}));
-    try std.testing.expectEqual(.created, try init(io, tmp.dir, "sub/nuclis.json"));
-    try std.testing.expectEqual(.exists, try init(io, tmp.dir, "sub/nuclis.json"));
+    const entries = [_]NamedModel{.{ .name = "qwen3.8-27b", .entry = registryEntry(catalog.find("qwen3.8-27b").?) }};
+    const written = initial(&entries, "qwen3.8-27b");
+    try std.testing.expectEqual(.created, try init(io, tmp.dir, "sub/nuclis.json", written));
+    try std.testing.expectEqual(.exists, try init(io, tmp.dir, "sub/nuclis.json", initial(&.{}, "x")));
     var loaded = try load(alloc, io, tmp.dir, "sub/nuclis.json", &diag);
     defer loaded.deinit();
     try std.testing.expect(loaded.found);
-    // The written file is the defaults plus the default model as an entry.
-    try std.testing.expectEqualDeep(initial(), loaded.config);
+    // The written file is the defaults, the installed model as an entry, and the model it names.
+    try std.testing.expectEqualDeep(written, loaded.config);
     try std.testing.expectEqualStrings("unsloth/Qwen3.8-27B-GGUF", loaded.config.models.find("qwen3.8-27b").?.repo.?);
     try std.testing.expectEqualStrings("mmproj-BF16.gguf", loaded.config.models.find("qwen3.8-27b").?.mmproj.?);
     try std.testing.expect(loaded.config.models.find("qwen3.8-27b").?.ctx_size == null);
@@ -1645,7 +1707,7 @@ test "registry entries parse by name with their overrides and companions" {
     try std.testing.expectEqualStrings("gemma-4-12b-it-UD-Q4_K_XL.gguf", gemma.file.?);
     try std.testing.expectEqualStrings("fc034cfff751157913579611efad8462ac1be606", gemma.revision.?);
     try std.testing.expectEqualStrings("mmproj-F16.gguf", gemma.mmproj.?);
-    try std.testing.expect(gemma.mtp == null and gemma.path == null);
+    try std.testing.expect(gemma.draft == null and gemma.path == null);
     try std.testing.expectEqual(@as(usize, 4096), gemma.ctx_size.?);
     try std.testing.expectEqual(.off, gemma.generation.think.?);
     try std.testing.expectEqual(@as(usize, 64), gemma.generation.sampling.top_k.?);
@@ -1781,7 +1843,7 @@ test "resolve applies defaults < file < flags per command and records the source
     , "t.json", &diag);
     defer loaded.deinit();
     const gen = resolve(&loaded, null, .{ .ctx_size = 1024, .sampling = .{ .top_k = 10 } }, .generate);
-    try std.testing.expectEqualStrings("qwen3.8-27b", gen.model);
+    try std.testing.expectEqualStrings("gemma-4-26b-a4b", gen.model);
     try std.testing.expect(gen.entry == null);
     try std.testing.expectEqual(.default, gen.source("engine.model"));
     try std.testing.expectEqual(.cpu, gen.backend);
@@ -1830,8 +1892,8 @@ test "resolve applies defaults < file < flags per command and records the source
     try std.testing.expectEqual(@as(usize, 16384), plain.ctx_size);
     try std.testing.expectEqual(@as(usize, 8192), plain.max_tokens);
     try std.testing.expectEqual(.off, plain.think);
-    try std.testing.expectEqual(.qwen38, plain.profile);
-    try std.testing.expectEqual(inference.profiles.Profile.qwen38.samplingDefaults(.off), plain.samplingOptions());
+    try std.testing.expectEqual(.gemma4, plain.profile);
+    try std.testing.expectEqual(inference.profiles.Profile.gemma4.samplingDefaults(.off), plain.samplingOptions());
     try std.testing.expectEqual(.low, resolve(&none, null, .{}, .agent).think);
     try std.testing.expect(plain.config_file == null);
     try std.testing.expectEqual(.profile, plain.source("generation.sampling.temperature"));
@@ -1930,11 +1992,13 @@ test "the image token cap: auto by default, an entry's count over it, the flag o
     defer edit.deinit(alloc);
     try std.testing.expect(std.mem.indexOf(u8, edit.text, "\"image_max_tokens\": \"auto\"") != null);
     try std.testing.expectEqualStrings("\"auto\"", edit.previous.?);
-    var edit2 = try set(alloc, edit.text, "t.json", "models.muse-glimmer-30b.generation.image_max_tokens", "768", &diag);
+    const with_entry = try registerEntries(alloc, edit.text, "t.json", &.{.{ .name = "glimmer", .entry = .{ .path = "/g.gguf" } }}, &.{}, &diag);
+    defer alloc.free(with_entry);
+    var edit2 = try set(alloc, with_entry, "t.json", "models.glimmer.generation.image_max_tokens", "768", &diag);
     defer edit2.deinit(alloc);
     var reloaded = try fromText(alloc, edit2.text, "t.json", &diag);
     defer reloaded.deinit();
-    try std.testing.expectEqual(ImageMaxTokens{ .tokens = 768 }, resolve(&reloaded, "muse-glimmer-30b", .{}, .generate).image_max_tokens);
+    try std.testing.expectEqual(ImageMaxTokens{ .tokens = 768 }, resolve(&reloaded, "glimmer", .{}, .generate).image_max_tokens);
     try std.testing.expectError(error.InvalidConfigValue, set(alloc, edit.text, "t.json", "generation.image_max_tokens", "0", &diag));
 }
 
@@ -1945,9 +2009,9 @@ test "set edits one key of the file's own text, validates it, and reports the pr
     var first = try set(alloc, null, "t.json", "engine.model", "gemma-4-12b", &diag);
     defer first.deinit(alloc);
     try std.testing.expect(first.previous != null);
-    try std.testing.expectEqualStrings("\"qwen3.8-27b\"", first.previous.?);
+    try std.testing.expectEqualStrings("\"gemma-4-26b-a4b\"", first.previous.?);
     try std.testing.expect(std.mem.indexOf(u8, first.text, "\"model\": \"gemma-4-12b\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, first.text, "\"qwen3.8-27b\": {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.text, "\"models\": {}") != null);
     // A value is JSON when it parses as JSON, a string otherwise; a stated
     // key is replaced in place and an unstated section is created.
     const text =
@@ -2012,7 +2076,7 @@ test "register writes a new entry, fills a companion or a profile, and refuses a
     // No file at all starts from the initial document.
     const first = try register(alloc, null, "t.json", "x", .{ .repo = "a/b", .revision = "0000000000000000000000000000000000000000", .file = "f.gguf" }, &diag);
     defer alloc.free(first);
-    try std.testing.expect(std.mem.indexOf(u8, first, "\"qwen3.8-27b\": {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first, "\"x\": {") != null);
     // Other content under the name is a conflict, never an overwrite.
     try std.testing.expectError(error.RegistryConflict, register(alloc, text, "t.json", "local", .{ .repo = "a/b", .revision = "0000000000000000000000000000000000000000", .file = "f.gguf" }, &diag));
     try std.testing.expectError(error.RegistryConflict, register(alloc, text, "t.json", "q", .{ .repo = "c/d", .revision = "0000000000000000000000000000000000000000", .file = "q.gguf" }, &diag));
@@ -2023,9 +2087,10 @@ test "register writes a new entry, fills a companion or a profile, and refuses a
     const qwen = catalog.find("qwen3.8-27b").?;
     try std.testing.expectError(error.RegistryConflict, register(alloc, text, "t.json", "qwen3.8-27b", .{ .repo = "a/b", .revision = qwen.revision, .file = "f.gguf" }, &diag));
     try std.testing.expect(std.mem.indexOf(u8, diag.message(), "catalogue name") != null);
-    const own = try register(alloc, text, "t.json", "qwen3.8-27b", .{ .repo = qwen.repo, .revision = qwen.revision, .file = qwen.file }, &diag);
+    const own = try register(alloc, text, "t.json", "qwen3.8-27b", .{ .repo = qwen.repo, .revision = qwen.revision, .file = qwen.main().path, .draft = "MTP/mtp-Qwen3.8-27B-Q4_0.gguf" }, &diag);
     defer alloc.free(own);
     try std.testing.expect(std.mem.indexOf(u8, own, "\"qwen3.8-27b\": {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, own, "\"draft\": \"MTP/mtp-Qwen3.8-27B-Q4_0.gguf\"") != null);
 }
 
 test "an entry named as a catalogue entry may not locate another file" {
@@ -2049,7 +2114,7 @@ test "show prints the effective value of every key with its source in both forms
     const alloc = std.testing.allocator;
     var diag: Diagnostic = .{};
     var loaded = try fromText(alloc,
-        \\{ "schema_version": 1, "engine": { "ctx_size": 4096 }, "generation": { "sampling": { "top_k": 40 } },
+        \\{ "schema_version": 1, "engine": { "ctx_size": 4096, "model": "qwen3.8-27b" }, "generation": { "sampling": { "top_k": 40 } },
         \\  "models": { "mine": { "path": "custom/m.gguf", "ctx_size": 2048, "generation": { "sampling": { "top_p": 0.5 } } } } }
     , "/r/nuclis.json", &diag);
     defer loaded.deinit();
@@ -2059,7 +2124,7 @@ test "show prints the effective value of every key with its source in both forms
     try std.testing.expect(std.mem.startsWith(u8, out.written(), "config: /r/nuclis.json (file)\nmodel: qwen3.8-27b (catalogue name; qwen38 profile)."));
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "a null sampling key in the file takes the profile's value for generation.think = off") != null);
     try expectRow(out.written(), "schema_version", "1", "file");
-    try expectRow(out.written(), "engine.model", "qwen3.8-27b", "default");
+    try expectRow(out.written(), "engine.model", "qwen3.8-27b", "file");
     try expectRow(out.written(), "engine.ctx_size", "4096", "file");
     // The profile's instruct values fill the unset sampling keys.
     try expectRow(out.written(), "generation.sampling.temperature", "0.7", "profile");
@@ -2121,18 +2186,24 @@ test "show prints the effective value of every key with its source in both forms
 
 test "the written initial file parses back exactly and shows the entry shape" {
     const alloc = std.testing.allocator;
+    const entries = [_]NamedModel{
+        .{ .name = "gemma-4-26b-a4b", .entry = registryEntry(catalog.find("gemma-4-26b-a4b").?) },
+        .{ .name = "qwen3.8-27b", .entry = registryEntry(catalog.find("qwen3.8-27b").?) },
+    };
+    const written = initial(&entries, "qwen3.8-27b");
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
-    try writeInitial(&out.writer);
+    try writeConfig(&out.writer, written);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"schema_version\": 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"temperature\": null") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"qwen3.8-27b\": {") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"revision\": \"4ca720788d1e01f1bff70c033e0d0028fd02e502\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"mtp\": \"MTP/mtp-Qwen3.8-27B-Q4_0.gguf\"") != null);
+    // The default draft variant's file, under the key that replaced `mtp`.
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"draft\": \"MTP/mtp-Qwen3.8-27B-Q4_0.gguf\"") != null);
     var diag: Diagnostic = .{};
     var loaded = try fromText(alloc, out.written(), "d.json", &diag);
     defer loaded.deinit();
-    try std.testing.expectEqualDeep(initial(), loaded.config);
+    try std.testing.expectEqualDeep(written, loaded.config);
     // The entry resolves like the catalogue name it mirrors: same globals, same profile.
     const gen = resolve(&loaded, null, .{}, .generate);
     try std.testing.expect(gen.entry != null);
@@ -2143,6 +2214,7 @@ test "the written initial file parses back exactly and shows the entry shape" {
     try std.testing.expectEqual(true, gen.entry.?.generation.speculative.?);
     try std.testing.expectEqual(@as(usize, 7), gen.entry.?.generation.draft_length.?);
     try std.testing.expect(gen.speculative);
+    try std.testing.expectEqualStrings("MTP/mtp-Qwen3.8-27B-Q4_0.gguf", (try gen.draftFile()).?);
     const moe = resolve(&loaded, "gemma-4-26b-a4b", .{}, .generate);
     try std.testing.expectEqual(false, moe.entry.?.generation.speculative.?);
     try std.testing.expect(!moe.speculative);
@@ -2150,14 +2222,64 @@ test "the written initial file parses back exactly and shows the entry shape" {
     try std.testing.expect(!resolve(&loaded, null, .{ .speculative = false }, .generate).speculative);
 }
 
-test "discovered entries are written under free names with only their stated keys" {
+test "a draft variant selects its file and its measured verdict" {
     const alloc = std.testing.allocator;
     var diag: Diagnostic = .{};
-    const text = try registerDiscovered(alloc, null, "/r/nuclis.json", &.{
-        .{ .name = "fine", .repo = "o/r", .file = "f.gguf", .revision = "abc", .mmproj = "mmproj.gguf", .profile = .gemma4, .speculative = false, .draft_length = 4 },
-        .{ .name = "loose", .path = "o/x/l.gguf" },
-    }, &diag);
+    var loaded = try fromText(alloc,
+        \\{ "schema_version": 1, "models": { "q": { "repo": "unsloth/Qwen3.8-27B-GGUF", "file": "Qwen3.8-27B-UD-Q4_K_M.gguf", "generation": { "draft": "dflash2" } } } }
+    , "t.json", &diag);
+    defer loaded.deinit();
+    const by_entry = resolve(&loaded, "q", .{}, .generate);
+    try std.testing.expectEqualStrings("MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", (try by_entry.draftFile()).?);
+    try std.testing.expect(by_entry.speculative and by_entry.draft_length == 7);
+    const by_flag = resolve(&loaded, "qwen3.8-27b", .{ .draft = "dflash2" }, .generate);
+    try std.testing.expectEqualStrings("MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", (try by_flag.draftFile()).?);
+    try std.testing.expectEqualStrings("MTP/mtp-Qwen3.8-27B-Q4_0.gguf", (try resolve(&loaded, "qwen3.8-27b", .{}, .generate).draftFile()).?);
+    try std.testing.expectError(error.NoSuchDraft, resolve(&loaded, "qwen3.8-27b", .{ .draft = "eagle" }, .generate).draftFile());
+    try std.testing.expectError(error.NoSuchDraft, resolve(&loaded, "/x.gguf", .{ .draft = "mtp" }, .generate).draftFile());
+}
+
+test "a draft variant on the command line brings its verdict over the entry's copy" {
+    const alloc = std.testing.allocator;
+    var diag: Diagnostic = .{};
+    var loaded = try fromText(alloc,
+        \\{ "schema_version": 1, "models": { "qwen3.8-27b": { "repo": "unsloth/Qwen3.8-27B-GGUF", "file": "Qwen3.8-27B-UD-Q4_K_M.gguf", "draft": "MTP/mtp-Qwen3.8-27B-Q4_0.gguf", "generation": { "speculative": false, "draft_length": 3 } } } }
+    , "t.json", &diag);
+    defer loaded.deinit();
+    const kept = resolve(&loaded, "qwen3.8-27b", .{}, .generate);
+    try std.testing.expect(!kept.speculative and kept.draft_length == 3);
+    const asked = resolve(&loaded, "qwen3.8-27b", .{ .draft = "dflash2" }, .generate);
+    try std.testing.expect(asked.speculative and asked.draft_length == 7);
+    try std.testing.expectEqualStrings("MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", (try asked.draftFile()).?);
+    const flagged = resolve(&loaded, "qwen3.8-27b", .{ .draft = "dflash2", .draft_length = 2 }, .generate);
+    try std.testing.expectEqual(@as(usize, 2), flagged.draft_length);
+}
+
+test "the old mtp key reads as draft and is named for the notice" {
+    const alloc = std.testing.allocator;
+    var diag: Diagnostic = .{};
+    var loaded = try fromText(alloc,
+        \\{ "schema_version": 1, "models": { "old": { "path": "o/r/m.gguf", "mtp": "MTP/d.gguf" } } }
+    , "t.json", &diag);
+    defer loaded.deinit();
+    try std.testing.expectEqualStrings("MTP/d.gguf", loaded.config.models.find("old").?.draft.?);
+    try std.testing.expectEqual(@as(usize, 1), loaded.config.models.old_mtp.len);
+    try std.testing.expectEqualStrings("old", loaded.config.models.old_mtp[0]);
+    try std.testing.expectError(error.InvalidConfigValue, fromText(alloc,
+        \\{ "schema_version": 1, "models": { "old": { "path": "o/r/m.gguf", "mtp": "a.gguf", "draft": "b.gguf" } } }
+    , "t.json", &diag));
+}
+
+test "registered entries are written under free names with only their stated keys, and pruned" {
+    const alloc = std.testing.allocator;
+    var diag: Diagnostic = .{};
+    const text = try registerEntries(alloc, null, "/r/nuclis.json", &.{
+        .{ .name = "fine", .entry = .{ .repo = "o/r", .file = "f.gguf", .revision = "abc", .mmproj = "mmproj.gguf", .profile = .gemma4, .generation = .{ .speculative = false, .draft_length = 4 } } },
+        .{ .name = "loose", .entry = .{ .path = "o/x/l.gguf" } },
+    }, &.{}, &diag);
     defer alloc.free(text);
+    // Only what an entry states: no null keys, no empty sections.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\"loose\": {\n      \"path\": \"o/x/l.gguf\"\n    }") != null);
     var loaded = try fromText(alloc, text, "/r/nuclis.json", &diag);
     defer loaded.deinit();
     const fine = loaded.config.models.find("fine").?;
@@ -2165,27 +2287,32 @@ test "discovered entries are written under free names with only their stated key
     try std.testing.expectEqualStrings("mmproj.gguf", fine.mmproj.?);
     try std.testing.expectEqual(Profile.gemma4, fine.profile.?);
     try std.testing.expectEqual(false, fine.generation.speculative.?);
-    try std.testing.expect(fine.mtp == null);
+    try std.testing.expect(fine.draft == null);
     const loose = loaded.config.models.find("loose").?;
     try std.testing.expectEqualStrings("o/x/l.gguf", loose.path.?);
     try std.testing.expect(loose.profile == null and loose.generation.speculative == null);
-    // The catalogue's names and an existing entry are refused.
-    try std.testing.expectError(error.RegistryConflict, registerDiscovered(alloc, text, "/r/nuclis.json", &.{.{ .name = "qwen3.8-27b", .path = "p.gguf" }}, &diag));
-    try std.testing.expectError(error.RegistryConflict, registerDiscovered(alloc, text, "/r/nuclis.json", &.{.{ .name = "fine", .path = "p.gguf" }}, &diag));
+    // An existing entry is refused; the loader refuses an index name locating another file.
+    try std.testing.expectError(error.RegistryConflict, registerEntries(alloc, text, "/r/nuclis.json", &.{.{ .name = "fine", .entry = .{ .path = "p.gguf" } }}, &.{}, &diag));
+    try std.testing.expectError(error.InvalidConfigValue, registerEntries(alloc, text, "/r/nuclis.json", &.{.{ .name = "qwen3.8-27b", .entry = .{ .path = "p.gguf" } }}, &.{}, &diag));
+    // Pruning removes the named entries and keeps the rest.
+    const pruned = try registerEntries(alloc, text, "/r/nuclis.json", &.{}, &.{ "loose", "absent" }, &diag);
+    defer alloc.free(pruned);
+    var after = try fromText(alloc, pruned, "/r/nuclis.json", &diag);
+    defer after.deinit();
+    try std.testing.expect(after.config.models.find("loose") == null and after.config.models.find("fine") != null);
 }
 
-test "the registry is written in name order: the initial file and every edit" {
+test "the registry is written in name order: every edit" {
     const alloc = std.testing.allocator;
-    for (initial_models[0 .. initial_models.len - 1], initial_models[1..]) |a, b| try std.testing.expect(std.mem.lessThan(u8, a.name, b.name));
     var diag: Diagnostic = .{};
     const text =
         \\{ "schema_version": 1, "models": { "zeta": { "path": "/z.gguf" }, "beta": { "path": "/b.gguf" } } }
     ;
     const registered = try register(alloc, text, "t.json", "alpha", .{ .repo = "a/b", .revision = "0000000000000000000000000000000000000000", .file = "a.gguf" }, &diag);
     defer alloc.free(registered);
-    const discovered = try registerDiscovered(alloc, registered, "t.json", &.{ .{ .name = "omega", .path = "/o.gguf" }, .{ .name = "gamma", .path = "/g.gguf" } }, &diag);
-    defer alloc.free(discovered);
-    var loaded = try fromText(alloc, discovered, "t.json", &diag);
+    const synced = try registerEntries(alloc, registered, "t.json", &.{ .{ .name = "omega", .entry = .{ .path = "/o.gguf" } }, .{ .name = "gamma", .entry = .{ .path = "/g.gguf" } } }, &.{}, &diag);
+    defer alloc.free(synced);
+    var loaded = try fromText(alloc, synced, "t.json", &diag);
     defer loaded.deinit();
     const want = [_][]const u8{ "alpha", "beta", "gamma", "omega", "zeta" };
     try std.testing.expectEqual(want.len, loaded.config.models.entries.len);

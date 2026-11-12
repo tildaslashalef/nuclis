@@ -42,16 +42,22 @@ pub const Options = struct {
     words: []const []const u8 = &.{},
     /// Which command's page `--help` asked for; null is the overview.
     help_topic: ?help_text.Topic = null,
-    config_action: enum { init, show, set } = .show,
-    /// `config init --discover [--dry-run]`: register the runnable files
-    /// the catalogue does not name.
+    config_action: enum { init, sync, show, set } = .show,
+    /// `config init --discover`: the old spelling of what `init` now does;
+    /// accepted with a notice.
     discover: bool = false,
     dry_run: bool = false,
+    /// `config sync --prune`: remove the entries whose file is gone.
+    prune: bool = false,
+    /// An old spelling was used (`mtp` for `draft`, `--discover`): the
+    /// command runs and a notice names the new one.
+    old_spelling: ?[]const u8 = null,
     /// `config set <key> <value>`.
     set_key: []const u8 = "",
     set_value: []const u8 = "",
-    model_action: enum { pull, ls, inspect, rm } = .ls,
+    model_action: enum { pull, ls, inspect, rm, adopt } = .ls,
     pull: model.PullOptions = .{},
+    ls: model.LsOptions = .{},
     /// The command-line layer of the configuration: only what was stated,
     /// so `config.resolve` can put it above the file.
     flags: config.Flags = .{},
@@ -194,9 +200,13 @@ pub fn parseArgs(args: []const []const u8) !Options {
         } else if (command == .config and options.config_action == .init and std.mem.eql(u8, args[i], "--discover")) {
             if (options.discover) return error.DuplicateOption;
             options.discover = true;
-        } else if (command == .config and options.config_action == .init and std.mem.eql(u8, args[i], "--dry-run")) {
+            options.old_spelling = "`config init --discover` is now `config init`, which registers what is installed; `config sync` does it for an existing file";
+        } else if (command == .config and (options.config_action == .init or options.config_action == .sync) and std.mem.eql(u8, args[i], "--dry-run")) {
             if (options.dry_run) return error.DuplicateOption;
             options.dry_run = true;
+        } else if (command == .config and options.config_action == .sync and std.mem.eql(u8, args[i], "--prune")) {
+            if (options.prune) return error.DuplicateOption;
+            options.prune = true;
         } else if (command != .config and std.mem.eql(u8, args[i], "--model")) {
             if (options.model != null) return error.DuplicateOption;
             i += 1;
@@ -361,6 +371,10 @@ pub fn parseArgs(args: []const []const u8) !Options {
             } else if (std.mem.eql(u8, flag, "--speculative")) {
                 if (f.speculative != null) return error.DuplicateOption;
                 f.speculative = parseOnOff(value) orelse return error.InvalidNumber;
+            } else if (std.mem.eql(u8, flag, "--draft")) {
+                if (f.draft != null) return error.DuplicateOption;
+                if (value.len == 0 or std.mem.startsWith(u8, value, "-")) return error.MissingOptionValue;
+                f.draft = value;
             } else if (std.mem.eql(u8, flag, "--draft-length")) {
                 if (f.draft_length != null) return error.DuplicateOption;
                 const n = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
@@ -426,7 +440,6 @@ pub fn parseArgs(args: []const []const u8) !Options {
         options.print.resume_id = options.resume_id;
         options.print.system_prompt = options.system_prompt_file;
     }
-    if (command == .config and options.config_action == .init and !options.discover and (options.json or options.dry_run)) return error.UnknownOption;
     if (command == .eval and options.evaluation.file == null) return error.MissingTextFile;
     const token_prompt = options.benchmark.prompt_tokens != null or options.generation.prompt_tokens != null;
     const sources = @as(u8, @intFromBool(options.generation.prompt != null)) + @intFromBool(options.generation.prompt_file != null) + @intFromBool(token_prompt);
@@ -451,10 +464,13 @@ fn parseOnOff(value: []const u8) ?bool {
 
 /// `model pull <name|owner/repo> [flags]` | `model inspect <name|owner/repo>
 /// [--file] [--revision] [--json]` | `model rm <name> [--with r,… | --all]
-/// [--json]` | `model ls [--json]`: the action and the
+/// [--json]` | `model adopt <path> [--force] [--json]` | `model ls [-l]
+/// [--available [--all]] [--json]`: the action and the
 /// repository are positional; the flags are the command's own, none of the
 /// generation flags apply, and `--model` in particular does not (there is
 /// no model to open).
+const mtp_notice = "`mtp` is now `draft` (`--with draft`, `--with draft=<variant>`); the old name goes in the next minor release";
+
 fn parseModelArgs(args: []const []const u8) !Options {
     if (args.len == 0) return error.MissingModelAction;
     var options: Options = .{ .command = .model };
@@ -473,7 +489,26 @@ fn parseModelArgs(args: []const []const u8) !Options {
             options.json = true;
             continue;
         }
-        if (options.model_action == .ls) return error.UnknownOption;
+        if (options.model_action == .ls) {
+            const l = &options.ls;
+            if (std.mem.eql(u8, flag, "-l") or std.mem.eql(u8, flag, "--long")) {
+                if (l.long) return error.DuplicateOption;
+                l.long = true;
+            } else if (std.mem.eql(u8, flag, "--available")) {
+                if (l.available) return error.DuplicateOption;
+                l.available = true;
+            } else if (std.mem.eql(u8, flag, "--all")) {
+                if (l.all) return error.DuplicateOption;
+                l.all = true;
+            } else return error.UnknownOption;
+            continue;
+        }
+        if (options.model_action == .adopt) {
+            if (!std.mem.eql(u8, flag, "--force")) return error.UnknownOption;
+            if (p.force) return error.DuplicateOption;
+            p.force = true;
+            continue;
+        }
         const pulls = options.model_action == .pull;
         // `rm` takes the companion choice and nothing else of pull's.
         const removes = options.model_action == .rm;
@@ -487,8 +522,18 @@ fn parseModelArgs(args: []const []const u8) !Options {
             p.all = true;
             continue;
         }
+        if (pulls and std.mem.eql(u8, flag, "--variants")) {
+            if (p.variants) return error.DuplicateOption;
+            p.variants = true;
+            continue;
+        }
         if (removes and !std.mem.eql(u8, flag, "--with")) return error.UnknownOption;
         if (!pulls and !removes and !std.mem.eql(u8, flag, "--file") and !std.mem.eql(u8, flag, "--revision")) return error.UnknownOption;
+        // An unknown last flag is unknown, not one missing its value.
+        const takes_value = for ([_][]const u8{ "--file", "--revision", "--role", "--register", "--profile", "--with" }) |known| {
+            if (std.mem.eql(u8, flag, known)) break true;
+        } else false;
+        if (!takes_value) return error.UnknownOption;
         i += 1;
         if (i == args.len) return error.MissingOptionValue;
         const value = args[i];
@@ -500,7 +545,8 @@ fn parseModelArgs(args: []const []const u8) !Options {
             p.revision = value;
         } else if (pulls and std.mem.eql(u8, flag, "--role")) {
             if (p.role != null) return error.DuplicateOption;
-            p.role = std.meta.stringToEnum(model.Role, value) orelse return error.UnknownRole;
+            p.role = model.Role.parse(value) orelse return error.UnknownRole;
+            if (std.mem.eql(u8, value, "mtp")) options.old_spelling = mtp_notice;
         } else if (pulls and std.mem.eql(u8, flag, "--register")) {
             if (p.register != null) return error.DuplicateOption;
             if (value.len == 0 or std.mem.startsWith(u8, value, "--")) return error.MissingOptionValue;
@@ -511,15 +557,25 @@ fn parseModelArgs(args: []const []const u8) !Options {
         } else if ((pulls or removes) and std.mem.eql(u8, flag, "--with")) {
             if (p.with.count() != 0) return error.DuplicateOption;
             var roles = std.mem.splitScalar(u8, value, ',');
-            while (roles.next()) |name| {
-                const role = std.meta.stringToEnum(model.Role, name) orelse return error.UnknownRole;
+            while (roles.next()) |item| {
+                // `draft=<variant>` picks a draft other than the default.
+                const eq = std.mem.indexOfScalar(u8, item, '=');
+                const name = if (eq) |e| item[0..e] else item;
+                const role = model.Role.parse(name) orelse return error.UnknownRole;
                 if (role == .main) return error.UnknownRole;
+                if (std.mem.eql(u8, name, "mtp")) options.old_spelling = mtp_notice;
+                if (eq) |e| {
+                    if (role != .draft or !pulls or item.len == e + 1) return error.UnknownRole;
+                    p.draft_variant = item[e + 1 ..];
+                }
                 p.with.insert(role);
             }
             if (p.with.count() == 0) return error.MissingOptionValue;
         } else return error.UnknownOption;
     }
     if (p.profile != null and p.register == null) return error.ConflictingOptions;
+    if (p.variants and !p.all) return error.ConflictingOptions;
+    if (options.ls.all and !options.ls.available) return error.ConflictingOptions;
     if (options.model_action == .rm and p.all and p.with.count() != 0) return error.ConflictingOptions;
     return options;
 }
@@ -536,6 +592,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     }
     // Text reports are styled only on a terminal; `--json` never is.
     const sty: style.Style = if (options.json) .none else style.Style.detect(environ, io, std.Io.File.stdout());
+    if (options.old_spelling) |notice| if (!options.json)
+        try out.print("{s}notice:{s} {s}\n", .{ sty.on(.warning), sty.off(), notice });
     switch (options.command) {
         .help => return help_text.write(out, sty, options.help_topic, version),
         .version => return out.writeAll("nuclis " ++ version ++ "\n"),
@@ -565,8 +623,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                     break :blk null;
                 };
                 defer if (loaded) |*l| l.deinit();
-                return model.ls(alloc, io, dir, if (loaded) |l| l.config.models else .{}, options.json, out, sty);
+                if (loaded) |l| try oldMtpNotice(out, l.config.models, options.json, sty);
+                return model.ls(alloc, io, dir, if (loaded) |l| l.config.models else .{}, if (loaded) |l| l.config.engine.model else null, options.ls, options.json, out, sty);
             },
+            .adopt => return model.adopt(alloc, io, dir, options.pull.repo, options.pull.force, options.json, out, sty, diag),
             .inspect => return model.inspect(alloc, io, environ, options.pull, options.json, out, sty, diag),
             // The registry decides which files other entries still use, so
             // a file that fails to load stops the removal.
@@ -650,47 +710,59 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     if (options.command == .config) {
         const file = config_path orelse return error.MissingHome;
         switch (options.config_action) {
-            .init => {
-                // A dry run writes nothing, the base file included: a missing
-                // file is judged as the initial document in memory.
-                const created: config.InitResult = if (options.dry_run) .exists else try config.init(io, .cwd(), file);
-                if (!options.discover) {
-                    switch (created) {
-                        .created => {
-                            try out.print("{s}wrote{s} {s}{s}{s}\n", .{ sty.on(.success), sty.off(), sty.on(.code), file, sty.off() });
-                            try renderStart(alloc, io, root.?, out, sty);
-                        },
-                        .exists => try out.print("{s}{s}{s} exists; not overwritten {s}(`nuclis config show` prints it; move it away to start over){s}\n", .{ sty.on(.code), file, sty.off(), sty.on(.dim), sty.off() }),
-                    }
-                    return;
-                }
-                if (!options.json and created == .created) try out.print("{s}wrote{s} {s}{s}{s}\n", .{ sty.on(.success), sty.off(), sty.on(.code), file, sty.off() });
+            .init, .sync => {
                 var arena_state = std.heap.ArenaAllocator.init(alloc);
                 defer arena_state.deinit();
                 const arena = arena_state.allocator();
                 const current = try config.readText(alloc, io, .cwd(), file, diag);
                 defer if (current) |c| alloc.free(c);
-                const initial = if (current == null) blk: {
-                    var w: std.Io.Writer.Allocating = .init(arena);
-                    try config.writeInitial(&w.writer);
-                    break :blk w.written();
-                } else null;
-                var loaded = try config.fromText(alloc, current orelse initial.?, file, diag);
-                defer loaded.deinit();
-                var report = try discover.discover(arena, alloc, io, root.?, loaded.config.models);
+                if (options.config_action == .init and current != null) {
+                    try out.print("{s}{s}{s} exists; not overwritten {s}(`nuclis config sync` adds what is installed; `nuclis config show` prints it){s}\n", .{ sty.on(.code), file, sty.off(), sty.on(.dim), sty.off() });
+                    return;
+                }
+                if (options.config_action == .sync and current == null) {
+                    diag.set("no {s}: `nuclis config init` writes one from what is installed", .{file});
+                    return error.MissingConfigFile;
+                }
+                var registry: config.Models = .{};
+                var loaded: ?config.Loaded = null;
+                defer if (loaded) |*l| l.deinit();
+                if (current) |text| {
+                    loaded = try config.fromText(alloc, text, file, diag);
+                    registry = loaded.?.config.models;
+                    try oldMtpNotice(out, registry, options.json, sty);
+                }
+                var report = try discover.plan(arena, alloc, io, root.?, registry, if (loaded) |l| l.config.engine.model else null);
                 report.config_file = file;
                 report.dry_run = options.dry_run;
-                if (!options.dry_run and report.registered.len > 0) {
-                    const text = try config.registerDiscovered(alloc, current, file, try discover.toEntries(arena, report.registered), diag);
-                    defer alloc.free(text);
-                    try config.write(io, .cwd(), file, text);
-                    report.written = true;
+                const entries = try discover.toEntries(arena, report.registered);
+                if (options.config_action == .init) {
+                    const model_name = discover.defaultModel(report.registered, report.default_installed);
+                    if (!options.dry_run) {
+                        _ = try config.init(io, .cwd(), file, config.initial(entries, model_name));
+                        report.written = true;
+                    }
+                    if (options.json) try report.render(out, true, sty) else try renderStart(out, file, model_name, report, sty);
+                } else {
+                    const prune: []const []const u8 = if (options.prune) blk: {
+                        const names = try arena.alloc([]const u8, report.gone.len);
+                        for (report.gone, names) |g, *n| n.* = g.name;
+                        break :blk names;
+                    } else &.{};
+                    report.pruned = prune.len > 0;
+                    if (!options.dry_run and (entries.len > 0 or prune.len > 0)) {
+                        const text = try config.registerEntries(alloc, current, file, entries, prune, diag);
+                        defer alloc.free(text);
+                        try config.write(io, .cwd(), file, text);
+                        report.written = true;
+                    }
+                    try report.render(out, options.json, sty);
                 }
-                try report.render(out, options.json, sty);
             },
             .show => {
                 var loaded = try config.load(alloc, io, .cwd(), file, diag);
                 defer loaded.deinit();
+                try oldMtpNotice(out, loaded.config.models, options.json, sty);
                 try config.show(&loaded, out, options.json, sty);
             },
             .set => {
@@ -745,6 +817,13 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         },
         else => return err,
     };
+    if (options.flags.draft != null or (if (config.resolve(&loaded, options.model, options.flags, .generate).entry) |e| e.generation.draft != null else false)) {
+        const probe = config.resolve(&loaded, options.model, options.flags, .generate);
+        _ = probe.draftFile() catch |err| {
+            diag.set("{s} has no draft variant {s} in the index (`nuclis model ls --available -l` lists each model's variants)", .{ probe.model, probe.draft.? });
+            return err;
+        };
+    }
     // The engine reports an architecture without an adapter as a typed
     // error; the reason (which ids the tree has) is added here, where the
     // diagnostic lives.
@@ -968,26 +1047,25 @@ fn selectAdapter(document: *const inference.gguf.Document, diag: *Diagnostic) !i
 /// After `config init`: what the file says, the state of every catalogue
 /// model under the root, and the command to run next (a fresh root has
 /// nothing pulled yet).
-fn renderStart(alloc: std.mem.Allocator, io: std.Io, root: []const u8, out: *std.Io.Writer, sty: style.Style) !void {
-    const defaults: config.Config = .{};
+/// Names the registry entries that still say `mtp`, which reads as
+/// `draft` for one minor release.
+fn oldMtpNotice(out: *std.Io.Writer, models: config.Models, json: bool, sty: style.Style) !void {
+    if (json or models.old_mtp.len == 0) return;
+    try out.print("{s}notice:{s} models.<name>.mtp is now models.<name>.draft; rename it in", .{ sty.on(.warning), sty.off() });
+    for (models.old_mtp, 0..) |name, i| try out.print("{s} {s}", .{ if (i == 0) "" else ",", name });
+    try out.writeByte('\n');
+}
+
+/// What `config init` leaves: the file, the model it runs, and the next
+/// command.
+fn renderStart(out: *std.Io.Writer, file: []const u8, model_name: []const u8, report: discover.Report, sty: style.Style) !void {
     const off = sty.off();
-    try out.print("  {s}engine.model{s} {s}{s}{s} (catalogue name), backend {s}, ctx_size {d}; think {s} (generate) / {s} (agent)\n", .{ sty.on(.label), off, sty.on(.keyword), defaults.engine.model, off, @tagName(defaults.engine.backend), defaults.engine.ctx_size, @tagName(defaults.generation.think), @tagName(defaults.agent.think) });
-    try out.print("  {s}models{s} {s}(the catalogue, registered in the file; `nuclis model ls` shows them){s}\n", .{ sty.on(.header), off, sty.on(.dim), off });
-    const models = try model.modelsDir(alloc, root);
-    defer alloc.free(models);
-    var missing: ?*const catalog.Entry = null;
-    for (&catalog.entries) |*entry| {
-        const path = try catalog.localPath(alloc, models, entry, entry.file);
-        defer alloc.free(path);
-        const status = try catalog.status(alloc, io, path, entry.sha256, entry.size);
-        if (status != .present and missing == null) missing = entry;
-        var name_buffer: [64]u8 = undefined;
-        try out.print("    {s}{s}{s} {s}{s:<10}{s} {s}{d}{s} bytes\n", .{ sty.on(.keyword), catalog.padName(&name_buffer, entry.name), off, sty.on(model.statusStyle(status)), @tagName(status), off, sty.on(.number), entry.size, off });
-    }
-    if (missing) |entry|
-        try out.print("{s}next:{s} {s}nuclis model pull {s}{s} fetches the model ({s}--all{s} adds its companions), then {s}nuclis agent{s}\n", .{ sty.on(.bold), off, sty.on(.code), entry.name, off, sty.on(.code), off, sty.on(.code), off })
-    else
-        try out.print("{s}next:{s} every catalogue model is present; {s}nuclis agent{s}\n", .{ sty.on(.bold), off, sty.on(.code), off });
+    try out.print("{s}{s}{s} {s}{s}{s} with {s}engine.model{s} {s}{s}{s}\n", .{ sty.on(if (report.dry_run) .bold else .success), if (report.dry_run) "dry run: would write" else "wrote", off, sty.on(.code), file, off, sty.on(.label), off, sty.on(.keyword), model_name, off });
+    try report.renderRows(out, sty);
+    if (report.dry_run) return;
+    if (!report.default_installed and report.registered.len == 0) {
+        try out.print("{s}next:{s} {s}nuclis model pull {s} --all{s} fetches it, then {s}nuclis config sync{s} registers what you pulled; {s}nuclis model ls --available{s} lists the index\n", .{ sty.on(.bold), off, sty.on(.code), model_name, off, sty.on(.code), off, sty.on(.code), off });
+    } else try out.print("{s}next:{s} {s}nuclis agent{s}; {s}nuclis model ls{s} shows what is installed\n", .{ sty.on(.bold), off, sty.on(.code), off, sty.on(.code), off });
 }
 
 test "completion takes one shell; the hidden command takes every word" {
@@ -1156,9 +1234,13 @@ test "sampling flags are per-option overrides shared by generate, bench, and the
 test "config parses its positional action and rejects the model and generation flags" {
     try std.testing.expectEqual(.init, (try parseArgs(&.{ "config", "init" })).config_action);
     const discovering = try parseArgs(&.{ "config", "init", "--discover", "--dry-run", "--json" });
-    try std.testing.expect(discovering.discover and discovering.dry_run and discovering.json);
-    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "init", "--dry-run" }));
-    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "init", "--json" }));
+    try std.testing.expect(discovering.discover and discovering.dry_run and discovering.json and discovering.old_spelling != null);
+    try std.testing.expect((try parseArgs(&.{ "config", "init", "--dry-run" })).dry_run);
+    try std.testing.expect((try parseArgs(&.{ "config", "init", "--json" })).json);
+    const sync = try parseArgs(&.{ "config", "sync", "--prune", "--dry-run", "--json" });
+    try std.testing.expect(sync.config_action == .sync and sync.prune and sync.dry_run and sync.json);
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "init", "--prune" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "sync", "--discover" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "show", "--discover" }));
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "config", "init", "--discover", "--discover" }));
     const show = try parseArgs(&.{ "config", "show", "--json" });
@@ -1173,7 +1255,6 @@ test "config parses its positional action and rejects the model and generation f
     try std.testing.expectEqualStrings("hauhau", set.set_value);
     try std.testing.expectError(error.MissingSetArguments, parseArgs(&.{ "config", "set", "engine.model" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "set", "engine.model", "x", "--json" }));
-    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "init", "--json" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "show", "--model", "m.gguf" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "show", "--ctx-size", "16" }));
     try std.testing.expectEqual(.help, (try parseArgs(&.{ "config", "--help" })).command);
@@ -1199,13 +1280,20 @@ test "config init and show run against NUCLIS_HOME without touching the real roo
     out.clearRetainingCapacity();
     try run(alloc, io, &environ, try parseArgs(&.{ "config", "init" }), &out.writer, &diag);
     try std.testing.expect(std.mem.startsWith(u8, out.written(), "wrote "));
-    // A fresh root: the catalogue model is absent and the next step is its pull.
-    // The column width comes from the catalogue's widest name, so the
-    // assertion is on the two parts rather than the spacing between them.
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "qwen3.8-27b ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), " absent") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "next: nuclis model pull qwen3.8-27b fetches the model") != null);
+    // A fresh root: nothing installed, so the default model and an empty
+    // registry, and the next step is its pull, then a sync.
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "with engine.model gemma-4-26b-a4b") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "next: nuclis model pull gemma-4-26b-a4b --all fetches it, then nuclis config sync") != null);
     try tmp.dir.access(io, "nuclis.json", .{});
+    {
+        var written = try config.load(alloc, io, tmp.dir, "nuclis.json", &diag);
+        defer written.deinit();
+        try std.testing.expectEqual(@as(usize, 0), written.config.models.entries.len);
+    }
+    // sync finds nothing to add on an empty root and writes nothing.
+    out.clearRetainingCapacity();
+    try run(alloc, io, &environ, try parseArgs(&.{ "config", "sync" }), &out.writer, &diag);
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "nothing to register"));
     out.clearRetainingCapacity();
     try run(alloc, io, &environ, try parseArgs(&.{ "config", "init" }), &out.writer, &diag);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "exists; not overwritten") != null);
@@ -1228,7 +1316,7 @@ test "config init and show run against NUCLIS_HOME without touching the real roo
     // A model that is not there fails before anything opens, naming the resolved path.
     try tmp.dir.writeFile(io, .{ .sub_path = "nuclis.json", .data = "{ \"schema_version\": 1 }" });
     try std.testing.expectError(error.ModelFileNotFound, run(alloc, io, &environ, try parseArgs(&.{ "inspect", "--json" }), &out.writer, &diag));
-    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf") != null);
+    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/") != null);
     try std.testing.expectError(error.ModelFileNotFound, run(alloc, io, &environ, try parseArgs(&.{ "inspect", "--model", "missing.gguf" }), &out.writer, &diag));
     try std.testing.expectEqualStrings("no model file at missing.gguf", diag.message()[0.."no model file at missing.gguf".len]);
 }
@@ -1240,14 +1328,28 @@ test "model parses its action, the positional repository, and its own flags only
     try std.testing.expectEqualStrings("unsloth/Qwen3.8-27B-GGUF", pull.pull.repo);
     try std.testing.expectEqualStrings("MTP/mtp.gguf", pull.pull.file.?);
     try std.testing.expectEqualStrings("main", pull.pull.revision.?);
-    try std.testing.expectEqual(model.Role.mtp, pull.pull.role.?);
+    // `mtp` is the old name of the draft role: it parses, with a notice.
+    try std.testing.expectEqual(model.Role.draft, pull.pull.role.?);
+    try std.testing.expect(pull.old_spelling != null);
     try std.testing.expect(pull.pull.force and pull.json);
     const plain = try parseArgs(&.{ "model", "pull", "a/b" });
     try std.testing.expect(plain.pull.file == null and plain.pull.revision == null and plain.pull.role == null and !plain.pull.force and !plain.json);
     try std.testing.expect(plain.pull.with.count() == 0 and !plain.pull.all);
-    const with = try parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "mmproj,mtp" });
-    try std.testing.expect(with.pull.with.contains(.mmproj) and with.pull.with.contains(.mtp) and !with.pull.with.contains(.imatrix));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--dry-run" }));
+    const with = try parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "mmproj,draft" });
+    try std.testing.expect(with.pull.with.contains(.mmproj) and with.pull.with.contains(.draft) and !with.pull.with.contains(.imatrix));
+    try std.testing.expect(with.old_spelling == null and with.pull.draft_variant == null);
+    const old = try parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "mtp" });
+    try std.testing.expect(old.pull.with.contains(.draft) and old.old_spelling != null);
+    const variant = try parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "mmproj,draft=dflash2" });
+    try std.testing.expectEqualStrings("dflash2", variant.pull.draft_variant.?);
+    try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "mmproj=x" }));
+    try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "draft=" }));
+    try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "rm", "qwen3.8-27b", "--with", "draft=dflash2" }));
     try std.testing.expect((try parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--all" })).pull.all);
+    const every = try parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--all", "--variants" });
+    try std.testing.expect(every.pull.all and every.pull.variants);
+    try std.testing.expectError(error.ConflictingOptions, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--variants" }));
     const registered = try parseArgs(&.{ "model", "pull", "HauhauCS/Gemma4", "--file", "g.gguf", "--register", "hauhau", "--profile", "gemma4" });
     try std.testing.expectEqualStrings("hauhau", registered.pull.register.?);
     try std.testing.expectEqual(.gemma4, registered.pull.profile.?);
@@ -1256,20 +1358,31 @@ test "model parses its action, the positional repository, and its own flags only
     try std.testing.expectError(error.MissingOptionValue, parseArgs(&.{ "model", "pull", "a/b", "--register", "--json" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "model", "inspect", "a/b", "--register", "x" }));
     try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "main" }));
-    try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "mmproj,draft" }));
+    try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "mmproj,eagle" }));
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "mtp", "--with", "mmproj" }));
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--all", "--all" }));
     const ls = try parseArgs(&.{ "model", "ls", "--json" });
     try std.testing.expectEqual(.ls, ls.model_action);
-    try std.testing.expect(ls.json);
+    try std.testing.expect(ls.json and !ls.ls.long and !ls.ls.available);
+    const long = try parseArgs(&.{ "model", "ls", "-l", "--available", "--all" });
+    try std.testing.expect(long.ls.long and long.ls.available and long.ls.all);
+    try std.testing.expect((try parseArgs(&.{ "model", "ls", "--long" })).ls.long);
+    try std.testing.expectError(error.ConflictingOptions, parseArgs(&.{ "model", "ls", "--all" }));
+    try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "model", "ls", "-l", "--long" }));
+    const adopt = try parseArgs(&.{ "model", "adopt", "o/r/f.gguf", "--force", "--json" });
+    try std.testing.expectEqual(.adopt, adopt.model_action);
+    try std.testing.expectEqualStrings("o/r/f.gguf", adopt.pull.repo);
+    try std.testing.expect(adopt.pull.force and adopt.json);
+    try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "adopt" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "model", "adopt", "f.gguf", "--with", "mmproj" }));
     try std.testing.expectEqual(.help, (try parseArgs(&.{ "model", "--help" })).command);
     try std.testing.expectError(error.MissingModelAction, parseArgs(&.{"model"}));
     try std.testing.expectError(error.UnknownModelAction, parseArgs(&.{ "model", "delete" }));
     // rm: the name, the companion choice, --json; nothing else of pull's.
-    const rm = try parseArgs(&.{ "model", "rm", "qwen3.8-27b", "--with", "mmproj,mtp", "--json" });
+    const rm = try parseArgs(&.{ "model", "rm", "qwen3.8-27b", "--with", "mmproj,draft", "--json" });
     try std.testing.expectEqual(.rm, rm.model_action);
     try std.testing.expectEqualStrings("qwen3.8-27b", rm.pull.repo);
-    try std.testing.expect(rm.pull.with.contains(.mmproj) and rm.pull.with.contains(.mtp) and rm.json);
+    try std.testing.expect(rm.pull.with.contains(.mmproj) and rm.pull.with.contains(.draft) and rm.json);
     try std.testing.expect((try parseArgs(&.{ "model", "rm", "laya", "--all" })).pull.all);
     try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "rm" }));
     try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "rm", "--all" }));
@@ -1279,7 +1392,7 @@ test "model parses its action, the positional repository, and its own flags only
     try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "rm", "qwen3.8-27b", "--with", "main" }));
     try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "pull" }));
     try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "pull", "--file", "x.gguf" }));
-    try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "pull", "a/b", "--role", "draft" }));
+    try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "pull", "a/b", "--role", "eagle" }));
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "model", "pull", "a/b", "--file", "x", "--file", "y" }));
     try std.testing.expectError(error.MissingOptionValue, parseArgs(&.{ "model", "pull", "a/b", "--revision" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "model", "pull", "a/b", "--model", "m.gguf" }));
@@ -1317,11 +1430,14 @@ test "model ls runs against NUCLIS_HOME and needs no configuration file" {
     defer out.deinit();
     var diag: config.Diagnostic = .{};
     try run(alloc, io, &environ, try parseArgs(&.{ "model", "ls" }), &out.writer, &diag);
-    // The column width comes from the catalogue's widest name, so the
-    // assertion is on the two parts rather than the spacing between them.
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "qwen3.8-27b ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), " absent") != null);
+    // A fresh root lists nothing installed and points at the index, warning about the file.
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "listing without registry names") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "nothing installed") != null);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "models", .{}));
+    out.clearRetainingCapacity();
+    try run(alloc, io, &environ, try parseArgs(&.{ "model", "ls", "--available" }), &out.writer, &diag);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "qwen3.8-27b ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "not pulled") != null);
     var empty: std.process.Environ.Map = .init(alloc);
     defer empty.deinit();
     try std.testing.expectError(error.MissingHome, run(alloc, io, &empty, try parseArgs(&.{ "model", "ls" }), &out.writer, &diag));

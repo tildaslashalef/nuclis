@@ -91,6 +91,7 @@ pub const Client = struct {
     pub fn localPath(c: Client, request: Request, filename: []const u8) ![]const u8 {
         try hub.validate(request);
         if (!hub.validPath(filename)) return error.InvalidFilename;
+        if (request.destination) |d| return c.allocator.dupe(u8, d);
         const base = try hub.directory(c.allocator, request.local_dir, c.nuclis_home, c.home);
         defer c.allocator.free(base);
         return std.fs.path.join(c.allocator, &.{ base, request.repo_id, filename });
@@ -110,6 +111,7 @@ pub const Client = struct {
         var arena = std.heap.ArenaAllocator.init(c.allocator);
         errdefer arena.deinit();
         const a = arena.allocator();
+        if (request.destination != null and !request.exact) return error.InvalidFilename;
         const selected = if (request.exact) try exactFile(a, &catalog, request.filename.?) else try hub.select(a, &catalog, request.filename);
         if (selected == null) {
             try c.report(.{ .phase = .selection_required });
@@ -124,7 +126,7 @@ pub const Client = struct {
         var completed: u64 = 0;
         for (selected.?, local, 0..) |file, *destination, file_index| {
             try c.io.checkCancel();
-            const path = try std.fs.path.join(a, &.{ base, catalog.repo_id, file.name });
+            const path = if (request.destination) |d| try a.dupe(u8, d) else try std.fs.path.join(a, &.{ base, catalog.repo_id, file.name });
             var remote_file = file;
             remote_file.name = try a.dupe(u8, file.name);
             destination.* = .{ .path = path, .size = file.size, .sha256 = undefined, .remote = remote_file, .transport = .verified_local };
@@ -730,6 +732,10 @@ test "local path mirrors the Hub path without the revision" {
     defer std.testing.allocator.free(path);
     try std.testing.expectEqualStrings("/data/nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf", path);
     try std.testing.expectError(error.InvalidFilename, c.localPath(.{ .repo_id = "a/b" }, "../x.gguf"));
+    // A destination places the file beside another repository's files.
+    const placed = try c.localPath(.{ .repo_id = "z-lab/D-GGUF", .filename = "d.gguf", .exact = true, .destination = "/data/nuclis/models/o/r/MTP/d.gguf" }, "d.gguf");
+    defer std.testing.allocator.free(placed);
+    try std.testing.expectEqualStrings("/data/nuclis/models/o/r/MTP/d.gguf", placed);
 }
 
 test "progress can cancel before any network or file operation" {

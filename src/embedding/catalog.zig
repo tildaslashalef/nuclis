@@ -13,7 +13,7 @@ pub const Resolved = struct {
     path: []const u8,
     /// The projector the entry names, pulled or not.
     mmproj: ?[]const u8 = null,
-    entry: ?*const catalog.EmbeddingEntry = null,
+    entry: ?*const catalog.Artifact = null,
 };
 
 /// The file `name` names, in order: a registry entry (which must be of kind
@@ -35,18 +35,17 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
         const mmproj = if (entry.mmproj) |m| try std.fs.path.join(arena, &.{ std.fs.path.dirname(path) orelse ".", m }) else null;
         return .{ .path = path, .mmproj = mmproj };
     }
-    if (catalog.findEmbedding(name)) |entry| {
+    if (catalog.find(name)) |entry| {
+        if (entry.kind != .embedding) {
+            diag.set("{s} is a {s} model of the catalogue, not an embedding model ({s} is one)", .{ name, kindName(entry.kind), catalog.firstOf(.embedding).name });
+            return error.NotAnEmbeddingModel;
+        }
         const dir = try catalog.underModels(arena, root, "", diag);
         return .{
-            .path = try std.fs.path.join(arena, &.{ dir, entry.repo, entry.file }),
-            .mmproj = if (entry.mmproj) |m| try std.fs.path.join(arena, &.{ dir, m.repo, m.file }) else null,
+            .path = try catalog.localPath(arena, dir, entry, entry.main()),
+            .mmproj = if (entry.companion(.mmproj)) |m| try catalog.localPath(arena, dir, entry, m) else null,
             .entry = entry,
         };
-    }
-    const other: ?catalog.ModelKind = if (catalog.find(name) != null) .generation else if (catalog.findDecision(name) != null) .decision else if (catalog.findAudio(name)) |a| a.kind else null;
-    if (other) |kind| {
-        diag.set("{s} is a {s} model of the catalogue, not an embedding model ({s} is one)", .{ name, kindName(kind), catalog.embedding_entries[0].name });
-        return error.NotAnEmbeddingModel;
     }
     return .{ .path = try catalog.underModels(arena, root, name, diag) };
 }
@@ -68,7 +67,7 @@ pub fn locate(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry:
     const resolved = try resolve(arena, root, registry, name, diag);
     std.Io.Dir.cwd().access(io, resolved.path, .{}) catch {
         if (resolved.entry) |e|
-            diag.set("{s}: not pulled yet (`nuclis model pull {s}` fetches it, {d} MB; --with mmproj adds images and audio)", .{ name, e.name, e.size / 1_000_000 })
+            diag.set("{s}: not pulled yet (`nuclis model pull {s}` fetches it, {d} MB; --with mmproj adds images and audio)", .{ name, e.name, e.main().size / 1_000_000 })
         else
             diag.set("{s}: no file (an embedding registry entry, an embedding catalogue name, or a GGUF path)", .{resolved.path});
         return error.ModelFileNotFound;

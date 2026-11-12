@@ -274,7 +274,7 @@ pub fn checkName(name: []const u8) Error!void {
         '_', '-' => if (i == 0) return error.InvalidVoiceName,
         else => return error.InvalidVoiceName,
     };
-    for (catalog.audio_entries) |entry| for (entry.speakers) |speaker| {
+    for (catalog.artifacts) |entry| for (entry.traits.speakers) |speaker| {
         if (std.mem.eql(u8, speaker, name)) return error.ReservedVoiceName;
     };
 }

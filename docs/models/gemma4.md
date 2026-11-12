@@ -264,7 +264,7 @@ and `gemma-4-12b-qat` is the QAT file
 ([§ Q4_0 path](#q4_0-path-and-the-qat-file-2026-09-12)). Between [MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12)
 and that day one name pointed at whichever file was newest, which made
 `nuclis model pull gemma-4-12b` mean different bytes in different weeks. Since 2026-09-26 ([APPS-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#apps-17--the-catalogue-at-five-entries-the-registry-in-name-order-2026-09-26)) only `gemma-4-12b-qat` is in the
-catalogue; the K-quant file runs through `config init --discover`
+catalogue (legacy since 2026-11-10); the K-quant file runs through `config sync`
 ([catalogue.md § The catalogue](catalogue.md#the-catalogue)).
 A registry entry of the same name still shadows either.
 

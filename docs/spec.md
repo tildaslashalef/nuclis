@@ -103,21 +103,27 @@ deferred (§10).
 
 ## 4. Supported models and artifacts
 
-The catalogue (`src/catalog.zig`) is the list of supported artifacts. An
-entry pins the Hub repository, file, revision, and SHA-256; the profile;
-the companion files by role (`mmproj`, `mtp`); and the per-entry generation
-defaults that a measurement set (the speculative switch and draft length).
+The index (`src/catalog.zig`, one table of `catalog.Artifact`) is the
+list of supported artifacts. An artifact pins the Hub repository, revision,
+and every file's SHA-256 and size; its kind, profile, and lifecycle; the
+companion files by role (`mmproj`, `draft`, `backbone`, `codec`), a draft
+by variant when there are several, each with the speculative verdict a
+measurement set (the switch and draft length). A `current` artifact is
+gated and written by `config init`; a `legacy` one pulls, verifies, and
+runs by name, with no gates. What is installed is what the sidecars say;
+`model ls` lists it first and `model ls --available` the rest of the
+index.
 
 | Entry | Family | Artifact | Notes |
 | --- | --- | --- | --- |
-| `qwen3.8-27b` | `qwen35` | `unsloth/Qwen3.8-27B-GGUF` `Qwen3.8-27B-UD-Q4_K_M.gguf` | the first and default model; 64 layers, 16 attention and 48 DeltaNet; an embedded draft block |
-| `gemma-4-12b-qat` | `gemma4` | `unsloth/gemma-4-12B-it-qat-GGUF` | sliding-window and global attention; Q4_0 throughout (quantization-aware trained) |
-| `gemma-4-26b-a4b` | `gemma4` | `unsloth/gemma-4-26B-A4B-it-qat-GGUF` | the expert configuration, 8 of 128 experts per token |
+| `qwen3.8-27b` | `qwen35` | `unsloth/Qwen3.8-27B-GGUF` `Qwen3.8-27B-UD-Q4_K_M.gguf` | the first model; 64 layers, 16 attention and 48 DeltaNet; an embedded draft block; two draft variants, `mtp` (the default) and `dflash2` (from `z-lab/Qwen3.8-27B-DFlash2-GGUF`, placed under `MTP/`) |
+| `gemma-4-12b-qat` | `gemma4` | `unsloth/gemma-4-12B-it-qat-GGUF` | legacy; sliding-window and global attention; Q4_0 throughout (quantization-aware trained) |
+| `gemma-4-26b-a4b` | `gemma4` | `unsloth/gemma-4-26B-A4B-it-qat-GGUF` | the default `engine.model`; the expert configuration, 8 of 128 experts per token |
 | `gemma-4-e4b-qat` | `gemma4` | `unsloth/gemma-4-E4B-it-qat-GGUF` | per-layer embeddings, 18 shared-KV layers; its own template revision (`gemma4_e`) |
-| `muse-glimmer-30b` | `muse_glimmer` | `unsloth/Muse-Glimmer-30B-GGUF` | dense; windowed and global attention; a DFlash draft companion |
+| `muse-glimmer-30b` | `muse_glimmer` | `unsloth/Muse-Glimmer-30B-GGUF` | legacy; dense; windowed and global attention; a DFlash draft companion |
 
-Decision checkpoints are pinned in a second table (`decision_entries`):
-repository, revision, the weights' SHA-256, and the support files by name.
+Decision checkpoints (kind `decision`) pin the repository, revision, the
+weights' SHA-256, and the support files by name.
 
 | Entry | Model | Artifact | Notes |
 | --- | --- | --- | --- |
@@ -125,16 +131,15 @@ repository, revision, the weights' SHA-256, and the support files by name.
 | `laya-multilingual` | mmBERT-base encoder, the same head | the same repository's `multilingual/model.safetensors` (F16) and its support files | multilingual; 1,024 tokens per sequence; chosen by the caller, never by language detection |
 | `clef-flash` | Qwen3.5-9B backbone (qwen35), joint schema head, Qwen3-VL projector | `Cloudflare/clef-flash` `joint_head.safetensors` (BF16) and its support files; the backbone `bartowski/Cloudflare_clef-flash-GGUF` `Cloudflare_clef-flash-Q6_K.gguf`; the projector `mmproj-Cloudflare_clef-flash-bf16.gguf` (`--with mmproj`) | every question of a state in one sequence of up to 16,384 tokens; images; a decision entry may name a backbone and a projector in another repository, each pinned and digest-checked |
 
-Embedding models are pinned in a third table (`embedding_entries`):
-repository, revision, the main file's SHA-256, the projector, the trained
+Embedding models (kind `embedding`) pin the repository, revision, the main file's SHA-256, the projector, the trained
 widths, and the modalities the files read.
 
 | Entry | Model | Artifact | Notes |
 | --- | --- | --- | --- |
 | `embeddinggemma-2` | EmbeddingGemma 2 (`gemma-embedding2`), 24-block bidirectional text encoder, Gemma 4 vision and audio encoders | `unsloth/embeddinggemma-2-GGUF` `embeddinggemma-2-Q8_0.gguf`; the projector `mmproj-BF16.gguf` (`--with mmproj`) | 768-dimensional unit vectors, Matryoshka 512/256/128; 8,192 tokens per input; text without the projector, text, images and audio with it; the default `embed.model` |
 
-Speech and transcription models are pinned in a fourth table
-(`audio_entries`): repository, revision, the weights' SHA-256, and the
+Speech and transcription models (kinds `speech` and `transcription`) pin
+the repository, revision, the weights' SHA-256, and the
 support files by name (the codec's beside a voice's).
 
 | Entry | Model | Artifact | Notes |
@@ -148,7 +153,7 @@ support files by name (the codec's beside a voice's).
 | `nemotron-asr-0.6b` | Nemotron 3.5 ASR streaming 0.6B: a cache-aware FastConformer, an RNN-T | `nvidia/nemotron-3.5-asr-streaming-0.6b` `model.safetensors` (F32) | lookaheads 0, 3, 6, 13 rows of 80 ms; a language prompt or `auto`, or up to four decoded at once (`auto` last, the fallback); the default `transcribe.model` |
 
 A file outside the catalogue whose architecture has an adapter is
-*runnable*: `config init --discover` registers it (the profile by template
+*runnable*: `config init` and `config sync` register it (the profile by template
 digest, the family's forced when none matches). The Gemma 4 12B K-quant
 release and Bonsai 2 27B (Qwen3.8 ternary, which renders the Qwen profile
 by force) left the catalogue on 2026-09-26 ([APPS-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#apps-17--the-catalogue-at-five-entries-the-registry-in-name-order-2026-09-26)) and run this way.
@@ -278,10 +283,11 @@ batch; the accepted prefix is kept and the session recovered to it.
   with penalties and history advanced through the batch; every emitted
   token is a target draw. Identical seeded streams against ordinary
   decoding are not required.
-- Three settings: the file (`models.<name>.mtp`, resolved and verified at
-  load); the switch (`generation.speculative`, `--speculative on|off` on
+- Three settings: the file (`models.<name>.draft`, or an index draft
+  variant by `--draft` or `models.<name>.generation.draft`, resolved and
+  verified at load; the old key `mtp` is read with a notice); the switch (`generation.speculative`, `--speculative on|off` on
   `generate`, `agent`, and `bench`, defaulting to the entry's measured
-  verdict); the draft length (`generation.draft_length`, `--draft-length`,
+  verdict, or the variant's when `--draft` names one); the draft length (`generation.draft_length`, `--draft-length`,
   capped by a host constant and by the loaded drafter's block bound).
 - Off **must** be the ordinary loop bit for bit; a drafter loaded but
   switched off costs memory and load time only. `bench` **must** open
@@ -503,23 +509,24 @@ nuclis agent ls [--json]
 nuclis agent rm <id>
 nuclis agent export <id> [path]
 nuclis cache [ls] [--json] | clear
-nuclis generate --model <m> (--prompt <text> | --prompt-file <path>) [--raw] [--image <path>]... [--audio <path>]... [--image-max-tokens auto|<n>] [--max-tokens <n>] [--think <e>] [--speculative on|off] [sampling flags] [--json]
-nuclis bench --model <m> (--prompt-file <path> | --prompt-tokens <json>) --max-tokens <n> [--ctx-size <n>] [--kv f16|f32|q8_0] [--speculative on|off] [--json]
+nuclis generate --model <m> (--prompt <text> | --prompt-file <path>) [--raw] [--image <path>]... [--audio <path>]... [--image-max-tokens auto|<n>] [--max-tokens <n>] [--think <e>] [--speculative on|off] [--draft <variant>] [sampling flags] [--json]
+nuclis bench --model <m> (--prompt-file <path> | --prompt-tokens <json>) --max-tokens <n> [--ctx-size <n>] [--kv f16|f32|q8_0] [--speculative on|off] [--draft <variant>] [--json]
 nuclis tokenize --model <m> --prompt-file <path> [--raw] [--json]
 nuclis eval --model <m> --file <path> [--ctx-size <n>] [--chunks <n>] [--reference <json>] [--kv f16|f32|q8_0] [--json]
 nuclis inspect --model <m> [--json]
 nuclis validate --model <m> [--json]
-nuclis model pull (<name> | <owner/repo> --file <f>) [--revision <r>] [--role <role>] [--all] [--register] [--force] [--json]
+nuclis model pull (<name> [--with mmproj,draft[=<variant>] | --all [--variants]] | <owner/repo> --file <f>) [--revision <r>] [--role <role>] [--register] [--force] [--json]
 nuclis model inspect (<name> | <owner/repo> --file <f>) [--revision <r>] [--json]
-nuclis model ls [--json]
-nuclis model rm <name> [--with mmproj,mtp | --all] [--json]
+nuclis model ls [-l] [--available [--all]] [--json]
+nuclis model adopt <path> [--force] [--json]
+nuclis model rm <name> [--with mmproj,draft | --all] [--json]
 nuclis decide (--request <file|-> | --questions <file> <states> | <inline questions> <states>) [--model <m>] [--truncate head|tail] [--uncalibrated] [--explain] [--json]
 nuclis embed (<text>... | --image <path>... | --audio <path>... | --input-file <file|->)... [--task <t>] [--title <s>] [--dimensions <n>] [--image-tokens <n>] [--truncate] [--model <m>] [--backend cpu|metal] [--json]
 nuclis speak <text>... -o <file.wav> [--voice <speaker|saved voice>] [--language <l>] [--instruct <s>] [--model <m>] [--seed <n>] [--backend cpu|metal] [--stream] [--chunk <n>] [--first-chunk <n>]
 nuclis voice add <name> <audio> [--text <transcript>] [--json] | list [--json] | rm <name> [--json]
 nuclis transcribe <file> [--stream] [--lookahead 0|3|6|13] [--language <code>] [--model <m>] [--backend cpu|metal] [--format text|json|srt|vtt] [--segments] [--json]
 nuclis serve [--host <ip>] [--port <n>] [--model <m>]... [--pin <m>]... [--memory <GiB>] [--backend cpu|metal] [--timeout <s>] [--web-url <url> | --no-web]
-nuclis config init [--discover [--dry-run]] [--json] | show [--json] | set <key> <value>
+nuclis config init [--dry-run] [--json] | sync [--prune] [--dry-run] [--json] | show [--json] | set <key> <value>
 nuclis completion fish|bash|zsh
 nuclis --help | <command> --help | --version
 ```
@@ -532,14 +539,14 @@ nuclis --help | <command> --help | --version
 | `eval` | teacher-forced perplexity of a raw text: windows of `--ctx-size` tokens (default 512), each from an empty session with the model's BOS over its first token, the second half scored against the text's actual next tokens (the reference's `llama-perplexity` method); the running and final perplexity with its standard error; `--reference` compares with a pinned reference run on the same file (its SHA-256 checked) and fails beyond 0.5 % |
 | `inspect` | identity, architecture, dimensions, the encoding histogram, validated ranges |
 | `validate` | whether the file binds to its family's adapter, with the layer composition |
-| `model` | pull with digest verification and sidecars, list the artifacts under the root, judge a file at the four levels of §4 |
+| `model` | pull with digest verification and sidecars; list what is installed, grouped by kind (`-l` every file with its commit, digest, and status; `--available` the index entries not installed, `--all` the legacy ones too); adopt a file placed by hand (hash, match to an index file by size and digest, write its sidecar); judge a file at the four levels of §4 |
 | `decide` | typed questions about states through a decision checkpoint (`decide.model`, default `laya`): a Jev-shaped request (`questions`, `state` or `states`), a questions file with states from flags, or questions inline, and images (`--image`, a request's `images`) for clef-flash; one state renders each answer with its distribution, several render ranked by the first question; `--json` is one Jev response per state (answers with exactly Jev's fields, extras under `nuclis`), with load, tokenize, and encode timings |
 | `embed` | inputs into unit vectors through an embedding model (`embed.model`, default `embeddinggemma-2`), §5.10: each argument one text input, `--image` one image input, `--audio` one clip input, `--input-file` one JSON input per line (a string or a list of content parts, images as data URLs, clips as `input_audio`), in the order given; `--task` and `--title` render the model's prefixes, `--dimensions` picks a trained width, `--image-tokens` the image budget, `--truncate` cuts an over-long input instead of refusing it; the text report gives each vector's tokens, norm, and first values and, for several inputs, their cosines; `--json` gives every vector with its token counts, the space, and load, tokenize, and embed timings |
 | `speak` | text into a 24 kHz (Drama 3: 44.1 kHz) mono 16-bit WAV through a voice (`speech.model`, default `qwen3-tts-1.7b-customvoice`; `speech.voice`, default `ryan`), §5.11: on CustomVoice one of the model's speakers and an instruction on the 1.7B, on VoiceDesign no speaker and the instruction describing the voice, on a Base a saved voice (made ready before the clock of the first audio: encoded on its first use with that model, read back after) and no instruction; a language or `auto`; `--stream` writes chunk by chunk and reports the time to the first audio |
 | `voice` | saved voices for a Base: `add` decodes a clip (any format `transcribe` reads, 1–30 s) to 24 kHz and saves it with its transcript (optional, at most 2 KiB) under a name (`[a-z0-9][a-z0-9_-]{0,63}`, not a catalogue speaker), at most 256 voices; `list`; `rm`; no model is opened |
 | `transcribe` | a recording into text through a recognizer (`transcribe.model`, default `nemotron-asr-0.6b`), §5.11: the text and its language; `--stream` feeds 80 ms pieces and prints partials as they change; `--format json` adds the tokens with their times and the timings, `srt` and `vtt` write subtitles from the segments, `--segments` lists them (sentences, or speech between pauses) |
 | `serve` | the nuclis API over HTTP/1.1 ([guide/api.md](guide/api.md)), loopback by default (another address warns: no authentication): `POST /v1/systemone` is TypeSafe's Jev call (status codes, answer fields, and `jev-…` model ids as Jev clients expect), `POST /v1/decisions` takes the `decide --request` body and returns the `decide --json` bytes, timings aside, `POST /v1/chat/completions` is OpenAI's Chat Completions for the language models (one open at a time, opened by name, never by path; `image_url` parts as data URLs and, for Gemma 4 E4B, `input_audio` parts of at most 30 s; the conversation resent whole and the model's state reused by the completer; streamed as server-sent events with keepalive comments; a client that leaves cancels its request; structured output, forced tools, several choices and log probabilities refused with `400 unsupported_feature`; with `serve.web`, the hosted `web_search`, `web_fetch`, and `web_context` tool types run by the server, at most six completions and six uncached searches per request, each call reported in `nuclis_web_calls`), `POST /v1/embeddings` is OpenAI's embeddings call for the embedding models (§5.10; by name, never by path; `float` or `base64` vectors; `task`, `title`, `truncate`, and `image_tokens` as in `nuclis embed`; image parts as base64 data URLs and `input_audio` parts; token arrays refused, since they are another model's tokens), `POST /v1/audio/speech` is OpenAI's speech call for the speech models (streamed as made, `wav` or `pcm`, raw or as server-sent events; on a Base `voice` a saved voice, by name or `{"id"}`, made ready on the connection's task before the job is queued; on VoiceDesign `instructions` the voice and `voice` ignored), `POST`, `GET`, and `DELETE /v1/audio/voices` OpenAI's custom voices for a Base's saved voices (a clip and its optional transcript, saved without opening a model), `POST /v1/audio/transcriptions` OpenAI's transcription call for whole recordings (multipart, up to `serve.transcription_bytes`, 256 MiB; `json`, `text`, `verbose_json`, `srt`, `vtt`; segments as server-sent events with `stream`), `GET /v1/audio/transcriptions/stream` a WebSocket for live transcription (16 kHz s16le in, `partial` and `final` with word times out); `--pin` (`serve.pin`) opens a model at start and never closes it to make room; `GET /v1/models` lists the decision, language, embedding, speech, and transcription models in OpenAI's shape (absent catalogue models too, each described well enough to choose it, build a request for it, or offer its pull) and `GET /v1/models/{id}` one of them, both with an `ETag` that `If-None-Match` answers with `304`, `GET /v1/health` the queue, the open models, and the requests in flight; every response carries `x-request-id` (a UUIDv7) and echoes the client's `x-client-request-id`; a request log of two JSON lines a request under `~/.nuclis/logs/` (one file a UTC day, kept 14 days and 256 MiB, typed fields, never a payload, `GET /v1/health` not logged; `serve.request_log`); `serve.host`, `serve.port` (default 9000), `serve.log`, and `serve.timeout` (the wait for the GPU, default 300 s) in the file, the flags over them; no model opened at start but those `--model` names (any kind: at most 2 decision, 1 language, 1 embedding), every other on its first request; every open model, of any kind, within one memory budget (`serve.memory_bytes`, `--memory`, default physical memory less a third, at most 16 GiB), the least recently used closed to make room and a model in use never; decision passes and embedding passes (at most 2,048 rows each) run between a generation's steps; a coloured line per response on stdout; at most 2 models open, one GPU pass at a time, requests waiting for one model batched into a pass; host limits on head, body, connections, waiting requests, and waiting time, each refusal a typed error body |
-| `config` | write the file with every catalogue model registered (`--discover` adds runnable files the catalogue does not name), show effective values with their source layer, set one key |
+| `config` | `init` writes the file from what is installed (every current index chat model, and every runnable file the index does not name), naming `gemma-4-26b-a4b` as `engine.model` or, when it is absent, the first installed chat model; `sync` adds what was installed since and, with `--prune`, drops entries whose files are gone; show effective values with their source layer, set one key |
 | `agent` | §7 |
 | `completion` | a thin script per shell: every Tab runs the hidden `nuclis __complete <words…>`, which answers from one command table (held to the parser and the help pages by tests) and the user's state: registered and catalogue models, the workspace's sessions, config keys and their values; paths go back to the shell; a failure completes nothing |
 

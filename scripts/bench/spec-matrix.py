@@ -77,8 +77,10 @@ def cell_name(context, sampling, draft, p_min):
     return f"{context}-{sampling}-d{draft}" + ("" if p_min is None else f"-p{p_min:g}")
 
 
-def bench_argv(nuclis, model, model_key, prompt, sampling, draft, p_min, repeat, tokens):
+def bench_argv(nuclis, model, model_key, prompt, sampling, draft, p_min, repeat, tokens, variant=None):
     argv = [str(nuclis), "bench", "--backend", "metal", "--model", model]
+    if variant is not None:
+        argv += ["--draft", variant]
     if prompt is None:
         argv += ["--prompt", CODE_PROMPT, "--raw"]
     else:
@@ -175,8 +177,9 @@ def main():
     gdoc = json.loads((ROOT / "gates.json").read_text())
     if args.model not in gdoc["models"]:
         sys.exit(f"unknown model {args.model}; gates.json has {', '.join(gdoc['models'])}")
-    # A pair names the catalogue entry so its draft companion resolves.
+    # A pair names the index entry and its draft variant.
     model = gdoc["models"][args.model].get("entry") or manifest.model_path(gdoc, args.model)
+    variant = gdoc["models"][args.model].get("draft")
     rev = args.rev or speed.git("rev-parse", "--short", "HEAD") + (
         "+dirty" if speed.git("status", "--porcelain") else ""
     )
@@ -196,7 +199,16 @@ def main():
                         if args.report:
                             continue
                         argv = bench_argv(
-                            speed.CANDIDATE, model, args.model, prompt, sampling, draft, p_min, args.repeat, args.tokens
+                            speed.CANDIDATE,
+                            model,
+                            args.model,
+                            prompt,
+                            sampling,
+                            draft,
+                            p_min,
+                            args.repeat,
+                            args.tokens,
+                            variant,
                         )
                         time.sleep(args.cooldown)
                         result = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)

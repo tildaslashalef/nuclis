@@ -25,7 +25,7 @@ pub const Located = struct {
     /// The checkpoint directory, or a speech GGUF's path (`isFile`).
     directory: []const u8,
     /// The catalogue's entry when the name is one.
-    entry: ?*const catalog.AudioEntry = null,
+    entry: ?*const catalog.Artifact = null,
     /// What the weights (and a speech model's codec) hold on disk, from the
     /// catalogue when it pins them.
     bytes: u64 = 0,
@@ -52,21 +52,16 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
         // A path to the weights names their directory.
         return .{ .directory = if (std.mem.endsWith(u8, full, ".safetensors")) std.fs.path.dirname(full) orelse full else full };
     }
-    if (catalog.findAudio(name)) |entry| {
+    if (catalog.find(name)) |entry| {
         if (entry.kind != kind.model()) {
             diag.set("{s} is a {s} model of the catalogue; `{s}` opens a {s} model ({s})", .{ name, catalog.kindName(entry.kind), catalog.command(kind.model()), @tagName(kind), defaultName(kind) });
             return error.WrongKind;
         }
-        return .{ .directory = try catalog.audioDirectory(arena, try catalog.underModels(arena, root, "", diag), entry), .entry = entry, .bytes = entry.totalSize() };
+        return .{ .directory = try catalog.checkpointDirectory(arena, try catalog.underModels(arena, root, "", diag), entry), .entry = entry, .bytes = entry.totalSize() };
     }
     if (catalog.renamedAudio(name)) |now| {
         diag.set("{s} is now {s}: a speech model's name says CustomVoice or Base", .{ name, now });
         return error.ModelNotFound;
-    }
-    const other = catalog.kindOf(.{}, name);
-    if (other != .generation or catalog.find(name) != null) {
-        diag.set("{s} is a {s} model of the catalogue; `{s}` opens a {s} model ({s})", .{ name, catalog.kindName(other), catalog.command(kind.model()), @tagName(kind), defaultName(kind) });
-        return error.WrongKind;
     }
     if (!paths) {
         diag.set("{s} is not a {s} model of the registry or the catalogue (`GET /v1/models` lists them)", .{ name, @tagName(kind) });
@@ -221,7 +216,7 @@ test "names resolve by kind; another kind's name is refused by name; the server 
     var diag: config.Diagnostic = .{};
     const voice = try resolve(arena, "/r", .{}, "qwen3-tts-1.7b-customvoice", .speech, false, &diag);
     try std.testing.expectEqualStrings("/r/models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", voice.directory);
-    try std.testing.expect(voice.entry.?.instructions);
+    try std.testing.expect(voice.entry.?.traits.instructions);
     const ears = try resolve(arena, "/r", .{}, "nemotron-asr-0.6b", .transcription, false, &diag);
     try std.testing.expectEqualStrings("/r/models/nvidia/nemotron-3.5-asr-streaming-0.6b", ears.directory);
     try std.testing.expectError(error.WrongKind, resolve(arena, "/r", .{}, "nemotron-asr-0.6b", .speech, true, &diag));

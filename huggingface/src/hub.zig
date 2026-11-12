@@ -23,6 +23,10 @@ pub const Request = struct {
     /// rename the verified copy over the destination; the old file stays
     /// until then. A kept partial download is ignored.
     replace: bool = false,
+    /// With `exact`: the path the file is written to instead of
+    /// `<local_dir>/<repo_id>/<filename>`, for a file placed beside another
+    /// repository's files.
+    destination: ?[]const u8 = null,
 };
 
 pub const Format = enum { gguf, safetensors };

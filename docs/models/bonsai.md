@@ -197,7 +197,7 @@ at open the way a registry entry's profile is (the catalogue's pin is now
 a forced profile, not only the sampling default, so `--model bonsai-2-27b`
 renders without any registry entry; by path, `--prompt-profile qwen38`
 does the same; since the entry left the catalogue on 2026-09-26,
-`config init --discover` forces the family's `qwen38` on the file), with
+`config init` or `config sync` forces the family's `qwen38` on the file), with
 the deviation recorded here: nuclis merges leading
 system messages the file's template would refuse. No `profiles/bonsai.zig`:
 the sampling hints in the header (1.0 / 0.95 / 20) are the pinned

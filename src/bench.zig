@@ -511,7 +511,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     // plan), which is the true baseline; `--speculative on` loads the
     // family's source and each measured run is done both ways on that one
     // loaded model, so the pair's off sample is the loaded-but-off case.
-    const draft_path = try engine.draftPath(alloc, model_path, if (settings.entry) |entry| entry.mtp else null);
+    const draft_path = try engine.draftPath(alloc, model_path, try settings.draftFile());
     defer if (draft_path) |path| alloc.free(path);
     const draft: inference.engine.DraftRequest = if (settings.speculative) .{ .preferred = draft_path } else .none;
     var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile, draft);

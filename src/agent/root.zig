@@ -1109,7 +1109,7 @@ const Ui = struct {
             return;
         };
         const registry = self.switching.loaded.config.models;
-        const listing = model.list(a, self.io, root, registry) catch |err| {
+        const listing = model.list(a, self.io, root, registry, self.switching.loaded.config.engine.model) catch |err| {
             try self.emit(.{ .notice = try a.print("  — {s} listing models", .{@errorName(err)}) });
             return;
         };

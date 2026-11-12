@@ -41,7 +41,31 @@ pub const version = @import("build_options").version;
 /// flag (the catalogue resolves it later), and `main` when nothing says.
 /// `support` is a safetensors artifact's configuration, tokenizer, or index;
 /// `codec` a speech model's codec weights, pulled with it.
-pub const Role = enum { main, mmproj, mtp, imatrix, support, codec };
+pub const Role = enum {
+    main,
+    mmproj,
+    draft,
+    imatrix,
+    support,
+    codec,
+    backbone,
+
+    /// A sidecar written before draft variants says `mtp` for a draft.
+    pub fn jsonParse(alloc: Allocator, source: anytype, options: std.json.ParseOptions) !Role {
+        const token = try source.nextAllocMax(alloc, .alloc_if_needed, options.max_value_len.?);
+        const text = switch (token) {
+            inline .string, .allocated_string => |t| t,
+            else => return error.UnexpectedToken,
+        };
+        return parse(text) orelse error.InvalidEnumTag;
+    }
+
+    /// A role by name, `mtp` included as the old spelling of `draft`.
+    pub fn parse(text: []const u8) ?Role {
+        if (std.mem.eql(u8, text, "mtp")) return .draft;
+        return std.meta.stringToEnum(Role, text);
+    }
+};
 
 pub const sidecar_suffix = ".nuclis.json";
 /// A sidecar is a few hundred bytes; anything larger is not ours.
@@ -51,12 +75,16 @@ pub const max_listed_files = 10_000;
 pub const max_depth_below_repo = 4;
 
 pub const PullOptions = struct {
-    /// A catalogue name (`qwen3.8-27b`) or a repository id (`owner/repo`).
+    /// An index name (`qwen3.8-27b`) or a repository id (`owner/repo`).
     repo: []const u8 = "",
-    /// Companions to add to a catalogue pull, by role; `all` takes every
-    /// companion the entry lists. Meaningless with a repository id.
+    /// Companions to add to an index pull, by role; `all` takes each role's
+    /// default file, and every draft variant with `variants`. Meaningless
+    /// with a repository id.
     with: std.EnumSet(Role) = .empty,
+    /// `--with draft=<variant>`: that draft instead of the default.
+    draft_variant: ?[]const u8 = null,
     all: bool = false,
+    variants: bool = false,
     file: ?[]const u8 = null,
     /// `main`, a tag, a branch, or a commit; the sidecar always records the
     /// commit it resolved to.
@@ -71,7 +99,7 @@ pub const PullOptions = struct {
     /// exact Hub name; `fromRegistry` fills them from the entry for
     /// `--with`/`--all`.
     mmproj: ?[]const u8 = null,
-    mtp: ?[]const u8 = null,
+    draft: ?[]const u8 = null,
     /// `--register <name>`: write the pulled files as a registry entry of
     /// `config_path` once they are verified; `profile` forces the entry's
     /// prompt profile (`--profile`, meaningful only with `--register`).
@@ -80,11 +108,11 @@ pub const PullOptions = struct {
     config_path: ?[]const u8 = null,
 };
 
-/// A name that is neither a catalogue entry nor an `owner/repo` id can
-/// only be a registry entry: the caller then reads `nuclis.json`, which
-/// the other forms never need (a broken file must not block a download).
+/// A name that is neither an index name nor an `owner/repo` id can only
+/// be a registry entry: the caller then reads `nuclis.json`, which the
+/// other forms never need (a broken file must not block a download).
 pub fn isRegistryName(name: []const u8) bool {
-    return name.len > 0 and catalog.find(name) == null and catalog.findDecision(name) == null and catalog.findEmbedding(name) == null and catalog.findAudio(name) == null and std.mem.indexOfScalar(u8, name, '/') == null;
+    return name.len > 0 and catalog.find(name) == null and std.mem.indexOfScalar(u8, name, '/') == null;
 }
 
 /// `pull <entry>`: the entry's repository, file, and pinned revision as a
@@ -99,11 +127,15 @@ pub fn fromRegistry(options: PullOptions, entry: *const config.ModelEntry, diag:
         diag.set("{s} is a registry entry and pins its file and revision; pull by repository id ({s}) to choose another", .{ options.repo, entry.repo.? });
         return error.ConflictingOptions;
     }
+    if (options.draft_variant != null) {
+        diag.set("{s} is a registry entry: it names one draft file; --with draft=<variant> needs an index name", .{options.repo});
+        return error.ConflictingOptions;
+    }
     var wanted = options.with.iterator();
     while (wanted.next()) |role| {
         const companion: ?[]const u8 = switch (role) {
             .mmproj => entry.mmproj,
-            .mtp => entry.mtp,
+            .draft => entry.draft,
             else => null,
         };
         if (companion == null) {
@@ -118,29 +150,44 @@ pub fn fromRegistry(options: PullOptions, entry: *const config.ModelEntry, diag:
     translated.revision = entry.revision;
     translated.with = .empty;
     translated.all = false;
+    translated.variants = false;
     if (options.all or options.with.contains(.mmproj)) translated.mmproj = entry.mmproj;
-    if (options.all or options.with.contains(.mtp)) translated.mtp = entry.mtp;
+    if (options.all or options.with.contains(.draft)) translated.draft = entry.draft;
     return translated;
 }
 
 /// The provenance record. `revision` is the 40-character commit and
 /// `sha256` the 64-character lowercase digest, both as the Hub reported
 /// them; `size` lets `ls` flag a file that changed underneath its sidecar.
+/// Schema 2 adds the artifact and variant a file belongs to and `model
+/// adopt`'s record: `adopted_at` instead of `downloaded_at`, and no
+/// `revision` when the file matched no pinned file (its digest is then the
+/// local one, which keeps the file identity-stable). Schema 1 still reads.
 pub const Sidecar = struct {
-    schema_version: u32 = 1,
+    schema_version: u32 = 2,
     repo: []const u8,
     file: []const u8,
-    revision: []const u8,
+    /// Null for an adopted file that matched no pinned one.
+    revision: ?[]const u8 = null,
     sha256: []const u8,
     size: u64,
     role: Role,
-    /// RFC 3339 UTC, second resolution.
-    downloaded_at: []const u8,
+    /// The index artifact the file belongs to, and its draft variant.
+    artifact: ?[]const u8 = null,
+    variant: ?[]const u8 = null,
+    /// RFC 3339 UTC, second resolution: one of the two is set.
+    downloaded_at: ?[]const u8 = null,
+    adopted_at: ?[]const u8 = null,
     /// The Hub's git blob id (40 hex) for a plain git file, which has no
     /// Hub SHA-256: `sha256` is then computed locally after the blob id
     /// verified the bytes. Null for LFS files.
     git_blob: ?[]const u8 = null,
     nuclis_version: []const u8,
+
+    /// The commit's first 12 characters, or a dash for an unmatched adoption.
+    pub fn shortRevision(self: Sidecar) []const u8 {
+        return if (self.revision) |r| r[0..12] else "-";
+    }
 };
 
 pub fn sidecarPath(alloc: Allocator, path: []const u8) ![]u8 {
@@ -156,7 +203,9 @@ pub fn readSidecar(alloc: Allocator, io: std.Io, dir: std.Io.Dir, sub_path: []co
     };
     defer alloc.free(bytes);
     const parsed = std.json.parseFromSliceLeaky(Sidecar, alloc, bytes, .{ .allocate = .alloc_always }) catch return error.InvalidSidecar;
-    if (parsed.schema_version != 1 or parsed.revision.len != 40 or parsed.sha256.len != 64) return error.InvalidSidecar;
+    if (parsed.schema_version < 1 or parsed.schema_version > 2 or parsed.sha256.len != 64) return error.InvalidSidecar;
+    if (parsed.revision) |r| if (r.len != 40) return error.InvalidSidecar;
+    if (parsed.schema_version == 1 and (parsed.revision == null or parsed.downloaded_at == null)) return error.InvalidSidecar;
     return parsed;
 }
 
@@ -165,7 +214,7 @@ pub fn readSidecar(alloc: Allocator, io: std.Io, dir: std.Io.Dir, sub_path: []co
 pub fn writeSidecar(alloc: Allocator, io: std.Io, dir: std.Io.Dir, sub_path: []const u8, sidecar: Sidecar) !void {
     var buffer: std.Io.Writer.Allocating = .init(alloc);
     defer buffer.deinit();
-    try std.json.Stringify.value(sidecar, .{ .whitespace = .indent_2 }, &buffer.writer);
+    try std.json.Stringify.value(sidecar, .{ .whitespace = .indent_2, .emit_null_optional_fields = false }, &buffer.writer);
     try buffer.writer.writeByte('\n');
     try dir.writeFile(io, .{ .sub_path = sub_path, .data = buffer.written() });
 }
@@ -262,10 +311,20 @@ const SelectionReport = struct {
 };
 
 /// One file to fetch: its exact Hub name, the role the caller knows (the
-/// catalogue's or `--role`), and the digest it must have (the catalogue's
-/// pinned one, or the Hub's own for a raw repository): a SHA-256, or for a
-/// plain git file only its blob id.
-const Job = struct { name: []const u8, role: ?Role, sha256: ?[]const u8, git_blob: ?[]const u8 = null, size: u64 };
+/// index's or `--role`), and the digest it must have (the index's pinned
+/// one, or the Hub's own for a raw repository): a SHA-256, or for a plain
+/// git file only its blob id. `pinned` marks a digest the index states;
+/// `destination` places the file away from its repository's layout.
+const Job = struct {
+    name: []const u8,
+    role: ?Role,
+    sha256: ?[]const u8,
+    git_blob: ?[]const u8 = null,
+    size: u64,
+    pinned: bool = false,
+    variant: ?[]const u8 = null,
+    destination: ?[]const u8 = null,
+};
 
 fn hexOrNull(arena: Allocator, bytes: anytype) !?[]const u8 {
     const value = bytes orelse return null;
@@ -283,47 +342,87 @@ fn remoteJob(arena: Allocator, f: hf.RemoteFile, role: ?Role) !Job {
     };
 }
 
-/// Resolves the repository (a catalogue name or an `owner/repo` id) and
-/// its revision, prints the pinned commit, downloads or verifies each file,
-/// and writes the sidecars. `diag` carries the reason of every typed
-/// failure.
-pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
-    const decision = catalog.findDecision(options.repo) orelse return pullOne(gpa, io, environ, root, options, json, out, sty, diag);
-    const backbone = decision.backbone orelse return pullOne(gpa, io, environ, root, options, json, out, sty, diag);
-    // clef: the backbone (and, asked for, its projector) from their own
-    // repository at the pinned commit, each checked against the catalogue's
-    // digest, then the head and its support files.
-    if (options.file != null or options.revision != null or options.register != null) {
-        diag.set("{s} is a decision checkpoint pinned to {s} at {s}; pulling by repository id chooses another file or commit", .{ decision.name, decision.repo, decision.revision[0..12] });
-        return error.ConflictingOptions;
-    }
+/// The files of an index artifact that come from one repository at one
+/// commit: one listing and one report.
+const Plan = struct {
+    artifact: *const catalog.Artifact,
+    repo: []const u8,
+    revision: []const u8,
+    files: []const *const catalog.File,
+};
+
+/// Which of an artifact's files a pull takes: the main file and those
+/// pulled with it, then `--with` roles (a draft by variant or the
+/// default), `--all` (each role's default, every variant with
+/// `--variants`). Refuses a role or variant the artifact does not have.
+pub fn selectFiles(arena: Allocator, a: *const catalog.Artifact, options: PullOptions, diag: *config.Diagnostic) ![]const *const catalog.File {
     var wanted = options.with.iterator();
-    while (wanted.next()) |role| if (role != .mmproj or decision.mmproj == null) {
-        diag.set("{s} has no {s} companion in the catalogue", .{ decision.name, @tagName(role) });
+    while (wanted.next()) |role| if (a.companion(role) == null) {
+        diag.set("{s} has no {s} companion in the index", .{ a.name, @tagName(role) });
         return error.NoSuchCompanion;
     };
-    const with_mmproj = options.all or options.with.contains(.mmproj);
-    for ([_]?catalog.Artifact{ backbone, if (with_mmproj) decision.mmproj else null }, [_]Role{ .main, .mmproj }) |artifact, role| {
-        const a = artifact orelse continue;
-        var part: PullOptions = .{ .repo = a.repo, .revision = a.revision, .file = a.file, .role = role, .force = options.force };
-        part.config_path = options.config_path;
-        try pullOne(gpa, io, environ, root, part, json, out, sty, diag);
-        var arena_state = std.heap.ArenaAllocator.init(gpa);
-        defer arena_state.deinit();
-        const path = try std.fs.path.join(arena_state.allocator(), &.{ try modelsDir(arena_state.allocator(), root), a.repo, a.file });
-        const recorded = (try readSidecar(arena_state.allocator(), io, .cwd(), try sidecarPath(arena_state.allocator(), path))) orelse return error.InvalidSidecar;
-        if (!std.mem.eql(u8, recorded.sha256, a.sha256)) {
-            diag.set("{s}: the Hub's digest at commit {s} is not the catalogue's {s}…; the catalogue entry needs updating", .{ a.file, a.revision[0..12], a.sha256[0..12] });
-            return error.CatalogMismatch;
-        }
+    if (options.draft_variant) |v| if (a.draft(v) == null) {
+        var names: std.ArrayList(u8) = .empty;
+        for (a.files) |f| if (f.role == .draft) if (f.variant) |fv| {
+            if (names.items.len > 0) try names.appendSlice(arena, ", ");
+            try names.appendSlice(arena, fv);
+        };
+        diag.set("{s} has no draft variant {s} (it has: {s})", .{ a.name, v, if (names.items.len > 0) names.items else "a single unnamed draft" });
+        return error.NoSuchCompanion;
+    };
+    var files: std.ArrayList(*const catalog.File) = .empty;
+    for (a.files) |*f| {
+        const take = catalog.pulledWith(f.role) or switch (f.role) {
+            .draft => if (options.all and options.variants) true else if (options.draft_variant) |v| std.mem.eql(u8, f.variant orelse "", v) else (options.all or options.with.contains(.draft)) and f == a.draft(null).?,
+            else => options.all or options.with.contains(f.role),
+        };
+        if (take) try files.append(arena, f);
     }
-    var head = options;
-    head.with = .empty;
-    head.all = false;
-    return pullOne(gpa, io, environ, root, head, json, out, sty, diag);
+    return files.items;
 }
 
-fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+/// Resolves the repository (an index name or an `owner/repo` id) and its
+/// revision, prints the pinned commit, downloads or verifies each file,
+/// and writes the sidecars. An index artifact whose files come from
+/// several repositories pulls one repository at a time, each with its own
+/// report. `diag` carries the reason of every typed failure.
+pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+    const a = catalog.find(options.repo) orelse return pullOne(gpa, io, environ, root, options, null, json, out, sty, diag);
+    if (options.file != null or options.revision != null) {
+        diag.set("{s} is an index name and pins its files and commit; pull by repository id ({s}) to choose another", .{ a.name, a.repo });
+        return error.ConflictingOptions;
+    }
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const groups = try groupByOrigin(arena, a, try selectFiles(arena, a, options, diag));
+    if (options.register != null and groups.len > 1) {
+        diag.set("{s} pulls from {d} repositories; register it with `nuclis config sync` after the pull", .{ a.name, groups.len });
+        return error.ConflictingOptions;
+    }
+    // The other repositories first, so the artifact's own report is last.
+    for (groups[1..]) |g| try pullOne(gpa, io, environ, root, options, g, json, out, sty, diag);
+    return pullOne(gpa, io, environ, root, options, groups[0], json, out, sty, diag);
+}
+
+/// `files` as one plan per origin (repository and commit), in first-seen
+/// order: the main file's comes first.
+pub fn groupByOrigin(arena: Allocator, a: *const catalog.Artifact, files: []const *const catalog.File) ![]const Plan {
+    var groups: std.ArrayList(Plan) = .empty;
+    for (files) |f| {
+        const repo = a.origin(f);
+        const revision = a.originRevision(f);
+        const group = for (groups.items) |*g| {
+            if (std.mem.eql(u8, g.repo, repo) and std.mem.eql(u8, g.revision, revision)) break g;
+        } else null;
+        if (group) |g| {
+            g.files = try std.mem.concat(arena, *const catalog.File, &.{ g.files, &.{f} });
+        } else try groups.append(arena, .{ .artifact = a, .repo = repo, .revision = revision, .files = try arena.dupe(*const catalog.File, &.{f}) });
+    }
+    return groups.items;
+}
+
+fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, plan: ?Plan, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -338,96 +437,61 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     var display: Display = .{ .io = io, .started = .now(io, .awake), .tty = std.Io.File.stderr().isTty(io) catch false, .json = json };
     client.progress = .{ .context = &display, .update = Display.update };
 
-    // 1. Resolve. A catalogue name pins repository, files, commit, and
-    //    digests from the table; a repository id resolves them on the Hub.
+    // 1. Resolve. An index plan pins repository, files, commit, and digests
+    //    from the table; a repository id resolves them on the Hub.
     var jobs: std.ArrayList(Job) = .empty;
     var request: hf.Request = .{ .repo_id = options.repo, .revision = options.revision orelse "main", .local_dir = models };
-    const entry = catalog.find(options.repo);
-    const decision = catalog.findDecision(options.repo);
-    const embedding = catalog.findEmbedding(options.repo);
-    const audio = catalog.findAudio(options.repo);
     var pinned: [40]u8 = undefined;
-    if (embedding) |e| {
-        if (options.file != null or options.revision != null) {
-            diag.set("{s} is a catalogue name and pins its file and commit; pull by repository id ({s}) to choose another", .{ e.name, e.repo });
-            return error.ConflictingOptions;
-        }
-        var wanted = options.with.iterator();
-        while (wanted.next()) |role| if (role != .mmproj or e.mmproj == null) {
-            diag.set("{s} has no {s} companion in the catalogue", .{ e.name, @tagName(role) });
-            return error.NoSuchCompanion;
+    if (plan) |p| {
+        const a = p.artifact;
+        request.repo_id = p.repo;
+        request.revision = p.revision;
+        @memcpy(&pinned, p.revision[0..40]);
+        // Safetensors weights and a codec bring support files: one listing
+        // at the pinned commit names them, and must hold every one the
+        // index names.
+        var listed: ?hf.Catalog = null;
+        defer if (listed) |*l| l.deinit();
+        for (p.files) |f| if (f.support.len > 0 or hf.format(f.path) == .safetensors) {
+            listed = client.list(request) catch |err| return listFailure(err, arena, client, request, options.repo, diag);
+            break;
         };
-        request.repo_id = e.repo;
-        request.revision = e.revision;
-        @memcpy(&pinned, e.revision[0..40]);
-        try jobs.append(arena, .{ .name = e.file, .role = .main, .sha256 = e.sha256, .size = e.size });
-        if (options.all or options.with.contains(.mmproj)) if (e.mmproj) |m|
-            try jobs.append(arena, .{ .name = m.file, .role = .mmproj, .sha256 = m.sha256, .size = m.size });
-    } else if (entry) |e| {
-        if (options.file != null or options.revision != null) {
-            diag.set("{s} is a catalogue name and pins its file and commit; pull by repository id ({s}) to choose another", .{ e.name, e.repo });
-            return error.ConflictingOptions;
-        }
-        request.repo_id = e.repo;
-        request.revision = e.revision;
-        @memcpy(&pinned, e.revision[0..40]);
-        try jobs.append(arena, .{ .name = e.file, .role = .main, .sha256 = e.sha256, .size = e.size });
-        for (e.companions) |c| if (options.all or options.with.contains(c.role)) try jobs.append(arena, .{ .name = c.file, .role = c.role, .sha256 = c.sha256, .size = c.size });
-        var wanted = options.with.iterator();
-        while (wanted.next()) |role| if (e.companion(role) == null) {
-            diag.set("{s} has no {s} companion in the catalogue", .{ e.name, @tagName(role) });
-            return error.NoSuchCompanion;
-        };
-    } else if (audio) |a| {
-        // A speech or transcription checkpoint: the weights and their support
-        // files, and a speech model's codec with its own, from one listing at
-        // the pinned commit, each digest the catalogue's.
-        if (options.all or options.with.count() != 0 or options.file != null or options.revision != null or options.register != null) {
-            diag.set("{s} is a {s} checkpoint pinned to {s} at {s}; it has no companions to choose (its codec comes with it), and pulling by repository id chooses another file or commit", .{ a.name, catalog.kindName(a.kind), a.repo, a.revision[0..12] });
-            return error.ConflictingOptions;
-        }
-        request.repo_id = a.repo;
-        request.revision = a.revision;
-        request.filename = a.file;
-        var remote = client.list(request) catch |err| return listFailure(err, arena, client, request, options.repo, diag);
-        defer remote.deinit();
-        pinned = remote.revision;
-        const parts = [_]struct { file: []const u8, sha256: []const u8, support: []const []const u8 }{
-            .{ .file = a.file, .sha256 = a.sha256, .support = a.support },
-            .{ .file = if (a.codec) |c| c.file else "", .sha256 = if (a.codec) |c| c.sha256 else "", .support = a.codec_support },
-        };
-        for (parts) |part| {
-            if (part.file.len == 0) continue;
-            const selected = (hf.select(arena, &remote, part.file) catch |err| return hubFailure(err, options.repo, diag)).?;
+        for (p.files) |f| {
+            const name = catalog.Artifact.hubName(f);
+            const destination: ?[]const u8 = if (f.remote != null) try catalog.localPath(arena, models, a, f) else null;
             const first = jobs.items.len;
-            const role: Role = if (a.codec != null and std.mem.eql(u8, part.file, a.codec.?.file)) .codec else .main;
-            for (selected) |f| try jobs.append(arena, try remoteJob(arena, f, if (std.mem.eql(u8, f.name, part.file)) role else null));
-            for (jobs.items[first..]) |job| if (std.mem.eql(u8, job.name, part.file) and !std.mem.eql(u8, job.sha256 orelse "", part.sha256)) {
-                diag.set("{s}: the Hub's digest at commit {s} is not the catalogue's {s}…; the catalogue entry needs updating", .{ part.file, a.revision[0..12], part.sha256[0..12] });
-                return error.CatalogMismatch;
-            };
-            for (part.support) |name| {
-                for (jobs.items[first..]) |job| {
-                    if (std.mem.eql(u8, job.name, name)) break;
-                } else {
-                    diag.set("{s}: {s} is not beside the weights at commit {s}; the catalogue entry needs updating", .{ a.name, name, a.revision[0..12] });
-                    return error.CatalogMismatch;
+            if (listed) |*remote| if (f.support.len > 0 or hf.format(f.path) == .safetensors) {
+                const selected = (hf.select(arena, remote, name) catch |err| return hubFailure(err, options.repo, diag)).?;
+                for (selected) |r| {
+                    var job = try remoteJob(arena, r, if (std.mem.eql(u8, r.name, name)) f.role else null);
+                    if (std.mem.eql(u8, r.name, name)) {
+                        if (!std.mem.eql(u8, job.sha256 orelse "", f.sha256)) {
+                            diag.set("{s}: the Hub's digest at commit {s} is not the index's {s}…; the index entry needs updating", .{ name, p.revision[0..12], f.sha256[0..12] });
+                            return error.CatalogMismatch;
+                        }
+                        job.pinned = true;
+                    }
+                    try jobs.append(arena, job);
                 }
-            }
+                for (f.support) |support| {
+                    for (jobs.items[first..]) |job| {
+                        if (std.mem.eql(u8, job.name, support)) break;
+                    } else {
+                        diag.set("{s}: {s} is not beside the weights at commit {s}; the index entry needs updating", .{ a.name, support, p.revision[0..12] });
+                        return error.CatalogMismatch;
+                    }
+                }
+                continue;
+            };
+            try jobs.append(arena, .{ .name = name, .role = f.role, .sha256 = f.sha256, .size = f.size, .pinned = true, .variant = f.variant, .destination = destination });
         }
+        if (listed) |l| pinned = l.revision;
     } else {
-        if (decision) |d| {
-            if (options.all or options.with.count() != 0 or options.file != null or options.revision != null) {
-                diag.set("{s} is a decision checkpoint pinned to {s} at {s}; it has no companions, and pulling by repository id chooses another file or commit", .{ d.name, d.repo, d.revision[0..12] });
-                return error.ConflictingOptions;
-            }
-            request.repo_id = d.repo;
-            request.revision = d.revision;
-        } else if (options.all or options.with.count() != 0) {
-            diag.set("--with and --all need a catalogue name; {s} is a repository id (pass --file per companion)", .{options.repo});
+        if (options.all or options.with.count() != 0 or options.draft_variant != null) {
+            diag.set("--with and --all need an index name; {s} is a repository id (pass --file per companion)", .{options.repo});
             return error.ConflictingOptions;
         }
-        request.filename = if (decision) |d| d.file else options.file;
+        request.filename = options.file;
         var remote = client.list(request) catch |err| return listFailure(err, arena, client, request, options.repo, diag);
         defer remote.deinit();
         pinned = remote.revision;
@@ -438,24 +502,8 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
             return error.SelectionRequired;
         };
         for (selected) |f| try jobs.append(arena, try remoteJob(arena, f, options.role));
-        // A decision checkpoint: the Hub at the pinned commit must hold the
-        // pinned weights and every support file the catalogue names.
-        if (decision) |d| {
-            for (jobs.items) |job| if (std.mem.eql(u8, job.name, d.file) and !std.mem.eql(u8, job.sha256 orelse "", d.sha256)) {
-                diag.set("{s}: the Hub's digest at commit {s} is not the catalogue's {s}…; the catalogue entry needs updating", .{ d.file, d.revision[0..12], d.sha256[0..12] });
-                return error.CatalogMismatch;
-            };
-            for (d.support) |name| {
-                for (jobs.items) |job| {
-                    if (std.mem.eql(u8, job.name, name)) break;
-                } else {
-                    diag.set("{s}: {s} is not beside the weights at commit {s}; the catalogue entry needs updating", .{ d.name, name, d.revision[0..12] });
-                    return error.CatalogMismatch;
-                }
-            }
-        }
         // A registry entry's companions, by exact name at the same commit.
-        for ([_]struct { name: ?[]const u8, role: Role }{ .{ .name = options.mmproj, .role = .mmproj }, .{ .name = options.mtp, .role = .mtp } }) |companion| {
+        for ([_]struct { name: ?[]const u8, role: Role }{ .{ .name = options.mmproj, .role = .mmproj }, .{ .name = options.draft, .role = .draft } }) |companion| {
             const name = companion.name orelse continue;
             const file = for (remote.files) |f| {
                 if (std.mem.eql(u8, f.name, name)) break f;
@@ -468,13 +516,13 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     }
     const revision: []const u8 = &pinned;
     request.revision = revision;
-    var model_kind: ?catalog.ModelKind = if (embedding != null) .embedding else null;
+    var model_kind: ?catalog.ModelKind = if (plan) |p| if (p.artifact.kind != .generation) p.artifact.kind else null else null;
     if (options.register) |name| {
         if (options.config_path == null) return error.MissingHome;
         const main_file = for (jobs.items) |job| {
             if (job.role == null or job.role == .main) break job.name;
         } else null;
-        if (main_file) |f| if (hf.format(f) == .safetensors) {
+        if (plan == null) if (main_file) |f| if (hf.format(f) == .safetensors) {
             // Laya's layout registers as a decision model; any other
             // checkpoint only once its downloaded config.json proves it a
             // speech model (`speechCheckpoint`, after the transfer).
@@ -487,7 +535,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
         };
         try config.registrable(name, request.repo_id, main_file, diag);
     }
-    const pinned_name: ?[]const u8 = if (entry) |e| e.name else if (decision) |d| d.name else if (embedding) |e| e.name else if (audio) |a| a.name else null;
+    const pinned_name: ?[]const u8 = if (plan) |p| p.artifact.name else null;
     if (!json) try renderHeader(out, sty, pinned_name orelse options.name, request.repo_id, if (pinned_name != null) null else options.revision orelse "main", revision);
     try out.flush();
 
@@ -496,7 +544,10 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     //    old one stays until then) and then its sidecar; a file without one
     //    is left to the package's verification.
     for (jobs.items) |job| {
-        const path = try client.localPath(request, job.name);
+        var placed = request;
+        placed.destination = job.destination;
+        placed.exact = job.destination != null;
+        const path = try client.localPath(placed, job.name);
         defer gpa.free(path);
         const sidecar = try sidecarPath(arena, path);
         const recorded = readSidecar(arena, io, .cwd(), sidecar) catch |err| switch (err) {
@@ -510,7 +561,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
             if (!options.force) {
                 const want, const kind = if (job.sha256) |sha| .{ sha, "sha256" } else .{ job.git_blob.?, "git blob" };
                 const have = if (job.sha256 != null) r.sha256 else r.git_blob orelse "(none recorded)";
-                diag.set("{s}: its sidecar records commit {s} ({s} {s}…), the request resolved to commit {s} ({s} {s}…); pass --force to replace it", .{ path, r.revision[0..12], kind, have[0..@min(12, have.len)], revision[0..12], kind, want[0..12] });
+                diag.set("{s}: its sidecar records commit {s} ({s} {s}…), the request resolved to commit {s} ({s} {s}…); pass --force to replace it", .{ path, r.shortRevision(), kind, have[0..@min(12, have.len)], revision[0..12], kind, want[0..12] });
                 return error.ExistingFileMismatch;
             }
         }
@@ -537,6 +588,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     for (jobs.items) |job| display.total += job.size;
     for (jobs.items, 0..) |job, index| {
         request.filename = job.name;
+        request.destination = job.destination;
         display.index = index;
         display.file = job.name;
         display.file_size = job.size;
@@ -576,9 +628,9 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
             // otherwise the table is wrong, and the file stays without a
             // sidecar so it is never taken for verified (a replaced file's
             // old sidecar goes too).
-            if ((entry != null or embedding != null) and !std.mem.eql(u8, digest, job.sha256.?)) {
+            if (job.pinned and !std.mem.eql(u8, digest, job.sha256.?)) {
                 if (options.force) try deleteIfPresent(io, sidecar);
-                diag.set("{s}: the Hub's digest at commit {s} is {s}…, the catalogue pins {s}…; the catalogue entry needs updating", .{ file.path, revision[0..12], digest[0..12], job.sha256.?[0..12] });
+                diag.set("{s}: the Hub's digest at commit {s} is {s}…, the index pins {s}…; the index entry needs updating", .{ file.path, revision[0..12], digest[0..12], job.sha256.?[0..12] });
                 return error.CatalogMismatch;
             }
             const header = if (hf.format(file.path) == .gguf) try roleFromHeader(gpa, io, file.path) else null;
@@ -593,11 +645,13 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
             const repo_dir = try std.fs.path.join(arena, &.{ models, request.repo_id });
             try writeSidecar(arena, io, .cwd(), sidecar, .{
                 .repo = request.repo_id,
-                .file = if (std.mem.startsWith(u8, file.path, repo_dir)) std.mem.trimStart(u8, file.path[repo_dir.len..], "/") else job.name,
+                .file = if (job.destination == null and std.mem.startsWith(u8, file.path, repo_dir)) std.mem.trimStart(u8, file.path[repo_dir.len..], "/") else job.name,
                 .revision = revision,
                 .sha256 = digest,
                 .size = file.size,
                 .role = role,
+                .artifact = if (plan) |p| p.artifact.name else null,
+                .variant = job.variant,
                 .downloaded_at = downloaded_at,
                 .nuclis_version = version,
                 .git_blob = try hexOrNull(arena, file.remote.git_oid),
@@ -611,8 +665,8 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
                     main_path = try arena.dupe(u8, file.path);
                 },
                 .mmproj => registration.mmproj = job.name,
-                .mtp => registration.mtp = job.name,
-                .imatrix, .support, .codec => {},
+                .draft => registration.draft = job.name,
+                .imatrix, .support, .codec, .backbone => {},
             }
         }
     }
@@ -638,7 +692,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
         };
         registered = .{ .name = name, .config = config_path, .key = key };
     }
-    try renderPull(out, .{ .name = pinned_name orelse options.name, .repo = request.repo_id, .requested_revision = options.revision orelse (if (entry) |e| e.revision else if (decision) |d| d.revision else if (embedding) |e| e.revision else if (audio) |a| a.revision else "main"), .revision = revision, .files = report.items, .registered = registered orelse null }, json, sty);
+    try renderPull(out, .{ .name = pinned_name orelse options.name, .repo = request.repo_id, .requested_revision = options.revision orelse if (plan) |p| p.revision else "main", .revision = revision, .files = report.items, .registered = registered orelse null }, json, sty);
 }
 
 /// Whether the files pulled hold `name` in the weights' own directory.
@@ -937,6 +991,7 @@ const Display = struct {
 
 // ---- ls --------------------------------------------------------------------
 
+/// A model file found under `<root>/models` in the layout.
 pub const Listed = struct {
     /// Relative to the models directory: `<owner>/<repo>/<file>`.
     path: []const u8,
@@ -953,129 +1008,285 @@ pub const RegisteredAs = struct { name: []const u8, profile: ?config.Profile };
 /// A registry entry whose file is not on disk.
 pub const MissingEntry = struct { name: []const u8, path: []const u8 };
 
-pub const CompanionRow = struct {
+/// One file of an installed model, as its sidecar records it.
+pub const InstalledFile = struct {
     role: Role,
-    status: catalog.Status,
+    variant: ?[]const u8 = null,
+    /// Relative to the models directory.
     path: []const u8,
     size: u64,
-    used_for: []const u8,
+    /// Against the index's pin for an index file, else `present` with a
+    /// sidecar and `unverified` without one.
+    status: catalog.Status,
+    revision: ?[]const u8 = null,
+    sha256: ?[]const u8 = null,
 };
 
-pub const CatalogRow = struct {
+/// The options an index model runs with when nothing overrides them, as
+/// `model ls -l` shows them.
+pub const RunDefaults = struct {
+    profile: ?config.Profile,
+    speculative: bool,
+    draft: ?[]const u8,
+    draft_length: usize,
+    think: ?inference.profiles.Effort,
+    thinking_budget: ?usize,
+};
+
+/// A model on disk: an index artifact whose main file is present, or a
+/// main file the index does not know, with the companions beside it.
+pub const Installed = struct {
+    /// The index name; for another file its registry name, else its
+    /// repository path (`owner/repo`, or the file's path when a repository
+    /// holds several).
     name: []const u8,
-    /// A `decision` row is a Laya checkpoint (`nuclis decide`); its path is
-    /// the weights, its support files sit beside them. An `embedding` row
-    /// runs under `nuclis embed`.
-    kind: catalog.ModelKind = .generation,
-    status: catalog.Status,
-    path: []const u8,
+    /// Null when nothing tells what runs it (a safetensors directory of no
+    /// known layout, a GGUF whose header does not parse).
+    kind: ?catalog.ModelKind,
+    /// The index artifact, null for a file not in the index.
+    artifact: ?[]const u8 = null,
+    legacy: bool = false,
+    registered: ?RegisteredAs = null,
+    architecture: ?[]const u8 = null,
+    quantization: []const u8,
+    /// Whether an adapter runs it; an index model always does.
+    runnable: bool,
+    /// The files present, summed.
     size: u64,
+    /// `engine.model` names it.
+    default: bool = false,
+    files: []const InstalledFile,
+    defaults: ?RunDefaults = null,
+    warnings: []const []const u8 = &.{},
+};
+
+/// An index artifact and whether it is installed, for `model ls --available`.
+pub const AvailableFile = struct {
+    role: Role,
+    variant: ?[]const u8,
+    /// Where it lands, relative to the models directory.
+    local: []const u8,
+    repo: []const u8,
+    revision: []const u8,
+    remote: []const u8,
+    size: u64,
+    sha256: []const u8,
+    used_for: []const u8,
+    status: catalog.Status,
+};
+
+pub const Available = struct {
+    name: []const u8,
+    title: []const u8,
+    kind: catalog.ModelKind,
+    status: catalog.Lifecycle,
+    repo: []const u8,
+    revision: []const u8,
     architecture: []const u8,
     quantization: []const u8,
-    revision: []const u8,
-    sha256: []const u8,
-    companions: []const CompanionRow,
-    /// A registry entry under another name than the catalogue's, or one
-    /// forcing a profile (the catalogue's own name is not repeated).
-    registered: ?RegisteredAs = null,
+    /// The main file and those pulled with it.
+    size: u64,
+    installed: bool,
+    files: []const AvailableFile,
+    defaults: ?RunDefaults,
+};
+
+/// What `model ls` shows, before rendering.
+pub const LsOptions = struct {
+    long: bool = false,
+    /// The index view instead of the installed one.
+    available: bool = false,
+    /// With `available`: legacy artifacts too.
+    all: bool = false,
 };
 
 pub const Listing = struct {
-    schema_version: u32 = 6,
+    schema_version: u32 = 7,
     models_dir: []const u8,
-    /// Every catalogue entry with its local status, companions beneath.
-    catalog: []const CatalogRow,
-    /// Model files (GGUF, safetensors) in the layout the catalogue does not name.
-    other: []const Listed,
+    /// Every installed model's files, summed.
+    total_bytes: u64,
+    /// By kind (chat, speech, transcription, decision, embedding, other),
+    /// then by name.
+    installed: []const Installed,
+    /// Model files with no sidecar (`nuclis model adopt <path>` writes one).
+    without_sidecar: []const []const u8,
+    /// Current index artifacts not installed.
+    available: usize,
     /// Model files found above the `<owner>/<repo>/` level; they are not
     /// listed because nothing can say which repository they came from.
     outside_layout: usize,
     /// Registry entries whose file is absent.
     missing: []const MissingEntry = &.{},
+    /// The index view, filled for `--available`.
+    index: []const Available = &.{},
 
-    pub fn render(self: Listing, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+    pub fn find(self: Listing, name: []const u8) ?*const Installed {
+        for (self.installed) |*i| if (std.mem.eql(u8, i.name, name) or (i.artifact != null and std.mem.eql(u8, i.artifact.?, name)) or (i.registered != null and std.mem.eql(u8, i.registered.?.name, name))) return i;
+        return null;
+    }
+
+    pub fn render(self: Listing, out: *std.Io.Writer, options: LsOptions, json: bool, sty: style.Style) !void {
         if (json) {
             try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
             return out.writeByte('\n');
         }
+        if (options.available) return self.renderIndex(out, options, sty);
         const off = sty.off();
-        const path = sty.on(.code);
-        const number = sty.on(.number);
-        const hash = sty.on(.comment);
-        try out.print("{s}models directory:{s} {s}{s}{s}\n\n{s}catalogue{s} {s}(supported artifacts; `nuclis model pull <name> [--all]`){s}\n", .{ sty.on(.label), off, path, self.models_dir, off, sty.on(.header), off, sty.on(.dim), off });
-        // One grid for the catalogue: the name column fits the widest name
-        // (a companion's role sits two cells in), the status column the
-        // widest status word, the path column the widest path of a main
-        // file or a companion; sizes are right-aligned after it.
-        var name_w: usize = catalog.name_width;
-        var path_w: usize = 0;
-        for (self.catalog) |row| {
-            name_w = @max(name_w, row.name.len);
-            path_w = @max(path_w, row.path.len);
-            for (row.companions) |c| path_w = @max(path_w, c.path.len);
-        }
-        const status_w: usize = 10;
-        for (self.catalog) |row| {
+        var total: [16]u8 = undefined;
+        try out.print("{s}models{s}  {s}{s}{s}  {s}{s}{s}\n", .{ sty.on(.label), off, sty.on(.code), self.models_dir, off, sty.on(.number), humanSize(&total, self.total_bytes), off });
+        if (self.installed.len == 0) try out.print("\n{s}nothing installed{s} {s}(`nuclis model ls --available` lists the index; `nuclis model pull <name>` fetches one){s}\n", .{ sty.on(.bold), off, sty.on(.dim), off });
+        const name_w = nameWidth(self.installed);
+        var quant_w: usize = 0;
+        for (self.installed) |i| quant_w = @max(quant_w, i.quantization.len);
+        var group: ?[]const u8 = null;
+        for (self.installed) |i| {
+            const heading = if (i.kind) |k| catalog.groupName(k) else "other";
+            if (group == null or !std.mem.eql(u8, group.?, heading)) {
+                try out.print("\n{s}{s}{s}\n", .{ sty.on(.header), heading, off });
+                group = heading;
+            }
             try out.writeAll("  ");
-            try column(out, sty.on(.keyword), row.name, off, name_w);
-            try column(out, sty.on(statusStyle(row.status)), @tagName(row.status), off, status_w);
-            try column(out, path, row.path, off, 0);
+            var short: [max_name_cells]u8 = undefined;
+            try column(out, sty.on(.keyword), shorten(&short, i.name), off, name_w);
+            try column(out, sty.on(.dim), i.quantization, off, quant_w);
+            var size: [16]u8 = undefined;
+            try out.print("{s}{s:>9}{s}", .{ sty.on(.number), humanSize(&size, i.size), off });
+            var companions: [128]u8 = undefined;
+            const tags = companionTags(&companions, i.files);
+            if (tags.len > 0) try out.print("  {s}{s}{s}", .{ sty.on(.dim), tags, off });
+            if (i.artifact == null) try out.print("  {s}not in the index{s}", .{ sty.on(.dim), off });
+            if (i.artifact == null and !i.runnable) try out.print("  {s}not runnable{s}", .{ sty.on(.warning), off });
+            if (i.legacy) try out.print("  {s}legacy{s}", .{ sty.on(.dim), off });
+            if (i.registered) |r| if (!std.mem.eql(u8, r.name, i.name)) try out.print("  {s}registered as{s} {s}{s}{s}", .{ sty.on(.dim), off, sty.on(.keyword), r.name, off });
+            if (i.default) try out.print("  {s}default{s}", .{ sty.on(.success), off });
             try out.writeByte('\n');
-            try out.splatByteAll(' ', 2 + name_w + 1 + status_w + 1);
-            var size_buffer: [16]u8 = undefined;
-            try out.print("{s}{s:>9}{s}  {s} {s}{s}  commit {s}{s}{s}  sha256 {s}{s}{s}\n", .{ number, humanSize(&size_buffer, row.size), off, row.architecture, row.quantization, switch (row.kind) {
-                .generation => "",
-                .decision => " (nuclis decide)",
-                .embedding => " (nuclis embed)",
-                .speech => " (nuclis speak)",
-                .transcription => " (nuclis transcribe)",
-            }, hash, row.revision[0..12], off, hash, row.sha256, off });
-            if (row.registered) |r| {
-                try out.splatByteAll(' ', 2 + name_w + 1 + status_w + 1);
-                try renderRegistered(out, r, sty);
-            }
-            for (row.companions) |c| {
+            for (i.warnings) |w| try out.print("    {s}{s}{s}\n", .{ sty.on(.warning), w, off });
+            if (!options.long) continue;
+            for (i.files) |f| {
                 try out.writeAll("    ");
-                try column(out, number, @tagName(c.role), off, name_w - 2);
-                try column(out, sty.on(statusStyle(c.status)), @tagName(c.status), off, status_w);
-                try column(out, path, c.path, off, path_w);
-                var companion_size: [16]u8 = undefined;
-                try out.print(" {s}{s:>9}{s}  {s}for {s}{s}\n", .{ number, humanSize(&companion_size, c.size), off, sty.on(.dim), c.used_for, off });
-            }
-        }
-        if (self.other.len > 0) {
-            try out.print("\n{s}other model files in the layout{s} {s}(not in the catalogue; runnable only if their architecture has an adapter){s}\n", .{ sty.on(.header), off, sty.on(.dim), off });
-            var width: usize = 0;
-            for (self.other) |f| width = @max(width, f.path.len);
-            for (self.other) |f| {
-                try out.print("  {s}{s}{s}", .{ path, f.path, off });
-                try out.splatByteAll(' ', width - f.path.len + 2);
-                var size_buffer: [16]u8 = undefined;
-                try out.print("{s}{s:>9}{s}  ", .{ number, humanSize(&size_buffer, f.size), off });
-                if (f.sidecar) |s| {
-                    try out.print("{s}{s:<7}{s}  {s}{s}  {s}{s}", .{ number, @tagName(s.role), off, hash, s.revision[0..12], s.sha256, off });
-                    if (s.size != f.size) try out.print("  {s}(size differs from the sidecar){s}", .{ sty.on(.warning), off });
-                } else try out.print("{s}(no sidecar: not verified by nuclis){s}", .{ sty.on(.warning), off });
+                var role: [48]u8 = undefined;
+                const label = if (f.variant) |v| std.fmt.bufPrint(&role, "{s}:{s}", .{ @tagName(f.role), v }) catch @tagName(f.role) else @tagName(f.role);
+                try column(out, sty.on(.number), label, off, 14);
+                try out.print("{s}commit {s}{s}  {s}sha256 {s}{s}  {s}{s}{s}", .{ sty.on(.comment), if (f.revision) |r| r[0..12] else "-           ", off, sty.on(.comment), if (f.sha256) |h| h[0..12] else "-           ", off, sty.on(.code), f.path, off });
+                if (f.status != .present) try out.print("  {s}{s}{s}", .{ sty.on(statusStyle(f.status)), @tagName(f.status), off });
                 try out.writeByte('\n');
-                if (f.registered) |r| {
-                    try out.writeAll("    ");
-                    try renderRegistered(out, r, sty);
-                }
             }
+            if (i.defaults) |d| try renderDefaults(out, d, sty);
         }
         if (self.missing.len > 0) {
-            try out.print("\n{s}registry entries without a file{s} {s}(`nuclis model pull <name>` fetches an entry with repo and file){s}\n", .{ sty.on(.header), off, sty.on(.dim), off });
+            try out.print("\n{s}registry entries without a file{s} {s}(`nuclis config sync --prune` removes them){s}\n", .{ sty.on(.header), off, sty.on(.dim), off });
             var width: usize = 0;
             for (self.missing) |m| width = @max(width, m.name.len);
             for (self.missing) |m| {
                 try out.writeAll("  ");
                 try column(out, sty.on(.keyword), m.name, off, width);
-                try out.print("{s}{s}{s}\n", .{ path, m.path, off });
+                try out.print("{s}{s}{s}\n", .{ sty.on(.code), m.path, off });
             }
         }
-        if (self.outside_layout > 0) try out.print("\n{s}{d} model file(s) outside the <owner>/<repo>/ layout are not listed{s}\n", .{ sty.on(.warning), self.outside_layout, off });
+        try out.writeByte('\n');
+        if (self.without_sidecar.len > 0) try out.print("{s}{d} file{s} without a sidecar:{s} {s}nuclis model adopt <path>{s}\n", .{ sty.on(.warning), self.without_sidecar.len, if (self.without_sidecar.len == 1) "" else "s", off, sty.on(.code), off });
+        if (self.available > 0) try out.print("{s}{d} more in the index:{s} {s}nuclis model ls --available{s}\n", .{ sty.on(.dim), self.available, off, sty.on(.code), off });
+        if (self.outside_layout > 0) try out.print("{s}{d} model file(s) outside the <owner>/<repo>/ layout are not listed{s}\n", .{ sty.on(.warning), self.outside_layout, off });
+    }
+
+    fn renderIndex(self: Listing, out: *std.Io.Writer, options: LsOptions, sty: style.Style) !void {
+        const off = sty.off();
+        try out.print("{s}index{s} {s}(what nuclis pulls and verifies by name; `nuclis model pull <name> [--all]`){s}\n", .{ sty.on(.label), off, sty.on(.dim), off });
+        var name_w: usize = 0;
+        var quant_w: usize = 0;
+        for (self.index) |a| {
+            name_w = @max(name_w, a.name.len);
+            quant_w = @max(quant_w, a.quantization.len);
+        }
+        var group: ?catalog.ModelKind = null;
+        for (self.index) |a| {
+            if (group != a.kind) {
+                try out.print("\n{s}{s}{s}\n", .{ sty.on(.header), catalog.groupName(a.kind), off });
+                group = a.kind;
+            }
+            try out.writeAll("  ");
+            try column(out, sty.on(.keyword), a.name, off, name_w);
+            try column(out, sty.on(.dim), a.quantization, off, quant_w);
+            var size: [16]u8 = undefined;
+            try out.print("{s}{s:>9}{s}  ", .{ sty.on(.number), humanSize(&size, a.size), off });
+            if (a.installed) try out.print("{s}installed{s}", .{ sty.on(.success), off }) else try out.print("{s}not pulled{s}", .{ sty.on(.dim), off });
+            if (a.status == .legacy) try out.print("  {s}legacy{s}", .{ sty.on(.dim), off });
+            try out.writeByte('\n');
+            if (!options.long) continue;
+            for (a.files) |f| {
+                try out.writeAll("    ");
+                var role: [48]u8 = undefined;
+                const label = if (f.variant) |v| std.fmt.bufPrint(&role, "{s}:{s}", .{ @tagName(f.role), v }) catch @tagName(f.role) else @tagName(f.role);
+                try column(out, sty.on(.number), label, off, 14);
+                var fsize: [16]u8 = undefined;
+                try out.print("{s}{s:>9}{s}  {s}commit {s}  sha256 {s}{s}  {s}{s}{s}", .{ sty.on(.number), humanSize(&fsize, f.size), off, sty.on(.comment), f.revision[0..12], f.sha256[0..12], off, sty.on(.code), f.local, off });
+                if (f.used_for.len > 0) try out.print("  {s}for {s}{s}", .{ sty.on(.dim), f.used_for, off });
+                try out.writeByte('\n');
+            }
+            if (a.defaults) |d| try renderDefaults(out, d, sty);
+        }
+        if (!options.all) {
+            var legacy: usize = 0;
+            for (&catalog.artifacts) |a| legacy += @intFromBool(a.status == .legacy);
+            if (legacy > 0) try out.print("\n{s}{d} legacy artifact(s) hidden:{s} {s}nuclis model ls --available --all{s}\n", .{ sty.on(.dim), legacy, off, sty.on(.code), off });
+        }
     }
 };
+
+/// The longest name `model ls` prints whole; a longer one keeps its two
+/// ends around an ellipsis.
+const max_name_cells = 40;
+
+fn nameWidth(installed: []const Installed) usize {
+    var width: usize = 0;
+    for (installed) |i| width = @max(width, @min(i.name.len, max_name_cells));
+    return width;
+}
+
+/// `text` shortened in the middle to `max_name_cells` bytes.
+fn shorten(buffer: *[max_name_cells]u8, text: []const u8) []const u8 {
+    if (text.len <= max_name_cells) return text;
+    const head = (max_name_cells - 3) / 2;
+    const tail = max_name_cells - 3 - head;
+    @memcpy(buffer[0..head], text[0..head]);
+    @memcpy(buffer[head..][0..3], "...");
+    @memcpy(buffer[head + 3 ..][0..tail], text[text.len - tail ..]);
+    return buffer;
+}
+
+/// `+mmproj +draft:mtp,dflash2 +codec` from the files besides the main one.
+fn companionTags(buffer: []u8, files: []const InstalledFile) []const u8 {
+    var w: std.Io.Writer = .fixed(buffer);
+    const order = [_]Role{ .mmproj, .draft, .codec, .backbone, .imatrix };
+    for (order) |role| {
+        var first = true;
+        for (files) |f| if (f.role == role) {
+            if (first) {
+                if (w.end > 0) w.writeByte(' ') catch break;
+                w.print("+{s}", .{@tagName(role)}) catch break;
+            }
+            if (f.variant) |v| w.print("{s}{s}", .{ if (first) ":" else ",", v }) catch break;
+            first = false;
+        };
+    }
+    return w.buffered();
+}
+
+fn renderDefaults(out: *std.Io.Writer, d: RunDefaults, sty: style.Style) !void {
+    try out.print("    {s}runs with: speculative {s}", .{ sty.on(.dim), if (d.speculative) "on" else "off" });
+    if (d.draft) |v| try out.print(" (draft {s}, length {d})", .{ v, d.draft_length }) else if (d.speculative) try out.print(" (length {d})", .{d.draft_length});
+    if (d.think) |t| try out.print(", think {s}", .{@tagName(t)});
+    if (d.thinking_budget) |b| try out.print(", thinking budget {d}", .{b});
+    if (d.profile) |p| try out.print(", profile {s}", .{@tagName(p)});
+    try out.print("{s}\n", .{sty.off()});
+}
+
+/// The defaults an index artifact runs with.
+pub fn runDefaults(a: *const catalog.Artifact) ?RunDefaults {
+    if (a.kind != .generation) return null;
+    const v = a.verdict();
+    return .{ .profile = a.defaults.profile, .speculative = v.speculative, .draft = if (a.draftCount() > 1) a.defaults.draft else null, .draft_length = v.draft_length, .think = a.defaults.think, .thinking_budget = a.defaults.thinking_budget };
+}
 
 /// A size for reading: decimal units, two decimals from a gigabyte up,
 /// one below (`16.46 GB`, `931.1 MB`, `12.0 KB`, `512 B`). The JSON form
@@ -1099,12 +1310,6 @@ fn column(out: *std.Io.Writer, on: []const u8, text: []const u8, off: []const u8
     if (width > 0) try out.splatByteAll(' ', (width -| text.len) + 1);
 }
 
-fn renderRegistered(out: *std.Io.Writer, r: RegisteredAs, sty: style.Style) !void {
-    try out.print("{s}registered as{s} {s}{s}{s}", .{ sty.on(.dim), sty.off(), sty.on(.keyword), r.name, sty.off() });
-    if (r.profile) |p| try out.print(" {s}(profile {s} forced){s}", .{ sty.on(.dim), @tagName(p), sty.off() });
-    try out.writeByte('\n');
-}
-
 /// Status words by how good the news is.
 pub fn statusStyle(status: catalog.Status) style.Kind {
     return switch (status) {
@@ -1115,48 +1320,80 @@ pub fn statusStyle(status: catalog.Status) style.Kind {
     };
 }
 
-/// The catalogue's status from sidecars, then a walk of `<root>/models` in
-/// the layout only: owner directories, repository directories, then files
-/// (with subdirectories such as `MTP/`). Nothing is created; a missing
-/// directory lists the catalogue as absent.
-pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Models) !Listing {
+/// A companion by its sidecar's role, else by the names the Hub uses
+/// (`mmproj-*.gguf`, `mtp-*.gguf`, `dflash*.gguf`, `*imatrix*`); null for
+/// a main file.
+pub fn companionRole(f: Listed) ?Role {
+    if (f.sidecar) |s| if (s.role != .main and s.role != .backbone) return s.role;
+    return companionRoleOfName(std.fs.path.basename(f.path));
+}
+
+pub fn companionRoleOfName(name: []const u8) ?Role {
+    var lower: [256]u8 = undefined;
+    const n = @min(name.len, lower.len);
+    const l = std.ascii.lowerString(lower[0..n], name[0..n]);
+    if (std.mem.indexOf(u8, l, "mmproj") != null) return .mmproj;
+    if (std.mem.startsWith(u8, l, "mtp") or std.mem.indexOf(u8, l, "-mtp") != null or std.mem.indexOf(u8, l, "dflash") != null) return .draft;
+    if (std.mem.indexOf(u8, l, "imatrix") != null) return .imatrix;
+    return null;
+}
+
+/// Whether `file` sits in `dir` or one level below it (`MTP/` in the
+/// Hub's layouts).
+fn besideOrBelow(dir: []const u8, file: []const u8) bool {
+    const d = std.fs.path.dirname(file) orelse "";
+    if (std.mem.eql(u8, d, dir)) return true;
+    const parent = std.fs.path.dirname(d) orelse "";
+    return std.mem.eql(u8, parent, dir);
+}
+
+fn kindOrder(kind: ?catalog.ModelKind) u8 {
+    const k = kind orelse return 5;
+    return switch (k) {
+        .generation => 0,
+        .speech => 1,
+        .transcription => 2,
+        .decision => 3,
+        .embedding => 4,
+    };
+}
+
+/// What a file outside the index is, from its header (GGUF) or the files
+/// beside it (safetensors): its kind, architecture, and whether an adapter
+/// runs it. Only the GGUF directory is read.
+fn judgeLocal(arena: Allocator, io: std.Io, models: []const u8, path: []const u8) !struct { kind: ?catalog.ModelKind, architecture: ?[]const u8, runnable: bool } {
+    const absolute = try std.fs.path.join(arena, &.{ models, path });
+    if (hf.format(path) == .safetensors) {
+        const dir = std.fs.path.dirname(absolute) orelse ".";
+        if (try exists(io, try std.fs.path.join(arena, &.{ dir, "rl_agent_config.json" }))) return .{ .kind = .decision, .architecture = null, .runnable = true };
+        if (try exists(io, try std.fs.path.join(arena, &.{ dir, "speech_tokenizer", "model.safetensors" }))) return .{ .kind = .speech, .architecture = null, .runnable = true };
+        return .{ .kind = null, .architecture = null, .runnable = false };
+    }
+    var doc = inference.gguf.open(arena, io, absolute, .{}) catch return .{ .kind = null, .architecture = null, .runnable = false };
+    defer doc.deinit();
+    const arch = try arena.dupe(u8, doc.string("general.architecture") orelse "");
+    if (std.mem.eql(u8, arch, inference.embed.architecture)) return .{ .kind = .embedding, .architecture = arch, .runnable = true };
+    if (std.mem.eql(u8, arch, "drama3")) return .{ .kind = .speech, .architecture = arch, .runnable = true };
+    const adapter = inference.models.adapterFor(arch);
+    return .{ .kind = if (adapter != null) .generation else null, .architecture = if (arch.len > 0) arch else null, .runnable = adapter != null };
+}
+
+/// The quantization a file name ends in (`Some-Model-Q4_K_M.gguf` →
+/// `Q4_K_M`), for a file the index does not describe.
+fn quantizationOf(path: []const u8) []const u8 {
+    if (hf.format(path) == .safetensors) return "safetensors";
+    const stem = std.fs.path.stem(std.fs.path.basename(path));
+    return if (std.mem.lastIndexOfScalar(u8, stem, '-')) |i| stem[i + 1 ..] else stem;
+}
+
+/// The installed models from a walk of `<root>/models` in the layout only
+/// (owner directories, repository directories, then files, with
+/// subdirectories such as `MTP/`): index artifacts first by their pinned
+/// paths, then every other main file with the companions beside it.
+/// Nothing is created; a missing directory lists nothing. `default_model`
+/// marks the row `engine.model` names.
+pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Models, default_model: ?[]const u8) !Listing {
     const models = try modelsDir(arena, root);
-    const rows = try arena.alloc(CatalogRow, catalog.entries.len + catalog.decision_entries.len + catalog.embedding_entries.len + catalog.audio_entries.len);
-    const embedding_rows = rows[catalog.entries.len + catalog.decision_entries.len ..][0..catalog.embedding_entries.len];
-    const audio_rows = rows[rows.len - catalog.audio_entries.len ..];
-    for (&catalog.audio_entries, audio_rows) |*e, *row| {
-        const path = try std.fs.path.join(arena, &.{ models, e.repo, e.file });
-        var companions: []CompanionRow = &.{};
-        if (e.codec) |c| {
-            const cpath = try std.fs.path.join(arena, &.{ models, c.repo, c.file });
-            companions = try arena.alloc(CompanionRow, 1);
-            companions[0] = .{ .role = .codec, .status = try catalog.status(arena, io, cpath, c.sha256, c.size), .path = cpath[models.len + 1 ..], .size = c.size, .used_for = "the speech codec (pulled with it)" };
-        }
-        row.* = .{ .name = e.name, .kind = e.kind, .status = try catalog.status(arena, io, path, e.sha256, e.size), .path = path[models.len + 1 ..], .size = e.size, .architecture = e.architecture, .quantization = e.quantization, .revision = e.revision, .sha256 = e.sha256, .companions = companions };
-    }
-    for (&catalog.embedding_entries, embedding_rows) |*e, *row| {
-        const path = try std.fs.path.join(arena, &.{ models, e.repo, e.file });
-        var companions: []CompanionRow = &.{};
-        if (e.mmproj) |m| {
-            const cpath = try std.fs.path.join(arena, &.{ models, m.repo, m.file });
-            companions = try arena.alloc(CompanionRow, 1);
-            companions[0] = .{ .role = .mmproj, .status = try catalog.status(arena, io, cpath, m.sha256, m.size), .path = cpath[models.len + 1 ..], .size = m.size, .used_for = "image and audio input" };
-        }
-        row.* = .{ .name = e.name, .kind = .embedding, .status = try catalog.status(arena, io, path, e.sha256, e.size), .path = path[models.len + 1 ..], .size = e.size, .architecture = e.architecture, .quantization = e.quantization, .revision = e.revision, .sha256 = e.sha256, .companions = companions };
-    }
-    for (&catalog.decision_entries, rows[catalog.entries.len..][0..catalog.decision_entries.len]) |*e, *row| {
-        const path = try std.fs.path.join(arena, &.{ models, e.repo, e.file });
-        row.* = .{ .name = e.name, .kind = .decision, .status = try catalog.status(arena, io, path, e.sha256, e.size), .path = path[models.len + 1 ..], .size = e.size, .architecture = e.architecture, .quantization = e.quantization, .revision = e.revision, .sha256 = e.sha256, .companions = &.{} };
-    }
-    for (&catalog.entries, rows[0..catalog.entries.len]) |*e, *row| {
-        const path = try catalog.localPath(arena, models, e, e.file);
-        const companions = try arena.alloc(CompanionRow, e.companions.len);
-        for (e.companions, companions) |c, *cr| {
-            const cpath = try catalog.localPath(arena, models, e, c.file);
-            cr.* = .{ .role = c.role, .status = try catalog.status(arena, io, cpath, c.sha256, c.size), .path = cpath[models.len + 1 ..], .size = c.size, .used_for = c.used_for };
-        }
-        row.* = .{ .name = e.name, .status = try catalog.status(arena, io, path, e.sha256, e.size), .path = path[models.len + 1 ..], .size = e.size, .architecture = e.architecture, .quantization = e.quantization, .revision = e.revision, .sha256 = e.sha256, .companions = companions };
-    }
     var files: std.ArrayList(Listed) = .empty;
     var outside: usize = 0;
     if (std.Io.Dir.cwd().openDir(io, models, .{ .iterate = true })) |dir| {
@@ -1167,22 +1404,81 @@ pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Mod
         error.FileNotFound => {},
         else => return err,
     }
-    // Files the catalogue names are reported under their entry, not twice.
-    var other: std.ArrayList(Listed) = .empty;
-    scan: for (files.items) |f| {
-        for (rows) |row| {
-            if (std.mem.eql(u8, f.path, row.path)) continue :scan;
-            for (row.companions) |c| if (std.mem.eql(u8, f.path, c.path)) continue :scan;
-        }
-        try other.append(arena, f);
-    }
-    std.mem.sort(Listed, other.items, {}, struct {
+    std.mem.sort(Listed, files.items, {}, struct {
         fn less(_: void, a: Listed, b: Listed) bool {
             return std.mem.lessThan(u8, a.path, b.path);
         }
     }.less);
-    // The registry's view: each entry's location relative to the models
-    // directory names a row, or the entry is missing its file.
+    const claimed = try arena.alloc(bool, files.items.len);
+    @memset(claimed, false);
+    var installed: std.ArrayList(Installed) = .empty;
+    var index: std.ArrayList(Available) = .empty;
+    var available: usize = 0;
+    for (&catalog.artifacts) |*a| {
+        var present: std.ArrayList(InstalledFile) = .empty;
+        var avail_files: std.ArrayList(AvailableFile) = .empty;
+        var warnings: std.ArrayList([]const u8) = .empty;
+        var main_present = false;
+        var size: u64 = 0;
+        for (a.files) |*f| {
+            const local = try std.fs.path.join(arena, &.{ a.directoryOf(f), f.path });
+            var status: catalog.Status = .absent;
+            for (files.items, claimed) |listed, *taken| if (std.mem.eql(u8, listed.path, local)) {
+                taken.* = true;
+                const recorded = listed.sidecar;
+                status = if (recorded) |r| if (std.mem.eql(u8, r.sha256, f.sha256) and r.size == f.size) .present else .mismatch else .unverified;
+                if (recorded) |r| if (r.size != listed.size) try warnings.append(arena, try arena.print("{s}: the size differs from its sidecar's", .{local}));
+                if (status == .mismatch) try warnings.append(arena, try arena.print("{s}: its sidecar records other content than the index pins (`nuclis model pull {s} --force` replaces it)", .{ local, a.name }));
+                if (status == .unverified) try warnings.append(arena, try arena.print("{s}: no sidecar (`nuclis model adopt {s}` verifies it)", .{ local, local }));
+                if (f.role == .main) main_present = true;
+                size += listed.size;
+                try present.append(arena, .{ .role = f.role, .variant = f.variant, .path = local, .size = listed.size, .status = status, .revision = if (recorded) |r| r.revision else null, .sha256 = if (recorded) |r| r.sha256 else null });
+                break;
+            };
+            try avail_files.append(arena, .{ .role = f.role, .variant = f.variant, .local = local, .repo = a.origin(f), .revision = a.originRevision(f), .remote = catalog.Artifact.hubName(f), .size = f.size, .sha256 = f.sha256, .used_for = f.used_for, .status = status });
+        }
+        if (!main_present and present.items.len > 0) try warnings.append(arena, try arena.print("only companions are present; `nuclis model pull {s}` fetches the model", .{a.name}));
+        if (main_present or present.items.len > 0) {
+            try installed.append(arena, .{ .name = a.name, .kind = a.kind, .artifact = a.name, .legacy = a.status == .legacy, .architecture = a.architecture, .quantization = a.quantization, .runnable = true, .size = size, .files = present.items, .defaults = runDefaults(a), .warnings = warnings.items });
+        } else if (a.status == .current) available += 1;
+        try index.append(arena, .{ .name = a.name, .title = a.title, .kind = a.kind, .status = a.status, .repo = a.repo, .revision = a.revision, .architecture = a.architecture, .quantization = a.quantization, .size = a.totalSize(), .installed = main_present, .files = avail_files.items, .defaults = runDefaults(a) });
+    }
+    // Files outside the index: each main file a row, its companions with it.
+    var without: std.ArrayList([]const u8) = .empty;
+    for (files.items) |f| if (f.sidecar == null) try without.append(arena, f.path);
+    for (files.items, claimed) |f, *taken| {
+        if (taken.* or companionRole(f) != null) continue;
+        taken.* = true;
+        const dir = std.fs.path.dirname(f.path) orelse "";
+        var row_files: std.ArrayList(InstalledFile) = .empty;
+        try row_files.append(arena, localFile(f, .main));
+        var size: u64 = f.size;
+        for (files.items, claimed) |c, *c_taken| {
+            if (c_taken.* or !besideOrBelow(dir, c.path)) continue;
+            const role = companionRole(c) orelse continue;
+            c_taken.* = true;
+            size += c.size;
+            try row_files.append(arena, localFile(c, role));
+        }
+        const judged = try judgeLocal(arena, io, models, f.path);
+        var warnings: std.ArrayList([]const u8) = .empty;
+        if (f.sidecar) |s| if (s.size != f.size) try warnings.append(arena, try arena.print("{s}: the size differs from its sidecar's", .{f.path}));
+        try installed.append(arena, .{ .name = f.path, .kind = judged.kind, .architecture = judged.architecture, .quantization = quantizationOf(f.path), .runnable = judged.runnable, .size = size, .files = row_files.items, .warnings = warnings.items });
+    }
+    // A companion with no main file beside it is a row of its own.
+    for (files.items, claimed) |f, taken| if (!taken) {
+        try installed.append(arena, .{ .name = f.path, .kind = null, .quantization = quantizationOf(f.path), .runnable = false, .size = f.size, .files = try arena.dupe(InstalledFile, &.{localFile(f, companionRole(f) orelse .main)}), .warnings = try arena.dupe([]const u8, &.{"a companion without its model beside it"}) });
+    };
+    // Rows outside the index are named by repository when it holds one main file.
+    for (installed.items) |*row| if (row.artifact == null and row.files[0].role == .main) {
+        const repo = repoOf(row.name) orelse continue;
+        var mains: usize = 0;
+        for (installed.items) |other| if (other.artifact == null and repoOf(other.name) != null and std.mem.eql(u8, repoOf(other.name).?, repo)) {
+            mains += 1;
+        };
+        if (mains == 1) row.name = repo;
+    };
+    // The registry's view: an entry locating a row's main file names it.
     var missing: std.ArrayList(MissingEntry) = .empty;
     for (registry.entries) |named| {
         const e = named.entry;
@@ -1195,33 +1491,63 @@ pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Mod
             continue;
         } else if (e.repo != null and e.file != null) try std.fs.path.join(arena, &.{ e.repo.?, e.file.? }) else null;
         const location = relative orelse continue;
-        var found = false;
-        for (rows) |*row| if (std.mem.eql(u8, row.path, location)) {
-            found = row.status != .absent;
-            if (found and (!std.mem.eql(u8, row.name, named.name) or e.profile != null)) row.registered = as;
-        };
-        for (other.items) |*f| if (std.mem.eql(u8, f.path, location)) {
-            f.registered = as;
-            found = true;
-        };
+        const found = for (installed.items) |*row| {
+            if (!std.mem.eql(u8, row.files[0].path, location) or row.files[0].role != .main) continue;
+            row.registered = as;
+            if (row.artifact == null) row.name = named.name;
+            if (row.kind == null) row.kind = e.kind orelse .generation;
+            break true;
+        } else false;
         if (!found) try missing.append(arena, .{ .name = named.name, .path = location });
     }
-    return .{ .models_dir = models, .catalog = rows, .other = other.items, .outside_layout = outside, .missing = missing.items };
+    var total: u64 = 0;
+    for (installed.items) |*row| {
+        total += row.size;
+        if (default_model) |d| row.default = std.mem.eql(u8, row.name, d) or (row.registered != null and std.mem.eql(u8, row.registered.?.name, d));
+    }
+    std.mem.sort(Installed, installed.items, {}, struct {
+        fn less(_: void, a: Installed, b: Installed) bool {
+            const ka = kindOrder(a.kind);
+            const kb = kindOrder(b.kind);
+            if (ka != kb) return ka < kb;
+            return std.mem.lessThan(u8, a.name, b.name);
+        }
+    }.less);
+    std.mem.sort(Available, index.items, {}, struct {
+        fn less(_: void, a: Available, b: Available) bool {
+            const ka = kindOrder(a.kind);
+            const kb = kindOrder(b.kind);
+            if (ka != kb) return ka < kb;
+            return std.mem.lessThan(u8, a.name, b.name);
+        }
+    }.less);
+    return .{ .models_dir = models, .total_bytes = total, .installed = installed.items, .without_sidecar = without.items, .available = available, .outside_layout = outside, .missing = missing.items, .index = index.items };
 }
 
-/// A model the agent can switch to (`/model`): a registry entry or a
-/// catalogue name, as `--model` would name it.
+fn localFile(f: Listed, role: Role) InstalledFile {
+    return .{ .role = role, .variant = if (f.sidecar) |s| s.variant else null, .path = f.path, .size = f.size, .status = if (f.sidecar != null) .present else .unverified, .revision = if (f.sidecar) |s| s.revision else null, .sha256 = if (f.sidecar) |s| s.sha256 else null };
+}
+
+/// `owner/repo` of a path in the layout.
+fn repoOf(path: []const u8) ?[]const u8 {
+    const first = std.mem.indexOfScalar(u8, path, '/') orelse return null;
+    const second = std.mem.indexOfScalarPos(u8, path, first + 1, '/') orelse return null;
+    return path[0..second];
+}
+
+/// A model the agent can switch to (`/model`): a registry entry or an
+/// index name, as `--model` would name it.
 pub const Runnable = struct {
     name: []const u8,
-    /// Architecture, quantization, and size for a catalogue file; the file's
+    /// Architecture, quantization, and size for an index file; the file's
     /// name otherwise.
     detail: []const u8,
 };
 
-/// The generation models whose files are present, as `listing` found them:
-/// registry entries in the file's order, then catalogue names no entry
-/// shadows. Decision and embedding models, absent files, and catalogue
-/// files whose digest disagrees with the catalogue are left out.
+/// The chat models whose files are present, as `listing` found them:
+/// registry entries in the file's order, then index names no entry
+/// shadows. Other kinds, absent files, and index files whose digest
+/// disagrees with the index are left out.
 pub fn runnableModels(arena: Allocator, listing: Listing, registry: config.Models) ![]const Runnable {
     var out: std.ArrayList(Runnable) = .empty;
     entries: for (registry.entries) |named| {
@@ -1229,22 +1555,23 @@ pub fn runnableModels(arena: Allocator, listing: Listing, registry: config.Model
         for (listing.missing) |m| if (std.mem.eql(u8, m.name, named.name)) continue :entries;
         const e = named.entry;
         const location = e.path orelse if (e.repo != null and e.file != null) try std.fs.path.join(arena, &.{ e.repo.?, e.file.? }) else continue;
-        const detail = for (listing.catalog) |row| {
-            if (row.kind == .generation and std.mem.eql(u8, row.path, location)) break try catalogueDetail(arena, row);
+        const detail = for (listing.installed) |row| {
+            if (row.artifact != null and row.kind == .generation and std.mem.eql(u8, row.files[0].path, location)) break try installedDetail(arena, row);
         } else std.fs.path.basename(location);
         try out.append(arena, .{ .name = named.name, .detail = detail });
     }
-    for (listing.catalog) |row| {
-        if (row.kind != .generation or registry.find(row.name) != null) continue;
-        if (row.status != .present and row.status != .unverified) continue;
-        try out.append(arena, .{ .name = row.name, .detail = try catalogueDetail(arena, row) });
+    for (listing.installed) |row| {
+        const name = row.artifact orelse continue;
+        if (row.kind != .generation or registry.find(name) != null) continue;
+        if (row.files[0].role != .main or row.files[0].status == .mismatch) continue;
+        try out.append(arena, .{ .name = name, .detail = try installedDetail(arena, row) });
     }
     return out.items;
 }
 
-fn catalogueDetail(arena: Allocator, row: CatalogRow) ![]const u8 {
+fn installedDetail(arena: Allocator, row: Installed) ![]const u8 {
     var size: [16]u8 = undefined;
-    return arena.print("{s} · {s} · {s}", .{ row.architecture, row.quantization, humanSize(&size, row.size) });
+    return arena.print("{s} · {s} · {s}", .{ row.architecture orelse "?", row.quantization, humanSize(&size, row.size) });
 }
 
 fn collect(arena: Allocator, io: std.Io, dir: std.Io.Dir, prefix: []const u8, depth: u8, files: *std.ArrayList(Listed), outside: *usize) !void {
@@ -1279,11 +1606,133 @@ fn collect(arena: Allocator, io: std.Io, dir: std.Io.Dir, prefix: []const u8, de
     }
 }
 
-pub fn ls(gpa: Allocator, io: std.Io, root: []const u8, registry: config.Models, json: bool, out: *std.Io.Writer, sty: style.Style) !void {
+pub fn ls(gpa: Allocator, io: std.Io, root: []const u8, registry: config.Models, default_model: ?[]const u8, options: LsOptions, json: bool, out: *std.Io.Writer, sty: style.Style) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
-    const listing = try list(arena_state.allocator(), io, root, registry);
-    try listing.render(out, json, sty);
+    var listing = try list(arena_state.allocator(), io, root, registry, default_model);
+    if (options.available) {
+        if (!options.all) {
+            var current: std.ArrayList(Available) = .empty;
+            for (listing.index) |a| if (a.status == .current) try current.append(arena_state.allocator(), a);
+            listing.index = current.items;
+        }
+        if (json) {
+            try std.json.Stringify.value(.{ .schema_version = 1, .models_dir = listing.models_dir, .artifacts = listing.index }, .{ .whitespace = .indent_2 }, out);
+            return out.writeByte('\n');
+        }
+    } else listing.index = &.{};
+    try listing.render(out, options, json, sty);
+}
+
+// ---- adopt -----------------------------------------------------------------
+
+pub const AdoptReport = struct {
+    schema_version: u32 = 1,
+    path: []const u8,
+    sidecar: []const u8,
+    size: u64,
+    sha256: []const u8,
+    /// The index artifact and file the digest matched; null for none.
+    artifact: ?[]const u8,
+    role: Role,
+    variant: ?[]const u8,
+    /// The pinned origin, when the digest matched.
+    repo: []const u8,
+    revision: ?[]const u8,
+
+    pub fn render(self: AdoptReport, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+        if (json) {
+            try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
+            return out.writeByte('\n');
+        }
+        const off = sty.off();
+        var size: [16]u8 = undefined;
+        try out.print("{s}adopted{s} {s}{s}{s}  {s}{s}{s}  {s}sha256 {s}{s}\n", .{ sty.on(.success), off, sty.on(.code), self.path, off, sty.on(.number), humanSize(&size, self.size), off, sty.on(.comment), self.sha256[0..12], off });
+        if (self.artifact) |a| {
+            try out.print("  {s}the index's {s}{s}{s} file of {s}{s}{s} from {s} at {s}{s}\n", .{ sty.on(.dim), if (self.variant) |v| v else @tagName(self.role), off, sty.on(.keyword), a, off, sty.on(.dim), self.repo, self.revision.?[0..12], off });
+        } else try out.print("  {s}matches no pinned file: the sidecar keeps its local digest so the file stays identity-stable{s}\n", .{ sty.on(.dim), off });
+    }
+};
+
+/// `model adopt <path>`: hashes a file under `<root>/models`, finds the
+/// index file with that size and SHA-256, and writes its sidecar (role,
+/// variant, origin, `adopted_at`); with no match, a sidecar with the local
+/// digest and no commit. A file that already has a valid sidecar is
+/// refused unless `force`.
+pub fn adopt(gpa: Allocator, io: std.Io, root: []const u8, path: []const u8, force: bool, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const models = try modelsDir(arena, root);
+    const absolute = if (std.fs.path.isAbsolute(path)) try std.fs.path.resolve(arena, &.{path}) else try std.fs.path.resolve(arena, &.{ models, path });
+    if (!inside(models, absolute)) {
+        diag.set("{s} is not under the models directory {s}", .{ path, models });
+        return error.OutsideModelsDirectory;
+    }
+    const relative = absolute[models.len + 1 ..];
+    const repo = repoOf(relative) orelse {
+        diag.set("{s} is outside the <owner>/<repo>/ layout; move it under a repository directory first", .{relative});
+        return error.OutsideModelsDirectory;
+    };
+    if (hf.format(relative) == null) {
+        diag.set("{s} is not a model file (.gguf or .safetensors)", .{relative});
+        return error.NotAModelFile;
+    }
+    const sidecar_path = try sidecarPath(arena, absolute);
+    if (!force) if (readSidecar(arena, io, .cwd(), sidecar_path) catch null) |_| {
+        diag.set("{s} already has a sidecar; pass --force to write it again", .{relative});
+        return error.AlreadyAdopted;
+    };
+    const stat = std.Io.Dir.cwd().statFile(io, absolute, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            diag.set("{s}: no such file", .{relative});
+            return error.FileNotFound;
+        },
+        else => return err,
+    };
+    const digest = try fileDigest(arena, io, absolute);
+    var stamp: [20]u8 = undefined;
+    const adopted_at = rfc3339(&stamp, std.Io.Timestamp.now(io, .real).toSeconds());
+    const match = catalog.findDigest(digest, stat.size);
+    // A file the index pins needs no header; another must at least parse.
+    const header = if (match == null and hf.format(relative) == .gguf) roleFromHeader(gpa, io, absolute) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {
+            diag.set("{s}: not a GGUF file nuclis reads ({s}); nothing written", .{ relative, @errorName(err) });
+            return error.NotAModelFile;
+        },
+    } else null;
+    const role: Role = if (match) |m| m.file.role else header orelse companionRoleOfName(std.fs.path.basename(relative)) orelse .main;
+    const sidecar: Sidecar = if (match) |m| .{
+        .repo = m.artifact.origin(m.file),
+        .file = catalog.Artifact.hubName(m.file),
+        .revision = m.artifact.originRevision(m.file),
+        .sha256 = digest,
+        .size = stat.size,
+        .role = role,
+        .artifact = m.artifact.name,
+        .variant = m.file.variant,
+        .adopted_at = adopted_at,
+        .nuclis_version = version,
+    } else .{ .repo = repo, .file = relative[repo.len + 1 ..], .revision = null, .sha256 = digest, .size = stat.size, .role = role, .adopted_at = adopted_at, .nuclis_version = version };
+    try writeSidecar(arena, io, .cwd(), sidecar_path, sidecar);
+    try (AdoptReport{ .path = relative, .sidecar = sidecar_path, .size = stat.size, .sha256 = digest, .artifact = if (match) |m| m.artifact.name else null, .role = role, .variant = sidecar.variant, .repo = sidecar.repo, .revision = sidecar.revision }).render(out, json, sty);
+}
+
+/// The SHA-256 of a whole file as 64 lowercase hex digits.
+pub fn fileDigest(arena: Allocator, io: std.Io, path: []const u8) ![]const u8 {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    var buffer: [256 * 1024]u8 = undefined;
+    var reader = file.reader(io, &buffer);
+    var hash: std.crypto.hash.sha2.Sha256 = .init(.{});
+    var chunk: [256 * 1024]u8 = undefined;
+    while (true) {
+        const n = try reader.interface.readSliceShort(&chunk);
+        if (n == 0) break;
+        hash.update(chunk[0..n]);
+    }
+    return arena.dupe(u8, &std.fmt.bytesToHex(hash.finalResult(), .lower));
 }
 
 // ---- rm --------------------------------------------------------------------
@@ -1355,7 +1804,7 @@ fn remove(arena: Allocator, io: std.Io, root: []const u8, registry: config.Model
                 diag.set("{s} is now {s}: a speech model's name says CustomVoice or Base", .{ name, now });
                 return error.UnknownModel;
             }
-            diag.set("{s} is not a catalogue name or an entry of the models registry", .{name});
+            diag.set("{s} is not an index name or an entry of the models registry", .{name});
             return error.UnknownModel;
         };
         break :blk try registryFiles(arena, io, models, name, entry, selection, diag);
@@ -1460,10 +1909,7 @@ fn tidy(io: std.Io, models: []const u8, start: []const u8) !void {
 
 fn catalogueNames(arena: Allocator) ![]const []const u8 {
     var names: std.ArrayList([]const u8) = .empty;
-    for (&catalog.entries) |e| try names.append(arena, e.name);
-    for (&catalog.decision_entries) |e| try names.append(arena, e.name);
-    for (&catalog.embedding_entries) |e| try names.append(arena, e.name);
-    for (&catalog.audio_entries) |e| try names.append(arena, e.name);
+    for (&catalog.artifacts) |a| try names.append(arena, a.name);
     return names.items;
 }
 
@@ -1483,40 +1929,23 @@ fn noSuchCompanion(name: []const u8, with: std.EnumSet(Role), has: std.EnumSet(R
     };
 }
 
-/// A catalogue entry's files, main file first: its support files, codec,
-/// and backbone always, its companions as `selection` takes them. Null for
-/// a name the catalogue does not hold.
+/// An index artifact's files, main file first: its support files, codec,
+/// and backbone always, its companions as `selection` takes them (every
+/// draft variant when drafts are taken). Null for a name the index does
+/// not hold.
 fn catalogueFiles(arena: Allocator, io: std.Io, models: []const u8, name: []const u8, selection: Selection, diag: *config.Diagnostic) !?[]const []const u8 {
+    const a = catalog.find(name) orelse return null;
+    var has: std.EnumSet(Role) = .empty;
+    for (a.files) |f| if (!catalog.pulledWith(f.role)) has.insert(f.role);
+    try noSuchCompanion(name, selection.with, has, diag);
     var files: std.ArrayList([]const u8) = .empty;
-    if (catalog.find(name)) |e| {
-        var has: std.EnumSet(Role) = .empty;
-        for (e.companions) |c| has.insert(c.role);
-        try noSuchCompanion(name, selection.with, has, diag);
-        try addFile(arena, &files, models, &.{ e.repo, e.file });
-        for (e.companions) |c| if (selection.takes(c.role)) try addFile(arena, &files, models, &.{ e.repo, c.file });
-    } else if (catalog.findDecision(name)) |d| {
-        try noSuchCompanion(name, selection.with, if (d.mmproj != null) .initOne(.mmproj) else .empty, diag);
-        try addFile(arena, &files, models, &.{ d.repo, d.file });
-        for (d.support) |s| try addFile(arena, &files, models, &.{ d.repo, s });
-        try discoverSupport(arena, io, models, files.items[0], d.repo, &files);
-        if (d.backbone) |b| try addFile(arena, &files, models, &.{ b.repo, b.file });
-        if (d.mmproj) |m| if (selection.takes(.mmproj)) try addFile(arena, &files, models, &.{ m.repo, m.file });
-    } else if (catalog.findEmbedding(name)) |e| {
-        try noSuchCompanion(name, selection.with, if (e.mmproj != null) .initOne(.mmproj) else .empty, diag);
-        try addFile(arena, &files, models, &.{ e.repo, e.file });
-        if (e.mmproj) |m| if (selection.takes(.mmproj)) try addFile(arena, &files, models, &.{ m.repo, m.file });
-    } else if (catalog.findAudio(name)) |a| {
-        try noSuchCompanion(name, selection.with, .empty, diag);
-        try addFile(arena, &files, models, &.{ a.repo, a.file });
-        for (a.support) |s| try addFile(arena, &files, models, &.{ a.repo, s });
-        try discoverSupport(arena, io, models, files.items[0], a.repo, &files);
-        if (a.codec) |c| {
-            const first = files.items.len;
-            try addFile(arena, &files, models, &.{ c.repo, c.file });
-            for (a.codec_support) |s| try addFile(arena, &files, models, &.{ c.repo, s });
-            try discoverSupport(arena, io, models, files.items[first], c.repo, &files);
-        }
-    } else return null;
+    for (a.files) |*f| {
+        if (!catalog.pulledWith(f.role) and !selection.takes(f.role)) continue;
+        const first = files.items.len;
+        try addFile(arena, &files, models, &.{ a.directoryOf(f), f.path });
+        for (f.support) |support| try addFile(arena, &files, models, &.{ a.directoryOf(f), support });
+        if (f.support.len > 0 or hf.format(f.path) == .safetensors) try discoverSupport(arena, io, models, files.items[first], a.origin(f), &files);
+    }
     return files.items;
 }
 
@@ -1527,7 +1956,7 @@ fn catalogueFiles(arena: Allocator, io: std.Io, models: []const u8, name: []cons
 fn registryFiles(arena: Allocator, io: std.Io, models: []const u8, name: []const u8, entry: *const config.ModelEntry, selection: Selection, diag: *config.Diagnostic) ![]const []const u8 {
     var has: std.EnumSet(Role) = .empty;
     if (entry.mmproj != null) has.insert(.mmproj);
-    if (entry.mtp != null) has.insert(.mtp);
+    if (entry.draft != null) has.insert(.draft);
     try noSuchCompanion(name, selection.with, has, diag);
     var files: std.ArrayList([]const u8) = .empty;
     if (entry.path) |p| {
@@ -1541,7 +1970,7 @@ fn registryFiles(arena: Allocator, io: std.Io, models: []const u8, name: []const
         if (entry.repo orelse if (recorded) |r| r.repo else null) |repo| try discoverSupport(arena, io, models, main, repo, &files);
     }
     const dir = std.fs.path.dirname(main).?;
-    for ([_]struct { role: Role, file: ?[]const u8 }{ .{ .role = .mmproj, .file = entry.mmproj }, .{ .role = .mtp, .file = entry.mtp } }) |c| {
+    for ([_]struct { role: Role, file: ?[]const u8 }{ .{ .role = .mmproj, .file = entry.mmproj }, .{ .role = .draft, .file = entry.draft } }) |c| {
         const file = c.file orelse continue;
         if (selection.takes(c.role)) try addFile(arena, &files, models, &.{ dir, file });
     }
@@ -1558,13 +1987,11 @@ fn discoverSupport(arena: Allocator, io: std.Io, models: []const u8, weights: []
         else => return err,
     };
     defer dir.close(io);
-    // The catalogue's checkpoint directories, which may nest in this one.
+    // The index's checkpoint directories, which may nest in this one.
     var foreign: std.ArrayList([]const u8) = .empty;
-    for (&catalog.decision_entries) |d| try addFile(arena, &foreign, models, &.{ d.repo, std.fs.path.dirnamePosix(d.file) orelse "" });
-    for (&catalog.audio_entries) |a| {
-        try addFile(arena, &foreign, models, &.{ a.repo, std.fs.path.dirnamePosix(a.file) orelse "" });
-        if (a.codec) |c| try addFile(arena, &foreign, models, &.{ c.repo, std.fs.path.dirnamePosix(c.file) orelse "" });
-    }
+    for (&catalog.artifacts) |*a| for (a.files) |*f| if (hf.format(f.path) == .safetensors) {
+        try addFile(arena, &foreign, models, &.{ a.directoryOf(f), std.fs.path.dirnamePosix(f.path) orelse "" });
+    };
     try walkSupport(arena, io, dir, path, 0, repo, foreign.items, files);
 }
 
@@ -1670,24 +2097,16 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
     const entry = catalog.find(options.repo);
     if (entry) |e| {
         if (options.file != null or options.revision != null) {
-            diag.set("{s} is a catalogue name and pins its file and commit; inspect by repository id ({s}) to choose another", .{ e.name, e.repo });
+            diag.set("{s} is an index name and pins its file and commit; inspect by repository id ({s}) to choose another", .{ e.name, e.repo });
             return error.ConflictingOptions;
         }
-        request = .{ .repo_id = e.repo, .revision = e.revision, .filename = e.file };
-    }
-    const audio = catalog.findAudio(options.repo);
-    if (audio) |a| {
-        if (options.file != null or options.revision != null) {
-            diag.set("{s} is a catalogue name and pins its file and commit; inspect by repository id ({s}) to choose another", .{ a.name, a.repo });
-            return error.ConflictingOptions;
-        }
-        request = .{ .repo_id = a.repo, .revision = a.revision, .filename = a.file };
+        request = .{ .repo_id = e.repo, .revision = e.revision, .filename = e.main().path };
     }
     var remote = client.list(request) catch |err| return listFailure(err, arena, client, request, options.repo, diag);
     defer remote.deinit();
     // A safetensors checkpoint has no directory to read remotely: the
-    // verdict is the catalogue's digest against the Hub's.
-    if (audio) |a| return renderInspect(out, try audioReport(arena, a, &remote), json, sty);
+    // verdict is the index's digests against the Hub's.
+    if (entry) |e| if (hf.format(e.main().path) == .safetensors) return renderInspect(out, try checkpointReport(arena, e, &remote), json, sty);
     const selected = (hf.select(arena, &remote, request.filename) catch |err| return hubFailure(err, options.repo, diag)) orelse {
         try renderSelection(out, .{ .repo = options.repo, .revision = &remote.revision, .selection_required = try choices(arena, remote.files) }, json, sty);
         try out.flush();
@@ -1716,24 +2135,25 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
     try renderInspect(out, report, json, sty);
 }
 
-/// `inspect` of a speech or transcription entry, from the Hub's listing at
-/// the pinned commit: supported when the weights (and a speech model's
-/// codec) carry the catalogue's digests.
-fn audioReport(arena: Allocator, a: *const catalog.AudioEntry, remote: *const hf.Catalog) !InspectReport {
+/// `inspect` of a safetensors checkpoint, from the Hub's listing at the
+/// pinned commit: supported when the weights (and the files of its own
+/// repository pulled with them) carry the index's digests.
+fn checkpointReport(arena: Allocator, a: *const catalog.Artifact, remote: *const hf.Catalog) !InspectReport {
+    const main_file = a.main();
     const weights = for (remote.files) |f| {
-        if (std.mem.eql(u8, f.name, a.file)) break f;
+        if (std.mem.eql(u8, f.name, main_file.path)) break f;
     } else return error.FileNotFound;
     const digest = try hexOrNull(arena, weights.sha256) orelse "";
-    var verdict: Verdict = .{ .status = .supported, .catalog = a.name, .role = .main, .reason = try arena.print("pinned by the catalogue: a {s} checkpoint (safetensors, {s}) that `{s}` runs; `nuclis model pull {s}` fetches it with its support files{s}", .{ catalog.kindName(a.kind), a.quantization, catalog.command(a.kind), a.name, if (a.codec != null) " and its codec" else "" }) };
-    var mismatch: ?[]const u8 = if (!std.mem.eql(u8, digest, a.sha256)) a.file else null;
-    if (a.codec) |c| for (remote.files) |f| if (std.mem.eql(u8, f.name, c.file)) {
-        if (!std.mem.eql(u8, try hexOrNull(arena, f.sha256) orelse "", c.sha256)) mismatch = c.file;
+    var verdict: Verdict = .{ .status = .supported, .catalog = a.name, .role = .main, .reason = try arena.print("pinned by the index: a {s} checkpoint (safetensors, {s}) that `{s}` runs; `nuclis model pull {s}` fetches it with its support files{s}", .{ catalog.kindName(a.kind), a.quantization, catalog.command(a.kind), a.name, if (a.companion(.codec) != null) " and its codec" else "" }) };
+    var mismatch: ?[]const u8 = if (!std.mem.eql(u8, digest, main_file.sha256)) main_file.path else null;
+    for (a.files[1..]) |*c| if (c.repo == null) for (remote.files) |f| if (std.mem.eql(u8, f.name, c.path)) {
+        if (!std.mem.eql(u8, try hexOrNull(arena, f.sha256) orelse "", c.sha256)) mismatch = c.path;
     };
-    if (mismatch) |file| verdict = .{ .status = .not_runnable, .reason = try arena.print("{s}: the Hub's digest at the pinned commit is not the catalogue's; the catalogue entry needs updating", .{file}) };
+    if (mismatch) |file| verdict = .{ .status = .not_runnable, .reason = try arena.print("{s}: the Hub's digest at the pinned commit is not the index's; the index entry needs updating", .{file}) };
     return finish(.{
         .name = a.name,
         .repo = a.repo,
-        .file = a.file,
+        .file = main_file.path,
         .requested_revision = a.revision,
         .revision = try arena.dupe(u8, &remote.revision),
         .size = weights.size,
@@ -1819,14 +2239,14 @@ fn encodingLabel(arena: Allocator, encoding_id: u32) ![]const u8 {
 /// binding; supported adds the catalogue pinning the Hub's digest.
 fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, id: Identity) !Verdict {
     const pinned = catalog.findFile(id.repo, id.file);
-    const in_catalog = pinned != null and std.mem.eql(u8, pinned.?.sha256, id.sha256);
+    const in_catalog = pinned != null and std.mem.eql(u8, pinned.?.file.sha256, id.sha256);
     const architecture = doc.string("general.architecture") orelse "";
     const adapter = inference.models.adapterFor(architecture) orelse {
-        if (in_catalog and pinned.?.role != .main) return .{
+        if (in_catalog and pinned.?.file.role != .main) return .{
             .status = .not_runnable,
-            .catalog = pinned.?.entry.name,
-            .role = pinned.?.role,
-            .reason = try arena.print("the {s} companion of catalogue entry {s} (loaded for {s}, not by the text engine); architecture \"{s}\" has no adapter", .{ @tagName(pinned.?.role), pinned.?.entry.name, pinned.?.used_for.?, architecture }),
+            .catalog = pinned.?.artifact.name,
+            .role = pinned.?.file.role,
+            .reason = try arena.print("the {s} companion of index entry {s} (loaded for {s}, not by the text engine); architecture \"{s}\" has no adapter", .{ @tagName(pinned.?.file.role), pinned.?.artifact.name, pinned.?.file.used_for, architecture }),
         };
         return .{
             .status = .not_runnable,
@@ -1846,18 +2266,18 @@ fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, 
         error.OutOfMemory => return err,
         else => return .{ .status = .not_runnable, .reason = try arena.print("the {s} adapter rejects the file: {s}", .{ @tagName(adapter), @errorName(err) }) },
     };
-    if (in_catalog and pinned.?.role == .main) return .{
+    if (in_catalog and pinned.?.file.role == .main) return .{
         .status = .supported,
-        .catalog = pinned.?.entry.name,
+        .catalog = pinned.?.artifact.name,
         .role = .main,
-        .reason = try arena.print("catalogue entry {s}: the Hub's digest at this commit equals the pinned one, and the {s} adapter binds it", .{ pinned.?.entry.name, @tagName(adapter) }),
+        .reason = try arena.print("index entry {s}: the Hub's digest at this commit equals the pinned one, and the {s} adapter binds it", .{ pinned.?.artifact.name, @tagName(adapter) }),
     };
     return .{
         .status = .runnable,
         .reason = if (pinned != null)
-            try arena.print("the {s} adapter binds it; the catalogue pins another digest for this file (entry {s})", .{ @tagName(adapter), pinned.?.entry.name })
+            try arena.print("the {s} adapter binds it; the index pins another digest for this file (entry {s})", .{ @tagName(adapter), pinned.?.artifact.name })
         else
-            try arena.print("the {s} adapter binds it; not in the catalogue", .{@tagName(adapter)}),
+            try arena.print("the {s} adapter binds it; not in the index", .{@tagName(adapter)}),
     };
 }
 
@@ -1935,7 +2355,7 @@ test "rfc3339 renders UTC from Unix seconds" {
 
 test "the header wins over the flag, a contradiction is an error, main is the default" {
     try std.testing.expectEqual(Role.main, try resolveRole(null, null));
-    try std.testing.expectEqual(Role.mtp, try resolveRole(null, .mtp));
+    try std.testing.expectEqual(Role.draft, try resolveRole(null, .draft));
     try std.testing.expectEqual(Role.imatrix, try resolveRole(.imatrix, null));
     try std.testing.expectEqual(Role.mmproj, try resolveRole(.mmproj, .mmproj));
     try std.testing.expectError(error.RoleMismatch, resolveRole(.imatrix, .main));
@@ -1958,18 +2378,22 @@ test "sidecar round trip, absence, and rejection of what nuclis did not write" {
         .revision = "0123456789abcdef0123456789abcdef01234567",
         .sha256 = "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
         .size = 16,
-        .role = .mtp,
+        .role = .draft,
+        .artifact = "qwen3.8-27b",
+        .variant = "mtp",
         .downloaded_at = "2026-09-11T00:00:00Z",
         .nuclis_version = version,
     };
     try writeSidecar(arena, io, tmp.dir, name, written);
     const read = (try readSidecar(arena, io, tmp.dir, name)).?;
     try std.testing.expectEqualStrings(written.repo, read.repo);
-    try std.testing.expectEqualStrings(written.revision, read.revision);
+    try std.testing.expectEqualStrings(written.revision.?, read.revision.?);
     try std.testing.expectEqualStrings(written.sha256, read.sha256);
     try std.testing.expectEqual(written.size, read.size);
-    try std.testing.expectEqual(Role.mtp, read.role);
-    try std.testing.expectEqualStrings(written.downloaded_at, read.downloaded_at);
+    try std.testing.expectEqual(Role.draft, read.role);
+    try std.testing.expectEqualStrings("mtp", read.variant.?);
+    try std.testing.expectEqualStrings("qwen3.8-27b", read.artifact.?);
+    try std.testing.expectEqualStrings(written.downloaded_at.?, read.downloaded_at.?);
     try std.testing.expect(read.git_blob == null);
     // A plain git file records its blob id; a sidecar without the field
     // (every one written before it existed) reads as null.
@@ -1984,7 +2408,21 @@ test "sidecar round trip, absence, and rejection of what nuclis did not write" {
     var again = written;
     again.revision = "89abcdef0123456789abcdef0123456789abcdef";
     try writeSidecar(arena, io, tmp.dir, name, again);
-    try std.testing.expectEqualStrings(again.revision, (try readSidecar(arena, io, tmp.dir, name)).?.revision);
+    try std.testing.expectEqualStrings(again.revision.?, (try readSidecar(arena, io, tmp.dir, name)).?.revision.?);
+    // A schema 1 sidecar still reads, its `mtp` role as `draft`.
+    try tmp.dir.writeFile(io, .{ .sub_path = name, .data = "{\"schema_version\":1,\"repo\":\"a/b\",\"file\":\"m\",\"revision\":\"0123456789abcdef0123456789abcdef01234567\",\"sha256\":\"322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482\",\"size\":1,\"role\":\"mtp\",\"downloaded_at\":\"2026-09-11T00:00:00Z\",\"nuclis_version\":\"0.1.0\"}" });
+    const old = (try readSidecar(arena, io, tmp.dir, name)).?;
+    try std.testing.expectEqual(Role.draft, old.role);
+    try std.testing.expect(old.variant == null and old.adopted_at == null);
+    // An adopted file nuclis could not match has no commit.
+    var adopted = written;
+    adopted.revision = null;
+    adopted.downloaded_at = null;
+    adopted.adopted_at = "2026-11-12T00:00:00Z";
+    try writeSidecar(arena, io, tmp.dir, name, adopted);
+    const adopted_read = (try readSidecar(arena, io, tmp.dir, name)).?;
+    try std.testing.expect(adopted_read.revision == null and adopted_read.downloaded_at == null);
+    try std.testing.expectEqualStrings("-", adopted_read.shortRevision());
     // Not ours: a short commit, an unknown key, a truncated file.
     try tmp.dir.writeFile(io, .{ .sub_path = name, .data = "{\"schema_version\":1,\"repo\":\"a/b\",\"file\":\"m\",\"revision\":\"abc\",\"sha256\":\"\",\"size\":1,\"role\":\"main\",\"downloaded_at\":\"\",\"nuclis_version\":\"\"}" });
     try std.testing.expectError(error.InvalidSidecar, readSidecar(arena, io, tmp.dir, name));
@@ -2025,7 +2463,7 @@ test "selection and pull reports render the same values in both forms" {
     try std.testing.expectEqualStrings("main", parsed_pull.value.object.get("files").?.array.items[0].object.get("role").?.string);
 }
 
-test "ls reports the catalogue from sidecars, then the other files in the layout" {
+test "ls lists what is installed, grouped by kind, with the index one flag away" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
@@ -2035,42 +2473,36 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    // Absent directory: the catalogue is absent, nothing else, nothing created.
-    const empty = try list(arena, io, root, .{});
-    try std.testing.expectEqual(catalog.entries.len + catalog.decision_entries.len + catalog.embedding_entries.len + catalog.audio_entries.len, empty.catalog.len);
-    try std.testing.expectEqual(catalog.Status.absent, empty.catalog[0].status);
-    // The speech and transcription entries come last, a voice's codec
-    // beneath it; the embedding entries before them, their projector beneath.
-    const voice = empty.catalog[empty.catalog.len - catalog.audio_entries.len];
-    try std.testing.expectEqual(catalog.ModelKind.speech, voice.kind);
-    try std.testing.expectEqualStrings("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/model.safetensors", voice.path);
-    try std.testing.expectEqual(Role.codec, voice.companions[0].role);
-    try std.testing.expectEqualStrings("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/speech_tokenizer/model.safetensors", voice.companions[0].path);
-    const ears = empty.catalog[empty.catalog.len - 1];
-    try std.testing.expectEqual(catalog.ModelKind.transcription, ears.kind);
-    try std.testing.expectEqual(@as(usize, 0), ears.companions.len);
-    const vectors = empty.catalog[empty.catalog.len - catalog.audio_entries.len - 1];
-    try std.testing.expectEqual(catalog.ModelKind.embedding, vectors.kind);
-    try std.testing.expectEqualStrings("unsloth/embeddinggemma-2-GGUF/embeddinggemma-2-Q8_0.gguf", vectors.path);
-    try std.testing.expectEqual(Role.mmproj, vectors.companions[0].role);
-    try std.testing.expectEqual(@as(usize, 0), empty.other.len);
+    // Absent directory: nothing installed, the whole index available, nothing created.
+    const empty = try list(arena, io, root, .{}, null);
+    try std.testing.expectEqual(@as(usize, 0), empty.installed.len);
+    try std.testing.expectEqual(catalog.artifacts.len, empty.index.len);
+    var current: usize = 0;
+    for (&catalog.artifacts) |*a| current += @intFromBool(a.status == .current);
+    try std.testing.expectEqual(current, empty.available);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "models", .{}));
     const qwen = catalog.find("qwen3.8-27b").?;
-    try tmp.dir.createDirPath(io, "models/unsloth/Qwen3.8-27B-GGUF/MTP");
+    const q = "models/unsloth/Qwen3.8-27B-GGUF/";
+    try tmp.dir.createDirPath(io, q ++ "MTP");
     try tmp.dir.createDirPath(io, "models/unsloth/Repo-GGUF/MTP");
+    try tmp.dir.createDirPath(io, "models/other/Loose-GGUF");
     try tmp.dir.createDirPath(io, "models/qwen");
-    // The pinned main file with a matching sidecar, the MTP head with a wrong one.
-    try tmp.dir.writeFile(io, .{ .sub_path = "models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf", .data = "GGUF" });
-    try writeSidecar(arena, io, tmp.dir, "models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf.nuclis.json", .{ .repo = qwen.repo, .file = qwen.file, .revision = qwen.revision, .sha256 = qwen.sha256, .size = qwen.size, .role = .main, .downloaded_at = "2026-09-11T00:00:00Z", .nuclis_version = version });
-    try tmp.dir.writeFile(io, .{ .sub_path = "models/unsloth/Qwen3.8-27B-GGUF/MTP/mtp-Qwen3.8-27B-Q4_0.gguf", .data = "GGUF" });
-    try writeSidecar(arena, io, tmp.dir, "models/unsloth/Qwen3.8-27B-GGUF/MTP/mtp-Qwen3.8-27B-Q4_0.gguf.nuclis.json", .{ .repo = qwen.repo, .file = "MTP/mtp-Qwen3.8-27B-Q4_0.gguf", .revision = qwen.revision, .sha256 = "0000000000000000000000000000000000000000000000000000000000000000", .size = 4, .role = .mtp, .downloaded_at = "2026-09-11T00:00:00Z", .nuclis_version = version });
-    // Files outside the catalogue: one with a sidecar, one without, two above the layout.
+    // The pinned main file with a matching sidecar, the MTP head with a
+    // wrong one, the DFlash2 drafter placed by hand (no sidecar).
+    try tmp.dir.writeFile(io, .{ .sub_path = q ++ "Qwen3.8-27B-UD-Q4_K_M.gguf", .data = "GGUF" });
+    try writeSidecar(arena, io, tmp.dir, q ++ "Qwen3.8-27B-UD-Q4_K_M.gguf.nuclis.json", .{ .repo = qwen.repo, .file = qwen.main().path, .revision = qwen.revision, .sha256 = qwen.main().sha256, .size = qwen.main().size, .role = .main, .artifact = qwen.name, .downloaded_at = "2026-09-11T00:00:00Z", .nuclis_version = version });
+    try tmp.dir.writeFile(io, .{ .sub_path = q ++ "MTP/mtp-Qwen3.8-27B-Q4_0.gguf", .data = "GGUF" });
+    try writeSidecar(arena, io, tmp.dir, q ++ "MTP/mtp-Qwen3.8-27B-Q4_0.gguf.nuclis.json", .{ .repo = qwen.repo, .file = "MTP/mtp-Qwen3.8-27B-Q4_0.gguf", .revision = qwen.revision, .sha256 = "0000000000000000000000000000000000000000000000000000000000000000", .size = 4, .role = .draft, .downloaded_at = "2026-09-11T00:00:00Z", .nuclis_version = version });
+    try tmp.dir.writeFile(io, .{ .sub_path = q ++ "MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", .data = "GGUF" });
+    // Outside the index: a main file with a sidecar and its drafter beside
+    // it, a loose file, a safetensors set of no known layout, two above the layout.
     try tmp.dir.writeFile(io, .{ .sub_path = "models/unsloth/Repo-GGUF/Repo-Q4.gguf", .data = "GGUFxxxx" });
     try tmp.dir.writeFile(io, .{ .sub_path = "models/unsloth/Repo-GGUF/README.md", .data = "not listed" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "models/unsloth/Repo-GGUF/MTP/mtp-Repo.gguf", .data = "GGUF" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "models/other/Loose-GGUF/Loose-Q8_0.gguf", .data = "GGUF" });
     try tmp.dir.createDirPath(io, "models/acme/encoder/tokenizer");
     try tmp.dir.writeFile(io, .{ .sub_path = "models/acme/encoder/model.safetensors", .data = "\x02\x00\x00\x00\x00\x00\x00\x00{}" });
     try tmp.dir.writeFile(io, .{ .sub_path = "models/acme/encoder/tokenizer/tokenizer.json", .data = "{}" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "models/unsloth/Repo-GGUF/MTP/mtp-Repo.gguf", .data = "GGUF" });
     try tmp.dir.writeFile(io, .{ .sub_path = "models/qwen/old-layout.gguf", .data = "GGUF" });
     try tmp.dir.writeFile(io, .{ .sub_path = "models/stray.gguf", .data = "GGUF" });
     try writeSidecar(arena, io, tmp.dir, "models/unsloth/Repo-GGUF/Repo-Q4.gguf.nuclis.json", .{
@@ -2084,109 +2516,119 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
         .nuclis_version = version,
     });
     // The registry: an entry naming the other repository's file with a
-    // forced profile, the catalogue's own name (not repeated), a second
-    // name for the catalogue file, one whose file is absent, and a path.
+    // forced profile, the index's own name, a second name for the index
+    // file, one whose file is absent, and a path.
     const entries = [_]config.NamedModel{
         .{ .name = "repo", .entry = .{ .repo = "unsloth/Repo-GGUF", .file = "Repo-Q4.gguf", .profile = .gemma4 } },
-        .{ .name = "qwen3.8-27b", .entry = .{ .repo = qwen.repo, .file = qwen.file } },
-        .{ .name = "big", .entry = .{ .repo = qwen.repo, .file = qwen.file } },
+        .{ .name = "qwen3.8-27b", .entry = .{ .repo = qwen.repo, .file = qwen.main().path } },
+        .{ .name = "big", .entry = .{ .repo = qwen.repo, .file = qwen.main().path } },
         .{ .name = "gone", .entry = .{ .repo = "unsloth/Gone-GGUF", .file = "gone.gguf" } },
-        .{ .name = "local", .entry = .{ .path = "unsloth/Repo-GGUF/MTP/mtp-Repo.gguf" } },
+        .{ .name = "local", .entry = .{ .path = "other/Loose-GGUF/Loose-Q8_0.gguf" } },
     };
-    const listing = try list(arena, io, root, .{ .entries = &entries });
+    const listing = try list(arena, io, root, .{ .entries = &entries }, "qwen3.8-27b");
+    // Chat first, in name order (the registry names the files outside the
+    // index), then what nothing says runs.
+    try std.testing.expectEqual(@as(usize, 4), listing.installed.len);
+    const names = [_][]const u8{ "local", "qwen3.8-27b", "repo", "acme/encoder" };
+    for (names, listing.installed) |name, row| try std.testing.expectEqualStrings(name, row.name);
+    const row = listing.find("qwen3.8-27b").?;
+    try std.testing.expect(row.default and row.kind == .generation and row.artifact != null);
+    try std.testing.expectEqualStrings("big", row.registered.?.name);
+    // The present files only: the projector is not pulled.
+    try std.testing.expectEqual(@as(usize, 3), row.files.len);
+    try std.testing.expectEqual(catalog.Status.present, row.files[0].status);
+    try std.testing.expectEqualStrings("mtp", row.files[1].variant.?);
+    try std.testing.expectEqual(catalog.Status.mismatch, row.files[1].status);
+    try std.testing.expectEqualStrings("unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", row.files[2].path);
+    try std.testing.expectEqual(catalog.Status.unverified, row.files[2].status);
+    try std.testing.expectEqual(@as(u64, 12), row.size);
+    const repo = listing.find("repo").?;
+    try std.testing.expect(repo.artifact == null and repo.kind == .generation);
+    try std.testing.expectEqual(.gemma4, repo.registered.?.profile.?);
+    // A drafter beside a main file outside the index is its companion.
+    try std.testing.expectEqual(@as(usize, 2), repo.files.len);
+    try std.testing.expectEqual(Role.draft, repo.files[1].role);
+    try std.testing.expectEqualStrings("0123456789abcdef0123456789abcdef01234567", repo.files[0].revision.?);
+    const other = listing.find("acme/encoder").?;
+    try std.testing.expect(other.kind == null and !other.runnable);
+    try std.testing.expectEqual(@as(usize, 1), listing.missing.len);
+    try std.testing.expectEqualStrings("gone", listing.missing[0].name);
+    try std.testing.expectEqualStrings("unsloth/Gone-GGUF/gone.gguf", listing.missing[0].path);
+    try std.testing.expectEqual(@as(usize, 2), listing.outside_layout);
+    // Every model file without a sidecar, the index's hand-placed drafter included.
+    try std.testing.expectEqual(@as(usize, 4), listing.without_sidecar.len);
+    try std.testing.expectEqual(current - 1, listing.available);
     // What `/model` offers: the entries whose file is present, in the file's
-    // order, then catalogue names no entry shadows (none here: the one
-    // present catalogue file is registered under its own name too).
+    // order, then index names no entry shadows (none here: the one present
+    // index model is registered under its own name too).
     const offered = try runnableModels(arena, listing, .{ .entries = &entries });
     try std.testing.expectEqual(@as(usize, 4), offered.len);
     try std.testing.expectEqualStrings("repo", offered[0].name);
     try std.testing.expectEqualStrings("Repo-Q4.gguf", offered[0].detail);
     try std.testing.expectEqualStrings("qwen3.8-27b", offered[1].name);
-    try std.testing.expectEqualStrings("qwen35 · UD-Q4_K_M · 16.46 GB", offered[1].detail);
+    try std.testing.expectEqualStrings("qwen35 · UD-Q4_K_M · 12 B", offered[1].detail);
     try std.testing.expectEqualStrings("big", offered[2].name);
     try std.testing.expectEqualStrings("local", offered[3].name);
-    // Without the registry, the present catalogue file is offered by name.
-    const bare = try runnableModels(arena, try list(arena, io, root, .{}), .{});
+    // Without the registry, the present index model is offered by name.
+    const bare = try runnableModels(arena, try list(arena, io, root, .{}, null), .{});
     try std.testing.expectEqual(@as(usize, 1), bare.len);
     try std.testing.expectEqualStrings("qwen3.8-27b", bare[0].name);
     // An embedding entry is never offered to the text engine.
     const embedding_only = [_]config.NamedModel{.{ .name = "vectors", .entry = .{ .kind = .embedding, .path = "unsloth/Repo-GGUF/Repo-Q4.gguf" } }};
-    const without = try runnableModels(arena, try list(arena, io, root, .{ .entries = &embedding_only }), .{ .entries = &embedding_only });
+    const without = try runnableModels(arena, try list(arena, io, root, .{ .entries = &embedding_only }, null), .{ .entries = &embedding_only });
     try std.testing.expectEqual(@as(usize, 1), without.len);
     try std.testing.expectEqualStrings("qwen3.8-27b", without[0].name);
-    try std.testing.expectEqualStrings("big", listing.catalog[0].registered.?.name);
-    try std.testing.expect(listing.catalog[0].registered.?.profile == null);
-    try std.testing.expectEqualStrings("local", listing.other[1].registered.?.name);
-    try std.testing.expectEqualStrings("repo", listing.other[2].registered.?.name);
-    try std.testing.expectEqual(.gemma4, listing.other[2].registered.?.profile.?);
-    try std.testing.expectEqual(@as(usize, 1), listing.missing.len);
-    try std.testing.expectEqualStrings("gone", listing.missing[0].name);
-    try std.testing.expectEqualStrings("unsloth/Gone-GGUF/gone.gguf", listing.missing[0].path);
-    const row = listing.catalog[0];
-    try std.testing.expectEqualStrings("qwen3.8-27b", row.name);
-    try std.testing.expectEqual(catalog.Status.present, row.status);
-    try std.testing.expectEqualStrings("unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf", row.path);
-    try std.testing.expectEqual(catalog.Status.absent, row.companions[0].status);
-    try std.testing.expectEqual(Role.mtp, row.companions[1].role);
-    try std.testing.expectEqual(catalog.Status.mismatch, row.companions[1].status);
-    // Weights of either format are rows; a safetensors set's support files are not.
-    try std.testing.expectEqual(@as(usize, 3), listing.other.len);
-    try std.testing.expectEqual(@as(usize, 2), listing.outside_layout);
-    try std.testing.expectEqualStrings("acme/encoder/model.safetensors", listing.other[0].path);
-    // The decision catalogue follows the text models, absent here.
-    const laya = listing.catalog[catalog.entries.len];
-    try std.testing.expectEqualStrings("laya", laya.name);
-    try std.testing.expectEqual(catalog.ModelKind.decision, laya.kind);
-    try std.testing.expectEqual(catalog.Status.absent, laya.status);
-    try std.testing.expectEqualStrings("convaiinnovations/laya/model.safetensors", laya.path);
-    try std.testing.expectEqualStrings("unsloth/Repo-GGUF/MTP/mtp-Repo.gguf", listing.other[1].path);
-    try std.testing.expect(listing.other[1].sidecar == null);
-    try std.testing.expectEqualStrings("unsloth/Repo-GGUF/Repo-Q4.gguf", listing.other[2].path);
-    try std.testing.expectEqual(@as(u64, 8), listing.other[2].size);
-    try std.testing.expectEqualStrings("0123456789abcdef0123456789abcdef01234567", listing.other[2].sidecar.?.revision);
+
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
-    try listing.render(&out.writer, false, .none);
-    // The column width comes from the catalogue's widest name, so the
-    // assertion is on the two parts rather than the spacing between them.
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "qwen3.8-27b ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), " present") != null);
-    // The role, status, and path columns line up under the main row's:
-    // the role cell is the name column less its two-cell indent, and the
-    // detail rows start at the path column.
-    const indent = try alloc.alloc(u8, 2 + catalog.name_width + 1 + 10 + 1);
-    defer alloc.free(indent);
-    @memset(indent, ' ');
-    const role_row = try alloc.print("    mtp{s}mismatch   unsloth/Qwen3.8-27B-GGUF/MTP/mtp-Qwen3.8-27B-Q4_0.gguf", .{indent[0 .. catalog.name_width - 2 - 3 + 1]});
-    defer alloc.free(role_row);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), role_row) != null);
-    const detail = try alloc.print("\n{s} 16.46 GB  qwen35 UD-Q4_K_M  commit 4ca720788d1e", .{indent});
-    defer alloc.free(detail);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), detail) != null);
-    const big = try alloc.print("\n{s}registered as big\n", .{indent});
-    defer alloc.free(big);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), big) != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "for image input") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "no sidecar") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "main     0123456789ab  322e194f") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "2 model file(s) outside") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n    registered as repo (profile gemma4 forced)\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "registry entries without a file") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "  gone unsloth/Gone-GGUF/gone.gguf\n") != null);
+    try listing.render(&out.writer, .{}, false, .none);
+    const text = out.written();
+    try std.testing.expect(std.mem.indexOf(u8, text, "\nchat\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\nother\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "+draft:mtp,dflash2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "registered as big  default\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "+draft  not in the index") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "not in the index  not runnable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "its sidecar records other content than the index pins") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "registry entries without a file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "  gone unsloth/Gone-GGUF/gone.gguf\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "4 files without a sidecar: nuclis model adopt <path>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "more in the index: nuclis model ls --available") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "2 model file(s) outside") != null);
+    // No digest without -l; with it, 12 characters of each and the defaults.
+    try std.testing.expect(std.mem.indexOf(u8, text, "322e194ff797") == null);
     out.clearRetainingCapacity();
-    try listing.render(&out.writer, true, .none);
+    try listing.render(&out.writer, .{ .long = true }, false, .none);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "commit 4ca720788d1e  sha256 322e194ff797  unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "draft:dflash2  commit -             sha256 -             unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf  unverified\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "runs with: speculative on (draft mtp, length 7), think low, thinking budget 1024, profile qwen38\n") != null);
+    out.clearRetainingCapacity();
+    try listing.render(&out.writer, .{}, true, .none);
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
     defer parsed.deinit();
-    const rows = parsed.value.object.get("catalog").?.array.items;
-    try std.testing.expectEqualStrings("present", rows[0].object.get("status").?.string);
-    try std.testing.expectEqualStrings("mismatch", rows[0].object.get("companions").?.array.items[1].object.get("status").?.string);
-    const files = parsed.value.object.get("other").?.array.items;
-    try std.testing.expectEqual(@as(usize, 3), files.len);
-    try std.testing.expect(files[1].object.get("sidecar").? == .null);
-    try std.testing.expectEqualStrings("main", files[2].object.get("sidecar").?.object.get("role").?.string);
-    try std.testing.expectEqual(@as(i64, 2), parsed.value.object.get("outside_layout").?.integer);
-    try std.testing.expectEqualStrings("repo", files[2].object.get("registered").?.object.get("name").?.string);
+    try std.testing.expectEqual(@as(i64, 7), parsed.value.object.get("schema_version").?.integer);
+    const rows = parsed.value.object.get("installed").?.array.items;
+    try std.testing.expectEqualStrings("qwen3.8-27b", rows[1].object.get("name").?.string);
+    // The JSON keeps whole digests.
+    try std.testing.expectEqualStrings(qwen.main().sha256, rows[1].object.get("files").?.array.items[0].object.get("sha256").?.string);
     try std.testing.expectEqualStrings("gone", parsed.value.object.get("missing").?.array.items[0].object.get("name").?.string);
+
+    // The index view: current artifacts by kind, installed ones marked, legacy behind --all.
+    out.clearRetainingCapacity();
+    try ls(alloc, io, root, .{}, null, .{ .available = true }, false, &out.writer, .none);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "qwen3.8-27b ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "installed\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "gemma-4-12b-qat") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "legacy artifact(s) hidden") != null);
+    out.clearRetainingCapacity();
+    try ls(alloc, io, root, .{}, null, .{ .available = true, .all = true, .long = true }, false, &out.writer, .none);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "gemma-4-12b-qat") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf") != null);
+    out.clearRetainingCapacity();
+    try ls(alloc, io, root, .{}, null, .{ .available = true }, true, &out.writer, .none);
+    const index = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
+    defer index.deinit();
+    try std.testing.expectEqual(current, index.value.object.get("artifacts").?.array.items.len);
 }
 
 /// Test double for `readRange`: serves a directory image in `chunk`-sized
@@ -2275,7 +2717,7 @@ fn inspectFixture(arena: Allocator, gpa: Allocator, mutation: Mutation, sha256: 
     return inspectDirectory(arena, gpa, &stub, .{
         .name = null,
         .repo = entry.repo,
-        .file = entry.file,
+        .file = entry.main().path,
         .requested_revision = "main",
         .revision = entry.revision,
         // The weights would follow the aligned directory.
@@ -2357,7 +2799,7 @@ test "inspect judges the pinned directory supported, runnable, or not, from the 
     const entry = catalog.find("qwen3.8-27b").?;
     // The real inventory with the pinned digest: supported, assembled from
     // several windows, nothing read past the directory.
-    const supported = try inspectFixture(arena, gpa, .{}, entry.sha256, 256 * 1024);
+    const supported = try inspectFixture(arena, gpa, .{}, entry.main().sha256, 256 * 1024);
     if (supported.verdict.status != .supported) std.debug.print("verdict: {s}\n", .{supported.verdict.reason});
     try std.testing.expectEqual(.supported, supported.verdict.status);
     try std.testing.expectEqualStrings("qwen3.8-27b", supported.verdict.catalog.?);
@@ -2376,27 +2818,27 @@ test "inspect judges the pinned directory supported, runnable, or not, from the 
     try std.testing.expect(runnable.requests < supported.requests);
     // A storable encoding outside the adapter's executable set (Q4_0, the
     // same 144 bytes per 256 elements as Q4_K, so the offsets still hold).
-    const stored = try inspectFixture(arena, gpa, .{ .encoding = .{ .tensor = "token_embd.weight", .id = 2 } }, entry.sha256, 1 << 20);
+    const stored = try inspectFixture(arena, gpa, .{ .encoding = .{ .tensor = "token_embd.weight", .id = 2 } }, entry.main().sha256, 1 << 20);
     try std.testing.expectEqual(.not_runnable, stored.verdict.status);
     try std.testing.expectEqualStrings("token_embd.weight", stored.verdict.tensor.?);
     try std.testing.expectEqualStrings("Q4_0 (id 2)", stored.verdict.encoding.?);
     try std.testing.expect(std.mem.indexOf(u8, stored.verdict.reason, "outside the qwen35 adapter's executable set") != null);
     try std.testing.expect(stored.directory != null);
     // An encoding nuclis does not store: rejected by the parser, named anyway.
-    const unknown = try inspectFixture(arena, gpa, .{ .encoding = .{ .tensor = "blk.0.ffn_up.weight", .id = 24 } }, entry.sha256, 1 << 20);
+    const unknown = try inspectFixture(arena, gpa, .{ .encoding = .{ .tensor = "blk.0.ffn_up.weight", .id = 24 } }, entry.main().sha256, 1 << 20);
     try std.testing.expectEqual(.not_runnable, unknown.verdict.status);
     try std.testing.expectEqualStrings("blk.0.ffn_up.weight", unknown.verdict.tensor.?);
     try std.testing.expectEqualStrings("id 24", unknown.verdict.encoding.?);
     try std.testing.expect(std.mem.indexOf(u8, unknown.verdict.reason, "does not store") != null);
     try std.testing.expect(unknown.directory == null);
     // An architecture without an adapter.
-    const foreign = try inspectFixture(arena, gpa, .{ .architecture = "gemma3" }, entry.sha256, 1 << 20);
+    const foreign = try inspectFixture(arena, gpa, .{ .architecture = "gemma3" }, entry.main().sha256, 1 << 20);
     try std.testing.expectEqual(.not_runnable, foreign.verdict.status);
     try std.testing.expectEqualStrings("no adapter for architecture \"gemma3\"", foreign.verdict.reason);
     try std.testing.expect(foreign.verdict.tensor == null);
     // An architecture with an adapter that rejects this directory (the
     // Gemma adapter over the Qwen tensor list).
-    const rejected = try inspectFixture(arena, gpa, .{ .architecture = "gemma4" }, entry.sha256, 1 << 20);
+    const rejected = try inspectFixture(arena, gpa, .{ .architecture = "gemma4" }, entry.main().sha256, 1 << 20);
     try std.testing.expectEqual(.not_runnable, rejected.verdict.status);
     try std.testing.expect(std.mem.startsWith(u8, rejected.verdict.reason, "the gemma4 adapter rejects the file: "));
     // Both renderings carry the verdict.
@@ -2406,7 +2848,7 @@ test "inspect judges the pinned directory supported, runnable, or not, from the 
     try std.testing.expect(std.mem.startsWith(u8, out.written(), "unsloth/Qwen3.8-27B-GGUF @ main: commit 4ca720788d1e01f1bff70c033e0d0028fd02e502\nQwen3.8-27B-UD-Q4_K_M.gguf: "));
     try std.testing.expect(std.mem.indexOf(u8, out.written(), " bytes, sha256 322e194f") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nArchitecture: \"qwen35\"\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nVerdict: supported: catalogue entry qwen3.8-27b") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nVerdict: supported: index entry qwen3.8-27b") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "no weights downloaded") != null);
     out.clearRetainingCapacity();
     try renderInspect(&out.writer, stored, false, .none);
@@ -2432,15 +2874,17 @@ test "registry entries translate into repository pulls with their companions" {
     try std.testing.expectEqualStrings("g.gguf", pull_options.file.?);
     try std.testing.expectEqualStrings("fc034cfff751157913579611efad8462ac1be606", pull_options.revision.?);
     try std.testing.expectEqualStrings("mmproj-F16.gguf", pull_options.mmproj.?);
-    try std.testing.expect(pull_options.mtp == null and pull_options.force and !pull_options.all and pull_options.with.count() == 0);
+    try std.testing.expect(pull_options.draft == null and pull_options.force and !pull_options.all and pull_options.with.count() == 0);
     const all = try fromRegistry(.{ .repo = "gemma", .all = true }, &gemma, &diag);
-    try std.testing.expect(all.mmproj != null and all.mtp == null and all.revision != null);
+    try std.testing.expect(all.mmproj != null and all.draft == null and all.revision != null);
     const plain = try fromRegistry(.{ .repo = "gemma" }, &.{ .repo = "a/b", .file = "f.gguf" }, &diag);
     try std.testing.expect(plain.mmproj == null and plain.revision == null);
     with = .empty;
-    with.insert(.mtp);
+    with.insert(.draft);
     try std.testing.expectError(error.NoSuchCompanion, fromRegistry(.{ .repo = "gemma", .with = with }, &gemma, &diag));
-    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "no mtp companion") != null);
+    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "no draft companion") != null);
+    // A draft variant is the index's, never a registry entry's.
+    try std.testing.expectError(error.ConflictingOptions, fromRegistry(.{ .repo = "gemma", .with = with, .draft_variant = "dflash2" }, &.{ .repo = "a/b", .file = "f.gguf", .draft = "d.gguf" }, &diag));
     try std.testing.expectError(error.NotPullable, fromRegistry(.{ .repo = "local" }, &.{ .path = "/scratch/x.gguf" }, &diag));
     try std.testing.expectError(error.ConflictingOptions, fromRegistry(.{ .repo = "gemma", .file = "other.gguf" }, &gemma, &diag));
     try std.testing.expect(isRegistryName("gemma") and !isRegistryName("qwen3.8-27b") and !isRegistryName("embeddinggemma-2") and !isRegistryName("a/b") and !isRegistryName(""));
@@ -2465,19 +2909,19 @@ test "rm removes an entry's files, sidecars, and support files, then the directo
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var diag: config.Diagnostic = .{};
-    const laya = catalog.findDecision("laya-multilingual").?;
+    const laya = catalog.findKind("laya-multilingual", .decision).?;
     const base = "models/convaiinnovations/laya/";
     try plant(arena, io, tmp.dir, base ++ "multilingual/model.safetensors", laya.repo, .main);
-    for (laya.support) |s| try plant(arena, io, tmp.dir, try std.mem.concat(arena, u8, &.{ "models/", laya.repo, "/", s }), laya.repo, .support);
+    for (laya.main().support) |s| try plant(arena, io, tmp.dir, try std.mem.concat(arena, u8, &.{ "models/", laya.repo, "/", s }), laya.repo, .support);
     // A support file the catalogue does not name, found by its sidecar.
     try plant(arena, io, tmp.dir, base ++ "multilingual/eval/results.json", laya.repo, .support);
     // The English checkpoint's support file, its weights absent: a partly
     // present entry of its own, which the first removal leaves alone.
     try plant(arena, io, tmp.dir, base ++ "rl_agent_config.json", laya.repo, .support);
-    try std.testing.expectError(error.NoSuchCompanion, remove(arena, io, root, .{}, "laya-multilingual", .{ .with = .initOne(.mtp) }, &diag));
+    try std.testing.expectError(error.NoSuchCompanion, remove(arena, io, root, .{}, "laya-multilingual", .{ .with = .initOne(.draft) }, &diag));
 
     const first = try remove(arena, io, root, .{}, "laya-multilingual", .{}, &diag);
-    try std.testing.expectEqual(2 * (1 + laya.support.len + 1), first.removed.len);
+    try std.testing.expectEqual(2 * (1 + laya.main().support.len + 1), first.removed.len);
     try std.testing.expectEqual(@as(usize, 0), first.kept.len);
     var freed: u64 = 0;
     for (first.removed) |r| freed += r.bytes;
@@ -2508,16 +2952,16 @@ test "rm keeps a file another entry uses, takes companions only when asked, and 
     const arena = arena_state.allocator();
     var diag: config.Diagnostic = .{};
     const qwen = catalog.find("qwen3.8-27b").?;
-    const main = try std.mem.concat(arena, u8, &.{ "models/", qwen.repo, "/", qwen.file });
-    const mmproj = try std.mem.concat(arena, u8, &.{ "models/", qwen.repo, "/", qwen.companion(.mmproj).?.file });
-    const mtp = try std.mem.concat(arena, u8, &.{ "models/", qwen.repo, "/", qwen.companion(.mtp).?.file });
+    const main = try std.mem.concat(arena, u8, &.{ "models/", qwen.repo, "/", qwen.main().path });
+    const mmproj = try std.mem.concat(arena, u8, &.{ "models/", qwen.repo, "/", qwen.companion(.mmproj).?.path });
+    const mtp = try std.mem.concat(arena, u8, &.{ "models/", qwen.repo, "/", qwen.draft(null).?.path });
     try plant(arena, io, tmp.dir, main, qwen.repo, .main);
     try plant(arena, io, tmp.dir, mmproj, qwen.repo, .mmproj);
-    try plant(arena, io, tmp.dir, mtp, qwen.repo, .mtp);
+    try plant(arena, io, tmp.dir, mtp, qwen.repo, .draft);
     const twin: config.NamedModel = .{ .name = "qwen3.8-27b", .entry = config.registryEntry(qwen) };
 
     // Another name for the same file keeps it; the twin does not.
-    const shared = [_]config.NamedModel{ twin, .{ .name = "big", .entry = .{ .repo = qwen.repo, .file = qwen.file } } };
+    const shared = [_]config.NamedModel{ twin, .{ .name = "big", .entry = .{ .repo = qwen.repo, .file = qwen.main().path } } };
     const blocked = try remove(arena, io, root, .{ .entries = &shared }, "qwen3.8-27b", .{}, &diag);
     try std.testing.expectEqual(@as(usize, 0), blocked.removed.len);
     try std.testing.expectEqual(@as(usize, 1), blocked.kept.len);
@@ -2559,7 +3003,7 @@ test "rm by registry name: its file and named companions, never outside the mode
         .{ .name = "away", .entry = .{ .path = "/elsewhere/x.gguf" } },
     };
     const registry: config.Models = .{ .entries = &entries };
-    try std.testing.expectError(error.NoSuchCompanion, remove(arena, io, root, registry, "local", .{ .with = .initOne(.mtp) }, &diag));
+    try std.testing.expectError(error.NoSuchCompanion, remove(arena, io, root, registry, "local", .{ .with = .initOne(.draft) }, &diag));
     const report = try remove(arena, io, root, registry, "local", .{ .with = .initOne(.mmproj) }, &diag);
     try std.testing.expectEqual(@as(usize, 3), report.removed.len);
     try std.testing.expectEqual(10 + 10 + report.removed[2].bytes, report.freed_bytes);
@@ -2578,4 +3022,85 @@ test "rm by registry name: its file and named companions, never outside the mode
     defer parsed.deinit();
     try std.testing.expectEqual(@as(i64, @intCast(report.freed_bytes)), parsed.value.object.get("freed_bytes").?.integer);
     try std.testing.expectEqual(@as(usize, 3), parsed.value.object.get("removed").?.array.items.len);
+}
+
+test "adopt writes a sidecar for a file placed by hand, once, and only under the models directory" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(root);
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diag: config.Diagnostic = .{};
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try plant(arena, io, tmp.dir, "models/acme/encoder/model.safetensors", "acme/encoder", null);
+    // A file the index does not pin keeps its local digest and no commit.
+    try adopt(alloc, io, root, "acme/encoder/model.safetensors", false, true, &out.writer, .none, &diag);
+    const report = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
+    defer report.deinit();
+    try std.testing.expect(report.value.object.get("artifact").? == .null);
+    try std.testing.expectEqualStrings("84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882", report.value.object.get("sha256").?.string);
+    const written = (try readSidecar(arena, io, tmp.dir, "models/acme/encoder/model.safetensors.nuclis.json")).?;
+    try std.testing.expect(written.revision == null and written.downloaded_at == null and written.adopted_at != null);
+    try std.testing.expectEqualStrings("acme/encoder", written.repo);
+    try std.testing.expectEqualStrings("model.safetensors", written.file);
+    try std.testing.expectEqual(Role.main, written.role);
+    // The listing no longer counts it as unverified.
+    try std.testing.expectEqual(@as(usize, 0), (try list(arena, io, root, .{}, null)).without_sidecar.len);
+    // Once only, unless forced.
+    try std.testing.expectError(error.AlreadyAdopted, adopt(alloc, io, root, "acme/encoder/model.safetensors", false, true, &out.writer, .none, &diag));
+    try adopt(alloc, io, root, "acme/encoder/model.safetensors", true, true, &out.writer, .none, &diag);
+    // Nothing outside the models directory or its layout, nothing that is not a model file.
+    try std.testing.expectError(error.OutsideModelsDirectory, adopt(alloc, io, root, "../nuclis.json", false, true, &out.writer, .none, &diag));
+    try plant(arena, io, tmp.dir, "models/loose.gguf", "", null);
+    try std.testing.expectError(error.OutsideModelsDirectory, adopt(alloc, io, root, "loose.gguf", false, true, &out.writer, .none, &diag));
+    try plant(arena, io, tmp.dir, "models/acme/encoder/notes.txt", "acme/encoder", null);
+    try std.testing.expectError(error.NotAModelFile, adopt(alloc, io, root, "acme/encoder/notes.txt", false, true, &out.writer, .none, &diag));
+    // A GGUF the index does not pin must parse before anything is written.
+    try plant(arena, io, tmp.dir, "models/acme/encoder/broken.gguf", "acme/encoder", null);
+    try std.testing.expectError(error.NotAModelFile, adopt(alloc, io, root, "acme/encoder/broken.gguf", false, true, &out.writer, .none, &diag));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "models/acme/encoder/broken.gguf.nuclis.json", .{}));
+    try std.testing.expectError(error.FileNotFound, adopt(alloc, io, root, "acme/encoder/absent.gguf", false, true, &out.writer, .none, &diag));
+}
+
+test "a pull takes each role's default draft, a named variant, or every one, grouped by origin" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diag: config.Diagnostic = .{};
+    const qwen = catalog.find("qwen3.8-27b").?;
+    const Paths = struct {
+        fn of(a: Allocator, files: []const *const catalog.File) ![]const u8 {
+            var out: std.ArrayList(u8) = .empty;
+            for (files) |f| {
+                if (out.items.len > 0) try out.append(a, ' ');
+                try out.appendSlice(a, if (f.variant) |v| v else @tagName(f.role));
+            }
+            return out.items;
+        }
+    };
+    try std.testing.expectEqualStrings("main", try Paths.of(arena, try selectFiles(arena, qwen, .{}, &diag)));
+    try std.testing.expectEqualStrings("main mtp", try Paths.of(arena, try selectFiles(arena, qwen, .{ .with = .initOne(.draft) }, &diag)));
+    try std.testing.expectEqualStrings("main dflash2", try Paths.of(arena, try selectFiles(arena, qwen, .{ .with = .initOne(.draft), .draft_variant = "dflash2" }, &diag)));
+    try std.testing.expectEqualStrings("main mmproj mtp", try Paths.of(arena, try selectFiles(arena, qwen, .{ .all = true }, &diag)));
+    const every = try selectFiles(arena, qwen, .{ .all = true, .variants = true }, &diag);
+    try std.testing.expectEqualStrings("main mmproj mtp dflash2", try Paths.of(arena, every));
+    try std.testing.expectError(error.NoSuchCompanion, selectFiles(arena, qwen, .{ .with = .initOne(.draft), .draft_variant = "eagle" }, &diag));
+    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "it has: mtp, dflash2") != null);
+    try std.testing.expectError(error.NoSuchCompanion, selectFiles(arena, catalog.find("laya").?, .{ .with = .initOne(.draft) }, &diag));
+    // The drafter from z-lab's repository is its own plan, after the model's own.
+    const groups = try groupByOrigin(arena, qwen, every);
+    try std.testing.expectEqual(@as(usize, 2), groups.len);
+    try std.testing.expectEqualStrings(qwen.repo, groups[0].repo);
+    try std.testing.expectEqual(@as(usize, 3), groups[0].files.len);
+    try std.testing.expectEqualStrings("z-lab/Qwen3.8-27B-DFlash2-GGUF", groups[1].repo);
+    try std.testing.expectEqualStrings("2d9571f8ce46e151f61c6499c99dee6079e1d610", groups[1].revision);
+    // It lands beside the model it drafts for.
+    const local = try catalog.localPath(arena, "/m", qwen, groups[1].files[0]);
+    try std.testing.expectEqualStrings("/m/unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", local);
+    try std.testing.expectEqualStrings("Qwen3.8-27B-DFlash2-Q8_0.gguf", catalog.Artifact.hubName(groups[1].files[0]));
 }

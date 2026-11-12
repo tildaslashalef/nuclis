@@ -69,11 +69,13 @@
    "path": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/mmproj-BF16.gguf"
   },
   "qwen38_dflash2": {
-   "path": "~/.nuclis/models/z-lab/Qwen3.8-27B-DFlash2-GGUF/Qwen3.8-27B-DFlash2-Q8_0.gguf"
+   "path": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf",
+   "entry": "qwen3.8-27b (dflash2 draft)"
   },
   "qwen38_dflash2_pair": {
    "path": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
-   "entry": "qwen-dflash2"
+   "entry": "qwen3.8-27b",
+   "draft": "dflash2"
   },
   "qwen3_tts_06b": {
    "path": "~/.nuclis/models/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
