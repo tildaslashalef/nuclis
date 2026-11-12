@@ -60,6 +60,14 @@ values [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/workl
 | | | `mmproj-BF16.gguf` | 931,146,432 | `83ee4f4f205fa514161778c41df1ea14144faa0f713510893b63c2395f5c2d53` |
 | | | `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` | 1,369,590,656 | `50d9ce5a6da381bbcfb31061cf73df94a90e6faf8efeddee379a9cb8f1501c6e` |
 | | | `imatrix_unsloth.gguf` | 13,642,656 | `0ee5b10bd0c2fa2127c6f4b43dbfe1efd71e383b63217af9dade1de36599f1c1` |
+
+The Qwen3.8 row is the first pin, which the records before 2026-11-12
+cite. The index pins Unsloth's re-made file since then; its companions
+are byte-identical at the new commit:
+
+| Repository | Commit | File | Size (B) | SHA-256 |
+| --- | --- | --- | ---: | --- |
+| `unsloth/Qwen3.8-27B-GGUF` | `ce331efc48d5722b4b8041f72793e530eae18d9b` | `Qwen3.8-27B-UD-Q4_K_M.gguf` | 16,564,259,744 | `1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529` |
 | `unsloth/gemma-4-12b-it-GGUF` | `fc034cfff751157913579611efad8462ac1be606` | `gemma-4-12b-it-UD-Q4_K_XL.gguf` | 7,366,423,360 | `90fd944d227e9d9b68e7e2c7d5b57b79d4c66ed521b0919fbbd932cf834f6f8e` |
 | `unsloth/gemma-4-12B-it-qat-GGUF` | `980b060c40a8539ac159e0501a3e0f66a6365af3` | `gemma-4-12B-it-qat-UD-Q4_K_XL.gguf` | 6,716,356,800 | `90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370` |
 | `unsloth/gemma-4-26B-A4B-it-qat-GGUF` | `7b92b5b28818151e8669af2e45e88d6086f490dd` | `gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` | 14,249,047,104 | `a7c5bc715f5ff8e99a3e8901ce7d2b42b402c669bf24f7c5250747633d0f5891` |
@@ -220,13 +228,13 @@ Hub collides):
   "schema_version": 2,
   "repo": "unsloth/Qwen3.8-27B-GGUF",
   "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
-  "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
-  "sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
-  "size": 16464442496,
+  "revision": "ce331efc48d5722b4b8041f72793e530eae18d9b",
+  "sha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
+  "size": 16564259744,
   "role": "main",
   "artifact": "qwen3.8-27b",
-  "downloaded_at": "2026-09-11T09:12:33Z",
-  "nuclis_version": "0.1.0-dev"
+  "downloaded_at": "2026-11-12T13:56:02Z",
+  "nuclis_version": "0.12.0-dev"
 }
 ```
 

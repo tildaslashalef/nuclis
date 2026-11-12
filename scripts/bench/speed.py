@@ -185,6 +185,13 @@ def family_run(model_key):
     workloads = manifest.workloads()
     run = acceptance_run(workloads, model_key)
     if run is None:
+        # A pair or a draft key names the same index artifact as its model.
+        models = manifest.load()["models"]
+        artifact = models.get(model_key, {}).get("artifact")
+        for key, model in models.items():
+            if run is None and artifact and model.get("artifact") == artifact and key != model_key:
+                run = acceptance_run(workloads, key)
+    if run is None:
         sys.exit(f"no acceptance workload names {model_key}'s token arrays")
     return run
 

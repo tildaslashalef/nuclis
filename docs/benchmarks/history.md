@@ -2199,3 +2199,38 @@ Prose geometric mean against off, and the worst cell:
 
 DFlash2's on-rate against MTP's, prose geometric mean: 0.925, 0.979,
 0.947, and 1.012 in the same order (the last ranging 0.90–1.10).
+
+## The re-made Qwen3.8 file (2026-11-12)
+
+Unsloth's re-made `Qwen3.8-27B-UD-Q4_K_M.gguf` (`1bce504d…`, commit
+`ce331efc`; [models/qwen3.8.md § The re-made file](../models/qwen3.8.md#the-re-made-file-2026-11-12)),
+a new baseline: no row here is a difference against the first pin's.
+
+Setup: Apple M4 Pro (16 GPU cores), 48 GiB, macOS 27, Zig 0.17.1,
+ReleaseSafe, `3126bfc` plus the re-pin, Metal, F16 cache, 32K context,
+one sitting without cooldown.
+
+Method: `make workload NAME='qwen38/{prose512,prose4096,code}'` (128
+greedy tokens, one warmup, the mean of three); `scripts/bench/spec-matrix.py
+--model qwen38 --contexts 512,4096,code --sampling greedy --drafts 7
+--baseline` for MTP, and the same with `--model qwen38_dflash2_pair` for
+DFlash2, at the engine's p_min (0.7), three off/on pairs per cell.
+
+| prompt | decode tok/s | prefill tok/s |
+| --- | ---: | ---: |
+| 512 | 11.79 | 94.22 |
+| 4,096 | 11.41 | 86.46 |
+| code | 11.83 | 34.88 |
+
+Decode with the drafter at draft 7, greedy (baseline → loaded but off →
+on, the median of the pairs' ratios):
+
+| prompt | MTP | DFlash2 |
+| --- | --- | --- |
+| 512 | 11.70 → 11.53 → 18.46, 1.605× (1.58–1.62) | 11.37 → 11.57 → 18.18, 1.629× (1.44–1.64) |
+| 4,096 | 11.18 → 11.27 → 15.98, 1.421× (1.41–1.43) | 11.34 → 11.06 → 16.81, 1.526× (1.46–1.58) |
+| code | 11.41 → 11.33 → 18.66, 1.652× (1.63–1.65) | 11.17 → 11.09 → 18.87, 1.690× (1.68–1.74) |
+
+Both drafters keep their verdicts (on, draft 7). Accepted per step at
+512: 1.98 of 3.00 proposed for MTP, 1.98 of 2.77 for DFlash2. The 16K and
+32K cells and sampled decoding were not re-run.

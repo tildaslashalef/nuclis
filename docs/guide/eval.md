@@ -214,6 +214,13 @@ speculative acceptance on Gemma drew from uncapped logits (row 0 of
 
 ## Regenerating a reference
 
+A re-pinned file's reference is nuclis's own: Metal's eight windows,
+cross-checked by one CPU window
+([models/README.md § Re-pinning a file](../models/README.md#re-pinning-a-file));
+`tests/fixtures/perplexity/qwen38-wikitext2-c512x8.json` is the first.
+The llama.cpp references of the other files were made this way, which is
+kept for them:
+
 ```sh
 make eval-corpus
 cmake --build .reference/llama.cpp/build --target llama-perplexity --parallel 8
@@ -236,7 +243,8 @@ unclamped rows.
 - Bonsai 2 has no reference record: its encodings decode only in the
   PrismML fork, which was not built with `llama-perplexity`.
 - The CPU reference runs `eval` token by token (about 11 s a token on the
-  Gemma 4 12B), so its record would take hours; none is pinned.
+  Gemma 4 12B; one window of Qwen3.8 takes 28 min), so
+  a whole CPU record is out of reach; one window cross-checks Metal's.
 - One corpus, one window size. Long-context perplexity (windows of 4K–32K)
   and a code corpus are not recorded.
 - The scored rows are read back whole (about 250 MB per 256 rows) and

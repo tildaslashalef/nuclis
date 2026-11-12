@@ -2197,7 +2197,7 @@ test "the written initial file parses back exactly and shows the entry shape" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"schema_version\": 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"temperature\": null") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"qwen3.8-27b\": {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"revision\": \"4ca720788d1e01f1bff70c033e0d0028fd02e502\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"revision\": \"ce331efc48d5722b4b8041f72793e530eae18d9b\"") != null);
     // The default draft variant's file, under the key that replaced `mtp`.
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"draft\": \"MTP/mtp-Qwen3.8-27B-Q4_0.gguf\"") != null);
     var diag: Diagnostic = .{};

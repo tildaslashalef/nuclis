@@ -203,19 +203,21 @@ pub const artifacts = [_]Artifact{
         .title = "Qwen3.8 27B",
         .kind = .generation,
         .repo = "unsloth/Qwen3.8-27B-GGUF",
-        .revision = "4ca720788d1e01f1bff70c033e0d0028fd02e502",
+        .revision = "ce331efc48d5722b4b8041f72793e530eae18d9b",
         .architecture = "qwen35",
         .quantization = "UD-Q4_K_M",
         .defaults = .{ .profile = .qwen38, .draft = "mtp", .think = .low, .thinking_budget = 1024 },
         .files = &.{
-            .{ .role = .main, .path = "Qwen3.8-27B-UD-Q4_K_M.gguf", .size = 16_464_440_224, .sha256 = "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482" },
+            .{ .role = .main, .path = "Qwen3.8-27B-UD-Q4_K_M.gguf", .size = 16_564_259_744, .sha256 = "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529" },
             .{ .role = .mmproj, .path = "mmproj-BF16.gguf", .size = 931_146_432, .sha256 = "83ee4f4f205fa514161778c41df1ea14144faa0f713510893b63c2395f5c2d53", .used_for = "image input" },
-            // Prose 1.25-1.57x from 512 to 32K, code 1.92-1.95x at draft 7
-            // (docs/benchmarks/history.md § The re-priced speculative verdicts (2026-10-01)).
+            // Prose 1.25-1.57x from 512 to 32K, code 1.92-1.95x at draft 7 on the
+            // first pin; 1.42-1.61x and code 1.65x on this file
+            // (docs/benchmarks/history.md § The re-made Qwen3.8 file (2026-11-12)).
             .{ .role = .draft, .variant = "mtp", .path = "MTP/mtp-Qwen3.8-27B-Q4_0.gguf", .size = 1_369_590_656, .sha256 = "50d9ce5a6da381bbcfb31061cf73df94a90e6faf8efeddee379a9cb8f1501c6e", .used_for = "speculative decoding", .verdict = .{ .speculative = true, .draft_length = 7 } },
             // z-lab's block drafter, placed beside the model it drafts for:
-            // prose 1.366x at draft 7 and p_min 0.3, 1.012x MTP's
-            // (docs/benchmarks/history.md § DFlash2 against MTP on the Q4_K_M (2026-10-21)).
+            // prose 1.366x at draft 7 and p_min 0.3, 1.012x MTP's on the first
+            // pin; 1.53-1.63x and code 1.69x on this file at p_min 0.7
+            // (docs/benchmarks/history.md § The re-made Qwen3.8 file (2026-11-12)).
             .{ .role = .draft, .variant = "dflash2", .path = "MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", .repo = "z-lab/Qwen3.8-27B-DFlash2-GGUF", .revision = "2d9571f8ce46e151f61c6499c99dee6079e1d610", .remote = "Qwen3.8-27B-DFlash2-Q8_0.gguf", .size = 2_056_414_816, .sha256 = "c18e800daedc59ca68fd13b6a856d795746af6d399a9279ac6a277d1d422f87e", .used_for = "speculative decoding (a DFlash2 drafter)", .verdict = .{ .speculative = true, .draft_length = 7 } },
         },
     },
