@@ -20,7 +20,6 @@ pub const QuestionError = decision.QuestionError;
 pub const system_prompt = "Read the complete state and schema. Decide every field jointly. Each answer must be exactly one of that field's allowed options.";
 /// The reference's `max_length`: the whole sequence, state cut first.
 pub const max_length = 16384;
-pub const image_placeholder = "<|vision_start|><|image_pad|><|vision_end|>";
 /// `processor_config.json`'s `shortest_edge`: an image smaller than this
 /// many pixels is scaled up (64 tokens of 32×32 pixels).
 pub const min_image_pixels = 65536;

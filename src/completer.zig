@@ -237,7 +237,7 @@ pub fn keyedRender(alloc: Allocator, full: []const u8, image_pad: ?[]const u8, a
     const pads = [2]?[]const u8{ image_pad, audio_pad };
     var runs: usize = 0;
     var i: usize = 0;
-    while (i < full.len) i = if (runAt(full, i, pads)) |run| blk: {
+    while (i < full.len) i = if (pastLiteral(full, i)) |after| after else if (runAt(full, i, pads)) |run| blk: {
         runs += 1;
         break :blk run.end;
     } else i + 1;
@@ -251,6 +251,10 @@ pub fn keyedRender(alloc: Allocator, full: []const u8, image_pad: ?[]const u8, a
     i = 0;
     var copied: usize = 0;
     while (i < full.len) {
+        if (pastLiteral(full, i)) |after| {
+            i = after;
+            continue;
+        }
         const run = runAt(full, i, pads) orelse {
             i += 1;
             continue;
@@ -270,6 +274,14 @@ pub fn keyedRender(alloc: Allocator, full: []const u8, image_pad: ?[]const u8, a
 }
 
 const Run = struct { kind: Media.Kind, end: usize };
+
+/// Past the literal span opening at `i`, if one does: content the profile
+/// framed holds no placeholder run, whatever it spells.
+fn pastLiteral(text: []const u8, i: usize) ?usize {
+    if (text[i] != inference.tokenizer.literal_open) return null;
+    const close = std.mem.indexOfScalarPos(u8, text, i, inference.tokenizer.literal_close) orelse return text.len;
+    return close + 1;
+}
 
 /// The placeholder run starting at `i`, if one does.
 fn runAt(text: []const u8, i: usize, pads: [2]?[]const u8) ?Run {
@@ -981,6 +993,10 @@ test "the keyed render names each media run's digest; the plain text drops them"
     try testing.expect(!std.mem.eql(u8, keyed, changed));
     try testing.expectError(error.ImageSpanMismatch, keyedRender(alloc, "<i>x<i>", "<i>", "<a>", media[1..]));
     try testing.expectError(error.ImageSpanMismatch, keyedRender(alloc, "<a>", "<i>", "<a>", media[0..1]));
+    // A placeholder spelled inside framed content is text, not a run.
+    const framed = try keyedRender(alloc, "\xfe<i>\xfdx<a>", "<i>", "<a>", media[1..]);
+    defer alloc.free(framed);
+    try testing.expectEqualStrings("\xfe<i>\xfdx<a>\xff" ++ twos ++ "\xff", framed);
 }
 
 test "the output budget is the slice when it fits, what is left when clamped, else nothing" {

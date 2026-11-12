@@ -32,6 +32,9 @@ pub const ffn = 4 * hidden;
 pub const blocks = 12;
 /// `a.pre_encode.out`'s width (Google's `output_proj_dims`).
 pub const output_dims = 1536;
+/// The longest clip the encoder is given: Google's feature extractor's 30 s,
+/// 750 rows.
+pub const max_seconds = 30;
 pub const channels = [2]usize{ 128, 32 };
 /// Frequency columns after the two stride-2 convolutions.
 pub const sub_columns = mel.filters / 4;

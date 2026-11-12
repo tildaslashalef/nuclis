@@ -52,7 +52,8 @@ pub fn load(gpa: std.mem.Allocator, vocab_json: []const u8, merges_txt: []const 
         return error.UnsupportedModel;
     if (config.add_prefix_space) return error.UnsupportedPreTokenizer;
     const added = config.added_tokens_decoder.map;
-    if (words.map.count() == 0 or added.count() > limits.added) return error.LimitExceeded;
+    if (words.map.count() == 0) return error.InvalidVocabJson;
+    if (added.count() > limits.added) return error.LimitExceeded;
 
     var count: usize = 0;
     for (words.map.values()) |id| count = @max(count, @as(usize, id) + 1);
@@ -92,14 +93,22 @@ pub fn load(gpa: std.mem.Allocator, vocab_json: []const u8, merges_txt: []const 
         const id = std.fmt.parseInt(u32, entry.key_ptr.*, 10) catch unreachable;
         const a = entry.value_ptr.*;
         if (a.single_word or a.rstrip) return error.UnsupportedAddedToken;
-        if (a.content.len == 0 or a.content.len > limits.added_bytes or !std.unicode.utf8ValidateSlice(a.content) or filled[id])
+        if (a.content.len == 0 or a.content.len > limits.added_bytes or !std.unicode.utf8ValidateSlice(a.content))
             return error.InvalidAddedToken;
-        const owned = try copyText(alloc, a.content, &remaining);
-        const slot = ids.getOrPutAssumeCapacity(owned);
-        if (slot.found_existing) return error.DuplicateToken;
-        slot.value_ptr.* = id;
-        tokens[id] = .{ .text = owned, .kind = if (a.special) .control else .user_defined };
-        filled[id] = true;
+        const kind: vocabulary.TokenType = if (a.special) .control else .user_defined;
+        if (filled[id]) {
+            // As in hf_json.zig: an added token over a vocabulary entry must
+            // spell it exactly (GPT-2's `<|endoftext|>` is in both files).
+            if (!std.mem.eql(u8, tokens[id].text, a.content) or tokens[id].kind != .normal) return error.InvalidAddedToken;
+            tokens[id].kind = kind;
+        } else {
+            const owned = try copyText(alloc, a.content, &remaining);
+            const slot = ids.getOrPutAssumeCapacity(owned);
+            if (slot.found_existing) return error.DuplicateToken;
+            slot.value_ptr.* = id;
+            tokens[id] = .{ .text = owned, .kind = kind };
+            filled[id] = true;
+        }
         if (a.lstrip) lstrip.set(id);
         try (if (a.normalized) &normalized else &raw).append(alloc, id);
     }
@@ -173,6 +182,14 @@ test "vocab.json, merges.txt, and added tokens encode as the pinned processor do
     try std.testing.expectEqualSlices(u32, &.{ 16, 0, 3, 1, 17, 7, 11, 2, 15, 14 }, ids);
 }
 
+test "an added token over a vocabulary entry that spells it exactly re-types it" {
+    var t = try load(std.testing.allocator, test_vocab, test_merges,
+        \\{"tokenizer_class":"Qwen2Tokenizer","added_tokens_decoder":{"0":{"content":"a","special":true}}}
+    , .{});
+    defer t.deinit();
+    try std.testing.expectEqual(vocabulary.TokenType.control, t.vocab.tokens[0].kind);
+}
+
 test "refusals name the unsupported flag or class" {
     const gpa = std.testing.allocator;
     try std.testing.expectError(error.UnsupportedModel, load(gpa, test_vocab, test_merges, "{\"tokenizer_class\":\"LlamaTokenizer\"}", .{}));
@@ -184,5 +201,9 @@ test "refusals name the unsupported flag or class" {
         \\{"tokenizer_class":"Qwen2Tokenizer","added_tokens_decoder":{"20":{"content":"<x>"}}}
     , .{}));
     try std.testing.expectError(error.InvalidMerge, load(gpa, test_vocab, "a  b\n", "{\"tokenizer_class\":\"Qwen2Tokenizer\"}", .{}));
+    try std.testing.expectError(error.InvalidVocabJson, load(gpa, "{}", test_merges, "{\"tokenizer_class\":\"Qwen2Tokenizer\"}", .{}));
+    try std.testing.expectError(error.InvalidAddedToken, load(gpa, test_vocab, test_merges,
+        \\{"tokenizer_class":"Qwen2Tokenizer","added_tokens_decoder":{"0":{"content":"b"}}}
+    , .{}));
     try std.testing.expectError(error.InvalidVocabJson, load(gpa, "[1]", test_merges, "{\"tokenizer_class\":\"Qwen2Tokenizer\"}", .{}));
 }

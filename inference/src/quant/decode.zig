@@ -10,9 +10,9 @@
 //! (`q - 8`) in place of the table; Q5_0 and Q5_1 add a fifth bit per value
 //! from a 32-bit plane (`d * (q - 16)`, `d * q + m`). PQ2_0 and PTQ1_0 are the PrismML fork's
 //! group-128 ternary blocks (`w = d * t`, `t` in {-1, 0, +1}), verified against
-//! the fork's own decoder (docs/models/bonsai.md). Q2_K, IQ1_S, IQ1_M,
-//! IQ2_XXS, IQ2_XS, IQ2_S, and IQ3_XXS index the codebooks in
-//! `iq-codebooks.zig`; their rows are validated against the same model in a
+//! the fork's own decoder (docs/models/bonsai.md). IQ1_S, IQ1_M, IQ2_XXS,
+//! IQ2_XS, IQ2_S, and IQ3_XXS index the codebooks in `iq-codebooks.zig`;
+//! their rows, and Q2_K's, are validated against the same model in a
 //! validated encoding (docs/models/saluki.md).
 const std = @import("std");
 const encoding = @import("../tensor/encoding.zig");

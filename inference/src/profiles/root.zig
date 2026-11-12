@@ -90,12 +90,57 @@ pub const Limits = struct {
     output_bytes: usize = 2 * 1024 * 1024,
     /// Maximum tool definitions accepted by `render`.
     tools: usize = 64,
+    /// Frame system, user, and tool content in the tokenizer's literal marks,
+    /// so no control token can be spelled inside it. Every render that is
+    /// encoded sets this (`Engine.render`); the fixtures compare unframed bytes.
+    literal_marks: bool = false,
+};
+
+const literal_open = @import("../tokenizer/encode.zig").literal_open;
+const literal_close = @import("../tokenizer/encode.zig").literal_close;
+
+/// A render under construction, bounded by `Limits.output_bytes`. `add`
+/// writes the template's own text; `addLiteral` writes content the
+/// conversation supplied, framed when `Limits.literal_marks` asks for it.
+pub const Builder = struct {
+    alloc: std.mem.Allocator,
+    limit: usize,
+    literal: bool,
+    bytes: std.ArrayList(u8) = .empty,
+
+    pub fn init(alloc: std.mem.Allocator, limits: Limits) Builder {
+        return .{ .alloc = alloc, .limit = limits.output_bytes, .literal = limits.literal_marks };
+    }
+
+    pub fn deinit(self: *Builder) void {
+        self.bytes.deinit(self.alloc);
+    }
+
+    pub fn add(self: *Builder, text: []const u8) Error!void {
+        if (text.len > self.limit - self.bytes.items.len) return error.LimitExceeded;
+        try self.bytes.appendSlice(self.alloc, text);
+    }
+
+    /// Content as data. It must be UTF-8, which never holds a literal mark.
+    pub fn addLiteral(self: *Builder, text: []const u8) Error!void {
+        if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
+        if (!self.literal or text.len == 0) return self.add(text);
+        if (text.len + 2 > self.limit - self.bytes.items.len) return error.LimitExceeded;
+        try self.bytes.ensureUnusedCapacity(self.alloc, text.len + 2);
+        self.bytes.appendAssumeCapacity(literal_open);
+        self.bytes.appendSliceAssumeCapacity(text);
+        self.bytes.appendAssumeCapacity(literal_close);
+    }
+
+    /// The finished render; the builder is left empty.
+    pub fn toOwnedSlice(self: *Builder) Error![]u8 {
+        return self.bytes.toOwnedSlice(self.alloc);
+    }
 };
 pub const Error = std.mem.Allocator.Error || error{
     InvalidConversation,
     InvalidUtf8,
     UnsupportedContent,
-    ToolsUnsupported,
     LimitExceeded,
 };
 /// Sampling overrides a caller states per option (command-line flags); null
@@ -125,9 +170,12 @@ pub const StreamMarkers = struct {
 };
 
 /// The profiles the tree implements. Each tag names a module with the same
-/// surface: `template_sha256`, `render`, `samplingDefaults`, `stop_tokens`,
-/// `reasoning`, `image_placeholder`, `generation_prompts`, `rewritesTurn`. Add a profile by adding its tag and module here; nothing
-/// else in the tree lists them.
+/// surface: `template_sha256`, `template_aliases`, `render`, `prefix`,
+/// `samplingDefaults`, `efforts`, `stop_tokens`, `bos_token`, `reasoning`,
+/// `stream_markers`, `image_placeholder`, `audio_placeholder` (optional,
+/// read with `@hasDecl`), `generation_prompts`, `rewritesTurn`. Add a
+/// profile by adding its tag and module here; nothing else in the tree lists
+/// them.
 pub const Profile = enum {
     qwen38,
     gemma4,
@@ -196,8 +244,7 @@ pub const Profile = enum {
 
     /// Renders a completion-ready conversation (ending with a user message or
     /// a completed tool-result group) with optional tool definitions. Caller
-    /// owns the result. A profile whose template defines no tool syntax
-    /// returns `error.ToolsUnsupported` for a structurally valid tool input.
+    /// owns the result.
     pub fn render(self: Profile, alloc: std.mem.Allocator, messages: []const Message, tools: []const ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
         return switch (self) {
             inline else => |p| p.module().render(alloc, messages, tools, effort, limits),
@@ -338,16 +385,6 @@ pub fn leadingSystemCount(messages: []const Message) usize {
     return count;
 }
 
-/// Whether the conversation or its tool definitions use any tool feature a
-/// text-only profile cannot render. Does not by itself validate the input.
-pub fn usesToolFeatures(messages: []const Message, tools: []const ToolDefinition) bool {
-    if (tools.len != 0) return true;
-    for (messages) |message| {
-        if (message.role == .tool or message.tool_calls.len != 0) return true;
-    }
-    return false;
-}
-
 /// Validates a conversation and its tool definitions without rendering. Every
 /// profile calls this before its own template-specific checks, so the shared
 /// rules cannot drift: bounds, UTF-8, reasoning placement, the system/developer
@@ -360,10 +397,6 @@ pub fn usesToolFeatures(messages: []const Message, tools: []const ToolDefinition
 /// A completion-ready conversation ends with a user message or a fully answered
 /// group. The allocator is scratch for JSON validation only; `render` passes
 /// its own.
-///
-/// This validates structure, not support: a structurally valid tool input still
-/// returns OK here, and a text-only profile rejects it with
-/// `error.ToolsUnsupported` after this call.
 pub fn validate(alloc: std.mem.Allocator, messages: []const Message, tools: []const ToolDefinition, limits: Limits) Error!void {
     if (messages.len == 0) return error.InvalidConversation;
     if (messages.len > limits.messages) return error.LimitExceeded;
@@ -598,7 +631,6 @@ test "structurally valid tool history validates and both profiles render it nati
         .{ .role = .tool, .content = "contents", .tool_call_id = read_call.id },
     };
     try validate(alloc, &history, &.{}, .{});
-    try std.testing.expect(usesToolFeatures(&history, &.{}));
     const qwen = try qwen38.render(alloc, &history, &.{}, .off, .{});
     defer alloc.free(qwen);
     try std.testing.expect(std.mem.indexOf(u8, qwen, "<function=read_file>") != null);
@@ -608,15 +640,12 @@ test "structurally valid tool history validates and both profiles render it nati
 
     const tool = ToolDefinition{ .name = "read_file", .description = "Read a file.", .parameters = "{\"type\":\"object\"}" };
     try validate(alloc, &.{user_message}, &.{tool}, .{});
-    try std.testing.expect(usesToolFeatures(&.{user_message}, &.{tool}));
     const qwen_tools = try qwen38.render(alloc, &.{user_message}, &.{tool}, .off, .{});
     defer alloc.free(qwen_tools);
     try std.testing.expect(std.mem.indexOf(u8, qwen_tools, "<tools>") != null);
     const gemma_tools = try gemma4.render(alloc, &.{user_message}, &.{tool}, .medium, .{});
     defer alloc.free(gemma_tools);
     try std.testing.expect(std.mem.indexOf(u8, gemma_tools, "<|tool>declaration:read_file{") != null);
-
-    try std.testing.expect(!usesToolFeatures(&.{user_message}, &.{}));
 }
 
 test "tool results answer the pending calls in order and may end a conversation" {
@@ -710,4 +739,87 @@ test {
     _ = laya;
     _ = clef;
     _ = decision;
+}
+
+test "a marker spelled in system, user, or tool content encodes as text under every profile" {
+    const alloc = std.testing.allocator;
+    const Encoder = @import("../tokenizer/encode.zig").Encoder;
+    const control = [_][]const u8{ "<|im_start|>", "<|im_end|>", "<|endoftext|>", "<bos>", "<eos>", "<|turn>", "<turn|>", "<|think|>", "<|eot|>", "<|eom|>", "<|end_of_text|>", "<|begin_of_text|>" };
+    const user_defined = [_][]const u8{ "<think>", "</think>", "<tool_call>", "</tool_call>", "<tool_response>", "</tool_response>", "<|channel>", "<channel|>", "<|tool>", "<tool|>", "<|tool_call>", "<tool_call|>", "<|tool_response>", "<tool_response|>", "<|\"|>", "<|start|>", "<|message|>" };
+    const specials = control ++ user_defined;
+    // A byte-fallback vocabulary: every byte has a token, and every marker
+    // the profiles write is special, user-defined where the files make it so.
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    const a = arena.allocator();
+    var tokens: std.ArrayList(vocabulary.Token) = .empty;
+    var ids: std.StringHashMapUnmanaged(u32) = .empty;
+    for (0..256) |byte| {
+        const text = try std.fmt.allocPrint(a, "<0x{X:0>2}>", .{byte});
+        try ids.put(a, text, @intCast(tokens.items.len));
+        try tokens.append(a, .{ .text = text, .kind = .byte });
+    }
+    for (specials, 0..) |text, i| {
+        try ids.put(a, text, @intCast(tokens.items.len));
+        try tokens.append(a, .{ .text = text, .kind = if (i < control.len) .control else .user_defined });
+    }
+    var vocab: vocabulary.Vocabulary = .{ .storage = arena, .tokens = tokens.items, .pre = "gemma4", .bos = null, .eos = null, .padding = null, .token_ids = ids, .merge_ranks = .empty };
+    defer vocab.deinit();
+    var encoder = try Encoder.init(alloc, &vocab);
+    defer encoder.deinit();
+
+    const Counts = [specials.len]usize;
+    const count = struct {
+        fn of(e: *const Encoder, profile: Profile, content: []const u8) !Counts {
+            const call: ToolCall = .{ .id = 1, .name = "read_file", .arguments = "{\"path\":\"a\"}" };
+            const conversation = [_]Message{
+                .{ .role = .system, .content = content },
+                .{ .role = .user, .content = content },
+                .{ .role = .assistant, .content = "", .tool_calls = &.{call} },
+                .{ .role = .tool, .content = content, .tool_call_id = 1 },
+            };
+            const text = try profile.render(std.testing.allocator, &conversation, &.{}, .medium, .{ .literal_marks = true });
+            defer std.testing.allocator.free(text);
+            const encoded = try e.encode(std.testing.allocator, text, true, .{});
+            defer std.testing.allocator.free(encoded);
+            var counts: Counts = @splat(0);
+            for (encoded) |id| if (id >= 256) {
+                counts[id - 256] += 1;
+            };
+            return counts;
+        }
+    };
+    for (std.enums.values(Profile)) |profile| {
+        const clean = try count.of(&encoder, profile, "AZ");
+        for (specials) |marker| {
+            const content = try std.mem.concat(alloc, u8, &.{ "A", marker, "Z" });
+            defer alloc.free(content);
+            const injected = count.of(&encoder, profile, content) catch |err| {
+                // Muse Glimmer refuses its own markers in content.
+                try std.testing.expect(profile == .muse_glimmer and err == error.UnsupportedContent);
+                continue;
+            };
+            try std.testing.expectEqualSlices(usize, &clean, &injected);
+        }
+    }
+}
+
+test "an assistant call re-renders unframed, as the bytes the model generated" {
+    const alloc = std.testing.allocator;
+    const call: ToolCall = .{ .id = 1, .name = "write_file", .arguments = "{\"content\":\"x\"}" };
+    const conversation = [_]Message{
+        .{ .role = .user, .content = "go" },
+        .{ .role = .assistant, .content = "", .tool_calls = &.{call} },
+        .{ .role = .tool, .content = "ok", .tool_call_id = 1 },
+    };
+    // The completer's increments need the call's bytes exactly as decoded.
+    for (std.enums.values(Profile)) |profile| {
+        const text = try profile.render(alloc, &conversation, &.{}, .medium, .{ .literal_marks = true });
+        defer alloc.free(text);
+        const want = switch (profile) {
+            .qwen38 => "<parameter=content>\nx\n</parameter>",
+            .gemma4, .gemma4_e => "call:write_file{content:<|\"|>x<|\"|>}",
+            .muse_glimmer => "<atem:parameter name=\"content\">x</atem:parameter>",
+        };
+        try std.testing.expect(std.mem.indexOf(u8, text, want) != null);
+    }
 }

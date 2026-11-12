@@ -284,8 +284,8 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!To
         .cased => unreachable,
     }
 
-    if (model.vocab.map.count() == 0 or model.merges.len > limits.merges or file.added_tokens.len > limits.added)
-        return error.LimitExceeded;
+    if (model.vocab.map.count() == 0) return error.InvalidTokenizerJson;
+    if (model.merges.len > limits.merges or file.added_tokens.len > limits.added) return error.LimitExceeded;
     // Ids are the model's and the added tokens' together, dense from zero.
     var count: usize = 0;
     for (model.vocab.map.values()) |id| count = @max(count, @as(usize, id) + 1);

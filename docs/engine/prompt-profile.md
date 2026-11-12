@@ -15,9 +15,11 @@ fixtures did not verify. Two profiles exist:
 | `qwen38` | [qwen38.zig](../../inference/src/profiles/qwen38.zig) | `12827f24…` | `<|im_end|>`, `<|endoftext|>` | `<think>` … `</think>` |
 | `gemma4` | [gemma4.zig](../../inference/src/profiles/gemma4.zig) | `845f1ee4…` | `<turn|>`, `<eos>`, `<|tool_response>` | `<|channel>thought\n` … `<channel|>` |
 
-Every module exposes the same surface: `template_sha256`, `render`,
-`samplingDefaults`, `stop_tokens`, `reasoning`, `stream_markers`,
-`generation_prompts`, and `rewritesTurn`. The last two serve the session
+Every module exposes the same surface: `template_sha256`,
+`template_aliases`, `render`, `prefix`, `samplingDefaults`, `efforts`,
+`stop_tokens`, `bos_token`, `reasoning`, `stream_markers`,
+`image_placeholder`, `generation_prompts`, and `rewritesTurn`, with
+`audio_placeholder` where the family hears. The last two serve the session
 cache ([session.md § The agent's token cache](session.md#the-agents-token-cache-2026-10-04)):
 `Profile.promptEnd` cuts the generation prompt off a render, leaving the
 bytes the next turn's render starts with, and `rewritesTurn(effort)` says
@@ -52,13 +54,35 @@ are system, developer, user, assistant, and tool. A completion-ready
 conversation ends with a user message or a fully answered tool-result group;
 system/developer messages are allowed only at the beginning. All strings
 must be valid UTF-8; reasoning on a non-assistant message is
-`UnsupportedContent`. A control marker spelled as text is refused in user
-and tool content and in tool names (structure smuggled past the profile)
-but **removed** from the assistant's own content and reasoning: that text
-is the model's past output (a call released as text when its closing token
-never came, a channel opened as text), and re-encoding it would turn the
-marker into a control token, while refusing it would end every later turn
-of the session. The template's own `strip_thinking` is the same idea.
+`UnsupportedContent`.
+
+### Content is data
+
+A control marker spelled as text in system, user, or tool content stays
+text. `render` with `Limits.literal_marks` set (every render the engine
+encodes: `Engine.render`, `Engine.prefix`, `nuclis tokenize`) frames that
+content between the tokenizer's literal marks, `0xFE` and `0xFD`, two bytes
+UTF-8 never uses; the encoder drops them and matches no special token of
+any kind inside or across a framed span
+([tokenizer.md § Literal spans](tokenizer.md#literal-spans)). A file the
+agent read that spells `<|im_end|>` or `</tool_response>`, a user who types
+`<|turn>`, or a client that sends `<|image_pad|>` gets those characters as
+text tokens, and the turn structure the model sees is the template's
+alone. Nothing is refused for it, so a tool result never ends the agent's
+turn for what a file says. Framing does not split the merges: a framed
+span tokenises exactly as the same bytes unframed, so text without a
+marker encodes as before. The fixtures compare unframed renders.
+
+Tool and parameter names are spelled bare inside the template's syntax, so
+a name carrying a marker (or the syntax's own delimiters) is refused with
+`UnsupportedContent`. The assistant's own content and reasoning are not
+framed: that text is the model's past output (a call released as text
+when its closing token never came, a channel opened as text), and its
+markers are **removed**, since re-encoding them would make control tokens
+and refusing them would end every later turn of the session. The
+template's own `strip_thinking` is the same idea. Muse Glimmer also
+refuses its markers and the ATEM markup in content (§ Muse Glimmer): the
+markup is text the model reads by pattern, which framing cannot defuse.
 
 Tool inputs are shared types, not profile syntax. `ToolDefinition` carries a
 name, a description, and a parameter schema as a JSON object;
@@ -81,12 +105,9 @@ buffer may reserve more.
 The effort argument is the shared `Effort` (`off`, `low`, `medium`,
 `high`, `xhigh`), named after Qwen3.8's levels because it came first (its
 template folds `high` into `xhigh`); a profile with fewer levels collapses
-them, and one without `off` renders it as its lowest level. Validation is
-separate from support: a structurally valid tools input still passes
-`validate`, and a profile whose template defined no tool grammar rejects it
-with `error.ToolsUnsupported`; all three profiles render and decode their
-native tool path against pinned fixtures. No profile implements multimodal
-content, assistant prefill, or a general Jinja interpreter.
+them, and one without `off` renders it as its lowest level. Every profile
+renders and decodes its native tool path against pinned fixtures. No
+profile implements assistant prefill or a general Jinja interpreter.
 
 ## Qwen3.8 (`qwen38`)
 
@@ -97,8 +118,8 @@ and `high` renders the `xhigh` line, as the template resolves it.
 All modes append the assistant generation prefix `<|im_start|>assistant\n<think>\n`;
 `off` closes it at once with an empty thinking block. Previous assistant
 reasoning is preserved in history as `<think>…</think>` before the answer,
-in every mode. Assistant answers containing `<think>` or `</think>` are
-rejected: callers supply reasoning separately. The renderer trims ASCII
+in every mode. Assistant answers lose a `<think>` or `</think>` they spell:
+callers supply reasoning separately. The renderer trims ASCII
 whitespace as the pinned llama.cpp Jinja implementation does; nonbreaking
 spaces and other Unicode stay intact.
 
@@ -111,9 +132,8 @@ after `:` and between items, keys in insertion order, non-ASCII literal).
 Assistant calls render as `<tool_call>\n<function=NAME>…` with one
 `<parameter=KEY>` block per argument (string values literal, others JSON);
 consecutive tool results fold into one `<|im_start|>user` turn of
-`<tool_response>` blocks, exactly as the template does. Assistant content
-carrying a control marker is rejected so structure cannot be smuggled into the
-answer. Gemma's native tool grammar is a different shape and its result
+`<tool_response>` blocks, exactly as the template does. A tool or parameter
+name carrying a marker, a `>`, or a newline is refused. Gemma's native tool grammar is a different shape and its result
 handoff resumes the model turn; see its section below and
 [tool-calling.md](tool-calling.md).
 
@@ -147,10 +167,10 @@ session's incremental prefill hits; when the model closes the channel with no
 newline the next step replays from the primed prefix instead (measured on
 the first step of the live check in the worklog). Two assistant
 messages in a row continue one `model` turn (contents trimmed and
-concatenated, no marker between them). Assistant content or reasoning
-carrying any control marker (`<|channel>`, `<channel|>`, the six tool
-markers, or the `<|"|>` delimiter) is rejected rather than stripped as the
-template would.
+concatenated, no marker between them). Assistant content and reasoning
+lose any control marker they spell (`<|channel>`, `<channel|>`, the six
+tool markers, the `<|"|>` delimiter, `<|turn>`, `<turn|>`, `<bos>`), as the
+template strips thoughts.
 
 **Tools.** Declarations go into the system turn after the system text with
 no separator, one `<|tool>declaration:NAME{…}<tool|>` each: the description,
@@ -169,7 +189,7 @@ no escape, so a string containing the delimiter or any marker is rejected),
 numbers as their JSON text, `true`/`false`/`null`, nested objects with bare
 keys, and arrays. The results that answer the calls follow inside the same
 model turn as `<|tool_response>response:NAME{value:<|"|>CONTENT<|"|>}<tool_response|>`
-(the content untrimmed), then the message's content; `<turn|>\n` closes the
+(the content untrimmed and framed, so a delimiter it spells stays text), then the message's content; `<turn|>\n` closes the
 turn unless it continues into the next assistant message or the conversation
 ends on results with no content, in which case the turn stays open and the
 generation prompt adds only `<|channel>thought\n` when thinking is on. When

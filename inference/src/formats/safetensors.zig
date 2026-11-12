@@ -95,22 +95,11 @@ pub const Document = struct {
     metadata: []const Metadata,
     /// In header order.
     tensors: []const Tensor,
-    by_name: std.StringHashMapUnmanaged(u32),
 
     /// Releases all header storage; tensors and metadata borrow from it.
     pub fn deinit(self: *Document) void {
         self.storage.deinit();
         self.* = undefined;
-    }
-
-    pub fn find(self: *const Document, name: []const u8) ?*const Tensor {
-        const index = self.by_name.get(name) orelse return null;
-        return &self.tensors[index];
-    }
-
-    pub fn metadataValue(self: *const Document, key: []const u8) ?[]const u8 {
-        for (self.metadata) |entry| if (std.mem.eql(u8, entry.key, key)) return entry.value;
-        return null;
     }
 };
 
@@ -126,28 +115,8 @@ pub const Error = Allocator.Error || std.Io.Reader.Error || error{
     UnindexedBytes,
 };
 
-/// Names the tensor behind a per-tensor rejection, as the GGUF reader's does.
-pub const Rejection = struct {
-    buffer: [128]u8 = undefined,
-    len: usize = 0,
-
-    pub fn tensor(self: *const Rejection) ?[]const u8 {
-        return if (self.len == 0) null else self.buffer[0..self.len];
-    }
-
-    fn note(self: ?*Rejection, name: []const u8) void {
-        const r = self orelse return;
-        r.len = @min(name.len, r.buffer.len);
-        @memcpy(r.buffer[0..r.len], name[0..r.len]);
-    }
-};
-
 /// Reader must start at file offset zero; file_bytes is the whole file.
 pub fn parse(gpa: Allocator, reader: *std.Io.Reader, file_bytes: u64, limits: Limits) Error!Document {
-    return parseDiagnosed(gpa, reader, file_bytes, limits, null);
-}
-
-pub fn parseDiagnosed(gpa: Allocator, reader: *std.Io.Reader, file_bytes: u64, limits: Limits, rejection: ?*Rejection) Error!Document {
     if (file_bytes < 8) return error.EndOfStream;
     var length: [8]u8 = undefined;
     try reader.readSliceAll(&length);
@@ -158,10 +127,10 @@ pub fn parseDiagnosed(gpa: Allocator, reader: *std.Io.Reader, file_bytes: u64, l
     const header = try gpa.alloc(u8, @intCast(header_bytes));
     defer gpa.free(header);
     try reader.readSliceAll(header);
-    return parseHeader(gpa, header, file_bytes, limits, rejection);
+    return parseHeader(gpa, header, file_bytes, limits);
 }
 
-fn parseHeader(gpa: Allocator, header: []const u8, file_bytes: u64, limits: Limits, rejection: ?*Rejection) Error!Document {
+fn parseHeader(gpa: Allocator, header: []const u8, file_bytes: u64, limits: Limits) Error!Document {
     if (header[0] != '{') return error.InvalidHeader;
     var storage = std.heap.ArenaAllocator.init(gpa);
     errdefer storage.deinit();
@@ -173,7 +142,9 @@ fn parseHeader(gpa: Allocator, header: []const u8, file_bytes: u64, limits: Limi
 
     var tensors: std.ArrayList(Tensor) = .empty;
     var metadata: std.ArrayList(Metadata) = .empty;
-    var by_name: std.StringHashMapUnmanaged(u32) = .empty;
+    // Sets for the duplicate checks, so a header at its limits stays linear.
+    var by_name: std.StringHashMapUnmanaged(void) = .empty;
+    var metadata_keys: std.StringHashMapUnmanaged(void) = .empty;
     var seen_metadata = false;
     try expect(&scanner, .object_begin);
     while (true) {
@@ -196,23 +167,16 @@ fn parseHeader(gpa: Allocator, header: []const u8, file_bytes: u64, limits: Limi
                     .allocated_string => |s| s,
                     else => return error.InvalidHeader,
                 };
-                for (metadata.items) |m| if (std.mem.eql(u8, m.key, k)) return error.InvalidHeader;
                 if (metadata.items.len == limits.metadata_count) return error.LimitExceeded;
+                if ((try metadata_keys.getOrPut(arena, k)).found_existing) return error.InvalidHeader;
                 try metadata.append(arena, .{ .key = k, .value = v });
             }
             continue;
         }
         if (tensors.items.len == limits.tensor_count) return error.LimitExceeded;
         const inserted = try by_name.getOrPut(arena, key);
-        if (inserted.found_existing) {
-            Rejection.note(rejection, key);
-            return error.DuplicateTensor;
-        }
-        inserted.value_ptr.* = @intCast(tensors.items.len);
-        const tensor = parseTensor(&scanner, arena, key, limits) catch |err| {
-            Rejection.note(rejection, key);
-            return err;
-        };
+        if (inserted.found_existing) return error.DuplicateTensor;
+        const tensor = try parseTensor(&scanner, arena, key, limits);
         try tensors.append(arena, tensor);
     }
     const last = scanner.next() catch return error.InvalidHeader;
@@ -230,15 +194,12 @@ fn parseHeader(gpa: Allocator, header: []const u8, file_bytes: u64, limits: Limi
     var end: u64 = 0;
     for (ordered) |t| {
         if (t.offset > buffer_bytes or t.bytes > buffer_bytes - t.offset) {
-            Rejection.note(rejection, t.name);
             return error.TensorOutOfBounds;
         }
         if (t.offset < end) {
-            Rejection.note(rejection, t.name);
             return error.OverlappingTensors;
         }
         if (t.offset > end) {
-            Rejection.note(rejection, t.name);
             return error.UnindexedBytes;
         }
         end = t.offset + t.bytes;
@@ -251,7 +212,6 @@ fn parseHeader(gpa: Allocator, header: []const u8, file_bytes: u64, limits: Limi
         .data_offset = data_offset,
         .metadata = metadata.items,
         .tensors = tensors.items,
-        .by_name = by_name,
     };
 }
 
@@ -593,14 +553,14 @@ test "read the header, metadata, and tensor ranges without the weights" {
     try std.testing.expectEqual(@as(usize, 4), doc.tensors.len);
     try std.testing.expectEqualStrings("b", doc.tensors[0].name);
     try std.testing.expectEqual(@as(u64, 8 + valid_header.len), doc.data_offset);
-    const b = doc.find("b").?;
+    const b = doc.tensors[0];
     try std.testing.expectEqual(Dtype.f16, b.dtype);
     try std.testing.expectEqualSlices(u64, &.{ 2, 2 }, b.shape);
     try std.testing.expectEqual(@as(u64, 12), b.offset);
-    try std.testing.expectEqual(@as(u64, 1), doc.find("s").?.elements);
-    try std.testing.expectEqual(@as(u64, 0), doc.find("e").?.bytes);
-    try std.testing.expectEqualStrings("pt", doc.metadataValue("format").?);
-    try std.testing.expect(doc.find("missing") == null);
+    try std.testing.expectEqual(@as(u64, 1), doc.tensors[2].elements);
+    try std.testing.expectEqual(@as(u64, 0), doc.tensors[3].bytes);
+    try std.testing.expectEqualStrings("format", doc.metadata[0].key);
+    try std.testing.expectEqualStrings("pt", doc.metadata[0].value);
     try std.testing.expectEqualStrings("BF16", Dtype.bf16.name());
 }
 
@@ -634,14 +594,7 @@ test "every rejection is typed, and hostile lengths fail before allocating" {
     std.mem.writeInt(u64, huge[0..8], 100, .little);
     try std.testing.expectError(error.InvalidHeader, parseBytes(gpa, &huge));
     try std.testing.expectError(error.EndOfStream, parseBytes(gpa, huge[0..4]));
-
-    // The rejected tensor is named for a caller that asks.
-    const bytes = try fixture(gpa, "{\"weird\":{\"dtype\":\"C64\",\"shape\":[1],\"data_offsets\":[0,8]}}", &@as([8]u8, @splat(0)));
-    defer gpa.free(bytes);
-    var rejection: Rejection = .{};
-    var reader: std.Io.Reader = .fixed(bytes);
-    try std.testing.expectError(error.UnsupportedDtype, parseDiagnosed(gpa, &reader, bytes.len, .{}, &rejection));
-    try std.testing.expectEqualStrings("weird", rejection.tensor().?);
+    try expectRejected(error.InvalidHeader, "{\"__metadata__\":{\"k\":\"a\",\"k\":\"b\"}}", 0);
 }
 
 /// Parses `bytes` as a file of `file_bytes`: a typed error or a document,

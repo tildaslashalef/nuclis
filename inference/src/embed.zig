@@ -33,9 +33,9 @@ pub const widths = [_]usize{ 768, 512, 256, 128 };
 /// Soft tokens per image: Google's default, and the budgets its processor accepts.
 pub const default_image_tokens: u32 = 280;
 pub const image_budgets = gemma4v.google_budgets;
-/// The longest audio part: Google's feature extractor cuts a clip at 30 s
-/// (750 rows).
-pub const max_audio_seconds = 30;
+/// The longest audio part (`gemma4a.max_seconds`); `--truncate` keeps the
+/// beginning of a longer one.
+pub const max_audio_seconds = gemma4a.max_seconds;
 const max_audio_samples = max_audio_seconds * mel.sample_rate;
 
 /// Rows an input of `tokens` tokens takes in a packed batch.

@@ -36,6 +36,7 @@ pub const Effort = profiles.Effort;
 pub const Message = profiles.Message;
 pub const Limits = profiles.Limits;
 pub const Error = profiles.Error;
+const Builder = profiles.Builder;
 pub const SamplingOverrides = profiles.SamplingOverrides;
 
 /// The tokens that end a generation: `<|eot|>` (200008, the file's EOT)
@@ -43,13 +44,13 @@ pub const SamplingOverrides = profiles.SamplingOverrides;
 /// the turn.
 pub const stop_tokens = [_][]const u8{ "<|eot|>", "<|end_of_text|>" };
 
-/// How the model delimits its reasoning: a message addressed to itself.
-/// The generation prompt ends at `<|start|>assistant`, so the first header
-/// (` to=self`) arrives as ordinary text and the decoder routes on it.
 /// The image span placeholder, inside `<|image_start|>` … `<|image_end|>`.
 pub const image_placeholder: ?[]const u8 = "<|patch|>";
 /// No `off`: the template renders it as `low`.
 pub const efforts = [_]Effort{ .low, .medium, .high, .xhigh };
+/// How the model delimits its reasoning: a message addressed to itself.
+/// The generation prompt ends at `<|start|>assistant`, so the first header
+/// (` to=self`) arrives as ordinary text and the decoder routes on it.
 pub const reasoning: profiles.Reasoning = .{ .open = "<|start|>assistant to=self<|message|>", .close = "<|eom|>" };
 /// The generation prompts a render may end with, longest first: what
 /// `promptEnd` cuts off.
@@ -105,10 +106,10 @@ const tools_example =
 /// there are none). Pinned as a byte prefix of `render`.
 pub fn prefix(alloc: std.mem.Allocator, messages: []const Message, tools: []const profiles.ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
     for (tools) |tool| try checkName(tool.name);
-    var builder: Builder = .{ .alloc = alloc, .limit = limits.output_bytes };
-    errdefer builder.bytes.deinit(alloc);
+    var builder: Builder = .init(alloc, limits);
+    errdefer builder.deinit();
     try renderSystem(&builder, alloc, messages[0..profiles.leadingSystemCount(messages)], tools, effort);
-    return builder.bytes.toOwnedSlice(alloc);
+    return builder.toOwnedSlice();
 }
 
 /// Returns an owned UTF-8 prompt; caller frees it with the supplied allocator.
@@ -120,8 +121,8 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
     try profiles.validate(alloc, messages, tools, limits);
     for (tools) |tool| try checkName(tool.name);
     const prefix_count = profiles.leadingSystemCount(messages);
-    var builder: Builder = .{ .alloc = alloc, .limit = limits.output_bytes };
-    errdefer builder.bytes.deinit(alloc);
+    var builder: Builder = .init(alloc, limits);
+    errdefer builder.deinit();
     try renderSystem(&builder, alloc, messages[0..prefix_count], tools, effort);
     // The calls of the last assistant message: a result names its call's tool.
     var pending: []const profiles.ToolCall = &.{};
@@ -140,7 +141,7 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
                 while (n < count) : (n += 1) try builder.add(image_placeholder.?);
                 try builder.add("<|image_end|>");
             }
-            try builder.add(message.content);
+            try builder.addLiteral(message.content);
             try builder.add("<|eot|>");
         },
         .assistant => {
@@ -182,12 +183,12 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
             try builder.add("<|message|><tool_output name=\"");
             try builder.add(name);
             try builder.add("\">\n");
-            try builder.add(message.content);
+            try builder.addLiteral(message.content);
             try builder.add("\n</tool_output><|eot|>");
         },
     };
     try builder.add("<|start|>assistant");
-    return builder.bytes.toOwnedSlice(alloc);
+    return builder.toOwnedSlice();
 }
 
 /// `<|begin_of_text|>` and one system turn per leading system or developer
@@ -205,7 +206,7 @@ fn renderSystem(builder: *Builder, alloc: std.mem.Allocator, leading: []const Me
     for (leading) |message| {
         if (hasMarker(message.content)) return error.UnsupportedContent;
         try builder.add("<|start|>system<|message|>");
-        try builder.add(message.content);
+        try builder.addLiteral(message.content);
         try renderSystemMeta(builder, alloc, tools, effort);
     }
 }
@@ -480,17 +481,6 @@ pub fn samplingDefaults(effort: Effort) sampling.Options {
 pub fn samplingOptions(effort: Effort, overrides: SamplingOverrides) sampling.Options {
     return samplingDefaults(effort).override(overrides);
 }
-
-const Builder = struct {
-    alloc: std.mem.Allocator,
-    limit: usize,
-    bytes: std.ArrayList(u8) = .empty,
-
-    fn add(self: *Builder, text: []const u8) Error!void {
-        if (text.len > self.limit - self.bytes.items.len) return error.LimitExceeded;
-        try self.bytes.appendSlice(self.alloc, text);
-    }
-};
 
 const Fixture = struct {
     template_sha256: []const u8,

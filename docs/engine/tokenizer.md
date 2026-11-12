@@ -63,7 +63,7 @@ failures return typed errors and release partially initialized state.
 `tokenizer.Encoder.init(allocator, &vocabulary)` accepts `pre` = `qwen35`,
 `llama4`, or `gemma4` (any other label is `UnsupportedPreTokenizer`) and
 owns a sorted special-ID index. The borrowed immutable vocabulary must outlive
-the encoder. Call `deinit` once. Initialization accepts at most 4,096 special
+the encoder. Call `deinit` once. Initialization accepts at most 8,192 special
 markers, each between 1 and 256 bytes.
 
 `encoder.encode(allocator, text, parse_special, limits)` returns owned token IDs.
@@ -124,6 +124,21 @@ is proportional to input bytes; output capacity may exceed its logical length.
 All allocations are explicit, and partial failures release owned state. The
 reference algorithms prioritize correctness over speed; no tokenizer throughput
 claim has been measured.
+
+### Literal spans
+
+`tokenizer.literal_open` (`0xFE`) and `tokenizer.literal_close` (`0xFD`)
+frame a span of the text in which no special token matches, whatever its
+kind: control, unknown, and user-defined alike, so a marker that straddles a
+mark matches neither. They are bytes UTF-8 never uses, so they cannot come
+from valid content; `encode` drops them before validating UTF-8, and the
+pieces and merges run over the unframed bytes, so a framed span tokenises
+exactly as the same bytes unframed. A text whose first mark is a close
+starts inside a span (a cut taken inside one). The prompt profiles frame the
+content they render as data
+([prompt-profile.md § Content is data](prompt-profile.md#content-is-data));
+`tokenizer.withoutLiteralMarks` gives the bytes the encoder read, for a
+round-trip check.
 
 ## BPE and ID-to-byte decoding
 
@@ -253,7 +268,7 @@ fixtures does.
 
 A speech recognizer only maps ids to text, so its `tokenizer.json` never
 needs the encoder above (which refuses Nemotron ASR's `Precompiled`
-normalizer by name). `piece_table.parse(allocator, bytes, limits)`
+normalizer by name). `pieces.parse(allocator, bytes, limits)`
 ([pieces.zig](../../inference/src/tokenizer/pieces.zig)) reads a `BPE`
 model's vocabulary and the added tokens (with their `special` flag) into a
 `Table` by id, under a `Metaspace` decoder only; normalizer, pre-tokenizer
@@ -274,7 +289,11 @@ limits)` builds the same `hf_tokenizer.Tokenizer` from `vocab.json` (the
 model vocabulary), `merges.txt` (one `a b` pair a line in rank order; a
 leading `#version` line is skipped), and `tokenizer_config.json`'s
 `added_tokens_decoder` (ids dense after the vocabulary; `special` ones
-`control`, the others `user_defined`). It refuses another
+`control`, the others `user_defined`; one over a vocabulary entry must spell
+it exactly and re-types it, as in `tokenizer.json`, since GPT-2-shaped
+vocabularies list `<|endoftext|>` in both files). An empty `vocab.json` is
+`InvalidVocabJson`, an empty `tokenizer.json` vocabulary
+`InvalidTokenizerJson`. It refuses another
 `tokenizer_class`, `add_prefix_space`, and the `single_word` and `rstrip`
 flags by name. Encoding is the path above with NFC on and the third shape,
 `cased`:

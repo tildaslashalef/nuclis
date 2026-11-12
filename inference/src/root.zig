@@ -1,13 +1,10 @@
 //! Reusable inference modules. Container inspection is the first implemented layer.
 //! No CLI, user-directory policy, or architecture-specific behavior belongs here.
 pub const gguf = @import("formats/gguf.zig");
-/// Test support: generated models (`models/tiny.zig`).
-pub const gguf_writer = @import("formats/gguf_writer.zig");
 pub const safetensors = @import("formats/safetensors.zig");
 pub const encoding = @import("tensor/encoding.zig");
 pub const quant = @import("quant/decode.zig");
 pub const quant_encode = @import("quant/encode.zig");
-pub const quant_sample = @import("quant/sample.zig");
 pub const metal = @import("backends/metal/root.zig");
 pub const cpu = @import("backends/cpu/root.zig");
 pub const profiles = @import("profiles/root.zig");
@@ -16,10 +13,6 @@ pub const bpe = @import("tokenizer/bpe.zig");
 pub const text_stream = @import("tokenizer/stream.zig");
 pub const tokenizer = @import("tokenizer/encode.zig");
 pub const hf_tokenizer = @import("tokenizer/hf_json.zig");
-/// Decode-only Metaspace piece tables (a speech recognizer's output side).
-pub const piece_table = @import("tokenizer/pieces.zig");
-/// Qwen2 tokenizers stored as vocab.json and merges.txt (Qwen3-TTS).
-pub const vocab_merges = @import("tokenizer/vocab_merges.zig");
 pub const models = @import("models/root.zig");
 pub const weights = @import("runtime/weights.zig");
 pub const sampling = @import("sampling/root.zig");
@@ -40,20 +33,21 @@ pub const audio = @import("audio/root.zig");
 test {
     _ = audio;
     _ = gguf;
-    _ = gguf_writer;
+    // Reached only through the modules that import them; their tests here.
+    _ = @import("formats/gguf_writer.zig");
+    _ = @import("quant/sample.zig");
+    _ = @import("tokenizer/pieces.zig");
+    _ = @import("tokenizer/vocab_merges.zig");
     _ = safetensors;
     _ = encoding;
     _ = quant;
     _ = quant_encode;
-    _ = quant_sample;
     _ = cpu;
     _ = profiles;
     _ = vocabulary;
     _ = bpe;
     _ = tokenizer;
     _ = hf_tokenizer;
-    _ = piece_table;
-    _ = vocab_merges;
     _ = text_stream;
     _ = models;
     _ = weights;
