@@ -230,18 +230,17 @@ pub fn Executor(comptime Family: type) type {
                 } else return error.UnsupportedVerify,
             }
         }
-        /// Whether `verify` serves the per-row top-k readback (the GPU plan
-        /// of a family that carries a drafter).
+        /// Whether `verify` serves the per-row top-k readback: the GPU plan
+        /// of a family whose plan has a batched `verify`.
         pub fn supportsVerifyTopK(self: *const Self) bool {
             return switch (self.*) {
                 .cpu => false,
-                .metal => true,
+                .metal => @hasDecl(Family.Plan, "verify"),
             };
         }
         /// `verify`'s greedy sibling: per-row argmax only, no logit readback
         /// where the family implements it.
-        pub fn verifyGreedy(self: *Self, tokens: []const u32, vocabulary: usize, out: []u32, h_rows: ?[]f32, observer: ?Observer) !void {
-            _ = vocabulary;
+        pub fn verifyGreedy(self: *Self, tokens: []const u32, out: []u32, h_rows: ?[]f32, observer: ?Observer) !void {
             switch (self.*) {
                 .cpu => |*runtime| if (comptime @hasDecl(Family.Runtime, "verifyGreedy")) {
                     try runtime.verifyGreedy(tokens, out, h_rows, observer);
@@ -411,9 +410,9 @@ pub const Model = struct {
             inline else => |*e| e.supportsVerifyTopK(),
         };
     }
-    pub fn verifyGreedy(self: *Model, tokens: []const u32, vocabulary: usize, out: []u32, h_rows: ?[]f32, observer: ?Observer) !void {
+    pub fn verifyGreedy(self: *Model, tokens: []const u32, out: []u32, h_rows: ?[]f32, observer: ?Observer) !void {
         switch (self.exec) {
-            inline else => |*e| try e.verifyGreedy(tokens, vocabulary, out, h_rows, observer),
+            inline else => |*e| try e.verifyGreedy(tokens, out, h_rows, observer),
         }
     }
     /// Whether `prefill` processes the prompt as chunks rather than per-token
@@ -719,8 +718,13 @@ fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, io: std.Io, vie
     };
 }
 
-/// A profile lists at most this many stop tokens (both today list two).
-pub const max_stop_tokens = 4;
+/// The most stop tokens any profile lists, so the load's table always holds
+/// them (one, the file's EOS, without a profile).
+pub const max_stop_tokens = blk: {
+    var most: usize = 1;
+    for (std.enums.values(profiles.Profile)) |p| most = @max(most, p.stopTokens().len);
+    break :blk most;
+};
 
 /// A loaded companion projector on the engine's backend. Heap-allocated so
 /// the projector's binding has a stable address for its executor to borrow.
@@ -755,9 +759,9 @@ pub const Audio = struct {
 const gemma4a = inference.audio.gemma4a;
 const mel = inference.audio.mel;
 
-/// The longest clip a prompt takes: Google's feature extractor's 30 s, 750
-/// rows. A longer one is `AudioTooLong`, never cut.
-pub const max_audio_seconds = 30;
+/// The longest clip a prompt takes (`gemma4a.max_seconds`). A longer one is
+/// `AudioTooLong`, never cut.
+pub const max_audio_seconds = gemma4a.max_seconds;
 
 /// One clip after the encoder: its rows (`tokens ×` the model width,
 /// caller-owned) and its length at 16 kHz.
@@ -962,11 +966,12 @@ pub const Engine = struct {
 
     /// Renders a completion-ready conversation (a user message or a completed
     /// tool-result group last) with the artifact's profile and optional tool
-    /// definitions. Caller owns the result. A profile that cannot render the
-    /// tools yet returns `error.ToolsUnsupported`.
+    /// definitions. Caller owns the result. Content is framed in the
+    /// tokenizer's literal marks, which `encode` drops (prompt-profile.md
+    /// § Content is data).
     pub fn render(self: *const Engine, messages: []const profiles.Message, tools: []const profiles.ToolDefinition, effort: profiles.Effort) ![]u8 {
         const profile = self.profile orelse return error.UnsupportedPromptTemplate;
-        return profile.render(self.alloc, messages, tools, effort, .{});
+        return profile.render(self.alloc, messages, tools, effort, .{ .literal_marks = true });
     }
 
     /// Loads a companion projector (`models.<name>.mmproj`) on the engine's
@@ -1159,10 +1164,11 @@ pub const Engine = struct {
     /// starts with (`profiles.Profile.prefix`). Caller owns the result.
     pub fn prefix(self: *const Engine, messages: []const profiles.Message, tools: []const profiles.ToolDefinition, effort: profiles.Effort) ![]u8 {
         const profile = self.profile orelse return error.UnsupportedPromptTemplate;
-        return profile.prefix(self.alloc, messages, tools, effort, .{});
+        return profile.prefix(self.alloc, messages, tools, effort, .{ .literal_marks = true });
     }
 
-    /// Encodes text with special-token markers recognized. Caller owns the IDs.
+    /// Encodes text with special-token markers recognized outside its literal
+    /// spans. Caller owns the IDs.
     pub fn encode(self: *Engine, text: []const u8) ![]u32 {
         const tokens = try self.encoder.encode(self.alloc, text, true, .{});
         if (tokens.len == 0) {
@@ -1628,7 +1634,6 @@ pub fn runLoop(
             timing.accept = .{ .nanoseconds = timing.accept.nanoseconds + result.accept.nanoseconds };
             timing.checkpoint = .{ .nanoseconds = timing.checkpoint.nanoseconds + result.checkpoint.nanoseconds };
             recordRecovery(&timing, result.accepted + 1, result.recover, result.recover_split);
-            timing.commit = .{ .nanoseconds = timing.commit.nanoseconds + result.commit.nanoseconds };
             // The accepted drafts and the correction go through the ordinary
             // per-token checks in order; the correction is the next batch's
             // seed, so it is not sampled again.
@@ -1666,23 +1671,18 @@ pub fn runLoop(
                 }
                 if (forced_at != null) break;
             }
-            if (!broke) if (forced_at) |i| {
-                // The session holds the seed and every accepted draft; keep
-                // only those before the replaced one, as a correction would.
+            // The session holds the seed and every accepted draft. A forced
+            // token keeps only those before the replaced one, as a correction
+            // would; a stop or the budget keeps the tokens actually emitted.
+            const cut: ?usize = if (broke) (if (kept < result.accepted) kept else null) else forced_at;
+            if (cut) |i| {
                 const recover_start = std.Io.Clock.awake.now(eng.io);
                 const split = try eng.model.recover(eng.io, s.tokens[0 .. 1 + i]);
                 recordRecovery(&timing, i + 1, recover_start.durationTo(std.Io.Clock.awake.now(eng.io)), split);
-            };
-            if (broke) {
-                // Discard the accepted drafts past the stop/budget: recover to
-                // the tokens actually emitted.
-                if (kept < result.accepted) {
-                    const recover_start = std.Io.Clock.awake.now(eng.io);
-                    const split = try eng.model.recover(eng.io, s.tokens[0 .. 1 + kept]);
-                    recordRecovery(&timing, kept + 1, recover_start.durationTo(std.Io.Clock.awake.now(eng.io)), split);
-                }
-                break;
             }
+            const committed = try commitKept(eng, s, 1 + (cut orelse result.accepted), drafter.?.hidden);
+            timing.commit = .{ .nanoseconds = timing.commit.nanoseconds + committed.nanoseconds };
+            if (broke) break;
             if (eng.model.session().position >= eng.model.session().capacity) {
                 stop = .context_limit;
                 break;
@@ -1710,15 +1710,16 @@ pub fn runLoop(
 /// The accepted length, the model's next token, and the timings of one verify
 /// batch: `recover_split` carries the copy/replay split of `recover`, and
 /// `fallbacks` counts sampled rows whose readback could not decide.
-const BatchResult = struct { accepted: usize, correction: u32, proposed: usize, fallbacks: usize, propose: std.Io.Duration, verify: std.Io.Duration, accept: std.Io.Duration, recover: std.Io.Duration, recover_split: Model.Recovery, checkpoint: std.Io.Duration, commit: std.Io.Duration };
+const BatchResult = struct { accepted: usize, correction: u32, proposed: usize, fallbacks: usize, propose: std.Io.Duration, verify: std.Io.Duration, accept: std.Io.Duration, recover: std.Io.Duration, recover_split: Model.Recovery, checkpoint: std.Io.Duration };
 
 /// Proposes `k` drafts from `seed_token`, checkpoints, verifies `[seed] ++
 /// drafts` on the main model, accepts the longest prefix (greedy: the row's
 /// argmax equals the draft; sampled: the row's own draw equals the draft),
-/// recovers the session to the accepted prefix, and advances the drafter over
-/// it. The caller emits the accepted drafts and the correction. A `k` of 0
-/// still runs the single-token batch so the drafter's cache stays aligned
-/// with the committed token.
+/// and recovers the session to the accepted prefix. The caller emits the
+/// accepted drafts and the correction, cuts the batch at a stop or a forced
+/// token, and then advances the drafter over what it kept (`commitKept`). A
+/// `k` of 0 still runs the single-token batch so the drafter's cache stays
+/// aligned with the committed token.
 fn speculativeBatch(
     eng: *Engine,
     sampler: *inference.sampling.Sampler,
@@ -1742,10 +1743,10 @@ fn speculativeBatch(
     @memcpy(s.tokens[1 .. 1 + n], s.drafts[0..n]);
     const batch = s.tokens[0 .. 1 + n];
     const hidden = s.hidden[0 .. (1 + n) * drafter.hidden];
-    var result: BatchResult = .{ .accepted = 0, .correction = 0, .proposed = n, .fallbacks = 0, .propose = propose, .verify = .zero, .accept = .zero, .recover = .zero, .recover_split = .{}, .checkpoint = checkpoint, .commit = .zero };
+    var result: BatchResult = .{ .accepted = 0, .correction = 0, .proposed = n, .fallbacks = 0, .propose = propose, .verify = .zero, .accept = .zero, .recover = .zero, .recover_split = .{}, .checkpoint = checkpoint };
     const verify_start = std.Io.Clock.awake.now(eng.io);
     if (greedy) {
-        try eng.model.verifyGreedy(batch, vocabulary, s.choices[0 .. 1 + n], hidden, observer);
+        try eng.model.verifyGreedy(batch, s.choices[0 .. 1 + n], hidden, observer);
         const accept_start = std.Io.Clock.awake.now(eng.io);
         result.verify = verify_start.durationTo(accept_start);
         while (result.accepted < n and s.choices[result.accepted] == s.drafts[result.accepted]) result.accepted += 1;
@@ -1815,10 +1816,17 @@ fn speculativeBatch(
     const recover_start = std.Io.Clock.awake.now(eng.io);
     result.recover_split = try eng.model.recover(eng.io, batch[0 .. 1 + result.accepted]);
     result.recover = recover_start.durationTo(std.Io.Clock.awake.now(eng.io));
-    const commit_start = std.Io.Clock.awake.now(eng.io);
-    try eng.model.commitDraft(batch[0 .. 1 + result.accepted], hidden[0 .. (1 + result.accepted) * drafter.hidden]);
-    result.commit = commit_start.durationTo(std.Io.Clock.awake.now(eng.io));
     return result;
+}
+
+/// Advances the drafter over the batch's first `kept` rows, the seed and the
+/// drafts the loop emitted, once a stop or a forced token has cut the batch
+/// where it will: committing rows the session then drops would leave the
+/// drafter's carried row ahead of it. Returns the time spent.
+fn commitKept(eng: *Engine, s: *SpeculativeScratch, kept: usize, hidden: usize) !std.Io.Duration {
+    const commit_start = std.Io.Clock.awake.now(eng.io);
+    try eng.model.commitDraft(s.tokens[0..kept], s.hidden[0 .. kept * hidden]);
+    return commit_start.durationTo(std.Io.Clock.awake.now(eng.io));
 }
 
 /// A `.gputrace` to record one command buffer into, and where the device's
@@ -1875,7 +1883,7 @@ pub fn forcedBatch(eng: *Engine, seed: u32, drafts: []const u32, accepted: usize
     if (profile) |p| p.paused = false;
     if (capture) |c| try (eng.model.gpu() orelse return error.CaptureRequiresMetal).captureNext(c.path, c.diagnostic);
     if (temperature == 0) {
-        try eng.model.verifyGreedy(batch, vocabulary, s.choices[0 .. 1 + n], hidden, null);
+        try eng.model.verifyGreedy(batch, s.choices[0 .. 1 + n], hidden, null);
         cost.next = s.choices[accepted];
     } else if (eng.model.supportsVerifyTopK()) {
         for (s.tops[0 .. 1 + n]) |*top| top.* = .{ .temperature = temperature };

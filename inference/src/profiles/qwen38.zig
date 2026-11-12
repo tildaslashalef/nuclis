@@ -2,9 +2,9 @@
 //! Adapted from its Qwen/Unsloth GGUF chat template (Apache-2.0; see THIRD_PARTY_NOTICES.md).
 //! This Zig implementation supports separate assistant reasoning and preserves
 //! it in history, renders a native tools block, and renders assistant calls and
-//! tool results in the template's own syntax. Multimodal content and assistant
-//! prefill are absent. It owns no tokenizer or model equations. See
-//! docs/engine/prompt-profile.md.
+//! tool results in the template's own syntax, and a user message's images as
+//! vision markers. Assistant prefill is absent. It owns no tokenizer or model
+//! equations. See docs/engine/prompt-profile.md.
 //!
 //! The profile also carries the model's official per-mode sampling defaults
 //! (`samplingDefaults`): they belong to the checkpoint's recommended usage,
@@ -29,14 +29,13 @@ pub const Effort = profiles.Effort;
 pub const Message = profiles.Message;
 pub const Limits = profiles.Limits;
 pub const Error = profiles.Error;
+const Builder = profiles.Builder;
 
 /// The tokens that end a turn under this template: `<|im_end|>` (248046,
 /// the file's `eos_token_id`) and `<|endoftext|>` (248044, its
 /// `bos_token_id`; the model emits it at the end of some answers).
 pub const stop_tokens = [_][]const u8{ "<|im_end|>", "<|endoftext|>" };
 
-/// How the model delimits its reasoning: the prompt opens `<think>` and the
-/// model closes it with `</think>`.
 /// The token a raw text starts with; the template opens with none.
 pub const bos_token: ?[]const u8 = null;
 /// The image span placeholder, inside `<|vision_start|>` … `<|vision_end|>`.
@@ -44,6 +43,8 @@ pub const image_placeholder: ?[]const u8 = "<|image_pad|>";
 /// The levels that render differently: the template folds `high` into
 /// `xhigh`.
 pub const efforts = [_]Effort{ .off, .low, .medium, .xhigh };
+/// How the model delimits its reasoning: the prompt opens `<think>` and the
+/// model closes it with `</think>`.
 pub const reasoning: profiles.Reasoning = .{ .open = "<think>", .close = "</think>" };
 /// The generation prompts a render may end with, longest first: what
 /// `promptEnd` cuts off.
@@ -77,13 +78,14 @@ const tools_format = "\n\nIf you choose to call a function ONLY reply in the fol
 /// folding of consecutive tool results into one user turn.
 pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []const profiles.ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
     try profiles.validate(alloc, messages, tools, limits);
+    for (tools) |tool| try checkName(tool.name);
     const prefix_count = profiles.leadingSystemCount(messages);
     const instruction = instructionFor(effort);
     const merged = try mergeSystem(alloc, messages[0..prefix_count]);
     defer alloc.free(merged);
 
-    var builder: Builder = .{ .alloc = alloc, .limit = limits.output_bytes };
-    errdefer builder.bytes.deinit(alloc);
+    var builder: Builder = .init(alloc, limits);
+    errdefer builder.deinit();
     try renderSystem(&builder, alloc, tools, instruction, merged);
 
     var i = prefix_count;
@@ -104,7 +106,7 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
                     while (n < count) : (n += 1) try builder.add("<|image_pad|>");
                     try builder.add("<|vision_end|>");
                 }
-                try builder.add(trim(message.content));
+                try builder.addLiteral(trim(message.content));
                 try builder.add("<|im_end|>\n");
             },
             .assistant => {
@@ -134,7 +136,7 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
             .tool => {
                 if (i > 0 and messages[i - 1].role != .tool) try builder.add("<|im_start|>user");
                 try builder.add("\n<tool_response>\n");
-                try builder.add(trim(message.content));
+                try builder.addLiteral(trim(message.content));
                 try builder.add("\n</tool_response>");
                 if (i + 1 >= messages.len or messages[i + 1].role != .tool) try builder.add("<|im_end|>\n");
             },
@@ -142,7 +144,7 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
     }
     try builder.add("<|im_start|>assistant\n<think>\n");
     if (effort == .off) try builder.add("\n</think>\n\n");
-    return builder.bytes.toOwnedSlice(alloc);
+    return builder.toOwnedSlice();
 }
 
 /// The bytes every rendering of a conversation with these leading system
@@ -150,13 +152,14 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
 /// generation prompt `render` ends with. What a session primes with before
 /// its first user message; pinned as a byte prefix of `render` by a test.
 pub fn prefix(alloc: std.mem.Allocator, messages: []const Message, tools: []const profiles.ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
+    for (tools) |tool| try checkName(tool.name);
     const prefix_count = profiles.leadingSystemCount(messages);
     const merged = try mergeSystem(alloc, messages[0..prefix_count]);
     defer alloc.free(merged);
-    var builder: Builder = .{ .alloc = alloc, .limit = limits.output_bytes };
-    errdefer builder.bytes.deinit(alloc);
+    var builder: Builder = .init(alloc, limits);
+    errdefer builder.deinit();
     try renderSystem(&builder, alloc, tools, instructionFor(effort), merged);
-    return builder.bytes.toOwnedSlice(alloc);
+    return builder.toOwnedSlice();
 }
 
 /// The leading system block. With tool definitions the tools text comes first
@@ -178,7 +181,7 @@ fn renderSystem(builder: *Builder, alloc: std.mem.Allocator, tools: []const prof
         try builder.add(tools_format);
         if (merged.len != 0) {
             try builder.add("\n\n");
-            try builder.add(merged);
+            try builder.addLiteral(merged);
         }
         try builder.add("<|im_end|>\n");
         return;
@@ -188,7 +191,7 @@ fn renderSystem(builder: *Builder, alloc: std.mem.Allocator, tools: []const prof
     try builder.add(instruction);
     if (merged.len != 0) {
         if (instruction.len != 0) try builder.add("\n\n");
-        try builder.add(merged);
+        try builder.addLiteral(merged);
     }
     try builder.add("<|im_end|>\n");
 }
@@ -206,6 +209,13 @@ fn instructionFor(effort: Effort) []const u8 {
 
 /// Every delimiter the template spells inside a turn.
 const markers = [_][]const u8{ "<think>", "</think>", "<tool_call>", "</tool_call>", "<tool_response>", "</tool_response>", "<|im_start|>", "<|im_end|>" };
+
+/// A tool or parameter name is spelled bare inside `<function=…>` and
+/// `<parameter=…>`, so it can carry neither a marker, a `>`, nor a newline.
+fn checkName(name: []const u8) Error!void {
+    for (markers) |marker| if (std.mem.indexOf(u8, name, marker) != null) return error.UnsupportedContent;
+    if (std.mem.indexOfAny(u8, name, ">\r\n") != null) return error.UnsupportedContent;
+}
 
 /// `text` without any control marker; owned by `alloc`.
 fn stripMarkers(alloc: std.mem.Allocator, text: []const u8) Error![]u8 {
@@ -259,6 +269,7 @@ fn addToolDefinition(builder: *Builder, alloc: std.mem.Allocator, tool: profiles
 /// One assistant call in the template's native syntax. String argument values
 /// are literal; every other value is JSON, exactly as history rendering does.
 fn renderCall(builder: *Builder, alloc: std.mem.Allocator, call: profiles.ToolCall) Error!void {
+    try checkName(call.name);
     try builder.add("<tool_call>\n<function=");
     try builder.add(call.name);
     try builder.add(">\n");
@@ -267,6 +278,7 @@ fn renderCall(builder: *Builder, alloc: std.mem.Allocator, call: profiles.ToolCa
     defer parsed.deinit();
     var it = parsed.value.object.iterator();
     while (it.next()) |entry| {
+        try checkName(entry.key_ptr.*);
         try builder.add("<parameter=");
         try builder.add(entry.key_ptr.*);
         try builder.add(">\n");
@@ -396,8 +408,6 @@ fn valueEnd(body: []const u8, from: usize) ?usize {
     return first;
 }
 
-/// A parameter value on the wire: JSON when it parses as JSON, a literal
-/// string otherwise — the template's own rule.
 /// A parameter value with the template's delimiters removed — one newline
 /// after `>` and one before `</parameter>`, the reference's grammar — and
 /// nothing else: a value keeps its own leading spaces and trailing newline.
@@ -408,8 +418,9 @@ fn delimited(raw: []const u8) []const u8 {
     return text;
 }
 
-/// The JSON typing looks at the whitespace-trimmed text, so ` 20 ` is the
-/// number 20; a value that is not JSON is written as the string it is.
+/// A parameter value on the wire: JSON when it parses as JSON, a literal
+/// string otherwise, the template's own rule. The typing looks at the
+/// whitespace-trimmed text, so ` 20 ` is the number 20.
 fn writeArgumentValue(json: *std.json.Stringify, alloc: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error!void {
     const typed = std.mem.trim(u8, raw, " \t\r\n");
     if (typed.len > 0) {
@@ -444,17 +455,6 @@ pub fn samplingOptions(effort: Effort, overrides: SamplingOverrides) sampling.Op
 fn trim(text: []const u8) []const u8 {
     return std.mem.trim(u8, text, " \t\r\n\x0b\x0c");
 }
-
-const Builder = struct {
-    alloc: std.mem.Allocator,
-    limit: usize,
-    bytes: std.ArrayList(u8) = .empty,
-
-    fn add(self: *Builder, text: []const u8) Error!void {
-        if (text.len > self.limit - self.bytes.items.len) return error.LimitExceeded;
-        try self.bytes.appendSlice(self.alloc, text);
-    }
-};
 
 test "the prefix is a byte prefix of every rendering that starts with its system messages" {
     const alloc = std.testing.allocator;

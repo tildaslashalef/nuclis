@@ -16,8 +16,6 @@ pub const Diagnostic = decision.Diagnostic;
 pub const QuestionError = decision.QuestionError;
 pub const Question = decision.Question;
 pub const pythonJson = decision.pythonJson;
-pub const writePythonJson = decision.writePythonJson;
-pub const writePythonFloat = decision.writePythonFloat;
 
 /// Validates a question definition (`{"type", "instructions", "criteria",
 /// "labels"}`) as the package does and renders its options; `arena` owns
@@ -290,12 +288,10 @@ pub fn assemble(arena: std.mem.Allocator, specials: Specials, prepared: Prepared
 /// `rl_agent_config.json`, the parts inference reads.
 pub const AgentConfig = struct {
     budget: Budget = .{},
-    /// Per question type, as shipped and as applied (clamped).
-    temperature_raw: [3]f64 = .{ 1, 1, 1 },
+    /// Per question type, as applied (clamped).
     temperature: [3]f64 = .{ 1, 1, 1 },
-    /// Per bucket (`"choice:3-5"`), as applied; `by_options_raw` as shipped.
+    /// Per bucket (`"choice:3-5"`), as applied.
     by_options: []const Bucketed = &.{},
-    by_options_raw: []const Bucketed = &.{},
 
     pub const Bucketed = struct { bucket: []const u8, temperature: f64 };
 
@@ -348,25 +344,19 @@ pub fn parseAgentConfig(arena: std.mem.Allocator, bytes: []const u8) ConfigError
             else => return error.InvalidAgentConfig,
         };
         if (a.items.len != 3) return error.InvalidAgentConfig;
-        for (a.items, 0..) |item, i| {
-            config.temperature_raw[i] = number(item);
-            config.temperature[i] = clampTemperature(config.temperature_raw[i]);
-        }
+        for (a.items, 0..) |item, i| config.temperature[i] = clampTemperature(number(item));
     }
     if (o.get("temperature_by_options")) |t| {
         const map = switch (t) {
             .object => |m| m,
             else => return error.InvalidAgentConfig,
         };
-        const raw = try arena.alloc(AgentConfig.Bucketed, map.count());
         const applied = try arena.alloc(AgentConfig.Bucketed, map.count());
         var it = map.iterator();
         var i: usize = 0;
         while (it.next()) |entry| : (i += 1) {
-            raw[i] = .{ .bucket = entry.key_ptr.*, .temperature = number(entry.value_ptr.*) };
-            applied[i] = .{ .bucket = entry.key_ptr.*, .temperature = clampTemperature(raw[i].temperature) };
+            applied[i] = .{ .bucket = entry.key_ptr.*, .temperature = clampTemperature(number(entry.value_ptr.*)) };
         }
-        config.by_options_raw = raw;
         config.by_options = applied;
     }
     return config;
@@ -466,9 +456,9 @@ test "Python JSON: separators, escapes, non-ASCII, and float repr" {
     , try pythonJson(arena, parsed));
     var buffer: [32]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buffer);
-    try writePythonFloat(&w, -0.0);
+    try decision.writePythonFloat(&w, -0.0);
     try w.writeAll(" ");
-    try writePythonFloat(&w, 1234.5);
+    try decision.writePythonFloat(&w, 1234.5);
     try std.testing.expectEqualStrings("-0.0 1234.5", w.buffered());
 }
 
@@ -556,7 +546,7 @@ test "agent config clamps temperatures; calibration and rounding" {
     try std.testing.expectEqual(@as(f64, 1.9), config.temperatureFor(.choice, 2));
     try std.testing.expectEqual(@as(f64, 5.0), config.temperatureFor(.noul, 2));
     try std.testing.expectEqual(@as(f64, 1.6), config.temperatureFor(.choice, 4));
-    try std.testing.expectEqual(@as(f64, 0.1006), config.by_options_raw[0].temperature);
+    try std.testing.expectEqual(@as(f64, 0.5), config.by_options[0].temperature);
     try std.testing.expectError(error.InvalidAgentConfig, parseAgentConfig(arena, "{\"temperature\": [1, 2]}"));
     try std.testing.expectError(error.InvalidAgentConfig, parseAgentConfig(arena, "{\"max_len\": 100, \"head_max_len\": 192}"));
     const noul = try calibrate(arena, .noul, &.{ 0, @log(@as(f32, 3)) }, 1);

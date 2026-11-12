@@ -278,8 +278,10 @@ fn validateName(name: []const u8) Error!void {
 
 /// Names the tensor a rejection concerned, since the errors carry no
 /// payload: filled for `UnsupportedTensorType`, `InvalidShape`, and
-/// `Overflow` raised while sizing a tensor, so an inspection can report
-/// the first offending tensor and encoding instead of a bare error name.
+/// `Overflow` raised while reading or sizing a tensor's shape, so an
+/// inspection can report the first offending tensor and encoding instead of
+/// a bare error name. The encoding is null for a rank the reader refuses
+/// before it reaches the encoding.
 /// The name is copied (the directory storage is freed on error) and
 /// truncated to the buffer.
 pub const Rejection = struct {
@@ -291,7 +293,7 @@ pub const Rejection = struct {
         return if (self.len == 0) null else self.buffer[0..self.len];
     }
 
-    fn note(self: *Rejection, name: []const u8, encoding_id: u32) void {
+    fn note(self: *Rejection, name: []const u8, encoding_id: ?u32) void {
         self.len = @min(name.len, self.buffer.len);
         @memcpy(self.buffer[0..self.len], name[0..self.len]);
         self.encoding_id = encoding_id;
@@ -342,15 +344,22 @@ pub fn parseDiagnosed(gpa: Allocator, reader: *std.Io.Reader, file_bytes: u64, l
         try validateName(name);
         if ((try names.getOrPut(name)).found_existing) return error.DuplicateTensor;
         const rank = try cursor.int(u32);
-        if (rank == 0 or rank > 4) return error.InvalidShape;
-        const dimensions = try alloc.alloc(u64, rank);
-        var elements: u64 = 1;
-        for (dimensions) |*dim| {
-            dim.* = try cursor.int(u64);
-            if (dim.* == 0) return error.InvalidShape;
-            elements = try std.math.mul(u64, elements, dim.*);
+        if (rank == 0 or rank > 4) {
+            if (rejection) |r| r.note(name, null);
+            return error.InvalidShape;
         }
+        const dimensions = try alloc.alloc(u64, rank);
+        for (dimensions) |*dim| dim.* = try cursor.int(u64);
         const encoding_id = try cursor.int(u32);
+        // The shape is judged once the encoding is read, so a rejection names both.
+        var elements: u64 = 1;
+        for (dimensions) |dim| {
+            const shaped = if (dim == 0) error.InvalidShape else std.math.mul(u64, elements, dim);
+            elements = shaped catch |err| {
+                if (rejection) |r| r.note(name, encoding_id);
+                return err;
+            };
+        }
         const layout = encoding.layout(encoding_id) orelse {
             if (rejection) |r| r.note(name, encoding_id);
             return error.UnsupportedTensorType;
@@ -477,6 +486,14 @@ test "a rejected tensor is named for the caller that asks" {
     try std.testing.expectError(error.InvalidShape, parseDiagnosed(std.testing.allocator, &reader, odd.written().len, .{}, &rejection));
     try std.testing.expectEqualStrings("first", rejection.tensor().?);
     try std.testing.expectEqual(@as(u32, 12), rejection.encoding_id.?);
+    // A zero dimension is named with its encoding.
+    var empty = try fixture(.{ .encoding_id = 0, .dimension = 0 });
+    defer empty.deinit();
+    reader = .fixed(empty.written());
+    rejection = .{};
+    try std.testing.expectError(error.InvalidShape, parseDiagnosed(std.testing.allocator, &reader, empty.written().len, .{}, &rejection));
+    try std.testing.expectEqualStrings("first", rejection.tensor().?);
+    try std.testing.expectEqual(@as(u32, 0), rejection.encoding_id.?);
     // Without a rejection the behavior is `parse`'s.
     reader = .fixed(bytes.written());
     try std.testing.expectError(error.UnsupportedTensorType, parse(std.testing.allocator, &reader, bytes.written().len, .{}));

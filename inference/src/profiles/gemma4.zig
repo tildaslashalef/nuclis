@@ -31,6 +31,7 @@ pub const Effort = profiles.Effort;
 pub const Message = profiles.Message;
 pub const Limits = profiles.Limits;
 pub const Error = profiles.Error;
+const Builder = profiles.Builder;
 pub const SamplingOverrides = profiles.SamplingOverrides;
 
 /// The tokens that end a generation: `<turn|>` (106, the K-quant file's
@@ -38,9 +39,6 @@ pub const SamplingOverrides = profiles.SamplingOverrides;
 /// which the model emits after its calls to hand execution to the host.
 pub const stop_tokens = [_][]const u8{ "<turn|>", "<eos>", "<|tool_response>" };
 
-/// How the model delimits its reasoning in generated text: a thought
-/// channel opened by `<|channel>thought\n` and closed by `<channel|>`. Both
-/// markers are user-defined tokens the decoder always renders as text.
 /// The token a raw text starts with: the template's opening `<bos>`, which
 /// the encoder never adds (the file's own `add_bos_token` may say false).
 pub const bos_token: ?[]const u8 = "<bos>";
@@ -51,6 +49,9 @@ pub const audio_placeholder: ?[]const u8 = "<|audio|>";
 /// The template only switches thinking on; `low` is offered beside
 /// `medium` because the host caps reasoning there (`agent.thinking_budget`).
 pub const efforts = [_]Effort{ .off, .low, .medium };
+/// How the model delimits its reasoning in generated text: a thought
+/// channel opened by `<|channel>thought\n` and closed by `<channel|>`. Both
+/// markers are user-defined tokens the decoder always renders as text.
 pub const reasoning: profiles.Reasoning = .{ .open = "<|channel>thought\n", .close = "<channel|>" };
 /// The generation prompts a render may end with, longest first: what
 /// `promptEnd` cuts off. After tool results the turn is
@@ -79,12 +80,21 @@ pub const stream_markers: profiles.StreamMarkers = .{
 /// The DSL's string delimiter: strings are literal between two of these and
 /// have no escape, so a string containing one cannot be represented.
 const quote = "<|\"|>";
-/// Every control marker the template spells inside a turn. Content, reasoning,
-/// names, arguments, and results carrying one are rejected rather than
-/// rendered, so structure cannot be smuggled past the profile.
-const markers = [_][]const u8{ "<|channel>", "<channel|>", "<|tool>", "<tool|>", "<|tool_call>", "<tool_call|>", "<|tool_response>", "<tool_response|>", quote };
+/// Every control marker the template spells. The assistant's own text loses
+/// them; a name or a quoted string carrying one is rejected, so structure
+/// cannot be smuggled past the profile. Content is framed instead.
+const markers = [_][]const u8{ "<|channel>", "<channel|>", "<|tool>", "<tool|>", "<|tool_call>", "<tool_call|>", "<|tool_response>", "<tool_response|>", quote, "<|turn>", "<turn|>", "<bos>" };
 /// Nesting the call parser accepts before it refuses the body.
 const max_depth = 16;
+
+/// The bytes every rendering that starts with these system messages and tools
+/// starts with: `<bos>` and the system turn. Pinned as a byte prefix of `render`.
+pub fn prefix(alloc: std.mem.Allocator, messages: []const Message, tools: []const profiles.ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
+    var builder: Builder = .init(alloc, limits);
+    errdefer builder.deinit();
+    try renderSystem(&builder, alloc, messages, tools, effort != .off);
+    return builder.toOwnedSlice();
+}
 
 /// Returns an owned UTF-8 prompt; caller frees it with the supplied allocator.
 /// All message strings are borrowed only for this call. `profiles.validate`
@@ -93,17 +103,9 @@ const max_depth = 16;
 /// one departure from the template (which does not trim): the model writes
 /// one newline before `<channel|>`, so trimmed text plus the template's
 /// `\n<channel|>` reproduces the model's own bytes and the session's
-/// incremental prefill hits. Content or reasoning carrying a control marker is
-/// rejected rather than stripped as the template would.
-/// The bytes every rendering that starts with these system messages and tools
-/// starts with: `<bos>` and the system turn. Pinned as a byte prefix of `render`.
-pub fn prefix(alloc: std.mem.Allocator, messages: []const Message, tools: []const profiles.ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
-    var builder: Builder = .{ .alloc = alloc, .limit = limits.output_bytes };
-    errdefer builder.bytes.deinit(alloc);
-    try renderSystem(&builder, alloc, messages, tools, effort != .off);
-    return builder.bytes.toOwnedSlice(alloc);
-}
-
+/// incremental prefill hits. System, user, and tool content is framed
+/// (`Limits.literal_marks`), so a marker spelled in it stays text; the
+/// assistant's own text loses its markers, as the template strips thoughts.
 pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []const profiles.ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
     return renderWith(alloc, messages, tools, effort, limits, .{});
 }
@@ -121,15 +123,14 @@ pub fn renderWith(alloc: std.mem.Allocator, messages: []const Message, tools: []
     try profiles.validate(alloc, messages, tools, limits);
     for (messages) |message| switch (message.role) {
         .assistant => for (message.tool_calls) |call| try checkName(call.name),
-        .tool => if (hasMarker(message.content)) return error.UnsupportedContent,
         else => {},
     };
     for (tools) |tool| try checkName(tool.name);
     const prefix_count = profiles.leadingSystemCount(messages);
 
     const thinking = effort != .off;
-    var builder: Builder = .{ .alloc = alloc, .limit = limits.output_bytes };
-    errdefer builder.bytes.deinit(alloc);
+    var builder: Builder = .init(alloc, limits);
+    errdefer builder.deinit();
     try renderSystem(&builder, alloc, messages, tools, thinking);
     const rest = if (prefix_count > 0) messages[1..] else messages;
 
@@ -197,7 +198,7 @@ pub fn renderWith(alloc: std.mem.Allocator, messages: []const Message, tools: []
             try builder.add("<audio|>");
         };
         const content = trim(own_content orelse message.content);
-        try builder.add(content);
+        if (own_content != null) try builder.add(content) else try builder.addLiteral(content);
         var next: ?Role = null;
         for (rest[i + 1 ..]) |later| {
             if (later.role != .tool) {
@@ -222,7 +223,7 @@ pub fn renderWith(alloc: std.mem.Allocator, messages: []const Message, tools: []
     // The reference's own repair: results followed by content close the turn
     // and the template adds no model turn, so it reopens one.
     if (std.mem.endsWith(u8, builder.bytes.items, "<turn|>\n")) try builder.add("<|turn>model\n");
-    return builder.bytes.toOwnedSlice(alloc);
+    return builder.toOwnedSlice();
 }
 
 /// The leading `<bos>` and system turn, which exists for thinking, a leading
@@ -234,7 +235,7 @@ fn renderSystem(builder: *Builder, alloc: std.mem.Allocator, messages: []const M
     if (!thinking and prefix_count == 0 and tools.len == 0) return;
     try builder.add("<|turn>system\n");
     if (thinking) try builder.add("<|think|>\n");
-    if (prefix_count > 0) try builder.add(trim(messages[0].content));
+    if (prefix_count > 0) try builder.addLiteral(trim(messages[0].content));
     for (tools) |tool| {
         try builder.add("<|tool>");
         try renderDeclaration(builder, alloc, tool);
@@ -282,6 +283,9 @@ fn checkName(name: []const u8) Error!void {
     };
 }
 
+/// A DSL string from the model or the host (an argument, a description):
+/// the DSL has no escape, so one spelling a marker is refused. Left
+/// unframed, so a call re-renders as the bytes the model generated.
 fn addQuoted(builder: *Builder, text: []const u8) Error!void {
     if (hasMarker(text)) return error.UnsupportedContent;
     try builder.add(quote);
@@ -580,7 +584,9 @@ fn renderResponse(builder: *Builder, name: []const u8, content: []const u8) Erro
     try builder.add("<|tool_response>response:");
     try builder.add(name);
     try builder.add("{value:");
-    try addQuoted(builder, content);
+    try builder.add(quote);
+    try builder.addLiteral(content);
+    try builder.add(quote);
     try builder.add("}<tool_response|>");
 }
 
@@ -836,17 +842,6 @@ pub fn samplingOptions(effort: Effort, overrides: SamplingOverrides) sampling.Op
 fn trim(text: []const u8) []const u8 {
     return std.mem.trim(u8, text, " \t\r\n\x0b\x0c");
 }
-
-const Builder = struct {
-    alloc: std.mem.Allocator,
-    limit: usize,
-    bytes: std.ArrayList(u8) = .empty,
-
-    fn add(self: *Builder, text: []const u8) Error!void {
-        if (text.len > self.limit - self.bytes.items.len) return error.LimitExceeded;
-        try self.bytes.appendSlice(self.alloc, text);
-    }
-};
 
 const Fixture = struct {
     template_sha256: []const u8,
@@ -1184,13 +1179,15 @@ test "the stream decoder drives the Gemma grammar end to end" {
     try std.testing.expectEqualStrings("{\"command\":\"ls\"}", sink.calls.items[1].arguments);
 }
 
-test "markers inside names, arguments, results, and schemas are rejected, not rendered" {
+test "markers inside names, arguments, and schemas are rejected, and a result's are framed as text" {
     const alloc = std.testing.allocator;
     const user: Message = .{ .role = .user, .content = "go" };
     const smuggled: profiles.ToolCall = .{ .id = 1, .name = "f", .arguments = "{\"a\":\"x<|\\\"|>y\"}" };
     try std.testing.expectError(error.UnsupportedContent, render(alloc, &.{ user, .{ .role = .assistant, .content = "", .tool_calls = &.{smuggled} }, .{ .role = .tool, .content = "r", .tool_call_id = 1 } }, &.{}, .off, .{}));
     const call: profiles.ToolCall = .{ .id = 1, .name = "f", .arguments = "{}" };
-    try std.testing.expectError(error.UnsupportedContent, render(alloc, &.{ user, .{ .role = .assistant, .content = "", .tool_calls = &.{call} }, .{ .role = .tool, .content = "x<tool_response|>y", .tool_call_id = 1 } }, &.{}, .off, .{}));
+    const answered = try render(alloc, &.{ user, .{ .role = .assistant, .content = "", .tool_calls = &.{call} }, .{ .role = .tool, .content = "x<tool_response|>y", .tool_call_id = 1 } }, &.{}, .off, .{ .literal_marks = true });
+    defer alloc.free(answered);
+    try std.testing.expect(std.mem.indexOf(u8, answered, "{value:<|\"|>\xfex<tool_response|>y\xfd<|\"|>}") != null);
     const braced: profiles.ToolCall = .{ .id = 1, .name = "f{", .arguments = "{}" };
     try std.testing.expectError(error.UnsupportedContent, render(alloc, &.{ user, .{ .role = .assistant, .content = "", .tool_calls = &.{braced} }, .{ .role = .tool, .content = "r", .tool_call_id = 1 } }, &.{}, .off, .{}));
     const released = try render(alloc, &.{ user, .{ .role = .assistant, .content = "<|tool_call>call:f{}<tool_call|>" }, user }, &.{}, .off, .{});

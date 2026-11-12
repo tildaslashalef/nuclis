@@ -1,7 +1,7 @@
 //! Incremental profile decoding, before token boundaries are lost.
 //!
-//! The two text profiles share a channel state machine, configured by each
-//! profile's actual control tokens. A marker spelled with ordinary tokens is
+//! Every chat profile decodes through this one state machine, configured by
+//! its actual control tokens. A marker spelled with ordinary tokens is
 //! ordinary text. Only the channel header's non-special suffix needs a small
 //! hold-back; reasoning and answer content stream without marker-sized delays.
 //! UTF-8 repair is local to each channel, so a partial scalar cannot cross a
@@ -194,6 +194,12 @@ pub const Decoder = struct {
         if (self.markers.channel) |channel| return self.feedChannel(channel, token, piece, sink);
         if (self.markers.tool) |tool| {
             if (token == tool.open) {
+                // A second open before a close settles the first as cut: a
+                // partial call is neither an action nor answer text.
+                if (self.in_tool) {
+                    self.in_tool = false;
+                    try sink.send(.{ .tool_cut = self.tool_buf.items.len });
+                }
                 try self.finish(sink);
                 self.in_tool = true;
                 self.tool_buf.clearRetainingCapacity();
@@ -401,9 +407,9 @@ pub const Decoder = struct {
 
     /// Release incomplete header text and an unfinished UTF-8 scalar at a
     /// stop or a channel boundary. An open call is `end`'s to settle; a
-    /// boundary inside a call is not one.
+    /// boundary inside a call is not one, so an open call is left untouched.
     pub fn finish(self: *Decoder, sink: anytype) !void {
-        std.debug.assert(!self.in_tool);
+        if (self.in_tool) return;
         if (self.in_header) {
             self.in_header = false;
             self.thinking = false;
@@ -825,6 +831,45 @@ test "a call open at a stop is cut, not text; at EOS a whole body is a call; a r
     try std.testing.expectEqual(@as(usize, 0), cut.calls);
     try std.testing.expectEqual(@as(?usize, 6), cut.cut);
     try std.testing.expectEqualStrings("Sure. ", cut.answer.written());
+}
+
+test "a second open before a close cuts the first call and starts another, under either unparsed rule" {
+    // Qwen releases an unparsed body as text, Gemma cuts it; both bracket
+    // grammars settle the abandoned call the same way.
+    for ([_]Tool.Unparsed{ .text, .cut }) |unparsed| {
+        var r = ToolSink.init(std.testing.allocator);
+        defer r.deinit();
+        var d = Decoder.init(std.testing.allocator, .{
+            .open = 1,
+            .close = 2,
+            .tool = .{ .open = 3, .close = 4, .parse = ToolFixture.parse, .unparsed = unparsed },
+        }, false);
+        defer d.deinit();
+        try d.feed(3, "<tool_call>", &r);
+        try d.feed(11, "LOST", &r);
+        try d.feed(3, "<tool_call>", &r);
+        try std.testing.expectEqual(@as(?usize, 4), r.cut);
+        try d.feed(11, "BODY", &r);
+        try d.feed(4, "</tool_call>", &r);
+        try d.end(.{ .stop = .eos, .timing = .{} }, &r);
+        try std.testing.expectEqual(@as(usize, 1), r.calls);
+        try std.testing.expectEqualStrings("", r.answer.written());
+        try std.testing.expectEqual(@as(usize, 1), r.stops);
+    }
+}
+
+test "finish inside a call leaves the call open" {
+    var r = ToolSink.init(std.testing.allocator);
+    defer r.deinit();
+    var d = toolDecoder();
+    defer d.deinit();
+    try d.feed(3, "<tool_call>", &r);
+    try d.feed(11, "BO", &r);
+    try d.finish(&r);
+    try d.feed(11, "DY", &r);
+    try d.feed(4, "</tool_call>", &r);
+    try std.testing.expectEqual(@as(usize, 1), r.calls);
+    try std.testing.expectEqual(@as(?usize, null), r.cut);
 }
 
 test "a growing call body reports its size; a stray close while answering is dropped" {

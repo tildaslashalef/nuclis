@@ -49,6 +49,13 @@ therefore help, but do not eliminate the need for a bounded incremental parser
 inside a call. These facts were read with `scripts/fixtures/gguf-inventory.py` and a
 standard-library reader over its recorded vocabulary offset, without weights.
 
+A tool result is framed content ([prompt-profile.md § Content is
+data](prompt-profile.md#content-is-data)): a file that spells
+`</tool_response>` or `<|im_end|>` reaches the model as text, not as the
+end of its response block or its turn. A tool or parameter name is spelled
+bare inside `<function=…>` and `<parameter=…>`, so one carrying a marker, a
+`>`, or a newline is refused.
+
 ## Gemma: calls and results inside a model turn
 
 The [26B-A4B upstream template](https://huggingface.co/google/gemma-4-26B-A4B-it/raw/main/chat_template.jinja)
@@ -101,6 +108,13 @@ not parse is dropped with `tool_cut`, not released as answer text as the
 other profiles do (`Tool.unparsed`): its brackets are control tokens, so
 the text would show the reader the model's call syntax; the API answers
 `malformed_tool_call`.
+
+A result's content sits between two `<|"|>` delimiters and the DSL has no
+escape. It is framed content, so a delimiter or a marker it spells is text
+tokens and cannot end the string, the response, or the turn; it is
+rendered, not refused, and a file that mentions one no longer ends the
+agent's turn. An argument string or a description carrying a marker is
+still refused, since those are the model's or the host's own strings.
 
 ## Muse Glimmer: ATEM calls as their own messages
 
@@ -175,6 +189,10 @@ several calls in one step all arrive before generation ends.
 Muse's grammar (`fixtures/muse_glimmer-tools.json`, `muse_glimmer.parseTool`)
 rides the decoder's second grammar, the message headers; its handoff is the
 stop token `<|eot|>` after the step's last call, the same shape as Gemma's.
+
+Under both bracket grammars a second opening token before a close settles
+the first call as cut (`tool_cut`) and starts the next one; no assert is
+reachable from model output.
 
 The application can validate call IDs, pending result order, schemas, and
 execution limits without knowing any wire format. The profile alone decides

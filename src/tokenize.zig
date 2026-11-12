@@ -76,9 +76,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, effort:
     // unless a profile is forced).
     const prompt = if (options.raw) try alloc.dupe(u8, user) else blk: {
         const profile = forced orelse inference.profiles.forDocument(mapped.document) orelse return error.UnsupportedPromptTemplate;
-        break :blk try profile.render(alloc, &.{.{ .role = .user, .content = user }}, &.{}, effort, .{});
+        break :blk try profile.render(alloc, &.{.{ .role = .user, .content = user }}, &.{}, effort, .{ .literal_marks = true });
     };
     defer alloc.free(prompt);
+    // The bytes the encoder reads: the render without its literal marks.
+    const read = try inference.tokenizer.withoutLiteralMarks(alloc, prompt);
+    defer alloc.free(read);
     var encoder = try inference.tokenizer.Encoder.init(alloc, &vocab);
     defer encoder.deinit();
     const ids = try encoder.encode(alloc, prompt, true, .{});
@@ -92,11 +95,11 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, effort:
         .model_path = model_path,
         .rendering = if (options.raw) "raw" else "chat",
         .think = if (options.raw) null else @tagName(effort),
-        .bytes = prompt.len,
+        .bytes = read.len,
         .tokens = ids.len,
         .ids = ids,
         .offsets = offsets,
-        .round_trip = std.mem.eql(u8, decoded, prompt),
+        .round_trip = std.mem.eql(u8, decoded, read),
     };
     try report.render(writer, json, sty);
 }

@@ -18,6 +18,23 @@ pub const Limits = struct {
 };
 pub const Error = bpe.Error || error{ UnsupportedPreTokenizer, InvalidUtf8 };
 
+/// Bytes UTF-8 never uses, framing a span of text in which no special token
+/// matches, whatever its kind (docs/engine/tokenizer.md § Literal spans). A
+/// prompt profile frames the content it renders as data; `encode` drops the
+/// marks, so a framed span tokenises exactly as the same bytes unframed. A
+/// text whose first mark is a close starts inside a span.
+pub const literal_open: u8 = 0xFE;
+pub const literal_close: u8 = 0xFD;
+
+/// `text` without its literal marks: the bytes the encoder reads. Caller
+/// owns the result.
+pub fn withoutLiteralMarks(alloc: std.mem.Allocator, text: []const u8) std.mem.Allocator.Error![]u8 {
+    var out: std.ArrayList(u8) = try .initCapacity(alloc, text.len);
+    errdefer out.deinit(alloc);
+    for (text) |byte| if (byte != literal_open and byte != literal_close) out.appendAssumeCapacity(byte);
+    return out.toOwnedSlice(alloc);
+}
+
 /// The splitters, keyed by the `pre` labels the encoder accepts: byte-level
 /// `qwen35` and `llama4` (gpt4o.zig), and Gemma's SPM-style `gemma4`.
 pub const Splitter = enum { qwen35, gpt4o, spm };
@@ -119,8 +136,14 @@ pub const Encoder = struct {
     /// Returns owned IDs, freed with alloc. `parse_special=false` treats control
     /// and unknown spellings as ordinary text; user-defined tokens always match,
     /// following the pinned reference. Never automatically adds BOS/EOS.
-    pub fn encode(self: *const Encoder, alloc: std.mem.Allocator, text: []const u8, parse_special: bool, limits: Limits) Error![]u32 {
-        if (text.len > limits.input_bytes) return error.LimitExceeded;
+    /// Literal marks (`literal_open`, `literal_close`) are dropped, and no
+    /// special token matches across a byte they frame.
+    pub fn encode(self: *const Encoder, alloc: std.mem.Allocator, framed: []const u8, parse_special: bool, limits: Limits) Error![]u32 {
+        if (framed.len > limits.input_bytes) return error.LimitExceeded;
+        var unframed: ?Unframed = if (std.mem.indexOfAny(u8, framed, &.{ literal_open, literal_close }) != null) try .of(alloc, framed) else null;
+        defer if (unframed) |*u| u.deinit(alloc);
+        const text = if (unframed) |u| u.text else framed;
+        const literal: ?[]const bool = if (unframed) |u| u.literal else null;
         if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
         const marks = try alloc.alloc(?u32, text.len);
         defer alloc.free(marks);
@@ -143,6 +166,7 @@ pub const Encoder = struct {
                 if (size > text.len - at) break;
                 try spend(&special_work, size);
                 if (!std.mem.eql(u8, text[at..][0..size], token.text)) continue;
+                if (literal) |l| if (std.mem.indexOfScalar(bool, l[at..][0..size], true) != null) continue;
                 if (try self.covered(marks, at, size, &special_work)) continue;
                 marks[at] = id;
                 pos = at + size;
@@ -183,6 +207,40 @@ pub const Encoder = struct {
             if (self.vocab.tokens[earlier].text.len > k) return true;
         };
         return false;
+    }
+};
+
+/// A framed text split into its bytes and, per byte, whether a literal span
+/// holds it.
+const Unframed = struct {
+    text: []u8,
+    literal: []bool,
+    /// The framed length both slices were allocated with.
+    capacity: usize,
+
+    fn of(alloc: std.mem.Allocator, framed: []const u8) std.mem.Allocator.Error!Unframed {
+        const text = try alloc.alloc(u8, framed.len);
+        errdefer alloc.free(text);
+        const literal = try alloc.alloc(bool, framed.len);
+        errdefer alloc.free(literal);
+        const first = std.mem.indexOfAny(u8, framed, &.{ literal_open, literal_close }).?;
+        var inside = framed[first] == literal_close;
+        var n: usize = 0;
+        for (framed) |byte| switch (byte) {
+            literal_open => inside = true,
+            literal_close => inside = false,
+            else => {
+                text[n] = byte;
+                literal[n] = inside;
+                n += 1;
+            },
+        };
+        return .{ .text = text[0..n], .literal = literal[0..n], .capacity = framed.len };
+    }
+
+    fn deinit(self: *Unframed, alloc: std.mem.Allocator) void {
+        alloc.free(self.text.ptr[0..self.capacity]);
+        alloc.free(self.literal.ptr[0..self.capacity]);
     }
 };
 
@@ -236,6 +294,34 @@ test "full encoding partitions special markers before Unicode and BPE" {
         defer std.testing.allocator.free(ids);
         try std.testing.expectEqualSlices(u32, case[2], ids);
     }
+}
+
+test "no special token of any kind matches inside or across a literal span, and the marks leave no trace" {
+    var vocab = try fixture();
+    defer vocab.deinit();
+    var encoder = try Encoder.init(std.testing.allocator, &vocab);
+    defer encoder.deinit();
+    const o = [1]u8{literal_open};
+    const c = [1]u8{literal_close};
+    const cases = .{
+        // Framed control and user-defined markers are text; outside a span
+        // they still match.
+        .{ "<x>" ++ o ++ "a<x>b<u>" ++ c ++ "<x>", &[_]u32{ 10, 0, 6, 8, 7, 1, 6, 9, 7, 10 } },
+        // A marker that straddles a mark is refused; framing does not split
+        // the merges, so `a` and `b` across a boundary still merge.
+        .{ "<" ++ o ++ "x>" ++ c, &[_]u32{ 6, 8, 7 } },
+        .{ "a" ++ o ++ "b" ++ c, &[_]u32{2} },
+        // A text cut inside a span starts inside it.
+        .{ "<x>" ++ c ++ "<x>", &[_]u32{ 6, 8, 7, 10 } },
+    };
+    inline for (cases) |case| {
+        const ids = try encoder.encode(std.testing.allocator, case[0], true, .{});
+        defer std.testing.allocator.free(ids);
+        try std.testing.expectEqualSlices(u32, case[1], ids);
+    }
+    const plain = try withoutLiteralMarks(std.testing.allocator, "a" ++ o ++ "<x>" ++ c);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("a<x>", plain);
 }
 
 test "full encoding bounds input, output, and aggregate work across pieces" {
@@ -308,6 +394,9 @@ fn allocationCheck(alloc: std.mem.Allocator, vocab: *const vocabulary.Vocabulary
     const ids = try encoder.encode(alloc, "ab<x>12<u>", true, .{});
     defer alloc.free(ids);
     try std.testing.expectEqualSlices(u32, &.{ 2, 10, 3, 4, 11 }, ids);
+    const framed = try encoder.encode(alloc, "a\xfe<x>\xfd", true, .{});
+    defer alloc.free(framed);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 6, 8, 7 }, framed);
 }
 
 test "encoder initialization and encoding clean up all allocation failures" {

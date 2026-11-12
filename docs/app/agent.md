@@ -133,13 +133,11 @@ the decoder and the history cannot drift.
 
 Validation is deliberately separate from support. `profiles.validate` accepts
 a structurally valid tools input; it does not decide whether a profile can
-render it. Each profile asks that second question. Qwen answered yes once its
-template was pinned; Gemma answered no with `error.ToolsUnsupported` for two
-days, until its distinct grammar and result handoff got their own fixtures.
-That ordering is the point: the loop was built and tested against the shared
-contract while the profile refused to guess at a wire format it had no
-fixtures for — the same rule that keeps a mismatched template from being
-rendered at all.
+render it. Each profile asks that second question, and renders a tool
+grammar only once its fixtures pin it: the loop is built and tested against
+the shared contract, never against a wire format a profile would have to
+guess — the same rule that keeps a mismatched template from being rendered
+at all.
 
 ## 4. A cell is not a code point: grapheme clusters and terminal width
 
