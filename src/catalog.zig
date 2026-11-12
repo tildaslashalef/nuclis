@@ -639,6 +639,77 @@ pub fn findDigest(sha256: []const u8, size: u64) ?FileMatch {
     return null;
 }
 
+/// The index as data, for the readers that import none of nuclis: the gate
+/// runner and the bench scripts read `src/catalog.json`, which `make index`
+/// writes with this and a test holds equal to the table.
+pub fn writeJson(out: *std.Io.Writer) std.Io.Writer.Error!void {
+    const JsonFile = struct { role: Role, variant: ?[]const u8, local: []const u8, size: u64, sha256: []const u8, verdict: ?Verdict };
+    const JsonArtifact = struct {
+        name: []const u8,
+        title: []const u8,
+        kind: ModelKind,
+        status: Lifecycle,
+        repo: []const u8,
+        revision: []const u8,
+        architecture: []const u8,
+        quantization: []const u8,
+        defaults: struct { profile: ?Profile, draft: ?[]const u8 },
+        files: []const JsonFile,
+    };
+    var w: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_1 } };
+    try w.beginObject();
+    try w.objectField("$comment");
+    try w.write("Generated from src/catalog.zig by `make index`; do not edit. docs/models/catalogue.md § The catalogue.");
+    try w.objectField("schema_version");
+    try w.write(1);
+    try w.objectField("artifacts");
+    try w.beginArray();
+    for (&artifacts) |*a| {
+        var files: [8]JsonFile = undefined;
+        var local: [8][256]u8 = undefined;
+        for (a.files, 0..) |*f, i| files[i] = .{
+            .role = f.role,
+            .variant = f.variant,
+            .local = std.fmt.bufPrint(&local[i], "{s}/{s}", .{ a.directoryOf(f), f.path }) catch unreachable, // comptime-checked lengths
+            .size = f.size,
+            .sha256 = f.sha256,
+            .verdict = f.verdict,
+        };
+        try w.write(JsonArtifact{
+            .name = a.name,
+            .title = a.title,
+            .kind = a.kind,
+            .status = a.status,
+            .repo = a.repo,
+            .revision = a.revision,
+            .architecture = a.architecture,
+            .quantization = a.quantization,
+            .defaults = .{ .profile = a.defaults.profile, .draft = a.defaults.draft },
+            .files = files[0..a.files.len],
+        });
+    }
+    try w.endArray();
+    try w.endObject();
+    try out.writeByte('\n');
+}
+
+comptime {
+    for (artifacts) |a| {
+        if (a.files.len > 8) @compileError(a.name ++ ": writeJson holds at most 8 files");
+        for (a.files) |f| if (a.directoryOf(&f).len + 1 + f.path.len > 256) @compileError(a.name ++ ": a local path over 256 bytes");
+    }
+}
+
+test "src/catalog.json is the table (make index rewrites it)" {
+    var buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buffer.deinit();
+    try writeJson(&buffer.writer);
+    std.testing.expectEqualStrings(@embedFile("catalog.json"), buffer.written()) catch |err| {
+        std.debug.print("src/catalog.json is stale: run `make index`\n", .{});
+        return err;
+    };
+}
+
 /// From the sidecar alone: `present` when it records the pinned digest and
 /// size, `mismatch` when it records something else, `unverified` when the
 /// file is there without one (copied in by hand; `model adopt` or a `pull`

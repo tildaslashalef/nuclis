@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """The workload driver: runs the benchmark workloads that workloads.json declares.
 
-A `bench` workload resolves into one `nuclis bench` command (model from
-gates.json, prompt array or raw text, budget, context, cache precision,
+workloads.json is shapes × models (scripts/bench/manifest.py `expand`
+names each `<row>/<shape>`). A `bench` workload resolves into one `nuclis
+bench` command (model from gates.json and the index, prompt array or raw text, budget, context, cache precision,
 sampling, the off/on pair with `--speculative on`, and an optional
 no-drafter baseline run) and saves the JSON report under
 `.zig-cache/bench/<workload>/<rev>-<n>.json`; an `acceptance` workload
@@ -43,9 +44,37 @@ BAR_METRICS = ("decode_tokens_per_second", "prefill_tokens_per_second", "decode_
 # ---- pure functions (covered by --self-test) --------------------------------
 
 
-def validate(doc, models):
+def validate_rows(wdoc, gdoc, index):
+    """The shapes × models document's own problems: unknown shapes and models,
+    and a model whose artifact is legacy (a workload measures current models)."""
     problems = []
-    for name, w in doc.get("workloads", {}).items():
+    shapes = wdoc.get("shapes", {})
+    for name, shape in shapes.items():
+        if "base" in shape and shape["base"] not in shapes:
+            problems.append(f"shapes.{name}: base names an unknown shape {shape['base']!r}")
+    for row, m in wdoc.get("models", {}).items():
+        key = m.get("model")
+        if key not in gdoc["models"]:
+            problems.append(f'models.{row}: model names an unknown gates.json key "{key}"')
+            continue
+        artifact = manifest.index_artifact(index, gdoc["models"][key].get("artifact", ""))
+        if artifact is not None and artifact.get("status") == "legacy":
+            problems.append(f"models.{row}: {artifact['name']} is legacy; remove its workloads")
+        for name in m.get("shapes", []):
+            if name not in shapes:
+                problems.append(f"models.{row}: unknown shape {name!r}")
+        for key in ("bars", "note", "evidence"):
+            for name in m.get(key, {}):
+                if name not in m.get("shapes", []):
+                    problems.append(f"models.{row}.{key}: {name!r} is not one of its shapes")
+        if "prompt_tokens" in str([shapes.get(n, {}) for n in m.get("shapes", [])]) and "run" not in m:
+            problems.append(f"models.{row}: a prompt_tokens shape needs the row's run")
+    return problems
+
+
+def validate(workloads, models):
+    problems = []
+    for name, w in workloads.items():
         if "/" not in name or name != name.lower():
             problems.append(f"{name}: names are lower-case <entry>/<workload>")
         kind = w.get("kind")
@@ -112,6 +141,8 @@ def bench_argv(w, model_path, nuclis="./zig-out/bin/nuclis", speculative=None):
     argv += ["--speculative", "on" if on else "off"]
     if on:
         argv += ["--draft-length", str(w["draft_length"])]
+        if w.get("draft"):
+            argv += ["--draft", w["draft"]]
     argv.append("--json")
     return argv
 
@@ -159,14 +190,23 @@ def next_path(directory, rev, suffix=""):
 
 
 def load():
-    doc = json.loads(MANIFEST.read_text())
-    gdoc = json.loads(manifest.MANIFEST.read_text())
-    problems = validate(doc, gdoc["models"])
+    """The expanded workloads and the resolved gates.json; exits on a problem."""
+    wdoc = json.loads(MANIFEST.read_text())
+    index = manifest.load_index()
+    gdoc = manifest.resolve(json.loads(manifest.MANIFEST.read_text()), index)
+    problems = validate_rows(wdoc, gdoc, index)
+    workloads = {}
+    if not problems:
+        try:
+            workloads = manifest.expand(wdoc, gdoc, index)
+        except KeyError as e:
+            problems.append(str(e))
+        problems += validate(workloads, gdoc["models"])
     if problems:
         for p in problems:
             print(f"workloads.json: {p}", file=sys.stderr)
         sys.exit(2)
-    return doc, gdoc
+    return workloads, gdoc
 
 
 def git_rev():
@@ -244,7 +284,7 @@ def main():
         "--run",
         action="append",
         metavar="NAME",
-        help="workloads by name or glob (repeatable): gemma4-qat/prose512-draft, 'qwen38/spec/*'",
+        help="workloads by name or glob (repeatable): qwen38/prose512-draft, 'gemma4-e4b/*'",
     )
     ap.add_argument("--save-dir", default=SAVE_ROOT, help=f"where bench reports go (default {SAVE_ROOT}/<workload>/)")
     ap.add_argument("--dry-run", action="store_true")
@@ -253,12 +293,12 @@ def main():
     os.chdir(ROOT)
     if args.self_test:
         sys.exit(0 if self_test() else 1)
-    doc, gdoc = load()
+    workloads, gdoc = load()
     if args.validate:
-        print(f"workloads.json: {len(doc['workloads'])} workloads, valid")
+        print(f"workloads.json: {len(workloads)} workloads, valid")
         sys.exit(0 if self_test() else 1)
     if args.list:
-        for name, w in doc["workloads"].items():
+        for name, w in workloads.items():
             model = manifest.model_path(gdoc, w["model"])
             shape = (
                 (
@@ -275,12 +315,12 @@ def main():
     if not args.run:
         ap.error("one of --list, --validate, --run is required")
     try:
-        names = select(list(doc["workloads"]), args.run)
+        names = select(list(workloads), args.run)
     except KeyError as e:
         sys.exit(f"no workload matches {e.args[0]!r}; --list shows them")
     if not args.no_build and not args.dry_run:
         manifest.build(gdoc, "metal", False)
-    failed = [n for n in names if not run_workload(n, doc["workloads"][n], gdoc, args)]
+    failed = [n for n in names if not run_workload(n, workloads[n], gdoc, args)]
     if failed:
         sys.exit("failed: " + ", ".join(failed))
 
@@ -331,16 +371,84 @@ def sample():
     }
 
 
+SAMPLE_INDEX = {
+    "artifacts": [
+        {
+            "name": "a",
+            "status": "current",
+            "defaults": {"draft": "mtp"},
+            "files": [
+                {"role": "main", "local": "o/a/a.gguf"},
+                {"role": "draft", "variant": "mtp", "local": "o/a/mtp.gguf", "verdict": {"draft_length": 7}},
+                {"role": "draft", "variant": "dflash2", "local": "o/a/d.gguf", "verdict": {"draft_length": 5}},
+            ],
+        },
+        {"name": "old", "status": "legacy", "defaults": {}, "files": [{"role": "main", "local": "o/old.gguf"}]},
+    ]
+}
+
+
+def sample_rows():
+    return {
+        "shapes": {
+            "prose": {
+                "kind": "bench",
+                "prompt_tokens": "p.json",
+                "max_tokens": 8,
+                "ctx": 64,
+                "kv": "f16",
+                "warmup": 1,
+                "repeat": 2,
+                "evidence": "docs/x.md",
+            },
+            "prose-draft": {"base": "prose", "pair": True},
+            "acceptance": {"kind": "acceptance", "evidence": "docs/x.md"},
+        },
+        "models": {
+            "a": {
+                "model": "a",
+                "run": "run-x",
+                "reference_records": "r.json",
+                "record_suffix": "a",
+                "shapes": ["prose", "prose-draft", "acceptance"],
+                "bars": {"prose-draft": {"decode_speedup": {"min": 1.0}}},
+            },
+            "a-dflash2": {"model": "a", "run": "run-x", "draft": "dflash2", "shapes": ["prose-draft"]},
+        },
+    }
+
+
 class SelfTest(unittest.TestCase):
     def test_sample_valid(self):
-        self.assertEqual(validate(sample(), {"a": {}}), [])
+        self.assertEqual(validate(sample()["workloads"], {"a": {}}), [])
+
+    def test_shapes_by_models(self):
+        gdoc = manifest.resolve({"models": {"a": {"artifact": "a"}, "old": {"artifact": "old"}}}, SAMPLE_INDEX)
+        self.assertEqual(validate_rows(sample_rows(), gdoc, SAMPLE_INDEX), [])
+        ws = manifest.expand(sample_rows(), gdoc, SAMPLE_INDEX)
+        self.assertEqual(sorted(ws), ["a-dflash2/prose-draft", "a/acceptance", "a/prose", "a/prose-draft"])
+        self.assertEqual(ws["a/prose"]["prompt_tokens"], "tests/fixtures/run-x/p.json")
+        self.assertEqual(ws["a/prose-draft"]["draft_length"], 7)
+        self.assertEqual(ws["a/prose-draft"]["bars"], {"decode_speedup": {"min": 1.0}})
+        self.assertEqual(ws["a-dflash2/prose-draft"]["draft_length"], 5)
+        self.assertEqual(ws["a/acceptance"]["run"], "run-x")
+        self.assertEqual(validate(ws, gdoc["models"]), [])
+        argv = bench_argv(ws["a-dflash2/prose-draft"], "a")
+        self.assertEqual(argv[argv.index("--draft") + 1], "dflash2")
+        self.assertNotIn("--draft", bench_argv(ws["a/prose-draft"], "a"))
+        rows = sample_rows()
+        rows["models"]["old"] = {"model": "old", "shapes": ["nope"]}
+        rows["models"]["gone"] = {"model": "zz", "shapes": []}
+        problems = validate_rows(rows, gdoc, SAMPLE_INDEX)
+        for needle in ("old is legacy", "unknown shape 'nope'", 'unknown gates.json key "zz"'):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
 
     def test_validation_names_problems(self):
         doc = sample()
         doc["workloads"]["a/prose"]["prompt"] = "both"
         doc["workloads"]["a/code-draft"]["bars"] = {"nope": {"min": 1}}
         doc["workloads"]["B/x"] = {"kind": "bench", "model": "zz"}
-        problems = validate(doc, {"a": {}})
+        problems = validate(doc["workloads"], {"a": {}})
         for needle in ("exactly one of prompt", "bars.nope", "lower-case", 'unknown gates.json key "zz"'):
             self.assertTrue(any(needle in p for p in problems), (needle, problems))
 

@@ -20,6 +20,9 @@ import sys
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import manifest  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 PAIR_HEADER = (
     "| report | prompt | sampling | draft | accepted/step | proposed/step | drafts/accepted | tokens/batch | propose ms | verify ms | "
@@ -237,7 +240,7 @@ def main():
         print("\n".join(compare(prev, cur)) or "nothing comparable")
     if args.check:
         name, path = args.check
-        workloads = json.loads((ROOT / "workloads.json").read_text())["workloads"]
+        workloads = manifest.workloads()
         if name not in workloads:
             sys.exit(f"unknown workload {name}")
         missed, lines = check_bars(workloads[name].get("bars", {}), json.loads(Path(path).read_text()))

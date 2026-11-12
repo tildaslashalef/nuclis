@@ -11,7 +11,10 @@ is the fixed short prompt of the speculative-decoding record. Reports are saved 
 so an interrupted matrix resumes. The table gives, per cell, accepted and
 proposed drafts per batch, E (emitted tokens per batch), the per-batch costs
 and their sum C, C / 50E (20 tok/s needs <= 1), the off and on rates, and the
-speedup: the median of the pairs' on/off ratios. The chip heats over a long
+speedup: the median of the pairs' on/off ratios. `--baseline` adds one
+no-drafter run per context and sampling (`bench` with the switch off opens
+no drafter), the true baseline the 2026-09-21 verdict record reports beside
+the pair's loaded-but-off rate. The chip heats over a long
 matrix, slowing both sides of a pair; `--cooldown` idles before each cell
 for cold-chip rates.
 See docs/development.md § The speed loop.
@@ -78,8 +81,9 @@ def cell_name(context, sampling, draft, p_min):
 
 
 def bench_argv(nuclis, model, model_key, prompt, sampling, draft, p_min, repeat, tokens, variant=None):
+    """One cell's off/on pairs; `draft` None is the no-drafter baseline run."""
     argv = [str(nuclis), "bench", "--backend", "metal", "--model", model]
-    if variant is not None:
+    if variant is not None and draft is not None:
         argv += ["--draft", variant]
     if prompt is None:
         argv += ["--prompt", CODE_PROMPT, "--raw"]
@@ -87,6 +91,8 @@ def bench_argv(nuclis, model, model_key, prompt, sampling, draft, p_min, repeat,
         argv += ["--prompt-tokens", str(prompt), "--prefix-cache", str(speed.PREFIX_DIR)]
     argv += ["--max-tokens", str(tokens), "--ctx-size", "32768", "--kv", "f16"]
     argv += ["--repeat", str(repeat), "--warmup", "0"]
+    if draft is None:
+        return argv + ["--speculative", "off"] + sampling_flags(model_key, sampling) + ["--json"]
     argv += ["--speculative", "on", "--draft-length", str(draft)]
     if p_min is not None:
         argv += ["--draft-p-min", str(p_min)]
@@ -141,10 +147,12 @@ HEADER = (
 
 def table_line(cell, row):
     context = cell["context"] if cell["context"] == "code" else f"{int(cell['context']):,}"
+    # With --baseline: the true baseline, then the pair's loaded-but-off rate.
+    rates = f"{row['off']:.2f}" if row.get("baseline") is None else f"{row['baseline']:.2f} → {row['off']:.2f}"
     return (
         f"| {context} | {cell['sampling']} | {cell['draft']} | {cell['p_min']:g} | {row['accepted']:.2f} | {row['proposed']:.2f} "
         f"| {row['E']:.2f} | {row['propose']:.1f} | {row['verify']:.1f} | {row['recover']:.1f} | {row['commit']:.1f} "
-        f"| {row['C']:.1f} | {row['C_over_50E']:.2f} | {row['off']:.2f} → {row['on']:.2f} "
+        f"| {row['C']:.1f} | {row['C_over_50E']:.2f} | {rates} → {row['on']:.2f} "
         f"| {row['speedup']:.3f}× ({row['speedup_min']:.2f}–{row['speedup_max']:.2f}) |"
     )
 
@@ -167,6 +175,9 @@ def main():
         "--cooldown", type=float, default=0, help="seconds idle before each run, for a cool chip (default: 0)"
     )
     ap.add_argument("--fresh", action="store_true", help="re-run cells already saved")
+    ap.add_argument(
+        "--baseline", action="store_true", help="also one no-drafter run per context and sampling (the true baseline)"
+    )
     ap.add_argument("--report", action="store_true", help="only print the saved cells, run nothing")
     ap.add_argument("--json", action="store_true", help="print the rows as JSON")
     ap.add_argument("--self-test", action="store_true", help="run the unit tests of the pure functions")
@@ -174,7 +185,7 @@ def main():
     if args.self_test:
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(SelfTest)
         sys.exit(0 if unittest.TextTestRunner(verbosity=0).run(suite).wasSuccessful() else 1)
-    gdoc = json.loads((ROOT / "gates.json").read_text())
+    gdoc = manifest.load()
     if args.model not in gdoc["models"]:
         sys.exit(f"unknown model {args.model}; gates.json has {', '.join(gdoc['models'])}")
     # A pair names the index entry and its draft variant.
@@ -192,6 +203,21 @@ def main():
     for context in args.contexts.split(","):
         prompt = None if context == "code" else speed.prompt_for(run, int(context))
         for sampling in args.sampling.split(","):
+            baseline = None
+            if args.baseline:
+                path = out_dir / f"{context}-{sampling}-baseline.json"
+                if (args.fresh or not path.exists()) and not args.report:
+                    argv = bench_argv(
+                        speed.CANDIDATE, model, args.model, prompt, sampling, None, None, args.repeat, args.tokens
+                    )
+                    time.sleep(args.cooldown)
+                    result = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+                    if result.returncode != 0:
+                        sys.exit(f"{' '.join(argv)} failed:\n{result.stderr.strip()[-2000:]}")
+                    path.write_text(result.stdout)
+                if path.exists():
+                    samples = json.loads(path.read_text())["samples"]
+                    baseline = statistics.mean(s["decode_tokens_per_second"] for s in samples)
             for draft in parse_ints(args.drafts):
                 for p_min in p_mins:
                     path = out_dir / (cell_name(context, sampling, draft, p_min) + ".json")
@@ -226,6 +252,7 @@ def main():
                         "draft": draft,
                         "p_min": report.get("speculative_p_min", 0.7),
                     }
+                    row["baseline"] = baseline
                     rows.append({**cell, **row})
                     print(table_line(cell, row), flush=True)
     if args.json:
@@ -253,6 +280,34 @@ class SelfTest(unittest.TestCase):
         self.assertEqual(deep[deep.index("--draft-length") + 1], "7")
         self.assertEqual(deep[deep.index("--draft-p-min") + 1], "0.5")
         self.assertIn("--prefix-cache", deep)
+
+    def test_baseline_argv(self):
+        base = bench_argv("nuclis", "m", "qwen38", Path("p.json"), "instruct", None, None, 3, 128, "dflash2")
+        self.assertEqual(base[base.index("--speculative") + 1], "off")
+        for flag in ("--draft-length", "--draft", "--draft-p-min"):
+            self.assertNotIn(flag, base)
+        self.assertIn("1.5", base)
+        line = table_line(
+            {"context": "512", "sampling": "greedy", "draft": 4, "p_min": 0.7},
+            {
+                "accepted": 1,
+                "proposed": 2,
+                "E": 2,
+                "propose": 1,
+                "verify": 1,
+                "recover": 1,
+                "commit": 1,
+                "C": 3,
+                "C_over_50E": 0.1,
+                "off": 10.0,
+                "on": 12.0,
+                "speedup": 1.2,
+                "speedup_min": 1.1,
+                "speedup_max": 1.3,
+                "baseline": 10.5,
+            },
+        )
+        self.assertIn("10.50 → 10.00 → 12.00", line)
 
     def test_cell_name(self):
         self.assertEqual(cell_name("512", "greedy", 4, None), "512-greedy-d4")

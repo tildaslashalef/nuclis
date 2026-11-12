@@ -4,15 +4,21 @@
 const std = @import("std");
 const compare = @import("compare.zig");
 const glob = @import("glob.zig");
+const catalog_index = @import("index.zig");
 const manifest = @import("manifest.zig");
 const run = @import("run.zig");
+const cache = @import("cache.zig");
+const costs = @import("costs.zig");
 
 const usage =
     \\usage: nuclis-gates MODE [options]
     \\       nuclis-gates compare NATIVE REFERENCE --positions N [options]
     \\
     \\modes:
-    \\  --list              every gate with its tier, family, model, and evidence
+    \\  --list              every gate with its tier, family, model, last seconds,
+    \\                      and evidence
+    \\  --costs             each tier's gates, seconds, budget, and slowest five,
+    \\                      as Markdown (from the last passing times)
     \\  --validate          validate gates.json against the tree (no model needed)
     \\  --auto [REV]        what a change needs: the checks its paths select, the
     \\                      gates its impact selects, cheapest first until one
@@ -32,7 +38,8 @@ const usage =
     \\  --json              print the results as JSON
     \\  --timeline          print each output line of a gate with its time
     \\  --keep-going        with --auto and --sweep, run on after a failure
-    \\  --strict            a gate whose model or data is missing fails
+    \\  --strict            a gate whose model or data is missing fails, and so
+    \\                      does a tier over its budget
     \\
     \\compare options:
     \\  --positions N --embedding N [--max-absolute X] [--max-relative-rms X]
@@ -43,6 +50,7 @@ const usage =
 const Mode = union(enum) {
     help,
     list,
+    costs,
     validate,
     auto: ?[]const u8,
     tier: []const u8,
@@ -106,6 +114,8 @@ fn parse(arena: std.mem.Allocator, args: []const []const u8, diag: *Diagnostic) 
             mode = .help;
         } else if (std.mem.eql(u8, arg, "--list")) {
             mode = .list;
+        } else if (std.mem.eql(u8, arg, "--costs")) {
+            mode = .costs;
         } else if (std.mem.eql(u8, arg, "--validate")) {
             mode = .validate;
         } else if (std.mem.eql(u8, arg, "--sweep")) {
@@ -235,8 +245,12 @@ fn enterRoot(arena: std.mem.Allocator, io: std.Io) !void {
 
 fn loadManifest(arena: std.mem.Allocator, io: std.Io, err: *std.Io.Writer) !manifest.Manifest {
     const text = try std.Io.Dir.cwd().readFileAlloc(io, "gates.json", arena, .limited(manifest.max_manifest_bytes));
-    const doc = try manifest.parse(arena, text);
-    const problems = try manifest.validate(arena, doc);
+    var doc = try manifest.parse(arena, text);
+    const index_text = try std.Io.Dir.cwd().readFileAlloc(io, catalog_index.path, arena, .limited(manifest.max_manifest_bytes));
+    const index_doc = try manifest.parse(arena, index_text);
+    // Artifacts resolve first, so `validate` sees the paths they name.
+    const resolved = try catalog_index.resolve(arena, &doc, index_doc);
+    const problems = try std.mem.concat(arena, []const u8, &.{ resolved, try catalog_index.coverage(arena, doc, index_doc), try manifest.validate(arena, doc) });
     if (problems.len > 0) {
         for (problems) |problem| try err.print("gates.json: {s}\n", .{problem});
         return error.InvalidManifest;
@@ -281,9 +295,16 @@ fn dispatch(init: std.process.Init, args: []const []const u8, out: *std.Io.Write
         error.InvalidManifest => return 2,
         else => |other| return other,
     };
-    if (command.mode == .list) {
+    if (command.mode == .list or command.mode == .costs) {
+        const times = (try cache.TimesFile.load(arena, io, try cache.directory(arena, init.environ_map))).times;
+        if (command.mode == .costs) {
+            try costs.writeMarkdown(out, try costs.all(arena, &m, &times));
+            return 0;
+        }
         for (m.gates) |gate| {
-            try out.print("{s:<34} {s:<14} {s:<14} {s:<20} {s}\n", .{ gate.name, gate.tier, gate.family, gate.model, gate.evidence });
+            var seconds: [16]u8 = undefined;
+            const shown = if (times.get(gate.name)) |t| try std.fmt.bufPrint(&seconds, "{d:.1} s", .{t}) else "-";
+            try out.print("{s:<34} {s:<14} {s:<14} {s:<20} {s:>8}  {s}\n", .{ gate.name, gate.tier, gate.family, gate.model, shown, gate.evidence });
         }
         return 0;
     }
@@ -301,7 +322,7 @@ fn dispatch(init: std.process.Init, args: []const []const u8, out: *std.Io.Write
     };
     try session.open();
     switch (command.mode) {
-        .help, .list => unreachable,
+        .help, .list, .costs => unreachable,
         .validate => {
             const status = try session.lint();
             if (status == 0) try out.print("gates.json: {d} gates, {d} models, {d} families, valid\n", .{ m.gates.len, m.models.len, m.families.len });
@@ -316,7 +337,16 @@ fn dispatch(init: std.process.Init, args: []const []const u8, out: *std.Io.Write
             for (m.gates) |*gate| {
                 if (std.mem.eql(u8, gate.tier, tier)) try selected.append(arena, gate);
             }
-            return session.runAll(selected.items);
+            const status = try session.runAll(selected.items);
+            if (command.options.dry_run) return status;
+            // The tier's cost after this run, against its budget.
+            const times = (try cache.TimesFile.load(arena, io, try cache.directory(arena, init.environ_map))).times;
+            const cost = try costs.of(arena, &m, tier, selected.items, &times);
+            if (!cost.over()) return status;
+            try err.print("{s}: {d:.0} s over its budget of {d:.0} s; slowest:", .{ tier, cost.seconds, cost.budget.? });
+            for (cost.slowest) |entry| try err.print(" {s} {d:.0} s", .{ entry[0], entry[1] });
+            try err.writeAll("\n");
+            return if (command.options.strict) @max(status, 1) else status;
         },
         .gates => |patterns| {
             const selected = try gatesNamed(arena, &m, patterns, err) orelse return 2;
@@ -355,8 +385,10 @@ test {
     _ = manifest;
     _ = run;
     _ = @import("cache.zig");
+    _ = @import("costs.zig");
     _ = @import("fingerprint.zig");
     _ = @import("git.zig");
+    _ = @import("index.zig");
     _ = @import("select.zig");
     _ = @import("tree.zig");
 }

@@ -139,7 +139,7 @@ there and nowhere else. A gate is one command (an argv with the
 placeholders `{nuclis}`, `{nuclis-cpu}`, `{zig-metal}`, `{zig-cpu}`,
 `{model}`, `{mtp}`, `{baseline}`, `{mmproj}`, `{entry}`, `{trace}`) and a comparator: `exit` (the command's
 status decides: the generation checks, the speculative checks, the Gemma
-and Muse draft checks that compare their own rows, `draft-stats`, the
+draft check that compares its own rows, `draft-stats`, the
 vocabulary checks, the perplexity checks, the cross-encoding check against
 its `baseline` file) or `trace` (the `{trace}` directory goes through
 `nuclis-gates compare` against the gate's `bounds`). A gate whose
@@ -159,10 +159,10 @@ make the registry cheaper than the recipes it replaced:
 
 | | tier `verify` | tier `verify-release` | tier `verify-long` | tier `verify-cpu` |
 | --- | --- | --- | --- | --- |
-| executor | the Metal plan (and the tokenizer) | the Metal plan, and the 12B QAT file's CPU gates | the Metal plan | the CPU reference |
-| covers | one representative file per family and the paths only a variant has (§ What each gate protects) | whole-file acceptance: the 8-window perplexities (`*-perplexity-full`), the Gemma 12B QAT file, `qwen38-draft-stats` | positions past 512 and the sliding windows | the CPU reference of every family, projector, and draft source |
-| cost | minutes (51 gates in 597 s after 185 s of builds, measured 2026-11-07 at `56162a1`, M4 Pro; the canaries about 50 s) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 3 and 11 min; the other families wait for their references) | 30 min (18 gates: 1,523 s for 15 measured 2026-10-02 with `clef-cpu`, 368 s, then `embeddinggemma-google-cpu` 134 s, `-vectors-cpu` 128 s and `-trace-cpu` 0.5 s on 2026-10-09; 14 gates in 1,327 s on 2026-09-30 with the reference's `matvec` on every core, from hours; `muse-vision-cpu` 447 s and `qwen38-speculative-cpu` 308 s the longest; engineering log, [KERN-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-19--a-threaded-cpu-reference-bit-identical-the-cpu-tier-in-22-minutes-2026-09-30), [MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one)) |
-| build | `ReleaseSafe`, `./zig-out/bin/nuclis` | the same (CPU gates as `verify-cpu`) | the same | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
+| executor | the Metal plan (and the tokenizer) | the Metal plan | the Metal plan | the CPU reference |
+| covers | one representative file per family and the paths only a variant has (§ What each gate protects) | whole-file acceptance: the 8-window perplexities of Qwen3.8 and the E4B (`*-perplexity-full`), the F32 trace of the 26B-A4B, the 1.7B speech round trip, Laya multilingual, `qwen38-draft-stats` | positions past 512 and the sliding windows | the CPU reference of every family, projector, and draft source |
+| cost | budget 480 s; the canaries 60 s (the table below) | budget 300 s | budget 120 s (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 3 and 11 min; the other families wait for their references) | no budget; 30 min (18 gates: 1,523 s for 15 measured 2026-10-02, 1,327 s for 14 on 2026-09-30 with the reference's `matvec` on every core, from hours; engineering log, [KERN-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-19--a-threaded-cpu-reference-bit-identical-the-cpu-tier-in-22-minutes-2026-09-30), [MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one)) |
+| build | `ReleaseSafe`, `./zig-out/bin/nuclis` | the same | the same | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
 | when | selected by `make verify-auto`; all of it before a release | once before a release | when a unit changes attention, the KV cache, or a windowed schedule (what only positions past 512 and past the 1,024/2,048-token windows exercise), and once before a release | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
 
 The fast tier trims what its gates repeat, not what they cover: a Metal
@@ -171,10 +171,44 @@ gate), `checkChunkedPrefill` takes its F32-tile and `prefillRows`
 comparisons over 40 tokens (chunk 32 still splits), and the Qwen and E4B
 `*-perplexity` gates run `--chunks 2` against the reference's running
 value after the second window (`chunk_ppl`; −0.005 %, −0.019 %
-at `f5982c4`), the whole run being `*-perplexity-full`. The 26B-A4B keeps
-all eight windows: its running difference swings from −4.1 % after the
-first to −1.2 % after the fourth before settling at −0.53 %, so its 1 %
-bound holds only for the whole run.
+at `f5982c4`), the whole run being `*-perplexity-full`. The 26B-A4B runs
+only the whole run, in `verify` (13 s): its running difference swings
+from −4.1 % after the first window to −1.2 % after the fourth before
+settling at −0.53 %, so its 1 % bound holds only for the whole run (two
+windows read −0.850 % at `79fe2c9`, inside the bound by luck of the
+prompt, not by design).
+
+**What a tier costs.** `nuclis-gates --costs` (`make gates-costs`) sums
+each tier's and the canaries' last passing seconds from
+`$NUCLIS_HOME/gates/times.json` against the manifest's `budgets`; a gate
+never timed on this machine counts as zero and shows in the `timed`
+column, so a total is a floor. A tier run that passes its budget warns
+on stderr, and fails under `--strict`; a gate that pushes `verify` over
+moves to `verify-release` or gets cheaper, it does not raise the budget.
+`make gates-list` prints each gate's seconds. Measured 2026-11-12 at
+`79fe2c9` (M4 Pro; Qwen3.8 and clef not on this machine, so their gates
+are untimed or carry earlier passes):
+
+| tier | gates | timed | seconds | budget | slowest |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `verify` | 52 | 40 | 443 | 480 | `drama3-roundtrip-metal` 82 s, `qwen38-generation-metal` 51 s, `qwen3-tts-0.6b-roundtrip-metal` 49 s, `drama3-metal` 45 s, `qwen3-tts-codec-metal` 36 s |
+| `verify-release` | 7 | 5 | 87 | 300 | `qwen3-tts-1.7b-roundtrip-metal` 56 s, `gemma4-e4b-perplexity-full` 13 s, `laya-multilingual-cpu` 9 s, `gemma4-26b-a4b-trace-f32` 6 s, `laya-multilingual-metal` 3 s |
+| `verify-long` | 3 | 0 | 0 | 120 | — |
+| `verify-cpu` | 29 | 0 | 0 | — | — |
+| `canaries` | 17 | 14 | 51 | 60 | `qwen38-speculative-metal` 14 s, `gemma4-e4b-generation-metal` 9 s, `qwen38-trace-f16` 7 s, `nemotron-asr-trace-metal` 5 s, `qwen38-vision-metal` 5 s |
+
+**Models are index files.** A `gates.json` model names an `artifact` of
+the catalogue's index and, optionally, a `file`: `main` (the default),
+`mmproj`, `draft` (the artifact's default draft), `draft:<variant>`, or
+`directory` (a safetensors checkpoint's folder). The runner reads the
+index from `src/catalog.json`, which `make index` writes from
+`src/catalog.zig` and a unit test holds equal to it (the runner imports
+none of nuclis, and CI's docs job has no Zig). A literal `path` is
+allowed only with a `note` saying why the file is not in the index. The
+manifest is invalid when a model names a legacy artifact, or when a
+current chat artifact has no gate. The manifest's `retired` list names
+fixture prefixes under `tests/fixtures/` that must not come back; the
+tree lint fails on any tracked file under one.
 
 **Three lanes.** Always: `make check`, on every commit, and `zig build
 test` in CI. Focus: `make verify-auto`, before a pull request, when the
@@ -201,7 +235,7 @@ else by its bytes. The root `build.zig` is left out on purpose. It walks
 seeds, stopping at `aggregators`. A changed file reached by one or a few
 families selects those families' gates; a file no family reaches alone, or
 more than `family_cutoff` reach, selects the `canaries`, 17 cheap gates
-that cover the shared plans in about 50 s. Other tiers are not run unless
+that cover the shared plans within their 60 s budget. Other tiers are not run unless
 asked: `make verify-changed BASE=<rev> ARGS='--tier verify-long'`.
 
 **Remembered passes.** A pass is keyed by the gate's definition, the
@@ -216,7 +250,7 @@ manifest's `build` block, and `zig version`. Passes live in `$NUCLIS_HOME/gates/
 
 The other commands: `make verify` / `make verify-release` / `make
 verify-long` / `make verify-cpu` (a tier), `make sweep`, `make gate
-NAME=<name or glob>` (`gemma4-qat-trace-f16`, `'qwen38-*'`; `ARGS=--dry-run`
+NAME=<name or glob>` (`gemma4-e4b-trace-f16`, `'qwen38-*'`; `ARGS=--dry-run`
 prints the commands), `make gates-list`, and `make gates-validate` (part of
 `make check`: the manifest's schema, no model).
 `nuclis-gates --json` returns the results with the git
@@ -224,11 +258,11 @@ revision for a log entry, each with its output lines stamped by time
 since launch (`--timeline` prints them); the check tools behind
 `{zig-*}` are compiled first (`zig build check-tools`), so the builds'
 seconds are reported apart from the gates'. Gate names are `<entry>-<check>-<executor>`:
-`qwen38`, `gemma4`, `gemma4-qat`, `gemma4-26b-a4b`;
+`qwen38`, `gemma4-e4b`, `gemma4-26b-a4b`, `laya`, `drama3`;
 `trace-{cpu,f32,f16}`, `generation-{cpu,metal}`, `speculative-{cpu,metal}`,
 `draft-trace-{cpu,metal}`, `draft-stats`, `vocabulary`, `perplexity` (two
 windows), `perplexity-full`, `perplexity-4k`. A
-model path is overridden per key by `<KEY>_MODEL` (`GEMMA4_QAT_MODEL=…`),
+model path is overridden per key by `<KEY>_MODEL` (`GEMMA4_E4B_MODEL=…`),
 except in a command that names `{entry}`, the model's catalogue name: that
 gate runs the pinned files the catalogue resolves (an audio or vision gate
 through `nuclis generate`, which finds the projector by entry). A `trace`
@@ -275,25 +309,24 @@ What can break independently, and what protects it. *Model-free* means
 | Laya multilingual: mmBERT's geometry (22 layers of 768, intermediate 1,152), positions 512 to 1,023, the checkpoint's own special tokens | — | `laya-multilingual-cpu`, `laya-multilingual-metal` |
 | experts (MoE) | Metal Q4_0 chains; CPU FFN on a 2×2 F32 tensor | `gemma4-26b-a4b-*` |
 | Qwen 3.5 plan (DeltaNet, gated attention, MTP block) | the runtime's admission tests | `qwen38-*` |
-| Qwen 3.5 with Hadamard rotations, PTQ1_0, BF16 | decoders, kernels | `bonsai-*` |
+| Qwen 3.5 with Hadamard rotations, PTQ1_0, BF16 | decoders, kernels | none (Bonsai is legacy in the index) |
 | Gemma 4: sliding/global, softcap | — | any Gemma file |
 | Gemma 4: shared KV, per-layer embeddings, own V on global layers, window 512 | — | `gemma4-e4b-*` |
-| Gemma 4: K=V global layers, window 1024, the `gemma4` profile | — | `gemma4-26b-a4b-*` (and the 12B QAT) |
-| Gemma 4: one global KV head (16:1), 48 layers | the 16:1 attention geometry | the 12B QAT, release tier (a shape, through the same code as the 26B's 8:1) |
-| Muse Glimmer plan | — | none |
+| Gemma 4: K=V global layers, window 1024, the `gemma4` profile | — | `gemma4-26b-a4b-*` |
+| Gemma 4: one global KV head (16:1), 48 layers | the 16:1 attention geometry | none (the 12B QAT file is legacy in the index; the same code as the 26B's 8:1) |
+| Muse Glimmer plan | — | none (legacy in the index) |
 | session layout: recurrent with the verify tape (Metal, drafter) | session unit tests | `qwen38-generation-metal` |
 | session layout: recurrent without a tape (rewind, replay) | session unit tests | every CPU generation gate |
 | session layout: attention only (truncate) | session unit tests | any Gemma generation gate |
 | engine loop: EOS, budget, context, cancellation, speculative loop, penalties, top-k readback | none (`engine.zig` has no tests) | `qwen38-speculative-metal` |
-| draft sources: Qwen MTP, Gemma assistant, Muse DFlash | — | `qwen38-draft-trace-*`, `gemma4-{e4b,qat}-draft-trace-*` (the same code, two shapes), `muse-draft-trace-*` |
-| tokenizers: Qwen BPE, Muse (GPT-4o splitter), Gemma SPM, Laya byte-level and Metaspace | the Metaspace rules and rejections on a synthetic vocabulary | one vocabulary gate each (the 12B QAT file carries E4B's tokenizer) |
+| draft sources: Qwen MTP and DFlash, Gemma assistant | — | `qwen38-draft-trace-*`, `qwen38-dflash2-*`, `gemma4-e4b-draft-trace-*` |
+| tokenizers: Qwen BPE, Muse (GPT-4o splitter), Gemma SPM, Laya byte-level and Metaspace | the Metaspace rules and rejections on a synthetic vocabulary | one vocabulary gate each |
 | vision: Qwen3-VL, SigLIP small with clamps, SigLIP large with standardization, Muse | preprocessing, grids | one vision gate each |
 | batched prefill at 256 rows, F16 cache over 511 keys, real prose | — | the perplexity gates |
 | a verify batch at depth (few-query attention, the multi-row weight path) against stepped decode from the same state | `checkAttentionVerify` against F64 to the 32K cache | `qwen38-verify-depth-{512,4k}`; `-16k`, `-32k` in `verify-long` |
 | past 512 tokens and the sliding windows | — | `verify-long` |
 
-Not covered by any gate: the 12B QAT's `gemma4uv` unified projector, the
-26B-A4B's assistant head, and the PQ2_0 encoding (decoder and kernel
+Not covered by any gate: the 26B-A4B's assistant head, and the PQ2_0 encoding (decoder and kernel
 fixtures only). On Metal a speculative greedy divergence is printed, not
 failed (chunk-versus-step rounding may flip a token); the CPU run fails
 on it. `qwen38-draft-stats` reports acceptance rates and fails only on
@@ -303,24 +336,30 @@ Adding a family adds its gates to the manifest and nothing to the
 Makefile ([models](models/README.md)). The
 manifest's numbers are the accepted tolerances the reference documents
 justify (Qwen's F16 bound in [metal-backend.md](engine/metal-backend.md),
-Gemma's in [gemma4.md](models/gemma4.md), Muse's in
-[muse-glimmer.md](models/muse-glimmer.md), Bonsai's in
-[bonsai.md](models/bonsai.md)); the CPU rows and the F32 cache run at
+Gemma's in [gemma4.md](models/gemma4.md)); the CPU rows and the F32 cache run at
 the bring-up thresholds (max abs 2e-3, relative RMS 1e-4).
 
 ## The record
 
-Every benchmark workload is a named entry in [`workloads.json`](../workloads.json),
-run by `scripts/bench/workloads.py` (`make workload NAME=<name or glob>`,
-`make workloads-list`, `make workloads-validate` inside `make check`), and
-its model path is one lookup into `gates.json`'s `models`. A `bench`
+Every benchmark workload is a named `<row>/<shape>` of
+[`workloads.json`](../workloads.json), which holds two tables: `shapes`
+(what to run: a prompt, a budget, a pair, or `acceptance`; a shape's
+`base` is another shape it extends) and `models` (a row per model: its
+`gates.json` key, its fixture `run`, the shapes it runs, and its own
+`bars`, `note`, and `evidence` keyed by shape). A new model is one row,
+and a shape added for one model is available to all.
+`scripts/bench/manifest.py` expands them, `scripts/bench/workloads.py`
+runs them (`make workload NAME=<name or glob>`, `make workloads-list`,
+`make workloads-validate` inside `make check`), and a model path is one
+lookup into `gates.json`'s `models`, which name index artifacts. A `bench`
 workload is one `nuclis bench --json` invocation: the prompt array
-(`tests/fixtures/run-*/prompt-<n>.json`) or a raw text prompt, `max_tokens`,
+(`prompt_tokens`, relative to the row's `tests/fixtures/<run>/`) or a raw text prompt, `max_tokens`,
 `ctx`, `kv`, `warmup`, `repeat`, an optional `sampling` map (the instruct
-profile's flags), `pair: true` with `draft_length` for the off/on pair on
-one loaded model (`--speculative on`, which is how `bench` already
-measures both ways; the pair names the catalogue entry so the `mtp`
-companion resolves), and `baseline: true` for a second run with the switch
+profile's flags), `pair: true` for the off/on pair on one loaded model
+(`--speculative on`, which is how `bench` already measures both ways; the
+pair names the index entry so its draft resolves, `draft_length` is the
+index's measured length for the row's draft unless the row overrides it,
+and a row's `"draft": "dflash2"` measures that variant), and `baseline: true` for a second run with the switch
 off, the no-drafter baseline. Reports are saved as
 `.zig-cache/bench/<workload>/<rev>-<n>[-baseline].json` (`<rev>` the short
 git revision, `<n>` a sequence per revision); nothing under `.zig-cache`
@@ -329,11 +368,13 @@ document cites it. An `acceptance` workload delegates to
 `scripts/bench/nuclis-baseline.py` (the four-length arrays, `/usr/bin/time`,
 hardware, the reference rows) and writes the dated record under
 `docs/benchmarks/` as before. The workloads: `qwen38/{prose512,
-prose4096, code}` and their `-draft` pairs, `qwen38/spec/*` (the twelve
-configurations of the speculative record, pair plus baseline each),
-`gemma4-qat/prose512{,-draft}`,
-`gemma4-26b-a4b/prose512`, `muse/prose512{,-draft}`, `bonsai/prose512`,
-and one `<entry>/acceptance` per pinned file.
+prose4096, code}` and their `-draft` pairs, `gemma4-26b-a4b/prose512`,
+`gemma4-e4b/prose512`, and one `<row>/acceptance` per current chat model.
+`workloads-validate` refuses a row whose model is a legacy artifact. The
+speculative matrix of the 2026-09-21 record, once twelve `qwen38/spec/*`
+workloads, is `make spec-matrix ARGS='--model qwen38 --contexts
+512,4096,code --sampling greedy,instruct --drafts 2,4,7 --baseline'`
+([§ The speed loop](#the-speed-loop)).
 
 `scripts/bench/bench-report.py` turns saved reports into the documents' tables:
 `--table FILE...` prints one row per report, the acceptance form (prefill
@@ -347,8 +388,8 @@ so a generated table is committed and never transcribed; `--compare PREV
 CUR` prints the deltas; `--check WORKLOAD FILE` tests a report against the
 workload's `bars` (`{metric: {min, max}}` on the decode rate, the prefill
 rate, or the speedup) and exits non-zero on a miss. Bars are sparse and
-mean a verdict's condition (`muse/prose512-draft` carries `decode_speedup
-≥ 1.0`, the reason its entry turns speculation on), not a regression
+mean a verdict's condition (a draft pair's `decode_speedup ≥ 1.0` is the
+reason its entry turns speculation on), not a regression
 threshold: run noise is stated by the record, not enforced by the driver.
 
 ## The speed loop
