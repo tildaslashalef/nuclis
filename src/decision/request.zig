@@ -7,6 +7,7 @@ const std = @import("std");
 const data_url = @import("../data_url.zig");
 const inference = @import("inference");
 const config = @import("../config.zig");
+const input = @import("../input.zig");
 
 const profile = inference.profiles.laya;
 const decide = inference.decide;
@@ -66,7 +67,7 @@ pub fn imagesFromJson(arena: std.mem.Allocator, io: std.Io, value: std.json.Valu
                     diag.set("images[{d}] names a file; this server reads no files, send the image as a data URL", .{i});
                     return error.FileStateRefused;
                 }
-                bytes.* = try readBounded(arena, io, p, decide.max_image_bytes, diag);
+                bytes.* = try input.readBounded(arena, io, p, decide.max_image_bytes, diag);
             },
             else => {
                 diag.set("images[{d}]: an image is a data URL, base64, or {{\"file\": path}}", .{i});
@@ -82,22 +83,6 @@ pub fn imagesFromJson(arena: std.mem.Allocator, io: std.Io, value: std.json.Valu
 pub const Files = enum { allowed, refused };
 
 pub const Error = error{ InvalidRequest, FileStateRefused, RequestTooLarge, StateTooLarge, TooManyOptions, MissingQuestions };
-
-/// Reads a whole file, or standard input for `-`, up to `limit` bytes.
-pub fn readBounded(arena: std.mem.Allocator, io: std.Io, path: []const u8, limit: usize, diag: *config.Diagnostic) ![]u8 {
-    if (std.mem.eql(u8, path, "-")) {
-        var buffer: [4096]u8 = undefined;
-        var reader = std.Io.File.stdin().readerStreaming(io, &buffer);
-        return reader.interface.allocRemaining(arena, .limited(limit)) catch |err| {
-            diag.set("standard input: {s} (at most {d} bytes)", .{ @errorName(err), limit });
-            return err;
-        };
-    }
-    return std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(limit)) catch |err| {
-        diag.set("{s}: {s}", .{ path, @errorName(err) });
-        return err;
-    };
-}
 
 pub fn parseJson(arena: std.mem.Allocator, bytes: []const u8, what: []const u8, diag: *config.Diagnostic) !std.json.Value {
     return std.json.parseFromSliceLeaky(std.json.Value, arena, bytes, .{}) catch |err| {
@@ -117,7 +102,7 @@ pub fn stateFromJson(arena: std.mem.Allocator, io: std.Io, value: std.json.Value
                 diag.set("state[{d}] names a file; this server reads no files, send the text", .{index});
                 return error.FileStateRefused;
             }
-            return .{ .label = f.string, .state = .{ .text = try readBounded(arena, io, f.string, decide.max_state_bytes, diag) } };
+            return .{ .label = f.string, .state = .{ .text = try input.readBounded(arena, io, f.string, decide.max_state_bytes, diag) } };
         },
         else => {},
     }

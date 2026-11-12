@@ -12,11 +12,12 @@
 //! - **`version` is the migration key.** A newer file is rejected with
 //!   `UnsupportedSessionVersion`, and nothing here rewrites a file it did not
 //!   create.
-//! - **Every entry carries `id` and `parent`**, even though this phase writes
-//!   a linear chain, so branching and cancel-rewind need no format migration.
+//! - **Every entry carries `id` and `parent`**, though the chain is linear,
+//!   so branching and cancel-rewind would need no format migration.
 //! - **Entries store what the model saw and produced** — prompt, reasoning,
-//!   answer, stop, measurements — never terminal styling. `/save` derives
-//!   markdown from the same entries; there is no second transcript format.
+//!   answer, stop, measurements — never terminal styling. `nuclis agent
+//!   export` derives markdown from the same entries; there is no second
+//!   transcript format.
 //!
 //! Serialization lives here rather than on `tui.event`, because an entry is
 //! not an event: a turn is hundreds of `answer_delta` events and one
@@ -38,6 +39,8 @@ pub const format_version: u32 = 1;
 /// A session file is a conversation, not a log of a machine: a bounded read
 /// is still wise, and 64 MiB is far past any real one.
 pub const max_file_bytes = 64 * 1024 * 1024;
+/// Past this the agent warns that the file nears `max_file_bytes`.
+pub const warn_bytes = max_file_bytes / 10 * 8;
 
 /// Bytes of the working-directory slug before it is hashed instead.
 pub const max_slug_bytes = 200;
@@ -176,8 +179,11 @@ pub const Session = struct {
     storage: []u8,
     next_id: u32 = 1,
     last_id: ?u32 = null,
-    /// Set once the header has been written.
+    /// Set once the header has been written, or the ids of an existing file read.
     started: bool = false,
+    /// Set once the file passed `warn_bytes`; `takeNearFull` reads it once.
+    near_full: bool = false,
+    warned: bool = false,
 
     pub fn deinit(self: *Session) void {
         if (self.path) |p| self.alloc.free(p);
@@ -199,18 +205,42 @@ pub const Session = struct {
         const file = try self.dir.createFile(self.io, path, .{ .truncate = false });
         defer file.close(self.io);
         const end = (try file.stat(self.io)).size;
+        // An existing file (print mode's `--session`) continues its own ids.
+        if (!self.started and end > 0) {
+            const bytes = try self.dir.readFileAlloc(self.io, path, self.alloc, .limited(max_file_bytes));
+            defer self.alloc.free(bytes);
+            if (lastId(self.alloc, bytes)) |last| {
+                self.next_id = last +| 1;
+                self.last_id = last;
+            }
+        }
+        const id = self.next_id;
+        var line: std.Io.Writer.Allocating = .init(self.alloc);
+        defer line.deinit();
+        if (end == 0) try writeHeader(&line.writer, self.header);
+        try writeEntry(&line.writer, entry, id, self.last_id, now);
+        // Loading stops at `max_file_bytes`: a longer file could not be resumed.
+        if (end + line.written().len > max_file_bytes) return error.SessionFileFull;
         var buffer: [4096]u8 = undefined;
         var writer = file.writerStreaming(self.io, &buffer);
         try writer.seekTo(end);
-        if (!self.started and end == 0) try writeHeader(&writer.interface, self.header);
-        self.started = true;
-        const id = self.next_id;
-        try writeEntry(&writer.interface, entry, id, self.last_id, now);
+        try writer.interface.writeAll(line.written());
         // One flush per entry: the file is complete at every turn boundary,
         // which is the whole crash story.
         try writer.interface.flush();
+        self.started = true;
         self.next_id += 1;
         self.last_id = id;
+        if (!self.warned and end + line.written().len >= warn_bytes) {
+            self.warned = true;
+            self.near_full = true;
+        }
+    }
+
+    /// True once, after the file first passed `warn_bytes`.
+    pub fn takeNearFull(self: *Session) bool {
+        defer self.near_full = false;
+        return self.near_full;
     }
 };
 
@@ -326,7 +356,8 @@ pub fn compactTime(buffer: *[17]u8, time: []const u8) []const u8 {
     return buffer[0..at];
 }
 
-/// `<root>/agent/exports/<name>`: where `/save` writes without a path.
+/// `<root>/agent/exports/<name>`: where `nuclis agent export` writes
+/// without a path.
 pub fn exportPath(alloc: Allocator, root_dir: []const u8, id: []const u8, time: []const u8) ![]u8 {
     var stamp: [17]u8 = undefined;
     const name = try alloc.print("{s}/{s}_{s}.md", .{ paths.exports_dir, compactTime(&stamp, time), id });
@@ -479,7 +510,7 @@ fn readHeader(a: Allocator, object: std.json.ObjectMap) !Header {
         else => return error.MalformedSessionLine,
     };
     return .{
-        .version = @intCast(file_version),
+        .version = try cast(u32, file_version),
         .id = try a.dupe(u8, string(object.get("id")) orelse return error.MalformedSessionLine),
         .time = try a.dupe(u8, string(object.get("time")) orelse ""),
         .cwd = try a.dupe(u8, string(object.get("cwd")) orelse ""),
@@ -488,14 +519,14 @@ fn readHeader(a: Allocator, object: std.json.ObjectMap) !Header {
             .sha256 = if (string(model_object.get("sha256"))) |digest| try a.dupe(u8, digest) else null,
         },
         .effort = try a.dupe(u8, string(object.get("effort")) orelse "off"),
-        .ctx_size = @intCast(integer(object.get("ctx_size")) orelse 0),
+        .ctx_size = try cast(usize, integer(object.get("ctx_size")) orelse 0),
     };
 }
 
 fn readRecord(a: Allocator, object: std.json.ObjectMap) !Record {
     const kind = string(object.get("type")) orelse return error.MalformedSessionLine;
     const id = integer(object.get("id")) orelse return error.MalformedSessionLine;
-    const parent: ?u32 = if (integer(object.get("parent"))) |value| @intCast(value) else null;
+    const parent: ?u32 = if (integer(object.get("parent"))) |value| try cast(u32, value) else null;
     const time = try a.dupe(u8, string(object.get("time")) orelse "");
     const entry: Entry = blk: {
         if (std.mem.eql(u8, kind, "user")) break :blk .{ .user = .{ .text = try text(a, object, "text"), .images = try readImages(a, object.get("images")), .audio = try readAudio(a, object.get("audio")) } };
@@ -504,7 +535,7 @@ fn readRecord(a: Allocator, object: std.json.ObjectMap) !Record {
             .answer = try text(a, object, "answer"),
             .tool_calls = try readCalls(a, object.get("tool_calls")),
             .stop = try text(a, object, "stop"),
-            .stats = readStats(object.get("stats")),
+            .stats = try readStats(object.get("stats")),
             .boundary = readBoundary(object.get("boundary")),
         } };
         if (std.mem.eql(u8, kind, "tool_result")) break :blk .{ .tool_result = .{
@@ -515,22 +546,22 @@ fn readRecord(a: Allocator, object: std.json.ObjectMap) !Record {
             .summary = try text(a, object, "summary"),
         } };
         if (std.mem.eql(u8, kind, "effort")) break :blk .{ .effort = .{ .effort = try text(a, object, "effort") } };
-        if (std.mem.eql(u8, kind, "context")) break :blk .{ .context = .{ .ctx_size = @intCast(integer(object.get("ctx_size")) orelse 0) } };
+        if (std.mem.eql(u8, kind, "context")) break :blk .{ .context = .{ .ctx_size = try cast(usize, integer(object.get("ctx_size")) orelse 0) } };
         if (std.mem.eql(u8, kind, "model")) break :blk .{ .model = .{
             .name = try text(a, object, "name"),
             .path = try text(a, object, "path"),
             .sha256 = if (string(object.get("sha256"))) |d| try a.dupe(u8, d) else null,
-            .ctx_size = @intCast(integer(object.get("ctx_size")) orelse 0),
+            .ctx_size = try cast(usize, integer(object.get("ctx_size")) orelse 0),
             .effort = try text(a, object, "effort"),
         } };
         if (std.mem.eql(u8, kind, "compaction")) break :blk .{ .compaction = .{
-            .first_kept = @intCast(integer(object.get("first_kept")) orelse 0),
+            .first_kept = try cast(usize, integer(object.get("first_kept")) orelse 0),
             .reason = try text(a, object, "reason"),
         } };
         if (std.mem.eql(u8, kind, "notice")) break :blk .{ .notice = .{ .text = try text(a, object, "text") } };
         return error.MalformedSessionLine;
     };
-    return .{ .id = @intCast(id), .parent = parent, .time = time, .entry = entry };
+    return .{ .id = try cast(u32, id), .parent = parent, .time = time, .entry = entry };
 }
 
 fn readCalls(a: Allocator, value: ?std.json.Value) ![]const Profile.ToolCall {
@@ -546,7 +577,7 @@ fn readCalls(a: Allocator, value: ?std.json.Value) ![]const Profile.ToolCall {
             else => return error.MalformedSessionLine,
         };
         calls[i] = .{
-            .id = @intCast(integer(object.get("id")) orelse 0),
+            .id = try cast(u32, integer(object.get("id")) orelse 0),
             .name = try a.dupe(u8, string(object.get("name")) orelse ""),
             .arguments = try a.dupe(u8, string(object.get("arguments")) orelse ""),
         };
@@ -568,10 +599,10 @@ fn readImages(a: Allocator, value: ?std.json.Value) ![]const ImageEntry {
         };
         images[i] = .{
             .path = try a.dupe(u8, string(object.get("path")) orelse ""),
-            .width = @intCast(integer(object.get("width")) orelse 0),
-            .height = @intCast(integer(object.get("height")) orelse 0),
-            .width_tokens = @intCast(integer(object.get("width_tokens")) orelse 0),
-            .height_tokens = @intCast(integer(object.get("height_tokens")) orelse 0),
+            .width = try cast(u32, integer(object.get("width")) orelse 0),
+            .height = try cast(u32, integer(object.get("height")) orelse 0),
+            .width_tokens = try cast(u32, integer(object.get("width_tokens")) orelse 0),
+            .height_tokens = try cast(u32, integer(object.get("height_tokens")) orelse 0),
         };
     }
     return images;
@@ -615,21 +646,43 @@ fn readBoundary(value: ?std.json.Value) ?Boundary {
     return .{ .bytes = std.math.cast(usize, bytes) orelse return null, .digest = digest };
 }
 
-fn readStats(value: ?std.json.Value) Stats {
+fn readStats(value: ?std.json.Value) error{MalformedSessionLine}!Stats {
     const object = switch (value orelse .null) {
         .object => |object| object,
         else => return .{},
     };
     return .{
-        .prompt_tokens = @intCast(integer(object.get("prompt_tokens")) orelse 0),
-        .generated = @intCast(integer(object.get("generated")) orelse 0),
+        .prompt_tokens = try cast(usize, integer(object.get("prompt_tokens")) orelse 0),
+        .generated = try cast(usize, integer(object.get("generated")) orelse 0),
         .prefill_seconds = number(object.get("prefill_seconds")),
         .decode_seconds = number(object.get("decode_seconds")),
         .thinking_seconds = number(object.get("thinking_seconds")),
         .replayed = boolean(object.get("replayed")),
         .reasoning_cut = boolean(object.get("reasoning_cut")),
-        .reasoning_tokens = @intCast(integer(object.get("reasoning_tokens")) orelse 0),
+        .reasoning_tokens = try cast(usize, integer(object.get("reasoning_tokens")) orelse 0),
     };
+}
+
+/// The id of the last entry that parses in `bytes`, a session file.
+fn lastId(alloc: Allocator, bytes: []const u8) ?u32 {
+    var lines = std.mem.splitBackwardsScalar(u8, std.mem.trimEnd(u8, bytes, "\n"), '\n');
+    while (lines.next()) |line| {
+        const parsed = std.json.parseFromSlice(std.json.Value, alloc, line, .{}) catch continue;
+        defer parsed.deinit();
+        const object = switch (parsed.value) {
+            .object => |o| o,
+            else => continue,
+        };
+        const id = integer(object.get("id")) orelse continue;
+        if (string(object.get("type"))) |t| if (std.mem.eql(u8, t, "session")) return null;
+        return std.math.cast(u32, id);
+    }
+    return null;
+}
+
+/// A number from the file as `T`; out of range is a malformed line, never a panic.
+fn cast(comptime T: type, value: i64) error{MalformedSessionLine}!T {
+    return std.math.cast(T, value) orelse error.MalformedSessionLine;
 }
 
 fn text(a: Allocator, object: std.json.ObjectMap, key: []const u8) ![]const u8 {
@@ -667,7 +720,7 @@ fn boolean(value: ?std.json.Value) bool {
 
 // ----- markdown export -----
 
-/// `/save`: the same entries as a document. Nothing is recomputed and nothing
+/// `nuclis agent export`: the same entries as a document. Nothing is recomputed and nothing
 /// is styled — a reader of the file and a reader of the terminal saw the same
 /// conversation.
 pub fn exportMarkdown(loaded: Loaded, out: *std.Io.Writer) !void {
@@ -797,6 +850,25 @@ test "a session round trips through the file, chained by id and parent" {
     }
 }
 
+test "a session appended to an existing file continues its ids" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const alloc = testing.allocator;
+    const options: Options = .{ .root_dir = "root", .id = "abc", .time = "t", .cwd = "/w", .model_path = "/m.gguf", .effort = "low", .ctx_size = 8 };
+    var first = try create(alloc, testing.io, tmp.dir, options);
+    defer first.deinit();
+    try first.append(.{ .user = .{ .text = "one" } }, "t1");
+    try first.append(.{ .notice = .{ .text = "two" } }, "t2");
+    var again = try create(alloc, testing.io, tmp.dir, options);
+    defer again.deinit();
+    try again.append(.{ .user = .{ .text = "three" } }, "t3");
+    const loaded = try load(alloc, testing.io, tmp.dir, again.path.?, null);
+    defer loaded.deinit();
+    try testing.expectEqual(@as(usize, 3), loaded.records.len);
+    try testing.expectEqual(@as(u32, 3), loaded.records[2].id);
+    try testing.expectEqual(@as(?u32, 2), loaded.records[2].parent);
+}
+
 test "a truncated last line is dropped, a damaged earlier one is an error" {
     const alloc = testing.allocator;
     const good = "{\"type\":\"session\",\"version\":1,\"id\":\"a\",\"time\":\"t\",\"cwd\":\"/w\",\"model\":{\"path\":\"/m\"},\"effort\":\"off\",\"ctx_size\":8}\n" ++
@@ -811,6 +883,24 @@ test "a truncated last line is dropped, a damaged earlier one is an error" {
     // An unknown entry kind is damage too: the version is the migration key,
     // so a reader that does not know a type is reading a file it should not.
     try testing.expectError(error.MalformedSessionLine, parseText(alloc, good ++ "{\"type\":\"future\",\"id\":2,\"parent\":1,\"time\":\"t\"}\n{\"type\":\"notice\",\"id\":3,\"parent\":2,\"time\":\"t\",\"text\":\"x\"}\n", null));
+}
+
+test "a number out of range is a malformed line, never a panic" {
+    const alloc = testing.allocator;
+    const header = "{\"type\":\"session\",\"version\":1,\"id\":\"a\",\"time\":\"t\",\"cwd\":\"/w\",\"model\":{\"path\":\"/m\"},\"effort\":\"off\",\"ctx_size\":8}\n";
+    const bad = [_][]const u8{
+        "{\"type\":\"session\",\"version\":-1,\"id\":\"a\",\"model\":{\"path\":\"/m\"},\"ctx_size\":8}\n",
+        "{\"type\":\"session\",\"version\":1,\"id\":\"a\",\"model\":{\"path\":\"/m\"},\"ctx_size\":-8}\n",
+        header ++ "{\"type\":\"user\",\"id\":-1,\"parent\":null,\"time\":\"t\",\"text\":\"x\"}\n{}\n",
+        header ++ "{\"type\":\"user\",\"id\":1,\"parent\":4294967296,\"time\":\"t\",\"text\":\"x\"}\n{}\n",
+        header ++ "{\"type\":\"context\",\"id\":1,\"parent\":null,\"time\":\"t\",\"ctx_size\":-5}\n{}\n",
+        header ++ "{\"type\":\"user\",\"id\":1,\"parent\":null,\"time\":\"t\",\"text\":\"x\",\"images\":[{\"path\":\"p\",\"width\":1099511627776}]}\n{}\n",
+        header ++ "{\"type\":\"assistant\",\"id\":1,\"parent\":null,\"time\":\"t\",\"stats\":{\"generated\":-3}}\n{}\n",
+    };
+    for (bad) |source| {
+        errdefer std.debug.print("source: {s}\n", .{source});
+        try testing.expectError(error.MalformedSessionLine, parseText(alloc, source, null));
+    }
 }
 
 test "a newer format is refused rather than guessed at" {

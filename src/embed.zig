@@ -8,9 +8,9 @@ const std = @import("std");
 const inference = @import("inference");
 const style = @import("tui/style.zig");
 const config = @import("config.zig");
+const bounded = @import("input.zig");
 const wire = @import("embedding/request.zig");
 const response = @import("embedding/response.zig");
-const files = @import("decision/request.zig");
 
 const embed = inference.embed;
 
@@ -124,17 +124,17 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, o: Options, diag: *config.
             try inputs.append(arena, .{ .parts = parts, .label = try arena.print("input[{d}]", .{inputs.items.len}) });
         },
         .file => |path| {
-            const bytes = try files.readBounded(arena, io, path, max_file_bytes, diag);
+            const bytes = try bounded.readBounded(arena, io, path, max_file_bytes, diag);
             try wire.inputsFromJsonLines(arena, bytes, if (std.mem.eql(u8, path, "-")) "stdin" else path, &inputs, diag);
         },
         .image => |path| {
             const parts = try arena.alloc(wire.Part, 1);
-            parts[0] = .{ .image = try files.readBounded(arena, io, path, wire.max_image_bytes, diag) };
+            parts[0] = .{ .image = try bounded.readBounded(arena, io, path, wire.max_image_bytes, diag) };
             try inputs.append(arena, .{ .parts = parts, .label = path });
         },
         .audio => |path| {
             const parts = try arena.alloc(wire.Part, 1);
-            parts[0] = .{ .audio = try files.readBounded(arena, io, path, wire.max_audio_bytes, diag) };
+            parts[0] = .{ .audio = try bounded.readBounded(arena, io, path, wire.max_audio_bytes, diag) };
             try inputs.append(arena, .{ .parts = parts, .label = path });
         },
     };

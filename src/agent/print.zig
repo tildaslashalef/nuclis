@@ -30,6 +30,7 @@ const paths = @import("../paths.zig");
 const tui = @import("../tui/root.zig");
 const session_log = @import("session.zig");
 const loop = @import("loop.zig");
+const record_entry = @import("record.zig");
 const tools = @import("tools/root.zig");
 const web = @import("../web/root.zig");
 const resume_mod = @import("resume.zig");
@@ -182,10 +183,10 @@ pub fn run(
         var diagnostic: session_log.Diagnostic = .{};
         const loaded = try session_log.load(alloc, io, .cwd(), path, &diagnostic);
         defer loaded.deinit();
-        const built = try resume_mod.messages(alloc, loaded);
-        defer alloc.free(built);
+        const built = try resume_mod.conversation(alloc, loaded);
+        defer built.deinit(alloc);
         completer.resumeFrom(resume_mod.lastBoundary(loaded));
-        try agent.restore(built, &.{});
+        try agent.restore(built.messages, &.{});
     }
 
     const stop = agent.turn(prompt, &.{}) catch |err| {
@@ -241,37 +242,8 @@ const Turn = struct {
         const self: *Turn = @ptrCast(@alignCast(context));
         var stamp: [20]u8 = undefined;
         const now = model.rfc3339(&stamp, std.Io.Timestamp.now(self.io, .real).toSeconds());
-        var call: [16]u8 = undefined;
-        const mapped: session_log.Entry = switch (entry) {
-            .user => |u| .{ .user = .{ .text = u.text } },
-            .assistant => |step| .{ .assistant = .{
-                .thinking = step.thinking,
-                .answer = step.answer,
-                .tool_calls = step.calls,
-                .stop = @tagName(step.stop),
-                .stats = .{
-                    .prompt_tokens = step.prompt_tokens,
-                    .generated = step.generated,
-                    .prefill_seconds = step.prefill_seconds,
-                    .decode_seconds = step.decode_seconds,
-                    .thinking_seconds = step.thinking_seconds,
-                    .replayed = step.replay != null,
-                    .replay = if (step.replay) |r| @tagName(r.cause) else "",
-                    .restored_tokens = if (step.replay) |r| r.restored else 0,
-                    .reasoning_cut = step.reasoning_cut,
-                    .reasoning_tokens = step.reasoning_tokens,
-                },
-                .boundary = if (step.boundary) |b| .{ .bytes = b.bytes, .digest = b.digest } else null,
-            } },
-            .compaction => |c| .{ .compaction = .{ .first_kept = c.first_kept, .reason = c.reason } },
-            .tool_result => |result| .{ .tool_result = .{
-                .call = std.fmt.bufPrint(&call, "{d}", .{result.call}) catch "?",
-                .text = result.text,
-                .truncated = result.truncated,
-                .is_error = result.is_error,
-                .summary = result.summary,
-            } },
-        };
+        var scratch: record_entry.Scratch = .{};
+        const mapped = record_entry.entry(&scratch, entry);
         try self.log.append(mapped, now);
     }
 

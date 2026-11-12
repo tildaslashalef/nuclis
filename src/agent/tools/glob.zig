@@ -19,6 +19,9 @@ pub const tool: root.Tool = .{
 };
 
 const max_results: usize = 200;
+/// Paths collected before sorting: the shown 200 are the first sorted ones
+/// of these, and a walk that reaches this many stops.
+const max_collected: usize = 10_000;
 
 const Args = struct { pattern: []const u8 };
 
@@ -36,31 +39,36 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         found.deinit(alloc);
     }
     var walker: Walker = .{ .alloc = alloc, .io = workspace.io, .pattern = pattern, .found = &found, .allow_hidden = namesHidden(pattern) };
-    walker.walk(workspace.dir, "");
+    try walker.walk(workspace.dir, "");
     std.mem.sort([]u8, found.items, {}, lessThan);
 
+    const shown = found.items[0..@min(found.items.len, max_results)];
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(alloc);
-    for (found.items, 0..) |path, i| {
+    for (shown, 0..) |path, i| {
         if (i != 0) try out.append(alloc, '\n');
         try out.appendSlice(alloc, path);
     }
-    const truncated = found.items.len == max_results;
-    const summary = try summarize(alloc, found.items.len, truncated);
+    const truncated = found.items.len > max_results;
+    const summary = try summarize(alloc, found.items.len, walker.capped, walker.unreadable);
     errdefer alloc.free(summary);
-    return .{ .text = try out.toOwnedSlice(alloc), .truncated = truncated, .summary = summary };
+    // The model reads the summary only when the list alone would mislead it.
+    if (truncated or walker.unreadable > 0) try out.print(alloc, "{s}[{s}]", .{ if (out.items.len > 0) "\n" else "", summary });
+    return .{ .text = try out.toOwnedSlice(alloc), .truncated = truncated or walker.capped, .summary = summary };
 }
 
-/// The detail row: how many paths, and whether the bound cut the list.
-fn summarize(alloc: std.mem.Allocator, count: usize, truncated: bool) std.mem.Allocator.Error![]u8 {
+/// The detail row: how many paths, whether the bound cut the list, and the
+/// directories that could not be read.
+fn summarize(alloc: std.mem.Allocator, count: usize, capped: bool, unreadable: usize) std.mem.Allocator.Error![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(alloc);
     switch (count) {
         0 => try out.appendSlice(alloc, "no files"),
         1 => try out.appendSlice(alloc, "1 file"),
-        else => try out.print(alloc, "{d} files", .{count}),
+        else => try out.print(alloc, "{s}{d} files", .{ if (capped) "over " else "", count }),
     }
-    if (truncated) try out.print(alloc, " · first {d} only", .{max_results});
+    if (count > max_results) try out.print(alloc, " · first {d} shown; narrow the pattern", .{max_results});
+    if (unreadable > 0) try out.print(alloc, " · {d} director{s} could not be read", .{ unreadable, if (unreadable == 1) "y" else "ies" });
     return out.toOwnedSlice(alloc);
 }
 
@@ -80,25 +88,37 @@ const Walker = struct {
     pattern: []const u8,
     found: *std.ArrayList([]u8),
     allow_hidden: bool,
+    collect_limit: usize = max_collected,
+    /// The walk stopped at `collect_limit`.
+    capped: bool = false,
+    unreadable: usize = 0,
 
-    fn walk(self: *Walker, dir: std.Io.Dir, prefix: []const u8) void {
-        var iterable = dir.openDir(self.io, if (prefix.len == 0) "." else prefix, .{ .iterate = true }) catch return;
+    fn walk(self: *Walker, dir: std.Io.Dir, prefix: []const u8) std.mem.Allocator.Error!void {
+        var iterable = dir.openDir(self.io, if (prefix.len == 0) "." else prefix, .{ .iterate = true }) catch {
+            self.unreadable += 1;
+            return;
+        };
         defer iterable.close(self.io);
         var it = iterable.iterate();
-        while (it.next(self.io) catch return) |entry| {
-            if (self.found.items.len >= max_results) return;
+        while (true) {
+            const entry = (it.next(self.io) catch {
+                self.unreadable += 1;
+                return;
+            }) orelse return;
+            if (self.found.items.len >= self.collect_limit) {
+                self.capped = true;
+                return;
+            }
             if (entry.name.len == 0) continue;
             if (entry.name[0] == '.' and !self.allow_hidden) continue;
-            const path = std.fs.path.join(self.alloc, &.{ prefix, entry.name }) catch return;
+            const path = try std.fs.path.join(self.alloc, &.{ prefix, entry.name });
             defer self.alloc.free(path);
             switch (entry.kind) {
-                .directory => self.walk(dir, path),
+                .directory => try self.walk(dir, path),
                 .file => if (matchPattern(self.pattern, path)) {
-                    const owned = self.alloc.dupe(u8, path) catch return;
-                    self.found.append(self.alloc, owned) catch {
-                        self.alloc.free(owned);
-                        return;
-                    };
+                    const owned = try self.alloc.dupe(u8, path);
+                    errdefer self.alloc.free(owned);
+                    try self.found.append(self.alloc, owned);
                 },
                 else => {},
             }
@@ -245,4 +265,27 @@ test "glob lists matching files, sorted and bounded" {
     var bad = try run(ws, testing.allocator, "{}");
     defer bad.deinit(testing.allocator);
     try testing.expect(bad.is_error);
+}
+
+test "glob shows the first 200 sorted, and says when more matched" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root_path);
+    const ws: root.Workspace = .{ .io = testing.io, .dir = tmp.dir, .root = root_path };
+    var name: [16]u8 = undefined;
+    // Exactly the bound is not truncated.
+    for (0..max_results) |i| try tmp.dir.writeFile(testing.io, .{ .sub_path = try std.fmt.bufPrint(&name, "f{d:0>4}.txt", .{i}), .data = "" });
+    var exact = try run(ws, testing.allocator, "{\"pattern\":\"*.txt\"}");
+    defer exact.deinit(testing.allocator);
+    try testing.expect(!exact.truncated);
+    try testing.expectEqual(@as(usize, max_results), std.mem.count(u8, exact.text, "\n") + 1);
+    // One more: the first 200 in sorted order, marked.
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "" });
+    var over = try run(ws, testing.allocator, "{\"pattern\":\"*.txt\"}");
+    defer over.deinit(testing.allocator);
+    try testing.expect(over.truncated);
+    try testing.expect(std.mem.startsWith(u8, over.text, "a.txt\nf0000.txt\n"));
+    try testing.expect(std.mem.indexOf(u8, over.text, "f0199.txt") == null);
+    try testing.expect(std.mem.endsWith(u8, over.text, "[201 files · first 200 shown; narrow the pattern]"));
 }

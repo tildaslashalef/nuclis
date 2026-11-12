@@ -100,11 +100,15 @@ pub const Workspace = struct {
         self.io.randomSecure(&random) catch self.io.random(&random);
         const temp = try alloc.printSentinel("{s}.nuclis-{x}.tmp", .{ target, &random }, 0);
         defer alloc.free(temp);
+        // The replacement keeps the target's mode (an executable stays one);
+        // a new file gets the default.
+        const kept: ?std.Io.File.Permissions = if (std.Io.Dir.cwd().statFile(self.io, target, .{})) |st| st.permissions else |_| null;
         {
             const file = try std.Io.Dir.createFileAbsolute(self.io, temp, .{});
             errdefer std.Io.Dir.deleteFileAbsolute(self.io, temp) catch {};
             defer file.close(self.io);
             try file.writeStreamingAll(self.io, content);
+            if (kept) |permissions| try file.setPermissions(self.io, permissions);
         }
         std.Io.Dir.renameAbsolute(temp, target, self.io) catch |err| {
             std.Io.Dir.deleteFileAbsolute(self.io, temp) catch {};

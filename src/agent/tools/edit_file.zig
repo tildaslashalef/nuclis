@@ -70,6 +70,9 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     if (count == 0) return root.fail(alloc, "edit_file: old_string was not found in {s}", .{path});
     if (count > 1) return root.fail(alloc, "edit_file: old_string appears {d} times in {s}; it must be unique (add surrounding context)", .{ count, path });
 
+    // The tools read and write at most `max_bytes`: an edit past it would leave a file they refuse.
+    const new_len = content.len - old_string.len + new_string.len;
+    if (new_len > max_bytes) return root.fail(alloc, "edit_file: the edit would make {s} {d} bytes, over the {d} the file tools handle; split the file or use bash", .{ path, new_len, max_bytes });
     var updated: std.ArrayList(u8) = .empty;
     defer updated.deinit(alloc);
     try updated.appendSlice(alloc, content[0..at]);
@@ -132,6 +135,30 @@ test "edit_file replaces one unique match and diffs the change" {
     const contents = try fixture.tmp.dir.readFileAlloc(testing.io, "a.txt", alloc, .limited(1024));
     defer alloc.free(contents);
     try testing.expectEqualStrings("one\nTWO\nthree\n", contents);
+}
+
+test "edit_file refuses an edit past the bound, and keeps the file's mode" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    const big: [max_bytes - 4]u8 = @splat('a');
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "big.txt", .data = &big ++ "MARK" });
+    var refused = try run(fixture.ws, alloc, "{\"path\":\"big.txt\",\"old_string\":\"MARK\",\"new_string\":\"MARKMARK\"}");
+    defer refused.deinit(alloc);
+    try testing.expect(refused.is_error);
+    try testing.expect(std.mem.indexOf(u8, refused.text, "over the") != null);
+
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "run.sh", .data = "echo one\n" });
+    {
+        const file = try fixture.tmp.dir.openFile(testing.io, "run.sh", .{});
+        defer file.close(testing.io);
+        try file.setPermissions(testing.io, .fromMode(0o750));
+    }
+    var edited = try run(fixture.ws, alloc, "{\"path\":\"run.sh\",\"old_string\":\"one\",\"new_string\":\"two\"}");
+    defer edited.deinit(alloc);
+    try testing.expect(!edited.is_error);
+    const st = try fixture.tmp.dir.statFile(testing.io, "run.sh", .{});
+    try testing.expectEqual(@as(u32, 0o750), @as(u32, @intCast(st.permissions.toMode())) & 0o777);
 }
 
 test "edit_file with two matches changes nothing and returns the count" {

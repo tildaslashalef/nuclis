@@ -30,6 +30,10 @@ const max_shown: usize = 50;
 const max_context: usize = 5;
 const max_file_bytes: usize = 4 * 1024 * 1024;
 const max_line: usize = 500;
+/// A search reads at most this many files, for at most `max_seconds`, then
+/// says where it stopped.
+const max_files: usize = 20_000;
+const max_seconds: i64 = 10;
 /// Binary sniffing window; a NUL here marks a file as not text.
 const sniff_bytes: usize = 8000;
 /// Generated trees that make a whole-workspace literal scan slow. Skipped by
@@ -62,9 +66,19 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     } else if (std.mem.indexOfAny(u8, scope, "*?[") != null) {
         // A glob: walk from its literal leading directories, keep what matches.
         const filter = if (std.mem.startsWith(u8, scope, "./")) scope[2..] else scope;
+        if (std.fs.path.isAbsolute(filter) or climbs(filter)) return root.fail(alloc, "grep: {s} is outside the workspace", .{scope});
         walker.filter = filter;
         const meta = std.mem.indexOfAny(u8, filter, "*?[").?;
         const start = if (std.mem.lastIndexOfScalar(u8, filter[0..meta], '/')) |slash| filter[0..slash] else "";
+        // The literal prefix may be a link out of the tree: it must resolve inside.
+        if (start.len > 0) {
+            const abs = workspace.resolve(alloc, start) catch |err| switch (err) {
+                error.OutsideWorkspace => return root.fail(alloc, "grep: {s} is outside the workspace", .{scope}),
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return root.fail(alloc, "grep: {s}: {s}", .{ start, @errorName(err) }),
+            };
+            alloc.free(abs);
+        }
         try walker.enter(start);
     } else {
         const abs = workspace.resolve(alloc, scope) catch |err| switch (err) {
@@ -92,14 +106,26 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         if (walker.shown < walker.total) try note.print(alloc, " · first {d} shown; narrow the pattern or the path for the rest", .{walker.shown});
     }
     if (walker.cut_files > 0) try note.print(alloc, " · {d} file{s} over {d} MiB searched in part", .{ walker.cut_files, plural(walker.cut_files, "s"), max_file_bytes / (1024 * 1024) });
+    if (walker.stopped) |stop| switch (stop) {
+        .files => try note.print(alloc, " · stopped after {d} files; narrow the path", .{max_files}),
+        .time => try note.print(alloc, " · stopped after {d} s; narrow the path", .{max_seconds}),
+    };
+    const cut = walker.shown < walker.total or walker.cut_files > 0 or walker.stopped != null;
     // The model reads a note only when the list alone would mislead it.
-    if (walker.total == 0 or walker.shown < walker.total or walker.cut_files > 0) {
+    if (walker.total == 0 or cut) {
         if (text.items.len > 0) try text.append(alloc, '\n');
         try text.print(alloc, "[{s}]", .{note.items});
     }
     const summary = try alloc.dupe(u8, note.items);
     errdefer alloc.free(summary);
-    return .{ .text = try text.toOwnedSlice(alloc), .truncated = walker.shown < walker.total or walker.cut_files > 0, .summary = summary };
+    return .{ .text = try text.toOwnedSlice(alloc), .truncated = cut, .summary = summary };
+}
+
+/// Whether a path has a `..` segment.
+fn climbs(path: []const u8) bool {
+    var segments = std.mem.tokenizeScalar(u8, path, '/');
+    while (segments.next()) |segment| if (std.mem.eql(u8, segment, "..")) return true;
+    return false;
 }
 
 fn plural(count: usize, suffix: []const u8) []const u8 {
@@ -127,6 +153,11 @@ const Walker = struct {
     total: usize = 0,
     files: usize = 0,
     cut_files: usize = 0,
+    searched: usize = 0,
+    file_limit: usize = max_files,
+    /// Set once a bound stopped the walk; nothing more is read.
+    stopped: ?enum { files, time } = null,
+    started: ?std.Io.Timestamp = null,
 
     fn deinit(self: *Walker) void {
         self.rules.deinit();
@@ -171,6 +202,7 @@ const Walker = struct {
         }
         std.mem.sort(Entry, entries.items, {}, entryLess);
         for (entries.items) |entry| {
+            if (self.stopped != null) return;
             const path = try std.fs.path.join(self.alloc, &.{ prefix, entry.name });
             defer self.alloc.free(path);
             const is_dir = entry.kind == .directory;
@@ -186,6 +218,15 @@ const Walker = struct {
     /// Counts a file's matches and renders the ones still within `max_shown`
     /// with their context, merged where they overlap.
     fn search(self: *Walker, path: []const u8) std.mem.Allocator.Error!void {
+        const now = std.Io.Clock.awake.now(self.io);
+        const started = self.started orelse blk: {
+            self.started = now;
+            break :blk now;
+        };
+        if (self.searched >= self.file_limit) self.stopped = .files;
+        if (started.durationTo(now).toNanoseconds() >= max_seconds * std.time.ns_per_s) self.stopped = .time;
+        if (self.stopped != null) return;
+        self.searched += 1;
         // One byte past the bound distinguishes "at the limit" from "larger".
         const bytes = self.dir.readFileAlloc(self.io, path, self.alloc, .limited(max_file_bytes + 1)) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -333,6 +374,29 @@ test "grep narrows to a directory, a file, or a glob, and adds merged context" {
     var outside = try run(fixture.ws, alloc, "{\"pattern\":\"hit\",\"path\":\"..\"}");
     defer outside.deinit(alloc);
     try testing.expect(outside.is_error);
+    // A glob never leaves the workspace: by `..`, by an absolute path, or through a link.
+    try fixture.tmp.dir.symLink(testing.io, "..", "up", .{ .is_directory = true });
+    for ([_][]const u8{ "../*", "../../x/*", "/etc/*", "src/../../*", "up/*" }) |glob_path| {
+        const arguments = try std.fmt.allocPrint(alloc, "{{\"pattern\":\"hit\",\"path\":\"{s}\"}}", .{glob_path});
+        defer alloc.free(arguments);
+        var escaped = try run(fixture.ws, alloc, arguments);
+        defer escaped.deinit(alloc);
+        errdefer std.debug.print("path {s}: {s}\n", .{ glob_path, escaped.text });
+        try testing.expect(escaped.is_error);
+        try testing.expect(std.mem.indexOf(u8, escaped.text, "outside the workspace") != null);
+    }
+}
+
+test "grep stops at its file bound and says so" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    for ([_][]const u8{ "a.txt", "b.txt", "c.txt" }) |name| try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = name, .data = "hit\n" });
+    var walker: Walker = .{ .alloc = alloc, .io = testing.io, .dir = fixture.tmp.dir, .pattern = "hit", .context = 0, .rules = .{ .alloc = alloc }, .file_limit = 2 };
+    defer walker.deinit();
+    try walker.enter("");
+    try testing.expectEqual(@as(usize, 2), walker.total);
+    try testing.expect(walker.stopped.? == .files);
 }
 
 test "grep reports bad arguments and an empty pattern as results" {

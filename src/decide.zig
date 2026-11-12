@@ -9,6 +9,7 @@ const std = @import("std");
 const inference = @import("inference");
 const style = @import("tui/style.zig");
 const config = @import("config.zig");
+const input = @import("input.zig");
 const wire = @import("decision/request.zig");
 const response = @import("decision/response.zig");
 
@@ -149,14 +150,14 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, family: inference.decide.F
     var states: std.ArrayList(wire.Labeled) = .empty;
     if (o.request) |request_path| {
         const path = if (std.mem.eql(u8, request_path, "-")) "standard input" else request_path;
-        const root = try wire.parseJson(arena, try wire.readBounded(arena, io, request_path, 64 * 1024 * 1024, diag), path, diag);
+        const root = try wire.parseJson(arena, try input.readBounded(arena, io, request_path, 64 * 1024 * 1024, diag), path, diag);
         const request = try wire.fromJson(arena, io, root, path, .allowed, family, diag);
         try ids.appendSlice(arena, request.ids);
         try questions.appendSlice(arena, request.questions);
         try states.appendSlice(arena, request.states);
     } else {
         if (o.questions) |path| {
-            const root = try wire.parseJson(arena, try wire.readBounded(arena, io, path, 1024 * 1024, diag), path, diag);
+            const root = try wire.parseJson(arena, try input.readBounded(arena, io, path, 1024 * 1024, diag), path, diag);
             // A whole request's "questions" field, or the map itself.
             const map = if (root == .object and root.object.get("questions") != null) root.object.get("questions").? else root;
             try wire.questionsFromJson(arena, family, map, path, &ids, &questions, diag);
@@ -196,7 +197,7 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, family: inference.decide.F
         }
         for (o.states.items, 0..) |source, i| try states.append(arena, switch (source) {
             .text => |t| .{ .label = try arena.print("state[{d}]", .{i}), .state = .{ .text = t } },
-            .file => |f| .{ .label = f, .state = .{ .text = try wire.readBounded(arena, io, f, inference.decide.max_state_bytes, diag) } },
+            .file => |f| .{ .label = f, .state = .{ .text = try input.readBounded(arena, io, f, inference.decide.max_state_bytes, diag) } },
         });
     }
     if (questions.items.len == 0) {
@@ -212,7 +213,7 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, family: inference.decide.F
             return error.RequestTooLarge;
         }
         const images = try arena.alloc([]const u8, o.images.items.len);
-        for (images, o.images.items) |*bytes, path| bytes.* = try wire.readBounded(arena, io, path, inference.decide.max_image_bytes, diag);
+        for (images, o.images.items) |*bytes, path| bytes.* = try input.readBounded(arena, io, path, inference.decide.max_image_bytes, diag);
         for (states.items) |*s| s.state.images = images;
     }
     return .{ .ids = ids.items, .questions = questions.items, .states = states.items };

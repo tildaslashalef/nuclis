@@ -244,9 +244,13 @@ enforced by *not reading* once the cap is hit or the deadline passes, and then
 killing the child. Cancellation is the third bound and the subtle one: the
 engine notices Ctrl-C between layers of the model, but a running child is not
 in that loop, so the tool has to poll the same `interrupt` flag between reads
-and kill the child itself. The three paths share one cleanup: `kill` blocks
-until the process is gone and reaps it, so cancel, timeout, and overflow all
-leave no orphan.
+and kill the child itself. The three paths share one cleanup. The command runs
+in a process group of its own, so the stop reaches what it started in the
+background too: the group gets `SIGTERM`, then `SIGKILL` if anything is still
+alive after a two-second grace, and the child is reaped, so cancel, timeout,
+and overflow all leave no orphan. A cancel that arrives between the calls of
+one step answers the calls not yet run with a typed `not run` result: every
+call keeps its result, so the history and the session stay valid.
 
 Reading output is a second lifetime hazard. stdout and stderr are separate
 pipes, and reading one to end before touching the other deadlocks as soon as
@@ -414,11 +418,16 @@ result match its call on load — the model never echoes them, so without them t
 conversation would not validate. And a **cancelled step is not a message** the
 model ever finished, so it is recorded for display but neither appended to
 history nor given stored calls; a file whose assistant call has no following
-result would not load. The cost of the replay is that a long conversation is
-prefilled again on resume, and a session that had grown past the context window
-must be compacted again — which is the honest trade: the alternative is
-persisting opaque numerical state that the format cannot describe and a future
-change cannot safely reinterpret.
+result would not load. The live loop also shrinks its view to fit
+the window, and each cut is a `compaction` entry the loader applies where it
+was written: `context_full` drops the turns before `first_kept`,
+`results_elided` turns the tool results of the turn in progress before
+`first_kept` into the same one-line stubs, and `turn_aborted` drops a turn that
+failed. So a resumed conversation is the one the model last saw, not the
+longer one the file holds. The cost of the replay is that it is prefilled
+again on resume — which is the honest trade: the alternative is persisting
+opaque numerical state that the format cannot describe and a future change
+cannot safely reinterpret.
 
 This is also why the resumable unit is the *entry*, not the event. A turn emits
 hundreds of `answer_delta` events and writes one `assistant` entry; the file
