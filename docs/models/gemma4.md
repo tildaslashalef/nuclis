@@ -442,7 +442,7 @@ tree gained, each pinned by the reference's own fixture:
 
 - `quant.row` id 2 and the eight-block Q4_0 row in
   `quant/fixtures/simple.json` from the pinned C decoder
-  (`scripts/fixtures/quant-fixtures.py`; the same payload bytes as the IQ4_NL row,
+  (`scripts/quant-fixtures.py`, retired; at tag `v0.11.0`; the same payload bytes as the IQ4_NL row,
   so the two decoders pin each other's nibble order).
 - `dequant.metal` `nu_dequant_q4_0` for the generic kernels
   (`nu_matvec`, `nu_embed`, the generic tile), bit-identical to the CPU

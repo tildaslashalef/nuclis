@@ -2,8 +2,8 @@
 """nuclis on the reference workload: prompts, runs, and a benchmark record.
 
 Runs `nuclis bench --prompt-tokens` on the reference harness's exact token
-arrays committed under tests/fixtures/ (scripts/bench/reference-baseline.py built
-them), one process per prompt length under /usr/bin/time -l for peak resident
+arrays committed under tests/fixtures/ (pinned from llama.cpp before nuclis
+became its own reference; tests/fixtures/provenance.md), one process per prompt length under /usr/bin/time -l for peak resident
 memory, and writes a compact record under docs/benchmarks/. Before any run it
 checks with `nuclis tokenize` that nuclis tokenizes the synthetic corpus into
 the reference's body tokens, and renders each prompt as text beside the
@@ -16,7 +16,6 @@ the model file.
 import argparse
 import datetime
 import hashlib
-import importlib.util
 import json
 import os
 import pathlib
@@ -26,11 +25,13 @@ import subprocess
 import sys
 import tempfile
 
-HERE = pathlib.Path(__file__).resolve().parent
-ROOT = HERE.parent
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts/bench"))
+from manifest import KV_PRECISIONS  # noqa: E402
+
 MARKER = "NUCLIS_BENCH_CONTENT"
 CLOSING = "\n```\n\nGive your review."
-# The reference harness's template marker per family (scripts/bench/reference-baseline.py):
+# The reference harness's template marker per family:
 # thinking off where the template can switch it, the default strength line for Muse.
 THINKING_OFF = {
     "qwen38": "<think>\n\n</think>",
@@ -63,14 +64,25 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-def reference_corpus():
-    """The synthetic Zig corpus, imported from the reference harness so the two never drift."""
-    spec = importlib.util.spec_from_file_location("reference_baseline", HERE / "reference-baseline.py")
-    if spec is None or spec.loader is None:
-        raise SystemExit(f"cannot import {spec}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.corpus()
+def corpus():
+    """The synthetic Zig corpus the reference runs tokenized; its digest is
+    pinned in each run's prompt-construction.json."""
+    header = (
+        "Review this synthetic Zig module for overflow and API design. "
+        "Give a concise review with concrete improvements.\n\n```zig\n"
+    )
+    functions = []
+    for index in range(1200):
+        functions.append(
+            f"pub fn sum_{index:04d}(values: []const u32) u64 {{\n"
+            "    var total: u64 = 0;\n"
+            "    for (values) |value| {\n"
+            f"        total += @as(u64, value) * {index % 17 + 1};\n"
+            "    }\n"
+            "    return total;\n"
+            "}\n\n"
+        )
+    return header + "".join(functions)
 
 
 class Tokenizer:
@@ -281,8 +293,27 @@ def reference_rows(benchmarks, names):
     ]
 
 
+def self_test():
+    """The paths and the pinned corpus, without a model (make workloads-validate)."""
+    problems = []
+    if not (ROOT / "build.zig").is_file():
+        problems.append(f"ROOT {ROOT} is not the repository root")
+    digest = hashlib.sha256(corpus().encode()).hexdigest()
+    for construction in sorted((ROOT / "tests/fixtures").glob("run-*/prompt-construction.json")):
+        if json.loads(construction.read_text()).get("corpus_sha256") != digest:
+            problems.append(f"{construction.relative_to(ROOT)}: the corpus digest differs")
+    for problem in problems:
+        print(f"nuclis-baseline: {problem}", file=sys.stderr)
+    if problems:
+        sys.exit(1)
+    print(
+        f"nuclis-baseline: self-test ok ({len(list((ROOT / 'tests/fixtures').glob('run-*/prompt-construction.json')))} pinned runs)"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--self-test", action="store_true", help="check the paths and the pinned corpus; run nothing")
     parser.add_argument(
         "--nuclis",
         default=str(ROOT / "zig-out/bin/nuclis"),
@@ -318,7 +349,7 @@ def main():
         help="repetitions for a prompt that fills the context with the output",
     )
     parser.add_argument("--ctx-size", type=int, default=32768)
-    parser.add_argument("--kv", default="f16", choices=("f16", "f32"))
+    parser.add_argument("--kv", default="f16", choices=KV_PRECISIONS)
     parser.add_argument(
         "--label",
         default="warm",
@@ -341,6 +372,8 @@ def main():
         help="comma-separated record names under docs/benchmarks whose accepted samples are the reference rows",
     )
     args = parser.parse_args()
+    if args.self_test:
+        return self_test()
     try:
         lengths = [int(n) for n in args.prompt_lengths.split(",")]
     except ValueError:
@@ -373,18 +406,20 @@ def main():
         or THINKING_ON.get(family, "\0") in construction["template"]
     ):
         raise RuntimeError("expected the reference's text template with reasoning disabled")
-    corpus = reference_corpus()
-    if hashlib.sha256(corpus.encode()).hexdigest() != construction["corpus_sha256"]:
+    corpus_text = corpus()
+    if hashlib.sha256(corpus_text.encode()).hexdigest() != construction["corpus_sha256"]:
         raise RuntimeError("the synthetic corpus no longer matches the reference run's digest")
     with tempfile.TemporaryDirectory() as scratch:
         tokenize = Tokenizer(args.nuclis, args.model, pathlib.Path(scratch))
-        corpus_report = tokenize(corpus)
+        corpus_report = tokenize(corpus_text)
         prompts = []
         for size in lengths:
             reference_ids, source = load_reference_prompt(args.fixtures, args.run, size)
             if len(reference_ids) != size:
                 raise RuntimeError(f"{source} holds {len(reference_ids)} tokens, not {size}")
-            prompt = build_prompt(size, construction, corpus, corpus_report, reference_ids, tokenize, args.prompt_dir)
+            prompt = build_prompt(
+                size, construction, corpus_text, corpus_report, reference_ids, tokenize, args.prompt_dir
+            )
             prompt["reference_fixture"] = source
             prompt["reference_fixture_sha256"] = sha256_file(ROOT / source)
             prompts.append(prompt)
@@ -448,6 +483,7 @@ def main():
         "summary": summarize(runs),
         "family": family,
         "reference": {
+            "about": "llama.cpp's rows from records pinned before nuclis became its own reference: a dated comparison",
             "revision": reference_revision(ROOT / "docs/benchmarks", args.reference_records.split(",")),
             "run": args.run,
             "rows": reference_rows(ROOT / "docs/benchmarks", args.reference_records.split(",")),

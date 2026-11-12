@@ -6,7 +6,7 @@ include = ["scripts"]
 exclude = [".zig-cache", "zig-out"]
 typeCheckingMode = "standard"
 pythonVersion = "3.12"
-extraPaths = ["scripts"]
+extraPaths = ["scripts", "scripts/lib"]
 
 [tool.ruff]
 include = ["scripts/**/*.py"]

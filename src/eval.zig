@@ -2,15 +2,18 @@
 //! tokenized raw, cut into windows of `ctx` tokens, and each window runs from
 //! an empty session with its first token replaced by the model's BOS (when
 //! it has one); the negative log-likelihood of every actual next token in the
-//! window's second half is summed in F64. This is the reference's
-//! `llama-perplexity` method, so `--reference` compares against its run on
-//! the same file (docs/guide/eval.md).
+//! window's second half is summed in F64: `llama-perplexity`'s method, so a
+//! reference from either tool compares. `--reference` reads a pinned run on
+//! the same file and `--write-reference` writes one (docs/guide/eval.md
+//! § The reference file).
 const std = @import("std");
 const inference = @import("inference");
 const engine = @import("engine.zig");
 const config = @import("config.zig");
 const interrupt = @import("interrupt.zig");
 const style = @import("tui/style.zig");
+const model = @import("model.zig");
+const build_options = @import("build_options");
 
 /// What only this command reads from the command line; the model, backend,
 /// cache precision, and forced profile arrive resolved (`config.Resolved`).
@@ -22,6 +25,8 @@ pub const Options = struct {
     /// is given, else every whole window.
     chunks: ?usize = null,
     reference: ?[]const u8 = null,
+    /// Where to write this run as a reference; an existing file is refused.
+    write_reference: ?[]const u8 = null,
 };
 
 pub const default_ctx = 512;
@@ -31,7 +36,9 @@ pub const max_text_bytes = 16 * 1024 * 1024;
 /// its own.
 pub const tolerance = 0.005;
 
-/// A pinned reference run, as `scripts/gate/reference-perplexity.py` writes it.
+/// A pinned reference run: what `--write-reference` writes (`Written`), or a
+/// `llama-perplexity` run pinned before nuclis was its own reference. Fields
+/// it does not name are ignored.
 pub const Reference = struct {
     tool: []const u8,
     revision: []const u8,
@@ -56,6 +63,88 @@ pub const Reference = struct {
         return .{ .ppl = running[chunks - 1], .ppl_error = null };
     }
 };
+
+/// What `--write-reference` writes: `Reference`'s fields and the provenance
+/// a pinned fixture carries. `cross_check` and `note` are added by hand.
+pub const Written = struct {
+    schema_version: u32 = 1,
+    tool: []const u8 = "nuclis eval",
+    executor: []const u8,
+    kv: []const u8,
+    revision: []const u8,
+    model_file: []const u8,
+    model_bytes: u64,
+    model_sha256: []const u8,
+    text_file: []const u8,
+    text_sha256: []const u8,
+    ctx: usize,
+    chunks: usize,
+    flags: []const []const u8,
+    ppl: f64,
+    ppl_error: f64,
+    chunk_ppl: []const f64,
+    date: []const u8,
+};
+
+/// `x` rounded to `places` decimals, as the pinned files print them.
+fn rounded(x: f64, comptime places: comptime_int) f64 {
+    const scale = std.math.pow(f64, 10, places);
+    return @round(x * scale) / scale;
+}
+
+/// The model file's size and SHA-256: its sidecar's when the sidecar
+/// records this size (a pull verified it), else hashed here.
+fn modelIdentity(arena: std.mem.Allocator, io: std.Io, path: []const u8) !struct { bytes: u64, sha256: []const u8 } {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    const size = (try file.stat(io)).size;
+    if (model.readSidecar(arena, io, .cwd(), try model.sidecarPath(arena, path)) catch null) |sidecar| {
+        if (sidecar.size == size) return .{ .bytes = size, .sha256 = sidecar.sha256 };
+    }
+    var hasher: std.crypto.hash.sha2.Sha256 = .init(.{});
+    var buffer: [1024 * 1024]u8 = undefined;
+    var reader = file.reader(io, &buffer);
+    while (true) {
+        const chunk = reader.interface.peekGreedy(1) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
+        hasher.update(chunk);
+        reader.interface.toss(chunk.len);
+    }
+    const digest = hasher.finalResult();
+    return .{ .bytes = size, .sha256 = try arena.dupe(u8, &std.fmt.bytesToHex(digest, .lower)) };
+}
+
+fn writeReference(arena: std.mem.Allocator, io: std.Io, target: []const u8, report: Report, text_path: []const u8) !void {
+    const identity = try modelIdentity(arena, io, report.model_path);
+    const chunk_ppl = try arena.alloc(f64, report.chunk_ppl.len);
+    for (chunk_ppl, report.chunk_ppl) |*r, p| r.* = rounded(p, 4);
+    var stamp: [20]u8 = undefined;
+    const written: Written = .{
+        .executor = report.backend,
+        .kv = report.kv_precision,
+        .revision = if (build_options.dirty) try std.mem.concat(arena, u8, &.{ build_options.revision, "-dirty" }) else build_options.revision,
+        .model_file = std.fs.path.basename(report.model_path),
+        .model_bytes = identity.bytes,
+        .model_sha256 = identity.sha256,
+        .text_file = std.fs.path.basename(text_path),
+        .text_sha256 = report.text_sha256,
+        .ctx = report.ctx,
+        .chunks = report.chunks,
+        .flags = &.{ "--backend", report.backend, "--kv", report.kv_precision, "--ctx-size", try std.fmt.allocPrint(arena, "{d}", .{report.ctx}), "--chunks", try std.fmt.allocPrint(arena, "{d}", .{report.chunks}) },
+        .ppl = rounded(report.ppl, 4),
+        .ppl_error = rounded(report.ppl_error, 5),
+        .chunk_ppl = chunk_ppl,
+        .date = model.rfc3339(&stamp, std.Io.Timestamp.now(io, .real).toSeconds())[0..10],
+    };
+    var text: std.Io.Writer.Allocating = .init(arena);
+    try std.json.Stringify.value(written, .{ .whitespace = .indent_1 }, &text.writer);
+    try text.writer.writeByte('\n');
+    const file = try std.Io.Dir.cwd().createFile(io, target, .{ .exclusive = true });
+    defer file.close(io);
+    try file.writeStreamingAll(io, text.written());
+}
 
 pub const Comparison = struct {
     tool: []const u8,
@@ -199,11 +288,16 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         };
         defer alloc.free(bytes);
         parsed_reference = std.json.parseFromSlice(Reference, alloc, bytes, .{ .ignore_unknown_fields = true, .allocate = .alloc_always }) catch |err| {
-            diag.set("{s} is not a reference-perplexity.py report", .{reference_path});
+            diag.set("{s} is not a perplexity reference (docs/guide/eval.md § The reference file)", .{reference_path});
             return err;
         };
     }
     const reference: ?Reference = if (parsed_reference) |p| p.value else null;
+    // Refused before the run, which can take hours, rather than after it.
+    if (options.write_reference) |target| if (std.Io.Dir.cwd().statFile(io, target, .{})) |_| {
+        diag.set("{s} exists; a reference is never overwritten", .{target});
+        return error.PathAlreadyExists;
+    } else |_| {};
     const ctx = options.ctx orelse if (reference) |r| r.ctx else default_ctx;
     if (ctx < 2 or ctx > config.max_context) return error.InvalidGenerationBudget;
     if (reference) |r| {
@@ -320,6 +414,15 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         report.reference = .{ .tool = r.tool, .revision = r.revision, .chunks = chunks, .ppl = expected.ppl, .ppl_error = expected.ppl_error, .relative_difference = difference, .tolerance = bound, .passed = @abs(difference) <= bound };
     }
     try report.render(out, json, sty);
+    if (options.write_reference) |target| {
+        var arena_state = std.heap.ArenaAllocator.init(alloc);
+        defer arena_state.deinit();
+        writeReference(arena_state.allocator(), io, target, report, path) catch |err| {
+            diag.set("could not write the reference {s}: {s}", .{ target, @errorName(err) });
+            return err;
+        };
+        if (!json) try out.print("{s}Reference:{s} written to {s}\n", .{ sty.on(.label), sty.off(), target });
+    }
     if (report.reference) |r| if (!r.passed) {
         diag.set("perplexity {d:.4} is {d:.3} % from the reference's {d:.4} (bound {d:.1} %)", .{ report.ppl, r.relative_difference * 100, r.ppl, r.tolerance * 100 });
         return error.ReferenceMismatch;
@@ -383,4 +486,20 @@ test "a reference compares after all its windows or a prefix of them" {
     bare.chunk_ppl = null;
     try std.testing.expectError(error.ReferenceMismatch, bare.after(2));
     _ = try bare.after(3);
+}
+
+test "what --write-reference writes, --reference reads back" {
+    const alloc = std.testing.allocator;
+    const running = [_]f64{ 4.2978, 6.1007 };
+    const written: Written = .{ .executor = "metal", .kv = "f16", .revision = "abc1234", .model_file = "m.gguf", .model_bytes = 7, .model_sha256 = "d", .text_file = "wiki.test.raw", .text_sha256 = "173c", .ctx = 512, .chunks = 2, .flags = &.{ "--ctx-size", "512" }, .ppl = rounded(6.10071234, 4), .ppl_error = rounded(0.359544, 5), .chunk_ppl = &running, .date = "2026-11-12" };
+    var text: std.Io.Writer.Allocating = .init(alloc);
+    defer text.deinit();
+    try std.json.Stringify.value(written, .{ .whitespace = .indent_1 }, &text.writer);
+    const parsed = try std.json.parseFromSlice(Reference, alloc, text.written(), .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("nuclis eval", parsed.value.tool);
+    try std.testing.expectEqual(@as(usize, 512), parsed.value.ctx);
+    try std.testing.expectEqual(@as(f64, 6.1007), parsed.value.ppl);
+    try std.testing.expectEqual(@as(f64, 0.35954), parsed.value.ppl_error);
+    try std.testing.expectEqual(@as(f64, 6.1007), (try parsed.value.after(2)).ppl);
 }

@@ -1,5 +1,5 @@
 //! Explicit check of clef-flash against the oracle's fixtures
-//! (scripts/oracle/clef-reference.py). `sequences CLEF_DIR` rebuilds every
+//! (scripts/clef-reference.py at tag v0.11.0). `sequences CLEF_DIR` rebuilds every
 //! request's model input and compares the ids and the head's spans with
 //! `sequences.json`, tokenizing with the backbone GGUF's vocabulary (only
 //! its directory is read, not the weights).

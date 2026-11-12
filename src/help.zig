@@ -386,8 +386,11 @@ fn eval(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--chunks <n>", "windows from the start of the text; default every");
     try more(out, "whole window, or the reference's; fewer than the");
     try more(out, "reference's compare with its running value");
-    try row(out, sty, "--reference <json>", "a pinned llama-perplexity run on the same file;");
-    try more(out, "fails beyond 0.5 % of its perplexity, or its bound");
+    try row(out, sty, "--reference <json>", "a pinned run on the same file; fails beyond");
+    try more(out, "0.5 % of its perplexity, or its bound");
+    try row(out, sty, "--write-reference <json>", "write this run as a reference (never over");
+    try more(out, "an existing file): the result, the text's and");
+    try more(out, "the model's digests, the revision, and the flags");
     try row(out, sty, "--model <name|path>", "registry entry, catalogue name, or path; default");
     try more(out, "engine.model of the config file (gemma-4-26b-a4b)");
     try row(out, sty, "--backend cpu|metal", default_backend);

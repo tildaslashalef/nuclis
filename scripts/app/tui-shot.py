@@ -41,8 +41,8 @@ PNG and the stream so far (`<name>.stream`). The window stays open after
 the command exits, so its last screen can be photographed.
 
 The session is left running unless `--stop` is given; attach to it with
-`tmux -L nuclis attach -t <session>`. See docs/development.md § The agent's
-transcript.
+`tmux -L nuclis attach -t <session>`. See docs/development.md § Looking at
+the agent without a person at the keyboard.
 """
 
 import argparse
@@ -190,7 +190,7 @@ def plain(ansi):
 
 
 class Session:
-    def __init__(self, name, size, command, cwd, keep_conf=False, env=()):
+    def __init__(self, name, size, command, cwd, env=()):
         self.name = name
         self.columns, self.rows = size
         self.command = command

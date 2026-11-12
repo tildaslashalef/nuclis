@@ -1,6 +1,6 @@
 //! Explicit full-model check of Nemotron 3.5 ASR's front end and encoder
 //! (CPU reference) against the trace pinned from the authors' code
-//! (scripts/oracle/speech-traces/nemotron_trace.py, tests/fixtures/nemotron-asr/).
+//! (scripts/speech-traces/nemotron_trace.py at tag v0.11.0, tests/fixtures/nemotron-asr/).
 //! Per clip: the log-mel frames of its WAV; then at each pinned lookahead
 //! the whole-clip pass and the authors' chunks fed as a stream, both from
 //! the pinned features, stage by stage at the pinned rows; then the clip's

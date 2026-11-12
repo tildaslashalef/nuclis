@@ -525,8 +525,8 @@ fn clips(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder:
     }
 }
 
-/// Each stage of the CPU reference against Google's, dumped by a hook
-/// script into `.zig-cache/audio-trace/<stage>.f32`.
+/// Each stage of the CPU reference against Google's, dumped into
+/// `.zig-cache/audio-trace/<stage>.f32` by scripts/audio-trace.py at tag v0.11.0.
 fn traceAudio(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder: *embed.Embedder, features: []const f32, frames: usize) !void {
     const a = inference.audio.gemma4a;
     const projector = &embedder.projector.?;

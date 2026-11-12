@@ -224,6 +224,7 @@ pub const commands = [_]Command{
         ctx_size,
         .{ .name = "--chunks", .value = .number, .summary = "windows from the start" },
         .{ .name = "--reference", .value = .file, .summary = "a pinned reference run" },
+        .{ .name = "--write-reference", .value = .file, .summary = "write this run as a reference" },
         model_flag,
         backend,
         kv,

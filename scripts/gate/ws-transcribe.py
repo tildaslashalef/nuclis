@@ -38,7 +38,6 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
-import http.client
 import json
 import os
 import pathlib
@@ -50,11 +49,13 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts/lib"))
+import serve  # noqa: E402
+
 CORPUS = ROOT / "tests/fixtures/speech-corpus.json"
 SPEECH = ROOT / ".reference/speech"
 GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -62,8 +63,9 @@ RATE = 16000
 STORY = "Write a long story about a lighthouse keeper who finds a message in a bottle. Tell it in detail."
 
 
-class Failure(Exception):
-    pass
+# A server that does not start fails the same way as everything else here.
+Failure = serve.Failed
+Server = serve.Server
 
 
 # ----- audio -----
@@ -329,36 +331,6 @@ def show(result: Result) -> None:
 # ----- the server -----
 
 
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
-
-
-class Server:
-    def __init__(self, nuclis: str, args: list[str]) -> None:
-        self.port = free_port()
-        command = [nuclis, "serve", "--host", "127.0.0.1", "--port", str(self.port), "--quiet", *args]
-        self.process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        deadline = time.time() + 600
-        while True:
-            try:
-                urllib.request.urlopen(f"http://127.0.0.1:{self.port}/v1/health", timeout=2).close()
-                return
-            except OSError:
-                if self.process.poll() is not None or time.time() > deadline:
-                    err = self.process.stderr.read().decode() if self.process.stderr else ""
-                    raise Failure(f"{' '.join(command)} did not start: {err}") from None
-                time.sleep(0.3)
-
-    def stop(self) -> None:
-        self.process.send_signal(2)
-        try:
-            self.process.wait(timeout=60)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-
-
 # ----- the chat beside it -----
 
 
@@ -372,29 +344,17 @@ def chat_stream(port: int, model: str, max_tokens: int, run: ChatRun) -> None:
     """A streamed chat completion; the arrival time of each content chunk."""
     body = {
         "model": model,
-        "stream": True,
         "temperature": 0,
         "max_tokens": max_tokens,
         "reasoning_effort": "none",
         "messages": [{"role": "user", "content": STORY}],
     }
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=600)
     try:
-        connection.request("POST", "/v1/chat/completions", json.dumps(body), {"content-type": "application/json"})
-        response = connection.getresponse()
-        if response.status != 200:
-            run.error = f"{response.status} {response.read().decode(errors='replace')}"
-            return
-        for raw in response:
-            line = raw.decode().strip()
-            if not line.startswith("data: ") or line == "data: [DONE]":
-                continue
-            chunk = json.loads(line[6:])
-            choices = chunk.get("choices") or []
-            if choices and (choices[0].get("delta") or {}).get("content"):
-                run.stamps.append(time.monotonic())
-    finally:
-        connection.close()
+        for at, chunk in serve.chat_stream(port, body):
+            if serve.content(chunk):
+                run.stamps.append(at)
+    except serve.Failed as failure:
+        run.error = str(failure)
 
 
 def rate(stamps: list[float], start: float, end: float) -> float:

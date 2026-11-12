@@ -343,6 +343,21 @@ class SelfTest(unittest.TestCase):
         out = table([("p", sample_pair(), base)])
         self.assertIn("| 25.00 → 25.40 → 22.80 |", out)
 
+    def test_loads_the_baseline_workloads_saved_beside_its_record(self):
+        import tempfile
+
+        import workloads
+
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "abc1234-3.json").write_text("{}")
+            n = workloads.next_sequence(d, "abc1234")
+            record = workloads.record_path(d, "abc1234", n)
+            record.write_text(json.dumps(sample_pair()))
+            workloads.record_path(d, "abc1234", n, "-baseline").write_text(json.dumps(sample_plain()))
+            [(label, _, baseline)] = load_entries([record])
+            self.assertEqual(label, "abc1234-4")
+            self.assertEqual(baseline, sample_plain())
+
     def test_replace_region(self):
         text = "a\n<!-- bench:x -->\nold\n<!-- /bench:x -->\nb\n"
         self.assertEqual(replace_region(text, "x", "new"), "a\n<!-- bench:x -->\nnew\n<!-- /bench:x -->\nb\n")

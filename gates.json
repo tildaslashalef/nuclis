@@ -159,8 +159,7 @@
     "gates.json",
     "workloads.json",
     "tools/gates/**",
-    "scripts/bench/**",
-    "scripts/gate/reference-perplexity.py"
+    "scripts/bench/**"
    ]
   },
   {

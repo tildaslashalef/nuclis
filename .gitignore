@@ -8,5 +8,6 @@ zig-out/
 !.env.example
 .reference/
 .cloudflare/
+.wrangler/
 dist/
 AGENTS.local.md

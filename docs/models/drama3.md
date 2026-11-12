@@ -580,7 +580,7 @@ every chunk's prompt while it fits, beside the latest chunk.
 
 ## The traces
 
-`scripts/oracle/speech-traces/drama3_trace.py` runs Fish's own modules (the
+`scripts/speech-traces/drama3_trace.py` (retired; at tag `v0.11.0`) ran Fish's own modules (the
 `DecoderLayer`s, `FishOmniAudioDecoder`, the DAC built from
 `modded_dac_vq.yaml` through hydra, `build_drama3_prompt`) on the CPU in
 F32. The weights are dequantized from this GGUF: Q4_K by ggml's formula,
@@ -608,20 +608,12 @@ whole run takes 5.6 minutes on the M4 Pro, with a peak resident size of
 32 GB that counts the GGUF's mapped pages. A second run reproduces every
 file byte for byte.
 
-To regenerate, use a throwaway venv. It needs `descript-audio-codec`
-installed `--no-deps`, since its training-only imports are not needed and
-the script stubs `audiotools`:
-
-```sh
-uv venv --python 3.12 .reference/venv-drama3
-VIRTUAL_ENV=.reference/venv-drama3 uv pip install torch==2.14.1 torchaudio==2.11.1 \
-  numpy==2.5.4 tokenizers==0.22.2 einops==0.8.2 loguru hydra-core omegaconf tqdm safetensors
-VIRTUAL_ENV=.reference/venv-drama3 uv pip install --no-deps descript-audio-codec==1.0.0
-.reference/venv-drama3/bin/python scripts/oracle/speech-traces/drama3_trace.py [--cases NAME,...]
-```
-
-The clip is read as `torchaudio.load` reads it (int16 / 32768); torchaudio
-2.11 needs torchcodec for `load`, so the script uses `wave`. Fish loads
+The generator is retired (tag `v0.11.0`); a re-pinned file's fixtures are made by
+nuclis ([§ Which executor makes which fixture](README.md#which-executor-makes-which-fixture)). It ran in a venv
+with torch 2.14.1, torchaudio 2.11.1, tokenizers 0.22.2, and
+`descript-audio-codec` 1.0.0 installed `--no-deps`. The clip was read as
+`torchaudio.load` reads it (int16 / 32768); torchaudio 2.11 needs
+torchcodec for `load`, so the script used `wave`. Fish loads
 the codec in bfloat16 by default (`load_codec_model`), and the traces are
 F32.
 

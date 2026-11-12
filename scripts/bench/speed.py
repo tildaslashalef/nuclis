@@ -232,7 +232,9 @@ def main():
     ap.add_argument("--accept", type=int, help="drafts each verify batch accepts (default: half the drafts)")
     ap.add_argument("--no-decode", action="store_true", help="only the verify rows")
     ap.add_argument("--model", default="qwen38", help="the gates.json model key (default: %(default)s)")
-    ap.add_argument("--kv", default="f16", choices=("f16", "q8_0"), help="attention cache (default: %(default)s)")
+    ap.add_argument(
+        "--kv", default="f16", choices=manifest.KV_PRECISIONS, help="attention cache (default: %(default)s)"
+    )
     ap.add_argument("--run", help="the fixture run holding the token arrays (default: the family's acceptance run)")
     ap.add_argument("--json", action="store_true", help="print the rows as JSON")
     ap.add_argument("--self-test", action="store_true", help="run the unit tests of the pure functions")

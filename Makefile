@@ -5,8 +5,14 @@
 #   OPT       Zig optimize mode for release/metal targets (ReleaseSafe)
 #   BACKEND   cpu | metal for run targets (metal)
 #   PROMPT    prompt text for run/bench targets
-#   ARGS      extra arguments appended to run/bench/generate
+#   ARGS      extra arguments appended to run/bench/generate, and to the gate, shot, and watch targets
 #   PREFIX    install root for `make install` ($(HOME)/.local: the binary goes to $(PREFIX)/bin)
+#   VARIANT   agent-eval: the label of the run (baseline)
+#   NAME      workload, gate: which (a name or a glob)
+#   BASE      verify-auto, verify-changed: the revision to compare against
+#   V, TIERS  release, tag, version: the version, and what the release tiers did
+#   CAPTURE   bench-kernels, bench-matvec-rows, bench-attention: the kernels to capture
+#   LINUX_OPT, LINUX_PREFIX  build-linux: the optimize mode (Debug) and the install prefix
 
 ZIG      ?= zig
 # `zig build` reads the global cache location from the environment only.
@@ -19,17 +25,23 @@ PROMPT   ?= Write a Zig function that reverses a string.
 ARGS     ?=
 PREFIX   ?= $(HOME)/.local
 BIN      := ./zig-out/bin/nuclis
+# The release's Linux build: CPU only, x86-64 with AVX2 and glibc 2.35 or
+# newer (docs/development.md § Linux); release.yml builds through this target.
+LINUX_TARGET := x86_64-linux-gnu.2.35
+LINUX_CPU    := x86_64_v3
+LINUX_OPT    ?= Debug
+LINUX_PREFIX ?= .zig-cache/linux
 METAL    := -Dmetal=true -Doptimize=$(OPT)
 
 .DEFAULT_GOAL := build
-.PHONY: help build index debug build-cpu build-linux metal install uninstall test test-metal test-tiny fuzz input-safety check gates-tool verify-auto verify verify-release verify-long verify-cpu verify-changed sweep gate gates-list gates-costs gates-validate \
+.PHONY: help build index debug build-cpu build-linux metal install uninstall test test-metal test-tiny fuzz input-safety check watch ci-test scripts-validate gates-tool verify-auto verify verify-release verify-long verify-cpu verify-changed sweep gate gates-list gates-costs gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate speed speed-base spec-matrix \
-        agent agent-eval api-check playground model-ls eval-corpus speech-corpus trace capture clean clean-cache distclean hf-downloader test-hf version release-draft release tag site-check site-serve docs-check
+        agent agent-eval api-check shot playground model-ls eval-corpus speech-corpus trace capture clean clean-cache distclean hf-downloader test-hf version release-draft release tag site-check site-serve docs-check
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
-	@echo; echo "Variables: MODEL OPT BACKEND PROMPT ARGS PREFIX  (see Makefile header)"
+	@echo; echo "Variables: MODEL OPT BACKEND PROMPT ARGS PREFIX VARIANT NAME BASE V TIERS CAPTURE LINUX_OPT LINUX_PREFIX  (see Makefile header)"
 
 # ---- build -----------------------------------------------------------------
 
@@ -45,8 +57,8 @@ build-cpu: ## Release build without the Metal backend (-Dmetal=false)
 # The release's Linux target, into its own prefix so ./zig-out keeps this
 # machine's binary. It proves the tree compiles for Linux; the Linux tests
 # run in CI.
-build-linux: ## Cross-compile the CPU-only Linux build into .zig-cache/linux (compiles only; CI runs its tests)
-	$(ZIG) build -Dmetal=false -Dtarget=x86_64-linux-gnu.2.35 -Dcpu=x86_64_v3 --prefix .zig-cache/linux
+build-linux: ## Cross-compile the CPU-only Linux build into $(LINUX_PREFIX) (compiles only; CI runs its tests)
+	$(ZIG) build -Dmetal=false -Doptimize=$(LINUX_OPT) -Dtarget=$(LINUX_TARGET) -Dcpu=$(LINUX_CPU) --prefix $(LINUX_PREFIX)
 
 metal: ## Release build with the Metal backend stated explicitly
 	$(ZIG) build $(METAL)
@@ -76,6 +88,9 @@ test-metal: ## GPU kernel fixture/lifecycle checks (needs a Metal device, no mod
 test-tiny: ## Metal against the CPU reference on generated models (needs a Metal device, no download)
 	$(ZIG) build test-tiny $(METAL)
 
+watch: ## Compile errors on every save, in about 0.25 s (Ctrl-C to stop; docs/development.md § Toolchain)
+	$(ZIG) build check -fincremental --watch $(ARGS)
+
 fuzz: ## One fuzz test under the fuzzer for SECONDS (default 60): TARGET=NAME; without TARGET, the list (docs/development.md § Hostile input)
 	python3 scripts/gate/fuzz.py $(if $(TARGET),--target $(TARGET) --seconds $(or $(SECONDS),60),--list)
 
@@ -83,7 +98,7 @@ input-safety: ## No panic, assert, unchecked cast, or forced optional on outside
 	python3 scripts/repo/input-safety-check.py --self-test
 	python3 scripts/repo/input-safety-check.py
 
-check: fmt-check input-safety test test-metal test-tiny gates-validate workloads-validate ## Format check + the input-safety check + unit tests (fuzz corpora included) + GPU fixtures + the two manifests (seconds)
+check: fmt-check input-safety test test-metal test-tiny gates-validate workloads-validate scripts-validate ## Format check + the input-safety check + unit tests (fuzz corpora included) + GPU fixtures + the two manifests (seconds)
 
 # ---- gates (gates.json; docs/development.md § Gates) ----------------------
 # Every model-specific numerical check is a gate in the manifest, run by the
@@ -114,7 +129,7 @@ verify-long: eval-corpus gates-tool ## The long-context tier: 4K-token perplexit
 verify-cpu: gates-tool ## The CPU-reference tier (hours): when a unit changes what the CPU reference computes, and before a release
 	$(GATES) --tier verify-cpu $(ARGS)
 
-verify-changed: eval-corpus gates-tool ## The gates the change from $(BASE) selects (BASE=HEAD, untracked files count); ARGS='--tier verify-long' or '--tier verify-cpu' for those tiers'
+verify-changed: eval-corpus gates-tool ## The gates the change from $(BASE) selects (BASE=HEAD, untracked files count); ARGS='--tier verify-long' or '--tier verify-cpu' for those tiers
 	$(GATES) --changed $(BASE) $(ARGS)
 
 sweep: eval-corpus gates-tool ## Every tier's gates not already cached, cheapest first, with skips reported
@@ -129,9 +144,8 @@ gates-list: gates-tool ## Every gate with its tier, family, model, evidence, and
 gates-costs: gates-tool ## Each tier's and the canaries' last passing seconds against their budgets, as Markdown
 	$(GATES) --costs
 
-gates-validate: gates-tool ## Validate gates.json against the tree, and run the perplexity reference's self-test (no model)
+gates-validate: gates-tool ## Validate gates.json against the tree (no model)
 	$(GATES) --validate
-	python3 scripts/gate/reference-perplexity.py --self-test
 
 # ---- workloads (workloads.json; docs/development.md § The record) ---------
 # Every benchmark workload is data: one `nuclis bench` invocation (or the
@@ -144,11 +158,12 @@ workload: ## Run workloads by name or glob: make workload NAME=qwen38/prose512-d
 workloads-list: ## Every workload with its model's status, shape, and evidence
 	python3 scripts/bench/workloads.py --list
 
-workloads-validate: ## Validate workloads.json and run the driver's, the report script's, the speed loop's, and the speculative matrix's self-tests (no model)
+workloads-validate: ## Validate workloads.json and run the driver's, the report script's, the speed loop's, the speculative matrix's, and the acceptance baseline's self-tests (no model)
 	python3 scripts/bench/workloads.py --validate
 	python3 scripts/bench/bench-report.py --self-test
 	python3 scripts/bench/speed.py --self-test
 	python3 scripts/bench/spec-matrix.py --self-test
+	python3 scripts/bench/nuclis-baseline.py --self-test
 
 # ---- the speed loop (scripts/bench/speed.py; docs/development.md § The speed loop) --
 # A saved base binary against the tree, interleaved on saved prefixes under
@@ -167,6 +182,15 @@ spec-matrix: metal ## Real speculation, off/on pairs per cell: make spec-matrix 
 
 fmt: ## Format Zig sources and build files in place
 	$(ZIG) fmt build.zig build.zig.zon src/ inference/ huggingface/ tools/
+
+# What CI's test job and release.yml run: the checks that need no GPU, no
+# model, and no network.
+ci-test: fmt-check input-safety gates-validate ## CI's checks without a GPU: format, input safety, unit tests, the gate manifest
+	$(ZIG) build test --summary all
+
+scripts-validate: ## The self-tests of the script helpers: the shared server module and the screenshot harness (no model)
+	python3 scripts/lib/serve.py
+	python3 scripts/app/tui-shot.py --self-test
 
 fmt-check: ## Fail if any Zig source is not formatted
 	$(ZIG) fmt --check build.zig build.zig.zon src/ inference/ huggingface/ tools/
@@ -199,7 +223,7 @@ lint-py: ## Lint, format-check, and type-check the Python scripts (ruff, basedpy
 inspect: metal ## Inspect the model container
 	$(BIN) inspect --model "$(MODEL)" $(ARGS)
 
-validate: metal ## Validate the Qwen structural profile
+validate: metal ## Check MODEL against its family's adapter (any family)
 	$(BIN) validate --model "$(MODEL)" $(ARGS)
 
 generate: metal ## Generate text: make generate PROMPT='...' BACKEND=cpu|metal ARGS='--max-tokens 64'
@@ -303,8 +327,6 @@ hf-downloader: ## Build the package's standalone downloader (zig-out/bin/hf-down
 
 test-hf: ## Offline tests of the huggingface package only (`make test` includes them)
 	$(ZIG) build test-hf
-
-# ---- releases --------------------------------------------------------------
 
 # ---- releases (docs/development.md § Versioning) ----------------------------
 # What merged, for the highlights; the version PR; the annotated tag on its

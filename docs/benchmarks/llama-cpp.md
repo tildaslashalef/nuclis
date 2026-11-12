@@ -50,9 +50,10 @@ mainline reference rejects, so its oracle is the PrismML fork of llama.cpp
 tag `prism-b10687-5d80cff`, commit
 `5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6` (2026-09-17). Two pins, never one
 moving one: the mainline revision above stays the oracle for every other
-family, and every script that checks a served build's revision takes the
+family, and every script that checked a served build's revision took the
 fork's as a parameter (`profile-alias-check.py --reference-revision`) or a
-second constant (`quant-fixtures.py`'s `PRISM_REVISION`). The same recipe,
+second constant (`quant-fixtures.py`'s `PRISM_REVISION`); both scripts are
+retired, at tag `v0.11.0` under `scripts/`. The same recipe,
 in its own checkout:
 
 ```sh
@@ -196,22 +197,14 @@ mkdir -p .reference
   > .reference/server.log 2>&1
 ```
 
-Then run the opt-in development harness from this repository:
+The records below were taken by the development harness
+`scripts/reference-baseline.py`, retired and at tag `v0.11.0`; nuclis is its own
+reference, and a re-pinned file's fixtures are made by nuclis
+([models § Which executor makes which fixture](../models/README.md#which-executor-makes-which-fixture)).
+The near-capacity check ran separately, with `--prompt-lengths 32639
+--repetitions 1`, leaving one token of boundary margin.
 
-```sh
-python3 scripts/bench/reference-baseline.py \
-  --output-dir .reference/warm-new-run
-```
-
-Run the near-capacity check separately, leaving one token of boundary margin:
-
-```sh
-python3 scripts/bench/reference-baseline.py \
-  --output-dir .reference/boundary-new-run \
-  --prompt-lengths 32639 --repetitions 1 --server-pid <pid>
-```
-
-For a second family, start the server on its file and pass `--family`
+For a second family, the server was started on its file with `--family`
 (`qwen38` by default; `gemma4` checks that family's thinking-off marker
 and writes `<bos>` into the prompt text, since the server's
 `/apply-template` strips the BOS its own tokenizer re-adds while nuclis's

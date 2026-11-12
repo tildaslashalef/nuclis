@@ -2,7 +2,7 @@
 //! `smoke`: a short text prompt through the backbone and the tower's
 //! teacher-forced prefill, the 4,097 logits checked finite, then a few
 //! greedy frames (argmax main token and codes), each step timed.
-//! `trace`: each case pinned by `scripts/oracle/speech-traces/drama3_trace.py`
+//! `trace`: each case pinned by `scripts/speech-traces/drama3_trace.py` (tag v0.11.0)
 //! under `tests/fixtures/drama3/` replayed from its frame rows: the
 //! backbone's input rows, its layers, final norm, and logits, and the
 //! tower's rows and head logits, against the trace (relative RMS per stage,

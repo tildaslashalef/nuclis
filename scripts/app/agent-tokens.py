@@ -4,8 +4,8 @@ their results added to the context, and each tool's share of all result
 tokens, counted with the engine's own tokenizer (`nuclis tokenize --raw`),
 not a character estimate.
 
-    python3 scripts/app/agent-tokens.py agnt19-after
-    python3 scripts/app/agent-tokens.py agnt19-after agnt20-grep   # side by side
+    python3 scripts/app/agent-tokens.py baseline
+    python3 scripts/app/agent-tokens.py baseline shorter-grep   # side by side
 
 Reads the session files `scripts/app/agent-eval.py` leaves under
 .zig-cache/agent-eval/<variant>/. A result's tool is the call its `call` id
@@ -24,7 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / ".zig-cache" / "agent-eval"
 DEFAULT_BINARY = ROOT / "zig-out" / "bin" / "nuclis"
-TOOLS = ["read_file", "edit_file", "write_file", "bash", "grep", "glob"]
+TOOLS = ["read_file", "edit_file", "write_file", "bash", "grep", "glob", "web_search", "web_context"]
 
 
 class Counter:

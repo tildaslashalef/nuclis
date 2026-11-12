@@ -84,7 +84,7 @@ bit-identical to the fork's `dequantize_row_pq2_0` / `dequantize_row_ptq1_0`
 on the committed [`ternary.json`](../../inference/src/quant/fixtures/ternary.json)
 fixture (arbitrary payload bytes, so non-canonical codes reproduce the
 reference arithmetic too, plus all-zero, all-one, and canonical blocks;
-`scripts/fixtures/quant-fixtures.py --prism-checkout`).
+`scripts/quant-fixtures.py --prism-checkout`, retired; at tag `v0.11.0`).
 
 - **PQ2_0** (id 142; the fork's file type `MOSTLY_PQ2_0` 128): 34 bytes —
   `ggml_half d` then `uint8_t qs[32]`. Element `j` is the two bits at
@@ -182,7 +182,7 @@ SHA-256 `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041`
 profile's (`12827f24…`, 9,993 bytes), which carries Unsloth's fixes
 (`developer` role, merged system messages, `high` mapped to `xhigh`,
 tool-argument type checks). The alias gate
-(`scripts/fixtures/profile-alias-check.py --profile qwen38 --reference-revision
+(`scripts/profile-alias-check.py --profile qwen38 --reference-revision
 5d80cff0…`, the fork's server holding the PQ2_0 file, 2026-09-18) replayed
 the pinned fixtures: **24 of 28 text prompt cases, all 20 tool cases, and
 all 20 token cases are byte-identical**; the 4 that differ are the
@@ -215,9 +215,9 @@ fork's server renders it.
 Built as the mainline recipe with `.reference/prism-llama.cpp`
 in place of the mainline checkout
 ([llama-cpp.md § The second oracle](../benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-2026-09-18)).
-Two pins, never one moving one: `scripts/fixtures/quant-fixtures.py` carries
-`PRISM_REVISION` beside `REVISION`, and `profile-alias-check.py` takes
-`--reference-revision`.
+Two pins, never one moving one: `scripts/quant-fixtures.py` carried
+`PRISM_REVISION` beside `REVISION`, and `profile-alias-check.py` took
+`--reference-revision` (both retired; at tag `v0.11.0`).
 
 Runs on 2026-09-18 (M4 Pro, Metal, the PQ2_0 file):
 

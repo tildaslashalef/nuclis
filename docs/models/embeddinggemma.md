@@ -388,7 +388,8 @@ represents them together and is comparable with a text-only one.
 - **sentence-transformers.** `google/embeddinggemma-2` at the pinned
   revision, in float32 on the CPU, through sentence-transformers 6.1.0,
   transformers 5.19.0 (the card was written against 5.18.0.dev0) and torch
-  2.14.1, in `.reference/venv-embed`, driven by `scripts/oracle/embedding-reference.py`.
+  2.14.1, in `.reference/venv-embed`, driven by `scripts/embedding-reference.py`
+  (retired; at tag `v0.11.0`).
   It is the end-to-end truth, input processing included (prefixes, image
   resizing, mel features).
 

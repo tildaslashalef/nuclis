@@ -13,17 +13,19 @@ costs); the method is docs/guide/api.md § The voice loop.
 """
 
 import argparse
-import http.client
 import json
 import random
-import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-NUCLIS = str(Path(__file__).resolve().parents[2] / "zig-out" / "bin" / "nuclis")
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts/lib"))
+import serve  # noqa: E402
+
+NUCLIS = str(ROOT / "zig-out" / "bin" / "nuclis")
 SENTENCE = (
     "The old lighthouse on the northern cape has guided fishing boats home through "
     "fog and winter storms for nearly two hundred years, and its keeper still climbs "
@@ -40,9 +42,9 @@ def filler(tokens: int, unique: str) -> str:
     return f"Session {unique}.\n" + " ".join(rng.choice(WORDS) for _ in range(tokens))
 
 
-def connection(url: str) -> http.client.HTTPConnection:
+def where(url: str) -> tuple[str, int]:
     parsed = urlparse(url)
-    return http.client.HTTPConnection(parsed.hostname or "127.0.0.1", parsed.port, timeout=300)
+    return parsed.hostname or serve.HOST, parsed.port or 80
 
 
 def chat(url, model, system, effort, out):
@@ -50,61 +52,48 @@ def chat(url, model, system, effort, out):
     body = {
         "model": model,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": "Name one sea bird."}],
-        "stream": True,
         "stream_options": {"include_usage": True},
         "max_tokens": 48,
         "temperature": 0,
         "reasoning_effort": effort,
     }
+    host, port = where(url)
     start = time.monotonic()
-    c = connection(url)
-    c.request("POST", "/v1/chat/completions", json.dumps(body), {"content-type": "application/json"})
-    response = c.getresponse()
     first = None
-    while line := response.readline():
-        if not line.startswith(b"data: {"):
-            continue
-        chunk = json.loads(line[6:])
+    for at, chunk in serve.chat_stream(port, body, timeout=300, host=host):
         delta = chunk["choices"][0].get("delta", {}) if chunk.get("choices") else {}
         if first is None and (delta.get("content") or delta.get("reasoning_content")):
-            first = time.monotonic() - start
+            first = at - start
         if chunk.get("usage"):
             out["usage"] = chunk["usage"]
     out["first_token"] = first
     out["total"] = time.monotonic() - start
-    c.close()
 
 
 def speak(url, voice_model, voice):
     """One speech request: the modelled player's stalls and the generate time."""
     body = {"model": voice_model, "input": SENTENCE, "voice": voice, "response_format": "pcm", "seed": 0}
+    host, port = where(url)
     start = time.monotonic()
-    c = connection(url)
-    c.request("POST", "/v1/audio/speech", json.dumps(body), {"content-type": "application/json"})
-    response = c.getresponse()
-    if response.status != 200:
-        raise SystemExit(f"speech: {response.status} {response.read()[:300]!r}")
     received = 0
     first_byte = start
     play_end = start  # the moment the player runs out of what it has
     stalls = []
     when = []
-    while True:
-        data = response.read1(BYTES_PER_100MS)
-        now = time.monotonic()
-        if not data:
-            break
-        if received == 0:
-            first_byte = now
-            play_end = now
-        if now > play_end + 0.005:
-            stalls.append(now - play_end)
-            when.append(now - first_byte)
-            play_end = now
-        play_end += len(data) / (2 * RATE)
-        received += len(data)
+    try:
+        for now, data in serve.speech_request(port, body, piece=BYTES_PER_100MS, timeout=300, host=host):
+            if received == 0:
+                first_byte = now
+                play_end = now
+            if now > play_end + 0.005:
+                stalls.append(now - play_end)
+                when.append(now - first_byte)
+                play_end = now
+            play_end += len(data) / (2 * RATE)
+            received += len(data)
+    except serve.Failed as failure:
+        raise SystemExit(f"speech: {failure}") from None
     end = time.monotonic()
-    c.close()
     seconds = received / (2 * RATE)
     return {
         "audio": seconds,
@@ -137,26 +126,6 @@ def one(url, brain, voice_model, voice, beside, tokens):
     return heard, chatted
 
 
-def serve(args):
-    command = [args.nuclis, "serve", "--quiet", "--port", str(args.port), "--memory", str(args.memory)]
-    for pin in [args.brain, args.voice_model]:
-        command += ["--pin", pin]
-    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    url = f"http://127.0.0.1:{args.port}"
-    for _ in range(600):
-        try:
-            c = connection(url)
-            c.request("GET", "/v1/health")
-            if c.getresponse().status == 200:
-                return process, url
-        except OSError:
-            pass
-        if process.poll() is not None:
-            raise SystemExit(f"the server exited with {process.returncode}")
-        time.sleep(0.5)
-    raise SystemExit("the server did not come up")
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--brain", default="gemma-4-e4b-qat")
@@ -165,16 +134,17 @@ def main():
     parser.add_argument("--beside", nargs="+", default=["nothing", "alone", "cached", "cold-off", "cold-low"])
     parser.add_argument("--runs", type=int, default=4)
     parser.add_argument("--tokens", type=int, default=2700)
-    parser.add_argument("--port", type=int, default=9482)
     parser.add_argument("--memory", type=int, default=40)
     parser.add_argument("--nuclis", default=NUCLIS)
     parser.add_argument("--url", help="a server already running; none is started")
     parser.add_argument("--json", help="also write every run here")
     args = parser.parse_args()
-    process = None
+    server = None
     url = args.url
     if not url:
-        process, url = serve(args)
+        pins = ["--pin", args.brain, "--pin", args.voice_model]
+        server = serve.Server(args.nuclis, ["--memory", str(args.memory), *pins])
+        url = f"http://{serve.HOST}:{server.port}"
     records = []
     try:
         print(f"{args.brain}, {args.tokens} tokens")
@@ -198,9 +168,8 @@ def main():
                 )
                 records.append({"beside": beside, "heard": heard, "chat": chatted})
     finally:
-        if process:
-            process.terminate()
-            process.wait()
+        if server:
+            server.stop()
     if args.json:
         Path(args.json).write_text(json.dumps(records, indent=1))
 

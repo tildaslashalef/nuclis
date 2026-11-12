@@ -1,9 +1,9 @@
 
 ---
 
-### The attached build
+### The attached builds
 
-macOS on Apple Silicon, release mode, with the Metal backend. It is **not
+**macOS on Apple Silicon**, release mode, with the Metal backend. It is **not
 signed or notarized** — there is no Apple Developer ID for this project — so
 macOS quarantines it on download. After unpacking:
 
@@ -15,7 +15,16 @@ xattr -d com.apple.quarantine nuclis-*/nuclis
 ./nuclis-*/nuclis --help
 ```
 
-A source archive (`nuclis-*-src.tar.gz`) is attached alongside the binary.
+**Linux on x86-64**, release mode, CPU only (no GPU backend): it needs a
+CPU with AVX2 and glibc 2.35 or newer (Ubuntu 22.04, Debian 12).
+
+```sh
+gh attestation verify nuclis-*-x86_64-linux.tar.gz -R tildaslashalef/nuclis
+tar -xzf nuclis-*-x86_64-linux.tar.gz
+./nuclis-*/nuclis --help
+```
+
+A source archive (`nuclis-*-src.tar.gz`) is attached alongside the binaries.
 Building from source needs only Zig and the Command Line Tools, and takes
 about a minute:
 

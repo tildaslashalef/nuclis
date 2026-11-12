@@ -17,7 +17,7 @@ States run up to 16,384 tokens. nuclis runs it in these parts:
 | Head (CPU, F32), the model | `inference/src/models/clef.zig` |
 | Projector (the Qwen3-VL merger at width 4,096) | `inference/src/vision/qwen3vl.zig`, `qwen3vl_metal.zig`, `projector.zig` |
 | The family seam, `nuclis decide`, `nuclis serve` | `inference/src/decide.zig`, `src/decide.zig`, `src/decision/`, `src/api/decisions/` |
-| Oracle and checks | `scripts/oracle/clef-reference.py`, `inference/clef-check.zig`, `inference/src/models/fixtures/clef/` |
+| Oracle and checks | `scripts/clef-reference.py` (retired; at tag `v0.11.0`), `inference/clef-check.zig`, `inference/src/models/fixtures/clef/` |
 
 ## The artifacts
 
@@ -114,7 +114,7 @@ transformers 5.10.2):
 
 | Check | How | Result |
 | --- | --- | --- |
-| The sequence | `clef-reference.py sequence` writes the reference's ids and spans for 10 requests (the card's two examples, Laya's shapes, a 3,931-token log, a 6-question conversation, two image requests); `clef-check sequences` rebuilds them | ids and every span equal, image token counts (80; 64 + 192) equal |
+| The sequence | `clef-reference.py sequence` wrote the reference's ids and spans for 10 requests (the card's two examples, Laya's shapes, a 3,931-token log, a 6-question conversation, two image requests); `clef-check sequences` rebuilds them | ids and every span equal, image token counts (80; 64 + 192) equal |
 | The head alone | seeded random inputs through both heads (`head --synthetic`) | max logit difference 1.4e-6 |
 | The head on real inputs | nuclis's Metal backbone dumps each request's rows and lexical vectors; the reference head turns them into `head.json` | nuclis's head within 6e-7 |
 | CPU against Metal | the CPU reference's rows against the Metal plan's | `card_invoice`: rows' cosine ≥ 0.999997, RMS ratio 6.2e-4, logits 8.5e-5; `noul_error` 7.5e-5, `noul_criteria` 5.8e-4 |

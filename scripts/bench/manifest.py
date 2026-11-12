@@ -17,8 +17,9 @@ ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "gates.json"
 INDEX = ROOT / "src" / "catalog.json"
 WORKLOADS = ROOT / "workloads.json"
-CPU_PREFIX = ".zig-cache/gates/cpu"
 MODELS_ROOT = "~/.nuclis/models/"
+# The attention cache precisions `nuclis bench --kv` takes.
+KV_PRECISIONS = ("f32", "f16", "q8_0")
 
 
 def index_artifact(index, name):
@@ -128,13 +129,9 @@ def workloads(gdoc=None, index=None):
     return expand(json.loads(WORKLOADS.read_text()), gdoc, index)
 
 
-def build(doc, which, dry_run):
-    """Build the `metal` or `cpu` binary; returns seconds."""
-    b = doc["build"]
-    if which == "metal":
-        cmd = ["zig", "build", "-Dmetal=true", f"-Doptimize={b['metal_optimize']}"]
-    else:
-        cmd = ["zig", "build", "-Dmetal=true", f"-Doptimize={b['cpu_optimize']}", "--prefix", CPU_PREFIX]
+def build(doc, dry_run):
+    """Build the Metal binary the bench scripts run; returns seconds."""
+    cmd = ["zig", "build", "-Dmetal=true", f"-Doptimize={doc['build']['metal_optimize']}"]
     print("build:", " ".join(cmd), file=sys.stderr, flush=True)
     if dry_run:
         return 0.0
