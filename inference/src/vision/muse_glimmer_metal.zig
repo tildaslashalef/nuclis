@@ -9,15 +9,14 @@
 //! sized for the largest image (16,384 patches).
 const std = @import("std");
 const metal = @import("../backends/metal/root.zig");
-const cpu = @import("../backends/cpu/root.zig");
 const weights = @import("../runtime/weights.zig");
 const preprocess = @import("preprocess.zig");
 const model = @import("muse_glimmer.zig");
 const attention = @import("attention_metal.zig");
+const plan = @import("plan_metal.zig");
 
 const Backend = metal.Backend;
 const Buffer = metal.Buffer;
-const Tensor = @import("../formats/gguf.zig").Tensor;
 
 const hidden = model.hidden;
 const ffn = model.ffn;
@@ -27,7 +26,7 @@ const out_width = model.output_width;
 /// The patch row padded to the matmul tile's column multiple.
 pub const patch_columns = @divCeil(model.patch_values, 64) * 64;
 
-const Weight = struct { buffer: Buffer, matrix: cpu.Matrix };
+const Weight = plan.Weight;
 const Layer = struct {
     n1w: Buffer,
     n1b: Buffer,
@@ -89,58 +88,46 @@ pub const Plan = struct {
         self.created_bytes = 0;
         const kernel = try model.patchKernel(alloc, view, binding, patch_columns);
         defer alloc.free(kernel);
-        const kernel_buffer = try self.created(kernel.len * 4);
+        const kernel_buffer = try plan.created(&self, kernel.len * 4);
         @memcpy(kernel_buffer.floats()[0..kernel.len], kernel);
         self.kernel = .{ .buffer = kernel_buffer, .matrix = .{ .encoding = 0, .rows = hidden, .columns = patch_columns, .bytes = kernel_buffer.host[0 .. kernel.len * 4] } };
-        self.pre_w = try self.wrapped(binding.pre_norm.weight);
-        self.pre_b = try self.wrapped(binding.pre_norm.bias);
+        self.pre_w = try plan.wrapped(&self, binding.pre_norm.weight);
+        self.pre_b = try plan.wrapped(&self, binding.pre_norm.bias);
         for (&self.layers, binding.layers) |*layer, l| layer.* = .{
-            .n1w = try self.wrapped(l.norm1.weight),
-            .n1b = try self.wrapped(l.norm1.bias),
-            .query = try self.weight(l.query.weight),
-            .qb = try self.wrapped(l.query.bias),
-            .key = try self.weight(l.key.weight),
-            .kb = try self.wrapped(l.key.bias),
-            .value = try self.weight(l.value.weight),
-            .vb = try self.wrapped(l.value.bias),
-            .output = try self.weight(l.output.weight),
-            .ob = try self.wrapped(l.output.bias),
-            .n2w = try self.wrapped(l.norm2.weight),
-            .n2b = try self.wrapped(l.norm2.bias),
-            .up = try self.weight(l.up.weight),
-            .ub = try self.wrapped(l.up.bias),
-            .down = try self.weight(l.down.weight),
-            .db = try self.wrapped(l.down.bias),
+            .n1w = try plan.wrapped(&self, l.norm1.weight),
+            .n1b = try plan.wrapped(&self, l.norm1.bias),
+            .query = try plan.weight(&self, l.query.weight),
+            .qb = try plan.wrapped(&self, l.query.bias),
+            .key = try plan.weight(&self, l.key.weight),
+            .kb = try plan.wrapped(&self, l.key.bias),
+            .value = try plan.weight(&self, l.value.weight),
+            .vb = try plan.wrapped(&self, l.value.bias),
+            .output = try plan.weight(&self, l.output.weight),
+            .ob = try plan.wrapped(&self, l.output.bias),
+            .n2w = try plan.wrapped(&self, l.norm2.weight),
+            .n2b = try plan.wrapped(&self, l.norm2.bias),
+            .up = try plan.weight(&self, l.up.weight),
+            .ub = try plan.wrapped(&self, l.up.bias),
+            .down = try plan.weight(&self, l.down.weight),
+            .db = try plan.wrapped(&self, l.down.bias),
         };
-        self.post_w = try self.wrapped(binding.post_norm.weight);
-        self.post_b = try self.wrapped(binding.post_norm.bias);
-        for (&self.adapter, binding.adapter) |*a, t| a.* = try self.weight(t);
+        self.post_w = try plan.wrapped(&self, binding.post_norm.weight);
+        self.post_b = try plan.wrapped(&self, binding.post_norm.bias);
+        for (&self.adapter, binding.adapter) |*a, t| a.* = try plan.weight(&self, t);
         const rows = Backend.matmulPadded(model.max_patches);
         const tokens = Backend.matmulPadded(model.max_tokens);
-        self.input = try self.created(rows * patch_columns * 4);
-        inline for (.{ "x", "h", "q", "k", "v", "attn" }) |field| @field(self, field) = try self.created(rows * hidden * 4);
-        self.up = try self.created(@max(rows * ffn, tokens * (merged + 2 * adapter)) * 4);
-        self.rope = try self.created(model.max_patches * model.rope_pairs * 8);
-        self.out = try self.created(tokens * out_width * 4);
-        self.scores = try self.created(attention.score_capacity * 4);
+        self.input = try plan.created(&self, rows * patch_columns * 4);
+        inline for (.{ "x", "h", "q", "k", "v", "attn" }) |field| @field(self, field) = try plan.created(&self, rows * hidden * 4);
+        self.up = try plan.created(&self, @max(rows * ffn, tokens * (merged + 2 * adapter)) * 4);
+        self.rope = try plan.created(&self, model.max_patches * model.rope_pairs * 8);
+        self.out = try plan.created(&self, tokens * out_width * 4);
+        self.scores = try plan.created(&self, attention.score_capacity * 4);
         self.windowed = try attention.Spans.init(alloc, backend, model.max_patches, &self.created_bytes);
         errdefer self.windowed.deinit(alloc);
         self.global = try attention.Spans.init(alloc, backend, model.max_patches, &self.created_bytes);
         errdefer self.global.deinit(alloc);
         self.scratch = try alloc.alloc(f32, 4 * hidden);
         return self;
-    }
-    fn created(self: *Plan, len: usize) !Buffer {
-        const buffer = try self.backend.create(len);
-        self.created_bytes += len;
-        return buffer;
-    }
-    fn wrapped(self: *Plan, tensor: *const Tensor) !Buffer {
-        return self.backend.wrap(try self.view.bytes(tensor));
-    }
-    fn weight(self: *Plan, tensor: *const Tensor) !Weight {
-        const matrix = try self.view.matrix(tensor);
-        return .{ .buffer = try self.backend.wrap(matrix.bytes), .matrix = matrix };
     }
     pub fn deinit(self: *Plan) void {
         // Device buffers belong to the backend and go with it.

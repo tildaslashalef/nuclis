@@ -247,11 +247,13 @@ pub fn bind(gpa: std.mem.Allocator, checkpoint: *const safetensors.Checkpoint, c
     return binding;
 }
 
-const Binder = struct {
+/// Binds tensors of `checkpoint` by name and shape, F32 only: aligned bytes
+/// are borrowed in place, others decoded into `arena`.
+pub const Binder = struct {
     checkpoint: *const safetensors.Checkpoint,
     arena: std.mem.Allocator,
 
-    fn get(self: *Binder, comptime format: []const u8, args: anytype, shape: []const usize) BindError![]const f32 {
+    pub fn get(self: *Binder, comptime format: []const u8, args: anytype, shape: []const usize) BindError![]const f32 {
         var buffer: [128]u8 = undefined;
         const name = std.fmt.bufPrint(&buffer, format, args) catch return error.MissingTensor;
         const ref = self.checkpoint.get(name) orelse return error.MissingTensor;

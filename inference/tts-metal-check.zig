@@ -170,7 +170,7 @@ pub fn check(alloc: std.mem.Allocator, b: *Backend) !void {
         fill(random, values, 1);
         const want = try a.alloc(f32, n * stride);
         const scores = try a.alloc(f64, window);
-        codec.attention(.{ .heads = heads, .head_dim = 64, .window = window }, q, keys, values, n, past, scores, want);
+        inference.audio.codec_attention.attention(.{ .heads = heads, .head_dim = 64, .window = window }, q, keys, values, n, past, scores, want);
         const out = try Up.zeros(b, &created, alloc, n * stride);
         try b.begin();
         try b.ttsWindowAttention(try Up.load(b, &created, alloc, q), try Up.load(b, &created, alloc, keys), try Up.load(b, &created, alloc, values), out, n, past, heads, window, 0.125);

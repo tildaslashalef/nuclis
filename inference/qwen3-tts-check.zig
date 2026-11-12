@@ -241,7 +241,7 @@ fn checkCodecMetal(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io,
     defer gpu.deinit();
     var decoder = try codec_metal.Decoder.init(gpa, &gpu, &runtime);
     defer decoder.deinit();
-    std.debug.print("Codec decoder on Metal: {d} MB of device buffers.\n", .{decoder.bytes / 1_000_000});
+    std.debug.print("Codec decoder on Metal: {d} MB of device buffers.\n", .{decoder.device.bytes / 1_000_000});
     const per = runtime.config.samplesPerFrame();
 
     var passed = true;

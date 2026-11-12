@@ -10,6 +10,7 @@
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const gguf = @import("../formats/gguf.zig");
+const table = @import("table.zig");
 
 pub const TokenType = enum(i32) { normal = 1, unknown = 2, control = 3, user_defined = 4, unused = 5, byte = 6 };
 pub const Token = struct { text: []const u8, kind: TokenType };
@@ -140,7 +141,7 @@ fn build(gpa: std.mem.Allocator, directory: []const u8, words: gguf.Array, kinds
             std.enums.fromInt(TokenType, (try reader.nextInt32()).?) orelse return error.InvalidToken
         else
             .normal;
-        const owned = try copyText(alloc, text, &remaining);
+        const owned = try table.copyText(alloc, text, &remaining);
         const entry = try ids.getOrPut(alloc, owned);
         if (entry.found_existing) return error.DuplicateToken;
         entry.value_ptr.* = @intCast(id);
@@ -164,19 +165,13 @@ fn build(gpa: std.mem.Allocator, directory: []const u8, words: gguf.Array, kinds
         if (space == 0 or space + 1 == text.len or
             std.mem.indexOfScalar(u8, text[space + 1 ..], ' ') != null or
             !std.unicode.utf8ValidateSlice(text)) return error.InvalidMerge;
-        const owned = try copyText(alloc, text, &remaining);
+        const owned = try table.copyText(alloc, text, &remaining);
         const entry = try ranks.getOrPut(alloc, owned);
         if (entry.found_existing) return error.DuplicateMerge;
         entry.value_ptr.* = rank;
     }
     const owned_pre = try alloc.dupe(u8, pre);
     return .{ .storage = arena, .tokens = tokens, .pre = owned_pre, .bos = specials.bos, .eos = specials.eos, .padding = specials.padding, .token_ids = ids, .merge_ranks = ranks };
-}
-
-fn copyText(alloc: std.mem.Allocator, text: []const u8, remaining: *usize) Error![]const u8 {
-    if (text.len > remaining.*) return error.LimitExceeded;
-    remaining.* -= text.len;
-    return alloc.dupe(u8, text);
 }
 
 fn string(doc: gguf.Document, key: []const u8) Error![]const u8 {

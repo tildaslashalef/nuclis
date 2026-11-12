@@ -11,6 +11,7 @@ const std = @import("std");
 const inference = @import("inference");
 const style = @import("tui/style.zig");
 const config = @import("config.zig");
+const timing = @import("timing.zig");
 const transcript = @import("audio/transcript.zig");
 
 const audio = inference.audio.audio;
@@ -215,7 +216,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
         diag.set("{s}: the Metal plan failed ({s}); run with --backend cpu", .{ directory, @errorName(err) });
         return err;
     };
-    const load_ns = lap(io, &started);
+    const load_ns = timing.lap(io, &started);
 
     const prompt_name = o.language orelse "auto";
     var prompts: [asr.max_languages]usize = undefined;
@@ -241,7 +242,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
         return err;
     };
     defer reader.close();
-    const decode_ns = lap(io, &started);
+    const decode_ns = timing.lap(io, &started);
 
     var transcriber = try asr.Transcriber.init(gpa, model, o.lookahead, prompts[0], switch (o.backend) {
         .cpu => .cpu,
@@ -280,7 +281,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
         while (!feeding.finished) _ = feeding.step() catch |err| return midway(diag, path, feeding.fed, err);
         samples = feeding.fed;
     }
-    const transcribe_ns = lap(io, &started);
+    const transcribe_ns = timing.lap(io, &started);
 
     var text: std.Io.Writer.Allocating = .init(arena);
     try segmenter.writeText(&text.writer);
@@ -310,10 +311,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
         .tokens = tokens,
         .segments = if (o.segments) .{ .segmenter = &segmenter } else null,
         .timings = .{
-            .load_ms = ms(load_ns),
-            .decode_audio_ms = ms(decode_ns),
-            .transcribe_ms = ms(transcribe_ns),
-            .real_time_factor = if (seconds > 0) ms(transcribe_ns) / 1000 / seconds else 0,
+            .load_ms = timing.ms(load_ns),
+            .decode_audio_ms = timing.ms(decode_ns),
+            .transcribe_ms = timing.ms(transcribe_ns),
+            .real_time_factor = if (seconds > 0) timing.ms(transcribe_ns) / 1000 / seconds else 0,
         },
     };
     if (o.format == .json) {
@@ -357,16 +358,6 @@ fn showPartial(arena: std.mem.Allocator, transcriber: *const asr.Transcriber, sh
         try out.print("\r\x1b[2K{s}{s}{s}", .{ sty.on(.dim), now.written(), sty.off() });
     } else try out.print("{s}\n", .{now.written()});
     try out.flush();
-}
-
-fn lap(io: std.Io, started: *std.Io.Timestamp) u64 {
-    const now = std.Io.Clock.awake.now(io);
-    defer started.* = now;
-    return @intCast(started.durationTo(now).toNanoseconds());
-}
-
-fn ms(ns: u64) f64 {
-    return @as(f64, @floatFromInt(ns)) / 1e6;
 }
 
 test "transcribe's options: one file, the lookaheads the checkpoint has, cpu or metal, a format" {

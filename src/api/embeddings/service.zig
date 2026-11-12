@@ -22,6 +22,8 @@ const models = @import("../models.zig");
 const router_mod = @import("../router.zig");
 const pool_mod = @import("pool.zig");
 const batcher_mod = @import("batcher.zig");
+const slot_mod = @import("../slot.zig");
+const timing = @import("../../timing.zig");
 
 const embed = inference.embed;
 const ApiError = errors.ApiError;
@@ -88,11 +90,11 @@ pub const Service = struct {
     /// when pulled, through the GPU.
     pub fn preload(self: *Service, arena: std.mem.Allocator, io: std.Io, name: []const u8, diag: *config.Diagnostic) !void {
         const located = try self.locate(arena, io, name, diag);
-        var opening: Opening = .{ .pool = &self.pool, .arena = arena, .path = located.path, .mmproj = located.mmproj, .name = name };
+        var opening: slot_mod.Opening(pool_mod.Pool.acquire) = .{ .target = &self.pool, .args = .{ located.path, located.mmproj, name } };
         try self.executor.submit(io, &opening.item);
         opening.item.done.waitUncancelable(io);
-        if (opening.failed) |e| {
-            diag.set("{s}", .{e.message});
+        if (opening.failed) |err| {
+            diag.set("{s}", .{batcher_mod.openFailure(arena, name, err).message});
             return error.ModelOpenFailed;
         }
     }
@@ -259,25 +261,6 @@ pub const Service = struct {
     }
 };
 
-/// Opening a model on the worker, outside any request.
-const Opening = struct {
-    item: gpu.Item = .{ .run = run },
-    pool: *pool_mod.Pool,
-    arena: std.mem.Allocator,
-    path: []const u8,
-    mmproj: ?[]const u8,
-    name: []const u8,
-    failed: ?ApiError = null,
-
-    fn run(item: *gpu.Item, io: std.Io) gpu.Item.After {
-        const self: *Opening = @fieldParentPtr("item", item);
-        _ = self.pool.acquire(io, self.path, self.mmproj, self.name) catch |err| {
-            self.failed = batcher_mod.openFailure(self.arena, self.name, err);
-        };
-        return .done;
-    }
-};
-
 fn refuse(arena: std.mem.Allocator, status: std.http.Status, code: []const u8, param: ?[]const u8, comptime format: []const u8, args: anytype) http.Response {
     var err: ApiError = .init(status, code, arena.print(format, args) catch code);
     err.param = param;
@@ -293,7 +276,7 @@ fn internal(arena: std.mem.Allocator) http.Response {
 fn note(arena: std.mem.Allocator, model: []const u8, body: response.Body, timings: batcher_mod.Job.Timings) []const u8 {
     const n = body.vectors.len;
     const passes = if (timings.passes > 1 or timings.shared > 1) arena.print(" · {d} pass{s}, shared by up to {d}", .{ timings.passes, if (timings.passes == 1) "" else "es", timings.shared }) catch "" else "";
-    const opened = if (timings.load_ns > 0) arena.print(" · opened in {d:.0} ms", .{response.ms(timings.load_ns)}) catch "" else "";
+    const opened = if (timings.load_ns > 0) arena.print(" · opened in {d:.0} ms", .{timing.ms(timings.load_ns)}) catch "" else "";
     return arena.print("{s} · {d} input{s} · {d} tokens{s}{s}", .{ model, n, if (n == 1) "" else "s", body.tokens(), passes, opened }) catch model;
 }
 

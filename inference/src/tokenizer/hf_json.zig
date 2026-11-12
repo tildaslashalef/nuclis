@@ -15,6 +15,7 @@
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const vocabulary = @import("vocabulary.zig");
+const table = @import("table.zig");
 const bpe = @import("bpe.zig");
 const encoder = @import("encode.zig");
 const gpt2 = @import("gpt2.zig");
@@ -286,64 +287,18 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!To
 
     if (model.vocab.map.count() == 0) return error.InvalidTokenizerJson;
     if (model.merges.len > limits.merges or file.added_tokens.len > limits.added) return error.LimitExceeded;
-    // Ids are the model's and the added tokens' together, dense from zero.
-    var count: usize = 0;
-    for (model.vocab.map.values()) |id| count = @max(count, @as(usize, id) + 1);
-    for (file.added_tokens) |a| count = @max(count, @as(usize, a.id) + 1);
-    if (count > limits.tokens) return error.LimitExceeded;
+    const added = try scratch.allocator().alloc(table.Added, file.added_tokens.len);
+    for (added, file.added_tokens) |*out, a| {
+        if (a.single_word or a.rstrip or (a.normalized and shape == .metaspace)) return error.UnsupportedAddedToken;
+        out.* = .{ .id = a.id, .content = a.content, .special = a.special, .lstrip = a.lstrip, .normalized = a.normalized };
+    }
 
     var arena: std.heap.ArenaAllocator = .init(gpa);
     errdefer arena.deinit();
     const alloc = arena.allocator();
     var remaining = limits.text_bytes;
-    const tokens = try alloc.alloc(vocabulary.Token, count);
-    const filled = try alloc.alloc(bool, count);
-    @memset(filled, false);
-    var ids: std.StringHashMapUnmanaged(u32) = .empty;
-    try ids.ensureTotalCapacity(alloc, @intCast(count));
-    var it = model.vocab.map.iterator();
-    while (it.next()) |entry| {
-        const id = entry.value_ptr.*;
-        const text = entry.key_ptr.*;
-        if (filled[id] or text.len == 0 or !std.unicode.utf8ValidateSlice(text)) return error.InvalidToken;
-        const owned = try copyText(alloc, text, &remaining);
-        const slot = ids.getOrPutAssumeCapacity(owned);
-        if (slot.found_existing) return error.DuplicateToken;
-        slot.value_ptr.* = id;
-        tokens[id] = .{ .text = owned, .kind = .normal };
-        filled[id] = true;
-    }
-
-    var lstrip = try std.bit_set.Dynamic.initEmpty(alloc, count);
-    var raw: std.ArrayList(u32) = .empty;
-    var normalized: std.ArrayList(u32) = .empty;
-    for (file.added_tokens) |a| {
-        if (a.single_word or a.rstrip or (a.normalized and shape == .metaspace)) return error.UnsupportedAddedToken;
-        if (a.content.len == 0 or a.content.len > limits.added_bytes or !std.unicode.utf8ValidateSlice(a.content))
-            return error.InvalidAddedToken;
-        const kind: vocabulary.TokenType = if (a.special) .control else .user_defined;
-        if (filled[a.id]) {
-            // An added token over a vocabulary entry must spell it exactly.
-            if (!std.mem.eql(u8, tokens[a.id].text, a.content) or tokens[a.id].kind != .normal) return error.InvalidAddedToken;
-            tokens[a.id].kind = kind;
-        } else {
-            const owned = try copyText(alloc, a.content, &remaining);
-            const entry = ids.getOrPutAssumeCapacity(owned);
-            if (entry.found_existing) return error.DuplicateToken;
-            entry.value_ptr.* = a.id;
-            tokens[a.id] = .{ .text = owned, .kind = kind };
-            filled[a.id] = true;
-        }
-        if (a.lstrip) lstrip.set(a.id);
-        try (if (a.normalized) &normalized else &raw).append(alloc, a.id);
-    }
-    for (filled) |f| if (!f) return error.InvalidToken;
-    if (shape == .metaspace) try markByteTokens(tokens, &ids);
-    for ([_]*std.ArrayList(u32){ &raw, &normalized }) |list| std.mem.sort(u32, list.items, tokens, struct {
-        fn longer(t: []const vocabulary.Token, a: u32, b: u32) bool {
-            return if (t[a].text.len != t[b].text.len) t[a].text.len > t[b].text.len else a < b;
-        }
-    }.longer);
+    var t = try table.build(alloc, scratch.allocator(), model.vocab.map, added, .{ .tokens = limits.tokens, .added_bytes = limits.added_bytes }, &remaining);
+    if (shape == .metaspace) try markByteTokens(t.tokens, &t.ids);
 
     var ranks: std.StringHashMapUnmanaged(u32) = .empty;
     try ranks.ensureTotalCapacity(alloc, @intCast(model.merges.len));
@@ -353,7 +308,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!To
                 const space = std.mem.indexOfScalar(u8, s, ' ') orelse return error.InvalidMerge;
                 if (space == 0 or space + 1 == s.len or std.mem.indexOfScalarPos(u8, s, space + 1, ' ') != null)
                     return error.InvalidMerge;
-                break :blk try copyText(alloc, s, &remaining);
+                break :blk try table.copyText(alloc, s, &remaining);
             },
             .array => |pair| blk: {
                 if (pair.items.len != 2) return error.InvalidMerge;
@@ -378,11 +333,11 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!To
     }
 
     return .{
-        .vocab = .{ .storage = arena, .tokens = tokens, .pre = if (shape == .metaspace) "metaspace" else "gpt2", .bos = null, .eos = null, .padding = null, .token_ids = ids, .merge_ranks = ranks },
+        .vocab = .{ .storage = arena, .tokens = t.tokens, .pre = if (shape == .metaspace) "metaspace" else "gpt2", .bos = null, .eos = null, .padding = null, .token_ids = t.ids, .merge_ranks = ranks },
         .shape = shape,
-        .raw = raw.items,
-        .normalized = normalized.items,
-        .lstrip = lstrip,
+        .raw = t.raw,
+        .normalized = t.normalized,
+        .lstrip = t.lstrip,
         .nfc = use_nfc,
     };
 }
@@ -443,12 +398,6 @@ fn isType(value: std.json.Value, name: []const u8) bool {
 fn flag(value: std.json.Value, name: []const u8, default: bool) bool {
     const field = value.object.get(name) orelse return default;
     return if (field == .bool) field.bool else default;
-}
-
-fn copyText(alloc: std.mem.Allocator, text: []const u8, remaining: *usize) Error![]const u8 {
-    if (text.len > remaining.*) return error.LimitExceeded;
-    remaining.* -= text.len;
-    return alloc.dupe(u8, text);
 }
 
 // A byte-level vocabulary small enough to read: the GPT-2 alphabet spells

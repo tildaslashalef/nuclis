@@ -12,6 +12,7 @@ const config = @import("config.zig");
 const input = @import("input.zig");
 const wire = @import("decision/request.zig");
 const response = @import("decision/response.zig");
+const timing = @import("timing.zig");
 
 const profile = inference.profiles.laya;
 const Decider = inference.decide.Decider;
@@ -275,9 +276,9 @@ const Report = struct {
     fn writeText(self: Report, arena: std.mem.Allocator, out: *std.Io.Writer, sty: style.Style) !void {
         const off = sty.off();
         try out.print("{s}{s}{s} {s}· {d} state{s} · {d} question{s} · load {d:.1} s · tokenize {d:.0} ms · encode {d:.0} ms{s}\n", .{
-            sty.on(.header),                  self.identity.name,                     off,                                 sty.on(.dim),
-            self.results.len,                 if (self.results.len == 1) "" else "s", self.request.ids.len,                if (self.request.ids.len == 1) "" else "s",
-            response.ms(self.load_ns) / 1000, response.ms(self.timings.tokenize_ns),  response.ms(self.timings.encode_ns), off,
+            sty.on(.header),                self.identity.name,                     off,                               sty.on(.dim),
+            self.results.len,               if (self.results.len == 1) "" else "s", self.request.ids.len,              if (self.request.ids.len == 1) "" else "s",
+            timing.ms(self.load_ns) / 1000, timing.ms(self.timings.tokenize_ns),    timing.ms(self.timings.encode_ns), off,
         });
         if (self.results.len == 1) {
             const result = self.results[0];

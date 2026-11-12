@@ -11,6 +11,7 @@ const config = @import("config.zig");
 const bounded = @import("input.zig");
 const wire = @import("embedding/request.zig");
 const response = @import("embedding/response.zig");
+const timing = @import("timing.zig");
 
 const embed = inference.embed;
 
@@ -183,7 +184,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]cons
         return err;
     };
     defer embedder.deinit();
-    timings.load_ns = lap(io, &started);
+    timings.load_ns = timing.lap(io, &started);
 
     const prepared = try arena.alloc(embed.Prepared, request.inputs.len);
     for (request.inputs, prepared) |input, *p| {
@@ -209,7 +210,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]cons
             return error.InputTooLong;
         }
     }
-    timings.tokenize_ns = lap(io, &started);
+    timings.tokenize_ns = timing.lap(io, &started);
 
     const full = try arena.alloc([]f32, request.inputs.len);
     for (full) |*v| v.* = try arena.alloc(f32, embed.dimensions);
@@ -220,18 +221,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]cons
         .tokens = p.tokens.len,
         .input_tokens = p.length,
     };
-    timings.embed_ns = lap(io, &started);
+    timings.embed_ns = timing.lap(io, &started);
 
     const body: response.Body = .{ .identity = identity, .request = request, .vectors = vectors, .timings = timings };
     if (o.json) return response.write(arena, out, body);
     try writeText(arena, out, sty, body);
-}
-
-/// Nanoseconds since `started`, which moves to now.
-fn lap(io: std.Io, started: *std.Io.Timestamp) u64 {
-    const now = std.Io.Clock.awake.now(io);
-    defer started.* = now;
-    return @intCast(started.durationTo(now).toNanoseconds());
 }
 
 /// Values shown per vector in the text report.
@@ -241,10 +235,10 @@ fn writeText(arena: std.mem.Allocator, out: *std.Io.Writer, sty: style.Style, bo
     const off = sty.off();
     const n = body.vectors.len;
     try out.print("{s}{s}{s} {s}· {d} input{s} · {d} tokens · load {d:.1} s · tokenize {d:.0} ms · embed {d:.0} ms{s}\n", .{
-        sty.on(.header),                    body.identity.name,                       off,
-        sty.on(.dim),                       n,                                        if (n == 1) "" else "s",
-        body.tokens(),                      response.ms(body.timings.load_ns) / 1000, response.ms(body.timings.tokenize_ns),
-        response.ms(body.timings.embed_ns), off,
+        sty.on(.header),                  body.identity.name,                     off,
+        sty.on(.dim),                     n,                                      if (n == 1) "" else "s",
+        body.tokens(),                    timing.ms(body.timings.load_ns) / 1000, timing.ms(body.timings.tokenize_ns),
+        timing.ms(body.timings.embed_ns), off,
     });
     try out.print("{s}space{s} {s}{s}{s}", .{ sty.on(.label), off, sty.on(.code), try response.space(arena, body.identity, body.request.dimensions), off });
     if (body.request.task) |t| try out.print("  {s}task{s} {s}", .{ sty.on(.label), off, @tagName(t) });

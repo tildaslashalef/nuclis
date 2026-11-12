@@ -10,15 +10,14 @@
 //! tokens).
 const std = @import("std");
 const metal = @import("../backends/metal/root.zig");
-const cpu = @import("../backends/cpu/root.zig");
 const weights = @import("../runtime/weights.zig");
 const preprocess = @import("preprocess.zig");
 const model = @import("gemma4.zig");
 const attention = @import("attention_metal.zig");
+const plan = @import("plan_metal.zig");
 
 const Backend = metal.Backend;
 const Buffer = metal.Buffer;
-const Tensor = @import("../formats/gguf.zig").Tensor;
 
 const siglip = model.siglip;
 const unified = model.unified;
@@ -27,7 +26,7 @@ pub fn ffnPadded(g: *const siglip.Geometry) usize {
     return @divCeil(g.ffn, 64) * 64;
 }
 
-const Weight = struct { buffer: Buffer, matrix: cpu.Matrix };
+const Weight = plan.Weight;
 
 const Unified = struct {
     n1w: Buffer,
@@ -109,31 +108,31 @@ pub const Plan = struct {
         self.binding = binding;
         self.created_bytes = 0;
         const tokens = Backend.matmulPadded(model.max_tokens);
-        self.ones = try self.created(@max(unified.hidden, siglip.max_hidden) * 4);
+        self.ones = try plan.created(&self, @max(unified.hidden, siglip.max_hidden) * 4);
         @memset(self.ones.floats(), 1);
-        self.out = try self.created(tokens * binding.output_width * 4);
+        self.out = try plan.created(&self, tokens * binding.output_width * 4);
         switch (binding.net) {
             .unified => |*net| {
-                self.projection = try self.weight(net.projection);
+                self.projection = try plan.weight(&self, net.projection);
                 self.net = .{ .unified = .{
-                    .n1w = try self.wrapped(net.patch_norm_1.weight),
-                    .n1b = try self.wrapped(net.patch_norm_1.bias),
-                    .kernel = try self.weight(net.patch_embedding),
-                    .bias = try self.wrapped(net.patch_bias),
-                    .n2w = try self.wrapped(net.patch_norm_2.weight),
-                    .n2b = try self.wrapped(net.patch_norm_2.bias),
-                    .n3w = try self.wrapped(net.patch_norm_3.weight),
-                    .n3b = try self.wrapped(net.patch_norm_3.bias),
-                    .input = try self.created(tokens * unified.values * 4),
-                    .normed = try self.created(tokens * unified.values * 4),
-                    .x = try self.created(tokens * unified.hidden * 4),
-                    .h = try self.created(tokens * unified.hidden * 4),
-                    .pos = try self.created(tokens * unified.hidden * 4),
+                    .n1w = try plan.wrapped(&self, net.patch_norm_1.weight),
+                    .n1b = try plan.wrapped(&self, net.patch_norm_1.bias),
+                    .kernel = try plan.weight(&self, net.patch_embedding),
+                    .bias = try plan.wrapped(&self, net.patch_bias),
+                    .n2w = try plan.wrapped(&self, net.patch_norm_2.weight),
+                    .n2b = try plan.wrapped(&self, net.patch_norm_2.bias),
+                    .n3w = try plan.wrapped(&self, net.patch_norm_3.weight),
+                    .n3b = try plan.wrapped(&self, net.patch_norm_3.bias),
+                    .input = try plan.created(&self, tokens * unified.values * 4),
+                    .normed = try plan.created(&self, tokens * unified.values * 4),
+                    .x = try plan.created(&self, tokens * unified.hidden * 4),
+                    .h = try plan.created(&self, tokens * unified.hidden * 4),
+                    .pos = try plan.created(&self, tokens * unified.hidden * 4),
                 } };
                 self.scratch = try alloc.alloc(f32, model.max_tokens * unified.hidden + unified.hidden);
             },
             .siglip => |*net| {
-                self.projection = try self.weight(net.projection);
+                self.projection = try plan.weight(&self, net.projection);
                 const rows = Backend.matmulPadded(siglip.max_patches);
                 const g = net.geometry;
                 const h = g.hidden;
@@ -144,19 +143,19 @@ pub const Plan = struct {
                     var bounds: [7]model.Bounds = undefined;
                     for (&bounds, l.clamps) |*b, c| b.* = try model.clampBounds(view, c);
                     layer.* = .{
-                        .ln1 = try self.wrapped(l.ln1),
-                        .query = try self.weight(l.query),
-                        .key = try self.weight(l.key),
-                        .value = try self.weight(l.value),
-                        .output = try self.weight(l.output),
-                        .query_norm = try self.wrapped(l.query_norm),
-                        .key_norm = try self.wrapped(l.key_norm),
-                        .post_attention_norm = try self.wrapped(l.post_attention_norm),
-                        .ln2 = try self.wrapped(l.ln2),
-                        .gate = try self.weight(l.gate),
-                        .up = try self.weight(l.up),
-                        .down = try self.paddedDown(l.down, g),
-                        .post_ffn_norm = try self.wrapped(l.post_ffn_norm),
+                        .ln1 = try plan.wrapped(&self, l.ln1),
+                        .query = try plan.weight(&self, l.query),
+                        .key = try plan.weight(&self, l.key),
+                        .value = try plan.weight(&self, l.value),
+                        .output = try plan.weight(&self, l.output),
+                        .query_norm = try plan.wrapped(&self, l.query_norm),
+                        .key_norm = try plan.wrapped(&self, l.key_norm),
+                        .post_attention_norm = try plan.wrapped(&self, l.post_attention_norm),
+                        .ln2 = try plan.wrapped(&self, l.ln2),
+                        .gate = try plan.weight(&self, l.gate),
+                        .up = try plan.weight(&self, l.up),
+                        .down = try plan.paddedDown(&self, l.down, g.hidden, g.ffn, ffnPadded(g)),
+                        .post_ffn_norm = try plan.wrapped(&self, l.post_ffn_norm),
                         .bounds = bounds,
                     };
                 }
@@ -164,16 +163,16 @@ pub const Plan = struct {
                 errdefer alloc.free(s.std_bias);
                 s.std_scale = if (net.std_scale) |t| try view.vector(alloc, t) else &.{};
                 errdefer alloc.free(s.std_scale);
-                s.input = try self.created(rows * siglip.values * 4);
+                s.input = try plan.created(&self, rows * siglip.values * 4);
                 // The attention reads queries and writes its output on the
                 // kernel's own row padding (a multiple of 8, within `rows`).
-                inline for (.{ "x", "h", "q", "k", "v", "attn" }) |field| @field(s, field) = try self.created(rows * h * 4);
-                s.gate = try self.created(rows * ffnPadded(g) * 4);
-                s.up = try self.created(rows * ffnPadded(g) * 4);
-                s.rope_x = try self.created(siglip.max_patches * g.ropePairs() * 8);
-                s.rope_y = try self.created(siglip.max_patches * g.ropePairs() * 8);
-                s.pooled = try self.created(tokens * h * 4);
-                s.scores = try self.created(attention.score_capacity * 4);
+                inline for (.{ "x", "h", "q", "k", "v", "attn" }) |field| @field(s, field) = try plan.created(&self, rows * h * 4);
+                s.gate = try plan.created(&self, rows * ffnPadded(g) * 4);
+                s.up = try plan.created(&self, rows * ffnPadded(g) * 4);
+                s.rope_x = try plan.created(&self, siglip.max_patches * g.ropePairs() * 8);
+                s.rope_y = try plan.created(&self, siglip.max_patches * g.ropePairs() * 8);
+                s.pooled = try plan.created(&self, tokens * h * 4);
+                s.scores = try plan.created(&self, attention.score_capacity * 4);
                 s.spans = try attention.Spans.init(alloc, backend, siglip.max_patches, &self.created_bytes);
                 errdefer s.spans.deinit(alloc);
                 self.net = .{ .siglip = s };
@@ -181,28 +180,6 @@ pub const Plan = struct {
             },
         }
         return self;
-    }
-    fn created(self: *Plan, len: usize) !Buffer {
-        const buffer = try self.backend.create(len);
-        self.created_bytes += len;
-        return buffer;
-    }
-    fn wrapped(self: *Plan, tensor: *const Tensor) !Buffer {
-        return self.backend.wrap(try self.view.bytes(tensor));
-    }
-    fn weight(self: *Plan, tensor: *const Tensor) !Weight {
-        const matrix = try self.view.matrix(tensor);
-        return .{ .buffer = try self.backend.wrap(matrix.bytes), .matrix = matrix };
-    }
-    fn paddedDown(self: *Plan, tensor: *const Tensor, g: *const siglip.Geometry) !Weight {
-        const down = try self.view.matrix(tensor);
-        const element: usize = if (down.encoding == 0) 4 else 2;
-        const padded = ffnPadded(g);
-        if (down.bytes.len != g.hidden * g.ffn * element) return error.InvalidShape;
-        const buffer = try self.created(g.hidden * padded * element);
-        const host = buffer.host[0 .. g.hidden * padded * element];
-        for (0..g.hidden) |r| @memcpy(host[r * padded * element ..][0 .. g.ffn * element], down.bytes[r * g.ffn * element ..][0 .. g.ffn * element]);
-        return .{ .buffer = buffer, .matrix = .{ .encoding = down.encoding, .rows = g.hidden, .columns = padded, .bytes = host } };
     }
     /// `output = clamp(W · clamp(input))` over `n` rows; an input clamp
     /// rewrites `input` in place, which every caller's next use tolerates

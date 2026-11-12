@@ -5,6 +5,7 @@
 const std = @import("std");
 const inference = @import("inference");
 const request_mod = @import("request.zig");
+const timing = @import("../timing.zig");
 
 const profile = inference.profiles.laya;
 const decide = inference.decide;
@@ -34,11 +35,11 @@ pub fn write(out: *std.Io.Writer, body: Body) std.Io.Writer.Error!void {
     try s.objectField("timings_ms");
     try s.beginObject();
     try s.objectField("load");
-    try s.write(round1(ms(body.load_ns)));
+    try s.write(timing.round1(timing.ms(body.load_ns)));
     try s.objectField("tokenize");
-    try s.write(round1(ms(body.timings.tokenize_ns)));
+    try s.write(timing.round1(timing.ms(body.timings.tokenize_ns)));
     try s.objectField("encode");
-    try s.write(round1(ms(body.timings.encode_ns)));
+    try s.write(timing.round1(timing.ms(body.timings.encode_ns)));
     try s.endObject();
     try s.objectField("results");
     try s.beginArray();
@@ -172,12 +173,4 @@ fn writeAnswer(s: *std.json.Stringify, q: profile.Question, a: decide.Answer, de
     }
     try s.endObject();
     try s.endObject();
-}
-
-pub fn ms(ns: u64) f64 {
-    return @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms;
-}
-
-fn round1(x: f64) f64 {
-    return @round(x * 10) / 10;
 }

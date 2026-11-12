@@ -22,8 +22,7 @@ const models = @import("../models.zig");
 const router_mod = @import("../router.zig");
 const pool_mod = @import("pool.zig");
 const batcher_mod = @import("batcher.zig");
-
-const ApiError = errors.ApiError;
+const slot_mod = @import("../slot.zig");
 
 /// A request waits at most this long for the GPU (queue and run together
 /// before it starts; a started pass is never cut). `serve.timeout` sets it.
@@ -153,11 +152,11 @@ pub const Service = struct {
     /// Opens `name` now (the `--model` of `nuclis serve`), through the GPU.
     pub fn preload(self: *Service, arena: std.mem.Allocator, io: std.Io, name: []const u8, diag: *config.Diagnostic) !void {
         const located = try catalog.locate(arena, io, self.root, self.registry, name, false, diag);
-        var opening: Opening = .{ .pool = &self.pool, .arena = arena, .location = located.location(), .name = name };
+        var opening: slot_mod.Opening(pool_mod.Pool.acquire) = .{ .target = &self.pool, .args = .{ located.location(), name } };
         try self.executor.submit(io, &opening.item);
         opening.item.done.waitUncancelable(io);
-        if (opening.failed) |e| {
-            diag.set("{s}", .{e.message});
+        if (opening.failed) |err| {
+            diag.set("{s}", .{batcher_mod.openFailure(arena, name, err).message});
             return error.ModelOpenFailed;
         }
     }
@@ -193,24 +192,6 @@ pub const Service = struct {
             const owner = if (l.repo) |r| r[0 .. std.mem.indexOfScalar(u8, r, '/') orelse r.len] else "local";
             try out.append(arena, .{ .id = l.name, .owned_by = owner, .details = .{ .object = details } });
         }
-    }
-};
-
-/// Opening a model on the worker, outside any request.
-const Opening = struct {
-    item: gpu.Item = .{ .run = run },
-    pool: *pool_mod.Pool,
-    arena: std.mem.Allocator,
-    location: inference.decide.Location,
-    name: []const u8,
-    failed: ?ApiError = null,
-
-    fn run(item: *gpu.Item, io: std.Io) gpu.Item.After {
-        const self: *Opening = @fieldParentPtr("item", item);
-        _ = self.pool.acquire(io, self.location, self.name) catch |err| {
-            self.failed = batcher_mod.openFailure(self.arena, self.name, err);
-        };
-        return .done;
     }
 };
 
@@ -504,7 +485,7 @@ test "decisions: requests waiting together share one pass and get what each gets
         try std.testing.expectEqual(std.http.Status.ok, r.status);
         a.* = try withoutTimings(arenas[i].allocator(), r.body);
     }
-    try std.testing.expectEqual(@as(u64, count), f.service.batcher.stats(io).batches);
+    try std.testing.expectEqual(@as(u64, count), f.service.batcher.stats(io).passes);
 
     // Together: the GPU is held while all sixteen arrive, then freed.
     var gate: Gate = .{};
@@ -518,7 +499,7 @@ test "decisions: requests waiting together share one pass and get what each gets
     // Each tiny job is about 300 rows (a byte per token), so the sixteen
     // fill a few passes of `decide.batch_rows`, never sixteen.
     const stats = f.service.batcher.stats(io);
-    try std.testing.expect(stats.batches - count <= 4);
+    try std.testing.expect(stats.passes - count <= 4);
     try std.testing.expectEqual(@as(u64, 2 * count), stats.jobs);
     for (together, alone, 0..) |r, a, i| {
         try std.testing.expectEqual(std.http.Status.ok, r.status);

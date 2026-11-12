@@ -4,6 +4,7 @@
 const std = @import("std");
 const catalog = @import("../catalog.zig");
 const request_mod = @import("request.zig");
+const timing = @import("../timing.zig");
 
 pub const schema_version = 1;
 
@@ -79,7 +80,7 @@ pub fn write(arena: std.mem.Allocator, out: *std.Io.Writer, body: Body) !void {
     try s.beginObject();
     inline for (.{ .{ "load", body.timings.load_ns }, .{ "tokenize", body.timings.tokenize_ns }, .{ "embed", body.timings.embed_ns } }) |field| {
         try s.objectField(field[0]);
-        try s.write(@round(ms(field[1]) * 10) / 10);
+        try s.write(timing.round1(timing.ms(field[1])));
     }
     try s.endObject();
     try s.objectField("vectors");
@@ -177,7 +178,7 @@ pub fn writeOpenAI(out: *std.Io.Writer, arena: std.mem.Allocator, body: Body, en
     try s.beginObject();
     inline for (.{ .{ "load", body.timings.load_ns }, .{ "tokenize", body.timings.tokenize_ns }, .{ "embed", body.timings.embed_ns } }) |field| {
         try s.objectField(field[0]);
-        try s.write(@round(ms(field[1]) * 10) / 10);
+        try s.write(timing.round1(timing.ms(field[1])));
     }
     try s.endObject();
     try s.endObject();
@@ -189,10 +190,6 @@ pub fn writeOpenAI(out: *std.Io.Writer, arena: std.mem.Allocator, body: Body, en
 /// else null.
 fn imageTokens(request: request_mod.Request) ?u32 {
     return if (request.hasImages()) request.image_tokens else null;
-}
-
-pub fn ms(ns: u64) f64 {
-    return @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms;
 }
 
 /// The cosine of two unit vectors of one space: their dot product.

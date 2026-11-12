@@ -8,6 +8,7 @@
 //! `log(mel + 2⁻²⁴)`). Sums run in F64 and cast to F32. A frame reads only
 //! its own samples, so `frames` also serves a stream. Pure: no I/O.
 const std = @import("std");
+const Fft = @import("fft.zig").Fft;
 
 pub const sample_rate = 16000;
 pub const hop = 160;
@@ -103,8 +104,7 @@ pub const Bank = struct {
     window: [fft]f32,
     /// `[bins][filters]`.
     weights: [bins * filters]f64,
-    /// `exp(−2πik/fft)` for k < fft/2.
-    twiddles: [fft / 2][2]f64,
+    fourier: Fft(fft),
 
     pub fn init(self: *Bank, spec: Spec) void {
         std.debug.assert(spec.window >= 2 and spec.window_at + spec.window <= fft);
@@ -132,10 +132,7 @@ pub const Bank = struct {
                 self.weights[k * filters + m] = @max(0, @min(down, up)) * area;
             }
         }
-        for (&self.twiddles, 0..) |*t, k| {
-            const angle = -2 * std.math.pi * @as(f64, @floatFromInt(k)) / fft;
-            t.* = .{ @cos(angle), @sin(angle) };
-        }
+        self.fourier.init();
     }
 
     /// Writes the log-mel features of `samples` into `out`
@@ -164,7 +161,7 @@ pub const Bank = struct {
                 // The product in F32, as the extractors' float32 arrays.
                 re[n] = span.sample(@intCast(at), spec.preemphasis) * self.window[n];
             }
-            self.transform(&re, &im);
+            self.fourier.transform(&re, &im);
             var spectrum: [bins]f64 = undefined;
             for (&spectrum, 0..) |*s, b| {
                 const p = re[b] * re[b] + im[b] * im[b];
@@ -178,35 +175,9 @@ pub const Bank = struct {
         }
     }
 
-    /// In-place iterative radix-2 FFT of `fft` points.
+    /// In-place FFT of `fft` points.
     fn transform(self: *const Bank, re: *[fft]f64, im: *[fft]f64) void {
-        comptime std.debug.assert(fft == 1 << 9);
-        for (0..fft) |i| {
-            const j = @bitReverse(@as(u9, @intCast(i)));
-            if (j > i) {
-                std.mem.swap(f64, &re[i], &re[j]);
-                std.mem.swap(f64, &im[i], &im[j]);
-            }
-        }
-        var size: usize = 2;
-        while (size <= fft) : (size *= 2) {
-            const half = size / 2;
-            const step = fft / size;
-            var start: usize = 0;
-            while (start < fft) : (start += size) {
-                for (0..half) |k| {
-                    const t = self.twiddles[k * step];
-                    const a = start + k;
-                    const b = a + half;
-                    const xr = re[b] * t[0] - im[b] * t[1];
-                    const xi = re[b] * t[1] + im[b] * t[0];
-                    re[b] = re[a] - xr;
-                    im[b] = im[a] - xi;
-                    re[a] += xr;
-                    im[a] += xi;
-                }
-            }
-        }
+        self.fourier.transform(re, im);
     }
 };
 

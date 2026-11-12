@@ -41,6 +41,8 @@ as a cross-check, never copied.
   Nemotron's), `Bank` (the window, the filter bank, the FFT twiddles),
   `features`, and `frames`, which computes frames from a span of a clip
   for a stream. Pure, no I/O.
+- `fft.zig`: `Fft(n)`, the radix-2 F64 transform `mel.zig` (512
+  points) and `ecapa.zig` (1024) both run.
 - `gemma4a.zig`: `bind` (the companion file's `a.*` and `mm.a.*`
   tensors; the header's norm epsilon may say 1e-6 or E4B's 1e-5, and 1e-6,
   Google's, is used) and `Runtime`, the CPU reference. It also holds the pieces the
@@ -57,6 +59,10 @@ as a cross-check, never copied.
   checked against `qwen3_codec.zig` on the same codes (gate
   `qwen3-tts-codec-metal`); the voice's talker and predictor are
   `models/qwen3_tts*.zig` ([qwen3-tts.md](../models/qwen3-tts.md)).
+- `codec_attention.zig` and `codec_metal.zig`: what both codecs share,
+  the CPU windowed attention and its per-layer `Cache` (the encoder's
+  full causal attention too), and on Metal the padded F32 matrices and the
+  recording of a convolution through its history (`Device`).
 - `ecapa.zig`: Qwen3-TTS Base's speaker encoder, CPU only: `Front`, the
   24 kHz mel `extract_speaker_embedding` computes, and `Encoder`, the
   ECAPA-TDNN to one embedding at the talker's width (gate

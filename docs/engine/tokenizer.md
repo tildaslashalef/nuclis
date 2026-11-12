@@ -216,8 +216,16 @@ The post-processor, truncation, and padding are call-time policy and are
 ignored: `encode` never inserts tokens.
 
 Ids are the model vocabulary's and the added tokens' together, dense from
-zero (an added token may fill a gap, or sit over a vocabulary entry it must
-spell exactly). Added tokens become `control` when `special`, else
+zero. Both Hugging Face sources build this table through
+[table.zig](../../inference/src/tokenizer/table.zig) (`table.build`), with
+one overlay rule: an added token may fill a gap, or sit over a vocabulary
+entry it spells exactly, which it re-types; one that spells something else
+there, or a second added token on the same id, is `InvalidAddedToken`. The
+reason is the format: an added token names a token by id and content, and
+the library gives a content already in `model.vocab` that entry's id, so an
+entry over a vocabulary id is the same token listed twice (byte-level
+vocabularies list `<|endoftext|>` in both) and a different spelling there is
+a contradiction. Added tokens become `control` when `special`, else
 `user_defined`, and keep their raw text, so decoding writes them verbatim.
 Merges may be `"a b"` strings or `["a", "b"]` pairs. In the Metaspace shape
 the `<0xNN>` tokens become `byte` tokens, and a byte without one must be
@@ -284,9 +292,10 @@ limits)` builds the same `hf_tokenizer.Tokenizer` from `vocab.json` (the
 model vocabulary), `merges.txt` (one `a b` pair a line in rank order; a
 leading `#version` line is skipped), and `tokenizer_config.json`'s
 `added_tokens_decoder` (ids dense after the vocabulary; `special` ones
-`control`, the others `user_defined`; one over a vocabulary entry must spell
-it exactly and re-types it, as in `tokenizer.json`, since GPT-2-shaped
-vocabularies list `<|endoftext|>` in both files). An empty `vocab.json` is
+`control`, the others `user_defined`; the overlay rule is `tokenizer.json`'s,
+through the same `table.build`, since `added_tokens_decoder` is the same
+id-and-content list and GPT-2-shaped vocabularies list `<|endoftext|>` in
+both files). An empty `vocab.json` is
 `InvalidVocabJson`, an empty `tokenizer.json` vocabulary
 `InvalidTokenizerJson`. It refuses another
 `tokenizer_class`, `add_prefix_space`, and the `single_word` and `rstrip`

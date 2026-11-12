@@ -18,6 +18,8 @@ pub const fish_codec_encoder = @import("fish_codec_encoder.zig");
 pub const fish_codec_metal = @import("fish_codec_metal.zig");
 /// The codec decoder on Metal, with the same streaming contract.
 pub const qwen3_codec_metal = @import("qwen3_codec_metal.zig");
+/// The codecs' windowed attention and its cache, on the CPU.
+pub const codec_attention = @import("codec_attention.zig");
 /// Nemotron 3.5 ASR's cache-aware encoder: speech in, mel rows to encoder rows.
 pub const nemotron_encoder = @import("nemotron_encoder.zig");
 /// Nemotron 3.5 ASR's RNN-T transducer: encoder rows to tokens.
@@ -40,6 +42,9 @@ test {
     _ = fish_codec_encoder;
     _ = fish_codec_metal;
     _ = qwen3_codec_metal;
+    _ = codec_attention;
+    _ = @import("codec_metal.zig");
+    _ = @import("fft.zig");
     _ = nemotron_encoder;
     _ = nemotron_rnnt;
     _ = boost;

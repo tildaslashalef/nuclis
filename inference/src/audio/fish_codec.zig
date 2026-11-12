@@ -11,6 +11,7 @@ const weights = @import("../runtime/weights.zig");
 const quant = @import("../quant/decode.zig");
 const cpu = @import("../backends/cpu/root.zig");
 const q3 = @import("qwen3_codec.zig");
+const window_attention = @import("codec_attention.zig");
 
 const Allocator = std.mem.Allocator;
 const dense = cpu.dense;
@@ -342,16 +343,13 @@ pub const Transformer = struct {
     norm: []const f32,
     window: usize,
 
+    fn shape(self: Transformer) window_attention.Shape {
+        return .{ .heads = heads, .head_dim = head_dim, .window = self.window };
+    }
+
     /// Each layer's cache, sized for this transformer's window.
     pub fn caches(self: Transformer, a: Allocator) ![]Cache {
-        const width = heads * head_dim;
-        const list = try a.alloc(Cache, self.layers.len);
-        for (list) |*cache| cache.* = .{
-            .keys = try a.alloc(f32, (self.window - 1) * width),
-            .values = try a.alloc(f32, (self.window - 1) * width),
-            .count = 0,
-        };
-        return list;
+        return Cache.many(a, self.shape(), self.layers.len);
     }
 
     /// `n` new rows of `x` (`[n][latent]`) in place, the first at RoPE
@@ -366,9 +364,7 @@ pub const Transformer = struct {
         const o = try ws.alloc(f32, n * latent);
         const gate = try ws.alloc(f32, n * intermediate);
         const up = try ws.alloc(f32, n * intermediate);
-        const keys = try ws.alloc(f32, (self.window - 1 + n) * width);
-        const values = try ws.alloc(f32, (self.window - 1 + n) * width);
-        const scores = try ws.alloc(f64, self.window);
+        const scratch: window_attention.Scratch = try .init(ws, self.shape(), n);
         for (self.layers, caches_) |layer, *cache| {
             try q3.rmsRows(x, layer.attn_norm, rms_eps, h);
             try q3.linear(io, layer.q, h, n, q);
@@ -379,13 +375,7 @@ pub const Transformer = struct {
                 rope(q[at..][0..head_dim], position + t, rope_base);
                 rope(k[at..][0..head_dim], position + t, rope_base);
             };
-            const past = cache.count;
-            const total = past + n;
-            @memcpy(keys[0 .. past * width], cache.keys[0 .. past * width]);
-            @memcpy(keys[past * width ..][0 .. n * width], k);
-            @memcpy(values[0 .. past * width], cache.values[0 .. past * width]);
-            @memcpy(values[past * width ..][0 .. n * width], v);
-            attention(self.window, q, keys, values, n, past, scores, attended);
+            cache.attend(self.shape(), scratch, q, k, v, n, attended);
             try q3.linear(io, layer.o, attended, n, o);
             q3.addScaled(x, layer.attn_scale, o);
             try q3.rmsRows(x, layer.ffn_norm, rms_eps, h);
@@ -394,17 +384,13 @@ pub const Transformer = struct {
             for (gate, up) |*g, u| g.* = cpu.silu(g.*) * u;
             try q3.linear(io, layer.down, gate, n, o);
             q3.addScaled(x, layer.ffn_scale, o);
-            const kept: usize = @min(self.window - 1, total);
-            @memcpy(cache.keys[0 .. kept * width], keys[(total - kept) * width ..][0 .. kept * width]);
-            @memcpy(cache.values[0 .. kept * width], values[(total - kept) * width ..][0 .. kept * width]);
-            cache.count = kept;
         }
         try q3.rmsRows(x, self.norm, rms_eps, h);
         @memcpy(x, h);
     }
 };
 
-pub const Cache = struct { keys: []f32, values: []f32, count: usize };
+pub const Cache = window_attention.Cache;
 const UpState = struct { trans: q3.History, dw: q3.History };
 const BlockState = struct { trans: q3.History, units: [3]q3.History };
 
@@ -532,37 +518,6 @@ pub const Stream = struct {
         self.position += n;
     }
 };
-
-/// Sliding-window attention of `n` new queries: query t (row `past + t` of
-/// `keys`) sees rows `past + t − attention_window + 1 … past + t`. Scores and sums in F64.
-fn attention(attention_window: usize, q: []const f32, keys: []const f32, values: []const f32, n: usize, past: usize, scores: []f64, out: []f32) void {
-    const width = heads * head_dim;
-    const scale = 1 / @sqrt(@as(f64, head_dim));
-    for (0..n) |t| for (0..heads) |head| {
-        const i = past + t;
-        const lowest = (i + 1) -| attention_window;
-        const qi = q[t * width + head * head_dim ..][0..head_dim];
-        var max: f64 = -std.math.inf(f64);
-        for (lowest..i + 1, 0..) |j, s| {
-            var dot: f64 = 0;
-            for (qi, keys[j * width + head * head_dim ..][0..head_dim]) |a, b| dot += @as(f64, a) * b;
-            scores[s] = dot * scale;
-            max = @max(max, scores[s]);
-        }
-        const count = i + 1 - lowest;
-        var total: f64 = 0;
-        for (scores[0..count]) |*s| {
-            s.* = @exp(s.* - max);
-            total += s.*;
-        }
-        const o = out[t * width + head * head_dim ..][0..head_dim];
-        for (o, 0..) |*value, d| {
-            var sum: f64 = 0;
-            for (lowest..i + 1, 0..) |j, s| sum += scores[s] * values[j * width + head * head_dim + d];
-            value.* = @floatCast(sum / total);
-        }
-    };
-}
 
 test "bf16 rounding is to nearest, ties to even" {
     try std.testing.expectEqual(@as(f32, 1.0), bf16(1.0));
