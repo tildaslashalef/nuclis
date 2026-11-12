@@ -8,7 +8,7 @@ const safetensors = @import("../formats/safetensors.zig");
 
 pub const Error = std.mem.Allocator.Error || error{
     InvalidConfig,
-    UnsupportedConfig,
+    UnsupportedConfiguration,
     MissingTensor,
     TensorShapeMismatch,
     UnsupportedDtype,
@@ -66,15 +66,15 @@ pub fn parseConfig(gpa: std.mem.Allocator, bytes: []const u8) Error!Config {
     };
     defer parsed.deinit();
     const j = parsed.value;
-    if (!std.mem.eql(u8, j.model_type, "modernbert")) return error.UnsupportedConfig;
+    if (!std.mem.eql(u8, j.model_type, "modernbert")) return error.UnsupportedConfiguration;
     if (j.attention_bias or j.mlp_bias or j.norm_bias or !std.mem.eql(u8, j.hidden_activation, "gelu"))
-        return error.UnsupportedConfig;
+        return error.UnsupportedConfiguration;
     if (j.num_hidden_layers == 0 or j.num_hidden_layers > Config.max_layers or j.hidden_size == 0 or
         j.hidden_size > 65536 or j.num_attention_heads == 0 or j.hidden_size % j.num_attention_heads != 0 or
         j.intermediate_size == 0 or j.intermediate_size > 1 << 20 or j.vocab_size == 0 or j.vocab_size > 1 << 24 or
         j.local_attention < 2 or !(j.norm_eps > 0 and j.norm_eps < 1)) return error.InvalidConfig;
     // RoPE pairs dimensions and the CPU kernels read eight lanes at a time.
-    if ((j.hidden_size / j.num_attention_heads) % 8 != 0) return error.UnsupportedConfig;
+    if ((j.hidden_size / j.num_attention_heads) % 8 != 0) return error.UnsupportedConfiguration;
     var config: Config = .{
         .layers = j.num_hidden_layers,
         .hidden = j.hidden_size,
@@ -90,7 +90,7 @@ pub fn parseConfig(gpa: std.mem.Allocator, bytes: []const u8) Error!Config {
     if (j.layer_types) |types| {
         if (types.len != config.layers) return error.InvalidConfig;
         for (types, 0..) |t, i| {
-            if (std.mem.eql(u8, t, "full_attention")) config.global.set(i) else if (!std.mem.eql(u8, t, "sliding_attention")) return error.UnsupportedConfig;
+            if (std.mem.eql(u8, t, "full_attention")) config.global.set(i) else if (!std.mem.eql(u8, t, "sliding_attention")) return error.UnsupportedConfiguration;
         }
     } else {
         const every = j.global_attn_every_n_layers orelse return error.InvalidConfig;
@@ -201,12 +201,12 @@ test "config: layer schedule, thetas, both spellings, and rejections" {
     try std.testing.expect(l.global.isSet(0) and !l.global.isSet(1) and l.global.isSet(2));
     try std.testing.expectEqual(@as(f32, 1e-5), l.norm_eps);
     const cases = .{
-        .{ "\"model_type\":\"modernbert\"", "\"model_type\":\"bert\"", error.UnsupportedConfig },
-        .{ "\"mlp_bias\":false", "\"mlp_bias\":true", error.UnsupportedConfig },
-        .{ "\"hidden_activation\":\"gelu\"", "\"hidden_activation\":\"gelu_new\"", error.UnsupportedConfig },
-        .{ "\"sliding_attention\",\"full", "\"chunked_attention\",\"full", error.UnsupportedConfig },
+        .{ "\"model_type\":\"modernbert\"", "\"model_type\":\"bert\"", error.UnsupportedConfiguration },
+        .{ "\"mlp_bias\":false", "\"mlp_bias\":true", error.UnsupportedConfiguration },
+        .{ "\"hidden_activation\":\"gelu\"", "\"hidden_activation\":\"gelu_new\"", error.UnsupportedConfiguration },
+        .{ "\"sliding_attention\",\"full", "\"chunked_attention\",\"full", error.UnsupportedConfiguration },
         .{ "\"num_attention_heads\":16", "\"num_attention_heads\":12", error.InvalidConfig },
-        .{ "\"num_attention_heads\":16", "\"num_attention_heads\":256", error.UnsupportedConfig },
+        .{ "\"num_attention_heads\":16", "\"num_attention_heads\":256", error.UnsupportedConfiguration },
         .{ "\"num_hidden_layers\":4", "\"num_hidden_layers\":5", error.InvalidConfig },
         .{ "\"rope_parameters\"", "\"rope_parameterz\"", error.InvalidConfig },
         .{ "{\"model_type\"", "[{\"model_type\"", error.InvalidConfig },

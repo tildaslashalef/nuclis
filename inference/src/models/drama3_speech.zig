@@ -358,7 +358,6 @@ pub const Synthesizer = struct {
         return n;
     }
 
-    /// The chunk the take speaks.
     /// The last sentence spoken (or the request's context when none was),
     /// borrowed until the synthesizer ends: the next request's `context`.
     pub fn lastTurn(self: *const Synthesizer) ?text_mod.Turn {

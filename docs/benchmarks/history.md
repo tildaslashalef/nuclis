@@ -1168,6 +1168,8 @@ GB/s bar. The 16×8 tile stays the verify control; the full-model verify
 latency is unchanged (262–297 ms per batch, the [ENGN-15](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-15--sampled-acceptance-on-the-gpu-top-k-readback-2026-09-20) pass above), since
 production routing never selects the candidate. Verdict in
 [metal-backend.md § The wide 32×8 tile](../engine/metal-backend.md#the-wide-328-tile-2026-09-20-closed-negative).
+The `_w8` kernels and `matmulTile32` were deleted on 2026-11-12; this
+record is their measurement.
 
 ## Split-K matvec sweep (2026-09-21)
 

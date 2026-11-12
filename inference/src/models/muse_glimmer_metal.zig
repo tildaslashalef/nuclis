@@ -35,6 +35,7 @@
 //! reference does the same); a ring layout for the windowed layers is a
 //! session-layout change of its own.
 const std = @import("std");
+const models = @import("root.zig");
 const model = @import("muse_glimmer.zig");
 const dflash = @import("dflash.zig");
 const weights = @import("../runtime/weights.zig");
@@ -86,10 +87,14 @@ const DraftConstants = struct {
     ffn_norm: Buffer,
 };
 
+comptime {
+    std.debug.assert(dflash.head_size == model.head_size and dflash.rope_base == model.rope_base);
+}
+
 /// The DFlash companion's device workspace and decoded constants. It owns no
 /// attention layout: the drafter's five caches are the session layouts after
 /// the language model's, and its rope table is the plan's (same 128-wide
-/// heads and 5e5 base; `bindDraft` checks the widths).
+/// heads and 5e5 base, held equal at compile time above).
 ///
 /// `stage` and `capture` are the two halves of the residual round trip: the
 /// language model copies each target layer's input rows into its `capture`
@@ -141,27 +146,26 @@ const Draft = struct {
                 .ffn_norm = try Draft.constant(plan, binding.view, layer.ffn_norm),
             };
         }
-        const b = plan.backend;
         const chunk_pad = metal.Backend.matmulPadded(chunk);
         const block_pad = metal.Backend.matmulPadded(dflash.block_size);
-        result.stage = try b.create(chunk_pad * dflash.hidden_width * 4);
-        result.encoded = try b.create(chunk_pad * dflash.embedding * 4);
-        result.inject_k = try b.create(chunk_pad * dflash.kv_width * 4);
-        result.inject_v = try b.create(chunk_pad * dflash.kv_width * 4);
-        result.capture = try b.create(dflash.block_count * chunk * dflash.embedding * 4);
-        result.x = try b.create(block_pad * dflash.embedding * 4);
-        result.normalized = try b.create(block_pad * dflash.embedding * 4);
-        result.q = try b.create(block_pad * dflash.query_width * 4);
-        result.k = try b.create(block_pad * dflash.kv_width * 4);
-        result.v = try b.create(block_pad * dflash.kv_width * 4);
-        result.mixed = try b.create(block_pad * dflash.query_width * 4);
-        result.projected = try b.create(block_pad * dflash.embedding * 4);
-        result.gate = try b.create(block_pad * dflash.feed_forward * 4);
-        result.up = try b.create(block_pad * dflash.feed_forward * 4);
-        result.hidden = try b.create(block_pad * dflash.embedding * 4);
-        result.logits = try b.create(block_pad * vocabulary * 4);
-        result.partials = try b.create(metal.Backend.attentionDecodePartials(dflash.heads, dflash.head_size) * 4);
-        for (&result.topk) |*scratch| scratch.* = try b.topkBuffers(1);
+        result.stage = try plan.create(chunk_pad * dflash.hidden_width * 4);
+        result.encoded = try plan.create(chunk_pad * dflash.embedding * 4);
+        result.inject_k = try plan.create(chunk_pad * dflash.kv_width * 4);
+        result.inject_v = try plan.create(chunk_pad * dflash.kv_width * 4);
+        result.capture = try plan.create(dflash.block_count * chunk * dflash.embedding * 4);
+        result.x = try plan.create(block_pad * dflash.embedding * 4);
+        result.normalized = try plan.create(block_pad * dflash.embedding * 4);
+        result.q = try plan.create(block_pad * dflash.query_width * 4);
+        result.k = try plan.create(block_pad * dflash.kv_width * 4);
+        result.v = try plan.create(block_pad * dflash.kv_width * 4);
+        result.mixed = try plan.create(block_pad * dflash.query_width * 4);
+        result.projected = try plan.create(block_pad * dflash.embedding * 4);
+        result.gate = try plan.create(block_pad * dflash.feed_forward * 4);
+        result.up = try plan.create(block_pad * dflash.feed_forward * 4);
+        result.hidden = try plan.create(block_pad * dflash.embedding * 4);
+        result.logits = try plan.create(block_pad * vocabulary * 4);
+        result.partials = try plan.create(metal.Backend.attentionDecodePartials(dflash.heads, dflash.head_size) * 4);
+        for (&result.topk) |*scratch| scratch.* = try plan.topkBuffers(1);
         return result;
     }
 
@@ -171,7 +175,7 @@ const Draft = struct {
         const values = try view.vector(plan.alloc, tensor);
         defer plan.alloc.free(values);
         if (values.len == 0) return error.InvalidShape;
-        const buffer = try plan.backend.create(values.len * 4);
+        const buffer = try plan.create(values.len * 4);
         @memcpy(buffer.floats(), values);
         return buffer;
     }
@@ -203,6 +207,9 @@ const Draft = struct {
 pub const Plan = struct {
     alloc: std.mem.Allocator,
     backend: *metal.Backend,
+    /// `init`'s record of the buffers it made, released if it fails; null
+    /// after it returns (later buffers are the backend's, as are the plan's).
+    init_buffers: ?*std.ArrayList(Buffer),
     view: weights.View,
     binding: model.Binding,
     state: session.Session,
@@ -305,11 +312,16 @@ pub const Plan = struct {
         var self: Plan = undefined;
         self.alloc = alloc;
         self.backend = backend;
+        var created: std.ArrayList(Buffer) = .empty;
+        defer created.deinit(alloc);
+        errdefer for (created.items) |buffer| backend.release(buffer) catch {};
+        self.init_buffers = &created;
         self.view = view;
         self.binding = binding;
         self.state = state;
         self.constants = constants;
         self.state_buffer = try backend.wrap(state.memory);
+        errdefer backend.unwrap(state.memory);
         for (binding.active(), constants) |layer, *c| {
             c.* = .{
                 .attention_norm = try self.constant(layer.attention_norm),
@@ -321,60 +333,76 @@ pub const Plan = struct {
             };
         }
         self.output_norm = try self.constant(binding.output_norm);
-        self.ones = try backend.create(hidden * 4);
+        self.ones = try self.create(hidden * 4);
         @memset(self.ones.floats(), 1);
-        self.rope_table = try backend.create(capacity * (hd / 2) * 8);
+        self.rope_table = try self.create(capacity * (hd / 2) * 8);
         try metal.Backend.ropeTable(self.rope_table, capacity, hd, model.rope_base, null);
-        self.x = try backend.create(hidden * 4);
-        self.normalized = try backend.create(hidden * 4);
-        self.projected = try backend.create(hidden * 4);
-        self.gate = try backend.create(ffn * 4);
-        self.up = try backend.create(ffn * 4);
-        self.qg = try backend.create(2 * q_width * 4);
+        self.x = try self.create(hidden * 4);
+        self.normalized = try self.create(hidden * 4);
+        self.projected = try self.create(hidden * 4);
+        self.gate = try self.create(ffn * 4);
+        self.up = try self.create(ffn * 4);
+        self.qg = try self.create(2 * q_width * 4);
         self.q = self.qg.slice(0, q_width * 4);
         self.attention_gate = self.qg.slice(q_width * 4, q_width * 4);
-        self.kv = try backend.create(2 * kv_width * 4);
+        self.kv = try self.create(2 * kv_width * 4);
         self.k = self.kv.slice(0, kv_width * 4);
         self.v = self.kv.slice(kv_width * 4, kv_width * 4);
-        self.mixed_out = try backend.create(q_width * 4);
-        self.kv_stage = if (kv == .q8_0) try backend.create(2 * capacity * kv_width * 2) else null;
+        self.mixed_out = try self.create(q_width * 4);
+        self.kv_stage = if (kv == .q8_0) try self.create(2 * capacity * kv_width * 2) else null;
         // Up to `verify_max_rows` rows for a verify batch's split pass.
-        self.partials = try backend.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, heads, hd) * 4);
-        self.logits = try backend.create(vocabulary * 4);
-        self.argmax_values = try backend.create(metal.Backend.argmax_partials * 4);
-        self.argmax_indices = try backend.create(metal.Backend.argmax_partials * 4);
-        self.argmax_result = try backend.create(4);
-        self.topk = try backend.topkBuffers(sampling.TopK.capacity);
-        self.penalty_history = try backend.create(@divCeil(vocabulary, 32) * 4);
+        self.partials = try self.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, heads, hd) * 4);
+        self.logits = try self.create(vocabulary * 4);
+        self.argmax_values = try self.create(metal.Backend.argmax_partials * 4);
+        self.argmax_indices = try self.create(metal.Backend.argmax_partials * 4);
+        self.argmax_result = try self.create(4);
+        self.topk = try self.topkBuffers(sampling.TopK.capacity);
+        self.penalty_history = try self.create(@divCeil(vocabulary, 32) * 4);
         self.penalty_revision = std.math.maxInt(u64);
         self.chunk = chunk;
         self.padded = metal.Backend.matmulPadded(chunk);
         const n = self.padded;
-        self.x_c = try backend.create(n * hidden * 4);
-        self.image_scratch = try backend.create(n * hidden * 4);
+        self.x_c = try self.create(n * hidden * 4);
+        self.image_scratch = try self.create(n * hidden * 4);
         self.image_rows = null;
         self.rows_logits = null;
-        self.normalized_c = try backend.create(n * hidden * 4);
-        self.projected_c = try backend.create(n * hidden * 4);
-        self.gate_c = try backend.create(n * ffn * 4);
-        self.up_c = try backend.create(n * ffn * 4);
-        self.q_c = try backend.create(n * q_width * 4);
-        self.k_c = try backend.create(n * kv_width * 4);
-        self.v_c = try backend.create(n * kv_width * 4);
-        self.attention_gate_c = try backend.create(n * q_width * 4);
-        self.q_c_h = try backend.create(n * q_width * 2);
-        self.mixed_out_c = try backend.create(n * q_width * 4);
+        self.normalized_c = try self.create(n * hidden * 4);
+        self.projected_c = try self.create(n * hidden * 4);
+        self.gate_c = try self.create(n * ffn * 4);
+        self.up_c = try self.create(n * ffn * 4);
+        self.q_c = try self.create(n * q_width * 4);
+        self.k_c = try self.create(n * kv_width * 4);
+        self.v_c = try self.create(n * kv_width * 4);
+        self.attention_gate_c = try self.create(n * q_width * 4);
+        self.q_c_h = try self.create(n * q_width * 2);
+        self.mixed_out_c = try self.create(n * q_width * 4);
         self.has_draft = has_draft;
         self.draft = if (has_draft) try Draft.init(&self, binding.draft.?, chunk) else null;
         if (has_draft) {
-            self.verify_logits = try backend.create(metal.Backend.matmulPadded(max_verify_rows) * vocabulary * 4);
-            self.verify_argmax = try backend.create(max_verify_rows * 4);
-            for (&self.topk_rows) |*scratch| scratch.* = try backend.topkBuffers(sampling.TopK.capacity);
+            self.verify_logits = try self.create(metal.Backend.matmulPadded(max_verify_rows) * vocabulary * 4);
+            self.verify_argmax = try self.create(max_verify_rows * 4);
+            for (&self.topk_rows) |*scratch| scratch.* = try self.topkBuffers(sampling.TopK.capacity);
         } else {
-            self.verify_logits = try backend.create(4);
-            self.verify_argmax = try backend.create(4);
+            self.verify_logits = try self.create(4);
+            self.verify_argmax = try self.create(4);
         }
+        self.init_buffers = null;
         return self;
+    }
+    /// A zero-filled buffer, recorded while `init` runs.
+    fn create(self: *Plan, len: usize) !Buffer {
+        const list = self.init_buffers orelse return self.backend.create(len);
+        try list.ensureUnusedCapacity(self.alloc, 1);
+        const buffer = try self.backend.create(len);
+        list.appendAssumeCapacity(buffer);
+        return buffer;
+    }
+    /// `Backend.topkBuffers`, its buffers recorded while `init` runs.
+    fn topkBuffers(self: *Plan, k: usize) !metal.Backend.TopKBuffers {
+        if (self.init_buffers) |list| try list.ensureUnusedCapacity(self.alloc, 6);
+        const t = try self.backend.topkBuffers(k);
+        if (self.init_buffers) |list| list.appendSliceAssumeCapacity(&.{ t.partial_values, t.partial_indices, t.values, t.indices, t.sums, t.flags });
+        return t;
     }
     pub fn deinit(self: *Plan) void {
         // GPU buffers are released with the backend; the session and the
@@ -393,7 +421,7 @@ pub const Plan = struct {
         const values = try self.view.vector(self.alloc, tensor);
         defer self.alloc.free(values);
         if (values.len == 0) return error.InvalidShape;
-        const buffer = try self.backend.create(values.len * 4);
+        const buffer = try self.create(values.len * 4);
         @memcpy(buffer.floats(), values);
         return buffer;
     }
@@ -655,9 +683,11 @@ pub const Plan = struct {
     /// Speculation is off on this path (no drafter capture).
     pub fn prefillVision(self: *Plan, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, observer: ?Observer) !void {
         if (tokens.len == 0) return error.InvalidShape;
+        try models.checkSpans(tokens.len, spans);
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
         for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
         if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
+        if (topk) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
         if (self.state.status != .ready) return error.SessionNotReady;
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
         var i: usize = 0;
@@ -887,6 +917,7 @@ pub const Plan = struct {
     /// buffer: the fallback for a row whose readback could not decide. Valid
     /// until the next verify.
     pub fn readVerifyRow(self: *Plan, row: usize, out: []f32) !void {
+        if (!self.has_draft) return error.NoDraftBlock;
         if (row >= max_verify_rows or out.len != vocabulary) return error.InvalidShape;
         @memcpy(out, self.verify_logits.floats()[row * vocabulary ..][0..vocabulary]);
         for (out) |v| if (!std.math.isFinite(v)) return error.NonFiniteResult;

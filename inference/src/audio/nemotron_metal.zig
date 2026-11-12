@@ -131,7 +131,7 @@ pub const Plan = struct {
         const w = enc.weights;
         const c = w.config;
         const t = transducer.config;
-        if (c.headDim() != 128 or c.hidden % 128 != 0 or c.channels % 64 != 0 or c.hidden % 64 != 0 or t.hidden % 64 != 0 or t.vocab % 8 != 0 or c.mels != mel.filters or t.encoder != c.hidden) return error.UnsupportedConfig;
+        if (c.headDim() != 128 or c.hidden % 128 != 0 or c.channels % 64 != 0 or c.hidden % 64 != 0 or t.hidden % 64 != 0 or t.vocab % 8 != 0 or c.mels != mel.filters or t.encoder != c.hidden) return error.UnsupportedConfiguration;
         const self = try alloc.create(Plan);
         errdefer alloc.destroy(self);
         var diagnostic: [512]u8 = @splat(0);
@@ -240,7 +240,7 @@ pub const Plan = struct {
         return .{ .weight = try self.vector(n.weight), .bias = try self.vector(n.bias) };
     }
     fn matrix(self: *Plan, values: []const f32, rows: usize, columns: usize) !Weight {
-        if (values.len != rows * columns or rows % 8 != 0 or columns % 64 != 0) return error.UnsupportedConfig;
+        if (values.len != rows * columns or rows % 8 != 0 or columns % 64 != 0) return error.UnsupportedConfiguration;
         const bytes = std.mem.sliceAsBytes(values);
         return .{ .buffer = try self.backend.wrap(bytes), .matrix = .{ .encoding = 0, .rows = rows, .columns = columns, .bytes = bytes } };
     }
@@ -347,7 +347,7 @@ pub const Stream = struct {
         const c = plan.config();
         if (std.mem.indexOfScalar(usize, &encoder.lookaheads, lookahead) == null) return error.UnsupportedLookahead;
         if (prompt >= c.prompts) return error.UnsupportedPrompt;
-        if (c.left > max_left) return error.UnsupportedConfig;
+        if (c.left > max_left) return error.UnsupportedConfiguration;
         const b = &plan.backend;
         var self: Stream = .{
             .alloc = alloc,

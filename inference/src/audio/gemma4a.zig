@@ -418,11 +418,13 @@ pub const Runtime = struct {
     binding: *const Binding,
     /// `blocks × relative × hidden`, from `relativeKeys`.
     relk: []f32,
-    /// One decoded matrix, `ffn × hidden` values.
+    /// One decoded matrix: room for the largest the model holds, the
+    /// projection's `output_width × output_dims` included, so any width
+    /// `bind` accepts runs.
     matrix: []f32,
 
     pub fn init(alloc: std.mem.Allocator, io: std.Io, view: weights.View, binding: *const Binding) !Runtime {
-        const matrix = try alloc.alloc(f32, @max(ffn * hidden, output_dims * hidden));
+        const matrix = try alloc.alloc(f32, @max(ffn * hidden, output_dims * hidden, binding.output_width * output_dims));
         errdefer alloc.free(matrix);
         const relk = try alloc.alloc(f32, blocks * relative * hidden);
         errdefer alloc.free(relk);

@@ -58,7 +58,7 @@ pub const Model = struct {
         try expectArchitecture(s, config_text);
         const encoder_config = try encoder.parseConfig(alloc, config_text);
         const transducer_config = try rnnt.parseConfig(alloc, config_text);
-        if (transducer_config.encoder != encoder_config.hidden) return error.UnsupportedConfig;
+        if (transducer_config.encoder != encoder_config.hidden) return error.UnsupportedConfiguration;
         const Defaults = struct { default_prompt_id: u32 };
         const defaults = std.json.parseFromSliceLeaky(Defaults, s, config_text, .{ .ignore_unknown_fields = true }) catch return error.InvalidConfig;
         if (defaults.default_prompt_id >= encoder_config.prompts) return error.InvalidConfig;
@@ -500,11 +500,6 @@ pub const Transcriber = struct {
         self.tokens.clearRetainingCapacity();
         self.own.clearRetainingCapacity();
         self.choice = .{};
-    }
-
-    /// The language prompt from the next chunk on; the caches stay.
-    pub fn setPrompt(self: *Transcriber, prompt: usize) !void {
-        return self.setLanguages(&.{prompt});
     }
 
     /// The languages to listen for from the next chunk on, at most

@@ -13,6 +13,10 @@
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 
+/// The most token positions a session holds: the context ceiling every
+/// executor, the engine, and the configuration check against.
+pub const max_capacity = 32768;
+
 /// Storage precision of an attention layer's cache rows. The CPU reference
 /// runtime always uses `f32`; `f16` and `q8_0` are GPU options that cut
 /// cache traffic and memory at long context. `q8_0` is GGML's block of 32
@@ -204,11 +208,6 @@ pub const Session = struct {
         }
         return .{ row - delta, row - delta, row - delta };
     }
-    /// The span containing `row`, if any.
-    pub fn spanAt(self: *const Session, row: usize) ?PositionSpan {
-        for (self.positionSpans()) |span| if (row >= span.row and row < span.row + span.count) return span;
-        return null;
-    }
     /// Drops the spans that start at or after `position`; a span straddling it
     /// is refused (`SpanStraddlesPosition`), since no row of it can stay alone.
     fn truncateSpans(self: *Session, position: usize) !void {
@@ -222,7 +221,7 @@ pub const Session = struct {
     }
 
     pub fn init(gpa: std.mem.Allocator, layouts: []const Layout, capacity: usize, want_checkpoint: bool) !Session {
-        if (capacity == 0 or capacity > 32768 or layouts.len == 0 or layouts.len > 1024) return error.InvalidShape;
+        if (capacity == 0 or capacity > max_capacity or layouts.len == 0 or layouts.len > 1024) return error.InvalidShape;
         var total: usize = 0;
         for (layouts) |layout| {
             const n = try sizes(layout, capacity);
@@ -562,8 +561,6 @@ test "position spans: rope positions, truncation, rewind, and snapshots" {
     try std.testing.expectEqual(@as(usize, 4), s.ropePosition(15));
     try std.testing.expectEqual(@as(usize, 8), s.ropePosition(16));
     try std.testing.expectEqual(@as(usize, 9), s.ropePosition(17));
-    try std.testing.expect(s.spanAt(10) != null);
-    try std.testing.expect(s.spanAt(16) == null);
     try std.testing.expectEqual([3]usize{ 4, 5, 6 }, s.ropeTriple(10));
     try std.testing.expectEqual([3]usize{ 4, 4, 4 }, s.ropeTriple(4));
     try std.testing.expectEqual([3]usize{ 8, 8, 8 }, s.ropeTriple(16));

@@ -62,8 +62,9 @@ pub fn matvecExperts(self: *Backend, weights: Buffer, tensor: cpu.ExpertMatrix, 
         .out_stride = std.math.cast(u32, out_stride) orelse return error.InvalidShape,
         .row_groups = @intCast(row_groups),
     };
-    // The bytes that bound the dispatch are the selected experts', read once each.
-    const shape: Shape = .{ .encoding = tensor.encoding, .rows = @intCast(tensor.rows * slots), .columns = @intCast(tensor.columns), .bytes = @as(u64, per_expert) * slots };
+    // The bytes that bound the dispatch are the selected experts', read once each;
+    // the row label saturates rather than refusing work it only describes.
+    const shape: Shape = .{ .encoding = tensor.encoding, .rows = std.math.lossyCast(u32, tensor.rows * slots), .columns = @intCast(tensor.columns), .bytes = @as(u64, per_expert) * slots };
     try self.dispatch(.matvec_experts, &.{ weights, input, output, indices }, p, @intCast(slots * row_groups), 32 * simdgroups_per_matvec_group, shape);
 }
 

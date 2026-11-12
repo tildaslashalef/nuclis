@@ -10,6 +10,7 @@ const Kernel = root.Kernel;
 const Precision = root.Precision;
 const enabled = root.enabled;
 const Shape = @import("../profile.zig").Shape;
+const max_capacity = @import("../../../runtime/session.zig").max_capacity;
 const perElement = Backend.perElement;
 
 pub const AttentionParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, visible: u32, scale: f32 };
@@ -278,7 +279,7 @@ fn attentionChunkParams(s: AttentionChunkShape) AttentionChunkParams {
 fn checkAttentionChunk(s: AttentionChunkShape, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer, query_elem: usize) !void {
     if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
     if (s.key_width == 0 or s.key_width % 8 != 0 or s.value_width == 0 or s.value_width % 8 != 0 or s.value_width > 512) return error.InvalidShape;
-    if (s.count == 0 or s.count > max_chunk_rows or s.position > 32768 - s.count) return error.InvalidShape;
+    if (s.count == 0 or s.count > max_chunk_rows or s.position > max_capacity - s.count) return error.InvalidShape;
     if (s.span.begin > s.span.end or s.span.end > s.count) return error.InvalidShape;
     if (s.q_stride < s.query_heads * s.key_width or s.out_stride < s.query_heads * s.value_width) return error.InvalidShape;
     const total = s.position + s.count;

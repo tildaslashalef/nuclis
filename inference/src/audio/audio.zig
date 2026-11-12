@@ -45,7 +45,7 @@ pub fn decode(alloc: std.mem.Allocator, bytes: []const u8, max_samples: u32) Err
 
 /// Decodes `bytes` at `rate` (8–192 kHz), keeping at most `max_samples`: a
 /// mono 16-bit or float WAV at that rate directly, anything else through
-/// the bridge.
+/// the bridge. A non-finite sample from either is `UnsupportedAudioFormat`.
 pub fn decodeAt(alloc: std.mem.Allocator, bytes: []const u8, max_samples: u32, rate: u32) Error!Pcm {
     std.debug.assert(rate >= 8000 and rate <= 192000); // checked: a model's codec rate, never a request's
     if (bytes.len > max_bytes) return error.AudioTooLarge;
@@ -63,6 +63,7 @@ pub fn decodeAt(alloc: std.mem.Allocator, bytes: []const u8, max_samples: u32, r
         else => return error.OutOfMemory,
     }
     defer nu_audio_free(samples);
+    for (samples[0..count]) |s| if (!std.math.isFinite(s)) return error.UnsupportedAudioFormat;
     return .{ .samples = try alloc.dupe(f32, samples[0..count]), .total = total };
 }
 
@@ -195,6 +196,7 @@ pub const Reader = struct {
                 if (!bridge_enabled) unreachable; // checked: `open` makes a bridge source only when the bridge is built
                 var n: u32 = 0;
                 if (nu_audio_read(handle, out.ptr, @intCast(@min(out.len, std.math.maxInt(u32))), &n) != 0) return error.UnsupportedAudioFormat; // checked: `@min` bounds it to `u32`
+                for (out[0..n]) |s| if (!std.math.isFinite(s)) return error.UnsupportedAudioFormat;
                 return n;
             },
         }
@@ -359,6 +361,29 @@ test "the bridge resamples and mixes what the WAV parser refuses" {
     var up = try decodeAt(alloc, narrow, std.math.maxInt(u32), 24000);
     defer up.deinit(alloc);
     try std.testing.expect(up.samples.len >= 23990 and up.samples.len <= 24010);
+}
+
+test "the bridge refuses a non-finite sample and reports a cut past its bound" {
+    if (!bridge_enabled) return error.SkipZigTest;
+    const alloc = std.testing.allocator;
+    const nan = try floatWav(alloc, &.{ 0, 0.5, std.math.nan(f32), 0.25 }, null);
+    defer alloc.free(nan);
+    try std.testing.expectError(error.UnsupportedAudioFormat, decode(alloc, nan, 10));
+    try std.testing.expectError(error.UnsupportedAudioFormat, decodeAt(alloc, nan, 10, 24000));
+
+    var samples: [2 * 20000]i16 = @splat(100);
+    const wav = try testWav(alloc, &samples, 2, sample_rate);
+    defer alloc.free(wav);
+    for ([_]u32{ 0, 1, 4096, 19999 }) |max| {
+        var cut = try decode(alloc, wav, max);
+        defer cut.deinit(alloc);
+        try std.testing.expectEqual(@as(usize, max), cut.samples.len);
+        try std.testing.expect(cut.total > max);
+    }
+    var whole = try decode(alloc, wav, 20000);
+    defer whole.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 20000), whole.samples.len);
+    try std.testing.expectEqual(@as(u64, 20000), whole.total);
 }
 
 test "a reader gives decode's samples in pieces of any size" {

@@ -13,15 +13,15 @@ const std = @import("std");
 const gguf = @import("../formats/gguf.zig");
 const models = @import("root.zig");
 const weights = @import("../runtime/weights.zig");
+const tiny_models = @import("build_options").tiny_models;
 const Tensor = gguf.Tensor;
 
 pub const architecture = "gemma4-assistant";
 pub const block_count = 4;
-/// The widest head of any pinned configuration; workspaces size by these.
+/// The most query heads of any pinned configuration; workspaces size by it.
 pub const max_heads = 16;
-pub const max_embedding = 1024;
-pub const max_feed_forward = 8192;
-pub const vocabulary = 262144;
+/// The target's vocabulary: the head's classifier rows are its tokens.
+pub const vocabulary = if (tiny_models) 1024 else 262144;
 pub const rms_epsilon: f32 = 1e-6;
 
 /// The per-block geometry of one pinned head width.
@@ -195,6 +195,7 @@ fn validateMetadata(doc: *const gguf.Document) Error!*const Config {
     const arch = doc.string("general.architecture") orelse return error.MissingMetadata;
     if (!std.mem.eql(u8, arch, architecture)) return error.UnsupportedArchitecture;
     const config = try configFor(doc);
+    try expectInteger(doc, "general.quantization_version", 2);
     for (shared_integer_settings) |setting| try expectInteger(doc, setting.key, setting.value);
     try expectInteger(doc, per_config_keys[0], config.embedding);
     try expectInteger(doc, per_config_keys[1], config.feed_forward);
@@ -303,8 +304,9 @@ const Binder = struct {
 
 /// doc must come from successful GGUF parsing. Allocations are temporary
 /// lookup storage, freed before return; only the returned tensor references
-/// borrow doc. Every tensor in the file must be claimed.
-pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
+/// borrow doc. Every tensor in the file must be claimed. `view` is the
+/// companion's mapping, recorded on the binding.
+pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document, view: weights.View) Error!Binding {
     const config = try validateMetadata(doc);
     var binder: Binder = .{ .remaining = .init(alloc), .config = config };
     defer binder.remaining.deinit();
@@ -313,6 +315,7 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
         if (previous != null) return error.DuplicateTensor;
     }
     var result: Binding = undefined;
+    result.view = view;
     result.config = config;
     result.classifier = try binder.take("token_embd.weight", &.{ config.embedding, vocabulary }, .matrix);
     result.output_norm = try binder.take("output_norm.weight", &.{config.embedding}, .f32);
@@ -337,10 +340,12 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     return result;
 }
 
+const test_view: weights.View = .{ .file = &.{}, .data_offset = 0 };
+
 test "the pinned 12B head binds: 49 tensors, three sliding blocks then the global one" {
     var doc = try @import("inventory.zig").document(std.testing.allocator, @embedFile("fixtures/gemma4-head-12b.json"));
     defer doc.deinit();
-    const binding = try bind(std.testing.allocator, &doc);
+    const binding = try bind(std.testing.allocator, &doc, test_view);
     try std.testing.expectEqual(&config_12b, binding.config);
     try std.testing.expectEqual(@as(u32, 49), binding.summary.text_tensors);
     try std.testing.expectEqual(@as(u64, 237_922_320), binding.summary.text_tensor_bytes);
@@ -357,7 +362,7 @@ test "the pinned 12B head binds: 49 tensors, three sliding blocks then the globa
 test "the pinned E4B head binds: 256 wide, four query heads, two KV heads on every block" {
     var doc = try @import("inventory.zig").document(std.testing.allocator, @embedFile("fixtures/gemma4-head-e4b.json"));
     defer doc.deinit();
-    const binding = try bind(std.testing.allocator, &doc);
+    const binding = try bind(std.testing.allocator, &doc, test_view);
     try std.testing.expectEqual(&config_e4b, binding.config);
     try std.testing.expectEqual(@as(u32, 49), binding.summary.text_tensors);
     for (&binding.layers, 0..) |layer, i| {
@@ -385,6 +390,7 @@ test "deviations from the pinned head are typed rejections" {
         .{ .mutation = .{ .set_kv = 8 }, .expected = error.UnsupportedConfiguration },
         .{ .mutation = .{ .drop_key = "gemma4-assistant.attention.shared_kv_layers" }, .expected = error.MissingMetadata },
         .{ .mutation = .{ .drop_key = "gemma4-assistant.nextn_predict_layers" }, .expected = error.MissingMetadata },
+        .{ .mutation = .{ .drop_key = "general.quantization_version" }, .expected = error.MissingMetadata },
     };
     for (cases) |case| {
         var doc = try @import("inventory.zig").document(std.testing.allocator, @embedFile("fixtures/gemma4-head-12b.json"));
@@ -421,6 +427,6 @@ test "deviations from the pinned head are typed rejections" {
                 doc.metadata = try kept.toOwnedSlice(alloc);
             },
         }
-        try std.testing.expectError(case.expected, bind(std.testing.allocator, &doc));
+        try std.testing.expectError(case.expected, bind(std.testing.allocator, &doc, test_view));
     }
 }

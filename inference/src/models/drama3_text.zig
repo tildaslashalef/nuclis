@@ -140,10 +140,6 @@ pub const Text = struct {
         return self.encoder.encode(gpa, normalized orelse text, false, .{});
     }
 
-    pub fn isSemantic(self: *const Text, id: u32) bool {
-        return id >= self.semantic_start and id <= self.semantic_end;
-    }
-
     /// The prompt rows for `text` after `references` and `history`, ending in
     /// the open assistant voice turn (Fish's `build_drama3_prompt`). Owned by
     /// the caller. Every literal is tokenized on its own.
@@ -282,7 +278,7 @@ fn validateCues(text: []const u8) InputError!void {
                 i += tag.len;
                 continue;
             }
-            if (std.mem.indexOfPos(u8, text, i + 2, "|>") != null) return error.UnknownSpecialToken;
+            if (specialTokenEnd(text, i) != null) return error.UnknownSpecialToken;
         }
         switch (text[i]) {
             '[' => {
@@ -533,15 +529,19 @@ fn protectedPieces(gpa: Allocator, text: []const u8, pieces: *std.ArrayList(Piec
     if (last < text.len) try pieces.append(gpa, .{ .text = text[last..], .protected = false });
 }
 
+/// The end of a token-shaped `<|name|>` at `i` (no `|` or `>` inside), or null.
+fn specialTokenEnd(text: []const u8, i: usize) ?usize {
+    if (!std.mem.startsWith(u8, text[i..], "<|")) return null;
+    var j = i + 2;
+    while (j < text.len and text[j] != '|' and text[j] != '>') j += 1;
+    if (j + 1 < text.len and text[j] == '|' and text[j + 1] == '>') return j + 2;
+    return null;
+}
+
 fn protectedAt(text: []const u8, i: usize) ?usize {
     switch (text[i]) {
         '<' => {
-            if (i + 1 < text.len and text[i + 1] == '|') {
-                var j = i + 2;
-                while (j < text.len and text[j] != '|' and text[j] != '>') j += 1;
-                if (j + 1 < text.len and text[j] == '|' and text[j + 1] == '>') return j + 2;
-                return null;
-            }
+            if (i + 1 < text.len and text[i + 1] == '|') return specialTokenEnd(text, i);
             if (i + 1 >= text.len or !std.ascii.isAlphabetic(text[i + 1])) return null;
             var j = i + 1;
             while (j < text.len and (std.ascii.isAlphanumeric(text[j]) or text[j] == '_' or text[j] == '-')) j += 1;
@@ -746,6 +746,10 @@ test "cue rules" {
     try testing.expectError(error.UnclosedTag, validateCues("<fast><slow>go</fast></slow>"));
     // An unknown angle bracket is text.
     try validateCues("a <3 b <unknown> c");
+    // So is a `<|` that does not open a token-shaped `<|name|>`.
+    try validateCues("a <| b > c |> d");
+    try validateCues("x <|| y");
+    try testing.expectError(error.UnknownSpecialToken, validateCues("say <|im_end|> now"));
 }
 
 test "history keeps the first turn and the latest one, and offers shorter candidates" {

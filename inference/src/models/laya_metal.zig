@@ -195,7 +195,7 @@ pub const Plan = struct {
         const shape = ref.tensor.shape;
         const m: cpu.Matrix = .{ .encoding = encoding, .rows = @intCast(shape[0]), .columns = @intCast(shape[1]), .bytes = ref.bytes };
         // The matmul's tile constraints; every Laya matrix meets them.
-        if (m.rows % 8 != 0 or m.columns % 64 != 0) return error.UnsupportedConfig;
+        if (m.rows % 8 != 0 or m.columns % 64 != 0) return error.UnsupportedConfiguration;
         return .{ .buffer = try self.backend.wrap(ref.bytes), .matrix = m };
     }
 

@@ -36,7 +36,7 @@ pub const Config = struct {
     pub const nemotron: Config = .{ .encoder = 1024, .hidden = 640, .layers = 2, .vocab = 13088, .blank = 13087, .max_symbols = 10 };
 };
 
-pub const ConfigError = error{ InvalidConfig, UnsupportedConfig, OutOfMemory };
+pub const ConfigError = error{ InvalidConfig, UnsupportedConfiguration, OutOfMemory };
 
 /// Reads the transducer's part of `config.json` (`Nemotron3_5AsrForRNNT`).
 pub fn parseConfig(gpa: std.mem.Allocator, text: []const u8) ConfigError!Config {
@@ -55,7 +55,7 @@ pub fn parseConfig(gpa: std.mem.Allocator, text: []const u8) ConfigError!Config 
     };
     defer parsed.deinit();
     const j = parsed.value;
-    if (!std.mem.eql(u8, j.hidden_act, "relu")) return error.UnsupportedConfig;
+    if (!std.mem.eql(u8, j.hidden_act, "relu")) return error.UnsupportedConfiguration;
     if (j.encoder_config.hidden_size == 0 or j.encoder_config.hidden_size > 16384 or j.decoder_hidden_size == 0 or
         j.decoder_hidden_size > 16384 or j.num_decoder_layers == 0 or j.num_decoder_layers > 16 or j.vocab_size < 2 or
         j.vocab_size > 1 << 20 or j.blank_token_id >= j.vocab_size or j.max_symbols_per_step == 0 or j.max_symbols_per_step > 1000)
@@ -565,7 +565,7 @@ test "config.json: the transducer's values" {
     try std.testing.expectEqual(Config.nemotron, try parseConfig(gpa, text));
     const relu_free = try std.mem.replaceOwned(u8, gpa, text, "\"relu\"", "\"tanh\"");
     defer gpa.free(relu_free);
-    try std.testing.expectError(error.UnsupportedConfig, parseConfig(gpa, relu_free));
+    try std.testing.expectError(error.UnsupportedConfiguration, parseConfig(gpa, relu_free));
     const blank_out = try std.mem.replaceOwned(u8, gpa, text, "13087", "13088");
     defer gpa.free(blank_out);
     try std.testing.expectError(error.InvalidConfig, parseConfig(gpa, blank_out));

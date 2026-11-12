@@ -48,6 +48,8 @@ pub const Boost = struct {
         var self: Boost = .{ .alloc = alloc, .bonus = bonus, .follow = follow, .phrases = spelled_all, .steps = steps_all };
         var built: usize = 0;
         errdefer for (self.phrases[0..built], self.steps[0..built]) |p, s| free(alloc, p, s);
+        var buckets = try Buckets.init(alloc, pieces);
+        defer buckets.deinit(alloc);
         for (phrases) |raw| {
             const spelled = try spell(alloc, raw);
             errdefer alloc.free(spelled);
@@ -61,11 +63,9 @@ pub const Boost = struct {
                 var list: std.ArrayList(Step) = .empty;
                 errdefer list.deinit(alloc);
                 const rest = spelled[off..];
-                for (0..pieces.count()) |id| {
-                    const token: u32 = @intCast(id);
-                    if (pieces.isSpecial(token)) continue;
-                    const piece = pieces.piece(token) orelse continue;
-                    if (piece.len == 0 or piece.len > rest.len or !std.mem.startsWith(u8, rest, piece)) continue;
+                for (buckets.of(rest[0])) |token| {
+                    const piece = pieces.piece(token).?; // checked: `Buckets.init` holds only tokens with a piece
+                    if (piece.len > rest.len or !std.mem.startsWith(u8, rest, piece)) continue;
                     try list.append(alloc, .{ .token = token, .len = @intCast(piece.len) });
                 }
                 at.* = try list.toOwnedSlice(alloc);
@@ -103,6 +103,46 @@ pub const Boost = struct {
             try out.appendSlice(alloc, word);
         }
         return out.toOwnedSlice(alloc);
+    }
+};
+
+/// The vocabulary's non-special, non-empty pieces by first byte, each
+/// bucket in ascending token order, so a phrase offset compares only the
+/// pieces that can start there.
+const Buckets = struct {
+    /// `tokens[starts[b]..starts[b + 1]]` begin with byte `b`.
+    starts: [257]usize,
+    tokens: []u32,
+
+    fn init(alloc: std.mem.Allocator, pieces: anytype) !Buckets {
+        var self: Buckets = .{ .starts = @splat(0), .tokens = &.{} };
+        for (0..pieces.count()) |id| if (first(pieces, @intCast(id))) |b| {
+            self.starts[@as(usize, b) + 1] += 1;
+        };
+        for (1..self.starts.len) |b| self.starts[b] += self.starts[b - 1];
+        self.tokens = try alloc.alloc(u32, self.starts[256]);
+        var next: [256]usize = self.starts[0..256].*;
+        for (0..pieces.count()) |id| if (first(pieces, @intCast(id))) |b| {
+            self.tokens[next[b]] = @intCast(id);
+            next[b] += 1;
+        };
+        return self;
+    }
+
+    fn deinit(self: *Buckets, alloc: std.mem.Allocator) void {
+        alloc.free(self.tokens);
+        self.* = undefined;
+    }
+
+    fn of(self: *const Buckets, byte: u8) []const u32 {
+        return self.tokens[self.starts[byte]..self.starts[@as(usize, byte) + 1]];
+    }
+
+    /// The first byte of a piece a phrase may use, or null for none.
+    fn first(pieces: anytype, token: u32) ?u8 {
+        if (pieces.isSpecial(token)) return null;
+        const piece = pieces.piece(token) orelse return null;
+        return if (piece.len == 0) null else piece[0];
     }
 };
 
@@ -241,6 +281,23 @@ test "phrases are bounded and must be text" {
     var two = try Boost.init(alloc, &.{ "New  York", "a" }, 1, 1, pieces);
     defer two.deinit();
     try std.testing.expectEqualStrings("▁New▁York", two.phrases[0]);
+}
+
+test "each phrase offset's steps are the naive scan's over the whole vocabulary" {
+    const alloc = std.testing.allocator;
+    const pieces: TestPieces = .{ .list = &.{ "▁", "▁S", "io", "", "b", "<s>", "ha", "n", "▁Si", "ob", "▁the", "▁New", "▁Y", "ork", "o", "Yo", "bhan", "▁" } };
+    var boost = try Boost.init(alloc, &.{ "Siobhan", "New York", "the oboe" }, 1, 1, pieces);
+    defer boost.deinit();
+    for (boost.phrases, boost.steps) |spelled, steps| for (steps, 0..) |got, off| {
+        var want: std.ArrayList(Boost.Step) = .empty;
+        defer want.deinit(alloc);
+        const rest = spelled[off..];
+        for (pieces.list, 0..) |piece, id| {
+            if (pieces.isSpecial(@intCast(id)) or piece.len == 0 or !std.mem.startsWith(u8, rest, piece)) continue;
+            try want.append(alloc, .{ .token = @intCast(id), .len = @intCast(piece.len) });
+        }
+        try std.testing.expectEqualSlices(Boost.Step, want.items, got);
+    };
 }
 
 test "a failed allocation frees what was built" {

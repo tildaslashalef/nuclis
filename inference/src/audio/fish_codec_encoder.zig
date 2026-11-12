@@ -256,14 +256,53 @@ fn strided(l: fc.Loader, base: []const u8, in: usize, out: usize, stride: usize,
 
 /// `rows` outputs of `c` over `x` (`[rows · stride][in]`) into `y`.
 fn stridedConv(ws: Allocator, io: std.Io, c: Strided, x: []const f32, rows: usize, y: []f32) !void {
+    return stridedConvTiled(ws, io, c, x, rows, y, gather_budget);
+}
+
+/// Floats of gathered rows per matrix multiply.
+const gather_budget = 1 << 20;
+
+/// `stridedConv`, gathering at most `budget` floats (one row at least) per
+/// matrix multiply; the rows are the same at any budget.
+fn stridedConvTiled(ws: Allocator, io: std.Io, c: Strided, x: []const f32, rows: usize, y: []f32, budget: usize) !void {
     const group = c.stride * c.in;
     const inner = c.taps * group;
-    const gathered = try ws.alloc(f32, rows * inner);
-    for (0..rows) |t| for (0..c.taps) |j| {
-        const dst = gathered[t * inner + j * group ..][0..group];
-        // Group t − (taps − 1) + j; before the start it is zero.
-        const g = @as(isize, @intCast(t + j)) - @as(isize, @intCast(c.taps - 1));
-        if (g < 0) @memset(dst, 0) else @memcpy(dst, x[@as(usize, @intCast(g)) * group ..][0..group]);
-    };
-    try dense.matmul(io, .{ .rows = rows, .inner = inner, .outputs = c.out, .x = gathered, .w = c.w, .bias = c.b }, y);
+    const tile = @max(1, @min(rows, budget / inner));
+    const gathered = try ws.alloc(f32, tile * inner);
+    defer ws.free(gathered);
+    var first: usize = 0;
+    while (first < rows) : (first += tile) {
+        const n = @min(tile, rows - first);
+        for (0..n) |r| for (0..c.taps) |j| {
+            const t = first + r;
+            const dst = gathered[r * inner + j * group ..][0..group];
+            // Group t − (taps − 1) + j; before the start it is zero.
+            const g = @as(isize, @intCast(t + j)) - @as(isize, @intCast(c.taps - 1));
+            if (g < 0) @memset(dst, 0) else @memcpy(dst, x[@as(usize, @intCast(g)) * group ..][0..group]);
+        };
+        try dense.matmul(io, .{ .rows = n, .inner = inner, .outputs = c.out, .x = gathered[0 .. n * inner], .w = c.w, .bias = c.b }, y[first * c.out ..][0 .. n * c.out]);
+    }
+}
+
+test "a strided convolution gathered in tiles gives the whole gather's rows bit for bit" {
+    const gpa = std.testing.allocator;
+    const in = 3;
+    const out = 5;
+    const stride = 2;
+    const taps = 2;
+    const rows = 11;
+    var w: [out * taps * stride * in]f32 = undefined;
+    for (&w, 0..) |*v, i| v.* = @sin(@as(f32, @floatFromInt(i)) * 0.37);
+    var b: [out]f32 = undefined;
+    for (&b, 0..) |*v, i| v.* = 0.1 * @as(f32, @floatFromInt(i));
+    var x: [rows * stride * in]f32 = undefined;
+    for (&x, 0..) |*v, i| v.* = @cos(@as(f32, @floatFromInt(i)) * 0.21);
+    const c: Strided = .{ .w = &w, .b = &b, .in = in, .out = out, .stride = stride, .taps = taps };
+    var whole: [rows * out]f32 = undefined;
+    try stridedConvTiled(gpa, std.testing.io, c, &x, rows, &whole, std.math.maxInt(usize));
+    for ([_]usize{ 0, taps * stride * in, 3 * taps * stride * in + 1 }) |budget| {
+        var tiled: [rows * out]f32 = undefined;
+        try stridedConvTiled(gpa, std.testing.io, c, &x, rows, &tiled, budget);
+        try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&whole), std.mem.sliceAsBytes(&tiled));
+    }
 }

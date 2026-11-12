@@ -62,8 +62,9 @@ pub const Builder = struct {
     /// so a product roughly preserves the size of the activation.
     pub fn matrix(self: *Builder, name: []const u8, dimensions: []const u64) Allocator.Error!void {
         if (self.cycle.len == 0) return self.encoded(name, dimensions, self.encoding);
+        const index = self.cycled % self.cycle.len;
         self.cycled += 1;
-        try self.encoded(name, dimensions, self.cycle[self.cycled % self.cycle.len]);
+        try self.encoded(name, dimensions, self.cycle[index]);
     }
 
     /// A matrix in a named encoding (a real file's mix).
@@ -402,6 +403,7 @@ fn emitBonsai(b: *Builder, seed: u64) Allocator.Error!void {
 
 fn emitMuse(b: *Builder, _: u64) Allocator.Error!void {
     try b.set("general.architecture", .{ .string = muse.architecture });
+    try b.set("general.quantization_version", .{ .uint32 = 2 });
     try b.set("general.name", .{ .string = "tiny muse-glimmer" });
     for ([_]struct { []const u8, u32 }{
         .{ "block_count", muse.layer_count },
@@ -447,6 +449,7 @@ fn emitMuse(b: *Builder, _: u64) Allocator.Error!void {
 /// `per_layer_model_proj` is BF16 on a K-quant file, as a real one keeps it.
 fn emitGemma(b: *Builder, config: *const gemma4.Config) Allocator.Error!void {
     try b.set("general.architecture", .{ .string = gemma4.architecture });
+    try b.set("general.quantization_version", .{ .uint32 = 2 });
     try b.set("general.name", .{ .string = config.profile });
     for ([_]struct { []const u8, usize }{
         .{ "attention.key_length", 512 },

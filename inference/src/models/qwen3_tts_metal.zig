@@ -56,6 +56,9 @@ const Cache = struct {
     rope: ?Buffer = null,
 };
 
+/// The widest talker row the host-side embedding sums hold.
+const max_row = 4096;
+
 pub const Plan = struct {
     gpa: Allocator,
     backend: *Backend,
@@ -128,6 +131,8 @@ pub const Plan = struct {
         for ([_]tts.Stack{ config.talker, config.predictor }) |s| {
             if (s.heads * s.head_dim > 4096 or s.head_dim > 512 or s.heads % s.kv_heads != 0) return error.UnsupportedConfiguration;
         }
+        // `embed` and `addRow` sum talker rows in `[max_row]f32` stack rows.
+        if (config.talker.hidden > max_row) return error.UnsupportedConfiguration;
         var self: Plan = undefined;
         self.gpa = gpa;
         self.backend = backend;
@@ -351,7 +356,7 @@ pub const Plan = struct {
                         const frames = (clone orelse return error.InvalidVoice).frames;
                         if (k >= frames.len) return error.InvalidVoice;
                         // The groups summed first, then the text, as `Model.embed`.
-                        var sum: [4096]f32 = undefined;
+                        var sum: [max_row]f32 = undefined;
                         @memset(sum[0..w], 0);
                         try self.addFrame(frames[k], sum[0..w]);
                         for (o, sum[0..w]) |*a, b| a.* += b;
@@ -379,7 +384,8 @@ pub const Plan = struct {
     /// `out += table[id]` (a BF16 row decoded on the host).
     fn addRow(self: *Plan, table: safetensors.Ref, id: usize, out: []f32) !void {
         _ = self;
-        var row: [4096]f32 = undefined;
+        var row: [max_row]f32 = undefined;
+        if (out.len > row.len) return error.InvalidShape;
         const r = row[0..out.len];
         try table.decode(@as(u64, id) * out.len, r);
         for (out, r) |*a, x| a.* += x;

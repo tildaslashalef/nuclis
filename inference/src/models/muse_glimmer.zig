@@ -121,7 +121,7 @@ pub const Binding = struct {
 pub const Error = models.BindError;
 /// `bindDraft` adds the companion's mismatch, the typed error `Engine.open`
 /// surfaces.
-pub const DraftError = models.BindError || error{ DraftSourceMismatch, InvalidShape, TensorOutOfBounds };
+pub const DraftError = models.BindError || error{DraftSourceMismatch};
 
 /// The registry entry (`models.table`).
 pub const family = struct {
@@ -145,14 +145,13 @@ pub const family = struct {
 pub fn bindDraft(alloc: std.mem.Allocator, doc: *const gguf.Document, view: weights.View, target_view: weights.View, target: *const Binding) DraftError!dflash.Binding {
     _ = target_view;
     _ = target;
-    var drafter = dflash.bind(alloc, doc) catch |err| switch (err) {
+    const drafter = dflash.bind(alloc, doc, view) catch |err| switch (err) {
         error.UnsupportedArchitecture, error.UnsupportedConfiguration, error.MissingMetadata, error.InvalidMetadata => return error.DraftSourceMismatch,
         else => return err,
     };
     // Both widths are the adapter's pinned constants; the check keeps the
     // failure typed if either file ever stops being the pinned one.
     if (dflash.embedding != embedding) return error.DraftSourceMismatch;
-    drafter.view = view;
     return drafter;
 }
 
@@ -189,6 +188,7 @@ fn integer(doc: *const gguf.Document, key: []const u8) Error!u64 {
 fn validateMetadata(doc: *const gguf.Document) Error!void {
     const arch = doc.string("general.architecture") orelse return error.MissingMetadata;
     if (!std.mem.eql(u8, arch, architecture)) return error.UnsupportedArchitecture;
+    if (try integer(doc, "general.quantization_version") != 2) return error.UnsupportedConfiguration;
     for (integer_settings) |setting| {
         if (try integer(doc, setting.key) != setting.value) return error.UnsupportedConfiguration;
     }
@@ -402,6 +402,8 @@ test "deviations from the pinned configuration are typed rejections" {
         .{ .mutation = .{ .set_float = .{ .key = "muse-glimmer.logit_scale", .value = 1 } }, .expected = error.UnsupportedConfiguration },
         .{ .mutation = .{ .set_float = .{ .key = "muse-glimmer.rope.freq_base", .value = 10000 } }, .expected = error.UnsupportedConfiguration },
         .{ .mutation = .{ .drop_key = "muse-glimmer.final_logit_softcapping" }, .expected = error.MissingMetadata },
+        .{ .mutation = .{ .drop_key = "general.quantization_version" }, .expected = error.MissingMetadata },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "general.quantization_version", .value = 1 } }, .expected = error.UnsupportedConfiguration },
         .{ .mutation = .{ .drop_key = "muse-glimmer.attention.head_count_kv" }, .expected = error.MissingMetadata },
         .{ .mutation = .{ .add_key = "muse-glimmer.rope.dimension_count" }, .expected = error.UnsupportedConfiguration },
         .{ .mutation = .{ .add_key = "muse-glimmer.attention.logit_softcapping" }, .expected = error.UnsupportedConfiguration },

@@ -115,7 +115,6 @@ pub const Error = models.BindError;
 
 const keys = struct {
     const prefix = architecture ++ ".";
-    const block_count = prefix ++ "block_count";
     const integers = [_]struct { []const u8, u64 }{
         .{ prefix ++ "block_count", layer_count },
         .{ prefix ++ "embedding_length", 512 },

@@ -220,24 +220,32 @@ pub const Sampler = struct {
         return o.top_k == 0 and (o.top_p < 1 or o.min_p > 0);
     }
 
-    /// Reference path: every logit, penalized against `history` when one is
-    /// given, sorted on the CPU. Greedy decoding needs no `scratch`.
-    pub fn select(self: *Sampler, logits: []const f32, scratch: []Candidate, history: ?*const History) !u32 {
-        if (logits.len == 0 or logits.len > std.math.maxInt(u32)) return error.InvalidLogits;
+    /// The argmax of `logits` penalized against `history`, each penalized
+    /// once and, with `store`, kept there as unsorted candidates.
+    /// `NonFiniteResult` for a penalized value that is not finite.
+    fn penalizedArgmax(self: *const Sampler, logits: []const f32, store: ?[]Candidate, history: ?*const History) !usize {
         var best: usize = 0;
         var best_value: f32 = undefined;
         for (logits, 0..) |raw, i| {
             const value = self.penalize(raw, i, history);
             if (!std.math.isFinite(value)) return error.NonFiniteResult;
+            if (store) |c| c[i] = .{ .id = @intCast(i), .weight = value };
             if (i == 0 or value > best_value) {
                 best = i;
                 best_value = value;
             }
         }
+        return best;
+    }
+
+    /// Reference path: every logit, penalized against `history` when one is
+    /// given, sorted on the CPU. Greedy decoding needs no `scratch`.
+    pub fn select(self: *Sampler, logits: []const f32, scratch: []Candidate, history: ?*const History) !u32 {
+        if (logits.len == 0 or logits.len > std.math.maxInt(u32)) return error.InvalidLogits;
+        const store: ?[]Candidate = if (self.options.temperature != 0 and scratch.len >= logits.len) scratch[0..logits.len] else null;
+        const best = try self.penalizedArgmax(logits, store, history);
         if (self.options.temperature == 0) return @intCast(best);
-        if (scratch.len < logits.len) return error.InsufficientScratch;
-        const candidates = scratch[0..logits.len];
-        for (candidates, logits, 0..) |*c, raw, id| c.* = .{ .id = @intCast(id), .weight = self.penalize(raw, id, history) };
+        const candidates = store orelse return error.InsufficientScratch;
         std.mem.sort(Candidate, candidates, {}, lessThan);
         const k = if (self.options.top_k == 0) candidates.len else @min(self.options.top_k, candidates.len);
         const retained = self.exponentiate(candidates[0..k]);
@@ -254,24 +262,14 @@ pub const Sampler = struct {
     /// must be at least `logits.len` for the sampled path and 1 for greedy.
     pub fn distribution(self: *const Sampler, logits: []const f32, scratch: []Candidate, history: ?*const History) ![]Candidate {
         if (logits.len == 0 or logits.len > std.math.maxInt(u32)) return error.InvalidLogits;
-        var best: usize = 0;
-        var best_value: f32 = undefined;
-        for (logits, 0..) |raw, i| {
-            const value = self.penalize(raw, i, history);
-            if (!std.math.isFinite(value)) return error.NonFiniteResult;
-            if (i == 0 or value > best_value) {
-                best = i;
-                best_value = value;
-            }
-        }
+        const store: ?[]Candidate = if (self.options.temperature != 0 and scratch.len >= logits.len) scratch[0..logits.len] else null;
+        const best = try self.penalizedArgmax(logits, store, history);
         if (self.options.temperature == 0) {
             if (scratch.len < 1) return error.InsufficientScratch;
             scratch[0] = .{ .id = @intCast(best), .weight = 1 };
             return scratch[0..1];
         }
-        if (scratch.len < logits.len) return error.InsufficientScratch;
-        const candidates = scratch[0..logits.len];
-        for (candidates, logits, 0..) |*c, raw, id| c.* = .{ .id = @intCast(id), .weight = self.penalize(raw, id, history) };
+        const candidates = store orelse return error.InsufficientScratch;
         std.mem.sort(Candidate, candidates, {}, lessThan);
         const k = if (self.options.top_k == 0) candidates.len else @min(self.options.top_k, candidates.len);
         const retained = self.exponentiate(candidates[0..k]);

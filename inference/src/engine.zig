@@ -833,7 +833,7 @@ pub const Engine = struct {
     /// prompt profile regardless of the file's template digest.
     pub fn open(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, backend: Backend, capacity: usize, kv: KvPrecision, forced: ?profiles.Profile, draft: DraftRequest) !Engine {
         const started = std.Io.Clock.awake.now(io);
-        if (capacity == 0 or capacity > 32768) return error.InvalidGenerationBudget;
+        if (capacity == 0 or capacity > inference.max_capacity) return error.InvalidGenerationBudget;
         var mapped = try inference.weights.Mapped.open(alloc, io, model_path);
         errdefer mapped.deinit(io);
         var draft_mapped: ?inference.weights.Mapped = null;

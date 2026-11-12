@@ -408,6 +408,10 @@ pub const Cache = struct { keys: []f32, values: []f32, count: usize };
 const UpState = struct { trans: q3.History, dw: q3.History };
 const BlockState = struct { trans: q3.History, units: [3]q3.History };
 
+/// RoPE positions a stream covers, its frames at most: the Metal stream's
+/// table, and the bound both executors refuse past (`StreamTooLong`).
+pub const max_positions = 16384;
+
 /// A decode in progress: push frames as they come and get their samples.
 /// Borrows the runtime, which must outlive it.
 pub const Stream = struct {
@@ -470,12 +474,15 @@ pub const Stream = struct {
     }
 
     /// Decodes the next `codes` into `out` (`codes.len · 2048` samples).
+    /// After any error, `reset` before pushing again: a failed push may leave
+    /// the stream partly advanced.
     pub fn pushObserved(self: *Stream, codes: []const Frame, out: []f32, observer: ?Observer) !void {
         const rt = self.runtime;
         const io = rt.io;
         const n = codes.len;
         if (out.len != n * samples_per_frame) return error.InvalidShape;
         if (n == 0) return;
+        if (self.position + n > max_positions) return error.StreamTooLong;
         var arena: std.heap.ArenaAllocator = .init(self.gpa);
         defer arena.deinit();
         const ws = arena.allocator();

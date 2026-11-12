@@ -3,7 +3,8 @@
 //! forward pass recorded in docs/models/muse-glimmer.md. Immutable weight
 //! views and the binding borrow the loaded model; this runtime owns the
 //! session (one attention cache per layer, F32) and its workspace. A failed
-//! step poisons the session. Text only: no vision.
+//! step poisons the session. Image spans take plain positions
+//! (`prefillVision`).
 //!
 //! When the DFlash companion is bound the runtime also runs the drafter
 //! (`Draft`): the language model keeps the input residual of the five target
@@ -29,6 +30,7 @@
 //! - the FFN gate is SiLU, there is no per-layer output scale, and logits
 //!   come from the untied head, scaled by `logit_scale`, soft-capped at 20.
 const std = @import("std");
+const models = @import("root.zig");
 const alloc_check = @import("../alloc_check.zig");
 const model = @import("muse_glimmer.zig");
 const dflash = @import("dflash.zig");
@@ -334,6 +336,7 @@ pub const Runtime = struct {
     /// drafter's `commit` consumes. Without a bound drafter `hidden` is
     /// `HiddenUnsupported`.
     pub fn prefill(self: *Runtime, tokens: []const u32, logits: ?[]f32, hidden: ?[]f32, observer: ?Observer) !void {
+        if (tokens.len == 0) return error.InvalidShape;
         if (hidden != null and self.draft == null) return error.HiddenUnsupported;
         if (hidden) |h| if (h.len != tokens.len * dflash.hidden_width) return error.InvalidShape;
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
@@ -350,6 +353,7 @@ pub const Runtime = struct {
     /// are its position, as for text.
     pub fn prefillVision(self: *Runtime, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, observer: ?Observer) !void {
         if (tokens.len == 0) return error.InvalidShape;
+        try models.checkSpans(tokens.len, spans);
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
         var si: usize = 0;
         var frow: usize = 0;
@@ -651,6 +655,10 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
             try std.testing.expectError(error.InvalidTokenId, runtime.step(model.vocabulary, null, null));
             try std.testing.expectEqual(.ready, runtime.state.status);
             try std.testing.expectError(error.InvalidShape, runtime.step(0, &.{}, null));
+            try std.testing.expectEqual(.ready, runtime.state.status);
+            try std.testing.expectError(error.InvalidShape, runtime.prefill(&.{}, null, null, null));
+            const overrun = [_]model.VisionSpan{.{ .start = 0, .count = 2, .width_tokens = 2, .height_tokens = 1 }};
+            try std.testing.expectError(error.InvalidShape, runtime.prefillVision(&.{0}, &overrun, &.{}, null, null));
             try std.testing.expectEqual(.ready, runtime.state.status);
             try std.testing.expect(runtime.step(0, null, null) != error.InvalidTokenId);
             try std.testing.expectEqual(.failed, runtime.state.status);

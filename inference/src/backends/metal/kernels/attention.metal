@@ -410,7 +410,8 @@ kernel void nu_attention_heads_t(device const KV * keys [[buffer(0)]],
         for (uint i = 0; i < CH; ++i) out[2 + CH * lane + i] = acc[h][i];
     }
 }
-// GROUP per (precision, width) must match `Backend.attentionHeadsGroup`.
+// GROUP per (precision, width) must match `decodePlan`'s `Choice.group` in
+// ops/attention.zig.
 #define NU_ATTN_HEADS(NAME, KV, GROUP, CH) \
     template [[host_name("nu_attention_heads_" NAME)]] kernel void nu_attention_heads_t<KV, GROUP, CH>(device const KV *, device const KV *, device const float *, device float *, constant AttentionDecodeParams &, uint, uint, uint, uint);
 NU_ATTN_HEADS("f32_128", float, 4, 4) NU_ATTN_HEADS("f32_256", float, 2, 8) NU_ATTN_HEADS("f32_512", float, 1, 16)

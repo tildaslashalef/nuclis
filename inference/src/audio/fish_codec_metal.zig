@@ -27,7 +27,7 @@ const width = codec.heads * codec.head_dim;
 /// which changes no sample.
 pub const max_frames = 8;
 /// RoPE positions the table covers: a stream's frames at most.
-pub const max_positions = 16384;
+pub const max_positions = codec.max_positions;
 const dwconv_kernel = 7;
 const out_kernel = 7;
 /// fish_codec.zig's (and qwen3_codec.zig's ConvNeXt) constants.
@@ -425,6 +425,8 @@ pub const Stream = struct {
     /// codes past a book are clamped to it, as the CPU reference does. With
     /// an observer, each stage's rows are shown as fish_codec's are (the
     /// piece commits at each stage to read them; no value changes).
+    /// After any error, `reset` before pushing again: a failed push may leave
+    /// the stream partly advanced.
     pub fn pushObserved(self: *Stream, codes: []const Frame, out: []f32, observer: ?codec.Observer) !void {
         if (out.len != codes.len * codec.samples_per_frame) return error.InvalidShape;
         if (self.position + codes.len > max_positions) return error.StreamTooLong;

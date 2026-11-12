@@ -292,11 +292,7 @@ fn validateMetadata(doc: *const gguf.Document) Error!struct { shape: Shape, auxi
     };
     if (!std.mem.eql(u8, arch, architecture)) return error.UnsupportedArchitecture;
     for (integer_settings) |setting| {
-        const value = doc.get(setting.key) orelse return error.MissingMetadata;
-        switch (value) {
-            .unsigned => |n| if (n != setting.value) return error.UnsupportedConfiguration,
-            else => return error.InvalidMetadata,
-        }
+        if (try unsignedValue(doc, setting.key) != setting.value) return error.UnsupportedConfiguration;
     }
     const blocks = try unsignedValue(doc, "qwen35.block_count");
     const nextn = if (doc.get("qwen35.nextn_predict_layers")) |_| try unsignedValue(doc, "qwen35.nextn_predict_layers") else 0;
@@ -367,9 +363,11 @@ fn knownArchitectureKey(key: []const u8) bool {
     return false;
 }
 
+/// Integer metadata regardless of the writer's chosen width or signedness.
 fn unsignedValue(doc: *const gguf.Document, key: []const u8) Error!u64 {
     return switch (doc.get(key) orelse return error.MissingMetadata) {
         .unsigned => |value| value,
+        .signed => |value| std.math.cast(u64, value) orelse error.InvalidMetadata,
         else => error.InvalidMetadata,
     };
 }
@@ -589,7 +587,8 @@ pub const DraftError = Error || error{DraftSourceMismatch};
 /// Binds a companion draft source onto `target` and reports whether it was
 /// taken. A DFlash2 drafter (`dflash` architecture with its keys) always is,
 /// replacing any prediction block. Qwen's MTP companion is taken by a file
-/// without a block, or when `force` asks it to replace the file's own.
+/// without a block, or when `force` asks it to replace the file's own, and
+/// replaces any DFlash2 drafter.
 pub fn attachDraft(alloc: std.mem.Allocator, doc: *const gguf.Document, view: weights.View, target_view: weights.View, target: *Binding, force: bool) DraftError!bool {
     const arch = doc.string("general.architecture") orelse return error.DraftSourceMismatch;
     if (std.mem.eql(u8, arch, dflash2.architecture)) {
@@ -606,6 +605,7 @@ pub fn attachDraft(alloc: std.mem.Allocator, doc: *const gguf.Document, view: we
     if (!std.mem.eql(u8, arch, architecture)) return error.DraftSourceMismatch;
     if (target.draft != null and !force) return false;
     target.draft = try bindDraft(alloc, doc, view, target_view, target);
+    target.dflash = null;
     return true;
 }
 
@@ -770,7 +770,10 @@ test "reject malformed metadata, altered RoPE, and semantic override keys" {
     defer doc.deinit();
     const context = metadataEntry(&doc, "qwen35.context_length");
     const saved = context.*;
+    // A writer may store an integer key signed; only a negative one is malformed.
     context.value = .{ .signed = 262144 };
+    _ = try bind(std.testing.allocator, &doc);
+    context.value = .{ .signed = -1 };
     try std.testing.expectError(error.InvalidMetadata, bind(std.testing.allocator, &doc));
     context.key = "missing";
     try std.testing.expectError(error.MissingMetadata, bind(std.testing.allocator, &doc));

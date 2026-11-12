@@ -48,7 +48,7 @@ kernel void nu_matvec(device const uchar * weights [[buffer(0)]],
 // specialized kernel and otherwise records nu_matvec. `blocks` counts
 // 256-value strides; the 32-value bodies walk their blocks from `columns`.
 struct MatvecBlockParams { uint columns; uint stride; uint rows; uint blocks; };
-#define NU_MATVEC_SIMDGROUPS 4 // must match simdgroups_per_matvec_group in root.zig
+#define NU_MATVEC_SIMDGROUPS 4 // must match simdgroups_per_matvec_group in ops/matvec.zig
 
 inline float nu_half_low(uint w) { return float(as_type<half>(ushort(w & 0xffffu))); }
 inline float nu_half_high(uint w) { return float(as_type<half>(ushort(w >> 16))); }

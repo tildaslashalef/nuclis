@@ -275,19 +275,21 @@ pub fn topK(values: []const f32, top: []f32, ids: []u32) void {
         top[i] = values[i];
         ids[i] = @intCast(i);
     }
-    var lowest = minIndex(top);
+    var lowest = evictable(top, ids);
     for (values[k..], k..) |v, i| {
         if (v > top[lowest]) {
             top[lowest] = v;
             ids[lowest] = @intCast(i);
-            lowest = minIndex(top);
+            lowest = evictable(top, ids);
         }
     }
 }
 
-fn minIndex(values: []const f32) usize {
+/// The slot to replace: the smallest value, and among equal ones the
+/// highest index, so a tie keeps the lower index.
+fn evictable(top: []const f32, ids: []const u32) usize {
     var lowest: usize = 0;
-    for (values, 0..) |v, i| if (v < values[lowest]) {
+    for (top, ids, 0..) |v, id, i| if (v < top[lowest] or (v == top[lowest] and id > ids[lowest])) {
         lowest = i;
     };
     return lowest;
@@ -311,4 +313,15 @@ test "top-k keeps the largest values" {
     for (ids) |id| seen[id] = true;
     try std.testing.expect(seen[1] and seen[3] and seen[5] and !seen[0]);
     try std.testing.expectApproxEqAbs(@as(f64, 1.0 / 3.0), probability(&[_]f32{ 0, 0, 0 }, 1), 1e-12);
+}
+
+test "top-k ties keep the lower index" {
+    // The two 1s fill the slots before the 2 evicts one of them.
+    const values = [_]f32{ 1, 1, 2, 1 };
+    var top: [2]f32 = undefined;
+    var ids: [2]u32 = undefined;
+    topK(&values, &top, &ids);
+    var seen: [4]bool = @splat(false);
+    for (ids) |id| seen[id] = true;
+    try std.testing.expect(seen[0] and seen[2] and !seen[1] and !seen[3]);
 }

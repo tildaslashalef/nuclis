@@ -86,8 +86,6 @@ pub fn sigmoid(x: f32) f32 {
     return @floatCast(logistic(x));
 }
 
-/// SiLU(x) = x * sigmoid(x). Its limit at -infinity is negative zero;
-/// +infinity remains +infinity and NaN propagates.
 /// GELU in the tanh approximation, the form GGUF checkpoints declare as
 /// `gelu_pytorch_tanh` (Gemma 4's `hidden_activation`):
 /// 0.5·x·(1 + tanh(√(2/π)·x·(1 + 0.044715·x²))). Evaluated in F64 so the
@@ -175,6 +173,8 @@ test "erf and the exact GELU match pinned values" {
     try std.testing.expectEqual(@as(f32, 8), geluErf(8));
 }
 
+/// SiLU(x) = x * sigmoid(x). Its limit at -infinity is negative zero;
+/// +infinity remains +infinity and NaN propagates.
 pub fn silu(x: f32) f32 {
     if (std.math.isNegativeInf(x)) return -0.0;
     return @floatCast(@as(f64, x) * logistic(x));

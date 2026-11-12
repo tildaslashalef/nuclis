@@ -66,15 +66,22 @@ const kernel_files = [_][]const u8{
     "kernels/encoders.metal",     "kernels/audio.metal",           "kernels/asr.metal",
     "kernels/tts.metal",
 };
+/// Benchmark-only kernels (the split-K matvecs, the fragment layout pin):
+/// joined after `kernel_files` and given the `bench_tags` only in the module
+/// instance `metal-check` imports, so the application neither embeds nor
+/// compiles them.
+pub const bench_kernels = @import("build_options").bench_kernels;
+const bench_files = [_][]const u8{"kernels/matvec_split_k.metal"};
 const kernels_source = blk: {
     var joined: []const u8 = "";
     for (kernel_files) |file| joined = joined ++ @embedFile(file);
+    if (bench_kernels) for (bench_files) |file| {
+        joined = joined ++ @embedFile(file);
+    };
     break :blk joined;
 };
 pub const source = "#include <metal_stdlib>\nusing namespace metal;\n" ++ codebook_source ++ @embedFile("dequant.metal") ++ "\n" ++ kernels_source;
 
-/// Each `Kernel` names its MSL entry point as `nu_` plus the tag; pipelines
-/// are indexed by the tag's value, so the two cannot drift apart.
 pub const kernel_names = blk: {
     const info = @typeInfo(Kernel).@"enum";
     var names: [info.field_names.len][:0]const u8 = undefined;
@@ -84,7 +91,8 @@ pub const kernel_names = blk: {
     }
     break :blk names;
 };
-pub const Kernel = enum(u32) {
+/// The kernels every build compiles.
+const shipped = enum(u32) {
     matvec,
     matvec_q4_k,
     matvec_q5_k,
@@ -209,20 +217,6 @@ pub const Kernel = enum(u32) {
     matvec_rows_iq2_xxs_t6,
     matvec_rows_iq2_xxs_t7,
     matvec_rows_iq2_xxs_t8,
-    matmul_q3_k_w8,
-    matmul_q4_k_w8,
-    matmul_q5_k_w8,
-    matmul_q6_k_w8,
-    matmul_iq3_s_w8,
-    matmul_iq4_xs_w8,
-    matmul_q4_0_w8,
-    matmul_pq2_0_w8,
-    matmul_ptq1_0_w8,
-    matvec_q4_k_split,
-    matvec_q5_k_split,
-    reduce_splits,
-    matvec_segments_split,
-    segment_reduce_splits,
     attention_chunk_reuse,
     attention_chunk_reuse_h,
     rmsnorm_add,
@@ -237,10 +231,7 @@ pub const Kernel = enum(u32) {
     clamp,
     attention_segments,
     gelu_erf_mul_rows,
-    fragment_layout,
     matmul_q4_k_f2,
-    matmul_q4_k_f2hh,
-    matmul_q4_k_f4,
     matmul_q5_k_f2,
     matmul_q6_k_f2,
     matmul_iq4_xs_f2,
@@ -346,4 +337,18 @@ pub const Kernel = enum(u32) {
     matmul_experts_q5_0,
     matmul_experts_q5_1,
     shared_expert_add,
+};
+
+/// The tags of `bench_files`, after the shipped ones so every value stays its
+/// declaration index.
+const bench_tags = [_][]const u8{ "matvec_q4_k_split", "matvec_q5_k_split", "reduce_splits", "matvec_segments_split", "segment_reduce_splits", "fragment_layout" };
+/// Each `Kernel` names its MSL entry point as `nu_` plus the tag; pipelines
+/// are indexed by the tag's value, so the two cannot drift apart.
+pub const Kernel = if (!bench_kernels) shipped else blk: {
+    const base = @typeInfo(shipped).@"enum".field_names;
+    var tags: [base.len + bench_tags.len][]const u8 = undefined;
+    for (base, 0..) |tag, i| tags[i] = tag;
+    for (bench_tags, base.len..) |tag, i| tags[i] = tag;
+    const all = tags;
+    break :blk @Enum(u32, .exhaustive, &all, &std.simd.iota(u32, all.len));
 };

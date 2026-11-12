@@ -123,8 +123,6 @@ int nu_metal_pipeline_stats(void * opaque, uint32_t index, uint32_t * out) {
     return 0;
 }
 
-size_t nu_metal_max_buffer_length(void * opaque) { return ((NuMetal *)opaque)->device.maxBufferLength; }
-
 // Zero-filled shared buffer owned by the bridge for the handle's lifetime.
 int nu_metal_buffer_create(void * opaque, size_t length, uint32_t * out_id) {
     @autoreleasepool {
@@ -168,7 +166,8 @@ void * nu_metal_buffer_contents(void * opaque, uint32_t index) {
     return m->buffers[index].contents;
 }
 
-// Frees a created buffer's memory before the handle is destroyed; its id is
+// Frees a created buffer's memory, or drops a wrapped buffer's no-copy view
+// (the borrowed memory stays the caller's), before the handle is destroyed; its id is
 // never reused and binding it afterwards fails the dispatch. Only valid
 // after the last commit that used it (commit waits, so any time between).
 int nu_metal_buffer_release(void * opaque, uint32_t index) {
