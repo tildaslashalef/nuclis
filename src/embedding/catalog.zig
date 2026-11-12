@@ -31,12 +31,12 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
             diag.set("models.{s} locates nothing: give it path, or repo and file", .{name});
             return error.InvalidRegistryEntry;
         };
-        const path = try models(arena, root, located);
+        const path = try catalog.underModels(arena, root, located, diag);
         const mmproj = if (entry.mmproj) |m| try std.fs.path.join(arena, &.{ std.fs.path.dirname(path) orelse ".", m }) else null;
         return .{ .path = path, .mmproj = mmproj };
     }
     if (catalog.findEmbedding(name)) |entry| {
-        const dir = try models(arena, root, "");
+        const dir = try catalog.underModels(arena, root, "", diag);
         return .{
             .path = try std.fs.path.join(arena, &.{ dir, entry.repo, entry.file }),
             .mmproj = if (entry.mmproj) |m| try std.fs.path.join(arena, &.{ dir, m.repo, m.file }) else null,
@@ -48,16 +48,10 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
         diag.set("{s} is a {s} model of the catalogue, not an embedding model ({s} is one)", .{ name, kindName(kind), catalog.embedding_entries[0].name });
         return error.NotAnEmbeddingModel;
     }
-    return .{ .path = try models(arena, root, name) };
+    return .{ .path = try catalog.underModels(arena, root, name, diag) };
 }
 
 const kindName = catalog.kindName;
-
-fn models(arena: std.mem.Allocator, root: ?[]const u8, path: []const u8) ![]const u8 {
-    if (std.fs.path.isAbsolute(path) or std.mem.startsWith(u8, path, "./") or std.mem.startsWith(u8, path, "../")) return path;
-    const dir = root orelse return error.MissingHome;
-    return std.fs.path.join(arena, &.{ dir, "models", path });
-}
 
 pub const Located = struct {
     path: []const u8,

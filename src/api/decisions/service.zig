@@ -98,7 +98,7 @@ pub const Service = struct {
         } else self.default_model else self.default_model;
         if (shape == .systemone and root == .object and root.object.get("states") != null)
             return fail(arena, .unprocessable_entity, "invalid_request", "systemone takes one \"state\"; POST /v1/decisions takes \"states\"");
-        const located = catalog.locate(arena, io, self.root, self.registry, name, &diag) catch |err|
+        const located = catalog.locate(arena, io, self.root, self.registry, name, false, &diag) catch |err|
             return locateFailure(arena, err, diag.message());
         const decision = wire.fromJson(arena, io, root, "the request body", .refused, inference.decide.Family.of(io, located.directory), &diag) catch |err|
             return requestFailure(arena, err, diag.message());
@@ -152,7 +152,7 @@ pub const Service = struct {
 
     /// Opens `name` now (the `--model` of `nuclis serve`), through the GPU.
     pub fn preload(self: *Service, arena: std.mem.Allocator, io: std.Io, name: []const u8, diag: *config.Diagnostic) !void {
-        const located = try catalog.locate(arena, io, self.root, self.registry, name, diag);
+        const located = try catalog.locate(arena, io, self.root, self.registry, name, false, diag);
         var opening: Opening = .{ .pool = &self.pool, .arena = arena, .location = located.location(), .name = name };
         try self.executor.submit(io, &opening.item);
         opening.item.done.waitUncancelable(io);
@@ -217,7 +217,7 @@ const Opening = struct {
 fn locateFailure(arena: std.mem.Allocator, err: anyerror, message: []const u8) http.Response {
     return switch (err) {
         error.NotADecisionModel => fail(arena, .unprocessable_entity, "not_a_decision_model", message),
-        error.ModelFileNotFound => fail(arena, .unprocessable_entity, "model_not_found", message),
+        error.ModelFileNotFound, error.ModelNotFound, error.PathEscapesModels => fail(arena, .unprocessable_entity, "model_not_found", message),
         error.InvalidRegistryEntry => fail(arena, .internal_server_error, "invalid_registry_entry", message),
         error.OutOfMemory => fail(arena, .internal_server_error, "internal", "out of memory"),
         else => fail(arena, .internal_server_error, "internal", @errorName(err)),
@@ -413,6 +413,8 @@ test "decisions: every refusal is a typed error body" {
     const cases = [_]struct { shape: Service.Shape = .decisions, body: []const u8, status: std.http.Status, code: []const u8 }{
         .{ .body = "{\"questions\":", .status = .unprocessable_entity, .code = "invalid_json" },
         .{ .body = "{" ++ q ++ ",\"state\":\"s\",\"model\":\"nope\"}", .status = .unprocessable_entity, .code = "model_not_found" },
+        .{ .body = "{" ++ q ++ ",\"state\":\"s\",\"model\":\"/etc\"}", .status = .unprocessable_entity, .code = "model_not_found" },
+        .{ .body = "{" ++ q ++ ",\"state\":\"s\",\"model\":\"../../etc\"}", .status = .unprocessable_entity, .code = "model_not_found" },
         .{ .body = "{" ++ q ++ ",\"state\":\"s\",\"model\":7}", .status = .unprocessable_entity, .code = "invalid_request" },
         .{ .body = "{" ++ q ++ ",\"state\":\"s\",\"model\":\"qwen3.8-27b\"}", .status = .unprocessable_entity, .code = "not_a_decision_model" },
         .{ .body = "{" ++ q ++ ",\"state\":{\"file\":\"/etc/passwd\"}}", .status = .unprocessable_entity, .code = "file_state_refused" },

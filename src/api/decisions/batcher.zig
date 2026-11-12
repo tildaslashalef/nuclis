@@ -50,9 +50,8 @@ pub const Job = struct {
         load_ns: u64,
         /// This job's tokenizing, the batch's encode.
         timings: decide.Timings,
-        /// The pass it shared: jobs and rows.
+        /// The jobs of the pass it shared.
         batch_jobs: usize,
-        batch_rows: usize,
     };
 };
 
@@ -249,7 +248,6 @@ pub const Batcher = struct {
             .load_ns = acquired.load_ns,
             .timings = .{ .tokenize_ns = job.prepare_ns, .encode_ns = timings.encode_ns },
             .batch_jobs = count,
-            .batch_rows = rows,
         } });
         return rest;
     }

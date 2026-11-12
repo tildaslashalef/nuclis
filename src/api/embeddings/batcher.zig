@@ -40,12 +40,14 @@ pub const Job = struct {
     /// A pass embedded some of its inputs: it is waited for whatever the
     /// deadline.
     started: bool = false,
-    /// Built once, on the first pass that reaches it.
+    /// Allocated on the first pass that reaches the job, filled to `ready`.
     prepared: ?[]embed.Prepared = null,
     /// `embed.dimensions` values per input, filled pass by pass.
     vectors: []const []f32 = &.{},
     /// Inputs embedded so far.
     cursor: usize = 0,
+    /// Inputs tokenized so far (`prepare`), from 0; at least `cursor`.
+    ready: usize = 0,
     timings: Timings = .{},
     outcome: Outcome = .pending,
 
@@ -222,21 +224,31 @@ pub const Batcher = struct {
         var used: usize = 0;
         var rest: std.ArrayList(*Job) = .empty;
         for (taken, 0..) |job, i| {
-            if (job.prepared == null) {
+            {
                 var clock = std.Io.Clock.awake.now(io);
-                prepare(acquired.embedder, job) catch |err| {
+                prepare(acquired.embedder, job, used, self.max_rows) catch |err| {
                     // An input over the limit set its own outcome, with the count.
                     self.finish(io, job, if (job.outcome == .failed) job.outcome else .{ .failed = failure(job.arena, job.name, err) });
                     continue;
                 };
-                job.timings.tokenize_ns = lap(io, &clock);
+                job.timings.tokenize_ns += lap(io, &clock);
             }
-            const prepared = job.prepared.?;
+            const prepared = job.prepared.?[0..job.ready];
             // A first image built the vision encoder: the budget counts it.
-            self.pool.account(io) catch {};
+            self.pool.account(io) catch |err| {
+                if (err == error.Pinned) {
+                    rest.appendSlice(scratch, taken[i..]) catch return self.failAll(io, taken);
+                    break;
+                }
+                // The pool closed the model: this job fails, the rest reopen it next pass.
+                self.finish(io, job, .{ .failed = openFailure(job.arena, job.name, err) });
+                var again: std.ArrayList(*Job) = .empty;
+                for (taken) |t| if (t.state != .finished) again.append(scratch, t) catch return self.failAll(io, taken);
+                return again.items;
+            };
             const n = fit(prepared, job.cursor, used, self.max_rows);
             if (n == 0) {
-                rest.appendSlice(scratch, taken[i..]) catch {};
+                rest.appendSlice(scratch, taken[i..]) catch return self.failAll(io, taken);
                 break;
             }
             for (prepared[job.cursor..][0..n]) |p| used += batchRows(p);
@@ -244,9 +256,9 @@ pub const Batcher = struct {
             vectors.appendSlice(scratch, job.vectors[job.cursor..][0..n]) catch return self.failAll(io, taken);
             members.append(scratch, .{ .job = job, .count = n }) catch return self.failAll(io, taken);
             if (acquired.load_ns > 0) job.timings.load_ns = acquired.load_ns;
-            if (job.cursor + n < prepared.len) {
+            if (job.cursor + n < job.inputs.len) {
                 // The pass is full: this job continues next time, first.
-                rest.appendSlice(scratch, taken[i..]) catch {};
+                rest.appendSlice(scratch, taken[i..]) catch return self.failAll(io, taken);
                 break;
             }
         }
@@ -256,7 +268,7 @@ pub const Batcher = struct {
             for (members.items) |m| self.finish(io, m.job, .{ .failed = failure(m.job.arena, m.job.name, err) });
             // A failed member that was also left over must not be requeued.
             var kept: std.ArrayList(*Job) = .empty;
-            for (rest.items) |job| if (job.state != .finished) kept.append(scratch, job) catch {};
+            for (rest.items) |job| if (job.state != .finished) kept.append(scratch, job) catch return self.failAll(io, rest.items);
             return kept.items;
         };
         const embed_ns = lap(io, &clock);
@@ -296,14 +308,26 @@ pub const Batcher = struct {
     }
 };
 
-/// Tokenizes every input of `job` (in its arena), encodes its images and
-/// clips, and gives it room for its vectors. An input over the limit fails
-/// the job unless it truncates; unreadable media fail it, naming the input.
-fn prepare(embedder: *embed.Embedder, job: *Job) !void {
-    const prepared = try job.arena.alloc(embed.Prepared, job.inputs.len);
-    for (job.inputs, prepared, 0..) |input, *p, i| {
+/// Tokenizes the inputs of `job` a pass holding `used` rows can still take
+/// (at least one), in its arena, encoding their images and clips; the first
+/// call gives it room for every vector. Tokenizing per pass keeps one GPU
+/// item short however many inputs a request carries. An input over the
+/// limit fails the job with the count in its outcome.
+fn prepare(embedder: *embed.Embedder, job: *Job, used: usize, max_rows: usize) !void {
+    if (job.prepared == null) {
+        const vectors = try job.arena.alloc([]f32, job.inputs.len);
+        for (vectors) |*v| v.* = try job.arena.alloc(f32, embed.dimensions);
+        job.vectors = vectors;
+        job.prepared = try job.arena.alloc(embed.Prepared, job.inputs.len);
+    }
+    const prepared = job.prepared.?;
+    var rows = used;
+    for (prepared[job.cursor..job.ready]) |p| rows += batchRows(p);
+    while (job.ready < job.inputs.len and (rows < max_rows or job.ready == job.cursor)) : (job.ready += 1) {
+        const i = job.ready;
+        const p = &prepared[i];
         // Prepared with truncation always, so a refusal can give the count.
-        p.* = embedder.prepare(job.arena, input, .{ .truncate = true, .image_tokens = job.image_tokens }) catch |err| {
+        p.* = embedder.prepare(job.arena, job.inputs[i], .{ .truncate = true, .image_tokens = job.image_tokens }) catch |err| {
             const refused: ?ApiError = switch (err) {
                 error.UnsupportedImageFormat, error.MalformedImage => .init(.bad_request, "invalid_image", job.arena.print("input[{d}]: not an image nuclis can read ({s})", .{ i, inference.vision.image.readable }) catch "an image could not be read"),
                 error.ImageTooLarge => .init(.bad_request, "invalid_image", job.arena.print("input[{d}]: the image is too large to decode", .{i}) catch "an image is too large"),
@@ -322,11 +346,8 @@ fn prepare(embedder: *embed.Embedder, job: *Job) !void {
             job.outcome = .{ .failed = if (p.clipped) clipTooLong(job.arena, i) else tooLong(job.arena, i, p.length) };
             return error.InputTooLong;
         }
+        rows += batchRows(p.*);
     }
-    const vectors = try job.arena.alloc([]f32, job.inputs.len);
-    for (vectors) |*v| v.* = try job.arena.alloc(f32, embed.dimensions);
-    job.vectors = vectors;
-    job.prepared = prepared;
 }
 
 fn batchRows(p: embed.Prepared) usize {
