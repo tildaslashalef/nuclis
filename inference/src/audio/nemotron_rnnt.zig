@@ -14,6 +14,7 @@ const safetensors = @import("../formats/safetensors.zig");
 const cpu = @import("../backends/cpu/root.zig");
 const mel = @import("mel.zig");
 const boost_mod = @import("boost.zig");
+const encoder = @import("nemotron_encoder.zig");
 
 const dense = cpu.dense;
 
@@ -119,7 +120,7 @@ pub const Binding = struct {
     }
 };
 
-pub const BindError = error{ MissingTensor, TensorShapeMismatch, UnsupportedDtype, OutOfMemory, TensorOutOfBounds };
+pub const BindError = encoder.BindError;
 
 /// Binds `encoder_projector.*`, `decoder.*` and `joint.*` at `config`'s
 /// shapes, F32 only, as published.
@@ -127,42 +128,24 @@ pub fn bind(gpa: std.mem.Allocator, checkpoint: *const safetensors.Checkpoint, c
     comptime std.debug.assert(builtin.cpu.arch.endian() == .little);
     var binding: Binding = .{ .arena = .init(gpa), .weights = undefined };
     errdefer binding.arena.deinit();
-    const arena = binding.arena.allocator();
+    var b: encoder.Binder = .{ .checkpoint = checkpoint, .arena = binding.arena.allocator() };
     const c = config;
     const h = c.hidden;
     var w: Weights = undefined;
     w.config = c;
     w.word_start = &.{};
-    w.projector = .{ .weight = try get(checkpoint, arena, "encoder_projector.weight", .{}, &.{ h, c.encoder }), .bias = try get(checkpoint, arena, "encoder_projector.bias", .{}, &.{h}) };
-    w.embedding = try get(checkpoint, arena, "decoder.embedding.weight", .{}, &.{ c.vocab, h });
-    const layers = try arena.alloc(Layer, c.layers);
+    w.projector = .{ .weight = try b.get("encoder_projector.weight", .{}, &.{ h, c.encoder }), .bias = try b.get("encoder_projector.bias", .{}, &.{h}) };
+    w.embedding = try b.get("decoder.embedding.weight", .{}, &.{ c.vocab, h });
+    const layers = try b.arena.alloc(Layer, c.layers);
     for (layers, 0..) |*l, i| l.* = .{
-        .input = .{ .weight = try get(checkpoint, arena, "decoder.lstm.weight_ih_l{d}", .{i}, &.{ 4 * h, h }), .bias = try get(checkpoint, arena, "decoder.lstm.bias_ih_l{d}", .{i}, &.{4 * h}) },
-        .recurrent = .{ .weight = try get(checkpoint, arena, "decoder.lstm.weight_hh_l{d}", .{i}, &.{ 4 * h, h }), .bias = try get(checkpoint, arena, "decoder.lstm.bias_hh_l{d}", .{i}, &.{4 * h}) },
+        .input = .{ .weight = try b.get("decoder.lstm.weight_ih_l{d}", .{i}, &.{ 4 * h, h }), .bias = try b.get("decoder.lstm.bias_ih_l{d}", .{i}, &.{4 * h}) },
+        .recurrent = .{ .weight = try b.get("decoder.lstm.weight_hh_l{d}", .{i}, &.{ 4 * h, h }), .bias = try b.get("decoder.lstm.bias_hh_l{d}", .{i}, &.{4 * h}) },
     };
     w.layers = layers;
-    w.output = .{ .weight = try get(checkpoint, arena, "decoder.decoder_projector.weight", .{}, &.{ h, h }), .bias = try get(checkpoint, arena, "decoder.decoder_projector.bias", .{}, &.{h}) };
-    w.head = .{ .weight = try get(checkpoint, arena, "joint.head.weight", .{}, &.{ c.vocab, h }), .bias = try get(checkpoint, arena, "joint.head.bias", .{}, &.{c.vocab}) };
+    w.output = .{ .weight = try b.get("decoder.decoder_projector.weight", .{}, &.{ h, h }), .bias = try b.get("decoder.decoder_projector.bias", .{}, &.{h}) };
+    w.head = .{ .weight = try b.get("joint.head.weight", .{}, &.{ c.vocab, h }), .bias = try b.get("joint.head.bias", .{}, &.{c.vocab}) };
     binding.weights = w;
     return binding;
-}
-
-fn get(checkpoint: *const safetensors.Checkpoint, arena: std.mem.Allocator, comptime format: []const u8, args: anytype, shape: []const usize) BindError![]const f32 {
-    var buffer: [128]u8 = undefined;
-    const name = std.fmt.bufPrint(&buffer, format, args) catch return error.MissingTensor;
-    const ref = checkpoint.get(name) orelse return error.MissingTensor;
-    if (ref.tensor.shape.len != shape.len) return error.TensorShapeMismatch;
-    for (ref.tensor.shape, shape) |a, want| if (a != want) return error.TensorShapeMismatch;
-    if (ref.tensor.dtype != .f32) return error.UnsupportedDtype;
-    const count: usize = @intCast(ref.tensor.elements);
-    if (@intFromPtr(ref.bytes.ptr) % @alignOf(f32) == 0)
-        return @as([*]const f32, @ptrCast(@alignCast(ref.bytes.ptr)))[0..count];
-    const copy = try arena.alloc(f32, count);
-    ref.decode(0, copy) catch |e| return switch (e) {
-        error.UnsupportedDtype => error.UnsupportedDtype,
-        error.TensorOutOfBounds => error.TensorOutOfBounds,
-    };
-    return copy;
 }
 
 /// An emitted token and the encoder row it was emitted at (start time

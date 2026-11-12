@@ -94,7 +94,7 @@ pub fn run(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, mapped:
     defer decoder.deinit();
     var stream = try fm.Stream.init(&decoder);
     defer stream.deinit();
-    std.debug.print("Metal decoder: {d} MB of buffers, copied in {d:.0} ms\n", .{ decoder.bytes / 1_000_000, elapsedMs(io, load_start) });
+    std.debug.print("Metal decoder: {d} MB of buffers, copied in {d:.0} ms\n", .{ decoder.device.bytes / 1_000_000, elapsedMs(io, load_start) });
 
     var ok = true;
     for ([_][]const u8{ "codec-reference", "codec-window" }) |name| {

@@ -54,6 +54,10 @@ The package (`inference/src/vision/root.zig`):
 - `attention_metal.zig` — `Spans`, the encoders' bidirectional attention on
   Metal: per-row window bounds and query tiles over the materialized-score
   kernels (below).
+- `plan_metal.zig` — what the three Metal plans share: `Weight` (a buffer
+  and its matrix), `created` (a counted device buffer), `wrapped` and
+  `weight` (mapped bytes in place), and `paddedDown` (an FFN down matrix
+  copied with its rows zero-padded to the tile's columns).
 - `projector.zig` — `Projector`, one loaded projector whatever its family:
   the file's projector type (`clip.projector_type` for Qwen and Muse,
   `clip.vision.projector_type` for Gemma) picks the adapter and the

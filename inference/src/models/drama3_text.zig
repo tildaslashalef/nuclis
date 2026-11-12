@@ -9,13 +9,14 @@ const gguf = @import("../formats/gguf.zig");
 const vocabulary = @import("../tokenizer/vocabulary.zig");
 const encode = @import("../tokenizer/encode.zig");
 const nfc = @import("../tokenizer/nfc.zig");
+const model = @import("drama3.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const codebooks = 10;
-pub const codebook_size = 4096;
+pub const codebooks = model.codebooks;
+pub const codebook_size = model.codebook_size;
 pub const max_speaker = 15;
-pub const max_prompt_rows = 8192;
+pub const max_prompt_rows = model.max_prompt_rows;
 
 /// Codes 0..9 of one frame; code 0 is the main token's offset in the
 /// semantic band.

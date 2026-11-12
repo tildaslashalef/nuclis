@@ -11,6 +11,7 @@ const std = @import("std");
 const safetensors = @import("../formats/safetensors.zig");
 const cpu = @import("../backends/cpu/root.zig");
 const alloc_check = @import("../alloc_check.zig");
+const window_attention = @import("codec_attention.zig");
 
 const Allocator = std.mem.Allocator;
 const Ref = safetensors.Ref;
@@ -59,6 +60,9 @@ pub const Config = struct {
     /// Channels into decoder block `i` (0–3) and, at `i = 4`, into the output.
     pub fn blockChannels(self: Config, i: usize) usize {
         return self.decoder_dim >> @intCast(i);
+    }
+    pub fn attention(self: Config) window_attention.Shape {
+        return .{ .heads = self.heads, .head_dim = self.head_dim, .window = self.window };
     }
 };
 
@@ -640,9 +644,7 @@ pub const History = struct {
     }
 };
 
-/// One layer's keys (after RoPE) and values of the rows before the next
-/// push: the last `window − 1`, all a later query can see.
-const Cache = struct { keys: []f32, values: []f32, count: usize };
+const Cache = window_attention.Cache;
 const UpState = struct { trans: History, dw: History };
 const BlockState = struct { trans: History, units: [3]History };
 
@@ -674,14 +676,7 @@ pub const Stream = struct {
         const a = self.memory.allocator();
         const c = runtime.config;
         self.pre_conv = try causalHistory(a, runtime.pre_conv);
-        const caches = try a.alloc(Cache, c.layers);
-        const width = c.heads * c.head_dim;
-        for (caches) |*cache| cache.* = .{
-            .keys = try a.alloc(f32, (c.window - 1) * width),
-            .values = try a.alloc(f32, (c.window - 1) * width),
-            .count = 0,
-        };
-        self.caches = caches;
+        self.caches = try Cache.many(a, c.attention(), c.layers);
         for (&self.upsample, runtime.upsample) |*state, stage| state.* = .{
             .trans = try transHistory(a, stage.trans),
             .dw = try history(a, dwconv_kernel - 1, c.latent),
@@ -797,9 +792,7 @@ pub const Stream = struct {
         const o = try ws.alloc(f32, n * c.hidden);
         const gate = try ws.alloc(f32, n * c.intermediate);
         const up = try ws.alloc(f32, n * c.intermediate);
-        const keys = try ws.alloc(f32, (c.window - 1 + n) * width);
-        const values = try ws.alloc(f32, (c.window - 1 + n) * width);
-        const scores = try ws.alloc(f64, c.window);
+        const scratch: window_attention.Scratch = try .init(ws, c.attention(), n);
         for (rt.layers, self.caches) |layer, *cache| {
             try rmsRows(x, layer.input_norm, c.rms_eps, h);
             try linear(io, layer.q, h, n, q);
@@ -811,13 +804,7 @@ pub const Stream = struct {
                 try cpu.rope.apply(q[at..][0..c.head_dim], q[at..][0..c.head_dim], options);
                 try cpu.rope.apply(k[at..][0..c.head_dim], k[at..][0..c.head_dim], options);
             };
-            const past = cache.count;
-            const total = past + n;
-            @memcpy(keys[0 .. past * width], cache.keys[0 .. past * width]);
-            @memcpy(keys[past * width ..][0 .. n * width], k);
-            @memcpy(values[0 .. past * width], cache.values[0 .. past * width]);
-            @memcpy(values[past * width ..][0 .. n * width], v);
-            attention(c, q, keys, values, n, past, scores, attended);
+            cache.attend(c.attention(), scratch, q, k, v, n, attended);
             try linear(io, layer.o, attended, n, o);
             addScaled(x, layer.attn_scale, o);
             try rmsRows(x, layer.post_norm, c.rms_eps, h);
@@ -826,10 +813,6 @@ pub const Stream = struct {
             for (gate, up) |*g, u| g.* = cpu.silu(g.*) * u;
             try linear(io, layer.down, gate, n, o);
             addScaled(x, layer.mlp_scale, o);
-            const kept = @min(c.window - 1, total);
-            @memcpy(cache.keys[0 .. kept * width], keys[(total - kept) * width ..][0 .. kept * width]);
-            @memcpy(cache.values[0 .. kept * width], values[(total - kept) * width ..][0 .. kept * width]);
-            cache.count = kept;
         }
         try rmsRows(x, rt.norm, c.rms_eps, h);
         try linear(io, rt.output, h, n, out);
@@ -849,37 +832,6 @@ pub fn transHistory(a: Allocator, conv: TransConv) !History {
 /// `x[i] += scale[i mod scale.len] · y[i]`: the layer scales and ConvNeXt's γ.
 pub fn addScaled(x: []f32, scale: []const f32, y: []const f32) void {
     for (x, y, 0..) |*r, value, i| r.* += scale[i % scale.len] * value;
-}
-
-/// Sliding-window attention of `n` new queries: query t (row `past + t` of
-/// `keys`) sees rows `past + t − window + 1 … past + t`. Scores and sums in F64.
-pub fn attention(c: Config, q: []const f32, keys: []const f32, values: []const f32, n: usize, past: usize, scores: []f64, out: []f32) void {
-    const width = c.heads * c.head_dim;
-    const scale = 1 / @sqrt(@as(f64, @floatFromInt(c.head_dim)));
-    for (0..n) |t| for (0..c.heads) |head| {
-        const i = past + t;
-        const lowest = (i + 1) -| c.window;
-        const qi = q[t * width + head * c.head_dim ..][0..c.head_dim];
-        var max: f64 = -std.math.inf(f64);
-        for (lowest..i + 1, 0..) |j, s| {
-            var dot: f64 = 0;
-            for (qi, keys[j * width + head * c.head_dim ..][0..c.head_dim]) |a, b| dot += @as(f64, a) * b;
-            scores[s] = dot * scale;
-            max = @max(max, scores[s]);
-        }
-        const count = i + 1 - lowest;
-        var total: f64 = 0;
-        for (scores[0..count]) |*s| {
-            s.* = @exp(s.* - max);
-            total += s.*;
-        }
-        const o = out[t * width + head * c.head_dim ..][0..c.head_dim];
-        for (o, 0..) |*value, d| {
-            var sum: f64 = 0;
-            for (lowest..i + 1, 0..) |j, s| sum += scores[s] * values[j * width + head * c.head_dim + d];
-            value.* = @floatCast(sum / total);
-        }
-    };
 }
 
 /// A convolution's input rows tap-major: `out[r][j·width …]` is row

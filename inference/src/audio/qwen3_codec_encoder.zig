@@ -10,6 +10,7 @@ const std = @import("std");
 const safetensors = @import("../formats/safetensors.zig");
 const cpu = @import("../backends/cpu/root.zig");
 const codec = @import("qwen3_codec.zig");
+const window_attention = @import("codec_attention.zig");
 
 const Allocator = std.mem.Allocator;
 const Ref = safetensors.Ref;
@@ -366,7 +367,7 @@ pub const Encoder = struct {
         const o = try ws.alloc(f32, rows * c.hidden);
         const wide = try ws.alloc(f32, rows * c.intermediate);
         const scores = try ws.alloc(f64, rows);
-        const shape: codec.Config = .{ .heads = c.heads, .head_dim = c.head_dim, .window = rows };
+        const shape: window_attention.Shape = .{ .heads = c.heads, .head_dim = c.head_dim, .window = rows };
         for (self.layers) |layer| {
             try layerNorm(x, layer.input_norm, c.norm_eps, h);
             try linear(io, layer.q, h, rows, q);
@@ -378,7 +379,7 @@ pub const Encoder = struct {
                 try cpu.rope.apply(q[at..][0..c.head_dim], q[at..][0..c.head_dim], options);
                 try cpu.rope.apply(k[at..][0..c.head_dim], k[at..][0..c.head_dim], options);
             };
-            codec.attention(shape, q, k, v, rows, 0, scores, attended);
+            window_attention.attention(shape, q, k, v, rows, 0, scores, attended);
             try linear(io, layer.o, attended, rows, o);
             codec.addScaled(x, layer.attn_scale, o);
             try layerNorm(x, layer.post_norm, c.norm_eps, h);

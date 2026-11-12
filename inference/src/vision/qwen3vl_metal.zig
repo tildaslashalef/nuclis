@@ -8,14 +8,15 @@
 //! tile's 64.
 const std = @import("std");
 const metal = @import("../backends/metal/root.zig");
-const cpu = @import("../backends/cpu/root.zig");
 const weights = @import("../runtime/weights.zig");
 const preprocess = @import("preprocess.zig");
 const model = @import("qwen3vl.zig");
 const attention = @import("attention_metal.zig");
+const plan = @import("plan_metal.zig");
 
 const Backend = metal.Backend;
 const Buffer = metal.Buffer;
+const Weight = plan.Weight;
 
 const hidden = model.hidden;
 const ffn = model.ffn;
@@ -29,20 +30,16 @@ const max_tokens = model.max_tokens;
 const Layer = struct {
     n1w: Buffer,
     n1b: Buffer,
-    qkv: Buffer,
-    qkv_m: cpu.Matrix,
+    qkv: Weight,
     qkv_b: Buffer,
-    out: Buffer,
-    out_m: cpu.Matrix,
+    out: Weight,
     out_b: Buffer,
     n2w: Buffer,
     n2b: Buffer,
-    up: Buffer,
-    up_m: cpu.Matrix,
+    up: Weight,
     up_b: Buffer,
     /// The padded copy, `hidden × ffn_padded` in the file's element encoding.
-    down: Buffer,
-    down_m: cpu.Matrix,
+    down: Weight,
     down_b: Buffer,
 };
 
@@ -51,17 +48,14 @@ pub const Plan = struct {
     backend: *Backend,
     view: weights.View,
     binding: *const model.Binding,
-    kernel: Buffer,
-    kernel_m: cpu.Matrix,
+    kernel: Weight,
     patch_bias: Buffer,
     layers: [model.blocks]Layer,
     post_w: Buffer,
     post_b: Buffer,
-    m0: Buffer,
-    m0_m: cpu.Matrix,
+    m0: Weight,
     m0_b: Buffer,
-    m2: Buffer,
-    m2_m: cpu.Matrix,
+    m2: Weight,
     m2_b: Buffer,
     // Activations for `max_patches` rows.
     input: Buffer,
@@ -91,64 +85,45 @@ pub const Plan = struct {
         self.created_bytes = 0;
         const kernel = try model.patchKernel(alloc, view, binding);
         defer alloc.free(kernel);
-        self.kernel = try self.created(hidden * model.patch_values * 4);
-        @memcpy(self.kernel.floats()[0 .. hidden * model.patch_values], kernel);
-        self.kernel_m = .{ .encoding = 0, .rows = hidden, .columns = model.patch_values, .bytes = self.kernel.host[0 .. hidden * model.patch_values * 4] };
-        self.patch_bias = try self.wrapped(binding.patch_bias);
+        const kernel_buffer = try plan.created(&self, hidden * model.patch_values * 4);
+        @memcpy(kernel_buffer.floats()[0 .. hidden * model.patch_values], kernel);
+        self.kernel = .{ .buffer = kernel_buffer, .matrix = .{ .encoding = 0, .rows = hidden, .columns = model.patch_values, .bytes = kernel_buffer.host[0 .. hidden * model.patch_values * 4] } };
+        self.patch_bias = try plan.wrapped(&self, binding.patch_bias);
         for (&self.layers, binding.layers) |*layer, l| {
-            layer.n1w = try self.wrapped(l.norm1.weight);
-            layer.n1b = try self.wrapped(l.norm1.bias);
-            layer.qkv_m = try view.matrix(l.qkv.weight);
-            layer.qkv = try backend.wrap(layer.qkv_m.bytes);
-            layer.qkv_b = try self.wrapped(l.qkv.bias);
-            layer.out_m = try view.matrix(l.output.weight);
-            layer.out = try backend.wrap(layer.out_m.bytes);
-            layer.out_b = try self.wrapped(l.output.bias);
-            layer.n2w = try self.wrapped(l.norm2.weight);
-            layer.n2b = try self.wrapped(l.norm2.bias);
-            layer.up_m = try view.matrix(l.up.weight);
-            layer.up = try backend.wrap(layer.up_m.bytes);
-            layer.up_b = try self.wrapped(l.up.bias);
-            const down = try view.matrix(l.down.weight);
-            const element: usize = if (down.encoding == 0) 4 else 2;
-            if (down.bytes.len != hidden * ffn * element) return error.InvalidShape;
-            layer.down = try self.created(hidden * ffn_padded * element);
-            const host = layer.down.host[0 .. hidden * ffn_padded * element];
-            for (0..hidden) |r| @memcpy(host[r * ffn_padded * element ..][0 .. ffn * element], down.bytes[r * ffn * element ..][0 .. ffn * element]);
-            layer.down_m = .{ .encoding = down.encoding, .rows = hidden, .columns = ffn_padded, .bytes = host };
-            layer.down_b = try self.wrapped(l.down.bias);
+            layer.n1w = try plan.wrapped(&self, l.norm1.weight);
+            layer.n1b = try plan.wrapped(&self, l.norm1.bias);
+            layer.qkv = try plan.weight(&self, l.qkv.weight);
+            layer.qkv_b = try plan.wrapped(&self, l.qkv.bias);
+            layer.out = try plan.weight(&self, l.output.weight);
+            layer.out_b = try plan.wrapped(&self, l.output.bias);
+            layer.n2w = try plan.wrapped(&self, l.norm2.weight);
+            layer.n2b = try plan.wrapped(&self, l.norm2.bias);
+            layer.up = try plan.weight(&self, l.up.weight);
+            layer.up_b = try plan.wrapped(&self, l.up.bias);
+            layer.down = try plan.paddedDown(&self, l.down.weight, hidden, ffn, ffn_padded);
+            layer.down_b = try plan.wrapped(&self, l.down.bias);
         }
-        self.post_w = try self.wrapped(binding.post_norm.weight);
-        self.post_b = try self.wrapped(binding.post_norm.bias);
-        self.m0_m = try view.matrix(binding.merger_0.weight);
-        self.m0 = try backend.wrap(self.m0_m.bytes);
-        self.m0_b = try self.wrapped(binding.merger_0.bias);
-        self.m2_m = try view.matrix(binding.merger_2.weight);
-        self.m2 = try backend.wrap(self.m2_m.bytes);
-        self.m2_b = try self.wrapped(binding.merger_2.bias);
-        self.input = try self.created(max_patches * model.patch_values * 4);
-        self.x = try self.created(max_patches * hidden * 4);
-        self.h = try self.created(max_patches * hidden * 4);
-        self.qkv = try self.created(max_patches * qkv_width * 4);
-        self.attn = try self.created(max_patches * hidden * 4);
-        self.up = try self.created(max_patches * ffn_padded * 4);
-        self.pos = try self.created(max_patches * hidden * 4);
-        self.rope = try self.created(max_patches * model.rope_pairs * 8);
-        self.mid = try self.created(max_tokens * merged * 4);
-        self.out = try self.created(max_tokens * binding.output_width * 4);
-        self.scores = try self.created(attention.score_capacity * 4);
+        self.post_w = try plan.wrapped(&self, binding.post_norm.weight);
+        self.post_b = try plan.wrapped(&self, binding.post_norm.bias);
+        self.m0 = try plan.weight(&self, binding.merger_0.weight);
+        self.m0_b = try plan.wrapped(&self, binding.merger_0.bias);
+        self.m2 = try plan.weight(&self, binding.merger_2.weight);
+        self.m2_b = try plan.wrapped(&self, binding.merger_2.bias);
+        self.input = try plan.created(&self, max_patches * model.patch_values * 4);
+        self.x = try plan.created(&self, max_patches * hidden * 4);
+        self.h = try plan.created(&self, max_patches * hidden * 4);
+        self.qkv = try plan.created(&self, max_patches * qkv_width * 4);
+        self.attn = try plan.created(&self, max_patches * hidden * 4);
+        self.up = try plan.created(&self, max_patches * ffn_padded * 4);
+        self.pos = try plan.created(&self, max_patches * hidden * 4);
+        self.rope = try plan.created(&self, max_patches * model.rope_pairs * 8);
+        self.mid = try plan.created(&self, max_tokens * merged * 4);
+        self.out = try plan.created(&self, max_tokens * binding.output_width * 4);
+        self.scores = try plan.created(&self, attention.score_capacity * 4);
         self.spans = try attention.Spans.init(alloc, backend, max_patches, &self.created_bytes);
         errdefer self.spans.deinit(alloc);
         self.scratch = try alloc.alloc(f32, 4 * hidden);
         return self;
-    }
-    fn created(self: *Plan, len: usize) !Buffer {
-        const buffer = try self.backend.create(len);
-        self.created_bytes += len;
-        return buffer;
-    }
-    fn wrapped(self: *Plan, tensor: anytype) !Buffer {
-        return self.backend.wrap(try self.view.bytes(tensor));
     }
     pub fn deinit(self: *Plan) void {
         // Device buffers belong to the backend and go with it.
@@ -177,34 +152,34 @@ pub const Plan = struct {
 
         try b.begin();
         errdefer b.discard();
-        try b.matmul(self.kernel, self.kernel_m, self.input, model.patch_values, self.x, hidden, n);
+        try b.matmul(self.kernel.buffer, self.kernel.matrix, self.input, model.patch_values, self.x, hidden, n);
         try b.addBiasRows(self.x, self.patch_bias, hidden, n, hidden);
         try b.add(self.x, self.pos, n * hidden);
         const keys = self.qkv.slice(hidden * 4, self.qkv.len - hidden * 4);
         const values = self.qkv.slice(2 * hidden * 4, self.qkv.len - 2 * hidden * 4);
         for (self.layers) |layer| {
             try b.layerNorm(self.x, layer.n1w, layer.n1b, self.h, .{ .rows = n, .width = hidden, .in_stride = hidden, .out_stride = hidden, .eps = model.norm_epsilon });
-            try b.matmul(layer.qkv, layer.qkv_m, self.h, hidden, self.qkv, qkv_width, n);
+            try b.matmul(layer.qkv.buffer, layer.qkv.matrix, self.h, hidden, self.qkv, qkv_width, n);
             try b.addBiasRows(self.qkv, layer.qkv_b, qkv_width, n, qkv_width);
             try b.ropeRows(self.qkv, self.rope, model.heads, model.head_dim, model.head_dim, 0, n, qkv_width, .split_half);
             try b.ropeRows(keys, self.rope, model.heads, model.head_dim, model.head_dim, 0, n, qkv_width, .split_half);
             try self.spans.attend(b, self.qkv, keys, values, self.attn, self.scores, .{ .width = model.head_dim, .q_stride = qkv_width, .kv_stride = qkv_width, .out_stride = hidden, .scale = 1.0 / @sqrt(@as(f32, model.head_dim)) });
-            try b.matmul(layer.out, layer.out_m, self.attn, hidden, self.h, hidden, n);
+            try b.matmul(layer.out.buffer, layer.out.matrix, self.attn, hidden, self.h, hidden, n);
             try b.addBiasRows(self.h, layer.out_b, hidden, n, hidden);
             try b.add(self.x, self.h, n * hidden);
             try b.layerNorm(self.x, layer.n2w, layer.n2b, self.h, .{ .rows = n, .width = hidden, .in_stride = hidden, .out_stride = hidden, .eps = model.norm_epsilon });
-            try b.matmul(layer.up, layer.up_m, self.h, hidden, self.up, ffn_padded, n);
+            try b.matmul(layer.up.buffer, layer.up.matrix, self.h, hidden, self.up, ffn_padded, n);
             try b.addBiasRows(self.up, layer.up_b, ffn, n, ffn_padded);
             try b.gelu(self.up, n * ffn_padded);
-            try b.matmul(layer.down, layer.down_m, self.up, ffn_padded, self.h, hidden, n);
+            try b.matmul(layer.down.buffer, layer.down.matrix, self.up, ffn_padded, self.h, hidden, n);
             try b.addBiasRows(self.h, layer.down_b, hidden, n, hidden);
             try b.add(self.x, self.h, n * hidden);
         }
         try b.layerNorm(self.x, self.post_w, self.post_b, self.h, .{ .rows = n, .width = hidden, .in_stride = hidden, .out_stride = hidden, .eps = model.norm_epsilon });
-        try b.matmul(self.m0, self.m0_m, self.h, merged, self.mid, merged, tokens);
+        try b.matmul(self.m0.buffer, self.m0.matrix, self.h, merged, self.mid, merged, tokens);
         try b.addBiasRows(self.mid, self.m0_b, merged, tokens, merged);
         try b.gelu(self.mid, tokens * merged);
-        try b.matmul(self.m2, self.m2_m, self.mid, merged, self.out, out_width, tokens);
+        try b.matmul(self.m2.buffer, self.m2.matrix, self.mid, merged, self.out, out_width, tokens);
         try b.addBiasRows(self.out, self.m2_b, out_width, tokens, out_width);
         try b.commit();
         @memcpy(out[0 .. tokens * out_width], self.out.floats()[0 .. tokens * out_width]);

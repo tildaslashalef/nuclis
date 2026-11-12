@@ -42,6 +42,7 @@ test {
     _ = @import("formats/gguf_writer.zig");
     _ = @import("quant/sample.zig");
     _ = @import("tokenizer/pieces.zig");
+    _ = @import("tokenizer/table.zig");
     _ = @import("tokenizer/vocab_merges.zig");
     _ = safetensors;
     _ = encoding;

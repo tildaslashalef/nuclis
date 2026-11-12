@@ -10,6 +10,7 @@ const std = @import("std");
 const cpu = @import("../backends/cpu/root.zig");
 const tts = @import("../models/qwen3_tts.zig");
 const mel = @import("mel.zig");
+const Fft = @import("fft.zig").Fft;
 
 const Allocator = std.mem.Allocator;
 const dense = cpu.dense;
@@ -34,8 +35,7 @@ pub const Front = struct {
     window: [fft]f32,
     /// `[filters][bins]`: librosa's Slaney bank, cast to F32 as it returns it.
     weights: [filters * bins]f32,
-    /// `exp(−2πik/fft)` for k < fft/2.
-    twiddles: [fft / 2][2]f64,
+    fourier: Fft(fft),
 
     pub fn init(self: *Front) void {
         for (&self.window, 0..) |*w, n| {
@@ -53,10 +53,7 @@ pub const Front = struct {
             const up = (edges[m + 2] - f) / (edges[m + 2] - edges[m + 1]);
             self.weights[m * bins + b] = @floatCast(@max(0, @min(down, up)) * 2 / (edges[m + 2] - edges[m]));
         };
-        for (&self.twiddles, 0..) |*t, k| {
-            const angle = -2 * std.math.pi * @as(f64, @floatFromInt(k)) / fft;
-            t.* = .{ @cos(angle), @sin(angle) };
-        }
+        self.fourier.init();
     }
 
     /// The frames a clip of `samples` gives: 0 when it is too short to
@@ -81,44 +78,13 @@ pub const Front = struct {
                 re[n] = samples[reflect(at, samples.len)] * self.window[n];
                 im[n] = 0;
             }
-            self.transform(&re, &im);
+            self.fourier.transform(&re, &im);
             var magnitude: [bins]f64 = undefined;
             for (&magnitude, 0..) |*v, b| v.* = @sqrt(re[b] * re[b] + im[b] * im[b] + 1e-9);
             for (out[k * filters ..][0..filters], 0..) |*o, m| {
                 var sum: f64 = 0;
                 for (magnitude, self.weights[m * bins ..][0..bins]) |v, w| sum += v * w;
                 o.* = @floatCast(@log(@max(sum, 1e-5)));
-            }
-        }
-    }
-
-    /// In-place iterative radix-2 FFT of `fft` points.
-    fn transform(self: *const Front, re: *[fft]f64, im: *[fft]f64) void {
-        comptime std.debug.assert(fft == 1 << 10);
-        for (0..fft) |i| {
-            const j = @bitReverse(@as(u10, @intCast(i)));
-            if (j > i) {
-                std.mem.swap(f64, &re[i], &re[j]);
-                std.mem.swap(f64, &im[i], &im[j]);
-            }
-        }
-        var size: usize = 2;
-        while (size <= fft) : (size *= 2) {
-            const half = size / 2;
-            const step = fft / size;
-            var start: usize = 0;
-            while (start < fft) : (start += size) {
-                for (0..half) |k| {
-                    const t = self.twiddles[k * step];
-                    const a = start + k;
-                    const b = a + half;
-                    const xr = re[b] * t[0] - im[b] * t[1];
-                    const xi = re[b] * t[1] + im[b] * t[0];
-                    re[b] = re[a] - xr;
-                    im[b] = im[a] - xi;
-                    re[a] += xr;
-                    im[a] += xi;
-                }
             }
         }
     }

@@ -11,13 +11,18 @@
 //! outlive it. docs/models/drama3.md § The codec on Metal.
 const std = @import("std");
 const metal = @import("../backends/metal/root.zig");
-const cpu = @import("../backends/cpu/root.zig");
+const cm = @import("codec_metal.zig");
 const codec = @import("fish_codec.zig");
 const q3 = @import("qwen3_codec.zig");
 
 const Allocator = std.mem.Allocator;
 const Backend = metal.Backend;
 const Buffer = metal.Buffer;
+const Mat = cm.Mat;
+const Conv = cm.Conv;
+const Trans = cm.Trans;
+const Snake = cm.Snake;
+const tile = cm.tile;
 const Frame = codec.Frame;
 const books = codec.codebooks;
 const latent = codec.latent;
@@ -35,25 +40,12 @@ const rms_eps = 1e-5;
 const layer_norm_eps = 1e-6;
 const rope_base = 1e4;
 
-/// A matrix in a created buffer, `columns` padded to a multiple of 64.
-const Mat = struct { buffer: Buffer, matrix: cpu.Matrix, bias: ?Buffer };
-/// A causal convolution (`taps` 1 with `dilation` 1 is a plain matrix).
-const Conv = struct { mat: Mat, in: usize, taps: usize, dilation: usize };
-/// A transposed convolution: `stride` output rows per input row.
-const Trans = struct { mat: Mat, in: usize, out: usize, stride: usize, taps: usize };
-const Snake = struct { scale: Buffer, inv: Buffer };
 const Layer = struct { attn_norm: Buffer, ffn_norm: Buffer, q: Mat, k: Mat, v: Mat, o: Mat, gate: Mat, up: Mat, down: Mat, attn_scale: Buffer, ffn_scale: Buffer };
 const NeXt = struct { dw: Buffer, dw_b: Buffer, ln_w: Buffer, ln_b: Buffer, gamma: Buffer, pw1: Mat, pw2: Mat };
 const Up = struct { trans: Trans, next: NeXt };
 const Unit = struct { act1: Snake, conv1: Conv, act2: Snake, conv2: Conv };
 const Block = struct { act: Snake, trans: Trans, units: [3]Unit };
 
-fn padded(columns: usize) usize {
-    return (columns + 63) / 64 * 64;
-}
-fn tile(rows: usize) usize {
-    return Backend.matmulPadded(rows);
-}
 fn bookSize(c: usize) usize {
     return if (c == 0) codec.semantic_size else codec.residual_size;
 }
@@ -77,9 +69,7 @@ pub fn ropeTable(table: []f32, positions: usize, dims: usize, base: f32) void {
 
 /// The decoder's weights and scratch on the device.
 pub const Decoder = struct {
-    gpa: Allocator,
-    backend: *Backend,
-    buffers: std.ArrayList(Buffer) = .empty,
+    device: cm.Device,
     /// The codebooks on the host (`bookOffset`): the lookup gathers there.
     books: []f32,
     /// The ten out_proj matrices side by side (`[latent][10 · 8]`), their
@@ -99,8 +89,6 @@ pub const Decoder = struct {
     picked: Buffer,
     /// The pipeline's activations, four buffers of the largest stage each.
     act: [4]Buffer,
-    gathered: Buffer,
-    joined: Buffer,
     th: Buffer,
     tq: Buffer,
     tk: Buffer,
@@ -112,8 +100,6 @@ pub const Decoder = struct {
     jk: Buffer,
     jv: Buffer,
     samples: Buffer,
-    /// Bytes of device memory created.
-    bytes: usize = 0,
 
     /// Copies `runtime`'s weights to the device; `runtime` may be released
     /// afterwards. `backend` must outlive the decoder.
@@ -121,12 +107,9 @@ pub const Decoder = struct {
         const post = runtime.post;
         if (post.window > Backend.tts_window_max or post.layers.len == 0 or runtime.conv_out.out != 1 or runtime.conv_out.kernel != out_kernel) return error.UnsupportedConfiguration;
         var self: Decoder = undefined;
-        self.gpa = gpa;
-        self.backend = backend;
-        self.buffers = .empty;
-        self.bytes = 0;
+        self.device = .{ .gpa = gpa, .backend = backend };
         self.window = post.window;
-        errdefer self.releaseAll();
+        errdefer self.device.releaseAll();
 
         self.books = try gpa.alloc(f32, bookOffset(books));
         errdefer gpa.free(self.books);
@@ -143,14 +126,14 @@ pub const Decoder = struct {
                 for (0..latent) |r| @memcpy(w[r * inner + c * codec.codebook_dim ..][0..codec.codebook_dim], p.w[r * codec.codebook_dim ..][0..codec.codebook_dim]);
                 for (bias, p.b.?) |*a, v| a.* += v;
             }
-            self.project = try self.linear(w, bias, latent, inner);
+            self.project = try self.device.linear(w, bias, latent, inner);
         }
 
         self.layers = try gpa.alloc(Layer, post.layers.len);
         errdefer gpa.free(self.layers);
         for (self.layers, post.layers) |*out, l| out.* = .{
-            .attn_norm = try self.upload(l.attn_norm),
-            .ffn_norm = try self.upload(l.ffn_norm),
+            .attn_norm = try self.device.upload(l.attn_norm),
+            .ffn_norm = try self.device.upload(l.ffn_norm),
             .q = try self.plain(l.q),
             .k = try self.plain(l.k),
             .v = try self.plain(l.v),
@@ -158,18 +141,18 @@ pub const Decoder = struct {
             .gate = try self.plain(l.gate),
             .up = try self.plain(l.up),
             .down = try self.plain(l.down),
-            .attn_scale = try self.upload(l.attn_scale),
-            .ffn_scale = try self.upload(l.ffn_scale),
+            .attn_scale = try self.device.upload(l.attn_scale),
+            .ffn_scale = try self.device.upload(l.ffn_scale),
         };
-        self.norm = try self.upload(post.norm);
+        self.norm = try self.device.upload(post.norm);
         for (&self.upsample, runtime.upsample) |*u, s| u.* = .{
             .trans = try self.transposed(s.trans),
             .next = .{
-                .dw = try self.upload(s.next.dw),
-                .dw_b = try self.upload(s.next.dw_b),
-                .ln_w = try self.upload(s.next.ln_w),
-                .ln_b = try self.upload(s.next.ln_b),
-                .gamma = try self.upload(s.next.gamma),
+                .dw = try self.device.upload(s.next.dw),
+                .dw_b = try self.device.upload(s.next.dw_b),
+                .ln_w = try self.device.upload(s.next.ln_w),
+                .ln_b = try self.device.upload(s.next.ln_b),
+                .gamma = try self.device.upload(s.next.gamma),
                 .pw1 = try self.plain(s.next.pw1),
                 .pw2 = try self.plain(s.next.pw2),
             },
@@ -186,9 +169,9 @@ pub const Decoder = struct {
             };
         }
         self.act_out = try self.snake(runtime.act_out);
-        self.out_w = try self.upload(runtime.conv_out.w);
-        self.out_b = try self.upload(runtime.conv_out.b);
-        self.rope = try self.floats(max_positions * codec.head_dim);
+        self.out_w = try self.device.upload(runtime.conv_out.w);
+        self.out_b = try self.device.upload(runtime.conv_out.b);
+        self.rope = try self.device.floats(max_positions * codec.head_dim);
         ropeTable(self.rope.floats(), max_positions, codec.head_dim, rope_base);
 
         // Scratch: every stage's rows at `max_frames`, padded for the tile.
@@ -221,119 +204,44 @@ pub const Decoder = struct {
         }
         const last = self.blocks[3].trans.out;
         joined = @max(joined, (rows + out_kernel - 1) * last);
-        self.picked = try self.floats(tile(n) * self.project.matrix.columns);
-        for (&self.act) |*a| a.* = try self.floats(act);
-        self.gathered = try self.floats(gathered);
-        self.joined = try self.floats(joined);
+        self.picked = try self.device.floats(tile(n) * self.project.matrix.columns);
+        for (&self.act) |*a| a.* = try self.device.floats(act);
+        self.device.gathered = try self.device.floats(gathered);
+        self.device.joined = try self.device.floats(joined);
         const t = tile(n);
         const intermediate = post.layers[0].gate.out;
-        self.th = try self.floats(t * latent);
-        self.tq = try self.floats(t * width);
-        self.tk = try self.floats(t * width);
-        self.tv = try self.floats(t * width);
-        self.tatt = try self.floats(t * width);
-        self.to = try self.floats(t * latent);
-        self.tgate = try self.floats(t * intermediate);
-        self.tup = try self.floats(t * intermediate);
-        self.jk = try self.floats((self.window - 1 + n) * width);
-        self.jv = try self.floats((self.window - 1 + n) * width);
-        self.samples = try self.floats(n * codec.samples_per_frame);
+        self.th = try self.device.floats(t * latent);
+        self.tq = try self.device.floats(t * width);
+        self.tk = try self.device.floats(t * width);
+        self.tv = try self.device.floats(t * width);
+        self.tatt = try self.device.floats(t * width);
+        self.to = try self.device.floats(t * latent);
+        self.tgate = try self.device.floats(t * intermediate);
+        self.tup = try self.device.floats(t * intermediate);
+        self.jk = try self.device.floats((self.window - 1 + n) * width);
+        self.jv = try self.device.floats((self.window - 1 + n) * width);
+        self.samples = try self.device.floats(n * codec.samples_per_frame);
         return self;
     }
 
     pub fn deinit(self: *Decoder) void {
-        self.releaseAll();
-        self.gpa.free(self.layers);
-        self.gpa.free(self.books);
+        self.device.releaseAll();
+        self.device.gpa.free(self.layers);
+        self.device.gpa.free(self.books);
         self.* = undefined;
     }
 
-    fn releaseAll(self: *Decoder) void {
-        for (self.buffers.items) |b| self.backend.release(b) catch {};
-        self.buffers.deinit(self.gpa);
-    }
-
-    fn floats(self: *Decoder, count: usize) !Buffer {
-        try self.buffers.ensureUnusedCapacity(self.gpa, 1);
-        const b = try self.backend.create(count * 4);
-        self.buffers.appendAssumeCapacity(b);
-        self.bytes += count * 4;
-        return b;
-    }
-    fn upload(self: *Decoder, values: []const f32) !Buffer {
-        const b = try self.floats(values.len);
-        @memcpy(b.floats()[0..values.len], values);
-        return b;
-    }
-    /// `w` is `[rows][columns]`, copied with the columns padded to 64 (the
-    /// buffer is created zeroed).
-    fn linear(self: *Decoder, w: []const f32, bias: ?[]const f32, rows: usize, columns: usize) !Mat {
-        const stride = padded(columns);
-        const b = try self.floats(rows * stride);
-        const dst = b.floats();
-        for (0..rows) |r| @memcpy(dst[r * stride ..][0..columns], w[r * columns ..][0..columns]);
-        return .{
-            .buffer = b,
-            .matrix = .{ .encoding = 0, .rows = rows, .columns = stride, .bytes = std.mem.sliceAsBytes(dst[0 .. rows * stride]) },
-            .bias = if (bias) |v| try self.upload(v) else null,
-        };
-    }
     fn plain(self: *Decoder, l: q3.Linear) !Mat {
-        return self.linear(l.w, l.b, l.out, l.in);
+        return self.device.linear(l.w, l.b, l.out, l.in);
     }
     fn causal(self: *Decoder, c: q3.CausalConv) !Conv {
-        return .{ .mat = try self.linear(c.w, c.b, c.out, c.kernel * c.in), .in = c.in, .taps = c.kernel, .dilation = c.dilation };
+        return .{ .mat = try self.device.linear(c.w, c.b, c.out, c.kernel * c.in), .in = c.in, .taps = c.kernel, .dilation = c.dilation };
     }
     fn transposed(self: *Decoder, t: q3.TransConv) !Trans {
-        return .{ .mat = try self.linear(t.w, t.b, t.stride * t.out, t.taps * t.in), .in = t.in, .out = t.out, .stride = t.stride, .taps = t.taps };
+        return .{ .mat = try self.device.linear(t.w, t.b, t.stride * t.out, t.taps * t.in), .in = t.in, .out = t.out, .stride = t.stride, .taps = t.taps };
     }
     fn snake(self: *Decoder, s: q3.SnakeBeta) !Snake {
-        return .{ .scale = try self.upload(s.scale), .inv = try self.upload(s.inv) };
-    }
-
-    // ---- recording helpers --------------------------------------------
-
-    /// `output = m · input (+ bias)` over `rows` rows of `in_stride`.
-    fn mm(self: *Decoder, m: Mat, input: Buffer, in_stride: usize, output: Buffer, rows: usize) !void {
-        const b = self.backend;
-        try b.matmulTile(m.buffer, m.matrix, input, in_stride, output, m.matrix.rows, rows);
-        if (m.bias) |bias| try b.addBiasRows(output, bias, m.matrix.rows, rows, m.matrix.rows);
-    }
-
-    /// `joined = history ‖ x` (`history` has `history_rows` rows of `w`).
-    fn join(self: *Decoder, history: ?Buffer, history_rows: usize, x: Buffer, rows: usize, w: usize) !void {
-        const b = self.backend;
-        if (history_rows > 0) try b.copy(self.joined, history.?, history_rows * w);
-        try b.copy(self.joined.slice(history_rows * w * 4, rows * w * 4), x, rows * w);
-    }
-    /// `history = the last rows of joined` after a `join` of `rows` new rows.
-    fn keep(self: *Decoder, history: ?Buffer, history_rows: usize, rows: usize, w: usize) !void {
-        if (history_rows > 0) try self.backend.copy(history.?, self.joined.slice(rows * w * 4, history_rows * w * 4), history_rows * w);
-    }
-
-    /// A causal convolution of `rows` rows of `x` into `y` through `history`.
-    fn convolve(self: *Decoder, conv: Conv, history: ?Buffer, x: Buffer, rows: usize, y: Buffer) !void {
-        const h = (conv.taps - 1) * conv.dilation;
-        const columns = conv.mat.matrix.columns;
-        if (h == 0 and columns == conv.in) return self.mm(conv.mat, x, conv.in, y, rows);
-        var source = x;
-        if (h > 0) {
-            try self.join(history, h, x, rows, conv.in);
-            source = self.joined;
-        }
-        try self.backend.ttsGather(source, self.gathered, rows, conv.in, conv.taps, columns, 0, @intCast(conv.dilation));
-        try self.mm(conv.mat, self.gathered, columns, y, rows);
-        try self.keep(history, h, rows, conv.in);
-    }
-
-    /// A transposed convolution of `rows` input rows into `rows · stride` rows of `y`.
-    fn transpose(self: *Decoder, t: Trans, history: ?Buffer, x: Buffer, rows: usize, y: Buffer) !void {
-        const h = t.taps - 1;
-        if (h == 0 and t.mat.matrix.columns == t.in) return self.mm(t.mat, x, t.in, y, rows);
-        try self.join(history, h, x, rows, t.in);
-        try self.backend.ttsGather(self.joined, self.gathered, rows, t.in, t.taps, t.mat.matrix.columns, h, -1);
-        try self.mm(t.mat, self.gathered, t.mat.matrix.columns, y, rows);
-        try self.keep(history, h, rows, t.in);
+        return .{ .scale = try self.device.upload(s.scale), .inv = try self.device.upload(s.inv) };
     }
 };
 
@@ -357,7 +265,7 @@ pub const Stream = struct {
     conv_out: Buffer,
 
     pub fn init(decoder: *Decoder) !Stream {
-        const gpa = decoder.gpa;
+        const gpa = decoder.device.gpa;
         const layers = decoder.layers.len;
         const cache = (decoder.window - 1) * width;
         var self: Stream = undefined;
@@ -370,8 +278,8 @@ pub const Stream = struct {
             for (blk.units) |u| total += (u.conv1.taps - 1) * u.conv1.dilation * blk.trans.out;
         }
         total += (out_kernel - 1) * decoder.blocks[3].trans.out;
-        self.state = try decoder.backend.create(total * 4);
-        errdefer decoder.backend.release(self.state) catch {};
+        self.state = try decoder.device.backend.create(total * 4);
+        errdefer decoder.device.backend.release(self.state) catch {};
         self.keys = try gpa.alloc(Buffer, layers);
         errdefer gpa.free(self.keys);
         self.values = try gpa.alloc(Buffer, layers);
@@ -403,9 +311,9 @@ pub const Stream = struct {
     }
 
     pub fn deinit(self: *Stream) void {
-        self.decoder.backend.release(self.state) catch {};
-        self.decoder.gpa.free(self.keys);
-        self.decoder.gpa.free(self.values);
+        self.decoder.device.backend.release(self.state) catch {};
+        self.decoder.device.gpa.free(self.keys);
+        self.decoder.device.gpa.free(self.values);
         self.* = undefined;
     }
 
@@ -442,7 +350,7 @@ pub const Stream = struct {
     /// and begins again.
     fn see(self: *Stream, observer: ?codec.Observer, stage: codec.Stage, buffer: Buffer, count: usize) !void {
         const o = observer orelse return;
-        const b = self.decoder.backend;
+        const b = self.decoder.device.backend;
         try b.commit();
         o.record(o.context, stage, buffer.floats()[0..count]);
         try b.begin();
@@ -450,7 +358,7 @@ pub const Stream = struct {
 
     fn piece(self: *Stream, codes: []const Frame, out: []f32, observer: ?codec.Observer) !void {
         const d = self.decoder;
-        const b = d.backend;
+        const b = d.device.backend;
         const n = codes.len;
         // The lookup on the host, into the side-by-side matrix's input row.
         const stride = d.project.matrix.columns;
@@ -463,7 +371,7 @@ pub const Stream = struct {
         errdefer b.discard();
 
         const a = d.act;
-        try d.mm(d.project, d.picked, stride, a[0], n);
+        try d.device.mm(d.project, d.picked, stride, a[0], n);
         try self.see(observer, .quantized, a[0], n * latent);
         try self.transformer(a[0], n, a[1]);
         try self.see(observer, .transformer, a[1], n * latent);
@@ -473,13 +381,13 @@ pub const Stream = struct {
         var spare = a[0];
         var rows = n;
         for (d.upsample, self.up_trans, self.dw, [2]codec.Stage{ .upsample_0, .upsample_1 }) |u, history, dw, label| {
-            try d.transpose(u.trans, history, x, rows, spare);
+            try d.device.transpose(u.trans, history, x, rows, spare);
             rows *= u.trans.stride;
             std.mem.swap(Buffer, &x, &spare);
             try self.convNeXt(u.next, dw, x, rows);
             try self.see(observer, label, x, rows * latent);
         }
-        try d.convolve(d.conv_in, self.conv_in, x, rows, spare);
+        try d.device.convolve(d.conv_in, self.conv_in, x, rows, spare);
         std.mem.swap(Buffer, &x, &spare);
         try self.see(observer, .decoder_in, x, rows * d.conv_in.mat.matrix.rows);
 
@@ -487,24 +395,24 @@ pub const Stream = struct {
         for (d.blocks, self.trans, &self.units, [4]codec.Stage{ .block_0, .block_1, .block_2, .block_3 }) |blk, history, *units, label| {
             const channels = blk.trans.in;
             try b.ttsSnake(x, blk.act.scale, blk.act.inv, spare, rows * channels, channels);
-            try d.transpose(blk.trans, history, spare, rows, x);
+            try d.device.transpose(blk.trans, history, spare, rows, x);
             rows *= blk.trans.stride;
             const out_channels = blk.trans.out;
             const count = rows * out_channels;
             for (blk.units, units) |unit, unit_history| {
                 try b.ttsSnake(x, unit.act1.scale, unit.act1.inv, a[2], count, out_channels);
-                try d.convolve(unit.conv1, unit_history, a[2], rows, a[3]);
+                try d.device.convolve(unit.conv1, unit_history, a[2], rows, a[3]);
                 try b.ttsSnake(a[3], unit.act2.scale, unit.act2.inv, a[3], count, out_channels);
-                try d.convolve(unit.conv2, null, a[3], rows, a[2]);
+                try d.device.convolve(unit.conv2, null, a[3], rows, a[2]);
                 try b.add(x, a[2], count);
             }
             try self.see(observer, label, x, count);
         }
         const last = d.blocks[3].trans.out;
         try b.ttsSnake(x, d.act_out.scale, d.act_out.inv, spare, rows * last, last);
-        try d.join(self.conv_out, out_kernel - 1, spare, rows, last);
-        try b.ttsConvOutTanh(d.joined, d.out_w, d.out_b, d.samples, rows, last, out_kernel);
-        try d.keep(self.conv_out, out_kernel - 1, rows, last);
+        try d.device.join(self.conv_out, out_kernel - 1, spare, rows, last);
+        try b.ttsConvOutTanh(d.device.joined, d.out_w, d.out_b, d.samples, rows, last, out_kernel);
+        try d.device.keep(self.conv_out, out_kernel - 1, rows, last);
         try b.commit();
         @memcpy(out, d.samples.floats()[0..out.len]);
         if (observer) |o| o.record(o.context, .samples, out);
@@ -515,7 +423,7 @@ pub const Stream = struct {
     /// the residual stream, changed in place); its final norm into `out`.
     fn transformer(self: *Stream, x: Buffer, n: usize, out: Buffer) !void {
         const d = self.decoder;
-        const b = d.backend;
+        const b = d.device.backend;
         const norm: Backend.Norm = .{ .rows = n, .width = latent, .in_stride = latent, .out_stride = latent, .eps = rms_eps };
         const scale: f32 = @floatCast(1 / @sqrt(@as(f64, codec.head_dim)));
         const past = self.cached;
@@ -524,9 +432,9 @@ pub const Stream = struct {
         for (d.layers, self.keys, self.values) |layer, keys, values| {
             const intermediate = layer.gate.matrix.rows;
             try b.rmsNorm(x, layer.attn_norm, d.th, norm);
-            try d.mm(layer.q, d.th, latent, d.tq, n);
-            try d.mm(layer.k, d.th, latent, d.tk, n);
-            try d.mm(layer.v, d.th, latent, d.tv, n);
+            try d.device.mm(layer.q, d.th, latent, d.tq, n);
+            try d.device.mm(layer.k, d.th, latent, d.tk, n);
+            try d.device.mm(layer.v, d.th, latent, d.tv, n);
             try b.ropeRows(d.tq, d.rope, codec.heads, codec.head_dim, codec.head_dim, self.position, n, width, .adjacent);
             try b.ropeRows(d.tk, d.rope, codec.heads, codec.head_dim, codec.head_dim, self.position, n, width, .adjacent);
             if (past > 0) {
@@ -538,13 +446,13 @@ pub const Stream = struct {
             try b.ttsWindowAttention(d.tq, d.jk, d.jv, d.tatt, n, past, codec.heads, d.window, scale);
             try b.copy(keys, d.jk.slice((total - kept) * width * 4, kept * width * 4), kept * width);
             try b.copy(values, d.jv.slice((total - kept) * width * 4, kept * width * 4), kept * width);
-            try d.mm(layer.o, d.tatt, width, d.to, n);
+            try d.device.mm(layer.o, d.tatt, width, d.to, n);
             try b.ttsScaledAdd(x, layer.attn_scale, d.to, n * latent, latent);
             try b.rmsNorm(x, layer.ffn_norm, d.th, norm);
-            try d.mm(layer.gate, d.th, latent, d.tgate, n);
-            try d.mm(layer.up, d.th, latent, d.tup, n);
+            try d.device.mm(layer.gate, d.th, latent, d.tgate, n);
+            try d.device.mm(layer.up, d.th, latent, d.tup, n);
             try b.siluMul(d.tgate, d.tup, n * intermediate);
-            try d.mm(layer.down, d.tgate, intermediate, d.to, n);
+            try d.device.mm(layer.down, d.tgate, intermediate, d.to, n);
             try b.ttsScaledAdd(x, layer.ffn_scale, d.to, n * latent, latent);
         }
         self.cached = kept;
@@ -554,18 +462,18 @@ pub const Stream = struct {
     /// ConvNeXt in place over `x` (`[rows][latent]`), through `history`.
     fn convNeXt(self: *Stream, next: NeXt, history: Buffer, x: Buffer, rows: usize) !void {
         const d = self.decoder;
-        const b = d.backend;
+        const b = d.device.backend;
         const a = d.act;
         // `x` is act[0] or act[1]; the other two hold the intermediates.
         const dw = a[2];
         const wide = a[3];
-        try d.join(history, dwconv_kernel - 1, x, rows, latent);
-        try b.ttsDepthwise(d.joined, next.dw, next.dw_b, dw, rows, latent, dwconv_kernel);
-        try d.keep(history, dwconv_kernel - 1, rows, latent);
+        try d.device.join(history, dwconv_kernel - 1, x, rows, latent);
+        try b.ttsDepthwise(d.device.joined, next.dw, next.dw_b, dw, rows, latent, dwconv_kernel);
+        try d.device.keep(history, dwconv_kernel - 1, rows, latent);
         try b.layerNorm(dw, next.ln_w, next.ln_b, dw, .{ .rows = rows, .width = latent, .in_stride = latent, .out_stride = latent, .eps = layer_norm_eps });
-        try d.mm(next.pw1, dw, latent, wide, rows);
+        try d.device.mm(next.pw1, dw, latent, wide, rows);
         try b.geluErf(wide, rows * next.pw1.matrix.rows);
-        try d.mm(next.pw2, wide, next.pw1.matrix.rows, dw, rows);
+        try d.device.mm(next.pw2, wide, next.pw1.matrix.rows, dw, rows);
         try b.ttsScaledAdd(x, next.gamma, dw, rows * latent, latent);
     }
 };

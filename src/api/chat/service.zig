@@ -22,6 +22,7 @@ const completer_mod = @import("../../completer.zig");
 const Pipe = @import("../pipe.zig").Pipe;
 const wire = @import("wire.zig");
 const language_mod = @import("model.zig");
+const slot_mod = @import("../slot.zig");
 const web = @import("../../web/root.zig");
 const stash_mod = @import("stash.zig");
 
@@ -63,7 +64,7 @@ pub const Service = struct {
 
     /// Opens `name` on the worker before the first request.
     pub fn preload(self: *Service, io: std.Io, name: []const u8) !void {
-        var opening: Opening = .{ .language = &self.language, .name = name };
+        var opening: slot_mod.Opening(language_mod.Language.ensure) = .{ .target = &self.language, .args = .{name} };
         try self.executor.submit(io, &opening.item);
         // The queue is empty at start: the item starts at once.
         try self.executor.wait(io, &opening.item, std.Io.Clock.Timestamp.fromNow(io, .{ .raw = .fromSeconds(3600), .clock = .awake }));
@@ -905,21 +906,6 @@ fn usageOf(ran: language_mod.Language.Ran) wire.Usage {
         .reasoning = reply.outcome.reasoning_tokens,
     };
 }
-
-const Opening = struct {
-    item: gpu.Item = .{ .run = run },
-    language: *language_mod.Language,
-    name: []const u8,
-    failed: ?anyerror = null,
-
-    fn run(item: *gpu.Item, io: std.Io) gpu.Item.After {
-        const self: *Opening = @alignCast(@fieldParentPtr("item", item));
-        self.language.ensure(io, self.name) catch |err| {
-            self.failed = err;
-        };
-        return .done;
-    }
-};
 
 fn respond(arena: std.mem.Allocator, io: std.Io, job: *const Job) !http.Response {
     const call_ids = try arena.alloc([]const u8, job.collected.calls.items.len);

@@ -1,23 +1,22 @@
-//! Embedding requests share GPU passes. Jobs wait here in arrival order;
-//! one executor item runs one pass at a time: it opens the oldest job's
-//! model, tokenizes each job the first time a pass reaches it, then packs
-//! inputs of that model's jobs, in order, while their rows fit `max_rows`
-//! (the first input always goes, so a longer one runs alone). A job whose
-//! inputs do not all fit continues in the next pass, ahead of later jobs.
-//! One pass per run keeps the item short: a generation's steps and other
-//! models' jobs interleave with a large request. Packed inputs do not affect
-//! each other, so batching changes timing, never vectors.
+//! Embedding requests share GPU passes, through the shared queue
+//! (`../batch.zig`): a pass opens the oldest job's model, tokenizes each job
+//! the first time a pass reaches it, then packs inputs of that model's jobs,
+//! in order, while their rows fit `pass_rows` (the first input always goes,
+//! so a longer one runs alone). A job whose inputs do not all fit continues
+//! in the next pass, ahead of later jobs, and is `started` from then on. One
+//! pass per run keeps the item short: a generation's steps and other models'
+//! jobs interleave with a large request. Packed inputs do not affect each
+//! other, so batching changes timing, never vectors.
 const std = @import("std");
 const inference = @import("inference");
+const batch = @import("../batch.zig");
 const errors = @import("../errors.zig");
-const gpu = @import("../gpu.zig");
 const pool_mod = @import("pool.zig");
+const timing = @import("../../timing.zig");
 
 const embed = inference.embed;
 const ApiError = errors.ApiError;
 
-/// Jobs one pass may take.
-pub const max_jobs = 64;
 /// Rows one pass holds: short enough to run between a generation's steps.
 pub const pass_rows = 2048;
 
@@ -35,7 +34,7 @@ pub const Job = struct {
     image_tokens: u32 = embed.default_image_tokens,
 
     next: ?*Job = null,
-    state: State = .idle,
+    state: batch.State = .idle,
     done: std.Io.Event = .unset,
     /// A pass embedded some of its inputs: it is waited for whatever the
     /// deadline.
@@ -51,7 +50,6 @@ pub const Job = struct {
     timings: Timings = .{},
     outcome: Outcome = .pending,
 
-    pub const State = enum { idle, pending, taken, finished, abandoned };
     pub const Outcome = union(enum) { pending, done, failed: ApiError };
     pub const Timings = struct {
         /// Opening the model, when one of its passes opened it.
@@ -65,248 +63,79 @@ pub const Job = struct {
     };
 };
 
-pub const Stats = struct { waiting: usize, passes: u64, jobs: u64 };
-
-pub const Batcher = struct {
-    executor: *gpu.Executor,
-    pool: *pool_mod.Pool,
-    mutex: std.Io.Mutex = .init,
-    head: ?*Job = null,
-    tail: ?*Job = null,
-    waiting: usize = 0,
-    max_waiting: usize,
-    scheduled: bool = false,
-    item: gpu.Item = .{ .run = drain, .short = true },
-    /// The worker's lists for one pass; reset per pass.
-    scratch: std.heap.ArenaAllocator,
-    max_rows: usize = pass_rows,
-    passes: u64 = 0,
-    jobs: u64 = 0,
-
-    pub fn init(gpa: std.mem.Allocator, executor: *gpu.Executor, pool: *pool_mod.Pool, max_waiting: usize) Batcher {
-        return .{ .executor = executor, .pool = pool, .max_waiting = max_waiting, .scratch = .init(gpa) };
+pub const Batcher = batch.Batcher(Job, pool_mod.Pool, struct {
+    pub fn same(a: *const Job, b: *const Job) bool {
+        return std.mem.eql(u8, a.path, b.path);
     }
 
-    /// After the executor's worker stopped.
-    pub fn deinit(self: *Batcher) void {
-        self.scratch.deinit();
-    }
+    pub const run = pass;
+});
 
-    /// Queues `job` and makes sure a drain is scheduled. `Busy` when
-    /// `max_waiting` jobs wait already.
-    pub fn submit(self: *Batcher, io: std.Io, job: *Job) error{ Busy, Stopped }!void {
-        self.mutex.lockUncancelable(io);
-        defer self.mutex.unlock(io);
-        std.debug.assert(job.state == .idle); // checked: a job is submitted once, by its handler
-        if (self.waiting >= self.max_waiting) return error.Busy;
-        self.link(job);
-        if (!self.scheduled) {
-            self.executor.submit(io, &self.item) catch |err| {
-                self.unlink(job);
-                job.state = .idle;
-                return err;
+const Member = struct { job: *Job, count: usize };
+
+/// Runs one pass over `taken` (one model's jobs, in order); the jobs it does
+/// not finish stay for the next.
+fn pass(self: *Batcher, io: std.Io, taken: []const *Job) void {
+    const scratch = self.scratch.allocator();
+    const first = taken[0];
+    const acquired = self.pool.acquire(io, first.path, first.mmproj, first.name) catch |err| {
+        // A generation holds the memory this model needs: wait for it.
+        if (err == error.Pinned) return;
+        for (taken) |job| self.finish(io, job, .{ .failed = openFailure(job.arena, job.name, err) });
+        return;
+    };
+    var rows: std.ArrayList(embed.Prepared) = .empty;
+    var vectors: std.ArrayList([]f32) = .empty;
+    var members: std.ArrayList(Member) = .empty;
+    var used: usize = 0;
+    for (taken) |job| {
+        {
+            var clock = std.Io.Clock.awake.now(io);
+            prepare(acquired.embedder, job, used, pass_rows) catch |err| {
+                // An input over the limit set its own outcome, with the count.
+                self.finish(io, job, if (job.outcome == .failed) job.outcome else .{ .failed = failure(job.arena, job.name, err) });
+                continue;
             };
-            self.scheduled = true;
+            job.timings.tokenize_ns += timing.lap(io, &clock);
         }
-    }
-
-    /// Waits for `job` up to `deadline`; `Timeout` only when no pass has
-    /// started it (it is unlinked). A started job is waited for whatever
-    /// the deadline.
-    pub fn wait(self: *Batcher, io: std.Io, job: *Job, deadline: std.Io.Clock.Timestamp) error{Timeout}!void {
-        while (true) {
-            job.done.waitTimeout(io, .{ .deadline = deadline }) catch {
-                if (std.Io.Clock.Timestamp.now(io, deadline.clock).compare(.lt, deadline) and !job.done.isSet()) continue;
-            };
-            if (job.done.isSet()) return;
-            self.mutex.lockUncancelable(io);
-            if (job.state == .pending and !job.started) {
-                self.unlink(job);
-                job.state = .abandoned;
-                self.mutex.unlock(io);
-                return error.Timeout;
-            }
-            self.mutex.unlock(io);
-            job.done.waitUncancelable(io);
+        const prepared = job.prepared.?[0..job.ready]; // checked: `prepare` above succeeded, which sets it
+        // A first image built the vision encoder: the budget counts it.
+        self.pool.account(io) catch |err| {
+            if (err == error.Pinned) break;
+            // The pool closed the model: this job fails, the rest reopen it next pass.
+            self.finish(io, job, .{ .failed = openFailure(job.arena, job.name, err) });
             return;
-        }
-    }
-
-    pub fn stats(self: *Batcher, io: std.Io) Stats {
-        self.mutex.lockUncancelable(io);
-        defer self.mutex.unlock(io);
-        return .{ .waiting = self.waiting, .passes = self.passes, .jobs = self.jobs };
-    }
-
-    fn link(self: *Batcher, job: *Job) void {
-        job.next = null;
-        job.state = .pending;
-        job.done = .unset;
-        if (self.tail) |t| t.next = job else self.head = job;
-        self.tail = job;
-        self.waiting += 1;
-    }
-
-    fn unlink(self: *Batcher, job: *Job) void {
-        var previous: ?*Job = null;
-        var cursor = self.head;
-        while (cursor) |c| : ({
-            previous = c;
-            cursor = c.next;
-        }) {
-            if (c != job) continue;
-            if (previous) |p| p.next = c.next else self.head = c.next;
-            if (self.tail == c) self.tail = previous;
-            self.waiting -= 1;
-            return;
-        }
-        unreachable; // checked: `unlink` is called under the mutex for a job that is still pending, so in the list
-    }
-
-    /// The executor item: one pass, then again while jobs wait.
-    fn drain(item: *gpu.Item, io: std.Io) gpu.Item.After {
-        const self: *Batcher = @fieldParentPtr("item", item);
-        var taken: [max_jobs]*Job = undefined;
-        var count: usize = 0;
-        self.mutex.lockUncancelable(io);
-        const first = self.head orelse {
-            self.scheduled = false;
-            self.mutex.unlock(io);
-            return .done;
         };
-        var cursor: ?*Job = first;
-        while (cursor) |c| {
-            cursor = c.next;
-            if (count == max_jobs) break;
-            if (!std.mem.eql(u8, c.path, first.path)) continue;
-            self.unlink(c);
-            c.state = .taken;
-            taken[count] = c;
-            count += 1;
-        }
-        self.mutex.unlock(io);
-
-        const rest = self.pass(io, taken[0..count]);
-
-        self.mutex.lockUncancelable(io);
-        defer self.mutex.unlock(io);
-        // Unfinished jobs go back in front, in their order.
-        var i = rest.len;
-        while (i > 0) {
-            i -= 1;
-            const job = rest[i];
-            job.state = .pending;
-            job.next = self.head;
-            self.head = job;
-            if (self.tail == null) self.tail = job;
-            self.waiting += 1;
-        }
-        if (self.head != null) return .again;
-        self.scheduled = false;
-        return .done;
+        const n = fit(prepared, job.cursor, used, pass_rows);
+        if (n == 0) break;
+        for (prepared[job.cursor..][0..n]) |p| used += batchRows(p);
+        rows.appendSlice(scratch, prepared[job.cursor..][0..n]) catch return self.failAll(io);
+        vectors.appendSlice(scratch, job.vectors[job.cursor..][0..n]) catch return self.failAll(io);
+        members.append(scratch, .{ .job = job, .count = n }) catch return self.failAll(io);
+        if (acquired.load_ns > 0) job.timings.load_ns = acquired.load_ns;
+        // The pass is full: this job continues next time, first.
+        if (job.cursor + n < job.inputs.len) break;
     }
-
-    /// Runs one pass over `taken` (one model's jobs, in order) and returns
-    /// the jobs it did not finish, in `scratch`.
-    fn pass(self: *Batcher, io: std.Io, taken: []const *Job) []const *Job {
-        _ = self.scratch.reset(.retain_capacity);
-        const scratch = self.scratch.allocator();
-        const first = taken[0];
-        const acquired = self.pool.acquire(io, first.path, first.mmproj, first.name) catch |err| {
-            // A generation holds the memory this model needs: wait for it.
-            if (err == error.Pinned) return taken;
-            for (taken) |job| self.finish(io, job, .{ .failed = openFailure(job.arena, job.name, err) });
-            return &.{};
-        };
-        var rows: std.ArrayList(embed.Prepared) = .empty;
-        var vectors: std.ArrayList([]f32) = .empty;
-        var members: std.ArrayList(Member) = .empty;
-        var used: usize = 0;
-        var rest: std.ArrayList(*Job) = .empty;
-        for (taken, 0..) |job, i| {
-            {
-                var clock = std.Io.Clock.awake.now(io);
-                prepare(acquired.embedder, job, used, self.max_rows) catch |err| {
-                    // An input over the limit set its own outcome, with the count.
-                    self.finish(io, job, if (job.outcome == .failed) job.outcome else .{ .failed = failure(job.arena, job.name, err) });
-                    continue;
-                };
-                job.timings.tokenize_ns += lap(io, &clock);
-            }
-            const prepared = job.prepared.?[0..job.ready]; // checked: `prepare` above succeeded, which sets it
-            // A first image built the vision encoder: the budget counts it.
-            self.pool.account(io) catch |err| {
-                if (err == error.Pinned) {
-                    rest.appendSlice(scratch, taken[i..]) catch return self.failAll(io, taken);
-                    break;
-                }
-                // The pool closed the model: this job fails, the rest reopen it next pass.
-                self.finish(io, job, .{ .failed = openFailure(job.arena, job.name, err) });
-                var again: std.ArrayList(*Job) = .empty;
-                for (taken) |t| if (t.state != .finished) again.append(scratch, t) catch return self.failAll(io, taken);
-                return again.items;
-            };
-            const n = fit(prepared, job.cursor, used, self.max_rows);
-            if (n == 0) {
-                rest.appendSlice(scratch, taken[i..]) catch return self.failAll(io, taken);
-                break;
-            }
-            for (prepared[job.cursor..][0..n]) |p| used += batchRows(p);
-            rows.appendSlice(scratch, prepared[job.cursor..][0..n]) catch return self.failAll(io, taken);
-            vectors.appendSlice(scratch, job.vectors[job.cursor..][0..n]) catch return self.failAll(io, taken);
-            members.append(scratch, .{ .job = job, .count = n }) catch return self.failAll(io, taken);
-            if (acquired.load_ns > 0) job.timings.load_ns = acquired.load_ns;
-            if (job.cursor + n < job.inputs.len) {
-                // The pass is full: this job continues next time, first.
-                rest.appendSlice(scratch, taken[i..]) catch return self.failAll(io, taken);
-                break;
-            }
-        }
-        if (members.items.len == 0) return rest.items;
-        var clock = std.Io.Clock.awake.now(io);
-        acquired.embedder.embedBatch(rows.items, vectors.items) catch |err| {
-            for (members.items) |m| self.finish(io, m.job, .{ .failed = failure(m.job.arena, m.job.name, err) });
-            // A failed member that was also left over must not be requeued.
-            var kept: std.ArrayList(*Job) = .empty;
-            for (rest.items) |job| if (job.state != .finished) kept.append(scratch, job) catch return self.failAll(io, rest.items);
-            return kept.items;
-        };
-        const embed_ns = lap(io, &clock);
-        self.mutex.lockUncancelable(io);
-        self.passes += 1;
-        self.mutex.unlock(io);
-        for (members.items) |m| {
-            const job = m.job;
-            job.started = true;
-            job.cursor += m.count;
-            job.timings.embed_ns += embed_ns;
-            job.timings.passes += 1;
-            job.timings.shared = @max(job.timings.shared, members.items.len);
-            if (job.cursor == job.inputs.len) {
-                self.mutex.lockUncancelable(io);
-                self.jobs += 1;
-                self.mutex.unlock(io);
-                self.finish(io, job, .done);
-            }
-        }
-        return rest.items;
+    if (members.items.len == 0) return;
+    var clock = std.Io.Clock.awake.now(io);
+    acquired.embedder.embedBatch(rows.items, vectors.items) catch |err| {
+        for (members.items) |m| self.finish(io, m.job, .{ .failed = failure(m.job.arena, m.job.name, err) });
+        return;
+    };
+    const embed_ns = timing.lap(io, &clock);
+    var answered: usize = 0;
+    for (members.items) |m| {
+        const job = m.job;
+        job.started = true;
+        job.cursor += m.count;
+        job.timings.embed_ns += embed_ns;
+        job.timings.passes += 1;
+        job.timings.shared = @max(job.timings.shared, members.items.len);
+        if (job.cursor == job.inputs.len) answered += 1;
     }
-
-    const Member = struct { job: *Job, count: usize };
-
-    fn failAll(self: *Batcher, io: std.Io, taken: []const *Job) []const *Job {
-        for (taken) |job| if (job.state != .finished) self.finish(io, job, .{ .failed = .init(.internal_server_error, "internal", "out of memory") });
-        return &.{};
-    }
-
-    fn finish(self: *Batcher, io: std.Io, job: *Job, outcome: Job.Outcome) void {
-        job.outcome = outcome;
-        self.mutex.lockUncancelable(io);
-        job.state = .finished;
-        self.mutex.unlock(io);
-        job.done.set(io);
-    }
-};
+    self.record(io, answered);
+    for (members.items) |m| if (m.job.cursor == m.job.inputs.len) self.finish(io, m.job, .done);
+}
 
 /// Tokenizes the inputs of `job` a pass holding `used` rows can still take
 /// (at least one), in its arena, encoding their images and clips; the first
@@ -367,13 +196,6 @@ pub fn fit(prepared: []const embed.Prepared, start: usize, used: usize, max_rows
         n += 1;
     }
     return n;
-}
-
-fn lap(io: std.Io, clock: *std.Io.Timestamp) u64 {
-    const now = std.Io.Clock.awake.now(io);
-    const elapsed: u64 = @intCast(@max(0, clock.durationTo(now).toNanoseconds())); // checked: clamped non-negative; one step, below 584 years
-    clock.* = now;
-    return elapsed;
 }
 
 fn clipTooLong(arena: std.mem.Allocator, index: usize) ApiError {

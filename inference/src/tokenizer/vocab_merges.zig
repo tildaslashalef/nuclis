@@ -7,6 +7,7 @@
 const std = @import("std");
 const vocabulary = @import("vocabulary.zig");
 const hf_json = @import("hf_json.zig");
+const table = @import("table.zig");
 
 pub const Limits = hf_json.Limits;
 pub const Error = hf_json.Error || error{ InvalidVocabJson, InvalidTokenizerConfig };
@@ -55,69 +56,18 @@ pub fn load(gpa: std.mem.Allocator, vocab_json: []const u8, merges_txt: []const 
     if (words.map.count() == 0) return error.InvalidVocabJson;
     if (added.count() > limits.added) return error.LimitExceeded;
 
-    var count: usize = 0;
-    for (words.map.values()) |id| count = @max(count, @as(usize, id) + 1);
-    for (added.keys()) |key| {
+    const list = try s.alloc(table.Added, added.count());
+    for (list, added.keys(), added.values()) |*out, key, a| {
         const id = std.fmt.parseInt(u32, key, 10) catch return error.InvalidTokenizerConfig;
-        count = @max(count, @as(usize, id) + 1);
+        if (a.single_word or a.rstrip) return error.UnsupportedAddedToken;
+        out.* = .{ .id = id, .content = a.content, .special = a.special, .lstrip = a.lstrip, .normalized = a.normalized };
     }
-    if (count > limits.tokens) return error.LimitExceeded;
 
     var arena: std.heap.ArenaAllocator = .init(gpa);
     errdefer arena.deinit();
     const alloc = arena.allocator();
     var remaining = limits.text_bytes;
-    const tokens = try alloc.alloc(vocabulary.Token, count);
-    const filled = try s.alloc(bool, count);
-    @memset(filled, false);
-    var ids: std.StringHashMapUnmanaged(u32) = .empty;
-    try ids.ensureTotalCapacity(alloc, @intCast(count));
-    var it = words.map.iterator();
-    while (it.next()) |entry| {
-        const id = entry.value_ptr.*;
-        const text = entry.key_ptr.*;
-        if (filled[id] or text.len == 0 or !std.unicode.utf8ValidateSlice(text)) return error.InvalidToken;
-        const owned = try copyText(alloc, text, &remaining);
-        const slot = ids.getOrPutAssumeCapacity(owned);
-        if (slot.found_existing) return error.DuplicateToken;
-        slot.value_ptr.* = id;
-        tokens[id] = .{ .text = owned, .kind = .normal };
-        filled[id] = true;
-    }
-
-    var lstrip = try std.bit_set.Dynamic.initEmpty(alloc, count);
-    var raw: std.ArrayList(u32) = .empty;
-    var normalized: std.ArrayList(u32) = .empty;
-    var added_it = added.iterator();
-    while (added_it.next()) |entry| {
-        const id = std.fmt.parseInt(u32, entry.key_ptr.*, 10) catch unreachable;
-        const a = entry.value_ptr.*;
-        if (a.single_word or a.rstrip) return error.UnsupportedAddedToken;
-        if (a.content.len == 0 or a.content.len > limits.added_bytes or !std.unicode.utf8ValidateSlice(a.content))
-            return error.InvalidAddedToken;
-        const kind: vocabulary.TokenType = if (a.special) .control else .user_defined;
-        if (filled[id]) {
-            // As in hf_json.zig: an added token over a vocabulary entry must
-            // spell it exactly (GPT-2's `<|endoftext|>` is in both files).
-            if (!std.mem.eql(u8, tokens[id].text, a.content) or tokens[id].kind != .normal) return error.InvalidAddedToken;
-            tokens[id].kind = kind;
-        } else {
-            const owned = try copyText(alloc, a.content, &remaining);
-            const slot = ids.getOrPutAssumeCapacity(owned);
-            if (slot.found_existing) return error.DuplicateToken;
-            slot.value_ptr.* = id;
-            tokens[id] = .{ .text = owned, .kind = kind };
-            filled[id] = true;
-        }
-        if (a.lstrip) lstrip.set(id);
-        try (if (a.normalized) &normalized else &raw).append(alloc, id);
-    }
-    for (filled) |f| if (!f) return error.InvalidToken;
-    for ([_]*std.ArrayList(u32){ &raw, &normalized }) |list| std.mem.sort(u32, list.items, tokens, struct {
-        fn longer(t: []const vocabulary.Token, a: u32, b: u32) bool {
-            return if (t[a].text.len != t[b].text.len) t[a].text.len > t[b].text.len else a < b;
-        }
-    }.longer);
+    const t = try table.build(alloc, s, words.map, list, .{ .tokens = limits.tokens, .added_bytes = limits.added_bytes }, &remaining);
 
     var ranks: std.StringHashMapUnmanaged(u32) = .empty;
     var lines = std.mem.splitScalar(u8, merges_txt, '\n');
@@ -132,7 +82,7 @@ pub fn load(gpa: std.mem.Allocator, vocab_json: []const u8, merges_txt: []const 
         const space = std.mem.indexOfScalar(u8, line, ' ') orelse return error.InvalidMerge;
         if (space == 0 or space + 1 == line.len or std.mem.indexOfScalarPos(u8, line, space + 1, ' ') != null or
             !std.unicode.utf8ValidateSlice(line)) return error.InvalidMerge;
-        const key = try copyText(alloc, line, &remaining);
+        const key = try table.copyText(alloc, line, &remaining);
         const slot = try ranks.getOrPut(alloc, key);
         if (slot.found_existing) return error.DuplicateMerge;
         slot.value_ptr.* = rank;
@@ -140,19 +90,13 @@ pub fn load(gpa: std.mem.Allocator, vocab_json: []const u8, merges_txt: []const 
     }
 
     return .{
-        .vocab = .{ .storage = arena, .tokens = tokens, .pre = "gpt2", .bos = null, .eos = null, .padding = null, .token_ids = ids, .merge_ranks = ranks },
+        .vocab = .{ .storage = arena, .tokens = t.tokens, .pre = "gpt2", .bos = null, .eos = null, .padding = null, .token_ids = t.ids, .merge_ranks = ranks },
         .shape = .cased,
-        .raw = raw.items,
-        .normalized = normalized.items,
-        .lstrip = lstrip,
+        .raw = t.raw,
+        .normalized = t.normalized,
+        .lstrip = t.lstrip,
         .nfc = true,
     };
-}
-
-fn copyText(alloc: std.mem.Allocator, text: []const u8, remaining: *usize) Error![]const u8 {
-    if (text.len > remaining.*) return error.LimitExceeded;
-    remaining.* -= text.len;
-    return alloc.dupe(u8, text);
 }
 
 // The GPT-2 alphabet spells space `Ġ` and newline `Ċ`; é (0xC3 0xA9) is `Ã©`.

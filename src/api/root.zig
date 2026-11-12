@@ -27,7 +27,7 @@ const memory = @import("memory.zig");
 const paths = @import("../paths.zig");
 const log_mod = @import("log.zig");
 const request_log = @import("request_log.zig");
-const batcher = @import("decisions/batcher.zig");
+const batch = @import("batch.zig");
 const interrupt = @import("../interrupt.zig");
 const web = @import("../web/root.zig");
 const catalog = @import("../catalog.zig");
@@ -421,7 +421,7 @@ fn webState(service: ?*web.Service, arena: std.mem.Allocator) []const u8 {
     };
 }
 
-fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, singles: Open, web_state: []const u8, budget: Memory, stats: gpu.Stats, batching: batcher.Stats, embedding_batching: embedding_batcher.Stats, speaking: speech.Stats, connections: u32, flights: []const request_log.Flight) !void {
+fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, singles: Open, web_state: []const u8, budget: Memory, stats: gpu.Stats, batching: batch.Stats, embedding_batching: batch.Stats, speaking: speech.Stats, connections: u32, flights: []const request_log.Flight) !void {
     var s: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
     try s.objectField("status");
@@ -482,7 +482,7 @@ fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.deci
     try s.objectField("waiting");
     try s.write(batching.waiting);
     try s.objectField("batches");
-    try s.write(batching.batches);
+    try s.write(batching.passes);
     try s.objectField("requests");
     try s.write(batching.jobs);
     try s.endObject();
@@ -724,6 +724,7 @@ test {
     _ = chat;
     _ = embeddings;
     _ = embedding_batcher;
+    _ = batch;
     _ = @import("embeddings/pool.zig");
     _ = @import("slot.zig");
     _ = @import("speech/wire.zig");
@@ -848,7 +849,7 @@ test "serve arguments" {
 test "health reports the queue and the open models" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, .{ .language = "qwen3.8-27b", .embedding = "embeddinggemma-2", .speech = "qwen3-tts-1.7b-customvoice" }, "off", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60, .pinned = true }, .{ .kind = .decision, .name = "laya", .bytes = 10, .in_use = true } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, .{ .waiting = 1, .passes = 4, .jobs = 2 }, .{ .waiting = 2, .speaking = true, .requests = 11 }, 3, &.{.{ .id = "019a3412-6f1e-7c2a-9b4d-0e5f6a7b8c9d", .client_id = "turn-41", .method = "POST", .path = "/v1/audio/speech", .running_ms = 812.5, .fields = &.{.{ .name = "model", .value = .{ .text = "qwen3-tts-0.6b-base" } }} }});
+    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, .{ .language = "qwen3.8-27b", .embedding = "embeddinggemma-2", .speech = "qwen3-tts-1.7b-customvoice" }, "off", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60, .pinned = true }, .{ .kind = .decision, .name = "laya", .bytes = 10, .in_use = true } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .passes = 3, .jobs = 9 }, .{ .waiting = 1, .passes = 4, .jobs = 2 }, .{ .waiting = 2, .speaking = true, .requests = 11 }, 3, &.{.{ .id = "019a3412-6f1e-7c2a-9b4d-0e5f6a7b8c9d", .client_id = "turn-41", .method = "POST", .path = "/v1/audio/speech", .running_ms = 812.5, .fields = &.{.{ .name = "model", .value = .{ .text = "qwen3-tts-0.6b-base" } }} }});
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("cpu", parsed.value.object.get("backend").?.string);

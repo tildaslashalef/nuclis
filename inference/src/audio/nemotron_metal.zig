@@ -336,7 +336,7 @@ pub const Stream = struct {
     };
 
     /// The most rows before its chunk a query sees that the cache holds.
-    const max_left = 56;
+    const max_left = encoder.Config.nemotron.left;
     const cache_rows = max_left + Backend.matmulPadded(max_rows);
 
     fn historyRows(c: encoder.Config) usize {

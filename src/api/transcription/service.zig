@@ -48,7 +48,7 @@ pub const Service = struct {
     /// Opens `name` now (a `--model` or `--pin` of `nuclis serve`) through the GPU.
     pub fn preload(self: *Service, arena: std.mem.Allocator, io: std.Io, name: []const u8, diag: *config.Diagnostic) !void {
         const located = try audio_catalog.locate(arena, io, self.root, self.registry, name, .transcription, false, diag);
-        var opening: Opening = .{ .slot = &self.slot, .directory = located.directory, .name = name, .bytes = located.bytes };
+        var opening: slot_mod.Opening(Slot.acquire) = .{ .target = &self.slot, .args = .{ located.directory, name, located.bytes } };
         try self.executor.submit(io, &opening.item);
         opening.item.done.waitUncancelable(io);
         if (opening.failed) |err| {
@@ -70,23 +70,6 @@ pub const Service = struct {
             try details.put(arena, "languages", .{ .array = try models.strings(arena, languages) });
             try details.put(arena, "options", .{ .object = try requestOptions(arena, languages) });
         }
-    }
-};
-
-const Opening = struct {
-    item: gpu.Item = .{ .run = run },
-    slot: *Slot,
-    directory: []const u8,
-    name: []const u8,
-    bytes: u64,
-    failed: ?anyerror = null,
-
-    fn run(item: *gpu.Item, io: std.Io) gpu.Item.After {
-        const self: *Opening = @alignCast(@fieldParentPtr("item", item));
-        _ = self.slot.acquire(io, self.directory, self.name, self.bytes) catch |err| {
-            self.failed = err;
-        };
-        return .done;
     }
 };
 

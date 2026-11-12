@@ -4,8 +4,10 @@
 //! (`deviceBytes`, when the model has one), against the server's memory
 //! budget (`memory.zig`) and is pinned there while a request holds it across GPU
 //! items (`hold`). Only the GPU worker opens, uses, and closes the model;
-//! other tasks only read which one is open.
+//! other tasks only read which one is open. `Opening` opens a model of any
+//! kind (a slot's or a pool's) on the worker, outside a request.
 const std = @import("std");
+const gpu = @import("gpu.zig");
 const memory = @import("memory.zig");
 
 /// `Model` is the opened thing; `open` and `close` are its constructor and
@@ -138,6 +140,35 @@ pub fn Slot(comptime Model: type, comptime kind: memory.Kind) type {
     };
 }
 
+/// An executor item that opens a model on the worker, outside any request
+/// (`nuclis serve --model`, `--pin`): it calls `open(target, io, args...)`,
+/// whose result it drops, and keeps the error in `failed`. `open` is a
+/// slot's or a pool's `acquire`, or the language model's `ensure`.
+pub fn Opening(comptime open: anytype) type {
+    const params = @typeInfo(@TypeOf(open)).@"fn".param_types;
+    return struct {
+        const Self = @This();
+
+        item: gpu.Item = .{ .run = run },
+        target: params[0].?, // checked: comptime; a generic `open` fails to compile here
+        /// The arguments after `io`; borrowed until the item ran.
+        args: @Tuple(rest: {
+            var types: [params.len - 2]type = undefined;
+            for (params[2..], &types) |p, *t| t.* = p.?; // checked: comptime, as above
+            break :rest &types;
+        }),
+        failed: ?anyerror = null,
+
+        fn run(item: *gpu.Item, io: std.Io) gpu.Item.After {
+            const self: *Self = @alignCast(@fieldParentPtr("item", item));
+            _ = @call(.auto, open, .{ self.target, io } ++ self.args) catch |err| {
+                self.failed = err;
+            };
+            return .done;
+        }
+    };
+}
+
 // ----- tests: a model that is a counter -----
 
 const Counter = struct {
@@ -212,4 +243,23 @@ test "a kept model is replaced by another of its kind when the swap fits" {
     _ = try slot.acquire(io, "/m/b", "b", 70);
     try std.testing.expect(slot.isOpen(io, "/m/b"));
     try std.testing.expectEqual(@as(u64, 70), budget.resident(io));
+}
+
+test "an opening opens through the worker and keeps the error" {
+    const io = std.testing.io;
+    var slot: Slot(Counter, .speech) = .init(std.testing.allocator, Counter.open, Counter.close, .{ .metal = false });
+    defer slot.deinit(io);
+    var executor: gpu.Executor = .init(4);
+    var worker = try io.concurrent(gpu.Executor.run, .{ &executor, io });
+    const Open = Opening(Slot(Counter, .speech).acquire);
+    var good: Open = .{ .target = &slot, .args = .{ "/m/a", "a", 1 } };
+    var bad: Open = .{ .target = &slot, .args = .{ "/broken", "x", 1 } };
+    try executor.submit(io, &good.item);
+    good.item.done.waitUncancelable(io);
+    try executor.submit(io, &bad.item);
+    bad.item.done.waitUncancelable(io);
+    executor.stop(io);
+    worker.await(io);
+    try std.testing.expectEqual(@as(?anyerror, null), good.failed);
+    try std.testing.expectEqual(@as(?anyerror, error.InvalidCheckpoint), bad.failed);
 }
