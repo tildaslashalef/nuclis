@@ -61,7 +61,7 @@ pub const Router = struct {
         const self: *Router = @ptrCast(@alignCast(context));
         var limit: ?usize = null;
         for (self.routes.items) |r| {
-            if (!std.mem.eql(u8, r.path, path)) continue;
+            if (!r.matches(path)) continue;
             if (r.max_body) |m| limit = @max(limit orelse 0, m);
         }
         return limit;

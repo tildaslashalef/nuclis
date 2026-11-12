@@ -907,7 +907,7 @@ fn runDecide(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_pat
     var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
     defer loaded.deinit();
     const name = options.model orelse loaded.config.decide.model;
-    const located = try decision_catalog.locate(arena, io, root, loaded.config.models, name, diag);
+    const located = try decision_catalog.locate(arena, io, root, loaded.config.models, name, true, diag);
     return decide.run(alloc, io, located.location(), located.identity, options, out, sty, diag);
 }
 

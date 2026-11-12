@@ -103,7 +103,6 @@ pub fn number(arena: std.mem.Allocator, x: f32) !std.json.Value {
     return .{ .number_string = try arena.print("{d}", .{x}) };
 }
 
-/// String values as a JSON array.
 /// `memory_bytes` and `memory_source`: what `name` holds against the budget
 /// while open ("open"), what it counted the last time it opened under
 /// `basis` ("measured"), else `floor`, what it counts before it opens
@@ -118,6 +117,7 @@ pub fn putMemory(arena: std.mem.Allocator, io: std.Io, details: *std.json.Object
     try details.put(arena, "memory_source", .{ .string = source });
 }
 
+/// String values as a JSON array.
 pub fn strings(arena: std.mem.Allocator, items: []const []const u8) !std.json.Array {
     var out: std.json.Array = .init(arena);
     for (items) |i| try out.append(.{ .string = i });

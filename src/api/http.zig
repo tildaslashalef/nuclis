@@ -12,6 +12,7 @@
 //! client's `x-client-request-id` echoed, and a start and an end line.
 const std = @import("std");
 const repeat = @import("../text.zig").repeat;
+const deadline = @import("deadline.zig");
 const errors = @import("errors.zig");
 const log_mod = @import("log.zig");
 const request_log = @import("request_log.zig");
@@ -32,6 +33,16 @@ pub const Limits = struct {
     /// least this large.
     max_head: usize = 16 * 1024,
     max_body: usize = 4 * 1024 * 1024,
+    /// The whole head of a request, idle keep-alive time included.
+    head_timeout_ns: i64 = 10 * std.time.ns_per_s,
+    /// Between two pieces of a body.
+    body_idle_timeout_ns: i64 = 30 * std.time.ns_per_s,
+    /// One write's wait for a client that does not read.
+    write_timeout_ns: i64 = 30 * std.time.ns_per_s,
+
+    pub fn durations(self: Limits) deadline.Guard.Durations {
+        return .{ .head_ns = self.head_timeout_ns, .body_idle_ns = self.body_idle_timeout_ns, .write_ns = self.write_timeout_ns };
+    }
 };
 
 pub const Request = struct {
@@ -92,6 +103,8 @@ pub const Response = struct {
 /// asks whether the client has gone without consuming what it may send.
 pub const Peer = struct {
     handle: std.posix.socket_t,
+    /// The connection's deadlines, when the watch guards it.
+    guard: ?*deadline.Guard = null,
 
     /// True once the client closed or reset the connection.
     pub fn gone(self: Peer) bool {
@@ -183,7 +196,14 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, in: *std.Io.Reader, out: *std.I
 
 /// One request and its response; false when the connection is done.
 fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, handler: Handler, limits: Limits, log: ?*log_mod.Log, book: ?*request_log.Book, peer: ?Peer) bool {
+    const guard = if (peer) |p| p.guard else null;
+    if (guard) |g| g.enter(.head);
     var request = server.receiveHead() catch |err| {
+        // The socket is shut down: nothing can be sent, the log says why.
+        if (guard) |g| if (g.expired.load(.acquire)) {
+            if (log) |l| l.request(io, .{ .method = null, .path = "-", .status = .request_timeout, .duration_ns = 0, .bytes_out = 0, .note = "timeout: no complete request head in time" });
+            return false;
+        };
         const refusal: ?errors.ApiError = switch (err) {
             error.HttpConnectionClosing, error.HttpRequestTruncated, error.ReadFailed => null,
             error.HttpHeadersOversize => .init(.request_header_fields_too_large, "headers_too_large", "the request line and headers exceed the limit"),
@@ -202,7 +222,8 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
         }
         return false;
     };
-    var exchange: Exchange = .{ .request = &request, .arena = arena, .io = io, .log = log, .started = std.Io.Clock.awake.now(io), .method = request.head.method };
+    if (guard) |g| g.enter(.body);
+    var exchange: Exchange = .{ .request = &request, .arena = arena, .io = io, .log = log, .started = std.Io.Clock.awake.now(io), .method = request.head.method, .guard = guard };
     // A connection that ends before the request is read never responds;
     // its record must still leave the book before the arena is reset.
     defer exchange.finish(client_closed, .init(client_closed, "client_closed", "the connection ended before the request was read"), 0);
@@ -241,6 +262,11 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
             parsed.if_none_match = arena.dupe(u8, h.value) catch return exchange.fail(.init(.internal_server_error, "internal", "out of memory"));
         };
     }
+    // Refused before any route: every later response would meet it again.
+    if (request.head.expect) |expect| if (!std.mem.eql(u8, expect, "100-continue")) {
+        request.head.expect = null;
+        return exchange.fail(.init(.expectation_failed, "bad_request", "unsupported Expect header"));
+    };
     if (request.head.transfer_compression != .identity)
         return exchange.fail(.init(.unsupported_media_type, "unsupported_encoding", "compressed request bodies are not accepted"));
     if (request.head.method.requestHasBody()) {
@@ -251,7 +277,6 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
         if (request.head.transfer_encoding == .none and request.head.content_length == null) request.head.content_length = 0;
         const body_reader = request.readerExpectContinue(&.{}) catch |err| return switch (err) {
             error.HttpExpectationFailed => blk: {
-                // `respond` would refuse the expectation again.
                 request.head.expect = null;
                 break :blk exchange.fail(.init(.expectation_failed, "bad_request", "unsupported Expect header"));
             },
@@ -289,6 +314,7 @@ const Exchange = struct {
     record: ?*request_log.Record = null,
     book: ?*request_log.Book = null,
     bytes_in: usize = 0,
+    guard: ?*deadline.Guard = null,
 
     /// `x-request-id` and the client's id echoed, as many as apply.
     fn idHeaders(self: *const Exchange, into: []std.http.Header) usize {
@@ -358,6 +384,7 @@ const Exchange = struct {
         var ids: [2]std.http.Header = undefined;
         const n = self.idHeaders(&ids);
         const sent = if (writeUpgrade(out, &accept, ids[0..n])) |_| true else |_| false;
+        if (self.guard) |g| g.enter(.session);
         if (sent) upgrade.run(upgrade.context, self.io, self.request.server.reader.in, out);
         self.finish(.switching_protocols, null, 0);
         if (self.log) |l| l.request(self.io, .{
@@ -548,6 +575,8 @@ test "oversized heads and bodies, malformed requests: an error body, then close"
         .{ .input = "GET / HTTP/1.1\r\n broken\r\n\r\n", .status = "400", .code = "bad_request" },
         .{ .input = "POST / HTTP/1.1\r\ncontent-encoding: gzip\r\ncontent-length: 1\r\n\r\nx", .status = "415", .code = "unsupported_encoding" },
         .{ .input = "POST / HTTP/1.1\r\nexpect: tea\r\ncontent-length: 1\r\n\r\nx", .status = "417", .code = "bad_request" },
+        .{ .input = "GET / HTTP/1.1\r\nexpect: tea\r\n\r\n", .status = "417", .code = "bad_request" },
+        .{ .input = "POST / HTTP/1.1\r\nexpect: tea\r\ncontent-length: 99999999\r\n\r\n", .status = "417", .code = "bad_request" },
     };
     for (cases) |case| {
         errdefer std.debug.print("case: {s}\n", .{case.input[0..@min(case.input.len, 60)]});
@@ -672,6 +701,81 @@ test "with a book every request but health's gets an id, the client's echoed whe
     const refused = try roundTripBook("BREW / HTTP/1.1\r\n\r\n", &echo, &book);
     defer std.testing.allocator.free(refused);
     try expectContains(refused, &.{ "400", "x-request-id: " });
+}
+
+test "a path of control bytes is logged as one JSON string, and the server lives" {
+    var echo: Echo = .{};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const root = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    try tmp.dir.createDirPath(io, "logs");
+    var book: request_log.Book = .{};
+    try book.open(std.testing.allocator, io, root);
+    defer book.deinit(std.testing.allocator);
+    // 900 bytes that JSON escapes to six each: past the line's 4,096.
+    const input = "GET /" ++ @as([900]u8, @splat(0x01)) ++ " HTTP/1.1\r\n\r\nGET /after HTTP/1.1\r\n\r\n";
+    const output = try roundTripBook(input, &echo, &book);
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqual(@as(usize, 2), echo.calls);
+    try expectContains(output, &.{"GET /after"});
+    var logs = try tmp.dir.openDir(io, "logs", .{ .iterate = true });
+    defer logs.close(io);
+    var it = logs.iterate();
+    const entry = (try it.next(io)).?;
+    const written = try logs.readFileAlloc(io, entry.name, std.testing.allocator, .limited(1 << 16));
+    defer std.testing.allocator.free(written);
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, written, "\n"), '\n');
+    var count: usize = 0;
+    while (lines.next()) |line| : (count += 1) {
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
+        defer parsed.deinit();
+        if (parsed.value.object.get("path")) |path| try std.testing.expect(path == .string);
+    }
+    try std.testing.expectEqual(@as(usize, 4), count);
+}
+
+const Served = struct {
+    done: std.atomic.Value(bool) = .init(false),
+
+    fn run(self: *Served, guard: *deadline.Guard, echo: *Echo) void {
+        defer self.done.store(true, .release);
+        const limits: Limits = .{ .max_head = 1024 };
+        serve(std.testing.allocator, std.testing.io, &guard.reader.interface, &guard.writer.interface, .{ .context = echo, .handle = Echo.handle, .body_limit = Echo.bodyLimit }, limits, null, null, .{ .handle = guard.stream.socket.handle, .guard = guard });
+    }
+};
+
+/// Serves one guarded connection whose client sends `input` and then waits;
+/// true when the server ended it within the bound.
+fn serveStalled(input: []const u8, echo: *Echo) !bool {
+    const io = std.testing.io;
+    const pair = try deadline.testPair();
+    defer pair[0].close(io);
+    defer pair[1].close(io);
+    var read_buffer: [1024]u8 = undefined;
+    var write_buffer: [1024]u8 = undefined;
+    var guard: deadline.Guard = undefined;
+    guard.init(io, pair[0], &read_buffer, &write_buffer, .{ .head_ns = 100 * std.time.ns_per_ms, .body_idle_ns = 100 * std.time.ns_per_ms, .write_ns = 100 * std.time.ns_per_ms });
+    var watch: deadline.Watch(2) = .{};
+    _ = watch.add(io, &guard);
+    if (input.len > 0) _ = std.c.write(pair[1].socket.handle, input.ptr, input.len);
+    var served: Served = .{};
+    var task = try io.concurrent(Served.run, .{ &served, &guard, echo });
+    const ended = deadline.watchUntil(io, &watch, &served.done, 5000);
+    if (!ended) pair[1].shutdown(io, .both) catch {};
+    task.await(io);
+    return ended and guard.expired.load(.acquire);
+}
+
+test "a silent client, a stalled head, and a stalled body are each cut at their deadline" {
+    var echo: Echo = .{};
+    try std.testing.expect(try serveStalled("", &echo));
+    try std.testing.expect(try serveStalled("GET / HTTP/1.1\r\nhost: x", &echo));
+    try std.testing.expect(try serveStalled("POST /a HTTP/1.1\r\ncontent-length: 10\r\n\r\nab", &echo));
+    // A served request, then an idle keep-alive connection: the head deadline again.
+    try std.testing.expect(try serveStalled("GET /a HTTP/1.1\r\n\r\n", &echo));
+    try std.testing.expectEqual(@as(usize, 1), echo.calls);
 }
 
 test "query parameters" {

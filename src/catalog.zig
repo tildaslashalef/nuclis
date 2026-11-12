@@ -641,6 +641,34 @@ pub fn command(kind: ModelKind) []const u8 {
 }
 
 /// The kind as a sentence names it ("a speech model").
+/// Where a model name that is not a catalogue name points: `path` itself
+/// (borrowed) when absolute or `./`- or `../`-prefixed, else `<root>/models/<path>`
+/// in `arena`. A name joined under `models/` may not climb out of it with a
+/// `..` segment (`PathEscapesModels`, said in `diag`).
+pub fn underModels(arena: std.mem.Allocator, root: ?[]const u8, path: []const u8, diag: *config.Diagnostic) error{ MissingHome, PathEscapesModels, OutOfMemory }![]const u8 {
+    if (std.fs.path.isAbsolute(path) or std.mem.startsWith(u8, path, "./") or std.mem.startsWith(u8, path, "../")) return path;
+    var segments = std.mem.tokenizeAny(u8, path, "/\\");
+    while (segments.next()) |segment| if (std.mem.eql(u8, segment, "..")) {
+        diag.set("{s}: a name under the models directory may not leave it (give ./ or an absolute path)", .{path});
+        return error.PathEscapesModels;
+    };
+    const dir = root orelse return error.MissingHome;
+    return std.fs.path.join(arena, &.{ dir, "models", path });
+}
+
+test underModels {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diag: config.Diagnostic = .{};
+    try std.testing.expectEqualStrings("/abs/m", try underModels(arena, "/r", "/abs/m", &diag));
+    try std.testing.expectEqualStrings("../m", try underModels(arena, "/r", "../m", &diag));
+    try std.testing.expectEqualStrings("/r/models/org/m", try underModels(arena, "/r", "org/m", &diag));
+    try std.testing.expectError(error.PathEscapesModels, underModels(arena, "/r", "org/../../etc", &diag));
+    try std.testing.expectError(error.PathEscapesModels, underModels(arena, "/r", "..", &diag));
+    try std.testing.expectError(error.MissingHome, underModels(arena, null, "m", &diag));
+}
+
 pub fn kindName(kind: ModelKind) []const u8 {
     return switch (kind) {
         .generation => "language",

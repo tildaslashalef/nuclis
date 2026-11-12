@@ -12,6 +12,7 @@ const inference = @import("inference");
 const config = @import("../config.zig");
 const style = @import("../tui/style.zig");
 const http = @import("http.zig");
+const deadline = @import("deadline.zig");
 const errors = @import("errors.zig");
 const gpu = @import("gpu.zig");
 const models = @import("models.zig");
@@ -283,6 +284,10 @@ const Server = struct {
     backend: inference.decide.Backend,
     version: []const u8,
     active: std.atomic.Value(u32) = .init(0),
+    /// The web tools' state, asked of the search service at most every few seconds.
+    web_health: WebHealth = .{},
+    /// Every open connection's deadlines, checked twice a second.
+    watch: deadline.Watch(limits.connections) = .{},
     log: ?*log_mod.Log = null,
     /// The requests in flight and, unless `serve.request_log` is off, the
     /// request log's files.
@@ -316,7 +321,7 @@ const Server = struct {
         const voice = self.speech.slot.openName(io, arena) catch null;
         const ears = self.transcription.slot.openName(io, arena) catch null;
         const resident = self.memory.snapshot(io, arena) catch &.{};
-        const web_state = webState(self.chat.web, arena);
+        const web_state = self.web_health.state(io, self.chat.web, arena);
         const flights = self.book.inFlight(io, arena) catch &.{};
         var out: std.Io.Writer.Allocating = .init(arena);
         writeHealth(&out.writer, self.version, self.backend, open, .{ .language = language, .embedding = embedding, .speech = voice, .transcription = ears }, web_state, .{ .limit = self.memory.limit, .models = resident }, stats, batching, self.embeddings.batcher.stats(io), self.speech.stats(io), self.active.load(.monotonic), flights) catch
@@ -366,15 +371,42 @@ const Server = struct {
         noDelay(stream);
         var read_buffer: [limits.transport.max_head]u8 = undefined;
         var write_buffer: [limits.write_buffer]u8 = undefined;
-        var reader = stream.reader(io, &read_buffer);
-        var writer = stream.writer(io, &write_buffer);
-        http.serve(self.gpa, io, &reader.interface, &writer.interface, self.router.handler(), limits.transport, self.log, &self.book, .{ .handle = stream.socket.handle });
+        var guard: deadline.Guard = undefined;
+        guard.init(io, stream, &read_buffer, &write_buffer, limits.transport.durations());
+        const watched = self.watch.add(io, &guard);
+        defer if (watched) self.watch.remove(io, &guard);
+        http.serve(self.gpa, io, &guard.reader.interface, &guard.writer.interface, self.router.handler(), limits.transport, self.log, &self.book, .{ .handle = stream.socket.handle, .guard = &guard });
     }
 };
 
 const Memory = struct { limit: u64, models: []const memory.Budget.Model };
 /// The open model of each kind the server keeps one of.
 const Open = struct { language: ?[]const u8 = null, embedding: ?[]const u8 = null, speech: ?[]const u8 = null, transcription: ?[]const u8 = null };
+
+/// `webState`, kept for `ttl_ns`: a poller of `/v1/health` must not wait
+/// on the search service each time. Two requests past the time may both ask.
+const WebHealth = struct {
+    const ttl_ns: i96 = 5 * std.time.ns_per_s;
+    mutex: std.Io.Mutex = .init,
+    last: ?[]const u8 = null,
+    at: std.Io.Timestamp = .zero,
+
+    fn state(self: *WebHealth, io: std.Io, service: ?*web.Service, arena: std.mem.Allocator) []const u8 {
+        if (service == null) return "off";
+        const now = std.Io.Clock.awake.now(io);
+        {
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
+            if (self.last) |l| if (self.at.durationTo(now).toNanoseconds() < ttl_ns) return l;
+        }
+        const fresh = webState(service, arena);
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        self.last = fresh;
+        self.at = std.Io.Clock.awake.now(io);
+        return fresh;
+    }
+};
 
 /// The hosted web tools as health reports them: `off` without a service,
 /// else `ok` when the search service answers and any provider is `ok`,
@@ -430,6 +462,8 @@ fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.deci
         try s.write(m.bytes);
         try s.objectField("pinned");
         try s.write(m.pinned);
+        try s.objectField("in_use");
+        try s.write(m.in_use);
         try s.endObject();
     }
     try s.endArray();
@@ -489,7 +523,7 @@ fn noDelay(stream: std.Io.net.Stream) void {
 pub const Context = struct {
     root: ?[]const u8,
     /// The configuration, borrowed for the serve: the chat service resolves
-    /// a language model's settings from it as `nuclis chat` does.
+    /// a language model's settings from it as `nuclis agent` does.
     loaded: *const config.Loaded,
     registry: config.Models,
     default_model: []const u8,
@@ -634,6 +668,8 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     defer group.cancel(io);
     interrupt.install();
     var accepting = try io.concurrent(Server.accept, .{ &server, io, &listener, &group, diag });
+    // The deadlines task; without one, connections go unguarded.
+    group.concurrent(io, @TypeOf(server.watch).run, .{ &server.watch, io, std.Io.Duration.fromMilliseconds(500) }) catch {};
     // The signal handler can only set a flag, so the main task polls it.
     while (!interrupt.requested() and !server.accept_ended.load(.acquire)) {
         io.sleep(.fromMilliseconds(100), .awake) catch break;
@@ -680,6 +716,7 @@ fn refuse(io: std.Io, stream: std.Io.net.Stream, active: *std.atomic.Value(u32),
 test {
     // The streamed routes' worker-to-connection queue, tested on its own.
     _ = @import("pipe.zig");
+    _ = @import("deadline.zig");
     _ = @import("memory.zig");
     _ = @import("request_log.zig");
     _ = chat;
@@ -809,7 +846,7 @@ test "serve arguments" {
 test "health reports the queue and the open models" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, .{ .language = "qwen3.8-27b", .embedding = "embeddinggemma-2", .speech = "qwen3-tts-1.7b-customvoice" }, "off", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60, .pinned = true }, .{ .kind = .decision, .name = "laya", .bytes = 10 } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, .{ .waiting = 1, .passes = 4, .jobs = 2 }, .{ .waiting = 2, .speaking = true, .requests = 11 }, 3, &.{.{ .id = "019a3412-6f1e-7c2a-9b4d-0e5f6a7b8c9d", .client_id = "turn-41", .method = "POST", .path = "/v1/audio/speech", .running_ms = 812.5, .fields = &.{.{ .name = "model", .value = .{ .text = "qwen3-tts-0.6b-base" } }} }});
+    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, .{ .language = "qwen3.8-27b", .embedding = "embeddinggemma-2", .speech = "qwen3-tts-1.7b-customvoice" }, "off", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60, .pinned = true }, .{ .kind = .decision, .name = "laya", .bytes = 10, .in_use = true } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, .{ .waiting = 1, .passes = 4, .jobs = 2 }, .{ .waiting = 2, .speaking = true, .requests = 11 }, 3, &.{.{ .id = "019a3412-6f1e-7c2a-9b4d-0e5f6a7b8c9d", .client_id = "turn-41", .method = "POST", .path = "/v1/audio/speech", .running_ms = 812.5, .fields = &.{.{ .name = "model", .value = .{ .text = "qwen3-tts-0.6b-base" } }} }});
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("cpu", parsed.value.object.get("backend").?.string);
@@ -828,6 +865,7 @@ test "health reports the queue and the open models" {
     try std.testing.expect(parsed.value.object.get("transcription").? == .null);
     const models_list = parsed.value.object.get("memory").?.object.get("models").?.array.items;
     try std.testing.expect(models_list[0].object.get("pinned").?.bool and !models_list[1].object.get("pinned").?.bool);
+    try std.testing.expect(!models_list[0].object.get("in_use").?.bool and models_list[1].object.get("in_use").?.bool);
     const speaking = parsed.value.object.get("speech_requests").?.object;
     try std.testing.expectEqual(@as(i64, 2), speaking.get("waiting").?.integer);
     try std.testing.expect(speaking.get("speaking").?.bool);

@@ -3,7 +3,7 @@
 //! the engine and its buffers (`completer.Open`), the `Completer` that
 //! continues or restores a conversation, and the sampler, set up as the
 //! agent sets them up for the same name, so a served conversation runs as
-//! `nuclis chat` would run it. A request naming another model swaps it. The
+//! `nuclis agent` would run it. A request naming another model swaps it. The
 //! model counts against the server's memory budget (`memory.zig`), pinned
 //! while it runs; between requests the budget may close it for another.
 const std = @import("std");
@@ -43,6 +43,9 @@ pub const Language = struct {
     /// What the last model asked for needed before it opened, for the
     /// message when it does not fit.
     needed: u64 = 0,
+    /// Holders of the open model (`hold`): a request across its hosted rounds,
+    /// and each run.
+    holds: u32 = 0,
     /// The companion file (images and audio share it) is in `footprint`.
     companion_counted: bool = false,
     /// The message whose clip the last request failed to encode, for the
@@ -50,7 +53,7 @@ pub const Language = struct {
     failed_clip: ?usize = null,
 
     /// What a request asked for that cannot be served, beside engine errors.
-    pub const Error = error{ ModelNotFound, NotALanguageModel, ImagesUnsupported, AudioUnsupported, ContextFull, InvalidSamplingOptions };
+    pub const Error = error{ ModelNotFound, NotALanguageModel, ImagesUnsupported, AudioUnsupported, ContextFull, InvalidSamplingOptions, Pinned };
 
     /// The model a request names (none: the open one, else `engine.model`),
     /// opened on this worker and the one before it closed when it is
@@ -68,7 +71,7 @@ pub const Language = struct {
         const path = try paths.modelPath(self.gpa, name, "", self.root, registry);
         defer self.gpa.free(path);
         std.Io.Dir.cwd().access(io, path, .{}) catch return error.ModelNotFound;
-        self.close(io);
+        if (self.holds > 0) return error.Pinned;
         var settings = config.resolve(self.loaded, name, .{}, .agent);
         const default_tokens = settings.max_tokens;
         // Sized for the largest request; each request slices its own budget.
@@ -78,17 +81,15 @@ pub const Language = struct {
         const file_bytes = fileSize(io, path);
         var bytes = openingBytes(settings, file_bytes);
         self.needed = bytes;
+        // Asked before the open model closes, so a refusal keeps it.
+        if (self.budget) |b| try b.canFit(io, bytes, self.name);
+        self.close(io);
         if (self.budget) |b| try b.reserve(io, bytes, null);
         self.open = try completer_mod.Open.init(self.gpa, io, path, settings);
         const open = &self.open.?;
-        errdefer self.close(io);
-        bytes += open.eng.model.session().bytes();
-        if (open.eng.model.drafter() != null) if (open.draft_path) |draft| {
-            bytes += fileSize(io, draft);
-        };
         const profile = open.profile();
         const effort = profile.nearestEffort(settings.think);
-        self.sampler = try inference.sampling.Sampler.init(0, profile.samplingOptions(effort, settings.sampling));
+        // Assigned before anything else can fail, so `close` finds it whole.
         self.completer = .{
             .alloc = self.gpa,
             .eng = &open.eng,
@@ -100,6 +101,12 @@ pub const Language = struct {
             .speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length },
             .cache = .{ .alloc = self.gpa, .budget = settings.cache.memory_bytes },
             .clamp_budget = true,
+        };
+        errdefer self.close(io);
+        self.sampler = try inference.sampling.Sampler.init(0, profile.samplingOptions(effort, settings.sampling));
+        bytes += open.eng.model.session().bytes();
+        if (open.eng.model.drafter() != null) if (open.draft_path) |draft| {
+            bytes += fileSize(io, draft);
         };
         self.settings = settings;
         self.default_tokens = default_tokens;
@@ -118,6 +125,15 @@ pub const Language = struct {
         self.footprint = bytes;
     }
 
+    /// One more holder of the open model (true), or one fewer (false): the
+    /// budget never closes it, and no other model replaces it, while any
+    /// holds it. Each `true` is paired with a `false`; GPU worker only.
+    pub fn hold(self: *Language, io: std.Io, held: bool) void {
+        const name = self.name orelse return;
+        if (held) self.holds += 1 else self.holds -= 1;
+        if (self.holds == @intFromBool(held)) if (self.budget) |b| b.pin(io, name, held);
+    }
+
     /// The budget's closer.
     fn closeKey(context: *anyopaque, io: std.Io, key: []const u8) void {
         const self: *Language = @ptrCast(@alignCast(context));
@@ -127,6 +143,7 @@ pub const Language = struct {
 
     /// Closes the open model, if any; on the worker, or after it stopped.
     pub fn close(self: *Language, io: std.Io) void {
+        std.debug.assert(self.holds == 0);
         if (self.budget) |b| if (self.name) |n| b.remove(io, n);
         self.footprint = 0;
         self.companion_counted = false;
@@ -160,8 +177,6 @@ pub const Language = struct {
         effort: Profile.Effort,
         /// The request asked for `minimal` (`wire.Request.minimal`).
         minimal: bool,
-        /// Tool calls the completion decoded.
-        calls: usize,
     };
 
     /// Completes `request` on the open model, its events into `sink`;
@@ -170,11 +185,9 @@ pub const Language = struct {
     pub fn run(self: *Language, io: std.Io, arena: Allocator, request: wire.Request, sink: *completer_mod.Sink, observer: ?inference.observer.Observer) !Ran {
         const open = &self.open.?;
         // In use: a decision run between its steps may not close it.
-        if (self.budget) |b| {
-            b.touch(io, self.name.?);
-            b.pin(io, self.name.?, true);
-        }
-        defer if (self.budget) |b| b.pin(io, self.name.?, false);
+        if (self.budget) |b| b.touch(io, self.name.?);
+        self.hold(io, true);
+        defer self.hold(io, false);
         const profile = open.profile();
         const effort = profile.nearestEffort(request.effort orelse self.settings.think);
         self.completer.effort = effort;
@@ -228,12 +241,7 @@ pub const Language = struct {
         // A turn that ends in an answer is a boundary the next request's
         // render starts with; a turn of calls continues the live session.
         if (reply.outcome.stop == .eos and counting.calls == 0) _ = m.checkpoint(m.context);
-        return .{ .reply = reply, .effort = effort, .minimal = request.minimal, .calls = counting.calls };
-    }
-
-    /// The tokens the open model's window holds.
-    pub fn capacity(self: *const Language) usize {
-        return self.open.?.eng.model.session().capacity;
+        return .{ .reply = reply, .effort = effort, .minimal = request.minimal };
     }
 
     fn loadVision(self: *Language, io: std.Io) !void {

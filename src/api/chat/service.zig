@@ -181,9 +181,10 @@ pub const Service = struct {
         // Every prompt profile renders native tool calls.
         try features.put(arena, "tools", .{ .bool = true });
         var hosted: std.json.Array = .init(arena);
-        if (self.web != null) {
+        if (self.web) |web_service| {
             try hosted.append(.{ .string = "web_search" });
             try hosted.append(.{ .string = "web_fetch" });
+            if (web_service.context_offered) try hosted.append(.{ .string = "web_context" });
         }
         try features.put(arena, "hosted_tools", .{ .array = hosted });
         try features.put(arena, "reasoning", .{ .bool = efforts.items.len > 1 });
@@ -427,6 +428,9 @@ const Job = struct {
             self.fail(openFailure(self.arena, language, self.request.model orelse language.loaded.config.engine.model, err));
             return .done;
         };
+        // Held across every hosted round: a drain between rounds may not close it.
+        language.hold(io, true);
+        defer language.hold(io, false);
         self.name = self.arena.dupe(u8, language.name.?) catch "";
         var sink: completer_mod.Sink = .{ .context = self, .call = route };
         if (self.pipe != null) {
@@ -967,7 +971,7 @@ fn openFailure(arena: std.mem.Allocator, language: *const language_mod.Language,
             .decision, .generation => apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is a decision model; POST /v1/decisions runs it", .{name}),
         },
         error.ModelTooLarge => apiError(arena, .bad_request, "model_too_large", "model", "{s} needs about {d:.1} GiB (its weights and cache.memory_bytes) and the server's budget is {d:.1} GiB (serve.memory_bytes, --memory)", .{ name, gib(language.needed), gib(if (language.budget) |b| b.limit else 0) }),
-        error.Pinned => apiError(arena, .service_unavailable, "busy", "model", "overloaded: {s} needs memory a running request holds; retry shortly", .{name}),
+        error.Pinned => apiError(arena, http.overloaded, "busy", "model", "overloaded: {s} needs memory a running request holds; retry shortly", .{name}),
         else => apiError(arena, .internal_server_error, "model_failed", "model", "{s} did not open: {s}", .{ name, @errorName(err) }),
     };
 }
@@ -979,9 +983,9 @@ fn runFailure(arena: std.mem.Allocator, language: *language_mod.Language, err: a
         else
             apiError(arena, .bad_request, "context_length_exceeded", "messages", "the conversation does not fit the window", .{}),
         error.ImagesUnsupported => apiError(arena, .bad_request, "images_unsupported", "messages", "this model has no image projector pulled; `nuclis model pull <name> --with mmproj` fetches it", .{}),
-        error.ModelTooLarge, error.Pinned => apiError(arena, .bad_request, "model_too_large", "messages", "this model and its image projector need more memory than the server's budget allows (serve.memory_bytes, --memory)", .{}),
+        error.ModelTooLarge => apiError(arena, .bad_request, "model_too_large", "messages", "this model and its image projector need more memory than the server's budget allows (serve.memory_bytes, --memory)", .{}),
+        error.Pinned => apiError(arena, http.overloaded, "busy", "messages", "overloaded: the image projector needs memory a running request holds; retry shortly", .{}),
         error.InvalidSamplingOptions => apiError(arena, .bad_request, "invalid_request", null, "the sampling options are out of range for this model", .{}),
-        error.ToolsUnsupported => apiError(arena, .bad_request, "invalid_request", "tools", "this model's prompt profile has no native tool calling", .{}),
         error.InvalidConversation, error.UnsupportedContent, error.LimitExceeded, error.InvalidUtf8 => apiError(arena, .bad_request, "invalid_request", "messages", "the model's template cannot render this conversation ({s})", .{@errorName(err)}),
         error.MalformedImage, error.UnsupportedImageFormat, error.ImageTooLarge => apiError(arena, .bad_request, "invalid_request", "messages", "an image could not be decoded ({s})", .{@errorName(err)}),
         error.AudioUnsupported => apiError(arena, .bad_request, "audio_unsupported", "messages", "this model hears no audio: only Gemma 4 E4B with its projector pulled (`nuclis model pull <name> --with mmproj`) does", .{}),

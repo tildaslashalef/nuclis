@@ -8,6 +8,7 @@
 //! mutex guards the list, every record's fields, and the file.
 const std = @import("std");
 const errors = @import("errors.zig");
+const printable = @import("../text.zig").printable;
 
 pub const schema = 1;
 pub const max_fields = 24;
@@ -15,6 +16,8 @@ pub const max_fields = 24;
 pub const max_text = 128;
 pub const max_client_id = 128;
 pub const max_line = 4096;
+/// A request path is cut to this many bytes, after `printable`.
+pub const max_path = 1024;
 pub const part_bytes: u64 = 64 << 20;
 pub const keep_days = 14;
 pub const keep_bytes: u64 = 256 << 20;
@@ -63,7 +66,8 @@ pub const Record = struct {
     fn put(self: *Record, name: []const u8, value: Value) void {
         var stored = value;
         if (value == .text) {
-            const cut = if (value.text.len > max_text) cutUtf8(value.text, max_text - "…".len) else value.text;
+            var clean_buffer: [max_text]u8 = undefined;
+            const cut = printable(&clean_buffer, if (value.text.len > max_text) cutUtf8(value.text, max_text - "…".len) else value.text);
             const extra: []const u8 = if (cut.len < value.text.len) "…" else "";
             const room = self.pool.len - self.pool_used;
             if (cut.len + extra.len > room) {
@@ -228,7 +232,7 @@ pub const Book = struct {
                 .id = try arena.dupe(u8, &r.id),
                 .client_id = try arena.dupe(u8, r.client_id),
                 .method = if (r.method) |m| @tagName(m) else "",
-                .path = try arena.dupe(u8, r.path),
+                .path = printable(try arena.alloc(u8, @min(r.path.len, max_path)), r.path),
                 .running_ms = r.runningMs(io),
                 .fields = fields,
             });
@@ -316,8 +320,33 @@ const File = struct {
 
 fn startLine(buffer: []u8, record: *const Record, now: std.Io.Timestamp) []const u8 {
     var out: std.Io.Writer = .fixed(buffer);
-    writeStart(&out, record, now) catch unreachable; // within max_line: the path is at most the head
+    if (writeStart(&out, record, now)) |_| return out.buffered() else |_| return minimalLine(buffer, record, "request.start", now);
+}
+
+/// The line written when the full one does not fit: fixed-size values only,
+/// about 200 bytes against `max_line`, marked `fields_dropped`.
+fn minimalLine(buffer: []u8, record: *const Record, event: []const u8, now: std.Io.Timestamp) []const u8 {
+    var out: std.Io.Writer = .fixed(buffer);
+    writeMinimal(&out, record, event, now) catch unreachable; // nothing in it is client-sized
     return out.buffered();
+}
+
+fn writeMinimal(out: *std.Io.Writer, record: *const Record, event: []const u8, now: std.Io.Timestamp) std.Io.Writer.Error!void {
+    var s: std.json.Stringify = .{ .writer = out };
+    var time_buffer: [24]u8 = undefined;
+    try s.beginObject();
+    try s.objectField("time");
+    try s.write(rfc3339(&time_buffer, now));
+    try s.objectField("schema");
+    try s.write(schema);
+    try s.objectField("event");
+    try s.write(event);
+    try s.objectField("id");
+    try s.write(&record.id);
+    try s.objectField("fields_dropped");
+    try s.write(true);
+    try s.endObject();
+    try out.writeByte('\n');
 }
 
 fn writeStart(out: *std.Io.Writer, record: *const Record, now: std.Io.Timestamp) std.Io.Writer.Error!void {
@@ -331,7 +360,8 @@ fn writeStart(out: *std.Io.Writer, record: *const Record, now: std.Io.Timestamp)
         try s.objectField("method");
         try s.write(@tagName(m));
         try s.objectField("path");
-        try s.write(cutUtf8(record.path, 1024));
+        var path_buffer: [max_path]u8 = undefined;
+        try s.write(printable(&path_buffer, record.path));
     }
     try s.endObject();
     try out.writeByte('\n');
@@ -342,8 +372,7 @@ fn endLine(buffer: []u8, record: *const Record, end: End, duration_ns: i96, now:
     var out: std.Io.Writer = .fixed(buffer);
     if (writeEnd(&out, record, end, duration_ns, now, record.fields[0..record.count])) |_| return out.buffered() else |_| {}
     out = .fixed(buffer);
-    writeEnd(&out, record, end, duration_ns, now, &.{}) catch unreachable;
-    return out.buffered();
+    if (writeEnd(&out, record, end, duration_ns, now, &.{})) |_| return out.buffered() else |_| return minimalLine(buffer, record, "request.end", now);
 }
 
 fn writeEnd(out: *std.Io.Writer, record: *const Record, end: End, duration_ns: i96, now: std.Io.Timestamp, fields: []const Field) std.Io.Writer.Error!void {
@@ -640,6 +669,42 @@ test "the two lines" {
     inline for (0..max_fields) |k| many.text(std.fmt.comptimePrint("f{d}", .{k}), &@as([max_text]u8, @splat('"')));
     const line = endLine(&buffer, &big, .{ .status = .ok }, 0, now);
     try testing.expect(std.mem.endsWith(u8, line, "\"fields_dropped\":true}\n"));
+}
+
+test "a hostile path is one JSON string within the line" {
+    var record: Record = .init(testing.io);
+    record.method = .GET;
+    const now: std.Io.Timestamp = .{ .nanoseconds = 0 };
+    var buffer: [max_line]u8 = undefined;
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const control: [1500]u8 = @splat(0x01);
+    const invalid: [1500]u8 = @splat(0xff);
+    const quotes: [1500]u8 = @splat('"');
+    for ([_][]const u8{ &control, &invalid, &quotes, "/\x1b]0;title\x07\xc2\x9b" }) |path| {
+        record.path = path;
+        const line = startLine(&buffer, &record, now);
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, line, .{});
+        const logged = parsed.object.get("path").?.string;
+        try testing.expect(logged.len <= max_path);
+        for (logged) |c| try testing.expect(c >= 0x20 and c != 0x7f);
+        try testing.expect(parsed.object.get("fields_dropped") == null);
+        _ = try std.json.parseFromSliceLeaky(std.json.Value, arena, endLine(&buffer, &record, .{ .status = .ok }, 0, now), .{});
+    }
+    // A text field from the client is cleaned the same way.
+    const fields: Fields = .{ .record = &record };
+    fields.text("model", "a\x1b[2J\xff");
+    try testing.expectEqualStrings("a?[2J?", record.fields[0].value.text);
+}
+
+test "the fallback line is valid JSON" {
+    var record: Record = .init(testing.io);
+    var buffer: [max_line]u8 = undefined;
+    const line = minimalLine(&buffer, &record, "request.start", .{ .nanoseconds = 0 });
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, line, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value.object.get("fields_dropped").?.bool);
 }
 
 test "a book: the in-flight list, the day's file, and retention" {

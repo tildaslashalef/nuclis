@@ -42,6 +42,11 @@ pub const Pool = struct {
     mutex: std.Io.Mutex = .init,
     slots: [capacity]?Slot = @splat(null),
     tick: u64 = 0,
+    /// The last model's footprint, kept until a slot opens or closes: a
+    /// request refused as `Pinned` is retried every generation step.
+    measured: ?Measured = null,
+
+    const Measured = struct { directory: []u8, bytes: u64 };
 
     const Slot = struct {
         /// Owned.
@@ -65,6 +70,23 @@ pub const Pool = struct {
     /// GPU worker only, after the worker stopped.
     pub fn deinit(self: *Pool, io: std.Io) void {
         for (0..capacity) |i| self.closeSlot(io, i);
+        self.forget();
+    }
+
+    /// `footprint(location)`, from `measured` when it is the same directory.
+    fn footprintOf(self: *Pool, io: std.Io, location: inference.decide.Location) u64 {
+        if (self.measured) |m| if (std.mem.eql(u8, m.directory, location.directory)) return m.bytes;
+        const bytes = footprint(io, location);
+        self.forget();
+        if (self.gpa.dupe(u8, location.directory)) |owned| {
+            self.measured = .{ .directory = owned, .bytes = bytes };
+        } else |_| {}
+        return bytes;
+    }
+
+    fn forget(self: *Pool) void {
+        if (self.measured) |m| self.gpa.free(m.directory);
+        self.measured = null;
     }
 
     /// GPU worker only: the decider for `directory`, opened (closing the
@@ -80,8 +102,8 @@ pub const Pool = struct {
         const started = std.Io.Clock.awake.now(io);
         // Asked before anything closes: a decision retried while a pinned
         // generation holds the memory must not close a model each time.
-        const bytes = footprint(io, location);
-        if (self.budget) |b| try b.canFit(io, bytes);
+        const bytes = self.footprintOf(io, location);
+        if (self.budget) |b| try b.canFit(io, bytes, null);
         // The slot's model closes only once the new one has opened (a
         // failed open keeps it); the room it will leave counts already.
         const index = self.victim();
@@ -97,6 +119,7 @@ pub const Pool = struct {
         const owned_name = try self.gpa.dupe(u8, name);
         errdefer self.gpa.free(owned_name);
         self.closeSlot(io, index);
+        self.forget();
         if (self.budget) |b| try b.add(io, .decision, directory, name, bytes, .{ .context = self, .close = closeKey });
         self.mutex.lockUncancelable(io);
         self.slots[index] = .{ .directory = owned_directory, .name = owned_name, .decider = decider, .used = self.tick };
@@ -112,6 +135,7 @@ pub const Pool = struct {
         self.slots[index] = null;
         self.mutex.unlock(io);
         var s = slot orelse return;
+        self.forget();
         if (self.budget) |b| b.remove(io, s.directory);
         s.decider.deinit(io);
         self.gpa.free(s.directory);

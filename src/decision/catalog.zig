@@ -14,8 +14,9 @@ const profile = inference.profiles.laya;
 /// The checkpoint directory `name` names, in order: a registry entry (which
 /// must be of kind `decision`), a decision catalogue name, else a directory
 /// (as given when absolute or `./`, else under `<root>/models`). A text
-/// model's name is refused.
-pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Models, name: []const u8, diag: *config.Diagnostic) ![]const u8 {
+/// model's name is refused. With `paths` false (the server), a name the
+/// registry and the catalogue do not know is `ModelNotFound`, never a path.
+pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Models, name: []const u8, paths: bool, diag: *config.Diagnostic) ![]const u8 {
     if (registry.find(name)) |entry| {
         if (entry.kind != .decision) {
             diag.set("{s} is a registry entry of a {s} model; `nuclis decide` opens a decision checkpoint (an entry with \"kind\": \"decision\")", .{ name, catalog.kindName(entry.kind orelse .generation) });
@@ -25,23 +26,21 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
             diag.set("models.{s} locates nothing: give it path, or repo and file", .{name});
             return error.InvalidRegistryEntry;
         };
-        const full = try models(arena, root, located);
+        const full = try catalog.underModels(arena, root, located, diag);
         // A path to the weights names their directory.
         return if (std.mem.endsWith(u8, full, ".safetensors")) std.fs.path.dirname(full) orelse full else full;
     }
-    if (catalog.findDecision(name)) |entry| return catalog.decisionDirectory(arena, try models(arena, root, ""), entry);
+    if (catalog.findDecision(name)) |entry| return catalog.decisionDirectory(arena, try catalog.underModels(arena, root, "", diag), entry);
     if (catalog.find(name) != null or catalog.findEmbedding(name) != null or catalog.findAudio(name) != null) {
         const what = if (catalog.find(name) != null) "a text model" else if (catalog.findEmbedding(name) != null) "an embedding model" else if (catalog.findAudio(name).?.kind == .speech) "a speech model" else "a transcription model";
         diag.set("{s} is {s} of the catalogue; `nuclis decide` opens a decision checkpoint (laya)", .{ name, what });
         return error.NotADecisionModel;
     }
-    return models(arena, root, name);
-}
-
-fn models(arena: std.mem.Allocator, root: ?[]const u8, path: []const u8) ![]const u8 {
-    if (std.fs.path.isAbsolute(path) or std.mem.startsWith(u8, path, "./") or std.mem.startsWith(u8, path, "../")) return path;
-    const dir = root orelse return error.MissingHome;
-    return std.fs.path.join(arena, &.{ dir, "models", path });
+    if (!paths) {
+        diag.set("{s} is not a decision model of the registry or the catalogue (`GET /v1/models` lists them)", .{name});
+        return error.ModelNotFound;
+    }
+    return catalog.underModels(arena, root, name, diag);
 }
 
 pub const Located = struct {
@@ -59,12 +58,12 @@ pub const Located = struct {
 
 /// `resolve`, then the weights' presence (`ModelFileNotFound` names the
 /// pull that fetches them) and their provenance from the pull's sidecar.
-pub fn locate(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: config.Models, name: []const u8, diag: *config.Diagnostic) !Located {
-    const directory = try resolve(arena, root, registry, name, diag);
+pub fn locate(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: config.Models, name: []const u8, paths: bool, diag: *config.Diagnostic) !Located {
+    const directory = try resolve(arena, root, registry, name, paths, diag);
     const entry = if (registry.find(name) == null) catalog.findDecision(name) else null;
     const weights_name = if (entry) |e| std.fs.path.basename(e.file) else if (inference.decide.Family.of(io, directory) == .clef) inference.models.clef.head_file else "model.safetensors";
     const weights = try std.fs.path.join(arena, &.{ directory, weights_name });
-    const backbone = if (entry) |e| if (e.backbone) |b| try std.fs.path.join(arena, &.{ try models(arena, root, ""), b.repo, b.file }) else null else null;
+    const backbone = if (entry) |e| if (e.backbone) |b| try std.fs.path.join(arena, &.{ try catalog.underModels(arena, root, "", diag), b.repo, b.file }) else null else null;
     for ([_]?[]const u8{ weights, backbone }) |path| if (path) |p| std.Io.Dir.cwd().access(io, p, .{}) catch {
         if (entry) |e|
             diag.set("{s}: not pulled yet (`nuclis model pull {s}` fetches it, {d} MB)", .{ name, e.name, e.totalSize() / 1_000_000 })
@@ -78,7 +77,7 @@ pub fn locate(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry:
         identity.revision = sidecar.revision;
     }
     // The projector is optional: without it a request with images is refused.
-    const mmproj = if (entry) |e| if (e.mmproj) |m| try std.fs.path.join(arena, &.{ try models(arena, root, ""), m.repo, m.file }) else null else null;
+    const mmproj = if (entry) |e| if (e.mmproj) |m| try std.fs.path.join(arena, &.{ try catalog.underModels(arena, root, "", diag), m.repo, m.file }) else null else null;
     const pulled_mmproj = if (mmproj) |p| if (std.Io.Dir.cwd().access(io, p, .{})) |_| p else |_| null else null;
     return .{ .directory = directory, .identity = identity, .backbone = backbone, .mmproj = pulled_mmproj };
 }
@@ -123,10 +122,10 @@ fn describe(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: c
         listed.family = .clef;
     };
     var diag: config.Diagnostic = .{};
-    const located = locate(arena, io, root, registry, name, &diag) catch |err| switch (err) {
+    const located = locate(arena, io, root, registry, name, false, &diag) catch |err| switch (err) {
         error.OutOfMemory => return err,
         error.ModelFileNotFound => {
-            listed.directory = resolve(arena, root, registry, name, &diag) catch null;
+            listed.directory = resolve(arena, root, registry, name, false, &diag) catch null;
             return listed;
         },
         else => return listed,
@@ -154,15 +153,20 @@ test "model names resolve: decision entries, the catalogue, paths; text models r
         .{ .name = "local", .entry = .{ .kind = .decision, .path = "/data/laya" } },
         .{ .name = "qwen", .entry = .{ .repo = "unsloth/Qwen3.8-27B-GGUF", .file = "Qwen3.8-27B-UD-Q4_K_M.gguf" } },
     } };
-    try std.testing.expectEqualStrings("/r/models/convaiinnovations/laya", try resolve(arena, "/r", registry, "laya", &diag));
-    try std.testing.expectEqualStrings("/r/models/convaiinnovations/laya/multilingual", try resolve(arena, "/r", registry, "multi", &diag));
-    try std.testing.expectEqualStrings("/data/laya", try resolve(arena, "/r", registry, "local", &diag));
-    try std.testing.expectEqualStrings("/r/models/me/finetune", try resolve(arena, "/r", registry, "me/finetune", &diag));
-    try std.testing.expectEqualStrings("./here", try resolve(arena, null, registry, "./here", &diag));
-    try std.testing.expectError(error.NotADecisionModel, resolve(arena, "/r", registry, "qwen", &diag));
-    try std.testing.expectError(error.NotADecisionModel, resolve(arena, "/r", registry, "qwen3.8-27b", &diag));
-    try std.testing.expectError(error.NotADecisionModel, resolve(arena, "/r", registry, "embeddinggemma-2", &diag));
-    try std.testing.expectError(error.MissingHome, resolve(arena, null, registry, "laya", &diag));
+    try std.testing.expectEqualStrings("/r/models/convaiinnovations/laya", try resolve(arena, "/r", registry, "laya", true, &diag));
+    try std.testing.expectEqualStrings("/r/models/convaiinnovations/laya/multilingual", try resolve(arena, "/r", registry, "multi", true, &diag));
+    try std.testing.expectEqualStrings("/data/laya", try resolve(arena, "/r", registry, "local", true, &diag));
+    try std.testing.expectEqualStrings("/r/models/me/finetune", try resolve(arena, "/r", registry, "me/finetune", true, &diag));
+    try std.testing.expectEqualStrings("./here", try resolve(arena, null, registry, "./here", true, &diag));
+    try std.testing.expectError(error.NotADecisionModel, resolve(arena, "/r", registry, "qwen", true, &diag));
+    try std.testing.expectError(error.NotADecisionModel, resolve(arena, "/r", registry, "qwen3.8-27b", true, &diag));
+    try std.testing.expectError(error.NotADecisionModel, resolve(arena, "/r", registry, "embeddinggemma-2", true, &diag));
+    try std.testing.expectError(error.MissingHome, resolve(arena, null, registry, "laya", true, &diag));
+    // The server names no path: an absolute, a dotted, or a climbing name is unknown.
+    for ([_][]const u8{ "/etc", "./here", "../up", "me/finetune" }) |path|
+        try std.testing.expectError(error.ModelNotFound, resolve(arena, "/r", registry, path, false, &diag));
+    try std.testing.expectEqualStrings("/data/laya", try resolve(arena, "/r", registry, "local", false, &diag));
+    try std.testing.expectError(error.PathEscapesModels, resolve(arena, "/r", registry, "me/../../etc", true, &diag));
 }
 
 test "the listing: catalogue then registry, nothing pulled under an empty root" {

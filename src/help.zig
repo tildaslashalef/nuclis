@@ -679,6 +679,11 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "shape");
     try row(out, sty, "GET /v1/health", "version, backend, open models, queue depth");
 
+    try heading(out, sty, "Trust:");
+    try plain(out, "There is no authentication: any client that can connect may call every");
+    try plain(out, "route and name any registry or catalogue model. The default host is");
+    try plain(out, "loopback; beyond it, put an authenticating reverse proxy in front.");
+
     try heading(out, sty, "Examples:");
     try example(out, sty, "nuclis serve", "listen on 127.0.0.1:9000, nothing open yet");
     try example(out, sty, "curl -s localhost:9000/v1/decisions -d @ticket.json", "one decision request");

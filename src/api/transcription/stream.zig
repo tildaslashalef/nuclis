@@ -972,7 +972,6 @@ fn languageProblem(err: anyerror) []const u8 {
     };
 }
 
-/// The final's words: the transcriber's tokens, specials left out.
 /// The utterance's words, grouped as a file's are; in `arena`.
 fn wordsOf(arena: std.mem.Allocator, t: *const asr.Transcriber) ![]const Word {
     var segmenter: transcript.Segmenter = .init(arena, null);

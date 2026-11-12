@@ -31,7 +31,7 @@ pub const Located = struct {
     bytes: u64 = 0,
 };
 
-pub const Error = error{ WrongKind, ModelNotFound, ModelFileNotFound, MissingHome, InvalidRegistryEntry, OutOfMemory };
+pub const Error = error{ WrongKind, ModelNotFound, ModelFileNotFound, MissingHome, PathEscapesModels, InvalidRegistryEntry, OutOfMemory };
 
 /// The directory `name` names for a model of `kind`, without touching the
 /// disk. A model of another kind is `WrongKind`; with `paths` false (the
@@ -48,7 +48,7 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
             diag.set("models.{s} locates nothing: give it path, or repo and file", .{name});
             return error.InvalidRegistryEntry;
         };
-        const full = try models(arena, root, located);
+        const full = try catalog.underModels(arena, root, located, diag);
         // A path to the weights names their directory.
         return .{ .directory = if (std.mem.endsWith(u8, full, ".safetensors")) std.fs.path.dirname(full) orelse full else full };
     }
@@ -57,7 +57,7 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
             diag.set("{s} is a {s} model of the catalogue; `{s}` opens a {s} model ({s})", .{ name, catalog.kindName(entry.kind), catalog.command(kind.model()), @tagName(kind), defaultName(kind) });
             return error.WrongKind;
         }
-        return .{ .directory = try catalog.audioDirectory(arena, try models(arena, root, ""), entry), .entry = entry, .bytes = entry.totalSize() };
+        return .{ .directory = try catalog.audioDirectory(arena, try catalog.underModels(arena, root, "", diag), entry), .entry = entry, .bytes = entry.totalSize() };
     }
     if (catalog.renamedAudio(name)) |now| {
         diag.set("{s} is now {s}: a speech model's name says CustomVoice or Base", .{ name, now });
@@ -72,7 +72,7 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
         diag.set("{s} is not a {s} model of the registry or the catalogue (`GET /v1/models` lists them)", .{ name, @tagName(kind) });
         return error.ModelNotFound;
     }
-    return .{ .directory = try models(arena, root, name) };
+    return .{ .directory = try catalog.underModels(arena, root, name, diag) };
 }
 
 /// Whether a located speech model is one GGUF rather than a directory.
@@ -115,12 +115,6 @@ fn defaultName(kind: Kind) []const u8 {
         .speech => "qwen3-tts-1.7b-customvoice",
         .transcription => "nemotron-asr-0.6b",
     };
-}
-
-fn models(arena: std.mem.Allocator, root: ?[]const u8, path: []const u8) ![]const u8 {
-    if (std.fs.path.isAbsolute(path) or std.mem.startsWith(u8, path, "./") or std.mem.startsWith(u8, path, "../")) return arena.dupe(u8, path);
-    const dir = root orelse return error.MissingHome;
-    return std.fs.path.join(arena, &.{ dir, "models", path });
 }
 
 /// What a speech checkpoint on disk says about itself. Strings live in

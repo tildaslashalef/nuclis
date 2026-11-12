@@ -6,6 +6,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const style = @import("../tui/style.zig");
+const printable = @import("../text.zig").printable;
 
 pub const Entry = struct {
     /// Null when the request never parsed (a refused connection, a bad head).
@@ -53,14 +54,17 @@ pub fn format(w: *std.Io.Writer, sty: style.Style, e: Entry, local_ms: u64) std.
     const day_ms = local_ms % std.time.ms_per_day;
     try w.print("{s}{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}{s} ", .{ sty.on(.dim), day_ms / std.time.ms_per_hour, day_ms / std.time.ms_per_min % 60, day_ms / std.time.ms_per_s % 60, day_ms % 1000, off });
     const method = if (e.method) |m| @tagName(m) else "-";
-    try w.print("{s}{s: <6}{s} {s}{s: <16}{s} ", .{ sty.on(.bold), method, off, sty.on(.code), e.path, off });
+    // A client names the path and may put terminal escapes in it.
+    var path_buffer: [512]u8 = undefined;
+    try w.print("{s}{s: <6}{s} {s}{s: <16}{s} ", .{ sty.on(.bold), method, off, sty.on(.code), printable(&path_buffer, e.path), off });
     const code = @backingInt(e.status);
     const status_kind: style.Kind = if (code < 300) .success else if (code < 500) .warning else .error_text;
     try w.print("{s}{d}{s} ", .{ sty.on(status_kind), code, off });
     var latency: [16]u8 = undefined;
     var size: [16]u8 = undefined;
     try w.print("{s}{s: >9}{s} {s}{s: >8}{s}", .{ sty.on(.number), formatDuration(&latency, e.duration_ns), off, sty.on(.dim), formatSize(&size, e.bytes_out), off });
-    if (e.note.len > 0) try w.print("  {s}{s}{s}", .{ sty.on(if (code < 400) .dim else status_kind), e.note, off });
+    var note_buffer: [512]u8 = undefined;
+    if (e.note.len > 0) try w.print("  {s}{s}{s}", .{ sty.on(if (code < 400) .dim else status_kind), printable(&note_buffer, e.note), off });
     try w.writeByte('\n');
 }
 
@@ -118,4 +122,7 @@ test "a line: time, method, path, status, latency, size, note" {
     w = .fixed(&buffer);
     try format(&w, .none, .{ .method = null, .path = "-", .status = @fromBackingInt(529), .duration_ns = 42_000, .bytes_out = 3 * 1024 * 1024 }, 0);
     try std.testing.expectEqualStrings("00:00:00.000 -      -                529  0.042 ms   3.0 MB\n", w.buffered());
+    w = .fixed(&buffer);
+    try format(&w, .none, .{ .method = .GET, .path = "/\x1b[2J", .status = .not_found, .duration_ns = 0, .bytes_out = 0, .note = "no \x1b]0;x\x07" }, 0);
+    try std.testing.expect(std.mem.indexOfScalar(u8, w.buffered(), 0x1b) == null);
 }

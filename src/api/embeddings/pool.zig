@@ -55,7 +55,7 @@ pub const Pool = struct {
         const bytes = (try std.Io.Dir.cwd().statFile(io, path, .{})).size;
         if (self.budget) |b| {
             // Asked before anything closes, as the decision pool does.
-            try b.canFit(io, bytes);
+            try b.canFit(io, bytes, null);
             const leaving: ?[]const u8 = if (self.slot) |s| s.path else null;
             try b.reserve(io, bytes -| if (leaving) |key| b.bytesOf(io, key) else 0, leaving);
         }
@@ -75,13 +75,19 @@ pub const Pool = struct {
     }
 
     /// GPU worker only, after a pass prepared its inputs: counts the media
-    /// encoders the open model built since.
+    /// encoders the open model built since. A refusal other than `Pinned`
+    /// closes the model, which the caller must not use again.
     pub fn account(self: *Pool, io: std.Io) !void {
         const s = if (self.slot) |*s| s else return;
         const media = s.embedder.mediaBytes();
         if (media == s.media) return;
+        // Stored only once counted, so a refusal is asked again next time.
+        if (self.budget) |b| b.resize(io, s.path, s.bytes + media) catch |err| {
+            // Pinned waits for the room; too large closes the model, encoder and all.
+            if (err != error.Pinned) self.close(io);
+            return err;
+        };
         s.media = media;
-        if (self.budget) |b| try b.resize(io, s.path, s.bytes + media);
     }
 
     /// GPU worker only: closes the open model, if any, and leaves the budget.

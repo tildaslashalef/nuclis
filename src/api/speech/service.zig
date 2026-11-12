@@ -207,10 +207,15 @@ pub const Service = struct {
             fields.ms("voice_ready_ms", @intCast(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds()));
         }
 
-        const job = arena.create(Job) catch {
+        // Everything from the arena first: once the pipe exists, a failure must free it.
+        const created = arena.create(Job) catch null;
+        const note_buffer = arena.alloc(u8, 512) catch null;
+        const message_buffer = arena.alloc(u8, 1024) catch null;
+        if (created == null or note_buffer == null or message_buffer == null) {
             if (ready) |*r| r.deinit(self.gpa);
             return internal(arena);
-        };
+        }
+        const job = created.?;
         job.* = .{
             .service = self,
             .request = parsed,
@@ -224,8 +229,8 @@ pub const Service = struct {
                 if (ready) |*r| r.deinit(self.gpa);
                 return internal(arena);
             },
-            .note_buffer = arena.alloc(u8, 512) catch return internal(arena),
-            .message_buffer = arena.alloc(u8, 1024) catch return internal(arena),
+            .note_buffer = note_buffer.?,
+            .message_buffer = message_buffer.?,
             .peer = peer,
             .fields = fields,
         };
@@ -928,7 +933,7 @@ fn startFailure(job: *Job, err: anyerror) ApiError {
         error.InstructionUnsupported => apiError(arena_message, .bad_request, "instructions_unsupported", "instructions", "{s} performs no instruction; qwen3-tts-1.7b-customvoice does", .{job.name}),
         error.EmptyText => apiError(arena_message, .bad_request, "invalid_request", "input", "\"input\" has no text to speak", .{}),
         error.ModelTooLarge => apiError(arena_message, .bad_request, "model_too_large", "model", "{s} needs {d:.1} GiB, more than the server's budget leaves beside the pinned models (serve.memory_bytes, --memory, --pin)", .{ job.name, @as(f64, @floatFromInt(job.bytes)) / (1 << 30) }),
-        error.Pinned => apiError(arena_message, .service_unavailable, "busy", "model", "overloaded: {s} needs memory a running request holds; retry shortly", .{job.name}),
+        error.Pinned => apiError(arena_message, http.overloaded, "busy", "model", "overloaded: {s} needs memory a running request holds; retry shortly", .{job.name}),
         else => apiError(arena_message, .internal_server_error, "model_failed", "model", "{s} did not speak: {s}", .{ job.name, @errorName(err) }),
     };
 }

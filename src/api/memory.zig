@@ -190,17 +190,19 @@ pub const Budget = struct {
     }
 
     /// Whether `reserve(bytes)` can succeed: everything neither in use nor
-    /// kept may be closed. No side effects, so a caller can ask before
+    /// kept may be closed, and `replacing`, which the caller closes itself,
+    /// counts for nothing. No side effects, so a caller can ask before
     /// closing its own.
-    pub fn canFit(self: *Budget, io: std.Io, bytes: u64) Error!void {
+    pub fn canFit(self: *Budget, io: std.Io, bytes: u64, replacing: ?[]const u8) Error!void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
-        const kept = self.keptLocked();
-        if (bytes > self.limit or kept + bytes > self.limit) return self.refuseLocked(bytes, null);
+        var kept: u64 = 0;
         var pinned: u64 = 0;
-        for (self.entries.items) |e| if (e.pinned and !e.kept) {
-            pinned += e.bytes;
-        };
+        for (self.entries.items) |e| {
+            if (replacing) |r| if (std.mem.eql(u8, e.key, r)) continue;
+            if (e.kept) kept += e.bytes else if (e.pinned) pinned += e.bytes;
+        }
+        if (bytes > self.limit or kept + bytes > self.limit) return self.refuseLocked(bytes, replacing);
         if (kept + pinned + bytes > self.limit) return error.Pinned;
     }
 
@@ -258,7 +260,8 @@ pub const Budget = struct {
         if (self.findLocked(key)) |e| e.pinned = pinned;
     }
 
-    pub const Model = struct { kind: Kind, name: []const u8, bytes: u64, pinned: bool = false };
+    /// `pinned` is kept for the server's life (`--pin`); `in_use`, held by a request now.
+    pub const Model = struct { kind: Kind, name: []const u8, bytes: u64, pinned: bool = false, in_use: bool = false };
 
     /// The resident models, most recently used first, in `arena`; any task.
     pub fn snapshot(self: *Budget, io: std.Io, arena: std.mem.Allocator) ![]Model {
@@ -274,7 +277,7 @@ pub const Budget = struct {
         }.newer);
         for (order, out) |i, *m| {
             const e = self.entries.items[i];
-            m.* = .{ .kind = e.kind, .name = try arena.dupe(u8, e.name), .bytes = e.bytes, .pinned = e.kept };
+            m.* = .{ .kind = e.kind, .name = try arena.dupe(u8, e.name), .bytes = e.bytes, .pinned = e.kept, .in_use = e.pinned };
         }
         return out;
     }
@@ -442,7 +445,7 @@ test "a pinned model is never closed; too large is refused at once" {
     // 25 more: laya goes, qwen stays, and 70 + 25 fits.
     try budget.reserve(io, 25, null);
     try std.testing.expectEqualStrings("laya", fake.closed.items[0]);
-    try std.testing.expectError(error.Pinned, budget.canFit(io, 40));
+    try std.testing.expectError(error.Pinned, budget.canFit(io, 40, null));
     try std.testing.expectError(error.Pinned, budget.reserve(io, 40, null));
     budget.pin(io, "qwen", false);
     try budget.reserve(io, 40, null);
@@ -482,7 +485,7 @@ test "kept models are never closed; what cannot fit beside them is too large" {
     try budget.reserve(io, 15, null);
     try std.testing.expectEqualStrings("laya", fake.closed.items[0]);
     // 31 more than the kept 70 leave: too large, at once, nothing closed.
-    try std.testing.expectError(error.ModelTooLarge, budget.canFit(io, 31));
+    try std.testing.expectError(error.ModelTooLarge, budget.canFit(io, 31, null));
     try std.testing.expectError(error.ModelTooLarge, budget.reserve(io, 31, null));
     try std.testing.expectEqual(@as(usize, 1), fake.closed.items.len);
     // 30 fits once the unkept transcription model closes.
@@ -491,7 +494,7 @@ test "kept models are never closed; what cannot fit beside them is too large" {
     try std.testing.expectEqual(@as(u64, 70), budget.resident(io));
     // A kept model in use is still only kept: in use adds nothing to wait for.
     budget.pin(io, "e4b", true);
-    try budget.canFit(io, 30);
+    try budget.canFit(io, 30, null);
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const models = try budget.snapshot(io, arena_state.allocator());
@@ -523,7 +526,7 @@ test "a refusal says what was needed and what the kept models left; counts are k
         try budget.keep(&.{ "lm", "voice" });
         budget.load(io, path);
         try budget.add(io, .language, "lm", "lm", 60, fake.closer());
-        try std.testing.expectError(error.ModelTooLarge, budget.canFit(io, 45));
+        try std.testing.expectError(error.ModelTooLarge, budget.canFit(io, 45, null));
         try std.testing.expectEqual(Budget.Refusal{ .needed = 45, .free = 40 }, budget.refusal(io).?);
         // Grown past the room once open: the whole count is what it needed.
         try budget.add(io, .speech, "/m/voice", "voice", 30, fake.closer());

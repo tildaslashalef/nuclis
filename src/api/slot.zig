@@ -65,8 +65,8 @@ pub fn Slot(comptime Model: type, comptime kind: memory.Kind) type {
             const started = std.Io.Clock.awake.now(io);
             if (self.budget) |b| {
                 // Asked before anything closes, as the other pools do.
-                try b.canFit(io, bytes);
                 const leaving: ?[]const u8 = if (self.current) |c| c.directory else null;
+                try b.canFit(io, bytes, leaving);
                 try b.reserve(io, bytes -| if (leaving) |key| b.bytesOf(io, key) else 0, leaving);
             }
             const owned_directory = try self.gpa.dupe(u8, directory);
@@ -198,4 +198,18 @@ test "one model at a time, counted in the budget, held models never closed" {
     try std.testing.expectError(error.ModelTooLarge, slot.acquire(io, "/m/c", "c", 101));
     try std.testing.expectEqual(@as(u64, 0), budget.resident(io));
     try std.testing.expectEqual(@as(?[]const u8, null), try slot.openName(io, arena_state.allocator()));
+}
+
+test "a kept model is replaced by another of its kind when the swap fits" {
+    const io = std.testing.io;
+    var budget: memory.Budget = .init(std.testing.allocator, 100);
+    defer budget.deinit();
+    try budget.keep(&.{"a"});
+    var slot: Slot(Counter, .speech) = .init(std.testing.allocator, Counter.open, Counter.close, .{ .metal = false });
+    slot.budget = &budget;
+    defer slot.deinit(io);
+    _ = try slot.acquire(io, "/m/a", "a", 60);
+    _ = try slot.acquire(io, "/m/b", "b", 70);
+    try std.testing.expect(slot.isOpen(io, "/m/b"));
+    try std.testing.expectEqual(@as(u64, 70), budget.resident(io));
 }

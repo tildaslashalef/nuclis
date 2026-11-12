@@ -12,7 +12,7 @@ made, beside a chat generation, in a built-in speaker, a saved voice
 cloned from a clip, or a voice described in words. This page
 is the reference for client authors; it assumes nothing about the code.
 
-- [Running the server](#running-the-server), [memory](#memory)
+- [Running the server](#running-the-server), [memory](#memory), [who may use it](#who-may-use-the-server)
 - [Conventions](#conventions)
 - [Errors](#errors)
 - [Decisions](#decisions): [`POST /v1/systemone`](#post-v1systemone),
@@ -43,7 +43,7 @@ nuclis serve                           # http://127.0.0.1:9000/v1, nothing open 
 
 | Option | Meaning |
 | --- | --- |
-| `--host <ip>` | the address to listen on: an IP literal (`127.0.0.1`, `::1`, `0.0.0.0`) or `localhost`; default `serve.host`, `127.0.0.1`. Any address beyond loopback prints a warning: there is no authentication. |
+| `--host <ip>` | the address to listen on: an IP literal (`127.0.0.1`, `::1`, `0.0.0.0`) or `localhost`; default `serve.host`, `127.0.0.1`. Any address beyond loopback prints a warning: there is no authentication ([trust](#who-may-use-the-server)). |
 | `--port <n>` | default `serve.port`, `9000` |
 | `--model <name>` | a model opened before the server listens, of any kind: a decision, language, embedding, speech, or transcription model by registry or catalogue name, or a decision checkpoint's directory; repeated, at most 2 decision, 1 language, 1 embedding, 1 speech, and 1 transcription model (what the server keeps open). Without it nothing opens at start: each model opens on its first request (`decide.model` for a decision request that names none, `embed.model` for an embeddings request, `speech.model` for a speech request) |
 | `--pin <name>` | a model opened at start, as `--model`, that the memory budget never closes ([memory](#memory)); repeated, at most 8; replaces `serve.pin` |
@@ -117,7 +117,9 @@ model is opened by, and it guards against the budget, not against a
 request: the server keeps one model of each kind but decisions, so a
 request naming another language or speech model still replaces the
 pinned one in its slot, and the pin applies again when its name reopens.
-`GET /v1/health` marks each resident model's `pinned`.
+`GET /v1/health` marks each resident model's `pinned`, and `in_use` while a
+request holds it (a chat request holds its model across every hosted web
+round).
 
 **Before a model opens**, `GET /v1/models` says what it will count in
 each entry's `memory_bytes`, with `memory_source` saying how it knows:
@@ -182,6 +184,15 @@ or the error):
 17:34:36.008 POST   /v1/decisions    422  0.062 ms    116 B  invalid_request: question a: unknown type "maybe"; use one of choice, noul, score
 ```
 
+### Who may use the server
+
+`nuclis serve` has no authentication: it listens on loopback by default,
+and any client that can connect may call every route and name any model
+of the registry or the catalogue (never a path). That is the contract,
+not an oversight: bind it beyond loopback only on a network you trust,
+and put a reverse proxy that authenticates in front of it for anything
+else.
+
 ## Conventions
 
 - Every route is under `/v1`. Request and response bodies are JSON
@@ -198,6 +209,9 @@ or the error):
 | request line and headers | 16 KiB | `431 headers_too_large`, connection closed |
 | request body | 4 MiB; 32 MiB for `/v1/chat/completions` and `/v1/embeddings`; 256 MiB for `/v1/audio/transcriptions` (`serve.transcription_bytes`) | `413 payload_too_large`, connection closed |
 | open connections | 64 | `529 busy`, connection closed |
+| the request line and headers to arrive, from the connection's start or the previous response (an idle keep-alive connection included) | 10 s | connection closed, nothing sent; the log says `408` |
+| a pause inside a request body | 30 s | connection closed, nothing sent |
+| one write to a client that does not read (a response, a stream's chunk, a WebSocket frame) | 30 s | connection closed; a WebSocket session ends without a close frame, which a client that stopped reading could not take |
 | decision requests waiting for the GPU | 64 | `529 busy` |
 | embedding requests waiting for the GPU | 64 | `529 busy` |
 | file transcriptions waiting for the GPU (each holds its upload) | 16 | `529 busy` |
@@ -238,7 +252,7 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 405 | `method_not_allowed` | the path exists, the method does not (`HEAD` is answered as `GET`) |
 | 413 | `payload_too_large` | the body exceeds 4 MiB (32 MiB for chat and embeddings, 256 MiB or `serve.transcription_bytes` for file transcriptions) |
 | 415 | `unsupported_encoding` | a compressed body (`content-encoding`) |
-| 417 | `bad_request` | an `expect` other than `100-continue` |
+| 417 | `bad_request` | an `expect` other than `100-continue`, on any method; the connection closes |
 | 422 | `invalid_json` | the body is not JSON |
 | 422 | `invalid_request` | the JSON is not a valid request: a missing or extra field, a malformed question, `states` sent to `systemone`, a text that cannot be tokenized |
 | 422 | `file_state_refused` | a state of the form `{"file": path}`; send the text |
@@ -276,7 +290,7 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 500 | `malformed_tool_call` | chat: the model wrote a tool call that does not parse (Gemma 4), so nothing ran and there is no answer; streamed, it is the stream's error line. Sending the request again usually works |
 | 500 | `internal`, `invalid_registry_entry` | a fault on the server's side |
 | 503 | `shutting_down` | the server is stopping |
-| 529 | `busy` | 64 requests wait already, or 64 connections are open |
+| 529 | `busy` | 64 requests wait already, 64 connections are open, or the memory a model needs is held by a running request (retry shortly) |
 | 529 | `timeout` | the request waited `serve.timeout` (300 s) without reaching the GPU |
 
 ## Decisions
@@ -1539,7 +1553,7 @@ A language model's:
 | `images` | its entry names a projector |
 | `audio` | it hears a request's `input_audio`: its projector is on disk and carries an audio encoder (Gemma 4 E4B's does, the 12B's does not) |
 | `efforts` | the reasoning levels its template renders, in the profile's names: `off` is the request's `none` (`reasoning_effort` accepts both) |
-| `features` | `tools` (native function calling; every profile renders it), `hosted_tools` (`["web_search", "web_fetch"]` when the server has web, else `[]`), `reasoning` (more than one effort), `streaming`, `structured_output` (`false`: a JSON `response_format` needs constrained decoding, which nuclis has not) |
+| `features` | `tools` (native function calling; every profile renders it), `hosted_tools` (`["web_search", "web_fetch"]` when the server has web, with `"web_context"` when its search service offers it, else `[]`), `reasoning` (more than one effort), `streaming`, `structured_output` (`false`: a JSON `response_format` needs constrained decoding, which nuclis has not) |
 | `limits` | what a request may carry: `max_output_tokens` (16,384), `max_tools` (64), `max_images` and `max_image_bytes` (8, 16 MiB), `max_audio_clips`, `max_audio_bytes`, and `max_audio_seconds` (8, 16 MiB, 30) |
 | `detail` | for a model on disk, the same as `nuclis model ls`: architecture, quantization, and size, or the file's name |
 | `options` | `reasoning_effort` (its efforts; default `agent.think`, the profile's nearest), `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repetition_penalty` (the parser's bounds; defaults the profile's for that effort after `generation.sampling` and the entry's overrides, with `by_effort`), `max_tokens` (1–16,384; default the model's `max_tokens`), `seed`, `tool_choice`, `tools` (the tool types: `function`, and `web_search`, `web_fetch` with web), `stream` |
@@ -1605,7 +1619,8 @@ A speech or transcription model's:
 `loaded` lists the open decision models, `language` the open language
 model (null before the first chat request), `memory` the budget
 (`limit`, `resident`, and each resident model's `name`, `kind`, and
-`bytes`, most recently used first). `queue` is the GPU's
+`bytes`, most recently used first; `pinned` when `--pin` keeps it,
+`in_use` while a request holds it, so the budget cannot close it). `queue` is the GPU's
 (`completed` counts GPU items, a batch or a completion being one);
 `decisions.waiting` is decision requests not yet in a pass,
 `batches` and `requests` the passes run and the requests they answered
