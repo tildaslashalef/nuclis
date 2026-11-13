@@ -1,6 +1,9 @@
 # Muse Glimmer 30B: facts from the artifact and the reference
 
-**No gates.** This family left the gate registry when its file left the test machine. The `make gate` commands below name gates as of `v0.11.0`; the measurements stand as recorded.
+**No gates.** The `muse-glimmer-30b` entry is legacy since 2026-11-10: it
+still pulls, verifies, and runs by name, but nothing gates it. The `make
+gate` commands below name gates as of `v0.11.0`; the measurements stand as
+recorded.
 
 Meta's dense 30B chat model (`general.architecture = muse-glimmer`): a
 period-4 sliding/global layer pattern with NoPE on the global layers, an
@@ -11,8 +14,9 @@ read on 2026-09-19 from the pulled UD-Q4_K_XL file with
 [`fixtures/muse-glimmer-30b.json`](../../inference/src/models/fixtures/muse-glimmer-30b.json))
 and from the pinned llama.cpp reference `7620399`
 (`src/models/muse-glimmer.cpp`, `src/llama-hparams.cpp`,
-`src/llama-vocab.cpp`, `src/unicode.cpp`), which is read as the semantics
-reference and used as the numerical oracle, never copied. The file carries
+`src/llama-vocab.cpp`, `src/unicode.cpp`), which was read as the semantics
+reference and used as the numerical oracle at bring-up, never copied
+([README.md § 4](README.md#4-validate-against-nuclis-itself)). The file carries
 no per-layer arrays and no epsilon, scale, or gate keys beyond the ones
 listed under *Metadata*: every "folded at conversion" and "hard-coded"
 fact below comes from the reference source, and the sentence says so.
@@ -30,14 +34,14 @@ fact below comes from the reference source, and the sentence says so.
 | `general.file_type` | 15 (Q4_K_M base; `quantize.imatrix.*` names an imatrix over 416 entries, 166 chunks) |
 
 Companions, pulled and verified the same day: `mmproj-kquant.gguf`
-(1,400,328,928 B, SHA-256 `f48b4523…`, the `mmproj` role, not executed) and
+(1,400,328,928 B, SHA-256 `f48b4523…`, the `mmproj` role, run by
+`vision/muse_glimmer.zig` since 2026-09-23) and
 `dflash-kquant.gguf` (1,631,205,312 B, `27d9a805…`, a DFlash drafter carried
-under the `mtp` role; bound and run by the CPU reference since [MODL-20](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-20--muse-glimmer-dflash-drafter-the-companion-the-cpu-reference-and-its-trace-the-metal-plan-a-positive-verdict-2026-09-21-two-sessions),
+under the `draft` role; run on both backends since 2026-09-21,
 [speculative-decoding.md § The Muse Glimmer DFlash drafter](../engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-2026-09-21)).
 Digests and the rest of the repository's listing are in
-[catalogue.md](catalogue.md). The quantization choice (Meta's "K-Quant-17GB"
-tier, 1.0 % measured degradation, wide headroom on 48 GB) is recorded in the
-plan that chose it and needs no restating here.
+[catalogue.md](catalogue.md). The quantization is Meta's "K-Quant-17GB"
+tier (1.0 % measured degradation by Meta's account, wide headroom on 48 GB).
 
 ## Metadata
 
@@ -122,8 +126,8 @@ loader); `attn_q_norm` absorbs the model's `qk_scale_factor` and
    20 · tanh(logits / 20)`.
 
 The reference keeps the sliding layers' cache in a separate window-sized
-cache (`build_attn_inp_kv_iswa`); the plan for the Metal unit keeps the
-full context on every layer and masks. It also exposes each layer's input
+cache (`build_attn_inp_kv_iswa`); nuclis keeps the full context on every
+layer and masks. It also exposes each layer's input
 residual (`t_layer_inp`) for the DFlash drafter; the drafter keeps five of
 them (layers 2, 14, 26, 38, 50) per consumed row
 ([speculative-decoding.md § The Muse Glimmer DFlash drafter](../engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-2026-09-21)).
@@ -192,8 +196,8 @@ without a regex engine:
 4. **Whitespace.** As qwen35: a run ending at its last CR/LF; else all but
    the last whitespace when text follows; else the run.
 
-The boundaries were read with `scripts/reference-split.cpp`, a harness
-linking the reference's `unicode.cpp` and `unicode-data.cpp` and printing
+The boundaries were read at bring-up with a harness (removed; at tag
+`v0.11.0`) linking the reference's `unicode.cpp` and `unicode-data.cpp` and printing
 `unicode_regex_split` pieces, over some sixty adversarial strings (token
 ids from `/tokenize` cannot show them: `WORLD` becomes `W`,`ORLD` through
 merges either way); the splitter's unit test pins those pieces. The shared category table
@@ -205,8 +209,8 @@ holds the reference server's ids for 20 standalone strings (the shared set
 plus the channel markers, with `parse_special` on and off) and 28 rendered
 prompts; `zig build test-vocabulary -- <file>` matches all of them
 (2026-09-19: 202,048 tokens, 439,802 merges, 125 distinct normal token
-pieces round-trip through BPE). The check selects the Muse expectations by
-template digest until the profile exists.
+pieces round-trip through BPE). The check selects the Muse expectations
+through the profile the template digest names.
 
 ## Chat template
 
@@ -215,9 +219,9 @@ template digest until the profile exists.
 trailing newline. It differs from the Hub repository's
 `chat_template.jinja`; the profile pins the file's digest as always.
 Facts the fixture capture confirmed, which `profiles/muse_glimmer.zig`
-implements ([MODL-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-13--muse-glimmer-30b-profile-text-reasoning-channel-catalogue-acceptance-2026-09-19); the clauses are in
+implements (the clauses are in
 [prompt-profile.md § Muse Glimmer](../engine/prompt-profile.md#muse-glimmer-muse_glimmer),
-the tool protocol in [AGNT-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-10--muse-glimmer-atem-tool-calling-rendering-decoding-fixtures-2026-09-19)):
+the tool protocol in [tool-calling.md](../engine/tool-calling.md#muse-glimmer-atem-calls-as-their-own-messages)):
 
 - The prompt opens with `bos_token` as text, but the server's
   `/apply-template` output omits it (its tokenizer adds BOS): the fixture
@@ -238,8 +242,8 @@ the tool protocol in [AGNT-10](https://github.com/tildaslashalef/nuclis/blob/v0.
   server defines `strftime_now`, `Current date: 2026-09-19.` on capture
   day (the fixture's `single_*`, `history_*`, `continued_*`, `unicode_*`,
   and `empty_*` cases carry that line). The profile decision of
-  2026-09-16 renders the default without the date line; the [MODL-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-13--muse-glimmer-30b-profile-text-reasoning-channel-catalogue-acceptance-2026-09-19) test
-  must account for the captured line.
+  2026-09-16 renders the default without the date line; the profile's
+  fixture test accounts for the captured line.
 - The template has no branch for the `developer` role, but the reference
   sends it as `system`: every leading system or developer message is its
   own system turn, each with the strength and recipients lines (the
@@ -252,15 +256,15 @@ the tool protocol in [AGNT-10](https://github.com/tildaslashalef/nuclis/blob/v0.
 
 ## Reference oracle status
 
-The pinned reference `7620399` loads and runs the file (2026-09-19,
+The pinned reference `7620399` loaded and ran the file (2026-09-19,
 Metal, `-ngl 99`): `llama-completion -p "Hello," -n 16 --temp 0 -no-cnv`
-continues `Hello, I am trying to use the following code to create a new
+continued `Hello, I am trying to use the following code to create a new
 table in a database`; `--jinja --single-turn` on `Explain slices in Zig in
 one sentence.` renders the synthesized system turn and the model opens a
 `to=self` reasoning message. Smoke rates from those runs, not a baseline:
 prompt 87.9 tok/s over 64 tokens, generation 14.5 tok/s (68.9 ms per
 token). The server (`llama-server --ctx-size 2048 --parallel 1 --device
-MTL0 --n-gpu-layers 99`) is the fixture source.
+MTL0 --n-gpu-layers 99`) was the fixture source.
 
 ## CPU reference against the oracle (2026-09-19)
 
@@ -312,11 +316,11 @@ the schedule needed from the backend, and what it reused unchanged
 | Pre norms and q/k norms at 1e-5, post norms at 1e-8 | `nu_rmsnorm` (`Norm.eps`) | reused; the epsilon is per call |
 | RoPE, adjacent pairing over the whole 128-wide head, base 5e5, sliding layers only | `nu_rope`, `nu_rope_rows` | **extended**: a `pairing` parameter (`Backend.Pairing`, the CPU's enum) selects `(2i, 2i+1)`; the table is the same for either pairing |
 | Decode attention (32 over 2, width 128, scale 1/√128) | `nu_attention_decode` / `_h` | reused; the window is a cache-row slice (`firstVisible`), as in the CPU reference |
-| Prefill attention | `nu_attention_chunk` / `_h` with `window = 2048` on sliding layers | reused (the [MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11) window mask) |
+| Prefill attention | `nu_attention_chunk` / `_h` with `window = 2048` on sliding layers | reused (Gemma's window mask) |
 | Attention output gate `o ⊙ sigmoid(g)` | `nu_sigmoid_gate` | reused (the Qwen3.5 gate epilogue; here the gate is its own projection, stride 128, offset 0) |
 | Logit scale and soft-cap | `nu_scale`, `nu_softcap` | reused; the scale is one rounding before the tanh, where the reference folds it into the argument |
 
-The DFlash drafter ([MODL-20](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-20--muse-glimmer-dflash-drafter-the-companion-the-cpu-reference-and-its-trace-the-metal-plan-a-positive-verdict-2026-09-21-two-sessions)) adds no kernel: the encoder and the block's
+The DFlash drafter adds no kernel: the encoder and the block's
 projections are the same batched matmuls, the injected keys use the same
 `nu_rope_rows` with the NeoX (split-half) pairing at the file's 5e5 base,
 and the block's **non-causal** attention — every row sees the anchor and
@@ -358,13 +362,13 @@ relative RMS (recorded bounds 5e-2 / 1e-2), the generic F32 tiles at
 3.7e-5 / 4.1e-6 (the schedule itself), the F16 cache stepped at 2.4e-3 /
 2.6e-4 and chunked at 5.0e-3 / 6.0e-4 (bounds 2e-2 / 2e-3), argmax 75 of
 75 on every path. The gap between the half tiles and the F32 tiles is the
-specialized matmul's half-operand rounding ([ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09)), as on Gemma.
+specialized matmul's half-operand rounding, as on Gemma.
 
 **First-look rates** (`nuclis bench`, Metal, greedy, context 2,048, three
 measured runs after one warmup; Apple M4 Pro 48 GB, Zig 0.16.0
-ReleaseSafe, 2026-09-19; not the acceptance record, which [MODL-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-13--muse-glimmer-30b-profile-text-reasoning-channel-catalogue-acceptance-2026-09-19) takes
-against the reference harness). The prompt is raw (`--raw`) because the
-profile does not exist yet:
+ReleaseSafe, 2026-09-19; not the acceptance record, which was taken later
+that day against the reference harness). The prompt is raw (`--raw`)
+because the profile did not exist yet:
 
 | Workload | Prefill tok/s | Decode tok/s | First token |
 | --- | ---: | ---: | ---: |
@@ -379,7 +383,7 @@ Decode is 71 % of the reference (15.87 GB of weights at 9.99 tok/s is
 Qwen `make bench` is unchanged by the shared-kernel change (39.75 /
 10.44 tok/s the same day; its recorded spread is 10.36–10.47). The
 decode gap is wider than Gemma's (81 %) or Qwen's; the per-kernel profile
-below was its starting point, and [KERN-15](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-15--split-k-decode-matvec-measured-behind-the-single-pass-closed-negative-2026-09-21) (2026-09-21) then measured the
+below was its starting point, and the split-K study (2026-09-21) then measured the
 row-poor matvecs' split-K candidate behind the single pass: the gap is the
 Q4_K kernel's per-block cost, not launch parallelism, and nothing routes
 to the split path.
@@ -408,21 +412,20 @@ four separate outputs need nine (unmerged, the 256-row k and v matvecs
 ran at 52 GB/s; merging them moved decode from 9.88 to 9.99 tok/s). The
 matvecs read at 145–175 GB/s where the head's Q5_K rows reach 208 and
 the reference averages 223 across the whole token, so the gap is spread
-over the large Q4_K matrices rather than sitting in one kernel; that is
-the performance theme's starting point, not this unit's.
+over the large Q4_K matrices rather than sitting in one kernel.
 
-**[KERN-15](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-15--split-k-decode-matvec-measured-behind-the-single-pass-closed-negative-2026-09-21) verdict on the row-poor shapes (2026-09-21).** Split-K twins of
+**Split-K verdict on the row-poor shapes (2026-09-21).** Split-K twins of
 the Q4_K/Q5_K matvec and of the plain segment merge closed negative:
 measured against the single-pass control they lose 2–10 % on every Q4_K
 plain shape and the loss grows with the split count, while the effective
 in-model 159 GB/s is the Q4_K kernel's ~0.9 ns per 256-value block with 144
 bytes in it (`matvec_q4_k` here at 146.9 and 151.8 GB/s) — not the 6,656
-row count the unit suspected (Q5_K's 176-byte blocks stream 175–208 at the
+row count suspected (Q5_K's 176-byte blocks stream 175–208 at the
 same geometry). Nothing routes to the split path; the kernels stay as the
 measured fixture and the exactness gates. The remaining per-family lever is
-per-block arithmetic on the Q4_K kernels, and the unit's acceptance — the two row-poor shapes ≥ 190 GB/s and
-Muse decode at 512 ≥ 10.5 tok/s — was not met, so the [MODL-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-13--muse-glimmer-30b-profile-text-reasoning-channel-catalogue-acceptance-2026-09-19) acceptance
-record above stays the current one. The sweep is
+per-block arithmetic on the Q4_K kernels, and the study's bar — the two row-poor shapes ≥ 190 GB/s and
+Muse decode at 512 ≥ 10.5 tok/s — was not met, so the 2026-09-19
+acceptance record stayed the family's. The sweep is
 [benchmarks § Split-K matvec sweep](../benchmarks/history.md#split-k-matvec-sweep-2026-09-21);
 the kernel note is
 [metal-backend.md § Split-K](../engine/metal-backend.md#split-k-2026-09-21-closed-negative).
@@ -439,29 +442,26 @@ The speed loop's interleaved A/B (`make speed ARGS='--contexts
 families: 32,639 now decodes within 2 % of the 512 rate (11.70 on
 `fcebd2b`, one warmup and three runs). The acceptance record's 8.08 /
 7.19 decode right after their own prefill and are not comparable with
-these rates; the README's tables keep them until the next release
-record.
+these rates.
 
 ## Status
 
-[MODL-11](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-11--muse-glimmer-30b-artifact-pin-facts-tokenizer-binding-cpu-reference-2026-09-19) closed on 2026-09-19: the artifact is pinned and verified, the
-facts recorded, the `llama4` splitter native and matched to the
-reference, the adapter binds the file (`nuclis model inspect` says
-*supported*), and the CPU reference matches the oracle traces at the
-bring-up thresholds with the same greedy token. [MODL-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-12--muse-glimmer-30b-metal-plan-2026-09-19) closed the same
-day: the Metal plan matches the traces in both cache precisions, passes
-the generation check, and runs the file at 9.9 tok/s. [MODL-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-13--muse-glimmer-30b-profile-text-reasoning-channel-catalogue-acceptance-2026-09-19) closed the
-same day with the profile (`profiles/muse_glimmer.zig`, the channel-grammar
-decoder, the `high` effort), the catalogue pin, and the acceptance record
+Brought up on 2026-09-19 against the pinned llama.cpp build: the artifact
+pinned and verified, the `llama4` splitter native, the adapter binding the
+file (`nuclis model inspect` says *supported*), the CPU reference and the
+Metal plan within the bring-up thresholds of the reference's traces in both
+cache precisions, the profile (`profiles/muse_glimmer.zig`, the
+channel-grammar decoder, the `high` effort), the ATEM tool protocol
+([tool-calling.md](../engine/tool-calling.md#muse-glimmer-atem-calls-as-their-own-messages)),
+and the acceptance record
 ([benchmarks](../benchmarks/history.md#muse-glimmer-30b-acceptance-record-2026-09-19):
 9.60 tok/s decode at 512 tokens, 6.62 at 32,639, against the reference's
-13.69 and 9.98), and [AGNT-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-10--muse-glimmer-atem-tool-calling-rendering-decoding-fixtures-2026-09-19) with the ATEM tool protocol
-([tool-calling.md](../engine/tool-calling.md#muse-glimmer-atem-calls-as-their-own-messages)).
-The family is complete for text and images: the vision projector closed in
-[MODL-23](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-23--muse-glimmers-windowed-vision-encoder-on-both-executors-the-image-token-cap-2026-09-23) ([engine/vision.md](../engine/vision.md)). The DFlash drafter closed in [MODL-20](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-20--muse-glimmer-dflash-drafter-the-companion-the-cpu-reference-and-its-trace-the-metal-plan-a-positive-verdict-2026-09-21-two-sessions)
-(2026-09-21): the CPU reference and its pinned trace in session 1, the
-Metal plan and the acceptance record in session 2 — the pair measures
-1.163–1.234× at draft lengths 4, 8, and 15
+13.69 and 9.98). The vision projector followed on 2026-09-23
+([engine/vision.md](../engine/vision.md)) and the DFlash drafter on
+2026-09-21, the pair measuring 1.163–1.234× at draft lengths 4, 8, and 15
 ([benchmarks § The Muse Glimmer DFlash draft pair](../benchmarks/history.md#the-muse-glimmer-dflash-draft-pair-2026-09-21);
 facts in
 [speculative-decoding.md § The Muse Glimmer DFlash drafter](../engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-2026-09-21)).
+The entry is legacy since 2026-11-10 and has no gates; the tiny
+`muse-glimmer` variants keep its load and forward paths under `make
+test-tiny` ([README.md § Tiny models](README.md#tiny-models)).

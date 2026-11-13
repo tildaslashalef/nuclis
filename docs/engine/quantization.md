@@ -2,17 +2,16 @@
 
 The inference library exposes `quant.row(id, bytes, output)` through
 [root.zig](../../inference/src/root.zig). It reconstructs one contiguous GGUF
-row into caller-owned `f32` storage. This is a numerical reference for future
-kernels; the CLI still provides structural inspection and validation only.
+row into caller-owned `f32` storage: the numerical reference the CPU
+executor computes with and the Metal decoders are held to.
 
-Implemented encodings are F32 (ID 0), F16 (1), Q4_0 (2), Q5_0 (6), Q5_1 (7), Q8_0 (8), Q3_K (11),
-Q4_K (12), Q5_K (13), Q6_K (14), IQ4_NL (20), IQ3_S (21), and IQ4_XS (23).
-This covers all nine encodings in the pinned Qwen artifact, plus F16, plus
-Q4_0 ([MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12), 2026-09-12: the only weight encoding of the catalogue's Gemma 4
-12B file), plus Q5_0 and Q5_1 (2026-10-28: K-quant files' fallback where
-a row is not a multiple of 256, below). A [CPU matrix-vector reference](cpu-reference.md) consumes these
-rows. Inspection also recognizes the BF16 layout; row decoding rejects it
-explicitly.
+[encoding.zig](../../inference/src/tensor/encoding.zig) sizes, and `quant.row`
+decodes, 23 encodings: F32 (ID 0), F16 (1), Q4_0 (2), Q5_0 (6), Q5_1 (7),
+Q8_0 (8), Q2_K (10), Q3_K (11), Q4_K (12), Q5_K (13), Q6_K (14), IQ2_XXS (16),
+IQ2_XS (17), IQ3_XXS (18), IQ1_S (19), IQ4_NL (20), IQ3_S (21), IQ2_S (22),
+IQ4_XS (23), IQ1_M (29), BF16 (30), and the PrismML fork's PQ2_0 (142) and
+PTQ1_0 (143). Any other ID is rejected before a tensor span is exposed. A
+[CPU matrix-vector reference](cpu-reference.md) consumes these rows.
 
 ## Interface and ownership
 
@@ -92,7 +91,7 @@ each nine-bit index selects four positive magnitudes, then separate per-value
 sign bits and a group multiplier `d * (1 + 2 * scale)` reconstruct the values.
 Eight groups of 32 values have four-bit scales. Its codebook is fixed format
 data, not learned model weights. The attributed
-[table](../../inference/src/quant/iq3-grid.zig) is regenerated from the pinned
+[table](../../inference/src/quant/iq3-grid.zig) was written from the pinned
 reference header; integer shifts extract components without host-endian aliasing.
 
 PQ2_0 and PTQ1_0 (ids 142 and 143) are the PrismML fork's group-128 ternary
@@ -119,7 +118,7 @@ Colocated tests cover hand-calculated blocks, signed extremes, every IQ4 lookup
 index, half-row ordering, independent block scales, F16 subnormals/signed zero/
 infinity/NaN, little-endian F32 values, and invalid inputs. A small committed
 [fixture](../../inference/src/quant/fixtures/simple.json) contains eight Q8_0,
-eight IQ4_NL, and (since [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12)) eight Q4_0 blocks with outputs from the pinned
+eight IQ4_NL, and (since 2026-09-12) eight Q4_0 blocks with outputs from the pinned
 C CPU decoders. The Zig results match exactly; these simple equations do not
 require a tolerance. The Q8 fixture covers all 256 byte representations; the
 Q4_0 and IQ4_NL payloads are the same bytes, so the two decoders are pinned

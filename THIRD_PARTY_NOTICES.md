@@ -1,8 +1,10 @@
 # Third-party notices
 
-nuclis is written independently. External implementations are used as
-**references and validation oracles**, not as sources to copy: see the policy in
-[AGENTS.md](AGENTS.md#engineering-rules). This file records every piece of
+nuclis is written independently. External implementations are read as
+**format definitions and the source of fixtures pinned before 2026-10-14**,
+never as sources to copy: see the policy in
+[AGENTS.md](AGENTS.md#engineering-rules) and the history in
+[docs/models/README.md](docs/models/README.md#4-validate-against-nuclis-itself). This file records every piece of
 third-party material that is actually present in the repository, with its
 origin and license, and lists the references that were consulted but not copied.
 License texts are linked on the web; no separate license text files live in the
@@ -10,10 +12,10 @@ repository.
 
 ## Material present in the repository
 
-The material falls into four kinds: the model prompt templates reimplemented
+The material falls into five kinds: the model prompt templates reimplemented
 in Zig, the format-defining data any decoder of these formats must contain,
-the presentation palette the terminal surface draws with, and speech data
-the speech recognizer is checked against.
+the presentation palette the terminal surface draws with, the speech data
+the speech recognizer is checked against, and the fonts the website serves.
 
 ### Model prompt templates
 
@@ -30,18 +32,19 @@ model SHA-256 `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`
 pinned one since 2026-11-12, carries the same template (SHA-256
 `12827f24…`).
 Modifications: explicit size limits, ownership, UTF-8 checks, and narrower typed
-inputs; multimodal rendering and assistant prefill are not implemented.
+inputs; tool calls and images are rendered, assistant prefill is not implemented.
 License: [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0.txt).
 
 #### Gemma 4 — as licensed by the artifact
 
-`inference/src/profiles/gemma4.zig` reimplements, in Zig, the text and
-tool-calling subset (system, user, assistant; thinking switch; tool
-declarations, calls, and responses; no media) of the chat template embedded
-in `gemma-4-12b-it-UD-Q4_K_XL.gguf` (Google / Unsloth; the QAT file carries
-the same template). The template text is not in the tree; the pinned fixtures
-in `inference/src/profiles/fixtures/gemma4-text.json` and `gemma4-tools.json`
-were rendered from it by the reference server. Source:
+`inference/src/profiles/gemma4.zig` reimplements, in Zig, the
+system, user, and assistant turns, the thinking switch, tool declarations,
+calls, and responses, and the image and audio spans of the chat template
+embedded in `gemma-4-12b-it-UD-Q4_K_XL.gguf` (Google / Unsloth; the QAT files
+carry the same template). The template text is not in the tree; the pinned
+fixtures in `inference/src/profiles/fixtures/gemma4-text.json` and
+`gemma4-tools.json` were rendered from it by the pinned llama.cpp server
+before 2026-10-14. Source:
 <https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/tree/fc034cfff751157913579611efad8462ac1be606>,
 model SHA-256 `90fd944d227e9d9b68e7e2c7d5b57b79d4c66ed521b0919fbbd932cf834f6f8e`,
 template SHA-256 `845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b`.
@@ -50,7 +53,30 @@ Google model is distributed under the terms stated on its model card
 (<https://huggingface.co/google/gemma-4-12b-it>), which govern the weights
 and are not affected by this reimplementation. Modifications: explicit
 size limits, ownership, UTF-8 checks, narrower typed inputs, `<bos>`
-rendered as text; tools, multimodal rendering, and assistant prefill are
+rendered as text; assistant prefill is not implemented.
+`inference/src/profiles/gemma4_e.zig` carries the E-series revision of the
+template (`gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf`, template SHA-256
+`241c50d8…`), which differs in one rendered case; its fixture is
+`inference/src/profiles/fixtures/gemma4_e-text.json`.
+
+#### Muse Glimmer — as licensed by the artifact
+
+`inference/src/profiles/muse_glimmer.zig` reimplements, in Zig, the turns,
+the reasoning-strength line, reasoning messages, the ATEM tool protocol,
+and the image spans of the chat template embedded in
+`Muse-Glimmer-30B-UD-Q4_K_XL.gguf` (Meta / Unsloth). The template text is
+not in the tree; the pinned fixtures in
+`inference/src/profiles/fixtures/muse_glimmer-text.json` and
+`muse_glimmer-tools.json` were rendered from it by the pinned llama.cpp
+server before 2026-10-14. Source:
+<https://huggingface.co/unsloth/Muse-Glimmer-30B-GGUF/tree/faa5b025c584459c13febfa5c59883516710ae39>,
+model SHA-256 `82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38`,
+template SHA-256 `114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e`.
+The artifact header declares no `general.license`; the weights are
+distributed under the terms stated on the model's card, which this
+reimplementation does not affect. Modifications: explicit size limits,
+ownership, UTF-8 checks, narrower typed inputs, no `Current date:` line in
+a synthesized system turn, `off` rendered as `low`; assistant prefill is
 not implemented.
 
 #### clef-flash — Apache License 2.0
@@ -98,7 +124,7 @@ Copyright (c) 2023-2026 The ggml authors, MIT License,
 The group-128 ternary encodings PQ2_0 and PTQ1_0 (ids 142, 143) are defined
 by the PrismML fork of llama.cpp (`PrismML-Eng/llama.cpp`, MIT, revision
 `5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6`), read as a format contract and
-used as the numerical oracle for the committed
+was the numerical source of the committed
 [`ternary.json`](inference/src/quant/fixtures/ternary.json) fixture; no
 table or code from it is present in the tree.
 
@@ -212,19 +238,19 @@ The JetBrains Mono Project Authors (<https://github.com/JetBrains/JetBrainsMono>
 
 ## References consulted, not copied
 
-These projects were read to understand formats and algorithms and are used at
-development time to generate pinned fixtures and comparison traces. No source
-code from them is present in nuclis.
+These projects were read to understand formats and algorithms, and some
+were run, before nuclis became its own reference, to generate the fixtures and
+traces pinned then. No source code from them is present in nuclis.
 
-- **llama.cpp** `7620399f58aebfd2196b74021f9581bcf7218cb9` (MIT) — GGUF format,
-  quantization semantics, tokenizer behavior, Metal reference performance.
-  Built under `.reference/` by [docs/benchmarks/llama-cpp.md](docs/benchmarks/llama-cpp.md);
-  `scripts/*.py`, and at `v0.11.0` `scripts/reference-generation.cpp`, call its public API.
-  Fixtures under `inference/src/**/fixtures/` and traces are outputs of
+- **llama.cpp** `7620399f58aebfd2196b74021f9581bcf7218cb9` (MIT) — the GGUF
+  format, the quantization constants and semantics, and tokenizer behavior.
+  Until 2026-10-14 it was also the numerical reference and the speed
+  reference; the scripts that drove it are at tag `v0.11.0`. Fixtures under
+  `inference/src/**/fixtures/` and traces pinned from it are outputs of
   running it, not copies of it.
-- **ds4** by antirez (<https://github.com/antirez/ds4>) — Objective-C Metal glue
-  pattern behind a C interface, named in the nuclis specification as an
-  implementation reference.
+- **ds4** by antirez (<https://github.com/antirez/ds4>) — the pattern of
+  Objective-C Metal glue behind a C interface that nuclis's Metal bridge
+  follows.
 - **laya** 0.3.20 by Convai Innovations (Apache-2.0,
   <https://github.com/NandhaKishorM/laya>) with PyTorch 2.14.0, Transformers
   5.17.0, and Tokenizers 0.23.2 — the decision model's input contract,
@@ -236,7 +262,7 @@ code from them is present in nuclis.
   checkpoints, not copies of them.
 - **clef-flash**'s `joint_schema_model.py` by Cloudflare (Apache-2.0, at
   commit `17f0b0ad`) with PyTorch 2.11.0 and Transformers 5.10.2 — the
-  oracle for the sequence and the head. `scripts/clef-reference.py`
+  definition of the sequence and the head. `scripts/clef-reference.py`
   (retired; at tag `v0.11.0`) ran it in a venv under `.reference/`; the fixtures under
   `inference/src/models/fixtures/clef/` are outputs of running it, not
   copies of it.
@@ -282,6 +308,6 @@ code from them is present in nuclis.
 ## The project's own licence
 
 nuclis is MIT-licensed ([LICENSE](LICENSE)). This file lists material from
-elsewhere that exists in the tree — format-defining constants, prompt
-templates, and palettes — with a link to each licence; it is not a list of
+elsewhere that exists in the tree — prompt templates, format-defining
+constants, a palette, speech clips, and fonts — with a link to each licence; it is not a list of
 dependencies, because the engine has none.

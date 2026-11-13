@@ -1,16 +1,17 @@
 # Gemma 4: facts from the artifacts and the reference
 
-The second architecture through the adapter seam ([MODL-04](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-04--adapter-registry-2026-09-11)–[MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12)), and
-since [MODL-09](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-09--gemma-4-26b-a4b-artifact-pin-facts-adapter-cpu-reference-metal-plan-2026-09-18-two-sessions) also the 26B-A4B mixture of experts
+The second architecture through the adapter seam (2026-09-11 to
+2026-09-12), and since 2026-09-18 also the 26B-A4B mixture of experts
 ([§ Gemma 4 26B-A4B](#gemma-4-26b-a4b-the-expert-configuration-2026-09-18)),
 bound by the same adapter as a second pinned configuration. Everything here was
 read on 2026-09-11 from the pinned files with `scripts/fixtures/gguf-inventory.py`
 (an independent header reader, no weights), from `nuclis model inspect`,
 and from the pinned llama.cpp reference `7620399` (`src/models/gemma4.cpp`,
 `src/llama-vocab.cpp`, `conversion/gemma.py`, `ggml-cpu/ops.cpp`), which
-is read as a format and semantics reference and used as the numerical
-oracle, never copied. Where a fact comes from the reference source rather
-than the file, the sentence says so. Nothing below is from memory of the
+was read as a format and semantics reference and, during bring-up, used as
+the numerical oracle, never copied
+([README.md § 4](README.md#4-validate-against-nuclis-itself)). Where a fact
+comes from the reference source rather than the file, the sentence says so. Nothing below is from memory of the
 model card. Images (the two projectors and the language model's
 bidirectional image spans on its sliding layers) are in
 [vision.md § Gemma 4's projectors](../engine/vision.md#gemma-4s-projectors-2026-09-23);
@@ -37,7 +38,7 @@ their encode times (the E4B's 676-token logo in 1.6 s, the 12B's in
 
 ## Artifacts
 
-| | K-quant (bring-up, [MODL-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-05--gemma-4-12b-facts-binding-cpu-reference-tokenizer-2026-09-11)–[MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12)) | QAT (the catalogue's file since [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12)) |
+| | K-quant (bring-up, 2026-09-11) | QAT (the catalogue's file since 2026-09-12) |
 | --- | --- | --- |
 | Repository | `unsloth/gemma-4-12b-it-GGUF` | `unsloth/gemma-4-12B-it-qat-GGUF` |
 | File | `gemma-4-12b-it-UD-Q4_K_XL.gguf` | `gemma-4-12B-it-qat-UD-Q4_K_XL.gguf` |
@@ -50,7 +51,7 @@ their encode times (the E4B's 676-token logo in 1.6 s, the 12B's in
 Both files have the same 58/48 architecture keys where they overlap, the
 same 667 tensor names and shapes, the same vocabulary, and the same chat
 template (SHA-256 `845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b`,
-18,924 bytes). Digests and companions are pinned in
+18,924 bytes of UTF-8, 18,922 characters, ending in a newline). Digests and companions are pinned in
 [catalogue.md](catalogue.md#pinned-commits-and-digests-2026-09-11). The
 inventory of the K-quant file is the fixture
 `inference/src/models/fixtures/gemma4-12b.json` (all keys, arrays up to
@@ -86,8 +87,8 @@ array; the upstream `config.json` says `layer_types` alternate
 `sliding_attention` ×5, `full_attention` ×1, with `global_head_dim` 512.
 
 The parser must retain 48-element arrays: `formats/gguf` keeps values for
-numeric arrays of at most 16 elements today (a Qwen-era bound), so [MODL-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-05--gemma-4-12b-facts-binding-cpu-reference-tokenizer-2026-09-11)
-raises that bound (a format-level capacity, not a Gemma key).
+numeric arrays of at most 64 elements, raised from a Qwen-era 16 for
+Gemma (a format-level capacity, not a Gemma key).
 
 ## Tensors (667)
 
@@ -114,7 +115,7 @@ Encodings per role in the K-quant file: attention and gate/up matrices
 Q4_K on 43 layers and Q5_K on 5; `attn_v` Q6_K on 35 layers, Q5_K on 5;
 `ffn_down` Q4_K/Q5_K/Q6_K (22/5/21); `attn_output` Q4_K everywhere;
 `token_embd` Q5_K. All are in the executable set, as is the QAT file's
-Q4_0 since [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12) ([§ Q4_0 path](#q4_0-path-and-the-qat-file-2026-09-12)).
+Q4_0 since 2026-09-12 ([§ Q4_0 path](#q4_0-path-and-the-qat-file-2026-09-12)).
 
 **Values read from the file.** `rope_freqs.weight` is 64 ones followed by
 192 values of 1e30. `layer_output_scale` is a per-layer scalar between
@@ -197,10 +198,10 @@ response markers, the channel markers, `<|"|>`) are rendered as text by the
 reference so a chat parser can read them.
 
 The tree's `tokenizer/vocabulary.zig` accepted only `model = "gpt2"` and
-`tokenizer/pre.zig` the `qwen35` splitter until [MODL-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-05--gemma-4-12b-facts-binding-cpu-reference-tokenizer-2026-09-11) added Gemma's
-vocabulary model and splitter (below); the stop set is `<turn|>` 106 and
+`tokenizer/pre.zig` the `qwen35` splitter until 2026-09-11, when Gemma's
+vocabulary model and splitter were added (below); the stop set is `<turn|>` 106 and
 `<eos>` 1 (the QAT file names 1 as EOS and 106 as EOT), owned by the
-profile since [MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12).
+profile since 2026-09-12.
 
 ## Chat template and profile (2026-09-12)
 
@@ -213,27 +214,29 @@ first message is system/developer, when tools are given, or when
 turn (or with `preserve_thinking` on tool-call turns); earlier turns are
 stripped of thinking with `strip_thinking`. Tool calls use
 `<|tool_call>…<tool_call|>` and responses `<|tool_response>…<tool_response|>`.
-The template text is extracted from the file at capture time, never
-embedded in the tree (18,922 bytes ending in a newline, the digest above).
+The template text is read from the file, never embedded in the tree
+(18,924 bytes of UTF-8, 18,922 characters, ending in a newline; the
+digest above).
 Finetunes converted with the earlier 17,530-byte revision (digest
 `dc311bb0…`) render history differently and are refused; they run under
 `--prompt-profile gemma4`
 ([prompt-profile.md § Evidence](../engine/prompt-profile.md#evidence-and-reproduction)).
 
-`inference/src/profiles/gemma4.zig` implements the text and tool-calling
-subset (system/developer, user, assistant, tool declarations, calls, and
-responses; no images or prefill) and is registered as
+`inference/src/profiles/gemma4.zig` implements the text, tool-calling, and
+media subset (system/developer, user, assistant, tool declarations, calls,
+and responses, image and audio placeholders) and is registered as
 `profiles.Profile.gemma4`, selected by the template digest. The tool path is
 in [prompt-profile.md § Gemma 4](../engine/prompt-profile.md#gemma-4-gemma4) and
 [tool-calling.md](../engine/tool-calling.md).
 What the reference's own rendering established, each with a fixture case
 (`inference/src/profiles/fixtures/gemma4-text.json`, 14 prompts and 20
-token strings captured from `llama-server 7620399` on the K-quant file,
+token strings captured from `llama-server 7620399` on the K-quant file at
+bring-up,
 [prompt-profile.md](../engine/prompt-profile.md#gemma-4-gemma4)):
 
 - The server's `/apply-template` output has no `<bos>` (its tokenizer adds
   BOS); the profile renders `<bos>` as text because the tree's encoder
-  never adds it ([MODL-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-05--gemma-4-12b-facts-binding-cpu-reference-tokenizer-2026-09-11)). Token streams are identical: `[2, 105, …]`.
+  never adds it. Token streams are identical: `[2, 105, …]`.
 - `developer` arrives at the template as `system`; later system messages
   are `<|turn>system\n…<turn|>\n` turns of their own, empty ones included.
 - Thinking is a switch: `off` pre-closes an empty channel in the
@@ -253,7 +256,7 @@ model ([llm-guide § 7](../llm-guide.md#7-the-prompt-profile-is-a-contract)).
 **Sampling.** The profile's defaults are the file's own hint,
 `general.sampling.temp` 1.0 / `top_p` 0.95 / `top_k` 64, the same in both
 modes, no penalties. Recorded as the file's claim (no per-mode table was
-pinned from a model card). `generate` and `chat` use the file's profile
+pinned from a model card). `generate` and `agent` use the file's profile
 even when the configuration guessed another from a bare path.
 
 **Catalogue.** Two entries, one per quantization (2026-09-12):
@@ -261,9 +264,9 @@ even when the configuration guessed another from a bare path.
 `90fd944d…`) with its companions `mmproj-BF16.gguf` (175,115,840 B,
 `2e269f90…`) and `mtp-gemma-4-12b-it.gguf` (465,109,248 B, `145db909…`),
 and `gemma-4-12b-qat` is the QAT file
-([§ Q4_0 path](#q4_0-path-and-the-qat-file-2026-09-12)). Between [MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12)
-and that day one name pointed at whichever file was newest, which made
-`nuclis model pull gemma-4-12b` mean different bytes in different weeks. Since 2026-09-26 ([APPS-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#apps-17--the-catalogue-at-five-entries-the-registry-in-name-order-2026-09-26)) only `gemma-4-12b-qat` is in the
+([§ Q4_0 path](#q4_0-path-and-the-qat-file-2026-09-12)). Between the
+morning's entry and the second one one name pointed at whichever file was newest, which made
+`nuclis model pull gemma-4-12b` mean different bytes in different weeks. Since 2026-09-26 only `gemma-4-12b-qat` is in the
 catalogue (legacy since 2026-11-10); the K-quant file runs through `config sync`
 ([catalogue.md § The catalogue](catalogue.md#the-catalogue)).
 A registry entry of the same name still shadows either.
@@ -279,19 +282,20 @@ harness is in [benchmarks](../benchmarks/history.md#gemma-4-12b-acceptance-recor
 
 ## Reference oracle status
 
-The pinned llama.cpp `7620399` loads and runs both files on Metal
+During bring-up the pinned llama.cpp `7620399`
+([README.md § 4](README.md#4-validate-against-nuclis-itself)) loaded and ran both files on Metal
 (`llama-completion -ngl 99 -no-cnv`, 2026-09-11): the K-quant file
-continues a raw prompt in a repetition loop and the QAT file emits digits,
+continued a raw prompt in a repetition loop and the QAT file emitted digits,
 which is what an instruction-tuned model does without its template; with
-`--jinja --single-turn` both files answer a chat prompt with a
+`--jinja --single-turn` both files answered a chat prompt with a
 `<|channel>thought` block (the template enables thinking by default in the
 reference's default arguments). First-look rates from those runs, not a
 benchmark record (default context, 6-token prompt): K-quant prompt 18.8 /
-decode 25.2 tok/s, QAT 26.9 / 31.5 tok/s. The trace harness
-`scripts/reference-generation.cpp` compiles against this build unchanged
-(it names layers by the reference's `l_out-N` tensors); it tokenizes
-without adding BOS, so Gemma traces pass `<bos>` in the prompt text
-(`parse_special` is on).
+decode 25.2 tok/s, QAT 26.9 / 31.5 tok/s. The trace harness of that time
+(removed; at tag `v0.11.0`) compiled
+against this build unchanged (it named layers by the reference's `l_out-N`
+tensors) and tokenized without adding BOS, so the Gemma traces passed
+`<bos>` in the prompt text.
 
 ## CPU reference against the oracle (2026-09-11)
 
@@ -300,8 +304,10 @@ and the real file: 667 tensors, 7,350,597,824 bytes, 40 sliding and 8
 global layers) and `gemma4_runtime.zig` executes the forward pass above on
 the CPU. Compared against the reference's per-layer outputs on
 `<bos>Hello,` (tokens `[2, 9259, 236764]`, three positions, the traces
-pinned under `tests/fixtures/gemma4-hello-comma/` through `v0.11.0`; since [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12) that target
-was `make gate NAME='gemma4-trace-f*'`, retired with the K-quant file on 2026-09-29; the QAT file's are `gemma4-qat-trace-*`):
+pinned under `tests/fixtures/gemma4-hello-comma/` through `v0.11.0`; their
+`gemma4-trace-*` gates were retired with the K-quant file on 2026-09-29, and
+the QAT file's `gemma4-qat-*` gates and traces on 2026-11-12, after its entry
+became legacy; the family's gates are the 26B-A4B's and the E4B's):
 
 | Comparison | Measured | Threshold |
 | --- | --- | --- |
@@ -314,15 +320,12 @@ Layer 0 at position 0 agrees to 3.8e-6 absolute, so the embedding scale,
 the raw-weight norms, and the unscaled attention are the reference's; the
 error grows slowly with depth and position as expected of F32 summation
 order. One CPU step is 33.7 s for the three-token prompt (ReleaseSafe, M4
-Pro), a reference number for the Metal plan of [MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11), not a benchmark.
+Pro), a reference number for the Metal plan, not a benchmark.
 
-Recipe (the harness compiled as in
-[sampling.md](../engine/sampling.md#numerical-traces)): `reference-generation
-<file> '<bos>Hello,' <dir>` (the harness does not add BOS; `parse_special`
-is on, so the marker in the text supplies it), then `nuclis generate
---backend cpu --prompt-tokens <ids.json> --max-tokens 1 --ctx-size 8
---logits … --trace-dir …`, then `nuclis-gates compare --positions 3
---embedding 3840 --layers 48 --vocab 262144`.
+Recipe: the reference harness wrote the traces for `'<bos>Hello,'`, then
+`nuclis generate --backend cpu --prompt-tokens <ids.json> --max-tokens 1
+--ctx-size 8 --logits … --trace-dir …`, then `nuclis-gates compare
+--positions 3 --embedding 3840 --layers 48 --vocab 262144`.
 
 **Shared math reused, and what was added.** `cpu.rmsNorm`, `cpu.matvec`
 and the quantized row decoders, `cpu.attention.apply` (the sliding window
@@ -334,12 +337,12 @@ in place within F32). The session layout is per layer (2048-wide rows on
 sliding layers, 512 on global ones). The Metal plan is
 [§ Metal plan](#metal-plan-2026-09-11).
 
-**Tokenizer (implemented in [MODL-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-05--gemma-4-12b-facts-binding-cpu-reference-tokenizer-2026-09-11)).** `tokenizer/vocabulary.zig` accepts
+**Tokenizer (2026-09-11).** `tokenizer/vocabulary.zig` accepts
 `tokenizer.ggml.model = "gemma4"` (`pre` is implied), `bpe.encodeSpmBudget`
 runs the shared merge scan over code points with `<0xNN>` byte fallback,
 `Encoder.encodeSpm` is the newline-run splitter with U+2581 escaping, and
 `bpe.decode` unescapes, rebuilds bytes, and always renders the seven
-user-defined markers. Checked against the reference server's `/tokenize`
+user-defined markers. Checked at bring-up against the reference server's `/tokenize`
 on the real vocabulary for twelve strings (mixed punctuation and newlines,
 leading and doubled spaces, four-newline runs, `émoji 😀 € 中文字`, the chat
 markers `<bos>`/`<|turn>`/`<turn|>` inside text, tabs and CRLF, indented
@@ -407,14 +410,14 @@ tokens: chunks of 64 / 48 / 32 at 8.6e-2 / 8.6e-2 / 2.6e-2 max abs and
 2.5e-3 / 2.6e-3 / 7.5e-4 relative RMS (recorded bounds 1e-1 / 4e-3; Qwen's
 are 2e-2 / 1e-3), same greedy token. Forcing the generic F32 tiles brings
 the chunked run to 4.8e-4 / 1.2e-5, so the gap is the half-operand
-rounding of the specialized matmul tiles ([ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09)) on Gemma's larger
+rounding of the specialized half-operand matmul tiles (2026-09-09) on Gemma's larger
 activations, not the chunk schedule (window mask, wide heads, the
 value-as-key copy).
 
 **First-look rates** (`nuclis bench`, Metal, greedy, context 2,048, three
 measured runs; Apple M4 Pro 48 GB, macOS 26.6.2, Zig 0.16.0 ReleaseSafe,
-2026-09-11; not the acceptance record, which [MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12) takes against the
-reference harness):
+2026-09-11; not the acceptance record, which was taken the next day against
+the reference harness):
 
 | Workload | Prefill tok/s | Decode tok/s | First token |
 | --- | ---: | ---: | ---: |
@@ -425,8 +428,8 @@ reference harness):
 | Reference `llama-bench` `7620399` on the same file (`-p 512 -n 128 -ngl 99 -fa 1 -ctk f16 -ctv f16 -r 3`) | 219.9 ± 2.4 | 24.9 ± 0.15 | — |
 
 Decode is 81 % of the reference (7.35 GB of weights at 20.2 tok/s is
-148 GB/s effective) and prefill 91 %; both are follow-ups after [MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12), not
-part of [MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11). The Qwen `make bench` is unchanged by the shared-kernel
+148 GB/s effective) and prefill 91 %, the starting point of later Gemma
+speed work. The Qwen `make bench` is unchanged by the shared-kernel
 changes (40.27 / 10.80 tok/s the same day).
 
 ## Q4_0 path and the QAT file (2026-09-12)
@@ -434,7 +437,7 @@ changes (40.27 / 10.80 tok/s the same day).
 The catalogue entry `gemma-4-12b` was decided on the quantization-aware-
 trained file ([artifacts](#artifacts)): every one of its 329 weight
 matrices is Q4_0, an encoding the parser stored and the CPU decoder
-refused until this sub-unit. Q4_0 is IQ4_NL's block (an F16 scale `d`,
+refused until 2026-09-12. Q4_0 is IQ4_NL's block (an F16 scale `d`,
 then sixteen bytes whose low nibbles are values 0–15 and high nibbles
 16–31) with the code itself as the value: `d · (q − 8)`, no table
 ([quantization.md](../engine/quantization.md#equations-and-evidence)). What the
@@ -481,8 +484,9 @@ and the F16 cache in particular: the key-rounding sensitivity measured on
 the K-quant file is prompt- and checkpoint-dependent, and the tolerance
 stays the family's recorded one. The K-quant comparisons ran as `make
 gate NAME='gemma4-trace-*'` until 2026-09-29, when the K-quant file's
-nine gates were retired with the file ([REPO-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#repo-19--the-gemma-4-12b-k-quant-files-gates-retired-with-the-file-2026-09-29)); the QAT, E4B, and 26B-A4B
-gates cover the family, and the K-quant results above stay as the record.
+nine gates were retired with the file; the QAT file's followed on
+2026-11-12, the E4B and 26B-A4B gates cover the family, and the results
+above stay as the record.
 
 **Generation check** (`make gate NAME=gemma4-qat-generation-metal` on the QAT
 file, 2026-09-12): sessions bit-identical, cancellation and reset,
@@ -492,7 +496,7 @@ at 4.4e-1 / 4.2e-1 / 1.5e-1 max abs and 1.4e-2 / 1.3e-2 / 4.7e-3
 relative RMS, same greedy token; through the generic F32 tiles 7.8e-4 /
 3.2e-5 (bound 5e-3 / 2e-4, unchanged), so the schedule and the Q4_0
 decode are exact and the gap is the half-operand rounding of the
-specialized tiles ([ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09)), which this checkpoint amplifies about five times
+specialized tiles, which this checkpoint amplifies about five times
 more than the K-quant file (8.6e-2 / 2.6e-2 at chunks 64 / 32 there).
 The family's chunk bound moved from 1e-1 / 4e-3 to 6e-1 / 2e-2 to cover
 both files, recorded in `generation-check.zig`; the F16 cache on this
@@ -528,7 +532,7 @@ the 12B files; `tokenizer.ggml.add_bos_token` is `false` here (the 12B's
 is `true`), which changes nothing: the encoder never adds BOS and the
 profile writes it. The catalogue entry `gemma-4-26b-a4b` and its
 companions (`mmproj-BF16.gguf`, `MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf`)
-were pinned ahead of this unit ([MODL-14](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-14--catalogue-entries-ahead-of-their-adapters-roadmap-reordered-around-speculation-2026-09-17)).
+were pinned the day before, ahead of the adapter.
 
 **Metadata against the 12B.** Shared and identical: `context_length`,
 `attention.head_count` 16, `sliding_window` 1024, `key_length` /
@@ -587,13 +591,13 @@ residual after the attention add (`attn_out`):
 
 Everything else in the layer is the 12B's forward pass above.
 
-**Reference oracle status.** The pinned llama.cpp `7620399` runs the file
+**Reference oracle status.** The pinned llama.cpp `7620399` ran the file
 on Metal; the trace harness captured `<bos>Hello,` (tokens `[2, 9259,
 236764]`) on 2026-09-18 with greedy token 29104 (` hello`); the traces
 are pinned under `tests/fixtures/gemma4-26b-a4b-hello-comma/` (90 layer
 files of 2,816 floats and the 262,144 logits).
 
-**CPU reference against the oracle (session 1, 2026-09-18).**
+**CPU reference against the oracle (2026-09-18).**
 `gemma4_runtime.zig` runs both configurations from one schedule; the
 expert layer is `Runtime.feedForward`. `make gate NAME=gemma4-26b-a4b-trace-cpu`
 (`--positions 3 --embedding 2816 --layers 30`):
@@ -614,7 +618,7 @@ a token touches 8 experts of 704 and a 2,112-wide shared FFN instead of
 a 15,360-wide FFN). `nuclis validate` reports the binding
 (`gemma4_26b_a4b`, 25 sliding and 5 global layers, 658 tensors).
 
-**Metal plan (session 2, 2026-09-18).** `gemma4_metal.zig` runs both
+**Metal plan (2026-09-18).** `gemma4_metal.zig` runs both
 configurations from one schedule: `feedForward` (decode) and
 `feedForwardChunk` (prefill) mirror the CPU reference's `feedForward`,
 and the expert branch is the gathered kernels of
@@ -701,7 +705,7 @@ tiles better ([metal-backend.md](../engine/metal-backend.md#gathered-expert-kern
 69 % against 50 %), for 80 MB of expert workspace and 0.15 GB of chunk
 activations; 1,024 buys 6 % more only on long prompts for twice that
 again and a coarser cancellation grain (about a second per chunk), and
-stays a follow-up beside the 64-token expert tile. Decode is 55 tok/s
+was left as a follow-up beside the 64-token expert tile. Decode is 55 tok/s
 against the 12B's 20.2 and the Qwen3.8-27B's 10.7 on the same machine:
 a token touches eight experts of 704 and a 2,112-wide shared FFN instead
 of a 15,360-wide FFN, about 2.2 GB of Q4_0 weights with the tied head
@@ -714,7 +718,7 @@ flash-decoding kernel at long context;
 The Qwen `make bench` is unchanged the same day (40.05 / 10.67 tok/s
 against 40.27 / 10.80).
 
-**Acceptance record and agent check ([MODL-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-10--gemma-4-26b-a4b-catalogue-verdict-acceptance-record-agent-check-2026-09-18), 2026-09-18).** Against the
+**Acceptance record and agent check (2026-09-18).** Against the
 reference harness on its own arrays: prefill / decode 500.42 / 55.29 at
 512, 346.17 / 49.44 at 4K, 206.44 / 39.55 at 16K, 134.74 / 31.30 at 32,639
 tok/s, the reference at 580.76 / 68.02, 548.41 / 60.82, 459.46 / 50.67,
@@ -798,8 +802,10 @@ reference (`7620399`):
 First look, not an acceptance record: decode 52.4 tok/s on a 28-token code
 prompt (256 greedy tokens, F16 cache); `--speculative on` 69.9 tok/s
 (1.34×, 188 of 230 drafts accepted, output identical), below the 1.5× bar,
-so the entry keeps speculation off. llama.cpp decoded 58.7 tok/s on a
-6-token prompt.
+so the entry kept speculation off at first; the re-priced verdicts of
+2026-10-01 turned it on at draft 6 (prose 1.47× geometric mean;
+[history.md](../benchmarks/history.md#the-re-priced-speculative-verdicts-2026-10-01)).
+llama.cpp decoded 58.7 tok/s on a 6-token prompt.
 
 
 ## Long-context decode with the head-split attention (2026-10-15)
@@ -981,7 +987,7 @@ SHA-256 `85a896a0…`; 720 tensors against the QAT file's 666):
   count.
 
 A file whose chat template is not Google's (a fine-tune's own) has no
-detected profile: `generate` and `chat` refuse with
+detected profile: `generate` and `agent` refuse with
 `UnsupportedPromptTemplate`, and `eval` reads raw text without `<bos>`
 when the file's `add_bos_token` is false. Force it with `--prompt-profile
 gemma4_e`, or register the pull with `--profile gemma4_e`.

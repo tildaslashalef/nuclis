@@ -3,10 +3,11 @@
 The complete 64-layer Qwen text schedule runs natively in Zig: mapped quantized
 weights, embeddings, 48 convolution/DeltaNet layers, 16 gated attention layers,
 residuals, feed-forward blocks, final normalization, and vocabulary logits.
-There is no llama.cpp dependency in nuclis. The external pinned reference is
-only used for comparisons.
+There is no llama.cpp dependency in nuclis.
 
-This is the slow correctness backend. `--backend metal` runs the same schedule
+This is the CPU reference, the slow correctness backend every other path
+is checked against
+([models § 4](../models/README.md#4-validate-against-nuclis-itself)). `--backend metal` runs the same schedule
 GPU-resident through the [Metal backend](metal-backend.md), with chunked
 prefill, the measured rates of the README's [Results](../../README.md#results),
 and teacher-forced scoring ([guide/eval.md](../guide/eval.md)). Default
@@ -33,8 +34,7 @@ inserting BOS or EOS. `--prompt` is limited to 64 KiB and `--prompt-file` to
 4 MiB of valid UTF-8; the two are exclusive and neither is ever truncated.
 
 Defaults (without a configuration file) are the Metal backend when built
-in, 2,048 output tokens, 8,192 total context, and seed zero (before [APPS-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#apps-03--engine-configuration-nuclisnuclisjson-2026-09-09):
-CPU, 16 tokens, 2,048 context). Sampling
+in, 8,192 output tokens, 16,384 total context, and seed zero. Sampling
 defaults come from the official Qwen3.8 profile of the reasoning mode (next
 section); the file's `generation.sampling` entries and then `--temperature`,
 `--top-k`, `--top-p`, `--min-p`, `--presence-penalty`, and
@@ -44,7 +44,7 @@ ID. Nonfinite logits are errors.
 
 ### Sampling profiles and the selection chain (2026-09-08)
 
-`generate` and `chat` sample with the checkpoint's official settings of the
+`generate` and `agent` sample with the checkpoint's official settings of the
 reasoning mode `--think` selects. The tables live in the profile modules
 (`samplingDefaults`) because they are part of the checkpoint's recommended
 usage, not of the shared sampler, whose own defaults are neutral (greedy).
@@ -64,7 +64,7 @@ the sampler to the file's profile once the model is open. Qwen3.8, from the
 | `presence_penalty` | 0.0 | 1.5 |
 | `repetition_penalty` | 1.0 | 1.0 |
 
-Gemma 4 (`inference/src/profiles/gemma4.zig`, [MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12)) uses the file's own
+Gemma 4 (`inference/src/profiles/gemma4.zig`) uses the file's own
 sampling hint in every mode: temperature 1.0, `top_p` 0.95, `top_k` 64, no
 `min_p`, no penalties (`general.sampling.*` in the header; no per-mode
 table was pinned from a model card).
@@ -72,7 +72,7 @@ table was pinned from a model card).
 Flags override per option, so `--temperature 0` under `--think off` is a
 greedy argmax over logits that still carry the instruct presence penalty;
 add `--presence-penalty 0` for the plain argmax (the GPU argmax path). The
-chat rebuilds the options from the current effort at every turn (Ctrl-T
+agent rebuilds the options from the current effort at every turn (Ctrl-T
 switches profiles) and never resets the RNG. `bench` never applies a
 profile: unflagged runs are greedy so its numbers stay comparable, and a
 sampled `bench` states its options in the report label.
@@ -100,7 +100,7 @@ repetition penalty finite and > 0.
 ### Prompt processing
 
 On the Metal backend the prompt is consumed in chunks of up to 256 tokens
-through batched matrix kernels ([ENGN-02](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-02--chunked-prefill-with-the-batched-matmul-2026-09-08); see
+through batched matrix kernels (see
 [metal-backend.md § Prefill in chunks](metal-backend.md#prefill-in-chunks-2026-09-08));
 `--trace-dir` requests per-layer activations per token and therefore steps
 the prompt token by token, as the CPU reference always does. Chunked and
@@ -174,7 +174,7 @@ acceptance asks for the per-row partial top-k instead (2 KB a row), leaving
 the logits resident so `readVerifyRow` can serve a row the readback cannot
 decide. The plan requires a batch no larger than its chunk and
 `max_verify_rows` (16); the loop's batches are at most `max_draft_length + 1`
-(8).
+(16).
 
 `runLoop` commits the prompt to the drafter first, in verify-sized chunks, so
 the block's cache holds the target hidden of every committed position. Each
@@ -208,7 +208,8 @@ speculation must equal ordinary greedy token for token, checked by
 `make gate NAME=qwen38-speculative-metal`); the two verify modes are compared row by row
 on real logits there as well.
 
-The output budget is 1–4,096 tokens and context is 1–32,768, with
+The output budget is 1–16,384 tokens and context is 1–32,768
+(`inference.max_capacity`), with
 prompt plus output budget required to fit. These are allocation/execution bounds,
 not a validated 32K performance claim. Both `<|im_end|>` and `<|endoftext|>` stop
 the pinned profile. Special tokens are omitted from presented text.
@@ -226,7 +227,7 @@ callback (injected Zig Io and a Ctrl-C flag, with a one-hour execution bound);
 it needs no activations, so on the GPU plan it runs while the token is being
 recorded and costs no synchronization. The `layer` callback, which receives
 activations and forces a GPU commit per layer, is installed only with
-`--trace-dir`. The third callback, `progress` ([TERM-01](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#term-01--agent-terminal-surface-2026-09-12)), reports how far a turn
+`--trace-dir`. The third callback, `progress`, reports how far a turn
 has got — `{phase, position, target}` after every prefill chunk on the GPU,
 every prompt token on the CPU, and every generated token. It exists because
 a chunked prefill is one `step` for the loop's hooks: a caller counting
@@ -249,101 +250,63 @@ named `token-POSITION-layer-LAYER.f32`. These diagnostics may contain prompt
 information; keep them in ignored local storage. Later generated-token steps
 produce layer traces too, but do not overwrite the initial prompt logits file.
 
-The reference helper requires the pinned checkout from
-[llama-cpp.md](../benchmarks/llama-cpp.md). It uses public APIs and selects
-GPU offload, F32 KV, disabled flash attention, and one token per decode call.
-It refuses to run without a GPU. Build against the relocated checkout:
+The reference is nuclis's own CPU path. `tests/fixtures/reference-hello-comma/`
+holds the CPU reference's traces of the raw `Hello,` prompt on the pinned
+file (provenance in
+[tests/fixtures/provenance.md](../../tests/fixtures/provenance.md)), and
+`make gate NAME=qwen38-trace-f32` checks the Metal plan against them:
 
 ```sh
-mkdir -p .zig-cache/generation
-c++ -std=c++17 \
-  -I.reference/llama.cpp/include \
-  -I.reference/llama.cpp/ggml/include \
-  -I.reference/llama.cpp/src \
-  scripts/reference-generation.cpp \
-  -L.reference/llama.cpp/build/bin -lllama -lggml -lggml-base \
-  -Wl,-rpath,"$PWD/.reference/llama.cpp/build/bin" \
-  -o .zig-cache/generation/reference-generation
-mkdir -p .zig-cache/generation/native-check .zig-cache/generation/reference-check
-./zig-out/bin/nuclis generate --raw --prompt 'Hello,' --max-tokens 1 --ctx-size 8 \
+mkdir -p .zig-cache/generation/native-check
+./zig-out/bin/nuclis generate --backend metal --kv f32 --raw --prompt 'Hello,' \
+  --max-tokens 1 --ctx-size 8 \
   --logits .zig-cache/generation/native-check/logits.f32 \
   --trace-dir .zig-cache/generation/native-check
-.zig-cache/generation/reference-generation \
-  "$HOME/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf" 'Hello,' \
-  .zig-cache/generation/reference-check
 ./zig-out/bin/nuclis-gates compare \
-  .zig-cache/generation/native-check .zig-cache/generation/reference-check --positions 2 \
+  .zig-cache/generation/native-check tests/fixtures/reference-hello-comma --positions 2 \
   --embedding 5120 --layers 64 --vocab 248320
 ```
 
-The same helper takes `--mtp-draft` after the trace directory. It then
-loads the file with its MTP tensors (`llama_model_params.load_mtp`), opens
-a second context of type `LLAMA_CONTEXT_TYPE_MTP`, and writes, per prompt
-position `p`, the block's pair inputs and outputs: `token-p-mtp-hprev.f32`
-(the target hidden of position `p - 1`; zeros at position 0),
-`token-p-mtp-h.f32` (the block's `h_nextn`), `mtp-greedy.txt` (the greedy
-draft token per position), and `mtp-tokens.txt`. The first `l_out-63` row
-is not what the block consumes: its `h` input is the target's
-`output_norm`-applied hidden, which is why the helper reads
-`llama_get_embeddings_nextn`. The small vectors are pinned under
-`inference/src/models/fixtures/qwen35-mtp/` and checked by
-`make gate NAME=qwen38-generation-cpu` (the `checkDraft` pass in `generation-check`).
+The same command with `--backend cpu` writes the fixture itself; it was
+re-made that way on 2026-11-12, when the file was re-pinned. The first
+traces came from llama.cpp `7620399` on 2026-09-06, through
+the llama.cpp generation harness (retired; at tag `v0.11.0`), while
+llama.cpp was the reference
+([models § 4](../models/README.md#4-validate-against-nuclis-itself)).
+`compare` takes the geometry as flags (`--embedding`, `--layers`,
+`--vocab`), so the same pair serves Gemma 4: `gemma4-26b-a4b-trace-*` and
+`gemma4-e4b-trace-*` compare against their own `*-hello-comma` fixtures
+([gemma4.md](../models/gemma4.md#cpu-reference-against-the-oracle-2026-09-11)).
+Top-five IDs and the reference's greedy margin are reported for diagnosis.
 
-`generation-check` can write the same rows natively: `--draft-trace DIR`
-steps the pinned `Hello,` tokens through the block on the CPU reference or
-the Metal plan (`--metal`) and writes `p0-h.f32`, `p1-h.f32`,
-`p1-hprev.f32`, and `greedy.txt`. `nuclis-gates compare --draft` compares
-those rows and the greedy tokens against the pinned directory
-(`make gate NAME=qwen38-draft-trace-metal`, both backends). `--draft-stats` instead reports the
-per-depth acceptance statistic and draft latency
+The draft block has the same kind of check. `generation-check` (`zig build
+test-generation`) with `--draft-trace DIR` steps the pinned `Hello,` tokens
+through the block on the CPU reference or the Metal plan (`--metal`) and
+writes `p0-h.f32` (the block's `h_nextn` at position 0, `h_prev` zeros),
+`p1-hprev.f32` (the target's `output_norm`-applied hidden after position
+0, which is what the block consumes), `p1-h.f32`, and `greedy.txt`.
+`nuclis-gates compare --draft` compares those rows and the greedy tokens
+against `inference/src/models/fixtures/qwen35-mtp/`, the CPU reference's
+rows of the pinned file (`make gate NAME=qwen38-draft-trace-cpu`,
+`qwen38-draft-trace-metal`); `make gate NAME=qwen38-generation-cpu` checks
+the same vectors inside `generation-check` (its `checkDraft` pass).
+`--draft-stats` instead reports the per-depth acceptance statistic and
+draft latency
 ([speculative-decoding.md § Acceptance statistic](speculative-decoding.md#the-qwen38-draft-head-2026-09-20)).
-
-`--dflash-draft DRAFT_MODEL` is Muse Glimmer's DFlash form, following the
-reference's `draft-dflash` driver: after the target decodes position `i`,
-the five layer inputs of `dflash.target_layers` are gathered from
-`llama_get_embeddings_layer_inp` (the target must enable them), concatenated
-and injected through the drafter's encoder at `i`; then a 16-row noise block
-`[next token, mask × 15]` is decoded at positions `i+1 …` and its per-row
-final hidden and greedy token are read back from `llama_get_embeddings_ith`
-and `llama_get_logits_ith`. The noise rows are removed afterwards
-(`llama_memory_seq_rm`), as the driver's checkpoint reset does. The
-`museDraftTrace` pass of `generation-check` checked the rows against the
-pinned `inference/src/models/fixtures/muse-dflash/` and wrote its native
-rows and greedy ids into the trace directory; both left with the Muse gates
-(the last tag that held them is `v0.11.0`). Two environment variables aid the diagnosis of a
-mismatch: `DFLASH_DRAFT_CPU=1` leaves the drafter's model off the GPU, and
-`DFLASH_DUMP_LAYERS=1` also writes the decoder graph's `l_out-N` rows per
-proposal. Neither is needed for the committed trace; they are how its
-tolerances were established (the reference's own CPU and Metal block
-outputs differ by 2–5 % per layer, the pinned rows are the Metal run).
+The first rows came from the retired helper's `--mtp-draft` mode, which
+read the block's pair from llama.cpp's MTP context; Muse Glimmer's DFlash
+rows came from its `--dflash-draft` mode and left the tree with the Muse
+gates (the last tag that held them is `v0.11.0`).
 
 The comparison checks every requested layer and final logits, rejecting missing,
-wrong-sized, or nonfinite files. Initial bring-up tolerances are maximum absolute
-error 0.002 and relative RMS error 0.0001 for every tensor. These are local
-full-model smoke thresholds, not general per-kernel or quality acceptance limits.
-They are the accepted numbers for the F32 cache (`make gate NAME=qwen38-trace-f32`); the
-F16 cache ([KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10)) has its own documented tolerance, 0.03 / 0.0002 on the layer
-files with the logits inside the bring-up numbers (`make gate NAME=qwen38-trace-f16`;
+wrong-sized, or nonfinite files. The bounds are maximum absolute error 0.002
+and relative RMS error 0.0001 for every tensor: local full-model smoke
+thresholds, not general per-kernel or quality acceptance limits. They hold
+for the F32 cache (`make gate NAME=qwen38-trace-f32`); the F16 cache has its
+own documented tolerance, 0.03 / 0.0002 on the layer files with the logits
+inside the F32 numbers (`make gate NAME=qwen38-trace-f16`;
 [metal-backend.md § F16 KV cache](metal-backend.md#f16-kv-cache-2026-09-10)).
-
-The accepted outputs of this procedure are committed as fixtures under
-[tests/fixtures/](../../tests/fixtures/) (`reference-hello-comma/`, with provenance in
-[tests/fixtures/provenance.md](../../tests/fixtures/provenance.md)); `make
-compare` runs the same comparison against `tests/fixtures/reference-hello-comma`
-without regenerating anything. The `.zig-cache/generation/` paths above are the
-working copies for reproducing or extending the traces; the compiled
-`reference-generation` harness itself is a cache artifact, never committed.
-Since [MODL-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-05--gemma-4-12b-facts-binding-cpu-reference-tokenizer-2026-09-11) the harness accepts any F32 layer width and the comparison
-script takes the geometry as flags (`--embedding`, `--layers`, `--vocab`;
-the defaults are Qwen3.8's), so the same pair serves Gemma 4
-(`make gate NAME='gemma4-trace-*'` on the K-quant entry, `gemma4-qat-trace-*`
-on the QAT file, each against its own traces;
-[gemma4.md](../models/gemma4.md#cpu-reference-against-the-oracle-2026-09-11)).
-Top-five IDs and reference greedy margin are reported for diagnosis. The
-harness also builds unchanged against the PrismML fork (the include and
-library paths of `.reference/prism-llama.cpp`, output
-`.zig-cache/generation/prism-reference-generation`), which is how the Bonsai
-2 27B traces were captured ([bonsai.md](../models/bonsai.md#oracle-the-prismml-fork)).
+The `.zig-cache/generation/` paths are working copies, never committed.
 
 The explicit session test runs the real two-token sequence in two independent
 sessions and after reset following injected cancellation in layer 3. Logits must

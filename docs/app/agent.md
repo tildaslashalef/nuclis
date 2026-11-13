@@ -103,14 +103,14 @@ A tool call uses the same boundary: the profile converts its native
 syntax into a complete call with host correlation ID, name, and JSON-object
 arguments. The agent validates the registered tool and executes it only after
 the completion hands back control. Qwen and Gemma serialize calls and results
-differently ([the evidence](../engine/tool-calling.md)); Qwen's native path is
-implemented (§8), and Gemma's remains unsupported until its own fixtures exist.
+differently ([the evidence](../engine/tool-calling.md)); each profile
+decodes its own (§8, §9).
 `generate` and `bench` retain the raw `runLoop` path.
 
 ## 3. A tool call is host data until a profile serializes it
 
-The other half of the tool seam is the conversation types a profile will
-encode. The interesting decision is what is *shared* and what is
+The other half of the tool seam is the conversation types a profile
+encodes. The interesting decision is what is *shared* and what is
 *profile-owned*. A model's wire syntax — Qwen's `<tool_call>` blocks, Gemma's
 `call:NAME{...}` grammar — is profile knowledge, because only the profile's
 pinned template can say how a call is spelled. But the agent needs to reason
@@ -207,11 +207,9 @@ which is why the loop's budget, cancellation, and tool-execution paths are
 pinned without a model or a GPU.
 
 The parse lives in the prompt profile. Native tool decoding belongs to the
-same place that owns the tokenizer's special-token boundaries (§2), and it now
-lives there: the shared `profiles/stream.zig` decoder holds the call's
-bracket token ids and a body parser, and the provisional in-app splitter,
-`src/agent/parse.zig`, is gone. Streaming still shapes the problem, and the
-state machine is the same idea the provisional parser had: the decoder collects
+same place that owns the tokenizer's special-token boundaries (§2): the
+shared `profiles/stream.zig` decoder holds the call's bracket token ids and a
+body parser. Streaming shapes the problem: the decoder collects
 the body between the two control tokens and never executes a call that is
 still open when the stream ends: at EOS a body that parses is still one call,
 and anything else, after a budget stop or a cancellation, is dropped with a
@@ -223,11 +221,10 @@ That is the parser analog of §2's rule: a byte's meaning depends on what came
 after it, and the only safe move is to delay the decision. §8 follows the
 decoder in detail.
 
-The loop now carries **native** tool history: an assistant message with its
+The loop carries **native** tool history: an assistant message with its
 `tool_calls` and one `.tool` result message per call, which the profile renders
-in the artifact's own syntax. The earlier folded `<tool_response>` user turn
-was the placeholder while the profile boundary caught up; it is gone, so the
-wire format lives in the profile and nowhere else.
+in the artifact's own syntax, so the wire format lives in the profile and
+nowhere else.
 
 ## 6. Running a command is a lifetime problem
 
@@ -339,7 +336,7 @@ boundaries only while it still has token IDs, and it must then treat the body
 as opaque text and parse it separately.
 
 `engine.complete` already hands each generated token to the profile decoder as
-`(id, piece)`. The shared decoder (`profiles/stream.zig`) now also holds an
+`(id, piece)`. The shared decoder (`profiles/stream.zig`) also holds an
 optional tool grammar: the two bracket IDs and a `parse(alloc, body)` function.
 On the opening ID it flushes whatever answer text was pending, switches to
 collecting the body, and stops emitting text; on the closing ID it parses the
@@ -348,12 +345,13 @@ parser is the profile's (`qwen38.parseTool`), so the wire syntax never leaves
 `profiles/` — the agent loop sees typed `ToolCall`s and nothing else.
 
 Two failure modes are decided by the same state machine. A call that is still
-open when the stream ends — EOS, the token budget, a cancellation — never
-reached its closing token, so it is released to the transcript as plain answer
-text, the same bytes the model wrote. A body that arrives complete but that the
-parser refuses (no function name, malformed parameters) is likewise released as
-text, except under Gemma 4, whose call brackets are control tokens: there it is
-dropped with a notice. Neither can reach execution: an incomplete or malformed call is a
+open when the stream ends never reached its closing token: at EOS a body that
+parses is still one call, and anything else — a body that does not parse, a
+budget stop, a cancellation — is dropped with a notice (`tool_cut`), never
+shown as answer text. A body that arrives complete but that the parser refuses
+(no function name, malformed parameters) is released as text under Qwen, the
+same bytes the model wrote, and dropped with a notice under Gemma 4
+(`Tool.unparsed`). Neither can reach execution: an incomplete or malformed call is a
 message, never an action. This is the tool analogue of §6's rule that a
 process is not an instruction until the host has actually built it.
 
@@ -363,18 +361,18 @@ the decoder reverses it by trying to parse each value as JSON and falling back
 to the literal text. The host still validates the fields against the tool it
 names — the profile normalizes the envelope, it does not vouch for the
 contents. And because the outer markers are resolved from the artifact's
-vocabulary, a template whose controls are not standalone tokens (Gemma's inner
-calls, for one) simply declares no tool grammar and keeps rejecting tool input
-rather than approximating a format its model never sees.
+vocabulary, a template whose call brackets are not standalone tokens declares
+no tool grammar and keeps rejecting tool input rather than approximating a
+format its model never sees.
 
 ## 9. Two tool grammars, one loop
 
 A decoder that recognises *a* tool call is not yet a design that recognises
-*any* model's tool call, and the two checkpoints nuclis runs make that concrete.
+*any* model's tool call, and Qwen3.8 and Gemma 4 make that concrete.
 Qwen3.8 wraps a call in two control tokens (`<tool_call>`/`</tool_call>`) and
 puts a small XML-like body inside; the bracket tokens are what makes decoding
-possible (§8). Gemma 4's template uses an ordinary-token grammar,
-`<|tool_call>call:NAME{…}<tool_call|>`, and its result handoff resumes the model
+possible (§8). Gemma 4's brackets are control tokens too, around an
+ordinary-token body, `<|tool_call>call:NAME{…}<tool_call|>`, and its result handoff resumes the model
 turn and can reopen the thought channel — neither is the same shape as Qwen's
 `<tool_response>` fold. ([The evidence](../engine/tool-calling.md) records the
 two formats.)
@@ -553,3 +551,117 @@ transcript (or the API's `nuclis_web_calls`) shows every query and URL. A
 fetched page can steer the model; its text is data, as the guideline says, and
 `bash` could already reach the web, so the tools add no capability, only a
 better one.
+
+## 12. The agent's token cache (2026-10-04)
+
+The agent re-prefilled tokens it had already computed whenever the session
+could not continue where it stood: every start (the system block and tools),
+a cancelled step, an effort change, compaction. `src/completer/cache.zig` keeps
+snapshots at **boundaries** and `Completer` (`src/completer.zig`) restores
+the longest one a render starts with, then prefills the rest. New tokens
+(a tool result, the user's message) are never cached; only re-prefill is
+removed.
+
+- **Boundaries.** The primed prefix, one per effort (the effort is part
+  of the system block), and the end of every turn that ends in an answer
+  (`Model.checkpoint`, called by the loop and by the server). A step whose
+  remainder holds the system block's end also keeps the state there, of at
+  least 64 tokens, when the memory tier does not hold it: `complete` feeds
+  the prompt in two segments and calls back between them
+  (`engine.Saves`); this is the server's primed prefix, since it never
+  primes. Every boundary sits before a control token, which BPE never
+  merges across, so the remainder encodes the same alone.
+- **Media** (2026-10-27). The placeholder text of an image or a clip is the
+  same for every image or clip of its size, so the text the completer
+  matches on is the render with each placeholder run followed by its
+  item's SHA-256 between two 0xFF bytes, never valid UTF-8 and so never in
+  rendered text (`keyedRender`); the tokenizer reads it without them
+  (`plainText`). A state with media is then kept, restored, and moved back
+  to like any other, under the same media only. Speculation stays off
+  while the consumed text holds media (the drafter's cache is stale over
+  their rows), and a step that prefills media saves no state inside its
+  prompt (`engine.Saves` refuses an image prefill).
+- **Rewritten turns.** Gemma 4's template never re-renders an answer as
+  the model generated it (`Profile.rewritesTurn`), so neither the session
+  nor an answer-end state is ever a prefix of the next turn. On an
+  attention-only model the step marks where its prompt ended
+  (`Profile.promptEnd`: before `<|turn>model\n`, or before the thought
+  channel a tool result leaves open), with the position and the penalty
+  set there; `checkpoint` moves the session back to the mark
+  (`Session.rewindTo`, no copy) before keeping it, and a step that never
+  reached `checkpoint` (an answer cut at its budget) moves back when the
+  next render starts with the mark. The next turn continues from there,
+  prefilling the answer as rendered and the new message. A recurrent model
+  would need a snapshot at the mark instead; no profile it runs rewrites
+  its turns.
+- **Matching** is on the rendered text the state consumed, not on tokens:
+  a turn's generated tokens need not be the canonical encoding of their
+  text, so re-encoding the render would miss them. A hit must be a proper
+  prefix, leaving a token whose logits the next sample needs. A cached
+  state further along than the session wins even when the session could
+  continue (after a re-prime under a conversation, the session stands at
+  the system block). The penalty history is a 31 KB bitset copied with the
+  state.
+- **Memory tier**: in the process, least recently used out first under
+  `cache.memory_bytes` (4 GiB; 0 keeps none). A Qwen state is 150 MB plus
+  64 KiB per token, about 250 MB primed and 1.2 GB at 16K. A context or
+  model change (`/model`, Ctrl-W) drops it (the states are bound to the
+  engine that made them).
+- **Disk tier**: the primed prefix, and the last turn end of each
+  conversation that has a session file (each save replaces that
+  conversation's previous one), under `<root>/cache/prefix/` through
+  `inference.prefix_cache` (header with the keys, content digest; a file
+  that fails either is deleted and reads as a miss). The key's token half
+  is the digest of the rendered text the state consumed, which is also the
+  middle of the file name, so a session's states are found without loading
+  a model (`cache.removeDigest`, used by `/resume`'s Ctrl-D and `agent rm`). The
+  key's model half hashes the model files (and the draft companion when a
+  drafter is loaded), the executor, and the build: version and commit,
+  plus the executable's size and modification time for a build from a
+  modified tree, since such builds share a commit (`cache.buildId`). A
+  different build misses, never restores. `cache.disk_bytes` (8 GiB; 0
+  disables) bounds the directory; a hit refreshes a file's modification
+  time and each save evicts the oldest beyond the budget.
+- **Resume.** The turn's last `assistant` entry records its `boundary`
+  (the text's byte length and digest). A resume (`Completer.resumeFrom`)
+  tries the file's last boundary before the memory tier: when the render
+  starts with it, the state is loaded from disk and the penalty history
+  is rebuilt from the text's encoding. The system block carries the date,
+  so a conversation resumed on another day misses and replays.
+- **Model switch.** `/model` unloads the engine, opens the chosen file,
+  empties the memory tier, and re-opens the disk tier under the new
+  model's key, so a model used before restores its primed prefix from disk
+  (switching back to Qwen3.8 after Gemma 4 12B: 0.1 s, 2026-10-04). The
+  conversation is rendered through the new profile and prefilled whole
+  (cause `model`), and the session file records a `model` entry beside
+  `context` and `effort`.
+- **Accounting.** A step that could not continue the session reports a
+  `Replay` with its cause (`resumed`, `cancel`, `rewrite` for compaction or
+  elision, `effort`, `context`, `model`, `failure`) and the tokens restored; the
+  bar shows `replayed <cause> <prefilled>, <restored> restored`, and the
+  session file records `replay` and `restored_tokens` beside `replayed`.
+
+**Evidence for the save inside a prompt and the rewind** (2026-10-08):
+the generation gates' prompt-saves check, run then on Gemma 4 12B QAT,
+the 26B-A4B, E4B, Qwen3.8, and Muse Glimmer (it runs today in
+`qwen38-generation-metal` and `gemma4-{26b-a4b,e4b}-generation-metal`): a run that saves after 8 of 17 prompt tokens emits
+the same 8 greedy tokens as one fed those 8 then the rest; the saved state
+restored, and on the attention-only families the session moved back to it
+after the run, emit them again; Qwen3.8 refuses the rewind. Through
+`nuclis serve` and `nuclis agent` on Gemma 4 12B, E4B, and Qwen3.8 the
+answers at temperature 0 equal the previous build's, and the reuse is the
+table in [api.md § Conversations and the cache](../guide/api.md#conversations-and-the-cache);
+in `nuclis agent` on the 12B (speculation on), turns 2 and 3 prefilled 28
+and 35 tokens where the previous build reported `replayed rewrite 44,
+3183 restored` and `76, 3183 restored`.
+
+**Evidence** (Qwen3.8-27B Q4_K_M, Metal, M4 Pro, 16K window, dirty build of
+2026-10-04 on `9f45bf0`). Start-up warm-up of the 1,333-token prefix at
+`low` (`make shot`, `.zig-cache/tui/c1-start`, `c8-warm-start`, `c6-low`):
+16.3 s prefilled, 1.0 s from disk, 0.4 s from memory. `agent -p` wall time
+with the weights in the page cache, three pairs: 17.4 s cold, 2.6 s with
+the disk entry. A cancel then a prompt (`c4-after-cancel`): `replayed
+cancel 41, 1369 restored`; low → xhigh → low then a prompt
+(`c7-after-effort`): `replayed effort 17, 1427 restored`. A cold and a
+warm `agent -p` at temperature 0 give the same text with the drafter and
+without it. A primed entry on disk is 242–251 MB.

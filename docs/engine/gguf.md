@@ -9,7 +9,7 @@ and the backends run them.
 
 ## Run it
 
-Use Zig 0.17.0 from the repository root:
+Use Zig 0.17.1 from the repository root:
 
 ```sh
 zig build -Doptimize=ReleaseSafe
@@ -19,8 +19,8 @@ zig build -Doptimize=ReleaseSafe
 zig build test
 ```
 
-The default path is `~/.nuclis/models/qwen/Qwen3.8-27B-UD-Q4_K_M.gguf`.
-An absolute `NUCLIS_HOME` overrides the shared root. `--model` takes precedence
+Without `--model`, inspection reads the configured `engine.model` under
+`~/.nuclis/models/`; an absolute `NUCLIS_HOME` overrides the root. `--model` takes precedence
 and works without a home directory; relative explicit model paths use the
 working directory. Inspection and help never create directories or settings.
 
@@ -53,7 +53,7 @@ inventory was also cross-checked with an independent Python wire-format reader.
 | Declared context | 262,144 tokens |
 
 Stored elements include auxiliary tensors; this is not a count of parameters
-used by the eventual text execution path. The [Qwen adapter](../models/qwen3.8.md)
+used by the text execution path. The [Qwen adapter](../models/qwen3.8.md)
 validates this tensor mapping and distinguishes 64 decoder layers from the
 auxiliary block; generic inspection does not perform that architecture-specific check.
 
@@ -69,8 +69,9 @@ auxiliary block; generic inspection does not perform that architecture-specific 
 | IQ3_S | 4 | 153,190,400 |
 | IQ4_XS | 117 | 4,760,043,520 |
 
-The filename's Q4 label is insufficient to select kernels: all nine observed
-encodings need correct handling before this artifact can execute.
+The filename's Q4 label is insufficient to select kernels: the artifact runs
+only because each of the nine observed encodings has its own decoder
+([quantization.md](quantization.md)).
 
 ## Code and ownership walkthrough
 
@@ -88,11 +89,10 @@ encodings need correct handling before this artifact can execute.
    document, so do not deinitialize it while those slices are in use or free two
    copies of the same owning value.
 5. Metadata arrays retain their type, count, and file offset. Numeric arrays of
-   at most 16 items also retain their values, allowing adapters to validate small
-   configuration arrays such as RoPE sections. The parser walks larger arrays
-   their encoded contents without materializing the vocabulary. `open` closes
-   its file before returning; later vocabulary access will require a separate
-   storage interface and lifetime contract.
+   at most 64 items (`retained_array_items`) also retain their values, allowing
+   adapters to validate small configuration arrays such as RoPE sections and
+   per-layer patterns. The parser walks larger arrays without materializing the
+   vocabulary; `ArrayReader` reads them later from a borrowed directory image.
 6. [encoding.zig](../../inference/src/tensor/encoding.zig) sizes stored blocks
    independently of architecture. Dimension zero is the contiguous row: each row
    must hold complete quantization blocks. Checked arithmetic rejects overflow.
@@ -109,15 +109,15 @@ ahead slightly into the payload. It does not scan or map the complete weight fil
 Default limits are 64 MiB of directory bytes, 16,384 metadata entries, 100,000
 tensors, 1 MiB per string, and 4,000,000 items per metadata array. Nested arrays,
 big-endian containers, other GGUF versions, and unknown layouts are explicitly
-unsupported in this increment. File-size validation assumes the file remains
+unsupported. File-size validation assumes the file remains
 unchanged during inspection. No model compatibility or peak-memory estimate is
 implied by successful parsing.
 
 The storage table follows the primary
 [GGUF format](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md) and
 [GGML block definitions](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-common.h).
-These references specify layouts; no external implementation was copied into
-this increment. Numerical decoding will need independent value fixtures.
+These references specify layouts; no external implementation was copied.
+Value decoding and its fixtures are in [quantization.md](quantization.md).
 
 ## Validation
 
@@ -130,28 +130,27 @@ test targets.
 Debug and ReleaseSafe builds were exercised on the actual model. Additional
 process checks covered JSON inventory, `NUCLIS_HOME` through a temporary model
 symlink, help without directory creation, and a truncated file returning a clean
-error. These establish inspection behavior; numerical accuracy, Metal resource
-lifetimes, throughput, and generation quality remain unmeasured.
+error. These establish inspection behavior only; numerical accuracy is held by
+the [CPU reference](cpu-reference.md) and the [Metal backend](metal-backend.md)'s checks.
 
 ## Companion files in models/qwen (2026-09-08)
 
-(The directory was `models/qwen/` when this was recorded; since [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-03--models-directory-catalogue-and-registry-2026-09-11) on
+(The directory was `models/qwen/` when this was recorded; since
 2026-09-11 the same files live under `models/unsloth/Qwen3.8-27B-GGUF/`,
 pulled by `nuclis model pull qwen3.8-27b --all` with provenance sidecars,
 and the imatrix, `config.json`, and `README.md` are no longer kept locally.)
 
-These files are available locally alongside the main GGUF. They are reference
-material or future execution inputs, not dependencies of current text generation.
+These files sat beside the main GGUF; text generation does not depend on them.
 `nuclis inspect --model <file> --json` successfully inspected the imatrix and
 projector containers; a separate read of their metadata established the fields
 below. Container inspection does not mean the engine can execute them.
 
 | File | Observed contents | Use in nuclis |
 | --- | --- | --- |
-| `config.json` | Qwen3.5-family architecture; 64 text layers, hidden 5120, FFN 17408, 24 query/4 KV heads, one MTP layer, no dedicated MTP embeddings; vision depth 27, hidden 1152, output 5120 | Cross-check the GGUF adapter, inform the MTP unit's weight-sharing investigation and later vision design. Runtime dimensions and encodings still come from the validated GGUF. |
-| `imatrix_unsloth.gguf` | 13,642,656 bytes; `general.type=imatrix`; 992 F32 tensors; dataset label `unsloth_calibration_dataset`, 1,251 chunks of 8,192 tokens | Calibration statistics for future quantization studies. It is not additional inference weights, a speed optimization, or a numerical trace oracle. |
-| `mmproj-BF16.gguf` | 931,146,432 bytes; architecture `clip`, type `mmproj`; 334 tensors (224 F32, 110 BF16); vision encoder present, 27 blocks, patch size 16, output width 5120, projector type `qwen3vl_merger` | Contains a vision encoder and merger, not merely a small linear projection. Future vision needs BF16 compute/decoding, preprocessing, image-token placement, and the vision schedule. Text inference does not load it. |
-| `mtp-Qwen3.8-27B-Q4_0.gguf` | Separate downloaded prediction head | Available for inspection by the MTP unit; the embedded main-model auxiliary block remains the first candidate. |
+| `config.json` | Qwen3.5-family architecture; 64 text layers, hidden 5120, FFN 17408, 24 query/4 KV heads, one MTP layer, no dedicated MTP embeddings; vision depth 27, hidden 1152, output 5120 | Cross-checked the GGUF adapter, the MTP weight sharing, and the vision design. Runtime dimensions and encodings come from the validated GGUF. |
+| `imatrix_unsloth.gguf` | 13,642,656 bytes; `general.type=imatrix`; 992 F32 tensors; dataset label `unsloth_calibration_dataset`, 1,251 chunks of 8,192 tokens | Calibration statistics for quantization studies. It is not additional inference weights, a speed optimization, or a numerical trace oracle. |
+| `mmproj-BF16.gguf` | 931,146,432 bytes; architecture `clip`, type `mmproj`; 334 tensors (224 F32, 110 BF16); vision encoder present, 27 blocks, patch size 16, output width 5120, projector type `qwen3vl_merger` | A vision encoder and merger, not merely a small linear projection; it is the projector of [vision.md § The Qwen3-VL projector](vision.md#the-qwen3-vl-projector-2026-09-22). Text-only generation does not load it. |
+| `mtp-Qwen3.8-27B-Q4_0.gguf` | Separate downloaded prediction head | The `mtp` companion: the same prediction block at lower precision ([speculative-decoding.md § The Qwen MTP companion](speculative-decoding.md#the-qwen-mtp-companion-2026-10-21)). |
 | `README.md` | Upstream architecture overview, thinking controls, suggested sampling parameters, vision/context claims | Human reference for product/evaluation choices. Its settings are not automatically applied; its claimed context is not our measured capacity. |
 
 An importance matrix summarizes activation magnitudes collected on calibration
@@ -164,10 +163,10 @@ for its quantization role and statistical limitations.
 
 The local README suggests thinking sampling of temperature 1.0/top-p 0.95/top-k
 20 and non-thinking 0.7/0.80/20, with presence penalty 1.5 in the latter mode.
-These are upstream recommendations, not measured nuclis defaults; presence
-penalty is not currently implemented. Keep benchmark sampling fixed for
+These are upstream recommendations, not measured nuclis defaults
+([sampling.md](sampling.md) has the sampler and its presence penalty). Keep benchmark sampling fixed for
 comparability. The config's `unsloth_fixed_mtp` flag is provenance information,
-not evidence that our future MTP implementation is correct.
+not evidence that nuclis's MTP path is correct.
 
 Local SHA-256 identities (not independently verified against remote hashes):
 

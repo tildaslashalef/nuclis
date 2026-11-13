@@ -3,9 +3,8 @@
 `nuclis eval` measures a model's perplexity on a text: the one number that
 ranks a quantization, a cache precision, or a kernel's rounding against the
 reference over thousands of positions, where the trace gates see two or
-three. The unit that built it is [APPS-14](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#apps-14--teacher-forced-eval-perplexity-against-the-references-per-token-run-the-all-rows-prefill-a-gate-per-family-2026-09-24) in the
-[worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md); [MODL-26](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-26--gemma-4s-metal-verify-rows-carry-the-final-soft-cap-2026-09-24) is the Gemma 4 `verify`
-fix it surfaced.
+three. Building it surfaced a Gemma 4 `verify` fix
+([§ Gemma 4's verify rows](#gemma-4s-verify-rows-2026-09-24)).
 
 ## The method
 
@@ -15,8 +14,11 @@ position's logits. The negative log-likelihood (NLL) averaged over the
 scored tokens is the cross-entropy in nats; its exponential is the
 perplexity.
 
-`eval` follows the reference's `llama-perplexity` exactly, so its numbers
-compare with that tool's output on the same file:
+`eval` follows llama.cpp's `llama-perplexity` exactly, which made the
+first pinned references while nuclis was bootstrapped
+([models/README.md § 4](../models/README.md#4-validate-against-nuclis-itself)),
+so its numbers compare with that tool's output on the same file. Below,
+*the reference* is that tool's run:
 
 1. The whole file is tokenized raw: no template, special markers not
    parsed. When the model has a BOS (below), it is prepended to the array.
@@ -73,27 +75,26 @@ position within 5e-3 / 2e-4 (summation order only), for every family.
 
 The encoder never adds BOS. A raw text starts with the *profile's* opening
 token (`Profile.bosToken`: none for Qwen3.8 and Bonsai, `<bos>` for Gemma 4,
-`<|begin_of_text|>` for Muse Glimmer), which is what the reference does:
-it forces `add_bos_token` on for every Gemma 4 file, including the 26B-A4B
+`<|begin_of_text|>` for Muse Glimmer), which is what the reference did:
+it forced `add_bos_token` on for every Gemma 4 file, including the 26B-A4B
 whose metadata says false. A file without a profile falls back to its own
 `tokenizer.ggml.add_bos_token` (`Engine.textBos`). On wikitext-2 the token
-arrays equal the reference's exactly: all 4,096 ids of the first eight
-windows, checked against its `--kl-divergence-base` dump for Qwen3.8 and
-Gemma 4 12B.
+arrays equalled the reference's exactly (2026-09-24): all 4,096 ids of the
+first eight windows, checked against its `--kl-divergence-base` dump for
+Qwen3.8 and Gemma 4 12B.
 
-Gemma's SPM-style splitter makes each line one BPE piece. The merge used
-to rescan the piece after every merge, so wikitext's paragraph lines
-exceeded the chat's work bounds (`WorkLimitExceeded`) and `eval` scaled them;
-the queued merge ([tokenizer.md § BPE](../engine/tokenizer.md#bpe-and-id-to-byte-decoding))
-made the work linear, and `eval` now only widens the input and work bounds
-in proportion to the text (capped at 16 MiB). The 1.29 MB test text encodes
+Gemma's SPM-style splitter makes each line one BPE piece, so wikitext's
+paragraph lines are long pieces; the queued merge
+([tokenizer.md § BPE](../engine/tokenizer.md#bpe-and-id-to-byte-decoding))
+keeps their work linear, and `eval` widens the input and work bounds in
+proportion to the text (capped at 16 MiB). The 1.29 MB test text encodes
 in about 0.26 s on Gemma.
 
 ## The reference and its two paths
 
-The reference's default run decodes a batch of 2,048 tokens (four windows
+The reference's default run decoded a batch of 2,048 tokens (four windows
 of 512) per call, through its matrix-matrix kernels. On Gemma 4 12B that
-batched path disagrees with its own per-token path (`-ub 1`, one token per
+batched path disagreed with its own per-token path (`-ub 1`, one token per
 decode call, the path its trace harness exercises) by 1.2 %: **597.36**
 against **590.13** over the same 4,096 tokens. Per scored token the two
 reference runs differ by a median of 0.049 nats, p99 1.49. Our first
@@ -112,9 +113,9 @@ perplexity, and looked like a Gemma bug. The localization:
 - against the per-token reference, our per-token NLL differs by a median of
   0.006 nats, p99 0.18.
 
-So the pinned references are **per-token runs** (`--ubatch 1`, which adds
-`-b <ctx> -ub 1`), for every family. The per-token reference is slow
-(it decodes one token per call) but is written once.
+So the references pinned from llama.cpp were **per-token runs**
+(`-b <ctx> -ub 1`), for every family: slow (one token per decode call),
+but written once.
 
 ## The reference record (2026-09-24)
 
@@ -164,9 +165,15 @@ per-token difference of −0.003 nats: noise that does not average out in
 2,040 tokens dominated by the tail, not a bias. The fixture carries
 `tolerance: 0.01` and the reason; every other family keeps 0.5 %.
 
-Each family's figure is a gate (`make gate NAME='*-perplexity'`, the
-`verify` tier): `nuclis eval --reference
-tests/fixtures/perplexity/<family>-wikitext2-c512x8.json`.
+The gates that pin these figures are `nuclis eval --reference
+tests/fixtures/perplexity/<model>-wikitext2-c512x8.json` on the files the
+catalogue still serves: `qwen38-perplexity` and `gemma4-e4b-perplexity`
+(two windows, `verify`), `gemma4-26b-a4b-perplexity-full` (`verify`), and
+the eight-window `qwen38-perplexity-full` and `gemma4-e4b-perplexity-full`
+(`verify-release`). The E4B's references were pinned on 2026-09-26
+(36.0558 against 36.0595, −0.010 %); Qwen3.8's was re-made by nuclis for
+its re-pinned file ([§ Regenerating a reference](#regenerating-a-reference)).
+The Gemma 4 12B and Muse Glimmer rows have no gate.
 
 ## The long-context record (2026-09-24)
 
@@ -179,12 +186,13 @@ reference's per-token run, as the 512 record does.
 
 | Model | nuclis | reference, per-token | difference | status |
 | --- | ---: | ---: | ---: | --- |
-| Gemma 4 12B | 752.989 ± 46.78 | 751.820 ± 46.67 | +0.155 % | gate `gemma4-perplexity-4k` (149 s; retired 2026-09-29 with the file, [REPO-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#repo-19--the-gemma-4-12b-k-quant-files-gates-retired-with-the-file-2026-09-29)) |
+| Gemma 4 12B | 752.989 ± 46.78 | 751.820 ± 46.67 | +0.155 % | gate `gemma4-perplexity-4k` (149 s), retired 2026-09-29 with the file |
+| Gemma 4 E4B (QAT, 2026-09-26) | 23.1732 | 23.1780 | −0.021 % | gate `gemma4-e4b-perplexity-4k` (`verify-long`) |
 | Gemma 4 26B-A4B | 992.812 ± 56.10 | 1010.894 ± 57.18 | **−1.789 %** | open: no gate |
 | Qwen3.8-27B, Muse Glimmer | — | not recorded | — | reference run stopped |
 
-The Gemma 4 12B passes with every scored position past its 1,024-token
-windows.
+The Gemma 4 12B and the E4B pass with every scored position past their
+sliding windows.
 
 **The 26B-A4B is open.** Its difference grew from −0.53 % at 512 to
 −1.79 % at 4,096, although four times the scored tokens should shrink
@@ -200,9 +208,10 @@ routing noise: it looks systematic and growing with context, not noise.
   (carrying the 512 record's 1 % routing bound) is kept as the evidence.
 
 The per-token references for Qwen3.8 and Muse (about 25 minutes each) were
-stopped before they finished. They are now made by nuclis
+stopped before they finished, so neither has a 4,096 record or gate; one
+would be made by nuclis
 ([§ Regenerating a reference](#regenerating-a-reference), `--ctx-size 4096
---chunks 4`), and each then gets a `*-perplexity-4k` gate in `gates.json`.
+--chunks 4`).
 
 ## Gemma 4's verify rows (2026-09-24)
 
@@ -250,20 +259,19 @@ make eval-corpus
 ```
 
 The second line is the cross-check; its result goes into `cross_check`.
-The Gemma 4 references are still `llama-perplexity` runs (`--ubatch 1`,
-[§ The reference and its two paths](#the-reference-and-its-two-paths)),
+The Gemma 4 references are `llama-perplexity` per-token runs
+([§ The reference and its two paths](#the-reference-and-its-two-paths)),
 pinned before nuclis became its own reference; they stay until their file
-is re-pinned. Their generator is retired (tag `v0.11.0`,
+is re-pinned. Their generator was retired (tag `v0.11.0`,
 `scripts/reference-perplexity.py`).
 
 ## Limitations
 
-- Bonsai 2 has no reference record: its encodings decode only in the
-  PrismML fork, which was not built with `llama-perplexity`.
+- Bonsai 2 has no reference record, and no gate.
 - The CPU reference runs `eval` token by token (about 11 s a token on the
   Gemma 4 12B; one window of Qwen3.8 takes 28 min), so
   a whole CPU record is out of reach; one window cross-checks Metal's.
-- One corpus, one window size. Long-context perplexity (windows of 4K–32K)
-  and a code corpus are not recorded.
+- One corpus, at windows of 512 and 4,096. Windows past 4,096 and a code
+  corpus are not recorded.
 - The scored rows are read back whole (about 250 MB per 256 rows) and
   reduced on the host; a device log-softmax would remove the copy.

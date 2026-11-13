@@ -10,7 +10,7 @@ on: recurrent state is never rewound by changing a length.
 
 | Layout | Regions | View the layer sees |
 | --- | --- | --- |
-| `attention { key_row, value_row, precision }` | `capacity` key rows and `capacity` value rows, stored as F32, F16, or Q8_0 blocks (`precision`, [KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10)) | `Rows`: `range(first, count)` is a byte range for a GPU binding; `floats(first, count)` is the F32 view the CPU reference reads (asserts `f32`); a `q8_0` row is a whole number of 32-value blocks (`Precision.bytes`) |
+| `attention { key_row, value_row, precision }` | `capacity` key rows and `capacity` value rows, stored as F32, F16, or Q8_0 blocks (`precision`) | `Rows`: `range(first, count)` is a byte range for a GPU binding; `floats(first, count)` is the F32 view the CPU reference reads (asserts `f32`); a `q8_0` row is a whole number of 32-value blocks (`Precision.bytes`) |
 | `recurrent { history, matrix }` | that many F32 values each, whole | `[]f32` |
 
 `Session.memory` is one page-aligned byte block (`[]align(16384) u8`), so a
@@ -61,7 +61,7 @@ sees `[0, position + 1)` after its own write, recurrent state is whole.
 
 The agent keeps snapshots at turn boundaries and restores the longest one
 a render starts with, in memory and on disk: see
-[§ The agent's token cache](#the-agents-token-cache-2026-10-04).
+[app/agent.md § 12](../app/agent.md#12-the-agents-token-cache-2026-10-04).
 
 Why copy instead of rewind: 48 of the 64 layers are recurrent, and their
 matrix after token *n* is a function of every token before it. Truncating a
@@ -130,7 +130,7 @@ operation used by the loop: the tape replay when the batch kept one, else
 rewind then `prefill(accepted)` on a recurrent model, and
 `truncate(checkpoint + accepted.len)` on an attention-only one.
 
-A model with an embedded draft block (Qwen's `blk.64`, [MODL-18](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-18--qwen38-draft-head-the-embedded-prediction-block-on-the-cpu-reference-and-the-metal-plan-2026-09-19--2026-09-20-two-sessions)) adds the
+A model with an embedded draft block (Qwen's `blk.64`) adds the
 block's attention cache as **one more layout in the same session** while the
 drafter is loaded, so the checkpoint/rewind/truncate contract above covers
 it with no second mechanism: the block's rows are rewritten by `commit`
@@ -181,121 +181,12 @@ test-metal`); `make gate NAME=qwen38-generation-metal` checks the recovery
 at every accepted length of a 4- and an 8-row batch against sequential
 steps and exercises the refusals.
 
-This replaced [ENGN-14](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-14--recovery-without-the-whole-stack-replay-2026-09-20-two-sessions)'s row checkpoints (a 150 MB recurrent copy per batch
+This replaced the row checkpoints recovery used from 2026-09-20 (a 150 MB recurrent copy per batch
 row, 1.25 GB for eight, written by the chunk kernel and restored by a host
-copy); see the [worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md) for both.
+copy); the [worklog archived at v0.6.0](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md) records both.
 
 ## The agent's token cache (2026-10-04)
 
-The agent re-prefilled tokens it had already computed whenever the session
-could not continue where it stood: every start (the system block and tools),
-a cancelled step, an effort change, compaction. `src/completer/cache.zig` keeps
-snapshots at **boundaries** and `Completer` (`src/completer.zig`) restores
-the longest one a render starts with, then prefills the rest. New tokens
-(a tool result, the user's message) are never cached; only re-prefill is
-removed.
-
-- **Boundaries.** The primed prefix, one per effort (the effort is part
-  of the system block), and the end of every turn that ends in an answer
-  (`Model.checkpoint`, called by the loop and by the server). A step whose
-  remainder holds the system block's end also keeps the state there, of at
-  least 64 tokens, when the memory tier does not hold it: `complete` feeds
-  the prompt in two segments and calls back between them
-  (`engine.Saves`); this is the server's primed prefix, since it never
-  primes. Every boundary sits before a control token, which BPE never
-  merges across, so the remainder encodes the same alone.
-- **Media** (2026-10-27). The placeholder text of an image or a clip is the
-  same for every image or clip of its size, so the text the completer
-  matches on is the render with each placeholder run followed by its
-  item's SHA-256 between two 0xFF bytes, never valid UTF-8 and so never in
-  rendered text (`keyedRender`); the tokenizer reads it without them
-  (`plainText`). A state with media is then kept, restored, and moved back
-  to like any other, under the same media only. Speculation stays off
-  while the consumed text holds media (the drafter's cache is stale over
-  their rows), and a step that prefills media saves no state inside its
-  prompt (`engine.Saves` refuses an image prefill).
-- **Rewritten turns.** Gemma 4's template never re-renders an answer as
-  the model generated it (`Profile.rewritesTurn`), so neither the session
-  nor an answer-end state is ever a prefix of the next turn. On an
-  attention-only model the step marks where its prompt ended
-  (`Profile.promptEnd`: before `<|turn>model\n`, or before the thought
-  channel a tool result leaves open), with the position and the penalty
-  set there; `checkpoint` moves the session back to the mark
-  (`Session.rewindTo`, no copy) before keeping it, and a step that never
-  reached `checkpoint` (an answer cut at its budget) moves back when the
-  next render starts with the mark. The next turn continues from there,
-  prefilling the answer as rendered and the new message. A recurrent model
-  would need a snapshot at the mark instead; no profile it runs rewrites
-  its turns.
-- **Matching** is on the rendered text the state consumed, not on tokens:
-  a turn's generated tokens need not be the canonical encoding of their
-  text, so re-encoding the render would miss them. A hit must be a proper
-  prefix, leaving a token whose logits the next sample needs. A cached
-  state further along than the session wins even when the session could
-  continue (after a re-prime under a conversation, the session stands at
-  the system block). The penalty history is a 31 KB bitset copied with the
-  state.
-- **Memory tier**: in the process, least recently used out first under
-  `cache.memory_bytes` (4 GiB; 0 keeps none). A Qwen state is 150 MB plus
-  64 KiB per token, about 250 MB primed and 1.2 GB at 16K. A context or
-  model change (`/model`, Ctrl-W) drops it (the states are bound to the
-  engine that made them).
-- **Disk tier**: the primed prefix, and the last turn end of each
-  conversation that has a session file (each save replaces that
-  conversation's previous one), under `<root>/cache/prefix/` through
-  `inference.prefix_cache` (header with the keys, content digest; a file
-  that fails either is deleted and reads as a miss). The key's token half
-  is the digest of the rendered text the state consumed, which is also the
-  middle of the file name, so a session's states are found without loading
-  a model (`cache.removeDigest`, used by `/resume`'s Ctrl-D and `agent rm`). The
-  key's model half hashes the model files (and the draft companion when a
-  drafter is loaded), the executor, and the build: version and commit,
-  plus the executable's size and modification time for a build from a
-  modified tree, since such builds share a commit (`cache.buildId`). A
-  different build misses, never restores. `cache.disk_bytes` (8 GiB; 0
-  disables) bounds the directory; a hit refreshes a file's modification
-  time and each save evicts the oldest beyond the budget.
-- **Resume.** The turn's last `assistant` entry records its `boundary`
-  (the text's byte length and digest). A resume (`Completer.resumeFrom`)
-  tries the file's last boundary before the memory tier: when the render
-  starts with it, the state is loaded from disk and the penalty history
-  is rebuilt from the text's encoding. The system block carries the date,
-  so a conversation resumed on another day misses and replays.
-- **Model switch.** `/model` unloads the engine, opens the chosen file,
-  empties the memory tier, and re-opens the disk tier under the new
-  model's key, so a model used before restores its primed prefix from disk
-  (switching back to Qwen3.8 after Gemma 4 12B: 0.1 s, 2026-10-04). The
-  conversation is rendered through the new profile and prefilled whole
-  (cause `model`), and the session file records a `model` entry beside
-  `context` and `effort`.
-- **Accounting.** A step that could not continue the session reports a
-  `Replay` with its cause (`resumed`, `cancel`, `rewrite` for compaction or
-  elision, `effort`, `context`, `model`, `failure`) and the tokens restored; the
-  bar shows `replayed <cause> <prefilled>, <restored> restored`, and the
-  session file records `replay` and `restored_tokens` beside `replayed`.
-
-**Evidence for the save inside a prompt and the rewind** (2026-10-08):
-the generation gates' prompt-saves check (`make gate
-NAME=gemma4-qat-generation-metal`, and the 26B-A4B, E4B, Qwen3.8, and
-Muse Glimmer ones): a run that saves after 8 of 17 prompt tokens emits
-the same 8 greedy tokens as one fed those 8 then the rest; the saved state
-restored, and on the attention-only families the session moved back to it
-after the run, emit them again; Qwen3.8 refuses the rewind. Through
-`nuclis serve` and `nuclis agent` on Gemma 4 12B, E4B, and Qwen3.8 the
-answers at temperature 0 equal the previous build's, and the reuse is the
-table in [api.md § Conversations and the cache](../guide/api.md#conversations-and-the-cache);
-in `nuclis agent` on the 12B (speculation on), turns 2 and 3 prefilled 28
-and 35 tokens where the previous build reported `replayed rewrite 44,
-3183 restored` and `76, 3183 restored`.
-
-**Evidence** (Qwen3.8-27B Q4_K_M, Metal, M4 Pro, 16K window, dirty build of
-2026-10-04 on `9f45bf0`). Start-up warm-up of the 1,333-token prefix at
-`low` (`make shot`, `.zig-cache/tui/c1-start`, `c8-warm-start`, `c6-low`):
-16.3 s prefilled, 1.0 s from disk, 0.4 s from memory. `agent -p` wall time
-with the weights in the page cache, three pairs: 17.4 s cold, 2.6 s with
-the disk entry. A cancel then a prompt (`c4-after-cancel`): `replayed
-cancel 41, 1369 restored`; low → xhigh → low then a prompt
-(`c7-after-effort`): `replayed effort 17, 1427 restored`. A cold and a
-warm `agent -p` at temperature 0 give the same text with the drafter and
-without it. A primed entry on disk is 242–251 MB.
-
+The snapshots the agent keeps at turn boundaries, in memory and on disk,
+are an application design:
+[app/agent.md § 12](../app/agent.md#12-the-agents-token-cache-2026-10-04).

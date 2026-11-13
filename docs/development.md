@@ -27,7 +27,8 @@ instructions belong in [../AGENTS.md](../AGENTS.md).
 
 Every command in `nuclis --help` works: `agent`, `generate`, `bench`,
 `tokenize`, `eval`, `inspect`, `validate`, `model`, `cache`, `decide`,
-`serve`, `config`, and `completion`. The engine runs on the CPU reference
+`embed`, `speak`, `voice`, `transcribe`, `serve`, `config`, and
+`completion`. The engine runs on the CPU reference
 and, built with `-Dmetal=true`, on the Metal backend. The
 [merged pull requests](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) what changed and why, and
 [worklog.md](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md) the work before v0.6.0.
@@ -47,7 +48,7 @@ inference/           engine library: runtime, quantization, tokenizer,
 huggingface/         Hub download library (Xet) and its standalone binary;
                      imported by src/ only
 tools/gates/         the gate runner, nuclis-gates; imports no package
-scripts/             gate/, bench/, repo/, app/, fixtures/, oracle/
+scripts/             gate/, bench/, repo/, app/, fixtures/, lib/
 docs/                the hub README.md: guide/, models/, engine/, app/, benchmarks/
 site/                the engine.nuclis.dev website: static HTML, CSS, JS, no build
 build.zig            build
@@ -77,49 +78,34 @@ Facts every unit depends on; keep them here, not in the tracker.
   `322e194f…` at `4ca72078`
   ([models/qwen3.8.md § The re-made file](models/qwen3.8.md#the-re-made-file-2026-11-12)).
   Its companions `mmproj-BF16.gguf` and `MTP/mtp-Qwen3.8-27B-Q4_0.gguf`
-  sit beside it, verified and not executed
+  sit beside it: the projector for images, the MTP head for speculation
   ([models/catalogue.md](models/catalogue.md#pinned-commits-and-digests-2026-09-11),
   [engine/gguf.md](engine/gguf.md#companion-files-in-modelsqwen-2026-09-08)).
 - Two ignored directories hold local state. `.zig-cache/` is disposable:
   Zig's build cache (`make clean-cache` drops it; it grows with every
   build), gate traces and results, the generated playground; `make
   distclean` or `rm -rf` loses nothing that does not come back by itself.
-  `.reference/` is durable: the oracles' checkouts, builds, and venvs, their
-  staged models, and pinned downloads (`eval/`, `ucd/`), all slow to set up
-  again; nothing in the Makefile deletes it.
-- Reference llama.cpp `7620399` builds on demand under
-  `.reference/llama.cpp`; the
-  PrismML fork `5d80cff` (release `prism-b10687-5d80cff`), the only decoder
-  of Bonsai 2 27B's ternary encodings, beside it under
-  `.reference/prism-llama.cpp` with the same recipe
-  ([llama-cpp.md § The second oracle](benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-2026-09-18)),
-  and mainline build `b11514` (`de7fa0a3c`), which runs EmbeddingGemma 2, under
-  `.reference/llama.cpp-embed`
-  ([llama-cpp.md § The third oracle](benchmarks/llama-cpp.md#the-third-oracle-embeddinggemma-2-2026-10-09)).
-  Master `529ac893e` (2026-10-14), under `.reference/llama.cpp-latest`,
-  took the last external record ([saluki.md](models/saluki.md#the-llamacpp-record-2026-10-14));
-  since then nuclis is its own reference and no new oracle is built.
-  EmbeddingGemma 2's semantic oracle is sentence-transformers 6.1 in a venv
-  at `.reference/venv-embed` (the recipe headed
-  `scripts/embedding-reference.py`, retired; at tag `v0.11.0`), with Google's checkpoint in float32.
-  The decision model's oracle is the `laya` 0.3.20 Python package in a venv
-  at `.reference/laya-venv` (Python 3.12 through `uv`; the recipe
-  headed `scripts/laya-reference.py`, retired; at tag `v0.11.0`; `--subfolder
-  multilingual` for the multilingual set), run on the CPU in F32 against the pulled checkpoint
-  from a staged copy, because the package may rewrite
-  `tokenizer_config.json` in place.
-  clef-flash's oracle is Cloudflare's `joint_schema_model.py` at the
-  pinned commit in a venv at `.reference/clef-venv` (torch 2.11.0,
-  transformers 5.10.2; the recipe headed `scripts/clef-reference.py`, retired; at tag `v0.11.0`),
-  which never loads the backbone: `sequence` mode writes the reference's
-  ids and spans, `head` mode runs the head on the rows `clef-check run
-  --dump` writes from nuclis's backbone.
-  The reference oracle itself is committed under `tests/fixtures/`
-  ([provenance](../tests/fixtures/provenance.md)); `make gate NAME='qwen38-trace-*'` reads
-  `tests/fixtures/reference-hello-comma`. The rates of both engines on the
-  same token arrays are the README's [Results](../README.md#results); the
-  method is [benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs),
-  the reference's harness [llama-cpp.md](benchmarks/llama-cpp.md).
+  `.reference/` is durable: pinned downloads (`eval/`, `speech/`, `ucd/`) and, on a
+  machine that ran them, the former oracles' checkouts and venvs, all slow
+  to set up again; nothing in the Makefile deletes it.
+- External oracles are history: the first families were brought up
+  against a pinned llama.cpp build (`7620399`), with the PrismML fork
+  `5d80cff` for Bonsai 2 27B, build `b11514` for EmbeddingGemma 2, and
+  Python oracles for the decision model (`laya` 0.3.20), clef-flash's head,
+  and EmbeddingGemma 2's semantic vectors (sentence-transformers 6.1).
+  Master `529ac893e` took the last external record on 2026-10-14
+  ([saluki.md](models/saluki.md#the-llamacpp-record-2026-10-14)); since
+  then nuclis is its own reference
+  ([models § 4](models/README.md#4-validate-against-nuclis-itself)). The
+  recipes and drivers are at tag `v0.11.0` under `scripts/`; the build
+  flags and dated runs are in [llama-cpp.md](benchmarks/llama-cpp.md).
+  The fixtures they pinned stay under `tests/fixtures/`
+  ([provenance](../tests/fixtures/provenance.md)); `make gate
+  NAME='qwen38-trace-*'` reads `tests/fixtures/reference-hello-comma`,
+  which nuclis's CPU reference re-made for the re-pinned file. The
+  2026-10 rates of both engines on the same token arrays are the README's
+  [Results](../README.md#results); the method is
+  [benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs).
 - `make help` lists all tasks. While editing: `make watch` reports
   compile errors about a quarter of a second after each save
   ([§ Zig 0.17 usage audit](#zig-017-usage-audit)). Per-commit: `make check` (fmt-check, the
@@ -166,7 +152,7 @@ make the registry cheaper than the recipes it replaced:
 | --- | --- | --- | --- | --- |
 | executor | the Metal plan (and the tokenizer) | the Metal plan | the Metal plan | the CPU reference |
 | covers | one representative file per family and the paths only a variant has (§ What each gate protects) | whole-file acceptance: the 8-window perplexities of Qwen3.8 and the E4B (`*-perplexity-full`), the F32 trace of the 26B-A4B, the 1.7B speech round trip, Laya multilingual, `qwen38-draft-stats` | positions past 512 and the sliding windows | the CPU reference of every family, projector, and draft source |
-| cost | budget 480 s; the canaries 60 s (the table below) | budget 300 s | budget 120 s (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 3 and 11 min; the other families wait for their references) | no budget; 30 min (18 gates: 1,523 s for 15 measured 2026-10-02, 1,327 s for 14 on 2026-09-30 with the reference's `matvec` on every core, from hours; engineering log, [KERN-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-19--a-threaded-cpu-reference-bit-identical-the-cpu-tier-in-22-minutes-2026-09-30), [MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one)) |
+| cost | budget 480 s; the canaries 60 s (the table below) | budget 300 s | budget 120 s (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 4 and 12 min) | no budget (29 gates; about 22 min for the 18 timed, the reference's `matvec` on every core since 2026-09-30) |
 | build | `ReleaseSafe`, `./zig-out/bin/nuclis` | the same | the same | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
 | when | selected by `make verify-auto`; all of it before a release | once before a release | when a unit changes attention, the KV cache, or a windowed schedule (what only positions past 512 and past the 1,024/2,048-token windows exercise), and once before a release | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
 
@@ -190,17 +176,18 @@ never timed on this machine counts as zero and shows in the `timed`
 column, so a total is a floor. A tier run that passes its budget warns
 on stderr, and fails under `--strict`; a gate that pushes `verify` over
 moves to `verify-release` or gets cheaper, it does not raise the budget.
-`make gates-list` prints each gate's seconds. Measured 2026-11-12 at
-`79fe2c9` (M4 Pro; Qwen3.8 and clef not on this machine, so their gates
-are untimed or carry earlier passes):
+`make gates-list` prints each gate's seconds. Measured 2026-11-13 at
+`3df9497` (M4 Pro; clef not on this machine, so its gates are untimed;
+the two depth gates' seconds include the prefill of a missing saved
+prefix):
 
 | tier | gates | timed | seconds | budget | slowest |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `verify` | 52 | 40 | 443 | 480 | `drama3-roundtrip-metal` 82 s, `qwen38-generation-metal` 51 s, `qwen3-tts-0.6b-roundtrip-metal` 49 s, `drama3-metal` 45 s, `qwen3-tts-codec-metal` 36 s |
-| `verify-release` | 7 | 5 | 87 | 300 | `qwen3-tts-1.7b-roundtrip-metal` 56 s, `gemma4-e4b-perplexity-full` 13 s, `laya-multilingual-cpu` 9 s, `gemma4-26b-a4b-trace-f32` 6 s, `laya-multilingual-metal` 3 s |
-| `verify-long` | 3 | 0 | 0 | 120 | — |
-| `verify-cpu` | 29 | 0 | 0 | — | — |
-| `canaries` | 17 | 14 | 51 | 60 | `qwen38-speculative-metal` 14 s, `gemma4-e4b-generation-metal` 9 s, `qwen38-trace-f16` 7 s, `nemotron-asr-trace-metal` 5 s, `qwen38-vision-metal` 5 s |
+| `verify` | 52 | 42 | 411 | 480 | `drama3-roundtrip-metal` 77 s, `qwen38-generation-metal` 52 s, `qwen3-tts-0.6b-roundtrip-metal` 46 s, `drama3-metal` 36 s, `qwen3-tts-codec-metal` 26 s |
+| `verify-release` | 7 | 7 | 144 | 300 | `qwen3-tts-1.7b-roundtrip-metal` 56 s, `qwen38-perplexity-full` 48 s, `gemma4-e4b-perplexity-full` 13 s, `qwen38-draft-stats` 10 s, `laya-multilingual-cpu` 9 s |
+| `verify-long` | 3 | 2 | 957 | 120 (over) | `qwen38-verify-depth-32k` 696 s, `qwen38-verify-depth-16k` 261 s |
+| `verify-cpu` | 29 | 18 | 1308 | — | `qwen38-dflash2-speculative-cpu` 439 s, `qwen38-generation-cpu` 268 s, `qwen38-vision-cpu` 234 s, `qwen38-speculative-cpu` 197 s, `gemma4-e4b-generation-cpu` 34 s |
+| `canaries` | 17 | 15 | 47 | 60 | `qwen38-speculative-metal` 14 s, `gemma4-e4b-generation-metal` 9 s, `nemotron-asr-trace-metal` 5 s, `qwen38-vision-metal` 5 s, `gemma4-e4b-perplexity` 3 s |
 
 **Models are index files.** A `gates.json` model names an `artifact` of
 the catalogue's index and, optionally, a `file`: `main` (the default),
@@ -263,7 +250,8 @@ revision for a log entry, each with its output lines stamped by time
 since launch (`--timeline` prints them); the check tools behind
 `{zig-*}` are compiled first (`zig build check-tools`), so the builds'
 seconds are reported apart from the gates'. Gate names are `<entry>-<check>-<executor>`:
-`qwen38`, `gemma4-e4b`, `gemma4-26b-a4b`, `laya`, `drama3`;
+`qwen38`, `gemma4-e4b`, `gemma4-26b-a4b`, `laya`, `clef`, `embeddinggemma`,
+`qwen3-tts-0.6b`, `drama3`, `nemotron-asr`;
 `trace-{cpu,f32,f16}`, `generation-{cpu,metal}`, `speculative-{cpu,metal}`,
 `draft-trace-{cpu,metal}`, `draft-stats`, `vocabulary`, `perplexity` (two
 windows), `perplexity-full`, `perplexity-4k`. A
@@ -306,7 +294,7 @@ What can break independently, and what protects it. *Model-free* means
 
 | Axis | Model-free | Gates that alone cover it |
 | --- | --- | --- |
-| matvec, matmul tiles, embed gather, per encoding | every quant fixture encoding (Q4_0, Q8_0, IQ4_NL, Q3–Q6_K, IQ3_S, IQ4_XS, PQ2_0, PTQ1_0, and the codebook fixture's Q2_K, IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS) against the CPU, the CPU decoders against llama.cpp's blocks (the codebook encodings against the cross-encoding check instead), and F32/F16/BF16 matvec and matmul tiles on random weights (`checkDenseEncodings`) | — |
+| matvec, matmul tiles, embed gather, per encoding | every quant fixture encoding (Q4_0, Q8_0, IQ4_NL, Q3–Q6_K, IQ3_S, IQ4_XS, PQ2_0, PTQ1_0, and the codebook fixture's Q2_K, IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS) against the CPU, the CPU decoders against fixture blocks pinned from llama.cpp's decoders during bring-up (the codebook encodings against the cross-encoding check instead), and F32/F16/BF16 matvec and matmul tiles on random weights (`checkDenseEncodings`) | — |
 | attention: decode, chunk, windowed, F16 cache | fixtures to 16K keys, and Gemma's geometries (16 heads of 512 over one or two KV heads, 16 of 256 over 8) | — |
 | DeltaNet, Hadamard, RoPE, norms, softcap, sampling kernels | fixtures | — |
 | Metal `layerNorm`, `addBiasRows` | strided rows against the CPU (`checkVisionNorms`) | — |
@@ -319,17 +307,18 @@ What can break independently, and what protects it. *Model-free* means
 | Gemma 4: shared KV, per-layer embeddings, own V on global layers, window 512 | — | `gemma4-e4b-*` |
 | Gemma 4: K=V global layers, window 1024, the `gemma4` profile | — | `gemma4-26b-a4b-*` |
 | Gemma 4: one global KV head (16:1), 48 layers | the 16:1 attention geometry | none (the 12B QAT file is legacy in the index; the same code as the 26B's 8:1) |
-| Muse Glimmer plan | — | none (legacy in the index) |
+| Muse Glimmer plan, its tokenizer (GPT-4o splitter) and projector | — | none (legacy in the index) |
 | session layout: recurrent with the verify tape (Metal, drafter) | session unit tests | `qwen38-generation-metal` |
 | session layout: recurrent without a tape (rewind, replay) | session unit tests | every CPU generation gate |
 | session layout: attention only (truncate) | session unit tests | any Gemma generation gate |
-| engine loop: EOS, budget, context, cancellation, speculative loop, penalties, top-k readback | none (`engine.zig` has no tests) | `qwen38-speculative-metal` |
+| engine loop: EOS, budget, context, cancellation, speculative loop, penalties, top-k readback | none (`engine.zig`'s one test covers companion selection) | `qwen38-speculative-metal` |
 | draft sources: Qwen MTP and DFlash, Gemma assistant | — | `qwen38-draft-trace-*`, `qwen38-dflash2-*`, `gemma4-e4b-draft-trace-*` |
-| tokenizers: Qwen BPE, Muse (GPT-4o splitter), Gemma SPM, Laya byte-level and Metaspace | the Metaspace rules and rejections on a synthetic vocabulary | one vocabulary gate each |
-| vision: Qwen3-VL, SigLIP small with clamps, SigLIP large with standardization, Muse | preprocessing, grids | one vision gate each |
+| tokenizers: Qwen BPE, Gemma SPM, Laya byte-level and Metaspace | the Metaspace rules and rejections on a synthetic vocabulary | one vocabulary gate each |
+| vision: Qwen3-VL, SigLIP small with clamps, SigLIP large with standardization | preprocessing, grids | one vision gate each |
 | batched prefill at 256 rows, F16 cache over 511 keys, real prose | — | the perplexity gates |
 | a verify batch at depth (few-query attention, the multi-row weight path) against stepped decode from the same state | `checkAttentionVerify` against F64 to the 32K cache | `qwen38-verify-depth-{512,4k}`; `-16k`, `-32k` in `verify-long` |
 | past 512 tokens and the sliding windows | — | `verify-long` |
+| speech, audio, and embeddings: Qwen3-TTS, Drama 3, Nemotron ASR, EmbeddingGemma 2, Gemma 4 audio | — | their own gates (`qwen3-tts-*`, `drama3-*`, `nemotron-asr-*`, `embeddinggemma-*`, `gemma4-e4b-audio-*`) |
 
 Not covered by any gate: the 26B-A4B's assistant head, and the PQ2_0 encoding (decoder and kernel
 fixtures only). On Metal a speculative greedy divergence is printed, not
@@ -485,10 +474,9 @@ Local language reference: `doc/langref.html` inside the Zig install
 (`~/.local/opt/zig/stable/doc/langref.html` on the author's machine).
 
 The Metal backend additionally needs Apple's SDK/frameworks and the
-Objective-C compiler. The [reference baseline](benchmarks/llama-cpp.md)
-compiles embedded shader source through Metal at runtime using Command Line
-Tools; a standalone `metal` compiler is needed only for an offline shader
-build path; nuclis compiles its kernels the same way. Swift is not a
+Objective-C compiler. nuclis compiles its embedded shader source through
+Metal at runtime using the Command Line Tools; a standalone `metal` compiler
+is needed only for an offline shader build path. Swift is not a
 project build requirement.
 
 Pass allocator and Io dependencies explicitly. Prefer a separate pure function
@@ -516,8 +504,8 @@ mode used.
 ### Zig 0.17 usage audit
 
 Audited 2026-10-03 against the
-[0.17.0 release notes](https://ziglang.org/download/0.17.0/release-notes.html)
-([REPO-29](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#repo-29--zig-0170-the-tree-migrated-and-its-features-adopted-2026-10-03-two-sessions)); counts are grep results over the
+[0.17.0 release notes](https://ziglang.org/download/0.17.0/release-notes.html),
+when the tree migrated to 0.17.0; counts are grep results over the
 tree. 0.16's adoption of the `Io` interface stands, as does the decision to
 skip its concurrency layer.
 
@@ -674,8 +662,9 @@ two seeds cannot resolve a 10 % difference in seconds, so a change is
 judged on the pass marks, the habit counts, and the medians rather than
 the means. This is how a change to the system prompt, a tool description,
 or the loop is judged: before and after, on the same list and seeds, and
-the log entry cites the table; the first record is
-[AGNT-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-13--the-system-prompt-as-sections-measured-the-playground-task-list-the-guidelines-that-changed-behaviour-the-instructions-file-2026-09-22).
+the unit's record cites the table; the first such record is the 2026-09-22
+change that split the system prompt into sections, in the
+[worklog archived at `v0.6.0`](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md).
 `scripts/app/agent-tokens.py <variant> [<variant> …]` says where a variant's
 prefill went: per tool, the calls, the tokens their results added (counted
 by `nuclis tokenize --raw`, the engine's own tokenizer), and each tool's
@@ -725,7 +714,7 @@ scripts:
 
 ```sh
 chromium --headless --hide-scrollbars --window-size=1200,630 --allow-file-access-from-files \
-  --screenshot=site/og.png "file://$PWD/scripts/site-og.html"
+  --screenshot=site/og.png "file://$PWD/scripts/repo/site-og.html"
 ```
 
 To test the CSP locally, put `_headers`' policy (less `frame-ancestors`)
@@ -1210,22 +1199,24 @@ is what makes the next load 20 s instead of a cold read.
 
 ## Reference implementations and third-party material
 
-llama.cpp and other engines are references: read them to understand a format or
-algorithm, and measure them as speed baselines. They no longer make
-fixtures: nuclis's CPU reference does
-([models/README.md § Which executor makes which fixture](models/README.md#which-executor-makes-which-fixture));
-the fixtures they made earlier stay until their file is re-pinned. Do not copy their code into nuclis. New kernels and decoders
-are written from the format contract and our own CPU references, then proven
-equivalent by fixtures (bit-exact where the operation is exact, stated tolerances
-otherwise). Outputs of running a reference are ours to commit as fixtures with
-provenance; its source is not. Constants that define a format (codebooks,
+nuclis is its own reference. llama.cpp was the oracle and the speed
+baseline while the first families were brought up; that is history
+([models/README.md § 4](models/README.md#4-validate-against-nuclis-itself)),
+and the fixtures it made stay until their file is re-pinned. Fixtures are
+now made by nuclis's CPU reference
+([§ Which executor makes which fixture](models/README.md#which-executor-makes-which-fixture)),
+and speed is measured against nuclis's own previous record. Another engine
+is read only as the definition of a format that has no other; its code is
+never copied. Kernels and decoders are written from the format contract and
+proven against the CPU reference by fixtures (bit-exact where the operation
+is exact, stated tolerances otherwise). Constants that define a format (codebooks,
 lookup tables) and any other third-party material that must be in the tree are
 listed in [../THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md), which links
 license texts on the web. Do not commit license text files.
 
 ## Documentation conventions
 
-- Keep product requirements and acceptance criteria in [spec.md](spec.md); the
+- Keep product requirements and acceptance criteria in [spec.md](spec.md);
   the active plan lives in the maintainer's tracker and each finished
   unit's record in its pull request.
 - Add a document under `docs/` when there is concrete information to record,

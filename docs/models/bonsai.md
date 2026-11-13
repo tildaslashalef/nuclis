@@ -1,6 +1,10 @@
 # Bonsai 2 27B: facts from the artifact and the fork
 
-**No gates.** This family left the gate registry when its file left the test machine. The `make gate` commands below name gates as of `v0.11.0`; the measurements stand as recorded.
+**No gates.** This family left the gate registry when its file left the
+test machine; the tiny `bonsai` variant keeps its load and forward paths
+under `make test-tiny` ([README.md § Tiny models](README.md#tiny-models)).
+The `make gate` commands below name gates as of `v0.11.0`; the measurements
+stand as recorded.
 
 Prism ML's ternary re-encoding of Qwen3.8-27B (`general.architecture =
 qwen35`): the pinned Qwen adapter, tokenizer, and runtime schedule apply
@@ -13,8 +17,9 @@ was read on 2026-09-18 from the pulled PQ2_0 file with
 rotation arrays included), from `nuclis model inspect`, and from the
 PrismML llama.cpp fork at its release `prism-b10687-5d80cff`
 (`ggml/src/ggml-common.h`, `ggml/src/ggml-quants.c`, `src/llama-model.cpp`,
-`src/llama-graph.cpp`, `src/llama-impl.h`), which is read as the format and
-semantics reference and used as the numerical oracle, never copied. The
+`src/llama-graph.cpp`, `src/llama-impl.h`), which was read as the format and
+semantics reference and used as the numerical oracle at bring-up, never
+copied ([README.md § 4](README.md#4-validate-against-nuclis-itself)). The
 whitepaper is the mathematical source for the rotation; the fork's loader
 is the source for what the file's keys mean. Where a fact comes from the
 fork rather than the file, the sentence says so.
@@ -156,8 +161,8 @@ activation `[hd, nk, rep] → [hd, rep, nk]` before the signs and the
 transform. The fork's numbers: `perm_hd = 6144 / ssm_dt_rank(48) = 128`,
 `perm_nk = ssm_n_group = 16`, `perm_rep = 48 / 16 = 3`. How nuclis's
 DeltaNet mixer orders its output decides whether this permutation is a
-real gather or a no-op; session 2 reads it from `qwen35_runtime.zig`
-rather than assuming.
+real gather or a no-op: the mixer emits the tiled order, so it is a real
+gather (§ CPU reference against the fork).
 
 The adapter pins this contract ([`qwen35.zig`](../../inference/src/models/qwen35.zig)
 `validateRotation`): version 1, block 1024, the transform and axis strings,
@@ -181,9 +186,9 @@ SHA-256 `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041`
 (8,952 bytes): **the upstream Qwen3.8 template**, not the pinned `qwen38`
 profile's (`12827f24…`, 9,993 bytes), which carries Unsloth's fixes
 (`developer` role, merged system messages, `high` mapped to `xhigh`,
-tool-argument type checks). The alias gate
-(`scripts/profile-alias-check.py --profile qwen38 --reference-revision
-5d80cff0…`, the fork's server holding the PQ2_0 file, 2026-09-18) replayed
+tool-argument type checks). The alias check of that time
+(`scripts/profile-alias-check.py`, removed; at tag `v0.11.0`; the fork's
+server at `5d80cff0…` holding the PQ2_0 file, 2026-09-18) replayed
 the pinned fixtures: **24 of 28 text prompt cases, all 20 tool cases, and
 all 20 token cases are byte-identical**; the 4 that differ are the
 `merged_system_*` cases (a `system`, `developer`, `system`, `user`
@@ -192,7 +197,7 @@ at the beginning.` instead of merging. So the digest is not an alias (an
 alias must render every case), and the difference is a stricter input
 contract, not a different rendering: for every conversation the file's own
 template accepts, the pinned profile renders the same bytes. **Decided
-2026-09-18 ([MODL-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18)): the catalogue entry's `profile = .qwen38`**, forced
+2026-09-18: the catalogue entry's `profile = .qwen38`**, forced
 at open the way a registry entry's profile is (the catalogue's pin is now
 a forced profile, not only the sampling default, so `--model bonsai-2-27b`
 renders without any registry entry; by path, `--prompt-profile qwen38`
@@ -211,8 +216,8 @@ fork's server renders it.
 
 `github.com/PrismML-Eng/llama.cpp` (MIT, tracks mainline), release
 `prism-b10687-5d80cff` = commit `5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6`
-(2026-09-17), pinned by tag since the fork has already retired one format.
-Built as the mainline recipe with `.reference/prism-llama.cpp`
+(2026-09-17), pinned by tag since the fork had already retired one format.
+It was built as the mainline recipe with `.reference/prism-llama.cpp`
 in place of the mainline checkout
 ([llama-cpp.md § The second oracle](../benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-2026-09-18)).
 Two pins, never one moving one: `scripts/quant-fixtures.py` carried
@@ -227,16 +232,15 @@ Runs on 2026-09-18 (M4 Pro, Metal, the PQ2_0 file):
   run, not a benchmark). The loader logs
   `loaded 402 Hadamard-folded weight(s) (1 inverse-lookup) using 1 rotation(s) and 3 sign vector(s)`,
   `file type = PQ2_0 - 2.13 bpw (group 128)`, `model params = 26.90 B`.
-- `scripts/reference-generation.cpp` built against the fork
-  (`.zig-cache/generation/prism-reference-generation`, the same source, the
-  fork's headers and libraries) on `Hello,`: 129 files in
+- The trace harness of that time (removed; at tag `v0.11.0`) built against the fork's headers and
+  libraries, on `Hello,`: 129 files in
   [`tests/fixtures/bonsai-hello-comma/`](https://github.com/tildaslashalef/nuclis/tree/v0.11.0/tests/fixtures/bonsai-hello-comma)
   (held through `v0.11.0`)
   (two positions × 64 layers × 5,120 F32, `logits.f32` of 248,320),
   greedy token 353 (` I`) — the same token the Qwen3.8 oracle picks, with
   logit 11.51 against Qwen's 12.41; the layer-63 residual at position 1
   has RMS 7.03 (Qwen 5.46) and a peak of 327 (Qwen 91). The payload of
-  `make gate NAME=bonsai-trace-cpu` (session 2).
+  `make gate NAME=bonsai-trace-cpu`.
 
 ## CPU reference against the fork (2026-09-18)
 
@@ -324,7 +328,7 @@ at 2.1 %, the gather at 0.2 %
 ([metal-backend.md](../engine/metal-backend.md#the-rotation-on-the-qwen-plan-2026-09-18));
 the kernels are at the set's multiply-rate ceiling (§ Ternary matvecs and
 tiles), so the rate the byte count promises needs a different ternary
-arithmetic in the matvec, the follow-up named there. The fork on the same
+arithmetic in the matvec. The fork on the same
 machine decodes at 17.0 tok/s at 512 tokens ([benchmarks § Bonsai
 acceptance record](../benchmarks/history.md#bonsai-2-27b-acceptance-record-2026-09-18)).
 
@@ -339,25 +343,26 @@ the PQ2_0 traces pass at max abs 2.29e-4 / 1.29e-2 (relative RMS 5.5e-6 /
 catalogue entry is the PTQ1_0 file** (5,946,648,928 B, SHA-256
 `53107f53…`), 1.26 GB smaller at the same rate; the acceptance record
 above was measured on the PQ2_0 file before the move and says so, the
-traces stay the PQ2_0 capture, and `BONSAI_MODEL` defaults to the PTQ1_0
-path.
+traces stayed the PQ2_0 capture, and the gates ran on the PTQ1_0 file
+from then on.
 
 ## Status
 
-[MODL-16](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-16--bonsai-2-27b-oracle-facts-ternary-encodings-hadamard-transform-cpu-reference-2026-09-18) closed on 2026-09-18: the file validates and binds, the three
-encodings decode against the fork's fixtures, the CPU reference applies
-the rotation and matches the fork's traces. [KERN-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-10--ternary-matvec-and-matmul-tiles-the-walsh-hadamard-kernel-2026-09-18) closed the same day:
-the Metal decoders, matvecs, and tiles for the three encodings
+Brought up on 2026-09-18 against the PrismML fork: the file validated and
+bound, the three encodings decoded against the fork's fixtures, and the
+CPU reference applied the rotation and matched the fork's traces. The
+Metal decoders, matvecs, and tiles for the three encodings
 ([metal-backend.md § Ternary](../engine/metal-backend.md#ternary-matvecs-and-tiles-2026-09-18):
 PQ2_0 119 GB/s, PTQ1_0 88 GB/s on the output head — at the kernel set's
 multiply rate, half the Q4_0 byte rate by density) and the transform
 kernel (`nu_hadamard`, 1.3–2.2 ms per token as 258 dispatches,
-[§ The Hadamard transform kernel](../engine/metal-backend.md#the-hadamard-transform-kernel-session-2-2026-09-18)).
-[MODL-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18) closed the same day: the Metal plan applies the rotation and
-matches the traces in both cache precisions, the profile is the pinned
-Qwen3.8 one through the catalogue entry, and the acceptance record
-against the fork's server, the agent check, and the PTQ1_0 measurement
-are in [benchmarks](../benchmarks/history.md#bonsai-2-27b-acceptance-record-2026-09-18).
-The catalogue entry left on 2026-09-26 when the catalogue was trimmed to five
-entries ([catalogue.md](catalogue.md)); the file still binds, runs, and keeps
-its gates, pulled by repository and file name.
+[§ The Hadamard transform kernel](../engine/metal-backend.md#the-hadamard-transform-kernel-2026-09-18))
+landed the same day, and so did the Metal plan, which applied the rotation
+and matched the traces in both cache precisions; the profile is the pinned
+Qwen3.8 one, and the acceptance record against the fork's server, the
+agent check, and the PTQ1_0 measurement are in
+[benchmarks](../benchmarks/history.md#bonsai-2-27b-acceptance-record-2026-09-18).
+The catalogue entry left on 2026-09-26 when the catalogue was trimmed to
+five entries ([catalogue.md](catalogue.md)). The file still binds and
+runs, pulled by repository and file name; it has no gates, and the fork's
+traces left the tree after `v0.11.0`.

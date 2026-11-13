@@ -129,7 +129,7 @@ Read: `inference/src/formats/gguf.zig`, `src/model.zig` (`inspect`),
 Quantization is the reason the model fits. A block encoding groups values
 (32 or 256 of them) under shared metadata, and its decoding equations say
 what the bytes mean. The Qwen file mixes nine encodings; the tree decodes
-eleven, and each one taught something about the difference between
+twenty-three, and each one taught something about the difference between
 counting bits and knowing a format.
 
 **A scale and a code.** Q8_0 is the simplest: an F16 scale and 32 signed
@@ -174,7 +174,7 @@ matrix, 992 F32 tensors of activation statistics used *by the quantizer*
 to decide which channels deserve precision. It is not a layer to run and
 does not restore anything when loaded beside the weights it shaped.
 
-Three rules survived all eleven. The CPU decoder is the truth, pinned
+Three rules survived all twenty-three. The CPU decoder is the truth, pinned
 against the reference implementation's own C decoders through fixtures.
 Every GPU decoder is bit-identical to it, because they index the same bytes
 with the same equations. And a specialized kernel folds the scale out of
@@ -1009,7 +1009,7 @@ Read: [models/gemma4.md](models/gemma4.md),
 
 ### 26. Measuring, and what counts as knowing
 
-Fluent output is not evidence. The oracle chain runs from the pinned
+Fluent output is not evidence. The oracle chain ran from the pinned
 llama.cpp build, used as a reference and never linked, through fixtures
 (decoders must match exactly; F32 GPU reductions match F64 sums within
 stated bounds), to per-layer traces of the real model on real prompts,

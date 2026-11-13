@@ -1,9 +1,9 @@
-# Qwen3-TTS 12Hz CustomVoice (0.6B and 1.7B)
+# Qwen3-TTS 12Hz: CustomVoice, Base, and VoiceDesign (0.6B and 1.7B)
 
 [Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice)
 (Qwen, Apache-2.0: the card's `license: apache-2.0` and the package's
 `LICENSE`) is a text-to-speech model. In nuclis it is the voice of a local
-voice assistant, served later by `POST /v1/audio/speech`. It has three
+voice assistant, served by `POST /v1/audio/speech`. It has three
 networks, in two files:
 
 - the **talker**, a 28-layer Qwen3-style decoder over a codec vocabulary,
@@ -933,7 +933,7 @@ decoder's priming with the reference frames (58 here). Open: the 1.7B's
 prefill grows far faster with the prompt's rows than the 0.6B's (68
 rows: 1,514 ms against 227 ms; VoiceDesign's 45 rows, without priming,
 961 ms), so the first audio of a long prompt on the 1.7B is about a
-second later than a speaker's; the cause is not yet measured.
+second later than a speaker's; the cause is unmeasured.
 
 With a transcript the prompt carries the clip's frames (12.5 a second) and
 its words, so the first audio grows with the clip: Muon measured
@@ -1288,10 +1288,10 @@ both; then "Pitzell" for "Patel" on the 0.6B and "said" for "set" on the
 `nuclis speak --stream` (ReleaseSafe, Apple M4 Pro, 48 GB) on "Is it
 twenty past nine already? Doctor Okafor said the results would arrive by
 Tuesday.", speaker `ryan`, English, seed 0, F16 talker cache, files in
-the page cache. Task 7 (the recognizer on Metal) was benchmarking on the
+the page cache. The recognizer's Metal work was benchmarking on the
 same GPU in parallel: every run below started with no other GPU job
-running, and runs another job overlapped are left out; the main session
-re-measures after merging. "Codes" is a frame's talker and predictor
+running, and runs another job overlapped are left out; the figures
+**Re-measured on a quiet machine** below supersede them. "Codes" is a frame's talker and predictor
 wall time, sampling included; the device split comes from `--split`,
 which commits between the predictor and the talker (one more command
 buffer a frame); the codec is per frame in chunks of 4.
@@ -1328,7 +1328,7 @@ frame reads, from the tensor shapes (not measured): the 1.7B's talker
 2.70 GB (28 layers of 96 MB, the head 13 MB), its predictor 2.37 GB (15
 groups of 5 layers of 30 MB, a head and the 2048 → 1024 projection of
 4 MB each), 5.07 GB; the 0.6B's talker 0.85 GB and predictor 2.31 GB,
-3.16 GB (the unit's estimates were 5.2 and 3.3 GB). At the device times
+3.16 GB (the estimates were 5.2 and 3.3 GB). At the device times
 above the talker reads 186 GB/s (1.7B) and 160 GB/s (0.6B), the predictor
 about 150 GB/s; `metal-check --tts-bench` puts one BF16 matvec at 200–250
 GB/s in isolation. 3× real time on the 1.7B needs the 5.07 GB in 26.7 ms

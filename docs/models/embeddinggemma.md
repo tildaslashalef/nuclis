@@ -14,8 +14,9 @@ the pinned files, through `scripts/fixtures/gguf-inventory.py`; Google's reposit
 at the pinned revision (`config.json`, `config_sentence_transformers.json`,
 `processor_config.json`, the card); and the second llama.cpp checkout
 `b11514` (`de7fa0a3c`; `src/models/gemma-embedding2.cpp`, `conversion/gemma.py`,
-`src/llama-hparams.h`, `tools/mtmd/`). The llama.cpp checkout is read for
-semantics and used as an oracle, never copied. Where a fact comes from a
+`src/llama-hparams.h`, `tools/mtmd/`). The llama.cpp checkout was read for
+semantics and used as an oracle at bring-up, never copied
+([README.md § 4](README.md#4-validate-against-nuclis-itself)). Where a fact comes from a
 reference rather than the file, the sentence says so.
 
 **Contents.**
@@ -69,7 +70,7 @@ input, not a file nuclis runs.
   entry's mmproj is; the repository's F16 is the format the card warns
   against.
 - The BF16 text file is pinned to measure the choice against, together
-  with Google's f32 vectors (the acceptance record, when it lands).
+  with Google's f32 vectors (the `embeddinggemma-google-*` gates).
 
 The inventories are the fixtures
 `inference/src/models/fixtures/embeddinggemma-2-q8_0.json` (48 keys, 413
@@ -325,8 +326,7 @@ here, 1536 → 2560 there):
 - **Google's processor cuts a clip at 30 s** (`max_length` 480,000
   samples).
 
-**Video** (deferred to its own unit, 2026-10-09) reuses the vision
-encoder. From Google's `EmbeddingGemma2VideoProcessor` and
+**Video** is not embedded; the model would reuse the vision encoder. From Google's `EmbeddingGemma2VideoProcessor` and
 `EmbeddingGemma2Processor` at the pinned revision:
 - **Sampling:** frames at 1 fps, at most 32; a longer video is
   resampled uniformly (`overflow_strategy = "uniform"`).
@@ -336,8 +336,8 @@ encoder. From Google's `EmbeddingGemma2VideoProcessor` and
   32 frames take about 4,500 tokens.
 - **The soundtrack is not embedded:** a video's audio would be a separate
   audio part.
-- **What the unit would add:** an AVFoundation frame decoder beside the
-  image and audio bridges, Google's sampling, oracle fixtures from a short
+- **What video input needs:** an AVFoundation frame decoder beside the
+  image and audio bridges, Google's sampling, fixtures from a short
   generated video, gates, `--video`, and a video part in the API. Parity
   with Google is exact only up to the decoded pixels, as with resampled
   audio.
@@ -374,30 +374,31 @@ represents them together and is comparable with a text-only one.
 
 ## Reference oracle status
 
-- **llama.cpp.** The main pin `7620399` does not know `gemma-embedding2`.
+- **llama.cpp.** The main pin `7620399` did not know `gemma-embedding2`.
   Upstream added it, with vision and audio, in `4fbc76dec` (#30054,
-  2026-10-06); the newest release, `v0.6.0` (2026-10-05), predates it. The
-  second checkout `.reference/llama.cpp-embed` is at build tag `b11514`,
+  2026-10-06); the newest release then, `v0.6.0` (2026-10-05), predated it. The
+  second checkout `.reference/llama.cpp-embed` was at build tag `b11514`,
   `de7fa0a3c6a2e1b4cd9f22eb8d6bf5b12dbdb63b` (2026-10-08), built with the
   usual recipe ([llama-cpp.md § The third oracle](../benchmarks/llama-cpp.md#the-third-oracle-embeddinggemma-2-2026-10-09)).
-  Its `llama-embedding --pooling mean` loads the Q8_0 and BF16 files and
-  returns unit vectors. The fixture driver is `scripts/reference-embedding.cpp`;
-  it runs each input as **one mixed batch** of token rows and projector rows
-  (`llama_batch_ext`), because separate decode calls on a cache-less model
-  would not attend to each other.
+  Its `llama-embedding --pooling mean` loaded the Q8_0 and BF16 files and
+  returned unit vectors. The fixture driver, a harness linked
+  against that build (removed; at tag `v0.11.0`), ran each input as **one mixed batch** of
+  token rows and projector rows (`llama_batch_ext`), because separate decode
+  calls on a cache-less model would not attend to each other.
 - **sentence-transformers.** `google/embeddinggemma-2` at the pinned
   revision, in float32 on the CPU, through sentence-transformers 6.1.0,
   transformers 5.19.0 (the card was written against 5.18.0.dev0) and torch
   2.14.1, in `.reference/venv-embed`, driven by `scripts/embedding-reference.py`
   (retired; at tag `v0.11.0`).
   It is the end-to-end truth, input processing included (prefixes, image
-  resizing, mel features).
+  resizing, mel features); its vectors are the `embeddinggemma-google-*`
+  gates' fixtures.
 
 Both read one input set, `tests/fixtures/embeddinggemma-inputs/inputs.json`
 (104 cases; [provenance](../../tests/fixtures/provenance.md)).
 
 **The oracles against each other (2026-10-09).** Cosines per case from
-`scripts/compare-embedding.py`, minimum and mean per group; the token ids
+`scripts/compare-embedding.py` (removed; at tag `v0.11.0`), minimum and mean per group; the token ids
 are identical in every case:
 
 | Group (cases) | llama.cpp Q8_0 / ST f32 | llama.cpp BF16 / ST f32 | Q8_0 / BF16 |
@@ -476,9 +477,9 @@ reference's own arithmetic rounds:
   `per_layer_model_proj`) relative RMS.
 - On the CPU, a BF16 matrix rounds its activations to bf16 too, and
   `llama-quantize … F32` keeps `per_layer_model_proj` in BF16. So the
-  traced reference runs on a copy with every tensor widened to F32
-  (`scripts/gguf-widen-f32.py`), and `inp_scaled` and `inp_per_layer` then
-  match.
+  traced reference ran on a copy with every tensor widened to F32
+  (`scripts/gguf-widen-f32.py`, removed; at tag `v0.11.0`), and
+  `inp_scaled` and `inp_per_layer` then match.
 - ggml's CPU GELU is an f16 lookup table (`GGML_GELU_FP16`, unconditional
   in `ggml-cpu/vec.h`): input and output rounded to f16. Emulating the table
   in our runtime brought layers 0–2 under 1e-4, but the later layers stay
@@ -535,6 +536,7 @@ ReleaseFast, at `191e26c`, with nothing else running on the GPU.
 `embeddinggemma-check MODEL bench --backend metal` against llama.cpp
 `b11514` on its defaults (Metal, flash attention `auto`, matmul
 activations staged as half), through `scripts/reference-embedding-bench.cpp`
+(removed; at tag `v0.11.0`)
 ([llama-cpp.md § The third oracle](../benchmarks/llama-cpp.md#the-third-oracle-embeddinggemma-2-2026-10-09)).
 
 **Method.** Each input is BOS, " the" repeated, EOS (the cost does not

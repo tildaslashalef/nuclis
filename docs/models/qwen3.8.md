@@ -5,8 +5,8 @@ are tuned for: catalogue entry `qwen3.8-27b`, file
 `unsloth/Qwen3.8-27B-GGUF` `Qwen3.8-27B-UD-Q4_K_M.gguf` (16.6 GB, Unsloth's re-made file of
 2026-11-11), adapter
 `qwen35` ([inference/src/models/qwen35.zig](../../inference/src/models/qwen35.zig)).
-Its speed against the reference is the README's
-[Results](../../README.md#results).
+Its speed is in the README's [Results](../../README.md#results) and
+[history.md](../benchmarks/history.md).
 
 ## At a glance
 
@@ -79,15 +79,18 @@ scratch space, and platform allocations.
 
 The adapter checks every required tensor's dimensions and encoding, then rejects
 unconsumed tensors. Normalization, convolution, and recurrent scalar tensors
-require F32. Matrix tensors accept the nine layouts needed by this initial
-artifact: F32, Q8_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ3_S, and IQ4_XS.
+require F32. Matrix tensors accept the encodings the Qwen kernels execute
+(`executableEncoding`): F32, BF16, Q8_0, Q2_K to Q6_K, IQ1_S, IQ1_M,
+IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_NL, IQ4_XS, and the ternary
+PQ2_0 and PTQ1_0; the pinned file uses nine of them.
 This is a structural allowlist; numerical acceptance is evidence from [sampling.md](../engine/sampling.md) and [metal-backend.md](../engine/metal-backend.md), not from binding.
 The validator does not enforce the exact per-tensor quantization choices or
 establish artifact identity. The full-file hash remains a separate check.
 
 Tokenizer vocabulary length is checked against embedding dimensions. Tokenizer
-algorithms, merges, special-token behavior, and prompt rendering remain separate
-work. A matching display name is neither required nor evidence of compatibility.
+algorithms, merges, special-token behavior, and prompt rendering belong to the
+tokenizer and the profile, not the binding. A matching display name is neither
+required nor evidence of compatibility.
 
 ### Implementation and ownership
 
@@ -99,7 +102,7 @@ All temporary allocations are freed on success or error.
 The returned `Binding` holds embedding/output tensor pointers and 64 `Layer`
 values. Every layer has common normalization and feed-forward weights plus a
 tagged `mixer` union containing either `FullAttention` or `DeltaNet`. This lets
-later numerical code work with named fields instead of repeating string lookups
+the numerical code work with named fields instead of repeating string lookups
 or guessing which weights belong to a layer. The union also prevents treating a
 recurrent layer as if it only needed an attention KV cache.
 
@@ -108,8 +111,8 @@ the binding finish. The binding does not own or allocate weight buffers, and
 has no independent cleanup method. The fixed 64-layer profile is intentional;
 generalizing it should follow another concrete supported model.
 
-The GGUF module remains independent of Qwen. It now retains numeric metadata
-arrays of at most 16 elements, while larger arrays retain descriptors. That
+The GGUF module remains independent of Qwen. It retains numeric metadata
+arrays of at most 64 elements, while larger arrays retain descriptors. That
 shared facility lets this adapter validate the four RoPE sections without
 materializing a large vocabulary or adding Qwen key names to the container parser.
 
@@ -130,14 +133,15 @@ Tests cover the hybrid schedule, borrowed references, text/auxiliary accounting,
 changed dimensions, wrong types, missing metadata, RoPE overrides, missing and
 unexpected tensors, altered query/gate shapes, forbidden encodings, auxiliary
 tensor errors, and allocation failure cleanup. Default tests require no model
-download or GPU. The root suite has 25 tests after this increment.
+download or GPU.
 
 Layout interpretation was checked against the
 [Qwen35 implementation at llama.cpp revision 7620399](https://github.com/ggml-org/llama.cpp/blob/7620399f58aebfd2196b74021f9581bcf7218cb9/src/models/qwen35.cpp)
 and the [upstream model configuration](https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/config.json).
 The former distinguishes main and auxiliary blocks and accounts for gated query
-dimensions. That revision is also the pinned performance reference
-([benchmarks/llama-cpp.md](../benchmarks/llama-cpp.md)). No external
+dimensions. That revision was also the reference the first families were
+brought up and measured against
+([README.md § 4](README.md#4-validate-against-nuclis-itself)). No external
 implementation code was copied into this adapter.
 
 ## The re-made file (2026-11-12)

@@ -2,10 +2,10 @@
 
 How nuclis turns an image into embedding rows the language model consumes,
 family by family. The shared contract, the preprocessing, each projector's
-tensor facts and provenance, the pinned traces, and the memory. The units
-that built it are in the [worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md): [MODL-21](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-21--the-vision-contract-image-input-and-the-qwen38-projector-on-both-executors-2026-09-22)
-(Qwen3.8), [AGNT-15](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-15--images-and-text-files-in-the-chat-drop-image-the-chips-the-projector-turn-the-detail-row-and-preview-sessions-2026-09-23) (the chat), [MODL-24](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-24--decode-after-an-image-the-metal-steps-cache-row-and-rotary-position-separated-the-vision-gate-compares-decode-with-one-prefill-2026-09-23) (decode after an image),
-[MODL-22](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-22--gemma-4-vision-the-unified-embedder-12b-and-the-siglip-encoder-26b-a4b-on-both-executors-bidirectional-image-spans-2026-09-23) (Gemma 4), and [MODL-23](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-23--muse-glimmers-windowed-vision-encoder-on-both-executors-the-image-token-cap-2026-09-23) (Muse Glimmer).
+tensor facts and provenance, the pinned traces, and the memory. The work
+that built it (2026-09-22 and 2026-09-23) is recorded in the
+[worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md)
+archived at the `v0.6.0` tag.
 
 **Contents.**
 
@@ -141,10 +141,11 @@ schedule, so the trace gates are unchanged. The language model's attention
 stays causal by slot: the merged raster token order equals the reference's
 2-D causal mask, so no mask change is needed.
 
-**The oracle** is `scripts/reference-vision.cpp` against libmtmd
-(`llama-mtmd-cli`'s API): it tokenizes `<__media__>describe this image`, runs
-the projector, and dumps the feature rows, the decoder positions, and the
-first greedy tokens. The pinned fixture is a synthetic 96×64 P6 image
+**The oracle** was the llama.cpp vision harness (retired; at tag
+`v0.11.0`) against libmtmd (`llama-mtmd-cli`'s API): it tokenized
+`<__media__>describe this image`, ran the projector, and dumped the feature
+rows, the decoder positions, and the first greedy tokens
+([models § 4](../models/README.md#4-validate-against-nuclis-itself)). The pinned fixture is a synthetic 96×64 P6 image
 (`inference/src/vision/fixtures/synthetic-96x64.ppm`); its reference-resized
 128×96 pixels, feature rows, and first eight greedy tokens are committed
 under `fixtures/qwen3vl-synthetic/` and `synthetic-96x64-resized.ppm`.
@@ -180,10 +181,10 @@ The gates are `qwen38-vision-metal` (Metal tier) and `qwen38-vision-cpu`
 (CPU tier), each `generation-check --vision-check`.
 
 **Limits.** Deepstack projectors and dynamic `image_min/max_pixels`
-overrides are not in this unit. The projector runs as its own command
+overrides are not supported. The projector runs as its own command
 buffer, separate from the language model's.
 
-**Bonsai 2 ([MODL-25](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-25--bonsai-2s-projector-through-the-qwen3-vl-adapter-q8_0-and-f16-weights-2026-09-23), 2026-09-23).** Its `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf`
+**Bonsai 2 (2026-09-23).** Its `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf`
 is this projector with the same metadata and tensors, re-encoded: the
 matrices Q8_0, `ffn_down` F16 (its 4,304 columns are not a multiple of
 Q8_0's 32-value block), vectors and the patch kernel F32. `bind` accepts
@@ -217,8 +218,8 @@ renumbering after a deletion rewrites bytes of equal length in place.
 completer's `Engine.encodeImage`), giving a `loop.Image` — path, file size,
 the `PreparedImage` with its grid, decoded size, and feature rows. The
 projector is loaded on the first attachment (`visionAvailable`), and an
-entry without one, or one whose projector cannot be bound (Gemma's until
-[MODL-22](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-22--gemma-4-vision-the-unified-embedder-12b-and-the-siglip-encoder-26b-a4b-on-both-executors-bidirectional-image-spans-2026-09-23), Muse's until [MODL-23](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-23--muse-glimmers-windowed-vision-encoder-on-both-executors-the-image-token-cap-2026-09-23), Bonsai's until [MODL-25](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-25--bonsai-2s-projector-through-the-qwen3-vl-adapter-q8_0-and-f16-weights-2026-09-23)), refuses the chip with a notice and
+entry without one, or one whose projector cannot be bound (Gemma's, Muse's,
+and Bonsai's until each was bound later on 2026-09-23), refuses the chip with a notice and
 leaves the paste as text. A failure reading or encoding an image is a
 notice naming it and the turn is not sent. The agent owns the images beside
 the history item (`Item.images` and the profile's `ImageRef`s), frees them
@@ -234,8 +235,10 @@ advance across later turns without engine changes.
 **Speculation.** `runLoop` runs an image prefill without the drafter, whose
 cache is stale from then on; the completer therefore keeps speculation off
 while what the session consumed holds an image or a clip, which its keyed
-text records ([session.md § The agent's token cache](session.md#the-agents-token-cache-2026-10-04)). No entry with a projector has speculation on ([ENGN-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-17--the-speculative-verdict-qwen-and-gemma-off-muse-on-the-full-record-and-benchs-true-baseline-2026-09-21)), so
-nothing measurable changes today.
+text records ([agent.md § The agent's token cache](../app/agent.md#12-the-agents-token-cache-2026-10-04)).
+`qwen3.8-27b` and `gemma-4-e4b-qat` (and the legacy `gemma-4-12b-qat` and
+`muse-glimmer-30b`) carry a projector with speculation on, so a
+conversation that has fed them an image decodes at the plain rate from then on.
 
 **What is shown and stored.** The transcript's user block gets one dim
 detail row per image (`image #1: /path/shot.png (320×240 → 10×8 tokens)`)
@@ -246,7 +249,7 @@ transmission (`f=24`, base64 in 4096-byte chunks, `q=2`, `C=1`) over a box
 of at most 12 rows, fewer when less room stands above the live region,
 whose aspect assumes 1:2 cells. Not under tmux (`TMUX` set): tmux redraws
 lines itself and cannot scroll a picture it does not know about, so a
-passed-through image stayed put over the text (seen 2026-09-23, [TERM-11](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#term-11--the-region-re-anchors-on-a-resize-from-the-terminals-cursor-report-the-preview-fits-above-the-region-and-is-off-under-tmux-2026-09-23));
+passed-through image stayed put over the text (seen 2026-09-23);
 the harness therefore shows the detail row only, and the preview is looked
 at by running the chat in Ghostty directly. The session file records a user entry's images as
 `{path, width, height, width_tokens, height_tokens}` and no pixels (a turn
@@ -262,13 +265,13 @@ the red rectangle (the ground it called a black strip); `/image` attached
 the same file as a chip after `/image nope.png` was refused; a dropped
 `README.md` became `[file README.md, 219 lines]`; the Gemma 4 12B entry
 refused the drop with `no vision support yet for this model: MissingMetadata
-loading the projector` (it captions since [MODL-22](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-22--gemma-4-vision-the-unified-embedder-12b-and-the-siglip-encoder-26b-a4b-on-both-executors-bidirectional-image-spans-2026-09-23)); and the captioned session resumed with its detail
+loading the projector` (it captioned once its projector was bound later that day); and the captioned session resumed with its detail
 row replayed and the follow-up `What colour is the rectangle?` answered
 `red` from the re-encoded image. The captures are under `.zig-cache/tui/`
 (`chip`, `caption`, `filechip`, `imagecmd`, `refusal`, `replay`,
 `resumed`). The preview's sequence, box, and downscale are pinned by unit
 tests; its rendering was first seen the next day in a Ghostty window
-attached to the harness's tmux session ([TERM-11](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#term-11--the-region-re-anchors-on-a-resize-from-the-terminals-cursor-report-the-preview-fits-above-the-region-and-is-off-under-tmux-2026-09-23)), where it drew correctly
+attached to the harness's tmux session, where it drew correctly
 and then failed to follow the scrolling text, which is why tmux is excluded.
 
 **Limits.** Clipboard images (Cmd-V of a bitmap) are not taken: reaching
@@ -294,8 +297,8 @@ affected. The fix passes the cache row and the rotary position separately
 
 **How it was found.** `test-generation -- <model> --metal --vision-check
 <mmproj> --vision-image <file> --vision-oracle <dir>` runs the projector on
-any image against an oracle directory from `scripts/reference-vision.cpp`
-and reports the rows' relative RMS with a per-block map of the token grid
+any image against an oracle directory written by the llama.cpp vision harness
+(retired; at tag `v0.11.0`) and reports the rows' relative RMS with a per-block map of the token grid
 (7.0e-3 on the photo, within the reference's own CPU-to-Metal spread, no
 region above 2.5e-2: the projector was right), the prompt's last logits on
 the oracle's rows (max abs 0.13, argmax equal), the greedy tokens, and a
@@ -306,7 +309,7 @@ After the fix: 182/183 (the one left is a tokenization boundary at the
 end of the cut text, where the reference itself gives the token a logit
 of 4.2), and the greedy answer on the photo matches the reference CLI's.
 
-**The guard.** The vision gate (`qwen38-vision-metal`, `-cpu`) now also
+**The guard.** The vision gate (`qwen38-vision-metal`, `-cpu`) also
 steps through its greedy tokens and compares the logits with one batched
 prefill of the same tokens (bound 2e-2): 2.8e-3 with the fix, 0.82 with it
 reverted. The 4×3-token fixture alone could not catch the defect (a shift
@@ -389,12 +392,10 @@ stay causal. So:
   the span only moves a sliding row's *last visible key* from its own row
   to the span's end. Decode after an image is the ordinary step.
 
-**The oracle and the fixtures.** `scripts/reference-vision.cpp` gains
-`--image-min-tokens`/`--image-max-tokens` and a 2,048-row ubatch (the
-reference requires a non-causal image in one ubatch); build it with
-`clang++ -std=c++17 -I<llama.cpp>/{include,ggml/include,tools/mtmd}
--L<llama.cpp>/build/bin -lmtmd -lllama -lggml -lggml-base
--Wl,-rpath,<llama.cpp>/build/bin`. The prompt is
+**The oracle and the fixtures.** The llama.cpp vision harness (retired;
+at tag `v0.11.0`) gained `--image-min-tokens`/`--image-max-tokens` and a
+2,048-row ubatch (the reference requires a non-causal image in one ubatch).
+The prompt was
 `<bos><|turn>user\n<__media__>describe this image<turn|>\n<|turn>model\n<|channel>thought\n<channel|>`,
 our rendering with thinking off. The synthetic 96×64 fixture at
 `--image-min-tokens 4` becomes 144×96, a **3×2-token** span on both
@@ -422,15 +423,15 @@ with boulders, snow-capped mountains, pine trees on the right shore):
 | photo: teacher-forced agreement, the oracle's rows | **120/121** (miss at margin 0.03) | **90/91** (margin 0.00) |
 | photo: teacher-forced agreement, our rows | **120/121** (margin 0.11) | **89/91** (margins 0.46, 0.04) |
 
-The CPU tier (`gemma4-vision-cpu` 12 min, `gemma4-26b-a4b-vision-cpu`
-4.6 min) agrees with Metal on every line. In the chat (the harness,
+The CPU runs (the 12B's 12 min, the 26B-A4B's 4.6 min) agreed with Metal
+on every line. In the chat (the harness,
 `--think off`, captures `gemma-caption`, `gemma-followup`, and
 `gemma12-caption` under `.zig-cache/tui/`), the photo dropped as
 `[image #1]` became a 44×25-token span; the 26B-A4B described the lake,
 the boulders, the mountains, and "a single tree on a rocky shoreline",
 and answered the follow-up "What stands on the right shore?" with "A
 single tree stands on the rocky shoreline on the right."; the 12B, which
-refused the drop before this unit, described the same scene with "a few
+had refused the drop that morning, described the same scene with "a few
 pine trees visible on the right". The 12B embedder matches the
 reference to F32 rounding on the fixture; on the photo its 7.8e-3 is the
 reference's own Metal matmul precision at 1,100 rows.
@@ -461,11 +462,14 @@ activations for 10,080 patches plus the padded down matrices (270 MB).
 Reserving a 1,120-row chunk grows the language model's chunk buffers from
 the prompt chunk (256 or 512 rows) to 1,120 (~0.3 MB per row).
 
-**Gates.** `gemma4-vision-metal`, `gemma4-26b-a4b-vision-metal` (Metal
-tier), `gemma4-vision-cpu`, `gemma4-26b-a4b-vision-cpu` (CPU tier): each
-`generation-check --vision-check` against its fixture. The photo is a
-manual diagnostic (`--vision-image <file> --vision-oracle <dir>`), which
-now also teacher-forces the language model on our own rows.
+**Gates.** `gemma4-26b-a4b-vision-metal` and `gemma4-e4b-vision-metal`
+(`verify`), `gemma4-26b-a4b-vision-cpu` and `gemma4-e4b-vision-cpu`
+(`verify-cpu`): each `generation-check --vision-check` against its fixture
+(`gemma4v-synthetic/`, and `gemma4v-e4b-synthetic/` built the same way on
+2026-09-26). The 12B's gates retired with its K-quant file on 2026-09-29; its
+`gemma4uv-synthetic/` fixture stays in the tree. The photo is a manual
+diagnostic (`--vision-image <file> --vision-oracle <dir>`), which also
+teacher-forces the language model on our own rows.
 
 **Limits.** The SigLIP attention is the slow part of a large image. Its
 rows track the reference only as far as F32 activations track BF16 ones.
@@ -571,7 +575,7 @@ by up to 0.59 with identical rows and greedy tokens. The fixture pins the
 **one-row** logits (`reference-vision --n-batch 1`, the path the text
 traces pin); our CPU and Metal agree with it, not with the batched run.
 
-**The oracle.** `scripts/reference-vision.cpp` gained `--n-ctx N`,
+**The oracle.** The llama.cpp vision harness gained `--n-ctx N`,
 `--vision-flash` (the projector's attention as the reference's flash
 attention; without it a global block over 16K patches materializes a 17 GB
 score matrix), and `--n-batch N`. Prompt: our rendering with thinking off
@@ -587,8 +591,8 @@ Muse gates (the last tag that holds them is `v0.11.0`).
 **Measured** (M4 Pro, 2026-09-23; `muse-vision-metal`, one CPU run before
 the logits were re-pinned to the one-row run (26.9 s for the projector,
 about 30 s per language-model token), and `generation-check --vision-image
-… --vision-oracle …` on the photo). The `muse-vision-cpu` gate itself was
-not run to the end:
+… --vision-oracle …` on the photo). The `muse-vision-cpu` gate (retired with
+the other Muse gates) was not run to the end:
 
 | check | CPU | Metal |
 | --- | ---: | ---: |
@@ -693,8 +697,8 @@ docs/branding/nuclis.png --prompt "Describe this image in one sentence."
 | `gemma-4-12b-qat` | 676 | 75–141 ms | 73–138 ms (unchanged: no attention) |
 | `qwen3.8-27b` | 1,024 | 18,657–19,077 ms | 2,389–2,748 ms |
 
-The two other encoders, timed by `generation-check` on the same image
-(their entries name no `mmproj` for `generate`), two runs each:
+The two other encoders, timed by `generation-check` on the same image, two
+runs each:
 Gemma 4 26B-A4B's SigLIP (6,084 patches) 7.11–7.54 s → 4.94–4.99 s; Muse
 Glimmer (8,100 patches, 45×45 tokens) 15.4–16.1 s → 10.2 s.
 
