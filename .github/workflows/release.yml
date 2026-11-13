@@ -121,7 +121,7 @@ jobs:
           fi
           # The workflow's own script, so a tag cut before it can still publish.
           git show "${{ github.sha }}:scripts/repo/release.py" > "$RUNNER_TEMP/release.py"
-          python3 "$RUNNER_TEMP/release.py" notes "$tag" > dist/changes.md
+          python3 "$RUNNER_TEMP/release.py" --root "$GITHUB_WORKSPACE" notes "$tag" > dist/changes.md
           { cat dist/highlights.md; echo; cat dist/changes.md; echo; cat .github/release-footer.md; } > dist/notes.md
           cat dist/notes.md
 
