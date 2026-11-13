@@ -1,3 +1,4 @@
+<!-- kind: card -->
 # Qwen3.8-27B: the first target
 
 Qwen3.8-27B is the family nuclis was built around and the one its kernels
@@ -8,7 +9,7 @@ are tuned for: catalogue entry `qwen3.8-27b`, file
 Its speed is in the README's [Results](../../README.md#results) and
 [history.md](../benchmarks/history.md).
 
-## At a glance
+## Architecture
 
 From the file's `qwen35.*` metadata (the [descriptor
 fixture](../../inference/src/models/fixtures/qwen35-27b.json)):
@@ -24,18 +25,22 @@ fixture](../../inference/src/models/fixtures/qwen35-27b.json)):
 | Context | 262,144 declared; nuclis measures up to 32,768 |
 | Weights | nine encodings (F32, Q8_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ3_S, IQ4_XS); 16.2 GB in the text decoder |
 
-## Where its facts live
+## Prompt profile and where its facts live
+
+The profile is `qwen38`, selected by the template digest (SHA-256
+`12827f24…`, Unsloth's fixed template); the engine's other documents carry
+the rest:
 
 | Topic | Document |
 | --- | --- |
 | Binding and structural validation | below |
 | Tokenizer (BPE over the GGUF vocabulary) | [engine/tokenizer.md](../engine/tokenizer.md) |
-| Chat template, reasoning markers, sampling profile | [engine/prompt-profile.md § Qwen3.8](../engine/prompt-profile.md#qwen38-qwen38), [engine/sampling.md § Sampling profiles](../engine/sampling.md#sampling-profiles-and-the-selection-chain-2026-09-08) |
+| Chat template, reasoning markers, sampling profile | [engine/prompt-profile.md § Qwen3.8](../engine/prompt-profile.md#qwen38-qwen38), [engine/sampling.md § Sampling profiles](../engine/sampling.md#sampling-profiles-and-the-selection-chain) |
 | Tool calls | [engine/tool-calling.md § Qwen](../engine/tool-calling.md#qwen-xml-like-calls-json-declarations) |
 | CPU forward, DeltaNet, traces against the reference | [engine/cpu-reference.md](../engine/cpu-reference.md), [engine/sampling.md § Numerical traces](../engine/sampling.md#numerical-traces) |
 | Metal plan and its kernels | [engine/metal-backend.md](../engine/metal-backend.md) |
-| Draft head and speculation budget | [engine/speculative-decoding.md § The Qwen3.8 draft head](../engine/speculative-decoding.md#the-qwen38-draft-head-2026-09-20), [§ The Qwen verify budget](../engine/speculative-decoding.md#the-qwen-verify-budget) |
-| Vision projector | [engine/vision.md § The Qwen3-VL projector](../engine/vision.md#the-qwen3-vl-projector-2026-09-22); its speed (1,024 tokens in 2.4–2.7 s) in [§ Encoders at the materialized-score attention](../engine/vision.md#encoders-at-the-materialized-score-attention-2026-10-27) |
+| Draft head and speculation budget | [benchmarks/record/speculative-decoding.md § The Qwen3.8 draft head](../benchmarks/record/speculative-decoding.md#the-qwen38-draft-head-2026-09-20), [§ The Qwen verify budget](../engine/speculative-decoding.md#the-qwen-verify-budget) |
+| Vision projector | [engine/vision.md § The Qwen3-VL projector](../engine/vision.md#the-qwen3-vl-projector); its speed (1,024 tokens in 2.4–2.7 s) in [§ Encoders at the materialized-score attention](../benchmarks/record/vision.md#encoders-at-the-materialized-score-attention-2026-10-27) |
 | Companion files and the catalogue entry | [catalogue.md](catalogue.md) |
 
 ## Structural validation
@@ -116,70 +121,58 @@ arrays of at most 64 elements, while larger arrays retain descriptors. That
 shared facility lets this adapter validate the four RoPE sections without
 materializing a large vocabulary or adding Qwen key names to the container parser.
 
-### Evidence and references
+## What is verified
 
-On 2026-09-06, the downloaded artifact passed the adapter and produced the counts
-above. A 39 KB [descriptor fixture](../../inference/src/models/fixtures/qwen35-27b.json)
-captures actual metadata and every tensor's name, dimensions, and encoding.
-It contains no weight values, tokens, or private prompts. Tests hydrate this
-independent inventory rather than generating the expected layout from the binder.
+<!-- gen:gates-for:qwen38 -->
+| Gate | Tier | Model | Evidence |
+| --- | --- | --- | --- |
+| `qwen38-trace-f32` | `verify` | qwen38 | [sampling.md § numerical-traces](../engine/sampling.md#numerical-traces) |
+| `qwen38-trace-f16` | `verify` | qwen38 | [sampling.md § numerical-traces](../engine/sampling.md#numerical-traces) |
+| `qwen38-trace-q8_0` | `verify` | qwen38 | [metal-attention.md § q8_0-kv-cache](../engine/metal-attention.md#q8_0-kv-cache) |
+| `qwen38-generation-metal` | `verify` | qwen38 | [session.md](../engine/session.md) |
+| `qwen38-generation-cpu` | `verify-cpu` | qwen38 | [session.md](../engine/session.md) |
+| `qwen38-vision-metal` | `verify` | qwen38 | [vision.md § the-qwen3-vl-projector](../engine/vision.md#the-qwen3-vl-projector) |
+| `qwen38-vision-cpu` | `verify-cpu` | qwen38 | [vision.md § the-qwen3-vl-projector](../engine/vision.md#the-qwen3-vl-projector) |
+| `qwen38-speculative-metal` | `verify` | qwen38 | [speculative-decoding.md](../engine/speculative-decoding.md) |
+| `qwen38-verify-depth-512` | `verify` | qwen38 | [metal-backend.md](../engine/metal-backend.md) |
+| `qwen38-verify-depth-4k` | `verify` | qwen38 | [metal-backend.md](../engine/metal-backend.md) |
+| `qwen38-speculative-cpu` | `verify-cpu` | qwen38 | [speculative-decoding.md](../engine/speculative-decoding.md) |
+| `qwen38-dflash2-trace-metal` | `verify` | qwen38 | [speculative-decoding.md § the-qwen-dflash2-drafter-2026-10-21](../benchmarks/record/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21) |
+| `qwen38-dflash2-trace-cpu` | `verify-cpu` | qwen38 | [speculative-decoding.md § the-qwen-dflash2-drafter-2026-10-21](../benchmarks/record/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21) |
+| `qwen38-dflash2-speculative-metal` | `verify` | qwen38 | [speculative-decoding.md § the-qwen-dflash2-drafter-2026-10-21](../benchmarks/record/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21) |
+| `qwen38-dflash2-speculative-cpu` | `verify-cpu` | qwen38 | [speculative-decoding.md § the-qwen-dflash2-drafter-2026-10-21](../benchmarks/record/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21) |
+| `qwen38-draft-trace-metal` | `verify` | qwen38 | [speculative-decoding.md § the-qwen38-draft-head-2026-09-20](../benchmarks/record/speculative-decoding.md#the-qwen38-draft-head-2026-09-20) |
+| `qwen38-draft-trace-cpu` | `verify-cpu` | qwen38 | [speculative-decoding.md § the-qwen38-draft-head-2026-09-20](../benchmarks/record/speculative-decoding.md#the-qwen38-draft-head-2026-09-20) |
+| `qwen38-draft-stats` | `verify-release` | qwen38 | [speculative-decoding.md § the-qwen38-draft-head-2026-09-20](../benchmarks/record/speculative-decoding.md#the-qwen38-draft-head-2026-09-20) |
+| `qwen38-vocabulary` | `verify` | qwen38 | [prompt-profile.md](../engine/prompt-profile.md) |
+| `qwen38-mtp-companion-trace-metal` | `verify` | qwen38 | [speculative-decoding.md § the-qwen-mtp-companion-2026-10-21](../benchmarks/record/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21) |
+| `qwen38-mtp-companion-trace-cpu` | `verify-cpu` | qwen38 | [speculative-decoding.md § the-qwen-mtp-companion-2026-10-21](../benchmarks/record/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21) |
+| `qwen38-perplexity` | `verify` | qwen38 | [eval.md § the-reference-record-2026-09-24](../benchmarks/record/eval.md#the-reference-record-2026-09-24) |
+| `qwen38-perplexity-full` | `verify-release` | qwen38 | [eval.md § the-reference-record-2026-09-24](../benchmarks/record/eval.md#the-reference-record-2026-09-24) |
+| `qwen38-verify-depth-16k` | `verify-long` | qwen38 | [metal-backend.md](../engine/metal-backend.md) |
+| `qwen38-verify-depth-32k` | `verify-long` | qwen38 | [metal-backend.md](../engine/metal-backend.md) |
+<!-- /gen -->
 
-Debug and ReleaseSafe validation both pass on the actual file. A process-level
-negative check used a temporary sparse file with the same directory but an
-altered attention interval: generic `inspect` succeeded, while `validate`
-returned `UnsupportedConfiguration` with no success JSON. No weights were copied.
+## Numbers
 
-Tests cover the hybrid schedule, borrowed references, text/auxiliary accounting,
-changed dimensions, wrong types, missing metadata, RoPE overrides, missing and
-unexpected tensors, altered query/gate shapes, forbidden encodings, auxiliary
-tensor errors, and allocation failure cleanup. Default tests require no model
-download or GPU.
+The re-made file's baseline (Metal, F16 cache, M4 Pro, 2026-11-12;
+[history.md § The re-made Qwen3.8 file](../benchmarks/history.md#the-re-made-qwen38-file-2026-11-12)):
 
-Layout interpretation was checked against the
-[Qwen35 implementation at llama.cpp revision 7620399](https://github.com/ggml-org/llama.cpp/blob/7620399f58aebfd2196b74021f9581bcf7218cb9/src/models/qwen35.cpp)
-and the [upstream model configuration](https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/config.json).
-The former distinguishes main and auxiliary blocks and accounts for gated query
-dimensions. That revision was also the reference the first families were
-brought up and measured against
-([README.md § 4](README.md#4-validate-against-nuclis-itself)). No external
-implementation code was copied into this adapter.
+| Prompt tokens | Prefill tok/s | Decode tok/s | MTP at draft 7 | DFlash2 at draft 7 |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 94.22 | 11.79 | 1.61× | 1.63× |
+| 4,096 | 86.46 | 11.41 | 1.42× | 1.53× |
 
-## The re-made file (2026-11-12)
+WikiText-2 perplexity over eight windows of 512 is 6.6320 ± 0.3595. Why
+the file was re-pinned and how it was checked:
+[record, 2026-11-12](../benchmarks/record/qwen3.8.md#the-re-made-file-2026-11-12).
 
-On 2026-11-11 Unsloth re-made the 2- to 6-bit files of
-`unsloth/Qwen3.8-27B-GGUF`. The index pins the new `UD-Q4_K_M` since
-2026-11-12: commit `ce331efc48d5722b4b8041f72793e530eae18d9b`,
-16,564,259,744 B, SHA-256 `1bce504d…c529`, in place of `322e194f…3482` at
-`4ca72078` ([catalogue.md § Pinned commits and digests](catalogue.md#pinned-commits-and-digests-2026-09-11)).
-It is the first file re-pinned under
-[README.md § Re-pinning a file](README.md#re-pinning-a-file).
+## Known limits
 
-- **Same model, different mix.** The same architecture, 19 `qwen35.*`
-  keys, 866 tensors, and nine encodings (now F32 360, Q8_0 107, Q3_K 2,
-  Q4_K 74, Q5_K 142, Q6_K 28, IQ4_NL 9, IQ3_S 2, IQ4_XS 142); 99.8 MB
-  more in the text decoder. The tokenizer gate passes, and the chat
-  template is byte-identical (SHA-256 `12827f24…`), so the profile and
-  its fixtures stand. The projector and the MTP file are byte-identical
-  at the new commit.
-- **Cross-encoding check: not run.** The first pin was not on the
-  machine and no encoding is new.
-- **Fixtures, from the CPU reference** (ReleaseFast): the `Hello,` traces
-  (`tests/fixtures/reference-hello-comma`, 6 s), the MTP rows
-  (`qwen35-mtp`, 40 s; drafts still 9419, 271), and the DFlash2 rows
-  (`tests/fixtures/qwen38-dflash2`, 12 s; anchor 353, drafts 2688,
-  14169, 11, 694, 353, 1144, 310). The vision check's greedy tokens are
-  unchanged (224 s on the CPU).
-- **Perplexity.** Metal over eight windows of 512: 6.6320 ± 0.3595,
-  against 6.6696 for the first pin's llama-perplexity reference (nuclis
-  matched it at −0.000 %): 0.56 % lower, so no worse. That run is the
-  pinned reference (`tests/fixtures/perplexity/qwen38-wikitext2-c512x8.json`),
-  cross-checked by one CPU window: 4.2975 against Metal's 4.2978,
-  −0.006 %, in 1,701 s (eight would take about 3.8 h; a run of all eight
-  was stopped after 1 h 50 min).
-- **Gates.** All 25 `qwen38-*` gates pass on the new fixtures, every
-  tier (2,289 s): F32 traces at 6.1e-5 max abs, the DFlash2 rows at
-  1.5e-2, verify depth to 32,638.
-- **Speed**, a new baseline: decode 11.79 / 11.41 tok/s and prefill
-  94.22 / 86.46 tok/s at 512 / 4,096; MTP 1.61× / 1.42× and DFlash2
-  1.63× / 1.53× at draft 7, code 1.65× and 1.69×
-  ([history.md § The re-made Qwen3.8 file](../benchmarks/history.md#the-re-made-qwen38-file-2026-11-12)).
+- The binding is fixed at 64 text layers: other sizes, tied output
+  embeddings, alternate projection packing, and other auxiliary layouts
+  are refused until a concrete file asks for them.
+- The file declares 262,144 tokens of context; nuclis's session stops at
+  32,768.
+- The dense 27B decodes at about 12 tok/s, too slow for agent loops on
+  this machine next to the Gemma 4 models.

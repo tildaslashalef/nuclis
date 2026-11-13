@@ -233,8 +233,8 @@ pub const Transcriber = struct {
         tokens: std.ArrayList(rnnt.Token) = .empty,
     };
 
-    /// The words' language (docs/models/nemotron-asr.md § Several
-    /// languages). A stretch is words up to a pause; its language may change
+    /// The words' language (docs/models/nemotron-asr.md § Prompt profile).
+    /// A stretch is words up to a pause; its language may change
     /// until the pause settles it.
     const Choice = struct {
         /// The open stretch's language, once one wrote text in it.

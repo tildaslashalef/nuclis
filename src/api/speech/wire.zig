@@ -2,7 +2,7 @@
 //! (OpenAI's fields, nuclis's `seed` and `language`), and the response's
 //! bytes: 16-bit PCM, a WAV header for a stream of unknown length, and the
 //! server-sent events (`speech.audio.delta`, `speech.audio.done`).
-//! What a field means and why some are refused: docs/guide/api.md § Speech.
+//! What a field means and why some are refused: docs/guide/api-speech.md § Speech.
 const std = @import("std");
 const errors = @import("../errors.zig");
 

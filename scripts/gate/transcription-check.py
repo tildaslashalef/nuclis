@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """`POST /v1/audio/transcriptions` against `nuclis transcribe`, and long
 recordings through it. Two gates (gates.json) and the measurements of
-docs/guide/api.md § Transcription (files):
+docs/benchmarks/record/api.md § File transcription:
 
     transcription-check.py route --model DIR   # the corpus: route text == CLI text, per clip
     transcription-check.py long --model DIR    # synthetic 5- and 30-minute recordings

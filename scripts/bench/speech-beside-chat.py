@@ -7,7 +7,7 @@ one speech request read as a stream. The audio is timestamped per 100 ms and
 played through a modelled player: playback starts with the first byte, runs
 at real time, and pauses while it has nothing (a stall). `--beside` picks what
 runs beside it (`alone` is the cold chat with no speech, for what the prefill
-costs); the method is docs/guide/api.md § The voice loop.
+costs); the method is docs/benchmarks/record/api.md § The voice loop.
 
     python3 scripts/bench/speech-beside-chat.py --brain gemma-4-e4b-qat --runs 4
 """

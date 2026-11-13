@@ -1,15 +1,17 @@
+<!-- kind: reference -->
 # Model artifacts: sources, conventions, and the models directory
 
-What we download, from where, how it is quantized, and where it lives on
-disk. Facts here are recorded from the upstream repositories and the Unsloth
-guides on the dates given; numbers quoted from a guide are that guide's
-claims, not our measurements. What is pinned today is the index
-([§ The catalogue](#the-catalogue)); the tables below record each pin.
+What we download, from where, how it is checked, and where it lives on
+disk. What is pinned is the index ([§ The catalogue](#the-catalogue));
+each pin's history, and what the upstream guides said when it was taken,
+is [the record](../benchmarks/record/catalogue.md).
 
 ## Sources
 
-We use [Unsloth](https://huggingface.co/unsloth)'s GGUF repositories. Their
-guides worth reading before touching an artifact:
+The chat models come from [Unsloth](https://huggingface.co/unsloth)'s GGUF
+repositories; the other kinds from their authors' repositories (or a
+conversion, as `drama-3`). Unsloth's guides worth reading before touching
+an artifact:
 
 - [Dynamic 3.0 GGUFs](https://unsloth.ai/docs/basics/dynamic-3.0-ggufs) —
   the quantization method and its naming.
@@ -18,182 +20,40 @@ guides worth reading before touching an artifact:
 - [Gemma 4](https://unsloth.ai/docs/models/gemma-4) — variants, official
   sampling, thinking control, memory at four bits.
 
-### Quantization generations (recorded 2026-09-09)
+### Encodings
 
-- **Dynamic 3.0** files carry the `UD-` prefix and are calibrated with a
-  published importance matrix (`imatrix_unsloth.gguf_file` in the repo);
-  the guide recommends at least `UD-Q2_K_XL` for agentic and tool-calling use
-  and warns against 1-bit variants for those cases. Qwen3.8 is the first
-  family quantized with 3.0; the pinned `Qwen3.8-27B-UD-Q4_K_M.gguf` is one.
-- **Dynamic 2.0 (older)** also uses the `UD-` prefix; the Gemma 4 repos below
-  were produced with it. The prefix alone does not identify the generation;
-  the repo card does.
-- A filename encoding (`Q4_K_M`, `Q4_K_XL`) names the dominant type only.
-  Every tensor's actual encoding is enumerated by `nuclis inspect`
-  ([gguf.md](../engine/gguf.md)) and the loader rejects
-  unimplemented encodings explicitly; it never requantizes. Implemented
-  (checked 2026-10-14 against `quant/decode.zig` and the adapters'
-  `executableEncoding`): F32, Q8_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ3_S,
-  IQ4_XS, Q4_0, BF16, the ternary PQ2_0 and PTQ1_0, and since 2026-10-14
-  Q2_K, IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, and IQ3_XXS
-  ([saluki.md](saluki.md)), and since 2026-10-28 Q5_0 and Q5_1 (a
-  K-quant file's `ffn_down` where its rows are not multiples of 256,
-  [quantization.md](../engine/quantization.md#equations-and-evidence)) for
-  matrices (F16 decodes on the CPU but the adapters do not accept it for a
-  matrix; the Qwen adapter's executable set does not list Q4_0, Q5_0, or
-  Q5_1, the Gemma adapter's does); specialized Metal matvec and matmul
-  kernels exist for Q3_K, Q4_K, Q5_K, Q6_K, IQ3_S, IQ4_XS, Q4_0, Q5_0,
-  Q5_1, PQ2_0, and PTQ1_0, the generic kernels serve the rest.
-  Not implemented: Q4_1, Q8_K, MXFP4. A repository file is *runnable* when every tensor is in the
-  implemented set (only `inspect` can tell; the filename cannot) and
-  *supported* only when the catalogue pins it (see [the catalogue](#the-catalogue)). Every
-  correctness fixture and benchmark record cites the pinned file.
+A filename encoding (`Q4_K_M`, `Q4_K_XL`) names the dominant type only,
+and the `UD-` prefix does not say which Dynamic generation made the file;
+the repository card does
+([record, 2026-09-09](../benchmarks/record/catalogue.md#quantization-generations-recorded-2026-09-09)).
+Every tensor's actual encoding is enumerated by `nuclis inspect`
+([gguf.md](../engine/gguf.md)); the loader knows
+<!-- gen:encodings-count -->23<!-- /gen --> encodings
+([quantization.md](../engine/quantization.md)), each adapter accepts its
+own executable set for matrices, and anything else is rejected
+explicitly, never requantized. A repository file is *runnable* when every
+tensor is in its adapter's set (only `inspect` can tell; the filename
+cannot) and *supported* only when the catalogue pins it. Every
+correctness fixture and benchmark record cites the pinned file.
 
-### Pinned commits and digests (2026-09-11)
+### Pins and companions
 
-Resolved and verified by `nuclis model pull` into a scratch home; the
-values the catalogue and the benchmark records cite:
+The index pins every file by commit, size, and SHA-256 in
+`src/catalog.json`; `nuclis model ls -l` shows them for what is installed,
+and `nuclis model inspect <name>` compares them with the Hub's. The
+pins that earlier records cite, files outside the index included, are in
+[the record](../benchmarks/record/catalogue.md#pinned-commits-and-digests-2026-09-11).
 
-| Repository | Commit | File | Size (B) | SHA-256 |
-| --- | --- | --- | ---: | --- |
-| `unsloth/Qwen3.8-27B-GGUF` | `4ca720788d1e01f1bff70c033e0d0028fd02e502` | `Qwen3.8-27B-UD-Q4_K_M.gguf` | 16,464,440,224 | `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482` |
-| | | `mmproj-BF16.gguf` | 931,146,432 | `83ee4f4f205fa514161778c41df1ea14144faa0f713510893b63c2395f5c2d53` |
-| | | `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` | 1,369,590,656 | `50d9ce5a6da381bbcfb31061cf73df94a90e6faf8efeddee379a9cb8f1501c6e` |
-| | | `imatrix_unsloth.gguf` | 13,642,656 | `0ee5b10bd0c2fa2127c6f4b43dbfe1efd71e383b63217af9dade1de36599f1c1` |
-
-The Qwen3.8 row is the first pin, which the records before 2026-11-12
-cite. The index pins Unsloth's re-made file since then; its companions
-are byte-identical at the new commit:
-
-| Repository | Commit | File | Size (B) | SHA-256 |
-| --- | --- | --- | ---: | --- |
-| `unsloth/Qwen3.8-27B-GGUF` | `ce331efc48d5722b4b8041f72793e530eae18d9b` | `Qwen3.8-27B-UD-Q4_K_M.gguf` | 16,564,259,744 | `1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529` |
-| `unsloth/gemma-4-12b-it-GGUF` | `fc034cfff751157913579611efad8462ac1be606` | `gemma-4-12b-it-UD-Q4_K_XL.gguf` | 7,366,423,360 | `90fd944d227e9d9b68e7e2c7d5b57b79d4c66ed521b0919fbbd932cf834f6f8e` |
-| `unsloth/gemma-4-12B-it-qat-GGUF` | `980b060c40a8539ac159e0501a3e0f66a6365af3` | `gemma-4-12B-it-qat-UD-Q4_K_XL.gguf` | 6,716,356,800 | `90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370` |
-| `unsloth/gemma-4-26B-A4B-it-qat-GGUF` | `7b92b5b28818151e8669af2e45e88d6086f490dd` | `gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` | 14,249,047,104 | `a7c5bc715f5ff8e99a3e8901ce7d2b42b402c669bf24f7c5250747633d0f5891` |
-| | | `mmproj-BF16.gguf` | 1,194,828,256 | `7b06953ccdbe8cf363f47841a7afaacd2b1c2ff9a8d6b426fdec7521a6878744` |
-| | | `MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf` | 251,939,328 | `7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a` |
-| `unsloth/gemma-4-E4B-it-qat-GGUF` | `8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265` | `gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf` | 4,215,695,776 | `df0fd4ee07072c607c29a0a1cb4f98918426cca12f45a2776bdd6ee6d09a4de3` |
-| | | `mmproj-BF16.gguf` | 991,552,320 | `7c9bafa27f82d658eda805c1d82ef62bb0368e1ff75f64f77de58ad318beaaf9` |
-| | | `MTP/mtp-gemma-4-E4B-it-Q4_0.gguf` | 59,678,016 | `423074e537504b4f9ec5eafed5c639fac82c96631626efccacdd3c4039b20605` |
-| `unsloth/Muse-Glimmer-30B-GGUF` | `faa5b025c584459c13febfa5c59883516710ae39` | `Muse-Glimmer-30B-UD-Q4_K_XL.gguf` | 15,878,222,368 | `82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38` |
-| | | `mmproj-kquant.gguf` | 1,400,328,928 | `f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6` |
-| | | `dflash-kquant.gguf` | 1,631,205,312 | `27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc` |
-| `prism-ml/Ternary-Bonsai-2-27B-gguf` | `6ed5e12bf84b7a63069882c91dd9e9218647d17b` | `Ternary-Bonsai-2-27B-PQ2_0.gguf` | 7,206,168,928 | `3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1` |
-| | | `Ternary-Bonsai-2-27B-PTQ1_0.gguf` | 5,946,648,928 | `53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3` |
-| | | `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf` | 629,246,976 | `6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903` |
-| | | `Ternary-Bonsai-2-27B-mmproj-BF16.gguf` | 931,145,856 | `e287342d92332fa3577ed1d42e921dac9370c08da58ba9337fa450f6cc76cfd7` |
-| `unsloth/embeddinggemma-2-GGUF` | `031f0d4b35536f69ab3509d4893c923264fcf253` | `embeddinggemma-2-Q8_0.gguf` | 309,855,520 | `6f1bd4ac6c5df7444f9cca7ca36cafe6cfa34cd6f49fefb1e0b4be8143aed8bc` |
-| | | `embeddinggemma-2-BF16.gguf` | 557,950,240 | `f315cbbb30dd487e44d501c8902abe88808755e43753a96beed1964f0a48aa4f` |
-| | | `mmproj-BF16.gguf` | 982,074,880 | `995aaa56e88b9b631f651861d659b728a625ccc02a238be37cff56cf11dc0032` |
-| `ConwayResearch/Underdog-Saluki-27B-1.0` | `4f60eba09f4b6db63c72915d328d97e1d93edb8c` | `Underdog-Saluki-27B-1.0-IQ2-mix.gguf` | 7,898,369,152 | `4a673518b11b1c4445f9b9a9d3c40356f5ba39f6a6260dcb25f3fbfd475d9efb` |
-| | | `mmproj-Underdog-Saluki-27B-1.0-Q8_0.gguf` | 629,246,976 | `2e0b88b680a45a58eea666b9776a89601b16f4ef575b871a686d82ee65938756` |
-| `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | `85e237c12c027371202489a0ec509ded67b5e4b5` | `model.safetensors` | 1,811,626,576 | `bc3c7e785eb961179c25450d1acff03f839e0002f2f3a5aeb67b5735c0fa2adb` |
-| | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
-| `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | `0c0e3051f131929182e2c023b9537f8b1c68adfe` | `model.safetensors` | 3,833,402,552 | `38b1d5971bdbd982b561cccec982669a53b0537c3cf5e9bd4778ed07bb2f5137` |
-| | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
-| `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | `5d83992436eae1d760afd27aff78a71d676296fc` | `model.safetensors` | 1,829,344,272 | `180b3b10eb1c9f1b4db7806d5475bae3071c0243c299d49926bab1da3b6946f6` |
-| | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
-| `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | `fd4b254389122332181a7c3db7f27e918eec64e3` | `model.safetensors` | 3,857,413,744 | `38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c` |
-| | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
-| `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` | `5ecdb67327fd37bb2e042aab12ff7391903235d3` | `model.safetensors` | 3,833,402,552 | `391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522` |
-| | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
-| `nvidia/nemotron-3.5-asr-streaming-0.6b` | `ea30d66debe3740a08b573244286791d423d6b3e` | `model.safetensors` | 2,552,062,944 | `9eebdd6590289cb3030f310858f3df93256600a800a3e8200c5993d5f967e174` |
-| `sakasegawa/drama-3-GGUF` | `9a01354d04ab6eb521bc9cdfc56ab6824c474af2` | `Drama-35B-A3B-v3-Q4_K.gguf` | 20,787,264,352 | `2a57b14c9b208a2ff833ab7305b920ca8f154ad807004a52d96a86a90a55523e` |
-| `z-lab/Qwen3.8-27B-DFlash2-GGUF` | `2d9571f8ce46e151f61c6499c99dee6079e1d610` | `Qwen3.8-27B-DFlash2-Q8_0.gguf` | 2,056,414,816 | `c18e800daedc59ca68fd13b6a856d795746af6d399a9279ac6a277d1d422f87e` |
-
-The Drama 3 row was pulled and verified on 2026-10-30 ([drama3.md](drama3.md)).
-The DFlash2 row is `qwen3.8-27b`'s second draft variant, which the index
-places beside the Qwen file ([§ The catalogue](#the-catalogue)).
-
-The Saluki rows were pulled and verified on 2026-10-14; the file is not a
-catalogue entry ([saluki.md](saluki.md)).
-
-The Qwen3-TTS (both sizes; the codec files are byte-identical) and Nemotron rows were pulled and verified on 2026-10-27,
-each with its configuration and tokenizer files as support files
-([qwen3-tts.md](qwen3-tts.md), [nemotron-asr.md](nemotron-asr.md)); the
-codec is a separate `--file speech_tokenizer/model.safetensors` pull,
-since a subdirectory holding other weights is another artifact. All three
-are catalogue entries since 2026-10-27 (the fourth table, [below](#the-catalogue)),
-whose pull fetches the codec with its voice.
-
-The 26B-A4B and Muse rows were verified by pulls on 2026-09-17 and entered
-the catalogue the same day as `gemma-4-26b-a4b` and `muse-glimmer-30b`,
-ahead of their adapters. The 26B-A4B is supported since 2026-09-18: the
-expert layers run on both backends, and it has its own reference
-traces, acceptance record, and agent check ([benchmarks](../benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-2026-09-18)).
-Since 2026-09-19 the Muse adapter binds the file, so `inspect` says
-*supported*; its CPU reference, Metal plan, and profile with its
-acceptance record were brought up that day against the pinned llama.cpp
-build ([README.md § 4](README.md#4-validate-against-nuclis-itself)). Its facts are in
-[muse-glimmer.md](muse-glimmer.md). The Bonsai rows were read by `model inspect` on 2026-09-18 and the
-PQ2_0 file and its Q8_0 projector verified by the pull the same day;
-`bonsai-2-27b` entered the catalogue then: the file is Qwen3.8-27B's
-architecture with every matrix in Prism ML's ternary packings (ids 142
-and 143) in a Hadamard-rotated basis ([bonsai.md](bonsai.md)). Since
-2026-09-18 the Qwen adapter binds it and `inspect` says *supported*; both
-backends were checked against the fork's traces that day, and it has an
-acceptance record and agent check
-([benchmarks](../benchmarks/history.md#bonsai-2-27b-acceptance-record-2026-09-18)).
-The PTQ1_0 file was pulled and verified on 2026-09-18 for the packing
-measurement (`nuclis model pull prism-ml/Ternary-Bonsai-2-27B-gguf --file
-Ternary-Bonsai-2-27B-PTQ1_0.gguf --revision 6ed5e12b…`) and became the
-entry's file the same day, measured not slower than PQ2_0 on the whole
-token at 1.26 GB less ([bonsai.md](bonsai.md#metal-plan-2026-09-18));
-the PQ2_0 file stays the traces' source. The repository also lists
-`Ternary-Bonsai-2-27B-F16.gguf` (53,808,408,928 B). The 26B-A4B
-repository also lists `mmproj-F16.gguf` (1,193,058,784 B), `mmproj-F32.gguf`
-(2,291,200,480 B), `MTP/mtp-gemma-4-26B-A4B-it-{BF16,F16}.gguf`
-(855,247,360 B each), `MTP/…-Q8_0.gguf` (461,785,600 B), and a root-level
-`mtp-gemma-4-26B-A4B-it.gguf` of the Q4_0 head's size. The Muse repository
-lists sixteen quantizations from `UD-IQ2_XXS` to `Q8_0` and a two-part
-`BF16/`, `mmproj-Muse-Glimmer-30B-{BF16,Q8_0}.gguf` (3,849,173,728 and
-2,051,685,088 B), and `dflash-kquant.gguf`: a DFlash drafter, not an MTP
-head, carried under the `draft` companion role, which names the draft
-source speculative decoding loads, whatever its mechanism.
-
-The Gemma rows are two different checkpoints, read remotely with
-`nuclis model inspect` on 2026-09-11; both digests were then verified by
-pulls (the K-quant file that day, the QAT file on 2026-09-11 through a
-registry entry and again on 2026-09-12 through the catalogue entry).
-Both declare architecture
-`gemma4`, 48 blocks, 667 tensors, embedding 3840, context 262,144.
-`gemma-4-12b-it` is post-training quantized from the bf16 weights: 338
-F32 tensors and 329 weight matrices as Q4_K (242), Q5_K (31), and Q6_K
-(56), every one in the executable set today. `gemma-4-12B-it-qat` is
-Google's quantization-aware-trained checkpoint (the header calls itself
-"smart Q4_0, QAT-lossless"): the same 338 F32 tensors and all 329 weight
-matrices as Q4_0, executed since 2026-09-12. Its repository (capital
-`B` in the id) also carries `mmproj-{BF16,F16,F32}.gguf` (175–210 MB),
-`MTP/mtp-gemma-4-12B-it-{Q4_0,Q8_0,BF16,F16}.gguf` (254 MB, 465 MB,
-862 MB, 862 MB), and `mtp-gemma-4-12B-it.gguf` (254 MB, the Q4_0 head by
-its size). Its pulled companions, verified 2026-09-11 and 2026-09-12:
-`mmproj-BF16.gguf` 175,115,840 B, SHA-256
-`dcb8103adad042b1bf99df767aaf34eb37c5a73a4a2f0417e4d7ba557e91664f`;
-`mtp-gemma-4-12B-it.gguf` 253,708,800 B, SHA-256
-`fcb35dea42c71333db904cee11baac525c9ef872818ee3753f6cb156f3c6f4f6`.
-
-### Companion files
-
-| Companion | Purpose | Qwen3.8-27B | Gemma 4 |
-| --- | --- | --- | --- |
-| Main GGUF | Text model | `Qwen3.8-27B-UD-Q4_K_M.gguf` (pinned) | `gemma-4-12b-it-UD-Q4_K_XL.gguf` (7.37 GB), `gemma-4-26B-A4B-it-UD-Q4_K_M.gguf` (16.9 GB) |
-| `mmproj-*.gguf` | Vision encoder and projector | `mmproj-BF16.gguf` (931,146,432 B; `clip`, `qwen3vl_merger`, see [gguf.md](../engine/gguf.md)), `mmproj-F16.gguf` (927,607,488 B) | 12B: `mmproj-BF16.gguf` and `mmproj-F16.gguf` (175,115,840 B each), `mmproj-F32.gguf` (209,522,240 B); 26B-A4B: `mmproj-BF16.gguf` (1.19 GB) |
-| `MTP/mtp-*.gguf` | Multi-token-prediction draft head | `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` (1,369,590,656 B); the main file also embeds one prediction block | 12B: `MTP/mtp-gemma-4-12b-it-BF16.gguf` and `-F16.gguf` (861,520,128 B each), `MTP/mtp-gemma-4-12b-it-Q8_0.gguf` (465,109,248 B), plus a root-level `mtp-gemma-4-12b-it.gguf` of the Q8_0 size; `MTP/README.md`. 26B-A4B: `MTP/mtp-gemma-4-26B-A4B-it.gguf` (462 MB); not embedded |
-| `imatrix_unsloth.gguf*` | Calibration statistics, not weights | `imatrix_unsloth.gguf` (13,642,656 B) | `imatrix_unsloth.gguf_file` (7,480,640 B) |
-
-Sizes as listed on Hugging Face on 2026-09-09 (byte-exact where the tree
-API reported them; corrected the same day: the Qwen repository does ship
-projectors). The Qwen repository also lists a `BF16/` directory and
-twenty-four quantizations from `UD-IQ1_S` to `UD-Q8_K_XL` plus `Q4_0`,
-`Q4_1`, `Q8_0`; the Gemma 12B repository twenty-two from `UD-IQ2_M` to
-`BF16`. Companions are only loaded when the configuration names them
-(see [the catalogue](#the-catalogue)); nothing is discovered by scanning a directory. The
-projector is loaded for image input ([engine/vision.md](../engine/vision.md))
-and the draft file for speculative decoding
-([engine/speculative-decoding.md](../engine/speculative-decoding.md)); the
-catalogue and the download sidecars record both, so a pulled model directory
-is complete and verified.
+A model's companions are separate files with roles: `mmproj` (the vision,
+and for Gemma 4 E4B audio, encoder and projector), `draft` (a
+multi-token-prediction head or a DFlash drafter for speculative decoding),
+`imatrix` (calibration statistics, never loaded), `codec` and `backbone`.
+Companions are loaded only when the configuration names them; nothing is
+discovered by scanning a directory. The projector serves image input
+([engine/vision.md](../engine/vision.md)) and the draft file speculative
+decoding ([engine/speculative-decoding.md](../engine/speculative-decoding.md));
+the catalogue and the download sidecars record both, so a pulled model
+directory is complete and verified.
 
 ## The models directory
 
@@ -373,127 +233,67 @@ with its own repository and commit when it is not the artifact's.
 `nuclis model pull <name> [--with mmproj,draft | --all]` fetches through
 the index, and `--model` and `engine.model` resolve names through it.
 Status (`present`, `absent`, `mismatch`, `unverified`) is read from
-sidecars, never by hashing, so a listing is instant. The rest of this
-section is the history of the entries and their pins. The Qwen entry was
-proven from a clean state on 2026-09-11: the old `models/qwen/` directory
-was deleted and `nuclis model pull qwen3.8-27b --all` rebuilt the model
-directory.
-Gemma 4 12B entered the catalogue as `gemma-4-12b` with its profile on
-2026-09-12 naming the K-quant file with `mmproj-BF16.gguf`
-(175,115,840 B, SHA-256 `2e269f906eb15169ee9ce880ea649bd6d42d4964c21f8ede10d0d0efc738bcbb`)
-and `mtp-gemma-4-12b-it.gguf` (465,109,248 B,
-`145db9094bc0f85f1701e255a2ed216dcc9800fc8bc8631ad00905b456bd451b`);
-later that day that one entry moved, name unchanged, to the QAT
-file. Since 2026-09-12 there are **two** entries instead, so each
-quantization has a name of its own: `gemma-4-12b` is the K-quant release
-again (the 2026-09-12 pins above) and `gemma-4-12b-qat` is the QAT file
-`gemma-4-12B-it-qat-UD-Q4_K_XL.gguf` with the companions listed above.
-Both are pinned, both are verified by `nuclis model pull <name> --all`,
-and each has its own reference traces and acceptance record — which is
-what the single name obscured while it pointed at whichever file was
-newest. `gemma-4-26b-a4b`, the mixture of experts, followed on 2026-09-17
-with its adapter arriving the next day; its verdict is *supported* since
-its acceptance record. `nuclis model inspect`
-judges a remote file from its directory alone and compares the Hub's
-digest against the catalogue (main file or companion) for its verdict
-([guide/getting-started.md § Model download](../guide/getting-started.md#model-download));
-the `models` registry in `nuclis.json` names models above the catalogue
-with per-model overrides, pinning no digest
-([guide/configuration.md § Configuration file](../guide/configuration.md#configuration-file)).
-`gemma-4-e4b-qat` joined on 2026-09-26. The same day
-the catalogue was trimmed to five entries — `qwen3.8-27b`,
-`gemma-4-12b-qat`, `gemma-4-26b-a4b`, `gemma-4-e4b-qat`,
-`muse-glimmer-30b` — and `gemma-4-12b` (the K-quant release) and
-`bonsai-2-27b` left it. Their pins above stay as the record their traces
-and acceptance runs cite; the files run as any other runnable GGUF:
-`nuclis model pull <owner/repo> --file <f>`, then `nuclis config sync`
-registers them (Bonsai's template is not a pinned one, so it
-takes its family's `qwen38` profile by force, as the entry did).
+sidecars, never by hashing, so a listing is instant.
 
-The decision artifacts (once a table of their own, `decision_entries`) pin checkpoints, which only
-`nuclis decide` opens (2026-09-29): `laya`, `convaiinnovations/laya` at
-commit `55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851`, weights
-`model.safetensors` (842,609,210 B, SHA-256
-`891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c`, F16)
-and, by name, `encoder/config.json`, `rl_agent_config.json`,
-`tokenizer/tokenizer.json`, and `tokenizer/tokenizer_config.json` (plain
-git files, whose Hub identity is a blob id); and `laya-multilingual`
-(2026-09-29), the same commit's `multilingual/model.safetensors`
-(643,835,514 B, SHA-256
-`9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204`, F16)
-with the same four support files under `multilingual/`, which lands in
-`~/.nuclis/models/convaiinnovations/laya/multilingual/`. `nuclis model
-pull laya` (or `laya-multilingual`) fetches the set at that commit and refuses it if the Hub's weights digest
-or a named support file differs; `model ls` lists it under
-`decision`, and its JSON rows carry `kind`
-(the listing is schema 7 since the index became one table). `decide.model` defaults to `laya`; the name is not a
-text model's, so `generate --model laya` is refused by name.
+<!-- gen:catalogue -->
+| Name | Kind | Encoding | Main file | Status |
+| --- | --- | --- | --- | --- |
+| `qwen3.8-27b` | generation | UD-Q4_K_M | 16.56 GB | current |
+| `gemma-4-12b-qat` | generation | Q4_0 (QAT) | 6.72 GB | legacy |
+| `gemma-4-26b-a4b` | generation | Q4_0 (QAT) | 14.25 GB | current |
+| `gemma-4-e4b-qat` | generation | Q4_0 (QAT) | 4.22 GB | current |
+| `muse-glimmer-30b` | generation | UD-Q4_K_XL | 15.88 GB | legacy |
+| `laya` | decision | F16 | 842.6 MB | current |
+| `laya-multilingual` | decision | F16 | 643.8 MB | current |
+| `clef-flash` | decision | Q6_K | 243.5 MB | current |
+| `embeddinggemma-2` | embedding | Q8_0 | 309.9 MB | current |
+| `qwen3-tts-1.7b-customvoice` | speech | BF16 | 3.83 GB | current |
+| `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | current |
+| `qwen3-tts-1.7b-base` | speech | BF16 | 3.86 GB | current |
+| `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | current |
+| `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | current |
+| `drama-3` | speech | Q4_K | 20.79 GB | current |
+| `nemotron-asr-0.6b` | transcription | F32 | 2.55 GB | current |
+<!-- /gen -->
 
-`clef-flash` (2026-10-02) spans two repositories: its head
-`joint_head.safetensors` (243,538,016 B, SHA-256
-`19cdcec8c81dc9212be320fff47462ab342fbc1278be4368fb3da71241cf5ba0`, BF16)
-with `config.json`, `joint_head_config.json`, `tokenizer.json`,
-`tokenizer_config.json`, `chat_template.jinja`, `processor_config.json`,
-and `generation_config.json` from `Cloudflare/clef-flash` at
-`17f0b0ad64efb65d273590632833508766b2aae6`, and its backbone
-`Cloudflare_clef-flash-Q6_K.gguf` (7,793,714,496 B, SHA-256
-`b80f7cfb803de25aade15853bab331e9f030a9ee64dee7bc91ed8c2b07312423`) from
-`bartowski/Cloudflare_clef-flash-GGUF` at
-`d7f376ea88c05e7bb1014dd5351a93df9dd8029e`, with the projector
-`mmproj-Cloudflare_clef-flash-bf16.gguf` (921,704,928 B, SHA-256
-`3c45b34aee6f353a0d41d6b96ba712a498a17a82f0a6152bf68a5021f9652c0f`)
-beside it. `nuclis model pull clef-flash` pulls the backbone first, by
-repository id at its commit, then the head and its support files; `--with
-mmproj` adds the projector. Each file lands under its own repository's
-directory, and a backbone or projector whose pulled digest is not the
-catalogue's fails the pull (`CatalogMismatch`). `nuclis decide` finds the
-backbone and, when it is pulled, the projector from the entry.
+**Decision artifacts** (`laya`, `laya-multilingual`, `clef-flash`) are
+checkpoints only `nuclis decide` opens; `decide.model` defaults to `laya`,
+and text commands refuse the names. `nuclis model pull laya` fetches the
+weights and their named support files at the pinned commit and refuses
+the set if a digest differs. `clef-flash` spans two repositories: the
+backbone GGUF (and with `--with mmproj` its projector) from
+`bartowski/Cloudflare_clef-flash-GGUF`, pulled first, then the head and
+its support files from `Cloudflare/clef-flash`; each lands under its own
+repository's directory, and a digest that is not the catalogue's fails
+the pull (`CatalogMismatch`).
 
-The embedding artifacts pin models, which only
-`nuclis embed` opens (2026-10-09): `embeddinggemma-2`,
-`unsloth/embeddinggemma-2-GGUF` at commit
-`031f0d4b35536f69ab3509d4893c923264fcf253`, the text model
-`embeddinggemma-2-Q8_0.gguf` (309,855,520 B, SHA-256
-`6f1bd4ac6c5df7444f9cca7ca36cafe6cfa34cd6f49fefb1e0b4be8143aed8bc`) and
-the projector `mmproj-BF16.gguf` (982,074,880 B, SHA-256
-`995aaa56e88b9b631f651861d659b728a625ccc02a238be37cff56cf11dc0032`),
-which `--with mmproj` adds (the vision and audio encoders; text needs only
-the main file). The entry also carries the trained widths (768, 512, 256,
-128) and the modalities its files read. Why Q8_0 with a BF16 projector is
-in [embeddinggemma.md § Artifacts](embeddinggemma.md#artifacts). `model
-ls` lists it under `embedding`, `+mmproj` when the projector is there;
-`embed.model` defaults to `embeddinggemma-2`, and text and decision
-commands refuse the name. `model pull <owner/repo> --register <name>`
+**The embedding artifact** `embeddinggemma-2` only `nuclis embed` opens:
+the text model alone, or with `--with mmproj` the vision and audio
+encoders. The entry carries the trained widths (768, 512, 256, 128) and
+the modalities its files read; why Q8_0 with a BF16 projector is in
+[embeddinggemma.md § Artifacts](embeddinggemma.md#files-and-encodings).
+`embed.model` defaults to it. `model pull <owner/repo> --register <name>`
 records a GGUF whose header says `gemma-embedding2` as `"kind":
-"embedding"` and names `embed.model` as the key that makes it the
-default.
+"embedding"`.
 
-The audio artifacts pin the speech and transcription
-checkpoints: `qwen3-tts-1.7b-customvoice` and `qwen3-tts-0.6b-customvoice`
-(2026-10-27), `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base`, and
-`qwen3-tts-1.7b-voicedesign` (2026-10-29), and `drama-3` (2026-10-30, one
-GGUF holding backbone, codebook tower, codec, and tokenizer; a saved voice
-like Base), kind `speech` (`nuclis speak`), and `nemotron-asr-0.6b` (kind
-`transcription`, `nuclis transcribe`), at the commits and digests of the
-table above. A speech
-name says CustomVoice (built-in speakers), Base (a saved voice), or
-VoiceDesign (a described voice). The names before 0.11.0, `qwen3-tts-1.7b` and
-`qwen3-tts-0.6b`, resolve to nothing: every command and the server refuse
-them with the name each became (`catalog.renamedAudio`), and a registry
-entry may take them.
-`nuclis model pull <name>` lists the repository once at the pinned
-commit and fetches the weights (Drama 3's one GGUF needs nothing else) with their support files (`config.json`,
-`generation_config.json`, the tokenizer's files, and
-`preprocessor_config.json` or `processor_config.json`) and, for a voice,
-the codec `speech_tokenizer/model.safetensors` with its own three, each
-digest checked against the catalogue before anything downloads
-(`CatalogMismatch`) and a named support file missing at the commit
-refused the same way. The codec's sidecar records the role `codec`. `--with`, `--all`, `--file`,
-`--revision`, and `--register` are refused for these names. `model ls`
-lists them under `speech` or `transcription`, `+codec` when a voice's
-codec is there; `model inspect <name>` compares the Hub's
-digests with the catalogue's (a safetensors file has no directory to read
-remotely). `speech.model` defaults to `qwen3-tts-1.7b-customvoice` (built-in
-speakers that take a delivery instruction), `transcribe.model` to `nemotron-asr-0.6b`;
-the other commands refuse these names, and `speak` and `transcribe`
-refuse each other's.
+**The audio artifacts** are kind `speech` (`nuclis speak`: the five
+Qwen3-TTS names and `drama-3`) and `transcription` (`nuclis transcribe`:
+`nemotron-asr-0.6b`). A Qwen3-TTS name says CustomVoice (built-in
+speakers), Base (a saved voice), or VoiceDesign (a described voice); the
+names before 0.11.0, `qwen3-tts-1.7b` and `qwen3-tts-0.6b`, resolve to
+nothing, and every command and the server refuse them with the name each
+became (`catalog.renamedAudio`). `nuclis model pull <name>` lists the
+repository once at the pinned commit and fetches the weights with their
+support files and, for a Qwen3-TTS voice, the codec
+`speech_tokenizer/model.safetensors` with its own (Drama 3's one GGUF
+needs nothing else), each digest checked before anything downloads
+(`CatalogMismatch`). The codec's sidecar records the role `codec`.
+`--with`, `--all`, `--file`, `--revision`, and `--register` are refused
+for these names. `model ls` lists them under `speech` or
+`transcription`, `+codec` when a voice's codec is there. `speech.model`
+defaults to `qwen3-tts-1.7b-customvoice`, `transcribe.model` to
+`nemotron-asr-0.6b`; the other commands refuse these names, and `speak`
+and `transcribe` refuse each other's.
+
+How each entry arrived, and the entries that left (`gemma-4-12b`,
+`bonsai-2-27b`): [record](../benchmarks/record/catalogue.md#the-entries-and-their-pins-2026-09-11-to-2026-10-30).

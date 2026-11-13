@@ -1,6 +1,6 @@
 //! A test build's deliberate panics (`zig build -Dpanic-hook=true`), so a
 //! check can watch the panic handler restore a leased terminal and write the
-//! request log's last line (docs/development.md § Hostile input). Every other
+//! request log's last line (docs/guide/code.md § Hostile input). Every other
 //! build compiles the hooks out.
 const std = @import("std");
 const build_options = @import("build_options");

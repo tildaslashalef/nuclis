@@ -1,13 +1,14 @@
+<!-- kind: reference -->
 # Audio through the companion encoders
 
 How nuclis turns a clip into embedding rows: the decoder, the log-mel front
 end, and Gemma 4's audio encoder (`gemma4a`) on the CPU and on Metal. Two
 families use that encoder: EmbeddingGemma 2
-([embeddinggemma.md § Audio](../models/embeddinggemma.md#audio-2026-10-09))
+([embeddinggemma.md § Audio](../models/embeddinggemma.md#audio))
 and Gemma 4 E4B, whose companion carries the same encoder (751 of its 752
 tensors byte-identical, the projection to 2560 its own) and hears clips in
 a chat through it
-([gemma4.md § Audio input on the E4B](../models/gemma4.md#audio-input-on-the-e4b-2026-10-27)).
+([gemma4.md § Audio input on the E4B](../models/gemma4.md#audio-input-on-the-e4b)).
 The front end also serves Nemotron 3.5 ASR's own encoder, described with
 its family in [nemotron-asr.md](../models/nemotron-asr.md).
 Everything here was written from Google's code at the pinned revisions
@@ -24,7 +25,7 @@ as a cross-check, never copied.
 - [The encoder](#the-encoder)
 - [What the file does not say](#what-the-file-does-not-say)
 - [Metal](#metal)
-- [Against the oracles (2026-10-09)](#against-the-oracles-2026-10-09)
+- [Against the oracles (2026-10-09)](#against-the-oracles)
 
 ## The package
 
@@ -68,24 +69,24 @@ as a cross-check, never copied.
   24 kHz mel `extract_speaker_embedding` computes, and `Encoder`, the
   ECAPA-TDNN to one embedding at the talker's width (gate
   `qwen3-tts-0.6b-clone-cpu`;
-  [qwen3-tts.md § The speaker encoder](../models/qwen3-tts.md#the-speaker-encoder)).
+  [qwen3-tts.md § The speaker encoder](../benchmarks/record/qwen3-tts.md#the-speaker-encoder-2026-10-29)).
 - `qwen3_codec_encoder.zig`: Qwen3-TTS's codec encoder, CPU only, 24 kHz
   samples to frames of 16 codes (the Base's reference codes): `bind` (its
   quantizer is the decoder binding's, the file's copies checked equal) and
   `Encoder` (gate `qwen3-tts-0.6b-clone-cpu`;
-  [qwen3-tts.md § The codec encoder](../models/qwen3-tts.md#the-codec-encoder)).
+  [qwen3-tts.md § The codec encoder](../benchmarks/record/qwen3-tts.md#the-codec-encoder-2026-10-29)).
 - `nemotron_encoder.zig`: Nemotron 3.5 ASR's cache-aware encoder and its
   prompt block, the CPU reference: `bind` (the safetensors checkpoint),
   `Encoder`, `Stream`, its `FrontEnd`, and the pure functions the Metal
   kernels are checked against (`conv2d`, `attention`, `glu`, `depthwise`)
-  ([nemotron-asr.md § The encoder](../models/nemotron-asr.md#the-encoder)).
+  ([nemotron-asr.md § The encoder](../benchmarks/record/nemotron-asr.md#the-encoder-2026-10-27)).
 - `nemotron_rnnt.zig`: its RNN-T transducer: `bind`, and `Decoder`,
   which turns encoder rows into tokens by greedy decoding, a row in full
-  as it arrives ([nemotron-asr.md § RNN-T decoding](../models/nemotron-asr.md#rnn-t-decoding)).
+  as it arrives ([nemotron-asr.md § RNN-T decoding](../benchmarks/record/nemotron-asr.md#rnn-t-decoding-2026-10-27)).
 - `nemotron_metal.zig`: `Plan` (the device weights and shared scratch)
   and `Stream`, the encoder's chunk step, the projector and the joint on
   the device, the LSTM on the CPU
-  ([nemotron-asr.md § On Metal](../models/nemotron-asr.md#on-metal-2026-10-27)).
+  ([nemotron-asr.md § On Metal](../benchmarks/record/nemotron-asr.md#on-metal-2026-10-27)).
 - `nemotron_asr.zig`: the family opened from its directory (`Model`: the
   encoder, the transducer, the piece table, the language prompts, and the
   Metal plan once `openMetal` built it) and `Transcriber`, one utterance
@@ -134,7 +135,7 @@ casts to F32. The steps are one `mel.Spec` value, `Spec.gemma`: the window
 lead (zeros before the clip), which frames a clip keeps, magnitude or power,
 HTK or Slaney filters, the log guard, and pre-emphasis.
 `Spec.nemotron` is Nemotron ASR's extractor
-([nemotron-asr.md § The front end](../models/nemotron-asr.md#the-front-end));
+([nemotron-asr.md § The front end](../benchmarks/record/nemotron-asr.md#the-front-end-2026-10-27));
 parameterizing the bank left Gemma's features bit for bit what they were. Against the extractor's own features
 (`tests/fixtures/embeddinggemma-audio-features/`) the largest difference
 is 4.8e-7 on all three clips.
@@ -232,9 +233,9 @@ carry a cache, which lives on the device with the rest of a stream's
 state. Its kernels are their own (`kernels/asr.metal`, `ops/asr.zig`);
 it shares the generic F32 tile, `layerNorm`, `addBiasRows`, `silu`, `add`
 and `copy` with the other plans. The schedule, the state and the
-measurements: [nemotron-asr.md § On Metal](../models/nemotron-asr.md#on-metal-2026-10-27).
+measurements: [nemotron-asr.md § On Metal](../benchmarks/record/nemotron-asr.md#on-metal-2026-10-27).
 
-## Against the oracles (2026-10-09)
+## Against the oracles
 
 `zig build test-embeddinggemma -- MODEL audio --mmproj mmproj-BF16.gguf`
 (gates `embeddinggemma-audio-cpu` and `embeddinggemma-audio-metal`) runs
@@ -246,10 +247,6 @@ four checks:
 - each clip through the whole pipeline against Google's float32 vector;
 - on Metal, a packed batch against one at a time.
 
-Every stage of the CPU reference also matched a hook dump of Google's
-tower (subsampling, each block, the output, the projection) to relative
-RMS ≤ 1.8e-6. `scripts/audio-trace.py` (retired; at tag `v0.11.0`) wrote that
-dump to `.zig-cache/audio-trace/`, and the `audio` mode traces the CPU reference
-against it stage by stage whenever it is there: the localizer that found
-the swapped norms and the mask width. Results are in
-[embeddinggemma.md § Audio](../models/embeddinggemma.md#audio-2026-10-09).
+The `audio` mode also traces the CPU reference stage by stage against a
+hook dump of Google's tower under `.zig-cache/audio-trace/` whenever one is
+there ([record, 2026-10-09](../benchmarks/record/audio.md#the-hook-dump-of-googles-tower-2026-10-09)).

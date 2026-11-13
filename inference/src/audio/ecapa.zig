@@ -5,7 +5,7 @@
 //! is the only one. Rows are time-major, `[frames][channels]`; every
 //! convolution is a matrix product over its gathered taps (`cpu.dense`), so
 //! the weights keep PyTorch's `[out][in][kernel]` layout.
-//! docs/models/qwen3-tts.md § The speaker encoder.
+//! docs/models/qwen3-tts.md § Voice cloning (the Base).
 const std = @import("std");
 const cpu = @import("../backends/cpu/root.zig");
 const tts = @import("../models/qwen3_tts.zig");

@@ -1,3 +1,4 @@
+<!-- kind: record -->
 # The pinned llama.cpp reference
 
 While the project bootstrapped, a pinned llama.cpp build was nuclis's
@@ -9,7 +10,7 @@ taken, and where their evidence stays. The scripts that drove it (the
 `reference-*` harnesses and their comparison and conversion helpers) left
 the tree with that change; read them with `git show v0.11.0:scripts/<name>`.
 
-## The pinned build
+## The pinned build (2026-09-06)
 
 The mainline revision was `7620399f58aebfd2196b74021f9581bcf7218cb9`,
 checked out and built under the ignored `.reference/` directory with:
@@ -53,11 +54,11 @@ vectors and traces are the `embeddinggemma-*` rows of
 came from ggml's CPU backend over a copy of the Q8_0 file with every tensor
 widened to F32, so no matmul rounded its activations; ggml's GELU was still
 an f16 lookup table, which with its other F32 differences set the traces'
-bound ([embeddinggemma.md § CPU reference](../models/embeddinggemma.md#cpu-reference-against-the-oracles-2026-10-09)).
+bound ([embeddinggemma.md § CPU reference](record/embeddinggemma.md#cpu-reference-against-the-oracles-2026-10-09)).
 Images were sized with `--image-max-tokens 280`, the count Google's
 processor uses.
 
-## Run the workload
+## Run the workload (2026-09-06)
 
 The reference records were taken against one server per family, started
 with these flags (the Qwen3.8 file shown):
@@ -93,7 +94,7 @@ thinking-off marker and wrote `<bos>` into the prompt text, `gemma4-e` a
 bare generation prompt, `muse-glimmer` the template's `Reasoning strength:
 high.` line (that template cannot switch reasoning off).
 
-## Where the evidence is
+## Where the evidence is (2026-10-14)
 
 - Compact records, one per run: `reference-*.json` in this directory.
 - Token arrays and raw run records: `tests/fixtures/run-2026-09-06/`,
@@ -106,7 +107,7 @@ high.` line (that template cannot switch reasoning off).
 - Later runs against the pin are in [README.md](README.md) and
   [history.md](history.md).
 
-## Recorded environment
+## Recorded environment (2026-09-06)
 
 | Item | Value on 2026-09-06 |
 | --- | --- |
@@ -155,7 +156,7 @@ zero-swap acceptance. The [compact record](reference-boundary-2026-09-06.json)
 keeps both timings, the acceptance flags and counts, hashes, and memory
 counters.
 
-## Source references
+## Source references (2026-09-06)
 
 Reference behaviour was checked against the pinned
 [server API documentation](https://github.com/ggml-org/llama.cpp/blob/7620399f58aebfd2196b74021f9581bcf7218cb9/tools/server/README.md),

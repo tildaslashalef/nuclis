@@ -1,5 +1,5 @@
 {
-  "$comment": "The benchmark workloads: docs/development.md § The record. Shapes × models: each model row runs the shapes it names, as <row>/<shape> (scripts/bench/manifest.py expand); its model is a gates.json key, so the path comes from the index (src/catalog.json). Run with scripts/bench/workloads.py (make workload NAME=…).",
+  "$comment": "The benchmark workloads: docs/benchmarks/README.md § The record. Shapes × models: each model row runs the shapes it names, as <row>/<shape> (scripts/bench/manifest.py expand); its model is a gates.json key, so the path comes from the index (src/catalog.json). Run with scripts/bench/workloads.py (make workload NAME=…).",
   "shapes": {
     "prose512": {
       "kind": "bench",

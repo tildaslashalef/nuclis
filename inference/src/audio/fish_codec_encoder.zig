@@ -2,7 +2,7 @@
 //! become frames of 10 codes, one per 2,048 samples. Binds `codec.enc.*` and
 //! the quantizer's `down`, `pre`, `in_proj`, codebook, and `out_proj`
 //! tensors of the Drama 3 GGUF; whole clips on the CPU. The pipeline:
-//! docs/models/drama3.md § The codec.
+//! docs/models/drama3.md § Architecture.
 const std = @import("std");
 const gguf = @import("../formats/gguf.zig");
 const weights = @import("../runtime/weights.zig");

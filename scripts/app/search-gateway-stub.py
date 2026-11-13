@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """A local stand-in for the search service behind the agent's web tools:
-the v1 contract in docs/app/agent.md § 11 answered from canned data,
+the v1 contract in docs/app/agent.md § The web tools, answered from canned data,
 for the screenshot harness, `nuclis serve` checks, and any run where the
 real service is out of reach. Standard library only; nothing leaves the
 machine.

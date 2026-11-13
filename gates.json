@@ -184,7 +184,24 @@
     "site/**",
     "gates.json",
     "workloads.json",
-    "scripts/repo/docs-check.py"
+    "src/catalog.json",
+    "docs/facts.json",
+    "scripts/repo/docs-check.py",
+    "scripts/repo/docs-gen.py"
+   ]
+  },
+  {
+   "name": "docs-facts",
+   "command": [
+    "make",
+    "docs-facts-check"
+   ],
+   "paths": [
+    "src/**/*.zig",
+    "inference/src/**/*.zig",
+    "huggingface/src/**/*.zig",
+    "docs/facts.json",
+    "scripts/repo/docs-gen.py"
    ]
   },
   {
@@ -460,7 +477,7 @@
     "max_absolute": 1.0,
     "max_relative_rms": 0.025
    },
-   "evidence": "docs/engine/metal-backend.md#q8_0-kv-cache-2026-10-15"
+   "evidence": "docs/engine/metal-attention.md#q8_0-kv-cache"
   },
   {
    "name": "qwen38-generation-metal",
@@ -512,7 +529,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/vision.md#the-qwen3-vl-projector-2026-09-22"
+   "evidence": "docs/engine/vision.md#the-qwen3-vl-projector"
   },
   {
    "name": "qwen38-vision-cpu",
@@ -530,7 +547,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/vision.md#the-qwen3-vl-projector-2026-09-22"
+   "evidence": "docs/engine/vision.md#the-qwen3-vl-projector"
   },
   {
    "name": "qwen38-speculative-metal",
@@ -644,7 +661,7 @@
     "max_absolute": 0.02,
     "max_relative_rms": 0.001
    },
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21",
+   "evidence": "docs/benchmarks/record/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21",
    "note": "the drafter's Q8_0 projections run the fragment tile, weights rounded to half: the family's half-tile bound (generation-check qwen35_spec); measured 1.6e-2 / 7.7e-4, drafts identical"
   },
   {
@@ -674,7 +691,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21"
+   "evidence": "docs/benchmarks/record/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21"
   },
   {
    "name": "qwen38-dflash2-speculative-metal",
@@ -695,7 +712,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21"
+   "evidence": "docs/benchmarks/record/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21"
   },
   {
    "name": "qwen38-dflash2-speculative-cpu",
@@ -715,7 +732,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21"
+   "evidence": "docs/benchmarks/record/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21"
   },
   {
    "name": "qwen38-draft-trace-metal",
@@ -742,7 +759,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen38-draft-head-2026-09-20"
+   "evidence": "docs/benchmarks/record/speculative-decoding.md#the-qwen38-draft-head-2026-09-20"
   },
   {
    "name": "qwen38-draft-trace-cpu",
@@ -768,7 +785,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen38-draft-head-2026-09-20"
+   "evidence": "docs/benchmarks/record/speculative-decoding.md#the-qwen38-draft-head-2026-09-20"
   },
   {
    "name": "qwen38-draft-stats",
@@ -787,7 +804,7 @@
     "kind": "exit"
    },
    "note": "prints the per-depth acceptance table; a change to the block's forward or commit must reproduce it within one draft per cell",
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen38-draft-head-2026-09-20"
+   "evidence": "docs/benchmarks/record/speculative-decoding.md#the-qwen38-draft-head-2026-09-20"
   },
   {
    "name": "qwen38-vocabulary",
@@ -1299,7 +1316,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/vision.md#gemma-4s-projectors-2026-09-23"
+   "evidence": "docs/engine/vision.md#gemma-4s-projectors"
   },
   {
    "name": "gemma4-26b-a4b-vision-cpu",
@@ -1318,7 +1335,7 @@
     "kind": "exit"
    },
    "note": "about 5 minutes",
-   "evidence": "docs/engine/vision.md#gemma-4s-projectors-2026-09-23"
+   "evidence": "docs/engine/vision.md#gemma-4s-projectors"
   },
   {
    "name": "qwen38-mtp-companion-trace-metal",
@@ -1349,7 +1366,7 @@
     "max_relative_rms": 0.15
    },
    "note": "the companion block (Q4_K/Q6_K) against the embedded block (Q6_K/Q8_0): a cross-encoding bound; measured 1.56 / 0.133, greedy drafts equal",
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
+   "evidence": "docs/benchmarks/record/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
   },
   {
    "name": "qwen38-mtp-companion-trace-cpu",
@@ -1379,7 +1396,7 @@
     "max_relative_rms": 0.15
    },
    "note": "the companion block (Q4_K/Q6_K) against the embedded block (Q6_K/Q8_0): a cross-encoding bound; measured 1.56 / 0.133, greedy drafts equal",
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
+   "evidence": "docs/benchmarks/record/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21"
   },
   {
    "name": "qwen38-perplexity",
@@ -1406,7 +1423,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
+   "evidence": "docs/benchmarks/record/eval.md#the-reference-record-2026-09-24"
   },
   {
    "name": "qwen38-perplexity-full",
@@ -1431,7 +1448,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
+   "evidence": "docs/benchmarks/record/eval.md#the-reference-record-2026-09-24"
   },
   {
    "name": "gemma4-26b-a4b-perplexity-full",
@@ -1456,7 +1473,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
+   "evidence": "docs/benchmarks/record/eval.md#the-reference-record-2026-09-24"
   },
   {
    "name": "gemma4-e4b-trace-cpu",
@@ -1631,7 +1648,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/vision.md#gemma-4s-projectors-2026-09-23"
+   "evidence": "docs/engine/vision.md#gemma-4s-projectors"
   },
   {
    "name": "gemma4-e4b-vision-cpu",
@@ -1650,7 +1667,7 @@
     "kind": "exit"
    },
    "note": "about 12 minutes",
-   "evidence": "docs/engine/vision.md#gemma-4s-projectors-2026-09-23"
+   "evidence": "docs/engine/vision.md#gemma-4s-projectors"
   },
   {
    "name": "gemma4-e4b-audio-metal",
@@ -1679,7 +1696,7 @@
     "kind": "exit"
    },
    "note": "E4B's companion audio encoder on EmbeddingGemma 2's three pinned clips: on the CPU reference its rows before the embedder equal EmbeddingGemma 2's encoder's bit for bit (751 identical tensors); the engine's Metal rows against the CPU's within 2e-3 max abs / 4e-5 relative RMS (first run 2026-10-27: 5.4e-4 / 9.7e-6 on the tone, 2.8e-5 / 1.1e-6 on speech); then the north clip in a chat prompt, 11 greedy steps against one prefill within 2e-2",
-   "evidence": "docs/models/gemma4.md#audio-input-on-the-e4b-2026-10-27"
+   "evidence": "docs/models/gemma4.md#audio-input-on-the-e4b"
   },
   {
    "name": "gemma4-e4b-audio-asr",
@@ -1708,7 +1725,7 @@
     "kind": "exit"
    },
    "note": "nuclis generate --audio on the catalogue entry (its mmproj), greedy, one fixed prompt (scripts/gate/wer.py CHAT_PROMPT), over six speech-corpus clips (make speech-corpus): three LibriSpeech test-clean, one FLEURS clip each in German, French and Spanish; the word error rate over all must stay at most 5 % (first run 2026-10-27: 1 error in 114 words, 0.88 %; the bound allows four more)",
-   "evidence": "docs/models/gemma4.md#audio-input-on-the-e4b-2026-10-27"
+   "evidence": "docs/models/gemma4.md#audio-input-on-the-e4b"
   },
   {
    "name": "gemma4-e4b-draft-trace-metal",
@@ -1731,7 +1748,7 @@
     "kind": "exit"
    },
    "note": "the check compares its rows against inference/src/models/fixtures/gemma4-mtp-e4b itself",
-   "evidence": "docs/engine/speculative-decoding.md#the-gemma-4-assistant-heads-2026-09-21"
+   "evidence": "docs/benchmarks/record/speculative-decoding.md#the-gemma-4-assistant-heads-2026-09-21"
   },
   {
    "name": "gemma4-e4b-draft-trace-cpu",
@@ -1752,7 +1769,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/speculative-decoding.md#the-gemma-4-assistant-heads-2026-09-21"
+   "evidence": "docs/benchmarks/record/speculative-decoding.md#the-gemma-4-assistant-heads-2026-09-21"
   },
   {
    "name": "gemma4-e4b-vocabulary",
@@ -1795,7 +1812,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
+   "evidence": "docs/benchmarks/record/eval.md#the-reference-record-2026-09-24"
   },
   {
    "name": "gemma4-e4b-perplexity-full",
@@ -1820,7 +1837,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
+   "evidence": "docs/benchmarks/record/eval.md#the-reference-record-2026-09-24"
   },
   {
    "name": "gemma4-e4b-perplexity-4k",
@@ -1845,7 +1862,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/guide/eval.md#the-long-context-record-2026-09-24"
+   "evidence": "docs/benchmarks/record/eval.md#the-long-context-record-2026-09-24"
   },
   {
    "name": "qwen38-verify-depth-16k",
@@ -1915,7 +1932,7 @@
     "kind": "exit"
    },
    "note": "the authors' traced codes (24 frames) through the codec decoder: every pinned stage and the samples against their trace, relative RMS <= 2e-5 per stage and samples max |difference| <= 1e-5 (first run: 3.8e-6 and 1.9e-6); then the same frames streamed in pieces of 5 equal the decode bit for bit",
-   "evidence": "docs/models/qwen3-tts.md#codec-decoder-against-the-trace-2026-10-27"
+   "evidence": "docs/benchmarks/record/qwen3-tts.md#codec-decoder-against-the-trace-2026-10-27"
   },
   {
    "name": "qwen3-tts-0.6b-trace-cpu",
@@ -1935,7 +1952,7 @@
     "kind": "exit"
    },
    "note": "the fox case replayed from the authors' codes: token ids and the prompt's rows exactly, then the talker's input rows, layers 0, 13, 27, final norm, group-0 logits of frames 0-4, and the predictor's logits of frames 0-1, relative RMS <= 1.5e-5 per stage (first run: 2.9e-6)",
-   "evidence": "docs/models/qwen3-tts.md#talker-and-code-predictor-against-the-trace-2026-10-27"
+   "evidence": "docs/benchmarks/record/qwen3-tts.md#talker-and-code-predictor-against-the-trace-2026-10-27"
   },
   {
    "name": "qwen3-tts-0.6b-clone-trace-cpu",
@@ -1955,7 +1972,7 @@
     "kind": "exit"
    },
    "note": "the Base's two clone cases replayed from the authors' codes with the trace's embedding and reference codes (the talker apart from the encoders): token ids (the reference transcript's too), the prompt's [text, codec, frame] rows, and the trailing text exactly; then the talker's input rows (prompt and 4 decode rows, the trailing text added), layers 0, 13, 27, final norm, group-0 logits of frames 0-4, and the predictor's logits of frames 0-1, relative RMS <= 1.5e-5 per stage (first run 2026-10-29: worst 1.41e-6, every argmax equal)",
-   "evidence": "docs/models/qwen3-tts.md#the-talker-and-the-decode-against-the-trace-2026-10-29"
+   "evidence": "docs/benchmarks/record/qwen3-tts.md#the-talker-and-the-decode-against-the-trace-2026-10-29"
   },
   {
    "name": "qwen3-tts-1.7b-trace-cpu",
@@ -1975,7 +1992,7 @@
     "kind": "exit"
    },
    "note": "the fox case with and without an instruction, replayed from the authors' codes: token ids and the prompt's rows exactly, then the talker's input rows, layers 0, 13, 27 and final norm (the last prompt rows and four decode rows), group-0 logits of frames 0-4, and the predictor (through small_to_mtp_projection) of frames 0-1, relative RMS <= 1.5e-5 per stage (first run: 3.0e-6)",
-   "evidence": "docs/models/qwen3-tts.md#talker-and-code-predictor-against-the-trace-2026-10-27"
+   "evidence": "docs/benchmarks/record/qwen3-tts.md#talker-and-code-predictor-against-the-trace-2026-10-27"
   },
   {
    "name": "qwen3-tts-1.7b-design-trace-cpu",
@@ -2019,7 +2036,7 @@
     "kind": "exit"
    },
    "note": "the authors' traced codes replayed through the Metal plan (the fox case): token ids and prompt rows exactly, then the talker's input rows, layers 0, 13, 27, final norm, group-0 logits of frames 0-4, and the predictor's logits of frames 0-1 against the trace, with an F32 talker cache within relative RMS 1.5e-5 per stage and with the F16 cache within 3e-3 (first run 2026-10-27: F32 cache worst 2.94e-6, F16 cache worst 5.28e-4; every logit row's argmax equal)",
-   "evidence": "docs/models/qwen3-tts.md#on-metal-2026-10-27"
+   "evidence": "docs/benchmarks/record/qwen3-tts.md#on-metal-2026-10-27"
   },
   {
    "name": "qwen3-tts-0.6b-clone-cpu",
@@ -2039,7 +2056,7 @@
     "kind": "exit"
    },
    "note": "the Base's reference clip, read from its 16-bit WAV at 24 kHz, through both encoders (the CPU is their only path, so this gate is in the fast tier): the speaker encoder's mel (last 64 rows), blocks 0 and 3 and mfa (last 8), pooled statistics, and embedding; the codec encoder's SEANet, transformer, and downsample outputs (last 16 rows), each within relative RMS 1e-4; the 58 frames of codes equal; and each clone case's codes decoded through a stream primed with the reference codes (ICL) against the trace's samples after the cut, within 1e-4 (first run 2026-10-29: speaker encoder worst 1.74e-6, codec encoder worst 3.26e-5 at the SEANet output, every code equal, the primed decode's first two frames 3.6e-6)",
-   "evidence": "docs/models/qwen3-tts.md#the-speaker-encoder-against-the-trace-2026-10-29"
+   "evidence": "docs/benchmarks/record/qwen3-tts.md#the-speaker-encoder-against-the-trace-2026-10-29"
   },
   {
    "name": "qwen3-tts-0.6b-clone-metal",
@@ -2063,7 +2080,7 @@
     "kind": "exit"
    },
    "note": "the Base's two clone cases through the Metal plan as qwen3-tts-0.6b-clone-trace-cpu: ids, rows, and trailing text exactly, then every stage against the trace with an F32 talker cache within relative RMS 1.5e-5 and with the F16 cache within 3e-3 (first run 2026-10-29: F32 cache worst 1.27e-6, F16 cache worst 3.30e-4; every argmax equal)",
-   "evidence": "docs/models/qwen3-tts.md#the-talker-and-the-decode-against-the-trace-2026-10-29"
+   "evidence": "docs/benchmarks/record/qwen3-tts.md#the-talker-and-the-decode-against-the-trace-2026-10-29"
   },
   {
    "name": "qwen3-tts-1.7b-trace-metal",
@@ -2087,7 +2104,7 @@
     "kind": "exit"
    },
    "note": "the authors' traced codes replayed through the Metal plan (the fox case with and without an instruction): token ids and prompt rows exactly, then the talker's input rows, layers 0, 13, 27, final norm, group-0 logits of frames 0-4, and the predictor's logits of frames 0-1 against the trace, with an F32 talker cache within relative RMS 1.5e-5 per stage and with the F16 cache within 3e-3 (first run 2026-10-27: F32 cache worst 2.99e-6, F16 cache worst 5.04e-4; every logit row's argmax equal)",
-   "evidence": "docs/models/qwen3-tts.md#on-metal-2026-10-27"
+   "evidence": "docs/benchmarks/record/qwen3-tts.md#on-metal-2026-10-27"
   },
   {
    "name": "qwen3-tts-1.7b-design-metal",
@@ -2133,7 +2150,7 @@
     "kind": "exit"
    },
    "note": "every traced case's codes (46, 171, 141, 86 frames) decoded on Metal against the CPU decode of the same codes, and against the trace's samples where pinned: relative RMS and max |difference| <= 1.5e-5 (first run 2026-10-27: 2.8e-6 and 2.9e-6); then the Metal stream in pieces of 1, 3, and 7 frames equals its own whole decode bit for bit",
-   "evidence": "docs/models/qwen3-tts.md#on-metal-2026-10-27"
+   "evidence": "docs/benchmarks/record/qwen3-tts.md#on-metal-2026-10-27"
   },
   {
    "name": "qwen3-tts-0.6b-roundtrip-metal",
@@ -2159,7 +2176,7 @@
     "kind": "exit"
    },
    "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal (speaker ryan, english, each its own seed), recognized by nuclis transcribe --backend cpu (the baseline model, Nemotron ASR), words scored against the text (scripts/gate/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-27: 5 errors in 190 words, 2.63 %, mostly the recognizer's spelling, dr for doctor and heres for here is; the bound allows six more)",
-   "evidence": "docs/models/qwen3-tts.md#on-metal-2026-10-27"
+   "evidence": "docs/benchmarks/record/qwen3-tts.md#on-metal-2026-10-27"
   },
   {
    "name": "qwen3-tts-1.7b-roundtrip-metal",
@@ -2185,7 +2202,7 @@
     "kind": "exit"
    },
    "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal (speaker ryan, english, each its own seed), recognized by nuclis transcribe --backend cpu (the baseline model, Nemotron ASR), words scored against the text (scripts/gate/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-27: 5 errors in 190 words, 2.63 %, mostly the recognizer's spelling, dr for doctor and heres for here is; the bound allows six more)",
-   "evidence": "docs/models/qwen3-tts.md#on-metal-2026-10-27"
+   "evidence": "docs/benchmarks/record/qwen3-tts.md#on-metal-2026-10-27"
   },
   {
    "name": "drama3-metal",
@@ -2207,7 +2224,7 @@
     "kind": "exit"
    },
    "note": "drama3-check metal: the smoke prompt (29 rows) and 8 argmax frames recorded through the CPU reference, then replayed through drama3_metal.Plan in prefill chunks of 24 rows (the gathered expert tiles and the verify attention), once with every kernel the generic decoder and once with the production kernels: the prefill hidden and logits, each decode row's hidden and logits, and each codebook head's 4,096 logits within 1e-5 relative RMS of the CPU's, every frame equal (first run 2026-10-30: prefill hidden 5.3e-6 in both runs, decode hidden 6.0e-7 / 7.8e-7, codebooks at most 6.6e-7 / 9.9e-7, every argmax equal)",
-   "evidence": "docs/models/drama3.md#on-metal-2026-10-30"
+   "evidence": "docs/benchmarks/record/drama3.md#on-metal-2026-10-30"
   },
   {
    "name": "drama3-trace-cpu",
@@ -2227,7 +2244,7 @@
     "kind": "exit"
    },
    "note": "Fish's clone-fox trace (188 rows, 164 prompt and 24 teacher-forced frames) replayed on the CPU: the backbone's input, layers 0, 3, 19 and 39, output_norm and logits at 40 rows, the tower's shared output, residual layers and heads at 6 rows, relative RMS <= 1e-5 per stage and every logits argmax equal (first run against the trace with the exact delta rule: 3.2e-6 at worst)",
-   "evidence": "docs/models/drama3.md#the-traces"
+   "evidence": "docs/benchmarks/record/drama3.md#the-traces-2026-10-30"
   },
   {
    "name": "drama3-roundtrip-metal",
@@ -2254,7 +2271,7 @@
     "kind": "exit"
    },
    "note": "the round trip: the 20 pinned sentences spoken by nuclis speak on Metal in the model's own voice (no reference, the language from the text, each its own seed), recognized by nuclis transcribe (the baseline model, Nemotron ASR), words scored against the text (scripts/gate/wer.py's normalization): the word error rate must stay at most 6% (first run 2026-10-30: 2 errors in 190 words, 1.05 %, both the recognizer's: dr for doctor, a dropped and)",
-   "evidence": "docs/models/drama3.md#the-round-trip"
+   "evidence": "docs/benchmarks/record/drama3.md#the-round-trip-2026-10-30"
   },
   {
    "name": "drama3-codec-cpu",
@@ -2274,7 +2291,7 @@
     "kind": "exit"
    },
    "note": "Fish's codec cases on the CPU: the reference clip (100 frames) and the clip twice over (200, past both transformer windows) encoded, every code Fish's, each pinned encoder stage within the bound; Fish's codes decoded, each pinned decoder stage and the samples within it (first run: codes 3000/3000, stages 3.4e-5 at worst, samples 1.9e-4 on the window case's last frames, which are quiet)",
-   "evidence": "docs/models/drama3.md#the-traces"
+   "evidence": "docs/benchmarks/record/drama3.md#the-traces-2026-10-30"
   },
   {
    "name": "drama3-codec-metal",
@@ -2294,7 +2311,7 @@
     "kind": "exit"
    },
    "note": "Fish's pinned codes (100 and 200 frames) decoded by fish_codec_metal against the CPU decoder on the same codes, the Metal stream in pushes of 1, 4 and the whole: every observed stage (quantized, the post-transformer, both upsamples, the decoder's input conv, its four blocks, the samples) within 1e-5 relative RMS over all its rows, and the three push sizes' samples equal bit for bit (first run 2026-10-30: 1.6e-6 at worst, samples 1.7e-6, max |difference| 2.5e-6)",
-   "evidence": "docs/models/drama3.md#the-codec-on-metal"
+   "evidence": "docs/benchmarks/record/drama3.md#the-codec-on-metal-2026-10-30"
   },
   {
    "name": "nemotron-asr-encoder-cpu",
@@ -2329,7 +2346,7 @@
     "kind": "exit"
    },
    "note": "the transducer against the trace pinned from transformers c0d024fb, two clips at lookaheads 0 and 3, from the pinned features in one pass and from the samples in 80 ms pieces: every greedy step's row and argmax exactly equal, the final token ids, rows and text exactly equal; the projector rows and the logits at the trace's top five ids within relative bounds, the margins within 1e-2 of the trace's and above their own disagreement (first run: 1.4e-5 relative, margins 1.7e-3 apart, smallest margin 0.011)",
-   "evidence": "docs/models/nemotron-asr.md#transducer-against-the-trace-and-word-error-rate-2026-10-27"
+   "evidence": "docs/benchmarks/record/nemotron-asr.md#transducer-against-the-trace-and-word-error-rate-2026-10-27"
   },
   {
    "name": "nemotron-asr-wer-cpu",
@@ -2355,7 +2372,7 @@
     "kind": "exit"
    },
    "note": "nuclis transcribe --backend cpu (lookahead 3, each clip under its locale) over six clips of the speech corpus (make speech-corpus), three LibriSpeech test-clean and one FLEURS clip each in German, French and Russian: the word error rate over all must stay at most 11 % (first run 2026-10-27: 10 errors in 123 words, 8.13 %; the bound allows three more). The Metal build's binary, for its AudioToolbox FLAC reader; the transcription runs on the CPU",
-   "evidence": "docs/models/nemotron-asr.md#transducer-against-the-trace-and-word-error-rate-2026-10-27"
+   "evidence": "docs/benchmarks/record/nemotron-asr.md#transducer-against-the-trace-and-word-error-rate-2026-10-27"
   },
   {
    "name": "nemotron-asr-trace-metal",
@@ -2373,7 +2390,7 @@
     "kind": "exit"
    },
    "note": "the encoder, projector and joint on Metal against the trace pinned from transformers c0d024fb, two clips at lookaheads 0 and 3, from the pinned features in one pass and from the samples in 80 ms pieces: the subsampling, blocks 0, 11, 23 and prompt rows within 2e-5 relative (first run 2.4e-6 max, 3.7e-6 RMS); every greedy step's row and argmax, the final token ids, rows and text exactly equal; the logits at the trace's top five ids within the CPU's bounds (first run 6.2e-6), the margins within 1e-2 of the trace's and above their own disagreement (first run 9.2e-4 apart, smallest margin 0.0107)",
-   "evidence": "docs/models/nemotron-asr.md#on-metal-2026-10-27"
+   "evidence": "docs/benchmarks/record/nemotron-asr.md#on-metal-2026-10-27"
   },
   {
    "name": "nemotron-asr-wer-metal",
@@ -2399,7 +2416,7 @@
     "kind": "exit"
    },
    "note": "nuclis transcribe --backend metal (lookahead 3, each clip under its locale) over the whole speech corpus (make speech-corpus), 40 LibriSpeech test-clean and 20 FLEURS clips in German, French, Spanish and Russian: the word error rate over all must stay at most 7 % (first run 2026-10-27: 74 errors in 1211 words, 6.11 %, every transcript word for word the CPU's; the bound allows eleven more)",
-   "evidence": "docs/models/nemotron-asr.md#on-metal-2026-10-27"
+   "evidence": "docs/benchmarks/record/nemotron-asr.md#on-metal-2026-10-27"
   },
   {
    "name": "nemotron-asr-file-route",
@@ -2422,7 +2439,7 @@
     "kind": "exit"
    },
    "note": "a fresh nuclis serve (the checkpoint named by a temporary registry) transcribes every clip of the speech corpus (make speech-corpus) through POST /v1/audio/transcriptions (response_format json, language the clip's locale), and nuclis transcribe --json --backend metal the same file: the two texts must be equal byte for byte, clip by clip (first run 2026-10-27: 60 of 60 equal, 512.2 s of audio)",
-   "evidence": "docs/guide/api.md#transcription-files"
+   "evidence": "docs/guide/api-transcription.md#transcription-files"
   },
   {
    "name": "nemotron-asr-long",
@@ -2445,7 +2462,7 @@
     "kind": "exit"
    },
    "note": "5- and 30-minute recordings built under .zig-cache/transcription/ from the 40 LibriSpeech clips of the speech corpus in a seeded order, each followed by 1.5-3 s of silence, through the route on a fresh server (verbose_json, auto): every segment within one clip's span widened by one 80 ms row (every join a boundary), the words against each clip transcribed alone differing by at most 3 % (the carried state changes a clip's first words), the stream's deltas and done text equal to the response's, and the 30-minute peak RSS above the 5-minute one by at most the larger upload plus 64 MiB (first run 2026-10-27: 0 segments across a join; 1.98 % and 2.18 % of words differ, WER against the references 5.04 % and 5.47 % against 4.08 % and 4.06 % for the clips alone; peak RSS +46 MiB for +45.7 MiB of upload; 64x real time)",
-   "evidence": "docs/guide/api.md#transcription-files"
+   "evidence": "docs/guide/api-transcription.md#transcription-files"
   },
   {
    "name": "nemotron-asr-stream-route",
@@ -2472,7 +2489,7 @@
     "kind": "exit"
    },
    "note": "nuclis serve's GET /v1/audio/transcriptions/stream on Metal: four corpus clips (make speech-corpus; two LibriSpeech test-clean, one FLEURS German, one French) streamed at three times real time on one WebSocket, each under its locale (a language message before its audio, a finish after it), lookahead 3: every final's text must equal nuclis transcribe --json of the same 16-bit samples exactly (first run 2026-10-27: 4 of 4)",
-   "evidence": "docs/guide/api.md#live-transcription"
+   "evidence": "docs/guide/api-transcription.md#live-transcription"
   }
  ]
 }

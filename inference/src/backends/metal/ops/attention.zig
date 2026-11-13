@@ -59,8 +59,8 @@ const DecodePlan = struct { kernel: Kernel, groups_per_split: usize, threads: u3
 /// values share a width of 128, 256, or 512 and the KV head's query
 /// heads fit one threadgroup; the general kernel otherwise. Query heads
 /// per SIMD group and preferred row lanes per (precision, width) are
-/// the measured optimum (docs/engine/metal-backend.md § The split pass
-/// at the memory roof); row lanes halve until the threadgroup holds
+/// the measured optimum (docs/benchmarks/record/metal-backend.md § The
+/// split pass at the memory roof); row lanes halve until the threadgroup holds
 /// at most 1,024 threads and their merge fits the kernel's 4,096-float
 /// stage. The group counts must match the kernel's instantiations.
 fn decodePlan(precision: Precision, query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize) DecodePlan {

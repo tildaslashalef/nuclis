@@ -1,3 +1,4 @@
+<!-- kind: record -->
 # Benchmark history
 
 Every dated benchmark record, oldest first, kept as written: the numbers of their day on the tree and OS of their day. The current results, the method, and the index of the JSON records are in [README.md](README.md).
@@ -31,7 +32,7 @@ Prefill is at the reference at 512 (+1 %) and below it as the prompt grows
 kernel's cost grows with the visible cache (the 2026-09-09 matmul tile-ceiling change measured the matmul
 tile at the reference's rate at 4K; the 2026-09-10 long-context prefill-attention work profiled the kernel at 30 % of
 the 16K prefill and found it latency-bound, not cache-bound:
-[metal-backend.md § Long-context prefill attention (2026-09-10, closed without a kernel change)](../engine/metal-backend.md#long-context-prefill-attention-2026-09-10-closed-without-a-kernel-change),
+[metal-backend.md § Long-context prefill attention (2026-09-10, closed without a kernel change)](record/metal-backend.md#long-context-prefill-attention-2026-09-10-closed-without-a-kernel-change),
 the 2026-09-21 register-reuse prefill attention). The 16K row is lower than the 66.5 / 8.92
 measured after the 13,399-token docs prompt in the 2026-09-10 flash-decoding change because the prompt is
 longer (the decode rate at 16K context is what this row states) and the
@@ -77,7 +78,7 @@ within a session; a positional filter is a follow-up if long-position
 numerics are ever in doubt (the F16 attention kernels are checked against
 the F64 reference at 32,000 rows in `test-metal`).
 
-## Observations so far
+## Observations so far (2026-09-07)
 
 These are smoke observations from the synchronous bring-up bridge, not
 acceptance results. 2026-09-07, Apple M4 Pro 48 GiB, macOS 26.6.2, Zig 0.16.0
@@ -116,7 +117,7 @@ Measured mean over 3 runs: prefill      8.62 tok/s, decode      8.54 tok/s, firs
 
 The same command on the generic kernels immediately before measured 4.93 tok/s
 decode. Per-kernel bandwidth is in
-[metal-backend.md § Specialized matvec](../engine/metal-backend.md#specialized-matvec).
+[metal-kernels.md § Specialized matvec](../engine/metal-kernels.md#specialized-matvec).
 
 The first per-kernel profile (below) showed that this run was committing 64
 command buffers per token, not one: the CLI's layer observer, which exists for
@@ -172,7 +173,7 @@ uses sequential token steps; the chunked-prefill, tiled-attention, and chunkwise
 
 The per-block cost study (2026-09-08) closed without a kernel change (every hypothesis measured
 below the 5 % kernel-benchmark bar; the record is in
-[metal-backend.md § Per-block cost research (2026-09-08, closed without a kernel change)](../engine/metal-backend.md#per-block-cost-research-2026-09-08-closed-without-a-kernel-change)).
+[metal-backend.md § Per-block cost research (2026-09-08, closed without a kernel change)](record/metal-backend.md#per-block-cost-research-2026-09-08-closed-without-a-kernel-change)).
 The same `make bench` workload at the end of the session, kernels identical
 to the 2026-09-08 merged-projection change: 11.09 tok/s prefill, 10.64 decode (runs 10.63 / 10.66 / 10.64), GPU
 busy 7,844 ms per 85 steps (92.3 ms/step). The per-kernel profile budget
@@ -211,7 +212,7 @@ Longer raw prompts with `bench --raw --prompt-file … --max-tokens 32
 3,547 tokens → 33.3 prefill, 7.76 decode (the decode drop is attention over
 the longer cache). The reference does 89.2/89.3 prefill at 512/4,096. These
 are not the acceptance workloads (the 2026-09-10 32K acceptance run builds the reference's exact prompts);
-details in [metal-backend.md § Prefill in chunks](../engine/metal-backend.md#prefill-in-chunks-2026-09-08).
+details in [metal-backend.md § Prefill in chunks](../engine/metal-backend.md#prefill-in-chunks).
 
 Causal tiled attention (2026-09-09), same hardware, artifact, and
 methodology (`bench --raw --prompt-file … --max-tokens 32 --ctx-size 4096
@@ -267,7 +268,7 @@ methodology (`bench --raw --prompt-file … --max-tokens 32 --ctx-size 4096
 The batched matmul now runs through per-encoding tiles with half operands
 and F32 accumulation in 64×64 tiles (`make bench-matmul`: 4.9–5.2 TFLOP/s,
 was 2.3–3.1; per-lever table in
-[metal-backend.md § Kernels](../engine/metal-backend.md#kernels)). Prefill is within
+[metal-kernels.md § Kernels](../engine/metal-kernels.md#batched-products)). Prefill is within
 6–9 % of the reference at 512 and 4K; decode is untouched. The 16K row was
 not rerun (the 2026-09-09 matmul tile-ceiling change does not change attention). Chunked vs stepped logits moved
 from 2.8e-5 to 2.4–2.6e-3 max abs with identical argmax (bound 2e-2).
@@ -297,7 +298,7 @@ same-day baseline. The remaining gap to the reference at 16K is the
 three-dispatch decode attention over a `[heads][visible]` score buffer,
 which the 2026-09-10 flash-decoding change replaces with one split-K pass. Greedy tokens on the 22-token
 and 545-token pinned prompts are identical in both precisions
-([metal-backend.md § F16 KV cache](../engine/metal-backend.md#f16-kv-cache-2026-09-10)).
+([metal-attention.md § F16 KV cache](../engine/metal-attention.md#f16-kv-cache)).
 
 Flash-decoding attention (2026-09-10), same hardware, artifact, and
 methodology, F16 cache. The 32K row is a 30,650-token prefix of the docs
@@ -374,7 +375,7 @@ which selects the 32×32 tile for this prompt:
 
 Prefill +10.9 %, first token −9.8 %, decode within noise. The per-shape
 kernel rates and the experiments behind the tile are in
-[metal-backend.md § Small-chunk tile](../engine/metal-backend.md#small-chunk-tile-2026-09-19).
+[metal-backend.md § Small-chunk tile](record/metal-backend.md#small-chunk-tile-2026-09-19).
 
 Multi-row matvec (2026-09-20), same machine and build: the kernel
 reads the weight bytes once per batch instead of once per token and was meant
@@ -386,7 +387,7 @@ tile, so it fails the unit's ≥ 150 / ≥ 120 GB/s targets. `Backend.matmul`
 routes only 2-row batches of the specialized encodings to it
 (`small_batch_rows = 2`); the verify (5 rows) is unchanged. Full table, method,
 and the register/FMA analysis are in
-[metal-backend.md § Multi-row matvec](../engine/metal-backend.md#multi-row-matvec-2026-09-20-closed-below-its-target).
+[metal-backend.md § Multi-row matvec](record/metal-backend.md#multi-row-matvec-2026-09-20-closed-below-its-target).
 A repeat-1 spot run at the close revision (512 prose, draft 4, F16 KV, ctx
 32768) measured verify 232–288 ms and recover 170–217 ms per batch, within the
 speculative record's range for verify. Recovery here is aggregate milliseconds
@@ -398,7 +399,7 @@ The corrected two-row sweep (2026-09-20, `27303ed` plus the 2026-09-20 multi-row
 specialized tile control and includes all four head encodings. All specialized
 cases still win: FFN 127.7–181.9 GB/s vs tile 87.7–116.2, head 146.8–188.0
 vs 89.2–114.1. Routing stays at two tokens. Method and individual rates:
-[corrected control](../engine/metal-backend.md#corrected-two-row-control-2026-09-20).
+[corrected control](record/metal-backend.md#corrected-two-row-control-2026-09-20).
 
 ## Gemma 4 12B: first look (2026-09-11)
 
@@ -406,7 +407,7 @@ The second family's rates on the same machine, method, and build as
 above (greedy, context 2,048, three measured runs after one warmup), not
 an acceptance record: the reference harness run on the same token arrays
 is the 2026-09-12 Gemma 4 12B acceptance work's. Both cache precisions, since Gemma's F16 tolerance is its own
-([gemma4.md § Metal plan](../models/gemma4.md#metal-plan-2026-09-11)).
+([gemma4.md § Metal plan](record/gemma4.md#metal-plan-2026-09-11)).
 
 | Workload | Prefill tok/s | Decode tok/s | First token |
 | --- | ---: | ---: | ---: |
@@ -470,7 +471,7 @@ value split, the 2026-09-11 Gemma 4 12B Metal plan) is the first thing to profil
 **Memory.** The session block is 11,274,289,152 bytes (10.5 GiB) at
 32,768 capacity: every one of the 40 sliding layers is allocated for the
 full capacity although it reads only the last 1,024 rows ([gemma4.md §
-Metal plan](../models/gemma4.md#metal-plan-2026-09-11)); a ring layout for
+Metal plan](record/gemma4.md#metal-plan-2026-09-11)); a ring layout for
 those layers would cut it to about 0.35 GB and is a session-layout change
 of its own. Peak resident set of the `bench` process was
 10.75 GiB at every length and its peak footprint 11.74–11.80 GB; the
@@ -509,8 +510,8 @@ runs (one at 32,639); the reference columns are its warm means:
 Every sample stopped with `token_budget` at the array's count and 128
 generated tokens. Against the K-quant record above, decode rose at every
 length (19.82 → 23.96 at 512, 14.04 → 16.24 at 32K: 6.7 GB of Q4_0 read
-through the fastest kernel of the set, [metal-backend.md § Specialized
-matvec](../engine/metal-backend.md#specialized-matvec)) and stands at 87 % of the
+through the fastest kernel of the set, [metal-kernels.md § Specialized
+matvec](../engine/metal-kernels.md#specialized-matvec)) and stands at 87 % of the
 reference at 512, 81 % at 4K and 16K, 78 % at 32K. Prefill fell slightly
 (192.97 → 179.45 at 512 inside that row's spread, 155 → 143 at 4K,
 103 → 99 at 16K, 74 → 73 at 32K) while the reference's rose on the same
@@ -669,11 +670,11 @@ gains nothing there.
 80 % at 32K. The step reads 7.2 GB of ternary weights, so 72.1 ms is 100
 GB/s effective against the fork's 123 at 58.6 ms; the kernels are at the
 set's multiply-rate ceiling
-([metal-backend.md § Ternary matvecs and tiles](../engine/metal-backend.md#ternary-matvecs-and-tiles-2026-09-18):
+([metal-kernels.md § Ternary matvecs and tiles](../engine/metal-kernels.md#ternary-matvecs-and-tiles):
 a ternary byte carries twice the values of a Q4_0 byte, and the same
 values per second is half the byte rate), the transform is 2.1 % and the
 gather 0.2 % of the step
-([§ The rotation on the Qwen plan](../engine/metal-backend.md#the-rotation-on-the-qwen-plan-2026-09-18)).
+([§ The rotation on the Qwen plan](../engine/metal-kernels.md#the-rotation-on-the-qwen-plan)).
 The byte count alone projected two to three times the Qwen rate; the
 kernel set delivers 1.3×, and the fork's own kernels 1.6× over the
 mainline Qwen record (17.05 against 9.66 at 512). Closing the rest is a
@@ -708,7 +709,7 @@ same weights (`Ternary-Bonsai-2-27B-PTQ1_0.gguf`, 5.95 GB) measured on the
 same plan the same day by `make bench` (22-token prompt, 64 output tokens,
 context 2,048, two rounds): 13.05 / 13.01 tok/s decode against PQ2_0's
 12.87, prefill 39.3 against 39.1, and it matches the PQ2_0 traces on both
-cache precisions ([bonsai.md](../models/bonsai.md#metal-plan-2026-09-18)).
+cache precisions ([bonsai.md](record/bonsai.md#metal-plan-2026-09-18)).
 Not slower at 1.26 GB less, so the catalogue entry moved to it (decided
 2026-09-18); the acceptance workload was not re-run on it.
 
@@ -721,7 +722,7 @@ is the 2026-09-19 Muse Glimmer acceptance work's. The prompt is raw because the 
 the 512-token array is the first 512 ids of `docs/spec.md`'s opening
 6,000 bytes through Muse's tokenizer (the Qwen arrays carry ids above
 its vocabulary). Both cache precisions, since Muse's F16 tolerance is
-its own ([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-2026-09-19),
+its own ([muse-glimmer.md § Metal plan](record/muse-glimmer.md#metal-plan-2026-09-19),
 which also holds the per-kernel profile).
 
 | Workload | Prefill tok/s | Decode tok/s | First token |
@@ -779,7 +780,7 @@ Every sample stopped with `token_budget` at exactly the array's count and
 512 and falls with length (87 % at 4K, 84 % at 16K, 77 % at 32K), the
 reference's own rate falling too (95 → 77). The gap is the widest of the
 four families and is spread over the large Q4_K matvecs
-([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-2026-09-19)
+([muse-glimmer.md § Metal plan](record/muse-glimmer.md#metal-plan-2026-09-19)
 has the per-kernel profile); the 4K row's decode drifted from 9.14 tok/s
 on its warmup to 8.12 on its third sample within four minutes, which no
 other length showed and which was not investigated (thermal is the
@@ -956,8 +957,8 @@ each at `draft_length` 4.
 
 The second speculative-decoding record, taken after the whole-stack replay
 was replaced by per-row recurrent checkpoints
-([speculative-decoding.md § Recovery by accepted length](../engine/speculative-decoding.md#recovery-by-accepted-length-2026-09-20),
-the worklog; replaced by the verify tape, [session.md § Pending rows and the verify tape](../engine/session.md#pending-rows-and-the-verify-tape-2026-10-01)). Same
+([speculative-decoding.md § Recovery by accepted length](record/speculative-decoding.md#recovery-by-accepted-length-2026-09-20),
+the worklog; replaced by the verify tape, [session.md § Pending rows and the verify tape](../engine/session.md#pending-rows-and-the-verify-tape)). Same
 methodology, corpus, prompts, sampling, draft lengths, context, and
 precision as the 2026-09-20 speculative-decoding record above; `scripts/nuclis-speculative.py`
 (later the `qwen38/spec/*` workloads, now `make spec-matrix`; reports under
@@ -1168,7 +1169,7 @@ wins only ~5–8 % on the wide head and IQ4_XS. No case reaches the ≤ 150
 GB/s bar. The 16×8 tile stays the verify control; the full-model verify
 latency is unchanged (262–297 ms per batch, the 2026-09-20 sampled-acceptance change pass above), since
 production routing never selects the candidate. Verdict in
-[metal-backend.md § The wide 32×8 tile](../engine/metal-backend.md#the-wide-328-tile-2026-09-20-closed-negative).
+[metal-backend.md § The wide 32×8 tile](record/metal-backend.md#the-wide-328-tile-2026-09-20-closed-negative).
 The `_w8` kernels and `matmulTile32` were deleted on 2026-11-12; this
 record is their measurement.
 
@@ -1215,7 +1216,7 @@ merges, which were not measured. No bucket routes. The Q4_K rate is the
 kernel's ~0.9 ns per 256-value block (144 bytes) against Q5_K's 176, not
 the row count; reaching the bar needs per-block arithmetic, not more K
 parallelism. Verdict in
-[metal-backend.md § Split-K](../engine/metal-backend.md#split-k-2026-09-21-closed-negative).
+[metal-backend.md § Split-K](record/metal-backend.md#split-k-2026-09-21-closed-negative).
 
 ## The proposal-policy quick pass (2026-09-20)
 
@@ -1387,7 +1388,7 @@ instead of one group carrying all 256; that is the window the shipped
 routing uses (`attention_reuse_max_rows = 64`, 256-wide values only).
 Run-to-run spread is ~1.5 % (the same 32,512/256 case measured 281.2 ms
 then 282.2 ms for the row-split body in two sweeps). Verdict in
-[metal-backend.md § Long-context prefill attention, second attempt (2026-09-21, closed negative)](../engine/metal-backend.md#long-context-prefill-attention-second-attempt-2026-09-21-closed-negative).
+[metal-backend.md § Long-context prefill attention, second attempt (2026-09-21, closed negative)](record/metal-backend.md#long-context-prefill-attention-second-attempt-2026-09-21-closed-negative).
 
 ## Fused norm sweep (2026-09-21)
 
@@ -1443,13 +1444,13 @@ the fused kernel moves it the same way in one dispatch, so the saving is
 the removed launch (~2–4 µs of ~7–10 µs), about 0.4 ms of Gemma's 39 ms
 step. The dispatch reduction is real (10–21 %) and shipped; the speed bars
 are missed and the unit closes below its target. Verdict in
-[metal-backend.md § Fused decode norms (2026-09-21, closed below its target)](../engine/metal-backend.md#fused-decode-norms-2026-09-21-closed-below-its-target).
+[metal-backend.md § Fused decode norms (2026-09-21, closed below its target)](record/metal-backend.md#fused-decode-norms-2026-09-21-closed-below-its-target).
 
 ## The decode-speed baseline (2026-09-30)
 
 The opening record of the decode-speed theme
 ([speculative-decoding.md § The Qwen verify budget](../engine/speculative-decoding.md#the-qwen-verify-budget)), taken with the speed
-loop's tools ([development.md § The speed loop](../development.md#the-speed-loop)):
+loop's tools ([benchmarks § The speed loop](README.md#the-speed-loop)):
 every run restores a saved prefix (the acceptance array less its last
 token) and feeds the last token, so no prefill rate is reported. Apple M4
 Pro (12 CPU, 16 GPU cores), 48 GiB, macOS 27.0 (26A428), AC power, Zig
@@ -1569,7 +1570,7 @@ a 4-row verify's weight work is 2.8× a decode step's and its attention
 Verify batches of up to 8 rows on Qwen's Metal plan step the DeltaNet
 recurrence per token without writing the state, and recovery replays the
 accepted rows from a tape
-([session.md § Pending rows and the verify tape](../engine/session.md#pending-rows-and-the-verify-tape-2026-10-01)).
+([session.md § Pending rows and the verify tape](../engine/session.md#pending-rows-and-the-verify-tape)).
 Apple M4 Pro 48 GiB, macOS 27.0, Zig 0.16.0, ReleaseSafe, Qwen3.8-27B
 UD-Q4_K_M, F16 KV, `--ctx-size 32768`, restored prefixes; `make speed`,
 5 interleaved pairs, base `2a6b1ac` (the 2026-10-01 register-fragment verify matmul's close), batch cost C in ms:
@@ -2037,7 +2038,7 @@ that end.
 
 Saluki 27B (`Underdog-Saluki-27B-1.0-IQ2-mix.gguf`) with Qwen's
 `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` bound as its draft block
-([speculative-decoding.md § The Qwen MTP companion](../engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21)).
+([speculative-decoding.md § The Qwen MTP companion](record/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21)).
 Apple M4 Pro (16 GPU cores), 48 GiB, macOS 27.0.1, Zig 0.17.0,
 ReleaseSafe, `301b26a` plus the documents. Method as
 [§ The re-priced speculative verdicts](#the-re-priced-speculative-verdicts-2026-10-01):
@@ -2115,7 +2116,7 @@ Qwen3.8-27B UD-Q4_K_M, two drafters on the same day:
 
 - **MTP:** its embedded block.
 - **DFlash2:** `z-lab/Qwen3.8-27B-DFlash2-GGUF` Q8_0, as a companion
-  ([speculative-decoding.md § The Qwen DFlash2 drafter](../engine/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21)).
+  ([speculative-decoding.md § The Qwen DFlash2 drafter](record/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21)).
 
 Setup: Apple M4 Pro (16 GPU cores), 48 GiB, macOS 27.0.1, Zig 0.17.0,
 ReleaseSafe, `7678bb3`.
@@ -2206,7 +2207,7 @@ DFlash2's on-rate against MTP's, prose geometric mean: 0.925, 0.979,
 ## The re-made Qwen3.8 file (2026-11-12)
 
 Unsloth's re-made `Qwen3.8-27B-UD-Q4_K_M.gguf` (`1bce504d…`, commit
-`ce331efc`; [models/qwen3.8.md § The re-made file](../models/qwen3.8.md#the-re-made-file-2026-11-12)),
+`ce331efc`; [benchmarks/record/qwen3.8.md § The re-made file](record/qwen3.8.md#the-re-made-file-2026-11-12)),
 a new baseline: no row here is a difference against the first pin's.
 
 Setup: Apple M4 Pro (16 GPU cores), 48 GiB, macOS 27, Zig 0.17.1,

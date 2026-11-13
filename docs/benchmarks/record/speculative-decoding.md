@@ -1,0 +1,1341 @@
+<!-- kind: record -->
+# Speculative decoding: the record
+
+The dated record behind [the reference](../../engine/speculative-decoding.md).
+
+## The draft contract (2026-09-20)
+
+`inference/src/runtime/draft.zig` owns the model-independent interface: a
+family exposes a `Drafter` (a host pointer and five function pointers)
+whose `propose(token, out)` returns greedy candidates chained from the
+state after the last committed token (no draft distribution: acceptance
+draws from the target alone, below); `commit(tokens, h_rows)`
+advances the drafter over tokens the main model committed using their
+target hidden; `reset()` clears the drafter's state; `carried()` is the
+state it keeps outside the session (the MTP heads' pending target hidden
+row; empty for DFlash), which `Model.snapshot`/`restore` copy with the
+session; `bytes()` reports the workspace it owns beyond the session's. There is deliberately no
+`rewind`: the drafter's own attention cache is one more layout in the
+*same* `Session`, so the session's checkpoint/rewind/truncate cover it and the
+generation loop only needs `reset` on a session reset.
+
+## The recovery contract (2026-09-19)
+
+A verify batch feeds the main model the last chosen token followed by `k`
+drafts in one forward and keeps every row's logits. If `a` drafts are
+accepted, the session must end at the state after them — the accepted
+prefix. The two state kinds recover differently:
+
+- **Attention caches rewind by position.** A row's content never depends on
+  later rows, so `truncate(P + a + 1)` sets the position and nothing is
+  copied; rows past it are ignored by contract. This is what Gemma 4 and
+  Muse Glimmer (attention-only) use.
+- **Recurrent state is replayed.** Qwen 27B and Bonsai 2 hold 48 DeltaNet
+  layers whose matrices are a function of every token fed. The batch's
+  checkpoint is taken before the forward; on partial acceptance the session
+  rewinds to it and re-runs the accepted prefix as a second batched
+  forward, which rewrites the same attention rows. Truncating the position
+  alone would leave the matrices at `P + k + 1`.
+
+The session owns the mechanism: a page-aligned region inside the byte
+block, one recurrent copy, `checkpoint`/`rewind`/`truncate` with their
+refusals, all described in [session.md § Checkpoint and
+rewind](../../engine/session.md#checkpoint-and-rewind). `engine.Model.recover`
+is the accepted-prefix operation, and `generation-check` exercises it per
+accepted length on every family, on both executors: replay is bit-identical
+to sequential decoding on the CPU, and within the family's
+chunk-versus-step bound on Metal (the generation check, `make gate
+NAME='qwen38-generation-*'`).
+
+Measured costs on Qwen 27B (2026-09-19): region 156,893,184 bytes;
+checkpoint and rewind 3 ms per batch on Metal and 2 ms on the CPU
+reference (one 150 MB copy each way); the replay is a short-chunk prefill
+(the small-chunk matmul tile). Losing `k − a` drafts
+therefore costs one 150 MB copy plus an `a + 1`-token prefill, not a
+context-long replay. A bounded alternative — per-token recurrent
+checkpoints written by the DeltaNet chunk kernel, `(k + 1) × 150 MB` of
+device scratch on Qwen — was not needed by these numbers; it was built
+the next day
+([§ Recovery by accepted length](#recovery-by-accepted-length-2026-09-20))
+and later replaced by the DeltaNet replay tape
+([session.md § Pending rows and the verify tape](../../engine/session.md#pending-rows-and-the-verify-tape)).
+
+## The Qwen3.8 draft head (2026-09-20)
+
+Facts confirmed on 2026-09-19 from the pinned reference
+(`7620399f5`): the dense MTP graph `src/models/qwen35.cpp:485-639`, the
+driver `common/speculative.cpp:1324-1760`
+(`common_speculative_impl_draft_mtp`), and the example loop
+`examples/speculative-simple/speculative-simple.cpp`.
+
+**The block.** The main file's 65th block is one dense full-attention
+decoder layer of the main model's shape plus four `nextn` tensors. There
+is no separate draft model: the reference opens the *same* file as a
+second context of type `LLAMA_CONTEXT_TYPE_MTP`
+(`llama_context_params.ctx_type`), which executes only that block with its
+own full-attention cache (`llama_set_embeddings_nextn(ctx, true, true)`).
+The main file's block carries `shared_head_norm` and falls back to the
+main `token_embd` and `output` (`qwen35.cpp:518,621-635`). The embedded
+block is therefore the source for this file. The separate
+`MTP/mtp-Qwen3.8-27B-Q4_0.gguf` carries the same block at lower precision,
+with its own Q3_K embedding and head. It is the draft source for a
+Qwen3.8 file without a block of its own
+([§ The Qwen MTP companion](#the-qwen-mtp-companion-2026-10-21)).
+
+**The pair.** At MTP position `p` the block consumes the token `x_p` and
+the target hidden `h_{p-1}`: `concat = [enorm(embed(x_p)); hnorm(h_{p-1})]`
+along the feature axis (`e_norm` first, `h_norm` second), projected by
+`nextn.eh_proj` `[2·5120 -> 5120]` (`qwen35.cpp:539-549`,
+`ggml_concat(..., dim=0)`). `h` is the target's `t_h_nextn`, i.e. the
+final hidden **after** `output_norm` and the input to the target's own
+head (`qwen35.cpp:204-209`), not the pre-norm residual; the block applies
+its own `hnorm` on top. In our runtime this is exactly the `self.normalized`
+row produced by `norm(self.x, self.normalized, self.output_norm)` before
+`self.mm(self.binding.output, ...)`.
+
+**The layer.** `attn_norm`; `attn_q` is the merged query+gate `[5120 ->
+12288]` with each head storing `[query(256); gate(256)]`; `attn_q_norm` /
+`attn_k_norm` are applied per head before RoPE; `attn_k`/`attn_v` are
+`[5120 -> 1024]` (4 KV heads, Q8_0 in the file, a supported encoding);
+24 query heads, key/value width 256, RoPE base 1e7 with sections
+`[11, 11, 10, 0]`; the attention output is multiplied elementwise by
+`sigmoid(gate)` and projected by `attn_output` `[6144 -> 5120]`; residual
+to the `eh_proj` output; `post_attention_norm`; dense FFN `ffn_gate` /
+`ffn_up` `[5120 -> 17408]`, `ffn_down` `[17408 -> 5120]`, `silu(gate)·up`;
+residual; `shared_head_norm`; the shared `output` head.
+
+**Drafting.** `draft()` seeds the block at `n_past` with token `id_last`
+and the carried `pending_h` (the target `h` of the last committed token),
+decodes one row, and takes the greedy top-1 (sampler `top_k = 10`,
+candidate 0) as the first draft; each later step feeds the drafted token
+and the block's own output hidden `h_nextn` as the next `h`, at position
+`n_past + i + 1`. Drafting stops at `n_max` or when the top-1 probability
+falls below `p_min` (`speculative.cpp:1596-1745`).
+
+**Advancing the cache.** After the target decodes `[id_last, drafts...]`,
+`process()` runs the block over the whole batch (token + shifted target
+`h`: row `k` gets `h` of the previous row; the first row gets `pending_h`),
+writing its cache rows at the batch positions. It stores every target `h`
+row for acceptance and carries the last one as `pending_h`
+(`speculative.cpp:1478-1594`). On partial acceptance the target and the
+draft cache are both rewound and `accept(n)` sets `pending_h` to the
+target `h` at index `n` (`speculative.cpp:1747-1760`). The block's own
+output hidden is used to chain drafts only; the cache is filled from the
+target's `h`, never the block's.
+
+**Which encoding.** The block's `attn_k`/`attn_v` are Q8_0; `qwen35`'s
+`executableEncoding` already admits id 8 (generic matvec and generic F32
+tile), and the binder validates every block tensor's shape and encoding
+before it is bound.
+
+**Measured.** The CPU block (`qwen35_runtime.draftForward`) ran against a
+trace captured from llama.cpp through the extended harness
+(its `--mtp-draft` mode, retired with the harness; at tag
+`v0.11.0`): at positions 0 and 1 of `Hello,`, its `h_nextn` matched to
+7.2e-6 and 1.1e-5 max abs (3.1e-7 and 4.9e-7 relative RMS) and its greedy
+draft token equalled the reference's (9419, 271). The vectors are pinned
+under `inference/src/models/fixtures/qwen35-mtp/` (re-made from the CPU
+reference when the file was re-pinned on 2026-11-12) and checked by
+`checkDraft` in the generation check (`make gate NAME='qwen38-generation-*'`)
+and by `qwen38-draft-trace-{cpu,metal}`. As a sanity figure for
+the acceptance that matters, the reference's own
+`llama-speculative-simple --spec-type draft-mtp --spec-draft-n-max 4` on
+`Hello,` accepted 8 of 33 drafts (24.2 %) over 16 generated tokens.
+
+**Metal (2026-09-20).** `qwen35_metal.zig` runs the same block with the
+existing kernels: the pair is two copies into a 10,240-wide buffer and an
+`eh_proj` matvec; the layer is the main full-attention path over the
+block's own cache layout (the plan sizes 65 layouts when a drafter is
+asked for); the head is the shared `output` matvec on the normalized
+hidden, argmaxed on the device. `Plan.init`'s `draft` flag is honored and
+`Engine.open(.embedded)` builds the block on Metal as on the CPU. Against
+the same pinned trace the Metal rows match at 1.5e-5 max abs / 5.8e-7
+relative RMS at position 0 and 1.5e-5 / 7.2e-7 at position 1 (F32 cache);
+with the F16 cache the keys and values round within the family's recorded
+`half_*` bound (8.5e-3 / 3.1e-4 and 2.5e-3 / 2.4e-4). `make gate NAME='qwen38-draft-trace-*'` writes the native rows and
+runs `nuclis-gates compare --draft` against the pinned directory; both executors pass
+on all three rows (block `h` at positions 0 and 1, and the target `hprev`).
+`draftRecoveryCheck` (generation-check, both executors) resets the block
+and takes a checkpoint/rewind across a block row: the hidden is
+reproduced byte for byte and two independently reset drafters propose the
+same greedy chain.
+
+## The Gemma 4 assistant heads (2026-09-21)
+
+Facts confirmed on 2026-09-21 from the pinned reference (`7620399f5`): the
+graph `src/models/gemma4-assistant.cpp` (200 lines, all of it), the KV
+sharing setup `src/llama-model.cpp:2633-2641`, the context rule
+`src/llama-context.cpp:146-151`, and the MTP driver
+`common/speculative.cpp:1324-1760` (the `is_mem_shared` branches at
+1425-1426, 1513 and 1710-1717). The companion file is a second GGUF of
+architecture `gemma4-assistant`: four trained heads, one per draft step,
+selected by `llama_set_nextn_layer_offset` (chain_heads) in the reference;
+here each step runs the corresponding block of our own forward.
+
+**The pair.** The head consumes the *target's* token embedding,
+`get_rows(model_other->tok_embd, x_p)`, scaled by `sqrt(n_embd_out)`, and
+the target's post-`output_norm` hidden `h_{p-1}` (the same `t_h_nextn` row
+our `verify`/`prefill` hidden reports), concatenated `[embed; h]` along the
+feature axis, and projected by `nextn.pre_projection` [2·3840 → 1024].
+Neither half is normalized; only the embedding scale is applied.
+
+**The layer.** The head has no `attn_k`/`attn_v`: with `attention.shared_kv_layers
+= 4` every block reads the target's own cache, block `il`'s kind deciding
+the source — the pattern `[1,1,1,0]` maps the three sliding blocks onto
+the target's layer `n_layer − 2` (46) and the one global block onto
+`n_layer − 1` (47), and the head's KV geometry equals those layers' (8
+heads of 256 on the sliding cache, 1 head of 512 on the global one, which
+is why `head_count_kv` is `[8,8,8,1]` and the key/value lengths differ).
+The graph passes `k_cur = v_cur = nullptr` to `build_attn`, so a head row
+never writes the shared cache; it is a pure reader. Query: `attn_q`
+[1024 → 4096 or 8192], reshaped to 16 heads, per-head RMS `attn_q_norm`,
+RoPE over the whole head (split-half, base 1e4/256 channels on sliding
+blocks, base 1e6/512 with `rope_freqs.weight` on the global one) at the
+*proposal* position. Attention scores are unscaled
+(`f_attention_scale = 1.0`). Sliding blocks see the target cache rows
+`P − 1023 … P − 1` (the reference's mask is `query − key >= 1024`, and the
+proposal's own row does not exist); the global block sees `0 … P − 1`.
+Then `post_attention_norm`, residual, `ffn_norm`, a tanh-GELU gated FFN
+(`LLM_FFN_GELU`, `LLM_FFN_PAR`: `gelu(gate)·up`) of the target's 8192
+width, `post_ffw_norm`, residual, and `layer_output_scale` multiplying the
+block's whole output.
+
+**The outputs.** After the four blocks, `output_norm` (1024) feeds two
+matmuls: `logits = token_embd · cur` — the head's **own** tied
+`token_embd` [1024 × 262144], not the target's head, and with no soft-cap
+— and `h_next = nextn.post_projection · cur` [1024 → 3840], the *same*
+normalized hidden, which chains the next block's `h` input. The drafted
+token's candidates come from the head's logits (the reference samples
+`top_k = 10` there and stops below `p_min`); the target's own `output` is
+never touched.
+
+**The draft driver.** `process()` is skipped entirely for the shared
+memory (`if (!is_mem_shared)` at speculative.cpp:1513) because there is no
+private cache to advance; `draft()` feeds each of the four chain steps at
+**the same position** `n_past` (the proposal position, comment at
+1710-1717), chaining `h_next` into `[embed; h]`, and `accept()` only
+carries the target hidden of the accepted row as the next `pending_h`.
+`commit` on our side therefore reduces to `pending_h = h_rows.last`; the
+drafter owns no attention cache and needs no checkpoint beyond the
+target's.
+
+**Measured.** The companion's 12B head binds 49 tensors (F32 norms/rope
+factors, Q4_0 matrices), `embedding_length_out = 3840`, vocabulary
+262144, 4 blocks of 1024/8192; the 26B-A4B head is the same architecture
+at width 2816 (`pre_projection` [5632 → 1024], `post_projection`
+[1024 → 2816], global KV heads 2) and is in scope as the same code with
+its own config. Traces were captured with the harness's
+`--assistant-draft` mode (below) on `Hello, world` (9259, 236764, 1902),
+one row per proposal position *before* the target decoded it: the rows are
+pinned under `inference/src/models/fixtures/gemma4-mtp/` (removed with
+the 12B's gates on 2026-11-12, when the file became legacy), and the
+reference's greedy drafts are 2613 (position 1) and 236764 (position 2).
+The reference driver's own run on `Hello,` at `--spec-draft-n-max 4`
+drafted 26 tokens and accepted 4 over 12 generated tokens.
+
+**Implemented (2026-09-21).** `inference/src/models/gemma4_assistant.zig` binds
+the companion (arch `gemma4-assistant`, 49 tensors, two pinned widths: the
+12B's `embedding_length_out` 3840 and the 26B-A4B's 2816, both with four
+blocks and patterns `[1,1,1,0]`). The binding carries **its own
+`weights.View`** (the companion's mapping, not the target's) — reading its
+tensors through the target's view silently reinterprets the main file at
+companion offsets, which is the one wiring mistake this adapter has cost.
+`Engine.open`'s `draft = .{ .file = path }` / `.preferred` maps the
+companion, requires the architecture, the target width, and the target's
+vocabulary count, and refuses a head whose global-layer `rope_freqs.weight`
+differs from the target's (the Metal plan reuses the target's rope tables);
+missing is `DraftSourceMissing`, everything else `DraftSourceMismatch`.
+`gemma4_runtime.zig` and `gemma4_metal.zig` run the head: `propose` runs one
+block per position at the target's current position, `[sqrt(3840)·embed; h]`
+through `nextn.pre_projection`, the target's layer-46 (sliding, visible
+`position − 1023 … position − 1`) or layer-47 (global, `0 … position − 1`)
+cache rows, `nextn.post_projection` for chaining, and the head's own tied
+`token_embd` for the greedy candidate; `commit` copies the last target
+hidden into `pending_h` and owns no cache, so recovery is the attention
+rewind alone (`recover` measured 1 µs per batch). `generate`/`agent`/`bench`
+resolve `.preferred` from the entry's `models.<name>.draft` (or an index
+draft variant, `--draft`); a family with an
+embedded block (Qwen) keeps its own.
+
+**Trace.** The harness's `--assistant-draft DRAFT_MODEL` mode
+(the llama.cpp generation harness, retired; at tag `v0.11.0`) ran each
+row *before* the target decoded that position, which is the driver's
+`draft()` moment; `Hello, world` (9259, 236764, 1902) pinned two rows under
+`inference/src/models/fixtures/gemma4-mtp/` with greedy drafts 2613 and
+236764 (the 26B head is bound and width-checked by the same tests but not
+traced). The `gemma4-qat-draft-trace-metal` gate checked them on both
+backends until the 12B became legacy (2026-11-12); the Gemma 4 draft gates
+are the E4B's, `gemma4-e4b-draft-trace-{metal,cpu}`, against its own rows
+(`inference/src/models/fixtures/gemma4-mtp-e4b/`). The 12B's figures:
+
+| backend | position | max abs | relative RMS | greedy |
+| --- | ---: | ---: | ---: | ---: |
+| CPU reference (F32 cache) | 1 | 1.097e-4 | 3.625e-6 | 2613 |
+| CPU reference | 2 | 9.829e-5 | 3.056e-6 | 236764 |
+| Metal (F32 cache) | 1 | 1.535e-4 | 5.390e-6 | 2613 |
+| Metal | 2 | 1.202e-4 | 4.490e-6 | 236764 |
+
+The check's bounds are 1e-2 / 1e-4; `propose` from the committed prefix
+returns the pinned 236764, and greedy decoding with the switch on is
+token-identical to ordinary greedy over 64 tokens (`Write a haiku about the
+sea.`, Metal, template prompt). Load errors were exercised through a
+temporary `NUCLIS_HOME`: a missing companion is `DraftSourceMissing`, the
+`clip` projector and the 26B head on the 12B target are
+`DraftSourceMismatch`.
+
+**Measured (2026-09-21, `4bc7b8d` + this change).** Gemma 4 12B QAT, Metal,
+F16 KV, ctx 32768, the 512-token Gemma acceptance prompt, 128 output tokens,
+greedy, one warmup and three measured runs per configuration on one loaded
+model (`--speculative on` runs the off/on pair); per-batch costs divide the
+sample's fields by `speculative_steps`. Table in
+[benchmarks § The Gemma 4 draft pair](../history.md#the-gemma-4-draft-pair-2026-09-21).
+
+| draft | accepted/step | proposed/step | tokens/batch | verify ms | propose ms | decode off → on tok/s | speedup |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 | 1.510 | 1.941 | 2.490 | 136.0 | 3.9 | 25.24 → 17.80 | 0.705× |
+| 4 | 2.256 | 3.385 | 3.256 | 135.9 | 6.8 | 25.40 → 22.83 | 0.899× |
+| 7 | 2.735 | 4.971 | 3.735 | 136.2 | 9.8 | 25.16 → 25.60 | **1.017×** |
+
+**The verdict was negative at the default draft length.** Acceptance is high
+(55 % per position at draft 7, 3.7 tokens per batch), the proposal is cheap
+(3.9–9.8 ms), the acceptance decision, recovery, commit, and checkpoint are
+microseconds — and the verify batch is 136 ms regardless of whether it
+carries 3 or 8 rows, because at these counts it is the 512-row attention and
+the per-layer dispatches, not the row work. Break-even needs `tokens/batch`
+above `(verify + propose) / 39.5 ms` ≈ 3.7, which only draft 7 reaches
+(1.017×). Two facts followed for the speculative verdict of 2026-09-21:
+the record's default for the Gemma entries was off at draft 4 and no
+better than parity at draft 7; and the row-flat verify cost said the lever
+was `max_draft_length` (the 8-row tile bound) rather than anything in the
+drafter. The cheaper verify of 2026-10-01 turned the Gemma heads on
+([§ The re-priced verdicts](#the-re-priced-verdicts-2026-10-01)).
+
+**The rows carry the soft-cap (2026-09-24).** Until then the Metal
+`verify` ran the head over every row without Gemma's final
+`30 · tanh(x / 30)`, which `step` and the CPU `verify` apply. Greedy
+acceptance was unaffected (the cap is monotonic, so each row's argmax
+held), but the full rows and the per-row top-k that sampled acceptance
+draws from were the uncapped logits: on `<bos>Hello,` row 0 sat 27.8 from
+the stepped logits at max abs. Every Gemma record above and in the
+2026-09-21 verdict is greedy, so its numbers stand; a sampled Gemma pair
+ran on the wrong distribution. `gemma4_metal.verify` applies the cap, and
+the Gemma draft check (`gemma4-e4b-draft-trace-metal`) compares every
+`verify` row with the stepped logits through the generic F32 tiles
+(5e-3 / 2e-4). It fails without the cap and passes with it. The top-k
+check never saw this because it compares `verify` with itself. Found by
+`nuclis eval`'s teacher-forced pass, whose all-rows path shares the head
+sequence.
+
+## The Muse Glimmer DFlash drafter (2026-09-21)
+
+Facts confirmed on 2026-09-21 from the pinned reference (`7620399f5`): the
+drafter graph `src/models/dflash.cpp` (the encoder/decoder duality at
+258–289 and 569–826), the driver `common/speculative.cpp:909-1322`
+(`common_speculative_impl_draft_dflash`), the mask token
+(`llama-vocab.cpp:2563`, `llama_vocab_mask` at 4306), the rope type
+(`llama-model.cpp:3006-3012`), the non-causal SWA mask
+(`llama-kv-cache.cpp:1683-1689`), and the target side of the contract, the
+layer input `t_layer_inp` (`muse-glimmer.cpp:85`). The companion is
+`dflash-kquant.gguf` (1,631,205,312 B, `27d9a805…`, the `mtp` role of the
+Muse entry): 58 tensors, a 2.6B drafter at the target's width.
+
+**The file.** `general.architecture = dflash`, 5 blocks at width 6656
+(FFN 19968), 32 query heads of 128 over 8 KV heads, RMS epsilon 1e-5,
+`dflash.block_size = 16`, `dflash.target_layers = [2, 14, 26, 38, 50]`,
+`dflash.attention.sliding_window = 2048` with the pattern `[1,1,1,1,1]`
+(every layer sliding), NeoX RoPE at base 5e5 over the whole 128-wide head,
+and `tokenizer.ggml.mask_token_id = 201818`. It has no token embedding and
+no output head: the reference reads the *target's* through `ctx_other`
+(`llama-context.cpp:155-162`), and the graph exposes no `sample_from_anchor`
+or `dflash.attention.causal` key, so the pinned configuration is
+anchor-first and non-causal (the driver's defaults,
+`common/speculative.cpp:966-978`). The adapter refuses a file that carries
+either key, a selector/conv key, a rope dimension count, or any other
+`dflash.*` key the pinned set does not have: each would change the
+equations while every checked value still matches.
+
+**The pair.** The drafter's cache is filled from the *target's* residuals,
+not its tokens. For each committed position the reference gathers the input
+of layers 2, 14, 26, 38, and 50 — the residual stream before the layer's own
+pre-norm, the graph's `t_layer_inp` — concatenates them in that order
+(`n_embd_inp = 5 × 6656 = 33280`), projects through `fc.weight`
+[33280 → 6656], RMS-norms with `enc.output_norm`, and then, per draft block,
+projects the cached keys and values (`attn_k`/`attn_v` [6656 → 1024]),
+RMS-norms each key head with `attn_k_norm` [128], applies RoPE at the target
+position, and writes both into the drafter's cache. That is the encoder
+batch (`graph<true>` and the `ubatch.embd` branch of `graph<false>`); it
+computes no queries and no attention.
+
+**The block.** A proposal is one forward over 16 rows at positions
+`P … P + 15`: the anchor (the last committed token) then 15 copies of the
+mask token. Each row embeds with the target's `token_embd`, and per block
+layer: `rms(attn_norm)` → q/k/v projections → per-head RMS norms
+(`attn_q_norm`, `attn_k_norm`) → RoPE at the row's own position →
+attention → `attn_output` → residual → `rms(ffn_norm)` → SiLU-gated FFN
+(`silu(gate)·up`, then down) → residual. After the five blocks a final
+`output_norm` feeds the target's `output` head; the draft tokens are the
+per-row argmax. The attention is **non-causal inside the block** (every row
+sees the anchor and all mask rows, later ones included) and each row sees
+the injected prefix back to its sliding window: the reference's mask drops
+keys with `p_key ≤ p_query − 2048` and, unlike a decoder, never drops future
+positions (`llama-kv-cache.cpp:1664-1689`). The reference does not scale or
+soft-cap these logits: `logit_scale` and `final_logit_softcapping` are the
+target's sampler transforms and are applied to the draft only by the DFlash2
+selector branch, which this file does not have.
+
+**The draft driver and the contract fit.** `draft()` decodes the whole block
+(anchor + `n_max` masks) in one batch and reads rows 1… for the drafts, so
+`propose(k)` is one forward for any `k ≤ 15` — the fit needs nothing the
+shared contract lacks. `process()` injects every target position into the
+drafter's cache, which is exactly `commit(tokens, h_rows)` with five
+residuals per token in place of the single target hidden; `Drafter.hidden`
+is therefore 33280 for this family. The block's own cache rows are noise
+rows: the reference removes them after drafting
+(`llama_memory_seq_rm(memory, seq_id, ckpt.pos_max + 1, -1)` in the example
+loop, `examples/speculative-simple/speculative-simple.cpp:212`) before
+`process()` injects target features at the same
+positions, and on partial acceptance it restores a checkpoint of the
+drafter's cache. Our plan never removes rows: the proposal's attention is
+bounded to the block's last position, so rows a previous proposal left past
+it are never read, and `commit` overwrites the accepted ones. The drafter
+carries no state beyond that cache — no pending hidden like the MTP heads —
+so `reset` is a no-op and recovery is the session's position rewind
+(Muse Glimmer is attention-only).
+
+**The proposal policy.** The reference's `p_min` compares the top candidate's
+probability renormalized over its `top_k = 10` sampler; our `draft_p_min`
+([§ The proposal policy](#the-proposal-policy-2026-09-20)) compares the full-vocabulary softmax at the argmax. That is a
+policy difference, not an equation: the candidates are argmax either way,
+and the shared contract's stop rule applies (the low-confidence position is
+still proposed, then the chain stops).
+
+**Trace (2026-09-21).** Captured with the `--dflash-draft DRAFT_MODEL`
+mode of the llama.cpp generation harness (retired; at tag `v0.11.0`) on
+`The capital of France is` (954, 7963, 323, 11698, 373), Metal target, F32
+caches, one target token per decode, dumping each position's residual rows
+and the block before the target decodes the next token — the driver's
+`draft()` moment. The rows were pinned under
+`inference/src/models/fixtures/muse-dflash/` and checked by the
+`muse-draft-trace-{cpu,metal}` gates (the `museDraftTrace` pass in
+`generation-check`; the `--metal` run also ran the CPU reference over the
+same rows); the gates, the pass, and the rows left with the family's
+gates, and `v0.11.0` is the last tag that holds them:
+
+| rows | CPU max abs / rel RMS | Metal max abs / rel RMS |
+| --- | ---: | ---: |
+| five residuals, position 0 | 7.6e-6 … 6.1e-5 / 1.1e-7 … 2.3e-7 | 1.5e-4 … 1.1e-3 / 9.2e-7 … 3.0e-6 |
+| five residuals, position 1 | 5.2e-6 … 6.9e-5 / 2.6e-7 … 4.9e-7 | 4.9e-5 … 3.1e-4 / 2.2e-6 … 3.1e-6 |
+| encoder output, positions 0 / 1 | 9.5e-7 / 9.5e-7 / 2.6e-7 / 2.3e-7 | 2.9e-4 / 2.2e-4 / 8.2e-5 / 1.4e-4 |
+| block hidden (4 rows), position 1 / 2 | 1.05e-2 / 4.8e-3 / 4.4e-3 / 1.5e-3 | 1.02e-2 / 4.7e-3 / 4.4e-3 / 1.5e-3 |
+
+All 30 pinned greedy drafts match on both executors. The check's bounds are
+2e-2 / 1e-2 on the block; on the residual rows 1e-3 / 1e-5 on the CPU and
+5e-3 / 1e-5 on Metal, and on the encoder 1e-2 / 1e-4 on the CPU and
+1e-2 / 2e-3 on Metal. Two Metal facts set those bounds: the trace's
+capture runs the generic F32 tile (the production chunked path's
+half-operand tiles round activations to F16, which would mask the
+drafter's own numerics), and the encoder's `fc` runs the shipped half tile
+over residual rows of magnitudes in the hundreds, so its F16 input
+rounding sits an order above the CPU's. The block's larger figure is the
+reference's own backend spread, not ours: the block's residual stream
+reaches magnitudes of hundreds before the output norm, and the
+reference's CPU path quantizes activations to Q8_K while its Metal path
+does not, so the two differ by 2.0e-2 (layer 0) to 4.8e-2 (layer 3)
+relative RMS per layer while the native CPU reference sits 2.3e-3…4.4e-3
+from the pinned Metal rows. `DFLASH_DRAFT_CPU=1` and `DFLASH_DUMP_LAYERS=1`
+in that harness reproduced that comparison; the trace pinned was the
+Metal run, as for the other families.
+
+**Load errors.** `Engine.open` maps the companion through the same
+`DraftRequest.{file,preferred}` path as the Gemma heads and requires the `dflash`
+architecture, the target's width, the target's vocabulary count, the 6656
+feature width, and the `target_layers` list; a missing file is
+`DraftSourceMissing` and everything else `DraftSourceMismatch`. Exercised
+through a temporary `NUCLIS_HOME`: a missing companion, the Gemma MTP file,
+and the Muse target itself as the drafter (three distinct
+rejections). The companion binding carries its own `weights.View`. On the
+CPU, greedy `generate --speculative on` on the registry entry is
+byte-identical to `--speculative off` over 6 tokens (`Hello,`, ctx 64).
+
+**Implemented (2026-09-21).** `inference/src/models/dflash.zig`
+binds the companion (metadata, tensors, the mask token, the target layers);
+`muse_glimmer.zig`'s `bindDraft` maps its refusals to
+`DraftSourceMismatch` and attaches the companion's view;
+`muse_glimmer_runtime.zig` keeps the five target layer inputs for every row
+it consumes (`prefill`/`verify`/`verifyGreedy` with `hidden`, the DFlash
+form of the row data the drafter's `commit` consumes), opens five draft
+attention layouts when a drafter is bound, and runs the encoder and the
+block on the CPU. The drafter's workspace is 2,309,376 bytes plus one
+133,120-byte decode row per core past the first, which `cpu.matvec`'s row
+tasks use (3,773,696 bytes on the 12-core M4 Pro); its cache is
+part of the session (5 × 2 × 1024 values per position; full capacity, as the
+language model's sliding layers are, so 1.34 GB F32 at 32,768 tokens and
+half that with the F16 cache).
+
+**The Metal plan (2026-09-21).** `muse_glimmer_metal.zig` opens
+the five draft layouts when a companion is bound (the same `kv` precision as
+the language model, F16 by default) and runs the same equations with the
+shipped kernels. The language model captures each target layer's input rows
+into one device slab per slot during `prefill`/`verify`/`verifyGreedy`
+(contiguous copies), the plan assembles them into the row-major `h_rows` the
+engine's `commit` consumes, and `commit` uploads them back through a staging
+buffer for the encoder's batched `fc` matmul and its per-layer key/value
+projections (batched over rows, one cache write per layer). The block is one
+batched forward over 1 + k rows: batched q/k/v, per-head norms, split-half
+RoPE at each row's own position, and the non-causal block attention as one
+`attentionDecode` per row — the causal chunk kernels cannot express the
+block's mask, so each row attends to the slice from its own window start to
+the block's last position. The proposal's head runs over every block row
+(the anchor included) and reads each draft row's top candidate and its
+full-vocabulary softmax denominator through the existing `topk` with `k = 1`.
+A `--speculative on` run on Metal is byte-identical to `--speculative off`
+over 12 greedy tokens on the registry entry, and the sampled paths (device
+top-k and the penalized full-rows fallback) complete on the same entry.
+
+**The verdict (2026-09-21).** Positive at every measured length on the Muse
+acceptance workload: 1.234× at draft 4, 1.163× at 8, 1.222× at 15, with
+73–77 % of the proposed positions accepted and the early stop trimming the
+proposals to 1.83 / 2.12 / 2.36 per step (of 4 / 8 / 15 requested). The
+verify batch (172.9–188.2 ms for 2.8–3.4 rows) is the cost; recovery is the
+position rewind alone (1 µs) and `commit` ~2 ms. Facts and the table:
+[benchmarks § The Muse Glimmer DFlash draft pair](../history.md#the-muse-glimmer-dflash-draft-pair-2026-09-21).
+Memory on Metal: the session is 2,415,919,104 bytes (2304 MiB) at 32,768
+with the five draft caches (640 MiB of it), the drafter's device workspace
+149,861,504 bytes, and the verify scratch 53,862,464 bytes.
+
+**The draft-length cap (2026-09-21).** Muse's block proposes 15 in one
+forward, so the host's static bound moved from 7 (the small-chunk tile's
+8-row verify bound) to 15, and the effective bound is the loaded drafter's own
+`Drafter.max_proposals` (Qwen 7, Gemma 7, Muse 15), enforced by `runLoop`
+and used to size the engine's speculative scratch. The configuration and
+`--draft-length` validate against the host bound; a length above a family's
+block is a typed `InvalidDraftLength` at run time.
+
+## The verify batch and the loop (2026-09-20)
+
+Implemented and checked on 2026-09-20; the configuration and the benchmark
+are the next section.
+
+**Verify.** `Model.verify(tokens, vocabulary, rows, hidden, observer)` fills
+`rows` (`tokens.len × vocabulary`) with the target logits of every row and,
+when `hidden` is given, the post-`output_norm` hidden per row that
+`Drafter.commit` consumes. The CPU reference loops `Runtime.step`; the Metal
+plan records the layer stack once (`recordLayers`, shared with
+`prefillChunk`) and runs the output head over all rows through the batched
+matmul tile into a device buffer sized by the tile
+(`matmulPadded(max_verify_rows) × vocabulary`, about 64 MB), reading back
+only `tokens.len` rows. `verifyGreedy` returns each row's argmax from the
+device (`nu_argmax_partial`/`final` per row) without a logit readback. A
+batch is at most the plan's chunk and `max_verify_rows = 16`; the loop uses
+at most `max_draft_length + 1 = 8`.
+
+**The loop.** `runLoop` takes a `Speculative{ enabled, draft_length }`
+setting; `max_draft_length = 7` was the host bound (the small-chunk
+tile's 8 rows less the seed; 15 since Muse's block,
+[§ The draft-length cap](#the-muse-glimmer-dflash-drafter-2026-09-21)). When a drafter is loaded and the switch is on, it first commits
+the prompt to the drafter in verify-sized chunks (the block's cache is
+filled from the target hidden of every committed position), then each step:
+proposes `k = min(draft_length, capacity − position − 1, budget_left)`
+drafts; checkpoints; verifies `[seed] ++ drafts`; accepts the longest prefix
+(greedy: `verifyGreedy` argmax equals the draft; sampled: the row's own
+draw equals the draft); recovers the accepted prefix; commits it to the
+drafter; and emits the accepted drafts and the correction through the
+ordinary per-token checks. The correction is emitted once and carried as the
+next step's seed. EOS, the budget, or the context limit inside a batch ends
+the turn there and the session recovers to the emitted prefix; a cancelled
+`verify` poisons the session and `resetAll` handles it. The per-token GPU
+greedy/top-k shortcuts are off while speculating (every seed row is
+materialized), and a per-layer observer disables speculation.
+
+**Sampled acceptance.** `inference/src/sampling/speculative.zig`:
+`Sampler.distribution` is the shaped, normalized nucleus (penalties, sort,
+top-k, temperature and `min_p`, top-p) factored from `select`; `decide`
+draws the target's own token from row `i`'s distribution and accepts the
+draft when they agree, else the draw is the correction; after the last
+accepted row the draw is the bonus. Every emitted token is a draw from the
+target whatever proposed the drafts, which is what makes the rule exact for
+the greedy chains the drafters produce (the `min(1, p/q)` rejection rule with
+a residual correction is exact only for drafts sampled from `q`, so an
+earlier version of this module that used it against argmax drafts leaned
+toward the drafter's choice and was replaced on 2026-09-20). The history
+advances through the accepted drafts, so row `i`'s penalties see the drafts
+before it. Unit tests draw 20,000 seeded decisions against a fixed `p` for
+a draft the target never emits and for its most likely token and hold the
+emitted counts and the acceptance rate to `p` within 3 σ. The decision costs
+one full-vocabulary sort per row on the host (`Timing.accept`, the bench's
+`accept_milliseconds`), which the per-token GPU top-k path avoids in
+ordinary decoding; the per-row top-k readback in `verify` followed
+([§ Sampled acceptance on the device readback](#sampled-acceptance-on-the-device-readback-2026-09-20)).
+
+**Evidence.** `generation-check --speculative-check`
+(`make gate NAME=qwen38-speculative-cpu`, `make gate NAME=qwen38-speculative-metal`) runs the model
+primitives and, on Metal, the engine loop: 12 greedy tokens equal ordinary
+greedy decoding token for token on both executors (7 of 24 drafts accepted on
+the pinned `Hello,` seed on Metal). `make check`, `make gate NAME='qwen38-trace-*'`, and
+`make gate NAME=qwen38-generation-metal` pass; `make gate NAME=qwen38-generation-cpu` is unchanged (the
+speculative check is its own target because the CPU reference is slow).
+
+**Acceptance statistic (2026-09-20).** `generation-check --draft-stats`
+(the `qwen38-draft-stats` gate) decodes each fixed coding prompt greedily,
+records every step's target hidden, commits the drafter over the prefix,
+proposes four chained candidates at every step and compares draft `i` to
+the token the target chose `i + 1` steps after the seed. On Metal, four
+drafts per position cost 6.2 ms (about 1.6 ms per block forward) and the
+block's workspace is 1,116,160 bytes. The per-depth acceptance was:
+
+| Prompt | depth 0 | depth 1 | depth 2 | depth 3 |
+| --- | ---: | ---: | ---: | ---: |
+| `Write a Zig function that reverses a string.` | 28/31 = 90.3 % | 24/30 = 80.0 % | 20/29 = 69.0 % | 18/28 = 64.3 % |
+| `def fibonacci(n):` | 29/31 = 93.5 % | 25/30 = 83.3 % | 24/29 = 82.8 % | 24/28 = 85.7 % |
+
+The reference's own driver on the first prompt accepted 24 of 40 drafts
+(60 %) with its top-k sampler, so the rates are credible rather than an
+artifact of the alignment. The block's weights add no decode cost when
+speculation is off: `runLoop` asks the drafter only while
+`Speculative.enabled` is set.
+The block's own `attn_k`/`attn_v` are Q8_0, already in
+`qwen35.executableEncoding`.
+
+## The switch, the bench pair, and the record (2026-09-20)
+
+**Configuration.** `generation.speculative` (default off) and
+`generation.draft_length` (default 4, 1 ≤ n ≤ `engine.max_draft_length` =
+15 — the host bound, the largest block any family ships; the loaded
+drafter's `max_proposals` is the effective cap, `InvalidNumber` above the
+host bound and `InvalidDraftLength` above the family's) in `nuclis.json`,
+per-entry overrides under `models.<name>.generation`, and
+`--speculative on|off` / `--draft-length N`
+on `generate`, `agent`, and `bench`, resolved defaults → entry → flag with
+`config show` provenance (`src/config.zig`, `src/cli.zig`). `generate`,
+`agent`, and `bench` all open the model with the family's source when the
+switch is on (`.preferred`: the entry's `mtp` path for a companion family,
+the embedded block for Qwen; a required source the family does not bind is
+`DraftSourceMissing`) and `.none` otherwise; `bench` opens with `.none` when the switch
+is off — no drafter weights, scratch, or cache — and with the family's
+source (`.preferred`, the entry's `mtp` path or the embedded block) when
+it is on, measuring every run as an off/on pair on the one loaded model,
+so the pair's ratio is the speedup claim and the pair's off sample is the
+loaded-but-off case
+(`src/bench.zig`: `speculative`, `draft_length`, `speculative_steps`,
+`accepted_per_step`, `verify_milliseconds`, `accept_milliseconds`,
+`recover_milliseconds` per sample; `speculative_draft_length`,
+`mean_speculative_decode_tokens_per_second`, `mean_accepted_per_step`,
+`decode_speedup` per report; `schema_version` stays 1).
+
+**The loop's edges** (`generation-check --speculative-check` on Metal):
+partial acceptance recovers and continues; the budget inside a batch stops
+at exactly the budget with the extra accepted drafts discarded
+(`Model.recover` to the emitted prefix); EOS inside a batch stops after
+the EOS with the session at the tokens before it, as ordinary decoding
+leaves it; cancellation mid-batch (the interrupt's `error.Cancelled`)
+resets the session and reports `.cancelled`; a context with no room for a
+batch stops at `context_limit`. `Model.recover` skips the rewind and the
+replay when every draft was accepted (the batch fed exactly the accepted
+prefix).
+
+**The sampled rule** was corrected the same day (above, *Sampled
+acceptance*): the target-draw rule replaces `min(1, p/q)`, and the draft
+contract lost its logits rows. `Timing.accept` isolates the host decision.
+
+**The record** is in [benchmarks § Speculative decoding record](../history.md#speculative-decoding-record-2026-09-20)
+(then `make workload NAME='qwen38/spec/*'`, now `make spec-matrix ... --baseline`): off by default for the Qwen entry; the
+per-batch costs — verify 225–250 ms at 512 and ≈ 342 ms at 4K, recovery
+99–272 ms on rejection, the sampled decision 46–78 ms, proposal 6.2 ms per
+draft, commit 6.2 ms per token, the prefill at 2.9–3.3× — are the cost
+table the sections below worked against, from the prompt commit to the
+speculative verdict.
+
+## The prompt commit and the batched drafter commit (2026-09-20)
+
+**Prompt commit through `prefill` (2026-09-20).** `Plan.prefill` gained a
+`hidden_rows` readback — every row's post-`output_norm` hidden, checked
+bit-identical to `verify`'s rows on the pinned `Hello,` trace — and
+`runLoop`'s speculative prompt branch now consumes the prompt through
+`engine.commitPrompt` in `prefill_chunk` (256) chunks instead of `verify` in
+8-row chunks.
+
+**Batched drafter commit (2026-09-20).** `Plan.commit` over two or more
+tokens is one command buffer: it embeds each token, pairs it with the
+previous row's target hidden in a `padded × 10240` `[enorm; hnorm]` buffer,
+projects `eh_proj`, runs the block's attention chunk at the batch's cache
+positions, and adds the FFN — the head norm is skipped because a commit only
+fills the block's cache rows. One token keeps the standalone `draftForward`;
+the CPU `Runtime.commit` stays per token as the reference. The scratch
+(`draft_hprev_c`, `draft_concat_c`) is sized by the padded chunk, since
+`eh_proj`'s matmul reads padded rows.
+
+**Measured** at revision `9a5d3cf`, draft 4, F16 KV, ctx 32768, prose 512 and
+4,096, one warmup and repeated measured pairs on one loaded model:
+
+| workload | ordinary prefill | speculative prefill | ratio | propose/batch | verify/batch | recover/batch | commit/batch |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 (three runs) | 5,807.8 ms | 5,939.4 ms | **1.02×** | 25.7 ms | 236.5 ms | 185.5 ms | **5.4 ms** |
+| 4,096 (two runs) | 51,831 ms | 54,399 ms | **1.05×** | 26.5 ms | 345.0 ms | 243.2 ms | 10.8 ms |
+
+Both met the change's targets (≤ 1.10× at 512, ≤ 1.15× at 4K, and
+`commit_milliseconds / speculative_steps` ≤ 8 ms at 512). Accepted drafts per
+batch was 1.667 at 512 and 1.977 at 4K. The serial prompt commit measured
+1.59× at `db9cf80` and the first record's `verify`-per-8-rows path
+2.85×. `make gate NAME=qwen38-draft-stats` reproduces the draft head's acceptance table (28/31, 24/30, 20/29, 18/28 and
+29/31, 25/30, 24/29, 24/28), `make gate NAME=qwen38-speculative-metal` is unchanged
+(7/24 and 6/21 accepted), `make gate NAME=qwen38-draft-trace-metal` unchanged (3 rows,
+1.5e-5 / 7.9e-7), and `make check`, `make gate NAME='qwen38-trace-*'` (f32 6.1e-5 / 7.7e-7,
+f16 2.5e-2 / 1.9e-4), `make gate NAME=qwen38-generation-metal` pass. `engine.Timing`
+now separates `propose` and `commit`, and `bench.Sample` carries
+`propose_milliseconds` and `commit_milliseconds`.
+
+**The agent (2026-09-20).** `Completer.prime` commits the primed prefix
+through `commitPrompt` when a drafter is loaded, so the primed snapshot
+carries the block's cache rows (the agent's first turn no longer attends over
+prefix rows the block never wrote). The loop surfaces the turn's mean
+accepted drafts per batch in the status bar (`spec N.NN/step`), from the
+engine timing. On a bounded pty at revision `ccb191b`, the first turn of
+`nuclis agent --speculative on` on `Write a one-line Python function that
+doubles a number.` (ctx 4096, 32 tokens) settled at **spec 2.56/step**,
+within the range `bench` measures for the code prompt (1.2–3.0 accepted at
+draft 4).
+
+## Small batches: the multi-row matvec and the 2-row routing (2026-09-20)
+
+The verify batch (`1 + k` rows), the recovery replay (`a + 1`), and the
+decode-time commit (`a + 1`) all reach `Backend.matmul`, which served them with
+the 16×8 split tile. The multi-row matvec, `nu_matvec_rows_*_t2..t8`, is one SIMD group
+per four output rows, a decoded weight slice multiplied against every activation
+row before the next slice is fetched, one accumulator per (row, token). The
+sweep (`make bench-matvec-rows`, both FFN shapes, in
+[metal-backend.md § Multi-row matvec](metal-backend.md#multi-row-matvec-2026-09-20-closed-below-its-target))
+shows it wins at **2 rows only** for every specialized encoding (143–182 GB/s
+against the tile's 88–116) and for Q6_K/IQ4_XS at 3; at 5 rows it is 49–67 and
+at 8 rows 20–33, below the tile. `Backend.matmul` therefore routes only 2-row
+batches of the specialized encodings (`small_batch_rows = 2`); the tile keeps
+3–24, so the 5-row verify is unchanged and the verify target
+(≥ 150 GB/s at 5, ≤ 130 ms) is **not met**. Growing arithmetic and
+activation-load work plausibly explain the tested scalar bodies' decline. The constant-input probe also permits
+arithmetic elimination, so it cannot isolate load cost or prove all scalar
+layouts incapable of meeting the target.
+
+A spot run at the close revision (512 prose, draft 4, F16 KV, ctx 32768,
+warmup 1, repeat 1, one loaded model) measured `verify_milliseconds /
+speculative_steps` 232–288 ms and `recover_milliseconds / speculative_steps`
+170–217 ms. These are aggregate costs per speculative step, mixing accepted
+lengths and steps without replay; they do not establish two-row recovery latency
+or the effect of its routing; the next section measures recovery by
+accepted length, before and after replacing replay with recurrent-state
+copies. `make gate NAME='qwen38-trace-*'`
+(f32 6.1e-5 / 7.7e-7, f16 2.5e-2 / 1.9e-4), `make gate NAME=qwen38-generation-metal`,
+`make gate NAME=qwen38-speculative-metal` (12 tokens greedy, the loop edge cases), and
+`make gate NAME=qwen38-draft-stats` (28/31, 24/30, 20/29, 18/28 and 29/31, 25/30, 24/29, 24/28)
+are unchanged.
+
+## Recovery by accepted length (2026-09-20)
+
+The aggregate `recover_milliseconds / speculative_steps` mixed accepted
+lengths together, which hid that the replay's cost is governed by its row
+count. `engine.Timing` now carries the split and the histogram — `recover`
+(aggregate, including the final recover to the emitted count when a batch
+crosses the budget), `recover_rewind` (the checkpoint copy), `recover_replay`,
+`recover_by_length[accepted]` (calls, rewind, replay per accepted prefix of
+1..`max_draft_length + 1`), and `checkpoint` (the verify batch's copy, which
+no other field covered). `bench`'s samples expose the same as
+`checkpoint_milliseconds`, `recover_rewind_milliseconds`,
+`recover_replay_milliseconds`, and `recover_by_length` (cells with `accepted`,
+`calls`, `rewind_milliseconds`, `replay_milliseconds`). Full acceptance
+recovers nothing: its cells count calls with zero time.
+
+A first pass measured the replay by accepted length and moved the seed-only
+case to the per-token `step` path; a second replaced the replay with
+per-row recurrent checkpoints. Measured on Qwen3.8-27B UD-Q4_K_M, Metal,
+F16 KV, ctx 32768, the 512-token prose prompt, greedy, 128 output tokens,
+draft 4, warmup 1 and three measured runs on one loaded model (48 verify
+batches per run, 144 total; per-run files under `.zig-cache/bench/engn14/`).
+`calls` and milliseconds **per call**, summed over the three runs:
+
+| accepted prefix | calls | replay via prefill ms (first pass) | replay via step ms (first pass) | restore by slot ms (second pass) |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 (seed only) | 36 | 217.8 | 96.4 | 15.6 |
+| 2 | 42 | 179.8 | 178.4 | 14.9 |
+| 3 | 27 | 220.4 | 219.8 | 16.5 |
+| 4 | 18 | 182.8 | 182.4 | 13.0 |
+| 5 (all four drafts) | 24 | 0 | 0 | 0 |
+
+The first pass's `recover` mean was 182 ms per batch on the prefill path and
+150 ms with the seed-only branch; the second's is **12.7 ms per batch**
+(610.8 ms over 48 batches), all of it the slot copy. The write side costs
+`verify` 12,330 ms per run against 11,307 without slots — **+21 ms per
+batch** for up to five 150 MB slot writes and their recompute — and
+`checkpoint` still copies the batch's checkpoint (150 ms per run, ~3 ms per
+batch). `session_bytes` is 3,850,633,216 with the 1,255,146,752-byte row
+region. The off/on pair at draft 4 greedy reads 0.85× (8.56 vs 10.04 tok/s)
+against the first pass's 0.62×; prose still lost, then to the verify batch
+rather than recovery: sampled acceptance on the device readback, the
+proposal policy, the small-batch tile (the sections below), and
+long-context attention were the remaining levers.
+
+Two facts for the next revisiter. The kernel computes each row's state as
+`S_r = γ_r S₀ + Σ_{s≤r} r(r,s) U[s]ᵀK[s]` with every exponent ≤ 0; the
+first implementation rescaled the full-chunk `W` by `r(r, n−1)` and
+overflowed on a layer whose chunk decay reached `cum = −114`, writing `inf`
+into slots and NaN into the state on restore. And the slot writes are only
+gated by `row_states > 0`: ordinary prefill, decode, and the prompt commit
+pass 0, and the kernels take the same code path as before. The layout and
+the refusals are in [session.md § Pending rows and the verify tape](../../engine/session.md#pending-rows-and-the-verify-tape), which replaced them.
+
+## The device penalty kernel (2026-09-20)
+
+A sampler with a presence or repetition penalty changes the sort itself, so
+before this kernel the loop turned both GPU selection paths off while one was
+active: every such token read the full 248,320-logit row back and sorted it
+on the host, and the ordinary decode step measured 7.7–8.6 tok/s on the
+instruct profile against 8.8–10.3 greedy (the recovery-by-length record). `nu_penalize`
+([metal-kernels.md § History penalties](../../engine/metal-kernels.md#history-penalties))
+applies the penalties on the device in place — before the argmax and before
+the three top-k passes — so the readback is the vector the CPU sampler
+would sort: repetition first (`l / r` for positive, `l · r` for negative
+logits), then `l − presence`, for every token in the history bit set. The
+host uploads the set as `vocabulary / 32` little-endian u32 words when its
+revision changed (`History.revision`, bumped by `observe` and `reset`), so
+the 31 KB copy happens on a change, not per step.
+
+The sampler side: `TopK` carries a `penalized` flag; `Sampler.selectFrom`
+decides a readback with penalties active only when the device marked it
+`penalized` (an unpenalized readback still defers to the full path), and
+`gpuEligible()` no longer excludes penalties. `Sampler`'s profile defaults
+to the same operation as before when a full readback is requested: raw
+`logits` are never penalized in place by the plan, and the loop's `readLogits`
+fallback skips the sampler's own penalties when the vector already carries
+them. The Qwen, Gemma 4, and Muse Glimmer plans all upload and apply the
+penalty (each on the final logits, after Gemma's and Muse's soft-cap).
+
+Measured 2026-09-20, `make workload NAME='qwen38/spec/*' ARGS="--only prose512 code"`,
+Qwen3.8-27B UD-Q4_K_M, Metal, F16 KV, ctx 32768, 128 output tokens, one
+warmup and three measured runs per configuration, off/on pairs on one
+loaded model (`d31c5cd`; the full table is in
+[benchmarks § The penalty-kernel quick pass (2026-09-20)](../history.md#the-penalty-kernel-quick-pass-2026-09-20)):
+
+| configuration | decode off tok/s (before the kernel) | decode off tok/s (with it) |
+| --- | ---: | ---: |
+| code, greedy, d2/d4/d7 | 8.81 / 9.15 / 9.32 | 8.66 / 8.67 / 8.74 |
+| code, instruct, d4 | 8.56 | 8.74 |
+| prose 512, greedy, d2/d4/d7 | 10.31 / 8.26 / 9.35 | 10.22 / 9.50 / 9.21 |
+| prose 512, instruct, d2/d4/d7 | 8.18 / 7.99 / 7.78 | 9.04 / 8.87 / 8.80 |
+
+The instruct baseline now sits inside the greedy band within a run and
+across the record (code instruct 8.74 against code greedy 8.66–8.74;
+prose instruct 8.80–9.04 against greedy 9.21–10.22, whose spread across the
+record's three consecutive runs is the session's clock drift, not the
+kernel). `topk_fallbacks` is 0 at every configuration: the penalized
+readback decided every token. The speculative speedups move little
+(code greedy 1.20× at draft 4 against 1.22×, prose 512 greedy 0.88 against
+0.93), because the acceptance decision still sorts the full rows
+(next section); what this kernel fixes is ordinary decode with penalties, which is
+no longer 12–25 % below greedy.
+
+## Sampled acceptance on the device readback (2026-09-20)
+
+The sampled acceptance used to call `Sampler.distribution` on every verify
+row: a full-vocabulary sort per row on the host, measured at 62.8–91.3 ms
+per batch in the penalty kernel's quick pass (17–22 % of an instruct batch). Now the
+verify batch has two output modes (`engine.VerifyOutput`): full `rows`, as
+before, and `topk` — one `sampling.TopK` per row from the device partial
+top-k over that row, with every row's logits left resident in
+`verify_logits` so `Plan.readVerifyRow(row, out)` serves a fallback. The
+plan owns one `TopKBuffers` set per verify row (16 × ~130 KB, allocated
+with the drafter) because the rows' dispatches share one command buffer.
+
+The sampled path in `speculativeBatch` picks a row's token with
+`Sampler.selectFromHistory(&tops[i], scratch, history)`: the penalties,
+when active, are applied on the host to the 256 candidates with the *live*
+history — which the accepted drafts of the batch advance, as
+`distribution`'s call sequence did — and the penalized top-k is exact when
+its last entry clears the readback's smallest raw value. That bound holds
+because the penalties only lower values; `repetition_penalty < 1`,
+`presence_penalty < 0`, a penalized greedy draw (`temperature == 0`), a
+nucleus (`top_k == 0`), or a retained set that fails the bound returns
+`null` without advancing the RNG, and the loop reads the row back and takes
+`distribution` (counted in `topk_fallbacks`). Without penalties
+`selectFromHistory` delegates to `selectFrom`, so eligible nucleus sampling
+decides from the readback as it already did on the step path. The greedy
+sampled path still uses `verifyGreedy`; only the temperature-0-with-penalty
+configuration falls back to full rows.
+
+Measured 2026-09-20, `make workload NAME='qwen38/spec/*' ARGS="--only prose512 code"`,
+same workload and methodology as the penalty kernel's pass above
+([benchmarks § The sampled-acceptance quick pass (2026-09-20)](../history.md#the-sampled-acceptance-quick-pass-2026-09-20)):
+
+| configuration | accept before (penalty-kernel pass) | accept after | fallbacks | speedup before → after |
+| --- | ---: | ---: | ---: | ---: |
+| code, instruct, d4 | 91.3 ms | 36.9 µs | 0 | 1.12× → 1.36× |
+| prose 512, instruct, d2 | 62.9 ms | 18.8 µs | 0 | 0.76× → 0.92× |
+| prose 512, instruct, d4 | 71.7 ms | 21.6 µs | 0 | 0.82× → 0.98× |
+| prose 512, instruct, d7 | 77.9 ms | 23.8 µs | 0 | 0.85× → 1.01× |
+
+The ≤ 5 ms target is met by two orders of magnitude, and the readback
+decided every row: the fallback path exists for the guard's edge cases, not
+for this profile. `Timing.topk_fallbacks` now counts the verify fallbacks
+too, not just the step-path ones. Exactness is checked twice:
+`generation-check --metal` runs `verifyTopKCheck`, which verifies the same
+four-token batch with both modes on real logits and requires every row's
+readback decision (with and without penalties) to equal `select` on the
+rows-mode row, reading the resident row back when the readback defers
+(8/8 rows decided, 0 fallbacks, all equal); and `sampling/root.zig` tests
+`selectFromHistory` against `select` for hundreds of random vectors and
+option sets, including the deferrals.
+
+## The small-batch tile experiment (2026-09-20, closed negative)
+
+Verify stayed the batch's whole cost after sampled acceptance moved to the
+device readback (262–297 ms at 512 tokens), so the largest single lever left was the small-batch matmul
+tile. The experiment: a 32-output-row variant of the 16×8 split-K tile,
+exactness-gated and measured against `Backend.matmulTile` as the fixed
+control on both FFN shapes and the head. It closed **negative**: the wide
+tile loses 8–26 % on the Qwen FFN encodings at 5 rows (Q4_K 96.8 → 88.7,
+Q6_K 114.0 → 84.6, Q3_K 63.0 → 47.1 GB/s), ties on Q5_K, and wins only
+5–8 % on the wide head; the best tile at 5 rows is 110 GB/s against the
+≤ 150 GB/s bar. Nothing routes to it, the 16×8 tile and the two-row matvec
+routing stay as they were, and full-model verify latency is unchanged.
+Numbers: [metal-backend.md § The wide 32×8 tile](metal-backend.md#the-wide-328-tile-2026-09-20-closed-negative)
+and [benchmarks § Small-batch tile sweep](../history.md#small-batch-tile-sweep-2026-09-20).
+The verify levers that remained were long-context attention (closed
+negative 2026-09-21) and, for the short-context batch, the proposal policy
+(next section), which trims what the verify is asked to do rather than
+making it cheaper.
+
+## The proposal policy (2026-09-20)
+
+The drafter asked for `k = draft_length` positions every batch, at ~6.3 ms
+per block forward (12.7–43.5 ms per batch). Two policies were weighed:
+a `p_min` early stop on the block's top-candidate probability, as the
+reference MTP driver does, and an adaptive length (`k = accepted + 1` after
+a rejection). The first is shipped at **`engine.draft_p_min = 0.7`**; the
+second closed negative and is not.
+
+**The bins.** `generation-check --draft-stats` now proposes position by
+position, computes each position's top-candidate probability (the device
+top-1 pass's `1 / Σ exp(l − max)` on Metal, the host softmax on the CPU —
+they agree to 2.6e-7 worst), and bins the draft's acceptance (whether it
+equals the target's token at that depth). On the two fixed prompts:
+acceptance is 90/80/69/64 % and 94/83/83/86 % by depth, and by `p_max`:
+
+| prompt | ≥ 0.9 | 0.7–0.9 | 0.5–0.7 | < 0.5 |
+| --- | ---: | ---: | ---: | ---: |
+| code, 128 drafts | 93.1 % (81/87) | 42.9 % (6/14) | 22.2 % (2/9) | 12.5 % (1/8) |
+| code, `def fibonacci(n):` | 92.5 % (98/106) | 100 % (2/2) | 14.3 % (1/7) | 33.3 % (1/3) |
+
+Below 0.7 the drafts pay for neither their forward nor their verify row, so
+`draft_p_min = 0.7` stops the chain after the first such position (the
+position itself is still proposed; `0` proposes every requested position).
+A threshold of 0.8 trims more prose but costs code 4.4 % of its decode rate
+(see below), so 0.7 is the measured choice.
+
+**The adaptive length is dropped.** `k = accepted + 1` after a rejection
+loses the chain's tail — positions after a rejection are still accepted at
+the high per-depth rates above. Measured interleaved in one session, code
+draft 7 with adaptive-only: accepted/step 1.91 against the control's 2.97
+and the policed 2.53; speedup 1.02 against 1.32.
+
+**Measured effect** (interleaved A/B in one session, off/on pairs, three
+repeats; control = `p_min = 0`; Apple M4 Pro, F16 KV, ctx 32768, 128
+output tokens):
+
+| configuration | control drafts/accepted | p_min 0.7 | control speedup | p_min 0.7 | p_min 0.8 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| prose 512, instruct, d4 | 2.16 | 1.57 (−27 %) | 0.872 / 0.907 | 0.951 / 0.942 | 0.925 / 1.009 |
+| code, greedy, d7 | 2.31 | 1.48 (−36 %) | 1.312 / 1.323 | 1.330 / 1.332 | 1.252 / 1.258 |
+
+The shipped configuration's gate pass (`--only prose512 code`; table in
+[benchmarks § The proposal-policy quick pass (2026-09-20)](../history.md#the-proposal-policy-quick-pass-2026-09-20))
+reads code instruct 1.35×, code greedy 1.33× at draft 7 (within 1 % of the
+control), prose instruct 1.00 / 1.03× at drafts 4 / 7 (was 0.98 / 1.01),
+and drafts per accepted token of 1.24–1.73. The acceptance's prose bar of
+a 30 % fall in drafts per accepted token is missed by three points against
+the measured control (27 %); the bar's purpose — the decode rate not
+lower — is met with an 8–10 % gain, and every other criterion passes.
+`bench.Sample` gained `proposed_per_step`, so the record's tables print
+proposed, accepted, and drafts per accepted token.
+
+## The re-priced verdicts (2026-10-01)
+
+The split verify attention, the register-fragment verify matmul, and the
+DeltaNet replay tape cut Qwen's 4-row
+verify batch from 257 to 177 ms at 512 and from 1,121 to 279 ms at
+32,639, and Gemma's by about half. `make spec-matrix` re-measured every
+family's real speculation at 512, 4K, 16K, and 32,639 tokens on saved
+prefixes, greedy and with the profile's sampling, at every draft length.
+The tables and the rule are in
+[benchmarks § The re-priced speculative verdicts](../history.md#the-re-priced-speculative-verdicts-2026-10-01).
+
+- **Qwen3.8-27B, on at draft 7.** Cold, prose runs 1.25–1.57× (15.9–16.5
+  tok/s at 512, 10.6–10.9 at 32,639) and the short code prompt 1.92–1.95×,
+  20.3 and 20.9 tok/s: the 20 tok/s of
+  [the Qwen verify budget](#the-qwen-verify-budget-2026-10-01) for short code. The
+  think-on sampling the agent uses reads 1.44–1.53×. Drafts 5–7 tie on
+  prose; 7 wins on code.
+- **Gemma 4 12B QAT, on at draft 5; E4B, on at draft 6.** 1.19–2.10× up
+  to 16K; at 32K both break even (0.98–1.16×), because the few-query
+  verify attention is linear in the batch's rows and longer drafts carry
+  more of them.
+- **Muse Glimmer, on at draft 6** (was 4). The DFlash block's forward
+  costs 25–30 ms up to 6 drafts and 47–60 ms from 8, so 6 is the knee.
+- **Gemma 4 26B-A4B, off.** 0.63–0.76× on prose: the verify grows with
+  the rows (60 → 98 ms), which a mixture of experts explains (each row
+  routes to its own experts).
+- **`draft_p_min` stays 0.7.** Swept at Qwen draft 7 over code, 512, and
+  4K: 0 → 1.489, 0.5 → 1.576, 0.6 → 1.613, 0.7 → 1.649, 0.8 → 1.631
+  (geometric mean speedup).
+
+A configuration file written before this record keeps its entries'
+`generation.speculative` and `generation.draft_length` (by design: the
+file is the user's); a fresh `nuclis config init` writes the new values.
+
+## The Qwen verify budget (2026-10-01)
+
+What a speculative batch must cost for Qwen3.8 to reach 20 tokens/s, and
+what was weighed on the way. The full decision record lived in a proposed
+design note (removed 2026-10-05); the rule, its last pricing, and the
+evidence it rested on are kept here.
+
+**The rule.** Rate is total emitted tokens over total decode seconds. A
+batch that emits E tokens on average and costs C milliseconds in all
+(propose, verify, recover, commit, the loop) reaches 20 tokens/s only when
+**C ≤ 50E**. Sum counts and times; never average per-batch rates. The
+verify budget is 50E less the batch's measured non-verify costs.
+`scripts/bench/spec-matrix.py` prints C / 50E for every cell.
+
+**Its last pricing** (2026-10-01, draft 7, cold chip, greedy / instruct,
+real runs on saved prefixes; [benchmarks § The re-priced speculative
+verdicts](../history.md#the-re-priced-speculative-verdicts-2026-10-01)):
+
+| Context | E | Budget 50E | Measured C | of which verify | C / 50E | tok/s, plain → speculative |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| short code | 3.53 / 3.81 | 176.5 / 190.5 ms | 174.1 / 182.3 ms | 142.2 / 144.6 ms | **0.99 / 0.96** | 10.55 → 20.26 / 10.51 → 20.93 |
+| 512 | 2.70 / 2.63 | 135.0 / 131.5 ms | 164.1 / 166.5 ms | 138.2 / 138.9 ms | 1.21 / 1.27 | 10.47 → 16.47 / 10.42 → 15.86 |
+| 4,096 | 2.82 / 2.56 | 141.0 / 128.0 ms | 178.5 / 181.6 ms | 148.3 / 151.6 ms | 1.26 / 1.42 | 10.12 → 15.81 / 10.08 → 14.26 |
+| 16,384 | 2.70 / 2.49 | 135.0 / 124.5 ms | 217.7 / 222.3 ms | 184.8 / 187.2 ms | 1.61 / 1.79 | 9.20 → 12.41 / 9.16 → 11.26 |
+| 32,639 | 2.95 / 2.84 | 147.5 / 142.0 ms | 270.8 / 269.2 ms | 234.0 / 231.6 ms | 1.83 / 1.89 | 8.26 → 10.91 / 8.24 → 10.60 |
+
+Short code meets the budget (20.87 tok/s on 2026-10-05, C / 50E 0.96).
+Prose misses it by 29–54 ms per batch at 512 and 4K, a third to half of a
+single-row step; from 16K the verify attention is the gap. A batch of
+about 3.7 rows must cost what one row costs, and at 4K and beyond less
+than the 2026-10-01 single-row step. The verifier streams the same 16.1 GB as
+that step, so the single-row path's weight streaming and long-context
+attention are on the critical path too. At 20 tokens/s an ordinary
+forward could read at most 13.65 GB at the 273 GB/s peak.
+
+**How to stop.** Drop a candidate whose predicted saving does not appear
+in whole-batch wall time, that only moves cost elsewhere, or that fails a
+numerical gate. Keep incremental gains, record the remaining gap, and
+re-price C and E after each retained change. Stop pursuing 20 tokens/s at
+a context when the measured costs plus a stated optimistic bound on the
+remaining work still cannot fit C ≤ 50E.
+
+**External evidence** (surveyed 2026-09-30; references and oracles, never
+sources to copy; **M** a measurement the source publishes, **C** a claim
+without shown data; the status column is as of that date):
+
+| Technique | Mechanism | Evidence | Our status then |
+| --- | --- | --- | --- |
+| Split-KV few-query attention with GQA packing | One threadgroup per (KV head, key split), rows = 6 query heads × T queries, per-row causal limit, partial merge | MLX [`sdpa_vector_2pass`](https://github.com/ml-explore/mlx/blob/main/mlx/backend/metal/scaled_dot_product_attention.cpp); llama.cpp `flash_attn_ext_vec`; [Open-TQ-Metal](https://arxiv.org/html/2604.16957v1) §3.2 split-K on an M1 Max (M) | Single-row decode only; added for verify on 2026-09-30 |
+| Register-fragment verify matmul | Decode quantized weights straight into 8×8 fragment elements, K permuted per lane; no threadgroup staging | [metal-flash-attention](https://github.com/philipturner/metal-flash-attention) design (C); [llama.cpp #29110](https://github.com/ggml-org/llama.cpp/pull/29110) 4-row register tile 1.6–1.9× (M, M3 Ultra); MLX `qmv_wide` (C) | Untried then; tried 2026-10-01, closed below its target |
+| Per-token recurrent verify plus replay | Below ~64 tokens the recurrent form beats the chunk (WY) form; verify keeps a frozen state and a per-token tape, commit replays the accepted prefix | [vLLM #58863](https://github.com/vllm-project/vllm/pull/58863) 1.3–2.3 ms/cycle (M, GB10); mlx-lm `gated_delta_step` (C) | Row checkpoints then; the replay tape since 2026-10-01 |
+| Block softmax, contiguous loads in decode attention | Lane owns contiguous `half8` channels; one max/rescale per key block | MLX `sdpa_vector`; metal-flash-attention | Per-key `simd_sum` and rescale |
+| GPU counters by capture | `MTLCaptureManager` `.gputrace`: utilization, limiters, occupancy | [Apple tech talk 111374](https://developer.apple.com/videos/play/tech-talks/111374/) | Unused then; `make capture` since 2026-09-30 ([apple-gpu.md](../../engine/apple-gpu.md)) |
+| Target-trained drafter | DFlash 2 checkpoint for this model | [z-lab/Qwen3.8-27B-DFlash2](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2): τ 9–20 % above MTP (C, H200) | Not adopted then; a drafter since 2026-10-21 ([§ The Qwen DFlash2 drafter](#the-qwen-dflash2-drafter-2026-10-21)) |
+| Suffix / prompt-lookup drafts | Free exact drafts from the prompt and history | [SuffixDecoding](https://arxiv.org/abs/2411.04975): 1.8–4.5× on agent traces (M, vLLM) | None |
+| Root-sibling verification | One extra row carrying the head's second candidate | [GDN Tree-Scan](https://arxiv.org/html/2609.23900v1): +27 % at B = 1 (M, GB10) | Chain-only |
+
+Ceiling references on the same class of hardware: MLX runs an M = 1
+forward of a 4-bit Qwen 27B on an M4 Pro in 68 ms and M = 3 at 1.38× that
+([mlx#3553](https://github.com/ml-explore/mlx/issues/3553), M), about 78 %
+of peak bandwidth at an estimated 14.4 GB of weights. Metal 4's tensor API
+lowers to the same ALUs before M5 and gives no gain here (llama.cpp
+#16634, C). Lossy KV and activation sparsity change the target and are
+out of scope.
+
+**Alternatives weighed.** Ordinary matvec tuning alone: its streaming
+floor is above the 50 ms step, so it cannot be the route alone, but the
+verify budgets need it too. Speculation on everywhere regardless of cost:
+ruled out by the prose and 4K regressions of the time. Wider tiles, scalar
+multi-row kernels, or split-K unchanged: earlier sweeps are their negative
+controls. A lighter quantization or a truncated context: changes quality
+or the target, a separate decision. A new drafter first: may raise
+acceptance but keeps an expensive verifier.
+
+## The Qwen MTP companion (2026-10-21)
+
+Saluki 27B ([saluki.md](../../models/saluki.md)) is Qwen3.8-27B with 64
+blocks and no `nextn` key: its file has no prediction block, so it could
+not speculate. Qwen's own `MTP/mtp-Qwen3.8-27B-Q4_0.gguf`
+(1,369,590,656 B, already in the [catalogue](../../models/catalogue.md) under
+the `mtp` role) holds the whole `blk.64` block. It has 18 tensors:
+`nextn.eh_proj` and `ffn_*` at Q4_K, `attn_*` at Q6_K, the norms in F32,
+and its own `token_embd`, `output` (Q3_K) and `output_norm`. The block in
+the Q4_K_M is the same weights at higher precision (`attn_k`/`attn_v`
+Q8_0, `ffn_*` and `eh_proj` Q6_K).
+
+**Binding.** `qwen35.bindDraft` binds the companion's `blk.<layers>.*`
+onto any unrotated target of the same shape and leaves the companion's
+embedding and head unbound, so the block shares the target's, exactly as
+the embedded block does. The block records its `DraftSource` (the
+companion's mapping and tensor table). Both executors read every weight
+through `Binding.viewOf`, which picks that mapping for the block's
+tensors, so the draft forward has no second path. `Engine.open` keeps a
+file's own block under `preferred` and takes the companion only for a
+file without one; `.file` replaces an embedded block. A Bonsai file
+(rotated, and the companion's block is in the plain basis) is refused
+with `DraftSourceMismatch`. `generation-check --draft-model` binds the
+companion for the Qwen draft trace, `--draft-stats`, and
+`--speculative-check`.
+
+**Validation.**
+
+- **Same weights.** The cross-encoding check of the companion against the
+  Q4_K_M (`test-cross-encoding`, 16 rows per matrix) reads cosine 0.9956
+  to 0.9999 per matrix. The Q4_K matrices are the farthest, at up to
+  9.4 % relative RMS.
+- **The companion on the Q4_K_M.** Against the embedded block's pinned
+  trace (`fixtures/qwen35-mtp`), the companion's block rows are 1.56 max
+  abs and 13.3 % relative RMS at position 0, 0.64 and 9.3 % at position
+  1, which is what the Q4_K error predicts. The greedy drafts are equal
+  (9419, 271). Gate: `qwen38-mtp-companion-trace-{metal,cpu}`.
+- **Saluki with the companion.** Metal against the CPU reference: 8.1e-6
+  max abs and 5.5e-7 relative RMS. The CPU rows were pinned under
+  `tests/fixtures/saluki-mtp` (held through `v0.11.0`); gate
+  `saluki-draft-trace-{metal,cpu}`, retired with the family.
+- **Greedy equivalence.** `saluki-speculative-metal`, retired with the
+  family: speculative greedy equalled plain greedy on the runner and
+  through `engine.runLoop`, and the forced-token, budget, EOS,
+  cancellation, and context checks passed (`saluki-speculative-cpu` was
+  the runner-level half). The check took `--prompt-profile qwen38`,
+  because Saluki's template is not pinned.
+
+Saluki's final hidden after `Hello` differs from the Q4_K_M's by 42 %
+relative RMS (the companion was trained on the full-precision model's).
+That alone does not predict acceptance, which is measured next.
+
+**Acceptance** (`--draft-stats`, Metal, greedy, 32 tokens after each
+prompt, per draft depth 0–3):
+
+| Target, block | Zig reverse prompt | `fibonacci` prompt |
+| --- | --- | --- |
+| Q4_K_M, embedded | 90.3 / 80.0 / 69.0 / 64.3 % | 93.5 / 83.3 / 82.8 / 85.7 % |
+| Q4_K_M, companion | 87.1 / 76.7 / 69.0 / 64.3 % | 93.5 / 83.3 / 82.8 / 82.1 % |
+| Saluki, companion | 96.8 / 93.3 / 89.7 / 85.7 % | 96.8 / 86.7 / 79.3 / 78.6 % |
+
+The companion's lower precision costs the Q4_K_M at most one draft in
+thirty. On these short code prompts Saluki accepts at least as much as
+the Q4_K_M. These samples are small (31 positions at depth 0); the
+speculative matrix below measures prose at every context.
+
+**The speculative matrix** (2026-10-21, `scripts/bench/spec-matrix.py --model
+saluki --run run-2026-09-06 --contexts code,512,4096,16384,32639 --drafts
+3-7 --sampling greedy,instruct --cooldown 60`, Metal, F16 cache, 128
+tokens, three off/on pairs per cell, Qwen's instruct sampling; the full
+table in [benchmarks § Saluki with the Qwen MTP companion](../history.md#saluki-with-the-qwen-mtp-companion-2026-10-21)).
+At draft 7:
+
+| Context | greedy E / C ms | greedy off → on | instruct E / C ms | instruct off → on |
+| --- | ---: | ---: | ---: | ---: |
+| code | 3.53 / 147.5 | 17.78 → 23.92 (1.34×) | 2.74 / 148.0 | 17.47 → 18.55 (1.07×) |
+| 512 | 2.65 / 144.3 | 17.68 → 18.34 (1.04×) | 2.54 / 147.8 | 17.29 → 17.24 (0.98×) |
+| 4,096 | 2.44 / 146.8 | 17.26 → 16.63 (0.96×) | 2.78 / 153.4 | 17.08 → 18.27 (1.08×) |
+| 16,384 | 3.02 / 169.9 | 16.19 → 17.80 (1.10×) | 2.28 / 161.5 | 16.04 → 14.14 (0.87×) |
+| 32,639 | 3.34 / 199.7 | 15.11 → 16.74 (1.11×) | 2.31 / 181.4 | 15.01 → 12.75 (0.85×) |
+
+**The verdict: off.** The prose geometric mean is 0.951, 0.980, 0.984,
+0.989, and 0.993× at drafts 3 to 7, and the worst prose cell is 0.83–0.85×
+at every length (the rule asks ≥ 1.10× and nothing below 0.98×;
+[benchmarks § The re-priced speculative verdicts](../history.md#the-re-priced-speculative-verdicts-2026-10-01)).
+
+**Why: the verify batch, not the drafter.**
+
+- **Verify cost.** Saluki's verify costs 120 ms at 512 and 150–165 ms at
+  32,639, against a single-row step of 57 and 67 ms: 2.1× and 2.4× a
+  step. On the Q4_K_M the same batch is 1.45× and 1.9×
+  ([§ The Qwen verify budget](#the-qwen-verify-budget-2026-10-01)). The cost hardly
+  grows with the draft length (120.0 ms at 3 drafts, 120.8 at 7), so it
+  is the fixed price of leaving the single-row matvec.
+- **Acceptance.** E is close to the Q4_K_M's at 512 (instruct 2.54
+  against 2.63). It falls behind at long contexts with sampling (2.28–2.31
+  at 16K and 32K against 2.49–2.84).
+- **Break-even.** At E ≈ 2.5 a batch must cost less than 2.5 single steps
+  (about 142 ms at 512) to break even, and it costs 144.
+- **What a cheaper verify would buy.** Arithmetic, not a measurement:
+  with the verify at the Q4_K_M's ratios (83 ms at 512, 127 ms at 32,639)
+  and everything else as measured, the draft-7 cells would read about
+  1.36–1.41× at 512 and 1.01–1.36× at 32,639.
+
+A target-trained drafter (DFlash2) raises E but leaves this verify cost,
+so it is not the next step for Saluki.
+
+**Where the verify time goes** (2026-10-21, Saluki at 512, F16 cache,
+unprofiled `bench --verify-rows R --accept 0` from a saved prefix):
+
+| R (rows) | 1 | 2 | 4 | 8 |
+| --- | ---: | ---: | ---: | ---: |
+| verify ms | 130.2 | 118.4 | 121.4 | 126.4 |
+
+A plain decode step is 57 ms, so even a single-row verify costs 2.3× a
+step. The cost is the batch path itself, not the number of rows. A
+profiled 8-row batch puts 89 % of it in the matrices, all on the
+register-fragment tiles (`matmul_*_f2`, which every Saluki encoding
+has).
+
+- **The tiles' rate.** Inside the model they read Saluki's weights at 22–57
+  GB/s, against 72–134 GB/s for the single-row matvecs on the same
+  matrices. IQ2_XXS's 17408×5120 tile costs 0.68 ms per dispatch there,
+  against the matvec's 0.29.
+- **Per weight, not per byte.** On the tile path a 2-bit weight costs
+  about what a 4-bit one costs: Saluki's verify (120–130 ms) is close to
+  the Q4_K_M's (138 ms), while its single-row step is 1.7× faster.
+- **The bench understates it.** `test-metal -- --matvec-rows-bench 8` (now
+  with a fragment-tile column) times the same IQ2_XXS tile at 0.38 ms. Its
+  23 MB matrix, re-read by 16 dispatches in one command buffer, likely
+  stays in the system cache, so the bench understates the tile's cost
+  in the model.
+- **The multi-row matvec does not help.** A multi-row body for IQ2_XXS
+  (`nu_matvec_rows_iq2_xxs`) beats the tile at 2 rows (0.33 against 0.38
+  ms in the bench) and loses from 3 (1.24 ms at 8). Its per-token input
+  loads dominate, as on the K-quants. `matmul` routes it at 2 rows only,
+  as it does every non-K-quant body. In the model it takes a 2-row verify
+  from 118.4 to 112.7 ms (three alternating pairs, identical to 0.1 ms).
+
+A cheaper Saluki verify therefore needs a few-row 2-bit kernel that keeps
+the matvec's decode rate. More rows per tile do not help, and Qwen's own
+register-fragment work closed below its target on 2026-10-01.
+
+## The Qwen DFlash2 drafter (2026-10-21)
+
+z-lab's DFlash2 is a block drafter trained against Qwen3.8-27B.
+
+**The file.** `z-lab/Qwen3.8-27B-DFlash2-GGUF` at `2d9571f8`,
+`Qwen3.8-27B-DFlash2-Q8_0.gguf`: 2,056,414,816 B, SHA-256 `c18e800d…`,
+Apache-2.0, pulled with role `mtp` (since 2026-11-12 the index's
+`qwen3.8-27b` draft variant `dflash2`, `--with draft=dflash2`, placed at
+`unsloth/Qwen3.8-27B-GGUF/MTP/` beside the model it drafts for). Its keys come from llama.cpp PR
+#27342's converter. The architecture id is `dflash`, Muse's, so the
+selector keys are what tell the two apart.
+
+**The equations.** They come from `z-lab/dflash` `dflash/model.py` at
+`07ebd93` (MIT). That file is the format's only definition: it was read
+for the equations, and nothing was copied.
+
+- **Base.** Muse's drafter
+  ([§ The Muse Glimmer DFlash drafter](#the-muse-glimmer-dflash-drafter-2026-09-21))
+  at Qwen's width:
+  - five Qwen3 blocks of 32 query and 8 KV heads of 128;
+  - q/k norms, RoPE θ 1e7 over the whole head;
+  - non-causal inside the block, a 2048 window both ways;
+  - the residuals entering target layers 6, 20, 34, 48 and 62 encoded by
+    `fc` and `enc.output_norm` into keys and values at their positions;
+  - an 8-row block `[anchor, mask × 7]` (mask 248070) embedded with the
+    target's table;
+  - the final norm, then the target's head.
+- **Two dynamic convolutions per block,** one around attention and one
+  around the FFN. With `x` the normed sublayer input, the taps are
+  `conv_proj(x)`, viewed `[half][tap][group of 16]`. The sublayer reads
+  `Σ_tap (base[0][tap] + taps[0][tap]) ⊙ x[t − tap]`; its output `y`
+  becomes `Σ_tap (base[1][tap] + taps[1][tap]) ⊙ y[t − tap]` before the
+  residual add. Row −1 is zero, and the context rows take no
+  convolution. GGUF stores `*_conv_base` as `[embedding, 2, 2]`, the
+  reverse of PyTorch's `[half][tap][channel]`.
+- **The candidate selector.** At each draft position it takes the 16
+  largest logits `u_k` and the projection `h = selector_hidden(row)`
+  (rank 256). Each candidate scores `u_k + Σ_r pred[prev][r] · h[r] ·
+  succ[cand_k][r]`, and the greedy chain from the anchor takes the
+  highest. Acceptance draws from the target alone, so the selector's
+  sampled distribution is not needed.
+
+**Binding.** `qwen35.attachDraft` takes a DFlash2 companion over the
+file's own prediction block. Under `preferred`, Qwen's MTP companion is
+taken only where the file has none; `.file` forces it. The family
+declares `attachDraft` instead of `bindDraft` so it can choose by content.
+
+**Executors.**
+
+- **Both.** They capture each target layer's input residual during
+  prefill and verify, and report the five per row (25,600 floats) as the
+  commit rows. The drafter's five caches are session layouts after the
+  text layers, so recovery rewinds them.
+- **CPU reference.** `dflash2_runtime.zig`.
+- **Metal.** `Flash` in `qwen35_metal.zig`:
+  - the convolution is `nu_dflash_conv`;
+  - the drafter has its own RoPE table (128 wide, θ 1e7);
+  - its Q8_0 projections call `nu_matmul_q8_0_f2`, a register-fragment
+    tile that only the drafter calls by name (`matmul` keeps routing Q8_0
+    to the generic tile for every other family);
+  - the selector runs on the host over a device top-16 per row and the
+    projected rows.
+
+**Validation.** There is no external oracle.
+
+- **Unit tests** pin the convolution and the selector against
+  hand-computed values. `test-metal` checks `nu_dflash_conv` against
+  `dflash2.convolve` (4.8e-7) and the Q8_0 tile against the CPU matvec
+  (3.7e-5 of the products' mass).
+- **Losslessness.** Greedy output with speculation on equals plain on
+  both executors: `generate` on the CPU over 24 tokens, and on Metal over
+  64. `qwen38-dflash2-speculative-{metal,cpu}` runs the engine's loop:
+  equivalence, forced token, budget, EOS, cancellation, and context.
+- **Metal against the CPU.** `--flash-trace` prefills `Hello,`, commits,
+  runs the block and proposes; the CPU rows are pinned under
+  `tests/fixtures/qwen38-dflash2`. Metal reads 1.6e-2 max abs and 7.7e-4
+  relative RMS with identical drafts, inside the family's half-tile
+  bound (`qwen38-dflash2-trace-metal`).
+- **Acceptance.** On the code prompt, with p_min 0, CPU and Metal agree
+  exactly (3.80 of 6.40 proposed drafts accepted, 24 tokens). A wrong
+  convolution layout or selector would collapse that to near zero.
+
+**Costs on the code prompt** (128 tokens, draft 7, F16 cache, hot; one
+run each, not the record):
+
+| | Propose ms/batch | Verify ms/batch | Accepted / proposed | tok/s (plain 12.0) |
+| --- | ---: | ---: | ---: | ---: |
+| MTP, p_min 0.7 | 22.6 | 135.8 | 2.53 / 3.75 | 21.05 |
+| DFlash2, generic Q8_0 tile, p_min 0 | 43.4 | 147.0 | 2.66 / 6.71 | 17.48 |
+| DFlash2, Q8_0 fragment tile, p_min 0 | 18.9 | 146.6 | 2.66 / 6.71 | 20.69 |
+| DFlash2, fragment tile, p_min 0.3 | | | 2.46 / 3.97 | 20.79 |
+
+DFlash2 drafts a whole block per forward and its later positions stay
+good: at p_min 0 it proposes nearly all 7 and keeps 2.7. But each
+batch then verifies about 8 rows, which costs more than MTP's ~5.
+
+**The speculative matrix** (2026-10-21, same day and method as
+[§ The re-priced verdicts](#the-re-priced-verdicts-2026-10-01): 128
+tokens, F16 cache, three off/on pairs per cell, `--cooldown 60`, Qwen's
+instruct sampling). MTP ran at its default (draft 7, p_min 0.7); DFlash2
+at drafts 5 and 7, p_min 0 and 0.3. The full tables are in
+[benchmarks § DFlash2 against MTP on the Q4_K_M](../history.md#dflash2-against-mtp-on-the-q4_k_m-2026-10-21).
+On-rate, tok/s, at draft 7:
+
+| Context, sampling | MTP, p_min 0.7 | DFlash2, p_min 0.3 | DFlash2 / MTP |
+| --- | ---: | ---: | ---: |
+| code, greedy | 21.17 | 20.72 | 0.98 |
+| code, instruct | 21.76 | 24.19 | 1.11 |
+| 512, greedy | 17.69 | 19.46 | 1.10 |
+| 512, instruct | 17.02 | 17.66 | 1.04 |
+| 4,096, greedy | 17.82 | 18.90 | 1.06 |
+| 4,096, instruct | 15.45 | 13.84 | 0.90 |
+| 16,384, greedy | 13.77 | 14.72 | 1.07 |
+| 16,384, instruct | 13.92 | 13.44 | 0.97 |
+| 32,639, greedy | 14.14 | 13.96 | 0.99 |
+| 32,639, instruct | 14.28 | 14.17 | 0.99 |
+
+**The verdict.**
+
+- **On its own, DFlash2 qualifies.** At draft 7 and p_min 0.3 the prose
+  geometric mean is 1.366× and the worst cell 1.172×. MTP reads 1.387×
+  and 1.260×.
+- **Against MTP it is a wash.** Over the eight prose cells its on-rate is
+  1.012× MTP's geometric mean, ranging from 0.90 to 1.10. It wins at
+  short context and on sampled code, and ties from 16K, where the verify
+  batch (8 rows of a 16.5 GB model) is most of each batch's cost.
+- **The other settings lose.** p_min 0 and draft 5 read 0.925–0.979×
+  MTP.
+- **The default stays MTP.** It is embedded in the file and costs no
+  extra 2 GB. DFlash2 is a supported alternative: `--draft dflash2` (or
+  the entry's `generation.draft`) selects it, with `--draft-p-min 0.3` (bench) and
+  draft 7.
+- **What would change it.** DFlash2 raises acceptance (E 2.95–3.26
+  against MTP's 2.46–2.95 at 512–4K), so it would pull ahead wherever a
+  verify batch got cheaper than it was then.

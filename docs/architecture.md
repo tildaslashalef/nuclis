@@ -1,3 +1,4 @@
+<!-- kind: reference -->
 # nuclis architecture guide
 
 The map of the engine: what the pieces are, how a token flows through them,
@@ -9,7 +10,12 @@ per component are in the documents [README.md](README.md) lists.
 nuclis has two components: the engine library under `inference/`, and the
 executable under `src/`, which embeds the `generate`/`bench` CLI and the
 `nuclis agent` surface on top of the engine. This guide follows the engine;
-the agent appears where it touches the same interfaces.
+the agent appears where it touches the same interfaces. The paths beside
+the token loop (decisions, embeddings, the HTTP API) are
+[architecture-paths.md](architecture-paths.md); how correctness is
+established, the Zig constructs the code leans on, how a model is added,
+and the structural facts the code relies on are
+[architecture-rules.md](architecture-rules.md).
 
 1. [What happens when you run `nuclis generate`](#1-what-happens-when-you-run-nuclis-generate)
 2. [The repository as layers](#2-the-repository-as-layers)
@@ -18,11 +24,7 @@ the agent appears where it touches the same interfaces.
 5. [The KV cache, end to end](#5-the-kv-cache-end-to-end)
 6. [Two executors, one schedule](#6-two-executors-one-schedule)
 7. [Metal for a Zig programmer](#7-metal-for-a-zig-programmer)
-8. [How correctness is established](#8-how-correctness-is-established)
-9. [Zig constructs this codebase leans on](#9-zig-constructs-this-codebase-leans-on)
-10. [Adding a model](#10-adding-a-model)
-11. [Where performance goes](#11-where-performance-goes)
-12. [Structural facts the code relies on](#12-structural-facts-the-code-relies-on)
+8. [Where performance goes](#8-where-performance-goes)
 
 ## 1. What happens when you run `nuclis generate`
 
@@ -172,119 +174,8 @@ signals, and the network.
 **Read:** [spec.md § Extension rules](spec.md#57-extension-rules),
 [development.md](development.md).
 
-### The decision path
-
-`nuclis decide` does not go through `Engine`. A decision model (Laya) is an
-encoder: it reads one whole sequence in both directions and scores the
-options at their `[MASK]` rows; nothing is decoded and nothing is carried
-between sequences, so there is no session, no sampler, and no KV cache.
-`inference.decide.Decider` composes three pieces from one checkpoint
-directory: the Hugging Face tokenizer (`tokenizer/hf_json.zig`), the
-profile (`profiles/laya.zig`: question validation, the sequence and its
-budgets, calibration), and the model (`models/laya.zig` over
-`models/modernbert*.zig`: F32 on the CPU through `backends/cpu/dense.zig`,
-or `models/laya_metal.zig` on Metal, which packs the sequences of a call
-into batches with per-row bounds instead of padding). Every question about
-every state is one sequence. It pays as a filter, one
-question over many states the language model never has to read
-([laya.md](models/laya.md)).
-
-The second family, clef-flash, shares the seam and not the shape: a
-Qwen3.5 backbone (the qwen35 adapter at the file's shape, its
-`hiddenRows`/`prefillHidden` giving every row after `output_norm` with no
-output head), images through the Qwen3-VL projector, and a joint schema
-head on the CPU (`models/clef.zig`) that reads one sequence per state
-holding every question (`profiles/clef.zig`). `Decider` is a tagged union
-of the two; the family decides how a question is validated
-(`decide.parseQuestion`), so `src/decision/` parses a request only once
-it knows the model, and a `Question` carries the order the model reads
-its options in beside the order it is answered in
-([clef-flash.md](models/clef-flash.md)).
-
-### The embedding path
-
-`nuclis embed` and `POST /v1/embeddings` do not go through `Engine`
-either. `inference.embed.Embedder` opens an EmbeddingGemma 2 file and,
-optionally, its mmproj. It turns an input's ordered parts into rows: text
-tokens, and for each image or clip its begin marker, the projector's rows
-(`vision/gemma4.zig` with Google's activation, `audio/gemma4a.zig` after
-`audio/mel.zig`), and its end marker. Then one bidirectional pass of the
-24-block encoder (`models/embeddinggemma*.zig`), a mean over every row,
-and a unit vector. There is no cache and no session, and on Metal inputs
-are packed back to back with per-row bounds, as Laya's are. The media
-encoders are built on first use. Images and audio follow Google's
-processor, not the chat path's reference pipeline, because the oracle is
-Google's float32 vectors ([embeddinggemma.md](models/embeddinggemma.md),
-[audio.md](engine/audio.md)). nuclis stops at the vector: indexing and
-search belong to the application that calls it.
-
-### The API layer
-
-`nuclis serve` (`src/api/`) keeps decision models open behind an HTTP/1.1
-server speaking TypeSafe's Jev protocol, and one language model behind
-OpenAI's Chat Completions ([api.md](guide/api.md)). Its layers stay
-apart, so each service is a directory and one registration:
-
-- `http.zig` serves one connection over any reader and writer: each
-  request read whole into the connection's arena (up to its route's body
-  limit), handed to a handler, answered with `Content-Length` in one flush,
-  or, when the response carries a `Stream`, with the head flushed at once
-  and the body in chunks as it is produced; it knows no route.
-  `router.zig` maps method and path to a service's handler; `errors.zig`
-  is the one error body; `log.zig` writes the transport's line per
-  response (the handler adds a note) under one lock.
-- `gpu.zig` is the one executor that owns the GPU: a single worker runs
-  submitted items one at a time in arrival order, so two models never run
-  at once and only the worker touches a model. An item lives in its
-  submitter's frame; a waiter that times out unlinks an item that never
-  started and otherwise waits for it. A long item (a generation) calls
-  `runShort` between its steps, so short ones (decision batches, speech
-  chunks, transcription pieces) run there instead of after it; one that
-  asks `betweenSteps` takes no more there than it needs (speech stays a
-  second ahead of playback, a file transcription a quarter of the time).
-  Each model has its own Metal queue and buffers. `memory.zig` is the one budget every open model counts
-  against: before a model opens, the least recently used others close,
-  of any kind; a model in use is pinned for the request, and one named by
-  `--pin` for the server's life. `slot.zig` is the one-model holder of
-  the kinds the server keeps one of (a voice, a recognizer). `pipe.zig` is the bounded byte
-  queue a streamed response crosses from the worker to its connection, so
-  the worker never writes to a socket.
-- `decisions/` validates on the connection's thread, then waits in the
-  batcher: one executor item takes the oldest waiting request's model and
-  every request waiting for it that fits one pass, and answers them with
-  `Decider.decideJobs` (each request prepared in its own arena, one
-  `logitsBatch` for all). `pool.zig` keeps two deciders open, opened and
-  closed only on the worker.
-- `chat/` reads a request into the profile's shapes on the connection's
-  task (`wire.zig`, pure), then waits for one executor item that opens
-  the named model if another is open and completes the conversation
-  through the agent's `Completer` (`model.zig`), so a served conversation
-  continues or restores the model's state exactly as `nuclis agent` does.
-  A whole response waits for the item; a streamed one drains its chunks
-  from a `pipe.zig` queue. Either way the connection watches its client
-  (`http.Peer`), and one that leaves sets the flag the item's observer
-  turns into a cancellation. Clients resend the whole conversation; no
-  response is stored.
-- `speech/` queues requests in arrival order behind one short executor
-  item that speaks the head one a chunk of frames per run, so speech
-  advances between a generation's steps; the response's head waits for
-  the prompt's prefill, then the audio drains from a `pipe.zig` queue
-  (the item parks rather than block the worker when its client lags).
-  `transcription/` keeps the recognizer's slot for the routes that use it:
-  `file.zig` takes a whole recording (`multipart.zig` parses the form)
-  and feeds it in 2.56 s pieces, one short item a piece; its segments,
-  subtitles, and word times come from `src/audio/transcript.zig`, which
-  `nuclis transcribe` shares.
-- `src/decision/` holds the wire format and model names that `nuclis
-  decide` and the service share, so the CLI's `--json` and the API's
-  body are the same bytes.
-- `websocket.zig` is RFC 6455's server side (the handshake, client
-  frames read into bounded messages, server frames written); a response
-  carrying an `http.Upgrade` makes the transport answer `101` and hand
-  the connection to the route. `transcription/stream.zig` is the live
-  route on it: per connection a reader task, the connection's task
-  writing the events, and one short executor item that owns the
-  connection's `Transcriber` and pushes one encoder chunk a run.
+The decision path, the embedding path, and the API layer:
+[architecture-paths.md](architecture-paths.md).
 
 ## 3. Three kinds of memory
 
@@ -353,7 +244,7 @@ The other families on the same wrapper:
 | Family | Layers | Mixers | What is different |
 | --- | --- | --- | --- |
 | Gemma 4 12B | 48 | sliding-window attention (1,024) and global attention with 512-wide heads | tanh GELU, RoPE factors, scaled residuals, capped logits ([models/gemma4.md](models/gemma4.md)) |
-| Gemma 4 26B-A4B | 30 | as the 12B | the feed-forward is 128 experts, 8 active per token ([models/gemma4.md § 26B-A4B](models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-2026-09-18)) |
+| Gemma 4 26B-A4B | 30 | as the 12B | the feed-forward is 128 experts, 8 active per token ([models/gemma4.md § 26B-A4B](models/gemma4.md#the-26b-a4bs-expert-layer)) |
 | Muse Glimmer 30B | 52 | 39 windowed (2,048), 13 global | dense; the `llama4` tokenizer splitter ([models/muse-glimmer.md](models/muse-glimmer.md)) |
 | Bonsai 2 27B | 64 | Qwen's | ternary weights in a Hadamard-rotated basis ([models/bonsai.md](models/bonsai.md)) |
 
@@ -446,7 +337,7 @@ flowchart LR
   grid and thread count and holds the constants the kernels assume; only
   `backends/metal/kernels/` names a lane or a SIMD group. The three kernel shapes
   (reductions, tiles on the matrix unit, elementwise) and every kernel's
-  geometry are tabulated in [engine/metal-backend.md § Kernel geometry](engine/metal-backend.md#kernel-geometry).
+  geometry are tabulated in [engine/metal-kernels.md § Kernel geometry](engine/metal-kernels.md#kernel-geometry).
 - **Unified memory.** The GPU addresses the mapped file and the session
   block directly through `newBufferWithBytesNoCopy`, page-aligned, with no
   copy. The mapping must outlive the backend.
@@ -462,148 +353,21 @@ flowchart LR
 [llm-guide.md § 11–§ 13](llm-guide.md#11-crossing-the-bridge), `bridge.m`,
 then `kernels/rowwise.metal` (`nu_add`, `nu_rmsnorm`) before `kernels/matvec.metal`.
 
-## 8. How correctness is established
-
-```mermaid
-flowchart LR
-    fx[pinned fixtures\nquant, vector, attention, recurrent JSON] --> cpu_t[CPU unit tests\nzig build test, no model]
-    cpu[cpu.* references] --> cpu_t
-    cpu --> gpu_t[metal-check\nzig build test-metal, no model]
-    fx --> gpu_t
-    tiny[generated tiny models\nevery encoding] --> tiny_t[make test-tiny\nMetal against the CPU]
-    cpu -- --trace-dir --> traces[per-layer traces of the real model]
-    traces -- gates.json --> full[trace and generation gates\nboth backends, both cache precisions]
-```
-
-nuclis is its own reference: the CPU reference is checked against the
-format and the mathematical contract, Metal against the CPU reference, and
-a new encoding of a model against one already validated. The first
-families were brought up against a pinned llama.cpp build, whose fixtures
-stay in the tree
-([models/README.md § 4](models/README.md#4-validate-against-nuclis-itself)).
-
-- **Unit tests** (`make test`) run without a model or GPU under a
-  leak-checking allocator, including on error paths.
-- **Fixtures** are a reference's outputs on small inputs, committed with
-  their provenance. Decoders must match exactly; F32 GPU
-  reductions match F64 sums within stated tolerances.
-- **Full-model traces** compare every layer output and the logits on real
-  prompts, with a documented tolerance per numerical mode.
-- **Perplexity** is the long-text check the traces cannot be: `nuclis eval`
-  scores windows of a pinned text teacher-forced, and each family's gate
-  holds it within a stated tolerance of the pinned per-token result on the
-  same tokens ([guide/eval.md](guide/eval.md)).
-- **Gates and workloads are data.** Every model-specific check is a gate in
-  `gates.json`, tiered by cost and selected by changed paths; every
-  benchmark is a workload in `workloads.json` with its report saved by
-  revision, and the record tables are generated from those reports.
-- **Bench** is the only source of performance claims and reports what it
-  could not measure as absent, not zero.
-
-**Read:** [development.md § Gates](development.md#gates) and
-[§ The record](development.md#the-record),
-[benchmarks](benchmarks/README.md), [guide/eval.md](guide/eval.md),
-`inference/metal-check.zig`.
-
-## 9. Zig constructs this codebase leans on
-
-| Construct | Why here | Read |
-| --- | --- | --- |
-| Explicit allocators | No hidden heap; tests inject a leak-checking allocator | `runtime/session.zig` `init` |
-| `errdefer` | Undo partial initialization when a later step fails | `engine.zig` `Engine.open` |
-| `defer` with `deinit` | Release at scope exit, in reverse order | `generate.zig` `run` |
-| Tagged unions with `switch` | A layer is attention *or* recurrent; both cases must be handled | `session.zig` `Layout`, `engine.zig` `Model` |
-| Error sets and `try` | Expected failures are values, not panics | `quant/decode.zig` |
-| Slices | Borrowed views with a length; doc comments say who owns the memory | `runtime/weights.zig` `View` |
-| `comptime` and `@embedFile` | Fixtures and shader source compiled in; the IQ3_S grid becomes MSL text at compile time | `backends/metal/kernels.zig` `codebookSource` |
-| `extern fn` + `*anyopaque` | Calling Objective-C through an opaque handle | `backends/metal/root.zig` |
-| `extern struct` | C layout, passed as kernel constants byte for byte | `Backend.MatvecParams` |
-| `std.Io` passed explicitly | File, clock, and cancellation through an injected interface | `generate.zig` `Trace` |
-| `checkAllAllocationFailures` | Every allocation site fails once in a test | `session.zig` tests |
-| Explicit casts | Every conversion visible and checked in safe builds | `quant/decode.zig` `half` |
-| Arena allocator | Many allocations with one lifetime | `qwen35_runtime.zig` `storage` |
-| `inline for` over struct fields | The configuration schema is a struct walked at compile time | `src/config.zig` |
-| Callback `context: *anyopaque` | Callbacks without closures | `runtime/observer.zig`, `engine.zig` `Hooks` |
-| `@Enum` / `@Union` from a table | The adapter enum and executor union are derived from one list of families | `models/registry.zig`, `engine.zig` `Executors` |
-| `std.atomic.Value` + `callconv(.c)` | A Ctrl-C flag set by a signal handler, read between layers | `src/interrupt.zig` |
-| Overflow-checked arithmetic | Sizes from untrusted files return `error.Overflow` | `formats/gguf.zig`, `session.zig` |
-| Aligned allocation in the type | The session block is page-aligned so the GPU wraps it with no copy | `runtime/session.zig` |
-
-The habit behind all of them: validate everything, then write nothing
-until validation passes, so a failure leaves caller buffers untouched.
-
-**Read:** the Zig language reference installed with the compiler,
-[development.md § Toolchain](development.md#toolchain).
-
-## 10. Adding a model
-
-```mermaid
-flowchart TB
-    a[models/NAME.zig\nvalidate metadata, bind tensors] --> b[models/NAME_runtime.zig\nCPU schedule using cpu.*]
-    a --> c[models/NAME_metal.zig\nGPU schedule using Backend encoders]
-    d[profiles/NAME.zig\ntemplate, stop set, reasoning markers,\ntool render/decode + fixtures] --> p[profiles/root.zig\nselected by template digest]
-    p --> e[models/root.zig table\n→ Adapter enum, executor union]
-    b --> e
-    c --> e
-    f[session.Layout list\nwhat state each layer has] --> b
-    f --> c
-```
-
-| You add | You do not touch |
-| --- | --- |
-| an adapter (`bind`, the CPU runtime, the Metal plan) and one line in `models/root.zig` `table` | `formats/gguf`, `quant`, `tokenizer/bpe`, `sampling`, `session`, `bridge.m`, the existing kernels, `generate`/`bench` |
-| a profile selected by the template's digest, with fixtures from the reference server | the agent loop, the tool registry, the events, the transcript, the diff, the session log |
-| genuinely new mathematics as a `cpu.*` function with fixtures plus a kernel with a `metal-check` entry | anything above or below that operation |
-| a draft companion implementing `runtime/draft.zig`, when the family has one | the speculative loop |
-
-What the families that went through the seam actually needed:
-
-| Case | New | Reference |
-| --- | --- | --- |
-| Gemma 4 12B | `cpu.gelu`, RoPE factors; on the GPU four scalar epilogues, a GELU pair mode, a window parameter on the chunk attention, a wider instantiation of decode attention, a `tanh` clamp | [gemma4.md](models/gemma4.md) |
-| Gemma 4 26B-A4B | not a second adapter: `gemma4.configs` selects by block count; `cpu.experts` and the gathered kernels; `weights.View.expertMatrix`; a per-plan `preferredChunk` | [gemma4.md § 26B-A4B](models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-2026-09-18) |
-| Q4_0 (the QAT file) | a `quant.row` arm, a generic GPU decoder, a specialized matvec and tile, the adapter's `executableEncoding` claim | [gemma4.md § Q4_0 path](models/gemma4.md#q4_0-path-and-the-qat-file-2026-09-12) |
-| Q5_0, Q5_1 (K-quant files' `ffn_down`) | the same four pieces, one templated body for both, and the gathered expert tile | [quantization.md](engine/quantization.md#equations-and-evidence) |
-| Muse Glimmer 30B | a tokenizer splitter, a windowed schedule with global layers, a profile with a reasoning channel and its own tool grammar; no new kernel | [muse-glimmer.md](models/muse-glimmer.md) |
-| Bonsai 2 27B | two ternary encodings, the Hadamard transform, a rotation contract in the Qwen adapter; the Qwen plan otherwise | [bonsai.md](models/bonsai.md) |
-| draft sources | Qwen's `nextn` block, embedded or from its `MTP/` companion (`qwen35.bindDraft`); `gemma4_assistant.zig`, a second GGUF reading the target's caches; `dflash.zig`, a block drafter | [speculative-decoding.md](engine/speculative-decoding.md) |
-
-Registration is one line: the adapter publishes a `family` namespace
-(`architecture`, `executableEncoding`, `Binding`/`bind`, `Runtime`, `Plan`)
-and `models/root.zig` lists it; the `Adapter` enum, the executor union,
-`model inspect`'s verdict, and `nuclis validate` derive from that table.
-Profiles register the same way and own everything template-specific: the
-stop set, the reasoning markers, and the tool path in both directions.
-Nothing under `src/` names an adapter or a profile module.
-
-**Read:** [models](models/README.md)
-(the order of work), [engine/prompt-profile.md](engine/prompt-profile.md),
-[engine/tool-calling.md](engine/tool-calling.md),
-[llm-guide.md § 24–§ 25](llm-guide.md#24-the-registry-table).
-
-## 11. Where performance goes
+## 8. Where performance goes
 
 Decode is bound by reading weights: 16.1 GB per token over a 273 GB/s bus
 is about 59 ms, a ceiling near 17 tok/s.
 
-```mermaid
-flowchart LR
-    m1[sync per-op bridge\n2.3 tok/s] --> m2[one command buffer / token\n5.0] --> m3[specialized matvec\n8.5] --> m3b[no per-layer commits\n9.7] --> m4[Q3_K/IQ3_S kernels,\nmerged projections\n10.6] --> m6[GPU sampling\nsampled = greedy speed] --> p1[chunked prefill matmul\n11 → 51 tok/s at 512] --> p2a[tiled causal attention\n33 → 51 at 4K] --> p2b[chunkwise DeltaNet] --> p3[half tiles\n53 → 84 at 512] --> m5[F16 KV + flash decoding\n32K decode 2.65 → 8.09] --> m7[penalty kernel\ninstruct 8.7 → 10.2] --> s1[speculative decoding on\nQwen 1.50× at 512] --> m8[half magic-number decode\n512 decode 10.4 → 11.8]
-```
-
-Against the pinned llama.cpp on the same tokens, the 2026-10-04 record
-(macOS 27, Qwen3.8's first pin): Qwen3.8 decoded 1.04–1.15× the reference at every length and prefilled
-level at 512, falling to 0.71× at 32K; the
-other families decoded 0.71–0.84× and prefilled 0.42–0.91×. Later records
-compare nuclis to its own previous one. The numbers are
-the README's [Results](../README.md#results), the record
-[benchmarks § The benchmarks on macOS 27](benchmarks/README.md#the-benchmarks-on-macos-27-2026-10-04).
+The milestones that took decode from 2.3 tok/s to the current rates, and
+the 2026-10-04 comparison with the pinned llama.cpp, are in
+[the record](benchmarks/record/architecture.md#the-decode-and-prefill-milestones-2026-10-04);
+the current rates are the README's [Results](../README.md#results).
 
 Levers that were built, measured, and kept out, each with its table in the
 record: a multi-row matvec that wins only at 2–3 rows, a wider small-batch
 tile, a split-K matvec, register-reuse prefill attention (shipped only for
 chunks of 17–64 rows; verify batches of up to 16 take the split pass of
-[few-query verify attention](engine/metal-backend.md#few-query-verify-attention-2026-09-30)), fused decode norms (shipped
+[few-query verify attention](engine/metal-attention.md#few-query-verify-attention)), fused decode norms (shipped
 for the dispatch count, not for speed), and speculation on the 26B-A4B,
 whose verify grows with every drafted row (each row routes to its own
 experts) until it costs more than the accepted drafts save. The other
@@ -613,71 +377,4 @@ entries speculate by default.
 [engine/metal-backend.md](engine/metal-backend.md),
 [engine/apple-gpu.md](engine/apple-gpu.md) (the GPU's counters on our kernels),
 [llm-guide.md § 13](llm-guide.md#13-the-matvec-that-reads-16-gb) and
-and
 [§ 23](llm-guide.md#23-guessing-ahead-and-paying-to-check).
-
-## 12. Structural facts the code relies on
-
-Each is enforced or documented in the file it names.
-
-- **Kernel binding convention:** data buffers at indices 0–6, the
-  parameter struct at 7. The `Backend` encoders in `backends/metal/ops/`
-  are the only place that knows kernel names and argument order.
-- **Specialized matvecs** are chosen per encoding when `specializedMatvec`
-  accepts the row alignment; `rows_per_simdgroup` and
-  `simdgroups_per_matvec_group` must match the kernel template constants.
-- Every `Backend` function starts with `if (!enabled) return
-  error.MetalNotEnabled;` so non-Metal builds link.
-- `Observer` has three optional callbacks: `check` (no activations, runs
-  while recording), `layer` (activations, forces a commit per layer, trace
-  runs only), `progress` (a call per chunk and per token). Never install
-  `layer` on a production path.
-- `Backend.tick` is called from `commit` only while a buffer runs longer
-  than 100 ms, on the calling thread, and must not touch the backend or
-  the model.
-- **Profiling** uses one encoder per dispatch because Apple GPUs stamp only
-  encoder boundaries; stamps are nanoseconds on the `GPUStartTime`
-  timeline; a profiled run's tok/s is not comparable.
-- Weights are wrapped per tensor, not as one buffer (one buffer made GPU
-  time swing 3–4×; documented in `models/qwen35_metal.zig`).
-- `Session` is one page-aligned block with typed views; attention rows are
-  F32 or F16 by layout, recurrent state F32, regions on 16-byte boundaries.
-  `snapshot`/`restore` require an equal layout digest and capacity; a
-  checkpoint region and per-row recurrent checkpoints serve the
-  speculative batch. **GPU-idle invariant:** no command buffer in flight
-  when the CPU touches session memory.
-- Prefill chunk buffers hold `matmulPadded(chunk)` rows; `nu_attention_chunk`
-  reads exactly `position + count` cache rows; a nonzero `window` masks
-  per row and the caller may slice the cache at the earliest visible key;
-  value widths above 256 take one threadgroup per 256 columns.
-- Decode attention is `nu_attention_decode` + `nu_attention_merge`: grid
-  (KV head, head group, split), each cache row read once per head group;
-  the `_w`/`_wh` instantiations serve widths up to 512.
-- Metal's `tanh` returns NaN past about ±44; every kernel goes through
-  `nu_tanh`, clamped at ±20 where F32 tanh is exactly ±1.
-- A plan's `deinit` calls `Backend.unwrap` on its session memory: `wrap`
-  caches by address and refuses a second length at the same address.
-- The DeltaNet GPU update is nontransactional; correctness after a failure
-  relies on `Session` poisoning until `reset()`.
-- **Speculation:** `verify` feeds `1 + k` rows through the prefill path with
-  every row's logits (or the device top-k per row) retained; acceptance
-  draws the target's own token per row; recovery is a slot copy. A draft
-  source is a session layout like any layer.
-- **Sampling:** `sampling.History` is session state owned by the caller
-  and reset wherever the session is; the sampler is policy only; the
-  per-mode defaults live in the profile. A penalty runs through the device
-  kernel before the top-k.
-- **Adapters and profiles are tables.** `models.table` builds the enum, the
-  union, and the known list; `profiles.forDocument` picks by template
-  digest; the stop set and the completion decoder are the profile's.
-- **The terminal surface** imports nothing from `inference`; only
-  `tui.terminal` touches the OS and only `tui.screen` emits a movement
-  escape, which is why its golden tests need no TTY. The agent's typed
-  events are consumed three times: the transcript (each closed block
-  written exactly once), the status bar, and print mode.
-- **Decided:** F16 KV is the GPU default and the CPU reference stays F32;
-  greedy decode uses GPU argmax; sliding caches are allocated for the full
-  capacity; the ternary matvec keeps its arithmetic.
-
-**Read:** [engine/metal-backend.md](engine/metal-backend.md),
-[engine/session.md](engine/session.md), `runtime/session.zig`.

@@ -7,7 +7,7 @@
 //! transcriber's caches, and the segments, never the decoded samples. The
 //! answer is the whole transcript in the asked format, or with
 //! `stream=true` server-sent events as segments become final. A client that
-//! leaves cancels between pieces. docs/guide/api.md § Transcription (files).
+//! leaves cancels between pieces. docs/guide/api-transcription.md § Transcription (files).
 const std = @import("std");
 const inference = @import("inference");
 const config = @import("../../config.zig");

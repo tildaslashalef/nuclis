@@ -9,7 +9,7 @@ region between `<!-- bench:NAME -->` and `<!-- /bench:NAME -->` in a
 document with that table and its provenance line, so record tables are
 generated, never transcribed. `--compare PREV CUR` prints the deltas, and
 `--check WORKLOAD FILE` tests a report against the workload's `bars`
-(exit 1 on a miss). See docs/development.md § The record.
+(exit 1 on a miss). See docs/benchmarks/README.md § The record.
 """
 
 import argparse

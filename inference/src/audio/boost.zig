@@ -3,7 +3,7 @@
 //! decoder may emit next, so every segmentation of it counts and no encoder
 //! is needed; a piece that starts or continues a phrase has `bonus` added to
 //! its logit before the argmax. Decoding without phrases is unchanged.
-//! docs/models/nemotron-asr.md § Phrase boosting.
+//! docs/models/nemotron-asr.md § Prompt profile.
 const std = @import("std");
 
 /// The bounds a client's list is held to.

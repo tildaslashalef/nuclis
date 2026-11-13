@@ -7,7 +7,7 @@
 //! it adds a two-tap dynamic convolution around each block's attention and
 //! FFN, and a candidate selector that re-ranks each position's top 16
 //! logits by the chosen predecessor. The equations and their provenance are
-//! in docs/engine/speculative-decoding.md § The Qwen DFlash2 drafter. The
+//! in docs/engine/speculative-decoding.md § Qwen3.8's DFlash2 drafter. The
 //! configuration is pinned to the Qwen3.8 file: a file that changes it is
 //! refused rather than run.
 const std = @import("std");

@@ -6,7 +6,7 @@
 //! message returns, so the model reads the results again and the completer
 //! reuses its state. Bounded by count, bytes, and age; a miss is a request
 //! without the exchange, as if there were no stash. Only the GPU worker
-//! touches it. docs/guide/api.md § Hosted web tools.
+//! touches it. docs/guide/api-chat.md § Hosted web tools.
 const std = @import("std");
 const inference = @import("inference");
 const wire = @import("wire.zig");

@@ -4,7 +4,7 @@
 //! model if needed and completes the conversation (`model.zig`). A whole
 //! response waits for it; a streamed one drains its chunks from a `Pipe`.
 //! Either way the connection watches its client, and a client that leaves
-//! cancels the run. docs/guide/api.md § Chat Completions.
+//! cancels the run. docs/guide/api-chat.md § Chat Completions.
 const std = @import("std");
 const inference = @import("inference");
 const config = @import("../../config.zig");

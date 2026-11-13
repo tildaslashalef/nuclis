@@ -1,60 +1,32 @@
+<!-- kind: reference -->
 # nuclis — technical specification
 
-This is the authoritative statement of what nuclis is, what it must do, and
-the decisions that bound how it does it. It states requirements and
-accepted decisions, not status: what changed and why is in the
-[merged pull requests](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) (before v0.6.0, the [worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md)), how it is built and measured in
-[development.md](development.md), how it is structured in
-[architecture.md](architecture.md), and the facts behind each component in
-the documents [README.md](README.md) lists. Numbers appear here only as acceptance criteria;
-the measurements that meet them live in the record they cite.
-
-*Must* is a requirement, *should* a strong default that a unit may depart
-from with a recorded reason, *may* a permission. A decision is a choice
-this document has made; changing one is a change to this document.
-
-1. [Purpose and scope](#1-purpose-and-scope)
-2. [Definitions](#2-definitions)
-3. [Decisions](#3-decisions)
-4. [Supported models and artifacts](#4-supported-models-and-artifacts)
-5. [Engine requirements](#5-engine-requirements)
-6. [Command-line interface](#6-command-line-interface)
-7. [The agent](#7-the-agent)
-8. [Performance requirements](#8-performance-requirements)
-9. [Verification](#9-verification)
-10. [Deferred work and non-goals](#10-deferred-work-and-non-goals)
-11. [Open questions](#11-open-questions)
+The authoritative statement of what nuclis is, what it must do, and the
+decisions that bound how it does it: requirements and accepted decisions,
+not status. History is in the
+[merged pull requests](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) (before v0.6.0, the [worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md)); the build and
+measurement in [development.md](development.md); the structure in
+[architecture.md](architecture.md); each component in the documents
+[README.md](README.md) lists. Numbers here are acceptance criteria; lists
+the code holds are generated from it. *Must* is a requirement, *should* a
+strong default a unit may depart from with a recorded reason, *may* a
+permission; changing a decision is a change to this document.
 
 ## 1. Purpose and scope
 
 nuclis runs language models locally with its own compute kernels, on Apple
-silicon, for one user doing coding work. It is three things in one
-repository:
-
-- **an inference library** (`inference/`): loading, validation,
-  tokenization, the model schedules, the CPU reference, the Metal backend,
-  sampling, and speculative decoding;
-- **an evaluation CLI** (`src/`): `generate`, `bench`, `tokenize`, `eval`,
-  `inspect`, `validate`, `model`, `cache`, `config`, `completion`, and
-  `decide`, which answers typed questions with a decision model (Laya,
-  clef-flash) rather than a language model (§5.9), `embed` (§5.10),
-  `speak`, `voice`, and `transcribe` (§5.11), and `serve`, which keeps
-  decision, language, embedding, speech, and transcription models open
-  behind an HTTP API;
-- **an interactive agent** (`nuclis agent`): a terminal surface over the
-  same engine with a bounded tool layer for small coding tasks in the
-  working directory.
-
-The target hardware is an Apple M4 Pro with 48 GB of unified memory.
-Linux is a CPU-only build target (`-Dmetal=false`, no GPU backend, no
-image or audio decoding): it builds, passes the unit tests, and serves
-the models the CPU reference runs fast enough, such as EmbeddingGemma 2
-([development.md § Linux](development.md#linux)). The
-first model was Qwen3.8-27B; the default is Gemma 4 26B-A4B. Language
-models come in three families through one extension seam, the adapter
-table (§4, §5.7); the decision, embedding, and speech models run through
-their own paths (§5.9–§5.11). Everything outside these three surfaces is
-deferred (§10).
+silicon, for one user doing coding work. It is **an inference library**
+(`inference/`: loading, validation, tokenization, the model schedules, the
+CPU reference, the Metal backend, sampling, speculative decoding); **an
+evaluation CLI** (`src/`, § 6), which also answers typed questions, embeds,
+speaks, transcribes, and serves every kind of model over HTTP; and **an
+interactive agent** (`nuclis agent`, § 7) with a bounded tool layer for
+small coding tasks. The target is an Apple M4 Pro with 48 GB of unified
+memory; Linux is a CPU-only build target that serves the models the CPU
+reference runs fast enough ([development.md § Linux](development.md#linux)).
+Language models come in three families through one seam, the adapter
+table (§ 5.7); the decision, embedding, and speech models have their own
+paths (§ 5.9–§ 5.11). Everything else is deferred (§ 10).
 
 ## 2. Definitions
 
@@ -65,13 +37,10 @@ deferred (§10).
 | adapter | the family's binding, CPU runtime, and Metal plan |
 | profile | the prompt contract of a chat template: rendering, stop set, reasoning markers, tool grammar; selected by the template's digest |
 | session | the mutable state of one conversation: attention cache rows and recurrent state, in one block |
-| prefill | consuming prompt tokens, in chunks on the GPU |
-| decode | producing one token per step from the previous one |
-| draft source | a model-specific component that proposes tokens for speculative decoding |
-| verify batch | one forward over the last committed token and `k` drafts, keeping every row's logits |
-| turn | in the agent: one user message and everything the model does until it answers |
-| step | in the agent: one completion request plus the execution of the tool calls it contains |
-| gate | a model-specific check in `gates.json`; workload: a benchmark in `workloads.json` |
+| prefill, decode | consuming prompt tokens, in chunks on the GPU; producing one token per step from the previous one |
+| draft source, verify batch | a model-specific component that proposes tokens for speculative decoding; one forward over the last committed token and `k` drafts, keeping every row's logits |
+| turn, step | in the agent: one user message and everything the model does until it answers; one completion request plus the execution of its tool calls |
+| gate, workload | a model-specific check in `gates.json`; a benchmark in `workloads.json` |
 | decision model | a model with a typed-decision head that scores a question's options about a state in one forward, with no decoding: Laya (an encoder, one pass per question) or clef-flash (a Qwen backbone, every question in one pass) |
 | state, question | what a decision model reads (text, or JSON rendered as text) and what it answers: `choice` (one of named options), `score` (a level of an ordered scale), or `noul` (the probability a statement holds) |
 
@@ -103,924 +72,472 @@ deferred (§10).
 | The terminal surface (`src/tui/`) imports nothing from `inference`. | Its golden tests need no model, no GPU, and no TTY. |
 | Every measurement names its hardware, build, artifact, context, and method; an estimate is never presented as one. | Performance claims are the record's, and only `bench` produces them. |
 | Nothing lands silently: every change is a unit, one commit whose body is its record, reached through its milestone's pull request. | The commits and pull requests are the durable history; this document carries none. |
-
 ## 4. Supported models and artifacts
 
-The index (`src/catalog.zig`, one table of `catalog.Artifact`) is the
-list of supported artifacts. An artifact pins the Hub repository, revision,
-and every file's SHA-256 and size; its kind, profile, and lifecycle; the
-companion files by role (`mmproj`, `draft`, `backbone`, `codec`), a draft
-by variant when there are several, each with the speculative verdict a
-measurement set (the switch and draft length). A `current` artifact is
-gated and written by `config init`; a `legacy` one pulls, verifies, and
-runs by name, with no gates. What is installed is what the sidecars say;
-`model ls` lists it first and `model ls --available` the rest of the
-index.
+The index (`src/catalog.json`, read by `src/catalog.zig`) is the list of
+supported artifacts. An entry pins the Hub repository, revision, and every
+file's SHA-256 and size; its kind, profile, and lifecycle; and its
+companions by role, each draft with the speculative verdict a measurement
+set. A `current` entry is gated and written by `config init`; a `legacy`
+one pulls, verifies, and runs by name, with no gates. The index:
 
-| Entry | Family | Artifact | Notes |
-| --- | --- | --- | --- |
-| `qwen3.8-27b` | `qwen35` | `unsloth/Qwen3.8-27B-GGUF` `Qwen3.8-27B-UD-Q4_K_M.gguf` | the first model; 64 layers, 16 attention and 48 DeltaNet; an embedded draft block; two draft variants, `mtp` (the default) and `dflash2` (from `z-lab/Qwen3.8-27B-DFlash2-GGUF`, placed under `MTP/`) |
-| `gemma-4-12b-qat` | `gemma4` | `unsloth/gemma-4-12B-it-qat-GGUF` | legacy; sliding-window and global attention; Q4_0 throughout (quantization-aware trained) |
-| `gemma-4-26b-a4b` | `gemma4` | `unsloth/gemma-4-26B-A4B-it-qat-GGUF` | the default `engine.model`; the expert configuration, 8 of 128 experts per token |
-| `gemma-4-e4b-qat` | `gemma4` | `unsloth/gemma-4-E4B-it-qat-GGUF` | per-layer embeddings, 18 shared-KV layers; its own template revision (`gemma4_e`) |
-| `muse-glimmer-30b` | `muse_glimmer` | `unsloth/Muse-Glimmer-30B-GGUF` | legacy; dense; windowed and global attention; a DFlash draft companion |
+<!-- gen:catalogue -->
+| Name | Kind | Encoding | Main file | Status |
+| --- | --- | --- | --- | --- |
+| `qwen3.8-27b` | generation | UD-Q4_K_M | 16.56 GB | current |
+| `gemma-4-12b-qat` | generation | Q4_0 (QAT) | 6.72 GB | legacy |
+| `gemma-4-26b-a4b` | generation | Q4_0 (QAT) | 14.25 GB | current |
+| `gemma-4-e4b-qat` | generation | Q4_0 (QAT) | 4.22 GB | current |
+| `muse-glimmer-30b` | generation | UD-Q4_K_XL | 15.88 GB | legacy |
+| `laya` | decision | F16 | 842.6 MB | current |
+| `laya-multilingual` | decision | F16 | 643.8 MB | current |
+| `clef-flash` | decision | Q6_K | 243.5 MB | current |
+| `embeddinggemma-2` | embedding | Q8_0 | 309.9 MB | current |
+| `qwen3-tts-1.7b-customvoice` | speech | BF16 | 3.83 GB | current |
+| `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | current |
+| `qwen3-tts-1.7b-base` | speech | BF16 | 3.86 GB | current |
+| `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | current |
+| `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | current |
+| `drama-3` | speech | Q4_K | 20.79 GB | current |
+| `nemotron-asr-0.6b` | transcription | F32 | 2.55 GB | current |
+<!-- /gen -->
 
-Decision checkpoints (kind `decision`) pin the repository, revision, the
-weights' SHA-256, and the support files by name.
+A command refuses another kind's model by name. What each entry is:
+[models/catalogue.md](models/catalogue.md) and the family cards. A file
+outside the index whose architecture has an adapter is *runnable*: `config
+init` and `config sync` register it, its profile chosen by template digest.
 
-| Entry | Model | Artifact | Notes |
-| --- | --- | --- | --- |
-| `laya` | ModernBERT-large encoder, typed-decision head | `convaiinnovations/laya` `model.safetensors` (F16) and its support files | English; 512 tokens per sequence; the default `decide.model` |
-| `laya-multilingual` | mmBERT-base encoder, the same head | the same repository's `multilingual/model.safetensors` (F16) and its support files | multilingual; 1,024 tokens per sequence; chosen by the caller, never by language detection |
-| `clef-flash` | Qwen3.5-9B backbone (qwen35), joint schema head, Qwen3-VL projector | `Cloudflare/clef-flash` `joint_head.safetensors` (BF16) and its support files; the backbone `bartowski/Cloudflare_clef-flash-GGUF` `Cloudflare_clef-flash-Q6_K.gguf`; the projector `mmproj-Cloudflare_clef-flash-bf16.gguf` (`--with mmproj`) | every question of a state in one sequence of up to 16,384 tokens; images; a decision entry may name a backbone and a projector in another repository, each pinned and digest-checked |
-
-Embedding models (kind `embedding`) pin the repository, revision, the main file's SHA-256, the projector, the trained
-widths, and the modalities the files read.
-
-| Entry | Model | Artifact | Notes |
-| --- | --- | --- | --- |
-| `embeddinggemma-2` | EmbeddingGemma 2 (`gemma-embedding2`), 24-block bidirectional text encoder, Gemma 4 vision and audio encoders | `unsloth/embeddinggemma-2-GGUF` `embeddinggemma-2-Q8_0.gguf`; the projector `mmproj-BF16.gguf` (`--with mmproj`) | 768-dimensional unit vectors, Matryoshka 512/256/128; 8,192 tokens per input; text without the projector, text, images and audio with it; the default `embed.model` |
-
-Speech and transcription models (kinds `speech` and `transcription`) pin
-the repository, revision, the weights' SHA-256, and the
-support files by name (the codec's beside a voice's).
-
-| Entry | Model | Artifact | Notes |
-| --- | --- | --- | --- |
-| `qwen3-tts-1.7b-customvoice` | Qwen3-TTS 12Hz CustomVoice 1.7B: a 28-layer talker, a 5-layer code predictor, the 16-codebook codec decoder | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` `model.safetensors` (BF16) and `speech_tokenizer/` (F32) | nine speakers, ten languages, an instruction (how to say it); the default `speech.model` |
-| `qwen3-tts-0.6b-customvoice` | the same at 0.6B | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | the same speakers and languages; no instruction |
-| `qwen3-tts-1.7b-base` | Qwen3-TTS 12Hz Base 1.7B: the CustomVoice networks, a speaker encoder, and the codec's encoder | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` `model.safetensors` (BF16) and `speech_tokenizer/` (F32) | no speakers: a saved voice, cloned from its clip (and its transcript); ten languages; no instruction |
-| `qwen3-tts-0.6b-base` | the same at 0.6B | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | the same |
-| `qwen3-tts-1.7b-voicedesign` | Qwen3-TTS 12Hz VoiceDesign 1.7B: the 1.7B CustomVoice's networks | `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` | no speakers: the instruction describes the voice; ten languages |
-| `drama-3` | Fish Audio Drama 3 35B-A3B: a 40-layer DeltaNet/attention mixture-of-experts backbone, a 13-layer codebook tower, Fish's 10-codebook 44.1 kHz codec (decoder and encoder) | `sakasegawa/drama-3-GGUF` `Drama-35B-A3B-v3-Q4_K.gguf` (one file) | a saved voice cloned from its clip and transcript (or, in `nuclis speak`, a voice of its own); delivery cued inline (`[cues]`, paired tags, speaker tags 0–15); the text's own language |
-| `nemotron-asr-0.6b` | Nemotron 3.5 ASR streaming 0.6B: a cache-aware FastConformer, an RNN-T | `nvidia/nemotron-3.5-asr-streaming-0.6b` `model.safetensors` (F32) | lookaheads 0, 3, 6, 13 rows of 80 ms; a language prompt or `auto`, or up to four decoded at once (`auto` last, the fallback); the default `transcribe.model` |
-
-A file outside the catalogue whose architecture has an adapter is
-*runnable*: `config init` and `config sync` register it (the profile by template
-digest, the family's forced when none matches). The Gemma 4 12B K-quant
-release and Bonsai 2 27B (Qwen3.8 ternary, which renders the Qwen profile
-by force) left the catalogue on 2026-09-26 and run this way.
-
-Requirements:
-
-- The loader **must** validate the architecture identifier, dimensions,
-  metadata, tensor names, shapes, offsets, and actual encodings against the
-  adapter, and **must** reject an unsupported combination with a typed
-  error naming the first offending tensor. It **must not** dispatch from a
-  display name or requantize.
+- The loader **must** validate the architecture, dimensions, metadata,
+  tensor names, shapes, offsets, and actual encodings against the adapter,
+  reject an unsupported combination with a typed error naming the first
+  offending tensor, and never dispatch from a display name or requantize
+  ([engine/gguf.md](engine/gguf.md), [engine/safetensors.md](engine/safetensors.md)).
 - `model pull` **must** verify the digest before publishing a file
-  atomically, and **must** write a provenance sidecar beside it; a file
-  whose encoding this build cannot execute keeps its sidecar and is
-  reported, not deleted.
-- `model inspect` **must** judge a file from its directory alone, over the
-  network if needed, at four levels: storable (the encoding has a layout),
-  executable (the adapter has kernels for it), bindable (every expected
-  tensor present with its shape, nothing unexpected), supported (the
-  catalogue pins the digest).
-- `model rm` **must** delete only under the models directory, **must**
-  keep a file another present catalogue or registry entry uses (naming it),
-  and **must not** edit the registry.
-- Companion files are loaded only by the unit that consumes them; a
-  missing or mismatched companion is a typed load error, never an implicit
-  download or a silent fallback.
-- The user root is `~/.nuclis` (`NUCLIS_HOME` overrides it with an absolute
-  path); models live under `models/<owner>/<repo>/<file>`, saved voices
-  under `voices/<name>/` (`reference.wav`, `reference-44k.wav` for
-  Drama 3, and `voice.json`, which keys
-  what the encoders made of the clip by the SHA-256 of the files that made
-  it; [qwen3-tts.md § Voice cloning (the Base)](models/qwen3-tts.md#voice-cloning-the-base)).
-
-Read: [models/catalogue.md](models/catalogue.md),
-[engine/gguf.md](engine/gguf.md), and the
-family documents [models/gemma4.md](models/gemma4.md),
-[models/muse-glimmer.md](models/muse-glimmer.md),
-[models/bonsai.md](models/bonsai.md),
-[models/embeddinggemma.md](models/embeddinggemma.md),
-[models/qwen3-tts.md](models/qwen3-tts.md),
-[models/drama3.md](models/drama3.md),
-[models/nemotron-asr.md](models/nemotron-asr.md).
+  atomically, beside a provenance sidecar. `model inspect` **must** judge a
+  file from its directory alone: storable, executable, bindable,
+  supported. `model rm` **must** delete only under the models directory and
+  keep a file another entry uses.
+- A companion is loaded only by the unit that consumes it; a missing or
+  mismatched one is a typed load error, never an implicit download.
+- The user root is `~/.nuclis` (`NUCLIS_HOME`, an absolute path, overrides
+  it), models under `models/<owner>/<repo>/<file>`.
 
 ## 5. Engine requirements
 
 ### 5.1 Interface
 
 The library **must** let a caller open a model, create a session, prefill,
-step, verify a batch, stream generation, reset, and release, returning
-typed results and metrics; the caller renders. Allocators and `Io` are
-explicit; every returned slice documents whether it is owned or borrowed.
-Per-token work **must** be free of string-based discovery: adapters,
-profiles, kernels, and stop tokens are resolved at load.
+step, verify a batch, stream, reset, and release, with typed results; the
+caller renders. Allocators and `Io` are explicit; every returned slice says
+whether it is owned or borrowed. Adapters, profiles, kernels, and stop
+tokens are resolved at load, never per token.
 
 ### 5.2 Loading and validation
 
-Parsing **must** be bounds-checked against the file size and the
-parser's own limits before any weight byte is read, with overflow-checked
-arithmetic on sizes. A malformed or truncated file is a typed error, never
-a panic. Tensor encodings **must** be decoded by CPU reference decoders whose
-fields are pinned by unit tests on hand-built blocks and whose rows agree
-with the same model's weights in an already-validated encoding (the
-cross-encoding check, [models/README.md § 4](models/README.md#4-validate-against-nuclis-itself));
-every GPU decoder **must** be bit-identical to its CPU decoder.
+Parsing **must** be bounds-checked against the file size and the parser's
+limits, with overflow-checked sizes, before any weight byte is read; a bad
+file is a typed error, never a panic. Every encoding **must** have a CPU
+decoder pinned by tests on hand-built blocks and agreeing with the same
+model in an already-validated encoding
+([models/README.md § 4](models/README.md#4-validate-against-nuclis-itself)),
+and a bit-identical GPU decoder ([engine/quantization.md](engine/quantization.md)).
 
 ### 5.3 Memory model
 
-Three kinds of memory with different owners: immutable mapped weights,
-mutable per-conversation session state in one page-aligned block, and
-per-step scratch. GPU-visible memory **must** outlive submitted work, and
-the CPU **must not** touch session memory while a command buffer that
-writes it is in flight. The session's layouts are declared by the adapter
-(attention rows at F32, F16, or Q8_0, recurrent state); a draft source's cache is
-one more layout in the same block.
+Immutable mapped weights, mutable session state in one page-aligned block,
+and per-step scratch. GPU-visible memory **must** outlive submitted work,
+and the CPU **must not** touch session memory while a command buffer that
+writes it is in flight. The adapter declares the session's layouts; a
+draft source's cache is one more layout.
 
 ### 5.4 Session contract
 
-- A step is `ready → updating → ready`; a failed step leaves the session
-  `failed` until `reset()`, because some layers may already have updated.
-- `snapshot`/`restore` copy the used extent behind a digest of layouts and
-  capacity; a mismatch is a typed error that touches nothing.
-- Attention state rewinds by position; recurrent state is restored from a
-  checkpoint. No operation **may** rewind a hybrid session by position
-  alone.
-- `reset()` rebuilds every kind of state. Different sessions share no
-  mutable state.
-
-Read: [engine/session.md](engine/session.md).
+A step is `ready → updating → ready`; a failed step leaves the session
+`failed` until `reset()`. `snapshot`/`restore` copy the used extent behind
+a digest of layouts and capacity, a mismatch touching nothing. Attention
+rewinds by position, recurrent state from a checkpoint; no operation
+**may** rewind a hybrid session by position alone. Sessions share no
+mutable state ([engine/session.md](engine/session.md)).
 
 ### 5.5 Execution
 
-- Prefill runs in chunks through batched kernels; the chunk size is the
-  plan's, and a chunked prefill **must** agree with the stepped path within
-  the family's documented tolerance.
-- Decode records one token's work into one command buffer; the production
-  path installs no per-layer observer.
-- The Metal bridge exposes matched create/destroy pairs, cleans up partial
-  initialization, and documents for each operation whether it records,
-  submits, or waits. The backend chooses dispatch geometry and legal
-  fusion; Zig owns the plan. An optional tick **may** be installed on the
-  wait; it runs on the calling thread, only during a wait longer than its
-  interval, and **must not** touch the backend or the model.
-- Sampling is a policy over a caller-owned history: the selection chain is
-  penalties, then temperature and sort, top-k, min-p, top-p, then the draw,
-  with the per-mode defaults owned by the profile. A GPU selection path
-  **must** produce the same token as the reference sampler for the same
-  seed or defer to it; it **must not** disagree.
-
-Read: [engine/sampling.md](engine/sampling.md),
-[engine/metal-backend.md](engine/metal-backend.md).
+- Chunked prefill **must** agree with the stepped path within the family's
+  tolerance; decode records one token into one command buffer, with no
+  per-layer observer on the production path.
+- The Metal bridge has matched create/destroy pairs, cleans up partial
+  initialization, and documents whether each operation records, submits,
+  or waits; Zig owns the plan. An optional tick runs on the calling thread
+  during a long wait and **must not** touch the backend or the model
+  ([engine/metal-backend.md](engine/metal-backend.md)).
+- Sampling is a policy over a caller-owned history (penalties,
+  temperature, top-k, min-p, top-p, the draw), with per-mode defaults
+  owned by the profile; a GPU path **must** produce the reference's token
+  for the same seed or defer to it ([engine/sampling.md](engine/sampling.md)).
 
 ### 5.6 Speculative decoding
 
-A draft source proposes tokens; the main model verifies them in one
-batch; the accepted prefix is kept and the session recovered to it.
-
-- The draft contract is family-independent (`propose`, `commit`, `reset`,
-  `bytes`); each adapter names its source (an embedded block, a companion
-  file of heads, a block drafter) and the loop never learns which. A file
-  without its family's embedded block (Saluki) may take the block from a
-  companion file; a file with one keeps its own.
-- Recovery: attention by position; recurrent state checkpointed before
-  the batch and restored on partial acceptance, with GPU work complete
-  before host-visible state is touched.
-- Acceptance is greedy when sampling is off (draft equals the row's
-  argmax) and, when it is on, a draw of the target's own token per row
-  with penalties and history advanced through the batch; every emitted
-  token is a target draw. Identical seeded streams against ordinary
-  decoding are not required.
-- Three settings: the file (`models.<name>.draft`, or an index draft
-  variant by `--draft` or `models.<name>.generation.draft`, resolved and
-  verified at load; the old key `mtp` is read with a notice); the switch (`generation.speculative`, `--speculative on|off` on
-  `generate`, `agent`, and `bench`, defaulting to the entry's measured
-  verdict, or the variant's when `--draft` names one); the draft length (`generation.draft_length`, `--draft-length`,
-  capped by a host constant and by the loaded drafter's block bound).
-- Off **must** be the ordinary loop bit for bit; a drafter loaded but
-  switched off costs memory and load time only. `bench` **must** open
-  with no drafter at all when the switch is off, so the baseline is true.
-- The acceptance rule and the recovery scheme are not user-visible
-  settings.
-
-Read: [engine/speculative-decoding.md](engine/speculative-decoding.md).
+A draft source proposes tokens, the main model verifies them in one batch,
+and the session is recovered to the accepted prefix
+([engine/speculative-decoding.md](engine/speculative-decoding.md)). The
+draft contract (`propose`, `commit`, `reset`, `bytes`) is
+family-independent; recurrent state is checkpointed before the batch, with
+GPU work complete before host-visible state is touched; every emitted token
+is a target draw (greedy acceptance when sampling is off). The switch
+defaults to the entry's measured verdict. Off **must** be the ordinary loop
+bit for bit, and `bench` **must** open no drafter when the switch is off.
 
 ### 5.7 Extension rules
 
 An additional family **must** cost a new adapter, its profile, its tests
 and fixtures, and any genuinely new mathematics (a `cpu.*` function with
-fixtures plus a kernel with a `metal-check` entry), and nothing else: no
-edit to the GGUF parser, the sampling policy, the session, the generation
-loop, or the Metal object lifecycle. A new storage encoding costs a CPU
-decoder arm with its fixture, a bit-identical generic GPU decoder,
-specialized kernels where wanted, and the adapter's executable claim.
-Shared kernels **may** gain parameters and instantiations; a kernel that
-exists for one family's shape stays explicitly specialized until another
-family shows reuse.
-
-Read: [models](models/README.md).
+fixtures, a kernel with a `metal-check` entry), and no edit to the GGUF
+parser, sampling, the session, the loop, or the Metal lifecycle. A new
+encoding costs a CPU decoder arm, a bit-identical GPU decoder, specialized
+kernels where wanted, and the adapter's claim ([models](models/README.md)).
 
 ### 5.8 Configuration
 
-One file, `~/.nuclis/nuclis.json` (the struct `Config` in
-`src/config.zig`), with sections `engine` (`model`, `backend`, `ctx_size`,
-`kv_precision`), `generation` (`max_tokens`, `think`, `speculative`,
-`draft_length`, `image_max_tokens`, sampling overrides), `agent` (`think`,
-`fold_thinking`, `theme`, `instructions`, `thinking_budget`, `web`),
-`decide` (`model`), `embed` (`model`), `speech` (`model`, `voice`),
-`transcribe` (`model`), `serve` (`host`, `port`, `log`, `request_log`,
-`timeout`, `memory_bytes`, `web`, `pin`, `transcription_bytes`), `web`
-(`url`, the service the web tools reach), `cache` (`memory_bytes`,
-`disk_bytes`: the agent's token cache budgets, 0 to turn a tier off), and
-a `models` registry of named entries that locate a file (path, or
-repository and file with a pinned revision), name its companions (and an
-index model's draft variant), force a profile, and override the context
-and any generation or agent key for that model only; an entry's `kind`
-(`decision`, `embedding`, `speech`, `transcription`; none is a language
-model) says which
-command opens it. Precedence is defaults < profile < file < registry
-entry < flags; `null` in the file means the profile's value. An unknown
-key or an out-of-range value is a typed error naming the key. `bench`
-ignores the file's sampling and budget so a measurement is reproducible
-from its command line. `image_max_tokens` caps the tokens one image
-becomes: `"auto"` (the default) is the projector's own maximum (Qwen3.8
-1,024, Gemma 4 1,120, Muse Glimmer 4,096), a count (1..4,096) is clamped to the loaded
-projector's range, and `--image-max-tokens` on `generate` and `agent`
-overrides both.
+One file, `~/.nuclis/nuclis.json`, whose schema is the struct `Config` in
+`src/config.zig`:
 
-Read: [guide/configuration.md § Configuration file](guide/configuration.md#configuration-file).
+<!-- gen:config-keys -->
+```text
+engine.*                model, backend, ctx_size, kv_precision
+generation.*            max_tokens, think, speculative, draft_length,
+                        image_max_tokens, sampling.{temperature, top_k, top_p,
+                        min_p, presence_penalty, repetition_penalty}
+agent.*                 think, fold_thinking, theme, instructions,
+                        thinking_budget, web
+decide.*                model
+embed.*                 model
+speech.*                model, voice
+transcribe.*            model
+serve.*                 host, port, log, request_log, timeout, memory_bytes,
+                        web, pin, transcription_bytes
+web.*                   url
+cache.*                 memory_bytes, disk_bytes
+models.<name>.*         path, or repo + file + revision; mmproj, draft (a
+                        file; mtp is its old name), profile, ctx_size,
+                        generation.*, agent.* for that model only, and
+                        generation.draft: an index model's draft variant
+                        (qwen3.8-27b: mtp, dflash2). Entries are created by
+                        init, sync, and model pull --register, never by set.
+A null sampling key takes the profile's value. agent.instructions is
+auto (AGENTS.md then CLAUDE.md), off, or a path.
+```
+<!-- /gen -->
+
+A `models` entry locates a file, names its companions, may force a
+profile, and overrides keys for that model; its `kind` says which command
+opens it. Precedence is defaults < profile < file < registry entry <
+flags; an unknown key or an out-of-range value **must** be a typed error
+naming the key, and `bench` ignores the file's sampling and budget
+([guide/configuration.md](guide/configuration.md#configuration-file)).
 
 ### 5.9 The decision path
 
-`inference.decide.Decider` opens a decision checkpoint and answers
-questions about states, beside `Engine`. Two families sit behind it,
-picked by the directory's files (clef's `joint_head.safetensors`, else
-Laya); each validates questions by its own rules, so a request is parsed
-for the model it names. Laya shares nothing with `Engine` but the
-tokenizer's BPE and the safetensors loader; clef-flash runs the qwen35
-backbone and the Qwen3-VL projector the text path uses. The Laya rules:
+`inference.decide.Decider` answers typed questions about states for two
+families picked by the checkpoint's files: Laya, an encoder, and
+clef-flash, the qwen35 backbone and Qwen3-VL projector with a joint head
+([models/laya.md](models/laya.md), [models/clef-flash.md](models/clef-flash.md)).
 
 - The input contract, calibration, and answer fields **must** be the
-  reference package's (`laya` 0.3.20): question validation, option
-  rendering, structured values rendered as Python's `json.dumps`, the
-  sequence in the checkpoint's own special tokens and its budgets (the
-  checkpoint's `max_len` and `head_max_len`: 512 and 192 for `laya`,
-  1,024 and 256 for `laya-multilingual`; options, then the question text,
-  then the state), a list state cut at its head and any other at its
-  tail, temperatures clamped to [0.5, 5.0], answers rounded to 4 places.
-  Every question about every state is one sequence.
-- The tokenizer **must** reproduce the reference library's encoding of
-  the checkpoint's `tokenizer.json` in its two shapes (byte-level: NFC,
-  two added-token passes, the GPT-2 split, byte-level BPE; Metaspace:
-  added tokens, `▁` per gap, SentencePiece BPE with byte fallback) and
-  reject any other tokenizer shape by name.
-- The CPU forward **must** match the reference's F32 run within relative
-  bounds (largest difference over largest value, and relative RMS, each
-  ≤ 1e-5 per stored stage; logits within 1e-4 of max(1, |logit|)); gates
-  `laya-vocabulary` and `laya-cpu`, and `laya-multilingual-vocabulary`
-  and `laya-multilingual-cpu`.
-- Host limits, never the caller's: 64 states, 32 questions, 255 options
-  (TypeSafe's limit; a model whose head budget cannot hold a question's
-  options refuses that question), 1 MiB per state. A cut state is
-  flagged, never silent.
-- `prepare` and `decideJobs` answer several calls in one batch, each
-  call's sequences and results in its own arena; a call that cannot be
-  built fails alone, and the answers **must** equal each call's alone.
-- The Metal plan **must** meet the same bounds against the reference, and
-  a packed batch **must** give each sequence exactly its logits alone;
-  gates `laya-metal` and `laya-multilingual-metal`. `nuclis decide
-  --backend cpu|metal` chooses, metal
-  by default in a Metal build.
-
-clef-flash:
-
-- The input contract and answer fields **must** be Cloudflare's
-  `joint_schema_model.py` at the pinned revision: question validation,
-  options rendered as sorted compact JSON in the model's order (`choice`
-  keys sorted, `noul` `true` first) and answered in the request's, the
-  one sequence per state with every question and its spans, the state cut
-  at its end to the 16,384-token budget, a softmax per question with no
-  calibration, `confidence` the top probability. The sequence **must**
-  equal the reference's ids and spans (gate `clef-sequences`).
-- The head **must** match the reference's F32 head on the same inputs
-  within 1e-4 of max(1, |logit|); the whole model on Metal **must** stay
-  within 1e-3 of the fixture the reference head made from the Metal
-  backbone's rows and pick every sanity answer (`clef-metal`); the CPU
-  reference within 2e-3 (`clef-cpu`).
-- Images (at most 8 per call, 16 MiB each) precede every state, stretched
-  to the processor's grid (at least 65,536 pixels, at most the projector
-  plan's 1,024 tokens); Laya, or clef without its projector, refuses them.
-
-Read: [models/laya.md](models/laya.md), [models/clef-flash.md](models/clef-flash.md).
+  reference package's (`laya` 0.3.20; Cloudflare's `joint_schema_model.py`
+  at the pinned revision, its sequence equal to the reference's), and
+  Laya's tokenizer the reference library's two shapes.
+- Laya **must** match the reference's F32 run within 1e-5 relative per
+  stored stage and logits within 1e-4 of max(1, |logit|) on the CPU and on
+  Metal; clef-flash's head within 1e-4, the whole model within 1e-3 on
+  Metal and 2e-3 on the CPU.
+- Host limits: 64 states, 32 questions, 255 options, 1 MiB per state, 8
+  images of 16 MiB; calls batched together **must** each get the answers
+  they get alone.
 
 ### 5.10 The embedding path
 
-`inference.embed.Embedder` opens an embedding-family GGUF file and turns
-inputs into unit vectors, beside `Engine` and `Decider`; it shares the
-tokenizer, the GGUF loader, and the Metal backend with the text path, and
-keeps no session state. The wire types (`src/embedding/`) are shared by
-`nuclis embed` and the API.
+`inference.embed.Embedder` turns an input's ordered parts (text, images,
+clips) into one unit vector, in one bidirectional pass of at most 8,192
+tokens, with no session ([models/embeddinggemma.md](models/embeddinggemma.md)).
 
-- An input is an ordered list of parts and gives one vector: `<bos>`, the
-  parts, `<eos>`, in one bidirectional pass of at most 8,192 tokens. Text
-  is literal: a control token's spelling in it is text, never the token.
-  An input over the limit **must** be refused with its token count unless
-  the request asks to truncate, which cuts its end, keeps `<eos>`, and is
-  reported per input; nothing is cut silently.
-- No implicit task: an input **must** be embedded exactly as given unless
-  the request names a `task`, which renders Google's prefix at the front
-  of the input, before any media part, as sentence-transformers places it
-  (`search_query`, `question_answering`, `fact_checking`,
-  `code_retrieval`, `classification`, `clustering`, `similarity`: `task: …
-  | query: `; `document`: `title: {title|none} | text: `). A `title` is
-  refused without `document`.
-- An image part is `<|image>`, its projector rows, `<image|>`, processed
-  as Google's processor does (its grid, torchvision's resize, F32 patches,
-  `gelu_pytorch_tanh`) at 70, 140, 280 (default), 560 or 1120 soft tokens;
-  the budget is recorded in the response. Its vector on the BF16 file
-  **must** match Google's float32 at cosine ≥ 0.9999999, on the CPU and
-  on Metal (`embeddinggemma-image-cpu`, `embeddinggemma-image-metal`).
-  Truncation drops an image whole rather than split it.
-- An audio part is `<|audio>`, its rows, `<audio|>`: 16 kHz mono (a 16 kHz
-  mono 16-bit WAV read exactly, anything else through AudioToolbox),
-  Google's log-mel frames, the `gemma4a` conformer, 25 rows a second. A
-  clip over 30 s (Google's processor's cut) **must** be refused unless the
-  request truncates, which keeps its first 30 s and reports the cut. Its
-  vector on the BF16 file **must** match Google's float32 at cosine ≥
-  0.9999999 on the CPU and on Metal (`embeddinggemma-audio-cpu`,
-  `embeddinggemma-audio-metal`).
-- Widths are the trained ones, 768, 512, 256, and 128: the leading values
-  renormalized. Any other is refused.
-- Every response names its **space**, `<checkpoint>@<sha256[0:12]>/<width>`:
-  the catalogue's name when the file's digest is the catalogue's, else
-  the caller's; the digest from the pull's sidecar, else computed from the
-  file. Vectors of different spaces are not comparable.
-- The CPU forward on the BF16 file **must** match Google's float32 vectors
-  at cosine ≥ 0.9999999 (`embeddinggemma-google-cpu`), the Q8_0 file
-  the Q8_0 vectors pinned from llama.cpp at ≥ 0.99999
-  (`embeddinggemma-vectors-cpu`), and the stages the traces pinned from
-  its graph (`embeddinggemma-trace-cpu`).
-  The Metal plan **must** meet the same bounds (`embeddinggemma-google-metal`,
-  `embeddinggemma-vectors-metal`) with F32 activations, and a packed batch
-  **must** give each input exactly its vector alone.
-- Host limits, never the caller's: 2,048 inputs per request, 1 MiB of text
-  per input, 32 MiB per encoded image, 64 MiB per encoded clip (the API's
-  body limit, 32 MiB, comes first). Media are decoded locally, never
-  fetched.
-- The API (`POST /v1/embeddings`) **must** give each input exactly the
-  vector it gets alone, whatever shares its pass: requests for one model
-  share passes of at most 2,048 rows in arrival order, a request larger
-  than a pass continues in the next, and passes run between a
-  generation's steps. Token arrays **must** be refused: an OpenAI client
-  sends them tokenized with another model's vocabulary.
-
-Read: [models/embeddinggemma.md](models/embeddinggemma.md).
+- An over-long input or a clip over 30 s **must** be refused unless the
+  request truncates, which is reported; text is literal, no task prefix is
+  implicit, and only the trained widths (768, 512, 256, 128) are served.
+- Every response names its **space**, `<checkpoint>@<sha256[0:12]>/<width>`.
+- The BF16 file **must** match Google's float32 vectors at cosine
+  ≥ 0.9999999 for text, images, and audio, and the Q8_0 file its pinned
+  vectors at ≥ 0.99999, on the CPU and on Metal; an input **must** get the
+  same vector whatever shares its pass.
+- Host limits: 2,048 inputs, 1 MiB of text an input, 32 MiB an image,
+  64 MiB a clip; media are never fetched, and the API refuses token arrays.
 
 ### 5.11 The speech path
 
-`inference.models.qwen3_tts_runtime` (`Voice`, `Synthesizer`) speaks and
-`inference.audio.nemotron_asr` (`Model`, `Transcriber`) hears, beside
-`Engine`, `Decider`, and `Embedder`; both open a safetensors checkpoint
-directory, run on the CPU reference or a Metal plan, and keep their state
-per utterance. Both families are validated by data (§3): their permanent
-gates are word error rates against human transcripts and a round trip
-through the recognizer; their bring-up traces from the authors' code are
-pinned fixtures.
-
-- A voice speaks a prompt of the speaker, the language, the text, and on
-  the 1.7B an instruction (refused on the 0.6B, never ignored); frames of
-  16 codes every 80 ms until the end code or 8,192 frames, decoded to
-  24 kHz mono. The codec **must** decode causally with carried state, so
-  the samples **must not** depend on how the frames are chunked; the same
-  text, voice, and seed **must** give the same samples alone or beside
-  other work. Chunks after the first are at most the frames made before
-  them, so a listener playing from the first byte never waits.
-- The Metal plan **must** match the CPU reference's stages within the
-  bounds of `qwen3-tts-*-trace-metal` and `qwen3-tts-codec-metal`, and
-  speech it makes, recognized by the CPU recognizer, **must** stay within
-  `qwen3-tts-*-roundtrip-metal`'s word error rate.
-- A transcriber reads 16 kHz mono (anything else through AudioToolbox),
-  feeds the encoder in chunks of its lookahead, and decodes greedily; a
-  clip streamed in any pieces **must** give the same text as the whole
-  clip, and Metal the same text as the CPU on every corpus clip
-  (`nemotron-asr-wer-*`). A file of any length is fed in pieces; memory
-  **must** not grow with the decoded samples.
-- Over HTTP (`docs/guide/api.md` § Speech, § Live transcription, §
-  Transcription (files)), a voice and a recognizer each hold one model
-  open; speech and transcription run as short GPU items between a
-  generation's steps, taking there only what playback or the stream
-  needs; a client that leaves cancels its request.
-
-Read: [models/qwen3-tts.md](models/qwen3-tts.md),
-[models/nemotron-asr.md](models/nemotron-asr.md),
-[engine/audio.md](engine/audio.md).
+`inference.models.qwen3_tts_runtime` speaks and
+`inference.audio.nemotron_asr` hears, on the CPU or a Metal plan, validated
+by data (§ 3): word error rates against human transcripts and a round trip
+through the recognizer ([models/qwen3-tts.md](models/qwen3-tts.md),
+[models/drama3.md](models/drama3.md), [models/nemotron-asr.md](models/nemotron-asr.md)).
+A voice **must** decode causally, its samples independent of chunking and
+of other work for the same text, voice, and seed; an instruction a model
+cannot take is refused. A clip streamed in any pieces **must** give the
+same text as the whole clip, Metal the same as the CPU, in memory that does
+not grow with the samples.
 
 ## 6. Command-line interface
 
+The commands, and their usage as their help pages print it:
+
+<!-- gen:cli-commands -->
+| Command | What it does |
+| --- | --- |
+| `agent` | the interactive chat; -p <text> runs one turn |
+| `generate` | one completion from a prompt |
+| `bench` | repeated prefill and decode measurements |
+| `tokenize` | the prompt's token ids and byte offsets, no model run |
+| `eval` | perplexity of a text file, teacher-forced |
+| `inspect` | an artifact's identity, dimensions, tensor encodings |
+| `validate` | whether a file binds to its architecture's adapter |
+| `model` | pull, list, judge, and remove Hugging Face Hub artifacts |
+| `cache` | list or clear the agent's saved model states |
+| `decide` | typed questions about text or JSON, answered by Laya |
+| `embed` | text, images, audio into vectors, by EmbeddingGemma 2 |
+| `speak, voice, transcribe` | speech by Qwen3-TTS, saved voices, Nemotron ASR |
+| `serve` | the nuclis API over HTTP: decisions, models kept open |
+| `config` | write, show, or set a key of ~/.nuclis/nuclis.json |
+| `completion` | the shell completion script for fish, bash, or zsh |
+<!-- /gen -->
+
+<!-- gen:cli-synopsis -->
 ```text
-nuclis agent [--model <m>] [--think <e>] [--image-max-tokens auto|<n>] [--resume [<id>]] [--system-prompt <path>]
-nuclis agent (-p <text> | --print --prompt-file <path>) [--json] [--session <path>]
+nuclis agent [options] [--resume [<id>]]
+nuclis agent -p <text> [--json] [--session <path>]
+nuclis agent --print --prompt-file <path> [--json] [--session <path>]
 nuclis agent ls [--json]
 nuclis agent rm <id>
 nuclis agent export <id> [path]
-nuclis cache [ls] [--json] | clear
-nuclis generate --model <m> (--prompt <text> | --prompt-file <path> | --prompt-tokens <json>) [--raw] [--image <path>]... [--audio <path>]... [--image-max-tokens auto|<n>] [--max-tokens <n>] [--think <e>] [--speculative on|off] [--draft <variant>] [--trace-dir <dir>] [--logits <path>] [sampling flags] [--json]
-nuclis bench --model <m> (--prompt <text> | --prompt-file <path> | --prompt-tokens <json>) --max-tokens <n> [--ctx-size <n>] [--kv f16|f32|q8_0] [--speculative on|off] [--draft <variant>] [--prefix-cache <dir>] [--profile] [--json]
-nuclis tokenize --model <m> (--prompt <text> | --prompt-file <path>) [--raw] [--json]
-nuclis eval --model <m> --file <path> [--ctx-size <n>] [--chunks <n>] [--reference <json> | --write-reference <json>] [--kv f16|f32|q8_0] [--json]
-nuclis inspect [--model <m>] [--tensor <name>] [--json]
-nuclis validate [--model <m>] [--json]
-nuclis model pull <name> [--with mmproj,draft[=<variant>] | --all [--variants]] [--force] [--json]
-nuclis model pull <owner/repo> [--file <f>] [--revision <r>] [--role <role>] [--register <name> [--profile <p>]] [--force] [--json]
-nuclis model inspect (<name> | <owner/repo> --file <f> [--revision <r>]) [--json]
+nuclis generate --prompt <text> [options]
+nuclis generate --prompt-file <path> [options]
+nuclis generate --prompt-tokens <json> [options]
+nuclis bench --prompt <text> [options]
+nuclis bench --prompt-file <path> [options]
+nuclis bench --prompt-tokens <json> [options]
+nuclis tokenize --prompt <text> [options]
+nuclis tokenize --prompt-file <path> [options]
+nuclis eval --file <path> [options]
+nuclis inspect [--model <name|path>] [--tensor <name>] [--json]
+nuclis validate [--model <name|path>] [--json]
 nuclis model ls [-l] [--available [--all]] [--json]
+nuclis model pull <name> [--with mmproj,draft[=<v>] | --all [--variants]]
+[--force] [--json]
+nuclis model pull <owner/repo> [--file <name>] [--revision <rev>] [--role <r>]
+[--register <name> [--profile <p>]] [--force] [--json]
+nuclis model inspect <name> [--json]
+nuclis model inspect <owner/repo> --file <name> [--revision <rev>] [--json]
 nuclis model adopt <path> [--force] [--json]
 nuclis model rm <name> [--with mmproj,draft | --all] [--json]
-nuclis decide (--request <file|-> | --questions <file> <states> | <inline questions> <states>) [--model <m>] [--image <path>]... [--truncate head|tail] [--uncalibrated] [--explain] [--json]
-nuclis embed (<text>... | --image <path>... | --audio <path>... | --input-file <file|->)... [--task <t>] [--title <s>] [--dimensions <n>] [--image-tokens <n>] [--truncate] [--model <m>] [--backend cpu|metal] [--json]
-nuclis speak <text>... -o <file.wav> [--voice <speaker|saved voice>] [--language <l>] [--instruct <s>] [--model <m>] [--seed <n>] [--backend cpu|metal] [--stream] [--chunk <n>] [--first-chunk <n>]
-nuclis voice add <name> <audio> [--text <transcript>] [--json] | list [--json] | rm <name> [--json]
-nuclis transcribe <file> [--stream] [--lookahead 0|3|6|13] [--language <code>[,<code>...]] [--phrase <words>]... [--model <m>] [--backend cpu|metal] [--format text|json|srt|vtt] [--segments] [--json]
-nuclis serve [--host <ip>] [--port <n>] [--model <m>]... [--pin <m>]... [--memory <GiB>] [--backend cpu|metal] [--timeout <s>] [--web-url <url> | --no-web]
-nuclis config init [--dry-run] [--json] | sync [--prune] [--dry-run] [--json] | show [--json] | set <key> <value>
+nuclis cache [ls] [--json]
+nuclis cache clear
+nuclis decide --request <file|-> [options]
+nuclis decide --questions <file> <states> [options]
+nuclis decide <inline questions> <states> [options]
+<states>: --state <text> and --state-file <path>, repeatable
+<inline questions>: --choice <text> --option <key[=desc]>…,
+--score <text> --level <text>…, --noul <text>; each [--id <name>]
+nuclis embed <text>… [options]
+nuclis embed --image <file>… --audio <file>… [options]
+nuclis embed --input-file <file|-> [options]
+each argument is one input: quote a sentence
+nuclis speak <text>… -o <file.wav> [options]
+the words are joined by spaces: quote a sentence
+nuclis voice add <name> <audio> [--text <transcript>] [--json]
+nuclis voice list [--json]
+nuclis voice rm <name> [--json]
+nuclis transcribe <file> [options]
+nuclis serve [--host <ip>] [--port <n>] [--model <name>]… [--pin <name>]…
+[--memory <GiB>] [--backend cpu|metal] [--timeout <s>]
+[--web-url <url> | --no-web]
+nuclis config init [--dry-run] [--json]
+nuclis config sync [--prune] [--dry-run] [--json]
+nuclis config show [--json]
+nuclis config set <key> <value>
 nuclis completion fish|bash|zsh
-nuclis --help | <command> --help | --version
 ```
+<!-- /gen -->
+
+What each command **must** do beyond its summary; `decide`, `embed`, `speak`,
+`voice`, and `transcribe` are § 5.9–§ 5.11, and `agent` is § 7:
 
 | Command | Contract |
 | --- | --- |
 | `generate` | one completion: raw prompt or one rendered turn, streamed, seeded, the profile's per-mode sampling defaults with per-flag overrides, a structured stop reason, timings |
-| `bench` | repeated cold and warm measurements with separate load, prefill, and decode timings; a prompt may be a token array so a reference's exact input is reproduced; the speculative pair measured on one loaded model in one process |
-| `tokenize` | the prompt as `generate` would feed it, its ids and each token's byte offset, from the artifact's header only |
-| `eval` | teacher-forced perplexity of a raw text: windows of `--ctx-size` tokens (default 512), each from an empty session with the model's BOS over its first token, the second half scored against the text's actual next tokens (the `llama-perplexity` method the first references used); the running and final perplexity with its standard error; `--reference` compares with a pinned reference run on the same file (its SHA-256 checked) and fails beyond its tolerance (0.5 % unless the file states one); `--write-reference` writes such a file from this run |
-| `inspect` | identity, architecture, dimensions, the encoding histogram, validated ranges |
-| `validate` | whether the file binds to its family's adapter, with the layer composition |
-| `model` | pull with digest verification and sidecars; list what is installed, grouped by kind (`-l` every file with its commit, digest, and status; `--available` the index entries not installed, `--all` the legacy ones too); adopt a file placed by hand (hash, match to an index file by size and digest, write its sidecar); judge a file at the four levels of §4 |
-| `decide` | typed questions about states through a decision checkpoint (`decide.model`, default `laya`): a Jev-shaped request (`questions`, `state` or `states`), a questions file with states from flags, or questions inline, and images (`--image`, a request's `images`) for clef-flash; one state renders each answer with its distribution, several render ranked by the first question; `--json` is one Jev response per state (answers with exactly Jev's fields, extras under `nuclis`), with load, tokenize, and encode timings |
-| `embed` | inputs into unit vectors through an embedding model (`embed.model`, default `embeddinggemma-2`), §5.10: each argument one text input, `--image` one image input, `--audio` one clip input, `--input-file` one JSON input per line (a string or a list of content parts, images as data URLs, clips as `input_audio`), in the order given; `--task` and `--title` render the model's prefixes, `--dimensions` picks a trained width, `--image-tokens` the image budget, `--truncate` cuts an over-long input instead of refusing it; the text report gives each vector's tokens, norm, and first values and, for several inputs, their cosines; `--json` gives every vector with its token counts, the space, and load, tokenize, and embed timings |
-| `speak` | text into a 24 kHz (Drama 3: 44.1 kHz) mono 16-bit WAV through a voice (`speech.model`, default `qwen3-tts-1.7b-customvoice`; `speech.voice`, default `ryan`), §5.11: on CustomVoice one of the model's speakers and an instruction on the 1.7B, on VoiceDesign no speaker and the instruction describing the voice, on a Base a saved voice (made ready before the clock of the first audio: encoded on its first use with that model, read back after) and no instruction; a language or `auto`; `--stream` writes chunk by chunk and reports the time to the first audio |
-| `voice` | saved voices for a Base: `add` decodes a clip (any format `transcribe` reads, 1–30 s) to 24 kHz and saves it with its transcript (optional, at most 2 KiB) under a name (`[a-z0-9][a-z0-9_-]{0,63}`, not a catalogue speaker), at most 256 voices; `list`; `rm`; no model is opened |
-| `transcribe` | a recording into text through a recognizer (`transcribe.model`, default `nemotron-asr-0.6b`), §5.11: the text and its language; `--stream` feeds 80 ms pieces and prints partials as they change; `--format json` adds the tokens with their times and the timings, `srt` and `vtt` write subtitles from the segments, `--segments` lists them (sentences, or speech between pauses) |
-| `serve` | the nuclis API over HTTP/1.1 ([guide/api.md](guide/api.md)), loopback by default (another address warns: no authentication): `POST /v1/systemone` is TypeSafe's Jev call (status codes, answer fields, and `jev-…` model ids as Jev clients expect), `POST /v1/decisions` takes the `decide --request` body and returns the `decide --json` bytes, timings aside, `POST /v1/chat/completions` is OpenAI's Chat Completions for the language models (one open at a time, opened by name, never by path; `image_url` parts as data URLs and, for Gemma 4 E4B, `input_audio` parts of at most 30 s; the conversation resent whole and the model's state reused by the completer; streamed as server-sent events with keepalive comments; a client that leaves cancels its request; structured output, forced tools, several choices and log probabilities refused with `400 unsupported_feature`; with `serve.web`, the hosted `web_search`, `web_fetch`, and `web_context` tool types run by the server, at most six completions and six uncached searches per request, each call reported in `nuclis_web_calls`), `POST /v1/embeddings` is OpenAI's embeddings call for the embedding models (§5.10; by name, never by path; `float` or `base64` vectors; `task`, `title`, `truncate`, and `image_tokens` as in `nuclis embed`; image parts as base64 data URLs and `input_audio` parts; token arrays refused, since they are another model's tokens), `POST /v1/audio/speech` is OpenAI's speech call for the speech models (streamed as made, `wav` or `pcm`, raw or as server-sent events; on a Base `voice` a saved voice, by name or `{"id"}`, made ready on the connection's task before the job is queued; on VoiceDesign `instructions` the voice and `voice` ignored), `POST`, `GET`, and `DELETE /v1/audio/voices` OpenAI's custom voices for a Base's saved voices (a clip and its optional transcript, saved without opening a model), `POST /v1/audio/transcriptions` OpenAI's transcription call for whole recordings (multipart, up to `serve.transcription_bytes`, 256 MiB; `json`, `text`, `verbose_json`, `srt`, `vtt`; segments as server-sent events with `stream`), `GET /v1/audio/transcriptions/stream` a WebSocket for live transcription (16 kHz s16le in, `partial` and `final` with word times out); `--pin` (`serve.pin`) opens a model at start and never closes it to make room; `GET /v1/models` lists the decision, language, embedding, speech, and transcription models in OpenAI's shape (absent catalogue models too, each described well enough to choose it, build a request for it, or offer its pull) and `GET /v1/models/{id}` one of them, both with an `ETag` that `If-None-Match` answers with `304`, `GET /v1/health` the queue, the open models, and the requests in flight; every response carries `x-request-id` (a UUIDv7) and echoes the client's `x-client-request-id`; a request log of two JSON lines a request under `~/.nuclis/logs/` (one file a UTC day, kept 14 days and 256 MiB, typed fields, never a payload, `GET /v1/health` not logged; `serve.request_log`); `serve.host`, `serve.port` (default 9000), `serve.log`, and `serve.timeout` (the wait for the GPU, default 300 s) in the file, the flags over them; no model opened at start but those `--model` names (any kind: at most 2 decision, 1 language, 1 embedding, 1 speech, 1 transcription), every other on its first request; every open model, of any kind, within one memory budget (`serve.memory_bytes`, `--memory`, default physical memory less a third, at most 16 GiB), the least recently used closed to make room and a model in use never; decision passes and embedding passes (at most 2,048 rows each) run between a generation's steps; a coloured line per response on stdout; at most 2 models open, one GPU pass at a time, requests waiting for one model batched into a pass; host limits on head, body, connections, waiting requests, and waiting time, each refusal a typed error body |
-| `config` | `init` writes the file from what is installed (every current index chat model, and every runnable file the index does not name), naming `gemma-4-26b-a4b` as `engine.model` or, when it is absent, the first installed chat model; `sync` adds what was installed since and, with `--prune`, drops entries whose files are gone; show effective values with their source layer, set one key |
-| `agent` | §7 |
-| `completion` | a thin script per shell: every Tab runs the hidden `nuclis __complete <words…>`, which answers from one command table (held to the parser and the help pages by tests) and the user's state: registered and catalogue models, the workspace's sessions, config keys and their values; paths go back to the shell; a failure completes nothing |
+| `bench` | repeated cold and warm measurements with separate load, prefill, and decode timings; a prompt may be a token array so an exact input is reproduced; the speculative pair on one loaded model in one process ([benchmarks](benchmarks/README.md)) |
+| `tokenize` | the prompt as `generate` would feed it, its ids and byte offsets, from the artifact's header only |
+| `model` | pull with digest verification and sidecars; list what is installed, grouped by kind; adopt a file placed by hand; judge a file at the four levels of § 4 |
+| `serve` | the nuclis API over HTTP/1.1, loopback by default (another address warns: no authentication): Jev's call, OpenAI's chat completions, embeddings, speech, custom voices, and transcription, live transcription, the model list, and health ([guide/api.md](guide/api.md)); models opened by name, never by path, within one memory budget, the least recently used closed to make room and a model in use never; one GPU pass at a time; every limit's refusal a typed error body |
+| `config` | `init` writes the file from what is installed; `sync` adds what was installed since and, with `--prune`, drops entries whose files are gone; `show` prints effective values with their source layer; `set` sets one key |
+| `completion` | a thin script per shell that runs the hidden `nuclis __complete <words…>`, which answers from one command table held to the parser and the help pages by tests |
 
-Output rules:
-
-- Generated text goes to stdout, diagnostics to stderr. `--json` uses
-  versioned result types shared with the human-readable form.
-- Reports are styled only on a terminal that advertises colour, at the
-  strongest level it advertises; `--json`, pipes, `NO_COLOR`, and an unset
-  or `dumb` `TERM` get plain bytes.
-- Every stop is a named reason: EOS, token budget, context limit,
-  cancellation, execution failure. Prompts are never silently truncated.
-- Streamed text **must** be valid UTF-8 even when a token ends inside a
-  character; ids stay exact.
-- Every `--help` page is self-contained: usage, options, examples, notes,
-  with no pointer at the repository's documents.
+Output rules: text to stdout, diagnostics to stderr; `--json` is a
+versioned result type shared with the human-readable form; styling only on
+a terminal that advertises colour, never under `NO_COLOR` or a pipe; every
+stop a named reason, and no prompt silently truncated; streamed text
+valid UTF-8; every `--help` page
+self-contained.
 
 ## 7. The agent
 
 `nuclis agent` is the interactive surface of the engine and the project's
-playground: every feature a user can feel is exercised here first. It is
-one command; the evaluation CLI stays separate.
+playground: every feature a user can feel is exercised here first; the
+evaluation CLI stays separate. What it does, key by key, is
+[app/agent-surface.md](app/agent-surface.md).
 
 ### 7.1 Surface
 
-- Requires a TTY; `-p`/`--print` runs one turn without one (§7.7).
-- Startup clears the visible screen (scrollback kept), prints the welcome
-  in a box when the terminal is wide enough for the wordmark, primes the
-  session (§7.5), and anchors the live region at the bottom: the active
-  turn, the framed input box, a hint row, and the status bar.
-- Completed turns are written once above the region and never repainted;
-  the region is the only thing repainted, inside synchronized output.
-  Insertion above the region uses a scrolling region with the top margin
-  at row 1 so scrolled-off rows reach the scrollback; a terminal without
-  the capability gets a cursor-up rewrite. The region's bottom is the
-  anchor; blank rows between the transcript and the region are slack that
-  insertions fill and a growing region takes back before anything scrolls.
-- A resize replays the last turn at the new width; older turns are left
-  as printed. Exit erases the region and restores the terminal, leaving
-  only the transcript.
-- Colour levels: truecolor, 256-colour, the sixteen ANSI slots, or plain
-  attributes; `NO_COLOR` wins. Glyphs: Unicode, or ASCII when the locale
-  is not UTF-8 or `NUCLIS_ASCII=1`. Code blocks draw no border, so a
-  selection copies code alone. The default theme is Gruvbox dark; a theme
-  supplies a palette only and can never change layout.
-- The surface repaints at the engine tick's cadence through every GPU
-  wait, so a prefill chunk and a long tool call both animate.
+It **must** require a TTY outside print mode, render inline with the
+terminal's native scrollback, write each completed turn once above a live
+region, and repaint only that region. Colour degrades to plain attributes,
+`NO_COLOR` wins, and a theme supplies a palette only, never layout.
 
 ### 7.2 Editor
 
-- Enter sends; Shift-Enter (kitty keyboard protocol, requested on entry;
-  Ctrl-J is the fallback) inserts a newline. Word wrap at spaces; the
-  cursor row is always visible; a scrolled editor shows how many rows are
-  above.
-- A bracketed paste of at least 4 lines or 400 bytes becomes a chip
-  (`[pasted 96 lines, 6.1 KB]`) that moves and deletes as one unit; Ctrl-E
-  expands it; the text itself is what is sent. Input limit 128 KiB.
-- A paste that is one file's path (a file dropped onto the window) becomes
-  an attachment chip: an image (`.png .jpg .jpeg .gif .webp .heic .tiff
-  .bmp .ppm`, decoded by the vision contract) is `[image #N]`, whose bytes
-  in the prompt are that marker. The file is encoded at once, in the
-  background while the prompt is typed, one image at a time; the chip
-  shows `[image #1 · queued]`, `· encoding…`, `· 676 tokens`, or
-  `· failed: <reason>`, and the turn takes the encoded rows when the file's
-  digest is unchanged (encoding it at submit otherwise, and waiting for an
-  encode still running). A deleted chip's encode finishes and is dropped;
-  quitting waits for it. An audio clip (`.wav .m4a .mp3 .flac .aiff`,
-  decoded by AudioToolbox) on a model that hears (the catalogue marks it:
-  Gemma 4 E4B with its projector) is `[audio #N]`, encoded the same way,
-  its chip showing `· 10.4 s → 261 tokens` when ready. A clip is measured
-  at drop from its header: one over 30 s is refused with the limit named
-  (`long.wav is 42.0 s: a clip is at most 30 s, and is not cut`), never cut;
-  a file no decoder reads is refused naming the formats; a model that does
-  not hear refuses by name (`gemma-4-12b-qat does not hear audio;
-  gemma-4-e4b-qat does`). A UTF-8
-  text file within the input limit is `[file name, N lines]` over its
-  content, fenced and headed by the path. A typed image or clip path in a
-  prompt is attached at submit: an `@path` (workspace-relative, as
-  completion offers it), or a path starting `/`, `~`, or `.` (what a drop
-  types on a terminal that does not bracket pastes).
-  At most 8 images and 8 clips per prompt, each kind numbered in attachment
-  order and renumbered on deletion; Backspace removes a chip and its file;
-  Ctrl-E turns an image or audio chip back into its path. A model without a
-  working projector or audio encoder refuses the chip with a notice naming
-  the reason; the paste stays text.
-- The transcript shows an attached image or clip as a dim detail row under
-  the prompt (`image #1: shot.png (320×240 → 10×8 tokens)`, `audio #1:
-  memo.m4a (12.4 s → 310 tokens)`) and, for an image on a terminal
-  that draws kitty graphics (Ghostty, kitty; by environment, never under
-  tmux, off with `NUCLIS_NO_PREVIEW=1`), a preview of at most 12 rows under
-  it, fewer when less room stands above the input box. Sessions
-  record an image's path and grid, never its pixels, and a clip's path,
-  SHA-256, length, and rows, never its samples; a resumed session decodes
-  and encodes each again (an image at the current cap; the recorded grid
-  binds nothing), leaves a missing file out with a notice, and says when a
-  clip's file changed since it was sent. A clip's digest keys the token
-  cache as an image's does, so a follow-up turn reads only its new tokens.
-- Up/Down move inside a multi-line input and recall history from the
-  first and last rows; history persists across sessions (200 entries).
-- Tab completes a `/command` or an `@path`, else folds thinking; Enter
-  on an open command list runs the highlighted command, and a bare `/` is
-  answered with the command names, never sent to the model. An
-  `@word` without a `/` matches fuzzily across the workspace tree (`@faq`
-  offers `docs/faq.md`; characters in order, case-insensitive, basename and
-  word starts first; `.git`, `node_modules`, `zig-out`, `.zig-cache`, and
-  `__pycache__` are not walked, at most 20,000 entries); one with a `/`
-  lists that directory by prefix, so Tab walks into it. Ctrl-O
-  cycles the tool rows of the last turn through three views: the summary
-  (each call's row, detail, and one result row), the output (the result's
-  text under it, 40 rows then `… N more lines`), and folded (the call rows
-  stay, their detail, result, and diff rows go); Ctrl-T cycles the efforts
-  the model's profile renders distinctly and Ctrl-W the context window (2K
-  to 32K, re-opening the engine), both accelerators for `/model`; Ctrl-N
-  is `/clear`; Ctrl-C cancels a turn, twice quits, or quits when idle;
-  Ctrl-D quits.
-- Ctrl-X copies the last answer to the clipboard through OSC 52 (at most
-  256 KiB); Ctrl-G opens the input in `$VISUAL` or `$EDITOR` with the
-  terminal released around the child and takes the edited text back.
-- A line that starts with `!` runs the rest through the `bash` tool (same
-  bounds, same workspace, Ctrl-C cancels): the transcript shows a
-  `Bash(cmd)` block with the output under it, bounded to 40 rows, and the
-  full output goes to the model as the next message, `$ cmd` first. `!!`
-  runs and shows without sending. Both forms enter the prompt history.
-- The editor stays live while a turn runs. Enter *steers*: the text is
-  delivered as a user message before the model's next step, after the
-  tool calls in flight, and appears in the transcript and the session
-  where the model saw it; at most four wait at once, and what a turn ends
-  without delivering goes out as the next message. Reasoning is
-  interruptible, output is not: a steer that arrives while the step has
-  only reasoned (no answer text, no call) stops the step, drops it from
-  the history and the session (the transcript keeps what it showed, then
-  `— steering: reasoning restarted`), delivers the message, and runs the
-  step again against the step budget; Ctrl-C in that window still
-  cancels the turn. Alt-Enter *queues* the
-  text for after the turn; a queued message is not in the transcript
-  until it is sent. Print mode has no steering.
-- The input box is framed; the frame's colour is the reasoning effort and
-  its top edge carries the spinner while a turn runs.
-- **Commands.** A line is a command only when it starts with `/` and its
-  first word is ASCII letters (`/usr/bin/env` stays a prompt). A command is
-  an *action* (no argument, acts now; an argument is a usage error) or a
-  *chooser* (no argument opens its picker; the choice typed as the argument
-  skips it). The commands are `/model [name]`, `/resume [id]`, `/clear`,
-  and `/help`, plus `!`/`!!`; a retired command (`/new`, `/think`, `/ctx`,
-  `/list`, `/delete`, `/save`, `/image`) answers with where its job went.
-  A command typed during a turn waits for the turn's end instead of
-  steering it. Results are one-line `  — …` notices; anything longer is an
-  info block.
-- **Pickers.** Every chooser uses one picker: a title with the match count,
-  a search box (the `@` matcher), the list with the item in use marked,
-  optional option rows adjusted with ←/→, a dim line saying what Enter will
-  cost, and the footer `↑↓ move · ←→ adjust · Enter choose · Esc back`;
-  ↑/↓ move through the list and then the option rows. A destructive action
-  asks inside the picker, and only `y` confirms. Keys are accelerators for
-  commands and listed beside them in `/help`; no setting is reachable by a
-  key alone.
-- **`/model [name]`** offers the runnable models: the registry entries of
-  `nuclis.json` whose file is present, then catalogue names no entry
-  shadows (as `nuclis model ls` reports them), with option rows for the
-  effort (the levels the profile renders distinctly) and the context
-  window, at the running values for the running model and at the entry's
-  (the effort carried over) for another. A name, or a query only one model
-  matches, switches without the picker. Enter on another model unloads the
-  engine, opens the chosen file with its entry's settings (context,
-  speculation, draft length, thinking budget, sampling; backend, cache
-  precision, output ceiling, and image cap from the command line hold),
-  primes it (the token cache's disk tier serves a model used before), and
-  continues the conversation rendered through the new profile, which is a
-  full prefill; the conversation's images and clips are encoded again by
-  the new model's encoders, and one it cannot read or hear leaves the
-  model's view with a notice.
-  A failed open falls back to the previous model. On the running model,
-  Enter applies a new effort (re-priming) or window (re-opening).
-- **`/resume [id]`**: an id or a prefix of exactly one id resumes it;
-  otherwise the picker lists the workspace's sessions (newest first, the
-  one in use marked; the argument becomes the search) and Ctrl-D deletes
-  the selected one after the in-picker confirmation, refusing the session
-  in use. **`/clear`** drops the conversation into a fresh session file; the
-  old one stays resumable.
+The editor stays live while a turn runs (Enter steers it, Alt-Enter
+queues). Pastes and dropped files become chips encoded in the background;
+what the model cannot read is refused by name, never cut or ignored. A
+line is a command only when it starts with `/` and an ASCII word; keys are
+accelerators for commands, and a destructive action is confirmed inside
+its picker.
 
 ### 7.3 Transcript and status
 
-- The agent produces typed events (user, thinking, answer, tool call, tool
-  result, diff, notice, info, status, turn end); the transcript turns them
-  into blocks and hands each closed block to the screen exactly once. An
-  answer flushes block by block as its markdown blocks close.
-- Thinking folds and unfolds without leaving the model conversation; a
-  step's block closes with its own measured time.
-- A tool call is a dot and `Name(argument)`, the dot coloured by state
-  (running pulses; settled well, failed, or a write), with the tool's
-  one-sentence result under it; a failed call shows its message, bounded.
-  A run of calls is summed up in one dim row where the model's text
-  resumes. A mutation is followed by its diff: a header with the path and
-  the `+N −M` counts, a gutter of old and new line numbers, a marker cell,
-  and the text on a band of its hue (dark green, dark red; the changed
-  bytes on a brighter tint) padded to the width; side by side from 96
-  columns and unified below that, folded when long. Sixteen-colour
-  terminals keep the accent without the band.
-- Answers render as markdown (headings, emphasis, inline code, links as
-  hyperlinks, nested quotes, lists with task boxes, fenced code with a
-  heuristic highlighter, rules, tables); a soft line break inside a
-  paragraph stays a line break; model-supplied control bytes are stripped;
-  no rendered row is ever wider than the terminal, whatever the input.
-- The status bar shows measurements on the left (state, progress, the
-  loop step, context use, token counts, prefill and decode rates) and
-  settings on the right (effort, the speculative switch and draft length,
-  cache precision, backend, model). A rate that was not measured prints as
-  absent; a countdown is marked as an estimate. A narrow bar drops
-  settings from the right.
+Typed events become blocks, each handed to the screen exactly once;
+model-supplied control bytes are stripped and no row is wider than the
+terminal. A rate that was not measured prints as absent.
 
 ### 7.4 Sessions and storage
 
-```text
-~/.nuclis/agent/
-  sessions/<cwd-slug>/<timestamp>_<id>.jsonl   one file per session
-  history.jsonl                                 prompt history
-  exports/                                      `agent export` markdown
-```
-
-- One JSON object per line: a header (format version, id, time, working
-  directory, the model's path and verified digest, effort, context size),
-  then entries with `id` and `parent`: `user`, `assistant` (thinking,
-  answer, tool calls, stop, stats, and on a turn's last step the
-  `boundary` of its state saved in the token cache), `tool_result` (with its summary),
-  `effort`, `context`, `model` (a `/model` switch: the name, file, digest,
-  context, and effort the conversation continued on; readers older than
-  the entry refuse the file, as any unknown type), `compaction`, `notice`.
-- Append-only, created at the first entry; a resumed file's ids continue
-  past its last. A file stops recording at 64 MiB, the most a resume
-  reads, with a notice past 51 MiB naming `/clear`. A truncated last line is
-  dropped on load; any other unparsable line or unknown entry type is a
-  typed error naming the line; a newer format version is refused.
-- Entries store what the model saw and produced, never terminal styling.
-  `nuclis agent export` derives markdown from the same entries. A failed write is a dim
-  notice, never a lost turn.
-- Resuming (`/resume`, `--resume [<id>]`, `latest` by default) renders
-  the conversation the model last saw through the profile into a fresh
-  session: cancelled steps left out and every `compaction` applied where
-  it was written (`context_full`, `results_elided`, `turn_aborted`). When the
-  file's last `boundary` starts that render and its state is on disk (same
-  model files, backend, context size, and build), the state is restored and
-  only the rest is prefilled; otherwise the whole conversation is
-  ([app/agent.md § The agent's token cache](app/agent.md#12-the-agents-token-cache-2026-10-04)).
-- `agent ls` and the `/resume` picker list a workspace's sessions (the
-  picker marks the one in use); `agent rm <id>` and Ctrl-D in the picker
-  delete one, named by its id or a prefix of exactly one id (the picker
-  asks first and refuses the session in use), together with the
-  token-cache states its boundaries name. `agent export <id> [path]`
-  writes one as markdown, to `path` or under `exports/`; exports stay.
-- `nuclis cache` lists the token cache (each state's size and last use,
-  the total against `cache.disk_bytes`); `nuclis cache clear` empties it.
+Sessions are append-only JSONL files under
+`~/.nuclis/agent/sessions/<cwd-slug>/` that store what the model saw and
+produced; a truncated last line is dropped, any other bad line is a typed
+error naming it, and a failed write is a notice, never a lost turn.
+Resuming restores a saved state from the token cache when one matches.
+nuclis deletes a session only when asked (`agent rm`).
 
 ### 7.5 The loop
 
-A turn is a loop over steps, at most 16 per turn:
-
-1. Render the system block, the history, and the tool definitions through
-   the profile.
-2. Stream the completion, forwarding events as they arrive.
-3. Execute each decoded tool call in order: validate against the
-   registry, run, append the typed result to history and the session.
-4. Send the results back, or finish when the response holds no calls.
-5. Stop on cancellation, an unrecoverable failure, or the step budget,
-   and publish the reason. A cancellation between the calls of one step
-   answers the calls not yet run with a typed `not run` result.
-
-- The system block is built from sections (`src/agent/system_prompt.zig`):
-  identity and workspace, the working rules, one guideline per tool under
-  the rendered tool definitions, the cost rule, the date and the `$ `
-  convention for the user's own shell commands, and the project's
-  instructions file (`agent.instructions`: `auto` reads `AGENTS.md`, then
-  `CLAUDE.md`; `off`; or a path), cut at 8 KiB with a marked cut. Every
-  sentence is judged on the playground task list
-  ([development.md § The agent's task list](development.md#the-agents-task-list));
-  `--system-prompt <file>` replaces the built sections for that purpose.
-  The session is primed with the block before the first prompt, restored
-  from the token cache when a state of it is kept; a window too
-  small for it is a notice at startup, and the warm-up notice counts the
-  instructions file's tokens and says where a restored prefix came from.
-- Multi-turn without replay: the loop keeps the text the session has
-  consumed and prefills only the increment; an effort change, a cancelled
-  turn, or compaction restarts from the longest cached state the
-  conversation begins with (the primed prefix or a turn's end) and
-  replays the rest, and the bar names the cause and the tokens prefilled
-  and restored ([agent.md § The agent's token cache](app/agent.md#12-the-agents-token-cache-2026-10-04)).
-- Compaction: one tool result may not exceed an eighth of the context
-  window in tokens (never below 256); it is cut at a line boundary with a
-  note saying how to ask for the rest. When a step still does not fit,
-  older results of the turn become one-line stubs, then whole earlier
-  turns leave the model's view, each recorded as a `compaction` entry
-  (a failed turn leaves it too, recorded the same way);
-  only then does the turn end with a message naming the tokens needed
-  and how to raise the window. A turn that alone cannot fit fails with a
-  named reason.
-- Reasoning budget: one step reasons for at most `agent.thinking_budget`
-  tokens at `low` (1024 by default and in every catalogue entry `config
-  init` writes, 0 for no cap), twice that at `medium`, three times at
-  `high`, four times at `xhigh`, and never more than half of the step's
-  `generation.max_tokens` (8192 by default), so the answer and a long
-  call keep the rest; past it
-  the engine emits the profile's close marker itself (Muse Glimmer's
-  `<|eom|>`), so the model answers or calls a tool, and the transcript and
-  the session step say the reasoning was cut. A model that reopens its
-  reasoning past the budget is closed again at once, after the block's
-  header, and the model's own late close is dropped, never shown as text.
-  Effort is otherwise the template's own instruction, which the model may
-  exceed.
-- A tool call the model is still writing shows its size in the region; a
-  call the step stopped inside (cancellation, the output budget) is
-  dropped with a notice, never executed and never shown as answer text.
-  Arguments are checked against the tool's schema before it runs, and a
-  missing or mistyped one is named in the result.
-- Failures are results: an unknown tool, invalid arguments, a timeout, a
-  truncated call, an empty result, or an ordinary tool failure returns a
-  typed result to the model. Only an inference-transport failure ends the
-  turn.
+A turn is a loop of at most 16 steps: render the system block, the history,
+and the tool definitions through the profile; stream the completion;
+execute each decoded call in order, validated against the registry; send
+the results back, or finish when the response holds no calls. A turn
+stops on cancellation, an unrecoverable failure, or the step budget, with
+its reason. Failures are results: an unknown tool, invalid arguments, a
+timeout, a truncated call, or a tool failure returns a typed result; only
+an inference-transport failure ends the turn. The loop prefills only each
+turn's increment; a result over an eighth of the window is cut, and older
+results, then earlier turns, leave the model's view before a turn fails.
+Every sentence of the system block is judged on the task list
+([development.md § The agent's task list](development.md#the-agents-task-list)).
 
 ### 7.6 Tools
 
-The workspace is the process's working directory, canonicalized at
-startup; every path is resolved under it and a symlink escape is refused.
-Limits are host constants, never model-supplied; truncation is always
-marked; exceeding a limit is a typed result, not an abort.
+Six fixed tools (`read_file`, `write_file`, `edit_file`, `glob`, `grep`,
+`bash`) and, only when the configuration opts in, three web tools; their
+contracts are [app/agent-surface.md § Tools](app/agent-surface.md#tools).
+Every path is resolved under the workspace, the process's working
+directory, and a symlink escape is refused. Limits are host constants,
+never model-supplied; truncation is always marked; exceeding a limit is a
+typed result. Without `agent.web` the model sees the six tools and the
+same system prompt, byte for byte. The host constants:
 
-| Tool | Contract |
-| --- | --- |
-| `read_file` | a line-addressed region: offset and count, 120 lines by default, at most 2,000 lines; a partial page ends with a note the model reads (its range, the total, where to continue), a whole file with none; a file over 1 MiB serves its first MiB, whole code points only, with the size stated and the shell named for the rest; `outline` lists a markdown file's headings or a source file's definitions (Python, Zig, JS/TS, Go, Rust, C-family, shell) with line numbers, at most 400; non-UTF-8 is a typed error |
-| `write_file` | create or replace a UTF-8 text file, at most 1 MiB, by atomic replacement that keeps a replaced file's mode; the model reads a replacement's diff, a new file's line count only |
-| `edit_file` | replace one exact, unique, non-empty sequence; zero or several matches change nothing, nor does a result over 1 MiB; the file's mode is kept; the model reads the diff with one line of context (the transcript shows three) |
-| `glob` | one pattern (`*`, `?`, classes, `**`); hidden entries only when named; at most 200 results in stable order, of at most 10,000 collected; more, or unreadable directories, are marked |
-| `grep` | literal, case-sensitive; `path` narrows it to a directory, a file, or a glob inside the workspace, `context` adds 0–5 lines around a match; grouped by file in path order; at most 50 matches with the total stated; at most 20,000 files and 10 s a search, a stop stated; skips hidden entries, symlinks, binary-looking files, generated trees, and what each directory's `.gitignore` excludes (a subset: negation, directory-only, anchoring, the glob wildcards) |
-| `bash` | one command with a minimal environment; combined output at most 1 MiB; 300 s; cancellation, the timeout, and the output bound stop the command's process group (`SIGTERM`, then `SIGKILL` after 2 s) and reap the child; an output over 120 lines reaches the model as its first 40 and last 80 with the omitted count between |
-| `web_search` | offered only with `agent.web` and `web.url`; one query (≤ 400 bytes) to the user's search service, optionally limited by `freshness` (`day`, `week`, `month`, `year`); at most 8 results, each title, URL, and snippet, up to two more snippets under the first three, the corrected query and the engines that failed noted; 15 s; Ctrl-C cancels |
-| `web_fetch` | offered as `web_search`; one `http`/`https` URL (≤ 2,048 bytes) fetched by the service, which refuses non-public addresses; its Markdown text 16,000 code points at a time, the range noted with the `offset` that continues it; a page behind a bot challenge named as such; 30 s; Ctrl-C cancels |
-| `web_context` | offered as `web_search` when the service's health lists `/v1/context` (it has Brave), probed once at startup; one query and optional `freshness`; passages from at most 8 pages, a 2,048-token budget, each source's title, URL, and date above its passages, at most 12,000 characters cut at a source boundary; 25 s; Ctrl-C cancels |
-
-The web tools are off by default: without `agent.web` the model is shown
-the six tools and the same system prompt, byte for byte. Searches and
-contexts are metered upstream, so a turn makes at most six uncached ones;
-past that the call answers that the budget is spent. The service and
-its contract: [app/agent.md § 11](app/agent.md#11-the-web-tools-a-hosts-search-service-opt-in).
-
-A read of lines a file returned earlier in the same turn, from unchanged
-content and with that result still in the context, is answered with a
-one-line pointer to it rather than the lines again.
-
-Read: [app/agent.md](app/agent.md),
-[engine/tool-calling.md](engine/tool-calling.md).
+<!-- gen:limits -->
+| Limit | Value | Declared in |
+| --- | --- | --- |
+| context ceiling (tokens) | 32,768 | inference/src/runtime/session.zig `max_capacity` |
+| output budget (tokens) | 16,384 | src/config.zig `max_output_tokens` |
+| draft length | 15 | inference/src/engine.zig `max_draft_length` |
+| prefill chunk (tokens) | 256 | inference/src/engine.zig `prefill_chunk` |
+| config file (bytes) | 65,536 | src/config.zig `max_file_bytes` |
+| agent steps per turn | 16 | src/agent/loop.zig `budget_default` |
+| agent turns per session | 256 | src/agent/loop.zig `max_turns` |
+| agent instructions file (bytes) | 8,192 | src/agent/system_prompt.zig `max_instructions_bytes` |
+| read_file lines per call | 2,000 | src/agent/tools/read_file.zig `max_lines` |
+| read_file default lines | 120 | src/agent/tools/read_file.zig `default_lines` |
+| read_file bytes | 1,048,576 | src/agent/tools/read_file.zig `max_bytes` |
+| grep matches shown | 50 | src/agent/tools/grep.zig `max_shown` |
+| grep files scanned | 20,000 | src/agent/tools/grep.zig `max_files` |
+| grep seconds | 10 | src/agent/tools/grep.zig `max_seconds` |
+| glob results | 200 | src/agent/tools/glob.zig `max_results` |
+| image tokens per image | 4,096 | inference/src/vision/root.zig `max_image_tokens` |
+| server output tokens | 16,384 | src/api/chat/wire.zig `max_output_tokens` |
+| server audio clip (bytes) | 16,777,216 | src/api/chat/wire.zig `max_audio_bytes` |
+| server web rounds | 6 | src/api/chat/service.zig `max_web_rounds` |
+| server speech input (bytes) | 16,384 | src/api/speech/wire.zig `max_input_bytes` |
+| server live transcriptions | 16 | src/api/transcription/stream.zig `max_sessions` |
+| decision questions per call | 32 | inference/src/decide.zig `max_questions` |
+| decision states per call | 64 | inference/src/decide.zig `max_states` |
+<!-- /gen -->
 
 ### 7.7 Print mode
 
-`nuclis agent -p "<prompt>"` (or `--print --prompt-file <path>`) runs one
-turn without a TTY: the text form streams the answer alone; `--json`
-writes every event as one object per line. A turn that produced no answer
-says so on stderr. Nothing is recorded unless `--session <path>` names a
-file. `--json` without print mode is an error.
+`nuclis agent -p "<prompt>"` runs one turn without a TTY: the answer alone,
+or with `--json` every event as a line; nothing is recorded unless
+`--session <path>` names a file.
 
 ### 7.8 Not in scope
 
-HTTP serving, a permission system, MCP or extensions, subagents, a docs or
-API lookup tool beyond the opt-in web tools, and a second product surface.
+A permission system, MCP or extensions, subagents, a lookup tool beyond
+the opt-in web tools, and a second product surface.
 
 ## 8. Performance requirements
 
-- The primary workload is one user doing coding work: measure time to
-  first token after a substantial code prompt and steady decode.
-- The acceptance context is 32,768 tokens on the 48 GB target: every
-  length of the reference workload **must** complete on its token budget
-  with no swap growth, with headroom left for the operating system and
-  the user's tools. The record is
-  [benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs).
-- Weights stay quantized on the GPU path; prefill is chunked with planned
-  scratch.
-- Claims are made against nuclis's own previous record on the same
-  machine and method (the pinned llama.cpp build for records before
-  2026-10-14), with equivalent context, cache precision, sampling, and
-  output budget, and each record names chip, OS, compiler, revision, artifact
-  hash, power mode, warm-up policy, and memory use. Prefill and decode are
-  reported separately; no absolute throughput target is set by this
-  document.
-- A kernel or loop change ships when it is at least as fast as its
-  control on the workload it targets and the correctness gates hold;
-  a negative result is recorded with its numbers and closed.
-- Speculation ships on for a family only when its measured decode rate
-  exceeds the ordinary rate on the family's acceptance workload.
+- The primary workload is one user doing coding work: time to first token
+  after a substantial code prompt, and steady decode. Every length of the
+  acceptance workload, to 32,768 tokens on the 48 GB target, **must**
+  complete on its budget with no swap growth
+  ([benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs)).
+- Claims are made against nuclis's own previous record on the same machine
+  and method, at equal context, cache precision, sampling, and output
+  budget, naming chip, OS, compiler, revision, artifact hash, power mode,
+  warm-up, and memory; prefill and decode separately.
+- A kernel or loop change ships when it is at least as fast as its control
+  and the gates hold; a negative result is recorded and closed.
+  Speculation ships on only when it beats the ordinary rate on the
+  family's acceptance workload.
 
 ## 9. Verification
 
 - **Default tests** (`make test`) need no network, credentials, GPU, or
-  model, and run under a leak-checking allocator with error paths covered.
-  They **must** cover malformed and truncated GGUF data, overflow, block
-  decoding, tokenization, prompt rendering, the tools against temporary
-  workspaces, the loop against a stubbed completion, and the surface's
-  escape streams.
-- **Fixtures** are a reference's outputs on small inputs, committed with
-  their provenance: nuclis's CPU reference since 2026-10-14, the pinned
-  llama.cpp build before
+  model, run under a leak-checking allocator, and **must** cover malformed
+  GGUF data, overflow, block decoding, tokenization, prompt rendering, the
+  tools in temporary workspaces, the loop against a stubbed completion, and
+  the surface's escape streams, error paths included.
+- **Fixtures** are a reference's outputs on small inputs, with provenance
   ([models/README.md § 4](models/README.md#4-validate-against-nuclis-itself));
-  decoders match exactly, F32 GPU reductions match F64 sums within stated
-  tolerances.
-- **GPU checks** (`make test-metal`) compare every kernel with the CPU
-  reference or the fixtures and exercise lifecycle, cancellation, and
-  cleanup separately, since the Zig allocator cannot see GPU allocations.
-- **Gates** are the model-specific checks in `gates.json`, in four tiers
-  (`verify`, `verify-cpu`, `verify-long`, `verify-release`), selected by
-  changed paths through `make verify-auto` and run whole before a release:
-  per-layer traces against the pinned traces for every current model and
-  cache precision, generation checks that chunked prefill agrees with the
-  stepped path, that a reset reproduces a fresh session, and that sessions
-  share nothing, the speculative equivalence checks, the projectors, the
-  speech, transcription, decision, and embedding paths, and each language
-  model's perplexity on a pinned text within its stated bound of the
-  pinned result (0.5 %, or the bound the file states), at 512-token
-  windows and, for Gemma 4 E4B, at 4,096 (past its sliding windows) in
-  the long tier ([guide/eval.md](guide/eval.md)). Every
-  threshold is written down per numerical mode; passes are recorded with
-  dates and observed maxima.
-- **Workloads** (`make workload`) are the benchmarks in `workloads.json`;
-  their reports are saved by revision and the record tables are generated
-  from them.
-- **Definition of done** for a change: build, tests including error
-  paths, formatting, the happy path on the freshly built binary, the gates
-  its paths select, the documents it affects, and a report of what
-  changed, what was verified, and what remains.
-
-Read: [development.md § Gates](development.md#gates) and
-[§ The record](development.md#the-record).
+  **GPU checks** (`make test-metal`) compare every kernel with the CPU
+  reference, and lifecycle, cancellation, and cleanup separately.
+- **Gates** (`gates.json`, selected by changed paths through `make
+  verify-auto`, every tier strict before a release) hold the traces, the
+  generation checks, the bounds of § 5.9–§ 5.11, and each language model's
+  perplexity ([guide/eval.md](guide/eval.md)), every threshold per
+  numerical mode ([development.md § Gates](development.md#gates)).
+- **Done** is build, tests with error paths, formatting, the happy path on
+  the fresh binary, the gates its paths select, its documents, and a report
+  of what changed, what was verified, and what remains.
 
 ## 10. Deferred work and non-goals
 
-Vision input through the companion projectors ships for every catalogue
-entry with a projector: Qwen3.8's (and Bonsai 2's Q8_0 re-encoding of it),
-Gemma 4's two (the 12B's unified
-embedder, the 26B-A4B's SigLIP encoder, with the language model's
-bidirectional image spans), and Muse Glimmer's windowed encoder
-(`generate --image`, the chat's image chip, the shared
-`inference/src/vision/` contract, [engine/vision.md](engine/vision.md)).
-Speculation stays off in a conversation once an image is in it.
-PDF attachments are not planned: nothing in the tree extracts their text. Deferred, to be taken through the existing seams as
-concrete requirements arrive: constrained decoding (structured output,
-forced tool choice) and additional GPU backends. OpenAI's Responses API
-is not planned: `nuclis serve` speaks Chat Completions, which the
-OpenAI-compatible clients it serves use (decided 2026-10-08). The server wraps the
-library; tool execution and permissions stay with the consuming agent. A docs or API lookup tool for the agent was assessed and not
-scheduled: read-only docs roots would be the cheapest form, a bounded
-fetch would reopen the no-permission decision, an embedding index is
-not a tool of the agent. A personal index (walking the user's files,
-chunking, storing vectors, search) is not nuclis's: nuclis stays an
-engine, and an application that wants retrieval calls `POST
-/v1/embeddings` (§5.10) and owns everything around it (decided
-2026-10-09). Video input to the embedding model (frames through the vision
-encoder) is deferred to its own unit.
-
-Non-goals: training, model conversion or quantization tooling, universal
-GGUF support, a general tensor compiler, and matching any external
-product's feature list.
+Deferred until a concrete requirement: constrained decoding (structured
+output, forced tool choice), additional GPU backends, and video input to
+the embedding model. Outside nuclis: PDF attachments; OpenAI's Responses
+API (the clients `nuclis serve` serves speak Chat Completions; decided
+2026-10-08); tool execution in the server; a docs lookup tool for the
+agent; and a personal index, which belongs to the application that calls
+`POST /v1/embeddings` (decided 2026-10-09). Non-goals: training, model
+conversion or quantization tooling, universal GGUF support, a general
+tensor compiler, and matching any external product's feature list.
 
 ## 11. Open questions
 
-- Whether tool steps want different sampling defaults for reliability;
-  measure before changing anything.
-- Whether a `bash` allow-list or an approval step is wanted once the
-  agent has run on more real tasks; the inline choice component exists
-  either way.
-- Whether the sliding-window caches should be ring buffers; the full
-  allocation was kept with the numbers on record.
+- Whether tool steps want different sampling defaults for reliability.
+- Whether `bash` wants an allow-list or an approval step.
+- Whether the sliding-window caches should be ring buffers.
+

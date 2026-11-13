@@ -4,7 +4,7 @@
 //! `Segmenter` groups the transcriber's timed tokens into segments and
 //! words as they become final, and `writeSrt`/`writeVtt` write subtitles.
 //! Times are the rows that emitted the tokens (80 ms each), not a forced
-//! alignment. docs/guide/api.md § Transcription (files).
+//! alignment. docs/guide/api-transcription.md § Transcription (files).
 const std = @import("std");
 const inference = @import("inference");
 
@@ -16,7 +16,7 @@ const rnnt = inference.audio.nemotron_rnnt;
 pub const row_ms = 80;
 /// A pause between words that ends a segment: 1.04 s. At 0.8 s, 14 of the
 /// speech corpus's 60 one-sentence clips split mid-sentence; at 1.04 s, 4
-/// (docs/guide/api.md § Segments).
+/// (docs/guide/api-transcription.md § Segments).
 pub const pause_rows = 13;
 /// How long a segment without terminal punctuation waits for a late
 /// comma or period before it is final: 4 s (the corpus's latest was 2.6 s).

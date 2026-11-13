@@ -348,7 +348,7 @@ pub const artifacts = [_]Artifact{
         },
     },
     // Google's EmbeddingGemma 2 as unsloth's Q8_0 conversion with the BF16
-    // projector (docs/models/embeddinggemma.md § Artifacts).
+    // projector (docs/models/embeddinggemma.md § Files and encodings).
     .{
         .name = "embeddinggemma-2",
         .title = "EmbeddingGemma 2",

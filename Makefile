@@ -37,7 +37,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT)
 .PHONY: help build index debug build-cpu build-linux metal install uninstall test test-metal test-tiny fuzz input-safety check watch ci-test scripts-validate gates-tool verify-auto verify verify-release verify-long verify-cpu verify-changed sweep gate gates-list gates-costs gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate speed speed-base spec-matrix \
-        agent agent-eval api-check shot playground model-ls eval-corpus speech-corpus trace capture clean clean-cache distclean hf-downloader test-hf version release-draft release tag site-check site-serve docs-check
+        agent agent-eval api-check shot playground model-ls eval-corpus speech-corpus trace capture clean clean-cache distclean hf-downloader test-hf version release-draft release tag site-check site-serve docs-check docs-gen docs-facts-bin docs-facts-check
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -88,17 +88,17 @@ test-metal: ## GPU kernel fixture/lifecycle checks (needs a Metal device, no mod
 test-tiny: ## Metal against the CPU reference on generated models (needs a Metal device, no download)
 	$(ZIG) build test-tiny $(METAL)
 
-watch: ## Compile errors on every save, in about 0.25 s (Ctrl-C to stop; docs/development.md § Toolchain)
+watch: ## Compile errors on every save, in about 0.25 s (Ctrl-C to stop; docs/guide/code.md § Toolchain)
 	$(ZIG) build check -fincremental --watch $(ARGS)
 
-fuzz: ## One fuzz test under the fuzzer for SECONDS (default 60): TARGET=NAME; without TARGET, the list (docs/development.md § Hostile input)
+fuzz: ## One fuzz test under the fuzzer for SECONDS (default 60): TARGET=NAME; without TARGET, the list (docs/guide/code.md § Hostile input)
 	python3 scripts/gate/fuzz.py $(if $(TARGET),--target $(TARGET) --seconds $(or $(SECONDS),60),--list)
 
 input-safety: ## No panic, assert, unchecked cast, or forced optional on outside input without a `// checked:` reason
 	python3 scripts/repo/input-safety-check.py --self-test
 	python3 scripts/repo/input-safety-check.py
 
-check: fmt-check input-safety test test-metal test-tiny gates-validate workloads-validate scripts-validate ## Format check + the input-safety check + unit tests (fuzz corpora included) + GPU fixtures + the two manifests (seconds)
+check: fmt-check input-safety test test-metal test-tiny gates-validate workloads-validate scripts-validate docs-facts-check ## Format check + the input-safety check + unit tests (fuzz corpora included) + GPU fixtures + the two manifests + the documents' facts (seconds)
 
 # ---- gates (gates.json; docs/development.md § Gates) ----------------------
 # Every model-specific numerical check is a gate in the manifest, run by the
@@ -147,7 +147,7 @@ gates-costs: gates-tool ## Each tier's and the canaries' last passing seconds ag
 gates-validate: gates-tool ## Validate gates.json against the tree (no model)
 	$(GATES) --validate
 
-# ---- workloads (workloads.json; docs/development.md § The record) ---------
+# ---- workloads (workloads.json; docs/benchmarks/README.md § The record) ---------
 # Every benchmark workload is data: one `nuclis bench` invocation (or the
 # acceptance script) with its model from gates.json; reports are saved under
 # .zig-cache/bench/<workload>/ and scripts/bench/bench-report.py makes the tables.
@@ -165,7 +165,7 @@ workloads-validate: ## Validate workloads.json and run the driver's, the report 
 	python3 scripts/bench/spec-matrix.py --self-test
 	python3 scripts/bench/nuclis-baseline.py --self-test
 
-# ---- the speed loop (scripts/bench/speed.py; docs/development.md § The speed loop) --
+# ---- the speed loop (scripts/bench/speed.py; docs/benchmarks/README.md § The speed loop) --
 # A saved base binary against the tree, interleaved on saved prefixes under
 # .zig-cache/speed/; the keep rule decides.
 
@@ -202,9 +202,24 @@ PYRIGHT := uvx basedpyright@1.40.1
 fmt-py: ## Format the Python scripts in place (ruff)
 	$(RUFF) format scripts
 
-docs-check: ## Every documentation link and anchor resolves: Markdown, the docs/ paths in JSON, scripts, and Zig, the site's repository links (no network); ARGS='--move old=new' moves documents and rewrites them
+docs-check: ## The documents hold: links and anchors, generated blocks current against docs/facts.json and the manifests, kinds, named things, budgets, listing (no build, no network); ARGS='--move old=new' moves documents and rewrites them
 	python3 scripts/repo/docs-check.py --self-test
+	python3 scripts/repo/docs-gen.py --self-test
+	python3 scripts/repo/docs-gen.py --check
 	python3 scripts/repo/docs-check.py $(ARGS)
+
+# The facts the generated blocks render from (docs/README.md § Generated
+# blocks), collected with a Debug build in its own prefix so ./zig-out keeps
+# this machine's binary.
+DOCS_BIN := .zig-cache/docs-facts/bin/nuclis
+docs-facts-bin:
+	$(ZIG) build --prefix .zig-cache/docs-facts
+
+docs-gen: docs-facts-bin ## Collect docs/facts.json from the code and rewrite every generated block in the documents
+	python3 scripts/repo/docs-gen.py --facts $(DOCS_BIN)
+
+docs-facts-check: docs-facts-bin ## docs/facts.json agrees with the code (a new flag, key, limit, or encoding needs make docs-gen)
+	python3 scripts/repo/docs-gen.py --check-facts $(DOCS_BIN)
 
 site-check: ## Check the engine.nuclis.dev site in site/: references, head tags, CSP fit, versions, and the README's figures (no model, no network)
 	python3 scripts/repo/site-check.py --self-test

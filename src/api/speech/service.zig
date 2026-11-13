@@ -9,7 +9,7 @@
 //! synthesizer at a time. The response head waits until the job's prompt
 //! is prefilled, so a refusal on the worker (an unknown speaker) is still a
 //! status; the audio then streams through a `Pipe`. A client that leaves
-//! cancels between chunks. docs/guide/api.md § Speech.
+//! cancels between chunks. docs/guide/api-speech.md § Speech.
 const std = @import("std");
 const inference = @import("inference");
 const config = @import("../../config.zig");
@@ -926,7 +926,7 @@ fn readyVoice(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, root
 /// A failure before the first chunk, as the client reads it.
 fn startFailure(job: *Job, err: anyerror) ApiError {
     const arena_message = job.message_buffer;
-    if (speech.inputProblem(err)) |problem| return apiError(arena_message, .bad_request, "invalid_request", "input", "{s} cannot speak \"input\": {s} (docs/guide/api.md § Speech)", .{ job.name, problem });
+    if (speech.inputProblem(err)) |problem| return apiError(arena_message, .bad_request, "invalid_request", "input", "{s} cannot speak \"input\": {s} (docs/guide/api-speech.md § Speech)", .{ job.name, problem });
     return switch (err) {
         error.UnknownSpeaker => apiError(arena_message, .bad_request, "invalid_request", "voice", "{s} is not a speaker of {s}: {f}", .{ job.voice, job.name, names(job.speakers) }),
         error.UnknownLanguage => apiError(arena_message, .bad_request, "invalid_request", "language", "{s} is not a language of {s}: auto, {f}", .{ job.request.language orelse "auto", job.name, names(job.languages) }),

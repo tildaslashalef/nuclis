@@ -3493,7 +3493,7 @@ fn checkWideRows(alloc: std.mem.Allocator, io: std.Io, b: *Backend, random: std.
     }
 }
 
-/// The `q8_0` cache (docs/engine/metal-backend.md § Q8_0 KV cache):
+/// The `q8_0` cache (docs/engine/metal-attention.md § Q8_0 KV cache):
 /// `packQ8` bit-identical to `quant_encode.q8_0Row` (zero, tiny, NaN, and
 /// infinite blocks included); `unpackQ8` bit-identical to the CPU decoder
 /// rounded to half; the Q8_0 split pass (decode, wide, verify rows)

@@ -323,7 +323,7 @@ pub const Plan = struct {
     /// configuration; 512 on the expert one, where a chunk's slot rows fill
     /// the gathered 32-row tiles better (measured 10–14 % faster prefill
     /// than 256, and 1,024 buys 6 % more only on long prompts for twice the
-    /// workspace; gemma4.md § 26B-A4B).
+    /// workspace; docs/benchmarks/record/gemma4.md § Gemma 4 26B-A4B).
     pub fn preferredChunk(binding: model.Binding, default: usize) usize {
         return if (binding.config.experts != null) 512 else default;
     }

@@ -17,7 +17,7 @@ no drafter), the true baseline the 2026-09-21 verdict record reports beside
 the pair's loaded-but-off rate. The chip heats over a long
 matrix, slowing both sides of a pair; `--cooldown` idles before each cell
 for cold-chip rates.
-See docs/development.md § The speed loop.
+See docs/benchmarks/README.md § The speed loop.
 """
 
 import argparse

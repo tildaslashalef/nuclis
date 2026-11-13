@@ -4,7 +4,7 @@
 //! shape and decodes them to F32, the CPU reference; `Stream` decodes frames
 //! as they arrive. Every stage is causal, so pieces of any size give one
 //! `decode`'s samples. The convolutions reuse qwen3_codec.zig's matrices.
-//! The pipeline: docs/models/drama3.md § The codec.
+//! The pipeline: docs/models/drama3.md § Architecture.
 const std = @import("std");
 const gguf = @import("../formats/gguf.zig");
 const weights = @import("../runtime/weights.zig");

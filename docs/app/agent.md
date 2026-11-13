@@ -1,186 +1,14 @@
-# Agent and terminal concepts
+<!-- kind: reference -->
+# Agent concepts
 
-Companion to implementation, teaching the agent and terminal concepts behind
-`nuclis agent`: how a turn reaches the terminal, how model output becomes typed
-events, and how the tool loop executes a call. The design is in
-[spec.md § The agent](../spec.md#7-the-agent); the inference stack is taught in the
-companion [llm-guide.md](../llm-guide.md).
-
-## 1. A terminal that is written once: events, blocks, and the line between them
-
-The inference companion is about producing tokens; this one is about the other
-end — how a turn reaches a person — because the terminal surface is what the
-tool loop hangs from, and its rules are not obvious.
-
-**The rendering model.** nuclis does not use the alternate screen (the
-full-window mode `vim` and `less` switch into). Finished output is written into
-the terminal's *own* scrollback exactly once and never touched again; a small
-**live region** at the bottom — the streaming block, the editor, the status bar
-— is the only thing repainted. The payoff is that scrolling, searching,
-selecting, and copying are the terminal's job, already correct, and the
-conversation survives exit. The price is that a printed row is gone: it can be
-rewritten only while it is still on screen, which is why a fold toggle on a
-turn taller than the screen does nothing rather than half-rewriting it.
-
-Two escape sequences carry the model. **Synchronized output** (`CSI ? 2026 h`
-/ `l`) brackets a repaint so a terminal shows the frame whole instead of
-tearing mid-write. A **scrolling region** (`DECSTBM`, `CSI 1 ; bottom r`)
-narrows scrolling to the rows *above* the live region, so inserting a finished
-row scrolls only those and the region below is never erased — the flicker of
-erase-and-repaint disappears. The top margin must stay at row 1, because that
-is the condition under which terminals feed scrolled-off rows to the
-scrollback.
-
-**When is a block finished?** While a turn streams, the last markdown block is
-still being written: a paragraph may gain words, a fenced block its closing
-fence, a table another row. So the renderer answers one question —
-`markdown.split(text)` returns the prefix whose rendering can no longer change
-and the tail that can — and the surface styles the first while showing the
-second raw. A blank line ends a block; a heading, a rule, a quote, a list item,
-or a closing fence ends one at its newline; a paragraph, a table, and an open
-fence keep theirs open. One property makes this safe, and is pinned by a test
-that feeds a document a byte at a time: *rendering a closed prefix produces a
-prefix of rendering the whole*. Without it, text would shift on the screen as
-later bytes arrived.
-
-**Events, and who owns their strings.** Between the generation loop and the
-screen sits a tagged union — user, thinking delta, thinking end, answer delta,
-tool call, tool result, diff, status, turn end, notice. The transcript builds
-blocks from it, the status bar folds the beats into a row, print mode writes
-it as text or JSON, and the engine and the tool loop produce the same kinds. An
-`answer_delta` is emitted once per generated token, so its
-string is **borrowed for the duration of the call**: a consumer that keeps text
-copies it. Owning every event's bytes would mean an allocation and a free per
-token for text that is copied anyway.
-
-Zig makes two parts of this cheap. The consumer is `anytype` with a single
-method — `sink.send(event)` — so the splitter that turns one stream into two
-works for the transcript and for print mode with no interface value, no vtable,
-and no allocation: each call site is compiled against its own concrete type.
-And the union is `union(enum)`, so `switch` over it is exhaustive: adding an
-event kind without rendering it is a compile error rather than a row that
-silently never appears.
-
-**The original hold-back.** A model writes one stream with its reasoning channel
-delimited by markers ([§7 of the inference companion](../llm-guide.md#7-the-prompt-profile-is-a-contract)). Splitting it *incrementally* has a trap: while the
-channel is open, the first bytes of a half-arrived `</think>` look exactly like
-reasoning text, and a naive splitter puts `</thi` on the screen for one token
-before reclassing it. Keeping back one marker's length minus one byte makes
-that impossible, and costs nothing — the held bytes arrive with the next token.
-But then the *end* of a turn must release them explicitly, or a turn cancelled
-mid-thought loses its last characters. That bug lived in the inline version
-until the splitter became a module with tests of its own; it is the kind of
-thing that only shows up when a component can be driven byte by byte without a
-model, a clock, or a terminal.
-
-## 2. Why a streaming parser needs token boundaries
-
-The final interpretation of model output belongs to the inference profile. A
-sampled token arrives as an integer ID; decoding it to
-bytes discards useful information. A real `</think>` token and several
-ordinary tokens spelling `</think>` can produce identical text, but only the
-former closes the reasoning channel. The application-level splitter (§1)
-could not distinguish them, however carefully it held back partial text.
-
-`engine.complete` runs the existing numerical loop and feeds each ID plus its
-decoded piece into `Profile.decoder`. Qwen's closing token and Gemma's channel
-closing token select the answer channel. Gemma's opener also carries ordinary
-`thought\n` text after the special token; only that short header suffix needs
-buffering across pieces. Reasoning content can otherwise be delivered at once.
-UTF-8 repair runs inside each channel, so half a character cannot join bytes
-on the other side of a control token. Tests exercise every split of a
-multibyte string and literal marker text using fake token IDs.
-
-The output is an `events.Event` union: thinking, answer, a reserved tool-call
-variant, or stop with the loop's metrics. In Zig, `sink: anytype` means the
-compiler checks and specializes the call to `sink.send(event)` for its actual
-consumer. Event strings borrow the decoder's reusable scratch only until that
-call returns. The agent copies the two text channels into owned writers, then
-uses those same values for the transcript, session log, and next prompt.
-There is no second interpretation at history replay time.
-
-A tool call uses the same boundary: the profile converts its native
-syntax into a complete call with host correlation ID, name, and JSON-object
-arguments. The agent validates the registered tool and executes it only after
-the completion hands back control. Qwen and Gemma serialize calls and results
-differently ([the evidence](../engine/tool-calling.md)); each profile
-decodes its own (§8, §9).
-`generate` and `bench` retain the raw `runLoop` path.
-
-## 3. A tool call is host data until a profile serializes it
-
-The other half of the tool seam is the conversation types a profile
-encodes. The interesting decision is what is *shared* and what is
-*profile-owned*. A model's wire syntax — Qwen's `<tool_call>` blocks, Gemma's
-`call:NAME{...}` grammar — is profile knowledge, because only the profile's
-pinned template can say how a call is spelled. But the agent needs to reason
-about calls before any of that: which call a result answers, whether a result
-is missing, whether the conversation is ready for another completion. That
-reasoning must not depend on either wire format, so it lives in shared types:
-`ToolCall {id, name, arguments}`, `ToolDefinition {name, description,
-parameters}`, `Role.tool`, and a `tool_call_id` on the result message.
-
-The `id` deserves a note. Neither Qwen nor Gemma promises to put a stable
-identifier on a call, and the model has no way to echo the host's notion of
-one. A short numeric ID (`u32`, matching the transcript) is therefore a
-*host* correlation token, assigned when the assistant's calls are parsed and
-matched back, by execution order, to the results. Making it explicit is what
-lets the validator reject an orphan result (nothing pending), a duplicate
-(already answered), a missing one (a user turn arrives mid-group), or an
-out-of-order pair — errors that a bare role tag cannot express. The same type
-serves the completion side: `events.ToolCall` *is* `profiles.ToolCall`, so
-the decoder and the history cannot drift.
-
-Validation is deliberately separate from support. `profiles.validate` accepts
-a structurally valid tools input; it does not decide whether a profile can
-render it. Each profile asks that second question, and renders a tool
-grammar only once its fixtures pin it: the loop is built and tested against
-the shared contract, never against a wire format a profile would have to
-guess — the same rule that keeps a mismatched template from being rendered
-at all.
-
-## 4. A cell is not a code point: grapheme clusters and terminal width
-
-A terminal is addressed in fixed cells, and the naive way to count them is one
-per Unicode code point (or worse, one per byte). That is wrong for exactly the
-text a chat UI sees most: emoji. `👋🏿` is a wave plus a skin-tone modifier,
-`👩‍🚀` is three code points joined by a zero-width joiner, `❤️` is a heart plus
-U+FE0F, `🇨🇭` is two regional indicators, `e` + U+0301 is a base plus a
-combining mark. Measured per code point, the first three are four cells wide
-and can be *split across a row* mid-cluster; the editor's Backspace can delete
-half a family.
-
-The unit is the **grapheme cluster**, defined by UAX #29. Clusters are found by
-a boundary rule, not by a per-character property: "no break before an Extend",
-"break around Control", "join a regional-indicator pair", "join an
-extended-pictographic ZWJ sequence", and a handful of Hangul and Indic rules.
-Several of those need *state* — the parity of a regional-indicator run, or
-whether an `Extended_Pictographic Extend* ZWJ` preceded the current character —
-which is the same lesson as §2: the meaning of a byte depends on what came
-before it. `src/tui/graphemes.zig` carries that state through a cluster and
-resets it at each boundary.
-
-Width is a second, separate policy on top of segmentation. UAX #11 gives each
-code point an East Asian Width (`W`/`F` are two cells, `A` ambiguous is a
-judgement call), but a cluster's width is not the sum of its parts: a joiner,
-a variation selector, a skin-tone modifier, and Hangul V/T jamo all contribute
-zero, and an emoji-presentation cluster is two cells regardless of how many
-code points it took. nuclis keeps one documented policy in `clusterWidth`:
-VS15 keeps a cluster at one cell, an emoji presentation / modifier / flag pair
-is two, everything else sums its non-zero code points, and an unpaired
-regional indicator stays one. That is a terminal approximation, pinned by
-fixtures rather than asserted universally.
-
-The data is the other half. Unicode properties are large tables; `uucode`
-exists to generate them, but adding a dependency for one table is a lot of
-surface for a project that keeps its build offline. `scripts/fixtures/grapheme-table.py`
-instead downloads a **pinned UCD** once, checks its digests, and emits one
-sorted interval table (`graphemes_table.zig`) that a binary search reads. The
-generator is committed, the artifact is committed, and the data layer sits
-behind `graphemes.zig`, so swapping in `uucode` later is a change to one file.
-The correctness evidence is the Unicode project's own conformance file:
-`GraphemeBreakTest.txt` (766 cases at 17.0.0) runs through the same iterator
-the editor and the wrapper use.
+The concepts behind `nuclis agent`'s loop: how a turn runs its steps, how a
+tool runs a process, how a session resumes, the web tools, and the token
+cache. The design is in [spec.md § The agent](../spec.md#7-the-agent); the
+inference stack is taught in the companion [llm-guide.md](../llm-guide.md).
+The concepts are numbered once across three documents: §1, §4, and §7, the
+terminal's, are in [terminal.md](terminal.md); §2, §3, §8, and §9, how a tool
+call crosses the token boundary, are in
+[agent-tool-calls.md](agent-tool-calls.md).
 
 ## 5. A turn is a loop: steps, the two seams, and a parser that must hold back
 
@@ -207,7 +35,7 @@ which is why the loop's budget, cancellation, and tool-execution paths are
 pinned without a model or a GPU.
 
 The parse lives in the prompt profile. Native tool decoding belongs to the
-same place that owns the tokenizer's special-token boundaries (§2): the
+same place that owns the tokenizer's special-token boundaries ([§2](agent-tool-calls.md#2-why-a-streaming-parser-needs-token-boundaries)): the
 shared `profiles/stream.zig` decoder holds the call's bracket token ids and a
 body parser. Streaming shapes the problem: the decoder collects
 the body between the two control tokens and never executes a call that is
@@ -217,8 +45,8 @@ notice. Released as answer text, its markers would read as the model's prose
 and come back as control tokens the next turn. It cannot emit `<tool_call>` as
 ordinary text and then discover the call, because the opening token is
 recognized by id, which is the only signal a byte-stream consumer cannot see.
-That is the parser analog of §2's rule: a byte's meaning depends on what came
-after it, and the only safe move is to delay the decision. §8 follows the
+That is the parser analog of [§2](agent-tool-calls.md#2-why-a-streaming-parser-needs-token-boundaries)'s rule: a byte's meaning depends on what came
+after it, and the only safe move is to delay the decision. [§8](agent-tool-calls.md#8-decoding-a-tool-call-at-the-token-boundary) follows the
 decoder in detail.
 
 The loop carries **native** tool history: an assistant message with its
@@ -244,7 +72,7 @@ in a process group of its own, so the stop reaches what it started in the
 background too: the group gets `SIGTERM`, then `SIGKILL` if anything is still
 alive after a two-second grace, and the child is reaped, so cancel, timeout,
 and overflow all leave no orphan. A cancel that arrives between the calls of
-one step answers the calls not yet run with a typed `not run` result: every
+one step answers the calls it has not run with a typed `not run` result: every
 call keeps its result, so the history and the session stay valid.
 
 Reading output is a second lifetime hazard. stdout and stderr are separate
@@ -282,113 +110,43 @@ Whatever is left out is stated with how to get it.
 One more turn of the same screw. When the terminal is in raw mode, Ctrl-C is a
 *key*, not a signal — ISIG is off — so the interrupt the engine's observer
 checks is never set while a blocking tool runs. The tool cannot poll a flag
-that nothing will raise, and the driver cannot read the keyboard while the
+that nothing raises, and the driver cannot read the keyboard while the
 tool holds the loop. The seam that closes the gap is a beat: an optional
 `Tick` the agent installs on the workspace, invoked by `bash` once per poll
 iteration, on which the driver reads the keyboard, repaints, and sets the same
 `interrupt` flag the tool is already watching. A tool that never blocks pays
 nothing, and print mode installs no tick at all.
 
-## 7. A diff is one computation, rendered two ways
+The bounds are host constants, never the model's; the tools' rows
+(`agent`, `read_file`, `grep`, `glob`) are read from the code:
 
-A diff looks like text, and the first instinct is to render it as text:
-compute a unified string, then colour the lines whose first byte is `+` or
-`-`. That works until the second consumer appears. The model and the session
-need the unified form; the terminal, at a wide width, wants a *two-column*
-view that shows an old line beside the replacement, with the bytes that
-changed marked. If the renderer recovers line numbers and pairing by parsing
-the unified string, the computation exists twice — once producing the string,
-once interpreting it — and the two can drift.
-
-So the unit of a diff here is a **row**: old line number, new line number,
-kind, text, and the byte span that changed. `tui.diff.compute` produces rows
-from an old and a new byte string and derives the unified text from the same
-edit script. The renderer consumes rows and never parses; the model and the
-session consume the unified string. Neither is a description of the other.
-
-The algorithm is a plain line diff with two practical concessions. Lines
-split on `\n` alone, so a CRLF file diffs cleanly against itself (`\r` stays
-in the line and is invisible once rendered). Common leading and trailing lines
-are stripped first, because the common case is a small edit in a large file;
-the remaining middle goes through an LCS table, and a middle too large for the
-table degrades to "all removed, all added" rather than spending unbounded
-time. Only changed hunks plus three lines of context are materialised, so a
-one-line change in a thousand-line file stays eight rows; the unified text the
-model reads keeps one line on each side, since it wrote the change and pays
-for every line it reads back. Pairing a removal with
-the addition that replaced it is what lets the two-column view put them on one
-display row and highlight the bytes that differ, and it falls out of the same
-edit script.
-
-Zig note: the module has no theme and no I/O. It allocates owned bytes and is
-tested against fixtures (insertion, deletion, replacement, context, CRLF, a
-missing trailing newline, the bounded fallback), which is what lets the layout
-be a golden test instead of a screenshot.
-
-## 8. Decoding a tool call at the token boundary
-
-A model does not emit JSON. Qwen3.8 emits a call as ordinary tokens wrapped in
-two *control* tokens: `<tool_call>` and `</tool_call>`. The wrapper is the only
-part the vocabulary marks as special; everything inside — `<function=…>`, each
-`<parameter=…>`, the value — is spelled with ordinary tokens that could appear
-in prose. That asymmetry is the whole design: the profile can detect a call's
-boundaries only while it still has token IDs, and it must then treat the body
-as opaque text and parse it separately.
-
-`engine.complete` already hands each generated token to the profile decoder as
-`(id, piece)`. The shared decoder (`profiles/stream.zig`) also holds an
-optional tool grammar: the two bracket IDs and a `parse(alloc, body)` function.
-On the opening ID it flushes whatever answer text was pending, switches to
-collecting the body, and stops emitting text; on the closing ID it parses the
-collected body with the profile and emits one `tool_call` event. The body
-parser is the profile's (`qwen38.parseTool`), so the wire syntax never leaves
-`profiles/` — the agent loop sees typed `ToolCall`s and nothing else.
-
-Two failure modes are decided by the same state machine. A call that is still
-open when the stream ends never reached its closing token: at EOS a body that
-parses is still one call, and anything else — a body that does not parse, a
-budget stop, a cancellation — is dropped with a notice (`tool_cut`), never
-shown as answer text. A body that arrives complete but that the parser refuses
-(no function name, malformed parameters) is released as text under Qwen, the
-same bytes the model wrote, and dropped with a notice under Gemma 4
-(`Tool.unparsed`). Neither can reach execution: an incomplete or malformed call is a
-message, never an action. This is the tool analogue of §6's rule that a
-process is not an instruction until the host has actually built it.
-
-The arguments themselves obey the template's own literal-versus-JSON rule. The
-prompt profile renders a string argument literally and anything else as JSON;
-the decoder reverses it by trying to parse each value as JSON and falling back
-to the literal text. The host still validates the fields against the tool it
-names — the profile normalizes the envelope, it does not vouch for the
-contents. And because the outer markers are resolved from the artifact's
-vocabulary, a template whose call brackets are not standalone tokens declares
-no tool grammar and keeps rejecting tool input rather than approximating a
-format its model never sees.
-
-## 9. Two tool grammars, one loop
-
-A decoder that recognises *a* tool call is not yet a design that recognises
-*any* model's tool call, and Qwen3.8 and Gemma 4 make that concrete.
-Qwen3.8 wraps a call in two control tokens (`<tool_call>`/`</tool_call>`) and
-puts a small XML-like body inside; the bracket tokens are what makes decoding
-possible (§8). Gemma 4's brackets are control tokens too, around an
-ordinary-token body, `<|tool_call>call:NAME{…}<tool_call|>`, and its result handoff resumes the model
-turn and can reopen the thought channel — neither is the same shape as Qwen's
-`<tool_response>` fold. ([The evidence](../engine/tool-calling.md) records the
-two formats.)
-
-The lesson is where the difference is allowed to live. The loop sees only
-`profiles.ToolCall {id, name, arguments}`, `Role.tool`, and a shared
-`ToolDefinition`; it never reads a marker or a body. What varies per checkpoint
-— the bracket texts, the body grammar, the result framing, whether the
-reasoning channel can reopen — is a `StreamMarkers`/`parse` pair and a render
-function in the profile module. Gemma's pair arrived with its own fixture set
-and no change to the loop: a second format is a second fixture set, not a
-branch in the loop. Its handoff is even a different mechanism — the model
-emits `<|tool_response>` after its calls, so that token is simply one more
-stop token in the profile's set.
-This is the same trade as [§24 of the inference companion](../llm-guide.md#24-the-registry-table): the variation is named once, at the
-seam, and the code above the seam stays single.
+<!-- gen:limits -->
+| Limit | Value | Declared in |
+| --- | --- | --- |
+| context ceiling (tokens) | 32,768 | inference/src/runtime/session.zig `max_capacity` |
+| output budget (tokens) | 16,384 | src/config.zig `max_output_tokens` |
+| draft length | 15 | inference/src/engine.zig `max_draft_length` |
+| prefill chunk (tokens) | 256 | inference/src/engine.zig `prefill_chunk` |
+| config file (bytes) | 65,536 | src/config.zig `max_file_bytes` |
+| agent steps per turn | 16 | src/agent/loop.zig `budget_default` |
+| agent turns per session | 256 | src/agent/loop.zig `max_turns` |
+| agent instructions file (bytes) | 8,192 | src/agent/system_prompt.zig `max_instructions_bytes` |
+| read_file lines per call | 2,000 | src/agent/tools/read_file.zig `max_lines` |
+| read_file default lines | 120 | src/agent/tools/read_file.zig `default_lines` |
+| read_file bytes | 1,048,576 | src/agent/tools/read_file.zig `max_bytes` |
+| grep matches shown | 50 | src/agent/tools/grep.zig `max_shown` |
+| grep files scanned | 20,000 | src/agent/tools/grep.zig `max_files` |
+| grep seconds | 10 | src/agent/tools/grep.zig `max_seconds` |
+| glob results | 200 | src/agent/tools/glob.zig `max_results` |
+| image tokens per image | 4,096 | inference/src/vision/root.zig `max_image_tokens` |
+| server output tokens | 16,384 | src/api/chat/wire.zig `max_output_tokens` |
+| server audio clip (bytes) | 16,777,216 | src/api/chat/wire.zig `max_audio_bytes` |
+| server web rounds | 6 | src/api/chat/service.zig `max_web_rounds` |
+| server speech input (bytes) | 16,384 | src/api/speech/wire.zig `max_input_bytes` |
+| server live transcriptions | 16 | src/api/transcription/stream.zig `max_sessions` |
+| decision questions per call | 32 | inference/src/decide.zig `max_questions` |
+| decision states per call | 64 | inference/src/decide.zig `max_states` |
+<!-- /gen -->
 
 ## 10. Resuming a session is a replay, not a restore
 
@@ -422,7 +180,7 @@ was written: `context_full` drops the turns before `first_kept`,
 failed. So a resumed conversation is the one the model last saw, not the
 longer one the file holds. The cost of the replay is that it is prefilled
 again on resume — which is the honest trade: the alternative is persisting
-opaque numerical state that the format cannot describe and a future change
+opaque numerical state that the format cannot describe and a later change
 cannot safely reinterpret.
 
 This is also why the resumable unit is the *entry*, not the event. A turn emits
@@ -515,14 +273,9 @@ again", a bot challenge names the host and, when offered, points to
 the turn. Queries are checked (≤ 400 bytes, a known `freshness`) and URLs too
 (`http`/`https`, ≤ 2,048 bytes) before anything leaves the machine.
 
-**Why a third tool.** A probe of ten questions (six coding, four chat;
-2026-10-16) compared `/v1/context` with a search and a fetch of the top hit.
-Context at 2,048 tokens held the answer every time in 4.3–9.2K characters
-and 1.1–1.4 s; 4,096 doubled the sources without adding an answer. Snippets
-answered simple facts but missed a before/after example, cut text mid-word,
-and left a version question ambiguous; two of ten top-hit fetches met a bot
-challenge whose page context still had. Search and fetch stay for finding
-links and reading a page whole.
+**Why a third tool.** Context passages answer what snippets and a top-hit
+fetch miss; search and fetch stay for finding links and reading a page
+whole ([record, 2026-10-16](../benchmarks/record/agent.md#why-a-third-tool-2026-10-16)).
 
 **Waiting without freezing.** `src/web/client.zig` runs each request in a
 concurrent task and waits in 50 ms beats, a pattern `bash`'s polling loop
@@ -537,7 +290,7 @@ first.
 sink, so the client never sees them as `tool_calls`, runs them on the GPU worker
 while short decision and embedding items run in the waits, appends the
 assistant message and the results, and completes again, at most six rounds
-([api.md § Hosted web tools](../guide/api.md#hosted-web-tools)). The model's
+([api-chat.md § Hosted web tools](../guide/api-chat.md#hosted-web-tools)). The model's
 state carries over between rounds, as between an agent's steps. Since the
 client's next request resends only the message it got back, the job keeps
 what the model saw in a bounded stash (`src/api/chat/stash.zig`) keyed by a
@@ -552,10 +305,10 @@ fetched page can steer the model; its text is data, as the guideline says, and
 `bash` could already reach the web, so the tools add no capability, only a
 better one.
 
-## 12. The agent's token cache (2026-10-04)
+## 12. The agent's token cache
 
-The agent re-prefilled tokens it had already computed whenever the session
-could not continue where it stood: every start (the system block and tools),
+Without a cache the agent re-prefills tokens it has already computed whenever
+the session cannot continue where it stands: every start (the system block and tools),
 a cancelled step, an effort change, compaction. `src/completer/cache.zig` keeps
 snapshots at **boundaries** and `Completer` (`src/completer.zig`) restores
 the longest one a render starts with, then prefills the rest. New tokens
@@ -571,7 +324,7 @@ removed.
   (`engine.Saves`); this is the server's primed prefix, since it never
   primes. Every boundary sits before a control token, which BPE never
   merges across, so the remainder encodes the same alone.
-- **Media** (2026-10-27). The placeholder text of an image or a clip is the
+- **Media.** The placeholder text of an image or a clip is the
   same for every image or clip of its size, so the text the completer
   matches on is the render with each placeholder run followed by its
   item's SHA-256 between two 0xFF bytes, never valid UTF-8 and so never in
@@ -630,8 +383,7 @@ removed.
   so a conversation resumed on another day misses and replays.
 - **Model switch.** `/model` unloads the engine, opens the chosen file,
   empties the memory tier, and re-opens the disk tier under the new
-  model's key, so a model used before restores its primed prefix from disk
-  (switching back to Qwen3.8 after Gemma 4 12B: 0.1 s, 2026-10-04). The
+  model's key, so a model used before restores its primed prefix from disk. The
   conversation is rendered through the new profile and prefilled whole
   (cause `model`), and the session file records a `model` entry beside
   `context` and `effort`.
@@ -641,27 +393,5 @@ removed.
   bar shows `replayed <cause> <prefilled>, <restored> restored`, and the
   session file records `replay` and `restored_tokens` beside `replayed`.
 
-**Evidence for the save inside a prompt and the rewind** (2026-10-08):
-the generation gates' prompt-saves check, run then on Gemma 4 12B QAT,
-the 26B-A4B, E4B, Qwen3.8, and Muse Glimmer (it runs today in
-`qwen38-generation-metal` and `gemma4-{26b-a4b,e4b}-generation-metal`): a run that saves after 8 of 17 prompt tokens emits
-the same 8 greedy tokens as one fed those 8 then the rest; the saved state
-restored, and on the attention-only families the session moved back to it
-after the run, emit them again; Qwen3.8 refuses the rewind. Through
-`nuclis serve` and `nuclis agent` on Gemma 4 12B, E4B, and Qwen3.8 the
-answers at temperature 0 equal the previous build's, and the reuse is the
-table in [api.md § Conversations and the cache](../guide/api.md#conversations-and-the-cache);
-in `nuclis agent` on the 12B (speculation on), turns 2 and 3 prefilled 28
-and 35 tokens where the previous build reported `replayed rewrite 44,
-3183 restored` and `76, 3183 restored`.
-
-**Evidence** (Qwen3.8-27B Q4_K_M, Metal, M4 Pro, 16K window, dirty build of
-2026-10-04 on `9f45bf0`). Start-up warm-up of the 1,333-token prefix at
-`low` (`make shot`, `.zig-cache/tui/c1-start`, `c8-warm-start`, `c6-low`):
-16.3 s prefilled, 1.0 s from disk, 0.4 s from memory. `agent -p` wall time
-with the weights in the page cache, three pairs: 17.4 s cold, 2.6 s with
-the disk entry. A cancel then a prompt (`c4-after-cancel`): `replayed
-cancel 41, 1369 restored`; low → xhigh → low then a prompt
-(`c7-after-effort`): `replayed effort 17, 1427 restored`. A cold and a
-warm `agent -p` at temperature 0 give the same text with the drafter and
-without it. A primed entry on disk is 242–251 MB.
+What the cache saves, and the checks of the save inside a prompt and the
+rewind: [record, 2026-10-04 and 2026-10-08](../benchmarks/record/agent.md#the-agents-token-cache-2026-10-04).

@@ -1,313 +1,111 @@
 # Third-party notices
 
-nuclis is written independently. External implementations are read as
-**format definitions and the source of fixtures pinned before 2026-10-14**,
-never as sources to copy: see the policy in
-[AGENTS.md](AGENTS.md#engineering-rules) and the history in
-[docs/models/README.md](docs/models/README.md#4-validate-against-nuclis-itself). This file records every piece of
-third-party material that is actually present in the repository, with its
-origin and license, and lists the references that were consulted but not copied.
-License texts are linked on the web; no separate license text files live in the
-repository.
+nuclis is written independently: other implementations are read as format
+definitions, never copied ([AGENTS.md](AGENTS.md#engineering-rules)). This
+file lists the third-party material present in the repository, with its
+origin and licence, and the projects consulted. Licence texts are linked,
+not copied into the tree.
 
-## Material present in the repository
+## Material in the repository
 
-The material falls into five kinds: the model prompt templates reimplemented
-in Zig, the format-defining data any decoder of these formats must contain,
-the presentation palette the terminal surface draws with, the speech data
-the speech recognizer is checked against, and the fonts the website serves.
+### Prompt templates, reimplemented in Zig
 
-### Model prompt templates
+| Profile | Template from | Fixtures | Licence |
+| --- | --- | --- | --- |
+| `inference/src/profiles/qwen38.zig` | the template in [unsloth/Qwen3.8-27B-GGUF](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/tree/ce331efc48d5722b4b8041f72793e530eae18d9b), SHA-256 `12827f24…` | `qwen38-text.json`, `qwen38-tools.json` | [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0.txt) |
+| `inference/src/profiles/gemma4.zig` | the template in [unsloth/gemma-4-12b-it-GGUF](https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/tree/fc034cfff751157913579611efad8462ac1be606) and the QAT files, SHA-256 `845f1ee4…` | `gemma4-text.json`, `gemma4-tools.json` | the artifact declares Apache-2.0; the weights follow [Google's model card](https://huggingface.co/google/gemma-4-12b-it) |
+| `inference/src/profiles/gemma4_e.zig` | the E-series revision in `gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf`, SHA-256 `241c50d8…` | `gemma4_e-text.json` | as Gemma 4 |
+| `inference/src/profiles/muse_glimmer.zig` | the template in [unsloth/Muse-Glimmer-30B-GGUF](https://huggingface.co/unsloth/Muse-Glimmer-30B-GGUF/tree/faa5b025c584459c13febfa5c59883516710ae39), SHA-256 `114f55eb…` | `muse_glimmer-text.json`, `muse_glimmer-tools.json` | none declared; the weights follow the model card |
+| `inference/src/profiles/clef.zig`, `inference/src/models/clef.zig` | the record encoding, fixed prompt text, and `JointSchemaHead.forward` of Cloudflare's [`joint_schema_model.py`](https://huggingface.co/Cloudflare/clef-flash/tree/17f0b0ad64efb65d273590632833508766b2aae6) | `inference/src/models/fixtures/clef/` | [Apache-2.0](https://huggingface.co/Cloudflare/clef-flash/blob/17f0b0ad64efb65d273590632833508766b2aae6/LICENSE) |
 
-#### Qwen3.8 — Apache License 2.0
-
-`inference/src/profiles/qwen38.zig` reimplements, in Zig, the
-reasoning-preserving subset of the chat template embedded in
-`Qwen3.8-27B-UD-Q4_K_M.gguf` (Qwen / Unsloth). The pinned fixtures in
-`inference/src/profiles/fixtures/qwen38-text.json` and `qwen38-tools.json` were
-rendered from that template. Source:
-<https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/tree/4ca720788d1e01f1bff70c033e0d0028fd02e502>,
-model SHA-256 `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`. Unsloth's re-made file at
-`ce331efc48d5722b4b8041f72793e530eae18d9b` (SHA-256 `1bce504d…`), the
-pinned one since 2026-11-12, carries the same template (SHA-256
-`12827f24…`).
-Modifications: explicit size limits, ownership, UTF-8 checks, and narrower typed
-inputs; tool calls and images are rendered, assistant prefill is not implemented.
-License: [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0.txt).
-
-#### Gemma 4 — as licensed by the artifact
-
-`inference/src/profiles/gemma4.zig` reimplements, in Zig, the
-system, user, and assistant turns, the thinking switch, tool declarations,
-calls, and responses, and the image and audio spans of the chat template
-embedded in `gemma-4-12b-it-UD-Q4_K_XL.gguf` (Google / Unsloth; the QAT files
-carry the same template). The template text is not in the tree; the pinned
-fixtures in `inference/src/profiles/fixtures/gemma4-text.json` and
-`gemma4-tools.json` were rendered from it by the pinned llama.cpp server
-before 2026-10-14. Source:
-<https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/tree/fc034cfff751157913579611efad8462ac1be606>,
-model SHA-256 `90fd944d227e9d9b68e7e2c7d5b57b79d4c66ed521b0919fbbd932cf834f6f8e`,
-template SHA-256 `845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b`.
-The artifact header declares `general.license = apache-2.0`; the upstream
-Google model is distributed under the terms stated on its model card
-(<https://huggingface.co/google/gemma-4-12b-it>), which govern the weights
-and are not affected by this reimplementation. Modifications: explicit
-size limits, ownership, UTF-8 checks, narrower typed inputs, `<bos>`
-rendered as text; assistant prefill is not implemented.
-`inference/src/profiles/gemma4_e.zig` carries the E-series revision of the
-template (`gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf`, template SHA-256
-`241c50d8…`), which differs in one rendered case; its fixture is
-`inference/src/profiles/fixtures/gemma4_e-text.json`.
-
-#### Muse Glimmer — as licensed by the artifact
-
-`inference/src/profiles/muse_glimmer.zig` reimplements, in Zig, the turns,
-the reasoning-strength line, reasoning messages, the ATEM tool protocol,
-and the image spans of the chat template embedded in
-`Muse-Glimmer-30B-UD-Q4_K_XL.gguf` (Meta / Unsloth). The template text is
-not in the tree; the pinned fixtures in
-`inference/src/profiles/fixtures/muse_glimmer-text.json` and
-`muse_glimmer-tools.json` were rendered from it by the pinned llama.cpp
-server before 2026-10-14. Source:
-<https://huggingface.co/unsloth/Muse-Glimmer-30B-GGUF/tree/faa5b025c584459c13febfa5c59883516710ae39>,
-model SHA-256 `82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38`,
-template SHA-256 `114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e`.
-The artifact header declares no `general.license`; the weights are
-distributed under the terms stated on the model's card, which this
-reimplementation does not affect. Modifications: explicit size limits,
-ownership, UTF-8 checks, narrower typed inputs, no `Current date:` line in
-a synthesized system turn, `off` rendered as `low`; assistant prefill is
-not implemented.
-
-#### clef-flash — Apache License 2.0
-
-`inference/src/profiles/clef.zig` reimplements, in Zig, the record
-encoding of Cloudflare's `joint_schema_model.py` (`encode_record`,
-`question_options`, `render`) and carries its fixed text: the system
-instruction (`SYSTEM_PROMPT`), the frame around the state, and the schema's
-field labels (`SCHEMA FIELDS:`, `FIELD`, `ID:`, `TYPE:`, `INSTRUCTION:`,
-`ALLOWED OPTIONS:`, `OPTION`, `END FIELD`, `JOINT SCHEMA DECISIONS:`);
-`inference/src/models/clef.zig` implements `JointSchemaHead.forward` from
-the same file. Source: <https://huggingface.co/Cloudflare/clef-flash/tree/17f0b0ad64efb65d273590632833508766b2aae6>,
-license <https://huggingface.co/Cloudflare/clef-flash/blob/17f0b0ad64efb65d273590632833508766b2aae6/LICENSE>.
-Modifications: explicit size limits, ownership, typed validation
-failures, the head in F32 rather than the release's BF16, images at most
-1,024 tokens; videos are not implemented.
+Profile fixtures are in `inference/src/profiles/fixtures/`. The Gemma 4 and
+Muse Glimmer fixtures were rendered by llama.cpp's server from the template
+before 2026-10-14; the template text itself is not in the tree. Every
+reimplementation adds size limits, ownership, UTF-8 checks, and typed
+inputs; none implements assistant prefill.
 
 ### Format-defining data
 
-#### GGML storage-format constants — MIT (ggml authors)
+- **GGML quantization tables** (MIT, Copyright (c) 2023-2026 The ggml
+  authors, [licence](https://github.com/ggml-org/llama.cpp/blob/master/LICENSE)):
+  the IQ3_S codebook (`inference/src/quant/iq3-grid.zig`, also emitted into
+  the Metal source), the IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, and IQ1_S codebooks
+  (`inference/src/quant/iq-codebooks.zig`; the IQ2 sign table is computed),
+  and the IQ4_NL values (`inference/src/quant/decode.zig`,
+  `inference/src/backends/metal/dequant.metal`), from llama.cpp `7620399f`
+  `ggml/src/ggml-common.h`. Any decoder of these formats must hold the same
+  numbers; the decoders are written independently.
+- **PQ2_0 and PTQ1_0** (ids 142, 143) are defined by the PrismML fork of
+  llama.cpp (MIT, `5d80cff0`), read as a format contract; its output is the
+  `inference/src/quant/fixtures/ternary.json` fixture. No code or table from
+  it is in the tree.
+- **Safetensors** dtype names and header layout, from the
+  [format specification](https://github.com/huggingface/safetensors)
+  (Apache-2.0), in `inference/src/formats/safetensors.zig`.
+- **GPT-2's byte-to-Unicode alphabet**, the order every GPT-2-style
+  vocabulary is stored in, in `inference/src/tokenizer/bpe.zig`.
+- **Unicode Character Database** ([Unicode License](https://www.unicode.org/license.txt),
+  Copyright © Unicode, Inc.): `inference/src/tokenizer/unicode-ranges.bin`
+  (character classes, by way of llama.cpp's `unicode-data.cpp` at the
+  revision above); `inference/src/tokenizer/nfc_table.zig` and
+  `src/tui/graphemes_table.zig`, generated from UCD 17.0.0 by
+  `scripts/fixtures/tokenizer-nfc.py` and `scripts/fixtures/grapheme-table.py`;
+  and `src/tui/fixtures/GraphemeBreakTest.txt`, the conformance file. The
+  pre-tokenizers, NFC, and grapheme rules over that data are written
+  independently.
 
-These lookup tables define GGML quantization formats and exist nowhere but
-the ggml/llama.cpp sources; any decoder of these formats must contain the
-same numbers. They were extracted from llama.cpp revision
-`7620399f58aebfd2196b74021f9581bcf7218cb9`, `ggml/src/ggml-common.h`:
+### Presentation
 
-- the 512-entry IQ3_S codebook, `inference/src/quant/iq3-grid.zig`
-  (also emitted into the Metal shader source at compile time);
-- the IQ2_XXS (256), IQ2_XS (512), IQ2_S (1,024), IQ3_XXS (256), and
-  IQ1_S (2,048; IQ1_M shares it) codebooks,
-  `inference/src/quant/iq-codebooks.zig`, written by
-  `scripts/iq-codebooks.py` (retired; at tag `v0.11.0`; the IQ2 sign table is
-  computed, not copied);
-- the 16-entry IQ4_NL value table in `inference/src/quant/decode.zig` and
-  `inference/src/backends/metal/dequant.metal`.
-
-The decoders themselves (Zig and MSL) are independent implementations of the
-documented block layouts, verified against pinned fixtures or, for the
-codebook encodings above, against the same model in a validated encoding
-(docs/models/saluki.md). The tables are
-retained with the ggml copyright notice as a conservative attribution:
-Copyright (c) 2023-2026 The ggml authors, MIT License,
-[llama.cpp LICENSE](https://github.com/ggml-org/llama.cpp/blob/master/LICENSE).
-
-The group-128 ternary encodings PQ2_0 and PTQ1_0 (ids 142, 143) are defined
-by the PrismML fork of llama.cpp (`PrismML-Eng/llama.cpp`, MIT, revision
-`5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6`), read as a format contract and
-was the numerical source of the committed
-[`ternary.json`](inference/src/quant/fixtures/ternary.json) fixture; no
-table or code from it is present in the tree.
-
-#### Safetensors dtype names — format fact (Apache License 2.0)
-
-`inference/src/formats/safetensors.zig` recognizes the dtype spellings
-(`BF16`, `F8_E4M3`, …) and the header layout defined by the safetensors
-format specification, huggingface/safetensors
-([Apache-2.0](https://github.com/huggingface/safetensors/blob/main/LICENSE)).
-The names are the format's vocabulary; the reader is independently
-written from the specification, with no code from the project.
-
-#### GPT-2 byte-level alphabet — format fact
-
-`inference/src/tokenizer/bpe.zig` maps the 256 byte values onto Unicode
-scalars in the order defined by OpenAI's GPT-2 byte-level BPE (the mapping every
-GPT-2-style GGUF vocabulary is stored in). The mapping is a property of the
-vocabulary format; the merge algorithm is independently implemented.
-
-#### Unicode character data — Unicode License
-
-`inference/src/tokenizer/unicode-ranges.bin` is a compact table of letter,
-mark, number, and whitespace membership derived from the Unicode Character
-Database, obtained through llama.cpp's generated `unicode-data.cpp` at the
-revision above (by `scripts/tokenizer-unicode.py`, retired; at tag `v0.11.0`). Unicode data is
-Copyright © Unicode, Inc., licensed under the Unicode License
-(<https://www.unicode.org/license.txt>). The pre-tokenizers in
-`inference/src/tokenizer/pre.zig` (`qwen35`),
-`inference/src/tokenizer/gpt4o.zig` (`llama4`), and
-`inference/src/tokenizer/gpt2.zig` (the GPT-2 pattern of a Hugging Face
-`ByteLevel` pre-tokenizer) implement the splitting rules declared by the
-models' tokenizers; all are independently written.
-
-`inference/src/tokenizer/nfc_table.zig` is generated by
-`scripts/fixtures/tokenizer-nfc.py` from UCD 17.0.0 (`UnicodeData.txt` canonical
-combining classes and decompositions, `DerivedNormalizationProps.txt`
-Full_Composition_Exclusion). `inference/src/tokenizer/nfc.zig` implements
-UAX #15 normalization form C over that data; it is independently written.
-
-`src/tui/graphemes_table.zig` is generated by `scripts/fixtures/grapheme-table.py` from
-UCD 17.0.0 (Grapheme_Cluster_Break and Indic_Conjunct_Break, East Asian Width,
-Default_Ignorable_Code_Point, Emoji_Presentation/Emoji_Modifier, and
-Extended_Pictographic). `src/tui/fixtures/GraphemeBreakTest.txt` is the
-conformance test file for that version. `src/tui/graphemes.zig` implements the
-UAX #29 boundary rules and the UAX #11 width policy over that data; it is
-independently written.
-
-### Presentation data
-
-#### Gruvbox dark palette — MIT (Pavel Pertsev)
-
-`src/tui/theme.zig` carries the colour values of the Gruvbox dark palette
-(morhetz/gruvbox, <https://github.com/morhetz/gruvbox>): the background and
-foreground scales and the eight accent pairs, each with the truecolor value
-and the 256-colour approximation published in `colors/gruvbox.vim`. A palette
-is a list of colours, not code; nuclis's role table, level detection, and
-sequence composition are independently written, and the values are retained
-with attribution because they are recognisably one designer's palette.
-Copyright (c) 2026 Pavel Pertsev, MIT License,
-[gruvbox LICENSE](https://github.com/morhetz/gruvbox/blob/master/LICENSE.md).
-The website's replay of the agent (`site/style.css`, the `--t-*` colours)
-reuses the same values so the replay looks like the terminal.
+- **Gruvbox dark palette** (MIT, Copyright (c) 2026 Pavel Pertsev,
+  [licence](https://github.com/morhetz/gruvbox/blob/master/LICENSE.md)): the
+  colour values in `src/tui/theme.zig` and the `--t-*` colours of
+  `site/style.css`.
+- **Fonts** ([SIL OFL 1.1](https://openfontlicense.org/open-font-license-official-text/),
+  no Reserved Font Name), from [google/fonts `9710da1`](https://github.com/google/fonts/tree/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl),
+  narrowed and subset with `fonttools`: `site/fonts/archivo-v1.woff2`
+  (Archivo, Copyright 2020 The Archivo Project Authors) and
+  `site/fonts/jetbrains-mono-v1.woff2` (JetBrains Mono, Copyright 2020 The
+  JetBrains Mono Project Authors).
 
 ### Speech data
 
-#### LibriSpeech — CC BY 4.0
+Both [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); the clips
+are cut and rounded to 16-bit PCM.
 
-`tests/fixtures/nemotron-asr/librispeech/clip.wav` is the first 80,880
-samples of LibriSpeech test-clean utterance `121-121726-0000`, rounded to
-16-bit PCM, and `tests/fixtures/speech-corpus.json` holds the reference
-transcripts of 40 test-clean utterances (the audio is fetched, not
-committed). LibriSpeech ASR corpus, V. Panayotov, G. Chen, D. Povey and
-S. Khudanpur (2015), from LibriVox public-domain audiobooks, OpenSLR
-resource 12 (<https://www.openslr.org/12>), licensed under
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Modifications:
-the cut and the rounding.
+- **LibriSpeech** (Panayotov, Chen, Povey, Khudanpur, 2015;
+  [OpenSLR 12](https://www.openslr.org/12)):
+  `tests/fixtures/nemotron-asr/librispeech/clip.wav` (test-clean
+  `121-121726-0000`) and 40 test-clean transcripts in
+  `tests/fixtures/speech-corpus.json`.
+- **FLEURS** (Conneau et al., 2022;
+  [google/fleurs `70bb2e84`](https://huggingface.co/datasets/google/fleurs/tree/70bb2e84b976b7e960aa89f1c648e09c59f894dd)):
+  `tests/fixtures/nemotron-asr/fleurs-de/clip.wav` (German test sentence
+  1660) and 20 transcripts in German, French, Spanish, and Russian in the
+  same corpus file.
 
-#### FLEURS — CC BY 4.0
+## Projects consulted, not copied
 
-`tests/fixtures/nemotron-asr/fleurs-de/clip.wav` is the first 80,880 samples
-of FLEURS German test utterance `1191248392415945452.wav` (sentence 1660),
-rounded from 32-bit float to 16-bit PCM, and
-`tests/fixtures/speech-corpus.json` holds the raw and normalized
-transcripts of 20 FLEURS test utterances in German, French, Latin American
-Spanish and Russian. FLEURS, A. Conneau et al. (2022), from
-[google/fleurs at `70bb2e84`](https://huggingface.co/datasets/google/fleurs/tree/70bb2e84b976b7e960aa89f1c648e09c59f894dd),
-licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-Modifications: the cut and the rounding.
+No code from these is in nuclis. Where fixtures came from running one, they
+are its outputs, pinned before nuclis became its own reference
+([docs/models/README.md § 4](docs/models/README.md#4-validate-against-nuclis-itself)).
 
-### Website fonts
+| Project | Read for | Fixtures from running it |
+| --- | --- | --- |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) `7620399f` (MIT) | GGUF, the quantization formats, tokenizer behaviour; the numerical and speed reference until 2026-10-14 | traces and token arrays under `tests/fixtures/` and `inference/src/**/fixtures/` |
+| [ds4](https://github.com/antirez/ds4) by antirez | the Objective-C Metal bridge behind a C interface | none |
+| [laya](https://github.com/NandhaKishorM/laya) 0.3.20 (Apache-2.0) | the decision model's inputs, forward, calibration, tokenizer | `inference/src/models/fixtures/laya/`, `laya-multilingual/` |
+| clef-flash `joint_schema_model.py` (Apache-2.0, `17f0b0ad`) | the sequence and the head | `inference/src/models/fixtures/clef/` |
+| [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) `022e286b` (Apache-2.0), with Transformers 4.57.3 | the talker, code predictor, codec; the tokenizer's split pattern (`inference/src/tokenizer/cased.zig`) | `tests/fixtures/qwen3-tts/` |
+| [fish-speech](https://github.com/fishaudio/fish-speech) `0f8a12e8` (Fish Audio Community License 1.0) | Drama 3's backbone, codebook tower, prompt, sampler, codec | `tests/fixtures/drama3/` |
+| [transformers](https://github.com/huggingface/transformers) `c0d024fb` (Apache-2.0) | Nemotron 3.5 ASR: features, encoder, streaming, transducer | `tests/fixtures/nemotron-asr/` |
 
-`site/fonts/` serves two fonts to engine.nuclis.dev, taken from
-[google/fonts at `9710da1`](https://github.com/google/fonts/tree/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl)
-and modified only by `fonttools`: the variable axes narrowed to the range
-the site uses (`varLib.instancer`) and the glyphs subset to the characters
-it sets (`subset`, WOFF2). Neither font declares a Reserved Font Name. Both
-are licensed under the
-[SIL Open Font License 1.1](https://openfontlicense.org/open-font-license-official-text/).
+Drama 3's weights are under the Fish Audio Community License: no hosted
+service for third parties without Fish Audio's agreement, consent from
+anyone whose voice is cloned, and "Built with Fish Audio" on
+redistribution ([model card](https://huggingface.co/fishaudio/drama-3)).
+nuclis pulls weights; it ships none.
 
-#### Archivo — SIL Open Font License 1.1
+## The project's licence
 
-`site/fonts/archivo-v1.woff2`, from `ofl/archivo/Archivo[wdth,wght].ttf`
-(width 100–125, weight 400–700). Copyright 2020 The Archivo Project Authors
-(<https://github.com/Omnibus-Type/Archivo>).
-
-#### JetBrains Mono — SIL Open Font License 1.1
-
-`site/fonts/jetbrains-mono-v1.woff2`, from
-`ofl/jetbrainsmono/JetBrainsMono[wght].ttf` (weight 400–700). Copyright 2020
-The JetBrains Mono Project Authors (<https://github.com/JetBrains/JetBrainsMono>).
-
-## References consulted, not copied
-
-These projects were read to understand formats and algorithms, and some
-were run, before nuclis became its own reference, to generate the fixtures and
-traces pinned then. No source code from them is present in nuclis.
-
-- **llama.cpp** `7620399f58aebfd2196b74021f9581bcf7218cb9` (MIT) — the GGUF
-  format, the quantization constants and semantics, and tokenizer behavior.
-  Until 2026-10-14 it was also the numerical reference and the speed
-  reference; the scripts that drove it are at tag `v0.11.0`. Fixtures under
-  `inference/src/**/fixtures/` and traces pinned from it are outputs of
-  running it, not copies of it.
-- **ds4** by antirez (<https://github.com/antirez/ds4>) — the pattern of
-  Objective-C Metal glue behind a C interface that nuclis's Metal bridge
-  follows.
-- **laya** 0.3.20 by Convai Innovations (Apache-2.0,
-  <https://github.com/NandhaKishorM/laya>) with PyTorch 2.14.0, Transformers
-  5.17.0, and Tokenizers 0.23.2 — the decision model's input contract,
-  forward, calibration, and tokenizer behaviour.
-  `scripts/laya-reference.py` (retired; at tag `v0.11.0`) ran it in a venv under
-  `.reference/`;
-  the fixtures under `inference/src/models/fixtures/laya/` and
-  `laya-multilingual/` are outputs of running it on the pulled
-  checkpoints, not copies of them.
-- **clef-flash**'s `joint_schema_model.py` by Cloudflare (Apache-2.0, at
-  commit `17f0b0ad`) with PyTorch 2.11.0 and Transformers 5.10.2 — the
-  definition of the sequence and the head. `scripts/clef-reference.py`
-  (retired; at tag `v0.11.0`) ran it in a venv under `.reference/`; the fixtures under
-  `inference/src/models/fixtures/clef/` are outputs of running it, not
-  copies of it.
-- **Qwen3-TTS** (`qwen-tts` 0.1.1) by the Qwen team (Apache-2.0,
-  <https://github.com/QwenLM/Qwen3-TTS> at commit `022e286b`) with PyTorch
-  2.14.1 and Transformers 4.57.3 — the definition of the talker, the code
-  predictor, and the codec decoder. `scripts/speech-traces/qwen3_tts_trace.py`
-  (retired; at tag `v0.11.0`) ran it in a venv under `.reference/`; the fixtures under
-  `tests/fixtures/qwen3-tts/` are outputs of running it on the pulled
-  `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` and `-1.7B-CustomVoice`
-  checkpoints, not copies of them. The split pattern of
-  `inference/src/tokenizer/cased.zig` is the one Transformers 4.57.3
-  (Apache-2.0, `tokenization_utils_base.py`, `fix_mistral_regex`) installs
-  on that tokenizer, implemented from the pattern, not copied.
-- **fish-speech** by Fish Audio (Fish Audio Community License 1.0,
-  <https://github.com/fishaudio/fish-speech> at commit `0f8a12e8`) with
-  PyTorch 2.14.1 and `descript-audio-codec` 1.0.0 — the definition of
-  Drama 3's backbone, codebook tower, prompt, chunking, sampler, and
-  codec. `scripts/speech-traces/drama3_trace.py` (retired; at tag `v0.11.0`) ran it
-  in a venv under
-  `.reference/`; the fixtures under `tests/fixtures/drama3/` are outputs of
-  running it on weights dequantized from the pulled
-  `sakasegawa/drama-3-GGUF` file, not copies of it. The model's weights
-  are under the same licence, which allows no hosted service for third
-  parties without Fish Audio's agreement, requires the consent of anyone
-  whose voice is cloned, and asks redistributions to say "Built with Fish
-  Audio" (<https://huggingface.co/fishaudio/drama-3>). nuclis pulls them;
-  it ships none. speech.cpp's GGUF converter was read only as the
-  definition of the file's layout.
-- **transformers** by Hugging Face (Apache-2.0) at commit
-  `c0d024fbc873ab0325e1b40fc1bd69069609de65` (5.21.0.dev0), with PyTorch
-  2.14.1 and librosa 1.0.0 — the definition of Nemotron 3.5 ASR
-  (`nemotron3_5_asr/`, `nemotron_asr_streaming/`, `parakeet/`): its
-  feature extractor, encoder, cache-aware streaming, and transducer.
-  `scripts/speech-traces/nemotron_trace.py` (retired; at tag `v0.11.0`) ran it in a
-  venv under
-  `.reference/`; the fixtures under `tests/fixtures/nemotron-asr/` are
-  outputs of running it, not copies of it.
-- Model documentation: the Qwen3.8 and Gemma 4 model cards and configuration
-  on Hugging Face, the `convaiinnovations/laya` model card, and the
-  `Cloudflare/clef-flash` model card.
-
-## The project's own licence
-
-nuclis is MIT-licensed ([LICENSE](LICENSE)). This file lists material from
-elsewhere that exists in the tree — prompt templates, format-defining
-constants, a palette, speech clips, and fonts — with a link to each licence; it is not a list of
-dependencies, because the engine has none.
+nuclis is MIT ([LICENSE](LICENSE)). The engine has no dependencies; this
+file lists material, not packages.

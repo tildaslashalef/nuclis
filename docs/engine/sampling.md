@@ -1,3 +1,4 @@
+<!-- kind: reference -->
 # Generation and sampling
 
 The complete 64-layer Qwen text schedule runs natively in Zig: mapped quantized
@@ -42,7 +43,7 @@ section); the file's `generation.sampling` entries and then `--temperature`,
 selects greedy. Greedy ties select the lowest token
 ID. Nonfinite logits are errors.
 
-### Sampling profiles and the selection chain (2026-09-08)
+### Sampling profiles and the selection chain
 
 `generate` and `agent` sample with the checkpoint's official settings of the
 reasoning mode `--think` selects. The tables live in the profile modules
@@ -101,14 +102,14 @@ repetition penalty finite and > 0.
 
 On the Metal backend the prompt is consumed in chunks of up to 256 tokens
 through batched matrix kernels (see
-[metal-backend.md § Prefill in chunks](metal-backend.md#prefill-in-chunks-2026-09-08));
+[metal-backend.md § Prefill in chunks](metal-backend.md#prefill-in-chunks));
 `--trace-dir` requests per-layer activations per token and therefore steps
 the prompt token by token, as the CPU reference always does. Chunked and
 stepped prompts agree within the tolerance recorded there, not bit for bit.
 `prefill_milliseconds` keeps its definition (all prompt tokens, logits for
 the last).
 
-### Sampling on the GPU without reading the vocabulary back (2026-09-08)
+### Sampling on the GPU without reading the vocabulary back
 
 The reference sampler (`inference/src/sampling/root.zig`, `Sampler.select`)
 sorts all 248,320 logits by (value descending, id ascending), exponentiates
@@ -160,58 +161,51 @@ Greedy decoding with a penalty active takes the same device argmax, after
 asked for (a trace or `--logits`), and then it is unpenalized for the CPU
 sampler.
 
-### Speculative verification and the loop (2026-09-20)
+### Speculative verification
 
-When a drafter is loaded and the speculative switch is on, the loop batches
-the step instead of feeding one token at a time. `Executor.verify` returns the
-target logits of every row of a batch (`tokens.len × vocabulary`) and, when
-asked, their post-`output_norm` hidden, which the drafter's `commit` consumes:
-the CPU reference steps token by token; the Metal plan records the layer stack
-once and runs the output head over all rows through the batched matmul tile.
-The full-logits mode reads the rows back (about 8 MB at eight rows);
-`verifyGreedy` returns only each row's argmax (four bytes a row); the sampled
-acceptance asks for the per-row partial top-k instead (2 KB a row), leaving
-the logits resident so `readVerifyRow` can serve a row the readback cannot
-decide. The plan requires a batch no larger than its chunk and
-`max_verify_rows` (16); the loop's batches are at most `max_draft_length + 1`
-(16).
+With a drafter loaded and the speculative switch on, the loop batches the
+step: it proposes drafts, verifies them in one forward, accepts the longest
+prefix, and emits the accepted drafts and the correction through the
+ordinary per-token path (history, hooks, stop, budget, context limit).
+Every emitted token is a draw from the target, and greedy speculation
+equals ordinary greedy token for token. The verify modes, the acceptance
+rule, and the device-readback decision are in
+[speculative-decoding.md](speculative-decoding.md#the-loop).
 
-`runLoop` commits the prompt to the drafter first, in verify-sized chunks, so
-the block's cache holds the target hidden of every committed position. Each
-speculative step then: proposes up to `k` drafts (`drafter.propose`, which
-stops after a position whose top-candidate probability is below
-`engine.draft_p_min`), checkpoints the
-session, verifies `[seed] ++ drafts`, accepts the longest matching prefix
-(greedy: row argmax equals the draft; sampled: the row's own draw from its
-shaped distribution equals the draft), recovers the accepted prefix, commits
-it to the drafter, and
-emits the accepted drafts and the correction through the ordinary per-token
-path (history, hooks, stop, budget, context limit). A stop token inside the
-batch ends the turn there and the session recovers to the emitted prefix; a
-correction is emitted once and carried as the next batch's seed. Cancellation
-during `verify` poisons the session and the loop resets it, as a cancelled step
-does. The sampled path lives in `inference/src/sampling/speculative.zig`:
-`Sampler.distribution` is the shaped, normalized nucleus and `decide` draws
-the target's token from it, accepting the draft when they agree and taking
-the draw as the correction otherwise, so every emitted token is a target
-draw whatever proposed the drafts. When the options are eligible the row's
-decision comes from the device readback instead
-(`Sampler.selectFromHistory`): the penalties, when active, are applied to the
-256 candidates with the live history (which the accepted drafts of the batch
-advance), the penalized top-k is exact when its last entry clears the
-readback's smallest raw value (penalties only lower values; `repetition < 1`
-or `presence < 0` defers), and a row that cannot be decided reads its
-resident logits back and takes `distribution` (counted in
-`topk_fallbacks`). Greedy
-speculation must equal ordinary greedy token for token, checked by
-`generation-check --speculative-check` (`make gate NAME=qwen38-speculative-cpu`,
-`make gate NAME=qwen38-speculative-metal`); the two verify modes are compared row by row
-on real logits there as well.
+### Bounds, output, and cancellation
 
-The output budget is 1–16,384 tokens and context is 1–32,768
-(`inference.max_capacity`), with
-prompt plus output budget required to fit. These are allocation/execution bounds,
-not a validated 32K performance claim. Both `<|im_end|>` and `<|endoftext|>` stop
+The output budget and the context are bounded by host constants, with
+prompt plus output budget required to fit:
+
+<!-- gen:limits -->
+| Limit | Value | Declared in |
+| --- | --- | --- |
+| context ceiling (tokens) | 32,768 | inference/src/runtime/session.zig `max_capacity` |
+| output budget (tokens) | 16,384 | src/config.zig `max_output_tokens` |
+| draft length | 15 | inference/src/engine.zig `max_draft_length` |
+| prefill chunk (tokens) | 256 | inference/src/engine.zig `prefill_chunk` |
+| config file (bytes) | 65,536 | src/config.zig `max_file_bytes` |
+| agent steps per turn | 16 | src/agent/loop.zig `budget_default` |
+| agent turns per session | 256 | src/agent/loop.zig `max_turns` |
+| agent instructions file (bytes) | 8,192 | src/agent/system_prompt.zig `max_instructions_bytes` |
+| read_file lines per call | 2,000 | src/agent/tools/read_file.zig `max_lines` |
+| read_file default lines | 120 | src/agent/tools/read_file.zig `default_lines` |
+| read_file bytes | 1,048,576 | src/agent/tools/read_file.zig `max_bytes` |
+| grep matches shown | 50 | src/agent/tools/grep.zig `max_shown` |
+| grep files scanned | 20,000 | src/agent/tools/grep.zig `max_files` |
+| grep seconds | 10 | src/agent/tools/grep.zig `max_seconds` |
+| glob results | 200 | src/agent/tools/glob.zig `max_results` |
+| image tokens per image | 4,096 | inference/src/vision/root.zig `max_image_tokens` |
+| server output tokens | 16,384 | src/api/chat/wire.zig `max_output_tokens` |
+| server audio clip (bytes) | 16,777,216 | src/api/chat/wire.zig `max_audio_bytes` |
+| server web rounds | 6 | src/api/chat/service.zig `max_web_rounds` |
+| server speech input (bytes) | 16,384 | src/api/speech/wire.zig `max_input_bytes` |
+| server live transcriptions | 16 | src/api/transcription/stream.zig `max_sessions` |
+| decision questions per call | 32 | inference/src/decide.zig `max_questions` |
+| decision states per call | 64 | inference/src/decide.zig `max_states` |
+<!-- /gen -->
+
+These are allocation/execution bounds, not a validated 32K performance claim. Both `<|im_end|>` and `<|endoftext|>` stop
 the pinned profile. Special tokens are omitted from presented text.
 
 Text is flushed after each token. The UTF-8 stream buffers incomplete characters
@@ -267,16 +261,12 @@ mkdir -p .zig-cache/generation/native-check
   --embedding 5120 --layers 64 --vocab 248320
 ```
 
-The same command with `--backend cpu` writes the fixture itself; it was
-re-made that way on 2026-11-12, when the file was re-pinned. The first
-traces came from llama.cpp `7620399` on 2026-09-06, through
-the llama.cpp generation harness (retired; at tag `v0.11.0`), while
-llama.cpp was the reference
-([models § 4](../models/README.md#4-validate-against-nuclis-itself)).
+The same command with `--backend cpu` writes the fixture itself
+([provenance: record](../benchmarks/record/sampling.md#trace-provenance-2026-09-06)).
 `compare` takes the geometry as flags (`--embedding`, `--layers`,
 `--vocab`), so the same pair serves Gemma 4: `gemma4-26b-a4b-trace-*` and
 `gemma4-e4b-trace-*` compare against their own `*-hello-comma` fixtures
-([gemma4.md](../models/gemma4.md#cpu-reference-against-the-oracle-2026-09-11)).
+([gemma4.md](../benchmarks/record/gemma4.md#cpu-reference-against-the-oracle-2026-09-11)).
 Top-five IDs and the reference's greedy margin are reported for diagnosis.
 
 The draft block has the same kind of check. `generation-check` (`zig build
@@ -292,11 +282,7 @@ rows of the pinned file (`make gate NAME=qwen38-draft-trace-cpu`,
 the same vectors inside `generation-check` (its `checkDraft` pass).
 `--draft-stats` instead reports the per-depth acceptance statistic and
 draft latency
-([speculative-decoding.md § Acceptance statistic](speculative-decoding.md#the-qwen38-draft-head-2026-09-20)).
-The first rows came from the retired helper's `--mtp-draft` mode, which
-read the block's pair from llama.cpp's MTP context; Muse Glimmer's DFlash
-rows came from its `--dflash-draft` mode and left the tree with the Muse
-gates (the last tag that held them is `v0.11.0`).
+([speculative-decoding.md § Evidence](speculative-decoding.md#evidence)).
 
 The comparison checks every requested layer and final logits, rejecting missing,
 wrong-sized, or nonfinite files. The bounds are maximum absolute error 0.002
@@ -305,7 +291,7 @@ thresholds, not general per-kernel or quality acceptance limits. They hold
 for the F32 cache (`make gate NAME=qwen38-trace-f32`); the F16 cache has its
 own documented tolerance, 0.03 / 0.0002 on the layer files with the logits
 inside the F32 numbers (`make gate NAME=qwen38-trace-f16`;
-[metal-backend.md § F16 KV cache](metal-backend.md#f16-kv-cache-2026-09-10)).
+[metal-attention.md § F16 KV cache](metal-attention.md#f16-kv-cache)).
 The `.zig-cache/generation/` paths are working copies, never committed.
 
 The explicit session test runs the real two-token sequence in two independent
@@ -316,25 +302,3 @@ be bit-identical within the same CPU backend:
 zig build test-generation -Doptimize=ReleaseSafe -- \
   "$HOME/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf"
 ```
-
-## Evidence
-
-On 2026-09-07, Zig 0.16.0 ReleaseSafe on the target Apple M4 Pro, the pinned
-artifact and llama.cpp revision `7620399f58aebfd2196b74021f9581bcf7218cb9`:
-
-- Raw `Hello`: all 64 layers compared; logits maximum absolute error `4.77e-6`,
-  RMS `9.80e-7`; identical top five, greedy token 11 (`,`).
-- Raw `Hello,`: all 128 layer outputs compared across two positions; identical
-  top five logits and greedy token 353 (` I`). Native two-token generation
-  continued with IDs `[353, 2688]`, text ` I'm`.
-
-- Chat `Hi` with the thinking-off template: all 832 layer outputs across 13
-  prompt positions pass the same comparison thresholds. Native output begins
-  `Hello! How` (IDs `[9419, 0, 2500]`).
-- Full-model session isolation and reset after injected layer-3 cancellation pass
-  with bit-identical two-token CPU logits. All 95 default tests pass in Debug and
-  ReleaseSafe, including partial-allocation cleanup, sampling, and UTF-8 splits.
-
-The first single-token native run took 39 whole seconds excluding model loading.
-That is a smoke-run observation, not a warm throughput benchmark. Full-model
-checks run explicitly and are distinct from default allocator/unit tests.

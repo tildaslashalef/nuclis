@@ -80,7 +80,7 @@ pub fn build(b: *std.Build) void {
     b.step("test-hf", "Offline tests of the huggingface package only").dependOn(hf_tests);
     // One fuzz test, `test "fuzz <target>: …"`, from either package that
     // holds them; `--fuzz` runs it under the fuzzer (`make fuzz`,
-    // docs/development.md § Hostile input).
+    // docs/guide/code.md § Hostile input).
     const fuzz_target = b.option([]const u8, "fuzz-target", "The fuzz test to build, by target name (make fuzz)") orelse "";
     const fuzz_step = b.step("fuzz", "One fuzz test over its corpus, or under the fuzzer with --fuzz (-Dfuzz-target=NAME)");
     const fuzz_filters: []const []const u8 = &.{b.fmt("fuzz {s}:", .{fuzz_target})};
@@ -89,7 +89,7 @@ pub fn build(b: *std.Build) void {
     }
     // Compile errors only: artifacts nothing installs or runs, so the build
     // runner passes -fno-emit-bin and `-fincremental --watch` recompiles in
-    // a fraction of a second (`make watch`, docs/development.md § Zig 0.17 usage audit).
+    // a fraction of a second (`make watch`, docs/guide/code.md § Toolchain).
     const check_step = b.step("check", "Compile errors only, no binary (use with -fincremental --watch)");
     check_step.dependOn(&b.addExecutable(.{ .name = "nuclis", .root_module = exe.root_module }).step);
     for ([_]*std.Build.Module{ exe.root_module, inference.module("inference"), huggingface.module("huggingface") }) |module|

@@ -1,3 +1,4 @@
+<!-- kind: reference -->
 # CPU numerical references
 
 The inference library exposes `cpu.Matrix` and `cpu.matvec(matrix, input,
@@ -40,7 +41,7 @@ operation widens both weights and inputs to F64 before multiplying, sums from
 the first column to the last, then converts the result to F32. This reduces
 reference accumulation error; it is not a promise of bit-identical results from
 parallel GPU reductions, whose per-operation tolerances against it are in
-[metal-backend.md § Numerical evidence](metal-backend.md#numerical-evidence). NaNs and infinities propagate; a finite F64 sum that
+[metal-evidence.md](metal-evidence.md). NaNs and infinities propagate; a finite F64 sum that
 exceeds F32 range can become infinity in the output.
 
 ## Normalization, probabilities, and activations
@@ -125,18 +126,14 @@ absolute tolerance `5e-7`; norm preservation uses relative tolerance `2e-7`.
 ## Pinned vector fixtures
 
 The committed [fixtures](../../inference/src/backends/cpu/fixtures/vector.json)
-come from llama.cpp `7620399f58aebfd2196b74021f9581bcf7218cb9`, its matching local
-Release build, and one CPU thread, written by `scripts/cpu-vector-fixtures.py`
-(retired; at tag `v0.11.0`); a re-pinned file's fixtures are made by nuclis
+were pinned from llama.cpp `7620399f58aebfd2196b74021f9581bcf7218cb9` on one
+CPU thread ([record](../benchmarks/record/cpu-reference.md#pinned-vector-fixtures-generator-2026-09-15));
+a re-pinned file's fixtures are made by nuclis
 ([models § Which executor makes which fixture](../models/README.md#which-executor-makes-which-fixture)).
-
-The script used the local C ABI to build and compute small graphs. Four L2 cases
-cover a 3–4 vector, denominator clamping, zero, and tiny values. Four RoPE cases
-use a synthetic 256-channel head at positions 0, 1, 127, and 32,767, with rotary
-width 64, base 10,000,000, IMRoPE mode 40, sections `[11,11,10,0]`, positions
-`[p,p,p,0]`, frequency scale 1, extension factor 0, and attention factor 1
-([models § 4](../models/README.md#4-validate-against-nuclis-itself) tells how
-that build served as the reference).
+Four L2 cases cover a 3–4 vector, denominator clamping, zero, and tiny
+values. Four RoPE cases use a synthetic 256-channel head at positions 0, 1,
+127, and 32,767, with rotary width 64, base 10,000,000, and IMRoPE mode 40
+with sections `[11,11,10,0]` and positions `[p,p,p,0]`.
 
 L2 fixtures use absolute tolerance `1e-7`. RoPE's rotated channels use `5e-6`
 through position 127 and `1e-3` at 32,767; tails match exactly. The largest
@@ -190,7 +187,7 @@ The reference's cache is F32 by decision: `Session.Rows.floats` asserts
 an `f32` layout, the CPU runtime never asks for another, and an `f16`
 request on `--backend cpu` runs F32 and reports it. The F16 cache is a GPU
 layout whose tolerance against this reference is recorded in
-[metal-backend.md § F16 KV cache](metal-backend.md#f16-kv-cache-2026-09-10).
+[metal-attention.md § F16 KV cache](metal-attention.md#f16-kv-cache).
 Subtracting the maximum makes exponentials at most one, with at least one
 nonzero term. Values are accumulated with these unnormalized weights and divided
 by their sum before the final F32 conversion. The existing F32 softmax API is
@@ -208,7 +205,7 @@ KV head, key width three, value width two, and visible prefixes one, two, or fou
 The reference composes `ggml_mul_mat`, `ggml_soft_max_ext`, and `ggml_mul_mat`,
 materializing only the visible KV prefix. Absolute tolerance is `2e-6` for these
 small cases; this is not an end-to-end attention-layer or GPU tolerance.
-The same retired generator wrote them; no model or GPU is needed to run them.
+No model or GPU is needed to run them.
 
 ## Causal convolution and DeltaNet state
 
@@ -262,14 +259,10 @@ failure including overflow in a later channel. Three consecutive convolution and
 DeltaNet steps are checked against [pinned fixtures](../../inference/src/backends/cpu/fixtures/recurrent.json),
 carrying our own state between steps. DeltaNet outputs and updated matrices use
 absolute tolerance `1e-6`; the exactly representable convolution examples and
-history shifts match exactly. The fixture generator calls `ggml_ssm_conv` and
-`ggml_gated_delta_net` on the pinned one-thread CPU backend; the latter exports
-both output and final state. Expected convolution history is the explicit window
-shift, not an output of `ggml_ssm_conv`. The generator is
-`scripts/cpu-vector-fixtures.py` (retired; at tag `v0.11.0`); no model or GPU is needed
-to run them.
+history shifts match exactly. Expected convolution history is the explicit
+window shift. No model or GPU is needed to run them.
 
-### Chunkwise DeltaNet (2026-09-09)
+### Chunkwise DeltaNet
 
 `recurrent.deltaChunk(chunk, state, next_state, output, scratch)` computes
 `C` consecutive steps of the same head without stepping the matrix per
@@ -297,21 +290,21 @@ F64, `state`/`next_state` are F32 like the session (`next_state` may alias
 `state`), and validation or overflow leaves both outputs untouched. Scratch
 is `2C² + 3CV + VK + C` F64 elements (`deltaChunkScratch`).
 
-Evidence (2026-09-09, four test blocks): against an F64-state sequential
-loop on a model-shaped chunk (C = 64, 128×128 state, random gates in the
-model's ranges) the outputs and carry are **bit-identical after the F32
-cast** (bound 1e-9); against the production `delta`, which rounds state to
-F32 per step, one chunk of 64 and two chunks of 40 + 24 with the state
-carried between them agree to 2.4e-7 (bound 1e-4); the three pinned
-sequential fixture steps run as one chunk reproduce the pinned outputs and
-final state to 1e-6; validation failures and the single-token case match
-`delta` exactly. The Metal kernel (`nu_delta_chunk`) is checked
-against this function and against the sequential steps.
+Four test blocks check it: against an F64-state sequential loop on a
+model-shaped chunk (C = 64, 128×128 state, random gates in the model's
+ranges) the outputs and carry are bit-identical after the F32 cast (bound
+1e-9); against the production `delta`, which rounds state to F32 per step,
+one chunk of 64 and two chunks of 40 + 24 with the state carried agree
+within 1e-4; the three pinned sequential fixture steps run as one chunk
+reproduce the pinned outputs and final state to 1e-6; validation failures
+and the single-token case match `delta` exactly. The Metal kernel
+(`nu_delta_chunk`) is checked against this function and against the
+sequential steps.
 
 A checkpoint test demonstrates buffer restoration at the primitive level.
 Session rollback must restore convolution history and DeltaNet matrices
 along with attention KV and token position; the session does that
-([session.md § Checkpoint and rewind](session.md#checkpoint-and-rewind-2026-09-19)),
+([session.md § Checkpoint and rewind](session.md#checkpoint-and-rewind)),
 and the full model composed from these primitives generates text
 ([§ Full-model composition](#full-model-composition)).
 
@@ -346,7 +339,7 @@ per-expert `down_scale[e_s]`, times `weights[s]`, summed over the slots
 in F64. Scratch is `Ffn.scratchLen()` floats plus one F64 per output. The
 Metal decode chain (`route`, `matvecExperts`, `geluMulRows`,
 `matvecExperts`, `combineExperts`) is checked against it in `test-metal`
-([metal-backend.md § Gathered expert kernels](metal-backend.md#gathered-expert-kernels-2026-09-18)).
+([metal-kernels.md § Gathered expert kernels](metal-kernels.md#gathered-expert-kernels)).
 
 ## The Hadamard rotation's activation side
 
@@ -365,7 +358,7 @@ Tests check the butterflies against the parity-defined matrix for blocks
 1, 2, 8, and 1024, the round trip, a constant and a delta block by hand,
 and that rejected shapes leave the input untouched. Which activations
 take it, and the value-head regathering before `ssm_out`, are the
-adapter's runtime's business ([bonsai.md](../models/bonsai.md#cpu-reference-against-the-fork-2026-09-18)).
+adapter's runtime's business ([bonsai.md](../benchmarks/record/bonsai.md#cpu-reference-against-the-fork-2026-09-18)).
 
 ## Validation and limits
 
@@ -399,4 +392,4 @@ These primitives execute every family's full schedule on the CPU through its
 `models/qwen35_runtime.zig`). See [generation](sampling.md) for CLI usage,
 full-layer/logit comparisons, and explicit session isolation/reset checks.
 This executor is the reference Metal is held to
-([metal-backend.md § Numerical evidence](metal-backend.md#numerical-evidence)).
+([metal-evidence.md](metal-evidence.md)).

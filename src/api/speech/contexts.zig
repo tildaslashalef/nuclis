@@ -1,7 +1,7 @@
 //! Drama 3's last sentences kept between speech requests: a finished
 //! request's last sentence (its text and codes) under the id its response
 //! sent as `x-speech-context`, so a later request in the same model and
-//! voice takes it as history (docs/guide/api.md § Drama 3). Each lives
+//! voice takes it as history (docs/guide/api-speech.md § Drama 3). Each lives
 //! `ttl_ns`; at most `capacity`, the oldest dropped first. Thread-safe.
 const std = @import("std");
 const inference = @import("inference");

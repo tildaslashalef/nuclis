@@ -1,3 +1,4 @@
+<!-- kind: guide -->
 # Bringing a new model family into nuclis
 
 The starter guide the spec asked for
@@ -13,7 +14,7 @@ diff against that list before closing.
 Numbers and file names below are Gemma's; substitute yours. Every step
 ends with something committed as evidence (a fixture, a trace directory,
 a table in the family's document), because the next step needs it and the
-transcript will not survive.
+transcript does not outlive the session.
 
 ## 1. Container and inventory
 
@@ -27,13 +28,13 @@ transcript will not survive.
   a specialized matvec and matmul tile built from the nearest existing
   block kernel, the adapter's `executableEncoding`, and the file's own
   traces and acceptance record
-  ([gemma4.md § Q4_0 path](gemma4.md#q4_0-path-and-the-qat-file-2026-09-12)).
+  ([../benchmarks/record/gemma4.md § Q4_0 path](../benchmarks/record/gemma4.md#q4_0-path-and-the-qat-file-2026-09-12)).
   Bring the adapter up on a file the kernels already execute first, if the
   repository offers one; the new encoding is then checked against it
   ([§ 6](#6-a-second-encoding)).
 - Pull it (`nuclis model pull <owner/repo> --file <name>`) and record the
   commit, size, and SHA-256 from the sidecar in
-  [catalogue.md](catalogue.md#pinned-commits-and-digests-2026-09-11). The
+  [../benchmarks/record/catalogue.md](../benchmarks/record/catalogue.md#pinned-commits-and-digests-2026-09-11). The
   companions (`mmproj`, `draft`) go into the same table; the index entry
   needs their digests. `nuclis inspect --model <file>` reads the local
   directory: identity, dimensions, the encoding histogram.
@@ -44,7 +45,7 @@ transcript will not survive.
   template as a length/offset/SHA descriptor. That JSON is the binder's
   test fixture.
 - Write the facts down in `docs/models/<family>.md` as
-  [gemma4.md § Forward pass](gemma4.md#forward-pass-from-the-reference-graph-gemma4cpp)
+  [gemma4.md § Forward pass](gemma4.md#forward-pass)
   does: notation, the forward pass in equations, norms (raw or shifted
   weights?), RoPE pairing and factors, attention scale, activation, soft
   caps, tied heads, layer patterns, and where each fact came from (the
@@ -79,7 +80,7 @@ of the text.
 
 The artifact check (`inference/vocabulary-check.zig`) selects its
 expectations through the profile the template digest names, so the
-`<family>-vocabulary` gate (`make gate NAME=<family>-vocabulary`) runs once
+`<family>-vocabulary` gate (`make gate NAME=<family>-vocabulary`) runs once <!-- ok: placeholder for the family's gate -->
 § 3 has registered the profile.
 
 ## 3. Prompt profile
@@ -218,7 +219,7 @@ relative RMS 1e-4, plus the same greedy token and top-5) and
 with its keys and values rounded to F16 and show the deviation is the
 model's, not the kernels' (Gemma: 0.75 on the CPU with rounded keys, 0.73
 on Metal). Both compare Metal against the CPU trace of § 4
-(`make gate NAME='<family>-trace-*'`). Extend `generation-check` (the
+(`make gate NAME='<family>-trace-*'`). Extend `generation-check` (the <!-- ok: placeholder for the family's gates -->
 `<family>-generation-metal` gate) with per-family tolerances for the
 chunked-versus-stepped comparison; it also exercises snapshot/restore,
 cancellation, and isolation, and it found a backend bug on its first run
@@ -248,7 +249,7 @@ For a new file or encoding of a family nuclis already runs
 ### Re-pinning a file
 
 For a new file of a model nuclis runs (Qwen3.8's re-made UD-Q4_K_M,
-2026-11-12, is the first; [qwen3.8.md § The re-made file](qwen3.8.md#the-re-made-file-2026-11-12)):
+2026-11-12, is the first; [../benchmarks/record/qwen3.8.md § The re-made file](../benchmarks/record/qwen3.8.md#the-re-made-file-2026-11-12)):
 
 1. Pull it, check the tokenizer gate and the chat template's SHA-256
    against the profile's, and run the cross-encoding check if the
@@ -343,8 +344,8 @@ vocabulary, and production refuses a shape only the tiny build pins).
 | `saluki`, `saluki-mix` | the same, a file per encoding and a mixed file | Q2_K, IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS |
 | `bonsai` | 4 layers, 1024 wide, rotated with BF16 `ssm_alpha` and `ssm_beta` | PQ2_0, PTQ1_0 |
 | `muse-glimmer`, `muse-mix` | 4 layers, 256 wide, real attention geometry, GPT-4o tokenizer | F32, Q4_0, Q8_0, Q3_K to Q6_K, IQ3_S, IQ4_NL, IQ4_XS |
-| `gemma4-dense`, `gemma4-mix` | 6 layers | F32, Q4_0, Q5_0, Q5_1, Q8_0, Q3_K to Q6_K, IQ3_S, IQ4_NL, IQ4_XS |
-| `gemma4-experts` | 7 layers, 16 experts of 64 | the same, `ffn_down_exps` in Q5_0 under a 256-block file |
+| `gemma4-dense`, `gemma4-mix` | 6 layers | F32, Q4_0, Q5_0, Q5_1, Q8_0, Q3_K to Q6_K, IQ3_S, IQ4_NL, IQ4_XS | <!-- ok: tiny-build variants, not gates -->
+| `gemma4-experts` | 7 layers, 16 experts of 64 | the same, `ffn_down_exps` in Q5_0 under a 256-block file | <!-- ok: tiny-build variant, not a gate -->
 | `gemma4-e4b` | 12 layers, per-layer embedding | the same, its projection BF16 under Q4_K |
 
 That is every encoding each adapter accepts. Bounds are about three times the

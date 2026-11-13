@@ -12,7 +12,7 @@
 //! `--bench` times the clips instead (with `--metal`, on the device).
 //! Needs the pulled checkpoint directory; FIXTURES defaults to
 //! `tests/fixtures/nemotron-asr`, read at run time. Results:
-//! docs/models/nemotron-asr.md § Front end and encoder against the trace,
+//! docs/benchmarks/record/nemotron-asr.md § Front end and encoder against the trace,
 //! § Transducer against the trace, and word error rate, § On Metal.
 const std = @import("std");
 const inference = @import("inference");

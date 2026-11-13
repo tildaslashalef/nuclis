@@ -2,8 +2,8 @@
 //! each row attends to every row of its window (one window for a whole-image
 //! block). It runs the segments kernels with materialized scores
 //! (`Backend.attentionSegmentsGrouped`), which reach several times the chunk
-//! attention kernel's rate on these shapes (docs/engine/vision.md § Faster
-//! encoders). A `Spans` holds one block kind's per-row bounds and query
+//! attention kernel's rate on these shapes (docs/engine/vision.md § Encoder
+//! attention). A `Spans` holds one block kind's per-row bounds and query
 //! tiles; the plan that owns it owns the score buffer the dispatches share.
 const std = @import("std");
 const metal = @import("../backends/metal/root.zig");

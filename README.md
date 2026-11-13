@@ -1,14 +1,16 @@
+<!-- kind: guide -->
 <h3 align="center"><img src="docs/branding/nuclis.png" alt="nuclis logo: two teal bands forming an N around an amber diamond" width="160"></h3>
 
 # NUCLIS Engine
 
 A local inference engine for open-weight models, written in Zig with a Metal
 backend for Apple Silicon, and a small coding agent on top of it. It is tuned
-for **Gemma 4 26B-A4B** and **Gemma 4 E4B** on an M4 Pro with 48 GB.
+for **Gemma 4 26B-A4B** and **Gemma 4 E4B** on an M4 Pro with 48 GB, and runs
+**Qwen3.8-27B**, the dense hybrid its kernels were first written for.
 Decoding reads every weight a token uses once per token, so on 273 GB/s of
 memory bandwidth speed follows the parameters a token activates, not the
 model's size: the 26B-A4B wakes 8 of its 128 experts, about 4B parameters,
-and decodes at about 50 tokens/s where a dense 27B manages 8–12.
+and decodes at about 50 tokens/s where the dense Qwen3.8-27B manages 8–12.
 
 How it is verified: every model runs first on a plain CPU reference, the
 Metal kernels are checked against it, generated tiny models exercise every
@@ -72,10 +74,8 @@ and `nuclis config sync` registers what was pulled.
 The 2026-10-04/05 record against the pinned llama.cpp `7620399` (Metal, flash
 attention, F16 cache) on the same token arrays: Apple M4 Pro (12 CPU, 16 GPU
 cores), 48 GiB, macOS 27.0.1, ReleaseSafe, 128 greedy output tokens, the mean
-of three runs after a warmup. Later records compare nuclis with its own
-previous release. The Qwen rows are the first pinned file's (the re-made one:
-[history.md](docs/benchmarks/history.md#the-re-made-qwen38-file-2026-11-12)).
-Tokens per second, nuclis / llama.cpp, by prompt length:
+of three runs after a warmup, Qwen3.8 on its first pinned file. Tokens per
+second, nuclis / llama.cpp, by prompt length:
 
 | Decode | 512 | 4,096 | 16,384 | 32,639 |
 | --- | ---: | ---: | ---: | ---: |
@@ -98,6 +98,14 @@ off → on, greedy, at the entry's draft length (2026-10-05, median of three):
 | Gemma 4 E4B QAT | 6 | 46.9 → 81.9 (1.75×) | 33.6 → 37.5 (1.12×) |
 | Qwen3.8-27B (first pin) | 7 | 11.6 → 17.4 (1.50×) | 7.9 → 9.8 (1.26×) |
 
+**Qwen3.8-27B today**, on Unsloth's re-made file: a new baseline by nuclis
+alone, as every record after 2026-10 is ([2026-11-12](docs/benchmarks/history.md#the-re-made-qwen38-file-2026-11-12)), each drafter at draft 7:
+
+| Prompt | Decode | Prefill | MTP | DFlash2 |
+| --- | ---: | ---: | ---: | ---: |
+| 512 | 11.79 | 94.22 | 18.46 (1.61×) | 18.18 (1.63×) |
+| 4,096 | 11.41 | 86.46 | 15.98 (1.42×) | 16.81 (1.53×) |
+
 An agent re-reads a growing prompt and writes a few hundred tokens a step.
 By the tables, a 4,096-token prompt and a 200-token answer take about 16 s on
 the 26B-A4B, 14 s on the E4B, and over a minute on Qwen3.8-27B: the two Gemma
@@ -108,13 +116,16 @@ is 0.71–0.79× of the reference's, and its prefill falls furthest with context
 (0.42× at 32,639). Speed work goes to the mixture of experts and to long
 context past 32K. Method and every record: [docs/benchmarks](docs/benchmarks/README.md).
 
-**How it got here.** nuclis began with Qwen3.8-27B: its hybrid of attention
-and Gated DeltaNet layers is where the engine's kernels were first written
-and tuned, and it decodes faster than the reference at every length. It stays
-a supported dense model, but at 8–12 tokens/s it is too slow for an agent on
-48 GB, and the measurements above moved the work to Gemma 4.
+**How it got here.** nuclis began with Qwen3.8-27B, whose attention and
+Gated DeltaNet layers are where the kernels were first written and tuned; it
+decoded faster than the reference at every length. It stays a supported
+dense model, but at 8–12 tokens/s it is too slow for an agent on 48 GB.
 
 ## Beyond chat
+
+[docs/README.md](docs/README.md) lists every document; start with
+[architecture.md](docs/architecture.md) and [llm-guide.md](docs/llm-guide.md).
+Every change is a [merged pull request](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) with its evidence.
 
 **Decisions.** `nuclis decide` asks Laya or clef-flash a typed question
 (yes/no, a choice, a level) and gets the answer in one pass: Laya judges a
@@ -130,15 +141,8 @@ transcription ([api.md](docs/guide/api.md)).
 pipeline on the BF16 file ([embeddinggemma.md](docs/models/embeddinggemma.md)).
 
 **Speech.** `nuclis speak` (Qwen3-TTS; Drama 3 over HTTP) and `nuclis
-transcribe` (Nemotron ASR, live or whole recordings) are a voice assistant's
-voice and ears beside the language model ([api.md § Speech](docs/guide/api.md#speech),
-[qwen3-tts.md](docs/models/qwen3-tts.md), [drama3.md](docs/models/drama3.md), [nemotron-asr.md](docs/models/nemotron-asr.md)).
-
-## Documentation
-
-[docs/README.md](docs/README.md) lists every document; start with
-[architecture.md](docs/architecture.md) and [llm-guide.md](docs/llm-guide.md).
-Every change is a [merged pull request](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) with its evidence.
+transcribe` (Nemotron ASR, live or whole recordings) are a voice and ears
+beside the language model ([api-speech.md](docs/guide/api-speech.md), [qwen3-tts.md](docs/models/qwen3-tts.md), [drama3.md](docs/models/drama3.md), [nemotron-asr.md](docs/models/nemotron-asr.md)).
 
 ## Design rules
 

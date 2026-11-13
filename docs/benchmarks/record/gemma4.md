@@ -1,0 +1,994 @@
+<!-- kind: record -->
+# Gemma 4: the record
+
+The dated record behind [the Gemma 4 card](../../models/gemma4.md): bring-up, oracle comparisons, first-look rates, and the investigations, as written on their dates.
+
+## How the facts were read (2026-09-11)
+
+The second architecture through the adapter seam (2026-09-11 to
+2026-09-12), and since 2026-09-18 also the 26B-A4B mixture of experts
+([§ Gemma 4 26B-A4B](#gemma-4-26b-a4b-the-expert-configuration-2026-09-18)),
+bound by the same adapter as a second pinned configuration. Everything here was
+read on 2026-09-11 from the pinned files with `scripts/fixtures/gguf-inventory.py`
+(an independent header reader, no weights), from `nuclis model inspect`,
+and from the pinned llama.cpp reference `7620399` (`src/models/gemma4.cpp`,
+`src/llama-vocab.cpp`, `conversion/gemma.py`, `ggml-cpu/ops.cpp`), which
+was read as a format and semantics reference and, during bring-up, used as
+the numerical oracle, never copied
+([README.md § 4](../../models/README.md#4-validate-against-nuclis-itself)). Where a fact
+comes from the reference source rather than the file, the sentence says so. Nothing below is from memory of the
+model card. Images (the two projectors and the language model's
+bidirectional image spans on its sliding layers) are in
+[vision.md § Gemma 4's projectors](../../engine/vision.md#gemma-4s-projectors);
+their encode times (the E4B's 676-token logo in 1.6 s, the 12B's in
+0.03 s) in [§ Encoders at the materialized-score attention](vision.md#encoders-at-the-materialized-score-attention-2026-10-27).
+
+## Artifacts (2026-09-11)
+
+| | K-quant (bring-up, 2026-09-11) | QAT (the catalogue's file since 2026-09-12) |
+| --- | --- | --- |
+| Repository | `unsloth/gemma-4-12b-it-GGUF` | `unsloth/gemma-4-12B-it-qat-GGUF` |
+| File | `gemma-4-12b-it-UD-Q4_K_XL.gguf` | `gemma-4-12B-it-qat-UD-Q4_K_XL.gguf` |
+| Commit | `fc034cfff751…` | `980b060c40a8…` |
+| Size | 7,366,423,360 B | 6,716,356,800 B |
+| Encodings | F32 338, Q4_K 242, Q5_K 31, Q6_K 56 | F32 338, Q4_0 329 |
+| `general.name` | `Gemma-4-12B-It` | `Gemma-4 12B IT (smart Q4_0, QAT-lossless)` |
+| `tokenizer.ggml.eos_token_id` | 106 (`<turn|>`) | 1 (`<eos>`), plus `eot_token_id` |
+
+Both files have the same 58/48 architecture keys where they overlap, the
+same 667 tensor names and shapes, the same vocabulary, and the same chat
+template (SHA-256 `845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b`,
+18,924 bytes of UTF-8, 18,922 characters, ending in a newline). Digests and companions are pinned in
+[catalogue.md](catalogue.md#pinned-commits-and-digests-2026-09-11). The
+inventory of the K-quant file is the fixture
+`inference/src/models/fixtures/gemma4-12b.json` (all keys, arrays up to
+64 elements retained, the template as a length/offset/SHA descriptor).
+
+## Metadata (`gemma4.*`) (2026-09-11)
+
+| Key | Value |
+| --- | --- |
+| `block_count` | 48 |
+| `context_length` | 262144 |
+| `embedding_length` | 3840 |
+| `feed_forward_length` | 15360 |
+| `attention.head_count` | 16 |
+| `attention.head_count_kv` | array of 48: `8` on sliding layers, `1` on global layers |
+| `attention.sliding_window_pattern` | array of 48 booleans: true on sliding layers |
+| `attention.sliding_window` | 1024 |
+| `attention.key_length` / `value_length` | 512 (global layers) |
+| `attention.key_length_swa` / `value_length_swa` | 256 (sliding layers) |
+| `rope.dimension_count` / `dimension_count_swa` | 512 / 256 |
+| `rope.freq_base` / `freq_base_swa` | 1,000,000 / 10,000 |
+| `attention.layer_norm_rms_epsilon` | 1e-6 |
+| `final_logit_softcapping` | 30.0 |
+| `attention.shared_kv_layers` | 0 (every layer has its own cache) |
+| `embedding_length_per_layer_input` | 0 (no per-layer embeddings) |
+| `general.sampling.temp` / `top_p` / `top_k` | 1.0 / 0.95 / 64 (the file's own sampling hint) |
+
+**Layer pattern.** Both 48-element arrays are the same period-6 pattern:
+layers 5, 11, 17, 23, 29, 35, 41, 47 are global (full causal attention,
+head size 512, one KV head); the other 40 are sliding (window 1024, head
+size 256, 8 KV heads). The reference derives the same from the pattern
+array; the upstream `config.json` says `layer_types` alternate
+`sliding_attention` ×5, `full_attention` ×1, with `global_head_dim` 512.
+
+The parser must retain 48-element arrays: `formats/gguf` keeps values for
+numeric arrays of at most 64 elements, raised from a Qwen-era 16 for
+Gemma (a format-level capacity, not a Gemma key).
+
+## Tensors (667) (2026-09-11)
+
+Non-block: `token_embd.weight` [3840, 262144] Q4_K, `output_norm.weight`
+[3840] F32, `rope_freqs.weight` [256] F32. There is **no `output.weight`**:
+the output projection is the embedding matrix (tied; the reference creates
+`output` as a duplicate of `token_embd`).
+
+Per block (14 tensors on sliding layers, 13 on global ones):
+
+| Tensor | Sliding layer | Global layer |
+| --- | --- | --- |
+| `attn_norm.weight`, `post_attention_norm.weight`, `ffn_norm.weight`, `post_ffw_norm.weight` | [3840] F32 | same |
+| `attn_q.weight` | [3840, 4096] = 16 × 256 | [3840, 8192] = 16 × 512 |
+| `attn_k.weight` | [3840, 2048] = 8 × 256 | [3840, 512] = 1 × 512 |
+| `attn_v.weight` | [3840, 2048] | **absent** |
+| `attn_output.weight` | [4096, 3840] | [8192, 3840] |
+| `attn_q_norm.weight`, `attn_k_norm.weight` | [256] F32 | [512] F32 |
+| `ffn_gate.weight`, `ffn_up.weight` | [3840, 15360] | same |
+| `ffn_down.weight` | [15360, 3840] | same |
+| `layer_output_scale.weight` | [1] F32 | same |
+
+Encodings per role in the K-quant file: attention and gate/up matrices
+Q4_K on 43 layers and Q5_K on 5; `attn_v` Q6_K on 35 layers, Q5_K on 5;
+`ffn_down` Q4_K/Q5_K/Q6_K (22/5/21); `attn_output` Q4_K everywhere;
+`token_embd` Q5_K. All are in the executable set, as is the QAT file's
+Q4_0 since 2026-09-12 ([§ Q4_0 path](#q4_0-path-and-the-qat-file-2026-09-12)).
+
+**Values read from the file.** `rope_freqs.weight` is 64 ones followed by
+192 values of 1e30. `layer_output_scale` is a per-layer scalar between
+0.0045 and 0.89 (0.053 on layer 0, 0.048 on layer 47, 0.0045 on layer 11).
+Norm weights are stored **raw**: the converter's `Gemma4Model.norm_shift`
+returns 0 (Gemma 3's added 1), so `attn_norm` values range −143…193 with
+mean 6.6 and `attn_q_norm` on layer 0 is the constant 1.0234, `attn_k_norm`
+the constant 0.1221. The reference's `build_norm` is `rms_norm(x) * w`,
+nothing added.
+
+## Forward pass (from the reference graph, `gemma4.cpp`) (2026-09-11)
+
+Notation: `d` = 3840, `rms(x) = x / sqrt(mean(x²) + 1e-6)`, `norm_w(x) =
+rms(x) * w`.
+
+1. **Embedding.** `x = E[token] * sqrt(d)` (the scale is applied to token
+   embeddings only, not to injected image embeddings).
+2. **Per layer** (`h` is the residual stream):
+   - `a = norm_attn(h)`.
+   - `q = Wq a` reshaped [heads=16][hd]; `q = norm_q(q)` per head over `hd`;
+     `q = rope(q)`.
+   - `k = Wk a` reshaped [kv][hd]; `v = Wv a` when the layer has `attn_v`,
+     **otherwise `v = k` before any norm** (global layers). Then
+     `k = norm_k(k)` per head, `v = rms(v)` per head **without a weight**,
+     and `k = rope(k)`. Order matters: V is the raw K projection, RMS-normed
+     without weight, never rotated.
+   - Attention scores are `q · k` with **scale 1.0** (`f_attention_scale =
+     1.0`, "no pre-attn scaling"; the norms carry the scaling), causal, and
+     on sliding layers masked to `p_key > p_query − 1024` (the reference's
+     `LLAMA_SWA_TYPE_STANDARD`: masked when `p1 − p0 ≥ n_swa`, so exactly
+     1024 positions including the query's own are visible). No attention
+     logit softcap (`attn_soft_cap` is false). GQA: 16 query heads over 8 KV
+     heads (groups of 2) on sliding layers, over 1 KV head on global layers.
+   - `o = Wo · concat(heads)`; `h = norm_post_attn(o) + h`.
+   - `f = norm_ffn(h)`; `f = Wdown · (gelu_tanh(Wgate f) ⊙ (Wup f))`
+     (`LLM_FFN_GELU` + `LLM_FFN_PAR`, i.e. `ggml_geglu_split`; `ggml_gelu` is
+     the tanh approximation `0.5·x·(1 + tanh(√(2/π)·x·(1 + 0.044715·x²)))`).
+   - `h = (norm_post_ffn(f) + h) * layer_output_scale` (the scalar
+     multiplies the whole new residual stream, after the add).
+3. **Head.** `y = norm_out(h)`; `logits = Eᵀ y` (tied); `logits =
+   30 · tanh(logits / 30)`.
+
+**RoPE.** NeoX pairing (`LLAMA_ROPE_TYPE_NEOX` for `LLM_ARCH_GEMMA4`): pair
+`i` is dimensions `(i, i + n_rot/2)`, rotated by angle `pos · θ_i`,
+`θ_i = base^(−2i/n_rot) / ff_i`. Sliding layers: `n_rot = 256` (the whole
+head), base 10,000, no factors. Global layers: `n_rot = 512` (the whole
+head), base 1,000,000, factors `rope_freqs.weight`: pairs 0–63 rotate
+(`ff = 1`), pairs 64–255 get `ff = 1e30`, so `θ ≈ 0` and those dimensions
+are unrotated. That is the upstream "proportional" RoPE with
+`partial_rotary_factor 0.25`: 128 of 512 dimensions (0–63 and 256–319)
+rotate on global layers. `freq_scale` is 1 and no YaRN terms apply
+(`ext_factor 0`).
+
+## Tokenizer (2026-09-11)
+
+`tokenizer.ggml.model = "gemma4"`, no `tokenizer.ggml.pre` key, 262,144
+tokens with scores (−1000 on control tokens) and 514,906 merges;
+`add_bos_token` true, `add_space_prefix` false. Token types: 261,865
+normal, 256 byte (`<0x00>`…`<0xFF>`, ids 238–493), 16 control, 7
+user-defined. The reference treats it as **SPM-style BPE**
+(`LLAMA_VOCAB_TYPE_BPE`, `LLAMA_VOCAB_PRE_TYPE_GEMMA4`):
+
+- no word pre-splitting except the regex `[^\n]+|[\n]+` (runs of newlines
+  are separated from everything else; a newline run that is itself a token,
+  such as `\n` 107, `\n\n` 108, `\n\n\n` 109, is emitted whole);
+- spaces are escaped to `▁` (U+2581) before merging (`escape_whitespaces`),
+  so vocabulary entries look like `▁hello` (29104) and `▁` (236743);
+  decoding unescapes them;
+- merges run over raw UTF-8 code points, not the GPT-2 byte alphabet
+  (`byte_encode = false`); a symbol with no token falls back to its bytes as
+  `<0xXX>` tokens;
+- the reference forces `add_bos` on for this pre-type; BOS is `<bos>` 2.
+
+Special tokens: `<pad>` 0, `<eos>` 1, `<bos>` 2, `<unk>` 3, `<mask>` 4,
+`<|tool>` 46, `<tool|>` 47, `<|tool_call>` 48, `<tool_call|>` 49,
+`<|tool_response>` 50, `<tool_response|>` 51, `<|"|>` 52, `<|think|>` 98,
+`<|channel>` 100, `<channel|>` 101, `<|turn>` 105, `<turn|>` 106; image and
+audio markers at 255999–258884. The seven user-defined ones (tool call and
+response markers, the channel markers, `<|"|>`) are rendered as text by the
+reference so a chat parser can read them.
+
+The tree's `tokenizer/vocabulary.zig` accepted only `model = "gpt2"` and
+`tokenizer/pre.zig` the `qwen35` splitter until 2026-09-11, when Gemma's
+vocabulary model and splitter were added (below); the stop set is `<turn|>` 106 and
+`<eos>` 1 (the QAT file names 1 as EOS and 106 as EOT), owned by the
+profile since 2026-09-12.
+
+## Chat template and profile (2026-09-12)
+
+Turns are `<|turn>role\n…<turn|>\n`; roles `system`, `user`, `model`,
+`tool`. The template emits `bos_token` first; a system turn exists when the
+first message is system/developer, when tools are given, or when
+`enable_thinking` is set, in which case the system turn starts with
+`<|think|>\n`. Assistant reasoning is rendered as
+`<|channel>thought\n…<channel|>` and only for turns after the last user
+turn (or with `preserve_thinking` on tool-call turns); earlier turns are
+stripped of thinking with `strip_thinking`. Tool calls use
+`<|tool_call>…<tool_call|>` and responses `<|tool_response>…<tool_response|>`.
+The template text is read from the file, never embedded in the tree
+(18,924 bytes of UTF-8, 18,922 characters, ending in a newline; the
+digest above).
+Finetunes converted with the earlier 17,530-byte revision (digest
+`dc311bb0…`) render history differently and are refused; they run under
+`--prompt-profile gemma4`
+([prompt-profile.md § Evidence](../../engine/prompt-profile.md#evidence-and-reproduction)).
+
+`inference/src/profiles/gemma4.zig` implements the text, tool-calling, and
+media subset (system/developer, user, assistant, tool declarations, calls,
+and responses, image and audio placeholders) and is registered as
+`profiles.Profile.gemma4`, selected by the template digest. The tool path is
+in [prompt-profile.md § Gemma 4](../../engine/prompt-profile.md#gemma-4-gemma4) and
+[tool-calling.md](../../engine/tool-calling.md).
+What the reference's own rendering established, each with a fixture case
+(`inference/src/profiles/fixtures/gemma4-text.json`, 14 prompts and 20
+token strings captured from `llama-server 7620399` on the K-quant file at
+bring-up,
+[prompt-profile.md](../../engine/prompt-profile.md#gemma-4-gemma4)):
+
+- The server's `/apply-template` output has no `<bos>` (its tokenizer adds
+  BOS); the profile renders `<bos>` as text because the tree's encoder
+  never adds it. Token streams are identical: `[2, 105, …]`.
+- `developer` arrives at the template as `system`; later system messages
+  are `<|turn>system\n…<turn|>\n` turns of their own, empty ones included.
+- Thinking is a switch: `off` pre-closes an empty channel in the
+  generation prompt, any other effort adds `<|think|>` and lets the model
+  open its channel. Reasoning never appears in history under this API.
+- Two assistant messages in a row continue one `model` turn.
+
+**Stop set and reasoning markers.** Generation ends on `<turn|>` (106) or
+`<eos>` (1), resolved from the profile in the vocabulary at load
+(`Engine.stop_ids`); the K-quant file names 106 as EOS and the QAT file 1,
+both carry both. The chat splits the turn on `<|channel>thought\n` …
+`<channel|>` (both user-defined tokens, always decoded as text). The engine
+no longer assumes Qwen's "EOS or BOS" pair or the chat `</think>`: both
+were latent Qwen assumptions outside the profile, found by the second
+model ([llm-guide § 7](../../llm-guide.md#7-the-prompt-profile-is-a-contract)).
+
+**Sampling.** The profile's defaults are the file's own hint,
+`general.sampling.temp` 1.0 / `top_p` 0.95 / `top_k` 64, the same in both
+modes, no penalties. Recorded as the file's claim (no per-mode table was
+pinned from a model card). `generate` and `agent` use the file's profile
+even when the configuration guessed another from a bare path.
+
+**Catalogue.** Two entries, one per quantization (2026-09-12):
+`gemma-4-12b` is the K-quant file (commit `fc034cff…`, SHA-256
+`90fd944d…`) with its companions `mmproj-BF16.gguf` (175,115,840 B,
+`2e269f90…`) and `mtp-gemma-4-12b-it.gguf` (465,109,248 B, `145db909…`),
+and `gemma-4-12b-qat` is the QAT file
+([§ Q4_0 path](#q4_0-path-and-the-qat-file-2026-09-12)). Between the
+morning's entry and the second one one name pointed at whichever file was newest, which made
+`nuclis model pull gemma-4-12b` mean different bytes in different weeks. Since 2026-09-26 only `gemma-4-12b-qat` is in the
+catalogue (legacy since 2026-11-10); the K-quant file runs through `config sync`
+([catalogue.md § The catalogue](../../models/catalogue.md#the-catalogue)).
+A registry entry of the same name still shadows either.
+
+**Exercised.** `nuclis generate --model gemma-4-12b` in both modes (greedy:
+a one-sentence answer ending on 106 with thinking off; a thought channel
+with thinking on), `tokenize` (17 tokens for `Hello` at `--think medium`,
+ids as the fixture), and a two-turn `nuclis agent` session under a
+pseudo-terminal (`expect`): thought folded as "Thought for 29.1s", answers
+144 then 145, the second turn a prefix extension of the first (ctx 87 →
+16x tokens), Ctrl-D exit. The acceptance record against the reference
+harness is in [benchmarks](../history.md#gemma-4-12b-acceptance-record-2026-09-12).
+
+## Reference oracle status (2026-09-11)
+
+During bring-up the pinned llama.cpp `7620399`
+([README.md § 4](../../models/README.md#4-validate-against-nuclis-itself)) loaded and ran both files on Metal
+(`llama-completion -ngl 99 -no-cnv`, 2026-09-11): the K-quant file
+continued a raw prompt in a repetition loop and the QAT file emitted digits,
+which is what an instruction-tuned model does without its template; with
+`--jinja --single-turn` both files answered a chat prompt with a
+`<|channel>thought` block (the template enables thinking by default in the
+reference's default arguments). First-look rates from those runs, not a
+benchmark record (default context, 6-token prompt): K-quant prompt 18.8 /
+decode 25.2 tok/s, QAT 26.9 / 31.5 tok/s. The trace harness of that time
+(removed; at tag `v0.11.0`) compiled
+against this build unchanged (it named layers by the reference's `l_out-N`
+tensors) and tokenized without adding BOS, so the Gemma traces passed
+`<bos>` in the prompt text.
+
+## CPU reference against the oracle (2026-09-11)
+
+`inference/src/models/gemma4.zig` binds the pinned directory (the fixture
+and the real file: 667 tensors, 7,350,597,824 bytes, 40 sliding and 8
+global layers) and `gemma4_runtime.zig` executes the forward pass above on
+the CPU. Compared against the reference's per-layer outputs on
+`<bos>Hello,` (tokens `[2, 9259, 236764]`, three positions, the traces
+pinned under `tests/fixtures/gemma4-hello-comma/` through `v0.11.0`; their
+`gemma4-trace-*` gates were retired with the K-quant file on 2026-09-29, and
+the QAT file's `gemma4-qat-*` gates and traces on 2026-11-12, after its entry
+became legacy; the family's gates are the 26B-A4B's and the E4B's):
+
+| Comparison | Measured | Threshold |
+| --- | --- | --- |
+| 144 layer files, max absolute | 8.0e-5 (layer 43, position 2) | 2e-3 |
+| 144 layer files, max relative RMS | 8.3e-6 (layer 41, position 2) | 1e-4 |
+| Logits, max absolute / relative RMS | 1.8e-4 / 5.3e-6 | 2e-3 / 1e-4 |
+| Greedy token | 45518 (`thought`) on both sides; top-5 identical | equal |
+
+Layer 0 at position 0 agrees to 3.8e-6 absolute, so the embedding scale,
+the raw-weight norms, and the unscaled attention are the reference's; the
+error grows slowly with depth and position as expected of F32 summation
+order. One CPU step is 33.7 s for the three-token prompt (ReleaseSafe, M4
+Pro), a reference number for the Metal plan, not a benchmark.
+
+Recipe: the reference harness wrote the traces for `'<bos>Hello,'`, then
+`nuclis generate --backend cpu --prompt-tokens <ids.json> --max-tokens 1
+--ctx-size 8 --logits … --trace-dir …`, then `nuclis-gates compare
+--positions 3 --embedding 3840 --layers 48 --vocab 262144`.
+
+**Shared math reused, and what was added.** `cpu.rmsNorm`, `cpu.matvec`
+and the quantized row decoders, `cpu.attention.apply` (the sliding window
+is a contiguous slice of the cache rows: the last 1024 positions), and
+`cpu.rope.apply` (already split-half) are the Qwen reference's; two
+additions have their own fixtures: `cpu.gelu` (the tanh form) and the
+`factors` option on RoPE (per-pair divisors, the 1e30 entries leave a pair
+in place within F32). The session layout is per layer (2048-wide rows on
+sliding layers, 512 on global ones). The Metal plan is
+[§ Metal plan](#metal-plan-2026-09-11).
+
+**Tokenizer (2026-09-11).** `tokenizer/vocabulary.zig` accepts
+`tokenizer.ggml.model = "gemma4"` (`pre` is implied), `bpe.encodeSpmBudget`
+runs the shared merge scan over code points with `<0xNN>` byte fallback,
+`Encoder.encodeSpm` is the newline-run splitter with U+2581 escaping, and
+`bpe.decode` unescapes, rebuilds bytes, and always renders the seven
+user-defined markers. Checked at bring-up against the reference server's `/tokenize`
+on the real vocabulary for twelve strings (mixed punctuation and newlines,
+leading and doubled spaces, four-newline runs, `émoji 😀 € 中文字`, the chat
+markers `<bos>`/`<|turn>`/`<turn|>` inside text, tabs and CRLF, indented
+code, digits, a literal `▁`, two spaces, one newline, one letter):
+identical ids on all twelve. `nuclis tokenize --raw` and `generate --raw`
+never add BOS; write `<bos>` in the text, as the traces do. Decoding does
+not apply the reference's `clean_spaces` heuristics (neither does the Qwen
+path).
+
+## Metal plan (2026-09-11)
+
+`inference/src/models/gemma4_metal.zig` records the forward pass above
+as `Backend` encoder calls, one command buffer per token (`step`) or per
+prompt chunk (`prefill`), the same shape as the Qwen plan. What the
+schedule needed from the backend, and what it reused unchanged
+([metal-backend.md](../../engine/metal-backend.md)):
+
+| Operation | Kernel | Status |
+| --- | --- | --- |
+| Projections, FFN, tied output head | `nu_matvec_*`, `nu_matmul_*`, `nu_matvec_segments` | reused; every Gemma matrix meets the alignment and row/column rules |
+| Residual and per-head norms (raw weights) | `nu_rmsnorm` | reused; the weightless value norm binds a row of ones |
+| Embedding scale √3840, per-layer output scale, logit soft-cap | `nu_scale`, `nu_add_scale`, `nu_softcap` | **new** scalar epilogues; `tanh` clamped at ±20 (Metal's overflows past ±44, the CPU's saturates) |
+| Tanh-GELU gate | `nu_gelu_mul`; pair mode 2 of `nu_matvec_segments` | **new**, matches `cpu.gelu` to 2e-6 relative |
+| RoPE (split-half over the whole head; base 1e4, or 1e6 with `rope_freqs`) | `nu_rope`, `nu_rope_rows` | reused; `Backend.ropeTable` gained the per-pair `factors` (two tables per plan: 128 and 256 pairs per position) |
+| Decode attention, sliding layers (16 over 8, width 256) | `nu_attention_decode` / `_h` | reused; the window is a cache-row slice (`firstVisible`), as in the CPU reference |
+| Decode attention, global layers (16 over 1, width 512) | `nu_attention_decode_w` / `_wh` | **new instantiation** of the same template (4 heads × 16 channels per lane; a KV head's 16 query heads take four threadgroups per split) |
+| Prefill attention, sliding layers | `nu_attention_chunk` / `_h` with `window = 1024` | **extended**: per-row window mask, key loop starts at the first visible tile, −∞ guard for rows with no visible key in a tile |
+| Prefill attention, global layers | same, value width 512 | **extended**: one threadgroup per 256 value columns, scores recomputed per split |
+
+Every cache is allocated for the full session capacity, sliding layers
+included (the CPU reference does the same): at 32,768 tokens the F16
+session is 11.3 GB (40 × 2 × 2,048 + 8 × 2 × 512 halves per position). A
+ring layout for the 40 windowed layers would cut that to about 0.35 GB and
+is a session-layout change of its own.
+
+**Against the pinned traces** (`make gate NAME='gemma4-trace-f*'`,
+three positions of `<bos>Hello,`, 145 files, 2026-09-11):
+
+| Path | Max absolute | Max relative RMS | Threshold | Greedy / top-5 |
+| --- | --- | --- | --- | --- |
+| CPU reference | 1.8e-4 | 8.3e-6 | 2e-3 / 1e-4 | 45518, identical |
+| Metal, F32 cache | 3.4e-4 (logits; layers below) | 1.5e-5 | 2e-3 / 1e-4 | 45518, identical |
+| Metal, F16 cache | 0.73 (logits), 0.18 (layers) | 3.2e-2 | 1.0 / 5e-2 (its own) | 45518, identical |
+
+The F16 tolerance is the model's, not the kernels'. Gemma's attention
+scores are unscaled (`scale = 1`) over 256- and 512-wide heads, so a
+2⁻¹¹ relative rounding of a key moves a score by up to a few hundredths
+and a softmax weight by percents; on a short prompt with a BOS sink the
+attention is peaked and the effect compounds through 48 layers. Two
+independent checks pin this down: `test-metal` runs the same half
+kernels on the Gemma geometry against the CPU over the *rounded*
+operands (decode 2.4e-7, chunk 1.9e-4), and the CPU reference itself
+with its keys and values rounded to F16 before the cache write deviates
+from the F32 traces by 0.75 / 3.3e-2, the same as the Metal F16 plan
+(0.73 / 3.2e-2); Metal F16 against that rounded CPU run is 0.030 /
+1.3e-3 (rounding-boundary flips, amplified the same way). On the
+70-random-token prompt of `generation-check` the F16 cache is 2.7e-2 /
+1.1e-3, so the sensitivity is prompt-dependent. `--kv f32` is available
+for numerical work; the default stays `f16` as for Qwen.
+
+**Generation check** (`make gate NAME=gemma4-generation-metal`, 2026-09-11):
+sessions bit-identical, cancellation and reset, snapshot/restore bit-exact
+(688,128 bytes at position 1); chunked prefill vs per-token steps on 70
+tokens: chunks of 64 / 48 / 32 at 8.6e-2 / 8.6e-2 / 2.6e-2 max abs and
+2.5e-3 / 2.6e-3 / 7.5e-4 relative RMS (recorded bounds 1e-1 / 4e-3; Qwen's
+are 2e-2 / 1e-3), same greedy token. Forcing the generic F32 tiles brings
+the chunked run to 4.8e-4 / 1.2e-5, so the gap is the half-operand
+rounding of the specialized half-operand matmul tiles (2026-09-09) on Gemma's larger
+activations, not the chunk schedule (window mask, wide heads, the
+value-as-key copy).
+
+**First-look rates** (`nuclis bench`, Metal, greedy, context 2,048, three
+measured runs; Apple M4 Pro 48 GB, macOS 26.6.2, Zig 0.16.0 ReleaseSafe,
+2026-09-11; not the acceptance record, which was taken the next day against
+the reference harness):
+
+| Workload | Prefill tok/s | Decode tok/s | First token |
+| --- | ---: | ---: | ---: |
+| 9-token raw prompt, 64 out, `--kv f16` | 36.8 | 21.2 | 245 ms |
+| same, `--kv f32` | 36.8 | 21.2 | 245 ms |
+| 512-token array (`tests/fixtures/run-2026-09-06/prompt-512.json`, Qwen's ids as an opaque array), 128 out, `--kv f16` | 199.7 | 20.25 | 2,564 ms |
+| same, `--kv f32` | 199.0 | 20.20 | 2,572 ms |
+| Reference `llama-bench` `7620399` on the same file (`-p 512 -n 128 -ngl 99 -fa 1 -ctk f16 -ctv f16 -r 3`) | 219.9 ± 2.4 | 24.9 ± 0.15 | — |
+
+Decode is 81 % of the reference (7.35 GB of weights at 20.2 tok/s is
+148 GB/s effective) and prefill 91 %, the starting point of later Gemma
+speed work. The Qwen `make bench` is unchanged by the shared-kernel
+changes (40.27 / 10.80 tok/s the same day).
+
+## Q4_0 path and the QAT file (2026-09-12)
+
+The catalogue entry `gemma-4-12b` was decided on the quantization-aware-
+trained file ([artifacts](#artifacts-2026-09-11)): every one of its 329 weight
+matrices is Q4_0, an encoding the parser stored and the CPU decoder
+refused until 2026-09-12. Q4_0 is IQ4_NL's block (an F16 scale `d`,
+then sixteen bytes whose low nibbles are values 0–15 and high nibbles
+16–31) with the code itself as the value: `d · (q − 8)`, no table
+([quantization.md](../../engine/quantization.md#equations-and-evidence)). What the
+tree gained, each pinned by the reference's own fixture:
+
+- `quant.row` id 2 and the eight-block Q4_0 row in
+  `quant/fixtures/simple.json` from the pinned C decoder
+  (`scripts/quant-fixtures.py`, retired; at tag `v0.11.0`; the same payload bytes as the IQ4_NL row,
+  so the two decoders pin each other's nibble order).
+- `dequant.metal` `nu_dequant_q4_0` for the generic kernels
+  (`nu_matvec`, `nu_embed`, the generic tile), bit-identical to the CPU
+  decoder (`test-metal` checks the embedding row exactly).
+- `nu_matvec_q4_0`: eight 18-byte blocks make the 256-value stride the
+  specialized matvecs walk, so lane `g` of an octet takes block `8·kb + g`
+  as IQ4_XS's lanes take a group; two `packed_ushort4` loads (blocks are
+  2-byte aligned) give four words, `nu_low_nibbles`/`nu_high_nibbles`
+  the codes, and the bias folds into the input sum as Q6_K's does:
+  `Σ d·(q−8)·x = d·(Σq·x − 8·Σx)`, exact for a one-hot input. Selected
+  by `specializedMatvec` when the row offset and stride are even (the
+  body walks 32-value blocks, so any whole-block row serves), also inside
+  `nu_matvec_segments`.
+- `nu_tile_q4_0` and the `nu_matmul_q4_0` / `_32` instantiations: the
+  tile template's segment addressing learned that a block can hold two
+  segments rather than sixteen; the decode is the generic decoder's
+  expression in the same operation order, so the F32 view is
+  bit-identical and only the half rounding remains
+  ([metal-backend.md § Prefill in chunks](../../engine/metal-backend.md#prefill-in-chunks)).
+- `gemma4.executableEncoding` lists id 2; Qwen's does not (its executable
+  set is that adapter's claim about the files it binds, not the kernels'
+  capability). `model inspect` on the QAT file: `supported`.
+
+**Against its own pinned traces** (`tests/fixtures/gemma4-qat-hello-comma/`,
+the reference harness on the QAT file, `<bos>Hello,`, three positions,
+145 files; `make gate NAME='gemma4-trace-f*'`, 2026-09-12):
+
+| Path | Max absolute | Max relative RMS | Threshold | Greedy / top-5 |
+| --- | --- | --- | --- | --- |
+| CPU reference | 4.4e-5 | 2.6e-6 | 2e-3 / 1e-4 | 107 (`<|channel>`), identical |
+| Metal, F32 cache | 7.7e-5 | 3.2e-6 | 2e-3 / 1e-4 | 107, identical |
+| Metal, F16 cache | 1.3e-2 | 6.2e-4 | 1.0 / 5e-2 (the family's) | 107, identical |
+
+Tighter than the K-quant file on every path (1.8e-4 / 3.4e-4 / 0.73),
+and the F16 cache in particular: the key-rounding sensitivity measured on
+the K-quant file is prompt- and checkpoint-dependent, and the tolerance
+stays the family's recorded one. The K-quant comparisons ran as `make
+gate NAME='gemma4-trace-*'` until 2026-09-29, when the K-quant file's
+nine gates were retired with the file; the QAT file's followed on
+2026-11-12, the E4B and 26B-A4B gates cover the family, and the results
+above stay as the record.
+
+**Generation check** (`make gate NAME=gemma4-qat-generation-metal` on the QAT
+file, 2026-09-12): sessions bit-identical, cancellation and reset,
+snapshot/restore bit-exact (688,128 bytes at position 1). Chunked prefill
+against per-token steps on the 70 random tokens: chunks of 64 / 48 / 32
+at 4.4e-1 / 4.2e-1 / 1.5e-1 max abs and 1.4e-2 / 1.3e-2 / 4.7e-3
+relative RMS, same greedy token; through the generic F32 tiles 7.8e-4 /
+3.2e-5 (bound 5e-3 / 2e-4, unchanged), so the schedule and the Q4_0
+decode are exact and the gap is the half-operand rounding of the
+specialized tiles, which this checkpoint amplifies about five times
+more than the K-quant file (8.6e-2 / 2.6e-2 at chunks 64 / 32 there).
+The family's chunk bound moved from 1e-1 / 4e-3 to 6e-1 / 2e-2 to cover
+both files, recorded in `generation-check.zig`; the F16 cache on this
+prompt is 8.2e-2 / 3.1e-3 stepped and 2.2e-1 / 7.1e-3 chunked (bound
+2.0 / 6e-2). A prefill tile that keeps Gemma's activations in F32 is a
+performance-versus-precision choice, not a correctness gap.
+
+**Catalogue and pull.** `gemma-4-12b` names the QAT file (commit
+`980b060c…`, SHA-256 `90fd44e2…`, 6,716,356,800 B) with `mmproj-BF16.gguf`
+(175,115,840 B, `dcb8103a…`) and `mtp-gemma-4-12B-it.gguf` (253,708,800 B,
+`fcb35dea…`); `nuclis model pull gemma-4-12b --all` verified all three
+against the pinned digests on 2026-09-12 (3.8 s, existing files reused),
+and `model ls` lists the K-quant directory in its second group. The
+profile fixtures apply unchanged (same template digest). The acceptance
+record on the QAT file is in
+[benchmarks](../history.md#gemma-4-12b-acceptance-record-qat-file-2026-09-12).
+
+## Gemma 4 26B-A4B: the expert configuration (2026-09-18)
+
+Read on 2026-09-18 from the pulled file with `scripts/fixtures/gguf-inventory.py`
+(the fixture `inference/src/models/fixtures/gemma4-26b-a4b.json`) and from
+the pinned reference's `src/models/gemma4.cpp` and the `build_moe_ffn`
+helper of `src/llama-graph.cpp`.
+
+**Artifact.** `unsloth/gemma-4-26B-A4B-it-qat-GGUF` at commit
+`7b92b5b28818151e8669af2e45e88d6086f490dd`,
+`gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf`, 14,249,047,104 B, SHA-256
+`a7c5bc71…` ([catalogue.md](../../models/catalogue.md)); `general.name` `Gemma-4 26B-A4B
+IT (smart Q4_0, QAT-lossless)`; 658 tensors, F32 392 and Q4_0 266 (every
+matrix, the expert tensors included). The same vocabulary (262,144), the
+same chat template digest (`845f1ee4…`), and the same sampling hint as
+the 12B files; `tokenizer.ggml.add_bos_token` is `false` here (the 12B's
+is `true`), which changes nothing: the encoder never adds BOS and the
+profile writes it. The catalogue entry `gemma-4-26b-a4b` and its
+companions (`mmproj-BF16.gguf`, `MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf`)
+were pinned the day before, ahead of the adapter.
+
+**Metadata against the 12B.** Shared and identical: `context_length`,
+`attention.head_count` 16, `sliding_window` 1024, `key_length` /
+`value_length` 512 and the `_swa` pair 256, `rope.dimension_count` 512 /
+`_swa` 256, both `freq_base`s, the epsilon, the soft-cap, `shared_kv_layers`
+0, `embedding_length_per_layer_input` 0. Different:
+
+| Key | 12B | 26B-A4B |
+| --- | --- | --- |
+| `block_count` | 48 | 30 |
+| `embedding_length` | 3840 | 2816 |
+| `feed_forward_length` | 15360 | 2112 (the shared dense FFN) |
+| `attention.head_count_kv` | 8 / **1** | 8 / **2** (global layers) |
+| `expert_count` / `expert_used_count` / `expert_feed_forward_length` | absent | 128 / 8 / 704 |
+
+The layer pattern is the same period 6 (`kindOf`): layers 5, 11, 17, 23,
+29 are global, the other 25 sliding. `rope_freqs.weight` [256] is present
+as on the 12B, and the global layers' `rope.dimension_count` is 512 with
+the same factors, so the global RoPE is the 12B's (128 of 512 dimensions
+rotate). The adapter selects the configuration by `block_count`
+(`gemma4.configs`), validates every key against it, and treats the three
+expert keys as known only to the expert configuration.
+
+**Tensors.** Non-block as the 12B at width 2816. Per block, the 12B's set
+(global layers: `attn_k` [2816, 1024] = 2 × 512, no `attn_v`,
+`attn_output` [8192, 2816]) plus the expert block on **every** layer:
+
+| Tensor | Shape (GGUF order) | Encoding |
+| --- | --- | --- |
+| `ffn_gate_inp.weight` | [2816, 128] | F32 |
+| `ffn_gate_inp.scale` | [2816] | F32 |
+| `ffn_gate_up_exps.weight` | [2816, 1408, 128] | Q4_0 |
+| `ffn_down_exps.weight` | [704, 2816, 128] | Q4_0 |
+| `ffn_down_exps.scale` | [128] | F32 |
+| `post_ffw_norm_1.weight`, `pre_ffw_norm_2.weight`, `post_ffw_norm_2.weight` | [2816] | F32 |
+
+The 3-D tensors are `[experts][rows][columns]` with the experts
+contiguous (`cpu.ExpertMatrix`; `weights.View.expertMatrix`); the fused
+gate-up rows are the gate rows then the up rows of one expert.
+
+**The expert layer's FFN (from the reference graph).** With `a` the
+residual after the attention add (`attn_out`):
+
+1. Shared branch: `m = post_ffw_norm_1(Wdown · (gelu(Wgate · ffn_norm(a)) ⊙ (Wup · ffn_norm(a))))`,
+   the 12B's FFN followed by its own post norm.
+2. Router: `t = rms(a) · (1 / sqrt(2816)) ⊙ ffn_gate_inp.scale` — the
+   *unweighted* RMS norm of the residual, scaled in that order — and
+   `logits = ffn_gate_inp · t` (128). Softmax, the 8 largest, the selected
+   probabilities renormalized to sum one with the sum clamped below at the
+   smallest F16 normal (`norm_w`; `cpu.experts.route`).
+3. Experts: over `pre_ffw_norm_2(a)`, each selected expert `e` computes
+   `scale[e] · Wdown[e] · (gelu(gate) ⊙ up)` with `(gate, up)` the halves
+   of `Wgate_up[e]` · input, and the outputs sum weighted by the routing
+   weights (`cpu.experts.ffn`); then `x = post_ffw_norm_2(Σ)`.
+4. `f = post_ffw_norm(m + x)`; `h = (f + a) · layer_output_scale`, as the 12B.
+
+Everything else in the layer is the 12B's forward pass above.
+
+**Reference oracle status.** The pinned llama.cpp `7620399` ran the file
+on Metal; the trace harness captured `<bos>Hello,` (tokens `[2, 9259,
+236764]`) on 2026-09-18 with greedy token 29104 (` hello`); the traces
+are pinned under `tests/fixtures/gemma4-26b-a4b-hello-comma/` (90 layer
+files of 2,816 floats and the 262,144 logits).
+
+**CPU reference against the oracle (2026-09-18).**
+`gemma4_runtime.zig` runs both configurations from one schedule; the
+expert layer is `Runtime.feedForward`. `make gate NAME=gemma4-26b-a4b-trace-cpu`
+(`--positions 3 --embedding 2816 --layers 30`):
+
+| Comparison | Measured | Threshold |
+| --- | --- | --- |
+| 90 layer files, max absolute | 4.6e-5 (layer 10, position 2) | 2e-3 |
+| 90 layer files, max relative RMS | 1.8e-6 (layer 28, position 2) | 1e-4 |
+| Logits, max absolute / relative RMS | 5.8e-5 / 3.1e-6 | 2e-3 / 1e-4 |
+| Greedy token and top-5 | 29104, 26352, 1852, 8349, 144673 on both sides, logits equal to four decimals | equal |
+
+Layer 0 at position 0 agrees to 4.0e-5, and the error does not grow
+through the 30 expert layers, so the router input, the selection, the
+renormalized weights, the per-expert down scale, and the three extra
+norms are the reference's. Greedy continuation on the CPU: ` hello!
+*waves`; a step is about 3 s (ReleaseSafe, M4 Pro; the 12B's is 11 s:
+a token touches 8 experts of 704 and a 2,112-wide shared FFN instead of
+a 15,360-wide FFN). `nuclis validate` reports the binding
+(`gemma4_26b_a4b`, 25 sliding and 5 global layers, 658 tensors).
+
+**Metal plan (2026-09-18).** `gemma4_metal.zig` runs both
+configurations from one schedule: `feedForward` (decode) and
+`feedForwardChunk` (prefill) mirror the CPU reference's `feedForward`,
+and the expert branch is the gathered kernels of
+[metal-kernels.md § Gathered expert kernels](../../engine/metal-kernels.md#gathered-expert-kernels):
+
+| Operation | Decode (`step`) | Prefill (`prefill`, per chunk of `count` rows) |
+| --- | --- | --- |
+| Shared branch post norm | `rmsNorm` with `post_ffw_norm_1` | same over `count` rows |
+| Router input `rms(a) · (1/√2816) ⊙ scale` | `rmsNorm` with `ffn_gate_inp.scale` as its weight, then `scale` by 1/√2816 (the reference multiplies in the other order: one F32 rounding apart) | same over `count` rows |
+| Router logits (F32 128 × 2,816) | generic `nu_matvec` | generic F32 `nu_matmul` tile |
+| Selection | `route` (1 row) | `route` over `count` rows, then `expertLists` |
+| Expert input | `rmsNorm` with `pre_ffw_norm_2` | same |
+| Gate-up (Q4_0, 1,408 × 2,816 per expert) | `matvecExperts`, shared input | `matmulExperts`, `in_group` 8 |
+| Gate | `geluMulRows` over 8 slot rows | over `count · 8` rows |
+| Down (Q4_0, 2,816 × 704 per expert) | `matvecExperts`, one hidden row per slot | `matmulExperts`, `in_group` 1 |
+| Weighted sum with the per-expert down scale | `combineExperts` | `combineExperts`, `rows = count` |
+| Expert post norm, add to the shared branch, ordinary post norm | `rmsNorm` with `post_ffw_norm_2`, `add`, `rmsNorm` | same |
+| Global attention, 16 heads of 512 over **two** KV heads | `nu_attention_decode_w` / `_wh` (two head groups per KV head) | `nu_attention_chunk` / `_h` |
+
+The three expert tensors are wrapped whole and stay resident (14.2 GB of
+weights, no paging); a token reads its eight experts' bytes. The
+decode workspace is 8 slot rows; the chunk workspace holds `chunk · 8`
+slot rows of 1,408, 704, and 2,816 floats plus the routing buffers
+(40 MB at 256 tokens). The wide decode kernel and the chunk kernel index
+the KV head generically; `test-metal` now runs the 16-over-2, width-512
+geometry through both (F32 3.0e-6, F16 over rounded operands 1.9e-4;
+decode 2.4e-7). The session at 32,768 tokens is 7.4 GB in F16
+(25 × 2 × 2,048 + 5 × 2 × 1,024 halves per position).
+
+**Against the pinned traces** (`make gate NAME='gemma4-26b-a4b-trace-f*'`, three
+positions of `<bos>Hello,`, 91 files, 2026-09-18):
+
+| Path | Max absolute | Max relative RMS | Threshold | Greedy / top-5 |
+| --- | --- | --- | --- | --- |
+| CPU reference | 5.8e-5 | 3.1e-6 | 2e-3 / 1e-4 | 29104; 26352, 1852, 8349, 144673 |
+| Metal, F32 cache | 7.7e-5 | 3.1e-6 | 2e-3 / 1e-4 | identical |
+| Metal, F16 cache | 1.9e-2 | 1.0e-3 | 1.0 / 5e-2 (the family's) | identical |
+
+The F16 cache is far less sensitive here than on the 12B (0.73 / 3.2e-2):
+30 layers instead of 48, and two global KV heads instead of one.
+
+**Generation check** (`make gate NAME=gemma4-26b-a4b-generation-metal`,
+2026-09-18): sessions bit-identical, cancellation and reset,
+snapshot/restore bit-exact (450,560 bytes at position 1). Chunked prefill
+vs per-token steps on the 70-random-token prompt: chunks of 64 / 48 / 32
+at 1.11e1 / 1.08e1 / 1.10e1 max abs and 3.46e-1 / 3.40e-1 / 3.45e-1
+relative RMS, the same greedy token in every case; the F16 cache stepped
+at 6.8e-1 / 2.4e-2 and chunked at 1.0e1 / 3.4e-1. Through the generic F32
+tiles the chunked run is **2.8e-4 / 1.2e-5** (bound 5e-3 / 2e-4
+unchanged), so the chunk schedule is exact and the gap is the
+specialized tiles' half-operand rounding amplified by the discrete
+routing: a perturbed router logit swaps a token's eighth expert. With
+the expert projections alone through per-token F32 matvecs the gap is
+still 1.1e-1 relative RMS, because the dense tiles' rounding already
+moves the router. The check records the expert configuration's own
+bounds (2e1 / 5e-1) beside the 12B's. The recovery check (a chunked verify batch
+against sequential steps) applies them too since 2026-10-15: with the
+head-split decode attention's rounding its last 8-row case swaps an
+expert and reaches 7.4e-1 / 3.0e-2, past the 12B's 6e-1 / 2e-2. The acceptance record
+([benchmarks](../history.md#gemma-4-26b-a4b-acceptance-record-2026-09-18))
+ran the reference's arrays greedy to the token budget at every length,
+which is what a rate record can say about it; per-token agreement on
+real prompts stays the trace comparison's job.
+
+**First-look rates** (`nuclis bench`, Metal, greedy, `--kv f16`, three
+measured runs; Apple M4 Pro 48 GB, macOS 26.6.2, Zig 0.16.0 ReleaseSafe,
+2026-09-18; the acceptance record against the reference harness is in
+[benchmarks](../history.md#gemma-4-26b-a4b-acceptance-record-2026-09-18)):
+
+| Workload | Chunk | Prefill tok/s | Decode tok/s | First token |
+| --- | ---: | ---: | ---: | ---: |
+| 22-token text prompt, 64 out, context 2,048 | 256 | 122.6 | 57.9 | 179 ms |
+| 512-token array (`tests/fixtures/run-2026-09-06/prompt-512.json`), 128 out, context 2,048 | 256 | 463.3 | 54.1 | 1,105 ms |
+| same | **512** | 525.9 | 55.3 | 974 ms |
+| same | 1,024 | 515.8 | 54.4 | 993 ms |
+| 4,096-token array (`prompt-4096.json`), 32 out, context 4,608 | 256 | 329.0 | 48.5 | 12,452 ms |
+| same | **512** | 361.0 | 49.6 | 11,346 ms |
+| same | 1,024 | 382.5 | 49.9 | 10,709 ms |
+
+**The chunk for this family is 512** (`Plan.preferredChunk`; the engine's
+default stays 256 for the dense configurations): 10–14 % more prefill
+than 256 because a chunk's 4,096 slot rows fill the gathered 32-row
+tiles better ([metal-kernels.md](../../engine/metal-kernels.md#gathered-expert-kernels):
+69 % against 50 %), for 80 MB of expert workspace and 0.15 GB of chunk
+activations; 1,024 buys 6 % more only on long prompts for twice that
+again and a coarser cancellation grain (about a second per chunk), and
+was left as a follow-up beside the 64-token expert tile. Decode is 55 tok/s
+against the 12B's 20.2 and the Qwen3.8-27B's 10.7 on the same machine:
+a token touches eight experts of 704 and a 2,112-wide shared FFN instead
+of a 15,360-wide FFN, about 2.2 GB of Q4_0 weights with the tied head
+(an estimate from the tensor shapes, not a measurement), so the
+effective rate is roughly 120 GB/s against the 12B's 148. The per-kernel
+profile ranked the follow-ups (the expert down projection at 114 GB/s on
+its 704-wide rows, then the launch-bound norms, then the wide
+flash-decoding kernel at long context;
+[benchmarks](../history.md#gemma-4-26b-a4b-acceptance-record-2026-09-18)).
+The Qwen `make bench` is unchanged the same day (40.05 / 10.67 tok/s
+against 40.27 / 10.80).
+
+**Acceptance record and agent check (2026-09-18).** Against the
+reference harness on its own arrays: prefill / decode 500.42 / 55.29 at
+512, 346.17 / 49.44 at 4K, 206.44 / 39.55 at 16K, 134.74 / 31.30 at 32,639
+tok/s, the reference at 580.76 / 68.02, 548.41 / 60.82, 459.46 / 50.67,
+343.38 / 44.09; session 6.87 GiB, peak footprint 8.0 GB
+([benchmarks](../history.md#gemma-4-26b-a4b-acceptance-record-2026-09-18)).
+`nuclis agent --model gemma-4-26b-a4b` (Metal, context 8,192, `--think
+medium`, `--print --json`) on "create greeting.txt with hello world, then
+read it back" issued `write_file` then `read_file` and answered from the
+contents, the file on disk `hello world`: 221 prompt tokens, 71 generated,
+prefill 0.99 s, decode 1.30 s (18–19 ms per token in the loop, against
+the 12B's 8.5 s for 168 tokens under the same check), `replayed: true`
+as on the 12B. The catalogue entry's verdict is *supported* (`model
+inspect`: the Hub's digest at the pinned commit and the adapter's
+binding).
+
+## Gemma 4 E4B: per-layer embeddings and shared KV (2026-09-26)
+
+The on-device checkpoint, QAT file only (`unsloth/gemma-4-E4B-it-qat-GGUF`
+at `8c5a9e4f…`, every matrix Q4_0; digests in
+[catalogue.md](catalogue.md#pinned-commits-and-digests-2026-09-11)).
+Main file: `gemma4`, 42 blocks, 666 tensors, width 2560, FFN 10240,
+context 131,072, `Config.config_e4b`. Read from the file and the pinned
+reference (`7620399`):
+
+- **Geometry:** 8 query heads; sliding window **512**; two KV heads on
+  every layer (256 wide sliding, 512 global), written as one scalar
+  `head_count_kv`; global layers have their own `attn_v` (the 12B and
+  26B-A4B take V from K). Pattern period 6 (35 sliding, 7 global).
+- **Shared KV:** `shared_kv_layers = 18`: layers 0–23 own a cache; layers
+  24–41 have no `attn_k`, `attn_v`, or `attn_k_norm`, still project and
+  rotate Q, and attend over layer 22's cache if sliding and 23's if global
+  (`llama-model.cpp`, the reuse callback: `kv_layers − 2` / `− 1`).
+  `Config.kvSource`; the session holds 24 caches.
+- **Per-layer embeddings,** 256 wide (`gemma4.cpp`, `build_inp_per_layer`,
+  `project_per_layer_inputs`): per token, with `x0 = embed(t)·√2560`,
+  `ple = (norm_256(P·x0 / √2560) + E_pl[t]·√256) / √2`
+  (`per_layer_token_embd [10752, 262144]`, `per_layer_model_proj`,
+  `per_layer_proj_norm`); per layer, after the FFN residual and before the
+  output scale, `x += norm(proj · (gelu(inp_gate · x) ⊙ ple[il])) ⊙ post_norm`.
+  An image row takes its unscaled projector row as `x0` and token 0's
+  (padding) per-layer row. Metal uses existing kernels only (embed, matmul,
+  per-slice RMS norm, the strided GELU pair).
+- **Images are causal:** the reference's `mtmd_decode_use_non_causal` keeps
+  the E2B/E4B span causal (text widths 1536 and 2560), unlike the 12B and
+  26B-A4B's bidirectional sliding layers; `Config.bidirectional_images`.
+  With the span bidirectional the last-position logits missed the oracle by
+  0.35; causal, 6.1e-3.
+- **Template** `241c50d8…`: the 12B's with one rendered difference — with
+  thinking off, no empty `<|channel>thought\n<channel|>` after the
+  generation prompt (the reference server's capture differs only in the
+  seven `_off` cases). Profile `gemma4_e` (`profiles/gemma4_e.zig`),
+  fixture `profiles/fixtures/gemma4_e-text.json`.
+- **Draft head** (`gemma4-assistant`, 49 tensors): width 256, FFN 2048,
+  4 query heads, two KV heads, window 512, `embedding_length_out` 2560; it
+  reads the target's layers 40/41, which the target's sharing maps to 22/23.
+  `bindDraft` refuses a head whose KV heads or window differ from the
+  target's. Q4_0 `MTP/mtp-gemma-4-E4B-it-Q4_0.gguf` (byte-identical to the
+  root `mtp-gemma-4-E4B-it.gguf`).
+- **Projector** (`clip`, 1,411 tensors, 752 of them the audio encoder,
+  bound since 2026-10-27, [§ Audio input](#audio-input-on-the-e4b-2026-10-27)): `gemma4v`, the 26B-A4B's SigLIP path at 16 blocks, width 768,
+  12 heads of 64, FFN 3072, no standardization, and **clipped linears**:
+  each block's q/k/v/out and gate/up/down carry `input_min/max` and
+  `output_min/max` scalars, `y = clamp(W · clamp(x))` (`gemma4v.cpp`,
+  `build_mm`), a `clamp` kernel on Metal
+  ([vision.md](../../engine/vision.md#gemma-4s-projectors)).
+
+**Measured at bring-up** (M4 Pro, the pinned reference, Metal, F32 cache):
+
+| Check | Result |
+| --- | --- |
+| traces on `<bos>Hello,`, CPU reference | max abs 3.1e-5, relative RMS 1.8e-6, top-5 equal |
+| traces, Metal F32 cache | 6.1e-5 / 2.5e-6 |
+| traces, Metal F16 cache | 1.3e-2 / 4.3e-4 (gate bound 0.05 / 0.002) |
+| `test-generation --metal` | passed; chunk 64 half tiles 3.1e-1 / 1.86e-2, F32 tiles 2.4e-3 / 1.4e-4 |
+| draft head rows, CPU and Metal | ≤ 6.9e-5; greedy 26352 236764 equal |
+| vision on the synthetic image, Metal | rows 3.6e-2 / 7.5e-3, logits 6.1e-3, 8 greedy tokens equal |
+| vocabulary check | 34 captured sequences encode to the reference's ids |
+| perplexity, wikitext-2 512×8 | 36.0558 vs 36.0595 (−0.010 %) |
+| perplexity, 4096×4 | 23.1732 vs 23.1780 (−0.021 %) |
+
+First look, not an acceptance record: decode 52.4 tok/s on a 28-token code
+prompt (256 greedy tokens, F16 cache); `--speculative on` 69.9 tok/s
+(1.34×, 188 of 230 drafts accepted, output identical), below the 1.5× bar,
+so the entry kept speculation off at first; the re-priced verdicts of
+2026-10-01 turned it on at draft 6 (prose 1.47× geometric mean;
+[history.md](../history.md#the-re-priced-speculative-verdicts-2026-10-01)).
+llama.cpp decoded 58.7 tok/s on a 6-token prompt.
+
+
+## Long-context decode with the head-split attention (2026-10-15)
+
+The decode split pass now spreads query heads across a threadgroup's
+SIMD groups ([metal-backend.md § The split pass at the memory roof](metal-backend.md#the-split-pass-at-the-memory-roof-2026-10-15)).
+Gemma's global layers (16 heads of 512, over one KV head on the 12B and
+two on the 26B-A4B) run with one head per SIMD group; at 32,640 rows the
+12B's layer takes 1.20 ms instead of 2.68. The sliding layers read at
+most 1,024 rows and gain little.
+
+The speed loop's interleaved A/B (`make speed ARGS='--contexts
+16384,32639 --tokens 128 --pairs 5 --model <key>'`, `fcebd2b` against
+`115cbf7`, F16 cache, medians of five pairs on the acceptance arrays
+from a restored prefix), decode tokens per second:
+
+| File | 16,384 | 32,639 |
+| --- | ---: | ---: |
+| 12B QAT (8 global layers) | 19.95 → **23.82** (+19.4 %, 8.1 ms/token) | 16.61 → **21.07** (+26.8 %, 12.7 ms) |
+| 26B-A4B (5 global layers) | 39.61 → **48.90** (+23.5 %, 4.8 ms) | 31.67 → **42.32** (+33.6 %, 7.9 ms) |
+
+On the 12B the kernel bench's 8 × 1.48 ms predicts 11.8 ms of the 12.7
+at 32,639. The 2026-10-05 acceptance rows (12B 17.93 / 15.11, 26B-A4B
+37.93 / 31.23) decode right after their own prefill and are not
+comparable with these rates; the README's tables keep them until the
+next release record.
+
+## Audio input on the E4B (2026-10-27)
+
+The E4B hears a clip in a chat: a user message's `input_audio` part
+([api.md § The request](../../guide/api-chat.md#the-request)) or `nuclis generate
+--audio <file>`. The encoder is the `gemma4a` conformer already validated
+for EmbeddingGemma 2 ([audio.md](../../engine/audio.md)); the E4B brings only
+its own projection.
+
+**The weights** (the pinned `mmproj-BF16.gguf`, 991,552,320 B, read with
+`scripts/fixtures/gguf-inventory.py` and by tensor digests):
+
+- 752 audio tensors, `a.*` and `mm.a.*`, with the names, shapes and
+  encodings of EmbeddingGemma 2's companion (618 F32, 134 BF16; 620 MB). 751
+  are **byte-identical** to EmbeddingGemma 2's: the same tower. The one
+  that differs is `mm.a.input_projection` (BF16 1536 → **2560**, the text
+  width, against 512 there); `clip.audio.projection_dim` says 2560. So
+  `gemma4a.bind` binds the file unchanged and the encoder's rows before the
+  embedder equal EmbeddingGemma 2's bit for bit (the gate below).
+- `clip.audio.attention.layer_norm_epsilon` is **1e-5** here and 1e-6 in
+  EmbeddingGemma 2's file. Google's `config.json` for `google/gemma-4-E4B-it`
+  says `audio_config.rms_norm_eps` 1e-6, which the embedder's norm uses too
+  (`Gemma4MultimodalEmbedder`, `eps = multimodal_config.rms_norm_eps`); the
+  pinned reference's `gemma4a.cpp` ignores the key and uses 1e-6; the
+  converter at that revision writes the audio config's `layer_norm_eps`,
+  absent from Google's config, default 1e-6, so the 1e-5 is an earlier
+  converter's default over the same weights. `bind` accepts either value
+  and computes at 1e-6.
+- The embedder is EmbeddingGemma 2's: an RMS norm without a weight, then
+  `mm.a.input_projection`; the rows are not scaled by √2560 (only token
+  rows are), and each audio row takes the padding token's per-layer
+  embedding, as an image row does (Google's `Gemma4Model.forward` replaces
+  every media id by `pad_token_id` before `get_per_layer_inputs`).
+
+**The prompt.** The E4B template (`241c50d8…`) renders an `audio` or
+`input_audio` part as one `<|audio|>`, in the content's order; Google's
+`Gemma4Processor.replace_audio_token` expands it to `<|audio>` (256000),
+one `<|audio|>` (258881) per encoder row, `<audio|>` (258883), the ids in
+Google's `config.json` and in the vocabulary. Rows: two stride-2 halvings
+of the mel frames, 25 a second, at most 750 (30 s: Google's extractor cuts
+there; nuclis refuses a longer clip rather than cut it). The profile
+renders a message's images, then its clips, then its text, as it already
+put images before the text; the processor would keep the client's part
+order. The span is **causal**: the E4B has no `use_bidirectional_attention`
+(Google's mask overlays blocks for vision only, and only on models that
+set it) and nuclis's `Config.bidirectional_images` is off for it. So a
+clip's span goes through the same `prefillVision` as an image's, the
+engine pairing each kind's placeholder runs with its rows
+(`Engine.mediaSpans`).
+
+**Loading.** The encoder is bound on the first clip
+(`Engine.loadAudio`), on the CPU (`gemma4a.Runtime`) or Metal
+(`gemma4a.Plan`), from the same companion file as the vision projector;
+the server counts that file against its memory budget once, whichever
+encoder needs it first.
+
+**Validation** (M4 Pro, Metal, `3e44397`):
+
+| Check | Result |
+| --- | --- |
+| encoder output (before the embedder), CPU, against EmbeddingGemma 2's encoder, three pinned clips | bit for bit (`speech-1`, `speech-2`, `tone-1khz`: 120, 88, 50 rows) |
+| E4B rows, Metal against the CPU reference | speech 2.8e-5 / 1.0e-6 and 2.2e-5 / 1.1e-6, tone 5.4e-4 / 9.7e-6 (max abs / relative RMS) |
+| `north` clip in a chat prompt, 11 greedy steps against one prefill | 7.2e-3 max abs; greedy "The Northern Lights are caused by charged particles from the sun striking" |
+| transcription, six corpus clips, greedy, one fixed prompt | 1 error in 114 words, **0.88 %** WER (English 0/55, German 0/18, French 1/21, Spanish 0/20) |
+
+The transcription prompt is `scripts/gate/wer.py`'s `CHAT_PROMPT` ("Transcribe
+this audio in the language it is spoken in. Write only the transcript."),
+the clips `librispeech-61-70968-0000`, `-672-122797-0000`,
+`-1089-134686-0000`, `fleurs-de_de-1661`, `fleurs-fr_fr-1662`,
+`fleurs-es_419-1661`; the French error is a dropped "de". The same text
+went through `POST /v1/chat/completions` (wav and AAC m4a parts).
+
+| Gate | Tier | Runs |
+| --- | --- | --- |
+| `gemma4-e4b-audio-metal` | `verify` | the rows above, bounds 2e-3 / 4e-5 on Metal, bit equality with EmbeddingGemma 2's encoder, 2e-2 on decode after the clip (12 s) |
+| `gemma4-e4b-audio-asr` | `verify` | `scripts/gate/wer.py --chat` over the six clips, WER at most 5 % (11 s) |
+
+**The cache.** A conversation with a clip in it is reused like any other:
+the completer keys what the session consumed with each image and clip's
+SHA-256 after its placeholder run ([session.md § The agent's token
+cache](../../engine/session.md#the-agents-token-cache)). Over
+`nuclis serve` (greedy, `none`): the north clip's request 0 of 136 tokens
+cached; the same request again 133; a follow-up under it 152 of 171; a
+different clip in the same place 0; that clip under the first one's
+follow-up 101 of 139, its own request's prompt.
+
+**In the agent** (2026-10-27): a dropped clip is an `[audio #N]` chip,
+encoded while the prompt is typed ([spec § 7.2](../../spec.md#72-editor),
+[app/terminal.md](../../app/terminal.md)). The plumbing holds: told "You hear
+this clip directly, no tool needed", the E4B gave `1089-134686-0000`'s
+sentence word for word (thinking low, 295 tokens read), and the follow-up
+turn read 57. Asked plainly ("What does the speaker say? One sentence."),
+it first answered that it cannot process audio: its thought listed the
+agent's tools, found none for audio, and followed the system prompt's
+"with the available tools, and nothing beyond it" (`generate` with the
+same words transcribed it). The prompt now says "An image or audio clip
+attached to a message is part of it: you see and hear it yourself, with
+no tool", and the plain question gets the sentence (285 tokens read).
+Measured on the agent's task list (two seeds, docs/development.md § The
+agent's task list): Qwen3.8 96 % → 100 % of tasks, tool errors 5 → 3;
+the E4B 69 % → 81 %, tool errors 40 → 28.
+
+**Speed** (Metal, a fresh `generate` per run, five runs each): decoding,
+the log-mel frames and the encoder take 134–149 ms for 4.8 s of speech
+(`speech-1.wav`) and 137–145 ms for a 4.9 s FLAC; the prefill of the
+136-token prompt 356–397 ms, as long as a 129-token text prompt's
+(409–419 ms in the same fresh process). On a warm server, a request with a
+5 s clip and a one-token answer takes 436–444 ms end to end (575 ms the
+first, which builds the encoder).
+
+**Does it hear tone?** An observation, not a gate. Two neutral sentences
+("The meeting has been moved to Thursday afternoon.", "I put the keys on
+the kitchen table.") spoken by Qwen3-TTS 1.7B CustomVoice (`ryan`, seed 7)
+under four `--instruct` moods, then asked, greedy, "In one word, what is
+the speaker's emotional tone?" with the clip, and with only the
+transcript in the text (the control):
+
+| Asked for | Sentence 1, audio | Sentence 1, transcript only | Sentence 2, audio | Sentence 2, transcript only |
+| --- | --- | --- | --- | --- |
+| cheerful | Neutral | Neutral | Casual | Neutral |
+| sad | Neutral | Neutral | Frustration | Neutral |
+| angry | Neutral | Neutral | Casual | Neutral |
+| calm | Neutral | Neutral | Indifferent | Neutral |
+
+With the closed question "Is the speaker cheerful, sad, angry, or calm?
+Answer with one word." every clip and every control answered "Calm". E4B
+transcribed all eight clips word for word, so it heard them; it named no
+mood it was asked to tell apart. Whether the clips carry the moods
+strongly was not measured (they last 2.2–3.4 s; the angry readings are
+the quietest, −24.6 and −25.4 dBFS); with these
+clips and prompts, the tone did not reach the answer.
+
+## K-quant E4B files (2026-10-29)
+
+llama.cpp's converter writes two things the QAT file does not, in every
+K-quant and IQ quant of the E4B (read from `unsloth/gemma-4-E4B-it-GGUF`
+at `bfc15c38…`, `gemma-4-E4B-it-Q4_K_M.gguf`, 4,977,171,584 bytes,
+SHA-256 `85a896a0…`; 720 tensors against the QAT file's 666):
+
+- **`per_layer_model_proj` in BF16** (`[2560, 10752]`, 55,050,240 bytes)
+  whatever the quant type. Its products already run the generic decode
+  (`quant.decodeRow` id 30 on the CPU, `nu_dequant` under Metal's generic
+  `matvec` and `matmul` tile), as EmbeddingGemma 2's same tensor does.
+  `executableEncoding` admits id 30 and the binder takes it only for this
+  tensor (`Storage.projection`); every other matrix is held to
+  `matrixEncoding`, since the fused, expert, and row-gather kernels have no
+  BF16 body. Its stored scale is about 70× the QAT file's; the per-layer
+  RMS norm that follows `P · x0` cancels it.
+- **`attn_k`, `attn_v`, `attn_k_norm` on the shared-KV layers 24–41** (54
+  tensors, the owners' shapes). Those layers attend over layer 22's or
+  23's cache, so the binder claims the tensors with their shapes checked
+  (`Binder.unused`) and never reads them; they are not in the summary's
+  count.
+
+A file whose chat template is not Google's (a fine-tune's own) has no
+detected profile: `generate` and `agent` refuse with
+`UnsupportedPromptTemplate`, and `eval` reads raw text without `<bos>`
+when the file's `add_bos_token` is false. Force it with `--prompt-profile
+gemma4_e`, or register the pull with `--profile gemma4_e`.
+
+**Measured** (M4 Pro, the Q4_K_M above, `<bos>Hello,` unless noted):
+
+| Check | Result |
+| --- | --- |
+| `model inspect` | runnable (was: BF16 outside the executable set, then `UnexpectedTensor`) |
+| logits, Metal F32 cache against the CPU reference | max abs 3.0e-5, relative RMS 1.5e-6, top-5 equal |
+| hidden state per layer against the QAT file, CPU | cosine 0.91–0.99 over layers 0–41 (lowest at layer 30 of the first token) |
+| perplexity, WikiText-2 512×8, Metal, `gemma4_e` | 75.56 ± 8.44 (QAT file 36.06 ± 3.23) |
+| greedy chat, "Name three primary colors." | Red, Yellow, Blue |
+
+The perplexity is the non-QAT checkpoint's, a different model from the
+QAT file's; it is a sanity figure, not a bound. No gate pins a K-quant E4B
+file.

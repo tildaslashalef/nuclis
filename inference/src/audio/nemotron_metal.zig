@@ -8,7 +8,7 @@
 //! Matrices are the checkpoint mapping's F32 bytes wrapped in place, read by
 //! the generic F32 tile. The plan owns its `Backend`, so every device buffer
 //! goes with `destroy`; the checkpoint and the CPU encoder must outlive it.
-//! One stream records at a time. docs/models/nemotron-asr.md § On Metal.
+//! One stream records at a time. docs/benchmarks/record/nemotron-asr.md § On Metal.
 const std = @import("std");
 const metal = @import("../backends/metal/root.zig");
 const cpu = @import("../backends/cpu/root.zig");
