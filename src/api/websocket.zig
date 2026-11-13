@@ -3,7 +3,7 @@
 //! messages (masked, fragmented, control frames between fragments, bounded),
 //! and server frames written (unmasked, never fragmented). No extensions and
 //! no subprotocols are negotiated. Knows no route; `http.zig` hands a
-//! connection over after the `101`. docs/guide/api.md § Live transcription.
+//! connection over after the `101`. docs/guide/api-transcription.md § Live transcription.
 const std = @import("std");
 const errors = @import("errors.zig");
 const repeat = @import("../text.zig").repeat;

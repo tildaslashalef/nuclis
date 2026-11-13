@@ -26,8 +26,8 @@ Playback is modelled, not played: audio starts when its first byte
 arrives and plays at real time, each request's after the one before it.
 The lead is how far the audio received is ahead of the playback cursor
 when a chunk arrives; an underrun is a chunk that arrives after the
-cursor ran out (the listener hears a gap). docs/guide/api.md § Measured
-rates.
+cursor ran out (the listener hears a gap).
+docs/benchmarks/record/api.md § The voice loop.
 """
 
 from __future__ import annotations

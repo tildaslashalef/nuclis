@@ -1,3 +1,4 @@
+<!-- kind: reference -->
 # Session state: layouts, the byte block, and snapshots
 
 `inference/src/runtime/session.zig` owns every mutable byte of an inference
@@ -42,7 +43,7 @@ block. The synchronous Metal backend waits on every command buffer, so
 these are always valid between steps; an asynchronous backend would have to
 fence first.
 
-## Snapshot and restore (2026-09-10)
+## Snapshot and restore
 
 `Session.snapshot(gpa)` copies the **used** extent into a caller-owned
 `Snapshot`: each attention layer's rows `[0, position)` (keys then values,
@@ -61,7 +62,7 @@ sees `[0, position + 1)` after its own write, recurrent state is whole.
 
 The agent keeps snapshots at turn boundaries and restores the longest one
 a render starts with, in memory and on disk: see
-[app/agent.md § 12](../app/agent.md#12-the-agents-token-cache-2026-10-04).
+[app/agent.md § 12](../app/agent.md#12-the-agents-token-cache).
 
 Why copy instead of rewind: 48 of the 64 layers are recurrent, and their
 matrix after token *n* is a function of every token before it. Truncating a
@@ -76,20 +77,11 @@ pending target hidden row, 20 KB for Qwen), in `Snapshot.carried`, and
 refuses a snapshot whose carried length differs before touching the
 session: without it a restored prefix proposed its first draft from a
 zeroed row. `bench --prefix-cache` writes the model's snapshot to disk
-([development.md § The speed loop](../development.md#the-speed-loop)).
+([benchmarks § The speed loop](../benchmarks/README.md#the-speed-loop)).
 
-**Evidence** (`make gate NAME=qwen38-generation-cpu` and `make gate NAME=qwen38-generation-metal`,
-2026-09-10): step token 1, snapshot (157,024,256 bytes at position 1),
-step token 2 → logits A; restore, step token 2 → logits B; A equals B bit
-for bit on both backends; a third step after the restore equals the same
-step of a never-snapshotted session; a session of capacity 8 refuses the
-capacity-4 snapshot and keeps its position; a session poisoned by a
-cancelled step refuses to snapshot until reset. Unit tests cover the
-round trip under every allocation failure, the used-extent size, the
-untouched unused row, precision and capacity mismatches, and a truncated
-snapshot.
+The round trip's checks: [record, 2026-09-10](../benchmarks/record/session.md#snapshot-and-restore-evidence-2026-09-10).
 
-## Checkpoint and rewind (2026-09-19)
+## Checkpoint and rewind
 
 A snapshot copies at `snapshot()` time whatever the caller then holds in
 the heap; the recovery of a speculative verify batch cannot pay that: it
@@ -120,7 +112,7 @@ batch's rows are rewritten by the same forward, and never by truncating a
 position alone. Qwen's Metal plan avoids both the rewind and the forward:
 its verify leaves the recurrent state at the batch's start and keeps a
 tape that replays the accepted rows
-([§ Pending rows and the verify tape](#pending-rows-and-the-verify-tape-2026-10-01)).
+([§ Pending rows and the verify tape](#pending-rows-and-the-verify-tape)).
 
 `reset()` and `restore()` clear the recorded position: both rewrite the
 state, so the region's bytes are stale and are only read after a fresh
@@ -136,19 +128,10 @@ drafter is loaded, so the checkpoint/rewind/truncate contract above covers
 it with no second mechanism: the block's rows are rewritten by `commit`
 after a rewind, and `reset` memsets them with the rest.
 
-**Costs** (the generation check, `make gate NAME='qwen38-generation-*'`, Qwen 27B,
-2026-09-19): the region is 156,893,184 bytes (150 MB) on Qwen and on
-Bonsai; `checkpoint` and `rewind` 3 ms each on Metal and 2 ms each on the
-CPU reference (one 150 MB copy in each direction, the block quiescent
-between steps). On the attention-only Gemma 4 and Muse Glimmer the region
-is zero bytes and both calls are free. The recovery check confirms the
-accepted-prefix contract per accepted length: on the CPU the replay's
-logits equal the sequential run bit for bit; on Metal the batch is chunked,
-so the family's chunk-versus-step bound applies (Qwen 27B ≤ 2.9e-3 max abs
-and 1.5e-4 relative RMS over a 4- and an 8-row batch, argmax equal; Bonsai
-≤ 8.6e-6; Gemma 4 and Muse exactly zero at these small tiles).
+The region is 156,893,184 bytes on Qwen and zero on attention-only
+layouts; its costs and the recovery check: [record, 2026-09-19](../benchmarks/record/session.md#checkpoint-and-rewind-costs-2026-09-19).
 
-## Pending rows and the verify tape (2026-10-01)
+## Pending rows and the verify tape
 
 A verify batch of at most `max_draft_rows` (8) on Qwen's Metal plan does
 not advance the recurrent layers. Per DeltaNet layer it copies the rows'
@@ -181,12 +164,10 @@ test-metal`); `make gate NAME=qwen38-generation-metal` checks the recovery
 at every accepted length of a 4- and an 8-row batch against sequential
 steps and exercises the refusals.
 
-This replaced the row checkpoints recovery used from 2026-09-20 (a 150 MB recurrent copy per batch
-row, 1.25 GB for eight, written by the chunk kernel and restored by a host
-copy); the [worklog archived at v0.6.0](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md) records both.
+The tape replaced per-row recurrent checkpoints ([record, 2026-10-01](../benchmarks/record/session.md#the-row-checkpoints-the-tape-replaced-2026-10-01)).
 
-## The agent's token cache (2026-10-04)
+## The agent's token cache
 
 The snapshots the agent keeps at turn boundaries, in memory and on disk,
 are an application design:
-[app/agent.md § 12](../app/agent.md#12-the-agents-token-cache-2026-10-04).
+[app/agent.md § 12](../app/agent.md#12-the-agents-token-cache).

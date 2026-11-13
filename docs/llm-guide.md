@@ -1,3 +1,4 @@
+<!-- kind: guide -->
 # Building an inference engine: the nuclis guide
 
 This is the companion to the inference stack: what it took to make a 27
@@ -129,7 +130,7 @@ Read: `inference/src/formats/gguf.zig`, `src/model.zig` (`inspect`),
 Quantization is the reason the model fits. A block encoding groups values
 (32 or 256 of them) under shared metadata, and its decoding equations say
 what the bytes mean. The Qwen file mixes nine encodings; the tree decodes
-twenty-three, and each one taught something about the difference between
+<!-- gen:encodings-count -->23<!-- /gen -->, and each one taught something about the difference between
 counting bits and knowing a format.
 
 **A scale and a code.** Q8_0 is the simplest: an F16 scale and 32 signed
@@ -174,7 +175,7 @@ matrix, 992 F32 tensors of activation statistics used *by the quantizer*
 to decide which channels deserve precision. It is not a layer to run and
 does not restore anything when loaded beside the weights it shaped.
 
-Three rules survived all twenty-three. The CPU decoder is the truth, pinned
+Three rules survived all <!-- gen:encodings-count -->23<!-- /gen -->. The CPU decoder is the truth, pinned
 against the reference implementation's own C decoders through fixtures.
 Every GPU decoder is bit-identical to it, because they index the same bytes
 with the same equations. And a specialized kernel folds the scale out of
@@ -466,7 +467,7 @@ this and no Zig vector types either; it is scalar F64 loops so that it
 stays the plain statement of the math.
 
 Read: `kernels/rowwise.metal` starting with `nu_add` and `nu_rmsnorm`,
-[engine/metal-backend.md § Kernel geometry](engine/metal-backend.md#kernel-geometry).
+[engine/metal-kernels.md § Kernel geometry](engine/metal-kernels.md#kernel-geometry).
 
 ### 13. The matvec that reads 16 GB
 
@@ -516,7 +517,7 @@ lever is a different geometry, not a shorter loop.
 
 Read: `kernels/matvec.metal` (`nu_matvec_q4_k` and its neighbours),
 `Backend.specializedMatvec`,
-[engine/metal-backend.md § Per-block cost research (2026-09-08, closed without a kernel change)](engine/metal-backend.md#per-block-cost-research-2026-09-08-closed-without-a-kernel-change).
+[benchmarks/record/metal-backend.md § Per-block cost research (2026-09-08, closed without a kernel change)](benchmarks/record/metal-backend.md#per-block-cost-research-2026-09-08-closed-without-a-kernel-change).
 
 ### 14. Fewer dispatches, same math
 
@@ -584,7 +585,7 @@ greedy.
 
 Read: `inference/src/sampling/root.zig`, `nu_topk_partial` and
 `nu_penalize` in `kernels/sampling.metal`,
-[engine/sampling.md § Sampling profiles](engine/sampling.md#sampling-profiles-and-the-selection-chain-2026-09-08).
+[engine/sampling.md § Sampling profiles](engine/sampling.md#sampling-profiles-and-the-selection-chain).
 
 ---
 
@@ -743,7 +744,7 @@ dense one's.
 
 Read: `inference/src/backends/cpu/experts.zig`, `nu_route`,
 `nu_expert_lists` in `kernels/experts.metal`, `nu_matmul_experts_t` in `kernels/matmul.metal`,
-[engine/metal-backend.md § Gathered expert kernels](engine/metal-backend.md#gathered-expert-kernels-2026-09-18).
+[engine/metal-kernels.md § Gathered expert kernels](engine/metal-kernels.md#gathered-expert-kernels).
 
 ---
 
@@ -959,7 +960,7 @@ families proves the derivation with no reference to Qwen. Nothing under
 `src/` names an adapter or a profile module any more.
 
 Read: `inference/src/models/registry.zig`, `models/root.zig`,
-`profiles/root.zig`, [architecture.md § 10](architecture.md#10-adding-a-model).
+`profiles/root.zig`, [architecture-rules.md § 10](architecture-rules.md#adding-a-model).
 
 ### 25. What a second architecture costs
 

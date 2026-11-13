@@ -3,7 +3,7 @@
 //! `audio_sample`, `name`, and nuclis's `reference_text`) as `nuclis voice
 //! add` does, without opening a model: the first request in the voice
 //! encodes it. `GET` lists them or returns one, `DELETE` removes one. The
-//! store is `voices.zig`; docs/guide/api.md § Voices.
+//! store is `voices.zig`; docs/guide/api-speech.md § Voices.
 const std = @import("std");
 const http = @import("../http.zig");
 const errors = @import("../errors.zig");

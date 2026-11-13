@@ -2,7 +2,7 @@
 //! into the profile's shapes (messages, tools, images and clips still encoded, effort,
 //! sampling, budget), and a completion's events collected and written back
 //! in OpenAI's response shape. Every refusal names the field at fault.
-//! What a field means and why some are refused: docs/guide/api.md § Chat Completions.
+//! What a field means and why some are refused: docs/guide/api-chat.md § Chat Completions.
 const std = @import("std");
 const inference = @import("inference");
 const data_url = @import("../../data_url.zig");

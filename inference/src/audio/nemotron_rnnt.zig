@@ -1,5 +1,5 @@
 //! Nemotron 3.5 ASR's RNN-T transducer, the CPU reference
-//! (docs/models/nemotron-asr.md § RNN-T decoding): `encoder_projector` takes
+//! (docs/benchmarks/record/nemotron-asr.md § RNN-T decoding): `encoder_projector` takes
 //! each encoder row (after the prompt block) to the joint's width; the
 //! prediction network (embedding, two LSTM layers, a projection) turns the
 //! last emitted token into `g`; the joint scores `head(relu(e + g))`, and

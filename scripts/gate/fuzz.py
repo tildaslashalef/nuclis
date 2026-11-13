@@ -7,7 +7,7 @@ own (`.zig-cache/fuzz/NAME`), where the corpus the fuzzer grows carries over
 from one chunk and one run to the next. A crash stops the run and names the
 saved input, which `zig build fuzz` reads back as a corpus entry. With
 `--list`, prints the targets: every `test "fuzz NAME: ..."` in the tree.
-docs/development.md § Hostile input.
+docs/guide/code.md § Hostile input.
 """
 
 from __future__ import annotations

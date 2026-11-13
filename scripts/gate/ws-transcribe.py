@@ -30,7 +30,8 @@ and locale, exactly.
 real time `--rounds` times after a warm-up, and reports each partial's and
 the final's delay; with `--beside-chat` it measures the chat model's
 streamed tokens per second alone and while the clip streams beside it.
-docs/guide/api.md § Live transcription, § Measured rates.
+docs/guide/api-transcription.md § Live transcription,
+docs/benchmarks/record/api.md § Measured rates.
 """
 
 from __future__ import annotations

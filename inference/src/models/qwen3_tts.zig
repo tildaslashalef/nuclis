@@ -5,7 +5,7 @@
 //! tensors, the text into token ids (`encodeText`), and `Prompt.build`, the
 //! talker's input rows as (text id, codec id) pairs. The forward is
 //! qwen3_tts_runtime.zig; the codec decoder audio/qwen3_codec.zig. Contract:
-//! docs/models/qwen3-tts.md § Forward pass and § Voice cloning (the Base).
+//! docs/models/qwen3-tts.md § Architecture and § Voice cloning (the Base).
 const std = @import("std");
 const safetensors = @import("../formats/safetensors.zig");
 const hf_json = @import("../tokenizer/hf_json.zig");
@@ -70,7 +70,7 @@ pub const CodecIds = struct { pad: u32, bos: u32, eos: u32, think: u32, nothink:
 
 /// A Base's speaker encoder (ECAPA-TDNN), `speaker_encoder_config` under
 /// the package's defaults. Block 0 is a TDNN, blocks 1…n−2 SE-Res2Net, the
-/// last entry `mfa`'s (docs/models/qwen3-tts.md § The speaker encoder).
+/// last entry `mfa`'s (docs/models/qwen3-tts.md § Voice cloning (the Base)).
 pub const SpeakerEncoder = struct {
     mel: usize,
     /// The embedding's width: the talker's, as it is a prompt row.
@@ -674,7 +674,7 @@ pub const Text = struct {
 /// (`_build_assistant_text`, `_build_instruct_text`): ids 0–2 are the role,
 /// the last 5 the closing `<|im_end|>\n<|im_start|>assistant\n`, the rest the
 /// text, taken by position even when a text that begins with a newline makes
-/// the role's third id another (docs/models/qwen3-tts.md § Tokenizer).
+/// the role's third id another (docs/benchmarks/record/qwen3-tts.md § Tokenizer).
 pub fn encodeText(gpa: Allocator, tokenizer: *const hf_json.Tokenizer, text: []const u8, instruct: ?[]const u8) !Text {
     const rendered = try std.fmt.allocPrint(gpa, "<|im_start|>assistant\n{s}<|im_end|>\n<|im_start|>assistant\n", .{text});
     defer gpa.free(rendered);
@@ -750,7 +750,7 @@ pub const CloneRequest = struct {
 
 /// A prompt's rows and, during decoding, its text track: step k adds
 /// `trailing[k]`, then `tts_pad` once they run out. `build` gives the
-/// non-streaming prompt (docs/models/qwen3-tts.md § (a)), whose trailing
+/// non-streaming prompt (docs/benchmarks/record/qwen3-tts.md § (a)), whose trailing
 /// text is empty; `buildClone` a Base's streaming one (§ The prompt), whose
 /// rows borrow its `clone`.
 pub const Prompt = struct {

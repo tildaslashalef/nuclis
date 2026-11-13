@@ -6,7 +6,7 @@ trailing `// checked: <where>` comment naming the guard that keeps it from
 firing on any input: `catch unreachable`, `unreachable`, `@intCast(`,
 `std.debug.assert(` (or an `assert(` alias), and `.?` on an optional. The
 comment is the reviewable part; the script cannot prove the guard holds.
-docs/development.md § Hostile input.
+docs/guide/code.md § Hostile input.
 """
 
 from __future__ import annotations

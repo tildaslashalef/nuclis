@@ -6,7 +6,7 @@
 //! convolution's left context and the attention window's keys and values,
 //! so pieces of any size give one `decode`'s samples bit for bit (every
 //! output element is summed in an order independent of the piece).
-//! The pipeline and its constants: docs/models/qwen3-tts.md § The codec decoder.
+//! The pipeline and its constants: docs/models/qwen3-tts.md § Architecture.
 const std = @import("std");
 const safetensors = @import("../formats/safetensors.zig");
 const cpu = @import("../backends/cpu/root.zig");

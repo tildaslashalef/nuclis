@@ -1,3 +1,4 @@
+<!-- kind: guide -->
 # Getting started
 
 From nothing to a chat with a local model: install nuclis, fetch a model,
@@ -99,7 +100,7 @@ an error).
 More on each: the models layout in [models/catalogue.md](../models/catalogue.md),
 the settings in [configuration.md](configuration.md), sessions in
 [spec.md § Sessions and storage](../spec.md#74-sessions-and-storage), the
-saved states in [app/agent.md § 12](../app/agent.md#12-the-agents-token-cache-2026-10-04).
+saved states in [app/agent.md § 12](../app/agent.md#12-the-agents-token-cache).
 
 ## Model download
 
@@ -109,24 +110,34 @@ The index is the list of models nuclis ships support for, each pinned
 to an exact commit and SHA-256 digest (`nuclis model ls --available`
 lists the ones not installed):
 
-| Name | What it is |
-| --- | --- |
-| `gemma-4-26b-a4b` | Gemma 4 26B-A4B, a mixture of experts, the default model (14.2 GB) |
-| `gemma-4-e4b-qat` | Gemma 4 E4B, the small one (4.2 GB) |
-| `qwen3.8-27b` | Qwen3.8-27B (16.6 GB), with two drafts: `mtp` and `dflash2` |
-| `laya`, `laya-multilingual` | decision encoders for `nuclis decide` |
-| `clef-flash` | Cloudflare's decision model for `nuclis decide` |
-| `embeddinggemma-2` | EmbeddingGemma 2, text, images and audio into vectors for `nuclis embed` (310 MB) |
-| `qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice` | Qwen3-TTS CustomVoice, text into speech in nine built-in voices for `nuclis speak` (4.5 and 2.5 GB with the codec; only the 1.7B takes a delivery instruction) |
-| `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base` | Qwen3-TTS Base, text into speech in a voice cloned from a clip saved with `nuclis voice add` (4.5 and 2.5 GB with the codec) |
-| `qwen3-tts-1.7b-voicedesign` | Qwen3-TTS VoiceDesign, text into speech in a voice described with `--instruct` (4.5 GB with the codec) |
-| `drama-3` | Fish Audio's Drama 3, text into speech at 44.1 kHz with dialogue, `[bracketed]` delivery cues, and voices saved with `nuclis voice add` (20.8 GB) |
-| `nemotron-asr-0.6b` | Nemotron 3.5 ASR streaming, speech into text for `nuclis transcribe` (2.6 GB) |
+<!-- gen:catalogue -->
+| Name | Kind | Encoding | Main file | Status |
+| --- | --- | --- | --- | --- |
+| `qwen3.8-27b` | generation | UD-Q4_K_M | 16.56 GB | current |
+| `gemma-4-12b-qat` | generation | Q4_0 (QAT) | 6.72 GB | legacy |
+| `gemma-4-26b-a4b` | generation | Q4_0 (QAT) | 14.25 GB | current |
+| `gemma-4-e4b-qat` | generation | Q4_0 (QAT) | 4.22 GB | current |
+| `muse-glimmer-30b` | generation | UD-Q4_K_XL | 15.88 GB | legacy |
+| `laya` | decision | F16 | 842.6 MB | current |
+| `laya-multilingual` | decision | F16 | 643.8 MB | current |
+| `clef-flash` | decision | Q6_K | 243.5 MB | current |
+| `embeddinggemma-2` | embedding | Q8_0 | 309.9 MB | current |
+| `qwen3-tts-1.7b-customvoice` | speech | BF16 | 3.83 GB | current |
+| `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | current |
+| `qwen3-tts-1.7b-base` | speech | BF16 | 3.86 GB | current |
+| `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | current |
+| `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | current |
+| `drama-3` | speech | Q4_K | 20.79 GB | current |
+| `nemotron-asr-0.6b` | transcription | F32 | 2.55 GB | current |
+<!-- /gen -->
 
-`gemma-4-12b-qat` (Gemma 4 12B, quantization-aware, 6.7 GB) and
-`muse-glimmer-30b` (15.9 GB) are *legacy*: they pull, verify, and run by
-name, but `config init` does not register them and `model ls --available`
-shows them only with `--all`.
+Each kind has its command: `generation` models chat (`nuclis agent`,
+`generate`), `decision` models answer `nuclis decide`, `embedding` models
+`nuclis embed`, `speech` models `nuclis speak` (in voices saved with `nuclis
+voice add`, on the Bases and Drama 3), and `transcription` models `nuclis
+transcribe`. What each one is: [models/catalogue.md](../models/catalogue.md).
+A *legacy* model pulls, verifies, and runs by name, but `config init` does
+not register it and `model ls --available` shows it only with `--all`.
 
 ```sh
 nuclis model pull qwen3.8-27b                     # the model alone

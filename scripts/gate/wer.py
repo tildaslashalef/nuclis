@@ -17,7 +17,7 @@ normalized transcript where the corpus has one (what the speaker said, which
 can differ from the written sentence), else the transcript (LibriSpeech's).
 
 `--max-wer` makes it a gate: the overall rate must not exceed it. Standard
-library only. docs/models/nemotron-asr.md § Transducer against the trace,
+library only. docs/benchmarks/record/nemotron-asr.md § Transducer against the trace,
 and word error rate.
 
 `--speak SENTENCES` scores text to speech instead: each sentence of the
@@ -25,7 +25,7 @@ list (`tests/fixtures/tts-roundtrip.json`) is spoken by `nuclis speak
 --model <--tts-model> --backend <--tts-backend>` with its seed, recognized
 as above, and its words scored against the text, normalized alike;
 `--own-voice` drops the list's speaker and language (Drama 3).
-docs/models/qwen3-tts.md § The round trip.
+docs/benchmarks/record/qwen3-tts.md § The round trip.
 
 `--chat` scores a language model that hears audio instead: each clip goes
 to `nuclis generate --model <--model> --audio <clip> --prompt CHAT_PROMPT

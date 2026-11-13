@@ -1,7 +1,7 @@
 //! Fish's Drama 3 sampler (`tower.py` `sample_top_k_top_p`) and the repeat
 //! window on the main token (RAS). Model-specific, so it lives beside the
 //! adapter rather than in `sampling/`. The draws are Fish's distribution, not
-//! its random stream. docs/models/drama3.md § Sampling.
+//! its random stream. docs/models/drama3.md § Prompt profile.
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;

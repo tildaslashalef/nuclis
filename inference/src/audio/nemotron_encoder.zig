@@ -1,5 +1,5 @@
 //! Nemotron 3.5 ASR's cache-aware FastConformer encoder and its language
-//! prompt block, the CPU reference (docs/models/nemotron-asr.md § The
+//! prompt block, the CPU reference (docs/benchmarks/record/nemotron-asr.md § The
 //! encoder, § Cache-aware streaming): log-mel frames through three causal
 //! stride-2 convolutions (8× fewer rows, one per 80 ms), 24 conformer blocks
 //! whose attention sees its own chunk of `r + 1` rows and `left` rows

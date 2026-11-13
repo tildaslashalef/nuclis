@@ -1,5 +1,5 @@
 //! EmbeddingGemma 2 on the CPU: the numerical reference for the family,
-//! written from docs/models/embeddinggemma.md § Forward pass. One input is one
+//! written from docs/models/embeddinggemma.md § Architecture. One input is one
 //! bidirectional pass in F32 with no cache, from its rows to the pooled unit
 //! vector. The binding and the mapped weights are borrowed; each `embed` call
 //! allocates its own workspace (about 0.4 GB at 8192 rows) and frees it.

@@ -1,5 +1,5 @@
 //! Test support for fuzz tests of parsers that read outside bytes
-//! (docs/development.md § Hostile input). A test body draws one byte string
+//! (docs/guide/code.md § Hostile input). A test body draws one byte string
 //! from the `Smith` with `bytes`; its seed corpus is plain inputs encoded by
 //! `corpus`, which `zig build test` runs as ordinary cases and `make fuzz`
 //! hands the fuzzer as a starting point. Never reached from the application.

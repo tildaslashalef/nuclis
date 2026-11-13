@@ -52,8 +52,9 @@ const qwen35_spec: Spec = .{ .Family = inference.models.qwen35.family, .vocabula
 // 4.4e-1 / 1.4e-2, the E4B at 3.1e-1 / 1.9e-2 (its F32 tiles 2.4e-3 /
 // 1.4e-4). On the 26B-A4B the same rounding moves router logits
 // past near-ties and swaps whole experts for a token, so its chunked
-// logits sit at 1.1e1 / 3.5e-1 (gemma4.md § 26B-A4B). The F32-tile
-// comparison below, at its own unchanged bound, is what proves the schedule.
+// logits sit at 1.1e1 / 3.5e-1
+// (docs/benchmarks/record/metal-backend.md § Gathered expert kernels). The
+// F32-tile comparison below, at its own unchanged bound, is what proves the schedule.
 const gemma4_spec: Spec = .{
     .Family = inference.models.gemma4.family,
     .vocabulary = inference.models.gemma4.vocabulary,

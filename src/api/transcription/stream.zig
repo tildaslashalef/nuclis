@@ -8,7 +8,7 @@
 //! its `Transcriber` (created, pushed one encoder chunk per run, and freed
 //! on the worker), so chunks run between a chat generation's steps. The
 //! model is the service's slot's, shared and held while any session uses
-//! it. docs/guide/api.md § Live transcription.
+//! it. docs/guide/api-transcription.md § Live transcription.
 const std = @import("std");
 const inference = @import("inference");
 const config = @import("../../config.zig");
@@ -31,7 +31,7 @@ const Code = websocket.Code;
 
 pub const path = router_mod.prefix ++ "/audio/transcriptions/stream";
 pub const sample_rate = 16000;
-/// Host limits (docs/guide/api.md § Live transcription).
+/// Host limits (docs/guide/api-transcription.md § Live transcription).
 pub const max_message = 1 << 20;
 pub const max_sessions = 16;
 pub const max_backlog_samples = 10 * sample_rate;

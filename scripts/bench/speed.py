@@ -16,7 +16,7 @@ below -1 %, NOISE between; the change is KEEP when one row keeps and none
 regresses, over >= 5 pairs. `--json` prints the rows for the ledger.
 The contexts name the acceptance token arrays (512, 4096, 16384, 32639);
 another length takes that many tokens from the 32,639 array.
-See docs/development.md § The speed loop.
+See docs/benchmarks/README.md § The speed loop.
 """
 
 import argparse

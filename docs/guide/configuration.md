@@ -1,3 +1,4 @@
+<!-- kind: guide -->
 # Configuring nuclis
 
 Every setting lives in one file, `~/.nuclis/nuclis.json`, and a
@@ -34,37 +35,77 @@ saying what to run next, or which model to pull when none is installed. The file
 `bench` reads only `engine`; its output budget, repetitions, and greedy
 sampling stay on its command line so runs remain comparable.
 
-A file as `init` writes it with one model installed (the 26B-A4B; with
-none, `models` is `{}`):
+A file as `init` writes it with no model installed; with one, `models`
+holds its entry ([the registry](#naming-your-models-the-registry)):
 
+<!-- gen:config-init-example -->
 ```json
 {
   "schema_version": 1,
-  "engine":   { "model": "gemma-4-26b-a4b", "backend": "metal", "ctx_size": 16384,
-                "kv_precision": "f16" },
-  "generation": { "max_tokens": 8192, "think": "off", "speculative": false, "draft_length": 4,
-                "image_max_tokens": "auto",
-                "sampling": { "temperature": null, "top_k": null, "top_p": null, "min_p": null,
-                              "presence_penalty": null, "repetition_penalty": null } },
-  "agent":    { "think": "low", "fold_thinking": true, "theme": "gruvbox-dark", "instructions": "auto",
-                "thinking_budget": 1024, "web": false },
-  "decide":   { "model": "laya" },
-  "embed":    { "model": "embeddinggemma-2" },
-  "speech":   { "model": "qwen3-tts-1.7b-customvoice", "voice": "ryan" },
-  "transcribe": { "model": "nemotron-asr-0.6b" },
-  "serve":    { "host": "127.0.0.1", "port": 9000, "log": true, "request_log": true, "timeout": 300,
-                "memory_bytes": null, "web": false, "pin": [], "transcription_bytes": 268435456 },
-  "web":      { "url": null },
-  "cache":    { "memory_bytes": 4294967296, "disk_bytes": 8589934592 },
-  "models":   { "gemma-4-26b-a4b": { "kind": null, "path": null,
-                                 "repo": "unsloth/gemma-4-26B-A4B-it-qat-GGUF", "file": "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
-                                 "revision": "7b92b5b28818151e8669af2e45e88d6086f490dd",
-                                 "mmproj": "mmproj-BF16.gguf", "draft": "MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf",
-                                 "profile": null, "ctx_size": null,
-                                 "generation": { "max_tokens": null, "think": null, "speculative": false, "draft": null, "draft_length": 4, "image_max_tokens": null, "sampling": { "…": null } },
-                                 "agent": { "think": "low", "fold_thinking": null, "thinking_budget": 1024 } } }
+  "engine": {
+    "model": "gemma-4-26b-a4b",
+    "backend": "metal",
+    "ctx_size": 16384,
+    "kv_precision": "f16"
+  },
+  "generation": {
+    "max_tokens": 8192,
+    "think": "off",
+    "speculative": false,
+    "draft_length": 4,
+    "image_max_tokens": "auto",
+    "sampling": {
+      "temperature": null,
+      "top_k": null,
+      "top_p": null,
+      "min_p": null,
+      "presence_penalty": null,
+      "repetition_penalty": null
+    }
+  },
+  "agent": {
+    "think": "low",
+    "fold_thinking": true,
+    "theme": "gruvbox-dark",
+    "instructions": "auto",
+    "thinking_budget": 1024,
+    "web": false
+  },
+  "decide": {
+    "model": "laya"
+  },
+  "embed": {
+    "model": "embeddinggemma-2"
+  },
+  "speech": {
+    "model": "qwen3-tts-1.7b-customvoice",
+    "voice": "ryan"
+  },
+  "transcribe": {
+    "model": "nemotron-asr-0.6b"
+  },
+  "serve": {
+    "host": "127.0.0.1",
+    "port": 9000,
+    "log": true,
+    "request_log": true,
+    "timeout": 300,
+    "memory_bytes": null,
+    "web": false,
+    "pin": [],
+    "transcription_bytes": 268435456
+  },
+  "web": {
+    "url": null
+  },
+  "cache": {
+    "memory_bytes": 4294967296,
+    "disk_bytes": 8589934592
+  },
+  "models": {}
 }
 ```
+<!-- /gen -->
 
 ## What overrides what
 
@@ -80,6 +121,37 @@ There are no per-key environment variables and no per-project files;
 `NUCLIS_HOME` only moves the root.
 
 ## The settings
+
+Every key, as `nuclis config --help` lists them:
+
+<!-- gen:config-keys -->
+```text
+engine.*                model, backend, ctx_size, kv_precision
+generation.*            max_tokens, think, speculative, draft_length,
+                        image_max_tokens, sampling.{temperature, top_k, top_p,
+                        min_p, presence_penalty, repetition_penalty}
+agent.*                 think, fold_thinking, theme, instructions,
+                        thinking_budget, web
+decide.*                model
+embed.*                 model
+speech.*                model, voice
+transcribe.*            model
+serve.*                 host, port, log, request_log, timeout, memory_bytes,
+                        web, pin, transcription_bytes
+web.*                   url
+cache.*                 memory_bytes, disk_bytes
+models.<name>.*         path, or repo + file + revision; mmproj, draft (a
+                        file; mtp is its old name), profile, ctx_size,
+                        generation.*, agent.* for that model only, and
+                        generation.draft: an index model's draft variant
+                        (qwen3.8-27b: mtp, dflash2). Entries are created by
+                        init, sync, and model pull --register, never by set.
+A null sampling key takes the profile's value. agent.instructions is
+auto (AGENTS.md then CLAUDE.md), off, or a path.
+```
+<!-- /gen -->
+
+Each section's defaults and meanings:
 
 ### `engine`
 
@@ -102,13 +174,13 @@ There are no per-key environment variables and no per-project files;
 | `sampling.*` | `null` | overrides of the profile: `temperature`, `top_k`, `top_p`, `min_p`, `presence_penalty`, `repetition_penalty` |
 
 `null` sampling keys take the official profile for the reasoning mode
-([engine/sampling.md](../engine/sampling.md#sampling-profiles-and-the-selection-chain-2026-09-08)),
+([engine/sampling.md](../engine/sampling.md#sampling-profiles-and-the-selection-chain)),
 so the file never freezes a model's recommended settings.
 
 Speculation is decided per model: each index entry `init` writes carries
 its default draft's measured verdict in its own `generation.speculative`
 and `draft_length` (on where it pays, off where it does not;
-[benchmarks/README.md](../benchmarks/README.md#speculation-pairs)). The
+[benchmarks/record/benchmarks.md](../benchmarks/record/benchmarks.md#speculation-pairs-2026-10-05)). The
 global `generation.speculative` applies to models without an entry. A
 model with several draft variants (`qwen3.8-27b`: `mtp`, `dflash2`) runs
 its default unless `--draft <variant>` or the entry's `generation.draft`
@@ -142,8 +214,8 @@ and `--speculative` or `--draft-length` still beat both.
 | `serve.timeout` | `300` | seconds a request may wait for the GPU before `529 timeout` (a clef-flash request can hold it for minutes); flag `--timeout` |
 | `serve.memory_bytes` | `null` | what every model `nuclis serve` keeps open may hold together, whatever their kind; null is physical memory less a third, at most 16 GiB. Flag `--memory <GiB>` ([api.md § Memory](api.md#memory)) |
 | `serve.pin` | `[]` | models `nuclis serve` opens at start and its memory budget never closes, by name, any kind: a JSON list (`["gemma-4-e4b-qat", "qwen3-tts-1.7b-customvoice"]`) or one comma-separated string (what `nuclis config set serve.pin a,b` writes); at most 8. Flag `--pin`, repeated, replaces it ([api.md § Memory](api.md#memory)) |
-| `serve.transcription_bytes` | `268435456` (256 MiB) | the largest upload `POST /v1/audio/transcriptions` takes, held in memory while it is transcribed: two hours of 16 kHz 16-bit mono WAV fit; past it `413 payload_too_large`. 1 byte to 4 GiB ([api.md § Transcription (files)](api.md#transcription-files)) |
-| `serve.web` | `false` | run the hosted `web_search`, `web_fetch`, and `web_context` tool types a chat request asks for, through `web.url` ([api.md § Hosted web tools](api.md#hosted-web-tools)); off refuses them. Needs `web.url` |
+| `serve.transcription_bytes` | `268435456` (256 MiB) | the largest upload `POST /v1/audio/transcriptions` takes, held in memory while it is transcribed: two hours of 16 kHz 16-bit mono WAV fit; past it `413 payload_too_large`. 1 byte to 4 GiB ([api-transcription.md § Transcription (files)](api-transcription.md#transcription-files)) |
+| `serve.web` | `false` | run the hosted `web_search`, `web_fetch`, and `web_context` tool types a chat request asks for, through `web.url` ([api-chat.md § Hosted web tools](api-chat.md#hosted-web-tools)); off refuses them. Needs `web.url` |
 
 ### `web`
 
@@ -154,7 +226,7 @@ are off until a surface opts in, `agent.web` for the agent and `serve.web`
 for the API; either one on without a URL is a load error. `nuclis serve
 --web-url <url>` turns the API's on against a URL without the file (the
 same rule as `web.url`), and `--no-web` turns them off whatever `serve.web`
-says ([api.md § Hosted web tools](api.md#hosted-web-tools)).
+says ([api-chat.md § Hosted web tools](api-chat.md#hosted-web-tools)).
 
 | Key | Default | Meaning |
 | --- | --- | --- |

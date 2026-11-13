@@ -1,9 +1,10 @@
+<!-- kind: reference -->
 # Tool calling: model evidence and the engine seam
 
-Research checked 2026-09-13 for the completion events and the tool seam,
-extended 2026-09-16 for Gemma 4 and 2026-09-19 for Muse Glimmer. These are
-format findings and design constraints; every profile implements its
-native path, the E-series through Gemma 4's
+Each family's native tool format, the evidence it was read from (Qwen on
+2026-09-13, Gemma 4 on 2026-09-16, Muse Glimmer on 2026-09-19), and the
+engine seam it constrains: the completion events. Every profile implements
+its native path, the E-series through Gemma 4's
 ([prompt-profile.md](prompt-profile.md)).
 
 ## Model cards and artifact identity
@@ -18,7 +19,7 @@ Neither card alone defines the complete wire format.
 The Gemma evidence below was read on the 12B artifacts pinned when it was
 gathered; the 26B-A4B has run since 2026-09-18 and carries the same
 template digest. The
-[artifact record](../models/catalogue.md#pinned-commits-and-digests-2026-09-11)
+[artifact record](../benchmarks/record/catalogue.md#pinned-commits-and-digests-2026-09-11)
 and [profile fixtures](prompt-profile.md#evidence-and-reproduction) remain
 authoritative for implemented behavior. A live upstream template is evidence
 for interface design, not permission to replace a pinned profile.
@@ -203,3 +204,39 @@ whether results become user turns or remain inside a model turn. The
 parsers' and the stream decoder's tests cover multiple calls, nested values,
 literal marker-like text, truncated controls, cancellation, and reasoning
 across tool steps.
+
+## Completion events
+
+`engine.complete` wraps `runLoop` with profile decoding. Its caller supplies
+sampling scratch (`CompletionBuffers`), the effort used to render the prompt,
+an optional observer, and a synchronous `sink.send(events.Event)`. Thinking
+and answer strings borrow per-piece scratch until `send` returns. The sink
+must copy anything it retains. UTF-8 fragments are joined within a channel;
+an incomplete scalar at a channel boundary or completion end becomes U+FFFD.
+A successful completion emits one `stop` carrying the loop's outcome and
+metrics, including cancellation during prefill or decode. Inference and sink
+errors propagate, without a fabricated stop. `runLoop` and its raw token hooks
+remain available to `generate` and `bench`.
+
+The union's `tool_call {id: u32, name, arguments}` is the same type as the
+history `ToolCall`; the ID is host correlation data (the profile sets 0 and
+the agent assigns it) and arguments are a normalized JSON object. The Qwen
+decoder produces these: the shared `profiles/stream.zig` recognizes the
+`<tool_call>` / `</tool_call>` control tokens by vocabulary ID, collects the
+body as ordinary pieces, and hands it to `qwen38.parseTool`, which emits one
+call when the closing token arrives, with `tool_progress` events (the body's
+size) while it grows. A body the parser refuses after its closing token is
+released as answer text and never executed, bracket text included (copied
+when the bracket arrives: a piece is the caller's per-token buffer). A call
+still open when the completion stops is one call at EOS if it parses;
+otherwise, and on a budget stop or a cancellation, it is dropped with a
+`tool_cut` event: neither an action nor answer text. A close token that
+arrives while no reasoning is open (the model ending a thought the engine
+already cut) is dropped. A Qwen parameter value ends at the first
+`</parameter>` followed by the next parameter, `</function>`, or the body's
+end, so content that mentions the marker survives. A reasoning channel the model
+opens while answering is thinking from there, shown as a further block,
+whatever the effort (with thinking off, Gemma still opens an empty channel
+after a tool result); a closing token with no channel open stays literal. The Gemma decoder is the same machinery with its own
+brackets (`<|tool_call>` / `<tool_call|>`) and `gemma4.parseTool`; its
+handoff is the `<|tool_response>` stop token. The model-card and pinned-template evidence is in the sections above.

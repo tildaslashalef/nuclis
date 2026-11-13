@@ -1,3 +1,4 @@
+<!-- kind: reference -->
 # Prompt profiles and tokenizer fixtures
 
 A prompt profile is the checkpoint's conversation contract, kept apart from
@@ -8,14 +9,23 @@ defaults. The registry is `inference/src/profiles/root.zig`: one tag per
 profile module, selected at load by the SHA-256 of the artifact's
 `tokenizer.chat_template` (`profiles.forDocument`), never by architecture,
 so a conversation is never interpreted with a template the profile's
-fixtures did not verify. Four profiles exist:
+fixtures did not verify. The profiles and their template digests:
 
-| Profile | Module | Template SHA-256 | Stop tokens | Reasoning markers |
-| --- | --- | --- | --- | --- |
-| `qwen38` | [qwen38.zig](../../inference/src/profiles/qwen38.zig) | `12827f24…` | `<|im_end|>`, `<|endoftext|>` | `<think>` … `</think>` |
-| `gemma4` | [gemma4.zig](../../inference/src/profiles/gemma4.zig) | `845f1ee4…` | `<turn|>`, `<eos>`, `<|tool_response>` | `<|channel>thought\n` … `<channel|>` |
-| `gemma4_e` | [gemma4_e.zig](../../inference/src/profiles/gemma4_e.zig) | `241c50d8…` | as `gemma4` | as `gemma4` |
-| `muse_glimmer` | [muse_glimmer.zig](../../inference/src/profiles/muse_glimmer.zig) | `114f55eb…` | `<|eot|>`, `<|end_of_text|>` | `<|start|>assistant to=self<|message|>` … `<|eom|>` |
+<!-- gen:profiles -->
+| Profile | Template SHA-256 |
+| --- | --- |
+| `qwen38` | `12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce` |
+| `gemma4` | `845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b` |
+| `gemma4_e` | `241c50d86bdfe5e43307da87f559cd2416aacd67a8de46c15acc0105ef2200b7` |
+| `muse_glimmer` | `114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e` |
+<!-- /gen -->
+
+| Profile | Module | Stop tokens | Reasoning markers |
+| --- | --- | --- | --- |
+| `qwen38` | [qwen38.zig](../../inference/src/profiles/qwen38.zig) | `<|im_end|>`, `<|endoftext|>` | `<think>` … `</think>` |
+| `gemma4` | [gemma4.zig](../../inference/src/profiles/gemma4.zig) | `<turn|>`, `<eos>`, `<|tool_response>` | `<|channel>thought\n` … `<channel|>` |
+| `gemma4_e` | [gemma4_e.zig](../../inference/src/profiles/gemma4_e.zig) | as `gemma4` | as `gemma4` |
+| `muse_glimmer` | [muse_glimmer.zig](../../inference/src/profiles/muse_glimmer.zig) | `<|eot|>`, `<|end_of_text|>` | `<|start|>assistant to=self<|message|>` … `<|eom|>` |
 
 The catalogue's `qwen3.8-27b` uses `qwen38`; `gemma-4-26b-a4b` and
 `gemma-4-12b-qat` use `gemma4`; `gemma-4-e4b-qat` uses `gemma4_e`;
@@ -28,7 +38,7 @@ Every module exposes the same surface: `template_sha256`,
 `stop_tokens`, `bos_token`, `reasoning`, `stream_markers`,
 `image_placeholder`, `generation_prompts`, and `rewritesTurn`, with
 `audio_placeholder` where the family hears. The last two serve the session
-cache ([agent.md § The agent's token cache](../app/agent.md#12-the-agents-token-cache-2026-10-04)):
+cache ([agent.md § The agent's token cache](../app/agent.md#12-the-agents-token-cache)):
 `Profile.promptEnd` cuts the generation prompt off a render, leaving the
 bytes the next turn's render starts with, and `rewritesTurn(effort)` says
 whether the history render of a generated answer differs from what its
@@ -50,7 +60,7 @@ prompt ends inside `<think>`, while Gemma's ends at `<|turn>model\n` and
 the model may answer without opening a channel, which is then answer text.
 The agent stores the channels directly for history and session logging;
 `generate`/`agent` sample with the profile's defaults for the
-`--think` effort ([sampling.md](sampling.md#sampling-profiles-and-the-selection-chain-2026-09-08)).
+`--think` effort ([sampling.md](sampling.md#sampling-profiles-and-the-selection-chain)).
 Nothing under `src/` names a profile module; the executable uses the tag.
 
 ## Shared contract
@@ -160,10 +170,8 @@ handoff resumes the model turn; see its section below and
 
 Turns are `<|turn>role\n…<turn|>\n`; the assistant's role name is `model`.
 The prompt starts with `<bos>` as text: the tree's encoder never adds BOS,
-so the profile writes the marker the template emits (the reference server
-that captured the fixtures stripped it from `/apply-template` output because
-its tokenizer adds it back; the token streams are identical, and the fixture
-test prepends it).
+so the profile writes the marker the template emits (the captured
+fixtures lack it, and the fixture test prepends it).
 The first message, when system or developer, goes into the system turn;
 later system and developer messages render as `system` turns of their own,
 empty ones included (the reference sends `developer` as `system`). Thinking
@@ -184,8 +192,7 @@ departure from the template (which does not): the model writes at most one
 newline before `<channel|>`, so trimmed text plus the template's own
 `\n<channel|>` reproduces the model's bytes when it wrote that newline and the
 session's incremental prefill hits; when the model closes the channel with no
-newline the next step replays from the primed prefix instead (measured on
-the first step of a live agent check). Two assistant
+newline the next step replays from the primed prefix instead. Two assistant
 messages in a row continue one `model` turn (contents trimmed and
 concatenated, no marker between them). Assistant content and reasoning
 lose any control marker they spell (`<|channel>`, `<channel|>`, the six
@@ -337,7 +344,7 @@ failure point.
 
 The tool fixtures
 ([qwen38-tools.json](../../inference/src/profiles/fixtures/qwen38-tools.json),
-captured by `scripts/profile-tools-fixtures.py`, retired; at tag `v0.11.0`) add 20 Qwen cases across the
+captured from llama.cpp's server like the text fixtures) add 20 Qwen cases across the
 four efforts: a tools block alone; one call with content and reasoning; two
 calls in one assistant message; a call with empty arguments; and a call whose
 string argument contains a newline and a quote. Each carries the same tools
@@ -372,26 +379,11 @@ facts too; `muse_glimmer` has no pinned facts there and is refused
 (`UnsupportedProfile`). Default tests exercise committed fixtures and
 synthetic vocabularies only.
 
-The captures were taken by `scripts/tokenizer-fixtures.py` and
-`scripts/profile-tools-fixtures.py` (retired; at tag `v0.11.0`) against
-llama.cpp's server, which was the reference while the first families were
-brought up ([models § 4](../models/README.md#4-validate-against-nuclis-itself));
+The captures came from llama.cpp's server on the pinned files, the
+reference while the first families were brought up
+([record](../benchmarks/record/prompt-profile.md#how-the-fixtures-were-captured-2026-09-07-to-2026-09-19));
 a re-pinned file's fixtures are made by nuclis
 ([models § Which executor makes which fixture](../models/README.md#which-executor-makes-which-fixture)).
-
-The script verified the model's full checksum, size, and template digest
-(the server reports the template without the file's trailing newline;
-both forms were accepted) and the reference build id. It passed the
-thinking settings per request as the template's own keyword arguments
-(`enable_thinking` and, for Qwen3.8, `reasoning_effort` and
-`preserve_thinking`) and used `/apply-template`, `/tokenize`, and
-`/detokenize`, with synthetic content only and no generation.
-
-Captures: Qwen3.8 on 2026-09-07 (re-captured 2026-09-12 with the seven
-conversations, 2026-09-19 with `high`), Gemma 4 on 2026-09-12, Muse
-Glimmer on 2026-09-19, all with llama.cpp
-`7620399f58aebfd2196b74021f9581bcf7218cb9` on the pinned files
-([catalogue.md](../models/catalogue.md#pinned-commits-and-digests-2026-09-11)).
 The templates are adapted, not copied; their origins and licenses are in
 [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).
 
@@ -409,58 +401,7 @@ is not an alias runs with `--prompt-profile <p>` (or a registry entry's
 `profile`), which renders the pinned protocol onto it; the agent says so at
 startup.
 
-Two revisions were checked with `scripts/profile-alias-check.py` (retired;
-at tag `v0.11.0`), which replayed every pinned case through llama.cpp's
-server holding the file. On 2026-09-17, for the 17,530-byte Gemma 4 revision that community Gemma 4 12B
-finetunes ship
-(`dc311bb0…`): **18 of 38 cases differ**, all in history rendering — a
-thought on an earlier tool-call step is dropped (the pinned template keeps
-it), two consecutive assistant messages become two turns, and a tool-result
-group before a user turn is left without its `<turn|>` — so it is not an
-alias. On 2026-09-18, for Bonsai 2 27B's template (`c3cf9e34…`, 8,952 bytes: the
-upstream Qwen3.8 template without Unsloth's fixes) on the PrismML fork's
-server (`--reference-revision 5d80cff0…`; the script reported a template's
-`raise_exception` as a mismatch rather than crashing): **4 of 68 cases
-differ**, the `merged_system_*` histories, which that template refuses
-(`System message must be at the beginning.`) where the pinned one merges
-them; every other prompt and token stream is byte-identical
-([bonsai.md § Chat template](../models/bonsai.md#chat-template)). Not an alias
-either; the Bonsai entry's profile was chosen from that evidence.
-
-## Completion events (2026-09-14)
-
-`engine.complete` wraps `runLoop` with profile decoding. Its caller supplies
-sampling scratch (`CompletionBuffers`), the effort used to render the prompt,
-an optional observer, and a synchronous `sink.send(events.Event)`. Thinking
-and answer strings borrow per-piece scratch until `send` returns. The sink
-must copy anything it retains. UTF-8 fragments are joined within a channel;
-an incomplete scalar at a channel boundary or completion end becomes U+FFFD.
-A successful completion emits one `stop` carrying the loop's outcome and
-metrics, including cancellation during prefill or decode. Inference and sink
-errors propagate, without a fabricated stop. `runLoop` and its raw token hooks
-remain available to `generate` and `bench`.
-
-The union's `tool_call {id: u32, name, arguments}` is the same type as the
-history `ToolCall`; the ID is host correlation data (the profile sets 0 and
-the agent assigns it) and arguments are a normalized JSON object. The Qwen
-decoder produces these: the shared `profiles/stream.zig` recognizes the
-`<tool_call>` / `</tool_call>` control tokens by vocabulary ID, collects the
-body as ordinary pieces, and hands it to `qwen38.parseTool`, which emits one
-call when the closing token arrives, with `tool_progress` events (the body's
-size) while it grows. A body the parser refuses after its closing token is
-released as answer text and never executed, bracket text included (copied
-when the bracket arrives: a piece is the caller's per-token buffer). A call
-still open when the completion stops is one call at EOS if it parses;
-otherwise, and on a budget stop or a cancellation, it is dropped with a
-`tool_cut` event: neither an action nor answer text. A close token that
-arrives while no reasoning is open (the model ending a thought the engine
-already cut) is dropped. A Qwen parameter value ends at the first
-`</parameter>` followed by the next parameter, `</function>`, or the body's
-end, so content that mentions the marker survives. A reasoning channel the model
-opens while answering is thinking from there, shown as a further block,
-whatever the effort (with thinking off, Gemma still opens an empty channel
-after a tool result); a closing token with no channel open stays literal. The Gemma decoder is the same machinery with its own
-brackets (`<|tool_call>` / `<tool_call|>`) and `gemma4.parseTool`; its
-handoff is the `<|tool_response>` stop token. See
-[tool-calling.md](tool-calling.md) for the model-card and pinned-template
-evidence.
+Two revisions are not aliases: the Gemma 4 one community 12B finetunes
+ship (`dc311bb0…`) and Bonsai 2 27B's (`c3cf9e34…`;
+[bonsai.md § Chat template](../models/bonsai.md#chat-template)); the cases
+that differ are in the [record](../benchmarks/record/prompt-profile.md#template-revisions-checked-2026-09-17-2026-09-18).

@@ -1,8 +1,11 @@
+<!-- kind: reference -->
 # The agent's terminal
 
 How `nuclis agent` draws: styled output, the live region, the transcript,
-the renderer, the session files, and the agent without a terminal. The
-concepts behind them are in [agent.md](agent.md); how the agent is looked
+the renderer, the session files, and the agent without a terminal, then
+the terminal concepts behind them (§1, §4, and §7 of the concepts whose
+others are in [agent.md](agent.md) and
+[agent-tool-calls.md](agent-tool-calls.md)). How the agent is looked
 at and measured while it changes is in
 [development.md § Working on the agent](../development.md#working-on-the-agent).
 
@@ -26,9 +29,9 @@ palette applied to one-shot reports.
 
 Dim is a colour, not a faded one: the `dim` role paints gruvbox's grey and
 adds the SGR dim attribute only at the plain level, where there is no colour
-to carry the meaning. Stacking both halves an already low-contrast foreground
-and made notices and the help page unreadable on a translucent terminal
-(reported and fixed 2026-09-12).
+to carry the meaning: stacking both halves an already low-contrast
+foreground, which makes notices and the help page unreadable on a
+translucent terminal.
 
 Glyphs are a separate axis from colour. Every decoration the
 agent draws — bullets, task boxes, rules, table joints, fold arrows, the
@@ -44,6 +47,21 @@ A finished turn sends a desktop notification (OSC 9, `nuclis: response
 ready`) when the window lost focus during it and the turn was not
 cancelled; terminals without OSC 9 ignore it. `NUCLIS_NO_NOTIFY=1` (any
 value but `0`) or a `dumb` `TERM` turns it off (`src/tui/terminal.zig`).
+
+Every `NUCLIS_*` variable the code reads, and where (`NUCLIS_HOME` moves
+the user root, [getting-started.md § User
+directories](../guide/getting-started.md#user-directories)):
+
+<!-- gen:env -->
+| Variable | Read in |
+| --- | --- |
+| `NUCLIS_ASCII` | `src/tui/theme.zig` |
+| `NUCLIS_HOME` | `src/agent/print.zig`, `src/cli.zig`, `src/completion.zig`, `huggingface/src/root.zig` |
+| `NUCLIS_NO_NOTIFY` | `src/tui/terminal.zig` |
+| `NUCLIS_NO_PREVIEW` | `src/tui/graphics.zig` |
+| `NUCLIS_NO_SCROLL_REGION` | `src/tui/screen.zig` |
+| `NUCLIS_PANIC_HOOK` | `src/panic_hook.zig` |
+<!-- /gen -->
 
 ## The agent's live region
 
@@ -144,7 +162,7 @@ the engine: a turn (`loadMedia`, under its `encoding image #1` label), a
 command, a model or context switch, a resume, quitting. The backend's
 `tick` runs on whichever thread commits, so `toolTick` returns at once off
 the driver's thread: the task never reads keys or draws. Measured on the
-E4B: [vision.md § Encoders at the materialized-score attention](../engine/vision.md#encoders-at-the-materialized-score-attention-2026-10-27).
+E4B: [vision.md § Encoders at the materialized-score attention](../benchmarks/record/vision.md#encoders-at-the-materialized-score-attention-2026-10-27).
 
 A mutation's diff is a header row (the path, `+N −M`), then rows of a
 `dim` gutter (old and new line numbers, right-aligned), a marker cell
@@ -233,3 +251,148 @@ Two rules matter when reading it:
   becomes the next break point instead of breaking the row, so a word ending
   exactly at the last column keeps it.
 
+## 1. A terminal that is written once: events, blocks, and the line between them
+
+The inference companion is about producing tokens; this one is about the other
+end — how a turn reaches a person — because the terminal surface is what the
+tool loop hangs from, and its rules are not obvious.
+
+**The rendering model.** nuclis does not use the alternate screen (the
+full-window mode `vim` and `less` switch into). Finished output is written into
+the terminal's *own* scrollback exactly once and never touched again; a small
+**live region** at the bottom — the streaming block, the editor, the status bar
+— is the only thing repainted. The payoff is that scrolling, searching,
+selecting, and copying are the terminal's job, already correct, and the
+conversation survives exit. The price is that a printed row is gone: it can be
+rewritten only while it is still on screen, which is why a fold toggle on a
+turn taller than the screen does nothing rather than half-rewriting it.
+
+Two escape sequences carry the model. **Synchronized output** (`CSI ? 2026 h`
+/ `l`) brackets a repaint so a terminal shows the frame whole instead of
+tearing mid-write. A **scrolling region** (`DECSTBM`, `CSI 1 ; bottom r`)
+narrows scrolling to the rows *above* the live region, so inserting a finished
+row scrolls only those and the region below is never erased — the flicker of
+erase-and-repaint disappears. The top margin must stay at row 1, because that
+is the condition under which terminals feed scrolled-off rows to the
+scrollback.
+
+**When is a block finished?** While a turn streams, the last markdown block is
+still being written: a paragraph may gain words, a fenced block its closing
+fence, a table another row. So the renderer answers one question —
+`markdown.split(text)` returns the prefix whose rendering can no longer change
+and the tail that can — and the surface styles the first while showing the
+second raw. A blank line ends a block; a heading, a rule, a quote, a list item,
+or a closing fence ends one at its newline; a paragraph, a table, and an open
+fence keep theirs open. One property makes this safe, and is pinned by a test
+that feeds a document a byte at a time: *rendering a closed prefix produces a
+prefix of rendering the whole*. Without it, text would shift on the screen as
+later bytes arrived.
+
+**Events, and who owns their strings.** Between the generation loop and the
+screen sits a tagged union — user, thinking delta, thinking end, answer delta,
+tool call, tool result, diff, status, turn end, notice. The transcript builds
+blocks from it, the status bar folds the beats into a row, print mode writes
+it as text or JSON, and the engine and the tool loop produce the same kinds. An
+`answer_delta` is emitted once per generated token, so its
+string is **borrowed for the duration of the call**: a consumer that keeps text
+copies it. Owning every event's bytes would mean an allocation and a free per
+token for text that is copied anyway.
+
+Zig makes two parts of this cheap. The consumer is `anytype` with a single
+method — `sink.send(event)` — so the splitter that turns one stream into two
+works for the transcript and for print mode with no interface value, no vtable,
+and no allocation: each call site is compiled against its own concrete type.
+And the union is `union(enum)`, so `switch` over it is exhaustive: adding an
+event kind without rendering it is a compile error rather than a row that
+silently never appears.
+
+**The original hold-back.** A model writes one stream with its reasoning channel
+delimited by markers ([§7 of the inference companion](../llm-guide.md#7-the-prompt-profile-is-a-contract)). Splitting it *incrementally* has a trap: while the
+channel is open, the first bytes of a half-arrived `</think>` look exactly like
+reasoning text, and a naive splitter puts `</thi` on the screen for one token
+before reclassing it. Keeping back one marker's length minus one byte makes
+that impossible, and costs nothing — the held bytes arrive with the next token.
+But then the *end* of a turn must release them explicitly, or a turn cancelled
+mid-thought loses its last characters. That bug lived in the inline version
+until the splitter became a module with tests of its own; it is the kind of
+thing that only shows up when a component can be driven byte by byte without a
+model, a clock, or a terminal.
+
+## 4. A cell is not a code point: grapheme clusters and terminal width
+
+A terminal is addressed in fixed cells, and the naive way to count them is one
+per Unicode code point (or worse, one per byte). That is wrong for exactly the
+text a chat UI sees most: emoji. `👋🏿` is a wave plus a skin-tone modifier,
+`👩‍🚀` is three code points joined by a zero-width joiner, `❤️` is a heart plus
+U+FE0F, `🇨🇭` is two regional indicators, `e` + U+0301 is a base plus a
+combining mark. Measured per code point, the first three are four cells wide
+and can be *split across a row* mid-cluster; the editor's Backspace can delete
+half a family.
+
+The unit is the **grapheme cluster**, defined by UAX #29. Clusters are found by
+a boundary rule, not by a per-character property: "no break before an Extend",
+"break around Control", "join a regional-indicator pair", "join an
+extended-pictographic ZWJ sequence", and a handful of Hangul and Indic rules.
+Several of those need *state* — the parity of a regional-indicator run, or
+whether an `Extended_Pictographic Extend* ZWJ` preceded the current character —
+which is the same lesson as [§2](agent-tool-calls.md#2-why-a-streaming-parser-needs-token-boundaries): the meaning of a byte depends on what came
+before it. `src/tui/graphemes.zig` carries that state through a cluster and
+resets it at each boundary.
+
+Width is a second, separate policy on top of segmentation. UAX #11 gives each
+code point an East Asian Width (`W`/`F` are two cells, `A` ambiguous is a
+judgement call), but a cluster's width is not the sum of its parts: a joiner,
+a variation selector, a skin-tone modifier, and Hangul V/T jamo all contribute
+zero, and an emoji-presentation cluster is two cells regardless of how many
+code points it took. nuclis keeps one documented policy in `clusterWidth`:
+VS15 keeps a cluster at one cell, an emoji presentation / modifier / flag pair
+is two, everything else sums its non-zero code points, and an unpaired
+regional indicator stays one. That is a terminal approximation, pinned by
+fixtures rather than asserted universally.
+
+The data is the other half. Unicode properties are large tables; `uucode`
+exists to generate them, but adding a dependency for one table is a lot of
+surface for a project that keeps its build offline. `scripts/fixtures/grapheme-table.py`
+instead downloads a **pinned UCD** once, checks its digests, and emits one
+sorted interval table (`graphemes_table.zig`) that a binary search reads. The
+generator is committed, the artifact is committed, and the data layer sits
+behind `graphemes.zig`, so swapping in `uucode` later is a change to one file.
+The correctness evidence is the Unicode project's own conformance file:
+`GraphemeBreakTest.txt` (766 cases at 17.0.0) runs through the same iterator
+the editor and the wrapper use.
+
+## 7. A diff is one computation, rendered two ways
+
+A diff looks like text, and the first instinct is to render it as text:
+compute a unified string, then colour the lines whose first byte is `+` or
+`-`. That works until the second consumer appears. The model and the session
+need the unified form; the terminal, at a wide width, wants a *two-column*
+view that shows an old line beside the replacement, with the bytes that
+changed marked. If the renderer recovers line numbers and pairing by parsing
+the unified string, the computation exists twice — once producing the string,
+once interpreting it — and the two can drift.
+
+So the unit of a diff here is a **row**: old line number, new line number,
+kind, text, and the byte span that changed. `tui.diff.compute` produces rows
+from an old and a new byte string and derives the unified text from the same
+edit script. The renderer consumes rows and never parses; the model and the
+session consume the unified string. Neither is a description of the other.
+
+The algorithm is a plain line diff with two practical concessions. Lines
+split on `\n` alone, so a CRLF file diffs cleanly against itself (`\r` stays
+in the line and is invisible once rendered). Common leading and trailing lines
+are stripped first, because the common case is a small edit in a large file;
+the remaining middle goes through an LCS table, and a middle too large for the
+table degrades to "all removed, all added" rather than spending unbounded
+time. Only changed hunks plus three lines of context are materialised, so a
+one-line change in a thousand-line file stays eight rows; the unified text the
+model reads keeps one line on each side, since it wrote the change and pays
+for every line it reads back. Pairing a removal with
+the addition that replaced it is what lets the two-column view put them on one
+display row and highlight the bytes that differ, and it falls out of the same
+edit script.
+
+Zig note: the module has no theme and no I/O. It allocates owned bytes and is
+tested against fixtures (insertion, deletion, replacement, context, CRLF, a
+missing trailing newline, the bounded fallback), which is what lets the layout
+be a golden test instead of a screenshot.

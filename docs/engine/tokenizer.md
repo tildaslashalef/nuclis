@@ -1,3 +1,4 @@
+<!-- kind: reference -->
 # Native tokenizer
 
 The library exposes `vocabulary.load(allocator, document, directory, limits)` in
@@ -104,7 +105,7 @@ Category data comes from pinned llama.cpp `unicode-data.cpp`, not the host's
 Unicode library. The compact checked-in table contains 1,921 five-byte range
 records (9,605 bytes) for letter, mark, number, and whitespace membership.
 The table's provenance is recorded in [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).
-The table was written by `scripts/tokenizer-unicode.py` (retired; at
+The table was written by the retired `tokenizer-unicode.py` (at
 tag `v0.11.0`), which verified source SHA-256
 `95170cd1c105a5b41a1b2dce73b0fae8ce8011ef7897600828bb2babe8b26e5d`.
 The generated table SHA-256 is
@@ -262,7 +263,7 @@ special tokens, checked against it (below):
    contractions, unbounded digit runs, marks outside letters, the
    `\s+(?!\S)` lookahead) and merged by `bpe.zig`.
 
-The Metaspace shape runs step 1 as written (every mmBERT added token,
+The Metaspace shape runs the first of those steps as written (every mmBERT added token,
 newline and tab runs and HTML tags among them, matches the raw text, and
 `<mask>` takes the spaces before it). Then each gap has its spaces turned
 into `▁` and gets one `▁` prepended unless it already starts with one, so
@@ -291,7 +292,7 @@ and the first piece written loses one leading `▁` unless the scheme is
 `never`. Ids are bounded by `limits.tokens`, copied piece bytes by
 `limits.text_bytes`; a piece that is empty or not UTF-8, an id given twice,
 or an added token that contradicts the vocabulary is refused. Nemotron
-ASR's use: [nemotron-asr.md § Tokenizer](../models/nemotron-asr.md#tokenizer).
+ASR's use: [nemotron-asr.md § Tokenizer](../benchmarks/record/nemotron-asr.md#tokenizer-2026-10-27).
 ## Vocabulary and merges files
 
 A `Qwen2Tokenizer` stored the slow way (Qwen3-TTS ships no
@@ -372,8 +373,8 @@ texts (those 32, then French, German, Spanish, Arabic, Hindi, Russian, and
 Thai, code points outside the vocabulary for byte fallback, `<mask>` and
 `[MASK]` in text, turn markers, HTML tags, tab and newline runs, a literal
 `▁`, and spaces at every position) plus the 16 requests of
-`fixtures/laya-multilingual/`. The fixtures come from
-`scripts/laya-reference.py [--subfolder multilingual]` (retired; at
+`fixtures/laya-multilingual/`. The fixtures come from the retired
+`laya-reference.py [--subfolder multilingual]` (at
 tag `v0.11.0`; the `laya` 0.3.20
 package and its `tokenizers` 0.23.2). The NFC tables
 pass every NFC column of UCD 17.0.0's `NormalizationTest.txt` whenever

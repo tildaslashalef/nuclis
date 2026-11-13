@@ -9,7 +9,7 @@ no-drafter baseline run) and saves the JSON report under
 `.zig-cache/bench/<workload>/<rev>-<n>.json`; an `acceptance` workload
 delegates to scripts/bench/nuclis-baseline.py, which writes the dated record under
 docs/benchmarks/. Tables come from scripts/bench/bench-report.py.
-See docs/development.md § The record.
+See docs/benchmarks/README.md § The record.
 """
 
 import argparse

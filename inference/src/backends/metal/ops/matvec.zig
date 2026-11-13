@@ -247,7 +247,7 @@ pub fn matvecSegments(self: *Backend, segments: []const Segment, input: Buffer, 
 }
 /// The seven 2-bit encodings' standalone kernels beat their bodies inside
 /// the merged kernel by 11–23 % on the gate+up pair, even with the two
-/// extra dispatches and `siluMul` (docs/engine/apple-gpu.md § Saluki's
+/// extra dispatches and `siluMul` (docs/benchmarks/record/apple-gpu.md § Saluki's
 /// 2-bit matvecs on the `ffn_down` shape), so a merge holding one is declined.
 pub fn mergeDeclined(kernel: Kernel) bool {
     return switch (kernel) {

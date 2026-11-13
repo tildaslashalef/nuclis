@@ -8,7 +8,7 @@
 //! and values) on the device. Every kernel sums an output in an order fixed
 //! by the output's own index, so pieces of any size give one decode's
 //! samples bit for bit. The decoder borrows its `Backend`, which must
-//! outlive it. docs/models/drama3.md § The codec on Metal.
+//! outlive it. docs/models/drama3.md § On Metal.
 const std = @import("std");
 const metal = @import("../backends/metal/root.zig");
 const cm = @import("codec_metal.zig");

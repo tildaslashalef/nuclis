@@ -9,7 +9,7 @@
 //! `tts.metal`'s window attention), so pieces of any size give one decode's
 //! samples bit for bit. The decoder borrows its `Backend`, which must
 //! outlive it; its buffers are released on `deinit`.
-//! docs/models/qwen3-tts.md § The codec decoder.
+//! docs/models/qwen3-tts.md § Architecture.
 const std = @import("std");
 const metal = @import("../backends/metal/root.zig");
 const cm = @import("codec_metal.zig");

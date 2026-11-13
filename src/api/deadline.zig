@@ -2,7 +2,7 @@
 //! writer: every read and write the connection blocks in stamps a deadline,
 //! and a `Watch` task shuts down the socket of any connection past its own,
 //! which wakes the blocked call with an end of stream or a failed write. The
-//! durations are `http.Limits` (docs/guide/api.md § Limits).
+//! durations are `http.Limits` (docs/guide/api.md § Conventions).
 //!
 //! A `Guard` is pinned: its reader's and writer's vtables find it by
 //! `@fieldParentPtr`, so it is initialised in place and never moved.

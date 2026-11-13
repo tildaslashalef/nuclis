@@ -1,3 +1,4 @@
+<!-- kind: reference -->
 # CPU quantization decoding
 
 The inference library exposes `quant.row(id, bytes, output)` through
@@ -6,11 +7,38 @@ row into caller-owned `f32` storage: the numerical reference the CPU
 executor computes with and the Metal decoders are held to.
 
 [encoding.zig](../../inference/src/tensor/encoding.zig) sizes, and `quant.row`
-decodes, 23 encodings: F32 (ID 0), F16 (1), Q4_0 (2), Q5_0 (6), Q5_1 (7),
-Q8_0 (8), Q2_K (10), Q3_K (11), Q4_K (12), Q5_K (13), Q6_K (14), IQ2_XXS (16),
-IQ2_XS (17), IQ3_XXS (18), IQ1_S (19), IQ4_NL (20), IQ3_S (21), IQ2_S (22),
-IQ4_XS (23), IQ1_M (29), BF16 (30), and the PrismML fork's PQ2_0 (142) and
-PTQ1_0 (143). Any other ID is rejected before a tensor span is exposed. A
+decodes, <!-- gen:encodings-count -->23<!-- /gen --> encodings, PQ2_0 and
+PTQ1_0 from the PrismML fork:
+
+<!-- gen:encodings -->
+| ID | Encoding | Values per block | Bytes per block |
+| --- | --- | --- | --- |
+| 0 | `F32` | 1 | 4 |
+| 1 | `F16` | 1 | 2 |
+| 2 | `Q4_0` | 32 | 18 |
+| 6 | `Q5_0` | 32 | 22 |
+| 7 | `Q5_1` | 32 | 24 |
+| 8 | `Q8_0` | 32 | 34 |
+| 10 | `Q2_K` | 256 | 84 |
+| 11 | `Q3_K` | 256 | 110 |
+| 12 | `Q4_K` | 256 | 144 |
+| 13 | `Q5_K` | 256 | 176 |
+| 14 | `Q6_K` | 256 | 210 |
+| 16 | `IQ2_XXS` | 256 | 66 |
+| 17 | `IQ2_XS` | 256 | 74 |
+| 18 | `IQ3_XXS` | 256 | 98 |
+| 19 | `IQ1_S` | 256 | 50 |
+| 20 | `IQ4_NL` | 32 | 18 |
+| 21 | `IQ3_S` | 256 | 110 |
+| 22 | `IQ2_S` | 256 | 82 |
+| 23 | `IQ4_XS` | 256 | 136 |
+| 29 | `IQ1_M` | 256 | 56 |
+| 30 | `BF16` | 1 | 2 |
+| 142 | `PQ2_0` | 128 | 34 |
+| 143 | `PTQ1_0` | 128 | 28 |
+<!-- /gen -->
+
+Any other ID is rejected before a tensor span is exposed. A
 [CPU matrix-vector reference](cpu-reference.md) consumes these rows.
 
 ## Interface and ownership
@@ -43,7 +71,7 @@ is the scale multiplied by the signed byte. It is also the one format nuclis
 writes at run time, as the `q8_0` attention cache: `quant/encode.zig`
 `q8_0Row` sets `d = f16(max |x| / 127)` and `q = clamp(round(x / d), -127,
 127)` per block, the arithmetic Metal's `nu_pack_q8_0` repeats bit for bit
-([metal-backend.md § Q8_0 KV cache](metal-backend.md#q8_0-kv-cache-2026-10-15)). IQ4_NL stores an F16 scale and 16
+([metal-attention.md § Q8_0 KV cache](metal-attention.md#q8_0-kv-cache)). IQ4_NL stores an F16 scale and 16
 bytes containing 32 four-bit lookup indices. The low nibbles describe the first
 16 values, and the high nibbles describe the next 16. The lookup values are
 nonuniform: treating IQ4_NL as ordinary signed four-bit integers is incorrect.
@@ -149,7 +177,7 @@ slices to exercise unaligned input; invalid-size tests cover both new encodings.
 
 The [ternary fixture](../../inference/src/quant/fixtures/ternary.json) is
 produced by the fork's own `dequantize_row_pq2_0` and `dequantize_row_ptq1_0`
-(`scripts/quant-fixtures.py --prism-checkout`, retired; at tag `v0.11.0`; its
+(the retired `quant-fixtures.py --prism-checkout`, at tag `v0.11.0`; its
 `revision` the fork's pin): eight blocks of each with arbitrary payload bytes and the eight scales
 above, so non-canonical codes reproduce the reference's fixed-point
 arithmetic too, plus all-zero and all-one blocks, an every-code PQ2_0 block,
@@ -164,8 +192,8 @@ of each block (scale and minimum nibbles, grid indices and their high bits,
 the 7-bit sign indices with parity as the eighth sign, the IQ1 shift of ±1/8
 and its sign, IQ1_M's scale rebuilt from four nibbles), and the
 cross-encoding check compares whole models' rows with an already-validated
-encoding of the same weights ([saluki.md § Validation](../models/saluki.md#validation-without-an-external-reference)).
-Their codebooks were written by `scripts/iq-codebooks.py` (retired; at tag `v0.11.0`). The
+encoding of the same weights ([saluki.md § Validation](../benchmarks/record/saluki.md#validation-without-an-external-reference-2026-10-14)).
+Their codebooks were written by the retired `iq-codebooks.py` (at tag `v0.11.0`). The
 [codebook fixture](../../inference/src/quant/fixtures/codebook.json) holds
 two real blocks of each from Saluki 27B, written by `zig build
 test-cross-encoding -- --fixture <out> <saluki.gguf>` with the CPU
@@ -192,8 +220,8 @@ Default tests consume only the committed fixtures and need no external checkout 
 zig build test
 ```
 
-The llama.cpp-made fixtures were written by `scripts/quant-fixtures.py`
-(retired; at tag `v0.11.0`), which checked the pinned checkout's revision and called
+The llama.cpp-made fixtures were written by the retired `quant-fixtures.py`
+(at tag `v0.11.0`), which checked the pinned checkout's revision and called
 its built `libggml-base` CPU functions through Python `ctypes`, loading no
 model. A re-pinned file's fixtures are made by nuclis
 ([models § Which executor makes which fixture](../models/README.md#which-executor-makes-which-fixture)).

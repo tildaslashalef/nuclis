@@ -1,0 +1,748 @@
+{
+  "$comment": "Written by scripts/repo/docs-gen.py --facts; never by hand (docs/README.md § Generated blocks).",
+  "commands": [
+    {
+      "command": "agent",
+      "summary": "the interactive chat; -p <text> runs one turn"
+    },
+    {
+      "command": "generate",
+      "summary": "one completion from a prompt"
+    },
+    {
+      "command": "bench",
+      "summary": "repeated prefill and decode measurements"
+    },
+    {
+      "command": "tokenize",
+      "summary": "the prompt's token ids and byte offsets, no model run"
+    },
+    {
+      "command": "eval",
+      "summary": "perplexity of a text file, teacher-forced"
+    },
+    {
+      "command": "inspect",
+      "summary": "an artifact's identity, dimensions, tensor encodings"
+    },
+    {
+      "command": "validate",
+      "summary": "whether a file binds to its architecture's adapter"
+    },
+    {
+      "command": "model",
+      "summary": "pull, list, judge, and remove Hugging Face Hub artifacts"
+    },
+    {
+      "command": "cache",
+      "summary": "list or clear the agent's saved model states"
+    },
+    {
+      "command": "decide",
+      "summary": "typed questions about text or JSON, answered by Laya"
+    },
+    {
+      "command": "embed",
+      "summary": "text, images, audio into vectors, by EmbeddingGemma 2"
+    },
+    {
+      "command": "speak, voice, transcribe",
+      "summary": "speech by Qwen3-TTS, saved voices, Nemotron ASR"
+    },
+    {
+      "command": "serve",
+      "summary": "the nuclis API over HTTP: decisions, models kept open"
+    },
+    {
+      "command": "config",
+      "summary": "write, show, or set a key of ~/.nuclis/nuclis.json"
+    },
+    {
+      "command": "completion",
+      "summary": "the shell completion script for fish, bash, or zsh"
+    }
+  ],
+  "cli": {
+    "agent": {
+      "usage": [
+        "nuclis agent [options] [--resume [<id>]]",
+        "nuclis agent -p <text> [--json] [--session <path>]",
+        "nuclis agent --print --prompt-file <path> [--json] [--session <path>]",
+        "nuclis agent ls [--json]",
+        "nuclis agent rm <id>",
+        "nuclis agent export <id> [path]"
+      ],
+      "flags": [
+        "-p",
+        "--prompt",
+        "--print",
+        "--prompt-file",
+        "--json",
+        "--session",
+        "--resume",
+        "--think",
+        "--thinking-budget",
+        "--system-prompt",
+        "--image-max-tokens",
+        "--model",
+        "--backend",
+        "--ctx-size",
+        "--kv",
+        "--max-tokens",
+        "--speculative",
+        "--draft",
+        "--draft-length",
+        "--prompt-profile",
+        "--seed",
+        "--temperature",
+        "--top-k",
+        "--top-p",
+        "--min-p",
+        "--presence-penalty",
+        "--repetition-penalty"
+      ]
+    },
+    "generate": {
+      "usage": [
+        "nuclis generate --prompt <text> [options]",
+        "nuclis generate --prompt-file <path> [options]",
+        "nuclis generate --prompt-tokens <json> [options]"
+      ],
+      "flags": [
+        "--prompt",
+        "--prompt-file",
+        "--prompt-tokens",
+        "--raw",
+        "--image",
+        "--audio",
+        "--image-max-tokens",
+        "--think",
+        "--logits",
+        "--trace-dir",
+        "--json",
+        "--model",
+        "--backend",
+        "--ctx-size",
+        "--kv",
+        "--max-tokens",
+        "--speculative",
+        "--draft",
+        "--draft-length",
+        "--prompt-profile",
+        "--seed",
+        "--temperature",
+        "--top-k",
+        "--top-p",
+        "--min-p",
+        "--presence-penalty",
+        "--repetition-penalty"
+      ]
+    },
+    "bench": {
+      "usage": [
+        "nuclis bench --prompt <text> [options]",
+        "nuclis bench --prompt-file <path> [options]",
+        "nuclis bench --prompt-tokens <json> [options]"
+      ],
+      "flags": [
+        "--prompt",
+        "--prompt-file",
+        "--prompt-tokens",
+        "--raw",
+        "--repeat",
+        "--warmup",
+        "--profile",
+        "--unfused-norms",
+        "--kernel-stats",
+        "--capture",
+        "--prefix-cache",
+        "--verify-rows",
+        "--accept",
+        "--draft-p-min",
+        "--json",
+        "--model",
+        "--backend",
+        "--ctx-size",
+        "--kv",
+        "--max-tokens",
+        "--speculative",
+        "--draft",
+        "--draft-length",
+        "--prompt-profile",
+        "--seed",
+        "--temperature",
+        "--top-k",
+        "--top-p",
+        "--min-p",
+        "--presence-penalty",
+        "--repetition-penalty"
+      ]
+    },
+    "tokenize": {
+      "usage": [
+        "nuclis tokenize --prompt <text> [options]",
+        "nuclis tokenize --prompt-file <path> [options]"
+      ],
+      "flags": [
+        "--prompt",
+        "--prompt-file",
+        "--raw",
+        "--think",
+        "--prompt-profile",
+        "--model",
+        "--json"
+      ]
+    },
+    "eval": {
+      "usage": [
+        "nuclis eval --file <path> [options]"
+      ],
+      "flags": [
+        "--file",
+        "--ctx-size",
+        "--chunks",
+        "--reference",
+        "--write-reference",
+        "--model",
+        "--backend",
+        "--kv",
+        "--prompt-profile",
+        "--json"
+      ]
+    },
+    "inspect": {
+      "usage": [
+        "nuclis inspect [--model <name|path>] [--tensor <name>] [--json]"
+      ],
+      "flags": [
+        "--model",
+        "--tensor",
+        "--json"
+      ]
+    },
+    "validate": {
+      "usage": [
+        "nuclis validate [--model <name|path>] [--json]"
+      ],
+      "flags": [
+        "--model",
+        "--json"
+      ]
+    },
+    "model": {
+      "usage": [
+        "nuclis model ls [-l] [--available [--all]] [--json]",
+        "nuclis model pull <name> [--with mmproj,draft[=<v>] | --all [--variants]]",
+        "[--force] [--json]",
+        "nuclis model pull <owner/repo> [--file <name>] [--revision <rev>] [--role <r>]",
+        "[--register <name> [--profile <p>]] [--force] [--json]",
+        "nuclis model inspect <name> [--json]",
+        "nuclis model inspect <owner/repo> --file <name> [--revision <rev>] [--json]",
+        "nuclis model adopt <path> [--force] [--json]",
+        "nuclis model rm <name> [--with mmproj,draft | --all] [--json]"
+      ],
+      "flags": [
+        "-l",
+        "--long",
+        "--available",
+        "--with",
+        "--all",
+        "--file",
+        "--revision",
+        "--role",
+        "--register",
+        "--profile",
+        "--force",
+        "--json",
+        "--variants"
+      ]
+    },
+    "cache": {
+      "usage": [
+        "nuclis cache [ls] [--json]",
+        "nuclis cache clear"
+      ],
+      "flags": [
+        "--json"
+      ]
+    },
+    "decide": {
+      "usage": [
+        "nuclis decide --request <file|-> [options]",
+        "nuclis decide --questions <file> <states> [options]",
+        "nuclis decide <inline questions> <states> [options]",
+        "<states>: --state <text> and --state-file <path>, repeatable",
+        "<inline questions>: --choice <text> --option <key[=desc]>…,",
+        "--score <text> --level <text>…, --noul <text>; each [--id <name>]"
+      ],
+      "flags": [
+        "--model",
+        "--truncate",
+        "--backend",
+        "--uncalibrated",
+        "--explain",
+        "--json",
+        "--request",
+        "--questions",
+        "--state",
+        "--state-file",
+        "--choice",
+        "--option",
+        "--score",
+        "--level",
+        "--noul",
+        "--id"
+      ]
+    },
+    "embed": {
+      "usage": [
+        "nuclis embed <text>… [options]",
+        "nuclis embed --image <file>… --audio <file>… [options]",
+        "nuclis embed --input-file <file|-> [options]",
+        "each argument is one input: quote a sentence"
+      ],
+      "flags": [
+        "--task",
+        "--title",
+        "--dimensions",
+        "--image-tokens",
+        "--truncate",
+        "--model",
+        "--backend",
+        "--json",
+        "--image",
+        "--audio",
+        "--input-file"
+      ]
+    },
+    "speak": {
+      "usage": [
+        "nuclis speak <text>… -o <file.wav> [options]",
+        "the words are joined by spaces: quote a sentence"
+      ],
+      "flags": [
+        "-o",
+        "--output",
+        "--voice",
+        "--language",
+        "--instruct",
+        "--model",
+        "--seed",
+        "--backend",
+        "--stream",
+        "--chunk",
+        "--first-chunk",
+        "--split",
+        "--host-sampling",
+        "--profile"
+      ]
+    },
+    "voice": {
+      "usage": [
+        "nuclis voice add <name> <audio> [--text <transcript>] [--json]",
+        "nuclis voice list [--json]",
+        "nuclis voice rm <name> [--json]"
+      ],
+      "flags": [
+        "--text",
+        "--json"
+      ]
+    },
+    "transcribe": {
+      "usage": [
+        "nuclis transcribe <file> [options]"
+      ],
+      "flags": [
+        "--stream",
+        "--lookahead",
+        "--language",
+        "--phrase",
+        "--model",
+        "--backend",
+        "--format",
+        "--segments",
+        "--json"
+      ]
+    },
+    "serve": {
+      "usage": [
+        "nuclis serve [--host <ip>] [--port <n>] [--model <name>]… [--pin <name>]…",
+        "[--memory <GiB>] [--backend cpu|metal] [--timeout <s>]",
+        "[--web-url <url> | --no-web]"
+      ],
+      "flags": [
+        "--host",
+        "--port",
+        "--model",
+        "--pin",
+        "--memory",
+        "--backend",
+        "--quiet",
+        "--timeout",
+        "--web-url",
+        "--no-web"
+      ]
+    },
+    "config": {
+      "usage": [
+        "nuclis config init [--dry-run] [--json]",
+        "nuclis config sync [--prune] [--dry-run] [--json]",
+        "nuclis config show [--json]",
+        "nuclis config set <key> <value>"
+      ],
+      "flags": [
+        "--prune",
+        "--dry-run",
+        "--json",
+        "--discover"
+      ]
+    },
+    "completion": {
+      "usage": [
+        "nuclis completion fish|bash|zsh"
+      ],
+      "flags": []
+    }
+  },
+  "config_keys": [
+    "  engine.*                model, backend, ctx_size, kv_precision",
+    "  generation.*            max_tokens, think, speculative, draft_length,",
+    "                          image_max_tokens, sampling.{temperature, top_k, top_p,",
+    "                          min_p, presence_penalty, repetition_penalty}",
+    "  agent.*                 think, fold_thinking, theme, instructions,",
+    "                          thinking_budget, web",
+    "  decide.*                model",
+    "  embed.*                 model",
+    "  speech.*                model, voice",
+    "  transcribe.*            model",
+    "  serve.*                 host, port, log, request_log, timeout, memory_bytes,",
+    "                          web, pin, transcription_bytes",
+    "  web.*                   url",
+    "  cache.*                 memory_bytes, disk_bytes",
+    "  models.<name>.*         path, or repo + file + revision; mmproj, draft (a",
+    "                          file; mtp is its old name), profile, ctx_size,",
+    "                          generation.*, agent.* for that model only, and",
+    "                          generation.draft: an index model's draft variant",
+    "                          (qwen3.8-27b: mtp, dflash2). Entries are created by",
+    "                          init, sync, and model pull --register, never by set.",
+    "  A null sampling key takes the profile's value. agent.instructions is",
+    "  auto (AGENTS.md then CLAUDE.md), off, or a path."
+  ],
+  "config_init": "{\n  \"schema_version\": 1,\n  \"engine\": {\n    \"model\": \"gemma-4-26b-a4b\",\n    \"backend\": \"metal\",\n    \"ctx_size\": 16384,\n    \"kv_precision\": \"f16\"\n  },\n  \"generation\": {\n    \"max_tokens\": 8192,\n    \"think\": \"off\",\n    \"speculative\": false,\n    \"draft_length\": 4,\n    \"image_max_tokens\": \"auto\",\n    \"sampling\": {\n      \"temperature\": null,\n      \"top_k\": null,\n      \"top_p\": null,\n      \"min_p\": null,\n      \"presence_penalty\": null,\n      \"repetition_penalty\": null\n    }\n  },\n  \"agent\": {\n    \"think\": \"low\",\n    \"fold_thinking\": true,\n    \"theme\": \"gruvbox-dark\",\n    \"instructions\": \"auto\",\n    \"thinking_budget\": 1024,\n    \"web\": false\n  },\n  \"decide\": {\n    \"model\": \"laya\"\n  },\n  \"embed\": {\n    \"model\": \"embeddinggemma-2\"\n  },\n  \"speech\": {\n    \"model\": \"qwen3-tts-1.7b-customvoice\",\n    \"voice\": \"ryan\"\n  },\n  \"transcribe\": {\n    \"model\": \"nemotron-asr-0.6b\"\n  },\n  \"serve\": {\n    \"host\": \"127.0.0.1\",\n    \"port\": 9000,\n    \"log\": true,\n    \"request_log\": true,\n    \"timeout\": 300,\n    \"memory_bytes\": null,\n    \"web\": false,\n    \"pin\": [],\n    \"transcription_bytes\": 268435456\n  },\n  \"web\": {\n    \"url\": null\n  },\n  \"cache\": {\n    \"memory_bytes\": 4294967296,\n    \"disk_bytes\": 8589934592\n  },\n  \"models\": {}\n}\n",
+  "encodings": [
+    {
+      "id": 0,
+      "name": "F32",
+      "elements_per_block": 1,
+      "bytes_per_block": 4
+    },
+    {
+      "id": 1,
+      "name": "F16",
+      "elements_per_block": 1,
+      "bytes_per_block": 2
+    },
+    {
+      "id": 2,
+      "name": "Q4_0",
+      "elements_per_block": 32,
+      "bytes_per_block": 18
+    },
+    {
+      "id": 6,
+      "name": "Q5_0",
+      "elements_per_block": 32,
+      "bytes_per_block": 22
+    },
+    {
+      "id": 7,
+      "name": "Q5_1",
+      "elements_per_block": 32,
+      "bytes_per_block": 24
+    },
+    {
+      "id": 8,
+      "name": "Q8_0",
+      "elements_per_block": 32,
+      "bytes_per_block": 34
+    },
+    {
+      "id": 10,
+      "name": "Q2_K",
+      "elements_per_block": 256,
+      "bytes_per_block": 84
+    },
+    {
+      "id": 11,
+      "name": "Q3_K",
+      "elements_per_block": 256,
+      "bytes_per_block": 110
+    },
+    {
+      "id": 12,
+      "name": "Q4_K",
+      "elements_per_block": 256,
+      "bytes_per_block": 144
+    },
+    {
+      "id": 13,
+      "name": "Q5_K",
+      "elements_per_block": 256,
+      "bytes_per_block": 176
+    },
+    {
+      "id": 14,
+      "name": "Q6_K",
+      "elements_per_block": 256,
+      "bytes_per_block": 210
+    },
+    {
+      "id": 16,
+      "name": "IQ2_XXS",
+      "elements_per_block": 256,
+      "bytes_per_block": 66
+    },
+    {
+      "id": 17,
+      "name": "IQ2_XS",
+      "elements_per_block": 256,
+      "bytes_per_block": 74
+    },
+    {
+      "id": 18,
+      "name": "IQ3_XXS",
+      "elements_per_block": 256,
+      "bytes_per_block": 98
+    },
+    {
+      "id": 19,
+      "name": "IQ1_S",
+      "elements_per_block": 256,
+      "bytes_per_block": 50
+    },
+    {
+      "id": 20,
+      "name": "IQ4_NL",
+      "elements_per_block": 32,
+      "bytes_per_block": 18
+    },
+    {
+      "id": 21,
+      "name": "IQ3_S",
+      "elements_per_block": 256,
+      "bytes_per_block": 110
+    },
+    {
+      "id": 22,
+      "name": "IQ2_S",
+      "elements_per_block": 256,
+      "bytes_per_block": 82
+    },
+    {
+      "id": 23,
+      "name": "IQ4_XS",
+      "elements_per_block": 256,
+      "bytes_per_block": 136
+    },
+    {
+      "id": 29,
+      "name": "IQ1_M",
+      "elements_per_block": 256,
+      "bytes_per_block": 56
+    },
+    {
+      "id": 30,
+      "name": "BF16",
+      "elements_per_block": 1,
+      "bytes_per_block": 2
+    },
+    {
+      "id": 142,
+      "name": "PQ2_0",
+      "elements_per_block": 128,
+      "bytes_per_block": 34
+    },
+    {
+      "id": 143,
+      "name": "PTQ1_0",
+      "elements_per_block": 128,
+      "bytes_per_block": 28
+    }
+  ],
+  "profiles": [
+    {
+      "name": "qwen38",
+      "template_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+    },
+    {
+      "name": "gemma4",
+      "template_sha256": "845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b"
+    },
+    {
+      "name": "gemma4_e",
+      "template_sha256": "241c50d86bdfe5e43307da87f559cd2416aacd67a8de46c15acc0105ef2200b7"
+    },
+    {
+      "name": "muse_glimmer",
+      "template_sha256": "114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e"
+    }
+  ],
+  "limits": [
+    {
+      "limit": "context ceiling (tokens)",
+      "value": 32768,
+      "source": "inference/src/runtime/session.zig `max_capacity`"
+    },
+    {
+      "limit": "output budget (tokens)",
+      "value": 16384,
+      "source": "src/config.zig `max_output_tokens`"
+    },
+    {
+      "limit": "draft length",
+      "value": 15,
+      "source": "inference/src/engine.zig `max_draft_length`"
+    },
+    {
+      "limit": "prefill chunk (tokens)",
+      "value": 256,
+      "source": "inference/src/engine.zig `prefill_chunk`"
+    },
+    {
+      "limit": "config file (bytes)",
+      "value": 65536,
+      "source": "src/config.zig `max_file_bytes`"
+    },
+    {
+      "limit": "agent steps per turn",
+      "value": 16,
+      "source": "src/agent/loop.zig `budget_default`"
+    },
+    {
+      "limit": "agent turns per session",
+      "value": 256,
+      "source": "src/agent/loop.zig `max_turns`"
+    },
+    {
+      "limit": "agent instructions file (bytes)",
+      "value": 8192,
+      "source": "src/agent/system_prompt.zig `max_instructions_bytes`"
+    },
+    {
+      "limit": "read_file lines per call",
+      "value": 2000,
+      "source": "src/agent/tools/read_file.zig `max_lines`"
+    },
+    {
+      "limit": "read_file default lines",
+      "value": 120,
+      "source": "src/agent/tools/read_file.zig `default_lines`"
+    },
+    {
+      "limit": "read_file bytes",
+      "value": 1048576,
+      "source": "src/agent/tools/read_file.zig `max_bytes`"
+    },
+    {
+      "limit": "grep matches shown",
+      "value": 50,
+      "source": "src/agent/tools/grep.zig `max_shown`"
+    },
+    {
+      "limit": "grep files scanned",
+      "value": 20000,
+      "source": "src/agent/tools/grep.zig `max_files`"
+    },
+    {
+      "limit": "grep seconds",
+      "value": 10,
+      "source": "src/agent/tools/grep.zig `max_seconds`"
+    },
+    {
+      "limit": "glob results",
+      "value": 200,
+      "source": "src/agent/tools/glob.zig `max_results`"
+    },
+    {
+      "limit": "image tokens per image",
+      "value": 4096,
+      "source": "inference/src/vision/root.zig `max_image_tokens`"
+    },
+    {
+      "limit": "server output tokens",
+      "value": 16384,
+      "source": "src/api/chat/wire.zig `max_output_tokens`"
+    },
+    {
+      "limit": "server audio clip (bytes)",
+      "value": 16777216,
+      "source": "src/api/chat/wire.zig `max_audio_bytes`"
+    },
+    {
+      "limit": "server web rounds",
+      "value": 6,
+      "source": "src/api/chat/service.zig `max_web_rounds`"
+    },
+    {
+      "limit": "server speech input (bytes)",
+      "value": 16384,
+      "source": "src/api/speech/wire.zig `max_input_bytes`"
+    },
+    {
+      "limit": "server live transcriptions",
+      "value": 16,
+      "source": "src/api/transcription/stream.zig `max_sessions`"
+    },
+    {
+      "limit": "decision questions per call",
+      "value": 32,
+      "source": "inference/src/decide.zig `max_questions`"
+    },
+    {
+      "limit": "decision states per call",
+      "value": 64,
+      "source": "inference/src/decide.zig `max_states`"
+    }
+  ],
+  "env": [
+    {
+      "variable": "NUCLIS_ASCII",
+      "read_in": [
+        "src/tui/theme.zig"
+      ]
+    },
+    {
+      "variable": "NUCLIS_HOME",
+      "read_in": [
+        "src/agent/print.zig",
+        "src/cli.zig",
+        "src/completion.zig",
+        "huggingface/src/root.zig"
+      ]
+    },
+    {
+      "variable": "NUCLIS_NO_NOTIFY",
+      "read_in": [
+        "src/tui/terminal.zig"
+      ]
+    },
+    {
+      "variable": "NUCLIS_NO_PREVIEW",
+      "read_in": [
+        "src/tui/graphics.zig"
+      ]
+    },
+    {
+      "variable": "NUCLIS_NO_SCROLL_REGION",
+      "read_in": [
+        "src/tui/screen.zig"
+      ]
+    },
+    {
+      "variable": "NUCLIS_PANIC_HOOK",
+      "read_in": [
+        "src/panic_hook.zig"
+      ]
+    }
+  ]
+}

@@ -309,5 +309,13 @@ small, attributable test fixtures.
 `docs/` holds exactly one authoritative spec
 ([docs/spec.md](docs/spec.md)). Every document is listed in
 [docs/README.md](docs/README.md) and lives in the folder its kind names.
-`make docs-check` holds every link; `make docs-check ARGS='--move old=new'`
-moves a document with its references.
+Each document states its kind on its first line: a `reference` or `card`
+says what is true now, a `guide` gives commands that work now, a `record`
+is dated and never edited after; how something came to be goes to the
+record, and the reference links it
+([docs/README.md § Three kinds of document](docs/README.md#three-kinds-of-document)).
+What the code knows (commands, flags, settings, the index, gates, limits,
+encodings) is a generated block, rewritten by `make docs-gen`, never by
+hand. `make docs-check` holds every link, the kinds' rules, and the
+budgets; `make docs-check ARGS='--move old=new'` moves a document or a
+section's anchor with its references.

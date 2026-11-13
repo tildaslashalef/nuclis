@@ -5,7 +5,7 @@
 //! task, then waits in the batcher, whose GPU item opens the model if needed
 //! and embeds every waiting request for it, pass by pass; a handler never
 //! touches a model. Models are opened by name only, never by a client's
-//! path. docs/guide/api.md § Embeddings.
+//! path. docs/guide/api-embeddings.md § Embeddings.
 const std = @import("std");
 const inference = @import("inference");
 const config = @import("../../config.zig");

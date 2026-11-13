@@ -21,7 +21,7 @@ const sampling = @import("../sampling/root.zig");
 pub const template_sha256 = "845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b";
 /// Other revisions of the same template that render every fixture case
 /// byte for byte like the pinned one, so a file carrying one of them takes
-/// this profile (prompt-profile.md § Other template revisions). None so far:
+/// this profile (prompt-profile.md § Evidence and reproduction). None so far:
 /// the 17,530-byte revision Gemma 4 finetunes ship differs on history
 /// (prompt-profile.md § Evidence), so such a file needs `--prompt-profile`.
 pub const template_aliases = [_][]const u8{};

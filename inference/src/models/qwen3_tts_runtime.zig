@@ -6,7 +6,7 @@
 //! for the 1.7B; text rows are decoded from the checkpoint as ids need them,
 //! so it must outlive the model). Projections are dense.zig's F32 matmul;
 //! norms, RoPE, and attention keep F64 statistics. The equations:
-//! docs/models/qwen3-tts.md § Forward pass.
+//! docs/benchmarks/record/qwen3-tts.md § Forward pass.
 const std = @import("std");
 const safetensors = @import("../formats/safetensors.zig");
 const cpu = @import("../backends/cpu/root.zig");
@@ -295,7 +295,7 @@ fn runStack(gpa: Allocator, io: std.Io, blocks: []const Block, s: tts.Stack, fin
         try rmsRows(k, b.k_norm, s.rms_eps, k);
         for (0..n) |t| {
             // One position per row: the talker's M-RoPE with three equal
-            // components is this 1-D NEOX RoPE (docs/models/qwen3-tts.md § (b)).
+            // components is this 1-D NEOX RoPE (docs/benchmarks/record/qwen3-tts.md § (b)).
             const options: cpu.rope.Options = .{ .dimensions = d, .base = s.rope_theta, .position = @intCast(past + t) };
             for (0..s.heads) |head| {
                 const at = q[t * qw + head * d ..][0..d];
@@ -624,7 +624,7 @@ pub const Synthesizer = struct {
     /// Embeds and prefills `prompt`; the first frame's logits are ready
     /// after. A cloned voice's reference frames go through the decoder
     /// first, their samples discarded, so the voice's audio begins where its
-    /// reference ends (docs/models/qwen3-tts.md § The decode). The prompt's
+    /// reference ends (docs/benchmarks/record/qwen3-tts.md § The decode). The prompt's
     /// rows and trailing text are copied in; its clone is not read after.
     pub fn init(gpa: Allocator, io: std.Io, config: *const tts.Config, engine: Engine, decoder: Decoder, prompt: *const tts.Prompt, seed: u64) !Synthesizer {
         const w = config.talker.hidden;

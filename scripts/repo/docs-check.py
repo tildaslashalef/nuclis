@@ -16,6 +16,15 @@ section's anchor. Standard library only; reads tracked files, no network.
 Also: no work-unit identifier (`AREA-NN`, retired with the worklog at
 v0.6.0) in a tracked Markdown file or the gate and workload manifests;
 work is named by what it does.
+
+The documents' rules (docs/README.md § Three kinds of document): each file
+under `docs/`, and `README.md`, opens with its kind (`<!-- kind: reference
+-->`, `card`, `guide`, or `record`); a reference, card, or guide uses no
+plan words about the project and names only `make` targets, `scripts/`
+paths, `nuclis` commands and flags, gates, and workloads that exist; every
+section of a record is dated; each kind keeps to its line budget
+(generated blocks not counted); every document is listed in
+`docs/README.md`.
 """
 
 import argparse
@@ -30,7 +39,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 REPO = "tildaslashalef/nuclis"
 # Files whose `docs/…` strings are this script's own test data.
-NO_REWRITE = {"scripts/repo/docs-check.py"}
+NO_REWRITE = {"scripts/repo/docs-check.py", "scripts/repo/docs-gen.py"}
 LINK = re.compile(r"(!?\[(?:[^\]\[]|\[[^\]]*\])*\]\()([^)\s]+)((?:\s+\"[^\"]*\")?\))")
 REF_DEF = re.compile(r"^( {0,3}\[[^\]]+\]:\s+)(\S+)", re.MULTILINE)
 # A code span: a run of backticks, then text without that run or a blank line
@@ -240,7 +249,14 @@ def parse_moves(spec):
 
 
 def tracked():
-    out = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    """Tracked files and new ones git does not ignore."""
+    out = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
     return [p for p in out.splitlines() if (ROOT / p).is_file()]
 
 
@@ -376,8 +392,308 @@ def move(spec):
     print(f"docs-check: moved {len(moves)} file(s), {len(anchor_moves)} anchor(s); rewrote {changed} file(s)")
 
 
+# ---- the documents' rules ------------------------------------------------------
+
+KINDS = {"reference": 400, "card": 200, "guide": 500, "record": None}
+KIND_LINE = re.compile(r"^<!-- kind: (\w+) -->\n")
+# The teaching companion keeps its own shape (docs/README.md § Three kinds).
+EXEMPT = {"docs/llm-guide.md"}
+README_BUDGET = 180
+PLAN_WORDS = re.compile(r"\b(will|not yet|planned|future|TODO|for now|phase \d+|step \d+)\b", re.IGNORECASE)
+OK_MARK = re.compile(r"<!-- ok: [^>]+ -->")
+GEN_BLOCK = re.compile(r"(?<!`)<!-- gen:[\w:.-]+ -->.*?<!-- /gen -->", re.DOTALL)
+QUOTE = re.compile(r"\"[^\"\n]*\"|“[^”\n]*”")
+DATE = re.compile(r"\b20\d\d-\d\d-\d\d\b")
+SPAN = re.compile(r"(`+)(.+?)\1", re.DOTALL)
+GLOBAL_FLAGS = {"--help", "-h", "--version", "--json"}
+# Rules that fail the check; any other is reported as a warning.
+FAILING = {"kind", "listed", "plan-word", "record-date", "name", "budget", "owner", "section"}
+
+
+def kind_of(path, text):
+    m = KIND_LINE.match(text)
+    return m[1] if m else None
+
+
+def governed(path):
+    return path == "README.md" or (path.startswith("docs/") and path.endswith(".md"))
+
+
+def strip_generated(text):
+    """`text` with every generated block's body removed (the markers stay)."""
+    return GEN_BLOCK.sub(lambda m: m[0].split("-->", 1)[0] + "--><!-- /gen -->", text)
+
+
+def budget_lines(text):
+    return strip_generated(text).count("\n")
+
+
+def plan_words(text):
+    """(line, word) for each plan word in prose: code, quotes, generated blocks, and `ok:` lines excluded."""
+    masked = mask_code(GEN_BLOCK.sub(lambda m: re.sub(r"[^\n]", " ", m[0]), text))
+    found = []
+    for n, line in enumerate(masked.splitlines(), 1):
+        if OK_MARK.search(line) or line.lstrip().startswith(">"):
+            continue
+        line = re.sub(r"<!--.*?-->", "", QUOTE.sub("", line))
+        found += [(n, m[1]) for m in PLAN_WORDS.finditer(line)]
+    return found
+
+
+def undated_headings(text):
+    """(line, heading) for each section heading of a record without a date."""
+    out = []
+    for n, line in enumerate(mask_code(text).splitlines(), 1):
+        m = HEADING.match(line)
+        if m and len(m[1]) >= 2 and not DATE.search(m[2]):
+            out.append((n, m[2]))
+    return out
+
+
+def make_targets(makefile):
+    return {m[1] for m in re.finditer(r"^([\w.-]+):(?!=)", makefile, re.MULTILINE)}
+
+
+def expand(pattern):
+    """A name pattern's alternatives: `{a,b}` braces expanded; `*` kept for fnmatch."""
+    m = re.search(r"\{([^{}]*)\}", pattern)
+    if not m:
+        return [pattern]
+    return [x for alt in m[1].split(",") for x in expand(pattern[: m.start()] + alt + pattern[m.end() :])]
+
+
+def matches_any(pattern, names):
+    import fnmatch
+
+    return all(any(fnmatch.fnmatchcase(n, alt) for n in names) for alt in expand(pattern))
+
+
+class Names:
+    """What a document may name: from the Makefile, the tree, the facts, and the manifests."""
+
+    def __init__(self, makefile, files, facts, gates, workloads, catalog):
+        self.targets = make_targets(makefile)
+        self.files = set(files)
+        self.dirs = {posixpath.dirname(f) for f in files} | {
+            "/".join(f.split("/")[:i]) for f in files for i in range(1, f.count("/") + 1)
+        }
+        self.cli = facts.get("cli", {})
+        self.gates = [g["name"] for g in gates.get("gates", [])]
+        self.families = set(gates.get("families", {})) | {g.get("family") for g in gates.get("gates", [])}
+        self.models = set(gates.get("models", {}))
+        self.workloads = [f"{r}/{s}" for r, m in workloads.get("models", {}).items() for s in m["shapes"]]
+        self.workload_rows = set(workloads.get("models", {}))
+        self.artifacts = {a["name"] for a in catalog.get("artifacts", [])}
+
+    def path_exists(self, path):
+        import fnmatch
+
+        path = path.rstrip("/").rstrip(".,;:")
+        if any(c in path for c in "*?{<"):
+            return any(fnmatch.fnmatchcase(f, alt) for f in self.files for alt in expand(path.split("<")[0] + "*"))
+        return path in self.files or path in self.dirs
+
+    def problems(self, span):
+        """What in one code span names something that does not exist."""
+        out = []
+        words = span.split()
+        if not words:
+            return out
+        if words[0] == "make" and len(words) > 1 and re.fullmatch(r"[\w.-]+", words[1]):
+            target = words[1]
+            if target not in self.targets and not target.endswith("-"):
+                out.append(f"make target `{target}`")
+            for w in words[2:]:
+                m = re.fullmatch(r"NAME=['\"]?([^'\"]+)['\"]?", w)
+                if m and target == "gate" and not matches_any(m[1], self.gates):
+                    out.append(f"gate `{m[1]}`")
+                if m and target == "workload" and "<" not in m[1] and not matches_any(m[1], self.workloads):
+                    out.append(f"workload `{m[1]}`")
+        for w in words:
+            if w.startswith("scripts/") and not self.path_exists(w):
+                out.append(f"path `{w}`")
+        binary = next((i for i, w in enumerate(words) if w in ("nuclis", "./zig-out/bin/nuclis")), None)
+        if binary is not None and binary + 1 < len(words):
+            cmd = words[binary + 1]
+            if re.fullmatch(r"[a-z]+", cmd):
+                if cmd not in self.cli:
+                    out.append(f"command `nuclis {cmd}`")
+                else:
+                    known = set(self.cli[cmd]["flags"]) | GLOBAL_FLAGS
+                    for w in words[binary + 2 :]:
+                        flag = w.split("=")[0]
+                        if re.fullmatch(r"--[a-z][\w-]*", flag) and flag not in known:
+                            out.append(f"flag `{flag}` of `nuclis {cmd}`")
+        if (
+            len(words) == 1
+            and re.fullmatch(r"[a-z0-9_]+(-[a-z0-9_*{},]+)+", span)
+            and span.split("-")[0] in self.families
+            and span not in self.artifacts
+            and span not in self.models
+            and span not in self.workload_rows
+            and not matches_any(span, self.gates)
+        ):
+            out.append(f"gate `{span}`")
+        return out
+
+
+def named_problems(text, names):
+    """(line, what) for each code span in prose that names something missing."""
+    body = GEN_BLOCK.sub(lambda m: re.sub(r"[^\n]", " ", m[0]), text)
+    fenced = mask_code_fences(body)
+    out = []
+    for m in SPAN.finditer(fenced):
+        if OK_MARK.search(fenced[m.end() : fenced.find("\n", m.end())]):
+            continue
+        line = fenced.count("\n", 0, m.start()) + 1
+        out += [(line, what) for what in names.problems(m[2].replace("\n", " "))]
+    return out
+
+
+def mask_code_fences(markdown):
+    """`markdown` with fenced blocks blanked (code spans kept), offsets kept."""
+    out, fence = [], None
+    for line in markdown.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            marker = stripped[:3]
+            fence = None if fence == marker else (fence or marker)
+            out.append(re.sub(r"[^\n]", " ", line))
+        else:
+            out.append(re.sub(r"[^\n]", " ", line) if fence else line)
+    return "".join(out)
+
+
+def load_json(path, default):
+    try:
+        import json
+
+        return json.loads((ROOT / path).read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def owner_problems(index, read):
+    """Each row of docs/README.md § Who owns which fact names a block its owner must carry."""
+    out = []
+    section = (
+        index.split("## Who owns which fact", 1)[1].split("\n## ", 1)[0] if "## Who owns which fact" in index else ""
+    )
+    for m in re.finditer(r"^\| ([^|]+) \| \[[^\]]*\]\(([^)#]+)[^)]*\) \(`([\w:-]+)`\) \|$", section, re.MULTILINE):
+        fact, target, block = m[1].strip(), resolve("docs/README.md", m[2]), m[3]
+        text = read(target)
+        if text is not None and f"<!-- gen:{block} -->" not in text:
+            out.append(f"docs/README.md: {target} owns {fact.lower()} but carries no `{block}` block")
+    return out
+
+
+SECTION_REF = re.compile(r"([\w./-]+\.md) § ([^)`\"\n,;:]+)")
+SECTION_SOURCES = (".zig", ".py", ".metal", ".m", ".h", ".json", ".sh")
+
+
+def section_title(heading):
+    """A heading's text as code cites it: markup and a leading section number dropped."""
+    return re.sub(r"^\d+(\.\d+)*\.?\s+", "", re.sub(r"[`*]", "", heading)).lower().strip()
+
+
+def cites(title, headings):
+    """Whether `file.md § title` in code names one of `headings` (either may be cut short)."""
+    t = section_title(title)
+    if re.fullmatch(r"\d+(\.\d+)*", title):
+        return any(re.match(rf"^{re.escape(title)}\b", h) for h in headings)
+    return any(h and (t.startswith(section_title(h)) or section_title(h).startswith(t)) for h in headings)
+
+
+def section_problems(files, read):
+    """(where, what) for each `docs/x.md § Title` in code whose document has no such heading."""
+    docs = {
+        p: [m[2] for m in map(HEADING.match, mask_code_fences(read(p)).splitlines()) if m]
+        for p in files
+        if is_markdown(p)
+    }
+    out = []
+    for path in files:
+        if (
+            path in NO_REWRITE
+            or "/fixtures/" in path
+            or not (path.endswith(SECTION_SOURCES) or path in ("Makefile", "build.zig"))
+        ):
+            continue
+        text = read(path)
+        for m in SECTION_REF.finditer(text):
+            name, title = m[1], m[2].strip().rstrip(".")
+            found = [p for p in docs if p == name or p.endswith("/" + name.lstrip("./"))]
+            line = text.count("\n", 0, m.start()) + 1
+            if not found:
+                out.append(f"{path}:{line}: names {name}, which does not exist")
+            elif not any(cites(title, docs[p]) for p in found):
+                out.append(f"{path}:{line}: {name} has no section § {title}")
+    return out
+
+
+def rules(files):
+    """(rule, problem) for every document rule a file breaks."""
+    out = []
+    names = Names(
+        (ROOT / "Makefile").read_text(),
+        files,
+        load_json("docs/facts.json", {}),
+        load_json("gates.json", {}),
+        load_json("workloads.json", {}),
+        load_json("src/catalog.json", {}),
+    )
+    index = (ROOT / "docs/README.md").read_text() if (ROOT / "docs/README.md").exists() else ""
+    listed = {resolve("docs/README.md", t) for _, _, t, _ in links(index)}
+
+    def read(path):
+        return (ROOT / path).read_text() if (ROOT / path).is_file() else None
+
+    out += [("owner", p) for p in owner_problems(index, read)]
+
+    def text_of(path):
+        try:
+            return (ROOT / path).read_text()
+        except (OSError, UnicodeDecodeError):
+            return ""
+
+    out += [("section", p) for p in section_problems(files, text_of)]
+    for path in files:
+        if not governed(path) or path in EXEMPT:
+            continue
+        text = (ROOT / path).read_text()
+        kind = kind_of(path, text)
+        if path.startswith("docs/") and path != "docs/README.md" and path not in listed:
+            out.append(("listed", f"{path}: not listed in docs/README.md"))
+        if kind not in KINDS:
+            out.append(("kind", f"{path}:1: no `<!-- kind: reference|card|guide|record -->` first line"))
+            continue
+        if kind == "record":
+            out += [
+                ("record-date", f"{path}:{n}: record heading without a date: {h}") for n, h in undated_headings(text)
+            ]
+            continue
+        out += [
+            ("plan-word", f"{path}:{n}: plan word `{w}` (state what is true, or mark `<!-- ok: why -->`)")
+            for n, w in plan_words(text)
+        ]
+        out += [("name", f"{path}:{n}: no such {what}") for n, what in named_problems(text, names)]
+        limit = README_BUDGET if path == "README.md" else KINDS[kind]
+        used = budget_lines(text)
+        if used > limit:
+            out.append(("budget", f"{path}: {used} lines, over the {kind} budget of {limit} (two subjects?)"))
+    return out
+
+
 def run():
-    problems = check(tracked())
+    files = tracked()
+    problems = check(files)
+    warnings = []
+    for rule, problem in rules(files):
+        (problems if rule in FAILING else warnings).append(problem)
+    for w in warnings:
+        print(f"docs-check: warning: {w}", file=sys.stderr)
+    if warnings:
+        print(f"docs-check: {len(warnings)} warning(s)", file=sys.stderr)
     for p in problems:
         print(f"docs-check: {p}", file=sys.stderr)
     if problems:
@@ -460,6 +776,59 @@ class SelfTest(unittest.TestCase):
     def test_unit_ids(self):
         text = "UTF-16 and IQ4_XS and SHA-256\nsee [KERN-03](x.md), ENGN-21\n"
         self.assertEqual(unit_ids(text), [(2, "KERN-03"), (2, "ENGN-21")])
+
+    def test_plan_words(self):
+        text = 'It will run.\n`will` in code\n> will quoted\nthe "will" word\nfuture rows <!-- ok: cache rows -->\nstep 3 here\n'
+        self.assertEqual(plan_words(text), [(1, "will"), (6, "step 3")])
+        self.assertEqual(plan_words("<!-- gen:x -->\nwill\n<!-- /gen -->\n"), [])
+
+    def test_record_headings(self):
+        self.assertEqual(undated_headings("# Title\n## A (2026-09-10)\n## B\n"), [(3, "B")])
+
+    def test_budget_skips_generated(self):
+        self.assertEqual(budget_lines("a\n<!-- gen:x -->\n1\n2\n3\n<!-- /gen -->\nb\n"), 3)
+
+    def test_names(self):
+        names = Names(
+            "check:\n\tx\ngate:\n\ty\nworkload:\nOPT := 1\n",
+            ["scripts/repo/docs-check.py"],
+            {"cli": {"generate": {"usage": [], "flags": ["--prompt"]}}},
+            {"gates": [{"name": "qwen38-trace-f32", "family": "qwen38"}], "families": {"qwen38": {}}},
+            {"models": {"qwen38": {"model": "qwen38", "shapes": ["code"]}}},
+            {"artifacts": [{"name": "qwen38-x"}]},
+        )
+        self.assertEqual(names.problems("make check"), [])
+        self.assertEqual(names.problems("make nope"), ["make target `nope`"])
+        self.assertEqual(names.problems("make OPT"), ["make target `OPT`"])
+        self.assertEqual(names.problems("make gate NAME='qwen38-*'"), [])
+        self.assertEqual(names.problems("make gate NAME=muse-x"), ["gate `muse-x`"])
+        self.assertEqual(names.problems("make workload NAME=qwen38/code"), [])
+        self.assertEqual(names.problems("scripts/repo/gone.py --x"), ["path `scripts/repo/gone.py`"])
+        self.assertEqual(names.problems("scripts/repo/"), [])
+        self.assertEqual(names.problems("nuclis generate --prompt x --json"), [])
+        self.assertEqual(names.problems("nuclis generate --nope"), ["flag `--nope` of `nuclis generate`"])
+        self.assertEqual(names.problems("nuclis chat"), ["command `nuclis chat`"])
+        self.assertEqual(names.problems("qwen38-trace-{f32,f16}"), ["gate `qwen38-trace-{f32,f16}`"])
+        self.assertEqual(names.problems("qwen38-trace-*"), [])
+        self.assertEqual(names.problems("qwen38-x"), [])
+
+    def test_owner(self):
+        index = "## Who owns which fact\n\n| Fact | Owner |\n| --- | --- |\n| Encodings | [q](engine/q.md) (`encodings`) |\n"
+        texts = {"docs/engine/q.md": "no block"}
+        self.assertEqual(len(owner_problems(index, texts.get)), 1)
+        texts["docs/engine/q.md"] = "<!-- gen:encodings -->\n<!-- /gen -->"
+        self.assertEqual(owner_problems(index, texts.get), [])
+
+    def test_section_refs(self):
+        texts = {"docs/a.md": "# A\n## 7.4 Sessions and storage\n## The split pass (2026-09-10)\n", "x.zig": ""}
+        texts["x.zig"] = (
+            "// docs/a.md § Sessions and storage; a.md § 7.4; a.md § The split pass; a.md § Gone; docs/b.md § X"
+        )
+        found = section_problems(list(texts), texts.get)
+        self.assertEqual(
+            [f.split(": ", 1)[1] for f in found],
+            ["a.md has no section § Gone", "names docs/b.md, which does not exist"],
+        )
 
     def test_parse_moves(self):
         moves, am = parse_moves("a.md=b.md, c.md#x=d.md")

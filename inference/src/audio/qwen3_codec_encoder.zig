@@ -5,7 +5,7 @@
 //! and projections are the decoder's (`qwen3_codec.Binding`; the file's
 //! encoder copies are checked equal and not read). It runs once per saved
 //! voice, so the F32 CPU path is the only one. Rows are time-major.
-//! docs/models/qwen3-tts.md § The codec encoder.
+//! docs/models/qwen3-tts.md § Voice cloning (the Base).
 const std = @import("std");
 const safetensors = @import("../formats/safetensors.zig");
 const cpu = @import("../backends/cpu/root.zig");
