@@ -1,7 +1,7 @@
 .{
     .name = .huggingface,
     .fingerprint = 0x504ea5b8be87abc5,
-    .version = "0.11.0",
+    .version = "0.12.0",
     .minimum_zig_version = "0.17.1",
     .dependencies = .{},
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md" },
