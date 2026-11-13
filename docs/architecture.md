@@ -259,7 +259,7 @@ apart, so each service is a directory and one registration:
   task (`wire.zig`, pure), then waits for one executor item that opens
   the named model if another is open and completes the conversation
   through the agent's `Completer` (`model.zig`), so a served conversation
-  continues or restores the model's state exactly as `nuclis chat` does.
+  continues or restores the model's state exactly as `nuclis agent` does.
   A whole response waits for the item; a streamed one drains its chunks
   from a `pipe.zig` queue. Either way the connection watches its client
   (`http.Peer`), and one that leaves sets the flag the item's observer
@@ -398,8 +398,8 @@ flowchart LR
     sched[one family's schedule\nwritten twice] --> cpu[*_runtime.zig\ncalls cpu.* functions\nF64 accumulation\n~18 s / token]
     sched --> gpu[*_metal.zig\nrecords Backend encoders\nF32, one command buffer / token\n~95 ms / token]
     cpu -- compare traces --> gpu
-    ref[llama.cpp traces\nfixtures] -- compare --> cpu
-    ref -- compare --> gpu
+    fx[pinned trace fixtures] -- compare --> cpu
+    fx -- compare --> gpu
 ```
 
 - `*_runtime.zig` is the **reference**: plain loops, F64 sums, every
@@ -407,7 +407,7 @@ flowchart LR
   purpose; when the two disagree it is presumed right. The exception is
   `modernbert_runtime.zig`, Laya's encoder: its F32 forward is the product
   path on the CPU (SIMD, split across `Io` tasks, `backends/cpu/dense.zig`),
-  and the oracle's F32 fixtures are its reference
+  and the F32 fixtures pinned from the `laya` package are its reference
   ([laya.md](models/laya.md)).
 - `*_metal.zig` is the **engine**: the same schedule, each line recording
   a dispatch; nothing runs until `commit()`. The files are deliberately
@@ -466,26 +466,33 @@ then `kernels/rowwise.metal` (`nu_add`, `nu_rmsnorm`) before `kernels/matvec.met
 
 ```mermaid
 flowchart LR
-    ref[llama.cpp pinned build\nreference only, never linked] -- scripts/*.py --> fx[pinned fixtures\nquant, vector, attention, recurrent JSON]
-    fx --> cpu_t[CPU unit tests\nzig build test, no model]
+    fx[pinned fixtures\nquant, vector, attention, recurrent JSON] --> cpu_t[CPU unit tests\nzig build test, no model]
     cpu[cpu.* references] --> cpu_t
-    fx --> gpu_t[metal-check\nzig build test-metal, no model]
-    cpu --> gpu_t
-    ref -- reference-generation.cpp --> traces[per-layer traces of the real model]
+    cpu --> gpu_t[metal-check\nzig build test-metal, no model]
+    fx --> gpu_t
+    tiny[generated tiny models\nevery encoding] --> tiny_t[make test-tiny\nMetal against the CPU]
+    cpu -- --trace-dir --> traces[per-layer traces of the real model]
     traces -- gates.json --> full[trace and generation gates\nboth backends, both cache precisions]
 ```
 
+nuclis is its own reference: the CPU reference is checked against the
+format and the mathematical contract, Metal against the CPU reference, and
+a new encoding of a model against one already validated. The first
+families were brought up against a pinned llama.cpp build, whose fixtures
+stay in the tree
+([models/README.md § 4](models/README.md#4-validate-against-nuclis-itself)).
+
 - **Unit tests** (`make test`) run without a model or GPU under a
   leak-checking allocator, including on error paths.
-- **Fixtures** are outputs of the reference on small inputs, committed with
-  the revision that produced them. Decoders must match exactly; F32 GPU
+- **Fixtures** are a reference's outputs on small inputs, committed with
+  their provenance. Decoders must match exactly; F32 GPU
   reductions match F64 sums within stated tolerances.
 - **Full-model traces** compare every layer output and the logits on real
   prompts, with a documented tolerance per numerical mode.
 - **Perplexity** is the long-text check the traces cannot be: `nuclis eval`
-  scores 4,096 tokens of a pinned text teacher-forced, and each family's
-  gate holds it within 0.5 % of the reference's per-token run on the same
-  tokens ([guide/eval.md](guide/eval.md)).
+  scores windows of a pinned text teacher-forced, and each family's gate
+  holds it within a stated tolerance of the pinned per-token result on the
+  same tokens ([guide/eval.md](guide/eval.md)).
 - **Gates and workloads are data.** Every model-specific check is a gate in
   `gates.json`, tiered by cost and selected by changed paths; every
   benchmark is a workload in `workloads.json` with its report saved by
@@ -584,10 +591,11 @@ flowchart LR
     m1[sync per-op bridge\n2.3 tok/s] --> m2[one command buffer / token\n5.0] --> m3[specialized matvec\n8.5] --> m3b[no per-layer commits\n9.7] --> m4[Q3_K/IQ3_S kernels,\nmerged projections\n10.6] --> m6[GPU sampling\nsampled = greedy speed] --> p1[chunked prefill matmul\n11 → 51 tok/s at 512] --> p2a[tiled causal attention\n33 → 51 at 4K] --> p2b[chunkwise DeltaNet] --> p3[half tiles\n53 → 84 at 512] --> m5[F16 KV + flash decoding\n32K decode 2.65 → 8.09] --> m7[penalty kernel\ninstruct 8.7 → 10.2] --> s1[speculative decoding on\nQwen 1.50× at 512] --> m8[half magic-number decode\n512 decode 10.4 → 11.8]
 ```
 
-Against the pinned llama.cpp on the same tokens (2026-10-04, macOS 27):
-Qwen3.8 decodes 1.04–1.15× the reference at every length and prefills
+Against the pinned llama.cpp on the same tokens, the 2026-10-04 record
+(macOS 27, Qwen3.8's first pin): Qwen3.8 decoded 1.04–1.15× the reference at every length and prefilled
 level at 512, falling to 0.71× at 32K; the
-other families decode 0.71–0.84× and prefill 0.42–0.91×. The numbers are
+other families decoded 0.71–0.84× and prefilled 0.42–0.91×. Later records
+compare nuclis to its own previous one. The numbers are
 the README's [Results](../README.md#results), the record
 [benchmarks § The benchmarks on macOS 27](benchmarks/README.md#the-benchmarks-on-macos-27-2026-10-04).
 

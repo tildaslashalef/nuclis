@@ -21,7 +21,7 @@ make test-hf              # offline library tests
 ```
 
 The package is self-contained (`build.zig`, `build.zig.zon`, `src/`) and a
-path dependency of the root build since [MODL-02](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-02--model-download-through-the-huggingface-package-2026-09-11) (2026-09-11): `nuclis model pull`
+path dependency of the root build: `nuclis model pull`
 and `model ls` (`src/model.zig`) are the host of the API below, and
 `zig build test` at the root runs these tests too. Only the executable imports
 it; the inference library never does.
@@ -235,8 +235,8 @@ with its framing exceeded its unit bound).
 
 The remaining gap is start-up latency (five sequential round trips before the
 first byte) and the drain at each span boundary, where the window empties
-before the next plan is requested; overlapping the next span's plan and units
-with the current span is the next step. Concurrency 12 or 16 did not beat 8.
+before the next plan is requested: the next span's plan and units are not
+overlapped with the current span. Concurrency 12 or 16 did not beat 8.
 
 ## Implementation contracts
 

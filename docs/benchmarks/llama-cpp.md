@@ -1,191 +1,68 @@
-# Pinned Metal reference baseline
+# The pinned llama.cpp reference
 
-**Retired.** The llama.cpp drivers named across these documents (`scripts/reference-generation.cpp`, `-embedding.cpp`, `-embedding-bench.cpp`, `-split.cpp`, `-vision.cpp`, `reference-record.py`, `compare-embedding.py`, `gguf-widen-f32.py`) left the tree when nuclis became its own reference; read them with `git show v0.11.0:scripts/<name>`. The fixtures they pinned stay.
+While the project bootstrapped, a pinned llama.cpp build was nuclis's
+numerical oracle and its speed reference. That role ended on 2026-10-14:
+nuclis is now its own reference
+([models § 4](../models/README.md#4-validate-against-nuclis-itself)). This
+page is the record of what was pinned, how the pinned measurements were
+taken, and where their evidence stays. The scripts that drove it (the
+`reference-*` harnesses and their comparison and conversion helpers) left
+the tree with that change; read them with `git show v0.11.0:scripts/<name>`.
 
-The pinned llama.cpp is nuclis's numerical oracle and its speed reference:
-how to build it, how the harness drives its server on the same token arrays
-nuclis runs, and how a run becomes a record. Every family's reference runs
-are in [README.md](README.md) (current) and [history.md](history.md); the
-results at the end of this page are the first, Qwen-only run of
-2026-09-06.
+## The pinned build
 
-## Build the reference
-
-The source revision is `7620399f58aebfd2196b74021f9581bcf7218cb9`.
-Keep its checkout and build in `.reference/`, the ignored directory for
-state that is slow to rebuild (unlike `.zig-cache`, which may be deleted at
-any time). Run these commands
-from the nuclis repository root:
+The mainline revision was `7620399f58aebfd2196b74021f9581bcf7218cb9`,
+checked out and built under the ignored `.reference/` directory with:
 
 ```sh
-mkdir -p .reference
-gh repo clone ggml-org/llama.cpp .reference/llama.cpp
-git -C .reference/llama.cpp checkout --detach 7620399f58aebfd2196b74021f9581bcf7218cb9
-
 cmake -S .reference/llama.cpp -B .reference/llama.cpp/build \
   -DCMAKE_BUILD_TYPE=Release \
   -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
   -DLLAMA_BUILD_TESTS=OFF -DLLAMA_OPENSSL=OFF \
   -DLLAMA_USE_PREBUILT_UI=OFF
-
 cmake --build .reference/llama.cpp/build \
   --target llama-server llama-bench llama-completion --parallel 8
 ```
 
-`.reference/` survives clearing `/tmp` and deleting `.zig-cache`; if it is
-lost, reconstruct the checkout and its build with the pinned commands above. CMake
-records absolute paths: after moving a checkout, configure a fresh build
-directory instead of reusing a build generated at the old location.
-
-This uses embedded shader source compiled through Metal at runtime. It worked
-with Command Line Tools even though `xcrun --find metal` found no standalone
-compiler. Initial shader compilation and subsequent driver-cache hits can have
-different startup costs. No system toolchain changes are required for this path.
+The Metal shaders were embedded source compiled at runtime, which worked
+with the Command Line Tools alone.
 
 ## The second oracle: the PrismML fork (2026-09-18)
 
-Bonsai 2 27B ([bonsai.md](../models/bonsai.md)) is stored in two encodings the
-mainline reference rejects, so its oracle is the PrismML fork of llama.cpp
-(`github.com/PrismML-Eng/llama.cpp`, MIT, tracks mainline) at its release
-tag `prism-b10687-5d80cff`, commit
-`5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6` (2026-09-17). Two pins, never one
-moving one: the mainline revision above stays the oracle for every other
-family, and every script that checked a served build's revision took the
-fork's as a parameter (`profile-alias-check.py --reference-revision`) or a
-second constant (`quant-fixtures.py`'s `PRISM_REVISION`); both scripts are
-retired, at tag `v0.11.0` under `scripts/`. The same recipe,
-in its own checkout:
-
-```sh
-git clone https://github.com/PrismML-Eng/llama.cpp .reference/prism-llama.cpp
-git -C .reference/prism-llama.cpp checkout --detach 5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6
-
-cmake -S .reference/prism-llama.cpp -B .reference/prism-llama.cpp/build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
-  -DLLAMA_BUILD_TESTS=OFF -DLLAMA_OPENSSL=OFF \
-  -DLLAMA_USE_PREBUILT_UI=OFF
-
-cmake --build .reference/prism-llama.cpp/build \
-  --target llama-server llama-bench llama-completion --parallel 8
-```
-
-The trace harness (`scripts/reference-generation.cpp`, public C API only)
-builds against this checkout unchanged with its include and library paths
-in place of the mainline ones, into
-`.zig-cache/generation/prism-reference-generation`
-([sampling.md](../engine/sampling.md#numerical-traces)). The fork's server takes
-the mainline one's flags below except `--lazy-mode`, which its older base
-does not know (drop it; the rest are accepted); `--jinja` renders the
-Bonsai template, while the fork's `llama-completion --jinja` aborts at its
-own start-up template self-test on that template (see bonsai.md). The
-Bonsai acceptance run ([MODL-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18), 2026-09-18) ran the workload harness
-against that server with `--reference-revision 5d80cff0…` (the harness
-otherwise insists on the mainline pin) and `--family qwen38`, the fork's
-revision recorded as the reference side of
+Bonsai 2 27B ([bonsai.md](../models/bonsai.md)) is stored in two encodings
+the mainline pin rejected, so its oracle was the PrismML fork of llama.cpp
+(`github.com/PrismML-Eng/llama.cpp`, MIT) at release tag
+`prism-b10687-5d80cff`, commit `5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6`
+(2026-09-17), built with the same flags in its own checkout. The mainline
+pin stayed the oracle for every other family. The fork's server took the
+mainline flags below except `--lazy-mode`, which it did not know. The
+Bonsai acceptance run of 2026-09-18 recorded the fork's revision as the
+reference side of
 [reference-2026-09-18-bonsai.json](reference-2026-09-18-bonsai.json)
-and read from there by `nuclis-baseline.py` into the nuclis record
-([benchmarks](history.md#bonsai-2-27b-acceptance-record-2026-09-18)).
+([history § Bonsai 2 27B acceptance record](history.md#bonsai-2-27b-acceptance-record-2026-09-18)).
 
 ## The third oracle: EmbeddingGemma 2 (2026-10-09)
 
-The mainline pin does not know `gemma-embedding2`
-([embeddinggemma.md](../models/embeddinggemma.md)). Upstream added it, with
-its vision and audio encoders, in `4fbc76dec` (#30054, 2026-10-06, first in
-build tag `b11452`), so the family's oracle is a second mainline checkout at
-build tag `b11514`, commit `de7fa0a3c6a2e1b4cd9f22eb8d6bf5b12dbdb63b`
-(2026-10-08), the newest build on 2026-10-09. The newest release, `v0.6.0`
-(2026-10-05), predates the model. The main pin `7620399` does not move. The checkout is cloned from the main one to
-save the fetch, and built with the same recipe, plus the embedding and
-multimodal tools:
-
-```sh
-git clone .reference/llama.cpp .reference/llama.cpp-embed
-git -C .reference/llama.cpp-embed remote set-url origin https://github.com/ggml-org/llama.cpp
-git -C .reference/llama.cpp-embed fetch origin master
-git -C .reference/llama.cpp-embed checkout --detach de7fa0a3c6a2e1b4cd9f22eb8d6bf5b12dbdb63b
-
-cmake -S .reference/llama.cpp-embed -B .reference/llama.cpp-embed/build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
-  -DLLAMA_BUILD_TESTS=OFF -DLLAMA_OPENSSL=OFF \
-  -DLLAMA_USE_PREBUILT_UI=OFF
-
-cmake --build .reference/llama.cpp-embed/build \
-  --target llama-server llama-embedding llama-mtmd-cli llama-completion --parallel 8
-```
-
-A vector from the command line, the check that the files load (both the
-Q8_0 and the BF16 file return unit vectors of width 768):
-
-```sh
-.reference/llama.cpp-embed/build/bin/llama-embedding \
-  -m ~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/embeddinggemma-2-Q8_0.gguf \
-  -ngl 99 --pooling mean --embd-normalize 2 --embd-output-format json \
-  -p 'task: search result | query: how does the KV cache work'
-```
-
-`--verbose-prompt` prints the tokens (BOS and EOS are added). For images,
-pass `--image-max-tokens 280`: without it, `clip.cpp` sizes `gemma4v`
-images toward its 1120-token cap, where Google's processor uses 280.
-
-The fixture driver `scripts/reference-embedding.cpp` (public C API, the
-mixed `llama_batch_ext`, and `mtmd`) builds against this checkout. It
-writes the vectors and traces of
-[provenance.md](../../tests/fixtures/provenance.md)'s `embeddinggemma-*`
-rows:
-
-```sh
-R=.reference/llama.cpp-embed
-mkdir -p .zig-cache/embedding
-c++ -std=c++17 -O2 -I$R/include -I$R/ggml/include -I$R/tools/mtmd -I$R/vendor \
-  scripts/reference-embedding.cpp -L$R/build/bin -lllama -lggml -lggml-base -lmtmd \
-  -Wl,-rpath,"$PWD/$R/build/bin" -o .zig-cache/embedding/reference-embedding
-D=~/.nuclis/models/unsloth/embeddinggemma-2-GGUF
-.zig-cache/embedding/reference-embedding $D/embeddinggemma-2-Q8_0.gguf $D/mmproj-BF16.gguf \
-  "$PWD/tests/fixtures/embeddinggemma-inputs/inputs.json" \
-  tests/fixtures/embeddinggemma-vectors/llama-q8_0 tests/fixtures
-python3 scripts/compare-embedding.py tests/fixtures/embeddinggemma-vectors/llama-q8_0 \
-  tests/fixtures/embeddinggemma-vectors/st-f32
-```
-
-The two text traces come from a CPU pass instead. On Metal, the batched
-matmul stages activations as half (bf16 for a BF16 matrix), and ggml's CPU
-BF16 matmul rounds them to bf16, so the traced pass runs `--cpu` (no layers
-or ops offloaded) over a copy of the file with every tensor widened to F32:
-
-```sh
-PYTHONPATH=$R/gguf-py .reference/venv-embed/bin/python scripts/gguf-widen-f32.py \
-  $D/embeddinggemma-2-Q8_0.gguf .zig-cache/embedding/embeddinggemma-2-Q8_0-widened.gguf
-.zig-cache/embedding/reference-embedding --cpu --text-only \
-  .zig-cache/embedding/embeddinggemma-2-Q8_0-widened.gguf $D/mmproj-BF16.gguf \
-  "$PWD/tests/fixtures/embeddinggemma-inputs/inputs.json" .zig-cache/embedding/f32cpu/llama-f32-cpu \
-  .zig-cache/embedding/f32cpu
-```
-
-Its GELU is still an f16 lookup table (`GGML_GELU_FP16`), which with its
-other F32 differences sets the traces' bound
-([embeddinggemma.md § CPU reference](../models/embeddinggemma.md#cpu-reference-against-the-oracles-2026-10-09)).
-
-The rates beside `embeddinggemma-check MODEL bench` come from
-`scripts/reference-embedding-bench.cpp`, the same inputs and method (64
-inputs of 256 tokens, then one of 512 and one of 8192; BOS, " the"
-repeated, EOS; batches of at most 8192 rows; one untimed warm-up, then the
-median), on the checkout's defaults (Metal, flash attention `auto`):
-
-```sh
-c++ -std=c++17 -O2 -I$R/include -I$R/ggml/include scripts/reference-embedding-bench.cpp \
-  -L$R/build/bin -lllama -lggml -lggml-base -Wl,-rpath,"$PWD/$R/build/bin" \
-  -o .zig-cache/embedding/reference-embedding-bench
-.zig-cache/embedding/reference-embedding-bench $D/embeddinggemma-2-Q8_0.gguf
-```
+The mainline pin did not know `gemma-embedding2`
+([embeddinggemma.md](../models/embeddinggemma.md)), so that family's
+oracle was a second mainline checkout at build tag `b11514`, commit
+`de7fa0a3c6a2e1b4cd9f22eb8d6bf5b12dbdb63b` (2026-10-08), built with the
+same flags plus the `llama-embedding` and `llama-mtmd-cli` targets. Its
+vectors and traces are the `embeddinggemma-*` rows of
+[provenance.md](../../tests/fixtures/provenance.md). The two text traces
+came from ggml's CPU backend over a copy of the Q8_0 file with every tensor
+widened to F32, so no matmul rounded its activations; ggml's GELU was still
+an f16 lookup table, which with its other F32 differences set the traces'
+bound ([embeddinggemma.md § CPU reference](../models/embeddinggemma.md#cpu-reference-against-the-oracles-2026-10-09)).
+Images were sized with `--image-max-tokens 280`, the count Google's
+processor uses.
 
 ## Run the workload
 
-Start one reference server in a separate terminal:
+The reference records were taken against one server per family, started
+with these flags (the Qwen3.8 file shown):
 
 ```sh
-mkdir -p .reference
 .reference/llama.cpp/build/bin/llama-server \
   --model "$HOME/.nuclis/models/qwen/Qwen3.8-27B-UD-Q4_K_M.gguf" \
   --ctx-size 32768 --parallel 1 --device MTL0 --n-gpu-layers 99 \
@@ -193,97 +70,41 @@ mkdir -p .reference
   --batch-size 2048 --ubatch-size 512 --threads 8 --threads-batch 8 \
   --host 127.0.0.1 --port 18087 --reasoning off --no-context-shift \
   --cache-ram 0 --cache-reuse 0 --load-mode mmap --lazy-mode off --fit off \
-  --perf --no-webui --cors-origins localhost --log-verbosity 4 \
-  > .reference/server.log 2>&1
+  --perf --no-webui --cors-origins localhost --log-verbosity 4
 ```
 
-The records below were taken by the development harness
-`scripts/reference-baseline.py`, retired and at tag `v0.11.0`; nuclis is its own
-reference, and a re-pinned file's fixtures are made by nuclis
-([models § Which executor makes which fixture](../models/README.md#which-executor-makes-which-fixture)).
-The near-capacity check ran separately, with `--prompt-lengths 32639
---repetitions 1`, leaving one token of boundary margin.
+The harness checked the server's revision and one-slot capacity, applied
+the model's chat template with thinking off, and recorded the exact input
+token arrays for 512, 4,096, and 16,384 tokens: a template prefix, a
+truncated synthetic-code sequence, and a closing instruction. The near-capacity
+check ran separately at 32,639 prompt tokens, one token of margin. Those
+token arrays are the inputs nuclis's own acceptance runs replay
+(`bench --prompt-tokens`), so both sides measured the same tokens.
 
-For a second family, the server was started on its file with `--family`
-(`qwen38` by default; `gemma4` checks that family's thinking-off marker
-and writes `<bos>` into the prompt text, since the server's
-`/apply-template` strips the BOS its own tokenizer re-adds while nuclis's
-encoder never adds one). The Gemma 4 12B run of 2026-09-12 used the same
-server flags on `gemma-4-12b-it-UD-Q4_K_XL.gguf` with
-`--prompt-lengths 512,4096,16384,32639` in one invocation
-(`tests/fixtures/run-2026-09-12-gemma4/`). `--family muse-glimmer` (the
-run of 2026-09-19, `tests/fixtures/run-2026-09-19-muse-glimmer/`) checks
-the template's default `Reasoning strength: high.` line instead, since
-that template cannot switch reasoning off, writes `<|begin_of_text|>`, and
-gives the smoke request `low` strength and a 384-token budget so the
-model's reasoning message leaves room for the code it checks for.
-`--family gemma4-e` (Gemma 4 E2B/E4B) checks a bare generation prompt
-and the absence of `<|think|>`, since that template renders thinking off
-without the empty thought channel.
+Each size had one discarded warm-up and three recorded repetitions: greedy
+(`temperature: 0`), seed 1, no prefix reuse, 128 generated tokens with EOS
+ignored. Prompt and decode rates are the server's own timings (decode over
+the intervals after the first generated token); streaming was off, so no
+time to first token was measured. OS file caches and the Metal compiler
+cache were not purged, and other applications kept running.
 
-`--replay <run>[,<run>…]` sends the committed arrays of those fixture runs
-under `tests/fixtures/` (the first run holding a size wins; the first
-supplies `prompt-construction.json`) instead of building them, so a later
-date measures the same tokens. It fails unless the server tokenizes the
-corpus into the fixture's body tokens, and records whether the server's
-own template rendering still equals the fixture's (Muse's carries the
-server's date, so it differs from day to day). Qwen replays
-`run-2026-09-06,boundary-2026-09-06`.
+For other families the template check changed: `gemma4` checked the
+thinking-off marker and wrote `<bos>` into the prompt text, `gemma4-e` a
+bare generation prompt, `muse-glimmer` the template's `Reasoning strength:
+high.` line (that template cannot switch reasoning off).
 
-Use a new output directory for every invocation. The harness refuses to overwrite
-an existing directory. It uses only the Python standard library, accepts only a
-loopback endpoint, and sends generated synthetic Zig code rather than workspace
-files. Stop the server with Ctrl-C afterward to release the model and GPU state.
-In an agent sandbox, both GPU access and the loopback connection may require
-execution outside the sandbox.
-Optional `--server-pid <pid>` samples that process's RSS between requests.
-Swap and VM counters are recorded around every timed request. These snapshots
-are observations, not continuous peak-memory measurements.
+## Where the evidence is
 
-The harness verifies the server's revision identifier and one-slot context
-capacity, then checks a simple code-generation response. It applies the model's
-chat template with thinking disabled and records exact input token arrays for
-512-, 4,096-, and 16,384-token prompts. These combine a template prefix, a
-truncated synthetic-code sequence, and a closing instruction/template suffix.
-The cut can occur inside a function; this is a reproducible throughput workload,
-not a coding-quality benchmark.
-
-Each size gets one discarded warmup followed by three recorded repetitions.
-Requests use greedy sampling (`temperature: 0`, only the temperature sampler),
-seed 1, no prefix reuse, and a fixed budget of 128 generated tokens. EOS is
-ignored for those timed requests to keep the work amount fixed. The smoke test
-uses normal EOS behavior. The separate near-capacity command runs one warmup
-and one measured request, each with 32,639 prompt tokens plus 128 outputs.
-The legacy `--capacity-check` option instead uses 32,640 prompt tokens plus 128
-outputs once. That exact-boundary diagnostic is expected to trip the pinned
-server's truncation flag; use the margin command for a clean capacity check.
-
-Raw responses, server properties, prompt-construction details, token arrays,
-individual timings, and summaries are written to the selected untracked output
-directory. Using `.reference` keeps them across restarts that clear
-`/tmp` and across deleting the Zig cache. The runner
-rejects truncated/reused prompts and completions that miss the output budget.
-Device selection and allocation details must also be checked in the server log;
-the runner's revision check alone does not establish that Metal was used.
-
-## Measurement boundaries
-
-Prompt and decode rates are the reference server's separate reported timings.
-The client additionally records total request wall time. Tokenization and prompt
-formatting happen before each timed request, and HTTP streaming is disabled, so
-these runs do not measure streaming time to first token. At this revision,
-decode rate uses the intervals after the first generated token; retain raw
-`predicted_n` and `predicted_ms` rather than recomputing it as 128 divided by time.
-
-Prefix reuse is disabled by both the request and server cache settings. The
-reference still uses its default recurrent-state checkpoints within requests;
-their overhead is part of the server baseline. Warmup results are retained but
-excluded from reported means. Means and sample standard deviations summarize
-per-request rates rather than pooling different contexts. The full-file checksum
-was reverified before timing, which also reads the artifact through the OS cache.
-OS file caches and the Metal compiler cache were
-not purged, and applications on the Mac were not stopped. A cold-start or isolated
-peak-throughput claim would require a separate experiment.
+- Compact records, one per run: `reference-*.json` in this directory.
+- Token arrays and raw run records: `tests/fixtures/run-2026-09-06/`,
+  `boundary-2026-09-06/`, `run-2026-09-18-gemma4-26b-a4b/`,
+  `run-2026-10-04-gemma4-e4b/`; layer traces, perplexity results, and
+  embedding vectors pinned from this build are listed in
+  [provenance.md](../../tests/fixtures/provenance.md). They stay in the
+  tree; a re-pinned file's fixtures are made by nuclis
+  ([models § Which executor makes which fixture](../models/README.md#which-executor-makes-which-fixture)).
+- Later runs against the pin are in [README.md](README.md) and
+  [history.md](history.md).
 
 ## Recorded environment
 
@@ -295,20 +116,18 @@ peak-throughput claim would require a separate experiment.
 | Compiler / SDK | Apple clang 21.0.0 (`clang-2100.1.1.101`), macOS SDK 26.5 |
 | Build | CMake 4.4.3, Release, native ARM CPU instructions, Metal and Accelerate |
 | Power | AC; `pmset -g custom` reports AC `powermode 0` |
-| Model | Pinned `Qwen3.8-27B-UD-Q4_K_M.gguf` from the [spec](../spec.md#4-supported-models-and-artifacts) |
+| Model | `Qwen3.8-27B-UD-Q4_K_M.gguf`, the first pin (`322e194f…`) |
 | Runtime device | Explicit `MTL0`, Apple M4 Pro |
 | Attention / recurrent state | F16 K/V, F32 recurrent state, flash attention enabled |
 
-The log confirms GPU offload and an auxiliary-block skip consistent with the
-[Qwen adapter](../models/qwen3.8.md). It reports a 2,048 MiB KV buffer, 149.62 MiB
-recurrent-state buffer, 257.30 MiB Metal compute buffer, and 52.02 MiB CPU compute
-buffer. Mapped model views may overlap; summing their reported sizes is not a
-valid resident-memory calculation.
+The server log showed a 2,048 MiB KV buffer, a 149.62 MiB recurrent-state
+buffer, a 257.30 MiB Metal compute buffer, and a 52.02 MiB CPU compute
+buffer.
 
-## Results
+## Results (2026-09-06)
 
-*The first run, 2026-09-06, macOS 26; today's are in [README.md](README.md).*
-Warm request rates, mean ± sample standard deviation over three repetitions:
+The first, Qwen-only run. Warm request rates, mean ± sample standard
+deviation over three repetitions:
 
 | Prompt tokens | Output tokens | Prompt tokens/s | Decode tokens/s |
 | ---: | ---: | ---: | ---: |
@@ -316,77 +135,29 @@ Warm request rates, mean ± sample standard deviation over three repetitions:
 | 4,096 | 128 | 89.26 ± 1.17 | 9.21 ± 0.25 |
 | 16,384 | 128 | 74.07 ± 0.66 | 7.32 ± 0.25 |
 
-The capacity request finished: 32,640 input tokens, 128 output tokens, zero
-cached prompt tokens, 487.67 seconds wall time. Diagnostic rates were 69.54
-prefill tokens/s and 6.93 decode tokens/s. The response set `truncated: true`,
-so the harness rejected it and did **not** write `summary.json`. The nine valid
-warm samples remain in `samples.json`; the raw capacity response was also saved.
+A first capacity request at the exact boundary (32,640 input tokens plus
+128 outputs, 487.67 s, 69.54 prefill and 6.93 decode tokens/s) finished but
+set the server's `truncated` flag: at this revision the server checks
+`prompt.n_tokens() + 1 >= n_ctx` before the output-budget stop. The harness
+rejected it. The [measurement record](reference-2026-09-06.json) keeps the
+nine accepted timings, input-file hashes, and the flagged result.
 
-At the pinned revision, `server-context.cpp` checks
-`!ctx_shift && prompt.n_tokens() + 1 >= n_ctx` before the normal output-budget
-stop. This sets the truncation flag at the exact context boundary even when all
-requested input and output counts were met. Thus this result demonstrates a
-completed boundary workload, but does not pass our strict no-truncation check.
-The follow-up below leaves one token of margin (32,639 + 128) and verifies the
-flag, counts, and memory without weakening the guard.
+## One-token-margin follow-up (2026-09-06)
 
-A compact [measurement record](reference-2026-09-06.json) preserves
-all nine accepted timings, input-file hashes, and the flagged capacity result.
-Saved warm/warmup memory snapshots showed zero swap usage; they are not peak
-memory measurements. The reference process was no longer running when checked
-after completion. Raw local evidence is in
-`tests/fixtures/run-2026-09-06/` (committed fixtures); `.reference/server.log`
-is a regenerable cache artifact.
-
-An earlier interrupted attempt experienced growing swap usage and lost its
-temporary artifacts when `/tmp` was cleared. Its partial timings are excluded
-from this report. The fresh run records memory conditions alongside every sample.
-
-The raw evidence of the accepted run is committed as fixtures:
-[tests/fixtures/run-2026-09-06/](../../tests/fixtures/run-2026-09-06/) — see
-[tests/fixtures/provenance.md](../../tests/fixtures/provenance.md). The
-working copies under `.reference/` are regenerable caches; the
-fixtures are the retained oracle. The reference process was no longer running
-when checked after completion.
-
-## One-token-margin follow-up — 2026-09-06
-
-The separate near-capacity command passed both its warmup and measured request:
-32,639 input tokens, 128 output tokens, zero cached prompt tokens,
-`truncated=false`, and `stop_type=limit`. The harness wrote `summary.json`.
-The measured request took 504.09 seconds, with 67.28 prefill tokens/s and
-6.71 decode tokens/s. The warmup took 455.17 seconds and is excluded from that
-measurement. This is one capacity sample, not a replacement for the warm means.
-
-System swap was already 247.81 MiB at harness start. It fell to 239.81 MiB after
-warmup and stayed there through the measured request. The system swap-out counter
-remained 180,352 pages across all saved snapshots; swap-ins increased. Server
-RSS ranged from 18,086,272 to 18,328,896 KiB around the requests. These are system
-snapshots and process RSS, not continuous peak GPU/unified-memory measurements.
-They do not establish zero-swap memory acceptance. Normal development activity,
-including Zig compilation during warmup, continued alongside this check.
-
-The [compact follow-up record](reference-boundary-2026-09-06.json)
-retains both timings, explicit acceptance flags/counts, input and response hashes,
-and memory counters. Raw evidence is in
-`tests/fixtures/boundary-2026-09-06/`; device/allocation evidence is in
-`.reference/server-boundary-2026-09-06.log`. The server was stopped
-cleanly after completion. This closes the reference boundary check; nuclis's own
-32K execution, numerical correctness, and memory acceptance remain pending.
-
-After measurement, the pinned checkout was moved from temporary storage into
-`.reference/llama.cpp` and its CMake build regenerated there. The
-measurement used the pre-relocation build. `build-before-relocation` preserves
-that old build as local evidence; it contains obsolete absolute paths and must
-not be used for future runs. Use `build/bin/` from the reconstruction commands.
-The relocated `llama-server`, `llama-bench`, and `llama-completion` targets build
-successfully. A tiny Metal `llama-bench` smoke run (16 prompt / 4 generated
-tokens, one repetition) passed, and CPU fixture regeneration produced identical
-files. These relocation checks do not replace or extend the performance baseline.
+At 32,639 input tokens plus 128 outputs, both the warm-up and the measured
+request passed: zero cached prompt tokens, `truncated=false`,
+`stop_type=limit`. The measured request took 504.09 s, with 67.28 prefill
+and 6.71 decode tokens/s; one capacity sample, not a replacement for the
+warm means. System swap was 247.81 MiB at the start and 239.81 MiB after
+the warm-up; server RSS ranged from 18,086,272 to 18,328,896 KiB. These
+are snapshots, not peak-memory measurements, and did not establish
+zero-swap acceptance. The [compact record](reference-boundary-2026-09-06.json)
+keeps both timings, the acceptance flags and counts, hashes, and memory
+counters.
 
 ## Source references
 
-Reference behavior was checked against the pinned
+Reference behaviour was checked against the pinned
 [server API documentation](https://github.com/ggml-org/llama.cpp/blob/7620399f58aebfd2196b74021f9581bcf7218cb9/tools/server/README.md),
 [Metal build configuration](https://github.com/ggml-org/llama.cpp/blob/7620399f58aebfd2196b74021f9581bcf7218cb9/ggml/src/ggml-metal/CMakeLists.txt),
 and [Qwen35 adapter](https://github.com/ggml-org/llama.cpp/blob/7620399f58aebfd2196b74021f9581bcf7218cb9/src/models/qwen35.cpp).

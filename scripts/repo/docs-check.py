@@ -12,6 +12,10 @@ Move (`--move old=new[,old=new…]`): `git mv` the files, then rewrite every
 reference above, re-relativizing Markdown links from each file's own
 directory (a moved file's outgoing links too). `old.md#a=new.md#b` moves a
 section's anchor. Standard library only; reads tracked files, no network.
+
+Also: no work-unit identifier (`AREA-NN`, retired with the worklog at
+v0.6.0) in a tracked Markdown file or the gate and workload manifests;
+work is named by what it does.
 """
 
 import argparse
@@ -40,6 +44,10 @@ TAG_LINK = re.compile(rf"^https://github\.com/{REPO}/blob/(v[\w.-]+)/([\w./-]+?)
 SITE_LINK = re.compile(rf"https://github\.com/{REPO}/(?:blob|tree)/main/([\w./-]+?)(#[\w-]+)?(?=[\"'\s)<]|$)")
 TEXT_SUFFIXES = (".json", ".py", ".zig", ".metal", ".cpp", ".m", ".h", ".sh")
 # Paths that tests and examples in code name as data, not as documents.
+# A retired work-unit identifier, and the strings of that shape that are not one.
+UNIT_ID = re.compile(r"\b[A-Z]{3,5}-[0-9]{2}\b")
+NOT_UNIT_IDS = {"UTF-16", "UTF-32"}
+UNIT_ID_FILES = {"gates.json", "workloads.json"}
 CODE_DATA_PATHS = {"docs/x.md", "docs/a.md", "docs/faq.md", "docs/design.md", "docs/history.md", "docs/fix_a_queue.md"}
 
 
@@ -107,6 +115,11 @@ def links(markdown):
     for m in REF_DEF.finditer(masked):
         out.append((m.start(2), m.end(2), markdown[m.start(2) : m.end(2)], None))
     return sorted(out)
+
+
+def unit_ids(text):
+    """(line, identifier) for each work-unit identifier in a text."""
+    return [(text.count("\n", 0, m.start()) + 1, m[0]) for m in UNIT_ID.finditer(text) if m[0] not in NOT_UNIT_IDS]
 
 
 def is_external(target):
@@ -293,6 +306,10 @@ def check(files):
     for path in files:
         if path in NO_REWRITE:
             continue
+        if is_markdown(path) or path in UNIT_ID_FILES:
+            text = (ROOT / path).read_text()
+            for line, found in unit_ids(text):
+                problems.append(f"{path}:{line}: {found} is a unit identifier; name the work by what it does")
         if is_markdown(path):
             text = (ROOT / path).read_text()
             for start, _, target, _ in links(text):
@@ -439,6 +456,10 @@ class SelfTest(unittest.TestCase):
         assert m is not None
         self.assertEqual(m.groups(), ("v0.6.0", "docs/worklog.md", "kern-21--x"))
         self.assertIsNone(TAG_LINK.match("https://github.com/tildaslashalef/nuclis/blob/main/docs/x.md"))
+
+    def test_unit_ids(self):
+        text = "UTF-16 and IQ4_XS and SHA-256\nsee [KERN-03](x.md), ENGN-21\n"
+        self.assertEqual(unit_ids(text), [(2, "KERN-03"), (2, "ENGN-21")])
 
     def test_parse_moves(self):
         moves, am = parse_moves("a.md=b.md, c.md#x=d.md")

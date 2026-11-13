@@ -569,7 +569,7 @@ request is one short Egyptian sentence, with the model already open:
 | prefix restored | 243 ms | 393 ms |
 | prefix restored, with a `context` (the previous sentence's 79 frames) | 700 ms | 854 ms |
 
-A take whose prefix is not yet kept now prefills in two passes. That
+A take whose prefix is not yet kept prefills in two passes. That
 cost about 0.25 s more than one pass in a two-sentence `nuclis speak`
 run, since each pass reads the experts it routes to.
 

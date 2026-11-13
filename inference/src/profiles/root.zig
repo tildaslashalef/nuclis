@@ -234,8 +234,8 @@ pub const Profile = enum {
         };
     }
 
-    /// Digests of other template revisions the profile accepts, each proven
-    /// to render the pinned fixtures identically (`fixtures/<profile>-aliases.json`).
+    /// Digests of other template revisions the profile accepts; the change
+    /// that adds one carries the evidence that it renders the fixtures identically.
     pub fn templateAliases(self: Profile) []const []const u8 {
         return switch (self) {
             inline else => |p| &p.module().template_aliases,

@@ -1,36 +1,41 @@
 # Underdog Saluki 27B: Qwen3.8-27B in 2.26 bits per weight
 
-**No gates.** This family left the gate registry when its file left the test machine. The `make gate` commands below name gates as of `v0.11.0`; the measurements stand as recorded.
+**Parked.** Saluki is not live work: the file is not on the test machine,
+it has no gates and no index entry, and nothing is scheduled for it. This
+document is the record of 2026-10-14 to 2026-10-21. The Qwen adapter still
+binds the file, and the tiny `saluki` variants keep its seven encodings
+under `make test-tiny` ([README.md § Tiny models](README.md#tiny-models)).
+The `make gate` commands below name gates as of `v0.11.0`; the measurements
+stand as recorded.
 
 Underdog's 2-bit re-encoding of Qwen3.8-27B (`general.architecture =
 qwen35`), built on ISTA DASLab's GSQ-RCO quantization. The pinned Qwen
 adapter, tokenizer, template, and runtime schedule apply unchanged; the
 work sits below the adapter, in seven weight encodings nuclis did not
-implement. It is the first model brought up without an external oracle:
+implement. It was the first model brought up without an external oracle:
 its validation is nuclis's own (§ [Validation](#validation-without-an-external-reference)).
 Everything here was read on 2026-10-14 from the pulled file with
 `scripts/fixtures/gguf-inventory.py` (the committed inventory is
 [`fixtures/saluki-27b.json`](../../inference/src/models/fixtures/saluki-27b.json))
 and by range reads of the comparison files' headers and tensors.
 
-**Goals** (restated 2026-10-15, the user's; the M4 Pro, `nuclis bench`,
-greedy, 128 tokens), set where the model is used, at 32K:
+**Goals as set on 2026-10-15** (the maintainer's; the M4 Pro, `nuclis bench`,
+greedy, 128 tokens), where the model is used, at 32K; neither was reached:
 
 - **Decode at 32,639 ≥ 18 tok/s** (F16 or Q8_0 cache; 14.97 / 15.03
-  today). It needs the 2-bit matvecs at about 200 GB/s over the 7.61 GB
+  then). It needs the 2-bit matvecs at about 200 GB/s over the 7.61 GB
   of weights a token reads, beside about 10 ms of attention and 8 ms of
   other work: about 56 ms a step.
 - **A 32,639-token prompt prefilled in ≤ 7 minutes** (≥ 79 tok/s,
-  llama.cpp's 78.87; 51.52 and 10.6 minutes today). The chunk attention
-  is the suspect, and it is the same on every family.
+  llama.cpp's 78.87; 51.52 and 10.6 minutes then). The chunk attention
+  was the suspect, and it is the same on every family.
 
-Decode at 512 stays the weights-only measure of the matvec kernels: the
-matvecs at 200 GB/s give about 22 tok/s there (16.96 today, llama.cpp
+Decode at 512 is the weights-only measure of the matvec kernels: the
+matvecs at 200 GB/s give about 22 tok/s there (16.96 then, llama.cpp
 12.46, § [The llama.cpp record](#the-llamacpp-record-2026-10-14)).
-Context past 32,768 (nuclis's cap; the model declares 262,144) waits on
-the prefill goal: extrapolating today's rates, whose attention share
-grows with the square of the prompt, a 128K prompt would take over an
-hour.
+Context past 32,768 (nuclis's cap; the model declares 262,144) was out of
+reach: extrapolating those rates, whose attention share grows with the
+square of the prompt, a 128K prompt would take over an hour.
 
 ## Artifacts
 
@@ -47,9 +52,8 @@ The repository also has `mmproj-…-F16.gguf` (927,606,912 B, SHA-256
 `f3aa5781…`, not pulled). The Q8_0 projector has the layout of Bonsai 2's
 (Q8_0 matrices, F16 `ffn_down`, F32 vectors;
 [vision.md § The Qwen3-VL projector](../engine/vision.md#the-qwen3-vl-projector-2026-09-22)),
-which the Qwen3-VL adapter already binds. No catalogue entry: the
-[catalogue](catalogue.md) decision is deferred (the user's, 2026-10-15);
-a comparison with Unsloth's 2-bit files on nuclis would inform it.
+which the Qwen3-VL adapter already binds. No catalogue entry
+([catalogue.md](catalogue.md)).
 
 ## Metadata
 
@@ -77,7 +81,7 @@ for tensor. Excluding the embedding (one row per token is gathered), a
 decoded token reads 7.61 GB, 2.26 bits per weight (the Q4_K_M: 15.39 GB,
 4.58). The encoding is chosen per tensor, so one layer mixes several:
 
-| Encoding | Tensors | In nuclis before this unit |
+| Encoding | Tensors | In nuclis before 2026-10-14 |
 | --- | ---: | --- |
 | F32 | 353 | yes |
 | IQ2_XXS | 119 | no |
@@ -373,25 +377,24 @@ too: a 1-row verify costs 130 ms. The register-fragment tiles decode
 Saluki's 2-bit weights at about the per-weight cost of 4-bit ones, so the
 verify saves nothing from the smaller file
 ([speculative-decoding.md § The Qwen MTP companion](../engine/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21)).
-A few-row 2-bit kernel at the matvec's decode rate is the step before any
-drafter change.
+A few-row 2-bit kernel at the matvec's decode rate would have to come
+before any drafter change.
 
 ## Status
 
-Bring-up (2026-10-14): the file validates and binds, the seven encodings
-decode on the CPU and on Metal, Metal matches the CPU reference's traces,
-and the model chats, calls tools, and reads images through `nuclis
-serve`.
+Parked, as the banner says. Bring-up (2026-10-14): the file validated
+and bound, the seven encodings decoded on the CPU and on Metal, Metal
+matched the CPU reference's traces, and the model chatted, called tools,
+and read images through `nuclis serve`.
 
 Speed (2026-10-15): specialized kernels for the seven, decode 16.96 tok/s
 at 512 (llama.cpp 12.46) and prefill 94.18 (97.19). Neither goal above
 (decode ≥ 18 tok/s and a prompt in ≤ 7 minutes, at 32,639) is reached;
 § Speed records where the step goes. The head-split decode attention
 (2026-10-15) took decode at 32,639 from 11.93 to 14.97 (F16, interleaved
-A/B on a restored prefix). Open: prefill at long
-context (35 % behind llama.cpp at 32,639), and which 2-bit file becomes a
-catalogue entry (the comparison with Unsloth's UD-IQ2_XXS and UD-IQ2_S).
+A/B on a restored prefix). Prefill at long context stayed 35 % behind
+llama.cpp at 32,639, and no 2-bit file became a catalogue entry.
 
-Speculation (2026-10-21): Qwen's MTP companion binds and drafts
-correctly, and its verdict is off (§ Speculation). The verify batch on
-the 2-bit encodings is the gap.
+Speculation (2026-10-21): Qwen's MTP companion bound and drafted
+correctly, and its verdict was off (§ Speculation): the verify batch on
+the 2-bit encodings was the gap.

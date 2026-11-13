@@ -113,7 +113,7 @@ keeping competing sources of truth.
 - `tools/gates/` is the gate runner (`nuclis-gates`), a separate executable
   that imports none of the three packages. `scripts/` holds the rest of the
   tooling by purpose: `gate/`, `bench/`, `repo/`, `app/`, `fixtures/`,
-  `oracle/`.
+  and `lib/` for what they share.
 - Root `build.zig` and `build.zig.zon` compose the packages through path
   dependencies. Do not add fictitious dependencies for unimplemented
   packages.

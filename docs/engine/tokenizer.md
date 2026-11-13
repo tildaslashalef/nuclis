@@ -2,7 +2,7 @@
 
 The library exposes `vocabulary.load(allocator, document, directory, limits)` in
 [vocabulary.zig](../../inference/src/tokenizer/vocabulary.zig). This implements
-owned GPT-2-family vocabulary storage. The library also exposes `bpe.encodePiece`
+owned vocabulary storage for GPT-2-family and Gemma 4 GGUF tokenizers. The library also exposes `bpe.encodePiece`
 and `bpe.decode` in [bpe.zig](../../inference/src/tokenizer/bpe.zig), composed
 by `tokenizer.Encoder` with the splitter the vocabulary's `pre` label selects:
 `qwen35` ([pre.zig](../../inference/src/tokenizer/pre.zig)), `llama4`
@@ -34,13 +34,17 @@ encoded strings separated by one ASCII space. Neither method encodes raw text.
 
 ## Validation and limits
 
-The loader requires `tokenizer.ggml.model=gpt2`, a nonempty UTF-8 `pre` label up
-to 128 bytes, tokens and merges as string arrays, and matching int32 token types.
-It retains the pre-tokenizer name without treating arbitrary names as supported
-tokenization algorithms. It rejects empty or invalid UTF-8 tokens, unknown token
-types, duplicate tokens/pairs, and merge strings without exactly two nonempty
-space-separated parts. It does not yet validate the byte alphabet or that merge
-parts correspond to available pieces.
+The loader accepts two values of `tokenizer.ggml.model`: `gpt2`, with a
+nonempty UTF-8 `tokenizer.ggml.pre` label up to 128 bytes, and `gemma4`
+(Gemma 4's SPM-style storage, which has no `pre` key; the label is then
+`gemma4`). Any other is `UnsupportedTokenizer`. It requires tokens and merges
+as string arrays and matching int32 token types. It retains the
+pre-tokenizer name without treating arbitrary names as supported
+tokenization algorithms; the encoder decides that. It rejects empty or
+invalid UTF-8 tokens, unknown token types, duplicate tokens/pairs, and merge
+strings without exactly two nonempty space-separated parts. It does not
+validate the byte alphabet or that merge parts correspond to available
+pieces.
 
 BOS, EOS, and padding IDs are optional; present IDs must be unsigned and inside
 the vocabulary. Token kinds preserve normal, unknown, control, user-defined,
@@ -48,8 +52,8 @@ unused, and byte categories, with one override the reference applies to every
 vocabulary at load: the spellings `<|start|>`, `<|message|>`, `<|channel|>`,
 and `<|constrain|>` become user-defined, so the encoder matches them in plain
 text even with `parse_special=false` (Muse Glimmer carries the first two; the
-Qwen and Gemma vocabularies carry none). Additional tokenizer options and
-special-ID metadata are not interpreted yet; successful loading does not
+Qwen and Gemma vocabularies carry none). Other tokenizer options and
+special-ID metadata are not interpreted; successful loading does not
 establish full compatibility.
 
 Defaults allow one million tokens and merges each, 64 MiB of copied token/merge
@@ -105,14 +109,13 @@ tag `v0.11.0`), which verified source SHA-256
 `95170cd1c105a5b41a1b2dce73b0fae8ce8011ef7897600828bb2babe8b26e5d`.
 The generated table SHA-256 is
 `462abaa4ae40898a30bdde54e46ea081a917c77ec7c786a0a7f7cdcc74c26ebd`.
-Default tests require neither this script nor the external checkout.
 
 Encoding defaults bound input to 1 MiB, output to 1,048,576 IDs, special-marker
 search to a conservative 1 GiB comparison budget (each marker's pass over the
 text is a vectorized search for its first byte, charged per 16-byte block,
 plus one comparison per candidate: Muse Glimmer's 2,048 reserved markers
-would otherwise exhaust the budget on 18 KB of text, as the acceptance run
-of [MODL-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-13--muse-glimmer-30b-profile-text-reasoning-channel-catalogue-acceptance-2026-09-19) found), and aggregate BPE scanning to 64 MiB across the entire
+would otherwise exhaust the budget on 18 KB of text, as Muse Glimmer's
+acceptance run found on 2026-09-19), and aggregate BPE scanning to 64 MiB across the entire
 call. Per-piece BPE limits also apply. Work limits may
 reject expensive input below the byte/token limits. Temporary marker storage
 is proportional to input bytes; output capacity may exceed its logical length.
@@ -178,20 +181,27 @@ boundaries required by the pre-tokenizer.
 `bpe.decode(allocator, vocabulary, ids, special, limits)` returns owned raw
 bytes. Normal tokens reverse the byte alphabet. Control and user-defined tokens
 emit their literal spelling when `special=true` and are omitted otherwise.
-Unknown, unused, and byte-category tokens are explicitly unsupported by this
-initial GPT-2-family decoder. Invalid IDs and invalid encoded scalars fail.
+SPM-style vocabularies (`gemma4`, and a Metaspace `tokenizer.json`) differ:
+normal tokens turn `▁` back into a space, `<0xNN>` byte tokens write their
+byte, and user-defined tokens (the visible chat markers) are always written.
+Unknown and unused tokens, and byte tokens in a GPT-2 vocabulary, are
+`UnsupportedTokenType`. Invalid IDs and invalid encoded scalars fail.
 Defaults allow one million input IDs and 4 MiB of output; allocation occurs only
 after validating and counting the complete output.
 
 Decoding neither strips BOS/EOS IDs nor applies text cleanup. A token can end
-inside a UTF-8 character, so a future streaming renderer must buffer incomplete
-characters across calls. Both APIs borrow an immutable vocabulary for the call
+inside a UTF-8 character, so the streaming renderer,
+[stream.zig](../../inference/src/tokenizer/stream.zig)'s `Stream`, keeps at
+most one incomplete scalar between pieces; malformed bytes and an unfinished
+final scalar become U+FFFD. Both APIs borrow an immutable vocabulary for the call
 and retain no references after returning. Neither inserts special IDs.
 
 The byte alphabet is the GPT-2 byte-level mapping the vocabulary is stored in
 ([notices](../../THIRD_PARTY_NOTICES.md)).
-The scan-based merge core is an independent implementation, checked against the
-[pinned reference](../benchmarks/llama-cpp.md) and synthetic ordering examples.
+The scan-based merge core is an independent implementation, checked against
+synthetic ordering examples and against the token ids the
+[pinned llama.cpp build](../benchmarks/llama-cpp.md) produced when the
+fixtures were captured.
 
 ## Hugging Face `tokenizer.json`
 
@@ -333,10 +343,10 @@ all 256 bytes, partial UTF-8, ranks versus longest match, leftmost ties, changin
 neighbors, exact work limits, decoding policy, and allocation failures. Unicode/encoder tests add
 combining marks, supplementary categories, contractions, whitespace backtracking,
 marker precedence, cross-piece merge prevention, shared budgets, and cleanup. No model or GPU
-is required. An explicit check uses an external pinned artifact, selecting
-its expectations and fixture by the file's template digest (through the
-profile when one exists; Muse Glimmer's digest is matched directly until
-its profile lands):
+is required. An explicit check uses a pinned artifact, selecting its
+expectations and fixture through the profile its template digest selects
+(`qwen38`, `gemma4`, `gemma4_e`; a `muse_glimmer` file has no pinned facts
+there and is refused with `UnsupportedProfile`):
 
 ```sh
 zig build test-vocabulary -- \
@@ -344,7 +354,8 @@ zig build test-vocabulary -- \
 ```
 
 The inference package also exposes `zig build test-vocabulary` independently
-(the `*-vocabulary` gates of `gates.json` run it per pinned file). The helper
+(the gates `qwen38-vocabulary`, `gemma4-e4b-vocabulary`, `laya-vocabulary`,
+and `laya-multilingual-vocabulary` run it per pinned file). The helper
 is separate from the shipped nuclis CLI; inspection and structural validation
 do not automatically load the vocabulary.
 
@@ -373,6 +384,6 @@ the `qwen35` label, BOS/EOS/padding IDs, and six token IDs from the captured
 fixtures. The extended check also matches six single-piece fixture cases (three
 inputs captured in two modes), re-encodes all 116 distinct normal token pieces
 observed in the fixtures, and decodes all 20 standalone and 20 prompt sequences
-byte-for-byte. Full native encoding now also matches every captured standalone
+byte-for-byte. Full native encoding also matches every captured standalone
 and prompt sequence in Debug and ReleaseSafe. This does not verify the file
 checksum or establish correctness for inputs outside the tested cases. Artifact identity remains pinned in the [spec](../spec.md).

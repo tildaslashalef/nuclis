@@ -23,14 +23,19 @@ saying what to run next, or which model to pull when none is installed. The file
 | `generation` | how tokens are produced: output budget, reasoning effort, speculative decoding, sampling | `generate`, `agent` |
 | `agent` | the chat surface's own settings | `agent` |
 | `decide` | the decision model | `decide`, `serve` |
-| `serve` | where the API listens | `serve` |
+| `embed` | the embedding model | `embed`, `serve` |
+| `speech` | the speech model and its voice | `speak`, `serve` |
+| `transcribe` | the transcription model | `transcribe`, `serve` |
+| `serve` | where the API listens, its logs, memory, and pinned models | `serve` |
+| `web` | the search service behind the web tools | `agent`, `serve` |
 | `cache` | the agent's saved model states | `agent` |
 | `models` | your named models (the registry) | anything that takes `--model` |
 
 `bench` reads only `engine`; its output budget, repetitions, and greedy
 sampling stay on its command line so runs remain comparable.
 
-A file as `init` writes it:
+A file as `init` writes it with one model installed (the 26B-A4B; with
+none, `models` is `{}`):
 
 ```json
 {
@@ -42,10 +47,14 @@ A file as `init` writes it:
                 "sampling": { "temperature": null, "top_k": null, "top_p": null, "min_p": null,
                               "presence_penalty": null, "repetition_penalty": null } },
   "agent":    { "think": "low", "fold_thinking": true, "theme": "gruvbox-dark", "instructions": "auto",
-                "thinking_budget": 1024 },
+                "thinking_budget": 1024, "web": false },
   "decide":   { "model": "laya" },
   "embed":    { "model": "embeddinggemma-2" },
-  "serve":    { "host": "127.0.0.1", "port": 9000, "log": true },
+  "speech":   { "model": "qwen3-tts-1.7b-customvoice", "voice": "ryan" },
+  "transcribe": { "model": "nemotron-asr-0.6b" },
+  "serve":    { "host": "127.0.0.1", "port": 9000, "log": true, "request_log": true, "timeout": 300,
+                "memory_bytes": null, "web": false, "pin": [], "transcription_bytes": 268435456 },
+  "web":      { "url": null },
   "cache":    { "memory_bytes": 4294967296, "disk_bytes": 8589934592 },
   "models":   { "gemma-4-26b-a4b": { "kind": null, "path": null,
                                  "repo": "unsloth/gemma-4-26B-A4B-it-qat-GGUF", "file": "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",

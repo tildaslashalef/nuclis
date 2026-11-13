@@ -3,8 +3,8 @@
 The Metal backend runs a model's text schedule on the GPU: one command
 buffer per token, every activation resident on the GPU, and the CPU supplying a
 token ID and reading back either logits or a greedy token. It is numerically
-validated against the CPU reference and llama.cpp traces, for every family
-in the catalogue; Qwen3.8 was the first and is the one the kernels are tuned
+validated against the CPU reference for every family in the catalogue
+([models § 4](../models/README.md#4-validate-against-nuclis-itself)); Qwen3.8 was the first and is the one the kernels are tuned
 for. For the surrounding stack see
 [architecture.md](../architecture.md), and for where decode and prefill time
 goes today [§ 11 Where performance goes](../architecture.md#11-where-performance-goes);
@@ -70,8 +70,8 @@ same `--logits`/`--trace-dir` oracle as the CPU backend ([sampling.md](sampling.
 | `backends/metal/dequant.metal` | GGUF block decoders, ported line by line from `quant/decode.zig`. Bit-exact with the CPU decoders. |
 | `backends/metal/kernels/*.metal` | Compute kernels, one file per kind of operation (`common`, `matvec`, `matvec_codebook`, `matvec_split`, `matvec_rows`, `experts`, `matmul`, `rowwise`, `recurrent`, `attention`, `recurrent_chunk`, `sampling`, `encoders`, `audio`, `asr`, `tts`), joined in that order (`kernel_files` in `kernels.zig`; later files use earlier helpers), then `matvec_split_k` (the split-K matvecs and the fragment layout pin) in the `bench_kernels` build `metal-check` imports only: generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0/Q5_0/Q5_1, merged projections (plain, SiLU pair, GELU pair) and their forced split-K twins (benchmark builds), embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, quick-gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window, bidirectional span, and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing; Nemotron ASR's subsampling convolutions, chunk-masked relative attention over a cached window, GLU, depthwise convolution, row shifts, joint input, and a few-rows F32 product with epilogues. |
 | `models/qwen35_metal.zig` | `Plan`: the Qwen schedule expressed as encoder calls. Owns the session and activation buffers; borrows weights and the backend. |
-| `models/gemma4_metal.zig` | `Plan`: the Gemma 4 12B schedule ([MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11)) on the same encoders; sliding-window slices, two RoPE tables, the wide global-layer attention ([gemma4.md § Metal plan](../models/gemma4.md#metal-plan-2026-09-11)). |
-| `models/muse_glimmer_metal.zig` | `Plan`: the Muse Glimmer 30B schedule ([MODL-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-12--muse-glimmer-30b-metal-plan-2026-09-19)) on the same encoders; adjacent-pair RoPE on sliding layers only, the sigmoid attention gate, the untied scaled head ([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-2026-09-19)). |
+| `models/gemma4_metal.zig` | `Plan`: the Gemma 4 schedules on the same encoders; sliding-window slices, two RoPE tables, the wide global-layer attention ([gemma4.md § Metal plan](../models/gemma4.md#metal-plan-2026-09-11)). |
+| `models/muse_glimmer_metal.zig` | `Plan`: the Muse Glimmer 30B schedule on the same encoders; adjacent-pair RoPE on sliding layers only, the sigmoid attention gate, the untied scaled head ([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-2026-09-19)). |
 | `models/qwen3_tts_metal.zig` | `Plan`: Qwen3-TTS's talker and code predictor over the BF16 matrices wrapped in place; a frame's 15 groups sampled on the device and checked by the host sampler ([qwen3-tts.md § On Metal](../models/qwen3-tts.md#on-metal-2026-10-27)). |
 | `audio/qwen3_codec_metal.zig` | `Decoder` and `Stream`: Qwen3-TTS's codec decoder, streamed with its carried state on the device, bit for bit the same for any piece size. |
 | `metal-check.zig` | Explicit GPU checks against pinned fixtures and CPU references (the TTS kernels' in `tts-metal-check.zig`); `--matvec-bench` measures the matvec kernels' achieved bandwidth, `--tts-bench` the BF16 matvec's. |
@@ -121,7 +121,7 @@ Plan.step(token)
   session.commit()                      CPU: position += 1
 ```
 
-[KERN-04](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-04--merged-projections-via-a-segment-table-2026-09-08) records about 932 dispatches per step (including final output work), down
+Merged projections (2026-09-08) brought a step to about 932 dispatches (including final output work), down
 from 1,236. The layer dispatches are recorded into one serial compute pass; Metal
 guarantees each dispatch sees the previous one's writes. `commit()` **waits**,
 so after it the CPU may read any buffer and may `reset()` the session. That
@@ -132,7 +132,7 @@ synchronous contract is what makes the following simple:
   backend. Wrapping the whole 16 GB mapping as one buffer was measured to make
   GPU time swing 3–4× between runs; per-tensor buffers are steady.
 - **Session state** (`runtime/session.zig`) is one page-aligned byte block
-  wrapped once. KV rows (F32 or F16 per the layout, [KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10)), convolution
+  wrapped once. KV rows (F32 or F16 per the layout), convolution
   history, and DeltaNet matrices are typed views the plan binds by byte
   range. `reset()` is a CPU memset, valid only when no GPU
   work is in flight — true after every `commit()`. An asynchronous backend must
@@ -182,19 +182,19 @@ Thread counts are the numbers `Backend` passes to `dispatch`.
 | `nu_matvec` (generic) | 32 | one output row | the row: lanes stride 16-value segments | `simd_sum` | none |
 | `nu_matvec_*` (specialized) | 128 | 16 output rows | 4 rows; 8 lanes per 256-value block | `simd_sum` | none |
 | `nu_matvec_segments` plain / pair | 128 | 16 rows of one segment / 8 gate+up pairs | 4 rows | `simd_sum`; pairs share 16 floats | 64 B (pair mode) |
-| `nu_matvec_experts` ([KERN-09](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-09--expert-routing-and-gathered-expert-kernels-decode-and-prefill-2026-09-17--2026-09-18)) | 128 | 16 rows of one slot's expert (the segment bodies) | 4 rows | `simd_sum` | none |
-| `nu_route` ([KERN-09](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-09--expert-routing-and-gathered-expert-kernels-decode-and-prefill-2026-09-17--2026-09-18)) | 256 | one row of ≤ 256 router logits | 32 logits; k rounds of "best untaken" | `simd_max`, `simd_sum`, `simd_shuffle_down`, 8-way threadgroup pick | 8 + 8 + 64 entries |
-| `nu_matmul_*` (specialized, [ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09)) | 128 | 64-row × 64-token output tile (32×32 for chunks of ≤ 32 tokens) | a 32×32 quarter as 4×4 `simdgroup_float8x8` (2×2 in the small tile) | matrix loads and MACs | 8 KB half weight tile + 8 KB half activation tile (small tile: 4 KB, activations from device), `threadgroup_barrier` |
-| `nu_matmul_*_8` ([KERN-11](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-11--small-chunk-prefill-matmul-near-the-weight-bandwidth-floor-2026-09-19-two-sessions)) | 128 | 16-row × 8-token output tile (two token tiles for 9..16) | 16 rows × 8 tokens over one K slice: two 8×8 accumulators sharing one B load, four groups split K | matrix loads and MACs | 8 KB half tile (16 rows × 64 k per group), `simdgroup_barrier` only |
-| `nu_matmul_*_f2` ([KERN-24](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-24--the-register-fragment-verify-matmul-2026-10-01-closed-below-its-target)) | 128 | 16-row × 8-token output tile (token tiles as `_8`) | 16 rows × 8 tokens over one K slice: each lane decodes one 16-value segment per row straight into its `simdgroup_matrix` elements (K permuted per 64-column step), two float4 activation loads per token | matrix MACs; four K partials summed in a fixed order | 2 KB of K partials, one `threadgroup_barrier` |
-| `nu_matvec_rows_*_t<n>` ([KERN-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-12--a-multi-row-matvec-for-28-rows-the-2-row-routing-2026-09-20-two-sessions-closed-below-its-target), [KERN-23](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-23--weight-streaming-for-one-row-and-a-few-qwen-decode-14--23-row-verify-batches-612--cheaper-2026-10-03-two-sessions)) | 128 | 32 output rows × up to 8 tokens | 8 rows: each 8-lane group owns 2 and the four walk the same block; one accumulator per (row, token) | `simd_shuffle_xor` across 8 lanes per (row, token) | 64 B IQ4 table (IQ4_XS), one `threadgroup_barrier` |
+| `nu_matvec_experts` | 128 | 16 rows of one slot's expert (the segment bodies) | 4 rows | `simd_sum` | none |
+| `nu_route` | 256 | one row of ≤ 256 router logits | 32 logits; k rounds of "best untaken" | `simd_max`, `simd_sum`, `simd_shuffle_down`, 8-way threadgroup pick | 8 + 8 + 64 entries |
+| `nu_matmul_*` (specialized) | 128 | 64-row × 64-token output tile (32×32 for chunks of ≤ 32 tokens) | a 32×32 quarter as 4×4 `simdgroup_float8x8` (2×2 in the small tile) | matrix loads and MACs | 8 KB half weight tile + 8 KB half activation tile (small tile: 4 KB, activations from device), `threadgroup_barrier` |
+| `nu_matmul_*_8` | 128 | 16-row × 8-token output tile (two token tiles for 9..16) | 16 rows × 8 tokens over one K slice: two 8×8 accumulators sharing one B load, four groups split K | matrix loads and MACs | 8 KB half tile (16 rows × 64 k per group), `simdgroup_barrier` only |
+| `nu_matmul_*_f2` | 128 | 16-row × 8-token output tile (token tiles as `_8`) | 16 rows × 8 tokens over one K slice: each lane decodes one 16-value segment per row straight into its `simdgroup_matrix` elements (K permuted per 64-column step), two float4 activation loads per token | matrix MACs; four K partials summed in a fixed order | 2 KB of K partials, one `threadgroup_barrier` |
+| `nu_matvec_rows_*_t<n>` | 128 | 32 output rows × up to 8 tokens | 8 rows: each 8-lane group owns 2 and the four walk the same block; one accumulator per (row, token) | `simd_shuffle_xor` across 8 lanes per (row, token) | 64 B IQ4 table (IQ4_XS), one `threadgroup_barrier` |
 | `nu_matmul` (generic) | 128 | 32-row × 32-token output tile | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 8 KB F32 weight tile + 8 KB F32 activation tile, `threadgroup_barrier` |
 | `nu_attention_chunk` / `_h` | 128 | (query head, 32-query tile, 256 value columns) | 8 query rows: 4 score blocks, 32 output blocks | `simd_shuffle_xor`, `simd_shuffle`, `simd_any`, matrix MACs | 6 KB (per-group score tile, diagonal, staging); 7.5 KB in the half instantiation (its own probability tile), `simdgroup_barrier` only |
 | `nu_segments_scores` | 128 | (query tile of ≤ 32 rows, head, 32-key block) | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 8 KB Q tile + 8 KB transposed K tile (F32), `threadgroup_barrier` |
 | `nu_segments_stats` | 256 | (query tile, head) | one strip row at a time, an online (max, sum) per lane | `simd_max`, `simd_sum` | none |
 | `nu_segments_values` | 128 | (query tile, head, 32 value columns) | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 4 KB P tile + 4 KB V tile (F32), `threadgroup_barrier` |
 | `nu_delta_chunk` | 128 | (value head, 32 value rows), all sub-chunks | an 8-row block of every 32×32 tile; column `tid` in the triangular solve | matrix MACs; no shuffles | 24 KB of 32×32 tiles, `threadgroup_barrier` per phase, `mem_device` per sub-chunk |
-| `nu_attention_decode` / `_h` ([KERN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-08--flash-decoding-attention-2026-09-10)), `_w` / `_wh` ([MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11)), `_q8` / `_wq8` ([Q8_0 KV cache](#q8_0-kv-cache-2026-10-15)) | 128 | (KV head, group of ≤ 8 query heads — ≤ 4 in the wide pair —, split of the visible rows) | every fourth row of the slice; lane l owns channels l, l+32, … (8 per lane, 16 in the wide pair) with per-head running max, sum, and accumulator in registers | `simd_sum` per (row, head); 3-round merge of the SIMD groups through 8 KB | 8 KB stage, `threadgroup_barrier` |
+| `nu_attention_decode` / `_h`, `_w` / `_wh`, `_q8` / `_wq8` ([Q8_0 KV cache](#q8_0-kv-cache-2026-10-15)) | 128 | (KV head, group of ≤ 8 query heads — ≤ 4 in the wide pair —, split of the visible rows) | every fourth row of the slice; lane l owns channels l, l+32, … (8 per lane, 16 in the wide pair) with per-head running max, sum, and accumulator in registers | `simd_sum` per (row, head); 3-round merge of the SIMD groups through 8 KB | 8 KB stage, `threadgroup_barrier` |
 | `nu_attention_merge` | 256 | one query head | — (threads stride the value channels, log-sum-exp over ≤ 64 splits) | none | none |
 | `nu_attention_scores` / `_values` (and `_h`; the three-pass decode kept as `test-metal`'s oracle) | 32 | one (head, position) / (head, channel) | the dot product / weighted sum | `simd_sum` | none |
 | `nu_attention_softmax` | 32 | one head's score row | the whole row | `simd_max`, `simd_sum` | none |
@@ -220,18 +220,18 @@ memory, and leave the rest to the grid.
   runtime encoding switch. It serves F32, F16, Q8_0, IQ4_NL, and any
   misaligned range.
 - `nu_matvec_q3_k`, `nu_matvec_q4_k`, `nu_matvec_q5_k`, `nu_matvec_q6_k`,
-  `nu_matvec_iq3_s`, `nu_matvec_iq4_xs`, `nu_matvec_q4_0` ([MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12)): specialized kernels,
+  `nu_matvec_iq3_s`, `nu_matvec_iq4_xs`, `nu_matvec_q4_0`: specialized kernels,
   selected by `Backend.matvec` when the row start, row stride, and input are
   aligned for their vector loads. See "Specialized matvec" below.
 - `nu_embed`: decodes one row of the embedding matrix.
 - `nu_rmsnorm`: 256-thread group per row, strided input/output rows, weighted,
   optional `silu(multiplier)` epilogue (used for DeltaNet's output gate).
 - `nu_l2norm`, `nu_rope` (from an F64-computed cos/sin table uploaded at init;
-  `Backend.ropeTable` takes optional per-pair frequency factors, [MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11);
+  `Backend.ropeTable` takes optional per-pair frequency factors;
   a `pairing` parameter rotates split-half `(i, i + dims/2)` or adjacent
-  `(2i, 2i + 1)` pairs, `cpu.rope.Pairing`, [MODL-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-12--muse-glimmer-30b-metal-plan-2026-09-19)),
+  `(2i, 2i + 1)` pairs, `cpu.rope.Pairing`),
   `nu_add`, `nu_silu_mul`, `nu_silu_inplace`, `nu_delta_gates`, `nu_sigmoid_gate`.
-- [MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11) epilogues for Gemma 4: `nu_gelu_mul` (tanh GELU of `cpu.gelu`, also
+- Epilogues for Gemma 4: `nu_gelu_mul` (tanh GELU of `cpu.gelu`, also
   pair mode 2 of `nu_matvec_segments`), `nu_scale` (x *= s), `nu_add_scale`
   (x = (x + y)·s, one rounding after the add), `nu_softcap` (cap·tanh(x/cap)).
   Their `tanh` is `nu_tanh`, clamped at ±20: Metal's `tanh` goes through
@@ -246,7 +246,7 @@ memory, and leave the rest to the grid.
 - `nu_convolution`: one thread per channel, history shifted in place.
 - Attention (decode): scores, softmax, values as three dispatches over a
   `[head][visible]` score buffer.
-- `nu_attention_chunk` ([ENGN-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-03--causal-tiled-attention-for-prefill-2026-09-09)): causal attention for a prefill chunk in one
+- `nu_attention_chunk`: causal attention for a prefill chunk in one
   dispatch per layer, no score buffer. Threadgroup per (query head, 32-query
   tile); each of its four SIMD groups owns 8 query rows and walks key tiles
   of 32 cache positions up to its own causal limit with an online softmax
@@ -259,11 +259,11 @@ memory, and leave the rest to the grid.
   zeroed, so no cache row beyond `position + count` is read; masked keys get
   score −∞ (weight exactly 0). Contract (`Backend.attentionChunk`): widths
   multiples of 8, value width ≤ 512 (above 256 the grid adds one
-  threadgroup per 256 value columns, each recomputing the scores; [MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11)),
-  `count` ≤ 16,384 (`max_chunk_rows`; 4,096 before [MODL-22](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-22--gemma-4-vision-the-unified-embedder-12b-and-the-siglip-encoder-26b-a4b-on-both-executors-bidirectional-image-spans-2026-09-23)), query/output buffers
+  threadgroup per 256 value columns, each recomputing the scores),
+  `count` ≤ 16,384 (`max_chunk_rows`), query/output buffers
   padded to a multiple of 8 rows (`attentionChunkRows`), the cache buffers
   cover `position + count` rows. Row `t` attends to `cache[0 .. position +
-  t]`, or with a nonzero `window` ([MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11)) to `cache[position + t + 1 −
+  t]`, or with a nonzero `window` to `cache[position + t + 1 −
   window .. position + t]`: the key loop starts at the tile holding the
   SIMD group's first visible key, hidden keys score −∞, and a row whose
   keys are all hidden in a tile keeps its running max at −∞ (no rescale,
@@ -277,25 +277,26 @@ memory, and leave the rest to the grid.
   1e30 in every key/value row after query row 20's horizon matches the
   clean reference for rows 0..20 and stays finite after; single- and
   three-token prompts from an empty cache; padded-row and width contract
-  violations are refused before dispatch. [MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11) adds the Gemma geometry:
+  violations are refused before dispatch. The Gemma geometry is checked too:
   windows of 1,024 before and inside a chunk, a window of 8 with fully
   hidden tiles, and 16 heads of 512 over one KV head (two value splits),
   F32 within 3.0e-6 (bound 1e-5) and F16 over the rounded operands within
   1.9e-4 (bound 2e-3) of the F64 reference per row with the window applied
-  as a key slice. [MODL-22](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-22--gemma-4-vision-the-unified-embedder-12b-and-the-siglip-encoder-26b-a4b-on-both-executors-bidirectional-image-spans-2026-09-23) adds `span { begin, end }`: chunk rows in the
+  as a key slice. `span { begin, end }` makes an image bidirectional: chunk rows in the
   span see keys up to `position + end` instead of their own row (the
   window still bounds them from below), and a SIMD group with a row inside
   walks keys to the span's end; the register-reuse body refuses a span.
-  Gemma 4 passes an image chunk's span on its sliding layers, and its
-  SigLIP projector runs a whole patch set as one span
-  ([vision.md § Gemma 4's projectors](vision.md#gemma-4s-projectors-2026-09-23)).
+  Gemma 4 passes an image chunk's span on its sliding layers
+  ([vision.md § Gemma 4's projectors](vision.md#gemma-4s-projectors-2026-09-23));
+  the vision encoders themselves run on the segments kernels since 2026-10-27
+  ([vision.md § Encoders at the materialized-score attention](vision.md#encoders-at-the-materialized-score-attention-2026-10-27)).
   Evidence: a span inside a 300-row chunk with poisoned keys and values
   after it, a span longer than a window of 8, an F16 span, and the
   projector's 16×72 geometry at 200 and 9,900 rows (every 97th compared),
   F32 within 1e-5 (relative past 1) of the F64 reference per row.
-- `nu_delta_chunk` ([ENGN-04](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-04--chunkwise-deltanet-wy-form-2026-09-09)): chunkwise DeltaNet for a prefill chunk in one
+- `nu_delta_chunk`: chunkwise DeltaNet for a prefill chunk in one
   dispatch per layer, the WY form of `cpu.recurrent.deltaChunk`
-  ([cpu-reference.md § Chunkwise DeltaNet](cpu-reference.md#chunkwise-deltanet-2026-09-09-stage-1)).
+  ([cpu-reference.md § Chunkwise DeltaNet](cpu-reference.md#chunkwise-deltanet-2026-09-09)).
   Threadgroup per (value head, block of 32 value rows), four per head, 128
   threads; it loops over 32-token sub-chunks with the state carried in the
   session buffer (each group reads and writes only its own 32 state rows,
@@ -325,7 +326,7 @@ memory, and leave the rest to the grid.
   contract violations are refused before dispatch.
 - `nu_argmax_partial` + `nu_argmax_final`: greedy selection with lowest-index
   tie breaking; the CPU reads back 4 bytes instead of 1 MB of logits.
-- `nu_matmul` ([ENGN-02](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-02--chunked-prefill-with-the-batched-matmul-2026-09-08), [ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09)): batched prefill product `out[t][r] = Σ W[r][k]·X[t][k]`
+- `nu_matmul`: batched prefill product `out[t][r] = Σ W[r][k]·X[t][k]`
   for a chunk of tokens, one template `nu_matmul_t<encoding, rows, tokens,
   weight type, activation type, staged>` with thirteen instantiations. A
   128-thread group owns a rows × tokens output tile as four SIMD groups of
@@ -338,12 +339,12 @@ memory, and leave the rest to the grid.
   a segment with the vector loads and packed-byte helpers of the specialized
   matvecs (`nu_tile_*`), evaluating the generic decoder's expression in the
   same F32 operation order, so a specialized F32 tile is bit-identical to the
-  generic one (Q4_0's tile, [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12), addresses two segments per 32-value block
+  generic one (Q4_0's tile addresses two segments per 32-value block
   where the K-quant tiles address sixteen per 256-value block); they hold both operands as **half** in 64×64 tiles (8 KB +
   8 KB) and accumulate in F32. A second set (`nu_matmul_*_32`, 32×32, half
   weight tile, activations loaded from device memory as F32, 4 KB) serves
   chunks of at most 32 tokens, where the 64-row tiles leave a 5,120-row
-  projection with only 80 threadgroups. A third set (`nu_matmul_*_8`, [KERN-11](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-11--small-chunk-prefill-matmul-near-the-weight-bandwidth-floor-2026-09-19-two-sessions):
+  projection with only 80 threadgroups. A third set (`nu_matmul_*_8`, 2026-09-19:
   16 rows × 8 tokens, half weight tile, activations from device as F32, 8 KB)
   splits the K range across the four SIMD groups with a `simdgroup_barrier`-
   only loop and serves chunks of at most `small_chunk_tokens` (24) tokens,
@@ -395,11 +396,11 @@ memory, and leave the rest to the grid.
   half operands. At 22 tokens the large tiles run at 20–25 GB/s of weight
   traffic (one token tile, too few threadgroups, a latency-bound K loop),
   hence the 32×32 set for short chunks; short prompts remain far from the
-  weight-bandwidth floor ([KERN-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-12--a-multi-row-matvec-for-28-rows-the-2-row-routing-2026-09-20-two-sessions-closed-below-its-target)'s multi-row matvec closes below its target —
+  weight-bandwidth floor (the multi-row matvec closed below its target —
   see [§ Multi-row matvec](#multi-row-matvec-2026-09-20-closed-below-its-target)
-  — and [KERN-15](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-15--split-k-decode-matvec-measured-behind-the-single-pass-closed-negative-2026-09-21)'s split-K measured behind the single pass; see
+  — and split-K measured behind the single pass; see
   [§ Split-K](#split-k-2026-09-21-closed-negative)).
-- Mixture of experts ([KERN-09](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-09--expert-routing-and-gathered-expert-kernels-decode-and-prefill-2026-09-17--2026-09-18); see [§ Gathered expert kernels](#gathered-expert-kernels-2026-09-18)):
+- Mixture of experts (see [§ Gathered expert kernels](#gathered-expert-kernels-2026-09-18)):
   `nu_route` (softmax and top-k with renormalized weights per logit row),
   `nu_matvec_experts` (a matvec over the selected experts' slices of a 3-D
   tensor, any encoding through the segment bodies), `nu_gelu_mul_rows`
@@ -410,7 +411,7 @@ memory, and leave the rest to the grid.
   the 32-row tile list) and `nu_matmul_experts` / `nu_matmul_experts_q4_0`
   (`_q5_0`, `_q5_1` likewise: the matmul body gathering its activation
   rows through the lists and scattering the results back).
-- `nu_topk_partial` + `nu_topk_final` + `nu_expsum_partial` ([KERN-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-06--gpu-partial-top-k-for-sampled-decoding-2026-09-08)): the best
+- `nu_topk_partial` + `nu_topk_final` + `nu_expsum_partial`: the best
   256 logits by (value desc, index asc) and Σ exp((l − max) / T) as 64 F32
   partials with non-finite flags. The partial pass keeps 16 register-resident
   values per thread and runs k rounds of "best untaken" (SIMD shuffle
@@ -497,7 +498,7 @@ pressure), and a float lookup table in place of `uchar4 → float4` conversion
 (mixed).
 
 **Half magic-number decode and the IQ4 table in threadgroup memory
-([KERN-23](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-23--weight-streaming-for-one-row-and-a-few-qwen-decode-14--23-row-verify-batches-612--cheaper-2026-10-03-two-sessions), 2026-10-03).** Q4_K and Q5_K codes are OR'd into the mantissas
+(2026-10-03).** Q4_K and Q5_K codes are OR'd into the mantissas
 of halves of exponent 1024 (two codes per `half2`, the fifth bit at bit 4
 or 8), minus 1024: exact, and on the FP16 pipe instead of an
 integer-to-float conversion per value; high nibbles stay at ×16 and the
@@ -518,7 +519,7 @@ The kernels are bound by per-block instruction work shared by all four
 threadgroups run ~10 % slower per block than shapes with 1,088 (occupancy).
 The bandwidth floor corresponds to ~0.5 ns per block.
 
-[KERN-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-03--specialized-matvec-for-q3_k-iq3_s-iq4_nl-deferred-2026-09-08) adds Q3_K and IQ3_S with the same four-row geometry. Both use a
+Q3_K and IQ3_S (2026-09-08) have the same four-row geometry. Both use a
 compile-time variant of `nu_matvec_three`; the encoding choice introduces no
 runtime branch. Q3_K assembles four biased codes in a word and folds the
 bias of four into each 16-value input sum. IQ3_S loads eight grid indices
@@ -533,11 +534,11 @@ best GB/s (generic column is the 248,320×5,120 case):
 | Q3_K | 124.1 | 121.5 | 121.0 | 43.2 |
 | IQ3_S | 122.6 | 121.0 | 119.0 | 42.5 |
 
-[MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12) (2026-09-12) adds Q4_0, the only weight encoding of the catalogue's
-Gemma 4 12B file, with the same 128-thread geometry: lane `l` of a SIMD
+Q4_0 (2026-09-12), the weight encoding of the Gemma 4 QAT files, has the
+same 128-thread geometry: lane `l` of a SIMD
 group takes the 18-byte blocks `l`, `l + 32`, … of its rows (the same
 block order as an octet taking block `8·kb + g` of stride `kb`, which is
-how it was first written; [KERN-09](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-09--expert-routing-and-gathered-expert-kernels-decode-and-prefill-2026-09-17--2026-09-18) made the loop walk blocks so a row of
+how it was first written; on 2026-09-17 the loop was made to walk blocks so a row of
 22 blocks — the 26B-A4B's expert down projection — no longer falls back
 to `nu_matvec`), two `packed_ushort4` loads (2-byte alignment) give the
 four nibble words, and the bias of eight folds into the per-block input
@@ -574,7 +575,7 @@ The row-poor decode matvec experiment. `nu_matvec_q4_k_split` and
 row, so their code is unchanged), `nu_matvec_segments_split` does the same
 for a plain segment merge, and each writes one `[split][row]` partial
 buffer that `nu_reduce_splits` / `nu_segment_reduce_splits` sum into the
-output. The unit's hypothesis was that a 6,656–8,704-row matrix launches
+output. The hypothesis was that a 6,656–8,704-row matrix launches
 too few 16-row threadgroups to keep the weight bus busy; splitting K
 multiplies the groups without re-reading a weight byte. Measured by
 `make bench-matvec-split` against the single-pass control, the hypothesis
@@ -585,7 +586,7 @@ grows with the split count — the per-group reduction tail and the second
 launch, not a lack of parallelism. Q5_K's only wins are inside noise or on
 a shape the model uses as Q4_K (6,656×19,968: 193.0 → 193.4 / 198.4 /
 193.3). The one reproducible gain is the four-segment merge at 2 and 8
-splits (152.1 → 157.4 / 150.3 / 158.5), ~4 %, far below the unit's
+splits (152.1 → 157.4 / 150.3 / 158.5), ~4 %, far below the
 ≥ 190 GB/s bar, and that bucket is global — it would route the other
 families' merges with it — so no row bucket routes. The Q4_K rate is the
 kernel's ~0.9 ns per 256-value block (144 bytes) against Q5_K's 176, not
@@ -647,11 +648,14 @@ rate halves. The per-value cost of this design (a field mask shared by
 four values, one integer-to-float conversion, one FMA) is the floor
 the structure has; going past it needs different arithmetic (packed
 integer products, or sharing one decoded value across several inputs),
-which is a follow-up measured against the model rate [MODL-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18) records,
+which would be measured against the model rate
+([the Bonsai acceptance record](../benchmarks/history.md#bonsai-2-27b-acceptance-record-2026-09-18)),
 not against this table. PTQ1_0 pays its five-digit extraction: 12 % fewer
 bytes than PQ2_0 at 25 % fewer bytes per second, so it decodes slower;
-whether the catalogue moves to it is decided by [MODL-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18)'s measurement.
-At batch 1 the transform of the activations ([KERN-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-10--ternary-matvec-and-matmul-tiles-the-walsh-hadamard-kernel-2026-09-18) session 2) adds
+the catalogue moved to it on the model rate anyway
+([bonsai.md § Metal plan](../models/bonsai.md#metal-plan-2026-09-18)).
+At batch 1 the transform of the activations
+([§ The Hadamard transform kernel](#the-hadamard-transform-kernel-2026-09-18)) adds
 to the token, not to these numbers.
 
 `make bench-matmul` (256 tokens), best ms and the GFLOP/s of the tile:
@@ -660,7 +664,7 @@ PTQ1_0 9.69 / 4,711 and 10.78 / 4,234, Q4_0 in the same run 9.66 / 4,724
 and 10.05 / 4,540: the prefill tiles are compute-bound and the ternary
 tiles match the set.
 
-### The Hadamard transform kernel (session 2, 2026-09-18)
+### The Hadamard transform kernel (2026-09-18)
 
 `nu_hadamard` is the activation side of the folded rotation
 (`cpu.hadamard`, [bonsai.md § Rotation](../models/bonsai.md#rotation-prismhadamard-as-the-forks-loader-reads-it)):
@@ -685,13 +689,13 @@ elements — in one command buffer. 2026-09-18, M4 Pro, ReleaseSafe, best
 1,024-block inside a 64-row 17,408-wide dispatch (0.11 ms of arithmetic
 for the whole token). The cost is launch and dependency, about 5 µs per
 dispatch, and at the ternary matvecs' rate it is 2–3 % of a token. The
-fusion the plan asked to measure — the sign flip and transform inside
+fusion considered — the sign flip and transform inside
 the matvec's input load — is decided by that arithmetic: every SIMD
 group of a matvec would recompute its block's transform (thousands of
 times per projection against once), so it is not attempted. What a
 fusion can save is launches, by folding the transform into the norm
 that precedes two of the four activations per layer; whether the 2–3 %
-justifies it is read from [MODL-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18)'s per-kernel profile of the whole
+justifies it is read from a per-kernel profile of the whole Bonsai
 token, not from this number.
 
 ### The rotation on the Qwen plan (2026-09-18)
@@ -722,7 +726,7 @@ prompt, 2,048 context, 192 measured steps): 1,292 dispatches per step,
 80 % at 97–116 GB/s of weight bytes (`matvec_segments` on the merged
 projections 102–113, the PQ2_0 FFN down 97, the output head 116), the
 norms 2.1 ms (2.6 %). So the fusion question the transform kernel left
-open is answered for now: folding the transform into the norm that
+open is answered: folding the transform into the norm that
 precedes two of the four activations would save at most about 1 % of the
 token, and the token is bound by the ternary matvecs' multiply rate
 (§ Ternary matvecs and tiles), which is where the next kernel work goes.
@@ -882,7 +886,7 @@ the token width, so the gain is unclear), a 64-token tile for chunks
 where experts exceed 32 rows, and Q4_K / Q6_K instantiations for other
 families.
 
-**In the adapter** ([MODL-09](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-09--gemma-4-26b-a4b-artifact-pin-facts-adapter-cpu-reference-metal-plan-2026-09-18-two-sessions), 2026-09-18). `gemma4_metal.zig` records the
+**In the adapter** (2026-09-18). `gemma4_metal.zig` records the
 decode chain after the dense FFN of every 26B-A4B layer and the prefill
 chain over each chunk's rows, both from the same `feedForward` shape as
 the CPU reference ([gemma4.md § 26B-A4B](../models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-2026-09-18)).
@@ -919,10 +923,10 @@ F32 expert tile (Q4_K has no half instantiation); the evidence is
 
 ### Per-block cost research (2026-09-08, closed without a kernel change)
 
-The unit spent one session on the plan's five hypotheses against the 0.8–0.9
+One session tested five hypotheses against the 0.8–0.9
 ns/block observation. Method per hypothesis: fixtures (`make test-metal`) →
 `make bench-kernels` → keep only a ≥ 5 % gain. Nothing met the bar, so the
-kernels are byte-identical to [KERN-04](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-04--merged-projections-via-a-segment-table-2026-09-08); the outputs are the harness changes above
+kernels are byte-identical to the merged-projection set; the outputs are the harness changes above
 (the true 5,120×17,408 down-projection shape and the longer batches for it),
 the `make trace` target, and the results below. Baseline for the session
 (HEAD kernels, new harness, best GB/s of five, block kernel / generic):
@@ -978,7 +982,7 @@ Rejected, with the Q4_K/Q5_K best GB/s on the same four shapes:
    licenses hurt Q5_K. ALU issue is not the limiter, and safe mode stays.
 
 Instruments: `xctrace` runs from the command line through `DEVELOPER_DIR`
-(see [AGENTS.md](../../AGENTS.md) § Local toolchain notes, `make trace`).
+(see [AGENTS.md](../../AGENTS.md) § Local toolchain, `make trace`).
 On this M4 Pro the "Metal GPU Counters" instrument reports *Selected counter
 profile is not supported on target device*; the `gpu-counter-value` and
 `metal-gpu-counter-intervals` tables export empty, while `metal-gpu-intervals`
@@ -990,7 +994,7 @@ vs H4a). The remaining candidates are load-latency exposure per block and
 the eight-lanes-per-block reduction structure, which only a different
 geometry (e.g. one SIMD group per block with a wider reduction) would test.
 
-**Answered by counters ([KERN-20](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-20--seeing-inside-the-gpu-metal-captures-pipeline-statistics-apple-gpumd-2026-09-30), 2026-09-30).** A Metal capture of the
+**Answered by counters (2026-09-30).** A Metal capture of the
 Q4_K matvec on the `ffn_down` shape, profiled at full clocks, reads it as
 **issue-bound on the integer and complex pipe** (limiter 69 %, 38 %
 utilized, half the ALU instructions), not latency-bound on memory (cache
@@ -1017,10 +1021,10 @@ and residual adds run over `count` rows at once, the DeltaNet convolution runs
 as one causal pass over the chunk plus a history update
 (`nu_convolution_rows`, `nu_convolution_history`; bit-identical to the
 sequential kernel by construction), attention runs as **one causal tiled
-dispatch per layer** (`nu_attention_chunk`, [ENGN-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-03--causal-tiled-attention-for-prefill-2026-09-09)) after the chunk's keys and
+dispatch per layer** (`nu_attention_chunk`) after the chunk's keys and
 values were projected, normalized, rotated, and copied into the cache in one
 go, and DeltaNet runs as **one chunkwise dispatch per layer**
-(`nu_delta_chunk`, [ENGN-04](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-04--chunkwise-deltanet-wy-form-2026-09-09)) over 32-token sub-chunks. Nothing steps per token
+(`nu_delta_chunk`) over 32-token sub-chunks. Nothing steps per token
 inside a chunk any more.
 
 Contract: the whole prompt must fit the remaining context (refused before any
@@ -1039,31 +1043,32 @@ Measured (2026-09-08, M4 Pro, ReleaseSafe, `bench --raw`, 32 output tokens,
 context 4096, one warmup and two runs; the 22-token row is the standard
 `make bench` workload at context 2048):
 
-| Prompt tokens | Prefill tok/s | Before [ENGN-02](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-02--chunked-prefill-with-the-batched-matmul-2026-09-08) | Reference (llama.cpp) | Decode after the prompt |
+| Prompt tokens | Prefill tok/s | Stepped per token | Reference (llama.cpp) | Decode after the prompt |
 | ---: | ---: | ---: | ---: | ---: |
 | 22 | 35.0 | 11.1 | — | 10.79 |
 | 543 | 51.3 | ~11 | 89.2 at 512 | 10.50 |
 | 3,547 | 33.3 | ~11 | 89.3 at 4,096 | 7.76 |
 
 The rate fell with prompt length because the per-token attention loop grew
-with the visible cache (3 dispatches per token per layer). [ENGN-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-03--causal-tiled-attention-for-prefill-2026-09-09) (2026-09-09,
-same methodology, prompts of 545 and 3,657 tokens) removed that fall-off:
+with the visible cache (3 dispatches per token per layer). The causal tiled
+chunk attention (2026-09-09, same methodology, prompts of 545 and 3,657
+tokens) removed that fall-off:
 
-| Prompt tokens | Prefill tok/s | [ENGN-02](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-02--chunked-prefill-with-the-batched-matmul-2026-09-08) | Reference (llama.cpp) | Decode after the prompt |
+| Prompt tokens | Prefill tok/s | Chunked matmul (2026-09-08) | Reference (llama.cpp) | Decode after the prompt |
 | ---: | ---: | ---: | ---: | ---: |
 | 22 | 35.3 | 35.0 | — | 10.47 |
 | 545 | 51.4 | 51.3 | 89.2 at 512 | 10.36 |
 | 3,657 | 50.6 | 33.3 | 89.3 at 4,096 | 8.48 |
 
-`generation-check --metal` (70-token prompt, 32-token chunks) after [ENGN-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-03--causal-tiled-attention-for-prefill-2026-09-09):
+`generation-check --metal` (70-token prompt, 32-token chunks) after it:
 max abs 2.5e-5, relative RMS 1.2e-6, identical argmax (bound 2e-2 / 1e-3).
 
-[ENGN-04](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-04--chunkwise-deltanet-wy-form-2026-09-09) (2026-09-09) replaced the last per-token loop, `nu_delta`, with
+The chunkwise DeltaNet (2026-09-09) replaced the last per-token loop, `nu_delta`, with
 `nu_delta_chunk`; `generation-check --metal` after it: max abs 2.8e-5,
 relative RMS 1.2e-6, identical argmax. Same methodology, plus a 13,399-token
 prompt at context 16,384 (`--repeat 1`):
 
-| Prompt tokens | Prefill tok/s | [ENGN-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-03--causal-tiled-attention-for-prefill-2026-09-09) | Reference (llama.cpp) | Decode after the prompt |
+| Prompt tokens | Prefill tok/s | Tiled attention | Reference (llama.cpp) | Decode after the prompt |
 | ---: | ---: | ---: | ---: | ---: |
 | 22 | 34.9 | 35.3 | — | 10.33 |
 | 545 | 52.6 | 51.4 | 89.2 at 512 | 10.28 |
@@ -1072,20 +1077,21 @@ prompt at context 16,384 (`--repeat 1`):
 
 Prefill then sat on the matmul tile's ceiling of 42–57 tok/s
 (`make bench-matmul`, generic decoder in the tile). The fall at 13K is
-chunk attention over a 13K-row F32 cache ([KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10)/KERN-08); decode at 13K context
+chunk attention over a 13K-row F32 cache (the F16 cache and flash-decoding
+attention of 2026-09-10 followed); decode at 13K context
 (4.67 vs the reference's 7.32) is the decode attention over the same cache.
 
-[ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09) (2026-09-09) raised that ceiling to 90–96 tok/s with specialized
-half-operand 64×64 tiles ([§ Kernels](#kernels)). Same methodology and
-prompts; the 16K row was not rerun because [ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09) does not touch attention:
+The specialized half-operand tiles (2026-09-09) raised that ceiling to 90–96 tok/s with specialized
+64×64 tiles ([§ Kernels](#kernels)). Same methodology and
+prompts; the 16K row was not rerun because the tiles do not touch attention:
 
-| Prompt tokens | Prefill tok/s | [ENGN-04](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-04--chunkwise-deltanet-wy-form-2026-09-09) | Reference (llama.cpp) | Decode after the prompt |
+| Prompt tokens | Prefill tok/s | Chunkwise DeltaNet | Reference (llama.cpp) | Decode after the prompt |
 | ---: | ---: | ---: | ---: | ---: |
 | 22 | 39.1 | 34.9 | — | 10.30 |
 | 545 | 83.8 | 52.6 | 89.2 at 512 | 10.15 |
 | 3,657 | 81.7 | 53.0 | 89.3 at 4,096 | 8.63 |
 
-`generation-check --metal` after [ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09) (70-token prompt, chunks of 64, 48,
+`generation-check --metal` after the half tiles (70-token prompt, chunks of 64, 48,
 and 32 so both tile sets are exercised): max abs 2.37e-3 / 2.32e-3 /
 2.59e-3, relative RMS 1.1–1.2e-4, identical argmax (bound 2e-2 / 1e-3). The
 step from 2.8e-5 to 2.5e-3 is the half rounding of both operands; the
@@ -1175,8 +1181,8 @@ gathers 8 tokens × columns × 4 B (160 KB at 5,120 columns) against 16 × colum
 of weights (46 KB of Q4_K) — and the 16-row tile only halved that ratio while
 the packed layout made it worse. The remaining levers (32 rows per group, a
 blocked activation read, or keeping the activations in threadgroup memory
-across a row strip) are recorded in the log, not shipped; the unit closes
-below its floor on this record.
+across a row strip) were recorded in the worklog archived at `v0.6.0`, not
+shipped; the work closed below its floor on this record.
 
 ### Multi-row matvec (2026-09-20; closed below its target)
 
@@ -1193,7 +1199,7 @@ Q4_0 and the ternary encodings and is slower than the tile at every count. The
 token count is a template parameter, one host name per encoding and count
 (`nu_matvec_rows_q4_k_t2` … `_t8`): a runtime `tokens` loop with `break` moves
 the accumulators to thread-local memory. `Backend.matmul` routes 2-row batches
-to the specialized bodies, and since [KERN-23](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-23--weight-streaming-for-one-row-and-a-few-qwen-decode-14--23-row-verify-batches-612--cheaper-2026-10-03-two-sessions) 3-row batches of the K-quants
+to the specialized bodies, and since 2026-10-03 3-row batches of the K-quants
 (`usesMatvecRows`, `small_batch_rows = 3`; [the word-outer
 body](#the-word-outer-body-2026-10-03) replaced the layout described
 here);
@@ -1227,10 +1233,10 @@ body's marginal cost is ~0.19–0.22 ms per token on the 50 MB FFN
 decoded rows were slower, consistent with register pressure, but register
 counts, spills and occupancy need compiler/profiler evidence. These experiments
 justify stopping work on these scalar bodies, not an impossibility claim for
-all scalar register tiles. The unit shipped two-row routing below its original
-acceptance; the matrix tile and eliminating recovery replay are the next levers.
+all scalar register tiles. Two-row routing shipped below its original
+acceptance; the matrix tile and eliminating recovery replay were the next levers.
 
-**Answered by counters ([KERN-20](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-20--seeing-inside-the-gpu-metal-captures-pipeline-statistics-apple-gpumd-2026-09-30), 2026-09-30).** A capture of the Q4_K body
+**Answered by counters (2026-09-30).** A capture of the Q4_K body
 at 2 and 8 rows confirms the register-pressure hypothesis: at 8 rows the
 kernel spills 607 GB/s of stack traffic against 395 GB/s of buffer reads,
 registers hold 72 % of the L1, the occupancy manager lowers its target to
@@ -1244,8 +1250,8 @@ of once per 32 values, and Q4_K fell to 55 GB/s at 2 rows.
 #### Corrected two-row control (2026-09-20)
 
 `make bench-matvec-rows ARGS="2 head"`, Apple M4 Pro (48 GiB), Zig 0.16.0,
-ReleaseSafe, revision `27303ed` plus the [REPO-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#repo-08--repair-the-multi-row-benchmark-controls-and-hand-off-2026-09-20) repair committed with this
-record. Minimum of three measured command buffers after one warm-up, sixteen
+ReleaseSafe, revision `27303ed` plus the benchmark-control repair committed
+with this record. Minimum of three measured command buffers after one warm-up, sixteen
 dispatches per buffer; synthetic quantization fixtures, no model loaded. Rates
 are logical weight bytes per GPU second, not measured DRAM traffic. No other
 GPU benchmark ran concurrently.
@@ -1269,7 +1275,7 @@ The generic paths remain slower on both FFN shapes (Q3_K, IQ3_S, Q4_0,
 PQ2_0, PTQ1_0). This run revalidates two-token routing; it does not replace
 the historical 3–8-token measurements or measure full-model recovery latency.
 
-**Session 1 table (single dispatch per command buffer — the rate is the GPU's
+**First table (single dispatch per command buffer — the rate is the GPU's
 clock ramp, not the tile; kept for the record and superseded by the batched
 table above).**
 
@@ -1336,9 +1342,9 @@ FFN, issue at 25 % occupancy, so the tile keeps 4–8 rows. Qwen's verify C
 
 ### The wide 32×8 tile (2026-09-20; closed negative)
 
-The verify batch's small-batch tile was the plan's largest single lever
+The verify batch's small-batch tile was the largest single lever
 (241–297 ms per batch at 512 tokens, 70–80 % of a speculative batch), so
-[KERN-14](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-14--the-wide-328-small-batch-tile-measured-closed-negative-2026-09-20) tried one variant of the 16×8 split-K tile: 32 output rows per
+one variant was tried of the 16×8 split-K tile: 32 output rows per
 128-thread group (`nu_matmul_wide_body`, the `_w8` instantiations), where
 each lane owns a row and four 8-row accumulator blocks share one B load per
 K step, halving the gathered activation traffic per weight byte. Nothing
@@ -1372,7 +1378,8 @@ activation reads did not pay for the wider tile's register pressure and
 longer per-step dependency chain; the 16×8 control stands and production
 routing is untouched (the two-row matvec routing included). The numbers are
 in [benchmarks § Small-batch tile sweep](../benchmarks/history.md#small-batch-tile-sweep-2026-09-20);
-the full-model verify latency is unchanged from the [ENGN-15](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-15--sampled-acceptance-on-the-gpu-top-k-readback-2026-09-20) quick pass
+the full-model verify latency is unchanged from the
+[sampled-acceptance quick pass](../benchmarks/history.md#the-sampled-acceptance-quick-pass-2026-09-20)
 (262–297 ms), since nothing routes to the candidate.
 
 ### The register-fragment tile (2026-10-01; below its target)
@@ -1423,8 +1430,8 @@ puts the kernel on the F32 pipe the multiplies occupy, half of them on
 padding columns at 4 rows. F32 weight fragments, block-wise K (shared
 headers), 8 or 32 rows per group, a software-pipelined decode, and a
 scaled variant (the multiplies on the integer codes, the group scale
-applied once) all measured within noise or worse (the log's ledger).
-The unit's 150 GB/s bar is met only by Q6_K's gate shape.
+applied once) all measured within noise or worse (the `v0.6.0` worklog's ledger).
+The 150 GB/s bar is met only by Q6_K's gate shape.
 `matmulKernel` forces any instantiation for measurement. The `_f2hh`
 (half × half) and `_f4` (32-row) Q4_K variants measured no faster and were
 deleted on 2026-11-12.
@@ -1458,7 +1465,7 @@ compute gate and two compute up, then share sixteen reduced F32 values (64 bytes
 through threadgroup memory. A barrier precedes `silu(gate) * up`; no intermediate
 FFN vector needs a GPU write/read. The existing `up` scratch buffer is retained
 for the standalone fallback. Each SIMD group still computes four rows with the
-same reduction order. This layout replaces the plan's initial sequential pair
+same reduction order. This layout replaced an initial sequential pair
 per SIMD group, which measured a regression; the outcome records both variants.
 
 ## F16 KV cache (2026-09-10)
@@ -1490,14 +1497,13 @@ Where the halves come from and who reads them:
   rotated queries are packed into `q_c_h`. `nu_attention_chunk_h` loads
   half keys, values, and queries into `simdgroup_half8x8` operands and
   accumulates in `simdgroup_float8x8`, because the matrix unit multiplies
-  operands of one type (the [ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09) matmul's contract; a half→float matrix
+  operands of one type (the half-tile matmul's contract; a half→float matrix
   conversion does not exist in MSL and the storage-vector route crashes
   the compiler). The probability tile is therefore rounded to half before
   P·V, and the running softmax sum is taken over the stored halves so the
   weights remain a convex combination. Scores, the online softmax, the
-  accumulators, and the output are F32. This is a design deviation from
-  the plan's "read half via a flag": the F16 chunk path rounds Q and P as
-  well as K and V, which the tolerances below measure.
+  accumulators, and the output are F32. The F16 chunk path therefore
+  rounds Q and P as well as K and V, which the tolerances below measure.
 - **The CPU reference** never carves an F16 layout (decided); an `f16`
   request on `--backend cpu` runs F32 and the report says so.
 
@@ -1506,7 +1512,7 @@ Evidence (`test-metal`, 2026-09-10): packed halves bit-identical to
 the rounded cache 1.1e-8 (the kernel's own error, bound 2e-5) and
 against the CPU over the original floats 1.2e-5 max abs, 2.1e-4 relative
 RMS (the rounding's cost on N(0, 0.5²) data); half chunk attention on the
-[ENGN-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-03--causal-tiled-attention-for-prefill-2026-09-09) cases against the CPU over the rounded operands 1.8e-4 max abs (bound
+tiled-attention cases against the CPU over the rounded operands 1.8e-4 max abs (bound
 1e-3: a 2^-11 weight perturbation over values up to about 2, reached only
 when few keys are visible). Full model: `make gate NAME=qwen38-trace-f16` (raw `Hello,`,
 position 2) passes at its own tolerance, **max abs 3e-2 and relative RMS
@@ -1515,17 +1521,17 @@ layer 51 of token 0; the residual stream's outlier channels carry the
 absolute error), with the logits inside the bring-up thresholds (9.2e-4 /
 5.3e-5) and the greedy token unchanged (353). The bring-up thresholds
 (2e-3 / 1e-4) stay the accepted numbers for the F32 cache
-(`make gate NAME=qwen38-trace-f32`, unchanged at 1.22e-4); `make gate NAME='qwen38-trace-*'` runs both.
+(`make gate NAME=qwen38-trace-f32`, unchanged at 1.22e-4); `make gate NAME='qwen38-trace-*'` runs them with the Q8_0 cache's.
 `test-generation --metal`: 70 tokens through an F16 cache against the F32
 stepped logits, 4.3e-4 max abs / 2.3e-5 relative RMS stepped and
 2.6e-3 / 1.3e-4 chunked (chunk 32), argmax identical; greedy tokens on the
 22-token bench prompt (64 out) and the 545-token raw prompt (32 out) are
 identical in both precisions. Half assumes |k|, |v| < 65,504 after the
-key norm and RoPE, checked like [ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09)'s activation assumption: through the
+key norm and RoPE, checked like the half tiles' activation assumption: through the
 generation check and the pinned prompts, never per element.
 
 Performance is in [benchmarks § Observations](../benchmarks/history.md#observations-so-far)
-([KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10) rows).
+(the 2026-09-10 F16 KV-cache rows).
 
 ## Q8_0 KV cache (2026-10-15)
 
@@ -1639,7 +1645,7 @@ walks its slice of rows, each SIMD group every fourth row so the four
 rows touched per step are adjacent in memory, lane l owning channels
 l, l+32, … of the key and value rows. The kernel is a template over the
 query heads per threadgroup and the channels per lane, instantiated as
-8 × 8 (widths up to 256) and, since [MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11), 4 × 16 (`_w` / `_wh`, widths up
+8 × 8 (widths up to 256) and, since 2026-09-11, 4 × 16 (`_w` / `_wh`, widths up
 to 512), the same 128 floats of registers per lane either way; a KV head
 with more query heads than the instantiation holds takes several
 threadgroups per split (`attentionDecodeHeadGroups`), each reading the
@@ -1666,7 +1672,7 @@ shape at 257 visible (two splits, the second short), 1,021, 16,385 (64
 uneven splits), and 32,000 rows against the F64 CPU reference: F32 cache 2.2e-8 / 1.2e-8 / 7.5e-9 / 4.7e-9 max abs, F16 cache over the rounded rows 1.9e-8 / 1.3e-8 / 5.1e-9 / 4.2e-9 (bounds 2e-5 up to 1,021 rows and 1e-4 above); shape rejections (a group of 9, a width of 264, a short partial buffer, a short cache).
 Full model: `make gate NAME=qwen38-trace-f32` 129 files, max abs 6.1e-5 (was 1.22e-4: each row is now accumulated once in F32 rather than through a stored score), `make gate NAME=qwen38-trace-f16` 2.50e-2 / 1.9e-4 at the F16 tolerance, greedy unchanged. `test-generation --metal` unchanged
 (bit-identical sessions, snapshot round trip). Performance:
-[benchmarks § Observations](../benchmarks/history.md#observations-so-far) ([KERN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-08--flash-decoding-attention-2026-09-10) rows).
+[benchmarks § Observations](../benchmarks/history.md#observations-so-far) (the 2026-09-10 flash-decoding rows).
 
 ## The split pass at the memory roof (2026-10-15)
 
@@ -1844,11 +1850,12 @@ argmax.
 
 ## Long-context prefill attention (2026-09-10, closed without a kernel change)
 
-[ENGN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-07--32k-acceptance-run-and-benchmark-record-2026-09-10) measured prefill at the reference's rate at 512 tokens and −6 / −15 /
-−26 % at 4K / 16K / 32,639, with the matmul tiles at the reference's speed
-([ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09)). [ENGN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-08--long-context-prefill-attention-2026-09-10) asked whether `nu_attention_chunk` re-reading the cache once
-per query head ([ENGN-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-03--causal-tiled-attention-for-prefill-2026-09-09)'s recorded deviation) was the cause, and found it is
-not; the record is here so the next attempt starts from the evidence.
+The 32K acceptance run of 2026-09-10 measured prefill at the reference's rate
+at 512 tokens and −6 / −15 / −26 % at 4K / 16K / 32,639, with the matmul
+tiles at the reference's speed. This investigation asked whether
+`nu_attention_chunk` re-reading the cache once per query head (the tiled
+kernel's recorded deviation) was the cause, and found it is not; the record
+is here so the next attempt starts from the evidence.
 
 **Profile** (`bench --profile --prompt-tokens` on the 16,384-token
 reference array, `--max-tokens 1`, F16 cache, one run;
@@ -1858,17 +1865,17 @@ prefill 256.5 s (63.9 tok/s under profiling), 64 chunks of 256 tokens.
 74 ms per layer and chunk at an average of ~8K visible rows), the
 batched matmuls together about 60 %, the chunkwise DeltaNet 3.6 %. At
 74 ms per layer-chunk the kernel runs at about 0.7 TFLOP/s of 8×8 matrix
-work against the 5 TFLOP/s the [ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09) matmul tiles reach, and the sub-block
+work against the 5 TFLOP/s the half matmul tiles reach, and the sub-block
 loads it issues per multiply are cache hits (see below), so it is neither
 bandwidth- nor matrix-unit-bound: instruction and latency per SIMD group.
 
 **Variants tried, all correct, all slower** (same profile, attention
-seconds of the same 16K prefill; every variant passed the [ENGN-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-03--causal-tiled-attention-for-prefill-2026-09-09) and [KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10)
+seconds of the same 16K prefill; every variant passed the tiled-attention and F16-cache
 fixtures and the new 16,384-row case, F32 3.87e-7 / half 1.81e-4):
 
 | Kernel | Attention | Prefill |
 | --- | ---: | ---: |
-| [ENGN-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-03--causal-tiled-attention-for-prefill-2026-09-09) as shipped: threadgroup per (query head, 32-query tile), each SIMD group loads its own K/V sub-blocks from the cache | 75.5 s | 63.9 tok/s |
+| The tiled kernel as shipped: threadgroup per (query head, 32-query tile), each SIMD group loads its own K/V sub-blocks from the cache | 75.5 s | 63.9 tok/s |
 | Shared stage: threadgroup per (KV head, 8-query tile), six SIMD groups (one per query head), each 8-row K/V sub-block staged once into threadgroup memory by a scalar copy, 16 threadgroup barriers per 32-key tile | 90.4 s | 60.8 |
 | Same with 8-wide vector staging, 16 half rows per stage (8 float), Q loads hoisted out of the sub-block loop, scratch sized for six groups | 85.3 s | 61.4 |
 | Same plus the 8 query rows held in registers for the whole key walk (32 `simdgroup_matrix` per SIMD group) | 96.8 s | 58.6 |
@@ -1888,15 +1895,15 @@ the probability tiles through threadgroup memory, so a V block serves four
 multiplies; the score half needs the same for K (a d-slice per SIMD group
 with a partial-score reduction) or accepts 1:1. That is a register-budget
 study first (48 live matrices per SIMD group), then a kernel; it was not
-started in [ENGN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-08--long-context-prefill-attention-2026-09-10)'s session.
+started in this session.
 
 ## Long-context prefill attention, second attempt (2026-09-21, closed negative)
 
-[ENGN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-08--long-context-prefill-attention-2026-09-10) left one untried lever on the table: register-level reuse in
+The first attempt left one untried lever on the table: register-level reuse in
 `nu_attention_chunk`. Its body gives each of the four SIMD groups of a
 (head, 32-query) tile eight query rows and all 256 value columns, so every
 8×8 multiply pairs with ~1.5 `simdgroup_load`s and no loaded block serves
-more than one multiply. [KERN-16](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-16--long-context-prefill-attention-register-level-reuse-measured-25--at-chunk-sizes-closed-negative-2026-09-21) built the reuse body and measured it.
+more than one multiply. This attempt built the reuse body and measured it.
 
 **Design** (`nu_attention_chunk_reuse` / `_h`, `Backend.attentionChunkReuse`).
 Each SIMD group owns all 32 query rows and 64 value columns (8 column
@@ -1923,7 +1930,7 @@ the control and as the 512-wide sibling.
 [benchmarks § Prefill attention sweep](../benchmarks/history.md#prefill-attention-sweep-2026-09-21).
 At the 256-row prefill chunks the reuse body is 2–5 % ahead in F16 at
 4K–32K (−4.8 % at 16K, −3.2 % at 32,512) and level at 512, against the
-attention cut the unit's acceptance needed (prefill at 32,639 within 10 %
+attention cut the acceptance needed (prefill at 32,639 within 10 %
 of the reference from −26 %). The loads were not the limiter: F16 and F32
 caches differ by only 5–10 % in time and the kernel sits flat at
 ~640–750 GFLOP/s F16 across the sweep, so the fixed per-tile
@@ -1932,10 +1939,11 @@ instructions per tile buys little. What the body does win by 11–16 % is the
 verify-shaped counts (1–64 rows), where spreading the value columns over
 four groups replaces one group's 256-column P·V walk; that window is
 shipped as `Backend.attention_reuse_max_rows = 64` on the 256-wide
-geometry, measured again by [ENGN-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-17--the-speculative-verdict-qwen-and-gemma-off-muse-on-the-full-record-and-benchs-true-baseline-2026-09-21)'s record. Untried levers, recorded for
-a future attempt: padding the score and P tiles against shared-memory bank
+geometry, measured again by
+[the speculative verdict record](../benchmarks/history.md#the-speculative-verdict-record-2026-09-21).
+Untried levers: padding the score and P tiles against shared-memory bank
 conflicts, staging K/V through shared memory with vectorized cooperative
-loads (the [ENGN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-08--long-context-prefill-attention-2026-09-10) variant done with double buffering rather than 16
+loads (the first attempt's variant done with double buffering rather than 16
 barriers and scalar copies), and an ablation that removes one phase at a
 time to identify the per-tile limiter rather than guessing at it.
 
@@ -2056,9 +2064,9 @@ in brief, `bench --profile` reads 938.8 → 844.3 dispatches per step on
 Qwen, 882.2 → 693.2 on Gemma 4 12B, 922.9 → 743.8 on Muse (per decode step
 −96, −192, −182, the design counts; the profile averages dilute them with
 three prefill buffers), while the decode rate at 512 improves 1.000 /
-1.005 / 1.004× against the interleaved unfused control. The unit's bars
-(≥ 1.01 / 1.04 / 1.02× and Muse's ≥ 20 % dispatches) are not met, so it
-closes below its target; the fusion stays shipped because it is a small
+1.005 / 1.004× against the interleaved unfused control. The bars
+(≥ 1.01 / 1.04 / 1.02× and Muse's ≥ 20 % dispatches) were not met, so it
+closed below its target; the fusion stays shipped because it is a small
 consistent win with the pair still available behind the flag. The reading:
 the profile's per-dispatch times were mostly kernel time, not launch
 overhead. A norm dispatch costs ~7–10 µs of which ~2–4 µs is the launch,
@@ -2088,20 +2096,20 @@ bar assumed all 52 layers rotate q/k; its 13 global layers do not, so only
 | Six pinned attention graphs | vs llama.cpp fixtures | 1e-5 |
 | Model-shaped attention, 1,021 visible of 1,024 | vs CPU `attention.apply` | 2e-5 |
 | `nu_pack_half` over 2 × 1,048,576 floats | vs `@floatCast` | **exact** |
-| Half decode attention, 1,021 visible ([KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10)) | vs CPU over the rounded cache / over the F32 cache | 2e-5 (measured 1.1e-8) / measured 1.2e-5, 2.1e-4 relative RMS |
-| Half chunk attention, the [ENGN-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-03--causal-tiled-attention-for-prefill-2026-09-09) cases with half Q, K, V, and P ([KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10)) | vs CPU over the rounded operands per row | 1e-3 (measured 1.8e-4) |
-| Flash-decoding attention ([KERN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-08--flash-decoding-attention-2026-09-10)): six pinned fixtures; model shape at 257 / 1,021 / 16,385 / 32,000 visible, F32 and F16 cache | vs fixtures; vs F64 CPU `attention.apply` (F16: over the rounded rows) | 1e-5; 2e-5 up to 1,021 and 1e-4 above (measured ≤ 2.3e-8) |
-| Windowed and wide chunk attention ([MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11)): windows of 1,024 and 8 on the 16/8/256 geometry, 16/1/512 with two value splits, F32 and F16 | vs F64 CPU per row over the window's key slice (F16: rounded operands) | 1e-5 (measured 3.0e-6); 2e-3 (measured 1.9e-4) |
-| Bidirectional spans in the chunk attention ([MODL-22](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-22--gemma-4-vision-the-unified-embedder-12b-and-the-siglip-encoder-26b-a4b-on-both-executors-bidirectional-image-spans-2026-09-23)): a 220-row span in a 300-row chunk with poisoned rows after it, a span past a window of 8, F16, and 16×72 heads at 200 and 9,900 rows | vs F64 CPU per row, the span's rows seeing to its end | 1e-5 relative past 1 (measured 3.1e-5 absolute on rows of magnitude ~13); 2e-3 F16 (measured 2.3e-4) |
-| Register-reuse chunk attention ([KERN-16](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-16--long-context-prefill-attention-register-level-reuse-measured-25--at-chunk-sizes-closed-negative-2026-09-21)): the same [MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11) cases and the model geometry at counts 1–256 over a poison-filled future range (1e30 F32 / 6e4 F16 past `position + count`) | vs F64 CPU per row, both bodies | 1e-5 (measured 3.0e-6); 1e-3 (measured 2.7e-4) |
-| Fused norms ([KERN-18](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-18--fused-decode-norms-182192-dispatches-per-decode-step-shipped-the-speed-bars-missed-closed-below-its-target-2026-09-21)): `rmsNormAdd` (1 and 3 strided rows), `addRmsNorm` (1 and 5 rows), `rmsNormRope` (24 packed heads at stride 512, 8 adjacent in place) | vs the unfused pair and `cpu.rmsNorm`/`cpu.rope` | 2e-5 fused-vs-unfused; 2e-4 vs CPU (measured 4.8e-7 both) |
-| Wide (`_w`/`_wh`) and grouped decode attention ([MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11)), 16/1/512 and 16/8/256 at 257 and 1,021 visible, both precisions | vs F64 CPU `attention.apply` (F16: rounded rows) | 5e-5 (measured 2.4e-7) |
+| Half decode attention, 1,021 visible | vs CPU over the rounded cache / over the F32 cache | 2e-5 (measured 1.1e-8) / measured 1.2e-5, 2.1e-4 relative RMS |
+| Half chunk attention, the tiled-attention cases with half Q, K, V, and P | vs CPU over the rounded operands per row | 1e-3 (measured 1.8e-4) |
+| Flash-decoding attention: six pinned fixtures; model shape at 257 / 1,021 / 16,385 / 32,000 visible, F32 and F16 cache | vs fixtures; vs F64 CPU `attention.apply` (F16: over the rounded rows) | 1e-5; 2e-5 up to 1,021 and 1e-4 above (measured ≤ 2.3e-8) |
+| Windowed and wide chunk attention: windows of 1,024 and 8 on the 16/8/256 geometry, 16/1/512 with two value splits, F32 and F16 | vs F64 CPU per row over the window's key slice (F16: rounded operands) | 1e-5 (measured 3.0e-6); 2e-3 (measured 1.9e-4) |
+| Bidirectional spans in the chunk attention: a 220-row span in a 300-row chunk with poisoned rows after it, a span past a window of 8, F16, and 16×72 heads at 200 and 9,900 rows | vs F64 CPU per row, the span's rows seeing to its end | 1e-5 relative past 1 (measured 3.1e-5 absolute on rows of magnitude ~13); 2e-3 F16 (measured 2.3e-4) |
+| Register-reuse chunk attention: the same windowed and wide cases and the model geometry at counts 1–256 over a poison-filled future range (1e30 F32 / 6e4 F16 past `position + count`) | vs F64 CPU per row, both bodies | 1e-5 (measured 3.0e-6); 1e-3 (measured 2.7e-4) |
+| Fused norms: `rmsNormAdd` (1 and 3 strided rows), `addRmsNorm` (1 and 5 rows), `rmsNormRope` (24 packed heads at stride 512, 8 adjacent in place) | vs the unfused pair and `cpu.rmsNorm`/`cpu.rope` | 2e-5 fused-vs-unfused; 2e-4 vs CPU (measured 4.8e-7 both) |
+| Wide (`_w`/`_wh`) and grouped decode attention, 16/1/512 and 16/8/256 at 257 and 1,021 visible, both precisions | vs F64 CPU `attention.apply` (F16: rounded rows) | 5e-5 (measured 2.4e-7) |
 | RoPE over a 512-wide head with factors (64 ones, 192 × 1e30) at 32,767 | vs CPU `rope.apply` with factors; unrotated pairs exact | 2e-6 relative; **exact** |
 | `nu_gelu_mul` (with ±60, 200, −3e3), `nu_scale`, `nu_add_scale`, `nu_softcap` (with ±3e3) | vs `cpu.gelu`, F32 arithmetic, `std.math.tanh` | 2e-6 relative; exact; exact; 2e-6 relative |
 | Merged GELU pair (`gelu_mul_pair`), every fixture encoding | vs standalone matvecs + `nu_gelu_mul` | **exact** |
 | RMSNorm (5120; 48×128 with silu gate; 24 strided heads) | vs CPU `rmsNorm` | 1e-5 |
 | RoPE at position 32,767 | vs CPU `rope.apply` | 2e-6 relative |
-| RoPE with adjacent pairing, 32 heads of 128 at base 5e5, position 32,767 ([MODL-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-12--muse-glimmer-30b-metal-plan-2026-09-19)) | vs CPU `rope.apply` in that mode | 2e-6 relative |
+| RoPE with adjacent pairing, 32 heads of 128 at base 5e5, position 32,767 | vs CPU `rope.apply` in that mode | 2e-6 relative |
 | L2 norm, silu·mul, add, silu, gates, sigmoid gate | vs `cpu.*` | 1e-6 |
 | Argmax over 248,320 with a tie | lowest index | exact |
 | Partial top-k (256) over 248,320 with ties, vs the CPU sort | (value, index) pairs | **exact** |
@@ -2110,24 +2118,24 @@ bar assumed all 52 layers rotate q/k; its 13 global layers do not, so only
 | Exp-sum over 248,320 flat logits, T = 1.5 | vs F64 | ≤ 2e-6 relative (measured 9.6e-8) |
 | Non-finite logit raises the partition flag and never enters the list; shape rejection | API invariants | exact |
 
-Full-model comparison, raw `Hello,`, GPU-resident plan, against the llama.cpp
-`7620399` traces: all 128 layer outputs across two positions and the logits
+Full-model comparison, raw `Hello,`, GPU-resident plan, against the traces
+pinned from llama.cpp `7620399`: all 128 layer outputs across two positions and the logits
 pass the bring-up thresholds (max absolute 0.002, relative RMS 1e-4). Observed
 maxima with the generic matvec: absolute `7.0e-4`, relative RMS `2.9e-6`;
 logits absolute `1.6e-5`, identical top five, greedy `[353, 2688]` (` I'm`).
 With the specialized matvec kernels (`make gate NAME='qwen38-trace-*'`, 2026-09-07): maximum
 absolute `9.2e-5` over the 129 files — tighter, since the factored form
-rounds fewer times. With [KERN-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-03--specialized-matvec-for-q3_k-iq3_s-iq4_nl-deferred-2026-09-08) Q3_K/IQ3_S (2026-09-08), all 129 files
-still pass, maximum absolute error `0.0001220703125`. [KERN-04](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-04--merged-projections-via-a-segment-table-2026-09-08) merged projections
+rounds fewer times. With the Q3_K/IQ3_S kernels (2026-09-08), all 129 files
+still pass, maximum absolute error `0.0001220703125`. Merged projections
 retain that maximum; `make gate NAME=qwen38-generation-metal` was rerun on 2026-09-08.
-With the F16 cache ([KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10), 2026-09-10) the same comparison holds at the F16
+With the F16 cache (2026-09-10) the same comparison holds at the F16
 tolerance stated in [§ F16 KV cache](#f16-kv-cache-2026-09-10): layer files up
 to 2.5e-2 absolute / 1.9e-4 relative RMS, logits 9.2e-4 / 5.3e-5, greedy
 unchanged.
 `test-generation --metal`
 passes: independent sessions and reset after injected cancellation produce
-bit-identical logits, and ([ENGN-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-06--session-snapshot-and-restore-2026-09-10)) a step after `restore` reproduces the
-snapshotted session's next logits bit for bit. Since [MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11) the check selects
+bit-identical logits, and a step after `restore` reproduces the
+snapshotted session's next logits bit for bit. Since 2026-09-11 the check selects
 the family from the file, carries per-family tolerances, and repeats the
 chunked comparison through the generic F32 tiles (`generic_only`) to
 separate the half-tile rounding from the chunk schedule: Qwen 2.4e-3 /
@@ -2145,7 +2153,7 @@ followed, kept as history; today's rates are the README's
 `make bench`: 22-token chat prompt, 64 output tokens, context 2048, greedy,
 ReleaseSafe, Apple M4 Pro 48 GiB, macOS 26, one warmup and three measured runs.
 
-Generic matvec (before [KERN-01](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-01--specialized-matvec-for-q4_k-q5_k-q6_k-iq4_xs-2026-09-07)):
+Generic matvec (before the specialized kernels):
 
 ```text
 run    prompt  gen  stop           prefill ms  pp tok/s  first ms   decode ms  tg tok/s   gpu ms
@@ -2155,7 +2163,7 @@ run    prompt  gen  stop           prefill ms  pp tok/s  first ms   decode ms  t
 Measured mean over 3 runs: prefill      5.29 tok/s, decode      4.93 tok/s, first token 4165.1 ms
 ```
 
-Specialized matvec ([KERN-01](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-01--specialized-matvec-for-q4_k-q5_k-q6_k-iq4_xs-2026-09-07), 2026-09-07):
+Specialized matvec (2026-09-07):
 
 ```text
 run    prompt  gen  stop           prefill ms  pp tok/s  first ms   decode ms  tg tok/s   gpu ms
@@ -2165,8 +2173,7 @@ run    prompt  gen  stop           prefill ms  pp tok/s  first ms   decode ms  t
 Measured mean over 3 runs: prefill      8.62 tok/s, decode      8.54 tok/s, first token 2554.7 ms
 ```
 
-One command buffer per token in the CLI as well (observer split, [KERN-02](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-02--per-kernel-gpu-profile-observer-checklayer-split-2026-09-07),
-2026-09-07):
+One command buffer per token in the CLI as well (observer split, 2026-09-07):
 
 ```text
 run    prompt  gen  stop           prefill ms  pp tok/s  first ms   decode ms  tg tok/s   gpu ms
@@ -2184,24 +2191,24 @@ budget per token (profile mode): specialized matvec 83.7 ms, generic matvec
 14.8 ms (Q3_K and IQ3_S at ~40 GB/s are 10 ms of it), everything else 6.6 ms
 (rmsnorm 2.7 ms in 209 launch-bound dispatches). The reference decodes at 9.66
 tok/s at 512 context; the bandwidth floor is ~59 ms per token. Prefill ran
-one token per command buffer at decode speed until [ENGN-02](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-02--chunked-prefill-with-the-batched-matmul-2026-09-08) (see [Prefill in
+one token per command buffer at decode speed until 2026-09-08 (see [Prefill in
 chunks](#prefill-in-chunks-2026-09-08)). These are smoke observations on a short
-prompt, not the acceptance runs ([ENGN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-07--32k-acceptance-run-and-benchmark-record-2026-09-10)).
+prompt, not the acceptance runs.
 
 ## Limits
 
-- The specialized matvec kernels reach 150–250 GB/s of a published 273 and
-  are bound at ~0.9 ns per block by per-block instruction work, not bytes.
-  Q8_0 and IQ4_NL (under 1 % of the Qwen file's bytes) still use the
-  generic kernel; [KERN-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-03--specialized-matvec-for-q3_k-iq3_s-iq4_nl-deferred-2026-09-08) gave Q3_K and IQ3_S their own, [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12) Q4_0.
+- The specialized matvec kernels reach 150–258 GB/s of a published 273 and
+  are bound by per-block instruction work, not bytes
+  ([apple-gpu.md](apple-gpu.md)). Q8_0 and IQ4_NL (under 1 % of the Qwen
+  file's bytes) use the generic kernel.
 - Profiling times dispatches in separate encoders, which perturbs what it
   measures by ~8 %; there is no per-dispatch sampling on Apple GPUs, and the
   Instruments GPU limiter counters are unavailable on this device from
-  `xctrace` ([KERN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-05--per-block-cost-of-the-specialized-kernels-2026-09-08)). Counters come from Metal captures replayed in Xcode,
+  `xctrace`. Counters come from Metal captures replayed in Xcode,
   and only for command buffers under its full-profiling limit (kernel
   captures, not a whole verify): [apple-gpu.md](apple-gpu.md).
-- Prefill is fully batched ([ENGN-02](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-02--chunked-prefill-with-the-batched-matmul-2026-09-08)–[ENGN-04](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-04--chunkwise-deltanet-wy-form-2026-09-09)); its ceiling is the matmul tile's
-  half operands ([ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09)), whose rounding shows more on Gemma's larger
+- Prefill is fully batched ([§ Prefill in chunks](#prefill-in-chunks-2026-09-08)); its ceiling is the matmul tile's
+  half operands, whose rounding shows more on Gemma's larger
   activations (2.5e-3 relative RMS on the chunked logits against 1.1e-4
   for Qwen). Attention widths are bounded at 512 (decode: 16 channels per
   lane in the wide pair; prefill: two value splits); a wider head needs a
@@ -2211,11 +2218,13 @@ prompt, not the acceptance runs ([ENGN-07](https://github.com/tildaslashalef/nuc
   and another length can be wrapped), but the bridge keeps every
   `MTLBuffer` object until the backend is destroyed; a long-lived backend
   that opens and closes many plans accumulates no-copy buffer objects.
-  Created buffers can be freed with `release` ([MODL-22](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-22--gemma-4-vision-the-unified-embedder-12b-and-the-siglip-encoder-26b-a4b-on-both-executors-bidirectional-image-spans-2026-09-23): the Gemma plan
+  Created buffers can be freed with `release` (the Gemma plan
   frees its chunk buffers when an image span grows them); the id is never
   reused, and a dispatch that binds a released id fails.
-- The chunk attention runs 72-wide heads (Gemma 4's SigLIP) at under
-  1 TFLOP/s: 13.7 s of a 1,100-token image's 17.1 s encode ([MODL-22](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-22--gemma-4-vision-the-unified-embedder-12b-and-the-siglip-encoder-26b-a4b-on-both-executors-bidirectional-image-spans-2026-09-23)).
+- The vision encoders' attention runs on the segments kernels; 72-wide
+  heads waste a quarter of the values kernel's last column block (the
+  26B-A4B's SigLIP: 2.95 s of a 4.95 s encode,
+  [vision.md § Encoders at the materialized-score attention](vision.md#encoders-at-the-materialized-score-attention-2026-10-27)).
 - Shader compiled from source at startup; no binary archive.
 - GPU resource cleanup is exercised by recreating the backend across fixture
   files in `metal-check`; Zig's testing allocator cannot observe Metal objects.

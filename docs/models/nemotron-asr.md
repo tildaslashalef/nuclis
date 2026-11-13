@@ -6,8 +6,9 @@ in, punctuated and capitalized text out, in 40 locales. It is a
 cache-aware FastConformer encoder (24 blocks of width 1024) with an RNN-T
 transducer (an LSTM prediction network and a joint network over 13,088
 outputs), conditioned on a language prompt. In nuclis it is the ears of a
-local voice assistant: `nuclis transcribe` first, later a streaming
-WebSocket transcription route on `nuclis serve`.
+local voice assistant: `nuclis transcribe` and the streaming WebSocket
+transcription route on `nuclis serve` (`GET
+/v1/audio/transcriptions/stream`).
 
 Everything here was read on 2026-10-27 from these sources: the pinned
 repository's `config.json`, `generation_config.json`,
@@ -51,9 +52,9 @@ from a file, the sentence names the class or function.
 
 The Hub lists `model.safetensors` with the LFS object id
 `9eebdd6590289cb3030f310858f3df93256600a800a3e8200c5993d5f967e174`, which
-the pull should reproduce. The rows go to
-[catalogue.md § Safetensors artifacts](catalogue.md#safetensors-artifacts)
-once pulled.
+the pull reproduced (2026-10-27). The rows are in
+[catalogue.md § Pinned commits and digests](catalogue.md#pinned-commits-and-digests-2026-09-11),
+and the index entry is `nemotron-asr-0.6b`.
 
 Not used: the `.nemo` (2,368,284,501 B, NeMo's gzipped tar of the
 tokenizer, `model_config.yaml` and weights) and the `.q8_0.gguf`
@@ -625,7 +626,7 @@ case folded, `ё` as `е`, apostrophes dropped, other punctuation a space.
 For FLEURS the reference is its normalized transcript, what the speaker
 said ("dass", a repeated "sie"), not the written sentence. The script sums
 edits over clips before dividing. The whole corpus at r = 3 (`nuclis`
-at this unit's `1f0be96`, 67 s wall time, one process per clip):
+at `1f0be96`, 67 s wall time, one process per clip):
 
 | Language | Clips | Words | WER, locale prompt | WER, `auto` | Card, FLEURS test, LangID / auto, 320 ms |
 | --- | ---: | ---: | ---: | ---: | --- |
@@ -787,10 +788,11 @@ pass, three rounds each. It runs the whole clip at once. Then it feeds
 pushed when its audio would have ended), and times every push. A
 *chunk push* is one that completes a chunk and runs the encoder; the
 *final delay* is the last push plus `finish`, the time from the end of
-the audio to the final transcript. Measured on this unit's branch on
+the audio to the final transcript. Measured on the bring-up branch on
 2026-10-27, while another worktree ran Metal benchmarks on the same GPU.
 Repeated runs moved the medians by up to 1.5×, so these are a shared
-machine's figures; the main session re-measures them on a quiet one.
+machine's figures; **Re-measured on a quiet machine** below supersedes
+them.
 A LibriSpeech clip of 11.70 s (`6829-68769-0000`, prompt `auto`):
 
 | | Metal r = 0 | Metal r = 3 | CPU r = 0 | CPU r = 3 |
@@ -858,8 +860,9 @@ two runs, which agree within 5 %):
 The r = 3 chunk is *slower* idle than it was measured beside another GPU
 job (21.3 ms): with nothing else running the GPU clocks down between
 chunks, so these figures are the pessimistic case, and beside a
-generating language model (Muon's case) they should fall; task 11
-measures that. Either way the proposed ≤ 15 ms per r = 3 chunk is not
+generating language model (Muon's case) they should fall, as
+[api.md § Live transcription alone and beside a chat stream](../guide/api.md#live-transcription-alone-and-beside-a-chat-stream-2026-10-27-commit-18216d7)
+measures. Either way the proposed ≤ 15 ms per r = 3 chunk is not
 met. Its floor is the weights: 2.5 GB of F32 read per chunk is 12.5 ms
 at 200 GB/s, and the 4-row products reach 133–168 GB/s; layer norms
 (5,328 dispatches per round) are the next cost. The final transcript
@@ -968,7 +971,7 @@ silence ("Hi") is lost under every prompt
 
 ## Decisions and open items
 
-Decided at the plan (2026-10-27); each is checked at bring-up:
+Decided 2026-10-27 and checked at bring-up:
 
 - **End of stream** is flushed as the whole-clip pass ends: zero samples
   past the end for the open frames, one zero row of right padding per

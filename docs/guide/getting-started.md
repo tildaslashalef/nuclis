@@ -8,9 +8,10 @@ and know where it keeps things. What each command does is in `nuclis
 
 nuclis runs on macOS on Apple silicon, and as a CPU-only build on x86-64
 Linux (AVX2, glibc 2.35 or newer), where it serves the small models such as
-EmbeddingGemma 2; images, audio, and the GPU need the macOS build. The default model, Qwen3.8-27B, is
-a 16.5 GB file (about 18 GB with its drafter and vision companions) and
-runs in 48 GB of memory; the smaller families need much less
+EmbeddingGemma 2; images, audio, and the GPU need the macOS build. The
+default model, Gemma 4 26B-A4B, is a 14.2 GB file (15.7 GB with its drafter
+and vision companions) and runs in 48 GB of memory; the largest, Drama 3,
+is 20.8 GB, and the smaller families need much less
 ([models/catalogue.md](../models/catalogue.md)).
 
 **From a release.** Download the tarball for the newest release from
@@ -98,7 +99,7 @@ an error).
 More on each: the models layout in [models/catalogue.md](../models/catalogue.md),
 the settings in [configuration.md](configuration.md), sessions in
 [spec.md § Sessions and storage](../spec.md#74-sessions-and-storage), the
-saved states in [engine/session.md § The agent's token cache](../engine/session.md#the-agents-token-cache-2026-10-04).
+saved states in [app/agent.md § 12](../app/agent.md#12-the-agents-token-cache-2026-10-04).
 
 ## Model download
 
@@ -110,15 +111,16 @@ lists the ones not installed):
 
 | Name | What it is |
 | --- | --- |
-| `gemma-4-26b-a4b` | Gemma 4 26B-A4B, a mixture of experts, the default model (14.3 GB) |
+| `gemma-4-26b-a4b` | Gemma 4 26B-A4B, a mixture of experts, the default model (14.2 GB) |
 | `gemma-4-e4b-qat` | Gemma 4 E4B, the small one (4.2 GB) |
-| `qwen3.8-27b` | Qwen3.8-27B (16.5 GB), with two drafts: `mtp` and `dflash2` |
+| `qwen3.8-27b` | Qwen3.8-27B (16.6 GB), with two drafts: `mtp` and `dflash2` |
 | `laya`, `laya-multilingual` | decision encoders for `nuclis decide` |
 | `clef-flash` | Cloudflare's decision model for `nuclis decide` |
 | `embeddinggemma-2` | EmbeddingGemma 2, text, images and audio into vectors for `nuclis embed` (310 MB) |
 | `qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice` | Qwen3-TTS CustomVoice, text into speech in nine built-in voices for `nuclis speak` (4.5 and 2.5 GB with the codec; only the 1.7B takes a delivery instruction) |
 | `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base` | Qwen3-TTS Base, text into speech in a voice cloned from a clip saved with `nuclis voice add` (4.5 and 2.5 GB with the codec) |
 | `qwen3-tts-1.7b-voicedesign` | Qwen3-TTS VoiceDesign, text into speech in a voice described with `--instruct` (4.5 GB with the codec) |
+| `drama-3` | Fish Audio's Drama 3, text into speech at 44.1 kHz with dialogue, `[bracketed]` delivery cues, and voices saved with `nuclis voice add` (20.8 GB) |
 | `nemotron-asr-0.6b` | Nemotron 3.5 ASR streaming, speech into text for `nuclis transcribe` (2.6 GB) |
 
 `gemma-4-12b-qat` (Gemma 4 12B, quantization-aware, 6.7 GB) and
@@ -274,7 +276,7 @@ commit, and a file that is not a model is refused.
 nuclis model rm qwen3.8-27b               # the model file alone
 nuclis model rm qwen3.8-27b --with mmproj # and the companions named: mmproj, draft
 nuclis model rm qwen3.8-27b --all         # and every companion
-nuclis model rm laya --json               # the report as one JSON object
+nuclis model rm laya-multilingual --json  # the report as one JSON object
 ```
 
 `nuclis model rm <name>` takes a catalogue name or a settings entry and

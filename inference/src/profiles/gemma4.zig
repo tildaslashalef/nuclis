@@ -15,8 +15,9 @@ const alloc_check = @import("../alloc_check.zig");
 const sampling = @import("../sampling/root.zig");
 
 /// Exact GGUF template this profile implements (`tokenizer.chat_template`,
-/// 18,922 bytes ending in a newline); `profiles.forDocument` selects the
-/// profile by this digest, never by architecture.
+/// 18,924 bytes of UTF-8, 18,922 characters, ending in a newline);
+/// `profiles.forDocument` selects the profile by this digest, never by
+/// architecture.
 pub const template_sha256 = "845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b";
 /// Other revisions of the same template that render every fixture case
 /// byte for byte like the pinned one, so a file carrying one of them takes

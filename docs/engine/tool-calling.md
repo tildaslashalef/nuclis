@@ -1,8 +1,9 @@
 # Tool calling: model evidence and the engine seam
 
-Research checked 2026-09-13 for [AGNT-01](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-01--completion-events-and-the-tool-seam-2026-09-13--2026-09-14), extended 2026-09-16 for [AGNT-09](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-09--gemma-4-native-tool-calling-2026-09-16)
-and 2026-09-19 for [AGNT-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-10--muse-glimmer-atem-tool-calling-rendering-decoding-fixtures-2026-09-19). These are format findings and design
-constraints; all three profiles implement their native path
+Research checked 2026-09-13 for the completion events and the tool seam,
+extended 2026-09-16 for Gemma 4 and 2026-09-19 for Muse Glimmer. These are
+format findings and design constraints; every profile implements its
+native path, the E-series through Gemma 4's
 ([prompt-profile.md](prompt-profile.md)).
 
 ## Model cards and artifact identity
@@ -14,8 +15,9 @@ advertises native function calling; it is a mixture-of-experts checkpoint,
 with configurable thinking and no previous-turn thoughts in ordinary history.
 Neither card alone defines the complete wire format.
 
-The engine's pinned Gemma artifacts are **12B**, not the requested 26B-A4B.
-The latter's numerical implementation landed as [MODL-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-10--gemma-4-26b-a4b-catalogue-verdict-acceptance-record-agent-check-2026-09-18) (2026-09-18). The existing
+The Gemma evidence below was read on the 12B artifacts pinned when it was
+gathered; the 26B-A4B has run since 2026-09-18 and carries the same
+template digest. The
 [artifact record](../models/catalogue.md#pinned-commits-and-digests-2026-09-11)
 and [profile fixtures](prompt-profile.md#evidence-and-reproduction) remain
 authoritative for implemented behavior. A live upstream template is evidence
@@ -79,9 +81,10 @@ confirms these structural rules. Direct inspection of the pinned 12B vocabulary
 found call markers 48/49, response markers 50/51, string delimiter 52, and
 channel markers 100/101 (all user-defined tokens, rendered as text by the
 decoder, so the body between the call brackets carries its own string
-delimiters). These IDs are **12B evidence**; they have not been verified on
-the requested 26B QAT artifact. The 12B tool fixtures are pinned
-(`gemma4-tools.json`).
+delimiters). The ids are not assumed: the decoder resolves each marker by
+its text in the loaded file's vocabulary (`MissingToolToken` when one is
+absent), and `gemma4-e4b-vocabulary` asserts them on the E4B. The tool
+fixtures, `gemma4-tools.json`, were captured on the 12B.
 
 Three facts from the pinned reference (`7620399`) shaped the Gemma
 implementation. Its vocabulary loader marks `<|tool_response>` end-of-generation
@@ -161,28 +164,28 @@ released text loses the markup instead.
 
 ## Consequences for implementation
 
-[AGNT-01](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-01--completion-events-and-the-tool-seam-2026-09-13--2026-09-14) establishes the shared boundary: profiles receive token IDs plus decoded
-pieces and emit thinking, answer, complete tool calls, and completion stop
-events. The agent consumes semantic events and owns execution. `runLoop`
-remains the raw primitive for measured generation paths.
+The shared boundary: profiles receive token IDs plus decoded pieces and
+emit thinking, answer, complete tool calls, and completion stop events. The
+agent consumes semantic events and owns execution. `runLoop` remains the
+raw primitive for measured generation paths.
 
-The tools parameter should carry names, descriptions, and parameter schemas;
-history needs assistant call records and tool-result correlation, not only a
-new role tag. Normalize arguments to a JSON object at the boundary, while
-letting each profile serialize its native format. IDs are host correlation
-data when the model format provides none. Reject unsupported tool inputs
-explicitly in [AGNT-01](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-01--completion-events-and-the-tool-seam-2026-09-13--2026-09-14); neither existing profile should silently render them as
-ordinary text.
+A tool definition carries a name, a description, and a parameter schema;
+history carries assistant call records and tool-result correlation, not
+only a role tag. Arguments are normalized to a JSON object at the boundary,
+and each profile serializes its native format. IDs are host correlation
+data when the model format provides none. Unsupported tool inputs are
+refused (`error.UnsupportedContent`), never rendered as ordinary text.
 
 Qwen rendering and decoding are both pinned
 (`fixtures/qwen38-tools.json`): the tools block, the native
 `<tool_call>`/`<function>`/`<parameter>` history, and the folded
 `<tool_response>` user turn match the artifact's template byte for byte, and
 the shared streaming decoder reads the outer control tokens from the
-artifact's vocabulary, parses the body with the profile's grammar, and releases
-a truncated or malformed call as text rather than executing it. Gemma's grammar
+artifact's vocabulary, parses the body with the profile's grammar, releases
+a malformed call as text, and cuts a truncated one (`tool_cut`), executing
+neither. Gemma's grammar
 (`fixtures/gemma4-tools.json`, `gemma4.parseTool`) rides the same decoder;
-its handoff turned out to need no new mechanism, because the model's own
+its handoff needs no mechanism of its own, because the model's own
 `<|tool_response>` token after the last call of a step is a stop token, so
 several calls in one step all arrive before generation ends.
 
@@ -196,6 +199,7 @@ reachable from model output.
 
 The application can validate call IDs, pending result order, schemas, and
 execution limits without knowing any wire format. The profile alone decides
-whether results become user turns or remain inside a model turn. Test multiple
-calls, nested values, literal marker-like text, truncated controls, cancellation,
-and reasoning across tool steps when implementing the native parsers.
+whether results become user turns or remain inside a model turn. The
+parsers' and the stream decoder's tests cover multiple calls, nested values,
+literal marker-like text, truncated controls, cancellation, and reasoning
+across tool steps.

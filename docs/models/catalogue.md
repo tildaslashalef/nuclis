@@ -3,8 +3,8 @@
 What we download, from where, how it is quantized, and where it lives on
 disk. Facts here are recorded from the upstream repositories and the Unsloth
 guides on the dates given; numbers quoted from a guide are that guide's
-claims, not our measurements. The pinned artifact of the active plan and its
-SHA-256 are in [../development.md § Environment](../development.md#environment).
+claims, not our measurements. What is pinned today is the index
+([§ The catalogue](#the-catalogue)); the tables below record each pin.
 
 ## Sources
 
@@ -52,7 +52,7 @@ guides worth reading before touching an artifact:
 ### Pinned commits and digests (2026-09-11)
 
 Resolved and verified by `nuclis model pull` into a scratch home; the
-values [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-03--models-directory-catalogue-and-registry-2026-09-11)'s catalogue and the Gemma 4 12B records cite:
+values the catalogue and the benchmark records cite:
 
 | Repository | Commit | File | Size (B) | SHA-256 |
 | --- | --- | --- | ---: | --- |
@@ -100,8 +100,11 @@ are byte-identical at the new commit:
 | | | `speech_tokenizer/model.safetensors` | 682,293,092 | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
 | `nvidia/nemotron-3.5-asr-streaming-0.6b` | `ea30d66debe3740a08b573244286791d423d6b3e` | `model.safetensors` | 2,552,062,944 | `9eebdd6590289cb3030f310858f3df93256600a800a3e8200c5993d5f967e174` |
 | `sakasegawa/drama-3-GGUF` | `9a01354d04ab6eb521bc9cdfc56ab6824c474af2` | `Drama-35B-A3B-v3-Q4_K.gguf` | 20,787,264,352 | `2a57b14c9b208a2ff833ab7305b920ca8f154ad807004a52d96a86a90a55523e` |
+| `z-lab/Qwen3.8-27B-DFlash2-GGUF` | `2d9571f8ce46e151f61c6499c99dee6079e1d610` | `Qwen3.8-27B-DFlash2-Q8_0.gguf` | 2,056,414,816 | `c18e800daedc59ca68fd13b6a856d795746af6d399a9279ac6a277d1d422f87e` |
 
 The Drama 3 row was pulled and verified on 2026-10-30 ([drama3.md](drama3.md)).
+The DFlash2 row is `qwen3.8-27b`'s second draft variant, which the index
+places beside the Qwen file ([§ The catalogue](#the-catalogue)).
 
 The Saluki rows were pulled and verified on 2026-10-14; the file is not a
 catalogue entry ([saluki.md](saluki.md)).
@@ -117,20 +120,19 @@ whose pull fetches the codec with its voice.
 The 26B-A4B and Muse rows were verified by pulls on 2026-09-17 and entered
 the catalogue the same day as `gemma-4-26b-a4b` and `muse-glimmer-30b`,
 ahead of their adapters. The 26B-A4B is supported since 2026-09-18: the
-expert layers run on both backends ([MODL-09](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-09--gemma-4-26b-a4b-artifact-pin-facts-adapter-cpu-reference-metal-plan-2026-09-18-two-sessions)) and it has its own reference
-traces, acceptance record, and agent check ([MODL-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-10--gemma-4-26b-a4b-catalogue-verdict-acceptance-record-agent-check-2026-09-18);
-[benchmarks](../benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-2026-09-18)).
-Since [MODL-11](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-11--muse-glimmer-30b-artifact-pin-facts-tokenizer-binding-cpu-reference-2026-09-19) (2026-09-19) the Muse adapter binds the file and the CPU
-reference matches the pinned reference's traces on it, so `inspect` says
-*supported*; the Metal plan ([MODL-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-12--muse-glimmer-30b-metal-plan-2026-09-19)) and the profile with its acceptance
-record ([MODL-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-13--muse-glimmer-30b-profile-text-reasoning-channel-catalogue-acceptance-2026-09-19)) landed the same day. Its facts are in
+expert layers run on both backends, and it has its own reference
+traces, acceptance record, and agent check ([benchmarks](../benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-2026-09-18)).
+Since 2026-09-19 the Muse adapter binds the file, so `inspect` says
+*supported*; its CPU reference, Metal plan, and profile with its
+acceptance record were brought up that day against the pinned llama.cpp
+build ([README.md § 4](README.md#4-validate-against-nuclis-itself)). Its facts are in
 [muse-glimmer.md](muse-glimmer.md). The Bonsai rows were read by `model inspect` on 2026-09-18 and the
 PQ2_0 file and its Q8_0 projector verified by the pull the same day;
 `bonsai-2-27b` entered the catalogue then: the file is Qwen3.8-27B's
 architecture with every matrix in Prism ML's ternary packings (ids 142
 and 143) in a Hadamard-rotated basis ([bonsai.md](bonsai.md)). Since
-[MODL-16](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-16--bonsai-2-27b-oracle-facts-ternary-encodings-hadamard-transform-cpu-reference-2026-09-18) the Qwen adapter binds it and `inspect` says *supported*; since
-[MODL-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18) both backends run it against the fork's traces and it has its
+2026-09-18 the Qwen adapter binds it and `inspect` says *supported*; both
+backends were checked against the fork's traces that day, and it has an
 acceptance record and agent check
 ([benchmarks](../benchmarks/history.md#bonsai-2-27b-acceptance-record-2026-09-18)).
 The PTQ1_0 file was pulled and verified on 2026-09-18 for the packing
@@ -147,13 +149,13 @@ repository also lists `mmproj-F16.gguf` (1,193,058,784 B), `mmproj-F32.gguf`
 lists sixteen quantizations from `UD-IQ2_XXS` to `Q8_0` and a two-part
 `BF16/`, `mmproj-Muse-Glimmer-30B-{BF16,Q8_0}.gguf` (3,849,173,728 and
 2,051,685,088 B), and `dflash-kquant.gguf`: a DFlash drafter, not an MTP
-head, carried under the `mtp` companion role because that role names the
-draft source the speculative-decoding unit loads, whatever its mechanism.
+head, carried under the `draft` companion role, which names the draft
+source speculative decoding loads, whatever its mechanism.
 
 The Gemma rows are two different checkpoints, read remotely with
 `nuclis model inspect` on 2026-09-11; both digests were then verified by
 pulls (the K-quant file that day, the QAT file on 2026-09-11 through a
-registry entry and again on 2026-09-12 through the catalogue entry, [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12)).
+registry entry and again on 2026-09-12 through the catalogue entry).
 Both declare architecture
 `gemma4`, 48 blocks, 667 tensors, embedding 3840, context 262,144.
 `gemma-4-12b-it` is post-training quantized from the bf16 weights: 338
@@ -161,7 +163,7 @@ F32 tensors and 329 weight matrices as Q4_K (242), Q5_K (31), and Q6_K
 (56), every one in the executable set today. `gemma-4-12B-it-qat` is
 Google's quantization-aware-trained checkpoint (the header calls itself
 "smart Q4_0, QAT-lossless"): the same 338 F32 tensors and all 329 weight
-matrices as Q4_0, executed since [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12) (2026-09-12). Its repository (capital
+matrices as Q4_0, executed since 2026-09-12. Its repository (capital
 `B` in the id) also carries `mmproj-{BF16,F16,F32}.gguf` (175–210 MB),
 `MTP/mtp-gemma-4-12B-it-{Q4_0,Q8_0,BF16,F16}.gguf` (254 MB, 465 MB,
 862 MB, 862 MB), and `mtp-gemma-4-12B-it.gguf` (254 MB, the Q4_0 head by
@@ -195,7 +197,7 @@ is complete and verified.
 
 ## The models directory
 
-Decided in [MODL-02](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-02--model-download-through-the-huggingface-package-2026-09-11) (2026-09-11): the layout is the `huggingface` package's
+Decided 2026-09-11: the layout is the `huggingface` package's
 `<root>/models/<owner>/<repo>/<file>`, the Hub path without the commit, so
 it is predictable from the repository id alone (`Client.localPath`) and a
 registry entry can name a file without a per-model naming rule. Every
@@ -243,14 +245,14 @@ Hub collides):
   schema 1 sidecars read the same, their `mtp` role as `draft`.
 - `revision` is always the resolved 40-character commit, whatever
   `--revision` said (`main`, a tag, a commit), which is what makes the
-  SHA-256 beside it meaningful; the [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-03--models-directory-catalogue-and-registry-2026-09-11) catalogue and every benchmark record
+  SHA-256 beside it meaningful; the index and every benchmark record
   cite commits the same way. Only an adopted file that matched no index
   file has none (`null`).
 - `role` is `main`, `mmproj`, `draft`, `imatrix`, `support`, `codec`, or
   `backbone`: from the
   header when it says so (`general.type` `imatrix` or `mmproj`, or a `clip`
   architecture; the main model and a separate draft file both say `model`),
-  else from `--role` (the [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-03--models-directory-catalogue-and-registry-2026-09-11) catalogue later), else `main`. A flag that
+  else from the index entry's role or `--role`, else `main`. A flag that
   contradicts the header is `RoleMismatch`. Safetensors weights are `main`;
   the configuration, tokenizer, and index files a safetensors artifact
   brings are `support` (see *Safetensors artifacts* below).
@@ -375,31 +377,31 @@ sidecars, never by hashing, so a listing is instant. The rest of this
 section is the history of the entries and their pins. The Qwen entry was
 proven from a clean state on 2026-09-11: the old `models/qwen/` directory
 was deleted and `nuclis model pull qwen3.8-27b --all` rebuilt the model
-directory ([MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-03--models-directory-catalogue-and-registry-2026-09-11)).
+directory.
 Gemma 4 12B entered the catalogue as `gemma-4-12b` with its profile on
-2026-09-12 ([MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12)) naming the K-quant file with `mmproj-BF16.gguf`
+2026-09-12 naming the K-quant file with `mmproj-BF16.gguf`
 (175,115,840 B, SHA-256 `2e269f906eb15169ee9ce880ea649bd6d42d4964c21f8ede10d0d0efc738bcbb`)
 and `mtp-gemma-4-12b-it.gguf` (465,109,248 B,
 `145db9094bc0f85f1701e255a2ed216dcc9800fc8bc8631ad00905b456bd451b`);
-later that day ([MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12)) that one entry moved, name unchanged, to the QAT
+later that day that one entry moved, name unchanged, to the QAT
 file. Since 2026-09-12 there are **two** entries instead, so each
 quantization has a name of its own: `gemma-4-12b` is the K-quant release
-again (the pins of [MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12), above) and `gemma-4-12b-qat` is the QAT file
+again (the 2026-09-12 pins above) and `gemma-4-12b-qat` is the QAT file
 `gemma-4-12B-it-qat-UD-Q4_K_XL.gguf` with the companions listed above.
 Both are pinned, both are verified by `nuclis model pull <name> --all`,
 and each has its own reference traces and acceptance record — which is
 what the single name obscured while it pointed at whichever file was
 newest. `gemma-4-26b-a4b`, the mixture of experts, followed on 2026-09-17
 with its adapter arriving the next day; its verdict is *supported* since
-its acceptance record ([MODL-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-10--gemma-4-26b-a4b-catalogue-verdict-acceptance-record-agent-check-2026-09-18)). `nuclis model inspect`
+its acceptance record. `nuclis model inspect`
 judges a remote file from its directory alone and compares the Hub's
 digest against the catalogue (main file or companion) for its verdict
 ([guide/getting-started.md § Model download](../guide/getting-started.md#model-download));
 the `models` registry in `nuclis.json` names models above the catalogue
 with per-model overrides, pinning no digest
 ([guide/configuration.md § Configuration file](../guide/configuration.md#configuration-file)).
-`gemma-4-e4b-qat` joined on 2026-09-26 ([MODL-27](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-27--gemma-4-e4b-qat-per-layer-embeddings-shared-kv-vision-draft-head-2026-09-27)). The same day
-([APPS-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#apps-17--the-catalogue-at-five-entries-the-registry-in-name-order-2026-09-26)) the catalogue was trimmed to five entries — `qwen3.8-27b`,
+`gemma-4-e4b-qat` joined on 2026-09-26. The same day
+the catalogue was trimmed to five entries — `qwen3.8-27b`,
 `gemma-4-12b-qat`, `gemma-4-26b-a4b`, `gemma-4-e4b-qat`,
 `muse-glimmer-30b` — and `gemma-4-12b` (the K-quant release) and
 `bonsai-2-27b` left it. Their pins above stay as the record their traces
@@ -409,14 +411,14 @@ registers them (Bonsai's template is not a pinned one, so it
 takes its family's `qwen38` profile by force, as the entry did).
 
 The decision artifacts (once a table of their own, `decision_entries`) pin checkpoints, which only
-`nuclis decide` opens ([MODL-30](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-30--laya-on-the-cpu-end-to-end-the-oracle-tokenizerjson-modernbert-and-the-decision-head-nuclis-decide-2026-09-29)): `laya`, `convaiinnovations/laya` at
+`nuclis decide` opens (2026-09-29): `laya`, `convaiinnovations/laya` at
 commit `55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851`, weights
 `model.safetensors` (842,609,210 B, SHA-256
 `891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c`, F16)
 and, by name, `encoder/config.json`, `rl_agent_config.json`,
 `tokenizer/tokenizer.json`, and `tokenizer/tokenizer_config.json` (plain
 git files, whose Hub identity is a blob id); and `laya-multilingual`
-([MODL-33](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-33--laya-multilingual-the-metaspace-tokenizer-the-checkpoints-own-special-tokens-checked-on-both-backends-2026-09-29)), the same commit's `multilingual/model.safetensors`
+(2026-09-29), the same commit's `multilingual/model.safetensors`
 (643,835,514 B, SHA-256
 `9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204`, F16)
 with the same four support files under `multilingual/`, which lands in
@@ -427,7 +429,7 @@ or a named support file differs; `model ls` lists it under
 (the listing is schema 7 since the index became one table). `decide.model` defaults to `laya`; the name is not a
 text model's, so `generate --model laya` is refused by name.
 
-`clef-flash` ([MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one)) spans two repositories: its head
+`clef-flash` (2026-10-02) spans two repositories: its head
 `joint_head.safetensors` (243,538,016 B, SHA-256
 `19cdcec8c81dc9212be320fff47462ab342fbc1278be4368fb3da71241cf5ba0`, BF16)
 with `config.json`, `joint_head_config.json`, `tokenizer.json`,
@@ -469,16 +471,18 @@ default.
 The audio artifacts pin the speech and transcription
 checkpoints: `qwen3-tts-1.7b-customvoice` and `qwen3-tts-0.6b-customvoice`
 (2026-10-27), `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base`, and
-`qwen3-tts-1.7b-voicedesign` (2026-10-29), kind `speech` (`nuclis
-speak`), and `nemotron-asr-0.6b` (kind `transcription`, `nuclis
-transcribe`), at the commits and digests of the table above. A speech
+`qwen3-tts-1.7b-voicedesign` (2026-10-29), and `drama-3` (2026-10-30, one
+GGUF holding backbone, codebook tower, codec, and tokenizer; a saved voice
+like Base), kind `speech` (`nuclis speak`), and `nemotron-asr-0.6b` (kind
+`transcription`, `nuclis transcribe`), at the commits and digests of the
+table above. A speech
 name says CustomVoice (built-in speakers), Base (a saved voice), or
 VoiceDesign (a described voice). The names before 0.11.0, `qwen3-tts-1.7b` and
 `qwen3-tts-0.6b`, resolve to nothing: every command and the server refuse
 them with the name each became (`catalog.renamedAudio`), and a registry
 entry may take them.
 `nuclis model pull <name>` lists the repository once at the pinned
-commit and fetches the weights with their support files (`config.json`,
+commit and fetches the weights (Drama 3's one GGUF needs nothing else) with their support files (`config.json`,
 `generation_config.json`, the tokenizer's files, and
 `preprocessor_config.json` or `processor_config.json`) and, for a voice,
 the codec `speech_tokenizer/model.safetensors` with its own three, each
@@ -489,7 +493,7 @@ refused the same way. The codec's sidecar records the role `codec`. `--with`, `-
 lists them under `speech` or `transcription`, `+codec` when a voice's
 codec is there; `model inspect <name>` compares the Hub's
 digests with the catalogue's (a safetensors file has no directory to read
-remotely). `speech.model` defaults to `qwen3-tts-1.7b-customvoice` (the only one that
-takes a delivery instruction), `transcribe.model` to `nemotron-asr-0.6b`;
+remotely). `speech.model` defaults to `qwen3-tts-1.7b-customvoice` (built-in
+speakers that take a delivery instruction), `transcribe.model` to `nemotron-asr-0.6b`;
 the other commands refuse these names, and `speak` and `transcribe`
 refuse each other's.

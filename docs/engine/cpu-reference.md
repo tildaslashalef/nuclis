@@ -2,11 +2,12 @@
 
 The inference library exposes `cpu.Matrix` and `cpu.matvec(matrix, input,
 output, scratch)` from [the CPU module](../../inference/src/backends/cpu/root.zig).
-It also exposes `rmsNorm`, `l2Norm`, `softmax`, `sigmoid`, `silu`, `softplus`, and
-`rope.apply`, `attention.apply`, `recurrent.convolution`/`recurrent.delta`, and
-`experts.route`/`experts.ffn` over `cpu.ExpertMatrix`. These
-references do not load a model, run layers, or provide an optimized CPU inference
-backend. Model composition and session/cache orchestration remain pending.
+It also exposes `rmsNorm`, `l2Norm`, `softmax`, `sigmoid`, `silu`, the GELU
+variants, `softplus`, and `rope.apply`, `attention.apply`,
+`recurrent.convolution`/`recurrent.delta`, and `experts.route`/`experts.ffn`
+over `cpu.ExpertMatrix`. These primitives are architecture-neutral: they load
+no model and run no layers. Each family's `*_runtime.zig` composes them into
+the CPU executor ([§ Full-model composition](#full-model-composition)).
 
 ## Matrix-vector contract
 
@@ -38,8 +39,8 @@ Each row is decoded to F32 using the [row decoders](quantization.md). The
 operation widens both weights and inputs to F64 before multiplying, sums from
 the first column to the last, then converts the result to F32. This reduces
 reference accumulation error; it is not a promise of bit-identical results from
-future parallel GPU reductions. Per-operation tolerances will be established
-with GPU implementations. NaNs and infinities propagate; a finite F64 sum that
+parallel GPU reductions, whose per-operation tolerances against it are in
+[metal-backend.md § Numerical evidence](metal-backend.md#numerical-evidence). NaNs and infinities propagate; a finite F64 sum that
 exceeds F32 range can become infinity in the output.
 
 ## Normalization, probabilities, and activations
@@ -82,7 +83,7 @@ and invalid inputs without partial writes. The nontrivial constants were checked
 independently using Python `decimal` with 80-digit precision; they are formula
 references, not measurements of llama.cpp kernels. F32 transcendental results
 use absolute tolerance `1e-7`, with relative `1e-6` for the tiny softplus tail.
-These CPU test tolerances do not establish future GPU acceptance tolerances.
+These CPU test tolerances are not the GPU acceptance tolerances.
 
 ## Unscaled text RoPE
 
@@ -92,7 +93,7 @@ an even, nonzero `dimensions` no larger than the head width, a finite frequency
 `base >= 1`, and an `i32` token `position`. Let `half = dimensions/2`:
 
 ```text
-theta[i] = position * base^(-i/half)
+theta[i] = position * base^(-i/half) / factor[i]
 y[i]      = x[i] * cos(theta[i]) - x[i+half] * sin(theta[i])
 y[i+half] = x[i] * sin(theta[i]) + x[i+half] * cos(theta[i])
 ```
@@ -108,10 +109,13 @@ of extreme finite inputs can overflow F32 and produce infinity.
 The pinned model rotates 64 of each head's 256 channels with base 10,000,000.
 Its text positions repeat the same index across the temporal/height/width
 streams, and the fourth rotary section is empty. Therefore its unscaled text
-MRoPE reduces to this ordinary split-half rotation. This operator does not
-implement different multimodal positions, adjacent-pair layout, frequency
-scaling, YaRN, or learned frequency factors. The future adapter must supply
-positions and traverse Q/K heads; calling this operator does not run attention.
+MRoPE reduces to this ordinary split-half rotation. `pairing` selects
+split-half or adjacent `(2i, 2i + 1)` pairs (Muse Glimmer), and the optional
+per-pair `factors` (`dimensions/2` finite positive values, all ones when
+absent) divide each pair's angle: Gemma 4's checkpoints store 1e30 to leave a
+pair unrotated. The operator does not implement different multimodal
+positions, frequency scaling, or YaRN. The adapter supplies positions and
+traverses Q/K heads; calling this operator does not run attention.
 
 Synthetic tests cover hand-calculated angles with two frequencies, rotation
 followed by its inverse, pair-norm preservation, exact alias, unchanged tails,
@@ -130,15 +134,16 @@ The script used the local C ABI to build and compute small graphs. Four L2 cases
 cover a 3–4 vector, denominator clamping, zero, and tiny values. Four RoPE cases
 use a synthetic 256-channel head at positions 0, 1, 127, and 32,767, with rotary
 width 64, base 10,000,000, IMRoPE mode 40, sections `[11,11,10,0]`, positions
-`[p,p,p,0]`, frequency scale 1, extension factor 0, and attention factor 1.
-The [reference guide](../benchmarks/llama-cpp.md) documents rebuilding the checkout.
+`[p,p,p,0]`, frequency scale 1, extension factor 0, and attention factor 1
+([models § 4](../models/README.md#4-validate-against-nuclis-itself) tells how
+that build served as the reference).
 
 L2 fixtures use absolute tolerance `1e-7`. RoPE's rotated channels use `5e-6`
 through position 127 and `1e-3` at 32,767; tails match exactly. The largest
 observed discrepancy against the latter fixture is about `9.4e-4`. The reference
 advances F32 angles by repeated multiplication, while ours evaluates each
 frequency directly in F64. Differences grow with position, so this comparison
-is not bitwise equivalence. It does not set future GPU tolerances or establish
+is not bitwise equivalence. It does not set GPU tolerances or establish
 end-to-end inference accuracy. The fixtures avoid extreme values where the
 reference's F32 squaring overflows or underflows but our F64 L2 reference does not.
 
@@ -161,7 +166,7 @@ Queries use `[query_head][key_channel]` order. Keys and values use
 Query heads must be a positive multiple of KV heads, with consecutive query
 head groups sharing one KV head. Key and value widths may differ. For the
 pinned model's 24 query heads and four KV heads, each group has six query heads;
-the future adapter supplies scale `1/sqrt(256)` after Q/K normalization and RoPE.
+the Qwen adapter supplies scale `1/sqrt(256)` after Q/K normalization and RoPE.
 The primitive itself chooses neither scale nor model equations.
 
 Only the leading `visible_tokens` KV entries participate. The caller can choose
@@ -181,7 +186,7 @@ other or any input. No allocation or I/O occurs; the function borrows all buffer
 
 Dot products, scaled scores, exponentials, and weighted sums remain F64. This
 avoids narrowing large finite dot products into F32 infinity before softmax.
-The reference's cache is F32 by decision ([KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10)): `Session.Rows.floats` asserts
+The reference's cache is F32 by decision: `Session.Rows.floats` asserts
 an `f32` layout, the CPU runtime never asks for another, and an `f16`
 request on `--backend cpu` runs F32 and reports it. The F16 cache is a GPU
 layout whose tolerance against this reference is recorded in
@@ -202,7 +207,7 @@ add six pinned one-thread CPU graphs: four query/two KV heads or three query/one
 KV head, key width three, value width two, and visible prefixes one, two, or four.
 The reference composes `ggml_mul_mat`, `ggml_soft_max_ext`, and `ggml_mul_mat`,
 materializing only the visible KV prefix. Absolute tolerance is `2e-6` for these
-small cases; this is not an end-to-end attention-layer or future GPU tolerance.
+small cases; this is not an end-to-end attention-layer or GPU tolerance.
 The same retired generator wrote them; no model or GPU is needed to run them.
 
 ## Causal convolution and DeltaNet state
@@ -238,8 +243,8 @@ query scale finite and positive. Q/K normalization, sigmoid beta, log-decay
 preparation, and output normalization/gating are caller responsibilities. KDA
 per-channel decay and automatic head broadcasting are not implemented here;
 the chunkwise form is `deltaChunk` below. The pinned fused reference maps repeated Q/K heads
-with modulo indexing; the future adapter must not reuse attention's consecutive
-GQA grouping blindly (the pinned model has 16 Q/K and 48 value heads).
+with modulo indexing, and so does the Qwen adapter (`h % 16`), not
+attention's consecutive GQA grouping (the pinned model has 16 Q/K and 48 value heads).
 
 `next_state` may exactly alias `state`; other overlap is forbidden. Scratch
 requires `state.len + value.len` F64 elements, and its suffix is untouched.
@@ -264,7 +269,7 @@ shift, not an output of `ggml_ssm_conv`. The generator is
 `scripts/cpu-vector-fixtures.py` (retired; at tag `v0.11.0`); no model or GPU is needed
 to run them.
 
-### Chunkwise DeltaNet (2026-09-09, stage 1)
+### Chunkwise DeltaNet (2026-09-09)
 
 `recurrent.deltaChunk(chunk, state, next_state, output, scratch)` computes
 `C` consecutive steps of the same head without stepping the matrix per
@@ -300,7 +305,7 @@ F32 per step, one chunk of 64 and two chunks of 40 + 24 with the state
 carried between them agree to 2.4e-7 (bound 1e-4); the three pinned
 sequential fixture steps run as one chunk reproduce the pinned outputs and
 final state to 1e-6; validation failures and the single-token case match
-`delta` exactly. The Metal kernel (`nu_delta_chunk`, stage 2) is checked
+`delta` exactly. The Metal kernel (`nu_delta_chunk`) is checked
 against this function and against the sequential steps.
 
 A checkpoint test demonstrates buffer restoration at the primitive level.
@@ -389,7 +394,9 @@ executes on the CPU and Metal backends.
 
 ## Full-model composition
 
-The CPU references now execute the full pinned Qwen text schedule through
-`models/qwen35_runtime.zig`. See [generation](sampling.md) for CLI usage,
+These primitives execute every family's full schedule on the CPU through its
+`models/*_runtime.zig` (the Qwen3.8 text schedule through
+`models/qwen35_runtime.zig`). See [generation](sampling.md) for CLI usage,
 full-layer/logit comparisons, and explicit session isolation/reset checks.
-Metal remains pending; this implementation is for numerical bring-up.
+This executor is the reference Metal is held to
+([metal-backend.md § Numerical evidence](metal-backend.md#numerical-evidence)).

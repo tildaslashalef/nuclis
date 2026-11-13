@@ -1,14 +1,15 @@
 # Audio through the companion encoders
 
 How nuclis turns a clip into embedding rows: the decoder, the log-mel front
-end, and Gemma 4's audio encoder (`gemma4a`) on the CPU and on Metal. Today
-EmbeddingGemma 2 is the only family that uses that encoder
-([embeddinggemma.md § Audio](../models/embeddinggemma.md#audio-2026-10-09)).
+end, and Gemma 4's audio encoder (`gemma4a`) on the CPU and on Metal. Two
+families use that encoder: EmbeddingGemma 2
+([embeddinggemma.md § Audio](../models/embeddinggemma.md#audio-2026-10-09))
+and Gemma 4 E4B, whose companion carries the same encoder (751 of its 752
+tensors byte-identical, the projection to 2560 its own) and hears clips in
+a chat through it
+([gemma4.md § Audio input on the E4B](../models/gemma4.md#audio-input-on-the-e4b-2026-10-27)).
 The front end also serves Nemotron 3.5 ASR's own encoder, described with
 its family in [nemotron-asr.md](../models/nemotron-asr.md).
-Gemma 4 E4B carries the same encoder (751 of its 752 tensors byte-identical,
-the projection to 2560 its own) and hears clips in a chat through it
-([gemma4.md § Audio input on the E4B](../models/gemma4.md#audio-input-on-the-e4b-2026-10-27)).
 Everything here was written from Google's code at the pinned revisions
 (transformers 5.19.0: `feature_extraction_gemma4.py`, `modeling_gemma4.py`
 `Gemma4Audio*`, `processing_embedding_gemma2.py`). llama.cpp's
@@ -209,7 +210,7 @@ on the device. The pieces:
 
 - **Matrices** are the mapped BF16 and F32 bytes on the generic F32 matmul
   tile, with F32 activations, as the text plan's.
-- **Two new kernels**, each tested against the CPU reference in
+- **Two kernels of its own**, each tested against the CPU reference in
   `zig build test-metal`:
   - `audio_attention`: one SIMD group per (row, head), four dimensions a
     lane. It scales q and k as it reads them and softmaxes the 12 visible
@@ -236,11 +237,12 @@ measurements: [nemotron-asr.md § On Metal](../models/nemotron-asr.md#on-metal-2
 ## Against the oracles (2026-10-09)
 
 `zig build test-embeddinggemma -- MODEL audio --mmproj mmproj-BF16.gguf`
-runs four checks:
+(gates `embeddinggemma-audio-cpu` and `embeddinggemma-audio-metal`) runs
+four checks:
 
 - the three clips' mel frames against the extractor's (bound 1e-4);
-- the `north` clip's encoder rows against llama.cpp's `media-0`, as a
-  localizer;
+- the `north` clip's encoder rows against the `media-0` rows llama.cpp
+  wrote when the fixture was pinned, as a localizer;
 - each clip through the whole pipeline against Google's float32 vector;
 - on Metal, a packed batch against one at a time.
 

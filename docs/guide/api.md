@@ -49,7 +49,7 @@ nuclis serve                           # http://127.0.0.1:9000/v1, nothing open 
 | `--pin <name>` | a model opened at start, as `--model`, that the memory budget never closes ([memory](#memory)); repeated, at most 8; replaces `serve.pin` |
 | `--memory <GiB>` | what every open model may hold together; default `serve.memory_bytes`, else physical memory less a third, at most 16 GiB ([memory](#memory)) |
 | `--backend cpu\|metal` | where the models run; default `metal` in a Metal build |
-| `--quiet` | no request log (`serve.log: false` does the same) |
+| `--quiet` | no line per request on stdout (`serve.log: false` does the same); the [request log](#the-request-log) file is unaffected |
 | `--timeout <s>` | how long a request may wait for the GPU before `529 timeout`; default `serve.timeout`, `300` |
 
 The configuration file (`~/.nuclis/nuclis.json`) holds the defaults:
@@ -455,7 +455,7 @@ pass: batching changes timing, never answers.
 
 ### `POST /v1/chat/completions`
 
-OpenAI's Chat Completions for the language models `nuclis chat` runs. A
+OpenAI's Chat Completions for the language models `nuclis agent` runs. A
 program written against an OpenAI SDK, or an agent configured for an
 OpenAI-compatible server, works with the base URL
 `http://127.0.0.1:9000/v1` and any API key.
@@ -489,7 +489,7 @@ curl -s localhost:9000/v1/chat/completions -d '{
 ```
 
 One language model is open at a time, beside the decision models. A
-request runs with the settings `nuclis chat` resolves for its model
+request runs with the settings `nuclis agent` resolves for its model
 (context window, attention cache precision, speculative decoding, the
 thinking budget `agent.thinking_budget`), and one request runs on the
 GPU at a time, decisions included.
@@ -503,7 +503,7 @@ GPU at a time, decisions included.
 | `input_audio` parts | `{"type": "input_audio", "input_audio": {"data": "<base64>", "format": "wav"}}`: `data` base64 or a base64 data URL, `format` one of `wav`, `mp3`, `aiff`, `flac`, `m4a` (the decoder reads the bytes; the name is checked, not trusted). At most 8 clips per request, 16 MiB and **30 s** each (750 rows; a longer clip is `400 input_too_long`, never cut). Only Gemma 4 E4B hears them (its projector pulled); another model answers `400 audio_unsupported`, a clip that does not decode `400 invalid_audio`. The model reads a message's images, then its clips, then its text ([gemma4.md § Audio input](../models/gemma4.md#audio-input-on-the-e4b-2026-10-27)) |
 | assistant `reasoning_content` | the turn's reasoning, given back as it was returned (`reasoning` is read too); the model's template keeps or drops it |
 | assistant `tool_calls`, tool `tool_call_id` | the calls and their results; a result must answer an earlier call |
-| `tools` | `type: "function"` with `name`, `description`, `parameters` (a JSON Schema); at most 64. The model's own template renders them. With `serve.web`, also `{"type": "web_search"}` and `{"type": "web_fetch"}`, which the server runs ([hosted web tools](#hosted-web-tools)) |
+| `tools` | `type: "function"` with `name`, `description`, `parameters` (a JSON Schema); at most 64. The model's own template renders them. With `serve.web`, also `{"type": "web_search"}`, `{"type": "web_fetch"}`, and `{"type": "web_context"}`, which the server runs ([hosted web tools](#hosted-web-tools)) |
 | `tool_choice` | `auto` (the default) or `none`, which renders no tools |
 | `reasoning_effort` | `none` (no reasoning), `minimal`, `low`, `medium`, `high`, `xhigh` (`max` reads as `xhigh`); the model's nearest level. `minimal` is `low` with its reasoning closed at half the budget (512 tokens at the default `agent.thinking_budget`, [below](#a-short-reasoning-minimal)). Absent: `agent.think` |
 | `max_completion_tokens`, `max_tokens` | the output budget, reasoning included; absent: the model's `max_tokens` setting. Larger values are capped at 16,384 and at what the window leaves after the prompt |
@@ -554,7 +554,7 @@ change the result and cannot be honoured:
 | `stop`, `logit_bias`, `frequency_penalty` other than 0 | not implemented; the model's own end of turn stops it |
 | `audio`, `modalities` beyond `text`, `prediction`, part types other than `text`, `image_url`, and `input_audio`, an audio `format` outside the five above | text out; text, images, and audio in |
 | an `image_url` that is not a data URL | the server fetches no URL |
-| a `web_search` or `web_fetch` tool type without `serve.web`; a function of the same name beside one (`invalid_request`) | the server runs no web tools unless configured to; a clash would make its calls ambiguous |
+| a `web_search`, `web_fetch`, or `web_context` tool type without `serve.web`; a function of the same name beside one (`invalid_request`) | the server runs no web tools unless configured to; a clash would make its calls ambiguous |
 
 ### The response
 
@@ -1485,9 +1485,14 @@ settings, or a model opening or closing (`loaded`).
 
 The list holds every decision model of the catalogue and the registry,
 pulled or not; every language model that is present (the ones `/model`
-offers in `nuclis chat`), then the catalogue's language models not on
+offers in `nuclis agent`), then the catalogue's language models not on
 disk; every embedding, speech, and transcription model of the catalogue
 and the registry, pulled or not.
+
+Beside `id` (the name a request sends) and `object`, an entry carries
+`created`, always 0 (OpenAI's schema requires it; nuclis has no creation
+time), and `owned_by`: the repository's owner, `nuclis` for a language
+model, `local` for a directory. The rest is under `nuclis`.
 
 Every kind's fields:
 
@@ -1525,8 +1530,6 @@ request from:
 A field the model does not take is left out (`instructions` on the 0.6B);
 the request formats' own fields (`messages`, `input`, `file`) are not
 listed.
-| `owned_by` | the repository's owner, `nuclis` for a language model, `local` for a directory |
-| `created` | always 0 |
 
 A decision model's:
 
@@ -1556,7 +1559,7 @@ A language model's:
 | `features` | `tools` (native function calling; every profile renders it), `hosted_tools` (`["web_search", "web_fetch"]` when the server has web, with `"web_context"` when its search service offers it, else `[]`), `reasoning` (more than one effort), `streaming`, `structured_output` (`false`: a JSON `response_format` needs constrained decoding, which nuclis has not) |
 | `limits` | what a request may carry: `max_output_tokens` (16,384), `max_tools` (64), `max_images` and `max_image_bytes` (8, 16 MiB), `max_audio_clips`, `max_audio_bytes`, and `max_audio_seconds` (8, 16 MiB, 30) |
 | `detail` | for a model on disk, the same as `nuclis model ls`: architecture, quantization, and size, or the file's name |
-| `options` | `reasoning_effort` (its efforts; default `agent.think`, the profile's nearest), `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repetition_penalty` (the parser's bounds; defaults the profile's for that effort after `generation.sampling` and the entry's overrides, with `by_effort`), `max_tokens` (1–16,384; default the model's `max_tokens`), `seed`, `tool_choice`, `tools` (the tool types: `function`, and `web_search`, `web_fetch` with web), `stream` |
+| `options` | `reasoning_effort` (its efforts; default `agent.think`, the profile's nearest), `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repetition_penalty` (the parser's bounds; defaults the profile's for that effort after `generation.sampling` and the entry's overrides, with `by_effort`), `max_tokens` (1–16,384; default the model's `max_tokens`), `seed`, `tool_choice`, `tools` (the tool types: `function`, and `web_search`, `web_fetch`, `web_context` with web), `stream` |
 
 An embedding model's:
 
@@ -1766,7 +1769,7 @@ At concurrency 16 a pass held 7.9 requests on average (512 in 65 passes,
 request already encodes at 3,020 rows/s (laya, 104 rows in 34.4 ms) and
 7,160 (laya-multilingual, 101 in 14.1 ms), against the packed rates
 [laya.md § Time per call](../models/laya.md#time-per-call) measures, about 3,700
-and 8,660, so packing can add about 1.2× here, and does. The planned 2×
+and 8,660, so packing can add about 1.2× here, and does. A 2× gain
 would need a faster Laya encode, not a different server. p99 is about two
 passes (laya 444 ms against 2 × 217 ms, laya-multilingual 172 against
 2 × 85): a request that just missed a pass waits for it and runs in the
