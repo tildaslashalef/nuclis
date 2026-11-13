@@ -24,6 +24,8 @@ import subprocess
 import sys
 import unittest
 
+# The checkout the script sits in; `--root` names another, for a copy run from
+# outside it (release.yml runs its own revision's script against the tag's).
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANIFESTS = ("build.zig.zon", "inference/build.zig.zon", "huggingface/build.zig.zon")
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$")
@@ -157,8 +159,18 @@ def fetch():
 
 def commits_between(start, end):
     """(subject, body) of each commit after `start` up to `end`, oldest first."""
-    log = run("git", "log", "--reverse", "--format=%s%x1f%b%x1e", f"{start}..{end}")
-    return [tuple(entry.strip("\n").split("\x1f", 1)) for entry in log.split("\x1e") if entry.strip()]
+    return parse_log(run("git", "log", "--reverse", "--format=%s%x1f%b%x1e", f"{start}..{end}"))
+
+
+def parse_log(log):
+    """(subject, body) pairs from `%s%x1f%b%x1e` output. str.strip() counts the
+    separators as whitespace, so the last commit's may be gone when its body is empty."""
+    pairs = []
+    for entry in log.split("\x1e"):
+        subject, _, body = entry.strip("\n").partition("\x1f")
+        if subject.strip():
+            pairs.append((subject, body))
+    return pairs
 
 
 def draft(args):
@@ -254,6 +266,10 @@ def tag(args):
 
 
 class SelfTest(unittest.TestCase):
+    def test_parse_log_keeps_a_last_commit_without_body(self):
+        log = "feat: a\x1fwhy\nmore\x1e\nchore(release): v1.0.0\x1f\x1e".strip()
+        self.assertEqual(parse_log(log), [("feat: a", "why\nmore"), ("chore(release): v1.0.0", "")])
+
     def test_parse_version(self):
         self.assertEqual(parse_version("0.6.0"), (0, 6, 0))
         self.assertEqual(parse_version("1.2.3-rc1"), (1, 2, 3))
@@ -295,6 +311,7 @@ def main():
         sys.argv = sys.argv[:1]
         unittest.main(module=__name__, verbosity=1)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--root", type=pathlib.Path, help="the repository to act on (default: the one this script is in)")
     sub = ap.add_subparsers(dest="command", required=True)
     d = sub.add_parser("draft", help="what merged since the last tag, for the highlights")
     d.add_argument("--since", help="the tag to start from (default: the last one)")
@@ -310,6 +327,9 @@ def main():
     n.add_argument("tag")
     n.set_defaults(fn=notes)
     args = ap.parse_args()
+    if args.root:
+        global ROOT
+        ROOT = args.root.resolve()
     args.fn(args)
 
 
