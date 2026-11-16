@@ -274,7 +274,7 @@ way rather than rewriting `nuclis.json`.
   the client's conversation as sent.
 - Every hosted call is reported in `message.nuclis_web_calls`, an extension
   OpenAI clients ignore: `name`, `arguments`, `summary` (`3 results`,
-  `characters 0 to 642 of 642`, or the failure's sentence), and `is_error`.
+  `the whole page, 642 characters`, or the failure's sentence), and `is_error`.
   Streamed, each call is two chunks whose `delta` carries
   `nuclis_web_calls` with the call's `index` and a `status`: `started`
   as the server is about to run it (its `name` and `arguments`, no
