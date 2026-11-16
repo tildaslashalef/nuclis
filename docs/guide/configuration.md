@@ -232,12 +232,14 @@ says ([api-chat.md § Hosted web tools](api-chat.md#hosted-web-tools)).
 | --- | --- | --- |
 | `web.url` | `null` | the service's base URL: `https`, or `http` on a loopback host for a local stand-in (`scripts/app/search-gateway-stub.py`); no credentials, query, or fragment |
 
-`web_context` needs a service with Brave: the agent offers it only when the
-service's health lists `/v1/context` at startup. Every limit, the context's budget and the six
-uncached searches a turn may make, is a host constant, not a key.
+`web_context` needs a service that offers `/v1/context`: the agent offers
+it only when the service's health lists it at startup. Every limit, the
+context's budget and the six billed calls a turn may make (uncached
+searches, contexts, and fetches with a question), is a host constant, not
+a key.
 
 Turning a surface on sends what the model searches for and the URLs it
-fetches to that service, which passes them to search engines and sites
+fetches to that service, which passes them to its search providers and the sites
 ([app/agent.md § 11](../app/agent.md#11-the-web-tools-a-hosts-search-service-opt-in)).
 
 ### `cache`

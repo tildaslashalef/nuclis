@@ -7,26 +7,30 @@ machine.
 
     python3 scripts/app/search-gateway-stub.py              # http://127.0.0.1:8099
     python3 scripts/app/search-gateway-stub.py --port 9100
-    python3 scripts/app/search-gateway-stub.py --no-context # a host without Brave
+    python3 scripts/app/search-gateway-stub.py --no-context # a host without /v1/context
 
 Point the configuration at it: `web.url` http://127.0.0.1:8099 (http is
 accepted on loopback only), then `agent.web` or `serve.web` true.
 
 The answers are deterministic. Any query searches the three pages below,
-the first two with extra snippets; a query of `busy` answers `busy`,
-`nothing` an empty list, `broken` the no-engines failure, and one
-containing `pyhton` is searched as corrected (`altered_query`). Context
-answers canned passages for any query, none for `nothing`; `--no-context`
-leaves `/v1/context` out of health and answers it `501 not_available`.
-`freshness` is checked as the contract says. The first answer to a search
-or context carries `X-Search-Cache: miss`, a repeat `hit`.
+the first two with snippets; a query of `busy` answers `busy`, `nothing` an
+empty list, `broken` `provider_unavailable` (every provider skipped), one
+containing `fallback` is answered by Brave with Parallel skipped
+(`providers_failed`), and one containing `pyhton` is searched as corrected
+(`altered_query`). Context answers canned passages for any query, none for
+`nothing`; `--no-context` leaves `/v1/context` out of health and answers it
+`501 not_available`. `freshness` is checked as the contract says. The first
+answer to a search, a context, or a fetch with `q` carries
+`X-Search-Cache: miss`, a repeat `hit`.
 
 A fetch of one of the pages serves its text, paged by `start` and
-`max_chars`; a private or local host is `blocked_address`, a `.pdf` is
-`unsupported_content`, `challenged.example` is the bot-challenge
-`upstream_failed`, a host named `slow.example` waits 25 s (past the
-service's 20 s budget, so it answers `upstream_timeout`), and any other URL
-is `upstream_failed`.
+`max_chars`, as the local fetcher does (`status` and `content_type` set);
+with `q`, as Parallel does: the paragraphs that share a word with the
+question, `focused` true, `status` and `content_type` null. A private or
+local host is `blocked_address`, a `.zip` is `unsupported_content`,
+`challenged.example` is the bot-challenge `upstream_failed`, a host named
+`slow.example` waits 26 s (past the service's 25 s budget, so it answers
+`upstream_timeout`), and any other URL is `upstream_failed`.
 """
 
 import argparse
@@ -40,8 +44,9 @@ import urllib.parse
 from typing import cast
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "stub-0.5.0"
+VERSION = "stub-0.6.0"
 MAX_QUERY_BYTES = 400
+FOCUSED_CHARS = 8_000
 MAX_RESULTS, DEFAULT_RESULTS = 10, 8
 MAX_CHARS, DEFAULT_CHARS = 100_000, 20_000
 MIN_TOKENS, MAX_TOKENS, DEFAULT_TOKENS = 1024, 16384, 8192
@@ -93,28 +98,25 @@ RESULTS = [
         "title": "std.http.Client — Zig standard library",
         "url": "https://ziglang.org/documentation/master/std/#std.http.Client",
         "snippet": "A HTTP(S) client: connection pooling, TLS, and redirects it can follow or hand back.",
-        "extra_snippets": [
+        "snippets": [
             "var req = try client.request(.GET, uri, .{}); then sendBodiless and receiveHead.",
             "redirect_behavior: .unhandled returns redirects to the caller.",
             "keep_alive reuses the connection; read the body to the end to return it to the pool.",
         ],
-        "engine": "brave",
         "published": None,
     },
     {
         "title": "PEP 8 – Style Guide for Python Code",
         "url": "https://peps.python.org/pep-0008/",
         "snippet": "This document gives coding conventions for the Python code comprising the standard library.",
-        "extra_snippets": ["Limit all lines to a maximum of 79 characters."],
-        "engine": "brave",
+        "snippets": ["Limit all lines to a maximum of 79 characters."],
         "published": "2001-07-05",
     },
     {
         "title": "Plain notes",
         "url": "https://example.org/notes.txt",
         "snippet": "A plain text file, served as text.",
-        "extra_snippets": [],
-        "engine": "searxng",
+        "snippets": [],
         "published": None,
     },
 ]
@@ -185,28 +187,31 @@ def search(params):
     if query == "busy":
         raise Failure(503, "busy", "every request slot stayed taken for 2 s")
     if query == "broken":
-        raise Failure(503, "no_engines", "no results, and these engines failed: duckduckgo, brave, mojeek")
+        raise Failure(
+            503, "provider_unavailable", "every provider was skipped: parallel (out of credit), brave (rate-limited)"
+        )
     results = [] if query == "nothing" else RESULTS[:count]
+    fallback = "fallback" in query
     return {
         "query": query,
         "altered_query": query.replace("pyhton", "python") if "pyhton" in query else None,
-        "provider": "brave",
+        "provider": "brave" if fallback else "parallel",
         "results": results,
-        "engines_failed": [],
+        "providers_failed": ["parallel"] if fallback else [],
     }
 
 
 def context(params, offered):
     if not offered:
-        raise Failure(501, "not_available", "this host has no Brave key; /v1/context is unavailable")
+        raise Failure(501, "not_available", "this host offers no /v1/context")
     query = checked_query(params)
     integer(params, "tokens", DEFAULT_TOKENS, MIN_TOKENS, MAX_TOKENS)
     urls = integer(params, "urls", DEFAULT_URLS, 1, MAX_URLS)
     return {
         "query": query,
-        "provider": "brave",
+        "provider": "parallel",
         "sources": [] if query == "nothing" else SOURCES[:urls],
-        "engines_failed": [],
+        "providers_failed": [],
     }
 
 
@@ -227,8 +232,8 @@ def fetch(params):
         raise Failure(400, "bad_request", "url must be an http or https URL with a host")
     if blocked(parts.hostname):
         raise Failure(403, "blocked_address", f"{parts.hostname} is not a public address")
-    if parts.path.endswith(".pdf"):
-        raise Failure(415, "unsupported_content", "application/pdf is not extracted")
+    if parts.path.endswith(".zip"):
+        raise Failure(415, "unsupported_content", "application/zip is not extracted")
     if parts.hostname == CHALLENGED:
         raise Failure(
             502,
@@ -237,25 +242,57 @@ def fetch(params):
             "try /v1/context, whose provider has the page's text",
         )
     if parts.hostname == "slow.example":
-        time.sleep(25)
-        raise Failure(504, "upstream_timeout", "slow.example did not answer within 20 s")
+        time.sleep(26)
+        raise Failure(504, "upstream_timeout", "slow.example did not answer within 25 s")
     page = PAGES.get(url)
     if page is None:
-        raise Failure(502, "upstream_failed", f"{parts.hostname} answered 404")
+        raise Failure(502, "upstream_failed", f"{parts.hostname} answered 404 Not Found")
     title, content_type, text = page
+    question = params.get("q", [""])[0].strip()
+    if "q" in params:
+        return focused(url, title, text, question)
     start = integer(params, "start", 0, 0, sys.maxsize)
     max_chars = integer(params, "max_chars", DEFAULT_CHARS, 1, MAX_CHARS)
     piece = text[start : start + max_chars]
     return {
         "url": url,
         "final_url": url,
+        "provider": "local",
+        "providers_failed": [],
         "status": 200,
         "content_type": content_type,
         "title": title,
+        "published": None,
+        "focused": False,
         "text": piece,
         "start": start,
         "chars": len(text),
         "truncated": start + len(piece) < len(text),
+    }
+
+
+def focused(url, title, text, question):
+    if not question:
+        raise Failure(400, "bad_request", "q is empty")
+    if len(question.encode()) > MAX_QUERY_BYTES:
+        raise Failure(400, "bad_request", f"q is longer than {MAX_QUERY_BYTES} bytes")
+    words = {w for w in re.findall(r"\w+", question.lower()) if len(w) >= 3}
+    parts = [p for p in text.split("\n\n") if words & set(re.findall(r"\w+", p.lower()))]
+    answer = "\n\n".join(parts)[:FOCUSED_CHARS]
+    return {
+        "url": url,
+        "final_url": url,
+        "provider": "parallel",
+        "providers_failed": [],
+        "status": None,
+        "content_type": None,
+        "title": title,
+        "published": None,
+        "focused": True,
+        "text": answer,
+        "start": 0,
+        "chars": len(answer),
+        "truncated": False,
     }
 
 
@@ -278,12 +315,23 @@ class Handler(BaseHTTPRequestHandler):
                 cache = server.seen(self.path)
             elif path == "/v1/fetch":
                 status, body = 200, fetch(params)
+                if "q" in params:
+                    cache = server.seen(self.path)
             elif path == "/v1/health":
                 endpoints = ["/v1/search", "/v1/fetch", "/v1/health"] + (["/v1/context"] if offered else [])
-                providers = {"brave": "ok", "searxng": "ok"} if offered else {"searxng": "ok"}
+                providers = {"parallel": "ok", "brave": "ok", "local": "ok"}
+                routes = {"/v1/search": ["parallel", "brave"], "/v1/fetch": ["parallel", "local"]}
+                if offered:
+                    routes["/v1/context"] = ["parallel", "brave"]
                 status, body = (
                     200,
-                    {"version": VERSION, "providers": providers, "endpoints": endpoints, "billed": server.billed},
+                    {
+                        "version": VERSION,
+                        "providers": providers,
+                        "routes": routes,
+                        "endpoints": endpoints,
+                        "billed": {"parallel": server.billed},
+                    },
                 )
             else:
                 raise Failure(404, "not_found", f"no endpoint {path}")
@@ -335,7 +383,7 @@ def main():
     parser = argparse.ArgumentParser(description="A local stand-in for the search service behind the web tools.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8099)
-    parser.add_argument("--no-context", action="store_true", help="play a host without Brave: no /v1/context")
+    parser.add_argument("--no-context", action="store_true", help="play a host without /v1/context")
     args = parser.parse_args()
     server = Server((args.host, args.port), not args.no_context)
     server.daemon_threads = True

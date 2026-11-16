@@ -7,8 +7,9 @@
 //! service, a timeout, a malformed answer, a cancellation) are `Failure`
 //! values, never Zig errors; only allocation failure is. The request runs in
 //! a concurrent task so the caller's `Beat` can repaint and cancel meanwhile.
-//! Search and context are metered upstream (Brave), so a `Service` answers at
-//! most `max_billed_calls` uncached ones between `beginTurn`s.
+//! Searches, contexts, and fetches that ask a question are billed upstream,
+//! so a `Service` answers at most `max_billed_calls` uncached ones between
+//! `beginTurn`s. A failure is judged by its code, never its message (`Retry`).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -16,8 +17,8 @@ const Io = std.Io;
 /// The most body bytes read from any answer; a fetch's 100,000 code points
 /// of text fit with room for the JSON around them.
 pub const max_body_bytes: usize = 512 * 1024;
-/// Above the service's own budgets (10 s and 20 s), so its timeout error
-/// arrives before ours.
+/// Above the service's own budgets (10 s search, 20 s context, 25 s fetch),
+/// so its timeout error arrives before ours.
 pub const search_timeout_ms: u64 = 15_000;
 pub const fetch_timeout_ms: u64 = 30_000;
 pub const context_timeout_ms: u64 = 25_000;
@@ -27,9 +28,11 @@ pub const probe_timeout_ms: u64 = 2_000;
 /// What one `web_context` call asks for: about 2K tokens from at most 8 pages.
 pub const context_tokens: u16 = 2048;
 pub const context_urls: u8 = 8;
-/// Uncached searches and contexts one turn (an agent turn, an API request)
-/// may make: each is a metered Brave request upstream.
+/// Uncached searches, contexts, and fetches with a question one turn (an
+/// agent turn, an API request) may make: each is billed upstream.
 pub const max_billed_calls: u8 = 6;
+/// The longest question a fetch may ask, as the service allows.
+pub const max_question_bytes = 400;
 const beat_ms: u64 = 50;
 
 /// Called about every 50 ms while a request is in flight, on the caller's
@@ -40,7 +43,8 @@ pub const Beat = struct {
 };
 
 pub const Failure = struct {
-    /// The service's code (`busy`, `blocked_address`, …) or one of ours:
+    /// The service's code (`busy`, `blocked_address`, …; `Retry.classOf`
+    /// sorts them) or one of ours:
     /// `unreachable`, `timeout`, `cancelled`, `invalid_response`, `budget`.
     code: []const u8,
     message: []const u8,
@@ -52,16 +56,18 @@ pub const Search = struct {
     query: []const u8 = "",
     /// The corrected query the provider searched instead, if it did.
     altered_query: ?[]const u8 = null,
+    /// The provider that answered; a whole answer, never a partial one.
     provider: []const u8 = "",
     results: []const Result = &.{},
-    engines_failed: []const []const u8 = &.{},
+    /// The providers skipped before `provider` answered.
+    providers_failed: []const []const u8 = &.{},
 
     pub const Result = struct {
         title: []const u8 = "",
         url: []const u8,
         snippet: []const u8 = "",
-        extra_snippets: []const []const u8 = &.{},
-        engine: []const u8 = "",
+        /// Up to five more passages from the page.
+        snippets: []const []const u8 = &.{},
         published: ?[]const u8 = null,
     };
 };
@@ -71,7 +77,7 @@ pub const Context = struct {
     query: []const u8 = "",
     provider: []const u8 = "",
     sources: []const Source = &.{},
-    engines_failed: []const []const u8 = &.{},
+    providers_failed: []const []const u8 = &.{},
 
     pub const Source = struct {
         url: []const u8,
@@ -102,9 +108,15 @@ pub const Freshness = enum {
 pub const Fetched = struct {
     url: []const u8 = "",
     final_url: []const u8 = "",
-    status: u16 = 0,
-    content_type: []const u8 = "",
+    provider: []const u8 = "",
+    providers_failed: []const []const u8 = &.{},
+    /// Null when the provider does not report them (Parallel).
+    status: ?u16 = null,
+    content_type: ?[]const u8 = null,
     title: []const u8 = "",
+    published: ?[]const u8 = null,
+    /// The text is only the parts that answer the fetch's question.
+    focused: bool = false,
     text: []const u8 = "",
     /// Code points, as `chars`.
     start: u64 = 0,
@@ -118,8 +130,8 @@ pub const Health = struct {
     /// The paths this service answers beyond the first three (`/v1/context`).
     endpoints: []const []const u8 = &.{},
 
-    /// True when any provider is `ok`: with Brave in front of SearXNG, an
-    /// exhausted Brave still leaves search working.
+    /// True when any provider is `ok`: each endpoint tries its providers in
+    /// order, so one exhausted provider still leaves the endpoint working.
     pub fn ok(self: Health) bool {
         for (self.providers.map.values()) |state| if (std.mem.eql(u8, state, "ok")) return true;
         return false;
@@ -169,6 +181,8 @@ pub const Service = struct {
     billed: u8 = 0,
     /// The service answers `/v1/context`, as `probe` found it.
     context_offered: bool = false,
+    /// The wait before a transient failure is sent again; tests shorten it.
+    retry_pause_ms: u64 = 1_000,
 
     /// `gpa` must be thread safe (`std.http.Client`'s pool is shared with
     /// the request task). `base` must pass `validBase`.
@@ -230,19 +244,27 @@ pub const Service = struct {
     }
 
     fn spentFailure() Failure {
-        return .{ .code = "budget", .message = std.fmt.comptimePrint("the turn's {d} uncached searches are spent", .{max_billed_calls}) };
+        return .{ .code = "budget", .message = std.fmt.comptimePrint("the turn's {d} uncached billed calls are spent", .{max_billed_calls}) };
     }
 
-    /// `GET /v1/fetch?url=&start=&max_chars=`.
-    pub fn fetch(self: *Service, gpa: Allocator, target: []const u8, start: u64, max_chars: u32, beat: ?Beat) Allocator.Error!Reply(Fetched) {
+    /// `GET /v1/fetch?url=&start=&max_chars=[&q=]`. A `question` (at most
+    /// `max_question_bytes`) asks for only the parts that answer it; that is
+    /// billed, so it counts against the allowance as `search` does, while a
+    /// plain fetch is free.
+    pub fn fetch(self: *Service, gpa: Allocator, target: []const u8, start: u64, max_chars: u32, question: ?[]const u8, beat: ?Beat) Allocator.Error!Reply(Fetched) {
         var arena: std.heap.ArenaAllocator = .init(gpa);
         errdefer arena.deinit();
         const a = arena.allocator();
+        if (question != null and self.spent()) return .{ .arena = arena, .outcome = .{ .failed = spentFailure() } };
         var url: std.ArrayList(u8) = .empty;
         try url.print(a, "{s}/v1/fetch?url=", .{self.base});
         try appendEscaped(a, &url, target);
         try url.print(a, "&start={d}&max_chars={d}", .{ start, max_chars });
-        const outcome = try self.call(Fetched, a, url.items, fetch_timeout_ms, false, beat);
+        if (question) |q| {
+            try url.appendSlice(a, "&q=");
+            try appendEscaped(a, &url, q);
+        }
+        const outcome = try self.call(Fetched, a, url.items, fetch_timeout_ms, question != null, beat);
         return .{ .arena = arena, .outcome = switch (outcome) {
             .ok => |v| .{ .ok = v },
             .failed => |f| .{ .failed = f },
@@ -281,29 +303,51 @@ pub const Service = struct {
         return union(enum) { ok: T, failed: Failure };
     }
 
-    /// One request and its decoding; everything lands in `a`. A `metered`
-    /// call's answer counts against the allowance unless the service says it
+    /// One request and its decoding; everything lands in `a`. An answer
+    /// whose code `Retry` calls transient is sent once more after
+    /// `retry_pause_ms`, each attempt under `timeout_ms`. A `metered` call
+    /// counts once against the allowance unless the service says its answer
     /// came from its cache.
     fn call(self: *Service, comptime T: type, a: Allocator, url: []const u8, timeout_ms: u64, metered: bool, beat: ?Beat) Allocator.Error!Outcome(T) {
-        const raw = switch (try self.exchange(a, url, timeout_ms, beat)) {
+        var raw = switch (try self.exchange(a, url, timeout_ms, beat)) {
             .done => |raw| raw,
             .failed => |f| return .{ .failed = f },
         };
-        if (metered and !raw.cached) self.billed +|= 1;
-        if (raw.status == 200) {
-            const value = std.json.parseFromSliceLeaky(T, a, raw.body, .{ .ignore_unknown_fields = true, .allocate = .alloc_always }) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => return .{ .failed = .{ .code = "invalid_response", .message = try std.fmt.allocPrint(a, "the search service's answer is not the v1 shape ({s})", .{@errorName(err)}), .status = raw.status } },
+        if (raw.status != 200 and Retry.classOf((try failureOf(a, raw)).code) == .transient) {
+            if (self.pause(beat)) return .{ .failed = .{ .code = "cancelled", .message = "the request was cancelled" } };
+            raw = switch (try self.exchange(a, url, timeout_ms, beat)) {
+                .done => |again| again,
+                .failed => |f| return .{ .failed = f },
             };
-            return .{ .ok = value };
         }
+        if (metered and !raw.cached) self.billed +|= 1;
+        if (raw.status != 200) return .{ .failed = try failureOf(a, raw) };
+        const value = std.json.parseFromSliceLeaky(T, a, raw.body, .{ .ignore_unknown_fields = true, .allocate = .alloc_always }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return .{ .failed = .{ .code = "invalid_response", .message = try std.fmt.allocPrint(a, "the search service's answer is not the v1 shape ({s})", .{@errorName(err)}), .status = raw.status } },
+        };
+        return .{ .ok = value };
+    }
+
+    /// Waits `retry_pause_ms` in beats; true when the beat cancelled it.
+    fn pause(self: *Service, beat: ?Beat) bool {
+        var waited: u64 = 0;
+        while (waited < self.retry_pause_ms) : (waited += beat_ms) {
+            if (beat) |b| if (b.call(b.context)) return true;
+            sleep(self.http.io, @min(beat_ms, self.retry_pause_ms - waited)) catch return true;
+        }
+        return false;
+    }
+
+    /// A non-200 answer as the failure it names.
+    fn failureOf(a: Allocator, raw: Raw) Allocator.Error!Failure {
         const Body = struct { @"error": struct { code: []const u8, message: []const u8 = "" } };
         const parsed = std.json.parseFromSliceLeaky(Body, a, raw.body, .{ .ignore_unknown_fields = true, .allocate = .alloc_always }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             // A proxy in front of the service (the edge) answers in HTML.
-            else => return .{ .failed = .{ .code = "invalid_response", .message = try std.fmt.allocPrint(a, "the search service answered {d} without an error body", .{raw.status}), .status = raw.status } },
+            else => return .{ .code = "invalid_response", .message = try std.fmt.allocPrint(a, "the search service answered {d} without an error body", .{raw.status}), .status = raw.status },
         };
-        return .{ .failed = .{ .code = parsed.@"error".code, .message = parsed.@"error".message, .status = raw.status } };
+        return .{ .code = parsed.@"error".code, .message = parsed.@"error".message, .status = raw.status };
     }
 
     /// `cached`: `X-Search-Cache` said `hit` or `stale`; a missing header
@@ -419,10 +463,39 @@ pub const Service = struct {
     }
 };
 
-/// Which failed requests are sent again; every request is a `GET`, so a
-/// replay is safe. At most one retry per call, inside its deadline, and it
-/// counts once against the allowance.
-const Retry = struct {
+/// What a failure means, by its cause: the service's error code (never its
+/// message) or, for a request that got no answer, the transport error. Every
+/// request is a `GET`, so a replay is safe; each cause is retried at most
+/// once per call, and the call counts once against the allowance.
+pub const Retry = struct {
+    pub const Class = enum {
+        /// May work a moment later: sent once more, then reported.
+        transient,
+        /// Will not change: reported at once.
+        permanent,
+        /// The page's own server failed (a 404, a 403): reported, and another
+        /// page may serve.
+        page,
+    };
+
+    const table = [_]struct { []const u8, Class }{
+        .{ "busy", .transient },
+        .{ "upstream_timeout", .transient },
+        .{ "provider_unavailable", .transient },
+        .{ "blocked_address", .permanent },
+        .{ "bad_request", .permanent },
+        .{ "unsupported_content", .permanent },
+        .{ "not_available", .permanent },
+        .{ "upstream_failed", .page },
+    };
+
+    /// A code the table lacks (one of ours, or one a newer service added) is
+    /// permanent: it is never sent again.
+    pub fn classOf(code: []const u8) Class {
+        for (table) |entry| if (std.mem.eql(u8, entry[0], code)) return entry[1];
+        return .permanent;
+    }
+
     /// A pooled connection the peer closed while it sat idle (the edge in
     /// front of the service drops idle ones after about 5 minutes): the
     /// request failed before any byte of the answer arrived.
@@ -472,9 +545,9 @@ test "health is ok when any provider is" {
     var health: Health = .{};
     try std.testing.expect(!health.ok());
     defer health.providers.deinit(std.testing.allocator);
-    try health.providers.map.put(std.testing.allocator, "brave", "down");
+    try health.providers.map.put(std.testing.allocator, "parallel", "down");
     try std.testing.expect(!health.ok());
-    try health.providers.map.put(std.testing.allocator, "searxng", "ok");
+    try health.providers.map.put(std.testing.allocator, "brave", "ok");
     try std.testing.expect(health.ok());
 }
 
@@ -492,14 +565,18 @@ test "search and fetch decode the v1 answers, ignoring fields they do not know" 
     const a = std.testing.allocator;
     var fake: Fake = try .init(io, &.{
         .{ .status = 200, .body =
-        \\{"query":"zig http","provider":"searxng","new_field":1,"results":[
-        \\{"title":"Zig","url":"https://ziglang.org/","snippet":"A language","engine":"duckduckgo","published":"2026-09-01"},
-        \\{"title":"zig","url":"https://github.com/ziglang/zig","snippet":"","engine":"github","published":null}],
-        \\"engines_failed":["mojeek"]}
+        \\{"query":"zig http","provider":"brave","new_field":1,"results":[
+        \\{"title":"Zig","url":"https://ziglang.org/","snippet":"A language","snippets":["one","two"],"published":"2026-09-01"},
+        \\{"title":"zig","url":"https://github.com/ziglang/zig","snippet":"","published":null}],
+        \\"providers_failed":["parallel"]}
         },
         .{ .status = 200, .body =
-        \\{"url":"https://example.org/a","final_url":"https://example.org/a/","status":200,"content_type":"text/html",
-        \\"title":"A","text":"# A\n\nbody","start":0,"chars":48211,"truncated":true}
+        \\{"url":"https://example.org/a","final_url":"https://example.org/a/","provider":"local","providers_failed":[],"status":200,"content_type":"text/html",
+        \\"title":"A","published":null,"text":"# A\n\nbody","start":0,"chars":48211,"truncated":true}
+        },
+        .{ .status = 200, .body =
+        \\{"url":"https://example.org/m.pdf","final_url":"https://example.org/m.pdf","provider":"parallel","providers_failed":[],"status":null,"content_type":null,
+        \\"title":"M","published":"2026-01-02","focused":true,"text":"the answer","start":0,"chars":10,"truncated":false}
         },
     });
     var task = try io.concurrent(Fake.serve, .{ &fake, io });
@@ -511,37 +588,54 @@ test "search and fetch decode the v1 answers, ignoring fields they do not know" 
     var found = try service.search(a, "zig http&more", 8, null, null);
     defer found.deinit();
     const s = found.outcome.ok;
-    try std.testing.expectEqualStrings("searxng", s.provider);
+    try std.testing.expectEqualStrings("brave", s.provider);
     try std.testing.expectEqual(@as(usize, 2), s.results.len);
     try std.testing.expectEqualStrings("2026-09-01", s.results[0].published.?);
+    try std.testing.expectEqualStrings("two", s.results[0].snippets[1]);
     try std.testing.expect(s.results[1].published == null);
-    try std.testing.expectEqualStrings("mojeek", s.engines_failed[0]);
+    try std.testing.expectEqualStrings("parallel", s.providers_failed[0]);
     try std.testing.expectEqualStrings("/v1/search?q=zig%20http%26more&n=8", fake.target(0));
     try std.testing.expectEqualStrings("nuclis/test", fake.agent[0..fake.agent_len]);
 
-    var page = try service.fetch(a, "https://example.org/a?b=1", 100, 2000, null);
+    var page = try service.fetch(a, "https://example.org/a?b=1", 100, 2000, null, null);
     defer page.deinit();
     const f = page.outcome.ok;
     try std.testing.expectEqual(@as(u64, 48211), f.chars);
     try std.testing.expect(f.truncated);
+    try std.testing.expect(!f.focused);
+    try std.testing.expectEqual(@as(?u16, 200), f.status);
+    try std.testing.expectEqualStrings("text/html", f.content_type.?);
     try std.testing.expectEqualStrings("# A\n\nbody", f.text);
     try std.testing.expectEqualStrings("/v1/fetch?url=https%3A%2F%2Fexample.org%2Fa%3Fb%3D1&start=100&max_chars=2000", fake.target(1));
+
+    // Parallel reports neither status nor content type.
+    var asked = try service.fetch(a, "https://example.org/m.pdf", 0, 16000, "what is new?", null);
+    defer asked.deinit();
+    const m = asked.outcome.ok;
+    try std.testing.expect(m.status == null and m.content_type == null);
+    try std.testing.expect(m.focused);
+    try std.testing.expectEqualStrings("parallel", m.provider);
+    try std.testing.expectEqualStrings("2026-01-02", m.published.?);
+    try std.testing.expectEqualStrings("/v1/fetch?url=https%3A%2F%2Fexample.org%2Fm.pdf&start=0&max_chars=16000&q=what%20is%20new%3F", fake.target(2));
 }
 
 test "the service's error codes, a proxy's page, and a malformed answer are failures" {
     const io = std.testing.io;
     const a = std.testing.allocator;
+    const busy_body = "{\"error\":{\"code\":\"busy\",\"message\":\"every slot stayed taken for 2 s\"}}";
     var fake: Fake = try .init(io, &.{
-        .{ .status = 503, .body = "{\"error\":{\"code\":\"busy\",\"message\":\"every slot stayed taken for 2 s\"}}" },
+        .{ .status = 503, .body = busy_body },
+        .{ .status = 503, .body = busy_body },
         .{ .status = 502, .body = "<html>Bad Gateway</html>" },
         .{ .status = 200, .body = "{\"results\": 7}" },
-        .{ .status = 200, .body = "{\"version\":\"0.1.0\",\"providers\":{\"searxng\":\"down\"}}" },
+        .{ .status = 200, .body = "{\"version\":\"0.2.0\",\"providers\":{\"parallel\":\"down\",\"brave\":\"down\"}}" },
     });
     var task = try io.concurrent(Fake.serve, .{ &fake, io });
     defer fake.stop(io, &task);
     var buffer: [64]u8 = undefined;
     var service: Service = .init(a, io, fake.base(&buffer), "nuclis/test");
     defer service.deinit();
+    service.retry_pause_ms = 1;
 
     var busy = try service.search(a, "q", 8, null, null);
     defer busy.deinit();
@@ -599,18 +693,18 @@ test "an unreachable service, a late answer, and a cancelling beat are failures"
     try std.testing.expectEqualStrings("unreachable", gone.outcome.failed.code);
 }
 
-test "context asks for the fixed budget and decodes sources; search decodes extras and the corrected query" {
+test "context asks for the fixed budget and decodes sources; search decodes snippets and the corrected query" {
     const io = std.testing.io;
     const a = std.testing.allocator;
     var fake: Fake = try .init(io, &.{
         .{ .status = 200, .body =
         \\{"query":"zig usingnamespace","provider":"brave","new_field":true,"sources":[
         \\{"url":"https://ziglang.org/download/0.15.1/release-notes.html","title":"0.15.1 Release Notes","published":"2025-08-19","snippets":["usingnamespace is removed.","Use a field instead."],"rank":1},
-        \\{"url":"https://example.org/z"}],"engines_failed":[]}
+        \\{"url":"https://example.org/z"}],"providers_failed":[]}
         },
         .{ .status = 200, .body =
         \\{"query":"zgi http","altered_query":"zig http","provider":"brave","results":[
-        \\{"title":"Zig","url":"https://ziglang.org/","snippet":"A language","extra_snippets":["one","two","three"],"engine":"brave","published":null}],"engines_failed":[]}
+        \\{"title":"Zig","url":"https://ziglang.org/","snippet":"A language","snippets":["one","two","three"],"published":null}],"providers_failed":[]}
         },
     });
     var task = try io.concurrent(Fake.serve, .{ &fake, io });
@@ -634,15 +728,15 @@ test "context asks for the fixed budget and decodes sources; search decodes extr
     const s = found.outcome.ok;
     try std.testing.expectEqualStrings("/v1/search?q=zgi%20http&n=8", fake.target(1));
     try std.testing.expectEqualStrings("zig http", s.altered_query.?);
-    try std.testing.expectEqual(@as(usize, 3), s.results[0].extra_snippets.len);
+    try std.testing.expectEqual(@as(usize, 3), s.results[0].snippets.len);
 }
 
 test "the probe offers web_context only when health lists it" {
     const io = std.testing.io;
     const a = std.testing.allocator;
     var fake: Fake = try .init(io, &.{
-        .{ .status = 200, .body = "{\"version\":\"0.5.0\",\"providers\":{\"brave\":\"ok\",\"searxng\":\"ok\"},\"endpoints\":[\"/v1/search\",\"/v1/fetch\",\"/v1/context\"],\"billed\":{\"month\":31},\"quota\":null}" },
-        .{ .status = 200, .body = "{\"version\":\"0.1.0\",\"providers\":{\"searxng\":\"ok\"}}" },
+        .{ .status = 200, .body = "{\"version\":\"0.5.0\",\"providers\":{\"brave\":\"ok\",\"local\":\"ok\",\"parallel\":\"ok\"},\"routes\":{\"/v1/search\":[\"parallel\",\"brave\"]},\"endpoints\":[\"/v1/search\",\"/v1/fetch\",\"/v1/context\"],\"billed\":{\"brave\":0,\"parallel\":5}}" },
+        .{ .status = 200, .body = "{\"version\":\"0.2.0\",\"providers\":{\"parallel\":\"ok\"}}" },
         .{ .status = 200, .body = "{}", .delay_ms = 2_500 },
     });
     var task = try io.concurrent(Fake.serve, .{ &fake, io });
@@ -661,7 +755,7 @@ test "the probe offers web_context only when health lists it" {
     try std.testing.expect(!service.context_offered);
 }
 
-test "the allowance: six uncached calls, then budget without a request; hits and fetches are free" {
+test "the allowance: six uncached calls, then budget without a request; hits and plain fetches are free" {
     const io = std.testing.io;
     const a = std.testing.allocator;
     const search_body = "{\"query\":\"q\",\"results\":[]}";
@@ -697,7 +791,7 @@ test "the allowance: six uncached calls, then budget without a request; hits and
         passages.deinit();
     }
     try std.testing.expectEqual(@as(u8, 6), service.billed);
-    var page = try service.fetch(a, "https://e.org/", 0, 100, null);
+    var page = try service.fetch(a, "https://e.org/", 0, 100, null, null);
     page.deinit();
     try std.testing.expectEqual(@as(u8, 6), service.billed);
 
@@ -707,6 +801,9 @@ test "the allowance: six uncached calls, then budget without a request; hits and
     var refused_context = try service.context(a, "q", null, null);
     defer refused_context.deinit();
     try std.testing.expectEqualStrings("budget", refused_context.outcome.failed.code);
+    var refused_question = try service.fetch(a, "https://e.org/", 0, 100, "why?", null);
+    defer refused_question.deinit();
+    try std.testing.expectEqualStrings("budget", refused_question.outcome.failed.code);
     // Neither reached the service: nine answers taken, the tenth waits.
     try std.testing.expectEqual(@as(usize, 9), fake.served.load(.acquire));
 
@@ -750,4 +847,66 @@ test "a pooled connection the peer closed before answering is retried once on a 
     try std.testing.expectEqualStrings("unreachable", lost.outcome.failed.code);
     try std.testing.expect(std.mem.indexOf(u8, lost.outcome.failed.message, "HttpConnectionClosing") != null);
     try std.testing.expectEqual(@as(usize, 6), fake.served.load(.acquire));
+}
+
+test "a failure is retried by its code: transient once after the pause, the rest at once" {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    const timeout_body = "{\"error\":{\"code\":\"upstream_timeout\",\"message\":\"no provider answered within 10 s\"}}";
+    var fake: Fake = try .init(io, &.{
+        .{ .status = 503, .body = "{\"error\":{\"code\":\"provider_unavailable\",\"message\":\"every provider was skipped\"}}" },
+        .{ .status = 200, .body = "{\"query\":\"q\",\"provider\":\"brave\",\"results\":[{\"url\":\"https://ziglang.org/\"}]}" },
+        .{ .status = 504, .body = timeout_body },
+        .{ .status = 504, .body = timeout_body },
+        .{ .status = 403, .body = "{\"error\":{\"code\":\"blocked_address\",\"message\":\"192.168.1.1 is not a public address\"}}" },
+        .{ .status = 502, .body = "{\"error\":{\"code\":\"upstream_failed\",\"message\":\"go.dev answered 404 Not Found\"}}" },
+        .{ .status = 503, .body = "{\"error\":{\"code\":\"busy\",\"message\":\"every slot stayed taken\"}}" },
+    });
+    var task = try io.concurrent(Fake.serve, .{ &fake, io });
+    defer fake.stop(io, &task);
+    var buffer: [64]u8 = undefined;
+    var service: Service = .init(a, io, fake.base(&buffer), "nuclis/test");
+    defer service.deinit();
+    service.retry_pause_ms = 1;
+
+    var recovered = try service.search(a, "q", 8, null, null);
+    defer recovered.deinit();
+    try std.testing.expectEqualStrings("https://ziglang.org/", recovered.outcome.ok.results[0].url);
+    try std.testing.expectEqual(@as(usize, 2), fake.served.load(.acquire));
+    try std.testing.expectEqual(@as(u8, 1), service.billed);
+
+    var late = try service.context(a, "q", null, null);
+    defer late.deinit();
+    try std.testing.expectEqualStrings("upstream_timeout", late.outcome.failed.code);
+    try std.testing.expectEqual(@as(usize, 4), fake.served.load(.acquire));
+    try std.testing.expectEqual(@as(u8, 2), service.billed);
+
+    var blocked = try service.fetch(a, "http://192.168.1.1/", 0, 100, null, null);
+    defer blocked.deinit();
+    try std.testing.expectEqualStrings("blocked_address", blocked.outcome.failed.code);
+    try std.testing.expectEqual(@as(usize, 5), fake.served.load(.acquire));
+    var dead = try service.fetch(a, "https://go.dev/x", 0, 100, null, null);
+    defer dead.deinit();
+    try std.testing.expectEqualStrings("upstream_failed", dead.outcome.failed.code);
+    try std.testing.expectEqualStrings("go.dev answered 404 Not Found", dead.outcome.failed.message);
+    try std.testing.expectEqual(@as(usize, 6), fake.served.load(.acquire));
+
+    // A beat that cancels during the pause stops the retry.
+    service.retry_pause_ms = 1_000;
+    const Cancel = struct {
+        fn now(_: *anyopaque) bool {
+            return true;
+        }
+    };
+    var dummy: u8 = 0;
+    var cancelled = try service.fetch(a, "https://e.org/", 0, 100, null, .{ .context = &dummy, .call = Cancel.now });
+    defer cancelled.deinit();
+    try std.testing.expectEqualStrings("cancelled", cancelled.outcome.failed.code);
+    try std.testing.expectEqual(@as(usize, 7), fake.served.load(.acquire));
+}
+
+test "the retry table sorts every code the contract names" {
+    for ([_][]const u8{ "busy", "upstream_timeout", "provider_unavailable" }) |code| try std.testing.expectEqual(Retry.Class.transient, Retry.classOf(code));
+    for ([_][]const u8{ "blocked_address", "bad_request", "unsupported_content", "not_available", "timeout", "budget", "some_new_code" }) |code| try std.testing.expectEqual(Retry.Class.permanent, Retry.classOf(code));
+    try std.testing.expectEqual(Retry.Class.page, Retry.classOf("upstream_failed"));
 }
