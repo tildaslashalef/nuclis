@@ -235,21 +235,22 @@ way rather than rewriting `nuclis.json`.
 ```
 
 - The three tools: `web_search` (`query`, optional `freshness`) returns at
-  most 8 results, a title, URL, and snippet each, with up to two more
-  snippets under the first three; `web_fetch` (`url`, optional `offset`)
-  reads one page as Markdown, 16,000 characters at a time; `web_context`
+  most 8 results, a title, URL, and snippet each, with up to three more
+  passages from the page; `web_fetch` (`url`, and optional `offset` or
+  `question`) reads one page or PDF as Markdown, 16,000 characters at a
+  time, or only the parts that answer `question`; `web_context`
   (`query`, optional `freshness`) returns passages from up to 8 pages that
   answer the question, about 2,000 tokens, each under its page's title and
   URL. `freshness` is `day`, `week`, `month`, or `year`.
-- `web_context` needs a search service with Brave. The server accepts the
+- `web_context` needs a search service that offers it. The server accepts the
   type either way and its start line names the tools the service offered
   when it started; on a service without it, a call answers "web_context is
-  unavailable on the search service now; use web_search" as its result, and
-  the model goes on.
-- Searches are metered upstream (Brave), so one request makes at most six
-  uncached `web_search` and `web_context` calls; a seventh answers that the
-  budget is spent, without reaching the service. Answers the service had
-  cached, and fetches, are free.
+  unavailable on the search service now; use web_search" (after its code,
+  `not_available`) as its result, and the model goes on.
+- Searches are billed upstream, so one request makes at most six uncached
+  `web_search`, `web_context`, and `web_fetch`-with-`question` calls; a
+  seventh answers that the budget is spent, without reaching the service.
+  Answers the service had cached, and plain fetches, are free.
 - In a request with hosted tools, a call to a web tool the request did not
   enable (and defines no function of that name) is not returned either:
   `web_context`'s description names the other two, so the model may call

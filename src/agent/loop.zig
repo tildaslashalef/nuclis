@@ -1317,7 +1317,7 @@ test "web on: eight definitions, the web guidelines, and a search answered by th
     const alloc = testing.allocator;
     const web = @import("../web/root.zig");
     var fake: web.Fake = try .init(testing.io, &.{.{ .status = 200, .body =
-        \\{"query":"zig std.http","provider":"searxng","results":[{"title":"std.http.Client","url":"https://ziglang.org/std/","snippet":"An HTTP client.","engine":"brave","published":null}],"engines_failed":[]}
+        \\{"query":"zig std.http","provider":"parallel","results":[{"title":"std.http.Client","url":"https://ziglang.org/std/","snippet":"An HTTP client.","snippets":[],"published":null}],"providers_failed":[]}
     }});
     var task = try testing.io.concurrent(web.Fake.serve, .{ &fake, testing.io });
     defer fake.stop(testing.io, &task);
@@ -1347,7 +1347,7 @@ test "context tier: nine definitions, the web_context guideline, and the allowan
     const alloc = testing.allocator;
     const web = @import("../web/root.zig");
     const context_body =
-        \\{"query":"zig 0.15 usingnamespace","provider":"brave","sources":[{"url":"https://ziglang.org/n","title":"Release Notes","snippets":["usingnamespace is removed."]}],"engines_failed":[]}
+        \\{"query":"zig 0.15 usingnamespace","provider":"brave","sources":[{"url":"https://ziglang.org/n","title":"Release Notes","snippets":["usingnamespace is removed."]}],"providers_failed":[]}
     ;
     var fake: web.Fake = try .init(testing.io, &.{
         .{ .status = 200, .body = "{\"version\":\"0.5.0\",\"providers\":{\"brave\":\"ok\"},\"endpoints\":[\"/v1/context\"]}" },

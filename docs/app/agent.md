@@ -191,9 +191,10 @@ records the turn, so a resume re-renders rather than replays keystrokes.
 
 `web_search`, `web_fetch`, and `web_context` are not the agent's own: they
 call a search service the user runs on another host (for example one in
-front of the Brave Search API with a self-hosted SearXNG that answers when
-Brave cannot). nuclis knows only the service's base URL and the v1 contract
-below, and offers the tools only when the configuration says so.
+front of Parallel's Search and Extract APIs, with the Brave Search API and
+a local fetcher behind them for when Parallel cannot answer). nuclis knows
+only the service's base URL and the v1 contract below, and offers the tools
+only when the configuration says so.
 
 **Opt-in, per surface.** `web.url` names the service; `agent.web` offers the
 tools to the agent, `serve.web` lets a chat request ask the server to run
@@ -207,14 +208,14 @@ adds `web_context` too. The guideline loop renders only offered tools, and
 for a tool its tier lacks is "not a tool I have", which also covers a
 resumed session recorded with more tools on.
 
-**The probe.** `web_context` exists only on a service with Brave, so the
-agent's setup asks `/v1/health` once (2 s at most) before the prompt is
-built and offers it when `endpoints` lists `/v1/context`; a slow or absent
-service starts at the `search` tier. The tier is fixed for the session, so
-the primed prompt prefix stays valid. `nuclis serve` probes too, for its
-start line only: a server runs for days and Brave may come and go, so it
-accepts the hosted type either way and a call to a service without it
-answers `not_available` as a result.
+**The probe.** `web_context` exists only on a service that offers
+`/v1/context`, so the agent's setup asks `/v1/health` once (2 s at most)
+before the prompt is built and offers it when `endpoints` lists `/v1/context`;
+a slow or absent service starts at the `search` tier. The tier is fixed for
+the session, so the primed prompt prefix stays valid. `nuclis serve` probes
+too, for its start line only: a server runs for days and its providers may
+come and go, so it accepts the hosted type either way and a call to a service
+without it answers `not_available` as a result.
 
 **Why a separate host.** The fetcher reads URLs the model chooses, and a page
 it reads can tell the model which URL to choose next. On the Mac that fetcher
@@ -226,54 +227,63 @@ change (a paid API, an offline index) without touching nuclis.
 
 **The contract nuclis relies on (v1).** `GET`, JSON, no
 authentication; nuclis sends `User-Agent: nuclis/<version>` and ignores fields
-it does not know, so additions never break it.
+it does not know, so additions never break it. Each endpoint tries its
+providers in order (search and context: Parallel, then Brave; fetch:
+Parallel, then a local fetcher), skipping one that is out of credit,
+refused, rate-limited, or too slow; `providers_failed` names those skipped,
+and the answer is still whole.
 
 | Call | Answer |
 | --- | --- |
-| `/v1/search?q=&n=[&freshness=]` | `{query, altered_query, provider, results: [{title, url, snippet, extra_snippets, engine, published}], engines_failed}`; `q` 1–400 bytes, `n` 1–10; `altered_query` is the corrected query the provider searched, else `null`; up to 5 `extra_snippets` (`[]` from SearXNG); no results while engines failed is `no_engines` |
-| `/v1/context?q=&tokens=&urls=[&freshness=]` | `{query, provider, sources: [{url, title, published, snippets}], engines_failed}`: passages Brave picked from several pages for one query, `tokens` 1,024–16,384, `urls` 1–20 (not always honoured: 8 asked returned 8–24); zero sources is a `200`; 20 s; `501 not_available` on a host without Brave |
-| `/v1/fetch?url=&start=&max_chars=` | `{url, final_url, status, content_type, title, text, start, chars, truncated}`; `http`/`https`, ports 80 and 443, at most 5 redirects and 5 MiB; `text` is Markdown with absolute links; `start` and `chars` count code points, and a `start` at or past `chars` returns empty text |
-| `/v1/health` | always `200`, `{version, providers: {<name>: ok \| down}, endpoints, billed, quota, cache}`; `endpoints` lists `/v1/context` when Brave is on |
+| `/v1/search?q=&n=[&freshness=]` | `{query, altered_query, provider, results: [{title, url, snippet, snippets, published}], providers_failed}`; `q` 1–400 bytes, `n` 1–10; `altered_query` is the corrected query the provider searched, else `null`; `snippets` holds up to 5 more passages from the page |
+| `/v1/context?q=&tokens=&urls=[&freshness=]` | `{query, provider, sources: [{url, title, published, snippets}], providers_failed}`: passages the provider picked from several pages for one query, `tokens` 1,024–16,384, `urls` 1–20 (not always honoured: 8 asked returned 8–24); zero sources is a `200`; 20 s; `501 not_available` on a host without it |
+| `/v1/fetch?url=&start=&max_chars=[&q=]` | `{url, final_url, provider, providers_failed, status, content_type, title, published, focused, text, start, chars, truncated}`; `http`/`https`, ports 80 and 443, at most 5 redirects and 5 MiB, HTML and PDF; `text` is Markdown with absolute links; `start` and `chars` count code points, and a `start` at or past `chars` returns empty text; `q` (≤ 400 characters) returns only the parts of the page that answer it, about 8,000 characters, with `focused: true`; `status` and `content_type` are `null` from Parallel; 25 s |
+| `/v1/health` | always `200`, `{version, providers: {<name>: ok \| down}, routes: {<endpoint>: [<provider>, …]}, endpoints, billed, cache}`; `endpoints` lists `/v1/context` when the service offers it |
 
 `freshness` is `pd`, `pw`, `pm`, `py`, or `YYYY-MM-DDtoYYYY-MM-DD`; nuclis
 offers only the first four (`day` … `year`), since a range needs today's
 date. Search and context answers carry `X-Search-Cache: hit | miss |
-stale`; nuclis never sends `Cache-Control: no-cache`.
+stale`; nuclis never sends `Cache-Control: no-cache`. A fetch with `q` is
+its own cache entry, kept 30 minutes.
 
-Errors are non-2xx with `{"error": {"code", "message"}}`: `bad_request` (also
-a query Brave refuses), `not_found`, `method_not_allowed`, `blocked_address`,
-`unsupported_content`, `upstream_failed` (also a page behind a bot challenge,
-its message saying so), `no_engines`, `busy`, `upstream_timeout`,
-`not_available`, `internal`. A code nuclis does not know is still a failure
-carrying the server's message.
+Errors are non-2xx with `{"error": {"code", "message"}}`; nuclis treats
+each by its code, never its message (`Retry` in `src/web/client.zig`), and
+any code not below (`not_found`, `internal`, an unknown one) as permanent:
 
-**The allowance.** Brave is metered: about 1,000 free requests a month, then
-US$5 per 1,000, capped at US$10 a month in its dashboard. Every uncached
-search or context is one; fetches and cache hits are free. So a `Service`
-answers at most `max_billed_calls` (6) uncached calls between `beginTurn`s,
-which the agent's loop calls at each turn and the API's job at each request;
-the seventh answers `budget` without a request, and the model reads that
-the turn's budget is spent and to answer from what it has. The count reads
-`X-Search-Cache` (an answer without it counts, so the stub and older
-services do). One turn at a time uses a service, so it needs no lock.
+| Code | Meaning | nuclis |
+| --- | --- | --- |
+| `busy`, `upstream_timeout`, `provider_unavailable` (every provider skipped) | transient | sends it once more after 1 s, then reports it as worth a later try |
+| `blocked_address`, `bad_request` (also a query a provider refuses), `unsupported_content`, `not_available` | permanent | reports it at once |
+| `upstream_failed` (also a page behind a bot challenge, its message saying so) | the page's own server failed (a 404, a 403) | reports it; another page may serve |
+
+**The allowance.** Providers bill per call (Parallel US$0.001 a search or
+page, US$0.005 a context; Brave US$0.005); cache hits are free. A `Service`
+answers at most `max_billed_calls` (6) uncached searches, contexts, and
+fetches with a question between `beginTurn`s (each agent turn, each API
+request); a plain fetch is free, its later chunks cached. The seventh answers
+`budget` without a request. The count reads `X-Search-Cache` (an answer
+without it counts); one turn at a time uses a service, so no lock.
 
 **What the model reads.** `src/web/tools.zig` holds the three definitions and
-their rendering, shared by the agent and the server. A search is a numbered
-list (`N. title — url`, the snippet under it, and up to two extra snippets
-under the first three results) at most 8 long, led by the corrected query
-when the provider changed it and followed by a note when engines failed. A
-context is the same numbering per source, its passages indented beneath,
-asked at a 2,048-token budget from 8 pages and cut at a source boundary past
-12,000 characters with the number not shown. A fetch is the page's URL and
-title, its text 16,000 code points at a time, and a bracketed note in
-`read_file`'s form: the range, the length, and the `offset` that continues
-it. A page read in one chunk says `the whole page, N characters` and a last
-chunk ends `the end of the page`, so the model does not ask past either; an
-offset past the end fails naming the length. Every failure is one sentence naming its cause (`busy` reads "try
-again", a bot challenge names the host and, when offered, points to
-`web_context`, whose provider has the page's text from its index); none ends
-the turn. Queries are checked (≤ 400 bytes, a known `freshness`) and URLs too
-(`http`/`https`, ≤ 2,048 bytes) before anything leaves the machine.
+their rendering, shared by the agent and the server. A search is at most 8
+numbered results (`N. title — url`, then the snippet and up to three
+`snippets`, one line of at most 300 characters each), led by the corrected
+query when the provider changed it and followed by `[answered by brave;
+parallel was skipped]` when one was (the results are whole, not truncated). A
+context is the same numbering per source, its passages indented beneath, asked
+at a 2,048-token budget from 8 pages and cut at a source boundary past 12,000
+characters with the number not shown. A fetch is the page's URL and title, its
+text 16,000 code points at a time, and a note in `read_file`'s form: the
+range, the length, and the `offset` that continues it, or `the whole page, N
+characters`, or `the end of the page`, so the model does not ask past either
+(an offset past the end fails naming the length). With `question` (sent as
+`q`, never with `offset`) the note is `[the parts of the page that answer:
+<question>]`: not paged. A failure is one line, code then message (`web_fetch:
+upstream_failed: go.dev answered 404 Not Found`), so a dead link reads apart
+from a broken tool; a transient code adds that it may work a moment later, a
+bot challenge names the host and, when offered, points to `web_context`, and
+none ends the turn. Queries and questions (≤ 400 bytes, a known `freshness`)
+and URLs (`http`/`https`, ≤ 2,048 bytes) are checked before anything leaves.
 
 **Why a third tool.** Context passages answer what snippets and a top-hit
 fetch miss; search and fetch stay for finding links and reading a page
@@ -283,14 +293,14 @@ whole ([record, 2026-10-16](../benchmarks/record/agent.md#why-a-third-tool-2026-
 concurrent task and waits in 50 ms beats, a pattern `bash`'s polling loop
 already uses: each beat the agent reads keys and repaints, and Ctrl-C cancels
 the request (the task is joined before the call returns, so nothing it
-borrowed outlives it). Its own deadline (15 s search, 25 s context, 30 s fetch) sits above
-the service's budgets, so the service's `upstream_timeout` normally arrives
-first. A request that reused a pooled connection and failed before any byte
-of the answer arrived (the edge in front of the service closes idle
-connections after about 5 minutes, and `std.http.Client` hands them out
-unchecked) is sent once more on a fresh connection, within the same deadline
-and counted once against the allowance; a timeout, a cancellation, or a
-second failure is not retried.
+borrowed outlives it). Its deadline per attempt (15 s search, 25 s context, 30
+s fetch) sits above the service's budgets (10, 20, 25 s), so the service's
+`upstream_timeout` normally arrives first. Two causes are retried, each once a
+call, the call counted once: a transient code, after a 1 s pause the beat can
+cancel; and a reused pooled connection that failed before any byte of the
+answer (the edge closes idle ones after about 5 minutes, and `std.http.Client`
+hands them out unchecked), at once on a fresh connection. Our own timeout, a
+cancellation, and a second failure are not.
 
 **In the API.** A chat request lists `{"type": "web_search"}`,
 `{"type": "web_fetch"}`, or `{"type": "web_context"}` among its tools. The job intercepts those calls in its
@@ -304,13 +314,25 @@ what the model saw in a bounded stash (`src/api/chat/stash.zig`) keyed by a
 digest of the client's conversation through that message, and puts it back
 when the message returns.
 
+**Using it well.** The guidance behind the tool descriptions:
+
+| Habit | Why |
+| --- | --- |
+| Search, then fetch one page | a result's snippets often answer without a fetch; fetch the page worth reading, not the first three |
+| Ask the page a question | `question` returns the parts of a long page that answer it; page with `offset` only when the whole text matters (a changelog, code to copy) |
+| `web_context` for a research question | several sources in one call of about 2,000 tokens, instead of a search and several fetches |
+| Stop when the note says the end | a page read whole says so |
+| Repeat freely | the same query, or a page's next chunk, is a cache hit: free and instant |
+| Read the error code | `blocked_address` is a private address and never works; `upstream_failed` means pick another page; the transient codes may work a moment later |
+| No secrets in a query or a URL | they go to Parallel or Brave and into the service's own log |
+
 **What it costs in trust.** Queries and URLs leave the machine: the search
-engines see the queries, the sites see the fetches. The guideline tells the
-model never to put workspace code, paths, or secrets in a query, and the
-transcript (or the API's `nuclis_web_calls`) shows every query and URL. A
-fetched page can steer the model; its text is data, as the guideline says, and
-`bash` could already reach the web, so the tools add no capability, only a
-better one.
+providers see the queries and questions, the sites see the fetches. The
+guideline tells the model never to put workspace code, paths, or secrets in a
+query, and the transcript (or the API's `nuclis_web_calls`) shows every query
+and URL. A fetched page can steer the model; its text is data, as the
+guideline says, and `bash` could already reach the web, so the tools add no
+capability, only a better one.
 
 ## 12. The agent's token cache
 
