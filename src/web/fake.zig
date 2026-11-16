@@ -9,11 +9,18 @@ const Io = std.Io;
 /// took by connecting itself (a blocked `accept` does not wake on
 /// cancellation), so a failing test ends instead of hanging.
 pub const Fake = struct {
-    /// `cache`, when set, is sent as `X-Search-Cache`.
-    pub const Answer = struct { status: u16, body: []const u8, delay_ms: u64 = 0, cache: ?[]const u8 = null };
+    /// `cache`, when set, is sent as `X-Search-Cache`. `keep_alive` keeps
+    /// the connection open for the next answer, which a `drop` takes by
+    /// reading the request on it and closing without a reply, as an edge
+    /// that closed the idle connection does; a `drop` with no connection
+    /// held does the same on a new one. The answer after a `keep_alive`
+    /// waits on that connection, which the client's `deinit` closes.
+    pub const Answer = struct { status: u16 = 200, body: []const u8 = "", delay_ms: u64 = 0, cache: ?[]const u8 = null, keep_alive: bool = false, drop: bool = false };
 
     server: std.Io.net.Server,
     answers: []const Answer,
+    /// The connection a `keep_alive` answer left open.
+    held: ?std.Io.net.Stream = null,
     targets: [max_answers][256]u8 = undefined,
     target_lens: [max_answers]usize = @splat(0),
     agent: [64]u8 = undefined,
@@ -38,6 +45,7 @@ pub const Fake = struct {
     }
 
     pub fn serve(self: *Fake, io: Io) void {
+        defer if (self.held) |stream| stream.close(io);
         for (self.answers, 0..) |answer, i| {
             var counted = false;
             self.answerOne(io, i, answer, &counted) catch {};
@@ -58,8 +66,12 @@ pub const Fake = struct {
     /// Counts the request as served once its head is read, before the reply:
     /// a client that has its answer may read `served` at once.
     fn answerOne(self: *Fake, io: Io, i: usize, answer: Answer, counted: *bool) !void {
-        const stream = try self.server.accept(io);
-        defer stream.close(io);
+        const stream = if (self.held) |held| held else try self.server.accept(io);
+        self.held = null;
+        var keep = false;
+        defer if (keep) {
+            self.held = stream;
+        } else stream.close(io);
         var read_buffer: [4096]u8 = undefined;
         var reader = std.Io.net.Stream.Reader.init(stream, io, &read_buffer);
         var first = true;
@@ -83,12 +95,14 @@ pub const Fake = struct {
         }
         _ = self.served.fetchAdd(1, .release);
         counted.* = true;
+        if (answer.drop) return;
         if (answer.delay_ms > 0) try io.sleep(.fromMilliseconds(@intCast(answer.delay_ms)), .awake);
         var write_buffer: [1024]u8 = undefined;
         var writer = std.Io.net.Stream.Writer.init(stream, io, &write_buffer);
-        try writer.interface.print("HTTP/1.1 {d} Answer\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n", .{ answer.status, answer.body.len });
+        try writer.interface.print("HTTP/1.1 {d} Answer\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: {s}\r\n", .{ answer.status, answer.body.len, if (answer.keep_alive) "keep-alive" else "close" });
         if (answer.cache) |cache| try writer.interface.print("X-Search-Cache: {s}\r\n", .{cache});
         try writer.interface.print("\r\n{s}", .{answer.body});
         try writer.interface.flush();
+        keep = answer.keep_alive;
     }
 };

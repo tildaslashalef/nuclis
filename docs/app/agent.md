@@ -283,7 +283,12 @@ already uses: each beat the agent reads keys and repaints, and Ctrl-C cancels
 the request (the task is joined before the call returns, so nothing it
 borrowed outlives it). Its own deadline (15 s search, 25 s context, 30 s fetch) sits above
 the service's budgets, so the service's `upstream_timeout` normally arrives
-first.
+first. A request that reused a pooled connection and failed before any byte
+of the answer arrived (the edge in front of the service closes idle
+connections after about 5 minutes, and `std.http.Client` hands them out
+unchecked) is sent once more on a fresh connection, within the same deadline
+and counted once against the allowance; a timeout, a cancellation, or a
+second failure is not retried.
 
 **In the API.** A chat request lists `{"type": "web_search"}`,
 `{"type": "web_fetch"}`, or `{"type": "web_context"}` among its tools. The job intercepts those calls in its
