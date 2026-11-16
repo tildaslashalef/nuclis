@@ -343,16 +343,40 @@ pub const Service = struct {
         }
     }
 
+    /// One request, sent once more on a fresh connection when `Retry` says
+    /// the pooled connection it reused was dead before the answer began.
+    /// Both attempts run inside one `exchange`, under its deadline and beat.
     fn perform(self: *Service, a: Allocator, url: []const u8, out: *?Raw) !void {
         const uri = try std.Uri.parse(url);
+        const pooled = try self.idleConnections() > 0;
+        var answered = false;
+        self.attempt(a, uri, out, &answered) catch |err| {
+            if (!pooled or answered or !Retry.afterTransport(err)) return err;
+            try self.closeIdle();
+            answered = false;
+            return self.attempt(a, uri, out, &answered);
+        };
+    }
+
+    /// `answered` turns true once the answer's head arrived. A failure to
+    /// send or to read the head returns the socket's own error
+    /// (`ConnectionResetByPeer`, `BrokenPipe`) rather than the stream's
+    /// `WriteFailed` or `ReadFailed`, so `Retry` can tell them apart.
+    fn attempt(self: *Service, a: Allocator, uri: std.Uri, out: *?Raw, answered: *bool) !void {
         var req = try self.http.request(.GET, uri, .{
             .redirect_behavior = .unhandled,
             .headers = .{ .user_agent = .{ .override = self.user_agent }, .accept_encoding = .{ .override = "identity" } },
             .extra_headers = &.{.{ .name = "Accept", .value = "application/json" }},
         });
         defer req.deinit();
-        try req.sendBodiless();
-        var res = try req.receiveHead(&.{});
+        req.sendBodiless() catch |err| switch (err) {
+            error.WriteFailed => return req.connection.?.stream_writer.err orelse err,
+        };
+        var res = req.receiveHead(&.{}) catch |err| switch (err) {
+            error.ReadFailed => return req.connection.?.getReadError() orelse err,
+            else => return err,
+        };
+        answered.* = true;
         const status: u16 = @backingInt(res.head.status);
         // Read before the body: `reader` invalidates the head's bytes.
         var cached = false;
@@ -373,8 +397,40 @@ pub const Service = struct {
         out.* = .{ .status = status, .body = body.items, .cached = cached };
     }
 
+    /// Idle connections in the pool, which the next request reuses: every
+    /// connection this client opens is to `base`.
+    fn idleConnections(self: *Service) Io.Cancelable!usize {
+        const pool = &self.http.connection_pool;
+        try pool.mutex.lock(self.http.io);
+        defer pool.mutex.unlock(self.http.io);
+        return pool.free_len;
+    }
+
+    /// Closes every idle pooled connection, so the next request opens its own.
+    fn closeIdle(self: *Service) Io.Cancelable!void {
+        const pool = &self.http.connection_pool;
+        const size = pool.free_size;
+        try pool.resize(self.http.io, 0);
+        try pool.resize(self.http.io, size);
+    }
+
     fn sleep(io: Io, ms: u64) Io.Cancelable!void {
         try io.sleep(.fromMilliseconds(@intCast(ms)), .awake);
+    }
+};
+
+/// Which failed requests are sent again; every request is a `GET`, so a
+/// replay is safe. At most one retry per call, inside its deadline, and it
+/// counts once against the allowance.
+const Retry = struct {
+    /// A pooled connection the peer closed while it sat idle (the edge in
+    /// front of the service drops idle ones after about 5 minutes): the
+    /// request failed before any byte of the answer arrived.
+    fn afterTransport(err: anyerror) bool {
+        return switch (err) {
+            error.HttpConnectionClosing, error.ConnectionResetByPeer, error.EndOfStream, error.BrokenPipe => true,
+            else => false,
+        };
     }
 };
 
@@ -523,6 +579,8 @@ test "an unreachable service, a late answer, and a cancelling beat are failures"
     const url = try std.fmt.allocPrint(arena.allocator(), "{s}/v1/health", .{service.base});
     const late = try service.call(Health, arena.allocator(), url, 100, false, null);
     try std.testing.expectEqualStrings("timeout", late.failed.code);
+    // A timeout is not retried: one request reached the service.
+    try std.testing.expectEqual(@as(usize, 1), fake.served.load(.acquire));
 
     const Cancel = struct {
         fn now(_: *anyopaque) bool {
@@ -656,4 +714,40 @@ test "the allowance: six uncached calls, then budget without a request; hits and
     var again = try service.search(a, "q", 8, null, null);
     defer again.deinit();
     try std.testing.expectEqual(@as(u8, 1), service.billed);
+}
+
+test "a pooled connection the peer closed before answering is retried once on a fresh one" {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    const health_body = "{\"version\":\"0.5.0\",\"providers\":{\"brave\":\"ok\"}}";
+    var fake: Fake = try .init(io, &.{
+        .{ .body = health_body, .keep_alive = true },
+        .{ .drop = true },
+        .{ .body = "{\"query\":\"q\",\"results\":[{\"url\":\"https://ziglang.org/\"}]}" },
+        .{ .body = health_body, .keep_alive = true },
+        .{ .drop = true },
+        .{ .drop = true },
+    });
+    var task = try io.concurrent(Fake.serve, .{ &fake, io });
+    defer fake.stop(io, &task);
+    var buffer: [64]u8 = undefined;
+    var service: Service = .init(a, io, fake.base(&buffer), "nuclis/test");
+    defer service.deinit();
+
+    var health = try service.health(a, null);
+    health.deinit();
+    var found = try service.search(a, "q", 8, null, null);
+    defer found.deinit();
+    try std.testing.expectEqualStrings("https://ziglang.org/", found.outcome.ok.results[0].url);
+    try std.testing.expectEqual(@as(usize, 3), fake.served.load(.acquire));
+    try std.testing.expectEqual(@as(u8, 1), service.billed);
+
+    // The fresh connection closing too is the second failure: no third try.
+    var again = try service.health(a, null);
+    again.deinit();
+    var lost = try service.search(a, "q", 8, null, null);
+    defer lost.deinit();
+    try std.testing.expectEqualStrings("unreachable", lost.outcome.failed.code);
+    try std.testing.expect(std.mem.indexOf(u8, lost.outcome.failed.message, "HttpConnectionClosing") != null);
+    try std.testing.expectEqual(@as(usize, 6), fake.served.load(.acquire));
 }
