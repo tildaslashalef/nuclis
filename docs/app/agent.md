@@ -267,7 +267,9 @@ asked at a 2,048-token budget from 8 pages and cut at a source boundary past
 12,000 characters with the number not shown. A fetch is the page's URL and
 title, its text 16,000 code points at a time, and a bracketed note in
 `read_file`'s form: the range, the length, and the `offset` that continues
-it. Every failure is one sentence naming its cause (`busy` reads "try
+it. A page read in one chunk says `the whole page, N characters` and a last
+chunk ends `the end of the page`, so the model does not ask past either; an
+offset past the end fails naming the length. Every failure is one sentence naming its cause (`busy` reads "try
 again", a bot challenge names the host and, when offered, points to
 `web_context`, whose provider has the page's text from its index); none ends
 the turn. Queries are checked (≤ 400 bytes, a known `freshness`) and URLs too

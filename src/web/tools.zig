@@ -278,8 +278,12 @@ fn appendFailedCount(alloc: Allocator, summary: *std.ArrayList(u8), failed: usiz
 }
 
 fn renderFetch(alloc: Allocator, page: client.Fetched, offset: u64) Allocator.Error!Rendered {
-    if (page.text.len == 0 and page.chars > 0 and offset >= page.chars)
-        return fail(alloc, "web_fetch: offset {d} is past the end ({d} characters)", .{ offset, page.chars });
+    if (page.text.len == 0 and page.chars > 0 and offset >= page.chars) {
+        // An offset equal to the length is what a previous final chunk named as its end.
+        if (offset == page.chars)
+            return fail(alloc, "web_fetch: offset {d} is past the end; the page has {d} characters and was read whole", .{ offset, page.chars });
+        return fail(alloc, "web_fetch: offset {d} is past the end; the page has {d} characters, so the last offset is {d}", .{ offset, page.chars, page.chars - 1 });
+    }
     const taken: u64 = std.unicode.utf8CountCodepoints(page.text) catch page.text.len;
     const end = offset + taken;
     var note: std.ArrayList(u8) = .empty;
@@ -287,9 +291,19 @@ fn renderFetch(alloc: Allocator, page: client.Fetched, offset: u64) Allocator.Er
     if (page.chars == 0) {
         try note.appendSlice(alloc, "no text extracted; a page that renders with JavaScript yields little, so fetch its source instead");
     } else {
-        try note.print(alloc, "characters {d} to {d} of {d}", .{ offset, end, page.chars });
-        if (end < page.chars) try note.print(alloc, " · truncated, continue with offset={d}", .{end});
-        if (page.truncated and end >= page.chars) try note.appendSlice(alloc, " · the page was cut at the service's 5 MiB read; this is all it read");
+        // A page the service cut short keeps its range, so "whole" never claims more than was read.
+        if (offset == 0 and end >= page.chars and !page.truncated) {
+            try note.print(alloc, "the whole page, {d} characters", .{page.chars});
+        } else {
+            try note.print(alloc, "characters {d} to {d} of {d}", .{ offset, end, page.chars });
+            if (end < page.chars) {
+                try note.print(alloc, " · truncated, continue with offset={d}", .{end});
+            } else if (page.truncated) {
+                try note.appendSlice(alloc, " · the page was cut at the service's 5 MiB read; this is all it read");
+            } else {
+                try note.appendSlice(alloc, " · the end of the page");
+            }
+        }
     }
     var text: std.ArrayList(u8) = .empty;
     errdefer text.deinit(alloc);
@@ -345,7 +359,7 @@ test "a search renders numbered results, dates, and the engines that failed" {
     try std.testing.expectEqualStrings("no results", none.summary.?);
 }
 
-test "a fetched page states its range and how to continue" {
+test "a fetched page states its range, whether it was read whole, and how to continue" {
     const a = std.testing.allocator;
     var partial = try renderFetch(a, .{ .url = "https://e.org/a", .final_url = "https://e.org/a/", .title = "A", .text = "# A\n\nbé", .chars = 100, .truncated = true }, 10);
     defer partial.deinit(a);
@@ -355,12 +369,29 @@ test "a fetched page states its range and how to continue" {
 
     var whole = try renderFetch(a, .{ .url = "https://e.org/t", .text = "plain", .chars = 5 }, 0);
     defer whole.deinit(a);
-    try std.testing.expectEqualStrings("https://e.org/t\n\nplain\n\n[characters 0 to 5 of 5]", whole.text);
+    try std.testing.expectEqualStrings("https://e.org/t\n\nplain\n\n[the whole page, 5 characters]", whole.text);
+    try std.testing.expectEqualStrings("the whole page, 5 characters", whole.summary.?);
+    try std.testing.expect(!whole.truncated);
+
+    var last = try renderFetch(a, .{ .url = "https://e.org/a", .text = "tail", .chars = 100 }, 96);
+    defer last.deinit(a);
+    try std.testing.expectEqualStrings("https://e.org/a\n\ntail\n\n[characters 96 to 100 of 100 · the end of the page]", last.text);
+    try std.testing.expectEqualStrings("characters 96 to 100 of 100", last.summary.?);
+    try std.testing.expect(!last.truncated);
+
+    var cut = try renderFetch(a, .{ .url = "https://e.org/big", .text = "all", .chars = 3, .truncated = true }, 0);
+    defer cut.deinit(a);
+    try std.testing.expectEqualStrings("https://e.org/big\n\nall\n\n[characters 0 to 3 of 3 · the page was cut at the service's 5 MiB read; this is all it read]", cut.text);
 
     var past = try renderFetch(a, .{ .url = "https://e.org/a", .chars = 100 }, 100);
     defer past.deinit(a);
     try std.testing.expect(past.is_error);
-    try std.testing.expectEqualStrings("web_fetch: offset 100 is past the end (100 characters)", past.text);
+    try std.testing.expectEqualStrings("web_fetch: offset 100 is past the end; the page has 100 characters and was read whole", past.text);
+
+    var beyond = try renderFetch(a, .{ .url = "https://e.org/a", .chars = 100 }, 250);
+    defer beyond.deinit(a);
+    try std.testing.expect(beyond.is_error);
+    try std.testing.expectEqualStrings("web_fetch: offset 250 is past the end; the page has 100 characters, so the last offset is 99", beyond.text);
 
     var empty = try renderFetch(a, .{ .url = "https://e.org/js" }, 0);
     defer empty.deinit(a);
