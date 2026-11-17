@@ -282,7 +282,9 @@ const Ui = struct {
         bar.busy = self.busy;
         bar.message = self.status;
         bar.context_used = session.position;
-        bar.context_capacity = session.capacity;
+        // The prompt's ceiling, not the window: the bar fills where
+        // compaction starts.
+        bar.context_capacity = self.completer.window().ceiling();
         bar.effort = @tagName(self.effort);
         bar.model = self.model_label;
         bar.speculative = self.eng.model.drafter() != null;
@@ -1200,8 +1202,10 @@ const Ui = struct {
             if (conversation) "a new context window re-opens the engine; the conversation is prefilled again" else "a new context window re-opens the engine"
         else if (choice_now.effort != self.effort)
             "a new effort primes the system block again"
-        else
-            "the model in use";
+        else blk: {
+            const window = self.completer.window();
+            break :blk std.fmt.bufPrint(&note, "the model in use: a window of {d}, {d} for the prompt and {d} kept for a step's output", .{ window.capacity, window.ceiling(), window.reserve }) catch "the model in use";
+        };
         try self.pick.setNote(text);
     }
 
@@ -2024,7 +2028,6 @@ fn bind(ui: *Ui, open: *Open, sampler: *inference.sampling.Sampler, label: []con
     c.dropCache();
     if (c.disk) |*d| d.close();
     c.disk = loop.cache.openDisk(ui.alloc, ui.io, ui.root_dir, settings.cache.disk_bytes, open.model_path, if (open.eng.model.drafter() != null) open.draft_path else null, @tagName(settings.backend));
-    ui.agent.result_budget = loop.resultBudget(settings.ctx_size);
     try sampler.setOptions(ui.profile.samplingOptions(ui.effort, ui.overrides));
 }
 
@@ -2163,6 +2166,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         // Session files are written under the root: a turn saved there can
         // be resumed.
         .save_turns = root_dir != null,
+        .reserve = .{ .step = loop.answer_reserve },
     };
     defer completer.deinit();
     // Declared after the engine and the completer, so its in-flight encode

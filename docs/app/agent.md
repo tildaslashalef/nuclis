@@ -173,8 +173,8 @@ conversation would not validate. And a **cancelled step is not a message** the
 model ever finished, so it is recorded for display but neither appended to
 history nor given stored calls; a file whose assistant call has no following
 result would not load. The live loop also shrinks its view to fit
-the window, and each cut is a `compaction` entry the loader applies where it
-was written: `context_full` drops the turns before `first_kept`,
+the window, one decision per overflow ([agent-surface.md § The loop](agent-surface.md#the-loop)),
+and each cut is a `compaction` entry the loader applies where it was written: `context_full` drops the turns before `first_kept`,
 `results_elided` turns the tool results of the turn in progress before
 `first_kept` into the same one-line stubs, and `turn_aborted` drops a turn that
 failed. So a resumed conversation is the one the model last saw, not the

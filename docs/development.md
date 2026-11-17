@@ -222,7 +222,7 @@ at by running `./zig-out/bin/nuclis agent` in Ghostty directly.
 ### The agent's task list
 
 `scripts/app/agent-eval.py` (`make agent-eval VARIANT=<name> ARGS='…'`) runs
-thirteen small tasks against the playground: a tiny Python geometry package
+fifteen small tasks against the playground: a tiny Python geometry package
 that `scripts/app/playground.py` generates on first use under
 `.zig-cache/playground/` (`make playground` builds it and prints the path)
 and commits with `git init` as the baseline its own Makefile's `reset`
@@ -235,11 +235,16 @@ a version stamp in its `.git` rebuilds it when the generator changes
 and a maximum, the release list), edits (a rename, the repeated heading,
 a planted bug, a validation with its test), a new module with tests, a
 flag added to the CLI, a silent `exit 7`, a tree-wide `grep`, a three-bullet
-summary, the 1 MiB file, and "what is this project about". Each task is one
+summary, the 1 MiB file, "what is this project about", five pages of an
+access log, and the same after three turns that fill the window (four
+`--print` runs continued through `--resume`, the compaction and replay
+case). Each task is one
 `nuclis agent --print` turn with a fixed seed from the committed baseline, checked by its own
 predicate (file contents, a command's output, the answer's text) and
 scored on steps, tool calls, tool errors, failed edits, prompt and
-generated tokens, the model's seconds, the answer's length, and four
+generated tokens, the model's seconds, the answer's length, what
+compaction cost (turns dropped, elisions, results clipped, prompt tokens
+of replayed steps), and four
 counted habits read from the session (a regex handed to the literal
 `grep`, a guessed `pytest`, a file re-read right after its own edit, a
 `cd` before a command); the records land under

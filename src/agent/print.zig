@@ -146,6 +146,7 @@ pub fn run(
         .cache = .{ .alloc = alloc, .budget = settings.cache.memory_bytes },
         .disk = loop.cache.openDisk(alloc, io, root, settings.cache.disk_bytes, model_path, if (eng.model.drafter() != null) draft_path else null, @tagName(settings.backend)),
         .save_turns = options.session != null,
+        .reserve = .{ .step = loop.answer_reserve },
     };
     defer completer.deinit();
     var workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
@@ -163,7 +164,6 @@ pub fn run(
     defer if (override) |text| alloc.free(text);
     var agent = try loop.Agent.init(alloc, io, workspace, completer.model(), turn.events(), loop.budget_default, .{ .root = cwd, .date = now[0..10], .instructions = instructions, .override = override });
     defer agent.deinit();
-    agent.result_budget = loop.resultBudget(capacity);
     _ = completer.prime(agent.system, agent.tool_defs) catch |err| {
         if (err == error.ContextFull) {
             const overflow = completer.overflow orelse loop.Overflow{ .needed = 0, .capacity = capacity };

@@ -247,11 +247,11 @@ test "the settings sit at the right edge, every one of them on a wide bar" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const status: Status = .{ .context_used = 934, .context_capacity = 16384, .effort = "low", .speculative = true, .draft_length = 4, .kv = "f16", .backend = "metal", .model = "qwen3.8-27b" };
+    const status: Status = .{ .context_used = 934, .context_capacity = 29696, .effort = "low", .speculative = true, .draft_length = 4, .kv = "f16", .backend = "metal", .model = "qwen3.8-27b" };
     const row = try painted(a, status, .{ .width = 200, .th = .{ .kind = .plain } });
     try testing.expectEqual(@as(usize, 200), view.width(row));
     try testing.expect(std.mem.endsWith(u8, row, "✦ think low │ speculative on 4 │ kv f16 │ metal │ qwen3.8-27b "));
-    try testing.expect(std.mem.startsWith(u8, row, " ◆ ready │ ▤ ctx 934/16384 │ ⇅ in 0 out 0 │ ⇤ pp — t/s │ ⇥ tg — t/s"));
+    try testing.expect(std.mem.startsWith(u8, row, " ◆ ready │ ▤ ctx 934/29696 │ ⇅ in 0 out 0 │ ⇤ pp — t/s │ ⇥ tg — t/s"));
     // The gap between the groups is blank.
     const left_end = std.mem.lastIndexOf(u8, row, "t/s").? + 3;
     const right_start = std.mem.indexOf(u8, row, "✦").?;
@@ -267,7 +267,7 @@ test "a narrow bar drops settings from the right, then truncates the measurement
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const status: Status = .{ .context_used = 934, .context_capacity = 16384, .effort = "low", .speculative = true, .draft_length = 4, .kv = "f16", .backend = "metal", .model = "qwen3.8-27b" };
+    const status: Status = .{ .context_used = 934, .context_capacity = 29696, .effort = "low", .speculative = true, .draft_length = 4, .kv = "f16", .backend = "metal", .model = "qwen3.8-27b" };
     // The measurements are 67 cells; the settings need 1 cell of gap and 1
     // of margin: 120 holds up to the backend, 100 up to the switch, 80 the
     // effort alone.
@@ -284,7 +284,7 @@ test "a narrow bar drops settings from the right, then truncates the measurement
     try testing.expect(std.mem.indexOf(u8, at60, "think") == null);
     try testing.expect(std.mem.indexOf(u8, at60, "⇤ pp") != null);
     const at40 = try painted(a, status, .{ .width = 40, .th = .{ .kind = .plain } });
-    try testing.expect(std.mem.startsWith(u8, at40, " ◆ ready │ ▤ ctx 934/16384"));
+    try testing.expect(std.mem.startsWith(u8, at40, " ◆ ready │ ▤ ctx 934/29696"));
     try testing.expect(std.mem.indexOf(u8, at40, "tg") == null);
     for ([_]usize{ 200, 100, 80, 60, 40, 20 }) |width| {
         try testing.expectEqual(width, view.styledWidth(try status.paint(a, .{ .width = width, .th = .{ .kind = .truecolor } })));
