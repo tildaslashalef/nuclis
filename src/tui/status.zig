@@ -15,8 +15,10 @@
 //!
 //! Two groups: the measurements on the left, the settings on the right,
 //! right-aligned. A bar too narrow for both drops settings cells from the
-//! right end, then truncates the measurements at the column; a wrapped bar
-//! would occupy two rows and break the cursor arithmetic in `screen.zig`.
+//! right end, then whole measurement cells from the right (the replay, `tg`,
+//! `pp`, `in/out`), and truncates at the column only when the phase cell and
+//! `ctx` alone do not fit; a wrapped bar would occupy two rows and break the
+//! cursor arithmetic in `screen.zig`.
 //! The row is padded to exactly `width` display cells with the escape-aware
 //! width (`view.styledWidth`), so the painted background spans it.
 const std = @import("std");
@@ -131,40 +133,43 @@ pub const Status = struct {
     pub fn paint(self: Status, a: std.mem.Allocator, options: Paint) ![]const u8 {
         const th = options.th;
         const gl = th.glyphs();
-        var left: std.Io.Writer.Allocating = .init(a);
+        // The measurements, each cell its own string: the first (the phase,
+        // the step, steering) and `ctx` always stay; the rest drop whole from
+        // the right once every setting has gone.
+        var head: std.Io.Writer.Allocating = .init(a);
         const spin: []const u8 = if (self.busy) gl.spinner[options.frame % gl.spinner.len] else gl.idle;
         // The bar is a raw row: its free text (the model's name comes from
         // the file) is cleaned here.
         if (self.busy and self.running != null) {
             const tool = self.running.?;
-            try left.writer.print(" {s} running {s} · {d:.0}s", .{ spin, try plain(a, tool.name), @floor(tool.seconds) });
-        } else try left.writer.print(" {s} {s}", .{ spin, try plain(a, self.message) });
+            try head.writer.print(" {s} running {s} · {d:.0}s", .{ spin, try plain(a, tool.name), @floor(tool.seconds) });
+        } else try head.writer.print(" {s} {s}", .{ spin, try plain(a, self.message) });
         if (self.busy and self.running != null) {} else if (self.busy and self.phase == .prefill and self.target > 0 and self.position < self.target) {
-            try left.writer.print(" {s}{d}/{d}{s}", .{ th.paint(.progress), self.position, self.target, theme.fg_default });
-            if (self.eta(options.elapsed_seconds)) |seconds_left| try left.writer.print(" ~{d:.0}s", .{seconds_left});
+            try head.writer.print(" {s}{d}/{d}{s}", .{ th.paint(.progress), self.position, self.target, theme.fg_default });
+            if (self.eta(options.elapsed_seconds)) |seconds_left| try head.writer.print(" ~{d:.0}s", .{seconds_left});
         } else if (self.busy and self.phase == .decode) {
-            try left.writer.print(" {s}{d}{s} out, {d:.0}s", .{ th.paint(.progress), self.generated, theme.fg_default, options.elapsed_seconds });
+            try head.writer.print(" {s}{d}{s} out, {d:.0}s", .{ th.paint(.progress), self.generated, theme.fg_default, options.elapsed_seconds });
         }
         if (self.busy and self.budget > 0)
-            try left.writer.print(" {s} step {d}/{d}", .{ gl.table_bar, self.step, self.budget });
+            try head.writer.print(" {s} step {d}/{d}", .{ gl.table_bar, self.step, self.budget });
         if (self.busy and self.steering > 0)
-            try left.writer.print(" {s} steering ×{d}", .{ gl.table_bar, self.steering });
-        try left.writer.print(" {s} {s} ctx {s}{d}/{d}{s} {s} {s} in {d} out {d} {s} {s} pp ", .{
-            gl.table_bar, gl.context, th.paint(.accent),  self.context_used, self.context_capacity, theme.fg_default,
-            gl.table_bar, gl.tokens,  self.prompt_tokens, self.generated,    gl.table_bar,          gl.prefill,
-        });
-        try rate(&left.writer, self.rates.prefill);
-        try left.writer.print(" t/s {s} {s} tg ", .{ gl.table_bar, gl.decode });
-        try rate(&left.writer, self.rates.decode);
-        try left.writer.writeAll(" t/s");
+            try head.writer.print(" {s} steering ×{d}", .{ gl.table_bar, self.steering });
+        var measures: std.ArrayList([]const u8) = .empty;
+        try measures.append(a, head.written());
+        try measures.append(a, try a.print("{s} ctx {s}{d}/{d}{s}", .{ gl.context, th.paint(.accent), self.context_used, self.context_capacity, theme.fg_default }));
+        try measures.append(a, try a.print("{s} in {d} out {d}", .{ gl.tokens, self.prompt_tokens, self.generated }));
+        try measures.append(a, try rateCell(a, gl.prefill, "pp", self.rates.prefill));
+        try measures.append(a, try rateCell(a, gl.decode, "tg", self.rates.decode));
         if (self.replay) |r| if (r.prefilled >= replay_shown) {
-            try left.writer.print(" {s} re-read ", .{gl.table_bar});
-            try writeCount(&left.writer, r.prefilled);
-            try left.writer.print(" tokens ({s})", .{causePhrase(r.cause)});
+            var cell: std.Io.Writer.Allocating = .init(a);
+            try cell.writer.writeAll("re-read ");
+            try writeCount(&cell.writer, r.prefilled);
+            try cell.writer.print(" tokens ({s})", .{causePhrase(r.cause)});
+            try measures.append(a, cell.written());
         };
 
         // The settings, each cell its own string so the narrow bar can drop
-        // them one at a time from the right.
+        // them one at a time from the right, before any measurement.
         var cells: std.ArrayList([]const u8) = .empty;
         try cells.append(a, try a.print("{s} think {s}{s}{s}", .{ gl.effort, th.paint(.accent), self.effort, theme.fg_default }));
         if (self.speculative) {
@@ -177,7 +182,8 @@ pub const Status = struct {
         if (self.backend.len != 0) try cells.append(a, self.backend);
         if (self.model.len != 0) try cells.append(a, try plain(a, self.model));
 
-        const left_width = view.styledWidth(left.written());
+        var left = try joinCells(a, measures.items, gl.table_bar);
+        var left_width = view.styledWidth(left);
         var keep = cells.items.len;
         var right: []const u8 = "";
         while (keep > 0) : (keep -= 1) {
@@ -185,11 +191,19 @@ pub const Status = struct {
             // One cell of gap at least, and one of margin at the right edge.
             if (left_width + 1 + view.styledWidth(right) + 1 <= options.width) break;
         }
-        if (keep == 0) right = "";
+        if (keep == 0) {
+            right = "";
+            var kept = measures.items.len;
+            while (left_width > options.width and kept > always_kept) {
+                kept -= 1;
+                left = try joinCells(a, measures.items[0..kept], gl.table_bar);
+                left_width = view.styledWidth(left);
+            }
+        }
         const right_width = view.styledWidth(right);
-        const body = if (right.len == 0) left.written() else blk: {
+        const body = if (right.len == 0) left else blk: {
             const gap = options.width - left_width - right_width - 1;
-            break :blk try std.mem.concat(a, u8, &.{ left.written(), spaces[0..@min(gap, spaces.len)], right, " " });
+            break :blk try std.mem.concat(a, u8, &.{ left, spaces[0..@min(gap, spaces.len)], right, " " });
         };
         const wrapped = try view.wrapStyled(a, body, options.width, .character);
         const pad = options.width -| view.styledWidth(wrapped[0]);
@@ -233,8 +247,13 @@ fn joinCells(a: std.mem.Allocator, cells: []const []const u8, bar: []const u8) !
     return w.written();
 }
 
-fn rate(w: *std.Io.Writer, value: ?f64) !void {
-    if (value) |v| try w.print("{d:.2}", .{v}) else try w.writeAll("—");
+/// The measurement cells a narrow bar never drops: the phase cell and `ctx`.
+const always_kept = 2;
+
+/// One rate cell (`⇤ pp 84.26 t/s`), `—` for a rate not measured.
+fn rateCell(a: std.mem.Allocator, glyph: []const u8, name: []const u8, value: ?f64) ![]const u8 {
+    if (value) |v| return a.print("{s} {s} {d:.2} t/s", .{ glyph, name, v });
+    return a.print("{s} {s} — t/s", .{ glyph, name });
 }
 
 // ----- tests -----
@@ -318,15 +337,52 @@ test "a narrow bar drops settings from the right, then truncates the measurement
     const at80 = try painted(a, status, .{ .width = 80, .th = .{ .kind = .plain } });
     try testing.expect(std.mem.indexOf(u8, at80, "think low") != null);
     try testing.expect(std.mem.indexOf(u8, at80, "speculative") == null);
+    // Then whole measurement cells from the right: `tg` (13 cells) goes at
+    // 60, `pp` and `in/out` at 40, and what stays is never cut.
     const at60 = try painted(a, status, .{ .width = 60, .th = .{ .kind = .plain } });
     try testing.expect(std.mem.indexOf(u8, at60, "think") == null);
-    try testing.expect(std.mem.indexOf(u8, at60, "⇤ pp") != null);
+    try testing.expect(std.mem.indexOf(u8, at60, "⇤ pp — t/s ") != null);
+    try testing.expect(std.mem.indexOf(u8, at60, "tg") == null);
     const at40 = try painted(a, status, .{ .width = 40, .th = .{ .kind = .plain } });
-    try testing.expect(std.mem.startsWith(u8, at40, " ◆ ready │ ▤ ctx 934/29696"));
-    try testing.expect(std.mem.indexOf(u8, at40, "tg") == null);
+    try testing.expectEqualStrings(" ◆ ready │ ▤ ctx 934/29696", std.mem.trimEnd(u8, at40, " "));
+    // Only the phase cell and `ctx` are ever truncated.
+    const at20 = try painted(a, status, .{ .width = 20, .th = .{ .kind = .plain } });
+    try testing.expect(std.mem.startsWith(u8, at20, " ◆ ready │ ▤ ctx"));
     for ([_]usize{ 200, 100, 80, 60, 40, 20 }) |width| {
         try testing.expectEqual(width, view.styledWidth(try status.paint(a, .{ .width = width, .th = .{ .kind = .truecolor } })));
     }
+}
+
+test "a busy bar at 80 columns drops a rate whole rather than cut it mid-word" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var status: Status = .{ .busy = true, .message = "generating", .phase = .decode, .generated = 58, .step = 2, .budget = 25, .context_used = 2310, .context_capacity = 13312, .prompt_tokens = 2310, .effort = "low", .backend = "metal" };
+    status.rates = .{ .prefill = 84.26, .decode = 20.25 };
+    const at80 = try painted(a, status, .{ .width = 80, .th = .{ .kind = .plain }, .elapsed_seconds = 6 });
+    try testing.expectEqual(@as(usize, 80), view.width(at80));
+    try testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, at80, " "), "│ ⇅ in 2310 out 58"));
+    try testing.expect(std.mem.indexOf(u8, at80, "pp") == null and std.mem.indexOf(u8, at80, "tg") == null);
+    try testing.expect(std.mem.indexOf(u8, at80, "think") == null);
+    const at60 = try painted(a, status, .{ .width = 60, .th = .{ .kind = .plain }, .elapsed_seconds = 6 });
+    try testing.expectEqualStrings(" ⠋ generating 58 out, 6s │ step 2/25 │ ▤ ctx 2310/13312", std.mem.trimEnd(u8, at60, " "));
+}
+
+test "a replay keeps its cell over the settings, and drops before the rates" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const status: Status = .{ .context_used = 4900, .context_capacity = 32768, .effort = "low", .speculative = true, .draft_length = 4, .kv = "f16", .backend = "metal", .model = "qwen3.8-27b", .replay = .{ .cause = "rewrite", .prefilled = 4900 } };
+    // At 160 the settings go first, from the right; the replay stays whole.
+    const at160 = try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } });
+    try testing.expect(std.mem.indexOf(u8, at160, "│ re-read 4.9k tokens (after trimming the context)") != null);
+    try testing.expect(std.mem.indexOf(u8, at160, "qwen3.8-27b") == null);
+    try testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, at160, " "), "think low │ speculative on 4 │ kv f16"));
+    // At 100 every setting has gone, then the replay, and the rates stay.
+    const at100 = try painted(a, status, .{ .width = 100, .th = .{ .kind = .plain } });
+    try testing.expect(std.mem.indexOf(u8, at100, "re-read") == null);
+    try testing.expect(std.mem.indexOf(u8, at100, "think") == null);
+    try testing.expect(std.mem.indexOf(u8, at100, "⇥ tg — t/s") != null);
 }
 
 test "a model name or message from a file cannot write escapes on the raw bar" {

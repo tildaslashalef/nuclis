@@ -1362,6 +1362,7 @@ const Ui = struct {
         } else {
             self.comp_kind = .none;
         }
+        if (completionSettled(self.comp_kind, word, items.items)) items.clearRetainingCapacity();
         try self.comp.set(items.items);
     }
 
@@ -1374,6 +1375,9 @@ const Ui = struct {
         const label = item.label[0 .. std.mem.indexOfScalar(u8, item.label, ' ') orelse item.label.len];
         try self.ed.replaceWord(label);
         if (self.comp_kind == .command) try self.ed.insert(" ");
+        // A file is a choice made: the list closes even when the accepted
+        // name still fuzzily matches others. The next edit rebuilds it.
+        if (self.comp_kind == .path and !std.mem.endsWith(u8, label, "/")) return self.comp.set(&.{});
         try self.refreshCompletion();
     }
 
@@ -2531,6 +2535,28 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             };
         }
     }
+}
+
+/// Whether an `@path` list has nothing left to offer: its one candidate is a
+/// file and the word already names it. A directory stays open to walk into,
+/// and a command list stays open to show its summary.
+fn completionSettled(kind: @FieldType(Ui, "comp_kind"), word: []const u8, items: []const choice.Item) bool {
+    if (kind != .path or items.len != 1) return false;
+    const label = items[0].label;
+    return !std.mem.endsWith(u8, label, "/") and std.mem.eql(u8, label, word);
+}
+
+test "an @path list closes on its one file, and stays open for a directory" {
+    const file = [_]choice.Item{.{ .label = "@notes.md" }};
+    try std.testing.expect(completionSettled(.path, "@notes.md", &file));
+    // Still being typed: the candidate is offered.
+    try std.testing.expect(!completionSettled(.path, "@no", &file));
+    const dir = [_]choice.Item{.{ .label = "@src/" }};
+    try std.testing.expect(!completionSettled(.path, "@src/", &dir));
+    const two = [_]choice.Item{ .{ .label = "@notes.md" }, .{ .label = "@notes/notes.md" } };
+    try std.testing.expect(!completionSettled(.path, "@notes.md", &two));
+    const cmd = [_]choice.Item{.{ .label = "/help", .detail = "list the commands" }};
+    try std.testing.expect(!completionSettled(.command, "/help", &cmd));
 }
 
 test "Ctrl-O names the view, and says when it starts with the next turn" {

@@ -101,24 +101,21 @@ it are [agent.md](agent.md).
   cache as an image's does, so a follow-up turn reads only its new tokens.
 - Up/Down move inside a multi-line input and recall history from the
   first and last rows; history persists across sessions (200 entries).
-- Tab completes a `/command` or an `@path`, else folds thinking; Enter
-  on an open command list runs the highlighted command, and a bare `/` is
-  answered with the command names, never sent to the model. An
-  `@word` without a `/` matches fuzzily across the workspace tree (`@faq`
-  offers `docs/faq.md`; characters in order, case-insensitive, basename and
-  word starts first; `.git`, `node_modules`, `zig-out`, `.zig-cache`, and
-  `__pycache__` are not walked, at most 20,000 entries); one with a `/`
-  lists that directory by prefix, so Tab walks into it. Ctrl-O
-  cycles the tool rows of the last turn through three views: the summary
-  (each call's row, detail, and one result row), the output (the result's
-  text under it, 40 rows then `… N more lines`), and folded (the call rows
-  stay, their detail, result, and diff rows go). The last turn is
-  rewritten in the new view when it is still wholly on screen; a taller
-  one keeps its rows, and the status bar says the view applies from the
-  next turn (`tools: folded · from the next turn`). Ctrl-T cycles the efforts
-  the model's profile renders distinctly and Ctrl-W the context window (2K
-  to 32K, re-opening the engine), both accelerators for `/model`; Ctrl-N
-  is `/clear`; Ctrl-C cancels a turn, twice quits, or quits when idle;
+- Tab completes a `/command` or an `@path`, else folds thinking; Enter on an open command list
+  runs the highlighted command, and a bare `/` is answered with the command names, never sent to
+  the model. An `@word` without a `/` matches fuzzily across the workspace tree (`@faq` offers
+  `docs/faq.md`; characters in order, case-insensitive, basename and word starts first; `.git`,
+  `node_modules`, `zig-out`, `.zig-cache`, and `__pycache__` are not walked, at most 20,000
+  entries); one with a `/` lists that directory by prefix, so Tab walks into it. The `@path`
+  list closes when Tab takes a file, or when the word already names the one file it offers; a
+  directory keeps it open. Ctrl-O cycles the tool rows of the last turn through three views: the
+  summary (each call's row, detail, and one result row), the output (the result's text under it,
+  40 rows then `… N more lines`), and folded (the call rows stay, their detail, result, and diff
+  rows go). The last turn is rewritten in the new view when it is still wholly on screen; a
+  taller one keeps its rows, and the status bar says the view applies from the next turn
+  (`tools: folded · from the next turn`). Ctrl-T cycles the efforts the model's profile renders
+  distinctly and Ctrl-W the context window (2K to 32K, re-opening the engine), both accelerators
+  for `/model`; Ctrl-N is `/clear`; Ctrl-C cancels a turn, twice quits, or quits when idle;
   Ctrl-D quits.
 - Ctrl-X copies the last answer to the clipboard through OSC 52 (at most
   256 KiB); Ctrl-G opens the input in `$VISUAL` or `$EDITOR` with the
@@ -161,23 +158,23 @@ it are [agent.md](agent.md).
   asks inside the picker, and only `y` confirms. Keys are accelerators for
   commands and listed beside them in `/help`; no setting is reachable by a
   key alone.
-- **`/model [name]`** offers the runnable models: the registry entries of
-  `nuclis.json` whose file is present, then catalogue names no entry
-  shadows (as `nuclis model ls` reports them), with option rows for the
-  effort (the levels the profile renders distinctly) and the context
-  window, at the running values for the running model and at the entry's
-  (the effort carried over) for another. A name, or a query only one model
-  matches, switches without the picker. Enter on another model unloads the
-  engine, opens the chosen file with its entry's settings (context,
-  speculation, draft length, thinking budget, sampling; backend, cache
-  precision, output ceiling, and image cap from the command line hold),
-  primes it (the token cache's disk tier serves a model used before), and
-  continues the conversation rendered through the new profile, which is a
-  full prefill; the conversation's images and clips are encoded again by
-  the new model's encoders, and one it cannot read or hear leaves the
-  model's view with a notice.
-  A failed open falls back to the previous model. On the running model,
-  Enter applies a new effort (re-priming) or window (re-opening).
+- **`/model [name]`** offers the runnable models: the registry entries of `nuclis.json` whose
+  file is present, then catalogue names no entry shadows (as `nuclis model ls` reports them),
+  each with its family, quantization, and size (`gemma4 · Q4_0 (QAT) · 15.70 GB`): the
+  catalogue's, or for a file outside it the GGUF header's `general.architecture` and
+  `general.file_type`, read within the directory limits when the listing walks the models; a
+  file whose header does not parse shows its name. The picker has option rows for the effort
+  (the levels the profile renders distinctly) and the context window, at the running values for
+  the running model and at the entry's (the effort carried over) for another. A name, or a query
+  only one model matches, switches without the picker. Enter on another model unloads the
+  engine, opens the chosen file with its entry's settings (context, speculation, draft length,
+  thinking budget, sampling; backend, cache precision, output ceiling, and image cap from the
+  command line hold), primes it (the token cache's disk tier serves a model used before), and
+  continues the conversation rendered through the new profile, which is a full prefill; the
+  conversation's images and clips are encoded again by the new model's encoders, and one it
+  cannot read or hear leaves the model's view with a notice. A failed open falls back to the
+  previous model. On the running model, Enter applies a new effort (re-priming) or window
+  (re-opening).
 - **`/resume [id]`**: an id or a prefix of exactly one id resumes it;
   otherwise the picker lists the workspace's sessions (newest first, the
   one in use marked; the argument becomes the search) and Ctrl-D deletes
@@ -235,16 +232,19 @@ it are [agent.md](agent.md).
   `turns_dropped`); a turn whose reads were whole adds nothing.
 - The status bar shows measurements on the left (state, progress, the loop step, context use,
   token counts, prefill and decode rates) and settings on the right (effort, the speculative
-  switch and draft length, cache precision, backend, model). A rate that was not measured
-  prints as absent; a countdown is marked as an estimate. A narrow bar drops settings from
-  the right. Context use is `ctx used/ceiling`: the tokens the session holds against the
-  prompt's ceiling, the window less the step's reserve (`ctx 7694/13312` at 16K, `low`, and a
-  1,024 budget), so the bar fills where compaction starts; `/model`'s note for the model in
-  use names the window, the ceiling, and the reserve. After a cancel, until the next step,
-  `ctx` is the conversation's size at the last step. A replay of 1,024 tokens or more
-  (`status.replay_shown`) reads `re-read 2.3k tokens (after a cancel)`, its cause in plain
-  words; a smaller one has no cell. `/help` explains it; the session file and `--print
-  --json` keep every replay's cause and tokens prefilled and restored.
+  switch and draft length, cache precision, backend, model). A rate that was not measured prints
+  as absent; a countdown is marked as an estimate. A narrow bar drops whole cells, never part of
+  one: the settings from the right (model, backend, cache precision, the switch, effort), then
+  the measurements from the right (the replay, `tg`, `pp`, `in/out`); only the state cell and
+  `ctx` are cut at the column when even they do not fit. The replay outlasts the settings
+  because it is news of the last turn and they are not. Context use is `ctx used/ceiling`: the
+  tokens the session holds against the prompt's ceiling, the window less the step's reserve
+  (`ctx 7694/13312` at 16K, `low`, and a 1,024 budget), so the bar fills where compaction
+  starts; `/model`'s note for the model in use names the window, the ceiling, and the reserve.
+  After a cancel, until the next step, `ctx` is the conversation's size at the last step. A
+  replay of 1,024 tokens or more (`status.replay_shown`) reads `re-read 2.3k tokens (after a
+  cancel)`, its cause in plain words; a smaller one has no cell. `/help` explains it; the
+  session file and `--print --json` keep every replay's cause and tokens prefilled and restored.
 
 ## Sessions and storage
 
@@ -382,7 +382,7 @@ The requirements every tool meets are [spec.md § 7.6](../spec.md#76-tools).
 | `read_file` | a line-addressed region: offset and count, 120 lines by default, at most 2,000 lines; a partial page ends with a note the model reads (its range, the total, where to continue), a whole file with none; a file over 1 MiB serves its first MiB, whole code points only, with the size stated and the shell named for the rest; `outline` lists a markdown file's headings or a source file's definitions (Python, Zig, JS/TS, Go, Rust, C-family, shell) with line numbers, at most 400; non-UTF-8 is a typed error |
 | `write_file` | create or replace a UTF-8 text file, at most 1 MiB, by atomic replacement that keeps a replaced file's mode; the model reads a replacement's diff, a new file's line count only |
 | `edit_file` | replace one exact, unique, non-empty sequence; zero or several matches change nothing, nor does a result over 1 MiB; the file's mode is kept; the model reads the diff with one line of context (the transcript shows three) |
-| `glob` | one pattern (`*`, `?`, classes, `**`); hidden entries only when named; at most 200 results in stable order, of at most 10,000 collected; more, or unreadable directories, are marked |
+| `glob` | one pattern (`*`, `?`, classes, `**`); hidden entries only when named; at most 200 results in stable order, of at most 10,000 collected; more, or unreadable directories, are marked; symlinks are not followed, and the ones the pattern could reach are counted (`[no files · 1 symlink skipped]`) |
 | `grep` | literal, case-sensitive; `path` narrows it to a directory, a file, or a glob inside the workspace, `context` adds 0–5 lines around a match; grouped by file in path order; at most 50 matches with the total stated; at most 20,000 files and 10 s a search, a stop stated; skips hidden entries, symlinks, binary-looking files, generated trees, and what each directory's `.gitignore` excludes (a subset: negation, directory-only, anchoring, the glob wildcards) |
 | `bash` | one command with a minimal environment; combined output at most 1 MiB; 300 s; cancellation, the timeout, and the output bound stop the command's process group (`SIGTERM`, then `SIGKILL` after 2 s) and reap the child; an output over 120 lines reaches the model as its first 40 and last 80 with the omitted count between |
 | `web_search` | offered only with `agent.web` and `web.url`; one query (≤ 400 bytes) to the user's search service, optionally limited by `freshness` (`day`, `week`, `month`, `year`); at most 8 results, each title, URL, and snippet, with up to three more passages from the page, each one line of at most 300 characters; the corrected query and a skipped provider noted; 15 s; Ctrl-C cancels |
