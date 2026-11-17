@@ -285,7 +285,12 @@ it are [agent.md](agent.md).
   tail, the trailing `[bash: …]` notes (the exit status) always kept, and
   `[… N lines cut to fit the context …]` at the cut; the row says the
   same. Other tools keep the prefix, since a `read_file` page continues
-  with `offset`.
+  with `offset`; a cut `web_fetch` page states the characters it kept
+  and the `offset` that continues it, the way a cut read restates its
+  lines. A web page is asked for at the budget's size
+  (`web.tools.pageChars`: 2.75 characters a token, at most 16,000), so
+  that cut is rare
+  ([record, 2026-11-17](../benchmarks/record/agent.md#web-pages-sized-from-the-result-budget-2026-11-17)).
   The window is 32K by default: Qwen3.8-27B with its drafter peaks at
   6.8 GB beside its 17.9 GB of mapped weights after a 26K-token prompt.
 - Compaction: one decision when a step does not fit, or runs into the
@@ -344,8 +349,8 @@ The requirements every tool meets are [spec.md § 7.6](../spec.md#76-tools).
 | `grep` | literal, case-sensitive; `path` narrows it to a directory, a file, or a glob inside the workspace, `context` adds 0–5 lines around a match; grouped by file in path order; at most 50 matches with the total stated; at most 20,000 files and 10 s a search, a stop stated; skips hidden entries, symlinks, binary-looking files, generated trees, and what each directory's `.gitignore` excludes (a subset: negation, directory-only, anchoring, the glob wildcards) |
 | `bash` | one command with a minimal environment; combined output at most 1 MiB; 300 s; cancellation, the timeout, and the output bound stop the command's process group (`SIGTERM`, then `SIGKILL` after 2 s) and reap the child; an output over 120 lines reaches the model as its first 40 and last 80 with the omitted count between |
 | `web_search` | offered only with `agent.web` and `web.url`; one query (≤ 400 bytes) to the user's search service, optionally limited by `freshness` (`day`, `week`, `month`, `year`); at most 8 results, each title, URL, and snippet, with up to three more passages from the page, each one line of at most 300 characters; the corrected query and a skipped provider noted; 15 s; Ctrl-C cancels |
-| `web_fetch` | offered as `web_search`; one `http`/`https` URL (≤ 2,048 bytes) of an HTML page or a PDF, fetched by the service, which refuses non-public addresses; its Markdown text 16,000 code points at a time, the range noted with the `offset` that continues it; or, with `question` (≤ 400 bytes, not with `offset`), only the parts that answer it, a few thousand characters; a page behind a bot challenge named as such; 30 s; Ctrl-C cancels |
-| `web_context` | offered as `web_search` when the service's health lists `/v1/context`, probed once at startup; one query and optional `freshness`; passages from at most 8 pages, a 2,048-token budget, each source's title, URL, and date above its passages, at most 12,000 characters cut at a source boundary; 25 s; Ctrl-C cancels |
+| `web_fetch` | offered as `web_search`; one `http`/`https` URL (≤ 2,048 bytes) of an HTML page or a PDF, fetched by the service, which refuses non-public addresses; its Markdown text a page at a time, sized from the result budget (5,632 code points at 16K and 13,139 at 32K with the default budget, at most 16,000), the range noted with the `offset` that continues it; or, with `question` (≤ 400 bytes, not with `offset`), only the parts that answer it, a few thousand characters; a page behind a bot challenge named as such; 30 s; Ctrl-C cancels |
+| `web_context` | offered as `web_search` when the service's health lists `/v1/context`, probed once at startup; one query and optional `freshness`; passages from at most 8 pages, a 2,048-token budget, each source's title, URL, and date above its passages, at most 12,000 characters, or the page size when smaller, cut at a source boundary; 25 s; Ctrl-C cancels |
 
 The web tools are off by default: without `agent.web` the model is shown
 the six tools and the same system prompt, byte for byte. Searches and

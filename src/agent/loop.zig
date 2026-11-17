@@ -29,6 +29,7 @@ const inference = @import("inference");
 const engine = @import("../engine.zig");
 const tui = @import("../tui/root.zig");
 const tools = @import("tools/root.zig");
+const web = @import("../web/root.zig");
 const interrupt = @import("../interrupt.zig");
 const config = @import("../config.zig");
 const completer = @import("../completer.zig");
@@ -611,6 +612,7 @@ pub const Agent = struct {
         while (true) {
             self.beginStep();
             self.result_budget = resultBudget(self.model.window(self.model.context).ceiling());
+            self.workspace.web_page_chars = web.tools.pageChars(self.result_budget);
             const messages = try self.buildMessages();
             try self.announce(cuts);
             var sink = self.engineSink();
@@ -769,7 +771,7 @@ pub const Agent = struct {
 
             // The tool's own bounds are host ceilings; this cut is the one
             // that scales with the window, so one result cannot fill it.
-            var fitted = try self.fit(call, model_text, result.lines);
+            var fitted = try self.fit(call, model_text, result.lines, result.page);
             defer if (fitted) |*f| f.deinit(self.alloc);
             var truncated = result.truncated;
             var summary: []const u8 = result.summary orelse "";
@@ -787,6 +789,8 @@ pub const Agent = struct {
                         try self.alloc.print("{d} of {d} lines cut from the middle for the context", .{ f.middle_cut, f.total_lines }))
                 else if (result.lines) |range|
                     try self.alloc.print("lines {d} to {d} of {d} · cut to fit the context, continue with offset={d}", .{ range.first, range.first + f.kept_lines - 1, range.total, range.first + f.kept_lines })
+                else if (f.chars) |c|
+                    try self.alloc.print("characters {d} to {d} of {d} · cut to fit the context, continue with offset={d}", .{ c.from, c.to, c.total, c.to })
                 else if (summary.len > 0)
                     try self.alloc.print("{s} · cut to {d} lines for the context", .{ summary, f.kept_lines })
                 else
@@ -903,6 +907,8 @@ pub const Agent = struct {
         total_lines: usize,
         /// Lines left out of the middle; zero for a prefix cut.
         middle_cut: usize = 0,
+        /// A paged web fetch's characters kept, `to` being the offset that continues it.
+        chars: ?struct { from: u64, to: u64, total: u64 } = null,
 
         fn deinit(self: *Fitted, alloc: Allocator) void {
             alloc.free(self.text);
@@ -914,8 +920,9 @@ pub const Agent = struct {
     /// middle cut (`fitMiddle`), and for any other tool the longest prefix at
     /// a line boundary that fits, found by scaling the byte cut with the
     /// measured token density and recounting, plus the continuation note.
-    /// `lines` is a read's range: its count, not the text's note, is the total.
-    fn fit(self: *Agent, call: Profile.ToolCall, text: []const u8, lines: ?tools.LineRange) !?Fitted {
+    /// `lines` is a read's range: its count, not the text's note, is the total;
+    /// `page` is a paged fetch's, whose kept characters give the next offset.
+    fn fit(self: *Agent, call: Profile.ToolCall, text: []const u8, lines: ?tools.LineRange, page: ?web.tools.Page) !?Fitted {
         var tokens = try self.model.count(self.model.context, text);
         if (tokens <= self.result_budget) return null;
         if (std.mem.eql(u8, call.name, "bash")) if (try self.fitMiddle(text)) |fitted| return fitted;
@@ -936,6 +943,12 @@ pub const Agent = struct {
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(self.alloc);
         try out.appendSlice(self.alloc, text[0..keep]);
+        if (page) |p| {
+            const body = text[@min(p.start, keep)..@min(p.end, keep)];
+            const to = p.offset + (std.unicode.utf8CountCodepoints(body) catch body.len);
+            try out.print(self.alloc, "\n[truncated to fit the context: characters {d} to {d} of {d} shown; continue with web_fetch offset={d}, or ask the page a question]", .{ p.offset, to, p.chars, to });
+            return .{ .text = try out.toOwnedSlice(self.alloc), .kept_lines = kept_lines, .total_lines = total_lines, .chars = .{ .from = p.offset, .to = to, .total = p.chars } };
+        }
         try out.print(self.alloc, "\n[truncated to fit the context: {d} of {d} lines shown", .{ kept_lines, total_lines });
         if (std.mem.eql(u8, call.name, "read_file")) {
             try out.print(self.alloc, "; continue with read_file offset={d}, or answer a question about the whole file with one bash command (grep, sort, awk, wc) instead of paging", .{readOffset(self.alloc, call.arguments) + kept_lines});
@@ -1547,7 +1560,6 @@ test "web off: no web definitions or guidelines, and a web call is not a tool" {
 
 test "web on: eight definitions, the web guidelines, and a search answered by the service" {
     const alloc = testing.allocator;
-    const web = @import("../web/root.zig");
     var fake: web.Fake = try .init(testing.io, &.{.{ .status = 200, .body =
         \\{"query":"zig std.http","provider":"parallel","results":[{"title":"std.http.Client","url":"https://ziglang.org/std/","snippet":"An HTTP client.","snippets":[],"published":null}],"providers_failed":[]}
     }});
@@ -1577,7 +1589,6 @@ test "web on: eight definitions, the web guidelines, and a search answered by th
 
 test "context tier: nine definitions, the web_context guideline, and the allowance per turn" {
     const alloc = testing.allocator;
-    const web = @import("../web/root.zig");
     const context_body =
         \\{"query":"zig 0.15 usingnamespace","provider":"brave","sources":[{"url":"https://ziglang.org/n","title":"Release Notes","snippets":["usingnamespace is removed."]}],"providers_failed":[]}
     ;
@@ -1610,6 +1621,48 @@ test "context tier: nine definitions, the web_context guideline, and the allowan
     try testing.expectEqualStrings("1. Release Notes — https://ziglang.org/n\n   usingnamespace is removed.", agent.history.items[2].content);
     try testing.expectEqualStrings("/v1/context?q=zig%200.15%20usingnamespace&tokens=2048&urls=8", fake.target(1));
     try testing.expectEqual(@as(u8, 1), service.billed);
+}
+
+test "a fetch asks for the page the result budget holds, and a cut of it restates the offset" {
+    const alloc = testing.allocator;
+    // A service that answers more than was asked: 80 lines of 29 characters
+    // from offset 100, past the stub's 256-token floor.
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(alloc);
+    try body.appendSlice(alloc, "{\"url\":\"https://e.org/m\",\"provider\":\"local\",\"status\":200,\"content_type\":\"text/html\",\"text\":\"");
+    for (0..80) |i| try body.print(alloc, "row {d:0>2} of the page, é.......\\n", .{i});
+    try body.appendSlice(alloc, "\",\"start\":100,\"chars\":9000,\"truncated\":false}");
+    var fake: web.Fake = try .init(testing.io, &.{.{ .status = 200, .body = body.items }});
+    var task = try testing.io.concurrent(web.Fake.serve, .{ &fake, testing.io });
+    defer fake.stop(testing.io, &task);
+    var buffer: [64]u8 = undefined;
+    var service: web.Service = .init(alloc, testing.io, fake.base(&buffer), "nuclis/test");
+    defer service.deinit();
+
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    fixture.ws.web = &service;
+    const read: Profile.ToolCall = .{ .id = 0, .name = "web_fetch", .arguments = "{\"url\":\"https://e.org/m\",\"offset\":100}" };
+    var stub: Stub = .{ .answers = &.{ "Reading.\n", "Read." }, .calls = &.{&.{read}} };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+    _ = try agent.turn("read the page", &.{});
+    try testing.expectEqual(min_result_budget, agent.result_budget);
+    try testing.expectEqualStrings("/v1/fetch?url=https%3A%2F%2Fe.org%2Fm&start=100&max_chars=704", fake.target(0));
+
+    const shown = agent.history.items[2].content;
+    const note_at = std.mem.indexOf(u8, shown, "\n[truncated to fit the context: characters 100 to ") orelse return error.TestUnexpectedResult;
+    // Every kept row is whole, 29 characters with its newline (the last one's dropped).
+    const rows = std.mem.count(u8, shown[0..note_at], "row ");
+    try testing.expect(rows > 0 and rows < 80);
+    var expected: [160]u8 = undefined;
+    var expected_row: [96]u8 = undefined;
+    const note = try std.fmt.bufPrint(&expected, "\n[truncated to fit the context: characters 100 to {d} of 9000 shown; continue with web_fetch offset={d}, or ask the page a question]", .{ 100 + 29 * rows - 1, 100 + 29 * rows - 1 });
+    try testing.expect(std.mem.endsWith(u8, shown, note));
+    const row = try std.fmt.bufPrint(&expected_row, "characters 100 to {d} of 9000 · cut to fit the context, continue with offset={d}", .{ 100 + 29 * rows - 1, 100 + 29 * rows - 1 });
+    try testing.expectEqualStrings(row, capture.last_summary.items);
 }
 
 test "a steered message lands after the step's tool results; one left over is taken back" {
@@ -1830,7 +1883,7 @@ test "a result over the context budget is cut at a line and told how to continue
     try testing.expectEqualStrings(shown, agent.history.items[2].content);
 
     // A result that fits is left alone.
-    try testing.expect((try agent.fit(read_a, "short", null)) == null);
+    try testing.expect((try agent.fit(read_a, "short", null, null)) == null);
 }
 
 test "a command's output over the budget is cut in the middle, keeping its tail and exit status" {
@@ -1889,7 +1942,7 @@ test "a command's one long line is cut inside it, and notes that alone overflow 
     const long = &@as([400]u8, @splat('x')) ++ "\n[bash: exit code 1]";
 
     agent.result_budget = 40;
-    var fitted = (try agent.fit(bash_call, long, null)).?;
+    var fitted = (try agent.fit(bash_call, long, null, null)).?;
     defer fitted.deinit(alloc);
     try testing.expect(Stub.count(undefined, fitted.text) catch unreachable <= 40);
     try testing.expect(std.mem.startsWith(u8, fitted.text, "xx"));
@@ -1899,7 +1952,7 @@ test "a command's one long line is cut inside it, and notes that alone overflow 
 
     // No room for the notes and a cut: the prefix cut, as for any tool.
     agent.result_budget = 12;
-    var prefix = (try agent.fit(bash_call, long, null)).?;
+    var prefix = (try agent.fit(bash_call, long, null, null)).?;
     defer prefix.deinit(alloc);
     try testing.expectEqual(@as(usize, 0), prefix.middle_cut);
     try testing.expect(std.mem.indexOf(u8, prefix.text, "[truncated to fit the context: ") != null);
@@ -1916,7 +1969,7 @@ test "a single line over the budget is cut inside the line at a code point" {
     defer agent.deinit();
     agent.result_budget = 4;
     // 40 bytes of two-byte code points on one line: 10 stub tokens.
-    var fitted = (try agent.fit(read_a, "éééééééééééééééééééé", null)).?;
+    var fitted = (try agent.fit(read_a, "éééééééééééééééééééé", null, null)).?;
     defer fitted.deinit(alloc);
     const note_at = std.mem.indexOf(u8, fitted.text, "\n[truncated").?;
     try testing.expect(note_at > 0 and note_at <= 16);

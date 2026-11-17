@@ -26,7 +26,7 @@ pub const search: Definition = .{
 
 pub const fetch: Definition = .{
     .name = "web_fetch",
-    .description = "Fetch one public web page (HTML or PDF) as Markdown, 16000 characters at a time; offset continues a long page. With question, only the parts of the page that answer it (a few thousand characters): prefer it for a long page or a manual when you need one fact.",
+    .description = "Fetch one public web page (HTML or PDF) as Markdown, a page at a time; offset continues a long page. With question, only the parts of the page that answer it (a few thousand characters): prefer it for a long page or a manual when you need one fact.",
     .parameters = "{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"},\"question\":{\"type\":\"string\"}},\"required\":[\"url\"]}",
 };
 
@@ -39,8 +39,9 @@ pub const context: Definition = .{
 pub const all = [_]Definition{ search, fetch, context };
 
 pub const max_results: u8 = 8;
-/// About 4K tokens of text per call; the loop's own cut still applies.
-pub const page_chars: u32 = 16_000;
+/// The longest page a fetch asks for, about 4K tokens of text: what a
+/// caller without a result budget of its own (`nuclis serve`) sends.
+pub const max_page_chars: u32 = 16_000;
 pub const max_query_bytes = 400;
 pub const max_url_bytes = 2048;
 /// A result's passages shown under its snippet, and the code points each
@@ -48,8 +49,16 @@ pub const max_url_bytes = 2048;
 pub const snippets_per_result = 3;
 pub const snippet_chars = 300;
 /// About 3K tokens; the 2048-token budget came in under 9,200 characters
-/// in the probe of ten questions.
+/// in the probe of ten questions. A smaller page size bounds it further.
 pub const context_chars = 12_000;
+
+/// The page a caller whose results are cut at `result_budget` tokens asks
+/// for: 2.75 characters a token, under the 2.9 bytes a token measured over
+/// the agent's results, so the page with its header and note fits the
+/// budget and its offset note stays true. At most `max_page_chars`.
+pub fn pageChars(result_budget: usize) u32 {
+    return @intCast(@min(result_budget *| 11 / 4, max_page_chars));
+}
 
 pub fn isWebTool(name: []const u8) bool {
     for (all) |definition| if (std.mem.eql(u8, name, definition.name)) return true;
@@ -62,6 +71,8 @@ pub const Rendered = struct {
     summary: ?[]u8 = null,
     is_error: bool = false,
     truncated: bool = false,
+    /// Set on a paged fetch with text: where the page's text sits in `text`.
+    page: ?Page = null,
 
     pub fn deinit(self: *Rendered, alloc: Allocator) void {
         alloc.free(self.text);
@@ -70,13 +81,20 @@ pub const Rendered = struct {
     }
 };
 
+/// A paged fetch's text within its rendering: bytes `start` to `end` of
+/// `Rendered.text` are the page's characters from `offset`, of `chars`. A
+/// caller that cuts the rendering further restates the offset from it.
+pub const Page = struct { offset: u64, start: usize, end: usize, chars: u64 };
+
 /// Runs `name` (`web_search`, `web_fetch`, or `web_context`) with the
 /// model's JSON `arguments`; null for any other name. `context_offered`:
 /// the caller offers `web_context`, so a failure may point to it.
-pub fn run(service: *client.Service, alloc: Allocator, name: []const u8, arguments: []const u8, context_offered: bool, beat: ?client.Beat) Allocator.Error!?Rendered {
+/// `page_chars` (`pageChars`, at most `max_page_chars`) sizes a fetch and
+/// bounds a context.
+pub fn run(service: *client.Service, alloc: Allocator, name: []const u8, arguments: []const u8, context_offered: bool, page_chars: u32, beat: ?client.Beat) Allocator.Error!?Rendered {
     if (std.mem.eql(u8, name, search.name)) return try runSearch(service, alloc, arguments, beat);
-    if (std.mem.eql(u8, name, fetch.name)) return try runFetch(service, alloc, arguments, context_offered, beat);
-    if (std.mem.eql(u8, name, context.name)) return try runContext(service, alloc, arguments, beat);
+    if (std.mem.eql(u8, name, fetch.name)) return try runFetch(service, alloc, arguments, context_offered, page_chars, beat);
+    if (std.mem.eql(u8, name, context.name)) return try runContext(service, alloc, arguments, page_chars, beat);
     return null;
 }
 
@@ -130,7 +148,7 @@ pub fn runSearch(service: *client.Service, alloc: Allocator, arguments: []const 
     };
 }
 
-pub fn runContext(service: *client.Service, alloc: Allocator, arguments: []const u8, beat: ?client.Beat) Allocator.Error!Rendered {
+pub fn runContext(service: *client.Service, alloc: Allocator, arguments: []const u8, page_chars: u32, beat: ?client.Beat) Allocator.Error!Rendered {
     const q = switch (try readQuery(alloc, context.name, arguments)) {
         .ok => |q| q,
         .failed => |r| return r,
@@ -139,13 +157,13 @@ pub fn runContext(service: *client.Service, alloc: Allocator, arguments: []const
     var reply = try service.context(alloc, q.query, q.freshness, beat);
     defer reply.deinit();
     return switch (reply.outcome) {
-        .ok => |passages| renderContext(alloc, passages),
+        .ok => |passages| renderContext(alloc, passages, @min(context_chars, page_chars)),
         // A service older than `/v1/context` answers `not_found`.
         .failed => |f| failure(alloc, context.name, if (std.mem.eql(u8, f.code, "not_found")) .{ .code = "not_available", .message = f.message, .status = f.status } else f),
     };
 }
 
-pub fn runFetch(service: *client.Service, alloc: Allocator, arguments: []const u8, context_offered: bool, beat: ?client.Beat) Allocator.Error!Rendered {
+pub fn runFetch(service: *client.Service, alloc: Allocator, arguments: []const u8, context_offered: bool, page_chars: u32, beat: ?client.Beat) Allocator.Error!Rendered {
     const Args = struct { url: []const u8, offset: ?u64 = null, question: ?[]const u8 = null };
     const parsed = std.json.parseFromSlice(Args, alloc, arguments, .{ .ignore_unknown_fields = true }) catch
         return fail(alloc, "web_fetch: arguments must be a JSON object with a \"url\" string, and an optional non-negative integer \"offset\" or an optional \"question\" string", .{});
@@ -244,8 +262,8 @@ fn appendSnippet(alloc: Allocator, text: *std.ArrayList(u8), passage: []const u8
 }
 
 /// Sources numbered as search results, each snippet indented under its
-/// source, cut at a source boundary past `context_chars`.
-fn renderContext(alloc: Allocator, passages: client.Context) Allocator.Error!Rendered {
+/// source, cut at a source boundary past `bound` characters.
+fn renderContext(alloc: Allocator, passages: client.Context, bound: usize) Allocator.Error!Rendered {
     var text: std.ArrayList(u8) = .empty;
     errdefer text.deinit(alloc);
     var block: std.ArrayList(u8) = .empty;
@@ -265,13 +283,13 @@ fn renderContext(alloc: Allocator, passages: client.Context) Allocator.Error!Ren
             while (lines.next()) |line| try block.print(alloc, "   {s}\n", .{std.mem.trimEnd(u8, line, "\r")});
         }
         const block_chars = std.unicode.utf8CountCodepoints(block.items) catch block.items.len;
-        if (shown > 0 and chars + block_chars > context_chars) break;
-        if (block_chars > context_chars) {
-            // One source alone past the bound: its first `context_chars`.
-            const cut = codepointPrefix(block.items, context_chars);
+        if (shown > 0 and chars + block_chars > bound) break;
+        if (block_chars > bound) {
+            // One source alone past the bound: its first `bound` characters.
+            const cut = codepointPrefix(block.items, bound);
             try text.appendSlice(alloc, cut);
             try text.appendSlice(alloc, "\n   [passage cut]\n");
-            chars += context_chars;
+            chars += bound;
         } else {
             try text.appendSlice(alloc, block.items);
             chars += block_chars;
@@ -351,11 +369,17 @@ fn renderFetch(alloc: Allocator, page: client.Fetched, offset: u64, question: ?[
     try text.appendSlice(alloc, if (page.final_url.len > 0) page.final_url else page.url);
     if (page.title.len > 0) try text.print(alloc, " — {s}", .{page.title});
     try text.append(alloc, '\n');
-    if (page.text.len > 0) try text.print(alloc, "\n{s}\n", .{std.mem.trimEnd(u8, page.text, "\n")});
+    var range: ?Page = null;
+    if (page.text.len > 0) {
+        try text.append(alloc, '\n');
+        const start = text.items.len;
+        try text.print(alloc, "{s}\n", .{std.mem.trimEnd(u8, page.text, "\n")});
+        range = .{ .offset = offset, .start = start, .end = text.items.len - 1, .chars = page.chars };
+    }
     try text.print(alloc, "\n[{s}]", .{note.items});
     const summary = try alloc.dupe(u8, note.items[0 .. std.mem.indexOf(u8, note.items, " · ") orelse note.items.len]);
     errdefer alloc.free(summary);
-    return .{ .text = try text.toOwnedSlice(alloc), .summary = summary, .truncated = end < page.chars or page.truncated };
+    return .{ .text = try text.toOwnedSlice(alloc), .summary = summary, .truncated = end < page.chars or page.truncated, .page = range };
 }
 
 fn renderFocused(alloc: Allocator, page: client.Fetched, question: []const u8) Allocator.Error!Rendered {
@@ -370,8 +394,10 @@ fn renderFocused(alloc: Allocator, page: client.Fetched, question: []const u8) A
     if (page.text.len > 0) try text.print(alloc, "\n{s}\n", .{std.mem.trimEnd(u8, page.text, "\n")});
     if (page.text.len == 0)
         try text.print(alloc, "\n[no part of the page answers: {s}]", .{question})
+    else if (cut)
+        try text.print(alloc, "\n[the parts of the page that answer: {s} · cut at the first {d} characters]", .{ question, taken })
     else
-        try text.print(alloc, "\n[the parts of the page that answer: {s}{s}]", .{ question, if (cut) std.fmt.comptimePrint(" · cut at the first {d} characters", .{page_chars}) else "" });
+        try text.print(alloc, "\n[the parts of the page that answer: {s}]", .{question});
     const summary = try std.fmt.allocPrint(alloc, "the parts that answer, {d} characters", .{taken});
     errdefer alloc.free(summary);
     return .{ .text = try text.toOwnedSlice(alloc), .summary = summary, .truncated = cut };
@@ -477,7 +503,7 @@ test "a fetch with a question reads as the parts that answer it, with no offset"
 
     var cut = try renderFetch(a, .{ .url = "https://e.org/m", .text = "abc", .chars = 40_000, .truncated = true, .focused = true }, 0, q);
     defer cut.deinit(a);
-    try std.testing.expect(std.mem.endsWith(u8, cut.text, "[the parts of the page that answer: how does defer work? · cut at the first 16000 characters]"));
+    try std.testing.expect(std.mem.endsWith(u8, cut.text, "[the parts of the page that answer: how does defer work? · cut at the first 3 characters]"));
     try std.testing.expect(cut.truncated);
 
     var nothing = try renderFetch(a, .{ .url = "https://e.org/m", .focused = true }, 0, q);
@@ -510,7 +536,7 @@ test "arguments are checked before anything leaves the machine" {
         .{ .name = "web_fetch", .arguments = "{\"url\": \"https://e.org\", \"question\": 7}", .needle = "\"question\" string" },
     };
     for (cases) |case| {
-        var r = (try run(&service, a, case.name, case.arguments, false, null)).?;
+        var r = (try run(&service, a, case.name, case.arguments, false, max_page_chars, null)).?;
         defer r.deinit(a);
         try std.testing.expect(r.is_error);
         if (std.mem.indexOf(u8, r.text, case.needle) == null) {
@@ -518,7 +544,7 @@ test "arguments are checked before anything leaves the machine" {
             return error.TestUnexpectedResult;
         }
     }
-    try std.testing.expect((try run(&service, a, "bash", "{}", false, null)) == null);
+    try std.testing.expect((try run(&service, a, "bash", "{}", false, max_page_chars, null)) == null);
 }
 
 test "a failure reads as its code then its message, a transient one as worth a later try" {
@@ -571,7 +597,7 @@ test "a corrected query leads the search, and each result shows up to three snip
     var full: [max_results]client.Search.Result = @splat(.{ .title = "T", .url = "https://e.org/", .snippet = &long, .snippets = &many_passages });
     var big = try renderSearch(a, .{ .query = "q", .results = &full });
     defer big.deinit(a);
-    try std.testing.expect(big.text.len < page_chars);
+    try std.testing.expect(big.text.len < max_page_chars);
     var lines = std.mem.splitScalar(u8, big.text, '\n');
     while (lines.next()) |line| try std.testing.expect((std.unicode.utf8CountCodepoints(line) catch line.len) <= snippet_chars + 3);
     try std.testing.expect(std.mem.endsWith(u8, big.text, "x…"));
@@ -583,7 +609,7 @@ test "context renders sources with their passages, zero sources plainly, and cut
         .{ .url = "https://ziglang.org/n", .title = "Release Notes", .published = "2025-08-19", .snippets = &.{ "usingnamespace is removed.", "Before:\nconst a = 1;" } },
         .{ .url = "https://e.org/z" },
     };
-    var r = try renderContext(a, .{ .query = "q", .provider = "brave", .sources = &sources, .providers_failed = &.{"parallel"} });
+    var r = try renderContext(a, .{ .query = "q", .provider = "brave", .sources = &sources, .providers_failed = &.{"parallel"} }, context_chars);
     defer r.deinit(a);
     try std.testing.expectEqualStrings(
         \\1. Release Notes — https://ziglang.org/n (2025-08-19)
@@ -597,7 +623,7 @@ test "context renders sources with their passages, zero sources plainly, and cut
     try std.testing.expectEqualStrings("2 sources · via brave", r.summary.?);
     try std.testing.expect(!r.truncated);
 
-    var none = try renderContext(a, .{ .query = "q" });
+    var none = try renderContext(a, .{ .query = "q" }, context_chars);
     defer none.deinit(a);
     try std.testing.expect(!none.is_error);
     try std.testing.expectEqualStrings("no passages matched the query", none.text);
@@ -607,7 +633,7 @@ test "context renders sources with their passages, zero sources plainly, and cut
     const long: [3900]u8 = @splat('x');
     const snippets = [_][]const u8{&long};
     var many: [5]client.Context.Source = @splat(.{ .url = "https://e.org/", .title = "L", .snippets = &snippets });
-    var cut = try renderContext(a, .{ .query = "q", .sources = &many });
+    var cut = try renderContext(a, .{ .query = "q", .sources = &many }, context_chars);
     defer cut.deinit(a);
     try std.testing.expect(cut.truncated);
     try std.testing.expect(std.mem.endsWith(u8, cut.text, "\n[2 more sources not shown]"));
@@ -618,7 +644,7 @@ test "context renders sources with their passages, zero sources plainly, and cut
     // One source alone past the bound keeps its first 12,000 characters.
     const huge: [20_000]u8 = @splat('y');
     const one = [_]client.Context.Source{.{ .url = "https://e.org/h", .snippets = &.{&huge} }};
-    var alone = try renderContext(a, .{ .query = "q", .sources = &one });
+    var alone = try renderContext(a, .{ .query = "q", .sources = &one }, context_chars);
     defer alone.deinit(a);
     try std.testing.expect(std.mem.endsWith(u8, alone.text, "[passage cut]"));
     try std.testing.expect(alone.text.len < context_chars + 100);
@@ -638,17 +664,17 @@ test "freshness: a known value is sent, an unknown one is refused before any req
     var service: client.Service = .init(a, io, fake.base(&buffer), "nuclis/test");
     defer service.deinit();
 
-    var bad = (try run(&service, a, "web_search", "{\"query\":\"zig\",\"freshness\":\"decade\"}", false, null)).?;
+    var bad = (try run(&service, a, "web_search", "{\"query\":\"zig\",\"freshness\":\"decade\"}", false, max_page_chars, null)).?;
     defer bad.deinit(a);
     try std.testing.expectEqualStrings("web_search: freshness must be day, week, month, or year", bad.text);
-    var bad_context = (try run(&service, a, "web_context", "{\"query\":\"zig\",\"freshness\":\"pd\"}", false, null)).?;
+    var bad_context = (try run(&service, a, "web_context", "{\"query\":\"zig\",\"freshness\":\"pd\"}", false, max_page_chars, null)).?;
     defer bad_context.deinit(a);
     try std.testing.expect(bad_context.is_error);
 
-    var day = (try run(&service, a, "web_search", "{\"query\":\"zig\",\"freshness\":\"day\"}", false, null)).?;
+    var day = (try run(&service, a, "web_search", "{\"query\":\"zig\",\"freshness\":\"day\"}", false, max_page_chars, null)).?;
     defer day.deinit(a);
     try std.testing.expectEqualStrings("/v1/search?q=zig&n=8&freshness=pd", fake.target(0));
-    var year = (try run(&service, a, "web_context", "{\"query\":\"zig\",\"freshness\":\"year\"}", false, null)).?;
+    var year = (try run(&service, a, "web_context", "{\"query\":\"zig\",\"freshness\":\"year\"}", false, max_page_chars, null)).?;
     defer year.deinit(a);
     try std.testing.expectEqualStrings("no passages matched the query", year.text);
     try std.testing.expectEqualStrings("/v1/context?q=zig&tokens=2048&urls=8&freshness=py", fake.target(1));
@@ -676,14 +702,14 @@ test "the budget, an unavailable context, and a bot challenge read as what to do
     defer service.deinit();
 
     for (0..2) |_| {
-        var unavailable = (try run(&service, a, "web_context", "{\"query\":\"zig\"}", true, null)).?;
+        var unavailable = (try run(&service, a, "web_context", "{\"query\":\"zig\"}", true, max_page_chars, null)).?;
         defer unavailable.deinit(a);
         try std.testing.expectEqualStrings("web_context: not_available: web_context is unavailable on the search service now; use web_search", unavailable.text);
     }
-    var offered = (try run(&service, a, "web_fetch", "{\"url\":\"https://stackoverflow.com/q/1\"}", true, null)).?;
+    var offered = (try run(&service, a, "web_fetch", "{\"url\":\"https://stackoverflow.com/q/1\"}", true, max_page_chars, null)).?;
     defer offered.deinit(a);
     try std.testing.expectEqualStrings("web_fetch: upstream_failed: stackoverflow.com is behind a bot challenge only a browser passes; web_context may hold its text", offered.text);
-    var alone = (try run(&service, a, "web_fetch", "{\"url\":\"https://stackoverflow.com/q/1\"}", false, null)).?;
+    var alone = (try run(&service, a, "web_fetch", "{\"url\":\"https://stackoverflow.com/q/1\"}", false, max_page_chars, null)).?;
     defer alone.deinit(a);
     try std.testing.expectEqualStrings("web_fetch: upstream_failed: stackoverflow.com is behind a bot challenge only a browser passes", alone.text);
 }
@@ -701,9 +727,61 @@ test "a fetch's question is sent as q and its answer read as focused" {
     var service: client.Service = .init(a, io, fake.base(&buffer), "nuclis/test");
     defer service.deinit();
 
-    var r = (try run(&service, a, "web_fetch", "{\"url\":\"https://e.org/m\",\"question\":\" what is the answer? \"}", false, null)).?;
+    var r = (try run(&service, a, "web_fetch", "{\"url\":\"https://e.org/m\",\"question\":\" what is the answer? \"}", false, max_page_chars, null)).?;
     defer r.deinit(a);
     try std.testing.expectEqualStrings("/v1/fetch?url=https%3A%2F%2Fe.org%2Fm&start=0&max_chars=16000&q=what%20is%20the%20answer%3F", fake.target(0));
     try std.testing.expectEqualStrings("https://e.org/m\n\nit is 42\n\n[the parts of the page that answer: what is the answer?]", r.text);
     try std.testing.expectEqual(@as(u8, 1), service.billed);
+}
+
+test "a fetch asks for the page its caller's result budget holds, and that size bounds a context" {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    // The agent's budgets at 16K and 32K at the default effort: a sixth of
+    // the ceilings 12,288 and 28,672.
+    const at_16k = pageChars(2048);
+    const at_32k = pageChars(4778);
+    try std.testing.expectEqual(@as(u32, 5632), at_16k);
+    try std.testing.expectEqual(@as(u32, 13139), at_32k);
+    try std.testing.expectEqual(max_page_chars, pageChars(100_000));
+
+    const Fake = @import("fake.zig").Fake;
+    const page = "{\"url\":\"https://e.org/m\",\"provider\":\"local\",\"status\":200,\"content_type\":\"text/html\",\"text\":\"abc\",\"start\":0,\"chars\":30000,\"truncated\":false}";
+    const long: [2500]u8 = @splat('x');
+    const source = "{\"url\":\"https://e.org/s\",\"title\":\"S\",\"snippets\":[\"" ++ long ++ "\"]}";
+    var fake: Fake = try .init(io, &.{
+        .{ .status = 200, .body = page },
+        .{ .status = 200, .body = page },
+        .{ .status = 200, .body = "{\"url\":\"https://e.org/m\",\"provider\":\"parallel\",\"status\":null,\"content_type\":null,\"focused\":true,\"text\":\"abc\",\"start\":0,\"chars\":30000,\"truncated\":false}" },
+        .{ .status = 200, .body = "{\"query\":\"q\",\"provider\":\"parallel\",\"sources\":[" ++ source ++ "," ++ source ++ "," ++ source ++ "]}" },
+    });
+    var task = try io.concurrent(Fake.serve, .{ &fake, io });
+    defer fake.stop(io, &task);
+    var buffer: [64]u8 = undefined;
+    var service: client.Service = .init(a, io, fake.base(&buffer), "nuclis/test");
+    defer service.deinit();
+
+    var small = (try run(&service, a, "web_fetch", "{\"url\":\"https://e.org/m\"}", false, at_16k, null)).?;
+    defer small.deinit(a);
+    try std.testing.expectEqualStrings("/v1/fetch?url=https%3A%2F%2Fe.org%2Fm&start=0&max_chars=5632", fake.target(0));
+    try std.testing.expect(std.mem.endsWith(u8, small.text, "[characters 0 to 3 of 30000 · truncated, continue with offset=3]"));
+    const range = small.page.?;
+    try std.testing.expectEqualStrings("abc", small.text[range.start..range.end]);
+    try std.testing.expectEqual(@as(u64, 30000), range.chars);
+
+    var large = (try run(&service, a, "web_fetch", "{\"url\":\"https://e.org/m\",\"offset\":0}", false, at_32k, null)).?;
+    defer large.deinit(a);
+    try std.testing.expectEqualStrings("/v1/fetch?url=https%3A%2F%2Fe.org%2Fm&start=0&max_chars=13139", fake.target(1));
+
+    var focused = (try run(&service, a, "web_fetch", "{\"url\":\"https://e.org/m\",\"question\":\"why?\"}", false, at_16k, null)).?;
+    defer focused.deinit(a);
+    try std.testing.expectEqualStrings("/v1/fetch?url=https%3A%2F%2Fe.org%2Fm&start=0&max_chars=5632&q=why%3F", fake.target(2));
+    try std.testing.expect(std.mem.endsWith(u8, focused.text, "[the parts of the page that answer: why? · cut at the first 3 characters]"));
+    try std.testing.expect(focused.page == null);
+
+    // Three sources of about 2,530 characters: two fit the 16K page.
+    var passages = (try run(&service, a, "web_context", "{\"query\":\"q\"}", true, at_16k, null)).?;
+    defer passages.deinit(a);
+    try std.testing.expect(std.mem.endsWith(u8, passages.text, "\n[1 more source not shown]"));
+    try std.testing.expect(passages.text.len < at_16k);
 }

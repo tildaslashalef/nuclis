@@ -194,6 +194,37 @@ and 1.37 GB for its `mtp` drafter):
 The largest case is 6.80 GB with 17.93 GB of mapped weights, under 25 GB
 of the 48, so no catalogue entry needs its own `ctx_size`.
 
+### Web pages sized from the result budget (2026-11-17)
+
+**Method.** Qwen3.8-27B UD-Q4_K_M, Metal, kv f16, M4 Pro 48 GB, effort
+`low`, thinking budget 2048, so the result budget is 2,048 tokens at 16K
+and 4,778 at 32K; seeds 1 and 2; the live search service. Three web
+turns through `make agent-eval`'s runner, not in its task list: `wpages`
+(PEP 8 by `web_fetch` with no question, three pages one after another,
+then the last heading read; 51,104 characters), `wfocus` (a question to
+the `functools` reference), and `wcontext` (PEP 8's line length by
+`web_context`). *Before* is the build of `6cf6ea1`, which asked for 16,000
+characters; *after* is that revision with this change, dirty, asking for
+`pageChars` of the budget (5,632 and 13,139). A cut is the loop's own
+(`[truncated to fit the context:`); an offset is followed when it is the
+one the previous result stated.
+
+| window | variant | web results cut | offsets followed / guessed | `wpages` prompt tokens (s1, s2) | `wcontext` | `wfocus` | `wpages` model s |
+| --- | --- | ---: | --- | --- | ---: | ---: | --- |
+| 16K | before | 8 of 10 | 0 / 4 | 5,604, 5,827 | 1,860, 1,898 | 2,092 | 125.8, 171.7 |
+| 16K | after | 0 of 10 | 4 / 0 | 4,414, 4,414 | 1,271, 1,188 | 1,570 | 100.2, 83.3 |
+| 32K | before | 0 of 10 | 4 / 0 | 12,316, 12,316 | 2,322, 2,308 | 2,092 | 218.1, 231.3 |
+| 32K | after | 0 of 10 | 4 / 0 | 10,139, 10,139 | 2,322, 2,308 | 2,092 | 188.7, 182.6 |
+
+Before, at 16K, every page and every context was cut to the budget with
+"narrow the request for the rest", and the model guessed the next offset
+on both seeds (16,000 then 32,000 on seed 1, past text it never saw; 241
+then 245 on seed 2). After, no result was cut and every continuation was
+the stated one. At 32K the pages already fit; the smaller page reads less
+of PEP 8 in three steps for 18 % fewer prompt tokens. `wfocus` failed
+seed 2 before at both windows, its answer omitting the `TypeError`; it
+passed every run after.
+
 ### Why a third tool (2026-10-16)
 
 **Why a third tool.** A probe of ten questions (six coding, four chat;

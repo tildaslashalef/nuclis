@@ -197,16 +197,15 @@ only the service's base URL and the v1 contract below, and offers the tools
 only when the configuration says so.
 
 **Opt-in, per surface.** `web.url` names the service; `agent.web` offers the
-tools to the agent, `serve.web` lets a chat request ask the server to run
-them ([configuration](../guide/configuration.md#web)). All three default to
-off, and with them off the agent's tool list and system prompt are the same
-bytes as without the feature. The tools come in tiers, `tools.Web`: `off`
-is the six tools, `search` adds `web_search` and `web_fetch`, `context`
-adds `web_context` too. The guideline loop renders only offered tools, and
-`Agent.init` derives the prompt and the definitions from
-`Workspace.webTier()` so they cannot disagree. A web call the model makes
-for a tool its tier lacks is "not a tool I have", which also covers a
-resumed session recorded with more tools on.
+tools to the agent, `serve.web` lets a chat request ask the server to run them
+([configuration](../guide/configuration.md#web)). All three default to off, and
+with them off the agent's tool list and system prompt are the same bytes as
+without the feature. The tools come in tiers, `tools.Web`: `off` is the six
+tools, `search` adds `web_search` and `web_fetch`, `context` adds `web_context`
+too. The guideline loop renders only offered tools, and `Agent.init` derives
+the prompt and the definitions from `Workspace.webTier()` so they cannot
+disagree. A web call the model makes for a tool its tier lacks is "not a tool I
+have", which also covers a resumed session recorded with more tools on.
 
 **The probe.** `web_context` exists only on a service that offers
 `/v1/context`, so the agent's setup asks `/v1/health` once (2 s at most)
@@ -225,13 +224,12 @@ non-public address at every redirect, and the hostile HTML is parsed there;
 nuclis receives bounded Markdown. The same separation lets the search backend
 change (a paid API, an offline index) without touching nuclis.
 
-**The contract nuclis relies on (v1).** `GET`, JSON, no
-authentication; nuclis sends `User-Agent: nuclis/<version>` and ignores fields
-it does not know, so additions never break it. Each endpoint tries its
-providers in order (search and context: Parallel, then Brave; fetch:
-Parallel, then a local fetcher), skipping one that is out of credit,
-refused, rate-limited, or too slow; `providers_failed` names those skipped,
-and the answer is still whole.
+**The contract nuclis relies on (v1).** `GET`, JSON, no authentication; nuclis
+sends `User-Agent: nuclis/<version>` and ignores fields it does not know, so
+additions never break it. Each endpoint tries its providers in order (search
+and context: Parallel, then Brave; fetch: Parallel, then a local fetcher),
+skipping one that is out of credit, refused, rate-limited, or too slow;
+`providers_failed` names those skipped, and the answer is still whole.
 
 | Call | Answer |
 | --- | --- |
@@ -272,13 +270,15 @@ query when the provider changed it and followed by `[answered by brave;
 parallel was skipped]` when one was (the results are whole, not truncated). A
 context is the same numbering per source, its passages indented beneath, asked
 at a 2,048-token budget from 8 pages and cut at a source boundary past 12,000
-characters with the number not shown. A fetch is the page's URL and title, its
-text 16,000 code points at a time, and a note in `read_file`'s form: the
+characters (or the page size) with the number not shown. A fetch is the page's
+URL and title, its text a page at a time, and a note in `read_file`'s form: the
 range, the length, and the `offset` that continues it, or `the whole page, N
 characters`, or `the end of the page`, so the model does not ask past either
-(an offset past the end fails naming the length). With `question` (sent as
-`q`, never with `offset`) the note is `[the parts of the page that answer:
-<question>]`: not paged. A failure is one line, code then message (`web_fetch:
+(an offset past the end fails naming the length). With `question` (sent as `q`,
+never with `offset`) the note is `[the parts of the page that answer:
+<question>]`: not paged. A page is 16,000 code points from `nuclis serve`, 2.75
+characters a budget token from the agent, so the loop's cut is rare and keeps
+the `offset`. A failure is one line, code then message (`web_fetch:
 upstream_failed: go.dev answered 404 Not Found`), so a dead link reads apart
 from a broken tool; a transient code adds that it may work a moment later, a
 bot challenge names the host and, when offered, points to `web_context`, and

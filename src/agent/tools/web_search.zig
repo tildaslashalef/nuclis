@@ -39,5 +39,5 @@ pub const Beat = struct {
 
 /// A shared rendering as the agent's result; ownership moves.
 pub fn adopt(rendered: web.tools.Rendered) root.Result {
-    return .{ .text = rendered.text, .summary = rendered.summary, .is_error = rendered.is_error, .truncated = rendered.truncated };
+    return .{ .text = rendered.text, .summary = rendered.summary, .is_error = rendered.is_error, .truncated = rendered.truncated, .page = rendered.page };
 }

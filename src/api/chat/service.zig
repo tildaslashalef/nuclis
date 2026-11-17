@@ -583,7 +583,7 @@ const Job = struct {
             // Streamed, the client hears of the call before its wait.
             if (self.pipe != null) self.emit(wire.Collector.WebCall{ .name = call.name, .arguments = call.arguments, .status = .started });
             const rendered: web.tools.Rendered = if (self.request.web.runs(call.name))
-                (try web.tools.run(service, self.arena, call.name, call.arguments, self.request.web.context, beat)).? // checked: `runs` admits only the hosted tools' names, which `run` always answers
+                (try web.tools.run(service, self.arena, call.name, call.arguments, self.request.web.context, web.tools.max_page_chars, beat)).? // checked: `runs` admits only the hosted tools' names, which `run` always answers
             else
                 .{ .text = try self.arena.print("{s} is not a tool in this request; use the tools listed", .{call.name}), .is_error = true };
             text.* = rendered.text;

@@ -47,6 +47,9 @@ pub const Workspace = struct {
     /// The search service behind the web tools; null unless the
     /// configuration opts in (`agent.web`), and then the tools are offered.
     web: ?*web.Service = null,
+    /// The page a web fetch asks for (`web.tools.pageChars`); the loop sets
+    /// it from its result budget, so a page fits the result it becomes.
+    web_page_chars: u32 = web.tools.max_page_chars,
 
     /// Which web tools are offered: none without a service, `web_context`
     /// too when the service's probe found it.
@@ -167,6 +170,8 @@ pub const Result = struct {
     /// A line-addressed read: where its text starts in the file and how long
     /// the file is, so a later cut can restate the range it actually kept.
     lines: ?LineRange = null,
+    /// A paged web fetch's text within `text`, for a cut that restates its offset.
+    page: ?web.tools.Page = null,
     /// Set by a mutation tool; null for reads.
     change: ?Change = null,
 
