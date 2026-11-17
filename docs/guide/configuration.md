@@ -68,7 +68,7 @@ holds its entry ([the registry](#naming-your-models-the-registry)):
     "fold_thinking": true,
     "theme": "gruvbox-dark",
     "instructions": "auto",
-    "thinking_budget": 1024,
+    "thinking_budget": 2048,
     "web": false
   },
   "decide": {
@@ -195,7 +195,7 @@ and `--speculative` or `--draft-length` still beat both.
 | `fold_thinking` | `true` | start with reasoning folded (Tab unfolds) |
 | `theme` | `gruvbox-dark` | the terminal palette |
 | `instructions` | `auto` | the project file the agent reads: `auto` (`AGENTS.md`, then `CLAUDE.md`), `off`, or a path in the workspace |
-| `thinking_budget` | `1024` | the most reasoning tokens a step spends at `low` before the engine closes the reasoning; `0` for no cap |
+| `thinking_budget` | `2048` | the most reasoning tokens a step spends at `low` before the engine closes the reasoning; `0` for no cap |
 | `web` | `false` | offer `web_search` and `web_fetch`, and `web_context` when the service has it, served by `web.url` ([below](#web)); needs `web.url` |
 
 ### `decide`, `embed`, `speech`, `transcribe`, and `serve`

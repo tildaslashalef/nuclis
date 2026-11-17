@@ -16,7 +16,10 @@ answer's text), and records one JSON per task and seed under
 calls, tool errors, failed edits, prompt and generated tokens, the model's
 own seconds, the answer's length, the stop reason, and what compaction
 cost (turns dropped, elisions, results clipped to the budget, and the prompt
-tokens of the steps that replayed the conversation). `--compare` renders
+tokens of the steps that replayed the conversation), and each step's
+reasoning tokens with the steps the thinking budget cut. A variant's
+budget and effort are agent flags after `--` (`-- --thinking-budget 2048
+--think medium`), which win over the registry entry's. `--compare` renders
 the variants side by side. The playground is generated on first use under
 .zig-cache/playground/ (scripts/app/playground.py); `--workspace` runs another.
 """
@@ -79,6 +82,9 @@ class Run:
     elided: int = 0
     clipped: int = 0
     replayed_prompt: int = 0
+    # Each step's reasoning tokens, and the steps the thinking budget cut.
+    reasoning: list = field(default_factory=list)
+    reasoning_cut: int = 0
     # The text of each read_file result of the last turn, in order.
     reads: list = field(default_factory=list)
 
@@ -364,6 +370,9 @@ def parse(events_text: str, session_path: Path, run: Run) -> Run:
                 if st.get("replayed"):
                     run.replayed_prompt += st.get("prompt_tokens", 0)
                 run.generated += st.get("generated", 0)
+                run.reasoning.append(st.get("reasoning_tokens", 0))
+                if st.get("reasoning_cut"):
+                    run.reasoning_cut += 1
                 if e.get("answer"):
                     run.answers.append(e["answer"])
                 for call in e.get("tool_calls", []):
@@ -509,6 +518,8 @@ def run_task(task: Task, seed: int, args, variant_dir: Path) -> dict:
         "elided": run.elided,
         "clipped": run.clipped,
         "replayed_prompt": run.replayed_prompt,
+        "reasoning": run.reasoning,
+        "reasoning_cut": run.reasoning_cut,
         "tools": run.tools,
         "answer": run.answer,
         "stderr_tail": stderr[-400:],
@@ -530,9 +541,18 @@ def load_variant(name: str) -> list:
     return records
 
 
+def percentile(values: list, q: float) -> int:
+    """The nearest-rank `q` percentile of `values`, 0 for none."""
+    if not values:
+        return 0
+    ordered = sorted(values)
+    return ordered[max(math.ceil(q * len(ordered)) - 1, 0)]
+
+
 def aggregate(records: list) -> dict:
     if not records:
         return {}
+    reasoning = [n for r in records for n in r.get("reasoning", [])]
     by_task = {}
     for r in records:
         by_task.setdefault(r["task"], []).append(r)
@@ -549,6 +569,10 @@ def aggregate(records: list) -> dict:
         "model_seconds": statistics.mean(r["model_seconds"] for r in records),
         "answer_chars": statistics.mean(r["answer_chars"] for r in records),
         **{k: sum(r.get(k, 0) for r in records) for k in COMPACTION},
+        "reasoning_cut": sum(r.get("reasoning_cut", 0) for r in records),
+        "reasoning_p50": percentile(reasoning, 0.5),
+        "reasoning_p90": percentile(reasoning, 0.9),
+        "reasoning_max": max(reasoning, default=0),
         **{b: sum(r["behaviours"][b] for r in records) for b in BEHAVIOURS},
     }
 
@@ -596,6 +620,8 @@ def compare(names: list) -> str:
     rows.append(fmt("model_seconds", lambda v: f"{v:.1f}"))
     rows.append(fmt("answer_chars", lambda v: f"{v:.0f}"))
     for k in COMPACTION:
+        rows.append(fmt(k, lambda v: str(v)))
+    for k in ("reasoning_cut", "reasoning_p50", "reasoning_p90", "reasoning_max"):
         rows.append(fmt(k, lambda v: str(v)))
     for b in BEHAVIOURS:
         rows.append(fmt(b, lambda v: str(v)))

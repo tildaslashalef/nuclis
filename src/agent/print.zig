@@ -150,7 +150,7 @@ pub fn run(
         .cache = .{ .alloc = alloc, .budget = settings.cache.memory_bytes },
         .disk = loop.cache.openDisk(alloc, io, root, settings.cache.disk_bytes, model_path, if (eng.model.drafter() != null) draft_path else null, @tagName(settings.backend)),
         .save_turns = options.session != null,
-        .reserve = .{ .step = loop.answer_reserve },
+        .reserve = .{ .step = config.answer_reserve },
     };
     defer completer.deinit();
     var workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };

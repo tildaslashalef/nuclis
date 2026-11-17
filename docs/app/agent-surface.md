@@ -204,7 +204,7 @@ it are [agent.md](agent.md).
   absent; a countdown is marked as an estimate. A narrow bar drops
   settings from the right. Context use is `ctx used/ceiling`: the tokens
   the session holds against the prompt's ceiling, the window less the
-  step's reserve (`ctx 7694/13312` at 16K and `low`), so the bar fills
+  step's reserve (`ctx 7694/13312` at 16K, `low`, and a 1,024 budget), so the bar fills
   where compaction starts; `/model`'s note for the model in use names the
   window, the ceiling, and the reserve.
 
@@ -276,7 +276,7 @@ it are [agent.md](agent.md).
   (2,048) and at most `max_tokens` (`completer.Reserve.step`), and may
   generate on to `max_tokens` while the window has room. The prompt may
   grow to the window less that reserve, its ceiling (`Window.ceiling`):
-  13,312 at 16K and 29,696 at 32K at `low` with the default budget, where
+  12,288 at 16K and 28,672 at 32K at `low` with the default budget, where
   reserving all 8,192 left 8,192 and 24,576. One tool result may take a
   sixth of the ceiling in tokens (`resultBudget`, never below 256); it is
   cut at a line boundary with a note saying how to ask for the rest.
@@ -300,11 +300,14 @@ it are [agent.md](agent.md).
   the reserve and the mark:
   [record, 2026-11-17](../benchmarks/record/agent.md#the-context-budget-2026-11-17).
 - Reasoning budget: one step reasons for at most `agent.thinking_budget`
-  tokens at `low` (1024 by default and in every catalogue entry `config
+  tokens at `low` (2048 by default and in every catalogue entry `config
   init` writes, 0 for no cap), twice that at `medium`, three times at
-  `high`, four times at `xhigh`, and never more than half of the step's
-  `generation.max_tokens` (8192 by default), so the answer and a long
-  call keep the rest; past it
+  `high`, four times at `xhigh`, and never more than the step's
+  `generation.max_tokens` (8192 by default) less `answer_reserve`
+  (2,048; half of a `max_tokens` below 4,096), so the answer and a long
+  call keep the rest: 2,048, 4,096, 6,144, and 6,144 at the defaults.
+  The default and the cap were measured on Qwen3.8 and Gemma 4:
+  [record, 2026-11-17](../benchmarks/record/agent.md#the-thinking-budget-2026-11-17). Past it
   the engine emits the profile's close marker itself (Muse Glimmer's
   `<|eom|>`), so the model answers or calls a tool, and the transcript and
   the session step say the reasoning was cut. A model that reopens its
