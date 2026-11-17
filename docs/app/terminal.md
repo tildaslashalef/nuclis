@@ -43,10 +43,11 @@ the fallback on a UTF-8 terminal. Colour and glyphs never influence each
 other: `NO_COLOR` keeps the Unicode drawing, and an ASCII terminal keeps its
 colours.
 
-A finished turn sends a desktop notification (OSC 9, `nuclis: response
-ready`) when the window lost focus during it and the turn was not
-cancelled; terminals without OSC 9 ignore it. `NUCLIS_NO_NOTIFY=1` (any
-value but `0`) or a `dumb` `TERM` turns it off (`src/tui/terminal.zig`).
+A turn of 120 s or more from Enter (`notify_after_seconds`) that ends
+unfocused and not cancelled sends an OSC 9 notification, `nuclis · 2m 14s ·
+<answer's first line>` as plain text cut to 80 cells, or `stopped: <reason>`
+(step budget, context full, an error), controls stripped. `NUCLIS_NO_NOTIFY=1`
+(any value but `0`) or a `dumb` `TERM` turns it off (`src/tui/terminal.zig`).
 
 Every `NUCLIS_*` variable the code reads, and where (`NUCLIS_HOME` moves
 the user root, [getting-started.md § User
@@ -103,11 +104,11 @@ marker, with a notice.
 
 ## The agent's transcript
 
-Between the renderer and the screen sits `src/tui/transcript.zig`, the
-answer to "what is on the screen, and who may rewrite it". The
-agent produces typed events (`src/tui/event.zig`: user, thinking, answer,
-tool call, tool result, diff, notice, status, turn end); the transcript turns
-them into blocks and offers three views of those blocks:
+Between the renderer and the screen sits `src/tui/transcript.zig`, the answer
+to "what is on the screen, and who may rewrite it". The agent produces typed
+events (`src/tui/event.zig`: user, thinking, answer, tool call, tool result,
+diff, notice, status, turn end); the transcript turns them into blocks and
+offers three views of those blocks:
 
 - `takeClosed` — rows for everything that closed since the last call, marked
   written. The agent inserts them above the live region. **Exactly once**:
@@ -218,8 +219,7 @@ turn with no TTY: the text form streams the answer, `--json` writes every
 event as one object per line, and `--session <path>` is the only way a
 printed turn records anything. It is the scripting entry point and the
 harness the agent's task list runs through (`make agent-eval`), where a
-stream of JSON lines is something a test can assert on and a terminal is
-not.
+test asserts on a stream of JSON lines, which it cannot on a terminal.
 
 ## The agent's session files
 

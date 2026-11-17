@@ -1641,6 +1641,8 @@ fn installTick(ui: *Ui) void {
 /// read and run through its encoder before the turn (or taken encoded from
 /// `Ahead`); one that fails is a notice and the turn is not sent.
 fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8, wanted: []const Wanted) !void {
+    // The notification's clock starts at Enter, before attachments encode.
+    const entered = std.Io.Clock.awake.now(ui.io);
     const images = loadMedia(ui, wanted) catch |err| switch (err) {
         error.MediaUnreadable => return,
         else => return err,
@@ -1670,16 +1672,31 @@ fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8, want
     defer reclaimSteering(ui) catch {};
     ui.attachments_pending = images;
     defer ui.attachments_pending = &.{};
-    const stop = try ui.agent.turn(user, images);
+    const stop = ui.agent.turn(user, images) catch |err| {
+        // The caller reports the failure; a long one still calls the user back.
+        notifyTurnEnd(ui, entered, true, .{ .stopped = if (err == error.ContextFull) "context full" else @errorName(err) }) catch {};
+        return err;
+    };
     if (stop == .cancelled and ui.agent.rendered_tokens > 0) ui.context_hold = ui.agent.rendered_tokens;
     ui.status = switch (stop) {
         .done => "ready",
         .budget => "step budget",
         .cancelled => "cancelled",
     };
-    if (terminal.shouldNotify(ui.focused, ui.notify, stop != .cancelled)) {
-        try ui.term.notify("nuclis: response ready");
-    }
+    try notifyTurnEnd(ui, entered, stop != .cancelled, switch (stop) {
+        .budget => .{ .stopped = "step budget" },
+        .done, .cancelled => .{ .answer = ui.agent.turnAnswer() orelse "" },
+    });
+}
+
+/// Sends the turn-end notification when `terminal.shouldNotify` says so: the
+/// window elsewhere, the turn not cancelled, and long enough since Enter.
+fn notifyTurnEnd(ui: *Ui, entered: std.Io.Timestamp, completed: bool, end: terminal.TurnEnd) !void {
+    const elapsed: u64 = @intFromFloat(@max(0, @floor(seconds(entered, std.Io.Clock.awake.now(ui.io)))));
+    if (!terminal.shouldNotify(ui.focused, ui.notify, completed, elapsed)) return;
+    const message = try terminal.notification(ui.alloc, elapsed, end);
+    defer ui.alloc.free(message);
+    try ui.term.notify(message);
 }
 
 /// One attachment of the prompt being sent: an image or a clip, by the path

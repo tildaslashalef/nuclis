@@ -469,6 +469,15 @@ pub const Agent = struct {
         return null;
     }
 
+    /// The answer text the last turn ended on: its final message when that is
+    /// the model's and has text, else null (a turn stopped on a tool call).
+    pub fn turnAnswer(self: *const Agent) ?[]const u8 {
+        if (self.history.items.len <= self.turn_start) return null;
+        const last = self.history.items[self.history.items.len - 1];
+        if (last.role != .assistant or last.content.len == 0) return null;
+        return last.content;
+    }
+
     /// Drops the turn in progress after a failure, leaving the earlier
     /// conversation intact. The driver has already shown the prompt; the model
     /// never saw a completed answer, so nothing of it is kept, and the session
@@ -2012,6 +2021,28 @@ test "the step budget stops a model that keeps calling" {
     try testing.expectEqual(@as(usize, 2), capture.results.items.len);
     // The status bar reads this against the budget.
     try testing.expectEqual(agent.budget, agent.steps_done);
+    // A turn that stopped on a call has no answer to notify with.
+    try testing.expect(agent.turnAnswer() == null);
+}
+
+test "the turn's answer is its final message, never an earlier turn's" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "a" });
+    var stub: Stub = .{ .answers = &.{ "First answer.", "Reading.\n", "" }, .calls = &.{ &.{}, &.{read_a}, &.{} } };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+    try testing.expect(agent.turnAnswer() == null);
+    try testing.expectEqual(Stop.done, try agent.turn("one", &.{}));
+    try testing.expectEqualStrings("First answer.", agent.turnAnswer().?);
+    // The second turn ends on an empty message: no answer, not the first.
+    try testing.expectEqual(Stop.done, try agent.turn("two", &.{}));
+    try testing.expect(agent.turnAnswer() == null);
+    // The clipboard's answer is the last text, the lead-in to a call included.
+    try testing.expectEqualStrings("Reading.\n", agent.lastAnswer().?);
 }
 
 test "a steer during reasoning restarts the step with the message in view" {

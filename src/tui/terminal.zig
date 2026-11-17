@@ -14,6 +14,8 @@
 //! which hides it while painting and shows it at the editor position.
 const std = @import("std");
 const builtin = @import("builtin");
+const markdown = @import("markdown.zig");
+const view = @import("view.zig");
 pub const Size = struct { rows: usize = 24, columns: usize = 80 };
 /// Kitty "disambiguate", bracketed paste, and focus in/out reports so a
 /// finished turn can notify when the window is elsewhere.
@@ -175,12 +177,10 @@ pub const Terminal = struct {
         return null;
     }
 
-    /// One desktop notification (OSC 9). `message` is a host constant; the
+    /// One desktop notification (OSC 9), built by `notification`; the
     /// terminals that support OSC 9 show it, the rest ignore it.
     pub fn notify(self: Terminal, message: []const u8) !void {
-        try self.out.writeAll("\x1b]9;");
-        try self.out.writeAll(message);
-        try self.out.writeAll("\x07");
+        try writeNotification(self.out, message);
         try self.out.flush();
     }
 };
@@ -283,17 +283,89 @@ pub fn notificationsEnabled(environ: *const std.process.Environ.Map) bool {
     return std.mem.eql(u8, value, "0");
 }
 
-/// A finished turn notifies only when the window was elsewhere and the user
-/// did not cancel it. Pure, so the decision is tested without a terminal.
-pub fn shouldNotify(focused: bool, enabled: bool, completed: bool) bool {
-    return enabled and !focused and completed;
+/// A turn shorter than this never notifies: a quick answer is seen anyway.
+pub const notify_after_seconds = 120;
+/// The most cells of the answer's first line a notification carries.
+pub const notify_line_cells = 80;
+
+/// A finished turn notifies only when the window was elsewhere, the user did
+/// not cancel it, and it ran `notify_after_seconds` or longer from Enter to
+/// its end. Pure, so the decision is tested without a terminal.
+pub fn shouldNotify(focused: bool, enabled: bool, completed: bool, elapsed_seconds: u64) bool {
+    return enabled and !focused and completed and elapsed_seconds >= notify_after_seconds;
+}
+
+/// How a turn that notifies ended: with its answer text (markdown, possibly
+/// empty), or stopped for a reason (`step budget`, `context full`, an error).
+pub const TurnEnd = union(enum) { answer: []const u8, stopped: []const u8 };
+
+/// The notification text: `nuclis · 2m 14s · <first line of the answer>`, the
+/// line as plain text cut to `notify_line_cells` on a cluster boundary (an
+/// ellipsis marks a cut), or `nuclis · 2m 14s · stopped: <reason>`. An answer
+/// with no words reads `stopped: no answer`. Owned by the caller.
+pub fn notification(alloc: std.mem.Allocator, elapsed_seconds: u64, end: TurnEnd) ![]const u8 {
+    var w: std.Io.Writer.Allocating = .init(alloc);
+    errdefer w.deinit();
+    try w.writer.writeAll("nuclis \u{b7} ");
+    try writeElapsed(&w.writer, elapsed_seconds);
+    try w.writer.writeAll(" \u{b7} ");
+    const first = switch (end) {
+        .answer => |text| try markdown.firstPlainLine(alloc, text),
+        .stopped => null,
+    };
+    defer if (first) |line| alloc.free(line);
+    if (first) |line| {
+        var clean: std.Io.Writer.Allocating = .init(alloc);
+        defer clean.deinit();
+        try view.safe(&clean.writer, line);
+        const text = clean.written();
+        if (view.width(text) <= notify_line_cells) {
+            try w.writer.writeAll(text);
+        } else {
+            const cut = try view.fit(alloc, text, notify_line_cells - 1);
+            try w.writer.writeAll(std.mem.trimEnd(u8, cut, " "));
+            try w.writer.writeAll("\u{2026}");
+        }
+    } else {
+        try w.writer.writeAll("stopped: ");
+        try view.safe(&w.writer, switch (end) {
+            .answer => "no answer",
+            .stopped => |reason| reason,
+        });
+    }
+    return w.toOwnedSlice();
+}
+
+/// `45s`, `2m 14s`, `1h 3m`: a notification's elapsed time.
+fn writeElapsed(out: *std.Io.Writer, seconds: u64) !void {
+    if (seconds < 60) return out.print("{d}s", .{seconds});
+    if (seconds < 3600) return out.print("{d}m {d}s", .{ seconds / 60, seconds % 60 });
+    try out.print("{d}h {d}m", .{ seconds / 3600, seconds % 3600 / 60 });
+}
+
+/// The OSC 9 sequence for `message`. Its controls (ESC and BEL among them,
+/// which would end the sequence early) are dropped, and so is a newline.
+pub fn writeNotification(out: *std.Io.Writer, message: []const u8) !void {
+    try out.writeAll("\x1b]9;");
+    var rest = message;
+    while (std.mem.indexOfScalar(u8, rest, '\n')) |at| {
+        try view.safe(out, rest[0..at]);
+        try out.writeByte(' ');
+        rest = rest[at + 1 ..];
+    }
+    try view.safe(out, rest);
+    try out.writeAll("\x07");
 }
 
 test "focus and notification decisions" {
-    try std.testing.expect(shouldNotify(false, true, true));
-    try std.testing.expect(!shouldNotify(true, true, true)); // focused
-    try std.testing.expect(!shouldNotify(false, false, true)); // disabled
-    try std.testing.expect(!shouldNotify(false, true, false)); // cancelled
+    try std.testing.expect(shouldNotify(false, true, true, 120));
+    try std.testing.expect(shouldNotify(false, true, true, 3600));
+    try std.testing.expect(!shouldNotify(false, true, true, 119)); // short
+    try std.testing.expect(!shouldNotify(true, true, true, 120)); // focused
+    try std.testing.expect(!shouldNotify(true, true, true, 119));
+    try std.testing.expect(!shouldNotify(false, false, true, 120)); // disabled
+    try std.testing.expect(!shouldNotify(false, true, false, 120)); // cancelled
+    try std.testing.expect(!shouldNotify(false, true, false, 600));
 
     var map = std.process.Environ.Map.init(std.testing.allocator);
     defer map.deinit();
@@ -305,6 +377,59 @@ test "focus and notification decisions" {
     try std.testing.expect(!notificationsEnabled(&map));
     try map.put("NUCLIS_NO_NOTIFY", "0");
     try std.testing.expect(notificationsEnabled(&map));
+}
+
+test "a notification names the time and the answer's first line, or why the turn stopped" {
+    const alloc = std.testing.allocator;
+    const cases = [_]struct { seconds: u64, end: TurnEnd, want: []const u8 }{
+        .{ .seconds = 134, .end = .{ .answer = "The tests pass.\nAll 12 of them." }, .want = "nuclis \u{b7} 2m 14s \u{b7} The tests pass." },
+        // Markdown markers go; blank lines and a fence before the words are skipped.
+        .{ .seconds = 120, .end = .{ .answer = "\n## **Fixed** the `parse` bug\n" }, .want = "nuclis \u{b7} 2m 0s \u{b7} Fixed the parse bug" },
+        .{ .seconds = 125, .end = .{ .answer = "- [x] see [the docs](https://example.com) _now_" }, .want = "nuclis \u{b7} 2m 5s \u{b7} see the docs now" },
+        .{ .seconds = 3725, .end = .{ .answer = "```\nconst x = 1;\n```" }, .want = "nuclis \u{b7} 1h 2m \u{b7} const x = 1;" },
+        // Model text cannot end the sequence or send its own.
+        .{ .seconds = 200, .end = .{ .answer = "done\x1b]9;spoof\x07 \xc2\x9b31m" }, .want = "nuclis \u{b7} 3m 20s \u{b7} done]9;spoof 31m" },
+        .{ .seconds = 140, .end = .{ .stopped = "step budget" }, .want = "nuclis \u{b7} 2m 20s \u{b7} stopped: step budget" },
+        .{ .seconds = 45, .end = .{ .stopped = "context full" }, .want = "nuclis \u{b7} 45s \u{b7} stopped: context full" },
+        .{ .seconds = 150, .end = .{ .answer = "\n  \n---\n" }, .want = "nuclis \u{b7} 2m 30s \u{b7} stopped: no answer" },
+        .{ .seconds = 150, .end = .{ .answer = "" }, .want = "nuclis \u{b7} 2m 30s \u{b7} stopped: no answer" },
+    };
+    for (cases) |case| {
+        const got = try notification(alloc, case.seconds, case.end);
+        defer alloc.free(got);
+        try std.testing.expectEqualStrings(case.want, got);
+    }
+
+    // A long line is cut to 80 cells, the ellipsis included, on a cluster
+    // boundary: a wide character that would straddle the edge is left out.
+    const long: [100]u8 = @splat('a');
+    const cut = try notification(alloc, 121, .{ .answer = &long });
+    defer alloc.free(cut);
+    const prefix = "nuclis \u{b7} 2m 1s \u{b7} ";
+    try std.testing.expectEqualStrings(&@as([79]u8, @splat('a')) ++ "\u{2026}", cut[prefix.len..]);
+    try std.testing.expectEqual(@as(usize, notify_line_cells), view.width(cut[prefix.len..]));
+    var wide: std.ArrayList(u8) = .empty;
+    defer wide.deinit(alloc);
+    for (0..50) |_| try wide.appendSlice(alloc, "\u{4e2d}");
+    const cut_wide = try notification(alloc, 121, .{ .answer = wide.items });
+    defer alloc.free(cut_wide);
+    try std.testing.expectEqual(@as(usize, 79), view.width(cut_wide[prefix.len..]));
+    try std.testing.expect(std.mem.endsWith(u8, cut_wide, "\u{4e2d}\u{2026}"));
+    // Exactly 80 cells is not cut.
+    const fits: [80]u8 = @splat('b');
+    const whole = try notification(alloc, 121, .{ .answer = &fits });
+    defer alloc.free(whole);
+    try std.testing.expectEqualStrings(&fits, whole[prefix.len..]);
+}
+
+test "the notification is one OSC 9 sequence whatever its text holds" {
+    var buffer: [128]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&buffer);
+    try writeNotification(&out, "nuclis \u{b7} 2m 14s \u{b7} ok");
+    try std.testing.expectEqualStrings("\x1b]9;nuclis \u{b7} 2m 14s \u{b7} ok\x07", out.buffered());
+    out = .fixed(&buffer);
+    try writeNotification(&out, "a\x1b\\b\x07c\nd\xc2\x9ce");
+    try std.testing.expectEqualStrings("\x1b]9;a\\bc de\x07", out.buffered());
 }
 
 test "a cursor report is found among other bytes, and a key sequence is not one" {

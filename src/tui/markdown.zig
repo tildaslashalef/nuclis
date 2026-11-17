@@ -423,6 +423,41 @@ fn ruleRow(alloc: std.mem.Allocator, cells_w: usize, th: theme_mod.Theme) ![]con
     return styled.toOwnedSlice(alloc);
 }
 
+/// The first line of `text` that holds words, as plain text with its block
+/// markers (heading, quote, list item, task box) and inline markers dropped
+/// and its control bytes stripped; blank lines, rules, and fence lines are
+/// skipped. Null when no line holds any. Owned by the caller.
+pub fn firstPlainLine(alloc: std.mem.Allocator, text: []const u8) !?[]const u8 {
+    const plain: theme_mod.Theme = .{ .kind = .plain };
+    var rows = std.mem.splitScalar(u8, text, '\n');
+    var styled: std.ArrayList(u8) = .empty;
+    defer styled.deinit(alloc);
+    while (rows.next()) |row| {
+        var line = std.mem.trim(u8, row, " \t\r");
+        if (line.len == 0 or isRule(line) or std.mem.startsWith(u8, line, "```")) continue;
+        if (headingBody(line)) |body| line = body;
+        if (quoteBody(line)) |quote| line = quote.body;
+        if (listMarker(line, plain.glyphs())) |marker| line = std.mem.trim(u8, marker.body, " ");
+        styled.clearRetainingCapacity();
+        try inlineSpan(alloc, &styled, line, plain, 0);
+        // The plain theme still paints with SGR and links with OSC 8.
+        var kept: usize = 0;
+        var i: usize = 0;
+        while (i < styled.items.len) {
+            if (view.escapeSpan(styled.items, i)) |end| {
+                i = end;
+                continue;
+            }
+            styled.items[kept] = styled.items[i];
+            kept += 1;
+            i += 1;
+        }
+        const words = std.mem.trim(u8, styled.items[0..kept], " ");
+        if (words.len > 0) return try alloc.dupe(u8, words);
+    }
+    return null;
+}
+
 /// `#`..`######` followed by a space; returns the heading text.
 fn headingBody(line: []const u8) ?[]const u8 {
     var level: usize = 0;
