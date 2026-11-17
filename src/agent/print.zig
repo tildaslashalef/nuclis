@@ -48,6 +48,10 @@ const Printer = struct {
 
     pub fn send(self: *Printer, e: Event) !void {
         if (self.json) {
+            // The row the terminal draws under an answer that rests on
+            // partial reads, as the event a script reads.
+            var note: [192]u8 = undefined;
+            if (e == .turn_end) if (e.turn_end.stats.partialNote(&note)) |text| try (Event{ .notice = text }).writeJson(self.out);
             try e.writeJson(self.out);
             try self.out.flush();
             return;
@@ -297,4 +301,12 @@ test "the text form is the answer, the JSON form is every event" {
     try testing.expectEqual(events.len, count);
     try testing.expect(std.mem.indexOf(u8, buffer.written(), "\"type\":\"thinking_delta\"") != null);
     try testing.expect(std.mem.indexOf(u8, buffer.written(), "\"stop\":\"eos\"") != null);
+    try testing.expect(std.mem.indexOf(u8, buffer.written(), "partial reads") == null);
+
+    // A turn that rests on partial reads: a notice before the turn end,
+    // and the three counts in its stats.
+    buffer.clearRetainingCapacity();
+    try json_form.send(.{ .turn_end = .{ .stop = .eos, .stats = .{ .results_cut = 5, .results_elided = 4 } } });
+    try testing.expect(std.mem.startsWith(u8, buffer.written(), "{\"type\":\"notice\",\"text\":\"  — this answer used partial reads: 5 results cut, 4 elided"));
+    try testing.expect(std.mem.indexOf(u8, buffer.written(), "\"results_cut\":5,\"results_elided\":4,\"turns_dropped\":0") != null);
 }

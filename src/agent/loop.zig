@@ -212,6 +212,10 @@ pub const Agent = struct {
     /// answered with a pointer to the result still in the context. Cleared
     /// with every turn.
     reads: std.ArrayList(Read) = .empty,
+    /// What the turn in progress lost to the window, for the row under its
+    /// answer: results cut to `result_budget`, and what compaction cut.
+    turn_clipped: usize = 0,
+    turn_cuts: Cuts = .{},
 
     thinking: std.Io.Writer.Allocating,
     /// The answer content of the step, calls excluded: what the user read and
@@ -503,6 +507,8 @@ pub const Agent = struct {
         self.agg_accepted_drafts = 0;
         self.agg_replay = null;
         self.agg_replay_prefilled = 0;
+        self.turn_clipped = 0;
+        self.turn_cuts = .{};
 
         self.in_turn = true;
         const stop = try self.steps();
@@ -635,6 +641,8 @@ pub const Agent = struct {
         var note: [96]u8 = undefined;
         if (cuts.turns > 0) try self.events.send(self.events.context, .{ .notice = countNotice(&note, cuts.turns, "older turn", "older turns", "dropped from context to fit") });
         if (cuts.results > 0) try self.events.send(self.events.context, .{ .notice = countNotice(&note, cuts.results, "earlier tool result of this turn", "earlier tool results of this turn", "elided from context to fit") });
+        self.turn_cuts.turns += cuts.turns;
+        self.turn_cuts.results += cuts.results;
         cuts.* = .{};
     }
 
@@ -799,6 +807,9 @@ pub const Agent = struct {
                     truncated = false;
                 }
             };
+            // A pointer to an earlier read replaced the cut text: the model
+            // was not shown less than it asked for.
+            if (fitted != null and repeat_text == null) self.turn_clipped += 1;
 
             try self.events.send(self.events.context, .{ .tool_result = .{
                 .id = id,
@@ -1109,6 +1120,9 @@ pub const Agent = struct {
                     .decode_seconds = self.agg_decode_seconds,
                     .accepted_per_step = if (self.agg_speculative_steps > 0) @as(f64, @floatFromInt(self.agg_accepted_drafts)) / @as(f64, @floatFromInt(self.agg_speculative_steps)) else null,
                     .replay = if (self.agg_replay) |r| .{ .cause = @tagName(r.cause), .prefilled = self.agg_replay_prefilled, .restored = r.restored } else null,
+                    .results_cut = self.turn_clipped,
+                    .results_elided = self.turn_cuts.results,
+                    .turns_dropped = self.turn_cuts.turns,
                 },
             },
         });
@@ -1329,6 +1343,7 @@ const Capture = struct {
     diffs: usize = 0,
     turn_end: usize = 0,
     last_turn_stop: ?tui.event.StopReason = null,
+    last_turn_stats: tui.event.TurnStats = .{},
 
     fn init(alloc: Allocator) Capture {
         return .{ .alloc = alloc, .answers = .init(alloc) };
@@ -1360,6 +1375,7 @@ const Capture = struct {
             .turn_end => |end| {
                 self.turn_end += 1;
                 self.last_turn_stop = end.stop;
+                self.last_turn_stats = end.stats;
             },
             .notice => |text| {
                 self.notices += 1;
@@ -2146,6 +2162,42 @@ test "several turns dropped in one step are one notice and one record each" {
     try testing.expectEqual(@as(usize, 3), capture.compactions);
     try testing.expectEqual(@as(usize, 1), capture.notices);
     try testing.expectEqualStrings("  — 3 older turns dropped from context to fit", capture.last_notice.items);
+    try testing.expectEqual(@as(usize, 3), capture.last_turn_stats.turns_dropped);
+}
+
+test "the turn end counts the results cut and elided, and the next turn starts at zero" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var content: std.Io.Writer.Allocating = .init(alloc);
+    defer content.deinit();
+    for (1..201) |i| try content.writer.print("line {d:0>4}\n", .{i});
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "long.txt", .data = content.written() });
+    for ([_][]const u8{ "a.txt", "b.txt", "c.txt" }) |name| try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = name, .data = "one\ntwo\nthree" });
+    const read = struct {
+        fn of(comptime name: []const u8) Profile.ToolCall {
+            return .{ .id = 0, .name = "read_file", .arguments = "{\"path\":\"" ++ name ++ "\"}" };
+        }
+    };
+    // The long page is cut to the result budget; the window is full at the
+    // fifth completion, which stubs the two oldest of the four results.
+    var stub: Stub = .{
+        .answers = &.{ "", "", "", "", "done", "again" },
+        .calls = &.{ &.{read.of("long.txt")}, &.{read.of("a.txt")}, &.{read.of("b.txt")}, &.{read.of("c.txt")} },
+        .context_full_at = 4,
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+
+    try testing.expectEqual(Stop.done, try agent.turn("read four", &.{}));
+    try testing.expectEqual(@as(usize, 1), capture.last_turn_stats.results_cut);
+    try testing.expectEqual(@as(usize, 2), capture.last_turn_stats.results_elided);
+    try testing.expectEqual(@as(usize, 0), capture.last_turn_stats.turns_dropped);
+
+    try testing.expectEqual(Stop.done, try agent.turn("and now?", &.{}));
+    try testing.expectEqual(@as(usize, 0), capture.last_turn_stats.results_cut + capture.last_turn_stats.results_elided + capture.last_turn_stats.turns_dropped);
 }
 
 test "a count notice is singular for one" {

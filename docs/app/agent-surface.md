@@ -188,6 +188,15 @@ it are [agent.md](agent.md).
   heuristic highlighter, rules, tables); a soft line break inside a
   paragraph stays a line break; model-supplied control bytes are stripped;
   no rendered row is ever wider than the terminal, whatever the input.
+- An answer that rests on partial reads ends with one dim row under it,
+  because the tool rows that said `cut` have scrolled away:
+  `— this answer used partial reads: 5 results cut, 4 elided · /clear or
+  a larger --ctx-size gives it more room`, naming only the counts that
+  are not zero: results cut to the result budget, results compaction
+  elided, and earlier turns dropped, all within the turn. `--print
+  --json` writes the row as a `notice` event before `turn_end`, whose
+  `stats` carry the three counts (`results_cut`, `results_elided`,
+  `turns_dropped`); a turn whose reads were whole adds nothing.
 - The status bar shows measurements on the left (state, progress, the
   loop step, context use, token counts, prefill and decode rates) and
   settings on the right (effort, the speculative switch and draft length,

@@ -49,7 +49,60 @@ pub const TurnStats = struct {
     accepted_per_step: ?f64 = null,
     /// Set when the turn re-prefilled the conversation.
     replay: ?Replay = null,
+    /// What the turn's context lost to the window: tool results cut to the
+    /// result budget, results compaction made stubs, earlier turns dropped.
+    results_cut: usize = 0,
+    results_elided: usize = 0,
+    turns_dropped: usize = 0,
+
+    /// The dim row under an answer that rests on partial reads, written into
+    /// `buf`; null when nothing was cut, elided, or dropped.
+    pub fn partialNote(self: TurnStats, buf: []u8) ?[]const u8 {
+        if (self.results_cut + self.results_elided + self.turns_dropped == 0) return null;
+        var w: std.Io.Writer = .fixed(buf);
+        self.writePartial(&w) catch return "  — this answer used partial reads" ++ partial_hint;
+        return w.buffered();
+    }
+
+    const partial_hint = " · /clear or a larger --ctx-size gives it more room";
+
+    fn writePartial(self: TurnStats, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        try w.writeAll("  — this answer used partial reads: ");
+        var sep: []const u8 = "";
+        if (self.results_cut > 0) {
+            try w.print("{d} {s} cut", .{ self.results_cut, if (self.results_cut == 1) "result" else "results" });
+            sep = ", ";
+        }
+        if (self.results_elided > 0) {
+            // The noun is said once: `5 results cut, 4 elided`.
+            const noun: []const u8 = if (self.results_cut > 0) "" else if (self.results_elided == 1) " result" else " results";
+            try w.print("{s}{d}{s} elided", .{ sep, self.results_elided, noun });
+            sep = ", ";
+        }
+        if (self.turns_dropped > 0) {
+            try w.print("{s}{d} earlier {s} dropped", .{ sep, self.turns_dropped, if (self.turns_dropped == 1) "turn" else "turns" });
+        }
+        try w.writeAll(partial_hint);
+    }
 };
+
+test "the partial-reads row names only the counts that are not zero" {
+    var buf: [192]u8 = undefined;
+    try std.testing.expect((TurnStats{}).partialNote(&buf) == null);
+    try std.testing.expectEqualStrings(
+        "  — this answer used partial reads: 5 results cut, 4 elided · /clear or a larger --ctx-size gives it more room",
+        (TurnStats{ .results_cut = 5, .results_elided = 4 }).partialNote(&buf).?,
+    );
+    try std.testing.expectEqualStrings(
+        "  — this answer used partial reads: 1 result elided, 2 earlier turns dropped · /clear or a larger --ctx-size gives it more room",
+        (TurnStats{ .results_elided = 1, .turns_dropped = 2 }).partialNote(&buf).?,
+    );
+    var tiny: [16]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "  — this answer used partial reads · /clear or a larger --ctx-size gives it more room",
+        (TurnStats{ .turns_dropped = 1 }).partialNote(&tiny).?,
+    );
+}
 
 /// Why a turn re-prefilled its conversation and what that cost: `prefilled`
 /// counts the prompt tokens of the steps that replayed, `restored` the
