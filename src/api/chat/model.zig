@@ -100,7 +100,7 @@ pub const Language = struct {
             .thinking_budget = settings.thinking_budget,
             .speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length },
             .cache = .{ .alloc = self.gpa, .budget = settings.cache.memory_bytes },
-            .clamp_budget = true,
+            .reserve = .clamp,
         };
         errdefer self.close(io);
         self.sampler = try inference.sampling.Sampler.init(0, profile.samplingOptions(effort, settings.sampling));

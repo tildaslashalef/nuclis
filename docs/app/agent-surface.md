@@ -193,7 +193,11 @@ it are [agent.md](agent.md).
   settings on the right (effort, the speculative switch and draft length,
   cache precision, backend, model). A rate that was not measured prints as
   absent; a countdown is marked as an estimate. A narrow bar drops
-  settings from the right.
+  settings from the right. Context use is `ctx used/ceiling`: the tokens
+  the session holds against the prompt's ceiling, the window less the
+  step's reserve (`ctx 7694/13312` at 16K and `low`), so the bar fills
+  where compaction starts; `/model`'s note for the model in use names the
+  window, the ceiling, and the reserve.
 
 ## Sessions and storage
 
@@ -258,15 +262,31 @@ it are [agent.md](agent.md).
   conversation begins with (the primed prefix or a turn's end) and
   replays the rest, and the bar names the cause and the tokens prefilled
   and restored ([agent.md § The agent's token cache](agent.md#12-the-agents-token-cache)).
-- Compaction: one tool result may not exceed an eighth of the context
-  window in tokens (never below 256); it is cut at a line boundary with a
-  note saying how to ask for the rest. When a step still does not fit,
-  older results of the turn become one-line stubs, then whole earlier
-  turns leave the model's view, each recorded as a `compaction` entry
-  (a failed turn leaves it too, recorded the same way);
-  only then does the turn end with a message naming the tokens needed
-  and how to raise the window. A turn that alone cannot fit fails with a
-  named reason.
+- Context budget: a step starts when its reserve is left after the
+  prompt, its thinking cap at the current effort plus `answer_reserve`
+  (2,048) and at most `max_tokens` (`completer.Reserve.step`), and may
+  generate on to `max_tokens` while the window has room. The prompt may
+  grow to the window less that reserve, its ceiling (`Window.ceiling`):
+  13,312 at 16K and 29,696 at 32K at `low` with the default budget, where
+  reserving all 8,192 left 8,192 and 24,576. One tool result may take a
+  sixth of the ceiling in tokens (`resultBudget`, never below 256); it is
+  cut at a line boundary with a note saying how to ask for the rest.
+  The window is 32K by default: Qwen3.8-27B with its drafter peaks at
+  6.8 GB beside its 17.9 GB of mapped weights after a 26K-token prompt.
+- Compaction: one decision when a step does not fit, or runs into the
+  window's end (that step is dropped and run once more; a second time is
+  `ContextFull`). `Agent.compact` measures the render (`Model.measure`),
+  drops whole earlier turns oldest first, then makes the turn's own
+  results one-line stubs, oldest first, keeping the last two, until the
+  render is at or below half the ceiling (`low_water_percent`), then
+  retries: stopping where the render fitted by a hair made the next step
+  compact and replay again. Each cut is a `compaction` entry, the stubs
+  all before the first result kept (a failed turn leaves the view too,
+  recorded the same way). Only then does the turn end with a message
+  naming the tokens needed and how to raise the window; a turn that
+  alone cannot fit fails with a named reason. The measurements behind
+  the reserve and the mark:
+  [record, 2026-11-17](../benchmarks/record/agent.md#the-context-budget-2026-11-17).
 - Reasoning budget: one step reasons for at most `agent.thinking_budget`
   tokens at `low` (1024 by default and in every catalogue entry `config
   init` writes, 0 for no cap), twice that at `medium`, three times at

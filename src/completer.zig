@@ -153,6 +153,9 @@ fn readDigest(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8) !?[]
 pub const Reply = struct {
     outcome: inference.engine.Outcome,
     replay: ?Replay = null,
+    /// The step ran out of room below its output budget: it reached the
+    /// window's end, not `max_tokens`.
+    window_end: bool = false,
     /// The rendered conversation's tokens, and how many of them the session
     /// already held (continued or restored) rather than prefilled.
     prompt_tokens: usize = 0,
@@ -205,6 +208,11 @@ pub const Model = struct {
     /// one. The rows are allocated with the given allocator, the grid being
     /// rows by 1 and `width` the clip's samples at 16 kHz.
     encode_audio: *const fn (*anyopaque, Allocator, bytes: []const u8) anyerror!inference.engine.PreparedImage = noAudio,
+    /// The window and what a step reserves of it now (`Window`).
+    window: *const fn (*anyopaque) Window,
+    /// Tokens the render of `messages` costs, without feeding it: what
+    /// compaction measures against the window.
+    measure: *const fn (*anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition) anyerror!usize,
     /// Called when a turn ends in an answer: a boundary the next turn's
     /// render starts with, worth keeping. Returns where the state was saved
     /// to disk, which the session records for a resume; null when it was
@@ -319,6 +327,31 @@ fn holdsMedia(keyed: []const u8) bool {
 /// step needed against the window. For the message the user reads.
 pub const Overflow = struct { needed: usize, capacity: usize };
 
+/// The context window and the output a step reserves of it. The prompt may
+/// grow to `ceiling()`; the result budget, the status bar, and compaction
+/// are all sized from it.
+pub const Window = struct {
+    capacity: usize,
+    reserve: usize,
+
+    pub fn ceiling(self: Window) usize {
+        return self.capacity -| self.reserve;
+    }
+};
+
+/// What the fit check requires to be left after the prompt.
+pub const Reserve = union(enum) {
+    /// The whole output buffer (`max_tokens`).
+    whole,
+    /// One token: a client sized `max_tokens` from its own idea of the
+    /// window, so the budget is capped at what the window leaves.
+    clamp,
+    /// The step's thinking cap plus this many answer tokens, at most the
+    /// buffer; the step may generate past it up to the buffer while the
+    /// window has room, and stops at the window's end (`Reply.window_end`).
+    step: usize,
+};
+
 /// The text still to prefill for `full` given what the model has consumed, or
 /// null when the conversation must be replayed from an empty session.
 pub fn increment(seen: []const u8, full: []const u8) ?[]const u8 {
@@ -405,13 +438,41 @@ pub const Completer = struct {
     mark: ?Mark = null,
     /// Left by a move back to `mark`; cleared with it (`dropMark`).
     tail: ?Tail = null,
-    /// Cap the output budget at the space the prompt leaves instead of
-    /// refusing it: a client sizes `max_tokens` from its own idea of the
-    /// window. The agent keeps the whole budget or reports `ContextFull`.
-    clamp_budget: bool = false,
+    /// What must be left after the prompt for a step to start; less is
+    /// `ContextFull`. The generation is always capped at what is left.
+    reserve: Reserve = .whole,
 
     pub fn model(self: *Completer) Model {
-        return .{ .context = self, .run = run, .count = count, .encode_image = encodeImage, .encode_audio = encodeAudio, .checkpoint = checkpoint };
+        return .{ .context = self, .run = run, .count = count, .window = windowOf, .measure = measure, .encode_image = encodeImage, .encode_audio = encodeAudio, .checkpoint = checkpoint };
+    }
+
+    /// The tokens `reserve` requires at the current effort and budget.
+    pub fn reserveTokens(self: *const Completer) usize {
+        const slice = self.buffers.generated.len;
+        return switch (self.reserve) {
+            .whole => slice,
+            .clamp => 1,
+            .step => |answer| @min(slice, (config.thinkingBudget(self.thinking_budget, self.effort, slice) orelse 0) + answer),
+        };
+    }
+
+    /// The window the engine opened and the reserve a step needs of it now.
+    pub fn window(self: *const Completer) Window {
+        return .{ .capacity = self.eng.model.session().capacity, .reserve = self.reserveTokens() };
+    }
+
+    fn windowOf(context: *anyopaque) Window {
+        const self: *Completer = @ptrCast(@alignCast(context));
+        return self.window();
+    }
+
+    fn measure(context: *anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition) anyerror!usize {
+        const self: *Completer = @ptrCast(@alignCast(context));
+        const rendered = try self.eng.render(messages, definitions, self.effort);
+        defer self.alloc.free(rendered);
+        const tokens = try self.eng.encode(rendered);
+        defer self.alloc.free(tokens);
+        return tokens.len;
     }
 
     /// The audio encoder over one clip's bytes, with the rows moved to the
@@ -468,8 +529,9 @@ pub const Completer = struct {
         const tokens = try self.eng.encode(text);
         defer self.alloc.free(tokens);
         const session = self.eng.model.session();
-        if (tokens.len + self.buffers.generated.len > session.capacity) {
-            self.overflow = .{ .needed = tokens.len + self.buffers.generated.len, .capacity = session.capacity };
+        const reserve = self.reserveTokens();
+        if (tokens.len + reserve > session.capacity) {
+            self.overflow = .{ .needed = tokens.len + reserve, .capacity = session.capacity };
             return error.ContextFull;
         }
         // Re-priming under a conversation replays it on the next step.
@@ -873,9 +935,9 @@ pub const Completer = struct {
         defer self.alloc.free(tokens);
         const session = self.eng.model.session();
         const reused = session.position;
-        const limit = outputBudget(session.position, tokens.len, self.buffers.generated.len, session.capacity, self.clamp_budget) orelse {
-            const output: usize = if (self.clamp_budget) 1 else self.buffers.generated.len;
-            self.overflow = .{ .needed = session.position + tokens.len + output, .capacity = session.capacity };
+        const reserve = self.reserveTokens();
+        const limit = outputBudget(session.position, tokens.len, self.buffers.generated.len, session.capacity, reserve) orelse {
+            self.overflow = .{ .needed = session.position + tokens.len + reserve, .capacity = session.capacity };
             return error.ContextFull;
         };
         // The remainder's placeholder runs are the last media rendered:
@@ -920,7 +982,9 @@ pub const Completer = struct {
         defer self.alloc.free(fed_text);
         try self.seen.appendSlice(self.alloc, fed_text);
         if (outcome.stop == .cancelled) self.reset(.cancel);
-        return .{ .outcome = outcome, .replay = replay, .prompt_tokens = reused + tokens.len, .reused_tokens = reused };
+        const window_end = (outcome.stop == .token_budget or outcome.stop == .context_limit) and limit < self.buffers.generated.len;
+        if (window_end) self.overflow = .{ .needed = reused + tokens.len + self.buffers.generated.len, .capacity = session.capacity };
+        return .{ .outcome = outcome, .replay = replay, .window_end = window_end, .prompt_tokens = reused + tokens.len, .reused_tokens = reused };
     }
 
     /// The spans and concatenated rows for the media runs in `tokens`
@@ -944,14 +1008,13 @@ pub const Completer = struct {
 
 /// The tokens a completion may generate after a prompt of `prompt` tokens
 /// fed at `position` in a window of `capacity`, from an output buffer of
-/// `slice`: the whole slice when it fits; with `clamp`, what the window has
-/// left, at least 1; null when it does not fit.
-pub fn outputBudget(position: usize, prompt: usize, slice: usize, capacity: usize, clamp: bool) ?usize {
+/// `slice`: the slice, capped at what the window leaves; null when less than
+/// `floor` (at least 1) is left.
+pub fn outputBudget(position: usize, prompt: usize, slice: usize, capacity: usize, floor: usize) ?usize {
     if (position + prompt > capacity) return null;
     const left = capacity - position - prompt;
-    if (slice <= left) return slice;
-    if (!clamp or left == 0) return null;
-    return left;
+    if (left < @max(floor, 1)) return null;
+    return @min(slice, left);
 }
 
 // ----- tests -----
@@ -999,11 +1062,41 @@ test "the keyed render names each media run's digest; the plain text drops them"
     try testing.expectEqualStrings("\xfe<i>\xfdx<a>\xff" ++ twos ++ "\xff", framed);
 }
 
-test "the output budget is the slice when it fits, what is left when clamped, else nothing" {
-    try testing.expectEqual(@as(?usize, 100), outputBudget(0, 900, 100, 1000, false));
-    try testing.expectEqual(@as(?usize, null), outputBudget(0, 901, 100, 1000, false));
-    try testing.expectEqual(@as(?usize, 99), outputBudget(0, 901, 100, 1000, true));
-    try testing.expectEqual(@as(?usize, 1), outputBudget(500, 499, 16384, 1000, true));
-    try testing.expectEqual(@as(?usize, null), outputBudget(500, 500, 16384, 1000, true));
-    try testing.expectEqual(@as(?usize, null), outputBudget(500, 501, 1, 1000, true));
+test "the output budget is the slice capped at what is left, or nothing below the floor" {
+    // The whole slice as the floor.
+    try testing.expectEqual(@as(?usize, 100), outputBudget(0, 900, 100, 1000, 100));
+    try testing.expectEqual(@as(?usize, null), outputBudget(0, 901, 100, 1000, 100));
+    // Clamped: a floor of one token.
+    try testing.expectEqual(@as(?usize, 99), outputBudget(0, 901, 100, 1000, 1));
+    try testing.expectEqual(@as(?usize, 1), outputBudget(500, 499, 16384, 1000, 1));
+    try testing.expectEqual(@as(?usize, null), outputBudget(500, 500, 16384, 1000, 1));
+    try testing.expectEqual(@as(?usize, null), outputBudget(500, 500, 16384, 1000, 0));
+    try testing.expectEqual(@as(?usize, null), outputBudget(500, 501, 1, 1000, 1));
+    // A step's reserve: it starts with the reserve left and may run to the window's end.
+    try testing.expectEqual(@as(?usize, 3500), outputBudget(0, 12884, 8192, 16384, 3072));
+    try testing.expectEqual(@as(?usize, null), outputBudget(0, 13313, 8192, 16384, 3072));
+    try testing.expectEqual(@as(?usize, 8192), outputBudget(0, 1964, 8192, 16384, 3072));
+}
+
+test "a step reserves its thinking cap and the answer, never more than the buffer" {
+    var generated: [8192]u32 = undefined;
+    var c: Completer = undefined;
+    c.buffers = .{ .logits = &.{}, .candidates = &.{}, .generated = &generated, .effort = .low };
+    c.thinking_budget = 1024;
+    c.effort = .low;
+    c.reserve = .{ .step = 2048 };
+    try testing.expectEqual(@as(usize, 3072), c.reserveTokens());
+    c.effort = .medium;
+    try testing.expectEqual(@as(usize, 4096), c.reserveTokens());
+    c.effort = .off;
+    try testing.expectEqual(@as(usize, 2048), c.reserveTokens());
+    c.effort = .xhigh;
+    c.thinking_budget = 4096;
+    // The thinking cap is at most half the buffer: 4,096 + 2,048.
+    try testing.expectEqual(@as(usize, 6144), c.reserveTokens());
+    c.reserve = .whole;
+    try testing.expectEqual(@as(usize, 8192), c.reserveTokens());
+    c.reserve = .clamp;
+    try testing.expectEqual(@as(usize, 1), c.reserveTokens());
+    try testing.expectEqual(@as(usize, 13312), (Window{ .capacity = 16384, .reserve = 3072 }).ceiling());
 }

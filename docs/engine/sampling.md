@@ -35,7 +35,7 @@ inserting BOS or EOS. `--prompt` is limited to 64 KiB and `--prompt-file` to
 4 MiB of valid UTF-8; the two are exclusive and neither is ever truncated.
 
 Defaults (without a configuration file) are the Metal backend when built
-in, 8,192 output tokens, 16,384 total context, and seed zero. Sampling
+in, 8,192 output tokens, 32,768 total context, and seed zero. Sampling
 defaults come from the official Qwen3.8 profile of the reasoning mode (next
 section); the file's `generation.sampling` entries and then `--temperature`,
 `--top-k`, `--top-p`, `--min-p`, `--presence-penalty`, and

@@ -163,9 +163,10 @@ pub const Config = struct {
         /// too slow on the target machine to be the first thing run.
         model: []const u8 = "gemma-4-26b-a4b",
         backend: Backend = if (inference.metal.enabled) .metal else .cpu,
-        /// 16K: room for an agent turn's system prompt, tools, and a few
-        /// results on top of the prompt (8K ran out in ordinary use).
-        ctx_size: usize = 16384,
+        /// 32K: at 16K an agent turn of a few paged reads compacted every
+        /// step; the largest catalogue model fits 48 GB at 32K with its
+        /// drafter (docs/benchmarks/record/agent.md, 2026-11-17).
+        ctx_size: usize = 32768,
         /// Attention cache precision on the GPU; the CPU reference
         /// always keeps F32 and reports it.
         kv_precision: KvPrecision = .f16,
@@ -1889,7 +1890,7 @@ test "resolve applies defaults < file < flags per command and records the source
     defer none.deinit();
     const plain = resolve(&none, null, .{}, .generate);
     try std.testing.expectEqual((Config.Engine{}).backend, plain.backend);
-    try std.testing.expectEqual(@as(usize, 16384), plain.ctx_size);
+    try std.testing.expectEqual(@as(usize, 32768), plain.ctx_size);
     try std.testing.expectEqual(@as(usize, 8192), plain.max_tokens);
     try std.testing.expectEqual(.off, plain.think);
     try std.testing.expectEqual(.gemma4, plain.profile);
@@ -2208,7 +2209,7 @@ test "the written initial file parses back exactly and shows the entry shape" {
     const gen = resolve(&loaded, null, .{}, .generate);
     try std.testing.expect(gen.entry != null);
     try std.testing.expectEqual(.qwen38, gen.profile);
-    try std.testing.expectEqual(@as(usize, 16384), gen.ctx_size);
+    try std.testing.expectEqual(@as(usize, 32768), gen.ctx_size);
     // The entry carries the measured speculative verdict: Qwen's
     // embedded head pays at draft 7, the mixture-of-experts Gemma's does not.
     try std.testing.expectEqual(true, gen.entry.?.generation.speculative.?);

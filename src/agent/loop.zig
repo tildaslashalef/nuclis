@@ -40,6 +40,7 @@ pub const Replay = completer.Replay;
 pub const Image = completer.Media;
 pub const freeImages = completer.freeImages;
 pub const Overflow = completer.Overflow;
+pub const Window = completer.Window;
 pub const increment = completer.increment;
 pub const system_prompt = @import("system_prompt.zig");
 
@@ -124,13 +125,24 @@ pub const Result = struct {
     summary: []const u8 = "",
 };
 
-/// Tokens one tool result may occupy: a fixed share of the context window,
-/// never below `min_result_budget`. The tools' own byte and line limits stay
-/// as absolute ceilings; this is the bound that scales with the window.
-pub fn resultBudget(capacity: usize) usize {
-    return @max(capacity / 8, min_result_budget);
+/// Tokens one tool result may occupy: a share of the prompt ceiling
+/// (`Window.ceiling`, the window less the step's reserve), never below
+/// `min_result_budget`. The tools' own byte and line limits stay as absolute
+/// ceilings; this is the bound that scales with the room a prompt has.
+pub fn resultBudget(ceiling: usize) usize {
+    return @max(ceiling / 6, min_result_budget);
 }
 pub const min_result_budget: usize = 256;
+
+/// Answer tokens a step reserves beside its thinking cap: the fit check
+/// starts a step only with both left (`completer.Reserve.step`). Non-reasoning
+/// output above 2,048 tokens per step is rare (docs/app/agent-surface.md § The loop).
+pub const answer_reserve: usize = 2048;
+
+/// Where compaction stops, as a percentage of the prompt ceiling: low enough
+/// that the steps after it do not compact and replay again at once; 50
+/// replayed less than 75 (docs/app/agent-surface.md § The loop).
+pub const low_water_percent: usize = 50;
 
 /// One history message, owned by the loop. `reasoning` is empty except on an
 /// assistant step. `tool_calls` are the calls the assistant requested (with
@@ -183,7 +195,7 @@ pub const Agent = struct {
     history: std.ArrayList(Item) = .empty,
     budget: usize,
     /// Tokens one tool result may occupy before the loop cuts it
-    /// (`resultBudget`); the caller sets it from the window it opened.
+    /// (`resultBudget`), set from the model's window at every step.
     result_budget: usize = resultBudget(8192),
     next_id: u32 = 1,
     /// Model completions completed in the turn in progress; the status bar
@@ -578,26 +590,33 @@ pub const Agent = struct {
         }
     }
 
-    /// One completion step, compacting and retrying when the conversation no
-    /// longer fits: first the turn's own older tool results become stubs,
-    /// then whole earlier turns go. The completion checks the fit before it
-    /// feeds anything, so a retry costs a render, not a prefill. `ContextFull`
-    /// with nothing left to give is the caller's.
+    /// One completion step. When the conversation no longer fits, or the
+    /// step ran into the window's end, the loop compacts once (`compact`) and
+    /// runs the step again; the completion checks the fit before it feeds
+    /// anything, so a refused step costs a render, not a prefill. A step
+    /// that reaches the window's end a second time, or a compaction with
+    /// nothing left to give, is the caller's `ContextFull`.
     fn runStep(self: *Agent) !Reply {
+        var ran_out = false;
         while (true) {
             self.beginStep();
+            self.result_budget = resultBudget(self.model.window(self.model.context).ceiling());
             const messages = try self.buildMessages();
             var sink = self.engineSink();
             const reply = self.model.run(self.model.context, messages, self.tool_defs, self.image_scratch.items, &sink) catch |err| switch (err) {
                 error.ContextFull => {
-                    if (try self.elideResults()) continue;
-                    if (!try self.dropOldestTurn()) return err;
-                    try self.events.send(self.events.context, .{ .notice = "  — older turns dropped from context to fit" });
+                    if (!try self.compact()) return err;
                     continue;
                 },
                 else => return err,
             };
-            return reply;
+            if (!reply.window_end) return reply;
+            // The step is dropped unrecorded, as a cancelled one is; the
+            // transcript already showed what it streamed.
+            if (self.thinking_open and !self.thinking_ended) try self.endThinking();
+            if (ran_out or !try self.compact()) return error.ContextFull;
+            ran_out = true;
+            try self.events.send(self.events.context, .{ .notice = "  — the step reached the end of the context; running it again" });
         }
     }
 
@@ -605,34 +624,60 @@ pub const Agent = struct {
     /// elided: the freshest are what the next step reads.
     const keep_results: usize = 2;
 
-    /// Replaces every tool result of the turn in progress but the last
-    /// `keep_results` with a one-line stub naming the call and its size, in
-    /// one cut: the rendering changes from the first stub on, so the session
-    /// replays from there, and one large cut is paid once. Returns false
-    /// when there is nothing left to elide.
-    fn elideResults(self: *Agent) !bool {
+    /// One compaction decision: drops earlier turns, oldest first, then stubs
+    /// the turn's own results, oldest first, until the render is at or below
+    /// `low_water_percent` of the prompt ceiling, so the steps after it have
+    /// room before the next. Earlier turns go first: the turn's results are
+    /// what the model is working on. Returns false when nothing could go.
+    fn compact(self: *Agent) !bool {
+        const target = self.model.window(self.model.context).ceiling() * low_water_percent / 100;
+        var tokens = try self.measured();
+        var dropped: usize = 0;
+        while (tokens > target and try self.dropOldestTurn()) {
+            dropped += 1;
+            tokens = try self.measured();
+        }
+        const elided = if (tokens > target) try self.elideResults(tokens - target) else 0;
+        if (dropped > 0) try self.events.send(self.events.context, .{ .notice = "  — older turns dropped from context to fit" });
+        if (elided > 0) {
+            var note: [96]u8 = undefined;
+            try self.events.send(self.events.context, .{ .notice = std.fmt.bufPrint(&note, "  — {d} earlier tool results of this turn elided from context to fit", .{elided}) catch "  — earlier tool results elided from context to fit" });
+        }
+        return dropped + elided > 0;
+    }
+
+    /// The tokens the next step's render costs as the history stands.
+    fn measured(self: *Agent) !usize {
+        const messages = try self.buildMessages();
+        return self.model.measure(self.model.context, messages, self.tool_defs);
+    }
+
+    /// Replaces the turn's verbatim tool results with one-line stubs naming
+    /// the call and its size, oldest first, until `excess` tokens are freed
+    /// or only the last `keep_results` remain. Everything stubbed precedes
+    /// the first result kept, so the cut is one point the session file
+    /// records and a resume replays. Returns how many it stubbed.
+    fn elideResults(self: *Agent, excess: usize) !usize {
         var verbatim: usize = 0;
         for (self.history.items[self.turn_start..]) |item| {
             if (item.role == .tool and !std.mem.startsWith(u8, item.content, elided_prefix)) verbatim += 1;
         }
-        if (verbatim <= keep_results) return false;
-        var to_elide = verbatim - keep_results;
-        var first_kept: usize = self.history.items.len;
+        var freed: usize = 0;
+        var elided: usize = 0;
+        var first_kept: usize = self.turn_start;
         for (self.history.items[self.turn_start..], self.turn_start..) |*item, index| {
+            if (freed >= excess or verbatim - elided <= keep_results) break;
             if (item.role != .tool or std.mem.startsWith(u8, item.content, elided_prefix)) continue;
-            if (to_elide == 0) {
-                first_kept = index;
-                break;
-            }
             const stub = try elisionStub(self.alloc, callName(self.history.items, item.tool_call_id), item.content);
+            errdefer self.alloc.free(stub);
+            freed += (try self.model.count(self.model.context, item.content)) -| (try self.model.count(self.model.context, stub));
             self.alloc.free(item.content);
             item.content = stub;
-            to_elide -= 1;
+            elided += 1;
+            first_kept = index + 1;
         }
-        var note: [96]u8 = undefined;
-        try self.events.send(self.events.context, .{ .notice = std.fmt.bufPrint(&note, "  — {d} earlier tool results of this turn elided from context to fit", .{verbatim - keep_results}) catch "  — earlier tool results elided from context to fit" });
-        try self.events.record(self.events.context, .{ .compaction = .{ .first_kept = first_kept, .reason = "results_elided" } });
-        return true;
+        if (elided > 0) try self.events.record(self.events.context, .{ .compaction = .{ .first_kept = first_kept, .reason = "results_elided" } });
+        return elided;
     }
 
     fn beginStep(self: *Agent) void {
@@ -1139,9 +1184,32 @@ const Stub = struct {
     cut_at: ?usize = null,
     /// Turn ends the loop offered to the cache.
     checkpoints: usize = 0,
+    /// The window `compact` measures against; a zero ceiling compacts as
+    /// far as the floors allow.
+    window_now: Window = .{ .capacity = 0, .reserve = 0 },
+    /// When set, the run at this answer index stops at the window's end
+    /// once, without consuming its answer.
+    window_end_at: ?usize = null,
+    /// When set, every run at this index stops at the window's end.
+    window_end_always: ?usize = null,
 
     fn model(self: *Stub) Model {
-        return .{ .context = self, .run = run, .count = count, .checkpoint = checkpoint };
+        return .{ .context = self, .run = run, .count = count, .window = window, .measure = measure, .checkpoint = checkpoint };
+    }
+    fn window(context: *anyopaque) Window {
+        const self: *Stub = @ptrCast(@alignCast(context));
+        return self.window_now;
+    }
+    /// The messages after the system block at `count`'s density, plus
+    /// four tokens of framing each.
+    fn measure(context: *anyopaque, messages: []const Profile.Message, _: []const Profile.ToolDefinition) anyerror!usize {
+        var total: usize = 0;
+        for (messages) |m| {
+            if (m.role == .system) continue;
+            total += 4 + try count(context, m.content) + try count(context, m.reasoning_content);
+            for (m.tool_calls) |call| total += try count(context, call.name) + try count(context, call.arguments);
+        }
+        return total;
     }
     fn checkpoint(context: *anyopaque) ?cache.Boundary {
         const self: *Stub = @ptrCast(@alignCast(context));
@@ -1162,6 +1230,14 @@ const Stub = struct {
                 self.context_full_at = null;
                 return error.ContextFull;
             }
+        }
+        const ran_out = if (self.window_end_at == self.index) blk: {
+            self.window_end_at = null;
+            break :blk true;
+        } else self.window_end_always == self.index;
+        if (ran_out) {
+            try sink.send(.{ .thinking = "out of room" });
+            return .{ .outcome = .{ .stop = .token_budget, .timing = .{ .prompt_tokens = 1, .generated_tokens = 1 } }, .window_end = true };
         }
         if (self.index >= self.answers.len) return error.NoScript;
         const i = self.index;
@@ -1560,10 +1636,11 @@ test "a result over the context budget is cut at a line and told how to continue
     const alloc = testing.allocator;
     var fixture = try Fixture.init(alloc);
     defer fixture.deinit(alloc);
-    // 100 lines of 10 bytes: 1,000 bytes, 250 stub tokens.
+    // 200 lines of 10 bytes; a default page from line 11 is 120 of them,
+    // 300 stub tokens.
     var content: std.Io.Writer.Allocating = .init(alloc);
     defer content.deinit();
-    for (1..101) |i| try content.writer.print("line {d:0>4}\n", .{i});
+    for (1..201) |i| try content.writer.print("line {d:0>4}\n", .{i});
     try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "long.txt", .data = content.written() });
     var stub: Stub = .{
         .answers = &.{ "", "ok" },
@@ -1573,13 +1650,14 @@ test "a result over the context budget is cut at a line and told how to continue
     defer capture.deinit();
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
-    agent.result_budget = 50; // 200 bytes: 20 lines of the 90 the read returns
 
     try testing.expectEqual(Stop.done, try agent.turn("read it", &.{}));
+    // The stub's window has no room, so the budget is its floor.
+    try testing.expectEqual(min_result_budget, agent.result_budget);
     const shown = capture.results.items[0];
     // The kept prefix ends on a line boundary and fits the budget.
     const note_at = std.mem.indexOf(u8, shown, "\n[truncated to fit the context: ") orelse return error.TestUnexpectedResult;
-    try testing.expect(Stub.count(undefined, shown[0..note_at]) catch unreachable <= 50);
+    try testing.expect(Stub.count(undefined, shown[0..note_at]) catch unreachable <= min_result_budget);
     try testing.expect(shown[note_at - 1] != '\n');
     try testing.expect(std.mem.startsWith(u8, shown, "line 0011\n"));
     // The note counts from the call's own offset.
@@ -1590,7 +1668,7 @@ test "a result over the context budget is cut at a line and told how to continue
     try testing.expect(std.mem.endsWith(u8, shown[0..note_at], want_last));
     try testing.expect(note_at == want_last.len or shown[note_at - want_last.len - 1] == '\n');
     var expected: [64]u8 = undefined;
-    const hint = try std.fmt.bufPrint(&expected, "{d} of 90 lines shown; continue with read_file offset={d},", .{ kept, 11 + kept });
+    const hint = try std.fmt.bufPrint(&expected, "{d} of 120 lines shown; continue with read_file offset={d},", .{ kept, 11 + kept });
     try testing.expect(std.mem.indexOf(u8, shown, hint) != null);
     // The model reads the cut text, not the whole file.
     try testing.expectEqualStrings(shown, agent.history.items[2].content);
@@ -1939,6 +2017,119 @@ test "a full window first elides the turn's older tool results, keeping the last
     try testing.expectEqual(@as(usize, 1), capture.notices);
     // No earlier turn existed to drop; the turn's own results were enough.
     try testing.expectEqual(@as(usize, 0), agent.turn_start);
+}
+
+test "elision stubs the oldest results first and stops at the low-water mark" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    // Four results of 400 tokens (1,600 bytes at the stub's density).
+    var bytes: [1600]u8 = @splat('x');
+    for (1..41) |n| bytes[n * 40 - 1] = '\n';
+    const body: []const u8 = &bytes;
+    for ([_][]const u8{ "a.txt", "b.txt", "c.txt", "d.txt" }) |name| try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = name, .data = body });
+    const read = struct {
+        fn of(comptime name: []const u8) Profile.ToolCall {
+            return .{ .id = 0, .name = "read_file", .arguments = "{\"path\":\"" ++ name ++ "\"}" };
+        }
+    };
+    // A 500-token question and four results: 2,164 tokens against a mark
+    // of 2,000, which one stub reaches.
+    var stub: Stub = .{
+        .answers = &.{ "", "", "", "", "done" },
+        .calls = &.{ &.{read.of("a.txt")}, &.{read.of("b.txt")}, &.{read.of("c.txt")}, &.{read.of("d.txt")} },
+        .context_full_at = 4,
+        .window_now = .{ .capacity = 2000 * 100 / low_water_percent, .reserve = 0 },
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+
+    const question: []const u8 = &@as([2000]u8, @splat('q'));
+    try testing.expectEqual(Stop.done, try agent.turn(question, &.{}));
+    try testing.expectEqual(resultBudget(2000 * 100 / low_water_percent), agent.result_budget);
+    try testing.expectEqualStrings("[result elided to fit the context: read_file, 40 lines]", agent.history.items[2].content);
+    // read_file returns the lines without the file's last newline.
+    for ([_]usize{ 4, 6, 8 }) |i| try testing.expectEqualStrings(body[0 .. body.len - 1], agent.history.items[i].content);
+    try testing.expectEqual(@as(usize, 1), capture.compactions);
+    try testing.expectEqual(@as(usize, 1), capture.notices);
+}
+
+test "compaction drops earlier turns before it elides the turn's own results" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    for ([_][]const u8{ "a.txt", "b.txt", "c.txt" }) |name| try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = name, .data = "one\ntwo\nthree" });
+    const read = struct {
+        fn of(comptime name: []const u8) Profile.ToolCall {
+            return .{ .id = 0, .name = "read_file", .arguments = "{\"path\":\"" ++ name ++ "\"}" };
+        }
+    };
+    var stub: Stub = .{
+        .answers = &.{ "first", "", "", "", "done" },
+        .calls = &.{ &.{}, &.{read.of("a.txt")}, &.{read.of("b.txt")}, &.{read.of("c.txt")} },
+        .context_full_at = 4,
+        // A 500-token first turn over a mark of 300; the second turn is small.
+        .window_now = .{ .capacity = 300 * 100 / low_water_percent, .reserve = 0 },
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+
+    const question: []const u8 = &@as([2000]u8, @splat('q'));
+    try testing.expectEqual(Stop.done, try agent.turn(question, &.{}));
+    try testing.expectEqual(Stop.done, try agent.turn("read three", &.{}));
+    // The first turn went; all three results of the second stay verbatim.
+    try testing.expectEqualStrings("read three", agent.history.items[0].content);
+    for ([_]usize{ 2, 4, 6 }) |i| try testing.expectEqualStrings("one\ntwo\nthree", agent.history.items[i].content);
+    try testing.expectEqual(@as(usize, 1), capture.compactions);
+    try testing.expectEqual(@as(usize, 1), capture.notices);
+}
+
+test "a step that reaches the window's end compacts and runs once more" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var stub: Stub = .{ .answers = &.{ "first", "second" }, .window_end_at = 1 };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+
+    try testing.expectEqual(Stop.done, try agent.turn("one", &.{}));
+    try testing.expectEqual(Stop.done, try agent.turn("two", &.{}));
+    // The cut step is neither recorded nor in the history; its rerun is.
+    try testing.expectEqual(@as(usize, 2), capture.assistant_records);
+    try testing.expectEqual(@as(usize, 2), agent.history.items.len);
+    try testing.expectEqualStrings("second", agent.history.items[1].content);
+    // The turn dropped, and the rerun said so.
+    try testing.expectEqual(@as(usize, 1), capture.compactions);
+    try testing.expectEqual(@as(usize, 2), capture.notices);
+    // Its reasoning block was closed before the rerun.
+    try testing.expectEqual(@as(usize, 1), capture.thinking_ends);
+}
+
+test "a second end of the window is the caller's ContextFull" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var stub: Stub = .{ .answers = &.{ "first", "second" }, .window_end_always = 1 };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+
+    try testing.expectEqual(Stop.done, try agent.turn("one", &.{}));
+    try testing.expectError(error.ContextFull, agent.turn("two", &.{}));
+    try testing.expectEqual(@as(usize, 1), capture.assistant_records);
+    // Nothing to compact at all: the first end of the window is already the caller's.
+    agent.abortTurn();
+    var alone: Stub = .{ .answers = &.{"never"}, .window_end_always = 0 };
+    var again = try Agent.init(alloc, testing.io, fixture.ws, alone.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer again.deinit();
+    try testing.expectError(error.ContextFull, again.turn("hello", &.{}));
 }
 
 test "a repeated read of an unchanged range points at the earlier result; a changed file is read again" {

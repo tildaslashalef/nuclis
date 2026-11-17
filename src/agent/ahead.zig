@@ -247,7 +247,7 @@ const testing = std.testing;
 const Fake = struct {
     calls: std.atomic.Value(usize) = .init(0),
     fn model(self: *Fake) completer.Model {
-        return .{ .context = self, .run = undefined, .count = undefined, .encode_image = encodeImage, .encode_audio = encodeAudio };
+        return .{ .context = self, .run = undefined, .count = undefined, .window = undefined, .measure = undefined, .encode_image = encodeImage, .encode_audio = encodeAudio };
     }
     /// A clip of `bytes.len * 1000` samples, one row per byte.
     fn encodeAudio(context: *anyopaque, alloc: Allocator, bytes: []const u8) anyerror!Prepared {

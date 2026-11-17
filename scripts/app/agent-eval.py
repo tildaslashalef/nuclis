@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""The agent's task list: thirteen small coding tasks against the playground
-project, each run as one `nuclis agent --print` turn and scored on whether it
-did the job and what it cost. The list is how a change to the system prompt,
+"""The agent's task list: fifteen small coding tasks against the playground
+project, each run as one `nuclis agent --print` turn (the multi-turn one as
+four, continued through `--resume`) and scored on whether it did the job and
+what it cost. The list is how a change to the system prompt,
 a tool description, or the loop is judged: run it before and after, compare.
 
     make agent-eval VARIANT=baseline                 # the built-in prompt
@@ -13,7 +14,9 @@ fixed seed, checks the result (file contents, a command's output, the
 answer's text), and records one JSON per task and seed under
 .zig-cache/agent-eval/<variant>/<task>-s<seed>.json: pass/fail, steps, tool
 calls, tool errors, failed edits, prompt and generated tokens, the model's
-own seconds, the answer's length, and the stop reason. `--compare` renders
+own seconds, the answer's length, the stop reason, and what compaction
+cost (turns dropped, elisions, results clipped to the budget, and the prompt
+tokens of the steps that replayed the conversation). `--compare` renders
 the variants side by side. The playground is generated on first use under
 .zig-cache/playground/ (scripts/app/playground.py); `--workspace` runs another.
 """
@@ -47,6 +50,9 @@ class Task:
     prompt: str
     check: Callable[[Path, "Run"], tuple[bool, str]]
     setup: Optional[Callable[[Path], None]] = None
+    # Earlier turns of the same conversation, each its own run continued
+    # through `--resume`, before `prompt`.
+    before: tuple = ()
 
 
 @dataclass
@@ -66,6 +72,15 @@ class Run:
     tools: list = field(default_factory=list)
     wall_seconds: float = 0.0
     exit_status: int = 0
+    # Compaction: earlier turns dropped, elisions of the turn's results,
+    # results cut to the result budget, and the prompt tokens of the steps
+    # that replayed the conversation instead of continuing it.
+    dropped: int = 0
+    elided: int = 0
+    clipped: int = 0
+    replayed_prompt: int = 0
+    # The text of each read_file result of the last turn, in order.
+    reads: list = field(default_factory=list)
 
 
 # ----- the tasks ------------------------------------------------------------
@@ -200,6 +215,29 @@ def check_big(ws: Path, run: Run):
     return ok, f"{len(run.answer)} chars, {run.steps} steps"
 
 
+PAGES = (
+    "Read data/requests.txt with read_file, five default pages one after another, "
+    "then tell me the last request number you read."
+)
+
+
+def check_pages(ws: Path, run: Run):
+    """The answer names the req= number on the last line the last read showed,
+    whatever the budget cut: what was read, not what a page should hold."""
+    if not run.reads:
+        return False, "no read_file result"
+    seen = re.findall(r"req=(\d+)", run.reads[-1])
+    if not seen:
+        return False, "the last read holds no request"
+    last = int(seen[-1])
+    said = {int(n) for n in re.findall(r"\d+", run.answer)}
+    reads = len(run.reads)
+    return (
+        last in said and reads >= 5,
+        f"last read req={last}, {reads} reads, {run.clipped} clipped, {run.elided} elisions",
+    )
+
+
 def check_about(ws: Path, run: Run):
     low = run.answer.lower()
     ok = ("geometr" in low or "shape" in low) and len(run.answer) <= 1500
@@ -275,6 +313,19 @@ TASKS = [
         check_validate,
     ),
     Task("about", "What is this project about?", check_about),
+    Task("pages", PAGES, check_pages),
+    # Three turns that fill the window, then the paging one: the compaction
+    # and replay cost the single-turn tasks never reach.
+    Task(
+        "replay",
+        PAGES,
+        check_pages,
+        before=(
+            "Read docs/design.md and summarize it in three bullets.",
+            "Read src/shapes/polygon.py and explain each function in one sentence.",
+            "Read data/measurements.txt with read_file, its first page, and tell me the largest radius on it.",
+        ),
+    ),
 ]
 
 
@@ -303,10 +354,15 @@ def parse(events_text: str, session_path: Path, run: Run) -> Run:
             except json.JSONDecodeError:
                 continue
             kind = e.get("type")
+            if kind == "user":
+                # A multi-turn task is judged on its last turn's reads.
+                run.reads = []
             if kind == "assistant":
                 run.steps += 1
                 st = e.get("stats", {})
                 run.prompt_tokens += st.get("prompt_tokens", 0)
+                if st.get("replayed"):
+                    run.replayed_prompt += st.get("prompt_tokens", 0)
                 run.generated += st.get("generated", 0)
                 if e.get("answer"):
                     run.answers.append(e["answer"])
@@ -314,7 +370,16 @@ def parse(events_text: str, session_path: Path, run: Run) -> Run:
                     run.calls += 1
                     names[str(call.get("id"))] = call.get("name")
                     run.tools.append(call.get("name"))
+            elif kind == "compaction":
+                if e.get("reason") == "context_full":
+                    run.dropped += 1
+                elif e.get("reason") == "results_elided":
+                    run.elided += 1
             elif kind == "tool_result":
+                if "[truncated to fit the context:" in e.get("text", ""):
+                    run.clipped += 1
+                if names.get(e.get("call")) == "read_file" and not e.get("is_error"):
+                    run.reads.append(e.get("text", ""))
                 if e.get("is_error"):
                     run.errors += 1
                     if names.get(e.get("call")) in ("edit_file", "write_file"):
@@ -324,6 +389,7 @@ def parse(events_text: str, session_path: Path, run: Run) -> Run:
 
 
 BEHAVIOURS = ("regex_grep", "pytest", "reread", "cd")
+COMPACTION = ("dropped", "elided", "clipped", "replayed_prompt")
 
 
 def behaviours(session_path: Path) -> dict:
@@ -377,32 +443,46 @@ def run_task(task: Task, seed: int, args, variant_dir: Path) -> dict:
     session = variant_dir / f"{task.name}-s{seed}.session.jsonl"
     if session.exists():
         session.unlink()
-    cmd = [
-        str(Path(args.binary).resolve()),
-        "agent",
-        "-p",
-        task.prompt,
-        "--json",
-        "--seed",
-        str(seed),
-        "--session",
-        str(session),
-    ]
-    if args.model:
-        cmd += ["--model", args.model]
-    if args.system_prompt:
-        cmd += ["--system-prompt", str(Path(args.system_prompt).resolve())]
-    cmd += args.extra
+
+    def turn(prompt: str, resume: bool):
+        cmd = [
+            str(Path(args.binary).resolve()),
+            "agent",
+            "-p",
+            prompt,
+            "--json",
+            "--seed",
+            str(seed),
+            "--session",
+            str(session),
+        ]
+        if resume:
+            cmd += ["--resume", str(session)]
+        if args.model:
+            cmd += ["--model", args.model]
+        if args.system_prompt:
+            cmd += ["--system-prompt", str(Path(args.system_prompt).resolve())]
+        cmd += args.extra
+        try:
+            proc = subprocess.run(cmd, cwd=ws, capture_output=True, text=True, timeout=TURN_TIMEOUT)
+            return proc.stdout, proc.stderr, proc.returncode
+        except subprocess.TimeoutExpired as exc:
+            return (
+                (exc.stdout or b"").decode() if isinstance(exc.stdout, bytes) else (exc.stdout or ""),
+                "timeout",
+                -1,
+            )
+
     started = time.monotonic()
-    try:
-        proc = subprocess.run(cmd, cwd=ws, capture_output=True, text=True, timeout=TURN_TIMEOUT)
-        events, stderr, status = proc.stdout, proc.stderr, proc.returncode
-    except subprocess.TimeoutExpired as exc:
-        events, stderr, status = (
-            (exc.stdout or b"").decode() if isinstance(exc.stdout, bytes) else (exc.stdout or ""),
-            "timeout",
-            -1,
-        )
+    status, stderr = 0, ""
+    for i, prompt in enumerate(task.before):
+        _, stderr, status = turn(prompt, i > 0)
+        if status != 0:
+            break
+    if status == 0:
+        events, stderr, status = turn(task.prompt, bool(task.before))
+    else:
+        events = ""
     run = parse(events, session, Run(wall_seconds=time.monotonic() - started, exit_status=status))
     try:
         ok, note = task.check(ws, run)
@@ -425,6 +505,10 @@ def run_task(task: Task, seed: int, args, variant_dir: Path) -> dict:
         "answer_chars": len(run.answer),
         "stop": run.stop,
         "exit_status": run.exit_status,
+        "dropped": run.dropped,
+        "elided": run.elided,
+        "clipped": run.clipped,
+        "replayed_prompt": run.replayed_prompt,
         "tools": run.tools,
         "answer": run.answer,
         "stderr_tail": stderr[-400:],
@@ -464,6 +548,7 @@ def aggregate(records: list) -> dict:
         "generated": statistics.mean(r["generated"] for r in records),
         "model_seconds": statistics.mean(r["model_seconds"] for r in records),
         "answer_chars": statistics.mean(r["answer_chars"] for r in records),
+        **{k: sum(r.get(k, 0) for r in records) for k in COMPACTION},
         **{b: sum(r["behaviours"][b] for r in records) for b in BEHAVIOURS},
     }
 
@@ -510,6 +595,8 @@ def compare(names: list) -> str:
     rows.append(fmt("generated", lambda v: f"{v:.0f}"))
     rows.append(fmt("model_seconds", lambda v: f"{v:.1f}"))
     rows.append(fmt("answer_chars", lambda v: f"{v:.0f}"))
+    for k in COMPACTION:
+        rows.append(fmt(k, lambda v: str(v)))
     for b in BEHAVIOURS:
         rows.append(fmt(b, lambda v: str(v)))
     # Per-task pass marks across variants, seeds joined.
@@ -540,7 +627,7 @@ def main():
         help="a file copied to the playground as AGENTS.md before every turn (the project instructions section); `none` for no file",
     )
     ap.add_argument("--seeds", default="1,2", help="comma-separated seeds; every task runs once per seed")
-    ap.add_argument("--tasks", default="*", help="glob over task names")
+    ap.add_argument("--tasks", default="*", help="comma-separated globs over task names")
     ap.add_argument("--workspace", help="a project with `make reset` and `make test`; default the generated playground")
     ap.add_argument("--binary", default=str(DEFAULT_BINARY))
     ap.add_argument("--model", help="--model for the agent; the configured default otherwise")
@@ -568,7 +655,8 @@ def main():
     variant_dir = OUT_DIR / args.variant
     variant_dir.mkdir(parents=True, exist_ok=True)
     seeds = [int(s) for s in args.seeds.split(",") if s]
-    chosen = [t for t in TASKS if fnmatch.fnmatch(t.name, args.tasks)]
+    globs = args.tasks.split(",")
+    chosen = [t for t in TASKS if any(fnmatch.fnmatch(t.name, g) for g in globs)]
     rev = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True
     ).stdout.strip()

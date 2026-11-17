@@ -45,7 +45,7 @@ holds its entry ([the registry](#naming-your-models-the-registry)):
   "engine": {
     "model": "gemma-4-26b-a4b",
     "backend": "metal",
-    "ctx_size": 16384,
+    "ctx_size": 32768,
     "kv_precision": "f16"
   },
   "generation": {
@@ -159,7 +159,7 @@ Each section's defaults and meanings:
 | --- | --- | --- |
 | `model` | `gemma-4-26b-a4b` (`config init` writes the first installed chat model when that one is absent) | a registry entry, an index name, or a path (under `~/.nuclis/models` unless absolute), tried in that order; flag `--model` |
 | `backend` | `metal` (`cpu` in a build without Metal) | where the model runs |
-| `ctx_size` | `16384` | the context window in tokens, 1..32,768 |
+| `ctx_size` | `32768` | the context window in tokens, 1..32,768 |
 | `kv_precision` | `f16` | the attention cache on the GPU: `f16` halves its memory and the bytes read per token; `q8_0` (blocks of 32 eight-bit codes and an F16 scale) about halves them again, for long contexts; `f32` otherwise. The CPU always keeps F32. Flag `--kv` |
 
 ### `generation`

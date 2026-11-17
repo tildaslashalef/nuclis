@@ -29,7 +29,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT = ROOT / ".zig-cache" / "playground"
 # Bump when the files below change, so existing workspaces are rebuilt.
-VERSION = "1"
+VERSION = "2"
 STAMP = "nuclis-playground"
 
 README = """\
@@ -43,7 +43,8 @@ A tiny Python project the nuclis agent works in.
 - `src/cli.py`: a command-line entry point that prints shape metrics.
 - `tests/`: unittest-based tests, run with `make test`.
 - `docs/`: a short design document and a long release history.
-- `data/`: fixtures: `measurements.txt` (400 lines) and `big.txt` (over 1 MiB).
+- `data/`: fixtures: `measurements.txt` (400 lines), `requests.txt` (1,000
+  requests), and `big.txt` (over 1 MiB).
 - `scripts/`: shell situations for the bash tool.
 
 ## Running
@@ -293,6 +294,23 @@ def big_text() -> str:
     return "\n".join(lines) + "\n"
 
 
+def requests_log() -> str:
+    """1,000 access-log lines, `req=` numbered as the line: wide enough that a
+    default read_file page (120 lines) is several thousand tokens."""
+    rng = random.Random(11)
+    shapes = ["circle", "rect", "polygon"]
+    lines = []
+    for i in range(1, 1001):
+        stamp = f"2026-11-14T09:{i // 60 % 60:02d}:{i % 60:02d}.{rng.randint(0, 999):03d}Z"
+        shape = rng.choice(shapes)
+        status = rng.choice([200, 200, 200, 200, 400, 404, 500])
+        lines.append(
+            f"{stamp} INFO req={i:04d} GET /api/v1/shapes/{shape}?sides={rng.randint(3, 12)}&length={rng.uniform(0.5, 9.5):.3f} "
+            f"status={status} took={rng.randint(1, 900)}ms bytes={rng.randint(120, 9000)} client=10.0.{rng.randint(0, 255)}.{rng.randint(1, 254)}"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def files() -> dict[str, str]:
     return {
         "README.md": README,
@@ -307,6 +325,7 @@ def files() -> dict[str, str]:
         "docs/design.md": DESIGN,
         "docs/history.md": history(),
         "data/measurements.txt": measurements(),
+        "data/requests.txt": requests_log(),
         "data/big.txt": big_text(),
         "scripts/exit7.sh": EXIT7,
     }
