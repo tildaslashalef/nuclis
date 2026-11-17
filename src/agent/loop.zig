@@ -595,17 +595,27 @@ pub const Agent = struct {
     /// runs the step again; the completion checks the fit before it feeds
     /// anything, so a refused step costs a render, not a prefill. A step
     /// that reaches the window's end a second time, or a compaction with
-    /// nothing left to give, is the caller's `ContextFull`.
+    /// nothing left to give, is the caller's `ContextFull`. Whatever the
+    /// retries cut is announced once, before the run that follows or the
+    /// failure.
     fn runStep(self: *Agent) !Reply {
+        var cuts: Cuts = .{};
+        const reply = self.attemptStep(&cuts);
+        try self.announce(&cuts);
+        return reply;
+    }
+
+    fn attemptStep(self: *Agent, cuts: *Cuts) !Reply {
         var ran_out = false;
         while (true) {
             self.beginStep();
             self.result_budget = resultBudget(self.model.window(self.model.context).ceiling());
             const messages = try self.buildMessages();
+            try self.announce(cuts);
             var sink = self.engineSink();
             const reply = self.model.run(self.model.context, messages, self.tool_defs, self.image_scratch.items, &sink) catch |err| switch (err) {
                 error.ContextFull => {
-                    if (!try self.compact()) return err;
+                    if (!try self.compact(cuts)) return err;
                     continue;
                 },
                 else => return err,
@@ -614,10 +624,18 @@ pub const Agent = struct {
             // The step is dropped unrecorded, as a cancelled one is; the
             // transcript already showed what it streamed.
             if (self.thinking_open and !self.thinking_ended) try self.endThinking();
-            if (ran_out or !try self.compact()) return error.ContextFull;
+            if (ran_out or !try self.compact(cuts)) return error.ContextFull;
             ran_out = true;
             try self.events.send(self.events.context, .{ .notice = "  — the step reached the end of the context; running it again" });
         }
+    }
+
+    /// Sends one notice per kind of cut tallied in `cuts`, then clears it.
+    fn announce(self: *Agent, cuts: *Cuts) !void {
+        var note: [96]u8 = undefined;
+        if (cuts.turns > 0) try self.events.send(self.events.context, .{ .notice = countNotice(&note, cuts.turns, "older turn", "older turns", "dropped from context to fit") });
+        if (cuts.results > 0) try self.events.send(self.events.context, .{ .notice = countNotice(&note, cuts.results, "earlier tool result of this turn", "earlier tool results of this turn", "elided from context to fit") });
+        cuts.* = .{};
     }
 
     /// Tool results of the turn in progress kept verbatim when the rest are
@@ -628,8 +646,9 @@ pub const Agent = struct {
     /// the turn's own results, oldest first, until the render is at or below
     /// `low_water_percent` of the prompt ceiling, so the steps after it have
     /// room before the next. Earlier turns go first: the turn's results are
-    /// what the model is working on. Returns false when nothing could go.
-    fn compact(self: *Agent) !bool {
+    /// what the model is working on. Adds what it cut to `cuts`; returns
+    /// false when nothing could go.
+    fn compact(self: *Agent, cuts: *Cuts) !bool {
         const target = self.model.window(self.model.context).ceiling() * low_water_percent / 100;
         var tokens = try self.measured();
         var dropped: usize = 0;
@@ -638,11 +657,8 @@ pub const Agent = struct {
             tokens = try self.measured();
         }
         const elided = if (tokens > target) try self.elideResults(tokens - target) else 0;
-        if (dropped > 0) try self.events.send(self.events.context, .{ .notice = "  — older turns dropped from context to fit" });
-        if (elided > 0) {
-            var note: [96]u8 = undefined;
-            try self.events.send(self.events.context, .{ .notice = std.fmt.bufPrint(&note, "  — {d} earlier tool results of this turn elided from context to fit", .{elided}) catch "  — earlier tool results elided from context to fit" });
-        }
+        cuts.turns += dropped;
+        cuts.results += elided;
         return dropped + elided > 0;
     }
 
@@ -1110,6 +1126,21 @@ fn toolDefs(alloc: Allocator, tier: tools.Web) Allocator.Error![]Profile.ToolDef
     return defs;
 }
 
+/// What compaction cut while one step was retried, so the transcript says
+/// it once: whole earlier turns dropped, and results of the turn in
+/// progress made stubs.
+const Cuts = struct {
+    turns: usize = 0,
+    results: usize = 0,
+};
+
+/// `  — N <noun> <rest>`, the noun singular for one; a count too long for
+/// `buf` falls back to the plural without the number.
+fn countNotice(buf: []u8, count: usize, comptime singular: []const u8, comptime plural: []const u8, comptime rest: []const u8) []const u8 {
+    if (count == 1) return "  — 1 " ++ singular ++ " " ++ rest;
+    return std.fmt.bufPrint(buf, "  — {d} " ++ plural ++ " " ++ rest, .{count}) catch "  — " ++ plural ++ " " ++ rest;
+}
+
 /// What an elided tool result becomes: one line naming the call and the
 /// result's size. Shared with `resume`, which replays elisions.
 pub const elided_prefix = "[result elided to fit the context: ";
@@ -1286,6 +1317,8 @@ const Capture = struct {
     recorded_cuts: usize = 0,
     compactions: usize = 0,
     notices: usize = 0,
+    /// The text of the last notice, for the tests that read it.
+    last_notice: std.ArrayList(u8) = .empty,
     thinking_ends: usize = 0,
     /// `E` per thinking end, `A` per run of answer text, `C` per call: the
     /// order a block closes in relative to what follows it.
@@ -1303,6 +1336,7 @@ const Capture = struct {
     fn deinit(self: *Capture) void {
         self.answers.deinit();
         self.order.deinit(self.alloc);
+        self.last_notice.deinit(self.alloc);
         for (self.results.items) |text| self.alloc.free(text);
         self.results.deinit(self.alloc);
     }
@@ -1327,7 +1361,11 @@ const Capture = struct {
                 self.turn_end += 1;
                 self.last_turn_stop = end.stop;
             },
-            .notice => self.notices += 1,
+            .notice => |text| {
+                self.notices += 1;
+                self.last_notice.clearRetainingCapacity();
+                try self.last_notice.appendSlice(self.alloc, text);
+            },
             .thinking_end => {
                 self.thinking_ends += 1;
                 try self.order.append(self.alloc, 'E');
@@ -2015,6 +2053,7 @@ test "a full window first elides the turn's older tool results, keeping the last
     try testing.expectEqual(agent.history.items[1].tool_calls[0].id, agent.history.items[2].tool_call_id.?);
     try testing.expectEqual(@as(usize, 1), capture.compactions);
     try testing.expectEqual(@as(usize, 1), capture.notices);
+    try testing.expectEqualStrings("  — 2 earlier tool results of this turn elided from context to fit", capture.last_notice.items);
     // No earlier turn existed to drop; the turn's own results were enough.
     try testing.expectEqual(@as(usize, 0), agent.turn_start);
 }
@@ -2086,6 +2125,35 @@ test "compaction drops earlier turns before it elides the turn's own results" {
     for ([_]usize{ 2, 4, 6 }) |i| try testing.expectEqualStrings("one\ntwo\nthree", agent.history.items[i].content);
     try testing.expectEqual(@as(usize, 1), capture.compactions);
     try testing.expectEqual(@as(usize, 1), capture.notices);
+    try testing.expectEqualStrings("  — 1 older turn dropped from context to fit", capture.last_notice.items);
+}
+
+test "several turns dropped in one step are one notice and one record each" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    // A zero ceiling compacts as far as the floors allow: every earlier turn.
+    var stub: Stub = .{ .answers = &.{ "one", "two", "three", "four" }, .context_full_at = 3 };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+
+    for ([_][]const u8{ "a", "b", "c", "d" }) |prompt| try testing.expectEqual(Stop.done, try agent.turn(prompt, &.{}));
+    try testing.expectEqual(@as(usize, 2), agent.history.items.len);
+    try testing.expectEqualStrings("d", agent.history.items[0].content);
+    // The session replays each drop; the transcript says it once.
+    try testing.expectEqual(@as(usize, 3), capture.compactions);
+    try testing.expectEqual(@as(usize, 1), capture.notices);
+    try testing.expectEqualStrings("  — 3 older turns dropped from context to fit", capture.last_notice.items);
+}
+
+test "a count notice is singular for one" {
+    var buf: [96]u8 = undefined;
+    try testing.expectEqualStrings("  — 1 older turn dropped", countNotice(&buf, 1, "older turn", "older turns", "dropped"));
+    try testing.expectEqualStrings("  — 12 older turns dropped", countNotice(&buf, 12, "older turn", "older turns", "dropped"));
+    var tiny: [4]u8 = undefined;
+    try testing.expectEqualStrings("  — older turns dropped", countNotice(&tiny, 12, "older turn", "older turns", "dropped"));
 }
 
 test "a step that reaches the window's end compacts and runs once more" {
