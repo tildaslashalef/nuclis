@@ -4,6 +4,45 @@
 The dated record behind [the agent concepts](../../app/agent.md): the
 measurements behind the web tools and the token cache.
 
+### An edit's echo cut to its hunk headers (2026-11-17)
+
+**Method.** `make agent-eval`'s six edit tasks (`rename`, `heading`,
+`bugfix`, `validate`, `newfile`, `json`), seeds 1 to 5, Qwen3.8-27B
+UD-Q4_K_M with its drafter, Metal, kv f16, M4 Pro 48 GB, the 32K default
+window, effort `low`, thinking budget 2048. *Full* is the build of
+`4d3cafe`, whose `edit_file` result carries the unified diff with one line
+of context; *headers* is that revision with the result cut to its first
+line and the `@@` hunk headers (the transcript still drew the whole diff),
+and the guideline's "the result shows the diff" changed to "the result
+names the lines changed". The two builds alternated seed by seed. Result
+tokens are `scripts/app/agent-tokens.py`'s count over all 30 runs of each.
+
+| variant | passes | failed edits | `reread` | `edit_file` calls | `edit_file` result tokens | all result tokens | model s, median / sum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| full | 29 / 30 | 0 | 0 | 58 | 5,971 | 23,220 | 54.5 / 2,105 |
+| headers | 29 / 30 | 0 | 2 | 63 | 1,572 | 23,636 | 59.0 / 1,961 |
+
+The echo was a quarter of what it was, but the turn's result tokens did
+not fall: the saving went into more reads, greps, and edits. Both rereads
+are one run, `json` seed 2, and its reasoning gives the cause: after an
+edit whose result was `@@ -12,2 +12,5 @@` and `@@ -19,7 +22,12 @@`, "I
+need to check what I actually wrote", then a read of the file, which
+showed two lines its edit had left behind, then two more edits to repair
+it and a second read to confirm. With the full echo the first of those
+lines is the context row under the change, and no run of the full build re-read a file
+it had just edited. The one failure in each arm is `validate` (seed 1 for
+headers, seed 4 for full), both the same miss: a test that asserts the
+`ValueError` without its message. The sum of model seconds is 7 % lower
+for headers, inside the spread of two outlier runs of the full build
+(`json` seed 4 at 291 s, `validate` seed 5 at 238 s); the medians go the
+other way.
+
+**Decision.** The kill criterion was a rise in `reread`, failed edits, or
+lost passes; `reread` rose, and the result tokens the change was for did
+not come back as a smaller turn. The full echo stays: the diff's `-` and
+`+` lines repeat the call, but its context lines are how the model sees
+where its edit landed without reading the file again.
+
 ### The thinking budget (2026-11-17)
 
 **Method.** `make agent-eval`'s fifteen tasks at the build of `3ddc0c5`
