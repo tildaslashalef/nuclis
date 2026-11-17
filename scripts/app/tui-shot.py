@@ -300,7 +300,10 @@ class Ghostty:
     def find_window(self):
         script = (
             'ObjC.import("CoreGraphics");'
-            "const list = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0));"
+            # The call returns a CFArrayRef, which deepUnwrap leaves opaque
+            # unless it is cast to an object first.
+            "const list = ObjC.deepUnwrap(ObjC.castRefToObject("
+            "$.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)));"
             'const w = list.filter(w => w.kCGWindowOwnerName === "Ghostty" && (w.kCGWindowName || "").includes("%s"));'
             "JSON.stringify(w.map(w => w.kCGWindowNumber));" % self.session.name
         )
