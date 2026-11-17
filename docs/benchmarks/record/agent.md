@@ -4,6 +4,100 @@
 The dated record behind [the agent concepts](../../app/agent.md): the
 measurements behind the web tools and the token cache.
 
+### Where an agent turn goes (2026-11-18)
+
+**Method.** `make agent-eval`'s eighteen tasks (the thirteen of before,
+`longread` and `manysteps` among the new), seeds 1 to 3, each variant's
+own registry effort and thinking budget, Metal, kv f16, the 32K window,
+M4 Pro 48 GB. The 26B-A4B (UD-Q4_K_XL) ran from a ReleaseSafe binary of
+`d5b359f`, speculation off and on with its MTP drafter at draft length 4;
+the E4B (QAT) from `29fb842`, with its drafter, as its entry has it;
+Qwen3.8-27B (the re-made UD-Q4_K_M) from `d5b359f`, seed 1 only, off and
+with each drafter at draft length 7. The
+step fields are those [§ 12 of the concepts](../../app/agent.md#12-the-agents-token-cache)
+lists; the table is `agent-eval.py --breakdown`, the fit a least-squares
+line of each step's prefill seconds on its new prompt tokens.
+
+| variant | runs passed | steps | wall s | prefill s (new / reused tok) | decode s (tok, tok/s) | accepted / drafted | prefill fit |
+| --- | ---: | ---: | ---: | --- | --- | ---: | --- |
+| E4B, drafter | 46 / 54 | 322 | 1,976 | 1,016 (242,830 / 1,458,176) | 942 (91,602, 97.3) | 63 % | −0.20 s + 4.45 ms/tok |
+| 26B-A4B, off | 42 / 54 | 394 | 3,420 | 1,682 (306,802 / 1,925,291) | 1,705 (88,775, 52.1) | — | 0.10 s + 5.36 ms/tok |
+| 26B-A4B, MTP 4 | 46 / 54 | 356 | 2,923 | 1,794 (300,735 / 1,691,832) | 1,086 (74,540, 68.6) | 74 % | 0.08 s + 5.87 ms/tok |
+| Qwen3.8, off | 17 / 18 | 95 | 2,839 | 1,308 (71,709 / 402,555) | 1,525 (15,098, 9.9) | — | 0.28 s + 17.9 ms/tok |
+| Qwen3.8, MTP 7 | 18 / 18 | 98 | 2,505 | 1,445 (80,237 / 442,271) | 1,052 (20,945, 19.9) | 76 % | 0.56 s + 17.3 ms/tok |
+| Qwen3.8, DFlash2 7 | 18 / 18 | 91 | 2,113 | 1,296 (76,658 / 404,206) | 810 (17,988, 22.2) | 77 % | 0.49 s + 16.3 ms/tok |
+
+Shares of wall time, prefill / decode / tools / idle: E4B 51 / 48 / 0 / 1;
+26B-A4B off 49 / 50 / 0 / 1; with the drafter 61 / 37 / 0 / 1; Qwen3.8
+off 46 / 54, MTP 58 / 42, DFlash2 61 / 38 (tools and idle under 1 %).
+Prefill tokens per generated token: 2.65, 3.46, 4.03; Qwen 4.75, 3.83,
+4.26. A first DFlash2 run, launched as MTP but taking the user's
+configured drafter, gave the same tokens at 2,196 s against 2,113: about
+4 % run to run on wall time.
+
+**Prefill with depth.** The line above ignores what a step's new tokens
+attend to. Fitted instead as `c + a·n + b·((d+n)² − d²)`, n the step's new
+tokens and d the reused depth before them (`--breakdown`'s second fit),
+every variant's prefill splits into a part per token, a part that grows
+with depth, and a fixed part per step:
+
+| variant | c, s | a, ms/tok | b, ns | R² | prefill s: per token + depth + fixed |
+| --- | ---: | ---: | ---: | ---: | --- |
+| E4B, drafter | 0.12 | 1.89 | 104 | 0.9997 | 459 + 518 + 39 |
+| 26B-A4B, off | 0.21 | 2.20 | 149 | 0.9999 | 675 + 924 + 84 |
+| 26B-A4B, MTP 4 | 0.19 | 2.50 | 160 | 0.9999 | 751 + 975 + 69 |
+| Qwen3.8, off | 0.51 | 10.76 | 297 | 0.9991 | 772 + 488 + 49 |
+| Qwen3.8, MTP 7 | 0.48 | 11.01 | 292 | 0.9996 | 883 + 516 + 47 |
+| Qwen3.8, DFlash2 7 | 0.38 | 10.55 | 274 | 1.0000 | 809 + 453 + 34 |
+
+The 26B-A4B's b matches the cold prompt's 164 ns
+([gemma4 record § Context past 32K](gemma4.md#context-past-32k-2026-11-18)):
+the global layers' attention, a third of the list's wall time with the
+drafter on (975 of 2,923 s).
+
+**Reuse.** Of the 26B-A4B's 394 steps without the drafter, 54 were a
+turn's first, 231 reused the whole saved state, 95 rewound to the mark
+(Gemma's template renders a step's own output differently on the next
+one), 9 resumed a stored conversation, and 5 were rewrites: the context
+budget elided or dropped a result and the completer restored only the
+system prefix. The rewinds lost 16,382 tokens, about 170 a step; the five
+rewrites lost 104,863 and prefilled 46,803 again (elision had shortened
+the prompt), 204 of the 1,682 prefill seconds (12 %). The MTP variant: 92
+rewinds lost 22,709 tokens, 5 rewrites lost 106,227 and took 228 s (13 %).
+The E4B: 66 rewinds for 18,226, its rewrites 4,419.
+
+**Reading.**
+- On the 26B-A4B the drafter takes decode from 52.1 to 68.6 tokens/s on
+  what the agent emits (1.32×, 74 % of drafts accepted; the prose and code
+  benchmark's 1.18-1.65×), and the list's wall time from 3,420 s to 2,923
+  (−15 %; model seconds per run 60.6 to 51.5). Prefill is then 61 % of
+  the time: the next lever is prefill, and inside it the global layers'
+  attention at depth (54 % of prefill seconds); the rewrites are a third
+  of the lost tokens and 12–13 % of the seconds.
+- The fixed cost per step is small on either Gemma: 0.12–0.21 s with the
+  depth term, 0.1 s at most on the line; Qwen3.8's is 0.38–0.51 s.
+  Prefill runs at 186 tokens/s (26B-A4B) and 225 (E4B) of new tokens over
+  a mean reused depth of 4,900 and 4,500.
+- Gemma's rewinds are frequent and cheap; the rewrites are rare and are
+  most of the lost reuse, in `pages` and `replay`, the two tasks that fill
+  the window. Little of a rewrite can be kept: elision stubs the turn's
+  oldest result first, and dropping a turn cuts right after the system
+  block, so the first changed token sits at about 2,000 (`pages` seed 2:
+  the system block is 1,892 tokens, the first result begins near 2,039)
+  and everything after it moves. Each time the window fills, the prompt
+  is prefilled again from the system block up to the ceiling, whatever
+  `low_water_percent` (50) is; what the cut decides is how many new tokens
+  a cycle admits before the next one, about 13,000 at 50 % and 18,200 at
+  30 % (derived, not measured), against what the model loses with the
+  results it no longer sees.
+- On Qwen3.8 the drafters double decode (9.9 to 19.9 and 22.2 tokens/s)
+  but cut model seconds per run only 11 % (MTP, 150.6 to 133.8) and 28 %
+  (DFlash2, to 107.8): prefill, at 17 ms a token, is then 58–61 % of the
+  time. Per task it takes 108 s with DFlash2 against the 26B-A4B's 51 s.
+- Passes differ by a few runs between variants of the same model; the
+  drafter changes no greedy output, and these runs sample, so the
+  difference is the seeds', not the drafter's.
+
 ### An edit's echo cut to its hunk headers (2026-11-17)
 
 **Method.** `make agent-eval`'s six edit tasks (`rename`, `heading`,

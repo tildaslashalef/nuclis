@@ -13,7 +13,7 @@ it when this file changes what it writes.
 It holds only what the tasks touch: the `shapes` package (whose polygon area
 is off by a factor of two on purpose, a task's scope check), the CLI, the
 tests, a design note whose `Error handling` heading appears twice, a seeded
-release history, 400 measurements, a file over 1 MiB, and a script that
+release history, three long operating notes, 400 measurements, a file over 1 MiB, and a script that
 exits 7 silently.
 """
 
@@ -29,7 +29,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT = ROOT / ".zig-cache" / "playground"
 # Bump when the files below change, so existing workspaces are rebuilt.
-VERSION = "2"
+VERSION = "3"
 STAMP = "nuclis-playground"
 
 README = """\
@@ -311,6 +311,40 @@ def requests_log() -> str:
     return "\n".join(lines) + "\n"
 
 
+def manual(seed: int, topic: str, port: int) -> str:
+    """About 4,000 tokens of seeded operating notes in under 120 lines (one
+    default read_file page), with the service's port stated once."""
+    rng = random.Random(seed)
+    nouns = [
+        "the request queue",
+        "the cache",
+        "a worker",
+        "the scheduler",
+        "the shape index",
+        "a client",
+        "the log writer",
+    ]
+    verbs = ["retries", "drains", "rebuilds", "throttles", "flushes", "validates", "rotates"]
+    whens = [
+        "after a restart",
+        "under load",
+        "when the disk is full",
+        "every hour",
+        "on a config reload",
+        "at shutdown",
+    ]
+    out = [f"# {topic}", ""]
+    for i in range(1, 104):
+        line = " ".join(
+            f"{rng.choice(nouns).capitalize()} {rng.choice(verbs)} {rng.choice(nouns)} {rng.choice(whens)}."
+            for _ in range(3)
+        )
+        out.append(f"{i:03d}. {line}")
+        if i == 61:
+            out.append(f"     The {topic.lower()} listener binds port {port}; nothing else in this file names a port.")
+    return "\n".join(out) + "\n"
+
+
 def files() -> dict[str, str]:
     return {
         "README.md": README,
@@ -328,6 +362,9 @@ def files() -> dict[str, str]:
         "data/requests.txt": requests_log(),
         "data/big.txt": big_text(),
         "scripts/exit7.sh": EXIT7,
+        "ops/api.md": manual(21, "API service", 8471),
+        "ops/metrics.md": manual(22, "Metrics exporter", 9364),
+        "ops/admin.md": manual(23, "Admin console", 7158),
     }
 
 

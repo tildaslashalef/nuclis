@@ -160,6 +160,40 @@ pub const Reply = struct {
     /// already held (continued or restored) rather than prefilled.
     prompt_tokens: usize = 0,
     reused_tokens: usize = 0,
+    /// Why the step kept less than the session held, and how many tokens it
+    /// lost: those the session held when the step began (before any move
+    /// back to a `Mark` since the last step) beyond what it kept.
+    reuse: Reuse = .first,
+    lost_tokens: usize = 0,
+};
+
+/// Why a step's prompt reused what it did (docs/benchmarks: the agent-turn
+/// breakdown reads it).
+pub const Reuse = enum {
+    /// Nothing was in the session: a new conversation.
+    first,
+    /// Everything the session held was kept.
+    full,
+    /// The session moved back to the last prompt's end because the profile
+    /// renders a step's own output differently (`rewritesTurn`).
+    rewound,
+    /// A `Replay.Cause` named the loss.
+    resumed,
+    cancel,
+    rewrite,
+    effort,
+    context,
+    model,
+    failure,
+    /// The session was reset for another reason (a failed restore or
+    /// step back).
+    reset,
+
+    fn of(cause: Replay.Cause) Reuse {
+        return switch (cause) {
+            inline else => |c| @field(Reuse, @tagName(c)),
+        };
+    }
 };
 
 /// Why a step re-prefilled the conversation, and how much of it a cached
@@ -441,6 +475,9 @@ pub const Completer = struct {
     /// What must be left after the prompt for a step to start; less is
     /// `ContextFull`. The generation is always capped at what is left.
     reserve: Reserve = .whole,
+    /// Tokens moved back over by `rewindToMark` since the last step began,
+    /// reported as that step's loss (`Reply.lost_tokens`).
+    rewound: usize = 0,
 
     pub fn model(self: *Completer) Model {
         return .{ .context = self, .run = run, .count = count, .window = windowOf, .measure = measure, .encode_image = encodeImage, .encode_audio = encodeAudio, .checkpoint = checkpoint };
@@ -731,8 +768,11 @@ pub const Completer = struct {
         self.primed_len = 0;
         self.cause = cause;
         // A new conversation keeps the last one's saved turn: it can still
-        // be resumed.
-        if (cause == null) self.saved_turn = null;
+        // be resumed. It loses nothing of the last one's.
+        if (cause == null) {
+            self.saved_turn = null;
+            self.rewound = 0;
+        }
     }
 
     pub fn deinit(self: *Completer) void {
@@ -746,6 +786,7 @@ pub const Completer = struct {
     /// session is reset, as after a failed restore.
     fn rewindToMark(self: *Completer, m: Mark) !void {
         self.mark = null;
+        self.rewound += self.eng.model.session().position -| m.position;
         var bits = m.history;
         defer if (bits) |*b| b.deinit(self.alloc);
         inference.engine.rewindSession(self.eng, m.position, m.last) catch |err| {
@@ -860,6 +901,12 @@ pub const Completer = struct {
     fn run(context: *anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, media: []const Media, sink: *Sink) anyerror!Reply {
         const self: *Completer = @ptrCast(@alignCast(context));
         var replay: ?Replay = null;
+        // What the session held for this conversation when the step began;
+        // a primed system block alone is a new conversation's.
+        const rewound_before = self.rewound;
+        const held_before = self.eng.model.session().position + rewound_before;
+        const conversation = self.seen.items.len > self.primed_len or rewound_before > 0;
+        self.rewound = 0;
         const profile = self.eng.profile orelse return error.UnsupportedPromptTemplate;
         for (media) |item| if (item.kind == .audio and profile.audioPlaceholder() == null) return error.AudioUnsupported;
         const rendered = try self.eng.render(messages, definitions, self.effort);
@@ -984,7 +1031,13 @@ pub const Completer = struct {
         if (outcome.stop == .cancelled) self.reset(.cancel);
         const window_end = (outcome.stop == .token_budget or outcome.stop == .context_limit) and limit < self.buffers.generated.len;
         if (window_end) self.overflow = .{ .needed = reused + tokens.len + self.buffers.generated.len, .capacity = session.capacity };
-        return .{ .outcome = outcome, .replay = replay, .window_end = window_end, .prompt_tokens = reused + tokens.len, .reused_tokens = reused };
+        const lost = if (conversation or replay != null) held_before -| reused else 0;
+        const reuse: Reuse = if (replay) |r| .of(r.cause) else if (!conversation)
+            .first
+        else if (lost == 0) .full else if (rewound_before + self.rewound > 0) .rewound else .reset;
+        // A rewind inside this step is already counted in `lost`.
+        self.rewound = 0;
+        return .{ .outcome = outcome, .replay = replay, .window_end = window_end, .prompt_tokens = reused + tokens.len, .reused_tokens = reused, .reuse = reuse, .lost_tokens = lost };
     }
 
     /// The spans and concatenated rows for the media runs in `tokens`

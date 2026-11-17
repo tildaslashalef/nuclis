@@ -113,6 +113,20 @@ pub const Step = struct {
     reasoning_tokens: usize = 0,
     /// Set on a turn's last step when its state was saved for a resume.
     boundary: ?cache.Boundary = null,
+    /// Prompt tokens the session already held, the reason it kept no more,
+    /// and the tokens it held but could not keep (`completer.Reply`).
+    reused_tokens: usize = 0,
+    reuse: completer.Reuse = .first,
+    lost_tokens: usize = 0,
+    /// The step's wall time from building its messages to the reply,
+    /// compaction retries included; prefill and decode are inside it.
+    run_seconds: f64 = 0,
+    /// From the first prompt step to the first sampled token.
+    first_token_seconds: f64 = 0,
+    /// Speculative verify batches, drafts proposed and accepted.
+    verify_batches: usize = 0,
+    drafted: usize = 0,
+    accepted: usize = 0,
 };
 
 /// One executed tool call and its typed result.
@@ -126,6 +140,8 @@ pub const Result = struct {
     cancelled: bool = false,
     /// The transcript's detail row, kept so a resumed session shows it.
     summary: []const u8 = "",
+    /// The tool's own wall time.
+    seconds: f64 = 0,
 };
 
 /// Tokens one tool result may occupy: a share of the prompt ceiling
@@ -235,6 +251,7 @@ pub const Agent = struct {
     agg_generated: usize = 0,
     agg_prefill_seconds: f64 = 0,
     agg_decode_seconds: f64 = 0,
+    agg_tool_seconds: f64 = 0,
     agg_speculative_steps: usize = 0,
     agg_accepted_drafts: usize = 0,
     /// The turn's first replay, and the prompt tokens its steps prefilled.
@@ -515,6 +532,7 @@ pub const Agent = struct {
         self.agg_generated = 0;
         self.agg_prefill_seconds = 0;
         self.agg_decode_seconds = 0;
+        self.agg_tool_seconds = 0;
         self.agg_speculative_steps = 0;
         self.agg_accepted_drafts = 0;
         self.agg_replay = null;
@@ -536,7 +554,9 @@ pub const Agent = struct {
                 try self.events.send(self.events.context, .{ .notice = "  — step budget reached" });
                 return .budget;
             }
+            const step_started = std.Io.Clock.awake.now(self.io);
             const reply = try self.runStep();
+            const run_seconds = seconds(step_started.durationTo(std.Io.Clock.awake.now(self.io)));
             completed += 1;
             self.steps_done = completed;
             self.rendered_tokens = reply.prompt_tokens;
@@ -600,6 +620,14 @@ pub const Agent = struct {
                 .reasoning_cut = reply.outcome.reasoning_cut,
                 .reasoning_tokens = reply.outcome.reasoning_tokens,
                 .boundary = boundary,
+                .reused_tokens = reply.reused_tokens,
+                .reuse = reply.reuse,
+                .lost_tokens = reply.lost_tokens,
+                .run_seconds = run_seconds,
+                .first_token_seconds = seconds(reply.outcome.timing.first_token),
+                .verify_batches = reply.outcome.timing.speculative_steps,
+                .drafted = reply.outcome.timing.proposed_drafts,
+                .accepted = reply.outcome.timing.accepted_drafts,
             } });
             if (cancelled) return .cancelled;
             try self.appendItem(.assistant, self.answer.written(), self.thinking.written(), calls, null, &.{});
@@ -853,7 +881,9 @@ pub const Agent = struct {
                 .is_error = result.is_error,
                 .cancelled = cancelled,
                 .summary = summary,
+                .seconds = ran,
             } });
+            self.agg_tool_seconds += ran;
             try self.appendItem(.tool, model_text, "", &.{}, id, &.{});
         }
     }
@@ -1218,6 +1248,8 @@ pub const Agent = struct {
                     .generated = self.agg_generated,
                     .prefill_seconds = self.agg_prefill_seconds,
                     .decode_seconds = self.agg_decode_seconds,
+                    .tool_seconds = self.agg_tool_seconds,
+                    .wall_seconds = seconds(self.turn_started.durationTo(std.Io.Clock.awake.now(self.io))),
                     .accepted_per_step = if (self.agg_speculative_steps > 0) @as(f64, @floatFromInt(self.agg_accepted_drafts)) / @as(f64, @floatFromInt(self.agg_speculative_steps)) else null,
                     .replay = if (self.agg_replay) |r| .{ .cause = @tagName(r.cause), .prefilled = self.agg_replay_prefilled, .restored = r.restored } else null,
                     .results_cut = self.turn_clipped,

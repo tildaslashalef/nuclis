@@ -34,6 +34,14 @@ pub fn entry(scratch: *Scratch, record: loop.Record) session.Entry {
                 .restored_tokens = if (step.replay) |r| r.restored else 0,
                 .reasoning_cut = step.reasoning_cut,
                 .reasoning_tokens = step.reasoning_tokens,
+                .reused_tokens = step.reused_tokens,
+                .reuse = @tagName(step.reuse),
+                .lost_tokens = step.lost_tokens,
+                .run_seconds = step.run_seconds,
+                .first_token_seconds = step.first_token_seconds,
+                .verify_batches = step.verify_batches,
+                .drafted = step.drafted,
+                .accepted = step.accepted,
             },
             .boundary = if (step.boundary) |b| .{ .bytes = b.bytes, .digest = b.digest } else null,
         } },
@@ -45,6 +53,7 @@ pub fn entry(scratch: *Scratch, record: loop.Record) session.Entry {
             .is_error = result.is_error,
             .cancelled = result.cancelled,
             .summary = result.summary,
+            .seconds = result.seconds,
         } },
     };
 }
