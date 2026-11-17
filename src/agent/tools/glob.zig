@@ -4,7 +4,9 @@
 //! classes, and `**` (zero or more path segments). Hidden entries are skipped
 //! unless the pattern itself names one (starts with `.` or contains `/.`).
 //! At most `max_results` paths, sorted, with no symlink following — the host
-//! constants keep a deep tree from consuming the turn.
+//! constants keep a deep tree from consuming the turn. A symlink the pattern
+//! could reach is counted and named in the note, so an empty list is not read
+//! as "nothing there".
 const std = @import("std");
 const root = @import("root.zig");
 
@@ -50,16 +52,16 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         try out.appendSlice(alloc, path);
     }
     const truncated = found.items.len > max_results;
-    const summary = try summarize(alloc, found.items.len, walker.capped, walker.unreadable);
+    const summary = try summarize(alloc, found.items.len, walker.capped, walker.unreadable, walker.symlinks);
     errdefer alloc.free(summary);
     // The model reads the summary only when the list alone would mislead it.
-    if (truncated or walker.unreadable > 0) try out.print(alloc, "{s}[{s}]", .{ if (out.items.len > 0) "\n" else "", summary });
+    if (truncated or walker.unreadable > 0 or walker.symlinks > 0) try out.print(alloc, "{s}[{s}]", .{ if (out.items.len > 0) "\n" else "", summary });
     return .{ .text = try out.toOwnedSlice(alloc), .truncated = truncated or walker.capped, .summary = summary };
 }
 
-/// The detail row: how many paths, whether the bound cut the list, and the
-/// directories that could not be read.
-fn summarize(alloc: std.mem.Allocator, count: usize, capped: bool, unreadable: usize) std.mem.Allocator.Error![]u8 {
+/// The detail row: how many paths, whether the bound cut the list, the
+/// directories that could not be read, and the symlinks left unfollowed.
+fn summarize(alloc: std.mem.Allocator, count: usize, capped: bool, unreadable: usize, symlinks: usize) std.mem.Allocator.Error![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(alloc);
     switch (count) {
@@ -69,6 +71,7 @@ fn summarize(alloc: std.mem.Allocator, count: usize, capped: bool, unreadable: u
     }
     if (count > max_results) try out.print(alloc, " · first {d} shown; narrow the pattern", .{max_results});
     if (unreadable > 0) try out.print(alloc, " · {d} director{s} could not be read", .{ unreadable, if (unreadable == 1) "y" else "ies" });
+    if (symlinks > 0) try out.print(alloc, " · {d} symlink{s} skipped", .{ symlinks, if (symlinks == 1) "" else "s" });
     return out.toOwnedSlice(alloc);
 }
 
@@ -92,6 +95,8 @@ const Walker = struct {
     /// The walk stopped at `collect_limit`.
     capped: bool = false,
     unreadable: usize = 0,
+    /// Symlinks the pattern could reach, as a file or as a directory to walk.
+    symlinks: usize = 0,
 
     fn walk(self: *Walker, dir: std.Io.Dir, prefix: []const u8) std.mem.Allocator.Error!void {
         var iterable = dir.openDir(self.io, if (prefix.len == 0) "." else prefix, .{ .iterate = true }) catch {
@@ -120,6 +125,9 @@ const Walker = struct {
                     errdefer self.alloc.free(owned);
                     try self.found.append(self.alloc, owned);
                 },
+                .sym_link => if (matchPattern(self.pattern, path) or couldDescend(self.pattern, 0, path, 0)) {
+                    self.symlinks += 1;
+                },
                 else => {},
             }
         }
@@ -132,6 +140,18 @@ const Walker = struct {
 /// `*` and `?` within a segment, `[...]`, `**` across segments).
 pub fn matchPattern(pattern: []const u8, path: []const u8) bool {
     return matchFrom(pattern, 0, path, 0);
+}
+
+/// Whether some path under the directory `path` (`path/...`) could match
+/// `pattern`: every segment of `path` matches and pattern is left over.
+fn couldDescend(pattern: []const u8, pi: usize, path: []const u8, si: usize) bool {
+    if (si >= path.len) return pi < pattern.len;
+    if (pi >= pattern.len) return false;
+    const pe = segmentEnd(pattern, pi);
+    if (std.mem.eql(u8, pattern[pi..pe], "**")) return true;
+    const se = segmentEnd(path, si);
+    if (!matchSegment(pattern[pi..pe], path[si..se])) return false;
+    return couldDescend(pattern, afterSegment(pattern, pe), path, afterSegment(path, se));
 }
 
 fn segmentEnd(text: []const u8, start: usize) usize {
@@ -288,4 +308,34 @@ test "glob shows the first 200 sorted, and says when more matched" {
     try testing.expect(std.mem.startsWith(u8, over.text, "a.txt\nf0000.txt\n"));
     try testing.expect(std.mem.indexOf(u8, over.text, "f0199.txt") == null);
     try testing.expect(std.mem.endsWith(u8, over.text, "[201 files · first 200 shown; narrow the pattern]"));
+}
+
+test "glob counts the symlinks the pattern could reach, and does not follow them" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root_path);
+    const ws: root.Workspace = .{ .io = testing.io, .dir = tmp.dir, .root = root_path };
+    try tmp.dir.createDir(testing.io, "real", .default_dir);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "real/hosts", .data = "" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "notes.md", .data = "" });
+    try tmp.dir.createDir(testing.io, "links", .default_dir);
+    try tmp.dir.symLink(testing.io, "../real", "links/etc", .{ .is_directory = true });
+    try tmp.dir.symLink(testing.io, "notes.md", "alias.md", .{});
+
+    // `**` reaches both links; the linked directory's file is not listed.
+    var all = try run(ws, testing.allocator, "{\"pattern\":\"**\"}");
+    defer all.deinit(testing.allocator);
+    try testing.expectEqualStrings("notes.md\nreal/hosts\n[2 files · 2 symlinks skipped]", all.text);
+    try testing.expect(!all.truncated);
+
+    // A pattern into the linked directory: no files, and the reason.
+    var into = try run(ws, testing.allocator, "{\"pattern\":\"links/etc/*\"}");
+    defer into.deinit(testing.allocator);
+    try testing.expectEqualStrings("[no files · 1 symlink skipped]", into.text);
+
+    // A pattern neither link could satisfy says nothing about them.
+    var real = try run(ws, testing.allocator, "{\"pattern\":\"real/*\"}");
+    defer real.deinit(testing.allocator);
+    try testing.expectEqualStrings("real/hosts", real.text);
 }

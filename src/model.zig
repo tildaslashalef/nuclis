@@ -1374,8 +1374,9 @@ fn kindOrder(kind: ?catalog.ModelKind) u8 {
 
 /// What a file outside the index is, from its header (GGUF) or the files
 /// beside it (safetensors): its kind, architecture, and whether an adapter
-/// runs it. Only the GGUF directory is read.
-fn judgeLocal(arena: Allocator, io: std.Io, models: []const u8, path: []const u8) !struct { kind: ?catalog.ModelKind, architecture: ?[]const u8, runnable: bool } {
+/// runs it, and the quantization its header declares. Only the GGUF
+/// directory is read, within `inference.gguf.Limits`.
+fn judgeLocal(arena: Allocator, io: std.Io, models: []const u8, path: []const u8) !struct { kind: ?catalog.ModelKind, architecture: ?[]const u8, runnable: bool, quantization: ?[]const u8 = null } {
     const absolute = try std.fs.path.join(arena, &.{ models, path });
     if (hf.format(path) == .safetensors) {
         const dir = std.fs.path.dirname(absolute) orelse ".";
@@ -1389,11 +1390,60 @@ fn judgeLocal(arena: Allocator, io: std.Io, models: []const u8, path: []const u8
     if (std.mem.eql(u8, arch, inference.embed.architecture)) return .{ .kind = .embedding, .architecture = arch, .runnable = true };
     if (std.mem.eql(u8, arch, "drama3")) return .{ .kind = .speech, .architecture = arch, .runnable = true };
     const adapter = inference.models.adapterFor(arch);
-    return .{ .kind = if (adapter != null) .generation else null, .architecture = if (arch.len > 0) arch else null, .runnable = adapter != null };
+    const file_type: ?u64 = if (doc.get("general.file_type")) |v| switch (v) {
+        .unsigned => |n| n,
+        .signed => |n| if (n >= 0) @intCast(n) else null,
+        else => null,
+    } else null;
+    return .{
+        .kind = if (adapter != null) .generation else null,
+        .architecture = if (arch.len > 0) arch else null,
+        .runnable = adapter != null,
+        .quantization = if (file_type) |t| fileTypeName(t) else null,
+    };
+}
+
+/// The name of a GGUF `general.file_type` (the file's declared dominant
+/// quantization), null for a value not listed here.
+fn fileTypeName(file_type: u64) ?[]const u8 {
+    return switch (file_type) {
+        0 => "F32",
+        1 => "F16",
+        2 => "Q4_0",
+        3 => "Q4_1",
+        7 => "Q8_0",
+        8 => "Q5_0",
+        9 => "Q5_1",
+        10 => "Q2_K",
+        11 => "Q3_K_S",
+        12 => "Q3_K_M",
+        13 => "Q3_K_L",
+        14 => "Q4_K_S",
+        15 => "Q4_K_M",
+        16 => "Q5_K_S",
+        17 => "Q5_K_M",
+        18 => "Q6_K",
+        19 => "IQ2_XXS",
+        20 => "IQ2_XS",
+        21 => "Q2_K_S",
+        22 => "IQ3_XS",
+        23 => "IQ3_XXS",
+        24 => "IQ1_S",
+        25 => "IQ4_NL",
+        26 => "IQ3_S",
+        27 => "IQ3_M",
+        28 => "IQ2_S",
+        29 => "IQ2_M",
+        30 => "IQ4_XS",
+        31 => "IQ1_M",
+        32 => "BF16",
+        else => null,
+    };
 }
 
 /// The quantization a file name ends in (`Some-Model-Q4_K_M.gguf` →
-/// `Q4_K_M`), for a file the index does not describe.
+/// `Q4_K_M`), for a file the index does not describe and whose header
+/// declares no `general.file_type` this reads.
 fn quantizationOf(path: []const u8) []const u8 {
     if (hf.format(path) == .safetensors) return "safetensors";
     const stem = std.fs.path.stem(std.fs.path.basename(path));
@@ -1477,7 +1527,7 @@ pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Mod
         const judged = try judgeLocal(arena, io, models, f.path);
         var warnings: std.ArrayList([]const u8) = .empty;
         if (f.sidecar) |s| if (s.size != f.size) try warnings.append(arena, try arena.print("{s}: the size differs from its sidecar's", .{f.path}));
-        try installed.append(arena, .{ .name = f.path, .kind = judged.kind, .architecture = judged.architecture, .quantization = quantizationOf(f.path), .runnable = judged.runnable, .size = size, .files = row_files.items, .warnings = warnings.items });
+        try installed.append(arena, .{ .name = f.path, .kind = judged.kind, .architecture = judged.architecture, .quantization = judged.quantization orelse quantizationOf(f.path), .runnable = judged.runnable, .size = size, .files = row_files.items, .warnings = warnings.items });
     }
     // A companion with no main file beside it is a row of its own.
     for (files.items, claimed) |f, taken| if (!taken) {
@@ -1553,8 +1603,8 @@ fn repoOf(path: []const u8) ?[]const u8 {
 /// index name, as `--model` would name it.
 pub const Runnable = struct {
     name: []const u8,
-    /// Architecture, quantization, and size for an index file; the file's
-    /// name otherwise.
+    /// Architecture, quantization, and size for an index file or a file
+    /// whose GGUF header names its architecture; the file's name otherwise.
     detail: []const u8,
 };
 
@@ -1570,7 +1620,7 @@ pub fn runnableModels(arena: Allocator, listing: Listing, registry: config.Model
         const e = named.entry;
         const location = e.path orelse if (e.repo != null and e.file != null) try std.fs.path.join(arena, &.{ e.repo.?, e.file.? }) else continue;
         const detail = for (listing.installed) |row| {
-            if (row.artifact != null and row.kind == .generation and std.mem.eql(u8, row.files[0].path, location)) break try installedDetail(arena, row);
+            if ((row.artifact != null or row.architecture != null) and row.kind == .generation and std.mem.eql(u8, row.files[0].path, location)) break try installedDetail(arena, row);
         } else std.fs.path.basename(location);
         try out.append(arena, .{ .name = named.name, .detail = detail });
     }
@@ -2475,6 +2525,53 @@ test "selection and pull reports render the same values in both forms" {
     const parsed_pull = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
     defer parsed_pull.deinit();
     try std.testing.expectEqualStrings("main", parsed_pull.value.object.get("files").?.array.items[0].object.get("role").?.string);
+}
+
+test "a registry entry outside the index shows its GGUF header's family and quantization" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(root);
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // A header with no tensors: the architecture and `general.file_type` (2, Q4_0).
+    var header: std.Io.Writer.Allocating = .init(arena);
+    const w = &header.writer;
+    try w.writeAll("GGUF");
+    try w.writeInt(u32, 3, .little);
+    try w.writeInt(u64, 0, .little);
+    try w.writeInt(u64, 2, .little);
+    try writeGgufString(w, "general.architecture");
+    try w.writeInt(u32, 8, .little);
+    try writeGgufString(w, "gemma4");
+    try writeGgufString(w, "general.file_type");
+    try w.writeInt(u32, 4, .little);
+    try w.writeInt(u32, 2, .little);
+    try w.splatByteAll(0, 64);
+    const dir = "models/acme/Gemma-GGUF/";
+    try tmp.dir.createDirPath(io, dir);
+    // Its name says Q4_K_M; the header says Q4_0, and the header wins.
+    try tmp.dir.writeFile(io, .{ .sub_path = dir ++ "Gemma-Custom-Q4_K_M.gguf", .data = header.written() });
+    try tmp.dir.writeFile(io, .{ .sub_path = dir ++ "Broken-Q8_0.gguf", .data = "GGUFxxxx" });
+    const entries = [_]config.NamedModel{
+        .{ .name = "custom", .entry = .{ .repo = "acme/Gemma-GGUF", .file = "Gemma-Custom-Q4_K_M.gguf" } },
+        .{ .name = "broken", .entry = .{ .repo = "acme/Gemma-GGUF", .file = "Broken-Q8_0.gguf", .profile = .gemma4 } },
+    };
+    const listing = try list(arena, io, root, .{ .entries = &entries }, null);
+    const offered = try runnableModels(arena, listing, .{ .entries = &entries });
+    try std.testing.expectEqual(@as(usize, 2), offered.len);
+    try std.testing.expectEqualStrings("custom", offered[0].name);
+    var size: [16]u8 = undefined;
+    const expected = try arena.print("gemma4 · Q4_0 · {s}", .{humanSize(&size, header.written().len)});
+    try std.testing.expectEqualStrings(expected, offered[0].detail);
+    // A header that does not parse leaves the file's name.
+    try std.testing.expectEqualStrings("broken", offered[1].name);
+    try std.testing.expectEqualStrings("Broken-Q8_0.gguf", offered[1].detail);
+    try std.testing.expectEqualStrings("Q4_0", fileTypeName(2).?);
+    try std.testing.expect(fileTypeName(141) == null);
 }
 
 test "ls lists what is installed, grouped by kind, with the index one flag away" {
