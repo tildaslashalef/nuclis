@@ -57,10 +57,6 @@ const Profile = inference.profiles;
 
 /// Idle height of the highlighted input box, in rows.
 const min_editor_rows = 3;
-/// Rows of the idle live region: the spacer, the framed editor (its rows
-/// plus two edges), the hint, and the bar. `anchor` walks down exactly this
-/// far, so the first paint never scrolls the header off the top.
-const idle_region_rows = min_editor_rows + 5;
 
 /// One paintable row. The type is the screen module's: the agent builds
 /// rows, `tui.screen` decides how they reach the terminal.
@@ -312,8 +308,8 @@ const Ui = struct {
         // A resize invalidates the width every printed row was wrapped at.
         // Completed turns are immutable (docs/spec.md § The agent, Surface): only
         // the last one is replayed at the new width, older ones are left as
-        // the terminal reflowed them, and the region is rebuilt below, at the
-        // bottom, from where the terminal says the cursor landed.
+        // the terminal reflowed them, and the region is rebuilt under it,
+        // from where the terminal says the cursor landed.
         const changed = size.rows != self.scr.size.rows or size.columns != self.scr.size.columns;
         const cursor: ?usize = if (changed and self.scr.region_rows > 0) blk: {
             const report = self.term.cursorPosition(&self.pending, &self.pending_len, 300) catch null;
@@ -326,8 +322,10 @@ const Ui = struct {
         if (resized) try self.replayTurn(a);
         // Whatever closed since the last frame belongs above the region, not
         // in it: a long answer moves into the scrollback line by line while
-        // it is written.
-        try self.commit(a);
+        // it is written. Taken before the live rows are built, written after
+        // they are painted, so the rows it moves out of the region fill the
+        // rows the region gives up.
+        const closed = try self.closedRows(a);
         var rows: std.ArrayList(Row) = .empty;
         const columns = self.columnsFor();
         const editor_cap = @min(@as(usize, 6), size.rows -| 5);
@@ -373,9 +371,12 @@ const Ui = struct {
             clampTop(&rows, max_live);
         }
         try rows.appendSlice(a, list);
-        // One blank row always separates the streaming answer from the input
-        // box, so output is never crammed against what is being typed.
-        try rows.append(a, .{ .text = "" });
+        // One blank row always separates the turn from the input box, so
+        // output is never crammed against what is being typed. A finished
+        // turn and a sent prompt end with their own, so with nothing over
+        // the box this one is left out rather than show two.
+        const ends_blank = if (closed.len > 0) closed[closed.len - 1].isBlank() else self.scr.above_blank;
+        if (rows.items.len > 0 or !ends_blank) try rows.append(a, .{ .text = "" });
         const editor_base = rows.items.len;
         const layout = try self.ed.layout(a, .{
             .width = columns -| editor.frame_cells,
@@ -407,7 +408,7 @@ const Ui = struct {
         // the cursor would hide where the next message is being typed.
         const unchanged = if (resized) 0 else self.unchangedPrefix(rows.items);
         try self.rememberFrame(rows.items);
-        try self.scr.paintFrom(rows.items, .{
+        try self.scr.paintWith(closed, rows.items, .{
             .row = editor_base + 1 + layout.cursor_row,
             .column = editor.frame_lead + 1 + layout.cursor_col,
         }, unchanged);
@@ -447,9 +448,15 @@ const Ui = struct {
     /// region. The transcript decides what is closed and hands over each row
     /// exactly once; this function only carries them to the screen.
     fn commit(self: *Ui, a: std.mem.Allocator) !void {
-        if (!self.tr.pending()) return;
-        const rows = try self.tr.takeClosed(a, .{ .width = self.columnsFor(), .th = self.th });
+        const rows = try self.closedRows(a);
         if (rows.len > 0) try self.scr.insertAbove(rows);
+    }
+
+    /// The rows that closed since they were last taken; the transcript
+    /// hands each over once, so the caller must write them.
+    fn closedRows(self: *Ui, a: std.mem.Allocator) ![]const Row {
+        if (!self.tr.pending()) return &.{};
+        return self.tr.takeClosed(a, .{ .width = self.columnsFor(), .th = self.th });
     }
 
     /// Rewrites the current turn's rows in place: the only transcript
@@ -573,8 +580,9 @@ const Ui = struct {
         defer decoded.deinit(a);
         var small = try tui.graphics.scaleDown(a, .{ .width = decoded.width, .height = decoded.height, .pixels = decoded.pixels });
         defer small.deinit(a);
-        // The picture must fit above the region it is written over.
-        const above = if (self.scr.region_top > 0) self.scr.region_top -| 2 else self.scr.size.rows / 3;
+        // The picture must fit on the screen above the region, which an
+        // insertion pushes down to the last row before anything scrolls.
+        const above = if (self.scr.region_rows > 0) (self.scr.size.rows -| self.scr.region_rows) -| 1 else self.scr.size.rows / 3;
         const b = tui.graphics.box(small.width, small.height, self.columnsFor() -| 4, @max(above, 1));
         return .{ .sequence = try tui.graphics.sequence(a, small, b), .rows = b.rows };
     }
@@ -2224,10 +2232,9 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         // erased before the lease restores the terminal (defers run in
         // reverse, so this happens first).
         defer scr.finish() catch {};
-        // Full-height layout: clear the visible screen (scrollback is kept),
-        // put the header at the top, then walk down so the live region
-        // anchors at the bottom — which is also what lets insertion above it
-        // scroll everything in between.
+        // Clear the visible screen (scrollback is kept) and put the header at
+        // the top; the live region follows it and moves down as the
+        // transcript grows, until it reaches the bottom.
         try scr.clear();
         {
             // The welcome: the wordmark when it fits, and what this session
@@ -2249,7 +2256,6 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             }, term.size().columns, th);
             try scr.insertAbove(welcome);
         }
-        try scr.anchor(idle_region_rows);
         primeSession(&ui);
         // A forced profile renders the pinned protocol onto a file whose own
         // template says something else: worth one line, every time.

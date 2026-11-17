@@ -70,15 +70,16 @@ its geometry is the contract the rest of the surface is written against: a
 repaint rewrites the live region in place inside synchronized output
 (`CSI ? 2026 h/l`), an insertion above it narrows the scrolling region to
 the rows above (`DECSTBM`, top margin row 1 so scrolled-off rows still
-reach the scrollback) and scrolls only those, and the region's *bottom*
-stays anchored, so a turn that grows the region pushes the transcript up
-and one that shrinks it releases rows above the editor rather than
-leaving blanks beneath it. A resize replays only the last turn at the new
-width; older turns are left as the terminal reflowed them (spec § The agent:
-completed turns are immutable), and the region's bottom follows the new
-last row: a taller terminal adds blank rows under the region that become
-slack above it, a shorter one is taken to have kept its last rows in view,
-as tmux and Ghostty do. `NUCLIS_NO_SCROLL_REGION=1` forces the
+reach the scrollback) and scrolls only those. The region follows the
+content, as inline terminal interfaces do: its top is the row after the
+transcript, a region that shrinks keeps its top and leaves blank rows
+under the status bar, and growth or an insertion takes those rows back
+first (an insertion opens them with `IL` at the region's top, moving the
+region down) before anything scrolls; once the region ends on the last
+row, growth scrolls the transcript into the scrollback. A resize replays
+only the last turn at the new width; older turns are left as the terminal
+reflowed them (spec § The agent: completed turns are immutable), and the
+region is rebuilt from the row the terminal reports the cursor on. `NUCLIS_NO_SCROLL_REGION=1` forces the
 cursor-up rewrite fallback for a terminal that mishandles `DECSTBM`, and a
 `dumb` or unset `TERM` turns both capabilities off. The escape stream of
 every operation is pinned by golden tests that need no TTY.
@@ -261,8 +262,9 @@ tool loop hangs from, and its rules are not obvious.
 **The rendering model.** nuclis does not use the alternate screen (the
 full-window mode `vim` and `less` switch into). Finished output is written into
 the terminal's *own* scrollback exactly once and never touched again; a small
-**live region** at the bottom — the streaming block, the editor, the status bar
-— is the only thing repainted. The payoff is that scrolling, searching,
+**live region** under it — the streaming block, the editor, the status bar —
+is the only thing repainted, and follows the transcript down the screen until
+it reaches the bottom. The payoff is that scrolling, searching,
 selecting, and copying are the terminal's job, already correct, and the
 conversation survives exit. The price is that a printed row is gone: it can be
 rewritten only while it is still on screen, which is why a fold toggle on a
@@ -275,7 +277,9 @@ narrows scrolling to the rows *above* the live region, so inserting a finished
 row scrolls only those and the region below is never erased — the flicker of
 erase-and-repaint disappears. The top margin must stay at row 1, because that
 is the condition under which terminals feed scrolled-off rows to the
-scrollback.
+scrollback. While blank rows remain under the region, **insert line** (`IL`,
+`CSI n L`) at its top opens room instead: the region moves down and nothing
+scrolls.
 
 **When is a block finished?** While a turn streams, the last markdown block is
 still being written: a paragraph may gain words, a fenced block its closing
