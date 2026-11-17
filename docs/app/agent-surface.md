@@ -187,10 +187,23 @@ it are [agent.md](agent.md).
   into blocks and hands each closed block to the screen exactly once. An
   answer flushes as it streams ([§ Surface](#surface)).
 - Thinking folds and unfolds without leaving the model conversation; a
-  step's block closes with its own measured time.
+  step's block closes with its own reasoning time, from its first
+  reasoning token (`Thought for 6.0s`).
+- While a turn runs, the live region names the step's phase, timed from
+  that phase's start, never the turn's: the prefill of the step's new
+  tokens (`reading the prompt… 3s` on the first step, `reading results…
+  1.2k/2.3k · 18s` after a tool result, the counts once the first beat
+  arrives), reasoning (`thinking… 6s (Tab to unfold)`, the clock the fold
+  label closes with), and a tool call being written (`writing a tool
+  call… 1.4 KB`).
 - A tool call is a dot and `Name(argument)`, the dot coloured by state
   (running pulses; settled well, failed, or a write), with the tool's
   one-sentence result under it; a failed call shows its message, bounded.
+  A running call counts its seconds after its row (`● Bash(sleep 20) ·
+  6s`), and the bar's phase cell names it (`running Bash · 6s`) in place
+  of the last model phase; the settled row keeps the tool's own time
+  (`└ no output · 20.0s`), left off for a call under a second. `--print
+  --json` carries it as the `tool_result` event's `seconds`.
   A run of calls is summed up in one dim row where the model's text
   resumes. A mutation is followed by its diff: a header with the path and
   the `+N −M` counts, a gutter of old and new line numbers, a marker cell,

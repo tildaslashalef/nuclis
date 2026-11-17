@@ -125,6 +125,13 @@ const Ui = struct {
     preparing: ?[]const u8 = null,
     /// Bytes of the tool call the model is writing; 0 when none is open.
     call_bytes: usize = 0,
+    /// What the step is doing now, for the live region's row and the bar's
+    /// tool cell; each phase is timed from its own start, never the turn's.
+    live_phase: LivePhase = .reading,
+    phase_started: ?std.Io.Timestamp = null,
+    /// The running call's display name, copied: the event's is borrowed.
+    tool_name_buf: [32]u8 = undefined,
+    tool_name_len: usize = 0,
     /// A `!` command is running: busy, but no loop step on the bar.
     shell: bool = false,
     /// The project instructions file in the prompt, for the warm-up notice.
@@ -294,6 +301,7 @@ const Ui = struct {
             bar.step = @min(self.agent.steps_done + 1, self.agent.budget);
             bar.steering = self.agent.pendingSteering();
             bar.budget = self.agent.budget;
+            if (self.live_phase == .running) bar.running = .{ .name = self.tool_name_buf[0..self.tool_name_len], .seconds = self.phaseSeconds() };
         }
         return bar.paint(a, .{
             .width = columns,
@@ -355,12 +363,24 @@ const Ui = struct {
                 .width = columns,
                 .th = self.th,
                 .budget = @max(max_live, 1),
-                .thinking_label = try self.busyThinkingLabel(a),
+                .thinking_label = try thinkingLabel(a, self.th.glyphs(), self.spinnerFrame(), self.tr.expanded, self.phaseSeconds()),
                 .spinner = self.spinnerFrame(),
                 // Five frames a phase: about half a second at the tick's cadence.
                 .pulse = (self.frame / 5) % 2 == 0,
+                .call_seconds = if (self.live_phase == .running) self.phaseSeconds() else 0,
             });
             try rows.appendSlice(a, live);
+            if (self.live_phase == .reading) {
+                // The beat's counts are this step's only once its prefill
+                // has started; before that the row states the time alone.
+                const counted = self.prefill_started != null and self.bar.phase == .prefill;
+                try rows.append(a, .{ .text = try readingLabel(a, self.th.glyphs(), self.spinnerFrame(), .{
+                    .first_step = self.agent.steps_done == 0,
+                    .position = if (counted) self.bar.position else 0,
+                    .target = if (counted) self.bar.target else 0,
+                    .seconds = self.phaseSeconds(),
+                }), .style = .thinking_header });
+            }
             if (self.call_bytes > 0) {
                 const written = if (self.call_bytes < 1024)
                     try a.print("{d} B", .{self.call_bytes})
@@ -541,6 +561,31 @@ const Ui = struct {
         switch (e) {
             .call_progress => |bytes| self.call_bytes = bytes,
             .tool_call, .turn_end => self.call_bytes = 0,
+            else => {},
+        }
+        switch (e) {
+            .thinking_delta => self.enterPhase(.thinking),
+            .answer_delta => self.enterPhase(.answering),
+            .call_progress => |bytes| if (bytes > 0) self.enterPhase(.writing),
+            .tool_call => |call| {
+                const name = if (tools.find(call.name)) |tool| tool.display else call.name;
+                self.tool_name_len = @min(name.len, self.tool_name_buf.len);
+                @memcpy(self.tool_name_buf[0..self.tool_name_len], name[0..self.tool_name_len]);
+                self.live_phase = .running;
+                self.phase_started = std.Io.Clock.awake.now(self.io);
+            },
+            // The next step reads the result from here: building and
+            // tokenizing its prompt is part of the reading.
+            // The bar drops the last step's decode count with it, rather than
+            // read "generating" until the first prefill beat arrives.
+            .tool_result => {
+                self.live_phase = .reading;
+                self.phase_started = std.Io.Clock.awake.now(self.io);
+                self.status = "prefill";
+                self.bar.phase = .prefill;
+                self.bar.position = 0;
+                self.bar.target = 0;
+            },
             else => {},
         }
     }
@@ -1342,17 +1387,17 @@ const Ui = struct {
         return frames[self.frame % frames.len];
     }
 
-    /// The label of a thinking block that has not closed yet: an animated dot
-    /// and counting seconds. It is the agent's because it reads a clock and a
-    /// spinner frame, which the transcript has neither of; every *closed*
-    /// label is the transcript's and carries the measured time.
-    fn busyThinkingLabel(self: *Ui, a: std.mem.Allocator) ![]const u8 {
-        var w: std.Io.Writer.Allocating = .init(a);
-        const gl = self.th.glyphs();
-        const hint = if (self.tr.expanded) "Tab to fold" else "Tab to unfold";
-        const spin = gl.spinner[self.frame % gl.spinner.len];
-        try w.writer.print("{s} thinking{s} {d:.0}s ({s})", .{ spin, gl.ellipsis, seconds(self.turn_started, std.Io.Clock.awake.now(self.io)), hint });
-        return w.written();
+    /// Moves the step to `phase`, timing it from now; staying in the phase
+    /// keeps its clock.
+    fn enterPhase(self: *Ui, phase: LivePhase) void {
+        if (self.live_phase == phase and self.phase_started != null) return;
+        self.live_phase = phase;
+        self.phase_started = std.Io.Clock.awake.now(self.io);
+    }
+
+    /// Seconds since the current phase began.
+    fn phaseSeconds(self: *Ui) f64 {
+        return seconds(self.phase_started orelse self.turn_started, std.Io.Clock.awake.now(self.io));
     }
 
     /// The warm-up's row in the region: what is being prefilled, how far,
@@ -1399,6 +1444,9 @@ const Ui = struct {
         const self: *Ui = @ptrCast(@alignCast(context));
         const now = std.Io.Clock.awake.now(self.io);
         if (value.phase == .decode) {
+            // A token that is neither reasoning nor answer still ends the
+            // reading: the step is generating.
+            if (self.live_phase == .reading) self.enterPhase(.answering);
             if (self.first_token == null) self.first_token = now;
             self.prefill_started = null;
             self.status = "generating";
@@ -1420,6 +1468,7 @@ const Ui = struct {
                 self.prefill_base = value.position;
                 self.first_token = null;
                 self.status = "prefill";
+                self.enterPhase(.reading);
             }
         }
         self.bar.apply(.{ .status = .{
@@ -1502,6 +1551,50 @@ fn seconds(from: std.Io.Timestamp, to: std.Io.Timestamp) f64 {
     return @as(f64, @floatFromInt(from.durationTo(to).nanoseconds)) / std.time.ns_per_s;
 }
 
+/// The phase a step is in, as the live region names it: its prompt being
+/// read, reasoning, a tool call being written, an answer, or a tool running.
+const LivePhase = enum { reading, thinking, writing, answering, running };
+
+/// The label of a thinking block that has not closed yet: an animated dot and
+/// the seconds since the step's first reasoning token, which is what the fold
+/// label measures once it closes. It is the agent's because it reads a clock
+/// and a spinner frame, which the transcript has neither of.
+fn thinkingLabel(a: std.mem.Allocator, gl: tui.theme.Glyphs, spin: []const u8, expanded: bool, elapsed: f64) ![]const u8 {
+    const hint = if (expanded) "Tab to fold" else "Tab to unfold";
+    return a.print("{s} thinking{s} {d:.0}s ({s})", .{ spin, gl.ellipsis, @floor(elapsed), hint });
+}
+
+const Reading = struct {
+    /// The turn's first step reads the user's prompt; every later one the
+    /// results of the step before.
+    first_step: bool,
+    /// The step's prefill beat; `target == 0` before the first one.
+    position: usize = 0,
+    target: usize = 0,
+    seconds: f64,
+};
+
+/// The live row while a step's new tokens are prefilled:
+/// `⠙ reading results… 1.2k/2.3k · 18s`.
+fn readingLabel(a: std.mem.Allocator, gl: tui.theme.Glyphs, spin: []const u8, r: Reading) ![]const u8 {
+    var w: std.Io.Writer.Allocating = .init(a);
+    try w.writer.print("{s} reading {s}{s} ", .{ spin, if (r.first_step) "the prompt" else "results", gl.ellipsis });
+    if (r.target > 0) {
+        try writeCount(&w.writer, @min(r.position, r.target));
+        try w.writer.writeByte('/');
+        try writeCount(&w.writer, r.target);
+        try w.writer.writeAll(" · ");
+    }
+    try w.writer.print("{d:.0}s", .{@floor(r.seconds)});
+    return w.written();
+}
+
+/// A token count for a narrow row: exact under a thousand, `2.3k` above.
+fn writeCount(w: *std.Io.Writer, n: usize) !void {
+    if (n < 1000) return w.print("{d}", .{n});
+    try w.print("{d:.1}k", .{@as(f64, @floatFromInt(n)) / 1000.0});
+}
+
 /// The tool-tick seam: a tool that already polls (`bash`) calls this so
 /// the driver reads the keyboard and repaints while the command holds the
 /// loop. A Ctrl-C read here sets the interrupt the tool consults, which closes
@@ -1551,6 +1644,8 @@ fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8, want
     ui.prefill_started = null;
     ui.prefill_rate = null;
     ui.turn_started = std.Io.Clock.awake.now(ui.io);
+    ui.live_phase = .reading;
+    ui.phase_started = ui.turn_started;
     ui.stats = .{};
     ui.bar = .{ .phase = .prefill };
     ui.status = "prefill";
@@ -2409,6 +2504,22 @@ test "increment is the unseen suffix, or null when the conversation must replay"
     try std.testing.expectEqualStrings("<|im_end|>\n<|im_start|>user\nmore", loop.increment("<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nanswer", "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nanswer<|im_end|>\n<|im_start|>user\nmore").?);
     try std.testing.expectEqualStrings("whole", loop.increment("", "whole").?);
     try std.testing.expect(loop.increment("system A", "system B") == null);
+}
+
+test "the live row names the step's phase, each timed from its own start" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const gl = (tui.theme.Theme{ .kind = .plain }).glyphs();
+    // Prefill: the prompt on the first step, results on every later one,
+    // with the step's own counts once its first beat arrived.
+    try std.testing.expectEqualStrings("⠙ reading the prompt… 3s", try readingLabel(a, gl, "⠙", .{ .first_step = true, .seconds = 3.9 }));
+    try std.testing.expectEqualStrings("⠙ reading results… 1.2k/2.3k · 18s", try readingLabel(a, gl, "⠙", .{ .first_step = false, .position = 1234, .target = 2310, .seconds = 18.2 }));
+    try std.testing.expectEqualStrings("⠙ reading results… 256/2.3k · 0s", try readingLabel(a, gl, "⠙", .{ .first_step = false, .position = 256, .target = 2310, .seconds = 0.4 }));
+    try std.testing.expectEqualStrings("⠙ reading results… 512/512 · 1s", try readingLabel(a, gl, "⠙", .{ .first_step = false, .position = 600, .target = 512, .seconds = 1 }));
+    // Reasoning: the seconds since its first token, the fold hint after.
+    try std.testing.expectEqualStrings("⠙ thinking… 6s (Tab to unfold)", try thinkingLabel(a, gl, "⠙", false, 6.7));
+    try std.testing.expectEqualStrings("⠙ thinking… 0s (Tab to fold)", try thinkingLabel(a, gl, "⠙", true, 0.2));
 }
 
 test {

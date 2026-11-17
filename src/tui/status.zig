@@ -38,6 +38,10 @@ pub const Paint = struct {
     elapsed_seconds: f64 = 0,
 };
 
+/// A running tool: its display name and the seconds since its call
+/// started, from the caller's clock.
+pub const Running = struct { name: []const u8, seconds: f64 };
+
 pub const Status = struct {
     /// The word on the left: "ready", "prefill", "generating", or why a turn
     /// stopped.
@@ -67,6 +71,9 @@ pub const Status = struct {
     steering: usize = 0,
     /// Set when the turn re-prefilled the conversation.
     replay: ?event_mod.Replay = null,
+    /// The tool call running now, if any: it takes the phase cell, since
+    /// the last model phase says nothing while a command holds the turn.
+    running: ?Running = null,
     /// Mean accepted drafts per verify batch, from the turn's engine timing;
     /// null on an ordinary run. Shown inside the `spec` cell while non-null.
     accepted_per_step: ?f64 = null,
@@ -128,8 +135,11 @@ pub const Status = struct {
         const spin: []const u8 = if (self.busy) gl.spinner[options.frame % gl.spinner.len] else gl.idle;
         // The bar is a raw row: its free text (the model's name comes from
         // the file) is cleaned here.
-        try left.writer.print(" {s} {s}", .{ spin, try plain(a, self.message) });
-        if (self.busy and self.phase == .prefill and self.target > 0 and self.position < self.target) {
+        if (self.busy and self.running != null) {
+            const tool = self.running.?;
+            try left.writer.print(" {s} running {s} · {d:.0}s", .{ spin, try plain(a, tool.name), @floor(tool.seconds) });
+        } else try left.writer.print(" {s} {s}", .{ spin, try plain(a, self.message) });
+        if (self.busy and self.running != null) {} else if (self.busy and self.phase == .prefill and self.target > 0 and self.position < self.target) {
             try left.writer.print(" {s}{d}/{d}{s}", .{ th.paint(.progress), self.position, self.target, theme.fg_default });
             if (self.eta(options.elapsed_seconds)) |seconds_left| try left.writer.print(" ~{d:.0}s", .{seconds_left});
         } else if (self.busy and self.phase == .decode) {
@@ -386,4 +396,20 @@ test "the bar truncates to its width instead of wrapping, in either glyph set" {
             try testing.expect(std.mem.indexOfScalar(u8, row, '\n') == null);
         }
     }
+}
+
+test "a running tool takes the phase cell, timed from its call" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var status: Status = .{ .busy = true, .message = "generating", .phase = .decode, .generated = 58, .step = 2, .budget = 25, .context_used = 2310, .context_capacity = 13312, .prompt_tokens = 2310 };
+    const generating = try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain }, .elapsed_seconds = 6 });
+    try testing.expect(std.mem.startsWith(u8, generating, " ⠋ generating 58 out, 6s │ step 2/25 │ ▤ ctx 2310/13312"));
+    status.running = .{ .name = "Bash", .seconds = 6.8 };
+    const running = try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain }, .elapsed_seconds = 31 });
+    try testing.expect(std.mem.startsWith(u8, running, " ⠋ running Bash · 6s │ step 2/25 │ ▤ ctx 2310/13312"));
+    try testing.expect(std.mem.indexOf(u8, running, "out, ") == null);
+    // An idle bar never names a tool.
+    status.busy = false;
+    try testing.expect(std.mem.indexOf(u8, try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } }), "running") == null);
 }
