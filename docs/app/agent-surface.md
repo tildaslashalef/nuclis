@@ -280,6 +280,12 @@ it are [agent.md](agent.md).
   reserving all 8,192 left 8,192 and 24,576. One tool result may take a
   sixth of the ceiling in tokens (`resultBudget`, never below 256); it is
   cut at a line boundary with a note saying how to ask for the rest.
+  A `bash` result is cut in the middle instead, since a failure reports
+  at the end: a third of the room for its head and two thirds for its
+  tail, the trailing `[bash: …]` notes (the exit status) always kept, and
+  `[… N lines cut to fit the context …]` at the cut; the row says the
+  same. Other tools keep the prefix, since a `read_file` page continues
+  with `offset`.
   The window is 32K by default: Qwen3.8-27B with its drafter peaks at
   6.8 GB beside its 17.9 GB of mapped weights after a 26K-token prompt.
 - Compaction: one decision when a step does not fit, or runs into the

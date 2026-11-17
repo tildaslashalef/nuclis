@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The agent's task list: fifteen small coding tasks against the playground
+"""The agent's task list: sixteen small coding tasks against the playground
 project, each run as one `nuclis agent --print` turn (the multi-turn one as
 four, continued through `--resume`) and scored on whether it did the job and
 what it cost. The list is how a change to the system prompt,
@@ -183,6 +183,31 @@ def check_exit(ws: Path, run: Run):
     return ok, 'status 7 and "printed nothing"'
 
 
+BUILD_SH = """#!/bin/sh
+i=1
+while [ $i -le 300 ]; do
+  n=$(printf %03d $i)
+  echo "[$n] compiling shapes/generated/part_$n.py: 48 functions, 112 branches, 0 warnings; cache key 7f${n}c2e9a1b4 stored in .build/cache/part_$n.pyc after 0.$n s"
+  i=$((i + 1))
+done
+echo "error: shapes/generated/part_300.py: checksum mismatch (expected 9f3a, got 0000)"
+exit 2
+"""
+
+
+def setup_longlog(ws: Path):
+    """A build log far over the result budget whose only error and exit
+    status come last; untracked, so the reset removes it."""
+    path = ws / "scripts" / "build.sh"
+    path.write_text(BUILD_SH)
+    path.chmod(0o755)
+
+
+def check_longlog(ws: Path, run: Run):
+    ok = re.search(r"\b2\b", run.answer) is not None and "checksum mismatch" in run.answer.lower()
+    return ok, f'status 2 and "checksum mismatch", {run.clipped} clipped'
+
+
 def check_grep(ws: Path, run: Run):
     ok = has_all(run.answer, ["circle.py", "polygon.py", "rect.py"]) and len(run.answer) <= 600
     return ok, "three paths, short answer"
@@ -305,6 +330,12 @@ TASKS = [
         setup_bugfix,
     ),
     Task("exit", "Run scripts/exit7.sh and report its exit status and whether it printed anything.", check_exit),
+    Task(
+        "longlog",
+        "Run scripts/build.sh and report its exit status and the last error it printed.",
+        check_longlog,
+        setup_longlog,
+    ),
     Task("grep", "Which files under src raise ValueError? Give the paths only.", check_grep),
     Task(
         "json",
@@ -385,7 +416,8 @@ def parse(events_text: str, session_path: Path, run: Run) -> Run:
                 elif e.get("reason") == "results_elided":
                     run.elided += 1
             elif kind == "tool_result":
-                if "[truncated to fit the context:" in e.get("text", ""):
+                text = e.get("text", "")
+                if "[truncated to fit the context:" in text or " cut to fit the context …]" in text:
                     run.clipped += 1
                 if names.get(e.get("call")) == "read_file" and not e.get("is_error"):
                     run.reads.append(e.get("text", ""))

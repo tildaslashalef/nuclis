@@ -780,7 +780,12 @@ pub const Agent = struct {
                 truncated = true;
                 // The row states what the model actually saw, and the same
                 // continuation the note inside the text gives it.
-                cut_summary = if (result.lines) |range|
+                cut_summary = if (f.middle_cut > 0)
+                    (if (summary.len > 0)
+                        try self.alloc.print("{s} · {d} line{s} cut from the middle for the context", .{ summary, f.middle_cut, if (f.middle_cut == 1) "" else "s" })
+                    else
+                        try self.alloc.print("{d} of {d} lines cut from the middle for the context", .{ f.middle_cut, f.total_lines }))
+                else if (result.lines) |range|
                     try self.alloc.print("lines {d} to {d} of {d} · cut to fit the context, continue with offset={d}", .{ range.first, range.first + f.kept_lines - 1, range.total, range.first + f.kept_lines })
                 else if (summary.len > 0)
                     try self.alloc.print("{s} · cut to {d} lines for the context", .{ summary, f.kept_lines })
@@ -896,6 +901,8 @@ pub const Agent = struct {
         text: []u8,
         kept_lines: usize,
         total_lines: usize,
+        /// Lines left out of the middle; zero for a prefix cut.
+        middle_cut: usize = 0,
 
         fn deinit(self: *Fitted, alloc: Allocator) void {
             alloc.free(self.text);
@@ -903,13 +910,15 @@ pub const Agent = struct {
         }
     };
 
-    /// Null when `text` fits `result_budget`; otherwise the longest prefix at a
-    /// line boundary that does, found by scaling the byte cut with the
+    /// Null when `text` fits `result_budget`; otherwise, for `bash`, the
+    /// middle cut (`fitMiddle`), and for any other tool the longest prefix at
+    /// a line boundary that fits, found by scaling the byte cut with the
     /// measured token density and recounting, plus the continuation note.
     /// `lines` is a read's range: its count, not the text's note, is the total.
     fn fit(self: *Agent, call: Profile.ToolCall, text: []const u8, lines: ?tools.LineRange) !?Fitted {
         var tokens = try self.model.count(self.model.context, text);
         if (tokens <= self.result_budget) return null;
+        if (std.mem.eql(u8, call.name, "bash")) if (try self.fitMiddle(text)) |fitted| return fitted;
         const total_lines = if (lines) |range| range.count else countLines(text);
         var keep = text.len;
         var rounds: usize = 0;
@@ -935,6 +944,64 @@ pub const Agent = struct {
         }
         try out.appendSlice(self.alloc, "]");
         return .{ .text = try out.toOwnedSlice(self.alloc), .kept_lines = kept_lines, .total_lines = total_lines };
+    }
+
+    /// A command's output cut in the middle, since its failure reports at
+    /// the end: a third of the room for the head and two thirds for the tail
+    /// (`bash`'s own proportion), at line boundaries, and the trailing
+    /// `[bash: …]` notes (the exit status) always kept. Null when those notes
+    /// alone leave no room, for the prefix cut to handle.
+    fn fitMiddle(self: *Agent, text: []const u8) !?Fitted {
+        const body_end = trailerStart(text);
+        const body = text[0..body_end];
+        const trailer = text[body_end..];
+        const note_room = 16; // the cut note's tokens, with margin
+        const fixed = try self.model.count(self.model.context, trailer) + note_room;
+        if (body.len == 0 or fixed >= self.result_budget) return null;
+        const room = self.result_budget - fixed;
+        const body_tokens = @max(try self.model.count(self.model.context, body), 1);
+        const density = @as(f64, @floatFromInt(body.len)) / @as(f64, @floatFromInt(body_tokens));
+        const share = tools.bash.head_lines + tools.bash.tail_lines;
+
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(self.alloc);
+        var scale: f64 = 0.9;
+        var rounds: usize = 0;
+        while (true) : (rounds += 1) {
+            // After a dozen misses keep nothing of the body: the notes fit.
+            if (rounds == 12) scale = 0;
+            const bytes = @as(f64, @floatFromInt(room)) * density * scale;
+            const head_target = @min(@as(usize, @intFromFloat(bytes * @as(f64, @floatFromInt(tools.bash.head_lines)) / @as(f64, @floatFromInt(share)))), body.len);
+            const tail_target = @min(@as(usize, @intFromFloat(bytes * @as(f64, @floatFromInt(tools.bash.tail_lines)) / @as(f64, @floatFromInt(share)))), body.len - head_target);
+            // The head ends after a newline and the tail starts after one;
+            // a line longer than its share is cut at a code point instead.
+            const head_end = if (std.mem.lastIndexOfScalar(u8, body[0..head_target], '\n')) |nl| nl + 1 else utf8Boundary(body, head_target);
+            const from = body.len - tail_target;
+            var tail_start = if (from == 0 or body[from - 1] == '\n') from else if (std.mem.indexOfScalarPos(u8, body, from, '\n')) |nl| nl + 1 else body.len;
+            if (tail_start == body.len and tail_target > 0) tail_start = utf8Forward(body, from);
+            tail_start = @max(tail_start, head_end);
+            const cut = body[head_end..tail_start];
+            // A swallowed elision marker stands for the lines it counts.
+            const cut_lines = countLines(cut) + omittedIn(cut);
+
+            out.clearRetainingCapacity();
+            try out.appendSlice(self.alloc, body[0..head_end]);
+            if (head_end > 0 and body[head_end - 1] != '\n') try out.append(self.alloc, '\n');
+            try out.print(self.alloc, "[… {d} line{s} cut to fit the context …]", .{ cut_lines, if (cut_lines == 1) "" else "s" });
+            if (tail_start < body.len) try out.append(self.alloc, '\n');
+            try out.appendSlice(self.alloc, body[tail_start..]);
+            try out.appendSlice(self.alloc, trailer);
+            if (scale == 0 or try self.model.count(self.model.context, out.items) <= self.result_budget) {
+                const total_lines = countLines(text) + omittedIn(cut);
+                return .{
+                    .text = try out.toOwnedSlice(self.alloc),
+                    .kept_lines = total_lines - cut_lines,
+                    .total_lines = total_lines,
+                    .middle_cut = cut_lines,
+                };
+            }
+            scale *= 0.8;
+        }
     }
 
     /// Looks up a registered tool and runs it. An unknown name is a typed
@@ -1174,6 +1241,39 @@ fn countLines(text: []const u8) usize {
     return std.mem.count(u8, text, "\n") + 1 - trailing;
 }
 
+/// Where a command's trailing `[bash: …]` notes begin: the newline before
+/// the first of the run of lines that start with the prefix and end the
+/// text, or `text.len` when it ends with none.
+fn trailerStart(text: []const u8) usize {
+    var start = text.len;
+    while (std.mem.lastIndexOfScalar(u8, text[0..start], '\n')) |nl| {
+        if (!std.mem.startsWith(u8, text[nl + 1 .. start], tools.bash.note_prefix)) break;
+        start = nl;
+    }
+    return start;
+}
+
+/// The lines `bash`'s elision markers in `text` stand for, less the marker
+/// lines themselves.
+fn omittedIn(text: []const u8) usize {
+    var extra: usize = 0;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, tools.bash.note_prefix) or !std.mem.endsWith(u8, line, tools.bash.omitted_suffix)) continue;
+        const digits = line[tools.bash.note_prefix.len .. line.len - tools.bash.omitted_suffix.len];
+        const count = std.fmt.parseInt(usize, digits, 10) catch continue;
+        extra += count -| 1;
+    }
+    return extra;
+}
+
+/// `at` moved forward to the start of the next code point.
+fn utf8Forward(text: []const u8, at: usize) usize {
+    var i = at;
+    while (i < text.len and (text[i] & 0xC0) == 0x80) i += 1;
+    return i;
+}
+
 /// `at` moved back to the start of the code point it falls in.
 fn utf8Boundary(text: []const u8, at: usize) usize {
     var i = at;
@@ -1334,6 +1434,8 @@ const Capture = struct {
     order: std.ArrayList(u8) = .empty,
     answers: std.Io.Writer.Allocating,
     results: std.ArrayList([]u8) = .empty,
+    /// The detail row of the last tool result.
+    last_summary: std.ArrayList(u8) = .empty,
     calls: usize = 0,
     diffs: usize = 0,
     turn_end: usize = 0,
@@ -1347,6 +1449,7 @@ const Capture = struct {
         self.answers.deinit();
         self.order.deinit(self.alloc);
         self.last_notice.deinit(self.alloc);
+        self.last_summary.deinit(self.alloc);
         for (self.results.items) |text| self.alloc.free(text);
         self.results.deinit(self.alloc);
     }
@@ -1365,7 +1468,11 @@ const Capture = struct {
                 self.calls += 1;
                 try self.order.append(self.alloc, 'C');
             },
-            .tool_result => |result| try self.results.append(self.alloc, try self.alloc.dupe(u8, result.text)),
+            .tool_result => |result| {
+                try self.results.append(self.alloc, try self.alloc.dupe(u8, result.text));
+                self.last_summary.clearRetainingCapacity();
+                try self.last_summary.appendSlice(self.alloc, result.summary);
+            },
             .diff => self.diffs += 1,
             .turn_end => |end| {
                 self.turn_end += 1;
@@ -1724,6 +1831,78 @@ test "a result over the context budget is cut at a line and told how to continue
 
     // A result that fits is left alone.
     try testing.expect((try agent.fit(read_a, "short", null)) == null);
+}
+
+test "a command's output over the budget is cut in the middle, keeping its tail and exit status" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    // 200 lines of 25 bytes, which bash already elides to 120 and a marker:
+    // still about 800 stub tokens, over the 256 floor.
+    var stub: Stub = .{
+        .answers = &.{ "", "ok" },
+        .calls = &.{&.{.{ .id = 0, .name = "bash", .arguments = "{\"command\":\"for i in $(seq -w 1 200); do echo \\\"build step $i of the log\\\"; done; echo 'error: the last failure'; exit 2\"}" }}},
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+
+    try testing.expectEqual(Stop.done, try agent.turn("run it", &.{}));
+    try testing.expectEqual(min_result_budget, agent.result_budget);
+    const shown = capture.results.items[0];
+    try testing.expect(Stub.count(undefined, shown) catch unreachable <= min_result_budget);
+    // The head, the note at a line boundary, the tail, and the exit status.
+    try testing.expect(std.mem.startsWith(u8, shown, "build step 001 of the log\n"));
+    const note_at = std.mem.indexOf(u8, shown, "[… ") orelse return error.TestUnexpectedResult;
+    try testing.expect(note_at > 0 and shown[note_at - 1] == '\n');
+    const note_tail = " lines cut to fit the context …]\n";
+    const note_end = std.mem.indexOfPos(u8, shown, note_at, note_tail) orelse return error.TestUnexpectedResult;
+    try testing.expect(std.mem.startsWith(u8, shown[note_end + note_tail.len ..], "build step "));
+    try testing.expect(std.mem.endsWith(u8, shown, "build step 200 of the log\nerror: the last failure\n\n[bash: exit code 2]"));
+    // The note counts what it left out: the kept lines and it make the whole.
+    const cut = try std.fmt.parseInt(usize, shown[note_at + "[… ".len .. note_end], 10);
+    // The cut swallowed bash's own elision marker and counts its lines too:
+    // 201 lines of output, the blank line, the exit note.
+    try testing.expect(std.mem.indexOf(u8, shown, "lines omitted") == null);
+    try testing.expectEqual(@as(usize, 203), countLines(shown) - 1 + cut);
+    try testing.expectEqualStrings(shown, agent.history.items[2].content);
+    // The head has about a third of the room and the tail two thirds.
+    const head_lines = countLines(shown[0..note_at]);
+    const tail_lines = countLines(shown[note_end..]) - 1;
+    try testing.expect(tail_lines > head_lines);
+    var want: [96]u8 = undefined;
+    try testing.expectEqualStrings(try std.fmt.bufPrint(&want, "exit 2 · 201 lines · {d} lines cut from the middle for the context", .{cut}), capture.last_summary.items);
+    try testing.expectEqual(@as(usize, 1), capture.last_turn_stats.results_cut);
+}
+
+test "a command's one long line is cut inside it, and notes that alone overflow fall back to the prefix cut" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var stub: Stub = .{ .answers = &.{"x"} };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+    const bash_call: Profile.ToolCall = .{ .id = 0, .name = "bash", .arguments = "{\"command\":\"x\"}" };
+    const long = &@as([400]u8, @splat('x')) ++ "\n[bash: exit code 1]";
+
+    agent.result_budget = 40;
+    var fitted = (try agent.fit(bash_call, long, null)).?;
+    defer fitted.deinit(alloc);
+    try testing.expect(Stub.count(undefined, fitted.text) catch unreachable <= 40);
+    try testing.expect(std.mem.startsWith(u8, fitted.text, "xx"));
+    try testing.expect(std.mem.indexOf(u8, fitted.text, "x\n[… 1 line cut to fit the context …]\nx") != null);
+    try testing.expect(std.mem.endsWith(u8, fitted.text, "x\n[bash: exit code 1]"));
+    try testing.expectEqual(@as(usize, 1), fitted.middle_cut);
+
+    // No room for the notes and a cut: the prefix cut, as for any tool.
+    agent.result_budget = 12;
+    var prefix = (try agent.fit(bash_call, long, null)).?;
+    defer prefix.deinit(alloc);
+    try testing.expectEqual(@as(usize, 0), prefix.middle_cut);
+    try testing.expect(std.mem.indexOf(u8, prefix.text, "[truncated to fit the context: ") != null);
 }
 
 test "a single line over the budget is cut inside the line at a code point" {
