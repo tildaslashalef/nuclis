@@ -48,7 +48,7 @@ pub const Block = union(enum) {
     thinking: Thinking,
     answer: Answer,
     tool_call: struct { id: event_mod.Id, name: []u8, summary: []u8, detail: ?[]u8 = null, running: bool = true, failed: bool = false },
-    tool_result: struct { id: event_mod.Id, text: []u8, truncated: bool, is_error: bool, summary: []u8 },
+    tool_result: struct { id: event_mod.Id, text: []u8, truncated: bool, is_error: bool, summary: []u8, seconds: f64 = 0 },
     diff: Diff,
     notice: []u8,
     /// A command's answer, at the terminal's own foreground.
@@ -70,8 +70,8 @@ pub const Block = union(enum) {
 
     pub const Thinking = struct {
         text: std.ArrayList(u8) = .empty,
-        /// The step's reasoning time, from its start to the end of the
-        /// channel; null while the block is open and after a cancelled turn
+        /// The step's reasoning time, from its first reasoning token to the
+        /// end of the channel; null while the block is open and after a cancelled turn
         /// (the bare label). Zero when a replayed session never kept it.
         seconds: ?f64 = null,
         closed: bool = false,
@@ -199,6 +199,9 @@ pub const Live = struct {
     /// The running dot's phase: lit or dim. The caller alternates it on its
     /// repaint cadence, so a long call blinks slowly.
     pulse: bool = true,
+    /// Seconds the running call has run, from the caller's clock; shown
+    /// after its row from the first whole second.
+    call_seconds: f64 = 0,
 };
 
 /// The tool views Ctrl-O cycles through, in order.
@@ -339,7 +342,7 @@ pub const Transcript = struct {
                 errdefer self.alloc.free(text);
                 const summary = try self.alloc.dupe(u8, result.summary);
                 errdefer self.alloc.free(summary);
-                try self.blocks.append(self.alloc, .{ .tool_result = .{ .id = result.id, .text = text, .truncated = result.truncated, .is_error = result.is_error, .summary = summary } });
+                try self.blocks.append(self.alloc, .{ .tool_result = .{ .id = result.id, .text = text, .truncated = result.truncated, .is_error = result.is_error, .summary = summary, .seconds = result.seconds } });
             },
             .diff => |d| {
                 const path = try self.alloc.dupe(u8, d.path);
@@ -473,7 +476,9 @@ pub const Transcript = struct {
                     // A running call keeps its dot pulsing here, in the
                     // region, until the result settles it into the scrollback.
                     if (call.running) {
-                        try produced.append(a, try callRow(a, call, options.th, options.pulse));
+                        var row = try callRow(a, call, options.th, options.pulse);
+                        if (options.call_seconds >= 1) row.text = try a.print("{s} {s}· {d:.0}s{s}", .{ row.text, options.th.paint(.dim), @floor(options.call_seconds), theme.reset });
+                        try produced.append(a, row);
                         if (call.detail) |detail| if (self.tools != .folded) try pushDetail(a, &produced, options.th.glyphs(), detail, options.width, .tool_result);
                     } else try self.render(a, &produced, block, shape, .remainder);
                 },
@@ -559,8 +564,10 @@ pub const Transcript = struct {
                 // The result text is the model's; the reader gets one row
                 // (the tool's summary), or the message when the call failed,
                 // and the text itself in the output view.
+                // A call that ran a second or more says how long, after
+                // the row it settles on.
                 if (self.tools == .folded) {} else if (self.tools == .output) {
-                    if (result.summary.len > 0) try pushDetail(a, out, gl, result.summary, options.width, if (result.is_error) .error_text else .tool_result);
+                    if (result.summary.len > 0 or ranLong(result.seconds)) try pushDetail(a, out, gl, try timed(a, result.summary, result.seconds), options.width, if (result.is_error) .error_text else .tool_result);
                     try pushOutput(a, out, gl, result.text, options.width);
                 } else if (result.is_error) {
                     var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, result.text, "\n"), '\n');
@@ -570,12 +577,14 @@ pub const Transcript = struct {
                             try out.append(a, .{ .text = try a.print("  {s}", .{gl.ellipsis}), .style = .dim });
                             break;
                         }
-                        if (shown == 0) try pushDetail(a, out, gl, line, options.width, .error_text) else try pushWrapped(a, out, try a.print("  {s}", .{line}), options.width, .error_text);
+                        if (shown == 0) try pushDetail(a, out, gl, try timed(a, line, result.seconds), options.width, .error_text) else try pushWrapped(a, out, try a.print("  {s}", .{line}), options.width, .error_text);
                     }
                 } else if (result.summary.len > 0) {
-                    try pushDetail(a, out, gl, result.summary, options.width, .tool_result);
+                    try pushDetail(a, out, gl, try timed(a, result.summary, result.seconds), options.width, .tool_result);
                 } else if (result.truncated) {
-                    try pushDetail(a, out, gl, "truncated", options.width, .dim);
+                    try pushDetail(a, out, gl, try timed(a, "truncated", result.seconds), options.width, .dim);
+                } else if (ranLong(result.seconds)) {
+                    try pushDetail(a, out, gl, try timed(a, "", result.seconds), options.width, .tool_result);
                 }
             },
             .diff => |d| try self.renderDiff(a, out, d, options),
@@ -806,6 +815,20 @@ fn foldLabel(a: Allocator, t: Block.Thinking, expanded: bool, th: theme.Theme) !
         return a.print("{s} Thought ({s})", .{ arrow, hint });
     }
     return a.print("{s} thinking ({s})", .{ arrow, hint });
+}
+
+/// Whether a call ran long enough to state its time: under a second it
+/// would be noise on every row.
+fn ranLong(seconds: f64) bool {
+    return seconds >= 1;
+}
+
+/// `text` with the call's time after it (`… · 20.1s`), or the time alone
+/// when there is no text; unchanged for a call under a second.
+fn timed(a: Allocator, text: []const u8, seconds: f64) ![]const u8 {
+    if (!ranLong(seconds)) return text;
+    if (text.len == 0) return a.print("{d:.1}s", .{seconds});
+    return a.print("{s} · {d:.1}s", .{ text, seconds });
 }
 
 /// The rows of an error result are bounded; the message's head is what the
@@ -1099,6 +1122,34 @@ test "a turn that ends while a call runs settles the call and writes what follow
     }
     try testing.expect(std.mem.indexOf(u8, text.items, "WriteFailed") != null);
     try testing.expectEqual(tr.blocks.items.len, tr.written);
+}
+
+test "a running call counts its seconds, and the settled row keeps the tool's own time" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    const th: theme.Theme = .{ .kind = .truecolor };
+    const options: Render = .{ .width = 80, .th = th };
+    try tr.apply(.{ .tool_call = .{ .id = 1, .name = "bash", .summary = "Bash(sleep 20)" } });
+    // Under a second the row is bare; from then on it counts whole seconds.
+    const fresh = try tr.liveRows(a, .{ .width = 80, .th = th, .budget = 10, .call_seconds = 0.4 });
+    try testing.expectEqualStrings("● Bash(sleep 20)", try stripped(a, fresh[0].text));
+    const later = try tr.liveRows(a, .{ .width = 80, .th = th, .budget = 10, .call_seconds = 6.7 });
+    try testing.expectEqualStrings("● Bash(sleep 20) · 6s", try stripped(a, later[0].text));
+    try tr.apply(.{ .tool_result = .{ .id = 1, .text = "", .truncated = false, .is_error = false, .summary = "exit 0", .seconds = 20.08 } });
+    const settled = try tr.takeClosed(a, options);
+    try testing.expectEqualStrings("● Bash(sleep 20)", try stripped(a, settled[0].text));
+    try testing.expectEqualStrings("└ exit 0 · 20.1s", settled[1].text);
+    // A call under a second states no time, and one with no summary gets the time alone.
+    try tr.apply(.{ .tool_call = .{ .id = 2, .name = "read_file", .summary = "Read(a.txt)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 2, .text = "x", .truncated = false, .is_error = false, .summary = "lines 1 to 1 of 1", .seconds = 0.2 } });
+    try tr.apply(.{ .tool_call = .{ .id = 3, .name = "bash", .summary = "Bash(make)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 3, .text = "", .truncated = false, .is_error = false, .summary = "", .seconds = 3.26 } });
+    const quick = try tr.takeClosed(a, options);
+    try testing.expectEqualStrings("└ lines 1 to 1 of 1", quick[1].text);
+    try testing.expectEqualStrings("└ 3.3s", quick[3].text);
 }
 
 test "a running call's dot pulses in the region and settles to the state's colour" {

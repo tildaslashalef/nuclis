@@ -225,9 +225,9 @@ pub const Agent = struct {
     /// Seconds the step's reasoning took, once it ended.
     thinking_seconds: f64 = 0,
     turn_started: std.Io.Timestamp,
-    /// Each step's reasoning is timed from here, not from the turn's start:
-    /// a later step's block must not carry the tool runs before it.
-    step_started: std.Io.Timestamp,
+    /// The step's first reasoning token: its reasoning is timed from here,
+    /// so neither the tool runs before the step nor its prefill count.
+    thinking_started: std.Io.Timestamp,
 
     agg_prompt_tokens: usize = 0,
     agg_generated: usize = 0,
@@ -272,7 +272,7 @@ pub const Agent = struct {
             .thinking = .init(alloc),
             .answer = .init(alloc),
             .turn_started = std.Io.Clock.awake.now(io),
-            .step_started = std.Io.Clock.awake.now(io),
+            .thinking_started = std.Io.Clock.awake.now(io),
         };
         errdefer agent.thinking.deinit();
         errdefer agent.answer.deinit();
@@ -708,13 +708,12 @@ pub const Agent = struct {
         self.thinking_open = false;
         self.thinking_ended = false;
         self.thinking_seconds = 0;
-        self.step_started = std.Io.Clock.awake.now(self.io);
     }
 
     /// Closes the step's reasoning block once, with its own duration.
     fn endThinking(self: *Agent) !void {
         self.thinking_ended = true;
-        self.thinking_seconds = seconds(self.step_started.durationTo(std.Io.Clock.awake.now(self.io)));
+        self.thinking_seconds = seconds(self.thinking_started.durationTo(std.Io.Clock.awake.now(self.io)));
         try self.events.send(self.events.context, .{ .thinking_end = self.thinking_seconds });
     }
 
@@ -756,8 +755,10 @@ pub const Agent = struct {
             defer described.deinit(self.alloc);
             try self.events.send(self.events.context, .{ .tool_call = .{ .id = id, .name = call.name, .summary = described.summary, .detail = described.detail } });
 
+            const started = std.Io.Clock.awake.now(self.io);
             var result = try self.runTool(call);
             defer result.deinit(self.alloc);
+            const ran = seconds(started.durationTo(std.Io.Clock.awake.now(self.io)));
             var model_text: []const u8 = result.text;
             var joined: ?[]u8 = null;
             defer if (joined) |bytes| self.alloc.free(bytes);
@@ -821,6 +822,7 @@ pub const Agent = struct {
                 .truncated = truncated,
                 .is_error = result.is_error,
                 .summary = summary,
+                .seconds = ran,
             } });
             try self.events.record(self.events.context, .{ .tool_result = .{
                 .call = id,
@@ -1140,6 +1142,7 @@ pub const Agent = struct {
     fn feed(self: *Agent, e: inference.events.Event) !void {
         switch (e) {
             .thinking => |text| {
+                if (!self.thinking_open) self.thinking_started = std.Io.Clock.awake.now(self.io);
                 self.thinking_open = true;
                 try self.thinking.writer.writeAll(text);
                 try self.events.send(self.events.context, .{ .thinking_delta = text });
