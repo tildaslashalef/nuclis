@@ -13,15 +13,20 @@ it are [agent.md](agent.md).
 - Requires a TTY; `-p`/`--print` runs one turn without one ([spec § 7.7](../spec.md#77-print-mode)).
 - Startup clears the visible screen (scrollback kept), prints the welcome
   in a box when the terminal is wide enough for the wordmark, primes the
-  session ([§ The loop](#the-loop)), and anchors the live region at the bottom: the active
-  turn, the framed input box, a hint row, and the status bar.
+  session ([§ The loop](#the-loop)), and paints the live region right under
+  the welcome: the active turn, the framed input box, a hint row, and the
+  status bar.
 - Completed turns are written once above the region and never repainted;
   the region is the only thing repainted, inside synchronized output.
   Insertion above the region uses a scrolling region with the top margin
   at row 1 so scrolled-off rows reach the scrollback; a terminal without
-  the capability gets a cursor-up rewrite. The region's bottom is the
-  anchor; blank rows between the transcript and the region are slack that
-  insertions fill and a growing region takes back before anything scrolls.
+  the capability gets a cursor-up rewrite. The region follows the content:
+  its top is the row after the transcript, a shorter region keeps its top
+  and leaves the rows it released blank under the status bar, and a taller
+  one or an insertion takes those rows back before the transcript scrolls.
+  Rows that close in the region are painted out and inserted in one frame,
+  so they fill the rows they free. At a turn's end the answer's last row
+  sits one blank row above the input box.
 - A resize replays the last turn at the new width; older turns are left
   as printed. Exit erases the region and restores the terminal, leaving
   only the transcript.
