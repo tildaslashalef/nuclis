@@ -42,8 +42,8 @@ it are [agent.md](agent.md).
   thing that stays in the region, tail-clamped when taller.
 - Colour levels: truecolor, 256-colour, the sixteen ANSI slots, or plain
   attributes; `NO_COLOR` wins. Glyphs: Unicode, or ASCII when the locale
-  is not UTF-8 or `NUCLIS_ASCII=1`. Code blocks draw no border, so a
-  selection copies code alone. The default theme is Gruvbox dark; a theme
+  is not UTF-8 or `NUCLIS_ASCII=1`. Code blocks draw no border and no
+  padding (the band is erase-to-end), so a selection copies code alone. The default theme is Gruvbox dark; a theme
   supplies a palette only and can never change layout.
 - The surface repaints at the engine tick's cadence through every GPU
   wait, so a prefill chunk and a long tool call both animate.

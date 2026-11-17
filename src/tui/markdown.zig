@@ -22,9 +22,10 @@
 //! scrollback line by line with the rows one render of the whole would
 //! give. The rules are in docs/app/agent-surface.md § Surface.
 //!
-//! A code block carries **no box glyphs**: its rows are the code padded to
-//! the block background, and the language is a caption row above them, so
-//! selecting a block in the terminal copies the code and nothing else.
+//! A code block carries **no box glyphs**: its rows are the code on the
+//! block background, filled to the edge by erase-to-end rather than spaces,
+//! and the language is a caption row above them, so selecting a block in the
+//! terminal copies the code and nothing else, and a reflow wraps nothing.
 const std = @import("std");
 const repeat = @import("../text.zig").repeat;
 const builtin = @import("builtin");
@@ -221,21 +222,16 @@ pub fn renderFrom(alloc: std.mem.Allocator, text: []const u8, columns: usize, th
         if (in_code) {
             var code_text: std.ArrayList(u8) = .empty;
             defer code_text.deinit(alloc);
-            try putSanitized(alloc, &code_text, raw_line);
-            // Pad to the full width so the code-block background spans it;
-            // wrapStyled persists the background across soft wraps.
+            // Trailing blanks are invisible on the band and would only be
+            // copied with a selection.
+            try putSanitized(alloc, &code_text, std.mem.trimEnd(u8, raw_line, " \t\r"));
             const styled_code = try highlight.line(alloc, code_text.items, hl_lang, &hl_state, th);
             defer alloc.free(styled_code);
-            const pad = (columns -| 1) -| view.width(code_text.items);
-            const filler = try fill(alloc, " ", pad);
-            defer alloc.free(filler);
             var styled: std.ArrayList(u8) = .empty;
             defer styled.deinit(alloc);
             try styled.appendSlice(alloc, th.paint(.code_block));
             try styled.appendSlice(alloc, styled_code);
-            try styled.appendSlice(alloc, filler);
-            try styled.appendSlice(alloc, theme_mod.reset);
-            try appendWrapped(alloc, &rows, styled.items, columns);
+            try appendCode(alloc, &rows, styled.items, columns, th);
             continue;
         }
         if (line.len == 0) {
@@ -310,8 +306,72 @@ fn appendWrapped(alloc: std.mem.Allocator, rows: *std.ArrayList([]const u8), sty
     try rows.appendSlice(alloc, wrapped);
 }
 
+/// Erase in line, cursor to end: it paints the cells with the background in
+/// force, so a code row's band reaches the edge without a space in the row,
+/// and reflow and selection see only the code.
+const erase_to_end = "\x1b[K";
+
+/// Appends one code line's rows: `styled` (the block background opened, not
+/// closed) wrapped to `columns`. Each row stands alone: it reopens the SGR
+/// state the row before it left, fills its band with `erase_to_end`, and ends
+/// in a reset, so no background reaches a line clear, an inserted line, or a
+/// scroll that follows it.
+fn appendCode(alloc: std.mem.Allocator, rows: *std.ArrayList([]const u8), styled: []const u8, columns: usize, th: theme_mod.Theme) !void {
+    const base = th.paint(.code_block);
+    const wrapped = try view.wrapStyled(alloc, styled, @max(columns, 1), .word);
+    defer {
+        for (wrapped) |fragment| alloc.free(fragment);
+        alloc.free(wrapped);
+    }
+    var state: std.ArrayList(u8) = .empty;
+    defer state.deinit(alloc);
+    for (wrapped) |fragment| {
+        var row: std.ArrayList(u8) = .empty;
+        errdefer row.deinit(alloc);
+        try row.appendSlice(alloc, state.items);
+        try row.appendSlice(alloc, fragment);
+        try closeBand(alloc, &row, view.styledWidth(fragment), columns, base);
+        const owned = try row.toOwnedSlice(alloc);
+        errdefer alloc.free(owned);
+        try rows.append(alloc, owned);
+        try carrySgr(alloc, &state, fragment, base);
+    }
+}
+
+/// Ends a row painted on the band `base`: erase-to-end when a band is painted
+/// and the row stops short of the edge, then a reset. A full row takes no
+/// erase, since the cursor waits on its last cell and the erase would clear it.
+fn closeBand(alloc: std.mem.Allocator, row: *std.ArrayList(u8), used: usize, columns: usize, base: []const u8) !void {
+    if (base.len > 0 and used < @max(columns, 1)) try row.appendSlice(alloc, erase_to_end);
+    try row.appendSlice(alloc, theme_mod.reset);
+}
+
+/// Folds the SGR sequences of `fragment` into `state`, the sequences that
+/// reproduce the attributes in force at its end. A reset empties it; the
+/// baseline `base` restarts it, which is exact because the highlighter
+/// clears every attribute a token sets before it re-stamps the baseline. That
+/// keeps `state` to a baseline and one token's style, however long the line.
+fn carrySgr(alloc: std.mem.Allocator, state: *std.ArrayList(u8), fragment: []const u8, base: []const u8) !void {
+    var i: usize = 0;
+    while (i < fragment.len) {
+        const end = view.escapeSpan(fragment, i) orelse {
+            i += 1;
+            continue;
+        };
+        const seq = fragment[i..end];
+        i = end;
+        if (seq.len < 3 or seq[1] != '[' or seq[seq.len - 1] != 'm') continue;
+        if (std.mem.eql(u8, seq, theme_mod.reset) or std.mem.eql(u8, seq, "\x1b[m")) {
+            state.clearRetainingCapacity();
+        } else if (base.len > 0 and std.mem.eql(u8, seq, base)) {
+            state.clearRetainingCapacity();
+            try state.appendSlice(alloc, base);
+        } else try state.appendSlice(alloc, seq);
+    }
+}
+
 /// The caption above a fenced block: the language name over the block's own
-/// background, dimmed, padded so the strip spans the block's width.
+/// background, dimmed, the strip filled to the edge like a code row.
 fn captionRow(alloc: std.mem.Allocator, info: []const u8, columns: usize, th: theme_mod.Theme) ![]const u8 {
     var styled: std.ArrayList(u8) = .empty;
     errdefer styled.deinit(alloc);
@@ -319,11 +379,7 @@ fn captionRow(alloc: std.mem.Allocator, info: []const u8, columns: usize, th: th
     try styled.appendSlice(alloc, th.paint(.comment));
     try styled.append(alloc, ' ');
     try putSanitized(alloc, &styled, info);
-    const pad = (columns -| 1) -| (view.width(info) + 1);
-    const filler = try fill(alloc, " ", pad);
-    defer alloc.free(filler);
-    try styled.appendSlice(alloc, filler);
-    try styled.appendSlice(alloc, theme_mod.reset);
+    try closeBand(alloc, &styled, view.width(info) + 1, columns, th.paint(.code_block));
     return styled.toOwnedSlice(alloc);
 }
 
@@ -913,6 +969,46 @@ test "blocks: headings, lists, tasks, quotes, code, tables" {
     // The fence's language is a caption row above the code, not a border.
     try std.testing.expect(std.mem.indexOf(u8, s, " zig") != null);
     try std.testing.expect(std.mem.indexOf(u8, s, "```") == null);
+}
+
+test "a code row is the code alone: the band is erase-to-end, each row closes its own style" {
+    const alloc = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const th = theme_mod.Theme{ .kind = .truecolor };
+    const base = th.paint(.code_block);
+    const long = "values = [first_value, second_value, third_value, fourth_value]";
+    const rows = try render(a, "```python\ndef mean(values):   \n\n    return sum(values)\n" ++ long ++ "\n```\n", 24, th);
+    // Caption, three lines, and the long line in four rows.
+    try std.testing.expectEqual(@as(usize, 8), rows.len);
+    for (rows, 0..) |row, i| {
+        errdefer std.debug.print("row {d}: {any}\n", .{ i, row });
+        // Every row opens the band and closes everything it set, so no
+        // background reaches the line clear, the inserted line, or the
+        // scroll that follows it on the screen.
+        try std.testing.expect(std.mem.startsWith(u8, row, base));
+        try std.testing.expect(std.mem.endsWith(u8, row, theme_mod.reset));
+        var plain: std.ArrayList(u8) = .empty;
+        try stripEscapes(a, &plain, row);
+        try std.testing.expect(plain.items.len == 0 or plain.items[plain.items.len - 1] != ' ');
+        // A row short of the edge fills it; a full row does not, since the
+        // erase would clear the cell the cursor waits on.
+        const filled = std.mem.endsWith(u8, row, erase_to_end ++ theme_mod.reset);
+        try std.testing.expectEqual(view.styledWidth(row) < 24, filled);
+    }
+    var first: std.ArrayList(u8) = .empty;
+    try stripEscapes(a, &first, rows[1]);
+    try std.testing.expectEqualStrings("def mean(values):", first.items);
+    // The empty line is a band with nothing on it.
+    try std.testing.expectEqualStrings(try std.mem.concat(a, u8, &.{ base, erase_to_end, theme_mod.reset }), rows[2]);
+    // A row cut inside a token reopens the token's style on the band.
+    const cut = try render(a, "```python\nx = \"aaaa bbbb cccc\"\n```\n", 10, th);
+    try std.testing.expectEqual(@as(usize, 3), cut.len);
+    try std.testing.expect(std.mem.startsWith(u8, cut[2], try std.mem.concat(a, u8, &.{ base, th.paint(.string), "bbbb" })));
+    // Plain output paints no band, so it has nothing to erase.
+    const bare = try render(a, "```\nx\n```\n", 24, .{ .kind = .plain });
+    try std.testing.expectEqualStrings("x" ++ theme_mod.reset, bare[0]);
 }
 
 test "nested list items indent by level and cycle their bullet" {

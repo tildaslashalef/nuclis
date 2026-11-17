@@ -84,6 +84,12 @@ cursor-up rewrite fallback for a terminal that mishandles `DECSTBM`, and a
 `dumb` or unset `TERM` turns both capabilities off. The escape stream of
 every operation is pinned by golden tests that need no TTY.
 
+A code block's band asks for background-colour erase: a code row (and the
+caption strip) is the code on the block background, then `CSI K`, then a
+reset, so a reflowing terminal wraps no padding and a selection copies none.
+Each row closes its own style, so no band is in force at a clear, an `IL`,
+or a scrolling line feed. Without the capability, code shows a ragged band.
+
 The lease is given back on every way out. A `defer` right after the lease
 is taken covers any startup failure; a panic restores the terminal before
 the default report (the root `panic` in `src/main.zig`), and `SIGTERM` and

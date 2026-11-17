@@ -175,7 +175,7 @@ fn dupeRow(alloc: std.mem.Allocator, row: []const u8, hidden: ?usize) ![]const u
 /// or null when no escape starts there. CSI runs to its final byte; OSC runs
 /// to BEL or ST. Unterminated sequences consume the rest of the text so a cut
 /// never drops bytes. Both occupy zero cells.
-fn escapeSpan(text: []const u8, offset: usize) ?usize {
+pub fn escapeSpan(text: []const u8, offset: usize) ?usize {
     if (text[offset] != 0x1b) return null;
     var end = offset + 1;
     if (end >= text.len) return end;
