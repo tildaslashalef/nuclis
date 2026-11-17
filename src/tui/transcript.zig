@@ -363,6 +363,10 @@ pub const Transcript = struct {
                     else => {},
                 };
                 try self.summarizeOps();
+                // The answer is the last thing on screen; the tool rows that
+                // said "cut" have scrolled away, so the warning goes under it.
+                var note: [192]u8 = undefined;
+                if (end.stats.partialNote(&note)) |text| try self.blocks.append(self.alloc, .{ .notice = try self.alloc.dupe(u8, text) });
                 try self.blocks.append(self.alloc, .{ .turn_end = .{ .stop = end.stop } });
             },
         }
@@ -1040,6 +1044,30 @@ test "every block kind renders, tool calls, results, and diffs included" {
     for (rows) |row| if (row.style) |style| try styles.append(a, style);
     try testing.expect(std.mem.indexOfScalar(theme.Style, styles.items, .diff_header) != null);
     try testing.expect(std.mem.indexOfScalar(theme.Style, styles.items, .error_text) != null);
+}
+
+test "an answer that rests on partial reads ends with one dim row under it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    const options: Render = .{ .width = 120, .th = .{ .kind = .plain } };
+    try tr.apply(.{ .answer_delta = "Page 5 ends at line 600." });
+    try tr.apply(.{ .turn_end = .{ .stop = .eos, .stats = .{ .results_cut = 5, .results_elided = 4 } } });
+    const rows = try tr.takeClosed(a, options);
+    try testing.expectEqualStrings(
+        "Page 5 ends at line 600.\n" ++
+            "  — this answer used partial reads: 5 results cut, 4 elided · /clear or a larger --ctx-size gives it more room\n" ++
+            "\n",
+        try texts(a, rows),
+    );
+    try testing.expectEqual(theme.Style.dim, rows[1].style.?);
+
+    // A turn whose reads were whole says nothing.
+    try tr.apply(.{ .answer_delta = "Done." });
+    try tr.apply(.{ .turn_end = .{ .stop = .eos } });
+    try testing.expectEqualStrings("Done.\n\n", try texts(a, try tr.takeClosed(a, options)));
 }
 
 test "a turn that ends while a call runs settles the call and writes what follows" {
