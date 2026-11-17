@@ -104,9 +104,9 @@ them into blocks and offers three views of those blocks:
 - `takeClosed` — rows for everything that closed since the last call, marked
   written. The agent inserts them above the live region. **Exactly once**:
   the same rows can never be handed out twice, which is what makes a
-  scrollback both append-only and correct. An answer flushes block by block
-  as its markdown blocks close, so a long answer scrolls away while it is
-  written.
+  scrollback both append-only and correct. An answer flushes whatever
+  `markdown.split` says is stable, about a line at a time, so a long answer
+  scrolls away while it is written.
 - `liveRows` — what is still open, tail-clamped under `… N lines above`.
 - `replayRows` — every written block again, for the two events that may
   rewrite the scrollback (a fold toggle, a resize). The agent skips the
@@ -234,15 +234,16 @@ second transcript format.
 `src/tui/markdown.zig` turns a turn's text into pre-styled, pre-wrapped rows.
 Two rules matter when reading it:
 
-- **Streaming.** `markdown.split(text)` divides a partial turn into the
-  blocks that can no longer change and the one still being written: a blank
-  line ends a block, a heading/rule/quote/list item ends one at its newline,
-  and a paragraph, a table, or an open fence keeps its block open. The agent
-  renders each closed block once, as it closes, and shows the open part
-  raw in the live region, so styling appears block by block instead of at
-  the end of the turn. A trailing newline is the end of the last block, not an
-  empty one after it — which is what makes the rendered prefix of a partial
-  turn a prefix of the finished one, a property a test pins byte by byte.
+- **Streaming.** `markdown.split(text, carry)` divides a partial turn into
+  the prefix that can no longer change and the rest, by the rules in
+  [agent-surface.md § Surface](agent-surface.md#surface): about a line at a
+  time. `markdown.renderFrom` renders that prefix once and returns a
+  `Carry` (the fence it stopped inside, with the highlighter's state), from
+  which the next prefix starts; the transcript keeps it beside the answer's
+  `flushed` offset. The open part is shown raw in the live region. A
+  trailing newline is the end of the last block, not an empty one after it,
+  which is what makes the rows of the flushed prefixes, joined, the rows of
+  one render of the whole: tests pin it byte by byte, for a resize too.
 - **Wrapping.** `view.lines` and `view.wrapStyled` take a `Wrap` mode.
   Everything a reader reads wraps at the last space that fits (`.word`, the
   editor's rule too); only rows that are truncated to one line

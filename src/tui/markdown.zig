@@ -15,13 +15,12 @@
 //! A soft line break inside a paragraph stays a line break. No row is ever
 //! wider than the width asked for, whatever the input.
 //!
-//! Streaming. A turn is rendered while it arrives, and the last
-//! block of a partial document is still being written: a paragraph may gain
-//! words, a fenced block its closing fence, a table another row. `split`
-//! draws that line — everything before it can no longer change and is
-//! rendered; the rest is shown as raw text until it closes. The agent
-//! repaints with both on every token, so styling appears block by block
-//! instead of at the end of the turn.
+//! Streaming. A turn is rendered while it arrives. `split` finds the
+//! prefix that can no longer change, `renderFrom` renders it, and the
+//! `Carry` it leaves (an open fence and its highlighter state) lets the
+//! next prefix start where that one stopped, so a long answer reaches the
+//! scrollback line by line with the rows one render of the whole would
+//! give. The rules are in docs/app/agent-surface.md § Surface.
 //!
 //! A code block carries **no box glyphs**: its rows are the code padded to
 //! the block background, and the language is a caption row above them, so
@@ -33,44 +32,143 @@ const theme_mod = @import("theme.zig");
 const view = @import("view.zig");
 const highlight = @import("highlight.zig");
 
-/// A partial document: the blocks that can no longer change, and the one
-/// still being written.
+/// A partial document: the part that can no longer change, and the rest.
 pub const Split = struct { closed: []const u8, open: []const u8 };
 
-/// Splits a streaming turn at the last block boundary. The rules are the
-/// renderer's own: a blank line ends a block; a heading, rule, quote, list
-/// item, or closing fence ends one at its newline; a paragraph or a table
-/// keeps its block open until one of those arrives, and everything from a
-/// fence opener on stays open until the fence closes. The last line is never
-/// closed, because the newline that would end it has not arrived.
-pub fn split(text: []const u8) Split {
-    var in_fence = false;
+/// What a rendered prefix leaves for the text after it: the fence it ended
+/// inside, if any, with that fence's language and highlighter state. A
+/// prefix `split` closed ends nowhere else that carries state.
+pub const Carry = struct {
+    fence: ?Fence = null,
+
+    pub const Fence = struct { lang: highlight.Language, hl: highlight.State = .{} };
+};
+
+/// Splits a streaming turn at the last point after which nothing before it
+/// can render differently. The rules are the renderer's own:
+///
+/// - a blank line, heading, rule, quote, or list item is stable at its
+///   newline, and so is a paragraph line, unless an inline span opened in
+///   the paragraph is still waiting for its closer (`spanOpen`);
+/// - every line inside a fence is stable at its newline; the opener waits
+///   for the first code line, so its caption goes out with it;
+/// - table rows stay open until a line that is not a row ends the table,
+///   because column widths need every row.
+///
+/// `carry` is what the text before `text` left (`renderFrom`). The last
+/// line is never closed: the newline that would end it has not arrived.
+pub fn split(text: []const u8, carry: Carry) Split {
+    var in_fence = carry.fence != null;
     var closed: usize = 0;
+    // Where the paragraph lines not yet closed begin.
+    var para: ?usize = null;
     var offset: usize = 0;
     while (std.mem.indexOfScalarPos(u8, text, offset, '\n')) |newline| {
         const line = std.mem.trim(u8, text[offset..newline], " \t\r");
         const next = newline + 1;
         if (in_fence) {
-            if (std.mem.startsWith(u8, line, "```")) {
-                in_fence = false;
-                closed = next;
-            }
-        } else if (std.mem.startsWith(u8, line, "```")) {
-            in_fence = true; // the block runs until the closing fence
-        } else if (line.len == 0 or !continues(line)) {
+            if (std.mem.startsWith(u8, line, "```")) in_fence = false;
             closed = next;
+        } else if (std.mem.startsWith(u8, line, "```")) {
+            in_fence = true;
+            para = null;
+        } else if (line.len == 0 or !isParagraph(line)) {
+            closed = next;
+            para = null;
+        } else if (line[0] == '|') {
+            para = null;
+        } else {
+            const start = para orelse offset;
+            if (paragraphStable(text[start..newline])) {
+                closed = next;
+                para = null;
+            } else para = start;
         }
         offset = next;
     }
     return .{ .closed = text[0..closed], .open = text[closed..] };
 }
 
-/// Whether a line leaves its block open for the next one: paragraph text
-/// accumulates until a blank line, and table rows accumulate into a grid.
-fn continues(line: []const u8) bool {
-    if (line[0] == '|') return true;
-    if (headingBody(line) != null or isRule(line) or quoteBody(line) != null) return false;
-    return listMarker(line, theme_mod.unicode_glyphs) == null;
+/// Whether the paragraph lines in `lines` (whole source lines, no trailing
+/// newline) render the same whatever lines follow them. The body is built
+/// as `render` builds it, each line trimmed and joined by line breaks; one
+/// longer than the scratch buffer is held, which is the safe answer.
+fn paragraphStable(lines: []const u8) bool {
+    var buf: [4096]u8 = undefined;
+    var len: usize = 0;
+    var iter = std.mem.splitScalar(u8, lines, '\n');
+    while (iter.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (len + line.len + 1 > buf.len) return false;
+        if (len > 0) {
+            buf[len] = '\n';
+            len += 1;
+        }
+        @memcpy(buf[len..][0..line.len], line);
+        len += line.len;
+    }
+    return !spanOpen(buf[0..len]);
+}
+
+/// Whether text appended after `text` could change how `inlineSpan` renders
+/// it: a closer search ran off the end, or a marker sits last, where only
+/// the next byte decides what it is. This is `inlineSpan`'s top level with
+/// the output left out; a span it closes is fixed whatever follows, so only
+/// the top level can stay open.
+fn spanOpen(text: []const u8) bool {
+    var brackets: Brackets = .{};
+    var i: usize = 0;
+    while (i < text.len) {
+        const b = text[i];
+        if (b == '\\') {
+            if (i + 1 >= text.len) return true;
+            i += 2;
+            continue;
+        }
+        if (b == '`') {
+            const j = std.mem.indexOfScalarPos(u8, text, i + 1, '`') orelse return true;
+            i = j + 1;
+            continue;
+        }
+        if (b == '[') {
+            if (linkEnd(text, i, &brackets)) |end| {
+                i = end.consumed;
+                continue;
+            }
+            // No `]` yet, or `](` with no `)` yet: a later line may finish it.
+            if (brackets.close >= text.len) return true;
+            if (brackets.close + 1 < text.len and text[brackets.close + 1] == '(') return true;
+        }
+        if (i + 2 < text.len and (b == '*' or b == '_') and text[i + 1] == b and text[i + 2] == b) {
+            const close = i + 3;
+            const j = findSeq(text, close, text[i .. i + 3]) orelse return true;
+            if (j > close) {
+                i = j + 3;
+                continue;
+            }
+        }
+        if (i + 1 < text.len and text[i + 1] == b and (b == '*' or b == '_' or b == '~')) {
+            const j = findSeq(text, i + 2, text[i .. i + 2]) orelse return true;
+            i = j + 2;
+            continue;
+        }
+        if (b == '*' or b == '_') {
+            if (i + 1 >= text.len) return true;
+            if (text[i + 1] != ' ') {
+                const j = findSingle(text, i + 1, b) orelse return true;
+                if (j > i + 1) {
+                    i = j + 1;
+                    continue;
+                }
+            }
+        }
+        if (view.isC1(text[i..])) {
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    return false;
 }
 
 /// Test instrumentation: how many times `render` ran, so a streaming test
@@ -78,7 +176,17 @@ fn continues(line: []const u8) bool {
 /// never through here.
 pub var render_calls: usize = 0;
 
+/// Renders a whole document to styled rows, each at most `columns` wide.
 pub fn render(alloc: std.mem.Allocator, text: []const u8, columns: usize, th: theme_mod.Theme) ![][]const u8 {
+    var carry: Carry = .{};
+    return renderFrom(alloc, text, columns, th, &carry);
+}
+
+/// Renders `text` as the continuation of a document whose earlier part left
+/// `carry`, and updates `carry` for the text after it. For a `text` that
+/// `split` closed, the rows are the ones a render of the whole document
+/// gives for those lines.
+pub fn renderFrom(alloc: std.mem.Allocator, text: []const u8, columns: usize, th: theme_mod.Theme, carry: *Carry) ![][]const u8 {
     if (builtin.is_test) render_calls += 1;
     var rows: std.ArrayList([]const u8) = .empty;
     errdefer rows.deinit(alloc);
@@ -87,9 +195,9 @@ pub fn render(alloc: std.mem.Allocator, text: []const u8, columns: usize, th: th
     var table: std.ArrayList([]const u8) = .empty;
     defer table.deinit(alloc);
     if (text.len == 0) return rows.toOwnedSlice(alloc);
-    var in_code = false;
-    var hl_state = highlight.State{};
-    var hl_lang = highlight.Language.generic;
+    var in_code = carry.fence != null;
+    var hl_state = if (carry.fence) |f| f.hl else highlight.State{};
+    var hl_lang = if (carry.fence) |f| f.lang else highlight.Language.generic;
     // One trailing newline is the end of the last block, not an empty one
     // after it. Dropping it is also what makes a streamed prefix render as a
     // prefix of the finished turn (`split`).
@@ -142,6 +250,9 @@ pub fn render(alloc: std.mem.Allocator, text: []const u8, columns: usize, th: th
             continue;
         }
         try flushTable(alloc, &table, &rows, columns, th);
+        // Every block but a paragraph line ends the paragraph before it, so
+        // its rows come first.
+        if (!isParagraph(line)) try flushPara(alloc, &para, &rows, columns, th);
         if (headingBody(line)) |body| {
             var styled: std.ArrayList(u8) = .empty;
             defer styled.deinit(alloc);
@@ -163,7 +274,6 @@ pub fn render(alloc: std.mem.Allocator, text: []const u8, columns: usize, th: th
             try styled.appendSlice(alloc, theme_mod.reset);
             try appendWrapped(alloc, &rows, styled.items, columns);
         } else if (listMarker(line, th.glyphs())) |marker| {
-            try flushPara(alloc, &para, &rows, columns, th);
             try listItem(alloc, &rows, marker, indentLevel(raw_line), columns, th);
         } else {
             // A soft line break stays a line break: a model that writes one
@@ -174,7 +284,14 @@ pub fn render(alloc: std.mem.Allocator, text: []const u8, columns: usize, th: th
     }
     try flushPara(alloc, &para, &rows, columns, th);
     try flushTable(alloc, &table, &rows, columns, th);
+    carry.* = if (in_code) .{ .fence = .{ .lang = hl_lang, .hl = hl_state } } else .{};
     return rows.toOwnedSlice(alloc);
+}
+
+/// Whether a non-blank line outside a fence or table is paragraph text.
+fn isParagraph(line: []const u8) bool {
+    return headingBody(line) == null and !isRule(line) and quoteBody(line) == null and
+        listMarker(line, theme_mod.unicode_glyphs) == null;
 }
 
 fn flushPara(alloc: std.mem.Allocator, para: *std.ArrayList(u8), rows: *std.ArrayList([]const u8), columns: usize, th: theme_mod.Theme) !void {
@@ -898,50 +1015,115 @@ test "the ASCII glyph set replaces every decoration" {
     try std.testing.expect(std.mem.indexOf(u8, s, "---+---") != null);
 }
 
-test "the streaming split closes blocks that can no longer change" {
-    // A paragraph stays open until a blank line ends it.
-    const partial = split("done.\n\nstill writ");
-    try std.testing.expectEqualStrings("done.\n\n", partial.closed);
-    try std.testing.expectEqualStrings("still writ", partial.open);
-    // Nothing at all is closed before the first boundary.
-    const first = split("one line so far");
+test "the streaming split closes what can no longer change" {
+    // A paragraph line is stable at its newline; the line still being
+    // written never is.
+    const partial = split("done.\nnext li", .{});
+    try std.testing.expectEqualStrings("done.\n", partial.closed);
+    try std.testing.expectEqualStrings("next li", partial.open);
+    const first = split("one line so far", .{});
     try std.testing.expectEqualStrings("", first.closed);
     try std.testing.expectEqualStrings("one line so far", first.open);
-    // A fence holds its block open until the closing fence arrives...
-    const fence = split("intro\n\n```zig\nconst x = 1;\n");
-    try std.testing.expectEqualStrings("intro\n\n", fence.closed);
-    const finished = split("intro\n\n```zig\nconst x = 1;\n```\nafter");
-    try std.testing.expectEqualStrings("intro\n\n```zig\nconst x = 1;\n```\n", finished.closed);
-    try std.testing.expectEqualStrings("after", finished.open);
-    // ...while single-line blocks close at their newline, and a table keeps
-    // accumulating rows.
-    try std.testing.expectEqualStrings("# Title\n", split("# Title\nnext").closed);
-    try std.testing.expectEqualStrings("- one\n", split("- one\nnext").closed);
-    try std.testing.expectEqualStrings("", split("| a |\n| - |\n").closed);
+    // An inline span still open holds its paragraph until it closes.
+    try std.testing.expectEqualStrings("", split("a **bold\nstill\n", .{}).closed);
+    try std.testing.expectEqualStrings("a **bold\nstill** here\n", split("a **bold\nstill** here\nx", .{}).closed);
+    try std.testing.expectEqualStrings("", split("see `the\n", .{}).closed);
+    try std.testing.expectEqualStrings("", split("a [link\n", .{}).closed);
+    // A blank line ends a held paragraph whatever is open in it.
+    try std.testing.expectEqualStrings("a *b\n\n", split("a *b\n\nc", .{}).closed);
+    // A fence: the opener waits for its first line, then each line closes.
+    try std.testing.expectEqualStrings("intro\n", split("intro\n```zig\n", .{}).closed);
+    try std.testing.expectEqualStrings("intro\n```zig\nconst x = 1;\n", split("intro\n```zig\nconst x = 1;\nconst", .{}).closed);
+    // Inside a fence a carried state continues it: a heading-like line is code.
+    const inside: Carry = .{ .fence = .{ .lang = .zig } };
+    try std.testing.expectEqualStrings("# not a heading\n", split("# not a heading\n| x", inside).closed);
+    try std.testing.expectEqualStrings("```\nafter\n", split("```\nafter\n| x", inside).closed);
+    // Single-line blocks close at their newline; a table keeps accumulating
+    // rows until a line that is not one ends it.
+    try std.testing.expectEqualStrings("# Title\n", split("# Title\nnext", .{}).closed);
+    try std.testing.expectEqualStrings("- one\n", split("- one\nnext", .{}).closed);
+    try std.testing.expectEqualStrings("", split("| a |\n| - |\n", .{}).closed);
+    try std.testing.expectEqualStrings("| a |\n| - |\nafter\n", split("| a |\n| - |\nafter\n", .{}).closed);
     // The closed prefix plus the open tail is always the whole text.
     const text = "a\n\n- b\n| c |\n";
-    const both = split(text);
+    const both = split(text, .{});
     try std.testing.expectEqual(text.len, both.closed.len + both.open.len);
 }
 
-test "a streamed document renders the same as the finished one, block by block" {
+/// Streams `document` through `split` and `renderFrom` one byte at a time,
+/// as the transcript does, and checks that the rows written equal one
+/// render of the whole and that the open part never exceeds `max_open`
+/// lines. Returns how many renders the stream took.
+fn expectStreamsAsWhole(document: []const u8, columns: usize, th: theme_mod.Theme, max_open: usize) !usize {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const whole = try render(alloc, document, columns, th);
+    var streamed: std.ArrayList([]const u8) = .empty;
+    var carry: Carry = .{};
+    var flushed: usize = 0;
+    var renders: usize = 0;
+    for (1..document.len + 1) |n| {
+        const part = split(document[flushed..n], carry);
+        if (part.closed.len > 0) {
+            try streamed.appendSlice(alloc, try renderFrom(alloc, part.closed, columns, th, &carry));
+            flushed += part.closed.len;
+            renders += 1;
+        }
+        // The open part restarts at the same point from the start, too.
+        try std.testing.expectEqual(flushed, split(document[0..n], .{}).closed.len);
+        try std.testing.expect(std.mem.count(u8, document[flushed..n], "\n") < max_open);
+    }
+    try streamed.appendSlice(alloc, try renderFrom(alloc, document[flushed..], columns, th, &carry));
+    try std.testing.expectEqual(whole.len, streamed.items.len);
+    for (whole, streamed.items) |w, r| try std.testing.expectEqualStrings(w, r);
+    return renders;
+}
+
+test "a streamed document renders the same as the finished one, line by line" {
+    const th = theme_mod.Theme{ .kind = .truecolor };
+    for (fixtures) |document| _ = try expectStreamsAsWhole(document, 32, th, 64);
+    // Plain lines, a list, quotes, and a fenced block with a block comment
+    // whose highlighting carries across lines.
+    _ = try expectStreamsAsWhole("one\ntwo **b** three\n- item\n  continued\n> q\ntext\n# Head\n```c\nint x; /* a\nb */ int y;\n```\nend\n", 40, th, 2);
+    // A paragraph followed by a heading keeps its order in one render too.
+    const ordered = try joined(std.testing.allocator, "text\n# Head\nmore\n", 40, .{ .kind = .plain });
+    defer std.testing.allocator.free(ordered);
+    try std.testing.expectEqualStrings("text\nHead\nmore\n", ordered);
+}
+
+test "a paragraph line closed by spanOpen renders the same with any line after it" {
+    // A small alphabet of every marker the inline renderer reads, over
+    // random two-line paragraphs: when the first line is not open, the
+    // inline render of both is the render of each, joined by a break.
     const alloc = std.testing.allocator;
     const th = theme_mod.Theme{ .kind = .plain };
-    const document = "# Heading\n\nA paragraph.\n\n- one\n- two\n";
-    const whole = try joined(alloc, document, 40, th);
-    defer alloc.free(whole);
-    // Feeding the document one byte at a time, the closed prefix only ever
-    // grows and never renders differently from the same prefix of the whole.
-    var seen: usize = 0;
-    for (1..document.len + 1) |n| {
-        const part = split(document[0..n]);
-        try std.testing.expect(part.closed.len >= seen);
-        seen = part.closed.len;
-        const rendered = try joined(alloc, part.closed, 40, th);
-        defer alloc.free(rendered);
-        try std.testing.expect(std.mem.startsWith(u8, whole, rendered));
+    const alphabet = "a *_`[]()\\~";
+    var prng = std.Random.DefaultPrng.init(0x5eed);
+    const random = prng.random();
+    var buf: [24]u8 = undefined;
+    var stable: usize = 0;
+    for (0..20_000) |_| {
+        const len_a = random.intRangeAtMost(usize, 1, 10);
+        const len_b = random.intRangeAtMost(usize, 1, 10);
+        for (buf[0 .. len_a + len_b + 1], 0..) |*c, k| c.* = if (k == len_a) '\n' else alphabet[random.uintLessThan(usize, alphabet.len)];
+        const both = buf[0 .. len_a + len_b + 1];
+        const first = both[0..len_a];
+        const second = both[len_a + 1 ..];
+        if (spanOpen(first)) continue;
+        stable += 1;
+        var whole: std.ArrayList(u8) = .empty;
+        defer whole.deinit(alloc);
+        try inlineSpan(alloc, &whole, both, th, 0);
+        var parts: std.ArrayList(u8) = .empty;
+        defer parts.deinit(alloc);
+        try inlineSpan(alloc, &parts, first, th, 0);
+        try parts.append(alloc, '\n');
+        try inlineSpan(alloc, &parts, second, th, 0);
+        try std.testing.expectEqualStrings(parts.items, whole.items);
     }
-    try std.testing.expectEqual(document.len, seen);
+    // The alphabet is dense in markers; a fair share still closes.
+    try std.testing.expect(stable > 2_000);
 }
 
 test "inline code in headings and items, bold italic, nested quotes, numbered starts, empty cells, soft breaks" {
@@ -1133,7 +1315,7 @@ test "every prefix of every fixture renders: no error, no control byte, bounded 
             _ = arena.reset(.retain_capacity);
             const alloc = arena.allocator();
             const prefix = document[0..n];
-            const parts = split(prefix);
+            const parts = split(prefix, .{});
             try std.testing.expectEqual(n, parts.closed.len + parts.open.len);
             for ([_][]const u8{ prefix, parts.closed }) |text| {
                 const rows = try render(alloc, text, columns, th);
@@ -1160,7 +1342,7 @@ test "fuzz markdown: any text renders at any width with no control byte and no r
             const kinds = std.enums.values(theme_mod.Kind);
             const th: theme_mod.Theme = .{ .kind = kinds[(input[0] >> 6) % kinds.len], .glyph_set = if (input[0] & 0x80 != 0) .ascii else .unicode };
             const text = input[1..];
-            const parts = split(text);
+            const parts = split(text, .{});
             try std.testing.expectEqual(text.len, parts.closed.len + parts.open.len);
             var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
             defer arena.deinit();
