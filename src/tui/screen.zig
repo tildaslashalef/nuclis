@@ -306,8 +306,10 @@ pub const Screen = struct {
             if (i + 1 < rows.len) try self.newline();
         }
         // A taller previous region leaves rows below the last one written:
-        // erased, they are the slack.
-        try out.writeAll("\x1b[0J");
+        // erased, they are the slack. When the last row was stepped over the
+        // cursor sits at its first column, and the erase would wipe it; the
+        // geometry is unchanged then, so nothing below needs erasing.
+        if (!same_geometry or unchanged < rows.len) try out.writeAll("\x1b[0J");
         // Writing may have scrolled: the region ends at `self.at`, so its top
         // is that many rows back, never the row the writes started on.
         self.region_rows = rows.len;
@@ -526,9 +528,11 @@ test "a frame rewrites only the rows after the unchanged prefix, and nothing whe
     try screen.paintFrom(&bar, .{ .row = 1, .column = 3 }, 3);
     try testing.expectEqualStrings("", buffer.written());
 
-    // Nothing changed but the cursor moved: a reposition without a rewrite.
+    // Nothing changed but the cursor moved (a space typed at the end of the
+    // input): a reposition without a rewrite, and no erase, which would wipe
+    // the last row the cursor stepped onto.
     try screen.paintFrom(&bar, .{ .row = 0, .column = 2 }, 3);
-    try testing.expectEqualStrings("\x1b[?2026h\x1b[?25l\x1b[1A\r\x1b[2B\x1b[0J\x1b[2A\x1b[2G\x1b[?25h\x1b[?2026l", buffer.written());
+    try testing.expectEqualStrings("\x1b[?2026h\x1b[?25l\x1b[1A\r\x1b[2B\x1b[2A\x1b[2G\x1b[?25h\x1b[?2026l", buffer.written());
     try testing.expectEqual(@as(usize, 0), screen.cursor_row);
 
     // A height change ignores the prefix and rewrites every row.
