@@ -325,7 +325,7 @@ const Ui = struct {
         const a = arena.allocator();
         if (resized) try self.replayTurn(a);
         // Whatever closed since the last frame belongs above the region, not
-        // in it: a long answer moves into the scrollback block by block while
+        // in it: a long answer moves into the scrollback line by line while
         // it is written.
         try self.commit(a);
         var rows: std.ArrayList(Row) = .empty;

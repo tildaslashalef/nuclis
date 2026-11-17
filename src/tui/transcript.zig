@@ -8,8 +8,9 @@
 //! views:
 //!
 //! - `takeClosed` — rows for everything closed since the last call, marked
-//!   written so it cannot return twice; an answer flushes block by block as
-//!   its markdown blocks close, so it moves to the scrollback while written.
+//!   written so it cannot return twice; an answer flushes whatever
+//!   `markdown.split` says is stable, about a line at a time, so it moves
+//!   to the scrollback while written.
 //! - `liveRows` — rows for what is still open, tail-clamped under a
 //!   `… N lines above` marker; nothing is lost, it appears in full on close.
 //! - `replayRows` — every written block again, for a fold toggle or a resize;
@@ -83,6 +84,9 @@ pub const Block = union(enum) {
         text: std.ArrayList(u8) = .empty,
         /// Bytes already written above the live region.
         flushed: usize = 0,
+        /// What the render of `text[0..flushed]` left for the rest: the
+        /// fence it stopped inside, with its highlighter state.
+        carry: markdown.Carry = .{},
         closed: bool = false,
     };
 
@@ -429,13 +433,14 @@ pub const Transcript = struct {
         return out.items;
     }
 
-    /// The closed markdown blocks of an answer that is still being written.
+    /// The stable part of an answer that is still being written: the one
+    /// place a streaming answer moves to the scrollback.
     fn flushAnswer(self: *Transcript, a: Allocator, out: *std.ArrayList(Row), answer: *Block.Answer, options: Render) !void {
         const rest = answer.text.items[answer.flushed..];
-        const blocks = markdown.split(rest);
-        if (blocks.closed.len == 0) return;
-        try self.pushMarkdown(a, out, blocks.closed, options);
-        answer.flushed += blocks.closed.len;
+        const stable = markdown.split(rest, answer.carry).closed;
+        if (stable.len == 0) return;
+        try self.pushMarkdown(a, out, stable, options, &answer.carry);
+        answer.flushed += stable.len;
     }
 
     /// Rows for what is still open, tail-clamped to the budget.
@@ -460,8 +465,8 @@ pub const Transcript = struct {
                 },
                 .answer => |ans| {
                     // Everything up to `flushed` is already in the scrollback:
-                    // the region holds the block still being written, raw
-                    // until it closes and can be styled.
+                    // the region holds what is not stable yet (the line being
+                    // written, a table, a held paragraph), raw until it is.
                     try pushRaw(a, &produced, ans.text.items[ans.flushed..], options.width);
                 },
                 .tool_call => |call| {
@@ -491,7 +496,8 @@ pub const Transcript = struct {
         if (self.written < self.blocks.items.len) {
             const block = self.blocks.items[self.written];
             if (block == .answer and block.answer.flushed > 0) {
-                try self.pushMarkdown(a, &out, block.answer.text.items[0..block.answer.flushed], options);
+                var carry: markdown.Carry = .{};
+                try self.pushMarkdown(a, &out, block.answer.text.items[0..block.answer.flushed], options, &carry);
             }
         }
         self.rows = out.items.len;
@@ -535,10 +541,15 @@ pub const Transcript = struct {
                     try pushWrapped(a, out, t.text.items, options.width, .thinking);
                 }
             },
-            .answer => |ans| try self.pushMarkdown(a, out, switch (scope) {
-                .remainder => ans.text.items[ans.flushed..],
-                .written => ans.text.items[0..ans.flushed],
-            }, options),
+            .answer => |ans| {
+                // The remainder continues from where the flushed part
+                // stopped; the written part is one render from the start.
+                var carry: markdown.Carry = if (scope == .remainder) ans.carry else .{};
+                try self.pushMarkdown(a, out, switch (scope) {
+                    .remainder => ans.text.items[ans.flushed..],
+                    .written => ans.text.items[0..ans.flushed],
+                }, options, &carry);
+            },
             .tool_call => |call| {
                 try out.append(a, try callRow(a, call, th, true));
                 if (call.detail) |detail| if (self.tools != .folded) try pushDetail(a, out, gl, detail, options.width, .tool_result);
@@ -616,9 +627,9 @@ pub const Transcript = struct {
         } else try out.appendSlice(a, produced.items);
     }
 
-    fn pushMarkdown(self: *const Transcript, a: Allocator, out: *std.ArrayList(Row), text: []const u8, options: Render) !void {
+    fn pushMarkdown(self: *const Transcript, a: Allocator, out: *std.ArrayList(Row), text: []const u8, options: Render, carry: *markdown.Carry) !void {
         _ = self;
-        const rendered = try markdown.render(a, text, options.width, options.th);
+        const rendered = try markdown.renderFrom(a, text, options.width, options.th, carry);
         for (rendered) |line| try out.append(a, .{ .text = line, .raw = true });
     }
 };
@@ -913,7 +924,7 @@ test "a closed block is written exactly once" {
     try testing.expectEqual(@as(usize, 2), tr.rows);
 }
 
-test "an answer flushes block by block while it streams" {
+test "an answer flushes as it streams" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -922,12 +933,12 @@ test "an answer flushes block by block while it streams" {
     const options: Render = .{ .width = 40, .th = .{ .kind = .plain } };
 
     try tr.apply(.{ .answer_delta = "First paragraph." });
-    // Nothing has closed yet: the paragraph is still being written.
+    // Nothing has closed yet: the line is still being written.
     try testing.expectEqual(@as(usize, 0), (try tr.takeClosed(a, options)).len);
     const live = try tr.liveRows(a, .{ .width = 40, .th = options.th, .budget = 10 });
     try testing.expectEqualStrings("First paragraph.", live[0].text);
 
-    // A blank line closes it, and only it.
+    // Its newline closes it, and the blank line after it.
     try tr.apply(.{ .answer_delta = "\n\nSecond" });
     const flushed = try tr.takeClosed(a, options);
     const written = try texts(a, flushed);
@@ -1435,7 +1446,7 @@ test "reset drops the blocks and the counters, not the scrollback" {
 test "the closed part of a streamed answer is rendered once; the open tail never goes through markdown" {
     // The cache is the answer's `flushed` offset: everything before it is in
     // the scrollback and is never handed to the renderer again. A render
-    // happens only when `split` closes a block, plus one for the tail at the
+    // happens only when `split` closes something, plus one for the tail at the
     // end of the turn; the live region shows the open tail as raw text.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1450,7 +1461,7 @@ test "the closed part of a streamed answer is rendered once; the open tail never
     var expected: usize = 1;
     var closed: usize = 0;
     for (1..document.len + 1) |n| {
-        const now = markdown.split(document[0..n]).closed.len;
+        const now = markdown.split(document[0..n], .{}).closed.len;
         if (now > closed) expected += 1;
         closed = now;
     }
@@ -1465,8 +1476,99 @@ test "the closed part of a streamed answer is rendered once; the open tail never
     try tr.apply(.{ .turn_end = .{ .stop = .eos } });
     _ = try tr.takeClosed(a, options);
     try testing.expectEqual(expected, markdown.render_calls);
-    // Nine block closes for ninety-odd bytes: the hit rate of the cache.
+    // About a dozen closes for a hundred-odd bytes: the hit rate of the cache.
     try testing.expect(markdown.render_calls * 8 < document.len);
+}
+
+/// Streams `document` into an answer one byte at a time, flushing after
+/// each byte as the agent's repaint does, and checks the live region never
+/// holds more than `max_live` rows. Returns the scrollback rows, the turn's
+/// closing rows left out.
+fn streamAnswer(a: Allocator, tr: *Transcript, document: []const u8, options: Render, max_live: usize) ![]const Row {
+    var streamed: std.ArrayList(Row) = .empty;
+    for (document) |byte| {
+        try tr.apply(.{ .answer_delta = &.{byte} });
+        try streamed.appendSlice(a, try tr.takeClosed(a, options));
+        const live = try tr.liveRows(a, .{ .width = options.width, .th = options.th, .budget = 38 });
+        try testing.expect(live.len <= max_live);
+    }
+    try tr.apply(.{ .turn_end = .{ .stop = .eos } });
+    const tail = try tr.takeClosed(a, options);
+    // The turn's end adds its one blank row after the answer.
+    try streamed.appendSlice(a, tail[0 .. tail.len - 1]);
+    return streamed.items;
+}
+
+fn expectRowsEqual(expected: []const []const u8, actual: []const Row) !void {
+    try testing.expectEqual(expected.len, actual.len);
+    for (expected, actual) |e, row| try testing.expectEqualStrings(e, row.text);
+}
+
+test "a long plain list streams to the scrollback line by line, as one render would draw it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    const options: Render = .{ .width = 60, .th = .{ .kind = .truecolor } };
+    var document: std.ArrayList(u8) = .empty;
+    try document.appendSlice(a, "Here are the files:\n\n");
+    for (1..301) |n| try document.print(a, "many/item-{d:0>3}.txt\n", .{n});
+    try document.appendSlice(a, "\nThat is all 300.");
+    // At most the line being written, wrapped once, is ever live.
+    const streamed = try streamAnswer(a, &tr, document.items, options, 2);
+    try expectRowsEqual(try markdown.render(a, document.items, options.width, options.th), streamed);
+}
+
+test "a long fence streams line by line with the highlighting of one render" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    const options: Render = .{ .width = 60, .th = .{ .kind = .truecolor } };
+    var document: std.ArrayList(u8) = .empty;
+    try document.appendSlice(a, "The loop:\n```c\n");
+    // A block comment opens on one line and closes lines later, so the
+    // highlighter's state has to cross the flushes.
+    for (0..60) |n| try document.print(a, "{s}int x{d} = \"{d}\"; /* note\n", .{ if (n % 5 == 4) "*/ " else "", n, n });
+    try document.appendSlice(a, "*/\n```\nDone.\n");
+    const streamed = try streamAnswer(a, &tr, document.items, options, 2);
+    try expectRowsEqual(try markdown.render(a, document.items, options.width, options.th), streamed);
+}
+
+test "a resize mid-stream replays the flushed part as one render at the new width" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    const wide: Render = .{ .width = 60, .th = .{ .kind = .truecolor } };
+    const narrow: Render = .{ .width = 24, .th = wide.th };
+    const document = "A first line that is long enough to wrap when narrow.\nsecond\n```zig\nconst a = 1; /* open\nstill */ const b = 2;\n```\n| a | b |\n| - | - |\n";
+    // Stop inside the fence, then inside the table, and replay each time.
+    for ([_]usize{ std.mem.indexOf(u8, document, "still").? + 3, document.len }) |stop| {
+        tr.reset();
+        for (document[0..stop]) |byte| {
+            try tr.apply(.{ .answer_delta = &.{byte} });
+            _ = try tr.takeClosed(a, wide);
+        }
+        const flushed = tr.blocks.items[tr.written].answer.flushed;
+        try testing.expect(flushed > 0);
+        try expectRowsEqual(try markdown.render(a, document[0..flushed], narrow.width, narrow.th), try tr.replayRows(a, narrow));
+        // The stream goes on at the new width, and what follows still
+        // matches one render of the whole at that width.
+        var rest: std.ArrayList(Row) = .empty;
+        for (document[stop..]) |byte| {
+            try tr.apply(.{ .answer_delta = &.{byte} });
+            try rest.appendSlice(a, try tr.takeClosed(a, narrow));
+        }
+        try tr.apply(.{ .turn_end = .{ .stop = .eos } });
+        try rest.appendSlice(a, try tr.takeClosed(a, narrow));
+        const whole = try markdown.render(a, document, narrow.width, narrow.th);
+        const before = (try markdown.render(a, document[0..flushed], narrow.width, narrow.th)).len;
+        try expectRowsEqual(whole[before..], rest.items[0 .. rest.items.len - 1]);
+    }
 }
 
 test "a `!` command is a Bash block with its output under it, never summed up as the model's" {

@@ -25,6 +25,16 @@ it are [agent.md](agent.md).
 - A resize replays the last turn at the new width; older turns are left
   as printed. Exit erases the region and restores the terminal, leaving
   only the transcript.
+- An answer streams into the scrollback about a line at a time, so the
+  live region holds the line being written and not a growing block: a
+  paragraph line, heading, rule, quote, or list item goes out at its
+  newline, styled, as one render of the whole answer would draw it; so
+  does each line of a fenced block (its caption with the first line, the
+  highlighting carried across). A paragraph is held while an inline span
+  opened in it (`**`, `` ` ``, a link) waits for its closer on a later
+  line. A table goes out whole once a line that is not a row ends it,
+  because its column widths need every row; until then it is the one
+  thing that stays in the region, tail-clamped when taller.
 - Colour levels: truecolor, 256-colour, the sixteen ANSI slots, or plain
   attributes; `NO_COLOR` wins. Glyphs: Unicode, or ASCII when the locale
   is not UTF-8 or `NUCLIS_ASCII=1`. Code blocks draw no border, so a
@@ -170,7 +180,7 @@ it are [agent.md](agent.md).
 - The agent produces typed events (user, thinking, answer, tool call, tool
   result, diff, notice, info, status, turn end); the transcript turns them
   into blocks and hands each closed block to the screen exactly once. An
-  answer flushes block by block as its markdown blocks close.
+  answer flushes as it streams ([§ Surface](#surface)).
 - Thinking folds and unfolds without leaving the model conversation; a
   step's block closes with its own measured time.
 - A tool call is a dot and `Name(argument)`, the dot coloured by state
