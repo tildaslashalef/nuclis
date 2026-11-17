@@ -1567,6 +1567,13 @@ const write_new: Profile.ToolCall = .{ .id = 0, .name = "write_file", .arguments
 
 const search_zig: Profile.ToolCall = .{ .id = 0, .name = "web_search", .arguments = "{\"query\":\"zig std.http\"}" };
 
+test "every replay cause has its own phrase on the bar" {
+    inline for (@typeInfo(Replay.Cause).@"enum".field_names) |name| {
+        const phrase = tui.status.causePhrase(name);
+        try std.testing.expect(!std.mem.eql(u8, phrase, name));
+    }
+}
+
 test "web off: no web definitions or guidelines, and a web call is not a tool" {
     const alloc = testing.allocator;
     var fixture = try Fixture.init(alloc);

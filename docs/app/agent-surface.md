@@ -233,17 +233,18 @@ it are [agent.md](agent.md).
   --json` writes the row as a `notice` event before `turn_end`, whose
   `stats` carry the three counts (`results_cut`, `results_elided`,
   `turns_dropped`); a turn whose reads were whole adds nothing.
-- The status bar shows measurements on the left (state, progress, the
-  loop step, context use, token counts, prefill and decode rates) and
-  settings on the right (effort, the speculative switch and draft length,
-  cache precision, backend, model). A rate that was not measured prints as
-  absent; a countdown is marked as an estimate. A narrow bar drops
-  settings from the right. Context use is `ctx used/ceiling`: the tokens
-  the session holds against the prompt's ceiling, the window less the
-  step's reserve (`ctx 7694/13312` at 16K, `low`, and a 1,024 budget), so the bar fills
-  where compaction starts; `/model`'s note for the model in use names the
-  window, the ceiling, and the reserve. After a cancel, until the next
-  step, `ctx` is the conversation's size at the last step.
+- The status bar shows measurements on the left (state, progress, the loop step, context use,
+  token counts, prefill and decode rates) and settings on the right (effort, the speculative
+  switch and draft length, cache precision, backend, model). A rate that was not measured
+  prints as absent; a countdown is marked as an estimate. A narrow bar drops settings from
+  the right. Context use is `ctx used/ceiling`: the tokens the session holds against the
+  prompt's ceiling, the window less the step's reserve (`ctx 7694/13312` at 16K, `low`, and a
+  1,024 budget), so the bar fills where compaction starts; `/model`'s note for the model in
+  use names the window, the ceiling, and the reserve. After a cancel, until the next step,
+  `ctx` is the conversation's size at the last step. A replay of 1,024 tokens or more
+  (`status.replay_shown`) reads `re-read 2.3k tokens (after a cancel)`, its cause in plain
+  words; a smaller one has no cell. `/help` explains it; the session file and `--print
+  --json` keep every replay's cause and tokens prefilled and restored.
 
 ## Sessions and storage
 
@@ -306,8 +307,7 @@ it are [agent.md](agent.md).
   consumed and prefills only the increment; an effort change, a cancelled
   turn, or compaction restarts from the longest cached state the
   conversation begins with (the primed prefix or a turn's end) and
-  replays the rest, and the bar names the cause and the tokens prefilled
-  and restored ([agent.md § The agent's token cache](agent.md#12-the-agents-token-cache)).
+  replays the rest ([agent.md § The agent's token cache](agent.md#12-the-agents-token-cache)).
 - Context budget: a step starts when its reserve is left after the
   prompt, its thinking cap at the current effort plus `answer_reserve`
   (2,048) and at most `max_tokens` (`completer.Reserve.step`), and may

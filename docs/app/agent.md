@@ -419,8 +419,8 @@ removed.
 - **Accounting.** A step that could not continue the session reports a
   `Replay` with its cause (`resumed`, `cancel`, `rewrite` for compaction or
   elision, `effort`, `context`, `model`, `failure`) and the tokens restored; the
-  bar shows `replayed <cause> <prefilled>, <restored> restored`, and the
-  session file records `replay` and `restored_tokens` beside `replayed`.
+  session file records `replay` and `restored_tokens` beside `replayed`; the bar names one of
+  1,024 tokens or more ([agent-surface.md § Transcript and status](agent-surface.md#transcript-and-status)).
 
 What the cache saves, and the checks of the save inside a prompt and the
 rewind: [record, 2026-10-04 and 2026-10-08](../benchmarks/record/agent.md#the-agents-token-cache-2026-10-04).
