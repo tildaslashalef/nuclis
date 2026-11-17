@@ -244,7 +244,8 @@ predicate (file contents, a command's output, the answer's text) and
 scored on steps, tool calls, tool errors, failed edits, prompt and
 generated tokens, the model's seconds, the answer's length, what
 compaction cost (turns dropped, elisions, results clipped, prompt tokens
-of replayed steps), and four
+of replayed steps), the reasoning tokens of each step (p50, p90, and max
+over the steps) and the steps the thinking budget cut, and four
 counted habits read from the session (a regex handed to the literal
 `grep`, a guessed `pytest`, a file re-read right after its own edit, a
 `cd` before a command); the records land under

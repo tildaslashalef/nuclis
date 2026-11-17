@@ -4,6 +4,108 @@
 The dated record behind [the agent concepts](../../app/agent.md): the
 measurements behind the web tools and the token cache.
 
+### The thinking budget (2026-11-17)
+
+**Method.** `make agent-eval`'s fifteen tasks at the build of `3ddc0c5`
+with the runner's reasoning counts added, M4 Pro 48 GB, Metal, kv f16,
+the 32K default window, `max_tokens` 8192, each model with its registry
+entry's generation settings (Qwen3.8-27B UD-Q4_K_M with its drafter,
+Gemma 4 26B-A4B UD-Q4_K_XL without). Every variant passes
+`-- --thinking-budget N --think E`, and the flag wins over the entry's
+`agent.thinking_budget` (`config.resolve`: the flag, else the entry,
+else the file). The recorded steps confirm it: every cut step reasons
+exactly its variant's cap plus one token (1,025, 2,049, 4,097), so no
+1,024 or 4,096 variant ran at the entries' 2,048. Reasoning tokens are
+per step (`reasoning_tokens` in the session), as nearest-rank
+percentiles over every step of a variant; "cut" counts steps whose
+`reasoning_cut` is set.
+
+**What ran.** The whole matrix (four variants, two models, three seeds)
+was estimated beforehand at about 10.5 hours from the 32K record's ~30
+minutes per Qwen sweep and a first Gemma sweep of ~20 minutes, so it ran
+two seeds of every variant and the third only for 1024 and 2048 at
+`low`, the two the default is chosen between: 284 runs, 6.8 hours of
+wall time. Gemma's `medium` ran one seed: its template only switches
+reasoning on, so `medium` at 2048 renders as `low` with a 4,096 cap, and
+its seed-1 sweep reproduced 4096 at `low` token for token (the same
+reasoning per step and the same answers on all fourteen tasks it ran
+before its `replay`, which was then dropped). Each command was one
+variant, seed, and task group (the thirteen single-turn tasks, `pages`,
+`replay`); eight single runs, all `pages` or `replay`, took 10 to 12.5
+minutes and could not be split further. One `pages` run was killed by
+the runner's guard and re-run whole.
+
+**Per variant**, every seed pooled; model seconds are a mean per run.
+
+| model | budget | effort | runs | passed | cut steps | reasoning p50 / p90 / max | steps over 1,024 | model s | prompt tokens, mean | dropped / elided |
+| --- | ---: | --- | ---: | --- | ---: | --- | ---: | ---: | ---: | --- |
+| Qwen3.8-27B | 1024 | low | 45 | 45 | 1 | 33 / 143 / 1,025 | 1 of 212 | 102 | 3,778 | 0 / 0 |
+| Qwen3.8-27B | 2048 | low | 45 | 45 | 1 | 34 / 151 / 2,049 | 2 of 213 | 108 | 3,898 | 3 / 1 |
+| Qwen3.8-27B | 4096 | low | 30 | 30 | 0 | 32 / 143 / 1,410 | 1 of 148 | 100 | 3,718 | 6 / 2 |
+| Qwen3.8-27B | 2048 | medium | 30 | 30 | 0 | 32 / 161 / 1,004 | 0 of 138 | 76 | 2,685 | 6 / 2 |
+| Gemma 4 26B-A4B | 1024 | low | 45 | 34 | 10 | 45 / 396 / 1,025 | 10 of 276 | 58 | 5,901 | 6 / 4 |
+| Gemma 4 26B-A4B | 2048 | low | 45 | 38 | 3 | 43 / 421 / 2,049 | 12 of 266 | 54 | 5,103 | 3 / 3 |
+| Gemma 4 26B-A4B | 4096 | low | 30 | 25 | 1 | 48 / 540 / 4,097 | 10 of 187 | 77 | 7,963 | 6 / 6 |
+
+**Per seed.**
+
+| model | budget | effort | seed | passed | steps | cut | reasoning p50 / p90 / max | model s | prompt tokens, mean | dropped / elided / replayed |
+| --- | ---: | --- | ---: | --- | ---: | ---: | --- | ---: | ---: | --- |
+| Qwen3.8-27B | 1024 | low | 1 | 15/15 | 70 | 1 | 36 / 143 / 1,025 | 1,624 | 3,881 | 0 / 0 / 3,066 |
+| Qwen3.8-27B | 1024 | low | 2 | 15/15 | 77 | 0 | 33 / 134 / 376 | 1,525 | 3,672 | 0 / 0 / 100 |
+| Qwen3.8-27B | 1024 | low | 3 | 15/15 | 65 | 0 | 29 / 146 / 969 | 1,451 | 3,782 | 0 / 0 / 100 |
+| Qwen3.8-27B | 2048 | low | 1 | 15/15 | 71 | 1 | 41 / 151 / 2,049 | 1,838 | 4,048 | 0 / 0 / 11,360 |
+| Qwen3.8-27B | 2048 | low | 2 | 15/15 | 77 | 0 | 30 / 134 / 482 | 1,516 | 3,561 | 0 / 0 / 100 |
+| Qwen3.8-27B | 2048 | low | 3 | 15/15 | 65 | 0 | 33 / 237 / 969 | 1,503 | 4,087 | 3 / 1 / 10,611 |
+| Qwen3.8-27B | 4096 | low | 1 | 15/15 | 71 | 0 | 34 / 143 / 1,410 | 1,534 | 3,718 | 3 / 1 / 8,825 |
+| Qwen3.8-27B | 4096 | low | 2 | 15/15 | 77 | 0 | 31 / 134 / 376 | 1,480 | 3,718 | 3 / 1 / 9,189 |
+| Qwen3.8-27B | 2048 | medium | 1 | 15/15 | 68 | 0 | 37 / 166 / 849 | 1,172 | 2,590 | 3 / 1 / 9,089 |
+| Qwen3.8-27B | 2048 | medium | 2 | 15/15 | 70 | 0 | 28 / 118 / 1,004 | 1,101 | 2,780 | 3 / 1 / 8,777 |
+| Gemma 4 26B-A4B | 1024 | low | 1 | 12/15 (not count, history, validate) | 98 | 4 | 45 / 510 / 1,025 | 1,159 | 8,602 | 3 / 3 / 32,062 |
+| Gemma 4 26B-A4B | 1024 | low | 2 | 10/15 (not count, newfile, pages, replay, validate) | 86 | 3 | 43 / 421 / 1,025 | 826 | 5,251 | 3 / 1 / 11,911 |
+| Gemma 4 26B-A4B | 1024 | low | 3 | 12/15 (not history, replay, validate) | 92 | 3 | 53 / 282 / 1,025 | 645 | 3,850 | 0 / 0 / 206 |
+| Gemma 4 26B-A4B | 2048 | low | 1 | 12/15 (not count, history, validate) | 80 | 1 | 40 / 522 / 2,049 | 726 | 4,338 | 0 / 0 / 251 |
+| Gemma 4 26B-A4B | 2048 | low | 2 | 12/15 (not count, newfile, pages) | 90 | 0 | 40 / 388 / 1,763 | 872 | 5,857 | 3 / 2 / 17,363 |
+| Gemma 4 26B-A4B | 2048 | low | 3 | 14/15 (not history) | 96 | 2 | 53 / 375 / 2,049 | 842 | 5,114 | 0 / 1 / 10,432 |
+| Gemma 4 26B-A4B | 4096 | low | 1 | 12/15 (not count, history, validate) | 89 | 1 | 45 / 766 / 4,097 | 1,038 | 6,821 | 3 / 2 / 22,709 |
+| Gemma 4 26B-A4B | 4096 | low | 2 | 13/15 (not count, newfile) | 98 | 0 | 50 / 471 / 1,763 | 1,286 | 9,105 | 3 / 4 / 47,947 |
+
+**The default: 2048.** Qwen3.8 passes every run at every budget and is
+cut once in 212 steps at 1,024: its ordinary step reasons for a p90 of
+about 150 tokens, and the budget barely binds. Gemma 4 is where it
+binds: at 1,024 ten steps were cut and three failures follow a cut
+(`validate` seeds 2 and 3, `pages` seed 2), and `validate` failed on all
+three seeds. At 2,048 the three cuts are all on `json`, which passed
+every time, and none of its seven failures has a cut: `count`,
+`history`, `newfile` seed 2, and `validate` seed 1 fail at every
+budget, and `pages` seed 2 stopped after three reads without a cut (it
+passed at 4,096). 4,096 cut one step, a 4,097-token runaway on `json`
+seed 1 that every budget cuts, and paid for its larger reservation in
+compaction: three turns dropped in `replay` on every seed of both models
+(and at Qwen's `medium`, the same 6,144 reserved), against one seed of
+three per model at 2,048; Gemma's replayed tokens rise from 28,046 over
+three seeds to 70,656 over two. The model seconds do not separate the
+`low` budgets beyond the seeds' spread on Qwen; Gemma at 4,096 took 77 s
+a run against 54 to 58. Qwen at `medium` ran faster (76 s) on fewer
+prompt tokens, its steps no longer. So the default and every catalogue
+entry `config init` writes are 2048, what the registry entries already
+set by hand.
+
+**The cap: `max_tokens` less `answer_reserve`.** Under the old rule (half
+of `max_tokens`) a 2,048 base gave 2,048 at `low` and 4,096 at `medium`,
+`high`, and `xhigh` alike, so the top three efforts stopped differing.
+The runs say a step needs no more than 4,096 at `medium`: Qwen's longest
+`medium` step reasoned 1,004 tokens, and Gemma's only step past 2,048 was
+the runaway. So nothing argues for raising `max_tokens`: that would let
+`high` and `xhigh` reserve more than 8,192 of the window, and the 4,096
+rows show what a larger reservation costs. The cap is `max_tokens` less
+the 2,048 the step reservation already holds for the answer (half of a
+`max_tokens` below 4,096): 2,048, 4,096, 6,144, and 6,144 at the
+defaults, so `high` again exceeds `medium` and the answer keeps the same
+2,048 at every effort. `xhigh` exceeds `high` only with `max_tokens` of
+10,240 or more, which a user may set; neither was measured here, since
+no task reached the 4,096 cap except the runaway.
+
 ### The context budget (2026-11-17)
 
 **Method.** Qwen3.8-27B UD-Q4_K_M, Metal, kv f16, M4 Pro 48 GB; effort

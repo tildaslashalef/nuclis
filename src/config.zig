@@ -276,10 +276,10 @@ pub const Config = struct {
     };
 };
 
-/// `agent.thinking_budget`'s default: above Qwen3.8's longest ordinary step
-/// at `low` in the playground sessions (about 550 tokens), not yet measured
-/// per family.
-pub const default_thinking_budget: usize = 1024;
+/// `agent.thinking_budget`'s default, measured on Qwen3.8 and Gemma 4: 1,024
+/// cut Gemma's longer steps and failed tasks on it, 4,096 cut no more and
+/// cost compaction (docs/benchmarks/record/agent.md § The thinking budget).
+pub const default_thinking_budget: usize = 2048;
 
 /// One registry entry: where a model lives and what it overrides for that
 /// model only. `path` (relative to `<root>/models` unless absolute) or
@@ -852,10 +852,17 @@ pub const Resolved = struct {
     }
 };
 
+/// Output tokens a step keeps for its answer and calls beside its reasoning:
+/// `thinkingBudget` leaves them out of the cap, and the agent's fit check
+/// reserves them on top of it (`completer.Reserve.step`). Non-reasoning output
+/// above 2,048 tokens per step is rare (docs/app/agent-surface.md § The loop).
+pub const answer_reserve: usize = 2048;
+
 /// The reasoning cap one step runs with at `effort`: `budget` at `low`, two,
 /// three, and four times it at `medium`, `high`, and `xhigh`, and never more
-/// than half of the step's `max_tokens`, so the answer and its calls keep the
-/// rest; none at `off` or when the budget is 0.
+/// than `max_tokens` less `answer_reserve` (half of a `max_tokens` below twice
+/// it), so the answer and its calls keep the rest; none at `off` or when the
+/// budget is 0.
 pub fn thinkingBudget(budget: usize, effort: Effort, max_tokens: usize) ?usize {
     if (budget == 0) return null;
     const scale: usize = switch (effort) {
@@ -865,7 +872,8 @@ pub fn thinkingBudget(budget: usize, effort: Effort, max_tokens: usize) ?usize {
         .high => 3,
         .xhigh => 4,
     };
-    return @max(@min(budget * scale, max_tokens / 2), 1);
+    const ceiling = @max(max_tokens -| answer_reserve, max_tokens / 2);
+    return @max(@min(budget * scale, ceiling), 1);
 }
 
 /// The sampling profile belongs to the checkpoint. The catalogue records it
@@ -1827,8 +1835,14 @@ test "the reasoning budget applies at low only, and 0 turns it off" {
     try std.testing.expectEqual(@as(?usize, 2048), thinkingBudget(1024, .medium, 8192));
     try std.testing.expectEqual(@as(?usize, 3072), thinkingBudget(1024, .high, 8192));
     try std.testing.expectEqual(@as(?usize, 4096), thinkingBudget(1024, .xhigh, 8192));
-    // Half the output stays the answer's, whatever the effort asks.
+    // The answer keeps `answer_reserve` of the output, whatever the effort
+    // asks, or half of an output below twice that.
+    try std.testing.expectEqual(@as(?usize, 4096), thinkingBudget(2048, .medium, 8192));
+    try std.testing.expectEqual(@as(?usize, 6144), thinkingBudget(2048, .high, 8192));
+    try std.testing.expectEqual(@as(?usize, 6144), thinkingBudget(2048, .xhigh, 8192));
+    try std.testing.expectEqual(@as(?usize, 8192), thinkingBudget(2048, .xhigh, 10240));
     try std.testing.expectEqual(@as(?usize, 2048), thinkingBudget(1024, .xhigh, 4096));
+    try std.testing.expectEqual(@as(?usize, 1024), thinkingBudget(2048, .low, 2048));
     try std.testing.expectEqual(@as(?usize, 1), thinkingBudget(1024, .low, 1));
     try std.testing.expectEqual(@as(?usize, null), thinkingBudget(0, .low, 8192));
     try std.testing.expectEqual(@as(?usize, null), thinkingBudget(1024, .off, 8192));

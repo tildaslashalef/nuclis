@@ -488,7 +488,7 @@ fn hostedDefinition(kind: []const u8) ?web.tools.Definition {
 }
 
 /// The part of `agent.thinking_budget` a `minimal` request reasons for:
-/// 512 tokens at the default 1,024 (256 lost a third of Gemma's tool
+/// 1,024 tokens at the default 2,048 (256 lost a third of Gemma's tool
 /// calls, docs/guide/api.md § The request).
 pub const minimal_share = 2;
 

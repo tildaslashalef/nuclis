@@ -238,7 +238,7 @@ fn agent(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--resume [<id>]", "replay a saved session first; the latest without <id>");
     try row(out, sty, "--think <effort>", "off, low, medium, high, xhigh; default low");
     try row(out, sty, "--thinking-budget <n>", "reasoning cap at low (x2 medium ... x4 xhigh, at");
-    try more(out, "most max-tokens/2); 0 none; default entry, else 1024");
+    try more(out, "most max-tokens - 2048); 0 none; entry's, else 2048");
     try row(out, sty, "--system-prompt <path>", "the file's text replaces the built prompt");
     try more(out, "sections (for tuning); AGENTS.md still follows");
     try row(out, sty, "--image-max-tokens <n>", "most tokens a dropped image becomes: auto (the");

@@ -2615,7 +2615,7 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
     try listing.render(&out.writer, .{ .long = true }, false, .none);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "commit ce331efc48d5  sha256 1bce504dfecd  unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "draft:dflash2  commit -             sha256 -             unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf  unverified\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "runs with: speculative on (draft mtp, length 7), think low, thinking budget 1024, profile qwen38\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "runs with: speculative on (draft mtp, length 7), think low, thinking budget 2048, profile qwen38\n") != null);
     out.clearRetainingCapacity();
     try listing.render(&out.writer, .{}, true, .none);
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});

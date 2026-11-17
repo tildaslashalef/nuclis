@@ -56,7 +56,7 @@ GPU at a time, decisions included.
 | assistant `tool_calls`, tool `tool_call_id` | the calls and their results; a result must answer an earlier call |
 | `tools` | `type: "function"` with `name`, `description`, `parameters` (a JSON Schema); at most 64. The model's own template renders them. With `serve.web`, also `{"type": "web_search"}`, `{"type": "web_fetch"}`, and `{"type": "web_context"}`, which the server runs ([hosted web tools](#hosted-web-tools)) |
 | `tool_choice` | `auto` (the default) or `none`, which renders no tools |
-| `reasoning_effort` | `none` (no reasoning), `minimal`, `low`, `medium`, `high`, `xhigh` (`max` reads as `xhigh`); the model's nearest level. `minimal` is `low` with its reasoning closed at half the budget (512 tokens at the default `agent.thinking_budget`, [below](#a-short-reasoning-minimal)). Absent: `agent.think` |
+| `reasoning_effort` | `none` (no reasoning), `minimal`, `low`, `medium`, `high`, `xhigh` (`max` reads as `xhigh`); the model's nearest level. `minimal` is `low` with its reasoning closed at half the budget (1,024 tokens at the default `agent.thinking_budget`, [below](#a-short-reasoning-minimal)). Absent: `agent.think` |
 | `max_completion_tokens`, `max_tokens` | the output budget, reasoning included; absent: the model's `max_tokens` setting. Larger values are capped at 16,384 and at what the window leaves after the prompt |
 | `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repetition_penalty` | each overrides one option of the model's sampling for the effort; `temperature: 0` is greedy |
 | `seed` | the sampler's seed for this request |

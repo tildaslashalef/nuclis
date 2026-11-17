@@ -2166,7 +2166,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         // Session files are written under the root: a turn saved there can
         // be resumed.
         .save_turns = root_dir != null,
-        .reserve = .{ .step = loop.answer_reserve },
+        .reserve = .{ .step = config.answer_reserve },
     };
     defer completer.deinit();
     // Declared after the engine and the completer, so its in-flight encode

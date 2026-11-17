@@ -206,7 +206,7 @@ pub const artifacts = [_]Artifact{
         .revision = "ce331efc48d5722b4b8041f72793e530eae18d9b",
         .architecture = "qwen35",
         .quantization = "UD-Q4_K_M",
-        .defaults = .{ .profile = .qwen38, .draft = "mtp", .think = .low, .thinking_budget = 1024 },
+        .defaults = .{ .profile = .qwen38, .draft = "mtp", .think = .low, .thinking_budget = 2048 },
         .files = &.{
             .{ .role = .main, .path = "Qwen3.8-27B-UD-Q4_K_M.gguf", .size = 16_564_259_744, .sha256 = "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529" },
             .{ .role = .mmproj, .path = "mmproj-BF16.gguf", .size = 931_146_432, .sha256 = "83ee4f4f205fa514161778c41df1ea14144faa0f713510893b63c2395f5c2d53", .used_for = "image input" },
@@ -234,7 +234,7 @@ pub const artifacts = [_]Artifact{
         // The Hub name says UD-Q4_K_XL; the header says every matrix is Q4_0.
         .quantization = "Q4_0 (QAT)",
         .traits = .{ .block_count = inference.models.gemma4.config_12b.layer_count },
-        .defaults = .{ .profile = .gemma4, .think = .low, .thinking_budget = 1024 },
+        .defaults = .{ .profile = .gemma4, .think = .low, .thinking_budget = 2048 },
         .files = &.{
             .{ .role = .main, .path = "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf", .size = 6_716_356_800, .sha256 = "90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370" },
             .{ .role = .mmproj, .path = "mmproj-BF16.gguf", .size = 175_115_840, .sha256 = "dcb8103adad042b1bf99df767aaf34eb37c5a73a4a2f0417e4d7ba557e91664f", .used_for = "image input" },
@@ -254,7 +254,7 @@ pub const artifacts = [_]Artifact{
         .architecture = "gemma4",
         .quantization = "Q4_0 (QAT)",
         .traits = .{ .block_count = inference.models.gemma4.config_26b_a4b.layer_count },
-        .defaults = .{ .profile = .gemma4, .think = .low, .thinking_budget = 1024 },
+        .defaults = .{ .profile = .gemma4, .think = .low, .thinking_budget = 2048 },
         .files = &.{
             .{ .role = .main, .path = "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf", .size = 14_249_047_104, .sha256 = "a7c5bc715f5ff8e99a3e8901ce7d2b42b402c669bf24f7c5250747633d0f5891" },
             .{ .role = .mmproj, .path = "mmproj-BF16.gguf", .size = 1_194_828_256, .sha256 = "7b06953ccdbe8cf363f47841a7afaacd2b1c2ff9a8d6b426fdec7521a6878744", .used_for = "image input" },
@@ -274,7 +274,7 @@ pub const artifacts = [_]Artifact{
         .architecture = "gemma4",
         .quantization = "Q4_0 (QAT)",
         .traits = .{ .block_count = inference.models.gemma4.config_e4b.layer_count, .hears = true },
-        .defaults = .{ .profile = .gemma4_e, .think = .low, .thinking_budget = 1024 },
+        .defaults = .{ .profile = .gemma4_e, .think = .low, .thinking_budget = 2048 },
         .files = &.{
             .{ .role = .main, .path = "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf", .size = 4_215_695_776, .sha256 = "df0fd4ee07072c607c29a0a1cb4f98918426cca12f45a2776bdd6ee6d09a4de3" },
             .{ .role = .mmproj, .path = "mmproj-BF16.gguf", .size = 991_552_320, .sha256 = "7c9bafa27f82d658eda805c1d82ef62bb0368e1ff75f64f77de58ad318beaaf9", .used_for = "image and audio input" },
@@ -294,7 +294,7 @@ pub const artifacts = [_]Artifact{
         .revision = "faa5b025c584459c13febfa5c59883516710ae39",
         .architecture = "muse-glimmer",
         .quantization = "UD-Q4_K_XL",
-        .defaults = .{ .profile = .muse_glimmer, .think = .low, .thinking_budget = 1024 },
+        .defaults = .{ .profile = .muse_glimmer, .think = .low, .thinking_budget = 2048 },
         .files = &.{
             .{ .role = .main, .path = "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", .size = 15_878_222_368, .sha256 = "82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38" },
             .{ .role = .mmproj, .path = "mmproj-kquant.gguf", .size = 1_400_328_928, .sha256 = "f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6", .used_for = "image input" },

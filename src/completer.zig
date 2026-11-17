@@ -1092,7 +1092,10 @@ test "a step reserves its thinking cap and the answer, never more than the buffe
     try testing.expectEqual(@as(usize, 2048), c.reserveTokens());
     c.effort = .xhigh;
     c.thinking_budget = 4096;
-    // The thinking cap is at most half the buffer: 4,096 + 2,048.
+    // The cap leaves the answer its 2,048: 6,144 + 2,048, the whole buffer.
+    try testing.expectEqual(@as(usize, 8192), c.reserveTokens());
+    c.effort = .medium;
+    c.thinking_budget = 2048;
     try testing.expectEqual(@as(usize, 6144), c.reserveTokens());
     c.reserve = .whole;
     try testing.expectEqual(@as(usize, 8192), c.reserveTokens());

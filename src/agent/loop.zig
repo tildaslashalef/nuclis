@@ -134,11 +134,6 @@ pub fn resultBudget(ceiling: usize) usize {
 }
 pub const min_result_budget: usize = 256;
 
-/// Answer tokens a step reserves beside its thinking cap: the fit check
-/// starts a step only with both left (`completer.Reserve.step`). Non-reasoning
-/// output above 2,048 tokens per step is rare (docs/app/agent-surface.md § The loop).
-pub const answer_reserve: usize = 2048;
-
 /// Where compaction stops, as a percentage of the prompt ceiling: low enough
 /// that the steps after it do not compact and replay again at once; 50
 /// replayed less than 75 (docs/app/agent-surface.md § The loop).
