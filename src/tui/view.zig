@@ -172,8 +172,9 @@ fn dupeRow(alloc: std.mem.Allocator, row: []const u8, hidden: ?usize) ![]const u
 }
 
 /// The end offset of an ANSI escape sequence that starts at `offset` (an ESC),
-/// or null when no escape starts there. CSI runs to its final byte; OSC runs
-/// to BEL or ST. Unterminated sequences consume the rest of the text so a cut
+/// or null when no escape starts there. CSI runs to its final byte; OSC and
+/// the other string controls (APC, as a kitty image travels, DCS, PM, SOS)
+/// run to BEL or ST. Unterminated sequences consume the rest of the text so a cut
 /// never drops bytes. Both occupy zero cells.
 pub fn escapeSpan(text: []const u8, offset: usize) ?usize {
     if (text[offset] != 0x1b) return null;
@@ -185,7 +186,7 @@ pub fn escapeSpan(text: []const u8, offset: usize) ?usize {
             while (end < text.len and text[end] >= 0x20 and text[end] <= 0x3f) end += 1;
             if (end < text.len) end += 1;
         },
-        ']' => {
+        ']', '_', 'P', '^', 'X' => {
             end += 1;
             while (end < text.len) {
                 if (text[end] == 0x07) {
