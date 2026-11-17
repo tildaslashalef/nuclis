@@ -652,6 +652,53 @@ test "insertion fills the rows a shrink released before it scrolls" {
     try testing.expectEqual(@as(usize, 9), screen.region_top);
 }
 
+/// Fails when a line clear, an inserted line, or a line feed meets a painted
+/// background, or an erase-to-end meets none: with background-colour erase,
+/// those would band a row that is not code, or leave code unbanded.
+fn expectBandOnlyOnErase(stream: []const u8) !void {
+    var band = false;
+    var i: usize = 0;
+    while (i < stream.len) {
+        if (stream[i] == '\n') try testing.expect(!band);
+        const end = view.escapeSpan(stream, i) orelse {
+            i += 1;
+            continue;
+        };
+        const seq = stream[i..end];
+        i = end;
+        if (seq.len < 3 or seq[1] != '[') continue;
+        switch (seq[seq.len - 1]) {
+            'm' => {
+                if (std.mem.indexOf(u8, seq, "48;") != null) band = true;
+                if (std.mem.eql(u8, seq, theme.reset)) band = false;
+            },
+            'L' => try testing.expect(!band),
+            'K' => try testing.expectEqual(!std.mem.eql(u8, seq, "\x1b[2K"), band),
+            else => {},
+        }
+    }
+}
+
+test "a code row's band is painted by its own erase, never by an insert, a scroll, or a clear" {
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
+    const code = "\x1b[48;5;237mx = 1\x1b[K\x1b[0m";
+    const rows = [_]Row{ .{ .text = code, .raw = true }, .{ .text = code, .raw = true }, .{ .text = code, .raw = true } };
+    for ([_]Caps{ .{}, .{ .scroll_region = false } }) |caps| {
+        var screen = testScreen(&buffer.writer, caps);
+        // Two rows of slack under a two-row region: the first two rows are
+        // inserted lines, the third scrolls the rows above the region.
+        screen.at = 6;
+        try screen.paint(&.{ .{ .text = "a" }, .{ .text = "b" }, .{ .text = "c" }, .{ .text = "d" } }, .{ .row = 3, .column = 1 });
+        try screen.paint(&.{ .{ .text = "x" }, .{ .text = "y" } }, .{ .row = 1, .column = 1 });
+        buffer.clearRetainingCapacity();
+        try screen.insertAbove(&rows);
+        try screen.paintWith(&rows, &.{ .{ .text = "x" }, .{ .text = "y" } }, .{ .row = 1, .column = 1 }, 0);
+        try testing.expect(std.mem.indexOf(u8, buffer.written(), "x = 1\x1b[K") != null);
+        try expectBandOnlyOnErase(buffer.written());
+    }
+}
+
 test "the rewrite fallback and finish leave no gap after a shrink" {
     var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
     defer buffer.deinit();
