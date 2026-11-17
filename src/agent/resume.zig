@@ -399,6 +399,7 @@ pub fn replay(alloc: Allocator, tr: *transcript.Transcript, loaded: session.Load
                 .text = r.text,
                 .truncated = r.truncated,
                 .is_error = r.is_error,
+                .cancelled = r.cancelled,
                 .summary = r.summary,
             } }),
             else => {},

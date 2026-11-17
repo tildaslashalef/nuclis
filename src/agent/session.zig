@@ -117,6 +117,9 @@ pub const Entry = union(enum) {
         text: []const u8,
         truncated: bool = false,
         is_error: bool = false,
+        /// A call the user's cancel stopped or kept from running; written
+        /// only when set, so other lines stay as older readers know them.
+        cancelled: bool = false,
         /// The transcript's detail row; absent in files written before it
         /// existed, which load as empty.
         summary: []const u8 = "",
@@ -391,10 +394,12 @@ pub fn writeEntry(out: *std.Io.Writer, entry: Entry, id: u32, parent: ?u32, time
         inline else => |payload| {
             inline for (@typeInfo(@TypeOf(payload)).@"struct".field_names) |name| {
                 const value = @field(payload, name);
-                // A turn without images, clips, or a boundary writes the line
-                // older readers know.
+                // A turn without images, clips, or a boundary, and a result
+                // not cancelled, write the line older readers know.
                 const absent = if (comptime (std.mem.eql(u8, name, "images") or std.mem.eql(u8, name, "audio")))
                     value.len == 0
+                else if (comptime std.mem.eql(u8, name, "cancelled"))
+                    !value
                 else if (comptime @typeInfo(@TypeOf(value)) == .optional)
                     value == null
                 else
@@ -543,6 +548,7 @@ fn readRecord(a: Allocator, object: std.json.ObjectMap) !Record {
             .text = try text(a, object, "text"),
             .truncated = boolean(object.get("truncated")),
             .is_error = boolean(object.get("is_error")),
+            .cancelled = boolean(object.get("cancelled")),
             .summary = try text(a, object, "summary"),
         } };
         if (std.mem.eql(u8, kind, "effort")) break :blk .{ .effort = .{ .effort = try text(a, object, "effort") } };
@@ -1049,6 +1055,24 @@ test "an assistant entry's boundary round-trips, any digest, and is absent unles
     try testing.expectEqual(@as(usize, 5120), b.bytes);
     try testing.expectEqual(@as(u64, 0xfedc_ba98_7654_3210), b.digest);
     try testing.expect(loaded.records[1].entry.assistant.boundary == null);
+}
+
+test "a tool result's cancel round-trips, and is absent unless set" {
+    const a = testing.allocator;
+    var buffer: std.Io.Writer.Allocating = .init(a);
+    defer buffer.deinit();
+    try writeEntry(&buffer.writer, .{ .tool_result = .{ .call = "1", .text = "\n[bash: cancelled]", .is_error = true, .cancelled = true } }, 1, null, "t1");
+    try writeEntry(&buffer.writer, .{ .tool_result = .{ .call = "2", .text = "ok" } }, 2, 1, "t2");
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, buffer.written(), "\"cancelled\":true"));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, buffer.written(), "\"cancelled\""));
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(a);
+    try source.appendSlice(a, "{\"type\":\"session\",\"version\":1,\"id\":\"a\",\"time\":\"t\",\"cwd\":\"/w\",\"model\":{\"path\":\"/m\"},\"effort\":\"off\",\"ctx_size\":8}\n");
+    try source.appendSlice(a, buffer.written());
+    const loaded = try parseText(a, source.items, null);
+    defer loaded.deinit();
+    try testing.expect(loaded.records[0].entry.tool_result.cancelled);
+    try testing.expect(!loaded.records[1].entry.tool_result.cancelled);
 }
 
 test "a model entry round-trips, with or without a digest, and exports as one line" {

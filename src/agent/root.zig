@@ -167,6 +167,10 @@ const Ui = struct {
     pending_len: usize = 0,
     /// Set after a Ctrl-C cancel so a second press during the same turn quits.
     cancel_pending: bool = false,
+    /// The conversation's rendered size after a cancelled turn, which resets
+    /// the session until the next step replays it: the bar's `ctx` until
+    /// the engine's next beat, a new session, or another model.
+    context_hold: ?usize = null,
     /// Context size requested with Ctrl-W or `/model`; the main loop
     /// re-opens the engine.
     ctx_request: ?usize = null,
@@ -252,6 +256,7 @@ const Ui = struct {
         self.completer.reset(null);
         self.eng.model.reset();
         self.tokens_seen.reset();
+        self.context_hold = null;
         self.stats = .{};
         self.status = "new session";
     }
@@ -284,7 +289,7 @@ const Ui = struct {
         var bar = self.bar;
         bar.busy = self.busy;
         bar.message = self.status;
-        bar.context_used = session.position;
+        bar.context_used = self.context_hold orelse session.position;
         // The prompt's ceiling, not the window: the bar fills where
         // compaction starts.
         bar.context_capacity = self.completer.window().ceiling();
@@ -1443,6 +1448,7 @@ const Ui = struct {
     fn onProgress(context: *anyopaque, value: inference.observer.Progress) !void {
         const self: *Ui = @ptrCast(@alignCast(context));
         const now = std.Io.Clock.awake.now(self.io);
+        self.context_hold = null;
         if (value.phase == .decode) {
             // A token that is neither reasoning nor answer still ends the
             // reading: the step is generating.
@@ -1665,6 +1671,7 @@ fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8, want
     ui.attachments_pending = images;
     defer ui.attachments_pending = &.{};
     const stop = try ui.agent.turn(user, images);
+    if (stop == .cancelled and ui.agent.rendered_tokens > 0) ui.context_hold = ui.agent.rendered_tokens;
     ui.status = switch (stop) {
         .done => "ready",
         .budget => "step budget",
@@ -1891,12 +1898,14 @@ fn runShell(ui: *Ui, sampler: *inference.sampling.Sampler, shell: commands.Shell
     defer result.deinit(ui.alloc);
     ui.busy = false;
     ui.shell = false;
+    // As in the loop: a command that failed because Ctrl-C stopped it was cancelled.
+    const cancelled = result.is_error and interrupt.requested();
     interrupt.clear();
-    ui.status = if (result.is_error) "command failed" else "ready";
+    ui.status = if (cancelled) "cancelled" else if (result.is_error) "command failed" else "ready";
     // A failed call's rows are its text; here the summary says it once
     // (`exit 1 · 0 lines`) and the output follows in full below.
     const summary = result.summary orelse "";
-    try ui.emit(.{ .tool_result = .{ .id = id, .text = if (result.is_error) summary else result.text, .truncated = result.truncated, .is_error = result.is_error, .summary = summary } });
+    try ui.emit(.{ .tool_result = .{ .id = id, .text = if (result.is_error) summary else result.text, .truncated = result.truncated, .is_error = result.is_error, .cancelled = cancelled, .summary = summary, .seconds = if (cancelled) seconds(ui.turn_started, std.Io.Clock.awake.now(ui.io)) else 0 } });
     // The user ran it, so the user sees it: the output's head, and the count
     // of what was left out. The trailing `[bash: …]` marker is the model's;
     // the summary row already said it. A run of `!` commands is not a run
@@ -1972,6 +1981,7 @@ fn performResume(ui: *Ui, alloc: std.mem.Allocator, io: std.Io, path: []const u8
     // the stored entries and prefilled on the next turn.
     ui.eng.model.reset();
     ui.tokens_seen.reset();
+    ui.context_hold = null;
     ui.completer.resumeFrom(resume_mod.lastBoundary(loaded));
     ui.agent.resetConversation();
     ui.effort = effort;
@@ -2166,6 +2176,7 @@ fn switchModel(ui: *Ui, open: *Open, sampler: *inference.sampling.Sampler, path:
     const previous_label = try alloc.dupe(u8, ui.model_label);
     defer alloc.free(previous_label);
     ui.status = if (same_file) "resizing context…" else "loading model…";
+    ui.context_hold = null;
     try ui.draw();
     // Encoded attachments belong to the projector being unloaded.
     ui.ahead.reset();
@@ -2487,6 +2498,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 ui.agent.abortTurn();
                 ui.eng.model.reset();
                 ui.tokens_seen.reset();
+                ui.context_hold = null;
                 ui.completer.reset(.failure);
                 interrupt.clear();
                 // The prompt is already in the transcript; say why nothing

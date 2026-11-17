@@ -129,12 +129,12 @@ state colour (`op_running` pulsing against `dim`, then `op_ok`, `op_error`,
 or `op_write`) and `Name(argument)` from `tools.describe`, the tool's
 one-sentence result under `└`, and, where the model's text resumes, the
 dim `ops` row counting the run's calls by their results (`Read 2 files,
-ran 1 shell command, 1 call failed`: a red call counts only as failed). The
-repaint cadence comes from the Metal backend's `tick`: `commit` waits on a
-semaphore its completion handler signals and calls back every 100 ms, and
-the surface installs its poll-and-draw there (`installTick`), so a prefill
-chunk repaints ten times a second instead of once. `Screen.paintFrom`
-rewrites only from the first row that differs from the last frame.
+ran 1 shell command, 1 call failed`: a red call counts only as failed, a
+dim, cancelled one only as cancelled). The Metal backend's `tick` sets the
+repaint cadence: `commit` waits on a semaphore its completion handler
+signals and calls back every 100 ms, where the surface installs its poll
+and draw (`installTick`), so a prefill chunk repaints ten times a second.
+`Screen.paintFrom` rewrites only from the first row that differs.
 
 An attachment is an `attachment` event after the prompt's `user` event:
 the transcript keeps it as a detail of that user block and renders a dim

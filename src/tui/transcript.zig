@@ -47,8 +47,8 @@ pub const Block = union(enum) {
     user: User,
     thinking: Thinking,
     answer: Answer,
-    tool_call: struct { id: event_mod.Id, name: []u8, summary: []u8, detail: ?[]u8 = null, running: bool = true, failed: bool = false },
-    tool_result: struct { id: event_mod.Id, text: []u8, truncated: bool, is_error: bool, summary: []u8, seconds: f64 = 0 },
+    tool_call: struct { id: event_mod.Id, name: []u8, summary: []u8, detail: ?[]u8 = null, running: bool = true, failed: bool = false, cancelled: bool = false },
+    tool_result: struct { id: event_mod.Id, text: []u8, truncated: bool, is_error: bool, cancelled: bool = false, summary: []u8, seconds: f64 = 0 },
     diff: Diff,
     notice: []u8,
     /// A command's answer, at the terminal's own foreground.
@@ -135,7 +135,8 @@ pub const Block = union(enum) {
 };
 
 /// Tool calls counted by what they did, for the `ops` row. A call counts
-/// when its result arrives; a failed one (its row red) counts only as failed.
+/// when its result arrives; a failed one (its row red) counts only as
+/// failed, a cancelled one only as cancelled.
 pub const OpsCount = struct {
     reads: usize = 0,
     searches: usize = 0,
@@ -144,17 +145,19 @@ pub const OpsCount = struct {
     web_searches: usize = 0,
     fetches: usize = 0,
     failed: usize = 0,
+    cancelled: usize = 0,
 
     fn any(self: OpsCount) bool {
-        return self.reads + self.searches + self.commands + self.writes + self.web_searches + self.fetches + self.failed > 0;
+        return self.reads + self.searches + self.commands + self.writes + self.web_searches + self.fetches + self.failed + self.cancelled > 0;
     }
 
-    fn add(self: *OpsCount, name: []const u8, is_error: bool) void {
-        if (is_error) self.failed += 1 else if (std.mem.eql(u8, name, "read_file")) self.reads += 1 else if (std.mem.eql(u8, name, "grep") or std.mem.eql(u8, name, "glob")) self.searches += 1 else if (std.mem.eql(u8, name, "bash")) self.commands += 1 else if (isWrite(name)) self.writes += 1 else if (std.mem.eql(u8, name, "web_search") or std.mem.eql(u8, name, "web_context")) self.web_searches += 1 else if (std.mem.eql(u8, name, "web_fetch")) self.fetches += 1 else self.commands += 1;
+    fn add(self: *OpsCount, name: []const u8, is_error: bool, cancelled: bool) void {
+        if (cancelled) self.cancelled += 1 else if (is_error) self.failed += 1 else if (std.mem.eql(u8, name, "read_file")) self.reads += 1 else if (std.mem.eql(u8, name, "grep") or std.mem.eql(u8, name, "glob")) self.searches += 1 else if (std.mem.eql(u8, name, "bash")) self.commands += 1 else if (isWrite(name)) self.writes += 1 else if (std.mem.eql(u8, name, "web_search") or std.mem.eql(u8, name, "web_context")) self.web_searches += 1 else if (std.mem.eql(u8, name, "web_fetch")) self.fetches += 1 else self.commands += 1;
     }
 
     /// `Read 2 files, searched 3 times, ran 1 shell command, wrote 1 file,
-    /// searched the web 2 times, fetched 1 page, 2 calls failed`.
+    /// searched the web 2 times, fetched 1 page, 2 calls failed, 1
+    /// cancelled`; alone, `1 call cancelled`.
     fn text(self: OpsCount, a: Allocator) ![]u8 {
         var w: std.Io.Writer.Allocating = .init(a);
         var parts: usize = 0;
@@ -165,6 +168,12 @@ pub const OpsCount = struct {
         if (self.web_searches > 0) try part(&w.writer, &parts, "searched the web {d} time{s}", self.web_searches);
         if (self.fetches > 0) try part(&w.writer, &parts, "fetched {d} page{s}", self.fetches);
         if (self.failed > 0) try part(&w.writer, &parts, "{d} call{s} failed", self.failed);
+        if (self.cancelled > 0) {
+            if (parts > 0) {
+                try w.writer.print(", {d} cancelled", .{self.cancelled});
+                parts += 1;
+            } else try part(&w.writer, &parts, "{d} call{s} cancelled", self.cancelled);
+        }
         const out = try w.toOwnedSlice();
         if (out.len > 0) out[0] = std.ascii.toUpper(out[0]);
         return out;
@@ -334,15 +343,16 @@ pub const Transcript = struct {
                 for (self.blocks.items) |*block| {
                     if (block.* == .tool_call and block.tool_call.id == result.id and block.tool_call.running) {
                         block.tool_call.running = false;
-                        block.tool_call.failed = result.is_error;
-                        self.ops.add(block.tool_call.name, result.is_error);
+                        block.tool_call.cancelled = result.cancelled;
+                        block.tool_call.failed = result.is_error and !result.cancelled;
+                        self.ops.add(block.tool_call.name, result.is_error, result.cancelled);
                     }
                 }
                 const text = try self.alloc.dupe(u8, result.text);
                 errdefer self.alloc.free(text);
                 const summary = try self.alloc.dupe(u8, result.summary);
                 errdefer self.alloc.free(summary);
-                try self.blocks.append(self.alloc, .{ .tool_result = .{ .id = result.id, .text = text, .truncated = result.truncated, .is_error = result.is_error, .summary = summary, .seconds = result.seconds } });
+                try self.blocks.append(self.alloc, .{ .tool_result = .{ .id = result.id, .text = text, .truncated = result.truncated, .is_error = result.is_error, .cancelled = result.cancelled, .summary = summary, .seconds = result.seconds } });
             },
             .diff => |d| {
                 const path = try self.alloc.dupe(u8, d.path);
@@ -566,7 +576,12 @@ pub const Transcript = struct {
                 // and the text itself in the output view.
                 // A call that ran a second or more says how long, after
                 // the row it settles on.
-                if (self.tools == .folded) {} else if (self.tools == .output) {
+                if (self.tools == .folded) {} else if (result.cancelled) {
+                    // The text is the model's, ending in the tool's note; the
+                    // row says what happened and the output view shows it.
+                    try pushDetail(a, out, gl, try cancelledRow(a, result.summary, result.seconds), options.width, .dim);
+                    if (self.tools == .output) try pushOutput(a, out, gl, result.text, options.width);
+                } else if (self.tools == .output) {
                     if (result.summary.len > 0 or ranLong(result.seconds)) try pushDetail(a, out, gl, try timed(a, result.summary, result.seconds), options.width, if (result.is_error) .error_text else .tool_result);
                     try pushOutput(a, out, gl, result.text, options.width);
                 } else if (result.is_error) {
@@ -831,6 +846,14 @@ fn timed(a: Allocator, text: []const u8, seconds: f64) ![]const u8 {
     return a.print("{s} · {d:.1}s", .{ text, seconds });
 }
 
+/// A cancelled call's row: `cancelled after 6.1s`, then the tool's summary
+/// (`· 3 lines of output`); `cancelled` alone for a call that never ran.
+fn cancelledRow(a: Allocator, summary: []const u8, seconds: f64) ![]const u8 {
+    const head = if (seconds > 0) try a.print("cancelled after {d:.1}s", .{seconds}) else "cancelled";
+    if (summary.len == 0) return head;
+    return a.print("{s} · {s}", .{ head, summary });
+}
+
 /// The rows of an error result are bounded; the message's head is what the
 /// reader needs, the rest is in the session file.
 const max_error_rows: usize = 3;
@@ -842,6 +865,8 @@ const max_error_rows: usize = 3;
 fn callRow(a: Allocator, call: anytype, th: theme.Theme, pulse: bool) !Row {
     const dot: theme.Style = if (call.running)
         (if (pulse) .op_running else .dim)
+    else if (call.cancelled)
+        .dim
     else if (call.failed)
         .op_error
     else if (isWrite(call.name))
@@ -1122,6 +1147,52 @@ test "a turn that ends while a call runs settles the call and writes what follow
     }
     try testing.expect(std.mem.indexOf(u8, text.items, "WriteFailed") != null);
     try testing.expectEqual(tr.blocks.items.len, tr.written);
+}
+
+test "a cancelled call reads as cancelled, with its time and any output, and counts apart" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    const options: Render = .{ .width = 80, .th = .{ .kind = .plain } };
+    // No output: the row is the cancel and its time, never the blank first
+    // line of the model's text.
+    try tr.apply(.{ .tool_call = .{ .id = 1, .name = "bash", .summary = "Bash(sleep 20)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 1, .text = "\n[bash: cancelled]", .truncated = false, .is_error = true, .cancelled = true, .seconds = 6.08 } });
+    try tr.apply(.{ .turn_end = .{ .stop = .cancelled } });
+    try testing.expectEqualStrings(
+        \\● Bash(sleep 20)
+        \\└ cancelled after 6.1s
+        \\1 call cancelled
+        \\  — cancelled
+        \\
+        \\
+    , try texts(a, try tr.takeClosed(a, options)));
+    try testing.expect(!tr.blocks.items[0].tool_call.failed);
+
+    // With output, the row counts it, and the output view shows it under
+    // the row; a call the cancel kept from running is cancelled too.
+    tr.reset();
+    try tr.apply(.{ .tool_call = .{ .id = 2, .name = "bash", .summary = "Bash(make)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 2, .text = "ok\n", .truncated = false, .is_error = false, .seconds = 1.2 } });
+    try tr.apply(.{ .tool_call = .{ .id = 3, .name = "bash", .summary = "Bash(make test)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 3, .text = "one\ntwo\n\n[bash: cancelled]", .truncated = false, .is_error = true, .cancelled = true, .summary = "2 lines of output", .seconds = 3.0 } });
+    try tr.apply(.{ .tool_call = .{ .id = 4, .name = "bash", .summary = "Bash(make lint)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 4, .text = "[not run: the user cancelled the turn]", .truncated = false, .is_error = true, .cancelled = true } });
+    try tr.apply(.{ .answer_delta = "Stopped." });
+    try tr.apply(.{ .turn_end = .{ .stop = .cancelled } });
+    const summary_view = try texts(a, try tr.takeClosed(a, options));
+    try testing.expect(std.mem.indexOf(u8, summary_view, "└ cancelled after 3.0s · 2 lines of output\n● Bash(make lint)\n└ cancelled\n") != null);
+    try testing.expect(std.mem.indexOf(u8, summary_view, "Ran 1 shell command, 2 cancelled\n") != null);
+    try testing.expect(std.mem.indexOf(u8, summary_view, "one") == null);
+    tr.tools = .output;
+    var rows: std.ArrayList(Row) = .empty;
+    try tr.render(a, &rows, tr.blocks.items[3], options, .written);
+    const shown = try texts(a, rows.items);
+    try testing.expect(std.mem.startsWith(u8, shown, "└ cancelled after 3.0s · 2 lines of output\n"));
+    try testing.expect(std.mem.indexOf(u8, shown, "one\n") != null);
+    try testing.expect(std.mem.indexOf(u8, shown, "[bash: cancelled]") != null);
 }
 
 test "a running call counts its seconds, and the settled row keeps the tool's own time" {
@@ -1747,26 +1818,26 @@ test "an attachment is a dim detail row under its prompt, and a preview reserves
     try testing.expect(lone.blocks.items[0] == .notice);
 }
 
-test "the tally counts a call by its result: web calls as searches and pages, any failure only as failed" {
+test "the tally counts a call by its result: web calls as searches and pages, a failure only as failed, a cancel only as cancelled" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var tr = transcript();
     defer tr.deinit();
     const options: Render = .{ .width = 80, .th = .{ .kind = .plain } };
-    const calls = [_]struct { name: []const u8, is_error: bool }{
+    const calls = [_]struct { name: []const u8, is_error: bool, cancelled: bool = false }{
         .{ .name = "web_search", .is_error = false },
         .{ .name = "web_search", .is_error = false },
         .{ .name = "web_fetch", .is_error = false },
         .{ .name = "read_file", .is_error = false },
-        // A refused fetch, a cancelled search, and a command that exited 1.
+        // A refused fetch, a command that exited 1, and a cancelled search.
         .{ .name = "web_fetch", .is_error = true },
-        .{ .name = "web_search", .is_error = true },
         .{ .name = "bash", .is_error = true },
+        .{ .name = "web_search", .is_error = true, .cancelled = true },
     };
     for (calls, 1..) |call, id| {
         try tr.apply(.{ .tool_call = .{ .id = @intCast(id), .name = call.name, .summary = call.name } });
-        try tr.apply(.{ .tool_result = .{ .id = @intCast(id), .text = "", .truncated = false, .is_error = call.is_error } });
+        try tr.apply(.{ .tool_result = .{ .id = @intCast(id), .text = "", .truncated = false, .is_error = call.is_error, .cancelled = call.cancelled } });
     }
     // A call still running when the text resumes has no result to count.
     try tr.apply(.{ .tool_call = .{ .id = 99, .name = "web_fetch", .summary = "Fetch(x)" } });
@@ -1775,11 +1846,11 @@ test "the tally counts a call by its result: web calls as searches and pages, an
     for (tr.blocks.items) |block| if (block == .ops) {
         tally = block.ops;
     };
-    try testing.expectEqualStrings("Read 1 file, searched the web 2 times, fetched 1 page, 3 calls failed", tally.?);
+    try testing.expectEqualStrings("Read 1 file, searched the web 2 times, fetched 1 page, 2 calls failed, 1 cancelled", tally.?);
     // A failure alone still writes the row.
     tr.reset();
     try tr.apply(.{ .tool_call = .{ .id = 1, .name = "web_fetch", .summary = "Fetch(x)" } });
-    try tr.apply(.{ .tool_result = .{ .id = 1, .text = "cancelled", .truncated = false, .is_error = true } });
+    try tr.apply(.{ .tool_result = .{ .id = 1, .text = "web_fetch: upstream_failed", .truncated = false, .is_error = true } });
     try tr.apply(.{ .turn_end = .{ .stop = .cancelled } });
     const alone = try texts(a, try tr.takeClosed(a, options));
     try testing.expect(std.mem.indexOf(u8, alone, "1 call failed\n") != null);
