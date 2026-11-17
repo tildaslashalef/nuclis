@@ -27,9 +27,11 @@ it are [agent.md](agent.md).
   Rows that close in the region are painted out and inserted in one frame,
   so they fill the rows they free. At a turn's end the answer's last row
   sits one blank row above the input box.
-- A resize replays the last turn at the new width; older turns are left
-  as printed. Exit erases the region and restores the terminal, leaving
-  only the transcript.
+- A resize replays the last turn at the new width when it is still
+  wholly on screen once the terminal has reflowed it; a taller turn, and
+  every older one, is left as the terminal reflowed it, with no message.
+  Exit erases the region and restores the terminal, leaving only the
+  transcript.
 - An answer streams into the scrollback about a line at a time, so the
   live region holds the line being written and not a growing block: a
   paragraph line, heading, rule, quote, or list item goes out at its
@@ -110,7 +112,10 @@ it are [agent.md](agent.md).
   cycles the tool rows of the last turn through three views: the summary
   (each call's row, detail, and one result row), the output (the result's
   text under it, 40 rows then `… N more lines`), and folded (the call rows
-  stay, their detail, result, and diff rows go); Ctrl-T cycles the efforts
+  stay, their detail, result, and diff rows go). The last turn is
+  rewritten in the new view when it is still wholly on screen; a taller
+  one keeps its rows, and the status bar says the view applies from the
+  next turn (`tools: folded · from the next turn`). Ctrl-T cycles the efforts
   the model's profile renders distinctly and Ctrl-W the context window (2K
   to 32K, re-opening the engine), both accelerators for `/model`; Ctrl-N
   is `/clear`; Ctrl-C cancels a turn, twice quits, or quits when idle;

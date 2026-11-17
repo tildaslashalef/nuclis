@@ -223,14 +223,14 @@ const Ui = struct {
     /// read there must not load an encoder.
     ticking: bool = false,
 
-    /// The next tool view, named in the bar so the cycle is legible.
-    fn cycleTools(self: *Ui) void {
+    /// The next tool view, named in the bar so the cycle is legible. With
+    /// `rewrite`, the finished turn on screen is rewritten in it; a turn
+    /// that no longer fits on the screen keeps its rows, and the bar says
+    /// the view starts with the next turn.
+    fn cycleTools(self: *Ui, rewrite: bool) !void {
         self.tr.tools = self.tr.tools.next();
-        self.status = switch (self.tr.tools) {
-            .summary => "tools: summary",
-            .output => "tools: output",
-            .folded => "tools: folded",
-        };
+        const applied = !rewrite or try self.rewriteTurn();
+        self.status = toolsStatus(self.tr.tools, applied);
     }
 
     fn deinit(self: *Ui) void {
@@ -327,7 +327,8 @@ const Ui = struct {
         var arena = std.heap.ArenaAllocator.init(self.alloc);
         defer arena.deinit();
         const a = arena.allocator();
-        if (resized) try self.replayTurn(a);
+        // A turn too tall to rewrite is left as the terminal reflowed it.
+        if (resized) _ = try self.replayTurn(a);
         // Whatever closed since the last frame belongs above the region, not
         // in it: a long answer moves into the scrollback line by line while
         // it is written. Taken before the live rows are built, written after
@@ -487,13 +488,15 @@ const Ui = struct {
     /// taller than the space above the region is left alone rather than
     /// half-rewritten — the fold state still applies to whatever is printed
     /// next. Clamping the walk at the top row would land the rewrite on the
-    /// wrong lines.
-    fn replayTurn(self: *Ui, a: std.mem.Allocator) !void {
+    /// wrong lines. Returns whether the turn on screen now matches the
+    /// current state: false when it was left alone.
+    fn replayTurn(self: *Ui, a: std.mem.Allocator) !bool {
         const replacing = self.tr.rows;
-        if (replacing == 0) return;
-        if (replacing + self.scr.region_rows >= self.scr.size.rows) return;
+        if (replacing == 0) return true;
+        if (!self.scr.canReplace(replacing)) return false;
         const rows = try self.tr.replayRows(a, .{ .width = self.columnsFor(), .th = self.th });
         try self.scr.replaceAbove(rows, replacing);
+        return true;
     }
 
     /// Build width for every row, live or transcript: the screen's width
@@ -890,7 +893,7 @@ const Ui = struct {
                 // written are rewritten when the turn is over.
                 .ignored => switch (key) {
                     .tab => self.tr.expanded = !self.tr.expanded,
-                    .ctrl => |c| if (c == 'o') self.cycleTools(),
+                    .ctrl => |c| if (c == 'o') try self.cycleTools(false),
                     else => {},
                 },
             }
@@ -937,10 +940,7 @@ const Ui = struct {
                     self.record(.{ .effort = .{ .effort = @tagName(self.effort) } });
                 },
                 'n' => self.newSession(),
-                'o' => {
-                    self.cycleTools();
-                    try self.rewriteTurn();
-                },
+                'o' => try self.cycleTools(true),
                 'x' => try self.copyLastAnswer(),
                 'g' => try self.editExternally(),
                 'w' => {
@@ -955,7 +955,7 @@ const Ui = struct {
             },
             .tab => {
                 self.tr.expanded = !self.tr.expanded;
-                try self.rewriteTurn();
+                _ = try self.rewriteTurn();
             },
             else => {},
         }
@@ -1012,10 +1012,10 @@ const Ui = struct {
     /// The last turn rewritten with the current fold state, so a fold works
     /// after the answer is already on screen; turns that scrolled away keep
     /// what they were printed with.
-    fn rewriteTurn(self: *Ui) !void {
+    fn rewriteTurn(self: *Ui) !bool {
         var arena = std.heap.ArenaAllocator.init(self.alloc);
         defer arena.deinit();
-        try self.replayTurn(arena.allocator());
+        return self.replayTurn(arena.allocator());
     }
 
     /// Keeps a message typed during a turn for the next one. The prompt is
@@ -1554,6 +1554,14 @@ fn seconds(from: std.Io.Timestamp, to: std.Io.Timestamp) f64 {
 /// The phase a step is in, as the live region names it: its prompt being
 /// read, reasoning, a tool call being written, an answer, or a tool running.
 const LivePhase = enum { reading, thinking, writing, answering, running };
+
+/// The bar's word for a tool view: `applied` false says the turn on screen
+/// keeps the view it was printed with and the new one starts with the next.
+fn toolsStatus(shown: tui.transcript.ToolView, applied: bool) []const u8 {
+    return switch (shown) {
+        inline else => |t| if (applied) "tools: " ++ @tagName(t) else "tools: " ++ @tagName(t) ++ " · from the next turn",
+    };
+}
 
 /// The label of a thinking block that has not closed yet: an animated dot and
 /// the seconds since the step's first reasoning token, which is what the fold
@@ -2498,6 +2506,13 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             };
         }
     }
+}
+
+test "Ctrl-O names the view, and says when it starts with the next turn" {
+    try std.testing.expectEqualStrings("tools: folded", toolsStatus(.folded, true));
+    try std.testing.expectEqualStrings("tools: folded · from the next turn", toolsStatus(.folded, false));
+    try std.testing.expectEqualStrings("tools: output · from the next turn", toolsStatus(.output, false));
+    try std.testing.expectEqualStrings("tools: summary", toolsStatus(.summary, true));
 }
 
 test "increment is the unseen suffix, or null when the conversation must replay" {

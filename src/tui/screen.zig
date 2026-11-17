@@ -34,9 +34,11 @@
 //! the status bar (`slack`), and a taller one takes those rows back before
 //! the transcript scrolls into the scrollback. Once the region ends on the
 //! last row, growth and insertion scroll the transcript. A resize keeps the
-//! region's top where the terminal reports the cursor (`resized`). What the
-//! model cannot survive is the terminal reflowing rows under it, which is why
-//! the caller replays the last turn after a resize.
+//! region's top where the terminal reports the cursor (`resized`). A
+//! reflowing terminal turns a row wider than the new width into several
+//! lines, so the walks after a resize count lines from the display widths
+//! the screen keeps of the rows it wrote, and the caller replays the last
+//! turn at the new width when `canReplace` says it is all still on screen.
 //!
 //! `Screen` writes to a plain `std.Io.Writer` and never allocates, so its
 //! tests capture the exact escape stream with no TTY in sight.
@@ -63,6 +65,13 @@ pub const Row = struct {
     /// Paints nothing but the line it clears.
     pub fn isBlank(row: Row) bool {
         return row.text.len == 0 and row.prefix.len == 0 and !row.bar and !row.editor;
+    }
+
+    /// Cells the row writes, escapes excluded, saturated to the ledger's
+    /// slot.
+    pub fn width(row: Row) u16 {
+        const cells = view.styledWidth(row.prefix) + view.styledWidth(row.text);
+        return @intCast(@min(cells, std.math.maxInt(u16)));
     }
 };
 
@@ -109,6 +118,19 @@ pub const Screen = struct {
     /// Whether the last row written above the region paints nothing, so the
     /// caller can leave out a spacer of its own.
     above_blank: bool = false,
+    /// Display widths of the last rows written above the region, a ring
+    /// with its next slot at `above_head`: a terminal that reflows on a
+    /// resize turns one row into as many lines as its width needs, and a
+    /// walk back over them counts lines, not rows.
+    above_widths: [ledger_rows]u16 = undefined,
+    above_head: usize = 0,
+    above_len: usize = 0,
+    /// Display widths of the painted region's rows, by row.
+    region_widths: [ledger_rows]u16 = undefined,
+
+    /// Rows whose widths are remembered: more than any screen is tall, so a
+    /// turn the ledger cannot measure is a turn that cannot be on screen.
+    pub const ledger_rows = 512;
 
     /// Clears the visible screen — the scrollback is untouched — and puts the
     /// cursor at the top. Used at startup, before the header.
@@ -118,6 +140,7 @@ pub const Screen = struct {
         self.region_rows = 0;
         self.at = 1;
         self.above_blank = false;
+        self.above_len = 0;
     }
 
     /// Blank rows under the painted region, down to the last row: what a
@@ -177,9 +200,20 @@ pub const Screen = struct {
         try self.out.flush();
     }
 
+    /// Whether the last `replacing` rows above the region are all still on
+    /// the screen, counted in the lines they take at the current width:
+    /// the condition for `replaceAbove` to land on them. A block that
+    /// reaches into the scrollback cannot be rewritten, since the walk up
+    /// stops at the first row.
+    pub fn canReplace(self: *const Screen, replacing: usize) bool {
+        const lines = self.linesAbove(replacing) orelse return false;
+        return lines < self.at -| self.cursor_row;
+    }
+
     /// Replaces the last `replacing` rows above the region with `rows` (a
     /// fold toggle, a resize replay). The region is erased and rebuilt by
     /// the next `paint`, since the new block may have a different height.
+    /// The caller checks `canReplace` first.
     pub fn replaceAbove(self: *Screen, rows: []const Row, replacing: usize) !void {
         try self.beginFrame();
         try self.rewriteRows(rows, replacing);
@@ -204,7 +238,11 @@ pub const Screen = struct {
         const out = self.out;
         try self.beginFrame();
         self.at = @max(1, @min(cursor orelse self.at, size.rows));
-        const up = @min(self.cursor_row, self.at - 1);
+        // The region's rows above the cursor, reflowed to the new width, and
+        // the cursor's own row as far as its column.
+        var lines: usize = (self.cursor_col -| 1) / @max(size.columns, 1);
+        for (0..self.cursor_row) |i| lines += linesFor(if (i < ledger_rows) self.region_widths[i] else 0, size.columns);
+        const up = @min(lines, self.at - 1);
         if (up > 0) try out.print("\x1b[{d}A", .{up});
         self.at -= up;
         try out.writeAll("\r\x1b[0J");
@@ -261,7 +299,10 @@ pub const Screen = struct {
             self.at += skip;
         }
         for (rows[skip..], skip..) |row, i| {
-            if (i >= unchanged or !same_geometry) try self.writeRow(row);
+            if (i >= unchanged or !same_geometry) {
+                try self.writeRow(row);
+                if (i < ledger_rows) self.region_widths[i] = row.width();
+            }
             if (i + 1 < rows.len) try self.newline();
         }
         // A taller previous region leaves rows below the last one written:
@@ -336,8 +377,10 @@ pub const Screen = struct {
     /// that shrank leaves no gap and one that grew scrolls the screen.
     fn rewriteRows(self: *Screen, rows: []const Row, extra: usize) !void {
         const out = self.out;
+        const lines = self.linesAbove(extra) orelse extra;
+        self.dropAbove(extra);
         self.noteAbove(rows);
-        const up = @min(self.cursor_row + extra, self.at -| 1);
+        const up = @min(self.cursor_row + lines, self.at -| 1);
         if (up > 0) try out.print("\x1b[{d}A", .{up});
         try out.writeAll("\r");
         self.at -= up;
@@ -351,6 +394,38 @@ pub const Screen = struct {
 
     fn noteAbove(self: *Screen, rows: []const Row) void {
         if (rows.len > 0) self.above_blank = rows[rows.len - 1].isBlank();
+        for (rows) |row| {
+            self.above_widths[self.above_head] = row.width();
+            self.above_head = (self.above_head + 1) % ledger_rows;
+            self.above_len = @min(self.above_len + 1, ledger_rows);
+        }
+    }
+
+    fn dropAbove(self: *Screen, count: usize) void {
+        const n = @min(count, self.above_len);
+        self.above_head = (self.above_head + ledger_rows - n) % ledger_rows;
+        self.above_len -= n;
+    }
+
+    /// The lines the last `count` rows above the region take at the current
+    /// width, or null when the ledger does not reach back that far.
+    fn linesAbove(self: *const Screen, count: usize) ?usize {
+        if (count > self.above_len) return null;
+        var lines: usize = 0;
+        for (0..count) |k| {
+            const slot = (self.above_head + ledger_rows - 1 - k) % ledger_rows;
+            lines += linesFor(self.above_widths[slot], self.size.columns);
+        }
+        return lines;
+    }
+
+    /// Lines a row of `width` cells takes once a terminal reflows it to
+    /// `columns`: what tmux, Ghostty, and most terminals do on a resize.
+    /// A row is built one cell narrower than the screen, so at the width
+    /// it was written at this is always one.
+    fn linesFor(width: usize, columns: usize) usize {
+        if (columns == 0) return 1;
+        return @max(1, (width + columns - 1) / columns);
     }
 
     /// No region is painted: the next paint builds one from the cursor.
@@ -915,4 +990,37 @@ test "a resize keeps the region's top where the terminal reports the cursor" {
     try testing.expect(try screen.resized(.{ .rows = 4, .columns = 60 }, null));
     try screen.paint(&rows, .{ .row = 1, .column = 3 });
     try testing.expectEqual(@as(usize, 2), screen.region_top);
+}
+
+test "a resize walks back the lines the terminal reflowed the rows into" {
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
+    var screen = testScreen(&buffer.writer, .{ .scroll_region = false });
+    // A header, a three-row turn, and a two-row region at 40 columns: the
+    // turn's middle row and the box's top are 30 cells wide.
+    const wide: []const u8 = &@as([30]u8, @splat('x'));
+    try screen.insertAbove(&.{.{ .text = "header" }});
+    try screen.paint(&.{ .{ .text = wide }, .{ .text = "> " } }, .{ .row = 1, .column = 3 });
+    try screen.insertAbove(&.{ .{ .text = "prompt" }, .{ .text = wide }, .{ .text = "" } });
+    try screen.paint(&.{ .{ .text = wide }, .{ .text = "> " } }, .{ .row = 1, .column = 3 });
+    try testing.expectEqual(@as(usize, 5), screen.region_top);
+    try testing.expect(screen.canReplace(3));
+    try testing.expect(!screen.canReplace(5));
+    // Narrowed to 20 columns, each 30-cell row is two lines: the cursor
+    // lands on row 7 and the box's top takes rows 5 and 6.
+    buffer.clearRetainingCapacity();
+    try testing.expect(try screen.resized(.{ .rows = 10, .columns = 20 }, 7));
+    try testing.expectEqualStrings("\x1b[?2026h\x1b[2A\r\x1b[0J\x1b[?2026l", buffer.written());
+    try testing.expectEqual(@as(usize, 5), screen.at);
+    // The turn is four lines now: the walk goes back over all of them, to
+    // the prompt on row 1, and not a line short.
+    try testing.expect(screen.canReplace(3));
+    buffer.clearRetainingCapacity();
+    try screen.replaceAbove(&.{ .{ .text = "prompt" }, .{ .text = &@as([19]u8, @splat('x')) }, .{ .text = &@as([11]u8, @splat('x')) }, .{ .text = "" } }, 3);
+    try testing.expect(std.mem.startsWith(u8, buffer.written(), "\x1b[?2026h\x1b[4A\r"));
+    try testing.expectEqual(@as(usize, 5), screen.at);
+    // The rewritten rows are measured at the new width, one line each; the
+    // header too would reach above the first row.
+    try testing.expect(screen.canReplace(4));
+    try testing.expect(!screen.canReplace(5));
 }

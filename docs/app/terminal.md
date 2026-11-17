@@ -79,10 +79,11 @@ region down) before anything scrolls; once the region ends on the last
 row, growth scrolls the transcript into the scrollback. A resize replays
 only the last turn at the new width; older turns are left as the terminal
 reflowed them (spec § The agent: completed turns are immutable), and the
-region is rebuilt from the row the terminal reports the cursor on. `NUCLIS_NO_SCROLL_REGION=1` forces the
-cursor-up rewrite fallback for a terminal that mishandles `DECSTBM`, and a
-`dumb` or unset `TERM` turns both capabilities off. The escape stream of
-every operation is pinned by golden tests that need no TTY.
+region is rebuilt from the row the terminal reports the cursor on,
+counting the lines a reflow made of each row it wrote (`ceil(w / columns)`).
+`NUCLIS_NO_SCROLL_REGION=1` forces the cursor-up rewrite fallback for a
+terminal that mishandles `DECSTBM`, and a `dumb` or unset `TERM` turns both
+capabilities off. Golden tests that need no TTY pin every escape stream.
 
 A code block's band asks for background-colour erase: a code row (and the
 caption strip) is the code on the block background, then `CSI K`, then a
@@ -116,9 +117,8 @@ them into blocks and offers three views of those blocks:
   scrolls away while it is written.
 - `liveRows` — what is still open, tail-clamped under `… N lines above`.
 - `replayRows` — every written block again, for the two events that may
-  rewrite the scrollback (a fold toggle, a resize). The agent skips the
-  rewrite when the turn is taller than the space above the region: those
-  rows are in the scrollback and cannot be reached.
+  rewrite the scrollback (a fold toggle, a resize), skipped when the turn
+  reaches past the screen's top (`Screen.canReplace`; Ctrl-O then says so).
 
 The transcript is pure: no `Io`, no clock (the animated thinking label and
 the running dot's pulse phase are passed in by the agent, which has both),
