@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The agent's task list: sixteen small coding tasks against the playground
+"""The agent's task list: eighteen small coding tasks against the playground
 project, each run as one `nuclis agent --print` turn (the multi-turn one as
 four, continued through `--resume`) and scored on whether it did the job and
 what it cost. The list is how a change to the system prompt,
@@ -17,7 +17,10 @@ calls, tool errors, failed edits, prompt and generated tokens, the model's
 own seconds, the answer's length, the stop reason, and what compaction
 cost (turns dropped, elisions, results clipped to the budget, and the prompt
 tokens of the steps that replayed the conversation), and each step's
-reasoning tokens with the steps the thinking budget cut. A variant's
+reasoning tokens with the steps the thinking budget cut, and where the
+turn's time went (`breakdown`: prefill and decode against new and reused
+tokens, tools, the rest, drafts accepted, and why reuse was lost;
+`--breakdown` prints it). A variant's
 budget and effort are agent flags after `--` (`-- --thinking-budget 2048
 --think medium`), which win over the registry entry's. `--compare` renders
 the variants side by side. The playground is generated on first use under
@@ -87,6 +90,23 @@ class Run:
     reasoning_cut: int = 0
     # The text of each read_file result of the last turn, in order.
     reads: list = field(default_factory=list)
+    # Where the time went (`breakdown`), summed over every turn.
+    turn_wall: float = 0.0
+    prefill_seconds: float = 0.0
+    decode_seconds: float = 0.0
+    first_token_seconds: float = 0.0
+    run_seconds: float = 0.0
+    tool_seconds: float = 0.0
+    prefill_new: int = 0
+    prefill_reused: int = 0
+    reasoning_tokens: int = 0
+    verify_batches: int = 0
+    drafted: int = 0
+    accepted: int = 0
+    lost: dict = field(default_factory=dict)
+    lost_tokens: int = 0
+    # (new prompt tokens, prefill seconds) per step, for the fixed-cost fit.
+    prefill_points: list = field(default_factory=list)
 
 
 # ----- the tasks ------------------------------------------------------------
@@ -297,6 +317,24 @@ def check_validate(ws: Path, run: Run):
     return "integer" in test_text and tests_pass(ws), "validation, its test, tests pass"
 
 
+def check_ports(ws: Path, run: Run):
+    p = ws / "notes" / "ports.txt"
+    if not p.exists():
+        return False, "no notes/ports.txt"
+    got = re.findall(r"\d+", p.read_text())
+    return got == ["8471", "9364", "7158"], f"ports {got}"
+
+
+REVIEWED = ("src/shapes/circle.py", "src/shapes/polygon.py", "src/shapes/rect.py", "src/cli.py", "tests/test_shapes.py")
+
+
+def check_reviewed(ws: Path, run: Run):
+    missing = [f for f in REVIEWED if not (ws / f).read_text().rstrip().endswith("# reviewed")]
+    if missing:
+        return False, f"not marked: {', '.join(missing)}"
+    return tests_pass(ws) and run.calls >= 10, f"{run.calls} calls, tests pass"
+
+
 TASKS = [
     Task(
         "count",
@@ -351,6 +389,21 @@ TASKS = [
     ),
     Task("about", "What is this project about?", check_about),
     Task("pages", PAGES, check_pages),
+    # About 12,000 tokens read in one turn before a single edit: the
+    # long-context cost the short tasks never pay.
+    Task(
+        "longread",
+        "Read ops/api.md, ops/metrics.md, and ops/admin.md in full. Each names one port. "
+        "Write the three ports, in that order and comma-separated, to notes/ports.txt.",
+        check_ports,
+    ),
+    # Ten or more tool calls in one turn: where per-step costs add up.
+    Task(
+        "manysteps",
+        "For each of src/shapes/circle.py, src/shapes/polygon.py, src/shapes/rect.py, src/cli.py, and "
+        "tests/test_shapes.py, in turn: read it, then append the line `# reviewed` at its end. Then run the tests.",
+        check_reviewed,
+    ),
     # Three turns that fill the window, then the paging one: the compaction
     # and replay cost the single-turn tasks never reach.
     Task(
@@ -373,8 +426,11 @@ def reset(ws: Path):
     subprocess.run(["make", "-s", "reset"], cwd=ws, check=True, capture_output=True)
 
 
-def parse(events_text: str, session_path: Path, run: Run) -> Run:
+def parse(events_text: str, session_path: Path, run: Run, walls=()) -> Run:
+    """`events_text` is the last turn's event stream; `walls` the wall
+    seconds of every turn, earlier ones included."""
     names = {}
+    run.turn_wall = sum(walls)
     for line in events_text.splitlines():
         try:
             e = json.loads(line)
@@ -402,6 +458,23 @@ def parse(events_text: str, session_path: Path, run: Run) -> Run:
                     run.replayed_prompt += st.get("prompt_tokens", 0)
                 run.generated += st.get("generated", 0)
                 run.reasoning.append(st.get("reasoning_tokens", 0))
+                new = st.get("prompt_tokens", 0)
+                run.prefill_new += new
+                run.prefill_reused += st.get("reused_tokens", 0)
+                run.prefill_seconds += st.get("prefill_seconds", 0)
+                run.decode_seconds += st.get("decode_seconds", 0)
+                run.first_token_seconds += st.get("first_token_seconds", 0)
+                run.run_seconds += st.get("run_seconds", 0)
+                run.reasoning_tokens += st.get("reasoning_tokens", 0)
+                run.verify_batches += st.get("verify_batches", 0)
+                run.drafted += st.get("drafted", 0)
+                run.accepted += st.get("accepted", 0)
+                reuse = st.get("reuse", "")
+                if st.get("lost_tokens", 0) > 0 or reuse not in ("", "first", "full"):
+                    run.lost[reuse] = run.lost.get(reuse, 0) + 1
+                    run.lost_tokens += st.get("lost_tokens", 0)
+                if new > 0:
+                    run.prefill_points.append([new, st.get("prefill_seconds", 0), st.get("reused_tokens", 0)])
                 if st.get("reasoning_cut"):
                     run.reasoning_cut += 1
                 if e.get("answer"):
@@ -416,6 +489,7 @@ def parse(events_text: str, session_path: Path, run: Run) -> Run:
                 elif e.get("reason") == "results_elided":
                     run.elided += 1
             elif kind == "tool_result":
+                run.tool_seconds += e.get("seconds", 0)
                 text = e.get("text", "")
                 if "[truncated to fit the context:" in text or " cut to fit the context …]" in text:
                     run.clipped += 1
@@ -514,17 +588,30 @@ def run_task(task: Task, seed: int, args, variant_dir: Path) -> dict:
                 -1,
             )
 
+    def turn_wall(events_text: str) -> float:
+        for line in events_text.splitlines():
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("type") == "turn_end":
+                return e.get("stats", {}).get("wall_seconds", 0)
+        return 0.0
+
     started = time.monotonic()
     status, stderr = 0, ""
+    walls = []
     for i, prompt in enumerate(task.before):
-        _, stderr, status = turn(prompt, i > 0)
+        out, stderr, status = turn(prompt, i > 0)
+        walls.append(turn_wall(out))
         if status != 0:
             break
     if status == 0:
         events, stderr, status = turn(task.prompt, bool(task.before))
+        walls.append(turn_wall(events))
     else:
         events = ""
-    run = parse(events, session, Run(wall_seconds=time.monotonic() - started, exit_status=status))
+    run = parse(events, session, Run(wall_seconds=time.monotonic() - started, exit_status=status), walls)
     try:
         ok, note = task.check(ws, run)
     except Exception as exc:  # noqa: BLE001
@@ -553,6 +640,23 @@ def run_task(task: Task, seed: int, args, variant_dir: Path) -> dict:
         "reasoning": run.reasoning,
         "reasoning_cut": run.reasoning_cut,
         "tools": run.tools,
+        "breakdown": {
+            "turn_wall": round(run.turn_wall, 2),
+            "prefill_seconds": round(run.prefill_seconds, 2),
+            "decode_seconds": round(run.decode_seconds, 2),
+            "first_token_seconds": round(run.first_token_seconds, 2),
+            "run_seconds": round(run.run_seconds, 2),
+            "tool_seconds": round(run.tool_seconds, 2),
+            "prefill_new": run.prefill_new,
+            "prefill_reused": run.prefill_reused,
+            "reasoning_tokens": run.reasoning_tokens,
+            "verify_batches": run.verify_batches,
+            "drafted": run.drafted,
+            "accepted": run.accepted,
+            "lost": run.lost,
+            "lost_tokens": run.lost_tokens,
+            "prefill_points": run.prefill_points,
+        },
         "answer": run.answer,
         "stderr_tail": stderr[-400:],
         "behaviours": behaviours(session),
@@ -671,6 +775,150 @@ def compare(names: list) -> str:
     return "\n".join(rows)
 
 
+def fit(points: list) -> Optional[tuple]:
+    """Least squares `seconds = a + b * tokens` over (tokens, seconds) pairs:
+    the fixed cost per step and the cost per new prompt token; None for
+    fewer than three points or one token count."""
+    if len(points) < 3:
+        return None
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    mx, my = statistics.mean(xs), statistics.mean(ys)
+    sxx = sum((x - mx) ** 2 for x in xs)
+    if sxx == 0:
+        return None
+    b = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx
+    return my - b * mx, b
+
+
+def fit_depth(points: list) -> Optional[tuple]:
+    """Least squares `seconds = c + a * n + b * ((d + n)^2 - d^2)` over
+    (n, seconds, d) triples, n the new prompt tokens and d the depth they
+    follow: the fixed cost, the cost per token, and the attention term
+    that grows with depth; with R^2. None when a point lacks its depth or
+    the system is singular."""
+    if len(points) < 4 or any(len(p) < 3 for p in points):
+        return None
+    rows = [(1.0, float(n), float((d + n) ** 2 - d**2)) for n, _, d in points]
+    ys = [float(p[1]) for p in points]
+    m = [
+        [sum(r[i] * r[j] for r in rows) for j in range(3)] + [sum(r[i] * y for r, y in zip(rows, ys))] for i in range(3)
+    ]
+    for i in range(3):
+        pivot = max(range(i, 3), key=lambda k: abs(m[k][i]))
+        m[i], m[pivot] = m[pivot], m[i]
+        if abs(m[i][i]) < 1e-12:
+            return None
+        for k in range(3):
+            if k != i:
+                f = m[k][i] / m[i][i]
+                m[k] = [a - f * b for a, b in zip(m[k], m[i])]
+    c, a, b = (m[i][3] / m[i][i] for i in range(3))
+    my = statistics.mean(ys)
+    total = sum((y - my) ** 2 for y in ys) or 1.0
+    resid = sum((y - (c + a * r[1] + b * r[2])) ** 2 for r, y in zip(rows, ys))
+    return c, a, b, 1 - resid / total, sum(a * r[1] for r in rows), sum(b * r[2] for r in rows)
+
+
+def breakdown(variant: str, records: list) -> str:
+    """Where each task's time went, summed over its seeds: prefill (new and
+    reused tokens), decode (tokens and rate), tools, the rest of the turn's
+    wall time (`idle`: renders, session writes, compaction, saves), drafts
+    accepted, and the steps that lost reuse by reason."""
+    by_task = {}
+    for r in records:
+        if "breakdown" in r:
+            by_task.setdefault(r["task"], []).append(r)
+    lines = [
+        f"{variant}: where the time went ({sum(len(v) for v in by_task.values())} runs, seeds summed)",
+        "| task | steps | wall s | prefill s (new / reused tok) | decode s (tok, tok/s) | tools s | idle s | accepted / drafted | reuse lost to |",
+        "| --- | ---: | ---: | --- | --- | ---: | ---: | ---: | --- |",
+    ]
+    total = {
+        k: 0
+        for k in (
+            "steps",
+            "wall",
+            "prefill",
+            "new",
+            "reused",
+            "decode",
+            "gen",
+            "tools",
+            "accepted",
+            "drafted",
+            "lost_tokens",
+        )
+    }
+    lost_all = {}
+    points = []
+
+    def row(name, t, lost):
+        idle = max(t["wall"] - t["prefill"] - t["decode"] - t["tools"], 0.0)
+        rate = (t["gen"] / t["decode"]) if t["decode"] > 0 else 0.0
+        acc = f"{t['accepted']} / {t['drafted']}" if t["drafted"] else "—"
+        why = ", ".join(f"{k} {v}" for k, v in sorted(lost.items())) or "—"
+        if t["lost_tokens"]:
+            why += f" ({t['lost_tokens']} tok)"
+        return (
+            f"| {name} | {t['steps']} | {t['wall']:.1f} | {t['prefill']:.1f} ({t['new']} / {t['reused']}) | "
+            f"{t['decode']:.1f} ({t['gen']}, {rate:.1f}) | {t['tools']:.1f} | {idle:.1f} | {acc} | {why} |"
+        ), idle
+
+    for t in TASKS:
+        rs = by_task.get(t.name)
+        if not rs:
+            continue
+        acc = {k: 0 for k in total}
+        lost = {}
+        for r in rs:
+            b = r["breakdown"]
+            acc["steps"] += r["steps"]
+            acc["wall"] += b["turn_wall"]
+            acc["prefill"] += b["prefill_seconds"]
+            acc["new"] += b["prefill_new"]
+            acc["reused"] += b["prefill_reused"]
+            acc["decode"] += b["decode_seconds"]
+            acc["gen"] += r["generated"]
+            acc["tools"] += b["tool_seconds"]
+            acc["accepted"] += b["accepted"]
+            acc["drafted"] += b["drafted"]
+            acc["lost_tokens"] += b["lost_tokens"]
+            for k, v in b["lost"].items():
+                lost[k] = lost.get(k, 0) + v
+            points += b["prefill_points"]
+        for k in total:
+            total[k] += acc[k]
+        for k, v in lost.items():
+            lost_all[k] = lost_all.get(k, 0) + v
+        lines.append(row(t.name, acc, lost)[0])
+    if not by_task:
+        return f"{variant}: no breakdown (records written before it existed)"
+    text, idle = row("**all**", total, lost_all)
+    lines.append(text)
+    wall = total["wall"] or 1.0
+    lines.append("")
+    lines.append(
+        f"shares of wall time: prefill {total['prefill'] / wall * 100:.0f} %, decode {total['decode'] / wall * 100:.0f} %, "
+        f"tools {total['tools'] / wall * 100:.0f} %, idle {idle / wall * 100:.0f} %"
+    )
+    if total["gen"]:
+        lines.append(f"prefill tokens per generated token: {total['new'] / total['gen']:.2f}")
+    if total["drafted"]:
+        lines.append(f"acceptance: {total['accepted'] / total['drafted'] * 100:.0f} % of drafted tokens")
+    f = fit(points)
+    if f:
+        lines.append(f"prefill fit over {len(points)} steps: {f[0]:.3f} s + {f[1] * 1000:.3f} ms per new token")
+    g = fit_depth(points)
+    if g:
+        c, a, b, r2, lin, quad = g
+        lines.append(
+            f"with depth: {c:.3f} s + {a * 1000:.3f} ms × n + {b * 1e9:.1f} ns × ((d+n)² − d²), R² {r2:.4f}; "
+            f"linear {lin:.0f} s, depth term {quad:.0f} s, fixed {c * len(points):.0f} s"
+        )
+    return "\n".join(lines)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
@@ -692,6 +940,7 @@ def main():
     ap.add_argument(
         "--compare", nargs="+", metavar="VARIANT", help="render the aggregate table of these variants and exit"
     )
+    ap.add_argument("--breakdown", metavar="VARIANT", help="print where the time went for this variant's runs and exit")
     ap.add_argument("--list", action="store_true", help="print the task list and exit")
     ap.add_argument("extra", nargs="*", help="further nuclis agent flags after --")
     args = ap.parse_args()
@@ -702,6 +951,12 @@ def main():
         return
     if args.compare:
         print(compare(args.compare))
+        for name in args.compare:
+            print()
+            print(breakdown(name, load_variant(name)))
+        return
+    if args.breakdown:
+        print(breakdown(args.breakdown, load_variant(args.breakdown)))
         return
     if args.workspace is None:
         args.workspace = str(playground.ensure())
@@ -746,6 +1001,8 @@ def main():
             )
     print()
     print(table(args.variant, load_variant(args.variant)))
+    print()
+    print(breakdown(args.variant, load_variant(args.variant)))
 
 
 if __name__ == "__main__":

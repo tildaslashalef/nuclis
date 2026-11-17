@@ -43,6 +43,9 @@ pub const TurnStats = struct {
     generated: usize = 0,
     prefill_seconds: f64 = 0,
     decode_seconds: f64 = 0,
+    /// Wall time of the turn's tool calls, and of the whole turn.
+    tool_seconds: f64 = 0,
+    wall_seconds: f64 = 0,
     /// Mean accepted drafts per speculative verify batch over the turn, null
     /// when speculation was off; the agent shows it to compare a live coding
     /// turn against `bench`.

@@ -89,6 +89,20 @@ pub const Stats = struct {
     reasoning_cut: bool = false,
     /// Generated tokens decoded as reasoning; 0 in older files.
     reasoning_tokens: usize = 0,
+    /// The prompt tokens the session already held, why it kept no more
+    /// (`completer.Reuse`), and those it held but lost; 0 and empty in
+    /// older files.
+    reused_tokens: usize = 0,
+    reuse: []const u8 = "",
+    lost_tokens: usize = 0,
+    /// The step's wall time from its render to its reply, and to its first
+    /// sampled token; 0 in older files.
+    run_seconds: f64 = 0,
+    first_token_seconds: f64 = 0,
+    /// Speculative verify batches and the drafts proposed and accepted.
+    verify_batches: usize = 0,
+    drafted: usize = 0,
+    accepted: usize = 0,
 };
 
 /// One line of the file after the header. The tag is the entry's `type`, and
@@ -123,6 +137,8 @@ pub const Entry = union(enum) {
         /// The transcript's detail row; absent in files written before it
         /// existed, which load as empty.
         summary: []const u8 = "",
+        /// The tool's wall time; written only when measured, 0 in older files.
+        seconds: f64 = 0,
     },
     effort: struct { effort: []const u8 },
     context: struct { ctx_size: usize },
@@ -400,6 +416,8 @@ pub fn writeEntry(out: *std.Io.Writer, entry: Entry, id: u32, parent: ?u32, time
                     value.len == 0
                 else if (comptime std.mem.eql(u8, name, "cancelled"))
                     !value
+                else if (comptime std.mem.eql(u8, name, "seconds"))
+                    value == 0
                 else if (comptime @typeInfo(@TypeOf(value)) == .optional)
                     value == null
                 else
@@ -540,7 +558,7 @@ fn readRecord(a: Allocator, object: std.json.ObjectMap) !Record {
             .answer = try text(a, object, "answer"),
             .tool_calls = try readCalls(a, object.get("tool_calls")),
             .stop = try text(a, object, "stop"),
-            .stats = try readStats(object.get("stats")),
+            .stats = try readStats(a, object.get("stats")),
             .boundary = readBoundary(object.get("boundary")),
         } };
         if (std.mem.eql(u8, kind, "tool_result")) break :blk .{ .tool_result = .{
@@ -550,6 +568,7 @@ fn readRecord(a: Allocator, object: std.json.ObjectMap) !Record {
             .is_error = boolean(object.get("is_error")),
             .cancelled = boolean(object.get("cancelled")),
             .summary = try text(a, object, "summary"),
+            .seconds = number(object.get("seconds")),
         } };
         if (std.mem.eql(u8, kind, "effort")) break :blk .{ .effort = .{ .effort = try text(a, object, "effort") } };
         if (std.mem.eql(u8, kind, "context")) break :blk .{ .context = .{ .ctx_size = try cast(usize, integer(object.get("ctx_size")) orelse 0) } };
@@ -652,7 +671,7 @@ fn readBoundary(value: ?std.json.Value) ?Boundary {
     return .{ .bytes = std.math.cast(usize, bytes) orelse return null, .digest = digest };
 }
 
-fn readStats(value: ?std.json.Value) error{MalformedSessionLine}!Stats {
+fn readStats(a: Allocator, value: ?std.json.Value) !Stats {
     const object = switch (value orelse .null) {
         .object => |object| object,
         else => return .{},
@@ -664,8 +683,18 @@ fn readStats(value: ?std.json.Value) error{MalformedSessionLine}!Stats {
         .decode_seconds = number(object.get("decode_seconds")),
         .thinking_seconds = number(object.get("thinking_seconds")),
         .replayed = boolean(object.get("replayed")),
+        .replay = try text(a, object, "replay"),
+        .restored_tokens = try cast(usize, integer(object.get("restored_tokens")) orelse 0),
         .reasoning_cut = boolean(object.get("reasoning_cut")),
         .reasoning_tokens = try cast(usize, integer(object.get("reasoning_tokens")) orelse 0),
+        .reused_tokens = try cast(usize, integer(object.get("reused_tokens")) orelse 0),
+        .reuse = try text(a, object, "reuse"),
+        .lost_tokens = try cast(usize, integer(object.get("lost_tokens")) orelse 0),
+        .run_seconds = number(object.get("run_seconds")),
+        .first_token_seconds = number(object.get("first_token_seconds")),
+        .verify_batches = try cast(usize, integer(object.get("verify_batches")) orelse 0),
+        .drafted = try cast(usize, integer(object.get("drafted")) orelse 0),
+        .accepted = try cast(usize, integer(object.get("accepted")) orelse 0),
     };
 }
 
@@ -1097,4 +1126,47 @@ test "a model entry round-trips, with or without a digest, and exports as one li
     defer out.deinit();
     try exportMarkdown(loaded, &out.writer);
     try testing.expect(std.mem.indexOf(u8, out.written(), "_model: gemma-4-12b (context 8192, effort off)_") != null);
+}
+
+test "a step's breakdown and a tool's time round-trip, and an older line loads without them" {
+    const alloc = testing.allocator;
+    var buffer: std.Io.Writer.Allocating = .init(alloc);
+    defer buffer.deinit();
+    try buffer.writer.writeAll("{\"type\":\"session\",\"version\":1,\"id\":\"a\",\"time\":\"t\",\"cwd\":\"/\",\"model\":{\"path\":\"/m\"},\"effort\":\"off\",\"ctx_size\":1}\n");
+    try writeEntry(&buffer.writer, .{ .assistant = .{ .stop = "eos", .stats = .{
+        .reused_tokens = 900,
+        .reuse = "rewound",
+        .lost_tokens = 41,
+        .run_seconds = 2.5,
+        .first_token_seconds = 0.75,
+        .verify_batches = 3,
+        .drafted = 18,
+        .accepted = 11,
+        .replay = "rewrite",
+        .restored_tokens = 64,
+    } } }, 1, null, "t1");
+    try writeEntry(&buffer.writer, .{ .tool_result = .{ .call = "1", .text = "ok", .seconds = 0.125 } }, 2, 1, "t2");
+    // A line from before the breakdown existed.
+    try buffer.writer.writeAll("{\"type\":\"assistant\",\"id\":3,\"parent\":2,\"time\":\"t3\",\"answer\":\"x\",\"stop\":\"eos\",\"stats\":{\"prompt_tokens\":5,\"generated\":2,\"prefill_seconds\":0.1,\"decode_seconds\":0.2}}\n");
+    try buffer.writer.writeAll("{\"type\":\"tool_result\",\"id\":4,\"parent\":3,\"time\":\"t4\",\"call\":\"2\",\"text\":\"y\"}\n");
+
+    const loaded = try parseText(alloc, buffer.written(), null);
+    defer loaded.deinit();
+    const stats = loaded.records[0].entry.assistant.stats;
+    try testing.expectEqual(@as(usize, 900), stats.reused_tokens);
+    try testing.expectEqualStrings("rewound", stats.reuse);
+    try testing.expectEqual(@as(usize, 41), stats.lost_tokens);
+    try testing.expectEqual(@as(f64, 2.5), stats.run_seconds);
+    try testing.expectEqual(@as(f64, 0.75), stats.first_token_seconds);
+    try testing.expectEqual(@as(usize, 3), stats.verify_batches);
+    try testing.expectEqual(@as(usize, 18), stats.drafted);
+    try testing.expectEqual(@as(usize, 11), stats.accepted);
+    try testing.expectEqualStrings("rewrite", stats.replay);
+    try testing.expectEqual(@as(usize, 64), stats.restored_tokens);
+    try testing.expectEqual(@as(f64, 0.125), loaded.records[1].entry.tool_result.seconds);
+    const old = loaded.records[2].entry.assistant.stats;
+    try testing.expectEqual(@as(usize, 5), old.prompt_tokens);
+    try testing.expectEqualStrings("", old.reuse);
+    try testing.expectEqual(@as(f64, 0), old.run_seconds);
+    try testing.expectEqual(@as(f64, 0), loaded.records[3].entry.tool_result.seconds);
 }

@@ -222,7 +222,7 @@ at by running `./zig-out/bin/nuclis agent` in Ghostty directly.
 ### The agent's task list
 
 `scripts/app/agent-eval.py` (`make agent-eval VARIANT=<name> ARGS='…'`) runs
-sixteen small tasks against the playground: a tiny Python geometry package
+eighteen small tasks against the playground: a tiny Python geometry package
 that `scripts/app/playground.py` generates on first use under
 `.zig-cache/playground/` (`make playground` builds it and prints the path)
 and commits with `git init` as the baseline its own Makefile's `reset`
@@ -237,9 +237,10 @@ a planted bug, a validation with its test), a new module with tests, a
 flag added to the CLI, a silent `exit 7`, a 300-line build log whose
 only error and `exit 2` come last, a tree-wide `grep`, a three-bullet
 summary, the 1 MiB file, "what is this project about", five pages of an
-access log, and the same after three turns that fill the window (four
+access log, the same after three turns that fill the window (four
 `--print` runs continued through `--resume`, the compaction and replay
-case). Each task is one
+case), three 4,000-token notes read before one written file, and five files
+read and marked before the tests run (ten or more calls). Each task is one
 `nuclis agent --print` turn with a fixed seed from the committed baseline, checked by its own
 predicate (file contents, a command's output, the answer's text) and
 scored on steps, tool calls, tool errors, failed edits, prompt and
@@ -267,6 +268,9 @@ change that split the system prompt into sections, in the
 prefill went: per tool, the calls, the tokens their results added (counted
 by `nuclis tokenize --raw`, the engine's own tokenizer), and each tool's
 share, with the variants side by side when given several.
+`--breakdown <variant>` splits each task's time (prefill on new and reused
+tokens, decode, tools, idle, drafts, reuse lost) and fits prefill seconds on
+new tokens alone and with their depth, `c + a·n + b·((d+n)² − d²)`.
 
 ## The website
 
