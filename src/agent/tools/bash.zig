@@ -36,8 +36,13 @@ pub const tool: root.Tool = .{
 const max_output: usize = 1024 * 1024;
 /// Lines of a long output the model reads: its head and, since a failure
 /// reports at the end, a longer tail, with the count omitted between them.
-const head_lines: usize = 40;
-const tail_lines: usize = 80;
+/// The loop's context cut keeps the same proportion (`Agent.fit`).
+pub const head_lines: usize = 40;
+pub const tail_lines: usize = 80;
+/// What every note the tool writes starts with.
+pub const note_prefix = "[bash: ";
+/// How the elision marker, `note_prefix` and a count, ends.
+pub const omitted_suffix = " lines omitted]";
 const max_command: usize = 32 * 1024;
 const timeout_ns: i96 = 300 * std.time.ns_per_s;
 const poll_ms: i64 = 100;
@@ -212,8 +217,6 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     return .{ .text = try text.toOwnedSlice(alloc), .truncated = outcome == .truncated, .is_error = is_error, .summary = owned_summary };
 }
 
-/// Keeps the first `head_lines` and last `tail_lines` of an output longer
-/// than both, with a marked count of the lines between.
 /// Ends the command's process group: TERM to all of it, up to `grace_ms`
 /// for the shell to exit, KILL to whatever is left, then the shell's reap.
 fn stop(child: *std.process.Child, io: std.Io) void {
@@ -244,6 +247,8 @@ fn exited(pid: std.posix.pid_t) bool {
     return signo.* == @backingInt(std.posix.SIG.CHLD);
 }
 
+/// Keeps the first `head_lines` and last `tail_lines` of an output longer
+/// than both, with a marked count of the lines between.
 fn elide(alloc: std.mem.Allocator, text: *std.ArrayList(u8), lines: usize) std.mem.Allocator.Error!void {
     if (lines <= head_lines + tail_lines) return;
     var head_end: usize = 0;
@@ -254,7 +259,7 @@ fn elide(alloc: std.mem.Allocator, text: *std.ArrayList(u8), lines: usize) std.m
     for (0..tail_lines) |_| tail_start = std.mem.lastIndexOfScalar(u8, text.items[0..tail_start], '\n').?; // checked: `lines` counts this text's lines, more than head and tail together
     tail_start += 1;
     var note: [48]u8 = undefined;
-    const marker = std.fmt.bufPrint(&note, "[bash: {d} lines omitted]\n", .{lines - head_lines - tail_lines}) catch unreachable; // checked: 48 bytes hold the note for any count
+    const marker = std.fmt.bufPrint(&note, note_prefix ++ "{d}" ++ omitted_suffix ++ "\n", .{lines - head_lines - tail_lines}) catch unreachable; // checked: 48 bytes hold the note for any count
     try text.replaceRange(alloc, head_end, tail_start - head_end, marker);
 }
 
