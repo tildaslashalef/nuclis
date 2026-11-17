@@ -282,7 +282,10 @@ it are [agent.md](agent.md).
   retries: stopping where the render fitted by a hair made the next step
   compact and replay again. Each cut is a `compaction` entry, the stubs
   all before the first result kept (a failed turn leaves the view too,
-  recorded the same way). Only then does the turn end with a message
+  recorded the same way). The transcript says what one step's retries
+  cut once per kind, before the run that follows or the failure
+  (`— 3 older turns dropped from context to fit`, `— 2 earlier tool
+  results of this turn elided from context to fit`). Only then does the turn end with a message
   naming the tokens needed and how to raise the window; a turn that
   alone cannot fit fails with a named reason. The measurements behind
   the reserve and the mark:
