@@ -15,6 +15,7 @@ const std = @import("std");
 const fuzzy = @import("../tui/fuzzy.zig");
 const inference = @import("inference");
 const catalog = @import("../catalog.zig");
+const status = @import("../tui/status.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -166,6 +167,10 @@ pub fn help(alloc: Allocator, ascii: bool) ![]const []const u8 {
         .{ "Ctrl-C / Ctrl-D", "cancel a turn, or quit" },
     };
     for (keys) |pair| try rows.append(alloc, try alloc.print("    {s: <17}  {s}", .{ pair[0], pair[1] }));
+    try rows.append(alloc, "");
+    try rows.append(alloc, "  The status bar says \"re-read 2.3k tokens (after a cancel)\" when a turn");
+    try rows.append(alloc, try alloc.print("  prefilled the conversation again, from {d} tokens; every replay's cause", .{status.replay_shown}));
+    try rows.append(alloc, "  and its tokens prefilled and restored are in the session file and --json.");
     try rows.append(alloc, "");
     try rows.append(alloc, "  Drop a file onto the window, or type @path, to attach it: text, images,");
     try rows.append(alloc, try alloc.print("  and audio clips up to {d} s on a model that hears ({s}).", .{ inference.engine.max_audio_seconds, if (catalog.hearing()) |e| e.name else "none" }));
@@ -354,6 +359,7 @@ test "the help text names every key and every command once" {
     try testing.expect(std.mem.indexOf(u8, joined.items, "(Ctrl-N)") != null);
     try testing.expect(std.mem.indexOf(u8, joined.items, "!<command>") != null);
     try testing.expect(std.mem.indexOf(u8, joined.items, "Ctrl-O") != null);
+    try testing.expect(std.mem.indexOf(u8, joined.items, "re-read") != null);
     try testing.expect(std.mem.indexOf(u8, joined.items, "Ctrl-G") != null);
     try testing.expect(std.mem.indexOf(u8, joined.items, "Ctrl-X") != null);
 }

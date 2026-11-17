@@ -157,10 +157,11 @@ pub const Status = struct {
         try left.writer.print(" t/s {s} {s} tg ", .{ gl.table_bar, gl.decode });
         try rate(&left.writer, self.rates.decode);
         try left.writer.writeAll(" t/s");
-        if (self.replay) |r| {
-            try left.writer.print(" {s} replayed {s} {d}", .{ gl.table_bar, r.cause, r.prefilled });
-            if (r.restored > 0) try left.writer.print(", {d} restored", .{r.restored});
-        }
+        if (self.replay) |r| if (r.prefilled >= replay_shown) {
+            try left.writer.print(" {s} re-read ", .{gl.table_bar});
+            try writeCount(&left.writer, r.prefilled);
+            try left.writer.print(" tokens ({s})", .{causePhrase(r.cause)});
+        };
 
         // The settings, each cell its own string so the narrow bar can drop
         // them one at a time from the right.
@@ -195,6 +196,33 @@ pub const Status = struct {
         return std.mem.concat(a, u8, &.{ wrapped[0], spaces[0..@min(pad, spaces.len)] });
     }
 };
+
+/// The fewest re-read tokens the bar names: a smaller replay (a resume's,
+/// a short cancelled step's) is noise on a row read every turn. Every
+/// replay, whatever its size, stays in the session file and `--print --json`.
+pub const replay_shown = 1024;
+
+/// A replay's cause (`completer.Replay.Cause`, by name) in plain words; an
+/// unknown name is shown as it is.
+pub fn causePhrase(cause: []const u8) []const u8 {
+    const phrases = [_][2][]const u8{
+        .{ "resumed", "after a resume" },
+        .{ "cancel", "after a cancel" },
+        .{ "rewrite", "after trimming the context" },
+        .{ "effort", "the effort changed" },
+        .{ "context", "the context size changed" },
+        .{ "model", "the model changed" },
+        .{ "failure", "after a failure" },
+    };
+    for (phrases) |pair| if (std.mem.eql(u8, pair[0], cause)) return pair[1];
+    return cause;
+}
+
+/// A token count for a narrow row: exact under a thousand, `2.3k` above.
+pub fn writeCount(w: *std.Io.Writer, n: usize) !void {
+    if (n < 1000) return w.print("{d}", .{n});
+    try w.print("{d:.1}k", .{@as(f64, @floatFromInt(n)) / 1000.0});
+}
 
 fn joinCells(a: std.mem.Allocator, cells: []const []const u8, bar: []const u8) ![]const u8 {
     var w: std.Io.Writer.Allocating = .init(a);
@@ -248,7 +276,7 @@ test "an idle bar states the settings and no rate it did not measure" {
     try testing.expect(std.mem.indexOf(u8, row, "tg — t/s") != null);
     try testing.expect(std.mem.indexOf(u8, row, "think low") != null);
     try testing.expect(std.mem.indexOf(u8, row, "speculative off") != null);
-    try testing.expect(std.mem.indexOf(u8, row, "replayed") == null);
+    try testing.expect(std.mem.indexOf(u8, row, "re-read") == null);
     // The row is exactly as wide as the bar, so its background spans it.
     try testing.expectEqual(@as(usize, 100), view.styledWidth(try status.paint(a, .{ .width = 100, .th = .{ .kind = .plain } })));
 }
@@ -358,7 +386,10 @@ test "a decoding bar shows the live count, and the end freezes the measurements"
     try testing.expect(std.mem.indexOf(u8, done, "pp 62.00 t/s") != null); // 31 / 0.5
     try testing.expect(std.mem.indexOf(u8, done, "tg 39.90 t/s") != null); // 399 / 10
     try testing.expect(std.mem.indexOf(u8, done, "speculative on 4 · 2.33/step") != null);
-    try testing.expect(std.mem.indexOf(u8, done, "replayed cancel 31, 15800 restored") != null);
+    // A 31-token replay is below the bar's threshold: its figures stay in
+    // the session file, not on the row.
+    try testing.expect(std.mem.indexOf(u8, done, "re-read") == null);
+    try testing.expect(std.mem.indexOf(u8, done, "15800") == null);
 
     // A turn that produced one token has no decode interval to divide by.
     var single: Status = .{};
@@ -412,4 +443,23 @@ test "a running tool takes the phase cell, timed from its call" {
     // An idle bar never names a tool.
     status.busy = false;
     try testing.expect(std.mem.indexOf(u8, try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } }), "running") == null);
+}
+
+test "the bar names a replay only from 1,024 re-read tokens, in plain words" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var status: Status = .{ .context_used = 2310, .context_capacity = 12288 };
+    status.replay = .{ .cause = "cancel", .prefilled = 260, .restored = 1964 };
+    const small = try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } });
+    try testing.expect(std.mem.indexOf(u8, small, "re-read") == null);
+    try testing.expect(std.mem.indexOf(u8, small, "1964") == null);
+    status.replay = .{ .cause = "cancel", .prefilled = 2300, .restored = 1964 };
+    const large = try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } });
+    try testing.expect(std.mem.indexOf(u8, large, "│ re-read 2.3k tokens (after a cancel)") != null);
+    try testing.expect(std.mem.indexOf(u8, large, "restored") == null);
+    status.replay = .{ .cause = "rewrite", .prefilled = replay_shown };
+    try testing.expect(std.mem.indexOf(u8, try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } }), "re-read 1.0k tokens (after trimming the context)") != null);
+    status.replay = .{ .cause = "effort", .prefilled = replay_shown - 1 };
+    try testing.expect(std.mem.indexOf(u8, try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } }), "re-read") == null);
 }

@@ -1603,11 +1603,7 @@ fn readingLabel(a: std.mem.Allocator, gl: tui.theme.Glyphs, spin: []const u8, r:
     return w.written();
 }
 
-/// A token count for a narrow row: exact under a thousand, `2.3k` above.
-fn writeCount(w: *std.Io.Writer, n: usize) !void {
-    if (n < 1000) return w.print("{d}", .{n});
-    try w.print("{d:.1}k", .{@as(f64, @floatFromInt(n)) / 1000.0});
-}
+const writeCount = tui.status.writeCount;
 
 /// The tool-tick seam: a tool that already polls (`bash`) calls this so
 /// the driver reads the keyboard and repaints while the command holds the
