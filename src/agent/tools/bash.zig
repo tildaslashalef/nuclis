@@ -169,10 +169,12 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     errdefer summary.deinit(alloc);
     var is_error = false;
     switch (outcome) {
+        // The loop marks the call cancelled and the row says so with its
+        // time; the summary keeps only what the command had printed.
         .cancelled => {
             is_error = true;
             try text.appendSlice(alloc, "\n[bash: cancelled]");
-            try summary.appendSlice(alloc, "cancelled");
+            if (lines > 0) try summary.print(alloc, "{d} line{s} of output", .{ lines, if (lines == 1) "" else "s" });
         },
         .timed_out => {
             is_error = true;
@@ -211,7 +213,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     if (clean and std.mem.trim(u8, text.items, " \t\r\n").len == 0) {
         try text.appendSlice(alloc, "[bash: no output, exit 0]");
         try summary.appendSlice(alloc, "no output");
-    } else if (summary.items.len > 0) try summary.print(alloc, " · {d} line{s}", .{ lines, if (lines == 1) "" else "s" });
+    } else if (summary.items.len > 0 and outcome != .cancelled) try summary.print(alloc, " · {d} line{s}", .{ lines, if (lines == 1) "" else "s" });
     const owned_summary: ?[]u8 = if (summary.items.len > 0) try summary.toOwnedSlice(alloc) else null;
     errdefer if (owned_summary) |s| alloc.free(s);
     return .{ .text = try text.toOwnedSlice(alloc), .truncated = outcome == .truncated, .is_error = is_error, .summary = owned_summary };
@@ -421,6 +423,40 @@ test "a requested cancellation stops the command and reaps the child" {
     try testing.expect(std.mem.indexOf(u8, result.text, "cancelled") != null);
     // If the child were not killed, this would wait for the full sleep.
     try testing.expect(elapsed_ns < 10 * std.time.ns_per_s);
+}
+
+test "a cancelled command's text ends in the note; its summary counts only the output" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    defer interrupt.clear();
+    interrupt.request();
+    var silent = try run(fixture.ws, alloc, "{\"command\":\"sleep 30\"}");
+    defer silent.deinit(alloc);
+    try testing.expectEqualStrings("\n[bash: cancelled]", silent.text);
+    try testing.expect(silent.summary == null);
+    interrupt.clear();
+
+    // Cancels a beat after the command has printed, so the wait in between
+    // has read the pipe, as a Ctrl-C after its output would.
+    const Ticker = struct {
+        dir: std.Io.Dir,
+        seen: bool = false,
+        fn tick(context: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.seen) return interrupt.request();
+            _ = self.dir.statFile(testing.io, "printed", .{}) catch return;
+            self.seen = true;
+        }
+    };
+    var ticker: Ticker = .{ .dir = fixture.tmp.dir };
+    var ws = fixture.ws;
+    ws.tick = .{ .context = &ticker, .call = Ticker.tick };
+    var printed = try run(ws, alloc, "{\"command\":\"echo one; echo two; touch printed; sleep 30\"}");
+    defer printed.deinit(alloc);
+    try testing.expect(printed.is_error);
+    try testing.expectEqualStrings("one\ntwo\n\n[bash: cancelled]", printed.text);
+    try testing.expectEqualStrings("2 lines of output", printed.summary.?);
 }
 
 test "a cancelled command that ignores TERM, and its background job, are gone within the grace" {

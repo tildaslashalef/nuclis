@@ -122,6 +122,8 @@ pub const Result = struct {
     text: []const u8,
     truncated: bool = false,
     is_error: bool = false,
+    /// Stopped or kept from running by the user's cancel; also `is_error`.
+    cancelled: bool = false,
     /// The transcript's detail row, kept so a resumed session shows it.
     summary: []const u8 = "",
 };
@@ -238,6 +240,10 @@ pub const Agent = struct {
     /// The turn's first replay, and the prompt tokens its steps prefilled.
     agg_replay: ?Replay = null,
     agg_replay_prefilled: usize = 0,
+    /// The rendered conversation's tokens at the last step's start, cancelled
+    /// steps included: what the context holds once a cancel has reset the
+    /// session, until the next step replays it. 0 before any step.
+    rendered_tokens: usize = 0,
     /// The last completed step's stop, so a turn that ended because its
     /// step ran out of output budget says so.
     last_stop: inference.engine.StopReason = .eos,
@@ -347,6 +353,7 @@ pub const Agent = struct {
         self.clearHistory();
         self.turn_start = 0;
         self.in_turn = false;
+        self.rendered_tokens = 0;
         self.clearCalls();
         self.clearReads();
     }
@@ -523,6 +530,7 @@ pub const Agent = struct {
             const reply = try self.runStep();
             completed += 1;
             self.steps_done = completed;
+            self.rendered_tokens = reply.prompt_tokens;
             self.agg_prompt_tokens += reply.outcome.timing.prompt_tokens;
             self.agg_generated += reply.outcome.timing.generated_tokens;
             self.agg_prefill_seconds += seconds(reply.outcome.timing.prefill);
@@ -759,6 +767,9 @@ pub const Agent = struct {
             var result = try self.runTool(call);
             defer result.deinit(self.alloc);
             const ran = seconds(started.durationTo(std.Io.Clock.awake.now(self.io)));
+            // A tool that honours the interrupt (bash, the web tools) fails
+            // when it stops; that failure is the user's cancel, not the tool's.
+            const cancelled = result.is_error and interrupt.requested();
             var model_text: []const u8 = result.text;
             var joined: ?[]u8 = null;
             defer if (joined) |bytes| self.alloc.free(bytes);
@@ -821,6 +832,7 @@ pub const Agent = struct {
                 .text = model_text,
                 .truncated = truncated,
                 .is_error = result.is_error,
+                .cancelled = cancelled,
                 .summary = summary,
                 .seconds = ran,
             } });
@@ -830,6 +842,7 @@ pub const Agent = struct {
                 .text = model_text,
                 .truncated = truncated,
                 .is_error = result.is_error,
+                .cancelled = cancelled,
                 .summary = summary,
             } });
             try self.appendItem(.tool, model_text, "", &.{}, id, &.{});
@@ -842,8 +855,8 @@ pub const Agent = struct {
         var described = try tools.describe(self.alloc, call.name, call.arguments);
         defer described.deinit(self.alloc);
         try self.events.send(self.events.context, .{ .tool_call = .{ .id = call.id, .name = call.name, .summary = described.summary, .detail = described.detail } });
-        try self.events.send(self.events.context, .{ .tool_result = .{ .id = call.id, .text = text, .truncated = false, .is_error = true, .summary = "cancelled" } });
-        try self.events.record(self.events.context, .{ .tool_result = .{ .call = call.id, .name = call.name, .text = text, .truncated = false, .is_error = true, .summary = "cancelled" } });
+        try self.events.send(self.events.context, .{ .tool_result = .{ .id = call.id, .text = text, .truncated = false, .is_error = true, .cancelled = true } });
+        try self.events.record(self.events.context, .{ .tool_result = .{ .call = call.id, .name = call.name, .text = text, .truncated = false, .is_error = true, .cancelled = true } });
         try self.appendItem(.tool, text, "", &.{}, call.id, &.{});
     }
 

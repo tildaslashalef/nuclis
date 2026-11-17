@@ -133,8 +133,9 @@ pub const Event = union(enum) {
     /// `text` is what the model reads and the session stores; `summary` is
     /// the one detail row the transcript shows instead, empty when there is
     /// nothing to say. `seconds` is how long the tool itself ran, 0 for a
-    /// call that never ran.
-    tool_result: struct { id: Id, text: []const u8, truncated: bool, is_error: bool, summary: []const u8 = "", seconds: f64 = 0 },
+    /// call that never ran. `cancelled` is a call the user's Ctrl-C stopped
+    /// or kept from running; it is also `is_error`, as the model reads it.
+    tool_result: struct { id: Id, text: []const u8, truncated: bool, is_error: bool, cancelled: bool = false, summary: []const u8 = "", seconds: f64 = 0 },
     /// A mutation's change, as structured rows. The renderer needs no parser:
     /// it lays the rows out (side by side when there is width, unified when
     /// there is not), and the unified text the model and session record comes
@@ -257,7 +258,7 @@ test "every event kind has a JSON line, with its own fields beside the type" {
     try std.testing.expectEqualStrings("{\"type\":\"tool_call\",\"id\":3,\"name\":\"grep\",\"summary\":\"Searching needle\",\"detail\":null}\n", buffer.written());
     buffer.clearRetainingCapacity();
     try (Event{ .tool_result = .{ .id = 3, .text = "a:1: needle", .truncated = false, .is_error = false, .summary = "1 match in 1 file", .seconds = 1.5 } }).writeJson(&buffer.writer);
-    try std.testing.expectEqualStrings("{\"type\":\"tool_result\",\"id\":3,\"text\":\"a:1: needle\",\"truncated\":false,\"is_error\":false,\"summary\":\"1 match in 1 file\",\"seconds\":1.5}\n", buffer.written());
+    try std.testing.expectEqualStrings("{\"type\":\"tool_result\",\"id\":3,\"text\":\"a:1: needle\",\"truncated\":false,\"is_error\":false,\"cancelled\":false,\"summary\":\"1 match in 1 file\",\"seconds\":1.5}\n", buffer.written());
     buffer.clearRetainingCapacity();
     const rows = [_]diff.Row{
         .{ .old_line = 1, .new_line = 1, .kind = .context, .text = "keep" },

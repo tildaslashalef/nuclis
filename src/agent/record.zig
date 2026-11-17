@@ -43,6 +43,7 @@ pub fn entry(scratch: *Scratch, record: loop.Record) session.Entry {
             .text = result.text,
             .truncated = result.truncated,
             .is_error = result.is_error,
+            .cancelled = result.cancelled,
             .summary = result.summary,
         } },
     };

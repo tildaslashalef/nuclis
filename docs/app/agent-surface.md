@@ -209,8 +209,11 @@ it are [agent.md](agent.md).
   of the last model phase; the settled row keeps the tool's own time
   (`└ no output · 20.0s`), left off for a call under a second. `--print
   --json` carries it as the `tool_result` event's `seconds`.
-  A run of calls is summed up in one dim row where the model's text
-  resumes. A mutation is followed by its diff: a header with the path and
+  A call Ctrl-C stopped is cancelled, not failed (dim dot, `└ cancelled
+  after 6.1s · 3 lines of output`, `└ cancelled` if it never ran; the
+  event and session entry carry `cancelled`; the model's text is the
+  tool's). A run of calls is summed up in one dim row where the model's
+  text resumes, a cancel apart (`Ran 2 shell commands, 1 cancelled`). A mutation is followed by its diff: a header with the path and
   the `+N −M` counts, a gutter of old and new line numbers, a marker cell,
   and the text on a band of its hue (dark green, dark red; the changed
   bytes on a brighter tint) padded to the width; side by side from 96
@@ -239,7 +242,8 @@ it are [agent.md](agent.md).
   the session holds against the prompt's ceiling, the window less the
   step's reserve (`ctx 7694/13312` at 16K, `low`, and a 1,024 budget), so the bar fills
   where compaction starts; `/model`'s note for the model in use names the
-  window, the ceiling, and the reserve.
+  window, the ceiling, and the reserve. After a cancel, until the next
+  step, `ctx` is the conversation's size at the last step.
 
 ## Sessions and storage
 
