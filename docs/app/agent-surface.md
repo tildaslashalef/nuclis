@@ -335,18 +335,18 @@ it are [agent.md](agent.md).
   `ContextFull`). `Agent.compact` measures the render (`Model.measure`),
   drops whole earlier turns oldest first, then makes the turn's own
   results one-line stubs, oldest first, keeping the last two, until the
-  render is at or below half the ceiling (`low_water_percent`), then
-  retries: stopping where the render fitted by a hair made the next step
-  compact and replay again. Each cut is a `compaction` entry, the stubs
-  all before the first result kept (a failed turn leaves the view too,
-  recorded the same way). The transcript says what one step's retries
-  cut once per kind, before the run that follows or the failure
-  (`— 3 older turns dropped from context to fit`, `— 2 earlier tool
-  results of this turn elided from context to fit`). Only then does the turn end with a message
+  render is at or below half the ceiling (`low_water_percent`; a cut
+  that only just fits compacts again at once), then retries. Each cut is a `compaction` entry, the stubs all before
+  the first result kept (a failed turn leaves the view too, recorded the
+  same way). The transcript says what one step's retries cut once per
+  kind, before the run that follows or the failure (`— 3 older turns
+  dropped from context to fit`, `— 2 earlier tool results of this turn
+  elided from context to fit`). Only then does the turn end with a message
   naming the tokens needed and how to raise the window; a turn that
   alone cannot fit fails with a named reason. The measurements behind
   the reserve and the mark:
-  [record, 2026-11-17](../benchmarks/record/agent.md#the-context-budget-2026-11-17).
+  [record, 2026-11-17](../benchmarks/record/agent.md#the-context-budget-2026-11-17);
+  30 % or 25 % change nothing on the task list: [2026-11-18](../benchmarks/record/agent.md#how-deep-compaction-cuts-low-water-50-30-25-2026-11-18).
 - Reasoning budget: one step reasons for at most `agent.thinking_budget`
   tokens at `low` (2048 by default and in every catalogue entry `config
   init` writes, 0 for no cap), twice that at `medium`, three times at
