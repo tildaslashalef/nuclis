@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """nuclis on the reference workload: prompts, runs, and a benchmark record.
 
-Runs `nuclis bench --prompt-tokens` on the reference harness's exact token
-arrays committed under tests/fixtures/ (pinned from llama.cpp before nuclis
-became its own reference; tests/fixtures/provenance.md), one process per prompt length under /usr/bin/time -l for peak resident
-memory, and writes a compact record under docs/benchmarks/. Before any run it
+Runs `nuclis bench --prompt-tokens` on a run's token arrays under
+tests/fixtures/ (the first runs pinned from llama.cpp before nuclis became
+its own reference; tests/fixtures/provenance.md), one process per prompt
+length under /usr/bin/time -l for peak resident memory, and writes a compact
+record under docs/benchmarks/. `--make-prompts` makes the arrays a run lacks
+the same way (template prefix, the corpus's tokens, closing and template
+suffix, all from `nuclis tokenize`) and holds the ones it has to what it
+would make: a new family's first run makes its own set. Before any run it
 checks with `nuclis tokenize` that nuclis tokenizes the synthetic corpus into
 the reference's body tokens, and renders each prompt as text beside the
 record for reading (the reference concatenated token sequences, so the text's
@@ -64,15 +68,21 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-def corpus():
+CORPUS_FUNCTIONS = 1200
+# Twice the reference's functions: 171K tokens, past a 131,072 context.
+LONG_FUNCTIONS = 2400
+
+
+def corpus(count=CORPUS_FUNCTIONS):
     """The synthetic Zig corpus the reference runs tokenized; its digest is
-    pinned in each run's prompt-construction.json."""
+    pinned in each run's prompt-construction.json. A longer corpus starts
+    with the shorter one, byte for byte."""
     header = (
         "Review this synthetic Zig module for overflow and API design. "
         "Give a concise review with concrete improvements.\n\n```zig\n"
     )
     functions = []
-    for index in range(1200):
+    for index in range(count):
         functions.append(
             f"pub fn sum_{index:04d}(values: []const u32) u64 {{\n"
             "    var total: u64 = 0;\n"
@@ -91,11 +101,12 @@ class Tokenizer:
     def __init__(self, nuclis, model, scratch):
         self.nuclis, self.model, self.scratch = nuclis, model, scratch
 
-    def __call__(self, text):
+    def __call__(self, text, raw=True):
         path = self.scratch / "tokenize-input.txt"
         path.write_text(text)
         result = subprocess.run(
-            [self.nuclis, "tokenize", "--model", self.model, "--raw", "--json", "--prompt-file", str(path)],
+            [self.nuclis, "tokenize", "--model", self.model, "--json", "--prompt-file", str(path)]
+            + (["--raw"] if raw else []),
             capture_output=True,
             text=True,
             timeout=600,
@@ -108,13 +119,136 @@ class Tokenizer:
         return report
 
 
+def template_of(tokenize):
+    """The family's template as nuclis renders one user turn (reasoning off):
+    its text with the marker, and the token IDs before and after the
+    marker, the closing line included in the suffix."""
+    chat = tokenize(MARKER + CLOSING, raw=False)
+    marker = tokenize(MARKER)["ids"]
+    ids = chat["ids"]
+    at = next((i for i in range(len(ids)) if ids[i : i + len(marker)] == marker), None)
+    if at is None or chat["text"].count(MARKER) != 1:
+        raise RuntimeError("the rendered turn does not hold the marker as its own tokens")
+    head, tail = chat["text"].split(MARKER)
+    if not tail.startswith(CLOSING):
+        raise RuntimeError("the rendered turn does not carry the closing line as written")
+    return head + MARKER + tail[len(CLOSING) :], ids[:at], ids[at + len(marker) :]
+
+
+def make_array(size, prefix, suffix, body):
+    """Template prefix, the corpus's first tokens, closing and suffix: `size` tokens."""
+    take = size - len(prefix) - len(suffix)
+    if take <= 0 or take > len(body):
+        raise RuntimeError(f"a {size}-token prompt needs {take} corpus tokens; the corpus holds {len(body)}")
+    return prefix + body[:take] + suffix
+
+
+def make_prompts(fixtures, run, family, lengths, tokenize):
+    """Writes each array `run` lacks and holds the ones it has to what nuclis
+    makes now; a run without prompt-construction.json gets one. Returns the
+    construction."""
+    directory = fixtures / run
+    path = directory / "prompt-construction.json"
+    template, prefix, suffix = template_of(tokenize)
+    construction = json.loads(path.read_text()) if path.is_file() else None
+    if construction is not None and (
+        construction["prefix_tokens"] != prefix or construction["suffix_tokens"] != suffix
+    ):
+        raise RuntimeError(f"{shown(path)}: nuclis renders the template to other tokens")
+    body = tokenize(corpus(LONG_FUNCTIONS))["ids"]
+    kin = same_template(fixtures, run) if construction is not None else [directory]
+    made = []
+    for size in lengths:
+        array = make_array(size, prefix, suffix, body)
+        target = directory / f"prompt-{size}.json"
+        held = next((d / target.name for d in kin if (d / target.name).is_file()), None)
+        if held is not None:
+            if json.loads(held.read_text()) != array:
+                raise RuntimeError(f"{shown(held)}: nuclis no longer makes this array")
+            print(f"{shown(held)}: nuclis makes it token for token", flush=True)
+            continue
+        directory.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(array, separators=(",", ":")) + "\n")
+        made.append(size)
+        print(f"made {shown(target)}", flush=True)
+    if construction is None:
+        construction = {
+            "family": family,
+            "template": template,
+            "corpus_sha256": hashlib.sha256(corpus().encode()).hexdigest(),
+            "prefix_tokens": prefix,
+            "suffix_tokens": suffix,
+            "method": "prefix + truncated synthetic-code token sequence + suffix",
+        }
+    if made:
+        construction.setdefault("made_by_nuclis", []).append(
+            {
+                "lengths": made,
+                "corpus_functions": LONG_FUNCTIONS,
+                "corpus_sha256": hashlib.sha256(corpus(LONG_FUNCTIONS).encode()).hexdigest(),
+                "revision": capture("git", "-C", str(ROOT), "rev-parse", "HEAD"),
+                "date": datetime.date.today().isoformat(),
+            }
+        )
+        path.write_text(json.dumps(construction, indent=2) + "\n")
+    return construction
+
+
+def previous_record(benchmarks, suffix, output):
+    """The latest committed nuclis record of this row before `output`, the
+    comparison a run is read against; None for a family's first."""
+    pattern = re.compile(r"nuclis-\d{4}-\d{2}-\d{2}" + (f"-{re.escape(suffix)}" if suffix else "") + r"\.json")
+    names = sorted(p.name for p in benchmarks.glob("nuclis-*.json") if pattern.fullmatch(p.name) and p != output)
+    if not names:
+        return None
+    record = json.loads((benchmarks / names[-1]).read_text())
+    return {
+        "record": names[-1],
+        "git_revision": record.get("git_revision"),
+        "rows": [
+            {
+                "prompt_tokens": r["prompt_tokens"],
+                "prefill_tokens_per_second": r["prefill_tokens_per_second"]["mean"],
+                "decode_tokens_per_second": r["decode_tokens_per_second"]["mean"],
+            }
+            for r in record.get("summary", [])
+        ],
+    }
+
+
+def record_suffix(output):
+    """The row's suffix in a record name `nuclis-<date>[-<suffix>].json`."""
+    match = re.fullmatch(r"nuclis-\d{4}-\d{2}-\d{2}(?:-(.+))?\.json", pathlib.Path(output).name)
+    return (match.group(1) or "") if match else ""
+
+
+def shown(path):
+    """`path` relative to the repository when inside it."""
+    path = pathlib.Path(path)
+    return path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else str(path)
+
+
+def same_template(fixtures, run):
+    """`run`, then every other run whose construction has its template tokens
+    (Qwen's 32,639 array is in its boundary run): never another family's."""
+    own = json.loads((fixtures / run / "prompt-construction.json").read_text())
+    out = [fixtures / run]
+    for path in sorted(fixtures.glob("*/prompt-construction.json")):
+        if path.parent.name == run:
+            continue
+        other = json.loads(path.read_text())
+        if (other.get("prefix_tokens"), other.get("suffix_tokens")) == (own["prefix_tokens"], own["suffix_tokens"]):
+            out.append(path.parent)
+    return out
+
+
 def load_reference_prompt(fixtures, run, size):
-    """The reference's token array for `size`: the named run's, else whichever fixture run holds it."""
-    for directory in [fixtures / run] + sorted(fixtures.iterdir()):
+    """The token array for `size`: the named run's, else a run of the same template's."""
+    for directory in same_template(fixtures, run):
         candidate = directory / f"prompt-{size}.json"
         if candidate.is_file():
-            return json.loads(candidate.read_text()), candidate.relative_to(ROOT).as_posix()
-    raise RuntimeError(f"no reference fixture holds a {size}-token prompt under {fixtures}")
+            return json.loads(candidate.read_text()), shown(candidate)
+    raise RuntimeError(f"no run of {run}'s template holds a {size}-token prompt under {fixtures}")
 
 
 def build_prompt(size, construction, corpus, corpus_report, reference_ids, tokenize, prompt_dir):
@@ -300,8 +434,50 @@ def self_test():
         problems.append(f"ROOT {ROOT} is not the repository root")
     digest = hashlib.sha256(corpus().encode()).hexdigest()
     for construction in sorted((ROOT / "tests/fixtures").glob("run-*/prompt-construction.json")):
-        if json.loads(construction.read_text()).get("corpus_sha256") != digest:
+        pinned = json.loads(construction.read_text())
+        if pinned.get("corpus_sha256") != digest:
             problems.append(f"{construction.relative_to(ROOT)}: the corpus digest differs")
+        for made in pinned.get("made_by_nuclis", []):
+            if hashlib.sha256(corpus(made["corpus_functions"]).encode()).hexdigest() != made["corpus_sha256"]:
+                problems.append(f"{construction.relative_to(ROOT)}: a made set's corpus digest differs")
+    if not corpus(LONG_FUNCTIONS).startswith(corpus()):
+        problems.append("the long corpus does not start with the reference's")
+    if make_array(6, [1], [9, 9], [5, 6, 7, 8]) != [1, 5, 6, 7, 9, 9]:
+        problems.append("make_array does not cut prefix + body + suffix")
+    try:
+        make_array(9, [1], [9], [5])
+        problems.append("make_array accepted a corpus too short")
+    except RuntimeError:
+        pass
+    if (
+        record_suffix("docs/benchmarks/nuclis-2026-11-18-gemma4-e4b.json"),
+        record_suffix("nuclis-2026-11-18.json"),
+    ) != (
+        "gemma4-e4b",
+        "",
+    ):
+        problems.append("record_suffix misreads a record name")
+
+    def fake(text, raw=True):
+        # One token per character, the marker one token; the turn wraps the text in <u>…</u>.
+        rendered = text if raw else "<u>" + text + "</u>"
+        ids, i = [], 0
+        while i < len(rendered):
+            if rendered.startswith(MARKER, i):
+                ids.append(0)
+                i += len(MARKER)
+            else:
+                ids.append(ord(rendered[i]))
+                i += 1
+        return {"ids": ids, "text": rendered}
+
+    template, prefix, suffix = template_of(fake)
+    if (
+        template != "<u>" + MARKER + "</u>"
+        or prefix != [ord(c) for c in "<u>"]
+        or suffix != [ord(c) for c in CLOSING + "</u>"]
+    ):
+        problems.append("template_of does not split the rendered turn at the marker")
     for problem in problems:
         print(f"nuclis-baseline: {problem}", file=sys.stderr)
     if problems:
@@ -369,8 +545,15 @@ def main():
     parser.add_argument(
         "--reference-records",
         default="reference-2026-09-06.json,reference-boundary-2026-09-06.json",
-        help="comma-separated record names under docs/benchmarks whose accepted samples are the reference rows",
+        help="comma-separated record names under docs/benchmarks whose accepted samples are the reference rows; "
+        "empty for a run with none",
     )
+    parser.add_argument(
+        "--make-prompts",
+        action="store_true",
+        help="make the arrays --run lacks and hold the ones it has to what nuclis makes",
+    )
+    parser.add_argument("--family", help="the family a new run's prompt-construction.json names")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
@@ -399,18 +582,24 @@ def main():
 
     args.prompt_dir.mkdir(parents=True, exist_ok=True)
     construction_path = args.fixtures / args.run / "prompt-construction.json"
-    construction = json.loads(construction_path.read_text())
-    family = construction.get("family", "qwen38")
-    if (
-        THINKING_OFF[family] not in construction["template"]
-        or THINKING_ON.get(family, "\0") in construction["template"]
-    ):
-        raise RuntimeError("expected the reference's text template with reasoning disabled")
-    corpus_text = corpus()
-    if hashlib.sha256(corpus_text.encode()).hexdigest() != construction["corpus_sha256"]:
-        raise RuntimeError("the synthetic corpus no longer matches the reference run's digest")
+    if not args.make_prompts and not construction_path.is_file():
+        parser.error(f"{construction_path} does not exist; --make-prompts makes the run")
+    if args.make_prompts and not construction_path.is_file() and not args.family:
+        parser.error("a new run needs --family")
     with tempfile.TemporaryDirectory() as scratch:
         tokenize = Tokenizer(args.nuclis, args.model, pathlib.Path(scratch))
+        if args.make_prompts:
+            make_prompts(args.fixtures, args.run, args.family, lengths, tokenize)
+        construction = json.loads(construction_path.read_text())
+        family = construction.get("family", "qwen38")
+        if family in THINKING_OFF and (
+            THINKING_OFF[family] not in construction["template"]
+            or THINKING_ON.get(family, "\0") in construction["template"]
+        ):
+            raise RuntimeError("expected the run's text template with reasoning disabled")
+        if hashlib.sha256(corpus().encode()).hexdigest() != construction["corpus_sha256"]:
+            raise RuntimeError("the synthetic corpus no longer matches the run's digest")
+        corpus_text = corpus(LONG_FUNCTIONS)
         corpus_report = tokenize(corpus_text)
         prompts = []
         for size in lengths:
@@ -445,6 +634,7 @@ def main():
         repetitions = args.boundary_repetitions if boundary else args.repetitions
         runs.append(run_bench(args, prompt, repetitions, args.warmup))
     model_sha256 = args.model_sha256 or sha256_file(args.model)
+    references = [name for name in args.reference_records.split(",") if name]
     record = {
         "schema_version": 1,
         "date": datetime.date.today().isoformat(),
@@ -452,8 +642,8 @@ def main():
         "purged_before_first_run": args.purge,
         "started_at": started,
         "finished_at": timestamp(),
-        "methodology": "See README.md#acceptance-runs and llama-cpp.md. Each run feeds the reference "
-        "harness's exact token array (tests/fixtures) through `bench --prompt-tokens`; every sample is greedy with a "
+        "methodology": "See README.md#acceptance-runs. Each run feeds the run's token array "
+        "(tests/fixtures) through `bench --prompt-tokens`; every sample is greedy with a "
         "fixed output budget and starts from an empty session; warmups are excluded from the means; peak resident "
         "memory is /usr/bin/time -l over the whole bench process (weights are memory-mapped, so it counts resident "
         "model pages).",
@@ -482,18 +672,31 @@ def main():
         "prompts": prompts,
         "summary": summarize(runs),
         "family": family,
+        "run": args.run,
+        "previous": previous_record(ROOT / "docs/benchmarks", record_suffix(output), output),
         "reference": {
             "about": "llama.cpp's rows from records pinned before nuclis became its own reference: a dated comparison",
-            "revision": reference_revision(ROOT / "docs/benchmarks", args.reference_records.split(",")),
+            "revision": reference_revision(ROOT / "docs/benchmarks", references),
             "run": args.run,
-            "rows": reference_rows(ROOT / "docs/benchmarks", args.reference_records.split(",")),
-        },
+            "rows": reference_rows(ROOT / "docs/benchmarks", references),
+        }
+        if references
+        else None,
         "runs": runs,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(record, indent=2) + "\n")
     print("Completed: " + str(output), flush=True)
+    before = {r["prompt_tokens"]: r for r in (record["previous"] or {}).get("rows", [])}
     for row in record["summary"]:
+        was = before.get(row["prompt_tokens"])
+        if was:
+            print(
+                f"  {row['prompt_tokens']:>6} tokens against {record['previous']['record']}: prefill "
+                f"{row['prefill_tokens_per_second']['mean'] / was['prefill_tokens_per_second']:.3f}x, decode "
+                f"{row['decode_tokens_per_second']['mean'] / was['decode_tokens_per_second']:.3f}x",
+                flush=True,
+            )
         print(
             f"  {row['prompt_tokens']:>6} tokens: prefill {row['prefill_tokens_per_second']['mean']:.2f} tok/s, "
             f"decode {row['decode_tokens_per_second']['mean']:.2f} tok/s, session {row['session_bytes'] / 2**20:.0f} MiB, "

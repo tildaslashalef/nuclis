@@ -18,7 +18,10 @@ pub const Report = struct {
     rendering: []const u8,
     /// Reasoning effort of the chat rendering; absent for raw prompts.
     think: ?[]const u8,
-    /// Bytes of the rendered prompt (the template included for `chat`).
+    /// The rendered prompt as the encoder reads it (the template included
+    /// for `chat`); the offsets index it.
+    text: []const u8,
+    /// Bytes of `text`.
     bytes: usize,
     tokens: usize,
     ids: []const u32,
@@ -95,6 +98,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, effort:
         .model_path = model_path,
         .rendering = if (options.raw) "raw" else "chat",
         .think = if (options.raw) null else @tagName(effort),
+        .text = read,
         .bytes = read.len,
         .tokens = ids.len,
         .ids = ids,
@@ -133,7 +137,7 @@ test "offsets are the byte starts of each token's decoded text plus the total" {
 }
 
 test "report renders text and JSON from the same value" {
-    const report: Report = .{ .model_path = "m.gguf", .rendering = "raw", .think = null, .bytes = 6, .tokens = 3, .ids = &.{ 0, 2, 1 }, .offsets = &.{ 0, 1, 4, 6 }, .round_trip = true };
+    const report: Report = .{ .model_path = "m.gguf", .rendering = "raw", .think = null, .text = "a b<x>", .bytes = 6, .tokens = 3, .ids = &.{ 0, 2, 1 }, .offsets = &.{ 0, 1, 4, 6 }, .round_trip = true };
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     try report.render(&out.writer, false, .none);
@@ -145,7 +149,8 @@ test "report renders text and JSON from the same value" {
     try std.testing.expect(parsed.value.object.get("think") == null);
     try std.testing.expectEqual(@as(i64, 3), parsed.value.object.get("tokens").?.integer);
     try std.testing.expectEqual(@as(usize, 4), parsed.value.object.get("offsets").?.array.items.len);
-    const chat: Report = .{ .model_path = "m.gguf", .rendering = "chat", .think = "low", .bytes = 1, .tokens = 1, .ids = &.{0}, .offsets = &.{ 0, 1 }, .round_trip = false };
+    try std.testing.expectEqualStrings("a b<x>", parsed.value.object.get("text").?.string);
+    const chat: Report = .{ .model_path = "m.gguf", .rendering = "chat", .think = "low", .text = "a", .bytes = 1, .tokens = 1, .ids = &.{0}, .offsets = &.{ 0, 1 }, .round_trip = false };
     out.clearRetainingCapacity();
     try chat.render(&out.writer, false, .none);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "chat rendering (think low), round trip MISMATCH") != null);

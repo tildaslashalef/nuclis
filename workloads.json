@@ -43,7 +43,20 @@
     },
     "acceptance": {
       "kind": "acceptance",
-      "note": "scripts/bench/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
+      "note": "scripts/bench/nuclis-baseline.py: the four-length arrays of the row's run (made by nuclis when the run lacks them), /usr/bin/time, hardware, the reference rows when the row names them, the previous record; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
+      "evidence": "docs/benchmarks/README.md#acceptance-runs"
+    },
+    "acceptance64": {
+      "kind": "acceptance",
+      "record_tag": "64k",
+      "prompt_lengths": [
+        32639,
+        65407
+      ],
+      "ctx": 65536,
+      "warmup": 1,
+      "repeat": 1,
+      "note": "needs a build with -Dmax-context=65536 or more; refused below it",
       "evidence": "docs/benchmarks/README.md#acceptance-runs"
     }
   },
@@ -69,7 +82,8 @@
       "record_suffix": "gemma4-26b-a4b",
       "shapes": [
         "prose512",
-        "acceptance"
+        "acceptance",
+        "acceptance64"
       ],
       "evidence": {
         "prose512": "docs/benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-2026-09-18",
