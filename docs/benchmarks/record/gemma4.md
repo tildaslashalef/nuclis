@@ -1187,3 +1187,30 @@ The configuration does not refuse a length the build allows. 131,072 is
 recorded as needing a more powerful machine than this one; 65,536 is the
 candidate for the next supported ceiling, after the windowed layout and
 the global layers' prefill attention.
+
+## Prefill at 32K, today's baseline and its split (2026-11-18)
+
+The acceptance workload's method (`make workload NAME=<row>/acceptance`:
+the pinned arrays, F16 cache, ctx 32,768, one warmup, mean of three),
+M4 Pro 48 GB, ReleaseSafe `4c8e8be`. Reports:
+[nuclis-2026-11-18-gemma4-26b-a4b.json](../nuclis-2026-11-18-gemma4-26b-a4b.json),
+[nuclis-2026-11-18-gemma4-e4b.json](../nuclis-2026-11-18-gemma4-e4b.json).
+
+| prefill tok/s (decode) | 512 | 4,096 | 16,384 | 32,639 |
+| --- | ---: | ---: | ---: | ---: |
+| 26B-A4B | 522.3 (57.2) | 359.4 (54.0) | 215.6 (48.7) | 141.4 (42.3) |
+| E4B QAT | 534.1 (52.9) | 432.6 (51.5) | 280.9 (47.1) | 190.8 (41.9) |
+
+Against the 2026-10-05 records prefill is 1.00–1.04× and decode
+1.06–1.35× (the gathered expert path and the fixes since). Solving each
+model's 16,384 and 32,639 rows for `a·N + b·N²`: the 26B-A4B 2.19 ms ×
+N + 149.7 ns × N², the E4B 1.86 ms × N + 103.5 ns × N². The single-run
+WikiText fit of § Context past 32K (2.61 ms, 164 ns) reads a different
+text; this is the baseline later work compares with.
+
+`bench --profile-prefill` at 32,639 splits the 26B-A4B's 236.0 GPU
+seconds into global attention 156.0, sliding attention 21.9, experts
+28.9, and the rest 29.2; the E4B's 171.7 into 108.5, 8.0, and 55.1 with
+no experts. The kernel's own record:
+[metal-backend.md § Gemma 4's global-layer chunk attention, measured](metal-backend.md#gemma-4s-global-layer-chunk-attention-measured-2026-11-18).
+

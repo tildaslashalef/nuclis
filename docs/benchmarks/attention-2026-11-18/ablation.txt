@@ -1,0 +1,22 @@
+Ablation of nu_attention_chunk_t on keys 512 / values 256 (16 query heads, 2 KV heads, 512 rows, F16); working tree only, reverted
+base v16384
+attr-k512-v256-v16384-c512-split-f16       255.033     0.80     0.80    795.8     1
+base v32768
+attr-k512-v256-v32768-c512-split-f16       519.718     0.79     0.79    787.2     1
+no-pv v16384
+attr-k512-v256-v16384-c512-split-f16       130.179     1.56     1.56   1559.0     1
+no-pv v32768
+attr-k512-v256-v32768-c512-split-f16       264.087     1.55     1.55   1549.1     1
+no-softmax v16384
+attr-k512-v256-v16384-c512-split-f16       191.133     1.06     1.06   1061.8     1
+no-softmax v32768
+attr-k512-v256-v32768-c512-split-f16       383.776     1.07     1.07   1066.0     1
+no-rescale v16384
+attr-k512-v256-v16384-c512-split-f16       252.127     0.80     0.80    804.9     1
+no-rescale v32768
+attr-k512-v256-v32768-c512-split-f16       516.866     0.79     0.79    791.5     1
+no-scores v16384
+attr-k512-v256-v16384-c512-split-f16       256.190     0.79     0.79    792.2     1
+no-scores v32768
+attr-k512-v256-v32768-c512-split-f16       520.864     0.79     0.79    785.4     1
+done

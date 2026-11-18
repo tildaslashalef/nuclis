@@ -273,8 +273,8 @@ bench-hadamard: ## GPU time of one token's 258 Hadamard transforms on the Bonsai
 bench-experts: ## GB/s of the gathered expert kernels on the 26B-A4B shape, 8 of 128 experts; prefill tiles over ARGS tokens (no model)
 	$(ZIG) build bench-experts $(METAL) $(if $(ARGS),-- $(ARGS))
 
-bench-attention: ## Prefill chunk attention, row-split vs register-reuse, 4K-32K visible and the verify-shaped counts (no model)
-	$(CAPTURE_ENV) $(ZIG) build bench-attention $(METAL)
+bench-attention: ## Prefill chunk attention, row-split vs register-reuse, 4K-32K visible and the verify-shaped counts; ARGS="gemma [<case>]" for Gemma 4's shapes (no model)
+	$(CAPTURE_ENV) $(ZIG) build bench-attention $(METAL) $(if $(ARGS),-- $(ARGS))
 
 agent: metal ## Interactive agent surface on the engine (Metal by default; ARGS="--think low")
 	$(BIN) agent --backend $(BACKEND) --model "$(MODEL)" $(ARGS)
