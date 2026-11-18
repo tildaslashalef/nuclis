@@ -14,8 +14,9 @@ const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 
 /// The most token positions a session holds: the context ceiling every
-/// executor, the engine, and the configuration check against.
-pub const max_capacity = 32768;
+/// executor, the engine, and the configuration check against. 32,768 unless
+/// a measurement build raises it (`-Dmax-context`).
+pub const max_capacity: usize = @import("build_options").max_context;
 
 /// Storage precision of an attention layer's cache rows. The CPU reference
 /// runtime always uses `f32`; `f16` and `q8_0` are GPU options that cut

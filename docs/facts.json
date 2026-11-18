@@ -593,7 +593,7 @@
     {
       "limit": "context ceiling (tokens)",
       "value": 32768,
-      "source": "inference/src/runtime/session.zig `max_capacity`"
+      "source": "inference/build.zig `default_max_context`"
     },
     {
       "limit": "output budget (tokens)",

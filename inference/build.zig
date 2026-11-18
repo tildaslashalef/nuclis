@@ -9,7 +9,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const metal = b.option(bool, "metal", "Build the Metal backend (the root build sets it)") orelse false;
-    configure(b, mod, metal, .{});
+    const max_context = b.option(u32, "max-context", "The session ceiling in tokens (the root build sets it)") orelse default_max_context;
+    configure(b, mod, metal, .{ .max_context = max_context });
     const tests = b.addTest(.{ .root_module = mod });
     const test_step = b.step("test", "Test inference library without GPU or model weights");
     test_step.dependOn(&b.addRunArtifact(tests).step);
@@ -22,7 +23,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    configure(b, tiny_mod, metal, .{ .tiny_models = true });
+    configure(b, tiny_mod, metal, .{ .tiny_models = true, .max_context = max_context });
     const tiny_root = b.createModule(.{
         .root_source_file = b.path("tiny-check.zig"),
         .target = target,
@@ -41,7 +42,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    configure(b, bench_mod, metal, .{ .bench_kernels = true });
+    configure(b, bench_mod, metal, .{ .bench_kernels = true, .max_context = max_context });
 
     // The check executables. The root declares every step that runs them
     // (AGENTS.md § Repository architecture); this file only builds them.
@@ -66,7 +67,11 @@ pub fn build(b: *std.Build) void {
 
 /// What one instance of the module swaps in: the adapters' tiny shapes, or
 /// the benchmark-only Metal kernels.
-const Variant = struct { tiny_models: bool = false, bench_kernels: bool = false };
+const Variant = struct { tiny_models: bool = false, bench_kernels: bool = false, max_context: u32 = default_max_context };
+
+/// The release build's session ceiling, and the supported one (docs/spec.md
+/// § 8). A larger `-Dmax-context` accepts longer contexts the gates do not cover.
+pub const default_max_context: u32 = 32768;
 
 /// The build options and platform bridges of one instance of the module.
 fn configure(b: *std.Build, mod: *std.Build.Module, metal: bool, variant: Variant) void {
@@ -74,6 +79,7 @@ fn configure(b: *std.Build, mod: *std.Build.Module, metal: bool, variant: Varian
     options.addOption(bool, "metal", metal);
     options.addOption(bool, "tiny_models", variant.tiny_models);
     options.addOption(bool, "bench_kernels", variant.bench_kernels);
+    options.addOption(u32, "max_context", variant.max_context);
     mod.addOptions("build_options", options);
     if (metal) {
         mod.addCSourceFile(.{ .file = b.path("src/backends/metal/bridge.m"), .flags = &.{"-fno-objc-arc"} });

@@ -13,6 +13,8 @@
 const std = @import("std");
 const style = @import("tui/style.zig");
 const config_schema = @import("config.zig");
+/// The context ceiling of this build (`-Dmax-context`).
+const max_ctx = std.fmt.comptimePrint("{d}", .{config_schema.max_context});
 /// What `--backend` defaults to: the CPU in a build without Metal.
 const default_backend = if (@import("inference").metal.enabled) "default metal" else "default cpu";
 
@@ -148,7 +150,7 @@ fn engineOptions(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--model <name|path>", "registry entry, catalogue name, or path; default");
     try more(out, "engine.model of the config file (gemma-4-26b-a4b)");
     try row(out, sty, "--backend cpu|metal", default_backend);
-    try row(out, sty, "--ctx-size <n>", "context window in tokens, 1..32768; default 32768");
+    try row(out, sty, "--ctx-size <n>", "context window in tokens, 1.." ++ max_ctx ++ "; default 32768");
     try row(out, sty, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16");
     try row(out, sty, "--max-tokens <n>", "output budget, 1..16384; default 8192 (bench: 32)");
     try row(out, sty, "--speculative on|off", "verify drafts from the model's draft source; the");
@@ -383,7 +385,7 @@ fn eval(out: *std.Io.Writer, sty: style.Style) !void {
 
     try heading(out, sty, "Options:");
     try row(out, sty, "--file <path>", "the text, read raw (no template), up to 16 MiB");
-    try row(out, sty, "--ctx-size <n>", "tokens per window, 2..32768; default 512, or the");
+    try row(out, sty, "--ctx-size <n>", "tokens per window, 2.." ++ max_ctx ++ "; default 512, or the");
     try more(out, "reference's");
     try row(out, sty, "--chunks <n>", "windows from the start of the text; default every");
     try more(out, "whole window, or the reference's; fewer than the");

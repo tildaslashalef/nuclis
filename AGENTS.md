@@ -11,7 +11,10 @@ of [docs/spec.md](docs/spec.md)) gives the playground small coding task
 abilities; it is not a second product.
 
 Read [docs/architecture.md](docs/architecture.md) for the stack overview and
-[docs/spec.md](docs/spec.md) for scope and acceptance criteria. Workflow and
+[docs/spec.md](docs/spec.md) for scope and acceptance criteria. A new model, a new
+release of a family nuclis runs, or a new drafter starts at
+[docs/models/README.md](docs/models/README.md), whose first section decides
+which of those it is. Workflow and
 toolchain conventions live in [docs/development.md](docs/development.md);
 every other document is listed in [docs/README.md](docs/README.md), one
 folder per kind (`guide/`, `models/`, `engine/`, `app/`, `benchmarks/`).

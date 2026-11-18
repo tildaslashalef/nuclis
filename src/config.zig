@@ -1744,6 +1744,9 @@ test "registry entries parse by name with their overrides and companions" {
 
 test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
     const alloc = std.testing.allocator;
+    // One past the build's ceiling, so a `-Dmax-context` build tests its own.
+    const past_ceiling = std.fmt.comptimePrint("{d}", .{max_context + 1});
+    const ceiling = std.fmt.comptimePrint("{d}", .{max_context});
     const cases = [_]struct { text: []const u8, err: anyerror, needle: []const u8 }{
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"modle\": \"x\" } }", .err = error.UnknownConfigKey, .needle = "unknown key engine.modle" },
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"sampling\": { \"top_q\": 1 } } }", .err = error.UnknownConfigKey, .needle = "generation.sampling.top_q" },
@@ -1751,7 +1754,7 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"backend\": \"cuda\" } }", .err = error.InvalidConfigValue, .needle = "engine.backend must be one of cpu|metal" },
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"kv_precision\": \"f64\" } }", .err = error.InvalidConfigValue, .needle = "engine.kv_precision must be one of f32|f16|q8_0" },
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"ctx_size\": -1 } }", .err = error.InvalidConfigValue, .needle = "engine.ctx_size must be a non-negative integer" },
-        .{ .text = "{ \"schema_version\": 1, \"engine\": { \"ctx_size\": 65536 } }", .err = error.InvalidConfigValue, .needle = "engine.ctx_size must be 1..32768" },
+        .{ .text = "{ \"schema_version\": 1, \"engine\": { \"ctx_size\": " ++ past_ceiling ++ " } }", .err = error.InvalidConfigValue, .needle = "engine.ctx_size must be 1.." ++ ceiling },
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"model\": \"\" } }", .err = error.InvalidConfigValue, .needle = "engine.model must not be empty" },
         .{ .text = "{ \"schema_version\": 1, \"engine\": \"metal\" }", .err = error.InvalidConfigValue, .needle = "engine must be an object" },
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"max_tokens\": 0 } }", .err = error.InvalidConfigValue, .needle = "generation.max_tokens must be 1..16384" },
@@ -1781,7 +1784,7 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"imatrix\": \"i.gguf\" } } }", .err = error.UnknownConfigKey, .needle = "unknown key models.g.imatrix" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generation\": { \"sampling\": { \"top_q\": 1 } } } } }", .err = error.UnknownConfigKey, .needle = "unknown key models.g.generation.sampling.top_q" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"ctx_size\": \"big\" } } }", .err = error.InvalidConfigValue, .needle = "models.g.ctx_size must be null or a non-negative integer" },
-        .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"ctx_size\": 0 } } }", .err = error.InvalidConfigValue, .needle = "models.g.ctx_size must be 1..32768" },
+        .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"ctx_size\": 0 } } }", .err = error.InvalidConfigValue, .needle = "models.g.ctx_size must be 1.." ++ ceiling },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generation\": { \"max_tokens\": 20000 } } } }", .err = error.InvalidConfigValue, .needle = "models.g.generation.max_tokens must be 1..16384" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generation\": { \"sampling\": { \"top_p\": 2 } } } } }", .err = error.InvalidConfigValue, .needle = "models.g.generation.sampling.top_p is out of range" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"agent\": { \"think\": \"loud\" } } } }", .err = error.InvalidConfigValue, .needle = "models.g.agent.think must be null or one of off|low|medium|high|xhigh" },
@@ -2056,7 +2059,7 @@ test "set edits one key of the file's own text, validates it, and reports the pr
     try std.testing.expectError(error.UnknownConfigKey, set(alloc, text, "t.json", "models.local.speed", "1", &diag));
     try std.testing.expectError(error.NoSuchEntry, set(alloc, text, "t.json", "models.other.profile", "gemma4", &diag));
     try std.testing.expect(std.mem.indexOf(u8, diag.message(), "--register other") != null);
-    try std.testing.expectError(error.InvalidConfigValue, set(alloc, text, "t.json", "engine.ctx_size", "99999", &diag));
+    try std.testing.expectError(error.InvalidConfigValue, set(alloc, text, "t.json", "engine.ctx_size", std.fmt.comptimePrint("{d}", .{max_context + 1}), &diag));
     try std.testing.expect(std.mem.indexOf(u8, diag.message(), "engine.ctx_size") != null);
     try std.testing.expectError(error.InvalidConfigValue, set(alloc, text, "t.json", "engine.model", "null", &diag));
     try std.testing.expectError(error.InvalidConfigValue, set(alloc, text, "t.json", "agent.theme", "neon", &diag));

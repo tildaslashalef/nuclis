@@ -89,12 +89,13 @@ second, nuclis / llama.cpp, by prompt length:
 | Gemma 4 E4B QAT | 531.03 / 597.96 | 430.80 / 600.85 | 276.77 / 516.49 | 189.30 / 388.42 |
 | Qwen3.8-27B (first pin) | 94.21 / 92.03 | 85.35 / 95.49 | 62.69 / 79.31 | 48.91 / 69.30 |
 
-**Speculative decoding**: a small drafter proposes tokens and the model
-checks them in one batch, keeping what it would have produced itself. Decode
-off → on, greedy, at the entry's draft length (2026-10-05, median of three):
+**Speculative decoding**: a small drafter proposes tokens and the model checks
+them in one batch, keeping what it would have produced itself. Decode off → on,
+greedy, the entry's draft length, median of three (2026-10-05; 26B-A4B 11-18):
 
 | Model | Draft | 512 | 32,639 |
 | --- | ---: | ---: | ---: |
+| Gemma 4 26B-A4B | 4 | 57.4 → 66.3 (1.16×) | 42.1 → 44.1 (1.05×) |
 | Gemma 4 E4B QAT | 6 | 46.9 → 81.9 (1.75×) | 33.6 → 37.5 (1.12×) |
 | Qwen3.8-27B (first pin) | 7 | 11.6 → 17.4 (1.50×) | 7.9 → 9.8 (1.26×) |
 
@@ -106,19 +107,19 @@ alone, as every record after 2026-10 is ([2026-11-12](docs/benchmarks/history.md
 | 512 | 11.79 | 94.22 | 18.46 (1.61×) | 18.18 (1.63×) |
 | 4,096 | 11.41 | 86.46 | 15.98 (1.42×) | 16.81 (1.53×) |
 
-An agent re-reads a growing prompt and writes a few hundred tokens a step.
-By the tables, a 4,096-token prompt and a 200-token answer take about 16 s on
-the 26B-A4B, 14 s on the E4B, and over a minute on Qwen3.8-27B: the two Gemma
-models make agentic work practical on this machine, the dense 27B does not.
-The 26B-A4B is work in progress: its drafter gains 1.1–1.65× ([2026-11-18](docs/benchmarks/record/gemma4.md#what-the-experts-cost-2026-11-18)),
-its decode is 0.71–0.79× of the reference's, and its prefill falls furthest
-with context (0.42× at 32,639). Speed work goes to the mixture of experts and to long
-context past 32K. Method and every record: [docs/benchmarks](docs/benchmarks/README.md).
+An agent re-reads a growing prompt and writes a few hundred tokens a step. On
+the agent's eighteen tasks ([2026-11-18](docs/benchmarks/record/agent.md#where-an-agent-turn-goes-2026-11-18)),
+drafters on, a task takes 35 s in the model on the E4B, 51 s on the 26B-A4B,
+and 108 s on Qwen3.8-27B. The 26B-A4B's drafter saves 15 % there, and prefill
+is then 61 % of its time. It is work in progress: decode is 0.71–0.79× of the
+reference's, prefill 0.42× at 32,639, and past 32K its session reaches 15.7 GB
+at 128K while its drafter stops paying ([2026-11-18](docs/benchmarks/record/gemma4.md#context-past-32k-2026-11-18)).
+Speed work goes to the global layers' attention at depth, a third of an agent
+list's time, then a window for the sliding layers. Method and every record: [docs/benchmarks](docs/benchmarks/README.md).
 
-**How it got here.** nuclis began with Qwen3.8-27B, whose attention and
-Gated DeltaNet layers are where the kernels were first written and tuned; it
-decoded faster than the reference at every length. It stays a supported
-dense model, but at 8–12 tokens/s it is too slow for an agent on 48 GB.
+**How it got here.** nuclis began with Qwen3.8-27B, whose attention and Gated
+DeltaNet layers are where the kernels were first written and tuned; it decoded
+faster than the reference at every length, and stays supported, if slow.
 
 ## Beyond chat
 

@@ -12,11 +12,18 @@ byte offset, element type, and for strings the SHA-256), which is what the
 tests need and keeps vocabularies out of the tree.
 
 Usage: gguf-inventory.py <file.gguf> [--out fixture.json] [--max-string 256]
+                         [--against fixture.json]
+
+`--against` compares the file with an existing family's fixture: the
+metadata keys and tensor names only one side has, with the architecture
+prefix and block numbers folded, the first question of a new release
+(docs/models/README.md § Which kind of new).
 """
 
 import argparse
 import hashlib
 import json
+import re
 import struct
 
 TYPES = {
@@ -113,13 +120,94 @@ def inventory(path, max_string):
         return {"gguf_version": version, "directory_bytes": r.pos, "metadata": metadata, "tensors": tensors}
 
 
+def fold_key(key, arch):
+    return re.sub(rf"^{re.escape(arch)}\.", "<arch>.", key) if arch else key
+
+
+def fold_tensor(name):
+    return re.sub(r"^blk\.\d+\.", "blk.N.", name)
+
+
+def shape_of(inv):
+    """The architecture, the folded key set, and the folded tensor-name set
+    of an inventory or fixture."""
+    meta = inv["metadata"]
+    arch = meta.get("general.architecture", "")
+    arch = arch["value"] if isinstance(arch, dict) else arch
+    keys = {fold_key(k, arch) for k in meta}
+    names = {fold_tensor(t[0]) for t in inv["tensors"]}
+    return arch, keys, names
+
+
+def comparable(value):
+    """A metadata value as compared: a scalar itself, an array its values
+    when retained, else its length and element type (tokenizer tables)."""
+    if isinstance(value, dict):
+        if "values" in value:
+            return tuple(value["values"])
+        return ("array", value.get("count"), value.get("type"))
+    return value
+
+
+def values_of(inv, arch):
+    """Folded key -> comparable value, `general.*` (names, licences, links)
+    left out."""
+    return {fold_key(k, arch): comparable(v) for k, v in inv["metadata"].items() if not k.startswith("general.")}
+
+
+def tensor_forms(inv):
+    """Folded tensor name -> the set of (shape, element type) its layers use."""
+    forms = {}
+    for name, shape, kind, *_ in inv["tensors"]:
+        forms.setdefault(fold_tensor(name), set()).add((tuple(shape), kind))
+    return forms
+
+
+def show(value, limit=80):
+    text = str(value)
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def against(inv, path):
+    """Prints what separates the file from an existing fixture: keys and
+    tensors only one side has, then scalar values and tensor shapes or
+    element types that differ under a shared folded name (ten of each)."""
+    with open(path) as f:
+        old = json.load(f)
+    new_arch, new_keys, new_names = shape_of(inv)
+    old_arch, old_keys, old_names = shape_of(old)
+    print(f"architecture: {new_arch} against {old_arch} ({path})")
+    for title, items in (
+        ("metadata keys only in the file", new_keys - old_keys),
+        ("metadata keys only in the fixture", old_keys - new_keys),
+        ("tensors only in the file", new_names - old_names),
+        ("tensors only in the fixture", old_names - new_names),
+    ):
+        print(f"{title}: {len(items)}")
+        for item in sorted(items):
+            print(f"  {item}")
+    new_values, old_values = values_of(inv, new_arch), values_of(old, old_arch)
+    changed = sorted(k for k in new_values.keys() & old_values.keys() if new_values[k] != old_values[k])
+    print(f"metadata values that differ: {len(changed)}")
+    for k in changed[:10]:
+        print(f"  {k}: {show(new_values[k])} (fixture {show(old_values[k])})")
+    new_forms, old_forms = tensor_forms(inv), tensor_forms(old)
+    reshaped = sorted(n for n in new_forms.keys() & old_forms.keys() if new_forms[n] != old_forms[n])
+    print(f"tensors whose shape or element type differs: {len(reshaped)}")
+    for n in reshaped[:10]:
+        print(f"  {n}: {show(sorted(new_forms[n]))} (fixture {show(sorted(old_forms[n]))})")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("file")
     ap.add_argument("--out")
     ap.add_argument("--max-string", type=int, default=256)
+    ap.add_argument("--against", help="an existing fixture to compare the file with")
     a = ap.parse_args()
     inv = inventory(a.file, a.max_string)
+    if a.against:
+        against(inv, a.against)
     text = json.dumps(inv, indent=None, separators=(", ", ": "))
     if a.out:
         # Retained numeric arrays stay on one line each (a sign vector is

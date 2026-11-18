@@ -232,7 +232,7 @@
           <span><i class="dot dot-n"></i>on</span>
         </div>
         <div class="chart" id="chart-spec"></div>
-        <p class="chart-note">On the agent's own task list, Qwen3.8 spends 38% less time in the model. Gemma 4 26B-A4B sits this one out: with 128 experts, checking a guess costs more than it saves.</p>
+        <p class="chart-note">On the agent's own task list, the drafter cuts the time in the model by 15% on Gemma 4 26B-A4B, whose experts now check a guess through the decode path, and by 28% on Qwen3.8.</p>
       </div>
     </div>
   </div>
@@ -423,6 +423,7 @@ cd nuclis &amp;&amp; make metal
     { "model": "Qwen3.8-27B (first pin)", "decode": { "512": [11.67, 10.21], "4096": [10.38, 10.02], "16384": [8.30, 7.54], "32639": [7.53, 6.56] }, "prefill": { "512": [94.21, 92.03], "4096": [85.35, 95.49], "16384": [62.69, 79.31], "32639": [48.91, 69.30] } }
   ],
   "speculative": [
+    { "model": "Gemma 4 26B-A4B", "draft": 4, "512": [57.4, 66.3], "32639": [42.1, 44.1], "ratio": { "512": "1.16", "32639": "1.05" } },
     { "model": "Gemma 4 E4B QAT", "draft": 6, "512": [46.9, 81.9], "32639": [33.6, 37.5], "ratio": { "512": "1.75", "32639": "1.12" } },
     { "model": "Qwen3.8-27B (first pin)", "draft": 7, "512": [11.6, 17.4], "32639": [7.9, 9.8], "ratio": { "512": "1.50", "32639": "1.26" } }
   ]
