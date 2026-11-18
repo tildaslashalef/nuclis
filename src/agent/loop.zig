@@ -155,7 +155,8 @@ pub const min_result_budget: usize = 256;
 
 /// Where compaction stops, as a percentage of the prompt ceiling: low enough
 /// that the steps after it do not compact and replay again at once; 50
-/// replayed less than 75 (docs/app/agent-surface.md § The loop).
+/// replayed less than 75, and 30 or 25 gained nothing on the task list
+/// (docs/app/agent-surface.md § The loop).
 pub const low_water_percent: usize = 50;
 
 /// One history message, owned by the loop. `reasoning` is empty except on an

@@ -423,4 +423,4 @@ removed.
 
 What the cache saves, and the checks of the save inside a prompt and the
 rewind: [record, 2026-10-04 and 2026-10-08](../benchmarks/record/agent.md#the-agents-token-cache-2026-10-04);
-where a turn's time and reuse go: [2026-11-18](../benchmarks/record/agent.md#where-an-agent-turn-goes-2026-11-18).
+where a turn's time and reuse go: [2026-11-18](../benchmarks/record/agent.md#where-an-agent-turn-goes-2026-11-18); how deep compaction cuts (low water 50, 30, 25): [2026-11-18](../benchmarks/record/agent.md#how-deep-compaction-cuts-low-water-50-30-25-2026-11-18).

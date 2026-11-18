@@ -4,6 +4,48 @@
 The dated record behind [the agent concepts](../../app/agent.md): the
 measurements behind the web tools and the token cache.
 
+### How deep compaction cuts: low water 50, 30, 25 (2026-11-18)
+
+**Question.** [§ Where an agent turn goes](#where-an-agent-turn-goes-2026-11-18)
+derived that a lower `low_water_percent` admits more new tokens per
+compaction (13,000 at 50 %, 18,200 at 30 %, 19,500 at 25 %) for the same
+prefill from the system block up. Would it save wall time on the list,
+and at what cost in passes?
+
+**Method.** Three ReleaseSafe binaries of `4defc23` differing only in the
+constant (50, 30, 25), the 26B-A4B (UD-Q4_K_XL) with its MTP drafter at
+draft length 4, its registry effort and thinking budget, Metal, kv f16,
+the 32K window, M4 Pro 48 GB. The eighteen tasks at seeds 1 to 3, then
+the four that fill the window (`pages`, `replay`, `longread`, `longlog`)
+at seeds 4 to 6. Wall and its split are `--breakdown`'s.
+
+| variant | list: passed | wall s | prefill s | decode s | new tok | four tasks, seeds 1–6: passed | wall s | new tok | rewrites | dropped / elided |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 50 (control) | 45 / 54 | 2,928 | 1,798 | 1,087 | 300,735 | 21 / 24 | 3,831 | 481,964 | 7 | 9 / 7 |
+| 30 | 45 / 54 | 2,924 | 1,795 | 1,086 | 300,735 | 21 / 24 | 3,774 | 477,583 | 7 | 9 / 7 |
+| 25 | 45 / 54 | 2,922 | 1,794 | 1,085 | 300,735 | 21 / 24 | 3,773 | 477,583 | 7 | 9 / 7 |
+
+The two-term fit does not move: 0.19 s + 2.49–2.52 ms/tok + 159–160 ns
+on every variant.
+
+**Reading.**
+- The mark decides nothing on this list. 65 of 66 runs are token for
+  token the same at all three marks; the control reproduces
+  § Where an agent turn goes's drafter row (300,735 new tokens, 2,923 s
+  there, 2,928 here). The list's wall differs by 0.1–0.2 %, inside the
+  run-to-run spread, and every pass and failure is the same run.
+- Compaction is rare and done once a run: 4 of 66 runs compact (`replay`
+  seeds 1, 4, and 6, `pages` seed 2), each in one decision, and no run fills
+  the window a second time, which is the only case a deeper cut pays
+  for. The decision's own granularity sets the depth: whole earlier
+  turns, then results down to the last two kept, so 50 % and 30 % land
+  on the same cut in three of the four.
+- The one exception, `replay` seed 6, cut one result deeper at 30 % and
+  25 % and prefilled 4,381 fewer tokens, 57 s of its 340.
+- Keep rule (no pass lost, at least 2 % less wall on the list): not met.
+  50 stays. The `keep_results` 3 variant the design held in reserve
+  applies only if 30 had won on time, so it did not run.
+
 ### Where an agent turn goes (2026-11-18)
 
 **Method.** `make agent-eval`'s eighteen tasks (the thirteen of before,
