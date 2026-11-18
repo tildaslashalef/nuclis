@@ -1832,6 +1832,45 @@ fn checkUnwrap(alloc: std.mem.Allocator) !void {
     std.debug.print("wrap/unwrap x{d}: each round's no-copy buffer released, a stale handle refused\n", .{rounds});
 }
 
+/// `metal.Created` releases every buffer it recorded when a plan's `init`
+/// fails part way: each record allocation fails in turn, inside `topk`'s six
+/// creations among them, and the backend's created bytes return to their
+/// baseline every time.
+fn checkCreated(alloc: std.mem.Allocator) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    const base = b.created_bytes;
+    var failures: usize = 0;
+    var part_way: usize = 0;
+    var index: usize = 0;
+    while (true) : (index += 1) {
+        var failing: std.testing.FailingAllocator = .init(alloc, .{ .fail_index = index, .resize_fail_index = index });
+        var created: inference.metal.Created = .init(failing.allocator(), b);
+        defer created.deinit();
+        const made: ?anyerror = blk: {
+            _ = created.create(256) catch |err| break :blk err;
+            for (0..3) |_| _ = created.topk(16) catch |err| break :blk err;
+            _ = created.create(64) catch |err| break :blk err;
+            break :blk null;
+        };
+        if (made) |err| {
+            if (err != error.OutOfMemory) return err;
+            failures += 1;
+            if (created.buffers.items.len > 0) part_way += 1;
+            created.releaseAll();
+            if (b.created_bytes != base) return error.CreatedLeaked;
+            continue;
+        }
+        if (created.buffers.items.len != 20) return error.CreatedMiscounted;
+        created.releaseAll();
+        if (b.created_bytes != base) return error.CreatedLeaked;
+        break;
+    }
+    if (part_way == 0) return error.CreatedNotExercised;
+    std.debug.print("Created: {d} failed inits ({d} part way), every buffer released\n", .{ failures, part_way });
+}
+
 fn checkDiscard(alloc: std.mem.Allocator) !void {
     const count = 1024;
     for ([_]bool{ false, true }) |profiled| {
@@ -3693,6 +3732,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len != 1) return error.UnknownOption;
     try checkFragmentLayout(alloc);
     try checkUnwrap(alloc);
+    try checkCreated(alloc);
     try checkDflashConv(alloc);
     try checkDiscard(alloc);
     try checkTick(alloc);

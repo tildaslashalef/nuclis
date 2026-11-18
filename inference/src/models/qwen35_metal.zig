@@ -23,6 +23,7 @@ const Tensor = @import("../formats/gguf.zig").Tensor;
 const Buffer = metal.Buffer;
 const Drafter = @import("../runtime/draft.zig").Drafter;
 const dflash2 = @import("dflash2.zig");
+const chat_plan = @import("chat_plan.zig");
 
 pub const vocabulary = model.vocabulary;
 /// Rows a single verify batch may hold: the largest draft block plus its
@@ -124,52 +125,52 @@ const Flash = struct {
     predecessor: Buffer,
     successors: Buffer,
 
-    fn init(plan: *Plan, binding: dflash2.Binding, chunk: usize, capacity: usize) !Flash {
+    fn init(created: *metal.Created, binding: dflash2.Binding, chunk: usize, capacity: usize) !Flash {
         var result: Flash = undefined;
         result.binding = binding;
         const view = binding.view;
         for (&result.constants, binding.layers) |*c, layer| c.* = .{
-            .attention_norm = try constantFrom(plan, view, layer.attention_norm),
-            .query_norm = try constantFrom(plan, view, layer.query_norm),
-            .key_norm = try constantFrom(plan, view, layer.key_norm),
-            .ffn_norm = try constantFrom(plan, view, layer.ffn_norm),
-            .attention_base = try constantFrom(plan, view, layer.attention_conv.base),
-            .ffn_base = try constantFrom(plan, view, layer.ffn_conv.base),
+            .attention_norm = try constantFrom(created, view, layer.attention_norm),
+            .query_norm = try constantFrom(created, view, layer.query_norm),
+            .key_norm = try constantFrom(created, view, layer.key_norm),
+            .ffn_norm = try constantFrom(created, view, layer.ffn_norm),
+            .attention_base = try constantFrom(created, view, layer.attention_conv.base),
+            .ffn_base = try constantFrom(created, view, layer.ffn_conv.base),
         };
-        result.encoder_norm = try constantFrom(plan, view, binding.encoder_norm);
-        result.output_norm = try constantFrom(plan, view, binding.output_norm);
-        result.rope_table = try plan.create(capacity * (dflash2.head_size / 2) * 8);
+        result.encoder_norm = try constantFrom(created, view, binding.encoder_norm);
+        result.output_norm = try constantFrom(created, view, binding.output_norm);
+        result.rope_table = try created.create(capacity * (dflash2.head_size / 2) * 8);
         try metal.Backend.ropeTable(result.rope_table, capacity, dflash2.head_size, dflash2.rope_base, null);
         const chunk_pad = metal.Backend.matmulPadded(chunk);
         const block_pad = metal.Backend.matmulPadded(dflash2.block_size);
-        result.stage = try plan.create(chunk_pad * dflash2.hidden_width * 4);
-        result.encoded = try plan.create(chunk_pad * dflash2.embedding * 4);
-        result.inject_k = try plan.create(chunk_pad * dflash2.kv_width * 4);
-        result.inject_v = try plan.create(chunk_pad * dflash2.kv_width * 4);
-        result.capture = try plan.create(dflash2.block_count * chunk * dflash2.embedding * 4);
-        inline for (.{ "x", "normalized", "prepared", "sub", "finished", "hidden" }) |field| @field(result, field) = try plan.create(block_pad * dflash2.embedding * 4);
-        result.taps = try plan.create(block_pad * dflash2.conv_projection * 4);
-        result.q = try plan.create(block_pad * dflash2.query_width * 4);
-        result.k = try plan.create(block_pad * dflash2.kv_width * 4);
-        result.v = try plan.create(block_pad * dflash2.kv_width * 4);
-        result.mixed = try plan.create(block_pad * dflash2.query_width * 4);
-        result.gate = try plan.create(block_pad * dflash2.feed_forward * 4);
-        result.up = try plan.create(block_pad * dflash2.feed_forward * 4);
-        result.projected = try plan.create(block_pad * dflash2.selector_rank * 4);
-        result.logits = try plan.create(block_pad * vocabulary * 4);
-        result.partials = try plan.create(metal.Backend.attentionDecodePartials(dflash2.heads, dflash2.head_size) * 4);
-        for (&result.topk) |*scratch| scratch.* = try plan.topkBuffers(dflash2.selector_top_k);
-        result.predecessor = try plan.create(dflash2.selector_rank * 4);
-        result.successors = try plan.create(dflash2.selector_top_k * dflash2.selector_rank * 4);
+        result.stage = try created.create(chunk_pad * dflash2.hidden_width * 4);
+        result.encoded = try created.create(chunk_pad * dflash2.embedding * 4);
+        result.inject_k = try created.create(chunk_pad * dflash2.kv_width * 4);
+        result.inject_v = try created.create(chunk_pad * dflash2.kv_width * 4);
+        result.capture = try created.create(dflash2.block_count * chunk * dflash2.embedding * 4);
+        inline for (.{ "x", "normalized", "prepared", "sub", "finished", "hidden" }) |field| @field(result, field) = try created.create(block_pad * dflash2.embedding * 4);
+        result.taps = try created.create(block_pad * dflash2.conv_projection * 4);
+        result.q = try created.create(block_pad * dflash2.query_width * 4);
+        result.k = try created.create(block_pad * dflash2.kv_width * 4);
+        result.v = try created.create(block_pad * dflash2.kv_width * 4);
+        result.mixed = try created.create(block_pad * dflash2.query_width * 4);
+        result.gate = try created.create(block_pad * dflash2.feed_forward * 4);
+        result.up = try created.create(block_pad * dflash2.feed_forward * 4);
+        result.projected = try created.create(block_pad * dflash2.selector_rank * 4);
+        result.logits = try created.create(block_pad * vocabulary * 4);
+        result.partials = try created.create(metal.Backend.attentionDecodePartials(dflash2.heads, dflash2.head_size) * 4);
+        for (&result.topk) |*scratch| scratch.* = try created.topk(dflash2.selector_top_k);
+        result.predecessor = try created.create(dflash2.selector_rank * 4);
+        result.successors = try created.create(dflash2.selector_top_k * dflash2.selector_rank * 4);
         return result;
     }
 
     /// A small F32 tensor from the companion's file in its own device buffer.
-    fn constantFrom(plan: *Plan, view: weights.View, tensor: *const Tensor) !Buffer {
-        const values = try view.vector(plan.alloc, tensor);
-        defer plan.alloc.free(values);
+    fn constantFrom(created: *metal.Created, view: weights.View, tensor: *const Tensor) !Buffer {
+        const values = try view.vector(created.alloc, tensor);
+        defer created.alloc.free(values);
         if (values.len == 0) return error.InvalidShape;
-        const buffer = try plan.create(values.len * 4);
+        const buffer = try created.create(values.len * 4);
         @memcpy(buffer.floats(), values);
         return buffer;
     }
@@ -216,9 +217,6 @@ fn flashNorm(rows: usize) metal.Backend.Norm {
 pub const Plan = struct {
     alloc: std.mem.Allocator,
     backend: *metal.Backend,
-    /// `init`'s record of the buffers it made, released if it fails; null
-    /// after it returns (later buffers are the backend's, as are the plan's).
-    init_buffers: ?*std.ArrayList(Buffer),
     view: weights.View,
     binding: model.Binding,
     state: session.Session,
@@ -256,29 +254,16 @@ pub const Plan = struct {
     /// `verify_max_rows` rows (a decode step uses the first), 25 MB,
     /// independent of the capacity.
     partials: Buffer,
-    logits: Buffer, // vocabulary
-    /// A verify batch's output head over every row: `max_verify_rows`
-    /// vocabulary rows, its per-row argmax results, and the post-`output_norm`
-    /// hidden rows the drafter's `commit` consumes. `topk_rows` holds one
-    /// partial top-k scratch set per row for the sampled acceptance path; the
-    /// logits stay resident for `readVerifyRow`'s fallback.
-    verify_logits: Buffer,
-    verify_argmax: Buffer,
+    /// The output head's logits, the selections over them, and the verify
+    /// batch's logits and per-row selections (`chat_plan.Readout`; its verify
+    /// scratch exists with a drafter).
+    readout: chat_plan.Readout(vocabulary, max_verify_rows),
+    /// A verify batch's post-`output_norm` hidden rows, which the drafter's
+    /// `commit` consumes.
     verify_hidden: Buffer,
     /// `prefillRows`' head output (`matmulPadded(chunk) × vocabulary`, about
     /// 250 MB), created on its first call so no other load pays for it.
     rows_logits: ?Buffer = null,
-    topk_rows: [max_verify_rows]metal.Backend.TopKBuffers,
-    argmax_values: Buffer,
-    argmax_indices: Buffer,
-    argmax_result: Buffer,
-    /// Partial top-k scratch for sampled decoding; `sampling.TopK.capacity` entries.
-    topk: metal.Backend.TopKBuffers,
-    /// The history bit set as device words for `nu_penalize`, uploaded when
-    /// the history's revision changed (one 31 KB copy per change, not per
-    /// step). `penalty_revision` is the last uploaded revision.
-    penalty_history: Buffer,
-    penalty_revision: u64,
     /// Chunked prefill: up to `chunk` prompt tokens per command buffer
     /// through the batched matmul. The `_c` buffers hold `padded` token rows
     /// ([token][feature]); `step` keeps its own single-token buffers above, so
@@ -385,10 +370,9 @@ pub const Plan = struct {
         var self: Plan = undefined;
         self.alloc = alloc;
         self.backend = backend;
-        var created: std.ArrayList(Buffer) = .empty;
-        defer created.deinit(alloc);
-        errdefer for (created.items) |buffer| backend.release(buffer) catch {};
-        self.init_buffers = &created;
+        var created: metal.Created = .init(alloc, backend);
+        defer created.deinit();
+        errdefer created.releaseAll();
         self.view = view;
         self.binding = binding;
         self.state = state;
@@ -397,102 +381,85 @@ pub const Plan = struct {
         errdefer backend.unwrap(state.memory);
         for (binding.layers(), constants) |layer, *c| {
             c.* = .{
-                .attention_norm = try self.constant(layer.attention_norm),
-                .post_attention_norm = try self.constant(layer.post_attention_norm),
+                .attention_norm = try self.constant(&created, layer.attention_norm),
+                .post_attention_norm = try self.constant(&created, layer.post_attention_norm),
                 .mixer = switch (layer.mixer) {
-                    .full_attention => |attn| .{ .full_attention = .{ .query_norm = try self.constant(attn.query_norm), .key_norm = try self.constant(attn.key_norm) } },
-                    .delta_net => |linear| .{ .delta_net = .{ .convolution = try self.constant(linear.convolution), .a = try self.constant(linear.a), .time_bias = try self.constant(linear.time_bias), .norm = try self.constant(linear.norm) } },
+                    .full_attention => |attn| .{ .full_attention = .{ .query_norm = try self.constant(&created, attn.query_norm), .key_norm = try self.constant(&created, attn.key_norm) } },
+                    .delta_net => |linear| .{ .delta_net = .{ .convolution = try self.constant(&created, linear.convolution), .a = try self.constant(&created, linear.a), .time_bias = try self.constant(&created, linear.time_bias), .norm = try self.constant(&created, linear.norm) } },
                 },
             };
         }
-        self.output_norm = try self.constant(binding.output_norm);
-        self.rope_table = try self.create(capacity * 32 * 8);
+        self.output_norm = try self.constant(&created, binding.output_norm);
+        self.rope_table = try created.create(capacity * 32 * 8);
         try metal.Backend.ropeTable(self.rope_table, capacity, 64, 1e7, null);
         // A per-row rotary table for chunks that contain image spans: the
         // scalar-position table above cannot express the M-RoPE triples, so
         // when a span exists the chunk fills this and rotates at position 0.
-        self.chunk_rope = try self.create(chunk * 32 * 8);
+        self.chunk_rope = try created.create(chunk * 32 * 8);
         self.image_rows = null;
         self.rows_logits = null;
-        self.image_scratch = try self.create(chunk * hidden * 4);
-        self.x = try self.create(hidden * 4);
-        self.normalized = try self.create(hidden * 4);
-        self.projected = try self.create(hidden * 4);
-        self.gate = try self.create(ffn * 4);
-        self.up = try self.create(ffn * 4);
-        self.qg = try self.create(heads * 512 * 4);
-        self.q = try self.create(heads * 256 * 4);
-        self.k = try self.create(1024 * 4);
-        self.v = try self.create(1024 * 4);
+        self.image_scratch = try created.create(chunk * hidden * 4);
+        self.x = try created.create(hidden * 4);
+        self.normalized = try created.create(hidden * 4);
+        self.projected = try created.create(hidden * 4);
+        self.gate = try created.create(ffn * 4);
+        self.up = try created.create(ffn * 4);
+        self.qg = try created.create(heads * 512 * 4);
+        self.q = try created.create(heads * 256 * 4);
+        self.k = try created.create(1024 * 4);
+        self.v = try created.create(1024 * 4);
         // One shared projection allocation lets four weights and all DeltaNet
         // outputs fit the merged kernel's seven data bindings. The named slices
         // preserve the downstream operation interfaces and borrowed lifetimes.
-        const delta_projections = try self.create((qkv + inner + 2 * value_heads) * 4);
+        const delta_projections = try created.create((qkv + inner + 2 * value_heads) * 4);
         self.mixed = delta_projections.slice(0, qkv * 4);
-        self.convolved = try self.create(qkv * 4);
+        self.convolved = try created.create(qkv * 4);
         self.z = delta_projections.slice(qkv * 4, inner * 4);
         self.alpha = delta_projections.slice((qkv + inner + value_heads) * 4, value_heads * 4);
         self.beta = delta_projections.slice((qkv + inner) * 4, value_heads * 4);
-        self.mixed_out = try self.create(mixed_out_width * 4);
-        self.partials = try self.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, heads, 256) * 4);
-        self.logits = try self.create(vocabulary * 4);
-        // Verify scratch exists only with a drafter (the loop's only caller).
-        // `matmul` writes `matmulPadded(tokens)` output rows regardless of the
-        // token count, so the logits buffer is sized by the tile, not the
-        // batch: about 64 MB, kept out of a non-speculative load.
-        if (draft) {
-            self.verify_logits = try self.create(metal.Backend.matmulPadded(max_verify_rows) * vocabulary * 4);
-            self.verify_argmax = try self.create(max_verify_rows * 4);
-            self.verify_hidden = try self.create(max_verify_rows * hidden * 4);
-            for (&self.topk_rows) |*scratch| scratch.* = try self.topkBuffers(sampling.TopK.capacity);
-        } else {
-            self.verify_logits = try self.create(4);
-            self.verify_argmax = try self.create(4);
-            self.verify_hidden = try self.create(4);
-        }
-        self.argmax_values = try self.create(metal.Backend.argmax_partials * 4);
-        self.argmax_indices = try self.create(metal.Backend.argmax_partials * 4);
-        self.argmax_result = try self.create(4);
-        self.topk = try self.topkBuffers(sampling.TopK.capacity);
-        self.penalty_history = try self.create(@divCeil(vocabulary, 32) * 4);
-        self.penalty_revision = std.math.maxInt(u64);
+        self.mixed_out = try created.create(mixed_out_width * 4);
+        self.partials = try created.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, heads, 256) * 4);
+        // Verify scratch exists only with a drafter (the loop's only caller):
+        // about 64 MB of logits, kept out of a non-speculative load.
+        self.readout = try .init(&created, draft);
+        self.verify_hidden = try created.create(if (draft) max_verify_rows * hidden * 4 else 4);
         self.chunk = chunk;
         self.padded = metal.Backend.matmulPadded(chunk);
         const n = self.padded;
-        self.x_c = try self.create(n * hidden * 4);
-        self.normalized_c = try self.create(n * hidden * 4);
-        self.projected_c = try self.create(n * hidden * 4);
-        self.gate_c = try self.create(n * ffn * 4);
-        self.up_c = try self.create(n * ffn * 4);
-        self.qg_c = try self.create(n * heads * 512 * 4);
-        self.q_c = try self.create(n * heads * 256 * 4);
-        self.k_c = try self.create(n * 1024 * 4);
-        self.v_c = try self.create(n * 1024 * 4);
-        self.q_c_h = try self.create(n * heads * 256 * 2);
-        self.kv_stage = if (kv == .q8_0) try self.create(2 * capacity * 1024 * 2) else null;
-        self.mixed_c = try self.create(n * qkv * 4);
-        self.convolved_c = try self.create(n * qkv * 4);
-        self.z_c = try self.create(n * inner * 4);
-        self.alpha_c = try self.create(n * value_heads * 4);
-        self.beta_c = try self.create(n * value_heads * 4);
-        self.mixed_out_c = try self.create(n * mixed_out_width * 4);
-        self.prefill_hidden = if (mtp) try self.create(chunk * hidden * 4) else null;
+        self.x_c = try created.create(n * hidden * 4);
+        self.normalized_c = try created.create(n * hidden * 4);
+        self.projected_c = try created.create(n * hidden * 4);
+        self.gate_c = try created.create(n * ffn * 4);
+        self.up_c = try created.create(n * ffn * 4);
+        self.qg_c = try created.create(n * heads * 512 * 4);
+        self.q_c = try created.create(n * heads * 256 * 4);
+        self.k_c = try created.create(n * 1024 * 4);
+        self.v_c = try created.create(n * 1024 * 4);
+        self.q_c_h = try created.create(n * heads * 256 * 2);
+        self.kv_stage = if (kv == .q8_0) try created.create(2 * capacity * 1024 * 2) else null;
+        self.mixed_c = try created.create(n * qkv * 4);
+        self.convolved_c = try created.create(n * qkv * 4);
+        self.z_c = try created.create(n * inner * 4);
+        self.alpha_c = try created.create(n * value_heads * 4);
+        self.beta_c = try created.create(n * value_heads * 4);
+        self.mixed_out_c = try created.create(n * mixed_out_width * 4);
+        self.prefill_hidden = if (mtp) try created.create(chunk * hidden * 4) else null;
         self.rotation = null;
         if (binding.rotation) |rotation| {
             var signs: [3]Buffer = undefined;
             for (&signs, rotation.signs) |*buffer, source| {
                 if (source.values.len == 0) return error.InvalidShape;
-                buffer.* = try self.create(source.values.len * 4);
+                buffer.* = try created.create(source.values.len * 4);
                 for (buffer.floats(), source.values) |*out, value| out.* = @floatFromInt(value.signed);
             }
             var value_map: ?Buffer = null;
             if (rotation.value_grouped) {
                 // Grouped head `nk * 3 + rep` takes the mixer's tiled head `rep * 16 + nk`.
-                const map = try self.create(48 * 4);
+                const map = try created.create(48 * 4);
                 for (@as([*]u32, @ptrCast(@alignCast(map.host)))[0..48], 0..) |*m, g| m.* = @intCast((g % 3) * 16 + g / 3);
                 value_map = map;
             }
-            self.rotation = .{ .signs = signs, .value_map = value_map, .regrouped = try self.create(6144 * 4), .regrouped_c = try self.create(n * 6144 * 4) };
+            self.rotation = .{ .signs = signs, .value_map = value_map, .regrouped = try created.create(6144 * 4), .regrouped_c = try created.create(n * 6144 * 4) };
         }
         self.has_draft = draft;
         self.mtp = mtp;
@@ -503,49 +470,33 @@ pub const Plan = struct {
         if (draft) {
             var delta_layers: usize = 0;
             for (binding.layers()) |layer| delta_layers += @intFromBool(layer.mixer == .delta_net);
-            self.tape = try self.create(delta_layers * tapeLayerFloats(shape) * 4);
+            self.tape = try created.create(delta_layers * tapeLayerFloats(shape) * 4);
         }
-        if (flash) self.flash = try Flash.init(&self, binding.dflash.?, chunk, capacity);
+        if (flash) self.flash = try Flash.init(&created, binding.dflash.?, chunk, capacity);
         if (mtp) {
             const block = binding.draft.?;
-            self.draft_enorm = try self.constant(block.enorm);
-            self.draft_hnorm_w = try self.constant(block.hnorm);
-            self.draft_head_norm = try self.constant(block.shared_head_norm);
+            self.draft_enorm = try self.constant(&created, block.enorm);
+            self.draft_hnorm_w = try self.constant(&created, block.hnorm);
+            self.draft_head_norm = try self.constant(&created, block.shared_head_norm);
             self.draft_constants = .{
-                .attention_norm = try self.constant(block.layer.attention_norm),
-                .post_attention_norm = try self.constant(block.layer.post_attention_norm),
+                .attention_norm = try self.constant(&created, block.layer.attention_norm),
+                .post_attention_norm = try self.constant(&created, block.layer.post_attention_norm),
                 .mixer = .{ .full_attention = .{
-                    .query_norm = try self.constant(block.layer.mixer.full_attention.query_norm),
-                    .key_norm = try self.constant(block.layer.mixer.full_attention.key_norm),
+                    .query_norm = try self.constant(&created, block.layer.mixer.full_attention.query_norm),
+                    .key_norm = try self.constant(&created, block.layer.mixer.full_attention.key_norm),
                 } },
             };
-            self.draft_h = try self.create(hidden * 4);
-            self.draft_hnorm = try self.create(hidden * 4);
-            self.draft_concat = try self.create(2 * hidden * 4);
-            self.draft_chain = try self.create(hidden * 4);
-            self.draft_pending_h = try self.create(hidden * 4);
-            self.draft_logits = try self.create(vocabulary * 4);
-            self.draft_hprev_c = try self.create(n * hidden * 4);
-            self.draft_concat_c = try self.create(n * 2 * hidden * 4);
+            self.draft_h = try created.create(hidden * 4);
+            self.draft_hnorm = try created.create(hidden * 4);
+            self.draft_concat = try created.create(2 * hidden * 4);
+            self.draft_chain = try created.create(hidden * 4);
+            self.draft_pending_h = try created.create(hidden * 4);
+            self.draft_logits = try created.create(vocabulary * 4);
+            self.draft_hprev_c = try created.create(n * hidden * 4);
+            self.draft_concat_c = try created.create(n * 2 * hidden * 4);
             @memset(self.draft_pending_h.floats(), 0);
         }
-        self.init_buffers = null;
         return self;
-    }
-    /// A zero-filled buffer, recorded while `init` runs.
-    fn create(self: *Plan, len: usize) !Buffer {
-        const list = self.init_buffers orelse return self.backend.create(len);
-        try list.ensureUnusedCapacity(self.alloc, 1);
-        const buffer = try self.backend.create(len);
-        list.appendAssumeCapacity(buffer);
-        return buffer;
-    }
-    /// `Backend.topkBuffers`, its buffers recorded while `init` runs.
-    fn topkBuffers(self: *Plan, k: usize) !metal.Backend.TopKBuffers {
-        if (self.init_buffers) |list| try list.ensureUnusedCapacity(self.alloc, 6);
-        const t = try self.backend.topkBuffers(k);
-        if (self.init_buffers) |list| list.appendSliceAssumeCapacity(&.{ t.partial_values, t.partial_indices, t.values, t.indices, t.sums, t.flags });
-        return t;
     }
     pub fn deinit(self: *Plan) void {
         // GPU buffers are released with the backend; the session and the
@@ -577,11 +528,11 @@ pub const Plan = struct {
     }
 
     /// Small F32 tensor copied into its own GPU buffer once at init.
-    fn constant(self: *Plan, tensor: *const Tensor) !Buffer {
+    fn constant(self: *Plan, created: *metal.Created, tensor: *const Tensor) !Buffer {
         const values = try self.binding.viewOf(self.view, tensor).vector(self.alloc, tensor);
         defer self.alloc.free(values);
         if (values.len == 0) return error.InvalidShape;
-        const buffer = try self.create(values.len * 4);
+        const buffer = try created.create(values.len * 4);
         @memcpy(buffer.floats(), values);
         return buffer;
     }
@@ -661,7 +612,7 @@ pub const Plan = struct {
         if (token >= vocabulary) return error.InvalidTokenId;
         if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
         if (topk) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
-        if (penalties) |p| try self.syncPenalties(p);
+        if (penalties) |p| try self.readout.syncPenalties(p);
         try self.settle();
         try self.state.begin();
         errdefer self.state.fail();
@@ -698,19 +649,8 @@ pub const Plan = struct {
             try self.recordOutputs(greedy, topk, penalties);
         }
         try b.commit();
-        try self.readOutputs(logits, greedy, topk, penalties != null);
+        try self.readout.readOutputs(logits, greedy, topk, penalties != null);
         try self.state.commit();
-    }
-
-    /// Uploads the history words to the device when the set changed since the
-    /// last upload; valid before the command buffer's first dispatch (the
-    /// shared-storage buffer is only read by the GPU at `commit`).
-    fn syncPenalties(self: *Plan, p: sampling.Penalties) !void {
-        if (p.history.revision == self.penalty_revision) return;
-        const words = @divCeil(vocabulary, 32);
-        const out = @as([*]u32, @ptrCast(@alignCast(self.penalty_history.host)))[0..words];
-        if (p.history.writeWords(out) != words) return error.InvalidShape;
-        self.penalty_revision = p.history.revision;
     }
 
     /// Records the output head for the normalized last-token row in
@@ -721,41 +661,9 @@ pub const Plan = struct {
         const hidden = self.binding.shape.hidden;
         const b = self.backend;
         try self.rotate(self.normalized, hidden, 1);
-        try self.mm(self.binding.output, self.normalized, self.logits);
-        // In place, so only a selection readback may request it: a raw
-        // `logits` readback must stay unpenalized for a CPU sampler.
-        if (penalties) |p| if (greedy != null or topk != null) try b.penalize(self.logits, vocabulary, self.penalty_history, p.repetition, p.presence);
-        if (greedy != null) try b.argmax(self.logits, vocabulary, self.argmax_values, self.argmax_indices, self.argmax_result);
-        if (topk) |top| try b.topk(self.logits, vocabulary, sampling.TopK.capacity, top.temperature, self.topk);
+        try self.mm(self.binding.output, self.normalized, self.readout.logits);
+        try self.readout.select(b, greedy != null, topk, penalties);
     }
-    /// Copies the requested readbacks out after `commit`. `penalized` marks a
-    /// `topk` readback taken after the device penalties, which is what lets
-    /// `Sampler.selectFrom` decide with penalties active.
-    fn readOutputs(self: *Plan, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalized: bool) !void {
-        if (logits) |out| try self.readLogits(out);
-        if (greedy) |out| {
-            const id = @as(*const u32, @ptrCast(@alignCast(self.argmax_result.host))).*;
-            if (id >= vocabulary) return error.NonFiniteResult;
-            out.* = id;
-        }
-        if (topk) |top| {
-            top.penalized = penalized;
-            const ids = @as([*]const u32, @ptrCast(@alignCast(self.topk.indices.host)))[0..sampling.TopK.capacity];
-            for (ids) |id| if (id >= vocabulary) return error.NonFiniteResult;
-            @memcpy(top.ids[0..], ids);
-            @memcpy(top.values[0..], self.topk.values.floats()[0..sampling.TopK.capacity]);
-            top.count = sampling.TopK.capacity;
-            // Partition order is fixed, so this F64 sum is deterministic run to run.
-            var total: f64 = 0;
-            for (self.topk.sums.floats()[0..metal.Backend.topk_partials]) |partial| total += partial;
-            top.total = total;
-            top.finite = true;
-            for (@as([*]const u32, @ptrCast(@alignCast(self.topk.flags.host)))[0..metal.Backend.topk_partials]) |flag| if (flag != 0) {
-                top.finite = false;
-            };
-        }
-    }
-
     /// Prefills a prompt with image spans: text runs and image spans are
     /// chunked separately (a span never straddles a chunk), each span
     /// registered in the session so its rows carry M-RoPE positions, and the
@@ -882,7 +790,7 @@ pub const Plan = struct {
             self.prefill_hidden = created;
             break :blk created;
         };
-        if (penalties) |p| try self.syncPenalties(p);
+        if (penalties) |p| try self.readout.syncPenalties(p);
         try self.state.beginChunk(count);
         errdefer self.state.fail();
         const b = self.backend;
@@ -904,7 +812,7 @@ pub const Plan = struct {
             try self.recordOutputs(greedy, topk, penalties);
         }
         try b.commit();
-        try self.readOutputs(logits, greedy, topk, penalties != null);
+        try self.readout.readOutputs(logits, greedy, topk, penalties != null);
         try self.state.commitChunk(count);
         if (hidden_rows) |dest| {
             if (capture) self.readCapture(count, dest) else @memcpy(dest, staging.?.floats()[0 .. count * hidden]);
@@ -1027,50 +935,27 @@ pub const Plan = struct {
         if (h_rows != null and !capture) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
         try self.rotate(self.normalized_c, hidden, count);
         const head = try self.weight(self.binding.output);
-        try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, self.verify_logits, vocabulary, count);
+        try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, self.readout.verify_logits, vocabulary, count);
         if (tops) |out| {
-            for (out, 0..) |top, i| try b.topk(self.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, sampling.TopK.capacity, top.temperature, self.topk_rows[i]);
+            for (out, 0..) |top, i| try b.topk(self.readout.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, sampling.TopK.capacity, top.temperature, self.readout.topk_rows[i]);
         }
         try b.commit();
         if (h_rows) |h| {
             if (capture) self.readCapture(count, h) else @memcpy(h, self.verify_hidden.floats()[0 .. count * hidden]);
         }
-        if (rows) |r| @memcpy(r, self.verify_logits.floats()[0 .. count * vocabulary]);
+        if (rows) |r| @memcpy(r, self.readout.verify_logits.floats()[0 .. count * vocabulary]);
         if (tops) |out| {
-            for (out, 0..) |*top, i| try self.readVerifyTopK(i, top);
+            for (out, 0..) |*top, i| try self.readout.readVerifyTopK(i, top);
         }
         try self.state.commitChunk(count);
         if (taped) try self.state.deferRows(count);
-    }
-
-    /// One verify row's partial top-k readback from its own scratch set. The
-    /// values are the raw logits (the penalties, when active, are the
-    /// sampler's on the host and `selectFromHistory` checks the bound).
-    fn readVerifyTopK(self: *Plan, row: usize, top: *sampling.TopK) !void {
-        const scratch = self.topk_rows[row];
-        const ids = @as([*]const u32, @ptrCast(@alignCast(scratch.indices.host)))[0..sampling.TopK.capacity];
-        for (ids) |id| if (id >= vocabulary) return error.NonFiniteResult;
-        @memcpy(top.ids[0..], ids);
-        @memcpy(top.values[0..], scratch.values.floats()[0..sampling.TopK.capacity]);
-        top.count = sampling.TopK.capacity;
-        var total: f64 = 0;
-        for (scratch.sums.floats()[0..metal.Backend.topk_partials]) |partial| total += partial;
-        top.total = total;
-        top.finite = true;
-        for (@as([*]const u32, @ptrCast(@alignCast(scratch.flags.host)))[0..metal.Backend.topk_partials]) |flag| if (flag != 0) {
-            top.finite = false;
-        };
-        top.penalized = false;
     }
 
     /// Copies one row of the last `verify`'s logits out of the shared buffer:
     /// the fallback for a row whose readback could not decide. Valid until
     /// the next verify.
     pub fn readVerifyRow(self: *Plan, row: usize, out: []f32) !void {
-        if (!self.has_draft) return error.NoDraftBlock;
-        if (row >= max_verify_rows or out.len != vocabulary) return error.InvalidShape;
-        @memcpy(out, self.verify_logits.floats()[row * vocabulary ..][0..vocabulary]);
-        for (out) |v| if (!std.math.isFinite(v)) return error.NonFiniteResult;
+        return self.readout.readVerifyRow(row, out);
     }
 
     /// `verify`'s greedy sibling: per-row argmax read back (four bytes a row),
@@ -1099,13 +984,13 @@ pub const Plan = struct {
         if (h_rows != null and !capture) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
         try self.rotate(self.normalized_c, hidden, count);
         const head = try self.weight(self.binding.output);
-        try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, self.verify_logits, vocabulary, count);
-        for (0..count) |i| try b.argmax(self.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, self.argmax_values, self.argmax_indices, self.verify_argmax.slice(i * 4, 4));
+        try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, self.readout.verify_logits, vocabulary, count);
+        for (0..count) |i| try b.argmax(self.readout.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, self.readout.argmax_values, self.readout.argmax_indices, self.readout.verify_argmax.slice(i * 4, 4));
         try b.commit();
         if (h_rows) |h| {
             if (capture) self.readCapture(count, h) else @memcpy(h, self.verify_hidden.floats()[0 .. count * hidden]);
         }
-        const ids = @as([*]const u32, @ptrCast(@alignCast(self.verify_argmax.host)))[0..count];
+        const ids = @as([*]const u32, @ptrCast(@alignCast(self.readout.verify_argmax.host)))[0..count];
         for (ids, out) |id, *token| {
             if (id >= vocabulary) return error.NonFiniteResult;
             token.* = id;
@@ -1291,9 +1176,7 @@ pub const Plan = struct {
     /// one (the raw vector is not kept), so the sampler must not penalize it
     /// again.
     pub fn readLogits(self: *Plan, out: []f32) !void {
-        if (out.len != vocabulary) return error.InvalidShape;
-        @memcpy(out, self.logits.floats());
-        for (out) |v| if (!std.math.isFinite(v)) return error.NonFiniteResult;
+        return self.readout.readLogits(out);
     }
 
     // --- the prediction block ------------------------------------------
@@ -1341,18 +1224,18 @@ pub const Plan = struct {
         try self.mm(self.binding.output, self.draft_h, self.draft_logits);
         // `pmax` needs the argmax and one top-1 top-k pass (whose F64 sum of
         // the partials is Σ exp(l − max) at T = 1) in the same command buffer.
-        if (greedy != null or logits != null or pmax != null) try b.argmax(self.draft_logits, vocabulary, self.argmax_values, self.argmax_indices, self.argmax_result);
-        if (pmax != null) try b.topk(self.draft_logits, vocabulary, 1, 1.0, self.topk);
+        if (greedy != null or logits != null or pmax != null) try b.argmax(self.draft_logits, vocabulary, self.readout.argmax_values, self.readout.argmax_indices, self.readout.argmax_result);
+        if (pmax != null) try b.topk(self.draft_logits, vocabulary, 1, 1.0, self.readout.topk);
         try b.commit();
         if (greedy) |out| {
-            out.* = @as(*const u32, @ptrCast(@alignCast(self.argmax_result.host))).*;
+            out.* = @as(*const u32, @ptrCast(@alignCast(self.readout.argmax_result.host))).*;
             if (out.* >= vocabulary) return error.NonFiniteResult;
         }
         if (pmax) |out| {
             var total: f64 = 0;
-            for (self.topk.sums.floats()[0..metal.Backend.topk_partials]) |partial| total += partial;
+            for (self.readout.topk.sums.floats()[0..metal.Backend.topk_partials]) |partial| total += partial;
             var finite = true;
-            for (@as([*]const u32, @ptrCast(@alignCast(self.topk.flags.host)))[0..metal.Backend.topk_partials]) |flag| if (flag != 0) {
+            for (@as([*]const u32, @ptrCast(@alignCast(self.readout.topk.flags.host)))[0..metal.Backend.topk_partials]) |flag| if (flag != 0) {
                 finite = false;
             };
             out.* = if (finite and total > 0) @floatCast(1.0 / total) else 1.0;
