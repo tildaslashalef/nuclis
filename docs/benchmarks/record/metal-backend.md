@@ -1921,3 +1921,105 @@ worst ([metal-evidence.md § Model-level checks](../../engine/metal-evidence.md#
   window mask hides the rest per row); the 26B-A4B's 16K row moved from
   5.9e-4 to 6.9e-4, inside the rounding. A window fault that small is
   under any bound the half tiles allow.
+
+## Gemma 4's global-layer chunk attention, measured (2026-11-18)
+
+Why the 26B-A4B and the E4B prefill fall to 0.42× and 0.49× of the
+external target at 32,639 tokens, attributed before any kernel change.
+M4 Pro 48 GB, ReleaseSafe, base `4c8e8be`, Metal. Reports:
+[attention-2026-11-18/](../attention-2026-11-18/) (`kernels.txt`,
+`ablation.txt`, `materialized.txt`, the two prefill profiles).
+
+**Where prefill goes.** One `bench --profile-prefill` run per model on its
+pinned 32,639-token array, F16 cache, the chunk attention keyed by rows
+and value width:
+
+| GPU seconds at 32,639 | global attention | sliding attention | experts | the rest | total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 26B-A4B (512-row chunks) | 156.0 | 21.9 | 28.9 | 29.2 | 236.0 |
+| E4B (256-row chunks) | 108.5 | 8.0 | — | 55.1 | 171.7 |
+
+The global layers' chunk attention is 66 % and 63 % of the prompt. The
+kernel alone accounts for it: the 26B's 512-row dispatch at 32,768
+visible is 984 ms, and summed over the 64 chunks and 5 layers the bench's
+times give the profile's 156 s.
+
+**The kernel alone** (`make bench-attention ARGS="gemma <case>"`, one case
+per run, 20 s apart; random normals; useful TFLOP/s counts each key-query
+pair once at `2·(key + value width)`; executed adds the score product
+again per 256 value columns):
+
+| shape, 512 rows unless noted | visible | row-split ms (useful / executed TFLOP/s) | register-reuse ms |
+| --- | ---: | --- | ---: |
+| 26B global 16 / 2 / 512, F16 | 4,096 | 111.7 (0.58 / 0.86) | 103.9 |
+| | 16,384 | 484.2 (0.56 / 0.84) | 424.8 |
+| | 32,768 | 984.0 (0.55 / 0.83) | 848.5 |
+| 26B global, F32 | 32,768 | 1,184.2 (0.46 / 0.69) | 996.4 |
+| E4B global 8 / 2 / 512, 256 rows, F16 | 32,768 | 246.5 (0.56 / 0.83) | 217.6 |
+| 26B sliding 16 / 8 / 256, window 1,024, F16 | any | 14.0–14.1 (0.61) | 14.5–14.6 |
+| 26B global, 32 rows, F16 | 32,768 | 90.6 (0.38 / 0.57) | 82.9 |
+| 26B global, 128 rows, F16 | 32,768 | 249.9 (0.55 / 0.82) | 218.5 |
+
+The few-row paths on the same global shape (F16 cache; Q8_0 within 10 %):
+one decode row is 0.59 ms at 16,384, 1.23 ms at 32,768, and 2.61 ms at
+65,536 (0.82–0.92 TFLOP/s; 820–930 GB/s logical, an eighth of it
+distinct). A verify batch of R rows is R decode rows: 16 rows take 8.84
+ms at 16,384 (15.3 × one row) and 18.9 ms at 32,768.
+
+**Attribution, on 16 query heads, 512 rows, F16:**
+- (a) The 512-wide value split. Keys 512 / values 256 take 524 ms at
+  32,768 (one threadgroup per head and tile), 512 / 512 take 984 (two),
+  256 / 256 take 402. The second value half costs a whole second pass of
+  the score phase: computing scores once would leave about 720 ms
+  (estimate, from the ablation below).
+- (b) The reuse body on 512 / 512, already correct for that width
+  (`checkWindowedAndWideAttention`), is 14 % ahead at 512 rows and 9–13 %
+  at 32 to 128; only the routing (`value_width == 256`) keeps the global
+  layers off it.
+- (c) KV heads 16 against 2 (eight times the distinct cache bytes, the
+  same arithmetic): 1,072 against 984 ms, 9 %. Sharing a KV head's reads
+  across its query heads can win at most that.
+
+**Ablation of the row-split body** (keys 512 / values 256, working tree
+only, reverted): 519.7 ms at 32,768 as it stands; without the P·V loop
+264.1 (−49 %); without the score tile's round trip through threadgroup
+memory and its exponentials 383.8 (−26 %); without the rescale 516.9
+(−0.5 %); without the score multiplies, their loads kept, 520.9 (0 %).
+The masked loads never run on these shapes (every key limit is a
+multiple of 8). The matrix multiplies are not the limit: the operand
+loads (Q again for every key tile, K, and V through 8×8 fragments) and
+the per-tile threadgroup round trip are. 16,384 gives the same shares.
+
+**The materialized body at depth.** `attentionSegmentsGrouped` (scores to
+a strip, statistics, then P·V; F32) as the causal chunk of the 26B
+global shape, tiles for the last rows only, beside the row-split body on
+the same F32 data (`make bench-attention ARGS=materialized`; dispatch
+times from the profile):
+
+| visible, rows | scores | stats | values | total ms | row-split F32 ms | strips MB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4,096, 512 | 11.4 | 0.5 | 8.2 | 20.1 | 131.8 | 126 |
+| 16,384, 512 | 47.5 | 2.2 | 42.8 | 92.5 | 583.9 | 529 |
+| 32,768, 512 | 95.7 | 5.0 | 97.0 | 197.7 | 1,194.0 | 1,066 |
+| 32,768, 16 | 5.6 | 0.6 | 4.3 | 10.4 | 109.6 | 34 |
+| 32,768, 5 (8 computed) | 5.3 | 0.3 | 4.2 | 9.7 | 109.5 | 17 |
+
+At 512 rows it is 6.0× the row-split body in F32 and 5.0× today's F16
+dispatch (984 ms), 2.8 TFLOP/s useful: the strip written once and read
+by the statistics and the 16 value threadgroups is served well enough
+that the hazard estimated before measuring (about 3 TB of strip traffic
+over a 32,639 prefill) does not show. At 16 rows it is 10.4 ms against
+the verify body's 18.9; at 5 rows the verify body's 6.0 ms is ahead.
+
+**Not taken: the counter capture.** A capture-sized case exists
+(`capture-26b-global-v4096-c64-split-f16`, for `CAPTURE=`), but reading
+its counters needs a person at Xcode; the ablation answered what it was
+for.
+
+**Reading.** The quadratic term is this one kernel on the global layers,
+and its ceiling is the per-tile structure, not the arithmetic or the
+bus. The structure that leaves it is already in nuclis: staged score
+strips and matmul-tile products run the same work 5–6× faster. Routing
+the global layers to the reuse body would take 14 %; computing the
+scores once per head, 1.3× (estimate). The materialized structure is the
+candidate to build; the reuse routing is the fallback.

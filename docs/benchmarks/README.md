@@ -267,6 +267,13 @@ inside one command buffer (`max(1, 65536 / visible)` repeats), two
 warm-ups, best of three measured rounds; it reports GPU ms per dispatch,
 GFLOP/s of the 8×8 matrix work over each query row's own causal prefix,
 and the logical cache bandwidth the math implies. Results and the reading of the 2026-09-21 register-reuse experiment are in [§ Prefill attention sweep](history.md#prefill-attention-sweep-2026-09-21).
+`ARGS="gemma [<case>]"` runs Gemma 4's shapes instead (the global and
+sliding chunks on both bodies, the verify batch and the decode row at
+depth, and the attribution shapes), one case per substring, on random
+normals; `ARGS="gemma list"` names the cases; run each alone. `ARGS=materialized` times
+the three-dispatch materialized body as the 26B-A4B's global causal
+chunk beside the row-split body. Their record:
+[metal-backend.md § Gemma 4's global-layer chunk attention, measured](record/metal-backend.md#gemma-4s-global-layer-chunk-attention-measured-2026-11-18).
 
 On the CPU reference backend, each step takes roughly 18–19 s; `bench` runs
 there only with small budgets and is useful for definitions, not for speed.
@@ -451,4 +458,4 @@ the older ones in [history.md](history.md).
 | Gemma 4 12B (K-quant) | [nuclis-2026-09-12-gemma4.json](nuclis-2026-09-12-gemma4.json) | [reference-2026-09-12-gemma4.json](reference-2026-09-12-gemma4.json) |
 | Bonsai 2 27B | [nuclis-2026-09-18-bonsai.json](nuclis-2026-09-18-bonsai.json) | [reference-2026-09-18-bonsai.json](reference-2026-09-18-bonsai.json) |
 
-Speculation pairs and profiles: [context-2026-11-18/](context-2026-11-18/), [experts-2026-11-18/](experts-2026-11-18/), [speculative-2026-10-05/](speculative-2026-10-05/), [speculative-2026-10-01/](speculative-2026-10-01/), [speculative-2026-09-21/](speculative-2026-09-21/), [speculative-2026-09-20-recovery/](speculative-2026-09-20-recovery/), [speculative-2026-09-20/](speculative-2026-09-20/), [nuclis-profile-c12-2026-09-08.json](nuclis-profile-c12-2026-09-08.json), [nuclis-profile-2026-09-08.json](nuclis-profile-2026-09-08.json), [nuclis-profile-2026-09-07.json](nuclis-profile-2026-09-07.json), [nuclis-profile-16k-2026-09-10.json](nuclis-profile-16k-2026-09-10.json), [gemma4-qat-prose512-draft-2026-09-21.json](gemma4-qat-prose512-draft-2026-09-21.json).
+Speculation pairs and profiles: [attention-2026-11-18/](attention-2026-11-18/), [context-2026-11-18/](context-2026-11-18/), [experts-2026-11-18/](experts-2026-11-18/), [speculative-2026-10-05/](speculative-2026-10-05/), [speculative-2026-10-01/](speculative-2026-10-01/), [speculative-2026-09-21/](speculative-2026-09-21/), [speculative-2026-09-20-recovery/](speculative-2026-09-20-recovery/), [speculative-2026-09-20/](speculative-2026-09-20/), [nuclis-profile-c12-2026-09-08.json](nuclis-profile-c12-2026-09-08.json), [nuclis-profile-2026-09-08.json](nuclis-profile-2026-09-08.json), [nuclis-profile-2026-09-07.json](nuclis-profile-2026-09-07.json), [nuclis-profile-16k-2026-09-10.json](nuclis-profile-16k-2026-09-10.json), [gemma4-qat-prose512-draft-2026-09-21.json](gemma4-qat-prose512-draft-2026-09-21.json).

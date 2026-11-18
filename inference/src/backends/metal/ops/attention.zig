@@ -256,7 +256,7 @@ pub fn attentionChunk(self: *Backend, keys: Buffer, values: Buffer, queries: Buf
     const reuse = s.value_width == 256 and s.count <= self.attention_reuse_max_rows and s.span.end == 0;
     const half = s.precision == .f16;
     const kernel: Kernel = if (reuse) (if (half) .attention_chunk_reuse_h else .attention_chunk_reuse) else if (half) .attention_chunk_h else .attention_chunk;
-    try self.dispatch(kernel, &.{ keys, values, queries, output }, p, @intCast(s.query_heads * tiles * value_splits), 128, .{});
+    try self.dispatch(kernel, &.{ keys, values, queries, output }, p, @intCast(s.query_heads * tiles * value_splits), 128, chunkProfile(s));
 }
 /// The register-reuse body explicitly: the same contract, but each
 /// threadgroup's four SIMD groups split the value columns instead of the
@@ -269,7 +269,14 @@ pub fn attentionChunkReuse(self: *Backend, keys: Buffer, values: Buffer, queries
     const p = attentionChunkParams(s);
     const tiles = @divCeil(s.count, 32);
     const value_splits = (s.value_width + 255) / 256;
-    try self.dispatch(if (s.precision == .f16) .attention_chunk_reuse_h else .attention_chunk_reuse, &.{ keys, values, queries, output }, p, @intCast(s.query_heads * tiles * value_splits), 128, .{});
+    try self.dispatch(if (s.precision == .f16) .attention_chunk_reuse_h else .attention_chunk_reuse, &.{ keys, values, queries, output }, p, @intCast(s.query_heads * tiles * value_splits), 128, chunkProfile(s));
+}
+/// The profile's key for a chunk dispatch: rows and value width keep a
+/// family's global and sliding layers apart; bytes are the cache rows the
+/// chunk sees, each once.
+fn chunkProfile(s: AttentionChunkShape) Shape {
+    const seen = if (s.window > 0) @min(s.position + s.count, s.window + s.count) else s.position + s.count;
+    return .{ .rows = @intCast(s.count), .columns = @intCast(s.value_width), .bytes = @intCast(seen * s.precision.bytes(s.kv_heads * (s.key_width + s.value_width))) };
 }
 fn attentionChunkParams(s: AttentionChunkShape) AttentionChunkParams {
     return .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .position = @intCast(s.position), .count = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .window = @intCast(s.window), .span_begin = @intCast(s.span.begin), .span_end = @intCast(s.span.end) };

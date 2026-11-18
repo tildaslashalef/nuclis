@@ -1108,6 +1108,250 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
 /// V loads for the same logical bytes). The verify body (`attentionVerify`,
 /// F32 queries) runs at counts up to its limit. A measurement aid, not the
 /// record.
+/// `--attention-bench gemma [<label substring>]`: the attention dispatches
+/// of Gemma 4's shapes on random-normal data, one case at a time, each
+/// alone in its command buffers: the global and sliding prefill chunk on
+/// both bodies, the few-row verify and the one-row decode at depth, and the
+/// attribution shapes (value width, KV heads). Reports GPU ms per dispatch,
+/// useful TFLOP/s (each pair once, `2·(key + value width)`), executed
+/// TFLOP/s (the score product again per 256 value columns), and logical
+/// GB/s (every query head reads its KV head's rows). A measurement aid,
+/// not the record.
+fn gemmaAttentionBench(alloc: std.mem.Allocator, filter: ?[]const u8) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    b.attention_reuse_max_rows = 0; // `split` must stay on the row-split body
+    const Precision = inference.session.Precision;
+    const Body = enum { split, reuse, verify, decode };
+    const Case = struct { label: []const u8, qh: usize, kvh: usize, kw: usize, vw: usize, window: usize = 0, visible: usize, count: usize, body: Body, precision: Precision };
+    var cases: std.ArrayList(Case) = .empty;
+    defer cases.deinit(alloc);
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const Geometry = struct { name: []const u8, qh: usize, kvh: usize, kw: usize, vw: usize, window: usize = 0, count: usize };
+    const chunk_geometries = [_]Geometry{
+        .{ .name = "26b-global", .qh = 16, .kvh = 2, .kw = 512, .vw = 512, .count = 512 },
+        .{ .name = "e4b-global", .qh = 8, .kvh = 2, .kw = 512, .vw = 512, .count = 256 },
+        .{ .name = "26b-sliding", .qh = 16, .kvh = 8, .kw = 256, .vw = 256, .window = 1024, .count = 512 },
+    };
+    const add = struct {
+        fn one(list: *std.ArrayList(Case), gpa: std.mem.Allocator, a: std.mem.Allocator, g: Geometry, visible: usize, count: usize, body: Body, precision: Precision) !void {
+            const label = try std.fmt.allocPrint(a, "{s}-v{d}-c{d}-{s}-{s}", .{ g.name, visible, count, @tagName(body), @tagName(precision) });
+            try list.append(gpa, .{ .label = label, .qh = g.qh, .kvh = g.kvh, .kw = g.kw, .vw = g.vw, .window = g.window, .visible = visible, .count = count, .body = body, .precision = precision });
+        }
+    }.one;
+    // The prefill chunk on its model's shapes.
+    for (chunk_geometries) |g| for ([_]usize{ 4096, 16384, 32768 }) |visible| for ([_]Body{ .split, .reuse }) |body| for ([_]Precision{ .f16, .f32 }) |precision| {
+        try add(&cases, alloc, arena, g, visible, g.count, body, precision);
+    };
+    // An agent step's increment on the global shape.
+    for ([_]usize{ 32, 128 }) |count| for ([_]Body{ .split, .reuse }) |body| try add(&cases, alloc, arena, chunk_geometries[0], 32768, count, body, .f16);
+    // The few-row batch and the one-row decode at depth.
+    for ([_]usize{ 16384, 32768 }) |visible| for ([_]usize{ 1, 2, 5, 8, 16 }) |count| for ([_]Precision{ .f16, .q8_0 }) |precision| {
+        try add(&cases, alloc, arena, chunk_geometries[0], visible, count, .verify, precision);
+    };
+    for ([_]usize{ 16384, 32768, 65536 }) |visible| for ([_]Precision{ .f16, .q8_0 }) |precision| try add(&cases, alloc, arena, chunk_geometries[0], visible, 1, .decode, precision);
+    // Attribution: (a) value width against the score product; (b) the reuse
+    // body by count; (c) eight times the distinct cache bytes, same math.
+    for ([_]usize{ 16384, 32768 }) |visible| {
+        for ([_]Geometry{
+            .{ .name = "attr-k512-v256", .qh = 16, .kvh = 2, .kw = 512, .vw = 256, .count = 512 },
+            .{ .name = "attr-k256-v256", .qh = 16, .kvh = 2, .kw = 256, .vw = 256, .count = 512 },
+            .{ .name = "attr-kv16", .qh = 16, .kvh = 16, .kw = 512, .vw = 512, .count = 512 },
+        }) |g| try add(&cases, alloc, arena, g, visible, 512, .split, .f16);
+        for ([_]usize{ 32, 64, 128 }) |count| try add(&cases, alloc, arena, chunk_geometries[0], visible, count, .reuse, .f16);
+    }
+    // One dispatch per command buffer, small enough to capture whole.
+    try add(&cases, alloc, arena, .{ .name = "capture-26b-global", .qh = 16, .kvh = 2, .kw = 512, .vw = 512, .count = 64 }, 4096, 64, .split, .f16);
+
+    var prng = std.Random.DefaultPrng.init(0x64a7);
+    const random = prng.random();
+    std.debug.print("{s:<40} {s:>9} {s:>8} {s:>8} {s:>8} {s:>5}\n", .{ "case", "ms", "useful", "executed", "GB/s", "reps" });
+    for (cases.items) |c| {
+        if (filter) |f| {
+            if (std.mem.eql(u8, f, "list")) {
+                std.debug.print("{s}\n", .{c.label});
+                continue;
+            }
+            if (std.mem.indexOf(u8, c.label, f) == null) continue;
+        }
+        const rows = c.visible * c.kvh;
+        const kv_elems = rows * @max(c.kw, c.vw);
+        // Random normals: keys 0.3, values 0.5, queries 0.3, as the checks.
+        const k32 = try b.create(kv_elems * 4);
+        defer b.release(k32) catch {};
+        const v32 = try b.create(kv_elems * 4);
+        defer b.release(v32) catch {};
+        for (k32.floats()) |*x| x.* = 0.3 * random.floatNorm(f32);
+        for (v32.floats()) |*x| x.* = 0.5 * random.floatNorm(f32);
+        const keys, const values = switch (c.precision) {
+            .f32 => .{ k32, v32 },
+            .f16 => .{ try b.create(kv_elems * 2), try b.create(kv_elems * 2) },
+            .q8_0 => .{ try b.create(kv_elems / 32 * 34), try b.create(kv_elems / 32 * 34) },
+        };
+        defer if (c.precision != .f32) {
+            b.release(keys) catch {};
+            b.release(values) catch {};
+        };
+        if (c.precision != .f32) {
+            try b.begin();
+            const pairs = [_]Backend.Pack{ .{ .dst = keys, .src = k32, .count = kv_elems }, .{ .dst = values, .src = v32, .count = kv_elems } };
+            if (c.precision == .f16) try b.packHalf(&pairs) else try b.packQ8(&pairs);
+            try b.commit();
+        }
+        const q_stride = c.qh * c.kw;
+        const out_stride = c.qh * c.vw;
+        const q_rows = Backend.attentionChunkRows(c.count);
+        const q32 = try b.create(q_rows * q_stride * 4);
+        defer b.release(q32) catch {};
+        for (q32.floats()) |*x| x.* = 0.3 * random.floatNorm(f32);
+        const q16 = try b.create(q_rows * q_stride * 2);
+        defer b.release(q16) catch {};
+        try b.begin();
+        try b.packHalf(&.{.{ .dst = q16, .src = q32, .count = q_rows * q_stride }});
+        try b.commit();
+        const out = try b.create(q_rows * out_stride * 4);
+        defer b.release(out) catch {};
+        const partials = try b.create(@max(Backend.attentionVerifyPartials(@min(c.count, Backend.verify_max_rows), c.qh, c.vw), Backend.attentionDecodePartials(c.qh, c.vw)) * 4);
+        defer b.release(partials) catch {};
+
+        const position = c.visible - c.count;
+        var pairs: usize = 0;
+        for (0..c.count) |t| pairs += if (c.window > 0) @min(position + t + 1, c.window) else position + t + 1;
+        const splits = (c.vw + 255) / 256;
+        const useful = 2.0 * @as(f64, @floatFromInt(c.qh * pairs * (c.kw + c.vw)));
+        const executed = switch (c.body) {
+            .split, .reuse => 2.0 * @as(f64, @floatFromInt(c.qh * pairs * (c.kw * splits + c.vw))),
+            .verify, .decode => useful,
+        };
+        const bytes = @as(f64, @floatFromInt(c.qh * pairs)) * @as(f64, @floatFromInt(c.precision.bytes(c.kw + c.vw)));
+        const capture = std.mem.startsWith(u8, c.label, "capture");
+        const repeats: usize = if (capture) 1 else @max(1, @as(usize, @intFromFloat(@ceil(2e10 / executed))));
+        const query = if (c.precision == .f16 and (c.body == .split or c.body == .reuse)) q16 else q32;
+        const shape: Backend.AttentionChunkShape = .{ .query_heads = c.qh, .kv_heads = c.kvh, .key_width = c.kw, .value_width = c.vw, .position = position, .count = c.count, .q_stride = q_stride, .out_stride = out_stride, .scale = 1.0, .precision = c.precision, .window = c.window };
+        var best: f64 = std.math.inf(f64);
+        for (0..5) |round| {
+            if (round == 1) try captureCase(b, c.label);
+            const before = b.gpuSeconds();
+            try b.begin();
+            var refused = false;
+            for (0..repeats) |_| {
+                const result = switch (c.body) {
+                    .split => b.attentionChunk(keys, values, query, out, shape),
+                    .reuse => b.attentionChunkReuse(keys, values, query, out, shape),
+                    .verify => b.attentionVerify(keys, values, query, partials, out, shape),
+                    .decode => b.attentionDecode(keys, values, query, partials, out, .{ .query_heads = c.qh, .kv_heads = c.kvh, .key_width = c.kw, .value_width = c.vw, .visible = c.visible, .scale = 1.0, .precision = c.precision }),
+                };
+                result catch |err| switch (err) {
+                    error.InvalidShape => {
+                        refused = true;
+                        break;
+                    },
+                    else => return err,
+                };
+            }
+            try b.commit();
+            if (refused) {
+                std.debug.print("{s:<40} refused by the shape check (the build's context ceiling?)\n", .{c.label});
+                break;
+            }
+            const ms = (b.gpuSeconds() - before) * 1e3 / @as(f64, @floatFromInt(repeats));
+            if (round >= 2) best = @min(best, ms);
+        }
+        if (best == std.math.inf(f64)) continue;
+        const s = best * 1e-3;
+        std.debug.print("{s:<40} {d:>9.3} {d:>8.2} {d:>8.2} {d:>8.1} {d:>5}\n", .{ c.label, best, useful / s / 1e12, executed / s / 1e12, bytes / s / 1e9, repeats });
+    }
+}
+
+/// `--attention-bench materialized`: the three-dispatch materialized body
+/// (`attentionSegmentsGrouped`) as the causal chunk of Gemma 4 26B-A4B's
+/// global layer (16 / 2 / 512, F32): row r sees keys `[0, r]`, tiles for
+/// the chunk's last rows only, beside the row-split body on the same data.
+/// Each dispatch's GPU time comes from the profile. A measurement aid.
+fn materializedAttentionBench(alloc: std.mem.Allocator) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    b.attention_reuse_max_rows = 0;
+    var diagnostic: [512]u8 = @splat(0);
+    try b.enableProfiling(4096, &diagnostic);
+    const qh = 16;
+    const kvh = 2;
+    const width = 512;
+    const q_stride = qh * width;
+    const kv_stride = kvh * width;
+    var prng = std.Random.DefaultPrng.init(0x64a8);
+    const random = prng.random();
+    std.debug.print("{s:<30} {s:>9} {s:>9} {s:>9} {s:>9} {s:>11} {s:>8}\n", .{ "case", "scores", "stats", "values", "total ms", "row-split", "strip MB" });
+    for ([_]usize{ 4096, 16384, 32768 }) |visible| for ([_]usize{ 5, 16, 512 }) |count| {
+        const keys = try b.create(visible * kv_stride * 4);
+        defer b.release(keys) catch {};
+        const values = try b.create(visible * kv_stride * 4);
+        defer b.release(values) catch {};
+        // Eight rows of slack: the row-split body's chunk view of the last
+        // rows reaches past `visible` when the count is not a multiple of 8.
+        const queries = try b.create((Backend.attentionChunkRows(visible) + 8) * q_stride * 4);
+        defer b.release(queries) catch {};
+        for (keys.floats()) |*x| x.* = 0.3 * random.floatNorm(f32);
+        for (values.floats()) |*x| x.* = 0.5 * random.floatNorm(f32);
+        for (queries.floats()) |*x| x.* = 0.3 * random.floatNorm(f32);
+        const out = try b.create(Backend.attentionChunkRows(visible) * q_stride * 4);
+        defer b.release(out) catch {};
+        const bounds = try b.create(visible * 8);
+        defer b.release(bounds) catch {};
+        const pairs: []u32 = @as([*]u32, @ptrCast(@alignCast(bounds.host)))[0 .. 2 * visible];
+        for (0..visible) |r| {
+            pairs[2 * r] = 0;
+            pairs[2 * r + 1] = @intCast(r + 1);
+        }
+        // Tiles start on a multiple of 8: a count of 5 computes 8 rows.
+        const first = (visible - count) / 8 * 8;
+        const tile_rows = std.mem.alignForward(usize, visible - first, 8);
+        const tiles = try b.create(tile_rows / 8 * @sizeOf(Backend.AttentionTile));
+        defer b.release(tiles) catch {};
+        const list: []Backend.AttentionTile = @as([*]Backend.AttentionTile, @ptrCast(@alignCast(tiles.host)))[0 .. tile_rows / 8];
+        var tile_count: usize = 0;
+        try Backend.attentionTiles(pairs, visible, null, first, tile_rows, list, &tile_count);
+        var strip_floats: usize = 0;
+        for (list[0..tile_count]) |t| strip_floats += @as(usize, t.rows) * t.span;
+        const capacity = qh * strip_floats + qh * strip_floats / 16; // the strips and their row statistics
+        var chunks: [8]Backend.AttentionChunk = undefined;
+        const chunk_count = try Backend.chunkTiles(list[0..tile_count], qh, capacity, &chunks);
+        const strips = try b.create(capacity * 4);
+        defer b.release(strips) catch {};
+        const shape: Backend.AttentionSegmentsGroupedShape = .{ .query_heads = qh, .kv_heads = kvh, .width = width, .rows = visible, .q_stride = q_stride, .kv_stride = kv_stride, .out_stride = q_stride, .scale = 1 };
+        var best: [3]f64 = @splat(std.math.inf(f64));
+        for (0..4) |round| {
+            b.profile.?.totals.clearRetainingCapacity();
+            try b.begin();
+            for (chunks[0..chunk_count]) |chunk| try b.attentionSegmentsGrouped(queries, keys, values, out, bounds, tiles.slice(chunk.first * @sizeOf(Backend.AttentionTile), chunk.count * @sizeOf(Backend.AttentionTile)), chunk, strips, shape);
+            try b.commit();
+            if (round == 0) continue;
+            for ([_]inference.metal.Kernel{ .segments_scores, .segments_stats, .segments_values }, 0..) |kernel, i| {
+                const total = b.profile.?.totals.get(.{ .kernel = kernel, .encoding = null, .rows = 0, .columns = 0 }) orelse continue;
+                best[i] = @min(best[i], total.seconds * 1e3);
+            }
+        }
+        // The row-split body on the same cache and the same rows.
+        const position = visible - count;
+        const chunk_queries = queries.slice(position * q_stride * 4, Backend.attentionChunkRows(count) * q_stride * 4);
+        const chunk_out = out.slice(0, Backend.attentionChunkRows(count) * q_stride * 4);
+        var split_best: f64 = std.math.inf(f64);
+        for (0..4) |round| {
+            const before = b.gpuSeconds();
+            try b.begin();
+            try b.attentionChunk(keys, values, chunk_queries, chunk_out, .{ .query_heads = qh, .kv_heads = kvh, .key_width = width, .value_width = width, .position = position, .count = count, .q_stride = q_stride, .out_stride = q_stride, .scale = 1 });
+            try b.commit();
+            if (round > 0) split_best = @min(split_best, (b.gpuSeconds() - before) * 1e3);
+        }
+        var label: [32]u8 = undefined;
+        std.debug.print("{s:<30} {d:>9.3} {d:>9.3} {d:>9.3} {d:>9.3} {d:>11.3} {d:>8.1}\n", .{ try std.fmt.bufPrint(&label, "v{d}-c{d}", .{ visible, count }), best[0], best[1], best[2], best[0] + best[1] + best[2], split_best, @as(f64, @floatFromInt(strip_floats * qh * 4)) / 1e6 });
+    };
+}
+
 /// `--decode-bench`: GPU time of one `attentionDecode` (Saluki's layer:
 /// 24 query heads over 4 KV heads of 256) per cache precision and depth,
 /// and the cache bytes it reads per second.
@@ -3719,6 +3963,8 @@ pub fn main(init: std.process.Init) !void {
         return matvecRowsBench(alloc, max_rows, with_head);
     }
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--hadamard-bench")) return hadamardBench(alloc);
+    if (args.len >= 3 and std.mem.eql(u8, args[1], "--attention-bench") and std.mem.eql(u8, args[2], "gemma")) return gemmaAttentionBench(alloc, if (args.len > 3) args[3] else null);
+    if (args.len >= 3 and std.mem.eql(u8, args[1], "--attention-bench") and std.mem.eql(u8, args[2], "materialized")) return materializedAttentionBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--attention-bench")) return attentionBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--decode-bench")) return decodeBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--tts-bench")) return @import("tts-metal-check.zig").bench(alloc);
