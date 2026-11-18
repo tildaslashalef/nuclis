@@ -110,10 +110,9 @@ An agent re-reads a growing prompt and writes a few hundred tokens a step.
 By the tables, a 4,096-token prompt and a 200-token answer take about 16 s on
 the 26B-A4B, 14 s on the E4B, and over a minute on Qwen3.8-27B: the two Gemma
 models make agentic work practical on this machine, the dense 27B does not.
-The 26B-A4B is work in progress: its drafter is off (0.67× at 512, as the
-verify batch grows dearer with every drafted token than it saves), its decode
-is 0.71–0.79× of the reference's, and its prefill falls furthest with context
-(0.42× at 32,639). Speed work goes to the mixture of experts and to long
+The 26B-A4B is work in progress: its drafter gains 1.1–1.65× ([2026-11-18](docs/benchmarks/record/gemma4.md#what-the-experts-cost-2026-11-18)),
+its decode is 0.71–0.79× of the reference's, and its prefill falls furthest
+with context (0.42× at 32,639). Speed work goes to the mixture of experts and to long
 context past 32K. Method and every record: [docs/benchmarks](docs/benchmarks/README.md).
 
 **How it got here.** nuclis began with Qwen3.8-27B, whose attention and

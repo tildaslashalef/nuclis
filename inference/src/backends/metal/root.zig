@@ -360,6 +360,7 @@ pub const Backend = struct {
     pub const route = experts_ops.route;
     pub const ExpertMatvecParams = experts_ops.ExpertMatvecParams;
     pub const matvecExperts = experts_ops.matvecExperts;
+    pub const matvecExpertsGrouped = experts_ops.matvecExpertsGrouped;
     pub const CombineParams = experts_ops.CombineParams;
     pub const CombineShape = experts_ops.CombineShape;
     pub const combineExperts = experts_ops.combineExperts;

@@ -48,6 +48,11 @@ pub const Observer = @import("../runtime/observer.zig").Observer;
 pub const vocabulary = model.vocabulary;
 /// Rows a verify batch may hold: the adapter's proposal bound plus the seed.
 pub const max_verify_rows = model.max_draft_proposals + 1;
+/// Chunks of at most this many rows run their experts through the gathered
+/// matvec, one slot at a time, instead of the gathered tiles: a few rows
+/// touch nearly k distinct experts each (docs/models/gemma4.md § What the
+/// experts cost), so a tile would hold one or two rows.
+pub const matvec_expert_rows = max_verify_rows;
 /// The widest per-layer geometry; narrower layers use a prefix of each buffer.
 const q_width = model.Kind.global.queryWidth(); // 16 × 512
 const kv_width = model.max_kv_width; // 8 × 256
@@ -318,6 +323,13 @@ pub const Plan = struct {
     /// The companion head, present when one was bound and asked for.
     draft: ?Head,
     has_draft: bool,
+    /// Every expert layer's routing for one batch (`layers × rows × k` u32),
+    /// created on the first call whose observer asks for `experts`; while
+    /// `tapping`, `route` writes here and the layer reads its ids back.
+    expert_tap: ?Buffer = null,
+    /// Rows per layer the tap holds; a grown chunk set re-creates it.
+    tap_rows: usize = 0,
+    tapping: bool = false,
 
     /// The prompt chunk the engine should ask for: `default` on the dense
     /// configuration; 512 on the expert one, where a chunk's slot rows fill
@@ -663,6 +675,8 @@ pub const Plan = struct {
         if (penalties) |p| try self.syncPenalties(p);
         try self.state.begin();
         errdefer self.state.fail();
+        try self.beginTap(observer);
+        defer self.tapping = false;
         const b = self.backend;
         try b.begin();
         errdefer b.discard();
@@ -676,7 +690,7 @@ pub const Plan = struct {
             try b.rmsNorm(self.x, c.attention_norm, self.normalized, norm);
             try self.attention(layer, c, il);
             try b.rmsNormAdd(self.x, self.projected, c.post_attention_norm, 1.0, norm);
-            try self.feedForward(layer, c);
+            try self.feedForward(layer, c, il);
             if (layer.per_layer) |block| {
                 const w = self.binding.config.per_layer_input;
                 try b.rmsNormAdd(self.x, self.projected, c.post_ffn_norm, 1.0, norm);
@@ -702,6 +716,7 @@ pub const Plan = struct {
             try self.recordOutputs(greedy, topk, penalties);
         }
         try b.commit();
+        try self.reportTap(observer, .decode, 1);
         try self.readOutputs(logits, greedy, topk, penalties != null);
         try self.state.commit();
     }
@@ -744,7 +759,7 @@ pub const Plan = struct {
     /// weighted by `router_scale` then scaled by 1/sqrt(width); the
     /// reference applies the two factors in the other order, one F32
     /// rounding apart.
-    fn feedForward(self: *Plan, layer: model.Layer, c: LayerConstants) !void {
+    fn feedForward(self: *Plan, layer: model.Layer, c: LayerConstants, il: usize) !void {
         const b = self.backend;
         const hidden = self.binding.config.embedding;
         const norm: metal.Backend.Norm = .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden };
@@ -761,14 +776,15 @@ pub const Plan = struct {
             try b.rmsNorm(self.x, ec.router_scale, self.normalized, norm);
             try b.scale(self.normalized, hidden, 1.0 / self.binding.config.embeddingScale());
             try self.mm(experts.router, self.normalized, e.router_logits);
-            try b.route(e.router_logits, spec.count, k, 1, spec.count, e.indices, e.route_weights);
+            const indices = self.tapSlice(il, 1, k) orelse e.indices;
+            try b.route(e.router_logits, spec.count, k, 1, spec.count, indices, e.route_weights);
             try b.rmsNorm(self.x, ec.pre_ffn_norm_2, self.normalized, norm);
             const gate_up = try self.expertWeight(experts.gate_up);
             const down = try self.expertWeight(experts.down);
-            try b.matvecExperts(gate_up.buffer, gate_up.tensor, e.indices, k, self.normalized, 0, e.gate_up, 2 * ff);
+            try b.matvecExperts(gate_up.buffer, gate_up.tensor, indices, k, self.normalized, 0, e.gate_up, 2 * ff);
             try b.geluMulRows(e.gate_up, e.gate_up.slice(ff * 4, e.gate_up.len - ff * 4), e.hidden, ff, k, 2 * ff, 2 * ff, ff);
-            try b.matvecExperts(down.buffer, down.tensor, e.indices, k, e.hidden, ff, e.down, hidden);
-            try b.combineExperts(e.down, e.route_weights, e.indices, ec.down_scale, e.out, .{ .columns = hidden, .slots = k, .rows = 1, .experts = spec.count, .in_stride = hidden, .out_stride = hidden });
+            try b.matvecExperts(down.buffer, down.tensor, indices, k, e.hidden, ff, e.down, hidden);
+            try b.combineExperts(e.down, e.route_weights, indices, ec.down_scale, e.out, .{ .columns = hidden, .slots = k, .rows = 1, .experts = spec.count, .in_stride = hidden, .out_stride = hidden });
             try b.rmsNormAdd(self.projected, e.out, ec.post_ffn_norm_2, 1.0, norm);
         }
     }
@@ -777,7 +793,7 @@ pub const Plan = struct {
     /// `projected_c`. The expert branch routes every row, groups the
     /// `count · k` slot rows by expert, and runs the gathered tiles once per
     /// group instead of the decode matvec once per slot.
-    fn feedForwardChunk(self: *Plan, layer: model.Layer, c: LayerConstants, count: usize) !void {
+    fn feedForwardChunk(self: *Plan, layer: model.Layer, c: LayerConstants, count: usize, il: usize) !void {
         const b = self.backend;
         const hidden = self.binding.config.embedding;
         const ffn = self.binding.config.feed_forward;
@@ -798,15 +814,27 @@ pub const Plan = struct {
             try b.rmsNorm(self.x_c, ec.router_scale, self.normalized_c, norm);
             try b.scale(self.normalized_c, count * hidden, 1.0 / self.binding.config.embeddingScale());
             try self.mmRows(experts.router, self.normalized_c, hidden, e.router_logits_c, spec.count, count);
-            try b.route(e.router_logits_c, spec.count, k, count, spec.count, e.indices_c, e.route_weights_c);
+            const indices = self.tapSlice(il, count, k) orelse e.indices_c;
+            try b.route(e.router_logits_c, spec.count, k, count, spec.count, indices, e.route_weights_c);
             try b.rmsNorm(self.x_c, ec.pre_ffn_norm_2, self.normalized_c, norm);
-            try b.expertLists(e.indices_c, count, k, spec.count, e.lists);
             const gate_up = try self.expertWeight(experts.gate_up);
             const down = try self.expertWeight(experts.down);
-            try b.matmulExperts(gate_up.buffer, gate_up.tensor, e.lists, count, k, self.normalized_c, hidden, k, e.gate_up_c, 2 * ff);
-            try b.geluMulRows(e.gate_up_c, e.gate_up_c.slice(ff * 4, e.gate_up_c.len - ff * 4), e.hidden_c, ff, n, 2 * ff, 2 * ff, ff);
-            try b.matmulExperts(down.buffer, down.tensor, e.lists, count, k, e.hidden_c, ff, 1, e.down_c, hidden);
-            try b.combineExperts(e.down_c, e.route_weights_c, e.indices_c, ec.down_scale, e.out_c, .{ .columns = hidden, .slots = k, .rows = count, .experts = spec.count, .in_stride = hidden, .out_stride = hidden });
+            if (count <= matvec_expert_rows) {
+                // A few rows (a verify batch, a prompt's tail) spread over
+                // nearly 8 experts each: the gathered tiles would run a
+                // 1–2-row list per expert. Each slot takes the decode
+                // step's gathered matvec instead, its token's row shared
+                // by its k slots.
+                try b.matvecExpertsGrouped(gate_up.buffer, gate_up.tensor, indices, n, self.normalized_c, hidden, k, e.gate_up_c, 2 * ff);
+                try b.geluMulRows(e.gate_up_c, e.gate_up_c.slice(ff * 4, e.gate_up_c.len - ff * 4), e.hidden_c, ff, n, 2 * ff, 2 * ff, ff);
+                try b.matvecExperts(down.buffer, down.tensor, indices, n, e.hidden_c, ff, e.down_c, hidden);
+            } else {
+                try b.expertLists(indices, count, k, spec.count, e.lists);
+                try b.matmulExperts(gate_up.buffer, gate_up.tensor, e.lists, count, k, self.normalized_c, hidden, k, e.gate_up_c, 2 * ff);
+                try b.geluMulRows(e.gate_up_c, e.gate_up_c.slice(ff * 4, e.gate_up_c.len - ff * 4), e.hidden_c, ff, n, 2 * ff, 2 * ff, ff);
+                try b.matmulExperts(down.buffer, down.tensor, e.lists, count, k, e.hidden_c, ff, 1, e.down_c, hidden);
+            }
+            try b.combineExperts(e.down_c, e.route_weights_c, indices, ec.down_scale, e.out_c, .{ .columns = hidden, .slots = k, .rows = count, .experts = spec.count, .in_stride = hidden, .out_stride = hidden });
             try b.rmsNorm(e.out_c, ec.post_ffn_norm_2, e.out_c, norm);
             try b.add(self.projected_c, e.out_c, count * hidden);
         }
@@ -995,6 +1023,8 @@ pub const Plan = struct {
         if (penalties) |p| try self.syncPenalties(p);
         try self.state.beginChunk(count);
         errdefer self.state.fail();
+        try self.beginTap(observer);
+        defer self.tapping = false;
         const b = self.backend;
         try b.begin();
         errdefer b.discard();
@@ -1015,9 +1045,56 @@ pub const Plan = struct {
             try self.recordOutputs(greedy, topk, penalties);
         }
         try b.commit();
+        try self.reportTap(observer, .prefill, count);
         try self.readOutputs(logits, greedy, topk, penalties != null);
         try self.state.commitChunk(count);
         if (hidden_rows) |dest| @memcpy(dest, self.prefill_hidden.floats()[0 .. count * hidden]);
+    }
+
+    /// Layer `il`'s slice of the expert tap for `rows` rows, or null when
+    /// not tapping.
+    fn tapSlice(self: *Plan, il: usize, rows: usize, k: usize) ?Buffer {
+        if (!self.tapping) return null;
+        const tap = self.expert_tap orelse return null;
+        std.debug.assert(rows <= self.tap_rows);
+        return tap.slice(il * self.tap_rows * k * 4, rows * k * 4);
+    }
+
+    /// Starts tapping the routing when `observer` asks for it, creating the
+    /// tap on first use.
+    fn beginTap(self: *Plan, observer: ?Observer) !void {
+        self.tapping = false;
+        const o = observer orelse return;
+        if (o.experts == null) return;
+        const spec = self.binding.config.experts orelse return;
+        const rows = @max(self.chunk, self.span_rows, max_verify_rows);
+        if (self.expert_tap != null and self.tap_rows < rows) {
+            try self.backend.release(self.expert_tap.?);
+            self.expert_tap = null;
+        }
+        if (self.expert_tap == null) {
+            self.expert_tap = try self.backend.create(self.binding.active().len * rows * spec.used * 4);
+            self.tap_rows = rows;
+        }
+        self.tapping = true;
+    }
+
+    /// After the batch's commit: hands every expert layer's routing to the
+    /// observer and stops tapping.
+    fn reportTap(self: *Plan, observer: ?Observer, batch: @import("../runtime/observer.zig").Batch, rows: usize) !void {
+        if (!self.tapping) return;
+        self.tapping = false;
+        const report = observer.?.experts.?;
+        const spec = self.binding.config.experts.?;
+        const tap = self.expert_tap.?;
+        const stride = self.tap_rows * spec.used;
+        const all = @as([*]const u32, @ptrCast(@alignCast(tap.host)))[0 .. self.binding.active().len * stride];
+        for (self.binding.active(), 0..) |layer, il| {
+            if (layer.experts == null) continue;
+            const ids = all[il * stride ..][0 .. rows * spec.used];
+            for (ids) |id| if (id >= spec.count) return error.NonFiniteResult;
+            try report(observer.?.context, .{ .batch = batch, .layer = il, .rows = rows, .k = spec.used, .experts = spec.count, .indices = ids });
+        }
     }
 
     /// Records the embedding gather and every decoder layer over one admitted
@@ -1046,7 +1123,7 @@ pub const Plan = struct {
             try self.attentionChunk(layer, c, il, count);
             try b.rmsNorm(self.projected_c, c.post_attention_norm, self.projected_c, norm);
             try b.add(self.x_c, self.projected_c, count * hidden);
-            try self.feedForwardChunk(layer, c, count);
+            try self.feedForwardChunk(layer, c, count, il);
             if (layer.per_layer) |block| {
                 try b.add(self.x_c, self.projected_c, count * hidden);
                 try self.mmRows(block.gate, self.x_c, hidden, self.pl_gate_c, w, count);
@@ -1117,6 +1194,8 @@ pub const Plan = struct {
         const count = tokens.len;
         try self.state.beginChunk(count);
         errdefer self.state.fail();
+        try self.beginTap(observer);
+        defer self.tapping = false;
         const b = self.backend;
         try b.begin();
         errdefer b.discard();
@@ -1133,6 +1212,7 @@ pub const Plan = struct {
             for (out, 0..) |top, i| try b.topk(self.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, sampling.TopK.capacity, top.temperature, self.topk_rows[i]);
         }
         try b.commit();
+        try self.reportTap(observer, .verify, count);
         if (h_rows) |h| @memcpy(h, self.verify_hidden.floats()[0 .. count * hidden]);
         if (rows) |r| @memcpy(r, self.verify_logits.floats()[0 .. count * vocabulary]);
         if (tops) |out| {
@@ -1155,6 +1235,8 @@ pub const Plan = struct {
         const count = tokens.len;
         try self.state.beginChunk(count);
         errdefer self.state.fail();
+        try self.beginTap(observer);
+        defer self.tapping = false;
         const b = self.backend;
         try b.begin();
         errdefer b.discard();
@@ -1165,6 +1247,7 @@ pub const Plan = struct {
         try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, self.verify_logits, vocabulary, count);
         for (0..count) |i| try b.argmax(self.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, self.argmax_values, self.argmax_indices, self.verify_argmax.slice(i * 4, 4));
         try b.commit();
+        try self.reportTap(observer, .verify, count);
         if (h_rows) |h| @memcpy(h, self.verify_hidden.floats()[0 .. count * hidden]);
         const ids = @as([*]const u32, @ptrCast(@alignCast(self.verify_argmax.host)))[0..count];
         for (ids, out) |id, *token| {

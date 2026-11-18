@@ -438,8 +438,19 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
         try draftRecoveryCheck(spec, alloc, io, if (backend) |*b| b else null, mapped.view(), binding, spec.draft.?);
         if (backend) |*b| try draftBatchCommitCheck(spec, alloc, b, mapped.view(), binding);
     } else std.debug.print("Draft block checks skipped: the file carries no embedded block.\n", .{});
-    try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 4, use_metal, boundsOf(spec, binding));
-    if (use_metal) try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 8, true, boundsOf(spec, binding));
+    const routed = if (comptime spec.expert_bounds != null) binding.config.experts != null else false;
+    try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 4, use_metal, boundsOf(spec, binding), !routed);
+    if (use_metal) try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 8, true, boundsOf(spec, binding), !routed);
+    if (routed) if (backend) |*b| {
+        b.generic_only = true;
+        defer b.generic_only = false;
+        var exact = boundsOf(spec, binding);
+        exact.chunk_max_abs = 5e-3;
+        exact.chunk_rel_rms = 2e-4;
+        std.debug.print("Recovery through the generic F32 tiles and matvecs:\n", .{});
+        try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 4, true, exact, true);
+        try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 8, true, exact, true);
+    };
     if (backend) |*b| try checkChunkedPrefill(spec, alloc, b, mapped.view(), binding, expected, actual);
 }
 
@@ -493,8 +504,11 @@ fn checkSnapshot(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
 /// configuration's chunk-versus-step tolerance (`boundsOf`) applies and the difference is printed. Then the
 /// refusals: rewind without a checkpoint, truncate on a recurrent layout, a
 /// cancelled batch poisoning the session, and an over-capacity batch refused
-/// before any write.
-fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Allocator, io: std.Io, first: *Model, second: *Model, other: *Model, rows: usize, use_metal: bool, bounds: Bounds) !void {
+/// before any write. `same_argmax` also holds the greedy token; an expert
+/// configuration drops it on the specialized kernels, where a router
+/// near-tie in the reference swaps an expert, and holds it in a second pass
+/// through the generic F32 kernels at a tight bound.
+fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Allocator, io: std.Io, first: *Model, second: *Model, other: *Model, rows: usize, use_metal: bool, bounds: Bounds, same_argmax: bool) !void {
     const count = rows + 1;
     const capacity = first.state().capacity;
     const tokens = try alloc.alloc(u32, @max(count + 1, capacity + 1));
@@ -524,7 +538,7 @@ fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
         for (tokens[0 .. 1 + accepted]) |t| try second.step(t, null, null);
         try second.step(tokens[1 + accepted], b, null);
         if (use_metal) {
-            try compareRecovery(rows, b, a, bounds.chunk_max_abs, bounds.chunk_rel_rms);
+            try compareRecovery(rows, b, a, bounds.chunk_max_abs, bounds.chunk_rel_rms, same_argmax);
         } else if (!std.mem.eql(f32, a, b)) return error.RecoveryMismatch;
     }
     // A taped batch keeps its rows pending: a checkpoint is refused until a
@@ -2041,10 +2055,11 @@ fn compareLogitRows(label: []const u8, vocabulary: usize, expected: []const f32,
 
 /// A recovered verify batch's correction logits against the sequential run's:
 /// the same metrics, recorded at the family's chunk-versus-step bound.
-fn compareRecovery(rows: usize, expected: []const f32, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64) !void {
+fn compareRecovery(rows: usize, expected: []const f32, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64, same_argmax: bool) !void {
     const d = Difference.of(expected, actual);
     std.debug.print("Recovery (batch {d} rows) vs sequential F32 steps: max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (bounds {e:.0} / {e:.0})\n", .{ rows, d.max_abs, d.rel_rms, d.arg_expected, d.arg_actual, max_abs_bound, rel_rms_bound });
-    if (!d.within(max_abs_bound, rel_rms_bound)) return error.RecoveryMismatch;
+    if (d.max_abs > max_abs_bound or d.rel_rms > rel_rms_bound) return error.RecoveryMismatch;
+    if (same_argmax and d.arg_expected != d.arg_actual) return error.RecoveryMismatch;
 }
 
 /// A pinned vision fixture: the reference's projector rows for the

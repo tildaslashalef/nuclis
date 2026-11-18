@@ -1356,14 +1356,18 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
         const decoded = try alloc.alloc(f32, columns);
         defer alloc.free(decoded);
         var clean: [slots.len * rows]f32 = undefined;
-        for ([_]usize{ 0, columns }) |in_stride| for ([_]bool{ false, true }) |generic| {
+        // (in_stride, in_group): one shared input, one per slot, and two
+        // slots per input row (a two-row batch of k = 2).
+        for ([_][2]usize{ .{ 0, 1 }, .{ columns, 1 }, .{ columns, 2 } }) |shape| for ([_]bool{ false, true }) |generic| {
+            const in_stride = shape[0];
+            const in_group = shape[1];
             b.generic_only = generic;
             for (output.floats()) |*v| v.* = std.math.nan(f32);
             try b.begin();
-            try b.matvecExperts(weights, tensor, indices, slots.len, input, in_stride, output, rows);
+            try b.matvecExpertsGrouped(weights, tensor, indices, slots.len, input, in_stride, in_group, output, rows);
             try b.commit();
             for (slots, 0..) |e, s| {
-                const x = input.floats()[s * in_stride ..][0..columns];
+                const x = input.floats()[s / in_group * in_stride ..][0..columns];
                 const matrix = try tensor.expert(e);
                 try inference.cpu.matvec(io, matrix, x, expected, decoded);
                 const stride = matrix.bytes.len / rows;
@@ -1372,7 +1376,7 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
                     var mass: f64 = 0;
                     for (decoded, x) |w, xv| mass += @abs(@as(f64, w) * xv);
                     expectClose(if (generic) "gathered matvec (generic)" else "gathered matvec", output.floats()[s * rows + r], expected[r], @floatCast(mass * 4e-6 + 1e-6)) catch |err| {
-                        std.debug.print("  in_stride {d}, slot {d} (expert {d}), row {d}\n", .{ in_stride, s, e, r });
+                        std.debug.print("  in_stride {d}, in_group {d}, slot {d} (expert {d}), row {d}\n", .{ in_stride, in_group, s, e, r });
                         return err;
                     };
                 }
@@ -1402,6 +1406,7 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
         if (b.matvecExperts(weights, tensor, indices, slots.len, input, columns + 1, output, rows)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
         if (b.matvecExperts(weights, tensor, indices.slice(2, 8), 2, input, 0, output, rows)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
         if (b.matvecExperts(weights, tensor, indices, 0, input, 0, output, rows)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        if (b.matvecExpertsGrouped(weights, tensor, indices, slots.len, input, columns, 0, output, rows)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
         var bad = tensor;
         bad.experts = 7;
         if (b.matvecExperts(weights, bad, indices, 1, input, 0, output, rows)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;

@@ -33,7 +33,7 @@ pub fn route(self: *Backend, logits: Buffer, experts: usize, k: usize, rows: usi
     try self.dispatch(.route, &.{ logits, indices, weights }, p, @intCast(rows), 256, .{});
 }
 
-pub const ExpertMatvecParams = extern struct { columns: u32, stride: u32, rows: u32, blocks: u32, encoding: u32, experts: u32, slots: u32, in_stride: u32, out_stride: u32, row_groups: u32 };
+pub const ExpertMatvecParams = extern struct { columns: u32, stride: u32, rows: u32, blocks: u32, encoding: u32, experts: u32, slots: u32, in_stride: u32, out_stride: u32, row_groups: u32, in_group: u32 };
 /// Gathered projection: for each slot `s < slots`,
 /// `output[s·out_stride + r] = W[indices[s]][r] · input[s·in_stride]`
 /// over the expert matrices of `tensor` (`cpu.ExpertMatrix`, experts
@@ -42,12 +42,19 @@ pub const ExpertMatvecParams = extern struct { columns: u32, stride: u32, rows: 
 /// stride must keep every slot float4-aligned); otherwise the generic
 /// decoder. Reads only the selected experts' bytes.
 pub fn matvecExperts(self: *Backend, weights: Buffer, tensor: cpu.ExpertMatrix, indices: Buffer, slots: usize, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize) !void {
+    return self.matvecExpertsGrouped(weights, tensor, indices, slots, input, in_stride, 1, output, out_stride);
+}
+/// `matvecExperts` with slot `s` reading input row `s / in_group`: a batch
+/// of tokens whose `k` slots each share their token's row (the gate-up
+/// projection of a few-row batch, `in_group` = k).
+pub fn matvecExpertsGrouped(self: *Backend, weights: Buffer, tensor: cpu.ExpertMatrix, indices: Buffer, slots: usize, input: Buffer, in_stride: usize, in_group: usize, output: Buffer, out_stride: usize) !void {
+    if (in_group == 0 or in_group > slots) return error.InvalidShape;
     const per_expert = tensor.expertBytes() catch return error.InvalidShape;
     const stride = per_expert / tensor.rows;
     if (tensor.columns % 16 != 0 or tensor.rows > std.math.maxInt(u32) / 4 or tensor.experts > std.math.maxInt(u32)) return error.InvalidShape;
     if (slots == 0 or slots > std.math.maxInt(u16) or out_stride < tensor.rows or (in_stride != 0 and in_stride < tensor.columns) or in_stride % 4 != 0) return error.InvalidShape;
     if (weights.len < tensor.bytes.len or indices.len < slots * 4 or indices.offset % 4 != 0) return error.InvalidShape;
-    if (input.len < ((slots - 1) * in_stride + tensor.columns) * 4 or output.len < ((slots - 1) * out_stride + tensor.rows) * 4 or output.offset % 4 != 0) return error.InvalidShape;
+    if (input.len < ((slots - 1) / in_group * in_stride + tensor.columns) * 4 or output.len < ((slots - 1) * out_stride + tensor.rows) * 4 or output.offset % 4 != 0) return error.InvalidShape;
     const specialized = !self.generic_only and specializedMatvec(tensor.encoding, weights.offset, stride, input.offset) != null;
     const row_groups = @divCeil(tensor.rows, 16);
     const p: ExpertMatvecParams = .{
@@ -61,6 +68,7 @@ pub fn matvecExperts(self: *Backend, weights: Buffer, tensor: cpu.ExpertMatrix, 
         .in_stride = @intCast(in_stride),
         .out_stride = std.math.cast(u32, out_stride) orelse return error.InvalidShape,
         .row_groups = @intCast(row_groups),
+        .in_group = @intCast(in_group),
     };
     // The bytes that bound the dispatch are the selected experts', read once each;
     // the row label saturates rather than refusing work it only describes.

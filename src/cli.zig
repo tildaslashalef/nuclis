@@ -272,12 +272,19 @@ pub fn parseArgs(args: []const []const u8) !Options {
         } else if (command == .bench and std.mem.eql(u8, args[i], "--profile")) {
             if (options.benchmark.profile) return error.DuplicateOption;
             options.benchmark.profile = true;
+        } else if (command == .bench and std.mem.eql(u8, args[i], "--profile-prefill")) {
+            if (options.benchmark.profile_prefill) return error.DuplicateOption;
+            options.benchmark.profile_prefill = true;
+            options.benchmark.profile = true;
         } else if (command == .bench and std.mem.eql(u8, args[i], "--kernel-stats")) {
             if (options.benchmark.kernel_stats) return error.DuplicateOption;
             options.benchmark.kernel_stats = true;
         } else if (command == .bench and std.mem.eql(u8, args[i], "--unfused-norms")) {
             if (options.benchmark.unfused_norms) return error.DuplicateOption;
             options.benchmark.unfused_norms = true;
+        } else if (command == .bench and std.mem.eql(u8, args[i], "--expert-counts")) {
+            if (options.benchmark.expert_counts) return error.DuplicateOption;
+            options.benchmark.expert_counts = true;
         } else if (command == .eval) {
             const flag = args[i];
             i += 1;

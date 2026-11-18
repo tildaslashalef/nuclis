@@ -38,4 +38,25 @@ pub const Observer = struct {
     /// a whole chunked prefill. `generate` and `bench` do not register it, so
     /// a measured run carries no display work.
     progress: ?*const fn (*anyopaque, Progress) anyerror!void = null,
+    /// Called after a mixture-of-experts layer's routing is computed, with
+    /// the experts each row chose; borrowed for the callback only. A
+    /// measurement hook (`bench --expert-counts`): the plan keeps every
+    /// layer's choices until its command buffer completes, which costs a
+    /// buffer, not a synchronization.
+    experts: ?*const fn (*anyopaque, Routing) anyerror!void = null,
+};
+
+/// Which batch a `Routing` came from: a prompt chunk, a speculative verify
+/// batch, or one decode step.
+pub const Batch = enum { prefill, verify, decode };
+
+/// One layer's routing over one batch: `indices` holds `rows × k` expert
+/// ids, row-major, each below `experts`.
+pub const Routing = struct {
+    batch: Batch,
+    layer: usize,
+    rows: usize,
+    k: usize,
+    experts: usize,
+    indices: []const u32,
 };

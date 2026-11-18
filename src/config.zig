@@ -2225,14 +2225,15 @@ test "the written initial file parses back exactly and shows the entry shape" {
     try std.testing.expectEqual(.qwen38, gen.profile);
     try std.testing.expectEqual(@as(usize, 32768), gen.ctx_size);
     // The entry carries the measured speculative verdict: Qwen's
-    // embedded head pays at draft 7, the mixture-of-experts Gemma's does not.
+    // embedded head pays at draft 7, the mixture-of-experts Gemma's at 4.
     try std.testing.expectEqual(true, gen.entry.?.generation.speculative.?);
     try std.testing.expectEqual(@as(usize, 7), gen.entry.?.generation.draft_length.?);
     try std.testing.expect(gen.speculative);
     try std.testing.expectEqualStrings("MTP/mtp-Qwen3.8-27B-Q4_0.gguf", (try gen.draftFile()).?);
     const moe = resolve(&loaded, "gemma-4-26b-a4b", .{}, .generate);
-    try std.testing.expectEqual(false, moe.entry.?.generation.speculative.?);
-    try std.testing.expect(!moe.speculative);
+    try std.testing.expectEqual(true, moe.entry.?.generation.speculative.?);
+    try std.testing.expectEqual(@as(usize, 4), moe.entry.?.generation.draft_length.?);
+    try std.testing.expect(moe.speculative);
     // A flag still wins over the entry's verdict.
     try std.testing.expect(!resolve(&loaded, null, .{ .speculative = false }, .generate).speculative);
 }

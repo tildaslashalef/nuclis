@@ -68,6 +68,21 @@ layer_output_scale`. The 3-D tensors are `[experts][rows][columns]`, experts
 contiguous (`cpu.ExpertMatrix`), and stay resident; on Metal they run on the
 [gathered expert kernels](../engine/metal-kernels.md#gathered-expert-kernels),
 and the plan asks for a prompt chunk of 512 (`Plan.preferredChunk`).
+A chunk of at most `matvec_expert_rows` (9) rows, a verify batch or a
+prompt's tail, runs its experts through the decode gathered matvec, one
+slot each, instead of the tiles.
+
+### What the experts cost
+
+Consecutive tokens share few experts: R rows touch about 8, 14, 18, 22, 25
+distinct ones for R = 1…5, so a batch's union grows close to linearly with
+R. A verify batch therefore costs its dense path once plus nearly R
+single-token expert chains, and speculation pays as far as the dense share
+of a step is large. Through the prefill tiles a verify batch's one-row
+lists read at about 44 GB/s; through the decode matvec it costs 24 ms at
+one row where it cost 40, and the drafter went from 0.6× to 1.1–1.65×.
+Prefill's slope with context is attention, not the experts
+([record, 2026-11-18](../benchmarks/record/gemma4.md#what-the-experts-cost-2026-11-18)).
 
 ### The E4B's per-layer embeddings and shared KV
 
@@ -179,7 +194,7 @@ nuclis / reference:
 
 | Model | Prefill 512 | Prefill 32,639 | Decode 512 | Decode 32,639 | Drafter at 512 |
 | --- | ---: | ---: | ---: | ---: | --- |
-| 26B-A4B | 521.06 / 584.62 | 136.86 / 325.68 | 54.02 / 68.14 | 31.23 / 43.36 | off |
+| 26B-A4B | 521.06 / 584.62 | 136.86 / 325.68 | 54.02 / 68.14 | 31.23 / 43.36 | 57.5 → 67.5, draft 4 (2026-11-18, own run) |
 | E4B QAT | 531.03 / 597.96 | 189.30 / 388.42 | 46.84 / 62.10 | 33.08 / 44.58 | 46.9 → 81.9, draft 6 |
 
 The head-split decode attention raised long-context decode afterwards
@@ -194,8 +209,10 @@ gate's set).
   at 32,768 tokens the F16 session is 11.3 GB on the 12B and 7.4 GB on the
   26B-A4B; a ring for the windowed layers would cut the 12B's to about
   0.35 GB.
-- The 26B-A4B's drafter is off (0.67× at 512), and its prefill falls
-  furthest behind the reference with context.
+- The 26B-A4B's drafter gains 1.0–1.3× on prose and up to 1.65× on short
+  code; a verify batch still reads each slot's expert separately and runs
+  its dense projections on the fragment tile at about 60 GB/s. Its prefill
+  falls furthest behind the reference with context, in attention.
 - The specialized prefill tiles round activations to half; Gemma's large
   activations make chunked prefill differ from per-token steps more than
   Qwen's (bounded, same greedy token).

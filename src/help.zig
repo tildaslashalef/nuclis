@@ -335,6 +335,8 @@ fn bench(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--warmup <n>", "unmeasured runs first, 0..100; default 1");
     try row(out, sty, "--profile", "per-kernel GPU time (Metal); perturbs the rates");
     try row(out, sty, "--unfused-norms", "run the norm pairs the fused kernels replace");
+    try row(out, sty, "--profile-prefill", "--profile with each run's prompt kept in it");
+    try row(out, sty, "--expert-counts", "count the experts each batch routes to (MoE)");
     try row(out, sty, "--kernel-stats", "instead of benchmarking, print each Metal");
     try more(out, "pipeline's thread limit, SIMD width, and static");
     try more(out, "threadgroup memory (no model or prompt)");

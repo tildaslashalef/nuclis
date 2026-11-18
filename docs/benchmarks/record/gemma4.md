@@ -992,3 +992,109 @@ gemma4_e`, or register the pull with `--profile gemma4_e`.
 The perplexity is the non-QAT checkpoint's, a different model from the
 QAT file's; it is a sanity figure, not a bound. No gate pins a K-quant E4B
 file.
+
+## What the experts cost (2026-11-18)
+
+Why the 26B-A4B's drafter lost (0.60–0.67× of plain decode) where the
+E4B's gains 1.7×, and the change that turned it on. M4 Pro 48 GB, Metal,
+F16 cache, context 32,768, the QAT Q4_0 file and its assistant head;
+revision 29fb842 with this unit's working tree. The saved reports are in
+[experts-2026-11-18/](../experts-2026-11-18/).
+
+**Routing** (`bench --expert-counts`, the acceptance run's prose at 512 and
+4,096 tokens and the code prompt;
+[expert-counts.json](../experts-2026-11-18/expert-counts.json)). Mean
+distinct experts over R consecutive prompt rows, prose at 512:
+
+| R | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| distinct | 8 | 13.7 | 18.2 | 21.9 | 25.2 | 28.0 | 30.6 | 32.9 |
+| of 8R | 1.00 | 0.85 | 0.76 | 0.69 | 0.63 | 0.58 | 0.55 | 0.51 |
+
+Real verify batches touch fewer, the drafts being likelier tokens: 12.2,
+16.0, 19.2, 23.2 at R = 2…5 on prose, 21.7 at R = 5 on code. A 512-row
+prefill chunk touches 100–112 of the 128 experts at 37–41 rows per list,
+61–67 % of its lists under one 32-row tile. The next token shares 2.0–2.8
+of its 8 experts in a prompt, 3.2–3.4 in decode. A batch's union therefore
+grows close to linearly with R: there is little reuse for a batch to
+exploit.
+
+**Decode** (`bench --profile`, 512-token prompt): 57.5 tok/s (49.0 at
+16,384). Of 17.0 ms of GPU time per token, the gathered expert matvecs are
+5.2 ms at 141–199 GB/s, the dense projections 6.1, the head 1.9,
+attention 1.6, the rest 3.0. The E4B decodes at 53.3 (47.3 at 16,384).
+
+**Verify, before** (`bench --verify-rows R`, the batch cost C in ms): the
+batch ran its experts through the prefill path, `expertLists` then the
+32/64-row `matmulExperts` tiles, which with one or two rows per list read
+the weights at about 44 GB/s; the experts alone were 21–82 ms of C.
+
+**Prefill** (`bench --profile-prefill`): the experts cost about 0.9 ms per
+token at every length from 512 to 32,639; attention is 178 of 236 GPU
+seconds at 32,639. Prefill's fall-off with context is the attention the
+E4B shares, not the experts.
+
+**The change.** A chunk of at most `matvec_expert_rows` (9) rows, every
+verify batch and a prompt's short tail, runs its experts through the
+decode gathered matvec, one slot per (row, expert): the gate-up matvec
+reads its input row through the new `in_group` stride (k slots share a
+row), then GELU, then the down matvec. Verify C, old → new
+([verify-ab.json](../experts-2026-11-18/verify-ab.json)):
+
+| R | 1 | 2 | 4 | 6 | 8 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| at 512 | 40.3 → 24.0 | 55.2 → 25.8 | 74.2 → 34.7 | 87.1 → 43.4 | 100.9 → 51.8 |
+| at 16,384 | 44.2 → 27.7 | — | — | 104.7 → 62.0 | 126.2 → 77.3 |
+
+At R = 5 a batch's 37.6 ms of GPU time is 20.7 ms of experts (the matvec at
+155–221 GB/s); at R = 1, 22.9 ms, with the dense Q4_0 projections on the
+fragment tile at about 60 GB/s and the F32 router on the matmul tile
+(2.5 ms).
+
+**The drafter on the new build** (`scripts/bench/spec-matrix.py --model
+gemma4_26b_a4b --drafts 1-4 --baseline`, three pairs per cell, 128 tokens;
+speedup over the no-drafter run;
+[spec-matrix.json](../experts-2026-11-18/spec-matrix.json)):
+
+| Context | Sampling | d1 | d2 | d3 | d4 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 512 | greedy | 1.13 | 1.24 | 1.23 | 1.18 |
+| 512 | instruct | 1.06 | 1.16 | 1.08 | 1.18 |
+| 4,096 | greedy | 1.03 | 1.12 | 1.09 | 1.08 |
+| 4,096 | instruct | 1.11 | 1.27 | 1.29 | 1.26 |
+| 16,384 | greedy | 1.10 | 1.23 | 1.25 | 1.26 |
+| 16,384 | instruct | 0.97 | 1.05 | 0.96 | 1.00 |
+| code | greedy | 1.17 | 1.41 | 1.53 | 1.63 |
+| code | instruct | 1.19 | 1.44 | 1.57 | 1.65 |
+
+Means over the eight rows: 1.24 at draft 2, 1.25 at 3, 1.28 at 4. The
+catalogue entry's verdict is now on at draft 4. Only 16,384 instruct sits
+at parity, within the pairs' spread.
+
+**The recovery gate.** `gemma4-26b-a4b-generation-metal` failed on the
+new path: after a 4-row batch with one row accepted, the recovered step's
+argmax differed (max abs 7.07, relative RMS 0.127). Instrumented, the chunk
+was closer to the step on the matvec than on the tiles (expert output
+1.4e-4 against 4.1e-4 relative, no routing flips over 30 layers); the
+reference step itself has a router near-tie at layer 3 (an 8th-to-9th logit
+margin of 2.3e-4), which the shared attention and dense rounding cross on
+one path and not the other. Twelve token seeds fail 5 of 60 cases on the
+tiles and 6 of 60 on the matvec, all on the argmax alone. On an expert
+configuration the specialized recovery pass now holds the 2e1 / 5e-1
+magnitudes only, and a second pass through the generic F32 kernels holds
+5e-3 / 2e-4 and the argmax: at most 9.7e-4 / 2.6e-5 at 4 and 8 rows.
+
+**For another k-of-E mixture.** Independent routing would make R rows
+touch E·(1 − (1 − k/E)^R) experts, 35 of 40 slots here at R = 5; this
+router's neighbours share more, 22–25. Either way, while the union is well
+under E it grows close to linearly with R, so a verify batch costs its
+dense path once plus nearly R single-token expert chains. Speculation pays
+as far as the dense share of a step is large, on any such model, provided
+the batch's experts run on a few-row kernel rather than prefill's tiles.
+
+**What remains.** A verify batch reads each (row, expert) slot separately
+although 5 rows touch about 23 distinct experts of 40 slots; a matvec that
+reads each distinct expert once would save about 8 ms at R = 5. The dense
+projections of a few-row batch run at a quarter of decode's bandwidth.
+`verify-long` was not run: the change touches the expert layer, not
+attention or the cache.

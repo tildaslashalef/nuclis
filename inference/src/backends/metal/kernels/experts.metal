@@ -9,9 +9,10 @@
 // generic decoder when bit 31 asks for it), so a selected expert costs the
 // bytes of a dense matrix of its size. `in_stride` 0 shares one input
 // vector across the slots (the gate-up projection); the down projection
-// gives each slot its own hidden row. Expert indices are clamped so a
+// gives each slot its own hidden row, and `in_group` k lets a batch's k
+// slots per token share that token's row. Expert indices are clamped so a
 // corrupt routing buffer can never read past the tensor.
-struct ExpertMatvecParams { uint columns, stride, rows, blocks, encoding, experts, slots, in_stride, out_stride, row_groups; };
+struct ExpertMatvecParams { uint columns, stride, rows, blocks, encoding, experts, slots, in_stride, out_stride, row_groups, in_group; };
 kernel void nu_matvec_experts(device const uchar * weights [[buffer(0)]],
                               device const float * input [[buffer(1)]],
                               device float * output [[buffer(2)]],
@@ -23,7 +24,7 @@ kernel void nu_matvec_experts(device const uchar * weights [[buffer(0)]],
     uint slot = group / p.row_groups, local = group % p.row_groups;
     uint expert = min(indices[slot], p.experts - 1);
     device const uchar * w = weights + ulong(expert) * ulong(p.rows) * ulong(p.stride);
-    device const float * x = input + ulong(slot) * p.in_stride;
+    device const float * x = input + ulong(slot / p.in_group) * p.in_stride;
     device float * out = output + ulong(slot) * p.out_stride;
     MatvecBlockParams shape = { p.columns, p.stride, p.rows, p.blocks };
     threadgroup float iq4[16];
