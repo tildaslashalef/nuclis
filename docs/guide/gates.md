@@ -176,7 +176,7 @@ What can break independently, and what protects it. *Model-free* means
 | tokenizers: Qwen BPE, Gemma SPM, Laya byte-level and Metaspace | the Metaspace rules and rejections on a synthetic vocabulary | one vocabulary gate each |
 | vision: Qwen3-VL, SigLIP small with clamps, SigLIP large with standardization | preprocessing, grids | one vision gate each |
 | batched prefill at 256 rows, F16 cache over 511 keys, real prose | — | the perplexity gates |
-| a verify batch at depth (few-query attention, the multi-row weight path) against stepped decode from the same state | `checkAttentionVerify` against F64 to the 32K cache | `qwen38-verify-depth-{512,4k}`; `-16k`, `-32k` in `verify-long` |
+| a verify batch at depth (few-query attention, the multi-row weight path) against stepped decode from the same state | `checkAttentionVerify` against F64 to the 32K cache | `{qwen38,gemma4-26b-a4b,gemma4-e4b}-verify-depth-{512,4k}`; `-16k`, `-32k` in `verify-long` |
 | past 512 tokens and the sliding windows | — | `verify-long` |
 | speech, audio, and embeddings: Qwen3-TTS, Drama 3, Nemotron ASR, EmbeddingGemma 2, Gemma 4 audio | — | their own gates (`qwen3-tts-*`, `drama3-*`, `nemotron-asr-*`, `embeddinggemma-*`, `gemma4-e4b-audio-*`) |
 

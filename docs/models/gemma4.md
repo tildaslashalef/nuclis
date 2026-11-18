@@ -154,6 +154,10 @@ clip by its SHA-256 ([session.md](../engine/session.md#the-agents-token-cache)).
 <!-- gen:gates-for:gemma4 -->
 | Gate | Tier | Model | Evidence |
 | --- | --- | --- | --- |
+| `gemma4-26b-a4b-verify-depth-512` | `verify` | gemma4_26b_a4b | [metal-backend.md § verify-rows-at-depth-on-gemma-4-2026-11-18](../benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18) |
+| `gemma4-26b-a4b-verify-depth-4k` | `verify` | gemma4_26b_a4b | [metal-backend.md § verify-rows-at-depth-on-gemma-4-2026-11-18](../benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18) |
+| `gemma4-e4b-verify-depth-512` | `verify` | gemma4_e4b | [metal-backend.md § verify-rows-at-depth-on-gemma-4-2026-11-18](../benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18) |
+| `gemma4-e4b-verify-depth-4k` | `verify` | gemma4_e4b | [metal-backend.md § verify-rows-at-depth-on-gemma-4-2026-11-18](../benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18) |
 | `gemma4-26b-a4b-trace-cpu` | `verify-cpu` | gemma4_26b_a4b | [gemma4.md](gemma4.md) |
 | `gemma4-26b-a4b-trace-f32` | `verify-release` | gemma4_26b_a4b | [gemma4.md](gemma4.md) |
 | `gemma4-26b-a4b-trace-f16` | `verify` | gemma4_26b_a4b | [gemma4.md](gemma4.md) |
@@ -176,6 +180,10 @@ clip by its SHA-256 ([session.md](../engine/session.md#the-agents-token-cache)).
 | `gemma4-e4b-perplexity` | `verify` | gemma4_e4b | [eval.md § the-reference-record-2026-09-24](../benchmarks/record/eval.md#the-reference-record-2026-09-24) |
 | `gemma4-e4b-perplexity-full` | `verify-release` | gemma4_e4b | [eval.md § the-reference-record-2026-09-24](../benchmarks/record/eval.md#the-reference-record-2026-09-24) |
 | `gemma4-e4b-perplexity-4k` | `verify-long` | gemma4_e4b | [eval.md § the-long-context-record-2026-09-24](../benchmarks/record/eval.md#the-long-context-record-2026-09-24) |
+| `gemma4-26b-a4b-verify-depth-16k` | `verify-long` | gemma4_26b_a4b | [metal-backend.md § verify-rows-at-depth-on-gemma-4-2026-11-18](../benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18) |
+| `gemma4-26b-a4b-verify-depth-32k` | `verify-long` | gemma4_26b_a4b | [metal-backend.md § verify-rows-at-depth-on-gemma-4-2026-11-18](../benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18) |
+| `gemma4-e4b-verify-depth-16k` | `verify-long` | gemma4_e4b | [metal-backend.md § verify-rows-at-depth-on-gemma-4-2026-11-18](../benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18) |
+| `gemma4-e4b-verify-depth-32k` | `verify-long` | gemma4_e4b | [metal-backend.md § verify-rows-at-depth-on-gemma-4-2026-11-18](../benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18) |
 <!-- /gen -->
 
 The F16 cache's trace bound (1.0 / 5e-2) is the model's, not the kernels':

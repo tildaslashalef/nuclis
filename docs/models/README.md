@@ -255,7 +255,11 @@ on Metal). Both compare Metal against the CPU trace of § 4
 `<family>-generation-metal` gate) with per-family tolerances for the
 chunked-versus-stepped comparison; it also exercises snapshot/restore,
 cancellation, and isolation, and it found a backend bug on its first run
-(`Backend.unwrap`).
+(`Backend.unwrap`). A family with a drafter adds
+`<family>-verify-depth-512`, `-4k` (tier `verify`), `-16k`, and `-32k`
+(`verify-long`): a 4-row verify batch against stepped decode at depth,
+with bounds measured at the four lengths and set at twice the worst
+(`depthPasses` in `generation-check`).
 
 Take first-look rates with `nuclis bench` and record them as first look,
 not as the acceptance record.
@@ -333,7 +337,7 @@ against the extension rule. Gates: `make check`, then `make verify-auto`,
 which runs the canaries for shared code and names any further tier (the
 other families' gates must be unchanged; the new family's
 `<family>-trace-*`, `<family>-generation-metal`, `<family>-vocabulary`,
-and `<family>-perplexity` gates, one set per pinned file when the family
+`<family>-perplexity`, and with a drafter `<family>-verify-depth-*` gates, one set per pinned file when the family
 has two, as Gemma's `gemma4-26b-a4b-*` and `gemma4-e4b-*`), and `make
 verify-cpu` for the new CPU reference.
 
