@@ -1098,3 +1098,92 @@ reads each distinct expert once would save about 8 ms at R = 5. The dense
 projections of a few-row batch run at a quarter of decode's bandwidth.
 `verify-long` was not run: the change touches the expert layer, not
 attention or the cache.
+
+## Context past 32K (2026-11-18)
+
+What the 26B-A4B does at 64K and 128K, measured from a binary built with
+`-Dmax-context=131072` (revision d5b359f with this unit's working tree,
+ReleaseSafe, Metal), M4 Pro 48 GB, the QAT Q4_0 file and its assistant
+head, greedy, draft length 4. Prompts: WikiText-2's test text tokenized
+by nuclis with BOS, cut at 32,639, 65,536, and 131,000 tokens. Each point
+prefills into a saved prefix (`bench --prefix-cache`), then decodes 64
+tokens plain and speculative from it twice, then once more from the saved
+file under `--profile`. Reports: [context-2026-11-18/](../context-2026-11-18/).
+
+**What breaks: nothing, by reading and by running.** Every kernel's
+parameter struct carries positions and counts as `uint`; no plan or layout
+packs a position below 32 bits. Rotary tables are built on the host in
+F64 for `capacity` rows. Buffer creation already refuses a length above
+the device's `maxBufferLength`. Decode splits stop at
+`decode_splits_max` (64), so the split buffers do not grow with depth.
+The four points ran to their budget with no error. What grows is memory:
+every attention layer, the 25 sliding ones included, is allocated for the
+whole capacity, though a sliding layer reads only its last 1,024 rows.
+
+| | 32,639 F16 | 65,536 F16 | 65,536 Q8_0 | 131,000 Q8_0 |
+| --- | ---: | ---: | ---: | ---: |
+| cold prefill, s (tokens/s) | 257 (127) | 885 (74) | 867 (76) | 3,149 (42) |
+| decode, plain, tokens/s | 42.2 | 32.5 | 34.4 | 24.0 |
+| decode, drafter on, tokens/s | 40.8 | 30.4 | 25.5 | 20.1 |
+| accepted / proposed per step | 1.62 / 2.62 | 2.56 / 3.22 | 1.56 / 3.24 | 2.20 / 2.95 |
+| session bytes | 7.38 GB | 15.69 GB | 8.33 GB | 15.69 GB |
+| saved state, bytes | 7.35 GB | 14.76 GB | 7.84 GB | 15.68 GB |
+| restore from the saved file (warm page cache), s | 1.2 | 6.4 | 1.3 | 7.0 |
+| peak footprint, GB (swap growth) | 15.4 (0) | 31.1 (2.4 GB) | 17.4 (0) | 33.3 (1.0 GB) |
+| GPU ms per decode step, profiled | 19.7 | 30.3 | 25.0 | 40.3 |
+| global layers' attention, ms (share) | 6.5 (31 %) | 14.5 (50 %) | 12.8 (49 %) | 26.4 (65 %) |
+| sliding layers' attention, ms | 1.28 | 1.30 | 0.83 | 0.88 |
+| the three expert matvecs, ms | 2.9 | 3.2 | 2.6 | 3.1 |
+
+The profile's steps are the plain and the speculative runs' together. The
+peak footprint is the bench's: it keeps the snapshot in memory beside the
+session, so it holds the state twice; the swap at 64K F16 and 128K is
+that copy.
+
+**Reading.**
+- The expert chain and the sliding layers cost the same at every depth;
+  the five global layers' attention is all of the growth. Their decode
+  kernel (`attention_heads_*_512`) reads its rows at 100–111 GB/s on F16
+  and 58–61 on Q8_0, a half and a quarter of what the matvecs reach.
+- The drafter stops paying past 32K: verify rows multiply the global
+  attention, and at 128K that is 65 % of a step. On Q8_0 it loses most
+  (0.74× at 64K).
+- Cold prefill fits `2.61 ms × N + 164 ns × N²` within 1 % at all three
+  lengths; the quadratic term is the global layers' chunk attention, about
+  0.5 TFLOP/s at 32K. Derived from the fit, not measured: 1,000 new tokens
+  on a restored state cost about 13.5 s at 32K, 24 s at 64K, 46 s at
+  128K, plus the restore.
+- A saved state holds rows `[0, position)` of every layer: 225 KB per
+  token on F16, of which 205 KB are sliding rows no later step reads. At
+  32K that is 7.35 GB, past `cache.memory_bytes` (4 GiB) and near
+  `cache.disk_bytes` (8 GiB): the agent's memory tier keeps no state of
+  this model past about 18K tokens, so reuse across turns already fails
+  inside the default window (a live session still reuses its own state
+  step to step).
+- The prompt paths: `nuclis tokenize` refuses the 1.29 MB text whole
+  (`LimitExceeded`; it was tokenized in pieces), the TUI editor takes 128
+  KiB, the web client's body 512 KiB. The agent's result budget and its
+  compaction mark scale with the window (a sixth of the ceiling and half
+  of it), so they need no change to follow a larger one.
+- Perplexity (`nuclis eval`, the same text, the second half of each
+  window scored) stays finite at every depth: 988 at 4K, 939 at 16K,
+  1,584 at 32K, 1,473 at 64K, 1,309 at 128K (Q8_0), each ±2–4 %. Q8_0
+  matches F16 at 32K (1,577 against 1,584). The figures are this
+  instruction-tuned model's on raw text, and each depth scores different
+  passages, so they show the long path computes without drift, not that
+  the model uses the longer context; a chat-form long-context task is
+  what would show that. Reports beside the others.
+
+**Recommendation.** Do not raise the supported context on the present
+layout. A sliding layer kept as a ring of its window would make the
+session about 2.7 GiB at 128K on F16 (1.4 with Q8_0) instead of 27.5,
+the saved state at 32K about 0.9 GB instead of 7.35, and restore and the
+cache limits stop mattering at the default window. That is the first
+change of part B, before any ceiling is raised; the global layers' decode
+attention at depth (a half to a quarter of the bandwidth) is the second,
+and the only one that would let the drafter pay past 32K.
+
+The configuration does not refuse a length the build allows. 131,072 is
+recorded as needing a more powerful machine than this one; 65,536 is the
+candidate for the next supported ceiling, after the windowed layout and
+the global layers' prefill attention.

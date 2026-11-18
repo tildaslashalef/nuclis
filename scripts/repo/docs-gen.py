@@ -34,7 +34,7 @@ BLOCK = re.compile(r"(?<!`)<!-- gen:([\w-]+)(?::([\w.-]+))? -->(.*?)<!-- /gen --
 
 # Host constants a document states, by the file and declaration that own them.
 LIMITS = [
-    ("context ceiling (tokens)", "inference/src/runtime/session.zig", "max_capacity"),
+    ("context ceiling (tokens)", "inference/build.zig", "default_max_context"),
     ("output budget (tokens)", "src/config.zig", "max_output_tokens"),
     ("draft length", "inference/src/engine.zig", "max_draft_length"),
     ("prefill chunk (tokens)", "inference/src/engine.zig", "prefill_chunk"),

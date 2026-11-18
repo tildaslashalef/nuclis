@@ -22,6 +22,13 @@ tokens with the F16 cache, 4.15 with F32, and about 1.2 with Q8_0
 (1,088 MiB of attention rows), of which 150 MB is recurrent state. A session built with a checkpoint region adds another 150 MB on
 Qwen (`checkpoint_region`, below). `layout_digest` hashes the layouts and
 the capacity; equal digests mean byte-compatible state.
+Every attention layer gets `capacity` rows, a windowed one too: Gemma 4
+26B-A4B's session is 225 KB per token on F16, 205 of it in the 25 sliding
+layers, which read only their last 1,024 rows (7.38 GB at 32,768,
+[record, 2026-11-18](../benchmarks/record/gemma4.md#context-past-32k-2026-11-18)).
+`max_capacity` is 32,768 in a release build; `zig build -Dmax-context=<n>`
+raises it, and the configuration then accepts that length, which the gates
+do not cover ([spec § 8](../spec.md#8-performance-requirements)).
 
 ## The state machine
 

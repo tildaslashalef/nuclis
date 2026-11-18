@@ -16,6 +16,38 @@ ends with something committed as evidence (a fixture, a trace directory,
 a table in the family's document), because the next step needs it and the
 transcript does not outlive the session.
 
+## Which kind of new
+
+A release of a family nuclis already runs is usually not a new family.
+Decide which of three it is before writing code, and write the answer in
+the unit's design:
+
+```sh
+nuclis model inspect <owner/repo> --file <name>
+scripts/fixtures/gguf-inventory.py <file.gguf> \
+  --against inference/src/models/fixtures/<nearest>.json
+```
+
+`inspect` reads the remote directory (no download) and says whether every
+tensor's encoding has a kernel. `--against` prints, with the architecture
+prefix and block numbers folded, the metadata keys and tensor names only
+one side has, then the values and tensor shapes that differ under a shared
+name: the E4B against the 26B-A4B is six per-layer embedding tensors on one
+side and the eight expert tensors on the other, then its head counts,
+window, block count, and widths. Same names with other values is the
+second row below, not the first.
+
+| What differs | It is | Start at |
+| --- | --- | --- |
+| nothing but the encodings or the file | a new file of a model nuclis runs | [§ Re-pinning a file](#re-pinning-a-file) or [§ 6](#6-a-second-encoding) |
+| keys and tensors an existing adapter can bind as a new configuration (an optional block, a layer pattern, a size) | a configuration of that adapter | its binding and its `<family>_metal.zig` plan; the E4B (per-layer embeddings, shared KV) and the 26B-A4B (experts) joined Gemma 4 this way ([gemma4.md](gemma4.md)) |
+| a new `general.architecture`, or an operation no adapter computes | a new family | § 1 onward |
+
+A configuration still takes the whole of § 4–§ 7 for its own file: CPU
+traces, Metal gates, a tiny variant when its shape is new, the catalogue
+entry, a perplexity reference, and a speed baseline. What it does not
+take is a second copy of the schedule.
+
 ## 1. Container and inventory
 
 - Pick the checkpoint and quantization by `nuclis model inspect
@@ -304,6 +336,36 @@ other families' gates must be unchanged; the new family's
 and `<family>-perplexity` gates, one set per pinned file when the family
 has two, as Gemma's `gemma4-26b-a4b-*` and `gemma4-e4b-*`), and `make
 verify-cpu` for the new CPU reference.
+
+## Draft sources and experts
+
+A model's drafter is its own bring-up: the draft contract and the four
+sources nuclis has (Qwen3.8's prediction block in the target's file,
+Gemma 4's assistant head in a companion file, the DFlash and DFlash2
+drafters) are in
+[speculative-decoding.md § Draft sources](../engine/speculative-decoding.md#draft-sources).
+A new source gets CPU draft-row fixtures (`test-generation -- <file>
+--draft-trace DIR`), a `<family>-draft-trace-metal` gate against them, and
+the speculative generation checks. Its catalogue verdict
+(`.verdict = .{ .speculative = …, .draft_length = … }` in
+`src/catalog.zig`) is measured, never assumed: `make spec-matrix
+ARGS='--model <key> --contexts 512,4096,16384,code --drafts 2-7'` off/on
+pairs, then the agent's task list with the drafter off and on
+([development.md § The agent's task list](../development.md#the-agents-task-list)).
+
+A mixture of experts drafts only if a verify batch of R rows costs well
+under R decode steps. Measure that before tuning anything:
+`nuclis bench --expert-counts` reports the distinct experts R rows touch;
+`--verify-rows R` times the batch. Gemma 4's plan runs a chunk of at most
+`matvec_expert_rows` rows through the gathered decode matvec, one slot
+per row and expert, and longer chunks through the expert tiles; a new
+mixture re-measures that crossover for its own k and E. The method, and
+what to measure first on another k-of-E mixture:
+[record, 2026-11-18](../benchmarks/record/gemma4.md#what-the-experts-cost-2026-11-18).
+Two things already exist and need no new code: the gathered expert
+kernels (every encoding the decode matvec covers, the generic kernel
+otherwise), and `generation-check`'s `expert_bounds`, which tolerates the
+router near-ties that make a recovery's argmax flip.
 
 ## Tiny models
 
