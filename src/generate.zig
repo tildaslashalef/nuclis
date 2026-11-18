@@ -3,6 +3,7 @@
 const std = @import("std");
 const inference = @import("inference");
 const engine = @import("engine.zig");
+const expert_counts = @import("expert_counts.zig");
 const config = @import("config.zig");
 const interrupt = @import("interrupt.zig");
 
@@ -43,6 +44,8 @@ pub const Trace = struct {
     /// `generate` and `bench` leave it null, so a measured run never pays
     /// for display work.
     progress: ?Sink = null,
+    /// Where a mixture of experts' routing is tallied (`bench --expert-counts`).
+    experts: ?*expert_counts.Counts = null,
 
     /// A progress consumer: the callback and the context it belongs to. A
     /// second indirection because the observer's context is this `Trace`.
@@ -67,12 +70,17 @@ pub const Trace = struct {
         const sink = self.progress.?;
         try sink.call(sink.context, value);
     }
+    fn routing(context: *anyopaque, value: inference.observer.Routing) !void {
+        const self: *Trace = @ptrCast(@alignCast(context));
+        try self.experts.?.add(value);
+    }
     pub fn observer(self: *Trace) inference.engine.Observer {
         return .{
             .context = self,
             .check = check,
             .layer = if (self.directory != null) layer else null,
             .progress = if (self.progress != null) forward else null,
+            .experts = if (self.experts != null) routing else null,
         };
     }
 };

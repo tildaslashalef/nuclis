@@ -1,0 +1,3522 @@
+{
+ "nuclis-16384-r1-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 774.206291,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 435.141459
+  },
+  "verify": {
+   "rows": 1,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 6.764583333333334e-05,
+    "checkpoint": 6.16875e-05,
+    "verify": 44.116985187500006,
+    "recover": 0.00010158333333333334,
+    "commit": 0.0007022291666666666,
+    "total": 44.117918333333336
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 0.0001196875,
+     "checkpoint": 0.00011981249999999999,
+     "verify": 58.1266953125,
+     "recover": 0.0006719375000000002,
+     "commit": 0.0007734375,
+     "total": 58.1283801875
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 6.75625e-05,
+     "checkpoint": 5.7375000000000005e-05,
+     "verify": 43.9666586875,
+     "recover": 0.00013025,
+     "commit": 0.0007265624999999999,
+     "total": 43.9676404375
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.299999999999999e-05,
+     "checkpoint": 5.4625000000000006e-05,
+     "verify": 44.206666750000004,
+     "recover": 8.856249999999999e-05,
+     "commit": 0.0006926874999999999,
+     "total": 44.207575625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 6.2375e-05,
+     "checkpoint": 7.30625e-05,
+     "verify": 44.17763012499999,
+     "recover": 8.59375e-05,
+     "commit": 0.0006874375,
+     "total": 44.1785389375
+    }
+   ]
+  }
+ },
+ "nuclis-16384-r1-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 757.669375,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 433.876792
+  },
+  "verify": {
+   "rows": 1,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 6.847916666666665e-05,
+    "checkpoint": 6.514583333333333e-05,
+    "verify": 44.35048700000001,
+    "recover": 0.00013889583333333335,
+    "commit": 0.0007248333333333334,
+    "total": 44.351484354166665
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 8.08125e-05,
+     "checkpoint": 0.00011718750000000001,
+     "verify": 58.252674437500005,
+     "recover": 0.0006144375,
+     "commit": 0.0008543749999999998,
+     "total": 58.25434125000001
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.7249999999999996e-05,
+     "checkpoint": 7.549999999999999e-05,
+     "verify": 44.27696875,
+     "recover": 0.00011981250000000002,
+     "commit": 0.0007005000000000002,
+     "total": 44.2779218125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.012499999999998e-05,
+     "checkpoint": 4.962500000000001e-05,
+     "verify": 44.226599,
+     "recover": 0.00011975000000000001,
+     "commit": 0.0006849375,
+     "total": 44.2275234375
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.806249999999998e-05,
+     "checkpoint": 7.031250000000001e-05,
+     "verify": 44.54789325,
+     "recover": 0.000177125,
+     "commit": 0.0007890624999999999,
+     "total": 44.5490078125
+    }
+   ]
+  }
+ },
+ "nuclis-16384-r2-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 756.363792,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 433.661959
+  },
+  "verify": {
+   "rows": 2,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 2.7311822916666664,
+    "checkpoint": 0.00023527083333333334,
+    "verify": 62.06979941666666,
+    "recover": 0.00014764583333333331,
+    "commit": 0.0008411458333333335,
+    "total": 64.80220577083334
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 7.6210155625,
+     "checkpoint": 0.00034387499999999994,
+     "verify": 71.84184618750002,
+     "recover": 0.0007056875000000002,
+     "commit": 0.0009506875,
+     "total": 79.464862
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.7315911875000003,
+     "checkpoint": 0.00024731250000000003,
+     "verify": 62.05587250000001,
+     "recover": 0.000135375,
+     "commit": 0.0008515625000000001,
+     "total": 64.7886979375
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.738390625,
+     "checkpoint": 0.0002135625,
+     "verify": 62.08744768749999,
+     "recover": 0.00016437500000000002,
+     "commit": 0.0008515000000000002,
+     "total": 64.82706775
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.7235650624999996,
+     "checkpoint": 0.00024493750000000004,
+     "verify": 62.0660780625,
+     "recover": 0.00014318749999999998,
+     "commit": 0.0008203750000000001,
+     "total": 64.790851625
+    }
+   ]
+  }
+ },
+ "nuclis-16384-r2-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 731.364542,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 427.91675
+  },
+  "verify": {
+   "rows": 2,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 2.7256978750000003,
+    "checkpoint": 0.00022052083333333328,
+    "verify": 62.196167520833335,
+    "recover": 0.00013110416666666666,
+    "commit": 0.0008549375000000001,
+    "total": 64.92307195833334
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 7.662057375,
+     "checkpoint": 0.0003410624999999999,
+     "verify": 72.03971100000003,
+     "recover": 0.0011510000000000001,
+     "commit": 0.0008957500000000001,
+     "total": 79.70415618749999
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.7272056875000006,
+     "checkpoint": 0.00020831249999999995,
+     "verify": 62.224700562500004,
+     "recover": 0.000140625,
+     "commit": 0.0008670625000000001,
+     "total": 64.95312224999999
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.7165155625,
+     "checkpoint": 0.00022143749999999998,
+     "verify": 62.336479125,
+     "recover": 0.00011462500000000002,
+     "commit": 0.0007941875,
+     "total": 65.0541249375
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.7333723749999996,
+     "checkpoint": 0.00023181249999999998,
+     "verify": 62.027322874999996,
+     "recover": 0.0001380625,
+     "commit": 0.0009035625000000001,
+     "total": 64.7619686875
+    }
+   ]
+  }
+ },
+ "nuclis-16384-r4-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 765.721792,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 431.211916
+  },
+  "verify": {
+   "rows": 4,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 7.5758690416666665,
+    "checkpoint": 0.00024735416666666666,
+    "verify": 85.86816497916668,
+    "recover": 0.000137125,
+    "commit": 0.0008585208333333335,
+    "total": 93.44527702083333
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 12.500833499999999,
+     "checkpoint": 0.00023956250000000006,
+     "verify": 95.9477005,
+     "recover": 0.0008411250000000001,
+     "commit": 0.0008827500000000002,
+     "total": 108.45049743749999
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.553403937500001,
+     "checkpoint": 0.000210875,
+     "verify": 85.8701875,
+     "recover": 0.00012756250000000002,
+     "commit": 0.0008776250000000001,
+     "total": 93.4248075
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.682111937499998,
+     "checkpoint": 0.0002813125,
+     "verify": 85.85041668750002,
+     "recover": 0.000138,
+     "commit": 0.0008776875000000001,
+     "total": 93.533825625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.49209125,
+     "checkpoint": 0.000249875,
+     "verify": 85.88389074999998,
+     "recover": 0.00014581250000000003,
+     "commit": 0.00082025,
+     "total": 93.37719793750001
+    }
+   ]
+  }
+ },
+ "nuclis-16384-r4-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 730.432125,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 429.696417
+  },
+  "verify": {
+   "rows": 4,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 7.526889604166667,
+    "checkpoint": 0.00019199999999999998,
+    "verify": 85.75800341666667,
+    "recover": 0.00017002083333333336,
+    "commit": 0.0009132708333333333,
+    "total": 93.28616831249998
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 12.410127624999998,
+     "checkpoint": 0.00025,
+     "verify": 96.2025834375,
+     "recover": 0.0006456875000000001,
+     "commit": 0.0009427499999999999,
+     "total": 108.61454950000001
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.516966124999999,
+     "checkpoint": 0.0001641875,
+     "verify": 85.75485149999999,
+     "recover": 0.00017700000000000002,
+     "commit": 0.0009453749999999999,
+     "total": 93.2731041875
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.453864500000001,
+     "checkpoint": 0.00020062499999999996,
+     "verify": 85.7686224375,
+     "recover": 0.00016387499999999999,
+     "commit": 0.0008829375,
+     "total": 93.22373437499999
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.609838187499999,
+     "checkpoint": 0.0002111875,
+     "verify": 85.75053631249999,
+     "recover": 0.0001691875,
+     "commit": 0.0009115000000000001,
+     "total": 93.36166637499998
+    }
+   ]
+  }
+ },
+ "nuclis-16384-r6-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 758.371166,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 433.009958
+  },
+  "verify": {
+   "rows": 6,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 12.277539083333332,
+    "checkpoint": 0.00021183333333333332,
+    "verify": 104.651703125,
+    "recover": 0.00016925000000000002,
+    "commit": 0.000945375,
+    "total": 116.93056866666666
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 17.195231687499998,
+     "checkpoint": 0.00023956250000000003,
+     "verify": 114.581450625,
+     "recover": 0.00077875,
+     "commit": 0.0009633750000000003,
+     "total": 131.778664
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.371567687499999,
+     "checkpoint": 0.00022924999999999996,
+     "verify": 104.65999743750001,
+     "recover": 0.0001873125,
+     "commit": 0.0009220000000000001,
+     "total": 117.0329036875
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.279627687500003,
+     "checkpoint": 0.00020312500000000002,
+     "verify": 104.65880206250002,
+     "recover": 0.00015112500000000003,
+     "commit": 0.000987,
+     "total": 116.939771
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.181421874999998,
+     "checkpoint": 0.000203125,
+     "verify": 104.636309875,
+     "recover": 0.00016931250000000003,
+     "commit": 0.0009271250000000001,
+     "total": 116.81903131249999
+    }
+   ]
+  }
+ },
+ "nuclis-16384-r6-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 737.466709,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 431.488333
+  },
+  "verify": {
+   "rows": 6,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 12.264663166666667,
+    "checkpoint": 0.00020918749999999998,
+    "verify": 104.65349568749998,
+    "recover": 0.00016320833333333335,
+    "commit": 0.0008732916666666666,
+    "total": 116.91940454166667
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 17.1344245625,
+     "checkpoint": 0.00022918749999999995,
+     "verify": 114.850216125,
+     "recover": 0.0006901250000000002,
+     "commit": 0.0009113750000000002,
+     "total": 131.986471375
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.329395875,
+     "checkpoint": 0.00018231250000000002,
+     "verify": 104.71958074999999,
+     "recover": 0.0001561875,
+     "commit": 0.0008751250000000001,
+     "total": 117.05019025000001
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.1641769375,
+     "checkpoint": 0.00025256249999999997,
+     "verify": 104.662601625,
+     "recover": 0.00018493750000000004,
+     "commit": 0.0008958124999999999,
+     "total": 116.828111875
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.300416687500002,
+     "checkpoint": 0.00019268749999999996,
+     "verify": 104.5783046875,
+     "recover": 0.00014849999999999998,
+     "commit": 0.0008489375000000001,
+     "total": 116.8799115
+    }
+   ]
+  }
+ },
+ "nuclis-16384-r8-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 743.077667,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 435.123791
+  },
+  "verify": {
+   "rows": 8,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 16.899775208333335,
+    "checkpoint": 0.00023525000000000003,
+    "verify": 126.28900954166666,
+    "recover": 0.0001510416666666667,
+    "commit": 0.0008698333333333335,
+    "total": 143.190040875
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 21.812192625,
+     "checkpoint": 0.0002813125000000001,
+     "verify": 136.11559625,
+     "recover": 0.0006015625000000001,
+     "commit": 0.001033875,
+     "total": 157.929705625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 16.9669556875,
+     "checkpoint": 0.0002708125,
+     "verify": 126.28019525,
+     "recover": 0.00016931250000000006,
+     "commit": 0.0008673125,
+     "total": 143.24845837499998
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 16.798177125,
+     "checkpoint": 0.00022393750000000004,
+     "verify": 126.2759689375,
+     "recover": 0.0001456875,
+     "commit": 0.0008620000000000002,
+     "total": 143.0753776875
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 16.934192812499997,
+     "checkpoint": 0.00021100000000000003,
+     "verify": 126.31086443749999,
+     "recover": 0.000138125,
+     "commit": 0.0008801875,
+     "total": 143.24628656250002
+    }
+   ]
+  }
+ },
+ "nuclis-16384-r8-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 775.064,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 434.169958
+  },
+  "verify": {
+   "rows": 8,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 16.734421854166666,
+    "checkpoint": 0.0002492083333333334,
+    "verify": 126.08167702083331,
+    "recover": 0.00016577083333333334,
+    "commit": 0.0009053958333333335,
+    "total": 142.81741925
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 22.262919125000003,
+     "checkpoint": 0.00021862500000000002,
+     "verify": 135.77958075,
+     "recover": 0.0007058750000000003,
+     "commit": 0.0009140625,
+     "total": 158.04433843750002
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 16.8169323125,
+     "checkpoint": 0.000257875,
+     "verify": 125.90570824999998,
+     "recover": 0.000171875,
+     "commit": 0.0009322500000000001,
+     "total": 142.7240025625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 16.526270625,
+     "checkpoint": 0.0002579375000000001,
+     "verify": 125.99184631250002,
+     "recover": 0.0001848125,
+     "commit": 0.0008932500000000002,
+     "total": 142.51945293749998
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 16.860062625,
+     "checkpoint": 0.00023181250000000003,
+     "verify": 126.34747649999997,
+     "recover": 0.00014062500000000002,
+     "commit": 0.0008906875000000001,
+     "total": 143.20880225000002
+    }
+   ]
+  }
+ },
+ "nuclis-512-r1-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 721.072833,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 21.521333
+  },
+  "verify": {
+   "rows": 1,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 6.25625e-05,
+    "checkpoint": 7.895833333333333e-05,
+    "verify": 40.247379395833335,
+    "recover": 0.00014233333333333337,
+    "commit": 0.0007447500000000001,
+    "total": 40.248408000000005
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 0.000127375,
+     "checkpoint": 0.0001225,
+     "verify": 54.57989068750001,
+     "recover": 0.0005208750000000001,
+     "commit": 0.00100775,
+     "total": 54.5816691875
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.481249999999999e-05,
+     "checkpoint": 8.062500000000001e-05,
+     "verify": 40.347372375,
+     "recover": 0.0001016875,
+     "commit": 0.0006718124999999999,
+     "total": 40.3482813125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.9999999999999995e-05,
+     "checkpoint": 8.331249999999999e-05,
+     "verify": 40.2001406875,
+     "recover": 0.00015356250000000003,
+     "commit": 0.0007604375,
+     "total": 40.201198
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.2875e-05,
+     "checkpoint": 7.29375e-05,
+     "verify": 40.194625125,
+     "recover": 0.00017175000000000003,
+     "commit": 0.000802,
+     "total": 40.1957446875
+    }
+   ]
+  }
+ },
+ "nuclis-512-r1-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 767.9225,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 13.93475
+  },
+  "verify": {
+   "rows": 1,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 6.599999999999999e-05,
+    "checkpoint": 6.597916666666667e-05,
+    "verify": 40.339329750000005,
+    "recover": 0.00010595833333333334,
+    "commit": 0.0007222708333333333,
+    "total": 40.34028995833332
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 7.524999999999999e-05,
+     "checkpoint": 0.00010174999999999999,
+     "verify": 54.2696430625,
+     "recover": 0.0014271250000000002,
+     "commit": 0.0008255000000000002,
+     "total": 54.2720726875
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.9812500000000004e-05,
+     "checkpoint": 7.825e-05,
+     "verify": 40.3455415,
+     "recover": 0.0001354375,
+     "commit": 0.0007604374999999999,
+     "total": 40.3465754375
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.55625e-05,
+     "checkpoint": 5.987500000000001e-05,
+     "verify": 40.35727068750001,
+     "recover": 9.650000000000001e-05,
+     "commit": 0.000710875,
+     "total": 40.35821349999999
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 6.2625e-05,
+     "checkpoint": 5.9812500000000004e-05,
+     "verify": 40.3151770625,
+     "recover": 8.593749999999998e-05,
+     "commit": 0.0006955,
+     "total": 40.31608093749999
+    }
+   ]
+  }
+ },
+ "nuclis-512-r2-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 769.264125,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 13.911125
+  },
+  "verify": {
+   "rows": 2,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 1.7894835416666666,
+    "checkpoint": 0.00019877083333333332,
+    "verify": 55.2357586875,
+    "recover": 0.00013454166666666668,
+    "commit": 0.0008776250000000003,
+    "total": 57.02645316666667
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 6.888781375,
+     "checkpoint": 0.000328,
+     "verify": 64.86745056250001,
+     "recover": 0.0009036250000000001,
+     "commit": 0.0009660625000000001,
+     "total": 71.758429625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 1.802981875,
+     "checkpoint": 0.00018999999999999998,
+     "verify": 55.226812562499994,
+     "recover": 0.0001328125,
+     "commit": 0.0008385625000000002,
+     "total": 57.03095581249999
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 1.785895875,
+     "checkpoint": 0.00019268750000000001,
+     "verify": 55.235114562499994,
+     "recover": 0.00014581250000000003,
+     "commit": 0.0008386250000000001,
+     "total": 57.0221875625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 1.7795728749999997,
+     "checkpoint": 0.00021362499999999995,
+     "verify": 55.245348937500005,
+     "recover": 0.00012500000000000003,
+     "commit": 0.0009556875000000002,
+     "total": 57.026216125000005
+    }
+   ]
+  }
+ },
+ "nuclis-512-r2-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 773.92875,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 13.601083
+  },
+  "verify": {
+   "rows": 2,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 1.7871181041666666,
+    "checkpoint": 0.0001561875,
+    "verify": 55.253188333333334,
+    "recover": 0.0001641458333333334,
+    "commit": 0.0008646041666666667,
+    "total": 57.041491375
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 6.9010884375,
+     "checkpoint": 0.00035943749999999995,
+     "verify": 64.96609624999999,
+     "recover": 0.0007708750000000002,
+     "commit": 0.0010233750000000002,
+     "total": 71.86933837499998
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 1.7908308124999999,
+     "checkpoint": 0.0002005,
+     "verify": 55.239538937499994,
+     "recover": 0.00019543750000000005,
+     "commit": 0.0009193125000000003,
+     "total": 57.031684999999996
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 1.7884348749999996,
+     "checkpoint": 0.00013012499999999998,
+     "verify": 55.261518187499995,
+     "recover": 0.00016418750000000005,
+     "commit": 0.0008593749999999999,
+     "total": 57.05110675
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 1.7820886249999999,
+     "checkpoint": 0.0001379375,
+     "verify": 55.25850787500001,
+     "recover": 0.00013281250000000004,
+     "commit": 0.000815125,
+     "total": 57.04168237499999
+    }
+   ]
+  }
+ },
+ "nuclis-512-r4-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 771.820459,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 13.907708
+  },
+  "verify": {
+   "rows": 4,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 5.431129354166667,
+    "checkpoint": 0.00018489583333333327,
+    "verify": 74.16566227083332,
+    "recover": 0.00017108333333333334,
+    "commit": 0.0009330416666666668,
+    "total": 79.59808064583333
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 10.656807312500002,
+     "checkpoint": 0.00030193749999999996,
+     "verify": 83.57152875,
+     "recover": 0.0007005000000000001,
+     "commit": 0.0009218750000000001,
+     "total": 94.230260375
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.394153687499999,
+     "checkpoint": 0.00022662499999999994,
+     "verify": 74.16740362500002,
+     "recover": 0.00021875000000000003,
+     "commit": 0.000981625,
+     "total": 79.5629843125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.6619818749999995,
+     "checkpoint": 0.00016399999999999997,
+     "verify": 74.13448949999999,
+     "recover": 0.00015118750000000004,
+     "commit": 0.0009425625,
+     "total": 79.79772912499999
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.237252499999999,
+     "checkpoint": 0.00016406249999999998,
+     "verify": 74.1950936875,
+     "recover": 0.0001433125,
+     "commit": 0.0008749375000000002,
+     "total": 79.4335285
+    }
+   ]
+  }
+ },
+ "nuclis-512-r4-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 769.793125,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 14.205834
+  },
+  "verify": {
+   "rows": 4,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 5.2979253958333326,
+    "checkpoint": 0.00018049999999999997,
+    "verify": 74.21725958333333,
+    "recover": 0.00016139583333333335,
+    "commit": 0.0008473125,
+    "total": 79.51637418749999
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 10.6759739375,
+     "checkpoint": 0.0002499375,
+     "verify": 83.79329168749999,
+     "recover": 0.0008566875,
+     "commit": 0.0009478125000000003,
+     "total": 94.47132006249998
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.258559937499999,
+     "checkpoint": 0.00020049999999999997,
+     "verify": 74.2593229375,
+     "recover": 0.000166625,
+     "commit": 0.0007814375,
+     "total": 79.5190314375
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.35558075,
+     "checkpoint": 0.00019275,
+     "verify": 74.22137749999999,
+     "recover": 0.00013543749999999998,
+     "commit": 0.0008698750000000001,
+     "total": 79.5781563125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.2796355,
+     "checkpoint": 0.00014824999999999997,
+     "verify": 74.1710783125,
+     "recover": 0.00018212500000000002,
+     "commit": 0.0008906250000000001,
+     "total": 79.4519348125
+    }
+   ]
+  }
+ },
+ "nuclis-512-r6-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 771.244125,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 13.618041
+  },
+  "verify": {
+   "rows": 6,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 8.789193520833331,
+    "checkpoint": 0.00023262500000000006,
+    "verify": 87.06424139583333,
+    "recover": 0.00013277083333333335,
+    "commit": 0.0008776250000000003,
+    "total": 95.85467793750001
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 14.420018250000002,
+     "checkpoint": 0.0002449375,
+     "verify": 96.46925,
+     "recover": 0.000669125,
+     "commit": 0.0009220625,
+     "total": 110.89110437499998
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 8.8637838125,
+     "checkpoint": 0.00023950000000000008,
+     "verify": 87.082205875,
+     "recover": 0.0001249375,
+     "commit": 0.000864625,
+     "total": 95.94721875000002
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 8.739247374999998,
+     "checkpoint": 0.00022143750000000004,
+     "verify": 87.03364850000003,
+     "recover": 0.0001405,
+     "commit": 0.0009140625000000003,
+     "total": 95.77417187500001
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 8.764549375,
+     "checkpoint": 0.0002369375,
+     "verify": 87.0768698125,
+     "recover": 0.00013287500000000002,
+     "commit": 0.0008541875000000001,
+     "total": 95.8426431875
+    }
+   ]
+  }
+ },
+ "nuclis-512-r6-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 776.913208,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 13.596709
+  },
+  "verify": {
+   "rows": 6,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 8.802680604166667,
+    "checkpoint": 0.00019960416666666664,
+    "verify": 87.10868745833335,
+    "recover": 0.00013547916666666667,
+    "commit": 0.0008706458333333335,
+    "total": 95.91257379166666
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 14.312226562499998,
+     "checkpoint": 0.000242125,
+     "verify": 96.44681506250001,
+     "recover": 0.0007344375000000002,
+     "commit": 0.0010208125000000002,
+     "total": 110.76103900000001
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 8.8753568125,
+     "checkpoint": 0.00018743750000000002,
+     "verify": 87.12842187500003,
+     "recover": 0.00014581250000000005,
+     "commit": 0.0008802500000000002,
+     "total": 96.00499218750002
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 8.8004663125,
+     "checkpoint": 0.0002030625,
+     "verify": 87.10535925000002,
+     "recover": 0.0001355625,
+     "commit": 0.0008568125000000002,
+     "total": 95.90702099999999
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 8.7322186875,
+     "checkpoint": 0.00020831249999999997,
+     "verify": 87.09228124999998,
+     "recover": 0.00012506249999999998,
+     "commit": 0.0008748750000000002,
+     "total": 95.8257081875
+    }
+   ]
+  }
+ },
+ "nuclis-512-r8-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 771.723792,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 14.144416
+  },
+  "verify": {
+   "rows": 8,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 12.306105916666667,
+    "checkpoint": 0.0002343125,
+    "verify": 100.90418925,
+    "recover": 0.00011462499999999998,
+    "commit": 0.0009323333333333333,
+    "total": 113.2115764375
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 17.705065124999997,
+     "checkpoint": 0.00027081250000000006,
+     "verify": 110.49761737499998,
+     "recover": 0.0006170625000000001,
+     "commit": 0.0009426250000000002,
+     "total": 128.204513
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.27627875,
+     "checkpoint": 0.00021343749999999998,
+     "verify": 100.913494875,
+     "recover": 0.00010418749999999998,
+     "commit": 0.0009036250000000001,
+     "total": 113.190994875
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.3567759375,
+     "checkpoint": 0.0002735000000000001,
+     "verify": 100.93535406250001,
+     "recover": 0.0001355,
+     "commit": 0.000974125,
+     "total": 113.293513125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.285263062499999,
+     "checkpoint": 0.00021599999999999996,
+     "verify": 100.8637188125,
+     "recover": 0.00010418749999999999,
+     "commit": 0.0009192500000000001,
+     "total": 113.15022131250001
+    }
+   ]
+  }
+ },
+ "nuclis-512-r8-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 771.165208,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 13.7595
+  },
+  "verify": {
+   "rows": 8,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 12.299321979166669,
+    "checkpoint": 0.0002369791666666667,
+    "verify": 100.85880564583333,
+    "recover": 0.00015354166666666665,
+    "commit": 0.0009089166666666667,
+    "total": 113.1594270625
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 17.5986614375,
+     "checkpoint": 0.00026556250000000006,
+     "verify": 110.20239325,
+     "recover": 0.0006432500000000002,
+     "commit": 0.0010129375,
+     "total": 127.8029764375
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.342513000000002,
+     "checkpoint": 0.000260375,
+     "verify": 100.87961987499999,
+     "recover": 0.00015356250000000005,
+     "commit": 0.000908875,
+     "total": 113.2234556875
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.239606687500002,
+     "checkpoint": 0.00021087500000000002,
+     "verify": 100.77942199999998,
+     "recover": 0.0001848125,
+     "commit": 0.0009168125000000001,
+     "total": 113.02034118750001
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.31584625,
+     "checkpoint": 0.00023968750000000002,
+     "verify": 100.91737506250001,
+     "recover": 0.00012225,
+     "commit": 0.0009010625000000001,
+     "total": 113.2344843125
+    }
+   ]
+  }
+ },
+ "nuclis-new-16384-r1-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 776.57375,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 433.736958
+  },
+  "verify": {
+   "rows": 1,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 7.379166666666668e-05,
+    "checkpoint": 7.897916666666666e-05,
+    "verify": 27.657164124999998,
+    "recover": 0.00010760416666666666,
+    "commit": 0.0007568958333333334,
+    "total": 27.658181395833335
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 8.0625e-05,
+     "checkpoint": 0.0001536875,
+     "verify": 42.110974,
+     "recover": 0.0006406875000000001,
+     "commit": 0.0008125000000000001,
+     "total": 42.1126615
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.5375e-05,
+     "checkpoint": 7.825e-05,
+     "verify": 27.8851145625,
+     "recover": 9.374999999999999e-05,
+     "commit": 0.0007083125000000002,
+     "total": 27.88607025
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.54375e-05,
+     "checkpoint": 7.556250000000001e-05,
+     "verify": 27.569414125,
+     "recover": 0.00011712499999999999,
+     "commit": 0.0008175625,
+     "total": 27.570499812500003
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.056250000000001e-05,
+     "checkpoint": 8.312499999999999e-05,
+     "verify": 27.516963687500002,
+     "recover": 0.0001119375,
+     "commit": 0.0007448125,
+     "total": 27.517974124999995
+    }
+   ]
+  }
+ },
+ "nuclis-new-16384-r1-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 764.620709,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 433.967959
+  },
+  "verify": {
+   "rows": 1,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 6.6125e-05,
+    "checkpoint": 7.8875e-05,
+    "verify": 27.749974895833333,
+    "recover": 0.00010762499999999999,
+    "commit": 0.0007318124999999999,
+    "total": 27.75095933333333
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 0.000104125,
+     "checkpoint": 0.00012500000000000003,
+     "verify": 41.45289837499999,
+     "recover": 0.00068225,
+     "commit": 0.0008203125000000001,
+     "total": 41.4546300625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 6.525e-05,
+     "checkpoint": 8.0625e-05,
+     "verify": 27.838487125,
+     "recover": 9.887499999999998e-05,
+     "commit": 0.0006979375000000001,
+     "total": 27.8394298125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 6.525e-05,
+     "checkpoint": 7.54375e-05,
+     "verify": 27.646414000000004,
+     "recover": 0.000119875,
+     "commit": 0.0007865000000000001,
+     "total": 27.6474610625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 6.7875e-05,
+     "checkpoint": 8.05625e-05,
+     "verify": 27.765023562499998,
+     "recover": 0.00010412500000000001,
+     "commit": 0.0007109999999999999,
+     "total": 27.765987125
+    }
+   ]
+  }
+ },
+ "nuclis-new-16384-r2-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 756.450667,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 434.023125
+  },
+  "verify": {
+   "rows": 2,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 2.7314843541666662,
+    "checkpoint": 0.00020660416666666665,
+    "verify": 32.61498872916666,
+    "recover": 0.00010327083333333332,
+    "commit": 0.0008602708333333332,
+    "total": 35.347643229166664
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 7.669533875000002,
+     "checkpoint": 0.0003098125,
+     "verify": 42.30950268750001,
+     "recover": 0.000664,
+     "commit": 0.0009037499999999998,
+     "total": 49.98091412499999
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.741596125,
+     "checkpoint": 0.00020056249999999998,
+     "verify": 32.439843749999994,
+     "recover": 8.8625e-05,
+     "commit": 0.0008515,
+     "total": 35.1825805625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.7266304375000003,
+     "checkpoint": 0.0002135,
+     "verify": 32.5755051875,
+     "recover": 0.00011449999999999998,
+     "commit": 0.00085425,
+     "total": 35.303317875
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.7262265,
+     "checkpoint": 0.00020575,
+     "verify": 32.82961725,
+     "recover": 0.00010668749999999998,
+     "commit": 0.0008750625,
+     "total": 35.557031249999994
+    }
+   ]
+  }
+ },
+ "nuclis-new-16384-r2-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 757.955958,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 437.025875
+  },
+  "verify": {
+   "rows": 2,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 2.7204339374999997,
+    "checkpoint": 0.00020752083333333332,
+    "verify": 32.588972229166664,
+    "recover": 0.00010585416666666665,
+    "commit": 0.0008627916666666667,
+    "total": 35.310582333333336
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 7.617776,
+     "checkpoint": 0.0003595625000000001,
+     "verify": 42.2599400625,
+     "recover": 0.0007187500000000002,
+     "commit": 0.0009271875,
+     "total": 49.8797215625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.7137992500000006,
+     "checkpoint": 0.00017993749999999998,
+     "verify": 32.688216,
+     "recover": 0.00011462499999999998,
+     "commit": 0.000861875,
+     "total": 35.403171687500006
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.7186848749999997,
+     "checkpoint": 0.000192625,
+     "verify": 32.439398437499996,
+     "recover": 0.0001094375,
+     "commit": 0.000861875,
+     "total": 35.15924725
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.7288176875000003,
+     "checkpoint": 0.00025,
+     "verify": 32.63930225,
+     "recover": 9.349999999999998e-05,
+     "commit": 0.000864625,
+     "total": 35.369328062499996
+    }
+   ]
+  }
+ },
+ "nuclis-new-16384-r4-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 758.787125,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 433.435125
+  },
+  "verify": {
+   "rows": 4,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 7.5102126249999985,
+    "checkpoint": 0.00022391666666666667,
+    "verify": 47.24022837499999,
+    "recover": 9.285416666666665e-05,
+    "commit": 0.0008593333333333335,
+    "total": 54.75161710416668
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 12.414252562500005,
+     "checkpoint": 0.00031775,
+     "verify": 57.384955687499996,
+     "recover": 0.0006562500000000001,
+     "commit": 0.0009244375000000001,
+     "total": 69.80110668750001
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.5432473125,
+     "checkpoint": 0.00023431249999999998,
+     "verify": 47.18761474999999,
+     "recover": 8.324999999999999e-05,
+     "commit": 0.0008515000000000002,
+     "total": 54.732031125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.531260375,
+     "checkpoint": 0.00019793749999999998,
+     "verify": 47.23565112499999,
+     "recover": 9.631249999999998e-05,
+     "commit": 0.0008645625000000002,
+     "total": 54.768070312500015
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.4561301874999995,
+     "checkpoint": 0.00023950000000000002,
+     "verify": 47.29741925,
+     "recover": 9.9e-05,
+     "commit": 0.0008619375000000002,
+     "total": 54.754749875
+    }
+   ]
+  }
+ },
+ "nuclis-new-16384-r4-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 756.564417,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 430.473875
+  },
+  "verify": {
+   "rows": 4,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 7.668516458333333,
+    "checkpoint": 0.00022395833333333336,
+    "verify": 47.17885772916666,
+    "recover": 0.00011016666666666666,
+    "commit": 0.0008792916666666668,
+    "total": 54.84858760416666
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 12.4009765625,
+     "checkpoint": 0.0002916875,
+     "verify": 57.61767443750001,
+     "recover": 0.0007343750000000001,
+     "commit": 0.0009870000000000002,
+     "total": 70.02066406249999
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.668247499999999,
+     "checkpoint": 0.00022912500000000005,
+     "verify": 47.24072912499999,
+     "recover": 9.374999999999999e-05,
+     "commit": 0.000836,
+     "total": 54.9101355
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.728445062500001,
+     "checkpoint": 0.00021625,
+     "verify": 47.296969,
+     "recover": 0.00010649999999999997,
+     "commit": 0.0008905625000000002,
+     "total": 55.026627375000004
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 7.6088568125,
+     "checkpoint": 0.00022650000000000003,
+     "verify": 46.99887506249999,
+     "recover": 0.00013025000000000002,
+     "commit": 0.0009113125000000002,
+     "total": 54.608999937499995
+    }
+   ]
+  }
+ },
+ "nuclis-new-16384-r6-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 761.134708,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 433.94125
+  },
+  "verify": {
+   "rows": 6,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 12.282597187499997,
+    "checkpoint": 0.00021016666666666666,
+    "verify": 61.931543291666664,
+    "recover": 0.00011204166666666666,
+    "commit": 0.0008854583333333335,
+    "total": 74.21534814583333
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 17.148715999999997,
+     "checkpoint": 0.00027081250000000006,
+     "verify": 72.12399231250001,
+     "recover": 0.0005857499999999999,
+     "commit": 0.0009506875000000001,
+     "total": 89.2745155625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.429356874999998,
+     "checkpoint": 0.00019018750000000004,
+     "verify": 61.95934099999999,
+     "recover": 0.00010687500000000002,
+     "commit": 0.0008750000000000001,
+     "total": 74.38986993750001
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.238544187499999,
+     "checkpoint": 0.00021881249999999999,
+     "verify": 61.873817624999994,
+     "recover": 0.00014081250000000001,
+     "commit": 0.0008958125000000001,
+     "total": 74.11361724999999
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.179890499999999,
+     "checkpoint": 0.0002215,
+     "verify": 61.96147125,
+     "recover": 8.843749999999999e-05,
+     "commit": 0.0008855625,
+     "total": 74.14255725
+    }
+   ]
+  }
+ },
+ "nuclis-new-16384-r6-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 764.647125,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 428.558334
+  },
+  "verify": {
+   "rows": 6,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 12.256115458333332,
+    "checkpoint": 0.0002039375,
+    "verify": 62.067217937500004,
+    "recover": 0.00011029166666666665,
+    "commit": 0.0008966666666666667,
+    "total": 74.32454429166667
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 17.358679749999993,
+     "checkpoint": 0.00028906250000000004,
+     "verify": 72.2129869375,
+     "recover": 0.0005833750000000001,
+     "commit": 0.0009610000000000002,
+     "total": 89.573500125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.176801874999999,
+     "checkpoint": 0.00020581249999999994,
+     "verify": 62.068820312499994,
+     "recover": 0.000125125,
+     "commit": 0.0008463750000000002,
+     "total": 74.2467995
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.282294375,
+     "checkpoint": 0.00018206249999999996,
+     "verify": 62.087187687500005,
+     "recover": 9.11875e-05,
+     "commit": 0.0008905,
+     "total": 74.37064581250002
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.309250124999998,
+     "checkpoint": 0.00022393750000000002,
+     "verify": 62.045645812500005,
+     "recover": 0.00011456249999999997,
+     "commit": 0.000953125,
+     "total": 74.35618756250001
+    }
+   ]
+  }
+ },
+ "nuclis-new-16384-r8-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 766.0305,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 432.55925
+  },
+  "verify": {
+   "rows": 8,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 16.903199666666666,
+    "checkpoint": 0.00024300000000000002,
+    "verify": 77.21156856249999,
+    "recover": 0.00010154166666666666,
+    "commit": 0.0008993125,
+    "total": 94.11601208333332
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 21.889604187499998,
+     "checkpoint": 0.0002758125,
+     "verify": 87.63003925000001,
+     "recover": 0.0005050624999999999,
+     "commit": 0.0008906875,
+     "total": 109.521315
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 16.910250062499998,
+     "checkpoint": 0.0002498125,
+     "verify": 77.161700625,
+     "recover": 0.00010149999999999999,
+     "commit": 0.0009296875000000002,
+     "total": 94.07323168749998
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 16.769591187499998,
+     "checkpoint": 0.00024212500000000004,
+     "verify": 77.21746087499999,
+     "recover": 9.89375e-05,
+     "commit": 0.0008959375,
+     "total": 93.98828906249997
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 17.029757749999998,
+     "checkpoint": 0.00023706250000000002,
+     "verify": 77.25554418749999,
+     "recover": 0.0001041875,
+     "commit": 0.0008723125000000001,
+     "total": 94.2865155
+    }
+   ]
+  }
+ },
+ "nuclis-new-16384-r8-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 771.370084,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-f7ea35688b1f2b69-bf955975cf0e0a46.snap",
+   "tokens": 16383,
+   "restored": true,
+   "milliseconds": 433.689292
+  },
+  "verify": {
+   "rows": 8,
+   "accepted": 0,
+   "depth": 16383,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 16.818010416666663,
+    "checkpoint": 0.00023360416666666668,
+    "verify": 77.31071697916667,
+    "recover": 0.00012933333333333332,
+    "commit": 0.0009009583333333335,
+    "total": 94.12999129166667
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 21.950013000000002,
+     "checkpoint": 0.00031775,
+     "verify": 87.58990881250001,
+     "recover": 0.0006692500000000001,
+     "commit": 0.0009582500000000002,
+     "total": 109.5418670625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 16.768713499999997,
+     "checkpoint": 0.00023712500000000003,
+     "verify": 77.20741662500001,
+     "recover": 0.0001666875,
+     "commit": 0.0009478125000000001,
+     "total": 93.97748175
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 16.8168463125,
+     "checkpoint": 0.0002396875,
+     "verify": 77.341971375,
+     "recover": 0.0001326875,
+     "commit": 0.0008775625000000003,
+     "total": 94.16006762500001
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 16.8684714375,
+     "checkpoint": 0.00022400000000000002,
+     "verify": 77.38276293749998,
+     "recover": 8.8625e-05,
+     "commit": 0.0008775,
+     "total": 94.2524245
+    }
+   ]
+  }
+ },
+ "nuclis-new-512-r1-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 2271.261667,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 13.674208
+  },
+  "verify": {
+   "rows": 1,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 6.335416666666668e-05,
+    "checkpoint": 6.510416666666667e-05,
+    "verify": 23.790490458333334,
+    "recover": 9.460416666666666e-05,
+    "commit": 0.0007300416666666669,
+    "total": 23.791443562500003
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 6.50625e-05,
+     "checkpoint": 0.00011706249999999998,
+     "verify": 37.742244937500004,
+     "recover": 0.0022188125000000003,
+     "commit": 0.0007550625000000002,
+     "total": 37.7454009375
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 6.256250000000001e-05,
+     "checkpoint": 7.018749999999999e-05,
+     "verify": 23.7226355,
+     "recover": 9.375e-05,
+     "commit": 0.0007552500000000002,
+     "total": 23.72361725
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.98125e-05,
+     "checkpoint": 6.518749999999999e-05,
+     "verify": 23.834005062499998,
+     "recover": 9.11875e-05,
+     "commit": 0.0006900625000000001,
+     "total": 23.8349113125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 6.76875e-05,
+     "checkpoint": 5.993750000000001e-05,
+     "verify": 23.814830812500002,
+     "recover": 9.887499999999999e-05,
+     "commit": 0.0007448125000000001,
+     "total": 23.815802125000005
+    }
+   ]
+  }
+ },
+ "nuclis-new-512-r1-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 771.318292,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 13.948375
+  },
+  "verify": {
+   "rows": 1,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 6.420833333333334e-05,
+    "checkpoint": 6.95e-05,
+    "verify": 24.129394958333336,
+    "recover": 8.681249999999999e-05,
+    "commit": 0.0007291666666666667,
+    "total": 24.130344645833333
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 7.28125e-05,
+     "checkpoint": 0.0001095,
+     "verify": 38.172799375,
+     "recover": 0.0006459375000000002,
+     "commit": 0.0009348125,
+     "total": 38.1745624375
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.9812500000000004e-05,
+     "checkpoint": 6.25625e-05,
+     "verify": 24.037776124999993,
+     "recover": 8.84375e-05,
+     "commit": 0.000700625,
+     "total": 24.038687562499998
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 6.5e-05,
+     "checkpoint": 7.043750000000001e-05,
+     "verify": 23.801117,
+     "recover": 8.868750000000001e-05,
+     "commit": 0.0007629375,
+     "total": 23.802104062499996
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 6.78125e-05,
+     "checkpoint": 7.549999999999999e-05,
+     "verify": 24.549291750000002,
+     "recover": 8.331249999999999e-05,
+     "commit": 0.0007239375000000001,
+     "total": 24.5502423125
+    }
+   ]
+  }
+ },
+ "nuclis-new-512-r2-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 771.119084,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 13.600125
+  },
+  "verify": {
+   "rows": 2,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 1.8698447083333332,
+    "checkpoint": 0.00018135416666666669,
+    "verify": 25.727165749999994,
+    "recover": 0.00010679166666666667,
+    "commit": 0.0008507499999999999,
+    "total": 27.598149354166665
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 6.956026124999999,
+     "checkpoint": 0.0003228125,
+     "verify": 35.394296875,
+     "recover": 0.0006667500000000002,
+     "commit": 0.0009453125,
+     "total": 42.35225787500001
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.0240182499999997,
+     "checkpoint": 0.0001458125,
+     "verify": 25.8046951875,
+     "recover": 0.000104125,
+     "commit": 0.00086725,
+     "total": 27.829830625000003
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 1.7974896875,
+     "checkpoint": 0.00018493750000000002,
+     "verify": 25.729713499999995,
+     "recover": 9.1125e-05,
+     "commit": 0.0008360625000000001,
+     "total": 27.5283153125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 1.7880261874999999,
+     "checkpoint": 0.00021331250000000004,
+     "verify": 25.647088562499995,
+     "recover": 0.000125125,
+     "commit": 0.0008489375,
+     "total": 27.436302124999994
+    }
+   ]
+  }
+ },
+ "nuclis-new-512-r2-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 771.139042,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 13.759
+  },
+  "verify": {
+   "rows": 2,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 1.9601675416666664,
+    "checkpoint": 0.00020495833333333336,
+    "verify": 25.933673499999998,
+    "recover": 0.00010766666666666666,
+    "commit": 0.0008550625,
+    "total": 27.895008729166666
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 6.885593625,
+     "checkpoint": 0.000401125,
+     "verify": 35.29765875000001,
+     "recover": 0.0006641875000000003,
+     "commit": 0.000979125,
+     "total": 42.1852968125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.0337864999999997,
+     "checkpoint": 0.0001666875,
+     "verify": 26.0444426875,
+     "recover": 9.375e-05,
+     "commit": 0.0008385625000000001,
+     "total": 28.079328187499993
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 1.779820375,
+     "checkpoint": 0.000208375,
+     "verify": 25.737601625,
+     "recover": 0.00012487499999999999,
+     "commit": 0.0008568749999999999,
+     "total": 27.518612125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 2.0668957499999996,
+     "checkpoint": 0.00023981250000000004,
+     "verify": 26.018976187499998,
+     "recover": 0.00010437499999999999,
+     "commit": 0.0008697500000000002,
+     "total": 28.087085875000007
+    }
+   ]
+  }
+ },
+ "nuclis-new-512-r4-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 773.657167,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 13.814333
+  },
+  "verify": {
+   "rows": 4,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 5.3276744375,
+    "checkpoint": 0.0002239583333333334,
+    "verify": 34.66059972916666,
+    "recover": 9.210416666666667e-05,
+    "commit": 0.0008376250000000002,
+    "total": 39.98942785416667
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 10.6341355,
+     "checkpoint": 0.00022931250000000002,
+     "verify": 44.219088312500006,
+     "recover": 0.0006668125000000003,
+     "commit": 0.0009140624999999999,
+     "total": 54.85503399999999
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.3392889375,
+     "checkpoint": 0.00022662500000000005,
+     "verify": 34.630942624999996,
+     "recover": 0.00010425000000000001,
+     "commit": 0.0008514375000000001,
+     "total": 39.971413874999996
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.3646693125,
+     "checkpoint": 0.00022643750000000002,
+     "verify": 34.699877625,
+     "recover": 8.343749999999999e-05,
+     "commit": 0.0008436250000000001,
+     "total": 40.065700437500006
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.2790650625,
+     "checkpoint": 0.00021881250000000007,
+     "verify": 34.6509789375,
+     "recover": 8.862500000000001e-05,
+     "commit": 0.0008178125000000001,
+     "total": 39.93116925
+    }
+   ]
+  }
+ },
+ "nuclis-new-512-r4-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 769.46475,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 14.650625
+  },
+  "verify": {
+   "rows": 4,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 5.317368916666666,
+    "checkpoint": 0.00021093750000000005,
+    "verify": 34.7752074375,
+    "recover": 0.00010681250000000001,
+    "commit": 0.0008637499999999999,
+    "total": 40.09375785416666
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 10.6826326875,
+     "checkpoint": 0.0002604375,
+     "verify": 44.262997375,
+     "recover": 0.0006536875000000002,
+     "commit": 0.0009036875000000001,
+     "total": 54.947447875
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.374127624999999,
+     "checkpoint": 0.0001875,
+     "verify": 34.87238543750001,
+     "recover": 0.00010925,
+     "commit": 0.0008595,
+     "total": 40.247669312499994
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.251567624999999,
+     "checkpoint": 0.00022137500000000003,
+     "verify": 34.71626825,
+     "recover": 0.00010156250000000001,
+     "commit": 0.000836,
+     "total": 39.9689948125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 5.3264115,
+     "checkpoint": 0.00022393750000000002,
+     "verify": 34.736968624999996,
+     "recover": 0.00010962500000000001,
+     "commit": 0.0008957500000000001,
+     "total": 40.0646094375
+    }
+   ]
+  }
+ },
+ "nuclis-new-512-r6-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 776.610958,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 14.386875
+  },
+  "verify": {
+   "rows": 6,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 8.779234458333335,
+    "checkpoint": 0.00021354166666666668,
+    "verify": 43.461418374999994,
+    "recover": 0.00010937499999999999,
+    "commit": 0.0008932708333333335,
+    "total": 52.24186902083333
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 14.229125,
+     "checkpoint": 0.0006198125000000001,
+     "verify": 52.80222124999999,
+     "recover": 0.0008335000000000001,
+     "commit": 0.0009321250000000002,
+     "total": 67.0337316875
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 8.809804687500002,
+     "checkpoint": 0.00020831250000000003,
+     "verify": 43.519546874999996,
+     "recover": 9.6375e-05,
+     "commit": 0.0008776250000000001,
+     "total": 52.330533875
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 8.8217656875,
+     "checkpoint": 0.00019537500000000002,
+     "verify": 43.46855462500001,
+     "recover": 9.387499999999999e-05,
+     "commit": 0.0008723750000000002,
+     "total": 52.291481937499995
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 8.706133000000001,
+     "checkpoint": 0.00023693749999999998,
+     "verify": 43.396153625,
+     "recover": 0.000137875,
+     "commit": 0.0009298125000000001,
+     "total": 52.10359125
+    }
+   ]
+  }
+ },
+ "nuclis-new-512-r6-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 769.066834,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 14.883583
+  },
+  "verify": {
+   "rows": 6,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 8.7647525625,
+    "checkpoint": 0.0002187916666666667,
+    "verify": 43.41327689583333,
+    "recover": 0.00010324999999999999,
+    "commit": 0.0008264375,
+    "total": 52.17917793749999
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 14.11986975,
+     "checkpoint": 0.00028375,
+     "verify": 52.891067875,
+     "recover": 0.000567625,
+     "commit": 0.0009375625000000001,
+     "total": 67.0127265625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 8.839390625,
+     "checkpoint": 0.00021612499999999998,
+     "verify": 43.406304687500004,
+     "recover": 0.0001328125,
+     "commit": 0.0008463125000000001,
+     "total": 52.2468905625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 8.725622437499998,
+     "checkpoint": 0.00023706250000000002,
+     "verify": 43.36553375,
+     "recover": 9.624999999999998e-05,
+     "commit": 0.0008334375000000001,
+     "total": 52.0923229375
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 8.729244625000002,
+     "checkpoint": 0.00020318750000000003,
+     "verify": 43.467992249999995,
+     "recover": 8.068749999999999e-05,
+     "commit": 0.0007995624999999999,
+     "total": 52.1983203125
+    }
+   ]
+  }
+ },
+ "nuclis-new-512-r8-p1": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 770.784833,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 14.036875
+  },
+  "verify": {
+   "rows": 8,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 12.282198833333334,
+    "checkpoint": 0.00018662500000000002,
+    "verify": 51.8070859375,
+    "recover": 9.291666666666667e-05,
+    "commit": 0.0009191875000000002,
+    "total": 64.09048349999999
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 17.739945375,
+     "checkpoint": 0.0002343125,
+     "verify": 61.12443231249999,
+     "recover": 0.0006328750000000002,
+     "commit": 0.0010024375,
+     "total": 78.8662473125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.344742250000001,
+     "checkpoint": 0.00017975,
+     "verify": 51.8101275625,
+     "recover": 0.0001016875,
+     "commit": 0.0009243125000000002,
+     "total": 64.1560755625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.2406693125,
+     "checkpoint": 0.0002005,
+     "verify": 51.79987243749999,
+     "recover": 0.0001015,
+     "commit": 0.0009243750000000001,
+     "total": 64.04176812499999
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.261184937500001,
+     "checkpoint": 0.00017962500000000004,
+     "verify": 51.8112578125,
+     "recover": 7.55625e-05,
+     "commit": 0.0009088750000000002,
+     "total": 64.0736068125
+    }
+   ]
+  }
+ },
+ "nuclis-new-512-r8-p2": {
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "fast",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 16,
+  "sampling": "greedy",
+  "sampling_options": {
+   "temperature": 0,
+   "top_k": 0,
+   "top_p": 1,
+   "min_p": 0,
+   "presence_penalty": 0,
+   "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 769.983459,
+  "prefix": {
+   "path": ".zig-cache/speed/prefix/ff8325860e21ec01-1fdab4c7be1356c1-bf955975cf0e0a46.snap",
+   "tokens": 511,
+   "restored": true,
+   "milliseconds": 13.727125
+  },
+  "verify": {
+   "rows": 8,
+   "accepted": 0,
+   "depth": 511,
+   "mean": {
+    "warmup": false,
+    "batches": 48,
+    "propose": 12.265348124999997,
+    "checkpoint": 0.00026395833333333333,
+    "verify": 51.84141922916667,
+    "recover": 0.00010660416666666664,
+    "commit": 0.0009003125000000001,
+    "total": 64.10803822916667
+   },
+   "samples": [
+    {
+     "warmup": true,
+     "batches": 16,
+     "propose": 17.765565187500002,
+     "checkpoint": 0.00027075,
+     "verify": 61.452966125,
+     "recover": 0.0006303125000000002,
+     "commit": 0.0009191875,
+     "total": 79.2203515625
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.3185390625,
+     "checkpoint": 0.0002734375,
+     "verify": 51.833783875,
+     "recover": 0.00010399999999999997,
+     "commit": 0.0009194375,
+     "total": 64.1536198125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.192744874999999,
+     "checkpoint": 0.00022150000000000002,
+     "verify": 51.8423098125,
+     "recover": 0.00011693749999999999,
+     "commit": 0.0008960000000000001,
+     "total": 64.036289125
+    },
+    {
+     "warmup": false,
+     "batches": 16,
+     "propose": 12.284760437500001,
+     "checkpoint": 0.0002969375,
+     "verify": 51.848164000000004,
+     "recover": 9.887499999999999e-05,
+     "commit": 0.0008854999999999999,
+     "total": 64.13420575
+    }
+   ]
+  }
+ }
+}

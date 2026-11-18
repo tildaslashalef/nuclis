@@ -308,7 +308,7 @@ test "a file takes the verdict of the index artifact its layer count matches" {
     try testing.expect(e4b.verdict().speculative and e4b.verdict().draft_length == 6);
     const moe = familyOf("gemma4", 30).?;
     try testing.expectEqualStrings("gemma-4-26b-a4b", moe.name);
-    try testing.expect(!moe.verdict().speculative);
+    try testing.expect(moe.verdict().speculative and moe.verdict().draft_length == 4);
     try testing.expectEqualStrings("gemma-4-12b-qat", familyOf("gemma4", 48).?.name);
     // An unknown layer count, or none, falls back to the architecture's first artifact.
     try testing.expectEqualStrings("gemma-4-12b-qat", familyOf("gemma4", 7).?.name);

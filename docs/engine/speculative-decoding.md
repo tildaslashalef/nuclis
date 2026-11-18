@@ -11,13 +11,14 @@ each piece was built and measured is in
 Every catalogue entry with a draft source is measured, and its defaults
 follow the record
 ([re-priced verdicts, 2026-10-01](../benchmarks/record/speculative-decoding.md#the-re-priced-verdicts-2026-10-01),
-[the DFlash2 drafter, 2026-10-21](../benchmarks/record/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21)):
+[the DFlash2 drafter, 2026-10-21](../benchmarks/record/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21),
+[the 26B-A4B's experts, 2026-11-18](../benchmarks/record/gemma4.md#what-the-experts-cost-2026-11-18)):
 
 | Entry | Default | Draft source |
 | --- | --- | --- |
 | Qwen3.8-27B | on at draft 7 | its `nextn` block; `--draft dflash2` selects the DFlash2 drafter, also on at 7 |
 | Gemma 4 E4B | on at draft 6 | its assistant head |
-| Gemma 4 26B-A4B | off | its assistant head |
+| Gemma 4 26B-A4B | on at draft 4 | its assistant head |
 | Gemma 4 12B QAT (legacy) | on at draft 5 | its assistant head |
 | Muse Glimmer | on at draft 6 | its DFlash drafter |
 
@@ -332,9 +333,12 @@ and the external evidence surveyed are in
 - Why the multi-row matvec takes only small batches and the wide tile was
   not adopted: [record, 2026-09-20](../benchmarks/record/speculative-decoding.md#small-batches-the-multi-row-matvec-and-the-2-row-routing-2026-09-20),
   [the tile experiment](../benchmarks/record/speculative-decoding.md#the-small-batch-tile-experiment-2026-09-20-closed-negative).
-- Why Gemma 4 26B-A4B is off and DFlash2 is not the default:
+- Why DFlash2 is not the default:
+  [record, 2026-10-21](../benchmarks/record/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21).
+- Why Gemma 4 26B-A4B was off, and what turned it on (a verify batch's
+  experts through the gathered matvec):
   [record, 2026-10-01](../benchmarks/record/speculative-decoding.md#the-re-priced-verdicts-2026-10-01),
-  [2026-10-21](../benchmarks/record/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21).
+  [2026-11-18](../benchmarks/record/gemma4.md#what-the-experts-cost-2026-11-18).
 - How each draft source was traced and validated:
   [Qwen's block](../benchmarks/record/speculative-decoding.md#the-qwen38-draft-head-2026-09-20),
   [the MTP companion](../benchmarks/record/speculative-decoding.md#the-qwen-mtp-companion-2026-10-21),

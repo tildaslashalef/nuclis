@@ -153,6 +153,8 @@
         "--warmup",
         "--profile",
         "--unfused-norms",
+        "--profile-prefill",
+        "--expert-counts",
         "--kernel-stats",
         "--capture",
         "--prefix-cache",

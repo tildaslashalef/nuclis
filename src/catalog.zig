@@ -260,7 +260,7 @@ pub const artifacts = [_]Artifact{
             .{ .role = .mmproj, .path = "mmproj-BF16.gguf", .size = 1_194_828_256, .sha256 = "7b06953ccdbe8cf363f47841a7afaacd2b1c2ff9a8d6b426fdec7521a6878744", .used_for = "image input" },
             // 0.63-0.76x on prose at drafts 2-7: rows route to their own
             // experts; off (docs/benchmarks/history.md § The re-priced speculative verdicts (2026-10-01)).
-            .{ .role = .draft, .path = "MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf", .size = 251_939_328, .sha256 = "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a", .used_for = "speculative decoding", .verdict = .{ .speculative = false, .draft_length = 4 } },
+            .{ .role = .draft, .path = "MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf", .size = 251_939_328, .sha256 = "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a", .used_for = "speculative decoding", .verdict = .{ .speculative = true, .draft_length = 4 } },
         },
     },
     // The on-device E4B, QAT file only: per-layer embeddings, shared KV
@@ -744,11 +744,11 @@ test "the index: kinds, lifecycle, and the per-kind facts the old tables held" {
     for ([_][]const u8{ "qwen3.8-27b", "gemma-4-26b-a4b", "gemma-4-e4b-qat", "clef-flash", "laya" }) |name| try std.testing.expectEqual(Lifecycle.current, find(name).?.status);
     // Files outside the index run through discovery, not by name.
     try std.testing.expect(find("gemma-4-12b") == null and find("qwen") == null and find("qwen/Qwen3.8-27B-UD-Q4_K_M.gguf") == null);
-    // The measured verdicts: every drafter pays but the mixture-of-experts head.
+    // The measured verdicts: every drafter pays.
     try std.testing.expect(qwen.verdict().speculative and qwen.verdict().draft_length == 7);
     try std.testing.expectEqual(@as(usize, 5), find("gemma-4-12b-qat").?.verdict().draft_length);
     try std.testing.expectEqual(@as(usize, 6), find("gemma-4-e4b-qat").?.verdict().draft_length);
-    try std.testing.expect(!find("gemma-4-26b-a4b").?.verdict().speculative);
+    try std.testing.expectEqual(@as(usize, 4), find("gemma-4-26b-a4b").?.verdict().draft_length);
     for (&artifacts) |*a| for (a.files) |f| if (f.verdict) |v| if (v.speculative) try std.testing.expect(v.draft_length >= 1 and v.draft_length <= inference.engine.max_draft_length);
     try std.testing.expectEqualStrings("gemma-4-e4b-qat", hearing().?.name);
     for (&artifacts) |*a| if (a.traits.hears) try std.testing.expect(a.companion(.mmproj) != null);

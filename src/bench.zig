@@ -5,6 +5,7 @@ const std = @import("std");
 const inference = @import("inference");
 const engine = @import("engine.zig");
 const generate = @import("generate.zig");
+const expert_counts = @import("expert_counts.zig");
 const config = @import("config.zig");
 const style = @import("tui/style.zig");
 const interrupt = @import("interrupt.zig");
@@ -27,9 +28,15 @@ pub const Options = struct {
     /// Per-kernel GPU timing (Metal only). Changes how work is recorded, so
     /// the whole-run rates of a profiled run are not comparable with unprofiled ones.
     profile: bool = false,
+    /// Keep each run's prompt in the profile instead of pausing it out: with
+    /// a short `--max-tokens`, prefill's per-kernel time.
+    profile_prefill: bool = false,
     /// Run the norm pairs the fused kernels replace instead of the fused
     /// ones: the interleaved control that measures the fusions.
     unfused_norms: bool = false,
+    /// Tally the experts every batch routes to (`expert_counts`) and report
+    /// them; a mixture of experts on Metal only.
+    expert_counts: bool = false,
     /// A `.gputrace` path: after the runs, one more decode step is recorded
     /// into it for Xcode's Metal debugger. Metal only.
     capture: ?[]const u8 = null,
@@ -274,6 +281,9 @@ pub const Report = struct {
     prefix: ?PrefixReport = null,
     verify: ?VerifyReport = null,
     profile: ?ProfileReport = null,
+    /// `--expert-counts`: the routing tallied over every run, warm-ups and
+    /// the prefix's prefill included.
+    experts: ?expert_counts.Summary = null,
 
     pub fn render(self: Report, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
         if (json) {
@@ -320,6 +330,10 @@ pub const Report = struct {
             } else try out.writeAll(", accepted —\n");
         }
         if (self.profile) |p| try renderProfile(p, out, sty);
+        if (self.experts) |e| {
+            try out.writeByte('\n');
+            try e.render(out);
+        }
     }
     fn rate(out: *std.Io.Writer, value: ?f64) !void {
         if (value) |v| try out.print("{d: >9.2}", .{v}) else try out.writeAll("        —");
@@ -569,6 +583,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         if (tokens.len - 1 + (limit - 1) * (accept + 1) + rows > capacity) return error.ContextFull;
     }
     var trace: generate.Trace = .{ .io = io, .directory = null, .started = std.Io.Clock.awake.now(io) };
+    const counts: ?*expert_counts.Counts = if (options.expert_counts) try alloc.create(expert_counts.Counts) else null;
+    defer if (counts) |c| alloc.destroy(c);
+    if (counts) |c| {
+        c.* = .{};
+        trace.experts = c;
+    }
 
     // The saved prefix is the prompt less its last token, so each run still
     // feeds one prompt token and samples its first token from real logits.
@@ -667,7 +687,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
             // The profile covers decode steps only: a run's prefill is
             // paused out of it and the loop's first step hook resumes it.
             var gate: ProfileGate = .{ .profile = if (gpu) |backend| (if (backend.profile) |*p| p else null) else null };
-            if (gate.profile) |p| p.paused = true;
+            if (gate.profile) |p| p.paused = !options.profile_prefill;
             const outcome = try generate.runLoop(&eng, fed, limit, &sampler, &history, spec, null, logits, candidates, generated, &trace, .{ .context = &gate, .step = ProfileGate.step });
             if (gate.profile) |p| p.paused = false;
             const t = outcome.timing;
@@ -763,6 +783,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         .decode_speedup = if (stats.decode != null and stats.speculative_decode != null) stats.speculative_decode.? / stats.decode.? else null,
         .prefix = prefix_report,
         .profile = profile,
+        .experts = if (counts) |c| c.summary() else null,
     };
     if (!json) try writer.writeByte('\n');
     try report.render(writer, json, sty);

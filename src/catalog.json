@@ -136,7 +136,7 @@
      "size": 251939328,
      "sha256": "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a",
      "verdict": {
-      "speculative": false,
+      "speculative": true,
       "draft_length": 4
      }
     }
