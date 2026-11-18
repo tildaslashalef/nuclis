@@ -57,6 +57,8 @@ pub const PipelineStats = profile_mod.PipelineStats;
 const Shape = profile_mod.Shape;
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
+/// The init-local buffer recorder a plan's `init` releases on failure.
+pub const Created = @import("created.zig").Created;
 pub const Buffer = struct {
     id: u32,
     offset: usize,

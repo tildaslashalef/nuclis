@@ -17,6 +17,8 @@ pub const qwen35_metal = @import("qwen35_metal.zig");
 pub const gemma4 = @import("gemma4.zig");
 pub const gemma4_runtime = @import("gemma4_runtime.zig");
 pub const gemma4_metal = @import("gemma4_metal.zig");
+/// The output readout the two chat Metal plans share.
+pub const chat_plan = @import("chat_plan.zig");
 pub const muse_glimmer = @import("muse_glimmer.zig");
 pub const muse_glimmer_runtime = @import("muse_glimmer_runtime.zig");
 pub const muse_glimmer_metal = @import("muse_glimmer_metal.zig");
@@ -142,6 +144,7 @@ test {
     _ = gemma4;
     _ = gemma4_runtime;
     _ = gemma4_metal;
+    _ = chat_plan;
     _ = muse_glimmer;
     _ = muse_glimmer_runtime;
     _ = muse_glimmer_metal;
