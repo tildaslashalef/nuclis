@@ -176,15 +176,22 @@ choices fit badly. Each part routes by row count instead:
   rather than the 32-token WY form
   ([speculative-decoding.md](speculative-decoding.md)).
 
-The `qwen38-verify-depth-*` gates (`generation-check --verify-depth`)
-restore a saved prefix of the acceptance arrays at 511, 4,095, 16,383, and
-32,638 tokens and compare a 4-row verify batch's logits with stepped decode
-from the same state, bounding the worst row at 4e-2 max abs and 2e-3
-relative RMS, with the same greedy token on every row. A causal limit off by
-the batch reads 4.7e-2 relative RMS with the greedy token unchanged, which
-is why the gate bounds the RMS and not only the argmax. Where a verify
-batch's cost went before these routes:
+The `*-verify-depth-*` gates (`generation-check --verify-depth`), for
+Qwen3.8 and both Gemma 4 files, restore a saved prefix of the acceptance
+arrays at 511, 4,095, 16,383, and 32,638 tokens and compare a 4-row verify
+batch's logits with stepped decode from the same state, with the same
+greedy token on every row and the worst row within the family's bounds
+([metal-evidence.md § Model-level checks](metal-evidence.md#model-level-checks)).
+A causal limit off by the batch reads 4.7e-2 relative RMS on Qwen with the
+greedy token unchanged, which is why the gates bound the RMS and not only
+the argmax. Where a verify batch's cost went before these routes:
 [record](../benchmarks/record/metal-backend.md#where-a-verify-batchs-cost-goes-2026-09-30).
+
+`generation-check --prefill-identity <tokens.json> --logits-out <file>`
+prefills an array on Metal in the plan's own chunks (F16 cache, no
+drafter) and writes the last row's logits as little-endian f32. A change
+to prefill attention shows its arithmetic unchanged by `cmp` of a base
+build's file and a candidate's; no gate runs it.
 
 ## Limits
 

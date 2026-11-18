@@ -102,6 +102,8 @@ pub fn main(init: std.process.Init) !void {
     var audio_clips: std.ArrayList([]const u8) = .empty;
     defer audio_clips.deinit(alloc);
     var verify_depth: ?[]const u8 = null;
+    var prefill_identity: ?[]const u8 = null;
+    var logits_out: ?[]const u8 = null;
     var prefix_dir: ?[]const u8 = null;
     var path: ?[]const u8 = null;
     var i: usize = 1;
@@ -153,6 +155,14 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedTokenArray;
             verify_depth = args[i];
+        } else if (std.mem.eql(u8, arg, "--prefill-identity")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedTokenArray;
+            prefill_identity = args[i];
+        } else if (std.mem.eql(u8, arg, "--logits-out")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedLogitsPath;
+            logits_out = args[i];
         } else if (std.mem.eql(u8, arg, "--prefix-cache")) {
             i += 1;
             if (i >= args.len) return error.ExpectedPrefixDirectory;
@@ -168,6 +178,10 @@ pub fn main(init: std.process.Init) !void {
         } else return error.UnknownOption;
     }
     const model_path = path orelse return error.ExpectedModelPath;
+    if (prefill_identity) |tokens_path| {
+        if (!use_metal) return error.PrefillIdentityNeedsMetal;
+        return prefillIdentity(alloc, init.io, model_path, tokens_path, logits_out orelse return error.ExpectedLogitsPath);
+    }
     if (verify_depth) |tokens_path| {
         if (!use_metal) return error.VerifyDepthNeedsMetal;
         return verifyAtDepth(alloc, init.io, model_path, draft_model, tokens_path, prefix_dir orelse return error.ExpectedPrefixDirectory);
@@ -929,19 +943,83 @@ fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, m
     if (backend) |*b| try verifyTopKCheck(spec, alloc, b, view, binding);
 }
 
+/// Prefills a token array on Metal in the plan's own chunks, F16 cache,
+/// no drafter, and writes the last row's logits to `out_path` as
+/// little-endian f32: two builds' files are compared byte for byte (`cmp`)
+/// to show a change to prefill leaves its arithmetic identical.
+fn prefillIdentity(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, tokens_path: []const u8, out_path: []const u8) !void {
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, tokens_path, alloc, .limited(16 << 20));
+    defer alloc.free(bytes);
+    const parsed = try std.json.parseFromSlice([]const u32, alloc, bytes, .{});
+    defer parsed.deinit();
+    const tokens = parsed.value;
+    if (tokens.len == 0 or tokens.len > inference.max_capacity) return error.InvalidTokenArray;
+    var eng = try inference.engine.Engine.open(alloc, io, model_path, .metal, @max(tokens.len, 32768), .f16, null, .none);
+    defer eng.deinit();
+    const logits = try alloc.alloc(f32, eng.vocab.tokens.len);
+    defer alloc.free(logits);
+    const started = std.Io.Clock.awake.now(io);
+    try eng.model.prefill(tokens, logits, null, null, null, null, null);
+    const took = started.durationTo(std.Io.Clock.awake.now(io));
+    for (logits) |v| if (!std.math.isFinite(v)) return error.NonFiniteLogits;
+    const file = try std.Io.Dir.cwd().createFile(io, out_path, .{});
+    defer file.close(io);
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(io, &buffer);
+    for (logits) |value| try writer.interface.writeInt(u32, @bitCast(value), .little);
+    try writer.interface.flush();
+    std.debug.print("Prefilled {d} tokens in {d:.1} s; the last row's {d} logits are in {s}\n", .{ tokens.len, @as(f64, @floatFromInt(took.nanoseconds)) / 1e9, logits.len, out_path });
+}
+
+/// A depth pass's bounds: every row's logits within both, and, when
+/// `same_argmax`, on the stepped decode's greedy token.
+const DepthBounds = struct { max_abs: f64, rel_rms: f64, same_argmax: bool };
+/// One comparison of the depth check: `generic` runs both sides through the
+/// generic F32 tiles and matvecs instead of the specialized kernels.
+const DepthPass = struct { label: []const u8, generic: bool, bounds: DepthBounds };
+// Twice the worst measured on both attention routes (1.8e-2 max abs at 4K,
+// 1.02e-3 relative RMS at 32K: the multi-row weight tiles' half operands,
+// flat with depth); a causal limit off by the batch reads 4.7e-2 relative
+// RMS with the greedy token unchanged.
+const qwen35_depth = [_]DepthPass{.{ .label = "specialized", .generic = false, .bounds = .{ .max_abs = 4e-2, .rel_rms = 2e-3, .same_argmax = true } }};
+// Twice the worst over 512, 4,096, 16,384, and 32,639 tokens
+// (docs/benchmarks/record/metal-backend.md § Verify rows at depth on
+// Gemma 4). On the 26B-A4B a verify row's experts go through the same
+// gathered matvec as a step, so the chunked prefill's router near-ties do
+// not arise; the generic F32 pass bounds the schedule without the
+// half-operand tiles.
+const gemma4_dense_depth = [_]DepthPass{.{ .label = "specialized", .generic = false, .bounds = .{ .max_abs = 1.5e-1, .rel_rms = 1.6e-2, .same_argmax = true } }};
+const gemma4_expert_depth = [_]DepthPass{
+    .{ .label = "specialized", .generic = false, .bounds = .{ .max_abs = 3e-2, .rel_rms = 1.5e-3, .same_argmax = true } },
+    .{ .label = "generic F32", .generic = true, .bounds = .{ .max_abs = 1.5e-2, .rel_rms = 8e-4, .same_argmax = true } },
+};
+
+/// The depth check's passes for the file: the family from its architecture,
+/// and on Gemma whether it is an expert configuration.
+fn depthPasses(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8) ![]const DepthPass {
+    var mapped = try inference.weights.Mapped.open(alloc, io, model_path);
+    defer mapped.deinit(io);
+    const architecture = mapped.document.string("general.architecture") orelse return error.MissingMetadata;
+    return switch (try inference.models.select(architecture)) {
+        .qwen35 => &qwen35_depth,
+        .gemma4 => if (mapped.document.get("gemma4.expert_count") != null) &gemma4_expert_depth else &gemma4_dense_depth,
+        else => error.VerifyDepthUnsupported,
+    };
+}
+
 /// A 4-row verify batch against stepped decode from the same restored state
 /// at the depth of a token array (its tokens less the last, a saved prefix
 /// under `prefix_dir`, keyed as `bench --speculative on` keys it so the
 /// speed loop's files serve): the seed and three fixed drafts, each row's
-/// logits within the depth bound below and on the same greedy token. Metal,
-/// F16 cache, 32,768 capacity, the drafter loaded (`draft_path` as the
-/// catalogue entry names it; Qwen loads its embedded block). Qwen only: the
-/// other families' errors at depth are unmeasured.
+/// logits within the family's depth bounds (`depthPasses`). Metal, F16
+/// cache, 32,768 capacity, the drafter loaded (`draft_path` as the
+/// catalogue entry names it; Qwen loads its embedded block).
 fn verifyAtDepth(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, draft_path: ?[]const u8, tokens_path: []const u8, prefix_dir: []const u8) !void {
     const engine = inference.engine;
     const prefix_cache = inference.prefix_cache;
     const rows = 4;
     const capacity = 32768;
+    const passes = try depthPasses(alloc, io, model_path);
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, tokens_path, alloc, .limited(16 << 20));
     defer alloc.free(bytes);
     const parsed = try std.json.parseFromSlice([]const u32, alloc, bytes, .{});
@@ -951,13 +1029,7 @@ fn verifyAtDepth(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, d
     var eng = try engine.Engine.open(alloc, io, model_path, .metal, capacity, .f16, null, .{ .preferred = draft_path });
     defer eng.deinit();
     if (eng.model.drafter() == null) return error.DraftSourceMissing;
-    if (eng.model.adapter() != .qwen35) return error.VerifyDepthUnsupported;
-    // Twice the worst measured on both attention routes (1.8e-2 max abs at
-    // 4K, 1.02e-3 relative RMS at 32K: the multi-row weight tiles' half
-    // operands, flat with depth); a causal limit off by the batch reads
-    // 4.7e-2 relative RMS with the greedy token unchanged.
-    const max_abs_bound = 4e-2;
-    const rel_rms_bound = 2e-3;
+    const gpu = eng.model.gpu() orelse return error.VerifyDepthNeedsMetal;
     const prefix = tokens[0 .. tokens.len - 1];
     const key: prefix_cache.Key = .{ .model = try prefix_cache.modelDigest(io, model_path, draft_path), .tokens = prefix_cache.tokenDigest(prefix), .layout = eng.model.session().layout_digest };
     const dir = try std.Io.Dir.cwd().createDirPathOpen(io, prefix_dir, .{});
@@ -977,29 +1049,35 @@ fn verifyAtDepth(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, d
     };
     defer snap.deinit();
     const prepared = started.durationTo(std.Io.Clock.awake.now(io));
+    std.debug.print("Verify rows vs stepped decode at depth {d} (F16 cache; prefix {s} in {d:.1} s):\n", .{ prefix.len, if (restored) "restored" else "prefilled and saved", @as(f64, @floatFromInt(prepared.nanoseconds)) / 1e9 });
     const batch = [rows]u32{ tokens[tokens.len - 1], tokens[0], tokens[1], tokens[2] };
     const vocabulary = eng.vocab.tokens.len;
     const verified = try alloc.alloc(f32, rows * vocabulary);
     defer alloc.free(verified);
     const stepped = try alloc.alloc(f32, rows * vocabulary);
     defer alloc.free(stepped);
-    try eng.model.restore(&snap);
-    try eng.model.verify(&batch, vocabulary, .{ .rows = verified }, null, null);
-    try eng.model.restore(&snap);
-    for (batch, 0..) |token, i| try eng.model.step(token, stepped[i * vocabulary ..][0..vocabulary], null, null, null, null);
-    var worst: Difference = .{ .max_abs = 0, .rel_rms = 0, .arg_expected = 0, .arg_actual = 0 };
-    var worst_row: usize = 0;
     var failed = false;
-    for (0..rows) |i| {
-        const d = Difference.of(stepped[i * vocabulary ..][0..vocabulary], verified[i * vocabulary ..][0..vocabulary]);
-        failed = failed or !d.within(max_abs_bound, rel_rms_bound);
-        if (i == 0 or !(d.rel_rms <= worst.rel_rms) or !d.within(max_abs_bound, rel_rms_bound)) {
-            worst = d;
-            worst_row = i;
+    for (passes) |pass| {
+        gpu.generic_only = pass.generic;
+        defer gpu.generic_only = false;
+        try eng.model.restore(&snap);
+        try eng.model.verify(&batch, vocabulary, .{ .rows = verified }, null, null);
+        try eng.model.restore(&snap);
+        for (batch, 0..) |token, i| try eng.model.step(token, stepped[i * vocabulary ..][0..vocabulary], null, null, null, null);
+        var max_abs: f64 = 0;
+        var rel_rms: f64 = 0;
+        var flipped: usize = 0;
+        for (0..rows) |i| {
+            const d = Difference.of(stepped[i * vocabulary ..][0..vocabulary], verified[i * vocabulary ..][0..vocabulary]);
+            if (!(d.max_abs <= max_abs)) max_abs = d.max_abs;
+            if (!(d.rel_rms <= rel_rms)) rel_rms = d.rel_rms;
+            flipped += @intFromBool(d.arg_expected != d.arg_actual);
         }
-        if (failed) break;
+        const b = pass.bounds;
+        const ok = max_abs <= b.max_abs and rel_rms <= b.rel_rms and (!b.same_argmax or flipped == 0);
+        failed = failed or !ok;
+        std.debug.print("  {s}: {d} rows, worst max abs {e:.3}, relative RMS {e:.3}, argmax differs on {d} (bounds {e:.1} / {e:.1}{s}){s}\n", .{ pass.label, rows, max_abs, rel_rms, flipped, b.max_abs, b.rel_rms, if (b.same_argmax) ", same argmax" else "", if (ok) "" else " FAILED" });
     }
-    std.debug.print("Verify rows vs stepped decode at depth {d} (F16 cache; prefix {s} in {d:.1} s): {d} rows, {s} row {d} max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (bounds {e:.0} / {e:.0})\n", .{ prefix.len, if (restored) "restored" else "prefilled and saved", @as(f64, @floatFromInt(prepared.nanoseconds)) / 1e9, rows, if (failed) "failing" else "worst", worst_row, worst.max_abs, worst.rel_rms, worst.arg_expected, worst.arg_actual, max_abs_bound, rel_rms_bound });
     if (failed) return error.VerifyDepthMismatch;
 }
 

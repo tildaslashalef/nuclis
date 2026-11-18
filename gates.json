@@ -16,6 +16,10 @@
   "gemma4_26b_a4b": {
    "artifact": "gemma-4-26b-a4b"
   },
+  "gemma4_26b_a4b_mtp": {
+   "artifact": "gemma-4-26b-a4b",
+   "file": "draft"
+  },
   "gemma4_e4b": {
    "artifact": "gemma-4-e4b-qat"
   },
@@ -614,6 +618,102 @@
     "kind": "exit"
    },
    "evidence": "docs/engine/metal-backend.md"
+  },
+  {
+   "name": "gemma4-26b-a4b-verify-depth-512",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_26b_a4b",
+   "mtp": "gemma4_26b_a4b_mtp",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-model",
+    "{mtp}",
+    "--verify-depth",
+    "tests/fixtures/run-2026-09-18-gemma4-26b-a4b/prompt-512.json",
+    "--prefix-cache",
+    ".zig-cache/speed/prefix"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18"
+  },
+  {
+   "name": "gemma4-26b-a4b-verify-depth-4k",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_26b_a4b",
+   "mtp": "gemma4_26b_a4b_mtp",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-model",
+    "{mtp}",
+    "--verify-depth",
+    "tests/fixtures/run-2026-09-18-gemma4-26b-a4b/prompt-4096.json",
+    "--prefix-cache",
+    ".zig-cache/speed/prefix"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18"
+  },
+  {
+   "name": "gemma4-e4b-verify-depth-512",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_e4b",
+   "mtp": "gemma4_e4b_mtp",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-model",
+    "{mtp}",
+    "--verify-depth",
+    "tests/fixtures/run-2026-10-04-gemma4-e4b/prompt-512.json",
+    "--prefix-cache",
+    ".zig-cache/speed/prefix"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18"
+  },
+  {
+   "name": "gemma4-e4b-verify-depth-4k",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_e4b",
+   "mtp": "gemma4_e4b_mtp",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-model",
+    "{mtp}",
+    "--verify-depth",
+    "tests/fixtures/run-2026-10-04-gemma4-e4b/prompt-4096.json",
+    "--prefix-cache",
+    ".zig-cache/speed/prefix"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18"
   },
   {
    "name": "qwen38-speculative-cpu",
@@ -1911,6 +2011,102 @@
     "kind": "exit"
    },
    "evidence": "docs/engine/metal-backend.md"
+  },
+  {
+   "name": "gemma4-26b-a4b-verify-depth-16k",
+   "family": "gemma4",
+   "tier": "verify-long",
+   "model": "gemma4_26b_a4b",
+   "mtp": "gemma4_26b_a4b_mtp",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-model",
+    "{mtp}",
+    "--verify-depth",
+    "tests/fixtures/run-2026-09-18-gemma4-26b-a4b/prompt-16384.json",
+    "--prefix-cache",
+    ".zig-cache/speed/prefix"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18"
+  },
+  {
+   "name": "gemma4-26b-a4b-verify-depth-32k",
+   "family": "gemma4",
+   "tier": "verify-long",
+   "model": "gemma4_26b_a4b",
+   "mtp": "gemma4_26b_a4b_mtp",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-model",
+    "{mtp}",
+    "--verify-depth",
+    "tests/fixtures/run-2026-09-18-gemma4-26b-a4b/prompt-32639.json",
+    "--prefix-cache",
+    ".zig-cache/speed/prefix"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18"
+  },
+  {
+   "name": "gemma4-e4b-verify-depth-16k",
+   "family": "gemma4",
+   "tier": "verify-long",
+   "model": "gemma4_e4b",
+   "mtp": "gemma4_e4b_mtp",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-model",
+    "{mtp}",
+    "--verify-depth",
+    "tests/fixtures/run-2026-10-04-gemma4-e4b/prompt-16384.json",
+    "--prefix-cache",
+    ".zig-cache/speed/prefix"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18"
+  },
+  {
+   "name": "gemma4-e4b-verify-depth-32k",
+   "family": "gemma4",
+   "tier": "verify-long",
+   "model": "gemma4_e4b",
+   "mtp": "gemma4_e4b_mtp",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-model",
+    "{mtp}",
+    "--verify-depth",
+    "tests/fixtures/run-2026-10-04-gemma4-e4b/prompt-32639.json",
+    "--prefix-cache",
+    ".zig-cache/speed/prefix"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18"
   },
   {
    "name": "qwen3-tts-codec-cpu",

@@ -83,6 +83,11 @@ These need a model and run as gates
   `inference/generation-check.zig`, in each cache precision. It repeats the
   chunked comparison through the generic F32 tiles (`generic_only`), which
   separates the half tiles' rounding from the chunk schedule.
-- **Verify at depth.** The `qwen38-verify-depth-*` gates
+- **Verify at depth.** The `*-verify-depth-*` gates
   ([metal-backend.md § Small batches](metal-backend.md#small-batches))
-  bound a 4-row verify batch's logits against stepped decode at depth.
+  bound a 4-row verify batch's logits against stepped decode at 512,
+  4,096 (tier `verify`), 16,384, and 32,639 tokens (`verify-long`), the
+  greedy token unchanged: Qwen 4e-2 max abs and 2e-3 relative RMS; the
+  Gemma 4 E4B 1.5e-1 and 1.6e-2; the 26B-A4B 3e-2 and 1.5e-3, and again
+  through the generic F32 tiles at 1.5e-2 and 8e-4
+  ([record](../benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18)).

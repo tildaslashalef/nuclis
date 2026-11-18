@@ -1886,3 +1886,38 @@ since is named.
   private draft cache; [Muse's DFlash](../history.md#the-muse-glimmer-dflash-draft-pair-2026-09-21)
   proposes differently and has no DeltaNet state to recover, so its
   economics do not transfer to Qwen.
+
+## Verify rows at depth on Gemma 4 (2026-11-18)
+
+`test-generation --verify-depth` on the two pinned Gemma 4 files: a 4-row
+verify batch (the seed and three fixed drafts) against four stepped
+decodes from the same restored prefix, F16 cache, capacity 32,768, the
+catalogue's MTP drafter loaded. M4 Pro, ReleaseSafe, base `7fa64c0`. The
+prefixes are `tests/fixtures/run-2026-09-18-gemma4-26b-a4b/` and
+`run-2026-10-04-gemma4-e4b/` `prompt-*.json`. Worst row of four; no row's
+greedy token differed anywhere.
+
+| File, pass | 512 | 4,096 | 16,384 | 32,639 |
+| --- | --- | --- | --- | --- |
+| 26B-A4B, specialized | 1.39e-2 / 7.46e-4 | 9.89e-3 / 4.34e-4 | 1.02e-2 / 5.93e-4 | 9.27e-3 / 3.59e-4 |
+| 26B-A4B, generic F32 | 1.71e-3 / 1.13e-4 | 1.17e-3 / 6.30e-5 | 7.05e-3 / 3.64e-4 | 1.79e-3 / 7.85e-5 |
+| E4B, specialized | 2.19e-2 / 1.31e-3 | 7.43e-2 / 7.72e-3 | 4.51e-2 / 2.20e-3 | 2.58e-2 / 1.16e-3 |
+
+Cells are max abs / relative RMS. The bounds are twice each column's
+worst ([metal-evidence.md § Model-level checks](../../engine/metal-evidence.md#model-level-checks)).
+
+- **The 26B-A4B is as tight as a dense file.** The router near-ties that
+  put its chunked prefill at 1.1e1 / 3.5e-1 do not arise here: since the
+  gathered verify experts, a verify row and a step run the same expert
+  matvec, so they route alike.
+- **The E4B's error peaks at 4K, not at 32K.** The error does not grow
+  with depth on either file; it follows the prompt.
+- **A planted fault.** With each verify row's causal limit one short of its
+  own key (`attentionChunk`'s `position` less one), the 16K gates read
+  9.0 / 5.5e-1 (26B-A4B, both passes) and 1.2e1 / 7.3e-1 with two greedy
+  tokens changed (E4B): caught by two orders of magnitude.
+- **What it cannot see.** Shifting the sliding layers' `firstVisible` up
+  one row drops one key of 1,024 from the batch's first row only (the
+  window mask hides the rest per row); the 26B-A4B's 16K row moved from
+  5.9e-4 to 6.9e-4, inside the rounding. A window fault that small is
+  under any bound the half tiles allow.
