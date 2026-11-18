@@ -107,6 +107,10 @@ def expand(wdoc, gdoc, index):
                 for key in ("run", "reference_records", "record_suffix"):
                     if key in m:
                         w[key] = m[key]
+                w["family"] = row
+                tag = w.pop("record_tag", None)
+                if tag:
+                    w["record_suffix"] = f"{w['record_suffix']}-{tag}" if w.get("record_suffix") else tag
             if "prompt_tokens" in w:
                 w["prompt_tokens"] = f"tests/fixtures/{m['run']}/{w['prompt_tokens']}"
             if w.get("pair"):

@@ -38,6 +38,8 @@ SAMPLING_FLAGS = {
     "repetition_penalty": "--repetition-penalty",
     "seed": "--seed",
 }
+ACCEPTANCE_LENGTHS = [512, 4096, 16384, 32639]
+ACCEPTANCE_OUTPUT = 128
 BAR_METRICS = ("decode_tokens_per_second", "prefill_tokens_per_second", "decode_speedup")
 
 
@@ -108,9 +110,16 @@ def validate(workloads, models):
                 ):
                     problems.append(f"{name}: bars.{metric} must be {{min|max}} on one of {BAR_METRICS}")
         elif kind == "acceptance":
-            for key in ("run", "reference_records", "record_suffix"):
+            for key in ("run", "record_suffix"):
                 if not isinstance(w.get(key), str):
                     problems.append(f"{name}: acceptance needs {key}")
+            if not isinstance(w.get("reference_records", ""), str):
+                problems.append(f"{name}: reference_records must be a string")
+            lengths = w.get("prompt_lengths", ACCEPTANCE_LENGTHS)
+            if not isinstance(lengths, list) or not lengths or not all(isinstance(n, int) and n > 0 for n in lengths):
+                problems.append(f"{name}: prompt_lengths must be positive integers")
+            elif max(lengths) + ACCEPTANCE_OUTPUT > w.get("ctx", 32768):
+                problems.append(f"{name}: the longest prompt and the output must fit ctx")
     return problems
 
 
@@ -148,6 +157,8 @@ def bench_argv(w, model_path, nuclis="./zig-out/bin/nuclis", speculative=None):
 
 
 def acceptance_argv(w, model_path, nuclis="./zig-out/bin/nuclis", date="DATE"):
+    """nuclis-baseline.py on the row's run: arrays it lacks are made, the
+    ones it has held to what nuclis makes; the shape's lengths and context."""
     argv = [
         sys.executable,
         "scripts/bench/nuclis-baseline.py",
@@ -158,11 +169,37 @@ def acceptance_argv(w, model_path, nuclis="./zig-out/bin/nuclis", date="DATE"):
         "--run",
         w["run"],
         "--reference-records",
-        w["reference_records"],
+        w.get("reference_records", ""),
+        "--make-prompts",
+        "--family",
+        w["family"],
+        "--prompt-lengths",
+        ",".join(str(n) for n in w.get("prompt_lengths", ACCEPTANCE_LENGTHS)),
+        "--ctx-size",
+        str(w.get("ctx", 32768)),
     ]
+    for key, flag in (("warmup", "--warmup"), ("repeat", "--repetitions"), ("repeat", "--boundary-repetitions")):
+        if key in w:
+            argv += [flag, str(w[key])]
     if w["record_suffix"]:
         argv += ["--output", f"docs/benchmarks/nuclis-{date}-{w['record_suffix']}.json"]
     return argv
+
+
+def ceiling_of(help_text):
+    """The build's context ceiling, from `nuclis bench --help`'s --ctx-size row."""
+    import re
+
+    match = re.search(r"context window in tokens, 1\.\.(\d+)", help_text)
+    return int(match.group(1)) if match else None
+
+
+def context_ceiling(nuclis="./zig-out/bin/nuclis"):
+    try:
+        result = subprocess.run([nuclis, "bench", "--help"], capture_output=True, text=True, timeout=30, cwd=ROOT)
+    except OSError:
+        return None
+    return ceiling_of(result.stdout + result.stderr)
 
 
 def select(names, patterns):
@@ -235,6 +272,14 @@ def run_workload(name, w, gdoc, args):
     save_dir = ROOT / args.save_dir / name
     rev = git_rev()
     if w["kind"] == "acceptance":
+        ceiling = context_ceiling()
+        if ceiling is not None and w.get("ctx", 32768) > ceiling:
+            print(
+                f"{name}: needs a {w['ctx']}-token context; this build's ceiling is {ceiling} "
+                f"(build with make metal ARGS=-Dmax-context={w['ctx']})",
+                file=sys.stderr,
+            )
+            return False
         argv = acceptance_argv(w, model, date=time.strftime("%Y-%m-%d"))
         print(f"{name}: {' '.join(argv)}", flush=True)
         if args.dry_run:
@@ -374,6 +419,19 @@ def sample():
                 "run": "run-x",
                 "reference_records": "r.json",
                 "record_suffix": "a",
+                "family": "a",
+                "evidence": "docs/x.md",
+            },
+            "a/acceptance64": {
+                "kind": "acceptance",
+                "model": "a",
+                "run": "run-x",
+                "record_suffix": "a-64k",
+                "family": "a",
+                "prompt_lengths": [32639, 65407],
+                "ctx": 65536,
+                "warmup": 1,
+                "repeat": 1,
                 "evidence": "docs/x.md",
             },
         }
@@ -412,6 +470,7 @@ def sample_rows():
             },
             "prose-draft": {"base": "prose", "pair": True},
             "acceptance": {"kind": "acceptance", "evidence": "docs/x.md"},
+            "acceptance64": {"kind": "acceptance", "record_tag": "64k", "ctx": 65536, "evidence": "docs/x.md"},
         },
         "models": {
             "a": {
@@ -419,7 +478,7 @@ def sample_rows():
                 "run": "run-x",
                 "reference_records": "r.json",
                 "record_suffix": "a",
-                "shapes": ["prose", "prose-draft", "acceptance"],
+                "shapes": ["prose", "prose-draft", "acceptance", "acceptance64"],
                 "bars": {"prose-draft": {"decode_speedup": {"min": 1.0}}},
             },
             "a-dflash2": {"model": "a", "run": "run-x", "draft": "dflash2", "shapes": ["prose-draft"]},
@@ -435,12 +494,16 @@ class SelfTest(unittest.TestCase):
         gdoc = manifest.resolve({"models": {"a": {"artifact": "a"}, "old": {"artifact": "old"}}}, SAMPLE_INDEX)
         self.assertEqual(validate_rows(sample_rows(), gdoc, SAMPLE_INDEX), [])
         ws = manifest.expand(sample_rows(), gdoc, SAMPLE_INDEX)
-        self.assertEqual(sorted(ws), ["a-dflash2/prose-draft", "a/acceptance", "a/prose", "a/prose-draft"])
+        self.assertEqual(
+            sorted(ws), ["a-dflash2/prose-draft", "a/acceptance", "a/acceptance64", "a/prose", "a/prose-draft"]
+        )
+        self.assertEqual(ws["a/acceptance64"]["record_suffix"], "a-64k")
         self.assertEqual(ws["a/prose"]["prompt_tokens"], "tests/fixtures/run-x/p.json")
         self.assertEqual(ws["a/prose-draft"]["draft_length"], 7)
         self.assertEqual(ws["a/prose-draft"]["bars"], {"decode_speedup": {"min": 1.0}})
         self.assertEqual(ws["a-dflash2/prose-draft"]["draft_length"], 5)
         self.assertEqual(ws["a/acceptance"]["run"], "run-x")
+        self.assertEqual(ws["a/acceptance"]["family"], "a")
         self.assertEqual(validate(ws, gdoc["models"]), [])
         argv = bench_argv(ws["a-dflash2/prose-draft"], "a")
         self.assertEqual(argv[argv.index("--draft") + 1], "dflash2")
@@ -487,6 +550,22 @@ class SelfTest(unittest.TestCase):
         argv = acceptance_argv(sample()["workloads"]["a/acceptance"], "/m.gguf", date="2026-01-02")
         self.assertEqual(argv[-1], "docs/benchmarks/nuclis-2026-01-02-a.json")
         self.assertEqual(argv[argv.index("--run") + 1], "run-x")
+        self.assertIn("--make-prompts", argv)
+        self.assertEqual(argv[argv.index("--prompt-lengths") + 1], "512,4096,16384,32639")
+        self.assertNotIn("--repetitions", argv)
+        long = acceptance_argv(sample()["workloads"]["a/acceptance64"], "/m.gguf", date="2026-01-02")
+        self.assertEqual(long[long.index("--reference-records") + 1], "")
+        self.assertEqual(long[long.index("--prompt-lengths") + 1], "32639,65407")
+        self.assertEqual(long[long.index("--ctx-size") + 1], "65536")
+        self.assertEqual(long[long.index("--repetitions") + 1], "1")
+        self.assertEqual(long[-1], "docs/benchmarks/nuclis-2026-01-02-a-64k.json")
+        doc = sample()
+        doc["workloads"]["a/acceptance64"]["prompt_lengths"] = [65500]
+        self.assertTrue(any("must fit ctx" in p for p in validate(doc["workloads"], {"a": {}})))
+
+    def test_ceiling_of(self):
+        self.assertEqual(ceiling_of("  --ctx-size <n>   context window in tokens, 1..131072; default 32768"), 131072)
+        self.assertIsNone(ceiling_of("no such row"))
 
     def test_select_and_record_paths(self):
         names = ["a/prose", "a/code-draft", "b/prose"]

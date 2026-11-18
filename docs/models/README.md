@@ -321,13 +321,15 @@ For a new file of a model nuclis runs (Qwen3.8's re-made UD-Q4_K_M,
   tests/fixtures/perplexity/<file>.json`, cross-checked by one CPU window
   as in [§ Re-pinning a file](#re-pinning-a-file)) and a
   `<family>-perplexity` gate that compares against it.
-- Speed: a row in `workloads.json` and `make workload NAME=<row>/<shape>`
-  (`code` takes a text prompt; `prose512`, `prose4096`, and `acceptance`
-  replay a row's `run`, the token arrays of
-  [benchmarks § Acceptance runs](../benchmarks/README.md#acceptance-runs)),
-  recorded against nuclis's own previous record on the same machine and
-  method, never against another file's. A new family's first record is
-  its baseline.
+- Speed: a row in `workloads.json` whose `run` names a new
+  `run-<date>-<row>` directory, then `make workload
+  NAME=<row>/acceptance`: the first run makes the row's token arrays with
+  `nuclis tokenize` ([benchmarks § Acceptance
+  runs](../benchmarks/README.md#acceptance-runs)); commit them with their
+  `prompt-construction.json`. `prose512`, `prose4096` replay the same
+  arrays, `code` takes a text prompt. A new family's first record is its
+  baseline; later records are read against nuclis's own previous record
+  on the same machine and method, never against another file's.
 
 Close with the pull request's record (design deviations, measured numbers,
 gate results, what was left out), the documents the change touched, a

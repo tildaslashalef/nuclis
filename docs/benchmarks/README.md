@@ -55,6 +55,7 @@ workloads at this commit:
 | `qwen38/acceptance` | qwen38 | acceptance |
 | `gemma4-26b-a4b/prose512` | gemma4_26b_a4b | bench |
 | `gemma4-26b-a4b/acceptance` | gemma4_26b_a4b | acceptance |
+| `gemma4-26b-a4b/acceptance64` | gemma4_26b_a4b | acceptance |
 | `gemma4-e4b/prose512` | gemma4_e4b | bench |
 | `gemma4-e4b/acceptance` | gemma4_e4b | acceptance |
 <!-- /gen -->
@@ -156,6 +157,22 @@ tokens at every cut (it does, through 32,620 tokens). The 512 array is not
 the canonical tokenization of its own text (its corpus slice ends on a lone
 space token that the pre-tokenizer merges with the suffix's newline: 511
 tokens as text), which is why the runs take arrays rather than text.
+
+nuclis makes the same arrays itself: the template's tokens before the
+marker (as `nuclis tokenize` renders one user turn, reasoning off), the
+corpus's first tokens, then the closing line and the template's tokens
+after the marker. The workload passes `--make-prompts`, which writes the
+arrays a row's `run` lacks and holds every one it has to what nuclis makes
+now; it reproduces every llama.cpp array token for token on all three
+pinned files, and a new family's first run creates its own directory the
+same way. Past 85,784 tokens the corpus doubles (2,400 functions, starting
+with the 1,200); `prompt-construction.json` records each made set's
+lengths, corpus digest, and revision. A row without `reference_records`
+gets no llama.cpp rows; every record carries `previous`, the row's latest
+committed record, and the run prints its ratios against it.
+`acceptance64` (the 26B-A4B's row) runs 32,639 and 65,407 tokens at
+context 65,536, one warmup and one measured run, and is refused by a
+build whose ceiling is lower (`-Dmax-context`).
 
 ## Per-kernel profile
 
