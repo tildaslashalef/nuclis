@@ -1,0 +1,14 @@
+base b2f5100 (dirty) vs tree b2f5100 (dirty), gemma4_26b_a4b, f16 cache, 5 pairs
+512 decode               base     57.68 cand     57.70 tok/s  +0.03 % (pairs -0.38..+0.49)  NOISE
+512 verify R=1 a=0       base     25.22 cand     24.93 ms     +1.16 % (pairs -0.14..+1.42)  NOISE
+512 verify R=2 a=0       base     33.97 cand     34.81 ms     -2.45 % (pairs -2.75..-2.31)  REGRESS
+512 verify R=4 a=1       base     47.00 cand     47.75 ms     -1.59 % (pairs -2.59..-1.22)  REGRESS
+512 verify R=5 a=2       base     52.91 cand     53.99 ms     -2.05 % (pairs -3.46..-1.72)  REGRESS
+512 verify R=8 a=3       base     71.61 cand     73.62 ms     -2.81 % (pairs -3.26..-2.64)  REGRESS
+16384 decode             base     48.93 cand     48.91 tok/s  -0.04 % (pairs -0.11..+0.32)  NOISE
+16384 verify R=1 a=0     base     28.19 cand     28.19 ms     +0.02 % (pairs -0.70..+1.12)  NOISE
+16384 verify R=2 a=0     base     41.29 cand     42.06 ms     -1.87 % (pairs -2.52..-1.36)  REGRESS
+16384 verify R=4 a=1     base     61.26 cand     62.22 ms     -1.57 % (pairs -2.03..-0.76)  REGRESS
+16384 verify R=5 a=2     base     71.14 cand     72.60 ms     -2.04 % (pairs -2.23..-1.71)  REGRESS
+16384 verify R=8 a=3     base    100.62 cand    102.45 ms     -1.81 % (pairs -2.57..-1.74)  REGRESS
+verdict: REGRESS
