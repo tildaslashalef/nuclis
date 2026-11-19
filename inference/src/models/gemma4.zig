@@ -25,6 +25,7 @@ const gguf = @import("../formats/gguf.zig");
 const models = @import("root.zig");
 const weights = @import("../runtime/weights.zig");
 const gemma4_assistant = @import("gemma4_assistant.zig");
+const gemma4_dflash = @import("gemma4_dflash.zig");
 const tiny_models = @import("build_options").tiny_models;
 const Tensor = gguf.Tensor;
 
@@ -346,6 +347,8 @@ pub const Binding = struct {
     config: *const Config,
     /// The draft head when a companion was loaded; null for the main file.
     draft: ?gemma4_assistant.Binding = null,
+    /// The DFlash drafter when that companion was loaded instead (E4B only).
+    flash: ?gemma4_dflash.Binding = null,
     /// Also the output projection (tied): logits = token_embedding · y.
     token_embedding: *const Tensor,
     output_norm: *const Tensor,
@@ -385,7 +388,29 @@ pub const family = struct {
     /// The draft source is the `gemma4-assistant` companion file.
     pub const draft_architecture = gemma4_assistant.architecture;
     pub const bindDraft = @import("gemma4.zig").bindDraft;
+    pub const attachDraft = @import("gemma4.zig").attachDraft;
 };
+
+/// Reads the companion and binds it by content: a `dflash` file becomes the
+/// E4B's DFlash drafter, anything else goes through `bindDraft`.
+pub fn attachDraft(alloc: std.mem.Allocator, doc: *const gguf.Document, view: weights.View, target_view: weights.View, target: *Binding, force: bool) DraftError!bool {
+    _ = force;
+    if (gemma4_dflash.matches(doc)) {
+        // The drafter reads residuals at the E4B's width and layer indices.
+        if (target.config.embedding != gemma4_dflash.embedding or target.config.layer_count <= gemma4_dflash.target_layers[gemma4_dflash.target_layers.len - 1]) return error.DraftSourceMismatch;
+        target.flash = gemma4_dflash.bind(alloc, doc, view) catch |err| switch (err) {
+            error.UnsupportedArchitecture, error.UnsupportedConfiguration, error.MissingMetadata, error.InvalidMetadata => return error.DraftSourceMismatch,
+            else => |e| return e,
+        };
+        target.draft = null;
+        return true;
+    }
+    const arch = doc.string("general.architecture") orelse return error.DraftSourceMismatch;
+    if (!std.mem.eql(u8, arch, gemma4_assistant.architecture)) return error.DraftSourceMismatch;
+    target.draft = try bindDraft(alloc, doc, view, target_view, target);
+    target.flash = null;
+    return true;
+}
 
 /// The companion head for a bound target (its architecture and width checks
 /// already ran in `Engine.open`): `view` is the companion file's byte source,
@@ -660,6 +685,7 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     var result: Binding = undefined;
     result.config = config;
     result.draft = null;
+    result.flash = null;
     result.token_embedding = try binder.take("token_embd.weight", &.{ config.embedding, vocabulary }, .matrix);
     result.output_norm = try binder.take("output_norm.weight", &.{config.embedding}, .f32);
     result.rope_factors = try binder.take("rope_freqs.weight", &.{256}, .f32);
