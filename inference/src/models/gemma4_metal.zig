@@ -35,6 +35,7 @@ const std = @import("std");
 const models = @import("root.zig");
 const model = @import("gemma4.zig");
 const assistant = @import("gemma4_assistant.zig");
+const dflash = @import("gemma4_dflash.zig");
 const weights = @import("../runtime/weights.zig");
 const session = @import("../runtime/session.zig");
 const sampling = @import("../sampling/root.zig");
@@ -219,6 +220,113 @@ const Head = struct {
     }
 };
 
+/// The target layer whose input residual the DFlash drafter reads at slot
+/// `index`, or null for every other layer.
+fn flashSlot(index: usize) ?usize {
+    inline for (dflash.target_layers, 0..) |layer, slot| if (index == layer) return slot;
+    return null;
+}
+
+const FlashConstants = struct {
+    attention_norm: Buffer,
+    query_norm: Buffer,
+    key_norm: Buffer,
+    ffn_norm: Buffer,
+};
+
+/// The DFlash companion's device workspace (E4B targets). Its five caches
+/// are session layouts after the target's (`Plan.flash_base`), so the
+/// session's rewind covers them; its rope table is its own (base 1e6 over
+/// the 128-wide head). The target copies each target layer's input rows
+/// into `capture` while recording; `commit` uploads the assembled rows back
+/// through `stage` for the encoder.
+const Flash = struct {
+    binding: dflash.Binding,
+    constants: [dflash.block_count]FlashConstants,
+    encoder_norm: Buffer,
+    output_norm: Buffer,
+    rope: Buffer,
+    stage: Buffer, // padded(chunk) × hidden_width
+    encoded: Buffer, // padded(chunk) × embedding
+    inject_k: Buffer, // padded(chunk) × kv_width
+    inject_v: Buffer,
+    capture: Buffer, // block_count × chunk × embedding
+    capture_rows: usize,
+    x: Buffer, // padded(block) × embedding
+    normalized: Buffer,
+    q: Buffer, // padded(block) × query_width
+    k: Buffer, // padded(block) × kv_width
+    v: Buffer,
+    mixed: Buffer, // padded(block) × query_width
+    projected: Buffer, // padded(block) × embedding
+    gate: Buffer, // padded(block) × feed_forward
+    up: Buffer,
+    hidden: Buffer, // padded(block) × embedding
+    logits: Buffer, // padded(block) × vocabulary
+    partials: Buffer,
+    topk: [dflash.block_size]metal.Backend.TopKBuffers,
+
+    fn init(created: *metal.Created, binding: dflash.Binding, chunk: usize, capacity: usize) !Flash {
+        var result: Flash = undefined;
+        result.binding = binding;
+        result.encoder_norm = try Head.constant(created, binding.view, binding.encoder_norm);
+        result.output_norm = try Head.constant(created, binding.view, binding.output_norm);
+        for (&result.constants, binding.layers) |*c, layer| {
+            c.* = .{
+                .attention_norm = try Head.constant(created, binding.view, layer.attention_norm),
+                .query_norm = try Head.constant(created, binding.view, layer.query_norm),
+                .key_norm = try Head.constant(created, binding.view, layer.key_norm),
+                .ffn_norm = try Head.constant(created, binding.view, layer.ffn_norm),
+            };
+        }
+        result.rope = try created.create(capacity * (dflash.head_size / 2) * 8);
+        try metal.Backend.ropeTable(result.rope, capacity, dflash.head_size, dflash.rope_base, null);
+        const chunk_pad = metal.Backend.matmulPadded(chunk);
+        const block_pad = metal.Backend.matmulPadded(dflash.block_size);
+        result.stage = try created.create(chunk_pad * dflash.hidden_width * 4);
+        result.encoded = try created.create(chunk_pad * dflash.embedding * 4);
+        result.inject_k = try created.create(chunk_pad * dflash.kv_width * 4);
+        result.inject_v = try created.create(chunk_pad * dflash.kv_width * 4);
+        result.capture_rows = chunk;
+        result.capture = try created.create(dflash.block_count * chunk * dflash.embedding * 4);
+        result.x = try created.create(block_pad * dflash.embedding * 4);
+        result.normalized = try created.create(block_pad * dflash.embedding * 4);
+        result.q = try created.create(block_pad * dflash.query_width * 4);
+        result.k = try created.create(block_pad * dflash.kv_width * 4);
+        result.v = try created.create(block_pad * dflash.kv_width * 4);
+        result.mixed = try created.create(block_pad * dflash.query_width * 4);
+        result.projected = try created.create(block_pad * dflash.embedding * 4);
+        result.gate = try created.create(block_pad * dflash.feed_forward * 4);
+        result.up = try created.create(block_pad * dflash.feed_forward * 4);
+        result.hidden = try created.create(block_pad * dflash.embedding * 4);
+        result.logits = try created.create(block_pad * vocabulary * 4);
+        result.partials = try created.create(metal.Backend.attentionDecodePartials(dflash.heads, dflash.head_size) * 4);
+        for (&result.topk) |*scratch| scratch.* = try created.topk(1);
+        return result;
+    }
+
+    /// A batched projection whose weight lives in the companion's file.
+    fn mmRows(self: *Flash, backend: *metal.Backend, tensor: *const Tensor, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, rows: usize) !void {
+        const matrix = try self.binding.view.matrix(tensor);
+        try q8FragOrMatmul(backend, try backend.wrap(matrix.bytes), matrix, input, in_stride, output, out_stride, rows);
+    }
+
+    /// The `slot`-th capture slab's first `rows` rows.
+    fn captureSlice(self: *Flash, slot: usize, rows: usize) Buffer {
+        return self.capture.slice(slot * self.capture_rows * dflash.embedding * 4, rows * dflash.embedding * 4);
+    }
+
+    fn bytes(self: *const Flash) usize {
+        var total: usize = self.encoder_norm.len + self.output_norm.len + self.rope.len +
+            self.stage.len + self.encoded.len + self.inject_k.len + self.inject_v.len + self.capture.len +
+            self.x.len + self.normalized.len + self.q.len + self.k.len + self.v.len + self.mixed.len +
+            self.projected.len + self.gate.len + self.up.len + self.hidden.len + self.logits.len + self.partials.len;
+        for (self.topk) |t| total += t.partial_values.len + t.partial_indices.len + t.values.len + t.indices.len + t.sums.len + t.flags.len;
+        for (self.constants) |c| total += c.attention_norm.len + c.query_norm.len + c.key_norm.len + c.ffn_norm.len;
+        return total;
+    }
+};
+
 /// A weight matrix ready for dispatch: its GPU range and CPU-side descriptor.
 const Weight = struct { buffer: Buffer, matrix: cpu.Matrix };
 /// A 3-D expert tensor ready for the gathered kernels.
@@ -314,6 +422,13 @@ pub const Plan = struct {
     prefill_hidden: Buffer,
     /// The companion head, present when one was bound and asked for.
     draft: ?Head,
+    /// The DFlash companion instead of the head (never both).
+    flash: ?Flash,
+    /// The session layer index of the drafter's first cache.
+    flash_base: usize,
+    /// While set, `recordLayers` copies the target layers' inputs into
+    /// `flash.capture`.
+    capturing: bool,
     has_draft: bool,
     /// Every expert layer's routing for one batch (`layers × rows × k` u32),
     /// created on the first call whose observer asks for `experts`; while
@@ -341,7 +456,7 @@ pub const Plan = struct {
         const config = binding.config;
         const hidden = config.embedding;
         const ffn = config.feed_forward;
-        var layouts: [model.max_layers]session.Layout = undefined;
+        var layouts: [model.max_layers + dflash.block_count]session.Layout = undefined;
         // A sliding layer's region keeps its window and the rewind slack,
         // not the capacity (docs/engine/session.md § Layouts and views).
         const room = @max(chunk, max_verify_rows);
@@ -350,7 +465,11 @@ pub const Plan = struct {
             const window: ?usize = if (layer.kind == .sliding) config.window else null;
             layout.* = .{ .attention = .{ .key_row = width, .value_row = width, .precision = kv, .window = window, .room = room } };
         }
-        var state = try session.Session.init(alloc, layouts[0..config.kv_layers], capacity, checkpoint);
+        // The drafter's caches keep every row: its block writes ahead of the
+        // position, which a windowed region's compaction does not admit.
+        const flash_layers: usize = if (draft and binding.flash != null) dflash.block_count else 0;
+        for (layouts[config.kv_layers..][0..flash_layers]) |*layout| layout.* = .{ .attention = .{ .key_row = dflash.kv_width, .value_row = dflash.kv_width, .precision = kv } };
+        var state = try session.Session.init(alloc, layouts[0 .. config.kv_layers + flash_layers], capacity, checkpoint);
         errdefer state.deinit();
         const constants = try alloc.alloc(LayerConstants, config.layer_count);
         errdefer alloc.free(constants);
@@ -423,7 +542,10 @@ pub const Plan = struct {
         } else {
             self.pl_norm = try created.create(4);
         }
-        self.has_draft = draft and binding.draft != null;
+        self.has_draft = draft and (binding.draft != null or binding.flash != null);
+        self.flash_base = config.kv_layers;
+        self.capturing = false;
+        self.flash = null;
         // The verify scratch exists only with a drafter (the loop's only caller).
         self.readout = try .init(&created, self.has_draft);
         self.chunk = chunk;
@@ -444,9 +566,14 @@ pub const Plan = struct {
         if (self.has_draft) {
             self.verify_hidden = try created.create(max_verify_rows * hidden * 4);
             self.prefill_hidden = try created.create(chunk * hidden * 4);
-            // The head reads the target's sliding rows, which keep only the target's window.
-            if (binding.draft.?.config.window > config.window) return error.UnsupportedConfiguration;
-            self.draft = try Head.init(&created, binding.draft.?);
+            if (binding.flash) |f| {
+                self.draft = null;
+                self.flash = try Flash.init(&created, f, chunk, capacity);
+            } else {
+                // The head reads the target's sliding rows, which keep only the target's window.
+                if (binding.draft.?.config.window > config.window) return error.UnsupportedConfiguration;
+                self.draft = try Head.init(&created, binding.draft.?);
+            }
         } else {
             self.verify_hidden = try created.create(4);
             self.prefill_hidden = try created.create(4);
@@ -604,7 +731,7 @@ pub const Plan = struct {
     fn mmRows(self: *Plan, tensor: *const Tensor, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, count: usize) !void {
         const w = try self.weight(tensor);
         if (count == 1) return self.backend.matvec(w.buffer, w.matrix, input.slice(0, w.matrix.columns * 4), output.slice(0, w.matrix.rows * 4));
-        try self.backend.matmul(w.buffer, w.matrix, input, in_stride, output, out_stride, count);
+        try q8FragOrMatmul(self.backend, w.buffer, w.matrix, input, in_stride, output, out_stride, count);
     }
     /// The rope table and rotary width of a layer kind (the whole head).
     fn ropeOf(self: *Plan, kind: model.Kind) struct { table: Buffer, dims: usize } {
@@ -888,7 +1015,7 @@ pub const Plan = struct {
         if (topk) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
         if (hidden_rows) |h| {
             if (!self.has_draft) return error.HiddenUnsupported;
-            if (h.len != tokens.len * self.binding.config.embedding) return error.InvalidShape;
+            if (h.len != tokens.len * self.hiddenWidth()) return error.InvalidShape;
         }
         // The whole prompt must fit: a prompt is never half-consumed.
         if (self.state.status != .ready) return error.SessionNotReady;
@@ -897,7 +1024,7 @@ pub const Plan = struct {
         while (offset < tokens.len) {
             const count = @min(self.chunk, tokens.len - offset);
             const last = offset + count == tokens.len;
-            try self.prefillChunk(tokens[offset..][0..count], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, if (hidden_rows) |h| h[offset * self.binding.config.embedding ..][0 .. count * self.binding.config.embedding] else null, observer);
+            try self.prefillChunk(tokens[offset..][0..count], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, if (hidden_rows) |h| h[offset * self.hiddenWidth() ..][0 .. count * self.hiddenWidth()] else null, observer);
             offset += count;
             // The whole prompt is one `step` for the loop's hooks, so this is
             // the only place a caller can learn how far a long prefill has got.
@@ -962,9 +1089,12 @@ pub const Plan = struct {
         const b = self.backend;
         try b.begin();
         errdefer b.discard();
+        const flash_capture = hidden_rows != null and self.flash != null;
+        self.capturing = flash_capture;
+        defer self.capturing = false;
         try self.recordLayers(tokens, count, observer);
         const hidden = self.binding.config.embedding;
-        if (hidden_rows != null) {
+        if (hidden_rows != null and !flash_capture) {
             // Normalize every row, as `verify` does; the last row also serves
             // the output head when a readback was asked for.
             try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
@@ -982,7 +1112,9 @@ pub const Plan = struct {
         try self.reportTap(observer, .prefill, count);
         try self.readout.readOutputs(logits, greedy, topk, penalties != null);
         try self.state.commitChunk(count);
-        if (hidden_rows) |dest| @memcpy(dest, self.prefill_hidden.floats()[0 .. count * hidden]);
+        if (hidden_rows) |dest| {
+            if (flash_capture) self.readCapture(count, dest) else @memcpy(dest, self.prefill_hidden.floats()[0 .. count * hidden]);
+        }
     }
 
     /// Layer `il`'s slice of the expert tap for `rows` rows, or null when
@@ -1053,6 +1185,7 @@ pub const Plan = struct {
         if (self.binding.per_layer != null) try self.perLayerInputs(if (self.image_rows != null) &.{0} else tokens, self.x_c, self.pl_c, self.pl_sel_c, count);
         const norm: metal.Backend.Norm = .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden };
         for (self.binding.active(), self.constants, 0..) |layer, c, il| {
+            if (self.capturing) if (flashSlot(il)) |slot| try b.copy(self.flash.?.captureSlice(slot, count), self.x_c, count * hidden);
             try b.rmsNorm(self.x_c, c.attention_norm, self.normalized_c, norm);
             try self.attentionChunk(layer, c, il, count);
             try b.rmsNorm(self.projected_c, c.post_attention_norm, self.projected_c, norm);
@@ -1121,7 +1254,7 @@ pub const Plan = struct {
             if (t.len != tokens.len) return error.InvalidShape;
             for (t) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
         }
-        if (h_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
+        if (h_rows) |h| if (h.len != tokens.len * self.hiddenWidth()) return error.InvalidShape;
         for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
         if (self.state.status != .ready) return error.SessionNotReady;
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
@@ -1133,9 +1266,11 @@ pub const Plan = struct {
         const b = self.backend;
         try b.begin();
         errdefer b.discard();
+        self.capturing = h_rows != null and self.flash != null;
+        defer self.capturing = false;
         try self.recordLayers(tokens, count, observer);
         try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
-        if (h_rows != null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
+        if (h_rows != null and self.flash == null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
         const head = try self.weight(self.binding.token_embedding);
         try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, self.readout.verify_logits, vocabulary, count);
         // The rows are the distributions sampled acceptance draws from, so
@@ -1147,7 +1282,9 @@ pub const Plan = struct {
         }
         try b.commit();
         try self.reportTap(observer, .verify, count);
-        if (h_rows) |h| @memcpy(h, self.verify_hidden.floats()[0 .. count * hidden]);
+        if (h_rows) |h| {
+            if (self.flash != null) self.readCapture(count, h) else @memcpy(h, self.verify_hidden.floats()[0 .. count * hidden]);
+        }
         if (rows) |r| @memcpy(r, self.readout.verify_logits.floats()[0 .. count * vocabulary]);
         if (tops) |out| {
             for (out, 0..) |*top, i| try self.readout.readVerifyTopK(i, top);
@@ -1162,7 +1299,7 @@ pub const Plan = struct {
         if (tokens.len == 0 or tokens.len > self.chunk or tokens.len > max_verify_rows) return error.InvalidShape;
         if (out.len != tokens.len) return error.InvalidShape;
         const hidden = self.binding.config.embedding;
-        if (h_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
+        if (h_rows) |h| if (h.len != tokens.len * self.hiddenWidth()) return error.InvalidShape;
         for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
         if (self.state.status != .ready) return error.SessionNotReady;
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
@@ -1174,15 +1311,19 @@ pub const Plan = struct {
         const b = self.backend;
         try b.begin();
         errdefer b.discard();
+        self.capturing = h_rows != null and self.flash != null;
+        defer self.capturing = false;
         try self.recordLayers(tokens, count, observer);
         try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
-        if (h_rows != null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
+        if (h_rows != null and self.flash == null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
         const head = try self.weight(self.binding.token_embedding);
         try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, self.readout.verify_logits, vocabulary, count);
         for (0..count) |i| try b.argmax(self.readout.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, self.readout.argmax_values, self.readout.argmax_indices, self.readout.verify_argmax.slice(i * 4, 4));
         try b.commit();
         try self.reportTap(observer, .verify, count);
-        if (h_rows) |h| @memcpy(h, self.verify_hidden.floats()[0 .. count * hidden]);
+        if (h_rows) |h| {
+            if (self.flash != null) self.readCapture(count, h) else @memcpy(h, self.verify_hidden.floats()[0 .. count * hidden]);
+        }
         const ids = @as([*]const u32, @ptrCast(@alignCast(self.readout.verify_argmax.host)))[0..count];
         for (ids, out) |id, *token| {
             if (id >= vocabulary) return error.NonFiniteResult;
@@ -1390,6 +1531,7 @@ pub const Plan = struct {
     /// head's own `h_next`; `out.len` bounds the count.
     pub fn propose(self: *Plan, token: u32, out: []u32, p_min: f32) !usize {
         if (!self.has_draft) return error.NoDraftBlock;
+        if (self.flash != null) return self.flashPropose(token, out, p_min);
         if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
         const head = &self.draft.?;
         const position = self.state.position;
@@ -1415,6 +1557,7 @@ pub const Plan = struct {
     /// target hidden of the last committed token, which the next `propose`
     /// pairs with the next seed.
     pub fn commit(self: *Plan, tokens: []const u32, h_rows: []const f32) !void {
+        if (self.flash != null) return self.flashCommit(tokens, h_rows);
         const head = &(self.draft orelse return error.NoDraftBlock);
         const width = head.binding.config.embedding_out;
         if (h_rows.len != tokens.len * width) return error.InvalidShape;
@@ -1422,10 +1565,154 @@ pub const Plan = struct {
         @memcpy(head.pending_h.floats()[0..width], h_rows[h_rows.len - width ..][0..width]);
     }
 
+    // --- the DFlash drafter ---------------------------------------------
+
+    /// What `commit` consumes per row: the head's hidden, or the drafter's
+    /// five concatenated residuals.
+    fn hiddenWidth(self: *const Plan) usize {
+        return if (self.flash != null) dflash.hidden_width else if (self.draft) |h| h.binding.config.embedding_out else self.binding.config.embedding;
+    }
+
+    /// Assembles the captured slabs into row-major `count × hidden_width`.
+    fn readCapture(self: *Plan, count: usize, out: []f32) void {
+        const f = &self.flash.?;
+        for (0..dflash.block_count) |slot| {
+            const slab = f.captureSlice(slot, count).floats();
+            for (0..count) |row| {
+                @memcpy(out[row * dflash.hidden_width + slot * dflash.embedding ..][0..dflash.embedding], slab[row * dflash.embedding ..][0..dflash.embedding]);
+            }
+        }
+    }
+
+    /// Encodes each committed row's residuals into one feature whose keys
+    /// and values enter the drafter's caches at the row's position.
+    fn flashCommit(self: *Plan, tokens: []const u32, h_rows: []const f32) !void {
+        const f = &self.flash.?;
+        if (h_rows.len != tokens.len * dflash.hidden_width) return error.InvalidShape;
+        if (tokens.len == 0) return;
+        if (self.state.position < tokens.len) return error.InvalidShape;
+        const start = self.state.position - tokens.len;
+        var offset: usize = 0;
+        while (offset < tokens.len) {
+            const count = @min(self.chunk, tokens.len - offset);
+            try self.flashCommitRows(f, count, h_rows[offset * dflash.hidden_width ..][0 .. count * dflash.hidden_width], start + offset);
+            offset += count;
+        }
+    }
+
+    fn flashCommitRows(self: *Plan, f: *Flash, count: usize, h_rows: []const f32, start: usize) !void {
+        const b = self.backend;
+        @memcpy(f.stage.floats()[0 .. count * dflash.hidden_width], h_rows);
+        try b.begin();
+        errdefer b.discard();
+        try f.mmRows(b, f.binding.fc, f.stage, dflash.hidden_width, f.encoded, dflash.embedding, count);
+        try b.rmsNorm(f.encoded, f.encoder_norm, f.encoded, flashNorm(count, dflash.embedding));
+        for (f.binding.layers, f.constants, 0..) |layer, c, il| {
+            try f.mmRows(b, layer.key, f.encoded, dflash.embedding, f.inject_k, dflash.kv_width, count);
+            try f.mmRows(b, layer.value, f.encoded, dflash.embedding, f.inject_v, dflash.kv_width, count);
+            try b.rmsNorm(f.inject_k, c.key_norm, f.inject_k, flashNorm(count * dflash.kv_heads, dflash.head_size));
+            try b.ropeRows(f.inject_k, f.rope, dflash.kv_heads, dflash.head_size, dflash.head_size, start, count, dflash.kv_width, .split_half);
+            const cache = self.state.layers[self.flash_base + il].attention;
+            try b.storeRows(&.{
+                .{ .dst = self.stateSlice(cache.keys.range(start, count)), .src = f.inject_k, .count = count * dflash.kv_width },
+                .{ .dst = self.stateSlice(cache.values.range(start, count)), .src = f.inject_v, .count = count * dflash.kv_width },
+            }, cache.keys.precision);
+        }
+        try b.commit();
+    }
+
+    /// One noise block from the session position: row 0 the anchor `token`,
+    /// the rest the mask token; every row's greedy draft through the
+    /// target's tied, soft-capped head. `p_min` > 0 stops after a position
+    /// whose top probability is below it.
+    fn flashPropose(self: *Plan, token: u32, out: []u32, p_min: f32) !usize {
+        const f = &self.flash.?;
+        if (token >= vocabulary) return error.InvalidTokenId;
+        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        if (out.len == 0) return 0;
+        const count_max: usize = @min(out.len, dflash.block_size - 1);
+        const rows = count_max + 1;
+        const base = self.state.position;
+        if (base + rows > self.state.capacity) return error.ContextFull;
+        const last = base + rows - 1;
+        const b = self.backend;
+        try b.begin();
+        errdefer b.discard();
+        const embedding = try self.weight(self.binding.token_embedding);
+        for (0..rows) |r| {
+            const input = if (r == 0) token else dflash.mask_token;
+            try b.embed(embedding.buffer, embedding.matrix, input, f.x.slice(r * dflash.embedding * 4, dflash.embedding * 4));
+        }
+        try b.scale(f.x, rows * dflash.embedding, dflash.embedding_scale);
+        for (f.binding.layers, f.constants, 0..) |layer, c, il| {
+            try b.rmsNorm(f.x, c.attention_norm, f.normalized, flashNorm(rows, dflash.embedding));
+            try f.mmRows(b, layer.query, f.normalized, dflash.embedding, f.q, dflash.query_width, rows);
+            try f.mmRows(b, layer.key, f.normalized, dflash.embedding, f.k, dflash.kv_width, rows);
+            try f.mmRows(b, layer.value, f.normalized, dflash.embedding, f.v, dflash.kv_width, rows);
+            try b.rmsNorm(f.q, c.query_norm, f.q, flashNorm(rows * dflash.heads, dflash.head_size));
+            try b.ropeRows(f.q, f.rope, dflash.heads, dflash.head_size, dflash.head_size, base, rows, dflash.query_width, .split_half);
+            try b.rmsNorm(f.k, c.key_norm, f.k, flashNorm(rows * dflash.kv_heads, dflash.head_size));
+            try b.ropeRows(f.k, f.rope, dflash.kv_heads, dflash.head_size, dflash.head_size, base, rows, dflash.kv_width, .split_half);
+            const cache = self.state.layers[self.flash_base + il].attention;
+            try b.storeRows(&.{
+                .{ .dst = self.stateSlice(cache.keys.range(base, rows)), .src = f.k, .count = rows * dflash.kv_width },
+                .{ .dst = self.stateSlice(cache.values.range(base, rows)), .src = f.v, .count = rows * dflash.kv_width },
+            }, cache.keys.precision);
+            // Non-causal inside the block: each row sees its window back and
+            // the whole block, one decode over its own visible slice.
+            for (0..rows) |r| {
+                const position = base + r;
+                const first = if (position + 1 > dflash.window) position + 1 - dflash.window else 0;
+                const visible = last - first + 1;
+                try b.attentionDecode(
+                    self.stateSlice(cache.keys.range(first, visible)),
+                    self.stateSlice(cache.values.range(first, visible)),
+                    f.q.slice(r * dflash.query_width * 4, dflash.query_width * 4),
+                    f.partials,
+                    f.mixed.slice(r * dflash.query_width * 4, dflash.query_width * 4),
+                    .{ .query_heads = dflash.heads, .kv_heads = dflash.kv_heads, .key_width = dflash.head_size, .value_width = dflash.head_size, .visible = visible, .scale = dflash.attention_scale, .precision = cache.keys.precision },
+                );
+            }
+            try f.mmRows(b, layer.output, f.mixed, dflash.query_width, f.projected, dflash.embedding, rows);
+            try b.add(f.x, f.projected, rows * dflash.embedding);
+            try b.rmsNorm(f.x, c.ffn_norm, f.normalized, flashNorm(rows, dflash.embedding));
+            try f.mmRows(b, layer.ffn_gate, f.normalized, dflash.embedding, f.gate, dflash.feed_forward, rows);
+            try f.mmRows(b, layer.ffn_up, f.normalized, dflash.embedding, f.up, dflash.feed_forward, rows);
+            try b.siluMul(f.gate, f.up, rows * dflash.feed_forward);
+            try f.mmRows(b, layer.ffn_down, f.gate, dflash.feed_forward, f.projected, dflash.embedding, rows);
+            try b.add(f.x, f.projected, rows * dflash.embedding);
+        }
+        try b.rmsNorm(f.x, f.output_norm, f.hidden, flashNorm(rows, dflash.embedding));
+        try b.matmul(embedding.buffer, embedding.matrix, f.hidden, dflash.embedding, f.logits, vocabulary, rows);
+        try b.softcap(f.logits, rows * vocabulary, model.final_softcap);
+        for (1..rows) |r| try b.topk(f.logits.slice(r * vocabulary * 4, vocabulary * 4), vocabulary, 1, 1.0, f.topk[r]);
+        try b.commit();
+        var count: usize = 0;
+        while (count < count_max) : (count += 1) {
+            const scratch = f.topk[1 + count];
+            const id = @as(*const u32, @ptrCast(@alignCast(scratch.indices.host))).*;
+            if (id >= vocabulary) return error.NonFiniteResult;
+            out[count] = id;
+            if (p_min > 0) {
+                var total: f64 = 0;
+                for (scratch.sums.floats()[0..metal.Backend.topk_partials]) |partial| total += partial;
+                var finite = true;
+                for (@as([*]const u32, @ptrCast(@alignCast(scratch.flags.host)))[0..metal.Backend.topk_partials]) |flag| if (flag != 0) {
+                    finite = false;
+                };
+                if (finite and total > 0 and 1.0 / total < p_min) {
+                    count += 1;
+                    break;
+                }
+            }
+        }
+        return count;
+    }
+
     /// The contract value the engine holds, or null when no head is loaded.
     pub fn drafter(self: *Plan) ?@import("../runtime/draft.zig").Drafter {
         if (!self.has_draft) return null;
-        return .{ .host = self, .hidden = self.draft.?.binding.config.embedding_out, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
+        return .{ .host = self, .hidden = self.hiddenWidth(), .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
     }
     fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
         const self: *Plan = @ptrCast(@alignCast(host));
@@ -1447,6 +1734,7 @@ pub const Plan = struct {
     fn draftBytes(host: *anyopaque) usize {
         const self: *Plan = @ptrCast(@alignCast(host));
         if (self.draft) |*head| return head.bytes();
+        if (self.flash) |*f| return f.bytes();
         return 0;
     }
 };
@@ -1459,4 +1747,18 @@ test "the visible window of a token is a suffix of the cache rows" {
     try std.testing.expectEqual(@as(usize, 5000 + 1 - config.window), config.firstVisible(.sliding, 5000));
     try std.testing.expectEqual(@as(usize, 0), config.firstVisible(.global, 5000));
     try std.testing.expectEqual(@as(usize, 5000 + 1 - 512), model.config_e4b.firstVisible(.sliding, 5000));
+}
+
+/// A DFlash RMS norm over `rows` rows of `width` at the drafter's epsilon.
+fn flashNorm(rows: usize, width: usize) metal.Backend.Norm {
+    return .{ .rows = rows, .width = width, .in_stride = width, .out_stride = width, .eps = dflash.rms_epsilon };
+}
+
+/// `matmul`, except that a Q8_0 matrix's few-row batch takes Q8_0's
+/// fragment tile by name, as Qwen's DFlash2 does: `matmul` routes Q8_0 to
+/// the generic F32 tile (docs/engine/metal-backend.md § Limits).
+fn q8FragOrMatmul(backend: *metal.Backend, buffer: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, rows: usize) !void {
+    if (matrix.encoding == 8 and rows <= metal.Backend.small_chunk_tokens and buffer.offset % 2 == 0 and (matrix.bytes.len / matrix.rows) % 2 == 0)
+        return backend.matmulKernel(.matmul_q8_0_f2, buffer, matrix, input, in_stride, output, out_stride, rows);
+    try backend.matmul(buffer, matrix, input, in_stride, output, out_stride, rows);
 }
