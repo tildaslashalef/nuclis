@@ -172,7 +172,8 @@ the file was re-pinned and how it was checked:
 - The binding is fixed at 64 text layers: other sizes, tied output
   embeddings, alternate projection packing, and other auxiliary layouts
   are refused until a concrete file asks for them.
-- The file declares 262,144 tokens of context; nuclis's session stops at
-  32,768.
+- The file declares 262,144 tokens of context; a release build accepts
+  131,072 (with an F16 or Q8_0 cache: F32 is `SessionTooLarge` there), and
+  nuclis measures up to 32,768.
 - The dense 27B decodes at about 12 tok/s, too slow for agent loops on
   this machine next to the Gemma 4 models.

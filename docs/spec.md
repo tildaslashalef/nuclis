@@ -451,7 +451,8 @@ same system prompt, byte for byte. The host constants:
 <!-- gen:limits -->
 | Limit | Value | Declared in |
 | --- | --- | --- |
-| context ceiling (tokens) | 32,768 | inference/build.zig `default_max_context` |
+| context ceiling (tokens) | 131,072 | inference/build.zig `default_max_context` |
+| supported context (tokens) | 32,768 | inference/src/runtime/session.zig `supported_context` |
 | output budget (tokens) | 16,384 | src/config.zig `max_output_tokens` |
 | draft length | 15 | inference/src/engine.zig `max_draft_length` |
 | prefill chunk (tokens) | 256 | inference/src/engine.zig `prefill_chunk` |
@@ -492,7 +493,7 @@ the opt-in web tools, and a second product surface.
 - The primary workload is one user doing coding work: time to first token
   after a substantial code prompt, and steady decode. Every length of the
   acceptance workload, to 32,768 tokens (the supported ceiling) on the 48 GB target, **must** complete on its budget with no swap growth ([benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs)).
-  The configuration **must** accept any `ctx_size` to the build's ceiling (`-Dmax-context`, to 131,072); 131,072 needs a machine beyond the target ([record](benchmarks/record/gemma4.md#context-past-32k-2026-11-18)).
+  The configuration **must** accept any `ctx_size` to 131,072 in a release build (`-Dmax-context` sets another ceiling); 32,768 stays the default and the supported ceiling, the length the gates cover ([record](benchmarks/record/gemma4.md#sliding-layers-keep-their-window-2026-11-19)).
 - Claims are made against nuclis's own previous record on the same machine
   and method, at equal context, cache precision, sampling, and output
   budget, naming chip, OS, compiler, revision, artifact hash, power mode,
@@ -538,5 +539,4 @@ tensor compiler, and matching any external product's feature list.
 
 - Whether tool steps want different sampling defaults for reliability.
 - Whether `bash` wants an allow-list or an approval step.
-- Whether the sliding-window caches should be ring buffers.
 

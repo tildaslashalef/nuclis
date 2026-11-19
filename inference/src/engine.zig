@@ -321,6 +321,12 @@ pub fn Executor(comptime Family: type) type {
         pub fn rewindTo(self: *Self, position: usize) !void {
             return self.sessionMut().rewindTo(position);
         }
+        pub fn hold(self: *Self, position: usize) void {
+            self.sessionMut().hold(position);
+        }
+        pub fn release(self: *Self) void {
+            self.sessionMut().release();
+        }
         pub fn gpu(self: *const Self) ?*inference.metal.Backend {
             return switch (self.*) {
                 .cpu => null,
@@ -513,6 +519,18 @@ pub const Model = struct {
         try self.settle();
         switch (self.exec) {
             inline else => |*e| try e.rewindTo(position),
+        }
+    }
+    /// Asks the session to keep `position` in reach of `rewindTo` while a
+    /// windowed layer's region can (`Session.hold`); `release` lets it go.
+    pub fn hold(self: *Model, position: usize) void {
+        switch (self.exec) {
+            inline else => |*e| e.hold(position),
+        }
+    }
+    pub fn release(self: *Model) void {
+        switch (self.exec) {
+            inline else => |*e| e.release(),
         }
     }
     /// Whether the model's state cannot be rewound by position alone.

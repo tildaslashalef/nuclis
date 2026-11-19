@@ -166,7 +166,7 @@ pub const Config = struct {
         /// 32K: at 16K an agent turn of a few paged reads compacted every
         /// step; the largest catalogue model fits 48 GB at 32K with its
         /// drafter (docs/benchmarks/record/agent.md, 2026-11-17).
-        ctx_size: usize = 32768,
+        ctx_size: usize = inference.supported_context,
         /// Attention cache precision on the GPU; the CPU reference
         /// always keeps F32 and reports it.
         kv_precision: KvPrecision = .f16,

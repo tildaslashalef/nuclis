@@ -223,6 +223,7 @@ pub fn causePhrase(cause: []const u8) []const u8 {
         .{ "resumed", "after a resume" },
         .{ "cancel", "after a cancel" },
         .{ "rewrite", "after trimming the context" },
+        .{ "rewind_out_of_reach", "after the window moved on" },
         .{ "effort", "the effort changed" },
         .{ "context", "the context size changed" },
         .{ "model", "the model changed" },

@@ -215,10 +215,9 @@ gate's set).
 
 ## Known limits
 
-- Every cache is allocated for the full session, sliding layers included:
-  at 32,768 tokens the F16 session is 11.3 GB on the 12B and 7.4 GB on the
-  26B-A4B; a ring for the windowed layers would cut the 12B's to about
-  0.35 GB.
+- A sliding layer keeps its window and 9,232 rows of slack, a global one
+  every row: at 32,768 tokens the F16 session is 2.77 GB on the 26B-A4B
+  and 0.94 GB on the E4B; a rewind further back than the slack re-prefills.
 - The 26B-A4B's drafter gains 1.0–1.3× on prose and up to 1.65× on short
   code; a verify batch's dense tile is flat at 100–125 GB/s from two to
   eight rows ([record, 2026-11-19](../benchmarks/record/gemma4.md#what-a-verify-batch-pays-at-a-few-rows-2026-11-19)). Its prefill

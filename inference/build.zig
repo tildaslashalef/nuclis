@@ -71,7 +71,7 @@ const Variant = struct { tiny_models: bool = false, bench_kernels: bool = false,
 
 /// The release build's session ceiling, and the supported one (docs/spec.md
 /// § 8). A larger `-Dmax-context` accepts longer contexts the gates do not cover.
-pub const default_max_context: u32 = 32768;
+pub const default_max_context: u32 = 131072;
 
 /// The build options and platform bridges of one instance of the module.
 fn configure(b: *std.Build, mod: *std.Build.Module, metal: bool, variant: Variant) void {

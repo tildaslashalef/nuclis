@@ -11,7 +11,7 @@ on: recurrent state is never rewound by changing a length.
 
 | Layout | Regions | View the layer sees |
 | --- | --- | --- |
-| `attention { key_row, value_row, precision }` | `capacity` key rows and `capacity` value rows, stored as F32, F16, or Q8_0 blocks (`precision`) | `Rows`: `range(first, count)` is a byte range for a GPU binding; `floats(first, count)` is the F32 view the CPU reference reads (asserts `f32`); a `q8_0` row is a whole number of 32-value blocks (`Precision.bytes`) |
+| `attention { key_row, value_row, precision, window, room }` | `capacity` key rows and `capacity` value rows, or `windowRows` of each with a `window`, stored as F32, F16, or Q8_0 blocks (`precision`) | `Rows`: `range(first, count)` is a byte range for a GPU binding, `first` a logical row at or past `base`; `floats(first, count)` is the F32 view the CPU reference reads (asserts `f32`); a `q8_0` row is a whole number of 32-value blocks (`Precision.bytes`) |
 | `recurrent { history, matrix }` | that many F32 values each, whole | `[]f32` |
 
 `Session.memory` is one page-aligned byte block (`[]align(16384) u8`), so a
@@ -22,13 +22,22 @@ tokens with the F16 cache, 4.15 with F32, and about 1.2 with Q8_0
 (1,088 MiB of attention rows), of which 150 MB is recurrent state. A session built with a checkpoint region adds another 150 MB on
 Qwen (`checkpoint_region`, below). `layout_digest` hashes the layouts and
 the capacity; equal digests mean byte-compatible state.
-Every attention layer gets `capacity` rows, a windowed one too: Gemma 4
-26B-A4B's session is 225 KB per token on F16, 205 of it in the 25 sliding
-layers, which read only their last 1,024 rows (7.38 GB at 32,768,
-[record, 2026-11-18](../benchmarks/record/gemma4.md#context-past-32k-2026-11-18)).
-`max_capacity` is 32,768 in a release build; `zig build -Dmax-context=<n>`
-raises it, and the configuration then accepts that length, which the gates
-do not cover ([spec § 8](../spec.md#8-performance-requirements)).
+A windowed layer (Gemma 4's sliding layers, `window` set by the plan)
+holds `window + window_margin + rewind_rows + max(room_rows, room)` rows,
+16 + 8,192 + 1,024 past its window, whose slot 0 is logical row `base`.
+When a chunk would overflow the region, `beginChunk` compacts: rows from
+the lowest of the position, the hold, and the checkpoint, less the window
+and the margin, move to slot 0 and `base` follows. `hold(position)` (the
+completer's mark) asks compactions to keep that position in reach and is
+dropped when it no longer fits; `rewindTo` and `truncate` past the reach
+are `RewindOutOfRange`. A snapshot packs a windowed layer's window and up
+to `window_margin` rows below it (`Snapshot.margin`), and `restore` sets
+`base` from them. On the 26B-A4B at 32,768 tokens the F16 session is
+2.77 GB where every row kept was 7.38
+([record, 2026-11-19](../benchmarks/record/gemma4.md#sliding-layers-keep-their-window-2026-11-19)).
+`max_capacity` is 131,072 in a release build and `supported_context`
+32,768, the length the gates cover; `zig build -Dmax-context=<n>` changes
+the ceiling ([spec § 8](../spec.md#8-performance-requirements)).
 
 ## The state machine
 
