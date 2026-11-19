@@ -282,8 +282,10 @@ pub const Plan = struct {
     /// Half copy of `q_c` for the F16 chunk attention (its operands share one type).
     q_c_h: Buffer, // padded × q_width halves
     /// A `q8_0` cache's visible rows expanded to F16 for the chunk kernel:
-    /// keys then values, capacity × kv_width halves each; null otherwise.
+    /// keys then values, `kv_stage_half` halves each; null otherwise.
     kv_stage: ?Buffer,
+    /// Halves of the stage's keys (then as many of its values).
+    kv_stage_half: usize = 0,
     /// The materialized global-layer attention's score strips
     /// (`attentionChunkMaterialized`), sized by `attentionStripScratch`.
     strips: Buffer,
@@ -340,9 +342,13 @@ pub const Plan = struct {
         const hidden = config.embedding;
         const ffn = config.feed_forward;
         var layouts: [model.max_layers]session.Layout = undefined;
+        // A sliding layer's region keeps its window and the rewind slack,
+        // not the capacity (docs/engine/session.md § Layouts and views).
+        const room = @max(chunk, max_verify_rows);
         for (binding.active()[0..config.kv_layers], layouts[0..config.kv_layers]) |layer, *layout| {
             const width = layer.kvWidth();
-            layout.* = .{ .attention = .{ .key_row = width, .value_row = width, .precision = kv } };
+            const window: ?usize = if (layer.kind == .sliding) config.window else null;
+            layout.* = .{ .attention = .{ .key_row = width, .value_row = width, .precision = kv, .window = window, .room = room } };
         }
         var state = try session.Session.init(alloc, layouts[0..config.kv_layers], capacity, checkpoint);
         errdefer state.deinit();
@@ -400,7 +406,11 @@ pub const Plan = struct {
         self.k = try created.create(kv_width * 4);
         self.v = try created.create(kv_width * 4);
         self.mixed_out = try created.create(q_width * 4);
-        self.kv_stage = if (kv == .q8_0) try created.create(2 * capacity * kv_width * 2) else null;
+        // The Q8_0 stage holds one layer's visible rows: every row of a
+        // global layer, the region of a sliding one.
+        const sliding_rows = session.windowRows(config.window, room, capacity);
+        self.kv_stage_half = @max(capacity * config.global_kv_heads * model.Kind.global.headSize(), sliding_rows * config.sliding_kv_heads * model.Kind.sliding.headSize());
+        self.kv_stage = if (kv == .q8_0) try created.create(2 * self.kv_stage_half * 2) else null;
         self.strips = try created.create(metal.Backend.attentionStripScratch(model.max_heads, chunk, capacity));
         // Up to `verify_max_rows` rows for a verify batch's split pass.
         self.partials = try created.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, model.max_heads, head_max) * 4);
@@ -434,6 +444,8 @@ pub const Plan = struct {
         if (self.has_draft) {
             self.verify_hidden = try created.create(max_verify_rows * hidden * 4);
             self.prefill_hidden = try created.create(chunk * hidden * 4);
+            // The head reads the target's sliding rows, which keep only the target's window.
+            if (binding.draft.?.config.window > config.window) return error.UnsupportedConfiguration;
             self.draft = try Head.init(&created, binding.draft.?);
         } else {
             self.verify_hidden = try created.create(4);
@@ -1240,7 +1252,7 @@ pub const Plan = struct {
             if (precision == .q8_0) {
                 const stage = self.kv_stage.?;
                 const half_keys = stage.slice(0, total * kvw * 2);
-                const half_values = stage.slice(self.state.capacity * kv_width * 2, total * kvw * 2);
+                const half_values = stage.slice(self.kv_stage_half * 2, total * kvw * 2);
                 try b.unpackQ8(&.{ .{ .dst = half_keys, .src = keys, .count = total * kvw }, .{ .dst = half_values, .src = values, .count = total * kvw } });
                 keys = half_keys;
                 values = half_values;

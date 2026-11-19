@@ -23,12 +23,14 @@ pub const Key = struct {
 };
 
 const magic = "NUCLSNAP".*;
-const version: u32 = 1;
+/// 2: a windowed layer's region and snapshot hold its window (`margin`).
+const version: u32 = 2;
 
 const Header = extern struct {
     magic: [8]u8 = magic,
     version: u32 = version,
-    reserved: u32 = 0,
+    /// The snapshot's `margin`.
+    margin: u32 = 0,
     model: u64,
     tokens: u64,
     layout: u64,
@@ -106,6 +108,7 @@ pub fn save(io: std.Io, dir: std.Io.Dir, key: Key, snap: *const Snapshot) !void 
         .layout = key.layout,
         .position = snap.position,
         .capacity = snap.capacity,
+        .margin = @intCast(snap.margin),
         .memory_bytes = snap.memory.len,
         .carried_floats = snap.carried.len,
         .content = contentDigest(snap),
@@ -157,7 +160,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, key: Key) !?Sna
     if (header.model != key.model or header.tokens != key.tokens or header.layout != key.layout) return error.PrefixMismatch;
     const carried_bytes = std.math.mul(u64, header.carried_floats, @sizeOf(f32)) catch return error.PrefixMismatch;
     const payload = std.math.add(u64, header.memory_bytes, carried_bytes) catch return error.PrefixMismatch;
-    if (size - @sizeOf(Header) != payload or header.position > header.capacity) return error.PrefixMismatch;
+    if (size - @sizeOf(Header) != payload or header.position > header.capacity or header.margin > session.window_margin) return error.PrefixMismatch;
     const memory = try gpa.alloc(u8, @intCast(header.memory_bytes));
     errdefer gpa.free(memory);
     const carried = try gpa.alloc(f32, @intCast(header.carried_floats));
@@ -170,6 +173,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, key: Key) !?Sna
         .position = @intCast(header.position),
         .capacity = @intCast(header.capacity),
         .layout_digest = header.layout,
+        .margin = header.margin,
         .carried = carried,
     };
     if (contentDigest(&snap) != header.content) return error.PrefixCorrupt;

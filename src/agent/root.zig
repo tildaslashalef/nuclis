@@ -2114,8 +2114,13 @@ fn newSessionLog(alloc: std.mem.Allocator, io: std.Io, root_dir: ?[]const u8, cw
     });
 }
 
-/// The context windows Ctrl-W cycles and `/model` offers.
-const context_sizes = [_]usize{ 2048, 4096, 8192, 16384, 32768 };
+/// The context windows Ctrl-W cycles and `/model` offers, up to the build's ceiling.
+const context_sizes = blk: {
+    const all = [_]usize{ 2048, 4096, 8192, 16384, 32768, 65536, 131072 };
+    var n: usize = 0;
+    for (all) |size| n += @intFromBool(size <= inference.max_capacity);
+    break :blk all[0..n].*;
+};
 
 /// What `/model` needs to open another entry the way `--model` would: the
 /// loaded configuration and the command line's flags. Borrowed for the run.

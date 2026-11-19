@@ -123,7 +123,8 @@ The bounds are host constants, never the model's; the tools' rows
 <!-- gen:limits -->
 | Limit | Value | Declared in |
 | --- | --- | --- |
-| context ceiling (tokens) | 32,768 | inference/build.zig `default_max_context` |
+| context ceiling (tokens) | 131,072 | inference/build.zig `default_max_context` |
+| supported context (tokens) | 32,768 | inference/src/runtime/session.zig `supported_context` |
 | output budget (tokens) | 16,384 | src/config.zig `max_output_tokens` |
 | draft length | 15 | inference/src/engine.zig `max_draft_length` |
 | prefill chunk (tokens) | 256 | inference/src/engine.zig `prefill_chunk` |
@@ -372,8 +373,8 @@ removed.
   set there; `checkpoint` moves the session back to the mark
   (`Session.rewindTo`, no copy) before keeping it, and a step that never
   reached `checkpoint` (an answer cut at its budget) moves back when the
-  next render starts with the mark. The next turn continues from there,
-  prefilling the answer as rendered and the new message. A recurrent model
+  next render starts with the mark, which a windowed layer keeps in reach while it can (`Session.hold`; past that the step re-prefills, `rewind_out_of_reach`).
+  The next turn continues from there, prefilling the answer as rendered and the new message. A recurrent model
   would need a snapshot at the mark instead; no profile it runs rewrites
   its turns.
 - **Matching** is on the rendered text the state consumed, not on tokens:

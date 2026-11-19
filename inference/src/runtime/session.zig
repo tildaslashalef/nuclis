@@ -14,9 +14,12 @@ const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 
 /// The most token positions a session holds: the context ceiling every
-/// executor, the engine, and the configuration check against. 32,768 unless
-/// a measurement build raises it (`-Dmax-context`).
+/// executor, the engine, and the configuration check against. 131,072
+/// unless the build sets another (`-Dmax-context`).
 pub const max_capacity: usize = @import("build_options").max_context;
+/// The longest context the gates and the acceptance workload cover, and the
+/// configuration's default.
+pub const supported_context: usize = 32768;
 
 /// Storage precision of an attention layer's cache rows. The CPU reference
 /// runtime always uses `f32`; `f16` and `q8_0` are GPU options that cut
@@ -44,25 +47,51 @@ pub const Precision = enum {
 };
 
 pub const Layout = union(enum) {
-    attention: struct { key_row: usize, value_row: usize, precision: Precision = .f32 },
+    /// `window`: the layer attends to at most this many rows back, so its
+    /// region holds `windowRows` rows rather than the capacity and its base
+    /// moves forward (`Rows.base`). Null keeps every row. `room`: the
+    /// largest chunk the plan admits, when larger than `room_rows`.
+    attention: struct { key_row: usize, value_row: usize, precision: Precision = .f32, window: ?usize = null, room: usize = 0 },
     recurrent: struct { history: usize, matrix: usize },
 };
 
-/// A typed view of one attention region: `capacity` rows of `row` elements
-/// stored at `precision`. `bytes` borrows from `Session.memory`; the view is
+/// Rows a windowed region keeps behind its window for rewinds: the default
+/// output budget, so a step's own output stays in reach.
+pub const rewind_rows = 8192;
+/// Rows a windowed region keeps ahead for the chunk being admitted.
+pub const room_rows = 1024;
+/// Rows below the window a compaction and a snapshot keep, so a restored
+/// state can still step one or two positions back.
+pub const window_margin = 16;
+/// Rows a windowed region holds at `capacity`.
+pub fn windowRows(window: usize, room: usize, capacity: usize) usize {
+    return @min(capacity, window + window_margin + rewind_rows + @max(room_rows, room));
+}
+
+/// A typed view of one attention region: `slots` rows of `row` elements
+/// stored at `precision`, slot 0 holding logical row `base` (0 unless the
+/// layer is windowed). `bytes` borrows from `Session.memory`; the view is
 /// what a backend binds by byte range and what the CPU reference reads as
-/// floats.
+/// floats. Callers name logical rows.
 pub const Rows = struct {
     bytes: []u8,
     row: usize,
     precision: Precision,
+    base: usize = 0,
+    window: ?usize = null,
 
     pub fn rowBytes(self: Rows) usize {
         return self.precision.bytes(self.row);
     }
-    /// Byte range of `count` rows starting at row `first`.
+    /// Rows the region holds.
+    pub fn slots(self: Rows) usize {
+        return self.bytes.len / self.rowBytes();
+    }
+    /// Byte range of `count` logical rows starting at row `first`, which
+    /// must lie at or past `base` with the range inside the region.
     pub fn range(self: Rows, first: usize, count: usize) []u8 {
-        return self.bytes[first * self.rowBytes() ..][0 .. count * self.rowBytes()];
+        std.debug.assert(first >= self.base and first - self.base + count <= self.slots());
+        return self.bytes[(first - self.base) * self.rowBytes() ..][0 .. count * self.rowBytes()];
     }
     /// F32 view of `count` rows from `first`. Only an `f32` region has one;
     /// the CPU reference never carves another layout, so this is an
@@ -92,6 +121,10 @@ pub const Snapshot = struct {
     position: usize,
     capacity: usize,
     layout_digest: u64,
+    /// Rows below each windowed layer's window the snapshot holds
+    /// (at most `window_margin`): a windowed layer packs rows
+    /// `[position -| (window + margin), position)`.
+    margin: usize = 0,
     spans: [max_spans]PositionSpan = undefined,
     span_count: usize = 0,
     /// State kept outside the session that belongs to the same point (a
@@ -125,8 +158,8 @@ pub const page = 16384;
 /// Every region starts on a 16-byte boundary so its F32 view is aligned and
 /// a GPU can bind it for vector loads.
 const region_alignment = 16;
-/// Upper bound on one session's block.
-const max_bytes = 16 * @as(usize, 1024 * 1024 * 1024);
+/// Upper bound on one session's block; past it `init` is `SessionTooLarge`.
+pub const max_bytes = 16 * @as(usize, 1024 * 1024 * 1024);
 
 fn asFloats(bytes: []u8) []f32 {
     return @as([*]f32, @ptrCast(@alignCast(bytes.ptr)))[0 .. bytes.len / @sizeOf(f32)];
@@ -164,6 +197,10 @@ pub const Session = struct {
     span_count: usize = 0,
     /// `span_count` when `checkpoint` ran, restored by `rewind`.
     checkpoint_span_count: usize = 0,
+    /// The lowest position a later `rewindTo` may name (`hold`); a windowed
+    /// compaction keeps its window while it fits, and drops the hold when
+    /// it does not.
+    hold_position: ?usize = null,
 
     /// Records a span whose rows `[row, row + count)` are about to be
     /// committed; spans are added in row order and never overlap.
@@ -227,13 +264,13 @@ pub const Session = struct {
         for (layouts) |layout| {
             const n = try sizes(layout, capacity);
             total = try std.math.add(usize, total, try std.math.add(usize, aligned(n[0]), aligned(n[1])));
-            if (total > max_bytes) return error.LimitExceeded;
+            if (total > max_bytes) return error.SessionTooLarge;
         }
         const checkpoint_bytes = if (want_checkpoint) try checkpointBytes(layouts) else 0;
         if (want_checkpoint) {
             // The region starts on its own page so it is GPU-bindable alone.
             total = try std.math.add(usize, std.mem.alignForward(usize, total, page), checkpoint_bytes);
-            if (total > max_bytes) return error.LimitExceeded;
+            if (total > max_bytes) return error.SessionTooLarge;
         }
         const layers = try gpa.alloc(Layer, layouts.len);
         errdefer gpa.free(layers);
@@ -252,8 +289,8 @@ pub const Session = struct {
             cursor += aligned(n[1]);
             layer.* = switch (layout) {
                 .attention => |x| .{ .attention = .{
-                    .keys = .{ .bytes = first, .row = x.key_row, .precision = x.precision },
-                    .values = .{ .bytes = second, .row = x.value_row, .precision = x.precision },
+                    .keys = .{ .bytes = first, .row = x.key_row, .precision = x.precision, .window = x.window },
+                    .values = .{ .bytes = second, .row = x.value_row, .precision = x.precision, .window = x.window },
                 } },
                 .recurrent => .{ .recurrent = .{ .history = asFloats(first), .matrix = asFloats(second) } },
             };
@@ -281,6 +318,11 @@ pub const Session = struct {
                     hasher.update(std.mem.asBytes(&x.key_row));
                     hasher.update(std.mem.asBytes(&x.value_row));
                     hasher.update(std.mem.asBytes(&@backingInt(x.precision)));
+                    if (x.window) |w| {
+                        const rows = windowRows(w, x.room, capacity);
+                        hasher.update(std.mem.asBytes(&w));
+                        hasher.update(std.mem.asBytes(&rows));
+                    }
                 },
                 .recurrent => |x| {
                     hasher.update(std.mem.asBytes(&x.history));
@@ -312,9 +354,11 @@ pub const Session = struct {
         const n: [2]usize = switch (layout) {
             .attention => |x| blk: {
                 if (!x.precision.fits(x.key_row) or !x.precision.fits(x.value_row)) return error.InvalidShape;
+                if (x.window) |w| if (w == 0) return error.InvalidShape;
+                const rows = if (x.window) |w| windowRows(w, x.room, capacity) else capacity;
                 break :blk .{
-                    try std.math.mul(usize, x.precision.bytes(x.key_row), capacity),
-                    try std.math.mul(usize, x.precision.bytes(x.value_row), capacity),
+                    try std.math.mul(usize, x.precision.bytes(x.key_row), rows),
+                    try std.math.mul(usize, x.precision.bytes(x.value_row), rows),
                 };
             },
             .recurrent => |x| .{ try std.math.mul(usize, x.history, @sizeOf(f32)), try std.math.mul(usize, x.matrix, @sizeOf(f32)) },
@@ -352,7 +396,65 @@ pub const Session = struct {
         if (self.pending_rows > 0) return error.ReplayPending;
         if (count == 0) return error.InvalidShape;
         if (count > self.capacity - self.position) return error.ContextFull;
+        try self.compact(count);
         self.status = .updating;
+    }
+    /// Makes room for `count` more rows in every windowed region: when the
+    /// region would overflow, rows from the lowest of the position, the
+    /// hold, and the checkpoint, less the window and `window_margin`, move
+    /// to slot 0 and `base` follows. The hold is dropped when keeping it
+    /// leaves no room; a chunk that still does not fit (an image span
+    /// larger than the region's slack) is `ContextFull`. A CPU memmove of
+    /// the shared block, valid under the GPU invariant above.
+    fn compact(self: *Session, count: usize) !void {
+        for (self.layers) |*layer| switch (layer.*) {
+            .recurrent => {},
+            .attention => |*a| {
+                const w = a.keys.window orelse continue;
+                const slots = a.keys.slots();
+                if (self.position + count - a.keys.base <= slots) continue;
+                var keep = self.keepFrom(w, true, a.keys.base);
+                if (self.position + count - keep > slots) {
+                    self.hold_position = null;
+                    keep = self.keepFrom(w, false, a.keys.base);
+                }
+                if (self.position + count - keep > slots) return error.ContextFull;
+                for ([_]*Rows{ &a.keys, &a.values }) |rows| {
+                    const n = (self.position - keep) * rows.rowBytes();
+                    const from = (keep - rows.base) * rows.rowBytes();
+                    std.mem.copyForwards(u8, rows.bytes[0..n], rows.bytes[from..][0..n]);
+                    rows.base = keep;
+                }
+            },
+        };
+    }
+    /// The first row a compaction keeps for a window of `w`, at `base` or later.
+    fn keepFrom(self: *const Session, w: usize, with_hold: bool, base: usize) usize {
+        var low = self.position;
+        if (with_hold) if (self.hold_position) |h| {
+            low = @min(low, h);
+        };
+        if (self.checkpoint_position) |c| low = @min(low, c);
+        return @max(base, low -| (w + window_margin));
+    }
+    /// Whether every windowed region still holds the rows a session moved
+    /// back to `position` attends to.
+    fn reaches(self: *const Session, position: usize) bool {
+        for (self.layers) |layer| switch (layer) {
+            .recurrent => {},
+            .attention => |a| if (a.keys.window) |w| {
+                if (position -| w < a.keys.base) return false;
+            },
+        };
+        return true;
+    }
+    /// Asks windowed compactions to keep `position` in reach of `rewindTo`
+    /// while they can; the latest hold replaces an earlier one.
+    pub fn hold(self: *Session, position: usize) void {
+        self.hold_position = position;
+    }
+    pub fn release(self: *Session) void {
+        self.hold_position = null;
     }
     pub fn commitChunk(self: *Session, count: usize) !void {
         if (self.status != .updating) return error.SessionNotUpdating;
@@ -442,7 +544,7 @@ pub const Session = struct {
         if (self.pending_rows > 0) return error.ReplayPending;
         const at = self.checkpoint_position orelse return error.NoCheckpoint;
         if (position < self.position and self.hasRecurrent()) return error.RecurrentStateNotRewindable;
-        if (position < at or position > self.position) return error.RewindOutOfRange;
+        if (position < at or position > self.position or !self.reaches(position)) return error.RewindOutOfRange;
         try self.truncateSpans(position);
         self.position = position;
     }
@@ -454,7 +556,7 @@ pub const Session = struct {
         if (self.status != .ready) return error.SessionNotReady;
         if (self.pending_rows > 0) return error.ReplayPending;
         if (self.hasRecurrent()) return error.RecurrentStateNotRewindable;
-        if (position > self.position) return error.RewindOutOfRange;
+        if (position > self.position or !self.reaches(position)) return error.RewindOutOfRange;
         try self.truncateSpans(position);
         self.position = position;
         self.checkpoint_position = null;
@@ -467,14 +569,46 @@ pub const Session = struct {
         self.pending_rows = 0;
         self.span_count = 0;
         self.checkpoint_span_count = 0;
+        self.hold_position = null;
+        self.setBases(0, 0);
+    }
+    /// Sets every windowed region's base to `position -| (window + margin)`.
+    fn setBases(self: *Session, position: usize, margin: usize) void {
+        for (self.layers) |*layer| switch (layer.*) {
+            .recurrent => {},
+            .attention => |*a| if (a.keys.window) |w| {
+                a.keys.base = position -| (w + margin);
+                a.values.base = a.keys.base;
+            },
+        };
+    }
+    /// The logical rows a snapshot at `position` with `margin` packs for a layer.
+    fn packedRows(a: anytype, position: usize, margin: usize) [2]usize {
+        const first = if (a.keys.window) |w| position -| (w + margin) else 0;
+        return .{ first, position - first };
+    }
+    /// The margin a snapshot can keep: `window_margin`, or less where a
+    /// region's base already sits closer to its window.
+    fn snapshotMargin(self: *const Session) usize {
+        var margin: usize = window_margin;
+        for (self.layers) |layer| switch (layer) {
+            .recurrent => {},
+            .attention => |a| if (a.keys.window) |w| {
+                margin = @min(margin, (self.position -| w) -| a.keys.base);
+            },
+        };
+        return margin;
     }
 
     /// The used extent of each layer, in layer order: attention rows
     /// `[0, position)` of keys then values, recurrent history then matrix.
-    fn usedBytes(self: *const Session) usize {
+    fn usedBytes(self: *const Session, margin: usize) usize {
         var total: usize = 0;
         for (self.layers) |layer| total += switch (layer) {
-            .attention => |a| a.keys.range(0, self.position).len + a.values.range(0, self.position).len,
+            .attention => |a| blk: {
+                const r = packedRows(a, self.position, margin);
+                break :blk a.keys.range(r[0], r[1]).len + a.values.range(r[0], r[1]).len;
+            },
             .recurrent => |r| std.mem.sliceAsBytes(r.history).len + std.mem.sliceAsBytes(r.matrix).len,
         };
         return total;
@@ -486,12 +620,14 @@ pub const Session = struct {
     pub fn snapshot(self: *const Session, gpa: std.mem.Allocator) !Snapshot {
         if (self.status != .ready) return error.SessionNotReady;
         if (self.pending_rows > 0) return error.ReplayPending;
-        const memory = try gpa.alloc(u8, self.usedBytes());
+        const margin = self.snapshotMargin();
+        const memory = try gpa.alloc(u8, self.usedBytes(margin));
         errdefer gpa.free(memory);
         var cursor: usize = 0;
         for (self.layers) |layer| switch (layer) {
             .attention => |a| {
-                for ([_][]const u8{ a.keys.range(0, self.position), a.values.range(0, self.position) }) |region| {
+                const r = packedRows(a, self.position, margin);
+                for ([_][]const u8{ a.keys.range(r[0], r[1]), a.values.range(r[0], r[1]) }) |region| {
                     @memcpy(memory[cursor..][0..region.len], region);
                     cursor += region.len;
                 }
@@ -505,7 +641,7 @@ pub const Session = struct {
             },
         };
         std.debug.assert(cursor == memory.len);
-        return .{ .gpa = gpa, .memory = memory, .position = self.position, .capacity = self.capacity, .layout_digest = self.layout_digest, .spans = self.spans, .span_count = self.span_count };
+        return .{ .gpa = gpa, .memory = memory, .position = self.position, .capacity = self.capacity, .layout_digest = self.layout_digest, .margin = margin, .spans = self.spans, .span_count = self.span_count };
     }
     /// Copies a snapshot back and sets the position. The session must be
     /// ready (reset a failed one first) and byte-compatible: same capacity
@@ -514,11 +650,20 @@ pub const Session = struct {
     /// Same GPU invariant as `snapshot`.
     pub fn restore(self: *Session, snap: *const Snapshot) !void {
         if (self.status != .ready) return error.SessionNotReady;
-        if (snap.capacity != self.capacity or snap.layout_digest != self.layout_digest or snap.position > self.capacity) return error.SnapshotMismatch;
+        if (snap.capacity != self.capacity or snap.layout_digest != self.layout_digest or snap.position > self.capacity or snap.margin > window_margin) return error.SnapshotMismatch;
+        // Checked whole before a byte moves, so a mismatch leaves the session untouched.
+        var expected: usize = 0;
+        for (self.layers) |layer| expected += switch (layer) {
+            .attention => |a| packedRows(a, snap.position, snap.margin)[1] * (a.keys.rowBytes() + a.values.rowBytes()),
+            .recurrent => |r| std.mem.sliceAsBytes(r.history).len + std.mem.sliceAsBytes(r.matrix).len,
+        };
+        if (expected != snap.memory.len) return error.SnapshotMismatch;
+        self.setBases(snap.position, snap.margin);
         var cursor: usize = 0;
         for (self.layers) |layer| switch (layer) {
             .attention => |a| {
-                for ([_][]u8{ a.keys.range(0, snap.position), a.values.range(0, snap.position) }) |region| {
+                const r = packedRows(a, snap.position, snap.margin);
+                for ([_][]u8{ a.keys.range(r[0], r[1]), a.values.range(r[0], r[1]) }) |region| {
                     if (cursor + region.len > snap.memory.len) return error.SnapshotMismatch;
                     @memcpy(region, snap.memory[cursor..][0..region.len]);
                     cursor += region.len;
@@ -541,6 +686,7 @@ pub const Session = struct {
         // `checkpoint`, and no recorded position may point at it.
         self.checkpoint_position = null;
         self.pending_rows = 0;
+        self.hold_position = null;
     }
 };
 
@@ -933,4 +1079,125 @@ test "rewind restores the recorded bytes exactly and leaves a peer untouched" {
     try std.testing.expectEqualSlices(f32, &.{ 4, 5 }, first.layers[0].recurrent.matrix[0..2]);
     try std.testing.expectEqualSlices(u8, region, first.checkpoint_region);
     try std.testing.expectEqualSlices(f32, &.{ 7, 0, 0 }, peer.layers[0].recurrent.history[0..3]);
+}
+
+fn windowedSession(a: std.mem.Allocator, capacity: usize) !Session {
+    // A windowed layer of window 4 beside a full one, one f32 per row.
+    const layouts = [_]Layout{ .{ .attention = .{ .key_row = 1, .value_row = 1, .window = 4, .room = 2 } }, .{ .attention = .{ .key_row = 1, .value_row = 1 } } };
+    return Session.init(a, &layouts, capacity, true);
+}
+/// Feeds `count` rows one chunk at a time, row `p` of every region holding `p`.
+fn feedRows(s: *Session, count: usize, chunk: usize) !void {
+    var left = count;
+    while (left > 0) {
+        const n = @min(chunk, left);
+        try s.beginChunk(n);
+        for (s.layers) |layer| for ([_]Rows{ layer.attention.keys, layer.attention.values }) |rows| {
+            for (rows.floats(s.position, n), s.position..) |*v, p| v.* = @floatFromInt(p);
+        };
+        try s.commitChunk(n);
+        left -= n;
+    }
+}
+fn expectRowsHold(s: *const Session, first: usize, end: usize) !void {
+    for (s.layers) |layer| for ([_]Rows{ layer.attention.keys, layer.attention.values }) |rows| {
+        for (rows.floats(first, end - first), first..) |v, p| try std.testing.expectEqual(@as(f32, @floatFromInt(p)), v);
+    };
+}
+
+test "a windowed region compacts, keeps its hold while it fits, and refuses rewinds past its reach" {
+    const a = std.testing.allocator;
+    const slots = windowRows(4, 2, max_capacity);
+    try std.testing.expectEqual(@as(usize, 4 + window_margin + rewind_rows + room_rows), slots);
+    var s = try windowedSession(a, max_capacity);
+    defer s.deinit();
+    try std.testing.expectEqual(slots, s.layers[0].attention.keys.slots());
+    try std.testing.expectEqual(@as(usize, max_capacity), s.layers[1].attention.keys.slots());
+    // Without a hold: the base moves to the window and margin behind the position.
+    try feedRows(&s, slots + 10, 7);
+    const base = s.layers[0].attention.keys.base;
+    try std.testing.expect(base > 0 and base <= s.position - 4 - window_margin);
+    try std.testing.expectEqual(base, s.layers[0].attention.values.base);
+    try std.testing.expectEqual(@as(usize, 0), s.layers[1].attention.keys.base);
+    try expectRowsHold(&s, base, s.position);
+    // A rewind inside the reach works; one row past it is refused.
+    try s.rewindTo(base + 4);
+    try std.testing.expectError(error.RewindOutOfRange, s.rewindTo(base + 3));
+    try expectRowsHold(&s, base, s.position);
+    // A hold keeps its rows through the next compaction while they fit.
+    s.reset();
+    try std.testing.expectEqual(@as(usize, 0), s.layers[0].attention.keys.base);
+    try feedRows(&s, 100, 7);
+    s.hold(100);
+    try feedRows(&s, slots - 50, 7);
+    try std.testing.expect(s.hold_position != null);
+    try std.testing.expect(s.layers[0].attention.keys.base <= 100 - 4 - window_margin);
+    try s.rewindTo(100);
+    try expectRowsHold(&s, 96, 100);
+    // A hold that no longer fits is dropped, not the chunk.
+    s.hold(100);
+    try feedRows(&s, slots, 7);
+    try std.testing.expect(s.hold_position == null);
+    try std.testing.expectError(error.RewindOutOfRange, s.rewindTo(100));
+    s.release();
+}
+
+test "a windowed region keeps its checkpoint, truncates across a compaction, and snapshots its window" {
+    const a = std.testing.allocator;
+    const slots = windowRows(4, 2, max_capacity);
+    var s = try windowedSession(a, max_capacity);
+    defer s.deinit();
+    try feedRows(&s, slots - 3, 7);
+    // A verify-shaped batch crosses a compaction; truncate back to its start.
+    try s.checkpoint();
+    const start = s.position;
+    try feedRows(&s, 6, 6);
+    try std.testing.expect(s.layers[0].attention.keys.base > 0);
+    try s.truncate(start + 2);
+    try std.testing.expectEqual(start + 2, s.position);
+    try expectRowsHold(&s, start - 4, start + 2);
+    // A snapshot holds the window and the margin; restore puts the base back.
+    var snap = try s.snapshot(a);
+    defer snap.deinit();
+    try std.testing.expectEqual(@as(usize, window_margin), snap.margin);
+    const window_bytes = (4 + window_margin) * 2 * 4;
+    try std.testing.expectEqual(window_bytes + s.position * 2 * 4, snap.bytes());
+    s.reset();
+    try s.restore(&snap);
+    try std.testing.expectEqual(snap.position, s.position);
+    try std.testing.expectEqual(s.position - 4 - window_margin, s.layers[0].attention.keys.base);
+    try expectRowsHold(&s, s.position - 4 - window_margin, s.position);
+    // Restored, the session can step two rows back and go on.
+    try s.rewindTo(s.position - 2);
+    try feedRows(&s, 3, 3);
+    try expectRowsHold(&s, s.layers[0].attention.keys.base, s.position);
+    // The window and its row count are part of the layout digest.
+    var plain = try Session.init(a, &.{ .{ .attention = .{ .key_row = 1, .value_row = 1 } }, .{ .attention = .{ .key_row = 1, .value_row = 1 } } }, max_capacity, true);
+    defer plain.deinit();
+    try std.testing.expect(plain.layout_digest != s.layout_digest);
+    var wider = try Session.init(a, &.{ .{ .attention = .{ .key_row = 1, .value_row = 1, .window = 5, .room = 2 } }, .{ .attention = .{ .key_row = 1, .value_row = 1 } } }, max_capacity, true);
+    defer wider.deinit();
+    try std.testing.expectError(error.SnapshotMismatch, wider.restore(&snap));
+    // A chunk larger than the region's slack is refused, not admitted half.
+    s.reset();
+    try feedRows(&s, 100, 7);
+    try std.testing.expectError(error.ContextFull, s.beginChunk(slots - 4));
+    try std.testing.expectEqual(@as(usize, 100), s.position);
+    try s.beginChunk(1);
+    s.fail();
+    try std.testing.expectError(error.InvalidShape, Session.init(a, &.{.{ .attention = .{ .key_row = 1, .value_row = 1, .window = 0 } }}, 64, false));
+}
+
+test "a session past the byte limit is refused by name" {
+    // Qwen3.8's 16 attention layers (1,024-wide keys and values) at the
+    // release ceiling with an F32 cache are 16 GiB of rows; its recurrent
+    // state takes the block past the limit.
+    var layouts: [17]Layout = @splat(.{ .attention = .{ .key_row = 1024, .value_row = 1024, .precision = .f32 } });
+    layouts[16] = .{ .recurrent = .{ .history = 1 << 20, .matrix = 1 << 20 } };
+    if (max_capacity < 131072) return error.SkipZigTest;
+    if (Session.init(std.testing.allocator, &layouts, 131072, false)) |ok| {
+        var unexpected = ok;
+        unexpected.deinit();
+        return error.TestExpectedError;
+    } else |err| try std.testing.expectEqual(error.SessionTooLarge, err);
 }

@@ -1302,3 +1302,70 @@ batch paid, and computing the slots in turn cost parallelism.
 the experts at their distinct bytes; neither yields to a few-row path
 on this machine. What remains is the number of distinct experts, a
 property of the routing, and the drafter's acceptance.
+
+## Sliding layers keep their window (2026-11-19)
+
+The first change § Context past 32K recommended: a sliding layer's
+region holds its window and a margin instead of the whole capacity
+([session.md § Layouts and views](../../engine/session.md#layouts-and-views)).
+M4 Pro 48 GB, ReleaseSafe, base `09de227`, both QAT files, Metal.
+Reports: [window-2026-11-19/](../window-2026-11-19/).
+
+**Same output.** Base and candidate, the same prompts (the acceptance
+fixtures at 16,384 and 32,639, and WikiText-2 at 65,536), byte-compared
+on every logit and token: both files, F16 and Q8_0 caches, 16,384 with
+the drafter off and on, 32,639 off, a sampled run at temperature 1 on
+each file, and the 26B-A4B at 65,536 with the drafter on against the
+base built at a 131,072 ceiling: all fifteen pairs identical. Prefill
+time is unchanged (within ±1 % on every pair at 32K and below, +1.3 %
+at 65,536: 289.8 against 293.7 s).
+
+| session bytes at 32,768 | F16 before | F16 after | Q8_0 before | Q8_0 after |
+| --- | ---: | ---: | ---: | ---: |
+| 26B-A4B | 7.38 GB | 2.77 GB | 3.92 GB | 1.47 GB |
+| E4B QAT | 1.88 GB | 0.94 GB | 1.00 GB | 0.50 GB |
+
+**Acceptance** (§ Prefill with materialized global attention's method):
+26B-A4B 539.7 / 434.3 / 369.1 / 313.4 tok/s at 512 / 4,096 / 16,384 /
+32,639 (1.00, 1.00, 0.99, 1.04× that record), E4B 548.6 / 507.8 / 443.7
+/ 382.0 (1.00, 1.00, 0.97, 1.06×); decode within ±3 %. The 16,384 points
+spread 4 % across their three runs (437–451 on the E4B).
+
+**Past 32K** (§ Context past 32K's method, the 26B-A4B; its four points
+again on this build):
+
+| | 32,639 F16 | 65,536 F16 | 131,000 Q8_0 | 131,000 F16 |
+| --- | ---: | ---: | ---: | ---: |
+| cold prefill, s (tokens/s) | 116 (281) | 295 (222) | 875 (150) | 871 (150) |
+| decode, plain, tokens/s | 42.1 | 32.2 | 23.8 | 19.8 |
+| decode, drafter on, tokens/s | 39.5 | 20.2 | 21.5 | 17.4 |
+| accepted / proposed per step | 1.91 / 3.05 | 0.97 / 2.69 | 2.56 / 3.22 | 2.37 / 2.95 |
+| session bytes (2026-11-18) | 2.77 GB (7.38) | 3.53 GB (15.69) | 2.54 GB (15.69) | 4.78 GB (29.5 derived) |
+| saved state, bytes (2026-11-18) | 0.88 GB (7.35) | 1.56 GB (14.76) | 1.54 GB (15.68) | 2.90 GB |
+| peak footprint, GB (swap growth) | 4.6 (0) | 6.2 (0) | 5.9 (0) | 8.9 (0) |
+
+The cold prefill includes the materialized global attention of the unit
+before; the per-token sliding rows are gone from the saved state, which
+now holds the global rows and each sliding layer's last window. At
+32,639 the saved state fits `cache.memory_bytes`, so the agent's memory
+tier keeps this model's state across the default window again.
+Acceptance per step differs from 2026-11-18 because that build
+prefilled with the online chunk body; the base build at 65,536 takes
+the same tokens and the same steps, so the 0.97 is the target's, not
+the layout's.
+
+**On the agent's list** (the 26B-A4B with its MTP drafter at draft 4,
+seeds 1–3, the method of § Prefill with materialized global attention;
+`agent-breakdown.txt`): 46 of 54 runs pass (48 on the base), in 2,273 s
+of wall against 2,671. Runs flipped both ways (four lost: `bugfix`,
+`pages` and `replay` once, `manysteps` twice; two gained: `bugfix` and
+`replay` once); with output byte-identical on the same input, the flips
+are the list's spread across paths, not the layout. Prefill is 987 s for
+295,800 new tokens, 3.3 ms a token against 3.4, and reuse lost to a
+rewrite four times (117,421 tokens) against eight (212,715); no run lost
+reuse to `rewind_out_of_reach`. Depth term 29.2 ns (30.8).
+
+**Not run.** A rewind of 3,000 tokens after 9,000 generated: the mark
+is held (`Session.hold`), and a rewind past what compaction kept returns
+`RewindOutOfRange`, which the agent counts as `rewind_out_of_reach` and
+replays; the unit tests cover that path, no measured run reached it.

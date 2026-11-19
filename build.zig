@@ -49,8 +49,9 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "dirty", dirty);
     build_options.addOption(bool, "panic_hook", b.option(bool, "panic-hook", "Test builds: NUCLIS_PANIC_HOOK=serve|terminal panics on purpose") orelse false);
 
-    // Past 32,768 the gates do not cover it (docs/spec.md § 8).
-    const max_context = b.option(u32, "max-context", "Session ceiling in tokens, accepted by the configuration (default 32768)") orelse 32768;
+    // Inference's `default_max_context`; past 32,768 (`supported_context`)
+    // the gates do not cover it (docs/spec.md § 8).
+    const max_context = b.option(u32, "max-context", "Session ceiling in tokens, accepted by the configuration (default 131072)") orelse 131072;
     const inference = b.dependency("inference", .{ .target = target, .optimize = optimize, .metal = metal, .@"max-context" = max_context });
     // The Hub downloader is imported by the executable only (`nuclis model`);
     // the inference library never depends on it (AGENTS.md § Repository

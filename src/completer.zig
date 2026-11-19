@@ -181,6 +181,7 @@ pub const Reuse = enum {
     resumed,
     cancel,
     rewrite,
+    rewind_out_of_reach,
     effort,
     context,
     model,
@@ -210,6 +211,9 @@ pub const Replay = struct {
         cancel,
         /// An earlier message renders differently (compaction, elision).
         rewrite,
+        /// The session's windowed layers no longer hold the rows its mark
+        /// needs (`Session.hold` was dropped).
+        rewind_out_of_reach,
         /// The reasoning effort changed the system block.
         effort,
         /// The engine was re-opened at another context size.
@@ -789,7 +793,9 @@ pub const Completer = struct {
         self.rewound += self.eng.model.session().position -| m.position;
         var bits = m.history;
         defer if (bits) |*b| b.deinit(self.alloc);
+        self.eng.model.release();
         inference.engine.rewindSession(self.eng, m.position, m.last) catch |err| {
+            if (err == error.RewindOutOfRange) self.cause = .rewind_out_of_reach;
             self.eng.model.reset();
             if (self.history) |h| h.reset();
             self.seen.clearRetainingCapacity();
@@ -809,6 +815,7 @@ pub const Completer = struct {
 
     fn dropMark(self: *Completer) void {
         if (self.mark) |*m| if (m.history) |*b| b.deinit(self.alloc);
+        if (self.mark != null) self.eng.model.release();
         self.mark = null;
         self.tail = null;
     }
@@ -830,6 +837,12 @@ pub const Completer = struct {
     fn markStepped(self: *Completer, full: []const u8, t: Tail) !void {
         const bits: ?std.bit_set.Dynamic = if (self.history) |h| try h.seen.clone(self.alloc) else null;
         self.mark = .{ .bytes = full.len, .position = t.position, .last = t.last, .before = t.before, .history = bits };
+        self.holdMark();
+    }
+    /// Keeps the mark's rows, and the one or two a drafter steps back
+    /// through, in reach of the windowed layers.
+    fn holdMark(self: *Completer) void {
+        if (self.mark) |m| self.eng.model.hold(m.position -| 2);
     }
 
     /// Marks where this step's prompt ends (`Mark`) when the model can move
@@ -852,6 +865,7 @@ pub const Completer = struct {
         var bits: ?std.bit_set.Dynamic = if (self.history) |h| try h.seen.clone(self.alloc) else null;
         if (bits) |*b| for (tokens[0..fed]) |token| if (token < b.bit_length) b.set(token);
         self.mark = .{ .bytes = end, .position = reused + fed, .last = tokens[fed - 1], .before = if (fed >= 2) tokens[fed - 2] else null, .history = bits };
+        self.holdMark();
     }
 
     /// A state kept inside a step's prompt: the system block's end, the
