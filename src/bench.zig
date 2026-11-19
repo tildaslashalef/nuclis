@@ -128,7 +128,7 @@ pub const Family = enum {
         const starts = std.mem.startsWith;
         const matrix = starts(u8, kernel, "matvec") or starts(u8, kernel, "matmul") or std.mem.endsWith(u8, kernel, "reduce_splits");
         if (matrix) return if (rows == vocabulary) .head else .matrix;
-        if (starts(u8, kernel, "attention") or starts(u8, kernel, "rope") or std.mem.eql(u8, kernel, "pack_half") or std.mem.eql(u8, kernel, "sigmoid_gate")) return .attention;
+        if (starts(u8, kernel, "attention") or starts(u8, kernel, "chunk_") or starts(u8, kernel, "rope") or std.mem.eql(u8, kernel, "pack_half") or std.mem.eql(u8, kernel, "sigmoid_gate")) return .attention;
         if (starts(u8, kernel, "delta") or starts(u8, kernel, "convolution") or std.mem.eql(u8, kernel, "l2norm")) return .deltanet;
         if (std.mem.indexOf(u8, kernel, "norm") != null) return .norms;
         if (starts(u8, kernel, "argmax") or starts(u8, kernel, "topk") or starts(u8, kernel, "expsum") or std.mem.eql(u8, kernel, "penalize")) return .selection;
@@ -925,6 +925,7 @@ test "profile report divides totals per step, sorts by time, and omits rates wit
     try std.testing.expectEqual(Family.other, report.families[1].family);
     try std.testing.expectEqual(Family.head, Family.of("matvec_q6_k", 248320, 248320));
     try std.testing.expectEqual(Family.attention, Family.of("attention_decode_wh", 0, 248320));
+    try std.testing.expectEqual(Family.attention, Family.of("chunk_scores_h", 0, 248320));
     try std.testing.expectEqual(Family.deltanet, Family.of("delta_chunk", 0, 248320));
     try std.testing.expectEqual(Family.norms, Family.of("add_rmsnorm", 0, 248320));
     try std.testing.expectEqual(Family.selection, Family.of("argmax_partial", 0, 248320));

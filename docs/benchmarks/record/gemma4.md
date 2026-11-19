@@ -1214,3 +1214,40 @@ seconds into global attention 156.0, sliding attention 21.9, experts
 no experts. The kernel's own record:
 [metal-backend.md § Gemma 4's global-layer chunk attention, measured](metal-backend.md#gemma-4s-global-layer-chunk-attention-measured-2026-11-18).
 
+
+## Prefill with materialized global attention (2026-11-19)
+
+The acceptance method of § Prefill at 32K, today's baseline and its
+split, on the build that routes the global layers to the materialized
+chunk body
+([metal-backend.md § Materialized chunk attention, built and routed](metal-backend.md#materialized-chunk-attention-built-and-routed-2026-11-19)).
+Reports:
+[nuclis-2026-11-19-gemma4-26b-a4b.json](../nuclis-2026-11-19-gemma4-26b-a4b.json),
+[nuclis-2026-11-19-gemma4-e4b.json](../nuclis-2026-11-19-gemma4-e4b.json).
+
+| prefill tok/s (decode) | 512 | 4,096 | 16,384 | 32,639 |
+| --- | ---: | ---: | ---: | ---: |
+| 26B-A4B | 539.5 (57.1) | 434.5 (54.2) | 374.4 (48.6) | 302.0 (40.9) |
+| against 2026-11-18 | 1.03× | 1.21× | 1.74× | 2.14× |
+| against the reference | 0.92× | 0.78× | 0.82× | 0.93× |
+| E4B QAT | 549.3 (52.9) | 507.4 (51.5) | 456.7 (47.2) | 358.9 (39.7) |
+| against 2026-11-18 | 1.03× | 1.17× | 1.63× | 1.88× |
+| against the reference | 0.92× | 0.84× | 0.88× | 0.92× |
+
+The quadratic term falls from 149.7 to 39.4 ns × N² on the 26B-A4B and
+from 103.5 to 36.7 on the E4B (2.03 and 1.59 ms × N). Decode is the
+same kernel as before; its 0.95–0.97× at 32,639 follows the runs' warm-up
+(the E4B's three 32,639 runs prefill at 345, 359, and 373 tok/s and
+decode at 38.6, 40.0, and 40.6). The interleaved A/B on the same build
+reads 323.6 and 395.4 at 32,639.
+
+**On the agent's list** (the 26B-A4B with its MTP drafter at draft 4,
+seeds 1–3, the method of
+[agent.md § How deep compaction cuts](agent.md#how-deep-compaction-cuts-low-water-50-30-25-2026-11-18)):
+48 of 54 runs pass (45 before), in 2,671 s of wall against 2,928.
+Prefill is 1,312 s for 381,822 new tokens, 3.4 ms a token against 6.0;
+the runs took other paths (more new tokens, 1,314 s of decode against
+1,087), so the wall is not a like-for-like saving. The fit's depth term
+is 30.8 ns against 159–160: 0.168 s + 2.59 ms × n + 30.8 ns × ((d+n)² −
+d²), R² 0.9995, the depth term 258 s of the list's prefill. Prefill and
+decode are now even, 49 % each.

@@ -278,6 +278,68 @@ fn chunkProfile(s: AttentionChunkShape) Shape {
     const seen = if (s.window > 0) @min(s.position + s.count, s.window + s.count) else s.position + s.count;
     return .{ .rows = @intCast(s.count), .columns = @intCast(s.value_width), .bytes = @intCast(seen * s.precision.bytes(s.kv_heads * (s.key_width + s.value_width))) };
 }
+/// Counts above this take the materialized body where a caller routes to
+/// it: at 16 rows it beat the few-row split pass, at 5 it lost
+/// (docs/benchmarks/record/metal-backend.md § Gemma 4's global-layer
+/// chunk attention, measured).
+pub const materialized_min_rows = 16;
+pub const ChunkStripParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, position: u32, count: u32, q_stride: u32, out_stride: u32, scale: f32, tile0: u32, tiles: u32, row_stride: u32 };
+/// Floats of scratch `attentionChunkMaterialized` needs to run `tiles`
+/// 32-row tiles at once whose rows see at most `keys` keys: the strips and
+/// one (max, 1 / sum) pair per strip row.
+pub fn attentionChunkStripFloats(query_heads: usize, tiles: usize, keys: usize) usize {
+    return query_heads * tiles * 32 * (std.mem.alignForward(usize, keys, 32) + 2);
+}
+/// The most scratch a plan gives the materialized body by default: a
+/// 512-row chunk at 32,768 keys needs about 1.1 GB in one group, so longer
+/// chunks run in groups of tiles that fit (three of 16 heads at 32,768).
+pub const strip_scratch_bytes: usize = 256 << 20;
+/// Bytes of score scratch a plan allocates for chunks of `chunk` rows over
+/// `capacity` cache rows: the whole chunk in one group when that fits
+/// `strip_scratch_bytes`, never less than one tile at the capacity.
+pub fn attentionStripScratch(query_heads: usize, chunk: usize, capacity: usize) usize {
+    const one = attentionChunkStripFloats(query_heads, 1, capacity);
+    const whole = attentionChunkStripFloats(query_heads, @divCeil(attentionChunkRows(chunk), 32), capacity);
+    return @max(one, @min(strip_scratch_bytes / 4, whole)) * 4;
+}
+/// Causal chunk attention through materialized scores: per group of 32-row
+/// tiles that fits `scratch`, a scores dispatch writes F32 strips, a
+/// statistics dispatch their softmax rows, and a values dispatch P·V, both
+/// products as F32 matmul tiles. The chunk contract of `attentionChunk`
+/// without a window or span; queries are F32 whatever the cache's
+/// `precision` (F32 or F16; a Q8_0 cache passes its F16 view). `scratch`
+/// must hold at least one tile at the chunk's last row
+/// (`attentionChunkStripFloats(query_heads, 1, position + count)` floats);
+/// the result does not depend on how many tiles a group takes.
+pub fn attentionChunkMaterialized(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer, scratch: Buffer, s: AttentionChunkShape) !void {
+    if (s.precision == .q8_0 or s.window != 0 or s.span.end != 0) return error.InvalidShape;
+    try checkAttentionChunk(s, keys, values, queries, output, 4);
+    if (queries.offset % 16 != 0 or output.offset % 16 != 0 or scratch.offset % 16 != 0) return error.InvalidShape;
+    const total = s.position + s.count;
+    const padded = attentionChunkRows(s.count);
+    const tile_count = @divCeil(padded, 32);
+    const capacity = scratch.len / 4;
+    if (attentionChunkStripFloats(s.query_heads, 1, total) > capacity) return error.InvalidShape;
+    const half = s.precision == .f16;
+    var tile0: usize = 0;
+    while (tile0 < tile_count) {
+        // The widest strip of a group is its last tile's.
+        var tiles: usize = 1;
+        while (tile0 + tiles < tile_count and attentionChunkStripFloats(s.query_heads, tiles + 1, keysSeen(s, tile0 + tiles + 1)) <= capacity) tiles += 1;
+        const row_stride = std.mem.alignForward(usize, keysSeen(s, tile0 + tiles), 32);
+        const p: ChunkStripParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .position = @intCast(s.position), .count = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .tile0 = @intCast(tile0), .tiles = @intCast(tiles), .row_stride = @intCast(row_stride) };
+        const n: u32 = @intCast(tiles);
+        try self.dispatch2(if (half) .chunk_scores_h else .chunk_scores, &.{ queries, keys, scratch }, p, n, @intCast(s.query_heads * row_stride / 32), 128);
+        try self.dispatch2(.chunk_stats, &.{scratch}, p, n, @intCast(s.query_heads), 256);
+        try self.dispatch2(if (half) .chunk_values_h else .chunk_values, &.{ scratch, values, output }, p, n, @intCast(s.query_heads * @divCeil(s.value_width, 32)), 128);
+        tile0 += tiles;
+    }
+}
+/// Keys the rows of tiles `[0, end)` see: up to the last row's own key,
+/// never past the chunk.
+fn keysSeen(s: AttentionChunkShape, end: usize) usize {
+    return @min(s.position + @min(end * 32, attentionChunkRows(s.count)), s.position + s.count);
+}
 fn attentionChunkParams(s: AttentionChunkShape) AttentionChunkParams {
     return .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .position = @intCast(s.position), .count = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .window = @intCast(s.window), .span_begin = @intCast(s.span.begin), .span_end = @intCast(s.span.end) };
 }

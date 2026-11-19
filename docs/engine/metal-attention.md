@@ -154,6 +154,29 @@ split the value columns and share the probability tiles (11–16 % faster at
 those counts, level at full chunks:
 [record](../benchmarks/record/metal-backend.md#long-context-prefill-attention-second-attempt-2026-09-21-closed-negative)).
 
+## Prefill: materialized chunk attention
+
+`Backend.attentionChunkMaterialized` is the chunk contract computed the
+way the segments body computes (below), reading a cache: per group of
+32-row tiles, `nu_chunk_scores` writes each row's scores against
+`cache[0 .. position + t]` to an F32 strip (keys past the row −∞, cache
+rows past `position + count` never read), `nu_chunk_stats` each strip
+row's max and 1 / sum, and `nu_chunk_values` P·V with P formed while the
+strip is staged. Both products are F32 matmul tiles with operands staged
+in threadgroup memory; an F16 cache (or a Q8_0 cache's F16 view) is
+converted while staged, so the queries stay F32 and the F16 result is as
+close to the CPU reference as the F32 one. Causal only: no window, no
+span. The strips live in a plan scratch (`attentionStripScratch`: the
+whole chunk when it fits `strip_scratch_bytes`, 256 MiB, and never less
+than one tile at the capacity); a chunk whose strips do not fit runs in
+several groups, and the result does not depend on the grouping. Routed for
+chunks above `materialized_min_rows` (16) rows: Gemma 4's global layers
+and Qwen3.8's attention layers. The online bodies keep the sliding
+window, the image spans, and the other callers. Gemma 4's global
+dispatch at 32,768 visible takes 198 ms in this structure against 984 in
+the online F16 body
+([record](../benchmarks/record/metal-backend.md#gemma-4s-global-layer-chunk-attention-measured-2026-11-18)).
+
 ## Segments attention with materialized scores
 
 `Backend.attentionSegmentsGrouped` is bidirectional attention with no

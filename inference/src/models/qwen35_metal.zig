@@ -284,6 +284,9 @@ pub const Plan = struct {
     /// A `q8_0` cache's visible rows expanded to F16 for the chunk kernel:
     /// keys then values, capacity × 1024 halves each; null otherwise.
     kv_stage: ?Buffer,
+    /// The materialized chunk attention's score strips, sized by
+    /// `attentionStripScratch`.
+    strips: Buffer,
     mixed_c: Buffer, // padded × qkv
     convolved_c: Buffer,
     z_c: Buffer, // padded × inner
@@ -437,6 +440,7 @@ pub const Plan = struct {
         self.v_c = try created.create(n * 1024 * 4);
         self.q_c_h = try created.create(n * heads * 256 * 2);
         self.kv_stage = if (kv == .q8_0) try created.create(2 * capacity * 1024 * 2) else null;
+        self.strips = try created.create(metal.Backend.attentionStripScratch(heads, chunk, capacity));
         self.mixed_c = try created.create(n * qkv * 4);
         self.convolved_c = try created.create(n * qkv * 4);
         self.z_c = try created.create(n * inner * 4);
@@ -1100,6 +1104,8 @@ pub const Plan = struct {
         // A verify batch or a drafter's commit (few rows) takes the split
         // pass with F32 queries; a prefill chunk the tiled body.
         const few = count <= metal.Backend.verify_max_rows;
+        // Longer chunks take the materialized body (F32 queries).
+        const materialized = count > metal.Backend.materialized_min_rows;
         try b.storeRows(&.{ .{ .dst = k_rows, .src = self.k_c, .count = count * 1024 }, .{ .dst = v_rows, .src = self.v_c, .count = count * 1024 } }, precision);
         // Row t attends to cache[0 .. position + t]; padded rows of
         // q_c/mixed_out_c absorb the tiled body's tail.
@@ -1121,12 +1127,18 @@ pub const Plan = struct {
                 values = half_values;
                 operands = .f16;
             }
-            try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * heads * 256 }});
-            queries = self.q_c_h;
+            if (!materialized) {
+                try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * heads * 256 }});
+                queries = self.q_c_h;
+            }
         }
         const width = heads * 256;
         const shape: metal.Backend.AttentionChunkShape = .{ .query_heads = heads, .kv_heads = 4, .key_width = 256, .value_width = 256, .position = position, .count = count, .q_stride = width, .out_stride = width, .scale = 1.0 / 16.0, .precision = operands };
-        if (few) try b.attentionVerify(keys, values, queries, self.partials, self.mixed_out_c, shape) else try b.attentionChunk(keys, values, queries, self.mixed_out_c, shape);
+        if (few) {
+            try b.attentionVerify(keys, values, queries, self.partials, self.mixed_out_c, shape);
+        } else if (materialized) {
+            try b.attentionChunkMaterialized(keys, values, queries, self.mixed_out_c, self.strips, shape);
+        } else try b.attentionChunk(keys, values, queries, self.mixed_out_c, shape);
         try b.sigmoidGate(self.mixed_out_c, self.qg_c, count * heads, 256, 512, 256);
         try self.rotate(self.mixed_out_c, width, count);
         try self.mmRows(attn.output, self.mixed_out_c, width, self.projected_c, hidden, count);
