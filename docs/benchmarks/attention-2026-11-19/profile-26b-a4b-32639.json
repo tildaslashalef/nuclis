@@ -1,0 +1,405 @@
+{
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "~/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "safe",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 7381975040,
+  "max_tokens": 1,
+  "sampling": "greedy",
+  "sampling_options": {
+    "temperature": 0,
+    "top_k": 0,
+    "top_p": 1,
+    "min_p": 0,
+    "presence_penalty": 0,
+    "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 0,
+  "measured_runs": 1,
+  "load_milliseconds": 978.698458,
+  "samples": [
+    {
+      "warmup": false,
+      "prompt_tokens": 32639,
+      "generated_tokens": 1,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 102055.369,
+      "first_token_milliseconds": 102055.369417,
+      "decode_milliseconds": 0.00125,
+      "prefill_tokens_per_second": 319.81658897338366,
+      "gpu_busy_milliseconds": 101380.76387508772,
+      "speculative": false
+    }
+  ],
+  "mean_prefill_tokens_per_second": 319.81658897338366,
+  "mean_first_token_milliseconds": 102055.369417,
+  "profile": {
+    "steps": 64,
+    "dispatches_per_step": 1589.96875,
+    "attributed_milliseconds_per_step": 1675.6138858593745,
+    "gpu_milliseconds_per_step": 1584.0744355482457,
+    "unsampled_dispatches": 0,
+    "kernels": [
+      {
+        "kernel": "attention_chunk_h",
+        "family": "attention",
+        "rows": 512,
+        "columns": 256,
+        "dispatches_per_step": 24.609375,
+        "milliseconds_per_step": 338.81807921875026,
+        "share": 0.20220534221998293,
+        "gigabytes_per_second": 0.8988516808259691
+      },
+      {
+        "kernel": "matmul_experts_q4_0",
+        "family": "matrix",
+        "encoding": "Q4_0",
+        "rows": 1408,
+        "columns": 2816,
+        "dispatches_per_step": 30,
+        "milliseconds_per_step": 296.1506781093746,
+        "share": 0.17674159936761769
+      },
+      {
+        "kernel": "chunk_scores_h",
+        "family": "other",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 12.96875,
+        "milliseconds_per_step": 207.69496920312514,
+        "share": 0.12395156841076446
+      },
+      {
+        "kernel": "chunk_values_h",
+        "family": "other",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 12.96875,
+        "milliseconds_per_step": 198.6534649062501,
+        "share": 0.11855563300274657
+      },
+      {
+        "kernel": "matmul_experts_q4_0",
+        "family": "matrix",
+        "encoding": "Q4_0",
+        "rows": 2816,
+        "columns": 704,
+        "dispatches_per_step": 30,
+        "milliseconds_per_step": 150.18799743750037,
+        "share": 0.0896316261788874
+      },
+      {
+        "kernel": "matmul_q4_0",
+        "family": "matrix",
+        "encoding": "Q4_0",
+        "rows": 2112,
+        "columns": 2816,
+        "dispatches_per_step": 60,
+        "milliseconds_per_step": 74.789604671875,
+        "share": 0.04463415187892021,
+        "gigabytes_per_second": 21.38697225393289
+      },
+      {
+        "kernel": "matmul_q4_0",
+        "family": "matrix",
+        "encoding": "Q4_0",
+        "rows": 2048,
+        "columns": 2816,
+        "dispatches_per_step": 50,
+        "milliseconds_per_step": 60.74533640624992,
+        "share": 0.03625258594410333,
+        "gigabytes_per_second": 21.27807789812509
+      },
+      {
+        "kernel": "matmul_q4_0",
+        "family": "matrix",
+        "encoding": "Q4_0",
+        "rows": 2816,
+        "columns": 4096,
+        "dispatches_per_step": 25,
+        "milliseconds_per_step": 57.825425937499915,
+        "share": 0.034509994471574164,
+        "gigabytes_per_second": 22.352520176799636
+      },
+      {
+        "kernel": "matmul_q4_0",
+        "family": "matrix",
+        "encoding": "Q4_0",
+        "rows": 4096,
+        "columns": 2816,
+        "dispatches_per_step": 25,
+        "milliseconds_per_step": 57.5426178124999,
+        "share": 0.034341215657202516,
+        "gigabytes_per_second": 22.462377436697405
+      },
+      {
+        "kernel": "rmsnorm",
+        "family": "norms",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 330.015625,
+        "milliseconds_per_step": 47.809185124999615,
+        "share": 0.02853234001488335
+      },
+      {
+        "kernel": "matmul_q4_0",
+        "family": "matrix",
+        "encoding": "Q4_0",
+        "rows": 2816,
+        "columns": 2112,
+        "dispatches_per_step": 30,
+        "milliseconds_per_step": 36.184111078125,
+        "share": 0.021594539997242382,
+        "gigabytes_per_second": 22.102563146383154
+      },
+      {
+        "kernel": "scale",
+        "family": "other",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 31,
+        "milliseconds_per_step": 31.221165749999976,
+        "share": 0.01863267308386355
+      },
+      {
+        "kernel": "rope_rows",
+        "family": "attention",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 60,
+        "milliseconds_per_step": 26.448598546875036,
+        "share": 0.015784423112076507
+      },
+      {
+        "kernel": "matmul_q4_0",
+        "family": "matrix",
+        "encoding": "Q4_0",
+        "rows": 2816,
+        "columns": 8192,
+        "dispatches_per_step": 5,
+        "milliseconds_per_step": 23.2273359375,
+        "share": 0.013861985827115156,
+        "gigabytes_per_second": 22.259014180153436
+      },
+      {
+        "kernel": "matmul_q4_0",
+        "family": "matrix",
+        "encoding": "Q4_0",
+        "rows": 8192,
+        "columns": 2816,
+        "dispatches_per_step": 5,
+        "milliseconds_per_step": 22.601488984375,
+        "share": 0.013488482743614492,
+        "gigabytes_per_second": 22.87537782831157
+      },
+      {
+        "kernel": "chunk_stats",
+        "family": "other",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 12.96875,
+        "milliseconds_per_step": 12.79366173437501,
+        "share": 0.00763520870908366
+      },
+      {
+        "kernel": "combine_experts",
+        "family": "other",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 30,
+        "milliseconds_per_step": 5.289398031250002,
+        "share": 0.003156692646132626
+      },
+      {
+        "kernel": "matmul",
+        "family": "matrix",
+        "encoding": "F32",
+        "rows": 128,
+        "columns": 2816,
+        "dispatches_per_step": 30,
+        "milliseconds_per_step": 3.894631812499998,
+        "share": 0.002324301466684583,
+        "gigabytes_per_second": 177.00178943423563
+      },
+      {
+        "kernel": "attention_chunk_h",
+        "family": "attention",
+        "rows": 383,
+        "columns": 256,
+        "dispatches_per_step": 0.390625,
+        "milliseconds_per_step": 3.878270203125,
+        "share": 0.0023145369203812403,
+        "gigabytes_per_second": 1.1601048313690656
+      },
+      {
+        "kernel": "gelu_mul_rows",
+        "family": "other",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 30,
+        "milliseconds_per_step": 3.5827321093750033,
+        "share": 0.002138160909031571
+      },
+      {
+        "kernel": "matmul_q4_0",
+        "family": "matrix",
+        "encoding": "Q4_0",
+        "rows": 1024,
+        "columns": 2816,
+        "dispatches_per_step": 5,
+        "milliseconds_per_step": 3.3051309687499986,
+        "share": 0.0019724896031491712,
+        "gigabytes_per_second": 19.55359730402515
+      },
+      {
+        "kernel": "add",
+        "family": "other",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 60,
+        "milliseconds_per_step": 2.5258878281249997,
+        "share": 0.0015074402578309643
+      },
+      {
+        "kernel": "route",
+        "family": "other",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 30,
+        "milliseconds_per_step": 2.4211426093749937,
+        "share": 0.001444928709297046
+      },
+      {
+        "kernel": "pack_half",
+        "family": "attention",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 55,
+        "milliseconds_per_step": 1.9629717031250005,
+        "share": 0.001171494053427618
+      },
+      {
+        "kernel": "embed",
+        "family": "other",
+        "encoding": "Q4_0",
+        "rows": 1,
+        "columns": 2816,
+        "dispatches_per_step": 509.984375,
+        "milliseconds_per_step": 1.9459604218748292,
+        "share": 0.0011613417854178271,
+        "gigabytes_per_second": 0.415124193133236
+      },
+      {
+        "kernel": "gelu_mul",
+        "family": "other",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 30,
+        "milliseconds_per_step": 1.8422827500000005,
+        "share": 0.001099467344802497
+      },
+      {
+        "kernel": "add_scale",
+        "family": "other",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 30,
+        "milliseconds_per_step": 1.2689568281250014,
+        "share": 0.0007573086131798136
+      },
+      {
+        "kernel": "expert_lists",
+        "family": "other",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 30,
+        "milliseconds_per_step": 0.776064812500002,
+        "share": 0.0004631525311703779
+      },
+      {
+        "kernel": "copy",
+        "family": "other",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 5,
+        "milliseconds_per_step": 0.1946659062500001,
+        "share": 0.00011617587314882003
+      },
+      {
+        "kernel": "matvec_q4_0",
+        "family": "head",
+        "encoding": "Q4_0",
+        "rows": 262144,
+        "columns": 2816,
+        "dispatches_per_step": 0.015625,
+        "milliseconds_per_step": 0.0316484375,
+        "share": 0.000018887667240695144,
+        "gigabytes_per_second": 205.00424389039742
+      },
+      {
+        "kernel": "argmax_final",
+        "family": "selection",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 0.015625,
+        "milliseconds_per_step": 0.00016731250000000003,
+        "share": 0.00000009985146423765176
+      },
+      {
+        "kernel": "softcap",
+        "family": "other",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 0.015625,
+        "milliseconds_per_step": 0.0001608125,
+        "share": 0.00000009597228893667461
+      },
+      {
+        "kernel": "argmax_partial",
+        "family": "selection",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 0.015625,
+        "milliseconds_per_step": 0.000092453125,
+        "share": 0.000000055175673692023286
+      }
+    ],
+    "families": [
+      {
+        "family": "matrix",
+        "milliseconds_per_step": 786.4543591562496,
+        "share": 0.469352973136111
+      },
+      {
+        "family": "other",
+        "milliseconds_per_step": 470.21051370312506,
+        "share": 0.28061984784875876
+      },
+      {
+        "family": "attention",
+        "milliseconds_per_step": 371.10791967187527,
+        "share": 0.2214757963058683
+      },
+      {
+        "family": "norms",
+        "milliseconds_per_step": 47.809185124999615,
+        "share": 0.02853234001488335
+      },
+      {
+        "family": "head",
+        "milliseconds_per_step": 0.0316484375,
+        "share": 0.000018887667240695144
+      },
+      {
+        "family": "selection",
+        "milliseconds_per_step": 0.000259765625,
+        "share": 0.00000015502713792967504
+      }
+    ]
+  }
+}

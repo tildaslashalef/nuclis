@@ -2023,3 +2023,55 @@ strips and matmul-tile products run the same work 5–6× faster. Routing
 the global layers to the reuse body would take 14 %; computing the
 scores once per head, 1.3× (estimate). The materialized structure is the
 candidate to build; the reuse routing is the fallback.
+
+## Materialized chunk attention, built and routed (2026-11-19)
+
+The structure § Gemma 4's global-layer chunk attention, measured chose,
+built to read the cache: `attentionChunkMaterialized` (scores to F32
+strips, statistics, P·V, both products F32 matmul tiles; F16 and Q8_0
+caches converted while staged), routed for causal chunks above 16 rows on
+Gemma 4's global layers and on Qwen3.8's attention layers
+([metal-attention.md § Prefill: materialized chunk attention](../../engine/metal-attention.md#prefill-materialized-chunk-attention)).
+M4 Pro 48 GB, ReleaseSafe, base `a0263e5`.
+
+**Correctness.** `checkChunkAttentionMaterialized` (in `make
+test-metal`; alone as `--check-materialized`) against the CPU chunk
+reference on 16 / 2 / 512, 8 / 2 / 512, and 24 / 4 / 256, at position 0
+and at 32,256 with 512 rows, with 64 poisoned rows past the chunk: worst
+error 3.7e-6 on the F32 cache and 3.2e-6 on F16, inside the 1e-5 bound
+for both. A scratch of one tile and a scratch for the whole chunk give
+bit-identical output. Window, span, and a scratch below one tile are
+refused. `make verify-auto` and `make verify-long` pass, the verify rows
+at 32K among them.
+
+**Prefill, interleaved A/B** (base then candidate, alternating, one
+warmup; median of three, one run each at 32,639), tok/s:
+
+| | 512 | 4,096 | 16,384 | 32,639 |
+| --- | ---: | ---: | ---: | ---: |
+| 26B-A4B | 423.7 → 438.4 | 352.5 → 424.7 | 215.1 → 374.2 | 141.4 → 323.6 |
+| E4B QAT | 495.0 → 507.4 | 428.9 → 502.2 | 280.6 → 449.9 | 190.8 → 395.4 |
+| Qwen3.8-27B (32,640) | 91.2 → 92.5 | 76.9 → 87.1 | 63.6 → 78.2 | 49.9 → 70.6 |
+
+**Where prefill goes now** (`bench --profile-prefill`, the same arrays
+as the 2026-11-18 split; [attention-2026-11-19/](../attention-2026-11-19/)):
+
+| GPU seconds at 32,639 | global attention | sliding attention | experts | the rest | total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 26B-A4B | 26.8 (was 156.0) | 21.9 | 28.9 | 23.7 | 101.4 (was 236.0) |
+| E4B | 19.2 (was 108.5) | 8.1 | — | 57.8 | 85.1 (was 171.7) |
+
+The global layers' attention falls 5.8× and 5.7×, close to the 5.0×
+the kernel bench predicted. Scores and values are about equal shares;
+the statistics are 3 %. The profile's family table now counts the
+`chunk_` kernels as attention.
+
+**Memory.** The strips are a plan scratch of 256 MiB at most: peak
+resident 7.25 → 7.50 GiB on the 26B-A4B, the session bytes unchanged.
+
+**Reading.** The quadratic term was the kernel's structure, and it is
+gone as the first cost: at 32,639 the 26B-A4B's prefill is now sliding
+attention, experts, and the projections in nearly equal parts. The
+sliding layers stay on the online body (a 1,024-key window), and so do
+the image spans, Drama 3, Muse Glimmer, and Qwen3-TTS, none measured
+here.

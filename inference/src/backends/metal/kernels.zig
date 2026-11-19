@@ -337,6 +337,11 @@ const shipped = enum(u32) {
     matmul_experts_q5_0,
     matmul_experts_q5_1,
     shared_expert_add,
+    chunk_scores,
+    chunk_scores_h,
+    chunk_stats,
+    chunk_values,
+    chunk_values_h,
 };
 
 /// The tags of `bench_files`, after the shipped ones so every value stays its

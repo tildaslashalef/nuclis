@@ -284,6 +284,9 @@ pub const Plan = struct {
     /// A `q8_0` cache's visible rows expanded to F16 for the chunk kernel:
     /// keys then values, capacity × kv_width halves each; null otherwise.
     kv_stage: ?Buffer,
+    /// The materialized global-layer attention's score strips
+    /// (`attentionChunkMaterialized`), sized by `attentionStripScratch`.
+    strips: Buffer,
     mixed_out_c: Buffer, // padded × q_width
     /// The per-layer embedding workspace (E4B; one float otherwise): each
     /// row's `[layers][w]` inputs, the selected embedding rows, the gate
@@ -398,6 +401,7 @@ pub const Plan = struct {
         self.v = try created.create(kv_width * 4);
         self.mixed_out = try created.create(q_width * 4);
         self.kv_stage = if (kv == .q8_0) try created.create(2 * capacity * kv_width * 2) else null;
+        self.strips = try created.create(metal.Backend.attentionStripScratch(model.max_heads, chunk, capacity));
         // Up to `verify_max_rows` rows for a verify batch's split pass.
         self.partials = try created.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, model.max_heads, head_max) * 4);
         const pl_width = config.per_layer_input * config.layer_count;
@@ -1214,6 +1218,9 @@ pub const Plan = struct {
         // A verify batch (few causal rows) takes the split pass with F32
         // queries; a prefill chunk or a span the tiled body.
         const few = count <= metal.Backend.verify_max_rows and span.end == 0;
+        // A global layer's chunk takes the materialized body: F32 queries,
+        // score strips in `strips` (docs/engine/metal-attention.md § Prefill).
+        const materialized = kind == .global and span.end == 0 and count > metal.Backend.materialized_min_rows;
         // The cache is sliced at the earliest key the chunk's first row can
         // see; the window mask hides the rest per row on sliding layers.
         const first = self.firstVisible(kind, position);
@@ -1223,8 +1230,9 @@ pub const Plan = struct {
         var queries = self.q_c;
         var operands = precision;
         if (!few and precision != .f32) {
-            // The F16 chunk kernel multiplies half operands: a Q8_0 cache's
-            // rows are expanded first, and the queries packed.
+            // The F16 chunk kernel multiplies half operands, the
+            // materialized one reads half rows into F32 tiles: a Q8_0
+            // cache's rows are expanded first either way.
             if (precision == .q8_0) {
                 const stage = self.kv_stage.?;
                 const half_keys = stage.slice(0, total * kvw * 2);
@@ -1234,11 +1242,17 @@ pub const Plan = struct {
                 values = half_values;
                 operands = .f16;
             }
-            try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * qw }});
-            queries = self.q_c_h;
+            if (!materialized) {
+                try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * qw }});
+                queries = self.q_c_h;
+            }
         }
         const shape: metal.Backend.AttentionChunkShape = .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .position = position - first, .count = count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = operands, .window = if (kind == .sliding) self.binding.config.window else 0, .span = span };
-        if (few) try b.attentionVerify(keys, values, queries, self.partials, self.mixed_out_c, shape) else try b.attentionChunk(keys, values, queries, self.mixed_out_c, shape);
+        if (few) {
+            try b.attentionVerify(keys, values, queries, self.partials, self.mixed_out_c, shape);
+        } else if (materialized) {
+            try b.attentionChunkMaterialized(keys, values, queries, self.mixed_out_c, self.strips, shape);
+        } else try b.attentionChunk(keys, values, queries, self.mixed_out_c, shape);
         try self.mmRows(layer.output, self.mixed_out_c, qw, self.projected_c, hidden, count);
     }
 

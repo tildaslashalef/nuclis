@@ -112,10 +112,10 @@ the agent's eighteen tasks ([2026-11-18](docs/benchmarks/record/agent.md#where-a
 drafters on, a task takes 35 s in the model on the E4B, 51 s on the 26B-A4B,
 and 108 s on Qwen3.8-27B. The 26B-A4B's drafter saves 15 % there, and prefill
 is then 61 % of its time. It is work in progress: decode is 0.71–0.79× of the
-reference's, prefill 0.42× at 32,639, and past 32K its session reaches 15.7 GB
-at 128K while its drafter stops paying ([2026-11-18](docs/benchmarks/record/gemma4.md#context-past-32k-2026-11-18)).
-Speed work goes to the global layers' attention at depth, a third of an agent
-list's time, then a window for the sliding layers. Method and every record: [docs/benchmarks](docs/benchmarks/README.md).
+reference's, prefill 0.93× at 32,639 ([2026-11-19](docs/benchmarks/record/gemma4.md#prefill-with-materialized-global-attention-2026-11-19)),
+and past 32K its session reaches 15.7 GB at 128K while its drafter stops paying
+([2026-11-18](docs/benchmarks/record/gemma4.md#context-past-32k-2026-11-18)). Speed work goes to the drafter's verify batch, then a
+window for the sliding layers. Method and every record: [docs/benchmarks](docs/benchmarks/README.md).
 
 **How it got here.** nuclis began with Qwen3.8-27B, whose attention and Gated
 DeltaNet layers are where the kernels were first written and tuned; it decoded

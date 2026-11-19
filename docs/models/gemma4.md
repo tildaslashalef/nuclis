@@ -207,7 +207,9 @@ nuclis / reference:
 
 The head-split decode attention raised long-context decode afterwards
 (26B-A4B 42.32 at 32,639 from a restored prefix;
-[record, 2026-10-15](../benchmarks/record/gemma4.md#long-context-decode-with-the-head-split-attention-2026-10-15)).
+[record, 2026-10-15](../benchmarks/record/gemma4.md#long-context-decode-with-the-head-split-attention-2026-10-15)),
+and the materialized global attention raised prefill to 0.92–0.93× of the
+reference at 512 and 32,639 on both ([record, 2026-11-19](../benchmarks/record/gemma4.md#prefill-with-materialized-global-attention-2026-11-19)).
 The E4B transcribes six corpus clips at 0.88 % WER (the `gemma4-e4b-audio-asr`
 gate's set).
 
@@ -220,7 +222,8 @@ gate's set).
 - The 26B-A4B's drafter gains 1.0–1.3× on prose and up to 1.65× on short
   code; a verify batch still reads each slot's expert separately and runs
   its dense projections on the fragment tile at about 60 GB/s. Its prefill
-  falls furthest behind the reference with context, in attention.
+  is 0.78–0.93× of the reference's; at 32K it splits nearly evenly between
+  sliding attention, experts, and the projections.
 - The specialized prefill tiles round activations to half; Gemma's large
   activations make chunked prefill differ from per-token steps more than
   Qwen's (bounded, same greedy token).
