@@ -40,7 +40,8 @@
      "sha256": "50d9ce5a6da381bbcfb31061cf73df94a90e6faf8efeddee379a9cb8f1501c6e",
      "verdict": {
       "speculative": true,
-      "draft_length": 7
+      "draft_length": 7,
+      "max_depth": null
      }
     },
     {
@@ -51,7 +52,8 @@
      "sha256": "c18e800daedc59ca68fd13b6a856d795746af6d399a9279ac6a277d1d422f87e",
      "verdict": {
       "speculative": true,
-      "draft_length": 7
+      "draft_length": 7,
+      "max_depth": null
      }
     }
    ]
@@ -94,7 +96,8 @@
      "sha256": "fcb35dea42c71333db904cee11baac525c9ef872818ee3753f6cb156f3c6f4f6",
      "verdict": {
       "speculative": true,
-      "draft_length": 5
+      "draft_length": 5,
+      "max_depth": null
      }
     }
    ]
@@ -137,7 +140,8 @@
      "sha256": "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a",
      "verdict": {
       "speculative": true,
-      "draft_length": 4
+      "draft_length": 4,
+      "max_depth": 32768
      }
     }
    ]
@@ -180,7 +184,8 @@
      "sha256": "423074e537504b4f9ec5eafed5c639fac82c96631626efccacdd3c4039b20605",
      "verdict": {
       "speculative": true,
-      "draft_length": 6
+      "draft_length": 6,
+      "max_depth": 32768
      }
     }
    ]
@@ -223,7 +228,8 @@
      "sha256": "27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc",
      "verdict": {
       "speculative": true,
-      "draft_length": 6
+      "draft_length": 6,
+      "max_depth": null
      }
     }
    ]

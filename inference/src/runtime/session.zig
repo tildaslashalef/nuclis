@@ -17,9 +17,9 @@ const alloc_check = @import("../alloc_check.zig");
 /// executor, the engine, and the configuration check against. 131,072
 /// unless the build sets another (`-Dmax-context`).
 pub const max_capacity: usize = @import("build_options").max_context;
-/// The longest context the gates and the acceptance workload cover, and the
-/// configuration's default.
-pub const supported_context: usize = 32768;
+/// The longest context the gates and the acceptance workload cover; a
+/// longer one runs, unmeasured.
+pub const supported_context: usize = 65536;
 
 /// Storage precision of an attention layer's cache rows. The CPU reference
 /// runtime always uses `f32`; `f16` and `q8_0` are GPU options that cut

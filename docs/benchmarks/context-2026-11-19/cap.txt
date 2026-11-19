@@ -1,0 +1,8 @@
+gemma4_26b_a4b 16384 greedy cap 32768 off 49.11 on 61.05 speedup 1.243 spec_steps 99
+gemma4_26b_a4b 16384 instruct cap 32768 off 47.83 on 51.31 speedup 1.073 spec_steps 125
+gemma4_26b_a4b 65407 greedy cap 32768 off 32.12 on 32.29 speedup 1.005 spec_steps 0
+gemma4_26b_a4b 65407 instruct cap 32768 off 31.49 on 31.78 speedup 1.009 spec_steps 0
+gemma4_e4b 16384 greedy cap 32768 off 46.96 on 63.04 speedup 1.342 spec_steps 150
+gemma4_e4b 16384 instruct cap 32768 off 46.34 on 54.71 speedup 1.181 spec_steps 164
+gemma4_e4b 65407 greedy cap 32768 off 32.87 on 32.88 speedup 1.000 spec_steps 0
+gemma4_e4b 65407 instruct cap 32768 off 32.77 on 32.72 speedup 0.999 spec_steps 0

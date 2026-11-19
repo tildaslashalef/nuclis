@@ -241,11 +241,11 @@
   // Measured figures live in index.html's #bench block, copied from the README's
   // tables; `make site-check` holds the two equal.
   const bench = JSON.parse($("#bench").textContent);
-  const names = bench.results.map((r) => r.model);
-  const CTX = ["512", "4096", "16384", "32639"];
-  const byCtx = (rows, pick, keys = CTX) => Object.fromEntries(keys.map((c) => [c, rows.map((r) => pick(r)[c])]));
-  // [nuclis, llama.cpp] tokens/s
-  const vs = { decode: byCtx(bench.results, (r) => r.decode), prefill: byCtx(bench.results, (r) => r.prefill) };
+  // nuclis today: per phase, each model's rate at every prompt length.
+  const CTX = ["512", "4096", "16384", "32639", "65407"];
+  const CTX_OPACITY = [0.22, 0.4, 0.6, 0.8, 1];
+  const todayNames = bench.today.map((r) => r.model);
+  const byCtx = (rows, pick, keys) => Object.fromEntries(keys.map((c) => [c, rows.map((r) => pick(r)[c])]));
   // [off, on] decode tokens/s, and each entry's draft length
   const specNames = bench.speculative.map((r) => r.model);
   const specDraft = bench.speculative.map((r) => r.draft);
@@ -290,7 +290,7 @@
         const link = el("rect", { x: 0, y: y - 1, width: 1, height: 2, class: "link" }, svg);
         const dots = kinds.map((k) => {
           const g = el("g", {}, svg);
-          el("circle", { r: 7, cx: 0, cy: 0, fill: k.fill, stroke: k.stroke ?? "#fff", "stroke-width": k.sw ?? 2 }, g);
+          el("circle", { r: 7, cx: 0, cy: 0, fill: k.fill, "fill-opacity": k.op ?? 1, stroke: k.stroke ?? "#fff", "stroke-width": k.sw ?? 2 }, g);
           return g;
         });
         const ratio = el("text", { x: Wd, y: y + 5, "text-anchor": "end", class: "ratio" }, svg);
@@ -335,26 +335,21 @@
   const anim = reduced ? "" : "transform .45s cubic-bezier(.3,.7,.2,1)";
   const styleMoves = (host) => host.querySelectorAll("g, .link").forEach((n) => (n.style.transition = anim));
 
-  // nuclis vs llama.cpp
-  const vsHost = $("#chart-vs");
-  const vsUpdate = dumbbell(vsHost, {
-    rows: names, ratioHead: "nuclis ÷ llama.cpp",
-    kinds: [{ fill: "var(--chart-r)" }, { fill: "var(--chart-n)" }],
+  // nuclis today: one dot per prompt length, the shortest faintest; the ratio
+  // is how much of the 512-token rate is left at 65,407.
+  const todayHost = $("#chart-today");
+  const todayUpdate = dumbbell(todayHost, {
+    rows: todayNames, ratioHead: "65,407 ÷ 512",
+    kinds: CTX_OPACITY.map((op) => ({ fill: "var(--chart-n)", op })),
   });
-  let phase = "decode", ctx = "512";
-  const drawVs = () => {
-    // marks are [llama, nuclis] so nuclis paints on top where they meet
-    const data = vs[phase][ctx].map(([n, r]) => [r, n]);
-    vsUpdate(data,
-      ([r, n], i) => `<b>${names[i]}</b><br>${phase}, ${(+ctx).toLocaleString()} tokens<br>nuclis ${n.toFixed(2)} tok/s<br>llama.cpp ${r.toFixed(2)} tok/s`,
-      ([r, n]) => [`${(n / r).toFixed(2)}×`, n >= r]);
-  };
-  drawVs(); styleMoves(vsHost);
-  document.querySelectorAll("[data-phase],[data-ctx]").forEach((b) => b.addEventListener("click", () => {
-    const key = b.dataset.phase ? "phase" : "ctx";
+  let phase = "decode";
+  const drawToday = () => todayUpdate(bench.today.map((r) => CTX.map((c) => r[phase][c])),
+    (vals, i) => `<b>${todayNames[i]}</b>, ${phase}<br>${CTX.map((c, k) => `${(+c).toLocaleString("en")}: ${vals[k].toFixed(2)} tok/s`).join("<br>")}`,
+    (vals) => [`${(vals[4] / vals[0]).toFixed(2)}×`, true]);
+  drawToday(); styleMoves(todayHost);
+  document.querySelectorAll("[data-phase]").forEach((b) => b.addEventListener("click", () => {
     b.parentElement.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
-    if (key === "phase") phase = b.dataset.phase; else ctx = b.dataset.ctx;
-    drawVs(); markVsTable();
+    phase = b.dataset.phase; drawToday();
   }));
 
   // speculation off -> on
@@ -378,31 +373,12 @@
   const table = (host, caption, head, rows) => {
     const d = document.createElement("details");
     d.className = "chart-table";
-    d.innerHTML = `<summary>${caption}</summary><table><thead><tr>${head.map((h) => `<th scope="col">${h}</th>`).join("")}</tr></thead><tbody>${
-      rows.map((r) => `<tr>${r.map((c, i) => (i ? `<td>${c}</td>` : `<th scope="row">${c}</th>`)).join("")}</tr>`).join("")}</tbody></table>`;
+    d.innerHTML = `<summary>${caption}</summary><div class="table-scroll"><table><thead><tr>${head.map((h) => `<th scope="col">${h}</th>`).join("")}</tr></thead><tbody>${
+      rows.map((r) => `<tr>${r.map((c, i) => (i ? `<td>${c}</td>` : `<th scope="row">${c}</th>`)).join("")}</tr>`).join("")}</tbody></table></div>`;
     host.after(d);
   };
-  // nuclis vs llama.cpp: one group per phase, a column per prompt length; the
-  // chart's phase and length are highlighted so the two views read together.
-  const vsTable = document.createElement("details");
-  vsTable.className = "chart-table vs-table";
-  const cellVs = ([n, r]) =>
-    `<span class="v v-n">${n.toFixed(2)}</span><span class="v-sep">/</span><span class="v v-r">${r.toFixed(2)}</span>` +
-    `<span class="v-x${n >= r ? " win" : ""}">${(n / r).toFixed(2)}×</span>`;
-  vsTable.innerHTML = `<summary>Show the numbers: <span class="v-n">nuclis</span> / <span class="v-r">llama.cpp</span>, tokens per second</summary>
-    <div class="table-scroll"><table>
-      <thead><tr><th scope="col">Prompt tokens</th>${CTX.map((c) => `<th scope="col" data-col="${c}">${(+c).toLocaleString("en")}</th>`).join("")}</tr></thead>
-      ${["decode", "prefill"].map((p) => `<tbody data-group="${p}">
-        <tr class="grp"><th scope="rowgroup" colspan="${CTX.length + 1}">${p === "decode" ? "Decode" : "Prefill"}</th></tr>
-        ${names.map((nm, i) => `<tr><th scope="row">${nm}</th>${CTX.map((c) => `<td data-col="${c}">${cellVs(vs[p][c][i])}</td>`).join("")}</tr>`).join("")}
-      </tbody>`).join("")}
-    </table></div>`;
-  vsHost.after(vsTable);
-  const markVsTable = () => {
-    vsTable.querySelectorAll("[data-col]").forEach((n) => n.classList.toggle("on", n.dataset.col === ctx));
-    vsTable.querySelectorAll("[data-group]").forEach((n) => n.classList.toggle("on", n.dataset.group === phase));
-  };
-  markVsTable();
+  table(todayHost, "Show the numbers: tokens per second", ["Model", ...CTX.map((c) => (+c).toLocaleString("en"))],
+    ["decode", "prefill"].flatMap((p) => bench.today.map((r) => [`${r.model}, ${p}`, ...CTX.map((c) => r[p][c].toFixed(2))])));
   table(specHost, "Show the numbers: off → on, tokens per second", ["Model", "Draft", "512", "32,639"],
     specNames.map((n, i) => [n, specDraft[i], ...["512", "32639"].map((c) => `${spec[c][i][0].toFixed(1)} → ${spec[c][i][1].toFixed(1)}`)]));
 

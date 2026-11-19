@@ -45,6 +45,20 @@ pub const max_file_bytes = 64 * 1024;
 /// Range rules shared with the command-line flags (`generate`, `bench`, and
 /// the chat check their resolved values against the same bounds).
 pub const max_context = inference.max_capacity;
+/// The longest context the gates measure; a longer one runs, with a notice.
+pub const supported_context = inference.supported_context;
+
+/// The once-a-session notice for a window past `supported_context`, or null.
+pub fn pastSupported(buf: []u8, ctx_size: usize) ?[]const u8 {
+    if (ctx_size <= supported_context) return null;
+    return std.fmt.bufPrint(buf, "context {d} is past the supported {d}: unmeasured by the gates", .{ ctx_size, supported_context }) catch null;
+}
+
+test "a window past the supported context names both lengths" {
+    var buf: [96]u8 = undefined;
+    try std.testing.expectEqual(@as(?[]const u8, null), pastSupported(&buf, supported_context));
+    try std.testing.expectEqualStrings("context 131072 is past the supported 65536: unmeasured by the gates", pastSupported(&buf, 131072).?);
+}
 /// The output budget is a stop against runaway decode, not a quality knob:
 /// reasoning modes think for thousands of tokens before answering, so the
 /// cap is the context's half and the default one completion's worth.
@@ -166,7 +180,7 @@ pub const Config = struct {
         /// 32K: at 16K an agent turn of a few paged reads compacted every
         /// step; the largest catalogue model fits 48 GB at 32K with its
         /// drafter (docs/benchmarks/record/agent.md, 2026-11-17).
-        ctx_size: usize = inference.supported_context,
+        ctx_size: usize = 32768,
         /// Attention cache precision on the GPU; the CPU reference
         /// always keeps F32 and reports it.
         kv_precision: KvPrecision = .f16,
@@ -181,6 +195,10 @@ pub const Config = struct {
         speculative: bool = false,
         /// Drafts proposed per step, 1..`max_draft_length`.
         draft_length: usize = 4,
+        /// The context depth drafting stops at: a run whose prompt reaches
+        /// it decodes plainly. `null` takes the draft file's measured
+        /// verdict, 0 never stops, N stops at N.
+        draft_max_depth: ?usize = null,
         /// The most tokens one image becomes (`ImageMaxTokens`).
         image_max_tokens: ImageMaxTokens = .auto,
         /// Per-option overrides of the reasoning mode's profile; `null`
@@ -317,6 +335,8 @@ pub const ModelEntry = struct {
         /// with instead of its default; `draft` names a file instead.
         draft: ?[]const u8 = null,
         draft_length: ?usize = null,
+        /// See `Config.Generation.draft_max_depth`; null inherits it.
+        draft_max_depth: ?usize = null,
         image_max_tokens: ?ImageMaxTokens = null,
         sampling: Overrides = .{},
     };
@@ -666,6 +686,14 @@ fn validateBudget(value: usize, path: []const u8, diag: *Diagnostic) !void {
 /// `serve.transcription_bytes`' bound: an upload is held in memory.
 const max_transcription_bytes: usize = 4 << 30;
 
+/// A depth cap is 0 (never) or a position the build's ceiling holds.
+fn validateDepth(value: usize, path: []const u8, diag: *Diagnostic) !void {
+    if (value > max_context) {
+        diag.set("{s} must be 0..{d} (found {d})", .{ path, max_context, value });
+        return error.InvalidConfigValue;
+    }
+}
+
 fn validateRange(value: usize, path: []const u8, max: usize, diag: *Diagnostic) !void {
     if (value == 0 or value > max) {
         diag.set("{s} must be 1..{d} (found {d})", .{ path, max, value });
@@ -695,6 +723,7 @@ fn validate(cfg: *const Config, diag: *Diagnostic) !void {
     try validateRange(cfg.engine.ctx_size, "engine.ctx_size", max_context, diag);
     try validateRange(cfg.generation.max_tokens, "generation.max_tokens", max_output_tokens, diag);
     try validateRange(cfg.generation.draft_length, "generation.draft_length", max_draft_length, diag);
+    if (cfg.generation.draft_max_depth) |n| try validateDepth(n, "generation.draft_max_depth", diag);
     if (cfg.generation.image_max_tokens.count()) |n| try validateRange(n, "generation.image_max_tokens", max_image_tokens, diag);
     try validateBudget(cfg.agent.thinking_budget, "agent.thinking_budget", diag);
     try validateSampling(cfg.generation.sampling, "generation.sampling", diag);
@@ -730,6 +759,7 @@ fn validate(cfg: *const Config, diag: *Diagnostic) !void {
         if (e.ctx_size) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.ctx_size", .{prefix}) catch unreachable, max_context, diag);
         if (e.generation.max_tokens) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.generation.max_tokens", .{prefix}) catch unreachable, max_output_tokens, diag);
         if (e.generation.draft_length) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.generation.draft_length", .{prefix}) catch unreachable, max_draft_length, diag);
+        if (e.generation.draft_max_depth) |n| try validateDepth(n, std.fmt.bufPrint(&key_buffer, "{s}.generation.draft_max_depth", .{prefix}) catch unreachable, diag);
         if (e.agent.thinking_budget) |n| try validateBudget(n, std.fmt.bufPrint(&key_buffer, "{s}.agent.thinking_budget", .{prefix}) catch unreachable, diag);
         if (e.generation.image_max_tokens) |v| if (v.count()) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.generation.image_max_tokens", .{prefix}) catch unreachable, max_image_tokens, diag);
         try validateSampling(e.generation.sampling, std.fmt.bufPrint(&key_buffer, "{s}.generation.sampling", .{prefix}) catch unreachable, diag);
@@ -768,6 +798,8 @@ pub const Flags = struct {
     /// `--draft <variant>`: see `ModelEntry.Generation.draft`.
     draft: ?[]const u8 = null,
     draft_length: ?usize = null,
+    /// `--draft-max-depth`: 0 never stops drafting by depth.
+    draft_max_depth: ?usize = null,
     image_max_tokens: ?ImageMaxTokens = null,
     /// `--thinking-budget`, the agent's only.
     thinking_budget: ?usize = null,
@@ -800,6 +832,9 @@ pub const Resolved = struct {
     /// Speculative decoding on this run, and the drafts proposed per step.
     speculative: bool,
     draft_length: usize,
+    /// The session position drafting stops at, null for none
+    /// (`generation.draft_max_depth` resolved).
+    draft_max_depth: ?usize = null,
     /// The draft variant asked for (`--draft`, else the entry's
     /// `generation.draft`), and the index file it chose: the variant's, else
     /// the artifact's default when the entry names no draft file.
@@ -898,6 +933,12 @@ pub fn artifactOf(name: []const u8, entry: ?*const ModelEntry) ?*const catalog.A
     return catalog.find(name);
 }
 
+/// The index draft file a registry entry's `draft` path names, if any.
+fn draftFileOf(e: ModelEntry) ?*const catalog.File {
+    const m = catalog.findFile(e.repo orelse return null, e.draft orelse return null) orelse return null;
+    return if (m.file.role == .draft) m.file else null;
+}
+
 /// Applies defaults < profile < file < entry < flags for one command. The
 /// entry is the registry's for `model` (`--model`, else `engine.model`).
 /// `bench` reads only the `engine` section and the entry's `ctx_size`: its
@@ -915,6 +956,11 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
     // An entry's verdict is the default variant's, copied when it was
     // written; a variant asked for on the command line brings its own.
     const asked: ?catalog.Verdict = if (flags.draft != null) if (choice) |c| c.verdict else null else null;
+    // The depth cap is never copied into an entry: the draft file in use
+    // brings its verdict's, found by the entry's draft path when no variant
+    // chose it.
+    const draft_file: ?*const catalog.File = choice orelse draftFileOf(e);
+    const depth_set = flags.draft_max_depth orelse e.generation.draft_max_depth orelse cfg.generation.draft_max_depth;
     var r: Resolved = .{
         .model = name,
         .entry = entry,
@@ -931,6 +977,7 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
         },
         .speculative = flags.speculative orelse if (asked) |v| v.speculative else e.generation.speculative orelse if (choice) |c| c.verdict.?.speculative else cfg.generation.speculative,
         .draft_length = flags.draft_length orelse if (asked) |v| v.draft_length else e.generation.draft_length orelse if (choice) |c| c.verdict.?.draft_length else cfg.generation.draft_length,
+        .draft_max_depth = if (depth_set) |n| (if (n == 0) null else n) else if (draft_file) |f| (if (f.verdict) |v| v.max_depth else null) else null,
         .draft = variant,
         .draft_choice = choice,
         .image_max_tokens = flags.image_max_tokens orelse e.generation.image_max_tokens orelse cfg.generation.image_max_tokens,
@@ -967,6 +1014,8 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
     if (flags.speculative != null) o[comptime leafIndex(Config, "generation.speculative")] = .flag;
     if (e.generation.draft_length != null) o[comptime leafIndex(Config, "generation.draft_length")] = .model;
     if (flags.draft_length != null) o[comptime leafIndex(Config, "generation.draft_length")] = .flag;
+    const depth = comptime leafIndex(Config, "generation.draft_max_depth");
+    if (flags.draft_max_depth != null) o[depth] = .flag else if (e.generation.draft_max_depth != null) o[depth] = .model else if (cfg.generation.draft_max_depth == null and draft_file != null) o[depth] = .model;
     if (e.generation.image_max_tokens != null) o[comptime leafIndex(Config, "generation.image_max_tokens")] = .model;
     if (flags.image_max_tokens != null) o[comptime leafIndex(Config, "generation.image_max_tokens")] = .flag;
     inline for (@typeInfo(Overrides).@"struct".field_names) |field_name| {
@@ -1300,17 +1349,42 @@ pub fn register(gpa: Allocator, current: ?[]const u8, path: []const u8, name: []
     return doc.finish(gpa, path, diag);
 }
 
+/// One key of a registry entry set to a value (JSON text), as `config sync`
+/// refreshes what the index now says.
+pub const EntryEdit = struct { name: []const u8, key: []const u8, value: []const u8 };
+
+/// What `config sync` writes besides new entries: entries removed
+/// (`--prune`), keys of existing entries refreshed, and the schema's keys
+/// the file lacks added at their defaults.
+pub const SyncEdits = struct {
+    prune: []const []const u8 = &.{},
+    edits: []const EntryEdit = &.{},
+    fill: bool = false,
+};
+
 /// Writes `entries` into the registry of the file's current text (`null`:
-/// no file yet), each under a name nothing uses, and removes the entries
-/// named in `prune` (`config sync --prune`). Only the keys an entry states
-/// are written. The result is validated before it is returned, as every
-/// edit is.
-pub fn registerEntries(gpa: Allocator, current: ?[]const u8, path: []const u8, entries: []const NamedModel, prune: []const []const u8, diag: *Diagnostic) ![]u8 {
+/// no file yet), each under a name nothing uses, then applies `sync`. Only
+/// the keys an entry states are written. The result is validated before
+/// it is returned, as every edit is.
+pub fn registerEntries(gpa: Allocator, current: ?[]const u8, path: []const u8, entries: []const NamedModel, sync: SyncEdits, diag: *Diagnostic) ![]u8 {
     var doc = try Document.open(gpa, current, path, diag);
     defer doc.deinit();
     const arena = doc.arena.allocator();
     const models = try doc.objectAt(&.{"models"}, diag);
-    for (prune) |name| _ = models.orderedRemove(name);
+    for (sync.prune) |name| _ = models.orderedRemove(name);
+    for (sync.edits) |edit| {
+        var keys: std.ArrayList([]const u8) = .empty;
+        try keys.appendSlice(arena, &.{ "models", edit.name });
+        var it = std.mem.splitScalar(u8, edit.key, '.');
+        while (it.next()) |k| try keys.append(arena, k);
+        const leaf = keys.pop().?;
+        const object = try doc.objectAt(keys.items, diag);
+        try object.put(arena, try arena.dupe(u8, leaf), try std.json.parseFromSliceLeaky(std.json.Value, arena, edit.value, .{}));
+    }
+    if (sync.fill) {
+        var added: std.ArrayList([]const u8) = .empty;
+        try fillMissing(arena, &doc.root.object, try defaultsValue(arena), "", &added);
+    }
     for (entries) |named| {
         if (models.get(named.name) != null) {
             diag.set("{s} is already a registry name", .{named.name});
@@ -1322,6 +1396,40 @@ pub fn registerEntries(gpa: Allocator, current: ?[]const u8, path: []const u8, e
         try models.put(arena, try arena.dupe(u8, named.name), value);
     }
     return doc.finish(gpa, path, diag);
+}
+
+/// The keys of the schema `current` lacks, by dotted path, outside the
+/// registry: what `config sync` adds at their defaults.
+pub fn missingKeys(arena: Allocator, current: []const u8) ![]const []const u8 {
+    var root = std.json.parseFromSliceLeaky(std.json.Value, arena, current, .{}) catch return &.{};
+    if (root != .object) return &.{};
+    var added: std.ArrayList([]const u8) = .empty;
+    try fillMissing(arena, &root.object, try defaultsValue(arena), "", &added);
+    return added.items;
+}
+
+/// A fresh file's document: every key at its default.
+fn defaultsValue(arena: Allocator) !std.json.ObjectMap {
+    var w: std.Io.Writer.Allocating = .init(arena);
+    try writeInitial(&w.writer);
+    return (try std.json.parseFromSliceLeaky(std.json.Value, arena, w.written(), .{})).object;
+}
+
+/// Adds to `into` each key of `defaults` it lacks, descending into the
+/// sections both hold as objects; the registry is the user's and skipped.
+fn fillMissing(arena: Allocator, into: *std.json.ObjectMap, defaults: std.json.ObjectMap, prefix: []const u8, added: *std.ArrayList([]const u8)) !void {
+    var it = defaults.iterator();
+    while (it.next()) |kv| {
+        const key = kv.key_ptr.*;
+        if (prefix.len == 0 and std.mem.eql(u8, key, "models")) continue;
+        const dotted = if (prefix.len == 0) key else try std.fmt.allocPrint(arena, "{s}.{s}", .{ prefix, key });
+        if (into.getPtr(key)) |have| {
+            if (have.* == .object and kv.value_ptr.* == .object) try fillMissing(arena, &have.object, kv.value_ptr.object, dotted, added);
+        } else {
+            try into.put(arena, key, kv.value_ptr.*);
+            try added.append(arena, dotted);
+        }
+    }
 }
 
 /// Removes the empty objects a struct with every key unset serializes to.
@@ -1403,7 +1511,8 @@ pub const Effective = struct {
     model_kind: enum { registry, catalogue, path },
     profile: Profile,
     engine: struct { model: []const u8, backend: Backend, ctx_size: usize, kv_precision: KvPrecision },
-    generation: struct { max_tokens: usize, think: Effort, speculative: bool, draft_length: usize, image_max_tokens: ImageMaxTokens, sampling: inference.sampling.Options },
+    /// `draft_max_depth` is the resolved cap, 0 when drafting has none.
+    generation: struct { max_tokens: usize, think: Effort, speculative: bool, draft_length: usize, draft_max_depth: usize, image_max_tokens: ImageMaxTokens, sampling: inference.sampling.Options },
     agent: struct { think: Effort, fold_thinking: bool, theme: ThemeName, instructions: []const u8, thinking_budget: usize, web: bool },
     decide: Config.Decide,
     embed: Config.Embed,
@@ -1424,7 +1533,7 @@ pub const Effective = struct {
             .model_kind = if (gen.entry != null) .registry else if (catalog.find(gen.model) != null) .catalogue else .path,
             .profile = gen.profile,
             .engine = .{ .model = gen.model, .backend = gen.backend, .ctx_size = gen.ctx_size, .kv_precision = gen.kv_precision },
-            .generation = .{ .max_tokens = gen.max_tokens, .think = gen.think, .speculative = gen.speculative, .draft_length = gen.draft_length, .image_max_tokens = gen.image_max_tokens, .sampling = gen.samplingOptions() },
+            .generation = .{ .max_tokens = gen.max_tokens, .think = gen.think, .speculative = gen.speculative, .draft_length = gen.draft_length, .draft_max_depth = gen.draft_max_depth orelse 0, .image_max_tokens = gen.image_max_tokens, .sampling = gen.samplingOptions() },
             .agent = .{ .think = agent.think, .fold_thinking = agent.fold_thinking, .theme = agent.theme, .instructions = agent.instructions, .thinking_budget = agent.thinking_budget, .web = loaded.config.agent.web },
             .decide = loaded.config.decide,
             .embed = loaded.config.embed,
@@ -1529,6 +1638,8 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
         @tagName(view.generation.think),
         sty.off(),
     });
+    var notice_buf: [96]u8 = undefined;
+    if (pastSupported(&notice_buf, view.engine.ctx_size)) |notice| try out.print("{s}notice:{s} {s}\n", .{ sty.on(.warning), sty.off(), notice });
     const Rows = struct {
         out: *std.Io.Writer,
         origin: *const Origin,
@@ -2010,7 +2121,7 @@ test "the image token cap: auto by default, an entry's count over it, the flag o
     defer edit.deinit(alloc);
     try std.testing.expect(std.mem.indexOf(u8, edit.text, "\"image_max_tokens\": \"auto\"") != null);
     try std.testing.expectEqualStrings("\"auto\"", edit.previous.?);
-    const with_entry = try registerEntries(alloc, edit.text, "t.json", &.{.{ .name = "glimmer", .entry = .{ .path = "/g.gguf" } }}, &.{}, &diag);
+    const with_entry = try registerEntries(alloc, edit.text, "t.json", &.{.{ .name = "glimmer", .entry = .{ .path = "/g.gguf" } }}, .{}, &diag);
     defer alloc.free(with_entry);
     var edit2 = try set(alloc, with_entry, "t.json", "models.glimmer.generation.image_max_tokens", "768", &diag);
     defer edit2.deinit(alloc);
@@ -2274,6 +2385,36 @@ test "a draft variant on the command line brings its verdict over the entry's co
     try std.testing.expectEqual(@as(usize, 2), flagged.draft_length);
 }
 
+test "the depth cap: the draft file's verdict, overridden off or to a value at every level" {
+    const alloc = std.testing.allocator;
+    var diag: Diagnostic = .{};
+    // The entry names its draft file by path, so no variant chooses it.
+    var loaded = try fromText(alloc,
+        \\{ "schema_version": 1, "models": { "g": { "repo": "unsloth/gemma-4-26B-A4B-it-qat-GGUF", "file": "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf", "draft": "MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf" },
+        \\  "off": { "repo": "unsloth/gemma-4-26B-A4B-it-qat-GGUF", "file": "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf", "draft": "MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf", "generation": { "draft_max_depth": 0 } } } }
+    , "t.json", &diag);
+    defer loaded.deinit();
+    const verdict = resolve(&loaded, "g", .{}, .generate);
+    try std.testing.expectEqual(@as(?usize, 32768), verdict.draft_max_depth);
+    try std.testing.expectEqual(Source.model, verdict.origin[comptime leafIndex(Config, "generation.draft_max_depth")]);
+    try std.testing.expectEqual(@as(?usize, 32768), resolve(&loaded, "gemma-4-26b-a4b", .{}, .generate).draft_max_depth);
+    try std.testing.expectEqual(@as(?usize, null), resolve(&loaded, "off", .{}, .generate).draft_max_depth);
+    try std.testing.expectEqual(@as(?usize, 49152), resolve(&loaded, "off", .{ .draft_max_depth = 49152 }, .generate).draft_max_depth);
+    const flag_off = resolve(&loaded, "g", .{ .draft_max_depth = 0 }, .generate);
+    try std.testing.expectEqual(@as(?usize, null), flag_off.draft_max_depth);
+    try std.testing.expectEqual(Source.flag, flag_off.origin[comptime leafIndex(Config, "generation.draft_max_depth")]);
+    // A drafter with no measured cap, and a global setting under the entry's.
+    try std.testing.expectEqual(@as(?usize, null), resolve(&loaded, "qwen3.8-27b", .{}, .generate).draft_max_depth);
+    var global = try fromText(alloc,
+        \\{ "schema_version": 1, "generation": { "draft_max_depth": 0 } }
+    , "t.json", &diag);
+    defer global.deinit();
+    try std.testing.expectEqual(@as(?usize, null), resolve(&global, "gemma-4-26b-a4b", .{}, .generate).draft_max_depth);
+    try std.testing.expectError(error.InvalidConfigValue, fromText(alloc,
+        \\{ "schema_version": 1, "generation": { "draft_max_depth": 99999999 } }
+    , "t.json", &diag));
+}
+
 test "the old mtp key reads as draft and is named for the notice" {
     const alloc = std.testing.allocator;
     var diag: Diagnostic = .{};
@@ -2295,7 +2436,7 @@ test "registered entries are written under free names with only their stated key
     const text = try registerEntries(alloc, null, "/r/nuclis.json", &.{
         .{ .name = "fine", .entry = .{ .repo = "o/r", .file = "f.gguf", .revision = "abc", .mmproj = "mmproj.gguf", .profile = .gemma4, .generation = .{ .speculative = false, .draft_length = 4 } } },
         .{ .name = "loose", .entry = .{ .path = "o/x/l.gguf" } },
-    }, &.{}, &diag);
+    }, .{}, &diag);
     defer alloc.free(text);
     // Only what an entry states: no null keys, no empty sections.
     try std.testing.expect(std.mem.indexOf(u8, text, "\"loose\": {\n      \"path\": \"o/x/l.gguf\"\n    }") != null);
@@ -2311,10 +2452,10 @@ test "registered entries are written under free names with only their stated key
     try std.testing.expectEqualStrings("o/x/l.gguf", loose.path.?);
     try std.testing.expect(loose.profile == null and loose.generation.speculative == null);
     // An existing entry is refused; the loader refuses an index name locating another file.
-    try std.testing.expectError(error.RegistryConflict, registerEntries(alloc, text, "/r/nuclis.json", &.{.{ .name = "fine", .entry = .{ .path = "p.gguf" } }}, &.{}, &diag));
-    try std.testing.expectError(error.InvalidConfigValue, registerEntries(alloc, text, "/r/nuclis.json", &.{.{ .name = "qwen3.8-27b", .entry = .{ .path = "p.gguf" } }}, &.{}, &diag));
+    try std.testing.expectError(error.RegistryConflict, registerEntries(alloc, text, "/r/nuclis.json", &.{.{ .name = "fine", .entry = .{ .path = "p.gguf" } }}, .{}, &diag));
+    try std.testing.expectError(error.InvalidConfigValue, registerEntries(alloc, text, "/r/nuclis.json", &.{.{ .name = "qwen3.8-27b", .entry = .{ .path = "p.gguf" } }}, .{}, &diag));
     // Pruning removes the named entries and keeps the rest.
-    const pruned = try registerEntries(alloc, text, "/r/nuclis.json", &.{}, &.{ "loose", "absent" }, &diag);
+    const pruned = try registerEntries(alloc, text, "/r/nuclis.json", &.{}, .{ .prune = &.{ "loose", "absent" } }, &diag);
     defer alloc.free(pruned);
     var after = try fromText(alloc, pruned, "/r/nuclis.json", &diag);
     defer after.deinit();
@@ -2329,11 +2470,35 @@ test "the registry is written in name order: every edit" {
     ;
     const registered = try register(alloc, text, "t.json", "alpha", .{ .repo = "a/b", .revision = "0000000000000000000000000000000000000000", .file = "a.gguf" }, &diag);
     defer alloc.free(registered);
-    const synced = try registerEntries(alloc, registered, "t.json", &.{ .{ .name = "omega", .entry = .{ .path = "/o.gguf" } }, .{ .name = "gamma", .entry = .{ .path = "/g.gguf" } } }, &.{}, &diag);
+    const synced = try registerEntries(alloc, registered, "t.json", &.{ .{ .name = "omega", .entry = .{ .path = "/o.gguf" } }, .{ .name = "gamma", .entry = .{ .path = "/g.gguf" } } }, .{}, &diag);
     defer alloc.free(synced);
     var loaded = try fromText(alloc, synced, "t.json", &diag);
     defer loaded.deinit();
     const want = [_][]const u8{ "alpha", "beta", "gamma", "omega", "zeta" };
     try std.testing.expectEqual(want.len, loaded.config.models.entries.len);
     for (want, loaded.config.models.entries) |name, named| try std.testing.expectEqualStrings(name, named.name);
+}
+
+test "sync's edits: entry keys set, the schema's missing keys added at their defaults" {
+    const alloc = std.testing.allocator;
+    var diag: Diagnostic = .{};
+    const current = "{\"schema_version\": 1, \"generation\": {\"draft_length\": 5}, \"models\": {\"m\": {\"path\": \"o/r/m.gguf\", \"generation\": {\"speculative\": false}}}}";
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const missing = try missingKeys(arena_state.allocator(), current);
+    var has_depth = false;
+    for (missing) |k| {
+        try std.testing.expect(!std.mem.startsWith(u8, k, "models"));
+        try std.testing.expect(!std.mem.eql(u8, k, "generation.draft_length"));
+        if (std.mem.eql(u8, k, "generation.draft_max_depth")) has_depth = true;
+    }
+    try std.testing.expect(has_depth);
+    const text = try registerEntries(alloc, current, "t.json", &.{}, .{ .edits = &.{.{ .name = "m", .key = "generation.speculative", .value = "true" }}, .fill = true }, &diag);
+    defer alloc.free(text);
+    var loaded = try fromText(alloc, text, "t.json", &diag);
+    defer loaded.deinit();
+    try std.testing.expect(loaded.config.models.find("m").?.generation.speculative.?);
+    try std.testing.expectEqual(@as(usize, 5), loaded.config.generation.draft_length);
+    // Nothing is left to add.
+    try std.testing.expectEqual(@as(usize, 0), (try missingKeys(arena_state.allocator(), text)).len);
 }

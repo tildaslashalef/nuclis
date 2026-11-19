@@ -36,7 +36,7 @@ to `window_margin` rows below it (`Snapshot.margin`), and `restore` sets
 2.77 GB where every row kept was 7.38
 ([record, 2026-11-19](../benchmarks/record/gemma4.md#sliding-layers-keep-their-window-2026-11-19)).
 `max_capacity` is 131,072 in a release build and `supported_context`
-32,768, the length the gates cover; `zig build -Dmax-context=<n>` changes
+65,536, the length the gates cover; `zig build -Dmax-context=<n>` changes
 the ceiling ([spec § 8](../spec.md#8-performance-requirements)).
 
 ## The state machine

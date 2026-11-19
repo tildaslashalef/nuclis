@@ -24,5 +24,16 @@
     248069,
     271
   ],
-  "method": "prefix + truncated synthetic-code token sequence + suffix"
+  "method": "prefix + truncated synthetic-code token sequence + suffix",
+  "made_by_nuclis": [
+    {
+      "lengths": [
+        65407
+      ],
+      "corpus_functions": 2400,
+      "corpus_sha256": "10b2acb9a11723f1e7727061f5d385f2ad81f07256a3ca0cfded78f428dac527",
+      "revision": "583635deb7e123bd3a8bef1890b85d764d0af2ce",
+      "date": "2026-11-19"
+    }
+  ]
 }

@@ -34,6 +34,15 @@ pub const Candidate = struct {
 
 pub const Skipped = struct { path: []const u8, reason: []const u8 };
 
+/// A key an index entry states that the index now says otherwise: a
+/// measured default (verdict, think settings) or a companion file the
+/// index now pins and that is on disk. Values are JSON text.
+pub const Refresh = struct { name: []const u8, key: []const u8, from: []const u8, to: []const u8 };
+
+/// An index entry whose pinned revision is not the index's: reported, not
+/// changed, since the files on disk are the entry's revision.
+pub const Behind = struct { name: []const u8, revision: []const u8, index: []const u8 };
+
 pub const Report = struct {
     schema_version: u32 = 2,
     models_dir: []const u8,
@@ -50,6 +59,12 @@ pub const Report = struct {
     /// Registry entries whose file is not on disk.
     gone: []const model.MissingEntry,
     skipped: []const Skipped,
+    /// `config sync`: entry keys set to what the index now says.
+    refreshed: []const Refresh = &.{},
+    /// `config sync`: keys of the schema the file lacked, added at their
+    /// defaults (the registry's entries excepted).
+    added: []const []const u8 = &.{},
+    behind: []const Behind = &.{},
 
     pub fn render(self: Report, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
         if (json) {
@@ -57,7 +72,9 @@ pub const Report = struct {
             return out.writeByte('\n');
         }
         const off = sty.off();
-        if (self.registered.len == 0) {
+        if (self.registered.len == 0 and (self.refreshed.len > 0 or self.added.len > 0)) {
+            try out.print("{s}{s}{s} {s}{s}{s} from the index; nothing new to register", .{ sty.on(if (self.dry_run) .bold else .success), if (self.dry_run) "dry run: would update" else "updated", off, sty.on(.code), self.config_file, off });
+        } else if (self.registered.len == 0) {
             try out.print("{s}nothing to register{s} under {s}{s}{s}", .{ sty.on(.bold), off, sty.on(.code), self.models_dir, off });
         } else if (self.dry_run) {
             try out.print("{s}dry run:{s} {d} model(s) under {s}{s}{s} would be registered in {s}{s}{s}; nothing written", .{ sty.on(.bold), off, self.registered.len, sty.on(.code), self.models_dir, off, sty.on(.code), self.config_file, off });
@@ -89,6 +106,15 @@ pub const Report = struct {
             } else try out.print("{s}entries whose file is gone{s} {s}(`nuclis config sync --prune` removes them){s}\n", .{ sty.on(.header), off, sty.on(.dim), off });
             for (self.gone) |g| try out.print("  {s}{s}{s}  {s}{s}{s}\n", .{ sty.on(.keyword), g.name, off, sty.on(.code), g.path, off });
         }
+        if (self.refreshed.len > 0) {
+            try out.print("{s}{s} from the index{s}\n", .{ sty.on(.header), if (self.dry_run) "would refresh" else "refreshed", off });
+            for (self.refreshed) |r| try out.print("  {s}{s}{s}  {s}{s}{s} {s} {s}->{s} {s}\n", .{ sty.on(.keyword), r.name, off, sty.on(.label), r.key, off, r.from, sty.on(.dim), off, r.to });
+        }
+        if (self.added.len > 0) {
+            try out.print("{s}{s} at their defaults{s}\n", .{ sty.on(.header), if (self.dry_run) "would add" else "added", off });
+            for (self.added) |k| try out.print("  {s}{s}{s}\n", .{ sty.on(.label), k, off });
+        }
+        for (self.behind) |b| try out.print("{s}notice:{s} {s}{s}{s} pins revision {s}, the index {s} {s}(not changed: the files on disk are the entry's){s}\n", .{ sty.on(.warning), off, sty.on(.keyword), b.name, off, b.revision[0..@min(b.revision.len, 12)], b.index[0..@min(b.index.len, 12)], sty.on(.dim), off });
         if (self.skipped.len > 0) {
             try out.print("{s}skipped{s}\n", .{ sty.on(.header), off });
             for (self.skipped) |s| try out.print("  {s}{s}{s}  {s}{s}{s}\n", .{ sty.on(.code), s.path, off, sty.on(.dim), s.reason, off });
@@ -130,7 +156,57 @@ pub fn plan(arena: Allocator, gpa: Allocator, io: std.Io, root: []const u8, regi
             return std.mem.lessThan(u8, a.name, b.name);
         }
     }.lessThan);
-    return .{ .models_dir = listing.models_dir, .registered = registered.items, .gone = listing.missing, .skipped = skipped.items, .default_installed = listing.find((config.Config.Engine{}).model) != null, .model_absent = if (engine_model) |m| if (listing.find(m) == null) m else null else null };
+    var refreshed: std.ArrayList(Refresh) = .empty;
+    var behind: std.ArrayList(Behind) = .empty;
+    for (listing.installed) |row| {
+        const name = row.artifact orelse continue;
+        const as = row.registered orelse continue;
+        const e = registry.find(as.name) orelse continue;
+        try refreshEntry(arena, as.name, e.*, catalog.find(name).?, row, &refreshed, &behind);
+    }
+    return .{ .refreshed = refreshed.items, .behind = behind.items, .models_dir = listing.models_dir, .registered = registered.items, .gone = listing.missing, .skipped = skipped.items, .default_installed = listing.find((config.Config.Engine{}).model) != null, .model_absent = if (engine_model) |m| if (listing.find(m) == null) m else null else null };
+}
+
+/// The keys `e` states that the index now says otherwise. A null key
+/// already follows the index and is left alone; a companion moves only to
+/// a file on disk; a draft verdict follows the variant the entry chose.
+fn refreshEntry(arena: Allocator, name: []const u8, e: config.ModelEntry, a: *const catalog.Artifact, row: model.Installed, refreshed: *std.ArrayList(Refresh), behind: *std.ArrayList(Behind)) !void {
+    if (a.status == .legacy) return;
+    const fresh = config.registryEntry(a);
+    if (e.revision) |r| if (!std.mem.eql(u8, r, a.revision)) try behind.append(arena, .{ .name = name, .revision = r, .index = a.revision });
+    if (fresh.mmproj) |p| if (installedAs(row, .mmproj, null)) try note(arena, refreshed, name, "mmproj", e.mmproj, p);
+    const default_draft = a.draft(null);
+    if (fresh.draft) |p| if (installedAs(row, .draft, default_draft.?.variant)) try note(arena, refreshed, name, "draft", e.draft, p);
+    if (a.kind == .generation) {
+        const chosen: ?*const catalog.File = if (e.generation.draft) |v| a.draft(v) else default_draft;
+        const verdict: catalog.Verdict = if (chosen) |f| f.verdict orelse .{ .speculative = false, .draft_length = 4 } else .{ .speculative = false, .draft_length = 4 };
+        try note(arena, refreshed, name, "generation.speculative", e.generation.speculative, verdict.speculative);
+        try note(arena, refreshed, name, "generation.draft_length", e.generation.draft_length, verdict.draft_length);
+    }
+    if (a.defaults.think) |t| try note(arena, refreshed, name, "agent.think", e.agent.think, t);
+    if (a.defaults.thinking_budget) |b| try note(arena, refreshed, name, "agent.thinking_budget", e.agent.thinking_budget, b);
+}
+
+fn installedAs(row: model.Installed, role: catalog.Role, variant: ?[]const u8) bool {
+    for (row.files) |f| if (f.role == role) {
+        if (variant == null or (f.variant != null and std.mem.eql(u8, f.variant.?, variant.?))) return true;
+    };
+    return false;
+}
+
+/// Records `key` when the entry states it and the index says otherwise.
+fn note(arena: Allocator, refreshed: *std.ArrayList(Refresh), name: []const u8, key: []const u8, stated: anytype, index: @typeInfo(@TypeOf(stated)).optional.child) !void {
+    const value = stated orelse return;
+    const from = try std.json.Stringify.valueAlloc(arena, value, .{});
+    const to = try std.json.Stringify.valueAlloc(arena, index, .{});
+    if (!std.mem.eql(u8, from, to)) try refreshed.append(arena, .{ .name = name, .key = key, .from = from, .to = to });
+}
+
+/// The refreshes as the edits `config.registerEntries` applies.
+pub fn toEdits(arena: Allocator, refreshed: []const Refresh) ![]const config.EntryEdit {
+    const out = try arena.alloc(config.EntryEdit, refreshed.len);
+    for (refreshed, out) |r, *d| d.* = .{ .name = r.name, .key = r.key, .value = r.to };
+    return out;
 }
 
 /// A file outside the index as a candidate, or null with the reason in
@@ -406,4 +482,37 @@ test "a plan registers installed chat artifacts and judges the rest" {
     const again = try plan(arena, testing.allocator, io, root, .{ .entries = entries }, "qwen3.8-27b");
     try testing.expectEqual(@as(usize, 0), again.registered.len);
     try testing.expect(again.model_absent == null);
+}
+
+test "sync refreshes what an index entry states and the index now says otherwise" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const a = catalog.find("qwen3.8-27b").?;
+    const local = try std.fs.path.join(arena, &.{ "models", a.directoryOf(a.main()), a.main().path });
+    try tmp.dir.createDirPath(io, std.fs.path.dirname(local).?);
+    try tmp.dir.writeFile(io, .{ .sub_path = local, .data = "GGUF" });
+    try model.writeSidecar(arena, io, tmp.dir, try model.sidecarPath(arena, local), .{ .repo = a.repo, .file = a.main().path, .revision = a.revision, .sha256 = a.main().sha256, .size = a.main().size, .role = .main, .downloaded_at = "2026-11-12T00:00:00Z", .nuclis_version = "test" });
+    // Stale stated values, a key left null, an old pin, and a draft file that is not on disk.
+    var entry = config.registryEntry(a);
+    entry.revision = "0123456789abcdef";
+    entry.draft = "MTP/old-draft.gguf";
+    entry.generation.speculative = false;
+    entry.generation.draft_length = null;
+    const registry: config.Models = .{ .entries = &.{.{ .name = "qwen3.8-27b", .entry = entry }} };
+    const report = try plan(arena, testing.allocator, io, root, registry, null);
+    try testing.expectEqual(@as(usize, 0), report.registered.len);
+    try testing.expectEqual(@as(usize, 1), report.refreshed.len);
+    try testing.expectEqualStrings("generation.speculative", report.refreshed[0].key);
+    try testing.expectEqualStrings("false", report.refreshed[0].from);
+    try testing.expectEqualStrings("true", report.refreshed[0].to);
+    try testing.expectEqual(@as(usize, 1), report.behind.len);
+    try testing.expectEqualStrings(a.revision, report.behind[0].index);
+    const edits = try toEdits(arena, report.refreshed);
+    try testing.expectEqualStrings("true", edits[0].value);
 }

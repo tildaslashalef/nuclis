@@ -10,7 +10,7 @@ The schema and its defaults are `src/config.zig`.
 
 ```sh
 nuclis config init               # write the file: defaults, every installed model registered
-nuclis config sync               # register what was installed since (--prune drops what is gone)
+nuclis config sync               # register what was installed since, take the index's newest defaults (--prune drops what is gone)
 nuclis config show               # every setting in effect, and where it came from
 nuclis config set <key> <value>  # change one setting by its dotted name
 ```
@@ -53,6 +53,7 @@ holds its entry ([the registry](#naming-your-models-the-registry)):
     "think": "off",
     "speculative": false,
     "draft_length": 4,
+    "draft_max_depth": null,
     "image_max_tokens": "auto",
     "sampling": {
       "temperature": null,
@@ -128,8 +129,9 @@ Every key, as `nuclis config --help` lists them:
 ```text
 engine.*                model, backend, ctx_size, kv_precision
 generation.*            max_tokens, think, speculative, draft_length,
-                        image_max_tokens, sampling.{temperature, top_k, top_p,
-                        min_p, presence_penalty, repetition_penalty}
+                        draft_max_depth, image_max_tokens,
+                        sampling.{temperature, top_k, top_p, min_p,
+                        presence_penalty, repetition_penalty}
 agent.*                 think, fold_thinking, theme, instructions,
                         thinking_budget, web
 decide.*                model
@@ -159,7 +161,7 @@ Each section's defaults and meanings:
 | --- | --- | --- |
 | `model` | `gemma-4-26b-a4b` (`config init` writes the first installed chat model when that one is absent) | a registry entry, an index name, or a path (under `~/.nuclis/models` unless absolute), tried in that order; flag `--model` |
 | `backend` | `metal` (`cpu` in a build without Metal) | where the model runs |
-| `ctx_size` | `32768` | the context window in tokens, from 1 to the build's ceiling (131,072 in a release build; `nuclis --help` prints it). Lengths past 32,768, the supported ceiling, are accepted and are not covered by the gates |
+| `ctx_size` | `32768` | the context window in tokens, from 1 to the build's ceiling (131,072 in a release build; `nuclis --help` prints it). 65,536 is the supported ceiling; 131,072 is accepted, unmeasured by the gates, and needs a more powerful machine. A length past the model file's own context length is refused |
 | `kv_precision` | `f16` | the attention cache on the GPU: `f16` halves its memory and the bytes read per token; `q8_0` (blocks of 32 eight-bit codes and an F16 scale) about halves them again, for long contexts; `f32` otherwise. The CPU always keeps F32. Flag `--kv` |
 
 ### `generation`
@@ -170,6 +172,7 @@ Each section's defaults and meanings:
 | `think` | `off` | reasoning effort: `off`, `low`, `medium`, `high`, `xhigh` |
 | `speculative` | `false` | speculative decoding with the model's drafter; flag `--speculative` |
 | `draft_length` | `4` | drafted tokens per step |
+| `draft_max_depth` | `null` | the context depth drafting stops at: a run whose prompt reaches it decodes plainly. `null` takes the draft file's measured verdict (32,768 for both Gemma 4 drafters, none for the others), `0` never stops, a number stops there; per model under `models.<name>.generation`; flag `--draft-max-depth` |
 | `image_max_tokens` | `auto` | the most tokens one image becomes, or a positive integer |
 | `sampling.*` | `null` | overrides of the profile: `temperature`, `top_k`, `top_p`, `min_p`, `presence_penalty`, `repetition_penalty` |
 
@@ -185,7 +188,10 @@ global `generation.speculative` applies to models without an entry. A
 model with several draft variants (`qwen3.8-27b`: `mtp`, `dflash2`) runs
 its default unless `--draft <variant>` or the entry's `generation.draft`
 names another; `--draft` brings that variant's verdict over the entry's,
-and `--speculative` or `--draft-length` still beat both.
+and `--speculative` or `--draft-length` still beat both. The depth cap is
+never copied into an entry: the draft file in use brings its verdict's
+unless a flag, the entry, or the global key sets one. Verdicts are measured
+on the M4 Pro; on another machine `make spec-matrix` measures them again.
 
 ### `agent`
 
@@ -300,7 +306,20 @@ pull --register`, never by `config set`.
   family's `profile` when the template matches none (a finetune); the
   speculation verdict of the catalogue entry with the same architecture
   and, where the catalogue records one, the same layer count (a Gemma 4
-  26B-A4B finetune takes the 26B-A4B's verdict, off, not the 12B's).
+  26B-A4B finetune takes the 26B-A4B's verdict, not the 12B's).
+- **Refreshed**, by `sync`: an index entry's measured defaults
+  (`generation.speculative` and `generation.draft_length` from the
+  verdict of the draft it runs, `agent.think`, `agent.thinking_budget`)
+  and its companions (`mmproj`, `draft`, when the index's file is on disk)
+  are set to what the index says now, each change printed as `key old ->
+  new`. A key the entry leaves `null` already follows the index and is not
+  written. A per-model value set by hand in an index entry is overwritten
+  the same way; `--dry-run` shows it first. An entry whose `revision` is
+  not the index's is reported and left, since the files on disk are its
+  revision.
+- **Added**, by `sync`: keys of the schema the file lacks (a setting a
+  newer nuclis introduced), at their defaults, outside `models`. A key the
+  file has keeps its value.
 - **Pruned**, with `sync --prune`: entries whose files are gone (the ones
   `model ls` lists without a file).
 - `engine.model`: `init` keeps the default when it is installed and

@@ -98,7 +98,7 @@ pub const Language = struct {
             .history = &open.history,
             .buffers = .{ .logits = open.logits, .candidates = open.candidates, .generated = open.generated, .effort = effort },
             .thinking_budget = settings.thinking_budget,
-            .speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length },
+            .speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length, .max_position = settings.draft_max_depth },
             .cache = .{ .alloc = self.gpa, .budget = settings.cache.memory_bytes },
             .reserve = .clamp,
         };

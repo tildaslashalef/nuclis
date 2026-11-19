@@ -274,6 +274,9 @@ pub const Report = struct {
     /// drafts per verify batch, and the decode speedup over the baseline.
     speculative_draft_length: ?usize = null,
     speculative_p_min: ?f32 = null,
+    /// The depth cap the "on" runs drafted under; a prompt at or past it ran
+    /// plainly, so its "on" rate is the plain one.
+    speculative_max_depth: ?usize = null,
     mean_speculative_decode_tokens_per_second: ?f64 = null,
     mean_accepted_per_step: ?f64 = null,
     mean_proposed_per_step: ?f64 = null,
@@ -681,7 +684,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
                 for (prefix_tokens) |token| try history.observe(token);
             }
             const fed = if (prefix != null) tokens[prefix_tokens.len..] else tokens;
-            const spec: inference.engine.Speculative = if (on) .{ .enabled = true, .draft_length = settings.draft_length, .p_min = p_min } else .{};
+            const spec: inference.engine.Speculative = if (on) .{ .enabled = true, .draft_length = settings.draft_length, .p_min = p_min, .max_position = settings.draft_max_depth } else .{};
             // Decode covers the steps after the first sampled token; the first
             // token's latency (prefill included) is reported separately.
             // The profile covers decode steps only: a run's prefill is
@@ -777,6 +780,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         .mean_first_token_milliseconds = stats.first,
         .speculative_draft_length = if (speculate) settings.draft_length else null,
         .speculative_p_min = if (speculate) p_min else null,
+        .speculative_max_depth = if (speculate) settings.draft_max_depth else null,
         .mean_speculative_decode_tokens_per_second = stats.speculative_decode,
         .mean_accepted_per_step = stats.accepted_per_step,
         .mean_proposed_per_step = stats.proposed_per_step,

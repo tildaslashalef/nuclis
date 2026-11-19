@@ -1555,6 +1555,10 @@ fn primeSession(ui: *Ui) void {
             std.fmt.bufPrint(&note, "  — warmed up in {d:.1}s · {d} tokens{s}", .{ elapsed, primed.tokens, how }) catch "  — warmed up";
         ui.emit(.{ .notice = text }) catch {};
     }
+    var past: [96]u8 = undefined;
+    var line: [104]u8 = undefined;
+    if (config.pastSupported(&past, ui.eng.model.session().capacity)) |notice|
+        ui.emit(.{ .notice = std.fmt.bufPrint(&line, "  — {s}", .{notice}) catch notice }) catch {};
 }
 
 fn seconds(from: std.Io.Timestamp, to: std.Io.Timestamp) f64 {
@@ -2167,7 +2171,7 @@ fn bind(ui: *Ui, open: *Open, sampler: *inference.sampling.Sampler, label: []con
     c.effort = ui.effort;
     c.buffers = .{ .logits = open.logits, .candidates = open.candidates, .generated = open.generated, .effort = ui.effort };
     c.thinking_budget = settings.thinking_budget;
-    c.speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length };
+    c.speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length, .max_position = settings.draft_max_depth };
     c.dropCache();
     if (c.disk) |*d| d.close();
     c.disk = loop.cache.openDisk(ui.alloc, ui.io, ui.root_dir, settings.cache.disk_bytes, open.model_path, if (open.eng.model.drafter() != null) open.draft_path else null, @tagName(settings.backend));

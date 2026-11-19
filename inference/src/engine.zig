@@ -63,6 +63,17 @@ fn wantsEmbedded(comptime Family: type, binding: *const Family.Binding) bool {
 }
 /// The `tokenizer.ggml.tokens` count of a document, or null when absent;
 /// the companion's vocabulary must be the target's.
+/// The file's own `<arch>.context_length`, when it declares one.
+fn declaredContext(doc: *const inference.gguf.Document) ?u64 {
+    const architecture = doc.string("general.architecture") orelse return null;
+    var buffer: [128]u8 = undefined;
+    const key = std.fmt.bufPrint(&buffer, "{s}.context_length", .{architecture}) catch return null;
+    return switch (doc.get(key) orelse return null) {
+        .unsigned => |value| value,
+        else => null,
+    };
+}
+
 fn vocabularyCount(doc: *const inference.gguf.Document) ?u64 {
     return switch (doc.get("tokenizer.ggml.tokens") orelse return null) {
         .array => |a| a.count,
@@ -652,6 +663,10 @@ pub const Speculative = struct {
     draft_length: usize = 0,
     /// The proposal threshold; only `bench --draft-p-min` departs from the default.
     p_min: f32 = draft_p_min,
+    /// The session position drafting stops at: a run whose prompt reaches it
+    /// decodes plainly; one that starts below drafts to its end. Null drafts
+    /// at any depth.
+    max_position: ?usize = null,
 };
 
 /// Engine-owned scratch for the speculative step, sized once when a drafter is
@@ -857,6 +872,8 @@ pub const Engine = struct {
         var draft_mapped: ?inference.weights.Mapped = null;
         errdefer if (draft_mapped) |*m| m.deinit(io);
         const adapter = try models.select(mapped.document.string("general.architecture") orelse "");
+        // A window past what the file was trained for is refused, not run.
+        if (declaredContext(&mapped.document)) |declared| if (capacity > declared) return error.ContextBeyondModel;
         const vocab = try alloc.create(inference.vocabulary.Vocabulary);
         errdefer alloc.destroy(vocab);
         vocab.* = try inference.vocabulary.load(alloc, mapped.document, mapped.mapping.memory[0..@intCast(mapped.document.directory_bytes)], .{});
@@ -1420,6 +1437,21 @@ pub fn commitPrompt(eng: *Engine, tokens: []const u32, logits: ?[]f32, observer:
     }
 }
 
+/// Whether a run whose prompt ends at `prompt_end` drafts under the cap. The
+/// decision is the run's: a mid-run switch would sample every later token
+/// from full logits, slower than a plain run, so a run that starts below the
+/// cap drafts to its end.
+fn draftsAt(max_position: ?usize, prompt_end: usize) bool {
+    return if (max_position) |cap| prompt_end < cap else true;
+}
+
+test "a run drafts only when its prompt ends below the cap" {
+    try std.testing.expect(draftsAt(null, 1 << 20));
+    try std.testing.expect(draftsAt(32768, 32767));
+    try std.testing.expect(!draftsAt(32768, 32768));
+    try std.testing.expect(!draftsAt(32768, 65407));
+}
+
 /// Shared prefill/decode loop. Prompt token IDs must fit the session; the
 /// loop stops at EOS, the token budget, the context limit, or cancellation.
 /// A cancelled step poisons the session; the loop resets it so the engine is
@@ -1468,7 +1500,7 @@ pub fn runLoop(
     // Speculation batches the step, so the per-token GPU greedy/top-k
     // shortcuts are off while it runs and the loop materializes every seed's
     // logits. A per-layer observer is a per-token contract and disables it.
-    const can_speculate = settings.enabled and drafter != null and (observer == null or observer.?.layer == null);
+    const can_speculate = settings.enabled and draftsAt(settings.max_position, eng.model.session().position + prompt.len) and drafter != null and (observer == null or observer.?.layer == null);
     // The loaded family's block, not the host maximum, is the effective cap.
     if (can_speculate and settings.draft_length > drafter.?.max_proposals) return error.InvalidDraftLength;
     // Greedy acceptance compares the target's argmax without penalties, so a
@@ -1965,4 +1997,26 @@ test "a Qwen file without its own block takes the companion; one with keeps its 
     // A companion-only family is left to its executor, as before.
     const muse = models.registry.family(.@"muse-glimmer");
     try std.testing.expect(!hasEmbeddedDraft(muse));
+}
+
+test "a file's declared context length is read under its architecture" {
+    const writer = @import("formats/gguf_writer.zig");
+    const head = try writer.directory(std.testing.allocator, &.{
+        .{ .key = "general.architecture", .value = .{ .string = "gemma4" } },
+        .{ .key = "gemma4.context_length", .value = .{ .uint32 = 131072 } },
+    }, &.{});
+    defer std.testing.allocator.free(head.bytes);
+    var reader: std.Io.Reader = .fixed(head.bytes);
+    var doc = try inference.gguf.parse(std.testing.allocator, &reader, head.file_bytes, .{});
+    defer doc.deinit();
+    try std.testing.expectEqual(@as(?u64, 131072), declaredContext(&doc));
+
+    const bare = try writer.directory(std.testing.allocator, &.{
+        .{ .key = "general.architecture", .value = .{ .string = "gemma4" } },
+    }, &.{});
+    defer std.testing.allocator.free(bare.bytes);
+    var bare_reader: std.Io.Reader = .fixed(bare.bytes);
+    var bare_doc = try inference.gguf.parse(std.testing.allocator, &bare_reader, bare.file_bytes, .{});
+    defer bare_doc.deinit();
+    try std.testing.expectEqual(@as(?u64, null), declaredContext(&bare_doc));
 }

@@ -102,6 +102,7 @@ pub fn main(init: std.process.Init) !void {
     var audio_clips: std.ArrayList([]const u8) = .empty;
     defer audio_clips.deinit(alloc);
     var verify_depth: ?[]const u8 = null;
+    var depth_capacity: usize = 32768;
     var prefill_identity: ?[]const u8 = null;
     var logits_out: ?[]const u8 = null;
     var prefix_dir: ?[]const u8 = null;
@@ -155,6 +156,10 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedTokenArray;
             verify_depth = args[i];
+        } else if (std.mem.eql(u8, arg, "--capacity")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedCapacity;
+            depth_capacity = std.fmt.parseInt(usize, args[i], 10) catch return error.InvalidCapacity;
         } else if (std.mem.eql(u8, arg, "--prefill-identity")) {
             i += 1;
             if (i >= args.len) return error.ExpectedTokenArray;
@@ -184,7 +189,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (verify_depth) |tokens_path| {
         if (!use_metal) return error.VerifyDepthNeedsMetal;
-        return verifyAtDepth(alloc, init.io, model_path, draft_model, tokens_path, prefix_dir orelse return error.ExpectedPrefixDirectory);
+        return verifyAtDepth(alloc, init.io, model_path, draft_model, tokens_path, prefix_dir orelse return error.ExpectedPrefixDirectory, depth_capacity);
     }
     var mapped = try inference.weights.Mapped.open(alloc, init.io, model_path);
     defer mapped.deinit(init.io);
@@ -1012,13 +1017,13 @@ fn depthPasses(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8) ![]
 /// under `prefix_dir`, keyed as `bench --speculative on` keys it so the
 /// speed loop's files serve): the seed and three fixed drafts, each row's
 /// logits within the family's depth bounds (`depthPasses`). Metal, F16
-/// cache, 32,768 capacity, the drafter loaded (`draft_path` as the
+/// cache, `capacity` rows (`--capacity`, 32,768 unless the gate names
+/// another), the drafter loaded (`draft_path` as the
 /// catalogue entry names it; Qwen loads its embedded block).
-fn verifyAtDepth(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, draft_path: ?[]const u8, tokens_path: []const u8, prefix_dir: []const u8) !void {
+fn verifyAtDepth(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, draft_path: ?[]const u8, tokens_path: []const u8, prefix_dir: []const u8, capacity: usize) !void {
     const engine = inference.engine;
     const prefix_cache = inference.prefix_cache;
     const rows = 4;
-    const capacity = 32768;
     const passes = try depthPasses(alloc, io, model_path);
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, tokens_path, alloc, .limited(16 << 20));
     defer alloc.free(bytes);

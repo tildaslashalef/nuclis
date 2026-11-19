@@ -182,9 +182,10 @@ and the session is recovered to the accepted prefix
 draft contract (`propose`, `commit`, `reset`, `bytes`) is
 family-independent; recurrent state is checkpointed before the batch, with
 GPU work complete before host-visible state is touched; every emitted token
-is a target draw (greedy acceptance when sampling is off). The switch
-defaults to the entry's measured verdict. Off **must** be the ordinary loop
-bit for bit, and `bench` **must** open no drafter when the switch is off.
+is a target draw (greedy acceptance when sampling is off). The switch and
+the depth drafting stops at (`generation.draft_max_depth`, 0 never) default
+to the entry's measured verdict, which any configuration level overrides.
+Off **must** be the ordinary loop bit for bit; `bench` opens no drafter then.
 
 ### 5.7 Extension rules
 
@@ -204,8 +205,9 @@ One file, `~/.nuclis/nuclis.json`, whose schema is the struct `Config` in
 ```text
 engine.*                model, backend, ctx_size, kv_precision
 generation.*            max_tokens, think, speculative, draft_length,
-                        image_max_tokens, sampling.{temperature, top_k, top_p,
-                        min_p, presence_penalty, repetition_penalty}
+                        draft_max_depth, image_max_tokens,
+                        sampling.{temperature, top_k, top_p, min_p,
+                        presence_penalty, repetition_penalty}
 agent.*                 think, fold_thinking, theme, instructions,
                         thinking_budget, web
 decide.*                model
@@ -452,7 +454,7 @@ same system prompt, byte for byte. The host constants:
 | Limit | Value | Declared in |
 | --- | --- | --- |
 | context ceiling (tokens) | 131,072 | inference/build.zig `default_max_context` |
-| supported context (tokens) | 32,768 | inference/src/runtime/session.zig `supported_context` |
+| supported context (tokens) | 65,536 | inference/src/runtime/session.zig `supported_context` |
 | output budget (tokens) | 16,384 | src/config.zig `max_output_tokens` |
 | draft length | 15 | inference/src/engine.zig `max_draft_length` |
 | prefill chunk (tokens) | 256 | inference/src/engine.zig `prefill_chunk` |
@@ -492,8 +494,9 @@ the opt-in web tools, and a second product surface.
 
 - The primary workload is one user doing coding work: time to first token
   after a substantial code prompt, and steady decode. Every length of the
-  acceptance workload, to 32,768 tokens (the supported ceiling) on the 48 GB target, **must** complete on its budget with no swap growth ([benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs)).
-  The configuration **must** accept any `ctx_size` to 131,072 in a release build (`-Dmax-context` sets another ceiling); 32,768 stays the default and the supported ceiling, the length the gates cover ([record](benchmarks/record/gemma4.md#sliding-layers-keep-their-window-2026-11-19)).
+  acceptance workload, to 65,536 tokens on the 48 GB target, **must** complete on its budget with no swap growth ([benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs)).
+  The **supported** ceiling is 65,536, the length the gates and the acceptance workload cover: there the 26B-A4B prefills 239 tokens a second cold and decodes 32 ([record](benchmarks/record/gemma4.md#supporting-65536-2026-11-19)).
+  The configuration **must** accept any `ctx_size` to 131,072 in a release build (`-Dmax-context` sets another ceiling); a length past the supported ceiling runs with a notice that the gates do not measure it, and one past the file's own `<arch>.context_length` is refused. 32,768 stays the default.
 - Claims are made against nuclis's own previous record on the same machine
   and method, at equal context, cache precision, sampling, and output
   budget, naming chip, OS, compiler, revision, artifact hash, power mode,
