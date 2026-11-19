@@ -220,8 +220,8 @@ gate's set).
   26B-A4B; a ring for the windowed layers would cut the 12B's to about
   0.35 GB.
 - The 26B-A4B's drafter gains 1.0–1.3× on prose and up to 1.65× on short
-  code; a verify batch still reads each slot's expert separately and runs
-  its dense projections on the fragment tile at about 60 GB/s. Its prefill
+  code; a verify batch's dense tile is flat at 100–125 GB/s from two to
+  eight rows ([record, 2026-11-19](../benchmarks/record/gemma4.md#what-a-verify-batch-pays-at-a-few-rows-2026-11-19)). Its prefill
   is 0.78–0.93× of the reference's; at 32K it splits nearly evenly between
   sliding attention, experts, and the projections.
 - The specialized prefill tiles round activations to half; Gemma's large

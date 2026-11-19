@@ -264,7 +264,7 @@ bench-matvec-split: ## Split-K matvec GB/s on the row-poor shapes at 1/2/4/8 spl
 bench-matmul: ## Throughput of the batched prefill matmul on model shapes, 256 tokens or ARGS=<tokens> (no model)
 	$(ZIG) build bench-matmul $(METAL) $(if $(ARGS),-- $(ARGS))
 
-bench-matvec-rows: ## Multi-row matvec vs the 16x8 tile at 1-8 rows, or ARGS=<max rows> (no model)
+bench-matvec-rows: ## Multi-row matvec vs the 16x8 tile at 1-8 rows, or ARGS="<max rows> [head|frag|gemma]" (no model)
 	$(CAPTURE_ENV) $(ZIG) build bench-matvec-rows $(METAL) $(if $(ARGS),-- $(ARGS))
 
 bench-hadamard: ## GPU time of one token's 258 Hadamard transforms on the Bonsai schedule, and per block (no model; docs/engine/metal-backend.md)

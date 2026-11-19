@@ -1251,3 +1251,54 @@ the runs took other paths (more new tokens, 1,314 s of decode against
 is 30.8 ns against 159–160: 0.168 s + 2.59 ms × n + 30.8 ns × ((d+n)² −
 d²), R² 0.9995, the depth term 258 s of the list's prefill. Prefill and
 decode are now even, 49 % each.
+
+## What a verify batch pays at a few rows (2026-11-19)
+
+The 26B-A4B's verify batch after § What the experts cost: which of its
+dense projections and expert reads a few-row path could save. M4 Pro 48
+GB, ReleaseSafe, base `b2f5100`, F16 cache. Reports:
+[verify-2026-11-19/](../verify-2026-11-19/).
+
+**Encodings.** Every dense projection of both QAT files is Q4_0 (the
+profile's kernels: attention 2048/4096/8192 × 2816 and back, the shared
+expert 2112 × 2816 and 2816 × 2112, the E4B's 10240 × 2560 and 2560 ×
+10240), and the 26B-A4B's router is an F32 128 × 2816.
+
+**Dense projections at 1–8 rows** (`make bench-matvec-rows ARGS="8
+gemma"`, `dense-rows.txt`): what `matmul` routes (the fragment tile),
+against R decode matvecs and the generic multi-row matvec. The tile
+reads the weights once for up to eight rows, and its time is flat from
+2 to 8 rows at 100–125 GB/s on the large shapes (8192 × 2816: 0.103 ms
+at every R). R matvecs win only at one row (0.064 ms there, 204 GB/s;
+0.126 at two), and the generic multi-row matvec is behind the tile from
+two rows on. At one row the tile is the slow path: 0.141 against 0.090
+ms on 2112 × 2816, and 0.065 against 0.005 ms for the F32 router.
+
+Two Q4_0 multi-row bodies were written and measured, then removed: one
+per (row, token) dot in the matvec's layout beat the tile only at two
+rows (0.082 against 0.103 ms on 8192 × 2816) and grew linearly past it
+(0.236 at five); one that loads each input once for its four rows
+spilled and was slower at every R. The scalar products are the limit at
+three rows and more, and the tile holds there.
+
+**Part kept: one row on the decode matvec.** `Plan.mmRows` runs a
+one-row chunk through `matvec` (`make speed`, 5 interleaved pairs,
+`one-row-ab.txt`): C at R = 1 30.19 → 25.07 ms at 512 (−17 %) and 33.17
+→ 28.29 at 16,384 (−15 %); R = 2, 4, 5 and decode unchanged (within
+±0.5 %). A one-row batch is a verify with nothing drafted and a
+prompt's one-token tail, so the agent list and the spec matrix, which
+run draft 4, are not re-measured.
+
+**Experts read once per batch: not kept.** `matvecExpertsUnion` over
+`expertLists` (one threadgroup per distinct expert and 16-row block,
+its slots computed in turn, output bit-identical to
+`matvecExpertsGrouped`) was slower than the grouped matvec at every R
+(`union-experts-ab.txt`): +1.6 to +2.8 % on C at R = 2, 4, 5, 8, both
+depths. Concurrent threadgroups reading one expert are already served
+from the system cache, so the distinct-expert bytes were what the
+batch paid, and computing the slots in turn cost parallelism.
+
+**Reading.** At R = 5 the batch is the dense tile at its flat cost and
+the experts at their distinct bytes; neither yields to a few-row path
+on this machine. What remains is the number of distinct experts, a
+property of the routing, and the drafter's acceptance.

@@ -585,9 +585,13 @@ pub const Plan = struct {
         const w = try self.weight(tensor);
         try self.backend.matvec(w.buffer, w.matrix, input, output);
     }
-    /// Batched projection over `count` token rows.
+    /// Batched projection over `count` token rows. One row takes the decode
+    /// matvec, which the fragment tile trails there; from two rows on the
+    /// tile, reading the weights once for up to eight rows, is ahead
+    /// (docs/benchmarks/record/gemma4.md § What a verify batch pays at a few rows).
     fn mmRows(self: *Plan, tensor: *const Tensor, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, count: usize) !void {
         const w = try self.weight(tensor);
+        if (count == 1) return self.backend.matvec(w.buffer, w.matrix, input.slice(0, w.matrix.columns * 4), output.slice(0, w.matrix.rows * 4));
         try self.backend.matmul(w.buffer, w.matrix, input, in_stride, output, out_stride, count);
     }
     /// The rope table and rotary width of a layer kind (the whole head).

@@ -860,6 +860,86 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
     std.debug.print("The multi-row path reads the weights once for all rows; the tile reads them once per 8-row token tile (one tile here).\n", .{});
 }
 
+/// `--matvec-rows-bench <max_rows> gemma`: Gemma 4's dense projections
+/// (Q4_0, both files' shapes, and the 26B-A4B's F32 router) at
+/// 1..`max_rows` rows, three ways: what `matmul` routes today (the fragment
+/// tile), R decode matvecs, one per row, and the generic multi-row matvec.
+/// GPU ms per projection and GB/s of weight bytes; minimum of three command
+/// buffers of 16 after a warm-up. A measurement aid.
+fn gemmaRowsBench(alloc: std.mem.Allocator, max_rows: usize) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    const Shape = struct { rows: usize, columns: usize, encoding: u32, name: []const u8 };
+    const shapes = [_]Shape{
+        .{ .rows = 2112, .columns = 2816, .encoding = 2, .name = "26b 2112x2816" },
+        .{ .rows = 2816, .columns = 2112, .encoding = 2, .name = "26b 2816x2112" },
+        .{ .rows = 4096, .columns = 2816, .encoding = 2, .name = "26b 4096x2816" },
+        .{ .rows = 2816, .columns = 4096, .encoding = 2, .name = "26b 2816x4096" },
+        .{ .rows = 2048, .columns = 2816, .encoding = 2, .name = "26b 2048x2816" },
+        .{ .rows = 8192, .columns = 2816, .encoding = 2, .name = "26b 8192x2816" },
+        .{ .rows = 2816, .columns = 8192, .encoding = 2, .name = "26b 2816x8192" },
+        .{ .rows = 128, .columns = 2816, .encoding = 0, .name = "26b router F32" },
+        .{ .rows = 10240, .columns = 2560, .encoding = 2, .name = "e4b 10240x2560" },
+        .{ .rows = 2560, .columns = 10240, .encoding = 2, .name = "e4b 2560x10240" },
+        .{ .rows = 2048, .columns = 2560, .encoding = 2, .name = "e4b 2048x2560" },
+        .{ .rows = 2560, .columns = 2048, .encoding = 2, .name = "e4b 2560x2048" },
+    };
+    const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/simple.json"), .{ .ignore_unknown_fields = true });
+    defer fixtures.deinit();
+    var q4_sample: ?[]const u8 = null;
+    for (fixtures.value.rows) |sample| if (sample.encoding == 2) {
+        q4_sample = sample.bytes;
+        break;
+    };
+    const q4 = q4_sample orelse return error.FixtureMissing;
+    var prng = std.Random.DefaultPrng.init(0x6e3a);
+    const random = prng.random();
+    const weights = try b.create(10240 * 2816 * 4);
+    const input = try b.create(Backend.matmulPadded(max_rows) * 10240 * 4);
+    for (input.floats()) |*x| x.* = random.float(f32) * 2 - 1;
+    const output = try b.create(Backend.matmulPadded(max_rows) * 10240 * 4);
+    const rounds = 3;
+    const repeats: usize = 16;
+    std.debug.print("{s:<16} {s:>4} {s:>9} {s:>8} {s:>9} {s:>8} {s:>9} {s:>8}  ms per projection, GB/s of weights ({d} rounds of {d})\n", .{ "shape", "rows", "matmul ms", "GB/s", "R mv ms", "GB/s", "rows ms", "GB/s", rounds, repeats });
+    for (shapes) |shape| {
+        const region = if (shape.encoding == 0) blk: {
+            const raw = try alloc.alloc(u8, shape.rows * shape.columns * 4);
+            for (std.mem.bytesAsSlice(f32, raw)) |*v| v.* = (random.float(f32) * 2 - 1) * 0.05;
+            break :blk raw;
+        } else try tiledMatrix(alloc, q4, shape.encoding, shape.rows, shape.columns);
+        defer alloc.free(region);
+        @memcpy(weights.host[0..region.len], region);
+        const w = weights.slice(0, region.len);
+        const matrix: inference.cpu.Matrix = .{ .rows = shape.rows, .columns = shape.columns, .encoding = shape.encoding, .bytes = region };
+        const mb = @as(f64, @floatFromInt(region.len)) / 1e6;
+        for (1..max_rows + 1) |tokens| {
+            var best: [3]f64 = @splat(std.math.nan(f64));
+            for (0..3) |path| {
+                if (path == 2 and tokens < 2) continue;
+                for (0..rounds + 1) |i| {
+                    const before = b.gpuSeconds();
+                    try b.begin();
+                    for (0..repeats) |_| switch (path) {
+                        0 => try b.matmul(w, matrix, input, shape.columns, output, shape.rows, tokens),
+                        1 => for (0..tokens) |t| try b.matvec(w, matrix, input.slice(t * shape.columns * 4, shape.columns * 4), output.slice(t * shape.rows * 4, shape.rows * 4)),
+                        else => try b.matvecRows(w, matrix, input, shape.columns, output, shape.rows, tokens),
+                    };
+                    try b.commit();
+                    const ms = (b.gpuSeconds() - before) * 1e3 / @as(f64, @floatFromInt(repeats));
+                    if (i == 0) continue;
+                    best[path] = if (i == 1) ms else @min(best[path], ms);
+                }
+            }
+            std.debug.print("{s:<16} {d:>4}", .{ shape.name, tokens });
+            for (best) |ms| {
+                if (std.math.isNan(ms)) std.debug.print(" {s:>9} {s:>8}", .{ "—", "—" }) else std.debug.print(" {d:>9.3} {d:>8.1}", .{ ms, mb / ms });
+            }
+            std.debug.print("\n", .{});
+        }
+    }
+}
+
 /// DFlash2's convolution kernel against `dflash2.convolve` on random rows,
 /// both halves, every block length.
 fn checkDflashConv(alloc: std.mem.Allocator) !void {
@@ -4076,6 +4156,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-rows-bench")) {
         const max_rows = if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 8;
         if (args.len > 3 and std.mem.eql(u8, args[3], "frag")) return fragBench(alloc, max_rows);
+        if (args.len > 3 and std.mem.eql(u8, args[3], "gemma")) return gemmaRowsBench(alloc, max_rows);
         const with_head = args.len > 3 and std.mem.eql(u8, args[3], "head");
         return matvecRowsBench(alloc, max_rows, with_head);
     }
