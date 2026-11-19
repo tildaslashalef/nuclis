@@ -220,11 +220,11 @@ gate's set).
 - A sliding layer keeps its window and 9,232 rows of slack, a global one
   every row: at 32,768 tokens the F16 session is 2.77 GB on the 26B-A4B
   and 0.94 GB on the E4B; a rewind further back than the slack re-prefills.
-- At the supported 65,536 the 26B-A4B prefills 239 tok/s and decodes 32,
-  the E4B 308 and 33; both drafters fall below 1× there, so drafting stops
+- At the supported 65,536 the 26B-A4B prefills 283 tok/s and decodes 32,
+  the E4B 337 and 33; both drafters fall below 1× there, so drafting stops
   at a 32,768-token prompt by default (`generation.draft_max_depth`) ([record](../benchmarks/record/gemma4.md#supporting-65536-2026-11-19)).
 - The 26B-A4B's drafter gains 1.0–1.3× on prose, 1.65× on short code; a verify batch's dense tile is flat from two to eight rows ([record](../benchmarks/record/gemma4.md#what-a-verify-batch-pays-at-a-few-rows-2026-11-19)).
-  Its prefill at 32K splits nearly evenly: sliding attention, experts, projections.
+  Its prefill's per-token cost is experts 0.89 ms, projections 0.67, sliding attention 0.22 ([record](../benchmarks/record/gemma4.md#sliding-layers-on-the-materialized-body-2026-11-19)).
 - The specialized prefill tiles round activations to half; Gemma's large
   activations make chunked prefill differ from per-token steps more than
   Qwen's (bounded, same greedy token).

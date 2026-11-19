@@ -495,7 +495,7 @@ the opt-in web tools, and a second product surface.
 - The primary workload is one user doing coding work: time to first token
   after a substantial code prompt, and steady decode. Every length of the
   acceptance workload, to 65,536 tokens on the 48 GB target, **must** complete on its budget with no swap growth ([benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs)).
-  The **supported** ceiling is 65,536, the length the gates and the acceptance workload cover: there the 26B-A4B prefills 239 tokens a second cold and decodes 32 ([record](benchmarks/record/gemma4.md#supporting-65536-2026-11-19)).
+  The **supported** ceiling is 65,536, the length the gates and the acceptance workload cover: there the 26B-A4B prefills 283 tokens a second cold and decodes 32 ([record](benchmarks/record/gemma4.md#sliding-layers-on-the-materialized-body-2026-11-19)).
   The configuration **must** accept any `ctx_size` to 131,072 in a release build (`-Dmax-context` sets another ceiling); a length past the supported ceiling runs with a notice that the gates do not measure it, and one past the file's own `<arch>.context_length` is refused. 32,768 stays the default.
 - Claims are made against nuclis's own previous record on the same machine
   and method, at equal context, cache precision, sampling, and output

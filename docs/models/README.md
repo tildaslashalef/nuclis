@@ -264,13 +264,20 @@ with bounds measured at the four lengths and set at twice the worst
 Three speed pieces are shared, and a plan has only to route to them;
 Gemma 4 lacked each until it was measured:
 
-- **Long prompt chunks.** A causal chunk of more than
+- **Long prompt chunks.** A chunk of more than
   `metal.Backend.materialized_min_rows` rows goes to
-  `Backend.attentionChunkMaterialized`, its strips in
-  `attentionStripScratch`; the online chunk body stays for windowed
-  layers, image spans, and the few-row verify batch. On the online body
-  Gemma 4's global layers took two thirds of its 32K prefill
-  ([record, 2026-11-19](../benchmarks/record/gemma4.md#prefill-with-materialized-global-attention-2026-11-19)).
+  `Backend.attentionChunkMaterialized`, causal or windowed, its strips in
+  `attentionStripScratch`; the online chunk body stays for image spans
+  and the few-row verify batch. A plan routes every layer kind, windowed
+  ones included: on the online body Gemma 4's global layers took two
+  thirds of its 32K prefill
+  ([record](../benchmarks/record/gemma4.md#prefill-with-materialized-global-attention-2026-11-19)),
+  and its sliding layers, routed later, a quarter of what was left
+  (17–26 % faster prefill on the 26B-A4B when they moved:
+  [record](../benchmarks/record/gemma4.md#sliding-layers-on-the-materialized-body-2026-11-19)).
+  Profile a new family's prefill by kernel (`bench --profile-prefill`)
+  before calling it done: an attention kernel well below the materialized
+  body's rate is a layer not routed.
 - **Sliding layers.** A layer that reads only its last W rows sets
   `.window` and `.room` on its `Layout.attention`, so its region holds the
   window and a margin, not the capacity
@@ -482,4 +489,5 @@ reading.
 | Gemma sampled with Qwen's presence penalty | the configuration guessed the profile from a bare path | the engine's profile corrects the sampler after load |
 | Prefill at 32K under half the reference's | global layers' long chunks on the online attention body | the plan routes them to `attentionChunkMaterialized` (§ 5) |
 | Session of 7.4 GB at 32K on a model with 1,024-row windows | sliding layers allocated for the whole capacity | `.window` on the layer's `Layout.attention` (§ 5) |
+| Prefill's per-token cost a quarter sliding attention | windowed layers left on the online body when the global ones moved | the materialized body takes a `window`; every layer kind routed (§ 5) |
 | A verify with nothing drafted costs more than a decode step | a one-row chunk through the matmul tile | the plan's projection takes the decode matvec at one row (§ 5) |

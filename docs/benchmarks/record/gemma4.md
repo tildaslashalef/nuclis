@@ -1428,3 +1428,84 @@ window past the file's own trained context is refused
 **Open.** The 26B-A4B's sampled crossover sits near 21K on prose; code,
 whose acceptance runs higher, was not measured, so the cap stays at
 32,768 for both files.
+
+## Sliding layers on the materialized body (2026-11-19)
+
+What prefill's per-token cost is, then the fix it pointed to. M4 Pro
+48 GB, ReleaseSafe, base `61bcde0`, both QAT files, F16 cache, Metal.
+Reports: [linear-2026-11-19/](../linear-2026-11-19/).
+
+**The split** (`bench --profile-prefill` on the acceptance arrays, GPU ms
+per prompt token, `split.txt`), flat from 4,096 to 32,639 except global
+attention, which grows with depth:
+
+| per token, ms | experts | sliding attention | dense projections | norms, rope, scale | linear total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 26B-A4B (512-row chunks) | 0.89 | 0.66 | 0.67 | 0.24 | 2.45 |
+| E4B (256-row chunks) | — | 0.24 | 1.62 | 0.08 | 1.94 |
+
+Against what nuclis's own kernels reach: the dense Q4_0 tile runs about
+4.9 TFLOP/s in the model and 5.1 in `make bench-matmul ARGS=512`
+(`matmul-q4_0.txt`), so it is at its ceiling. The expert tiles run 3.25:
+a 512-row chunk's 4,096 slot rows fill 186 tiles of 32 over 128 experts
+(69 %); 1,024- and 2,048-row chunks take the chain from 0.95 to 0.77 and
+0.68 ms a token (`make bench-experts`, `experts.txt`). Sliding attention,
+still on the online chunk body, ran 0.62 TFLOP/s: the rate the global
+layers ran at before § Prefill with materialized global attention moved
+them, where that body runs about 2.8.
+
+**The fix.** `attentionChunkMaterialized` takes a `window`: a row sees its
+last `window` keys, and a tile's strip starts at the 32-aligned key below
+its first row's earliest, so a strip is at most `window` + 96 keys wide at
+any depth ([metal-attention.md § Prefill: materialized chunk
+attention](../../engine/metal-attention.md#prefill-materialized-chunk-attention)).
+Gemma 4's plan routes every chunk above 16 rows without an image span to
+it. Against the CPU F64 reference, with windows of 8, 33, 100, 512, and
+1,024 at positions to 32,256 and future rows poisoned: worst 3.7e-6 (F32
+cache) and 3.2e-6 (F16), bound 1e-5; one tile per group equals the whole
+chunk bit for bit.
+
+**Prefill** (cold, base against candidate, three interleaved pairs, first
+mover swapped, `ab.txt`):
+
+| tok/s | 4,096 | 16,384 | 32,639 |
+| --- | ---: | ---: | ---: |
+| 26B-A4B | 425.8 → 537.3 (+26.2 %) | 368.2 → 454.9 (+23.6 %) | 309.5 → 362.8 (+17.2 %) |
+| E4B | 503.6 → 555.7 (+10.3 %) | 439.6 → 484.7 (+10.3 %) | 375.9 → 411.8 (+9.5 %) |
+
+Every pair moved the same way (the narrowest +7.9 %). In the profile at
+32,639 sliding attention falls from about 0.67 to 0.22 ms a token on the
+26B-A4B and from 0.25 to 0.10 on the E4B (`profile-*-after.json`; profile
+mode perturbs the other kernels' rates, so the A/B is the result).
+
+**Acceptance** (§ Supporting 65,536's method, records
+`nuclis-2026-11-19-gemma4-{26b-a4b,e4b}-sliding{,-64k}.json`), against
+the 2026-11-19 records before this change:
+
+| prefill, tok/s | 512 | 4,096 | 16,384 | 32,639 | 65,407 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 26B-A4B | 587.1 (539.5) | 550.1 (434.5) | 469.9 (374.4) | 388.0 (316.6) | 282.8 (239.0) |
+| E4B | 586.0 (549.3) | 551.4 (507.4) | 501.0 (456.7) | 435.8 (403.0) | 337.2 (308.2) |
+
+Decode is within ±3 % of those records (26B-A4B 57.5 / 54.1 / 48.7 /
+42.1, 32.3 at 65,407; E4B 53.2 / 50.1 / 47.2 / 41.9, 33.0), runs within
+0.1 % of each other. A first pass of all four records, taken while
+another session ran models on the GPU, read 5–11 % lower in prefill and
+up to 6 % lower in decode, whose path this change does not touch; it was
+discarded and every record taken again on an idle machine.
+
+**The greedy-token check.** `gemma4-26b-a4b-generation-metal` compares
+a 70-token chunked prefill through the half-operand tiles against F32
+steps. Its logits sit 1.0e1 / 3.4e-1 from the reference on either build
+(the routing near-ties those tiles' rounding moves), and they move by
+about 1 between chunk sizes of one build, against a top-two gap of 2.8:
+the base kept token 236772 and this build takes 100, the token the base's
+own Q8_0 chunked run takes. The expert configuration's half-tile
+comparisons now hold their size bounds and leave the greedy token to the
+F32-tile comparison, which keeps it at 1.3e-4 / 5.4e-6 (bound 5e-3 /
+2e-4). Perplexity on the full set is −0.28 % against the reference
+(+0.29 % on the base; bound 1 %).
+
+**Left.** The experts' tile fill (1,024-row chunks, −0.18 ms a token
+measured in isolation), the norm and rope dispatches (≤ 0.1 ms), and the
+dense tile, at its ceiling.

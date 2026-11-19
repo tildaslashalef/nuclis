@@ -74,7 +74,7 @@ and `nuclis config sync` registers what was pulled.
 nuclis today (2026-11-19): Apple M4 Pro, 48 GiB, macOS 27.2.1, ReleaseSafe,
 Metal, F16 cache, 128 greedy output tokens; the mean of three runs after a
 warmup to 16,384, one run each at 32,639 and 65,407 on a 65,536 context, with
-no swap ([2026-11-19](docs/benchmarks/record/gemma4.md#sliding-layers-keep-their-window-2026-11-19)).
+no swap ([2026-11-19](docs/benchmarks/record/gemma4.md#sliding-layers-on-the-materialized-body-2026-11-19)).
 Tokens per second by prompt length; each record is measured against nuclis's
 own previous one
 ([the October 2026 comparison with llama.cpp](docs/benchmarks/record/benchmarks.md#the-benchmarks-on-macos-27-2026-10-04)
@@ -82,14 +82,14 @@ is history):
 
 | Decode | 512 | 4,096 | 16,384 | 32,639 | 65,407 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Gemma 4 26B-A4B | 57.14 | 54.22 | 48.63 | 41.47 | 32.13 |
-| Gemma 4 E4B QAT | 52.88 | 51.53 | 47.18 | 41.94 | 32.65 |
+| Gemma 4 26B-A4B | 57.54 | 54.11 | 48.71 | 41.94 | 32.30 |
+| Gemma 4 E4B QAT | 53.19 | 50.13 | 47.22 | 41.90 | 33.03 |
 | Qwen3.8-27B | 11.16 | 9.23 | 9.02 | 9.17 | 8.41 |
 
 | Prefill | 512 | 4,096 | 16,384 | 32,639 | 65,407 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Gemma 4 26B-A4B | 539.50 | 434.52 | 374.42 | 316.58 | 239.04 |
-| Gemma 4 E4B QAT | 549.30 | 507.42 | 456.65 | 402.99 | 308.18 |
+| Gemma 4 26B-A4B | 587.14 | 550.06 | 469.89 | 391.81 | 282.76 |
+| Gemma 4 E4B QAT | 585.95 | 551.42 | 500.96 | 437.29 | 337.20 |
 | Qwen3.8-27B | 93.16 | 84.02 | 77.48 | 73.17 | 61.19 |
 
 **Speculative decoding**: a small drafter proposes tokens and the model checks

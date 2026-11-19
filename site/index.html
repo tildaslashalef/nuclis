@@ -184,7 +184,7 @@
 <section class="sec" id="numbers">
   <div class="wrap">
     <h2>Honest numbers, one machine.</h2>
-    <p class="sec-lede">An M4 Pro with 48 GB, measured on 2026-11-19. Gemma 4 26B-A4B decodes 57 tokens a second on a short prompt and still 32 at a 64K one, which makes an agent practical here; a dense 27B manages 8 to 11. Every record is measured against nuclis's own previous one, never against another engine.</p>
+    <p class="sec-lede">An M4 Pro with 48 GB, measured on 2026-11-19. Gemma 4 26B-A4B decodes 58 tokens a second on a short prompt and still 32 at a 64K one, which makes an agent practical here; a dense 27B manages 8 to 11. Every record is measured against nuclis's own previous one, never against another engine.</p>
 
     <div class="chart-card">
       <div class="chart-head">
@@ -419,8 +419,8 @@ cd nuclis &amp;&amp; make metal
     { "model": "Qwen3.8-27B", "draft": 7, "512": [11.6, 17.4], "32639": [7.9, 9.8], "ratio": { "512": "1.50", "32639": "1.26" } }
   ],
   "today": [
-    { "model": "Gemma 4 26B-A4B", "decode": { "512": 57.14, "4096": 54.22, "16384": 48.63, "32639": 41.47, "65407": 32.13 }, "prefill": { "512": 539.50, "4096": 434.52, "16384": 374.42, "32639": 316.58, "65407": 239.04 } },
-    { "model": "Gemma 4 E4B QAT", "decode": { "512": 52.88, "4096": 51.53, "16384": 47.18, "32639": 41.94, "65407": 32.65 }, "prefill": { "512": 549.30, "4096": 507.42, "16384": 456.65, "32639": 402.99, "65407": 308.18 } },
+    { "model": "Gemma 4 26B-A4B", "decode": { "512": 57.54, "4096": 54.11, "16384": 48.71, "32639": 41.94, "65407": 32.30 }, "prefill": { "512": 587.14, "4096": 550.06, "16384": 469.89, "32639": 391.81, "65407": 282.76 } },
+    { "model": "Gemma 4 E4B QAT", "decode": { "512": 53.19, "4096": 50.13, "16384": 47.22, "32639": 41.90, "65407": 33.03 }, "prefill": { "512": 585.95, "4096": 551.42, "16384": 500.96, "32639": 437.29, "65407": 337.20 } },
     { "model": "Qwen3.8-27B", "decode": { "512": 11.16, "4096": 9.23, "16384": 9.02, "32639": 9.17, "65407": 8.41 }, "prefill": { "512": 93.16, "4096": 84.02, "16384": 77.48, "32639": 73.17, "65407": 61.19 } }
   ]
 }

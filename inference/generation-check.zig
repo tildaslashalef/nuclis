@@ -25,6 +25,10 @@ const Bounds = struct {
     /// rounding moves the greedy token, so only finiteness is checked
     /// and perplexity measures the cost (metal-backend.md § Q8_0 KV cache).
     q8: ?struct { max_abs: f64, rel_rms: f64 },
+    /// Whether the half-tile comparisons must keep the greedy token; false
+    /// where routing makes it chance (an expert configuration), so the
+    /// F32-tile comparison alone holds it.
+    greedy: bool = true,
 };
 /// The prediction block's pinned trace: the tokens of `Hello,` and the
 /// reference's greedy draft per position, against the embedded hidden rows.
@@ -53,14 +57,17 @@ const qwen35_spec: Spec = .{ .Family = inference.models.qwen35.family, .vocabula
 // 1.4e-4). On the 26B-A4B the same rounding moves router logits
 // past near-ties and swaps whole experts for a token, so its chunked
 // logits sit at 1.1e1 / 3.5e-1
-// (docs/benchmarks/record/metal-backend.md § Gathered expert kernels). The
-// F32-tile comparison below, at its own unchanged bound, is what proves the schedule.
+// (docs/benchmarks/record/metal-backend.md § Gathered expert kernels), and
+// their greedy token is chance: logits move by about 1 between chunk sizes
+// against a top-two gap of 2.8 (record/gemma4.md § Sliding layers on the
+// materialized body). The F32-tile comparison below, at its own unchanged
+// bound and greedy token, is what proves the schedule.
 const gemma4_spec: Spec = .{
     .Family = inference.models.gemma4.family,
     .vocabulary = inference.models.gemma4.vocabulary,
     .tokens = .{ 9259, 236764 },
     .bounds = .{ .chunk_max_abs = 6e-1, .chunk_rel_rms = 2e-2, .half_max_abs = 2.0, .half_rel_rms = 6e-2, .q8 = .{ .max_abs = 1.2e1, .rel_rms = 3.5e-1 } },
-    .expert_bounds = .{ .chunk_max_abs = 2e1, .chunk_rel_rms = 5e-1, .half_max_abs = 2e1, .half_rel_rms = 5e-1, .q8 = null },
+    .expert_bounds = .{ .chunk_max_abs = 2e1, .chunk_rel_rms = 5e-1, .half_max_abs = 2e1, .half_rel_rms = 5e-1, .q8 = null, .greedy = false },
 };
 /// The bounds of the bound configuration: the expert ones when the family
 /// declares them and the file is an expert configuration.
@@ -1992,13 +1999,13 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
         var big = try Plan.init(alloc, b, view, binding, 128, chunk, .f32, false, false);
         defer big.deinit();
         try big.prefill(&tokens, actual, null, null, null, null, null);
-        try compareChunked("chunk", chunk, tokens.len, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
+        try compareChunked("chunk", chunk, tokens.len, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms, bounds.greedy);
     }
     var chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
     defer chunked.deinit();
     try chunked.prefill(&tokens, actual, null, null, null, null, null);
     if (chunked.state.position != tokens.len or stepped.state.position != tokens.len) return error.PositionMismatch;
-    try compareChunked("chunk", 32, tokens.len, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
+    try compareChunked("chunk", 32, tokens.len, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms, bounds.greedy);
     {
         // The same comparison through the generic F32 tiles and matvecs
         // (`generic_only`): what remains is summation order alone, so this
@@ -2020,7 +2027,7 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
         var generic_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
         defer generic_chunked.deinit();
         try generic_chunked.prefill(prefix, actual, null, null, null, null, null);
-        try compareChunked("F32 tiles, chunk", 32, prefix.len, generic_expected, actual, 5e-3, 2e-4);
+        try compareChunked("F32 tiles, chunk", 32, prefix.len, generic_expected, actual, 5e-3, 2e-4, true);
         // The evaluation path keeps every row: each must be the stepped
         // logits at its position, so the head (scale and soft-cap included)
         // runs on every row as `step` runs it on one.
@@ -2040,11 +2047,11 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
     defer half_stepped.deinit();
     if (half_stepped.state.bytes() >= stepped.state.bytes()) return error.HalfCacheNotSmaller;
     for (tokens, 0..) |t, i| try half_stepped.step(t, if (i + 1 == tokens.len) actual else null, null, null, null, null);
-    try compareChunked("F16 KV stepped", 1, tokens.len, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
+    try compareChunked("F16 KV stepped", 1, tokens.len, expected, actual, bounds.half_max_abs, bounds.half_rel_rms, bounds.greedy);
     var half_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false, false);
     defer half_chunked.deinit();
     try half_chunked.prefill(&tokens, actual, null, null, null, null, null);
-    try compareChunked("F16 KV chunk", 32, tokens.len, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
+    try compareChunked("F16 KV chunk", 32, tokens.len, expected, actual, bounds.half_max_abs, bounds.half_rel_rms, bounds.greedy);
     // And through a Q8_0 cache: decode reads the blocks, the chunk an F16
     // expansion of them (the session holds about half the F16 bytes).
     var q8_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .q8_0, false, false);
@@ -2102,18 +2109,20 @@ const Difference = struct {
 /// A Q8_0 run against the stepped F32 logits at the family's bound, or,
 /// where it has none, printed and checked finite only.
 fn compareQ8(label: []const u8, chunk: usize, tokens: usize, expected: []const f32, actual: []const f32, bounds: Bounds) !void {
-    if (bounds.q8) |q8| return compareChunked(label, chunk, tokens, expected, actual, q8.max_abs, q8.rel_rms);
+    if (bounds.q8) |q8| return compareChunked(label, chunk, tokens, expected, actual, q8.max_abs, q8.rel_rms, true);
     for (actual) |v| if (!std.math.isFinite(v)) return error.NonFiniteLogits;
     const d = Difference.of(expected, actual);
     std.debug.print("Prefill ({d} tokens, {s} {d}) vs per-token F32 steps: max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (not bounded: perplexity measures it)\n", .{ tokens, label, chunk, d.max_abs, d.rel_rms, d.arg_expected, d.arg_actual });
 }
 
 /// Final logits of a chunked prefill against the stepped ones: max abs,
-/// relative RMS, and the greedy choice, within the family's recorded bound.
-fn compareChunked(label: []const u8, chunk: usize, tokens: usize, expected: []const f32, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64) !void {
+/// relative RMS, and, when `greedy`, the greedy choice, within the family's
+/// recorded bound.
+fn compareChunked(label: []const u8, chunk: usize, tokens: usize, expected: []const f32, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64, greedy: bool) !void {
     const d = Difference.of(expected, actual);
-    std.debug.print("Prefill ({d} tokens, {s} {d}) vs per-token F32 steps: max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (bounds {e:.0} / {e:.0})\n", .{ tokens, label, chunk, d.max_abs, d.rel_rms, d.arg_expected, d.arg_actual, max_abs_bound, rel_rms_bound });
-    if (!d.within(max_abs_bound, rel_rms_bound)) return error.ChunkedPrefillMismatch;
+    std.debug.print("Prefill ({d} tokens, {s} {d}) vs per-token F32 steps: max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (bounds {e:.0} / {e:.0}{s})\n", .{ tokens, label, chunk, d.max_abs, d.rel_rms, d.arg_expected, d.arg_actual, max_abs_bound, rel_rms_bound, if (greedy) "" else ", greedy not bounded" });
+    const kept = d.max_abs <= max_abs_bound and d.rel_rms <= rel_rms_bound;
+    if (!kept or (greedy and d.arg_expected != d.arg_actual)) return error.ChunkedPrefillMismatch;
 }
 
 /// Every row of a multi-row readback against the stepped logits at the same

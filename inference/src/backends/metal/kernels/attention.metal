@@ -771,22 +771,27 @@ template [[host_name("nu_attention_chunk_reuse_h")]] kernel void nu_attention_ch
 // The materialized chunk body: the structure of `nu_segments_*` (scores to
 // an F32 strip, exact two-pass softmax statistics, then P·V; both products
 // as F32 matmul tiles with operands staged in threadgroup memory) reading a
-// cache instead of a sequence. Causal only, no window or span: chunk row r
-// sees cache rows [0, position + r]. A dispatch covers `tiles` 32-row tiles
+// cache instead of a sequence. No span: chunk row r sees cache rows
+// [0, position + r], or with a nonzero `window` its last `window` of them.
+// A tile's strip starts at its `base` key (0 causal; with a window, the
+// 32-aligned key below its first row's earliest), so a windowed strip is
+// at most `window` + 96 wide. A dispatch covers `tiles` 32-row tiles
 // from `tile0`; tile i's strip rows are `row_stride` floats apart, head h's
 // strips start at h · tiles · 32 · row_stride, and the (max, 1 / sum) pairs
 // follow all heads' strips, one per strip row. `T` is the cache's type;
 // queries and output are F32, and the staging converts to F32, so an F16
 // cache multiplies in F32 like an F32 one. Rows past `count` up to the
 // caller's padding are computed over keys clamped to the chunk's end.
-struct ChunkStripParams { uint query_heads; uint kv_heads; uint key_width; uint value_width; uint position; uint count; uint q_stride; uint out_stride; float scale; uint tile0; uint tiles; uint row_stride; };
-struct ChunkTile { uint first; uint rows; uint span; uint total; };
+struct ChunkStripParams { uint query_heads; uint kv_heads; uint key_width; uint value_width; uint position; uint count; uint q_stride; uint out_stride; float scale; uint tile0; uint tiles; uint row_stride; uint window; };
+struct ChunkTile { uint first; uint rows; uint base; uint span; uint total; };
 inline ChunkTile nu_chunk_tile(constant ChunkStripParams & p, uint index) {
     ChunkTile t;
     t.total = p.position + p.count;
     t.first = (p.tile0 + index) * 32;
     t.rows = min(32u, (p.count + 7) / 8 * 8 - t.first);
     t.span = (min(p.position + t.first + t.rows, t.total) + 31) / 32 * 32;
+    const uint low = p.position + t.first + 1; // the first row's keys end here
+    t.base = p.window != 0 && low > p.window ? (low - p.window) / 32 * 32 : 0;
     return t;
 }
 template <typename T>
@@ -808,9 +813,9 @@ kernel void nu_chunk_scores_t(device const float * queries [[buffer(0)]],
     threadgroup float kt[64 * 32]; // [d][key]
     const ChunkTile t = nu_chunk_tile(p, group.x);
     const uint head = group.y % p.query_heads, block = group.y / p.query_heads;
-    if (block * 32 >= t.span) return; // uniform over the threadgroup
+    const uint key0 = t.base + block * 32;
+    if (key0 >= t.span) return; // uniform over the threadgroup
     const uint kv = head / (p.query_heads / p.kv_heads);
-    const uint key0 = block * 32;
     const uint r = tid >> 2, seg = tid & 3;
     const bool q_ok = r < t.rows, k_ok = key0 + r < t.total;
     device const float * qrow = queries + ulong(t.first + r) * p.q_stride + ulong(head) * p.key_width;
@@ -841,11 +846,13 @@ kernel void nu_chunk_scores_t(device const float * queries [[buffer(0)]],
     for (uint i = 0; i < 2; ++i) for (uint j = 0; j < 2; ++j)
         simdgroup_store(acc[i][j], result + (sub_row + 8 * i) * 32 + sub_key + 8 * j, 32);
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    device float * strip = scores + ulong(head) * p.tiles * 32 * p.row_stride + ulong(group.x) * 32 * p.row_stride + key0;
+    device float * strip = scores + ulong(head) * p.tiles * 32 * p.row_stride + ulong(group.x) * 32 * p.row_stride + block * 32;
     for (uint e = tid; e < t.rows * 32; e += 128) {
         const uint row = e >> 5, col = e & 31;
         const uint hi = min(p.position + t.first + row + 1, t.total); // exclusive
-        strip[ulong(row) * p.row_stride + col] = key0 + col < hi ? result[e] * p.scale : -INFINITY;
+        const uint lo = p.window != 0 && hi > p.window ? hi - p.window : 0;
+        const uint key = key0 + col;
+        strip[ulong(row) * p.row_stride + col] = key < hi && key >= lo ? result[e] * p.scale : -INFINITY;
     }
 }
 template [[host_name("nu_chunk_scores")]] kernel void nu_chunk_scores_t<float>(device const float *, device const float *, device float *, constant ChunkStripParams &, uint2, uint2, uint);
@@ -865,7 +872,7 @@ kernel void nu_chunk_stats(device float * scores [[buffer(0)]],
     for (uint row = sg; row < t.rows; row += 8) {
         device const float * x = strip + ulong(row) * p.row_stride;
         float m = -INFINITY, sum = 0.0f;
-        for (uint i = lane; i < t.span; i += 32) {
+        for (uint i = lane; i < t.span - t.base; i += 32) {
             const float v = x[i];
             if (v == -INFINITY) continue;
             if (v > m) { sum = sum * exp(m - v) + 1.0f; m = v; }
@@ -907,8 +914,8 @@ kernel void nu_chunk_values_t(device const float * scores [[buffer(0)]],
     const uint sub_row = (sg & 1) * 16, sub_col = (sg >> 1) * 16;
     simdgroup_float8x8 acc[2][2];
     for (uint i = 0; i < 2; ++i) for (uint j = 0; j < 2; ++j) acc[i][j] = simdgroup_float8x8(0.0f);
-    for (uint k0 = 0; k0 < t.span; k0 += 32) {
-        const uint key = k0 + r;
+    for (uint k0 = 0; k0 < t.span - t.base; k0 += 32) {
+        const uint key = t.base + k0 + r;
         for (uint c = 0; c < 2; ++c) {
             ((threadgroup float4 *)(ps + r * 32 + part))[c] = p_ok ? exp(((device const float4 *)(prow + k0))[c] - st.x) * st.y : float4(0.0f);
             ((threadgroup float4 *)(vs + r * 32 + part))[c] = key < t.total && c_ok ? nu_load4(vbase + ulong(key) * vrow + 4 * c) : float4(0.0f);
