@@ -153,11 +153,11 @@ fn engineOptions(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--ctx-size <n>", "context window in tokens, 1.." ++ max_ctx ++ "; default 32768");
     try row(out, sty, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16");
     try row(out, sty, "--max-tokens <n>", "output budget, 1..16384; default 8192 (bench: 32)");
-    try row(out, sty, "--speculative on|off", "verify drafts from the model's draft source; the");
-    try more(out, "default is the model entry's verdict, else off");
+    try row(out, sty, "--speculative on|off", "verify drafts; default the model's verdict, else off");
     try row(out, sty, "--draft <variant>", "another drafter of an index model (qwen: dflash2)");
     try row(out, sty, "--draft-length <n>", "drafts per verify batch, 1..15, capped by the");
     try more(out, "draft source; default the model entry's, else 4");
+    try row(out, sty, "--draft-max-depth <n>", "depth drafting stops at; 0 never; default measured");
     try row(out, sty, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e, or muse_glimmer");
     try more(out, "on a finetune whose chat template is not pinned");
     try row(out, sty, "--seed <n>", "sampler seed; default 0");
@@ -895,8 +895,10 @@ fn config(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "engine.model the default (gemma-4-26b-a4b) or, when it");
     try more(out, "is not installed, the first installed chat model; an");
     try more(out, "existing file is kept");
-    try row(out, sty, "sync", "add entries for installed models that have none and");
-    try more(out, "report the entries whose file is gone");
+    try row(out, sty, "sync", "add entries for installed models that have none, set");
+    try more(out, "index entries' measured defaults to the index's, add");
+    try more(out, "keys a newer nuclis introduced, and report the");
+    try more(out, "entries whose file is gone");
     try row(out, sty, "show", "every key's effective value and where it came from:");
     try more(out, "default, profile, file, model entry, or flag");
     try row(out, sty, "set", "change one key by its dotted name; the file is");
@@ -921,7 +923,7 @@ fn config(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "auto (AGENTS.md then CLAUDE.md), off, or a path.");
 
     try heading(out, sty, "Examples:");
-    try example(out, sty, "nuclis config sync --dry-run", "what a sync would add");
+    try example(out, sty, "nuclis config sync --dry-run", "what a sync would change");
     try example(out, sty, "nuclis config set engine.model qwen3.8-27b", "the default model");
     try example(out, sty, "nuclis config set models.qwen3.8-27b.generation.draft dflash2", "another drafter for one model");
     try example(out, sty, "nuclis config set generation.sampling.temperature 0.7", "a sampling override");

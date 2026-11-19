@@ -182,8 +182,10 @@ clip by its SHA-256 ([session.md](../engine/session.md#the-agents-token-cache)).
 | `gemma4-e4b-perplexity-4k` | `verify-long` | gemma4_e4b | [eval.md § the-long-context-record-2026-09-24](../benchmarks/record/eval.md#the-long-context-record-2026-09-24) |
 | `gemma4-26b-a4b-verify-depth-16k` | `verify-long` | gemma4_26b_a4b | [metal-backend.md § verify-rows-at-depth-on-gemma-4-2026-11-18](../benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18) |
 | `gemma4-26b-a4b-verify-depth-32k` | `verify-long` | gemma4_26b_a4b | [metal-backend.md § verify-rows-at-depth-on-gemma-4-2026-11-18](../benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18) |
+| `gemma4-26b-a4b-verify-depth-64k` | `verify-long` | gemma4_26b_a4b | [gemma4.md § supporting-65536-2026-11-19](../benchmarks/record/gemma4.md#supporting-65536-2026-11-19) |
 | `gemma4-e4b-verify-depth-16k` | `verify-long` | gemma4_e4b | [metal-backend.md § verify-rows-at-depth-on-gemma-4-2026-11-18](../benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18) |
 | `gemma4-e4b-verify-depth-32k` | `verify-long` | gemma4_e4b | [metal-backend.md § verify-rows-at-depth-on-gemma-4-2026-11-18](../benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18) |
+| `gemma4-e4b-verify-depth-64k` | `verify-long` | gemma4_e4b | [gemma4.md § supporting-65536-2026-11-19](../benchmarks/record/gemma4.md#supporting-65536-2026-11-19) |
 <!-- /gen -->
 
 The F16 cache's trace bound (1.0 / 5e-2) is the model's, not the kernels':
@@ -218,11 +220,11 @@ gate's set).
 - A sliding layer keeps its window and 9,232 rows of slack, a global one
   every row: at 32,768 tokens the F16 session is 2.77 GB on the 26B-A4B
   and 0.94 GB on the E4B; a rewind further back than the slack re-prefills.
-- The 26B-A4B's drafter gains 1.0–1.3× on prose and up to 1.65× on short
-  code; a verify batch's dense tile is flat at 100–125 GB/s from two to
-  eight rows ([record, 2026-11-19](../benchmarks/record/gemma4.md#what-a-verify-batch-pays-at-a-few-rows-2026-11-19)). Its prefill
-  is 0.78–0.93× of the reference's; at 32K it splits nearly evenly between
-  sliding attention, experts, and the projections.
+- At the supported 65,536 the 26B-A4B prefills 239 tok/s and decodes 32,
+  the E4B 308 and 33; both drafters fall below 1× there, so drafting stops
+  at a 32,768-token prompt by default (`generation.draft_max_depth`) ([record](../benchmarks/record/gemma4.md#supporting-65536-2026-11-19)).
+- The 26B-A4B's drafter gains 1.0–1.3× on prose, 1.65× on short code; a verify batch's dense tile is flat from two to eight rows ([record](../benchmarks/record/gemma4.md#what-a-verify-batch-pays-at-a-few-rows-2026-11-19)).
+  Its prefill at 32K splits nearly evenly: sliding attention, experts, projections.
 - The specialized prefill tiles round activations to half; Gemma's large
   activations make chunked prefill differ from per-token steps more than
   Qwen's (bounded, same greedy token).

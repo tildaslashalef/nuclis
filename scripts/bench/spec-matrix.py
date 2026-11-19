@@ -3,7 +3,8 @@
 
 A cell is (context, sampling, draft length, p_min). Each runs one `nuclis
 bench --speculative on` process: `--repeat` off/on pairs on one loaded
-model, 128 output tokens, F16 KV, context 32,768. A numeric context restores
+model, 128 output tokens, F16 KV, context 32,768 (or the next power of two
+that holds the prompt and the output, `ctx_for`). A numeric context restores
 the speed loop's saved prefix of the family's acceptance array
 (.zig-cache/speed/prefix, prefilled by the first run that needs it); `code`
 is the fixed short prompt of the speculative-decoding record. Reports are saved under
@@ -80,7 +81,16 @@ def cell_name(context, sampling, draft, p_min):
     return f"{context}-{sampling}-d{draft}" + ("" if p_min is None else f"-p{p_min:g}")
 
 
-def bench_argv(nuclis, model, model_key, prompt, sampling, draft, p_min, repeat, tokens, variant=None):
+def ctx_for(context, tokens):
+    """The cell's `--ctx-size`: 32,768, or the next power of two holding the prompt and its output."""
+    need = 0 if context == "code" else int(context) + tokens
+    ctx = 32768
+    while ctx < need:
+        ctx *= 2
+    return ctx
+
+
+def bench_argv(nuclis, model, model_key, prompt, sampling, draft, p_min, repeat, tokens, variant=None, ctx=32768):
     """One cell's off/on pairs; `draft` None is the no-drafter baseline run."""
     argv = [str(nuclis), "bench", "--backend", "metal", "--model", model]
     if variant is not None and draft is not None:
@@ -89,11 +99,12 @@ def bench_argv(nuclis, model, model_key, prompt, sampling, draft, p_min, repeat,
         argv += ["--prompt", CODE_PROMPT, "--raw"]
     else:
         argv += ["--prompt-tokens", str(prompt), "--prefix-cache", str(speed.PREFIX_DIR)]
-    argv += ["--max-tokens", str(tokens), "--ctx-size", "32768", "--kv", "f16"]
+    argv += ["--max-tokens", str(tokens), "--ctx-size", str(ctx), "--kv", "f16"]
     argv += ["--repeat", str(repeat), "--warmup", "0"]
     if draft is None:
         return argv + ["--speculative", "off"] + sampling_flags(model_key, sampling) + ["--json"]
-    argv += ["--speculative", "on", "--draft-length", str(draft)]
+    # The matrix measures the drafter itself, so no depth cap applies.
+    argv += ["--speculative", "on", "--draft-length", str(draft), "--draft-max-depth", "0"]
     if p_min is not None:
         argv += ["--draft-p-min", str(p_min)]
     return argv + sampling_flags(model_key, sampling) + ["--json"]
@@ -208,7 +219,16 @@ def main():
                 path = out_dir / f"{context}-{sampling}-baseline.json"
                 if (args.fresh or not path.exists()) and not args.report:
                     argv = bench_argv(
-                        speed.CANDIDATE, model, args.model, prompt, sampling, None, None, args.repeat, args.tokens
+                        speed.CANDIDATE,
+                        model,
+                        args.model,
+                        prompt,
+                        sampling,
+                        None,
+                        None,
+                        args.repeat,
+                        args.tokens,
+                        ctx=ctx_for(context, args.tokens),
                     )
                     time.sleep(args.cooldown)
                     result = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
@@ -235,6 +255,7 @@ def main():
                             args.repeat,
                             args.tokens,
                             variant,
+                            ctx=ctx_for(context, args.tokens),
                         )
                         time.sleep(args.cooldown)
                         result = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
@@ -278,6 +299,7 @@ class SelfTest(unittest.TestCase):
         self.assertNotIn("--draft-p-min", code)
         deep = bench_argv("nuclis", "m", "qwen38", Path("p.json"), "thinking", 7, 0.5, 3, 128)
         self.assertEqual(deep[deep.index("--draft-length") + 1], "7")
+        self.assertEqual(deep[deep.index("--draft-max-depth") + 1], "0")
         self.assertEqual(deep[deep.index("--draft-p-min") + 1], "0.5")
         self.assertIn("--prefix-cache", deep)
 
@@ -308,6 +330,13 @@ class SelfTest(unittest.TestCase):
             },
         )
         self.assertIn("10.50 → 10.00 → 12.00", line)
+
+    def test_ctx_for(self):
+        self.assertEqual(ctx_for("code", 128), 32768)
+        self.assertEqual(ctx_for("32639", 128), 32768)
+        self.assertEqual(ctx_for("32700", 128), 65536)
+        self.assertEqual(ctx_for("65407", 128), 65536)
+        self.assertEqual(ctx_for("65500", 128), 131072)
 
     def test_cell_name(self):
         self.assertEqual(cell_name("512", "greedy", 4, None), "512-greedy-d4")

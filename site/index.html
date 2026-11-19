@@ -184,29 +184,25 @@
 <section class="sec" id="numbers">
   <div class="wrap">
     <h2>Honest numbers, one machine.</h2>
-    <p class="sec-lede">The October 2026 record: an M4 Pro with 48 GB, the same tokens fed to nuclis and to a pinned llama.cpp. Gemma 4 26B-A4B decodes near 50 tokens a second, which makes an agent practical here; a dense 27B manages 8 to 12. The Gemma gap, prefill at long context most of all, is where the speed work goes. Later records compare nuclis with its own previous release.</p>
+    <p class="sec-lede">An M4 Pro with 48 GB, measured on 2026-11-19. Gemma 4 26B-A4B decodes 57 tokens a second on a short prompt and still 32 at a 64K one, which makes an agent practical here; a dense 27B manages 8 to 11. Every record is measured against nuclis's own previous one, never against another engine.</p>
 
     <div class="chart-card">
       <div class="chart-head">
-        <h3>Tokens per second</h3>
+        <h3>Tokens per second, as the prompt grows</h3>
         <div class="seg" role="group" aria-label="Phase">
           <button type="button" data-phase="decode" aria-pressed="true">Decode</button>
           <button type="button" data-phase="prefill" aria-pressed="false">Prefill</button>
         </div>
-        <div class="seg seg-ctx" role="group" aria-label="Prompt length in tokens">
-          <span class="seg-label" aria-hidden="true">Prompt</span>
-          <button type="button" data-ctx="512" aria-pressed="true">512</button>
-          <button type="button" data-ctx="4096" aria-pressed="false">4,096</button>
-          <button type="button" data-ctx="16384" aria-pressed="false">16,384</button>
-          <button type="button" data-ctx="32639" aria-pressed="false">32,639</button>
-        </div>
       </div>
-      <div class="legend">
-        <span><i class="dot dot-n"></i>nuclis</span>
-        <span><i class="dot dot-r"></i>llama.cpp, 2026-10</span>
+      <div class="legend" aria-label="Prompt length in tokens">
+        <span><i class="dot dot-n dot-c1"></i>512</span>
+        <span><i class="dot dot-n dot-c2"></i>4,096</span>
+        <span><i class="dot dot-n dot-c3"></i>16,384</span>
+        <span><i class="dot dot-n dot-c4"></i>32,639</span>
+        <span><i class="dot dot-n"></i>65,407</span>
       </div>
-      <div class="chart" id="chart-vs"></div>
-      <p class="chart-note">128 greedy tokens, the warm mean of three runs, release builds on both sides, 2026-10-04/05. Qwen3.8 on its first pinned file. <a class="icon-link" href="https://github.com/tildaslashalef/nuclis/blob/main/docs/benchmarks/README.md">How these were measured<svg><use href="#i-out"/></svg></a></p>
+      <div class="chart" id="chart-today"></div>
+      <p class="chart-note">128 greedy tokens, a release build, an F16 cache: the warm mean of three runs to 16,384, one run each at 32,639 and 65,407 on a 65,536 context, where Gemma 4 26B-A4B peaks at 4.2 GB resident and nothing swaps. <a class="icon-link" href="https://github.com/tildaslashalef/nuclis/blob/main/docs/benchmarks/README.md">How these were measured<svg><use href="#i-out"/></svg></a></p>
     </div>
 
     <div class="spec">
@@ -414,18 +410,18 @@ cd nuclis &amp;&amp; make metal
 </footer>
 
 <!-- Measured on the M4 Pro, copied from README.md's Results and Speculative
-     decoding tables; make site-check fails when the two differ. -->
+     decoding tables; make site-check fails when they differ. -->
 <script type="application/json" id="bench">
 {
-  "results": [
-    { "model": "Gemma 4 26B-A4B", "decode": { "512": [54.02, 68.14], "4096": [48.64, 62.37], "16384": [37.93, 53.31], "32639": [31.23, 43.36] }, "prefill": { "512": [521.06, 584.62], "4096": [358.23, 559.48], "16384": [206.89, 456.93], "32639": [136.86, 325.68] } },
-    { "model": "Gemma 4 E4B QAT", "decode": { "512": [46.84, 62.10], "4096": [45.40, 59.26], "16384": [38.02, 52.29], "32639": [33.08, 44.58] }, "prefill": { "512": [531.03, 597.96], "4096": [430.80, 600.85], "16384": [276.77, 516.49], "32639": [189.30, 388.42] } },
-    { "model": "Qwen3.8-27B (first pin)", "decode": { "512": [11.67, 10.21], "4096": [10.38, 10.02], "16384": [8.30, 7.54], "32639": [7.53, 6.56] }, "prefill": { "512": [94.21, 92.03], "4096": [85.35, 95.49], "16384": [62.69, 79.31], "32639": [48.91, 69.30] } }
-  ],
   "speculative": [
     { "model": "Gemma 4 26B-A4B", "draft": 4, "512": [57.4, 66.3], "32639": [42.1, 44.1], "ratio": { "512": "1.16", "32639": "1.05" } },
     { "model": "Gemma 4 E4B QAT", "draft": 6, "512": [46.9, 81.9], "32639": [33.6, 37.5], "ratio": { "512": "1.75", "32639": "1.12" } },
-    { "model": "Qwen3.8-27B (first pin)", "draft": 7, "512": [11.6, 17.4], "32639": [7.9, 9.8], "ratio": { "512": "1.50", "32639": "1.26" } }
+    { "model": "Qwen3.8-27B", "draft": 7, "512": [11.6, 17.4], "32639": [7.9, 9.8], "ratio": { "512": "1.50", "32639": "1.26" } }
+  ],
+  "today": [
+    { "model": "Gemma 4 26B-A4B", "decode": { "512": 57.14, "4096": 54.22, "16384": 48.63, "32639": 41.47, "65407": 32.13 }, "prefill": { "512": 539.50, "4096": 434.52, "16384": 374.42, "32639": 316.58, "65407": 239.04 } },
+    { "model": "Gemma 4 E4B QAT", "decode": { "512": 52.88, "4096": 51.53, "16384": 47.18, "32639": 41.94, "65407": 32.65 }, "prefill": { "512": 549.30, "4096": 507.42, "16384": 456.65, "32639": 402.99, "65407": 308.18 } },
+    { "model": "Qwen3.8-27B", "decode": { "512": 11.16, "4096": 9.23, "16384": 9.02, "32639": 9.17, "65407": 8.41 }, "prefill": { "512": 93.16, "4096": 84.02, "16384": 77.48, "32639": 73.17, "65407": 61.19 } }
   ]
 }
 </script>

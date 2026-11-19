@@ -148,6 +148,7 @@ const engine_flags = [_]Flag{
     .{ .name = "--speculative", .value = .{ .choice = &.{ "on", "off" } }, .summary = "verify drafts from the draft source" },
     .{ .name = "--draft", .value = .{ .choice = draft_variants }, .summary = "an index model's draft variant" },
     .{ .name = "--draft-length", .value = .number, .summary = "drafts per verify batch" },
+    .{ .name = "--draft-max-depth", .value = .number, .summary = "context depth drafting stops at; 0 never" },
     prompt_profile,
     .{ .name = "--seed", .value = .number, .summary = "sampler seed" },
     .{ .name = "--temperature", .value = .number, .summary = "0 is greedy" },

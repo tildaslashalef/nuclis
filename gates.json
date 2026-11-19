@@ -2061,6 +2061,32 @@
    "evidence": "docs/benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18"
   },
   {
+   "name": "gemma4-26b-a4b-verify-depth-64k",
+   "family": "gemma4",
+   "tier": "verify-long",
+   "model": "gemma4_26b_a4b",
+   "mtp": "gemma4_26b_a4b_mtp",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-model",
+    "{mtp}",
+    "--verify-depth",
+    "tests/fixtures/run-2026-09-18-gemma4-26b-a4b/prompt-65407.json",
+    "--prefix-cache",
+    ".zig-cache/speed/prefix",
+    "--capacity",
+    "65536"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/benchmarks/record/gemma4.md#supporting-65536-2026-11-19"
+  },
+  {
    "name": "gemma4-e4b-verify-depth-16k",
    "family": "gemma4",
    "tier": "verify-long",
@@ -2107,6 +2133,32 @@
     "kind": "exit"
    },
    "evidence": "docs/benchmarks/record/metal-backend.md#verify-rows-at-depth-on-gemma-4-2026-11-18"
+  },
+  {
+   "name": "gemma4-e4b-verify-depth-64k",
+   "family": "gemma4",
+   "tier": "verify-long",
+   "model": "gemma4_e4b",
+   "mtp": "gemma4_e4b_mtp",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-model",
+    "{mtp}",
+    "--verify-depth",
+    "tests/fixtures/run-2026-10-04-gemma4-e4b/prompt-65407.json",
+    "--prefix-cache",
+    ".zig-cache/speed/prefix",
+    "--capacity",
+    "65536"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/benchmarks/record/gemma4.md#supporting-65536-2026-11-19"
   },
   {
    "name": "qwen3-tts-codec-cpu",

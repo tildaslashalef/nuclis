@@ -662,6 +662,8 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     defer listener.deinit(io);
     if (!isLoopback(listen_address))
         try out.print("{s}warning:{s} listening beyond this machine ({s}); the API has no authentication\n", .{ sty.on(.warning), sty.off(), options.host });
+    var notice_buf: [96]u8 = undefined;
+    if (config.pastSupported(&notice_buf, context.loaded.config.engine.ctx_size)) |notice| try out.print("{s}notice:{s} {s}\n", .{ sty.on(.warning), sty.off(), notice });
     if (web_service) |*service| try out.print("{s}web tools:{s} {s} run here for requests that ask, through {s}\n", .{ sty.on(.label), sty.off(), if (service.context_offered) "web_search, web_fetch, and web_context" else "web_search and web_fetch", service.base });
     try out.print("{s}nuclis serve{s} listening on {s}http://{f}/v1{s} {s}(backend {s}, default decision model {s}, models within {d:.1} GiB{s}; Ctrl-C stops){s}\n", .{ sty.on(.header), sty.off(), sty.on(.code), listen_address, sty.off(), sty.on(.dim), @tagName(backend), context.default_model, @as(f64, @floatFromInt(server.memory.limit)) / (1 << 30), if (options.log) "" else ", quiet", sty.off() });
     try out.flush();

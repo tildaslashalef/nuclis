@@ -71,23 +71,26 @@ and `nuclis config sync` registers what was pulled.
 
 ## Results
 
-The 2026-10-04/05 record against the pinned llama.cpp `7620399` (Metal, flash
-attention, F16 cache) on the same token arrays: Apple M4 Pro (12 CPU, 16 GPU
-cores), 48 GiB, macOS 27.0.1, ReleaseSafe, 128 greedy output tokens, the mean
-of three runs after a warmup, Qwen3.8 on its first pinned file. Tokens per
-second, nuclis / llama.cpp, by prompt length:
+nuclis today (2026-11-19): Apple M4 Pro, 48 GiB, macOS 27.2.1, ReleaseSafe,
+Metal, F16 cache, 128 greedy output tokens; the mean of three runs after a
+warmup to 16,384, one run each at 32,639 and 65,407 on a 65,536 context, with
+no swap ([2026-11-19](docs/benchmarks/record/gemma4.md#sliding-layers-keep-their-window-2026-11-19)).
+Tokens per second by prompt length; each record is measured against nuclis's
+own previous one
+([the October 2026 comparison with llama.cpp](docs/benchmarks/record/benchmarks.md#the-benchmarks-on-macos-27-2026-10-04)
+is history):
 
-| Decode | 512 | 4,096 | 16,384 | 32,639 |
-| --- | ---: | ---: | ---: | ---: |
-| Gemma 4 26B-A4B | 54.02 / 68.14 | 48.64 / 62.37 | 37.93 / 53.31 | 31.23 / 43.36 |
-| Gemma 4 E4B QAT | 46.84 / 62.10 | 45.40 / 59.26 | 38.02 / 52.29 | 33.08 / 44.58 |
-| Qwen3.8-27B (first pin) | 11.67 / 10.21 | 10.38 / 10.02 | 8.30 / 7.54 | 7.53 / 6.56 |
+| Decode | 512 | 4,096 | 16,384 | 32,639 | 65,407 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Gemma 4 26B-A4B | 57.14 | 54.22 | 48.63 | 41.47 | 32.13 |
+| Gemma 4 E4B QAT | 52.88 | 51.53 | 47.18 | 41.94 | 32.65 |
+| Qwen3.8-27B | 11.16 | 9.23 | 9.02 | 9.17 | 8.41 |
 
-| Prefill | 512 | 4,096 | 16,384 | 32,639 |
-| --- | ---: | ---: | ---: | ---: |
-| Gemma 4 26B-A4B | 521.06 / 584.62 | 358.23 / 559.48 | 206.89 / 456.93 | 136.86 / 325.68 |
-| Gemma 4 E4B QAT | 531.03 / 597.96 | 430.80 / 600.85 | 276.77 / 516.49 | 189.30 / 388.42 |
-| Qwen3.8-27B (first pin) | 94.21 / 92.03 | 85.35 / 95.49 | 62.69 / 79.31 | 48.91 / 69.30 |
+| Prefill | 512 | 4,096 | 16,384 | 32,639 | 65,407 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Gemma 4 26B-A4B | 539.50 | 434.52 | 374.42 | 316.58 | 239.04 |
+| Gemma 4 E4B QAT | 549.30 | 507.42 | 456.65 | 402.99 | 308.18 |
+| Qwen3.8-27B | 93.16 | 84.02 | 77.48 | 73.17 | 61.19 |
 
 **Speculative decoding**: a small drafter proposes tokens and the model checks
 them in one batch, keeping what it would have produced itself. Decode off → on,
@@ -97,29 +100,25 @@ greedy, the entry's draft length, median of three (2026-10-05; 26B-A4B 11-18):
 | --- | ---: | ---: | ---: |
 | Gemma 4 26B-A4B | 4 | 57.4 → 66.3 (1.16×) | 42.1 → 44.1 (1.05×) |
 | Gemma 4 E4B QAT | 6 | 46.9 → 81.9 (1.75×) | 33.6 → 37.5 (1.12×) |
-| Qwen3.8-27B (first pin) | 7 | 11.6 → 17.4 (1.50×) | 7.9 → 9.8 (1.26×) |
+| Qwen3.8-27B | 7 | 11.6 → 17.4 (1.50×) | 7.9 → 9.8 (1.26×) |
 
-**Qwen3.8-27B today**, on Unsloth's re-made file: a new baseline by nuclis
-alone, as every record after 2026-10 is ([2026-11-12](docs/benchmarks/history.md#the-re-made-qwen38-file-2026-11-12)), each drafter at draft 7:
-
-| Prompt | Decode | Prefill | MTP | DFlash2 |
-| --- | ---: | ---: | ---: | ---: |
-| 512 | 11.79 | 94.22 | 18.46 (1.61×) | 18.18 (1.63×) |
-| 4,096 | 11.41 | 86.46 | 15.98 (1.42×) | 16.81 (1.53×) |
+Qwen3.8-27B's re-made file drafts at draft 7 to 18.46 tok/s with MTP and
+18.18 with DFlash2 at 512 (1.61×, 1.63×), 15.98 and 16.81 at 4,096
+([2026-11-12](docs/benchmarks/history.md#the-re-made-qwen38-file-2026-11-12)).
 
 An agent re-reads a growing prompt and writes a few hundred tokens a step. On
 the agent's eighteen tasks ([2026-11-18](docs/benchmarks/record/agent.md#where-an-agent-turn-goes-2026-11-18)),
 drafters on, a task takes 35 s in the model on the E4B, 51 s on the 26B-A4B,
 and 108 s on Qwen3.8-27B. The 26B-A4B's drafter saves 15 % there, and prefill
-is then 61 % of its time. It is work in progress: decode is 0.71–0.79× of the
-reference's, prefill 0.93× at 32,639 ([2026-11-19](docs/benchmarks/record/gemma4.md#prefill-with-materialized-global-attention-2026-11-19)),
-and past 32K its session reaches 15.7 GB at 128K while its drafter stops paying
-([2026-11-18](docs/benchmarks/record/gemma4.md#context-past-32k-2026-11-18)). Speed work goes to the drafter's verify batch, then a
-window for the sliding layers. Method and every record: [docs/benchmarks](docs/benchmarks/README.md).
+is then 61 % of its time. Past 32K the drafters stop paying: greedy, the
+26B-A4B's is 1.05× at 32,639 and 0.94× at 65,407, the E4B's 1.14× and
+0.97×, and below 1× sooner when sampling, so drafting stops at a
+32,768-token prompt by default (`generation.draft_max_depth`, 0 never). Method and every record: [docs/benchmarks](docs/benchmarks/README.md).
 
 **How it got here.** nuclis began with Qwen3.8-27B, whose attention and Gated
 DeltaNet layers are where the kernels were first written and tuned; it decoded
-faster than the reference at every length, and stays supported, if slow.
+faster than llama.cpp at every length in October 2026, and stays supported,
+if slow.
 
 ## Beyond chat
 

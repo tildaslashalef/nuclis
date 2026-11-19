@@ -89,7 +89,7 @@ pub const Options = struct {
 
 /// The flags `generate`, `bench`, `agent`, and `tokenize` read with a value;
 /// which command accepts which is decided where the value is read.
-const value_flags = [_][]const u8{ "--accept", "--audio", "--backend", "--capture", "--ctx-size", "--draft", "--draft-length", "--draft-p-min", "--image", "--image-max-tokens", "--kv", "--logits", "--max-tokens", "--min-p", "--prefix-cache", "--presence-penalty", "--prompt", "--prompt-file", "--prompt-profile", "--prompt-tokens", "--repeat", "--repetition-penalty", "--seed", "--speculative", "--temperature", "--think", "--thinking-budget", "--top-k", "--top-p", "--trace-dir", "--verify-rows", "--warmup" };
+const value_flags = [_][]const u8{ "--accept", "--audio", "--backend", "--capture", "--ctx-size", "--draft", "--draft-length", "--draft-max-depth", "--draft-p-min", "--image", "--image-max-tokens", "--kv", "--logits", "--max-tokens", "--min-p", "--prefix-cache", "--presence-penalty", "--prompt", "--prompt-file", "--prompt-profile", "--prompt-tokens", "--repeat", "--repetition-penalty", "--seed", "--speculative", "--temperature", "--think", "--thinking-budget", "--top-k", "--top-p", "--trace-dir", "--verify-rows", "--warmup" };
 
 fn isValueFlag(flag: []const u8) bool {
     for (value_flags) |known| if (std.mem.eql(u8, flag, known)) return true;
@@ -404,6 +404,11 @@ pub fn parseArgs(args: []const []const u8) !Options {
                 const n = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
                 if (n == 0 or n > config.max_draft_length) return error.InvalidNumber;
                 f.draft_length = n;
+            } else if (std.mem.eql(u8, flag, "--draft-max-depth")) {
+                if (f.draft_max_depth != null) return error.DuplicateOption;
+                const n = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
+                if (n > config.max_context) return error.InvalidNumber;
+                f.draft_max_depth = n;
             } else if (command == .agent and std.mem.eql(u8, flag, "--thinking-budget")) {
                 if (f.thinking_budget != null) return error.DuplicateOption;
                 const n = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
@@ -778,8 +783,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                         break :blk names;
                     } else &.{};
                     report.pruned = prune.len > 0;
-                    if (!options.dry_run and (entries.len > 0 or prune.len > 0)) {
-                        const text = try config.registerEntries(alloc, current, file, entries, prune, diag);
+                    report.added = try config.missingKeys(arena, current.?);
+                    const edits = try discover.toEdits(arena, report.refreshed);
+                    if (!options.dry_run and (entries.len > 0 or prune.len > 0 or edits.len > 0 or report.added.len > 0)) {
+                        const text = try config.registerEntries(alloc, current, file, entries, .{ .prune = prune, .edits = edits, .fill = true }, diag);
                         defer alloc.free(text);
                         try config.write(io, .cwd(), file, text);
                         report.written = true;
@@ -1216,6 +1223,9 @@ test "agent parses sampling and effort flags without a prompt" {
     try std.testing.expectEqual(@as(usize, 2), (try parseArgs(&.{ "agent", "--speculative", "on", "--draft-length", "2" })).flags.draft_length.?);
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--speculative", "maybe" }));
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--draft-length", "0" }));
+    try std.testing.expectEqual(@as(usize, 0), (try parseArgs(&.{ "bench", "--prompt", "a", "--draft-max-depth", "0" })).flags.draft_max_depth.?);
+    try std.testing.expectEqual(@as(usize, 49152), (try parseArgs(&.{ "agent", "--draft-max-depth", "49152" })).flags.draft_max_depth.?);
+    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--draft-max-depth", "99999999" }));
     try std.testing.expectEqual(config.ImageMaxTokens{ .tokens = 512 }, (try parseArgs(&.{ "generate", "--prompt", "a", "--image-max-tokens", "512" })).flags.image_max_tokens.?);
     try std.testing.expectEqual(config.ImageMaxTokens.auto, (try parseArgs(&.{ "agent", "--image-max-tokens", "auto" })).flags.image_max_tokens.?);
     try std.testing.expectEqual(@as(?usize, 0), (try parseArgs(&.{ "agent", "--thinking-budget", "0" })).flags.thinking_budget);

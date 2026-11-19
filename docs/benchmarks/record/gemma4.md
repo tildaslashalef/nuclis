@@ -1369,3 +1369,62 @@ reuse to `rewind_out_of_reach`. Depth term 29.2 ns (30.8).
 is held (`Session.hold`), and a rewind past what compaction kept returns
 `RewindOutOfRange`, which the agent counts as `rewind_out_of_reach` and
 replays; the unit tests cover that path, no measured run reached it.
+
+## Supporting 65,536 (2026-11-19)
+
+The unit after § Sliding layers keep their window: 65,536 becomes the
+supported context, measured and gated. M4 Pro 48 GB, ReleaseSafe, base
+`583635d`, both QAT files and Qwen3.8-27B, Metal, F16 cache. Reports:
+the acceptance records `nuclis-2026-11-19-64k.json`,
+`nuclis-2026-11-19-gemma4-26b-a4b-64k.json`,
+`nuclis-2026-11-19-gemma4-e4b-64k.json`, and
+[context-2026-11-19/](../context-2026-11-19/).
+
+**Acceptance** at 32,639 and 65,407 tokens (one run each; no swap growth):
+
+| | prefill, tok/s | decode, tok/s | session | peak | first token |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 26B-A4B | 316.6 / 239.0 | 41.5 / 32.1 | 3.44 GB | 4.22 GB | 273.6 s |
+| E4B | 403.0 / 308.2 | 41.9 / 32.7 | 1.47 GB | 2.16 GB | 212.2 s |
+| Qwen3.8-27B | 73.2 / 61.2 | 9.2 / 8.4 | 4.45 GB | 4.99 GB | 1,069 s |
+
+**Gates.** `gemma4-26b-a4b-verify-depth-64k` and
+`gemma4-e4b-verify-depth-64k`, the verify path against plain decode at
+65,407: worst max abs 2.335e-3 and relative RMS 9.470e-5 on the 26B-A4B
+(bounds 1.5e-2 / 8.0e-4), 3.249e-2 and 1.993e-3 on the E4B (1.5e-1 /
+1.6e-2).
+
+**The drafter with depth** (`make spec-matrix`, five interleaved pairs,
+`matrix-*.txt`), speedup of drafting on over off:
+
+| | 16,384 | 32,639 | 65,407 |
+| --- | ---: | ---: | ---: |
+| 26B-A4B, draft 4, greedy | 1.256× | 1.048× | 0.942× |
+| 26B-A4B, draft 4, instruct | 1.060× | 0.843× | 0.792× |
+| E4B, draft 6, greedy | 1.311× | 1.141× | 0.973× |
+| E4B, draft 6, instruct | 1.089× | 1.006× | 0.738× |
+
+Acceptance per step barely moves with depth (2.85 → 2.34 accepted on the
+26B-A4B greedy); the verify step's cost grows with it (C 63.6 → 111.9
+ms) while plain decode slows less, so the break-even E* = C / t_plain
+rises past what acceptance gives. The model reproduces the measured
+ratios to about 1 %.
+
+**The depth cap.** Each drafter's verdict carries `max_depth` 32,768: a
+run whose prompt ends at or past it decodes plainly with the GPU's
+shortcuts; one that starts below drafts to its end. It is a setting
+(`generation.draft_max_depth`, per model and `--draft-max-depth`; `0`
+never caps), not a constant. At the default (`cap.txt`, three pairs):
+65,407 runs take no draft step and run at plain speed (1.000–1.009×);
+16,384 runs still draft (1.07–1.34×). A mid-run switch was not built: it
+would read back full logits for every token. A verify batch with nothing
+drafted was measured slower than plain decode (25 against 17.5 ms).
+
+**Notice and refusal.** A window past 65,536 runs with the notice
+"context N is past the supported 65536: unmeasured by the gates"; a
+window past the file's own trained context is refused
+(`ContextBeyondModel`).
+
+**Open.** The 26B-A4B's sampled crossover sits near 21K on prose; code,
+whose acceptance runs higher, was not measured, so the cap stays at
+32,768 for both files.

@@ -282,6 +282,22 @@ the loaded drafter's `max_proposals` is `InvalidDraftLength` at run time.
 A configuration file keeps the values it was written with; `nuclis config
 init` writes the current defaults.
 
+`generation.draft_max_depth` stops drafting by depth, because a verify
+batch's rows each attend over the whole context while the tokens it saves
+do not grow: both Gemma 4 drafters fall below 1× past 32K
+([record](../benchmarks/record/gemma4.md#supporting-65536-2026-11-19)).
+`Speculative.max_position` is the cap; a run whose prompt ends at or past
+it decodes plainly, with the GPU's selection shortcuts, and one that starts
+below drafts to its end, since plain steps after a batch would sample every
+token from full logits. The value resolves flag → entry → global → the
+draft file's verdict (`Verdict.max_depth`, never copied into an entry), 0
+meaning none. The verdict is this machine's measurement and a default: on
+other hardware `make spec-matrix` (which passes `--draft-max-depth 0`)
+measures the crossover again. Skipping the drafter past the cap is exact:
+Gemma 4's heads keep no rows of their own, and their one carried hidden
+row is rewritten by the next prompt's commit; a drafter with its own rows
+would only accept less after a rewind below the cap.
+
 The commands open the model with `.preferred` when the switch is on and
 `.none` otherwise. `bench` with the switch on measures every run as an
 off/on pair on the one loaded model, so the pair's ratio is the speedup

@@ -45,7 +45,13 @@ pub const SpeechMode = enum {
 
 /// A draft source's measured verdict: on or off by default, and the draft
 /// length the record chose.
-pub const Verdict = struct { speculative: bool, draft_length: usize };
+pub const Verdict = struct {
+    speculative: bool,
+    draft_length: usize,
+    /// The context depth drafting stops at, where the measured off/on pairs
+    /// fall below 1×; null drafts at any depth.
+    max_depth: ?usize = null,
+};
 
 /// One pinned file of an artifact. `path` is where it lands under the
 /// artifact's repository directory and, without `remote`, its Hub name too.
@@ -258,9 +264,10 @@ pub const artifacts = [_]Artifact{
         .files = &.{
             .{ .role = .main, .path = "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf", .size = 14_249_047_104, .sha256 = "a7c5bc715f5ff8e99a3e8901ce7d2b42b402c669bf24f7c5250747633d0f5891" },
             .{ .role = .mmproj, .path = "mmproj-BF16.gguf", .size = 1_194_828_256, .sha256 = "7b06953ccdbe8cf363f47841a7afaacd2b1c2ff9a8d6b426fdec7521a6878744", .used_for = "image input" },
-            // 0.63-0.76x on prose at drafts 2-7: rows route to their own
-            // experts; off (docs/benchmarks/history.md § The re-priced speculative verdicts (2026-10-01)).
-            .{ .role = .draft, .path = "MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf", .size = 251_939_328, .sha256 = "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a", .used_for = "speculative decoding", .verdict = .{ .speculative = true, .draft_length = 4 } },
+            // On at draft 4 once a verify batch's experts ran through the decode
+            // path; past 32,768 below 1x (0.94x greedy, 0.79x sampled at 65,407:
+            // docs/benchmarks/record/gemma4.md § Supporting 65,536 (2026-11-19)).
+            .{ .role = .draft, .path = "MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf", .size = 251_939_328, .sha256 = "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a", .used_for = "speculative decoding", .verdict = .{ .speculative = true, .draft_length = 4, .max_depth = 32768 } },
         },
     },
     // The on-device E4B, QAT file only: per-layer embeddings, shared KV
@@ -278,9 +285,10 @@ pub const artifacts = [_]Artifact{
         .files = &.{
             .{ .role = .main, .path = "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf", .size = 4_215_695_776, .sha256 = "df0fd4ee07072c607c29a0a1cb4f98918426cca12f45a2776bdd6ee6d09a4de3" },
             .{ .role = .mmproj, .path = "mmproj-BF16.gguf", .size = 991_552_320, .sha256 = "7c9bafa27f82d658eda805c1d82ef62bb0368e1ff75f64f77de58ad318beaaf9", .used_for = "image and audio input" },
-            // Prose 1.47x geometric mean, 0.99x at 32K at draft 6
-            // (docs/benchmarks/history.md § The re-priced speculative verdicts (2026-10-01)).
-            .{ .role = .draft, .path = "MTP/mtp-gemma-4-E4B-it-Q4_0.gguf", .size = 59_678_016, .sha256 = "423074e537504b4f9ec5eafed5c639fac82c96631626efccacdd3c4039b20605", .used_for = "speculative decoding", .verdict = .{ .speculative = true, .draft_length = 6 } },
+            // Prose 1.47x geometric mean at draft 6; past 32,768 below 1x
+            // (0.97x greedy, 0.74x sampled at 65,407: docs/benchmarks/record/gemma4.md
+            // § Supporting 65,536 (2026-11-19)).
+            .{ .role = .draft, .path = "MTP/mtp-gemma-4-E4B-it-Q4_0.gguf", .size = 59_678_016, .sha256 = "423074e537504b4f9ec5eafed5c639fac82c96631626efccacdd3c4039b20605", .used_for = "speculative decoding", .verdict = .{ .speculative = true, .draft_length = 6, .max_depth = 32768 } },
         },
     },
     // Meta's dense agentic model with its DFlash drafter. Legacy: no gate

@@ -72,7 +72,8 @@
         "code",
         "prose512-draft",
         "code-draft",
-        "acceptance"
+        "acceptance",
+        "acceptance64"
       ]
     },
     "gemma4-26b-a4b": {
@@ -97,7 +98,8 @@
       "record_suffix": "gemma4-e4b",
       "shapes": [
         "prose512",
-        "acceptance"
+        "acceptance",
+        "acceptance64"
       ],
       "evidence": {
         "acceptance": "docs/benchmarks/README.md"

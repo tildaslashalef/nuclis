@@ -124,7 +124,7 @@ The bounds are host constants, never the model's; the tools' rows
 | Limit | Value | Declared in |
 | --- | --- | --- |
 | context ceiling (tokens) | 131,072 | inference/build.zig `default_max_context` |
-| supported context (tokens) | 32,768 | inference/src/runtime/session.zig `supported_context` |
+| supported context (tokens) | 65,536 | inference/src/runtime/session.zig `supported_context` |
 | output budget (tokens) | 16,384 | src/config.zig `max_output_tokens` |
 | draft length | 15 | inference/src/engine.zig `max_draft_length` |
 | prefill chunk (tokens) | 256 | inference/src/engine.zig `prefill_chunk` |

@@ -44,11 +44,11 @@ REQUIRED_FILES = [
     "wrangler.jsonc",
     ".assetsignore",
 ]
-# The prompt lengths of the README's *Results* tables, one table per phase.
-CONTEXTS = ("512", "4096", "16384", "32639")
+# The README's *Results* tables, one per phase, one rate per cell.
+TODAY_CONTEXTS = ("512", "4096", "16384", "32639", "65407")
 RESULTS_HEADERS = {
-    "decode": "| Decode | 512 | 4,096 | 16,384 | 32,639 |",
-    "prefill": "| Prefill | 512 | 4,096 | 16,384 | 32,639 |",
+    "decode": "| Decode | 512 | 4,096 | 16,384 | 32,639 | 65,407 |",
+    "prefill": "| Prefill | 512 | 4,096 | 16,384 | 32,639 | 65,407 |",
 }
 SPEC_HEADER = "| Model | Draft | 512 | 32,639 |"
 
@@ -142,25 +142,38 @@ def table_rows(markdown, header):
     return rows
 
 
-def readme_results(markdown):
-    """{model: {"decode": {"512": [n, r], ...}, "prefill": {...}}} from the *Results* tables."""
+def readme_today(markdown):
+    """{model: {"decode": {"512": rate, ...}, "prefill": {...}}} from the *Results* tables."""
     out = {}
     for phase, header in RESULTS_HEADERS.items():
         rows = table_rows(markdown, header)
         if rows is None:
             return None
         for model, *cells in rows:
-            if len(cells) != len(CONTEXTS):
-                raise ValueError(f"{phase} row for {model} has {len(cells)} lengths, not {len(CONTEXTS)}")
-            out.setdefault(model, {})[phase] = {ctx: pair(cell) for ctx, cell in zip(CONTEXTS, cells)}
+            if len(cells) != len(TODAY_CONTEXTS):
+                raise ValueError(f"{phase} row for {model} has {len(cells)} lengths, not {len(TODAY_CONTEXTS)}")
+            out.setdefault(model, {})[phase] = {ctx: float(cell) for ctx, cell in zip(TODAY_CONTEXTS, cells)}
     if any(set(entry) != set(RESULTS_HEADERS) for entry in out.values()):
         raise ValueError("the decode and prefill tables list different models")
     return out
 
 
-def pair(cell):
-    """`"10.62 / 9.66"` -> [10.62, 9.66]"""
-    return [float(x) for x in cell.split("/")]
+def compare_today(bench, today):
+    problems = []
+    site = {r["model"]: r for r in bench.get("today", [])}
+    if list(site) != list(today):
+        problems.append(f"bench today models {list(site)} != README {list(today)}")
+    for model, want in today.items():
+        got = site.get(model)
+        if got is None:
+            continue
+        for phase in RESULTS_HEADERS:
+            for ctx in TODAY_CONTEXTS:
+                if got[phase].get(ctx) != want[phase][ctx]:
+                    problems.append(
+                        f"{model} today {phase} {ctx}: site {got[phase].get(ctx)} != README {want[phase][ctx]}"
+                    )
+    return problems
 
 
 SPEC_CELL = re.compile(r"^([\d.]+) → ([\d.]+) \(([\d.]+)×\)$")
@@ -184,19 +197,8 @@ def readme_speculative(markdown):
     return out
 
 
-def compare_bench(bench, results, spec):
+def compare_spec(bench, spec):
     problems = []
-    site_results = {r["model"]: r for r in bench.get("results", [])}
-    if list(site_results) != list(results):
-        problems.append(f"bench results models {list(site_results)} != README {list(results)}")
-    for model, want in results.items():
-        got = site_results.get(model)
-        if got is None:
-            continue
-        for phase in ("decode", "prefill"):
-            for ctx in CONTEXTS:
-                if got[phase].get(ctx) != want[phase][ctx]:
-                    problems.append(f"{model} {phase} {ctx}: site {got[phase].get(ctx)} != README {want[phase][ctx]}")
     site_spec = {r["model"]: r for r in bench.get("speculative", [])}
     if list(site_spec) != list(spec):
         problems.append(f"bench speculative models {list(site_spec)} != README {list(spec)}")
@@ -359,13 +361,14 @@ def run():
     check_page(SITE / "404.html", problems)
     check_versions(index, problems)
     readme = (ROOT / "README.md").read_text()
-    results, spec = readme_results(readme), readme_speculative(readme)
-    if results is None or spec is None:
+    spec, today = readme_speculative(readme), readme_today(readme)
+    if spec is None or today is None:
         problems.append("README.md: a Results or Speculative decoding table header changed; update site-check.py")
     else:
         try:
             bench = json.loads(index.data_blocks.get("bench", ""))
-            problems += compare_bench(bench, results, spec)
+            problems += compare_today(bench, today)
+            problems += compare_spec(bench, spec)
         except json.JSONDecodeError as e:
             problems.append(f"site/index.html: #bench does not parse: {e}")
     for p in problems:
@@ -386,12 +389,12 @@ class SelfTest(unittest.TestCase):
             "## Results",
             "",
             RESULTS_HEADERS["decode"],
-            "| --- | ---: | ---: | ---: | ---: |",
-            "| A | 10.62 / 9.66 | 10.20 / 9.21 | 8.27 / 7.32 | 7.55 / 6.71 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+            "| A | 57.14 | 54.22 | 48.63 | 41.47 | 32.13 |",
             "",
             RESULTS_HEADERS["prefill"],
-            "| --- | ---: | ---: | ---: | ---: |",
-            "| A | 90.45 / 89.19 | 83.70 / 89.26 | 62.70 / 74.07 | 49.55 / 67.28 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+            "| A | 539.50 | 434.52 | 374.42 | 316.58 | 239.04 |",
             "",
             SPEC_HEADER,
             "| --- | ---: | ---: | ---: |",
@@ -402,23 +405,6 @@ class SelfTest(unittest.TestCase):
 
     def bench(self):
         return {
-            "results": [
-                {
-                    "model": "A",
-                    "decode": {
-                        "512": [10.62, 9.66],
-                        "4096": [10.2, 9.21],
-                        "16384": [8.27, 7.32],
-                        "32639": [7.55, 6.71],
-                    },
-                    "prefill": {
-                        "512": [90.45, 89.19],
-                        "4096": [83.7, 89.26],
-                        "16384": [62.7, 74.07],
-                        "32639": [49.55, 67.28],
-                    },
-                }
-            ],
             "speculative": [
                 {
                     "model": "A",
@@ -428,40 +414,53 @@ class SelfTest(unittest.TestCase):
                     "ratio": {"512": "1.51", "32639": "1.26"},
                 }
             ],
+            "today": [
+                {
+                    "model": "A",
+                    "decode": {"512": 57.14, "4096": 54.22, "16384": 48.63, "32639": 41.47, "65407": 32.13},
+                    "prefill": {"512": 539.5, "4096": 434.52, "16384": 374.42, "32639": 316.58, "65407": 239.04},
+                }
+            ],
         }
 
-    def test_tables_parse_and_match(self):
-        results, spec = readme_results(self.README), readme_speculative(self.README)
-        assert results is not None and spec is not None
-        self.assertEqual(results["A"]["prefill"]["32639"], [49.55, 67.28])
-        self.assertEqual(results["A"]["decode"]["16384"], [8.27, 7.32])
+    def test_speculation_parses_and_matches(self):
+        spec = readme_speculative(self.README)
+        assert spec is not None
         self.assertEqual(spec["A"]["ratios"], {"512": "1.51", "32639": "1.26"})
-        self.assertEqual(compare_bench(self.bench(), results, spec), [])
+        self.assertEqual(compare_spec(self.bench(), spec), [])
 
-    def test_a_drifted_number_is_named(self):
+    def test_today_parses_and_matches(self):
+        today = readme_today(self.README)
+        assert today is not None
+        self.assertEqual(today["A"]["prefill"]["65407"], 239.04)
+        self.assertEqual(compare_today(self.bench(), today), [])
+
+    def test_a_drifted_number_today_is_named(self):
         bench = self.bench()
-        bench["results"][0]["decode"]["512"] = [10.7, 9.66]
-        problems = compare_bench(bench, readme_results(self.README), readme_speculative(self.README))
-        self.assertEqual(len(problems), 1)
-        self.assertIn("A decode 512", problems[0])
+        bench["today"][0]["prefill"]["65407"] = 239.4
+        self.assertEqual(
+            compare_today(bench, readme_today(self.README)),
+            ["A today prefill 65407: site 239.4 != README 239.04"],
+        )
+
+    def test_a_short_row_today_is_an_error(self):
+        with self.assertRaises(ValueError):
+            readme_today(self.README.replace("| 32.13 ", ""))
 
     def test_a_ratio_that_would_read_differently_is_caught(self):
         readme = self.README.replace("(1.51×)", "(1.52×)")
-        problems = compare_bench(self.bench(), readme_results(readme), readme_speculative(readme))
+        problems = compare_spec(self.bench(), readme_speculative(readme))
         self.assertTrue(any("the site shows 1.51×, README 1.52×" in p for p in problems))
 
     def test_a_changed_header_reads_as_missing(self):
-        self.assertIsNone(readme_results(self.README.replace("| Decode | 512", "| Decode | 0.5K")))
+        self.assertIsNone(readme_today(self.README.replace("| Decode | 512", "| Decode | 0.5K")))
 
     def test_a_missing_length_on_the_site_is_named(self):
         bench = self.bench()
-        del bench["results"][0]["prefill"]["4096"]
-        problems = compare_bench(bench, readme_results(self.README), readme_speculative(self.README))
-        self.assertEqual(problems, ["A prefill 4096: site None != README [83.7, 89.26]"])
-
-    def test_a_short_row_is_an_error(self):
-        with self.assertRaises(ValueError):
-            readme_results(self.README.replace("| 8.27 / 7.32 ", ""))
+        del bench["today"][0]["prefill"]["4096"]
+        self.assertEqual(
+            compare_today(bench, readme_today(self.README)), ["A today prefill 4096: site None != README 434.52"]
+        )
 
     def test_page_facts(self):
         page = parse_page(

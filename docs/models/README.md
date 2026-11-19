@@ -256,10 +256,31 @@ on Metal). Both compare Metal against the CPU trace of § 4
 chunked-versus-stepped comparison; it also exercises snapshot/restore,
 cancellation, and isolation, and it found a backend bug on its first run
 (`Backend.unwrap`). A family with a drafter adds
-`<family>-verify-depth-512`, `-4k` (tier `verify`), `-16k`, and `-32k`
+`<family>-verify-depth-512`, `-4k` (tier `verify`), `-16k`, `-32k`, and `-64k`
 (`verify-long`): a 4-row verify batch against stepped decode at depth,
 with bounds measured at the four lengths and set at twice the worst
 (`depthPasses` in `generation-check`).
+
+Three speed pieces are shared, and a plan has only to route to them;
+Gemma 4 lacked each until it was measured:
+
+- **Long prompt chunks.** A causal chunk of more than
+  `metal.Backend.materialized_min_rows` rows goes to
+  `Backend.attentionChunkMaterialized`, its strips in
+  `attentionStripScratch`; the online chunk body stays for windowed
+  layers, image spans, and the few-row verify batch. On the online body
+  Gemma 4's global layers took two thirds of its 32K prefill
+  ([record, 2026-11-19](../benchmarks/record/gemma4.md#prefill-with-materialized-global-attention-2026-11-19)).
+- **Sliding layers.** A layer that reads only its last W rows sets
+  `.window` and `.room` on its `Layout.attention`, so its region holds the
+  window and a margin, not the capacity
+  ([session.md § Layouts and views](../engine/session.md#layouts-and-views)):
+  the 26B-A4B's session at 32K went from 7.4 to 2.8 GB.
+- **One-row chunks.** The plan's batched projection sends a one-row chunk
+  (a verify with nothing drafted, a prompt's last token) to the decode
+  `matvec`, which the matmul tile trails at one row (Gemma 4's
+  `Plan.mmRows`;
+  [record, 2026-11-19](../benchmarks/record/gemma4.md#what-a-verify-batch-pays-at-a-few-rows-2026-11-19)).
 
 Take first-look rates with `nuclis bench` and record them as first look,
 not as the acceptance record.
@@ -459,3 +480,6 @@ reading.
 | Model stops on `<bos>` or never on `<eos>` | the engine's stop rule was Qwen's (`eos or bos`) | `stop_tokens` on the profile, resolved at load |
 | Thinking never folds in the chat | the split marker was the literal `</think>` | `reasoning` markers on the profile |
 | Gemma sampled with Qwen's presence penalty | the configuration guessed the profile from a bare path | the engine's profile corrects the sampler after load |
+| Prefill at 32K under half the reference's | global layers' long chunks on the online attention body | the plan routes them to `attentionChunkMaterialized` (§ 5) |
+| Session of 7.4 GB at 32K on a model with 1,024-row windows | sliding layers allocated for the whole capacity | `.window` on the layer's `Layout.attention` (§ 5) |
+| A verify with nothing drafted costs more than a decode step | a one-row chunk through the matmul tile | the plan's projection takes the decode matvec at one row (§ 5) |
