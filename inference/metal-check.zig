@@ -3143,8 +3143,9 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: b
 }
 
 /// The materialized chunk body against the CPU F64 reference on Gemma 4's
-/// global geometries (16 / 2 / 512, 8 / 2 / 512) and a 256-wide one, F32
-/// and F16 caches (F32 queries), with 64 poisoned cache rows after the
+/// global geometries (16 / 2 / 512, 8 / 2 / 512), its sliding ones with a
+/// window (16 / 8 / 256 at 1,024, 8 / 2 / 256 at 512, and odd windows), and
+/// a 256-wide one, F32 and F16 caches (F32 queries), with 64 poisoned cache rows after the
 /// chunk; each case runs with a scratch of one tile and with one that
 /// takes the whole chunk, and the two outputs must be identical. Then the
 /// contract's refusals.
@@ -3155,7 +3156,9 @@ fn checkChunkAttentionMaterialized(alloc: std.mem.Allocator, b: *Backend) !void 
     const big: Geometry = .{ .qh = 16, .kvh = 2, .hd = 512 };
     const e4b: Geometry = .{ .qh = 8, .kvh = 2, .hd = 512 };
     const narrow: Geometry = .{ .qh = 24, .kvh = 4, .hd = 256 };
-    const Case = struct { g: Geometry, position: usize, count: usize, half: bool, sample: usize = 1 };
+    const sliding: Geometry = .{ .qh = 16, .kvh = 8, .hd = 256 };
+    const e4b_sliding: Geometry = .{ .qh = 8, .kvh = 2, .hd = 256 };
+    const Case = struct { g: Geometry, position: usize, count: usize, half: bool, sample: usize = 1, window: usize = 0 };
     const cases = [_]Case{
         .{ .g = big, .position = 5, .count = 37, .half = false },
         .{ .g = big, .position = 300, .count = 40, .half = true },
@@ -3167,6 +3170,14 @@ fn checkChunkAttentionMaterialized(alloc: std.mem.Allocator, b: *Backend) !void 
         .{ .g = e4b, .position = 2049, .count = 100, .half = false, .sample = 3 },
         .{ .g = narrow, .position = 129, .count = 64, .half = true },
         .{ .g = big, .position = 32256, .count = 512, .half = true, .sample = 61 },
+        .{ .g = sliding, .position = 0, .count = 512, .half = true, .sample = 7, .window = 1024 },
+        .{ .g = sliding, .position = 700, .count = 512, .half = true, .sample = 5, .window = 1024 },
+        .{ .g = sliding, .position = 1500, .count = 512, .half = false, .sample = 9, .window = 1024 },
+        .{ .g = sliding, .position = 32256, .count = 512, .half = true, .sample = 31, .window = 1024 },
+        .{ .g = e4b_sliding, .position = 1000, .count = 256, .half = true, .sample = 3, .window = 512 },
+        .{ .g = e4b_sliding, .position = 37, .count = 90, .half = false, .window = 100 },
+        .{ .g = sliding, .position = 64, .count = 200, .half = true, .window = 33 },
+        .{ .g = sliding, .position = 0, .count = 40, .half = false, .window = 8 },
     };
     const poison_rows = 64;
     var worst_f32: check_stats.Worst = .{};
@@ -3206,13 +3217,13 @@ fn checkChunkAttentionMaterialized(alloc: std.mem.Allocator, b: *Backend) !void 
             b.release(keys) catch {};
             b.release(values) catch {};
         };
-        const shape: Backend.AttentionChunkShape = .{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .position = case.position, .count = case.count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = if (case.half) .f16 else .f32 };
+        const shape: Backend.AttentionChunkShape = .{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .position = case.position, .count = case.count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = if (case.half) .f16 else .f32, .window = case.window };
         // One tile per group, then every tile in one.
         var outs: [2]Buffer = undefined;
         for (&outs, [_]usize{ 1, @divCeil(rows, 32) }) |*out, tiles| {
             out.* = try b.create(rows * qw * 4);
             for (out.floats()) |*o| o.* = std.math.nan(f32);
-            const scratch = try b.create(Backend.attentionChunkStripFloats(g.qh, tiles, total) * 4);
+            const scratch = try b.create(Backend.attentionChunkStripFloats(g.qh, tiles, Backend.attentionStripKeys(shape, @divCeil(rows, 32))) * 4);
             defer b.release(scratch) catch {};
             try b.begin();
             try b.attentionChunkMaterialized(keys, values, q, out.*, scratch, shape);
@@ -3220,7 +3231,7 @@ fn checkChunkAttentionMaterialized(alloc: std.mem.Allocator, b: *Backend) !void 
         }
         defer for (outs) |out| b.release(out) catch {};
         if (!std.mem.eql(f32, outs[0].floats()[0 .. case.count * qw], outs[1].floats()[0 .. case.count * qw])) {
-            std.debug.print("materialized chunk: the result depends on the scratch's grouping (geometry {d}/{d}/{d}, position {d}, count {d})\n", .{ g.qh, g.kvh, g.hd, case.position, case.count });
+            std.debug.print("materialized chunk: the result depends on the scratch's grouping (geometry {d}/{d}/{d}, position {d}, count {d}, window {d})\n", .{ g.qh, g.kvh, g.hd, case.position, case.count, case.window });
             return error.MetalMismatch;
         }
         const scratch = try alloc.alloc(f64, total);
@@ -3229,27 +3240,26 @@ fn checkChunkAttentionMaterialized(alloc: std.mem.Allocator, b: *Backend) !void 
         defer alloc.free(expected);
         var t: usize = 0;
         while (t < case.count) : (t += case.sample) {
-            const visible = case.position + t + 1;
-            try inference.cpu.attention.apply(.{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .tokens = visible, .visible_tokens = visible, .scale = 1.0, .queries = q.floats()[t * qw ..][0..qw], .keys = k32.floats()[0 .. visible * kvw], .values = v32.floats()[0 .. visible * kvw] }, expected, scratch);
+            const end = case.position + t + 1;
+            const lo = if (case.window != 0 and end > case.window) end - case.window else 0;
+            const visible = end - lo;
+            try inference.cpu.attention.apply(.{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .tokens = visible, .visible_tokens = visible, .scale = 1.0, .queries = q.floats()[t * qw ..][0..qw], .keys = k32.floats()[lo * kvw .. end * kvw], .values = v32.floats()[lo * kvw .. end * kvw] }, expected, scratch);
             for (expected, outs[0].floats()[t * qw ..][0..qw]) |e, a| {
                 const d = @abs(a - e);
                 if (case.half) worst_f16.observe(d) else worst_f32.observe(d);
                 expectClose("materialized chunk attention", a, e, 1e-5 * @max(1, @abs(e))) catch |err| {
-                    std.debug.print("  geometry {d}/{d}/{d}, position {d}, count {d}, half {}, row {d}\n", .{ g.qh, g.kvh, g.hd, case.position, case.count, case.half, t });
+                    std.debug.print("  geometry {d}/{d}/{d}, position {d}, count {d}, half {}, window {d}, row {d}\n", .{ g.qh, g.kvh, g.hd, case.position, case.count, case.half, case.window, t });
                     return err;
                 };
             }
         }
     }
     std.debug.print("Materialized chunk attention vs CPU F64 per row, future rows poisoned: F32 max abs {e:.3} (bound 1e-5, relative past 1), F16 cache over its rounded rows {e:.3} (bound 1e-5; the products are F32); one tile per group equals the whole chunk in one, bit for bit\n", .{ worst_f32.shown(), worst_f16.shown() });
-    // Contract: a window, a span, a Q8_0 cache, and a scratch smaller than
-    // one tile are refused.
+    // Contract: a span, a Q8_0 cache, and a scratch smaller than one tile
+    // are refused.
     const any = try b.create(1 << 20);
     defer b.release(any) catch {};
     const shape: Backend.AttentionChunkShape = .{ .query_heads = 2, .kv_heads = 1, .key_width = 64, .value_width = 64, .position = 0, .count = 8, .q_stride = 128, .out_stride = 128, .scale = 1.0 };
-    var windowed = shape;
-    windowed.window = 4;
-    try std.testing.expectError(error.InvalidShape, b.attentionChunkMaterialized(any, any, any, any, any, windowed));
     var spanned = shape;
     spanned.span = .{ .begin = 0, .end = 8 };
     try std.testing.expectError(error.InvalidShape, b.attentionChunkMaterialized(any, any, any, any, any, spanned));

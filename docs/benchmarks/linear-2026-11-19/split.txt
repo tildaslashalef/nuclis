@@ -1,0 +1,7 @@
+model                 N   ms/tok | per-token ms by group (GPU, profile mode)
+gemma-4-26b-a4b   16384    2.856 | experts 0.892  dense 0.665  sliding attn 0.663  global attn 0.399  other 0.236  prefill 372.1 tok/s
+gemma-4-26b-a4b   32639    3.278 | experts 0.887  global attn 0.822  sliding attn 0.671  dense 0.664  other 0.234  prefill 321.5 tok/s
+gemma-4-26b-a4b    4096    2.550 | experts 0.919  dense 0.675  sliding attn 0.609  other 0.250  global attn 0.098  prefill 289.2 tok/s
+gemma-4-e4b-qat   16384    2.219 | dense 1.618  global attn 0.278  sliding attn 0.244  other 0.079  prefill 448.3 tok/s
+gemma-4-e4b-qat   32639    2.513 | dense 1.618  global attn 0.570  sliding attn 0.246  other 0.079  prefill 396.2 tok/s
+gemma-4-e4b-qat    4096    2.001 | dense 1.620  sliding attn 0.234  other 0.079  global attn 0.068  prefill 463.0 tok/s

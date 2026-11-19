@@ -1,0 +1,6 @@
+gemma-4-26b-a4b 4096 base 425.8 cand 537.3 change +26.2% (pairs +26.0..+26.8%)
+gemma-4-26b-a4b 16384 base 368.2 cand 454.9 change +23.6% (pairs +21.6..+24.8%)
+gemma-4-26b-a4b 32639 base 309.5 cand 362.8 change +17.2% (pairs +15.4..+17.6%)
+gemma-4-e4b-qat 4096 base 503.6 cand 555.7 change +10.3% (pairs +10.3..+10.5%)
+gemma-4-e4b-qat 16384 base 439.6 cand 484.7 change +10.3% (pairs +7.9..+10.3%)
+gemma-4-e4b-qat 32639 base 375.9 cand 411.8 change +9.5% (pairs +7.9..+9.5%)

@@ -1,0 +1,12 @@
+prefill chunk of 512 tokens: 4096 slot rows in 186 tiles of 32 over 128 experts
+prefill gate-up tiles                            414.8      39.5      39.5  39 39 39 40 39  (10490 us per chunk; 1627 tok/s if 30 such layers were the whole cost)
+prefill down tiles                               207.4      38.7      38.7  39 39 39 39 39  (5355 us per chunk; 3187 tok/s if 30 such layers were the whole cost)
+prefill chain (lists, tiles, gelu, combine)      622.2      38.3      38.3  38 38 38 38 38  (16230 us per chunk; 1052 tok/s if 30 such layers were the whole cost)
+prefill chunk of 1024 tokens: 8192 slot rows in 315 tiles of 32 over 128 experts
+prefill gate-up tiles                            702.5      41.5      40.9  40 40 41 42 42  (16912 us per chunk; 2018 tok/s if 30 such layers were the whole cost)
+prefill down tiles                               351.3      40.8      40.8  41 41 41 41 41  (8600 us per chunk; 3969 tok/s if 30 such layers were the whole cost)
+prefill chain (lists, tiles, gelu, combine)     1053.8      39.9      39.3  39 39 39 40 39  (26405 us per chunk; 1293 tok/s if 30 such layers were the whole cost)
+prefill chunk of 2048 tokens: 16384 slot rows in 569 tiles of 32 over 128 experts
+prefill gate-up tiles                           1269.0      41.8      41.1  42 40 41 42 42  (30346 us per chunk; 2250 tok/s if 30 such layers were the whole cost)
+prefill down tiles                               634.5      41.7      41.3  42 41 41 41 41  (15227 us per chunk; 4483 tok/s if 30 such layers were the whole cost)
+prefill chain (lists, tiles, gelu, combine)     1903.5      40.8      40.7  41 41 41 41 41  (46711 us per chunk; 1461 tok/s if 30 such layers were the whole cost)

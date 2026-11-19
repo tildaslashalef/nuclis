@@ -518,6 +518,7 @@ pub const Backend = struct {
     pub const attentionChunkMaterialized = attention_ops.attentionChunkMaterialized;
     pub const attentionChunkStripFloats = attention_ops.attentionChunkStripFloats;
     pub const attentionStripScratch = attention_ops.attentionStripScratch;
+    pub const attentionStripKeys = attention_ops.stripKeys;
     pub const materialized_min_rows = attention_ops.materialized_min_rows;
     pub const TopKParams = sampling_ops.TopKParams;
     pub const topk_partials = sampling_ops.topk_partials;

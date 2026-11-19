@@ -286,7 +286,7 @@ pub const Plan = struct {
     kv_stage: ?Buffer,
     /// Halves of the stage's keys (then as many of its values).
     kv_stage_half: usize = 0,
-    /// The materialized global-layer attention's score strips
+    /// The materialized chunk attention's score strips
     /// (`attentionChunkMaterialized`), sized by `attentionStripScratch`.
     strips: Buffer,
     mixed_out_c: Buffer, // padded × q_width
@@ -1234,9 +1234,10 @@ pub const Plan = struct {
         // A verify batch (few causal rows) takes the split pass with F32
         // queries; a prefill chunk or a span the tiled body.
         const few = count <= metal.Backend.verify_max_rows and span.end == 0;
-        // A global layer's chunk takes the materialized body: F32 queries,
-        // score strips in `strips` (docs/engine/metal-attention.md § Prefill).
-        const materialized = kind == .global and span.end == 0 and count > metal.Backend.materialized_min_rows;
+        // A chunk without an image span takes the materialized body, a
+        // sliding layer's strips bounded by its window: F32 queries, score
+        // strips in `strips` (docs/engine/metal-attention.md § Prefill).
+        const materialized = span.end == 0 and count > metal.Backend.materialized_min_rows;
         // The cache is sliced at the earliest key the chunk's first row can
         // see; the window mask hides the rest per row on sliding layers.
         const first = self.firstVisible(kind, position);
