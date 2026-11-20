@@ -414,9 +414,9 @@ test "names come from the repository, never collide, and never take an index nam
 test "the default model: the default when installed, else the first installed chat model" {
     const chat: Candidate = .{ .name = "gemma-4-e4b-qat", .path = "u/r/f.gguf", .kind = .generation, .entry = .{} };
     const speech: Candidate = .{ .name = "drama-3", .path = "s/d/f.gguf", .kind = .speech, .entry = .{} };
-    try testing.expectEqualStrings("gemma-4-26b-a4b", defaultModel(&.{ speech, chat }, true));
+    try testing.expectEqualStrings("qwen3.8-27b", defaultModel(&.{ speech, chat }, true));
     try testing.expectEqualStrings("gemma-4-e4b-qat", defaultModel(&.{ speech, chat }, false));
-    try testing.expectEqualStrings("gemma-4-26b-a4b", defaultModel(&.{speech}, false));
+    try testing.expectEqualStrings("qwen3.8-27b", defaultModel(&.{speech}, false));
 }
 
 test "a report renders both ways from the same rows" {
@@ -467,7 +467,7 @@ test "a plan registers installed chat artifacts and judges the rest" {
     const qwen = report.registered[0];
     try testing.expectEqualStrings("qwen3.8-27b", qwen.name);
     try testing.expectEqualStrings("qwen3.8-27b", qwen.artifact.?);
-    try testing.expectEqualStrings("MTP/mtp-Qwen3.8-27B-Q4_0.gguf", qwen.entry.draft.?);
+    try testing.expectEqualStrings("MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", qwen.entry.draft.?);
     try testing.expect(qwen.entry.generation.speculative.? and qwen.entry.generation.draft_length.? == 7);
     // The file that does not parse is skipped with its reason; the gone entry is reported.
     try testing.expectEqual(@as(usize, 1), report.skipped.len);
@@ -475,7 +475,7 @@ test "a plan registers installed chat artifacts and judges the rest" {
     try testing.expectEqual(@as(usize, 1), report.gone.len);
     try testing.expectEqualStrings("old", report.gone[0].name);
     try testing.expectEqualStrings("old", report.model_absent.?);
-    try testing.expect(!report.default_installed);
+    try testing.expect(report.default_installed);
     try testing.expectEqualStrings("qwen3.8-27b", defaultModel(report.registered, report.default_installed));
     // Once registered, a second plan has nothing to add.
     const entries = try toEntries(arena, report.registered);

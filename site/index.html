@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>nuclis: a local inference engine for Apple Silicon, right first, then fast</title>
-  <meta name="description" content="nuclis runs open-weight models on your Mac: an inference engine written from scratch in Zig and Metal, tuned for Gemma 4, with a coding agent on top.">
+  <meta name="description" content="nuclis runs open-weight models on your Mac: an inference engine written from scratch in Zig and Metal, built around Qwen3.8-27B, with a coding agent on top.">
   <link rel="canonical" href="https://engine.nuclis.dev/">
   <meta name="theme-color" content="#F7FAFA">
   <meta name="color-scheme" content="light">
@@ -34,7 +34,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "nuclis",
-    "description": "A local inference engine for open-weight models on Apple Silicon, written in Zig with a Metal backend and tuned for Gemma 4 26B-A4B and E4B, with a small coding agent, typed decision models, multimodal embeddings, speech in and out, and an OpenAI-compatible API on top.",
+    "description": "A local inference engine for open-weight models on Apple Silicon, written in Zig with a Metal backend and built around Qwen3.8-27B, with Gemma 4 E4B as its small model, a small coding agent, typed decision models, multimodal embeddings, speech in and out, and an OpenAI-compatible API on top.",
     "url": "https://engine.nuclis.dev/",
     "image": "https://engine.nuclis.dev/og.png",
     "applicationCategory": "DeveloperApplication",
@@ -100,7 +100,7 @@
   <div class="wrap">
     <h1>Right first. <span>Then fast.</span></h1>
     <div class="hero-sub">
-      <p class="lede">nuclis is an inference engine for Apple Silicon, written from scratch in Zig and Metal and tuned for Gemma 4's mixture of experts. Hand it a failing test suite and watch it find the bug on your laptop, offline. Every kernel is checked against nuclis's own CPU reference before it is tuned.</p>
+      <p class="lede">nuclis is an inference engine for Apple Silicon, written from scratch in Zig and Metal and built around Qwen3.8-27B, a dense 27B that writes code at about 25 tokens a second with its drafter. Hand it a failing test suite and watch it find the bug on your laptop, offline. Every kernel is checked against nuclis's own CPU reference before it is tuned.</p>
       <div class="hero-cta">
         <div class="hero-actions">
           <a class="btn btn-primary" href="https://github.com/tildaslashalef/nuclis/releases/download/v0.13.0/nuclis-v0.13.0-aarch64-macos.tar.gz" data-release-asset>
@@ -134,7 +134,7 @@
       </div>
     </div>
     <figcaption>
-      <span>An earlier session, retyped: Qwen3.8-27B, the first model nuclis ran, on an M4 Pro with speculative decoding on. The long pauses are trimmed; the rest runs at the speed it was recorded.</span>
+      <span>An earlier session, retyped: Qwen3.8-27B, the flagship and the first model nuclis ran, on an M4 Pro with speculative decoding on. The long pauses are trimmed; the rest runs at the speed it was recorded.</span>
       <button class="link-btn" id="replay-again" type="button"><svg><use href="#i-replay"/></svg>Replay</button>
     </figcaption>
     <noscript><p class="noscript">The replay needs JavaScript. In words: asked to fix a failing test suite, the agent listed the project, read the Makefile, the README and <code>src/shapes/rect.py</code>, ran the tests, changed <code>return width + height</code> to <code>return 2 * (width + height)</code>, ran the tests again, and reported the fix: seven steps, 36 seconds.</p></noscript>
@@ -184,7 +184,7 @@
 <section class="sec" id="numbers">
   <div class="wrap">
     <h2>Honest numbers, one machine.</h2>
-    <p class="sec-lede">An M4 Pro with 48 GB, measured on 2026-11-19. Gemma 4 26B-A4B decodes 58 tokens a second on a short prompt and still 32 at a 64K one, which makes an agent practical here; a dense 27B manages 8 to 11. Every record is measured against nuclis's own previous one, never against another engine.</p>
+    <p class="sec-lede">An M4 Pro with 48 GB, measured on 2026-11-19 and 2026-11-20. Two models, two jobs: Qwen3.8-27B is the capable one, a dense 27B that decodes 8 to 11 tokens a second on its own and passes every task on the agent's list; Gemma 4 E4B is the small brain, 53 a second on a short prompt and still 33 at a 64K one. Every record is measured against nuclis's own previous one, never against another engine.</p>
 
     <div class="chart-card">
       <div class="chart-head">
@@ -202,7 +202,7 @@
         <span><i class="dot dot-n"></i>65,407</span>
       </div>
       <div class="chart" id="chart-today"></div>
-      <p class="chart-note">128 greedy tokens, a release build, an F16 cache: the warm mean of three runs to 16,384, one run each at 32,639 and 65,407 on a 65,536 context, where Gemma 4 26B-A4B peaks at 4.2 GB resident and nothing swaps. <a class="icon-link" href="https://github.com/tildaslashalef/nuclis/blob/main/docs/benchmarks/README.md">How these were measured<svg><use href="#i-out"/></svg></a></p>
+      <p class="chart-note">128 greedy tokens, a release build, an F16 cache: the warm mean of three runs to 16,384, one run each at 32,639 and 65,407 on a 65,536 context, where nothing swaps. <a class="icon-link" href="https://github.com/tildaslashalef/nuclis/blob/main/docs/benchmarks/README.md">How these were measured<svg><use href="#i-out"/></svg></a></p>
     </div>
 
     <div class="spec">
@@ -228,7 +228,7 @@
           <span><i class="dot dot-n"></i>on</span>
         </div>
         <div class="chart" id="chart-spec"></div>
-        <p class="chart-note">On the agent's own task list, the drafter cuts the time in the model by 15% on Gemma 4 26B-A4B, whose experts now check a guess through the decode path, and by 28% on Qwen3.8.</p>
+        <p class="chart-note">In an agent session building a small web app, Qwen3.8-27B's DFlash2 drafter landed 84% of its guesses: 18,345 tokens at 25.69 a second, more than twice its pace alone.</p>
       </div>
     </div>
   </div>
@@ -237,22 +237,22 @@
 <section class="sec" id="models">
   <div class="wrap">
     <h2>Pinned to the byte.</h2>
-    <p class="sec-lede">Each model in the catalogue is pinned to a repository, a commit and a SHA-256. You get the exact bytes that were measured, or you get an error. Every one reads images and brings its own drafter.</p>
+    <p class="sec-lede">One model per job, each pinned to a repository, a commit and a SHA-256. You get the exact bytes that were measured, or you get an error. Both chat models read images and bring their own drafter.</p>
     <div class="shelf">
       <article>
-        <h3>Gemma 4 26B-A4B</h3>
-        <p>A mixture of experts: 128 of them, 8 awake for any one token. The default.</p>
-        <footer><code>gemma-4-26b-a4b</code><span>14.2 GB</span></footer>
+        <h3>Qwen3.8 27B</h3>
+        <p>The flagship and the default. Dense, three DeltaNet layers for every attention layer, and the agent's coder. Where the kernels were first tuned.</p>
+        <footer><code>qwen3.8-27b</code><span>16.6 GB</span></footer>
       </article>
       <article>
         <h3>Gemma 4 E4B QAT</h3>
-        <p>Built for small devices, with per-layer embeddings and layers that share a cache. It hears, too.</p>
+        <p>The small, efficient brain: per-layer embeddings and layers that share a cache. It hears, too, and runs on the Linux build.</p>
         <footer><code>gemma-4-e4b-qat</code><span>4.2 GB</span></footer>
       </article>
       <article>
-        <h3>Qwen3.8 27B</h3>
-        <p>Dense: three DeltaNet layers for every attention layer. Where the kernels were first tuned.</p>
-        <footer><code>qwen3.8-27b</code><span>16.6 GB</span></footer>
+        <h3>The rest of the set</h3>
+        <p>Laya and clef-flash for typed answers, EmbeddingGemma 2 for vectors, Qwen3-TTS for a voice, Nemotron ASR for ears.</p>
+        <footer><code>nuclis model ls --available</code></footer>
       </article>
       <article class="shelf-more">
         <h3>Something else?</h3>
@@ -289,7 +289,7 @@
       <li><code>models</code><span>what is open, what could be</span></li>
       <li><code>health</code><span>is it up</span></li>
     </ul>
-    <pre class="snip"><code><span class="c">$</span> nuclis serve --model gemma-4-26b-a4b
+    <pre class="snip"><code><span class="c">$</span> nuclis serve --model qwen3.8-27b
 <span class="c"># then point any OpenAI-compatible client at</span>
 http://127.0.0.1:9000/v1</code></pre>
   </div>
@@ -366,11 +366,12 @@ tar xzf <span data-release-name>nuclis-v0.13.0-aarch64-macos</span>.tar.gz
 cd <span data-release-name>nuclis-v0.13.0-aarch64-macos</span>
 xattr -d com.apple.quarantine nuclis
 <span class="c"># fetch a model, then put it to work</span>
-./nuclis model pull gemma-4-26b-a4b --all
+./nuclis model pull qwen3.8-27b --all
+./nuclis config init
 ./nuclis agent</code></pre>
 <pre id="cmd-src" role="tabpanel" aria-labelledby="tab-src" hidden><code>git clone https://github.com/tildaslashalef/nuclis
 cd nuclis &amp;&amp; make metal
-./zig-out/bin/nuclis model pull gemma-4-26b-a4b --all
+./zig-out/bin/nuclis model pull qwen3.8-27b --all
 ./zig-out/bin/nuclis config init
 ./zig-out/bin/nuclis agent</code></pre>
       </div>
@@ -414,14 +415,12 @@ cd nuclis &amp;&amp; make metal
 <script type="application/json" id="bench">
 {
   "speculative": [
-    { "model": "Gemma 4 26B-A4B", "draft": 4, "512": [57.4, 66.3], "32639": [42.1, 44.1], "ratio": { "512": "1.16", "32639": "1.05" } },
-    { "model": "Gemma 4 E4B QAT", "draft": 6, "512": [46.9, 81.9], "32639": [33.6, 37.5], "ratio": { "512": "1.75", "32639": "1.12" } },
-    { "model": "Qwen3.8-27B", "draft": 7, "512": [11.6, 17.4], "32639": [7.9, 9.8], "ratio": { "512": "1.50", "32639": "1.26" } }
+    { "model": "Qwen3.8-27B", "draft": 7, "512": [11.52, 18.70], "32639": [10.53, 13.50], "ratio": { "512": "1.63", "32639": "1.29" } },
+    { "model": "Gemma 4 E4B QAT", "draft": 6, "512": [53.08, 88.53], "32639": [41.56, 47.77], "ratio": { "512": "1.67", "32639": "1.15" } }
   ],
   "today": [
-    { "model": "Gemma 4 26B-A4B", "decode": { "512": 57.54, "4096": 54.11, "16384": 48.71, "32639": 41.94, "65407": 32.30 }, "prefill": { "512": 587.14, "4096": 550.06, "16384": 469.89, "32639": 391.81, "65407": 282.76 } },
-    { "model": "Gemma 4 E4B QAT", "decode": { "512": 53.19, "4096": 50.13, "16384": 47.22, "32639": 41.90, "65407": 33.03 }, "prefill": { "512": 585.95, "4096": 551.42, "16384": 500.96, "32639": 437.29, "65407": 337.20 } },
-    { "model": "Qwen3.8-27B", "decode": { "512": 11.16, "4096": 9.23, "16384": 9.02, "32639": 9.17, "65407": 8.41 }, "prefill": { "512": 93.16, "4096": 84.02, "16384": 77.48, "32639": 73.17, "65407": 61.19 } }
+    { "model": "Qwen3.8-27B", "decode": { "512": 11.16, "4096": 9.23, "16384": 9.02, "32639": 9.17, "65407": 8.41 }, "prefill": { "512": 93.16, "4096": 84.02, "16384": 77.48, "32639": 73.17, "65407": 61.19 } },
+    { "model": "Gemma 4 E4B QAT", "decode": { "512": 53.19, "4096": 50.13, "16384": 47.22, "32639": 41.90, "65407": 33.03 }, "prefill": { "512": 585.95, "4096": 551.42, "16384": 500.96, "32639": 437.29, "65407": 337.20 } }
   ]
 }
 </script>

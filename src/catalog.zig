@@ -212,7 +212,7 @@ pub const artifacts = [_]Artifact{
         .revision = "ce331efc48d5722b4b8041f72793e530eae18d9b",
         .architecture = "qwen35",
         .quantization = "UD-Q4_K_M",
-        .defaults = .{ .profile = .qwen38, .draft = "mtp", .think = .low, .thinking_budget = 2048 },
+        .defaults = .{ .profile = .qwen38, .draft = "dflash2", .think = .low, .thinking_budget = 2048 },
         .files = &.{
             .{ .role = .main, .path = "Qwen3.8-27B-UD-Q4_K_M.gguf", .size = 16_564_259_744, .sha256 = "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529" },
             .{ .role = .mmproj, .path = "mmproj-BF16.gguf", .size = 931_146_432, .sha256 = "83ee4f4f205fa514161778c41df1ea14144faa0f713510893b63c2395f5c2d53", .used_for = "image input" },
@@ -224,6 +224,8 @@ pub const artifacts = [_]Artifact{
             // prose 1.366x at draft 7 and p_min 0.3, 1.012x MTP's on the first
             // pin; 1.53-1.63x and code 1.69x on this file at p_min 0.7
             // (docs/benchmarks/history.md § The re-made Qwen3.8 file (2026-11-12)).
+            // The default: ahead of the MTP head in every cell measured on
+            // 2026-11-20 (docs/benchmarks/record/benchmarks.md).
             .{ .role = .draft, .variant = "dflash2", .path = "MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", .repo = "z-lab/Qwen3.8-27B-DFlash2-GGUF", .revision = "2d9571f8ce46e151f61c6499c99dee6079e1d610", .remote = "Qwen3.8-27B-DFlash2-Q8_0.gguf", .size = 2_056_414_816, .sha256 = "c18e800daedc59ca68fd13b6a856d795746af6d399a9279ac6a277d1d422f87e", .used_for = "speculative decoding (a DFlash2 drafter)", .verdict = .{ .speculative = true, .draft_length = 7 } },
         },
     },
@@ -255,6 +257,7 @@ pub const artifacts = [_]Artifact{
         .name = "gemma-4-26b-a4b",
         .title = "Gemma 4 26B-A4B",
         .kind = .generation,
+        .status = .legacy,
         .repo = "unsloth/gemma-4-26B-A4B-it-qat-GGUF",
         .revision = "7b92b5b28818151e8669af2e45e88d6086f490dd",
         .architecture = "gemma4",
@@ -331,6 +334,7 @@ pub const artifacts = [_]Artifact{
         .name = "laya-multilingual",
         .title = "Laya multilingual",
         .kind = .decision,
+        .status = .legacy,
         .repo = "convaiinnovations/laya",
         .revision = "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
         .architecture = "modernbert",
@@ -388,6 +392,7 @@ pub const artifacts = [_]Artifact{
         .name = "qwen3-tts-0.6b-customvoice",
         .title = "Qwen3-TTS 0.6B CustomVoice",
         .kind = .speech,
+        .status = .legacy,
         .repo = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
         .revision = "85e237c12c027371202489a0ec509ded67b5e4b5",
         .architecture = "qwen3_tts",
@@ -400,6 +405,7 @@ pub const artifacts = [_]Artifact{
         .name = "qwen3-tts-1.7b-base",
         .title = "Qwen3-TTS 1.7B Base",
         .kind = .speech,
+        .status = .legacy,
         .repo = "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         .revision = "fd4b254389122332181a7c3db7f27e918eec64e3",
         .architecture = "qwen3_tts",
@@ -411,6 +417,7 @@ pub const artifacts = [_]Artifact{
         .name = "qwen3-tts-0.6b-base",
         .title = "Qwen3-TTS 0.6B Base",
         .kind = .speech,
+        .status = .legacy,
         .repo = "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         .revision = "5d83992436eae1d760afd27aff78a71d676296fc",
         .architecture = "qwen3_tts",
@@ -424,6 +431,7 @@ pub const artifacts = [_]Artifact{
         .name = "qwen3-tts-1.7b-voicedesign",
         .title = "Qwen3-TTS 1.7B VoiceDesign",
         .kind = .speech,
+        .status = .legacy,
         .repo = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
         .revision = "5ecdb67327fd37bb2e042aab12ff7391903235d3",
         .architecture = "qwen3_tts",
@@ -437,6 +445,7 @@ pub const artifacts = [_]Artifact{
         .name = "drama-3",
         .title = "Fish Audio Drama 3",
         .kind = .speech,
+        .status = .legacy,
         .repo = "sakasegawa/drama-3-GGUF",
         .revision = "9a01354d04ab6eb521bc9cdfc56ab6824c474af2",
         .architecture = "drama3",
@@ -747,9 +756,10 @@ test "the index: kinds, lifecycle, and the per-kind facts the old tables held" {
     try std.testing.expectEqualStrings("unsloth/Qwen3.8-27B-GGUF", qwen.repo);
     try std.testing.expectEqual(Profile.qwen38, qwen.defaults.profile.?);
     try std.testing.expectEqual(Profile.gemma4_e, find("gemma-4-e4b-qat").?.defaults.profile.?);
-    try std.testing.expectEqual(Lifecycle.legacy, find("gemma-4-12b-qat").?.status);
-    try std.testing.expectEqual(Lifecycle.legacy, find("muse-glimmer-30b").?.status);
-    for ([_][]const u8{ "qwen3.8-27b", "gemma-4-26b-a4b", "gemma-4-e4b-qat", "clef-flash", "laya" }) |name| try std.testing.expectEqual(Lifecycle.current, find(name).?.status);
+    for ([_][]const u8{ "gemma-4-12b-qat", "muse-glimmer-30b", "gemma-4-26b-a4b", "laya-multilingual", "qwen3-tts-0.6b-customvoice", "qwen3-tts-0.6b-base", "qwen3-tts-1.7b-base", "qwen3-tts-1.7b-voicedesign", "drama-3" }) |name| try std.testing.expectEqual(Lifecycle.legacy, find(name).?.status);
+    var current: usize = 0;
+    for (&artifacts) |*a| current += @intFromBool(a.status == .current);
+    try std.testing.expectEqual(@as(usize, 7), current);
     // Files outside the index run through discovery, not by name.
     try std.testing.expect(find("gemma-4-12b") == null and find("qwen") == null and find("qwen/Qwen3.8-27B-UD-Q4_K_M.gguf") == null);
     // The measured verdicts: every drafter pays.
@@ -785,8 +795,8 @@ test "the index: kinds, lifecycle, and the per-kind facts the old tables held" {
 test "drafts: variants, the default, and a file placed beside its parent" {
     const qwen = find("qwen3.8-27b").?;
     try std.testing.expectEqual(@as(usize, 2), qwen.draftCount());
-    try std.testing.expectEqualStrings("mtp", qwen.draft(null).?.variant.?);
-    try std.testing.expectEqualStrings("mtp", qwen.companion(.draft).?.variant.?);
+    try std.testing.expectEqualStrings("dflash2", qwen.draft(null).?.variant.?);
+    try std.testing.expectEqualStrings("dflash2", qwen.companion(.draft).?.variant.?);
     const flash = qwen.draft("dflash2").?;
     try std.testing.expect(qwen.draft("eagle") == null);
     try std.testing.expectEqualStrings("z-lab/Qwen3.8-27B-DFlash2-GGUF", qwen.origin(flash));

@@ -355,8 +355,8 @@ zig build test-vocabulary -- \
 ```
 
 The inference package also exposes `zig build test-vocabulary` independently
-(the gates `qwen38-vocabulary`, `gemma4-e4b-vocabulary`, `laya-vocabulary`,
-and `laya-multilingual-vocabulary` run it per pinned file). The helper
+(the gates `qwen38-vocabulary`, `gemma4-e4b-vocabulary`, and
+`laya-vocabulary` run it per pinned file). The helper
 is separate from the shipped nuclis CLI; inspection and structural validation
 do not automatically load the vocabulary.
 
@@ -367,8 +367,8 @@ ids its `tokenizer_config.json` names, the 32 texts of `inference/src/models/fix
 (accents composed and decomposed, Hangul jamo, composition exclusions, CJK,
 emoji, code, whitespace runs, controls, every added-token kind), and every
 text the 8 oracle requests of `requests.json` tokenized, found in their
-recorded sequences. For the multilingual set (gate
-`laya-multilingual-vocabulary`) it is 256,000 ids, 580,604 merges, and 59
+recorded sequences. For the multilingual set (the legacy multilingual
+checkpoint, ungated) it is 256,000 ids, 580,604 merges, and 59
 texts (those 32, then French, German, Spanish, Arabic, Hindi, Russian, and
 Thai, code points outside the vocabulary for byte fallback, `<mask>` and
 `[MASK]` in text, turn markers, HTML tags, tab and newline runs, a literal

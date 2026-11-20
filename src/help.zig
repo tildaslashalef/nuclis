@@ -148,9 +148,9 @@ fn innerList(comptime T: type) []const u8 {
 /// The options `generate`, `bench`, and `agent` share (the engine's).
 fn engineOptions(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--model <name|path>", "registry entry, catalogue name, or path; default");
-    try more(out, "engine.model of the config file (gemma-4-26b-a4b)");
+    try more(out, "engine.model of the config file (qwen3.8-27b)");
     try row(out, sty, "--backend cpu|metal", default_backend);
-    try row(out, sty, "--ctx-size <n>", "context window in tokens, 1.." ++ max_ctx ++ "; default 32768");
+    try row(out, sty, "--ctx-size <n>", "context window in tokens, 1.." ++ max_ctx ++ "; default 65536");
     try row(out, sty, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16");
     try row(out, sty, "--max-tokens <n>", "output budget, 1..16384; default 8192 (bench: 32)");
     try row(out, sty, "--speculative on|off", "verify drafts; default the model's verdict, else off");
@@ -206,10 +206,10 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "--json", "machine-readable output, where a command reports");
 
     try heading(out, sty, "Examples:");
-    try example(out, sty, "nuclis model pull gemma-4-26b-a4b --all", "fetch the default model and its companions");
+    try example(out, sty, "nuclis model pull qwen3.8-27b --all", "fetch the default model and its companions");
     try example(out, sty, "nuclis config init", "the config file, from what is installed");
     try example(out, sty, "nuclis agent", "chat with the configured model");
-    try example(out, sty, "nuclis generate --model qwen3.8-27b --prompt \"Explain RoPE\"", "one answer, another model");
+    try example(out, sty, "nuclis generate --model gemma-4-e4b-qat --prompt \"Explain RoPE\"", "one answer, another model");
 
     try heading(out, sty, "Files:");
     try row(out, sty, "~/.nuclis/nuclis.json", "engine, generation, agent settings; the registry");
@@ -267,7 +267,7 @@ fn agent(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "/help", "keys and commands, inside the surface");
 
     try heading(out, sty, "Examples:");
-    try example(out, sty, "nuclis agent --model qwen3.8-27b --think medium", "chat with another model at more effort");
+    try example(out, sty, "nuclis agent --model gemma-4-e4b-qat --think medium", "chat with another model at more effort");
     try example(out, sty, "nuclis agent -p \"Summarize README.md\" --json", "one scripted turn, events as JSON lines");
     try example(out, sty, "nuclis agent ls", "the sessions saved for this directory");
 
@@ -396,7 +396,7 @@ fn eval(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "an existing file): the result, the text's and");
     try more(out, "the model's digests, the revision, and the flags");
     try row(out, sty, "--model <name|path>", "registry entry, catalogue name, or path; default");
-    try more(out, "engine.model of the config file (gemma-4-26b-a4b)");
+    try more(out, "engine.model of the config file (qwen3.8-27b)");
     try row(out, sty, "--backend cpu|metal", default_backend);
     try row(out, sty, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16");
     try row(out, sty, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e, or muse_glimmer");
@@ -609,7 +609,7 @@ fn speak(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--voice <name>", "on CustomVoice one of its speakers, Qwen's nine:");
     try more(out, "aiden, dylan, eric, ono_anna, ryan, serena,");
     try more(out, "sohee, uncle_fu, vivian; on a Base a saved voice");
-    try more(out, "(nuclis voice); default speech.voice (ryan)");
+    try more(out, "(nuclis voice); default speech.voice (sohee)");
     try row(out, sty, "--language <name>", "english, chinese, german, spanish, french,");
     try more(out, "italian, portuguese, russian, japanese, korean,");
     try more(out, "or auto; default auto");
@@ -861,7 +861,7 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "(a pull from several repositories: an array)");
 
     try heading(out, sty, "Examples:");
-    try example(out, sty, "nuclis model pull gemma-4-26b-a4b --all", "the default model with its projector");
+    try example(out, sty, "nuclis model pull qwen3.8-27b --all", "the default model with its projector");
     try example(out, sty, "nuclis model pull qwen3.8-27b --with draft=dflash2", "Qwen's DFlash2 drafter, beside the model");
     try code(out, sty, "nuclis model pull unsloth/gemma-4-12b-it-GGUF \\");
     try example(out, sty, "    --file gemma-4-12b-it-UD-Q4_K_XL.gguf --register gemma-fast", "any file of a repository, under a name");
@@ -892,7 +892,7 @@ fn config(out: *std.Io.Writer, sty: style.Style) !void {
     try heading(out, sty, "Commands:");
     try row(out, sty, "init", "write the file from what is installed: the defaults,");
     try more(out, "an entry for each installed model that needs one, and");
-    try more(out, "engine.model the default (gemma-4-26b-a4b) or, when it");
+    try more(out, "engine.model the default (qwen3.8-27b) or, when it");
     try more(out, "is not installed, the first installed chat model; an");
     try more(out, "existing file is kept");
     try row(out, sty, "sync", "add entries for installed models that have none, set");

@@ -389,3 +389,94 @@ Ctrl-C idle) the process is gone in 0.5-0.6 s with status 0, the footprint is
 returned, wired memory falls back to its idle 3 GB, and a tool's child is
 killed; the GGUF stays in the page cache as reclaimable cached files, which
 is what makes the next load 20 s instead of a cold read.
+
+## The two chat models with their drafters (2026-11-20)
+
+**Question.** With Qwen3.8-27B made the flagship and Gemma 4 E4B the small
+chat model, what does each decode with its drafter at one revision, which of
+Qwen's two drafters should be its default, and what does Qwen reach in a
+real agent session?
+
+**Setup.** Apple M4 Pro (16 GPU cores), 48 GiB, macOS 27.2.1, Zig 0.17.1,
+ReleaseSafe, Metal, F16 cache, binary `c43823e`. Qwen3.8-27B is the re-made
+`UD-Q4_K_M` (`1bce504d…`) with `mtp` (`MTP/mtp-Qwen3.8-27B-Q4_0.gguf`) or
+`dflash2` (`Qwen3.8-27B-DFlash2-Q8_0.gguf`); Gemma 4 E4B is the QAT file
+with its assistant head.
+
+**Method.** `scripts/bench/spec-matrix.py --contexts 512,code,32639 --drafts
+<the entry's> --baseline --cooldown 20`, three off/on pairs of 128 tokens per
+cell on one loaded model, p_min 0.7: `--model qwen38_dflash2_pair` and
+`--model qwen38` (MTP) with `--sampling greedy,thinking`, `--model
+gemma4_e4b` with `--sampling greedy,instruct`. Rates read baseline (no
+drafter) → loaded but off → on; the speedup is the median of the pairs'
+on/off ratios, its range in parentheses. Reports:
+[speculative-2026-11-20/](../speculative-2026-11-20/).
+
+A `qwen38` cell follows the `nuclis.json` of the machine running it, and
+this one's Qwen entry set `generation.draft` to `dflash2`: the first `qwen38`
+run measured DFlash2 again (accepted and proposed per step equal to the
+DFlash2 run's in all six cells, where MTP proposes 2.91 at 512 to DFlash2's
+2.77). The MTP rows below ran with `NUCLIS_HOME` pointing at a copy of the
+configuration without that override, the models directory linked.
+
+**Qwen3.8-27B, draft 7** (decode tok/s):
+
+| prompt | sampling | DFlash2 | MTP |
+| --- | --- | --- | --- |
+| 512 | greedy | 11.41 → 11.52 → 18.70, 1.629× (1.60–1.64) | 11.71 → 11.50 → 18.15, 1.577× (1.55–1.61) |
+| 512 | thinking | 11.65 → 11.63 → 17.16, 1.407× (1.39–1.64) | 11.69 → 11.66 → 17.05, 1.397× (1.39–1.60) |
+| code | greedy | 11.80 → 11.77 → 20.05, 1.705× (1.69–1.72) | 11.80 → 11.78 → 19.03, 1.616× (1.59–1.64) |
+| code | thinking | 11.75 → 11.73 → 19.30, 1.712× (1.50–1.73) | 11.59 → 11.55 → 17.00, 1.534× (1.35–1.53) |
+| 32,639 | greedy | 10.58 → 10.53 → 13.50, 1.287× (1.25–1.31) | 10.46 → 9.28 → 12.19, 1.319× (1.29–1.33) |
+| 32,639 | thinking | 10.52 → 10.48 → 12.56, 1.212× (1.09–1.29) | 9.66 → 10.42 → 12.41, 1.163× (1.12–1.30) |
+| 65,407 | greedy | 9.03 → 9.23 → 11.13, 1.245× (1.13–1.25) | not run |
+| 65,407 | thinking | 9.47 → 9.63 → 11.25, 1.166× (1.11–1.23) | not run |
+
+Accepted of proposed per verify batch, DFlash2 / MTP: 1.98 of 2.77 / 1.91 of
+2.91 at 512 greedy, 2.20 of 3.23 / 2.20 of 3.60 on code, 1.61 of 2.49 / 1.61
+of 2.51 at 32,639, DFlash2 1.67 of 2.56 at 65,407. DFlash2's on-rate is the
+higher in all six cells measured with both; MTP's
+32,639 greedy ratio is higher only because its loaded-but-off rate fell to
+9.28 in that sitting. `qwen3.8-27b`'s default drafter is `dflash2` from this
+record. At 65,407 it still pays, 1.17–1.25× (every pair above 1.1×; the
+65,407 cells were run after the others, with the 65,536 capacity), so Qwen
+keeps no draft depth cap and `engine.ctx_size` defaults to 65,536 from
+here; the gate `qwen38-dflash2-verify-depth-64k` checks its verify rows
+against stepped decode at that depth.
+
+**Gemma 4 E4B QAT, draft 6** (decode tok/s):
+
+| prompt | sampling | assistant head |
+| --- | --- | --- |
+| 512 | greedy | 53.00 → 53.08 → 88.53, 1.674× (1.66–1.67) |
+| 512 | instruct | 51.92 → 51.90 → 73.12, 1.373× (1.35–1.50) |
+| code | greedy | 57.78 → 57.80 → 178.28, 3.084× (3.08–3.09) |
+| code | instruct | 56.38 → 56.39 → 178.98, 3.174× (3.00–3.34) |
+| 32,639 | greedy | 41.84 → 41.56 → 47.77, 1.148× (1.14–1.16) |
+| 32,639 | instruct | 40.49 → 40.33 → 39.74, 1.005× (0.92–1.03) |
+
+Accepted of proposed per verify batch: 1.78 of 3.13 at 512 greedy, 1.56 of
+2.78 at 32,639. On the code prompt the head is accepted 4.82 of 5.50 times
+per batch (5.30 of 5.62 sampled), far above any other cell; the generated
+text was not read, and output that repeats itself would draft this well, so
+the code cells are not quoted elsewhere. At 32,639 sampled the drafter is
+even with plain decode, which the entry's 32,768-token cap already
+reflects.
+
+**Qwen3.8-27B in an agent session.** The maintainer's own `nuclis agent`
+session, building a TODO app (a Bun server, SQLite in WAL mode, a REST API,
+a styled front end) in an empty directory: binary `c43823e`, DFlash2 at draft
+7, think low, a 65,536 context, F16 cache. From the session's per-step stats:
+
+| part | steps | generated | decode s | tok/s | drafts accepted | tokens per verify batch |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| turn 1, the design | 2 | 1,993 | 102.4 | 19.47 | 70.2 % | 3.32 |
+| turn 2, the build | 15 | 18,345 | 714.0 | 25.69 | 83.6 % | 5.37 |
+| the session | 17 | 20,338 | 816.3 | 24.91 | 82.2 % (16,317 of 19,841) | 5.06 |
+
+The longest step, a 6,842-token run of writes, decoded at 28.98 tok/s and
+6.19 tokens per verify batch; the context peaked at 26,714 tokens. The status
+bar's `tg` is a turn's generated tokens over its decode seconds, so its
+25.69 is turn 2's. One session, not a mean: a bench cell's 128 tokens from
+a short prompt draft 2.6–3.2 tokens per batch, and an agent writing files
+it has planned drafts nearly twice that.

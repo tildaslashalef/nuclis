@@ -86,19 +86,19 @@ one pulls, verifies, and runs by name, with no gates. The index:
 | --- | --- | --- | --- | --- |
 | `qwen3.8-27b` | generation | UD-Q4_K_M | 16.56 GB | current |
 | `gemma-4-12b-qat` | generation | Q4_0 (QAT) | 6.72 GB | legacy |
-| `gemma-4-26b-a4b` | generation | Q4_0 (QAT) | 14.25 GB | current |
+| `gemma-4-26b-a4b` | generation | Q4_0 (QAT) | 14.25 GB | legacy |
 | `gemma-4-e4b-qat` | generation | Q4_0 (QAT) | 4.22 GB | current |
 | `muse-glimmer-30b` | generation | UD-Q4_K_XL | 15.88 GB | legacy |
 | `laya` | decision | F16 | 842.6 MB | current |
-| `laya-multilingual` | decision | F16 | 643.8 MB | current |
+| `laya-multilingual` | decision | F16 | 643.8 MB | legacy |
 | `clef-flash` | decision | Q6_K | 243.5 MB | current |
 | `embeddinggemma-2` | embedding | Q8_0 | 309.9 MB | current |
 | `qwen3-tts-1.7b-customvoice` | speech | BF16 | 3.83 GB | current |
-| `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | current |
-| `qwen3-tts-1.7b-base` | speech | BF16 | 3.86 GB | current |
-| `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | current |
-| `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | current |
-| `drama-3` | speech | Q4_K | 20.79 GB | current |
+| `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | legacy |
+| `qwen3-tts-1.7b-base` | speech | BF16 | 3.86 GB | legacy |
+| `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | legacy |
+| `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | legacy |
+| `drama-3` | speech | Q4_K | 20.79 GB | legacy |
 | `nemotron-asr-0.6b` | transcription | F32 | 2.55 GB | current |
 <!-- /gen -->
 

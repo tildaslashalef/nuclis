@@ -191,19 +191,23 @@ decoding; `backbone` and `codec` for the decision and speech models), each
 with its own repository and commit when it is not the artifact's.
 
 - **Lifecycle.** `current` artifacts are looked after: they have gates and
-  `config init` writes them. A `legacy` artifact (`gemma-4-12b-qat`,
-  `muse-glimmer-30b`, decided 2026-11-10) still pulls, verifies, and runs by
-  name, but `config init` never writes it, `model ls --available` hides it
-  without `--all`, and nothing gates it.
+  `config init` writes them. A `legacy` artifact (`gemma-4-12b-qat` and
+  `muse-glimmer-30b`, decided 2026-11-10; `gemma-4-26b-a4b`,
+  `laya-multilingual`, `drama-3`, and every Qwen3-TTS but the 1.7B
+  CustomVoice, decided 2026-11-20) still pulls, verifies, and runs by name,
+  but `config init` never writes it, `model ls --available` hides it
+  without `--all`, and nothing gates it, with one exception: the 26B-A4B's
+  gates name its files by path, the only real-model check of Gemma 4's
+  mixture-of-experts path.
 - **Draft variants.** An artifact may carry several draft files, each with
   a variant name and its own speculative verdict (on or off, draft
-  length). `qwen3.8-27b` has `mtp` (Unsloth's head, the default) and
-  `dflash2` (`z-lab/Qwen3.8-27B-DFlash2-GGUF` at
+  length). `qwen3.8-27b` has `dflash2`, the default, and `mtp`
+  (Unsloth's head), both on at draft 7
+  ([engine/speculative-decoding.md](../engine/speculative-decoding.md)).
+  `dflash2` is `z-lab/Qwen3.8-27B-DFlash2-GGUF` at
   `2d9571f8ce46e151f61c6499c99dee6079e1d610`,
   `Qwen3.8-27B-DFlash2-Q8_0.gguf`, 2,056,414,816 B, SHA-256
-  `c18e800daedc59ca68fd13b6a856d795746af6d399a9279ac6a277d1d422f87e`;
-  on, draft 7, from
-  [engine/speculative-decoding.md](../engine/speculative-decoding.md)). A
+  `c18e800daedc59ca68fd13b6a856d795746af6d399a9279ac6a277d1d422f87e`. A
   file fetched from another repository at a Hub name of its own lands
   where the index places it, beside its parent: the DFlash2 file is
   `unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf`.
@@ -226,9 +230,9 @@ with its own repository and commit when it is not the artifact's.
   installed GGUF by its adapter; `nuclis config sync [--prune] [--dry-run]`
   adds what was installed since and, with `--prune`, drops entries whose
   files are gone ([guide/configuration.md](../guide/configuration.md)).
-  `engine.model` defaults to `gemma-4-26b-a4b`, the fastest current chat
-  model with a draft that pays on this machine; `config init` names the
-  first installed chat model instead when that one is absent.
+  `engine.model` defaults to `qwen3.8-27b`, the flagship, which codes at
+  about 25 tokens/s with its drafter on this machine; `config init` names
+  the first installed chat model instead when that one is absent.
 
 `nuclis model pull <name> [--with mmproj,draft | --all]` fetches through
 the index, and `--model` and `engine.model` resolve names through it.
@@ -240,19 +244,19 @@ sidecars, never by hashing, so a listing is instant.
 | --- | --- | --- | --- | --- |
 | `qwen3.8-27b` | generation | UD-Q4_K_M | 16.56 GB | current |
 | `gemma-4-12b-qat` | generation | Q4_0 (QAT) | 6.72 GB | legacy |
-| `gemma-4-26b-a4b` | generation | Q4_0 (QAT) | 14.25 GB | current |
+| `gemma-4-26b-a4b` | generation | Q4_0 (QAT) | 14.25 GB | legacy |
 | `gemma-4-e4b-qat` | generation | Q4_0 (QAT) | 4.22 GB | current |
 | `muse-glimmer-30b` | generation | UD-Q4_K_XL | 15.88 GB | legacy |
 | `laya` | decision | F16 | 842.6 MB | current |
-| `laya-multilingual` | decision | F16 | 643.8 MB | current |
+| `laya-multilingual` | decision | F16 | 643.8 MB | legacy |
 | `clef-flash` | decision | Q6_K | 243.5 MB | current |
 | `embeddinggemma-2` | embedding | Q8_0 | 309.9 MB | current |
 | `qwen3-tts-1.7b-customvoice` | speech | BF16 | 3.83 GB | current |
-| `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | current |
-| `qwen3-tts-1.7b-base` | speech | BF16 | 3.86 GB | current |
-| `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | current |
-| `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | current |
-| `drama-3` | speech | Q4_K | 20.79 GB | current |
+| `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | legacy |
+| `qwen3-tts-1.7b-base` | speech | BF16 | 3.86 GB | legacy |
+| `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | legacy |
+| `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | legacy |
+| `drama-3` | speech | Q4_K | 20.79 GB | legacy |
 | `nemotron-asr-0.6b` | transcription | F32 | 2.55 GB | current |
 <!-- /gen -->
 

@@ -154,19 +154,11 @@ voice.
 <!-- gen:gates-for:qwen3-tts -->
 | Gate | Tier | Model | Evidence |
 | --- | --- | --- | --- |
-| `qwen3-tts-codec-cpu` | `verify-cpu` | qwen3_tts_06b | [qwen3-tts.md § codec-decoder-against-the-trace-2026-10-27](../benchmarks/record/qwen3-tts.md#codec-decoder-against-the-trace-2026-10-27) |
-| `qwen3-tts-0.6b-trace-cpu` | `verify-cpu` | qwen3_tts_06b | [qwen3-tts.md § talker-and-code-predictor-against-the-trace-2026-10-27](../benchmarks/record/qwen3-tts.md#talker-and-code-predictor-against-the-trace-2026-10-27) |
-| `qwen3-tts-0.6b-clone-trace-cpu` | `verify-cpu` | qwen3_tts_06b_base | [qwen3-tts.md § the-talker-and-the-decode-against-the-trace-2026-10-29](../benchmarks/record/qwen3-tts.md#the-talker-and-the-decode-against-the-trace-2026-10-29) |
+| `qwen3-tts-codec-cpu` | `verify-cpu` | qwen3_tts_17b | [qwen3-tts.md § codec-decoder-against-the-trace-2026-10-27](../benchmarks/record/qwen3-tts.md#codec-decoder-against-the-trace-2026-10-27) |
 | `qwen3-tts-1.7b-trace-cpu` | `verify-cpu` | qwen3_tts_17b | [qwen3-tts.md § talker-and-code-predictor-against-the-trace-2026-10-27](../benchmarks/record/qwen3-tts.md#talker-and-code-predictor-against-the-trace-2026-10-27) |
-| `qwen3-tts-1.7b-design-trace-cpu` | `verify-cpu` | qwen3_tts_17b_design | [qwen3-tts.md § voicedesign](qwen3-tts.md#voicedesign) |
-| `qwen3-tts-0.6b-trace-metal` | `verify` | qwen3_tts_06b | [qwen3-tts.md § on-metal-2026-10-27](../benchmarks/record/qwen3-tts.md#on-metal-2026-10-27) |
-| `qwen3-tts-0.6b-clone-cpu` | `verify` | qwen3_tts_06b_base | [qwen3-tts.md § the-speaker-encoder-against-the-trace-2026-10-29](../benchmarks/record/qwen3-tts.md#the-speaker-encoder-against-the-trace-2026-10-29) |
-| `qwen3-tts-0.6b-clone-metal` | `verify` | qwen3_tts_06b_base | [qwen3-tts.md § the-talker-and-the-decode-against-the-trace-2026-10-29](../benchmarks/record/qwen3-tts.md#the-talker-and-the-decode-against-the-trace-2026-10-29) |
 | `qwen3-tts-1.7b-trace-metal` | `verify` | qwen3_tts_17b | [qwen3-tts.md § on-metal-2026-10-27](../benchmarks/record/qwen3-tts.md#on-metal-2026-10-27) |
-| `qwen3-tts-1.7b-design-metal` | `verify` | qwen3_tts_17b_design | [qwen3-tts.md § voicedesign](qwen3-tts.md#voicedesign) |
-| `qwen3-tts-codec-metal` | `verify` | qwen3_tts_06b | [qwen3-tts.md § on-metal-2026-10-27](../benchmarks/record/qwen3-tts.md#on-metal-2026-10-27) |
-| `qwen3-tts-0.6b-roundtrip-metal` | `verify` | qwen3_tts_06b | [qwen3-tts.md § on-metal-2026-10-27](../benchmarks/record/qwen3-tts.md#on-metal-2026-10-27) |
-| `qwen3-tts-1.7b-roundtrip-metal` | `verify-release` | qwen3_tts_17b | [qwen3-tts.md § on-metal-2026-10-27](../benchmarks/record/qwen3-tts.md#on-metal-2026-10-27) |
+| `qwen3-tts-codec-metal` | `verify` | qwen3_tts_17b | [qwen3-tts.md § on-metal-2026-10-27](../benchmarks/record/qwen3-tts.md#on-metal-2026-10-27) |
+| `qwen3-tts-1.7b-roundtrip-metal` | `verify` | qwen3_tts_17b | [qwen3-tts.md § on-metal-2026-10-27](../benchmarks/record/qwen3-tts.md#on-metal-2026-10-27) |
 <!-- /gen -->
 
 ## Current numbers

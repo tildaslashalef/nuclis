@@ -4,9 +4,10 @@
 Google's Gemma 4 in three configurations behind one adapter,
 [inference/src/models/gemma4.zig](../../inference/src/models/gemma4.zig),
 which selects the configuration by `gemma4.block_count` and validates every
-key against it. Catalogue entries: `gemma-4-26b-a4b` (the mixture of
-experts, the default chat model), `gemma-4-e4b-qat` (the on-device size,
-which also hears audio), and `gemma-4-12b-qat` (the dense 12B, legacy).
+key against it. Catalogue entries: `gemma-4-e4b-qat` (the on-device size,
+the small chat model, which also hears audio), `gemma-4-26b-a4b` (the
+mixture of experts, legacy; its gates stay as the check of the expert path),
+and `gemma-4-12b-qat` (the dense 12B, legacy).
 Each pulls its quantization-aware-trained Q4_0 file, a vision projector,
 and a draft head ([catalogue.md](catalogue.md)). How every fact here was
 established, the oracle comparisons, and the first-look rates are in

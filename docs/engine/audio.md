@@ -67,13 +67,13 @@ as a cross-check, never copied.
   recording of a convolution through its history (`Device`).
 - `ecapa.zig`: Qwen3-TTS Base's speaker encoder, CPU only: `Front`, the
   24 kHz mel `extract_speaker_embedding` computes, and `Encoder`, the
-  ECAPA-TDNN to one embedding at the talker's width (gate
-  `qwen3-tts-0.6b-clone-cpu`;
+  ECAPA-TDNN to one embedding at the talker's width (ungated: the Base
+  checkpoints are legacy;
   [qwen3-tts.md § The speaker encoder](../benchmarks/record/qwen3-tts.md#the-speaker-encoder-2026-10-29)).
 - `qwen3_codec_encoder.zig`: Qwen3-TTS's codec encoder, CPU only, 24 kHz
   samples to frames of 16 codes (the Base's reference codes): `bind` (its
   quantizer is the decoder binding's, the file's copies checked equal) and
-  `Encoder` (gate `qwen3-tts-0.6b-clone-cpu`;
+  `Encoder` (ungated, with the Base;
   [qwen3-tts.md § The codec encoder](../benchmarks/record/qwen3-tts.md#the-codec-encoder-2026-10-29)).
 - `nemotron_encoder.zig`: Nemotron 3.5 ASR's cache-aware encoder and its
   prompt block, the CPU reference: `bind` (the safetensors checkpoint),
