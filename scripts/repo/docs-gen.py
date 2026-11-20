@@ -81,10 +81,14 @@ def constant(text, name):
 
 
 def help_sections(page):
-    """A help page's sections by title (`Usage:` → its indented lines)."""
+    """A help page's sections by title (`Usage:` → its indented lines); a
+    one-line `Usage: nuclis x …` is that section with one line."""
     sections, title = {}, None
     for line in page.splitlines():
-        if line and not line.startswith(" ") and line.endswith(":"):
+        if line.startswith("Usage: "):
+            sections["Usage"] = ["  " + line[len("Usage: ") :]]
+            title = None
+        elif line and not line.startswith(" ") and line.endswith(":"):
             title = line[:-1]
             sections[title] = []
         elif title and line.startswith("  "):
@@ -97,16 +101,26 @@ def help_sections(page):
 
 
 def two_columns(lines):
-    """(term, text) rows of a help section; continuation lines join the text."""
-    rows = []
+    """(term, text) rows of a help section; a line indented to the text's
+    column continues the row before it (a long-only flag is indented less)."""
+    rows, column = [], None
     for line in lines:
-        m = re.match(r"^  (\S.*?)\s{2,}(\S.*)$", line)
-        if m and not line.startswith("   "):
-            rows.append([m[1], m[2]])
-        elif rows and line.startswith("   "):
+        indent = len(line) - len(line.lstrip(" "))
+        if rows and column is not None and indent >= column:
             rows[-1][1] += " " + line.strip()
+            continue
+        if rows and column is None and not rows[-1][1] and indent > 6:
+            # The text of a name too wide for the column, on its own line.
+            rows[-1][1] = line.strip()
+            column = indent
+            continue
+        m = re.match(r"^( {2,})(\S.*?)\s{2,}(\S.*)$", line)
+        if m:
+            rows.append([m[2], m[3]])
+            column = m.start(3)
         else:
             rows.append([line.strip(), ""])
+            column = None
     return rows
 
 
@@ -164,9 +178,11 @@ def collect(binary):
     for topic in topics(commands):
         page = help_sections(run_help(binary, topic, "--help"))
         usage = [line.strip() for line in page.get("Usage", [])]
-        named = flags(page.get("Options", []))
+        named = flags(page.get("Flags", page.get("Options", [])))
         named += [f for f in re.findall(r"(?<![\w-])(--[a-z][\w-]*)", " ".join(usage)) if f not in named]
         cli[topic] = {"usage": usage, "flags": named}
+    # `help` has no page of its own: it is the pages' alias.
+    cli["help"] = {"usage": ["nuclis help [<command> [<action>]]"], "flags": []}
     config_page = help_sections(run_help(binary, "config", "--help"))
     with tempfile.TemporaryDirectory() as home:
         subprocess.run(
@@ -187,10 +203,10 @@ def collect(binary):
 
 
 def topics(commands):
-    """Command names with a page: the overview's terms, `speak, voice, transcribe` split."""
+    """Command names with a page: the overview's terms (`help` is the pages' alias)."""
     out = []
     for term, _ in commands:
-        out += [t.strip() for t in term.split(",")]
+        out += [t.strip() for t in term.split(",") if t.strip() != "help"]
     return out
 
 
@@ -338,16 +354,16 @@ def write_facts(facts):
 
 class SelfTest(unittest.TestCase):
     PAGE = (
-        "nuclis x — a thing\n\nUsage:\n  nuclis x [--a] <file>\n\nOptions:\n"
-        "  --alpha, -a             one\n                          two\n  --beta N                three\n\n"
+        "Usage: nuclis x [--a] <file>\n\nA thing\n\nFlags:\n"
+        "  -a, --alpha    One\n                 two\n      --beta N   Three\n\n"
         "Examples:\n  nuclis x\n"
     )
 
     def test_sections_and_flags(self):
         s = help_sections(self.PAGE)
         self.assertEqual(s["Usage"], ["  nuclis x [--a] <file>"])
-        self.assertEqual(two_columns(s["Options"])[0], ["--alpha, -a", "one two"])
-        self.assertEqual(flags(s["Options"]), ["--alpha", "-a", "--beta"])
+        self.assertEqual(two_columns(s["Flags"]), [["-a, --alpha", "One two"], ["--beta N", "Three"]])
+        self.assertEqual(flags(s["Flags"]), ["-a", "--alpha", "--beta"])
 
     def test_constant(self):
         self.assertEqual(constant("pub const max_bytes: usize = 4 * 1024 * 1024;", "max_bytes"), 4 << 20)

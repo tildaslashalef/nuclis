@@ -125,9 +125,9 @@ view shows it. Numbers are rounded to 4 places as Python's `round` does.
 
 <!-- gen:cli-synopsis:decide -->
 ```text
-nuclis decide --request <file|-> [options]
-nuclis decide --questions <file> <states> [options]
-nuclis decide <inline questions> <states> [options]
+nuclis decide --request <file|-> [flags]
+nuclis decide --questions <file> <states> [flags]
+nuclis decide <inline questions> <states> [flags]
 <states>: --state <text> and --state-file <path>, repeatable
 <inline questions>: --choice <text> --option <key[=desc]>…,
 --score <text> --level <text>…, --noul <text>; each [--id <name>]

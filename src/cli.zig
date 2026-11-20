@@ -14,7 +14,6 @@ const engine = @import("engine.zig");
 const config = @import("config.zig");
 const agent = @import("agent/root.zig");
 const model = @import("model.zig");
-const style = @import("tui/style.zig");
 const kit = @import("ui.zig");
 const catalog = @import("catalog.zig");
 const help_text = @import("help.zig");
@@ -109,6 +108,10 @@ pub fn parse(args: []const []const u8, diag: *Diagnostic) !Options {
     };
 }
 
+fn isHelp(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
+}
+
 /// `parse` without the explanation, for the tests that pin error names.
 pub fn parseArgs(args: []const []const u8) !Options {
     var at: usize = 0;
@@ -122,6 +125,18 @@ fn parseAt(args: []const []const u8, at: *usize) !Options {
         return .{ .command = .help };
     if (args.len == 1 and std.mem.eql(u8, args[0], "--version"))
         return .{ .command = .version };
+    // `nuclis help [<command> [<action>]]`: the overview, or the command's
+    // page, which covers its actions.
+    if (std.mem.eql(u8, args[0], "help")) {
+        if (args.len == 1) return .{ .command = .help };
+        at.* = 1;
+        const topic = std.meta.stringToEnum(help_text.Topic, args[1]) orelse return error.UnknownCommand;
+        if (args.len > 3) {
+            at.* = 3;
+            return error.UnknownOption;
+        }
+        return .{ .command = .help, .help_topic = topic };
+    }
     if (std.mem.eql(u8, args[0], "__complete")) return .{ .command = .complete, .words = args[1..] };
     // `__index`: the index as JSON, for `make index` (src/catalog.json).
     if (args.len == 1 and std.mem.eql(u8, args[0], "__index")) return .{ .command = .index };
@@ -163,7 +178,7 @@ fn parseAt(args: []const []const u8, at: *usize) !Options {
         return error.UnknownCommand;
     // `nuclis <command> --help` is that command's page; the bare `--help`
     // above is the overview.
-    if (args.len == 2 and std.mem.eql(u8, args[1], "--help")) {
+    if ((args.len == 2 and isHelp(args[1])) or (args.len == 3 and isHelp(args[2]) and !std.mem.startsWith(u8, args[1], "-"))) {
         return .{ .command = .help, .help_topic = std.meta.stringToEnum(help_text.Topic, args[0]) };
     }
     at.* = 1;
@@ -664,11 +679,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         else => {},
     }
     // Text reports are styled only on a terminal; `--json` never is.
-    const sty: style.Style = if (options.json) .none else style.Style.detect(environ, io, std.Io.File.stdout());
     const ui: kit.Ui = if (options.json) .plain else kit.Ui.detect(environ, io, std.Io.File.stdout());
     if (options.old_spelling) |notice| std.log.warn("{s}", .{notice});
     switch (options.command) {
-        .help => return help_text.write(out, sty, options.help_topic, version),
+        .help => return help_text.write(out, ui, options.help_topic, version),
         .version => return out.writeAll("nuclis " ++ version ++ "\n"),
         // Compiles the kernels only: no model, root, or configuration.
         .bench => if (options.benchmark.kernel_stats) return bench.kernelStats(alloc, options.json, out, ui, diag),
@@ -1598,7 +1612,6 @@ test {
     _ = @import("interrupt.zig");
     _ = @import("timing.zig");
     _ = @import("web/root.zig");
-    _ = style;
     _ = completion;
     _ = decide;
     _ = decision_catalog;

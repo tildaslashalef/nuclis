@@ -360,6 +360,7 @@ pub const commands = [_]Command{
         .{ .name = "set", .summary = "change one key", .positionals = &.{ .config_key, .config_value } },
     } },
     .{ .name = "completion", .summary = "the shell completion script", .actions = &.{.{ .positionals = &.{.{ .choice = names(Shell) }} }} },
+    .{ .name = "help", .summary = "show help for a command", .actions = &.{.{ .positionals = &.{.{ .choice = names(help.Topic) }} }} },
 };
 
 const globals = [_]Flag{
@@ -1000,10 +1001,11 @@ test "every flag the parser spells is in the table" {
 
 test "every flag in the table is on its command's help page" {
     for (&commands) |*command| {
+        if (std.mem.eql(u8, command.name, "help")) continue;
         const topic = std.meta.stringToEnum(help.Topic, command.name) orelse return error.TestUnexpectedResult;
         var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
         defer buffer.deinit();
-        try help.write(&buffer.writer, .none, topic, "0.0.0-test");
+        try help.write(&buffer.writer, .plain, topic, "0.0.0-test");
         for (command.actions) |action| {
             if (action.name.len > 0) try testing.expect(std.mem.indexOf(u8, buffer.written(), action.name) != null);
             for (action.flags) |f| if (std.mem.indexOf(u8, buffer.written(), f.name) == null) {

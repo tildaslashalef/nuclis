@@ -203,29 +203,28 @@ One file, `~/.nuclis/nuclis.json`, whose schema is the struct `Config` in
 
 <!-- gen:config-keys -->
 ```text
-engine.*                model, backend, ctx_size, kv_precision
-generation.*            max_tokens, think, speculative, draft_length,
-                        draft_max_depth, image_max_tokens,
-                        sampling.{temperature, top_k, top_p, min_p,
-                        presence_penalty, repetition_penalty}
-agent.*                 think, fold_thinking, theme, instructions,
-                        thinking_budget, web
-decide.*                model
-embed.*                 model
-speech.*                model, voice
-transcribe.*            model
-serve.*                 host, port, log, request_log, timeout, memory_bytes,
-                        web, pin, transcription_bytes
-web.*                   url
-cache.*                 memory_bytes, disk_bytes
-models.<name>.*         path, or repo + file + revision; mmproj, draft (a
-                        file; mtp is its old name), profile, ctx_size,
-                        generation.*, agent.* for that model only, and
-                        generation.draft: an index model's draft variant
-                        (qwen3.8-27b: mtp, dflash2). Entries are created by
-                        init, sync, and model pull --register, never by set.
-A null sampling key takes the profile's value. agent.instructions is
-auto (AGENTS.md then CLAUDE.md), off, or a path.
+engine.*         model, backend, ctx_size, kv_precision
+generation.*     max_tokens, think, speculative, draft_length,
+                 draft_max_depth, image_max_tokens, sampling.{temperature,
+                 top_k, top_p, min_p, presence_penalty, repetition_penalty}
+agent.*          think, fold_thinking, theme, instructions, thinking_budget,
+                 web
+decide.*         model
+embed.*          model
+speech.*         model, voice
+transcribe.*     model
+serve.*          host, port, log, request_log, timeout, memory_bytes, web,
+                 pin, transcription_bytes
+web.*            url
+cache.*          memory_bytes, disk_bytes
+models.<name>.*  Path, or repo + file + revision; mmproj, draft (a file; mtp
+                 is its old name), profile, ctx_size, generation.*, agent.*
+                 for that model only, and generation.draft: an index model's
+                 draft variant (qwen3.8-27b: mtp, dflash2). Entries are
+                 created by init, sync, and model pull --register, never by
+                 set.
+A null sampling key takes the profile's value. agent.instructions is auto
+(AGENTS.md then CLAUDE.md), off, or a path.
 ```
 <!-- /gen -->
 
@@ -292,40 +291,43 @@ The commands, and their usage as their help pages print it:
 <!-- gen:cli-commands -->
 | Command | What it does |
 | --- | --- |
-| `agent` | the interactive chat; -p <text> runs one turn |
-| `generate` | one completion from a prompt |
-| `bench` | repeated prefill and decode measurements |
-| `tokenize` | the prompt's token ids and byte offsets, no model run |
-| `eval` | perplexity of a text file, teacher-forced |
-| `inspect` | an artifact's identity, dimensions, tensor encodings |
-| `validate` | whether a file binds to its architecture's adapter |
-| `model` | pull, list, judge, and remove Hugging Face Hub artifacts |
-| `cache` | list or clear the agent's saved model states |
-| `decide` | typed questions about text or JSON, answered by Laya |
-| `embed` | text, images, audio into vectors, by EmbeddingGemma 2 |
-| `speak, voice, transcribe` | speech by Qwen3-TTS, saved voices, Nemotron ASR |
-| `serve` | the nuclis API over HTTP: decisions, models kept open |
-| `config` | write, show, or set a key of ~/.nuclis/nuclis.json |
-| `completion` | the shell completion script for fish, bash, or zsh |
+| `agent` | The interactive chat; -p <text> runs one turn |
+| `generate` | One completion from a prompt |
+| `bench` | Repeated prefill and decode measurements |
+| `tokenize` | The prompt's token ids and byte offsets, no model run |
+| `eval` | Perplexity of a text file, teacher-forced |
+| `inspect` | An artifact's identity, dimensions, tensor encodings |
+| `validate` | Whether a file binds to its architecture's adapter |
+| `model` | Pull, list, judge, and remove Hugging Face Hub artifacts |
+| `cache` | List or clear the agent's saved model states |
+| `decide` | Typed questions about text or JSON, by Laya or clef-flash |
+| `embed` | Text, images, audio into vectors, by EmbeddingGemma 2 |
+| `speak` | Speech from text, by Qwen3-TTS |
+| `voice` | Saved voices for speak and the server |
+| `transcribe` | Text from speech, by Nemotron ASR |
+| `serve` | The nuclis API over HTTP, models kept open |
+| `config` | Write, show, or set a key of ~/.nuclis/nuclis.json |
+| `completion` | The shell completion script for fish, bash, or zsh |
+| `help` | Show help for a command |
 <!-- /gen -->
 
 <!-- gen:cli-synopsis -->
 ```text
-nuclis agent [options] [--resume [<id>]]
+nuclis agent [flags] [--resume [<id>]]
 nuclis agent -p <text> [--json] [--session <path>]
 nuclis agent --print --prompt-file <path> [--json] [--session <path>]
 nuclis agent ls [--json]
 nuclis agent rm <id>
 nuclis agent export <id> [path]
-nuclis generate --prompt <text> [options]
-nuclis generate --prompt-file <path> [options]
-nuclis generate --prompt-tokens <json> [options]
-nuclis bench --prompt <text> [options]
-nuclis bench --prompt-file <path> [options]
-nuclis bench --prompt-tokens <json> [options]
-nuclis tokenize --prompt <text> [options]
-nuclis tokenize --prompt-file <path> [options]
-nuclis eval --file <path> [options]
+nuclis generate --prompt <text> [flags]
+nuclis generate --prompt-file <path> [flags]
+nuclis generate --prompt-tokens <json> [flags]
+nuclis bench --prompt <text> [flags]
+nuclis bench --prompt-file <path> [flags]
+nuclis bench --prompt-tokens <json> [flags]
+nuclis tokenize --prompt <text> [flags]
+nuclis tokenize --prompt-file <path> [flags]
+nuclis eval --file <path> [flags]
 nuclis inspect [--model <name|path>] [--tensor <name>] [--json]
 nuclis validate [--model <name|path>] [--json]
 nuclis model ls [-l] [--available [--all]] [--json]
@@ -340,22 +342,22 @@ nuclis model adopt <path> [--force] [--json]
 nuclis model rm <name> [--with mmproj,draft | --all] [--json]
 nuclis cache [ls] [--json]
 nuclis cache clear
-nuclis decide --request <file|-> [options]
-nuclis decide --questions <file> <states> [options]
-nuclis decide <inline questions> <states> [options]
+nuclis decide --request <file|-> [flags]
+nuclis decide --questions <file> <states> [flags]
+nuclis decide <inline questions> <states> [flags]
 <states>: --state <text> and --state-file <path>, repeatable
 <inline questions>: --choice <text> --option <key[=desc]>…,
 --score <text> --level <text>…, --noul <text>; each [--id <name>]
-nuclis embed <text>… [options]
-nuclis embed --image <file>… --audio <file>… [options]
-nuclis embed --input-file <file|-> [options]
+nuclis embed <text>… [flags]
+nuclis embed --image <file>… --audio <file>… [flags]
+nuclis embed --input-file <file|-> [flags]
 each argument is one input: quote a sentence
-nuclis speak <text>… -o <file.wav> [options]
+nuclis speak <text>… -o <file.wav> [flags]
 the words are joined by spaces: quote a sentence
 nuclis voice add <name> <audio> [--text <transcript>] [--json]
 nuclis voice list [--json]
 nuclis voice rm <name> [--json]
-nuclis transcribe <file> [options]
+nuclis transcribe <file> [flags]
 nuclis serve [--host <ip>] [--port <n>] [--model <name>]… [--pin <name>]…
 [--memory <GiB>] [--backend cpu|metal] [--timeout <s>]
 [--web-url <url> | --no-web]
@@ -364,6 +366,7 @@ nuclis config sync [--prune] [--dry-run] [--json]
 nuclis config show [--json]
 nuclis config set <key> <value>
 nuclis completion fish|bash|zsh
+nuclis help [<command> [<action>]]
 ```
 <!-- /gen -->
 
