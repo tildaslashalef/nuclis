@@ -21,6 +21,14 @@ the same. The agent's chat surface draws on its own
   (`812 ms`, `42.1 s`, `5m 03s`), grouped counts (`65,536`).
 - **Plans**: before work that downloads or writes in bulk, the plan
   (what, where, from → to).
+- **Progress**: live steps on stderr, so stdout keeps the result. On a
+  terminal the running step is one line redrawn in place (spinner, name,
+  the latest detail, cut to the width) that becomes its final line when
+  it ends: `✓ model.safetensors  842.6 MB in 18.4 s · 45.8 MB/s`. Off a
+  terminal, one line with the local time when a step starts and one when
+  it ends (`18:16:14 ▸ …`, `18:16:21 ✓ …`). When stdout is the same
+  terminal, the live lines stand for the result table, which is not
+  printed again. `--json` progress is one JSON object per line.
 - **Palette**: the agent's theme (gruvbox dark): titles and identifiers
   blue, muted gray, ok green, warning yellow, failure red, a changed value
   aqua, high impact orange. `NO_COLOR`, a dumb terminal, or a pipe turn it

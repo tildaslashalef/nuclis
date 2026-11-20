@@ -25,17 +25,22 @@ pub const Cell = struct {
 
 const gutter = 2;
 
-/// Rows are slices of `columns.len` cells; an empty cell or `--` reads muted.
+/// Rows are slices of `columns.len` cells; an empty cell or `--` reads
+/// muted. A column with no text in any row is left out, and a row ends
+/// at its last cell with text.
 pub fn render(w: *std.Io.Writer, ui: Ui, arena: std.mem.Allocator, indent: usize, columns: []const Column, rows: []const []const Cell) !void {
     const n = columns.len;
     const widths = try arena.alloc(usize, n);
     const shown = try arena.alloc(bool, n);
     for (columns, 0..) |c, i| {
         widths[i] = text.width(c.title);
-        shown[i] = true;
+        shown[i] = rows.len == 0;
     }
     for (rows) |row| {
-        for (row[0..n], 0..) |cell, i| widths[i] = @max(widths[i], text.width(cell.text));
+        for (row[0..n], 0..) |cell, i| {
+            widths[i] = @max(widths[i], text.width(cell.text));
+            if (cell.text.len > 0) shown[i] = true;
+        }
     }
     if (ui.width) |full| {
         const limit = full -| indent;
@@ -69,14 +74,19 @@ pub fn render(w: *std.Io.Writer, ui: Ui, arena: std.mem.Allocator, indent: usize
     try w.writeByte('\n');
     for (rows) |row| {
         try w.splatByteAll(' ', indent);
+        var row_last: usize = 0;
+        for (row[0..n], 0..) |cell, i| {
+            if (shown[i] and cell.text.len > 0) row_last = i;
+        }
         for (columns, 0..) |c, i| {
             if (!shown[i]) continue;
+            if (i > row_last) break;
             const cell = row[i];
             const role: style.Role = if (cell.text.len == 0 or std.mem.eql(u8, cell.text, "--")) .muted else cell.role;
             try w.writeAll(ui.on(role));
-            try text.writeFit(w, cell.text, widths[i], c.alignment, ui.glyphs.ellipsis, i != last);
+            try text.writeFit(w, cell.text, widths[i], c.alignment, ui.glyphs.ellipsis, i != row_last);
             try w.writeAll(ui.off(role));
-            if (i != last) try w.splatByteAll(' ', gutter);
+            if (i != row_last) try w.splatByteAll(' ', gutter);
         }
         try w.writeByte('\n');
     }

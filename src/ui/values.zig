@@ -3,6 +3,7 @@
 //! Sizes are decimal (the Hub's and the documentation's units); JSON keeps
 //! exact bytes and seconds.
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// A missing value in a table or detail view, painted muted.
 pub const missing = "--";
@@ -96,6 +97,46 @@ pub const Grouped = struct {
 
 pub fn grouped(n: anytype) Grouped {
     return .{ .n = @intCast(n) };
+}
+
+/// `14:32:01`: the time of day of `epoch_s` (seconds since the epoch) in
+/// the zone `offset_s` from UTC (`utcOffset`).
+pub const Clock = struct {
+    epoch_s: i64,
+    offset_s: i64,
+
+    pub fn format(c: Clock, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        const day: u64 = @intCast(@mod(c.epoch_s + c.offset_s, 86400));
+        try w.print("{d:0>2}:{d:0>2}:{d:0>2}", .{ day / 3600, day % 3600 / 60, day % 60 });
+    }
+};
+
+pub fn clock(epoch_s: i64, offset_s: i64) Clock {
+    return .{ .epoch_s = epoch_s, .offset_s = offset_s };
+}
+
+const Tm = extern struct {
+    sec: c_int,
+    min: c_int,
+    hour: c_int,
+    mday: c_int,
+    mon: c_int,
+    year: c_int,
+    wday: c_int,
+    yday: c_int,
+    isdst: c_int,
+    gmtoff: c_long,
+    zone: ?[*:0]const u8,
+};
+extern "c" fn localtime_r(time: *const c_long, result: *Tm) ?*Tm;
+
+/// The local zone's offset from UTC at `now` (seconds since the epoch);
+/// zero where libc's zone database is not linked.
+pub fn utcOffset(now: i64) i64 {
+    if (!builtin.target.os.tag.isDarwin()) return 0;
+    var tm: Tm = undefined;
+    const t: c_long = @intCast(now); // checked: the system clock, not a client's
+    return if (localtime_r(&t, &tm) != null) tm.gmtoff else 0;
 }
 
 const testing = std.testing;

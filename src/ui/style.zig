@@ -48,6 +48,8 @@ pub const Glyphs = struct {
     bar_empty: []const u8,
     arrow: []const u8,
     dot: []const u8,
+    /// A step starting, in a plain progress line.
+    step: []const u8,
     rule: []const u8,
     /// nuclis's mark, leading the header line.
     mark: []const u8,
@@ -68,6 +70,7 @@ pub const unicode: Glyphs = .{
     .bar_empty = "░",
     .arrow = "→",
     .dot = "·",
+    .step = "▸",
     .rule = "─",
     .mark = "◆",
     .spinner = &.{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
@@ -86,6 +89,7 @@ pub const ascii: Glyphs = .{
     .bar_empty = ".",
     .arrow = "->",
     .dot = "-",
+    .step = ">",
     .rule = "-",
     .mark = "nuclis",
     .spinner = &.{ "|", "/", "-", "\\" },

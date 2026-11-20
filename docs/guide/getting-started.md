@@ -155,8 +155,7 @@ the next. `nuclis config init` then registers them all.
 
 Files land in `~/.nuclis/models/<owner>/<repo>/<file>`, each SHA-256
 verified before it is published. If the Hub's digest at the pinned commit
-is not the catalogue's, the pull stops before writing a sidecar
-(`CatalogMismatch`).
+is not the catalogue's, the pull stops before writing a sidecar.
 
 ### Pull any other model from Hugging Face
 
@@ -168,7 +167,7 @@ nuclis model pull <owner/repo> --file <name> --register mymodel   # and name it
 - The revision (`main` by default; a tag, branch, or commit) is resolved
   once to a commit, printed, and recorded in the sidecar.
 - Without `--file`, a repository with several files lists them with their
-  sizes and stops (`SelectionRequired`). Names match in full, folders
+  sizes and stops. Names match in full, folders
   included: `--file MTP/mtp-Qwen3.8-27B-Q4_0.gguf`.
 - A safetensors set comes with its config and tokenizer files
   ([models/catalogue.md § Safetensors artifacts](../models/catalogue.md#safetensors-artifacts)).
@@ -198,22 +197,25 @@ adapter; `nuclis model inspect` tells you before you download (below).
 `nuclis model pull <entry>` pulls a model entry from `nuclis.json` (its
 `repo`, `file`, and `revision`, `main` when unset; `--with` and `--all`
 add its companions). An entry that points at a local `path` has nothing to
-pull (`NotPullable`); a name that is neither an entry, a catalogue name,
-nor `owner/repo` is `UnknownModel`. The entries are described in
+pull, and a name that is neither an entry, a catalogue name, nor
+`owner/repo` is refused. The entries are described in
 [configuration.md § Configuration file](configuration.md#configuration-file).
 
 ### What happens on a second pull, and on failure
 
 - **Pulling again** re-hashes the file and downloads nothing.
 - **A file that does not match** its sidecar, or that nuclis never verified,
-  is refused (`ExistingFileMismatch`).
+  is refused.
 - **`--force`** downloads every file of the pull again, verified ones
   included, and replaces each only once the new copy verifies: the old
   file stays in place until then, and a failed or interrupted download
   leaves it as it was. The sidecar is rewritten after; the report marks
   each file `xet` or `http`, never `verified_local`.
-- **Progress** is one updating line (bytes, rate, time left) on a terminal,
-  plain lines otherwise. A file downloads into `<file>.partial` beside its
+- **Progress** is a line per file on stderr: on a terminal it updates in
+  place (percentage, bytes, rate, time left) and ends as
+  `✓ <file>  <size> in <time> · <rate>`; otherwise a timestamped line when
+  a download starts and one when the file ends
+  ([command-output.md](../app/command-output.md)). A file downloads into `<file>.partial` beside its
   destination and is renamed into place once its digest verifies.
 - **Ctrl-C** (SIGINT) stops the pull and removes the partial file; a second
   Ctrl-C kills the process and may leave `<file>.partial` behind, which the

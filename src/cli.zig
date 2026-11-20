@@ -15,6 +15,7 @@ const config = @import("config.zig");
 const agent = @import("agent/root.zig");
 const model = @import("model.zig");
 const style = @import("tui/style.zig");
+const kit = @import("ui.zig");
 const catalog = @import("catalog.zig");
 const help_text = @import("help.zig");
 const errors = @import("errors.zig");
@@ -664,8 +665,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     }
     // Text reports are styled only on a terminal; `--json` never is.
     const sty: style.Style = if (options.json) .none else style.Style.detect(environ, io, std.Io.File.stdout());
-    if (options.old_spelling) |notice| if (!options.json)
-        try out.print("{s}notice:{s} {s}\n", .{ sty.on(.warning), sty.off(), notice });
+    const ui: kit.Ui = if (options.json) .plain else kit.Ui.detect(environ, io, std.Io.File.stdout());
+    if (options.old_spelling) |notice| std.log.warn("{s}", .{notice});
     switch (options.command) {
         .help => return help_text.write(out, sty, options.help_topic, version),
         .version => return out.writeAll("nuclis " ++ version ++ "\n"),
@@ -691,24 +692,24 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 // The registry names what is listed; a file that fails to
                 // load leaves the listing unannotated rather than blocked.
                 var loaded: ?config.Loaded = config.load(alloc, io, .cwd(), config_path, diag) catch |err| blk: {
-                    try out.print("{s}{s}: {s} ({s}); listing without registry names{s}\n", .{ sty.on(.warning), config_path.?, diag.message(), @errorName(err), sty.off() });
+                    std.log.warn("{s}: {s}; listing without registry names", .{ config_path.?, if (diag.len > 0) diag.message() else @errorName(err) });
                     break :blk null;
                 };
                 defer if (loaded) |*l| l.deinit();
-                if (loaded) |l| try oldMtpNotice(out, l.config.models, options.json, sty);
-                return model.ls(alloc, io, dir, if (loaded) |l| l.config.models else .{}, if (loaded) |l| l.config.engine.model else null, options.ls, options.json, out, sty);
+                if (loaded) |l| oldMtpNotice(l.config.models);
+                return model.ls(alloc, io, dir, if (loaded) |l| l.config.models else .{}, if (loaded) |l| l.config.engine.model else null, options.ls, options.json, out, ui);
             },
-            .adopt => return model.adopt(alloc, io, dir, options.pull.repo, options.pull.force, options.json, out, sty, diag),
-            .inspect => return model.inspect(alloc, io, environ, options.pull, options.json, out, sty, diag),
+            .adopt => return model.adopt(alloc, io, dir, options.pull.repo, options.pull.force, options.json, out, ui, diag),
+            .inspect => return model.inspect(alloc, io, environ, options.pull, options.json, out, ui, diag),
             // The registry decides which files other entries still use, so
             // a file that fails to load stops the removal.
             .rm => {
                 var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
                 defer loaded.deinit();
-                return model.rm(alloc, io, dir, loaded.config.models, options.pull, options.json, out, sty, diag);
+                return model.rm(alloc, io, dir, loaded.config.models, options.pull, options.json, out, ui, diag);
             },
             .pull => {
-                if (options.pull.catalogue) return model.pullCatalogue(alloc, io, environ, dir, options.pull, options.json, out, sty, diag);
+                if (options.pull.catalogue) return model.pullCatalogue(alloc, io, environ, dir, options.pull, options.json, out, ui, diag);
                 var pull_options = options.pull;
                 pull_options.config_path = config_path;
                 var loaded: ?config.Loaded = null;
@@ -729,7 +730,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                     };
                     pull_options = try model.fromRegistry(options.pull, entry, diag);
                 }
-                return model.pull(alloc, io, environ, dir, pull_options, options.json, out, sty, diag);
+                return model.pull(alloc, io, environ, dir, pull_options, options.json, out, ui, diag);
             },
         }
     }
@@ -803,7 +804,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 if (current) |text| {
                     loaded = try config.fromText(alloc, text, file, diag);
                     registry = loaded.?.config.models;
-                    try oldMtpNotice(out, registry, options.json, sty);
+                    oldMtpNotice(registry);
                 }
                 var report = try discover.plan(arena, alloc, io, root.?, registry, if (loaded) |l| l.config.engine.model else null);
                 report.config_file = file;
@@ -837,7 +838,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             .show => {
                 var loaded = try config.load(alloc, io, .cwd(), file, diag);
                 defer loaded.deinit();
-                try oldMtpNotice(out, loaded.config.models, options.json, sty);
+                oldMtpNotice(loaded.config.models);
                 try config.show(&loaded, out, options.json, sty);
             },
             .set => {
@@ -962,7 +963,9 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             } else {
                 var histogram: [32]inspection.EncodingCount = undefined;
                 const result = try inspection.snapshot(document, path, &histogram);
-                try result.render(out, options.json, sty);
+                var arena_state = std.heap.ArenaAllocator.init(alloc);
+                defer arena_state.deinit();
+                try result.render(arena_state.allocator(), out, options.json, ui);
             }
             break :blk {};
         },
@@ -1128,11 +1131,13 @@ fn selectAdapter(document: *const inference.gguf.Document, diag: *Diagnostic) !i
 /// nothing pulled yet).
 /// Names the registry entries that still say `mtp`, which reads as
 /// `draft` for one minor release.
-fn oldMtpNotice(out: *std.Io.Writer, models: config.Models, json: bool, sty: style.Style) !void {
-    if (json or models.old_mtp.len == 0) return;
-    try out.print("{s}notice:{s} models.<name>.mtp is now models.<name>.draft; rename it in", .{ sty.on(.warning), sty.off() });
-    for (models.old_mtp, 0..) |name, i| try out.print("{s} {s}", .{ if (i == 0) "" else ",", name });
-    try out.writeByte('\n');
+/// A warning on stderr naming the entries that still spell `mtp`.
+fn oldMtpNotice(models: config.Models) void {
+    if (models.old_mtp.len == 0) return;
+    var buffer: [256]u8 = undefined;
+    var names: std.Io.Writer = .fixed(&buffer);
+    for (models.old_mtp, 0..) |name, i| names.print("{s}{s}", .{ if (i == 0) "" else ", ", name }) catch break;
+    std.log.warn("models.<name>.mtp is now models.<name>.draft; rename it in {s}", .{names.buffered()});
 }
 
 /// What `config init` leaves: the file, the model it runs, and the next
@@ -1534,8 +1539,8 @@ test "model ls runs against NUCLIS_HOME and needs no configuration file" {
     defer out.deinit();
     var diag: config.Diagnostic = .{};
     try run(alloc, io, &environ, try parseArgs(&.{ "model", "ls" }), &out.writer, &diag);
-    // A fresh root lists nothing installed and points at the index, warning about the file.
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "listing without registry names") != null);
+    // A fresh root lists nothing installed and points at the catalogue (the
+    // broken file is a warning on stderr).
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "nothing installed") != null);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "models", .{}));
     out.clearRetainingCapacity();
