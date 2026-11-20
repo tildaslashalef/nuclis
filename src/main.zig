@@ -18,6 +18,7 @@ fn onPanic(message: []const u8, first_trace_address: ?usize) noreturn {
 }
 
 pub fn main(init: std.process.Init) void {
+    log_ui = kit.Ui.detect(init.environ_map, init.io, std.Io.File.stderr());
     var diag: cli.Diagnostic = .{};
     run(init, &diag) catch |err| {
         // Report expected failures without a Zig stack trace; all owned
@@ -25,10 +26,9 @@ pub fn main(init: std.process.Init) void {
         // `nuclis: <message>` on stderr, the message the failure's
         // diagnostic or else `errors.describe`; a usage error adds its hint
         // and exits 2 (docs/app/command-output.md).
-        const ui = kit.Ui.detect(init.environ_map, init.io, std.Io.File.stderr());
         var buffer: [1024]u8 = undefined;
         var stderr = std.Io.File.stderr().writerStreaming(init.io, &buffer);
-        reportError(&stderr.interface, ui, err, &diag) catch {};
+        reportError(&stderr.interface, log_ui, err, &diag) catch {};
         stderr.interface.flush() catch {};
         std.process.exit(errors.exitCode(err, diag.hint_len > 0));
     };
@@ -49,14 +49,19 @@ fn reportError(w: *std.Io.Writer, ui: kit.Ui, err: anyerror, diag: *const cli.Di
 }
 
 /// `std.log` in the same voice as the error line: `nuclis: warning: …`,
-/// `nuclis: …`; debug messages are dropped outside debug builds as usual.
+/// `nuclis: …`, the prefix in the warning or failure colour; debug messages
+/// are dropped outside debug builds as usual.
 pub const std_options: std.Options = .{ .logFn = log };
+
+/// stderr's settings, detected once at startup; plain until then (tests).
+var log_ui: kit.Ui = .plain;
 
 fn log(comptime level: std.log.Level, comptime scope: @EnumLiteral(), comptime format: []const u8, args: anytype) void {
     _ = scope;
-    const prefix = switch (level) {
-        .err, .info, .debug => "nuclis: ",
-        .warn => "nuclis: warning: ",
+    const prefix, const role: kit.style.Role = switch (level) {
+        .err => .{ "nuclis:", .fail },
+        .info, .debug => .{ "nuclis:", .muted },
+        .warn => .{ "nuclis: warning:", .warn },
     };
     const io = std.Options.debug_io;
     const prev = io.swapCancelProtection(.blocked);
@@ -64,7 +69,7 @@ fn log(comptime level: std.log.Level, comptime scope: @EnumLiteral(), comptime f
     var buffer: [512]u8 = undefined;
     const stderr = std.debug.lockStderr(&buffer).terminal();
     defer std.debug.unlockStderr();
-    stderr.writer.print(prefix ++ format ++ "\n", args) catch {};
+    stderr.writer.print("{s}" ++ prefix ++ "{s} " ++ format ++ "\n", .{ log_ui.on(role), log_ui.off(role) } ++ args) catch {};
 }
 
 fn run(init: std.process.Init, diag: *cli.Diagnostic) !void {

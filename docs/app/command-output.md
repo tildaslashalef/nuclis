@@ -28,7 +28,11 @@ the same. The agent's chat surface draws on its own
   terminal, one line with the local time when a step starts and one when
   it ends (`18:16:14 ▸ …`, `18:16:21 ✓ …`). When stdout is the same
   terminal, the live lines stand for the result table, which is not
-  printed again. `--json` progress is one JSON object per line.
+  printed again. `--json` progress is one JSON object per line. A
+  command with one long step (a benchmark's runs, an evaluation's
+  windows, speech being made) redraws it on a terminal and erases it
+  before the result; off a terminal each run or window is a timestamped
+  line.
 - **Palette**: the agent's theme (gruvbox dark): titles and identifiers
   blue, muted gray, ok green, warning yellow, failure red, a changed value
   aqua, high impact orange. `NO_COLOR`, a dumb terminal, or a pipe turn it
@@ -37,7 +41,8 @@ the same. The agent's chat surface draws on its own
   name: the diagnostic the failure set, or a sentence for the error. A
   usage error names the argument (`unknown option '--frob' for 'nuclis
   model pull'`) and adds `Run 'nuclis <command> --help' for usage.`
-  Warnings and notes from deeper code read `nuclis: warning: …`.
+  Warnings and notes from deeper code read `nuclis: warning: …`, the
+  prefix in the warning colour.
 - **Exit status**: 0 success, 1 failure, 2 a usage error, 130 an
   interrupt.
 

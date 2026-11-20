@@ -2,7 +2,6 @@
 //! render it before freeing the parsed directory.
 const std = @import("std");
 const inference = @import("inference");
-const style = @import("tui/style.zig");
 const kit = @import("ui.zig");
 
 pub const EncodingCount = struct {
@@ -99,35 +98,43 @@ pub const SafetensorsSnapshot = struct {
     pub const Shard = struct { file: []const u8, file_bytes: u64, header_bytes: u64, tensors: usize };
     pub const DtypeCount = struct { dtype: []const u8, tensors: u64 = 0, elements: u64 = 0, bytes: u64 = 0 };
 
-    pub fn render(self: SafetensorsSnapshot, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+    /// The checkpoint's facts and metadata as one detail section, then the
+    /// shard and dtype tables. Names and metadata come from the file and
+    /// are cleaned.
+    pub fn render(self: SafetensorsSnapshot, arena: std.mem.Allocator, out: *std.Io.Writer, json: bool, ui: kit.Ui) !void {
         if (json) {
             try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
             return out.writeByte('\n');
         }
-        const label = sty.on(.label);
-        const number = sty.on(.number);
-        const off = sty.off();
-        try out.print("{s}Checkpoint:{s} {s}", .{ label, off, sty.on(.code) });
-        try std.json.Stringify.value(self.resolved, .{}, out);
-        try out.print("{s}\n{s}Safetensors:{s} {s}{d}{s} shard(s), {s}{d}{s} tensors, {s}{d}{s} metadata keys\n", .{ off, label, off, number, self.shards.len, off, number, self.tensor_count, off, number, self.metadata.len, off });
-        try out.print("{s}Stored tensor elements:{s} {s}{d}{s}; tensor bytes: {s}{d}{s}\n", .{ label, off, number, self.stored_elements, off, number, self.tensor_bytes, off });
-        for (self.metadata) |m| {
-            try out.print("{s}Metadata{s} ", .{ label, off });
-            // Escaped: keys and values come from the file.
-            try std.json.Stringify.value(m.key, .{}, out);
-            try out.writeAll(" = ");
-            try std.json.Stringify.value(m.value, .{}, out);
-            try out.writeByte('\n');
-        }
-        try out.print("\n{s}Shard                                        Header bytes  Tensors          Bytes{s}\n", .{ sty.on(.header), off });
-        for (self.shards) |shard| {
-            try out.print("{s}{s: <44}{s} {s}{d: >12}{s}  {s}{d: >7}{s}  {s}{d: >13}{s}\n", .{ sty.on(.code), shard.file, off, number, shard.header_bytes, off, number, shard.tensors, off, number, shard.file_bytes, off });
-        }
-        try out.print("\n{s}Dtype      Tensors        Elements          Bytes{s}\n", .{ sty.on(.header), off });
-        for (self.dtypes) |d| {
-            try out.print("{s}{s: <8}{s}  {s}{d: >7}{s}  {s}{d: >14}{s}  {s}{d: >13}{s}\n", .{ sty.on(.code), d.dtype, off, number, d.tensors, off, number, d.elements, off, number, d.bytes, off });
-        }
-        try out.print("\n{s}Header and byte buffer validated. No text-generation family runs safetensors; `decide`, `speak`, and `transcribe` do.{s}\n", .{ sty.on(.dim), off });
+        const v = kit.values;
+        const resolved = try kit.text.clean(arena, self.resolved);
+        try kit.blocks.header(out, ui, std.fs.path.basename(resolved), std.fs.path.dirname(resolved) orelse "");
+        var fields: std.ArrayList(kit.blocks.Field) = .empty;
+        try fields.append(arena, .{ .key = "Safetensors", .value = try std.fmt.allocPrint(arena, "{f} · {f} · {f}", .{ v.count(self.shards.len, "shard"), v.count(self.tensor_count, "tensor"), v.count(self.metadata.len, "metadata key") }) });
+        try fields.append(arena, .{ .key = "Tensors", .value = try std.fmt.allocPrint(arena, "{f} elements · {f}", .{ v.grouped(self.stored_elements), v.size(self.tensor_bytes) }) });
+        for (self.metadata) |m| try fields.append(arena, .{ .key = try kit.text.clean(arena, m.key), .value = try kit.text.clean(arena, m.value), .role = .muted });
+        try kit.blocks.detail(out, ui, &.{.{ .fields = fields.items }});
+        try out.writeByte('\n');
+        const shard_rows = try arena.alloc([]const kit.table.Cell, self.shards.len);
+        for (self.shards, shard_rows) |shard, *row| row.* = try arena.dupe(kit.table.Cell, &.{
+            .{ .text = try kit.text.clean(arena, shard.file), .role = .id },
+            .{ .text = try std.fmt.allocPrint(arena, "{f}", .{v.size(shard.header_bytes)}) },
+            .{ .text = try std.fmt.allocPrint(arena, "{d}", .{shard.tensors}) },
+            .{ .text = try std.fmt.allocPrint(arena, "{f}", .{v.size(shard.file_bytes)}) },
+        });
+        try kit.table.render(out, ui, arena, 0, &.{ .{ .title = "SHARD" }, .{ .title = "HEADER", .alignment = .right, .drop = 1 }, .{ .title = "TENSORS", .alignment = .right }, .{ .title = "SIZE", .alignment = .right } }, shard_rows);
+        try out.writeByte('\n');
+        const dtype_rows = try arena.alloc([]const kit.table.Cell, self.dtypes.len);
+        for (self.dtypes, dtype_rows) |d, *row| row.* = try arena.dupe(kit.table.Cell, &.{
+            .{ .text = d.dtype, .role = .id },
+            .{ .text = try std.fmt.allocPrint(arena, "{d}", .{d.tensors}) },
+            .{ .text = try std.fmt.allocPrint(arena, "{f}", .{v.grouped(d.elements)}) },
+            .{ .text = try std.fmt.allocPrint(arena, "{f}", .{v.size(d.bytes)}) },
+        });
+        try kit.table.render(out, ui, arena, 0, &.{ .{ .title = "DTYPE", .truncate = false }, .{ .title = "TENSORS", .alignment = .right }, .{ .title = "ELEMENTS", .alignment = .right, .drop = 1 }, .{ .title = "SIZE", .alignment = .right } }, dtype_rows);
+        try out.writeByte('\n');
+        try kit.blocks.result(out, ui, .ok, "header and byte buffer valid", "");
+        try kit.blocks.hint(out, ui, "no text-generation family runs safetensors; ", "decide, speak, transcribe", " do");
     }
 };
 
@@ -143,21 +150,27 @@ pub const TensorPeek = struct {
 
     pub const shown = 8;
 
-    pub fn render(self: TensorPeek, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+    pub fn render(self: TensorPeek, arena: std.mem.Allocator, out: *std.Io.Writer, json: bool, ui: kit.Ui) !void {
         if (json) {
             try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
             return out.writeByte('\n');
         }
-        const label = sty.on(.label);
-        const off = sty.off();
-        try out.print("{s}Tensor:{s} {s}", .{ label, off, sty.on(.code) });
-        try std.json.Stringify.value(self.name, .{}, out);
-        try out.print("{s}\n{s}Dtype:{s} {s}; {s}shape:{s} {any}; {d} elements, {d} bytes\n", .{ off, label, off, self.dtype, label, off, self.shape, self.elements, self.bytes });
+        const v = kit.values;
+        var shape: std.ArrayList(u8) = .empty;
+        for (self.shape, 0..) |d, i| try shape.print(arena, "{s}{d}", .{ if (i > 0) " × " else "", d });
+        var first: std.ArrayList(u8) = .empty;
         if (self.first) |values| {
-            try out.print("{s}First {d}:{s}", .{ label, values.len, off });
-            for (values) |v| try out.print(" {d}", .{v});
-            try out.writeByte('\n');
-        } else try out.print("{s}(values not decoded: the loader decodes F32, F16, and BF16){s}\n", .{ sty.on(.dim), off });
+            for (values, 0..) |x, i| try first.print(arena, "{s}{d}", .{ if (i > 0) "  " else "", x });
+        }
+        try kit.blocks.header(out, ui, try kit.text.clean(arena, self.name), self.dtype);
+        try kit.blocks.detail(out, ui, &.{.{ .fields = &.{
+            .{ .key = "Shape", .value = shape.items },
+            .{ .key = "Elements", .value = try std.fmt.allocPrint(arena, "{f} · {f}", .{ v.grouped(self.elements), v.size(self.bytes) }) },
+            if (self.first) |values|
+                .{ .key = try std.fmt.allocPrint(arena, "First {d}", .{values.len}), .value = first.items }
+            else
+                .{ .key = "Values", .value = "not decoded: the loader decodes F32, F16, and BF16", .role = .muted },
+        } }});
     }
 };
 

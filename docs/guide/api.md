@@ -127,14 +127,24 @@ waits up to 10 s for decisions already queued or running, closes the
 connections (idle keep-alive ones included), and exits 0, so a Debug
 build ends with the allocator's leak check. A second Ctrl-C ends the
 process at once. The server reads no files on a client's behalf and
-writes nothing but its log: one line per response on stdout, coloured on
-a terminal (time, method, path, status, latency, size, and what was done
-or the error):
+writes nothing but its log. At start it prints a header, a line for each
+model `--model` or `--pin` opened, what it serves (the default decision
+model, the memory budget, the pins, the web tools, whether it logs each
+response), any warning, and the address; then one line per response on
+stdout, coloured on a terminal (time, method, path, status, latency,
+size, and what was done or the error):
 
 ```text
+◆ nuclis serve · metal
+
+Decisions    laya by default
+Memory       models within 34.36 GB
+Request log  one line per response
+
+✓ listening on http://127.0.0.1:8080/v1  Ctrl-C stops
 17:34:35.751 POST   /v1/systemone    200   51.6 ms    175 B  laya · 1 state × 1 question · 43 tokens
-17:34:36.278 POST   /v1/decisions    200  201.8 ms   1.3 KB  laya · 1 state × 2 questions · 104 tokens · pass of 6
-17:34:36.008 POST   /v1/decisions    422  0.062 ms    116 B  invalid_request: question a: unknown type "maybe"; use one of choice, noul, score
+17:34:36.278 POST   /v1/decisions    200    202 ms   1.3 KB  laya · 1 state × 2 questions · 104 tokens · pass of 6
+17:34:36.008 POST   /v1/decisions    422   0.06 ms    116 B  invalid_request: question a: unknown type "maybe"; use one of choice, noul, score
 ```
 
 ### Who may use the server

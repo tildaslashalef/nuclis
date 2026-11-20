@@ -15,6 +15,7 @@ pub const values = @import("ui/values.zig");
 pub const table = @import("ui/table.zig");
 pub const blocks = @import("ui/blocks.zig");
 pub const Ui = @import("ui/Ui.zig");
+pub const Step = @import("ui/Step.zig");
 
 test {
     _ = style;
@@ -23,4 +24,5 @@ test {
     _ = table;
     _ = blocks;
     _ = Ui;
+    _ = Step;
 }

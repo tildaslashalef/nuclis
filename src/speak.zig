@@ -10,7 +10,7 @@
 //! delivery cued in the text (docs/models/drama3.md).
 const std = @import("std");
 const inference = @import("inference");
-const style = @import("tui/style.zig");
+const kit = @import("ui.zig");
 const config = @import("config.zig");
 const audio_catalog = @import("audio/catalog.zig");
 const paths = @import("paths.zig");
@@ -174,7 +174,7 @@ pub fn pcm16(x: f32) i16 {
 /// reports. `--model` (else `speech.model`) is a speech registry entry, a
 /// speech catalogue name, or a checkpoint directory; the speaker defaults
 /// to `speech.voice`.
-pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *const config.Loaded, words: []const []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *const config.Loaded, words: []const []const u8, out: *std.Io.Writer, ui: kit.Ui, step: *kit.Step, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -190,7 +190,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
         return error.TextTooLong;
     }
     const dir = (try audio_catalog.locate(arena, io, root, loaded.config.models, options.model orelse loaded.config.speech.model, .speech, true, diag)).directory;
-    if (audio_catalog.isFile(dir)) return runDrama3(alloc, arena, io, root, &options, backend, text, dir, out, sty, diag);
+    if (audio_catalog.isFile(dir)) return runDrama3(alloc, arena, io, root, &options, backend, text, dir, out, ui, step, diag);
     const seed = options.seed orelse 0;
     const language = options.language orelse "auto";
     const speaker = options.voice orelse loaded.config.speech.voice;
@@ -220,10 +220,18 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
         diag.set("{s} is a VoiceDesign: it has no speakers or saved voices; describe the voice with --instruct", .{std.fs.path.basename(dir)});
         return error.UnknownSpeaker;
     }
-    if (designed)
-        try out.print("{s}{s}{s} ({s}), the voice {s}{s}{s}, language {s}, seed {d}, {s}; loaded in {d:.1} s\n", .{ sty.on(.header), std.fs.path.basename(dir), sty.off(), voice.config.size, if (options.instruct != null) "described as \"" else "left to the model (no --instruct)", options.instruct orelse "", if (options.instruct != null) "\"" else "", language, seed, @tagName(backend), @as(f64, @floatFromInt(load_ms)) / 1000 })
-    else
-        try out.print("{s}{s}{s} ({s}), {s} {s}, language {s}, seed {d}, {s}; loaded in {d:.1} s\n", .{ sty.on(.header), std.fs.path.basename(dir), sty.off(), voice.config.size, if (cloned) "voice" else "speaker", speaker, language, seed, @tagName(backend), @as(f64, @floatFromInt(load_ms)) / 1000 });
+    const v = kit.values;
+    try kit.blocks.header(out, ui, std.fs.path.basename(dir), try std.fmt.allocPrint(arena, "{s} · {s}", .{ voice.config.size, @tagName(backend) }));
+    try kit.blocks.detail(out, ui, &.{.{ .fields = &.{
+        if (designed)
+            .{ .key = "Voice", .value = if (options.instruct) |d| try std.fmt.allocPrint(arena, "described as \"{s}\"", .{try kit.text.clean(arena, d)}) else "left to the model (no --instruct)" }
+        else
+            .{ .key = if (cloned) "Voice" else "Speaker", .value = try kit.text.clean(arena, speaker), .role = .id },
+        .{ .key = "Language", .value = try kit.text.clean(arena, language) },
+        .{ .key = "Seed", .value = try std.fmt.allocPrint(arena, "{d}", .{seed}) },
+        .{ .key = "Load", .value = try std.fmt.allocPrint(arena, "{f}", .{v.duration(@as(f64, @floatFromInt(load_ms)) / 1000)}) },
+    } }});
+    try out.writeByte('\n');
     try out.flush();
 
     // A Base speaks in a saved voice, made ready (encoded on its first use
@@ -245,7 +253,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
             return err;
         };
         const r = &ready.?;
-        try out.print("voice {s}: {s}; ready in {d} ms\n", .{ r.name, if (r.reference_text != null) "its clip and transcript" else "its speaker embedding alone", ready_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() });
+        try kit.blocks.result(out, ui, .ok, try std.fmt.allocPrint(arena, "voice {s} ready", .{try kit.text.clean(arena, r.name)}), try std.fmt.allocPrint(arena, "{s} · {f}", .{ if (r.reference_text != null) "its clip and transcript" else "its speaker embedding alone", v.duration(@as(f64, @floatFromInt(ready_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds())) / 1000) }));
         try out.flush();
     }
 
@@ -294,6 +302,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
         if (n == 0) break;
         if (first_ms == null) first_ms = @as(f64, @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toMicroseconds())) / 1000;
         samples += n;
+        if (step.live()) step.update("speaking  {d:.1} s of audio", .{@as(f64, @floatFromInt(samples)) / sample_rate});
         if (options.stream) {
             for (buffer[0..n]) |x| try writer.interface.writeInt(i16, pcm16(x), .little);
             try writer.interface.flush();
@@ -307,34 +316,34 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
     try writer.interface.flush();
     try file.writePositionalAll(io, &try wavHeader(samples, sample_rate), 0);
 
+    step.clear();
     const frames = synth.frames;
     const audio_seconds = @as(f64, @floatFromInt(samples)) / sample_rate;
-    try out.print("wrote {s}: {d} frames, {d:.2} s of audio in {d:.2} s ({d:.0} ms a frame, {d:.2}× real time)\n", .{
-        path,
-        frames,
-        audio_seconds,
-        seconds,
-        if (frames > 0) seconds * 1000 / @as(f64, @floatFromInt(frames)) else 0,
-        if (seconds > 0) audio_seconds / seconds else 0,
-    });
+    try kit.blocks.result(out, ui, .ok, try std.fmt.allocPrint(arena, "wrote {s}", .{try kit.text.clean(arena, path)}), try std.fmt.allocPrint(arena, "{d:.2} s of audio in {f} · {d:.2}x real time", .{ audio_seconds, v.duration(seconds), if (seconds > 0) audio_seconds / seconds else 0 }));
+    if (synth.finish == .length) try kit.blocks.result(out, ui, .warning, "stopped at the length budget", try std.fmt.allocPrint(arena, "{d} frames for {d} text tokens: the model did not end the speech", .{ synth.budget, prompt.text_tokens }));
     const t = synth.timing;
     const per_frame = struct {
         fn ms(ns: u64, count: usize) f64 {
             return if (count == 0) 0 else @as(f64, @floatFromInt(ns)) / 1e6 / @as(f64, @floatFromInt(count));
         }
     }.ms;
-    try out.print("prefill {d:.0} ms; a frame: codes {d:.1} ms, codec {d:.1} ms", .{ @as(f64, @floatFromInt(t.prefill)) / 1e6, per_frame(t.frames, frames), per_frame(t.codec, frames) });
-    if (backend == .cpu or synth.split) try out.print(" (talker {d:.1} ms, predictor {d:.1} ms{s})", .{ per_frame(t.talker, frames), per_frame(t.predictor, frames), if (backend == .metal) " on the device" else "" });
-    if (first_ms) |ms| try out.print("; first audio {d:.0} ms after the text (chunks of {d} frames, the first {d})", .{ ms, synth.chunk, synth.first_chunk });
-    if (voice.plan) |plan| if (plan.disagreements > 0) try out.print("; the host overruled the device's draw {d} times", .{plan.disagreements});
+    var fields: std.ArrayList(kit.blocks.Field) = .empty;
+    try fields.append(arena, .{ .key = "Frames", .value = try std.fmt.allocPrint(arena, "{d} · {d:.0} ms a frame", .{ frames, if (frames > 0) seconds * 1000 / @as(f64, @floatFromInt(frames)) else 0 }) });
+    try fields.append(arena, .{ .key = "Prefill", .value = try std.fmt.allocPrint(arena, "{d:.0} ms", .{@as(f64, @floatFromInt(t.prefill)) / 1e6}) });
+    try fields.append(arena, .{ .key = "A frame", .value = if (backend == .cpu or synth.split)
+        try std.fmt.allocPrint(arena, "codes {d:.1} ms · codec {d:.1} ms · talker {d:.1} ms · predictor {d:.1} ms{s}", .{ per_frame(t.frames, frames), per_frame(t.codec, frames), per_frame(t.talker, frames), per_frame(t.predictor, frames), if (backend == .metal) " on the device" else "" })
+    else
+        try std.fmt.allocPrint(arena, "codes {d:.1} ms · codec {d:.1} ms", .{ per_frame(t.frames, frames), per_frame(t.codec, frames) }) });
+    if (first_ms) |ms| try fields.append(arena, .{ .key = "First audio", .value = try std.fmt.allocPrint(arena, "{d:.0} ms after the text · chunks of {d} frames, the first {d}", .{ ms, synth.chunk, synth.first_chunk }), .role = .emphasis });
+    if (voice.plan) |plan| if (plan.disagreements > 0) try fields.append(arena, .{ .key = "Draws", .value = try std.fmt.allocPrint(arena, "the host overruled the device's draw {d} times", .{plan.disagreements}) });
     try out.writeByte('\n');
-    if (synth.finish == .length) try out.print("{s}stopped at the length budget ({d} frames for {d} text tokens): the model did not end the speech{s}\n", .{ sty.on(.warning), synth.budget, prompt.text_tokens, sty.off() });
-    if (voice.gpu) |*g| if (g.profile) |*p| try printProfile(arena, out, p, frames);
+    try kit.blocks.detail(out, ui, &.{.{ .title = "Timing", .fields = fields.items }});
+    if (voice.gpu) |*g| if (g.profile) |*p| try printProfile(arena, out, ui, p, frames);
 }
 
 /// `run` for Drama 3: a saved voice only when `--voice` names one, the
 /// sentences generated a few frames at a time.
-fn runDrama3(alloc: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, options: *const Options, backend: Backend, text: []const u8, path: []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+fn runDrama3(alloc: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, options: *const Options, backend: Backend, text: []const u8, path: []const u8, out: *std.Io.Writer, ui: kit.Ui, step: *kit.Step, diag: *config.Diagnostic) !void {
     const drama = inference.models.drama3_speech;
     const name = std.fs.path.basename(path);
     if (options.instruct != null) {
@@ -359,7 +368,14 @@ fn runDrama3(alloc: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, roo
         return err;
     };
     defer voice.close();
-    try out.print("{s}{s}{s}, {s}{s}, seed {d}, {s}; loaded in {d:.1} s\n", .{ sty.on(.header), name, sty.off(), if (options.voice != null) "voice " else "its own voice", options.voice orelse "", seed, @tagName(backend), @as(f64, @floatFromInt(load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds())) / 1000 });
+    const v = kit.values;
+    try kit.blocks.header(out, ui, name, @tagName(backend));
+    try kit.blocks.detail(out, ui, &.{.{ .fields = &.{
+        if (options.voice) |speaker| .{ .key = "Voice", .value = try kit.text.clean(arena, speaker), .role = .id } else .{ .key = "Voice", .value = "its own" },
+        .{ .key = "Seed", .value = try std.fmt.allocPrint(arena, "{d}", .{seed}) },
+        .{ .key = "Load", .value = try std.fmt.allocPrint(arena, "{f}", .{v.duration(@as(f64, @floatFromInt(load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds())) / 1000)}) },
+    } }});
+    try out.writeByte('\n');
     try out.flush();
 
     var ready: ?voices.Ready = null;
@@ -376,7 +392,7 @@ fn runDrama3(alloc: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, roo
             return err;
         };
         reference[0] = .{ .transcript = ready.?.reference_text.?, .codes = ready.?.rows(drama.Codes) };
-        try out.print("voice {s}: its clip and transcript; ready in {d} ms\n", .{ speaker, ready_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() });
+        try kit.blocks.result(out, ui, .ok, try std.fmt.allocPrint(arena, "voice {s} ready", .{try kit.text.clean(arena, speaker)}), try std.fmt.allocPrint(arena, "its clip and transcript · {f}", .{v.duration(@as(f64, @floatFromInt(ready_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds())) / 1000)}));
         try out.flush();
     }
 
@@ -407,6 +423,7 @@ fn runDrama3(alloc: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, roo
         if (n == 0) break;
         if (first_ms == null) first_ms = @as(f64, @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toMicroseconds())) / 1000;
         samples += n;
+        if (step.live()) step.update("speaking  {d:.1} s of audio", .{@as(f64, @floatFromInt(samples)) / drama.sample_rate});
         for (buffer[0..n]) |x| try writer.interface.writeInt(i16, pcm16(x), .little);
         if (options.stream) try writer.interface.flush();
     }
@@ -414,18 +431,23 @@ fn runDrama3(alloc: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, roo
     try writer.interface.flush();
     try file.writePositionalAll(io, &try wavHeader(samples, drama.sample_rate), 0);
     const audio_seconds = @as(f64, @floatFromInt(samples)) / drama.sample_rate;
-    try out.print("wrote {s}: {d} frames in {d} sentence{s}, {d:.2} s of audio in {d:.2} s ({d:.2}× real time)\n", .{ options.output.?, synth.frames, synth.chunks.len, if (synth.chunks.len == 1) "" else "s", audio_seconds, seconds, if (seconds > 0) audio_seconds / seconds else 0 });
+    step.clear();
+    try kit.blocks.result(out, ui, .ok, try std.fmt.allocPrint(arena, "wrote {s}", .{try kit.text.clean(arena, options.output.?)}), try std.fmt.allocPrint(arena, "{d:.2} s of audio in {f} · {d:.2}x real time", .{ audio_seconds, v.duration(seconds), if (seconds > 0) audio_seconds / seconds else 0 }));
+    if (synth.stops[@backingInt(drama.Stop.length)] > 0) try kit.blocks.result(out, ui, .warning, "a sentence stopped at the length budget", "the model did not end it");
     const t = synth.timing;
-    try out.print("prefill {d:.0} ms (the {d}-row prefix restored {d}, prefilled {d}); frames {d:.0} ms, codec {d:.0} ms", .{ @as(f64, @floatFromInt(t.prefill_ns)) / 1e6, t.prefix_rows, t.prefix_hits, t.prefix_misses, @as(f64, @floatFromInt(t.frames_ns)) / 1e6, @as(f64, @floatFromInt(t.codec_ns)) / 1e6 });
-    if (first_ms) |ms| try out.print("; first audio {d:.0} ms after the text", .{ms});
-    if (synth.retried > 0) try out.print("; {d} silent starts retried", .{synth.retried});
+    var fields: std.ArrayList(kit.blocks.Field) = .empty;
+    try fields.append(arena, .{ .key = "Frames", .value = try std.fmt.allocPrint(arena, "{d} in {f}", .{ synth.frames, v.count(synth.chunks.len, "sentence") }) });
+    try fields.append(arena, .{ .key = "Prefill", .value = try std.fmt.allocPrint(arena, "{d:.0} ms · the {d}-row prefix restored {d}, prefilled {d}", .{ @as(f64, @floatFromInt(t.prefill_ns)) / 1e6, t.prefix_rows, t.prefix_hits, t.prefix_misses }) });
+    try fields.append(arena, .{ .key = "Generation", .value = try std.fmt.allocPrint(arena, "frames {d:.0} ms · codec {d:.0} ms", .{ @as(f64, @floatFromInt(t.frames_ns)) / 1e6, @as(f64, @floatFromInt(t.codec_ns)) / 1e6 }) });
+    if (first_ms) |ms| try fields.append(arena, .{ .key = "First audio", .value = try std.fmt.allocPrint(arena, "{d:.0} ms after the text", .{ms}), .role = .emphasis });
+    if (synth.retried > 0) try fields.append(arena, .{ .key = "Retried", .value = try std.fmt.allocPrint(arena, "{f}", .{v.count(synth.retried, "silent start")}) });
     try out.writeByte('\n');
-    if (synth.stops[@backingInt(drama.Stop.length)] > 0) try out.print("{s}a sentence stopped at the length budget: the model did not end it{s}\n", .{ sty.on(.warning), sty.off() });
+    try kit.blocks.detail(out, ui, &.{.{ .title = "Timing", .fields = fields.items }});
 }
 
 /// The profile's kernels by device time, each with its share and, for a
 /// matrix, the weight bytes it read per second.
-fn printProfile(arena: std.mem.Allocator, out: *std.Io.Writer, p: *const inference.metal.Profile, frames: usize) !void {
+fn printProfile(arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui, p: *const inference.metal.Profile, frames: usize) !void {
     const Entry = struct { key: inference.metal.Profile.Key, total: inference.metal.Profile.Total };
     var entries: std.ArrayList(Entry) = .empty;
     var sum: f64 = 0;
@@ -439,13 +461,26 @@ fn printProfile(arena: std.mem.Allocator, out: *std.Io.Writer, p: *const inferen
             return a.total.seconds > b.total.seconds;
         }
     }.more);
-    try out.print("device time by kernel ({d} command buffers, {d:.1} ms timed of {d:.1} ms busy; per frame over {d} frames):\n", .{ p.command_buffers, sum * 1e3, p.gpu_seconds * 1e3, frames });
-    for (entries.items[0..@min(entries.items.len, 24)]) |e| {
+    try out.print("\n{s}Device time by kernel{s} {s}{d} command buffers · {d:.1} ms timed of {d:.1} ms busy · per frame over {d} frames{s}\n", .{ ui.on(.title), ui.off(.title), ui.on(.muted), p.command_buffers, sum * 1e3, p.gpu_seconds * 1e3, frames, ui.off(.muted) });
+    const Cell = kit.table.Cell;
+    const shown = entries.items[0..@min(entries.items.len, 24)];
+    const rows = try arena.alloc([]const Cell, shown.len);
+    for (shown, rows) |e, *row| {
         const per = if (frames > 0) e.total.seconds * 1e3 / @as(f64, @floatFromInt(frames)) else 0;
-        try out.print("  {s:<26} {d:>5}x{d:<5} {d:>7} dispatches {d:>7.2} ms/frame {d:>5.1} %", .{ @tagName(e.key.kernel), e.key.rows, e.key.columns, e.total.dispatches, per, 100 * e.total.seconds / sum });
-        if (e.total.bytes > 0) try out.print(" {d:>6.0} GB/s", .{@as(f64, @floatFromInt(e.total.bytes)) / e.total.seconds / 1e9});
-        try out.writeByte('\n');
+        row.* = try arena.dupe(Cell, &.{
+            .{ .text = @tagName(e.key.kernel), .role = .id },
+            .{ .text = try std.fmt.allocPrint(arena, "{d}x{d}", .{ e.key.rows, e.key.columns }) },
+            .{ .text = try std.fmt.allocPrint(arena, "{d}", .{e.total.dispatches}) },
+            .{ .text = try std.fmt.allocPrint(arena, "{d:.2}", .{per}), .role = .emphasis },
+            .{ .text = try std.fmt.allocPrint(arena, "{d:.1}%", .{100 * e.total.seconds / sum}) },
+            if (e.total.bytes > 0) .{ .text = try std.fmt.allocPrint(arena, "{d:.0}", .{@as(f64, @floatFromInt(e.total.bytes)) / e.total.seconds / 1e9}) } else .{ .text = kit.values.missing, .role = .muted },
+        });
     }
+    try kit.table.render(out, ui, arena, 2, &.{
+        .{ .title = "KERNEL" },                          .{ .title = "SHAPE", .alignment = .right },
+        .{ .title = "DISPATCHES", .alignment = .right }, .{ .title = "MS/FRAME", .alignment = .right },
+        .{ .title = "SHARE", .alignment = .right },      .{ .title = "GB/S", .alignment = .right },
+    }, rows);
 }
 
 fn names(arena: std.mem.Allocator, items: anytype) ![]const u8 {

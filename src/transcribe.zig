@@ -9,7 +9,7 @@
 //! docs/models/nemotron-asr.md.
 const std = @import("std");
 const inference = @import("inference");
-const style = @import("tui/style.zig");
+const kit = @import("ui.zig");
 const config = @import("config.zig");
 const timing = @import("timing.zig");
 const transcript = @import("audio/transcript.zig");
@@ -192,7 +192,7 @@ const Timings = struct {
 };
 
 /// Transcribes `o.file` with the checkpoint directory `directory`.
-pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options, out: *std.Io.Writer, ui: kit.Ui, step: *kit.Step, diag: *config.Diagnostic) !void {
     if (o.backend == .metal and !inference.metal.enabled) {
         diag.set(config.no_metal_message, .{});
         return error.MetalNotEnabled;
@@ -270,15 +270,27 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
             if (n == 0) break;
             samples += n;
             const emitted = try transcriber.push(piece[0..n]);
-            if (emitted > 0 and o.format == .text) try showPartial(arena, &transcriber, &shown, out, sty);
+            if (emitted > 0 and o.format == .text) try showPartial(arena, &transcriber, &shown, out, ui);
         }
         _ = try transcriber.finish();
         _ = try segmenter.update(model, transcriber.tokens.items, transcriber.rowsDecoded(), true);
-        if (o.format == .text and sty.enabled) try out.writeAll("\r\x1b[2K");
+        if (o.format == .text and ui.width != null) try out.writeAll("\r\x1b[2K");
     } else {
         var feeding: transcript.Run = try .init(gpa, &reader, &transcriber, &segmenter);
         defer feeding.deinit(gpa);
-        while (!feeding.finished) _ = feeding.step() catch |err| return midway(diag, path, feeding.fed, err);
+        var shown_seconds: u64 = 0;
+        while (!feeding.finished) {
+            _ = feeding.step() catch |err| {
+                step.clear();
+                return midway(diag, path, feeding.fed, err);
+            };
+            const fed_seconds = feeding.fed / audio.sample_rate;
+            if (step.live() and fed_seconds != shown_seconds) {
+                shown_seconds = fed_seconds;
+                step.update("transcribing  {d} s of audio", .{fed_seconds});
+            }
+        }
+        step.clear();
         samples = feeding.fed;
     }
     const transcribe_ns = timing.lap(io, &started);
@@ -321,23 +333,24 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
         try std.json.Stringify.value(report, .{ .whitespace = .indent_2 }, out);
         return out.writeByte('\n');
     }
-    const off = sty.off();
+    const v = kit.values;
+    try kit.blocks.header(out, ui, std.fs.path.basename(directory), try std.fmt.allocPrint(arena, "{s} · lookahead {d} ({d} ms)", .{ report.backend, report.lookahead, (report.lookahead + 1) * 80 }));
     if (o.segments) {
-        for (segmenter.segments.items) |s| {
-            try out.print("{s}", .{sty.on(.dim)});
-            try transcript.writeTime(out, s.start_ms, '.');
-            try out.writeAll(" → ");
-            try transcript.writeTime(out, s.end_ms, '.');
-            try out.print("{s}{s}{s}  {s}\n", .{ if (s.language != null) "  " else "", s.language orelse "", off, s.text });
+        for (segmenter.segments.items) |seg| {
+            try out.writeAll(ui.on(.muted));
+            try transcript.writeTime(out, seg.start_ms, '.');
+            try out.print(" {s} ", .{ui.glyphs.arrow});
+            try transcript.writeTime(out, seg.end_ms, '.');
+            try out.print("{s}{s}{s}  {s}\n", .{ if (seg.language != null) "  " else "", seg.language orelse "", ui.off(.muted), seg.text });
         }
-    } else try out.print("{s}{s}{s}\n", .{ sty.on(.header), report.text, off });
-    try out.print("{s}{s} · prompt {s} · lookahead {d} ({d} ms) · {d:.1} s of audio in {d:.2} s ({d:.2}× real time) · load {d:.1} s{s}\n", .{
-        sty.on(.dim),                        if (report.language) |l| l else "no language tag",
-        report.prompt,                       report.lookahead,
-        (report.lookahead + 1) * 80,         seconds,
-        report.timings.transcribe_ms / 1000, report.timings.real_time_factor,
-        report.timings.load_ms / 1000,       off,
-    });
+    } else try out.print("{s}\n", .{report.text});
+    try out.writeByte('\n');
+    try kit.blocks.detail(out, ui, &.{.{ .fields = &.{
+        .{ .key = "Language", .value = report.language orelse "no language tag" },
+        .{ .key = "Prompt", .value = report.prompt },
+        .{ .key = "Audio", .value = try std.fmt.allocPrint(arena, "{f} in {f} · {d:.2}x real time", .{ v.duration(seconds), v.duration(report.timings.transcribe_ms / 1000), report.timings.real_time_factor }), .role = .emphasis },
+        .{ .key = "Load", .value = try std.fmt.allocPrint(arena, "{f}", .{v.duration(report.timings.load_ms / 1000)}) },
+    } }});
 }
 
 /// The file stopped decoding after `samples`.
@@ -348,14 +361,14 @@ fn midway(diag: *config.Diagnostic, path: []const u8, samples: u64, err: anyerro
 
 /// Prints the transcript so far when it changed: in place on a terminal,
 /// one line per change otherwise.
-fn showPartial(arena: std.mem.Allocator, transcriber: *const asr.Transcriber, shown: *std.Io.Writer.Allocating, out: *std.Io.Writer, sty: style.Style) !void {
+fn showPartial(arena: std.mem.Allocator, transcriber: *const asr.Transcriber, shown: *std.Io.Writer.Allocating, out: *std.Io.Writer, ui: kit.Ui) !void {
     var now: std.Io.Writer.Allocating = .init(arena);
     try transcriber.writeText(&now.writer);
     if (std.mem.eql(u8, now.written(), shown.written())) return;
     shown.clearRetainingCapacity();
     try shown.writer.writeAll(now.written());
-    if (sty.enabled) {
-        try out.print("\r\x1b[2K{s}{s}{s}", .{ sty.on(.dim), now.written(), sty.off() });
+    if (ui.width != null) {
+        try out.print("\r\x1b[2K{s}{s}{s}", .{ ui.on(.muted), now.written(), ui.off(.muted) });
     } else try out.print("{s}\n", .{now.written()});
     try out.flush();
 }
@@ -392,5 +405,6 @@ test "--backend metal without Metal is refused before anything is opened" {
     var diag: config.Diagnostic = .{};
     var buffer: [64]u8 = undefined;
     var out: std.Io.Writer = .fixed(&buffer);
-    try std.testing.expectError(error.MetalNotEnabled, run(std.testing.allocator, std.testing.io, "nowhere", .{ .file = "a.wav", .backend = .metal }, &out, .none, &diag));
+    var step: kit.Step = .{ .io = std.testing.io, .ui = .plain, .offset_s = 0 };
+    try std.testing.expectError(error.MetalNotEnabled, run(std.testing.allocator, std.testing.io, "nowhere", .{ .file = "a.wav", .backend = .metal }, &out, .plain, &step, &diag));
 }
