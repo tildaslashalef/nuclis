@@ -3,6 +3,46 @@
 
 The dated record behind [the reference](../../engine/speculative-decoding.md).
 
+## Prompt lookup in agent sessions, counted offline (2026-11-20)
+
+**Question.** Would a prompt-lookup proposer (the longest suffix of the
+output so far, 3 to 16 tokens, found earlier in the step's context or
+output, proposing what followed it) pay beside the MTP head on agent
+work? The stop line set before counting: under 15 % of output tokens in
+runs of 4 or more.
+
+**Method.** The two long-task sessions of todo-bun, seed 1, at rev
+4d3b486 ([agent record § Agent long tasks](agent.md#agent-long-tasks-2026-11-20)): Gemma 4 26B-A4B (29
+steps) and Qwen3.8-27B (26 steps). Each step's context is rendered in
+the profile's own call syntax (Gemma drops a turn's reasoning once a user
+message follows, Qwen keeps it) after the pinned system prompt, without
+the tools block, and tokenized with `nuclis tokenize --raw --json`. At
+each output position the most recent occurrence of the longest matching
+suffix gives a run of agreeing tokens; a run of r covers r and moves
+past r + 1. Draft 4 accepts the agreeing prefix of up to four.
+
+| | Gemma 26B-A4B | Qwen3.8-27B | All |
+| --- | ---: | ---: | ---: |
+| output tokens | 19,236 | 31,334 | 50,570 |
+| in runs ≥ 2 / ≥ 4 / ≥ 8 | 39.5 / 33.2 / 25.2 % | 36.5 / 30.8 / 23.1 % | 37.6 / 31.7 / 23.9 % |
+| lookup alone at draft 4, tokens per verify batch | 1.58 | 1.53 | 1.55 |
+| the MTP head in the same sessions (acceptance) | 4.33 (76.1 %) | 4.72 (82.1 %) | 4.59 (80.4 %) |
+
+Runs of 4 or more by kind: write and edit arguments 39.4 %, other call
+arguments 59.6 %, reasoning 12.1 %, answers 12.2 %; write and edit
+arguments are 61 % of all output. The copied tokens split evenly between
+the step's own earlier output (8,172) and its context (7,856).
+
+**Result.** The stop line is not met: 31.7 % sit in runs of 4 or more.
+Lookup alone loses to the MTP head, since most positions match nothing;
+it can only pay as a long draft on a long match beside the head. An
+estimate, not a measurement: drafting up to 16 on those runs with the
+head's mean elsewhere needs 1.23× fewer verify batches (up to 8: 1.14×),
+an upper bound, since the head likely beats its mean inside copies and a
+17-row verify costs more than a 5-row one. Not counted: two Qwen steps
+cut at the budget (12.3K tokens the file does not keep), the verify cost
+at 17 rows, and a second task or seed. The proposer stays deferred.
+
 ## The draft contract (2026-09-20)
 
 `inference/src/runtime/draft.zig` owns the model-independent interface: a
