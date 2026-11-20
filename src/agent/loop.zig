@@ -2517,13 +2517,10 @@ test "the tools block the profile renders is pinned to its measured size" {
     };
     const with_tools = try Profile.qwen38.render(a, &messages, defs, .low, .{});
     const without = try Profile.qwen38.render(a, &messages, &.{}, .low, .{});
-    // Measured on the pinned Qwen artifact (2026-09-14): the six-tool block
-    // added 720 prompt tokens / 2,896 bytes to the system prompt, ~9% of an
-    // 8,192-token context before any conversation; `read_file`'s description
-    // grew it to 2,959 bytes on 2026-09-15; `grep`'s path and context and
-    // `read_file`'s outline to 3,392 (about 115 tokens more) on 2026-10-04.
-    // Pinned so a tool description edit cannot grow the context silently.
-    try testing.expectEqual(@as(usize, 3392), with_tools.len - without.len);
+    // The six tools' block in the pinned Qwen rendering, in bytes; its
+    // measured sizes are in docs/benchmarks/record/agent.md. Pinned so a
+    // tool description edit cannot grow the context silently.
+    try testing.expectEqual(@as(usize, 3487), with_tools.len - without.len);
 }
 
 test "every step that reasoned closes its own thinking block" {

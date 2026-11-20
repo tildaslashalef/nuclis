@@ -68,11 +68,13 @@ pub const Workspace = struct {
     }
 
     /// Resolves a path for a mutation, where the target may not exist yet.
-    /// Unlike `resolve`, a missing target is allowed: the parent directory
-    /// must canonicalize inside the workspace and the final component must be
-    /// a plain name. An existing path that canonicalizes outside — including
-    /// through a symlink — is refused, which is what stops a write from
-    /// following a link out of the tree. The caller owns `abs`.
+    /// Unlike `resolve`, a missing target is allowed: the nearest existing
+    /// ancestor must canonicalize inside the workspace, and the final
+    /// component and every missing directory below that ancestor must be a
+    /// plain name (not empty, `.`, or `..`). An existing path that
+    /// canonicalizes outside, including through a symlink, is refused, which
+    /// is what stops a write from following a link out of the tree. Nothing
+    /// is created here. The caller owns `abs`.
     pub fn resolveTarget(self: Workspace, alloc: Allocator, path: []const u8) !ResolvedTarget {
         if (self.dir.realPathFileAlloc(self.io, path, alloc)) |abs| {
             if (!within(self.root, abs)) {
@@ -84,13 +86,45 @@ pub const Workspace = struct {
             error.FileNotFound => {},
             else => return err,
         }
-        const parent = std.fs.path.dirname(path) orelse ".";
         const name = std.fs.path.basename(path);
-        if (name.len == 0 or std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return error.InvalidPath;
-        const parent_abs = try self.dir.realPathFileAlloc(self.io, if (parent.len == 0) "." else parent, alloc);
-        defer alloc.free(parent_abs);
-        if (!within(self.root, parent_abs)) return error.OutsideWorkspace;
-        return .{ .abs = try std.fs.path.joinZ(alloc, &.{ parent_abs, name }), .exists = false };
+        if (!plainName(name)) return error.InvalidPath;
+
+        // Missing directories, innermost first; each is a slice of `path`.
+        var missing: std.ArrayList([]const u8) = .empty;
+        defer missing.deinit(alloc);
+        var ancestor: []const u8 = std.fs.path.dirname(path) orelse ".";
+        const ancestor_abs = while (true) {
+            if (self.dir.realPathFileAlloc(self.io, ancestor, alloc)) |abs| {
+                break abs;
+            } else |err| switch (err) {
+                error.FileNotFound => {},
+                else => return err,
+            }
+            const component = std.fs.path.basename(ancestor);
+            if (!plainName(component)) return error.InvalidPath;
+            if (missing.items.len >= max_missing_parents) return error.InvalidPath;
+            try missing.append(alloc, component);
+            ancestor = std.fs.path.dirname(ancestor) orelse ".";
+        };
+        defer alloc.free(ancestor_abs);
+        if (!within(self.root, ancestor_abs)) return error.OutsideWorkspace;
+
+        const parts = try alloc.alloc([]const u8, missing.items.len + 2);
+        defer alloc.free(parts);
+        parts[0] = ancestor_abs;
+        var tail_len: usize = 0;
+        for (missing.items, 0..) |component, i| {
+            parts[missing.items.len - i] = component;
+            tail_len += component.len + @intFromBool(i != 0);
+        }
+        parts[parts.len - 1] = name;
+        const abs = try std.fs.path.joinZ(alloc, parts);
+        const tail_end = abs.len - name.len - 1;
+        return .{
+            .abs = abs,
+            .exists = false,
+            .missing_parents = if (tail_len == 0) "" else abs[tail_end - tail_len .. tail_end],
+        };
     }
 
     /// Replaces `target` with `content` atomically: a temp file beside it is
@@ -120,7 +154,27 @@ pub const Workspace = struct {
     }
 };
 
-pub const ResolvedTarget = struct { abs: [:0]u8, exists: bool };
+pub const ResolvedTarget = struct {
+    abs: [:0]u8,
+    exists: bool,
+    /// The directories between the nearest existing ancestor and the target
+    /// that do not exist yet, relative to that ancestor; empty when none.
+    /// Borrowed from `abs`.
+    missing_parents: []const u8 = "",
+
+    /// The directory `abs` is written in.
+    pub fn parent(self: ResolvedTarget) []const u8 {
+        return std.fs.path.dirname(self.abs) orelse "/";
+    }
+};
+
+/// Bounds the directories one write may create, so a path of thousands of
+/// missing components is refused before it is walked.
+const max_missing_parents = 32;
+
+fn plainName(name: []const u8) bool {
+    return name.len != 0 and !std.mem.eql(u8, name, ".") and !std.mem.eql(u8, name, "..");
+}
 
 /// Whether `abs` is `root` itself or a path beneath it. `abs` and `root` are
 /// both canonical, so a prefix comparison plus a separator is exact.
@@ -473,6 +527,42 @@ test "resolve refuses dot-dot, absolute paths, and a symlink out of the tree" {
     const ok = try workspace.resolve(alloc, "ok.txt");
     defer alloc.free(ok);
     try std.testing.expect(std.mem.endsWith(u8, ok, "ok.txt"));
+}
+
+test "resolveTarget names the missing parents of a new path and refuses an escape through them" {
+    const alloc = std.testing.allocator;
+    var inside = std.testing.tmpDir(.{});
+    defer inside.cleanup();
+    var outside = std.testing.tmpDir(.{});
+    defer outside.cleanup();
+    const root = try inside.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(root);
+    const outside_path = try outside.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(outside_path);
+    try inside.dir.createDirPath(std.testing.io, "src");
+    try inside.dir.symLink(std.testing.io, outside_path, "link", .{});
+    const workspace: Workspace = .{ .io = std.testing.io, .dir = inside.dir, .root = root };
+
+    const flat = try workspace.resolveTarget(alloc, "new.txt");
+    defer alloc.free(flat.abs);
+    try std.testing.expect(!flat.exists);
+    try std.testing.expectEqualStrings("", flat.missing_parents);
+
+    const nested = try workspace.resolveTarget(alloc, "src/handlers/deep/todos.ts");
+    defer alloc.free(nested.abs);
+    try std.testing.expect(!nested.exists);
+    try std.testing.expectEqualStrings("handlers/deep", nested.missing_parents);
+    const expected = try std.fs.path.join(alloc, &.{ root, "src", "handlers", "deep", "todos.ts" });
+    defer alloc.free(expected);
+    try std.testing.expectEqualStrings(expected, nested.abs);
+    try std.testing.expect(std.mem.endsWith(u8, nested.parent(), "src/handlers/deep"));
+
+    try std.testing.expectError(error.InvalidPath, workspace.resolveTarget(alloc, "a/../../x"));
+    try std.testing.expectError(error.InvalidPath, workspace.resolveTarget(alloc, "a/./b/x"));
+    try std.testing.expectError(error.OutsideWorkspace, workspace.resolveTarget(alloc, "link/new/x.txt"));
+    try std.testing.expectError(error.OutsideWorkspace, workspace.resolveTarget(alloc, "src/../../x/y.txt"));
+    // Nothing was created by resolving.
+    try std.testing.expectError(error.FileNotFound, inside.dir.statFile(std.testing.io, "src/handlers", .{}));
 }
 
 test "fuzz tools: any arguments to a file tool give a result, and nothing outside the workspace is read or written" {
