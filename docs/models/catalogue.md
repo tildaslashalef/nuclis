@@ -190,8 +190,8 @@ one artifact marked `hears`, Gemma 4 E4B; `draft` for speculative
 decoding; `backbone` and `codec` for the decision and speech models), each
 with its own repository and commit when it is not the artifact's.
 
-- **Lifecycle.** `current` artifacts are looked after: they have gates and
-  `config init` writes them. A `legacy` artifact (`gemma-4-12b-qat` and
+- **Lifecycle.** `current` artifacts are looked after: they have gates,
+  `config init` writes them, and `model pull --catalogue` fetches them all. A `legacy` artifact (`gemma-4-12b-qat` and
   `muse-glimmer-30b`, decided 2026-11-10; `gemma-4-26b-a4b`,
   `laya-multilingual`, `drama-3`, and every Qwen3-TTS but the 1.7B
   CustomVoice, decided 2026-11-20) still pulls, verifies, and runs by name,

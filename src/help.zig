@@ -812,6 +812,7 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try code(out, sty, "nuclis model ls [-l] [--available [--all]] [--json]");
     try code(out, sty, "nuclis model pull <name> [--with mmproj,draft[=<v>] | --all [--variants]]");
     try code(out, sty, "                  [--force] [--json]");
+    try code(out, sty, "nuclis model pull --catalogue [--force] [--json]");
     try code(out, sty, "nuclis model pull <owner/repo> [--file <name>] [--revision <rev>] [--role <r>]");
     try code(out, sty, "                  [--register <name> [--profile <p>]] [--force] [--json]");
     try code(out, sty, "nuclis model inspect <name> [--json]");
@@ -825,8 +826,7 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "of its own; --available lists the index instead");
     try row(out, sty, "pull", "fetch an index model, a registry entry, or any");
     try more(out, "artifact of a repository, verified by digest and");
-    try more(out, "published atomically; a safetensors artifact brings");
-    try more(out, "its config, tokenizer, and index files");
+    try more(out, "published atomically, with a safetensors set's files");
     try row(out, sty, "inspect", "read a remote file's header (at most 64 MiB, no");
     try more(out, "weights) and say whether it would run: supported,");
     try more(out, "runnable, or not");
@@ -846,6 +846,7 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "mtp, dflash2); mtp is the old name of draft");
     try row(out, sty, "--all", "every companion the entry names, one per role;");
     try more(out, "with --variants, every draft variant");
+    try row(out, sty, "--catalogue", "pull: every current entry, with --all (about 43 GB)");
     try row(out, sty, "--file <name>", "which weight file (.gguf, .safetensors); required");
     try more(out, "when several; its support files come with it");
     try row(out, sty, "--revision <rev>", "a branch, tag, or commit; default main");
@@ -855,14 +856,13 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--profile <p>", "with --register: force qwen38, gemma4,");
     try more(out, "gemma4_e, or muse_glimmer");
     try row(out, sty, "--force", "download every file again, replacing each once the");
-    try more(out, "new copy verifies (the old one stays until then);");
-    try more(out, "adopt: replace a sidecar already there");
+    try more(out, "copy verifies; adopt: replace a sidecar already there");
     try row(out, sty, "--json", "the listing, pull, verdict, or removal as JSON");
     try more(out, "(a pull from several repositories: an array)");
 
     try heading(out, sty, "Examples:");
-    try example(out, sty, "nuclis model pull qwen3.8-27b --all", "the default model with its projector");
-    try example(out, sty, "nuclis model pull qwen3.8-27b --with draft=dflash2", "Qwen's DFlash2 drafter, beside the model");
+    try example(out, sty, "nuclis model pull qwen3.8-27b --all", "the default model, its projector and drafter");
+    try example(out, sty, "nuclis model pull --catalogue", "every current model, then nuclis config init");
     try code(out, sty, "nuclis model pull unsloth/gemma-4-12b-it-GGUF \\");
     try example(out, sty, "    --file gemma-4-12b-it-UD-Q4_K_XL.gguf --register gemma-fast", "any file of a repository, under a name");
     try code(out, sty, "nuclis model pull convaiinnovations/laya --file model.safetensors");

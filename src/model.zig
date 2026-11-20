@@ -85,6 +85,9 @@ pub const PullOptions = struct {
     draft_variant: ?[]const u8 = null,
     all: bool = false,
     variants: bool = false,
+    /// `--catalogue`: every current catalogue entry with `--all`, in place
+    /// of a name; only `--force` and `--json` go with it.
+    catalogue: bool = false,
     file: ?[]const u8 = null,
     /// `main`, a tag, a branch, or a commit; the sidecar always records the
     /// commit it resolved to.
@@ -417,6 +420,123 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
     try pullOne(gpa, io, environ, root, options, groups[0], json, &reports.writer, sty, diag);
     try reports.writer.writeAll("]\n");
     return out.writeAll(reports.written());
+}
+
+/// One current catalogue entry as `pull --catalogue` takes it: the files
+/// `--all` selects, and what of them is already here and verified.
+pub const CatalogueEntry = struct {
+    artifact: *const catalog.Artifact,
+    files: []const *const catalog.File,
+    bytes: u64,
+    /// Bytes of `files` whose sidecar records the index's digest and size.
+    present: u64,
+};
+
+/// Every current entry in catalogue order, each with its `--all` files;
+/// legacy entries never. `models` is the models directory the sidecars are
+/// read from (`present` counts zero for a directory that does not exist).
+pub fn catalogueSelection(arena: Allocator, io: std.Io, models: []const u8) ![]const CatalogueEntry {
+    var entries: std.ArrayList(CatalogueEntry) = .empty;
+    var diag: config.Diagnostic = .{};
+    for (&catalog.artifacts) |*a| {
+        if (a.status != .current) continue;
+        const files = try selectFiles(arena, a, .{ .all = true }, &diag);
+        var entry: CatalogueEntry = .{ .artifact = a, .files = files, .bytes = 0, .present = 0 };
+        for (files) |f| {
+            entry.bytes += f.size;
+            const local = try catalog.localPath(arena, models, a, f);
+            const recorded = readSidecar(arena, io, .cwd(), try sidecarPath(arena, local)) catch |err| switch (err) {
+                error.InvalidSidecar, error.FileNotFound, error.NotDir => null,
+                else => return err,
+            };
+            if (recorded) |r| if (std.mem.eql(u8, r.sha256, f.sha256) and r.size == f.size) {
+                entry.present += f.size;
+            };
+        }
+        try entries.append(arena, entry);
+    }
+    return entries.items;
+}
+
+/// `pull --catalogue`: every current entry with its default companions, so
+/// one command sets a machine up; legacy entries are never pulled. The plan
+/// prints first. An entry that fails is reported and the rest continue; an
+/// interrupt stops them all. Under `--json`, one array of the per-repository
+/// reports, written at the end.
+pub fn pullCatalogue(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const entries = try catalogueSelection(arena, io, try modelsDir(arena, root));
+    if (!json) {
+        try renderCataloguePlan(out, entries, sty);
+        try out.flush();
+    }
+    var reports: std.Io.Writer.Allocating = .init(arena);
+    var failed: std.ArrayList([]const u8) = .empty;
+    var written: usize = 0;
+    for (entries) |e| {
+        const entry_options: PullOptions = .{ .repo = e.artifact.name, .all = true, .force = options.force };
+        diag.len = 0;
+        const result = if (json) pullReports(gpa, io, environ, root, entry_options, e, &reports.writer, &written, sty, diag) else pull(gpa, io, environ, root, entry_options, false, out, sty, diag);
+        result catch |err| {
+            if (err == error.Cancelled) return err;
+            try failed.append(arena, try arena.dupe(u8, e.artifact.name));
+            if (!json) {
+                try out.print("{s}{s}: {s}{s}{s}{s}\n", .{ sty.on(.error_text), e.artifact.name, @errorName(err), if (diag.len > 0) ": " else "", diag.message(), sty.off() });
+                try out.flush();
+            }
+        };
+    }
+    diag.len = 0;
+    if (json) try out.print("[\n{s}]\n", .{reports.written()});
+    if (failed.items.len > 0) {
+        diag.set("{d} of {d} entries did not pull: {s}; pull them by name to see why", .{ failed.items.len, entries.len, try std.mem.join(arena, ", ", failed.items) });
+        return error.CatalogueIncomplete;
+    }
+    if (!json) try out.print("{s}the catalogue is here{s}; next: {s}nuclis config init{s} (or {s}nuclis config sync{s} beside an existing nuclis.json)\n", .{ sty.on(.success), sty.off(), sty.on(.code), sty.off(), sty.on(.code), sty.off() });
+}
+
+/// One entry's per-repository JSON reports appended to `w`, comma-separated
+/// across calls by `written`; nothing is appended for a repository whose
+/// pull failed.
+fn pullReports(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, entry: CatalogueEntry, w: *std.Io.Writer, written: *usize, sty: style.Style, diag: *config.Diagnostic) !void {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    for (try groupByOrigin(arena, entry.artifact, entry.files)) |g| {
+        var one: std.Io.Writer.Allocating = .init(arena);
+        try pullOne(gpa, io, environ, root, options, g, true, &one.writer, sty, diag);
+        if (written.* > 0) try w.writeAll(",\n");
+        try w.writeAll(std.mem.trimEnd(u8, one.written(), "\n"));
+        written.* += 1;
+    }
+    try w.writeByte('\n');
+}
+
+fn renderCataloguePlan(out: *std.Io.Writer, entries: []const CatalogueEntry, sty: style.Style) !void {
+    var total: u64 = 0;
+    var present: u64 = 0;
+    var count: usize = 0;
+    for (entries) |e| {
+        total += e.bytes;
+        present += e.present;
+        count += e.files.len;
+    }
+    var a: [32]u8 = undefined;
+    var b: [32]u8 = undefined;
+    try out.print("{s}the catalogue{s}: {d} entries, {d} files, {s}{s}{s}", .{ sty.on(.bold), sty.off(), entries.len, count, sty.on(.number), humanSize(&a, total), sty.off() });
+    try out.print(", {s}{s}{s} to fetch\n", .{ sty.on(.number), humanSize(&b, total - present), sty.off() });
+    for (entries) |e| {
+        var names: [128]u8 = undefined;
+        var fw: std.Io.Writer = .fixed(&names);
+        for (e.files, 0..) |f, i| {
+            if (i > 0) fw.writeByte(' ') catch {};
+            fw.writeAll(if (f.variant) |v| v else @tagName(f.role)) catch {};
+        }
+        const state = if (e.present == e.bytes) "here" else if (e.present == 0) "to fetch" else "partly here";
+        try out.print("  {s}{s: <28}{s} {s: <24} {s}{s: >9}{s}  {s}{s}{s}\n", .{ sty.on(.keyword), e.artifact.name, sty.off(), fw.buffered(), sty.on(.number), humanSize(&a, e.bytes), sty.off(), sty.on(.dim), state, sty.off() });
+    }
 }
 
 /// `files` as one plan per origin (repository and commit), in first-seen
@@ -3176,6 +3296,44 @@ test "adopt writes a sidecar for a file placed by hand, once, and only under the
     try std.testing.expectError(error.NotAModelFile, adopt(alloc, io, root, "acme/encoder/broken.gguf", false, true, &out.writer, .none, &diag));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "models/acme/encoder/broken.gguf.nuclis.json", .{}));
     try std.testing.expectError(error.FileNotFound, adopt(alloc, io, root, "acme/encoder/absent.gguf", false, true, &out.writer, .none, &diag));
+}
+
+test "pull --catalogue takes every current entry with its defaults, and counts what is here" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const models = try tmp.dir.realPathFileAlloc(io, ".", arena);
+    const empty = try catalogueSelection(arena, io, models);
+    try std.testing.expectEqual(@as(usize, 7), empty.len);
+    for (empty) |e| {
+        try std.testing.expectEqual(catalog.Lifecycle.current, e.artifact.status);
+        try std.testing.expectEqual(@as(u64, 0), e.present);
+    }
+    const qwen = empty[0];
+    try std.testing.expectEqualStrings("qwen3.8-27b", qwen.artifact.name);
+    try std.testing.expectEqual(@as(usize, 3), qwen.files.len);
+    try std.testing.expectEqualStrings("dflash2", qwen.files[2].variant.?);
+    const e4b = for (empty) |e| {
+        if (std.mem.eql(u8, e.artifact.name, "gemma-4-e4b-qat")) break e;
+    } else unreachable;
+    try std.testing.expectEqual(@as(usize, 3), e4b.files.len);
+    // A matching sidecar counts the file as here; a stale one does not.
+    const files = [_]*const catalog.File{ qwen.files[0], qwen.files[1] };
+    for (files, [_][]const u8{ files[0].sha256, &@as([64]u8, @splat('0')) }) |f, sha| {
+        const local = try catalog.localPath(arena, models, qwen.artifact, f);
+        try tmp.dir.createDirPath(io, std.fs.path.dirname(local[models.len + 1 ..]).?);
+        try writeSidecar(arena, io, .cwd(), try sidecarPath(arena, local), .{ .repo = qwen.artifact.repo, .file = f.path, .revision = qwen.artifact.revision, .sha256 = sha, .size = f.size, .role = f.role, .downloaded_at = "2026-11-20T00:00:00Z", .nuclis_version = "test" });
+    }
+    const after = try catalogueSelection(arena, io, models);
+    try std.testing.expectEqual(files[0].size, after[0].present);
+    var out: std.Io.Writer.Allocating = .init(arena);
+    try renderCataloguePlan(&out.writer, after, .none);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "the catalogue: 7 entries, 15 files") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "main mmproj dflash2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "partly here") != null);
 }
 
 test "a pull takes each role's default draft, a named variant, or every one, grouped by origin" {

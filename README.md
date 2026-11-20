@@ -45,7 +45,7 @@ make metal                                          # release build, Metal backe
 ./zig-out/bin/nuclis agent                          # the chat, with tools, in this directory
 ```
 
-`nuclis model pull gemma-4-e4b-qat --all` adds the small brain.
+`nuclis model pull --catalogue` fetches every model below (about 43 GB).
 [Releases](https://github.com/tildaslashalef/nuclis/releases) ship the macOS
 binary and an x86-64 Linux build that runs on the CPU only, for the small
 models ([getting-started.md](docs/guide/getting-started.md)). `nuclis --help`

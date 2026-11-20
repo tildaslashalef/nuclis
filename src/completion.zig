@@ -251,6 +251,7 @@ pub const commands = [_]Command{
             .{ .name = "--with", .value = .roles, .summary = "also fetch these companions" },
             .{ .name = "--all", .summary = "every companion the entry names" },
             .{ .name = "--variants", .summary = "with --all: every draft variant" },
+            .{ .name = "--catalogue", .summary = "every current catalogue entry, with --all" },
             .{ .name = "--file", .value = .text, .summary = "which file of the repository" },
             .{ .name = "--revision", .value = .text, .summary = "a branch, tag, or commit" },
             .{ .name = "--role", .value = .{ .choice = names(model.Role) }, .summary = "the file's role" },
@@ -947,6 +948,8 @@ test "every flag in the table is one the parser takes for that command" {
         try args.append(a, command.name);
         if (action.name.len > 0) try args.append(a, action.name);
         for (action.positionals) |p| try args.append(a, sample(p));
+        // `--catalogue` stands in for pull's name.
+        if (std.mem.eql(u8, f.name, "--catalogue")) _ = args.pop();
         try args.append(a, f.name);
         if (f.value != .none) try args.append(a, sample(f.value));
         // What the command needs besides the flag under test.
