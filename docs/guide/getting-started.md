@@ -142,10 +142,16 @@ not register it and `model ls --available` shows it only with `--all`.
 ```sh
 nuclis model pull qwen3.8-27b                     # the model alone
 nuclis model pull qwen3.8-27b --all               # with its default draft and vision companions
-nuclis model pull qwen3.8-27b --with draft=dflash2  # or pick them: mmproj, draft[=variant]
+nuclis model pull qwen3.8-27b --with draft=mtp   # or pick them: mmproj, draft[=variant]
 nuclis model pull qwen3.8-27b --all --variants    # every draft variant too
+nuclis model pull --catalogue                     # every current model with --all, about 43 GB
 nuclis model ls                                   # what is here
 ```
+
+`--catalogue` sets a machine up in one command: it prints the plan (each
+entry's files, and what is already here) before the first download, skips
+files already verified, and when an entry fails reports it and goes on to
+the next. `nuclis config init` then registers them all.
 
 Files land in `~/.nuclis/models/<owner>/<repo>/<file>`, each SHA-256
 verified before it is published. If the Hub's digest at the pinned commit

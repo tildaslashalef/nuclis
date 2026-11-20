@@ -509,7 +509,10 @@ fn parseModelArgs(args: []const []const u8) !Options {
     var options: Options = .{ .command = .model };
     options.model_action = std.meta.stringToEnum(@FieldType(Options, "model_action"), args[0]) orelse return error.UnknownModelAction;
     var i: usize = 1;
-    if (options.model_action != .ls) {
+    if (options.model_action == .pull and i < args.len and std.mem.eql(u8, args[i], "--catalogue")) {
+        options.pull.catalogue = true;
+        i += 1;
+    } else if (options.model_action != .ls) {
         if (i == args.len or std.mem.startsWith(u8, args[i], "--")) return error.MissingRepository;
         options.pull.repo = args[i];
         i += 1;
@@ -545,6 +548,8 @@ fn parseModelArgs(args: []const []const u8) !Options {
         const pulls = options.model_action == .pull;
         // `rm` takes the companion choice and nothing else of pull's.
         const removes = options.model_action == .rm;
+        // After a name, `--catalogue` is a second subject, not a flag.
+        if (pulls and std.mem.eql(u8, flag, "--catalogue")) return error.ConflictingOptions;
         if (pulls and std.mem.eql(u8, flag, "--force")) {
             if (p.force) return error.DuplicateOption;
             p.force = true;
@@ -606,6 +611,8 @@ fn parseModelArgs(args: []const []const u8) !Options {
             if (p.with.count() == 0) return error.MissingOptionValue;
         } else return error.UnknownOption;
     }
+    // The catalogue pins every entry's files, commit, and companions.
+    if (p.catalogue and (p.all or p.variants or p.with.count() != 0 or p.file != null or p.revision != null or p.role != null or p.register != null or p.profile != null)) return error.ConflictingOptions;
     if (p.profile != null and p.register == null) return error.ConflictingOptions;
     if (p.variants and !p.all) return error.ConflictingOptions;
     if (options.ls.all and !options.ls.available) return error.ConflictingOptions;
@@ -673,6 +680,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 return model.rm(alloc, io, dir, loaded.config.models, options.pull, options.json, out, sty, diag);
             },
             .pull => {
+                if (options.pull.catalogue) return model.pullCatalogue(alloc, io, environ, dir, options.pull, options.json, out, sty, diag);
                 var pull_options = options.pull;
                 pull_options.config_path = config_path;
                 var loaded: ?config.Loaded = null;
@@ -1449,6 +1457,17 @@ test "model parses its action, the positional repository, and its own flags only
     try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "rm", "qwen3.8-27b", "--with", "main" }));
     try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "pull" }));
     try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "pull", "--file", "x.gguf" }));
+    // --catalogue stands in for the name and takes only --force and --json.
+    const whole = try parseArgs(&.{ "model", "pull", "--catalogue", "--force", "--json" });
+    try std.testing.expect(whole.pull.catalogue and whole.pull.force and whole.json and whole.pull.repo.len == 0);
+    for ([_][]const []const u8{
+        &.{ "model", "pull", "--catalogue", "--all" },
+        &.{ "model", "pull", "--catalogue", "--with", "draft" },
+        &.{ "model", "pull", "--catalogue", "--revision", "main" },
+        &.{ "model", "pull", "--catalogue", "--register", "x" },
+        &.{ "model", "pull", "laya", "--catalogue" },
+    }) |argv| try std.testing.expectError(error.ConflictingOptions, parseArgs(argv));
+    try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "inspect", "--catalogue" }));
     try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "pull", "a/b", "--role", "eagle" }));
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "model", "pull", "a/b", "--file", "x", "--file", "y" }));
     try std.testing.expectError(error.MissingOptionValue, parseArgs(&.{ "model", "pull", "a/b", "--revision" }));
