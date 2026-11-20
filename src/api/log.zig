@@ -4,9 +4,9 @@
 //! Connection tasks log concurrently; a line is formatted on the caller's
 //! stack and written whole under the lock, so lines never interleave.
 const std = @import("std");
-const builtin = @import("builtin");
 const style = @import("../tui/style.zig");
 const printable = @import("../text.zig").printable;
+const values = @import("../ui/values.zig");
 
 pub const Entry = struct {
     /// Null when the request never parsed (a refused connection, a bad head).
@@ -28,7 +28,7 @@ pub const Log = struct {
 
     pub fn init(out: *std.Io.Writer, sty: style.Style, io: std.Io) Log {
         const now: i64 = @intCast(@divFloor(std.Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s)); // checked: the system clock, not a client's
-        return .{ .out = out, .sty = sty, .offset_s = utcOffset(now) };
+        return .{ .out = out, .sty = sty, .offset_s = values.utcOffset(now) };
     }
 
     pub fn request(self: *Log, io: std.Io, entry: Entry) void {
@@ -86,30 +86,6 @@ fn formatSize(buffer: []u8, bytes: usize) []const u8 {
         std.fmt.bufPrint(buffer, "{d:.1} KB", .{b / 1024})
     else
         std.fmt.bufPrint(buffer, "{d:.1} MB", .{b / (1024 * 1024)})) catch "?";
-}
-
-const Tm = extern struct {
-    sec: c_int,
-    min: c_int,
-    hour: c_int,
-    mday: c_int,
-    mon: c_int,
-    year: c_int,
-    wday: c_int,
-    yday: c_int,
-    isdst: c_int,
-    gmtoff: c_long,
-    zone: ?[*:0]const u8,
-};
-extern "c" fn localtime_r(time: *const c_long, result: *Tm) ?*Tm;
-
-/// The local zone's offset at `now` (seconds since the epoch); UTC where
-/// libc's zone database is not linked.
-fn utcOffset(now: i64) i64 {
-    if (!builtin.target.os.tag.isDarwin()) return 0;
-    var tm: Tm = undefined;
-    const t: c_long = @intCast(now); // checked: the system clock, not a client's
-    return if (localtime_r(&t, &tm) != null) tm.gmtoff else 0;
 }
 
 test "a line: time, method, path, status, latency, size, note" {

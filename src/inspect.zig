@@ -3,6 +3,7 @@
 const std = @import("std");
 const inference = @import("inference");
 const style = @import("tui/style.zig");
+const kit = @import("ui.zig");
 
 pub const EncodingCount = struct {
     id: u32,
@@ -30,38 +31,51 @@ pub const Snapshot = struct {
     tensor_bytes: u64,
     encodings: []const EncodingCount,
 
-    pub fn render(self: Snapshot, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+    /// `inspect --model`: the header, the directory's facts, the encodings,
+    /// and the next step.
+    pub fn render(self: Snapshot, arena: std.mem.Allocator, out: *std.Io.Writer, json: bool, ui: kit.Ui) !void {
         if (json) {
             try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
             return out.writeByte('\n');
         }
-        try self.renderText(out, sty);
-        try out.print("\n{s}Directory and tensor ranges validated. Run `validate` to check architecture support.{s}\n", .{ sty.on(.dim), sty.off() });
+        const path = try kit.text.clean(arena, self.model_path);
+        try kit.blocks.header(out, ui, std.fs.path.basename(path), std.fs.path.dirname(path) orelse "");
+        try self.renderText(arena, out, ui, &.{});
+        try out.writeByte('\n');
+        try kit.blocks.result(out, ui, .ok, "directory and tensor ranges valid", "");
+        try kit.blocks.hint(out, ui, "", try std.fmt.allocPrint(arena, "nuclis validate --model {s}", .{path}), " checks architecture support");
     }
 
-    /// The human-readable body without the closing advice, so a caller
-    /// with its own verdict (`model inspect`) can append it.
-    pub fn renderText(self: Snapshot, out: *std.Io.Writer, sty: style.Style) !void {
-        const label = sty.on(.label);
-        const number = sty.on(.number);
-        const off = sty.off();
-        try out.print("{s}Model:{s} {s}", .{ label, off, sty.on(.code) });
-        // JSON string escaping also keeps file-controlled names from emitting
-        // terminal control sequences in the human-readable output.
-        try std.json.Stringify.value(self.name orelse "(unnamed)", .{}, out);
-        try out.print("{s}\n{s}Architecture:{s} {s}", .{ off, label, off, sty.on(.code) });
-        try std.json.Stringify.value(self.architecture orelse "(unspecified)", .{}, out);
-        try out.writeAll(off);
-        if (self.declared_block_count) |count| try out.print("\n{s}Declared blocks:{s} {s}{d}{s}", .{ label, off, number, count, off });
-        if (self.declared_context_length) |count| try out.print("\n{s}Declared context:{s} {s}{d}{s} tokens", .{ label, off, number, count, off });
-        if (self.embedding_length) |count| try out.print("\n{s}Embedding length:{s} {s}{d}{s}", .{ label, off, number, count, off });
-        try out.print("\n{s}GGUF:{s} v{d}, {s}{d}{s} metadata keys, {s}{d}{s} tensors\n", .{ label, off, self.gguf_version, number, self.metadata_count, off, number, self.tensor_count, off });
-        try out.print("{s}File:{s} {s}{d}{s} bytes; directory: {s}{d}{s} bytes; data offset: {s}{d}{s}\n", .{ label, off, number, self.file_bytes, off, number, self.directory_bytes, off, number, self.data_offset, off });
-        try out.print("{s}Stored tensor elements:{s} {s}{d}{s}; tensor bytes: {s}{d}{s}\n\n", .{ label, off, number, self.stored_elements, off, number, self.tensor_bytes, off });
-        try out.print("{s}Encoding      Tensors       Bytes{s}\n", .{ sty.on(.header), off });
-        for (self.encodings) |entry| {
-            try out.print("{s}{s: <12}{s}  {s}{d: >7}{s}  {s}{d: >12}{s}\n", .{ sty.on(.code), entry.name, off, number, entry.tensors, off, number, entry.bytes, off });
-        }
+    /// The directory's facts as one detail section after `lead` (a
+    /// caller's own fields: `model inspect` names the file and digest),
+    /// then the encodings table. Names from the file are cleaned.
+    pub fn renderText(self: Snapshot, arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui, lead: []const kit.blocks.Field) !void {
+        const v = kit.values;
+        var fields: std.ArrayList(kit.blocks.Field) = .empty;
+        try fields.appendSlice(arena, lead);
+        try fields.append(arena, .{ .key = "Model", .value = if (self.name) |n| try kit.text.clean(arena, n) else v.missing });
+        try fields.append(arena, .{ .key = "Architecture", .value = if (self.architecture) |a| try kit.text.clean(arena, a) else v.missing, .role = .id });
+        if (self.declared_block_count) |n| try fields.append(arena, .{ .key = "Blocks", .value = try std.fmt.allocPrint(arena, "{f}", .{v.grouped(n)}) });
+        if (self.declared_context_length) |n| try fields.append(arena, .{ .key = "Context", .value = try std.fmt.allocPrint(arena, "{f} tokens", .{v.grouped(n)}) });
+        if (self.embedding_length) |n| try fields.append(arena, .{ .key = "Embedding", .value = try std.fmt.allocPrint(arena, "{f}", .{v.grouped(n)}) });
+        try fields.append(arena, .{ .key = "GGUF", .value = try std.fmt.allocPrint(arena, "v{d} · {f} · {f}", .{ self.gguf_version, v.count(self.metadata_count, "metadata key"), v.count(self.tensor_count, "tensor") }) });
+        try fields.append(arena, .{ .key = "Size", .value = try std.fmt.allocPrint(arena, "{f} · directory {f} · data at byte {f}", .{ v.size(self.file_bytes), v.size(self.directory_bytes), v.grouped(self.data_offset) }) });
+        try fields.append(arena, .{ .key = "Tensors", .value = try std.fmt.allocPrint(arena, "{f} elements · {f}", .{ v.grouped(self.stored_elements), v.size(self.tensor_bytes) }) });
+        try kit.blocks.detail(out, ui, &.{.{ .fields = fields.items }});
+        if (self.encodings.len == 0) return;
+        try out.writeByte('\n');
+        const columns = [_]kit.table.Column{
+            .{ .title = "ENCODING", .truncate = false },
+            .{ .title = "TENSORS", .alignment = .right },
+            .{ .title = "SIZE", .alignment = .right },
+        };
+        const rows = try arena.alloc([]const kit.table.Cell, self.encodings.len);
+        for (self.encodings, rows) |e, *row| row.* = try arena.dupe(kit.table.Cell, &.{
+            .{ .text = e.name, .role = .id },
+            .{ .text = try std.fmt.allocPrint(arena, "{d}", .{e.tensors}) },
+            .{ .text = try std.fmt.allocPrint(arena, "{f}", .{v.size(e.bytes)}) },
+        });
+        try kit.table.render(out, ui, arena, 0, &columns, rows);
     }
 };
 
@@ -266,9 +280,12 @@ test "JSON output preserves paths and clearly reports inspection-only capability
         .tensor_bytes = 0,
         .encodings = &.{},
     };
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try value.render(&out.writer, true, .none);
+    try value.render(arena, &out.writer, true, .plain);
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings(value.model_path, parsed.value.object.get("model_path").?.string);
@@ -276,7 +293,19 @@ test "JSON output preserves paths and clearly reports inspection-only capability
     try std.testing.expect(parsed.value.object.get("inference_available") == null);
     var text_out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer text_out.deinit();
-    try value.render(&text_out.writer, false, .none);
+    try value.render(arena, &text_out.writer, false, .plain);
     try std.testing.expect(std.mem.findScalar(u8, text_out.written(), 0x1b) == null);
-    try std.testing.expect(std.mem.startsWith(u8, text_out.written(), "Model: \"model\\u001b[31m\"\nArchitecture: \"test\"\nGGUF: v3, 0 metadata keys, 0 tensors\n"));
+    try std.testing.expectEqualStrings(
+        \\◆ a\b"c.gguf
+        \\
+        \\Model         model?[31m
+        \\Architecture  test
+        \\GGUF          v3 · 0 metadata keys · 0 tensors
+        \\Size          64 B · directory 32 B · data at byte 32
+        \\Tensors       0 elements · 0 B
+        \\
+        \\✓ directory and tensor ranges valid
+        \\→ nuclis validate --model a\b"c.gguf checks architecture support
+        \\
+    , text_out.written());
 }

@@ -8,6 +8,7 @@ const http = @import("http.zig");
 const errors = @import("errors.zig");
 const router_mod = @import("router.zig");
 const model_files = @import("../model.zig");
+const values = @import("../ui/values.zig");
 const memory = @import("memory.zig");
 
 /// Raised when a `nuclis` object changes incompatibly.
@@ -213,8 +214,7 @@ fn detailOf(arena: std.mem.Allocator, d: std.json.ObjectMap) ![]const u8 {
     var parts: std.ArrayList([]const u8) = .empty;
     if (d.get("architecture")) |v| if (v == .string) try parts.append(arena, v.string);
     if (d.get("quantization")) |v| if (v == .string) try parts.append(arena, v.string);
-    var buffer: [16]u8 = undefined;
-    if (d.get("size_bytes")) |v| if (v == .integer and v.integer > 0) try parts.append(arena, try arena.dupe(u8, model_files.humanSize(&buffer, @intCast(v.integer)))); // checked: positive, checked in the same line
+    if (d.get("size_bytes")) |v| if (v == .integer and v.integer > 0) try parts.append(arena, try std.fmt.allocPrint(arena, "{f}", .{values.size(@intCast(v.integer))})); // checked: positive, checked in the same line
     return std.mem.join(arena, " · ", parts.items);
 }
 

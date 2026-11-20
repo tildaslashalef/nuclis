@@ -31,7 +31,8 @@ const config = @import("config.zig");
 const catalog = @import("catalog.zig");
 const interrupt = @import("interrupt.zig");
 const inspection = @import("inspect.zig");
-const style = @import("tui/style.zig");
+const kit = @import("ui.zig");
+const errors = @import("errors.zig");
 const Allocator = std.mem.Allocator;
 
 pub const version = @import("build_options").version;
@@ -390,8 +391,8 @@ pub fn selectFiles(arena: Allocator, a: *const catalog.Artifact, options: PullOp
 /// several repositories pulls one repository at a time, each with its own
 /// report (under `json`, one array of them). `diag` carries the reason of
 /// every typed failure.
-pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
-    const a = catalog.find(options.repo) orelse return pullOne(gpa, io, environ, root, options, null, json, out, sty, diag);
+pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
+    const a = catalog.find(options.repo) orelse return pullOne(gpa, io, environ, root, options, null, json, out, ui, diag);
     if (options.file != null or options.revision != null) {
         diag.set("{s} is an index name and pins its files and commit; pull by repository id ({s}) to choose another", .{ a.name, a.repo });
         return error.ConflictingOptions;
@@ -406,18 +407,21 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
     }
     if (!json or groups.len == 1) {
         // The other repositories first, so the artifact's own report is last.
-        for (groups[1..]) |g| try pullOne(gpa, io, environ, root, options, g, json, out, sty, diag);
-        return pullOne(gpa, io, environ, root, options, groups[0], json, out, sty, diag);
+        for (groups[1..]) |g| {
+            try pullOne(gpa, io, environ, root, options, g, json, out, ui, diag);
+            if (!json) try out.writeByte('\n');
+        }
+        return pullOne(gpa, io, environ, root, options, groups[0], json, out, ui, diag);
     }
     // Several repositories under --json: one array, one report per
     // repository, written only once every pull succeeded.
     var reports: std.Io.Writer.Allocating = .init(arena);
     try reports.writer.writeAll("[\n");
     for (groups[1..]) |g| {
-        try pullOne(gpa, io, environ, root, options, g, json, &reports.writer, sty, diag);
+        try pullOne(gpa, io, environ, root, options, g, json, &reports.writer, ui, diag);
         try reports.writer.writeAll(",\n");
     }
-    try pullOne(gpa, io, environ, root, options, groups[0], json, &reports.writer, sty, diag);
+    try pullOne(gpa, io, environ, root, options, groups[0], json, &reports.writer, ui, diag);
     try reports.writer.writeAll("]\n");
     return out.writeAll(reports.written());
 }
@@ -463,13 +467,13 @@ pub fn catalogueSelection(arena: Allocator, io: std.Io, models: []const u8) ![]c
 /// prints first. An entry that fails is reported and the rest continue; an
 /// interrupt stops them all. Under `--json`, one array of the per-repository
 /// reports, written at the end.
-pub fn pullCatalogue(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+pub fn pullCatalogue(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const entries = try catalogueSelection(arena, io, try modelsDir(arena, root));
     if (!json) {
-        try renderCataloguePlan(out, entries, sty);
+        try renderCataloguePlan(arena, out, entries, ui);
         try out.flush();
     }
     var reports: std.Io.Writer.Allocating = .init(arena);
@@ -478,35 +482,42 @@ pub fn pullCatalogue(gpa: Allocator, io: std.Io, environ: *const std.process.Env
     for (entries) |e| {
         const entry_options: PullOptions = .{ .repo = e.artifact.name, .all = true, .force = options.force };
         diag.len = 0;
-        const result = if (json) pullReports(gpa, io, environ, root, entry_options, e, &reports.writer, &written, sty, diag) else pull(gpa, io, environ, root, entry_options, false, out, sty, diag);
+        if (!json) try out.writeByte('\n');
+        const result = if (json) pullReports(gpa, io, environ, root, entry_options, e, &reports.writer, &written, ui, diag) else pull(gpa, io, environ, root, entry_options, false, out, ui, diag);
         result catch |err| {
             if (err == error.Cancelled) return err;
             try failed.append(arena, try arena.dupe(u8, e.artifact.name));
             if (!json) {
-                try out.print("{s}{s}: {s}{s}{s}{s}\n", .{ sty.on(.error_text), e.artifact.name, @errorName(err), if (diag.len > 0) ": " else "", diag.message(), sty.off() });
+                var words: [64]u8 = undefined;
+                const why = if (diag.len > 0) diag.message() else if (errors.describe(err).len > 0) errors.describe(err) else errors.words(&words, @errorName(err));
+                try kit.blocks.result(out, ui, .failed, e.artifact.name, try kit.text.clean(arena, why));
                 try out.flush();
             }
         };
     }
     diag.len = 0;
     if (json) try out.print("[\n{s}]\n", .{reports.written()});
+    if (!json) {
+        try out.writeByte('\n');
+        try kit.blocks.summary(out, ui, .{ .ok = entries.len - failed.items.len, .failed = failed.items.len });
+    }
     if (failed.items.len > 0) {
         diag.set("{d} of {d} entries did not pull: {s}; pull them by name to see why", .{ failed.items.len, entries.len, try std.mem.join(arena, ", ", failed.items) });
         return error.CatalogueIncomplete;
     }
-    if (!json) try out.print("{s}the catalogue is here{s}; next: {s}nuclis config init{s} (or {s}nuclis config sync{s} beside an existing nuclis.json)\n", .{ sty.on(.success), sty.off(), sty.on(.code), sty.off(), sty.on(.code), sty.off() });
+    if (!json) try kit.blocks.hint(out, ui, "next: ", "nuclis config init", " (or `nuclis config sync` beside an existing nuclis.json)");
 }
 
 /// One entry's per-repository JSON reports appended to `w`, comma-separated
 /// across calls by `written`; nothing is appended for a repository whose
 /// pull failed.
-fn pullReports(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, entry: CatalogueEntry, w: *std.Io.Writer, written: *usize, sty: style.Style, diag: *config.Diagnostic) !void {
+fn pullReports(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, entry: CatalogueEntry, w: *std.Io.Writer, written: *usize, ui: kit.Ui, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     for (try groupByOrigin(arena, entry.artifact, entry.files)) |g| {
         var one: std.Io.Writer.Allocating = .init(arena);
-        try pullOne(gpa, io, environ, root, options, g, true, &one.writer, sty, diag);
+        try pullOne(gpa, io, environ, root, options, g, true, &one.writer, ui, diag);
         if (written.* > 0) try w.writeAll(",\n");
         try w.writeAll(std.mem.trimEnd(u8, one.written(), "\n"));
         written.* += 1;
@@ -514,29 +525,45 @@ fn pullReports(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
     try w.writeByte('\n');
 }
 
-fn renderCataloguePlan(out: *std.Io.Writer, entries: []const CatalogueEntry, sty: style.Style) !void {
+/// The plan `pull --catalogue` prints before any download: what each
+/// entry brings, its size, and whether it is here.
+fn renderCataloguePlan(arena: Allocator, out: *std.Io.Writer, entries: []const CatalogueEntry, ui: kit.Ui) !void {
     var total: u64 = 0;
     var present: u64 = 0;
-    var count: usize = 0;
+    var files: usize = 0;
     for (entries) |e| {
         total += e.bytes;
         present += e.present;
-        count += e.files.len;
+        files += e.files.len;
     }
-    var a: [32]u8 = undefined;
-    var b: [32]u8 = undefined;
-    try out.print("{s}the catalogue{s}: {d} entries, {d} files, {s}{s}{s}", .{ sty.on(.bold), sty.off(), entries.len, count, sty.on(.number), humanSize(&a, total), sty.off() });
-    try out.print(", {s}{s}{s} to fetch\n", .{ sty.on(.number), humanSize(&b, total - present), sty.off() });
-    for (entries) |e| {
-        var names: [128]u8 = undefined;
-        var fw: std.Io.Writer = .fixed(&names);
+    try kit.blocks.header(out, ui, "the catalogue", try std.fmt.allocPrint(arena, "{f}, {f}, {f} · {f} to fetch", .{
+        kit.values.countIrregular(entries.len, "entry", "entries"),
+        kit.values.count(files, "file"),
+        kit.values.size(total),
+        kit.values.size(total - present),
+    }));
+    const columns = [_]kit.table.Column{
+        .{ .title = "NAME" },
+        .{ .title = "BRINGS", .drop = 1 },
+        .{ .title = "SIZE", .alignment = .right },
+        .{ .title = "STATUS" },
+    };
+    const rows = try arena.alloc([]const kit.table.Cell, entries.len);
+    for (entries, rows) |e, *row| {
+        var names: std.ArrayList(u8) = .empty;
         for (e.files, 0..) |f, i| {
-            if (i > 0) fw.writeByte(' ') catch {};
-            fw.writeAll(if (f.variant) |v| v else @tagName(f.role)) catch {};
+            if (i > 0) try names.append(arena, ' ');
+            try names.appendSlice(arena, f.variant orelse @tagName(f.role));
         }
-        const state = if (e.present == e.bytes) "here" else if (e.present == 0) "to fetch" else "partly here";
-        try out.print("  {s}{s: <28}{s} {s: <24} {s}{s: >9}{s}  {s}{s}{s}\n", .{ sty.on(.keyword), e.artifact.name, sty.off(), fw.buffered(), sty.on(.number), humanSize(&a, e.bytes), sty.off(), sty.on(.dim), state, sty.off() });
+        const status: kit.style.Status, const word = if (e.present == e.bytes) .{ .ok, "here" } else if (e.present == 0) .{ .not_checked, "to fetch" } else .{ .stopped, "partly here" };
+        row.* = try arena.dupe(kit.table.Cell, &.{
+            .{ .text = e.artifact.name, .role = .id },
+            .{ .text = names.items, .role = .muted },
+            .{ .text = try std.fmt.allocPrint(arena, "{f}", .{kit.values.size(e.bytes)}) },
+            .{ .text = try kit.blocks.statusText(arena, ui, status, word), .role = status.role() },
+        });
     }
+    try kit.table.render(out, ui, arena, 0, &columns, rows);
 }
 
 /// `files` as one plan per origin (repository and commit), in first-seen
@@ -556,7 +583,7 @@ pub fn groupByOrigin(arena: Allocator, a: *const catalog.Artifact, files: []cons
     return groups.items;
 }
 
-fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, plan: ?Plan, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, plan: ?Plan, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -568,7 +595,14 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     // The package's allocator must be thread safe: the concurrent workers
     // share it. `gpa` from `std.process.Init` is.
     var client = hf.Client.init(gpa, io, environ);
-    var display: Display = .{ .io = io, .started = .now(io, .awake), .tty = std.Io.File.stderr().isTty(io) catch false, .json = json };
+    const pull_started: std.Io.Timestamp = .now(io, .awake);
+    var display: Display = .{
+        .io = io,
+        .ui = if (json) .plain else kit.Ui.detect(environ, io, std.Io.File.stderr()),
+        .json = json,
+        .offset_s = kit.values.utcOffset(std.Io.Timestamp.now(io, .real).toSeconds()),
+        .started = pull_started,
+    };
     client.progress = .{ .context = &display, .update = Display.update };
 
     // 1. Resolve. An index plan pins repository, files, commit, and digests
@@ -630,7 +664,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
         defer remote.deinit();
         pinned = remote.revision;
         const selected = (hf.select(arena, &remote, request.filename) catch |err| return hubFailure(err, options.repo, diag)) orelse {
-            try renderSelection(out, .{ .repo = options.repo, .revision = &pinned, .selection_required = try choices(arena, remote.files) }, json, sty);
+            try renderSelection(arena, out, .{ .repo = options.repo, .revision = &pinned, .selection_required = try choices(arena, remote.files) }, json, ui);
             try out.flush();
             diag.set("{s} has {d} model files; pass --file <name>", .{ options.repo, remote.files.len });
             return error.SelectionRequired;
@@ -670,7 +704,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
         try config.registrable(name, request.repo_id, main_file, diag);
     }
     const pinned_name: ?[]const u8 = if (plan) |p| p.artifact.name else null;
-    if (!json) try renderHeader(out, sty, pinned_name orelse options.name, request.repo_id, if (pinned_name != null) null else options.revision orelse "main", revision);
+    if (!json) try renderHeader(arena, out, ui, pinned_name orelse options.name, request.repo_id, if (pinned_name != null) null else options.revision orelse "main", revision);
     try out.flush();
 
     // 2. Destinations: a sidecar recording other content is a conflict
@@ -680,7 +714,8 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     for (jobs.items) |job| {
         var placed = request;
         placed.destination = job.destination;
-        placed.exact = job.destination != null;
+        // Every job is one named file, support files included.
+        placed.exact = true;
         const path = try client.localPath(placed, job.name);
         defer gpa.free(path);
         const sidecar = try sidecarPath(arena, path);
@@ -729,26 +764,34 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
         defer display.done += job.size;
         var result = client.download(request) catch |err| switch (err) {
             error.Canceled => {
+                display.fail();
                 diag.set("interrupted; the partial download was removed", .{});
                 return error.Cancelled;
             },
             error.Paused => {
+                display.fail();
                 diag.set("stopped; the partial download of {s} was kept, and pulling again continues it", .{job.name});
                 return error.Cancelled;
             },
             error.ResumedChecksumMismatch => {
+                display.fail();
                 diag.set("{s}: the partial download kept from an earlier pull did not verify and was removed; pull again to download it whole", .{job.name});
                 return err;
             },
             error.DownloadInProgress => {
+                display.fail();
                 diag.set("{s}: another pull is downloading this file", .{job.name});
                 return err;
             },
             error.ExistingFileMismatch => {
+                display.fail();
                 diag.set("{s}: a file nuclis never verified is at the destination and differs from the Hub's; move it away or pass --force", .{job.name});
                 return err;
             },
-            else => return hubFailure(err, options.repo, diag),
+            else => {
+                display.fail();
+                return hubFailure(err, options.repo, diag);
+            },
         };
         defer result.deinit();
         const files = switch (result.outcome) {
@@ -804,6 +847,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
             }
         }
     }
+    display.finish(pull_started);
     if (options.register != null and registration.kind == null) if (main_path) |p| if (hf.format(p) == .safetensors) {
         registration.kind = try speechCheckpoint(gpa, io, p, diag);
     };
@@ -826,7 +870,9 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
         };
         registered = .{ .name = name, .config = config_path, .key = key };
     }
-    try renderPull(out, .{ .name = pinned_name orelse options.name, .repo = request.repo_id, .requested_revision = options.revision orelse if (plan) |p| p.revision else "main", .revision = revision, .files = report.items, .registered = registered orelse null }, json, sty);
+    // On one terminal the live lines already showed each file.
+    const shown = display.live() and ui.width != null;
+    try renderPull(arena, out, .{ .name = pinned_name orelse options.name, .repo = request.repo_id, .requested_revision = options.revision orelse if (plan) |p| p.revision else "main", .revision = revision, .files = report.items, .registered = registered orelse null }, json, ui, models, shown);
 }
 
 /// Whether the files pulled hold `name` in the weights' own directory.
@@ -867,13 +913,16 @@ fn speechCheckpoint(gpa: Allocator, io: std.Io, weights: []const u8, diag: *conf
     return .speech;
 }
 
-/// `name = repo @ requested: commit <40 hex>`; the name and the requested
-/// revision are omitted when absent (a catalogue pull pins its commit).
-fn renderHeader(out: *std.Io.Writer, sty: style.Style, name: ?[]const u8, repo: []const u8, requested: ?[]const u8, revision: []const u8) !void {
-    if (name) |n| try out.print("{s}{s}{s} = ", .{ sty.on(.keyword), n, sty.off() });
-    try out.print("{s}{s}{s} @ ", .{ sty.on(.code), repo, sty.off() });
-    if (requested) |r| try out.print("{s}: ", .{r});
-    try out.print("commit {s}{s}{s}\n", .{ sty.on(.comment), revision, sty.off() });
+/// `◆ <name> · <repo> @ <commit>`: the commit's first 12 digits (the
+/// sidecars and `--json` keep all 40), after the requested revision when
+/// one was asked for; the name is omitted when absent.
+fn renderHeader(arena: Allocator, out: *std.Io.Writer, ui: kit.Ui, name: ?[]const u8, repo: []const u8, requested: ?[]const u8, revision: []const u8) !void {
+    const commit = revision[0..@min(12, revision.len)];
+    const context = if (requested) |r|
+        if (std.mem.startsWith(u8, revision, r)) try std.fmt.allocPrint(arena, "{s} @ {s}", .{ repo, commit }) else try std.fmt.allocPrint(arena, "{s} @ {s} ({s})", .{ repo, r, commit })
+    else
+        try std.fmt.allocPrint(arena, "{s} @ {s}", .{ repo, commit });
+    try kit.blocks.header(out, ui, if (name) |n| try kit.text.clean(arena, n) else null, try kit.text.clean(arena, context));
 }
 
 fn choices(arena: Allocator, files: []const hf.RemoteFile) ![]const SelectionReport.Choice {
@@ -882,44 +931,60 @@ fn choices(arena: Allocator, files: []const hf.RemoteFile) ![]const SelectionRep
     return out;
 }
 
-fn renderSelection(out: *std.Io.Writer, report: SelectionReport, json: bool, sty: style.Style) !void {
+fn renderSelection(arena: Allocator, out: *std.Io.Writer, report: SelectionReport, json: bool, ui: kit.Ui) !void {
     if (json) {
         try std.json.Stringify.value(report, .{ .whitespace = .indent_2 }, out);
         return out.writeByte('\n');
     }
-    try out.print("{s}{s}{s} @ commit {s}{s}{s} has {s}{d}{s} model files; choose one with --file <name>:\n", .{ sty.on(.code), report.repo, sty.off(), sty.on(.comment), report.revision, sty.off(), sty.on(.number), report.selection_required.len, sty.off() });
-    for (report.selection_required) |c| try out.print("  {s}{s}{s}\t{s}{d}{s}\n", .{ sty.on(.code), c.name, sty.off(), sty.on(.number), c.size, sty.off() });
+    try renderHeader(arena, out, ui, null, report.repo, null, report.revision);
+    const columns = [_]kit.table.Column{ .{ .title = "FILE" }, .{ .title = "SIZE", .alignment = .right } };
+    const rows = try arena.alloc([]const kit.table.Cell, report.selection_required.len);
+    for (report.selection_required, rows) |c, *row| row.* = try arena.dupe(kit.table.Cell, &.{
+        .{ .text = try kit.text.clean(arena, c.name), .role = .id },
+        .{ .text = try std.fmt.allocPrint(arena, "{f}", .{kit.values.size(c.size)}) },
+    });
+    try kit.table.render(out, ui, arena, 0, &columns, rows);
+    try out.writeByte('\n');
 }
 
-fn renderPull(out: *std.Io.Writer, report: PullReport, json: bool, sty: style.Style) !void {
+/// The pulled files as a table (unless the live lines on the same terminal
+/// already showed them), then the registry entry `--register` wrote.
+/// Paths are shown below the repository's directory in `models`.
+fn renderPull(arena: Allocator, out: *std.Io.Writer, report: PullReport, json: bool, ui: kit.Ui, models: []const u8, shown: bool) !void {
     if (json) {
         try std.json.Stringify.value(report, .{ .whitespace = .indent_2 }, out);
         return out.writeByte('\n');
     }
-    for (report.files) |f| {
-        try out.print("{s}{s}{s} {s}{s}{s}\n  {s}{d}{s} bytes, sha256 {s}{s}{s}, role {s}{s}{s}; provenance beside it in {s}{s}{s}{s}\n", .{
-            sty.on(.success),
-            if (std.mem.eql(u8, f.transport, "verified_local")) "verified" else "downloaded",
-            sty.off(),
-            sty.on(.code),
-            f.path,
-            sty.off(),
-            sty.on(.number),
-            f.size,
-            sty.off(),
-            sty.on(.comment),
-            f.sha256,
-            sty.off(),
-            sty.on(.number),
-            @tagName(f.role),
-            sty.off(),
-            sty.on(.dim),
-            std.fs.path.basename(f.path),
-            sidecar_suffix,
-            sty.off(),
-        });
+    if (!shown and report.files.len > 0) {
+        const columns = [_]kit.table.Column{
+            .{ .title = "FILE" },
+            .{ .title = "ROLE", .drop = 2 },
+            .{ .title = "SIZE", .alignment = .right },
+            .{ .title = "SHA256", .drop = 1 },
+            .{ .title = "STATUS" },
+        };
+        const repo_dir = try std.fs.path.join(arena, &.{ models, report.repo });
+        const rows = try arena.alloc([]const kit.table.Cell, report.files.len);
+        for (report.files, rows) |f, *row| {
+            const path = if (std.mem.startsWith(u8, f.path, repo_dir) and f.path.len > repo_dir.len)
+                f.path[repo_dir.len + 1 ..]
+            else if (std.mem.startsWith(u8, f.path, models) and f.path.len > models.len) f.path[models.len + 1 ..] else f.path;
+            const word = if (std.mem.eql(u8, f.transport, "verified_local")) "verified" else if (f.resumed_bytes > 0) "resumed" else "downloaded";
+            row.* = try arena.dupe(kit.table.Cell, &.{
+                .{ .text = try kit.text.clean(arena, path), .role = .id },
+                .{ .text = @tagName(f.role), .role = .muted },
+                .{ .text = try std.fmt.allocPrint(arena, "{f}", .{kit.values.size(f.size)}) },
+                .{ .text = short(f.sha256), .role = .muted },
+                .{ .text = try kit.blocks.statusText(arena, ui, .ok, word), .role = .ok },
+            });
+        }
+        try kit.table.render(out, ui, arena, 0, &columns, rows);
     }
-    if (report.registered) |r| try out.print("{s}registered{s} as {s}{s}{s} in {s}{s}{s} {s}(`nuclis config set {s} {s}` makes it the default){s}\n", .{ sty.on(.success), sty.off(), sty.on(.keyword), r.name, sty.off(), sty.on(.code), r.config, sty.off(), sty.on(.dim), r.key, r.name, sty.off() });
+    if (report.registered) |r| {
+        try out.writeByte('\n');
+        try kit.blocks.result(out, ui, .ok, try std.fmt.allocPrint(arena, "registered {s}", .{r.name}), try std.fmt.allocPrint(arena, "in {s}", .{try kit.text.clean(arena, r.config)}));
+        try kit.blocks.hint(out, ui, "", try std.fmt.allocPrint(arena, "nuclis config set {s} {s}", .{ r.key, r.name }), " makes it the default");
+    }
 }
 
 fn deleteIfPresent(io: std.Io, path: []const u8) !void {
@@ -969,24 +1034,34 @@ fn hubFailure(err: anyerror, repo: []const u8, diag: *config.Diagnostic) anyerro
     return err;
 }
 
-/// Renders the package's progress on stderr: one line per phase and, on a
-/// terminal, a line rewritten in place at most every 200 ms with the file's
-/// percentage, bytes, throughput since the download started, and the
-/// estimated remaining time. Off a terminal only the phase lines print.
-/// With `--json`, one JSON object per line instead (`Progress`; the format
-/// is in docs/guide/getting-started.md § Model download). Write failures
-/// are ignored: progress is advisory. The interrupt flag is polled here
+/// Renders the package's progress on stderr as live steps, one per file
+/// (docs/app/command-output.md, Progress). On a terminal the running file
+/// is one line redrawn in place at most every 100 ms (spinner, name, and
+/// the latest detail, cut to the width) that becomes its final line when
+/// the file ends: `✓ <file>  16.46 GB in 3m 12s · 85.3 MB/s`. Off a
+/// terminal, one timestamped line when a download starts and one when the
+/// file ends. With `--json`, one JSON object per line instead (`Progress`;
+/// docs/guide/getting-started.md § Model download). Write failures are
+/// ignored: progress is advisory. The interrupt flag is polled here
 /// because this is the one callback the package makes between chunks.
 const Display = struct {
     io: std.Io,
-    started: std.Io.Timestamp,
-    tty: bool,
+    /// stderr's settings: a width means a terminal, where lines redraw.
+    ui: kit.Ui = .plain,
     json: bool = false,
+    /// Local time's offset from UTC, for the plain lines' clock.
+    offset_s: i64 = 0,
+    frame: usize = 0,
     last_line: ?std.Io.Timestamp = null,
     last_phase: ?@FieldType(hf.ProgressEvent, "phase") = null,
+    /// When this file's package call started, and its download did.
+    started: std.Io.Timestamp,
     download_started: ?std.Io.Timestamp = null,
     download_base: u64 = 0,
+    /// A running line is drawn and not ended.
     open_line: bool = false,
+    /// This file's final line is out (a verified reuse ends before `.complete`).
+    ended: bool = false,
     /// The pull's files, set by `pullOne` before each package call: this
     /// one's Hub name, index, and size, and the bytes of the files before it.
     file: []const u8 = "",
@@ -1044,8 +1119,12 @@ const Display = struct {
         return .{ .event = name, .file = d.file, .index = d.index, .count = d.count, .done = done, .size = d.file_size, .pull_done = d.done + done, .pull_size = d.total };
     }
 
+    fn live(d: *const Display) bool {
+        return d.ui.width != null;
+    }
+
     fn render(d: *Display, event: hf.ProgressEvent) !void {
-        var buffer: [512]u8 = undefined;
+        var buffer: [1024]u8 = undefined;
         // Streaming, not positional: a positional writer restarts at offset
         // zero on every call and overwrites a redirected log.
         var stderr = std.Io.File.stderr().writerStreaming(d.io, &buffer);
@@ -1061,65 +1140,127 @@ const Display = struct {
             }
             return;
         }
-        const name = event.filename orelse "";
         const phase_changed = d.last_phase == null or d.last_phase.? != event.phase;
         d.last_phase = event.phase;
+        var detail_buffer: [160]u8 = undefined;
+        var detail: std.Io.Writer = .fixed(&detail_buffer);
+        if (event.file_count > 1) detail.print("part {d} of {d}  ", .{ event.file_index + 1, event.file_count }) catch {};
         switch (event.phase) {
-            // Each package call starts here: the overall clock is per file.
+            // Each package call starts here: the file's clock starts too.
             .resolving => {
                 d.started = now;
-                try w.writeAll("resolving revision and files\n");
+                d.ended = false;
+                d.download_started = null;
+                d.last_line = null;
+                try d.running(w, "resolving");
             },
             // Reused by `update` as the cancel notice: the phase never comes
             // from the package after selection succeeded.
-            .selection_required => {
-                try d.endLine(w);
-                try w.writeAll("interrupted\n");
-            },
+            .selection_required => try d.end(w, .failed, "interrupted"),
             .verifying => if (event.reused) {
-                try d.endLine(w);
-                try w.print("{s}: existing file verified, reused\n", .{name});
+                detail.print("{f} · already here, verified", .{kit.values.size(d.file_size)}) catch {};
+                try d.end(w, .ok, detail.buffered());
             } else if (event.file_completed == 0) {
-                try w.print("{s}: checking for an existing file\n", .{name});
+                try d.running(w, "checking for a kept file");
             } else {
-                try d.endLine(w);
-                try w.print("{s}: verifying the digest and publishing\n", .{name});
+                detail.writeAll("verifying the digest") catch {};
+                if (d.live()) try d.running(w, detail.buffered()) else try d.plain(w, d.ui.glyphs.dot, detail.buffered());
             },
             .downloading => {
                 if (phase_changed or event.file_completed == 0) {
                     d.download_started = now;
                     d.download_base = event.file_completed;
-                    if (event.file_count > 1) try w.print("file {d} of {d}\n", .{ event.file_index + 1, event.file_count });
-                    if (event.resumed_bytes > 0) try w.print("{s}: resuming a kept partial download at {d:.1} of {d:.1} MB\n", .{ name, mb(event.resumed_bytes), mb(event.file_total) });
-                    if (!d.tty) try w.print("{s}: downloading {d:.1} MB\n", .{ name, mb(event.file_total - event.resumed_bytes) });
+                    if (!d.live()) {
+                        if (event.resumed_bytes > 0)
+                            detail.print("resuming at {f} of {f}", .{ kit.values.size(event.resumed_bytes), kit.values.size(event.file_total) }) catch {}
+                        else
+                            detail.print("downloading {f}", .{kit.values.size(event.file_total)}) catch {};
+                        return d.plain(w, d.ui.glyphs.step, detail.buffered());
+                    }
                 }
-                if (!d.tty) return;
-                if (d.last_line) |last| if (event.file_completed < event.file_total and last.durationTo(now).toMilliseconds() < 200) return;
+                if (!d.live()) return;
+                if (d.last_line) |last| if (event.file_completed < event.file_total and last.durationTo(now).toMilliseconds() < 100) return;
                 d.last_line = now;
-                const elapsed_ms = d.download_started.?.durationTo(now).toMilliseconds();
+                const seconds = secondsBetween(d.download_started.?, now);
                 const moved = event.file_completed - d.download_base;
-                const rate_bps = if (elapsed_ms > 0) @as(f64, @floatFromInt(moved)) * 1000 / @as(f64, @floatFromInt(elapsed_ms)) else 0;
-                const remaining = event.file_total - event.file_completed;
-                const eta_s: u64 = if (rate_bps > 0) @intFromFloat(@as(f64, @floatFromInt(remaining)) / rate_bps) else 0;
+                const rate = if (seconds > 0) @as(f64, @floatFromInt(moved)) / seconds else 0;
                 const percent = if (event.file_total == 0) 0 else 100 * event.file_completed / event.file_total;
-                try w.print("\r{s}: {d:>3}% {d:.1}/{d:.1} MB {d:.1} MB/s eta {d}s   ", .{ name, percent, mb(event.file_completed), mb(event.file_total), rate_bps / 1e6, eta_s });
-                d.open_line = true;
+                detail.print("{d}%  {f} / {f}", .{ percent, kit.values.size(event.file_completed), kit.values.size(event.file_total) }) catch {};
+                if (rate > 0) detail.print("  {d:.1} MB/s  {f} left", .{ rate / 1e6, kit.values.duration(@as(f64, @floatFromInt(event.file_total - event.file_completed)) / rate) }) catch {};
+                try d.running(w, detail.buffered());
             },
             .complete => {
-                try d.endLine(w);
-                const total_ms = d.started.durationTo(now).toMilliseconds();
-                try w.print("done: {d:.1} MB in {d:.1} s ({d:.1} MB/s overall, verified reuse included)\n", .{ mb(event.completed_bytes), @as(f64, @floatFromInt(total_ms)) / 1000, if (total_ms > 0) mb(event.completed_bytes) * 1000 / @as(f64, @floatFromInt(total_ms)) else 0 });
+                const seconds = secondsBetween(d.started, now);
+                detail.print("{f} in {f}", .{ kit.values.size(event.completed_bytes), kit.values.duration(seconds) }) catch {};
+                if (d.download_started != null and seconds > 0)
+                    detail.print(" · {d:.1} MB/s", .{@as(f64, @floatFromInt(event.completed_bytes)) / seconds / 1e6}) catch {};
+                try d.end(w, .ok, detail.buffered());
             },
         }
     }
 
-    fn endLine(d: *Display, w: *std.Io.Writer) !void {
-        if (d.open_line) try w.writeAll("\n");
-        d.open_line = false;
+    /// Ends this file's step as failed when nothing else ended it, so an
+    /// error printed next starts on a line of its own.
+    fn fail(d: *Display) void {
+        if (d.json or d.ended or d.last_phase == null) return;
+        var buffer: [256]u8 = undefined;
+        var stderr = std.Io.File.stderr().writerStreaming(d.io, &buffer);
+        d.end(&stderr.interface, .failed, "failed") catch {};
+        stderr.interface.flush() catch {};
     }
 
-    fn mb(bytes: u64) f64 {
-        return @as(f64, @floatFromInt(bytes)) / 1e6;
+    /// The running line, redrawn in place: spinner, file, detail, never
+    /// wider than the terminal. Off a terminal, nothing.
+    fn running(d: *Display, w: *std.Io.Writer, detail: []const u8) !void {
+        const cols = d.ui.width orelse return;
+        const g = d.ui.glyphs;
+        const glyph = g.spinner[d.frame % g.spinner.len];
+        d.frame +%= 1;
+        try w.print("\r\x1b[K{s}{s}{s} ", .{ d.ui.on(.id), glyph, d.ui.off(.id) });
+        // The last column stays empty: writing it would wrap the line.
+        var room = cols -| (kit.text.width(glyph) + 2);
+        const name_cells = @min(kit.text.width(d.file), room);
+        try kit.text.writeFit(w, d.file, name_cells, .left, g.ellipsis, false);
+        room -= name_cells;
+        if (detail.len > 0 and room > 6) {
+            try w.print("  {s}", .{d.ui.on(.muted)});
+            try kit.text.writeFit(w, detail, room - 2, .left, g.ellipsis, false);
+            try w.writeAll(d.ui.off(.muted));
+        }
+        d.open_line = true;
+    }
+
+    /// This file's final line, once.
+    fn end(d: *Display, w: *std.Io.Writer, s: kit.style.Status, detail: []const u8) !void {
+        if (d.ended) return;
+        d.ended = true;
+        if (!d.live()) return d.plain(w, s.glyph(d.ui.glyphs), detail);
+        if (d.open_line) try w.writeAll("\r\x1b[K");
+        d.open_line = false;
+        try kit.blocks.result(w, d.ui, s, d.file, detail);
+    }
+
+    /// `14:32:01 ▸ <file>  <detail>`: a plain progress line.
+    fn plain(d: *Display, w: *std.Io.Writer, glyph: []const u8, detail: []const u8) !void {
+        const epoch = std.Io.Timestamp.now(d.io, .real).toSeconds();
+        try w.print("{f} {s} {s}", .{ kit.values.clock(epoch, d.offset_s), glyph, d.file });
+        if (detail.len > 0) try w.print("  {s}", .{detail});
+        try w.writeByte('\n');
+    }
+
+    /// After a pull of several files: their count, size, and time.
+    fn finish(d: *Display, started: std.Io.Timestamp) void {
+        if (d.json or d.count < 2) return;
+        var buffer: [256]u8 = undefined;
+        var stderr = std.Io.File.stderr().writerStreaming(d.io, &buffer);
+        const w = &stderr.interface;
+        const seconds = secondsBetween(started, .now(d.io, .awake));
+        w.print("{s}{f}, {f} in {f}{s}\n", .{ d.ui.on(.muted), kit.values.count(d.count, "file"), kit.values.size(d.total), kit.values.duration(seconds), d.ui.off(.muted) }) catch {};
+        w.flush() catch {};
+    }
+
+    fn secondsBetween(a: std.Io.Timestamp, b: std.Io.Timestamp) f64 {
+        return @as(f64, @floatFromInt(@max(a.durationTo(b).nanoseconds, 0))) / std.time.ns_per_s;
     }
 };
 
@@ -1259,160 +1400,236 @@ pub const Listing = struct {
         return null;
     }
 
-    pub fn render(self: Listing, out: *std.Io.Writer, options: LsOptions, json: bool, sty: style.Style) !void {
+    pub fn render(self: Listing, arena: Allocator, out: *std.Io.Writer, options: LsOptions, json: bool, ui: kit.Ui) !void {
         if (json) {
             try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
             return out.writeByte('\n');
         }
-        if (options.available) return self.renderIndex(out, options, sty);
-        const off = sty.off();
-        var total: [16]u8 = undefined;
-        try out.print("{s}models{s}  {s}{s}{s}  {s}{s}{s}\n", .{ sty.on(.label), off, sty.on(.code), self.models_dir, off, sty.on(.number), humanSize(&total, self.total_bytes), off });
-        if (self.installed.len == 0) try out.print("\n{s}nothing installed{s} {s}(`nuclis model ls --available` lists the index; `nuclis model pull <name>` fetches one){s}\n", .{ sty.on(.bold), off, sty.on(.dim), off });
-        const name_w = nameWidth(self.installed);
-        var quant_w: usize = 0;
-        for (self.installed) |i| quant_w = @max(quant_w, i.quantization.len);
-        var group: ?[]const u8 = null;
-        for (self.installed) |i| {
-            const heading = if (i.kind) |k| catalog.groupName(k) else "other";
-            if (group == null or !std.mem.eql(u8, group.?, heading)) {
-                try out.print("\n{s}{s}{s}\n", .{ sty.on(.header), heading, off });
-                group = heading;
-            }
-            try out.writeAll("  ");
-            var short: [max_name_cells]u8 = undefined;
-            try column(out, sty.on(.keyword), shorten(&short, i.name), off, name_w);
-            try column(out, sty.on(.dim), i.quantization, off, quant_w);
-            var size: [16]u8 = undefined;
-            try out.print("{s}{s:>9}{s}", .{ sty.on(.number), humanSize(&size, i.size), off });
-            var companions: [128]u8 = undefined;
-            const tags = companionTags(&companions, i.files);
-            if (tags.len > 0) try out.print("  {s}{s}{s}", .{ sty.on(.dim), tags, off });
-            if (i.artifact == null) try out.print("  {s}not in the index{s}", .{ sty.on(.dim), off });
-            if (i.artifact == null and !i.runnable) try out.print("  {s}not runnable{s}", .{ sty.on(.warning), off });
-            if (i.legacy) try out.print("  {s}legacy{s}", .{ sty.on(.dim), off });
-            if (i.registered) |r| if (!std.mem.eql(u8, r.name, i.name)) try out.print("  {s}registered as{s} {s}{s}{s}", .{ sty.on(.dim), off, sty.on(.keyword), r.name, off });
-            if (i.default) try out.print("  {s}default{s}", .{ sty.on(.success), off });
-            try out.writeByte('\n');
-            for (i.warnings) |w| try out.print("    {s}{s}{s}\n", .{ sty.on(.warning), w, off });
-            if (!options.long) continue;
-            for (i.files) |f| {
-                try out.writeAll("    ");
-                var role: [48]u8 = undefined;
-                const label = if (f.variant) |v| std.fmt.bufPrint(&role, "{s}:{s}", .{ @tagName(f.role), v }) catch @tagName(f.role) else @tagName(f.role);
-                try column(out, sty.on(.number), label, off, 14);
-                try out.print("{s}commit {s}{s}  {s}sha256 {s}{s}  {s}{s}{s}", .{ sty.on(.comment), if (f.revision) |r| r[0..12] else "-           ", off, sty.on(.comment), if (f.sha256) |h| h[0..12] else "-           ", off, sty.on(.code), f.path, off });
-                if (f.status != .present) try out.print("  {s}{s}{s}", .{ sty.on(statusStyle(f.status)), @tagName(f.status), off });
-                try out.writeByte('\n');
-            }
-            if (i.defaults) |d| try renderDefaults(out, d, sty);
+        if (options.available) return self.renderIndex(arena, out, options, ui);
+        const g = ui.glyphs;
+        try kit.blocks.header(out, ui, null, try std.fmt.allocPrint(arena, "{s} {s} {f} {s} {f}", .{ self.models_dir, g.dot, kit.values.count(self.installed.len, "model"), g.dot, kit.values.size(self.total_bytes) }));
+        if (self.installed.len == 0) {
+            try kit.blocks.result(out, ui, .not_checked, "nothing installed", "");
+            try kit.blocks.hint(out, ui, "the catalogue: ", "nuclis model ls --available", "");
+            return;
         }
+        if (options.long) {
+            for (self.installed, 0..) |i, n| {
+                if (n > 0) try out.writeByte('\n');
+                try renderInstalledLong(arena, out, i, ui);
+            }
+        } else {
+            const columns = [_]kit.table.Column{
+                .{ .title = "NAME", .truncate = false },
+                .{ .title = "KIND", .drop = 3 },
+                .{ .title = "QUANT", .drop = 4 },
+                .{ .title = "SIZE", .alignment = .right, .truncate = false },
+                .{ .title = "COMPANIONS", .drop = 2 },
+                .{ .title = "STATUS", .truncate = false },
+                .{ .title = "NOTE", .drop = 1 },
+            };
+            const rows = try arena.alloc([]const kit.table.Cell, self.installed.len);
+            for (self.installed, rows) |i, *row| {
+                const st = installedStatus(i);
+                row.* = try arena.dupe(kit.table.Cell, &.{
+                    .{ .text = try kit.text.clean(arena, i.name), .role = .id },
+                    .{ .text = if (i.kind) |k| catalog.groupName(k) else "other" },
+                    .{ .text = try kit.text.clean(arena, i.quantization), .role = .muted },
+                    .{ .text = try std.fmt.allocPrint(arena, "{f}", .{kit.values.size(i.size)}) },
+                    .{ .text = try companionList(arena, i.files), .role = .muted },
+                    .{ .text = try kit.blocks.statusText(arena, ui, st.status, st.word), .role = st.status.role() },
+                    .{ .text = try installedNote(arena, i), .role = if (i.default) .emphasis else .muted },
+                });
+            }
+            try kit.table.render(out, ui, arena, 0, &columns, rows);
+        }
+        var notes = false;
+        for (self.installed) |i| for (i.warnings) |w| {
+            if (!notes) try out.writeByte('\n');
+            notes = true;
+            try kit.blocks.result(out, ui, .warning, try kit.text.clean(arena, i.name), try kit.text.clean(arena, w));
+        };
         if (self.missing.len > 0) {
-            try out.print("\n{s}registry entries without a file{s} {s}(`nuclis config sync --prune` removes them){s}\n", .{ sty.on(.header), off, sty.on(.dim), off });
-            var width: usize = 0;
-            for (self.missing) |m| width = @max(width, m.name.len);
-            for (self.missing) |m| {
-                try out.writeAll("  ");
-                try column(out, sty.on(.keyword), m.name, off, width);
-                try out.print("{s}{s}{s}\n", .{ sty.on(.code), m.path, off });
-            }
+            try out.print("\n{s}Registry entries without a file{s}\n", .{ ui.on(.title), ui.off(.title) });
+            const rows = try arena.alloc([]const kit.table.Cell, self.missing.len);
+            for (self.missing, rows) |m, *row| row.* = try arena.dupe(kit.table.Cell, &.{ .{ .text = try kit.text.clean(arena, m.name), .role = .id }, .{ .text = try kit.text.clean(arena, m.path), .role = .muted } });
+            try kit.table.render(out, ui, arena, 2, &.{ .{ .title = "NAME", .truncate = false }, .{ .title = "PATH" } }, rows);
+            try kit.blocks.hint(out, ui, "", "nuclis config sync --prune", " removes them");
         }
-        try out.writeByte('\n');
-        if (self.without_sidecar.len > 0) try out.print("{s}{d} file{s} without a sidecar:{s} {s}nuclis model adopt <path>{s}\n", .{ sty.on(.warning), self.without_sidecar.len, if (self.without_sidecar.len == 1) "" else "s", off, sty.on(.code), off });
-        if (self.available > 0) try out.print("{s}{d} more in the index:{s} {s}nuclis model ls --available{s}\n", .{ sty.on(.dim), self.available, off, sty.on(.code), off });
-        if (self.outside_layout > 0) try out.print("{s}{d} model file(s) outside the <owner>/<repo>/ layout are not listed{s}\n", .{ sty.on(.warning), self.outside_layout, off });
+        if (self.without_sidecar.len > 0 or self.available > 0 or self.outside_layout > 0) try out.writeByte('\n');
+        if (self.without_sidecar.len > 0) {
+            try kit.blocks.result(out, ui, .warning, try std.fmt.allocPrint(arena, "{f} without a sidecar", .{kit.values.count(self.without_sidecar.len, "file")}), "");
+            try kit.blocks.hint(out, ui, "", "nuclis model adopt <path>", " verifies one and writes it");
+        }
+        if (self.outside_layout > 0) try kit.blocks.result(out, ui, .warning, try std.fmt.allocPrint(arena, "{f} outside the <owner>/<repo>/ layout, not listed", .{kit.values.count(self.outside_layout, "model file")}), "");
+        if (self.available > 0) try kit.blocks.hint(out, ui, try std.fmt.allocPrint(arena, "{d} more in the catalogue: ", .{self.available}), "nuclis model ls --available", "");
     }
 
-    fn renderIndex(self: Listing, out: *std.Io.Writer, options: LsOptions, sty: style.Style) !void {
-        const off = sty.off();
-        try out.print("{s}index{s} {s}(what nuclis pulls and verifies by name; `nuclis model pull <name> [--all]`){s}\n", .{ sty.on(.label), off, sty.on(.dim), off });
-        var name_w: usize = 0;
-        var quant_w: usize = 0;
-        for (self.index) |a| {
-            name_w = @max(name_w, a.name.len);
-            quant_w = @max(quant_w, a.quantization.len);
-        }
-        var group: ?catalog.ModelKind = null;
-        for (self.index) |a| {
-            if (group != a.kind) {
-                try out.print("\n{s}{s}{s}\n", .{ sty.on(.header), catalog.groupName(a.kind), off });
-                group = a.kind;
+    fn renderIndex(self: Listing, arena: Allocator, out: *std.Io.Writer, options: LsOptions, ui: kit.Ui) !void {
+        try kit.blocks.header(out, ui, null, try std.fmt.allocPrint(arena, "the catalogue {s} {f}, pinned and verified by name", .{ ui.glyphs.dot, kit.values.countIrregular(self.index.len, "entry", "entries") }));
+        if (options.long) {
+            for (self.index, 0..) |a, n| {
+                if (n > 0) try out.writeByte('\n');
+                try renderAvailableLong(arena, out, a, ui);
             }
-            try out.writeAll("  ");
-            try column(out, sty.on(.keyword), a.name, off, name_w);
-            try column(out, sty.on(.dim), a.quantization, off, quant_w);
-            var size: [16]u8 = undefined;
-            try out.print("{s}{s:>9}{s}  ", .{ sty.on(.number), humanSize(&size, a.size), off });
-            if (a.installed) try out.print("{s}installed{s}", .{ sty.on(.success), off }) else try out.print("{s}not pulled{s}", .{ sty.on(.dim), off });
-            if (a.status == .legacy) try out.print("  {s}legacy{s}", .{ sty.on(.dim), off });
-            try out.writeByte('\n');
-            if (!options.long) continue;
-            for (a.files) |f| {
-                try out.writeAll("    ");
-                var role: [48]u8 = undefined;
-                const label = if (f.variant) |v| std.fmt.bufPrint(&role, "{s}:{s}", .{ @tagName(f.role), v }) catch @tagName(f.role) else @tagName(f.role);
-                try column(out, sty.on(.number), label, off, 14);
-                var fsize: [16]u8 = undefined;
-                try out.print("{s}{s:>9}{s}  {s}commit {s}  sha256 {s}{s}  {s}{s}{s}", .{ sty.on(.number), humanSize(&fsize, f.size), off, sty.on(.comment), f.revision[0..12], f.sha256[0..12], off, sty.on(.code), f.local, off });
-                if (f.used_for.len > 0) try out.print("  {s}for {s}{s}", .{ sty.on(.dim), f.used_for, off });
-                try out.writeByte('\n');
+        } else {
+            var legacy_shown = false;
+            for (self.index) |a| legacy_shown = legacy_shown or a.status == .legacy;
+            const columns = [_]kit.table.Column{
+                .{ .title = "NAME", .truncate = false },
+                .{ .title = "KIND", .drop = 2 },
+                .{ .title = "QUANT", .drop = 3 },
+                .{ .title = "SIZE", .alignment = .right, .truncate = false },
+                .{ .title = "STATUS", .truncate = false },
+                .{ .title = "LIFECYCLE", .drop = 1 },
+            };
+            const rows = try arena.alloc([]const kit.table.Cell, self.index.len);
+            for (self.index, rows) |a, *row| {
+                const st: kit.style.Status = if (a.installed) .ok else .not_checked;
+                row.* = try arena.dupe(kit.table.Cell, &.{
+                    .{ .text = a.name, .role = .id },
+                    .{ .text = catalog.groupName(a.kind) },
+                    .{ .text = a.quantization, .role = .muted },
+                    .{ .text = try std.fmt.allocPrint(arena, "{f}", .{kit.values.size(a.size)}) },
+                    .{ .text = try kit.blocks.statusText(arena, ui, st, if (a.installed) "installed" else "not pulled"), .role = st.role() },
+                    .{ .text = @tagName(a.status), .role = .muted },
+                });
             }
-            if (a.defaults) |d| try renderDefaults(out, d, sty);
+            try kit.table.render(out, ui, arena, 0, columns[0..if (legacy_shown) columns.len else columns.len - 1], rows);
         }
         if (!options.all) {
             var legacy: usize = 0;
             for (&catalog.artifacts) |a| legacy += @intFromBool(a.status == .legacy);
-            if (legacy > 0) try out.print("\n{s}{d} legacy artifact(s) hidden:{s} {s}nuclis model ls --available --all{s}\n", .{ sty.on(.dim), legacy, off, sty.on(.code), off });
+            if (legacy > 0) {
+                try out.writeByte('\n');
+                try kit.blocks.hint(out, ui, try std.fmt.allocPrint(arena, "{f} hidden: ", .{kit.values.countIrregular(legacy, "legacy entry", "legacy entries")}), "nuclis model ls --available --all", "");
+            }
         }
+        try kit.blocks.hint(out, ui, "", "nuclis model pull <name> --all", " fetches one with its companions");
     }
 };
 
-/// The longest name `model ls` prints whole; a longer one keeps its two
-/// ends around an ellipsis.
-const max_name_cells = 40;
-
-fn nameWidth(installed: []const Installed) usize {
-    var width: usize = 0;
-    for (installed) |i| width = @max(width, @min(i.name.len, max_name_cells));
-    return width;
+/// How an installed model reads in the STATUS column: the worst of its
+/// files' states, or whether anything runs it.
+fn installedStatus(i: Installed) struct { status: kit.style.Status, word: []const u8 } {
+    var unverified = false;
+    for (i.files) |f| switch (f.status) {
+        .mismatch => return .{ .status = .failed, .word = "mismatch" },
+        .unverified => unverified = true,
+        .present, .absent => {},
+    };
+    if (i.artifact == null and !i.runnable) return .{ .status = .warning, .word = "not runnable" };
+    if (unverified) return .{ .status = .warning, .word = "unverified" };
+    return .{ .status = .ok, .word = "verified" };
 }
 
-/// `text` shortened in the middle to `max_name_cells` bytes.
-fn shorten(buffer: *[max_name_cells]u8, text: []const u8) []const u8 {
-    if (text.len <= max_name_cells) return text;
-    const head = (max_name_cells - 3) / 2;
-    const tail = max_name_cells - 3 - head;
-    @memcpy(buffer[0..head], text[0..head]);
-    @memcpy(buffer[head..][0..3], "...");
-    @memcpy(buffer[head + 3 ..][0..tail], text[text.len - tail ..]);
-    return buffer;
+/// The NOTE column: the default, its registry name, legacy, outside the index.
+fn installedNote(arena: Allocator, i: Installed) ![]const u8 {
+    var parts: std.ArrayList([]const u8) = .empty;
+    if (i.default) try parts.append(arena, "default");
+    if (i.registered) |r| if (!std.mem.eql(u8, r.name, i.name)) try parts.append(arena, try std.fmt.allocPrint(arena, "registered as {s}", .{try kit.text.clean(arena, r.name)}));
+    if (i.legacy) try parts.append(arena, "legacy");
+    if (i.artifact == null) try parts.append(arena, "not in the catalogue");
+    return std.mem.join(arena, ", ", parts.items);
 }
 
-/// `+mmproj +draft:mtp,dflash2 +codec` from the files besides the main one.
-fn companionTags(buffer: []u8, files: []const InstalledFile) []const u8 {
-    var w: std.Io.Writer = .fixed(buffer);
+/// `mmproj, draft dflash2 mtp, codec`: the companions beside the main file.
+fn companionList(arena: Allocator, files: []const InstalledFile) ![]const u8 {
+    var parts: std.ArrayList([]const u8) = .empty;
     const order = [_]Role{ .mmproj, .draft, .codec, .backbone, .imatrix };
     for (order) |role| {
-        var first = true;
+        var variants: std.ArrayList([]const u8) = .empty;
+        var any = false;
         for (files) |f| if (f.role == role) {
-            if (first) {
-                if (w.end > 0) w.writeByte(' ') catch break;
-                w.print("+{s}", .{@tagName(role)}) catch break;
-            }
-            if (f.variant) |v| w.print("{s}{s}", .{ if (first) ":" else ",", v }) catch break;
-            first = false;
+            any = true;
+            if (f.variant) |v| try variants.append(arena, v);
         };
+        if (!any) continue;
+        try parts.append(arena, if (variants.items.len == 0) @tagName(role) else try std.fmt.allocPrint(arena, "{s} {s}", .{ @tagName(role), try std.mem.join(arena, " ", variants.items) }));
     }
-    return w.buffered();
+    return std.mem.join(arena, ", ", parts.items);
 }
 
-fn renderDefaults(out: *std.Io.Writer, d: RunDefaults, sty: style.Style) !void {
-    try out.print("    {s}runs with: speculative {s}", .{ sty.on(.dim), if (d.speculative) "on" else "off" });
-    if (d.draft) |v| try out.print(" (draft {s}, length {d})", .{ v, d.draft_length }) else if (d.speculative) try out.print(" (length {d})", .{d.draft_length});
-    if (d.think) |t| try out.print(", think {s}", .{@tagName(t)});
-    if (d.thinking_budget) |b| try out.print(", thinking budget {d}", .{b});
-    if (d.profile) |p| try out.print(", profile {s}", .{@tagName(p)});
-    try out.print("{s}\n", .{sty.off()});
+/// A role and its variant as one label: `draft dflash2`.
+fn roleLabel(arena: Allocator, role: Role, variant: ?[]const u8) ![]const u8 {
+    return if (variant) |v| std.fmt.allocPrint(arena, "{s} {s}", .{ @tagName(role), v }) else @tagName(role);
+}
+
+fn short(hex: ?[]const u8) []const u8 {
+    const h = hex orelse return "--";
+    return h[0..@min(12, h.len)];
+}
+
+/// `model ls -l`: one model's line, its files as a table, and its defaults.
+fn renderInstalledLong(arena: Allocator, out: *std.Io.Writer, i: Installed, ui: kit.Ui) !void {
+    const st = installedStatus(i);
+    try out.print("{s}{s}{s}", .{ ui.on(.title), try kit.text.clean(arena, i.name), ui.off(.title) });
+    try out.print(" {s}{s} {s} {s} {s} {f}{s}  ", .{ ui.on(.muted), if (i.kind) |k| catalog.groupName(k) else "other", ui.glyphs.dot, try kit.text.clean(arena, i.quantization), ui.glyphs.dot, kit.values.size(i.size), ui.off(.muted) });
+    try kit.blocks.status(out, ui, st.status, st.word);
+    const note = try installedNote(arena, i);
+    if (note.len > 0) try out.print("  {s}{s}{s}", .{ ui.on(if (i.default) .emphasis else .muted), note, ui.off(if (i.default) .emphasis else .muted) });
+    try out.writeByte('\n');
+    const rows = try arena.alloc([]const kit.table.Cell, i.files.len);
+    for (i.files, rows) |f, *row| {
+        const fs: kit.style.Status = switch (f.status) {
+            .present => .ok,
+            .mismatch => .failed,
+            .unverified => .warning,
+            .absent => .not_checked,
+        };
+        row.* = try arena.dupe(kit.table.Cell, &.{
+            .{ .text = try roleLabel(arena, f.role, f.variant) },
+            .{ .text = try std.fmt.allocPrint(arena, "{f}", .{kit.values.size(f.size)}) },
+            .{ .text = short(f.revision), .role = .muted },
+            .{ .text = short(f.sha256), .role = .muted },
+            .{ .text = try kit.blocks.statusText(arena, ui, fs, if (f.status == .present) "verified" else @tagName(f.status)), .role = fs.role() },
+            .{ .text = try kit.text.clean(arena, f.path), .role = .muted },
+        });
+    }
+    try kit.table.render(out, ui, arena, 2, &.{
+        .{ .title = "ROLE", .truncate = false },
+        .{ .title = "SIZE", .alignment = .right, .truncate = false },
+        .{ .title = "COMMIT", .drop = 2 },
+        .{ .title = "SHA256", .drop = 3 },
+        .{ .title = "STATUS", .truncate = false },
+        .{ .title = "PATH", .drop = 1 },
+    }, rows);
+    if (i.defaults) |d| try renderDefaults(arena, out, d, ui);
+}
+
+/// `model ls --available -l`: one catalogue entry and the files it pins.
+fn renderAvailableLong(arena: Allocator, out: *std.Io.Writer, a: Available, ui: kit.Ui) !void {
+    try out.print("{s}{s}{s} {s}{s} {s} {s} {s} {f} {s} {s}@{s}{s}  ", .{ ui.on(.title), a.name, ui.off(.title), ui.on(.muted), catalog.groupName(a.kind), ui.glyphs.dot, a.quantization, ui.glyphs.dot, kit.values.size(a.size), ui.glyphs.dot, a.repo, a.revision[0..12], ui.off(.muted) });
+    try kit.blocks.status(out, ui, if (a.installed) .ok else .not_checked, if (a.installed) "installed" else "not pulled");
+    if (a.status == .legacy) try out.print("  {s}legacy{s}", .{ ui.on(.muted), ui.off(.muted) });
+    try out.writeByte('\n');
+    const rows = try arena.alloc([]const kit.table.Cell, a.files.len);
+    for (a.files, rows) |f, *row| row.* = try arena.dupe(kit.table.Cell, &.{
+        .{ .text = try roleLabel(arena, f.role, f.variant) },
+        .{ .text = try std.fmt.allocPrint(arena, "{f}", .{kit.values.size(f.size)}) },
+        .{ .text = f.sha256[0..12], .role = .muted },
+        .{ .text = if (f.used_for.len > 0) f.used_for else "--", .role = .muted },
+        .{ .text = f.local, .role = .muted },
+    });
+    try kit.table.render(out, ui, arena, 2, &.{
+        .{ .title = "ROLE", .truncate = false },
+        .{ .title = "SIZE", .alignment = .right, .truncate = false },
+        .{ .title = "SHA256", .drop = 3 },
+        .{ .title = "FOR", .drop = 2 },
+        .{ .title = "PATH", .drop = 1 },
+    }, rows);
+    if (a.defaults) |d| try renderDefaults(arena, out, d, ui);
+}
+
+/// `Runs with  speculative on (draft dflash2, length 7), think low, …`
+fn renderDefaults(arena: Allocator, out: *std.Io.Writer, d: RunDefaults, ui: kit.Ui) !void {
+    var w: std.Io.Writer.Allocating = .init(arena);
+    try w.writer.print("speculative {s}", .{if (d.speculative) "on" else "off"});
+    if (d.draft) |v| try w.writer.print(" (draft {s}, length {d})", .{ v, d.draft_length }) else if (d.speculative) try w.writer.print(" (length {d})", .{d.draft_length});
+    if (d.think) |t| try w.writer.print(", think {s}", .{@tagName(t)});
+    if (d.thinking_budget) |b| try w.writer.print(", thinking budget {d}", .{b});
+    if (d.profile) |p| try w.writer.print(", profile {s}", .{@tagName(p)});
+    try out.print("  {s}Runs with{s}  {s}\n", .{ ui.on(.muted), ui.off(.muted), w.written() });
 }
 
 /// The defaults an index artifact runs with.
@@ -1420,38 +1637,6 @@ pub fn runDefaults(a: *const catalog.Artifact) ?RunDefaults {
     if (a.kind != .generation) return null;
     const v = a.verdict();
     return .{ .profile = a.defaults.profile, .speculative = v.speculative, .draft = if (a.draftCount() > 1) a.defaults.draft else null, .draft_length = v.draft_length, .think = a.defaults.think, .thinking_budget = a.defaults.thinking_budget };
-}
-
-/// A size for reading: decimal units, two decimals from a gigabyte up,
-/// one below (`16.46 GB`, `931.1 MB`, `12.0 KB`, `512 B`). The JSON form
-/// and the pull report keep exact bytes.
-pub fn humanSize(buffer: []u8, bytes: u64) []const u8 {
-    const b: f64 = @floatFromInt(bytes);
-    return if (bytes >= 1_000_000_000)
-        std.fmt.bufPrint(buffer, "{d:.2} GB", .{b / 1e9}) catch "?"
-    else if (bytes >= 1_000_000)
-        std.fmt.bufPrint(buffer, "{d:.1} MB", .{b / 1e6}) catch "?"
-    else if (bytes >= 1_000)
-        std.fmt.bufPrint(buffer, "{d:.1} KB", .{b / 1e3}) catch "?"
-    else
-        std.fmt.bufPrint(buffer, "{d} B", .{bytes}) catch "?";
-}
-
-/// One grid cell: styled text padded to `width` (plus one separating
-/// space); a width of 0 pads nothing, for the last cell of a row.
-fn column(out: *std.Io.Writer, on: []const u8, text: []const u8, off: []const u8, width: usize) !void {
-    try out.print("{s}{s}{s}", .{ on, text, off });
-    if (width > 0) try out.splatByteAll(' ', (width -| text.len) + 1);
-}
-
-/// Status words by how good the news is.
-pub fn statusStyle(status: catalog.Status) style.Kind {
-    return switch (status) {
-        .present => .success,
-        .absent => .dim,
-        .mismatch => .error_text,
-        .unverified => .warning,
-    };
 }
 
 /// A companion by its sidecar's role, else by the names the Hub uses
@@ -1754,8 +1939,7 @@ pub fn runnableModels(arena: Allocator, listing: Listing, registry: config.Model
 }
 
 fn installedDetail(arena: Allocator, row: Installed) ![]const u8 {
-    var size: [16]u8 = undefined;
-    return arena.print("{s} · {s} · {s}", .{ row.architecture orelse "?", row.quantization, humanSize(&size, row.size) });
+    return arena.print("{s} · {s} · {f}", .{ row.architecture orelse "?", row.quantization, kit.values.size(row.size) });
 }
 
 fn collect(arena: Allocator, io: std.Io, dir: std.Io.Dir, prefix: []const u8, depth: u8, files: *std.ArrayList(Listed), outside: *usize) !void {
@@ -1790,7 +1974,7 @@ fn collect(arena: Allocator, io: std.Io, dir: std.Io.Dir, prefix: []const u8, de
     }
 }
 
-pub fn ls(gpa: Allocator, io: std.Io, root: []const u8, registry: config.Models, default_model: ?[]const u8, options: LsOptions, json: bool, out: *std.Io.Writer, sty: style.Style) !void {
+pub fn ls(gpa: Allocator, io: std.Io, root: []const u8, registry: config.Models, default_model: ?[]const u8, options: LsOptions, json: bool, out: *std.Io.Writer, ui: kit.Ui) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     var listing = try list(arena_state.allocator(), io, root, registry, default_model);
@@ -1805,7 +1989,7 @@ pub fn ls(gpa: Allocator, io: std.Io, root: []const u8, registry: config.Models,
             return out.writeByte('\n');
         }
     } else listing.index = &.{};
-    try listing.render(out, options, json, sty);
+    try listing.render(arena_state.allocator(), out, options, json, ui);
 }
 
 // ---- adopt -----------------------------------------------------------------
@@ -1824,17 +2008,16 @@ pub const AdoptReport = struct {
     repo: []const u8,
     revision: ?[]const u8,
 
-    pub fn render(self: AdoptReport, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+    pub fn render(self: AdoptReport, arena: Allocator, out: *std.Io.Writer, json: bool, ui: kit.Ui) !void {
         if (json) {
             try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
             return out.writeByte('\n');
         }
-        const off = sty.off();
-        var size: [16]u8 = undefined;
-        try out.print("{s}adopted{s} {s}{s}{s}  {s}{s}{s}  {s}sha256 {s}{s}\n", .{ sty.on(.success), off, sty.on(.code), self.path, off, sty.on(.number), humanSize(&size, self.size), off, sty.on(.comment), self.sha256[0..12], off });
-        if (self.artifact) |a| {
-            try out.print("  {s}the index's {s}{s}{s} file of {s}{s}{s} from {s} at {s}{s}\n", .{ sty.on(.dim), if (self.variant) |v| v else @tagName(self.role), off, sty.on(.keyword), a, off, sty.on(.dim), self.repo, self.revision.?[0..12], off });
-        } else try out.print("  {s}matches no pinned file: the sidecar keeps its local digest so the file stays identity-stable{s}\n", .{ sty.on(.dim), off });
+        try kit.blocks.result(out, ui, .ok, try std.fmt.allocPrint(arena, "adopted {s}", .{try kit.text.clean(arena, self.path)}), try std.fmt.allocPrint(arena, "{f} {s} sha256 {s}", .{ kit.values.size(self.size), ui.glyphs.dot, self.sha256[0..12] }));
+        try kit.blocks.detail(out, ui, &.{.{ .fields = &.{
+            .{ .key = "  Matches", .value = if (self.artifact) |a| try std.fmt.allocPrint(arena, "{s} of {s}, from {s} @ {s}", .{ try roleLabel(arena, self.role, self.variant), a, self.repo, self.revision.?[0..12] }) else "no pinned file: the sidecar keeps the local digest", .role = if (self.artifact != null) .id else .muted },
+            .{ .key = "  Sidecar", .value = try kit.text.clean(arena, self.sidecar), .role = .muted },
+        } }});
     }
 };
 
@@ -1843,7 +2026,7 @@ pub const AdoptReport = struct {
 /// variant, origin, `adopted_at`); with no match, a sidecar with the local
 /// digest and no commit. A file that already has a valid sidecar is
 /// refused unless `force`.
-pub fn adopt(gpa: Allocator, io: std.Io, root: []const u8, path: []const u8, force: bool, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+pub fn adopt(gpa: Allocator, io: std.Io, root: []const u8, path: []const u8, force: bool, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -1900,7 +2083,7 @@ pub fn adopt(gpa: Allocator, io: std.Io, root: []const u8, path: []const u8, for
         .nuclis_version = version,
     } else .{ .repo = repo, .file = relative[repo.len + 1 ..], .revision = null, .sha256 = digest, .size = stat.size, .role = role, .adopted_at = adopted_at, .nuclis_version = version };
     try writeSidecar(arena, io, .cwd(), sidecar_path, sidecar);
-    try (AdoptReport{ .path = relative, .sidecar = sidecar_path, .size = stat.size, .sha256 = digest, .artifact = if (match) |m| m.artifact.name else null, .role = role, .variant = sidecar.variant, .repo = sidecar.repo, .revision = sidecar.revision }).render(out, json, sty);
+    try (AdoptReport{ .path = relative, .sidecar = sidecar_path, .size = stat.size, .sha256 = digest, .artifact = if (match) |m| m.artifact.name else null, .role = role, .variant = sidecar.variant, .repo = sidecar.repo, .revision = sidecar.revision }).render(arena, out, json, ui);
 }
 
 /// The SHA-256 of a whole file as 64 lowercase hex digits.
@@ -1934,19 +2117,32 @@ pub const RmReport = struct {
     kept: []const Kept,
     freed_bytes: u64,
 
-    pub fn render(self: RmReport, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+    pub fn render(self: RmReport, arena: Allocator, out: *std.Io.Writer, json: bool, ui: kit.Ui) !void {
         if (json) {
             try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
             return out.writeByte('\n');
         }
-        const off = sty.off();
-        for (self.removed) |r| {
-            var size: [16]u8 = undefined;
-            try out.print("{s}removed{s} {s}{s}{s}  {s}{s}{s}\n", .{ sty.on(.success), off, sty.on(.code), self.relative(r.path), off, sty.on(.number), humanSize(&size, r.bytes), off });
-        }
-        for (self.kept) |k| try out.print("{s}kept{s}    {s}{s}{s}  {s}used by{s} {s}{s}{s}\n", .{ sty.on(.warning), off, sty.on(.code), self.relative(k.path), off, sty.on(.dim), off, sty.on(.keyword), k.used_by, off });
-        var size: [16]u8 = undefined;
-        try out.print("{s}{s}{s}: {s}{s}{s} freed\n", .{ sty.on(.keyword), self.name, off, sty.on(.number), humanSize(&size, self.freed_bytes), off });
+        try kit.blocks.header(out, ui, try kit.text.clean(arena, self.name), self.models_dir);
+        const rows = try arena.alloc([]const kit.table.Cell, self.removed.len + self.kept.len);
+        for (self.removed, rows[0..self.removed.len]) |r, *row| row.* = try arena.dupe(kit.table.Cell, &.{
+            .{ .text = try kit.text.clean(arena, self.relative(r.path)) },
+            .{ .text = try std.fmt.allocPrint(arena, "{f}", .{kit.values.size(r.bytes)}) },
+            .{ .text = try kit.blocks.statusText(arena, ui, .ok, "removed"), .role = .ok },
+            .{ .text = "" },
+        });
+        for (self.kept, rows[self.removed.len..]) |k, *row| row.* = try arena.dupe(kit.table.Cell, &.{
+            .{ .text = try kit.text.clean(arena, self.relative(k.path)) },
+            .{ .text = "--" },
+            .{ .text = try kit.blocks.statusText(arena, ui, .not_checked, "kept"), .role = .muted },
+            .{ .text = try std.fmt.allocPrint(arena, "used by {s}", .{try kit.text.clean(arena, k.used_by)}), .role = .muted },
+        });
+        try kit.table.render(out, ui, arena, 0, &.{
+            .{ .title = "FILE" },
+            .{ .title = "SIZE", .alignment = .right, .truncate = false },
+            .{ .title = "STATUS", .truncate = false },
+            .{ .title = "NOTE", .drop = 1 },
+        }, rows);
+        try out.print("\n{f} freed\n", .{kit.values.size(self.freed_bytes)});
     }
 
     fn relative(self: RmReport, path: []const u8) []const u8 {
@@ -1971,11 +2167,11 @@ const Selection = struct {
 /// present entry uses, then the directories the removal emptied. The
 /// registry is not edited. A same-named registry entry is the catalogue
 /// entry's twin (`config init` writes one per catalogue model), not a user.
-pub fn rm(gpa: Allocator, io: std.Io, root: []const u8, registry: config.Models, options: PullOptions, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+pub fn rm(gpa: Allocator, io: std.Io, root: []const u8, registry: config.Models, options: PullOptions, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const report = try remove(arena_state.allocator(), io, root, registry, options.repo, .{ .with = options.with, .all = options.all }, diag);
-    try report.render(out, json, sty);
+    try report.render(arena_state.allocator(), out, json, ui);
 }
 
 fn remove(arena: Allocator, io: std.Io, root: []const u8, registry: config.Models, name: []const u8, selection: Selection, diag: *config.Diagnostic) !RmReport {
@@ -2271,7 +2467,7 @@ const Identity = struct {
 /// Hub and needs `--file` when it holds several GGUFs), then parses the
 /// directory from the head of the file and prints what `inspect` prints
 /// for a local file, ending with the verdict.
-pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, options: PullOptions, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, options: PullOptions, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -2290,9 +2486,9 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
     defer remote.deinit();
     // A safetensors checkpoint has no directory to read remotely: the
     // verdict is the index's digests against the Hub's.
-    if (entry) |e| if (hf.format(e.main().path) == .safetensors) return renderInspect(out, try checkpointReport(arena, e, &remote), json, sty);
+    if (entry) |e| if (hf.format(e.main().path) == .safetensors) return renderInspect(arena, out, try checkpointReport(arena, e, &remote), json, ui);
     const selected = (hf.select(arena, &remote, request.filename) catch |err| return hubFailure(err, options.repo, diag)) orelse {
-        try renderSelection(out, .{ .repo = options.repo, .revision = &remote.revision, .selection_required = try choices(arena, remote.files) }, json, sty);
+        try renderSelection(arena, out, .{ .repo = options.repo, .revision = &remote.revision, .selection_required = try choices(arena, remote.files) }, json, ui);
         try out.flush();
         diag.set("{s} has {d} model files; pass --file <name>", .{ options.repo, remote.files.len });
         return error.SelectionRequired;
@@ -2316,7 +2512,7 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
         .size = file.size,
         .sha256 = try arena.dupe(u8, &std.fmt.bytesToHex(file.sha256.?, .lower)),
     }, diag);
-    try renderInspect(out, report, json, sty);
+    try renderInspect(arena, out, report, json, ui);
 }
 
 /// `inspect` of a safetensors checkpoint, from the Hub's listing at the
@@ -2465,30 +2661,33 @@ fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, 
     };
 }
 
-fn renderInspect(out: *std.Io.Writer, report: InspectReport, json: bool, sty: style.Style) !void {
+fn renderInspect(arena: Allocator, out: *std.Io.Writer, report: InspectReport, json: bool, ui: kit.Ui) !void {
     if (json) {
         try std.json.Stringify.value(report, .{ .whitespace = .indent_2 }, out);
         return out.writeByte('\n');
     }
-    try renderHeader(out, sty, report.name, report.repo, if (std.mem.eql(u8, report.requested_revision, report.revision)) null else report.requested_revision, report.revision);
-    try out.print("{s}{s}{s}: {s}{d}{s} bytes, sha256 {s}{s}{s}\n", .{ sty.on(.code), report.file, sty.off(), sty.on(.number), report.size, sty.off(), sty.on(.comment), report.sha256, sty.off() });
-    if (report.directory) |directory| {
-        try directory.renderText(out, sty);
-        try out.writeByte('\n');
-    }
-    const word: []const u8, const kind: style.Kind = switch (report.verdict.status) {
-        .supported => .{ "supported", .success },
-        .runnable => .{ "runnable", .header },
-        .not_runnable => .{ "not runnable", .error_text },
+    try renderHeader(arena, out, ui, report.name, report.repo, if (std.mem.eql(u8, report.requested_revision, report.revision)) null else report.requested_revision, report.revision);
+    const lead = [_]kit.blocks.Field{
+        .{ .key = "File", .value = try kit.text.clean(arena, report.file), .role = .id },
+        .{ .key = "SHA256", .value = report.sha256, .role = .muted },
     };
-    try out.print("{s}Verdict:{s} {s}{s}{s}{s}: {s}\n", .{ sty.on(.bold), sty.off(), sty.on(.bold), sty.on(kind), word, sty.off(), report.verdict.reason });
-    try out.print("{s}Directory read: {d} bytes in {d} request(s); no weights downloaded.{s}\n", .{ sty.on(.dim), report.bytes_read, report.requests, sty.off() });
+    if (report.directory) |directory| try directory.renderText(arena, out, ui, &lead) else try kit.blocks.detail(out, ui, &.{.{ .fields = &(lead ++ [_]kit.blocks.Field{
+        .{ .key = "Size", .value = try std.fmt.allocPrint(arena, "{f}", .{kit.values.size(report.size)}) },
+    }) }});
+    try out.writeByte('\n');
+    const status: kit.style.Status, const word: []const u8 = switch (report.verdict.status) {
+        .supported => .{ .ok, "supported" },
+        .runnable => .{ .ok, "runnable" },
+        .not_runnable => .{ .failed, "not runnable" },
+    };
+    try out.print("{s}{s} {s}{s}  {s}\n", .{ ui.on(status.role()), status.glyph(ui.glyphs), word, ui.off(status.role()), try kit.text.clean(arena, report.verdict.reason) });
+    try out.print("{s}directory read: {f} in {f}; no weights downloaded{s}\n", .{ ui.on(.muted), kit.values.size(report.bytes_read), kit.values.count(report.requests, "request"), ui.off(.muted) });
 }
 
 test "--json progress: a line per phase, downloads at most every 250 ms and at the file's end" {
     const io = std.testing.io;
     const t0: std.Io.Timestamp = .now(io, .awake);
-    var d: Display = .{ .io = io, .started = t0, .tty = false, .json = true, .file = "model.safetensors", .index = 1, .count = 3, .file_size = 100, .done = 40, .total = 200 };
+    var d: Display = .{ .io = io, .started = t0, .json = true, .file = "model.safetensors", .index = 1, .count = 3, .file_size = 100, .done = 40, .total = 200 };
     const resolving = d.progress(.{ .phase = .resolving }, t0).?;
     try std.testing.expectEqualStrings("resolving", resolving.event);
     d.last_phase = .resolving;
@@ -2519,14 +2718,6 @@ test "--json progress: a line per phase, downloads at most every 250 ms and at t
     defer out.deinit();
     try std.json.Stringify.value(reused, .{}, &out.writer);
     try std.testing.expectEqualStrings("{\"event\":\"reused\",\"file\":\"model.safetensors\",\"index\":1,\"count\":3,\"done\":100,\"size\":100,\"pull_done\":140,\"pull_size\":200}", out.written());
-}
-
-test "sizes read in decimal units, exact bytes below a kilobyte" {
-    var buffer: [16]u8 = undefined;
-    try std.testing.expectEqualStrings("16.46 GB", humanSize(&buffer, 16464440224));
-    try std.testing.expectEqualStrings("931.1 MB", humanSize(&buffer, 931146432));
-    try std.testing.expectEqualStrings("12.0 KB", humanSize(&buffer, 12000));
-    try std.testing.expectEqualStrings("512 B", humanSize(&buffer, 512));
 }
 
 test "rfc3339 renders UTC from Unix seconds" {
@@ -2618,30 +2809,48 @@ test "sidecar round trip, absence, and rejection of what nuclis did not write" {
 
 test "selection and pull reports render the same values in both forms" {
     const alloc = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
     const selection: SelectionReport = .{ .repo = "a/b", .revision = "0123456789abcdef0123456789abcdef01234567", .selection_required = &.{ .{ .name = "Q4.gguf", .size = 4 }, .{ .name = "MTP/mtp.gguf", .size = 2 } } };
-    try renderSelection(&out.writer, selection, false, .none);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "choose one with --file") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "  MTP/mtp.gguf\t2\n") != null);
+    try renderSelection(arena, &out.writer, selection, false, .plain);
+    try std.testing.expectEqualStrings(
+        \\◆ a/b @ 0123456789ab
+        \\
+        \\FILE          SIZE
+        \\Q4.gguf        4 B
+        \\MTP/mtp.gguf   2 B
+        \\
+        \\
+    , out.written());
     out.clearRetainingCapacity();
-    try renderSelection(&out.writer, selection, true, .none);
+    try renderSelection(arena, &out.writer, selection, true, .plain);
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqual(@as(usize, 2), parsed.value.object.get("selection_required").?.array.items.len);
     try std.testing.expectEqualStrings(selection.revision, parsed.value.object.get("revision").?.string);
     out.clearRetainingCapacity();
     const pulled: PullReport = .{ .name = null, .repo = "a/b", .requested_revision = "main", .revision = selection.revision, .files = &.{.{ .path = "/m/a/b/Q4.gguf", .size = 4, .sha256 = "ab", .transport = "verified_local", .role = .main, .sidecar = "/m/a/b/Q4.gguf.nuclis.json" }} };
-    try renderPull(&out.writer, pulled, false, .none);
-    try std.testing.expect(std.mem.startsWith(u8, out.written(), "verified /m/a/b/Q4.gguf\n  4 bytes, sha256 ab, role main; provenance beside it in Q4.gguf.nuclis.json\n"));
+    try renderPull(arena, &out.writer, pulled, false, .plain, "/m", false);
+    try std.testing.expectEqualStrings(
+        \\FILE     ROLE  SIZE  SHA256  STATUS
+        \\Q4.gguf  main   4 B  ab      ✓ verified
+        \\
+    , out.written());
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "registered") == null);
     out.clearRetainingCapacity();
     var named = pulled;
     named.registered = .{ .name = "q", .config = "/r/nuclis.json" };
-    try renderPull(&out.writer, named, false, .none);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "registered as q in /r/nuclis.json (`nuclis config set engine.model q` makes it the default)\n") != null);
+    try renderPull(arena, &out.writer, named, false, .plain, "/m", false);
+    try std.testing.expect(std.mem.endsWith(u8, out.written(), "\n✓ registered q  in /r/nuclis.json\n→ nuclis config set engine.model q makes it the default\n"));
+    // The live lines on the same terminal showed the files: only the entry follows.
     out.clearRetainingCapacity();
-    try renderPull(&out.writer, pulled, true, .none);
+    try renderPull(arena, &out.writer, named, false, .plain, "/m", true);
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "\n✓ registered q"));
+    out.clearRetainingCapacity();
+    try renderPull(arena, &out.writer, pulled, true, .plain, "/m", false);
     const parsed_pull = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
     defer parsed_pull.deinit();
     try std.testing.expectEqualStrings("main", parsed_pull.value.object.get("files").?.array.items[0].object.get("role").?.string);
@@ -2684,8 +2893,7 @@ test "a registry entry outside the index shows its GGUF header's family and quan
     const offered = try runnableModels(arena, listing, .{ .entries = &entries });
     try std.testing.expectEqual(@as(usize, 2), offered.len);
     try std.testing.expectEqualStrings("custom", offered[0].name);
-    var size: [16]u8 = undefined;
-    const expected = try arena.print("gemma4 · Q4_0 · {s}", .{humanSize(&size, header.written().len)});
+    const expected = try arena.print("gemma4 · Q4_0 · {f}", .{kit.values.size(header.written().len)});
     try std.testing.expectEqualStrings(expected, offered[0].detail);
     // A header that does not parse leaves the file's name.
     try std.testing.expectEqualStrings("broken", offered[1].name);
@@ -2812,29 +3020,28 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
 
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
-    try listing.render(&out.writer, .{}, false, .none);
+    try listing.render(arena, &out.writer, .{}, false, .plain);
     const text = out.written();
-    try std.testing.expect(std.mem.indexOf(u8, text, "\nchat\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "\nother\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "+draft:mtp,dflash2") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "registered as big  default\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "+draft  not in the index") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "not in the index  not runnable") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "its sidecar records other content than the index pins") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "registry entries without a file") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "  gone unsloth/Gone-GGUF/gone.gguf\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "4 files without a sidecar: nuclis model adopt <path>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "more in the index: nuclis model ls --available") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "2 model file(s) outside") != null);
+    try std.testing.expect(std.mem.startsWith(u8, text, "◆ "));
+    try std.testing.expect(std.mem.indexOf(u8, text, "/models · 4 models · 38 B\n\nNAME          KIND   QUANT        SIZE  COMPANIONS         STATUS          NOTE\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\nqwen3.8-27b   chat   UD-Q4_K_M    12 B  draft mtp dflash2  ✗ mismatch      default, registered as big\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\nrepo          chat   Q4           12 B  draft              ▲ not runnable  not in the catalogue\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\nacme/encoder  other  safetensors  10 B                     ▲ not runnable  not in the catalogue\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "MTP/mtp-Qwen3.8-27B-Q4_0.gguf: its sidecar records other content than the index pins") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\nRegistry entries without a file\n  NAME  PATH\n  gone  unsloth/Gone-GGUF/gone.gguf\n→ nuclis config sync --prune removes them\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\n▲ 4 files without a sidecar\n→ nuclis model adopt <path> verifies one and writes it\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\n▲ 2 model files outside the <owner>/<repo>/ layout, not listed\n") != null);
+    try std.testing.expect(std.mem.endsWith(u8, text, "\n→ 6 more in the catalogue: nuclis model ls --available\n"));
     // No digest without -l; with it, 12 characters of each and the defaults.
     try std.testing.expect(std.mem.indexOf(u8, text, "1bce504dfecd") == null);
     out.clearRetainingCapacity();
-    try listing.render(&out.writer, .{ .long = true }, false, .none);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "commit ce331efc48d5  sha256 1bce504dfecd  unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "draft:dflash2  commit -             sha256 -             unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf  unverified\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "runs with: speculative on (draft dflash2, length 7), think low, thinking budget 2048, profile qwen38\n") != null);
+    try listing.render(arena, &out.writer, .{ .long = true }, false, .plain);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nqwen3.8-27b chat · UD-Q4_K_M · 12 B  ✗ mismatch  default, registered as big\n  ROLE           SIZE  COMMIT        SHA256        STATUS        PATH\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n  main            4 B  ce331efc48d5  1bce504dfecd  ✓ verified    unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n  draft dflash2   4 B  --            --            ▲ unverified  unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n  Runs with  speculative on (draft dflash2, length 7), think low, thinking budget 2048, profile qwen38\n") != null);
     out.clearRetainingCapacity();
-    try listing.render(&out.writer, .{}, true, .none);
+    try listing.render(arena, &out.writer, .{}, true, .plain);
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqual(@as(i64, 7), parsed.value.object.get("schema_version").?.integer);
@@ -2846,17 +3053,18 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
 
     // The index view: current artifacts by kind, installed ones marked, legacy behind --all.
     out.clearRetainingCapacity();
-    try ls(alloc, io, root, .{}, null, .{ .available = true }, false, &out.writer, .none);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "qwen3.8-27b ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "installed\n") != null);
+    try ls(alloc, io, root, .{}, null, .{ .available = true }, false, &out.writer, .plain);
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ the catalogue · 7 entries, pinned and verified by name\n\nNAME   "));
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nqwen3.8-27b                 chat           UD-Q4_K_M   16.56 GB  ✓ installed\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nlaya                        decision       F16         842.6 MB  – not pulled\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "gemma-4-12b-qat") == null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "legacy artifact(s) hidden") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n→ 9 legacy entries hidden: nuclis model ls --available --all\n") != null);
     out.clearRetainingCapacity();
-    try ls(alloc, io, root, .{}, null, .{ .available = true, .all = true, .long = true }, false, &out.writer, .none);
+    try ls(alloc, io, root, .{}, null, .{ .available = true, .all = true, .long = true }, false, &out.writer, .plain);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "gemma-4-12b-qat") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf") != null);
     out.clearRetainingCapacity();
-    try ls(alloc, io, root, .{}, null, .{ .available = true }, true, &out.writer, .none);
+    try ls(alloc, io, root, .{}, null, .{ .available = true }, true, &out.writer, .plain);
     const index = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
     defer index.deinit();
     try std.testing.expectEqual(current, index.value.object.get("artifacts").?.array.items.len);
@@ -3075,17 +3283,17 @@ test "inspect judges the pinned directory supported, runnable, or not, from the 
     // Both renderings carry the verdict.
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
-    try renderInspect(&out.writer, supported, false, .none);
-    try std.testing.expect(std.mem.startsWith(u8, out.written(), "unsloth/Qwen3.8-27B-GGUF @ main: commit ce331efc48d5722b4b8041f72793e530eae18d9b\nQwen3.8-27B-UD-Q4_K_M.gguf: "));
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), " bytes, sha256 1bce504d") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nArchitecture: \"qwen35\"\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nVerdict: supported: index entry qwen3.8-27b") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "no weights downloaded") != null);
+    try renderInspect(arena, &out.writer, supported, false, .plain);
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ unsloth/Qwen3.8-27B-GGUF @ main (ce331efc48d5)\n\nFile          Qwen3.8-27B-UD-Q4_K_M.gguf\nSHA256        1bce504d"));
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nArchitecture  qwen35\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nQ4_K          104   4.20 GB\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n✓ supported  index entry qwen3.8-27b") != null);
+    try std.testing.expect(std.mem.endsWith(u8, out.written(), "\ndirectory read: 2.0 MB in 8 requests; no weights downloaded\n"));
     out.clearRetainingCapacity();
-    try renderInspect(&out.writer, stored, false, .none);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nVerdict: not runnable: tensor token_embd.weight uses encoding Q4_0 (id 2)") != null);
+    try renderInspect(arena, &out.writer, stored, false, .plain);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n✗ not runnable  tensor token_embd.weight uses encoding Q4_0 (id 2)") != null);
     out.clearRetainingCapacity();
-    try renderInspect(&out.writer, unknown, true, .none);
+    try renderInspect(arena, &out.writer, unknown, true, .plain);
     const parsed = try std.json.parseFromSlice(std.json.Value, gpa, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("not_runnable", parsed.value.object.get("verdict").?.object.get("status").?.string);
@@ -3244,11 +3452,12 @@ test "rm by registry name: its file and named companions, never outside the mode
     // Both forms come from the same report.
     var text: std.Io.Writer.Allocating = .init(alloc);
     defer text.deinit();
-    try report.render(&text.writer, false, .none);
-    try std.testing.expect(std.mem.indexOf(u8, text.written(), "removed acme/thing/x.gguf") != null);
+    try report.render(arena, &text.writer, false, .plain);
+    try std.testing.expect(std.mem.indexOf(u8, text.written(), "\nacme/thing/x.gguf                    10 B  ✓ removed\n") != null);
+    try std.testing.expect(std.mem.endsWith(u8, text.written(), try std.fmt.allocPrint(arena, "\n\n{f} freed\n", .{kit.values.size(report.freed_bytes)})));
     var json: std.Io.Writer.Allocating = .init(alloc);
     defer json.deinit();
-    try report.render(&json.writer, true, .none);
+    try report.render(arena, &json.writer, true, .plain);
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, json.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqual(@as(i64, @intCast(report.freed_bytes)), parsed.value.object.get("freed_bytes").?.integer);
@@ -3270,7 +3479,7 @@ test "adopt writes a sidecar for a file placed by hand, once, and only under the
     defer out.deinit();
     try plant(arena, io, tmp.dir, "models/acme/encoder/model.safetensors", "acme/encoder", null);
     // A file the index does not pin keeps its local digest and no commit.
-    try adopt(alloc, io, root, "acme/encoder/model.safetensors", false, true, &out.writer, .none, &diag);
+    try adopt(alloc, io, root, "acme/encoder/model.safetensors", false, true, &out.writer, .plain, &diag);
     const report = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
     defer report.deinit();
     try std.testing.expect(report.value.object.get("artifact").? == .null);
@@ -3283,19 +3492,19 @@ test "adopt writes a sidecar for a file placed by hand, once, and only under the
     // The listing no longer counts it as unverified.
     try std.testing.expectEqual(@as(usize, 0), (try list(arena, io, root, .{}, null)).without_sidecar.len);
     // Once only, unless forced.
-    try std.testing.expectError(error.AlreadyAdopted, adopt(alloc, io, root, "acme/encoder/model.safetensors", false, true, &out.writer, .none, &diag));
-    try adopt(alloc, io, root, "acme/encoder/model.safetensors", true, true, &out.writer, .none, &diag);
+    try std.testing.expectError(error.AlreadyAdopted, adopt(alloc, io, root, "acme/encoder/model.safetensors", false, true, &out.writer, .plain, &diag));
+    try adopt(alloc, io, root, "acme/encoder/model.safetensors", true, true, &out.writer, .plain, &diag);
     // Nothing outside the models directory or its layout, nothing that is not a model file.
-    try std.testing.expectError(error.OutsideModelsDirectory, adopt(alloc, io, root, "../nuclis.json", false, true, &out.writer, .none, &diag));
+    try std.testing.expectError(error.OutsideModelsDirectory, adopt(alloc, io, root, "../nuclis.json", false, true, &out.writer, .plain, &diag));
     try plant(arena, io, tmp.dir, "models/loose.gguf", "", null);
-    try std.testing.expectError(error.OutsideModelsDirectory, adopt(alloc, io, root, "loose.gguf", false, true, &out.writer, .none, &diag));
+    try std.testing.expectError(error.OutsideModelsDirectory, adopt(alloc, io, root, "loose.gguf", false, true, &out.writer, .plain, &diag));
     try plant(arena, io, tmp.dir, "models/acme/encoder/notes.txt", "acme/encoder", null);
-    try std.testing.expectError(error.NotAModelFile, adopt(alloc, io, root, "acme/encoder/notes.txt", false, true, &out.writer, .none, &diag));
+    try std.testing.expectError(error.NotAModelFile, adopt(alloc, io, root, "acme/encoder/notes.txt", false, true, &out.writer, .plain, &diag));
     // A GGUF the index does not pin must parse before anything is written.
     try plant(arena, io, tmp.dir, "models/acme/encoder/broken.gguf", "acme/encoder", null);
-    try std.testing.expectError(error.NotAModelFile, adopt(alloc, io, root, "acme/encoder/broken.gguf", false, true, &out.writer, .none, &diag));
+    try std.testing.expectError(error.NotAModelFile, adopt(alloc, io, root, "acme/encoder/broken.gguf", false, true, &out.writer, .plain, &diag));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "models/acme/encoder/broken.gguf.nuclis.json", .{}));
-    try std.testing.expectError(error.FileNotFound, adopt(alloc, io, root, "acme/encoder/absent.gguf", false, true, &out.writer, .none, &diag));
+    try std.testing.expectError(error.FileNotFound, adopt(alloc, io, root, "acme/encoder/absent.gguf", false, true, &out.writer, .plain, &diag));
 }
 
 test "pull --catalogue takes every current entry with its defaults, and counts what is here" {
@@ -3330,10 +3539,10 @@ test "pull --catalogue takes every current entry with its defaults, and counts w
     const after = try catalogueSelection(arena, io, models);
     try std.testing.expectEqual(files[0].size, after[0].present);
     var out: std.Io.Writer.Allocating = .init(arena);
-    try renderCataloguePlan(&out.writer, after, .none);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "the catalogue: 7 entries, 15 files") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "main mmproj dflash2") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "partly here") != null);
+    try renderCataloguePlan(arena, &out.writer, after, .plain);
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ the catalogue · 7 entries, 15 files, 42.98 GB · "));
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nqwen3.8-27b                 main mmproj dflash2   19.55 GB  ○ partly here\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nlaya                        main                  842.6 MB  – to fetch\n") != null);
 }
 
 test "a pull takes each role's default draft, a named variant, or every one, grouped by origin" {
