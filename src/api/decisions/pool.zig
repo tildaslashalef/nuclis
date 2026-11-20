@@ -13,11 +13,18 @@ const Decider = inference.decide.Decider;
 
 pub const capacity = 2;
 
-/// What a decision model holds open: the files of its checkpoint directory
-/// (not its subdirectories) and the backbone and projector it names.
+/// What a decision model holds open: clef's GGUF and projector, or the
+/// files of Laya's checkpoint directory (not its subdirectories).
 pub fn footprint(io: std.Io, location: inference.decide.Location) u64 {
     var total: u64 = 0;
-    if (std.Io.Dir.cwd().openDir(io, location.directory, .{ .iterate = true })) |opened| {
+    if (inference.decide.Family.of(location.path) == .clef) {
+        for ([_]?[]const u8{ location.path, location.mmproj }) |file| if (file) |path| {
+            const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch continue;
+            total += stat.size;
+        };
+        return total;
+    }
+    if (std.Io.Dir.cwd().openDir(io, location.path, .{ .iterate = true })) |opened| {
         var dir = opened;
         defer dir.close(io);
         var it = dir.iterate();
@@ -27,10 +34,6 @@ pub fn footprint(io: std.Io, location: inference.decide.Location) u64 {
             total += stat.size;
         }
     } else |_| {}
-    for ([_]?[]const u8{ location.backbone, location.mmproj }) |file| if (file) |path| {
-        const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch continue;
-        total += stat.size;
-    };
     return total;
 }
 
@@ -46,11 +49,11 @@ pub const Pool = struct {
     /// request refused as `Pinned` is retried every generation step.
     measured: ?Measured = null,
 
-    const Measured = struct { directory: []u8, bytes: u64 };
+    const Measured = struct { path: []u8, bytes: u64 };
 
     const Slot = struct {
-        /// Owned.
-        directory: []u8,
+        /// The location's path; owned.
+        path: []u8,
         /// The name the opening request used; owned.
         name: []u8,
         decider: Decider,
@@ -75,26 +78,26 @@ pub const Pool = struct {
 
     /// `footprint(location)`, from `measured` when it is the same directory.
     fn footprintOf(self: *Pool, io: std.Io, location: inference.decide.Location) u64 {
-        if (self.measured) |m| if (std.mem.eql(u8, m.directory, location.directory)) return m.bytes;
+        if (self.measured) |m| if (std.mem.eql(u8, m.path, location.path)) return m.bytes;
         const bytes = footprint(io, location);
         self.forget();
-        if (self.gpa.dupe(u8, location.directory)) |owned| {
-            self.measured = .{ .directory = owned, .bytes = bytes };
+        if (self.gpa.dupe(u8, location.path)) |owned| {
+            self.measured = .{ .path = owned, .bytes = bytes };
         } else |_| {}
         return bytes;
     }
 
     fn forget(self: *Pool) void {
-        if (self.measured) |m| self.gpa.free(m.directory);
+        if (self.measured) |m| self.gpa.free(m.path);
         self.measured = null;
     }
 
     /// GPU worker only: the decider for `directory`, opened (closing the
     /// least recently used when full) if it is not open.
     pub fn acquire(self: *Pool, io: std.Io, location: inference.decide.Location, name: []const u8) !Acquired {
-        const directory = location.directory;
+        const directory = location.path;
         self.tick += 1;
-        for (&self.slots) |*slot| if (slot.*) |*s| if (std.mem.eql(u8, s.directory, directory)) {
+        for (&self.slots) |*slot| if (slot.*) |*s| if (std.mem.eql(u8, s.path, directory)) {
             s.used = self.tick;
             self.touch(io, directory);
             return .{ .decider = &s.decider, .load_ns = 0 };
@@ -108,7 +111,7 @@ pub const Pool = struct {
         // failed open keeps it); the room it will leave counts already.
         const index = self.victim();
         if (self.budget) |b| {
-            const leaving: ?[]const u8 = if (self.slots[index]) |s| s.directory else null;
+            const leaving: ?[]const u8 = if (self.slots[index]) |s| s.path else null;
             const freed = if (leaving) |key| b.bytesOf(io, key) else 0;
             try b.reserve(io, bytes -| freed, leaving);
         }
@@ -122,7 +125,7 @@ pub const Pool = struct {
         self.forget();
         if (self.budget) |b| try b.add(io, .decision, directory, name, bytes, .{ .context = self, .close = closeKey });
         self.mutex.lockUncancelable(io);
-        self.slots[index] = .{ .directory = owned_directory, .name = owned_name, .decider = decider, .used = self.tick };
+        self.slots[index] = .{ .path = owned_directory, .name = owned_name, .decider = decider, .used = self.tick };
         self.mutex.unlock(io);
         const load_ns: u64 = @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())); // checked: clamped non-negative; one load, below 584 years
         return .{ .decider = &self.slots[index].?.decider, .load_ns = load_ns }; // checked: assigned two lines above
@@ -136,16 +139,16 @@ pub const Pool = struct {
         self.mutex.unlock(io);
         var s = slot orelse return;
         self.forget();
-        if (self.budget) |b| b.remove(io, s.directory);
+        if (self.budget) |b| b.remove(io, s.path);
         s.decider.deinit(io);
-        self.gpa.free(s.directory);
+        self.gpa.free(s.path);
         self.gpa.free(s.name);
     }
 
     /// The budget's closer: the model open from directory `key`.
     fn closeKey(context: *anyopaque, io: std.Io, key: []const u8) void {
         const self: *Pool = @ptrCast(@alignCast(context));
-        for (self.slots, 0..) |slot, i| if (slot) |s| if (std.mem.eql(u8, s.directory, key)) return self.closeSlot(io, i);
+        for (self.slots, 0..) |slot, i| if (slot) |s| if (std.mem.eql(u8, s.path, key)) return self.closeSlot(io, i);
     }
 
     /// An empty slot, else the least recently used.
@@ -167,7 +170,7 @@ pub const Pool = struct {
     pub fn isOpen(self: *Pool, io: std.Io, directory: []const u8) bool {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
-        for (self.slots) |slot| if (slot) |s| if (std.mem.eql(u8, s.directory, directory)) return true;
+        for (self.slots) |slot| if (slot) |s| if (std.mem.eql(u8, s.path, directory)) return true;
         return false;
     }
 
@@ -200,16 +203,16 @@ test "the pool opens once, keeps two, and closes the least recently used" {
 
     var pool: Pool = .init(gpa, .cpu);
     defer pool.deinit(io);
-    try std.testing.expect((try pool.acquire(io, .{ .directory = paths[0] }, "a")).load_ns > 0);
-    try std.testing.expectEqual(@as(u64, 0), (try pool.acquire(io, .{ .directory = paths[0] }, "a")).load_ns);
-    _ = try pool.acquire(io, .{ .directory = paths[1] }, "b");
-    _ = try pool.acquire(io, .{ .directory = paths[0] }, "a");
-    _ = try pool.acquire(io, .{ .directory = paths[2] }, "c");
+    try std.testing.expect((try pool.acquire(io, .{ .path = paths[0] }, "a")).load_ns > 0);
+    try std.testing.expectEqual(@as(u64, 0), (try pool.acquire(io, .{ .path = paths[0] }, "a")).load_ns);
+    _ = try pool.acquire(io, .{ .path = paths[1] }, "b");
+    _ = try pool.acquire(io, .{ .path = paths[0] }, "a");
+    _ = try pool.acquire(io, .{ .path = paths[2] }, "c");
     try std.testing.expect(pool.isOpen(io, paths[0]) and !pool.isOpen(io, paths[1]) and pool.isOpen(io, paths[2]));
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     try std.testing.expectEqual(@as(usize, 2), (try pool.openNames(io, arena_state.allocator())).len);
-    try std.testing.expectError(error.FileNotFound, pool.acquire(io, .{ .directory = root }, "root"));
+    try std.testing.expectError(error.FileNotFound, pool.acquire(io, .{ .path = root }, "root"));
     try std.testing.expect(pool.isOpen(io, paths[0]) and pool.isOpen(io, paths[2]));
 }
 
@@ -230,7 +233,7 @@ test "the budget closes a model to make room and refuses while a pinned one hold
     defer gpa.free(a);
     const b = try std.fs.path.join(gpa, &.{ root, "b" });
     defer gpa.free(b);
-    const size = footprint(io, .{ .directory = a });
+    const size = footprint(io, .{ .path = a });
     try std.testing.expect(size > 0);
 
     // Room for one model and a half: the second open closes the first.
@@ -239,8 +242,8 @@ test "the budget closes a model to make room and refuses while a pinned one hold
     var pool: Pool = .init(gpa, .cpu);
     pool.budget = &budget;
     defer pool.deinit(io);
-    _ = try pool.acquire(io, .{ .directory = a }, "a");
-    _ = try pool.acquire(io, .{ .directory = b }, "b");
+    _ = try pool.acquire(io, .{ .path = a }, "a");
+    _ = try pool.acquire(io, .{ .path = b }, "b");
     try std.testing.expect(!pool.isOpen(io, a) and pool.isOpen(io, b));
     try std.testing.expectEqual(size, budget.resident(io));
 
@@ -251,7 +254,7 @@ test "the budget closes a model to make room and refuses while a pinned one hold
     var unused: u8 = 0;
     try budget.add(io, .language, "gen", "gen", size / 2 + 1, .{ .context = &unused, .close = Nothing.close });
     budget.pin(io, "gen", true);
-    try std.testing.expectError(error.Pinned, pool.acquire(io, .{ .directory = a }, "a"));
+    try std.testing.expectError(error.Pinned, pool.acquire(io, .{ .path = a }, "a"));
     try std.testing.expect(pool.isOpen(io, b));
     budget.remove(io, "gen");
 }

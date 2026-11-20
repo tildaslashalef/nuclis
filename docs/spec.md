@@ -91,7 +91,7 @@ one pulls, verifies, and runs by name, with no gates. The index:
 | `muse-glimmer-30b` | generation | UD-Q4_K_XL | 15.88 GB | legacy |
 | `laya` | decision | F16 | 842.6 MB | current |
 | `laya-multilingual` | decision | F16 | 643.8 MB | legacy |
-| `clef-flash` | decision | Q6_K | 243.5 MB | current |
+| `clef-flash` | decision | Q4_K_M | 6.73 GB | current |
 | `embeddinggemma-2` | embedding | Q8_0 | 309.9 MB | current |
 | `qwen3-tts-1.7b-customvoice` | speech | BF16 | 3.83 GB | current |
 | `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | legacy |
@@ -248,8 +248,8 @@ clef-flash, the qwen35 backbone and Qwen3-VL projector with a joint head
   Laya's tokenizer the reference library's two shapes.
 - Laya **must** match the reference's F32 run within 1e-5 relative per
   stored stage and logits within 1e-4 of max(1, |logit|) on the CPU and on
-  Metal; clef-flash's head within 1e-4, the whole model within 1e-3 on
-  Metal and 2e-3 on the CPU.
+  Metal; clef-flash's head within 5e-3 of the reference's logits, the whole
+  model within 1e-3 of its pinned logits (CPU 2e-3), 2e-2 in probability.
 - Host limits: 64 states, 32 questions, 255 options, 1 MiB per state, 8
   images of 16 MiB; calls batched together **must** each get the answers
   they get alone.
@@ -328,7 +328,8 @@ nuclis bench --prompt-tokens <json> [flags]
 nuclis tokenize --prompt <text> [flags]
 nuclis tokenize --prompt-file <path> [flags]
 nuclis eval --file <path> [flags]
-nuclis inspect [--model <name|path>] [--tensor <name>] [--json]
+nuclis inspect [--model <name|path>] [--metadata] [--tensors]
+[--tensor <name>] [--json]
 nuclis validate [--model <name|path>] [--json]
 nuclis model ls [-l] [--available [--all]] [--json]
 nuclis model pull <name> [--with mmproj,draft[=<v>] | --all [--variants]]
@@ -336,8 +337,10 @@ nuclis model pull <name> [--with mmproj,draft[=<v>] | --all [--variants]]
 nuclis model pull --catalogue [--force] [--json]
 nuclis model pull <owner/repo> [--file <name>] [--revision <rev>] [--role <r>]
 [--register <name> [--profile <p>]] [--force] [--json]
-nuclis model inspect <name> [--json]
-nuclis model inspect <owner/repo> --file <name> [--revision <rev>] [--json]
+nuclis model inspect <name> [--metadata] [--tensors] [--tensor <name>]
+[--json]
+nuclis model inspect <owner/repo> --file <name> [--revision <rev>]
+[--metadata] [--tensors] [--tensor <name>] [--json]
 nuclis model adopt <path> [--force] [--json]
 nuclis model rm <name> [--with mmproj,draft | --all] [--json]
 nuclis cache [ls] [--json]

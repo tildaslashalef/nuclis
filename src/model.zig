@@ -49,7 +49,6 @@ pub const Role = enum {
     imatrix,
     support,
     codec,
-    backbone,
 
     /// A sidecar written before draft variants says `mtp` for a draft.
     pub fn jsonParse(alloc: Allocator, source: anytype, options: std.json.ParseOptions) !Role {
@@ -843,7 +842,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
                 },
                 .mmproj => registration.mmproj = job.name,
                 .draft => registration.draft = job.name,
-                .imatrix, .support, .codec, .backbone => {},
+                .imatrix, .support, .codec => {},
             }
         }
     }
@@ -1536,7 +1535,7 @@ fn installedNote(arena: Allocator, i: Installed) ![]const u8 {
 /// `mmproj, draft dflash2 mtp, codec`: the companions beside the main file.
 fn companionList(arena: Allocator, files: []const InstalledFile) ![]const u8 {
     var parts: std.ArrayList([]const u8) = .empty;
-    const order = [_]Role{ .mmproj, .draft, .codec, .backbone, .imatrix };
+    const order = [_]Role{ .mmproj, .draft, .codec, .imatrix };
     for (order) |role| {
         var variants: std.ArrayList([]const u8) = .empty;
         var any = false;
@@ -1643,7 +1642,7 @@ pub fn runDefaults(a: *const catalog.Artifact) ?RunDefaults {
 /// (`mmproj-*.gguf`, `mtp-*.gguf`, `dflash*.gguf`, `*imatrix*`); null for
 /// a main file.
 pub fn companionRole(f: Listed) ?Role {
-    if (f.sidecar) |s| if (s.role != .main and s.role != .backbone) return s.role;
+    if (f.sidecar) |s| if (s.role != .main) return s.role;
     return companionRoleOfName(std.fs.path.basename(f.path));
 }
 
@@ -1790,7 +1789,7 @@ pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Mod
         var main_present = false;
         var size: u64 = 0;
         for (a.files) |*f| {
-            const local = try std.fs.path.join(arena, &.{ a.directoryOf(f), f.path });
+            const local = try std.fs.path.join(arena, &.{ a.repo, f.path });
             var status: catalog.Status = .absent;
             for (files.items, claimed) |listed, *taken| if (std.mem.eql(u8, listed.path, local)) {
                 taken.* = true;
@@ -2322,8 +2321,8 @@ fn catalogueFiles(arena: Allocator, io: std.Io, models: []const u8, name: []cons
     for (a.files) |*f| {
         if (!catalog.pulledWith(f.role) and !selection.takes(f.role)) continue;
         const first = files.items.len;
-        try addFile(arena, &files, models, &.{ a.directoryOf(f), f.path });
-        for (f.support) |support| try addFile(arena, &files, models, &.{ a.directoryOf(f), support });
+        try addFile(arena, &files, models, &.{ a.repo, f.path });
+        for (f.support) |support| try addFile(arena, &files, models, &.{ a.repo, support });
         if (f.support.len > 0 or hf.format(f.path) == .safetensors) try discoverSupport(arena, io, models, files.items[first], a.origin(f), &files);
     }
     return files.items;
@@ -2370,7 +2369,7 @@ fn discoverSupport(arena: Allocator, io: std.Io, models: []const u8, weights: []
     // The index's checkpoint directories, which may nest in this one.
     var foreign: std.ArrayList([]const u8) = .empty;
     for (&catalog.artifacts) |*a| for (a.files) |*f| if (hf.format(f.path) == .safetensors) {
-        try addFile(arena, &foreign, models, &.{ a.directoryOf(f), std.fs.path.dirnamePosix(f.path) orelse "" });
+        try addFile(arena, &foreign, models, &.{ a.repo, std.fs.path.dirnamePosix(f.path) orelse "" });
     };
     try walkSupport(arena, io, dir, path, 0, repo, foreign.items, files);
 }
@@ -2448,6 +2447,8 @@ pub const InspectReport = struct {
     requests: usize,
     /// Null when the directory itself was rejected (the verdict says why).
     directory: ?inspection.Snapshot,
+    /// `--tensor <name>`: that tensor and its first values.
+    tensor: ?inspection.TensorPeek = null,
     verdict: Verdict,
 };
 
@@ -2467,7 +2468,7 @@ const Identity = struct {
 /// Hub and needs `--file` when it holds several GGUFs), then parses the
 /// directory from the head of the file and prints what `inspect` prints
 /// for a local file, ending with the verdict.
-pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, options: PullOptions, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
+pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, options: PullOptions, detail: inspection.Detail, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -2486,7 +2487,13 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
     defer remote.deinit();
     // A safetensors checkpoint has no directory to read remotely: the
     // verdict is the index's digests against the Hub's.
-    if (entry) |e| if (hf.format(e.main().path) == .safetensors) return renderInspect(arena, out, try checkpointReport(arena, e, &remote), json, ui);
+    if (entry) |e| if (hf.format(e.main().path) == .safetensors) {
+        if (detail.metadata or detail.tensors or detail.tensor != null) {
+            diag.set("{s}: --metadata, --tensors, and --tensor read GGUF directories; pull the checkpoint and `nuclis inspect --model` it", .{e.name});
+            return error.UnsupportedFormat;
+        }
+        return renderInspect(arena, out, try checkpointReport(arena, e, &remote), json, ui);
+    };
     const selected = (hf.select(arena, &remote, request.filename) catch |err| return hubFailure(err, options.repo, diag)) orelse {
         try renderSelection(arena, out, .{ .repo = options.repo, .revision = &remote.revision, .selection_required = try choices(arena, remote.files) }, json, ui);
         try out.flush();
@@ -2511,7 +2518,7 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
         .revision = revision,
         .size = file.size,
         .sha256 = try arena.dupe(u8, &std.fmt.bytesToHex(file.sha256.?, .lower)),
-    }, diag);
+    }, detail, diag);
     try renderInspect(arena, out, report, json, ui);
 }
 
@@ -2557,7 +2564,7 @@ const HubRange = struct {
 /// by `gpa` (possibly fewer than `count`, never none); production wraps
 /// `readRange`, the tests a byte slice. Every string of the report lives
 /// in `arena`.
-fn inspectDirectory(arena: Allocator, gpa: Allocator, reader: anytype, id: Identity, diag: *config.Diagnostic) !InspectReport {
+fn inspectDirectory(arena: Allocator, gpa: Allocator, reader: anytype, id: Identity, detail: inspection.Detail, diag: *config.Diagnostic) !InspectReport {
     var head: std.ArrayList(u8) = .empty;
     defer head.deinit(gpa);
     var requests: usize = 0;
@@ -2601,7 +2608,33 @@ fn inspectDirectory(arena: Allocator, gpa: Allocator, reader: anytype, id: Ident
     var snapshot = try inspection.snapshot(doc, try arena.print("{s}/{s}", .{ id.repo, id.file }), try arena.alloc(inspection.EncodingCount, 32));
     if (snapshot.architecture) |a| snapshot.architecture = try arena.dupe(u8, a);
     if (snapshot.name) |n| snapshot.name = try arena.dupe(u8, n);
-    return finish(id, head.items.len, requests, snapshot, try judge(arena, gpa, &doc, id));
+    if (detail.metadata) snapshot.metadata = try inspection.metadataRows(arena, doc);
+    if (detail.tensors) snapshot.tensors = try inspection.tensorRows(arena, doc);
+    var report = finish(id, head.items.len, requests, snapshot, try judge(arena, gpa, &doc, id));
+    if (detail.tensor) |name| {
+        const tensor = inspection.findTensor(doc, name) orelse {
+            diag.set("{s}: no tensor named {s} (names match in full; --tensors lists them)", .{ id.file, name });
+            return error.TensorNotFound;
+        };
+        // The first row only, read past the directory in range requests.
+        const start = try std.math.add(u64, doc.data_offset, tensor.offset);
+        const count: usize = @intCast(inspection.firstRowBytes(tensor));
+        if (start > id.size or count > id.size - start) return error.UnexpectedEndOfFile;
+        const row = try arena.alloc(u8, count);
+        var filled: usize = 0;
+        while (filled < count) {
+            const chunk = try reader.read(start + filled, @min(count - filled, hf.max_range_bytes));
+            defer gpa.free(chunk);
+            if (chunk.len == 0) return error.UnexpectedEndOfFile;
+            const n = @min(chunk.len, count - filled);
+            @memcpy(row[filled..][0..n], chunk[0..n]);
+            filled += n;
+            requests += 1;
+        }
+        report.requests = requests;
+        report.tensor = try inspection.ggufPeek(arena, doc, tensor, row);
+    }
+    return report;
 }
 
 fn finish(id: Identity, bytes_read: u64, requests: usize, directory: ?inspection.Snapshot, verdict: Verdict) InspectReport {
@@ -2621,6 +2654,12 @@ fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, 
     const pinned = catalog.findFile(id.repo, id.file);
     const in_catalog = pinned != null and std.mem.eql(u8, pinned.?.file.sha256, id.sha256);
     const architecture = doc.string("general.architecture") orelse "";
+    // A decision, embedding, or speech model's GGUF has no text adapter;
+    // its own command opens it, and the pinned digest is the check.
+    if (in_catalog and pinned.?.file.role == .main and pinned.?.artifact.kind != .generation) {
+        const a = pinned.?.artifact;
+        return .{ .status = .supported, .catalog = a.name, .role = .main, .reason = try arena.print("index entry {s}, run by `{s}` (architecture \"{s}\"); the Hub's digest at this commit equals the pinned one", .{ a.name, catalog.command(a.kind), architecture }) };
+    }
     const adapter = inference.models.adapterFor(architecture) orelse {
         if (in_catalog and pinned.?.file.role != .main) return .{
             .status = .not_runnable,
@@ -2674,6 +2713,10 @@ fn renderInspect(arena: Allocator, out: *std.Io.Writer, report: InspectReport, j
     if (report.directory) |directory| try directory.renderText(arena, out, ui, &lead) else try kit.blocks.detail(out, ui, &.{.{ .fields = &(lead ++ [_]kit.blocks.Field{
         .{ .key = "Size", .value = try std.fmt.allocPrint(arena, "{f}", .{kit.values.size(report.size)}) },
     }) }});
+    if (report.tensor) |peek| {
+        try out.writeByte('\n');
+        try peek.render(arena, out, false, ui);
+    }
     try out.writeByte('\n');
     const status: kit.style.Status, const word: []const u8 = switch (report.verdict.status) {
         .supported => .{ .ok, "supported" },
@@ -2681,7 +2724,9 @@ fn renderInspect(arena: Allocator, out: *std.Io.Writer, report: InspectReport, j
         .not_runnable => .{ .failed, "not runnable" },
     };
     try out.print("{s}{s} {s}{s}  {s}\n", .{ ui.on(status.role()), status.glyph(ui.glyphs), word, ui.off(status.role()), try kit.text.clean(arena, report.verdict.reason) });
-    try out.print("{s}directory read: {f} in {f}; no weights downloaded{s}\n", .{ ui.on(.muted), kit.values.size(report.bytes_read), kit.values.count(report.requests, "request"), ui.off(.muted) });
+    const read = if (report.tensor != null) "directory and one tensor row read" else "directory read";
+    const weights = if (report.tensor != null) "" else "; no weights downloaded";
+    try out.print("{s}{s}: {f} in {f}{s}{s}\n", .{ ui.on(.muted), read, kit.values.size(report.bytes_read), kit.values.count(report.requests, "request"), weights, ui.off(.muted) });
 }
 
 test "--json progress: a line per phase, downloads at most every 250 ms and at the file's end" {
@@ -3162,7 +3207,7 @@ fn inspectFixture(arena: Allocator, gpa: Allocator, mutation: Mutation, sha256: 
         // The weights would follow the aligned directory.
         .size = std.mem.alignForward(u64, directory.len, 32) + inventory.file_bytes,
         .sha256 = sha256,
-    }, &diag);
+    }, .{}, &diag);
 }
 
 test "--register knows a speech checkpoint from its config.json and refuses another" {
@@ -3540,9 +3585,9 @@ test "pull --catalogue takes every current entry with its defaults, and counts w
     try std.testing.expectEqual(files[0].size, after[0].present);
     var out: std.Io.Writer.Allocating = .init(arena);
     try renderCataloguePlan(arena, &out.writer, after, .plain);
-    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ the catalogue · 7 entries, 15 files, 42.98 GB · "));
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nqwen3.8-27b                 main mmproj dflash2   19.55 GB  ○ partly here\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nlaya                        main                  842.6 MB  – to fetch\n") != null);
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ the catalogue · 7 entries, 14 files, 41.68 GB · "));
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nqwen3.8-27b                 main mmproj dflash2  19.55 GB  ○ partly here\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nlaya                        main                 842.6 MB  – to fetch\n") != null);
 }
 
 test "a pull takes each role's default draft, a named variant, or every one, grouped by origin" {

@@ -165,6 +165,10 @@ keeping competing sources of truth.
   state cannot be reset or rewound by truncating an attention KV cache.
 - Validate GGUF metadata, dimensions, offsets, and actual tensor encodings.
   Reject unsupported combinations explicitly; never requantize silently.
+- Read a model file's header with `nuclis model inspect` (an index name,
+  or `<owner/repo> --file <name>` before downloading), never a hand-written
+  parser or `strings`. When it does not show what you need, extend
+  `inspect` in the same unit rather than scripting around it.
 - Numerical correctness precedes optimization. Measure prefill and decode
   separately, against nuclis's own previous record on the same machine and
   method.

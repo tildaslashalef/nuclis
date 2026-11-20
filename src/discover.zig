@@ -442,9 +442,10 @@ test "a file takes the verdict of the index artifact its layer count matches" {
     try testing.expectEqualStrings("gemma-4-12b-qat", familyOf("gemma4", 7).?.name);
     try testing.expectEqualStrings("gemma-4-12b-qat", familyOf("gemma4", null).?.name);
     try testing.expectEqualStrings("qwen3.8-27b", familyOf("qwen35", 64).?.name);
-    try testing.expect(familyOf("llama", 32) == null);
-    // clef's backbone shares Qwen's architecture but is not a chat artifact.
     try testing.expectEqualStrings("qwen3.8-27b", familyOf("qwen35", null).?.name);
+    try testing.expect(familyOf("llama", 32) == null);
+    // A decision model's GGUF is not a chat artifact.
+    try testing.expect(familyOf("clef", null) == null);
 }
 
 test "a companion is named relative to its main file's directory" {
@@ -524,7 +525,7 @@ test "a plan registers installed chat artifacts and judges the rest" {
     // An index chat model, a legacy one, a decision model, and a file outside the index that does not parse.
     for ([_][]const u8{ "qwen3.8-27b", "gemma-4-12b-qat", "laya" }) |name| {
         const a = catalog.find(name).?;
-        const local = try std.fs.path.join(arena, &.{ "models", a.directoryOf(a.main()), a.main().path });
+        const local = try std.fs.path.join(arena, &.{ "models", a.repo, a.main().path });
         try tmp.dir.createDirPath(io, std.fs.path.dirname(local).?);
         try tmp.dir.writeFile(io, .{ .sub_path = local, .data = "GGUF" });
         try model.writeSidecar(arena, io, tmp.dir, try model.sidecarPath(arena, local), .{ .repo = a.repo, .file = a.main().path, .revision = a.revision, .sha256 = a.main().sha256, .size = a.main().size, .role = .main, .downloaded_at = "2026-11-12T00:00:00Z", .nuclis_version = "test" });
@@ -565,7 +566,7 @@ test "sync refreshes what an index entry states and the index now says otherwise
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const a = catalog.find("qwen3.8-27b").?;
-    const local = try std.fs.path.join(arena, &.{ "models", a.directoryOf(a.main()), a.main().path });
+    const local = try std.fs.path.join(arena, &.{ "models", a.repo, a.main().path });
     try tmp.dir.createDirPath(io, std.fs.path.dirname(local).?);
     try tmp.dir.writeFile(io, .{ .sub_path = local, .data = "GGUF" });
     try model.writeSidecar(arena, io, tmp.dir, try model.sidecarPath(arena, local), .{ .repo = a.repo, .file = a.main().path, .revision = a.revision, .sha256 = a.main().sha256, .size = a.main().size, .role = .main, .downloaded_at = "2026-11-12T00:00:00Z", .nuclis_version = "test" });

@@ -120,7 +120,7 @@ lists the ones not installed):
 | `muse-glimmer-30b` | generation | UD-Q4_K_XL | 15.88 GB | legacy |
 | `laya` | decision | F16 | 842.6 MB | current |
 | `laya-multilingual` | decision | F16 | 643.8 MB | legacy |
-| `clef-flash` | decision | Q6_K | 243.5 MB | current |
+| `clef-flash` | decision | Q4_K_M | 6.73 GB | current |
 | `embeddinggemma-2` | embedding | Q8_0 | 309.9 MB | current |
 | `qwen3-tts-1.7b-customvoice` | speech | BF16 | 3.83 GB | current |
 | `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | legacy |
@@ -144,7 +144,7 @@ nuclis model pull qwen3.8-27b                     # the model alone
 nuclis model pull qwen3.8-27b --all               # with its default draft and vision companions
 nuclis model pull qwen3.8-27b --with draft=mtp   # or pick them: mmproj, draft[=variant]
 nuclis model pull qwen3.8-27b --all --variants    # every draft variant too
-nuclis model pull --catalogue                     # every current model with --all, about 43 GB
+nuclis model pull --catalogue                     # every current model with --all, about 42 GB
 nuclis model ls                                   # what is here
 ```
 
@@ -264,11 +264,16 @@ the GGUF directory parses (a few seconds; nothing is written), prints what
 `nuclis inspect` prints for a local file, and ends with a verdict:
 
 - **supported**: in the catalogue with the Hub's digest, and an adapter
-  binds it;
+  binds it (a decision, embedding, or speech model: its own command runs
+  it);
 - **runnable**: an adapter for its architecture binds it, but it is not a
   catalogue file;
 - **not runnable**: names the first tensor or encoding nuclis cannot run,
   the missing adapter, or the adapter's reason.
+
+`--metadata`, `--tensors`, and `--tensor <name>` add every metadata key,
+every tensor's encoding and shape, or one tensor's first values (one row
+read from the Hub), as `nuclis inspect` shows them for a local file.
 
 ### What is on disk
 
@@ -300,8 +305,8 @@ nuclis model rm laya-multilingual --json  # the report as one JSON object
 
 `nuclis model rm <name>` takes a catalogue name or a settings entry and
 deletes its files with their `.nuclis.json` sidecars: a catalogue entry's
-main file, its support files (configuration, tokenizer), a speech model's
-codec, and clef-flash's backbone; companions only with `--with` or `--all`,
+main file, its support files (configuration, tokenizer), and a speech
+model's codec; companions only with `--with` or `--all`,
 as `pull` takes them. A settings entry removes its file and, asked, the
 `mmproj` and `draft` it names; a file outside `~/.nuclis/models` is never
 touched. The directories the removal leaves empty go too.

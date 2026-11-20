@@ -43,32 +43,30 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
 }
 
 pub const Located = struct {
-    directory: []const u8,
+    /// Laya's checkpoint directory or clef's GGUF.
+    path: []const u8,
     identity: response.Identity,
-    /// clef's backbone GGUF when the catalogue entry names one.
-    backbone: ?[]const u8 = null,
     /// clef's projector when the catalogue entry names one and it is pulled.
     mmproj: ?[]const u8 = null,
 
     pub fn location(self: Located) inference.decide.Location {
-        return .{ .directory = self.directory, .backbone = self.backbone, .mmproj = self.mmproj };
+        return .{ .path = self.path, .mmproj = self.mmproj };
     }
 };
 
 /// `resolve`, then the weights' presence (`ModelFileNotFound` names the
 /// pull that fetches them) and their provenance from the pull's sidecar.
 pub fn locate(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: config.Models, name: []const u8, paths: bool, diag: *config.Diagnostic) !Located {
-    const directory = try resolve(arena, root, registry, name, paths, diag);
+    const path = try resolve(arena, root, registry, name, paths, diag);
     const entry = if (registry.find(name) == null) catalog.findKind(name, .decision) else null;
     const models = try catalog.underModels(arena, root, "", diag);
-    const weights_name = if (entry) |e| std.fs.path.basename(e.main().path) else if (inference.decide.Family.of(io, directory) == .clef) inference.models.clef.head_file else "model.safetensors";
-    const weights = try std.fs.path.join(arena, &.{ directory, weights_name });
-    const backbone = if (entry) |e| if (e.companion(.backbone)) |b| try catalog.localPath(arena, models, e, b) else null else null;
-    for ([_]?[]const u8{ weights, backbone }) |path| if (path) |p| std.Io.Dir.cwd().access(io, p, .{}) catch {
+    // clef's location is its weights; Laya's directory holds them.
+    const weights = if (inference.decide.Family.of(path) == .clef) path else try std.fs.path.join(arena, &.{ path, if (entry) |e| std.fs.path.basename(e.main().path) else "model.safetensors" });
+    std.Io.Dir.cwd().access(io, weights, .{}) catch {
         if (entry) |e|
             diag.set("{s}: not pulled yet (`nuclis model pull {s}` fetches it, {d} MB)", .{ name, e.name, e.totalSize() / 1_000_000 })
         else
-            diag.set("{s}: no model.safetensors (a Laya checkpoint directory, a decision registry entry, or a decision catalogue name)", .{directory});
+            diag.set("{s}: no model.safetensors (a Laya checkpoint directory, a decision registry entry, or a decision catalogue name)", .{path});
         return error.ModelFileNotFound;
     };
     var identity: response.Identity = .{ .name = name };
@@ -79,7 +77,7 @@ pub fn locate(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry:
     // The projector is optional: without it a request with images is refused.
     const mmproj = if (entry) |e| if (e.companion(.mmproj)) |m| try catalog.localPath(arena, models, e, m) else null else null;
     const pulled_mmproj = if (mmproj) |p| if (std.Io.Dir.cwd().access(io, p, .{})) |_| p else |_| null else null;
-    return .{ .directory = directory, .identity = identity, .backbone = backbone, .mmproj = pulled_mmproj };
+    return .{ .path = path, .identity = identity, .mmproj = pulled_mmproj };
 }
 
 /// A decision model of the catalogue or the registry, as it stands on disk.
@@ -93,7 +91,7 @@ pub const Listed = struct {
     present: bool,
     /// From `rl_agent_config.json` when it is present and valid.
     budget: ?profile.Budget,
-    /// From the catalogue entry (a backbone means clef), else the files.
+    /// From the catalogue entry's main file (a GGUF means clef), else the location.
     family: inference.decide.Family = .laya,
     /// clef with its projector pulled.
     images: bool = false,
@@ -118,8 +116,8 @@ pub fn list(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: c
 fn describe(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: config.Models, name: []const u8, repo: ?[]const u8, revision: ?[]const u8) !Listed {
     var listed: Listed = .{ .name = name, .repo = repo, .revision = revision, .directory = null, .present = false, .budget = null };
     // Known before anything is pulled, so a client plans for it either way.
-    if (registry.find(name) == null) if (catalog.findKind(name, .decision)) |e| if (e.companion(.backbone) != null) {
-        listed.family = .clef;
+    if (registry.find(name) == null) if (catalog.findKind(name, .decision)) |e| {
+        listed.family = inference.decide.Family.of(e.main().path);
     };
     var diag: config.Diagnostic = .{};
     const located = locate(arena, io, root, registry, name, false, &diag) catch |err| switch (err) {
@@ -130,13 +128,14 @@ fn describe(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: c
         },
         else => return listed,
     };
-    listed.directory = located.directory;
+    listed.directory = located.path;
     listed.present = true;
-    if (listed.family == .laya) listed.family = inference.decide.Family.of(io, located.directory);
+    if (listed.family == .laya) listed.family = inference.decide.Family.of(located.path);
     listed.images = listed.family == .clef and located.mmproj != null;
     if (located.identity.repo) |r| listed.repo = r;
     if (located.identity.revision) |r| listed.revision = r;
-    const agent_path = try std.fs.path.join(arena, &.{ located.directory, "rl_agent_config.json" });
+    if (listed.family != .laya) return listed;
+    const agent_path = try std.fs.path.join(arena, &.{ located.path, "rl_agent_config.json" });
     if (std.Io.Dir.cwd().readFileAlloc(io, agent_path, arena, .limited(1024 * 1024))) |bytes| {
         if (profile.parseAgentConfig(arena, bytes)) |agent| listed.budget = agent.budget else |_| {}
     } else |_| {}

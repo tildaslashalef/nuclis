@@ -47,7 +47,7 @@ pins that earlier records cite, files outside the index included, are in
 A model's companions are separate files with roles: `mmproj` (the vision,
 and for Gemma 4 E4B audio, encoder and projector), `draft` (a
 multi-token-prediction head or a DFlash drafter for speculative decoding),
-`imatrix` (calibration statistics, never loaded), `codec` and `backbone`.
+`imatrix` (calibration statistics, never loaded), and `codec`.
 Companions are loaded only when the configuration names them; nothing is
 discovered by scanning a directory. The projector serves image input
 ([engine/vision.md](../engine/vision.md)) and the draft file speculative
@@ -108,9 +108,8 @@ Hub collides):
   SHA-256 beside it meaningful; the index and every benchmark record
   cite commits the same way. Only an adopted file that matched no index
   file has none (`null`).
-- `role` is `main`, `mmproj`, `draft`, `imatrix`, `support`, `codec`, or
-  `backbone`: from the
-  header when it says so (`general.type` `imatrix` or `mmproj`, or a `clip`
+- `role` is `main`, `mmproj`, `draft`, `imatrix`, `support`, or `codec`:
+  from the header when it says so (`general.type` `imatrix` or `mmproj`, or a `clip`
   architecture; the main model and a separate draft file both say `model`),
   else from the index entry's role or `--role`, else `main`. A flag that
   contradicts the header is `RoleMismatch`. Safetensors weights are `main`;
@@ -187,8 +186,9 @@ has a name (after the model, `qwen3.8-27b`, not the quantization), a kind
 `transcription`), a lifecycle, and its files: the main file first, then
 its companions by role (`mmproj` for image input, and audio input on the
 one artifact marked `hears`, Gemma 4 E4B; `draft` for speculative
-decoding; `backbone` and `codec` for the decision and speech models), each
-with its own repository and commit when it is not the artifact's.
+decoding; `codec` for a speech model). A file from another repository
+(the DFlash2 drafter) names that repository, its commit, and its Hub name,
+and lands beside the artifact's other files.
 
 - **Lifecycle.** `current` artifacts are looked after: they have gates,
   `config init` writes them, and `model pull --catalogue` fetches them all. A `legacy` artifact (`gemma-4-12b-qat` and
@@ -249,7 +249,7 @@ sidecars, never by hashing, so a listing is instant.
 | `muse-glimmer-30b` | generation | UD-Q4_K_XL | 15.88 GB | legacy |
 | `laya` | decision | F16 | 842.6 MB | current |
 | `laya-multilingual` | decision | F16 | 643.8 MB | legacy |
-| `clef-flash` | decision | Q6_K | 243.5 MB | current |
+| `clef-flash` | decision | Q4_K_M | 6.73 GB | current |
 | `embeddinggemma-2` | embedding | Q8_0 | 309.9 MB | current |
 | `qwen3-tts-1.7b-customvoice` | speech | BF16 | 3.83 GB | current |
 | `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | legacy |
@@ -264,12 +264,10 @@ sidecars, never by hashing, so a listing is instant.
 checkpoints only `nuclis decide` opens; `decide.model` defaults to `laya`,
 and text commands refuse the names. `nuclis model pull laya` fetches the
 weights and their named support files at the pinned commit and refuses
-the set if a digest differs. `clef-flash` spans two repositories: the
-backbone GGUF (and with `--with mmproj` its projector) from
-`bartowski/Cloudflare_clef-flash-GGUF`, pulled first, then the head and
-its support files from `Cloudflare/clef-flash`; each lands under its own
-repository's directory, and a digest that is not the catalogue's fails
-the pull (`CatalogMismatch`).
+the set if a digest differs. `clef-flash` is one GGUF from
+`ggml-org/Clef-Flash-GGUF` holding the backbone, the decision head, and
+the tokenizer, with its projector beside it (`--with mmproj`); a digest
+that is not the catalogue's fails the pull (`CatalogMismatch`).
 
 **The embedding artifact** `embeddinggemma-2` only `nuclis embed` opens:
 the text model alone, or with `--with mmproj` the vision and audio

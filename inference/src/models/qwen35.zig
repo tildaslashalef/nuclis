@@ -80,6 +80,27 @@ pub const DraftSource = struct {
 
 /// The `general.architecture` id this adapter binds.
 pub const architecture = "qwen35";
+/// clef-flash's single file: this family's backbone under its own id and
+/// key prefix, with the decision head's tensors (`decision_prefixes`),
+/// which `bind` leaves to `models/clef.zig`.
+pub const clef_architecture = "clef";
+pub const decision_prefixes = [_][]const u8{ "decision.", "dec.blk.", "token_types." };
+
+/// The file's metadata prefix; key names in this module are written with
+/// `qwen35.` and spelled with the file's prefix where they are read.
+const Keys = struct {
+    prefix: []const u8,
+    buffer: [96]u8 = undefined,
+
+    /// `name` ("qwen35.<rest>") as the file spells it; valid until the next call.
+    fn of(self: *Keys, name: []const u8) []const u8 {
+        std.debug.assert(std.mem.startsWith(u8, name, architecture ++ "."));
+        return std.fmt.bufPrint(&self.buffer, "{s}{s}", .{ self.prefix, name[architecture.len..] }) catch unreachable;
+    }
+};
+
+/// Keys a clef file adds for its head, which `models/clef.zig` validates.
+const clef_head_keys = [_][]const u8{ "decision.type", "decision.routing_block_count", "decision.block_count", "decision.head_count", "attention.layer_norm_epsilon" };
 
 pub const vocabulary = if (tiny_models) 1024 else 248320;
 
@@ -285,30 +306,33 @@ const shape_keys = [_][]const u8{
 /// The text layers, plus the auxiliary prediction block when the file
 /// declares it: the Qwen3.8 release counts it as one more block with one
 /// `nextn` layer, the Bonsai re-encoding and the 9B drop it (no key).
-fn validateMetadata(doc: *const gguf.Document) Error!struct { shape: Shape, auxiliary: bool } {
+fn validateMetadata(doc: *const gguf.Document) Error!struct { shape: Shape, auxiliary: bool, clef: bool } {
     const arch = switch (doc.get("general.architecture") orelse return error.MissingMetadata) {
         .string => |value| value,
         else => return error.InvalidMetadata,
     };
-    if (!std.mem.eql(u8, arch, architecture)) return error.UnsupportedArchitecture;
+    const clef = std.mem.eql(u8, arch, clef_architecture);
+    if (!clef and !std.mem.eql(u8, arch, architecture)) return error.UnsupportedArchitecture;
+    var k: Keys = .{ .prefix = arch };
     for (integer_settings) |setting| {
-        if (try unsignedValue(doc, setting.key) != setting.value) return error.UnsupportedConfiguration;
+        const key = if (std.mem.startsWith(u8, setting.key, architecture ++ ".")) k.of(setting.key) else setting.key;
+        if (try unsignedValue(doc, key) != setting.value) return error.UnsupportedConfiguration;
     }
-    const blocks = try unsignedValue(doc, "qwen35.block_count");
-    const nextn = if (doc.get("qwen35.nextn_predict_layers")) |_| try unsignedValue(doc, "qwen35.nextn_predict_layers") else 0;
+    const blocks = try unsignedValue(doc, k.of("qwen35.block_count"));
+    const nextn = if (doc.get(k.of("qwen35.nextn_predict_layers"))) |_| try unsignedValue(doc, k.of("qwen35.nextn_predict_layers")) else 0;
     if (nextn > 1 or blocks <= nextn) return error.UnsupportedConfiguration;
-    const shape = try readShape(doc, blocks - nextn);
+    const shape = try readShape(doc, &k, blocks - nextn);
     // Newer converters spell the schedule out; it must be the pinned one.
-    if (doc.get("qwen35.attention.recurrent_layers") != null) {
-        const flags = try arrayValues(doc, "qwen35.attention.recurrent_layers", .boolean, shape.layers);
+    if (doc.get(k.of("qwen35.attention.recurrent_layers")) != null) {
+        const flags = try arrayValues(doc, k.of("qwen35.attention.recurrent_layers"), .boolean, shape.layers);
         for (flags, 0..) |flag, i| switch (flag) {
             .boolean => |recurrent| if (recurrent != ((i + 1) % 4 != 0)) return error.UnsupportedConfiguration,
             else => return error.InvalidMetadata,
         };
     }
-    try expectFloat(doc, "qwen35.rope.freq_base", 10_000_000);
-    try expectFloat(doc, "qwen35.attention.layer_norm_rms_epsilon", @as(f32, 1e-6));
-    const sections = switch (doc.get("qwen35.rope.dimension_sections") orelse return error.MissingMetadata) {
+    try expectFloat(doc, k.of("qwen35.rope.freq_base"), 10_000_000);
+    try expectFloat(doc, k.of("qwen35.attention.layer_norm_rms_epsilon"), @as(f32, 1e-6));
+    const sections = switch (doc.get(k.of("qwen35.rope.dimension_sections")) orelse return error.MissingMetadata) {
         .array => |a| a,
         else => return error.InvalidMetadata,
     };
@@ -330,21 +354,21 @@ fn validateMetadata(doc: *const gguf.Document) Error!struct { shape: Shape, auxi
     // These keys can override the equations/schedule even when the scalar
     // dimensions still match. Supporting them requires a separate profile.
     for (doc.metadata) |entry| {
-        if (std.mem.startsWith(u8, entry.key, "qwen35.") and !knownArchitectureKey(entry.key))
+        if (std.mem.startsWith(u8, entry.key, arch) and entry.key.len > arch.len and entry.key[arch.len] == '.' and !knownArchitectureKey(entry.key[arch.len + 1 ..], clef))
             return error.UnsupportedConfiguration;
     }
-    return .{ .shape = shape, .auxiliary = nextn == 1 };
+    return .{ .shape = shape, .auxiliary = nextn == 1, .clef = clef };
 }
 
 /// Each dimension a multiple of the 256-element quantization block, the
 /// heads whole groups of the pinned KV and key heads, the layers whole
 /// periods of the every-4th schedule.
-fn readShape(doc: *const gguf.Document, layers: u64) Error!Shape {
-    const hidden = try unsignedValue(doc, "qwen35.embedding_length");
-    const ffn = try unsignedValue(doc, "qwen35.feed_forward_length");
-    const heads = try unsignedValue(doc, "qwen35.attention.head_count");
-    const value_heads = try unsignedValue(doc, "qwen35.ssm.time_step_rank");
-    const inner = try unsignedValue(doc, "qwen35.ssm.inner_size");
+fn readShape(doc: *const gguf.Document, k: *Keys, layers: u64) Error!Shape {
+    const hidden = try unsignedValue(doc, k.of("qwen35.embedding_length"));
+    const ffn = try unsignedValue(doc, k.of("qwen35.feed_forward_length"));
+    const heads = try unsignedValue(doc, k.of("qwen35.attention.head_count"));
+    const value_heads = try unsignedValue(doc, k.of("qwen35.ssm.time_step_rank"));
+    const inner = try unsignedValue(doc, k.of("qwen35.ssm.inner_size"));
     if (hidden == 0 or hidden > 16384 or hidden % 256 != 0) return error.UnsupportedConfiguration;
     if (ffn == 0 or ffn > 65536 or ffn % 256 != 0) return error.UnsupportedConfiguration;
     if (heads == 0 or heads > 64 or heads % Shape.kv_heads != 0) return error.UnsupportedConfiguration;
@@ -354,12 +378,13 @@ fn readShape(doc: *const gguf.Document, layers: u64) Error!Shape {
     return .{ .hidden = @intCast(hidden), .ffn = @intCast(ffn), .heads = @intCast(heads), .layers = @intCast(layers), .value_heads = @intCast(value_heads) };
 }
 
-fn knownArchitectureKey(key: []const u8) bool {
-    for (integer_settings) |setting| if (std.mem.eql(u8, key, setting.key)) return true;
-    for (shape_keys) |known| if (std.mem.eql(u8, key, known)) return true;
-    for ([_][]const u8{
-        "qwen35.rope.freq_base", "qwen35.attention.layer_norm_rms_epsilon", "qwen35.rope.dimension_sections",
-    }) |known| if (std.mem.eql(u8, key, known)) return true;
+/// `rest` is a key after the file's prefix and its dot.
+fn knownArchitectureKey(rest: []const u8, clef: bool) bool {
+    const prefix = architecture ++ ".";
+    for (integer_settings) |setting| if (std.mem.startsWith(u8, setting.key, prefix) and std.mem.eql(u8, rest, setting.key[prefix.len..])) return true;
+    for (shape_keys) |known| if (std.mem.eql(u8, rest, known[prefix.len..])) return true;
+    for ([_][]const u8{ "rope.freq_base", "attention.layer_norm_rms_epsilon", "rope.dimension_sections" }) |known| if (std.mem.eql(u8, rest, known)) return true;
+    if (clef) for (clef_head_keys) |known| if (std.mem.eql(u8, rest, known)) return true;
     return false;
 }
 
@@ -668,6 +693,16 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     // schedule keeps its length.
     result.draft = if (auxiliary) try binder.draftBlock() else null;
     result.dflash = null;
+    if (declared.clef) {
+        var it = binder.remaining.keyIterator();
+        var head: std.ArrayList([]const u8) = .empty;
+        defer head.deinit(alloc);
+        while (it.next()) |name| for (decision_prefixes) |p| if (std.mem.startsWith(u8, name.*, p)) {
+            try head.append(alloc, name.*);
+            break;
+        };
+        for (head.items) |name| _ = binder.remaining.remove(name);
+    }
     if (binder.remaining.count() != 0) return error.UnexpectedTensor;
     result.summary = .{
         .profile = if (shape.eql(qwen38_shape)) "qwen35_27b" else if (shape.eql(qwen35_9b_shape)) "qwen35_9b" else "qwen35",
@@ -917,7 +952,7 @@ test "the companion is refused by a target of another shape, a rotated target, a
     const view: weights.View = .{ .file = &.{}, .data_offset = 0 };
     var companion = try companionDocument();
     defer companion.deinit();
-    var nine = try @import("inventory.zig").document(std.testing.allocator, @embedFile("fixtures/clef-flash-q6k.json"));
+    var nine = try @import("inventory.zig").document(std.testing.allocator, @embedFile("fixtures/clef-flash-q4km.json"));
     defer nine.deinit();
     const nine_target = try bind(std.testing.allocator, &nine);
     try std.testing.expectError(error.DraftSourceMismatch, bindDraft(std.testing.allocator, &companion, view, view, &nine_target));
@@ -994,7 +1029,7 @@ test "reject rotations outside the pinned contract" {
 }
 
 test "bind clef-flash's 9B inventory: the shape from the file, no prediction block" {
-    var doc = try @import("inventory.zig").document(std.testing.allocator, @embedFile("fixtures/clef-flash-q6k.json"));
+    var doc = try @import("inventory.zig").document(std.testing.allocator, @embedFile("fixtures/clef-flash-q4km.json"));
     defer doc.deinit();
     const model = try bind(std.testing.allocator, &doc);
     try std.testing.expect(model.shape.eql(qwen35_9b_shape));
@@ -1008,9 +1043,26 @@ test "bind clef-flash's 9B inventory: the shape from the file, no prediction blo
     try std.testing.expectEqualSlices(u64, &.{ 4096, 8192 }, model.layers()[3].mixer.full_attention.query_and_gate.dimensions);
     try std.testing.expectEqual(@as(usize, 8192 * 3), model.shape.deltaHistory());
     // The spelled-out schedule must be the every-4th one.
-    const flags = @constCast(metadataEntry(&doc, "qwen35.attention.recurrent_layers").value.array.values.?);
+    const flags = @constCast(metadataEntry(&doc, "clef.attention.recurrent_layers").value.array.values.?);
     flags[3] = .{ .boolean = true };
     try std.testing.expectError(error.UnsupportedConfiguration, bind(std.testing.allocator, &doc));
+}
+
+test "a clef file binds under its own prefix and leaves the head's tensors to the head" {
+    var doc = try @import("inventory.zig").document(std.testing.allocator, @embedFile("fixtures/clef-flash-q4km.json"));
+    defer doc.deinit();
+    const model = try bind(std.testing.allocator, &doc);
+    // 160 head tensors stay out of the backbone's count.
+    try std.testing.expectEqual(@as(u32, @intCast(doc.tensors.len - 160)), model.summary.text_tensors);
+    // An unknown key under the prefix is refused, as under `qwen35.`.
+    const general = metadataEntry(&doc, "clef.decision.type");
+    const key = general.key;
+    general.key = "clef.decision.surprise";
+    try std.testing.expectError(error.UnsupportedConfiguration, bind(std.testing.allocator, &doc));
+    general.key = key;
+    // The head's keys and tensors belong to a clef file only.
+    metadataEntry(&doc, "general.architecture").value = .{ .string = "qwen35" };
+    try std.testing.expectError(error.MissingMetadata, bind(std.testing.allocator, &doc));
 }
 
 test "reject shapes outside the accepted bounds" {

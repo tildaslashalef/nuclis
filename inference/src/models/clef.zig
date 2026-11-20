@@ -1,24 +1,26 @@
 //! clef-flash's joint schema head on the CPU: from the backbone's final
 //! hidden rows (after `output_norm`) and each option's mean output-head row,
 //! one logit per option of every question, as Cloudflare's
-//! `JointSchemaHead.forward` computes them. The BF16 weights are decoded to
-//! F32 once at `open` (about 0.5 GB); the head owns them. Matmuls go
+//! `JointSchemaHead.forward` computes them. The head's tensors live in the
+//! clef GGUF beside the backbone (`decision.*`, `dec.blk.*`); they are
+//! decoded to F32 once at `open` (about 0.5 GB) and the head owns them. Matmuls go
 //! through `cpu.dense` (F32 SIMD lanes, split across `Io` tasks), so results
 //! match an F32 reference to rounding. Contract: docs/models/clef-flash.md.
 const std = @import("std");
-const safetensors = @import("../formats/safetensors.zig");
 const cpu = @import("../backends/cpu/root.zig");
 const dense = cpu.dense;
 const profile = @import("../profiles/clef.zig");
 const qwen35 = @import("qwen35.zig");
 const weights = @import("../runtime/weights.zig");
+const gguf = @import("../formats/gguf.zig");
+const quant = @import("../quant/decode.zig");
 const vocabulary = @import("../tokenizer/vocabulary.zig");
 const Encoder = @import("../tokenizer/encode.zig").Encoder;
 const metal = @import("../backends/metal/root.zig");
 const Backend = @import("laya.zig").Backend;
 const vision = @import("../vision/root.zig");
 
-/// `joint_head_config.json`; only the released shape is accepted.
+/// The head's shape (`clef.decision.*`); only the released one is accepted.
 pub const Config = struct {
     hidden_size: usize,
     width: usize,
@@ -85,70 +87,74 @@ pub const Head = struct {
     option_norm: Norm,
     scorer_up: Linear,
     scorer_down: Linear,
-    prior_logit_scale: f32,
-    joint_logit_scale: f32,
+    /// The forward's factors as stored: exp(prior), exp(joint), sigmoid(gate).
+    prior_scale: f32,
+    joint_scale: f32,
     residual_gate: f32,
 
-    /// Reads `joint_head_config.json` and `joint_head.safetensors` from
-    /// `dir`; every tensor of the file must be bound, with its shape.
-    pub fn open(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !Head {
+    /// Reads the head from the clef GGUF: its shape from `clef.decision.*`
+    /// (the released one only) and every `decision.*`, `dec.blk.*`, and
+    /// `token_types` tensor decoded to F32, each bound with its shape.
+    pub fn open(gpa: std.mem.Allocator, doc: *const gguf.Document, view: weights.View) !Head {
         var storage: std.heap.ArenaAllocator = .init(gpa);
         errdefer storage.deinit();
         const arena = storage.allocator();
-        const config_path = try std.fs.path.join(arena, &.{ dir, "joint_head_config.json" });
-        const config_bytes = try std.Io.Dir.cwd().readFileAlloc(io, config_path, arena, .limited(64 * 1024));
-        const config = std.json.parseFromSliceLeaky(Config, arena, config_bytes, .{}) catch return error.InvalidHeadConfig;
-        if (!std.meta.eql(config, released)) return error.UnsupportedHeadConfig;
-        const weights_path = try std.fs.path.join(arena, &.{ dir, "joint_head.safetensors" });
-        var checkpoint = try safetensors.Checkpoint.open(gpa, io, weights_path, .{});
-        defer checkpoint.deinit(io);
-        var loader: Loader = .{ .arena = arena, .checkpoint = &checkpoint };
+        const config = try readConfig(doc);
+        var loader: Loader = .{ .arena = arena, .doc = doc, .view = view };
         const h = config.hidden_size;
         const w = config.width;
         var head: Head = undefined;
         head.config = config;
-        head.hidden_norm = try loader.norm("hidden_norm", h);
-        head.memory_projection = try loader.linear("memory_projection", w, h, false);
-        head.question_projection = try loader.linear("question_projection", w, h, false);
-        head.option_question_projection = try loader.linear("option_question_projection", w, h, false);
-        head.global_projection = try loader.linear("global_projection", w, h, false);
-        head.option_context_projection = try loader.linear("option_context_projection", w, h, false);
-        head.option_lexical_projection = try loader.linear("option_lexical_projection", w, h, false);
-        head.type_embedding = try loader.tensor("type_embedding.weight", &.{ 3, w });
+        head.hidden_norm = try loader.norm("decision.hidden_norm", h);
+        head.memory_projection = try loader.linear("decision.proj_memory", w, h, false);
+        head.question_projection = try loader.linear("decision.proj_question", w, h, false);
+        head.option_question_projection = try loader.linear("decision.proj_option_question", w, h, false);
+        head.global_projection = try loader.linear("decision.proj_global", w, h, false);
+        head.option_context_projection = try loader.linear("decision.proj_option_context", w, h, false);
+        head.option_lexical_projection = try loader.linear("decision.proj_option_lexical", w, h, false);
+        head.type_embedding = try loader.tensor("token_types.weight", &.{ 3, w });
         head.routing = try arena.alloc(Routing, config.routing_layers);
         for (head.routing, 0..) |*r, i| {
-            const p = try arena.print("evidence_layers.{d}.", .{i});
+            const p = try arena.print("dec.blk.{d}.", .{i});
             r.* = .{
-                .query_norm = try loader.norm(try cat(arena, p, "query_norm"), w),
-                .memory_norm = try loader.norm(try cat(arena, p, "memory_norm"), w),
-                .attention = try loader.attention(try cat(arena, p, "attention"), w),
-                .feedforward_norm = try loader.norm(try cat(arena, p, "feedforward_norm"), w),
-                .up = try loader.linear(try cat(arena, p, "feedforward.0"), config.feedforward, w, true),
-                .down = try loader.linear(try cat(arena, p, "feedforward.3"), w, config.feedforward, true),
+                .query_norm = try loader.norm(try cat(arena, p, "cross_attn_norm"), w),
+                .memory_norm = try loader.norm(try cat(arena, p, "cross_attn_norm_kv"), w),
+                .attention = try loader.attention(try cat(arena, p, "cross_attn"), w),
+                .feedforward_norm = try loader.norm(try cat(arena, p, "ffn_norm"), w),
+                .up = try loader.linear(try cat(arena, p, "ffn_up"), config.feedforward, w, true),
+                .down = try loader.linear(try cat(arena, p, "ffn_down"), w, config.feedforward, true),
             };
         }
-        head.option_summary_norm = try loader.norm("option_summary_norm", w);
+        head.option_summary_norm = try loader.norm("decision.option_summary_norm", w);
         head.decoders = try arena.alloc(Decoder, config.layers);
         for (head.decoders, 0..) |*d, i| {
-            const p = try arena.print("layers.{d}.", .{i});
+            const p = try arena.print("dec.blk.{d}.", .{config.routing_layers + i});
             d.* = .{
-                .norm1 = try loader.norm(try cat(arena, p, "norm1"), w),
-                .norm2 = try loader.norm(try cat(arena, p, "norm2"), w),
-                .norm3 = try loader.norm(try cat(arena, p, "norm3"), w),
-                .self_attention = try loader.attention(try cat(arena, p, "self_attn"), w),
-                .cross_attention = try loader.attention(try cat(arena, p, "multihead_attn"), w),
-                .up = try loader.linear(try cat(arena, p, "linear1"), config.feedforward, w, true),
-                .down = try loader.linear(try cat(arena, p, "linear2"), w, config.feedforward, true),
+                .norm1 = try loader.norm(try cat(arena, p, "attn_norm"), w),
+                .norm2 = try loader.norm(try cat(arena, p, "cross_attn_norm"), w),
+                .norm3 = try loader.norm(try cat(arena, p, "ffn_norm"), w),
+                .self_attention = try loader.attention(try cat(arena, p, "attn"), w),
+                .cross_attention = try loader.attention(try cat(arena, p, "cross_attn"), w),
+                .up = try loader.linear(try cat(arena, p, "ffn_up"), config.feedforward, w, true),
+                .down = try loader.linear(try cat(arena, p, "ffn_down"), w, config.feedforward, true),
             };
         }
-        head.field_norm = try loader.norm("field_norm", w);
-        head.option_norm = try loader.norm("option_norm", w);
-        head.scorer_up = try loader.linear("residual_scorer.0", w, 4 * w, true);
-        head.scorer_down = try loader.linear("residual_scorer.3", 1, w, true);
-        head.prior_logit_scale = (try loader.tensor("prior_logit_scale", &.{}))[0];
-        head.joint_logit_scale = (try loader.tensor("joint_logit_scale", &.{}))[0];
-        head.residual_gate = (try loader.tensor("residual_gate", &.{}))[0];
-        if (loader.bound != checkpoint.tensorCount()) return error.UnexpectedHeadTensor;
+        head.field_norm = try loader.norm("decision.field_norm", w);
+        head.option_norm = try loader.norm("decision.option_norm", w);
+        head.scorer_up = try loader.linear("decision.scorer", w, 4 * w, true);
+        head.scorer_down = .{
+            .w = try loader.tensor("decision.scorer_out.weight", &.{w}),
+            .b = try loader.tensor("decision.scorer_out.bias", &.{1}),
+            .outputs = 1,
+            .inner = w,
+        };
+        // Stored as the forward uses them: exp(prior), exp(joint), sigmoid(gate).
+        const scales = try loader.tensor("decision.scales", &.{3});
+        head.prior_scale = scales[0];
+        head.joint_scale = scales[1];
+        head.residual_gate = scales[2];
+        if (!(head.prior_scale > 0 and head.joint_scale > 0 and head.residual_gate >= 0 and head.residual_gate <= 1)) return error.InvalidHeadScales;
+        if (loader.bound != headTensorCount(doc)) return error.UnexpectedHeadTensor;
         head.storage = storage;
         return head;
     }
@@ -253,9 +259,9 @@ pub const Head = struct {
 
         // Scores: a lexical prior against the question's anchor, plus a gated
         // joint term (cosine and a residual MLP of the field-option pair).
-        const prior_scale: f32 = @exp(@min(self.prior_logit_scale, @log(@as(f32, 100))));
-        const joint_scale: f32 = @exp(@min(self.joint_logit_scale, @log(@as(f32, 100))));
-        const gate = cpu.sigmoid(self.residual_gate);
+        const prior_scale = self.prior_scale;
+        const joint_scale = self.joint_scale;
+        const gate = self.residual_gate;
         const anchor = try scratch.alloc(f32, h);
         const option = try scratch.alloc(f32, w);
         const features = try scratch.alloc(f32, 4 * w);
@@ -355,18 +361,35 @@ const Work = struct {
     }
 };
 
+/// Decodes the head's tensors from the GGUF to F32 and counts them.
 const Loader = struct {
     arena: std.mem.Allocator,
-    checkpoint: *const safetensors.Checkpoint,
+    doc: *const gguf.Document,
+    view: weights.View,
     bound: usize = 0,
 
-    fn tensor(self: *Loader, name: []const u8, shape: []const u64) ![]f32 {
-        const ref = self.checkpoint.get(name) orelse return error.MissingHeadTensor;
-        if (!std.mem.eql(u64, ref.tensor.shape, shape)) return error.InvalidHeadTensorShape;
-        const out = try self.arena.alloc(f32, @intCast(ref.tensor.elements));
-        try ref.decode(0, out);
-        self.bound += 1;
+    /// Tensor `name` as F32, row-major in `shape` (outputs first: the
+    /// reverse of GGUF's dimension order).
+    fn tensor(self: *Loader, name: []const u8, shape: []const usize) ![]f32 {
+        var count: usize = 1;
+        for (shape) |d| count *= d;
+        const out = try self.arena.alloc(f32, count);
+        try self.into(name, shape, out);
         return out;
+    }
+
+    fn into(self: *Loader, name: []const u8, shape: []const usize, out: []f32) !void {
+        const t = findTensor(self.doc, name) orelse return error.MissingHeadTensor;
+        if (t.dimensions.len != shape.len) return error.InvalidHeadTensorShape;
+        for (t.dimensions, 0..) |d, i| if (d != shape[shape.len - 1 - i]) return error.InvalidHeadTensorShape;
+        if (t.elements != out.len) return error.InvalidHeadTensorShape;
+        const bytes = try self.view.bytes(t);
+        const columns = shape[shape.len - 1];
+        const rows = out.len / columns;
+        if (bytes.len % rows != 0) return error.InvalidHeadTensorShape;
+        const width = bytes.len / rows;
+        for (0..rows) |r| try quant.row(t.encoding_id, bytes[r * width ..][0..width], out[r * columns ..][0..columns]);
+        self.bound += 1;
     }
 
     fn norm(self: *Loader, prefix: []const u8, width: usize) !Norm {
@@ -382,16 +405,64 @@ const Loader = struct {
         };
     }
 
+    /// `<prefix>_{q,k,v,o}`; the key and value rows go into one buffer, so
+    /// memory is projected once per layer.
     fn attention(self: *Loader, prefix: []const u8, w: usize) !Attention {
-        const in_w = try self.tensor(try cat(self.arena, prefix, ".in_proj_weight"), &.{ 3 * w, w });
-        const in_b = try self.tensor(try cat(self.arena, prefix, ".in_proj_bias"), &.{3 * w});
+        const kv_w = try self.arena.alloc(f32, 2 * w * w);
+        const kv_b = try self.arena.alloc(f32, 2 * w);
+        try self.into(try cat(self.arena, prefix, "_k.weight"), &.{ w, w }, kv_w[0 .. w * w]);
+        try self.into(try cat(self.arena, prefix, "_v.weight"), &.{ w, w }, kv_w[w * w ..]);
+        try self.into(try cat(self.arena, prefix, "_k.bias"), &.{w}, kv_b[0..w]);
+        try self.into(try cat(self.arena, prefix, "_v.bias"), &.{w}, kv_b[w..]);
         return .{
-            .query = .{ .w = in_w[0 .. w * w], .b = in_b[0..w], .outputs = w, .inner = w },
-            .key_value = .{ .w = in_w[w * w ..], .b = in_b[w..], .outputs = 2 * w, .inner = w },
-            .out = try self.linear(try cat(self.arena, prefix, ".out_proj"), w, w, true),
+            .query = try self.linear(try cat(self.arena, prefix, "_q"), w, w, true),
+            .key_value = .{ .w = kv_w, .b = kv_b, .outputs = 2 * w, .inner = w },
+            .out = try self.linear(try cat(self.arena, prefix, "_o"), w, w, true),
         };
     }
 };
+
+fn findTensor(doc: *const gguf.Document, name: []const u8) ?*const gguf.Tensor {
+    for (doc.tensors) |*t| if (std.mem.eql(u8, t.name, name)) return t;
+    return null;
+}
+
+/// The head's tensors in the file, for the all-bound check.
+fn headTensorCount(doc: *const gguf.Document) usize {
+    var n: usize = 0;
+    for (doc.tensors) |t| for (qwen35.decision_prefixes) |p| if (std.mem.startsWith(u8, t.name, p)) {
+        n += 1;
+        break;
+    };
+    return n;
+}
+
+/// `clef.decision.*`: the released shape only; widths follow the tensors.
+fn readConfig(doc: *const gguf.Document) !Config {
+    const kind = doc.string("clef.decision.type") orelse return error.MissingHeadConfig;
+    if (!std.mem.eql(u8, kind, "clef")) return error.UnsupportedHeadConfig;
+    const config: Config = .{
+        .hidden_size = try unsigned(doc, "clef.embedding_length"),
+        .width = released.width,
+        .routing_layers = try unsigned(doc, "clef.decision.routing_block_count"),
+        .layers = try unsigned(doc, "clef.decision.block_count"),
+        .heads = try unsigned(doc, "clef.decision.head_count"),
+        .feedforward = released.feedforward,
+    };
+    if (!std.meta.eql(config, released)) return error.UnsupportedHeadConfig;
+    switch (doc.get("clef.attention.layer_norm_epsilon") orelse return error.MissingHeadConfig) {
+        .float => |eps| if (@as(f32, @floatCast(eps)) != norm_eps) return error.UnsupportedHeadConfig,
+        else => return error.InvalidHeadConfig,
+    }
+    return config;
+}
+
+fn unsigned(doc: *const gguf.Document, key: []const u8) !usize {
+    return switch (doc.get(key) orelse return error.MissingHeadConfig) {
+        .unsigned => |v| std.math.cast(usize, v) orelse error.InvalidHeadConfig,
+        else => error.InvalidHeadConfig,
+    };
+}
 
 fn cat(arena: std.mem.Allocator, a: []const u8, b: []const u8) ![]const u8 {
     return std.mem.concat(arena, u8, &.{ a, b });
@@ -455,11 +526,9 @@ pub fn optionCount(sequence: profile.Sequence) usize {
 
 /// The head's weights beside the support files; its presence marks a clef
 /// checkpoint directory.
-pub const head_file = "joint_head.safetensors";
-
-/// clef-flash on one backend: the backbone GGUF (the qwen35 family, its
-/// tokenizer read from the same file), the head, and when given the vision
-/// projector. Owns the mappings, the executors, and the head; one sequence
+/// clef-flash on one backend from its one GGUF: the backbone (the qwen35
+/// family under the `clef` id), the head, and the tokenizer; and when given,
+/// the vision projector. Owns the mappings, the executors, and the head; one sequence
 /// at a time.
 pub const Model = struct {
     gpa: std.mem.Allocator,
@@ -479,19 +548,19 @@ pub const Model = struct {
 
     const Projector = struct { mapped: weights.Mapped, projector: vision.Projector };
 
-    /// `directory` holds the head and its support files; `backbone_path`
-    /// the GGUF, else the directory's own `*.gguf` that is not a projector;
-    /// `mmproj` the projector, without which a request with images fails.
-    pub fn open(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, backbone_path: ?[]const u8, mmproj: ?[]const u8, backend: Backend) !Model {
+    /// `path` is the clef GGUF (backbone, head, and tokenizer); `mmproj`
+    /// the projector, without which a request with images fails.
+    pub fn open(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]const u8, backend: Backend) !Model {
         var storage: std.heap.ArenaAllocator = .init(gpa);
         errdefer storage.deinit();
         const arena = storage.allocator();
-        const path = backbone_path orelse try findBackbone(arena, io, directory);
         const mapped = try arena.create(weights.Mapped);
         mapped.* = try weights.Mapped.open(gpa, io, path);
         errdefer mapped.deinit(io);
+        const arch = mapped.document.string("general.architecture") orelse return error.MissingMetadata;
+        if (!std.mem.eql(u8, arch, qwen35.clef_architecture)) return error.NotClef;
         const binding = try qwen35.bind(arena, &mapped.document);
-        var head = try Head.open(gpa, io, directory);
+        var head = try Head.open(gpa, &mapped.document, mapped.view());
         errdefer head.deinit();
         if (binding.shape.hidden != head.config.hidden_size) return error.HeadDoesNotFitBackbone;
         const vocab = try arena.create(vocabulary.Vocabulary);
@@ -660,17 +729,6 @@ pub const Image = struct { pixels: vision.image.Rgb8, grid: vision.Grid };
 /// Prompt tokens per Metal command buffer: 512 measured 291 tok/s on
 /// clef against about 260 at the engine's 256.
 const chunk = 512;
-
-fn findBackbone(arena: std.mem.Allocator, io: std.Io, directory: []const u8) ![]const u8 {
-    var dir = try std.Io.Dir.cwd().openDir(io, directory, .{ .iterate = true });
-    defer dir.close(io);
-    var it = dir.iterate();
-    while (try it.next(io)) |entry| {
-        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".gguf") or std.mem.startsWith(u8, entry.name, "mmproj")) continue;
-        return std.fs.path.join(arena, &.{ directory, entry.name });
-    }
-    return error.MissingBackbone;
-}
 
 test "the head refuses a sequence it cannot score before reading a weight" {
     // Only `config` is read before the shape checks.

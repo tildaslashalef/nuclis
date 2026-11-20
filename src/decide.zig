@@ -224,8 +224,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, location: inference.decide.Locati
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const directory = location.directory;
-    const request = try buildRequest(arena, io, inference.decide.Family.of(io, directory), o, diag);
+    const request = try buildRequest(arena, io, inference.decide.Family.of(location.path), o, diag);
     try wire.checkLimits(request, diag);
 
     const started = std.Io.Clock.awake.now(io);
@@ -233,7 +232,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, location: inference.decide.Locati
         if (err == error.MetalNotEnabled)
             diag.set(config.no_metal_message, .{})
         else
-            diag.set("{s}: not a decision checkpoint nuclis can run ({s})", .{ directory, @errorName(err) });
+            diag.set("{s}: not a decision checkpoint nuclis can run ({s})", .{ location.path, @errorName(err) });
         return err;
     };
     defer decider.deinit(io);

@@ -1,18 +1,17 @@
 //! Explicit check of clef-flash against the oracle's fixtures
-//! (scripts/clef-reference.py at tag v0.11.0). `sequences CLEF_DIR` rebuilds every
-//! request's model input and compares the ids and the head's spans with
-//! `sequences.json`, tokenizing with the backbone GGUF's vocabulary (only
-//! its directory is read, not the weights).
-//! `head CLEF_DIR DUMPS HEAD_JSON` runs nuclis's head on the dumped inputs
+//! (scripts/clef-reference.py at tag v0.11.0); CLEF is the clef GGUF.
+//! `sequences CLEF` rebuilds every request's model input and compares the
+//! ids and the head's spans with `sequences.json`, tokenizing with the
+//! file's vocabulary (only its directory is read, not the weights).
+//! `head CLEF DUMPS HEAD_JSON` runs nuclis's head on the dumped inputs
 //! (`DUMPS/<name>.hidden.f32`, `.lexical.f32`) and compares its logits with
-//! the reference head's on the same inputs. `run CLEF_DIR` is the whole
+//! the reference head's on the same inputs. `run CLEF` is the whole
 //! model on a backend: every text request through the backbone and the
 //! head, its logits against `head.json` (the reference head fed the Metal
 //! backbone's dumps) and its answers against the sanity set's; `--dump`
 //! writes the head's inputs for the script, `--max-tokens` skips longer
 //! requests (the CPU backbone runs about a token a second), `--only` runs
-//! one; the image requests run when `--mmproj` names the projector. The backbone defaults to the catalogue's GGUF beside
-//! CLEF_DIR's repository (`<models>/bartowski/...`).
+//! one; the image requests run when `--mmproj` names the projector.
 const std = @import("std");
 const inference = @import("inference");
 const check_stats = @import("check_stats.zig");
@@ -42,10 +41,10 @@ pub fn main(init: std.process.Init) !void {
     if (args.len == 5 and std.mem.eql(u8, args[1], "head")) return checkHead(gpa, io, arena, args[2], args[3], args[4]);
     if (args.len >= 3 and std.mem.eql(u8, args[1], "run")) return checkRun(gpa, io, arena, args[2], args[3..]);
     if (args.len != 3 or !std.mem.eql(u8, args[1], "sequences")) {
-        std.debug.print("usage: clef-check sequences CLEF_DIR | head CLEF_DIR DUMPS HEAD_JSON | run CLEF_DIR [--backbone GGUF] [--backend cpu|metal] [--mmproj GGUF] [--dump DIR] [--max-tokens N] [--only NAME]\n", .{});
+        std.debug.print("usage: clef-check sequences CLEF | head CLEF DUMPS HEAD_JSON | run CLEF [--backend cpu|metal] [--mmproj GGUF] [--dump DIR] [--max-tokens N] [--only NAME]\n", .{});
         return error.InvalidArguments;
     }
-    var mapped = try inference.weights.Mapped.open(gpa, io, try backboneBeside(arena, args[2]));
+    var mapped = try inference.weights.Mapped.open(gpa, io, args[2]);
     defer mapped.deinit(io);
     var vocab = try inference.vocabulary.load(gpa, mapped.document, mapped.mapping.memory[0..@intCast(mapped.document.directory_bytes)], .{});
     defer vocab.deinit();
@@ -102,15 +101,18 @@ pub fn sequenceFor(arena: std.mem.Allocator, tokenizer: *const Encoder, frame: c
     return clef.assemble(arena, frame, schema, media, state, null);
 }
 
-/// Per logit, the difference over max(1, |logit|): F32 summation order
-/// differs between `cpu.dense` and PyTorch, nothing else.
-const logit_bound = 1e-4;
+/// Per logit, the difference over max(1, |logit|) from the oracle's head
+/// fed the same rows: the head's Q8_0 matrices moved them by at most
+/// 2.62e-3 (multi_question, 2026-11-20); summation order adds about 1e-5.
+const logit_bound = 5e-3;
 
 const HeadResult = struct { name: []const u8, logits: []const []const f32 };
 const HeadFile = struct { results: []const HeadResult };
 
-fn checkHead(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, clef_dir: []const u8, dumps: []const u8, head_json: []const u8) !void {
-    var head = try inference.models.clef.Head.open(gpa, io, clef_dir);
+fn checkHead(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, clef_path: []const u8, dumps: []const u8, head_json: []const u8) !void {
+    var mapped = try inference.weights.Mapped.open(gpa, io, clef_path);
+    defer mapped.deinit(io);
+    var head = try inference.models.clef.Head.open(gpa, &mapped.document, mapped.view());
     defer head.deinit();
     const file = try std.json.parseFromSliceLeaky(File, arena, sequences_json, .{ .ignore_unknown_fields = true });
     const expected_bytes = try std.Io.Dir.cwd().readFileAlloc(io, head_json, arena, .limited(16 << 20));
@@ -163,13 +165,19 @@ fn readF32(arena: std.mem.Allocator, io: std.Io, dir: []const u8, name: []const 
     return out;
 }
 
+/// Cloudflare's head on the rows of the Q6_K backbone nuclis first ran
+/// (`scripts/clef-reference.py`): the oracle `run` holds probabilities to.
 const head_fixture = @embedFile("src/models/fixtures/clef/head.json");
-const default_backbone = "bartowski/Cloudflare_clef-flash-GGUF/Cloudflare_clef-flash-Q6_K.gguf";
-
-fn checkRun(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, clef_dir: []const u8, rest: []const [:0]const u8) !void {
-    var backbone: ?[]const u8 = null;
+/// nuclis's own Metal logits for the catalogue's file (`run --pin`): what
+/// `run` holds the logits to.
+const pinned_fixture = @embedFile("src/models/fixtures/clef/logits.json");
+/// Per question, the softmax against the oracle's: the Q4_K_M backbone and
+/// the Q8_0 head moved them by at most 1.55e-2 (card_systemone, 2026-11-20).
+const oracle_probability_bound = 2e-2;
+fn checkRun(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, clef_path: []const u8, rest: []const [:0]const u8) !void {
     var backend: inference.decide.Backend = .cpu;
     var dump: ?[]const u8 = null;
+    var pin: ?[]const u8 = null;
     var mmproj: ?[]const u8 = null;
     var only: ?[]const u8 = null;
     var max_tokens: usize = std.math.maxInt(usize);
@@ -180,26 +188,28 @@ fn checkRun(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, clef_d
         i += 1;
         if (std.mem.eql(u8, flag, "--max-tokens")) {
             max_tokens = try std.fmt.parseInt(usize, rest[i], 10);
-        } else if (std.mem.eql(u8, flag, "--backbone")) backbone = rest[i] else if (std.mem.eql(u8, flag, "--backend")) {
+        } else if (std.mem.eql(u8, flag, "--backend")) {
             backend = std.meta.stringToEnum(inference.decide.Backend, rest[i]) orelse return error.UnknownBackend;
         } else if (std.mem.eql(u8, flag, "--only")) {
             only = rest[i];
-        } else if (std.mem.eql(u8, flag, "--dump")) dump = rest[i] else if (std.mem.eql(u8, flag, "--mmproj")) {
+        } else if (std.mem.eql(u8, flag, "--pin")) pin = rest[i] else if (std.mem.eql(u8, flag, "--dump")) dump = rest[i] else if (std.mem.eql(u8, flag, "--mmproj")) {
             mmproj = rest[i];
         } else return error.InvalidArguments;
     }
-    const backbone_path = backbone orelse try backboneBeside(arena, clef_dir);
     const load_start = std.Io.Clock.awake.now(io);
-    var model = try inference.models.clef.Model.open(gpa, io, clef_dir, backbone_path, mmproj, backend);
+    var model = try inference.models.clef.Model.open(gpa, io, clef_path, mmproj, backend);
     defer model.deinit(io);
     std.debug.print("clef-flash loaded on the {s} in {d} ms\n", .{ @tagName(backend), load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() });
     const file = try std.json.parseFromSliceLeaky(File, arena, sequences_json, .{ .ignore_unknown_fields = true });
-    const expected = try std.json.parseFromSliceLeaky(HeadFile, arena, head_fixture, .{ .ignore_unknown_fields = true });
+    const oracle = try std.json.parseFromSliceLeaky(HeadFile, arena, head_fixture, .{ .ignore_unknown_fields = true });
+    const expected = try std.json.parseFromSliceLeaky(HeadFile, arena, pinned_fixture, .{ .ignore_unknown_fields = true });
+    var pinned: std.ArrayList(HeadResult) = .empty;
     if (dump) |d| try std.Io.Dir.cwd().createDirPath(io, d);
     // The fixture is the Metal run's; the CPU reference's F32 cache and
-    // kernels move the logits by about 1e-4 (8.5e-5 on card_invoice).
+    // kernels move the logits by about 1e-4.
     const bound: f64 = if (backend == .metal) 1e-3 else 2e-3;
     var worst: check_stats.Worst = .{};
+    var worst_gap: check_stats.Worst = .{};
     var wrong: usize = 0;
     var ran: usize = 0;
     var unpinned: usize = 0;
@@ -249,6 +259,7 @@ fn checkRun(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, clef_d
             try writeF32(io, arena, d, entry.name, "lexical", lexical);
         }
         var difference: ?f64 = null;
+        var gap: f64 = 0;
         for (expected.results) |r| if (std.mem.eql(u8, r.name, entry.name)) {
             var d: check_stats.Worst = .{};
             for (logits, r.logits) |got, want| for (got, want) |g, x| {
@@ -257,6 +268,13 @@ fn checkRun(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, clef_d
             difference = d.shown();
             worst.merge(d);
         };
+        for (oracle.results) |r| if (std.mem.eql(u8, r.name, entry.name)) {
+            var pg: check_stats.Worst = .{};
+            for (logits, r.logits) |got, want| pg.observe(probabilityGap(got, want));
+            gap = pg.shown();
+            worst_gap.merge(pg);
+        };
+        if (pin != null) try pinned.append(arena, .{ .name = entry.name, .logits = try copyLogits(arena, logits) });
         if (difference == null) unpinned += 1;
         var picks: std.Io.Writer.Allocating = .init(arena);
         for (entry.questions, logits) |q, l| {
@@ -269,11 +287,11 @@ fn checkRun(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, clef_d
         }
         const tokens_per_s = @as(f64, @floatFromInt(sequence.ids.len)) * 1000 / @as(f64, @floatFromInt(@max(1, backbone_ms)));
         if (difference) |d|
-            std.debug.print("{s}: {d} tokens, backbone {d} ms ({d:.0} tok/s), head {d} ms, logits {e:.2} from the fixture;{s}\n", .{ entry.name, sequence.ids.len, backbone_ms, tokens_per_s, head_ms, d, picks.written() })
+            std.debug.print("{s}: {d} tokens, backbone {d} ms ({d:.0} tok/s), head {d} ms, logits {e:.2} from the pinned run, probabilities {e:.2} from the oracle;{s}\n", .{ entry.name, sequence.ids.len, backbone_ms, tokens_per_s, head_ms, d, gap, picks.written() })
         else
-            std.debug.print("{s}: {d} tokens, backbone {d} ms ({d:.0} tok/s), head {d} ms;{s}\n", .{ entry.name, sequence.ids.len, backbone_ms, tokens_per_s, head_ms, picks.written() });
+            std.debug.print("{s}: {d} tokens, backbone {d} ms ({d:.0} tok/s), head {d} ms, probabilities {e:.2} from the oracle;{s}\n", .{ entry.name, sequence.ids.len, backbone_ms, tokens_per_s, head_ms, gap, picks.written() });
     }
-    std.debug.print("{d} requests run, {d} logits compared with the fixture, {d} requests the fixture does not pin\n", .{ ran, worst.count, unpinned });
+    std.debug.print("{d} requests run, {d} logits compared with the pinned run, {d} requests it does not pin; probabilities within {e:.2} of the oracle\n", .{ ran, worst.count, unpinned, worst_gap.shown() });
     if (ran == 0) {
         std.debug.print("no request selected (--only, --max-tokens, --mmproj)\n", .{});
         return error.NothingCompared;
@@ -282,11 +300,49 @@ fn checkRun(gpa: std.mem.Allocator, io: std.Io, arena: std.mem.Allocator, clef_d
         std.debug.print("{d} sanity answers differ from the expected options\n", .{wrong});
         return error.SanityMismatch;
     }
+    if (worst_gap.count == 0 or !worst_gap.within(oracle_probability_bound)) {
+        std.debug.print("probabilities differ from the oracle's by {e:.2}, over {e}\n", .{ worst_gap.shown(), oracle_probability_bound });
+        return error.ProbabilityMismatch;
+    }
+    if (pin) |path| {
+        var out: std.Io.Writer.Allocating = .init(arena);
+        try std.json.Stringify.value(.{ .repo = "ggml-org/Clef-Flash-GGUF", .revision = "c3d925454595d792d5333da8b35f3c09911f7568", .file = std.fs.path.basename(clef_path), .backend = @tagName(backend), .results = pinned.items }, .{ .whitespace = .indent_1 }, &out.writer);
+        try out.writer.writeByte('\n');
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = out.written() });
+        std.debug.print("pinned {d} requests' logits to {s}\n", .{ pinned.items.len, path });
+        return;
+    }
     if (worst.count == 0 or !worst.within(bound)) {
-        std.debug.print("logits differ from the fixture by {e:.2}, over {e}\n", .{ worst.shown(), bound });
+        std.debug.print("logits differ from the pinned run by {e:.2}, over {e}\n", .{ worst.shown(), bound });
         return error.LogitMismatch;
     }
-    std.debug.print("every sanity answer is the expected option; logits within {e} of the fixture\n", .{bound});
+    std.debug.print("every sanity answer is the expected option; logits within {e} of the pinned run, probabilities within {e} of the oracle\n", .{ bound, oracle_probability_bound });
+}
+
+fn copyLogits(arena: std.mem.Allocator, logits: []const []f32) ![]const []const f32 {
+    const out = try arena.alloc([]const f32, logits.len);
+    for (logits, out) |l, *o| o.* = try arena.dupe(f32, l);
+    return out;
+}
+
+/// The largest difference between one question's softmax over `got` and
+/// over `want`.
+fn probabilityGap(got: []const f32, want: []const f32) f64 {
+    var gm: f64 = -std.math.inf(f64);
+    var wm: f64 = -std.math.inf(f64);
+    for (got, want) |g, w| {
+        gm = @max(gm, g);
+        wm = @max(wm, w);
+    }
+    var gs: f64 = 0;
+    var ws: f64 = 0;
+    for (got, want) |g, w| {
+        gs += @exp(@as(f64, g) - gm);
+        ws += @exp(@as(f64, w) - wm);
+    }
+    var out: f64 = 0;
+    for (got, want) |g, w| out = @max(out, @abs(@exp(@as(f64, g) - gm) / gs - @exp(@as(f64, w) - wm) / ws));
+    return out;
 }
 
 /// A fixture request's images: solid colours of the recorded sizes.
@@ -305,12 +361,6 @@ fn fixtureImages(arena: std.mem.Allocator, model: *const inference.models.clef.M
         img.* = .{ .pixels = .{ .width = width, .height = height, .pixels = pixels }, .grid = try model.imageGrid(.{ .width = width, .height = height }) };
     }
     return out;
-}
-
-/// The catalogue's backbone for a head directory `<models>/Cloudflare/clef-flash`.
-fn backboneBeside(arena: std.mem.Allocator, clef_dir: []const u8) ![]const u8 {
-    const models_dir = std.fs.path.dirname(std.fs.path.dirname(clef_dir) orelse ".") orelse ".";
-    return std.fs.path.join(arena, &.{ models_dir, default_backbone });
 }
 
 fn writeF32(io: std.Io, arena: std.mem.Allocator, dir: []const u8, name: []const u8, kind: []const u8, values: []const f32) !void {
