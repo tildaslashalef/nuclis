@@ -226,51 +226,53 @@ eighteen small tasks against the playground: a tiny Python geometry package
 that `scripts/app/playground.py` generates on first use under
 `.zig-cache/playground/` (`make playground` builds it and prints the path)
 and commits with `git init` as the baseline its own Makefile's `reset`
-target returns to. Nothing of it is committed to nuclis; it holds only what the tasks and
-the README's GIF (`scripts/app/agent-demo.py`, which clones it) touch, from
-text and fixed seeds, so every machine gets the same baseline commit, and
-a version stamp in its `.git` rebuilds it when the generator changes
-(`--workspace <dir>` runs another project whose Makefile has `reset` and
-`test` targets). The tasks: whole-file questions (a line count
-and a maximum, the release list), edits (a rename, the repeated heading,
-a planted bug, a validation with its test), a new module with tests, a
-flag added to the CLI, a silent `exit 7`, a 300-line build log whose
-only error and `exit 2` come last, a tree-wide `grep`, a three-bullet
+target returns to. Nothing of it is committed to nuclis; it holds only what
+the tasks and the README's GIF (`scripts/app/agent-demo.py`, which clones
+it) touch, from text and fixed seeds, so every machine gets the same
+baseline commit, and a version stamp in its `.git` rebuilds it when the
+generator changes (`--workspace <dir>` runs another project whose Makefile
+has `reset` and `test` targets). The tasks: whole-file questions (a line
+count and a maximum, the release list), edits (a rename, the repeated
+heading, a planted bug, a validation with its test), a new module with
+tests, a flag added to the CLI, a silent `exit 7`, a 300-line build log
+whose only error and `exit 2` come last, a tree-wide `grep`, a three-bullet
 summary, the 1 MiB file, "what is this project about", five pages of an
-access log, the same after three turns that fill the window (four
-`--print` runs continued through `--resume`, the compaction and replay
-case), three 4,000-token notes read before one written file, and five files
-read and marked before the tests run (ten or more calls). Each task is one
-`nuclis agent --print` turn with a fixed seed from the committed baseline, checked by its own
-predicate (file contents, a command's output, the answer's text) and
-scored on steps, tool calls, tool errors, failed edits, prompt and
-generated tokens, the model's seconds, the answer's length, what
-compaction cost (turns dropped, elisions, results clipped, prompt tokens
-of replayed steps), the reasoning tokens of each step (p50, p90, and max
-over the steps) and the steps the thinking budget cut, and four
-counted habits read from the session (a regex handed to the literal
-`grep`, a guessed `pytest`, a file re-read right after its own edit, a
-`cd` before a command); the records land under
-`.zig-cache/agent-eval/<variant>/` with their session files, and
+access log, the same after three turns that fill the window (four `--print`
+runs continued through `--resume`, the compaction and replay case), three
+4,000-token notes read before one written file, and five files read and
+marked before the tests run (ten or more calls). Each task is one `nuclis
+agent --print` turn with a fixed seed from the committed baseline, checked
+by its own predicate (file contents, a command's output, the answer's text)
+and scored on steps, tool calls, tool errors, failed edits, prompt and
+generated tokens, the model's seconds, the answer's length, what compaction
+cost (turns dropped, elisions, results clipped, prompt tokens of replayed
+steps), the reasoning tokens of each step (p50, p90, and max over the steps)
+and the steps the thinking budget cut, and four counted habits read from the
+session (a regex handed to the literal `grep`, a guessed `pytest`, a file
+re-read right after its own edit, a `cd` before a command); the records land
+under `.zig-cache/agent-eval/<variant>/` with their session files, and
 `--compare a b …` renders the variants side by side. `--system-prompt
-<file>` runs a candidate prompt without a rebuild (the instructions
-section still follows it), `--instructions <file>` plants the playground's
-`AGENTS.md` (`tests/fixtures/agent-eval/AGENTS.md` by default, `none` for
-no file), and `--seeds 1,2` is the default because a sampled turn varies:
-two seeds cannot resolve a 10 % difference in seconds, so a change is
-judged on the pass marks, the habit counts, and the medians rather than
-the means. This is how a change to the system prompt, a tool description,
-or the loop is judged: before and after, on the same list and seeds, and
-the unit's record cites the table; the first such record is the 2026-09-22
-change that split the system prompt into sections, in the
-[worklog archived at `v0.6.0`](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md).
+<file>` runs a candidate prompt without a rebuild (the instructions section
+still follows it), `--instructions <file>` plants the playground's
+`AGENTS.md` (`tests/fixtures/agent-eval/AGENTS.md` by default, `none` for no
+file), and `--seeds 1,2` is the default because a sampled turn varies: two
+seeds cannot resolve a 10 % difference in seconds, so a change is judged on
+the pass marks, the habit counts, and the medians rather than the means.
+This is how a change to the system prompt, a tool description, or the loop
+is judged: before and after, on the same list and seeds, and the unit's
+record cites the table.
 `scripts/app/agent-tokens.py <variant> [<variant> …]` says where a variant's
-prefill went: per tool, the calls, the tokens their results added (counted
-by `nuclis tokenize --raw`, the engine's own tokenizer), and each tool's
-share, with the variants side by side when given several.
-`--breakdown <variant>` splits each task's time (prefill on new and reused
-tokens, decode, tools, idle, drafts, reuse lost) and fits prefill seconds on
-new tokens alone and with their depth, `c + a·n + b·((d+n)² − d²)`.
+prefill went: per tool, the calls, the tokens their results added (counted by
+`nuclis tokenize --raw`, the engine's own tokenizer), and each tool's share,
+with the variants side by side when given several. `--breakdown <variant>`
+splits each task's time (prefill on new and reused tokens, decode, tools,
+idle, drafts, reuse lost) and fits prefill seconds on new tokens alone and
+with their depth, `c+a·n+b·((d+n)²−d²)`. `--long todo-bun` builds the to-do
+app of `tests/fixtures/agent-eval/long/` in an empty workspace over
+`--resume`d turns, checks it by running it (build, :3000, WAL, the REST API),
+and counts dropped calls, errors, reasoning cuts, replays, and the peak
+context; `--binary` runs a frozen build and `--long-compare a b` renders the
+records side by side.
 
 ## The website
 
@@ -469,18 +471,16 @@ command buffer of each case whose printed label contains `CAPTURE` into
 dropped), replacing the previous set.
 
 **The division of work.** The agent makes the capture and asks the user
-to profile it (gauge menu: Maximum, *Profile*) and export Counters as CSV
-into `.zig-cache/trace/` under any name. When the user says it is done,
-the agent renames the export to `<capture name>_<YYYY-MM-DDTHHMM>_<performance
-state>.csv` (the time is the file's modification time; the state is
-checked against the replay's GPU time, which at Maximum matches the
-benchmark's rate), for example
-`matvec-Q4_K-5120x17408-ffn_down-block_2026-09-30T0947_max.csv`, reads
-it, copies the numbers that matter into
-[apple-gpu.md](engine/apple-gpu.md) citing the file name, and deletes
-the capture (the `.gputrace`), keeping the CSV. About 1 GB each:
-the benchmark's buffers are sized for its largest shape, and the capture
-holds whole buffers.
+to profile it (gauge menu: Maximum, *Profile*) and export Counters as CSV into
+`.zig-cache/trace/` under any name. When the user says it is done, the agent
+renames the export to `<capture name>_<YYYY-MM-DDTHHMM>_<performance
+state>.csv` (the time is the file's modification time; the state is checked
+against the replay's GPU time, which at Maximum matches the benchmark's rate),
+for example `matvec-Q4_K-5120x17408-ffn_down-block_2026-09-30T0947_max.csv`,
+reads it, copies the numbers that matter into
+[apple-gpu.md](engine/apple-gpu.md) citing the file name, and deletes the
+capture (the `.gputrace`), keeping the CSV. About 1 GB each: the benchmark's
+buffers are sized for its largest shape, and the capture holds whole buffers.
 
 ## Commits, progress, and code explanations
 

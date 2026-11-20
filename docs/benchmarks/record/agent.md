@@ -4,6 +4,124 @@
 The dated record behind [the agent concepts](../../app/agent.md): the
 measurements behind the web tools and the token cache.
 
+### Agent long tasks (2026-11-20)
+
+**Question.** Can the agent build a small app in the 64K window, over
+several turns, without the harness losing work: dropped calls, failed
+writes, reasoning cut mid-file, replays after a resume?
+
+**Method.** `agent-eval.py --long todo-bun` (the user's TODO-app prompt:
+a Bun server, SQLite in WAL mode, a REST API, a styled front end; design
+first, then a confirmation, then up to four "continue" turns while a
+check fails), seed 1, `--print` turns through `--resume`, M4 Pro 48 GB,
+ReleaseSafe. Checks: `bun build`, the server on :3000, `todos.db` in WAL
+mode, the API's create, read, update, and delete. Frozen binaries: base
+at 4d3b486, before the milestone's units; every other row names its
+revision. Model defaults: Gemma 4 26B-A4B MTP draft 4,
+Qwen3.8-27B its entry's drafter; think low, thinking budget 2048,
+max_tokens 8192.
+
+| variant | checks | turns | steps | cut | write err | bash err | reasoning cut | replayed (s) | peak ctx | generated | model s | wall s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| Gemma, base | 3/4 | 6 | 29 | 0 | 0 | 2 | 0 | 2,351 (9) | 40,542 | 19,195 | 410.5 | 449.1 |
+| Gemma, new (bf86635) | 3/4 | 6 | 40 | 1 | 0 | 4 | 0 | 19,944 (54) | 33,378 | 22,924 | 490.4 | 1,120.5 |
+| Gemma, new (9afcf53) | 4/4 | 2 | 11 | 0 | 0 | 0 | 0 | 953 (3) | 14,645 | 12,321 | 190.0 | 200.8 |
+| Gemma, new (7cf7204) | 4/4 | 3 | 28 | 1 | 1 | 6 | 0 | 1,435 (4) | 20,509 | 17,481 | 283.4 | 317.0 |
+| Qwen, base | 4/4 | 4 | 26 | 2 | 1 | 1 | 2 | 27,066 (325) | 43,492 | 43,620 | 2,522.8 | 2,586.6 |
+| Qwen, new (9afcf53) | 4/4 | 2 | 17 | 1 | 1 | 0 | 3 | 11,030 (132) | 29,839 | 32,190 | 1,547.6 | 1,578.8 |
+| Qwen, new (0d6ec99) | 4/4 | 2 | 16 | 0 | 0 | 0 | 0 | 21 (1) | 22,341 | 16,073 | 680.4 | 716.9 |
+
+One seed: a changed binary samples another path, so a row is a trace to
+read, not a mean. What the traces showed, each fixed in the unit it
+belongs to:
+
+- **Qwen, base: every resumed turn re-read 12–15K tokens** (27,066 in
+  all, 325 s). A step cut at max_tokens left a turn end that history does
+  not render, so the saved boundary matched only the system block. A
+  budget stop now rewinds to the prompt mark before the save.
+- **Gemma, bf86635: turn 3 re-read 17,485 tokens.** `bun init` wrote
+  `CLAUDE.md` mid-session, and the next process read it into the system
+  block. The session now records its system block and a resume keeps it
+  when only the date or instructions differ.
+- **Gemma, bf86635: 600 s in two 300 s bash timeouts.** One was a server
+  in the foreground. In the other, `a && b && server & sleep 2 && curl … &&
+  kill $!` backgrounded the whole chain, so `kill $!` stopped only the
+  subshell, and the server held the output open. A shell that exits with
+  its output held is now drained 1 s and its group stopped.
+- **Gemma, bf86635: three `read_file` calls failed alike**:
+  `{count:200,offset=201,path:…}` parsed with a key `offset=201,path`.
+  A bare key now ends at `=`, so the call is a cut whose message quotes the
+  spot.
+- **Qwen, 9afcf53: one 15,261-byte write cut at max_tokens cost 131.6 s**,
+  re-reading 11,009 tokens: a recurrent model has no prompt mark. Its
+  prefill now keeps a state at the prompt end in memory. With
+  `--max-tokens 1200` on a 300-line file, the step after a cut restores
+  2,213 tokens and prefills 285; at 9afcf53 it restored the system block
+  (2,174) and prefilled 325, then 637, 939, 2,352, and 2,664 (26–30 s) on
+  the later cuts.
+- **Gemma, 7cf7204: 4/4 in 317 s.** The server check stopped `bun run
+  src/index.ts` on `*:3000` after 15 s, where earlier runs waited 300 s.
+  Its one cut was a 6,000-byte write whose string opened with a backtick;
+  the result named the delimiter and the next step wrote the file.
+
+**The settings, Gemma 4 26B-A4B** (binary at 09048f0 unless named; one
+seed each):
+
+| variant | checks | turns | steps | replayed (s) | peak ctx | generated | decode tok/s | model s | wall s |
+| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| defaults (MTP draft 4, think low, budget 2048) | 4/4 | 2 | 11 | 953 (3) | 14,645 | 12,321 | 68.1 | 190.0 | 200.8 |
+| `--speculative off` | 4/4 | 3 | 22 | 2,003 (5) | 20,559 | 18,325 | 50.2 | 380.0 | 709.6 |
+| `--think medium` | 4/4 | 3 | 26 | 26,945 (74) | 37,530 | 21,793 | 59.0 | 511.3 | 842.6 |
+| `--thinking-budget 4096` | 3/4 | 6 | 21 | 3,371 (10) | 26,304 | 17,444 | 61.9 | 320.6 | 344.2 |
+| prompt candidate (4909146) | 3/4 | 6 | 24 | 4,783 (14) | 35,504 | 20,765 | 59.1 | 412.4 | 444.8 |
+
+- The drafter pays: decode at 68.1 tokens/s against 50.2 without it.
+- Think medium reasoned 4,835 tokens and filled the window at 37K, where
+  compaction dropped old reasoning and stubbed old writes; the next step
+  replayed 23,966 tokens (66 s). The defaults stand.
+- The two 3/4 runs failed the same check (a POST answered without the
+  new item's `id`): a trajectory, not a setting.
+- Two wall times carry a 300 s bash timeout each, a server started in the
+  foreground. A command still running whose output has been quiet 15 s,
+  with a process of its group listening on TCP (`lsof`), is now stopped
+  as such a server and told how to run it in the background.
+- The prompt candidate (a rule against drafting files in reasoning, writes
+  in parts, edits batched, a server's background form) on Qwen at 78582f9:
+  4/4, but 8,920 reasoning tokens against 1,060 without it, two reasoning
+  cuts, and 1,605.8 s against 716.9. On Gemma's task list it passed 78 %
+  of runs against 72 % at 0d6ec99, at 5,174 prompt tokens a run against
+  3,833. It is not pinned.
+- **Gemma's `pages` task died at its first page in every new binary**
+  (`ContextFull` at 11,287 of 65,536 tokens): a speculative checkpoint the
+  previous step left at 2,323 pinned the sliding layers' rows, and the
+  region, 8,192 rows of slack past its window, could not admit the next
+  chunk. The base binary escaped by a rewind, which clears the checkpoint.
+  Compaction now drops a checkpoint it cannot keep, as it drops the hold.
+- Gemma's replays at the third step of a turn (11 in the prompt
+  candidate's task list, one in the 4096 run): a step whose call came with
+  text ends its prompt on `<turn|>\n<|channel>thought\n` with thinking on,
+  which history never renders, and `promptEnd` did not cut that ending, so
+  the mark failed and the step re-prefilled from the system block. It is
+  now a generation prompt; every one of 24 recorded renders is a prefix of
+  the next.
+
+**The task list, Gemma, seeds 1 and 2** (`make agent-eval`): base 81 %
+of runs (edit errors 7); 09048f0 72 % (edit errors 36, the batch `line`
+refusal); 0d6ec99 72 % (9); 7cf7204 81 % (9), where `pages` seed 1 and
+`replay` pass for the first time, both stopped before by the stale
+checkpoint above. The remaining misses are trajectories: `validate`
+seed 1 fixes the fixture's wrong formula (out of scope), `newfile` seed 2
+renames a function back and forth and ends with no answer.
+
+**The task list, Qwen3.8-27B, seed 1:** 18 of 18 at the base and at
+7cf7204; 93 steps and 2,622.0 s against 84 and 2,532.5 s, 79 % of drafted
+tokens accepted in both.
+
+**The tools block.** The size `src/agent/loop.zig` pins (Qwen's render,
+bytes): 2,896 (2026-09-14, 720 tokens), 2,959 (2026-09-15), 3,392
+(2026-10-04), 3,487 (write_file `append`, 2026-11-20), 3,788 (edit_file
+`edits` and `line`, 2026-11-20).
+
 ### How deep compaction cuts: low water 50, 30, 25 (2026-11-18)
 
 **Question.** [§ Where an agent turn goes](#where-an-agent-turn-goes-2026-11-18)
