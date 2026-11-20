@@ -379,11 +379,14 @@ pub const Listing = struct {
     }
 };
 
-/// `bytes` in binary units, one decimal: `236.4 MiB`, `4.0 GiB`.
+/// `bytes` in binary units, one decimal: `12.5 KiB`, `236.4 MiB`, `4.0 GiB`.
 pub fn byteLabel(buffer: *[16]u8, bytes: u64) []const u8 {
     const value: f64 = @floatFromInt(bytes);
-    if (bytes >= 1 << 30) return std.fmt.bufPrint(buffer, "{d:.1} GiB", .{value / (1 << 30)}) catch "?";
-    if (bytes >= 1 << 20) return std.fmt.bufPrint(buffer, "{d:.1} MiB", .{value / (1 << 20)}) catch "?";
+    // A unit is chosen by the value as printed, so 1,048,575 B reads
+    // 1.0 MiB, not 1024.0 KiB.
+    if (value >= (1 << 30) - 0.05 * (1 << 20)) return std.fmt.bufPrint(buffer, "{d:.1} GiB", .{value / (1 << 30)}) catch "?";
+    if (value >= (1 << 20) - 0.05 * (1 << 10)) return std.fmt.bufPrint(buffer, "{d:.1} MiB", .{value / (1 << 20)}) catch "?";
+    if (bytes >= 1 << 10) return std.fmt.bufPrint(buffer, "{d:.1} KiB", .{value / (1 << 10)}) catch "?";
     return std.fmt.bufPrint(buffer, "{d} B", .{bytes}) catch "?";
 }
 
@@ -618,6 +621,11 @@ test "cache ls lists the states newest first and clear removes them" {
     try clear(alloc, io, root, &out.writer, .{});
     try testing.expect(std.mem.indexOf(u8, out.written(), "removed 2 states, 5 B") != null);
     try testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "cache/prefix/a.snap", .{}));
+    var label: [16]u8 = undefined;
+    try testing.expectEqualStrings("1023 B", byteLabel(&label, 1023));
+    try testing.expectEqualStrings("200.0 KiB", byteLabel(&label, 200 * 1024));
+    try testing.expectEqualStrings("1.2 MiB", byteLabel(&label, 1258291));
+    try testing.expectEqualStrings("1.0 MiB", byteLabel(&label, 1048575));
 }
 
 test "opening the disk tier deletes stale save temporaries and nothing else" {

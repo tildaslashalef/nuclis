@@ -1092,7 +1092,11 @@ const Ui = struct {
         defer resume_mod.freeList(self.alloc, summaries);
         self.closePicker();
         if (summaries.len == 0) {
-            try self.emit(.{ .notice = "  — no saved sessions for this workspace" });
+            const dir = try resume_mod.sessionsPath(self.alloc, self.root_dir.?, self.cwd);
+            defer self.alloc.free(dir);
+            const note = try std.fmt.allocPrint(self.alloc, "  — no saved sessions for this workspace in {s}", .{dir});
+            defer self.alloc.free(note);
+            try self.emit(.{ .notice = note });
             return;
         }
         errdefer self.closePicker();
@@ -1104,9 +1108,10 @@ const Ui = struct {
             try self.pick_keys.append(self.alloc, try self.alloc.dupe(u8, summary.path));
             const short = if (summary.id.len > 8) summary.id[0..8] else summary.id;
             const about = if (summary.first_prompt.len > 0) summary.first_prompt else std.fs.path.basename(summary.cwd);
+            var size: [16]u8 = undefined;
             try items.append(a, .{
                 .label = try a.print("{s}  {s}", .{ short, summary.time }),
-                .detail = try a.print("{s} · ctx {d} · {s}", .{ summary.effort, summary.ctx_size, about }),
+                .detail = try a.print("{s} · ctx {d} · {s} · {s}", .{ summary.effort, summary.ctx_size, loop.cache.byteLabel(&size, summary.bytes), about }),
                 .search = try a.print("{s} {s}", .{ summary.id, about }),
                 .current = std.mem.eql(u8, summary.id, self.log.header.id),
             });
@@ -2404,18 +2409,25 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — prompt profile {s} forced: the file's chat template is not the pinned one", .{@tagName(open.profile())}) catch "  — prompt profile forced" }) catch {};
         }
         // `--resume <id>`: locate the session and replay it before the first
-        // prompt. A missing id is a notice, not a startup failure.
+        // prompt. A missing id is a notice, not a startup failure. A bare
+        // `--resume` opens the picker, as `/resume` does.
         if (resume_id) |id| {
-            // A path needs no root; an id is resolved through the user root.
-            const found = resume_mod.find(alloc, io, root_dir orelse "", cwd, id) catch null;
-            if (found) |path| {
-                defer alloc.free(path);
-                performResume(&ui, alloc, io, path, root_dir, cwd, open.model_path, open.digest, &log) catch |err| {
+            if (std.mem.eql(u8, id, resume_mod.pick)) {
+                ui.resumeCommand(alloc, null) catch |err| {
                     ui.status = @errorName(err);
                 };
             } else {
-                var note: [128]u8 = undefined;
-                ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — no session {s} for this workspace", .{id}) catch "  — no such session" }) catch {};
+                // A path needs no root; an id is resolved through the user root.
+                const found = resume_mod.find(alloc, io, root_dir orelse "", cwd, id) catch null;
+                if (found) |path| {
+                    defer alloc.free(path);
+                    performResume(&ui, alloc, io, path, root_dir, cwd, open.model_path, open.digest, &log) catch |err| {
+                        ui.status = @errorName(err);
+                    };
+                } else {
+                    var note: [128]u8 = undefined;
+                    ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — no session {s} for this workspace", .{id}) catch "  — no such session" }) catch {};
+                }
             }
         }
         while (!ui.quit) {

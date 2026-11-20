@@ -61,7 +61,7 @@ pub const Flag = struct {
     name: []const u8,
     short: ?[]const u8 = null,
     value: Value = .none,
-    /// The value may be left out (`--resume` alone is the newest session).
+    /// The value may be left out (`--resume` alone opens the session picker).
     optional: bool = false,
     repeat: bool = false,
     summary: []const u8,
