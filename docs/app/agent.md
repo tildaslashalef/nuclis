@@ -138,6 +138,7 @@ The bounds are host constants, never the model's; the tools' rows
 | grep matches shown | 50 | src/agent/tools/grep.zig `max_shown` |
 | grep files scanned | 20,000 | src/agent/tools/grep.zig `max_files` |
 | grep seconds | 10 | src/agent/tools/grep.zig `max_seconds` |
+| edit_file edits per call | 16 | src/agent/tools/edit_file.zig `max_edits` |
 | glob results | 200 | src/agent/tools/glob.zig `max_results` |
 | image tokens per image | 4,096 | inference/src/vision/root.zig `max_image_tokens` |
 | server output tokens | 16,384 | src/api/chat/wire.zig `max_output_tokens` |

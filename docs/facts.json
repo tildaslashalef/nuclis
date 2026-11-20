@@ -670,6 +670,11 @@
       "source": "src/agent/tools/grep.zig `max_seconds`"
     },
     {
+      "limit": "edit_file edits per call",
+      "value": 16,
+      "source": "src/agent/tools/edit_file.zig `max_edits`"
+    },
+    {
       "limit": "glob results",
       "value": 200,
       "source": "src/agent/tools/glob.zig `max_results`"

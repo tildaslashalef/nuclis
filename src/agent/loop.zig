@@ -871,6 +871,9 @@ pub const Agent = struct {
             const started = std.Io.Clock.awake.now(self.io);
             var result = if (self.cutMessage(index)) |message| try tools.fail(self.alloc, "{s}", .{message}) else try self.runTool(call);
             defer result.deinit(self.alloc);
+            // A failed edit means the model's picture of the file is wrong:
+            // its next read must be the text, not a pointer to an earlier one.
+            if (result.is_error and std.mem.eql(u8, call.name, "edit_file")) try self.forgetReads(call);
             const ran = seconds(started.durationTo(std.Io.Clock.awake.now(self.io)));
             // A tool that honours the interrupt (bash, the web tools) fails
             // when it stops; that failure is the user's cancel, not the tool's.
@@ -1019,6 +1022,24 @@ pub const Agent = struct {
         });
         owned = false;
         return null;
+    }
+
+    /// Drops this turn's reads of the call's `path`.
+    fn forgetReads(self: *Agent, call: Profile.ToolCall) !void {
+        const Args = struct { path: []const u8 };
+        const parsed = std.json.parseFromSlice(Args, self.alloc, call.arguments, .{ .ignore_unknown_fields = true }) catch return;
+        defer parsed.deinit();
+        const abs = self.workspace.resolve(self.alloc, parsed.value.path) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return,
+        };
+        defer self.alloc.free(abs);
+        var i: usize = 0;
+        while (i < self.reads.items.len) {
+            if (std.mem.eql(u8, self.reads.items[i].path, abs)) {
+                self.alloc.free(self.reads.swapRemove(i).path);
+            } else i += 1;
+        }
     }
 
     /// A result cut to the budget: the kept prefix plus a note that says what
@@ -2520,7 +2541,7 @@ test "the tools block the profile renders is pinned to its measured size" {
     // The six tools' block in the pinned Qwen rendering, in bytes; its
     // measured sizes are in docs/benchmarks/record/agent.md. Pinned so a
     // tool description edit cannot grow the context silently.
-    try testing.expectEqual(@as(usize, 3487), with_tools.len - without.len);
+    try testing.expectEqual(@as(usize, 3788), with_tools.len - without.len);
 }
 
 test "every step that reasoned closes its own thinking block" {
@@ -2805,6 +2826,28 @@ test "a repeated read of an unchanged range points at the earlier result; a chan
     try testing.expectEqualStrings("[unchanged since step 1: lines 2 to 2 of this file are in that result above]", agent.history.items[4].content);
     // After the edit the content differs, so the line is served again.
     try testing.expectEqualStrings("TWO\n[lines 2 to 2 of 3 · truncated, continue with offset=3]", agent.history.items[8].content);
+}
+
+test "a failed edit clears the file's reads, so the next read returns the text" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\nthree" });
+    const miss: Profile.ToolCall = .{ .id = 0, .name = "edit_file", .arguments = "{\"path\":\"a.txt\",\"old_string\":\"zzzz\",\"new_string\":\"y\"}" };
+    var stub: Stub = .{
+        .answers = &.{ "", "", "", "done" },
+        .calls = &.{ &.{read_a}, &.{miss}, &.{read_a} },
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+
+    try testing.expectEqual(Stop.done, try agent.turn("read, miss an edit, reread", &.{}));
+    // [user, (assistant, tool) x3, assistant]
+    try testing.expectEqualStrings("one\ntwo\nthree", agent.history.items[2].content);
+    try testing.expect(std.mem.startsWith(u8, agent.history.items[4].content, "edit_file: old_string was not found"));
+    try testing.expectEqualStrings("one\ntwo\nthree", agent.history.items[6].content);
 }
 
 test "with nothing left to elide, a full window is the caller's error" {
