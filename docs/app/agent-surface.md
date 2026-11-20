@@ -144,7 +144,7 @@ it are [agent.md](agent.md).
   first word is ASCII letters (`/usr/bin/env` stays a prompt). A command is
   an *action* (no argument, acts now; an argument is a usage error) or a
   *chooser* (no argument opens its picker; the choice typed as the argument
-  skips it). The commands are `/model [name]`, `/resume [id]`, `/clear`,
+  skips it). The commands are `/model [name]`, `/resume [id]`, `/compact [focus]`, `/clear`,
   and `/help`, plus `!`/`!!`; a retired command (`/new`, `/think`, `/ctx`,
   `/list`, `/delete`, `/save`, `/image`) answers with where its job went.
   A command typed during a turn waits for the turn's end instead of
@@ -262,7 +262,7 @@ it are [agent.md](agent.md).
   `boundary` of its state saved in the token cache), `tool_result` (with its summary),
   `effort`, `context`, `model` (a `/model` switch: the name, file, digest,
   context, and effort the conversation continued on; readers older than
-  the entry refuse the file, as any unknown type), `compaction`, `notice`.
+  the entry refuse the file, as any unknown type), `compaction`, `notice`, `cut` (a dropped call), `handoff`.
 - Append-only, created at the first entry; a resumed file's ids continue
   past its last. A file stops recording at 64 MiB, the most a resume
   reads, with a notice past 51 MiB naming `/clear`. A truncated last line is
@@ -274,7 +274,7 @@ it are [agent.md](agent.md).
 - Resuming (`/resume`, `--resume [<id>]`; print mode's default `latest`) renders
   the conversation the model last saw through the profile into a fresh
   session: cancelled steps left out and every `compaction` applied where
-  it was written (`context_full`, `results_elided`, `turn_aborted`). When the
+  it was written (`context_full`, `results_elided`, `turn_aborted`, `reasoning_dropped`, `arguments_stubbed`), from the latest `handoff`. When the
   file's last `boundary` starts that render and its state is on disk (same
   model files, backend, context size, and build), the state is restored and
   only the rest is prefilled; otherwise the whole conversation is
@@ -330,21 +330,21 @@ it are [agent.md](agent.md).
   ([record, 2026-11-17](../benchmarks/record/agent.md#web-pages-sized-from-the-result-budget-2026-11-17)).
   The window is 32K by default: Qwen3.8-27B with its drafter peaks at
   6.8 GB beside its 17.9 GB of mapped weights after a 26K-token prompt.
-- Compaction: one decision when a step does not fit, or runs into the
-  window's end (that step is dropped and run once more; a second time is
-  `ContextFull`). `Agent.compact` measures the render (`Model.measure`),
-  drops whole earlier turns oldest first, then makes the turn's own
-  results one-line stubs, oldest first, keeping the last two, until the
-  render is at or below half the ceiling (`low_water_percent`; a cut
-  that only just fits compacts again at once), then retries. Each cut is a `compaction` entry, the stubs all before
-  the first result kept (a failed turn leaves the view too, recorded the
-  same way). The transcript says what one step's retries cut once per
-  kind, before the run that follows or the failure (`— 3 older turns
-  dropped from context to fit`, `— 2 earlier tool results of this turn
-  elided from context to fit`). Only then does the turn end with a message
-  naming the tokens needed and how to raise the window; a turn that
-  alone cannot fit fails with a named reason. The measurements behind
-  the reserve and the mark:
+- Compaction: one decision when a step does not fit, runs into the
+  window's end (dropped and run once more; a second time is
+  `ContextFull`), or a turn starts past 85 % of the ceiling. Until the
+  render (`Model.measure`) is at or below half the ceiling
+  (`low_water_percent`), `Agent.compact` empties the reasoning of every
+  step but the last two, then shortens their `write_file` and `edit_file`
+  arguments to the path and a stub, then hands off (also `/compact
+  [focus]`): one step without tools summarizes a condensed render, and the
+  conversation becomes one message: the host's ledger (every request, the
+  answer replied to, the files written, the last failing command's end),
+  the summary, and the request in progress. When it cannot run, earlier
+  turns go oldest first, then the turn's results become stubs, keeping the
+  last two. Each cut is an entry a resume replays, announced once per kind
+  (`— 3 older turns dropped from context to fit`); past them the turn ends
+  naming the tokens needed. The reserve and the mark:
   [record, 2026-11-17](../benchmarks/record/agent.md#the-context-budget-2026-11-17);
   30 % or 25 % change nothing on the task list: [2026-11-18](../benchmarks/record/agent.md#how-deep-compaction-cuts-low-water-50-30-25-2026-11-18).
 - Reasoning budget: one step reasons for at most `agent.thinking_budget`

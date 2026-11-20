@@ -15,6 +15,7 @@ const session = @import("session.zig");
 const cache = @import("../completer/cache.zig");
 const tools = @import("tools/root.zig");
 const loop = @import("loop.zig");
+const handoff = @import("handoff.zig");
 const style = @import("../tui/style.zig");
 
 const Allocator = std.mem.Allocator;
@@ -316,12 +317,16 @@ pub fn sessionsPath(alloc: Allocator, root_dir: []const u8, cwd: []const u8) ![]
 pub const Conversation = struct {
     messages: []Profile.Message,
     records: []usize,
-    /// The elision stubs some messages' content points at; owned.
+    /// The elision stubs some messages' content or call arguments point
+    /// at, and the call arrays rebuilt to hold shortened arguments; owned.
     stubs: [][]u8,
+    calls: [][]Profile.ToolCall = &.{},
 
     pub fn deinit(self: Conversation, alloc: Allocator) void {
         for (self.stubs) |stub| alloc.free(stub);
         alloc.free(self.stubs);
+        for (self.calls) |list_| alloc.free(list_);
+        alloc.free(self.calls);
         alloc.free(self.records);
         alloc.free(self.messages);
     }
@@ -340,6 +345,11 @@ pub fn conversation(alloc: Allocator, loaded: session.Loaded) !Conversation {
     defer {
         for (stubs.items) |stub| alloc.free(stub);
         stubs.deinit(alloc);
+    }
+    var calls: std.ArrayList([]Profile.ToolCall) = .empty;
+    defer {
+        for (calls.items) |list_| alloc.free(list_);
+        calls.deinit(alloc);
     }
     // Where the turn in progress begins in `out`, as the loop's `turn_start`.
     var turn_start: usize = 0;
@@ -378,7 +388,21 @@ pub fn conversation(alloc: Allocator, loaded: session.Loaded) !Conversation {
                     out.shrinkRetainingCapacity(kept);
                     at.shrinkRetainingCapacity(kept);
                     turn_start = @min(turn_start, kept);
+                } else if (std.mem.eql(u8, c.reason, loop.reasoning_dropped)) {
+                    for (out.items[0..kept]) |*m| if (m.role == .assistant) {
+                        m.reasoning_content = "";
+                    };
+                } else if (std.mem.eql(u8, c.reason, loop.arguments_stubbed)) {
+                    for (out.items[0..kept]) |*m| try stubCalls(alloc, m, &stubs, &calls);
                 }
+                continue;
+            },
+            .handoff => |h| {
+                out.clearRetainingCapacity();
+                at.clearRetainingCapacity();
+                turn_start = 0;
+                try out.append(alloc, .{ .role = .user, .content = h.text });
+                try at.append(alloc, index);
                 continue;
             },
             else => continue,
@@ -392,7 +416,31 @@ pub fn conversation(alloc: Allocator, loaded: session.Loaded) !Conversation {
     errdefer alloc.free(messages);
     const records = try at.toOwnedSlice(alloc);
     errdefer alloc.free(records);
-    return .{ .messages = messages, .records = records, .stubs = try stubs.toOwnedSlice(alloc) };
+    const owned_stubs = try stubs.toOwnedSlice(alloc);
+    errdefer {
+        for (owned_stubs) |stub| alloc.free(stub);
+        alloc.free(owned_stubs);
+    }
+    return .{ .messages = messages, .records = records, .stubs = owned_stubs, .calls = try calls.toOwnedSlice(alloc) };
+}
+
+/// Shortens `m`'s write and edit calls as the loop did
+/// (`handoff.argumentStub`), into a call array of its own.
+fn stubCalls(alloc: Allocator, m: *Profile.Message, stubs: *std.ArrayList([]u8), calls: *std.ArrayList([]Profile.ToolCall)) !void {
+    if (m.role != .assistant or m.tool_calls.len == 0) return;
+    var copy: []Profile.ToolCall = &.{};
+    for (m.tool_calls, 0..) |call, i| {
+        try stubs.ensureUnusedCapacity(alloc, 1);
+        const stub = try handoff.argumentStub(alloc, call.name, call.arguments) orelse continue;
+        stubs.appendAssumeCapacity(stub);
+        if (copy.len == 0) {
+            try calls.ensureUnusedCapacity(alloc, 1);
+            copy = try alloc.dupe(Profile.ToolCall, m.tool_calls);
+            calls.appendAssumeCapacity(copy);
+        }
+        copy[i].arguments = stub;
+    }
+    if (copy.len > 0) m.tool_calls = copy;
 }
 
 /// Applies a stored conversation to a transcript and returns the rows it
@@ -442,6 +490,8 @@ pub fn replay(alloc: Allocator, tr: *transcript.Transcript, loaded: session.Load
                 .cancelled = r.cancelled,
                 .summary = r.summary,
             } }),
+            // Display only: the rows above stay, the model resumes from here.
+            .handoff => try tr.apply(.{ .notice = "  — handed off here: the model continues from a summary of the above" }),
             else => {},
         }
         try out.appendSlice(alloc, try tr.takeClosed(alloc, options));
@@ -748,4 +798,44 @@ test "fuzz session: any file loads, rebuilds, and exports, or is a typed error" 
         header ++ "{\"type\":\"user\",\"id\":1,\"parent\":null,\"time\":\"t\",\"text\":\"x\",\"images\":[{\"path\":\"p\",\"width\":1099511627776}]}\n{",
         header ++ "{\"type\":\"compaction\",\"id\":1,\"parent\":null,\"time\":\"t\",\"first_kept\":99,\"reason\":\"x\"}\n",
     }) });
+}
+
+test "a resume replays the cheap cuts and starts at the latest hand-off" {
+    const alloc = std.testing.allocator;
+    var buffer: std.Io.Writer.Allocating = .init(alloc);
+    defer buffer.deinit();
+    const w = &buffer.writer;
+    try w.writeAll("{\"type\":\"session\",\"version\":2,\"id\":\"a\",\"time\":\"t\",\"cwd\":\"/w\",\"model\":{\"path\":\"/m\"},\"effort\":\"low\",\"ctx_size\":8}\n");
+    const big = "{\"path\":\"a.txt\",\"content\":\"" ++ @as([600]u8, @splat('x')) ++ "\"}";
+    const entries = [_]session.Entry{
+        .{ .user = .{ .text = "go" } },
+        .{ .assistant = .{ .thinking = "plan", .answer = "", .tool_calls = &.{.{ .id = 1, .name = "write_file", .arguments = big }}, .stop = "eos" } },
+        .{ .tool_result = .{ .call = "1", .text = "created a.txt" } },
+        .{ .compaction = .{ .first_kept = 2, .reason = loop.reasoning_dropped } },
+        .{ .compaction = .{ .first_kept = 2, .reason = loop.arguments_stubbed } },
+    };
+    for (entries, 1..) |entry, id| try session.writeEntry(w, entry, @intCast(id), if (id == 1) null else @intCast(id - 1), "t");
+    {
+        const loaded = try session.parseText(alloc, buffer.written(), null);
+        defer loaded.deinit();
+        const c = try conversation(alloc, loaded);
+        defer c.deinit(alloc);
+        try std.testing.expectEqual(@as(usize, 3), c.messages.len);
+        try std.testing.expectEqualStrings("", c.messages[1].reasoning_content);
+        try std.testing.expect(std.mem.indexOf(u8, c.messages[1].tool_calls[0].arguments, handoff.stub_marker) != null);
+    }
+    const later = [_]session.Entry{
+        .{ .handoff = .{ .text = "H1" } },
+        .{ .user = .{ .text = "more" } },
+        .{ .handoff = .{ .text = "H2" } },
+        .{ .assistant = .{ .answer = "ok", .stop = "eos" } },
+    };
+    for (later, entries.len + 1..) |entry, id| try session.writeEntry(w, entry, @intCast(id), @intCast(id - 1), "t");
+    const loaded = try session.parseText(alloc, buffer.written(), null);
+    defer loaded.deinit();
+    const c = try conversation(alloc, loaded);
+    defer c.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 2), c.messages.len);
+    try std.testing.expectEqualStrings("H2", c.messages[0].content);
+    try std.testing.expectEqualStrings("ok", c.messages[1].content);
 }

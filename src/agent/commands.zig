@@ -19,7 +19,7 @@ const status = @import("../tui/status.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const Kind = enum { clear, resume_session, model, help, shell };
+pub const Kind = enum { clear, compact, resume_session, model, help, shell };
 
 pub const Form = enum { action, chooser };
 
@@ -37,6 +37,7 @@ pub const Spec = struct {
 pub const table = [_]Spec{
     .{ .kind = .model, .name = "model", .form = .chooser, .argument = "[name]", .summary = "switch the model; its effort and context window", .keys = "Ctrl-T effort, Ctrl-W context" },
     .{ .kind = .resume_session, .name = "resume", .form = .chooser, .argument = "[id]", .summary = "continue a saved session (Ctrl-D in the list deletes one)" },
+    .{ .kind = .compact, .name = "compact", .form = .chooser, .argument = "[focus]", .summary = "replace the conversation with a hand-off summary, to continue with room" },
     .{ .kind = .clear, .name = "clear", .summary = "drop the conversation; the old session stays resumable", .keys = "Ctrl-N" },
     .{ .kind = .help, .name = "help", .summary = "keys and commands" },
 };
@@ -63,6 +64,8 @@ pub const Shell = struct { command: []const u8, send: bool };
 
 pub const Command = union(enum) {
     clear,
+    /// What the hand-off should focus on, or null.
+    compact: ?[]const u8,
     /// An id or id prefix, or null to pick the session interactively.
     resume_session: ?[]const u8,
     /// A model name (or a fuzzy query for one), or null to pick it.
@@ -107,6 +110,7 @@ pub fn parse(line: []const u8) ?Result {
         return .{
             .command = switch (spec.kind) {
                 .clear => .clear,
+                .compact => .{ .compact = argument },
                 .help => .help,
                 .resume_session => .{ .resume_session = argument },
                 .model => .{ .model = argument },

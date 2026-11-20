@@ -176,10 +176,10 @@ model ever finished, so it is recorded for display but neither appended to
 history nor given stored calls; a file whose assistant call has no following
 result would not load. The live loop also shrinks its view to fit
 the window, one decision per overflow ([agent-surface.md § The loop](agent-surface.md#the-loop)),
-and each cut is a `compaction` entry the loader applies where it was written: `context_full` drops the turns before `first_kept`,
-`results_elided` turns the tool results of the turn in progress before
-`first_kept` into the same one-line stubs, and `turn_aborted` drops a turn that
-failed. So a resumed conversation is the one the model last saw, not the
+and each cut is an entry the loader applies where it was written. Before `first_kept`, a `compaction`'s
+`context_full` drops the turns, `results_elided` stubs the turn's results, `turn_aborted` drops a
+failed turn, `reasoning_dropped` empties the reasoning and `arguments_stubbed` shortens the writes;
+a `handoff` replaces all before it. So a resumed conversation is the one the model last saw, not the
 longer one the file holds. The cost of the replay is that it is prefilled
 again on resume — which is the honest trade: the alternative is persisting
 opaque numerical state that the format cannot describe and a later change
