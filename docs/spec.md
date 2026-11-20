@@ -381,11 +381,10 @@ What each command **must** do beyond its summary; `decide`, `embed`, `speak`,
 | `completion` | a thin script per shell that runs the hidden `nuclis __complete <words…>`, which answers from one command table held to the parser and the help pages by tests |
 
 Output rules: text to stdout, diagnostics to stderr; `--json` is a
-versioned result type shared with the human-readable form; styling only on
-a terminal that advertises colour, never under `NO_COLOR` or a pipe; every
-stop a named reason, and no prompt silently truncated; streamed text
-valid UTF-8; every `--help` page
-self-contained.
+versioned result type shared with the text; every stop a named reason, no
+prompt silently truncated; streamed text valid UTF-8; every `--help` page
+self-contained; the text through one kit, errors as `nuclis: <message>`,
+exit 2 for a usage error ([app/command-output.md](app/command-output.md)).
 
 ## 7. The agent
 

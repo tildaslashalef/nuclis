@@ -54,8 +54,8 @@ and, built with `-Dmetal=true`, on the Metal backend. The
 
 ```text
 src/                 executable: CLI, model commands, config
-  src/tui/           terminal surface, engine-free: screen, editor, theme,
-                     markdown, keys
+  src/tui/, src/ui/  terminal surface (screen, editor, theme, markdown, keys);
+                     the command-output kit (docs/app/command-output.md)
   src/completer.zig  the completion side of a conversation: render, continue
                      or restore the session, complete (src/completer/cache.zig)
   src/agent/         agent composition: engine, conversation, sessions, tools

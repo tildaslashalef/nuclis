@@ -115,7 +115,7 @@ A model refused at start (`--model`, `--pin`) says the sizes, the
 needed and the free beside the models pinned before it:
 
 ```text
-error: ModelTooLarge: the speech model drama-3 needs 19.4 GiB; 16.6 of 40.0 GiB is free beside the pinned models (--memory, serve.memory_bytes)
+nuclis: the speech model drama-3 needs 19.4 GiB; 16.6 of 40.0 GiB is free beside the pinned models (--memory, serve.memory_bytes)
 ```
 
 The pins open in the order decision, language, embedding, speech,

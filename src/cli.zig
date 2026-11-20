@@ -17,6 +17,7 @@ const model = @import("model.zig");
 const style = @import("tui/style.zig");
 const catalog = @import("catalog.zig");
 const help_text = @import("help.zig");
+const errors = @import("errors.zig");
 const completion = @import("completion.zig");
 const decide = @import("decide.zig");
 const decision_catalog = @import("decision/catalog.zig");
@@ -96,7 +97,25 @@ fn isValueFlag(flag: []const u8) bool {
     return false;
 }
 
+/// The command line as `Options`, and on failure `diag` saying which
+/// argument went wrong and how (`errors.explainParse`), with the hint
+/// that makes it a usage error.
+pub fn parse(args: []const []const u8, diag: *Diagnostic) !Options {
+    var at: usize = 0;
+    return parseAt(args, &at) catch |err| {
+        errors.explainParse(diag, err, .{ .args = args, .at = at });
+        return err;
+    };
+}
+
+/// `parse` without the explanation, for the tests that pin error names.
 pub fn parseArgs(args: []const []const u8) !Options {
+    var at: usize = 0;
+    return parseAt(args, &at);
+}
+
+/// `at` follows the argument being read, so a failure can name it.
+fn parseAt(args: []const []const u8, at: *usize) !Options {
     if (args.len == 0) return .{ .command = .help };
     if (args.len == 1 and (std.mem.eql(u8, args[0], "--help") or std.mem.eql(u8, args[0], "-h")))
         return .{ .command = .help };
@@ -146,7 +165,8 @@ pub fn parseArgs(args: []const []const u8) !Options {
     if (args.len == 2 and std.mem.eql(u8, args[1], "--help")) {
         return .{ .command = .help, .help_topic = std.meta.stringToEnum(help_text.Topic, args[0]) };
     }
-    if (command == .model) return parseModelArgs(args[1..]);
+    at.* = 1;
+    if (command == .model) return parseModelArgs(args[1..], at);
     if (command == .decide) return .{ .command = .decide, .words = args[1..] };
     if (command == .embed) return .{ .command = .embed, .words = args[1..] };
     if (command == .transcribe) return .{ .command = .transcribe, .words = args[1..] };
@@ -155,7 +175,10 @@ pub fn parseArgs(args: []const []const u8) !Options {
     if (command == .serve) return .{ .command = .serve, .words = args[1..] };
     if (command == .completion) {
         if (args.len < 2) return error.MissingShell;
-        if (args.len > 2) return error.UnknownOption;
+        if (args.len > 2) {
+            at.* = 2;
+            return error.UnknownOption;
+        }
         return .{ .command = .completion, .shell = std.meta.stringToEnum(completion.Shell, args[1]) orelse return error.UnknownShell };
     }
     if (command == .cache) {
@@ -165,18 +188,21 @@ pub fn parseArgs(args: []const []const u8) !Options {
             options.cache_action = std.meta.stringToEnum(@FieldType(Options, "cache_action"), rest[0]) orelse return error.UnknownCacheAction;
             rest = rest[1..];
         }
-        for (rest) |arg| {
+        for (rest, args.len - rest.len..) |arg, k| {
+            at.* = k;
             if (std.mem.eql(u8, arg, "--json") and options.cache_action == .ls and !options.json) options.json = true else return error.UnknownOption;
         }
         return options;
     }
     if (command == .agent and args.len >= 2 and std.mem.eql(u8, args[1], "export")) {
         if (args.len < 3) return error.MissingSessionId;
+        at.* = 4;
         if (args.len > 4) return error.UnknownOption;
         return .{ .command = .agent, .agent_action = .@"export", .session_id = args[2], .export_path = if (args.len == 4) args[3] else null };
     }
     if (command == .agent and args.len >= 2 and std.mem.eql(u8, args[1], "rm")) {
         if (args.len < 3) return error.MissingSessionId;
+        at.* = 3;
         if (args.len > 3) return error.UnknownOption;
         return .{ .command = .agent, .agent_action = .rm, .session_id = args[2] };
     }
@@ -205,6 +231,7 @@ pub fn parseArgs(args: []const []const u8) !Options {
     const samples = command == .generate or command == .agent;
     const prompts = command == .generate or command == .bench or command == .tokenize;
     while (i < args.len) : (i += 1) {
+        at.* = i;
         if (std.mem.eql(u8, args[i], "--json")) {
             if (options.json) return error.DuplicateOption;
             if (command == .config and options.config_action == .set) return error.UnknownOption;
@@ -504,7 +531,7 @@ fn parseOnOff(value: []const u8) ?bool {
 /// no model to open).
 const mtp_notice = "`mtp` is now `draft` (`--with draft`, `--with draft=<variant>`); the old name goes in the next minor release";
 
-fn parseModelArgs(args: []const []const u8) !Options {
+fn parseModelArgs(args: []const []const u8, at: *usize) !Options {
     if (args.len == 0) return error.MissingModelAction;
     var options: Options = .{ .command = .model };
     options.model_action = std.meta.stringToEnum(@FieldType(Options, "model_action"), args[0]) orelse return error.UnknownModelAction;
@@ -519,6 +546,7 @@ fn parseModelArgs(args: []const []const u8) !Options {
     }
     const p = &options.pull;
     while (i < args.len) : (i += 1) {
+        at.* = i + 1;
         const flag = args[i];
         if (std.mem.eql(u8, flag, "--json")) {
             if (options.json) return error.DuplicateOption;
