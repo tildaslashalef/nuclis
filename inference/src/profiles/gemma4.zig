@@ -76,6 +76,10 @@ pub const stream_markers: profiles.StreamMarkers = .{
     // Its brackets are control tokens: a call that does not parse is no
     // answer text either.
     .tool_unparsed = .cut,
+    .tool_diagnose = diagnoseTool,
+    // Names no marker: the reminder reaches the model inside a tool
+    // response, whose strings cannot carry one.
+    .tool_cut_hint = "Write each string argument between the string delimiter tokens, not in JSON quotes: such a string needs no escaping.",
 };
 
 /// The DSL's string delimiter: strings are literal between two of these and
@@ -624,6 +628,40 @@ pub fn parseTool(alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.E
     return .{ .id = 0, .name = name_owned, .arguments = arguments_owned };
 }
 
+/// Why `parseTool` refused `body`: no `call:NAME{` head, a `\\u` escape
+/// that is no code point, or where else the reading stopped. `name` borrows
+/// `body`.
+pub fn diagnoseTool(alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.Error!profiles.stream.Diagnosis {
+    const lead = body.len - std.mem.trimStart(u8, body, " \t\r\n").len;
+    const text = std.mem.trim(u8, body, " \t\r\n");
+    const call_marker = "call:";
+    if (!std.mem.startsWith(u8, text, call_marker)) return .{ .reason = .no_name, .at = lead };
+    const brace = std.mem.indexOfScalarPos(u8, text, call_marker.len, '{') orelse return .{ .reason = .no_name, .at = lead + text.len };
+    const name = text[call_marker.len..brace];
+    checkName(name) catch return .{ .reason = .no_name, .at = lead + call_marker.len };
+    if (name.len == 0) return .{ .reason = .no_name, .at = lead + call_marker.len };
+    var arguments: std.Io.Writer.Allocating = .init(alloc);
+    defer arguments.deinit();
+    var parser: Parser = .{ .alloc = alloc, .text = text, .pos = brace, .json = .{ .writer = &arguments.writer } };
+    defer parser.scratch.deinit(alloc);
+    const whole = try parser.object(0);
+    if (whole) parser.space();
+    return .{
+        .reason = if (parser.bad_escape) .invalid_escape else .malformed,
+        .at = lead + @min(parser.pos, text.len),
+        .name = name,
+    };
+}
+
+/// A bare key ends at the bytes that end or separate a pair; a schema's own
+/// key may hold anything else (spaces, `@`, `/`, any script).
+fn isKeyByte(c: u8) bool {
+    return switch (c) {
+        ':', '}', ',', '=', '\n' => false,
+        else => true,
+    };
+}
+
 /// A recursive-descent reader of the call DSL that writes JSON as it goes.
 /// Every method returns false for a malformed or truncated body; the only
 /// error is allocation (the writer is allocating, so its failure is OOM).
@@ -634,6 +672,8 @@ const Parser = struct {
     json: std.json.Stringify,
     /// The last JSON string read, decoded; valid until the next one.
     scratch: std.ArrayList(u8) = .empty,
+    /// A `\u` escape was not a valid code point (`diagnoseTool`).
+    bad_escape: bool = false,
 
     const Fail = std.mem.Allocator.Error;
 
@@ -663,9 +703,10 @@ const Parser = struct {
                 self.space();
                 if (!self.take(":")) return false;
             } else {
-                // A key is anything up to the colon, bar a closing brace.
+                // `offset=201,path` is a broken call, not a key: reading
+                // stops where it breaks.
                 const start = self.pos;
-                while (self.pos < self.text.len and self.text[self.pos] != ':' and self.text[self.pos] != '}') self.pos += 1;
+                while (self.pos < self.text.len and isKeyByte(self.text[self.pos])) self.pos += 1;
                 if (self.pos == start or self.pos == self.text.len or self.text[self.pos] != ':') return false;
                 self.json.objectField(self.text[start..self.pos]) catch return error.OutOfMemory;
                 self.pos += 1;
@@ -674,11 +715,23 @@ const Parser = struct {
             if (!try self.value(depth)) return false;
             self.space();
             if (self.take("}")) break;
+            // The body's end closes what the model left open: the call's
+            // close marker already came, so nothing more was meant.
+            if (self.pos == self.text.len) break;
             if (!self.take(",")) return false;
             self.space();
         }
         self.json.endObject() catch return error.OutOfMemory;
         return true;
+    }
+
+    /// Whether a bare `key:` starts at `pos`: an identifier and a colon,
+    /// which no array element can begin with.
+    fn keyAhead(self: *const Parser) bool {
+        var i = self.pos;
+        if (i >= self.text.len or !(std.ascii.isAlphabetic(self.text[i]) or self.text[i] == '_')) return false;
+        while (i < self.text.len and (std.ascii.isAlphanumeric(self.text[i]) or self.text[i] == '_')) i += 1;
+        return i < self.text.len and self.text[i] == ':';
     }
 
     fn array(self: *Parser, depth: usize) Fail!bool {
@@ -693,8 +746,17 @@ const Parser = struct {
             if (!try self.value(depth)) return false;
             self.space();
             if (self.take("]")) break;
+            // A list the model left open ends where only its enclosing
+            // object can go on: a `}`, the body's end, or a comma before a
+            // bare key (`edits:[{…},line:3}`), the comma left to the object.
+            if (self.pos == self.text.len or self.text[self.pos] == '}') break;
+            const comma = self.pos;
             if (!self.take(",")) return false;
             self.space();
+            if (self.keyAhead()) {
+                self.pos = comma;
+                break;
+            }
         }
         self.json.endArray() catch return error.OutOfMemory;
         return true;
@@ -747,7 +809,7 @@ const Parser = struct {
                     if (self.pos >= self.text.len) return null;
                     const e = self.text[self.pos];
                     self.pos += 1;
-                    const byte: u8 = switch (e) {
+                    const byte: u8 = escaped: switch (e) {
                         '"', '\\', '/' => e,
                         'b' => 0x08,
                         'f' => 0x0c,
@@ -755,6 +817,8 @@ const Parser = struct {
                         'r' => '\r',
                         't' => '\t',
                         'u' => {
+                            // Every early return below is a bad `\u` escape.
+                            self.bad_escape = true;
                             const unit = self.hex4() orelse return null;
                             var point: u21 = unit;
                             if (std.unicode.utf16IsHighSurrogate(unit)) {
@@ -766,9 +830,15 @@ const Parser = struct {
                             var buf: [4]u8 = undefined;
                             const n = std.unicode.utf8Encode(point, &buf) catch return null;
                             try self.scratch.appendSlice(self.alloc, buf[0..n]);
+                            self.bad_escape = false;
                             continue;
                         },
-                        else => return null,
+                        // An escape JSON lacks (`\$`, `\``) is the source text
+                        // the model meant: both bytes are kept.
+                        else => {
+                            try self.scratch.append(self.alloc, '\\');
+                            break :escaped e;
+                        },
                     };
                     try self.scratch.append(self.alloc, byte);
                 },
@@ -1087,7 +1157,6 @@ test "parseTool accepts the grammar's whitespace and refuses malformed or trunca
         "no call here",
         "call:{a:1}", // empty name
         "call:f x{a:1}", // whitespace in the name
-        "call:f{a:1", // truncated
         "call:f{a:<|\"|>open}", // unterminated string
         "call:f{a:1}x", // trailing text
         "call:f{:1}", // empty key
@@ -1102,6 +1171,31 @@ test "parseTool accepts the grammar's whitespace and refuses malformed or trunca
     }
 }
 
+test "parseTool closes a list or object the model left open where only one reading exists" {
+    const alloc = std.testing.allocator;
+    for ([_][2][]const u8{
+        .{ "call:f{a:1", "{\"a\":1}" },
+        .{ "call:f{e:[{x:1},{x:2}", "{\"e\":[{\"x\":1},{\"x\":2}]}" },
+        .{ "call:f{e:[{x:1}},", "" },
+        .{ "call:f{e:[{x:1}}", "{\"e\":[{\"x\":1}]}" },
+        .{ "call:f{e:[{x:1,p:<|\"|>a<|\"|>},line:31}", "{\"e\":[{\"x\":1,\"p\":\"a\"}],\"line\":31}" },
+        .{ "call:f{e:[[1,2,b:3}", "{\"e\":[[1,2]],\"b\":3}" },
+        .{ "call:f{e:[<|\"|>a:b<|\"|>,<|\"|>c<|\"|>]}", "{\"e\":[\"a:b\",\"c\"]}" },
+    }) |case| {
+        const call = try parseTool(alloc, case[0]);
+        if (case[1].len == 0) {
+            try std.testing.expect(call == null);
+            continue;
+        }
+        const got = call orelse return error.TestUnexpectedResult;
+        defer {
+            alloc.free(got.name);
+            alloc.free(got.arguments);
+        }
+        try std.testing.expectEqualStrings(case[1], got.arguments);
+    }
+}
+
 test "parseTool reads JSON strings, as the models sometimes write them" {
     const alloc = std.testing.allocator;
     for ([_][2][]const u8{
@@ -1111,6 +1205,8 @@ test "parseTool reads JSON strings, as the models sometimes write them" {
         .{ "call:remember{fact:<|\"|>x<|\"|>}", "{\"fact\":\"x\"}" },
         .{ "call:f{a: \"say \\\"hi\\\"\\n\", b:<|\"|>c: d<|\"|>, c:[\"\\u00e9\\ud83d\\ude00\", 1]}", "{\"a\":\"say \\\"hi\\\"\\n\",\"b\":\"c: d\",\"c\":[\"é😀\",1]}" },
         .{ "call:f{\"a:b\":1}", "{\"a:b\":1}" },
+        // An escape JSON lacks keeps its backslash, as a shell command means it.
+        .{ "call:bash{command: \"echo \\$HOME \\`date\\`\"}", "{\"command\":\"echo \\\\$HOME \\\\`date\\\\`\"}" },
     }) |case| {
         const call = (try parseTool(alloc, case[0])) orelse return error.TestUnexpectedResult;
         defer {
@@ -1121,7 +1217,6 @@ test "parseTool reads JSON strings, as the models sometimes write them" {
     }
     for ([_][]const u8{
         "call:f{a: \"open}", // unterminated
-        "call:f{a: \"\\x\"}", // invalid escape
         "call:f{a: \"\\u12\"}", // short escape
         "call:f{a: \"\\ud83d\"}", // lone surrogate
         "call:f{\"\":1}", // empty key
@@ -1202,4 +1297,23 @@ test "markers inside names, arguments, and schemas are rejected, and a result's 
     const bare = try render(alloc, &.{user}, &.{.{ .name = "f", .description = "d", .parameters = "{}" }}, .off, .{});
     defer alloc.free(bare);
     try std.testing.expect(std.mem.indexOf(u8, bare, "<|tool>declaration:f{description:<|\"|>d<|\"|>}<tool|>") != null);
+}
+
+test "diagnoseTool names the call and says where and why it broke" {
+    const alloc = std.testing.allocator;
+    const escape = try diagnoseTool(alloc, "call:bash{command: \"a \\u12zz\"}");
+    try std.testing.expectEqual(@import("../events.zig").CutReason.invalid_escape, escape.reason);
+    try std.testing.expectEqualStrings("bash", escape.name);
+    const broken = try diagnoseTool(alloc, " call:write_file{path:<|\"|>a<|\"|> content}");
+    try std.testing.expectEqual(@import("../events.zig").CutReason.malformed, broken.reason);
+    try std.testing.expectEqualStrings("write_file", broken.name);
+    try std.testing.expect(broken.at > 1 and broken.at <= 44);
+    try std.testing.expectEqual(@import("../events.zig").CutReason.no_name, (try diagnoseTool(alloc, "{\"a\":1}")).reason);
+    try std.testing.expectEqual(@import("../events.zig").CutReason.no_name, (try diagnoseTool(alloc, "call:{a:1}")).reason);
+    // A key written `key=value,` is no key: the read stops at the `=`.
+    const glued = "call:read_file{count:200,offset=201,path:<|\"|>a.js<|\"|>}";
+    try std.testing.expect(try parseTool(alloc, glued) == null);
+    const at_equals = try diagnoseTool(alloc, glued);
+    try std.testing.expectEqual(@import("../events.zig").CutReason.malformed, at_equals.reason);
+    try std.testing.expectEqual(std.mem.indexOfScalar(u8, glued, '=').?, at_equals.at);
 }

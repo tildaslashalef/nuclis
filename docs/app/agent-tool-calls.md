@@ -94,12 +94,22 @@ parser is the profile's (`qwen38.parseTool`), so the wire syntax never leaves
 Two failure modes are decided by the same state machine. A call that is still
 open when the stream ends never reached its closing token: at EOS a body that
 parses is still one call, and anything else — a body that does not parse, a
-budget stop, a cancellation — is dropped with a notice (`tool_cut`), never
-shown as answer text. A body that arrives complete but that the parser refuses
-(no function name, malformed parameters) is released as text under Qwen, the
-same bytes the model wrote, and dropped with a notice under Gemma 4
-(`Tool.unparsed`). Neither can reach execution: an incomplete or malformed call is a
-message, never an action. This is the tool analogue of [§6](agent.md#6-running-a-command-is-a-lifetime-problem)'s rule that a
+budget stop, a cancellation — is dropped (`tool_cut`), never shown as answer
+text. A body that arrives complete but that the parser refuses (no function
+name, malformed parameters) is dropped the same way under both profiles
+(`Tool.unparsed`). Neither can reach execution: an incomplete or malformed
+call is a message, never an action. The cut carries why (`CutReason`: unclosed,
+no name, an invalid escape, other syntax), the byte where reading stopped
+(`Tool.diagnose`, the profile's), the name if one was read, and the profile's
+one-line syntax reminder. The loop answers it with a substitute call, the
+named tool if it is offered or else `invalid_call`, with empty arguments
+and an error result that says all of that and quotes the line where reading
+stopped (`here: "…<<HERE>>…"`), or says a bracket was left open when
+reading ran off the end, so the model learns what broke
+instead of the turn ending; a body over 4 KiB also suggests writing the file
+in parts. The body never enters the history; the session keeps its first and
+last 512 bytes in a `cut` entry for diagnosis. A second step in a row that
+only drops calls ends the turn. This is the tool analogue of [§6](agent.md#6-running-a-command-is-a-lifetime-problem)'s rule that a
 process is not an instruction until the host has actually built it.
 
 The arguments themselves obey the template's own literal-versus-JSON rule. The

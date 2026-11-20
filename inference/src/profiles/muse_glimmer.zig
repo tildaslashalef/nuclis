@@ -878,7 +878,7 @@ const Sink = struct {
             .answer => |t| try self.answer.writer.writeAll(t),
             .tool_call => |c| try self.calls.append(self.alloc, .{ .id = 0, .name = try self.alloc.dupe(u8, c.name), .arguments = try self.alloc.dupe(u8, c.arguments) }),
             .tool_progress => {},
-            .tool_cut => |bytes| self.cut = bytes,
+            .tool_cut => |c| self.cut = c.bytes,
             .stop => self.stops += 1,
         }
     }

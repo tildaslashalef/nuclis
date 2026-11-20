@@ -29,17 +29,26 @@
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const Utf8 = @import("../tokenizer/stream.zig").Stream;
-const ToolCall = @import("../events.zig").ToolCall;
+const events = @import("../events.zig");
+const ToolCall = events.ToolCall;
 const Token = @import("../tokenizer/vocabulary.zig").Token;
 
 /// A template's native call grammar: the bracket tokens and the body parser.
 /// `parse` returns an owned call (the slices live until the caller frees
 /// them), or null for a body that is not one complete, well-formed call.
 pub const ParseTool = *const fn (alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.Error!?ToolCall;
+/// Why a body that `ParseTool` refused is not a call, and the name it gave,
+/// for the report the consumer turns into a result. `name` borrows `body`.
+pub const Diagnosis = struct { reason: events.CutReason, at: usize, name: []const u8 = "" };
+pub const Diagnose = *const fn (alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.Error!Diagnosis;
 pub const Tool = struct {
     open: u32,
     close: u32,
     parse: ParseTool,
+    /// Explains a refused body; without it a cut says only `malformed`.
+    diagnose: ?Diagnose = null,
+    /// The profile's one-line reminder of its call syntax, sent with a cut.
+    cut_hint: []const u8 = "",
     /// A closed body that does not parse: released as the model wrote it, or
     /// dropped with `tool_cut` where the brackets are control tokens a reader
     /// must never be shown.
@@ -177,7 +186,48 @@ pub const Decoder = struct {
             }
         }
         self.thinking = false;
-        try sink.send(.{ .tool_cut = self.tool_buf.items.len });
+        try self.sendCut(sink, !eos);
+    }
+
+    /// The end of the body's head sample, moved back to a code point so the
+    /// sample stays valid UTF-8.
+    fn sampleEnd(body: []const u8) usize {
+        var stop = @min(body.len, events.cut_sample);
+        while (stop > 0 and stop < body.len and (body[stop] & 0xc0) == 0x80) stop -= 1;
+        return stop;
+    }
+
+    /// The start of the tail sample (the body's length when the head holds
+    /// it all), moved forward to a code point.
+    fn sampleStart(body: []const u8) usize {
+        if (body.len <= events.cut_sample) return body.len;
+        var start = body.len - events.cut_sample;
+        while (start < body.len and (body[start] & 0xc0) == 0x80) start += 1;
+        return start;
+    }
+
+    /// Reports the collected body as dropped: `unclosed` when the completion
+    /// stopped inside it, else the profile's diagnosis of why it is no call.
+    fn sendCut(self: *Decoder, sink: anytype, unclosed: bool) !void {
+        const body = self.tool_buf.items;
+        const tool = self.markers.tool;
+        var cut: events.ToolCut = .{
+            .bytes = body.len,
+            .reason = if (unclosed) .unclosed else .malformed,
+            .at = if (unclosed) body.len else 0,
+            .head = body[0..sampleEnd(body)],
+            .tail = body[sampleStart(body)..],
+            .hint = if (tool) |t| t.cut_hint else "",
+        };
+        if (tool) |t| if (t.diagnose) |diagnose| {
+            const d = try diagnose(self.alloc, body);
+            cut.name = d.name;
+            if (!unclosed) {
+                cut.reason = d.reason;
+                cut.at = d.at;
+            }
+        };
+        try sink.send(.{ .tool_cut = cut });
     }
 
     /// Appends a body piece and reports the size when it crosses a step.
@@ -198,7 +248,7 @@ pub const Decoder = struct {
                 // partial call is neither an action nor answer text.
                 if (self.in_tool) {
                     self.in_tool = false;
-                    try sink.send(.{ .tool_cut = self.tool_buf.items.len });
+                    try self.sendCut(sink, true);
                 }
                 try self.finish(sink);
                 self.in_tool = true;
@@ -384,7 +434,7 @@ pub const Decoder = struct {
             }
             try sink.send(.{ .tool_call = call });
         } else if (tool.unparsed == .cut) {
-            try sink.send(.{ .tool_cut = self.tool_buf.items.len });
+            try self.sendCut(sink, false);
         } else {
             try self.text(self.tool_open_text.items, sink);
             try self.text(self.tool_buf.items, sink);
@@ -451,6 +501,17 @@ const Recorder = struct {
         }
     }
 };
+
+test "a cut's samples end and start on a code point" {
+    // `é` spans bytes 511 and 512: the head stops before it, the tail after.
+    const body = @as([511]u8, @splat('a')) ++ "é" ++ @as([511]u8, @splat('b'));
+    const head = body[0..Decoder.sampleEnd(body)];
+    const tail = body[Decoder.sampleStart(body)..];
+    try std.testing.expectEqual(@as(usize, 511), head.len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(head) and std.unicode.utf8ValidateSlice(tail));
+    try std.testing.expectEqual(@as(usize, 511), tail.len);
+    try std.testing.expectEqual(@as(usize, 3), Decoder.sampleStart("abc"));
+}
 
 test "only actual control IDs split reasoning; ordinary marker text stays literal" {
     var r = Recorder.init(std.testing.allocator);
@@ -661,6 +722,9 @@ const ToolSink = struct {
     progress: usize = 0,
     progress_events: usize = 0,
     cut: ?usize = null,
+    cut_reason: ?events.CutReason = null,
+    cut_at: usize = 0,
+    cut_hint: []const u8 = "",
     stops: usize = 0,
 
     fn init(alloc: std.mem.Allocator) ToolSink {
@@ -685,7 +749,12 @@ const ToolSink = struct {
                 self.progress = bytes;
                 self.progress_events += 1;
             },
-            .tool_cut => |bytes| self.cut = bytes,
+            .tool_cut => |c| {
+                self.cut = c.bytes;
+                self.cut_reason = c.reason;
+                self.cut_at = c.at;
+                self.cut_hint = c.hint;
+            },
             .stop => self.stops += 1,
             else => return error.UnexpectedEvent,
         }
@@ -831,6 +900,40 @@ test "a call open at a stop is cut, not text; at EOS a whole body is a call; a r
     try std.testing.expectEqual(@as(usize, 0), cut.calls);
     try std.testing.expectEqual(@as(?usize, 6), cut.cut);
     try std.testing.expectEqualStrings("Sure. ", cut.answer.written());
+}
+
+test "a cut says why: unclosed at a stop, else the profile's diagnosis, with its hint" {
+    const engine = @import("../engine.zig");
+    const Fixture = struct {
+        fn diagnose(_: std.mem.Allocator, body: []const u8) std.mem.Allocator.Error!Diagnosis {
+            return .{ .reason = .invalid_escape, .at = body.len - 1, .name = body[0..2] };
+        }
+    };
+    const markers: Markers = .{
+        .open = 1,
+        .close = 2,
+        .tool = .{ .open = 3, .close = 4, .parse = ToolFixture.parse, .unparsed = .cut, .diagnose = Fixture.diagnose, .cut_hint = "HINT" },
+    };
+    var r = ToolSink.init(std.testing.allocator);
+    defer r.deinit();
+    var refused = Decoder.init(std.testing.allocator, markers, false);
+    defer refused.deinit();
+    try refused.feed(3, "<tool_call>", &r);
+    try refused.feed(11, "NOPE", &r);
+    try refused.feed(4, "</tool_call>", &r);
+    try refused.finish(&r);
+    try std.testing.expectEqual(@as(?events.CutReason, .invalid_escape), r.cut_reason);
+    try std.testing.expectEqual(@as(usize, 3), r.cut_at);
+    try std.testing.expectEqualStrings("HINT", r.cut_hint);
+
+    var stopped = Decoder.init(std.testing.allocator, markers, false);
+    defer stopped.deinit();
+    try stopped.feed(3, "<tool_call>", &r);
+    try stopped.feed(11, "NOPE", &r);
+    try stopped.end(.{ .stop = .cancelled, .timing = .{} }, &r);
+    try std.testing.expectEqual(@as(?events.CutReason, .unclosed), r.cut_reason);
+    try std.testing.expectEqual(@as(usize, 4), r.cut_at);
+    _ = engine;
 }
 
 test "a second open before a close cuts the first call and starts another, under either unparsed rule" {

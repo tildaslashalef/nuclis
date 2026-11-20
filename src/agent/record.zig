@@ -46,6 +46,15 @@ pub fn entry(scratch: *Scratch, record: loop.Record) session.Entry {
             .boundary = if (step.boundary) |b| .{ .bytes = b.bytes, .digest = b.digest } else null,
         } },
         .compaction => |c| .{ .compaction = .{ .first_kept = c.first_kept, .reason = c.reason } },
+        .cut => |c| .{ .cut = .{
+            .call = std.fmt.bufPrint(&scratch.call, "{d}", .{c.call}) catch "?",
+            .name = c.name,
+            .reason = c.reason,
+            .at = c.at,
+            .bytes = c.bytes,
+            .head = c.head,
+            .tail = c.tail,
+        } },
         .tool_result => |result| .{ .tool_result = .{
             .call = std.fmt.bufPrint(&scratch.call, "{d}", .{result.call}) catch "?",
             .text = result.text,

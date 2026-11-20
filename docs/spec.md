@@ -431,11 +431,11 @@ and the tool definitions through the profile; stream the completion;
 execute each decoded call in order, validated against the registry; send
 the results back, or finish when the response holds no calls. A turn
 stops on cancellation, an unrecoverable failure, or the step budget, with
-its reason. Failures are results: an unknown tool, invalid arguments, a
-timeout, a truncated call, or a tool failure returns a typed result; only
-an inference-transport failure ends the turn. The loop prefills only each
-turn's increment; a result over an eighth of the window is cut, and older
-results, then earlier turns, leave the model's view before a turn fails.
+its reason. Failures are results saying why (an unknown tool, bad
+arguments, a timeout, a dropped call, a tool failure); two steps of only
+dropped calls, or a transport failure, end the turn. Only each turn's
+increment is prefilled; a result over an eighth of the window is cut, and
+older results, then earlier turns, leave the view before a turn fails.
 Every sentence of the system block is judged on the task list
 ([development.md § The agent's task list](development.md#the-agents-task-list)).
 

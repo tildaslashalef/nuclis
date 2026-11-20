@@ -147,6 +147,10 @@ pub const Entry = union(enum) {
     model: struct { name: []const u8, path: []const u8, sha256: ?[]const u8 = null, ctx_size: usize, effort: []const u8 },
     compaction: struct { first_kept: usize, reason: []const u8 },
     notice: struct { text: []const u8 },
+    /// A call the profile dropped, kept to diagnose it: the substitute call
+    /// it was answered by, the reason (`inference.events.CutReason`), and
+    /// the body's ends. The history replays the substitute, never this.
+    cut: struct { call: []const u8, name: []const u8, reason: []const u8, at: usize, bytes: usize, head: []const u8, tail: []const u8 },
 };
 
 /// A saved turn end (`completer/cache.zig`): the rendered text's first `bytes`
@@ -584,6 +588,15 @@ fn readRecord(a: Allocator, object: std.json.ObjectMap) !Record {
             .reason = try text(a, object, "reason"),
         } };
         if (std.mem.eql(u8, kind, "notice")) break :blk .{ .notice = .{ .text = try text(a, object, "text") } };
+        if (std.mem.eql(u8, kind, "cut")) break :blk .{ .cut = .{
+            .call = try text(a, object, "call"),
+            .name = try text(a, object, "name"),
+            .reason = try text(a, object, "reason"),
+            .at = try cast(usize, integer(object.get("at")) orelse 0),
+            .bytes = try cast(usize, integer(object.get("bytes")) orelse 0),
+            .head = try text(a, object, "head"),
+            .tail = try text(a, object, "tail"),
+        } };
         return error.MalformedSessionLine;
     };
     return .{ .id = try cast(u32, id), .parent = parent, .time = time, .entry = entry };
@@ -796,6 +809,7 @@ pub fn exportMarkdown(loaded: Loaded, out: *std.Io.Writer) !void {
             .model => |m| try out.print("_model: {s} (context {d}, effort {s})_\n\n", .{ m.name, m.ctx_size, m.effort }),
             .compaction => |c| try out.print("_older turns dropped ({s}), from turn {d}_\n\n", .{ c.reason, c.first_kept }),
             .notice => |n| try out.print("_{s}_\n\n", .{n.text}),
+            .cut => |c| try out.print("_tool call {s} dropped ({s}, {d} bytes, at byte {d})_\n\n", .{ c.call, c.reason, c.bytes, c.at }),
         }
     }
 }
@@ -826,6 +840,21 @@ test "the header and the entries are the format the specification names" {
     buffer.clearRetainingCapacity();
     try writeEntry(&buffer.writer, .{ .compaction = .{ .first_kept = 2, .reason = "context_full" } }, 6, 5, "t");
     try testing.expectEqualStrings("{\"type\":\"compaction\",\"id\":6,\"parent\":5,\"time\":\"t\",\"first_kept\":2,\"reason\":\"context_full\"}\n", buffer.written());
+}
+
+test "a dropped call's entry reads back as written" {
+    const alloc = testing.allocator;
+    var buffer: std.Io.Writer.Allocating = .init(alloc);
+    defer buffer.deinit();
+    try buffer.writer.writeAll("{\"type\":\"session\",\"version\":1,\"id\":\"a\",\"model\":{\"path\":\"/m.gguf\"}}\n");
+    try writeEntry(&buffer.writer, .{ .cut = .{ .call = "4", .name = "write_file", .reason = "unclosed", .at = 9, .bytes = 9, .head = "call:w{\"", .tail = "" } }, 1, null, "t");
+    const loaded = try parseText(alloc, buffer.written(), null);
+    defer loaded.deinit();
+    const cut = loaded.records[0].entry.cut;
+    try testing.expectEqualStrings("write_file", cut.name);
+    try testing.expectEqualStrings("unclosed", cut.reason);
+    try testing.expectEqualStrings("call:w{\"", cut.head);
+    try testing.expectEqual(@as(usize, 9), cut.bytes);
 }
 
 test "a session round trips through the file, chained by id and parent" {
