@@ -278,6 +278,9 @@ class Ghostty:
                 "-na",
                 "Ghostty",
                 "--args",
+                # The lookup matches the title; tmux and the agent would
+                # otherwise set their own.
+                "--title=%s" % self.session.name,
                 "--window-width=%d" % self.session.columns,
                 "--window-height=%d" % self.session.rows,
                 "-e",

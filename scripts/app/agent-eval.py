@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+import agent_long
 import playground
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -942,6 +943,14 @@ def main():
     )
     ap.add_argument("--breakdown", metavar="VARIANT", help="print where the time went for this variant's runs and exit")
     ap.add_argument("--list", action="store_true", help="print the task list and exit")
+    ap.add_argument(
+        "--long",
+        metavar="TASK",
+        help=f"run a long task (a from-scratch app over several turns) instead of the list: {', '.join(agent_long.LONG_TASKS)}",
+    )
+    ap.add_argument(
+        "--long-compare", nargs="+", metavar="VARIANT", help="render the long-task records of these variants and exit"
+    )
     ap.add_argument("extra", nargs="*", help="further nuclis agent flags after --")
     args = ap.parse_args()
 
@@ -957,6 +966,37 @@ def main():
         return
     if args.breakdown:
         print(breakdown(args.breakdown, load_variant(args.breakdown)))
+        return
+    if args.long_compare:
+        print(agent_long.compare(OUT_DIR, args.long_compare))
+        return
+    if args.long:
+        task = agent_long.LONG_TASKS.get(args.long)
+        if task is None:
+            sys.exit(f"no long task {args.long}; known: {', '.join(agent_long.LONG_TASKS)}")
+        if shutil.which("bun") is None:
+            print(f"skipped: the long task {args.long} needs bun on PATH")
+            return
+        if not Path(args.binary).exists():
+            sys.exit(f"no binary at {args.binary}")
+        variant_dir = OUT_DIR / args.variant
+        variant_dir.mkdir(parents=True, exist_ok=True)
+        rev = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True
+        ).stdout.strip()
+        meta = {
+            "variant": args.variant,
+            "rev": rev,
+            "long": args.long,
+            "model": args.model,
+            "extra": args.extra,
+            "system_prompt": args.system_prompt,
+            "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        (variant_dir / "long-meta.json").write_text(json.dumps(meta, indent=1) + "\n")
+        for seed in [int(s) for s in args.seeds.split(",") if s]:
+            r = agent_long.run_long(task, seed, args, variant_dir, parse, Run)
+            print(agent_long.summary_line(r), flush=True)
         return
     if args.workspace is None:
         args.workspace = str(playground.ensure())

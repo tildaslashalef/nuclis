@@ -95,6 +95,40 @@ pub fn modelPath(alloc: Allocator, explicit: ?[]const u8, configured: []const u8
     return std.fs.path.join(alloc, &.{ dir, "models", value });
 }
 
+/// The registry entry whose model file is the absolute `path`, so a model
+/// named by its file still gets its entry's settings (its drafter, effort,
+/// budgets). Null for a relative path, a name the registry or catalogue
+/// already knows, or a file no entry locates. Borrows the registry's name.
+pub fn registryName(alloc: Allocator, path: []const u8, root_dir: ?[]const u8, registry: config.Models) !?[]const u8 {
+    if (!std.fs.path.isAbsolute(path) or registry.find(path) != null or catalog.find(path) != null) return null;
+    const wanted = try std.fs.path.resolve(alloc, &.{path});
+    defer alloc.free(wanted);
+    for (registry.entries) |named| {
+        const located = modelPath(alloc, named.name, "", root_dir, registry) catch continue;
+        defer alloc.free(located);
+        if (!std.fs.path.isAbsolute(located)) continue;
+        const candidate = try std.fs.path.resolve(alloc, &.{located});
+        defer alloc.free(candidate);
+        if (std.mem.eql(u8, candidate, wanted)) return named.name;
+    }
+    return null;
+}
+
+test "a model file named by path finds the registry entry that locates it" {
+    const alloc = std.testing.allocator;
+    const entries = [_]config.NamedModel{
+        .{ .name = "qwen", .entry = .{ .repo = "o/r", .file = "q.gguf" } },
+        .{ .name = "local", .entry = .{ .path = "/abs/l.gguf" } },
+    };
+    const registry: config.Models = .{ .entries = &entries };
+    try std.testing.expectEqualStrings("qwen", (try registryName(alloc, "/root/models/o/r/q.gguf", "/root", registry)).?);
+    try std.testing.expectEqualStrings("qwen", (try registryName(alloc, "/root/models/o/r/../r/q.gguf", "/root", registry)).?);
+    try std.testing.expectEqualStrings("local", (try registryName(alloc, "/abs/l.gguf", "/root", registry)).?);
+    try std.testing.expect((try registryName(alloc, "/root/models/other.gguf", "/root", registry)) == null);
+    try std.testing.expect((try registryName(alloc, "models/o/r/q.gguf", "/root", registry)) == null);
+    try std.testing.expect((try registryName(alloc, "/root/models/o/r/q.gguf", null, registry)) == null);
+}
+
 test "explicit model path takes precedence without needing a root" {
     const path = try modelPath(std.testing.allocator, "relative.gguf", "qwen/x.gguf", null, .{});
     defer std.testing.allocator.free(path);

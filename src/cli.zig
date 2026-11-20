@@ -852,8 +852,11 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         },
         else => return err,
     };
-    if (options.flags.draft != null or (if (config.resolve(&loaded, options.model, options.flags, .generate).entry) |e| e.generation.draft != null else false)) {
-        const probe = config.resolve(&loaded, options.model, options.flags, .generate);
+    // A file named by path takes the settings of the registry entry that
+    // locates it, as its name would.
+    const model_name: ?[]const u8 = if (options.model) |m| (try paths.registryName(alloc, path, root, loaded.config.models)) orelse m else null;
+    if (options.flags.draft != null or (if (config.resolve(&loaded, model_name, options.flags, .generate).entry) |e| e.generation.draft != null else false)) {
+        const probe = config.resolve(&loaded, model_name, options.flags, .generate);
         _ = probe.draftFile() catch |err| {
             diag.set("{s} has no draft variant {s} in the index (`nuclis model ls --available -l` lists each model's variants)", .{ probe.model, probe.draft.? });
             return err;
@@ -864,17 +867,17 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // diagnostic lives.
     (switch (options.command) {
         .help, .version, .config, .model, .cache, .decide, .embed, .transcribe, .speak, .voice, .serve, .completion, .complete, .index => unreachable,
-        .generate => generate.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .generate), options.generation, options.json, out),
-        .bench => bench.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .bench), options.benchmark, options.json, out, sty),
+        .generate => generate.run(alloc, io, path, config.resolve(&loaded, model_name, options.flags, .generate), options.generation, options.json, out),
+        .bench => bench.run(alloc, io, path, config.resolve(&loaded, model_name, options.flags, .bench), options.benchmark, options.json, out, sty),
         .tokenize => blk: {
-            const resolved = config.resolve(&loaded, options.model, options.flags, .generate);
+            const resolved = config.resolve(&loaded, model_name, options.flags, .generate);
             break :blk tokenize.run(alloc, io, path, resolved.think, resolved.forced_profile, options.generation, options.json, out, sty);
         },
-        .eval => eval.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .bench), options.evaluation, options.json, out, sty, diag),
+        .eval => eval.run(alloc, io, path, config.resolve(&loaded, model_name, options.flags, .bench), options.evaluation, options.json, out, sty, diag),
         .agent => if (options.printing)
-            agent.print_mode.run(alloc, io, environ, path, config.resolve(&loaded, options.model, options.flags, .agent), options.print, out, diag)
+            agent.print_mode.run(alloc, io, environ, path, config.resolve(&loaded, model_name, options.flags, .agent), options.print, out, diag)
         else
-            agent.run(alloc, io, environ, path, root, config.resolve(&loaded, options.model, options.flags, .agent), .{ .loaded = &loaded, .flags = options.flags }, options.generation.seed, options.resume_id, options.system_prompt_file, out),
+            agent.run(alloc, io, environ, path, root, config.resolve(&loaded, model_name, options.flags, .agent), .{ .loaded = &loaded, .flags = options.flags }, options.generation.seed, options.resume_id, options.system_prompt_file, out),
         .inspect, .validate => blk: {
             if (try isSafetensors(io, path)) {
                 if (options.command == .validate) {
