@@ -18,9 +18,38 @@ pub const Event = union(enum) {
     /// streams nothing else, and a consumer can show it is being written.
     tool_progress: usize,
     tool_call: ToolCall,
-    /// A call the completion stopped inside (cancellation, the output budget,
-    /// or an unparseable body at EOS), dropped after this many body bytes:
-    /// it is neither an action nor answer text.
-    tool_cut: usize,
+    /// A call dropped unrun: the completion stopped inside it, or its body
+    /// did not parse. It is neither an action nor answer text.
+    tool_cut: ToolCut,
     stop: engine.Outcome,
 };
+
+/// Why a call was dropped, and enough of it to say so. Slices borrow until
+/// the sink's `send` returns, except `hint`, which is static.
+pub const ToolCut = struct {
+    bytes: usize,
+    reason: CutReason = .malformed,
+    /// Byte offset in the body where reading stopped.
+    at: usize = 0,
+    /// The tool name the body named, or empty.
+    name: []const u8 = "",
+    /// The body's first and last bytes, at most `cut_sample` each.
+    head: []const u8 = "",
+    tail: []const u8 = "",
+    /// The profile's one-line reminder of its call syntax; may be empty.
+    hint: []const u8 = "",
+};
+
+pub const CutReason = enum {
+    /// The completion stopped before the call's closing token.
+    unclosed,
+    /// No tool name could be read.
+    no_name,
+    /// An escape the call syntax does not define.
+    invalid_escape,
+    /// Any other break in the call syntax.
+    malformed,
+};
+
+/// Bytes of a cut body kept at each end for the report.
+pub const cut_sample = 512;

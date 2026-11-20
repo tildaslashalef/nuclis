@@ -61,6 +61,11 @@ pub const stream_markers: profiles.StreamMarkers = .{
     .tool_open = "<tool_call>",
     .tool_close = "</tool_call>",
     .tool_parse = parseTool,
+    // The brackets are control tokens: a body that is no call is not
+    // answer text either, and the consumer reports it.
+    .tool_unparsed = .cut,
+    .tool_diagnose = diagnoseTool,
+    .tool_cut_hint = "A call is one function block naming the tool, with each argument in its own parameter block.",
 };
 
 /// The tools-block header and its format explanation, and the framing around
@@ -390,6 +395,17 @@ pub fn parseTool(alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.E
     return .{ .id = 0, .name = name_owned, .arguments = arguments_owned };
 }
 
+/// Why `parseTool` refused `body`: it reads a call from any body that names
+/// a function, so a refusal is a missing or empty name. `name` borrows `body`.
+pub fn diagnoseTool(_: std.mem.Allocator, body: []const u8) std.mem.Allocator.Error!profiles.stream.Diagnosis {
+    const function_marker = "<function=";
+    const at = std.mem.indexOf(u8, body, function_marker) orelse return .{ .reason = .no_name, .at = 0 };
+    const start = at + function_marker.len;
+    const end = std.mem.indexOfScalarPos(u8, body, start, '>') orelse return .{ .reason = .no_name, .at = start };
+    const name = std.mem.trim(u8, body[start..end], " \t\r\n");
+    return .{ .reason = if (name.len == 0) .no_name else .malformed, .at = end, .name = name };
+}
+
 /// Where the value starting at `from` ends: the first `</parameter>` that the
 /// next parameter, the function's close, or the body's end follows. A value
 /// may itself contain the marker (a file that documents this format); only
@@ -665,4 +681,13 @@ test "a user image renders the vision markers before the text" {
     const plain = try render(alloc, &.{.{ .role = .user, .content = "hi" }}, &.{}, .off, .{});
     defer alloc.free(plain);
     try std.testing.expect(std.mem.indexOf(u8, plain, "<|vision_start|>") == null);
+}
+
+test "diagnoseTool reads the function name, or says there is none" {
+    const alloc = std.testing.allocator;
+    const named = try diagnoseTool(alloc, "<function=write_file>\n<parameter=path>\na");
+    try std.testing.expectEqual(@import("../events.zig").CutReason.malformed, named.reason);
+    try std.testing.expectEqualStrings("write_file", named.name);
+    try std.testing.expectEqual(@import("../events.zig").CutReason.no_name, (try diagnoseTool(alloc, "{\"name\":\"x\"}")).reason);
+    try std.testing.expectEqual(@import("../events.zig").CutReason.no_name, (try diagnoseTool(alloc, "<function= >")).reason);
 }

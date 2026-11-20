@@ -164,6 +164,10 @@ pub const StreamMarkers = struct {
     tool_close: ?[]const u8 = null,
     tool_parse: ?stream.ParseTool = null,
     tool_unparsed: stream.Tool.Unparsed = .text,
+    /// Explains a body `tool_parse` refused (`stream.Tool.diagnose`).
+    tool_diagnose: ?stream.Diagnose = null,
+    /// The one-line syntax reminder a cut call carries (`stream.Tool.cut_hint`).
+    tool_cut_hint: []const u8 = "",
     /// The message-header grammar's control texts (`stream.Channel`);
     /// `tool_parse` then reads a tool body. Replaces the bracket grammar.
     channel: ?struct { start: []const u8, message: []const u8, eom: []const u8 } = null,
@@ -202,6 +206,8 @@ pub const Profile = enum {
                         .close = vocab.tokenId(m.tool_close.?) orelse return error.MissingToolToken,
                         .parse = m.tool_parse.?,
                         .unparsed = m.tool_unparsed,
+                        .diagnose = m.tool_diagnose,
+                        .cut_hint = m.tool_cut_hint,
                     };
                 }
                 if (m.channel) |c| {

@@ -107,11 +107,12 @@ rendered as their JSON text where the reference reformats floats
 The models leave the grammar in one way seen so far: the 26B-A4B wrote
 `call:remember{fact: "…"}`, a JSON string in plain quotes, in 2 of 4
 replays of one turn (Muon, 2026-10-28). The parser reads a JSON string,
-as value or key (`{"fact":…}`), as JSON reads it. A body that still does
-not parse is dropped with `tool_cut`, not released as answer text as the
-other profiles do (`Tool.unparsed`): its brackets are control tokens, so
-the text would show the reader the model's call syntax; the API answers
-`malformed_tool_call`.
+as value or key (`{"fact":…}`), as JSON reads it, except that an escape
+JSON lacks (`\$`, `` \` `` in a shell command) keeps its backslash, as the
+command means it. A body that still does not parse is dropped with
+`tool_cut`, not released as answer text (`Tool.unparsed`): its brackets are
+control tokens, so the text would show the reader the model's call syntax;
+the API answers `malformed_tool_call`.
 
 A result's content sits between two `<|"|>` delimiters and the DSL has no
 escape. It is framed content, so a delimiter or a marker it spells is text
@@ -182,10 +183,13 @@ Qwen rendering and decoding are both pinned
 `<tool_call>`/`<function>`/`<parameter>` history, and the folded
 `<tool_response>` user turn match the artifact's template byte for byte, and
 the shared streaming decoder reads the outer control tokens from the
-artifact's vocabulary, parses the body with the profile's grammar, releases
-a malformed call as text, and cuts a truncated one (`tool_cut`), executing
-neither. Gemma's grammar
-(`fixtures/gemma4-tools.json`, `gemma4.parseTool`) rides the same decoder;
+artifact's vocabulary, parses the body with the profile's grammar, and cuts
+a malformed or truncated one (`tool_cut`), executing neither. Gemma's grammar
+(`fixtures/gemma4-tools.json`, `gemma4.parseTool`; a bare key ends at `:`, `,`,
+`=`, `}`, or a newline, so `offset=201,path:` is a cut, not a key; a list or
+object the model left open closes where only its enclosing object can go on,
+at a `}`, a comma before a bare `key:`, or the body's end, since the close
+marker came: `edits:[{…},line:3}` reads as the model meant) rides the same decoder;
 its handoff needs no mechanism of its own, because the model's own
 `<|tool_response>` token after the last call of a step is a stop token, so
 several calls in one step all arrive before generation ends.
@@ -226,8 +230,9 @@ decoder produces these: the shared `profiles/stream.zig` recognizes the
 body as ordinary pieces, and hands it to `qwen38.parseTool`, which emits one
 call when the closing token arrives, with `tool_progress` events (the body's
 size) while it grows. A body the parser refuses after its closing token is
-released as answer text and never executed, bracket text included (copied
-when the bracket arrives: a piece is the caller's per-token buffer). A call
+released as answer text, bracket text included (copied when the bracket
+arrives: a piece is the caller's per-token buffer), or cut, by the
+profile's `Tool.unparsed`; never executed. A call
 still open when the completion stops is one call at EOS if it parses;
 otherwise, and on a budget stop or a cancellation, it is dropped with a
 `tool_cut` event: neither an action nor answer text. A close token that

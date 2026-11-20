@@ -52,6 +52,9 @@ const Event = tui.event.Event;
 /// Model completions allowed in one turn before the loop stops. A host
 /// constant, never model-supplied (docs/spec.md § The loop).
 pub const budget_default: usize = 16;
+/// Consecutive steps of only dropped calls that end the turn: the model was
+/// told once why its call failed and wrote another that failed too.
+const max_cut_streak = 2;
 
 /// User turns kept in one conversation, mirroring the surface's own limit.
 pub const max_turns: usize = 256;
@@ -75,6 +78,19 @@ pub const Record = union(enum) {
     tool_result: Result,
     /// The model's view of the conversation shrank to fit the window.
     compaction: Compaction,
+    /// A call the profile dropped, answered by the substitute call `call`.
+    cut: CutRecord,
+};
+
+/// What the session keeps of a dropped call, to diagnose it later. Borrows.
+pub const CutRecord = struct {
+    call: u32,
+    name: []const u8,
+    reason: []const u8,
+    at: usize,
+    bytes: usize,
+    head: []const u8,
+    tail: []const u8,
 };
 
 /// A user message and the images and clips attached to it (images first),
@@ -162,6 +178,30 @@ pub const low_water_percent: usize = 50;
 /// One history message, owned by the loop. `reasoning` is empty except on an
 /// assistant step. `tool_calls` are the calls the assistant requested (with
 /// host ids assigned), and `tool_call_id` marks a `.tool` result.
+/// Body bytes past which a dropped call's result also suggests writing in
+/// parts: one call that size is many chances for the syntax to break.
+const large_call_bytes = 4096;
+
+/// A call the profile dropped this step. Owned strings.
+const CutCall = struct {
+    /// Its substitute's place in the step's calls.
+    index: usize = 0,
+    name: []u8 = &.{},
+    message: []u8 = &.{},
+    reason: inference.events.CutReason,
+    at: usize,
+    bytes: usize,
+    head: []u8 = &.{},
+    tail: []u8 = &.{},
+
+    fn deinit(self: CutCall, alloc: Allocator) void {
+        alloc.free(self.name);
+        alloc.free(self.message);
+        alloc.free(self.head);
+        alloc.free(self.tail);
+    }
+};
+
 const Item = struct {
     role: Profile.Role,
     content: []u8,
@@ -239,6 +279,11 @@ pub const Agent = struct {
     /// Calls the profile decoded during this step, in emission order. Owned;
     /// cleared at the start of each step.
     calls: std.ArrayList(Profile.ToolCall) = .empty,
+    /// Calls the profile dropped this step, each answered by a substitute
+    /// call whose error result says why. Owned; cleared with `calls`.
+    cut_calls: std.ArrayList(CutCall) = .empty,
+    /// Consecutive steps whose only output was dropped calls.
+    cut_streak: usize = 0,
     thinking_open: bool = false,
     thinking_ended: bool = false,
     /// Seconds the step's reasoning took, once it ended.
@@ -319,6 +364,7 @@ pub const Agent = struct {
         self.image_scratch.deinit(self.alloc);
         self.clearCalls();
         self.calls.deinit(self.alloc);
+        self.cut_calls.deinit(self.alloc);
         self.clearReads();
         self.reads.deinit(self.alloc);
         for (self.steering.items) |text| self.alloc.free(text);
@@ -596,6 +642,14 @@ pub const Agent = struct {
             // its reasoning here; a cancelled one keeps the bare label.
             if (!cancelled and self.thinking_open and !self.thinking_ended) try self.endThinking();
             if (reply.outcome.reasoning_cut) try self.events.send(self.events.context, .{ .notice = "  — reasoning cut at its budget (agent.thinking_budget)" });
+            // A dropped call is answered like any failed one, so the model
+            // learns why; a run of steps that only drop calls ends the turn.
+            const decoded = self.calls.items.len;
+            if (!cancelled) {
+                try self.substituteCuts();
+                const only_cuts = decoded == 0 and self.cut_calls.items.len > 0 and self.answer.written().len == 0;
+                self.cut_streak = if (only_cuts) self.cut_streak + 1 else 0;
+            }
             // The assistant turn is the answer content plus the calls the
             // profile decoded; assign their host ids first, so the session
             // records the same correlation ids the history carries.
@@ -631,10 +685,23 @@ pub const Agent = struct {
                 .accepted = reply.outcome.timing.accepted_drafts,
             } });
             if (cancelled) return .cancelled;
+            for (self.cut_calls.items) |cut| try self.events.record(self.events.context, .{ .cut = .{
+                .call = calls[cut.index].id,
+                .name = cut.name,
+                .reason = @tagName(cut.reason),
+                .at = cut.at,
+                .bytes = cut.bytes,
+                .head = cut.head,
+                .tail = cut.tail,
+            } });
             try self.appendItem(.assistant, self.answer.written(), self.thinking.written(), calls, null, &.{});
             if (calls.len == 0) return .done;
             try self.execute(calls);
             try self.deliverSteering();
+            if (self.cut_streak >= max_cut_streak) {
+                try self.events.send(self.events.context, .{ .notice = "  — two steps in a row wrote only tool calls that did not parse; the turn stops" });
+                return .done;
+            }
         }
     }
 
@@ -802,7 +869,7 @@ pub const Agent = struct {
             try self.events.send(self.events.context, .{ .tool_call = .{ .id = id, .name = call.name, .summary = described.summary, .detail = described.detail } });
 
             const started = std.Io.Clock.awake.now(self.io);
-            var result = try self.runTool(call);
+            var result = if (self.cutMessage(index)) |message| try tools.fail(self.alloc, "{s}", .{message}) else try self.runTool(call);
             defer result.deinit(self.alloc);
             const ran = seconds(started.durationTo(std.Io.Clock.awake.now(self.io)));
             // A tool that honours the interrupt (bash, the web tools) fails
@@ -1157,6 +1224,86 @@ pub const Agent = struct {
             self.alloc.free(call.arguments);
         }
         self.calls.clearRetainingCapacity();
+        for (self.cut_calls.items) |cut| cut.deinit(self.alloc);
+        self.cut_calls.clearRetainingCapacity();
+    }
+
+    /// Keeps a dropped call for `substituteCuts`, with the result text the
+    /// model will read.
+    fn keepCut(self: *Agent, cut: inference.events.ToolCut) !void {
+        var message: std.Io.Writer.Allocating = .init(self.alloc);
+        defer message.deinit();
+        const w = &message.writer;
+        try w.print("{s}: the call ({d} bytes) did not parse: ", .{ if (cut.name.len > 0) cut.name else "a tool call", cut.bytes });
+        switch (cut.reason) {
+            .unclosed => try w.writeAll("the output stopped before the call was closed."),
+            .no_name => try w.writeAll("no tool name could be read."),
+            .invalid_escape => try w.print("an invalid escape at byte {d}", .{cut.at}),
+            // Reading ran off the end: a list or object was never closed.
+            .malformed => if (cut.at >= cut.bytes)
+                try w.print("it ended (byte {d}) with a `[` or `{{` left open", .{cut.at})
+            else
+                try w.print("its syntax broke at byte {d}", .{cut.at}),
+        }
+        switch (cut.reason) {
+            .invalid_escape, .malformed => if (cutExcerpt(cut)) |near|
+                try w.print(", here: \"{s}<<HERE>>{s}\".", .{ near.before, near.after })
+            else
+                try w.writeByte('.'),
+            else => {},
+        }
+        if (cut.hint.len > 0) try w.print(" {s}", .{cut.hint});
+        if (cut.bytes > large_call_bytes) try w.writeAll(" A call this large is fragile: write a big file in parts (write_file, then write_file with append: true).");
+        try w.writeAll(" Nothing ran.");
+        var kept: CutCall = .{ .reason = cut.reason, .at = cut.at, .bytes = cut.bytes };
+        errdefer kept.deinit(self.alloc);
+        kept.name = try self.alloc.dupe(u8, cut.name);
+        kept.head = try self.alloc.dupe(u8, cut.head);
+        kept.tail = try self.alloc.dupe(u8, cut.tail);
+        kept.message = try message.toOwnedSlice();
+        try self.cut_calls.append(self.alloc, kept);
+    }
+
+    /// The line of a dropped call around where reading stopped, at most
+    /// `excerpt_bytes` each side, when the kept ends of the body hold it.
+    fn cutExcerpt(cut: inference.events.ToolCut) ?struct { before: []const u8, after: []const u8 } {
+        const excerpt_bytes = 32;
+        const text, const at = if (cut.at < cut.head.len)
+            .{ cut.head, cut.at }
+        else if (cut.tail.len > 0 and cut.at >= cut.bytes -| cut.tail.len and cut.at - (cut.bytes -| cut.tail.len) <= cut.tail.len)
+            .{ cut.tail, cut.at - (cut.bytes -| cut.tail.len) }
+        else
+            return null;
+        var start = at -| excerpt_bytes;
+        if (std.mem.lastIndexOfScalar(u8, text[start..at], '\n')) |nl| start += nl + 1;
+        while (start < at and (text[start] & 0xc0) == 0x80) start += 1;
+        var end = @min(text.len, at + excerpt_bytes);
+        if (std.mem.indexOfScalar(u8, text[at..end], '\n')) |nl| end = at + nl;
+        while (end > at and end < text.len and (text[end] & 0xc0) == 0x80) end -= 1;
+        return .{ .before = text[start..at], .after = text[at..end] };
+    }
+
+    /// Appends a call for each dropped one, named for its tool when the
+    /// model named an offered tool, else `invalid_call`, with no arguments:
+    /// the body never enters the history. `execute` answers it with the
+    /// kept message instead of running it.
+    fn substituteCuts(self: *Agent) !void {
+        for (self.cut_calls.items) |*cut| {
+            const offered = cut.name.len > 0 and tools.findOffered(self.workspace.webTier(), cut.name) != null;
+            const name = try self.alloc.dupe(u8, if (offered) cut.name else "invalid_call");
+            errdefer self.alloc.free(name);
+            const arguments = try self.alloc.dupe(u8, "{}");
+            errdefer self.alloc.free(arguments);
+            cut.index = self.calls.items.len;
+            try self.calls.append(self.alloc, .{ .id = 0, .name = name, .arguments = arguments });
+        }
+    }
+
+    /// The kept message when `index` of this step's calls stands for a
+    /// dropped one.
+    fn cutMessage(self: *const Agent, index: usize) ?[]const u8 {
+        for (self.cut_calls.items) |cut| if (cut.index == index) return cut.message;
+        return null;
     }
 
     fn freeItem(self: *Agent, item: Item) void {
@@ -1218,10 +1365,17 @@ pub const Agent = struct {
                 if (self.thinking_open and !self.thinking_ended) try self.endThinking();
                 try self.events.send(self.events.context, .{ .call_progress = bytes });
             },
-            .tool_cut => |bytes| {
+            .tool_cut => |cut| {
                 try self.events.send(self.events.context, .{ .call_progress = 0 });
-                var note: [96]u8 = undefined;
-                try self.events.send(self.events.context, .{ .notice = std.fmt.bufPrint(&note, "  — a tool call of {d} bytes was cut off or did not parse; nothing ran", .{bytes}) catch "  — a tool call was cut off or did not parse; nothing ran" });
+                var note: [160]u8 = undefined;
+                const why: []const u8 = switch (cut.reason) {
+                    .unclosed => "was cut off",
+                    .no_name => "named no tool",
+                    .invalid_escape => "had an invalid escape",
+                    .malformed => "did not parse",
+                };
+                try self.events.send(self.events.context, .{ .notice = std.fmt.bufPrint(&note, "  — a {s} call of {d} bytes {s}; nothing ran, and the model is told why", .{ if (cut.name.len > 0) cut.name else "tool", cut.bytes, why }) catch "  — a tool call did not parse; nothing ran" });
+                try self.keepCut(cut);
             },
             .tool_call => |call| {
                 const name = try self.alloc.dupe(u8, call.name);
@@ -1375,6 +1529,8 @@ const Stub = struct {
     answers: []const []const u8,
     /// One entry per step that produced calls; missing steps produce none.
     calls: []const []const Profile.ToolCall = &.{},
+    /// Calls the profile dropped, per step, sent after the decoded ones.
+    cuts: []const []const inference.events.ToolCut = &.{},
     /// Reasoning text per step, sent before the answer; missing steps think
     /// nothing.
     thinking: []const []const u8 = &.{},
@@ -1479,6 +1635,9 @@ const Stub = struct {
         if (i < self.calls.len) {
             for (self.calls[i]) |call| try sink.send(.{ .tool_call = call });
         }
+        if (i < self.cuts.len) {
+            for (self.cuts[i]) |cut| try sink.send(.{ .tool_cut = cut });
+        }
         return .{ .outcome = .{
             .stop = if (i < self.stops.len) self.stops[i] else .eos,
             .timing = .{ .prompt_tokens = 1, .generated_tokens = 1 },
@@ -1495,6 +1654,8 @@ const Capture = struct {
     /// same host ids the history does.
     recorded_calls: usize = 0,
     recorded_cuts: usize = 0,
+    /// `cut` records: calls the profile dropped.
+    dropped: usize = 0,
     compactions: usize = 0,
     notices: usize = 0,
     /// The text of the last notice, for the tests that read it.
@@ -1572,6 +1733,7 @@ const Capture = struct {
                 if (step.reasoning_cut) self.recorded_cuts += 1;
             },
             .compaction => self.compactions += 1,
+            .cut => self.dropped += 1,
             else => {},
         }
     }
@@ -2250,6 +2412,63 @@ test "an unknown tool is an error result the model reads, not a failure" {
     try testing.expectEqual(Stop.done, try agent.turn("go", &.{}));
     try testing.expectEqual(@as(usize, 1), capture.results.items.len);
     try testing.expectEqualStrings("nope is not a tool I have", capture.results.items[0]);
+}
+
+test "a dropped call is answered with why, and the turn goes on" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var stub: Stub = .{
+        .answers = &.{ "", "Written in parts." },
+        .cuts = &.{&.{.{ .bytes = 6000, .reason = .unclosed, .at = 6000, .name = "write_file", .head = "call:write_file{", .hint = "HINT" }}},
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+
+    try testing.expectEqual(Stop.done, try agent.turn("go", &.{}));
+    try testing.expectEqual(@as(usize, 2), stub.index);
+    try testing.expectEqual(@as(usize, 1), capture.dropped);
+    try testing.expectEqual(@as(usize, 1), capture.results.items.len);
+    const told = capture.results.items[0];
+    try testing.expect(std.mem.startsWith(u8, told, "write_file: the call (6000 bytes) did not parse: the output stopped before the call was closed. HINT"));
+    try testing.expect(std.mem.indexOf(u8, told, "write_file with append: true") != null);
+    // The history carries the substitute call, never the dropped body.
+    const step = agent.history.items[agent.history.items.len - 3];
+    try testing.expectEqual(@as(usize, 1), step.tool_calls.len);
+    try testing.expectEqualStrings("write_file", step.tool_calls[0].name);
+    try testing.expectEqualStrings("{}", step.tool_calls[0].arguments);
+}
+
+test "a call naming no offered tool is answered as invalid_call; two steps of only dropped calls end the turn" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    const body = "call:nope{a:1,b=2,c:3}\nmore";
+    const cut: inference.events.ToolCut = .{ .bytes = body.len, .reason = .malformed, .at = 15, .name = "nope", .head = body };
+    const open = "call:nope{a:[{b:1}";
+    const ended: inference.events.ToolCut = .{ .bytes = open.len, .reason = .malformed, .at = open.len, .name = "nope", .head = open, .tail = open };
+    var stub: Stub = .{
+        .answers = &.{ "", "" },
+        .cuts = &.{ &.{cut}, &.{ended} },
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+
+    try testing.expectEqual(Stop.done, try agent.turn("go", &.{}));
+    try testing.expectEqual(@as(usize, 2), capture.dropped);
+    try testing.expectEqual(@as(usize, 2), capture.results.items.len);
+    try testing.expect(std.mem.indexOf(u8, capture.results.items[0], "its syntax broke at byte 15, here: \"call:nope{a:1,b<<HERE>>=2,c:3}\".") != null);
+    try testing.expect(std.mem.indexOf(u8, capture.results.items[1], "it ended (byte 18) with a `[` or `{` left open, here: \"call:nope{a:[{b:1}<<HERE>>\".") != null);
+    try testing.expect(std.mem.indexOf(u8, capture.last_notice.items, "the turn stops") != null);
+    var named_invalid = false;
+    for (agent.history.items) |item| for (item.tool_calls) |call| {
+        if (std.mem.eql(u8, call.name, "invalid_call")) named_invalid = true;
+    };
+    try testing.expect(named_invalid);
 }
 
 test "restore rebuilds the conversation and continues the correlation ids" {
