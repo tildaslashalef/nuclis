@@ -176,11 +176,11 @@ it are [agent.md](agent.md).
   previous model. On the running model, Enter applies a new effort (re-priming) or window
   (re-opening).
 - **`/resume [id]`**: an id or a prefix of exactly one id resumes it;
-  otherwise the picker lists the workspace's sessions (newest first, the
-  one in use marked; the argument becomes the search) and Ctrl-D deletes
-  the selected one after the in-picker confirmation, refusing the session
-  in use. **`/clear`** drops the conversation into a fresh session file; the
-  old one stays resumable.
+  otherwise the picker (also a bare `nuclis agent --resume`, at start)
+  lists the workspace's sessions of any size, newest first with their
+  bytes, the one in use marked (the argument is the search; none, a notice
+  naming the directory); Ctrl-D deletes one after a confirmation, refusing
+  the one in use. **`/clear`** starts a fresh session file; the old stays resumable.
 
 ## Transcript and status
 
@@ -271,7 +271,7 @@ it are [agent.md](agent.md).
 - Entries store what the model saw and produced, never terminal styling.
   `nuclis agent export` derives markdown from the same entries. A failed write is a dim
   notice, never a lost turn.
-- Resuming (`/resume`, `--resume [<id>]`, `latest` by default) renders
+- Resuming (`/resume`, `--resume [<id>]`; print mode's default `latest`) renders
   the conversation the model last saw through the profile into a fresh
   session: cancelled steps left out and every `compaction` applied where
   it was written (`context_full`, `results_elided`, `turn_aborted`). When the

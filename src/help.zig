@@ -237,7 +237,7 @@ fn agent(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--prompt-file <path>", "the prompt's text, for print mode");
     try row(out, sty, "--json", "in print mode: one event per line instead of text");
     try row(out, sty, "--session <path>", "record a printed turn to this session file");
-    try row(out, sty, "--resume [<id>]", "replay a saved session first; the latest without <id>");
+    try row(out, sty, "--resume [<id>]", "replay a saved session first; alone, pick (-p: latest)");
     try row(out, sty, "--think <effort>", "off, low, medium, high, xhigh; default low");
     try row(out, sty, "--thinking-budget <n>", "reasoning cap at low (x2 medium ... x4 xhigh, at");
     try more(out, "most max-tokens - 2048); 0 none; entry's, else 2048");

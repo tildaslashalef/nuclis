@@ -68,7 +68,7 @@ pub const Options = struct {
     print: agent.print_mode.Options = .{},
     printing: bool = false,
     /// `agent --resume [<id>]`: replay a saved session before the first turn;
-    /// `resume.latest` when no id followed the flag.
+    /// `resume.pick` when no id followed the flag (print mode: `resume.latest`).
     resume_id: ?[]const u8 = null,
     /// `agent ls` lists the workspace's sessions instead of running one;
     /// `agent rm <id>` deletes the one `session_id` names; `agent export
@@ -240,9 +240,9 @@ pub fn parseArgs(args: []const []const u8) !Options {
             options.system_prompt_file = args[i];
         } else if (command == .agent and std.mem.eql(u8, args[i], "--resume")) {
             if (options.resume_id != null) return error.DuplicateOption;
-            // The id is optional: alone, the flag means the newest session.
+            // The id is optional: alone, the flag opens the session picker.
             if (i + 1 == args.len or args[i + 1].len == 0 or std.mem.startsWith(u8, args[i + 1], "-")) {
-                options.resume_id = agent.resume_mod.latest;
+                options.resume_id = agent.resume_mod.pick;
             } else {
                 i += 1;
                 options.resume_id = args[i];
@@ -466,7 +466,11 @@ pub fn parseArgs(args: []const []const u8) !Options {
         if (options.print.session != null and !options.printing) return error.UnknownOption;
         options.print.json = options.json;
         options.print.seed = options.generation.seed;
-        options.print.resume_id = options.resume_id;
+        // A script has no picker: a bare `--resume` is the newest session.
+        options.print.resume_id = if (options.resume_id) |id|
+            (if (std.mem.eql(u8, id, agent.resume_mod.pick)) agent.resume_mod.latest else id)
+        else
+            null;
         options.print.system_prompt = options.system_prompt_file;
     }
     if (command == .eval and options.evaluation.file == null) return error.MissingTextFile;
@@ -936,10 +940,11 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             return err;
         },
         error.SessionNotFound => {
-            if (std.mem.eql(u8, options.resume_id orelse "", agent.resume_mod.latest))
+            const id = options.print.resume_id orelse options.resume_id orelse "";
+            if (std.mem.eql(u8, id, agent.resume_mod.latest))
                 diag.set("no saved session for this workspace yet (`nuclis agent ls` lists them under {s})", .{root orelse "~/.nuclis"})
             else
-                diag.set("no saved session {s} for this workspace (`nuclis agent ls` and /resume list the sessions under {s})", .{ options.resume_id orelse "", root orelse "~/.nuclis" });
+                diag.set("no saved session {s} for this workspace (`nuclis agent ls` and /resume list the sessions under {s})", .{ id, root orelse "~/.nuclis" });
             return err;
         },
         else => return err,
@@ -1161,8 +1166,10 @@ test "agent print mode takes a prompt, JSON lines, and a session file" {
     const print_resume = try parseArgs(&.{ "agent", "-p", "hi", "--resume", "abcdef" });
     try std.testing.expectEqualStrings("abcdef", print_resume.print.resume_id.?);
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "agent", "--resume", "a", "--resume", "b" }));
-    // Alone, `--resume` is the newest session; a following flag is not an id.
-    try std.testing.expectEqualStrings(agent.resume_mod.latest, (try parseArgs(&.{ "agent", "--resume" })).resume_id.?);
+    // Alone, `--resume` opens the picker, or in print mode is the newest
+    // session; a following flag is not an id.
+    try std.testing.expectEqualStrings(agent.resume_mod.pick, (try parseArgs(&.{ "agent", "--resume" })).resume_id.?);
+    try std.testing.expectEqualStrings(agent.resume_mod.latest, (try parseArgs(&.{ "agent", "--resume", "latest" })).resume_id.?);
     const latest_print = try parseArgs(&.{ "agent", "--resume", "-p", "hi" });
     try std.testing.expectEqualStrings(agent.resume_mod.latest, latest_print.print.resume_id.?);
     try std.testing.expectEqualStrings("hi", latest_print.print.prompt.?);

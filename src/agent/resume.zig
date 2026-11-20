@@ -22,10 +22,14 @@ const Profile = inference.profiles;
 const transcript = tui.transcript;
 const screen = tui.screen;
 
-/// The id `find` resolves to the newest session of the workspace, for
-/// `--resume` with no id. A real id is 32 hex digits, so the word cannot
-/// collide.
+/// The id `find` resolves to the newest session of the workspace: `--resume
+/// latest`, and `--resume` with no id in print mode. A real id is 32 hex
+/// digits, so the word cannot collide.
 pub const latest = "latest";
+
+/// What a bare `--resume` asks of the terminal surface: the session picker
+/// at startup. Never passed to `find`; print mode turns it into `latest`.
+pub const pick = "";
 
 /// One saved conversation, as a picker sees it: the header's facts plus the
 /// path to load. Owned strings.
@@ -35,6 +39,8 @@ pub const Summary = struct {
     cwd: []u8,
     effort: []u8,
     ctx_size: usize,
+    /// The file's size on disk.
+    bytes: u64,
     path: []u8,
     /// The first prompt's first line, at most `prompt_preview` bytes; empty
     /// when nothing was said.
@@ -69,7 +75,7 @@ pub const Listing = struct {
             try out.print("{s}no saved sessions for{s} {s}{s}{s}\n", .{ sty.on(.label), off, sty.on(.code), self.cwd, off });
             return;
         }
-        try out.print("{s}sessions for{s} {s}{s}{s} {s}(newest first; `nuclis agent --resume [<id>]` continues the newest or the named one){s}\n", .{ sty.on(.label), off, sty.on(.code), self.cwd, off, sty.on(.dim), off });
+        try out.print("{s}sessions for{s} {s}{s}{s} {s}(newest first; `nuclis agent --resume` picks one, `--resume <id>` continues it){s}\n", .{ sty.on(.label), off, sty.on(.code), self.cwd, off, sty.on(.dim), off });
         for (self.sessions) |s| {
             const short = if (s.id.len > 8) s.id[0..8] else s.id;
             try out.print("  {s}{s}{s}  {s}  {s}{s:<6}{s} ctx {s}{d:<5}{s}", .{ sty.on(.keyword), short, off, s.time, sty.on(.number), s.effort, off, sty.on(.number), s.ctx_size, off });
@@ -92,8 +98,14 @@ pub fn freeList(alloc: Allocator, items: []Summary) void {
     alloc.free(items);
 }
 
-/// The sessions recorded for `cwd`, newest first. A root with no session
-/// directory yet is an empty list, not an error.
+/// How much of a session file `list` reads: the header and the first user
+/// entry. A first prompt cut off by it shows no preview.
+const summary_prefix_bytes = 64 * 1024;
+
+/// The sessions recorded for `cwd`, newest first, whatever their size: each
+/// file is read only up to `summary_prefix_bytes`. A root with no session
+/// directory yet is an empty list, not an error; a file whose first line is
+/// not a header is skipped.
 pub fn list(alloc: Allocator, io: std.Io, root_dir: []const u8, cwd: []const u8) ![]Summary {
     const dir_path = try sessionsPath(alloc, root_dir, cwd);
     defer alloc.free(dir_path);
@@ -107,23 +119,33 @@ pub fn list(alloc: Allocator, io: std.Io, root_dir: []const u8, cwd: []const u8)
         for (out.items) |item| item.deinit(alloc);
         out.deinit(alloc);
     }
+    const buffer = try alloc.alloc(u8, summary_prefix_bytes);
+    defer alloc.free(buffer);
     var iterator = dir.iterate();
     while (try iterator.next(io)) |entry| {
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".jsonl")) continue;
-        const bytes = dir.readFileAlloc(io, entry.name, alloc, .limited(64 * 1024)) catch continue;
-        defer alloc.free(bytes);
-        const header = session.parseHeader(alloc, bytes) catch continue;
+        const head = readHead(io, dir, entry.name, buffer) catch continue;
+        const header = session.parseHeader(alloc, head.bytes) catch continue;
         defer header.deinit(alloc);
         const path = try std.fs.path.join(alloc, &.{ dir_path, entry.name });
         errdefer alloc.free(path);
-        const first_prompt = try firstPrompt(alloc, bytes);
+        const first_prompt = try firstPrompt(alloc, head.bytes);
         errdefer alloc.free(first_prompt);
+        const id = try alloc.dupe(u8, header.id);
+        errdefer alloc.free(id);
+        const time = try alloc.dupe(u8, header.time);
+        errdefer alloc.free(time);
+        const directory = try alloc.dupe(u8, header.cwd);
+        errdefer alloc.free(directory);
+        const effort = try alloc.dupe(u8, header.effort);
+        errdefer alloc.free(effort);
         try out.append(alloc, .{
-            .id = try alloc.dupe(u8, header.id),
-            .time = try alloc.dupe(u8, header.time),
-            .cwd = try alloc.dupe(u8, header.cwd),
-            .effort = try alloc.dupe(u8, header.effort),
+            .id = id,
+            .time = time,
+            .cwd = directory,
+            .effort = effort,
             .ctx_size = header.ctx_size,
+            .bytes = head.size,
             .path = path,
             .first_prompt = first_prompt,
         });
@@ -132,8 +154,19 @@ pub fn list(alloc: Allocator, io: std.Io, root_dir: []const u8, cwd: []const u8)
     return out.toOwnedSlice(alloc);
 }
 
+/// The first bytes of `name` (at most `buffer.len`, borrowed from it) and
+/// the file's whole size.
+fn readHead(io: std.Io, dir: std.Io.Dir, name: []const u8, buffer: []u8) !struct { bytes: []const u8, size: u64 } {
+    const file = try dir.openFile(io, name, .{});
+    defer file.close(io);
+    const stat = try file.stat(io);
+    const n = try file.readPositionalAll(io, buffer, 0);
+    return .{ .bytes = buffer[0..n], .size = stat.size };
+}
+
 /// The first line of the first user entry, cut to the preview length at a
-/// code point; empty when the second line is not a user entry.
+/// code point; empty when the second line is not a whole user entry (`bytes`
+/// may be a prefix that ends mid-line).
 fn firstPrompt(alloc: Allocator, bytes: []const u8) ![]u8 {
     const start = (std.mem.indexOfScalar(u8, bytes, '\n') orelse return alloc.dupe(u8, "")) + 1;
     const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
@@ -225,7 +258,13 @@ pub fn match(alloc: Allocator, io: std.Io, root_dir: []const u8, cwd: []const u8
         alloc.free(sessions);
         return .{ .one = one };
     }
-    const shrunk = alloc.realloc(sessions, kept) catch sessions[0..kept];
+    // A copy, not a shrink in place: the caller frees by the returned length.
+    const shrunk = alloc.dupe(Summary, sessions[0..kept]) catch |err| {
+        for (sessions[0..kept]) |s| s.deinit(alloc);
+        alloc.free(sessions);
+        return err;
+    };
+    alloc.free(sessions);
     return .{ .many = shrunk };
 }
 
@@ -264,7 +303,8 @@ pub fn lastBoundary(loaded: session.Loaded) ?cache.Boundary {
     return null;
 }
 
-fn sessionsPath(alloc: Allocator, root_dir: []const u8, cwd: []const u8) ![]u8 {
+/// The directory holding `cwd`'s session files under `root_dir`. Caller owns it.
+pub fn sessionsPath(alloc: Allocator, root_dir: []const u8, cwd: []const u8) ![]u8 {
     const slug = try session.cwdSlug(alloc, cwd);
     defer alloc.free(slug);
     return std.fs.path.join(alloc, &.{ root_dir, paths.agent_dir, paths.sessions_dir, slug });
@@ -562,6 +602,73 @@ test "listing finds sessions for the working directory and orders them newest fi
     const none = try list(alloc, io, root, "/work/other");
     defer freeList(alloc, none);
     try testing.expectEqual(@as(usize, 0), none.len);
+}
+
+test "listing reads a session of any size, skips a damaged header, and keeps newest first" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const alloc = testing.allocator;
+    const io = testing.io;
+    const root = try tmp.dir.realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(root);
+    const cwd = "/work/proj";
+    const slug = try session.cwdSlug(alloc, cwd);
+    defer alloc.free(slug);
+    const header = "{{\"type\":\"session\",\"version\":1,\"id\":\"{s}\",\"time\":\"{s}\",\"cwd\":\"/work/proj\",\"model\":{{\"path\":\"/m\"}},\"effort\":\"low\",\"ctx_size\":8192}}\n";
+    const user = "{\"type\":\"user\",\"id\":1,\"parent\":null,\"time\":\"t\",\"text\":\"fix the parser\\nplease\"}\n";
+    const answer = "{\"type\":\"assistant\",\"id\":2,\"parent\":1,\"time\":\"t\",\"answer\":\"" ++ @as([1000]u8, @splat('a')) ++ "\",\"stop\":\"eos\"}\n";
+    const dir = try std.fmt.allocPrint(alloc, "agent/sessions/{s}", .{slug});
+    defer alloc.free(dir);
+    try tmp.dir.createDirPath(io, dir);
+
+    // Oldest: past 200 KiB, well beyond the summary prefix.
+    var big: std.ArrayList(u8) = .empty;
+    defer big.deinit(alloc);
+    try big.print(alloc, header, .{ "1111", "2026-11-01T09:00:00Z" });
+    try big.appendSlice(alloc, user);
+    while (big.items.len < 200 * 1024) try big.appendSlice(alloc, answer);
+    // Newest: a first prompt longer than the summary bound has no preview.
+    var long: std.ArrayList(u8) = .empty;
+    defer long.deinit(alloc);
+    try long.print(alloc, header, .{ "3333", "2026-11-01T11:00:00Z" });
+    try long.appendSlice(alloc, "{\"type\":\"user\",\"id\":1,\"parent\":null,\"time\":\"t\",\"text\":\"");
+    try long.appendNTimes(alloc, 'x', 70 * 1024);
+    try long.appendSlice(alloc, "\"}\n");
+    var middle: std.ArrayList(u8) = .empty;
+    defer middle.deinit(alloc);
+    try middle.print(alloc, header, .{ "2222", "2026-11-01T10:00:00Z" });
+    try middle.appendSlice(alloc, user);
+    const files = [_]struct { name: []const u8, data: []const u8 }{
+        .{ .name = "20261101T090000Z_1111.jsonl", .data = big.items },
+        .{ .name = "20261101T110000Z_3333.jsonl", .data = long.items },
+        .{ .name = "20261101T100000Z_2222.jsonl", .data = middle.items },
+        .{ .name = "20261101T120000Z_dead.jsonl", .data = "{\"type\":\"session\",\"version\":1,\"id\":\"dead\"" },
+        .{ .name = "20261101T130000Z_beef.jsonl", .data = "not json\n" ++ user },
+    };
+    for (files) |file| {
+        const rel = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ dir, file.name });
+        defer alloc.free(rel);
+        try tmp.dir.writeFile(io, .{ .sub_path = rel, .data = file.data });
+    }
+
+    const items = try list(alloc, io, root, cwd);
+    defer freeList(alloc, items);
+    try testing.expectEqual(@as(usize, 3), items.len);
+    try testing.expectEqualStrings("3333", items[0].id);
+    try testing.expectEqualStrings("", items[0].first_prompt);
+    try testing.expectEqualStrings("2222", items[1].id);
+    try testing.expectEqualStrings("fix the parser", items[1].first_prompt);
+    try testing.expectEqual(@as(u64, middle.items.len), items[1].bytes);
+    try testing.expectEqualStrings("1111", items[2].id);
+    try testing.expectEqualStrings("fix the parser", items[2].first_prompt);
+    try testing.expectEqual(@as(u64, big.items.len), items[2].bytes);
+    // `latest` and an id prefix see the big session too.
+    const newest = (try find(alloc, io, root, cwd, latest)).?;
+    defer alloc.free(newest);
+    try testing.expect(std.mem.endsWith(u8, newest, "_3333.jsonl"));
+    const one = try match(alloc, io, root, cwd, "11");
+    defer one.deinit(alloc);
+    try testing.expectEqualStrings("1111", one.one.id);
 }
 
 test "an id prefix names one session or says which it could mean, and delete takes its cached states" {

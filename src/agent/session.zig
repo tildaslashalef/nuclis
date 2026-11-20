@@ -242,8 +242,9 @@ pub const Session = struct {
         defer line.deinit();
         if (end == 0) try writeHeader(&line.writer, self.header);
         try writeEntry(&line.writer, entry, id, self.last_id, now);
-        // Loading stops at `max_file_bytes`: a longer file could not be resumed.
-        if (end + line.written().len > max_file_bytes) return error.SessionFileFull;
+        // Loading refuses a file of `max_file_bytes` or more: such a file could
+        // not be resumed.
+        if (end + line.written().len >= max_file_bytes) return error.SessionFileFull;
         var buffer: [4096]u8 = undefined;
         var writer = file.writerStreaming(self.io, &buffer);
         try writer.seekTo(end);
