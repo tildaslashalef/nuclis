@@ -8,7 +8,9 @@
 //! bound end the whole group (`stop`: TERM, a grace, then KILL) and reap the
 //! shell, so a command that ignores TERM, a pipeline, or a `&` job cannot
 //! outlive them. Exceeding the output bound returns the prefix with
-//! `truncated` set. An output longer than
+//! `truncated` set. A command quiet 15 s with a process of its group
+//! listening on TCP is a server in the foreground and is stopped the same
+//! way (`listening`). An output longer than
 //! `head_lines + tail_lines` reaches the model as its head and tail with the
 //! omitted count marked between them.
 //!
@@ -54,7 +56,20 @@ const fallback_path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 const Args = struct { command: []const u8 };
 
-const Outcome = enum { completed, timed_out, cancelled, truncated, read_failed };
+/// How long the output is still read after the shell exits while a process
+/// it left in the background holds the output open.
+const drain_ms: i64 = 1000;
+
+/// A command still running with its output quiet this long is checked
+/// for a server: a process of its group listening on TCP (`listening`),
+/// every `server_check_ms` after.
+const server_quiet_ms: i64 = if (builtin.is_test) 300 else 15_000;
+const server_check_ms: i64 = if (builtin.is_test) 200 else 5_000;
+/// The most of `lsof`'s output read, and how long it may take.
+const lsof_max: usize = 4096;
+const lsof_timeout_ms: i64 = 2000;
+
+const Outcome = enum { completed, timed_out, cancelled, truncated, read_failed, left_running, serving };
 
 fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u8) std.mem.Allocator.Error!root.Result {
     const parsed = std.json.parseFromSlice(Args, alloc, arguments, .{ .ignore_unknown_fields = true }) catch {
@@ -108,6 +123,13 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
 
     const started = std.Io.Clock.awake.now(workspace.io);
     var outcome: Outcome = .completed;
+    // When the shell exited with the output still open: a `&` job holds it.
+    var shell_gone: ?std.Io.Timestamp = null;
+    // The output's length when it last grew, and when; the last server check.
+    var heard: usize = 0;
+    var heard_at = started;
+    var checked_at: ?std.Io.Timestamp = null;
+    var ports: Ports = .{};
     while (true) {
         // The agent's beat, before anything else: read the keyboard and
         // repaint while the command holds the loop. A Ctrl-C read here sets
@@ -125,7 +147,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         // while the child is idle; data arriving wakes the wait early.
         reader.fill(64, .{ .duration = .{ .raw = .{ .nanoseconds = poll_ms * std.time.ns_per_ms }, .clock = .awake } }) catch |err| switch (err) {
             error.EndOfStream => break,
-            error.Timeout => continue,
+            error.Timeout => {},
             else => {
                 outcome = .read_failed;
                 break;
@@ -134,6 +156,31 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         if (reader.reader(0).buffered().len + reader.reader(1).buffered().len > max_output) {
             outcome = .truncated;
             break;
+        }
+        // Checked on every pass: a job that writes often never lets a read
+        // time out.
+        if (shell_gone) |gone| {
+            if (gone.durationTo(std.Io.Clock.awake.now(workspace.io)).nanoseconds >= drain_ms * std.time.ns_per_ms) {
+                outcome = .left_running;
+                break;
+            }
+        } else if (exited(child.id.?)) { // checked: spawned
+            shell_gone = std.Io.Clock.awake.now(workspace.io);
+        } else {
+            const now = std.Io.Clock.awake.now(workspace.io);
+            const size = reader.reader(0).buffered().len + reader.reader(1).buffered().len;
+            if (size != heard) {
+                heard = size;
+                heard_at = now;
+            } else if (heard_at.durationTo(now).nanoseconds >= server_quiet_ms * std.time.ns_per_ms and
+                (if (checked_at) |at| at.durationTo(now).nanoseconds >= server_check_ms * std.time.ns_per_ms else true))
+            {
+                checked_at = now;
+                if (listening(alloc, workspace.io, child.id.?, &ports)) { // checked: spawned
+                    outcome = .serving;
+                    break;
+                }
+            }
         }
     }
 
@@ -146,7 +193,14 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     reader_ready = false;
 
     var term: std.process.Child.Term = .{ .exited = 0 };
-    if (outcome == .completed) {
+    var stopped_left = false;
+    if (outcome == .left_running) {
+        // The shell is done: end what it left in its group while the
+        // unreaped shell still holds the group's id, then reap it.
+        stopped_left = endGroup(child.id.?, workspace.io); // checked: spawned
+        term = child.wait(workspace.io) catch |err| return root.fail(alloc, "bash: could not reap the command: {s}", .{@errorName(err)});
+        child_live = false;
+    } else if (outcome == .completed) {
         term = child.wait(workspace.io) catch |err| return root.fail(alloc, "bash: could not reap the command: {s}", .{@errorName(err)});
         child_live = false;
     } else {
@@ -178,13 +232,23 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         },
         .timed_out => {
             is_error = true;
-            try text.appendSlice(alloc, "\n[bash: timed out after 300 s]");
+            try text.appendSlice(alloc, "\n[bash: timed out after 300 s; a command that does not exit, such as a server, runs in the background: `cmd > cmd.log 2>&1 & sleep 2; …; kill $!`]");
             try summary.appendSlice(alloc, "timed out after 300 s");
         },
         .read_failed => {
             is_error = true;
             try text.appendSlice(alloc, "\n[bash: could not read the command's output]");
             try summary.appendSlice(alloc, "could not read the output");
+        },
+        .left_running => {
+            try text.print(alloc, "\n[bash: the command exited, but a process it started in the background still held its output{s}; give a background process its own output (`cmd > cmd.log 2>&1 &`) and stop it with `kill $!`]", .{if (stopped_left) ", and was stopped" else " outside the command's process group, and could not be stopped"});
+            try summary.appendSlice(alloc, if (stopped_left) "a background process was stopped" else "a background process holds the output");
+        },
+        .serving => {
+            is_error = true;
+            const seconds = @divFloor(started.durationTo(std.Io.Clock.awake.now(workspace.io)).nanoseconds, std.time.ns_per_s);
+            try text.print(alloc, "\n[bash: the command was still running after {d} s, listening on {s} with no output for {d} s, so it was stopped as a server in the foreground; run a server in the background: `cmd > cmd.log 2>&1 & sleep 2; …; kill $!`]", .{ seconds, ports.slice(), @divFloor(server_quiet_ms, 1000) });
+            try summary.print(alloc, "a server in the foreground, stopped after {d} s", .{seconds});
         },
         .truncated => {
             try text.print(alloc, "\n[bash: output stopped at {d} bytes and the command was killed]", .{max_output});
@@ -231,6 +295,58 @@ fn stop(child: *std.process.Child, io: std.Io) void {
     }
     std.posix.kill(-pid, .KILL) catch {};
     _ = child.wait(io) catch {};
+}
+
+/// Ends what an exited, unreaped shell left in its group: TERM, a grace,
+/// then KILL. Whether anything was signalled; the shell's zombie counts as
+/// a member, so the grace is spent whole.
+fn endGroup(pid: std.posix.pid_t, io: std.Io) bool {
+    std.posix.kill(-pid, .TERM) catch return false;
+    io.sleep(.fromMilliseconds(grace_ms), .awake) catch {};
+    std.posix.kill(-pid, .KILL) catch {};
+    return true;
+}
+
+/// The addresses `listening` found, as `lsof` names them (`*:3000`).
+const Ports = struct {
+    buf: [128]u8 = undefined,
+    len: usize = 0,
+
+    fn slice(self: *const Ports) []const u8 {
+        return if (self.len == 0) "a port" else self.buf[0..self.len];
+    }
+};
+
+/// Whether a process in group `pgid` listens on TCP, asked of `lsof`
+/// (bounded in time and output); false when it cannot tell, as where
+/// `lsof` is missing. Fills `ports` with the addresses.
+fn listening(alloc: std.mem.Allocator, io: std.Io, pgid: std.posix.pid_t, ports: *Ports) bool {
+    var number: [24]u8 = undefined;
+    const group = std.fmt.bufPrint(&number, "{d}", .{pgid}) catch return false;
+    const result = std.process.run(alloc, io, .{
+        .argv = &.{ "lsof", "-nP", "-b", "-w", "-a", "-g", group, "-iTCP", "-sTCP:LISTEN", "-Fn" },
+        .stdout_limit = .limited(lsof_max),
+        .stderr_limit = .limited(lsof_max),
+        .timeout = .{ .duration = .{ .raw = .{ .nanoseconds = lsof_timeout_ms * std.time.ns_per_ms }, .clock = .awake } },
+    }) catch return false;
+    defer alloc.free(result.stdout);
+    defer alloc.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) return false;
+    ports.len = 0;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    var found = false;
+    while (lines.next()) |line| {
+        if (line.len < 2 or line[0] != 'n') continue;
+        found = true;
+        const name = line[1..];
+        const sep: []const u8 = if (ports.len > 0) ", " else "";
+        if (ports.len + sep.len + name.len > ports.buf.len) continue;
+        if (std.mem.indexOf(u8, ports.buf[0..ports.len], name) != null) continue;
+        @memcpy(ports.buf[ports.len..][0..sep.len], sep);
+        @memcpy(ports.buf[ports.len + sep.len ..][0..name.len], name);
+        ports.len += sep.len + name.len;
+    }
+    return found;
 }
 
 extern "c" fn waitid(idtype: c_int, id: c_uint, info: *std.c.siginfo_t, options: c_int) c_int;
@@ -501,6 +617,52 @@ test "a cancelled command that ignores TERM, and its background job, are gone wi
         testing.io.sleep(.fromMilliseconds(10), .awake) catch {};
     }
     try testing.expect(gone);
+}
+
+test "a background job left holding the output is stopped once the shell exits, and the run stands" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    const started = std.Io.Clock.awake.now(testing.io);
+    var result = try run(fixture.ws, alloc, "{\"command\":\"(sleep 100; echo late) & echo $! > bg.pid; echo done\"}");
+    defer result.deinit(alloc);
+    const elapsed_ns = started.durationTo(std.Io.Clock.awake.now(testing.io)).nanoseconds;
+    try testing.expect(elapsed_ns < (drain_ms + grace_ms + 3000) * std.time.ns_per_ms);
+    try testing.expect(std.mem.startsWith(u8, result.text, "done\n"));
+    try testing.expect(std.mem.indexOf(u8, result.text, "still held its output, and was stopped") != null);
+    try testing.expect(!result.is_error);
+    const text = try fixture.tmp.dir.readFileAlloc(testing.io, "bg.pid", alloc, .limited(32));
+    defer alloc.free(text);
+    const job = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, text, " \n"), 10);
+    var gone = false;
+    for (0..200) |_| {
+        std.posix.kill(job, @fromBackingInt(@intCast(0))) catch {
+            gone = true;
+            break;
+        };
+        testing.io.sleep(.fromMilliseconds(10), .awake) catch {};
+    }
+    try testing.expect(gone);
+}
+
+test "a quiet command listening on TCP is stopped as a server in the foreground" {
+    const alloc = testing.allocator;
+    const tools = std.process.run(alloc, testing.io, .{ .argv = &.{ "/bin/sh", "-c", "command -v lsof && command -v python3" } }) catch return error.SkipZigTest;
+    defer alloc.free(tools.stdout);
+    defer alloc.free(tools.stderr);
+    if (tools.term != .exited or tools.term.exited != 0) return error.SkipZigTest;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    const started = std.Io.Clock.awake.now(testing.io);
+    var result = try run(fixture.ws, alloc, "{\"command\":\"echo up; python3 -c \\\"import socket, time; s = socket.socket(); s.bind(('127.0.0.1', 0)); s.listen(); time.sleep(60)\\\"\"}");
+    defer result.deinit(alloc);
+    const elapsed_ns = started.durationTo(std.Io.Clock.awake.now(testing.io)).nanoseconds;
+    try testing.expect(elapsed_ns < 20 * std.time.ns_per_s);
+    try testing.expect(result.is_error);
+    try testing.expect(std.mem.startsWith(u8, result.text, "up\n"));
+    try testing.expect(std.mem.indexOf(u8, result.text, "listening on 127.0.0.1:") != null);
+    try testing.expect(std.mem.indexOf(u8, result.text, "so it was stopped as a server in the foreground") != null);
+    try testing.expect(std.mem.startsWith(u8, result.summary.?, "a server in the foreground, stopped after "));
 }
 
 test "the tick can request cancellation mid-command" {
