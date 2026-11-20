@@ -453,6 +453,12 @@ pub const Completer = struct {
     primed_len: usize = 0,
     /// Set when `run` last reported `ContextFull`, for the caller's message.
     overflow: ?Overflow = null,
+    /// While a step's prompt is prefilled: why it re-reads the conversation,
+    /// if it does, so the live row can say so before the step's `Reply`.
+    replaying: ?Replay = null,
+    /// The last step's output stopped at its budget, not where the model
+    /// ended it (`checkpoint`).
+    budget_stop: bool = false,
     /// States at turn boundaries and primed prefixes, restored instead of
     /// re-prefilled when a render starts with one (`cache.zig`).
     cache: cache.Memory,
@@ -692,8 +698,10 @@ pub const Completer = struct {
         const self: *Completer = @ptrCast(@alignCast(context));
         if (self.seen.items.len == 0) return null;
         // The next render cannot continue past the prompt's end: go back
-        // there first, so the state kept is one it can use.
-        if (self.mark) |m| if (self.eng.profile.?.rewritesTurn(self.effort)) self.rewindToMark(m) catch return null;
+        // there first, so the state kept is one it can use. An output cut
+        // at its budget may not render as generated either (a call it was
+        // writing is dropped), and a resume would then miss the whole state.
+        if (self.mark) |m| if (self.eng.profile.?.rewritesTurn(self.effort) or self.budget_stop) self.rewindToMark(m) catch return null;
         const to_disk = self.save_turns and self.disk != null;
         const in_memory = self.cache.budget > 0 and self.cache.exact(self.seen.items) == null;
         if (!to_disk and !in_memory) return null;
@@ -868,47 +876,60 @@ pub const Completer = struct {
         self.holdMark();
     }
 
-    /// A state kept inside a step's prompt: the system block's end, the
+    /// States kept inside a step's prompt: the system block's end, the
     /// boundary every conversation under the same system prompt shares
-    /// (the agent primes it; a server request does not). Fed to `complete`
-    /// as `inference.engine.Saves`.
+    /// (the agent primes it; a server request does not), and, for a model
+    /// that cannot rewind by position (`markPromptEnd`), the history's end,
+    /// so a step whose output the next render drops (a call cut at its
+    /// budget, a cancel) restores it instead of replaying the turn. Fed to
+    /// `complete` as `inference.engine.Saves`.
     const Saving = struct {
         completer: *Completer,
         full: []const u8,
-        offset: usize = 0,
-        bytes: usize = 0,
+        offsets: [2]usize = undefined,
+        bytes: [2]usize = undefined,
+        count: usize = 0,
 
-        /// Picks the system block's end when it lies inside the remainder,
-        /// the memory tier would keep it and does not hold it, and the
-        /// state holds `min_save_tokens`.
+        /// Picks each boundary that lies inside the remainder, encodes as a
+        /// prefix of `tokens`, is not held already, and leaves a state of
+        /// `min_save_tokens`, while the memory tier keeps states.
         fn plan(self: *Saving, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, tokens: []const u32, reused: usize) !void {
             const c = self.completer;
             if (c.cache.budget == 0) return;
             if (c.observer) |o| if (o.layer != null) return;
-            const start = c.seen.items.len;
             const system = try c.eng.prefix(messages[0..Profile.leadingSystemCount(messages)], definitions, c.effort);
             defer c.alloc.free(system);
-            if (system.len <= start or system.len >= self.full.len or !std.mem.startsWith(u8, self.full, system)) return;
-            if (c.cache.exact(system) != null) return;
-            const head = try c.eng.encode(self.full[start..system.len]);
+            if (std.mem.startsWith(u8, self.full, system)) try self.add(system.len, tokens, reused);
+            if (c.eng.model.hasRecurrentState()) try self.add(c.eng.profile.?.promptEnd(self.full), tokens, reused);
+        }
+
+        fn add(self: *Saving, end: usize, tokens: []const u32, reused: usize) !void {
+            const c = self.completer;
+            const start = c.seen.items.len;
+            const after = if (self.count > 0) self.bytes[self.count - 1] else start;
+            if (end <= after or end >= self.full.len) return;
+            if (c.cache.exact(self.full[0..end]) != null) return;
+            const head = try c.eng.encode(self.full[start..end]);
             defer c.alloc.free(head);
             if (head.len >= tokens.len or !std.mem.eql(u32, head, tokens[0..head.len])) return;
             if (reused + head.len < min_save_tokens) return;
-            self.offset = head.len;
-            self.bytes = system.len;
+            if (self.count > 0 and head.len <= self.offsets[self.count - 1]) return;
+            self.offsets[self.count] = head.len;
+            self.bytes[self.count] = end;
+            self.count += 1;
         }
 
         fn saves(self: *Saving) ?inference.engine.Saves {
-            if (self.offset == 0) return null;
-            return .{ .offsets = (&self.offset)[0..1], .context = self, .save = save };
+            if (self.count == 0) return null;
+            return .{ .offsets = self.offsets[0..self.count], .context = self, .save = save };
         }
 
-        fn save(context: *anyopaque, _: usize) void {
+        fn save(context: *anyopaque, i: usize) void {
             const self: *Saving = @ptrCast(@alignCast(context));
             const c = self.completer;
             var snap = c.eng.model.snapshot(c.alloc) catch return;
             if (snap.span_count != 0) return snap.deinit();
-            c.keepAs(snap, self.full[0..self.bytes]);
+            c.keepAs(snap, self.full[0..self.bytes[i]]);
         }
     };
 
@@ -991,6 +1012,8 @@ pub const Completer = struct {
             break :blk full;
         };
         self.cause = null;
+        self.replaying = replay;
+        defer self.replaying = null;
         self.primed_len = @min(self.primed_len, self.seen.items.len);
         const tokens = if (stepped) |t| try self.alloc.dupe(u32, &.{t}) else try self.encodeKeyed(remainder);
         defer self.alloc.free(tokens);
@@ -1043,6 +1066,7 @@ pub const Completer = struct {
         defer self.alloc.free(fed_text);
         try self.seen.appendSlice(self.alloc, fed_text);
         if (outcome.stop == .cancelled) self.reset(.cancel);
+        self.budget_stop = outcome.stop == .token_budget or outcome.stop == .context_limit;
         const window_end = (outcome.stop == .token_budget or outcome.stop == .context_limit) and limit < self.buffers.generated.len;
         if (window_end) self.overflow = .{ .needed = reused + tokens.len + self.buffers.generated.len, .capacity = session.capacity };
         const lost = if (conversation or replay != null) held_before -| reused else 0;

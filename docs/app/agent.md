@@ -369,15 +369,15 @@ removed.
   the model generated it (`Profile.rewritesTurn`), so neither the session
   nor an answer-end state is ever a prefix of the next turn. On an
   attention-only model the step marks where its prompt ended
-  (`Profile.promptEnd`: before `<|turn>model\n`, or before the thought
-  channel a tool result leaves open), with the position and the penalty
+  (`Profile.promptEnd`: before `<|turn>model\n`, the thought channel a
+  tool result leaves open, or the close after a step's text), with the position and the penalty
   set there; `checkpoint` moves the session back to the mark
   (`Session.rewindTo`, no copy) before keeping it, and a step that never
   reached `checkpoint` (an answer cut at its budget) moves back when the
   next render starts with the mark, which a windowed layer keeps in reach while it can (`Session.hold`; past that the step re-prefills, `rewind_out_of_reach`).
   The next turn continues from there, prefilling the answer as rendered and the new message. A recurrent model
-  would need a snapshot at the mark instead; no profile it runs rewrites
-  its turns.
+  cannot move back by position: its prefill keeps a state at the prompt end in memory, which a step whose
+  output the next render drops (a budget cut, a cancel) restores instead of replaying the turn.
 - **Matching** is on the rendered text the state consumed, not on tokens:
   a turn's generated tokens need not be the canonical encoding of their
   text, so re-encoding the render would miss them. A hit must be a proper

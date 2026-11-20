@@ -222,7 +222,7 @@ pub fn causePhrase(cause: []const u8) []const u8 {
     const phrases = [_][2][]const u8{
         .{ "resumed", "after a resume" },
         .{ "cancel", "after a cancel" },
-        .{ "rewrite", "after trimming the context" },
+        .{ "rewrite", "an earlier message changed" },
         .{ "rewind_out_of_reach", "after the window moved on" },
         .{ "effort", "the effort changed" },
         .{ "context", "the context size changed" },
@@ -376,7 +376,7 @@ test "a replay keeps its cell over the settings, and drops before the rates" {
     const status: Status = .{ .context_used = 4900, .context_capacity = 32768, .effort = "low", .speculative = true, .draft_length = 4, .kv = "f16", .backend = "metal", .model = "qwen3.8-27b", .replay = .{ .cause = "rewrite", .prefilled = 4900 } };
     // At 160 the settings go first, from the right; the replay stays whole.
     const at160 = try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } });
-    try testing.expect(std.mem.indexOf(u8, at160, "│ re-read 4.9k tokens (after trimming the context)") != null);
+    try testing.expect(std.mem.indexOf(u8, at160, "│ re-read 4.9k tokens (an earlier message changed)") != null);
     try testing.expect(std.mem.indexOf(u8, at160, "qwen3.8-27b") == null);
     try testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, at160, " "), "think low │ speculative on 4 │ kv f16"));
     // At 100 every setting has gone, then the replay, and the rates stay.
@@ -516,7 +516,7 @@ test "the bar names a replay only from 1,024 re-read tokens, in plain words" {
     try testing.expect(std.mem.indexOf(u8, large, "│ re-read 2.3k tokens (after a cancel)") != null);
     try testing.expect(std.mem.indexOf(u8, large, "restored") == null);
     status.replay = .{ .cause = "rewrite", .prefilled = replay_shown };
-    try testing.expect(std.mem.indexOf(u8, try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } }), "re-read 1.0k tokens (after trimming the context)") != null);
+    try testing.expect(std.mem.indexOf(u8, try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } }), "re-read 1.0k tokens (an earlier message changed)") != null);
     status.replay = .{ .cause = "effort", .prefilled = replay_shown - 1 };
     try testing.expect(std.mem.indexOf(u8, try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } }), "re-read") == null);
 }

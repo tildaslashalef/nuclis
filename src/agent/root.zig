@@ -382,6 +382,7 @@ const Ui = struct {
                 const counted = self.prefill_started != null and self.bar.phase == .prefill;
                 try rows.append(a, .{ .text = try readingLabel(a, self.th.glyphs(), self.spinnerFrame(), .{
                     .first_step = self.agent.steps_done == 0,
+                    .replay = if (self.completer.replaying) |r| @tagName(r.cause) else "",
                     .position = if (counted) self.bar.position else 0,
                     .target = if (counted) self.bar.target else 0,
                     .seconds = self.phaseSeconds(),
@@ -1595,6 +1596,9 @@ const Reading = struct {
     /// The turn's first step reads the user's prompt; every later one the
     /// results of the step before.
     first_step: bool,
+    /// Why the step re-reads the conversation instead (`Replay.Cause`, by
+    /// name), or empty.
+    replay: []const u8 = "",
     /// The step's prefill beat; `target == 0` before the first one.
     position: usize = 0,
     target: usize = 0,
@@ -1602,10 +1606,15 @@ const Reading = struct {
 };
 
 /// The live row while a step's new tokens are prefilled:
-/// `⠙ reading results… 1.2k/2.3k · 18s`.
+/// `⠙ reading results… 1.2k/2.3k · 18s`, or, when the step re-reads the
+/// conversation, `⠙ re-reading the conversation (an earlier message
+/// changed)… 1.2k/2.3k · 18s`. The counts are the session's position.
 fn readingLabel(a: std.mem.Allocator, gl: tui.theme.Glyphs, spin: []const u8, r: Reading) ![]const u8 {
     var w: std.Io.Writer.Allocating = .init(a);
-    try w.writer.print("{s} reading {s}{s} ", .{ spin, if (r.first_step) "the prompt" else "results", gl.ellipsis });
+    if (r.replay.len > 0)
+        try w.writer.print("{s} re-reading the conversation ({s}){s} ", .{ spin, tui.status.causePhrase(r.replay), gl.ellipsis })
+    else
+        try w.writer.print("{s} reading {s}{s} ", .{ spin, if (r.first_step) "the prompt" else "results", gl.ellipsis });
     if (r.target > 0) {
         try writeCount(&w.writer, @min(r.position, r.target));
         try w.writer.writeByte('/');
@@ -2041,10 +2050,12 @@ fn performResume(ui: *Ui, alloc: std.mem.Allocator, io: std.Io, path: []const u8
     const built = try resume_mod.conversation(a, loaded);
     const images = try resumeMedia(ui, loaded, built.records);
     defer ui.alloc.free(images);
+    const own_system = try ui.agent.adoptSystem(built.system);
     try ui.agent.restore(built.messages, images);
     ui.tr.reset();
     const rows = try resume_mod.replay(a, ui.tr, loaded, .{ .width = ui.columnsFor(), .th = ui.th });
     if (rows.len > 0) try ui.scr.insertAbove(rows);
+    if (own_system) try ui.emit(.{ .notice = "  — kept the session's own system prompt; /new reads the instructions file and the date again" });
     ui.bar = .{};
     ui.status = "resumed";
 }
@@ -2631,6 +2642,9 @@ test "the live row names the step's phase, each timed from its own start" {
     try std.testing.expectEqualStrings("⠙ reading results… 1.2k/2.3k · 18s", try readingLabel(a, gl, "⠙", .{ .first_step = false, .position = 1234, .target = 2310, .seconds = 18.2 }));
     try std.testing.expectEqualStrings("⠙ reading results… 256/2.3k · 0s", try readingLabel(a, gl, "⠙", .{ .first_step = false, .position = 256, .target = 2310, .seconds = 0.4 }));
     try std.testing.expectEqualStrings("⠙ reading results… 512/512 · 1s", try readingLabel(a, gl, "⠙", .{ .first_step = false, .position = 600, .target = 512, .seconds = 1 }));
+    const replayed = try readingLabel(a, gl, "⠙", .{ .first_step = false, .replay = "rewrite", .position = 1500, .target = 4000, .seconds = 9 });
+    try std.testing.expect(std.mem.startsWith(u8, replayed, "⠙ re-reading the conversation ("));
+    try std.testing.expect(std.mem.endsWith(u8, replayed, "1.5k/4.0k · 9s"));
     // Reasoning: the seconds since its first token, the fold hint after.
     try std.testing.expectEqualStrings("⠙ thinking… 6s (Tab to unfold)", try thinkingLabel(a, gl, "⠙", false, 6.7));
     try std.testing.expectEqualStrings("⠙ thinking… 0s (Tab to fold)", try thinkingLabel(a, gl, "⠙", true, 0.2));

@@ -1371,9 +1371,14 @@ pub fn complete(
         budget: ?usize,
         reasoning: usize = 0,
         cut: bool = false,
+        /// The token due right after a forced close (`Markers.close_trail`).
+        trail: ?u32 = null,
 
         fn token(context: *anyopaque, id: u32) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
+            // The trail is due only at the position right after the close;
+            // a speculative batch may have written past it.
+            if (id != self.decoder.markers.close) self.trail = null;
             if (self.eng.isStop(id)) return;
             if (self.decoder.thinking and !self.decoder.in_header) self.reasoning += 1;
             const piece = try inference.bpe.decode(self.eng.alloc, self.eng.vocab, &.{id}, true, .{});
@@ -1388,9 +1393,14 @@ pub fn complete(
         /// ends with `eom`, which is not a stop token.
         fn force(context: *anyopaque) ?u32 {
             const self: *@This() = @ptrCast(@alignCast(context));
-            const close = self.decoder.cutToken(self.reasoning, self.budget orelse return null) orelse return null;
+            if (self.trail) |t| {
+                self.trail = null;
+                return t;
+            }
+            const forced = self.decoder.cutToken(self.reasoning, self.budget orelse return null) orelse return null;
             self.cut = true;
-            return close;
+            if (forced == self.decoder.markers.close) self.trail = self.decoder.markers.close_trail;
+            return forced;
         }
     };
     var bridge: Bridge = .{ .eng = eng, .decoder = try profile.decoder(eng.alloc, eng.vocab, buffers.effort, tokens), .sink = sink, .budget = buffers.thinking_budget };

@@ -47,6 +47,7 @@ pub fn entry(scratch: *Scratch, record: loop.Record) session.Entry {
         } },
         .compaction => |c| .{ .compaction = .{ .first_kept = c.first_kept, .reason = c.reason } },
         .handoff => |h| .{ .handoff = .{ .text = h.text } },
+        .system => |sys| .{ .system = .{ .text = sys.text } },
         .cut => |c| .{ .cut = .{
             .call = std.fmt.bufPrint(&scratch.call, "{d}", .{c.call}) catch "?",
             .name = c.name,

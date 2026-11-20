@@ -83,6 +83,9 @@ pub const Record = union(enum) {
     cut: CutRecord,
     /// The conversation was replaced by one hand-off message, `text`.
     handoff: struct { text: []const u8 },
+    /// The system block the conversation is rendered under, before its
+    /// first user message: a resume renders the same one.
+    system: struct { text: []const u8 },
 };
 
 /// Compaction reasons beyond the turn and result cuts, which a resume
@@ -249,10 +252,17 @@ pub const Agent = struct {
     workspace: tools.Workspace,
     model: Model,
     events: Events,
-    /// The leading system message (`system_prompt.build`). Built once, owned.
-    /// The profile renders the tool definitions into this block; the loop
-    /// never spells the wire format.
-    system: []u8,
+    /// The leading system message: `fresh_system`, or a resumed session's
+    /// own (`adoptSystem`), so a resume renders what the session was cached
+    /// under. The profile renders the tool definitions into this block; the
+    /// loop never spells the wire format.
+    system: []const u8,
+    /// `system_prompt.build`'s text, built once at init; owned.
+    fresh_system: []u8,
+    /// A resumed session's recorded system block, when it differs; owned.
+    adopted_system: ?[]u8 = null,
+    /// Whether the session file already holds the system block in use.
+    system_recorded: bool = false,
     /// The definitions handed to the profile, in registry order. Built once;
     /// the names, descriptions, and schemas borrow the static registry.
     tool_defs: []Profile.ToolDefinition,
@@ -359,6 +369,7 @@ pub const Agent = struct {
             .model = model,
             .events = events,
             .system = undefined,
+            .fresh_system = undefined,
             .tool_defs = undefined,
             .budget = budget,
             .thinking = .init(alloc),
@@ -372,14 +383,16 @@ pub const Agent = struct {
         // guidelines and the definitions follow it, so they cannot disagree.
         var options = prompt;
         options.web = workspace.webTier();
-        agent.system = try system_prompt.build(alloc, options);
-        errdefer alloc.free(agent.system);
+        agent.fresh_system = try system_prompt.build(alloc, options);
+        agent.system = agent.fresh_system;
+        errdefer alloc.free(agent.fresh_system);
         agent.tool_defs = try toolDefs(alloc, options.web);
         return agent;
     }
 
     pub fn deinit(self: *Agent) void {
-        self.alloc.free(self.system);
+        self.alloc.free(self.fresh_system);
+        if (self.adopted_system) |text| self.alloc.free(text);
         self.alloc.free(self.tool_defs);
         self.clearHistory();
         self.history.deinit(self.alloc);
@@ -440,6 +453,7 @@ pub const Agent = struct {
     /// Forgets the conversation but keeps the engine usable as it is: the next
     /// turn replays from the fresh session the model already reset.
     pub fn resetConversation(self: *Agent) void {
+        _ = self.adoptSystem(null) catch unreachable;
         self.clearHistory();
         self.clearLedger();
         self.turn_start = 0;
@@ -447,6 +461,24 @@ pub const Agent = struct {
         self.rendered_tokens = 0;
         self.clearCalls();
         self.clearReads();
+    }
+
+    /// Renders a resumed session under its recorded system block `text`, the
+    /// one its cached turns were saved under, when it differs from the fresh
+    /// one only in its date or instructions (`system_prompt.sameBut`): the
+    /// tools, workspace, and prompt are this process's. Null (none recorded,
+    /// or a new conversation), or a block that differs in more, renders the
+    /// fresh one, recorded at the next turn. Whether `text` was kept over a
+    /// different fresh block.
+    pub fn adoptSystem(self: *Agent, text: ?[]const u8) Allocator.Error!bool {
+        const same = if (text) |t| std.mem.eql(u8, t, self.fresh_system) else false;
+        const keep = if (text) |t| !same and system_prompt.sameBut(t, self.fresh_system) else false;
+        const kept: ?[]u8 = if (keep) try self.alloc.dupe(u8, text.?) else null;
+        if (self.adopted_system) |old| self.alloc.free(old);
+        self.adopted_system = kept;
+        self.system = kept orelse self.fresh_system;
+        self.system_recorded = same or keep;
+        return keep;
     }
 
     /// Rebuilds the conversation from a stored one (`/resume`, `--resume`), so
@@ -602,6 +634,10 @@ pub const Agent = struct {
         };
         try self.appendItem(.user, user, "", &.{}, null, images);
         try self.events.send(self.events.context, .{ .user = user });
+        if (!self.system_recorded) {
+            try self.events.record(self.events.context, .{ .system = .{ .text = self.system } });
+            self.system_recorded = true;
+        }
         try self.events.record(self.events.context, .{ .user = .{ .text = user, .images = images } });
 
         self.turn_started = std.Io.Clock.awake.now(self.io);
@@ -2015,6 +2051,8 @@ const Capture = struct {
     /// `cut` records: calls the profile dropped.
     dropped: usize = 0,
     compactions: usize = 0,
+    /// `system` records: the block a resume renders.
+    systems: usize = 0,
     notices: usize = 0,
     /// The text of the last notice, for the tests that read it.
     last_notice: std.ArrayList(u8) = .empty,
@@ -2092,6 +2130,7 @@ const Capture = struct {
             },
             .compaction => self.compactions += 1,
             .cut => self.dropped += 1,
+            .system => self.systems += 1,
             else => {},
         }
     }
@@ -2861,6 +2900,45 @@ test "restore rebuilds the conversation and continues the correlation ids" {
     try testing.expectEqual(Profile.Role.tool, agent.history.items[2].role);
     // The new call's id follows the restored one.
     try testing.expectEqual(@as(u32, 6), agent.history.items[4].tool_calls[0].id);
+}
+
+test "a resumed session renders under its recorded system block, and /new under a fresh one" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var stub: Stub = .{ .answers = &.{ "one", "two", "three", "four" } };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root, .date = "2026-11-20" });
+    defer agent.deinit();
+    // A new conversation records the block it renders under, once.
+    _ = try agent.turn("first", &.{});
+    _ = try agent.turn("second", &.{});
+    try testing.expectEqual(@as(usize, 1), capture.systems);
+    // A resume takes the session's own block, though instructions or the
+    // date changed since, and records none: the file holds it.
+    agent.resetConversation();
+    const older = try std.mem.replaceOwned(u8, alloc, agent.fresh_system, "Today is 2026-11-20.", "Today is 2026-09-22.");
+    defer alloc.free(older);
+    try testing.expect(try agent.adoptSystem(older));
+    try testing.expectEqualStrings(older, agent.system);
+    _ = try agent.turn("third", &.{});
+    try testing.expectEqual(@as(usize, 1), capture.systems);
+    // One that differs in more (another workspace, other tools) is not kept:
+    // the fresh block renders, and is recorded at the next turn.
+    agent.resetConversation();
+    try testing.expect(!try agent.adoptSystem("You are a prompt for other tools."));
+    try testing.expect(agent.system.ptr == agent.fresh_system.ptr);
+    _ = try agent.turn("fourth", &.{});
+    try testing.expectEqual(@as(usize, 2), capture.systems);
+    // The same text as the fresh block, or none recorded, is the fresh one;
+    // a file without one gets it recorded at its next turn.
+    try testing.expect(!try agent.adoptSystem(agent.fresh_system));
+    try testing.expect(agent.adopted_system == null);
+    try testing.expect(!try agent.adoptSystem(null));
+    try testing.expect(agent.system.ptr == agent.fresh_system.ptr);
+    agent.resetConversation();
+    try testing.expect(agent.system.ptr == agent.fresh_system.ptr);
 }
 
 test "the tools block the profile renders is pinned to its measured size" {

@@ -216,14 +216,14 @@ no escape, so a string containing the delimiter or any marker is rejected),
 numbers as their JSON text, `true`/`false`/`null`, nested objects with bare
 keys, and arrays. The results that answer the calls follow inside the same
 model turn as `<|tool_response>response:NAME{value:<|"|>CONTENT<|"|>}<tool_response|>`
-(the content untrimmed and framed, so a delimiter it spells stays text), then the message's content; `<turn|>\n` closes the
-turn unless it continues into the next assistant message or the conversation
-ends on results with no content, in which case the turn stays open and the
-generation prompt adds only `<|channel>thought\n` when thinking is on. When
-results are followed by content at the end of the conversation the template
-closes the turn and adds no model turn; the reference's chat layer then
-appends `<|turn>model\n`, and the profile reproduces that (its
-`/apply-template` renders through the same layer, so the fixtures pin it).
+(the content untrimmed and framed, so a delimiter it spells stays text), then
+the message's content; `<turn|>\n` closes the turn unless it continues into
+the next assistant message or the conversation ends on results with no
+content, when the turn stays open and the generation prompt adds only
+`<|channel>thought\n` with thinking on. Results then content at the end
+close the turn; the reference's chat layer appends `<|turn>model\n` (or, thinking on, the
+thought channel), as the profile does (the fixtures pin it), and `promptEnd`
+cuts the close too: the mark ends where history continues.
 Decoding uses the `<|tool_call>` / `<tool_call|>` control tokens (48/49)
 through the shared stream decoder and `gemma4.parseTool`, a bounded
 recursive-descent reader of the DSL (nesting depth 16, whitespace where the

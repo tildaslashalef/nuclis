@@ -66,6 +66,9 @@ pub const stream_markers: profiles.StreamMarkers = .{
     .tool_unparsed = .cut,
     .tool_diagnose = diagnoseTool,
     .tool_cut_hint = "A call is one function block naming the tool, with each argument in its own parameter block.",
+    // What `render` writes around an assistant turn's trimmed reasoning.
+    .close_lead = "\n",
+    .close_trail = "\n\n",
 };
 
 /// The tools-block header and its format explanation, and the framing around
@@ -690,4 +693,15 @@ test "diagnoseTool reads the function name, or says there is none" {
     try std.testing.expectEqualStrings("write_file", named.name);
     try std.testing.expectEqual(@import("../events.zig").CutReason.no_name, (try diagnoseTool(alloc, "{\"name\":\"x\"}")).reason);
     try std.testing.expectEqual(@import("../events.zig").CutReason.no_name, (try diagnoseTool(alloc, "<function= >")).reason);
+}
+
+test "a reasoning cut's forced ending is what the history renders after the reasoning" {
+    const alloc = std.testing.allocator;
+    const user: profiles.Message = .{ .role = .user, .content = "go" };
+    const text = try render(alloc, &.{ user, .{ .role = .assistant, .content = "answer", .reasoning_content = "plan" }, user }, &.{}, .low, .{});
+    defer alloc.free(text);
+    // The cut writes the reasoning, then `close_lead`, the close, and
+    // `close_trail`; the model then answers.
+    const generated = "<think>\nplan" ++ stream_markers.close_lead ++ stream_markers.close ++ stream_markers.close_trail ++ "answer";
+    try std.testing.expect(std.mem.indexOf(u8, text, "<|im_start|>assistant\n" ++ generated) != null);
 }

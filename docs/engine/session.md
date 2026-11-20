@@ -29,7 +29,9 @@ When a chunk would overflow the region, `beginChunk` compacts: rows from
 the lowest of the position, the hold, and the checkpoint, less the window
 and the margin, move to slot 0 and `base` follows. `hold(position)` (the
 completer's mark) asks compactions to keep that position in reach and is
-dropped when it no longer fits; `rewindTo` and `truncate` past the reach
+dropped when it no longer fits, and so then is a checkpoint, which a live
+verify keeps at its batch's start and only an earlier step's lies so far
+behind; `rewindTo` and `truncate` past the reach
 are `RewindOutOfRange`. A snapshot packs a windowed layer's window and up
 to `window_margin` rows below it (`Snapshot.margin`), and `restore` sets
 `base` from them. On the 26B-A4B at 32,768 tokens the F16 session is
