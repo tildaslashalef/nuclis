@@ -99,14 +99,13 @@ pub const Service = struct {
             return fail(arena, .unprocessable_entity, "invalid_request", "systemone takes one \"state\"; POST /v1/decisions takes \"states\"");
         const located = catalog.locate(arena, io, self.root, self.registry, name, false, &diag) catch |err|
             return locateFailure(arena, err, diag.message());
-        const decision = wire.fromJson(arena, io, root, "the request body", .refused, inference.decide.Family.of(io, located.directory), &diag) catch |err|
+        const decision = wire.fromJson(arena, io, root, "the request body", .refused, inference.decide.Family.of(located.path), &diag) catch |err|
             return requestFailure(arena, err, diag.message());
         wire.checkLimits(decision, &diag) catch |err| return requestFailure(arena, err, diag.message());
 
         var job: batcher_mod.Job = .{
             .arena = arena,
-            .directory = located.directory,
-            .backbone = located.backbone,
+            .path = located.path,
             .mmproj = located.mmproj,
             .name = name,
             .states = wire.decisionStates(arena, decision) catch return fail(arena, .internal_server_error, "internal", "out of memory"),
@@ -336,7 +335,7 @@ test "decisions: the response is what `nuclis decide --json` writes" {
         var diag: config.Diagnostic = .{};
         const args: []const []const u8 = if (explain) &.{ "--request", path, "--json", "--backend", "cpu", "--explain" } else &.{ "--request", path, "--json", "--backend", "cpu" };
         var cli: std.Io.Writer.Allocating = .init(arena);
-        try decide.run(std.testing.allocator, io, .{ .directory = f.directory }, .{ .name = "tiny" }, try decide.parseArgs(arena, args, &diag), &cli.writer, .plain, &diag);
+        try decide.run(std.testing.allocator, io, .{ .path = f.directory }, .{ .name = "tiny" }, try decide.parseArgs(arena, args, &diag), &cli.writer, .plain, &diag);
         try std.testing.expectEqualStrings(try withoutTimings(arena, cli.written()), try withoutTimings(arena, served.body));
     }
 

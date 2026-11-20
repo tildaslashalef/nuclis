@@ -34,8 +34,7 @@
    "file": "directory"
   },
   "clef": {
-   "artifact": "clef-flash",
-   "file": "directory"
+   "artifact": "clef-flash"
   },
   "embeddinggemma": {
    "artifact": "embeddinggemma-2"

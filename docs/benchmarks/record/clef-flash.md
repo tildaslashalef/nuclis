@@ -48,3 +48,39 @@ where Laya pays a pass per question. An image adds its projector pass
 (`image_red`, 80 image tokens: 1.24 s for 224 tokens against 0.61 s for a
 143-token text request). A debug build is about 1.5× slower (the head on
 the CPU).
+
+## ggml-org's single file (2026-11-21)
+
+nuclis moved from two repositories (bartowski's Q6_K backbone and BF16
+projector, Cloudflare's BF16 `joint_head.safetensors` with its support
+files) to one: `ggml-org/Clef-Flash-GGUF` at `c3d92545`,
+`Clef-Flash-Q4_K_M.gguf` (architecture `clef`: 97 Q4_K, 212 Q8_0, 277 F32,
+1 BF16 tensors; the head's matrices Q8_0, its norms, biases, type
+embedding and scales F32, `scorer_out` BF16) and `mmproj-Clef-Flash-BF16.gguf`.
+Measured on the M4 Pro (48 GB), `ReleaseSafe`, branch `clef-flash-gguf`
+on `a946a24`, before the old files were removed:
+
+| Check | How | Result |
+| --- | --- | --- |
+| The head's tensors | each GGUF tensor decoded to F32 against the safetensors one it maps to | every F32 and BF16 tensor equal; each Q8_0 matrix within 4.1e-3 of its largest value (half a Q8_0 step) |
+| `decision.scales` | against `prior_logit_scale`, `joint_logit_scale`, `residual_gate` (2.296875, 2.296875, −2) | stored transformed: exp, exp, sigmoid (9.943062, 9.943062, 0.11920292) |
+| The head alone | the new head on the Q6_K backbone's dumped rows, against `head.json` | logits within 2.62e-3 (multi_question) |
+| The whole model, Metal | every request, images included, against `head.json` | logits within 1.38 (multi_question), probabilities within 1.55e-2 (card_systemone); every sanity answer and every pick equal to the old path's |
+| The sequences | `clef-check sequences` with the file's own vocabulary | ids and spans equal for all 10 requests |
+| CPU against Metal | the two requests under 160 tokens | logits within 7.65e-5 |
+
+The gates now hold the logits to nuclis's own Metal run of this file
+(`fixtures/clef/logits.json`; Metal 1e-3, CPU 2e-3) and the probabilities
+to the oracle's within 2e-2.
+
+Time per decision, Metal, `nuclis decide --json`, one `noul` question over
+a log state, load excluded (0.27 s):
+
+| State | Tokens per sequence | 1 state | 10 states |
+| --- | ---: | ---: | ---: |
+| about 500 tokens of log | 621–628 | 2.36 s | 22.7 s (2.27 s each) |
+| about 2,000 tokens of log | 2,111–2,131 | 7.56 s | 78.6 s (7.86 s each) |
+
+The prefill is compute-bound, so the Q4_K_M backbone runs at the Q6_K's
+rate (about 260–295 tok/s); the file is 1.06 GB smaller, and the pull
+1.3 GB smaller (no support files).

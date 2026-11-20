@@ -50,7 +50,7 @@ pub fn explainParse(diag: *config.Diagnostic, err: anyerror, cursor: Cursor) voi
         error.InvalidNumber => diag.set("'{s}' does not take '{s}'", .{ flag, value }),
         error.MissingOptionValue => diag.set("'{s}' needs a value", .{flag}),
         error.ConflictingOptions => diag.set("these options do not go together for 'nuclis {s}'", .{cmd}),
-        error.UnknownRole => diag.set("'{s}' is not a companion role: mmproj, draft[=<variant>], backbone, codec, imatrix", .{value}),
+        error.UnknownRole => diag.set("'{s}' is not a companion role: mmproj, draft[=<variant>], codec, imatrix", .{value}),
         error.UnknownPromptProfile => diag.set("'{s}' is not a prompt profile", .{value}),
         error.UnsupportedBackend => diag.set("'{s}' is not a backend: cpu or metal", .{value}),
         error.UnsupportedKvPrecision => diag.set("'{s}' is not a cache precision: f16 or f32", .{value}),

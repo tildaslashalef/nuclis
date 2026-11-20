@@ -18,7 +18,7 @@ kind `decision` in `~/.nuclis/nuclis.json`, a decision catalogue name
 request that names none gets the configuration's `decide.model` (default
 `laya`). The server keeps 2 models open and closes the least recently used
 when a third is asked for; opening takes 0.07 s (`laya`) to 0.15 s
-(`laya-multilingual`) on Metal, and 0.5 s for `clef-flash`, paid by the
+(`laya-multilingual`) on Metal, and 0.3 s for `clef-flash`, paid by the
 request that asks. Each model validates questions by its own rules:
 `clef-flash` takes questions without `instructions`, Laya does not.
 

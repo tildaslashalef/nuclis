@@ -54,7 +54,8 @@ pub const Verdict = struct {
 };
 
 /// One pinned file of an artifact. `path` is where it lands under the
-/// artifact's repository directory and, without `remote`, its Hub name too.
+/// artifact's repository directory and, without `remote`, its Hub name too;
+/// a file of another repository names `remote` and lands beside the rest.
 pub const File = struct {
     role: Role,
     /// Names one of several files of a role (`mtp`, `dflash2`); null alone.
@@ -63,8 +64,7 @@ pub const File = struct {
     /// Set when the file comes from another repository (`revision` with it).
     repo: ?[]const u8 = null,
     revision: ?[]const u8 = null,
-    /// The Hub name in `repo` when it lands at `path` beside the parent
-    /// instead of under its own repository directory (the DFlash2 drafter).
+    /// The Hub name in `repo` (the DFlash2 drafter), required with it.
     remote: ?[]const u8 = null,
     size: u64,
     sha256: []const u8,
@@ -161,14 +161,8 @@ pub const Artifact = struct {
         return f.remote orelse f.path;
     }
 
-    /// The repository directory a file lands in: its origin's, unless it
-    /// names `remote` and lands beside the parent.
-    pub fn directoryOf(self: *const Artifact, f: *const File) []const u8 {
-        return if (f.remote != null) self.repo else f.repo orelse self.repo;
-    }
-
     /// The bytes a plain pull fetches: the main file and those pulled with
-    /// it (codec, backbone), without optional companions.
+    /// it (a codec), without optional companions.
     pub fn totalSize(self: *const Artifact) u64 {
         var total: u64 = 0;
         for (self.files) |f| if (pulledWith(f.role)) {
@@ -188,7 +182,7 @@ pub const Artifact = struct {
 /// Roles a pull always takes with the main file.
 pub fn pulledWith(role: Role) bool {
     return switch (role) {
-        .main, .codec, .backbone => true,
+        .main, .codec => true,
         else => false,
     };
 }
@@ -343,20 +337,20 @@ pub const artifacts = [_]Artifact{
             .{ .role = .main, .path = "multilingual/model.safetensors", .size = 643_835_514, .sha256 = "9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204", .support = &.{ "multilingual/encoder/config.json", "multilingual/rl_agent_config.json", "multilingual/tokenizer/tokenizer.json", "multilingual/tokenizer/tokenizer_config.json" } },
         },
     },
-    // Cloudflare's clef-flash: the joint schema head and support files, the
-    // Qwen3.5-9B backbone as bartowski's Q6_K GGUF, and its BF16 projector.
+    // Cloudflare's clef-flash as ggml-org's one GGUF: the Qwen3.5-9B backbone
+    // (Q4_K_M), the joint schema head (Q8_0), and the tokenizer; its BF16
+    // projector beside it.
     .{
         .name = "clef-flash",
         .title = "Cloudflare clef-flash",
         .kind = .decision,
-        .repo = "Cloudflare/clef-flash",
-        .revision = "17f0b0ad64efb65d273590632833508766b2aae6",
-        .architecture = "qwen35",
-        .quantization = "Q6_K",
+        .repo = "ggml-org/Clef-Flash-GGUF",
+        .revision = "c3d925454595d792d5333da8b35f3c09911f7568",
+        .architecture = "clef",
+        .quantization = "Q4_K_M",
         .files = &.{
-            .{ .role = .main, .path = "joint_head.safetensors", .size = 243_538_016, .sha256 = "19cdcec8c81dc9212be320fff47462ab342fbc1278be4368fb3da71241cf5ba0", .support = &.{ "config.json", "joint_head_config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "processor_config.json", "generation_config.json" } },
-            .{ .role = .backbone, .path = "Cloudflare_clef-flash-Q6_K.gguf", .repo = "bartowski/Cloudflare_clef-flash-GGUF", .revision = "d7f376ea88c05e7bb1014dd5351a93df9dd8029e", .size = 7_793_714_496, .sha256 = "b80f7cfb803de25aade15853bab331e9f030a9ee64dee7bc91ed8c2b07312423", .used_for = "the backbone (pulled with it)" },
-            .{ .role = .mmproj, .path = "mmproj-Cloudflare_clef-flash-bf16.gguf", .repo = "bartowski/Cloudflare_clef-flash-GGUF", .revision = "d7f376ea88c05e7bb1014dd5351a93df9dd8029e", .size = 921_704_928, .sha256 = "3c45b34aee6f353a0d41d6b96ba712a498a17a82f0a6152bf68a5021f9652c0f", .used_for = "image input" },
+            .{ .role = .main, .path = "Clef-Flash-Q4_K_M.gguf", .size = 6_732_781_824, .sha256 = "eef2968c238a80d49d340430f22410ea3db9934ad1c6fdb233a503cbf9a9b54e" },
+            .{ .role = .mmproj, .path = "mmproj-Clef-Flash-BF16.gguf", .size = 921_704_928, .sha256 = "477598b2425d3aea55fefb895c414e04bda1ee2ec55878d78e850cb8b420d8d6", .used_for = "image input" },
         },
     },
     // Google's EmbeddingGemma 2 as unsloth's Q8_0 conversion with the BF16
@@ -486,7 +480,7 @@ comptime {
             if (!isHex(f.sha256, 64)) @compileError(a.name ++ ": " ++ f.path ++ " digest is not 64 hex");
             if (j > 0 and f.role == .main) @compileError(a.name ++ ": a second main file");
             if (f.repo != null and (f.revision == null or !isHex(f.revision.?, 40))) @compileError(a.name ++ ": " ++ f.path ++ " names a repository without its 40-hex commit");
-            if (f.remote != null and f.repo == null) @compileError(a.name ++ ": " ++ f.path ++ " names a remote without its repository");
+            if ((f.remote != null) != (f.repo != null)) @compileError(a.name ++ ": " ++ f.path ++ " names a repository without its remote name, or the reverse");
             if (f.role == .draft and f.verdict == null) @compileError(a.name ++ ": " ++ f.path ++ " is a draft without its verdict");
             if (f.role == .draft and drafts > 1 and f.variant == null) @compileError(a.name ++ ": several drafts, each needs a variant");
             // At most one file per role, except drafts told apart by variant.
@@ -602,7 +596,7 @@ test underModels {
 
 /// `<models>/<directory>/<path>`, where `model pull` writes `f`.
 pub fn localPath(alloc: Allocator, models_dir: []const u8, a: *const Artifact, f: *const File) ![]u8 {
-    return std.fs.path.join(alloc, &.{ models_dir, a.directoryOf(f), f.path });
+    return std.fs.path.join(alloc, &.{ models_dir, a.repo, f.path });
 }
 
 /// The directory a checkpoint opens from: the main file's directory, or the
@@ -689,7 +683,7 @@ pub fn writeJson(out: *std.Io.Writer) std.Io.Writer.Error!void {
         for (a.files, 0..) |*f, i| files[i] = .{
             .role = f.role,
             .variant = f.variant,
-            .local = std.fmt.bufPrint(&local[i], "{s}/{s}", .{ a.directoryOf(f), f.path }) catch unreachable, // comptime-checked lengths
+            .local = std.fmt.bufPrint(&local[i], "{s}/{s}", .{ a.repo, f.path }) catch unreachable, // comptime-checked lengths
             .size = f.size,
             .sha256 = f.sha256,
             .verdict = f.verdict,
@@ -715,7 +709,7 @@ pub fn writeJson(out: *std.Io.Writer) std.Io.Writer.Error!void {
 comptime {
     for (artifacts) |a| {
         if (a.files.len > 8) @compileError(a.name ++ ": writeJson holds at most 8 files");
-        for (a.files) |f| if (a.directoryOf(&f).len + 1 + f.path.len > 256) @compileError(a.name ++ ": a local path over 256 bytes");
+        for (a.files) |f| if (a.repo.len + 1 + f.path.len > 256) @compileError(a.name ++ ": a local path over 256 bytes");
     }
 }
 
@@ -787,7 +781,7 @@ test "the index: kinds, lifecycle, and the per-kind facts the old tables held" {
     };
     try std.testing.expect(find("qwen3-tts-1.7b-customvoice").?.traits.instructions and !find("qwen3-tts-0.6b-customvoice").?.traits.instructions);
     try std.testing.expectEqual(@as(u64, 3_833_402_552 + 682_293_092), find("qwen3-tts-1.7b-customvoice").?.totalSize());
-    try std.testing.expectEqual(@as(u64, 243_538_016 + 7_793_714_496), find("clef-flash").?.totalSize());
+    try std.testing.expectEqual(@as(u64, 6_732_781_824), find("clef-flash").?.totalSize());
     try std.testing.expect(find("qwen3-tts-1.7b") == null);
     try std.testing.expectEqualStrings("qwen3-tts-0.6b-customvoice", renamedAudio("qwen3-tts-0.6b").?);
 }
@@ -805,11 +799,10 @@ test "drafts: variants, the default, and a file placed beside its parent" {
     const path = try localPath(std.testing.allocator, "/m", qwen, flash);
     defer std.testing.allocator.free(path);
     try std.testing.expectEqualStrings("/m/unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", path);
-    // A cross-repository file without `remote` keeps its own repository's layout.
     const clef = find("clef-flash").?;
-    const backbone = try localPath(std.testing.allocator, "/m", clef, clef.companion(.backbone).?);
-    defer std.testing.allocator.free(backbone);
-    try std.testing.expectEqualStrings("/m/bartowski/Cloudflare_clef-flash-GGUF/Cloudflare_clef-flash-Q6_K.gguf", backbone);
+    const clef_path = try checkpointDirectory(std.testing.allocator, "/m", clef);
+    defer std.testing.allocator.free(clef_path);
+    try std.testing.expectEqualStrings("/m/ggml-org/Clef-Flash-GGUF/Clef-Flash-Q4_K_M.gguf", clef_path);
     // A single drafter needs no variant and is the default.
     try std.testing.expect(find("gemma-4-e4b-qat").?.draft(null).?.variant == null);
     try std.testing.expect(find("laya").?.draft(null) == null);

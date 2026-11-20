@@ -20,9 +20,9 @@ pub const Job = struct {
     /// The request's arena: the job's sequences and results live here, and
     /// its connection leaves it alone until `wait` returns.
     arena: std.mem.Allocator,
-    directory: []const u8,
-    /// clef's backbone and projector, when the catalogue names them.
-    backbone: ?[]const u8 = null,
+    /// Laya's directory or clef's GGUF.
+    path: []const u8,
+    /// clef's projector, when the catalogue names one and it is pulled.
     mmproj: ?[]const u8 = null,
     /// The name the request used (the pool remembers the opener's).
     name: []const u8,
@@ -53,7 +53,7 @@ pub const Job = struct {
 
 pub const Batcher = batch.Batcher(Job, pool_mod.Pool, struct {
     pub fn same(a: *const Job, b: *const Job) bool {
-        return std.mem.eql(u8, a.directory, b.directory);
+        return std.mem.eql(u8, a.path, b.path);
     }
 
     pub const run = answer;
@@ -63,7 +63,7 @@ pub const Batcher = batch.Batcher(Job, pool_mod.Pool, struct {
 /// job); the rest stay for the next.
 fn answer(self: *Batcher, io: std.Io, taken: []const *Job) void {
     const first = taken[0];
-    const acquired = self.pool.acquire(io, .{ .directory = first.directory, .backbone = first.backbone, .mmproj = first.mmproj }, first.name) catch |err| {
+    const acquired = self.pool.acquire(io, .{ .path = first.path, .mmproj = first.mmproj }, first.name) catch |err| {
         // A generation holds the memory this model needs: the jobs wait for
         // it to end instead of failing.
         if (err == error.Pinned) return;

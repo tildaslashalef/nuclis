@@ -83,8 +83,9 @@ pub const Options = struct {
     /// prompt sections (a tuning aid; the instructions file still follows).
     system_prompt_file: ?[]const u8 = null,
     model: ?[]const u8 = null,
-    /// `inspect --tensor <name>`: one tensor of a safetensors checkpoint.
-    tensor: ?[]const u8 = null,
+    /// `inspect` and `model inspect`: `--metadata`, `--tensors`, and
+    /// `--tensor <name>` (one tensor and its first values).
+    detail: inspection.Detail = .{},
     json: bool = false,
 };
 
@@ -269,10 +270,16 @@ fn parseAt(args: []const []const u8, at: *usize) !Options {
                 return error.MissingModelPath;
             options.model = args[i];
         } else if (command == .inspect and std.mem.eql(u8, args[i], "--tensor")) {
-            if (options.tensor != null) return error.DuplicateOption;
+            if (options.detail.tensor != null) return error.DuplicateOption;
             i += 1;
             if (i == args.len or args[i].len == 0) return error.MissingOptionValue;
-            options.tensor = args[i];
+            options.detail.tensor = args[i];
+        } else if (command == .inspect and std.mem.eql(u8, args[i], "--metadata")) {
+            if (options.detail.metadata) return error.DuplicateOption;
+            options.detail.metadata = true;
+        } else if (command == .inspect and std.mem.eql(u8, args[i], "--tensors")) {
+            if (options.detail.tensors) return error.DuplicateOption;
+            options.detail.tensors = true;
         } else if (command == .agent and std.mem.eql(u8, args[i], "--print")) {
             if (options.printing) return error.DuplicateOption;
             options.printing = true;
@@ -583,6 +590,19 @@ fn parseModelArgs(args: []const []const u8, at: *usize) !Options {
             } else return error.UnknownOption;
             continue;
         }
+        if (options.model_action == .inspect and (std.mem.eql(u8, flag, "--metadata") or std.mem.eql(u8, flag, "--tensors"))) {
+            const set = if (flag[2] == 'm') &options.detail.metadata else &options.detail.tensors;
+            if (set.*) return error.DuplicateOption;
+            set.* = true;
+            continue;
+        }
+        if (options.model_action == .inspect and std.mem.eql(u8, flag, "--tensor")) {
+            if (options.detail.tensor != null) return error.DuplicateOption;
+            i += 1;
+            if (i == args.len or args[i].len == 0) return error.MissingOptionValue;
+            options.detail.tensor = args[i];
+            continue;
+        }
         if (options.model_action == .adopt) {
             if (!std.mem.eql(u8, flag, "--force")) return error.UnknownOption;
             if (p.force) return error.DuplicateOption;
@@ -714,7 +734,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 return model.ls(alloc, io, dir, if (loaded) |l| l.config.models else .{}, if (loaded) |l| l.config.engine.model else null, options.ls, options.json, out, ui);
             },
             .adopt => return model.adopt(alloc, io, dir, options.pull.repo, options.pull.force, options.json, out, ui, diag),
-            .inspect => return model.inspect(alloc, io, environ, options.pull, options.json, out, ui, diag),
+            .inspect => return model.inspect(alloc, io, environ, options.pull, options.detail, options.json, out, ui, diag),
             // The registry decides which files other entries still use, so
             // a file that fails to load stops the removal.
             .rm => {
@@ -885,7 +905,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
     defer loaded.deinit();
     const wanted = options.model orelse loaded.config.engine.model;
-    switch (catalog.kindOf(loaded.config.models, wanted)) {
+    // `inspect` reads any model's file; the others run chat models only.
+    if (options.command != .inspect) switch (catalog.kindOf(loaded.config.models, wanted)) {
         .generation => {},
         .decision => {
             diag.set("{s} is a decision model; `nuclis decide --model {s}` runs it", .{ wanted, wanted });
@@ -899,7 +920,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             diag.set("{s} is a {s} model; `{s} --model {s}` runs it", .{ wanted, catalog.kindName(kind), catalog.command(kind), wanted });
             return error.AudioModel;
         },
-    }
+    };
     const path = try paths.modelPath(alloc, options.model, loaded.config.engine.model, root, loaded.config.models);
     defer alloc.free(path);
     std.Io.Dir.cwd().access(io, path, .{}) catch |err| switch (err) {
@@ -956,7 +977,11 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 defer checkpoint.deinit(io);
                 var arena_state = std.heap.ArenaAllocator.init(alloc);
                 defer arena_state.deinit();
-                if (options.tensor) |name| {
+                if (options.detail.metadata or options.detail.tensors) {
+                    diag.set("{s}: --metadata and --tensors read GGUF files; a safetensors checkpoint lists its tensors' dtypes, and --tensor reads one", .{path});
+                    break :blk error.UnsupportedFormat;
+                }
+                if (options.detail.tensor) |name| {
                     const ref = checkpoint.get(name) orelse {
                         diag.set("{s}: no tensor named {s} (names match in full, as the header spells them)", .{ path, name });
                         break :blk error.TensorNotFound;
@@ -969,10 +994,20 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 try result.render(arena_state.allocator(), out, options.json, ui);
                 break :blk {};
             }
-            if (options.tensor != null) {
-                diag.set("{s}: --tensor reads safetensors checkpoints only", .{path});
-                break :blk error.UnsupportedFormat;
-            }
+            if (options.command == .inspect) if (options.detail.tensor) |name| {
+                var mapped = try inference.weights.Mapped.open(alloc, io, path);
+                defer mapped.deinit(io);
+                const tensor = inspection.findTensor(mapped.document, name) orelse {
+                    diag.set("{s}: no tensor named {s} (names match in full; --tensors lists them)", .{ path, name });
+                    break :blk error.TensorNotFound;
+                };
+                const bytes = try mapped.view().bytes(tensor);
+                var arena_state = std.heap.ArenaAllocator.init(alloc);
+                defer arena_state.deinit();
+                const peek = try inspection.ggufPeek(arena_state.allocator(), mapped.document, tensor, bytes[0..@intCast(inspection.firstRowBytes(tensor))]);
+                try peek.render(arena_state.allocator(), out, options.json, ui);
+                break :blk {};
+            };
             var document = try inference.gguf.open(alloc, io, path, .{});
             defer document.deinit();
             if (options.command == .validate) {
@@ -983,9 +1018,11 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 try validation.render(arena_state.allocator(), path, summary, out, options.json, ui);
             } else {
                 var histogram: [32]inspection.EncodingCount = undefined;
-                const result = try inspection.snapshot(document, path, &histogram);
+                var result = try inspection.snapshot(document, path, &histogram);
                 var arena_state = std.heap.ArenaAllocator.init(alloc);
                 defer arena_state.deinit();
+                if (options.detail.metadata) result.metadata = try inspection.metadataRows(arena_state.allocator(), document);
+                if (options.detail.tensors) result.tensors = try inspection.tensorRows(arena_state.allocator(), document);
                 try result.render(arena_state.allocator(), out, options.json, ui);
             }
             break :blk {};
@@ -1201,9 +1238,17 @@ test "parse inspection and reject ambiguous or incomplete flags" {
     try std.testing.expectError(error.MissingPrompt, parseArgs(&.{"generate"}));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "inspect", "--typo" }));
     const peek = try parseArgs(&.{ "inspect", "--model", "laya", "--tensor", "temperature" });
-    try std.testing.expectEqualStrings("temperature", peek.tensor.?);
+    try std.testing.expectEqualStrings("temperature", peek.detail.tensor.?);
     try std.testing.expectError(error.MissingOptionValue, parseArgs(&.{ "inspect", "--tensor" }));
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "inspect", "--tensor", "a", "--tensor", "b" }));
+    const listing = try parseArgs(&.{ "inspect", "--metadata", "--tensors" });
+    try std.testing.expect(listing.detail.metadata and listing.detail.tensors);
+    try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "inspect", "--tensors", "--tensors" }));
+    var remote_at: usize = 0;
+    const remote = try parseModelArgs(&.{ "inspect", "o/r", "--file", "f.gguf", "--metadata", "--tensor", "x.weight" }, &remote_at);
+    try std.testing.expect(remote.detail.metadata and !remote.detail.tensors);
+    try std.testing.expectEqualStrings("x.weight", remote.detail.tensor.?);
+    try std.testing.expectError(error.UnknownOption, parseModelArgs(&.{ "pull", "o/r", "--tensors" }, &remote_at));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--tensor", "a" }));
 }
 

@@ -930,23 +930,30 @@ fn serve(p: *Page) !void {
 fn inspect(p: *Page) !void {
     try title(p, "nuclis inspect", "what an artifact is");
     try heading(p, "Usage:");
-    try code(p, "nuclis inspect [--model <name|path>] [--tensor <name>] [--json]");
+    try code(p, "nuclis inspect [--model <name|path>] [--metadata] [--tensors]");
+    try code(p, "               [--tensor <name>] [--json]");
 
     try heading(p, "Options:");
     try row(p, "--model <name|path>", "the file to read; default engine.model; a");
     try more(p, "safetensors file, index, or directory too");
-    try row(p, "--tensor <name>", "safetensors: one tensor's dtype, shape, and");
-    try more(p, "first values");
+    try row(p, "--metadata", "GGUF: every metadata key, its type, and its value");
+    try more(p, "(long strings cut, vocabulary arrays counted)");
+    try row(p, "--tensors", "GGUF: every tensor's encoding, shape, size, and");
+    try more(p, "offset in the file");
+    try row(p, "--tensor <name>", "one tensor's encoding or dtype, shape, and first");
+    try more(p, "values (decoded from any encoding nuclis reads)");
     try row(p, "--json", "the same facts as JSON");
 
     try heading(p, "Examples:");
     try example(p, "nuclis inspect", "the configured model");
     try example(p, "nuclis inspect --model ~/Downloads/some-model.gguf --json", "any GGUF file, for a script");
+    try example(p, "nuclis inspect --model clef-flash --tensors", "every tensor of the file");
 
     try heading(p, "Notes:");
     try plain(p, "Reads the GGUF directory only: identity, architecture, dimensions, the");
     try plain(p, "tensor encoding histogram, and the memory a context would need. Ranges");
-    try plain(p, "and offsets are validated; weight values are not read. Little-endian GGUF");
+    try plain(p, "and offsets are validated; weight values are not read (--tensor reads one");
+    try plain(p, "row). Little-endian GGUF");
     try plain(p, "v3 only; an unknown tensor layout is an error rather than a guess.");
     try plain(p, "A safetensors checkpoint gets its header, shards, and dtype histogram,");
     try plain(p, "with the byte buffer's tiling checked. No text-generation family runs");
@@ -983,8 +990,10 @@ fn model(p: *Page) !void {
     try code(p, "nuclis model pull --catalogue [--force] [--json]");
     try code(p, "nuclis model pull <owner/repo> [--file <name>] [--revision <rev>] [--role <r>]");
     try code(p, "                  [--register <name> [--profile <p>]] [--force] [--json]");
-    try code(p, "nuclis model inspect <name> [--json]");
-    try code(p, "nuclis model inspect <owner/repo> --file <name> [--revision <rev>] [--json]");
+    try code(p, "nuclis model inspect <name> [--metadata] [--tensors] [--tensor <name>]");
+    try code(p, "                     [--json]");
+    try code(p, "nuclis model inspect <owner/repo> --file <name> [--revision <rev>]");
+    try code(p, "                     [--metadata] [--tensors] [--tensor <name>] [--json]");
     try code(p, "nuclis model adopt <path> [--force] [--json]");
     try code(p, "nuclis model rm <name> [--with mmproj,draft | --all] [--json]");
 
@@ -1014,11 +1023,15 @@ fn model(p: *Page) !void {
     try more(p, "mtp, dflash2); mtp is the old name of draft");
     try row(p, "--all", "every companion the entry names, one per role;");
     try more(p, "with --variants, every draft variant");
-    try row(p, "--catalogue", "pull: every current entry, with --all (about 43 GB)");
+    try row(p, "--catalogue", "pull: every current entry, with --all (about 42 GB)");
     try row(p, "--file <name>", "which weight file (.gguf, .safetensors); required");
     try more(p, "when several; its support files come with it");
     try row(p, "--revision <rev>", "a branch, tag, or commit; default main");
     try row(p, "--role <r>", "main, mmproj, draft, or imatrix; default by content");
+    try row(p, "--metadata", "inspect: every metadata key, its type, and its value");
+    try row(p, "--tensors", "inspect: every tensor's encoding, shape, and offset");
+    try row(p, "--tensor <name>", "inspect: one tensor and its first values (reads that");
+    try more(p, "tensor's first row, no other weights)");
     try row(p, "--register <name>", "once verified, write the pull as a registry entry");
     try more(p, "(repo, file, commit); a companion fills the same entry");
     try row(p, "--profile <p>", "with --register: force qwen38, gemma4,");

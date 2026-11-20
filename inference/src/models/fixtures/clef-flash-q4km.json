@@ -1,63 +1,68 @@
 {
  "metadata": {
-  "general.architecture": "qwen35",
+  "general.architecture": "clef",
   "general.type": "model",
-  "general.name": "Clef Flash",
-  "general.size_label": "9.0B",
+  "general.name": "Clef-Flash",
+  "general.size_label": "9.1B",
   "general.license": "apache-2.0",
   "general.base_model.count": 1,
   "general.base_model.0.name": "Qwen3.5 9B",
   "general.base_model.0.organization": "Qwen",
   "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
   "general.tags": {
-   "count": 11,
-   "offset": 511,
+   "count": 12,
+   "offset": 509,
    "type": 8
   },
-  "qwen35.block_count": 32,
-  "qwen35.context_length": 262144,
-  "qwen35.embedding_length": 4096,
-  "qwen35.feed_forward_length": 12288,
-  "qwen35.attention.head_count": 16,
-  "qwen35.attention.head_count_kv": 4,
-  "qwen35.rope.dimension_sections": {
+  "clef.block_count": 32,
+  "clef.context_length": 262144,
+  "clef.embedding_length": 4096,
+  "clef.feed_forward_length": 12288,
+  "clef.attention.head_count": 16,
+  "clef.attention.head_count_kv": 4,
+  "clef.rope.dimension_sections": {
    "count": 4,
-   "offset": 1030,
+   "offset": 1036,
    "type": 5,
    "values": [11,11,10,0]
   },
-  "qwen35.rope.freq_base": 10000000.0,
-  "qwen35.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
-  "qwen35.attention.key_length": 256,
-  "qwen35.attention.value_length": 256,
-  "qwen35.ssm.conv_kernel": 4,
-  "qwen35.ssm.state_size": 128,
-  "qwen35.ssm.group_count": 16,
-  "qwen35.ssm.time_step_rank": 32,
-  "qwen35.ssm.inner_size": 4096,
-  "qwen35.attention.recurrent_layers": {
+  "clef.rope.freq_base": 10000000.0,
+  "clef.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
+  "clef.attention.key_length": 256,
+  "clef.attention.value_length": 256,
+  "clef.ssm.conv_kernel": 4,
+  "clef.ssm.state_size": 128,
+  "clef.ssm.group_count": 16,
+  "clef.ssm.time_step_rank": 32,
+  "clef.ssm.inner_size": 4096,
+  "clef.attention.recurrent_layers": {
    "count": 32,
-   "offset": 1474,
+   "offset": 1460,
    "type": 7,
    "values": [1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0]
   },
-  "qwen35.full_attention_interval": 4,
-  "qwen35.rope.dimension_count": 64,
+  "clef.full_attention_interval": 4,
+  "clef.rope.dimension_count": 64,
+  "clef.decision.type": "clef",
+  "clef.decision.routing_block_count": 2,
+  "clef.decision.block_count": 4,
+  "clef.decision.head_count": 16,
+  "clef.attention.layer_norm_epsilon": 9.999999747378752e-06,
   "tokenizer.ggml.model": "gpt2",
   "tokenizer.ggml.pre": "qwen35",
   "tokenizer.ggml.tokens": {
    "count": 248320,
-   "offset": 1728,
+   "offset": 1931,
    "type": 8
   },
   "tokenizer.ggml.token_type": {
    "count": 248320,
-   "offset": 4855135,
+   "offset": 4855338,
    "type": 5
   },
   "tokenizer.ggml.merges": {
    "count": 247587,
-   "offset": 5848460,
+   "offset": 5848663,
    "type": 8
   },
   "tokenizer.ggml.eos_token_id": 248046,
@@ -66,25 +71,1206 @@
   "tokenizer.ggml.add_eos_token": false,
   "tokenizer.chat_template": {
    "length": 7756,
-   "offset": 10935043,
+   "offset": 10935246,
    "sha256": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
    "head": "{%- set image_count = namespace(value=0) %}\n{%- set video_count "
   },
+  "tokenizer.ggml.normalizer.nfc": true,
+  "tokenizer.ggml.clean_spaces": false,
+  "tokenizer.chat_template.systemone": {
+   "length": 1309,
+   "offset": 10943137,
+   "sha256": "083fcf6056ae4489f179e34ea299f180887c611c72d3357f895ffb94214d0480",
+   "head": "{{ \"<|im_start|>system\\nRead the complete state and schema. Deci"
+  },
+  "tokenizer.chat_templates": {
+   "count": 1,
+   "offset": 10944494,
+   "type": 8
+  },
   "general.quantization_version": 2,
-  "general.file_type": 18,
-  "quantize.imatrix.file": "/models_out/clef-flash-GGUF/Cloudflare_clef-flash-imatrix.gguf",
-  "quantize.imatrix.dataset": "/models_out/clef-flash-GGUF/Cloudflare_clef-flash-calibration-v6.txt",
-  "quantize.imatrix.entries_count": 248,
-  "quantize.imatrix.chunks_count": 550
+  "general.file_type": 15
  },
  "tensors": [
+  [
+   "dec.blk.0.cross_attn_k.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.0.cross_attn_k.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.0.cross_attn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.0.cross_attn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.0.cross_attn_norm_kv.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.0.cross_attn_norm_kv.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.0.cross_attn_o.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.0.cross_attn_o.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.0.cross_attn_q.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.0.cross_attn_q.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.0.cross_attn_v.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.0.cross_attn_v.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.0.ffn_down.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.0.ffn_down.weight",
+   [
+    4096,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.0.ffn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.0.ffn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.0.ffn_up.bias",
+   [
+    4096
+   ],
+   0
+  ],
+  [
+   "dec.blk.0.ffn_up.weight",
+   [
+    1024,
+    4096
+   ],
+   8
+  ],
+  [
+   "dec.blk.1.cross_attn_k.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.1.cross_attn_k.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.1.cross_attn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.1.cross_attn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.1.cross_attn_norm_kv.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.1.cross_attn_norm_kv.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.1.cross_attn_o.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.1.cross_attn_o.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.1.cross_attn_q.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.1.cross_attn_q.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.1.cross_attn_v.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.1.cross_attn_v.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.1.ffn_down.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.1.ffn_down.weight",
+   [
+    4096,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.1.ffn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.1.ffn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.1.ffn_up.bias",
+   [
+    4096
+   ],
+   0
+  ],
+  [
+   "dec.blk.1.ffn_up.weight",
+   [
+    1024,
+    4096
+   ],
+   8
+  ],
+  [
+   "dec.blk.2.attn_k.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.attn_k.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.2.attn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.attn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.attn_o.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.attn_o.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.2.attn_q.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.attn_q.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.2.attn_v.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.attn_v.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.2.cross_attn_k.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.cross_attn_k.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.2.cross_attn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.cross_attn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.cross_attn_o.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.cross_attn_o.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.2.cross_attn_q.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.cross_attn_q.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.2.cross_attn_v.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.cross_attn_v.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.2.ffn_down.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.ffn_down.weight",
+   [
+    4096,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.2.ffn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.ffn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.ffn_up.bias",
+   [
+    4096
+   ],
+   0
+  ],
+  [
+   "dec.blk.2.ffn_up.weight",
+   [
+    1024,
+    4096
+   ],
+   8
+  ],
+  [
+   "dec.blk.3.attn_k.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.attn_k.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.3.attn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.attn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.attn_o.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.attn_o.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.3.attn_q.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.attn_q.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.3.attn_v.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.attn_v.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.3.cross_attn_k.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.cross_attn_k.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.3.cross_attn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.cross_attn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.cross_attn_o.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.cross_attn_o.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.3.cross_attn_q.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.cross_attn_q.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.3.cross_attn_v.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.cross_attn_v.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.3.ffn_down.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.ffn_down.weight",
+   [
+    4096,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.3.ffn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.ffn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.ffn_up.bias",
+   [
+    4096
+   ],
+   0
+  ],
+  [
+   "dec.blk.3.ffn_up.weight",
+   [
+    1024,
+    4096
+   ],
+   8
+  ],
+  [
+   "dec.blk.4.attn_k.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.attn_k.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.4.attn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.attn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.attn_o.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.attn_o.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.4.attn_q.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.attn_q.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.4.attn_v.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.attn_v.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.4.cross_attn_k.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.cross_attn_k.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.4.cross_attn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.cross_attn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.cross_attn_o.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.cross_attn_o.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.4.cross_attn_q.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.cross_attn_q.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.4.cross_attn_v.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.cross_attn_v.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.4.ffn_down.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.ffn_down.weight",
+   [
+    4096,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.4.ffn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.ffn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.ffn_up.bias",
+   [
+    4096
+   ],
+   0
+  ],
+  [
+   "dec.blk.4.ffn_up.weight",
+   [
+    1024,
+    4096
+   ],
+   8
+  ],
+  [
+   "dec.blk.5.attn_k.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.attn_k.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.5.attn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.attn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.attn_o.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.attn_o.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.5.attn_q.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.attn_q.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.5.attn_v.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.attn_v.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.5.cross_attn_k.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.cross_attn_k.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.5.cross_attn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.cross_attn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.cross_attn_o.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.cross_attn_o.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.5.cross_attn_q.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.cross_attn_q.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.5.cross_attn_v.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.cross_attn_v.weight",
+   [
+    1024,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.5.ffn_down.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.ffn_down.weight",
+   [
+    4096,
+    1024
+   ],
+   8
+  ],
+  [
+   "dec.blk.5.ffn_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.ffn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.ffn_up.bias",
+   [
+    4096
+   ],
+   0
+  ],
+  [
+   "dec.blk.5.ffn_up.weight",
+   [
+    1024,
+    4096
+   ],
+   8
+  ],
+  [
+   "decision.field_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "decision.field_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "decision.hidden_norm.bias",
+   [
+    4096
+   ],
+   0
+  ],
+  [
+   "decision.hidden_norm.weight",
+   [
+    4096
+   ],
+   0
+  ],
+  [
+   "decision.option_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "decision.option_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "decision.option_summary_norm.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "decision.option_summary_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "decision.proj_global.weight",
+   [
+    4096,
+    1024
+   ],
+   8
+  ],
+  [
+   "decision.proj_memory.weight",
+   [
+    4096,
+    1024
+   ],
+   8
+  ],
+  [
+   "decision.proj_option_context.weight",
+   [
+    4096,
+    1024
+   ],
+   8
+  ],
+  [
+   "decision.proj_option_lexical.weight",
+   [
+    4096,
+    1024
+   ],
+   8
+  ],
+  [
+   "decision.proj_option_question.weight",
+   [
+    4096,
+    1024
+   ],
+   8
+  ],
+  [
+   "decision.proj_question.weight",
+   [
+    4096,
+    1024
+   ],
+   8
+  ],
+  [
+   "decision.scales",
+   [
+    3
+   ],
+   0
+  ],
+  [
+   "decision.scorer.bias",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "decision.scorer.weight",
+   [
+    4096,
+    1024
+   ],
+   8
+  ],
+  [
+   "decision.scorer_out.bias",
+   [
+    1
+   ],
+   0
+  ],
+  [
+   "decision.scorer_out.weight",
+   [
+    1024
+   ],
+   30
+  ],
   [
    "output.weight",
    [
     4096,
     248320
    ],
-   14
+   8
   ],
   [
    "output_norm.weight",
@@ -99,7 +1285,15 @@
     4096,
     248320
    ],
-   14
+   12
+  ],
+  [
+   "token_types.weight",
+   [
+    1024,
+    3
+   ],
+   0
   ],
   [
    "blk.0.attn_gate.weight",
@@ -130,7 +1324,7 @@
     12288,
     4096
    ],
-   8
+   12
   ],
   [
    "blk.0.ffn_gate.weight",
@@ -138,7 +1332,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.0.ffn_up.weight",
@@ -146,7 +1340,7 @@
     4096,
     12288
    ],
-   8
+   12
   ],
   [
    "blk.0.post_attention_norm.weight",
@@ -168,7 +1362,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.0.ssm_beta.weight",
@@ -176,7 +1370,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.0.ssm_conv1d.weight",
@@ -237,7 +1431,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.1.ffn_gate.weight",
@@ -245,7 +1439,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.1.ffn_up.weight",
@@ -253,7 +1447,7 @@
     4096,
     12288
    ],
-   8
+   12
   ],
   [
    "blk.1.post_attention_norm.weight",
@@ -275,7 +1469,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.1.ssm_beta.weight",
@@ -283,7 +1477,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.1.ssm_conv1d.weight",
@@ -344,7 +1538,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.2.ffn_gate.weight",
@@ -352,7 +1546,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.2.ffn_up.weight",
@@ -360,7 +1554,7 @@
     4096,
     12288
    ],
-   8
+   12
   ],
   [
    "blk.2.post_attention_norm.weight",
@@ -382,7 +1576,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.2.ssm_beta.weight",
@@ -390,7 +1584,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.2.ssm_conv1d.weight",
@@ -458,7 +1652,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.3.attn_q_norm.weight",
@@ -481,7 +1675,7 @@
     12288,
     4096
    ],
-   8
+   12
   ],
   [
    "blk.3.ffn_gate.weight",
@@ -489,7 +1683,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.3.ffn_up.weight",
@@ -497,7 +1691,7 @@
     4096,
     12288
    ],
-   8
+   12
   ],
   [
    "blk.3.post_attention_norm.weight",
@@ -535,7 +1729,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.4.ffn_gate.weight",
@@ -543,7 +1737,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.4.ffn_up.weight",
@@ -551,7 +1745,7 @@
     4096,
     12288
    ],
-   8
+   12
   ],
   [
    "blk.4.post_attention_norm.weight",
@@ -573,7 +1767,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.4.ssm_beta.weight",
@@ -581,7 +1775,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.4.ssm_conv1d.weight",
@@ -642,7 +1836,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.5.ffn_gate.weight",
@@ -650,7 +1844,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.5.ffn_up.weight",
@@ -658,7 +1852,7 @@
     4096,
     12288
    ],
-   8
+   12
   ],
   [
    "blk.5.post_attention_norm.weight",
@@ -680,7 +1874,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.5.ssm_beta.weight",
@@ -688,7 +1882,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.5.ssm_conv1d.weight",
@@ -749,7 +1943,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.6.ffn_gate.weight",
@@ -757,7 +1951,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.6.ffn_up.weight",
@@ -765,7 +1959,7 @@
     4096,
     12288
    ],
-   8
+   12
   ],
   [
    "blk.6.post_attention_norm.weight",
@@ -787,7 +1981,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.6.ssm_beta.weight",
@@ -795,7 +1989,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.6.ssm_conv1d.weight",
@@ -863,7 +2057,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.7.attn_q_norm.weight",
@@ -886,7 +2080,7 @@
     12288,
     4096
    ],
-   8
+   12
   ],
   [
    "blk.7.ffn_gate.weight",
@@ -894,7 +2088,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.7.ffn_up.weight",
@@ -902,7 +2096,7 @@
     4096,
     12288
    ],
-   8
+   12
   ],
   [
    "blk.7.post_attention_norm.weight",
@@ -917,7 +2111,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.8.attn_norm.weight",
@@ -932,7 +2126,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.8.ffn_down.weight",
@@ -940,7 +2134,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.8.ffn_gate.weight",
@@ -948,7 +2142,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.8.ffn_up.weight",
@@ -956,7 +2150,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.8.post_attention_norm.weight",
@@ -978,7 +2172,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.8.ssm_beta.weight",
@@ -986,7 +2180,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.8.ssm_conv1d.weight",
@@ -1024,7 +2218,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.9.attn_norm.weight",
@@ -1039,7 +2233,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.9.ffn_down.weight",
@@ -1047,7 +2241,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.9.ffn_gate.weight",
@@ -1055,7 +2249,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.9.ffn_up.weight",
@@ -1063,7 +2257,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.9.post_attention_norm.weight",
@@ -1085,7 +2279,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.9.ssm_beta.weight",
@@ -1093,7 +2287,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.9.ssm_conv1d.weight",
@@ -1131,7 +2325,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.10.attn_norm.weight",
@@ -1146,7 +2340,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.10.ffn_down.weight",
@@ -1154,7 +2348,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.10.ffn_gate.weight",
@@ -1162,7 +2356,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.10.ffn_up.weight",
@@ -1170,7 +2364,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.10.post_attention_norm.weight",
@@ -1192,7 +2386,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.10.ssm_beta.weight",
@@ -1200,7 +2394,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.10.ssm_conv1d.weight",
@@ -1268,7 +2462,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.11.attn_q_norm.weight",
@@ -1291,7 +2485,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.11.ffn_gate.weight",
@@ -1299,7 +2493,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.11.ffn_up.weight",
@@ -1307,7 +2501,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.11.post_attention_norm.weight",
@@ -1322,7 +2516,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.12.attn_norm.weight",
@@ -1337,7 +2531,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.12.ffn_down.weight",
@@ -1345,7 +2539,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.12.ffn_gate.weight",
@@ -1353,7 +2547,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.12.ffn_up.weight",
@@ -1361,7 +2555,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.12.post_attention_norm.weight",
@@ -1383,7 +2577,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.12.ssm_beta.weight",
@@ -1391,7 +2585,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.12.ssm_conv1d.weight",
@@ -1429,7 +2623,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.13.attn_norm.weight",
@@ -1444,7 +2638,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.13.ffn_down.weight",
@@ -1452,7 +2646,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.13.ffn_gate.weight",
@@ -1460,7 +2654,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.13.ffn_up.weight",
@@ -1468,7 +2662,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.13.post_attention_norm.weight",
@@ -1490,7 +2684,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.13.ssm_beta.weight",
@@ -1498,7 +2692,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.13.ssm_conv1d.weight",
@@ -1536,7 +2730,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.14.attn_norm.weight",
@@ -1551,7 +2745,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.14.ffn_down.weight",
@@ -1559,7 +2753,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.14.ffn_gate.weight",
@@ -1567,7 +2761,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.14.ffn_up.weight",
@@ -1575,7 +2769,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.14.post_attention_norm.weight",
@@ -1597,7 +2791,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.14.ssm_beta.weight",
@@ -1605,7 +2799,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.14.ssm_conv1d.weight",
@@ -1673,7 +2867,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.15.attn_q_norm.weight",
@@ -1696,7 +2890,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.15.ffn_gate.weight",
@@ -1704,7 +2898,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.15.ffn_up.weight",
@@ -1712,7 +2906,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.15.post_attention_norm.weight",
@@ -1727,7 +2921,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.16.attn_norm.weight",
@@ -1742,7 +2936,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.16.ffn_down.weight",
@@ -1750,7 +2944,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.16.ffn_gate.weight",
@@ -1758,7 +2952,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.16.ffn_up.weight",
@@ -1766,7 +2960,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.16.post_attention_norm.weight",
@@ -1788,7 +2982,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.16.ssm_beta.weight",
@@ -1796,7 +2990,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.16.ssm_conv1d.weight",
@@ -1834,7 +3028,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.17.attn_norm.weight",
@@ -1849,7 +3043,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.17.ffn_down.weight",
@@ -1857,7 +3051,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.17.ffn_gate.weight",
@@ -1865,7 +3059,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.17.ffn_up.weight",
@@ -1873,7 +3067,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.17.post_attention_norm.weight",
@@ -1895,7 +3089,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.17.ssm_beta.weight",
@@ -1903,7 +3097,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.17.ssm_conv1d.weight",
@@ -1941,7 +3135,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.18.attn_norm.weight",
@@ -1956,7 +3150,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.18.ffn_down.weight",
@@ -1964,7 +3158,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.18.ffn_gate.weight",
@@ -1972,7 +3166,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.18.ffn_up.weight",
@@ -1980,7 +3174,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.18.post_attention_norm.weight",
@@ -2002,7 +3196,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.18.ssm_beta.weight",
@@ -2010,7 +3204,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.18.ssm_conv1d.weight",
@@ -2078,7 +3272,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.19.attn_q_norm.weight",
@@ -2101,7 +3295,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.19.ffn_gate.weight",
@@ -2109,7 +3303,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.19.ffn_up.weight",
@@ -2117,7 +3311,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.19.post_attention_norm.weight",
@@ -2132,7 +3326,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.20.attn_norm.weight",
@@ -2147,7 +3341,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.20.ffn_down.weight",
@@ -2155,7 +3349,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.20.ffn_gate.weight",
@@ -2163,7 +3357,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.20.ffn_up.weight",
@@ -2171,7 +3365,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.20.post_attention_norm.weight",
@@ -2193,7 +3387,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.20.ssm_beta.weight",
@@ -2201,7 +3395,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.20.ssm_conv1d.weight",
@@ -2239,7 +3433,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.21.attn_norm.weight",
@@ -2254,7 +3448,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.21.ffn_down.weight",
@@ -2262,7 +3456,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.21.ffn_gate.weight",
@@ -2270,7 +3464,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.21.ffn_up.weight",
@@ -2278,7 +3472,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.21.post_attention_norm.weight",
@@ -2300,7 +3494,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.21.ssm_beta.weight",
@@ -2308,7 +3502,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.21.ssm_conv1d.weight",
@@ -2346,7 +3540,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.22.attn_norm.weight",
@@ -2361,7 +3555,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.22.ffn_down.weight",
@@ -2369,7 +3563,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.22.ffn_gate.weight",
@@ -2377,7 +3571,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.22.ffn_up.weight",
@@ -2385,7 +3579,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.22.post_attention_norm.weight",
@@ -2407,7 +3601,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.22.ssm_beta.weight",
@@ -2415,7 +3609,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.22.ssm_conv1d.weight",
@@ -2483,7 +3677,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.23.attn_q_norm.weight",
@@ -2506,7 +3700,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.23.ffn_gate.weight",
@@ -2514,7 +3708,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.23.ffn_up.weight",
@@ -2522,7 +3716,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.23.post_attention_norm.weight",
@@ -2552,7 +3746,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.24.ffn_down.weight",
@@ -2560,7 +3754,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.24.ffn_gate.weight",
@@ -2568,7 +3762,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.24.ffn_up.weight",
@@ -2576,7 +3770,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.24.post_attention_norm.weight",
@@ -2598,7 +3792,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.24.ssm_beta.weight",
@@ -2606,7 +3800,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.24.ssm_conv1d.weight",
@@ -2644,7 +3838,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.25.attn_norm.weight",
@@ -2659,7 +3853,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.25.ffn_down.weight",
@@ -2667,7 +3861,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.25.ffn_gate.weight",
@@ -2675,7 +3869,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.25.ffn_up.weight",
@@ -2683,7 +3877,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.25.post_attention_norm.weight",
@@ -2705,7 +3899,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.25.ssm_beta.weight",
@@ -2713,7 +3907,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.25.ssm_conv1d.weight",
@@ -2751,7 +3945,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.26.attn_norm.weight",
@@ -2766,7 +3960,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.26.ffn_down.weight",
@@ -2774,7 +3968,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.26.ffn_gate.weight",
@@ -2782,7 +3976,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.26.ffn_up.weight",
@@ -2790,7 +3984,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.26.post_attention_norm.weight",
@@ -2812,7 +4006,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.26.ssm_beta.weight",
@@ -2820,7 +4014,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.26.ssm_conv1d.weight",
@@ -2888,7 +4082,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.27.attn_q_norm.weight",
@@ -2911,7 +4105,7 @@
     12288,
     4096
    ],
-   8
+   12
   ],
   [
    "blk.27.ffn_gate.weight",
@@ -2919,7 +4113,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.27.ffn_up.weight",
@@ -2927,7 +4121,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.27.post_attention_norm.weight",
@@ -2942,7 +4136,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.28.attn_norm.weight",
@@ -2957,7 +4151,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.28.ffn_down.weight",
@@ -2965,7 +4159,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.28.ffn_gate.weight",
@@ -2973,7 +4167,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.28.ffn_up.weight",
@@ -2981,7 +4175,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.28.post_attention_norm.weight",
@@ -3003,7 +4197,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.28.ssm_beta.weight",
@@ -3011,7 +4205,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.28.ssm_conv1d.weight",
@@ -3049,7 +4243,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.29.attn_norm.weight",
@@ -3064,7 +4258,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.29.ffn_down.weight",
@@ -3072,7 +4266,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.29.ffn_gate.weight",
@@ -3080,7 +4274,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.29.ffn_up.weight",
@@ -3088,7 +4282,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.29.post_attention_norm.weight",
@@ -3110,7 +4304,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.29.ssm_beta.weight",
@@ -3118,7 +4312,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.29.ssm_conv1d.weight",
@@ -3156,7 +4350,7 @@
     4096,
     4096
    ],
-   14
+   8
   ],
   [
    "blk.30.attn_norm.weight",
@@ -3171,7 +4365,7 @@
     4096,
     8192
    ],
-   14
+   8
   ],
   [
    "blk.30.ffn_down.weight",
@@ -3179,7 +4373,7 @@
     12288,
     4096
    ],
-   14
+   12
   ],
   [
    "blk.30.ffn_gate.weight",
@@ -3187,7 +4381,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.30.ffn_up.weight",
@@ -3195,7 +4389,7 @@
     4096,
     12288
    ],
-   14
+   12
   ],
   [
    "blk.30.post_attention_norm.weight",
@@ -3217,7 +4411,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.30.ssm_beta.weight",
@@ -3225,7 +4419,7 @@
     4096,
     32
    ],
-   0
+   8
   ],
   [
    "blk.30.ssm_conv1d.weight",
@@ -3316,7 +4510,7 @@
     12288,
     4096
    ],
-   8
+   12
   ],
   [
    "blk.31.ffn_gate.weight",
@@ -3324,7 +4518,7 @@
     4096,
     12288
    ],
-   8
+   12
   ],
   [
    "blk.31.ffn_up.weight",
@@ -3332,7 +4526,7 @@
     4096,
     12288
    ],
-   8
+   12
   ],
   [
    "blk.31.post_attention_norm.weight",

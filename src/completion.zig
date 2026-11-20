@@ -236,7 +236,9 @@ pub const commands = [_]Command{
     } }} },
     .{ .name = "inspect", .summary = "an artifact's identity and encodings", .actions = &.{.{ .flags = &.{
         model_flag,
-        .{ .name = "--tensor", .value = .text, .summary = "one safetensors tensor" },
+        .{ .name = "--metadata", .summary = "every metadata key and value" },
+        .{ .name = "--tensors", .summary = "every tensor: encoding, shape, offset" },
+        .{ .name = "--tensor", .value = .text, .summary = "one tensor and its first values" },
         json,
     } }} },
     .{ .name = "validate", .summary = "whether a file binds to its adapter", .actions = &.{.{ .flags = &.{ model_flag, json } }} },
@@ -263,6 +265,9 @@ pub const commands = [_]Command{
         .{ .name = "inspect", .summary = "judge a remote file before the download", .positionals = &.{.repo}, .flags = &.{
             .{ .name = "--file", .value = .text, .summary = "which file of the repository" },
             .{ .name = "--revision", .value = .text, .summary = "a branch, tag, or commit" },
+            .{ .name = "--metadata", .summary = "every metadata key and value" },
+            .{ .name = "--tensors", .summary = "every tensor: encoding, shape, offset" },
+            .{ .name = "--tensor", .value = .text, .summary = "one tensor and its first values (one row read)" },
             json,
         } },
         .{ .name = "rm", .summary = "delete a model's files", .positionals = &.{.present}, .flags = &.{
@@ -521,7 +526,7 @@ pub fn candidates(arena: Allocator, target: Target, current: []const u8, state: 
                 const cut = if (std.mem.lastIndexOfScalar(u8, current, ',')) |c| c + 1 else 0;
                 const typed = current[0..cut];
                 for (names(model.Role)) |role| {
-                    if (std.mem.eql(u8, role, "main") or std.mem.eql(u8, role, "support") or std.mem.eql(u8, role, "codec") or std.mem.eql(u8, role, "backbone")) continue;
+                    if (std.mem.eql(u8, role, "main") or std.mem.eql(u8, role, "support") or std.mem.eql(u8, role, "codec")) continue;
                     if (listed(typed, role)) continue;
                     try list.append(arena, .{ .text = try std.mem.concat(arena, u8, &.{ typed, role }) });
                     if (std.mem.eql(u8, role, "draft")) for (draft_variants) |variant| try list.append(arena, .{ .text = try std.mem.concat(arena, u8, &.{ typed, "draft=", variant }) });
@@ -866,7 +871,7 @@ test "commands, actions, flags, and fixed values complete from the table" {
     try expectTexts(a, &.{ "agent", "-p", "hi", "--prompt" }, .{}, &.{ "--prompt-file", "--prompt-profile" });
     // Flags are per action.
     try expectTexts(a, &.{ "agent", "ls", "--" }, .{}, &.{"--json"});
-    try expectTexts(a, &.{ "model", "inspect", "x", "--" }, .{}, &.{ "--file", "--revision", "--json" });
+    try expectTexts(a, &.{ "model", "inspect", "x", "--" }, .{}, &.{ "--file", "--revision", "--metadata", "--tensors", "--tensor", "--json" });
     try expectTexts(a, &.{ "completion", "" }, .{}, &.{ "fish", "bash", "zsh" });
     // Free text, numbers, and unknown commands complete to nothing.
     try expectTexts(a, &.{ "agent", "--prompt", "" }, .{}, &.{});

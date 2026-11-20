@@ -287,10 +287,10 @@
    "title": "Cloudflare clef-flash",
    "kind": "decision",
    "status": "current",
-   "repo": "Cloudflare/clef-flash",
-   "revision": "17f0b0ad64efb65d273590632833508766b2aae6",
-   "architecture": "qwen35",
-   "quantization": "Q6_K",
+   "repo": "ggml-org/Clef-Flash-GGUF",
+   "revision": "c3d925454595d792d5333da8b35f3c09911f7568",
+   "architecture": "clef",
+   "quantization": "Q4_K_M",
    "defaults": {
     "profile": null,
     "draft": null
@@ -299,25 +299,17 @@
     {
      "role": "main",
      "variant": null,
-     "local": "Cloudflare/clef-flash/joint_head.safetensors",
-     "size": 243538016,
-     "sha256": "19cdcec8c81dc9212be320fff47462ab342fbc1278be4368fb3da71241cf5ba0",
-     "verdict": null
-    },
-    {
-     "role": "backbone",
-     "variant": null,
-     "local": "bartowski/Cloudflare_clef-flash-GGUF/Cloudflare_clef-flash-Q6_K.gguf",
-     "size": 7793714496,
-     "sha256": "b80f7cfb803de25aade15853bab331e9f030a9ee64dee7bc91ed8c2b07312423",
+     "local": "ggml-org/Clef-Flash-GGUF/Clef-Flash-Q4_K_M.gguf",
+     "size": 6732781824,
+     "sha256": "eef2968c238a80d49d340430f22410ea3db9934ad1c6fdb233a503cbf9a9b54e",
      "verdict": null
     },
     {
      "role": "mmproj",
      "variant": null,
-     "local": "bartowski/Cloudflare_clef-flash-GGUF/mmproj-Cloudflare_clef-flash-bf16.gguf",
+     "local": "ggml-org/Clef-Flash-GGUF/mmproj-Clef-Flash-BF16.gguf",
      "size": 921704928,
-     "sha256": "3c45b34aee6f353a0d41d6b96ba712a498a17a82f0a6152bf68a5021f9652c0f",
+     "sha256": "477598b2425d3aea55fefb895c414e04bda1ee2ec55878d78e850cb8b420d8d6",
      "verdict": null
     }
    ]

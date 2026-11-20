@@ -3,8 +3,8 @@
 
 `nuclis inspect` reads a GGUF file's directory without loading weights for
 execution: it validates the container, the metadata, and every tensor's span
-and encoding, for any architecture. It does not check a model's equations,
-decode quantized values, or tokenize; the adapters bind the tensors
+and encoding, for any architecture. It does not check a model's equations or
+tokenize; the adapters bind the tensors
 ([models/qwen3.8.md § Structural validation](../models/qwen3.8.md#structural-validation))
 and the backends run them.
 
@@ -17,8 +17,19 @@ zig build -Doptimize=ReleaseSafe
 ./zig-out/bin/nuclis --help
 ./zig-out/bin/nuclis inspect
 ./zig-out/bin/nuclis inspect --model /path/to/model.gguf --json
+./zig-out/bin/nuclis inspect --model clef-flash --metadata --tensors
+./zig-out/bin/nuclis inspect --model clef-flash --tensor decision.scales
 zig build test
 ```
+
+`--metadata` lists every key with its type and value (a long string is cut
+on screen and whole in JSON; a vocabulary-sized array shows its count),
+`--tensors` every tensor's encoding, shape, size, and offset in the file,
+and `--tensor <name>` one tensor with its first values, its first row
+decoded from whatever encoding nuclis reads. `nuclis model inspect` takes
+the same three flags for a file on the Hub, reading the directory and, for
+`--tensor`, that tensor's first row only. Read a file this way, not with a
+script of your own: when it lacks something, extend it.
 
 Without `--model`, inspection reads the configured `engine.model` under
 `~/.nuclis/models/`; an absolute `NUCLIS_HOME` overrides the root. `--model` takes precedence
@@ -67,7 +78,9 @@ a filename's quantization label is not enough to select kernels.
    must hold complete quantization blocks. Checked arithmetic rejects overflow.
 7. [inspect.zig](../../src/inspect.zig) builds one snapshot borrowing the
    document and caller-provided histogram storage, then renders it before either
-   expires. Model-controlled strings are escaped for safe terminal output.
+   expires; the metadata and tensor rows (`--metadata`, `--tensors`) are
+   copied into an arena, so `model inspect` keeps them after the directory
+   it fetched is freed. Model-controlled strings are escaped for safe terminal output.
 
 The parser checks duplicate names, ranks, nonzero dimensions, supported layouts,
 alignment, file bounds, and overlapping tensor spans. It sorts a copy of tensor

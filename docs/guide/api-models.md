@@ -105,7 +105,7 @@ A decision model's:
 
 | Field | Meaning |
 | --- | --- |
-| `name`, `architecture`, `quantization`, `size_bytes` | the id; the catalogue's (`modernbert`, `F16`, the weights with clef's backbone), null for a registry entry |
+| `name`, `architecture`, `quantization`, `size_bytes` | the id; the catalogue's (`modernbert`, `F16`, the main file's size), null for a registry entry |
 | `options` | `{}`: a decision request's fields describe the task, not the model |
 | `family` | `laya` or `clef`, known before the model is pulled |
 | `packs` | `true`: the states of a request, and the requests waiting with it, share one GPU pass (Laya). `false`: each state is its own pass, its cost linear in tokens (clef-flash: send one state per request with every question in it, and keep one or two requests in flight; [clef-flash.md § Time per decision](../models/clef-flash.md#numbers)) |

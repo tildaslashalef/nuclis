@@ -13,24 +13,25 @@ States run up to 16,384 tokens. nuclis runs it in these parts:
 
 | Part | Files |
 | --- | --- |
-| Backbone (qwen35 at the file's shape), CPU and Metal | `inference/src/models/qwen35.zig`, `qwen35_runtime.zig`, `qwen35_metal.zig` |
+| Backbone (qwen35 at the file's shape, under the `clef` id), CPU and Metal | `inference/src/models/qwen35.zig`, `qwen35_runtime.zig`, `qwen35_metal.zig` |
 | Input contract: questions, the sequence, images' tokens | `inference/src/profiles/clef.zig`, `profiles/decision.zig` |
-| Head (CPU, F32), the model | `inference/src/models/clef.zig` |
+| Head (CPU, F32, read from the same GGUF), the model | `inference/src/models/clef.zig` |
 | Projector (the Qwen3-VL merger at width 4,096) | `inference/src/vision/qwen3vl.zig`, `qwen3vl_metal.zig`, `projector.zig` |
 | The family seam, `nuclis decide`, `nuclis serve` | `inference/src/decide.zig`, `src/decide.zig`, `src/decision/`, `src/api/decisions/` |
 | Checks | `inference/clef-check.zig`, the reference's fixtures in `inference/src/models/fixtures/clef/` |
 
 ## Architecture: the joint schema head
 
-`JointSchemaHead` (`joint_head_config.json`: hidden 4,096, width 1,024, 2
-routing layers, 4 decoder layers, 16 heads, feed-forward 4,096; 122 M
-parameters), decoded to F32 at load (about 0.5 GB):
+`JointSchemaHead` (`clef.decision.*`: hidden 4,096, width 1,024, 2 routing
+layers, 4 decoder layers, 16 heads, feed-forward 4,096; 122 M parameters),
+its tensors `decision.*` and `dec.blk.0`–`5` (routing layers first) in the
+same file as the backbone, decoded to F32 at load (about 0.5 GB):
 
 1. A LayerNorm over every hidden row, then the **memory**: every row
    projected to 1,024.
 2. Per question, the mean of its instruction span; per option, the mean of
    its span (context) and the mean of the output head's rows over its
-   tokens (lexical, `output.weight` decoded from Q6_K).
+   tokens (lexical, `output.weight` decoded from Q8_0).
 3. **Option queries** (context + lexical + question projections) pass two
    evidence-routing layers: cross-attention to the normalized memory, a
    GELU feed-forward.
@@ -41,7 +42,8 @@ parameters), decoded to F32 at load (about 0.5 GB):
 5. **Scores**: a lexical prior (cosine of the option's lexical vector and
    the question + last-row anchor, scaled) plus a gated joint term (scaled
    cosine of field and normalized option, and a residual MLP of `[f, o,
-   f·o, |f−o|]`).
+   f·o, |f−o|]`). The file stores the two scales and the gate as the
+   forward uses them (`decision.scales`: exp, exp, sigmoid).
 
 It runs on the CPU in both backends (`cpu.dense` matmuls across cores,
 attention per head as two matmuls): 30–130 ms per request up to 829
@@ -50,18 +52,22 @@ has no Metal path.
 
 ## Files and encodings
 
-`nuclis model pull clef-flash` fetches three things, each pinned by commit
-and checked against the catalogue's SHA-256:
+`nuclis model pull clef-flash` fetches one file from
+`ggml-org/Clef-Flash-GGUF`, pinned at `c3d92545` and checked against the
+catalogue's SHA-256; `--with mmproj` adds the projector:
 
-| What | Repository and file | Size |
+| What | File | Size |
 | --- | --- | ---: |
-| Backbone | `bartowski/Cloudflare_clef-flash-GGUF` `Cloudflare_clef-flash-Q6_K.gguf` (llama.cpp b11279, imatrix; 125 Q6_K, 77 Q8_0, 225 F32 tensors) at `d7f376ea` | 7.79 GB |
-| Head and support files | `Cloudflare/clef-flash` `joint_head.safetensors` (BF16) with `joint_head_config.json`, `config.json`, the tokenizer files, the template, `processor_config.json` at `17f0b0ad` | 0.24 GB |
-| Projector (`--with mmproj`) | the GGUF repository's `mmproj-Cloudflare_clef-flash-bf16.gguf` | 0.92 GB |
+| Backbone, head, and tokenizer (architecture `clef`) | `Clef-Flash-Q4_K_M.gguf`: the backbone Q4_K and Q8_0, the head's matrices Q8_0, its norms, biases, and scales F32 (97 Q4_K, 212 Q8_0, 277 F32, 1 BF16 tensors) | 6.73 GB |
+| Projector (`--with mmproj`) | `mmproj-Clef-Flash-BF16.gguf` | 0.92 GB |
 
-Q6_K, not a bf16 backbone: a decision is one prefill, compute-bound, so
-fewer bits buy little speed and cost flipped answers. The MLX 4-bit
-conversion was rejected: its own card reports 96.4 % agreement with bf16.
+Q4_K_M rather than the Q6_K nuclis first ran: the prefill is
+compute-bound, so the rate is the same and the file 1 GB smaller. Against
+Cloudflare's reference the answers' probabilities moved by at most 1.55e-2
+and no fixture answer changed
+([record, 2026-11-21](../benchmarks/record/clef-flash.md#ggml-orgs-single-file-2026-11-21)).
+The BF16 projector, not the Q8_0 one: the Metal projector plan executes
+F32, F16, and BF16 matrices.
 
 ## The input contract
 
@@ -98,10 +104,8 @@ From Cloudflare's `joint_schema_model.py` at `17f0b0ad`
   pixels (`processor_config.json`), as the Hugging Face processor resizes,
   not letterboxed as the Qwen3.8 chat path does.
 
-Tokenizing goes through the backbone GGUF's own vocabulary and the
-`qwen35` splitter; `tokenizer.json`'s `Split` pre-tokenizer is one the
-Hugging Face JSON loader does not read, and the sequence fixture proves
-the two agree.
+Tokenizing goes through the file's own vocabulary and the `qwen35`
+splitter; the sequence fixture proves it builds the reference's ids.
 
 ## `nuclis decide` and `nuclis serve`
 
@@ -126,28 +130,31 @@ projector pulled, a request with images is refused
 
 The backbone is the qwen35 family nuclis validates for Qwen3.8 and the
 projector is Qwen3.8's at another width; the new parts (the sequence and
-the head) are held to Cloudflare's reference: `clef-sequences` rebuilds its
-ids and spans for 10 requests, `clef-metal` holds every request, images
-included, within 1e-3 of the reference head's logits on nuclis's rows and
-requires each answer of a sanity set, and `clef-cpu` does the same for the
-two requests under 160 tokens within 2e-3
-([record, 2026-10-02](../benchmarks/record/clef-flash.md#checked-against-the-oracle-2026-10-02)).
+the head) were held to Cloudflare's reference at bring-up
+([record, 2026-10-02](../benchmarks/record/clef-flash.md#checked-against-the-oracle-2026-10-02)),
+and the GGUF's head to that bring-up's tensor by tensor
+([record, 2026-11-21](../benchmarks/record/clef-flash.md#ggml-orgs-single-file-2026-11-21)).
+`clef-sequences` rebuilds the reference's ids and spans for 10 requests;
+`clef-metal` holds every request, images included, within 1e-3 of
+nuclis's pinned Metal logits for this file, within 2e-2 of the reference's
+probabilities, and to each answer of a sanity set; `clef-cpu` does the
+same for the two requests under 160 tokens, the logits within 2e-3.
 
 ## Numbers
 
 One `noul` question over a log state, Metal, `nuclis decide --json`,
-ReleaseSafe, load (0.5 s) excluded (M4 Pro, 2026-10-02;
-[record](../benchmarks/record/clef-flash.md#time-per-decision-2026-10-02)):
+ReleaseSafe, load (0.27 s) excluded (M4 Pro, 2026-11-21;
+[record](../benchmarks/record/clef-flash.md#ggml-orgs-single-file-2026-11-21)):
 
 | State | Tokens per sequence | 1 state | 10 states |
 | --- | ---: | ---: | ---: |
-| about 500 tokens of log | 637 | 2.37 s | 23.0 s |
-| about 2,000 tokens of log | 2,162 | 8.51 s | 82.4 s |
+| about 500 tokens of log | 621–628 | 2.36 s | 22.7 s |
+| about 2,000 tokens of log | 2,111–2,131 | 7.56 s | 78.6 s |
 
-The time is the backbone's prefill, about 260–290 tok/s, linear in the
+The time is the backbone's prefill, about 260–295 tok/s, linear in the
 states. Questions are almost free: they add their schema tokens to one
 pass, where Laya pays a pass per question. An image adds its projector
-pass (80 image tokens: 1.24 s against 0.61 s for a 143-token text
+pass (80 image tokens: 1.19 s against 0.61 s for a 143-token text
 request).
 
 ## Known limits
@@ -159,4 +166,5 @@ request).
   down further than it would be there. Videos are not read.
 - The CPU backbone runs about a token a second (the reference forward,
   slow by design); the CPU path is for checks, not for use.
-- No Q8_0 or bf16 backbone has been compared with the Q6_K.
+- Only the Q4_K_M file is pinned; ggml-org's Q8_0 and BF16 files have not
+  been run.

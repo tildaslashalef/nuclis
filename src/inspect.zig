@@ -29,6 +29,10 @@ pub const Snapshot = struct {
     stored_elements: u64,
     tensor_bytes: u64,
     encodings: []const EncodingCount,
+    /// Every metadata key, with `--metadata`.
+    metadata: ?[]const MetadataRow = null,
+    /// Every tensor's descriptor, in file order, with `--tensors`.
+    tensors: ?[]const TensorRow = null,
 
     /// `inspect --model`: the header, the directory's facts, the encodings,
     /// and the next step.
@@ -75,8 +79,208 @@ pub const Snapshot = struct {
             .{ .text = try std.fmt.allocPrint(arena, "{f}", .{v.size(e.bytes)}) },
         });
         try kit.table.render(out, ui, arena, 0, &columns, rows);
+        if (self.metadata) |m| try renderMetadata(arena, out, ui, m);
+        if (self.tensors) |t| try renderTensors(arena, out, ui, t);
     }
 };
+
+/// What `--metadata`, `--tensors`, and `--tensor <name>` add to a GGUF
+/// inspection.
+pub const Detail = struct {
+    metadata: bool = false,
+    tensors: bool = false,
+    tensor: ?[]const u8 = null,
+};
+
+pub const Scalar = union(enum) {
+    unsigned: u64,
+    signed: i64,
+    /// A `float32` value at its own precision, so it prints as stored.
+    float32: f32,
+    float: f64,
+    boolean: bool,
+    string: []const u8,
+};
+
+/// A metadata value: a scalar, or an array's element type and count with
+/// its values when the parser retained them (small arrays; vocabulary
+/// arrays stay lazy and show their count only).
+pub const MetadataValue = union(enum) {
+    scalar: Scalar,
+    array: struct { element_type: []const u8, count: u64, values: ?[]const Scalar },
+};
+
+pub const MetadataRow = struct {
+    key: []const u8,
+    type: []const u8,
+    value: MetadataValue,
+};
+
+/// A tensor's descriptor; `offset` is from the start of the file.
+pub const TensorRow = struct {
+    name: []const u8,
+    encoding: []const u8,
+    shape: []const u64,
+    elements: u64,
+    bytes: u64,
+    offset: u64,
+};
+
+/// Copies every metadata key into `arena`, so the rows outlive `doc`.
+pub fn metadataRows(arena: std.mem.Allocator, doc: inference.gguf.Document) ![]const MetadataRow {
+    const rows = try arena.alloc(MetadataRow, doc.metadata.len);
+    for (doc.metadata, rows) |m, *row| row.* = .{
+        .key = try arena.dupe(u8, m.key),
+        .type = @tagName(m.kind),
+        .value = switch (m.value) {
+            .array => |a| .{ .array = .{
+                .element_type = @tagName(a.element_type),
+                .count = a.count,
+                .values = if (a.values) |values| blk: {
+                    const out = try arena.alloc(Scalar, values.len);
+                    for (values, out) |v, *o| o.* = try scalar(arena, v);
+                    break :blk out;
+                } else null,
+            } },
+            .float => |x| .{ .scalar = if (m.kind == .float32) .{ .float32 = @floatCast(x) } else .{ .float = x } },
+            else => .{ .scalar = try scalar(arena, m.value) },
+        },
+    };
+    return rows;
+}
+
+fn scalar(arena: std.mem.Allocator, v: inference.gguf.Value) !Scalar {
+    return switch (v) {
+        .unsigned => |x| .{ .unsigned = x },
+        .signed => |x| .{ .signed = x },
+        .float => |x| .{ .float = x },
+        .boolean => |x| .{ .boolean = x },
+        .string => |x| .{ .string = try arena.dupe(u8, x) },
+        .array => error.InvalidMetadataType,
+    };
+}
+
+/// Copies every tensor's descriptor into `arena`, in file order.
+pub fn tensorRows(arena: std.mem.Allocator, doc: inference.gguf.Document) ![]const TensorRow {
+    const rows = try arena.alloc(TensorRow, doc.tensors.len);
+    for (doc.tensors, rows) |t, *row| row.* = .{
+        .name = try arena.dupe(u8, t.name),
+        .encoding = inference.encoding.layout(t.encoding_id).?.name,
+        .shape = try arena.dupe(u64, t.dimensions),
+        .elements = t.elements,
+        .bytes = t.bytes,
+        .offset = try std.math.add(u64, doc.data_offset, t.offset),
+    };
+    return rows;
+}
+
+pub fn findTensor(doc: inference.gguf.Document, name: []const u8) ?*const inference.gguf.Tensor {
+    for (doc.tensors) |*t| if (std.mem.eql(u8, t.name, name)) return t;
+    return null;
+}
+
+/// The bytes of a GGUF tensor's first row (its first dimension's span),
+/// what `ggufPeek` decodes; at most `peek_row_bytes`.
+pub fn firstRowBytes(tensor: *const inference.gguf.Tensor) u64 {
+    const columns = if (tensor.dimensions.len > 0) tensor.dimensions[0] else 1;
+    const rows = if (columns == 0) 1 else @max(1, tensor.elements / columns);
+    return @min(tensor.bytes / rows, peek_row_bytes);
+}
+pub const peek_row_bytes = 1 << 20;
+
+/// A GGUF tensor's descriptor and the first values of `row` (its first
+/// row's bytes, `firstRowBytes` long) decoded to f32; null when nuclis has
+/// no decoder for the encoding or the row is cut by `peek_row_bytes`.
+pub fn ggufPeek(arena: std.mem.Allocator, doc: inference.gguf.Document, tensor: *const inference.gguf.Tensor, row: []const u8) !TensorPeek {
+    const columns: usize = @intCast(if (tensor.dimensions.len > 0) tensor.dimensions[0] else 1);
+    const decoded = try arena.alloc(f32, columns);
+    const first: ?[]const f32 = if (inference.quant.row(tensor.encoding_id, row, decoded)) decoded[0..@min(columns, TensorPeek.shown)] else |_| null;
+    return .{
+        .name = try arena.dupe(u8, tensor.name),
+        .dtype = inference.encoding.layout(tensor.encoding_id).?.name,
+        .shape = try arena.dupe(u64, tensor.dimensions),
+        .elements = tensor.elements,
+        .bytes = tensor.bytes,
+        .offset = try std.math.add(u64, doc.data_offset, tensor.offset),
+        .first = first,
+    };
+}
+
+/// A string value on one line: cleaned, cut at `shown_string` bytes with
+/// the full length marked.
+const shown_string = 96;
+
+fn scalarText(arena: std.mem.Allocator, s: Scalar) ![]const u8 {
+    return switch (s) {
+        .unsigned => |x| std.fmt.allocPrint(arena, "{d}", .{x}),
+        .signed => |x| std.fmt.allocPrint(arena, "{d}", .{x}),
+        .float32 => |x| std.fmt.allocPrint(arena, "{d}", .{x}),
+        .float => |x| std.fmt.allocPrint(arena, "{d}", .{x}),
+        .boolean => |x| if (x) "true" else "false",
+        .string => |x| if (x.len <= shown_string)
+            kit.text.clean(arena, x)
+        else
+            std.fmt.allocPrint(arena, "{s}… ({d} bytes)", .{ try kit.text.clean(arena, x[0..shown_string]), x.len }),
+    };
+}
+
+fn renderMetadata(arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui, rows: []const MetadataRow) !void {
+    try out.writeByte('\n');
+    const columns = [_]kit.table.Column{
+        .{ .title = "KEY", .truncate = false },
+        .{ .title = "TYPE", .truncate = false },
+        .{ .title = "VALUE", .truncate = false },
+    };
+    const cells = try arena.alloc([]const kit.table.Cell, rows.len);
+    for (rows, cells) |r, *row| {
+        var value: std.ArrayList(u8) = .empty;
+        var kind: []const u8 = r.type;
+        switch (r.value) {
+            .scalar => |s| try value.appendSlice(arena, try scalarText(arena, s)),
+            .array => |a| {
+                kind = try std.fmt.allocPrint(arena, "array<{s}>", .{a.element_type});
+                if (a.values) |values| {
+                    try value.append(arena, '[');
+                    for (values, 0..) |v, i| try value.print(arena, "{s}{s}", .{ if (i > 0) ", " else "", try scalarText(arena, v) });
+                    try value.append(arena, ']');
+                } else try value.print(arena, "{d} items", .{a.count});
+            },
+        }
+        row.* = try arena.dupe(kit.table.Cell, &.{
+            .{ .text = try kit.text.clean(arena, r.key), .role = .id },
+            .{ .text = kind, .role = .muted },
+            .{ .text = value.items },
+        });
+    }
+    try kit.table.render(out, ui, arena, 0, &columns, cells);
+}
+
+fn renderTensors(arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui, rows: []const TensorRow) !void {
+    const v = kit.values;
+    try out.writeByte('\n');
+    const columns = [_]kit.table.Column{
+        .{ .title = "TENSOR", .truncate = false },
+        .{ .title = "ENCODING", .truncate = false },
+        .{ .title = "SHAPE", .truncate = false },
+        .{ .title = "SIZE", .alignment = .right },
+        .{ .title = "OFFSET", .alignment = .right },
+    };
+    const cells = try arena.alloc([]const kit.table.Cell, rows.len);
+    for (rows, cells) |r, *row| row.* = try arena.dupe(kit.table.Cell, &.{
+        .{ .text = try kit.text.clean(arena, r.name), .role = .id },
+        .{ .text = r.encoding },
+        .{ .text = try shapeText(arena, r.shape) },
+        .{ .text = try std.fmt.allocPrint(arena, "{f}", .{v.size(r.bytes)}) },
+        .{ .text = try std.fmt.allocPrint(arena, "{d}", .{r.offset}), .role = .muted },
+    });
+    try kit.table.render(out, ui, arena, 0, &columns, cells);
+}
+
+fn shapeText(arena: std.mem.Allocator, shape: []const u64) ![]const u8 {
+    var text: std.ArrayList(u8) = .empty;
+    for (shape, 0..) |d, i| try text.print(arena, "{s}{d}", .{ if (i > 0) " × " else "", d });
+    return text.items;
+}
 
 /// A safetensors checkpoint (one file or an indexed shard set): the header
 /// facts per shard and the dtype histogram over every tensor. Borrows the
@@ -146,6 +350,8 @@ pub const TensorPeek = struct {
     shape: []const u64,
     elements: u64,
     bytes: u64,
+    /// A GGUF tensor's first byte in the file; null for safetensors.
+    offset: ?u64 = null,
     first: ?[]const f32,
 
     pub const shown = 8;
@@ -156,21 +362,21 @@ pub const TensorPeek = struct {
             return out.writeByte('\n');
         }
         const v = kit.values;
-        var shape: std.ArrayList(u8) = .empty;
-        for (self.shape, 0..) |d, i| try shape.print(arena, "{s}{d}", .{ if (i > 0) " × " else "", d });
+        const shape = try shapeText(arena, self.shape);
         var first: std.ArrayList(u8) = .empty;
         if (self.first) |values| {
             for (values, 0..) |x, i| try first.print(arena, "{s}{d}", .{ if (i > 0) "  " else "", x });
         }
         try kit.blocks.header(out, ui, try kit.text.clean(arena, self.name), self.dtype);
-        try kit.blocks.detail(out, ui, &.{.{ .fields = &.{
-            .{ .key = "Shape", .value = shape.items },
-            .{ .key = "Elements", .value = try std.fmt.allocPrint(arena, "{f} · {f}", .{ v.grouped(self.elements), v.size(self.bytes) }) },
-            if (self.first) |values|
-                .{ .key = try std.fmt.allocPrint(arena, "First {d}", .{values.len}), .value = first.items }
-            else
-                .{ .key = "Values", .value = "not decoded: the loader decodes F32, F16, and BF16", .role = .muted },
-        } }});
+        var fields: std.ArrayList(kit.blocks.Field) = .empty;
+        try fields.append(arena, .{ .key = "Shape", .value = shape });
+        try fields.append(arena, .{ .key = "Elements", .value = try std.fmt.allocPrint(arena, "{f} · {f}", .{ v.grouped(self.elements), v.size(self.bytes) }) });
+        if (self.offset) |o| try fields.append(arena, .{ .key = "Offset", .value = try std.fmt.allocPrint(arena, "byte {f} of the file", .{v.grouped(o)}), .role = .muted });
+        try fields.append(arena, if (self.first) |values|
+            .{ .key = try std.fmt.allocPrint(arena, "First {d}", .{values.len}), .value = first.items }
+        else
+            .{ .key = "Values", .value = "not decoded: nuclis has no decoder for this encoding", .role = .muted });
+        try kit.blocks.detail(out, ui, &.{.{ .fields = fields.items }});
     }
 };
 

@@ -43,12 +43,11 @@ pub const Family = enum {
         return self == .laya;
     }
 
-    /// The family a checkpoint directory holds: clef's head file, else Laya.
-    pub fn of(io: std.Io, directory: []const u8) Family {
-        var buffer: [std.fs.max_path_bytes]u8 = undefined;
-        const path = std.fmt.bufPrint(&buffer, "{s}/{s}", .{ directory, clef.head_file }) catch return .laya;
-        std.Io.Dir.cwd().access(io, path, .{}) catch return .laya;
-        return .clef;
+    /// The family a location holds: a GGUF file is clef's, a directory
+    /// Laya's safetensors checkpoint. `clef.Model.open` checks the file's
+    /// architecture.
+    pub fn of(path: []const u8) Family {
+        return if (std.mem.endsWith(u8, path, ".gguf")) .clef else .laya;
     }
 };
 
@@ -60,12 +59,10 @@ pub fn parseQuestion(family: Family, arena: std.mem.Allocator, id: []const u8, v
     };
 }
 
-/// Where a checkpoint is: its directory, and for clef the backbone GGUF
-/// (null: the directory's own `*.gguf` that is not a projector) and the
+/// Where a checkpoint is: Laya's directory or clef's GGUF, and for clef the
 /// projector (null: requests with images are refused).
 pub const Location = struct {
-    directory: []const u8,
-    backbone: ?[]const u8 = null,
+    path: []const u8,
     mmproj: ?[]const u8 = null,
 };
 
@@ -124,8 +121,8 @@ pub const Decider = struct {
     family: union(Family) { laya: Laya, clef: Clef },
 
     pub fn open(gpa: std.mem.Allocator, io: std.Io, location: Location, backend: Backend) !Decider {
-        return .{ .gpa = gpa, .family = switch (Family.of(io, location.directory)) {
-            .laya => .{ .laya = try Laya.open(gpa, io, location.directory, backend) },
+        return .{ .gpa = gpa, .family = switch (Family.of(location.path)) {
+            .laya => .{ .laya = try Laya.open(gpa, io, location.path, backend) },
             .clef => .{ .clef = try Clef.open(gpa, io, location, backend) },
         } };
     }
@@ -328,7 +325,7 @@ const Clef = struct {
     model: clef.Model,
 
     fn open(gpa: std.mem.Allocator, io: std.Io, location: Location, backend: Backend) !Clef {
-        return .{ .model = try clef.Model.open(gpa, io, location.directory, location.backbone, location.mmproj, backend) };
+        return .{ .model = try clef.Model.open(gpa, io, location.path, location.mmproj, backend) };
     }
 
     fn deinit(self: *Clef, io: std.Io) void {
