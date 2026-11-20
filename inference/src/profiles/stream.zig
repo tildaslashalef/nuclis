@@ -68,6 +68,17 @@ pub const Channel = struct {
 /// A header longer than this is not one: its bytes are released as answer
 /// text (a model writing prose where a header belongs hides nothing).
 pub const header_limit = 256;
+/// Tokens past its budget a reasoning may still write so a cut lands after
+/// text rather than inside trailing whitespace the render would trim.
+pub const cut_grace = 32;
+
+/// The whitespace the profiles' renders trim from reasoning.
+fn isSpace(byte: u8) bool {
+    return switch (byte) {
+        ' ', '\t', '\r', '\n', 0x0b, 0x0c => true,
+        else => false,
+    };
+}
 /// A call body reports its size each time it grows past a multiple of this.
 pub const progress_step = 256;
 
@@ -81,6 +92,12 @@ pub const Markers = struct {
     /// Present for the message-header grammar, which replaces the bracket
     /// grammar above (`open`/`close`/`tool` are then unused).
     channel: ?Channel = null,
+    /// The bracket grammar's history renders reasoning trimmed, then this
+    /// newline token, then `close`, then `close_trail`: a cut that writes the
+    /// same leaves the next step's render continuing the session instead of
+    /// rewriting it (`cutToken`). Null: a cut forces `close` alone.
+    close_lead: ?u32 = null,
+    close_trail: ?u32 = null,
     /// The artifact's tokens: one that is neither `normal` nor `byte` is
     /// structure, never text, wherever the model writes it. The markers above
     /// keep their place in the grammar. Borrowed.
@@ -132,6 +149,11 @@ pub const Decoder = struct {
     /// start of the completion, since the prompt ends inside one).
     in_header: bool = false,
     header_buf: std.ArrayList(u8) = .empty,
+    /// The last bytes of the reasoning written since it last opened, and
+    /// how many there were (at most two): where a cut can close it so the
+    /// text matches the trimmed render (`cutToken`).
+    reasoning_tail: [2]u8 = .{ 0, 0 },
+    reasoning_seen: u2 = 0,
 
     pub fn init(alloc: std.mem.Allocator, markers: Markers, thinking: bool) Decoder {
         const channel = markers.channel != null;
@@ -162,9 +184,28 @@ pub const Decoder = struct {
     /// `budget`, or null: never inside a call or a header being written, and
     /// again after every reopen, so a model that resumes thinking past its
     /// budget writes an empty block instead of unbounded thought.
+    ///
+    /// With `close_lead`, the cut writes what the history renders: text
+    /// then the lead newline then the close. A reasoning that ends in one
+    /// newline after text closes at once; one that ends in other whitespace,
+    /// which the render trims, waits up to `cut_grace` tokens for text.
     pub fn cutToken(self: *const Decoder, reasoning: usize, budget: usize) ?u32 {
         if (!self.thinking or self.in_tool or self.in_header or self.header or reasoning < budget) return null;
-        return if (self.markers.channel) |channel| channel.eom else self.markers.close;
+        if (self.markers.channel) |channel| return channel.eom;
+        const lead = self.markers.close_lead orelse return self.markers.close;
+        if (self.reasoning_seen == 0) return lead;
+        const last = self.reasoning_tail[1];
+        if (!isSpace(last)) return lead;
+        if (last == '\n' and (self.reasoning_seen == 1 or !isSpace(self.reasoning_tail[0]))) return self.markers.close;
+        if (reasoning < budget + cut_grace) return null;
+        return self.markers.close;
+    }
+
+    fn noteReasoning(self: *Decoder, bytes: []const u8) void {
+        for (bytes) |byte| {
+            self.reasoning_tail = .{ self.reasoning_tail[1], byte };
+            if (self.reasoning_seen < 2) self.reasoning_seen += 1;
+        }
     }
 
     /// A call still open when the completion stopped. At EOS a channel body
@@ -286,6 +327,7 @@ pub const Decoder = struct {
         }
         if (self.initial and self.thinking and token == self.markers.open) {
             self.initial = false;
+            self.reasoning_seen = 0;
             self.header = self.markers.open_suffix.len != 0;
             return;
         }
@@ -297,6 +339,7 @@ pub const Decoder = struct {
         if (!self.thinking and token == self.markers.open) {
             try self.finish(sink);
             self.thinking = true;
+            self.reasoning_seen = 0;
             self.initial = false;
             self.header = self.markers.open_suffix.len != 0;
             self.matched = 0;
@@ -452,7 +495,10 @@ pub const Decoder = struct {
     fn flush(self: *Decoder, sink: anytype) !void {
         const bytes = self.scratch.written();
         if (bytes.len == 0) return;
-        if (self.thinking) try sink.send(.{ .thinking = bytes }) else try sink.send(.{ .answer = bytes });
+        if (self.thinking) {
+            self.noteReasoning(bytes);
+            try sink.send(.{ .thinking = bytes });
+        } else try sink.send(.{ .answer = bytes });
     }
 
     /// Release incomplete header text and an unfinished UTF-8 scalar at a
@@ -1016,6 +1062,36 @@ test "past the budget every reopened reasoning block is cut again, after its hea
     try d.feed(3, "answer", &r);
     try std.testing.expectEqualStrings("plan", r.thinking.written());
     try std.testing.expectEqualStrings("answer", r.answer.written());
+}
+
+test "with a lead token the cut writes the render's own ending: text, newline, close" {
+    var r = Recorder.init(std.testing.allocator);
+    defer r.deinit();
+    const markers: Markers = .{ .open = 1, .close = 2, .close_lead = 50, .close_trail = 51 };
+    // Empty reasoning: the newline first, then the close.
+    var empty = Decoder.init(std.testing.allocator, markers, true);
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(?u32, 50), empty.cutToken(10, 10));
+    try empty.feed(50, "\n", &r);
+    try std.testing.expectEqual(@as(?u32, 2), empty.cutToken(11, 10));
+
+    var d = Decoder.init(std.testing.allocator, markers, true);
+    defer d.deinit();
+    try d.feed(3, "plan", &r);
+    try std.testing.expectEqual(@as(?u32, null), d.cutToken(9, 10));
+    try std.testing.expectEqual(@as(?u32, 50), d.cutToken(10, 10));
+    try d.feed(50, "\n", &r);
+    try std.testing.expectEqual(@as(?u32, 2), d.cutToken(11, 10));
+    // A paragraph break the render would trim: wait for text, a bounded while.
+    try d.feed(3, "\n", &r);
+    try std.testing.expectEqual(@as(?u32, null), d.cutToken(12, 10));
+    try std.testing.expectEqual(@as(?u32, 2), d.cutToken(10 + cut_grace, 10));
+    try d.feed(3, "more", &r);
+    try std.testing.expectEqual(@as(?u32, 50), d.cutToken(13, 10));
+    // A reopened block starts its tail afresh.
+    try d.feed(2, "</think>", &r);
+    try d.feed(1, "<think>", &r);
+    try std.testing.expectEqual(@as(?u32, 50), d.cutToken(14, 10));
 }
 
 fn allocationPaths(alloc: std.mem.Allocator) !void {

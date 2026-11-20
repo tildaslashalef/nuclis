@@ -402,8 +402,8 @@ pub const Session = struct {
     /// Makes room for `count` more rows in every windowed region: when the
     /// region would overflow, rows from the lowest of the position, the
     /// hold, and the checkpoint, less the window and `window_margin`, move
-    /// to slot 0 and `base` follows. The hold is dropped when keeping it
-    /// leaves no room; a chunk that still does not fit (an image span
+    /// to slot 0 and `base` follows. The hold, then the checkpoint, is
+    /// dropped when keeping it leaves no room; a chunk that still does not fit (an image span
     /// larger than the region's slack) is `ContextFull`. A CPU memmove of
     /// the shared block, valid under the GPU invariant above.
     fn compact(self: *Session, count: usize) !void {
@@ -413,10 +413,17 @@ pub const Session = struct {
                 const w = a.keys.window orelse continue;
                 const slots = a.keys.slots();
                 if (self.position + count - a.keys.base <= slots) continue;
-                var keep = self.keepFrom(w, true, a.keys.base);
+                var keep = self.keepFrom(w, true, true, a.keys.base);
                 if (self.position + count - keep > slots) {
                     self.hold_position = null;
-                    keep = self.keepFrom(w, false, a.keys.base);
+                    keep = self.keepFrom(w, false, true, a.keys.base);
+                }
+                // A verify's checkpoint is at the position its batch starts
+                // from and always fits; one this far behind is an earlier
+                // step's, which no `recover` will ask for.
+                if (self.position + count - keep > slots) {
+                    self.checkpoint_position = null;
+                    keep = self.keepFrom(w, false, false, a.keys.base);
                 }
                 if (self.position + count - keep > slots) return error.ContextFull;
                 for ([_]*Rows{ &a.keys, &a.values }) |rows| {
@@ -429,12 +436,14 @@ pub const Session = struct {
         };
     }
     /// The first row a compaction keeps for a window of `w`, at `base` or later.
-    fn keepFrom(self: *const Session, w: usize, with_hold: bool, base: usize) usize {
+    fn keepFrom(self: *const Session, w: usize, with_hold: bool, with_checkpoint: bool, base: usize) usize {
         var low = self.position;
         if (with_hold) if (self.hold_position) |h| {
             low = @min(low, h);
         };
-        if (self.checkpoint_position) |c| low = @min(low, c);
+        if (with_checkpoint) if (self.checkpoint_position) |c| {
+            low = @min(low, c);
+        };
         return @max(base, low -| (w + window_margin));
     }
     /// Whether every windowed region still holds the rows a session moved
@@ -1178,6 +1187,15 @@ test "a windowed region keeps its checkpoint, truncates across a compaction, and
     var wider = try Session.init(a, &.{ .{ .attention = .{ .key_row = 1, .value_row = 1, .window = 5, .room = 2 } }, .{ .attention = .{ .key_row = 1, .value_row = 1 } } }, max_capacity, true);
     defer wider.deinit();
     try std.testing.expectError(error.SnapshotMismatch, wider.restore(&snap));
+    // A checkpoint an earlier step left behind is dropped when keeping it
+    // leaves no room for the chunk, as a hold is.
+    s.reset();
+    try feedRows(&s, 100, 7);
+    try s.checkpoint();
+    try feedRows(&s, slots, 7);
+    try std.testing.expect(s.checkpoint_position == null);
+    try std.testing.expectEqual(@as(usize, 100 + slots), s.position);
+    try std.testing.expectError(error.NoCheckpoint, s.rewind());
     // A chunk larger than the region's slack is refused, not admitted half.
     s.reset();
     try feedRows(&s, 100, 7);

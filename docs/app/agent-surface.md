@@ -192,12 +192,11 @@ it are [agent.md](agent.md).
   step's block closes with its own reasoning time, from its first
   reasoning token (`Thought for 6.0s`).
 - While a turn runs, the live region names the step's phase, timed from
-  that phase's start, never the turn's: the prefill of the step's new
-  tokens (`reading the prompt… 3s` on the first step, `reading results…
-  1.2k/2.3k · 18s` after a tool result, the counts once the first beat
-  arrives), reasoning (`thinking… 6s (Tab to unfold)`, the clock the fold
-  label closes with), and a tool call being written (`writing a tool
-  call… 1.4 KB`).
+  its start: the prefill (`reading the prompt… 3s`, `reading results…
+  1.2k/2.3k · 18s`, or `re-reading the conversation (the effort
+  changed)…` when the step replays, by `Replay.Cause`), reasoning
+  (`thinking… 6s (Tab to unfold)`), and a call being written (`writing a
+  tool call… 1.4 KB`).
 - A tool call is a dot and `Name(argument)`, the dot coloured by state
   (running pulses; settled well, failed, or a write), with the tool's
   one-sentence result under it; a failed call shows its message, bounded.
@@ -262,7 +261,7 @@ it are [agent.md](agent.md).
   `boundary` of its state saved in the token cache), `tool_result` (with its summary),
   `effort`, `context`, `model` (a `/model` switch: the name, file, digest,
   context, and effort the conversation continued on; readers older than
-  the entry refuse the file, as any unknown type), `compaction`, `notice`, `cut` (a dropped call), `handoff`.
+  the entry refuse the file, as any unknown type), `compaction`, `notice`, `cut` (a dropped call), `handoff`, `system` (the system block, before the first user entry).
 - Append-only, created at the first entry; a resumed file's ids continue
   past its last. A file stops recording at 64 MiB, the most a resume
   reads, with a notice past 51 MiB naming `/clear`. A truncated last line is
@@ -274,7 +273,7 @@ it are [agent.md](agent.md).
 - Resuming (`/resume`, `--resume [<id>]`; print mode's default `latest`) renders
   the conversation the model last saw through the profile into a fresh
   session: cancelled steps left out and every `compaction` applied where
-  it was written (`context_full`, `results_elided`, `turn_aborted`, `reasoning_dropped`, `arguments_stubbed`), from the latest `handoff`. When the
+  it was written (`context_full`, `results_elided`, `turn_aborted`, `reasoning_dropped`, `arguments_stubbed`), from the latest `handoff`, under the latest `system` block when only its date or instructions differ (those wait for `/new`). When the
   file's last `boundary` starts that render and its state is on disk (same
   model files, backend, context size, and build), the state is restored and
   only the rest is prefilled; otherwise the whole conversation is
@@ -356,11 +355,11 @@ it are [agent.md](agent.md).
   call keep the rest: 2,048, 4,096, 6,144, and 6,144 at the defaults.
   The default and the cap were measured on Qwen3.8 and Gemma 4:
   [record, 2026-11-17](../benchmarks/record/agent.md#the-thinking-budget-2026-11-17). Past it
-  the engine emits the profile's close marker itself (Muse Glimmer's
-  `<|eom|>`), so the model answers or calls a tool, and the transcript and
-  the session step say the reasoning was cut. A model that reopens its
-  reasoning past the budget is closed again at once, after the block's
-  header, and the model's own late close is dropped, never shown as text.
+  the engine closes the reasoning itself (Muse Glimmer's `<|eom|>`), as
+  history renders it (Qwen3.8: a newline, `</think>`, a blank line), so
+  the next step continues the session; the transcript and the session
+  step say it was cut. A reasoning reopened past the budget is closed
+  again after its header; the model's own late close is dropped.
   Effort is otherwise the template's own instruction, which the model may
   exceed.
 - A tool call the model is still writing shows its size in the region; a

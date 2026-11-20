@@ -13,6 +13,7 @@ const std = @import("std");
 const sampling = @import("../sampling/root.zig");
 const gguf = @import("../formats/gguf.zig");
 const vocabulary = @import("../tokenizer/vocabulary.zig");
+const bpe = @import("../tokenizer/bpe.zig");
 pub const stream = @import("stream.zig");
 
 pub const qwen38 = @import("qwen38.zig");
@@ -171,6 +172,11 @@ pub const StreamMarkers = struct {
     /// The message-header grammar's control texts (`stream.Channel`);
     /// `tool_parse` then reads a tool body. Replaces the bracket grammar.
     channel: ?struct { start: []const u8, message: []const u8, eom: []const u8 } = null,
+    /// The text the history renders between trimmed reasoning and `close`,
+    /// and after `close` (`stream.Markers.close_lead`); each must encode to
+    /// one token, or a cut forces `close` alone.
+    close_lead: []const u8 = "",
+    close_trail: []const u8 = "",
 };
 
 /// The profiles the tree implements. Each tag names a module with the same
@@ -199,6 +205,8 @@ pub const Profile = enum {
                     .close = vocab.tokenId(m.close) orelse return error.MissingReasoningToken,
                     .open_suffix = m.open_suffix,
                     .tokens = vocab.tokens,
+                    .close_lead = try singleToken(alloc, vocab, m.close_lead),
+                    .close_trail = try singleToken(alloc, vocab, m.close_trail),
                 };
                 if (m.tool_open) |open_text| {
                     markers.tool = .{
@@ -221,6 +229,18 @@ pub const Profile = enum {
                 break :blk stream.Decoder.init(alloc, markers, effort != .off and stream.opensInReasoning(markers, prompt));
             },
         };
+    }
+
+    /// The one token `text` encodes to, or null when it is empty or takes
+    /// more than one.
+    fn singleToken(alloc: std.mem.Allocator, vocab: *const vocabulary.Vocabulary, text: []const u8) !?u32 {
+        if (text.len == 0) return null;
+        const ids = bpe.encodePiece(alloc, vocab, text, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return null,
+        };
+        defer alloc.free(ids);
+        return if (ids.len == 1) ids[0] else null;
     }
 
     /// The module behind a tag, for `inline` dispatch below.

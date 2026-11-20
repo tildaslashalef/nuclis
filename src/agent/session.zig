@@ -35,7 +35,7 @@ const Allocator = std.mem.Allocator;
 /// Bumped when an existing key changes meaning or disappears, or when a new
 /// entry kind appears (an older reader refuses a kind it does not know, and
 /// the version says why); adding a key to a kind is backwards compatible.
-/// 2 added `cut` and `handoff`, and the compaction reasons
+/// 2 added `cut`, `handoff`, and `system`, and the compaction reasons
 /// `reasoning_dropped` and `arguments_stubbed`.
 pub const format_version: u32 = 2;
 
@@ -157,6 +157,9 @@ pub const Entry = union(enum) {
     /// The conversation was replaced by one hand-off message
     /// (`loop.Agent.handoff`): a resume starts from it.
     handoff: struct { text: []const u8 },
+    /// The system block the conversation is rendered under, written before
+    /// its first user message; the latest one is the one a resume renders.
+    system: struct { text: []const u8 },
 };
 
 /// A saved turn end (`completer/cache.zig`): the rendered text's first `bytes`
@@ -596,6 +599,7 @@ fn readRecord(a: Allocator, object: std.json.ObjectMap) !Record {
         } };
         if (std.mem.eql(u8, kind, "notice")) break :blk .{ .notice = .{ .text = try text(a, object, "text") } };
         if (std.mem.eql(u8, kind, "handoff")) break :blk .{ .handoff = .{ .text = try text(a, object, "text") } };
+        if (std.mem.eql(u8, kind, "system")) break :blk .{ .system = .{ .text = try text(a, object, "text") } };
         if (std.mem.eql(u8, kind, "cut")) break :blk .{ .cut = .{
             .call = try text(a, object, "call"),
             .name = try text(a, object, "name"),
@@ -818,6 +822,7 @@ pub fn exportMarkdown(loaded: Loaded, out: *std.Io.Writer) !void {
             .compaction => |c| try out.print("_older turns dropped ({s}), from turn {d}_\n\n", .{ c.reason, c.first_kept }),
             .notice => |n| try out.print("_{s}_\n\n", .{n.text}),
             .handoff => |h| try out.print("---\n\n### Hand-off — {s}\n\n{s}\n\n", .{ record.time, h.text }),
+            .system => {},
             .cut => |c| try out.print("_tool call {s} dropped ({s}, {d} bytes, at byte {d})_\n\n", .{ c.call, c.reason, c.bytes, c.at }),
         }
     }

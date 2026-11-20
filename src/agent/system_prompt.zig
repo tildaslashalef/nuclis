@@ -157,9 +157,49 @@ pub fn build(alloc: Allocator, options: Options) ![]u8 {
     return out.toOwnedSlice();
 }
 
+/// Whether two built texts differ at most in their date and their
+/// instructions section: what a resumed session may keep from its own
+/// (`loop.Agent.adoptSystem`), since its tools, workspace, and prompt are
+/// the current ones.
+pub fn sameBut(a: []const u8, b: []const u8) bool {
+    const ka = core(a);
+    const kb = core(b);
+    return std.mem.eql(u8, ka.before, kb.before) and std.mem.eql(u8, ka.after, kb.after);
+}
+
+/// The text before the instructions section, split around its date.
+fn core(text: []const u8) struct { before: []const u8, after: []const u8 } {
+    const body = text[0 .. std.mem.indexOf(u8, text, "\n<project_instructions file=\"") orelse text.len];
+    const lead = "Today is ";
+    const date_len = "2026-09-22. ".len;
+    if (std.mem.indexOf(u8, body, lead)) |at| if (at + lead.len + date_len <= body.len) {
+        return .{ .before = body[0..at], .after = body[at + lead.len + date_len ..] };
+    };
+    return .{ .before = body, .after = "" };
+}
+
 // ----- tests -----
 
 const testing = std.testing;
+
+test "a resumed session may keep its own date and instructions, nothing else" {
+    const alloc = testing.allocator;
+    var name = "CLAUDE.md".*;
+    var rules_text = "Use bun.".*;
+    const ins: Instructions = .{ .name = &name, .text = &rules_text };
+    const then = try build(alloc, .{ .root = "/w", .date = "2026-09-22" });
+    defer alloc.free(then);
+    const now = try build(alloc, .{ .root = "/w", .date = "2026-11-20", .instructions = ins });
+    defer alloc.free(now);
+    try testing.expect(sameBut(then, now));
+    const elsewhere = try build(alloc, .{ .root = "/x", .date = "2026-09-22" });
+    defer alloc.free(elsewhere);
+    try testing.expect(!sameBut(then, elsewhere));
+    const searching = try build(alloc, .{ .root = "/w", .date = "2026-09-22", .web = .search });
+    defer alloc.free(searching);
+    try testing.expect(!sameBut(then, searching));
+    try testing.expect(!sameBut(then, "Be terse.\n"));
+}
 
 test "the built text is the measured one" {
     // The task list measured exactly this text (docs/development.md § The

@@ -166,12 +166,19 @@ fn readHead(io: std.Io, dir: std.Io.Dir, name: []const u8, buffer: []u8) !struct
 }
 
 /// The first line of the first user entry, cut to the preview length at a
-/// code point; empty when the second line is not a whole user entry (`bytes`
-/// may be a prefix that ends mid-line).
+/// code point; empty when the first entry past the header and any `system`
+/// entries is not a whole user entry (`bytes` may be a prefix that ends
+/// mid-line).
 fn firstPrompt(alloc: Allocator, bytes: []const u8) ![]u8 {
-    const start = (std.mem.indexOfScalar(u8, bytes, '\n') orelse return alloc.dupe(u8, "")) + 1;
-    const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
-    const parsed = std.json.parseFromSlice(struct { type: []const u8, text: []const u8 = "" }, alloc, bytes[start..end], .{ .ignore_unknown_fields = true }) catch return alloc.dupe(u8, "");
+    var start = (std.mem.indexOfScalar(u8, bytes, '\n') orelse return alloc.dupe(u8, "")) + 1;
+    const Line = struct { type: []const u8, text: []const u8 = "" };
+    const parsed = while (true) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+        const line = std.json.parseFromSlice(Line, alloc, bytes[start..end], .{ .ignore_unknown_fields = true }) catch return alloc.dupe(u8, "");
+        if (!std.mem.eql(u8, line.value.type, "system") or end == bytes.len) break line;
+        line.deinit();
+        start = end + 1;
+    };
     defer parsed.deinit();
     if (!std.mem.eql(u8, parsed.value.type, "user")) return alloc.dupe(u8, "");
     var line = parsed.value.text;
@@ -321,6 +328,9 @@ pub const Conversation = struct {
     /// at, and the call arrays rebuilt to hold shortened arguments; owned.
     stubs: [][]u8,
     calls: [][]Profile.ToolCall = &.{},
+    /// The latest recorded system block (`loop.Agent.adoptSystem`), or null
+    /// for a file from before it was recorded; borrows `loaded`.
+    system: ?[]const u8 = null,
 
     pub fn deinit(self: Conversation, alloc: Allocator) void {
         for (self.stubs) |stub| alloc.free(stub);
@@ -353,6 +363,7 @@ pub fn conversation(alloc: Allocator, loaded: session.Loaded) !Conversation {
     }
     // Where the turn in progress begins in `out`, as the loop's `turn_start`.
     var turn_start: usize = 0;
+    var system: ?[]const u8 = null;
     for (loaded.records, 0..) |record, index| {
         const message: Profile.Message = switch (record.entry) {
             .user => |u| blk: {
@@ -397,6 +408,10 @@ pub fn conversation(alloc: Allocator, loaded: session.Loaded) !Conversation {
                 }
                 continue;
             },
+            .system => |sys| {
+                system = sys.text;
+                continue;
+            },
             .handoff => |h| {
                 out.clearRetainingCapacity();
                 at.clearRetainingCapacity();
@@ -421,7 +436,7 @@ pub fn conversation(alloc: Allocator, loaded: session.Loaded) !Conversation {
         for (owned_stubs) |stub| alloc.free(stub);
         alloc.free(owned_stubs);
     }
-    return .{ .messages = messages, .records = records, .stubs = owned_stubs, .calls = try calls.toOwnedSlice(alloc) };
+    return .{ .messages = messages, .records = records, .stubs = owned_stubs, .calls = try calls.toOwnedSlice(alloc), .system = system };
 }
 
 /// Shortens `m`'s write and edit calls as the loop did
@@ -654,6 +669,16 @@ test "listing finds sessions for the working directory and orders them newest fi
     try testing.expectEqual(@as(usize, 0), none.len);
 }
 
+test "the preview is the first user entry, past the system block" {
+    const alloc = std.testing.allocator;
+    const preview = try firstPrompt(alloc, "{\"type\":\"session\"}\n{\"type\":\"system\",\"text\":\"You are nuclis.\"}\n{\"type\":\"user\",\"text\":\"build a todo app\\nnow\"}\n");
+    defer alloc.free(preview);
+    try std.testing.expectEqualStrings("build a todo app", preview);
+    const none = try firstPrompt(alloc, "{\"type\":\"session\"}\n{\"type\":\"system\",\"text\":\"x\"}\n{\"type\":\"assistant\"}\n");
+    defer alloc.free(none);
+    try std.testing.expectEqualStrings("", none);
+}
+
 test "listing reads a session of any size, skips a damaged header, and keeps newest first" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -800,7 +825,7 @@ test "fuzz session: any file loads, rebuilds, and exports, or is a typed error" 
     }) });
 }
 
-test "a resume replays the cheap cuts and starts at the latest hand-off" {
+test "a resume replays the cheap cuts, starts at the latest hand-off, and takes the latest system block" {
     const alloc = std.testing.allocator;
     var buffer: std.Io.Writer.Allocating = .init(alloc);
     defer buffer.deinit();
@@ -808,6 +833,7 @@ test "a resume replays the cheap cuts and starts at the latest hand-off" {
     try w.writeAll("{\"type\":\"session\",\"version\":2,\"id\":\"a\",\"time\":\"t\",\"cwd\":\"/w\",\"model\":{\"path\":\"/m\"},\"effort\":\"low\",\"ctx_size\":8}\n");
     const big = "{\"path\":\"a.txt\",\"content\":\"" ++ @as([600]u8, @splat('x')) ++ "\"}";
     const entries = [_]session.Entry{
+        .{ .system = .{ .text = "S1" } },
         .{ .user = .{ .text = "go" } },
         .{ .assistant = .{ .thinking = "plan", .answer = "", .tool_calls = &.{.{ .id = 1, .name = "write_file", .arguments = big }}, .stop = "eos" } },
         .{ .tool_result = .{ .call = "1", .text = "created a.txt" } },
@@ -821,11 +847,13 @@ test "a resume replays the cheap cuts and starts at the latest hand-off" {
         const c = try conversation(alloc, loaded);
         defer c.deinit(alloc);
         try std.testing.expectEqual(@as(usize, 3), c.messages.len);
+        try std.testing.expectEqualStrings("S1", c.system.?);
         try std.testing.expectEqualStrings("", c.messages[1].reasoning_content);
         try std.testing.expect(std.mem.indexOf(u8, c.messages[1].tool_calls[0].arguments, handoff.stub_marker) != null);
     }
     const later = [_]session.Entry{
         .{ .handoff = .{ .text = "H1" } },
+        .{ .system = .{ .text = "S2" } },
         .{ .user = .{ .text = "more" } },
         .{ .handoff = .{ .text = "H2" } },
         .{ .assistant = .{ .answer = "ok", .stop = "eos" } },
@@ -838,4 +866,5 @@ test "a resume replays the cheap cuts and starts at the latest hand-off" {
     try std.testing.expectEqual(@as(usize, 2), c.messages.len);
     try std.testing.expectEqualStrings("H2", c.messages[0].content);
     try std.testing.expectEqualStrings("ok", c.messages[1].content);
+    try std.testing.expectEqualStrings("S2", c.system.?);
 }

@@ -190,6 +190,11 @@ pub fn run(
         const built = try resume_mod.conversation(alloc, loaded);
         defer built.deinit(alloc);
         completer.resumeFrom(resume_mod.lastBoundary(loaded));
+        _ = try agent.adoptSystem(built.system);
+        // Another file than the one resumed holds no system block yet.
+        if (options.session) |dest| if (!std.mem.eql(u8, dest, path)) {
+            agent.system_recorded = false;
+        };
         try agent.restore(built.messages, &.{});
     }
 

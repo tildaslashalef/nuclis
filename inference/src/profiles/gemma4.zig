@@ -57,9 +57,10 @@ pub const reasoning: profiles.Reasoning = .{ .open = "<|channel>thought\n", .clo
 /// The generation prompts a render may end with, longest first: what
 /// `promptEnd` cuts off. After tool results the turn is
 /// still open: only the thought channel, or nothing. Results followed by
-/// the call step's text close the turn and the render reopens one, where
-/// history continues the turn: the close is cut too.
-pub const generation_prompts = [_][]const u8{ "<|turn>model\n<|channel>thought\n<channel|>", "<turn|>\n<|turn>model\n", "<|turn>model\n", "<|channel>thought\n" };
+/// the call step's text close the turn, and the render reopens one (thinking
+/// off) or opens the thought channel after the close (thinking on, as the
+/// reference does), where history continues the turn: the close is cut too.
+pub const generation_prompts = [_][]const u8{ "<|turn>model\n<|channel>thought\n<channel|>", "<turn|>\n<|channel>thought\n", "<turn|>\n<|turn>model\n", "<|turn>model\n", "<|channel>thought\n" };
 /// History never renders a generated answer as consumed: thinking off, the
 /// generation prompt's empty thought channel is absent from past turns;
 /// thinking on, the reasoning gate drops the thought once a user follows.
@@ -988,6 +989,27 @@ test "history drops assistant reasoning, as the template's gate does" {
     defer alloc.free(without);
     try std.testing.expectEqualStrings(without, with);
     try std.testing.expect(std.mem.indexOf(u8, with, "hidden") == null);
+}
+
+test "a step's text after its results ends the prompt where the continued history goes on, at any effort" {
+    const alloc = std.testing.allocator;
+    const user: Message = .{ .role = .user, .content = "go" };
+    const call: profiles.ToolCall = .{ .id = 1, .name = "f", .arguments = "{}" };
+    const again: profiles.ToolCall = .{ .id = 2, .name = "f", .arguments = "{}" };
+    const step: Message = .{ .role = .assistant, .content = "I will look.", .reasoning_content = "plan", .tool_calls = &.{call} };
+    const result: Message = .{ .role = .tool, .content = "r", .tool_call_id = 1 };
+    const next: Message = .{ .role = .assistant, .content = "", .reasoning_content = "more", .tool_calls = &.{again} };
+    const second: Message = .{ .role = .tool, .content = "s", .tool_call_id = 2 };
+    for ([_]Effort{ .off, .low }) |effort| {
+        const prompt = try render(alloc, &.{ user, step, result }, &.{}, effort, .{});
+        defer alloc.free(prompt);
+        const end = for (generation_prompts) |g| {
+            if (std.mem.endsWith(u8, prompt, g)) break prompt.len - g.len;
+        } else prompt.len;
+        const later = try render(alloc, &.{ user, step, result, next, second }, &.{}, effort, .{});
+        defer alloc.free(later);
+        try std.testing.expect(std.mem.startsWith(u8, later, prompt[0..end]));
+    }
 }
 
 test "invalid conversations and bounded rendering return typed errors" {
