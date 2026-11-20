@@ -86,6 +86,19 @@ pub const Style = enum {
     frame_medium,
     frame_high,
     frame_xhigh,
+    /// The command-output kit's roles (`src/ui/style.zig`): titles and
+    /// identifiers, muted text and borders, the three outcomes, a changed
+    /// value, emphasis, and a high-impact word.
+    ui_title,
+    ui_id,
+    ui_muted,
+    ui_border,
+    ui_ok,
+    ui_warn,
+    ui_fail,
+    ui_changed,
+    ui_emphasis,
+    ui_high,
 };
 
 pub const reset = "\x1b[0m";
@@ -417,6 +430,16 @@ fn role(style: Style) Role {
         .frame_medium => .{ .fg = .aqua },
         .frame_high => .{ .fg = .yellow },
         .frame_xhigh => .{ .fg = .orange, .attrs = .{ .bold = true } },
+        .ui_title => .{ .fg = .blue, .attrs = .{ .bold = true } },
+        .ui_id => .{ .fg = .blue },
+        .ui_muted => .{ .fg = .fg4, .plain = .{ .dim = true } },
+        .ui_border => .{ .fg = .bg2, .plain = .{ .dim = true } },
+        .ui_ok => .{ .fg = .green },
+        .ui_warn => .{ .fg = .yellow },
+        .ui_fail => .{ .fg = .red },
+        .ui_changed => .{ .fg = .aqua },
+        .ui_emphasis => .{ .fg = .purple },
+        .ui_high => .{ .fg = .orange, .attrs = .{ .bold = true } },
     };
 }
 

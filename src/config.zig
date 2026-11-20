@@ -426,11 +426,22 @@ pub const no_metal_message = "this build has no Metal backend; run with --backen
 pub const Diagnostic = struct {
     buffer: [256]u8 = undefined,
     len: usize = 0,
+    /// A second line after the message: where to read on (a parse error's
+    /// `Run 'nuclis <command> --help' for usage.`). Its presence marks a
+    /// usage error, which exits 2.
+    hint_buffer: [96]u8 = undefined,
+    hint_len: usize = 0,
     pub fn message(self: *const Diagnostic) []const u8 {
         return self.buffer[0..self.len];
     }
     pub fn set(self: *Diagnostic, comptime fmt: []const u8, args: anytype) void {
         self.len = if (std.fmt.bufPrint(&self.buffer, fmt, args)) |s| s.len else |_| self.buffer.len;
+    }
+    pub fn hint(self: *const Diagnostic) []const u8 {
+        return self.hint_buffer[0..self.hint_len];
+    }
+    pub fn setHint(self: *Diagnostic, comptime fmt: []const u8, args: anytype) void {
+        self.hint_len = if (std.fmt.bufPrint(&self.hint_buffer, fmt, args)) |s| s.len else |_| 0;
     }
 };
 

@@ -147,6 +147,7 @@ generated block.
 
 | Document | Purpose |
 | --- | --- |
+| [command-output.md](app/command-output.md) | How every command's report and error read: the output kit, glyphs, values, errors, exit status |
 | [agent.md](app/agent.md) | The agent behind `nuclis agent`: the loop, its tools, web tools, and token cache |
 | [agent-surface.md](app/agent-surface.md) | The agent's surface and loop: editor, keys, pickers, transcript, session files, tool contracts |
 | [agent-tool-calls.md](app/agent-tool-calls.md) | Tool calls at the token boundary: each profile's calls, streaming, and what is cut |
