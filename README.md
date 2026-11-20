@@ -4,20 +4,24 @@
 # NUCLIS Engine
 
 A local inference engine for open-weight models, written in Zig with a Metal
-backend for Apple Silicon, and a small coding agent on top of it. It is tuned
-for **Gemma 4 26B-A4B** and **Gemma 4 E4B** on an M4 Pro with 48 GB, and runs
-**Qwen3.8-27B**, the dense hybrid its kernels were first written for.
+backend for Apple Silicon, and a small coding agent on top of it. On an M4 Pro
+with 48 GB it is built around **Qwen3.8-27B**, the flagship: a dense hybrid of
+16 attention and 48 Gated DeltaNet layers, the model its kernels were first
+written for and the one its agent codes with. Beside it, **Gemma 4 E4B** is
+the small, efficient brain: 4.2 GB, about 50 tokens/s, and it hears audio.
+
 Decoding reads every weight a token uses once per token, so on 273 GB/s of
-memory bandwidth speed follows the parameters a token activates, not the
-model's size: the 26B-A4B wakes 8 of its 128 experts, about 4B parameters,
-and decodes at about 50 tokens/s where the dense Qwen3.8-27B manages 8–12.
+memory bandwidth a dense 27B decodes about 11 tokens/s by itself. Its DFlash2
+drafter proposes up to seven tokens and Qwen checks them in one batch,
+keeping exactly what it would have written: building a to-do app in `nuclis
+agent`, Qwen3.8-27B wrote 18,345 tokens at **25.69 tokens/s**, 84 % of its
+drafts accepted
+([2026-11-20](docs/benchmarks/record/benchmarks.md#the-two-chat-models-with-their-drafters-2026-11-20)).
 
 How it is verified: every model runs first on a plain CPU reference, the
-Metal kernels are checked against it, generated tiny models exercise every
-weight encoding with no download (`make test-tiny`), and gates per model run
-in lanes, from `make check` (seconds, no model) through `make verify-auto`
-(what a change reaches) to the release tiers
-([docs/development.md § Gates](docs/development.md#gates)).
+Metal kernels are checked against it, tiny generated models exercise every
+weight encoding (`make test-tiny`), and per-model gates run from `make check`
+to the release tiers ([docs/development.md § Gates](docs/development.md#gates)).
 
 ![nuclis agent with Qwen3.8-27B finding and fixing a failing test](docs/media/agent.gif)
 
@@ -35,12 +39,13 @@ is 0.x, and breaking changes arrive without notice.
 From source: macOS on Apple Silicon, Zig 0.17.1, and the Command Line Tools.
 
 ```sh
-make metal                                              # release build, Metal backend
-./zig-out/bin/nuclis model pull gemma-4-26b-a4b --all   # pinned commit, SHA-256 verified
-./zig-out/bin/nuclis config init                        # ~/.nuclis/nuclis.json, from what is installed
-./zig-out/bin/nuclis agent                              # the chat, with tools, in this directory
+make metal                                          # release build, Metal backend
+./zig-out/bin/nuclis model pull qwen3.8-27b --all   # pinned commit, SHA-256 verified, with its drafter
+./zig-out/bin/nuclis config init                    # ~/.nuclis/nuclis.json, from what is installed
+./zig-out/bin/nuclis agent                          # the chat, with tools, in this directory
 ```
 
+`nuclis model pull gemma-4-e4b-qat --all` adds the small brain.
 [Releases](https://github.com/tildaslashalef/nuclis/releases) ship the macOS
 binary and an x86-64 Linux build that runs on the CPU only, for the small
 models ([getting-started.md](docs/guide/getting-started.md)). `nuclis --help`
@@ -48,87 +53,82 @@ lists every command, `make help` the development targets.
 
 ## Models
 
-The index pins each model's repository, commit, and SHA-256, so `nuclis model
-pull <name>` fetches exactly the bytes that were measured.
+The catalogue is one model per job. Each entry pins its repository, commit,
+and SHA-256, so `nuclis model pull <name>` fetches exactly the bytes that
+were measured.
 
-| Kind | Name | What it is | Size |
+| Kind | Name | Its job | Size |
 | --- | --- | --- | ---: |
-| chat | `gemma-4-26b-a4b` | Gemma 4 mixture of experts, 8 of 128 per token; the default | 14.2 GB |
-| chat | `gemma-4-e4b-qat` | Gemma 4 at on-device size: per-layer embeddings, shared KV layers; hears audio | 4.2 GB |
-| chat | `qwen3.8-27b` | dense hybrid: 16 attention and 48 DeltaNet layers; drafters `mtp` and `dflash2` | 16.6 GB |
-| decision | `laya`, `laya-multilingual` | a small encoder that answers typed questions in one pass | 0.8, 0.6 GB |
-| decision | `clef-flash` | Cloudflare's 9B decision model: long states and images | 8.0 GB |
+| chat | `qwen3.8-27b` | the flagship and the default: the agent's coder, with drafters `dflash2` (the default) and `mtp` | 16.6 GB |
+| chat | `gemma-4-e4b-qat` | the small, efficient brain: per-layer embeddings, shared KV layers; hears audio; serves the Linux CPU build | 4.2 GB |
+| decision | `laya` | fast typed answers about text, one pass per question | 0.8 GB |
+| decision | `clef-flash` | typed answers about long states and images, on Qwen's own backbone | 8.0 GB |
 | embedding | `embeddinggemma-2` | text, images, and audio into one vector space | 0.3 GB |
-| speech | `qwen3-tts-{1.7b,0.6b}-{customvoice,base}`, `qwen3-tts-1.7b-voicedesign` | nine built-in voices, a voice cloned from a clip, or one described in words | 2.5–4.5 GB |
-| speech | `drama-3` | Fish Audio's Drama 3: dialogue, delivery cues, cloned voices | 20.8 GB |
+| speech | `qwen3-tts-1.7b-customvoice` | nine built-in voices that take direction ("warmly, smiling") | 4.5 GB |
 | transcription | `nemotron-asr-0.6b` | streaming recognition with punctuation and word times | 2.6 GB |
 
-Every chat model reads images and carries a drafter, switched on where it
-measured faster. **Anything else** runs when its architecture has an adapter
-(Qwen3.8, Gemma 4, Muse Glimmer): finetunes, other quantizations, Prism ML's
-ternary Bonsai 2. `nuclis model inspect` judges a file before the download,
-and `nuclis config sync` registers what was pulled.
+**Legacy** entries (Gemma 4 26B-A4B and 12B, Muse Glimmer, Drama 3,
+multilingual Laya, the other Qwen3-TTS sizes and modes) still pull and run by
+name. **Anything else** runs when its architecture has an adapter: finetunes,
+other quantizations, Prism ML's ternary Bonsai 2; `nuclis model inspect`
+judges a file before the download.
 
 ## Results
 
-nuclis today (2026-11-19): Apple M4 Pro, 48 GiB, macOS 27.2.1, ReleaseSafe,
-Metal, F16 cache, 128 greedy output tokens; the mean of three runs after a
-warmup to 16,384, one run each at 32,639 and 65,407 on a 65,536 context, with
-no swap ([2026-11-19](docs/benchmarks/record/gemma4.md#sliding-layers-on-the-materialized-body-2026-11-19)).
-Tokens per second by prompt length; each record is measured against nuclis's
-own previous one
-([the October 2026 comparison with llama.cpp](docs/benchmarks/record/benchmarks.md#the-benchmarks-on-macos-27-2026-10-04)
-is history):
+Apple M4 Pro, 48 GiB, macOS 27.2.1, ReleaseSafe, Metal, F16 cache. Each
+record is measured against nuclis's own previous one; method and every
+record: [docs/benchmarks](docs/benchmarks/README.md).
+
+**Qwen3.8-27B, the capable one**, passes all eighteen of the agent's tasks,
+where the faster Gemma 4 26B-A4B passed 72–81 % of runs
+([2026-11-20](docs/benchmarks/record/agent.md#agent-long-tasks-2026-11-20)).
+Its drafter writes code at 19–20 tokens/s on a short prompt and 25–29 in an
+agent session writing files. Its weak side is prefill, 61–93 tokens/s: a task
+spends about 108 s in the model ([2026-11-18](docs/benchmarks/record/agent.md#where-an-agent-turn-goes-2026-11-18)).
+**Gemma 4 E4B, the small brain**, has six times the prefill and nearly five
+times the decode in a quarter of the memory: about 35 s a task.
+
+Tokens per second by prompt length, no drafter, 128 greedy tokens; the mean
+of three runs to 16,384, one run each at 32,639 and 65,407, no swap
+([2026-11-19](docs/benchmarks/record/gemma4.md#sliding-layers-on-the-materialized-body-2026-11-19)):
 
 | Decode | 512 | 4,096 | 16,384 | 32,639 | 65,407 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Gemma 4 26B-A4B | 57.54 | 54.11 | 48.71 | 41.94 | 32.30 |
-| Gemma 4 E4B QAT | 53.19 | 50.13 | 47.22 | 41.90 | 33.03 |
 | Qwen3.8-27B | 11.16 | 9.23 | 9.02 | 9.17 | 8.41 |
+| Gemma 4 E4B QAT | 53.19 | 50.13 | 47.22 | 41.90 | 33.03 |
 
 | Prefill | 512 | 4,096 | 16,384 | 32,639 | 65,407 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Gemma 4 26B-A4B | 587.14 | 550.06 | 469.89 | 391.81 | 282.76 |
-| Gemma 4 E4B QAT | 585.95 | 551.42 | 500.96 | 437.29 | 337.20 |
 | Qwen3.8-27B | 93.16 | 84.02 | 77.48 | 73.17 | 61.19 |
+| Gemma 4 E4B QAT | 585.95 | 551.42 | 500.96 | 437.29 | 337.20 |
 
-**Speculative decoding**: a small drafter proposes tokens and the model checks
-them in one batch, keeping what it would have produced itself. Decode off → on,
-greedy, the entry's draft length, median of three (2026-10-05; 26B-A4B 11-18):
+**Speculative decoding**, the drafter loaded, off → on: greedy, the entry's
+draft length, the median of three pairs ([2026-11-20](docs/benchmarks/record/benchmarks.md#the-two-chat-models-with-their-drafters-2026-11-20)):
 
 | Model | Draft | 512 | 32,639 |
 | --- | ---: | ---: | ---: |
-| Gemma 4 26B-A4B | 4 | 57.4 → 66.3 (1.16×) | 42.1 → 44.1 (1.05×) |
-| Gemma 4 E4B QAT | 6 | 46.9 → 81.9 (1.75×) | 33.6 → 37.5 (1.12×) |
-| Qwen3.8-27B | 7 | 11.6 → 17.4 (1.50×) | 7.9 → 9.8 (1.26×) |
+| Qwen3.8-27B | 7 | 11.52 → 18.70 (1.63×) | 10.53 → 13.50 (1.29×) |
+| Gemma 4 E4B QAT | 6 | 53.08 → 88.53 (1.67×) | 41.56 → 47.77 (1.15×) |
 
-Qwen3.8-27B's re-made file drafts at draft 7 to 18.46 tok/s with MTP and
-18.18 with DFlash2 at 512 (1.61×, 1.63×), 15.98 and 16.81 at 4,096
-([2026-11-12](docs/benchmarks/history.md#the-re-made-qwen38-file-2026-11-12)).
+On a short code prompt with the agent's thinking sampling, Qwen's DFlash2
+drafter reaches 19.30 tokens/s (1.71×; its MTP head, 17.00), and it still
+pays at 65,407 (1.25×); the E4B's stops at a 32,768-token prompt by default
+(`generation.draft_max_depth`, 0 never). The default context is 65,536.
 
-An agent re-reads a growing prompt and writes a few hundred tokens a step. On
-the agent's eighteen tasks ([2026-11-18](docs/benchmarks/record/agent.md#where-an-agent-turn-goes-2026-11-18)),
-drafters on, a task takes 35 s in the model on the E4B, 51 s on the 26B-A4B,
-and 108 s on Qwen3.8-27B. The 26B-A4B's drafter saves 15 % there, and prefill
-is then 61 % of its time. Past 32K the drafters stop paying: greedy, the
-26B-A4B's is 1.05× at 32,639 and 0.94× at 65,407, the E4B's 1.14× and
-0.97×, and below 1× sooner when sampling, so drafting stops at a
-32,768-token prompt by default (`generation.draft_max_depth`, 0 never). Method and every record: [docs/benchmarks](docs/benchmarks/README.md).
-
-**How it got here.** nuclis began with Qwen3.8-27B, whose attention and Gated
-DeltaNet layers are where the kernels were first written and tuned; it decoded
-faster than llama.cpp at every length in October 2026, and stays supported,
-if slow.
+**How it got here.** nuclis began with Qwen3.8-27B and decoded it faster
+than llama.cpp at every length in October 2026. Gemma 4 26B-A4B, a mixture of
+experts at about 50 tokens/s, led until Qwen's drafter closed enough of the
+gap for its quality to lead; its gates stay, as the check of the expert path.
 
 ## Beyond chat
 
 [docs/README.md](docs/README.md) lists every document; start with
-[architecture.md](docs/architecture.md) and [llm-guide.md](docs/llm-guide.md).
-Every change is a [merged pull request](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) with its evidence.
+[architecture.md](docs/architecture.md) and [llm-guide.md](docs/llm-guide.md). Every change is a [merged pull request](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) with its evidence.
 
 **Decisions.** `nuclis decide` asks Laya or clef-flash a typed question
 (yes/no, a choice, a level) and gets the answer in one pass: Laya judges a
-500-token log in 0.1–0.2 s ([laya.md](docs/models/laya.md), [clef-flash.md](docs/models/clef-flash.md)).
+500-token log in 0.1–0.2 s; clef-flash reads up to 16,384 tokens and images
+([laya.md](docs/models/laya.md), [clef-flash.md](docs/models/clef-flash.md)).
 
 **HTTP.** `nuclis serve` keeps models open behind a local API: OpenAI's Chat
 Completions (tools, images, streaming, a cache of what a conversation already
@@ -139,9 +139,10 @@ transcription ([api.md](docs/guide/api.md)).
 768-number vector with EmbeddingGemma 2, within `1 − cos` ≤ 5e-11 of Google's
 pipeline on the BF16 file ([embeddinggemma.md](docs/models/embeddinggemma.md)).
 
-**Speech.** `nuclis speak` (Qwen3-TTS; Drama 3 over HTTP) and `nuclis
-transcribe` (Nemotron ASR, live or whole recordings) are a voice and ears
-beside the language model ([api-speech.md](docs/guide/api-speech.md), [qwen3-tts.md](docs/models/qwen3-tts.md), [drama3.md](docs/models/drama3.md), [nemotron-asr.md](docs/models/nemotron-asr.md)).
+**Speech.** `nuclis speak` (Qwen3-TTS) and `nuclis transcribe` (Nemotron
+ASR, live or whole recordings) are a voice and ears beside the language
+model; with the E4B, one `nuclis serve` holds the ears, the brain, and the
+voice ([api-speech.md](docs/guide/api-speech.md), [qwen3-tts.md](docs/models/qwen3-tts.md), [nemotron-asr.md](docs/models/nemotron-asr.md)).
 
 ## Design rules
 

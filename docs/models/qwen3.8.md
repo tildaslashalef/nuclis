@@ -1,8 +1,9 @@
 <!-- kind: card -->
-# Qwen3.8-27B: the first target
+# Qwen3.8-27B: the flagship
 
-Qwen3.8-27B is the family nuclis was built around and the one its kernels
-are tuned for: catalogue entry `qwen3.8-27b`, file
+Qwen3.8-27B is the family nuclis was built around, the one its kernels are
+tuned for, and its default chat model, drafting with DFlash2 by default:
+catalogue entry `qwen3.8-27b`, file
 `unsloth/Qwen3.8-27B-GGUF` `Qwen3.8-27B-UD-Q4_K_M.gguf` (16.6 GB, Unsloth's re-made file of
 2026-11-11), adapter
 `qwen35` ([inference/src/models/qwen35.zig](../../inference/src/models/qwen35.zig)).
@@ -22,7 +23,7 @@ fixture](../../inference/src/models/fixtures/qwen35-27b.json)):
 | Attention | 24 query heads, 4 KV heads, key and value length 256; RoPE base 10,000,000 over 64 dimensions in four sections |
 | DeltaNet | inner size 6,144, 16 groups, state 128, 48 time-step heads, convolution kernel 4 |
 | Vocabulary | 248,320 tokens; RMS norm epsilon 1e-6 |
-| Context | 262,144 declared; nuclis measures up to 32,768 |
+| Context | 262,144 declared; nuclis measures up to 65,536 |
 | Weights | nine encodings (F32, Q8_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ3_S, IQ4_XS); 16.2 GB in the text decoder |
 
 ## Prompt profile and where its facts live
@@ -151,6 +152,7 @@ materializing a large vocabulary or adding Qwen key names to the container parse
 | `qwen38-perplexity-full` | `verify-release` | qwen38 | [eval.md § the-reference-record-2026-09-24](../benchmarks/record/eval.md#the-reference-record-2026-09-24) |
 | `qwen38-verify-depth-16k` | `verify-long` | qwen38 | [metal-backend.md](../engine/metal-backend.md) |
 | `qwen38-verify-depth-32k` | `verify-long` | qwen38 | [metal-backend.md](../engine/metal-backend.md) |
+| `qwen38-dflash2-verify-depth-64k` | `verify-long` | qwen38 | [benchmarks.md § the-two-chat-models-with-their-drafters-2026-11-20](../benchmarks/record/benchmarks.md#the-two-chat-models-with-their-drafters-2026-11-20) |
 <!-- /gen -->
 
 ## Numbers
@@ -163,6 +165,19 @@ The re-made file's baseline (Metal, F16 cache, M4 Pro, 2026-11-12;
 | 512 | 94.22 | 11.79 | 1.61× | 1.63× |
 | 4,096 | 86.46 | 11.41 | 1.42× | 1.53× |
 
+With a drafter at draft 7, three off/on pairs at `c43823e` (2026-11-20;
+[record](../benchmarks/record/benchmarks.md#the-two-chat-models-with-their-drafters-2026-11-20)),
+decode tok/s with the drafter loaded, off → on:
+
+| Prompt | Sampling | DFlash2 (default) | MTP |
+| --- | --- | --- | --- |
+| 512 | greedy | 11.52 → 18.70 (1.63×) | 11.50 → 18.15 (1.58×) |
+| code | thinking | 11.73 → 19.30 (1.71×) | 11.55 → 17.00 (1.53×) |
+| 32,639 | greedy | 10.53 → 13.50 (1.29×) | 9.28 → 12.19 (1.32×) |
+
+In an agent session writing a small web app, DFlash2 kept 82 % of its
+drafts and decoded 20,338 tokens at 24.91 tok/s.
+
 WikiText-2 perplexity over eight windows of 512 is 6.6320 ± 0.3595. Why
 the file was re-pinned and how it was checked:
 [record, 2026-11-12](../benchmarks/record/qwen3.8.md#the-re-made-file-2026-11-12).
@@ -174,6 +189,7 @@ the file was re-pinned and how it was checked:
   are refused until a concrete file asks for them.
 - The file declares 262,144 tokens of context; a release build accepts
   131,072 (with an F16 or Q8_0 cache: F32 is `SessionTooLarge` there), and
-  nuclis measures up to 32,768.
-- The dense 27B decodes at about 12 tok/s, too slow for agent loops on
-  this machine next to the Gemma 4 models.
+  nuclis measures up to 65,536.
+- Prefill is the slow side: 61–93 tok/s from 512 to 65,407 tokens, about a
+  sixth of Gemma 4 E4B's, so an agent step that re-reads a long prompt waits
+  on it.

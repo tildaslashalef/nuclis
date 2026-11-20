@@ -170,9 +170,6 @@ cannot ([record](../benchmarks/record/laya.md#the-multilingual-checkpoint-checke
 | `laya-vocabulary` | `verify` | laya | [tokenizer.md](../engine/tokenizer.md) |
 | `laya-cpu` | `verify` | laya | [laya.md](laya.md) |
 | `laya-metal` | `verify` | laya | [laya.md](laya.md) |
-| `laya-multilingual-vocabulary` | `verify` | laya_multilingual | [tokenizer.md](../engine/tokenizer.md) |
-| `laya-multilingual-cpu` | `verify-release` | laya_multilingual | [laya.md](laya.md) |
-| `laya-multilingual-metal` | `verify-release` | laya_multilingual | [laya.md](laya.md) |
 <!-- /gen -->
 
 Bounds are relative, because the pre-norm residual carries outliers up to

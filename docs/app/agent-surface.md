@@ -114,7 +114,7 @@ it are [agent.md](agent.md).
   rows go). The last turn is rewritten in the new view when it is still wholly on screen; a
   taller one keeps its rows, and the status bar says the view applies from the next turn
   (`tools: folded · from the next turn`). Ctrl-T cycles the efforts the model's profile renders
-  distinctly and Ctrl-W the context window (2K to 32K, re-opening the engine), both accelerators
+  distinctly and Ctrl-W the context window (2K up to the build's ceiling, re-opening the engine), both accelerators
   for `/model`; Ctrl-N is `/clear`; Ctrl-C cancels a turn, twice quits, or quits when idle;
   Ctrl-D quits.
 - Ctrl-X copies the last answer to the clipboard through OSC 52 (at most

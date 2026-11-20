@@ -159,7 +159,7 @@ What can break independently, and what protects it. *Model-free* means
 | DeltaNet, Hadamard, RoPE, norms, softcap, sampling kernels | fixtures | — |
 | Metal `layerNorm`, `addBiasRows` | strided rows against the CPU (`checkVisionNorms`) | — |
 | Metal attention over packed sequences, the erf GeGLU (Laya) | packed sequences and windows against F64 (`checkSegmentAttention`), fused rows against the CPU (`checkGeluErfRows`) | `laya-metal` (the plan, its batching, and its cleanup) |
-| Laya multilingual: mmBERT's geometry (22 layers of 768, intermediate 1,152), positions 512 to 1,023, the checkpoint's own special tokens | — | `laya-multilingual-cpu`, `laya-multilingual-metal` |
+| Laya multilingual: mmBERT's geometry (22 layers of 768, intermediate 1,152), positions 512 to 1,023, the checkpoint's own special tokens | — | none (multilingual Laya is legacy in the index) |
 | experts (MoE) | Metal Q4_0 chains; CPU FFN on a 2×2 F32 tensor | `gemma4-26b-a4b-*` |
 | Qwen 3.5 plan (DeltaNet, gated attention, MTP block) | the runtime's admission tests | `qwen38-*` |
 | Qwen 3.5 with Hadamard rotations, PTQ1_0, BF16 | decoders, kernels | none (Bonsai is legacy in the index) |
@@ -176,11 +176,13 @@ What can break independently, and what protects it. *Model-free* means
 | tokenizers: Qwen BPE, Gemma SPM, Laya byte-level and Metaspace | the Metaspace rules and rejections on a synthetic vocabulary | one vocabulary gate each |
 | vision: Qwen3-VL, SigLIP small with clamps, SigLIP large with standardization | preprocessing, grids | one vision gate each |
 | batched prefill at 256 rows, F16 cache over 511 keys, real prose | — | the perplexity gates |
-| a verify batch at depth (few-query attention, the multi-row weight path) against stepped decode from the same state | `checkAttentionVerify` against F64 to the 32K cache | `{qwen38,gemma4-26b-a4b,gemma4-e4b}-verify-depth-{512,4k}`; `-16k`, `-32k`, and Gemma 4's `-64k` in `verify-long` |
+| a verify batch at depth (few-query attention, the multi-row weight path) against stepped decode from the same state | `checkAttentionVerify` against F64 to the 32K cache | `{qwen38,gemma4-26b-a4b,gemma4-e4b}-verify-depth-{512,4k}`; `-16k`, `-32k`, Gemma 4's `-64k`, and `qwen38-dflash2-verify-depth-64k` in `verify-long` |
 | past 512 tokens and the sliding windows | — | `verify-long` |
-| speech, audio, and embeddings: Qwen3-TTS, Drama 3, Nemotron ASR, EmbeddingGemma 2, Gemma 4 audio | — | their own gates (`qwen3-tts-*`, `drama3-*`, `nemotron-asr-*`, `embeddinggemma-*`, `gemma4-e4b-audio-*`) |
+| speech, audio, and embeddings: Qwen3-TTS, Nemotron ASR, EmbeddingGemma 2, Gemma 4 audio | — | their own gates (`qwen3-tts-*`, `nemotron-asr-*`, `embeddinggemma-*`, `gemma4-e4b-audio-*`) |
 
-Not covered by any gate: the 26B-A4B's assistant head, and the PQ2_0 encoding (decoder and kernel
+Not covered by any gate: the 26B-A4B's assistant head, the legacy speech
+and decision checkpoints (Drama 3, Qwen3-TTS Base and VoiceDesign,
+multilingual Laya), and the PQ2_0 encoding (decoder and kernel
 fixtures only). On Metal a speculative greedy divergence is printed, not
 failed (chunk-versus-step rounding may flip a token); the CPU run fails
 on it. `qwen38-draft-stats` reports acceptance rates and fails only on

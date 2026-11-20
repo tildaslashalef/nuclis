@@ -43,9 +43,9 @@ holds its entry ([the registry](#naming-your-models-the-registry)):
 {
   "schema_version": 1,
   "engine": {
-    "model": "gemma-4-26b-a4b",
+    "model": "qwen3.8-27b",
     "backend": "metal",
-    "ctx_size": 32768,
+    "ctx_size": 65536,
     "kv_precision": "f16"
   },
   "generation": {
@@ -80,7 +80,7 @@ holds its entry ([the registry](#naming-your-models-the-registry)):
   },
   "speech": {
     "model": "qwen3-tts-1.7b-customvoice",
-    "voice": "ryan"
+    "voice": "sohee"
   },
   "transcribe": {
     "model": "nemotron-asr-0.6b"

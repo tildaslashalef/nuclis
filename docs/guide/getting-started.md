@@ -10,9 +10,9 @@ and know where it keeps things. What each command does is in `nuclis
 nuclis runs on macOS on Apple silicon, and as a CPU-only build on x86-64
 Linux (AVX2, glibc 2.35 or newer), where it serves the small models such as
 EmbeddingGemma 2; images, audio, and the GPU need the macOS build. The
-default model, Gemma 4 26B-A4B, is a 14.2 GB file (15.7 GB with its drafter
-and vision companions) and runs in 48 GB of memory; the largest, Drama 3,
-is 20.8 GB, and the smaller families need much less
+default model, Qwen3.8-27B, is a 16.6 GB file (20.9 GB with its drafters
+and vision companion) and runs in 48 GB of memory; the small chat model,
+Gemma 4 E4B, is 4.2 GB, and the other kinds need less
 ([models/catalogue.md](../models/catalogue.md)).
 
 **From a release.** Download the tarball for the newest release from
@@ -43,9 +43,9 @@ make install                  # optional: ~/.local/bin (PREFIX= elsewhere)
 ## A first run
 
 ```sh
-nuclis model pull gemma-4-26b-a4b --all  # pinned commit, SHA-256 verified, with its companions
-nuclis config init                     # ~/.nuclis/nuclis.json, every model installed
-nuclis agent                           # the chat, with tools, in this directory
+nuclis model pull qwen3.8-27b --all  # pinned commit, SHA-256 verified, with its companions
+nuclis config init                   # ~/.nuclis/nuclis.json, every model installed
+nuclis agent                         # the chat, with tools, in this directory
 ```
 
 `nuclis generate`, `bench`, `eval`, `decide`, `embed`, and `serve` cover
@@ -115,19 +115,19 @@ lists the ones not installed):
 | --- | --- | --- | --- | --- |
 | `qwen3.8-27b` | generation | UD-Q4_K_M | 16.56 GB | current |
 | `gemma-4-12b-qat` | generation | Q4_0 (QAT) | 6.72 GB | legacy |
-| `gemma-4-26b-a4b` | generation | Q4_0 (QAT) | 14.25 GB | current |
+| `gemma-4-26b-a4b` | generation | Q4_0 (QAT) | 14.25 GB | legacy |
 | `gemma-4-e4b-qat` | generation | Q4_0 (QAT) | 4.22 GB | current |
 | `muse-glimmer-30b` | generation | UD-Q4_K_XL | 15.88 GB | legacy |
 | `laya` | decision | F16 | 842.6 MB | current |
-| `laya-multilingual` | decision | F16 | 643.8 MB | current |
+| `laya-multilingual` | decision | F16 | 643.8 MB | legacy |
 | `clef-flash` | decision | Q6_K | 243.5 MB | current |
 | `embeddinggemma-2` | embedding | Q8_0 | 309.9 MB | current |
 | `qwen3-tts-1.7b-customvoice` | speech | BF16 | 3.83 GB | current |
-| `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | current |
-| `qwen3-tts-1.7b-base` | speech | BF16 | 3.86 GB | current |
-| `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | current |
-| `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | current |
-| `drama-3` | speech | Q4_K | 20.79 GB | current |
+| `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | legacy |
+| `qwen3-tts-1.7b-base` | speech | BF16 | 3.86 GB | legacy |
+| `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | legacy |
+| `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | legacy |
+| `drama-3` | speech | Q4_K | 20.79 GB | legacy |
 | `nemotron-asr-0.6b` | transcription | F32 | 2.55 GB | current |
 <!-- /gen -->
 

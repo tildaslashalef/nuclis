@@ -44,7 +44,7 @@ The configuration file (`~/.nuclis/nuclis.json`) holds the defaults:
 
 ```json
 "decide": { "model": "laya" },
-"speech": { "model": "qwen3-tts-1.7b-customvoice", "voice": "ryan" },
+"speech": { "model": "qwen3-tts-1.7b-customvoice", "voice": "sohee" },
 "serve":  { "host": "127.0.0.1", "port": 9000, "log": true, "timeout": 300,
             "pin": ["gemma-4-e4b-qat", "qwen3-tts-1.7b-customvoice", "nemotron-asr-0.6b"] }
 ```

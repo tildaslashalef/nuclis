@@ -1334,8 +1334,8 @@ test "config init and show run against NUCLIS_HOME without touching the real roo
     try std.testing.expect(std.mem.startsWith(u8, out.written(), "wrote "));
     // A fresh root: nothing installed, so the default model and an empty
     // registry, and the next step is its pull, then a sync.
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "with engine.model gemma-4-26b-a4b") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "next: nuclis model pull gemma-4-26b-a4b --all fetches it, then nuclis config sync") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "with engine.model qwen3.8-27b") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "next: nuclis model pull qwen3.8-27b --all fetches it, then nuclis config sync") != null);
     try tmp.dir.access(io, "nuclis.json", .{});
     {
         var written = try config.load(alloc, io, tmp.dir, "nuclis.json", &diag);
@@ -1373,7 +1373,7 @@ test "config init and show run against NUCLIS_HOME without touching the real roo
     // A model that is not there fails before anything opens, naming the resolved path.
     try tmp.dir.writeFile(io, .{ .sub_path = "nuclis.json", .data = "{ \"schema_version\": 1 }" });
     try std.testing.expectError(error.ModelFileNotFound, run(alloc, io, &environ, try parseArgs(&.{ "inspect", "--json" }), &out.writer, &diag));
-    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "/models/unsloth/Qwen3.8-27B-GGUF/") != null);
     try std.testing.expectError(error.ModelFileNotFound, run(alloc, io, &environ, try parseArgs(&.{ "inspect", "--model", "missing.gguf" }), &out.writer, &diag));
     try std.testing.expectEqualStrings("no model file at missing.gguf", diag.message()[0.."no model file at missing.gguf".len]);
 }

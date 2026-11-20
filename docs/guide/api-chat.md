@@ -198,7 +198,7 @@ provider. For pi, `~/.pi/agent/models.json`:
         "reasoning": true,
         "thinkingLevelMap": {"off": "none", "xhigh": "xhigh"},
         "input": ["text", "image"],
-        "contextWindow": 32768,
+        "contextWindow": 65536,
         "maxTokens": 8192
       }]
     }

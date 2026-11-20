@@ -12,13 +12,14 @@ Every catalogue entry with a draft source is measured, and its defaults
 follow the record
 ([re-priced verdicts, 2026-10-01](../benchmarks/record/speculative-decoding.md#the-re-priced-verdicts-2026-10-01),
 [the DFlash2 drafter, 2026-10-21](../benchmarks/record/speculative-decoding.md#the-qwen-dflash2-drafter-2026-10-21),
-[the 26B-A4B's experts, 2026-11-18](../benchmarks/record/gemma4.md#what-the-experts-cost-2026-11-18)):
+[the 26B-A4B's experts, 2026-11-18](../benchmarks/record/gemma4.md#what-the-experts-cost-2026-11-18),
+[the two chat models, 2026-11-20](../benchmarks/record/benchmarks.md#the-two-chat-models-with-their-drafters-2026-11-20)):
 
 | Entry | Default | Draft source |
 | --- | --- | --- |
-| Qwen3.8-27B | on at draft 7 | its `nextn` block; `--draft dflash2` selects the DFlash2 drafter, also on at 7 |
+| Qwen3.8-27B | on at draft 7 | the DFlash2 drafter; `--draft mtp` selects its `nextn` block, also on at 7 |
 | Gemma 4 E4B | on at draft 6 | its assistant head |
-| Gemma 4 26B-A4B | on at draft 4 | its assistant head |
+| Gemma 4 26B-A4B (legacy) | on at draft 4 | its assistant head |
 | Gemma 4 12B QAT (legacy) | on at draft 5 | its assistant head |
 | Muse Glimmer | on at draft 6 | its DFlash drafter |
 

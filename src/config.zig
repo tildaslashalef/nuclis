@@ -173,14 +173,14 @@ pub const Config = struct {
     pub const Engine = struct {
         /// A registry entry name, a catalogue name (`src/catalog.zig`), or a
         /// path relative to `<root>/models` unless absolute, in that order
-        /// (`paths.modelPath`). The mixture of experts: a dense 27B model is
-        /// too slow on the target machine to be the first thing run.
-        model: []const u8 = "gemma-4-26b-a4b",
+        /// (`paths.modelPath`). The flagship: with its drafter the dense
+        /// 27B codes at about 25 tokens/s on the target machine.
+        model: []const u8 = "qwen3.8-27b",
         backend: Backend = if (inference.metal.enabled) .metal else .cpu,
-        /// 32K: at 16K an agent turn of a few paged reads compacted every
-        /// step; the largest catalogue model fits 48 GB at 32K with its
-        /// drafter (docs/benchmarks/record/agent.md, 2026-11-17).
-        ctx_size: usize = 32768,
+        /// 64K, the supported ceiling: the agent's long tasks were tuned in
+        /// this window, and the flagship's session is about 4.5 GB in it
+        /// (docs/benchmarks/record/benchmarks.md, 2026-11-20).
+        ctx_size: usize = 65536,
         /// Attention cache precision on the GPU; the CPU reference
         /// always keeps F32 and reports it.
         kv_precision: KvPrecision = .f16,
@@ -244,7 +244,7 @@ pub const Config = struct {
         /// name, or (for `speak`) a checkpoint directory.
         model: []const u8 = "qwen3-tts-1.7b-customvoice",
         /// The speaker a request that names none gets.
-        voice: []const u8 = "ryan",
+        voice: []const u8 = "sohee",
     };
     pub const Transcribe = struct {
         /// The transcription model `nuclis transcribe` and the server open:
@@ -1776,7 +1776,7 @@ test "the voice keys: speech and transcription models, the default speaker, pins
     var defaults = try fromText(alloc, "{ \"schema_version\": 1 }", "d.json", &diag);
     defer defaults.deinit();
     try std.testing.expectEqualStrings("qwen3-tts-1.7b-customvoice", defaults.config.speech.model);
-    try std.testing.expectEqualStrings("ryan", defaults.config.speech.voice);
+    try std.testing.expectEqualStrings("sohee", defaults.config.speech.voice);
     try std.testing.expectEqualStrings("nemotron-asr-0.6b", defaults.config.transcribe.model);
     try std.testing.expectEqual(@as(usize, 0), defaults.config.serve.pin.names.len);
     var listed = try fromText(alloc,
@@ -1972,7 +1972,7 @@ test "resolve applies defaults < file < flags per command and records the source
     , "t.json", &diag);
     defer loaded.deinit();
     const gen = resolve(&loaded, null, .{ .ctx_size = 1024, .sampling = .{ .top_k = 10 } }, .generate);
-    try std.testing.expectEqualStrings("gemma-4-26b-a4b", gen.model);
+    try std.testing.expectEqualStrings("qwen3.8-27b", gen.model);
     try std.testing.expect(gen.entry == null);
     try std.testing.expectEqual(.default, gen.source("engine.model"));
     try std.testing.expectEqual(.cpu, gen.backend);
@@ -2018,11 +2018,11 @@ test "resolve applies defaults < file < flags per command and records the source
     defer none.deinit();
     const plain = resolve(&none, null, .{}, .generate);
     try std.testing.expectEqual((Config.Engine{}).backend, plain.backend);
-    try std.testing.expectEqual(@as(usize, 32768), plain.ctx_size);
+    try std.testing.expectEqual(@as(usize, 65536), plain.ctx_size);
     try std.testing.expectEqual(@as(usize, 8192), plain.max_tokens);
     try std.testing.expectEqual(.off, plain.think);
-    try std.testing.expectEqual(.gemma4, plain.profile);
-    try std.testing.expectEqual(inference.profiles.Profile.gemma4.samplingDefaults(.off), plain.samplingOptions());
+    try std.testing.expectEqual(.qwen38, plain.profile);
+    try std.testing.expectEqual(inference.profiles.Profile.qwen38.samplingDefaults(plain.think), plain.samplingOptions());
     try std.testing.expectEqual(.low, resolve(&none, null, .{}, .agent).think);
     try std.testing.expect(plain.config_file == null);
     try std.testing.expectEqual(.profile, plain.source("generation.sampling.temperature"));
@@ -2138,7 +2138,7 @@ test "set edits one key of the file's own text, validates it, and reports the pr
     var first = try set(alloc, null, "t.json", "engine.model", "gemma-4-12b", &diag);
     defer first.deinit(alloc);
     try std.testing.expect(first.previous != null);
-    try std.testing.expectEqualStrings("\"gemma-4-26b-a4b\"", first.previous.?);
+    try std.testing.expectEqualStrings("\"qwen3.8-27b\"", first.previous.?);
     try std.testing.expect(std.mem.indexOf(u8, first.text, "\"model\": \"gemma-4-12b\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.text, "\"models\": {}") != null);
     // A value is JSON when it parses as JSON, a string otherwise; a stated
@@ -2328,7 +2328,7 @@ test "the written initial file parses back exactly and shows the entry shape" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"qwen3.8-27b\": {") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"revision\": \"ce331efc48d5722b4b8041f72793e530eae18d9b\"") != null);
     // The default draft variant's file, under the key that replaced `mtp`.
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"draft\": \"MTP/mtp-Qwen3.8-27B-Q4_0.gguf\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"draft\": \"MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf\"") != null);
     var diag: Diagnostic = .{};
     var loaded = try fromText(alloc, out.written(), "d.json", &diag);
     defer loaded.deinit();
@@ -2337,13 +2337,13 @@ test "the written initial file parses back exactly and shows the entry shape" {
     const gen = resolve(&loaded, null, .{}, .generate);
     try std.testing.expect(gen.entry != null);
     try std.testing.expectEqual(.qwen38, gen.profile);
-    try std.testing.expectEqual(@as(usize, 32768), gen.ctx_size);
+    try std.testing.expectEqual(@as(usize, 65536), gen.ctx_size);
     // The entry carries the measured speculative verdict: Qwen's
     // embedded head pays at draft 7, the mixture-of-experts Gemma's at 4.
     try std.testing.expectEqual(true, gen.entry.?.generation.speculative.?);
     try std.testing.expectEqual(@as(usize, 7), gen.entry.?.generation.draft_length.?);
     try std.testing.expect(gen.speculative);
-    try std.testing.expectEqualStrings("MTP/mtp-Qwen3.8-27B-Q4_0.gguf", (try gen.draftFile()).?);
+    try std.testing.expectEqualStrings("MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", (try gen.draftFile()).?);
     const moe = resolve(&loaded, "gemma-4-26b-a4b", .{}, .generate);
     try std.testing.expectEqual(true, moe.entry.?.generation.speculative.?);
     try std.testing.expectEqual(@as(usize, 4), moe.entry.?.generation.draft_length.?);
@@ -2364,7 +2364,7 @@ test "a draft variant selects its file and its measured verdict" {
     try std.testing.expect(by_entry.speculative and by_entry.draft_length == 7);
     const by_flag = resolve(&loaded, "qwen3.8-27b", .{ .draft = "dflash2" }, .generate);
     try std.testing.expectEqualStrings("MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", (try by_flag.draftFile()).?);
-    try std.testing.expectEqualStrings("MTP/mtp-Qwen3.8-27B-Q4_0.gguf", (try resolve(&loaded, "qwen3.8-27b", .{}, .generate).draftFile()).?);
+    try std.testing.expectEqualStrings("MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", (try resolve(&loaded, "qwen3.8-27b", .{}, .generate).draftFile()).?);
     try std.testing.expectError(error.NoSuchDraft, resolve(&loaded, "qwen3.8-27b", .{ .draft = "eagle" }, .generate).draftFile());
     try std.testing.expectError(error.NoSuchDraft, resolve(&loaded, "/x.gguf", .{ .draft = "mtp" }, .generate).draftFile());
 }
