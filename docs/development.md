@@ -30,21 +30,24 @@ Every command in `nuclis --help` works:
 <!-- gen:cli-commands -->
 | Command | What it does |
 | --- | --- |
-| `agent` | the interactive chat; -p <text> runs one turn |
-| `generate` | one completion from a prompt |
-| `bench` | repeated prefill and decode measurements |
-| `tokenize` | the prompt's token ids and byte offsets, no model run |
-| `eval` | perplexity of a text file, teacher-forced |
-| `inspect` | an artifact's identity, dimensions, tensor encodings |
-| `validate` | whether a file binds to its architecture's adapter |
-| `model` | pull, list, judge, and remove Hugging Face Hub artifacts |
-| `cache` | list or clear the agent's saved model states |
-| `decide` | typed questions about text or JSON, answered by Laya |
-| `embed` | text, images, audio into vectors, by EmbeddingGemma 2 |
-| `speak, voice, transcribe` | speech by Qwen3-TTS, saved voices, Nemotron ASR |
-| `serve` | the nuclis API over HTTP: decisions, models kept open |
-| `config` | write, show, or set a key of ~/.nuclis/nuclis.json |
-| `completion` | the shell completion script for fish, bash, or zsh |
+| `agent` | The interactive chat; -p <text> runs one turn |
+| `generate` | One completion from a prompt |
+| `bench` | Repeated prefill and decode measurements |
+| `tokenize` | The prompt's token ids and byte offsets, no model run |
+| `eval` | Perplexity of a text file, teacher-forced |
+| `inspect` | An artifact's identity, dimensions, tensor encodings |
+| `validate` | Whether a file binds to its architecture's adapter |
+| `model` | Pull, list, judge, and remove Hugging Face Hub artifacts |
+| `cache` | List or clear the agent's saved model states |
+| `decide` | Typed questions about text or JSON, by Laya or clef-flash |
+| `embed` | Text, images, audio into vectors, by EmbeddingGemma 2 |
+| `speak` | Speech from text, by Qwen3-TTS |
+| `voice` | Saved voices for speak and the server |
+| `transcribe` | Text from speech, by Nemotron ASR |
+| `serve` | The nuclis API over HTTP, models kept open |
+| `config` | Write, show, or set a key of ~/.nuclis/nuclis.json |
+| `completion` | The shell completion script for fish, bash, or zsh |
+| `help` | Show help for a command |
 <!-- /gen -->
 
 The engine runs on the CPU reference

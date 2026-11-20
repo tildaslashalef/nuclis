@@ -127,29 +127,28 @@ Every key, as `nuclis config --help` lists them:
 
 <!-- gen:config-keys -->
 ```text
-engine.*                model, backend, ctx_size, kv_precision
-generation.*            max_tokens, think, speculative, draft_length,
-                        draft_max_depth, image_max_tokens,
-                        sampling.{temperature, top_k, top_p, min_p,
-                        presence_penalty, repetition_penalty}
-agent.*                 think, fold_thinking, theme, instructions,
-                        thinking_budget, web
-decide.*                model
-embed.*                 model
-speech.*                model, voice
-transcribe.*            model
-serve.*                 host, port, log, request_log, timeout, memory_bytes,
-                        web, pin, transcription_bytes
-web.*                   url
-cache.*                 memory_bytes, disk_bytes
-models.<name>.*         path, or repo + file + revision; mmproj, draft (a
-                        file; mtp is its old name), profile, ctx_size,
-                        generation.*, agent.* for that model only, and
-                        generation.draft: an index model's draft variant
-                        (qwen3.8-27b: mtp, dflash2). Entries are created by
-                        init, sync, and model pull --register, never by set.
-A null sampling key takes the profile's value. agent.instructions is
-auto (AGENTS.md then CLAUDE.md), off, or a path.
+engine.*         model, backend, ctx_size, kv_precision
+generation.*     max_tokens, think, speculative, draft_length,
+                 draft_max_depth, image_max_tokens, sampling.{temperature,
+                 top_k, top_p, min_p, presence_penalty, repetition_penalty}
+agent.*          think, fold_thinking, theme, instructions, thinking_budget,
+                 web
+decide.*         model
+embed.*          model
+speech.*         model, voice
+transcribe.*     model
+serve.*          host, port, log, request_log, timeout, memory_bytes, web,
+                 pin, transcription_bytes
+web.*            url
+cache.*          memory_bytes, disk_bytes
+models.<name>.*  Path, or repo + file + revision; mmproj, draft (a file; mtp
+                 is its old name), profile, ctx_size, generation.*, agent.*
+                 for that model only, and generation.draft: an index model's
+                 draft variant (qwen3.8-27b: mtp, dflash2). Entries are
+                 created by init, sync, and model pull --register, never by
+                 set.
+A null sampling key takes the profile's value. agent.instructions is auto
+(AGENTS.md then CLAUDE.md), off, or a path.
 ```
 <!-- /gen -->
 

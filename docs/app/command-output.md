@@ -37,6 +37,13 @@ the same. The agent's chat surface draws on its own
   blue, muted gray, ok green, warning yellow, failure red, a changed value
   aqua, high impact orange. `NO_COLOR`, a dumb terminal, or a pipe turn it
   off; `NUCLIS_ASCII=1` forces the ASCII glyphs; `COLUMNS` pins the width.
+- **Help**: `nuclis help <command>` is `nuclis <command> --help` (and
+  `nuclis <command> <action> --help` the same page). A page opens with
+  `Usage:`, then what the command is, then titled sections (`Commands:`,
+  `Flags:`, `Examples:`, `Notes:`) whose rows align per section and whose
+  summaries are sentences, wrapped to the terminal (80 columns in a pipe);
+  a long-only flag sits under the short ones' long names. The overview
+  ends `Run 'nuclis help <command>' for its flags and examples.`
 - **Errors**: one line on stderr, `nuclis: <message>`, never an error's
   name: the diagnostic the failure set, or a sentence for the error. A
   usage error names the argument (`unknown option '--frob' for 'nuclis

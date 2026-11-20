@@ -3,69 +3,81 @@
   "commands": [
     {
       "command": "agent",
-      "summary": "the interactive chat; -p <text> runs one turn"
+      "summary": "The interactive chat; -p <text> runs one turn"
     },
     {
       "command": "generate",
-      "summary": "one completion from a prompt"
+      "summary": "One completion from a prompt"
     },
     {
       "command": "bench",
-      "summary": "repeated prefill and decode measurements"
+      "summary": "Repeated prefill and decode measurements"
     },
     {
       "command": "tokenize",
-      "summary": "the prompt's token ids and byte offsets, no model run"
+      "summary": "The prompt's token ids and byte offsets, no model run"
     },
     {
       "command": "eval",
-      "summary": "perplexity of a text file, teacher-forced"
+      "summary": "Perplexity of a text file, teacher-forced"
     },
     {
       "command": "inspect",
-      "summary": "an artifact's identity, dimensions, tensor encodings"
+      "summary": "An artifact's identity, dimensions, tensor encodings"
     },
     {
       "command": "validate",
-      "summary": "whether a file binds to its architecture's adapter"
+      "summary": "Whether a file binds to its architecture's adapter"
     },
     {
       "command": "model",
-      "summary": "pull, list, judge, and remove Hugging Face Hub artifacts"
+      "summary": "Pull, list, judge, and remove Hugging Face Hub artifacts"
     },
     {
       "command": "cache",
-      "summary": "list or clear the agent's saved model states"
+      "summary": "List or clear the agent's saved model states"
     },
     {
       "command": "decide",
-      "summary": "typed questions about text or JSON, answered by Laya"
+      "summary": "Typed questions about text or JSON, by Laya or clef-flash"
     },
     {
       "command": "embed",
-      "summary": "text, images, audio into vectors, by EmbeddingGemma 2"
+      "summary": "Text, images, audio into vectors, by EmbeddingGemma 2"
     },
     {
-      "command": "speak, voice, transcribe",
-      "summary": "speech by Qwen3-TTS, saved voices, Nemotron ASR"
+      "command": "speak",
+      "summary": "Speech from text, by Qwen3-TTS"
+    },
+    {
+      "command": "voice",
+      "summary": "Saved voices for speak and the server"
+    },
+    {
+      "command": "transcribe",
+      "summary": "Text from speech, by Nemotron ASR"
     },
     {
       "command": "serve",
-      "summary": "the nuclis API over HTTP: decisions, models kept open"
+      "summary": "The nuclis API over HTTP, models kept open"
     },
     {
       "command": "config",
-      "summary": "write, show, or set a key of ~/.nuclis/nuclis.json"
+      "summary": "Write, show, or set a key of ~/.nuclis/nuclis.json"
     },
     {
       "command": "completion",
-      "summary": "the shell completion script for fish, bash, or zsh"
+      "summary": "The shell completion script for fish, bash, or zsh"
+    },
+    {
+      "command": "help",
+      "summary": "Show help for a command"
     }
   ],
   "cli": {
     "agent": {
       "usage": [
-        "nuclis agent [options] [--resume [<id>]]",
+        "nuclis agent [flags] [--resume [<id>]]",
         "nuclis agent -p <text> [--json] [--session <path>]",
         "nuclis agent --print --prompt-file <path> [--json] [--session <path>]",
         "nuclis agent ls [--json]",
@@ -105,9 +117,9 @@
     },
     "generate": {
       "usage": [
-        "nuclis generate --prompt <text> [options]",
-        "nuclis generate --prompt-file <path> [options]",
-        "nuclis generate --prompt-tokens <json> [options]"
+        "nuclis generate --prompt <text> [flags]",
+        "nuclis generate --prompt-file <path> [flags]",
+        "nuclis generate --prompt-tokens <json> [flags]"
       ],
       "flags": [
         "--prompt",
@@ -142,9 +154,9 @@
     },
     "bench": {
       "usage": [
-        "nuclis bench --prompt <text> [options]",
-        "nuclis bench --prompt-file <path> [options]",
-        "nuclis bench --prompt-tokens <json> [options]"
+        "nuclis bench --prompt <text> [flags]",
+        "nuclis bench --prompt-file <path> [flags]",
+        "nuclis bench --prompt-tokens <json> [flags]"
       ],
       "flags": [
         "--prompt",
@@ -185,8 +197,8 @@
     },
     "tokenize": {
       "usage": [
-        "nuclis tokenize --prompt <text> [options]",
-        "nuclis tokenize --prompt-file <path> [options]"
+        "nuclis tokenize --prompt <text> [flags]",
+        "nuclis tokenize --prompt-file <path> [flags]"
       ],
       "flags": [
         "--prompt",
@@ -200,7 +212,7 @@
     },
     "eval": {
       "usage": [
-        "nuclis eval --file <path> [options]"
+        "nuclis eval --file <path> [flags]"
       ],
       "flags": [
         "--file",
@@ -275,9 +287,9 @@
     },
     "decide": {
       "usage": [
-        "nuclis decide --request <file|-> [options]",
-        "nuclis decide --questions <file> <states> [options]",
-        "nuclis decide <inline questions> <states> [options]",
+        "nuclis decide --request <file|-> [flags]",
+        "nuclis decide --questions <file> <states> [flags]",
+        "nuclis decide <inline questions> <states> [flags]",
         "<states>: --state <text> and --state-file <path>, repeatable",
         "<inline questions>: --choice <text> --option <key[=desc]>…,",
         "--score <text> --level <text>…, --noul <text>; each [--id <name>]"
@@ -303,9 +315,9 @@
     },
     "embed": {
       "usage": [
-        "nuclis embed <text>… [options]",
-        "nuclis embed --image <file>… --audio <file>… [options]",
-        "nuclis embed --input-file <file|-> [options]",
+        "nuclis embed <text>… [flags]",
+        "nuclis embed --image <file>… --audio <file>… [flags]",
+        "nuclis embed --input-file <file|-> [flags]",
         "each argument is one input: quote a sentence"
       ],
       "flags": [
@@ -324,7 +336,7 @@
     },
     "speak": {
       "usage": [
-        "nuclis speak <text>… -o <file.wav> [options]",
+        "nuclis speak <text>… -o <file.wav> [flags]",
         "the words are joined by spaces: quote a sentence"
       ],
       "flags": [
@@ -357,7 +369,7 @@
     },
     "transcribe": {
       "usage": [
-        "nuclis transcribe <file> [options]"
+        "nuclis transcribe <file> [flags]"
       ],
       "flags": [
         "--stream",
@@ -409,32 +421,37 @@
         "nuclis completion fish|bash|zsh"
       ],
       "flags": []
+    },
+    "help": {
+      "usage": [
+        "nuclis help [<command> [<action>]]"
+      ],
+      "flags": []
     }
   },
   "config_keys": [
-    "  engine.*                model, backend, ctx_size, kv_precision",
-    "  generation.*            max_tokens, think, speculative, draft_length,",
-    "                          draft_max_depth, image_max_tokens,",
-    "                          sampling.{temperature, top_k, top_p, min_p,",
-    "                          presence_penalty, repetition_penalty}",
-    "  agent.*                 think, fold_thinking, theme, instructions,",
-    "                          thinking_budget, web",
-    "  decide.*                model",
-    "  embed.*                 model",
-    "  speech.*                model, voice",
-    "  transcribe.*            model",
-    "  serve.*                 host, port, log, request_log, timeout, memory_bytes,",
-    "                          web, pin, transcription_bytes",
-    "  web.*                   url",
-    "  cache.*                 memory_bytes, disk_bytes",
-    "  models.<name>.*         path, or repo + file + revision; mmproj, draft (a",
-    "                          file; mtp is its old name), profile, ctx_size,",
-    "                          generation.*, agent.* for that model only, and",
-    "                          generation.draft: an index model's draft variant",
-    "                          (qwen3.8-27b: mtp, dflash2). Entries are created by",
-    "                          init, sync, and model pull --register, never by set.",
-    "  A null sampling key takes the profile's value. agent.instructions is",
-    "  auto (AGENTS.md then CLAUDE.md), off, or a path."
+    "  engine.*         model, backend, ctx_size, kv_precision",
+    "  generation.*     max_tokens, think, speculative, draft_length,",
+    "                   draft_max_depth, image_max_tokens, sampling.{temperature,",
+    "                   top_k, top_p, min_p, presence_penalty, repetition_penalty}",
+    "  agent.*          think, fold_thinking, theme, instructions, thinking_budget,",
+    "                   web",
+    "  decide.*         model",
+    "  embed.*          model",
+    "  speech.*         model, voice",
+    "  transcribe.*     model",
+    "  serve.*          host, port, log, request_log, timeout, memory_bytes, web,",
+    "                   pin, transcription_bytes",
+    "  web.*            url",
+    "  cache.*          memory_bytes, disk_bytes",
+    "  models.<name>.*  Path, or repo + file + revision; mmproj, draft (a file; mtp",
+    "                   is its old name), profile, ctx_size, generation.*, agent.*",
+    "                   for that model only, and generation.draft: an index model's",
+    "                   draft variant (qwen3.8-27b: mtp, dflash2). Entries are",
+    "                   created by init, sync, and model pull --register, never by",
+    "                   set.",
+    "  A null sampling key takes the profile's value. agent.instructions is auto",
+    "  (AGENTS.md then CLAUDE.md), off, or a path."
   ],
   "config_init": "{\n  \"schema_version\": 1,\n  \"engine\": {\n    \"model\": \"qwen3.8-27b\",\n    \"backend\": \"metal\",\n    \"ctx_size\": 65536,\n    \"kv_precision\": \"f16\"\n  },\n  \"generation\": {\n    \"max_tokens\": 8192,\n    \"think\": \"off\",\n    \"speculative\": false,\n    \"draft_length\": 4,\n    \"draft_max_depth\": null,\n    \"image_max_tokens\": \"auto\",\n    \"sampling\": {\n      \"temperature\": null,\n      \"top_k\": null,\n      \"top_p\": null,\n      \"min_p\": null,\n      \"presence_penalty\": null,\n      \"repetition_penalty\": null\n    }\n  },\n  \"agent\": {\n    \"think\": \"low\",\n    \"fold_thinking\": true,\n    \"theme\": \"gruvbox-dark\",\n    \"instructions\": \"auto\",\n    \"thinking_budget\": 2048,\n    \"web\": false\n  },\n  \"decide\": {\n    \"model\": \"laya\"\n  },\n  \"embed\": {\n    \"model\": \"embeddinggemma-2\"\n  },\n  \"speech\": {\n    \"model\": \"qwen3-tts-1.7b-customvoice\",\n    \"voice\": \"sohee\"\n  },\n  \"transcribe\": {\n    \"model\": \"nemotron-asr-0.6b\"\n  },\n  \"serve\": {\n    \"host\": \"127.0.0.1\",\n    \"port\": 9000,\n    \"log\": true,\n    \"request_log\": true,\n    \"timeout\": 300,\n    \"memory_bytes\": null,\n    \"web\": false,\n    \"pin\": [],\n    \"transcription_bytes\": 268435456\n  },\n  \"web\": {\n    \"url\": null\n  },\n  \"cache\": {\n    \"memory_bytes\": 4294967296,\n    \"disk_bytes\": 8589934592\n  },\n  \"models\": {}\n}\n",
   "encodings": [
