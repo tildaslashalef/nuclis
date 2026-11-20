@@ -49,6 +49,7 @@ LIMITS = [
     ("grep matches shown", "src/agent/tools/grep.zig", "max_shown"),
     ("grep files scanned", "src/agent/tools/grep.zig", "max_files"),
     ("grep seconds", "src/agent/tools/grep.zig", "max_seconds"),
+    ("edit_file edits per call", "src/agent/tools/edit_file.zig", "max_edits"),
     ("glob results", "src/agent/tools/glob.zig", "max_results"),
     ("image tokens per image", "inference/src/vision/root.zig", "max_image_tokens"),
     ("server output tokens", "src/api/chat/wire.zig", "max_output_tokens"),

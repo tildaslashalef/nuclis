@@ -324,6 +324,8 @@ pub fn checkArguments(alloc: Allocator, tool: Tool, arguments: []const u8) Alloc
             .integer => std.mem.eql(u8, want, "integer") or std.mem.eql(u8, want, "number"),
             .float, .number_string => std.mem.eql(u8, want, "number"),
             .bool => std.mem.eql(u8, want, "boolean"),
+            .array => std.mem.eql(u8, want, "array"),
+            .object => std.mem.eql(u8, want, "object"),
             else => false,
         };
         const article = if (std.mem.indexOfScalar(u8, "aeiou", want[0]) != null) "an" else "a";
@@ -435,6 +437,12 @@ test "checkArguments names a missing or mistyped argument and passes a good call
     try std.testing.expect(std.mem.indexOf(u8, broken.text, "not valid JSON") != null);
 
     try std.testing.expect((try checkArguments(alloc, write, "{\"path\":\"a\",\"content\":\"\",\"extra\":1}")) == null);
+
+    const edit = find("edit_file").?;
+    try std.testing.expect((try checkArguments(alloc, edit, "{\"path\":\"a\",\"edits\":[{\"old_string\":\"x\",\"new_string\":\"y\"}]}")) == null);
+    var not_array = (try checkArguments(alloc, edit, "{\"path\":\"a\",\"edits\":\"x\"}")).?;
+    defer not_array.deinit(alloc);
+    try std.testing.expectEqualStrings("edit_file: the argument \"edits\" must be an array; nothing was done", not_array.text);
 }
 
 test "every tool's subject is the first property of its schema" {
@@ -632,5 +640,6 @@ test "fuzz tools: any arguments to a file tool give a result, and nothing outsid
         "\x03{\"path\":\"sub/../../escape.txt\",\"content\":\"x\"}",
         "\x04{\"path\":\"link/secret.txt\",\"old_string\":\"SECRET\",\"new_string\":\"x\"}",
         "\x04{\"path\":\"a.txt\",\"old_string\":\"\",\"new_string\":\"x\"}",
+        "\x04{\"path\":\"a.txt\",\"edits\":[{\"old_string\":\"alpha\",\"new_string\":\"x\"},{\"old_string\":\"  beta \",\"new_string\":\"y\"}],\"line\":-1}",
     }) });
 }
