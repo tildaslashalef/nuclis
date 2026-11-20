@@ -32,9 +32,12 @@ const repeat = @import("../text.zig").repeat;
 const Profile = inference.profiles;
 const Allocator = std.mem.Allocator;
 
-/// Bumped only when an existing key changes meaning or disappears; adding a
-/// key is backwards compatible because a reader ignores what it does not know.
-pub const format_version: u32 = 1;
+/// Bumped when an existing key changes meaning or disappears, or when a new
+/// entry kind appears (an older reader refuses a kind it does not know, and
+/// the version says why); adding a key to a kind is backwards compatible.
+/// 2 added `cut` and `handoff`, and the compaction reasons
+/// `reasoning_dropped` and `arguments_stubbed`.
+pub const format_version: u32 = 2;
 
 /// A session file is a conversation, not a log of a machine: a bounded read
 /// is still wise, and 64 MiB is far past any real one.
@@ -151,6 +154,9 @@ pub const Entry = union(enum) {
     /// it was answered by, the reason (`inference.events.CutReason`), and
     /// the body's ends. The history replays the substitute, never this.
     cut: struct { call: []const u8, name: []const u8, reason: []const u8, at: usize, bytes: usize, head: []const u8, tail: []const u8 },
+    /// The conversation was replaced by one hand-off message
+    /// (`loop.Agent.handoff`): a resume starts from it.
+    handoff: struct { text: []const u8 },
 };
 
 /// A saved turn end (`completer/cache.zig`): the rendered text's first `bytes`
@@ -589,6 +595,7 @@ fn readRecord(a: Allocator, object: std.json.ObjectMap) !Record {
             .reason = try text(a, object, "reason"),
         } };
         if (std.mem.eql(u8, kind, "notice")) break :blk .{ .notice = .{ .text = try text(a, object, "text") } };
+        if (std.mem.eql(u8, kind, "handoff")) break :blk .{ .handoff = .{ .text = try text(a, object, "text") } };
         if (std.mem.eql(u8, kind, "cut")) break :blk .{ .cut = .{
             .call = try text(a, object, "call"),
             .name = try text(a, object, "name"),
@@ -810,6 +817,7 @@ pub fn exportMarkdown(loaded: Loaded, out: *std.Io.Writer) !void {
             .model => |m| try out.print("_model: {s} (context {d}, effort {s})_\n\n", .{ m.name, m.ctx_size, m.effort }),
             .compaction => |c| try out.print("_older turns dropped ({s}), from turn {d}_\n\n", .{ c.reason, c.first_kept }),
             .notice => |n| try out.print("_{s}_\n\n", .{n.text}),
+            .handoff => |h| try out.print("---\n\n### Hand-off — {s}\n\n{s}\n\n", .{ record.time, h.text }),
             .cut => |c| try out.print("_tool call {s} dropped ({s}, {d} bytes, at byte {d})_\n\n", .{ c.call, c.reason, c.bytes, c.at }),
         }
     }
@@ -831,7 +839,7 @@ test "the header and the entries are the format the specification names" {
         .ctx_size = 8192,
     });
     try testing.expectEqualStrings(
-        "{\"type\":\"session\",\"version\":1,\"id\":\"0123456789abcdef0123456789abcdef\",\"time\":\"2026-09-12T10:12:03Z\"," ++
+        "{\"type\":\"session\",\"version\":2,\"id\":\"0123456789abcdef0123456789abcdef\",\"time\":\"2026-09-12T10:12:03Z\"," ++
             "\"cwd\":\"/Users/x/nuclis\",\"model\":{\"path\":\"/m.gguf\",\"sha256\":\"90fd44e2\"},\"effort\":\"low\",\"ctx_size\":8192}\n",
         buffer.written(),
     );
@@ -970,7 +978,7 @@ test "a number out of range is a malformed line, never a panic" {
 
 test "a newer format is refused rather than guessed at" {
     const alloc = testing.allocator;
-    try testing.expectError(error.UnsupportedSessionVersion, parseText(alloc, "{\"type\":\"session\",\"version\":2,\"id\":\"a\",\"time\":\"t\",\"cwd\":\"/w\",\"model\":{\"path\":\"/m\"},\"effort\":\"off\",\"ctx_size\":8}\n", null));
+    try testing.expectError(error.UnsupportedSessionVersion, parseText(alloc, "{\"type\":\"session\",\"version\":3,\"id\":\"a\",\"time\":\"t\",\"cwd\":\"/w\",\"model\":{\"path\":\"/m\"},\"effort\":\"off\",\"ctx_size\":8}\n", null));
     try testing.expectError(error.MalformedSessionLine, parseText(alloc, "{\"type\":\"user\",\"id\":1}\n", null));
     try testing.expectError(error.EmptySessionFile, parseText(alloc, "\n", null));
 }

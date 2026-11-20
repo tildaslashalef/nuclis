@@ -1698,6 +1698,32 @@ fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8, want
     });
 }
 
+/// `/compact [focus]`: the conversation becomes one hand-off message
+/// (`loop.Agent.handoff`), its summary written by one model step shown as
+/// a turn's live rows; the notices say what happened.
+fn compactCommand(ui: *Ui, focus: []const u8) !void {
+    if (ui.agent.history.items.len == 0) return ui.emit(.{ .notice = "  — nothing to compact yet" });
+    ui.completer.effort = ui.effort;
+    ui.busy = true;
+    defer ui.busy = false;
+    ui.first_token = null;
+    ui.prefill_started = null;
+    ui.prefill_rate = null;
+    ui.turn_started = std.Io.Clock.awake.now(ui.io);
+    ui.live_phase = .reading;
+    ui.phase_started = ui.turn_started;
+    ui.stats = .{};
+    ui.bar = .{ .phase = .prefill };
+    ui.status = "hand-off";
+    interrupt.clear();
+    defer ui.status = "ready";
+    // A hand-off that could not run says so itself and changes nothing.
+    _ = ui.agent.handoff(focus) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return ui.emit(.{ .notice = "  — the hand-off failed; the conversation is unchanged" }),
+    };
+}
+
 /// Sends the turn-end notification when `terminal.shouldNotify` says so: the
 /// window elsewhere, the turn not cancelled, and long enough since Enter.
 fn notifyTurnEnd(ui: *Ui, entered: std.Io.Timestamp, completed: bool, end: terminal.TurnEnd) !void {
@@ -1883,6 +1909,7 @@ fn runCommand(ui: *Ui, sampler: *inference.sampling.Sampler, parsed: commands.Re
                 ui.newSession();
                 try ui.emit(.{ .notice = "  — cleared; the previous session stays in /resume" });
             },
+            .compact => |focus| try compactCommand(ui, focus orelse ""),
             .resume_session => |query| try ui.resumeCommand(a, query),
             .model => |query| try ui.modelCommand(a, query),
             .shell => |shell| try runShell(ui, sampler, shell),

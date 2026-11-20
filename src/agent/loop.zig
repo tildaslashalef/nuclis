@@ -29,6 +29,7 @@ const inference = @import("inference");
 const engine = @import("../engine.zig");
 const tui = @import("../tui/root.zig");
 const tools = @import("tools/root.zig");
+const handoff_mod = @import("handoff.zig");
 const web = @import("../web/root.zig");
 const interrupt = @import("../interrupt.zig");
 const config = @import("../config.zig");
@@ -80,7 +81,15 @@ pub const Record = union(enum) {
     compaction: Compaction,
     /// A call the profile dropped, answered by the substitute call `call`.
     cut: CutRecord,
+    /// The conversation was replaced by one hand-off message, `text`.
+    handoff: struct { text: []const u8 },
 };
+
+/// Compaction reasons beyond the turn and result cuts, which a resume
+/// replays: every step before `first_kept` lost its reasoning, or had its
+/// write and edit arguments shortened (`handoff.argumentStub`).
+pub const reasoning_dropped = "reasoning_dropped";
+pub const arguments_stubbed = "arguments_stubbed";
 
 /// What the session keeps of a dropped call, to diagnose it later. Borrows.
 pub const CutRecord = struct {
@@ -325,6 +334,20 @@ pub const Agent = struct {
     /// the user cancels, so a real Ctrl-C still ends the turn.
     steer_break: bool = false,
 
+    /// What the hand-off ledger reads (`handoff.Ledger`), kept across cuts
+    /// and hand-offs: every request, the answer the user last replied to,
+    /// the files written, and the last failing command's end. Owned.
+    asks: std.ArrayList([]u8) = .empty,
+    agreed: []u8 = &.{},
+    /// The turn's own request, kept apart from the history, which a
+    /// hand-off replaces: a second hand-off repeats this, not the first's text.
+    request: []u8 = &.{},
+    touched: std.ArrayList(Touched) = .empty,
+    failing: []u8 = &.{},
+    /// Whether a full window hands off before it drops turns; off in the
+    /// tests that drive the fallback order.
+    handoff_enabled: bool = true,
+
     /// Steered messages a turn holds at once; a host constant.
     pub const max_steering: usize = 4;
 
@@ -367,6 +390,9 @@ pub const Agent = struct {
         self.cut_calls.deinit(self.alloc);
         self.clearReads();
         self.reads.deinit(self.alloc);
+        self.clearLedger();
+        self.asks.deinit(self.alloc);
+        self.touched.deinit(self.alloc);
         for (self.steering.items) |text| self.alloc.free(text);
         self.steering.deinit(self.alloc);
         self.thinking.deinit();
@@ -415,6 +441,7 @@ pub const Agent = struct {
     /// turn replays from the fresh session the model already reset.
     pub fn resetConversation(self: *Agent) void {
         self.clearHistory();
+        self.clearLedger();
         self.turn_start = 0;
         self.in_turn = false;
         self.rendered_tokens = 0;
@@ -569,6 +596,10 @@ pub const Agent = struct {
             freeImages(self.alloc, images);
             return error.ConversationLimit;
         }
+        self.noteAsk(user) catch |err| {
+            freeImages(self.alloc, images);
+            return err;
+        };
         try self.appendItem(.user, user, "", &.{}, null, images);
         try self.events.send(self.events.context, .{ .user = user });
         try self.events.record(self.events.context, .{ .user = .{ .text = user, .images = images } });
@@ -588,6 +619,7 @@ pub const Agent = struct {
         self.turn_cuts = .{};
 
         self.in_turn = true;
+        try self.handOffIfNearFull();
         const stop = try self.steps();
         try self.emitTurnEnd(stop);
         self.in_turn = false;
@@ -751,6 +783,8 @@ pub const Agent = struct {
         var note: [96]u8 = undefined;
         if (cuts.turns > 0) try self.events.send(self.events.context, .{ .notice = countNotice(&note, cuts.turns, "older turn", "older turns", "dropped from context to fit") });
         if (cuts.results > 0) try self.events.send(self.events.context, .{ .notice = countNotice(&note, cuts.results, "earlier tool result of this turn", "earlier tool results of this turn", "elided from context to fit") });
+        if (cuts.reasoning > 0) try self.events.send(self.events.context, .{ .notice = countNotice(&note, cuts.reasoning, "earlier step's reasoning", "earlier steps' reasoning", "dropped from context to fit") });
+        if (cuts.arguments > 0) try self.events.send(self.events.context, .{ .notice = countNotice(&note, cuts.arguments, "earlier file write", "earlier file writes", "shortened in context to fit") });
         self.turn_cuts.turns += cuts.turns;
         self.turn_cuts.results += cuts.results;
         cuts.* = .{};
@@ -769,6 +803,31 @@ pub const Agent = struct {
     fn compact(self: *Agent, cuts: *Cuts) !bool {
         const target = self.model.window(self.model.context).ceiling() * low_water_percent / 100;
         var tokens = try self.measured();
+        // The cheap cuts first: what the model wrote earlier and no longer
+        // needs verbatim. Then a hand-off, which keeps every request; turns
+        // and results are dropped only when it cannot run.
+        var cheap = false;
+        // A cut counts only when the render shrank: a profile that never
+        // renders earlier reasoning gains nothing from dropping it.
+        if (tokens > target) {
+            const n = try self.dropReasoning();
+            const after = if (n > 0) try self.measured() else tokens;
+            if (after < tokens) cuts.reasoning += n;
+            cheap = cheap or after < tokens;
+            tokens = after;
+        }
+        if (tokens > target) {
+            const n = try self.stubArguments();
+            const after = if (n > 0) try self.measured() else tokens;
+            if (after < tokens) cuts.arguments += n;
+            cheap = cheap or after < tokens;
+            tokens = after;
+        }
+        if (tokens <= target) return cheap;
+        if (self.handoff_enabled) {
+            try self.announce(cuts);
+            if (try self.handoff("")) return true;
+        }
         var dropped: usize = 0;
         while (tokens > target and try self.dropOldestTurn()) {
             dropped += 1;
@@ -777,7 +836,249 @@ pub const Agent = struct {
         const elided = if (tokens > target) try self.elideResults(tokens - target) else 0;
         cuts.turns += dropped;
         cuts.results += elided;
-        return dropped + elided > 0;
+        return cheap or dropped + elided > 0;
+    }
+
+    /// Where the kept steps begin: the history index of the `keep_steps`-th
+    /// assistant message from the end, or 0 when there are fewer.
+    fn keptFrom(self: *const Agent) usize {
+        var seen: usize = 0;
+        var i = self.history.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.history.items[i].role != .assistant) continue;
+            seen += 1;
+            if (seen == keep_steps) return i;
+        }
+        return 0;
+    }
+
+    /// Empties the reasoning of every step before the kept ones; recorded
+    /// so a resume does the same. Returns how many steps it emptied.
+    fn dropReasoning(self: *Agent) !usize {
+        const end = self.keptFrom();
+        var n: usize = 0;
+        for (self.history.items[0..end]) |*item| {
+            if (item.role != .assistant or item.reasoning.len == 0) continue;
+            self.alloc.free(item.reasoning);
+            item.reasoning = &.{};
+            n += 1;
+        }
+        if (n > 0) try self.events.record(self.events.context, .{ .compaction = .{ .first_kept = end, .reason = reasoning_dropped } });
+        return n;
+    }
+
+    /// Shortens the write and edit calls before the kept steps to their
+    /// path and a stub (`handoff.argumentStub`); recorded so a resume does
+    /// the same. Returns how many it shortened.
+    fn stubArguments(self: *Agent) !usize {
+        const end = self.keptFrom();
+        var n: usize = 0;
+        for (self.history.items[0..end]) |item| {
+            if (item.role != .assistant) continue;
+            for (item.tool_calls) |*call| {
+                const stub = try handoff_mod.argumentStub(self.alloc, call.name, call.arguments) orelse continue;
+                self.alloc.free(call.arguments);
+                call.arguments = stub;
+                n += 1;
+            }
+        }
+        if (n > 0) try self.events.record(self.events.context, .{ .compaction = .{ .first_kept = end, .reason = arguments_stubbed } });
+        return n;
+    }
+
+    /// At a turn's start, a conversation past `near_full_percent` of the
+    /// ceiling is compacted before the first step rather than at the edge.
+    fn handOffIfNearFull(self: *Agent) !void {
+        if (!self.handoff_enabled) return;
+        const ceiling = self.model.window(self.model.context).ceiling();
+        if (ceiling == 0 or try self.measured() * 100 <= ceiling * near_full_percent) return;
+        var cuts: Cuts = .{};
+        _ = try self.compact(&cuts);
+        try self.announce(&cuts);
+    }
+
+    /// Replaces the conversation with one hand-off message: the host's
+    /// ledger, a summary the model writes over a condensed render (one
+    /// step, no tools; `focus` is added to its instruction), and, inside a
+    /// turn, the request in progress. Returns false, changing nothing, when
+    /// the step cannot run (the window, a cancel, an empty answer).
+    pub fn handoff(self: *Agent, focus: []const u8) !bool {
+        const condensed_text = try self.condensed();
+        defer self.alloc.free(condensed_text);
+        const prompt = try std.fmt.allocPrint(self.alloc, "The session so far, condensed:\n\n{s}\n\n{s}{s}{s}", .{
+            condensed_text,
+            handoff_mod.instruction,
+            if (focus.len > 0) "\nFocus on: " else "",
+            focus,
+        });
+        defer self.alloc.free(prompt);
+        const messages = [_]Profile.Message{
+            .{ .role = .system, .content = handoff_mod.system },
+            .{ .role = .user, .content = prompt },
+        };
+        try self.events.send(self.events.context, .{ .notice = "  — writing a hand-off of the session so far, to continue from it" });
+        var collector: Collector = .{ .answer = .init(self.alloc) };
+        defer collector.answer.deinit();
+        var sink: completer.Sink = .{ .context = &collector, .call = Collector.event };
+        const reply = self.model.run(self.model.context, &messages, &.{}, &.{}, &sink) catch |err| switch (err) {
+            error.ContextFull => {
+                try self.events.send(self.events.context, .{ .notice = "  — the hand-off did not fit the context either" });
+                return false;
+            },
+            else => return err,
+        };
+        const summary = std.mem.trim(u8, collector.answer.written(), " \t\r\n");
+        if (reply.window_end or reply.outcome.stop == .cancelled or summary.len == 0) {
+            try self.events.send(self.events.context, .{ .notice = "  — the hand-off was not written; nothing changed" });
+            return false;
+        }
+        const request = if (self.in_turn) self.request else "";
+        const touched = try self.alloc.alloc(handoff_mod.Touched, self.touched.items.len);
+        defer self.alloc.free(touched);
+        for (self.touched.items, touched) |t, *out| out.* = .{ .path = t.path, .summary = t.summary };
+        const asks = try self.alloc.alloc([]const u8, self.asks.items.len);
+        defer self.alloc.free(asks);
+        for (self.asks.items, asks) |a, *out| out.* = a;
+        const text = try handoff_mod.write(self.alloc, .{ .asks = asks, .agreed = self.agreed, .touched = touched, .failing = self.failing }, summary, request);
+        defer self.alloc.free(text);
+
+        self.clearHistory();
+        self.turn_start = 0;
+        self.clearReads();
+        try self.appendItem(.user, text, "", &.{}, null, &.{});
+        try self.events.record(self.events.context, .{ .handoff = .{ .text = text } });
+        var note: [128]u8 = undefined;
+        const tokens = self.model.count(self.model.context, text) catch 0;
+        try self.events.send(self.events.context, .{ .notice = std.fmt.bufPrint(&note, "  — handed off: the conversation is now a summary of {d} tokens", .{tokens}) catch "  — handed off" });
+        return true;
+    }
+
+    /// The conversation as the summary step reads it: requests, answers,
+    /// each call as one line and each result as its first line, the last
+    /// `condensed_full_results` results whole; the oldest lines after the
+    /// first request go first past the token bound. Caller owns the text.
+    fn condensed(self: *Agent) ![]u8 {
+        var lines: std.ArrayList([]u8) = .empty;
+        defer {
+            for (lines.items) |line| self.alloc.free(line);
+            lines.deinit(self.alloc);
+        }
+        var results: usize = 0;
+        for (self.history.items) |item| results += @intFromBool(item.role == .tool);
+        var result_index: usize = 0;
+        for (self.history.items) |item| {
+            const line: []u8 = switch (item.role) {
+                .user => try std.fmt.allocPrint(self.alloc, "User: {s}", .{handoff_mod.cut(item.content, handoff_mod.ask_bytes)}),
+                .assistant => blk: {
+                    var w: std.Io.Writer.Allocating = .init(self.alloc);
+                    defer w.deinit();
+                    const answer = std.mem.trim(u8, item.content, " \t\r\n");
+                    if (answer.len > 0) try w.writer.print("Assistant: {s}", .{handoff_mod.cut(answer, handoff_mod.condensed_answer_bytes)});
+                    for (item.tool_calls) |call| {
+                        var described = try tools.describe(self.alloc, call.name, call.arguments);
+                        defer described.deinit(self.alloc);
+                        if (w.written().len > 0) try w.writer.writeByte('\n');
+                        try w.writer.print("Call: {s}", .{handoff_mod.cut(described.summary, handoff_mod.condensed_result_bytes)});
+                    }
+                    break :blk try w.toOwnedSlice();
+                },
+                .tool => blk: {
+                    result_index += 1;
+                    const whole = results - result_index < handoff_mod.condensed_full_results;
+                    const body = if (whole) handoff_mod.cut(item.content, handoff_mod.condensed_full_bytes) else handoff_mod.cut(firstLine(item.content), handoff_mod.condensed_result_bytes);
+                    break :blk try std.fmt.allocPrint(self.alloc, "Result: {s}", .{body});
+                },
+                else => continue,
+            };
+            errdefer self.alloc.free(line);
+            if (line.len == 0) {
+                self.alloc.free(line);
+                continue;
+            }
+            try lines.append(self.alloc, line);
+        }
+        const bound = @min(handoff_mod.condensed_tokens, self.model.window(self.model.context).ceiling() / 2);
+        var total: usize = 0;
+        for (lines.items) |line| total += try self.model.count(self.model.context, line) + 1;
+        var omitted: usize = 0;
+        while (total > bound and lines.items.len > 2) {
+            const line = lines.orderedRemove(1);
+            total -|= (try self.model.count(self.model.context, line)) + 1;
+            self.alloc.free(line);
+            omitted += 1;
+        }
+        var out: std.Io.Writer.Allocating = .init(self.alloc);
+        defer out.deinit();
+        for (lines.items, 0..) |line, i| {
+            if (i == 1 and omitted > 0) try out.writer.print("[{d} earlier lines omitted]\n", .{omitted});
+            try out.writer.print("{s}\n", .{line});
+        }
+        return try out.toOwnedSlice();
+    }
+
+    fn clearLedger(self: *Agent) void {
+        for (self.asks.items) |a| self.alloc.free(a);
+        self.asks.clearRetainingCapacity();
+        for (self.touched.items) |t| {
+            self.alloc.free(t.path);
+            self.alloc.free(t.summary);
+        }
+        self.touched.clearRetainingCapacity();
+        self.alloc.free(self.agreed);
+        self.agreed = &.{};
+        self.alloc.free(self.failing);
+        self.failing = &.{};
+        self.alloc.free(self.request);
+        self.request = &.{};
+    }
+
+    /// A turn's request for the ledger, and the answer it replies to.
+    fn noteAsk(self: *Agent, user: []const u8) !void {
+        try handoff_mod.pushAsk(self.alloc, &self.asks, user);
+        const request = try self.alloc.dupe(u8, user);
+        self.alloc.free(self.request);
+        self.request = request;
+        var i = self.history.items.len;
+        while (i > 0) {
+            i -= 1;
+            const item = self.history.items[i];
+            if (item.role == .user) break;
+            if (item.role != .assistant) continue;
+            const answer = std.mem.trim(u8, item.content, " \t\r\n");
+            if (answer.len == 0) continue;
+            const kept = try self.alloc.dupe(u8, handoff_mod.cut(answer, handoff_mod.agreed_bytes));
+            self.alloc.free(self.agreed);
+            self.agreed = kept;
+            break;
+        }
+    }
+
+    /// A settled call for the ledger: a file it changed, and a command's
+    /// failure (cleared by the next command that succeeds).
+    fn noteResult(self: *Agent, call: Profile.ToolCall, result: tools.Result) !void {
+        if (std.mem.eql(u8, call.name, "bash")) {
+            const kept: []u8 = if (result.is_error) try self.alloc.dupe(u8, handoff_mod.tailLines(result.text, handoff_mod.failing_lines)) else &.{};
+            self.alloc.free(self.failing);
+            self.failing = kept;
+        }
+        const change = result.change orelse return;
+        if (result.is_error) return;
+        const summary = try self.alloc.dupe(u8, result.summary orelse "");
+        errdefer self.alloc.free(summary);
+        for (self.touched.items) |*t| if (std.mem.eql(u8, t.path, change.path)) {
+            self.alloc.free(t.summary);
+            t.summary = summary;
+            return;
+        };
+        const path = try self.alloc.dupe(u8, change.path);
+        errdefer self.alloc.free(path);
+        if (self.touched.items.len == handoff_mod.max_touched) {
+            const old = self.touched.orderedRemove(0);
+            self.alloc.free(old.path);
+            self.alloc.free(old.summary);
+        }
+        try self.touched.append(self.alloc, .{ .path = path, .summary = summary });
     }
 
     /// The tokens the next step's render costs as the history stands.
@@ -874,6 +1175,7 @@ pub const Agent = struct {
             // A failed edit means the model's picture of the file is wrong:
             // its next read must be the text, not a pointer to an earlier one.
             if (result.is_error and std.mem.eql(u8, call.name, "edit_file")) try self.forgetReads(call);
+            try self.noteResult(call, result);
             const ran = seconds(started.durationTo(std.Io.Clock.awake.now(self.io)));
             // A tool that honours the interrupt (bash, the web tools) fails
             // when it stops; that failure is the user's cancel, not the tool's.
@@ -1454,7 +1756,37 @@ fn toolDefs(alloc: Allocator, tier: tools.Web) Allocator.Error![]Profile.ToolDef
 const Cuts = struct {
     turns: usize = 0,
     results: usize = 0,
+    /// Steps whose reasoning left the model's view.
+    reasoning: usize = 0,
+    /// Write and edit calls shortened to a stub.
+    arguments: usize = 0,
 };
+
+/// A file in the hand-off ledger. Owned strings.
+const Touched = struct { path: []u8, summary: []u8 };
+
+/// Collects the hand-off step's answer; its reasoning is not shown.
+const Collector = struct {
+    answer: std.Io.Writer.Allocating,
+    calls: usize = 0,
+
+    fn event(context: *anyopaque, e: inference.events.Event) anyerror!void {
+        const self: *Collector = @ptrCast(@alignCast(context));
+        switch (e) {
+            .answer => |text| try self.answer.writer.writeAll(text),
+            .tool_call, .tool_cut => self.calls += 1,
+            else => {},
+        }
+    }
+};
+
+/// The share of the prompt ceiling past which a turn starts with a
+/// compaction, so its steps do not begin a step from the window's edge.
+const near_full_percent = 85;
+
+/// Steps whose reasoning and write arguments stay in view when earlier
+/// ones are cut: the model's latest work.
+const keep_steps: usize = 2;
 
 /// `  — N <noun> <rest>`, the noun singular for one; a count too long for
 /// `buf` falls back to the plural without the number.
@@ -1465,6 +1797,11 @@ fn countNotice(buf: []u8, count: usize, comptime singular: []const u8, comptime 
 
 /// What an elided tool result becomes: one line naming the call and the
 /// result's size. Shared with `resume`, which replays elisions.
+/// `text` up to its first newline.
+fn firstLine(text: []const u8) []const u8 {
+    return text[0 .. std.mem.indexOfScalar(u8, text, '\n') orelse text.len];
+}
+
 pub const elided_prefix = "[result elided to fit the context: ";
 
 pub fn elisionStub(alloc: Allocator, name: []const u8, content: []const u8) Allocator.Error![]u8 {
@@ -2607,6 +2944,7 @@ test "a full window first elides the turn's older tool results, keeping the last
     defer capture.deinit();
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
+    agent.handoff_enabled = false;
 
     try testing.expectEqual(Stop.done, try agent.turn("read it four times", &.{}));
     // [user, (assistant, tool) x4, assistant]: the two oldest results are
@@ -2651,6 +2989,7 @@ test "elision stubs the oldest results first and stops at the low-water mark" {
     defer capture.deinit();
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
+    agent.handoff_enabled = false;
 
     const question: []const u8 = &@as([2000]u8, @splat('q'));
     try testing.expectEqual(Stop.done, try agent.turn(question, &.{}));
@@ -2660,6 +2999,65 @@ test "elision stubs the oldest results first and stops at the low-water mark" {
     for ([_]usize{ 4, 6, 8 }) |i| try testing.expectEqualStrings(body[0 .. body.len - 1], agent.history.items[i].content);
     try testing.expectEqual(@as(usize, 1), capture.compactions);
     try testing.expectEqual(@as(usize, 1), capture.notices);
+}
+
+test "a full window cuts earlier reasoning, then earlier write arguments, before anything else" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "b.txt", .data = "one" });
+    const big_write: Profile.ToolCall = .{ .id = 0, .name = "write_file", .arguments = "{\"path\":\"a.txt\",\"content\":\"" ++ @as([1200]u8, @splat('x')) ++ "\"}" };
+    const read_b: Profile.ToolCall = .{ .id = 0, .name = "read_file", .arguments = "{\"path\":\"b.txt\"}" };
+    var stub: Stub = .{
+        .answers = &.{ "", "", "", "done" },
+        .thinking = &.{ &@as([2000]u8, @splat('t')), "r", "r" },
+        .calls = &.{ &.{big_write}, &.{read_b}, &.{read_b} },
+        .context_full_at = 3,
+        .window_now = .{ .capacity = 300 * 100 / low_water_percent, .reserve = 0 },
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+
+    try testing.expectEqual(Stop.done, try agent.turn("go", &.{}));
+    // The oldest step lost its reasoning and its write's content; the two
+    // latest steps kept theirs, and nothing else was cut.
+    const first = agent.history.items[1];
+    try testing.expectEqual(@as(usize, 0), first.reasoning.len);
+    try testing.expect(std.mem.startsWith(u8, first.tool_calls[0].arguments, "{\"path\":\"a.txt\",\"content\":\"[shortened to fit the context: 1 line written"));
+    try testing.expectEqualStrings("r", agent.history.items[3].reasoning);
+    try testing.expectEqual(@as(usize, 2), capture.compactions);
+    try testing.expectEqualStrings("go", agent.history.items[0].content);
+}
+
+test "past the cheap cuts a full window hands off: one message with the ledger, the summary, and the request" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "b.txt", .data = "one" });
+    const read_b: Profile.ToolCall = .{ .id = 0, .name = "read_file", .arguments = "{\"path\":\"b.txt\"}" };
+    var stub: Stub = .{
+        .answers = &.{ "", "Goal: read b", "done" },
+        .calls = &.{&.{read_b}},
+        .context_full_at = 1,
+        .window_now = .{ .capacity = 300 * 100 / low_water_percent, .reserve = 0 },
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+
+    const question: []const u8 = "read b " ++ @as([1600]u8, @splat('q'));
+    try testing.expectEqual(Stop.done, try agent.turn(question, &.{}));
+    try testing.expectEqual(@as(usize, 3), stub.index);
+    try testing.expectEqual(@as(usize, 2), agent.history.items.len);
+    const text = agent.history.items[0].content;
+    try testing.expect(std.mem.startsWith(u8, text, handoff_mod.header));
+    try testing.expect(std.mem.indexOf(u8, text, "1. read b qq") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "## Summary\nGoal: read b\n") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "## The request in progress\nread b qq") != null);
+    try testing.expectEqualStrings("done", agent.history.items[1].content);
 }
 
 test "compaction drops earlier turns before it elides the turn's own results" {
@@ -2683,6 +3081,7 @@ test "compaction drops earlier turns before it elides the turn's own results" {
     defer capture.deinit();
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
+    agent.handoff_enabled = false;
 
     const question: []const u8 = &@as([2000]u8, @splat('q'));
     try testing.expectEqual(Stop.done, try agent.turn(question, &.{}));
@@ -2705,6 +3104,7 @@ test "several turns dropped in one step are one notice and one record each" {
     defer capture.deinit();
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
+    agent.handoff_enabled = false;
 
     for ([_][]const u8{ "a", "b", "c", "d" }) |prompt| try testing.expectEqual(Stop.done, try agent.turn(prompt, &.{}));
     try testing.expectEqual(@as(usize, 2), agent.history.items.len);
@@ -2741,6 +3141,7 @@ test "the turn end counts the results cut and elided, and the next turn starts a
     defer capture.deinit();
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
+    agent.handoff_enabled = false;
 
     try testing.expectEqual(Stop.done, try agent.turn("read four", &.{}));
     try testing.expectEqual(@as(usize, 1), capture.last_turn_stats.results_cut);
@@ -2768,6 +3169,7 @@ test "a step that reaches the window's end compacts and runs once more" {
     defer capture.deinit();
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
+    agent.handoff_enabled = false;
 
     try testing.expectEqual(Stop.done, try agent.turn("one", &.{}));
     try testing.expectEqual(Stop.done, try agent.turn("two", &.{}));
@@ -2791,6 +3193,7 @@ test "a second end of the window is the caller's ContextFull" {
     defer capture.deinit();
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
+    agent.handoff_enabled = false;
 
     try testing.expectEqual(Stop.done, try agent.turn("one", &.{}));
     try testing.expectError(error.ContextFull, agent.turn("two", &.{}));
@@ -2800,6 +3203,7 @@ test "a second end of the window is the caller's ContextFull" {
     var alone: Stub = .{ .answers = &.{"never"}, .window_end_always = 0 };
     var again = try Agent.init(alloc, testing.io, fixture.ws, alone.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer again.deinit();
+    again.handoff_enabled = false;
     try testing.expectError(error.ContextFull, again.turn("hello", &.{}));
 }
 
@@ -2859,6 +3263,7 @@ test "with nothing left to elide, a full window is the caller's error" {
     defer capture.deinit();
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
+    agent.handoff_enabled = false;
     try testing.expectError(error.ContextFull, agent.turn("hello", &.{}));
     try testing.expectEqual(@as(usize, 0), capture.compactions);
 }
@@ -2892,6 +3297,7 @@ test "compaction drops a whole prior turn, tool response included" {
     defer capture.deinit();
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
+    agent.handoff_enabled = false;
 
     try testing.expectEqual(Stop.done, try agent.turn("one", &.{}));
     // Turn one is [user, assistant(call), tool, assistant].
