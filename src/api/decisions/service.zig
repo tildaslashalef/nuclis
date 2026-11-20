@@ -336,7 +336,7 @@ test "decisions: the response is what `nuclis decide --json` writes" {
         var diag: config.Diagnostic = .{};
         const args: []const []const u8 = if (explain) &.{ "--request", path, "--json", "--backend", "cpu", "--explain" } else &.{ "--request", path, "--json", "--backend", "cpu" };
         var cli: std.Io.Writer.Allocating = .init(arena);
-        try decide.run(std.testing.allocator, io, .{ .directory = f.directory }, .{ .name = "tiny" }, try decide.parseArgs(arena, args, &diag), &cli.writer, .none, &diag);
+        try decide.run(std.testing.allocator, io, .{ .directory = f.directory }, .{ .name = "tiny" }, try decide.parseArgs(arena, args, &diag), &cli.writer, .plain, &diag);
         try std.testing.expectEqualStrings(try withoutTimings(arena, cli.written()), try withoutTimings(arena, served.body));
     }
 

@@ -6,7 +6,7 @@
 //! (`embedding/response.zig`). docs/models/embeddinggemma.md.
 const std = @import("std");
 const inference = @import("inference");
-const style = @import("tui/style.zig");
+const kit = @import("ui.zig");
 const config = @import("config.zig");
 const bounded = @import("input.zig");
 const wire = @import("embedding/request.zig");
@@ -153,7 +153,7 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, o: Options, diag: *config.
 
 /// Embeds every input of `o` with the model at `path` (and its projector
 /// `mmproj` for images and audio, null when not pulled), and reports.
-pub fn run(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]const u8, identity_in: response.Identity, o: Options, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]const u8, identity_in: response.Identity, o: Options, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -225,48 +225,63 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]cons
 
     const body: response.Body = .{ .identity = identity, .request = request, .vectors = vectors, .timings = timings };
     if (o.json) return response.write(arena, out, body);
-    try writeText(arena, out, sty, body);
+    try writeText(arena, out, ui, body);
 }
 
 /// Values shown per vector in the text report.
 const head_values = 6;
 
-fn writeText(arena: std.mem.Allocator, out: *std.Io.Writer, sty: style.Style, body: response.Body) !void {
-    const off = sty.off();
+fn writeText(arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui, body: response.Body) !void {
+    const v = kit.values;
+    const Cell = kit.table.Cell;
     const n = body.vectors.len;
-    try out.print("{s}{s}{s} {s}· {d} input{s} · {d} tokens · load {d:.1} s · tokenize {d:.0} ms · embed {d:.0} ms{s}\n", .{
-        sty.on(.header),                  body.identity.name,                     off,
-        sty.on(.dim),                     n,                                      if (n == 1) "" else "s",
-        body.tokens(),                    timing.ms(body.timings.load_ns) / 1000, timing.ms(body.timings.tokenize_ns),
-        timing.ms(body.timings.embed_ns), off,
-    });
-    try out.print("{s}space{s} {s}{s}{s}", .{ sty.on(.label), off, sty.on(.code), try response.space(arena, body.identity, body.request.dimensions), off });
-    if (body.request.task) |t| try out.print("  {s}task{s} {s}", .{ sty.on(.label), off, @tagName(t) });
-    if (body.request.hasImages()) try out.print("  {s}image tokens{s} {d}", .{ sty.on(.label), off, body.request.image_tokens });
-    try out.writeAll("\n\n");
-    for (body.vectors, body.request.inputs, 0..) |v, input, i| {
-        try out.print("{s}{d:>3}{s}  {s}{s}{s}\n", .{ sty.on(.number), i, off, sty.on(.code), try snippet(arena, input), off });
-        try out.print("     {d} tokens · {d} values · norm {d:.4} · ", .{ v.tokens, v.values.len, @sqrt(response.cosine(v.values, v.values)) });
-        for (v.values[0..@min(head_values, v.values.len)]) |x| try out.print("{s}{d: >7.4}{s} ", .{ sty.on(.number), x, off });
-        try out.writeAll("…\n");
-        if (v.truncated()) try out.print("     {s}cut from {d} tokens to {d}{s}\n", .{ sty.on(.warning), v.input_tokens, v.tokens, off });
+    try kit.blocks.header(out, ui, try kit.text.clean(arena, body.identity.name), try std.fmt.allocPrint(arena, "{f} · {f}", .{ v.count(n, "input"), v.count(body.tokens(), "token") }));
+    var fields: std.ArrayList(kit.blocks.Field) = .empty;
+    try fields.append(arena, .{ .key = "Space", .value = try response.space(arena, body.identity, body.request.dimensions), .role = .id });
+    if (body.request.task) |t| try fields.append(arena, .{ .key = "Task", .value = @tagName(t) });
+    if (body.request.hasImages()) try fields.append(arena, .{ .key = "Image tokens", .value = try std.fmt.allocPrint(arena, "{d}", .{body.request.image_tokens}) });
+    if (n == 2) try fields.append(arena, .{ .key = "Cosine", .value = try std.fmt.allocPrint(arena, "{d:.4}", .{response.cosine(body.vectors[0].values, body.vectors[1].values)}), .role = .emphasis });
+    try kit.blocks.detail(out, ui, &.{.{ .fields = fields.items }});
+    try out.writeByte('\n');
+    const rows = try arena.alloc([]const Cell, n);
+    for (body.vectors, body.request.inputs, rows, 0..) |vec, input, *row, i| {
+        var head: std.ArrayList(u8) = .empty;
+        for (vec.values[0..@min(head_values, vec.values.len)], 0..) |x, j| try head.print(arena, "{s}{d: >7.4}", .{ if (j > 0) " " else "", x });
+        if (vec.values.len > head_values) try head.print(arena, " {s}", .{ui.glyphs.ellipsis});
+        row.* = try arena.dupe(Cell, &.{
+            .{ .text = try std.fmt.allocPrint(arena, "{d}", .{i}), .role = .muted },
+            .{ .text = try snippet(arena, input), .role = .id },
+            .{ .text = try std.fmt.allocPrint(arena, "{d}", .{vec.tokens}) },
+            .{ .text = try std.fmt.allocPrint(arena, "{d:.4}", .{@sqrt(response.cosine(vec.values, vec.values))}) },
+            .{ .text = head.items, .role = .muted },
+            if (vec.truncated()) .{ .text = try std.fmt.allocPrint(arena, "{s} cut from {d} tokens to {d}", .{ ui.glyphs.warn, vec.input_tokens, vec.tokens }), .role = .warn } else .{ .text = "" },
+        });
     }
-    if (n == 2) {
-        try out.print("\n{s}cosine{s} {s}{d:.4}{s}\n", .{ sty.on(.label), off, sty.on(.number), response.cosine(body.vectors[0].values, body.vectors[1].values), off });
-    } else if (n > 2 and n <= max_matrix) {
-        try out.print("\n{s}cosines{s}\n     ", .{ sty.on(.label), off });
-        for (0..n) |j| try out.print("{s}{d:>7}{s}", .{ sty.on(.dim), j, off });
-        try out.writeByte('\n');
-        for (body.vectors, 0..) |a, i| {
-            try out.print("{s}{d:>3}{s}  ", .{ sty.on(.number), i, off });
-            for (body.vectors, 0..) |b, j| {
-                if (i == j) try out.print("{s}{s:>7}{s}", .{ sty.on(.dim), "·", off }) else try out.print("{d:>7.4}", .{response.cosine(a.values, b.values)});
-            }
-            try out.writeByte('\n');
+    try kit.table.render(out, ui, arena, 0, &.{
+        .{ .title = "#", .alignment = .right, .min = 1 }, .{ .title = "INPUT" },
+        .{ .title = "TOKENS", .alignment = .right },      .{ .title = "NORM", .alignment = .right },
+        .{ .title = "VALUES", .drop = 2 },                .{ .title = "", .drop = 1 },
+    }, rows);
+    if (n > 2 and n <= max_matrix) {
+        try out.print("\n{s}Cosines{s}\n", .{ ui.on(.title), ui.off(.title) });
+        const columns = try arena.alloc(kit.table.Column, n + 1);
+        columns[0] = .{ .title = "", .alignment = .right, .min = 1 };
+        for (columns[1..], 0..) |*c, j| c.* = .{ .title = try std.fmt.allocPrint(arena, "{d}", .{j}), .alignment = .right, .min = 6 };
+        const matrix = try arena.alloc([]const Cell, n);
+        for (body.vectors, matrix, 0..) |a, *row, i| {
+            const cells = try arena.alloc(Cell, n + 1);
+            cells[0] = .{ .text = try std.fmt.allocPrint(arena, "{d}", .{i}), .role = .muted };
+            for (body.vectors, cells[1..], 0..) |b, *cell, j| cell.* = if (i == j)
+                .{ .text = ui.glyphs.dot, .role = .muted }
+            else
+                .{ .text = try std.fmt.allocPrint(arena, "{d:.4}", .{response.cosine(a.values, b.values)}) };
+            row.* = cells;
         }
+        try kit.table.render(out, ui, arena, 2, columns, matrix);
     } else if (n > max_matrix) {
-        try out.print("\n{s}cosines are crossed for up to {d} inputs; --json gives every vector{s}\n", .{ sty.on(.dim), max_matrix, off });
+        try out.print("\n{s}cosines are crossed for up to {d} inputs; --json gives every vector{s}\n", .{ ui.on(.muted), max_matrix, ui.off(.muted) });
     }
+    try out.print("\n{s}load {f} · tokenize {f} · embed {f}{s}\n", .{ ui.on(.muted), v.duration(timing.ms(body.timings.load_ns) / 1000), v.duration(timing.ms(body.timings.tokenize_ns) / 1000), v.duration(timing.ms(body.timings.embed_ns) / 1000), ui.off(.muted) });
 }
 
 /// An input as one short line: its first text, else its label.
@@ -349,7 +364,7 @@ test "the text report: a snippet per input, one cosine for a pair" {
         .{ .parts = &.{.{ .text = &long }}, .label = "docs.jsonl:4" },
     };
     var out: std.Io.Writer.Allocating = .init(arena);
-    try writeText(arena, &out.writer, .none, .{
+    try writeText(arena, &out.writer, .plain, .{
         .identity = .{ .name = "e", .sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" },
         .request = .{ .inputs = &inputs, .dimensions = 768 },
         .vectors = &.{ .{ .values = &a, .tokens = 3, .input_tokens = 3 }, .{ .values = &b, .tokens = 4, .input_tokens = 9 } },
@@ -358,7 +373,7 @@ test "the text report: a snippet per input, one cosine for a pair" {
     const text = out.written();
     try std.testing.expect(std.mem.indexOf(u8, text, "\"first line\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "docs.jsonl:4 \"" ++ long[0..64] ++ "…\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "cut from 9 tokens") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "cosine 0.6000") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "space e@0123456789ab/768") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "▲ cut from 9 tokens to 4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Cosine  0.6000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Space   e@0123456789ab/768") != null);
 }

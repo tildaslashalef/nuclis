@@ -10,7 +10,7 @@
 const std = @import("std");
 const inference = @import("inference");
 const config = @import("../config.zig");
-const style = @import("../tui/style.zig");
+const kit = @import("../ui.zig");
 const http = @import("http.zig");
 const deadline = @import("deadline.zig");
 const errors = @import("errors.zig");
@@ -238,9 +238,11 @@ pub fn byKind(arena: std.mem.Allocator, io: std.Io, registry: config.Models, nam
     return named;
 }
 
-fn printOpened(out: *std.Io.Writer, sty: style.Style, io: std.Io, name: []const u8, kind: []const u8, started: std.Io.Timestamp) !void {
-    const ms = @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_ms;
-    try out.print("{s}opened{s} {s} {s}({s}, {d:.0} ms){s}\n", .{ sty.on(.success), sty.off(), name, sty.on(.dim), kind, ms, sty.off() });
+fn printOpened(out: *std.Io.Writer, ui: kit.Ui, io: std.Io, name: []const u8, kind: []const u8, started: std.Io.Timestamp) !void {
+    const seconds = @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_s;
+    var buffer: [64]u8 = undefined;
+    try kit.blocks.result(out, ui, .ok, name, std.fmt.bufPrint(&buffer, "{s} · opened in {f}", .{ kind, kit.values.duration(seconds) }) catch kind);
+    try out.flush();
 }
 
 /// `catalog.kindOf`, and a directory is a decision checkpoint, as
@@ -547,7 +549,7 @@ fn gibibytes(bytes: u64) f64 {
 /// opened, and the shutdown to `out`. After Ctrl-C it accepts nothing new,
 /// waits up to `limits.drain_seconds` for queued decisions, closes the
 /// connections, and returns; a second Ctrl-C ends the process at once.
-pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Options, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Options, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     const backend = options.backend orelse inference.decide.default_backend;
     const listen_address = try address(options.host, options.port, diag);
     var server: Server = .{
@@ -614,10 +616,12 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     // Only what --model and the pins name opens here; every other model
     // opens on its first request.
     const named = try byKind(arena_state.allocator(), io, context.registry, try opened(arena_state.allocator(), options), diag);
+    try kit.blocks.header(out, ui, "nuclis serve", @tagName(backend));
+    try out.flush();
     for (named.decision.items) |name| {
         const started = std.Io.Clock.awake.now(io);
         server.decisions.preload(arena_state.allocator(), io, name, diag) catch |err| return tooLarge(io, &server.memory, diag, "decision", name, err);
-        try printOpened(out, sty, io, name, "decision", started);
+        try printOpened(out, ui, io, name, "decision", started);
     }
     if (named.language) |name| {
         const started = std.Io.Clock.awake.now(io);
@@ -625,33 +629,37 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
             diag.set("the language model {s} did not open: {s}", .{ name, @errorName(err) });
             return tooLarge(io, &server.memory, diag, "language", name, err);
         };
-        try printOpened(out, sty, io, name, "chat", started);
+        try printOpened(out, ui, io, name, "chat", started);
     }
     if (named.embedding) |name| {
         const started = std.Io.Clock.awake.now(io);
         server.embeddings.preload(arena_state.allocator(), io, name, diag) catch |err| return tooLarge(io, &server.memory, diag, "embedding", name, err);
-        try printOpened(out, sty, io, name, "embedding", started);
+        try printOpened(out, ui, io, name, "embedding", started);
     }
     if (named.speech) |name| {
         const started = std.Io.Clock.awake.now(io);
         server.speech.preload(arena_state.allocator(), io, name, diag) catch |err| return tooLarge(io, &server.memory, diag, "speech", name, err);
-        try printOpened(out, sty, io, name, "speech", started);
+        try printOpened(out, ui, io, name, "speech", started);
     }
     if (named.transcription) |name| {
         const started = std.Io.Clock.awake.now(io);
         server.transcription.preload(arena_state.allocator(), io, name, diag) catch |err| return tooLarge(io, &server.memory, diag, "transcription", name, err);
-        try printOpened(out, sty, io, name, "transcription", started);
+        try printOpened(out, ui, io, name, "transcription", started);
     }
-    if (options.pins.items.len > 0) {
-        const pins = try std.mem.join(arena_state.allocator(), ", ", options.pins.items);
-        try out.print("{s}pinned:{s} {s} {s}(never closed to make room){s}\n", .{ sty.on(.label), sty.off(), pins, sty.on(.dim), sty.off() });
-    }
+    const arena = arena_state.allocator();
+    var fields: std.ArrayList(kit.blocks.Field) = .empty;
+    try fields.append(arena, .{ .key = "Decisions", .value = try std.fmt.allocPrint(arena, "{s} by default", .{context.default_model}), .role = .id });
+    try fields.append(arena, .{ .key = "Memory", .value = try std.fmt.allocPrint(arena, "models within {f}", .{kit.values.size(server.memory.limit)}) });
+    if (options.pins.items.len > 0) try fields.append(arena, .{ .key = "Pinned", .value = try std.fmt.allocPrint(arena, "{s} · never closed to make room", .{try std.mem.join(arena, ", ", options.pins.items)}) });
+    if (web_service) |*service| try fields.append(arena, .{ .key = "Web tools", .value = try std.fmt.allocPrint(arena, "{s} run here for requests that ask, through {s}", .{ if (service.context_offered) "web_search, web_fetch, and web_context" else "web_search and web_fetch", service.base }) });
+    try fields.append(arena, .{ .key = "Request log", .value = if (options.log) "one line per response" else "quiet" });
 
-    var log: log_mod.Log = .init(out, sty, io);
+    var log: log_mod.Log = .init(out, ui, io);
     if (options.log) server.log = &log;
     defer server.book.deinit(gpa);
+    var warnings: std.ArrayList([2][]const u8) = .empty;
     if (options.request_log) if (context.root) |root| server.book.open(gpa, io, root) catch |err|
-        try out.print("{s}warning:{s} no request log under {s}/logs: {s}\n", .{ sty.on(.warning), sty.off(), root, @errorName(err) });
+        try warnings.append(arena, .{ "no request log", try std.fmt.allocPrint(arena, "under {s}/logs: {s}", .{ root, @errorName(err) }) });
     request_log.armPanic(&server.book);
     defer request_log.armPanic(null);
 
@@ -661,11 +669,15 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     };
     defer listener.deinit(io);
     if (!isLoopback(listen_address))
-        try out.print("{s}warning:{s} listening beyond this machine ({s}); the API has no authentication\n", .{ sty.on(.warning), sty.off(), options.host });
+        try warnings.append(arena, .{ "listening beyond this machine", try std.fmt.allocPrint(arena, "{s}; the API has no authentication", .{options.host}) });
     var notice_buf: [96]u8 = undefined;
-    if (config.pastSupported(&notice_buf, context.loaded.config.engine.ctx_size)) |notice| try out.print("{s}notice:{s} {s}\n", .{ sty.on(.warning), sty.off(), notice });
-    if (web_service) |*service| try out.print("{s}web tools:{s} {s} run here for requests that ask, through {s}\n", .{ sty.on(.label), sty.off(), if (service.context_offered) "web_search, web_fetch, and web_context" else "web_search and web_fetch", service.base });
-    try out.print("{s}nuclis serve{s} listening on {s}http://{f}/v1{s} {s}(backend {s}, default decision model {s}, models within {d:.1} GiB{s}; Ctrl-C stops){s}\n", .{ sty.on(.header), sty.off(), sty.on(.code), listen_address, sty.off(), sty.on(.dim), @tagName(backend), context.default_model, @as(f64, @floatFromInt(server.memory.limit)) / (1 << 30), if (options.log) "" else ", quiet", sty.off() });
+    if (config.pastSupported(&notice_buf, context.loaded.config.engine.ctx_size)) |notice| try warnings.append(arena, .{ try arena.dupe(u8, notice), "" });
+    if (named.decision.items.len > 0 or named.language != null or named.embedding != null or named.speech != null or named.transcription != null) try out.writeByte('\n');
+    try kit.blocks.detail(out, ui, &.{.{ .fields = fields.items }});
+    if (warnings.items.len > 0) try out.writeByte('\n');
+    for (warnings.items) |w| try kit.blocks.result(out, ui, .warning, w[0], w[1]);
+    try out.writeByte('\n');
+    try out.print("{s}{s}{s} listening on {s}http://{f}/v1{s}  {s}Ctrl-C stops{s}\n", .{ ui.on(.ok), ui.glyphs.ok, ui.off(.ok), ui.on(.id), listen_address, ui.off(.id), ui.on(.muted), ui.off(.muted) });
     try out.flush();
 
     var group: std.Io.Group = .init;
@@ -683,7 +695,8 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
         else => return err,
     };
 
-    try out.print("{s}stopping:{s} no new connections; finishing queued decisions and embeddings {s}(up to {d} s; Ctrl-C again ends now){s}\n", .{ sty.on(.warning), sty.off(), sty.on(.dim), limits.drain_seconds, sty.off() });
+    var drain_buffer: [128]u8 = undefined;
+    try kit.blocks.result(out, ui, .warning, "stopping", std.fmt.bufPrint(&drain_buffer, "no new connections; finishing queued decisions and embeddings (up to {d} s; Ctrl-C again ends now)", .{limits.drain_seconds}) catch "");
     try out.flush();
     const drain_until = std.Io.Clock.awake.now(io).addDuration(.fromSeconds(limits.drain_seconds));
     while (server.busy(io) and std.Io.Clock.awake.now(io).compare(.lt, drain_until)) {
@@ -693,7 +706,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     // Wakes idle keep-alive connections; a request already taken by a batch
     // finishes first (the batcher waits through one cancelation).
     group.cancel(io);
-    try out.print("{s}stopped{s}{s}\n", .{ sty.on(.success), sty.off(), if (abandoned) " (queued work abandoned after the drain limit)" else "" });
+    try kit.blocks.result(out, ui, if (abandoned) .warning else .ok, "stopped", if (abandoned) "queued work abandoned after the drain limit" else "");
     try out.flush();
 }
 

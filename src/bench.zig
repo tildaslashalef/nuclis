@@ -7,7 +7,7 @@ const engine = @import("engine.zig");
 const generate = @import("generate.zig");
 const expert_counts = @import("expert_counts.zig");
 const config = @import("config.zig");
-const style = @import("tui/style.zig");
+const kit = @import("ui.zig");
 const interrupt = @import("interrupt.zig");
 const prefix_cache = inference.prefix_cache;
 
@@ -61,7 +61,7 @@ pub const Options = struct {
 /// Compiles the Metal kernels and prints each pipeline's limits: a thread
 /// limit under 1024 is the compiler saying the kernel's registers cap its
 /// occupancy, the cheapest register-pressure signal a kernel change has.
-pub fn kernelStats(alloc: std.mem.Allocator, json: bool, writer: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+pub fn kernelStats(alloc: std.mem.Allocator, json: bool, writer: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     const Backend = inference.metal.Backend;
     var diagnostic: [512]u8 = @splat(0);
     var backend = Backend.init(alloc, &diagnostic) catch |err| {
@@ -83,12 +83,22 @@ pub fn kernelStats(alloc: std.mem.Allocator, json: bool, writer: *std.Io.Writer,
         try std.json.Stringify.value(.{ .pipelines = &stats }, .{ .whitespace = .indent_2 }, writer);
         return writer.writeByte('\n');
     }
-    try writer.print("{s}Metal pipelines:{s} {d}, {d} below 1024 threads per threadgroup\n\n", .{ sty.on(.bold), sty.off(), stats.len, limited });
-    try writer.print("{s}kernel                       max threads  SIMD width  threadgroup bytes{s}\n", .{ sty.on(.header), sty.off() });
-    for (stats) |s| {
-        const flag = if (s.max_threads < 1024) sty.on(.number) else "";
-        try writer.print("{s: <28} {s}{d: >12}{s} {d: >11} {d: >18}\n", .{ s.name, flag, s.max_threads, if (flag.len > 0) sty.off() else "", s.execution_width, s.threadgroup_memory });
-    }
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try kit.blocks.header(writer, ui, "Metal pipelines", try std.fmt.allocPrint(arena, "{d} kernels · {d} below 1024 threads per threadgroup", .{ stats.len, limited }));
+    const Cell = kit.table.Cell;
+    const rows = try arena.alloc([]const Cell, stats.len);
+    for (stats, rows) |s, *row| row.* = try arena.dupe(Cell, &.{
+        .{ .text = s.name, .role = .id },
+        .{ .text = try std.fmt.allocPrint(arena, "{d}", .{s.max_threads}), .role = if (s.max_threads < 1024) .warn else .text },
+        .{ .text = try std.fmt.allocPrint(arena, "{d}", .{s.execution_width}) },
+        .{ .text = try std.fmt.allocPrint(arena, "{d}", .{s.threadgroup_memory}) },
+    });
+    try kit.table.render(writer, ui, arena, 0, &.{
+        .{ .title = "KERNEL" },                          .{ .title = "MAX THREADS", .alignment = .right },
+        .{ .title = "SIMD WIDTH", .alignment = .right }, .{ .title = "THREADGROUP BYTES", .alignment = .right },
+    }, rows);
 }
 
 /// The dispatches one Qwen token records (~1,240), with margin; the plan is not asked
@@ -288,76 +298,166 @@ pub const Report = struct {
     /// the prefix's prefill included.
     experts: ?expert_counts.Summary = null,
 
-    pub fn render(self: Report, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+    pub fn render(self: Report, arena: std.mem.Allocator, out: *std.Io.Writer, json: bool, ui: kit.Ui) !void {
         if (json) {
             try std.json.Stringify.value(self, .{ .whitespace = .indent_2, .emit_null_optional_fields = false }, out);
             return out.writeByte('\n');
         }
-        const label = sty.on(.label);
-        const off = sty.off();
-        try out.print("{s}Backend:{s} {s} ({s})\n{s}Model:{s} {s}{s}{s}\n{s}Config:{s} {s}{s}{s}\n", .{ label, off, self.backend, self.build_mode, label, off, sty.on(.code), self.model_path, off, label, off, sty.on(.code), self.config, off });
-        try out.print("{s}Context:{s} {d} tokens, KV {s} (session {d:.1} MiB), output budget: {d}, {s}, prompt from {s}{s}\n{s}Load:{s} {d:.1} ms\n", .{ label, off, self.context, self.kv_precision, @as(f64, @floatFromInt(self.session_bytes)) / (1024 * 1024), self.max_tokens, self.sampling, self.prompt_source, if (self.profile != null) ", profiled (one encoder per dispatch; rates not comparable)" else "", label, off, self.load_milliseconds });
-        if (self.prefix) |p| try out.print("{s}Prefix:{s} {d} tokens {s} in {d:.1} ms{s}{s}\n", .{ label, off, p.tokens, if (p.restored) "restored" else "prefilled", p.milliseconds, if (p.path != null) ", " else "", p.path orelse "" });
+        const v = kit.values;
+        const model = try kit.text.clean(arena, self.model_path);
+        try kit.blocks.header(out, ui, std.fs.path.basename(model), try std.fmt.allocPrint(arena, "{s} ({s})", .{ self.backend, self.build_mode }));
+        var fields: std.ArrayList(kit.blocks.Field) = .empty;
+        try fields.append(arena, .{ .key = "Model", .value = model, .role = .id });
+        try fields.append(arena, .{ .key = "Config", .value = try kit.text.clean(arena, self.config), .role = .id });
+        try fields.append(arena, .{ .key = "Context", .value = try std.fmt.allocPrint(arena, "{f} · KV {s} · session {f}", .{ v.count(self.context, "token"), self.kv_precision, v.size(self.session_bytes) }) });
+        try fields.append(arena, .{ .key = "Output", .value = try std.fmt.allocPrint(arena, "budget of {f} · {s} · prompt from {s}", .{ v.count(self.max_tokens, "token"), self.sampling, self.prompt_source }) });
+        try fields.append(arena, .{ .key = "Load", .value = try std.fmt.allocPrint(arena, "{f}", .{v.duration(self.load_milliseconds / 1000)}) });
+        if (self.prefix) |p| {
+            const where = if (p.path) |path| try std.fmt.allocPrint(arena, " · {s}", .{try kit.text.clean(arena, path)}) else "";
+            try fields.append(arena, .{ .key = "Prefix", .value = try std.fmt.allocPrint(arena, "{f} {s} in {f}{s}", .{ v.count(p.tokens, "token"), if (p.restored) "restored" else "prefilled", v.duration(p.milliseconds / 1000), where }) });
+        }
+        if (self.profile != null) try fields.append(arena, .{ .key = "Profiled", .value = "one encoder per dispatch, so these rates are not comparable with unprofiled runs", .role = .warn });
+        try kit.blocks.detail(out, ui, &.{.{ .fields = fields.items }});
         try out.writeByte('\n');
-        if (self.verify) |v| {
-            try renderVerify(v, out, sty);
-            if (self.profile) |p| try renderProfile(p, out, sty);
+        if (self.verify) |verify| {
+            try renderVerify(verify, arena, out, ui);
+            if (self.profile) |p| try renderProfile(p, arena, out, ui);
             return;
         }
-        try out.print("{s}run    prompt  gen  spec  stop           prefill ms  pp tok/s  first ms   decode ms  tg tok/s   gpu ms  fallbacks{s}\n", .{ sty.on(.header), off });
-        for (self.samples, 0..) |s, i| {
-            try out.print("{s}{d: <4} {d: >7} {d: >4}  {s: <4}  {s: <13} {d: >11.1} ", .{ if (s.warmup) "w" else " ", i, s.prompt_tokens, s.generated_tokens, if (s.speculative) "on" else "off", s.stop_reason, s.prefill_milliseconds });
-            try rate(out, s.prefill_tokens_per_second);
-            try out.print(" {d: >9.1} {d: >11.1} ", .{ s.first_token_milliseconds, s.decode_milliseconds });
-            try rate(out, s.decode_tokens_per_second);
-            if (s.gpu_busy_milliseconds) |gpu| try out.print(" {d: >8.1}", .{gpu}) else try out.writeAll("        —");
-            if (s.topk_fallbacks) |n| try out.print(" {d: >10}", .{n}) else try out.writeAll("          —");
-            try out.writeByte('\n');
-        }
-        try out.print("\n{s}Measured mean over {d} runs:{s} prefill {s}", .{ sty.on(.bold), self.measured_runs, off, sty.on(.number) });
-        try rate(out, self.mean_prefill_tokens_per_second);
-        try out.print("{s} tok/s, decode {s}", .{ off, sty.on(.number) });
-        try rate(out, self.mean_decode_tokens_per_second);
-        try out.print("{s} tok/s, first token ", .{off});
-        if (self.mean_first_token_milliseconds) |ms| try out.print("{d:.1} ms\n", .{ms}) else try out.writeAll("—\n");
+        try self.renderSamples(arena, out, ui);
+        try out.writeByte('\n');
+        var means: std.ArrayList(kit.blocks.Field) = .empty;
+        try means.append(arena, .{ .key = "Prefill", .value = try rate(arena, self.mean_prefill_tokens_per_second) });
+        try means.append(arena, .{ .key = "Decode", .value = try rate(arena, self.mean_decode_tokens_per_second) });
+        try means.append(arena, .{ .key = "First token", .value = if (self.mean_first_token_milliseconds) |ms| try std.fmt.allocPrint(arena, "{d:.1} ms", .{ms}) else v.missing });
         if (self.speculative_draft_length) |drafts| {
-            try out.print("{s}Speculative (draft length {d}):{s} decode ", .{ sty.on(.bold), drafts, off });
-            if (self.mean_speculative_decode_tokens_per_second) |v| try out.print("{s}{d:.2}{s} tok/s", .{ sty.on(.number), v, off }) else try out.writeAll("—");
-            try out.print(" vs baseline ", .{});
-            if (self.mean_decode_tokens_per_second) |v| try out.print("{d:.2} tok/s", .{v}) else try out.writeAll("—");
-            if (self.decode_speedup) |x| try out.print(", {s}{d:.2}x{s}", .{ sty.on(.number), x, off }) else try out.writeAll(", —x");
-            if (self.mean_accepted_per_step) |v| {
-                try out.print(", accepted {d:.2} drafts/step", .{v});
-                if (self.mean_proposed_per_step) |p| try out.print(" of {d:.2} proposed", .{p});
-                try out.writeByte('\n');
-            } else try out.writeAll(", accepted —\n");
+            try means.append(arena, .{ .key = "Speculative", .value = try std.fmt.allocPrint(arena, "{s} decode at draft length {d}", .{ try rate(arena, self.mean_speculative_decode_tokens_per_second), drafts }) });
+            try means.append(arena, .{ .key = "Speedup", .value = if (self.decode_speedup) |x| try std.fmt.allocPrint(arena, "{d:.2}x over the baseline", .{x}) else v.missing, .role = .emphasis });
+            try means.append(arena, .{ .key = "Accepted", .value = if (self.mean_accepted_per_step) |a|
+                (if (self.mean_proposed_per_step) |p| try std.fmt.allocPrint(arena, "{d:.2} of {d:.2} drafts per step", .{ a, p }) else try std.fmt.allocPrint(arena, "{d:.2} drafts per step", .{a}))
+            else
+                v.missing });
         }
-        if (self.profile) |p| try renderProfile(p, out, sty);
+        try kit.blocks.detail(out, ui, &.{.{ .title = try std.fmt.allocPrint(arena, "Mean of {f}", .{v.count(self.measured_runs, "measured run")}), .fields = means.items }});
+        if (self.profile) |p| try renderProfile(p, arena, out, ui);
         if (self.experts) |e| {
             try out.writeByte('\n');
             try e.render(out);
         }
     }
-    fn rate(out: *std.Io.Writer, value: ?f64) !void {
-        if (value) |v| try out.print("{d: >9.2}", .{v}) else try out.writeAll("        —");
-    }
-    fn renderVerify(v: VerifyReport, out: *std.Io.Writer, sty: style.Style) !void {
-        try out.print("{s}run  batches  propose  checkpoint   verify  recover   commit   C ms/batch{s}\n", .{ sty.on(.header), sty.off() });
-        for (v.samples, 0..) |s, i| try out.print("{s}{d: <3} {d: >8} {d: >8.2} {d: >11.2} {d: >8.2} {d: >8.2} {d: >8.2} {d: >12.2}\n", .{ if (s.warmup) "w" else " ", i, s.batches, s.propose, s.checkpoint, s.verify, s.recover, s.commit, s.total });
-        try out.print("\n{s}Verify batch, {d} rows, {d} accepted, from depth {d}:{s} ", .{ sty.on(.bold), v.rows, v.accepted, v.depth, sty.off() });
-        if (v.mean) |m| {
-            try out.print("C {s}{d:.2}{s} ms (propose {d:.2}, checkpoint {d:.2}, verify {d:.2}, recover {d:.2}, commit {d:.2})\n", .{ sty.on(.number), m.total, sty.off(), m.propose, m.checkpoint, m.verify, m.recover, m.commit });
-        } else try out.writeAll("no measured run\n");
-    }
-    fn renderProfile(p: ProfileReport, out: *std.Io.Writer, sty: style.Style) !void {
-        try out.print("\n{s}Per-kernel GPU time over {d} measured steps:{s} {d:.0} dispatches/step, {d:.1} ms/step attributed of {d:.1} ms/step command-buffer time, {d} unsampled dispatches\n", .{ sty.on(.bold), p.steps, sty.off(), p.dispatches_per_step, p.attributed_milliseconds_per_step, p.gpu_milliseconds_per_step, p.unsampled_dispatches });
-        try out.print("{s}kernel             encoding    rows    cols   n/step   ms/step  share    GB/s{s}\n", .{ sty.on(.header), sty.off() });
-        for (p.kernels) |k| {
-            try out.print("{s: <18} {s: <8} {d: >7} {d: >7} {d: >8.1} {d: >9.3} {d: >5.1}%", .{ k.kernel, k.encoding orelse "—", k.rows, k.columns, k.dispatches_per_step, k.milliseconds_per_step, k.share * 100 });
-            if (k.gigabytes_per_second) |gbps| try out.print(" {d: >7.1}\n", .{gbps}) else try out.writeAll("       —\n");
+
+    /// One row per run; a column no run measured (GPU time on the CPU,
+    /// fallbacks off the top-k path, the switch without a drafter) is left out.
+    fn renderSamples(self: Report, arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui) !void {
+        const Cell = kit.table.Cell;
+        var any_gpu = false;
+        var any_fallbacks = false;
+        for (self.samples) |s| {
+            any_gpu = any_gpu or s.gpu_busy_milliseconds != null;
+            any_fallbacks = any_fallbacks or s.topk_fallbacks != null;
         }
-        try out.print("\n{s}family      ms/step  share{s}\n", .{ sty.on(.header), sty.off() });
-        for (p.families) |f| try out.print("{s: <10} {d: >9.3} {d: >5.1}%\n", .{ @tagName(f.family), f.milliseconds_per_step, f.share * 100 });
+        const missing: Cell = .{ .text = kit.values.missing, .role = .muted };
+        const rows = try arena.alloc([]const Cell, self.samples.len);
+        // A speculative run is a pair (off, then on) under one number.
+        const per_run: usize = if (self.speculative_draft_length != null) 2 else 1;
+        var measured: usize = 0;
+        for (self.samples, rows) |s, *row| {
+            if (!s.warmup) measured += 1;
+            row.* = try arena.dupe(Cell, &.{
+                if (s.warmup) .{ .text = "warm-up", .role = .muted } else .{ .text = try std.fmt.allocPrint(arena, "{d}", .{(measured - 1) / per_run + 1}) },
+                .{ .text = try std.fmt.allocPrint(arena, "{d}", .{s.prompt_tokens}) },
+                .{ .text = try std.fmt.allocPrint(arena, "{d}", .{s.generated_tokens}) },
+                .{ .text = if (self.speculative_draft_length == null) "" else if (s.speculative) "on" else "off" },
+                .{ .text = s.stop_reason, .role = if (std.mem.eql(u8, s.stop_reason, "cancelled")) .warn else .text },
+                .{ .text = try std.fmt.allocPrint(arena, "{d:.1}", .{s.prefill_milliseconds}) },
+                if (s.prefill_tokens_per_second) |r| .{ .text = try std.fmt.allocPrint(arena, "{d:.2}", .{r}), .role = .emphasis } else missing,
+                .{ .text = try std.fmt.allocPrint(arena, "{d:.1}", .{s.first_token_milliseconds}) },
+                .{ .text = try std.fmt.allocPrint(arena, "{d:.1}", .{s.decode_milliseconds}) },
+                if (s.decode_tokens_per_second) |r| .{ .text = try std.fmt.allocPrint(arena, "{d:.2}", .{r}), .role = .emphasis } else missing,
+                if (!any_gpu) .{ .text = "" } else if (s.gpu_busy_milliseconds) |ms| .{ .text = try std.fmt.allocPrint(arena, "{d:.1}", .{ms}) } else missing,
+                if (!any_fallbacks) .{ .text = "" } else if (s.topk_fallbacks) |n| .{ .text = try std.fmt.allocPrint(arena, "{d}", .{n}) } else missing,
+            });
+        }
+        try kit.table.render(out, ui, arena, 0, &.{
+            .{ .title = "RUN" },                                    .{ .title = "PROMPT", .alignment = .right },
+            .{ .title = "GEN", .alignment = .right },               .{ .title = "SPEC" },
+            .{ .title = "STOP" },                                   .{ .title = "PREFILL MS", .alignment = .right },
+            .{ .title = "PP TOK/S", .alignment = .right },          .{ .title = "FIRST MS", .alignment = .right },
+            .{ .title = "DECODE MS", .alignment = .right },         .{ .title = "TG TOK/S", .alignment = .right },
+            .{ .title = "GPU MS", .alignment = .right, .drop = 2 }, .{ .title = "FALLBACKS", .alignment = .right, .drop = 1 },
+        }, rows);
+    }
+
+    fn rate(arena: std.mem.Allocator, value: ?f64) ![]const u8 {
+        return if (value) |r| std.fmt.allocPrint(arena, "{d:.2} tok/s", .{r}) else kit.values.missing;
+    }
+
+    fn renderVerify(verify: VerifyReport, arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui) !void {
+        const Cell = kit.table.Cell;
+        const rows = try arena.alloc([]const Cell, verify.samples.len);
+        var measured: usize = 0;
+        for (verify.samples, rows) |s, *row| {
+            if (!s.warmup) measured += 1;
+            row.* = try arena.dupe(Cell, &.{
+                if (s.warmup) .{ .text = "warm-up", .role = .muted } else .{ .text = try std.fmt.allocPrint(arena, "{d}", .{measured}) },
+                .{ .text = try std.fmt.allocPrint(arena, "{d}", .{s.batches}) },
+                .{ .text = try std.fmt.allocPrint(arena, "{d:.2}", .{s.propose}) },
+                .{ .text = try std.fmt.allocPrint(arena, "{d:.2}", .{s.checkpoint}) },
+                .{ .text = try std.fmt.allocPrint(arena, "{d:.2}", .{s.verify}) },
+                .{ .text = try std.fmt.allocPrint(arena, "{d:.2}", .{s.recover}) },
+                .{ .text = try std.fmt.allocPrint(arena, "{d:.2}", .{s.commit}) },
+                .{ .text = try std.fmt.allocPrint(arena, "{d:.2}", .{s.total}), .role = .emphasis },
+            });
+        }
+        try kit.table.render(out, ui, arena, 0, &.{
+            .{ .title = "RUN" },                          .{ .title = "BATCHES", .alignment = .right },
+            .{ .title = "PROPOSE", .alignment = .right }, .{ .title = "CHECKPOINT", .alignment = .right },
+            .{ .title = "VERIFY", .alignment = .right },  .{ .title = "RECOVER", .alignment = .right },
+            .{ .title = "COMMIT", .alignment = .right },  .{ .title = "C MS/BATCH", .alignment = .right },
+        }, rows);
+        try out.writeByte('\n');
+        try kit.blocks.detail(out, ui, &.{.{ .title = "Verify batch", .fields = &.{
+            .{ .key = "Rows", .value = try std.fmt.allocPrint(arena, "{d} · {d} accepted · from depth {d}", .{ verify.rows, verify.accepted, verify.depth }) },
+            .{ .key = "Cost C", .value = if (verify.mean) |m| try std.fmt.allocPrint(arena, "{d:.2} ms per batch", .{m.total}) else "no measured run", .role = .emphasis },
+            .{ .key = "Of which", .value = if (verify.mean) |m| try std.fmt.allocPrint(arena, "propose {d:.2} · checkpoint {d:.2} · verify {d:.2} · recover {d:.2} · commit {d:.2}", .{ m.propose, m.checkpoint, m.verify, m.recover, m.commit }) else kit.values.missing },
+        } }});
+    }
+
+    fn renderProfile(p: ProfileReport, arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui) !void {
+        const Cell = kit.table.Cell;
+        try out.writeByte('\n');
+        try kit.blocks.detail(out, ui, &.{.{ .title = try std.fmt.allocPrint(arena, "GPU time per kernel over {f}", .{kit.values.count(p.steps, "measured step")}), .fields = &.{
+            .{ .key = "Dispatches", .value = try std.fmt.allocPrint(arena, "{d:.0} per step · {d} unsampled", .{ p.dispatches_per_step, p.unsampled_dispatches }) },
+            .{ .key = "Attributed", .value = try std.fmt.allocPrint(arena, "{d:.1} ms per step of {d:.1} ms command-buffer time", .{ p.attributed_milliseconds_per_step, p.gpu_milliseconds_per_step }) },
+        } }});
+        try out.writeByte('\n');
+        const kernels = try arena.alloc([]const Cell, p.kernels.len);
+        for (p.kernels, kernels) |k, *row| row.* = try arena.dupe(Cell, &.{
+            .{ .text = k.kernel, .role = .id },
+            if (k.encoding) |e| .{ .text = e } else .{ .text = kit.values.missing, .role = .muted },
+            .{ .text = try std.fmt.allocPrint(arena, "{d}", .{k.rows}) },
+            .{ .text = try std.fmt.allocPrint(arena, "{d}", .{k.columns}) },
+            .{ .text = try std.fmt.allocPrint(arena, "{d:.1}", .{k.dispatches_per_step}) },
+            .{ .text = try std.fmt.allocPrint(arena, "{d:.3}", .{k.milliseconds_per_step}), .role = .emphasis },
+            .{ .text = try std.fmt.allocPrint(arena, "{d:.1}%", .{k.share * 100}) },
+            if (k.gigabytes_per_second) |gbps| .{ .text = try std.fmt.allocPrint(arena, "{d:.1}", .{gbps}) } else .{ .text = kit.values.missing, .role = .muted },
+        });
+        try kit.table.render(out, ui, arena, 0, &.{
+            .{ .title = "KERNEL" },                      .{ .title = "ENCODING" },
+            .{ .title = "ROWS", .alignment = .right },   .{ .title = "COLS", .alignment = .right },
+            .{ .title = "N/STEP", .alignment = .right }, .{ .title = "MS/STEP", .alignment = .right },
+            .{ .title = "SHARE", .alignment = .right },  .{ .title = "GB/S", .alignment = .right },
+        }, kernels);
+        try out.writeByte('\n');
+        const families = try arena.alloc([]const Cell, p.families.len);
+        for (p.families, families) |f, *row| row.* = try arena.dupe(Cell, &.{
+            .{ .text = @tagName(f.family) },
+            .{ .text = try std.fmt.allocPrint(arena, "{d:.3}", .{f.milliseconds_per_step}), .role = .emphasis },
+            .{ .text = try std.fmt.allocPrint(arena, "{d:.1}%", .{f.share * 100}) },
+        });
+        try kit.table.render(out, ui, arena, 0, &.{
+            .{ .title = "FAMILY" }, .{ .title = "MS/STEP", .alignment = .right }, .{ .title = "SHARE", .alignment = .right },
+        }, families);
     }
 };
 
@@ -515,7 +615,10 @@ pub fn summarize(samples: []const Sample) Summary {
     };
 }
 
-pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, settings: config.Resolved, options: Options, json: bool, writer: *std.Io.Writer, sty: style.Style) !void {
+pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, settings: config.Resolved, options: Options, json: bool, writer: *std.Io.Writer, ui: kit.Ui, step: *kit.Step) !void {
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     const user: ?[]u8 = if (options.prompt_tokens == null) try engine.readPrompt(alloc, io, options.prompt, options.prompt_file) else null;
     defer if (user) |text| alloc.free(text);
     const limit = settings.max_tokens;
@@ -637,13 +740,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
             };
         }
         prefix_report = .{ .path = path, .tokens = prefix_tokens.len, .restored = restored, .milliseconds = engine.milliseconds(started.durationTo(std.Io.Clock.awake.now(io))) };
-        if (!json) {
-            try writer.print("prefix: {d} tokens {s}\n", .{ prefix_tokens.len, if (restored) "restored" else "prefilled" });
-            try writer.flush();
-        }
+        step.update("prefix: {d} tokens {s}", .{ prefix_tokens.len, if (restored) "restored" else "prefilled" });
     }
 
-    if (options.verify_rows) |rows| return runVerify(alloc, &eng, tokens, &prefix.?, rows, accept, limit, warmup, repeat, capture, json, writer, sty, .{
+    if (options.verify_rows) |rows| return runVerify(alloc, &eng, tokens, &prefix.?, rows, accept, limit, warmup, repeat, capture, json, writer, ui, step, .{
         .backend = @tagName(settings.backend),
         .model_path = model_path,
         .config = settings.config_file orelse "built-in defaults",
@@ -689,6 +789,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
             // token's latency (prefill included) is reported separately.
             // The profile covers decode steps only: a run's prefill is
             // paused out of it and the loop's first step hook resumes it.
+            if (step.live()) step.update("{s} {d} of {d}{s}", .{ if (i < warmup) "warm-up" else "run", if (i < warmup) i + 1 else i - warmup + 1, if (i < warmup) warmup else repeat, if (on) ", speculative" else "" });
             var gate: ProfileGate = .{ .profile = if (gpu) |backend| (if (backend.profile) |*p| p else null) else null };
             if (gate.profile) |p| p.paused = !options.profile_prefill;
             const outcome = try generate.runLoop(&eng, fed, limit, &sampler, &history, spec, null, logits, candidates, generated, &trace, .{ .context = &gate, .step = ProfileGate.step });
@@ -722,10 +823,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
                 .recover_by_length = if (on) recoverByLength(t) else null,
                 .commit_milliseconds = if (on) engine.milliseconds(t.commit) else null,
             };
-            if (!json) {
-                try writer.print("{s} run {d}{s}: {d} prompt, {d} generated, {s}\n", .{ if (i < warmup) "warmup" else "measured", i, if (on) " (speculative)" else "", tokens.len, t.generated_tokens, @tagName(outcome.stop) });
-                try writer.flush();
-            }
+            if (!step.live()) step.update("{s} {d} of {d}{s}: {d} prompt, {d} generated, {s}", .{ if (i < warmup) "warm-up" else "run", if (i < warmup) i + 1 else i - warmup + 1, if (i < warmup) warmup else repeat, if (on) ", speculative" else "", tokens.len, t.generated_tokens, @tagName(outcome.stop) });
             completed += 1;
             // A cancelled run is reported as its own sample and ends the
             // benchmark; partial runs must not be averaged as if they had
@@ -757,7 +855,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         };
         var next: u32 = 0;
         try eng.model.step(generated[0], null, &next, null, null, null);
-        if (!json) try writer.print("captured one decode step at position {d}: {s}\n", .{ eng.model.session().position, path });
+        step.done(.ok, "captured one decode step", try std.fmt.allocPrint(arena, "position {d} · {s}", .{ eng.model.session().position, path }));
     };
     const report: Report = .{
         .backend = @tagName(settings.backend),
@@ -789,8 +887,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         .profile = profile,
         .experts = if (counts) |c| c.summary() else null,
     };
-    if (!json) try writer.writeByte('\n');
-    try report.render(writer, json, sty);
+    step.clear();
+    try report.render(arena, writer, json, ui);
 }
 
 /// Resumes a paused profile at the first step after a run's prefill; a
@@ -808,7 +906,10 @@ const ProfileGate = struct {
 /// the prompt's first tokens as the fixed drafts), then renders `base` with
 /// the verify report and the profile. A capture records one more batch's
 /// verify command buffer from the prefix.
-fn runVerify(alloc: std.mem.Allocator, eng: *engine.Engine, tokens: []const u32, prefix: *const inference.session.Snapshot, rows: usize, accept: usize, limit: usize, warmup: usize, repeat: usize, capture: ?[:0]const u8, json: bool, writer: *std.Io.Writer, sty: style.Style, base: Report) !void {
+fn runVerify(alloc: std.mem.Allocator, eng: *engine.Engine, tokens: []const u32, prefix: *const inference.session.Snapshot, rows: usize, accept: usize, limit: usize, warmup: usize, repeat: usize, capture: ?[:0]const u8, json: bool, writer: *std.Io.Writer, ui: kit.Ui, step: *kit.Step, base: Report) !void {
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     const samples = try alloc.alloc(VerifySample, warmup + repeat);
     defer alloc.free(samples);
     var drafts: [inference.engine.max_draft_length]u32 = undefined;
@@ -836,10 +937,7 @@ fn runVerify(alloc: std.mem.Allocator, eng: *engine.Engine, tokens: []const u32,
         const n: f64 = @floatFromInt(@max(batches, 1));
         samples[completed] = .{ .warmup = i < warmup, .batches = batches, .propose = sums[0] / n, .checkpoint = sums[1] / n, .verify = sums[2] / n, .recover = sums[3] / n, .commit = sums[4] / n, .total = sums[5] / n };
         completed += 1;
-        if (!json) {
-            try writer.print("{s} run {d}: {d} batches of {d} rows, {d} accepted, {d:.2} ms each\n", .{ if (i < warmup) "warmup" else "measured", i, batches, rows, accept, sums[5] / n });
-            try writer.flush();
-        }
+        step.update("{s} {d} of {d}: {d} batches of {d} rows, {d} accepted, {d:.2} ms each", .{ if (i < warmup) "warm-up" else "run", if (i < warmup) i + 1 else i - warmup + 1, if (i < warmup) warmup else repeat, batches, rows, accept, sums[5] / n });
         if (cancelled) break;
     }
     // A cancelled run is shown but never averaged.
@@ -870,14 +968,14 @@ fn runVerify(alloc: std.mem.Allocator, eng: *engine.Engine, tokens: []const u32,
             std.log.err("{s}", .{std.mem.sliceTo(&diagnostic, 0)});
             return err;
         };
-        if (!json) try writer.print("captured one {d}-row verify batch at position {d}: {s}\n", .{ rows, prefix.position, path });
+        step.done(.ok, "captured one verify batch", try std.fmt.allocPrint(arena, "{d} rows · position {d} · {s}", .{ rows, prefix.position, path }));
     };
     var report = base;
     report.measured_runs = measured;
     report.verify = .{ .rows = rows, .accepted = accept, .depth = prefix.position, .mean = if (measured > 0) mean else null, .samples = samples[0..completed] };
     report.profile = profile;
-    if (!json) try writer.writeByte('\n');
-    try report.render(writer, json, sty);
+    step.clear();
+    try report.render(arena, writer, json, ui);
 }
 
 test "summary excludes warmups and omits rates that were not measured" {
@@ -937,10 +1035,13 @@ test "profile report divides totals per step, sorts by time, and omits rates wit
     const wrapped: Report = .{ .backend = "metal", .model_path = "m.gguf", .context = 64, .max_tokens = 2, .warmup_runs = 0, .measured_runs = 1, .load_milliseconds = 1, .samples = &.{}, .mean_prefill_tokens_per_second = null, .mean_decode_tokens_per_second = null, .mean_first_token_milliseconds = null, .profile = report };
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
-    try wrapped.render(&out.writer, false, .none);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "matvec_q4_k        Q4_K       17408    5120      2.0    50.000  66.7%    20.0") != null);
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    try wrapped.render(arena_state.allocator(), &out.writer, false, .plain);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "KERNEL       ENCODING   ROWS  COLS  N/STEP  MS/STEP  SHARE  GB/S\nmatvec_q4_k  Q4_K      17408  5120     2.0   50.000  66.7%  20.0\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "Profiled  one encoder per dispatch") != null);
     out.clearRetainingCapacity();
-    try wrapped.render(&out.writer, true, .none);
+    try wrapped.render(arena_state.allocator(), &out.writer, true, .plain);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"gigabytes_per_second\": 20") != null);
     var empty: inference.metal.Profile = .{};
     const none = try profileReport(alloc, &empty, 248320);
@@ -954,18 +1055,38 @@ test "report renders text and JSON from the same samples" {
     const samples = [_]Sample{
         .{ .warmup = false, .prompt_tokens = 4, .generated_tokens = 2, .stop_reason = "token_budget", .prefill_milliseconds = 500, .first_token_milliseconds = 50, .decode_milliseconds = 150, .prefill_tokens_per_second = 8, .decode_tokens_per_second = null, .gpu_busy_milliseconds = null },
     };
-    const report: Report = .{ .backend = "cpu", .model_path = "m.gguf", .context = 64, .max_tokens = 2, .warmup_runs = 0, .measured_runs = 1, .load_milliseconds = 12.5, .samples = &samples, .mean_prefill_tokens_per_second = 8, .mean_decode_tokens_per_second = null, .mean_first_token_milliseconds = 50 };
+    const report: Report = .{ .backend = "cpu", .build_mode = "ReleaseFast", .model_path = "m.gguf", .context = 64, .max_tokens = 2, .warmup_runs = 0, .measured_runs = 1, .load_milliseconds = 12.5, .samples = &samples, .mean_prefill_tokens_per_second = 8, .mean_decode_tokens_per_second = null, .mean_first_token_milliseconds = 50 };
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try report.render(&out.writer, true, .none);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try report.render(arena, &out.writer, true, .plain);
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expect(parsed.value.object.get("mean_decode_tokens_per_second") == null);
     // 8.0 serializes as the integer literal 8.
     try std.testing.expectEqual(@as(i64, 8), parsed.value.object.get("mean_prefill_tokens_per_second").?.integer);
     out.clearRetainingCapacity();
-    try report.render(&out.writer, false, .none);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "decode         — tok/s") != null);
+    try report.render(arena, &out.writer, false, .plain);
+    try std.testing.expectEqualStrings(
+        \\◆ m.gguf · cpu (ReleaseFast)
+        \\
+        \\Model    m.gguf
+        \\Config   built-in defaults
+        \\Context  64 tokens · KV f32 · session 0 B
+        \\Output   budget of 2 tokens · greedy · prompt from text
+        \\Load     12.5 ms
+        \\
+        \\RUN  PROMPT  GEN  STOP          PREFILL MS  PP TOK/S  FIRST MS  DECODE MS  TG TOK/S
+        \\1         4    2  token_budget       500.0      8.00      50.0      150.0        --
+        \\
+        \\Mean of 1 measured run
+        \\  Prefill      8.00 tok/s
+        \\  Decode       --
+        \\  First token  50.0 ms
+        \\
+    , out.written());
 }
 
 test {

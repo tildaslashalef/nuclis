@@ -7,7 +7,7 @@
 //! docs/models/laya.md.
 const std = @import("std");
 const inference = @import("inference");
-const style = @import("tui/style.zig");
+const kit = @import("ui.zig");
 const config = @import("config.zig");
 const input = @import("input.zig");
 const wire = @import("decision/request.zig");
@@ -220,7 +220,7 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, family: inference.decide.F
     return .{ .ids = ids.items, .questions = questions.items, .states = states.items };
 }
 
-pub fn run(gpa: std.mem.Allocator, io: std.Io, location: inference.decide.Location, identity: response.Identity, o: Options, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, location: inference.decide.Location, identity: response.Identity, o: Options, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -261,7 +261,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, location: inference.decide.Locati
     };
     const report: Report = .{ .request = request, .results = results, .identity = identity, .decider = &decider, .load_ns = load_ns, .timings = timings, .options = o };
     if (o.json) return response.write(out, .{ .request = request, .results = results, .identity = identity, .load_ns = load_ns, .timings = timings, .explain = o.explain });
-    try report.writeText(arena, out, sty);
+    try report.writeText(arena, out, ui);
 }
 
 const Report = struct {
@@ -273,24 +273,27 @@ const Report = struct {
     timings: inference.decide.Timings,
     options: Options,
 
-    fn writeText(self: Report, arena: std.mem.Allocator, out: *std.Io.Writer, sty: style.Style) !void {
-        const off = sty.off();
-        try out.print("{s}{s}{s} {s}· {d} state{s} · {d} question{s} · load {d:.1} s · tokenize {d:.0} ms · encode {d:.0} ms{s}\n", .{
-            sty.on(.header),                self.identity.name,                     off,                               sty.on(.dim),
-            self.results.len,               if (self.results.len == 1) "" else "s", self.request.ids.len,              if (self.request.ids.len == 1) "" else "s",
-            timing.ms(self.load_ns) / 1000, timing.ms(self.timings.tokenize_ns),    timing.ms(self.timings.encode_ns), off,
-        });
+    fn writeText(self: Report, arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui) !void {
+        const v = kit.values;
+        try kit.blocks.header(out, ui, try kit.text.clean(arena, self.identity.name), try std.fmt.allocPrint(arena, "{f} · {f}", .{ v.count(self.results.len, "state"), v.count(self.request.ids.len, "question") }));
         if (self.results.len == 1) {
             const result = self.results[0];
-            if (result.truncated) try out.print("{s}the state is {d} tokens; the model read part of it (--truncate chooses the end cut){s}\n", .{ sty.on(.warning), result.state_tokens, off });
-            for (self.request.ids, self.request.questions, result.answers) |id, q, a| {
+            if (result.truncated) {
+                try kit.blocks.result(out, ui, .warning, try std.fmt.allocPrint(arena, "the state is {f}", .{v.count(result.state_tokens, "token")}), "the model read part of it; --truncate chooses the end cut");
                 try out.writeByte('\n');
-                try writeQuestion(out, sty, id, q, a);
-                if (self.options.explain) try self.writeExplain(arena, out, sty, q, a);
             }
-            return;
-        }
-        // Several states: ranked by the first question.
+            for (self.request.ids, self.request.questions, result.answers, 0..) |id, q, a, i| {
+                if (i > 0) try out.writeByte('\n');
+                try writeQuestion(arena, out, ui, id, q, a);
+                if (self.options.explain) try self.writeExplain(arena, out, ui, q, a);
+            }
+        } else try self.writeRanked(arena, out, ui);
+        try out.print("\n{s}load {f} · tokenize {f} · encode {f}{s}\n", .{ ui.on(.muted), v.duration(timing.ms(self.load_ns) / 1000), v.duration(timing.ms(self.timings.tokenize_ns) / 1000), v.duration(timing.ms(self.timings.encode_ns) / 1000), ui.off(.muted) });
+    }
+
+    /// Several states: one row each, ranked by the first question, its bar
+    /// and summary first and the other questions' summaries after.
+    fn writeRanked(self: Report, arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui) !void {
         const order = try arena.alloc(usize, self.results.len);
         for (order, 0..) |*x, i| x.* = i;
         const first = self.request.questions[0];
@@ -302,41 +305,50 @@ const Report = struct {
             }
         };
         std.mem.sort(usize, order, Rank{ .results = self.results, .kind = first.kind }, Rank.greater);
-        try out.print("\n{s}ranked by {s}{s} {s}({s}){s}\n", .{ sty.on(.label), self.request.ids[0], off, sty.on(.dim), rankMeaning(first), off });
-        var widest: usize = 0;
-        for (self.request.states) |l| widest = @max(widest, @min(l.label.len, 48));
-        for (order, 1..) |index, rank| {
+        try out.print("{s}Ranked by {s}{s} {s}{s}{s}\n", .{ ui.on(.title), self.request.ids[0], ui.off(.title), ui.on(.muted), rankMeaning(first), ui.off(.muted) });
+        const Cell = kit.table.Cell;
+        var columns: std.ArrayList(kit.table.Column) = .empty;
+        try columns.appendSlice(arena, &.{ .{ .title = "#", .alignment = .right, .min = 1 }, .{ .title = "STATE" }, .{ .title = "", .truncate = false }, .{ .title = try std.ascii.allocUpperString(arena, self.request.ids[0]), .alignment = .right } });
+        for (self.request.ids[1..], 1..) |id, i| try columns.append(arena, .{ .title = try std.ascii.allocUpperString(arena, id), .alignment = .right, .drop = @intCast(@min(i, 200)) });
+        try columns.append(arena, .{ .title = "" });
+        const rows = try arena.alloc([]const Cell, order.len);
+        for (order, rows, 1..) |index, *row, rank| {
             const result = self.results[index];
-            const a = result.answers[0];
-            const label = self.request.states[index].label;
-            try out.print("{d:>3}. {s}{s}{s}", .{ rank, sty.on(.code), label[0..@min(label.len, 48)], off });
-            for (0..widest - @min(label.len, 48) + 2) |_| try out.writeByte(' ');
-            try writeBar(out, sty, rankKey(first.kind, a) / rankScale(first));
-            try out.print(" {s}{s}{s}", .{ sty.on(.number), try summary(arena, first, a), off });
-            for (self.request.ids[1..], self.request.questions[1..], result.answers[1..]) |id, q, other|
-                try out.print("  {s}{s}{s} {s}", .{ sty.on(.dim), id, off, try summary(arena, q, other) });
-            if (result.truncated) try out.print("  {s}truncated ({d} tokens){s}", .{ sty.on(.warning), result.state_tokens, off });
-            try out.writeByte('\n');
+            var cells: std.ArrayList(Cell) = .empty;
+            var bar: std.Io.Writer.Allocating = .init(arena);
+            try writeBar(&bar.writer, .plain, rankKey(first.kind, result.answers[0]) / rankScale(first));
+            try cells.appendSlice(arena, &.{
+                .{ .text = try std.fmt.allocPrint(arena, "{d}", .{rank}), .role = .muted },
+                .{ .text = try kit.text.clean(arena, self.request.states[index].label), .role = .id },
+                .{ .text = bar.written(), .role = .id },
+                .{ .text = try summary(arena, first, result.answers[0]), .role = .emphasis },
+            });
+            for (self.request.questions[1..], result.answers[1..]) |q, other| try cells.append(arena, .{ .text = try summary(arena, q, other) });
+            try cells.append(arena, if (result.truncated) .{ .text = try std.fmt.allocPrint(arena, "{s} {d} tokens, cut", .{ ui.glyphs.warn, result.state_tokens }), .role = .warn } else .{ .text = "" });
+            row.* = cells.items;
         }
+        try kit.table.render(out, ui, arena, 0, columns.items, rows);
     }
 
-    fn writeExplain(self: Report, arena: std.mem.Allocator, out: *std.Io.Writer, sty: style.Style, q: profile.Question, a: inference.decide.Answer) !void {
-        const off = sty.off();
+    fn writeExplain(self: Report, arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui, q: profile.Question, a: inference.decide.Answer) !void {
+        var logits: std.ArrayList(u8) = .empty;
+        for (q.keys, a.logits, 0..) |key, z, i| try logits.print(arena, "{s}{s}={d:.4}", .{ if (i > 0) " " else "", key, z });
         const seq = a.sequence orelse {
             // clef: one sequence per state, every question in it.
-            try out.print("   {s}logits{s}", .{ sty.on(.label), off });
-            for (q.keys, a.logits) |key, z| try out.print(" {s}={d:.4}", .{ key, z });
-            return out.writeByte('\n');
+            try out.writeByte('\n');
+            return kit.blocks.detail(out, ui, &.{.{ .title = "Explain", .fields = &.{.{ .key = "Logits", .value = logits.items }} }});
         };
         const laya = &self.decider.family.laya;
         const decoded = try inference.bpe.decode(arena, &laya.tokenizer.vocab, seq.ids, true, .{});
         var options_kept: usize = 0;
         for (seq.option_kept) |k| options_kept += k;
-        try out.print("   {s}sequence{s} {d} tokens: question {d}, options {d} ({d} each at most), state {d} of the budget {d}{s}\n", .{ sty.on(.label), off, seq.ids.len, seq.head_kept, options_kept, std.mem.max(usize, seq.option_kept), seq.state_kept, laya.config.budget.max_len, if (seq.truncated) ", cut" else "" });
-        try out.print("   {s}temperature{s} {d:.4} ({s}{s}){s}\n", .{ sty.on(.label), off, a.calibrated.temperature, a.bucket, if (self.options.uncalibrated) ", uncalibrated" else "", "" });
-        try out.print("   {s}logits{s}", .{ sty.on(.label), off });
-        for (q.keys, a.logits) |key, z| try out.print(" {s}={d:.4}", .{ key, z });
-        try out.print("\n   {s}decoded{s} {s}{s}{s}\n", .{ sty.on(.label), off, sty.on(.dim), decoded, off });
+        try out.writeByte('\n');
+        try kit.blocks.detail(out, ui, &.{.{ .title = "Explain", .fields = &.{
+            .{ .key = "Sequence", .value = try std.fmt.allocPrint(arena, "{d} tokens: question {d}, options {d} ({d} each at most), state {d} of the budget {d}{s}", .{ seq.ids.len, seq.head_kept, options_kept, std.mem.max(usize, seq.option_kept), seq.state_kept, laya.config.budget.max_len, if (seq.truncated) ", cut" else "" }) },
+            .{ .key = "Temperature", .value = try std.fmt.allocPrint(arena, "{d:.4} ({s}{s})", .{ a.calibrated.temperature, a.bucket, if (self.options.uncalibrated) ", uncalibrated" else "" }) },
+            .{ .key = "Logits", .value = logits.items },
+            .{ .key = "Decoded", .value = try kit.text.clean(arena, decoded), .role = .muted },
+        } }});
     }
 };
 
@@ -371,35 +383,36 @@ fn summary(arena: std.mem.Allocator, q: profile.Question, a: inference.decide.An
 
 const bar_width = 20;
 
-fn writeBar(out: *std.Io.Writer, sty: style.Style, fraction: f64) !void {
+fn writeBar(out: *std.Io.Writer, ui: kit.Ui, fraction: f64) !void {
     const eighths: usize = @intFromFloat(@round(std.math.clamp(fraction, 0, 1) * bar_width * 8));
     const blocks = [_][]const u8{ "", "▏", "▎", "▍", "▌", "▋", "▊", "▉" };
-    try out.writeAll(sty.on(.accent));
+    try out.writeAll(ui.on(.id));
     for (0..eighths / 8) |_| try out.writeAll("█");
     try out.writeAll(blocks[eighths % 8]);
-    try out.writeAll(sty.off());
+    try out.writeAll(ui.off(.id));
     for (0..bar_width - eighths / 8 - @intFromBool(eighths % 8 != 0)) |_| try out.writeByte(' ');
 }
 
-fn writeQuestion(out: *std.Io.Writer, sty: style.Style, id: []const u8, q: profile.Question, a: inference.decide.Answer) !void {
-    const off = sty.off();
+/// `<id> <kind>  <answer>  confidence 0.93`, then each option's bar.
+fn writeQuestion(arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui, id: []const u8, q: profile.Question, a: inference.decide.Answer) !void {
     const c = a.calibrated;
-    try out.print("{s}{s}{s} ", .{ sty.on(.bold), id, off });
-    if (!std.mem.eql(u8, id, @tagName(q.kind))) try out.print("{s}{s}{s} ", .{ sty.on(.dim), @tagName(q.kind), off });
+    try out.print("{s}{s}{s}", .{ ui.on(.title), id, ui.off(.title) });
+    if (!std.mem.eql(u8, id, @tagName(q.kind))) try out.print(" {s}{s}{s}", .{ ui.on(.muted), @tagName(q.kind), ui.off(.muted) });
+    try out.writeAll("  ");
     switch (q.kind) {
-        .choice => try out.print("{s}{s}{s}", .{ sty.on(.success), q.keys[c.best], off }),
-        .score => try out.print("{s}{d:.2}{s} of 0–{d}", .{ sty.on(.number), c.value, off, q.keys.len - 1 }),
-        .noul => try out.print("{s}{d:.2}{s} {s}", .{ sty.on(.number), c.value, off, if (c.value >= 0.5) "true" else "false" }),
+        .choice => try out.print("{s}{s}{s}", .{ ui.on(.ok), try kit.text.clean(arena, q.keys[c.best]), ui.off(.ok) }),
+        .score => try out.print("{s}{d:.2}{s} of 0–{d}", .{ ui.on(.emphasis), c.value, ui.off(.emphasis), q.keys.len - 1 }),
+        .noul => try out.print("{s}{d:.2}{s} {s}", .{ ui.on(.emphasis), c.value, ui.off(.emphasis), if (c.value >= 0.5) "true" else "false" }),
     }
-    try out.print("  {s}confidence {d:.2}{s}\n", .{ sty.on(.dim), c.answer_confidence, off });
+    try out.print("  {s}confidence {d:.2}{s}\n", .{ ui.on(.muted), c.answer_confidence, ui.off(.muted) });
     var widest: usize = 0;
-    for (q.keys, 0..) |key, i| widest = @max(widest, optionLabel(q, key, i).len);
+    for (q.keys, 0..) |key, i| widest = @max(widest, kit.text.width(optionLabel(q, key, i)));
     for (q.keys, c.probabilities, 0..) |key, p, i| {
-        const label = optionLabel(q, key, i);
-        try out.print("   {s}", .{label});
-        for (0..widest - label.len + 2) |_| try out.writeByte(' ');
-        try writeBar(out, sty, p);
-        try out.print(" {s}{d:.2}{s}\n", .{ sty.on(.number), p, off });
+        const label = try kit.text.clean(arena, optionLabel(q, key, i));
+        try out.print("  {s}", .{label});
+        try out.splatByteAll(' ', widest - kit.text.width(label) + 2);
+        try writeBar(out, ui, p);
+        try out.print(" {s}{d:.2}{s}\n", .{ ui.on(.emphasis), p, ui.off(.emphasis) });
     }
 }
 

@@ -671,7 +671,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         .help => return help_text.write(out, sty, options.help_topic, version),
         .version => return out.writeAll("nuclis " ++ version ++ "\n"),
         // Compiles the kernels only: no model, root, or configuration.
-        .bench => if (options.benchmark.kernel_stats) return bench.kernelStats(alloc, options.json, out, sty, diag),
+        .bench => if (options.benchmark.kernel_stats) return bench.kernelStats(alloc, options.json, out, ui, diag),
         else => {},
     }
     // Every other command starts from the user root and the configuration
@@ -734,16 +734,17 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             },
         }
     }
-    if (options.command == .decide) return runDecide(alloc, io, root, config_path, options.words, out, sty, diag);
-    if (options.command == .embed) return runEmbed(alloc, io, root, config_path, options.words, out, sty, diag);
-    if (options.command == .transcribe) return runTranscribe(alloc, io, root, config_path, options.words, out, sty, diag);
+    if (options.command == .decide) return runDecide(alloc, io, root, config_path, options.words, out, ui, diag);
+    if (options.command == .embed) return runEmbed(alloc, io, root, config_path, options.words, out, ui, diag);
+    if (options.command == .transcribe) return runTranscribe(alloc, io, environ, root, config_path, options.words, out, ui, diag);
     if (options.command == .speak) {
         var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
         defer loaded.deinit();
-        return speak.run(alloc, io, root, &loaded, options.words, out, sty, diag);
+        var speak_step = kit.Step.init(io, environ);
+        return speak.run(alloc, io, root, &loaded, options.words, out, ui, &speak_step, diag);
     }
     if (options.command == .voice) return voices.run(alloc, io, root, options.words, out, ui, diag);
-    if (options.command == .serve) return runServe(alloc, io, root, config_path, options.words, out, sty, diag);
+    if (options.command == .serve) return runServe(alloc, io, root, config_path, options.words, out, ui, diag);
     if (options.command == .agent and options.agent_action == .ls) {
         const dir = root orelse return error.MissingHome;
         const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc);
@@ -904,18 +905,21 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             return err;
         };
     }
+    // Progress of a long command (a benchmark's runs, an evaluation's
+    // windows) goes to stderr, apart from the result on stdout.
+    var step = kit.Step.init(io, environ);
     // The engine reports an architecture without an adapter as a typed
     // error; the reason (which ids the tree has) is added here, where the
     // diagnostic lives.
     (switch (options.command) {
         .help, .version, .config, .model, .cache, .decide, .embed, .transcribe, .speak, .voice, .serve, .completion, .complete, .index => unreachable,
         .generate => generate.run(alloc, io, path, config.resolve(&loaded, model_name, options.flags, .generate), options.generation, options.json, out),
-        .bench => bench.run(alloc, io, path, config.resolve(&loaded, model_name, options.flags, .bench), options.benchmark, options.json, out, sty),
+        .bench => bench.run(alloc, io, path, config.resolve(&loaded, model_name, options.flags, .bench), options.benchmark, options.json, out, ui, &step),
         .tokenize => blk: {
             const resolved = config.resolve(&loaded, model_name, options.flags, .generate);
-            break :blk tokenize.run(alloc, io, path, resolved.think, resolved.forced_profile, options.generation, options.json, out, sty);
+            break :blk tokenize.run(alloc, io, path, resolved.think, resolved.forced_profile, options.generation, options.json, out, ui);
         },
-        .eval => eval.run(alloc, io, path, config.resolve(&loaded, model_name, options.flags, .bench), options.evaluation, options.json, out, sty, diag),
+        .eval => eval.run(alloc, io, path, config.resolve(&loaded, model_name, options.flags, .bench), options.evaluation, options.json, out, ui, &step, diag),
         .agent => if (options.printing)
             agent.print_mode.run(alloc, io, environ, path, config.resolve(&loaded, model_name, options.flags, .agent), options.print, out, diag)
         else
@@ -944,11 +948,11 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                         break :blk error.TensorNotFound;
                     };
                     const peek = try inspection.tensorPeek(arena_state.allocator(), ref);
-                    try peek.render(out, options.json, sty);
+                    try peek.render(arena_state.allocator(), out, options.json, ui);
                     break :blk {};
                 }
                 const result = try inspection.safetensorsSnapshot(arena_state.allocator(), &checkpoint, path);
-                try result.render(out, options.json, sty);
+                try result.render(arena_state.allocator(), out, options.json, ui);
                 break :blk {};
             }
             if (options.tensor != null) {
@@ -960,7 +964,9 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             if (options.command == .validate) {
                 const adapter = try selectAdapter(&document, diag);
                 const summary = try inference.models.registry.validate(adapter, alloc, &document);
-                try validation.render(path, summary, out, options.json, sty);
+                var arena_state = std.heap.ArenaAllocator.init(alloc);
+                defer arena_state.deinit();
+                try validation.render(arena_state.allocator(), path, summary, out, options.json, ui);
             } else {
                 var histogram: [32]inspection.EncodingCount = undefined;
                 const result = try inspection.snapshot(document, path, &histogram);
@@ -1063,55 +1069,56 @@ fn exportSession(alloc: std.mem.Allocator, io: std.Io, root: []const u8, cwd: []
 
 /// `decide`: its own flags, a checkpoint directory rather than a GGUF file,
 /// and none of the engine's keys.
-fn runDecide(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty_detected: style.Style, diag: *config.Diagnostic) !void {
+fn runDecide(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, ui_detected: kit.Ui, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const options = try decide.parseArgs(arena, words, diag);
-    const sty: style.Style = if (options.json) .none else sty_detected;
+    const ui: kit.Ui = if (options.json) .plain else ui_detected;
     var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
     defer loaded.deinit();
     const name = options.model orelse loaded.config.decide.model;
     const located = try decision_catalog.locate(arena, io, root, loaded.config.models, name, true, diag);
-    return decide.run(alloc, io, located.location(), located.identity, options, out, sty, diag);
+    return decide.run(alloc, io, located.location(), located.identity, options, out, ui, diag);
 }
 
 /// `embed`: its own flags, and a model of the embedding kind only.
-fn runEmbed(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty_detected: style.Style, diag: *config.Diagnostic) !void {
+fn runEmbed(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, ui_detected: kit.Ui, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const options = try embed.parseArgs(arena, words, diag);
-    const sty: style.Style = if (options.json) .none else sty_detected;
+    const ui: kit.Ui = if (options.json) .plain else ui_detected;
     var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
     defer loaded.deinit();
     const name = options.model orelse loaded.config.embed.model;
     const located = try embedding_catalog.locate(arena, io, root, loaded.config.models, name, diag);
-    return embed.run(alloc, io, located.path, located.mmproj, located.identity, options, out, sty, diag);
+    return embed.run(alloc, io, located.path, located.mmproj, located.identity, options, out, ui, diag);
 }
 
 /// `transcribe`: its own flags; `--model` (else `transcribe.model`) is a
 /// transcription registry entry, catalogue name, or checkpoint directory.
-fn runTranscribe(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty_detected: style.Style, diag: *config.Diagnostic) !void {
+fn runTranscribe(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, ui_detected: kit.Ui, diag: *config.Diagnostic) !void {
     const options = try transcribe.parseArgs(words, diag);
-    const sty: style.Style = if (options.format != .text) .none else sty_detected;
+    const ui: kit.Ui = if (options.format != .text) .plain else ui_detected;
+    var step = kit.Step.init(io, environ);
     var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
     defer loaded.deinit();
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const located = try audio_catalog.locate(arena_state.allocator(), io, root, loaded.config.models, options.model orelse loaded.config.transcribe.model, .transcription, true, diag);
-    return transcribe.run(alloc, io, located.directory, options, out, sty, diag);
+    return transcribe.run(alloc, io, located.directory, options, out, ui, &step, diag);
 }
 
 /// `serve`: the API over every model kind, each opened on its first request
 /// unless `--model` names it.
-fn runServe(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+fn runServe(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
     defer loaded.deinit();
     const options = try api.parseArgs(arena_state.allocator(), words, loaded.config.serve, diag);
-    return api.serve(alloc, io, .{ .root = root, .loaded = &loaded, .registry = loaded.config.models, .default_model = loaded.config.decide.model, .version = version }, options, out, sty, diag);
+    return api.serve(alloc, io, .{ .root = root, .loaded = &loaded, .registry = loaded.config.models, .default_model = loaded.config.decide.model, .version = version }, options, out, ui, diag);
 }
 
 /// The registry's architectures as one comma-separated list, joined at

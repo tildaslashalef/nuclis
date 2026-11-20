@@ -11,7 +11,7 @@ const inference = @import("inference");
 const engine = @import("engine.zig");
 const config = @import("config.zig");
 const interrupt = @import("interrupt.zig");
-const style = @import("tui/style.zig");
+const kit = @import("ui.zig");
 const model = @import("model.zig");
 const build_options = @import("build_options");
 
@@ -184,20 +184,26 @@ pub const Report = struct {
     tokens_per_second: f64,
     reference: ?Comparison = null,
 
-    pub fn render(self: Report, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+    /// The result; the setup (model, text, windows) is printed before the
+    /// run, so a long evaluation says what it is doing.
+    pub fn render(self: Report, arena: std.mem.Allocator, out: *std.Io.Writer, json: bool, ui: kit.Ui) !void {
         if (json) {
             try std.json.Stringify.value(self, .{ .whitespace = .indent_2, .emit_null_optional_fields = false }, out);
             return out.writeByte('\n');
         }
-        const label = sty.on(.label);
-        const number = sty.on(.number);
-        const off = sty.off();
-        try out.print("{s}Perplexity:{s} {s}{d:.4}{s} ± {d:.5} (nll {d:.6}), {d} tokens scored in {d:.1} s, {d:.1} tok/s fed\n", .{ label, off, number, self.ppl, off, self.ppl_error, self.nll, self.scored_tokens, self.eval_milliseconds / 1000, self.tokens_per_second });
+        try kit.blocks.detail(out, ui, &.{.{ .fields = &.{
+            .{ .key = "Perplexity", .value = try std.fmt.allocPrint(arena, "{d:.4} ± {d:.5}", .{ self.ppl, self.ppl_error }), .role = .emphasis },
+            .{ .key = "NLL", .value = try std.fmt.allocPrint(arena, "{d:.6} per token", .{self.nll}) },
+            .{ .key = "Scored", .value = try std.fmt.allocPrint(arena, "{f} in {f} · {d:.1} tok/s fed", .{ kit.values.count(self.scored_tokens, "token"), kit.values.duration(self.eval_milliseconds / 1000), self.tokens_per_second }) },
+        } }});
         if (self.reference) |r| {
-            const verdict = if (r.passed) sty.on(.success) else sty.on(.error_text);
-            try out.print("{s}Reference:{s} {s}{d:.4}{s}", .{ label, off, number, r.ppl, off });
-            if (r.ppl_error) |e| try out.print(" ± {d:.5}", .{e}) else try out.print(" after {d} windows", .{r.chunks});
-            try out.print(" ({s} {s}), difference {d:.3} % (bound {d:.1} %): {s}{s}{s}\n", .{ r.tool, r.revision[0..@min(r.revision.len, 9)], r.relative_difference * 100, r.tolerance * 100, verdict, if (r.passed) "pass" else "FAIL", off });
+            try out.writeByte('\n');
+            const spread = if (r.ppl_error) |e| try std.fmt.allocPrint(arena, " ± {d:.5}", .{e}) else try std.fmt.allocPrint(arena, " after {d} windows", .{r.chunks});
+            const detail = try std.fmt.allocPrint(arena, "{d:.4}{s} ({s} {s}), {d:.3} % apart, bound {d:.1} %", .{ r.ppl, spread, r.tool, r.revision[0..@min(r.revision.len, 9)], r.relative_difference * 100, r.tolerance * 100 });
+            if (r.passed)
+                try kit.blocks.result(out, ui, .ok, "matches the reference", detail)
+            else
+                try kit.blocks.result(out, ui, .failed, "differs from the reference", detail);
         }
     }
 };
@@ -277,7 +283,7 @@ const Watch = struct {
     }
 };
 
-pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, settings: config.Resolved, options: Options, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, settings: config.Resolved, options: Options, json: bool, out: *std.Io.Writer, ui: kit.Ui, step: *kit.Step, diag: *config.Diagnostic) !void {
     const path = options.file orelse return error.MissingTextFile;
     var parsed_reference: ?std.json.Parsed(Reference) = null;
     defer if (parsed_reference) |*p| p.deinit();
@@ -349,10 +355,17 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     const chunk_ppl = try alloc.alloc(f64, chunks);
     defer alloc.free(chunk_ppl);
 
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     if (!json) {
-        try out.print("{s}Model:{s} {s} {s}({s}, {s}, kv {s}){s}\n", .{ sty.on(.label), sty.off(), eng.name, sty.on(.dim), model_path, @tagName(settings.backend), @tagName(eng.kv_precision), sty.off() });
-        try out.print("{s}Text:{s} {s}, {d} bytes, {d} tokens, sha256 {s}\n", .{ sty.on(.label), sty.off(), path, text.len, tokens.len, text_sha256[0..16] });
-        try out.print("{s}Windows:{s} {d} × {d} tokens, the last {d} of each scored, BOS {s}\n", .{ sty.on(.label), sty.off(), chunks, ctx, ctx - first - 1, if (bos != null) "written over the first" else "none" });
+        try kit.blocks.header(out, ui, try kit.text.clean(arena, eng.name), try std.fmt.allocPrint(arena, "{s} · KV {s}", .{ @tagName(settings.backend), @tagName(eng.kv_precision) }));
+        try kit.blocks.detail(out, ui, &.{.{ .fields = &.{
+            .{ .key = "Model", .value = try kit.text.clean(arena, model_path), .role = .id },
+            .{ .key = "Text", .value = try std.fmt.allocPrint(arena, "{s} · {f} · {f} · sha256 {s}", .{ try kit.text.clean(arena, path), kit.values.size(text.len), kit.values.count(tokens.len, "token"), text_sha256[0..16] }) },
+            .{ .key = "Windows", .value = try std.fmt.allocPrint(arena, "{d} × {d} tokens, the last {d} of each scored · BOS {s}", .{ chunks, ctx, ctx - first - 1, if (bos != null) "written over the first" else "none" }) },
+        } }});
+        try out.writeByte('\n');
         try out.flush();
     }
     var watch: Watch = .{ .io = io };
@@ -361,10 +374,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     const started = std.Io.Clock.awake.now(io);
     for (0..chunks) |c| {
         // A cancelled run ends the running line, so the error starts its own.
-        errdefer if (!json and c > 0) {
-            out.writeByte('\n') catch {};
-            out.flush() catch {};
-        };
+        var label_buffer: [64]u8 = undefined;
+        const label = std.fmt.bufPrint(&label_buffer, "window {d} of {d}", .{ c + 1, chunks }) catch "window";
+        errdefer step.done(.failed, label, "stopped");
+        if (step.live()) step.update("window {d} of {d}{s}", .{ c + 1, chunks, if (c > 0) try std.fmt.allocPrint(arena, "  running perplexity {d:.4}", .{chunk_ppl[c - 1]}) else "" });
         window(tokens, c, ids, bos);
         eng.model.reset();
         if (first > 0) try eng.model.prefill(ids[0..first], null, null, null, null, null, observer);
@@ -381,10 +394,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
             at += count;
         }
         chunk_ppl[c] = sums.ppl();
-        if (!json) {
-            try out.print("[{d}]{d:.4}{s}", .{ c + 1, chunk_ppl[c], if (c + 1 == chunks) "\n" else "," });
-            try out.flush();
-        }
+        if (!step.live()) step.update("window {d} of {d}  running perplexity {d:.4}", .{ c + 1, chunks, chunk_ppl[c] });
     }
     const elapsed = started.durationTo(std.Io.Clock.awake.now(io));
     const seconds = @as(f64, @floatFromInt(elapsed.toNanoseconds())) / 1e9;
@@ -413,15 +423,17 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         const bound = r.tolerance orelse tolerance;
         report.reference = .{ .tool = r.tool, .revision = r.revision, .chunks = chunks, .ppl = expected.ppl, .ppl_error = expected.ppl_error, .relative_difference = difference, .tolerance = bound, .passed = @abs(difference) <= bound };
     }
-    try report.render(out, json, sty);
+    step.clear();
+    try report.render(arena, out, json, ui);
     if (options.write_reference) |target| {
-        var arena_state = std.heap.ArenaAllocator.init(alloc);
-        defer arena_state.deinit();
-        writeReference(arena_state.allocator(), io, target, report, path) catch |err| {
+        writeReference(arena, io, target, report, path) catch |err| {
             diag.set("could not write the reference {s}: {s}", .{ target, @errorName(err) });
             return err;
         };
-        if (!json) try out.print("{s}Reference:{s} written to {s}\n", .{ sty.on(.label), sty.off(), target });
+        if (!json) {
+            try out.writeByte('\n');
+            try kit.blocks.result(out, ui, .ok, "wrote the reference", try kit.text.clean(arena, target));
+        }
     }
     if (report.reference) |r| if (!r.passed) {
         diag.set("perplexity {d:.4} is {d:.3} % from the reference's {d:.4} (bound {d:.1} %)", .{ report.ppl, r.relative_difference * 100, r.ppl, r.tolerance * 100 });

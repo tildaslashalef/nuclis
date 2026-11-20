@@ -9,7 +9,7 @@ const std = @import("std");
 const inference = @import("inference");
 const engine = @import("engine.zig");
 const generate = @import("generate.zig");
-const style = @import("tui/style.zig");
+const kit = @import("ui.zig");
 
 pub const Report = struct {
     schema_version: u32 = 1,
@@ -33,20 +33,25 @@ pub const Report = struct {
     /// False means an offset is not a cut point in the prompt text.
     round_trip: bool,
 
-    pub fn render(self: Report, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+    pub fn render(self: Report, arena: std.mem.Allocator, out: *std.Io.Writer, json: bool, ui: kit.Ui) !void {
         if (json) {
             try std.json.Stringify.value(self, .{ .emit_null_optional_fields = false }, out);
             return out.writeByte('\n');
         }
-        const label = sty.on(.label);
-        const number = sty.on(.number);
-        const off = sty.off();
-        try out.print("{s}Model:{s} {s}{s}{s}\n{s}Prompt:{s} {s}{d}{s} tokens, {s}{d}{s} bytes, {s} rendering", .{ label, off, sty.on(.code), self.model_path, off, label, off, number, self.tokens, off, number, self.bytes, off, self.rendering });
-        if (self.think) |effort| try out.print(" (think {s})", .{effort});
-        if (self.round_trip) try out.print(", round trip {s}ok{s}\n", .{ sty.on(.success), off }) else try out.print(", round trip {s}MISMATCH{s}\n", .{ sty.on(.error_text), off });
-        try out.print("{s}ids:{s}", .{ label, off });
-        for (self.ids) |id| try out.print(" {d}", .{id});
+        const v = kit.values;
+        const path = try kit.text.clean(arena, self.model_path);
+        try kit.blocks.header(out, ui, std.fs.path.basename(path), if (self.think) |effort| try std.fmt.allocPrint(arena, "{s} rendering, think {s}", .{ self.rendering, effort }) else try std.fmt.allocPrint(arena, "{s} rendering", .{self.rendering}));
+        var ids: std.ArrayList(u8) = .empty;
+        for (self.ids, 0..) |id, i| try ids.print(arena, "{s}{d}", .{ if (i > 0) " " else "", id });
+        try kit.blocks.detail(out, ui, &.{.{ .fields = &.{
+            .{ .key = "Prompt", .value = try std.fmt.allocPrint(arena, "{f} · {f}", .{ v.count(self.tokens, "token"), v.count(self.bytes, "byte") }) },
+            .{ .key = "IDs", .value = ids.items, .role = .id },
+        } }});
         try out.writeByte('\n');
+        if (self.round_trip)
+            try kit.blocks.result(out, ui, .ok, "round trip", "decoding the IDs gives the prompt back byte for byte")
+        else
+            try kit.blocks.result(out, ui, .failed, "round trip", "decoding the IDs does not give the prompt back; an offset is not a cut point");
     }
 };
 
@@ -67,7 +72,7 @@ pub fn tokenOffsets(alloc: std.mem.Allocator, vocab: *const inference.vocabulary
     return offsets;
 }
 
-pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, effort: inference.profiles.Effort, forced: ?inference.profiles.Profile, options: generate.Options, json: bool, writer: *std.Io.Writer, sty: style.Style) !void {
+pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, effort: inference.profiles.Effort, forced: ?inference.profiles.Profile, options: generate.Options, json: bool, writer: *std.Io.Writer, ui: kit.Ui) !void {
     const user = try engine.readPrompt(alloc, io, options.prompt, options.prompt_file);
     defer alloc.free(user);
     var mapped = try inference.weights.Mapped.open(alloc, io, model_path);
@@ -105,7 +110,9 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, effort:
         .offsets = offsets,
         .round_trip = std.mem.eql(u8, decoded, read),
     };
-    try report.render(writer, json, sty);
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    try report.render(arena_state.allocator(), writer, json, ui);
 }
 
 fn fixtureVocabulary() !inference.vocabulary.Vocabulary {
@@ -138,12 +145,23 @@ test "offsets are the byte starts of each token's decoded text plus the total" {
 
 test "report renders text and JSON from the same value" {
     const report: Report = .{ .model_path = "m.gguf", .rendering = "raw", .think = null, .text = "a b<x>", .bytes = 6, .tokens = 3, .ids = &.{ 0, 2, 1 }, .offsets = &.{ 0, 1, 4, 6 }, .round_trip = true };
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try report.render(&out.writer, false, .none);
-    try std.testing.expectEqualStrings("Model: m.gguf\nPrompt: 3 tokens, 6 bytes, raw rendering, round trip ok\nids: 0 2 1\n", out.written());
+    try report.render(arena, &out.writer, false, .plain);
+    try std.testing.expectEqualStrings(
+        \\◆ m.gguf · raw rendering
+        \\
+        \\Prompt  3 tokens · 6 bytes
+        \\IDs     0 2 1
+        \\
+        \\✓ round trip  decoding the IDs gives the prompt back byte for byte
+        \\
+    , out.written());
     out.clearRetainingCapacity();
-    try report.render(&out.writer, true, .none);
+    try report.render(arena, &out.writer, true, .plain);
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expect(parsed.value.object.get("think") == null);
@@ -152,6 +170,7 @@ test "report renders text and JSON from the same value" {
     try std.testing.expectEqualStrings("a b<x>", parsed.value.object.get("text").?.string);
     const chat: Report = .{ .model_path = "m.gguf", .rendering = "chat", .think = "low", .text = "a", .bytes = 1, .tokens = 1, .ids = &.{0}, .offsets = &.{ 0, 1 }, .round_trip = false };
     out.clearRetainingCapacity();
-    try chat.render(&out.writer, false, .none);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "chat rendering (think low), round trip MISMATCH") != null);
+    try chat.render(arena, &out.writer, false, .plain);
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ m.gguf · chat rendering, think low\n"));
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n✗ round trip  decoding the IDs does not give the prompt back") != null);
 }
