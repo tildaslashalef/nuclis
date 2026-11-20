@@ -742,25 +742,25 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         defer loaded.deinit();
         return speak.run(alloc, io, root, &loaded, options.words, out, sty, diag);
     }
-    if (options.command == .voice) return voices.run(alloc, io, root, options.words, out, sty, diag);
+    if (options.command == .voice) return voices.run(alloc, io, root, options.words, out, ui, diag);
     if (options.command == .serve) return runServe(alloc, io, root, config_path, options.words, out, sty, diag);
     if (options.command == .agent and options.agent_action == .ls) {
         const dir = root orelse return error.MissingHome;
         const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc);
         defer alloc.free(cwd);
-        return agent.resume_mod.ls(alloc, io, dir, cwd, options.json, out, sty);
+        return agent.resume_mod.ls(alloc, io, dir, cwd, options.json, out, ui);
     }
     if (options.command == .agent and options.agent_action == .rm) {
         const dir = root orelse return error.MissingHome;
         const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc);
         defer alloc.free(cwd);
-        return removeSession(alloc, io, dir, cwd, options.session_id, out, sty, diag);
+        return removeSession(alloc, io, dir, cwd, options.session_id, out, ui, diag);
     }
     if (options.command == .agent and options.agent_action == .@"export") {
         const dir = root orelse return error.MissingHome;
         const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc);
         defer alloc.free(cwd);
-        return exportSession(alloc, io, dir, cwd, options.session_id, options.export_path, out, sty, diag);
+        return exportSession(alloc, io, dir, cwd, options.session_id, options.export_path, out, ui, diag);
     }
     if (options.command == .cache) {
         const dir = root orelse return error.MissingHome;
@@ -776,9 +776,9 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 } else |_| {
                     diag.len = 0;
                 };
-                return agent.loop.cache.ls(alloc, io, dir, budget, options.json, out, sty);
+                return agent.loop.cache.ls(alloc, io, dir, budget, options.json, out, ui);
             },
-            .clear => agent.loop.cache.clear(alloc, io, dir, out, sty),
+            .clear => agent.loop.cache.clear(alloc, io, dir, out, ui),
         };
     }
     if (options.command == .config) {
@@ -791,7 +791,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 const current = try config.readText(alloc, io, .cwd(), file, diag);
                 defer if (current) |c| alloc.free(c);
                 if (options.config_action == .init and current != null) {
-                    try out.print("{s}{s}{s} exists; not overwritten {s}(`nuclis config sync` adds what is installed; `nuclis config show` prints it){s}\n", .{ sty.on(.code), file, sty.off(), sty.on(.dim), sty.off() });
+                    try kit.blocks.result(out, ui, .not_checked, try std.fmt.allocPrint(arena, "{s} exists", .{try kit.text.clean(arena, file)}), "not overwritten");
+                    try kit.blocks.hint(out, ui, "", "nuclis config sync", " adds what is installed; `nuclis config show` prints it");
                     return;
                 }
                 if (options.config_action == .sync and current == null) {
@@ -816,7 +817,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                         _ = try config.init(io, .cwd(), file, config.initial(entries, model_name));
                         report.written = true;
                     }
-                    if (options.json) try report.render(out, true, sty) else try renderStart(out, file, model_name, report, sty);
+                    if (options.json) try report.render(arena, out, true, ui) else try report.renderInit(arena, out, ui, model_name);
                 } else {
                     const prune: []const []const u8 = if (options.prune) blk: {
                         const names = try arena.alloc([]const u8, report.gone.len);
@@ -832,14 +833,16 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                         try config.write(io, .cwd(), file, text);
                         report.written = true;
                     }
-                    try report.render(out, options.json, sty);
+                    try report.render(arena, out, options.json, ui);
                 }
             },
             .show => {
                 var loaded = try config.load(alloc, io, .cwd(), file, diag);
                 defer loaded.deinit();
                 oldMtpNotice(loaded.config.models);
-                try config.show(&loaded, out, options.json, sty);
+                var arena_state = std.heap.ArenaAllocator.init(alloc);
+                defer arena_state.deinit();
+                try config.show(arena_state.allocator(), &loaded, out, options.json, ui);
             },
             .set => {
                 const current = try config.readText(alloc, io, .cwd(), file, diag);
@@ -859,9 +862,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                     };
                 }
                 try config.write(io, .cwd(), file, edit.text);
-                try out.print("{s}set{s} {s}{s}{s} = {s}{s}{s} in {s}{s}{s}", .{ sty.on(.success), sty.off(), sty.on(.label), options.set_key, sty.off(), sty.on(.keyword), options.set_value, sty.off(), sty.on(.code), file, sty.off() });
-                if (edit.previous) |p| try out.print(" {s}(was {s}){s}", .{ sty.on(.dim), p, sty.off() });
-                try out.writeByte('\n');
+                try renderSet(out, ui, options.set_key, edit.previous, options.set_value, file);
             },
         }
         return;
@@ -1000,7 +1001,7 @@ fn isSafetensors(io: std.Io, path: []const u8) !bool {
 
 /// `nuclis agent rm <id>`: deletes the workspace's session `query` names
 /// (a whole id or a prefix of exactly one) and its token-cache states.
-fn removeSession(alloc: std.mem.Allocator, io: std.Io, root: []const u8, cwd: []const u8, query: []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+fn removeSession(alloc: std.mem.Allocator, io: std.Io, root: []const u8, cwd: []const u8, query: []const u8, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     const found = try agent.resume_mod.match(alloc, io, root, cwd, query);
     defer found.deinit(alloc);
     switch (found) {
@@ -1017,14 +1018,18 @@ fn removeSession(alloc: std.mem.Allocator, io: std.Io, root: []const u8, cwd: []
         },
         .one => |summary| {
             const removed = try agent.resume_mod.delete(alloc, io, root, summary.path);
-            try out.print("{s}deleted{s} {s}{s}{s} {s}{s}{s} and {d} cached state{s}\n", .{ sty.on(.label), sty.off(), sty.on(.keyword), summary.id, sty.off(), sty.on(.dim), summary.first_prompt, sty.off(), removed, if (removed == 1) "" else "s" });
+            var arena_state = std.heap.ArenaAllocator.init(alloc);
+            defer arena_state.deinit();
+            const a = arena_state.allocator();
+            const prompt = try kit.text.clean(a, summary.first_prompt);
+            try kit.blocks.result(out, ui, .ok, try std.fmt.allocPrint(a, "deleted {s}", .{try kit.text.clean(a, summary.id)}), try std.fmt.allocPrint(a, "{s}{s}{f}", .{ prompt, if (prompt.len > 0) " · " else "", kit.values.countIrregular(removed, "cached state", "cached states") }));
         },
     }
 }
 
 /// `agent export <id> [path]`: the session as markdown, derived from its
 /// entries (what the model saw), at `path` or under `<root>/agent/exports/`.
-fn exportSession(alloc: std.mem.Allocator, io: std.Io, root: []const u8, cwd: []const u8, query: []const u8, path: ?[]const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+fn exportSession(alloc: std.mem.Allocator, io: std.Io, root: []const u8, cwd: []const u8, query: []const u8, path: ?[]const u8, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     const found = try agent.resume_mod.match(alloc, io, root, cwd, query);
     defer found.deinit(alloc);
     const summary = switch (found) {
@@ -1043,7 +1048,8 @@ fn exportSession(alloc: std.mem.Allocator, io: std.Io, root: []const u8, cwd: []
     const a = arena_state.allocator();
     var diagnostic: agent.session_log.Diagnostic = .{};
     const loaded = agent.session_log.load(a, io, .cwd(), summary.path, &diagnostic) catch |err| {
-        diag.set("{s} reading {s} (line {d})", .{ @errorName(err), summary.path, diagnostic.line });
+        var words: [64]u8 = undefined;
+        diag.set("{s}, line {d}: {s}", .{ summary.path, diagnostic.line, errors.words(&words, @errorName(err)) });
         return err;
     };
     defer loaded.deinit();
@@ -1052,7 +1058,7 @@ fn exportSession(alloc: std.mem.Allocator, io: std.Io, root: []const u8, cwd: []
     try agent.session_log.exportMarkdown(loaded, &document.writer);
     if (std.fs.path.dirname(target)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = target, .data = document.written() });
-    try out.print("{s}exported{s} {s}{s}{s} to {s}{s}{s}\n", .{ sty.on(.label), sty.off(), sty.on(.keyword), summary.id, sty.off(), sty.on(.code), target, sty.off() });
+    try kit.blocks.result(out, ui, .ok, try std.fmt.allocPrint(a, "exported {s}", .{try kit.text.clean(a, summary.id)}), try std.fmt.allocPrint(a, "to {s}", .{try kit.text.clean(a, target)}));
 }
 
 /// `decide`: its own flags, a checkpoint directory rather than a GGUF file,
@@ -1142,14 +1148,15 @@ fn oldMtpNotice(models: config.Models) void {
 
 /// What `config init` leaves: the file, the model it runs, and the next
 /// command.
-fn renderStart(out: *std.Io.Writer, file: []const u8, model_name: []const u8, report: discover.Report, sty: style.Style) !void {
-    const off = sty.off();
-    try out.print("{s}{s}{s} {s}{s}{s} with {s}engine.model{s} {s}{s}{s}\n", .{ sty.on(if (report.dry_run) .bold else .success), if (report.dry_run) "dry run: would write" else "wrote", off, sty.on(.code), file, off, sty.on(.label), off, sty.on(.keyword), model_name, off });
-    try report.renderRows(out, sty);
-    if (report.dry_run) return;
-    if (!report.default_installed and report.registered.len == 0) {
-        try out.print("{s}next:{s} {s}nuclis model pull {s} --all{s} fetches it, then {s}nuclis config sync{s} registers what you pulled; {s}nuclis model ls --available{s} lists the index\n", .{ sty.on(.bold), off, sty.on(.code), model_name, off, sty.on(.code), off, sty.on(.code), off });
-    } else try out.print("{s}next:{s} {s}nuclis agent{s}; {s}nuclis model ls{s} shows what is installed\n", .{ sty.on(.bold), off, sty.on(.code), off, sty.on(.code), off });
+/// `config set`: `✓ <key>  <was> → <now>`, then the file, muted. Values
+/// came from the command line and the file, so they are cleaned.
+fn renderSet(out: *std.Io.Writer, ui: kit.Ui, key: []const u8, previous: ?[]const u8, value: []const u8, file: []const u8) !void {
+    var buffer: [4096]u8 = undefined;
+    var fba: std.heap.FixedBufferAllocator = .init(&buffer);
+    const a = fba.allocator();
+    try out.print("{s}{s}{s} {s}{s}{s}  ", .{ ui.on(.ok), ui.glyphs.ok, ui.off(.ok), ui.on(.id), try kit.text.clean(a, key), ui.off(.id) });
+    if (previous) |p| try out.print("{s}{s} {s}{s} ", .{ ui.on(.muted), kit.text.clean(a, p) catch p, ui.glyphs.arrow, ui.off(.muted) });
+    try out.print("{s}{s}{s}  {s}in {s}{s}\n", .{ ui.on(.changed), kit.text.clean(a, value) catch value, ui.off(.changed), ui.on(.muted), kit.text.clean(a, file) catch file, ui.off(.muted) });
 }
 
 test "completion takes one shell; the hidden command takes every word" {
@@ -1363,6 +1370,7 @@ test "config init and show run against NUCLIS_HOME without touching the real roo
     var environ: std.process.Environ.Map = .init(alloc);
     defer environ.deinit();
     try environ.put("NUCLIS_HOME", root);
+    try environ.put("LANG", "en_US.UTF-8");
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
     var diag: config.Diagnostic = .{};
@@ -1372,11 +1380,9 @@ test "config init and show run against NUCLIS_HOME without touching the real roo
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "nuclis.json", .{}));
     out.clearRetainingCapacity();
     try run(alloc, io, &environ, try parseArgs(&.{ "config", "init" }), &out.writer, &diag);
-    try std.testing.expect(std.mem.startsWith(u8, out.written(), "wrote "));
     // A fresh root: nothing installed, so the default model and an empty
     // registry, and the next step is its pull, then a sync.
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "with engine.model qwen3.8-27b") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "next: nuclis model pull qwen3.8-27b --all fetches it, then nuclis config sync") != null);
+    try std.testing.expect(std.mem.endsWith(u8, out.written(), "/nuclis.json\n\n✓ wrote nuclis.json  engine.model qwen3.8-27b · 0 entries\n→ next: nuclis model pull qwen3.8-27b --all fetches it, then `nuclis config sync` registers it\n"));
     try tmp.dir.access(io, "nuclis.json", .{});
     {
         var written = try config.load(alloc, io, tmp.dir, "nuclis.json", &diag);
@@ -1386,10 +1392,10 @@ test "config init and show run against NUCLIS_HOME without touching the real roo
     // sync finds nothing to add on an empty root and writes nothing.
     out.clearRetainingCapacity();
     try run(alloc, io, &environ, try parseArgs(&.{ "config", "sync" }), &out.writer, &diag);
-    try std.testing.expect(std.mem.startsWith(u8, out.written(), "nothing to register"));
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n\n– nothing to register  under ") != null);
     out.clearRetainingCapacity();
     try run(alloc, io, &environ, try parseArgs(&.{ "config", "init" }), &out.writer, &diag);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "exists; not overwritten") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "/nuclis.json exists  not overwritten\n→ nuclis config sync adds") != null);
     out.clearRetainingCapacity();
     try run(alloc, io, &environ, try parseArgs(&.{ "config", "show", "--json" }), &out.writer, &diag);
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});

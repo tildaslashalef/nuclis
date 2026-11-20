@@ -348,9 +348,10 @@ nuclis config set generation.sampling.top_k null     # clear an override
 
 `nuclis config show [--json]` prints every key's effective value and its
 source: `default`, `profile`, `file`, `model` (the registry entry), or
-`flag`. Above the table it names the model, how it resolved (registry
-entry, catalogue name, or path), and its profile; below, each registry
-entry's own keys.
+`flag`, one section per part of the file (`engine`, `generation`, …). Its
+header names the model, how it resolved (registry entry, catalogue name,
+or path), and its profile; after the sections come each registry entry's
+own keys, as `models.<name>`.
 
 The profile named there is the catalogue's, chosen without opening the
 file. A run samples with the profile of the file it opens (chosen by its

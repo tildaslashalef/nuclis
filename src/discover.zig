@@ -15,7 +15,7 @@ const inference = @import("inference");
 const config = @import("config.zig");
 const catalog = @import("catalog.zig");
 const model = @import("model.zig");
-const style = @import("tui/style.zig");
+const kit = @import("ui.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Candidate = struct {
@@ -66,60 +66,112 @@ pub const Report = struct {
     added: []const []const u8 = &.{},
     behind: []const Behind = &.{},
 
-    pub fn render(self: Report, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+    /// `config sync`: the file, what changed or would, and a closing line.
+    pub fn render(self: Report, arena: Allocator, out: *std.Io.Writer, json: bool, ui: kit.Ui) !void {
         if (json) {
             try std.json.Stringify.value(self, .{ .whitespace = .indent_2, .emit_null_optional_fields = false }, out);
             return out.writeByte('\n');
         }
-        const off = sty.off();
+        try kit.blocks.header(out, ui, try kit.text.clean(arena, self.config_file), if (self.dry_run) "dry run" else "");
+        try self.renderRows(arena, out, ui);
+        const n = kit.values.count(self.registered.len, "model");
         if (self.registered.len == 0 and (self.refreshed.len > 0 or self.added.len > 0)) {
-            try out.print("{s}{s}{s} {s}{s}{s} from the index; nothing new to register", .{ sty.on(if (self.dry_run) .bold else .success), if (self.dry_run) "dry run: would update" else "updated", off, sty.on(.code), self.config_file, off });
+            try kit.blocks.result(out, ui, if (self.dry_run) .not_checked else .ok, if (self.dry_run) "would update from the catalogue" else "updated from the catalogue", if (self.dry_run) "nothing written" else "nothing new to register");
         } else if (self.registered.len == 0) {
-            try out.print("{s}nothing to register{s} under {s}{s}{s}", .{ sty.on(.bold), off, sty.on(.code), self.models_dir, off });
+            try kit.blocks.result(out, ui, .not_checked, "nothing to register", try std.fmt.allocPrint(arena, "under {s}", .{try kit.text.clean(arena, self.models_dir)}));
         } else if (self.dry_run) {
-            try out.print("{s}dry run:{s} {d} model(s) under {s}{s}{s} would be registered in {s}{s}{s}; nothing written", .{ sty.on(.bold), off, self.registered.len, sty.on(.code), self.models_dir, off, sty.on(.code), self.config_file, off });
-        } else {
-            try out.print("{s}registered{s} {d} model(s) under {s}{s}{s} in {s}{s}{s}", .{ sty.on(.success), off, self.registered.len, sty.on(.code), self.models_dir, off, sty.on(.code), self.config_file, off });
-        }
-        try out.writeByte('\n');
-        try self.renderRows(out, sty);
+            try kit.blocks.result(out, ui, .not_checked, try std.fmt.allocPrint(arena, "would register {f}", .{n}), "nothing written");
+        } else try kit.blocks.result(out, ui, .ok, try std.fmt.allocPrint(arena, "registered {f}", .{n}), "");
     }
 
-    /// The candidates, the entries whose file is gone, and what was skipped,
-    /// without the summary line (`config init` says what it wrote first).
-    pub fn renderRows(self: Report, out: *std.Io.Writer, sty: style.Style) !void {
-        const off = sty.off();
-        for (self.registered) |c| {
-            try out.print("  {s}{s}{s}  {s}{s}{s}\n", .{ sty.on(.keyword), c.name, off, sty.on(.code), c.path, off });
-            try out.print("      {s}{s}", .{ sty.on(.dim), catalog.groupName(c.kind) });
-            if (c.artifact != null) try out.writeAll(", from the index");
-            if (c.adapter) |a| try out.print(", {s} adapter", .{a});
-            if (c.entry.profile) |p| try out.print(", profile {s}{s}", .{ @tagName(p), if (c.profile_forced) " (forced: the template is not a pinned one)" else "" });
-            if (c.entry.mmproj) |m| try out.print(", mmproj {s}", .{m});
-            if (c.entry.draft) |m| try out.print(", draft {s}", .{m});
-            if (c.entry.generation.speculative) |s| try out.print(", speculative {s}", .{if (s) "on" else "off"});
-            try out.print("{s}\n", .{off});
+    /// `config init`: the file and what it registers, the model it runs,
+    /// and the next command.
+    pub fn renderInit(self: Report, arena: Allocator, out: *std.Io.Writer, ui: kit.Ui, model_name: []const u8) !void {
+        try kit.blocks.header(out, ui, try kit.text.clean(arena, self.config_file), if (self.dry_run) "dry run" else "");
+        try self.renderRows(arena, out, ui);
+        const detail = try std.fmt.allocPrint(arena, "engine.model {s} · {f}", .{ model_name, kit.values.countIrregular(self.registered.len, "entry", "entries") });
+        const name = std.fs.path.basename(self.config_file);
+        if (self.dry_run) return kit.blocks.result(out, ui, .not_checked, try std.fmt.allocPrint(arena, "would write {s}", .{name}), detail);
+        try kit.blocks.result(out, ui, .ok, try std.fmt.allocPrint(arena, "wrote {s}", .{name}), detail);
+        if (!self.default_installed and self.registered.len == 0) {
+            try kit.blocks.hint(out, ui, "next: ", try std.fmt.allocPrint(arena, "nuclis model pull {s} --all", .{model_name}), " fetches it, then `nuclis config sync` registers it");
+        } else try kit.blocks.hint(out, ui, "next: ", "nuclis agent", "");
+    }
+
+    /// Each part of the report as a titled table, the notices as `▲`
+    /// lines; every part ends with a blank line.
+    pub fn renderRows(self: Report, arena: Allocator, out: *std.Io.Writer, ui: kit.Ui) !void {
+        const T = kit.table;
+        const clean = kit.text.clean;
+        if (self.registered.len > 0) {
+            try section(out, ui, if (self.dry_run) "Would register" else "Registered");
+            const rows = try arena.alloc([]const T.Cell, self.registered.len);
+            for (self.registered, rows) |c, *row| {
+                var notes: std.ArrayList([]const u8) = .empty;
+                if (c.artifact != null) try notes.append(arena, "from the catalogue");
+                if (c.adapter) |a| try notes.append(arena, try std.fmt.allocPrint(arena, "{s} adapter", .{a}));
+                if (c.entry.profile) |p| try notes.append(arena, try std.fmt.allocPrint(arena, "profile {s}{s}", .{ @tagName(p), if (c.profile_forced) " (forced: the template is not a pinned one)" else "" }));
+                if (c.entry.mmproj != null) try notes.append(arena, "mmproj");
+                if (c.entry.draft != null) try notes.append(arena, "draft");
+                if (c.entry.generation.speculative) |on| try notes.append(arena, if (on) "speculative on" else "speculative off");
+                row.* = try arena.dupe(T.Cell, &.{
+                    .{ .text = try clean(arena, c.name), .role = .id },
+                    .{ .text = catalog.groupName(c.kind) },
+                    .{ .text = try clean(arena, c.path) },
+                    .{ .text = try clean(arena, try std.mem.join(arena, ", ", notes.items)), .role = .muted },
+                });
+            }
+            try T.render(out, ui, arena, 2, &.{ .{ .title = "NAME", .truncate = false }, .{ .title = "KIND" }, .{ .title = "PATH" }, .{ .title = "NOTE", .drop = 1 } }, rows);
+            try out.writeByte('\n');
         }
         if (self.gone.len > 0) {
-            if (self.pruned) {
-                try out.print("{s}{s}{s} {d} entr{s} whose file is gone\n", .{ sty.on(.success), if (self.dry_run) "would remove" else "removed", off, self.gone.len, if (self.gone.len == 1) "y" else "ies" });
-            } else try out.print("{s}entries whose file is gone{s} {s}(`nuclis config sync --prune` removes them){s}\n", .{ sty.on(.header), off, sty.on(.dim), off });
-            for (self.gone) |g| try out.print("  {s}{s}{s}  {s}{s}{s}\n", .{ sty.on(.keyword), g.name, off, sty.on(.code), g.path, off });
+            try section(out, ui, if (!self.pruned) "Entries whose file is gone" else if (self.dry_run) "Would remove (the file is gone)" else "Removed (the file is gone)");
+            const rows = try arena.alloc([]const T.Cell, self.gone.len);
+            for (self.gone, rows) |g, *row| row.* = try arena.dupe(T.Cell, &.{ .{ .text = try clean(arena, g.name), .role = .id }, .{ .text = try clean(arena, g.path) } });
+            try T.render(out, ui, arena, 2, &.{ .{ .title = "NAME", .truncate = false }, .{ .title = "PATH" } }, rows);
+            if (!self.pruned) try kit.blocks.hint(out, ui, "", "nuclis config sync --prune", " removes them");
+            try out.writeByte('\n');
         }
         if (self.refreshed.len > 0) {
-            try out.print("{s}{s} from the index{s}\n", .{ sty.on(.header), if (self.dry_run) "would refresh" else "refreshed", off });
-            for (self.refreshed) |r| try out.print("  {s}{s}{s}  {s}{s}{s} {s} {s}->{s} {s}\n", .{ sty.on(.keyword), r.name, off, sty.on(.label), r.key, off, r.from, sty.on(.dim), off, r.to });
+            try section(out, ui, if (self.dry_run) "Would refresh from the catalogue" else "Refreshed from the catalogue");
+            const rows = try arena.alloc([]const T.Cell, self.refreshed.len);
+            for (self.refreshed, rows) |r, *row| row.* = try arena.dupe(T.Cell, &.{
+                .{ .text = try clean(arena, r.name), .role = .id },
+                .{ .text = r.key },
+                .{ .text = try clean(arena, r.from), .role = .muted },
+                .{ .text = ui.glyphs.arrow, .role = .muted },
+                .{ .text = try clean(arena, r.to), .role = .changed },
+            });
+            try T.render(out, ui, arena, 2, &.{ .{ .title = "NAME", .truncate = false }, .{ .title = "KEY" }, .{ .title = "FROM" }, .{ .title = "" }, .{ .title = "TO" } }, rows);
+            try out.writeByte('\n');
         }
         if (self.added.len > 0) {
-            try out.print("{s}{s} at their defaults{s}\n", .{ sty.on(.header), if (self.dry_run) "would add" else "added", off });
-            for (self.added) |k| try out.print("  {s}{s}{s}\n", .{ sty.on(.label), k, off });
+            try section(out, ui, if (self.dry_run) "Would add at their defaults" else "Added at their defaults");
+            for (self.added) |k| try out.print("  {s}{s}{s}\n", .{ ui.on(.id), k, ui.off(.id) });
+            try out.writeByte('\n');
         }
-        for (self.behind) |b| try out.print("{s}notice:{s} {s}{s}{s} pins revision {s}, the index {s} {s}(not changed: the files on disk are the entry's){s}\n", .{ sty.on(.warning), off, sty.on(.keyword), b.name, off, b.revision[0..@min(b.revision.len, 12)], b.index[0..@min(b.index.len, 12)], sty.on(.dim), off });
         if (self.skipped.len > 0) {
-            try out.print("{s}skipped{s}\n", .{ sty.on(.header), off });
-            for (self.skipped) |s| try out.print("  {s}{s}{s}  {s}{s}{s}\n", .{ sty.on(.code), s.path, off, sty.on(.dim), s.reason, off });
+            try section(out, ui, "Skipped");
+            const rows = try arena.alloc([]const T.Cell, self.skipped.len);
+            for (self.skipped, rows) |sk, *row| row.* = try arena.dupe(T.Cell, &.{ .{ .text = try clean(arena, sk.path) }, .{ .text = try clean(arena, sk.reason), .role = .muted } });
+            try T.render(out, ui, arena, 2, &.{ .{ .title = "PATH" }, .{ .title = "REASON", .min = 16 } }, rows);
+            try out.writeByte('\n');
         }
-        if (self.model_absent) |m| try out.print("{s}notice:{s} engine.model {s}{s}{s} is not installed {s}(`nuclis model pull {s}`, or `nuclis config set engine.model <name>`){s}\n", .{ sty.on(.warning), off, sty.on(.keyword), m, off, sty.on(.dim), m, off });
+        var notices = false;
+        for (self.behind) |b| {
+            try kit.blocks.result(out, ui, .warning, try clean(arena, b.name), try std.fmt.allocPrint(arena, "pins revision {s}, the catalogue {s}; not changed (the files on disk are the entry's)", .{ b.revision[0..@min(b.revision.len, 12)], b.index[0..@min(b.index.len, 12)] }));
+            notices = true;
+        }
+        if (self.model_absent) |m| {
+            try kit.blocks.result(out, ui, .warning, try std.fmt.allocPrint(arena, "engine.model {s} is not installed", .{try clean(arena, m)}), "");
+            try kit.blocks.hint(out, ui, "", try std.fmt.allocPrint(arena, "nuclis model pull {s}", .{try clean(arena, m)}), " fetches it, or `nuclis config set engine.model <name>`");
+            notices = true;
+        }
+        if (notices) try out.writeByte('\n');
+    }
+
+    fn section(out: *std.Io.Writer, ui: kit.Ui, title: []const u8) !void {
+        try out.print("{s}{s}{s}\n", .{ ui.on(.title), title, ui.off(.title) });
     }
 };
 
@@ -427,14 +479,33 @@ test "a report renders both ways from the same rows" {
         .gone = &.{.{ .name = "old", .path = "o/gone/x.gguf" }},
         .skipped = &.{.{ .path = "o/r/mmproj.gguf", .reason = "a mmproj companion" }},
     };
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
-    try report.render(&out.writer, false, .none);
-    try testing.expect(std.mem.indexOf(u8, out.written(), "registered 1 model(s)") != null);
-    try testing.expect(std.mem.indexOf(u8, out.written(), "profile gemma4 (forced") != null);
-    try testing.expect(std.mem.indexOf(u8, out.written(), "config sync --prune") != null);
+    try report.render(arena, &out.writer, false, .plain);
+    try testing.expectEqualStrings(
+        \\◆ /c.json
+        \\
+        \\Registered
+        \\  NAME  KIND  PATH        NOTE
+        \\  fine  chat  o/r/f.gguf  gemma4 adapter, profile gemma4 (forced: the template is not a pinned one), mmproj, speculative off
+        \\
+        \\Entries whose file is gone
+        \\  NAME  PATH
+        \\  old   o/gone/x.gguf
+        \\→ nuclis config sync --prune removes them
+        \\
+        \\Skipped
+        \\  PATH             REASON
+        \\  o/r/mmproj.gguf  a mmproj companion
+        \\
+        \\✓ registered 1 model
+        \\
+    , out.written());
     out.clearRetainingCapacity();
-    try report.render(&out.writer, true, .none);
+    try report.render(arena, &out.writer, true, .plain);
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, out.written(), .{});
     defer parsed.deinit();
     try testing.expectEqualStrings("fine", parsed.value.object.get("registered").?.array.items[0].object.get("name").?.string);

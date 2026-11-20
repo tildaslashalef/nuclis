@@ -20,7 +20,7 @@ const inference = @import("inference");
 const build_options = @import("build_options");
 const paths = @import("../paths.zig");
 const model_mod = @import("../model.zig");
-const style = @import("../tui/style.zig");
+const kit = @import("../ui.zig");
 
 const Allocator = std.mem.Allocator;
 const Snapshot = inference.session.Snapshot;
@@ -359,23 +359,33 @@ pub const Listing = struct {
 
     pub const State = struct { file: []const u8, bytes: u64, last_used: []const u8 };
 
-    pub fn render(self: Listing, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+    /// The text form: a header with the count and the budget, then one row
+    /// per state, its age against `now` (seconds since the epoch).
+    pub fn render(self: Listing, arena: Allocator, out: *std.Io.Writer, json: bool, ui: kit.Ui, now: i64) !void {
         if (json) {
             try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
             return out.writeByte('\n');
         }
-        const off = sty.off();
-        var used: [16]u8 = undefined;
-        var budget: [16]u8 = undefined;
-        try out.print("{s}token cache{s} {s}{s}{s}: {d} state{s}, {s} of {s} {s}(cache.disk_bytes; least recently used out first){s}\n", .{
-            sty.on(.label),  off,                                   sty.on(.code),                      self.dir,                              off,
-            self.states.len, if (self.states.len == 1) "" else "s", byteLabel(&used, self.total_bytes), byteLabel(&budget, self.budget_bytes), sty.on(.dim),
-            off,
-        });
-        for (self.states) |state| {
-            var size: [16]u8 = undefined;
-            try out.print("  {s}{s: >10}{s}  {s}  {s}{s}{s}\n", .{ sty.on(.number), byteLabel(&size, state.bytes), off, state.last_used, sty.on(.dim), state.file, off });
+        const v = kit.values;
+        try kit.blocks.header(out, ui, "token cache", try std.fmt.allocPrint(arena, "{s} · {f}, {f} of {f}", .{ try kit.text.clean(arena, self.dir), v.count(self.states.len, "state"), v.size(self.total_bytes), v.size(self.budget_bytes) }));
+        if (self.states.len == 0) {
+            try kit.blocks.result(out, ui, .not_checked, "no saved states", "the agent saves one per conversation it can continue");
+            return;
         }
+        const columns = [_]kit.table.Column{
+            .{ .title = "SIZE", .alignment = .right },
+            .{ .title = "LAST USED", .drop = 1 },
+            .{ .title = "FILE" },
+        };
+        const rows = try arena.alloc([]const kit.table.Cell, self.states.len);
+        for (self.states, rows) |state, *row| row.* = try arena.dupe(kit.table.Cell, &.{
+            .{ .text = try std.fmt.allocPrint(arena, "{f}", .{v.size(state.bytes)}) },
+            .{ .text = if (v.parseUtc(state.last_used)) |t| try std.fmt.allocPrint(arena, "{f}", .{v.ago(now - t)}) else state.last_used },
+            .{ .text = try kit.text.clean(arena, state.file), .role = .muted },
+        });
+        try kit.table.render(out, ui, arena, 0, &columns, rows);
+        try out.writeByte('\n');
+        try kit.blocks.hint(out, ui, "past cache.disk_bytes the least recently used goes first; ", "nuclis cache clear", " removes them all");
     }
 };
 
@@ -392,7 +402,7 @@ pub fn byteLabel(buffer: *[16]u8, bytes: u64) []const u8 {
 
 /// `nuclis cache ls`: the states under `<root>/cache/prefix/` and the
 /// budget they count against. A missing directory lists nothing.
-pub fn ls(alloc: Allocator, io: std.Io, root_dir: []const u8, budget: u64, json: bool, out: *std.Io.Writer, sty: style.Style) !void {
+pub fn ls(alloc: Allocator, io: std.Io, root_dir: []const u8, budget: u64, json: bool, out: *std.Io.Writer, ui: kit.Ui) !void {
     const path = try paths.prefixCachePath(alloc, root_dir);
     defer alloc.free(path);
     var arena = std.heap.ArenaAllocator.init(alloc);
@@ -419,12 +429,12 @@ pub fn ls(alloc: Allocator, io: std.Io, root_dir: []const u8, budget: u64, json:
         else => return err,
     }
     const listing: Listing = .{ .dir = path, .budget_bytes = budget, .total_bytes = total, .states = states.items };
-    try listing.render(out, json, sty);
+    try listing.render(a, out, json, ui, std.Io.Timestamp.now(io, .real).toSeconds());
 }
 
 /// `nuclis cache clear`: deletes every saved state; says how many and how
 /// much. Nothing else lives in the directory, and nothing needs it.
-pub fn clear(alloc: Allocator, io: std.Io, root_dir: []const u8, out: *std.Io.Writer, sty: style.Style) !void {
+pub fn clear(alloc: Allocator, io: std.Io, root_dir: []const u8, out: *std.Io.Writer, ui: kit.Ui) !void {
     const path = try paths.prefixCachePath(alloc, root_dir);
     defer alloc.free(path);
     var removed: usize = 0;
@@ -443,8 +453,10 @@ pub fn clear(alloc: Allocator, io: std.Io, root_dir: []const u8, out: *std.Io.Wr
         error.FileNotFound => {},
         else => return err,
     }
-    var label: [16]u8 = undefined;
-    try out.print("{s}token cache{s}: removed {d} state{s}, {s}\n", .{ sty.on(.label), sty.off(), removed, if (removed == 1) "" else "s", byteLabel(&label, freed) });
+    var buffer: [64]u8 = undefined;
+    const what = std.fmt.bufPrint(&buffer, "removed {f}", .{kit.values.count(removed, "state")}) catch "removed";
+    var freed_buffer: [32]u8 = undefined;
+    try kit.blocks.result(out, ui, .ok, what, std.fmt.bufPrint(&freed_buffer, "{f} freed", .{kit.values.size(freed)}) catch "");
 }
 
 /// This build's identity: the version and commit, plus the executable's size
@@ -603,23 +615,31 @@ test "cache ls lists the states newest first and clear removes them" {
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
     // No directory yet: an empty listing, not an error.
-    try ls(alloc, io, root, 1 << 30, false, &out.writer, .{});
-    try testing.expect(std.mem.indexOf(u8, out.written(), ": 0 states, 0 B of 1.0 GiB") != null);
+    try ls(alloc, io, root, 1 << 30, false, &out.writer, .plain);
+    try testing.expect(std.mem.startsWith(u8, out.written(), "◆ token cache · "));
+    try testing.expect(std.mem.endsWith(u8, out.written(), "/cache/prefix · 0 states, 0 B of 1.07 GB\n\n– no saved states  the agent saves one per conversation it can continue\n"));
     try tmp.dir.createDirPath(io, "cache/prefix");
     try tmp.dir.writeFile(io, .{ .sub_path = "cache/prefix/a.snap", .data = "xx" });
     try tmp.dir.writeFile(io, .{ .sub_path = "cache/prefix/b.snap", .data = "xxx" });
     try tmp.dir.setTimestamps(io, "cache/prefix/a.snap", .{ .modify_timestamp = .{ .new = .{ .nanoseconds = 2 * std.time.ns_per_s } } });
     try tmp.dir.setTimestamps(io, "cache/prefix/b.snap", .{ .modify_timestamp = .{ .new = .{ .nanoseconds = 1 * std.time.ns_per_s } } });
     out.clearRetainingCapacity();
-    try ls(alloc, io, root, 1 << 30, true, &out.writer, .{});
+    try ls(alloc, io, root, 1 << 30, true, &out.writer, .plain);
     const parsed = try std.json.parseFromSlice(Listing, alloc, out.written(), .{});
     defer parsed.deinit();
     try testing.expectEqual(@as(u64, 5), parsed.value.total_bytes);
     try testing.expectEqualStrings("a.snap", parsed.value.states[0].file);
     try testing.expectEqualStrings("1970-01-01T00:00:02Z", parsed.value.states[0].last_used);
     out.clearRetainingCapacity();
-    try clear(alloc, io, root, &out.writer, .{});
-    try testing.expect(std.mem.indexOf(u8, out.written(), "removed 2 states, 5 B") != null);
+    // The text form: newest first, each state's age.
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    out.clearRetainingCapacity();
+    try parsed.value.render(arena_state.allocator(), &out.writer, false, .plain, 2 + 5 * 60);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\n\nSIZE  LAST USED  FILE\n 2 B  5m ago     a.snap\n 3 B  5m ago     b.snap\n\n→ ") != null);
+    out.clearRetainingCapacity();
+    try clear(alloc, io, root, &out.writer, .plain);
+    try testing.expectEqualStrings("✓ removed 2 states  5 B freed\n", out.written());
     try testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "cache/prefix/a.snap", .{}));
     var label: [16]u8 = undefined;
     try testing.expectEqualStrings("1023 B", byteLabel(&label, 1023));

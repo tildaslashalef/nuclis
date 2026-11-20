@@ -23,7 +23,7 @@
 const std = @import("std");
 const inference = @import("inference");
 const catalog = @import("catalog.zig");
-const style = @import("tui/style.zig");
+const kit = @import("ui.zig");
 const tui_theme = @import("tui/theme.zig");
 const web = @import("web/client.zig");
 const Allocator = std.mem.Allocator;
@@ -1559,21 +1559,11 @@ pub const Effective = struct {
 };
 
 /// The color of a value is the layer it came from.
-fn sourceStyle(source: Source) style.Kind {
-    return switch (source) {
-        .default => .dim,
-        .profile => .number,
-        .file => .success,
-        .model => .warning,
-        .flag => .user,
-    };
-}
-
 /// Prints the effective value of every key with its source, then each
 /// registry entry's stated keys. The JSON form carries the file as loaded
 /// (`config`, with the registry as a map), the effective view, and a flat
 /// `sources` map keyed by dotted path.
-pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+pub fn show(arena: std.mem.Allocator, loaded: *const Loaded, out: *std.Io.Writer, json: bool, ui: kit.Ui) !void {
     const view = Effective.from(loaded);
     if (json) {
         var s: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_2 } };
@@ -1627,43 +1617,25 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
         try out.writeByte('\n');
         return;
     }
-    if (loaded.path.len == 0)
-        try out.print("{s}config:{s} no user root (HOME and NUCLIS_HOME unset); built-in defaults\n", .{ sty.on(.label), sty.off() })
-    else
-        try out.print("{s}config:{s} {s}{s}{s} {s}({s}){s}\n", .{ sty.on(.label), sty.off(), sty.on(.code), loaded.path, sty.off(), sty.on(.dim), if (loaded.found) "file" else "not found; built-in defaults", sty.off() });
-    try out.print("{s}model:{s} {s}{s}{s} ({s}; {s}{s}{s} profile). {s}Values are effective: a null sampling key in the file takes the profile's value for generation.think = {s} (source \"profile\").{s}\n", .{
-        sty.on(.label),
-        sty.off(),
-        sty.on(.keyword),
-        view.engine.model,
-        sty.off(),
+    var notice_buf: [96]u8 = undefined;
+    const context = try std.fmt.allocPrint(arena, "{s} ({s}, profile {s})", .{
+        try kit.text.clean(arena, view.engine.model),
         switch (view.model_kind) {
             .registry => "registry entry",
             .catalogue => "catalogue name",
             .path => "path",
         },
-        sty.on(.number),
         @tagName(view.profile),
-        sty.off(),
-        sty.on(.dim),
-        @tagName(view.generation.think),
-        sty.off(),
     });
-    var notice_buf: [96]u8 = undefined;
-    if (pastSupported(&notice_buf, view.engine.ctx_size)) |notice| try out.print("{s}notice:{s} {s}\n", .{ sty.on(.warning), sty.off(), notice });
-    const Rows = struct {
-        out: *std.Io.Writer,
-        origin: *const Origin,
-        sty: style.Style,
-        fn leaf(self: *@This(), comptime path: []const u8, value: anytype) !void {
-            var buf: [64]u8 = undefined;
-            const source = self.origin[comptime leafIndex(Config, path)];
-            const paint = self.sty.on(sourceStyle(source));
-            try self.out.print("{s: <36} {s}{s: <40}{s} {s}{s}{s}\n", .{ path, paint, formatLeaf(&buf, value), self.sty.off(), paint, @tagName(source), self.sty.off() });
-        }
-    };
-    var rows: Rows = .{ .out = out, .origin = &view.origin, .sty = sty };
-    try rows.leaf("schema_version", loaded.config.schema_version);
+    if (loaded.path.len == 0)
+        try kit.blocks.header(out, ui, "built-in defaults", "HOME and NUCLIS_HOME unset")
+    else
+        try kit.blocks.header(out, ui, try kit.text.clean(arena, loaded.path), if (loaded.found) context else try std.fmt.allocPrint(arena, "not found; built-in defaults · {s}", .{context}));
+    if (pastSupported(&notice_buf, view.engine.ctx_size)) |notice| {
+        try kit.blocks.result(out, ui, .warning, notice, "");
+        try out.writeByte('\n');
+    }
+    var rows: ShowRows = .{ .arena = arena, .origin = &view.origin };
     try walk(@TypeOf(view.engine), view.engine, "engine.", &rows);
     try walk(@TypeOf(view.generation), view.generation, "generation.", &rows);
     try walk(@TypeOf(view.agent), view.agent, "agent.", &rows);
@@ -1676,22 +1648,70 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
     try walk(@TypeOf(view.cache), view.cache, "cache.", &rows);
     for (loaded.config.models.entries) |named| {
         var entry_rows: struct {
-            out: *std.Io.Writer,
-            name: []const u8,
-            sty: style.Style,
+            rows: *ShowRows,
+            section: []const u8,
             fn leaf(self: *@This(), comptime path: []const u8, value: anytype) !void {
                 // Only what the entry states; a null inherits the global value.
                 if (@typeInfo(@TypeOf(value)) == .optional and value == null) return;
                 var buf: [64]u8 = undefined;
-                var key: [max_path_bytes]u8 = undefined;
-                const full = std.fmt.bufPrint(&key, "models.{s}.{s}", .{ self.name, path }) catch unreachable;
-                const paint = self.sty.on(sourceStyle(.file));
-                try self.out.print("{s: <36} {s}{s: <40}{s} {s}{s}{s}\n", .{ full, paint, formatLeaf(&buf, value), self.sty.off(), paint, "file", self.sty.off() });
+                try self.rows.add(self.section, path, formatLeaf(&buf, value), .file);
             }
-        } = .{ .out = out, .name = named.name, .sty = sty };
+        } = .{ .rows = &rows, .section = try std.fmt.allocPrint(arena, "models.{s}", .{try kit.text.clean(arena, named.name)}) };
         try walk(ModelEntry, named.entry, "", &entry_rows);
     }
+    try rows.render(out, ui);
+    try out.writeByte('\n');
+    try kit.blocks.hint(out, ui, "values are effective (a sampling key left null takes the profile's); ", "nuclis config show --json", " has the file as written");
 }
+
+/// `config show`'s rows, grouped by section in the order added, and their
+/// aligned rendering: one key column and one value column across all of
+/// them, the source muted.
+const ShowRows = struct {
+    arena: std.mem.Allocator,
+    origin: *const Origin,
+    items: std.ArrayList(Row) = .empty,
+
+    const Row = struct { section: []const u8, key: []const u8, value: []const u8, source: Source };
+    const max_value_cells = 44;
+
+    fn leaf(self: *ShowRows, comptime path: []const u8, value: anytype) !void {
+        const dot = comptime std.mem.indexOfScalar(u8, path, '.').?;
+        var buf: [64]u8 = undefined;
+        try self.add(path[0..dot], path[dot + 1 ..], formatLeaf(&buf, value), self.origin[comptime leafIndex(Config, path)]);
+    }
+
+    fn add(self: *ShowRows, section: []const u8, key: []const u8, value: []const u8, source: Source) !void {
+        try self.items.append(self.arena, .{ .section = section, .key = key, .value = try kit.text.clean(self.arena, try self.arena.dupe(u8, value)), .source = source });
+    }
+
+    fn render(self: ShowRows, out: *std.Io.Writer, ui: kit.Ui) !void {
+        var key_w: usize = 0;
+        var value_w: usize = 0;
+        for (self.items.items) |r| {
+            key_w = @max(key_w, kit.text.width(r.key));
+            value_w = @max(value_w, @min(kit.text.width(r.value), max_value_cells));
+        }
+        var section: []const u8 = "";
+        for (self.items.items, 0..) |r, i| {
+            if (i == 0 or !std.mem.eql(u8, r.section, section)) {
+                if (i > 0) try out.writeByte('\n');
+                section = r.section;
+                try out.print("{s}{s}{s}\n", .{ ui.on(.title), section, ui.off(.title) });
+            }
+            const role: kit.style.Role = if (r.source == .default) .muted else .text;
+            try out.writeAll("  ");
+            try out.writeAll(ui.on(.muted));
+            try kit.text.writeFit(out, r.key, key_w, .left, "", true);
+            try out.print("{s}  {s}", .{ ui.off(.muted), ui.on(role) });
+            const cells = kit.text.width(r.value);
+            try out.writeAll(r.value);
+            try out.writeAll(ui.off(role));
+            try out.splatByteAll(' ', (value_w -| cells) + 2);
+            try out.print("{s}{s}{s}\n", .{ ui.on(.muted), @tagName(r.source), ui.off(.muted) });
+        }
+    }
+};
 
 test "defaults round-trip through init and load, and a missing file never writes" {
     const alloc = std.testing.allocator;
@@ -2090,11 +2110,19 @@ test "a registry entry layers between the file's globals and the flags, for its 
 }
 
 /// Finds the `show` row for `key` and checks its value and source columns.
+/// The row of `config show` for the full key `key` (`engine.ctx_size`,
+/// `models.mine.path`): its section's title line, then `  <rest>  <value>
+/// <source>`.
 fn expectRow(text: []const u8, key: []const u8, value: []const u8, source: []const u8) !void {
     var lines = std.mem.splitScalar(u8, text, '\n');
+    var section: []const u8 = "";
     while (lines.next()) |line| {
-        if (!std.mem.startsWith(u8, line, key) or line.len <= key.len or line[key.len] != ' ') continue;
-        var columns = std.mem.tokenizeScalar(u8, line[key.len..], ' ');
+        if (line.len > 0 and line[0] != ' ') section = line;
+        if (!std.mem.startsWith(u8, line, "  ")) continue;
+        const rest = line[2..];
+        const name_end = std.mem.indexOfScalar(u8, rest, ' ') orelse continue;
+        if (section.len + 1 + name_end != key.len or !std.mem.startsWith(u8, key, section) or key[section.len] != '.' or !std.mem.eql(u8, key[section.len + 1 ..], rest[0..name_end])) continue;
+        var columns = std.mem.tokenizeScalar(u8, rest[name_end..], ' ');
         try std.testing.expectEqualStrings(value, columns.next() orelse "");
         try std.testing.expectEqualStrings(source, columns.next() orelse "");
         try std.testing.expect(columns.next() == null);
@@ -2260,10 +2288,12 @@ test "show prints the effective value of every key with its source in both forms
     defer loaded.deinit();
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
-    try show(&loaded, &out.writer, false, .none);
-    try std.testing.expect(std.mem.startsWith(u8, out.written(), "config: /r/nuclis.json (file)\nmodel: qwen3.8-27b (catalogue name; qwen38 profile)."));
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "a null sampling key in the file takes the profile's value for generation.think = off") != null);
-    try expectRow(out.written(), "schema_version", "1", "file");
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try show(arena, &loaded, &out.writer, false, .plain);
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ /r/nuclis.json · qwen3.8-27b (catalogue name, profile qwen38)\n\nengine\n  model "));
+    try std.testing.expect(std.mem.endsWith(u8, out.written(), "\n\n→ values are effective (a sampling key left null takes the profile's); nuclis config show --json has the file as written\n"));
     try expectRow(out.written(), "engine.model", "qwen3.8-27b", "file");
     try expectRow(out.written(), "engine.ctx_size", "4096", "file");
     // The profile's instruct values fill the unset sampling keys.
@@ -2279,7 +2309,7 @@ test "show prints the effective value of every key with its source in both forms
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "models.mine.repo") == null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "models.mine.generation.sampling.top_k") == null);
     out.clearRetainingCapacity();
-    try show(&loaded, &out.writer, true, .none);
+    try show(arena, &loaded, &out.writer, true, .plain);
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
     defer parsed.deinit();
     const object = parsed.value.object;
@@ -2312,16 +2342,17 @@ test "show prints the effective value of every key with its source in both forms
         \\{ "schema_version": 1, "engine": { "model": "mine" }, "models": { "mine": { "path": "custom/m.gguf", "ctx_size": 2048 } } }
     , "/r/nuclis.json", &diag);
     defer active.deinit();
-    try show(&active, &out.writer, false, .none);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "model: mine (registry entry; qwen38 profile)") != null);
+    try show(arena, &active, &out.writer, false, .plain);
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ /r/nuclis.json · mine (registry entry, profile qwen38)\n"));
     try expectRow(out.written(), "engine.model", "mine", "file");
     try expectRow(out.written(), "engine.ctx_size", "2048", "model");
-    // Styled: the same rows, values wrapped in the layer's color (orange
-    // for `model`), the padding inside the span.
+    // Styled: a default reads muted, the padding outside the span.
     out.clearRetainingCapacity();
-    try show(&active, &out.writer, false, .{ .theme = .{ .kind = .truecolor }, .enabled = true });
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), " \x1b[38;2;254;128;25m2048") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b[0m \x1b[38;2;254;128;25mmodel\x1b[0m\n") != null);
+    try show(arena, &active, &out.writer, false, .{ .paint = .{ .theme = .{ .kind = .truecolor }, .enabled = true } });
+    const at = std.mem.indexOf(u8, out.written(), "ctx_size").?;
+    const line = out.written()[at .. at + std.mem.indexOfScalar(u8, out.written()[at..], '\n').?];
+    try std.testing.expect(std.mem.indexOf(u8, line, "\x1b[0m  2048 ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "2048\x1b") == null);
 }
 
 test "the written initial file parses back exactly and shows the entry shape" {

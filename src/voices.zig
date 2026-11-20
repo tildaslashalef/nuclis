@@ -18,7 +18,7 @@ const config = @import("config.zig");
 const model = @import("model.zig");
 const paths = @import("paths.zig");
 const speak = @import("speak.zig");
-const style = @import("tui/style.zig");
+const kit = @import("ui.zig");
 
 const Allocator = std.mem.Allocator;
 const audio = inference.audio.audio;
@@ -655,7 +655,7 @@ pub fn parseArgs(args: []const []const u8, diag: *config.Diagnostic) !Options {
 
 /// `nuclis voice`: saves a clip under a name, lists the saved voices, or
 /// removes one. No model is opened: a voice is encoded on its first use.
-pub fn run(alloc: Allocator, io: std.Io, root: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+pub fn run(alloc: Allocator, io: std.Io, root: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     const options = try parseArgs(words, diag);
     const home = root orelse return error.MissingHome;
     var arena_state = std.heap.ArenaAllocator.init(alloc);
@@ -674,19 +674,12 @@ pub fn run(alloc: Allocator, io: std.Io, root: ?[]const u8, words: []const []con
                 return err;
             };
             if (options.json) return writeJson(out, added);
-            try out.print("saved {s}{s}{s}: {d:.1} s", .{ sty.on(.header), added.name, sty.off(), added.seconds });
-            if (added.reference_text) |t| try out.print(", transcript \"{s}\"", .{t}) else try out.writeAll(", no transcript (the speaker embedding alone)");
-            try out.print("\nit is encoded on its first use: `nuclis speak --model qwen3-tts-1.7b-base --voice {s} \"…\" -o out.wav`\n", .{added.name});
+            try renderAdded(arena, out, ui, added);
         },
         .list => {
             const listed = try store.list(arena);
             if (options.json) return writeJson(out, listed);
-            if (listed.len == 0) return out.writeAll("no saved voices (`nuclis voice add <name> <audio> --text <transcript>` saves one)\n");
-            for (listed) |v| {
-                var stamp: [20]u8 = undefined;
-                try out.print("{s}{s:<20}{s} {d:>5.1} s  {s}  ", .{ sty.on(.header), v.name, sty.off(), v.seconds, model.rfc3339(&stamp, v.created_at) });
-                if (v.reference_text) |t| try out.print("\"{s}\"\n", .{t}) else try out.writeAll("(no transcript)\n");
-            }
+            try renderList(arena, out, ui, store.path, listed, std.Io.Timestamp.now(io, .real).toSeconds());
         },
         .rm => |name| {
             store.remove(name) catch |err| {
@@ -694,9 +687,43 @@ pub fn run(alloc: Allocator, io: std.Io, root: ?[]const u8, words: []const []con
                 return err;
             };
             if (options.json) return out.print("{{\"removed\":\"{s}\"}}\n", .{name});
-            try out.print("removed {s}\n", .{name});
+            try kit.blocks.result(out, ui, .ok, try std.fmt.allocPrint(arena, "removed {s}", .{name}), "");
         },
     }
+}
+
+/// `voice add`: what was saved, and the command that first encodes it.
+fn renderAdded(arena: Allocator, out: *std.Io.Writer, ui: kit.Ui, added: anytype) !void {
+    const detail = if (added.reference_text) |t|
+        try std.fmt.allocPrint(arena, "{f} · transcript {s}", .{ kit.values.duration(added.seconds), try kit.text.clean(arena, t) })
+    else
+        try std.fmt.allocPrint(arena, "{f} · no transcript (the speaker embedding alone)", .{kit.values.duration(added.seconds)});
+    try kit.blocks.result(out, ui, .ok, try std.fmt.allocPrint(arena, "saved {s}", .{added.name}), detail);
+    try kit.blocks.hint(out, ui, "", try std.fmt.allocPrint(arena, "nuclis speak --model qwen3-tts-1.7b-base --voice {s} \"…\" -o out.wav", .{added.name}), " encodes it on first use");
+}
+
+/// `voice list`: one row per saved voice, its age against `now`.
+fn renderList(arena: Allocator, out: *std.Io.Writer, ui: kit.Ui, dir: []const u8, listed: anytype, now: i64) !void {
+    const v = kit.values;
+    try kit.blocks.header(out, ui, "voices", try std.fmt.allocPrint(arena, "{s} · {f}", .{ try kit.text.clean(arena, dir), v.count(listed.len, "voice") }));
+    if (listed.len == 0) {
+        try kit.blocks.result(out, ui, .not_checked, "no saved voices", "");
+        return kit.blocks.hint(out, ui, "", "nuclis voice add <name> <audio> --text <transcript>", " saves one");
+    }
+    const columns = [_]kit.table.Column{
+        .{ .title = "NAME", .truncate = false },
+        .{ .title = "LENGTH", .alignment = .right },
+        .{ .title = "SAVED", .drop = 1 },
+        .{ .title = "TRANSCRIPT", .min = 12 },
+    };
+    const rows = try arena.alloc([]const kit.table.Cell, listed.len);
+    for (listed, rows) |voice, *row| row.* = try arena.dupe(kit.table.Cell, &.{
+        .{ .text = voice.name, .role = .id },
+        .{ .text = try std.fmt.allocPrint(arena, "{f}", .{v.duration(voice.seconds)}) },
+        .{ .text = try std.fmt.allocPrint(arena, "{f}", .{v.ago(now - voice.created_at)}) },
+        .{ .text = if (voice.reference_text) |t| try kit.text.clean(arena, t) else v.missing, .role = .muted },
+    });
+    try kit.table.render(out, ui, arena, 0, &columns, rows);
 }
 
 fn writeJson(out: *std.Io.Writer, value: anytype) !void {

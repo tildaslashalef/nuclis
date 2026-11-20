@@ -16,7 +16,7 @@ const cache = @import("../completer/cache.zig");
 const tools = @import("tools/root.zig");
 const loop = @import("loop.zig");
 const handoff = @import("handoff.zig");
-const style = @import("../tui/style.zig");
+const kit = @import("../ui.zig");
 
 const Allocator = std.mem.Allocator;
 const Profile = inference.profiles;
@@ -66,32 +66,48 @@ pub const Listing = struct {
     cwd: []const u8,
     sessions: []const Summary,
 
-    pub fn render(self: Listing, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+    /// The text form: a header with the workspace, one row per session
+    /// (its age against `now`, seconds since the epoch), and how to resume.
+    pub fn render(self: Listing, arena: Allocator, out: *std.Io.Writer, json: bool, ui: kit.Ui, now: i64) !void {
         if (json) {
             try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
             return out.writeByte('\n');
         }
-        const off = sty.off();
+        const v = kit.values;
+        try kit.blocks.header(out, ui, "sessions", try std.fmt.allocPrint(arena, "{s} · {f}", .{ try kit.text.clean(arena, self.cwd), v.count(self.sessions.len, "session") }));
         if (self.sessions.len == 0) {
-            try out.print("{s}no saved sessions for{s} {s}{s}{s}\n", .{ sty.on(.label), off, sty.on(.code), self.cwd, off });
-            return;
+            try kit.blocks.result(out, ui, .not_checked, "no saved sessions for this workspace", "");
+            return kit.blocks.hint(out, ui, "", "nuclis agent", " starts one");
         }
-        try out.print("{s}sessions for{s} {s}{s}{s} {s}(newest first; `nuclis agent --resume` picks one, `--resume <id>` continues it){s}\n", .{ sty.on(.label), off, sty.on(.code), self.cwd, off, sty.on(.dim), off });
-        for (self.sessions) |s| {
-            const short = if (s.id.len > 8) s.id[0..8] else s.id;
-            try out.print("  {s}{s}{s}  {s}  {s}{s:<6}{s} ctx {s}{d:<5}{s}", .{ sty.on(.keyword), short, off, s.time, sty.on(.number), s.effort, off, sty.on(.number), s.ctx_size, off });
-            if (s.first_prompt.len > 0) try out.print("  {s}{s}{s}", .{ sty.on(.dim), s.first_prompt, off });
-            try out.writeByte('\n');
-        }
+        const columns = [_]kit.table.Column{
+            .{ .title = "ID", .truncate = false },
+            .{ .title = "STARTED" },
+            .{ .title = "EFFORT", .drop = 2 },
+            .{ .title = "CTX", .alignment = .right, .drop = 1 },
+            .{ .title = "PROMPT", .min = 12 },
+        };
+        const rows = try arena.alloc([]const kit.table.Cell, self.sessions.len);
+        for (self.sessions, rows) |s, *row| row.* = try arena.dupe(kit.table.Cell, &.{
+            .{ .text = try kit.text.clean(arena, s.id[0..@min(8, s.id.len)]), .role = .id },
+            .{ .text = if (v.parseUtc(s.time)) |t| try std.fmt.allocPrint(arena, "{f}", .{v.ago(now - t)}) else try kit.text.clean(arena, s.time) },
+            .{ .text = try kit.text.clean(arena, s.effort) },
+            .{ .text = try std.fmt.allocPrint(arena, "{f}", .{v.grouped(s.ctx_size)}) },
+            .{ .text = try kit.text.clean(arena, s.first_prompt), .role = .muted },
+        });
+        try kit.table.render(out, ui, arena, 0, &columns, rows);
+        try out.writeByte('\n');
+        try kit.blocks.hint(out, ui, "", "nuclis agent --resume <id>", " continues one; --resume alone picks");
     }
 };
 
 /// `nuclis agent ls`: the sessions recorded for `cwd`.
-pub fn ls(alloc: Allocator, io: std.Io, root_dir: []const u8, cwd: []const u8, json: bool, out: *std.Io.Writer, sty: style.Style) !void {
+pub fn ls(alloc: Allocator, io: std.Io, root_dir: []const u8, cwd: []const u8, json: bool, out: *std.Io.Writer, ui: kit.Ui) !void {
     const sessions = try list(alloc, io, root_dir, cwd);
     defer freeList(alloc, sessions);
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
     const listing: Listing = .{ .cwd = cwd, .sessions = sessions };
-    try listing.render(out, json, sty);
+    try listing.render(arena_state.allocator(), out, json, ui, std.Io.Timestamp.now(io, .real).toSeconds());
 }
 
 pub fn freeList(alloc: Allocator, items: []Summary) void {
@@ -643,6 +659,23 @@ test "listing finds sessions for the working directory and orders them newest fi
     const items = try list(alloc, io, root, cwd);
     defer freeList(alloc, items);
     try testing.expectEqual(@as(usize, 2), items.len);
+    // The text form: newest first, each start as an age.
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    var text: std.Io.Writer.Allocating = .init(alloc);
+    defer text.deinit();
+    const listing: Listing = .{ .cwd = cwd, .sessions = items };
+    try listing.render(arena_state.allocator(), &text.writer, false, .plain, kit.values.parseUtc("2026-09-14T11:32:00Z").?);
+    try testing.expectEqualStrings(
+        \\◆ sessions · /work/proj · 2 sessions
+        \\
+        \\ID    STARTED  EFFORT     CTX
+        \\bbbb  2m ago   medium  16,384
+        \\aaaa  2h ago   low      8,192
+        \\
+        \\→ nuclis agent --resume <id> continues one; --resume alone picks
+        \\
+    , text.written());
     try testing.expectEqualStrings("bbbb", items[0].id);
     try testing.expectEqualStrings("2026-09-14T11:30:00Z", items[0].time);
     try testing.expectEqualStrings("medium", items[0].effort);

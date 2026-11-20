@@ -99,6 +99,52 @@ pub fn grouped(n: anytype) Grouped {
     return .{ .n = @intCast(n) };
 }
 
+/// How long ago `seconds` was: `just now`, `42s ago`, `5m ago`, `3h ago`,
+/// `12d ago`; a time in the future reads `just now`.
+pub const Ago = struct {
+    seconds: i64,
+
+    pub fn format(a: Ago, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        const s = a.seconds;
+        if (s < 10) return w.writeAll("just now");
+        if (s < 60) return w.print("{d}s ago", .{s});
+        if (s < 3600) return w.print("{d}m ago", .{@divTrunc(s, 60)});
+        if (s < 86400) return w.print("{d}h ago", .{@divTrunc(s, 3600)});
+        try w.print("{d}d ago", .{@divTrunc(s, 86400)});
+    }
+};
+
+pub fn ago(seconds: i64) Ago {
+    return .{ .seconds = seconds };
+}
+
+/// Seconds since the epoch of `YYYY-MM-DDTHH:MM:SSZ` (the form nuclis
+/// writes); null for anything else.
+pub fn parseUtc(s: []const u8) ?i64 {
+    if (s.len != 20 or s[4] != '-' or s[7] != '-' or s[10] != 'T' or s[13] != ':' or s[16] != ':' or s[19] != 'Z') return null;
+    const num = struct {
+        fn f(t: []const u8) ?i64 {
+            return std.fmt.parseInt(i64, t, 10) catch null;
+        }
+    }.f;
+    const y = num(s[0..4]) orelse return null;
+    const m = num(s[5..7]) orelse return null;
+    const d = num(s[8..10]) orelse return null;
+    const hh = num(s[11..13]) orelse return null;
+    const mm = num(s[14..16]) orelse return null;
+    const ss = num(s[17..19]) orelse return null;
+    if (m < 1 or m > 12 or d < 1 or d > 31 or hh > 23 or mm > 59 or ss > 60) return null;
+    // Days from the civil date (Howard Hinnant's algorithm).
+    const yy = if (m <= 2) y - 1 else y;
+    const era = @divFloor(yy, 400);
+    const yoe = yy - era * 400;
+    const mp = @mod(m + 9, 12);
+    const doy = @divTrunc(153 * mp + 2, 5) + d - 1;
+    const doe = yoe * 365 + @divTrunc(yoe, 4) - @divTrunc(yoe, 100) + doy;
+    const days = era * 146097 + doe - 719468;
+    return days * 86400 + hh * 3600 + mm * 60 + ss;
+}
+
 /// `14:32:01`: the time of day of `epoch_s` (seconds since the epoch) in
 /// the zone `offset_s` from UTC (`utcOffset`).
 pub const Clock = struct {
@@ -165,4 +211,17 @@ test "values read the same everywhere" {
     try expectFmt("65,536", grouped(65536));
     try expectFmt("512", grouped(512));
     try expectFmt("1,000,000", grouped(1_000_000));
+}
+
+test "relative times and the UTC stamps nuclis writes" {
+    try expectFmt("just now", ago(3));
+    try expectFmt("42s ago", ago(42));
+    try expectFmt("5m ago", ago(5 * 60 + 9));
+    try expectFmt("3h ago", ago(3 * 3600 + 1));
+    try expectFmt("12d ago", ago(12 * 86400));
+    try testing.expectEqual(@as(?i64, 0), parseUtc("1970-01-01T00:00:00Z"));
+    try testing.expectEqual(@as(?i64, 1795167600), parseUtc("2026-11-20T09:40:00Z"));
+    try testing.expectEqual(@as(?i64, null), parseUtc("2026-11-20 09:40:00"));
+    try expectFmt("09:40:00", clock(1795167600, 0));
+    try expectFmt("10:40:00", clock(1795167600, 3600));
 }
