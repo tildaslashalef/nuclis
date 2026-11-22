@@ -3093,7 +3093,7 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
     try std.testing.expect(std.mem.indexOf(u8, text, "\nRegistry entries without a file\n  NAME  PATH\n  gone  unsloth/Gone-GGUF/gone.gguf\n→ nuclis config sync --prune removes them\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "\n▲ 4 files without a sidecar\n→ nuclis model adopt <path> verifies one and writes it\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "\n▲ 2 model files outside the <owner>/<repo>/ layout, not listed\n") != null);
-    try std.testing.expect(std.mem.endsWith(u8, text, "\n→ 6 more in the catalogue: nuclis model ls --available\n"));
+    try std.testing.expect(std.mem.endsWith(u8, text, "\n→ 7 more in the catalogue: nuclis model ls --available\n"));
     // No digest without -l; with it, 12 characters of each and the defaults.
     try std.testing.expect(std.mem.indexOf(u8, text, "1bce504dfecd") == null);
     out.clearRetainingCapacity();
@@ -3116,7 +3116,7 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
     // The index view: current artifacts by kind, installed ones marked, legacy behind --all.
     out.clearRetainingCapacity();
     try ls(alloc, io, root, .{}, null, .{ .available = true }, false, &out.writer, .plain);
-    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ the catalogue · 7 entries, pinned and verified by name\n\nNAME   "));
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ the catalogue · 8 entries, pinned and verified by name\n\nNAME   "));
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nqwen3.8-27b                 chat           UD-Q4_K_M   16.56 GB  ✓ installed\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nlaya                        decision       F16         842.6 MB  – not pulled\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "gemma-4-12b-qat") == null);
@@ -3578,7 +3578,7 @@ test "pull --catalogue takes every current entry with its defaults, and counts w
     const arena = arena_state.allocator();
     const models = try tmp.dir.realPathFileAlloc(io, ".", arena);
     const empty = try catalogueSelection(arena, io, models);
-    try std.testing.expectEqual(@as(usize, 7), empty.len);
+    try std.testing.expectEqual(@as(usize, 8), empty.len);
     for (empty) |e| {
         try std.testing.expectEqual(catalog.Lifecycle.current, e.artifact.status);
         try std.testing.expectEqual(@as(u64, 0), e.present);
@@ -3602,7 +3602,7 @@ test "pull --catalogue takes every current entry with its defaults, and counts w
     try std.testing.expectEqual(files[0].size, after[0].present);
     var out: std.Io.Writer.Allocating = .init(arena);
     try renderCataloguePlan(arena, &out.writer, after, .plain);
-    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ the catalogue · 7 entries, 14 files, 41.68 GB · "));
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ the catalogue · 8 entries, 15 files, 43.03 GB · "));
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nqwen3.8-27b                 main mmproj dflash2  19.55 GB  ○ partly here\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nlaya                        main                 842.6 MB  – to fetch\n") != null);
 }

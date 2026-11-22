@@ -324,13 +324,14 @@ pub const commands = [_]Command{
     .{ .name = "speak", .summary = "text into a WAV of speech, by Qwen3-TTS", .actions = &.{.{ .flags = &.{
         .{ .name = "--output", .short = "-o", .value = .file, .summary = "the WAV to write" },
         .{ .name = "--voice", .value = .voice, .summary = "a speaker, or a saved voice on a Base" },
-        .{ .name = "--language", .value = .{ .choice = &.{ "auto", "english", "chinese", "german", "spanish", "french", "italian", "portuguese", "russian", "japanese", "korean" } }, .summary = "the language, or auto" },
-        .{ .name = "--instruct", .value = .text, .summary = "how to say it, or VoiceDesign's voice" },
-        .{ .name = "--model", .value = .dir, .summary = "the checkpoint directory" },
+        .{ .name = "--language", .value = .{ .choice = &.{ "auto", "arz", "english", "chinese", "german", "spanish", "french", "italian", "portuguese", "russian", "japanese", "korean" } }, .summary = "the language, or auto" },
+        .{ .name = "--instruct", .value = .text, .summary = "how to say it, VoiceDesign's voice, or OmniVoice tags" },
+        .{ .name = "--model", .value = .dir, .summary = "the speech model name or path" },
         .{ .name = "--seed", .value = .number, .summary = "the sampler's seed" },
+        .{ .name = "--speed", .value = .number, .summary = "speaking rate multiplier (voicetut-tts)" },
         backend,
     } }} },
-    .{ .name = "voice", .summary = "save a clip as a voice for Qwen3-TTS Base or Drama 3", .actions = &.{
+    .{ .name = "voice", .summary = "save a clip as a voice for cloning speech models", .actions = &.{
         .{ .name = "add", .summary = "save a clip under a name", .positionals = &.{ .text, .file }, .flags = &.{
             .{ .name = "--text", .value = .text, .summary = "what the clip says" },
             json,

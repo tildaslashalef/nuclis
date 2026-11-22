@@ -10,7 +10,7 @@ is [the record](../benchmarks/record/catalogue.md).
 
 The chat models come from [Unsloth](https://huggingface.co/unsloth)'s GGUF
 repositories; the other kinds from their authors' repositories (or a
-conversion, as `drama-3`). Unsloth's guides worth reading before touching
+conversion, as `drama-3` and `voicetut-tts`). Unsloth's guides worth reading before touching
 an artifact:
 
 - [Dynamic 3.0 GGUFs](https://unsloth.ai/docs/basics/dynamic-3.0-ggufs) —
@@ -257,6 +257,7 @@ sidecars, never by hashing, so a listing is instant.
 | `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | legacy |
 | `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | legacy |
 | `drama-3` | speech | Q4_K | 20.79 GB | legacy |
+| `voicetut-tts` | speech | Q8_0 | 1.35 GB | current |
 | `nemotron-asr-0.6b` | transcription | F32 | 2.55 GB | current |
 <!-- /gen -->
 

@@ -9,10 +9,13 @@ server, its memory budget, its limits, and its errors.
 OpenAI's speech call for the speech models `nuclis speak` runs, Qwen3-TTS
 in three kinds: CustomVoice (two sizes) speaks in nine built-in speakers,
 Base (two sizes) in a saved voice cloned from a clip ([voices](#voices)),
-and the 1.7B VoiceDesign in a voice its `instructions` describe; and
+and the 1.7B VoiceDesign in a voice its `instructions` describe;
 Fish Audio's Drama 3 (`drama-3`, [below](#drama-3)), which clones a saved
-voice at 44.1 kHz with its delivery cued in the text. The
-audio streams as it is made: the first
+voice at 44.1 kHz with its delivery cued in the text; and
+VoiceTut-TTS (`voicetut-tts`, [below](#voicetut-tts)), an OmniVoice model
+specialized in Egyptian Arabic and Arabic–English code-switching with
+auto-voice, attribute-based voice design, and zero-shot voice cloning at
+24 kHz. The audio streams as it is made: the first
 80 ms leave after one frame, then chunks of one, two, and four frames
 (320 ms), each no longer than the audio sent before it, so a listener
 who plays from the first byte never waits between them.
@@ -42,14 +45,14 @@ sentence ends does.
 | Field | In nuclis |
 | --- | --- |
 | `input` | the text, UTF-8, at most 16 KiB (`400 request_too_large`) |
-| `model` | a registry entry of kind `speech` or a catalogue speech name (`qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice`, `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base`, `qwen3-tts-1.7b-voicedesign`, `drama-3`); never a path. The names before 0.11.0 (`qwen3-tts-1.7b`, `qwen3-tts-0.6b`) are `404 model_not_found`, the message naming the new one. Absent: the open one, else `speech.model` (`qwen3-tts-1.7b-customvoice`). Another speech model replaces the open one; that request pays the open |
-| `voice` | on CustomVoice one of its speakers: `aiden`, `dylan`, `eric`, `ono_anna`, `ryan`, `serena`, `sohee`, `uncle_fu`, `vivian` (OpenAI's voice names are not speakers here: `400 invalid_request`, listing them). On a Base a saved voice, by name or as OpenAI's custom voice `{"id": "<name>"}`: `404 voice_not_found` for one not saved, `400 invalid_request` for a speaker's name. On VoiceDesign ignored (OpenAI's clients always send one). A custom voice on CustomVoice or VoiceDesign is `400 voice_cloning_unsupported`. Absent: `speech.voice` (`ryan`) |
-| `instructions` | on the 1.7B CustomVoice how to say it (`"Speak with excited, breathless joy."`); on VoiceDesign the voice itself (`"A calm elderly man with a deep, gravelly voice."`), sampled anew each request; absent, the model's own choice. On the 0.6B CustomVoice, a Base, and Drama 3 (whose cues are in `input`), `400 instructions_unsupported` |
+| `model` | a registry entry of kind `speech` or a catalogue speech name (`qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice`, `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base`, `qwen3-tts-1.7b-voicedesign`, `drama-3`, `voicetut-tts`); never a path. The names before 0.11.0 (`qwen3-tts-1.7b`, `qwen3-tts-0.6b`) are `404 model_not_found`, the message naming the new one. Absent: the open one, else `speech.model` (`qwen3-tts-1.7b-customvoice`). Another speech model replaces the open one; that request pays the open |
+| `voice` | on CustomVoice one of its speakers: `aiden`, `dylan`, `eric`, `ono_anna`, `ryan`, `serena`, `sohee`, `uncle_fu`, `vivian` (OpenAI's voice names are not speakers here: `400 invalid_request`, listing them). On a Base or Drama 3 a saved voice, by name or as OpenAI's custom voice `{"id": "<name>"}`: `404 voice_not_found` for one not saved, `400 invalid_request` for a speaker's name. On VoiceTut-TTS omitted/`null` uses auto-voice (or voice design when `instructions` is given), and a saved voice (`"<name>"` or `{"id": "<name>"}`) clones it with its caption. On VoiceDesign ignored (OpenAI's clients always send one). A custom voice on CustomVoice or VoiceDesign is `400 voice_cloning_unsupported`. Absent on non-OmniVoice models: `speech.voice` (`ryan`) |
+| `instructions` | on the 1.7B CustomVoice how to say it (`"Speak with excited, breathless joy."`); on VoiceDesign the voice itself (`"A calm elderly man with a deep, gravelly voice."`), sampled anew each request; on VoiceTut-TTS comma-separated OmniVoice attribute tags (`"male, young adult, moderate pitch"`) when `voice` is omitted (`400 invalid_request` for unknown/conflicting tags or when combined with a saved `voice`). On the 0.6B CustomVoice, a Base, and Drama 3 (whose cues are in `input`), `400 instructions_unsupported` |
 | `response_format` | `wav` (the default; OpenAI's is `mp3`) or `pcm` |
 | `stream_format` | `audio` (the default): the bytes as they are made. `sse`: server-sent events, each `{"type": "speech.audio.delta", "audio": "<base64>"}` carrying the next bytes of the same stream (the WAV header in the first, for `wav`), then `{"type": "speech.audio.done", "usage": {"input_tokens", "output_tokens", "total_tokens"}, "finish_reason"}` (the prompt's rows in, the frames out; `eos` when the model ended the speech, `length` when [the frame budget](../models/qwen3-tts.md#the-frame-budget) stopped it, which a client may treat as a failed line) |
-| `speed` | `1` only (`400 unsupported_feature` otherwise): the model has no rate control |
+| `speed` | positive speaking rate multiplier on `voicetut-tts` (default `1.0`); `1` only (`400 unsupported_feature` otherwise) on models without rate control |
 | `seed` | nuclis's: the sampler's seed, default 0. The same text, voice, and seed give the same samples, alone or beside a chat generation |
-| `language` | nuclis's: `auto` (the default), or one of the model's (`english`, `chinese`, `german`, …; `400 invalid_request` lists them). Drama 3 takes only `auto` |
+| `language` | nuclis's: `auto` (the default; on `voicetut-tts` defaults to `arz` for Egyptian Arabic), or one of the model's (`english`, `chinese`, `german`, …; `400 invalid_request` lists them). Drama 3 takes only `auto` |
 | `context` | nuclis's, Drama 3 only: an earlier response's `x-speech-context`, whose last sentence this request continues ([below](#drama-3)); ignored when unknown or expired |
 
 Other fields OpenAI defines are ignored. Refused with `400
@@ -159,6 +162,48 @@ clip, a one-sentence request's prefill went from 1,612 ms to 243 ms
 (first audio 393 ms), or 700 ms with a context (first audio 854 ms). The
 take is the same bit for bit either way:
 [drama3.md § The prompt's prefix](../models/drama3.md#the-prompts-prefix).
+
+## VoiceTut-TTS
+
+`voicetut-tts` (OmniVoice fine-tuned for Egyptian Arabic and Arabic–English
+code-switching, one 1.35 GB `Q8_0` GGUF; [models/omnivoice.md](../models/omnivoice.md))
+outputs 24 kHz mono audio and runs in three voice modes from the same file:
+
+- **Auto-voice**: omit `voice` (or set it to `null`) and omit `instructions`.
+  Speaks immediately with no saved voice; the voice timbre is determined by
+  `seed`.
+- **Voice design**: omit `voice` and set `instructions` to comma-separated
+  OmniVoice attribute tags, at most one per category: gender (`male`, `female`),
+  age (`child`, `teenager`, `young adult`, `middle-aged`, `elderly`), pitch
+  (`very low pitch`, `low pitch`, `moderate pitch`, `high pitch`,
+  `very high pitch`), style (`whisper`), and English accent / Chinese dialect.
+  Unknown tags, conflicting categories, or combining `instructions` with a
+  saved `voice` return `400 invalid_request` (param `instructions`).
+- **Zero-shot voice cloning**: pass `"voice": "<name>"` or
+  `"voice": {"id": "<name>"}` for a voice saved via `nuclis voice add` or
+  `POST /v1/audio/voices` with its transcript (`reference_text`). A voice saved
+  without `reference_text` is `400 invalid_request` (param `voice`). On first
+  use the 24 kHz clip is encoded on the connection task with the Higgs Audio V2
+  tokenizer and cached in `voice.json`.
+
+`language` defaults to `arz` (Egyptian Arabic) when omitted or `auto`; `input`
+is passed verbatim with no implicit text normalizer. `speed` scales the
+estimated target duration (`> 0`, default `1.0`).
+
+```sh
+# Auto-voice (Egyptian Arabic + English code-switching)
+curl -s localhost:9000/v1/audio/speech -o cairo.wav -d '{
+  "model": "voicetut-tts",
+  "input": "عندي meeting مهم بكرة الصبح في المكتب."
+}'
+
+# Voice design
+curl -s localhost:9000/v1/audio/speech -o design.wav -d '{
+  "model": "voicetut-tts",
+  "input": "أهلاً بيك في القاهرة.",
+  "instructions": "male, young adult, moderate pitch"
+}'
+```
 
 ## Streaming and cancellation
 

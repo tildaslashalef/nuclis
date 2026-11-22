@@ -355,6 +355,7 @@
         "--instruct",
         "--model",
         "--seed",
+        "--speed",
         "--backend",
         "--stream",
         "--chunk",

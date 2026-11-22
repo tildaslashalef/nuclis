@@ -208,4 +208,50 @@ open 184 ms):
 Transcribed by `nuclis transcribe --language ar` (`nemotron-3.5-asr-streaming-0.6b`):
 `"إزيك بش عامل إيه النهار ده"` (identical to CPU).
 
+## Round-trip and speed baseline (2026-11-22)
+
+Measured on Apple M4 Pro (48 GiB, macOS 27.2.1), `ReleaseSafe`, Metal,
+`voicetut-tts` (`voicetut-tts-q8_0.gguf`, 1.35 GB) via freshly built
+`./zig-out/bin/nuclis` at `6b32f42` (before the catalogue pin).
+
+### Egyptian Arabic round-trip (`omnivoice-roundtrip-metal`, 2026-11-22)
+
+8 pinned sentences (`tests/fixtures/omnivoice-roundtrip.json`, 6 Egyptian
+Arabic with `nuclis transcribe --language ar` and 2 Arabic–English
+code-switching with `--language ar,en-US`), spoken by
+`nuclis speak --model voicetut-tts --backend metal --seed 0` and scored by
+`scripts/gate/wer.py` with Egyptian-aware Arabic normalization (stripping
+diacritics and tatweel, folding `أ/إ/آ/ٱ→ا`, `ى→ي`, `ة→ه`, `ؤ→و`, `ئ→ي`):
+
+- **Overall**: **15.42 % CER** (35 / 227 characters), **34.69 % WER** (17 / 49
+  words), 26.7 s of audio in 27.5 s wall time (two fresh processes per sentence).
+- Gate bound: `--max-cer 0.22`. Most character edits come from Nemotron ASR
+  transliterating code-switched English words into Arabic script (`meeting` →
+  `ميتنج`, `update` → `ابديت`, `deadline` → `ديد لاين`) and Egyptian spelling
+  variants (`بكره` vs `بكرا`, `النهارده` vs `النهار ده`).
+
+### Cold and warm Metal speed baseline (2026-11-22)
+
+| Case | Mode | Audio | Synth | Speed | Diffusion / Codec | TTFA | Load | Peak RSS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Short Egyptian Arabic (cold) | auto-voice | 2.16 s | 1.88 s | 1.15× | 1,856 / 23 ms | 1,880 ms | 173 ms | 408 MiB |
+| Short Egyptian Arabic (warm) | auto-voice | 2.16 s | 1.81 s | 1.19× | 1,783 / 29 ms | 1,813 ms | 176 ms | 408 MiB |
+| Medium Egyptian Arabic | auto-voice | 6.19 s | 4.76 s | 1.30× | 4,685 / 74 ms | 4,759 ms | 179 ms | — |
+| Arabic–English code-switching | auto-voice | 7.57 s | 6.11 s | 1.24× | 6,018 / 91 ms | 6,110 ms | 179 ms | — |
+| Multi-sentence paragraph (2 chunks) | auto-voice (chunk-0 anchor) | 15.10 s | 15.27 s | 0.99× | 15,105 / 165 ms | 7,707 ms | 181 ms | — |
+| Voice design (`male, young adult, moderate pitch`) | `--instruct` | 3.32 s | 2.89 s | 1.15× | 2,846 / 43 ms | 2,890 ms | 182 ms | — |
+| Zero-shot clone, 2.16 s ref (first use) | `--voice` | 3.20 s | 4.02 s | 0.80× | 3,940 / 81 ms | 4,021 ms | 181 ms | 2,184 MiB |
+| Zero-shot clone, 2.16 s ref (cached) | `--voice` | 3.20 s | 3.81 s | 0.84× | 3,769 / 45 ms | 3,814 ms | 185 ms | — |
+
+Reference voice encoding (lazy CPU HuBERT-Base + DAC encoder on first use):
+**1.0 s** for a 2.16 s clip (2,184 MiB peak RSS during encoder init); **0.0 ms**
+on subsequent calls once cached in `voice.json`.
+
+Compared against nuclis's other speech models on the same Apple M4 Pro:
+`voicetut-tts` (1.35 GB, 408 MiB RSS) is smaller than `qwen3-tts-1.7b-customvoice`
+(4.5 GB) and `drama-3` (20.8 GB) and runs faster than real time (1.15–1.30×) in
+auto-voice and voice-design modes, with higher first-audio latency (one full
+32-step diffusion chunk before decode) than autoregressive frame-streaming models.
+
+
 

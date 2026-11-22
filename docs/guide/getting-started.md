@@ -128,6 +128,7 @@ lists the ones not installed):
 | `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | legacy |
 | `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | legacy |
 | `drama-3` | speech | Q4_K | 20.79 GB | legacy |
+| `voicetut-tts` | speech | Q8_0 | 1.35 GB | current |
 | `nemotron-asr-0.6b` | transcription | F32 | 2.55 GB | current |
 <!-- /gen -->
 

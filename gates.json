@@ -65,8 +65,7 @@
    "file": "directory"
   },
   "omnivoice": {
-   "path": "~/.nuclis/models/mohammedaly22/VoiceTut-TTS-GGUF/voicetut-tts-q8_0.gguf",
-   "note": "voicetut-tts-q8_0.gguf is pulled by repo id until end-to-end synthesis enters the catalogue"
+   "artifact": "voicetut-tts"
   }
  },
  "data": {
@@ -310,7 +309,8 @@
    "inference/src/models/omnivoice*.zig",
    "inference/src/models/fixtures/omnivoice-*.json",
    "inference/src/audio/higgs_codec*.zig",
-   "tests/fixtures/omnivoice/**"
+   "tests/fixtures/omnivoice/**",
+   "tests/fixtures/omnivoice-roundtrip.json"
   ]
  },
  "aggregators": [
@@ -341,7 +341,8 @@
   "laya-metal",
   "clef-sequences",
   "qwen3-tts-1.7b-trace-metal",
-  "nemotron-asr-trace-metal"
+  "nemotron-asr-trace-metal",
+  "omnivoice-trace-metal"
  ],
  "retired": [
   "gemma4-qat",
@@ -2546,6 +2547,35 @@
    },
    "note": "decodes the 50-frame (2.00 s, 48,000 samples) HiggsAudioV2Tokenizer fixture codes.u16 through higgs_codec_metal.Decoder in one Metal command buffer (two init/decode/deinit lifecycle passes with zero leaked GPU buffers) and compares against both CPU higgs_codec and the author trace: requires <= 1e-4 relative RMS and <= 2e-3 max abs (first run 2026-11-22: 31.3 ms, vs CPU rel_rms 1.878e-6 max_abs 3.776e-6, vs author rel_rms 1.915e-6 max_abs 3.040e-6)",
    "evidence": "docs/benchmarks/record/omnivoice.md#on-metal-2026-11-22"
+  },
+  {
+   "name": "omnivoice-roundtrip-metal",
+   "family": "omnivoice",
+   "tier": "verify",
+   "model": "omnivoice",
+   "baseline": "nemotron_asr",
+   "command": [
+    "python3",
+    "scripts/gate/wer.py",
+    "--nuclis",
+    "{nuclis}",
+    "--model",
+    "{baseline}",
+    "--speak",
+    "tests/fixtures/omnivoice-roundtrip.json",
+    "--tts-model",
+    "{model}",
+    "--tts-backend",
+    "metal",
+    "--own-voice",
+    "--max-cer",
+    "0.22"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the Egyptian Arabic and Arabic-English code-switching round trip: 8 pinned sentences spoken by nuclis speak --model voicetut-tts --backend metal --seed 0 (auto-voice, language arz), recognized by nuclis transcribe --backend cpu (nemotron-asr-0.6b, language ar / ar,en-US), scored with Egyptian-aware Arabic normalization (folding diacritics, Alef variants, Alef Maqsura, and Ta Marbuta): requires CER <= 22% (first run 2026-11-22: 15.42% CER, 35/227 chars, 34.69% WER, 26.7 s audio in 27.5 s wall time; most diffs are Nemotron ASR transliterating English code-switched words into Arabic script)",
+   "evidence": "docs/benchmarks/record/omnivoice.md#round-trip-and-speed-baseline-2026-11-22"
   }
  ]
 }

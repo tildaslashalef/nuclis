@@ -45,7 +45,7 @@ make metal                                          # release build, Metal backe
 ./zig-out/bin/nuclis agent                          # the chat, with tools, in this directory
 ```
 
-`nuclis model pull --catalogue` fetches every model below (about 43 GB).
+`nuclis model pull --catalogue` fetches every model below (about 44 GB).
 [Releases](https://github.com/tildaslashalef/nuclis/releases) ship the macOS
 binary and an x86-64 Linux build that runs on the CPU only, for the small
 models ([getting-started.md](docs/guide/getting-started.md)). `nuclis --help`
@@ -65,6 +65,7 @@ were measured.
 | decision | `clef-flash` | typed answers about long states and images, on Qwen's own backbone | 8.0 GB |
 | embedding | `embeddinggemma-2` | text, images, and audio into one vector space | 0.3 GB |
 | speech | `qwen3-tts-1.7b-customvoice` | nine built-in voices that take direction ("warmly, smiling") | 4.5 GB |
+| speech | `voicetut-tts` | speech model specialized in Egyptian Arabic, with Arabic–English code-switching, attribute-based voice design, and zero-shot voice cloning | 1.4 GB |
 | transcription | `nemotron-asr-0.6b` | streaming recognition with punctuation and word times | 2.6 GB |
 
 **Legacy** entries (Gemma 4 26B-A4B and 12B, Muse Glimmer, Drama 3,
@@ -139,10 +140,9 @@ transcription ([api.md](docs/guide/api.md)).
 768-number vector with EmbeddingGemma 2, within `1 − cos` ≤ 5e-11 of Google's
 pipeline on the BF16 file ([embeddinggemma.md](docs/models/embeddinggemma.md)).
 
-**Speech.** `nuclis speak` (Qwen3-TTS) and `nuclis transcribe` (Nemotron
-ASR, live or whole recordings) are a voice and ears beside the language
-model; with the E4B, one `nuclis serve` holds the ears, the brain, and the
-voice ([api-speech.md](docs/guide/api-speech.md), [qwen3-tts.md](docs/models/qwen3-tts.md), [nemotron-asr.md](docs/models/nemotron-asr.md)).
+**Speech.** `nuclis speak` (Qwen3-TTS, VoiceTut-TTS) and `nuclis transcribe`
+(Nemotron ASR) are a voice and ears beside the language model in `nuclis serve`
+([api-speech.md](docs/guide/api-speech.md), [qwen3-tts.md](docs/models/qwen3-tts.md), [omnivoice.md](docs/models/omnivoice.md), [nemotron-asr.md](docs/models/nemotron-asr.md)).
 
 ## Design rules
 

@@ -52,23 +52,40 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 CORPUS = ROOT / "tests/fixtures/speech-corpus.json"
 SPEECH = ROOT / ".reference/speech"
 APOSTROPHES = "'’ʼ`´"
+# Arabic diacritics, tatweel, and orthographic folds (Egyptian-aware).
+ARABIC_FOLDS = str.maketrans(
+    {
+        "أ": "ا",
+        "إ": "ا",
+        "آ": "ا",
+        "ٱ": "ا",
+        "ى": "ي",
+        "ة": "ه",
+        "ؤ": "و",
+        "ئ": "ي",
+        "\u0640": "",  # tatweel
+    }
+)
 # The fixed request `--chat` sends with every clip.
 CHAT_PROMPT = "Transcribe this audio in the language it is spoken in. Write only the transcript."
 
 
 def normalize(text: str) -> list[str]:
-    """The words of `text`, normalized for scoring."""
-    text = unicodedata.normalize("NFKC", text).casefold().replace("ё", "е")
+    """The words of `text`, normalized for scoring (including Egyptian-aware Arabic folding)."""
+    text = unicodedata.normalize("NFKC", text).casefold().replace("ё", "е").translate(ARABIC_FOLDS)
     out: list[str] = []
     for ch in text:
         if ch in APOSTROPHES:
+            continue
+        code = ord(ch)
+        if 0x064B <= code <= 0x065F or code == 0x0670 or 0x06D6 <= code <= 0x06ED:
             continue
         out.append(" " if unicodedata.category(ch).startswith("P") or ch.isspace() else ch)
     return "".join(out).split()
 
 
 def edits(reference: list[str], hypothesis: list[str]) -> int:
-    """Levenshtein distance over words: substitutions, deletions, insertions."""
+    """Levenshtein distance over sequences (words or characters): substitutions, deletions, insertions."""
     previous = list(range(len(hypothesis) + 1))
     for i, word in enumerate(reference, 1):
         current = [i] + [0] * len(hypothesis)
@@ -76,6 +93,13 @@ def edits(reference: list[str], hypothesis: list[str]) -> int:
             current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (word != other))
         previous = current
     return previous[-1]
+
+
+def char_edits(reference: list[str], hypothesis: list[str]) -> tuple[int, int]:
+    """Character-level edit distance and reference character count (ignoring spaces)."""
+    ref_chars = list("".join(reference))
+    hyp_chars = list("".join(hypothesis))
+    return edits(ref_chars, hyp_chars), len(ref_chars)
 
 
 @dataclass
@@ -177,7 +201,7 @@ def speak_and_recognize(
     done = subprocess.run(command, capture_output=True, text=True, check=False)
     if done.returncode != 0:
         raise SystemExit(f"{' '.join(command)}: exit {done.returncode}\n{done.stderr}")
-    report = recognize(nuclis, asr_model, wav, plan["asr_language"], lookahead)
+    report = recognize(nuclis, asr_model, wav, sentence.get("asr_language") or plan["asr_language"], lookahead)
     reference = normalize(sentence["text"])
     hypothesis = normalize(report["text"])
     return Result(
@@ -193,17 +217,26 @@ def speak_and_recognize(
 
 
 def summarize(results: list[Result]) -> dict[str, dict[str, float]]:
-    """Per language and `all`: clips, words, errors, rate, audio and transcription seconds."""
+    """Per language and `all`: clips, words, errors, WER, chars, CER, audio and transcription seconds."""
     table: dict[str, dict[str, float]] = {}
     for key in sorted({r.language for r in results}) + ["all"]:
         chosen = [r for r in results if key in ("all", r.language)]
         words = sum(len(r.reference) for r in chosen)
         errors = sum(r.errors for r in chosen)
+        c_err = 0
+        c_tot = 0
+        for r in chosen:
+            ce, ct = char_edits(r.reference, r.hypothesis)
+            c_err += ce
+            c_tot += ct
         table[key] = {
             "clips": len(chosen),
             "words": words,
             "errors": errors,
             "wer": errors / words if words else 0.0,
+            "chars": c_tot,
+            "char_errors": c_err,
+            "cer": c_err / c_tot if c_tot else 0.0,
             "audio_s": sum(r.seconds for r in chosen),
             "transcribe_s": sum(r.transcribe_ms for r in chosen) / 1000,
         }
@@ -226,7 +259,8 @@ def main() -> int:
     parser.add_argument(
         "--backend", default="cpu", choices=("cpu", "metal"), help="where transcribe runs (default cpu)"
     )
-    parser.add_argument("--max-wer", type=float, help="fail when the overall rate exceeds this")
+    parser.add_argument("--max-wer", type=float, help="fail when the overall word error rate exceeds this")
+    parser.add_argument("--max-cer", type=float, help="fail when the overall character error rate exceeds this")
     parser.add_argument("--json", type=pathlib.Path, help="write every clip's result and the summary here")
     parser.add_argument("--verbose", action="store_true", help="print each clip's words")
     parser.add_argument("--self-test", action="store_true", help="run the normalizer's and the alignment's tests")
@@ -321,7 +355,10 @@ def round_trip(args: argparse.Namespace) -> int:
                 print(f"  ref {' '.join(result.reference)}\n  hyp {' '.join(result.hypothesis)}")
     table = summarize(results)
     row = table["all"]
-    print(f"\n{row['clips']:.0f} sentences, {row['words']:.0f} words, {row['errors']:.0f} errors: WER {row['wer']:.2%}")
+    print(
+        f"\n{row['clips']:.0f} sentences, {row['words']:.0f} words, {row['errors']:.0f} errors: "
+        f"WER {row['wer']:.2%} · CER {row['cer']:.2%} ({row['char_errors']:.0f}/{row['chars']:.0f} chars)"
+    )
     print(
         f"{row['audio_s']:.1f} s of audio; wall time {time.monotonic() - started:.1f} s (every sentence two fresh processes)"
     )
@@ -330,6 +367,9 @@ def round_trip(args: argparse.Namespace) -> int:
         args.json.write_text(json.dumps(payload, indent=1, ensure_ascii=False) + "\n")
     if args.max_wer is not None and row["wer"] > args.max_wer:
         print(f"WER {row['wer']:.2%} exceeds the bound {args.max_wer:.2%}", file=sys.stderr)
+        return 1
+    if args.max_cer is not None and row["cer"] > args.max_cer:
+        print(f"CER {row['cer']:.2%} exceeds the bound {args.max_cer:.2%}", file=sys.stderr)
         return 1
     return 0
 
@@ -343,6 +383,12 @@ class Tests(unittest.TestCase):
         self.assertEqual(normalize("Das Cochamó-Tal – Chiles"), ["das", "cochamó", "tal", "chiles"])
         self.assertEqual(normalize("ЁМКОСТИ, ёлка"), ["емкости", "елка"])
         self.assertEqual(normalize("HE BEGAN A CONFUSED COMPLAINT"), normalize("He began a confused complaint."))
+        self.assertEqual(
+            normalize("أَهْلاً بِيكَ في القَاهِرَة، إِزَّيَّك؟"),
+            ["اهلا", "بيك", "في", "القاهره", "ازيك"],
+        )
+        self.assertEqual(normalize("إلى متى؟"), normalize("الي متي"))
+        self.assertEqual(char_edits(["النهارده"], ["النهار", "ده"]), (0, 8))
 
     def test_round_trip_list(self) -> None:
         plan = json.loads((ROOT / "tests/fixtures/tts-roundtrip.json").read_text())
