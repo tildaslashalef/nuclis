@@ -52,8 +52,8 @@ pub const EncodeError = encoder.Error || nfc.Error;
 
 /// The accepted shapes, named by their pre-tokenizer. `cased` (byte-level
 /// pieces split by cased.zig) comes from vocab_merges.zig, never from a
-/// `tokenizer.json`.
-pub const Shape = enum { byte_level, metaspace, cased };
+/// `tokenizer.json`. `qwen2` is `Sequence([Split(qwen2 regex, Isolated), ByteLevel(use_regex=false)])`.
+pub const Shape = enum { byte_level, metaspace, cased, qwen2 };
 
 pub const Tokenizer = struct {
     /// `pre` is "gpt2" (byte-level: normal tokens decode through the byte
@@ -131,6 +131,10 @@ const Encoding = struct {
                     var it = try cased.Iterator.init(text);
                     while (it.next()) |text_piece| try self.piece(text_piece);
                 },
+                .qwen2 => {
+                    var it = try pre.Qwen2Iterator.init(text);
+                    while (it.next()) |text_piece| try self.piece(text_piece);
+                },
                 .metaspace => try self.metaspace(text),
             },
         }
@@ -171,7 +175,7 @@ const Encoding = struct {
         piece_limits.output_tokens = @min(piece_limits.output_tokens, self.limits.output_tokens - self.output.items.len);
         const vocab = &self.tokenizer.vocab;
         const ids = switch (self.tokenizer.shape) {
-            .byte_level, .cased => try bpe.encodePieceBudget(self.alloc, vocab, text, piece_limits, &self.bpe_work),
+            .byte_level, .cased, .qwen2 => try bpe.encodePieceBudget(self.alloc, vocab, text, piece_limits, &self.bpe_work),
             .metaspace => try bpe.encodeSpmBudget(self.alloc, vocab, text, piece_limits, &self.bpe_work),
         };
         defer self.alloc.free(ids);
@@ -257,7 +261,14 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!To
     };
     const model = file.model;
     const splitter = file.pre_tokenizer orelse return error.UnsupportedPreTokenizer;
-    const shape: Shape = if (isType(splitter, "ByteLevel")) .byte_level else if (isType(splitter, "Metaspace")) .metaspace else return error.UnsupportedPreTokenizer;
+    const shape: Shape = if (isType(splitter, "ByteLevel"))
+        .byte_level
+    else if (isType(splitter, "Metaspace"))
+        .metaspace
+    else if (isQwen2PreTokenizer(splitter))
+        .qwen2
+    else
+        return error.UnsupportedPreTokenizer;
     if (!std.mem.eql(u8, model.type, "BPE") or model.dropout != null or
         nonEmpty(model.continuing_subword_prefix) or nonEmpty(model.end_of_word_suffix) or model.ignore_merges)
         return error.UnsupportedModel;
@@ -271,6 +282,14 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!To
             }
             if (flag(splitter, "add_prefix_space", false) or !flag(splitter, "use_regex", true))
                 return error.UnsupportedPreTokenizer;
+            if (file.decoder) |d| if (!isType(d, "ByteLevel")) return error.UnsupportedDecoder;
+        },
+        .qwen2 => {
+            if (model.unk_token != null or model.byte_fallback) return error.UnsupportedModel;
+            if (file.normalizer) |n| {
+                if (!isType(n, "NFC")) return error.UnsupportedNormalizer;
+                use_nfc = true;
+            }
             if (file.decoder) |d| if (!isType(d, "ByteLevel")) return error.UnsupportedDecoder;
         },
         .metaspace => {
@@ -358,6 +377,23 @@ fn markByteTokens(tokens: []vocabulary.Token, ids: *const std.StringHashMapUnman
             if (b != 0xC0 and b != 0xC1 and b < 0xF5) return error.UnsupportedModel;
         } else if (ids.get(&[_]u8{@intCast(b)}) == null) return error.UnsupportedModel;
     }
+}
+
+const qwen2_regex = "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+
+/// `Sequence([Split(qwen2_regex, Isolated, invert=false), ByteLevel(add_prefix_space=false, use_regex=false)])`.
+fn isQwen2PreTokenizer(value: std.json.Value) bool {
+    if (!isType(value, "Sequence")) return false;
+    const steps = value.object.get("pretokenizers") orelse return false;
+    if (steps != .array or steps.array.items.len != 2) return false;
+    const split = steps.array.items[0];
+    const byte_level = steps.array.items[1];
+    if (!isType(split, "Split") or !isString(split, "behavior", "Isolated") or flag(split, "invert", false))
+        return false;
+    const pattern = split.object.get("pattern") orelse return false;
+    if (pattern != .object or pattern.object.count() != 1 or !isString(pattern, "Regex", qwen2_regex))
+        return false;
+    return isType(byte_level, "ByteLevel") and !flag(byte_level, "add_prefix_space", false) and !flag(byte_level, "use_regex", true);
 }
 
 /// `{"type":"Replace","pattern":{"String":from},"content":to}`.
@@ -561,5 +597,48 @@ test "Metaspace: other normalizers, schemes, and uncovered bytes are rejected" {
     inline for (.{ "<0xC0>", "<0x61>" }) |drop| {
         var t = try metaspaceFixture(gpa, none, drop);
         t.deinit();
+    }
+}
+
+const qwen2_fixture =
+    \\{"version":"1.0","truncation":null,"padding":null,
+    \\ "added_tokens":[
+    \\  {"id":16,"content":"<|lang_start|>","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":true},
+    \\  {"id":17,"content":"<|lang_end|>","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":true},
+    \\  {"id":18,"content":"<|text_start|>","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":true},
+    \\  {"id":19,"content":"<|text_end|>","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":true}],
+    \\ "normalizer":{"type":"NFC"},
+    \\ "pre_tokenizer":{"type":"Sequence","pretokenizers":[
+    \\  {"type":"Split","pattern":{"Regex":"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"},"behavior":"Isolated","invert":false},
+    \\  {"type":"ByteLevel","add_prefix_space":false,"trim_offsets":true,"use_regex":false}]},
+    \\ "post_processor":null,
+    \\ "decoder":{"type":"ByteLevel","add_prefix_space":true,"trim_offsets":true,"use_regex":true},
+    \\ "model":{"type":"BPE","dropout":null,"unk_token":null,"continuing_subword_prefix":"","end_of_word_suffix":"",
+    \\  "fuse_unk":false,"byte_fallback":false,"ignore_merges":false,
+    \\  "vocab":{"a":0,"b":1,"Ġ":2,"Ġb":3,"1":4,"2":5,"!":6,"Ø":7,"¹":8,"Ù":9,"ħ":10,"Ø¹":11,"Ùħ":12,"Ä":13,"Ĭ":14,"Ã©":15},
+    \\  "merges":[["Ġ","b"],["Ø","¹"],["Ù","ħ"]]}}
+;
+
+test "qwen2 shape: Sequence([Split, ByteLevel]), digits, Arabic, NFC, and control tokens" {
+    const gpa = std.testing.allocator;
+    var t = try parse(gpa, qwen2_fixture, .{});
+    defer t.deinit();
+    try std.testing.expectEqual(Shape.qwen2, t.shape);
+    try std.testing.expectEqual(vocabulary.TokenType.control, t.vocab.tokens[16].kind);
+    // Single-digit splitting (\p{N}), Arabic UTF-8 bytes (ع = 0xD8 0xB9 -> Ø¹),
+    // English word with leading space, punctuation, and special control tokens.
+    try expectIds(&t, "<|lang_start|>a<|lang_end|><|text_start|>ع b12!<|text_end|>", &.{ 16, 0, 17, 18, 11, 3, 4, 5, 6, 19 });
+    // Rejection of altered Sequence([Split, ByteLevel]) parameters.
+    const bad_cases = .{
+        .{ "\"behavior\":\"Isolated\"", "\"behavior\":\"Removed\"", error.UnsupportedPreTokenizer },
+        .{ "\"invert\":false", "\"invert\":true", error.UnsupportedPreTokenizer },
+        .{ "\"use_regex\":false", "\"use_regex\":true", error.UnsupportedPreTokenizer },
+        .{ "\"add_prefix_space\":false", "\"add_prefix_space\":true", error.UnsupportedPreTokenizer },
+        .{ "\\\\p{N}|", "\\\\p{N}+|", error.UnsupportedPreTokenizer },
+    };
+    inline for (bad_cases) |case| {
+        const edited = try std.mem.replaceOwned(u8, gpa, qwen2_fixture, case[0], case[1]);
+        defer gpa.free(edited);
+        try std.testing.expectError(case[2], parse(gpa, edited, .{}));
     }
 }
