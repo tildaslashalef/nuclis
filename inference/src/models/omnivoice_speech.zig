@@ -14,7 +14,10 @@ const hf_json = @import("../tokenizer/hf_json.zig");
 const model = @import("omnivoice.zig");
 const text_mod = @import("omnivoice_text.zig");
 const runtime = @import("omnivoice_runtime.zig");
+const metal_plan = @import("omnivoice_metal.zig");
+const metal = @import("../backends/metal/root.zig");
 const hc = @import("../audio/higgs_codec.zig");
+const hcm = @import("../audio/higgs_codec_metal.zig");
 const hce = @import("../audio/higgs_codec_encoder.zig");
 
 const Allocator = std.mem.Allocator;
@@ -50,7 +53,10 @@ pub const Voice = struct {
     tokenizer: hf_json.Tokenizer,
     model: runtime.Model,
     backend: Backend,
+    gpu: ?metal.Backend = null,
+    plan: ?metal_plan.Plan = null,
     codec: ?hc.Runtime = null,
+    decoder: ?hcm.Decoder = null,
     encoder: ?hce.Encoder = null,
 
     pub fn open(gpa: Allocator, io: std.Io, path: []const u8) !*Voice {
@@ -58,13 +64,15 @@ pub const Voice = struct {
     }
 
     pub fn openWith(gpa: Allocator, io: std.Io, path: []const u8, options: Options) !*Voice {
-        if (options.backend == .metal) return error.UnsupportedBackend;
         const self = try gpa.create(Voice);
         errdefer gpa.destroy(self);
         self.gpa = gpa;
         self.io = io;
         self.backend = options.backend;
+        self.gpu = null;
+        self.plan = null;
         self.codec = null;
+        self.decoder = null;
         self.encoder = null;
 
         self.mapped = try weights.Mapped.open(gpa, io, path);
@@ -86,11 +94,30 @@ pub const Voice = struct {
         self.codec = try hc.Runtime.init(gpa, io, doc.*, directory, self.mapped.view());
         errdefer if (self.codec) |*c| c.deinit();
 
+        if (options.backend == .metal) {
+            var message: [512]u8 = @splat(0);
+            self.gpu = try metal.Backend.init(gpa, &message);
+        }
+        errdefer if (self.gpu) |*g| g.deinit();
+        if (self.gpu) |*g| {
+            self.plan = try metal_plan.Plan.init(gpa, g, &self.model);
+        }
+        errdefer if (self.plan) |*p| p.deinit();
+        if (self.gpu) |*g| {
+            self.decoder = try hcm.Decoder.init(gpa, g, &self.codec.?);
+            self.codec.?.deinit();
+            self.codec = null;
+        }
+        errdefer if (self.decoder) |*d| d.deinit();
+
         return self;
     }
 
     pub fn close(self: *Voice) void {
         if (self.encoder) |*e| e.deinit();
+        if (self.decoder) |*d| d.deinit();
+        if (self.plan) |*p| p.deinit();
+        if (self.gpu) |*g| g.deinit();
         if (self.codec) |*c| c.deinit();
         self.model.deinit();
         self.tokenizer.deinit();
@@ -135,6 +162,8 @@ pub const Synthesizer = struct {
     chunks: []const []const u8,
     chunk_index: usize = 0,
     total_frames: usize = 0,
+    diffusion_us: i64 = 0,
+    codec_us: i64 = 0,
     /// Anchor codes from chunk 0 when auto-voice / voice-design spans multiple chunks.
     anchor_codes: ?[]Frame = null,
     /// Buffered decoded samples of the current chunk.
@@ -239,19 +268,22 @@ pub const Synthesizer = struct {
 
         var step_cfg = self.req.sampling;
         step_cfg.seed +%= ci;
-        const codes = try self.voice.model.generate(
-            self.gpa,
-            prompt_ids,
-            ref_codes,
-            target_frames,
-            step_cfg,
-            self.req.cancel,
-        );
+        const diff_start = std.Io.Clock.awake.now(self.voice.io);
+        const codes = if (self.voice.plan) |*plan|
+            try plan.generate(self.gpa, prompt_ids, ref_codes, target_frames, step_cfg, self.req.cancel)
+        else
+            try self.voice.model.generate(self.gpa, prompt_ids, ref_codes, target_frames, step_cfg, self.req.cancel);
         errdefer self.gpa.free(codes);
+        self.diffusion_us += diff_start.durationTo(std.Io.Clock.awake.now(self.voice.io)).toMicroseconds();
 
         self.total_frames += codes.len;
-        const raw_pcm = try self.voice.codec.?.decode(self.gpa, codes);
+        const codec_start = std.Io.Clock.awake.now(self.voice.io);
+        const raw_pcm = if (self.voice.decoder) |*dec|
+            try dec.decode(self.gpa, codes)
+        else
+            try self.voice.codec.?.decode(self.gpa, codes);
         errdefer self.gpa.free(raw_pcm);
+        self.codec_us += codec_start.durationTo(std.Io.Clock.awake.now(self.voice.io)).toMicroseconds();
 
         if (ci == 0 and self.req.ref_codes == null and self.chunks.len > 1) {
             self.anchor_codes = codes;

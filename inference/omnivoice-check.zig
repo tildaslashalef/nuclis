@@ -1,8 +1,8 @@
 //! Explicit full-model check of OmniVoice / VoiceTut-TTS (`audio.cpp` GGUF).
 //!
 //!   omnivoice-check MODEL.gguf vocab
-//!   omnivoice-check MODEL.gguf codec|codec-encode|codec-decode [--fixtures DIR] [--max-relative-rms X]
-//!   omnivoice-check MODEL.gguf trace [--fixtures DIR] [--max-relative-rms X] [--max-abs X]
+//!   omnivoice-check MODEL.gguf codec|codec-encode|codec-decode|codec-metal [--fixtures DIR] [--max-relative-rms X] [--max-abs X]
+//!   omnivoice-check MODEL.gguf trace|trace-metal [--fixtures DIR] [--max-relative-rms X] [--max-abs X]
 //!   omnivoice-check MODEL.gguf speak --text T --out FILE.wav [--backend cpu|metal] [--seed N] [--steps N] [--duration D] [--speed S] [--lang L] [--instruct I]
 const std = @import("std");
 const inference = @import("inference");
@@ -10,14 +10,17 @@ const check_stats = @import("check_stats.zig");
 const omnivoice = inference.models.omnivoice;
 const text_mod = inference.models.omnivoice_text;
 const runtime = inference.models.omnivoice_runtime;
+const metal_plan = inference.models.omnivoice_metal;
 const speech = inference.models.omnivoice_speech;
+const metal = inference.metal;
 const hf_json = inference.hf_tokenizer;
 const weights = inference.weights;
 const hc = inference.audio.higgs_codec;
+const hcm = inference.audio.higgs_codec_metal;
 const hce = inference.audio.higgs_codec_encoder;
 const audio_mod = inference.audio.audio;
 
-const usage = "usage: omnivoice-check MODEL.gguf vocab|codec|codec-encode|codec-decode|trace|speak [options]\n";
+const usage = "usage: omnivoice-check MODEL.gguf vocab|codec|codec-encode|codec-decode|codec-metal|trace|trace-metal|speak [options]\n";
 
 const Vector = struct {
     name: []const u8,
@@ -296,6 +299,58 @@ fn runCodecDecode(gpa: std.mem.Allocator, io: std.Io, mapped: *const weights.Map
     return ok;
 }
 
+fn runCodecMetal(gpa: std.mem.Allocator, io: std.Io, mapped: *const weights.Mapped, fixtures_dir: []const u8, rel_bound: f64, abs_bound: f64) !bool {
+    const directory = mapped.mapping.memory[0..@intCast(mapped.document.directory_bytes)];
+    var cpu_dec = try hc.Runtime.init(gpa, io, mapped.document, directory, mapped.view());
+    defer cpu_dec.deinit();
+
+    const codes = try readCodesFile(gpa, io, fixtures_dir, "codes.u16");
+    defer gpa.free(codes);
+
+    const cpu_samples = try cpu_dec.decode(gpa, codes);
+    defer gpa.free(cpu_samples);
+
+    var diag: [512]u8 = @splat(0);
+    var gpu = try metal.Backend.init(gpa, &diag);
+    defer gpu.deinit();
+
+    // Lifecycle check: init, decode, deinit twice, verifying zero leaked GPU buffers.
+    var metal_samples: []f32 = undefined;
+    var metal_ms: f64 = 0;
+    for (0..2) |pass| {
+        var dec = try hcm.Decoder.init(gpa, &gpu, &cpu_dec);
+        const t0 = std.Io.Clock.awake.now(io);
+        const got = try dec.decode(gpa, codes);
+        const ms = @as(f64, @floatFromInt(t0.durationTo(std.Io.Clock.awake.now(io)).toMicroseconds())) / 1000.0;
+        dec.deinit();
+        if (gpu.created_bytes != 0 or gpu.wrapped.count() != 0) {
+            gpa.free(got);
+            std.debug.print("FAIL codec-metal lifecycle pass {d}: created_bytes={d} wrapped={d}\n", .{ pass, gpu.created_bytes, gpu.wrapped.count() });
+            return false;
+        }
+        if (pass == 0) {
+            gpa.free(got);
+        } else {
+            metal_samples = got;
+            metal_ms = ms;
+        }
+    }
+    defer gpa.free(metal_samples);
+
+    const s_cpu = relRms(metal_samples, cpu_samples);
+    const want_author = try readF32File(gpa, io, fixtures_dir, "dec_samples.f32");
+    defer gpa.free(want_author);
+    const s_author = relRms(metal_samples, want_author);
+
+    const ok = !check_stats.exceeds(s_cpu.rel, rel_bound) and !check_stats.exceeds(s_cpu.max_abs, abs_bound) and
+        !check_stats.exceeds(s_author.rel, rel_bound) and !check_stats.exceeds(s_author.max_abs, abs_bound);
+    std.debug.print(
+        "Higgs codec Metal decode ({d} frames -> {d} samples, {d:.1} ms): vs CPU rel_rms={e:.3} max_abs={e:.3}; vs author rel_rms={e:.3} max_abs={e:.3} (bounds {e:.2}, {e:.2}) {s}\n",
+        .{ codes.len, metal_samples.len, metal_ms, s_cpu.rel, s_cpu.max_abs, s_author.rel, s_author.max_abs, rel_bound, abs_bound, if (ok) "ok" else "FAIL" },
+    );
+    return ok;
+}
+
 const BackboneRec = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -382,6 +437,170 @@ fn runTrace(gpa: std.mem.Allocator, io: std.Io, mapped: *const weights.Mapped, f
     return ok;
 }
 
+const MetalStageRec = struct {
+    gpa: std.mem.Allocator,
+    prefix: []const u8,
+    rel_bound: f64,
+    abs_bound: f64,
+    cpu_embed: ?[]f32 = null,
+    cpu_layer0: ?[]f32 = null,
+    cpu_layer13: ?[]f32 = null,
+    cpu_layer27: ?[]f32 = null,
+    cpu_norm: ?[]f32 = null,
+    cpu_logits: ?[]f32 = null,
+    worst_rel: check_stats.Worst = .{},
+    worst_abs: check_stats.Worst = .{},
+    ok: bool = true,
+
+    fn deinit(self: *MetalStageRec) void {
+        inline for (.{ "cpu_embed", "cpu_layer0", "cpu_layer13", "cpu_layer27", "cpu_norm", "cpu_logits" }) |f| {
+            if (@field(self, f)) |s| self.gpa.free(s);
+        }
+    }
+
+    fn slot(self: *MetalStageRec, stage: runtime.Stage, layer_index: ?usize) ?*?[]f32 {
+        return switch (stage) {
+            .embed => &self.cpu_embed,
+            .norm => &self.cpu_norm,
+            .logits => &self.cpu_logits,
+            .layer => switch (layer_index orelse return null) {
+                0 => &self.cpu_layer0,
+                13 => &self.cpu_layer13,
+                27 => &self.cpu_layer27,
+                else => null,
+            },
+        };
+    }
+
+    fn captureCpu(ctx: *anyopaque, stage: runtime.Stage, layer_index: ?usize, rows: []const f32) void {
+        const self: *MetalStageRec = @ptrCast(@alignCast(ctx));
+        const dst = self.slot(stage, layer_index) orelse return;
+        dst.* = self.gpa.dupe(f32, rows) catch {
+            self.ok = false;
+            return;
+        };
+    }
+
+    fn compareMetal(ctx: *anyopaque, stage: runtime.Stage, layer_index: ?usize, rows: []const f32) void {
+        const self: *MetalStageRec = @ptrCast(@alignCast(ctx));
+        const dst = self.slot(stage, layer_index) orelse return;
+        const want = dst.* orelse {
+            self.ok = false;
+            return;
+        };
+        const s = relRms(rows, want);
+        self.worst_rel.observe(s.rel);
+        const check_abs = stage != .layer;
+        if (check_abs) self.worst_abs.observe(s.max_abs);
+        var argmax_ok = true;
+        if (stage == .logits) {
+            const slices = rows.len / runtime.audio_vocab;
+            for (0..slices) |k| {
+                const g_sl = rows[k * runtime.audio_vocab ..][0..runtime.audio_vocab];
+                const w_sl = want[k * runtime.audio_vocab ..][0..runtime.audio_vocab];
+                if (std.mem.indexOfMax(f32, g_sl) != std.mem.indexOfMax(f32, w_sl)) argmax_ok = false;
+            }
+        }
+        const pass = !check_stats.exceeds(s.rel, self.rel_bound) and (!check_abs or !check_stats.exceeds(s.max_abs, self.abs_bound)) and argmax_ok;
+        if (!pass) self.ok = false;
+        var label_buf: [32]u8 = undefined;
+        const label = switch (stage) {
+            .layer => std.fmt.bufPrint(&label_buf, "{s}_layer{d}", .{ self.prefix, layer_index.? }) catch unreachable,
+            else => std.fmt.bufPrint(&label_buf, "{s}_{s}", .{ self.prefix, @tagName(stage) }) catch unreachable,
+        };
+        std.debug.print("  {s:<18} rel_rms={e:.3} max_abs={e:.3}{s} {s}\n", .{ label, s.rel, s.max_abs, if (stage == .logits) (if (argmax_ok) " argmax=ok" else " argmax=FAIL") else "", if (pass) "ok" else "FAIL" });
+    }
+};
+
+fn runTraceMetal(gpa: std.mem.Allocator, io: std.Io, mapped: *const weights.Mapped, rel_bound: f64, abs_bound: f64) !bool {
+    var m = try runtime.Model.init(gpa, io, &mapped.document, mapped.view());
+    defer m.deinit();
+
+    const prompt_ids = [_]u32{ 151669, 151670, 277, 89, 151671, 151672, 4064, 151673, 151674, 69682, 16157, 80970, 124376, 27846, 126300, 13, 85153, 125089, 31073, 124080, 16157, 35038, 91335, 128332, 151675 };
+    const all_codes = try readCodesFile(gpa, io, "tests/fixtures/omnivoice/codec", "codes.u16");
+    defer gpa.free(all_codes);
+    const ref_frames: usize = 16;
+    const target_frames: usize = 12;
+    const masked: hc.Frame = @splat(runtime.audio_mask_id);
+
+    const cond_rows = try gpa.alloc(runtime.Row, prompt_ids.len + ref_frames + target_frames);
+    defer gpa.free(cond_rows);
+    for (prompt_ids, 0..) |id, i| cond_rows[i] = .{ .text = id };
+    for (0..ref_frames) |i| cond_rows[prompt_ids.len + i] = .{ .audio = all_codes[i] };
+    for (0..target_frames) |i| cond_rows[prompt_ids.len + ref_frames + i] = .{ .audio = masked };
+
+    const uncond_rows = try gpa.alloc(runtime.Row, target_frames);
+    defer gpa.free(uncond_rows);
+    for (uncond_rows) |*r| r.* = .{ .audio = masked };
+
+    const cpu_c_logits = try gpa.alloc(f32, target_frames * runtime.audio_table_rows);
+    defer gpa.free(cpu_c_logits);
+    const cpu_u_logits = try gpa.alloc(f32, target_frames * runtime.audio_table_rows);
+    defer gpa.free(cpu_u_logits);
+
+    var cond_rec: MetalStageRec = .{ .gpa = gpa, .prefix = "cond", .rel_bound = rel_bound, .abs_bound = abs_bound };
+    defer cond_rec.deinit();
+    try m.forward(gpa, cond_rows, target_frames, cpu_c_logits, .{ .context = &cond_rec, .record = MetalStageRec.captureCpu });
+
+    var uncond_rec: MetalStageRec = .{ .gpa = gpa, .prefix = "uncond", .rel_bound = rel_bound, .abs_bound = abs_bound };
+    defer uncond_rec.deinit();
+    try m.forward(gpa, uncond_rows, target_frames, cpu_u_logits, .{ .context = &uncond_rec, .record = MetalStageRec.captureCpu });
+
+    var diag: [512]u8 = @splat(0);
+    var gpu = try metal.Backend.init(gpa, &diag);
+    defer gpu.deinit();
+
+    var plan = try metal_plan.Plan.init(gpa, &gpu, &m);
+    const metal_c_logits = try gpa.alloc(f32, target_frames * runtime.audio_table_rows);
+    defer gpa.free(metal_c_logits);
+    const metal_u_logits = try gpa.alloc(f32, target_frames * runtime.audio_table_rows);
+    defer gpa.free(metal_u_logits);
+
+    // 1. Observed single-sequence checks (cond S=53, uncond S=12) against CPU.
+    try plan.forwardObserved(cond_rows, target_frames, metal_c_logits, .{ .context = &cond_rec, .record = MetalStageRec.compareMetal });
+    try plan.forwardObserved(uncond_rows, target_frames, metal_u_logits, .{ .context = &uncond_rec, .record = MetalStageRec.compareMetal });
+
+    // 2. Packed CFG `[cond || uncond]` (S=65) in one command buffer against CPU.
+    const packed_c = try gpa.alloc(f32, target_frames * runtime.audio_table_rows);
+    defer gpa.free(packed_c);
+    const packed_u = try gpa.alloc(f32, target_frames * runtime.audio_table_rows);
+    defer gpa.free(packed_u);
+    const t0 = std.Io.Clock.awake.now(io);
+    try plan.forwardPacked(cond_rows, uncond_rows, target_frames, packed_c, packed_u);
+    const step_ms = @as(f64, @floatFromInt(t0.durationTo(std.Io.Clock.awake.now(io)).toMicroseconds())) / 1000.0;
+
+    const sc_packed = relRms(packed_c, cpu_c_logits);
+    const su_packed = relRms(packed_u, cpu_u_logits);
+    const packed_ok = !check_stats.exceeds(sc_packed.rel, rel_bound) and !check_stats.exceeds(sc_packed.max_abs, abs_bound) and
+        !check_stats.exceeds(su_packed.rel, rel_bound) and !check_stats.exceeds(su_packed.max_abs, abs_bound);
+    std.debug.print("  packed_cond        rel_rms={e:.3} max_abs={e:.3} {s}\n", .{ sc_packed.rel, sc_packed.max_abs, if (!check_stats.exceeds(sc_packed.rel, rel_bound) and !check_stats.exceeds(sc_packed.max_abs, abs_bound)) "ok" else "FAIL" });
+    std.debug.print("  packed_uncond      rel_rms={e:.3} max_abs={e:.3} {s} ({d:.1} ms/step)\n", .{ su_packed.rel, su_packed.max_abs, if (!check_stats.exceeds(su_packed.rel, rel_bound) and !check_stats.exceeds(su_packed.max_abs, abs_bound)) "ok" else "FAIL", step_ms });
+
+    // 3. Cancellation check: canceled flag must stop cleanly before GPU work.
+    var cancel_flag = std.atomic.Value(bool).init(true);
+    const cancel_res = plan.generate(gpa, &prompt_ids, all_codes[0..ref_frames], target_frames, .{}, &cancel_flag);
+    const cancel_ok = if (cancel_res) |toks| blk: {
+        gpa.free(toks);
+        break :blk false;
+    } else |err| err == error.Canceled;
+
+    // 4. Lifecycle cleanup check: deinit must release all created and wrapped buffers.
+    plan.deinit();
+    const clean_ok = gpu.created_bytes == 0 and gpu.wrapped.count() == 0;
+    if (!clean_ok) std.debug.print("FAIL trace-metal lifecycle: created_bytes={d} wrapped={d}\n", .{ gpu.created_bytes, gpu.wrapped.count() });
+
+    const worst_rel = @max(@max(cond_rec.worst_rel.shown(), uncond_rec.worst_rel.shown()), @max(sc_packed.rel, su_packed.rel));
+    const worst_abs = @max(@max(cond_rec.worst_abs.shown(), uncond_rec.worst_abs.shown()), @max(sc_packed.max_abs, su_packed.max_abs));
+    const ok = cond_rec.ok and uncond_rec.ok and packed_ok and cancel_ok and clean_ok and
+        cond_rec.worst_rel.within(rel_bound) and uncond_rec.worst_rel.within(rel_bound) and
+        cond_rec.worst_abs.within(abs_bound) and uncond_rec.worst_abs.within(abs_bound);
+    std.debug.print(
+        "OmniVoice Metal backbone trace: worst rel_rms={e:.3} (bound {e:.2}), worst max_abs={e:.3} (bound {e:.2}), cancel={}, cleanup={}.\n",
+        .{ worst_rel, rel_bound, worst_abs, abs_bound, cancel_ok, clean_ok },
+    );
+    return ok;
+}
+
 fn writeWav16(io: std.Io, path: []const u8, samples: []const f32, rate: u32) !void {
     const file = try std.Io.Dir.cwd().createFile(io, path, .{});
     defer file.close(io);
@@ -461,9 +680,12 @@ fn runSpeak(
     }
     const rms = if (all.items.len > 0) @sqrt(sum_sq / @as(f64, @floatFromInt(all.items.len))) else 0.0;
     const audio_sec = @as(f64, @floatFromInt(all.items.len)) / @as(f64, @floatFromInt(speech.sample_rate));
+    const diff_ms = @as(f64, @floatFromInt(synth.diffusion_us)) / 1000.0;
+    const codec_ms = @as(f64, @floatFromInt(synth.codec_us)) / 1000.0;
+    const step_ms = if (steps > 0) diff_ms / @as(f64, @floatFromInt(steps)) else 0.0;
     std.debug.print(
-        "OmniVoice speak ({s}): {d} frames, {d} samples ({d:.2} s audio), open {d:.0} ms, synth {d:.0} ms (RTF {d:.2}x), rms={d:.4}, finite={}.\n",
-        .{ @tagName(backend), synth.frames(), all.items.len, audio_sec, open_ms, synth_ms, if (audio_sec > 0) (synth_ms / 1000.0) / audio_sec else 0.0, rms, finite },
+        "OmniVoice speak ({s}): {d} frames, {d} samples ({d:.2} s audio), open {d:.0} ms, synth {d:.1} ms (diff {d:.1} ms = {d:.1} ms/step, codec {d:.1} ms, RTF {d:.2}x), rms={d:.4}, finite={}.\n",
+        .{ @tagName(backend), synth.frames(), all.items.len, audio_sec, open_ms, synth_ms, diff_ms, step_ms, codec_ms, if (audio_sec > 0) (synth_ms / 1000.0) / audio_sec else 0.0, rms, finite },
     );
     return finite and all.items.len > 0 and rms > 1e-4;
 }
@@ -551,6 +773,8 @@ pub fn main(init: std.process.Init) !void {
         try runCodecEncode(gpa, io, &mapped, fixtures_dir orelse "tests/fixtures/omnivoice/codec", rel_bound)
     else if (std.mem.eql(u8, mode, "codec-decode"))
         try runCodecDecode(gpa, io, &mapped, fixtures_dir orelse "tests/fixtures/omnivoice/codec", rel_bound)
+    else if (std.mem.eql(u8, mode, "codec-metal"))
+        try runCodecMetal(gpa, io, &mapped, fixtures_dir orelse "tests/fixtures/omnivoice/codec", rel_bound, abs_bound)
     else if (std.mem.eql(u8, mode, "codec")) blk: {
         const d = fixtures_dir orelse "tests/fixtures/omnivoice/codec";
         const enc_ok = try runCodecEncode(gpa, io, &mapped, d, rel_bound);
@@ -558,6 +782,8 @@ pub fn main(init: std.process.Init) !void {
         break :blk enc_ok and dec_ok;
     } else if (std.mem.eql(u8, mode, "trace"))
         try runTrace(gpa, io, &mapped, fixtures_dir orelse "tests/fixtures/omnivoice/backbone", rel_bound, abs_bound)
+    else if (std.mem.eql(u8, mode, "trace-metal"))
+        try runTraceMetal(gpa, io, &mapped, rel_bound, abs_bound)
     else {
         std.debug.print(usage, .{});
         std.process.exit(2);
