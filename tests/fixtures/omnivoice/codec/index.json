@@ -1,0 +1,131 @@
+{
+ "source_wav": "tests/fixtures/qwen3-tts/0.6b-clone-reference/reference.wav",
+ "num_samples": 48000,
+ "num_frames": 50,
+ "sample_rate": 24000,
+ "torch": "2.14.1",
+ "transformers": "5.19.0",
+ "files": {
+  "resampled_16k.f32": {
+   "shape": [
+    32000
+   ],
+   "dtype": "float32",
+   "sha256": "40382150b2495b0da9a51074062eaa4ce3dec4821a0928e89bf48d18a48814e9"
+  },
+  "enc_hubert.f32": {
+   "shape": [
+    50,
+    768
+   ],
+   "dtype": "float32",
+   "sha256": "14eea7131f9096da72fe14157df38643fbebf8ff3d227f88adc8695bd9af5e5d"
+  },
+  "enc_semantic.f32": {
+   "shape": [
+    50,
+    768
+   ],
+   "dtype": "float32",
+   "sha256": "aa184f58be9446387f6134916b634e4557e8062b790c1dc9838e71b1903d093a"
+  },
+  "enc_acoustic.f32": {
+   "shape": [
+    50,
+    256
+   ],
+   "dtype": "float32",
+   "sha256": "1c8dea488eaf81207e351cafbdd62bb7f88ac488a13ca7584efe83e495d09194"
+  },
+  "enc_fused.f32": {
+   "shape": [
+    50,
+    1024
+   ],
+   "dtype": "float32",
+   "sha256": "4a6a1a7a7b73bcbc15a3bb7ee4f9cffc0b4622b45835dac9989ec4a49aec1413"
+  },
+  "codes.u16": {
+   "shape": [
+    50,
+    8
+   ],
+   "dtype": "uint16",
+   "sha256": "1214f1d15dc87c1147072492c13b001dd827f16cb663cfd9b56c9fcd14e6f01c"
+  },
+  "dec_quantized.f32": {
+   "shape": [
+    50,
+    1024
+   ],
+   "dtype": "float32",
+   "sha256": "a6d340de2adddbcbe6039e2097a117557859f1583d405ed57986d1557d226e88"
+  },
+  "dec_fc2.f32": {
+   "shape": [
+    50,
+    256
+   ],
+   "dtype": "float32",
+   "sha256": "46683c476f9cfebbfb26f623dc10058064a6998f24cc3dca0f796f55c88f58cb"
+  },
+  "dec_conv1.f32": {
+   "shape": [
+    50,
+    1024
+   ],
+   "dtype": "float32",
+   "sha256": "45a5908959abd7c59f1cea88b4356cae4c782b2c55c608b5990e5a01fe4177f4"
+  },
+  "dec_block0_edges.f32": {
+   "shape": [
+    32,
+    512
+   ],
+   "dtype": "float32",
+   "sha256": "893054ab169a032cba6332c5472d3384efed4f52eaaf7c0e2d4fe90adff0bcd5"
+  },
+  "dec_block1_edges.f32": {
+   "shape": [
+    32,
+    256
+   ],
+   "dtype": "float32",
+   "sha256": "61ed6328eb15529c20b93436d14b925bbe023ce187c69482d1558dfa3b1c765b"
+  },
+  "dec_block2_edges.f32": {
+   "shape": [
+    32,
+    128
+   ],
+   "dtype": "float32",
+   "sha256": "b0c58280f02a18cbd8b7eb86e4f16dbae8267f3f3ddba95545010f4a5d3dd238"
+  },
+  "dec_block3_edges.f32": {
+   "shape": [
+    32,
+    64
+   ],
+   "dtype": "float32",
+   "sha256": "7163e64f2b23d99c0f0f10907ef3760c9f56cd392f5e2c7b1fe80754359f6e67"
+  },
+  "dec_block4_edges.f32": {
+   "shape": [
+    32,
+    32
+   ],
+   "dtype": "float32",
+   "sha256": "a75a44238fa3a9c207015a6c8ea96519d3b6450586deb6664e880cb1eb5552d2"
+  },
+  "dec_samples.f32": {
+   "shape": [
+    48000
+   ],
+   "dtype": "float32",
+   "sha256": "d4e4e562b1774ae71fb948ea707cb19e84e762cdf2ca61c23d0e95681a7976d3"
+  }
+ },
+ "acoustic_encoder_padded": false,
+ "reconstruction_snr_db": 7.221,
+ "reconstruction_corr": 0.904
+}

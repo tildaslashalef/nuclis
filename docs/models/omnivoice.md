@@ -91,8 +91,14 @@ verbatim (no implicit text normalizer):
   automatic script-aware frame estimation (25 fps, bounded to 10–1,500 frames).
   Long text splits on Arabic and English sentence ends (`.!?;…`, newlines,
   `؟؛۔`) without breaking `<|...|>` or `[...]` tags.
-- **Gate**: `omnivoice-vocabulary` (`make gate NAME=omnivoice-vocabulary`)
+- **Gates**: `omnivoice-vocabulary` (`make gate NAME=omnivoice-vocabulary`)
   checks the full structural binding, embedded `config.json`,
   `weights/codebook_layer_offsets`, and pinned English, Egyptian Arabic,
   code-switching, diacritics, and prompt token sequences.
+  `omnivoice-codec-cpu` (`make gate NAME=omnivoice-codec-cpu`, tier
+  `verify-cpu`) checks `higgs_codec_encoder` and `higgs_codec` on the CPU
+  against the 50-frame `HiggsAudioV2Tokenizer` trace (400/400 RVQ codes exact,
+  samples within `1.7e-6` relative RMS,
+  [record](../benchmarks/record/omnivoice.md#the-codec-on-the-cpu-2026-11-22)).
+
 

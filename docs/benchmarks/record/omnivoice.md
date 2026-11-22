@@ -94,6 +94,35 @@ codec tensors (`audio_tokenizer_weights/*`):
   `class_temperature = 0.0` (argmax).
 - **Audio codec**: HiggsAudioV2Tokenizer decodes `[8, T]` codes at 25 fps
   through 8 RVQ codebooks (1,024 × 64) and a 5-stage DAC decoder
-  (`upsampling_ratios = [8, 5, 4, 2, 3]`, product 960) to 24 kHz mono PCM.
+  (`upsampling_ratios = [8, 5, 4, 2, 3]`, product 960, `output_padding = stride % 2`,
+  no final `tanh`) to 24 kHz mono PCM.
   Reference clips are encoded by the dual acoustic (DAC, 24 kHz) + semantic
-  (HuBERT-Base 12-layer, 16 kHz) encoder into `[8, T_ref]` codes.
+  (HuBERT-Base 12-layer, 16 kHz, mean over all 13 hidden states subsampled `::2`)
+  encoder into `[8, T_ref]` codes.
+
+## The codec on the CPU (2026-11-22)
+
+`HiggsAudioV2TokenizerModel` (`transformers` 5.19.0, `torch` 2.14.1, CPU F32)
+was run once on all 527 `audio_tokenizer_weights/*` tensors dequantized from
+`voicetut-tts-q8_0.gguf` over the first 48,000 samples (2.00 s, 50 frames at
+24 kHz) of `tests/fixtures/qwen3-tts/0.6b-clone-reference/reference.wav`
+(reconstruction SNR 7.22 dB, correlation 0.9040). The fixtures live under
+`tests/fixtures/omnivoice/codec/`.
+
+`omnivoice-check MODEL.gguf codec --max-relative-rms 1e-4` (gate
+`omnivoice-codec-cpu`, tier `verify-cpu`, ReleaseFast on Apple M4 Pro):
+
+| Stage | Shape | rel RMS | max \|Δ\| |
+| --- | --- | ---: | ---: |
+| `enc resampled_16k` | `[32000]` | 1.131e-7 | 1.192e-7 |
+| `enc hubert` | `[50, 768]` | 2.789e-6 | 1.568e-5 |
+| `enc semantic` | `[50, 768]` | 4.974e-6 | 1.078e-4 |
+| `enc acoustic` | `[50, 256]` | 8.231e-6 | 1.124e-4 |
+| `enc fused` | `[50, 1024]` | 7.503e-6 | 2.067e-4 |
+| `enc codes` | `[50, 8]` | 400 / 400 exact | — |
+| `dec quantized` | `[50, 1024]` | 1.703e-7 | 3.815e-6 |
+| `dec fc2` | `[50, 256]` | 5.068e-7 | 7.248e-5 |
+| `dec conv1` | `[50, 1024]` | 6.790e-7 | 1.183e-4 |
+| `dec block_0`–`block_4` (worst) | `[32, C]` edges | 1.288e-6 | 2.289e-4 |
+| `dec samples` | `[48000]` | 1.689e-6 | 3.487e-6 |
+
