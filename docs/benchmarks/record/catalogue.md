@@ -86,7 +86,9 @@ are byte-identical at the new commit:
 | `nvidia/nemotron-3.5-asr-streaming-0.6b` | `ea30d66debe3740a08b573244286791d423d6b3e` | `model.safetensors` | 2,552,062,944 | `9eebdd6590289cb3030f310858f3df93256600a800a3e8200c5993d5f967e174` |
 | `sakasegawa/drama-3-GGUF` | `9a01354d04ab6eb521bc9cdfc56ab6824c474af2` | `Drama-35B-A3B-v3-Q4_K.gguf` | 20,787,264,352 | `2a57b14c9b208a2ff833ab7305b920ca8f154ad807004a52d96a86a90a55523e` |
 | `z-lab/Qwen3.8-27B-DFlash2-GGUF` | `2d9571f8ce46e151f61c6499c99dee6079e1d610` | `Qwen3.8-27B-DFlash2-Q8_0.gguf` | 2,056,414,816 | `c18e800daedc59ca68fd13b6a856d795746af6d399a9279ac6a277d1d422f87e` |
+| `mohammedaly22/VoiceTut-TTS-GGUF` | `615457bb2e9043f468e012c159146b28fa8f5959` | `voicetut-tts-q8_0.gguf` | 1,350,264,224 | `995a1fc8973cf376b490231aa107bd22ab1f5da003e89d11ada48f6d5058f67a` |
 
+The VoiceTut-TTS row was inspected and verified on 2026-11-22 ([omnivoice.md](../../models/omnivoice.md)).
 The Drama 3 row was pulled and verified on 2026-10-30 ([drama3.md](../../models/drama3.md)).
 The DFlash2 row is `qwen3.8-27b`'s second draft variant, which the index
 places beside the Qwen file ([§ The catalogue](../../models/catalogue.md#the-catalogue)).

@@ -15,7 +15,7 @@ pub const Limits = struct {
     metadata_count: u64 = 16_384,
     tensor_count: u64 = 100_000,
     string_bytes: u64 = 1024 * 1024,
-    array_items: u64 = 4_000_000,
+    array_items: u64 = 32_000_000,
 };
 
 pub const Type = enum(u32) {
@@ -58,8 +58,8 @@ pub const Array = struct {
 
 /// Bounded, allocation-free access to lazy arrays in a borrowed directory image.
 /// `directory` starts at file offset zero and excludes tensor data. Returned
-/// strings borrow it, not the Document. Only the two tokenizer array types are
-/// supported here; extending access does not change inspection's lazy storage.
+/// slices borrow it, not the Document. Supports string, uint8, int32, uint64,
+/// and int64 lazy arrays; extending access does not change inspection's lazy storage.
 pub const ArrayReader = struct {
     bytes: []const u8,
     remaining: u64,
@@ -69,13 +69,28 @@ pub const ArrayReader = struct {
     pub fn init(array: Array, directory: []const u8, limits: Limits) Error!ArrayReader {
         if (directory.len > limits.directory_bytes or array.count > limits.array_items)
             return error.LimitExceeded;
-        if (array.element_type != .string and array.element_type != .int32)
-            return error.InvalidMetadataType;
+        const minimum: u64 = switch (array.element_type) {
+            .uint8 => 1,
+            .int32 => 4,
+            .string, .uint64, .int64 => 8,
+            else => return error.InvalidMetadataType,
+        };
         if (array.file_offset > directory.len) return error.EndOfStream;
         const bytes = directory[@intCast(array.file_offset)..]; // checked: at most `directory.len`, the line above
-        const minimum: u64 = if (array.element_type == .string) 8 else 4;
         if (array.count > bytes.len / minimum) return error.EndOfStream;
         return .{ .bytes = bytes, .remaining = array.count, .kind = array.element_type, .string_bytes = limits.string_bytes };
+    }
+
+    /// Borrows the complete byte payload of a lazy `uint8` array from a
+    /// directory image starting at file offset zero, with bounds checking.
+    pub fn byteSlice(array: Array, directory: []const u8, limits: Limits) Error![]const u8 {
+        if (directory.len > limits.directory_bytes or array.count > limits.array_items)
+            return error.LimitExceeded;
+        if (array.element_type != .uint8) return error.InvalidMetadataType;
+        if (array.file_offset > directory.len) return error.EndOfStream;
+        const tail = directory[@intCast(array.file_offset)..]; // checked: at most `directory.len`, the line above
+        if (array.count > tail.len) return error.EndOfStream;
+        return tail[0..@intCast(array.count)]; // checked: at most `tail.len`, the line above
     }
 
     pub fn nextString(self: *ArrayReader) Error!?[]const u8 {
@@ -98,6 +113,26 @@ pub const ArrayReader = struct {
         if (self.bytes.len < 4) return error.EndOfStream;
         const value = std.mem.readInt(i32, self.bytes[0..4], .little);
         self.bytes = self.bytes[4..];
+        self.remaining -= 1;
+        return value;
+    }
+
+    pub fn nextUint64(self: *ArrayReader) Error!?u64 {
+        if (self.kind != .uint64) return error.InvalidMetadataType;
+        if (self.remaining == 0) return null;
+        if (self.bytes.len < 8) return error.EndOfStream;
+        const value = std.mem.readInt(u64, self.bytes[0..8], .little);
+        self.bytes = self.bytes[8..];
+        self.remaining -= 1;
+        return value;
+    }
+
+    pub fn nextInt64(self: *ArrayReader) Error!?i64 {
+        if (self.kind != .int64) return error.InvalidMetadataType;
+        if (self.remaining == 0) return null;
+        if (self.bytes.len < 8) return error.EndOfStream;
+        const value = std.mem.readInt(i64, self.bytes[0..8], .little);
+        self.bytes = self.bytes[8..];
         self.remaining -= 1;
         return value;
     }
@@ -544,6 +579,65 @@ test "lazy array access bounds offsets, counts, strings, and element types" {
     try std.testing.expectEqual(@as(?i32, -1), try signed.nextInt32());
     try std.testing.expectEqual(@as(?i32, null), try signed.nextInt32());
     try std.testing.expectError(error.InvalidMetadataType, signed.nextString());
+    try std.testing.expectError(error.InvalidMetadataType, signed.nextUint64());
+    try std.testing.expectError(error.InvalidMetadataType, signed.nextInt64());
+
+    var u64_buf: [16]u8 = undefined;
+    std.mem.writeInt(u64, u64_buf[0..8], 0, .little);
+    std.mem.writeInt(u64, u64_buf[8..16], 11_433_692, .little);
+    var u64s = try ArrayReader.init(.{ .element_type = .uint64, .count = 2, .file_offset = 0 }, &u64_buf, .{});
+    try std.testing.expectEqual(@as(?u64, 0), try u64s.nextUint64());
+    try std.testing.expectEqual(@as(?u64, 11_433_692), try u64s.nextUint64());
+    try std.testing.expectEqual(@as(?u64, null), try u64s.nextUint64());
+    try std.testing.expectError(error.EndOfStream, ArrayReader.init(.{ .element_type = .uint64, .count = 2, .file_offset = 0 }, u64_buf[0..15], .{}));
+
+    var i64_buf: [16]u8 = undefined;
+    std.mem.writeInt(i64, i64_buf[0..8], -42, .little);
+    std.mem.writeInt(i64, i64_buf[8..16], 1024, .little);
+    var i64s = try ArrayReader.init(.{ .element_type = .int64, .count = 2, .file_offset = 0 }, &i64_buf, .{});
+    try std.testing.expectEqual(@as(?i64, -42), try i64s.nextInt64());
+    try std.testing.expectEqual(@as(?i64, 1024), try i64s.nextInt64());
+    try std.testing.expectEqual(@as(?i64, null), try i64s.nextInt64());
+    try std.testing.expectError(error.EndOfStream, ArrayReader.init(.{ .element_type = .int64, .count = 2, .file_offset = 0 }, i64_buf[0..15], .{}));
+}
+
+test "lazy uint8 byte slice borrows directory payload with bounds checks" {
+    const dir = "HDRpayloadTAIL";
+    const desc: Array = .{ .element_type = .uint8, .count = 7, .file_offset = 3 };
+    try std.testing.expectEqualStrings("payload", try ArrayReader.byteSlice(desc, dir, .{}));
+    try std.testing.expectError(error.InvalidMetadataType, ArrayReader.byteSlice(.{ .element_type = .int32, .count = 1, .file_offset = 0 }, dir, .{}));
+    try std.testing.expectError(error.LimitExceeded, ArrayReader.byteSlice(desc, dir, .{ .array_items = 6 }));
+    try std.testing.expectError(error.LimitExceeded, ArrayReader.byteSlice(desc, dir, .{ .directory_bytes = 10 }));
+    try std.testing.expectError(error.EndOfStream, ArrayReader.byteSlice(.{ .element_type = .uint8, .count = 12, .file_offset = 3 }, dir, .{}));
+    try std.testing.expectError(error.EndOfStream, ArrayReader.byteSlice(.{ .element_type = .uint8, .count = 0, .file_offset = dir.len + 1 }, dir, .{}));
+
+    // Large lazy uint8 array parses as a descriptor without materializing values.
+    const blob_len: usize = retained_array_items + 128;
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    const w = &out.writer;
+    try w.writeAll("GGUF");
+    try w.writeInt(u32, 3, .little);
+    try w.writeInt(u64, 0, .little);
+    try w.writeInt(u64, 1, .little);
+    try fixtureString(w, "audiocpp.embedded_files.data");
+    try w.writeInt(u32, 9, .little);
+    try w.writeInt(u32, 0, .little);
+    try w.writeInt(u64, blob_len, .little);
+    for (0..blob_len) |i| try w.writeByte(@truncate(i));
+    try w.splatByteAll(0, (32 - out.written().len % 32) % 32);
+
+    var reader: std.Io.Reader = .fixed(out.written());
+    var doc = try parse(std.testing.allocator, &reader, out.written().len, .{});
+    defer doc.deinit();
+    const arr = doc.get("audiocpp.embedded_files.data").?.array;
+    try std.testing.expectEqual(Type.uint8, arr.element_type);
+    try std.testing.expectEqual(@as(u64, blob_len), arr.count);
+    try std.testing.expect(arr.values == null);
+    const slice = try ArrayReader.byteSlice(arr, out.written()[0..@intCast(doc.directory_bytes)], .{});
+    try std.testing.expectEqual(blob_len, slice.len);
+    try std.testing.expectEqual(@as(u8, 0), slice[0]);
+    try std.testing.expectEqual(@as(u8, @truncate(blob_len - 1)), slice[blob_len - 1]);
 }
 
 test "truncated directory and tensor payloads fail cleanly" {

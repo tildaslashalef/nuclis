@@ -7,7 +7,7 @@ row into caller-owned `f32` storage: the numerical reference the CPU
 executor computes with and the Metal decoders are held to.
 
 [encoding.zig](../../inference/src/tensor/encoding.zig) sizes, and `quant.row`
-decodes, <!-- gen:encodings-count -->23<!-- /gen --> encodings, PQ2_0 and
+decodes, <!-- gen:encodings-count -->24<!-- /gen --> encodings, PQ2_0 and
 PTQ1_0 from the PrismML fork:
 
 <!-- gen:encodings -->
@@ -32,6 +32,7 @@ PTQ1_0 from the PrismML fork:
 | 21 | `IQ3_S` | 256 | 110 |
 | 22 | `IQ2_S` | 256 | 82 |
 | 23 | `IQ4_XS` | 256 | 136 |
+| 27 | `I64` | 1 | 8 |
 | 29 | `IQ1_M` | 256 | 56 |
 | 30 | `BF16` | 1 | 2 |
 | 142 | `PQ2_0` | 128 | 34 |
