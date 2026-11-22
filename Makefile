@@ -288,7 +288,7 @@ api-check: metal ## nuclis serve's OpenAI-compatible routes against a real model
 agent-eval: build ## The agent's task list against the playground: make agent-eval VARIANT=name ARGS='--system-prompt p.txt --seeds 1,2' (scripts/app/agent-eval.py --help)
 	python3 scripts/app/agent-eval.py --variant $(VARIANT) $(ARGS)
 
-shot: metal ## Drive `nuclis agent` in tmux and capture its screen: make shot ARGS='until=ready,60 capture=idle --stop' (scripts/app/tui-shot.py --help)
+shot: metal ## Drive `nuclis agent` in a Rex terminal and capture its screen: make shot ARGS='until=ready,60 capture=idle --stop' (scripts/app/tui-shot.py --help)
 	python3 scripts/app/tui-shot.py --command "$(BIN) agent --backend $(BACKEND) --model $(MODEL)" $(ARGS)
 
 model-ls: build ## List the model files (GGUF, safetensors) under <root>/models with their provenance sidecars

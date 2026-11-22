@@ -2,63 +2,105 @@
 """Record the README's GIF: `nuclis agent` with Qwen3.8-27B fixing a failing
 test in a scratch clone of the generated playground (scripts/app/playground.py).
 
-The agent runs in a detached tmux session (the terminal the screenshot
-harness uses); `tmux pipe-pane` streams everything it writes through this
-script's `--stamp` mode into an asciicast v2 file, and `agg` renders that
-to docs/media/agent.gif. vhs's browser terminal stalls the TUI's frames,
-so it is not used. Needs tmux, agg (`brew install agg`), and a release
-build in zig-out/. Run from anywhere: `python3 scripts/app/agent-demo.py`.
+The shell runs in a Rex terminal (rexterm.py, the one the screenshot
+harness uses) under this script's `--record` mode: a pty between the
+terminal and the shell that writes everything the shell's side prints into
+an asciicast v2 file, from the first clear of the screen on. `agg` renders
+that to docs/media/agent.gif. vhs's browser terminal stalls the TUI's
+frames, so it is not used. Needs the `rex` CLI, agg (`brew install agg`),
+and a release build in zig-out/. Run from anywhere:
+`python3 scripts/app/agent-demo.py`.
 """
 
 import argparse
 import codecs
+import fcntl
 import json
 import os
 import pathlib
+import pty
 import re
+import select
+import signal
 import subprocess
 import sys
+import termios
 import time
+import tty
 
 import playground
+from rexterm import Terminal
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 NUCLIS = ROOT / "zig-out/bin/nuclis"
 WORK = pathlib.Path("/tmp/playground")
 CAST = ROOT / ".zig-cache/demo/agent.cast"
 GIF = ROOT / "docs/media/agent.gif"
-SOCKET = "nuclis-demo"
 COLUMNS, ROWS = 110, 32
 TASK = "The tests fail. Find the bug, fix it, and run the tests again."
+TERM: Terminal | None = None  # the Rex terminal main() starts
 
 
-def stamp(columns, rows):
-    """stdin bytes to asciicast v2 on stdout, one output event per read."""
-    header = {
-        "version": 2,
-        "width": columns,
-        "height": rows,
-        "timestamp": int(time.time()),
-        "env": {"TERM": "xterm-256color", "SHELL": "/bin/bash"},
-    }
-    print(json.dumps(header), flush=True)
+def term() -> Terminal:
+    assert TERM is not None, "main() starts the terminal first"
+    return TERM
+
+
+CLEAR = b"\x1b[2J"
+
+
+def record(cast, columns, rows, argv):
+    """Runs inside the Rex terminal: `argv` on a pty sized like the
+    terminal, the terminal's keys to it, its output to the terminal and,
+    from its first clear of the screen on, to `cast` as asciicast v2."""
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execvp(argv[0], argv)
+
+    def winch(*_):
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8))
+
+    signal.signal(signal.SIGWINCH, winch)
+    winch()
+    saved = termios.tcgetattr(0)
+    tty.setraw(0)
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
-    start = time.monotonic()
-    while True:
-        chunk = os.read(0, 65536)
-        if not chunk:
-            break
-        text = decoder.decode(chunk)
-        if text:
-            print(json.dumps([round(time.monotonic() - start, 4), "o", text]), flush=True)
-
-
-def tmux(*args, check=True):
-    return subprocess.run(["tmux", "-L", SOCKET, *args], check=check, capture_output=True, text=True).stdout
+    start = None
+    with open(cast, "w") as out:
+        while True:
+            try:
+                ready, _, _ = select.select([0, fd], [], [])
+            except InterruptedError:
+                continue
+            if fd in ready:
+                try:
+                    data = os.read(fd, 65536)
+                except OSError:
+                    data = b""
+                if not data:
+                    break
+                os.write(1, data)
+                if start is None and CLEAR in data:
+                    data = b"\x1b[H" + data[data.index(CLEAR) :]
+                    start = time.monotonic()
+                    header = {"version": 2, "width": columns, "height": rows, "timestamp": int(time.time())}
+                    header["env"] = {"TERM": "xterm-256color", "SHELL": "/bin/bash"}
+                    out.write(json.dumps(header) + "\n")
+                if start is not None:
+                    text = decoder.decode(data)
+                    if text:
+                        out.write(json.dumps([round(time.monotonic() - start, 4), "o", text]) + "\n")
+                        out.flush()
+            if 0 in ready:
+                data = os.read(0, 65536)
+                if data:
+                    os.write(fd, data)
+    os.waitpid(pid, 0)
+    termios.tcsetattr(0, termios.TCSAFLUSH, saved)
 
 
 def screen():
-    return tmux("capture-pane", "-p", "-t", "demo")
+    return term().capture("text")
 
 
 def until(pattern, seconds):
@@ -72,22 +114,23 @@ def until(pattern, seconds):
 
 def type_text(text, delay=0.035):
     for ch in text:
-        tmux("send-keys", "-t", "demo", "-l", ch)
+        term().send_text(ch)
         time.sleep(delay)
 
 
 def enter():
-    tmux("send-keys", "-t", "demo", "Enter")
+    term().send_key("enter")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--stamp", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--record", metavar="CAST", help=argparse.SUPPRESS)
     parser.add_argument("--speed", default="1", help="agg playback speed (default 1, real time)")
     parser.add_argument("--idle", default="1.5", help="agg idle-time limit in seconds (default 1.5)")
+    if "--record" in sys.argv:
+        at = sys.argv.index("--record")
+        return record(sys.argv[at + 1], COLUMNS, ROWS, sys.argv[sys.argv.index("--", at) + 1 :])
     args = parser.parse_args()
-    if args.stamp:
-        return stamp(COLUMNS, ROWS)
 
     # The scratch project: the playground with rect_perimeter broken and
     # committed, so the agent's fix is the only diff.
@@ -99,34 +142,21 @@ def main():
 
     CAST.parent.mkdir(parents=True, exist_ok=True)
     GIF.parent.mkdir(parents=True, exist_ok=True)
-    tmux("kill-server", check=False)
-    env = ["-e", "COLORTERM=truecolor", "-e", "NUCLIS_NO_NOTIFY=1", "-e", "PS1=$ "]
-    tmux(
-        "new-session",
-        "-d",
-        "-s",
-        "demo",
-        "-x",
-        str(COLUMNS),
-        "-y",
-        str(ROWS),
-        "-c",
-        str(WORK),
-        *env,
-        "bash --norc --noprofile",
+    global TERM
+    # PS1 is set on bash itself: the /bin/sh in between drops it.
+    shell = "%s %s --record %s -- env 'PS1=$ ' bash --norc --noprofile" % (
+        sys.executable,
+        pathlib.Path(__file__).resolve(),
+        CAST,
     )
+    env = ["PATH=%s:%s" % (NUCLIS.parent, os.environ.get("PATH", ""))]
+    TERM = Terminal("nuclis-demo", (COLUMNS, ROWS), shell, WORK, env=env)
+    TERM.start()
     time.sleep(1)
-    # Set before the recording starts: tmux's `-e` does not carry PATH into
-    # the pane's shell.
-    tmux("send-keys", "-t", "demo", 'export PATH="%s:$PATH"; clear' % NUCLIS.parent, "Enter")
-    time.sleep(0.5)
-    tmux(
-        "pipe-pane", "-O", "-t", "demo", "%s %s --stamp > %s" % (sys.executable, pathlib.Path(__file__).resolve(), CAST)
-    )
-    time.sleep(0.5)
     try:
         # Clear inside the recording so the cast starts from a blank screen.
-        tmux("send-keys", "-t", "demo", "clear", "Enter")
+        type_text("clear", 0)
+        enter()
         time.sleep(1)
         type_text("make test 2>&1 | tail -3")
         enter()
@@ -141,10 +171,11 @@ def main():
         time.sleep(10)
         until(r"◆ ready", 900)
         time.sleep(4)
-        tmux("send-keys", "-t", "demo", "C-c")
+        TERM.send_key("ctrl+c")
         time.sleep(1.5)
         # A fresh screen for the ending; no pager, so the diff is plain text.
-        tmux("send-keys", "-t", "demo", "clear", "Enter")
+        type_text("clear", 0)
+        enter()
         time.sleep(0.5)
         type_text("git --no-pager diff --color")
         enter()
@@ -153,8 +184,7 @@ def main():
         enter()
         time.sleep(4)
     finally:
-        tmux("pipe-pane", "-t", "demo", check=False)
-        tmux("kill-server", check=False)
+        TERM.stop()
     subprocess.run(
         [
             "agg",

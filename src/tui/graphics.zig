@@ -38,13 +38,16 @@ pub const max_rows: usize = 12;
 pub const cell_aspect: f64 = 2.0;
 const chunk: usize = 4096;
 
-/// Whether the terminal is one that draws kitty graphics (Ghostty, kitty),
-/// by environment; `NUCLIS_NO_PREVIEW=1` turns it off, and tmux is never one.
+/// Whether the terminal is one that draws kitty graphics (Ghostty, kitty,
+/// Rex), by environment; `NUCLIS_NO_PREVIEW=1` turns it off, and tmux is
+/// never one.
 pub fn enabled(environ: *const std.process.Environ.Map) bool {
     if (environ.get("NUCLIS_NO_PREVIEW")) |v| if (!std.mem.eql(u8, v, "0")) return false;
     if (environ.get("TMUX") != null) return false;
     if (environ.get("GHOSTTY_RESOURCES_DIR") != null or environ.get("KITTY_WINDOW_ID") != null) return true;
-    if (environ.get("TERM_PROGRAM")) |p| if (std.ascii.eqlIgnoreCase(p, "ghostty")) return true;
+    if (environ.get("TERM_PROGRAM")) |p| {
+        if (std.ascii.eqlIgnoreCase(p, "ghostty") or std.ascii.eqlIgnoreCase(p, "rex")) return true;
+    }
     const term = environ.get("TERM") orelse "";
     return std.mem.indexOf(u8, term, "ghostty") != null or std.mem.indexOf(u8, term, "kitty") != null;
 }
@@ -189,6 +192,8 @@ test "the preview is decided by the environment" {
     defer environ.deinit();
     try testing.expect(!enabled(&environ));
     try environ.put("TERM_PROGRAM", "ghostty");
+    try testing.expect(enabled(&environ));
+    try environ.put("TERM_PROGRAM", "rex");
     try testing.expect(enabled(&environ));
     try environ.put("NUCLIS_NO_PREVIEW", "1");
     try testing.expect(!enabled(&environ));
