@@ -2409,6 +2409,28 @@
    },
    "note": "nuclis serve's GET /v1/audio/transcriptions/stream on Metal: four corpus clips (make speech-corpus; two LibriSpeech test-clean, one FLEURS German, one French) streamed at three times real time on one WebSocket, each under its locale (a language message before its audio, a finish after it), lookahead 3: every final's text must equal nuclis transcribe --json of the same 16-bit samples exactly (first run 2026-10-27: 4 of 4)",
    "evidence": "docs/guide/api-transcription.md#live-transcription"
+  },
+  {
+   "name": "nemotron-asr-languages",
+   "family": "nemotron-asr",
+   "tier": "verify",
+   "model": "nemotron_asr",
+   "command": [
+    "python3",
+    "scripts/gate/transcription-check.py",
+    "languages",
+    "--nuclis",
+    "{nuclis}",
+    "--model",
+    "{model}",
+    "--backends",
+    "metal,cpu"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "four pinned fixtures joined with silence (speech-2, speech-1, fleurs-de, librispeech) under de-DE,ar,en-US,auto: --stream must equal pieced on both Metal and CPU (exact tokens on CPU), with four alternatives reported; fleurs-de under de-DE,en-US vs en-US,de-DE must flip between 'Die...' and 'The...'",
+   "evidence": "docs/models/nemotron-asr.md#prompt-profile"
   }
  ]
 }

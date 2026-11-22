@@ -310,7 +310,7 @@ pub const Run = struct {
             self.segmenter.language = l;
         };
         const t = self.transcriber;
-        return self.segmenter.update(t.model, t.tokens.items[0..t.settled()], t.rowsDecoded(), self.finished);
+        return self.segmenter.update(t.model, t.tokens.items[0..t.settled()], t.settledRows(), self.finished);
     }
 
     /// The audio pushed so far, in seconds.
@@ -379,6 +379,29 @@ pub fn writeWords(w: *std.json.Stringify, words: []const Word) std.Io.Writer.Err
         try w.write(seconds(word.start_ms));
         try w.objectField("end");
         try w.write(seconds(word.end_ms));
+        try w.endObject();
+    }
+    try w.endArray();
+}
+
+/// `[{language, text, tokens, text_rows, (tag)}, …]`: each listed language's
+/// reading of the utterance, shared by the CLI and both transcription routes.
+pub fn writeAlternatives(w: *std.json.Stringify, alts: []const asr.Alternative) std.Io.Writer.Error!void {
+    try w.beginArray();
+    for (alts) |a| {
+        try w.beginObject();
+        try w.objectField("language");
+        try w.write(a.language);
+        try w.objectField("text");
+        try w.write(a.text);
+        try w.objectField("tokens");
+        try w.write(a.tokens);
+        try w.objectField("text_rows");
+        try w.write(a.text_rows);
+        if (a.tag) |tag| {
+            try w.objectField("tag");
+            try w.write(tag);
+        }
         try w.endObject();
     }
     try w.endArray();

@@ -61,6 +61,8 @@ pub const Request = struct {
     words: bool = false,
     stream: bool = false,
     lookahead: usize = 3,
+    /// Include per-language `alternatives` in JSON responses and `done` events.
+    alternatives: bool = false,
     /// Words to lean toward (`phrases`, a JSON array), in the arena.
     phrases: []const []const u8 = &.{},
 };
@@ -123,6 +125,8 @@ pub fn parse(arena: std.mem.Allocator, body: []const u8, content_type: ?[]const 
             if (std.mem.indexOfScalar(usize, &lookaheads, n) == null)
                 return refusef(arena, problem, "invalid_request", name, "lookahead takes 0, 3, 6, or 13 (rows of 80 ms), not {s}", .{value});
             request.lookahead = n;
+        } else if (std.mem.eql(u8, name, "alternatives")) {
+            request.alternatives = parseBool(value) orelse return refusef(arena, problem, "invalid_request", name, "alternatives takes true or false, not {s}", .{value});
         } else if (std.mem.eql(u8, name, "phrases")) {
             request.phrases = parsePhrases(arena, value) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -531,6 +535,9 @@ const Job = struct {
     fields: request_log.Fields = .{},
     /// The samples transcribed, kept from the run when `finish` frees it.
     fed: u64 = 0,
+    /// Captured from `transcriber` at completion when `request.alternatives` is set.
+    alternatives_arena: ?std.heap.ArenaAllocator = null,
+    alternatives: ?[]const asr.Alternative = null,
 
     /// One piece: decoded, transcribed, segmented, and, for a stream, the
     /// events of the segments it finalized queued.
@@ -548,7 +555,16 @@ const Job = struct {
         const now = std.Io.Clock.awake.now(io);
         if (finalized > 0 and self.first_segment_ns == null) self.first_segment_ns = nanos(self.started, now);
         self.over = run.finished;
-        if (self.over) self.elapsed_ns = nanos(self.started, now);
+        if (self.over) {
+            self.elapsed_ns = nanos(self.started, now);
+            if (self.request.alternatives) if (self.transcriber) |*t| {
+                var a: std.heap.ArenaAllocator = .init(self.files.service.slot.gpa);
+                if (t.alternatives(a.allocator())) |alts| {
+                    self.alternatives_arena = a;
+                    self.alternatives = alts;
+                } else |_| a.deinit();
+            };
+        }
         if (self.pipe == null) return;
         self.queueEvents(now) catch {
             self.cancel.store(true, .release);
@@ -602,6 +618,10 @@ const Job = struct {
             json.endWriteRaw();
             try json.objectField("usage");
             try writeUsage(&json, run.seconds());
+            if (self.alternatives) |alts| {
+                try json.objectField("alternatives");
+                try transcript.writeAlternatives(&json, alts);
+            }
             try json.endObject();
             try w.writeAll("\n\n");
         } else if (nanos(self.last_progress, now) >= progress_ms * std.time.ns_per_ms) {
@@ -681,6 +701,10 @@ const Job = struct {
                 }
                 try json.objectField("usage");
                 try writeUsage(&json, seconds);
+                if (self.alternatives) |alts| {
+                    try json.objectField("alternatives");
+                    try transcript.writeAlternatives(&json, alts);
+                }
                 try json.endObject();
                 try w.writeByte('\n');
             },
@@ -807,6 +831,9 @@ const Job = struct {
     fn free(self: *Job, gpa: std.mem.Allocator) void {
         self.reader.close();
         self.segmenter.deinit();
+        if (self.alternatives_arena) |*a| a.deinit();
+        self.alternatives_arena = null;
+        self.alternatives = null;
         if (self.pipe) |*p| p.deinit(gpa);
     }
 
@@ -909,7 +936,7 @@ test "the form: fields, defaults, granularities, and what is refused" {
     const plain = try parse(arena, try testForm(arena, &.{.{ "model", "nemotron-asr-0.6b" }}, "RIFF"), test_type, &problem);
     try std.testing.expectEqualStrings("RIFF", plain.file);
     try std.testing.expectEqualStrings("nemotron-asr-0.6b", plain.model.?);
-    try std.testing.expect(plain.language == null and plain.format == .json and plain.segments and !plain.words and !plain.stream);
+    try std.testing.expect(plain.language == null and plain.format == .json and plain.segments and !plain.words and !plain.stream and !plain.alternatives);
     try std.testing.expectEqual(@as(usize, 3), plain.lookahead);
     const full = try parse(arena, try testForm(arena, &.{
         .{ "language", "de-DE" },
@@ -917,6 +944,7 @@ test "the form: fields, defaults, granularities, and what is refused" {
         .{ "timestamp_granularities[]", "word" },
         .{ "stream", "true" },
         .{ "lookahead", "13" },
+        .{ "alternatives", "true" },
         .{ "temperature", "0" },
         .{ "prompt", "" },
         .{ "phrases", "[\"Siobhan\", \"Dun Laoghaire\"]" },
@@ -924,7 +952,7 @@ test "the form: fields, defaults, granularities, and what is refused" {
     try std.testing.expectEqual(@as(usize, 2), full.phrases.len);
     try std.testing.expectEqualStrings("Dun Laoghaire", full.phrases[1]);
     try std.testing.expectEqualStrings("de-DE", full.language.?);
-    try std.testing.expect(full.format == .verbose_json and full.words and !full.segments and full.stream);
+    try std.testing.expect(full.format == .verbose_json and full.words and !full.segments and full.stream and full.alternatives);
     try std.testing.expectEqual(@as(usize, 13), full.lookahead);
     try std.testing.expect((try parse(arena, try testForm(arena, &.{.{ "language", "auto" }}, "x"), test_type, &problem)).language == null);
 
@@ -937,6 +965,7 @@ test "the form: fields, defaults, granularities, and what is refused" {
         .{ .fields = &.{.{ "stream", "maybe" }}, .param = "stream" },
         .{ .fields = &.{ .{ "stream", "true" }, .{ "response_format", "srt" } }, .code = "unsupported_feature", .param = "stream" },
         .{ .fields = &.{.{ "lookahead", "4" }}, .param = "lookahead" },
+        .{ .fields = &.{.{ "alternatives", "maybe" }}, .param = "alternatives" },
         .{ .fields = &.{.{ "phrases", "Siobhan" }}, .param = "phrases" },
         .{ .fields = &.{.{ "phrases", "[\"\"]" }}, .param = "phrases" },
         .{ .fields = &.{.{ "phrases", "[1]" }}, .param = "phrases" },

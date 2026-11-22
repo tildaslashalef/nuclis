@@ -945,6 +945,77 @@ greedy decoder's phrase boost cannot lift it without looping ("يا يا
 silence ("Hi") is lost under every prompt
 ([Decisions and open items](#decisions-and-open-items-2026-10-27)).
 
+## Ranked language lists and push-size invariance (2026-11-22)
+
+Under the 2026-10-30 arbiter, `Decoder.score` summed log-probabilities
+including blanks (about 0.004–0.013 nats per blank row vs 0.2–0.3 per
+token), so a language that wrote fewer tokens scored higher and stole
+stretches regardless of list order. In addition, `merge` ran once per
+`push`, so 32-row file pieces skipped settles that 4-row live chunks took,
+making `POST /v1/audio/transcriptions` and `GET /v1/audio/transcriptions/stream`
+disagree on multi-language lists. Phrase boosting also penalized the
+boosted language by adding the plain log-probability of boosted pieces.
+
+**Measured corpus.** Measured on M4 Pro 48 GB (ReleaseSafe, Zig 0.17.1,
+Metal r = 3, plus CPU on the fixture join and order-flip gate) over:
+(1) the four-sentence join built from pinned fixtures
+(`speech-2` + 1.2 s + `speech-1` + 1.7 s + `fleurs-de` + 1.1 s +
+`librispeech`), (2) the pinned `fleurs-de` and `librispeech` fixtures, and
+(3) the 60-clip public speech corpus (`make speech-corpus`: 40 LibriSpeech
+English, 5 each FLEURS German, French, Spanish, Russian). Private
+voice-assistant recordings were not on disk on this machine and were not
+measured here.
+
+**Coverage margin selection.** On the 60-clip corpus under
+`de-DE,ar,en-US,auto` (evaluating per-clip `text_rows` from
+`--alternatives`):
+
+| Margin `(mult, min_diff)` | All WER | `en-US` (40) | `de-DE` (5) | `fr-FR` (5) | `es-US` (5) | `ru-RU` (5) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `(1.25, 2)` | 12.72 % | 4.95 % | 13.54 % | 20.62 % | 23.16 % | 61.05 % |
+| `(1.5, 3)` | 14.20 % | 5.43 % | 13.54 % | 24.74 % | 32.63 % | 62.11 % |
+| `(2.0, 3)` | 18.58 % | 10.39 % | 13.54 % | 27.84 % | 42.11 % | 62.11 % |
+
+`(1.5, 3)` (exact integer check `rows * 2 >= incumbent * 3` and
+`rows >= incumbent + 3`) was chosen: it clears every partial-prefix Arabic
+reading on the English clips (e.g. `ar` 10–20 rows vs `en-US` 18–63 rows,
+where `(2.0, 3)` misses `ar=15 / en=25` and `ar=10 / en=18`) while
+requiring a 50 % and 3-row (240 ms) lead so short equal-coverage
+utterances do not flip on 1–2 row timing jitter.
+
+**60-clip speech corpus, before vs after (Metal, r = 3, pieced):**
+
+| `language` | Before (all / `en-US` / `de-DE`) | After (all / `en-US` / `de-DE`) |
+| --- | --- | --- |
+| `auto` | 6.19 % / 4.11 % / 14.58 % | 6.19 % / 4.11 % / 14.58 % |
+| `ar,en-US,auto` | 11.64 % / 3.99 % / 15.62 % | 12.63 % / 4.11 % / 26.04 % |
+| `de-DE,ar,en-US,auto` | 15.77 % / 9.90 % / 15.62 % | 14.37 % / 5.68 % / 14.58 % |
+| `de-DE,en-US,auto` | 14.78 % / 9.90 % / 15.62 % | 13.38 % / 5.68 % / 14.58 % |
+| `en-US,de-DE,auto` | 14.78 % / 9.90 % / 15.62 % | 11.73 % / 3.86 % / 25.00 % |
+
+Before the change, `de-DE,en-US,auto` and `en-US,de-DE,auto` were
+identical (14.78 %; `en-US` degraded from 4.11 % to 9.90 % because short
+`de-DE` prefixes out-scored full English stretches). After the change,
+putting `en-US` first restores `en-US` to 3.86 % (11.73 % overall), while
+putting `de-DE` first keeps `de-DE` at 14.58 % and cuts `en-US` errors
+nearly in half (9.90 % → 5.68 %).
+
+**Push-size invariance and order-flip repro:**
+
+- **Four-sentence join (`de-DE,ar,en-US,auto`):** before, pieced output
+  dropped both English sentences (`de-DE` solo) while `--stream` kept all
+  four. After rewriting the arbiter as a row-by-row replay (`Arbiter`)
+  and passing `Transcriber.settledRows()` to `Segmenter`, pieced,
+  `--stream`, `POST /v1/audio/transcriptions` (JSON and SSE), and
+  `GET /v1/audio/transcriptions/stream` all produce the exact same text
+  (141 tokens on both Metal and CPU) and the same four `alternatives`
+  entries (`de-DE`, `ar-AR`, `en-US`, `auto` with `tag: "en-US"`).
+- **Order flip (`fleurs-de`):** both `de-DE` and `en-US` cover 20 text
+  rows. Before, both `de-DE,en-US` and `en-US,de-DE` returned `"Die
+  Romantik…"`. After, `de-DE,en-US` returns `"Die Romantik…"` and
+  `en-US,de-DE` returns `"The Romantik…"` identically on the CLI, file
+  route, and live WebSocket route (held by gate `nemotron-asr-languages`).
+
 ## Decisions and open items (2026-10-27)
 
 Decided 2026-10-27 and checked at bring-up:

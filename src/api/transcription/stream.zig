@@ -72,6 +72,8 @@ pub const Query = struct {
     /// A `prompt_dictionary` key; null is the model's default (`auto`).
     language: ?[]const u8 = null,
     lookahead: usize = 3,
+    /// Include per-language `alternatives` on each `final` event.
+    alternatives: bool = false,
 };
 
 /// The query's fields, or the reason it is refused (`param` names the field).
@@ -89,6 +91,13 @@ fn parseQuery(request: http.Request, problem: *Problem) error{Refused}!Query {
         const n = std.fmt.parseInt(usize, r, 10) catch std.math.maxInt(usize);
         if (std.mem.indexOfScalar(usize, &lookaheads, n) == null) return problem.refuse("lookahead", "\"lookahead\" takes 0, 3, 6, or 13 (rows of 80 ms)");
         q.lookahead = n;
+    }
+    if (request.param("alternatives")) |a| {
+        if (std.ascii.eqlIgnoreCase(a, "true") or std.mem.eql(u8, a, "1")) {
+            q.alternatives = true;
+        } else if (std.ascii.eqlIgnoreCase(a, "false") or std.mem.eql(u8, a, "0")) {
+            q.alternatives = false;
+        } else return problem.refuse("alternatives", "\"alternatives\" takes true or false");
     }
     return q;
 }
@@ -154,6 +163,7 @@ fn handle(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, request: ht
         .bytes = located.bytes,
         .lookahead = query.lookahead,
         .language = query.language,
+        .alternatives = query.alternatives,
         .note_buffer = arena.alloc(u8, 256) catch return .fromError(arena, .init(.internal_server_error, "internal", "out of memory")),
         .fields = request.fields,
     };
@@ -307,7 +317,7 @@ pub fn writePartial(out: *std.Io.Writer, text: []const u8, audio_seconds: f64) !
     try s.endObject();
 }
 
-pub fn writeFinal(out: *std.Io.Writer, text: []const u8, language: ?[]const u8, words: []const Word, audio_seconds: f64) !void {
+pub fn writeFinal(out: *std.Io.Writer, text: []const u8, language: ?[]const u8, words: []const Word, audio_seconds: f64, alts: ?[]const asr.Alternative) !void {
     var s: std.json.Stringify = .{ .writer = out };
     try s.beginObject();
     try s.objectField("type");
@@ -331,6 +341,10 @@ pub fn writeFinal(out: *std.Io.Writer, text: []const u8, language: ?[]const u8, 
     try s.endArray();
     try s.objectField("audio_seconds");
     try writeSeconds(&s, audio_seconds);
+    if (alts) |a| {
+        try s.objectField("alternatives");
+        try transcript.writeAlternatives(&s, a);
+    }
     try s.endObject();
 }
 
@@ -368,6 +382,7 @@ const Session = struct {
     bytes: u64,
     lookahead: usize,
     language: ?[]const u8,
+    alternatives: bool = false,
     note_buffer: []u8,
     note: []const u8 = "",
 
@@ -826,17 +841,21 @@ const Session = struct {
         var text: []const u8 = "";
         var language: ?[]const u8 = null;
         var words: []const Word = &.{};
+        var alts: ?[]const asr.Alternative = null;
         if (at > start) {
             if (self.scratch.items.len > 0) _ = t.push(self.scratch.items) catch |err| return self.pushFailed(io, err);
             _ = t.finish() catch |err| return self.pushFailed(io, err);
+            var segmenter: transcript.Segmenter = .init(arena, null);
+            _ = segmenter.update(t.model, t.tokens.items, t.rowsDecoded(), true) catch {};
             var written: std.Io.Writer.Allocating = .init(arena);
-            t.writeText(&written.writer) catch {};
-            text = std.mem.trim(u8, written.written(), " ");
+            segmenter.writeText(&written.writer) catch {};
+            text = written.written();
             language = t.language();
-            words = wordsOf(arena, t) catch &.{};
+            words = segmenter.words.items;
         }
+        if (self.alternatives) alts = t.alternatives(arena) catch &.{};
         var w: std.Io.Writer.Allocating = .init(self.gpa);
-        writeFinal(&w.writer, text, language, words, @as(f64, @floatFromInt(at - start)) / sample_rate) catch {};
+        writeFinal(&w.writer, text, language, words, @as(f64, @floatFromInt(at - start)) / sample_rate, alts) catch {};
         self.queueEvent(io, &w);
         if (at > start) t.reset() catch |err| return self.fail(io, err);
         self.shown.clearRetainingCapacity();
@@ -972,13 +991,6 @@ fn languageProblem(err: anyerror) []const u8 {
     };
 }
 
-/// The utterance's words, grouped as a file's are; in `arena`.
-fn wordsOf(arena: std.mem.Allocator, t: *const asr.Transcriber) ![]const Word {
-    var segmenter: transcript.Segmenter = .init(arena, null);
-    _ = try segmenter.update(t.model, t.tokens.items, t.rowsDecoded(), true);
-    return segmenter.words.items;
-}
-
 fn sendClose(out: *std.Io.Writer, code: ?u16, reason: []const u8) void {
     websocket.writeClose(out, code, reason) catch return;
     out.flush() catch {};
@@ -1007,16 +1019,17 @@ test "chunk boundaries: the processor's sample counts at every lookahead" {
 
 test "the query: lookahead, language, model, each refused by name" {
     var problem: Problem = .{};
-    const q = try parseQuery(.{ .method = .GET, .path = path, .query = "model=nemotron-asr-0.6b&language=de-DE&lookahead=13", .body = "" }, &problem);
+    const q = try parseQuery(.{ .method = .GET, .path = path, .query = "model=nemotron-asr-0.6b&language=de-DE&lookahead=13&alternatives=true", .body = "" }, &problem);
     try std.testing.expectEqualStrings("nemotron-asr-0.6b", q.model.?);
     try std.testing.expectEqualStrings("de-DE", q.language.?);
     try std.testing.expectEqual(@as(usize, 13), q.lookahead);
+    try std.testing.expect(q.alternatives);
     const listed = try parseQuery(.{ .method = .GET, .path = path, .query = "language=ar,en-US,auto", .body = "" }, &problem);
     try std.testing.expectEqualStrings("ar,en-US,auto", listed.language.?);
     const defaults = try parseQuery(.{ .method = .GET, .path = path, .query = "language=auto", .body = "" }, &problem);
-    try std.testing.expect(defaults.language == null and defaults.model == null);
+    try std.testing.expect(defaults.language == null and defaults.model == null and !defaults.alternatives);
     try std.testing.expectEqual(@as(usize, 3), defaults.lookahead);
-    for ([_][2][]const u8{ .{ "lookahead=1", "lookahead" }, .{ "lookahead=x", "lookahead" }, .{ "language=", "language" }, .{ "language=de%2DDE", "language" }, .{ "language=ar,,en", "language" }, .{ "language=ar,", "language" }, .{ "model=../x", "model" } }) |case| {
+    for ([_][2][]const u8{ .{ "lookahead=1", "lookahead" }, .{ "lookahead=x", "lookahead" }, .{ "language=", "language" }, .{ "language=de%2DDE", "language" }, .{ "language=ar,,en", "language" }, .{ "language=ar,", "language" }, .{ "model=../x", "model" }, .{ "alternatives=yes", "alternatives" } }) |case| {
         try std.testing.expectError(error.Refused, parseQuery(.{ .method = .GET, .path = path, .query = case[0], .body = "" }, &problem));
         try std.testing.expectEqualStrings(case[1], problem.param.?);
     }
@@ -1062,10 +1075,16 @@ test "events as the client reads them" {
     try writePartial(&w, "hello \"you\"", 1.28);
     try std.testing.expectEqualStrings("{\"type\":\"partial\",\"text\":\"hello \\\"you\\\"\",\"audio_seconds\":1.280}", w.buffered());
     w.end = 0;
-    try writeFinal(&w, "Hi.", "en-US", &.{.{ .word = "Hi.", .start_ms = 240, .end_ms = 400 }}, 0.75);
+    try writeFinal(&w, "Hi.", "en-US", &.{.{ .word = "Hi.", .start_ms = 240, .end_ms = 400 }}, 0.75, null);
     try std.testing.expectEqualStrings("{\"type\":\"final\",\"text\":\"Hi.\",\"language\":\"en-US\",\"words\":[{\"word\":\"Hi.\",\"start\":0.240,\"end\":0.400}],\"audio_seconds\":0.750}", w.buffered());
     w.end = 0;
-    try writeFinal(&w, "", null, &.{}, 0);
+    try writeFinal(&w, "Hi.", "en-US", &.{}, 0.75, &.{
+        .{ .language = "en-US", .text = "Hi.", .tokens = 2, .text_rows = 2 },
+        .{ .language = "auto", .text = "Hi.", .tokens = 2, .text_rows = 2, .tag = "en-US" },
+    });
+    try std.testing.expectEqualStrings("{\"type\":\"final\",\"text\":\"Hi.\",\"language\":\"en-US\",\"words\":[],\"audio_seconds\":0.750,\"alternatives\":[{\"language\":\"en-US\",\"text\":\"Hi.\",\"tokens\":2,\"text_rows\":2},{\"language\":\"auto\",\"text\":\"Hi.\",\"tokens\":2,\"text_rows\":2,\"tag\":\"en-US\"}]}", w.buffered());
+    w.end = 0;
+    try writeFinal(&w, "", null, &.{}, 0, null);
     try std.testing.expectEqualStrings("{\"type\":\"final\",\"text\":\"\",\"language\":null,\"words\":[],\"audio_seconds\":0.000}", w.buffered());
     w.end = 0;
     try writeError(&w, "audio_backlog", "x");
