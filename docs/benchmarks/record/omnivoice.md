@@ -126,3 +126,36 @@ was run once on all 527 `audio_tokenizer_weights/*` tensors dequantized from
 | `dec block_0`–`block_4` (worst) | `[32, C]` edges | 1.288e-6 | 2.289e-4 |
 | `dec samples` | `[48000]` | 1.689e-6 | 3.487e-6 |
 
+## The backbone on the CPU (2026-11-22)
+
+`Qwen3Model` (`transformers` 5.19.0, eager full bidirectional attention, CPU F32)
+plus `audio_embeddings` and `audio_heads` dequantized from `voicetut-tts-q8_0.gguf`
+was run once at step 0 on a 53-row conditional Egyptian Arabic clone sequence
+(25 prompt tokens + 16 reference frames from `omnivoice/codec/codes.u16` + 12
+masked target frames) and the 12-row unconditional target canvas. The fixtures
+live under `tests/fixtures/omnivoice/backbone/`.
+
+`omnivoice-check MODEL.gguf trace --max-relative-rms 1e-4 --max-abs 2e-3` (gate
+`omnivoice-trace-cpu`, tier `verify-cpu`, ReleaseFast on Apple M4 Pro):
+
+| Stage | Conditional rel RMS / max \|Δ\| | Unconditional rel RMS / max \|Δ\| |
+| --- | ---: | ---: |
+| `embed` | 0.000e0 / 0.000e0 | 0.000e0 / 0.000e0 |
+| `layer0` | 6.991e-7 / 2.861e-5 | 4.940e-7 / 1.526e-5 |
+| `layer13` | 7.967e-7 / 2.747e-4 | 3.985e-7 / 4.578e-5 |
+| `layer27` | 2.169e-6 / 6.738e-2 | 1.182e-6 / 3.906e-3 |
+| `norm` | 8.915e-7 / 5.493e-4 | 8.877e-7 / 1.984e-4 |
+| `logits` (`[12, 8200]`, 96/96 argmax equal) | 5.954e-7 / 3.052e-4 | 6.025e-7 / 3.204e-4 |
+
+The unnormalized layer-27 residual stream reaches magnitude ~3×10⁴ before
+`llm.norm`, so `max |Δ|` is checked on `embed`, `norm`, and `logits`, while
+`rel RMS` (`≤ 1e-4`) covers every stage.
+
+**CPU synthesis smoke test (2026-11-22)**: `omnivoice-check MODEL.gguf speak
+--backend cpu --text "إزيك يا باشا؟ عامل إيه النهارده؟" --duration 2.0 --seed 0`
+(ReleaseFast, Apple M4 Pro, 32 diffusion steps, `guidance_scale = 2.0`) produced
+50 frames / 48,000 samples (2.00 s, RMS 0.1106, finite) in 240.9 s (RTF 120.46×;
+open 189 ms). Transcribed by `nuclis transcribe --language ar` (`nemotron-3.5-asr-streaming-0.6b`):
+`"إزيك بش عامل إيه النهار ده"`.
+
+

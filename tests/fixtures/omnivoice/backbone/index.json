@@ -1,0 +1,138 @@
+{
+ "prompt_ids": [
+  151669,
+  151670,
+  277,
+  89,
+  151671,
+  151672,
+  4064,
+  151673,
+  151674,
+  69682,
+  16157,
+  80970,
+  124376,
+  27846,
+  126300,
+  13,
+  85153,
+  125089,
+  31073,
+  124080,
+  16157,
+  35038,
+  91335,
+  128332,
+  151675
+ ],
+ "ref_frames": 16,
+ "target_frames": 12,
+ "cond_len": 53,
+ "uncond_len": 12,
+ "pinned_layers": [
+  0,
+  13,
+  27
+ ],
+ "torch": "2.14.1",
+ "transformers": "5.19.0",
+ "files": {
+  "cond_embed.f32": {
+   "shape": [
+    53,
+    1024
+   ],
+   "dtype": "float32",
+   "sha256": "7264b2bd9ef9d871cd1bca7e073f29fd17abba63e28d99c1c12a37420b399738"
+  },
+  "cond_layer0.f32": {
+   "shape": [
+    53,
+    1024
+   ],
+   "dtype": "float32",
+   "sha256": "8e46999a80943aec263d213dcb1554f6eb7a124433c669b3ea5fefa9bb5e71e8"
+  },
+  "cond_layer13.f32": {
+   "shape": [
+    53,
+    1024
+   ],
+   "dtype": "float32",
+   "sha256": "69ebb4d5b25242be12785764b9f048c0a1dccb13b63b934630f292b12d64bede"
+  },
+  "cond_layer27.f32": {
+   "shape": [
+    53,
+    1024
+   ],
+   "dtype": "float32",
+   "sha256": "67f7c98b3bed7c0fa824f6b91bcc8e5974e029606bd8a59f65a09d68538fdbb9"
+  },
+  "cond_norm.f32": {
+   "shape": [
+    53,
+    1024
+   ],
+   "dtype": "float32",
+   "sha256": "e11e301a031b92b3ffe822d17ccebe6c85c63c80842d09d4c66ffd4f04e8eb97"
+  },
+  "cond_logits.f32": {
+   "shape": [
+    12,
+    8200
+   ],
+   "dtype": "float32",
+   "sha256": "ba9df7504928da540adab7f807673b5476294e8f22dc0eecc9b0bfff0a3d3196"
+  },
+  "uncond_embed.f32": {
+   "shape": [
+    12,
+    1024
+   ],
+   "dtype": "float32",
+   "sha256": "18acf58b3c7769fa6675c3054fdbd317c45efe4229b6b919e39be45fb711cc95"
+  },
+  "uncond_layer0.f32": {
+   "shape": [
+    12,
+    1024
+   ],
+   "dtype": "float32",
+   "sha256": "05dabc934534ad2fe0f0b056ecda8e6e1347b56c80861120745a98d7d133736f"
+  },
+  "uncond_layer13.f32": {
+   "shape": [
+    12,
+    1024
+   ],
+   "dtype": "float32",
+   "sha256": "1ef22e86a713228f68fc0593bd472341cd02a5eac7c2aae4257ed012d1f8ac5b"
+  },
+  "uncond_layer27.f32": {
+   "shape": [
+    12,
+    1024
+   ],
+   "dtype": "float32",
+   "sha256": "5f5e9b628a1a75b1e524902c1751480760bf250c3d461ed772fd241f1d6b586f"
+  },
+  "uncond_norm.f32": {
+   "shape": [
+    12,
+    1024
+   ],
+   "dtype": "float32",
+   "sha256": "4ed9f492ae1926fccb13c9e25a989380b9f7fab77e99aec7cea994c97dfa7cbc"
+  },
+  "uncond_logits.f32": {
+   "shape": [
+    12,
+    8200
+   ],
+   "dtype": "float32",
+   "sha256": "d1112ebb732348c07b6eb5690c177bc1237cafcfa9cc3496ccd34f6de89c2166"
+  }
+ }
+}

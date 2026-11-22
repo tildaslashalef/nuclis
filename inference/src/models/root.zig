@@ -57,6 +57,8 @@ pub const drama3_speech = @import("drama3_speech.zig");
 /// single-GGUF container. Not a registry family: it decodes audio codebooks.
 pub const omnivoice = @import("omnivoice.zig");
 pub const omnivoice_text = @import("omnivoice_text.zig");
+pub const omnivoice_runtime = @import("omnivoice_runtime.zig");
+pub const omnivoice_speech = @import("omnivoice_speech.zig");
 
 /// The registered families, in lookup order. Each registers itself through
 /// its `family` declaration.
@@ -170,6 +172,8 @@ test {
     _ = drama3_speech;
     _ = omnivoice;
     _ = omnivoice_text;
+    _ = omnivoice_runtime;
+    _ = omnivoice_speech;
     _ = dflash;
     _ = dflash2;
     _ = dflash2_runtime;
