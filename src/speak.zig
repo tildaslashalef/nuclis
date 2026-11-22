@@ -32,6 +32,7 @@ pub const Options = struct {
     instruct: ?[]const u8 = null,
     model: ?[]const u8 = null,
     seed: ?u64 = null,
+    speed: ?f32 = null,
     backend: ?Backend = null,
     output: ?[]const u8 = null,
     /// Write each chunk as it is decoded and report the time to the first audio.
@@ -81,7 +82,7 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
             slot.* = true;
             continue;
         }
-        const known = [_][]const u8{ "--voice", "--language", "--instruct", "--model", "--seed", "--backend", "--output", "-o", "--chunk", "--first-chunk" };
+        const known = [_][]const u8{ "--voice", "--language", "--instruct", "--model", "--seed", "--speed", "--backend", "--output", "-o", "--chunk", "--first-chunk" };
         const takes_value = for (known) |k| {
             if (std.mem.eql(u8, word, k)) break true;
         } else false;
@@ -121,6 +122,18 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
                 diag.set("--seed takes a whole number, not {s}", .{value});
                 return error.InvalidOptionValue;
             };
+            continue;
+        } else if (std.mem.eql(u8, word, "--speed")) {
+            if (o.speed != null) return error.DuplicateOption;
+            const s = std.fmt.parseFloat(f32, value) catch {
+                diag.set("--speed takes a positive number (e.g. 1.0), not {s}", .{value});
+                return error.InvalidOptionValue;
+            };
+            if (!std.math.isFinite(s) or s <= 0.0) {
+                diag.set("--speed must be a positive number, not {s}", .{value});
+                return error.InvalidOptionValue;
+            }
+            o.speed = s;
             continue;
         } else {
             if (o.backend != null) return error.DuplicateOption;
@@ -190,7 +203,15 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, loaded: *con
         return error.TextTooLong;
     }
     const dir = (try audio_catalog.locate(arena, io, root, loaded.config.models, options.model orelse loaded.config.speech.model, .speech, true, diag)).directory;
-    if (audio_catalog.isFile(dir)) return runDrama3(alloc, arena, io, root, &options, backend, text, dir, out, ui, step, diag);
+    switch (speech_union.engineOf(arena, io, dir)) {
+        .drama3 => return runDrama3(alloc, arena, io, root, &options, backend, text, dir, out, ui, step, diag),
+        .omnivoice => return runOmniVoice(alloc, arena, io, root, &options, backend, text, dir, out, ui, step, diag),
+        .qwen3_tts => {},
+    }
+    if (options.speed) |s| if (s != 1.0) {
+        diag.set("{s} has no rate control; --speed is supported only by OmniVoice", .{std.fs.path.basename(dir)});
+        return error.InvalidOptionValue;
+    };
     const seed = options.seed orelse 0;
     const language = options.language orelse "auto";
     const speaker = options.voice orelse loaded.config.speech.voice;
@@ -358,6 +379,10 @@ fn runDrama3(alloc: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, roo
         diag.set("--profile, --split, --host-sampling, and --first-chunk are Qwen3-TTS's; {s} has none", .{name});
         return error.InvalidOptionValue;
     }
+    if (options.speed) |s| if (s != 1.0) {
+        diag.set("{s} has no rate control; --speed is supported only by OmniVoice", .{name});
+        return error.InvalidOptionValue;
+    };
     const seed = options.seed orelse 0;
     const load_start = std.Io.Clock.awake.now(io);
     const voice = drama.Voice.openWith(alloc, io, path, .{ .backend = switch (backend) {
@@ -445,6 +470,131 @@ fn runDrama3(alloc: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, roo
     try kit.blocks.detail(out, ui, &.{.{ .title = "Timing", .fields = fields.items }});
 }
 
+/// `run` for OmniVoice / VoiceTut-TTS: auto-voice (default), voice design via
+/// `--instruct` attribute tags, or zero-shot cloning via `--voice <saved>`.
+fn runOmniVoice(alloc: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, options: *const Options, backend: Backend, text: []const u8, path: []const u8, out: *std.Io.Writer, ui: kit.Ui, step: *kit.Step, diag: *config.Diagnostic) !void {
+    const omni = inference.models.omnivoice_speech;
+    const omni_text = inference.models.omnivoice_text;
+    const name = std.fs.path.basename(path);
+    if (options.profile or options.split or options.host_sampling or options.first_chunk != null or options.chunk != null) {
+        diag.set("--profile, --split, --host-sampling, --chunk, and --first-chunk are not supported by {s}", .{name});
+        return error.InvalidOptionValue;
+    }
+    if (options.voice != null and options.instruct != null) {
+        diag.set("{s} cannot combine --voice with --instruct; omit --voice for voice design or omit --instruct for voice cloning", .{name});
+        return error.ConflictingVoiceMode;
+    }
+    const language = if (options.language) |l| (if (std.mem.eql(u8, l, "auto")) omni_text.default_language else l) else omni_text.default_language;
+    omni_text.validateLanguage(language) catch |err| {
+        diag.set("invalid --language \"{s}\": {s}", .{ language, @errorName(err) });
+        return err;
+    };
+    if (options.instruct) |inst| {
+        omni_text.validateInstruct(inst) catch |err| {
+            switch (err) {
+                error.DuplicateInstructCategory => diag.set("conflicting --instruct tags in \"{s}\": {s}", .{ inst, speech_union.omnivoice_instruct_help }),
+                else => diag.set("unknown --instruct tag in \"{s}\": {s}", .{ inst, speech_union.omnivoice_instruct_help }),
+            }
+            return err;
+        };
+    }
+    const seed = options.seed orelse 0;
+    const speed = options.speed orelse 1.0;
+
+    const load_start = std.Io.Clock.awake.now(io);
+    const voice = omni.Voice.openWith(alloc, io, path, .{ .backend = switch (backend) {
+        .cpu => .cpu,
+        .metal => .metal,
+    } }) catch |err| {
+        diag.set("{s}", .{path});
+        return err;
+    };
+    defer voice.close();
+    const v = kit.values;
+    try kit.blocks.header(out, ui, name, @tagName(backend));
+    try kit.blocks.detail(out, ui, &.{.{ .fields = &.{
+        if (options.voice) |speaker|
+            .{ .key = "Voice", .value = try kit.text.clean(arena, speaker), .role = .id }
+        else if (options.instruct) |inst|
+            .{ .key = "Voice", .value = try std.fmt.allocPrint(arena, "designed as \"{s}\"", .{try kit.text.clean(arena, inst)}) }
+        else
+            .{ .key = "Voice", .value = "auto" },
+        .{ .key = "Language", .value = try kit.text.clean(arena, language) },
+        .{ .key = "Seed", .value = try std.fmt.allocPrint(arena, "{d}", .{seed}) },
+        .{ .key = "Load", .value = try std.fmt.allocPrint(arena, "{f}", .{v.duration(@as(f64, @floatFromInt(load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds())) / 1000)}) },
+    } }});
+    try out.writeByte('\n');
+    try out.flush();
+
+    var ready: ?voices.Ready = null;
+    defer if (ready) |*r| r.deinit(alloc);
+    if (options.voice) |speaker| {
+        const store: voices.Store = .{ .io = io, .path = try paths.voicesPath(arena, root orelse return error.MissingHome) };
+        const ready_start = std.Io.Clock.awake.now(io);
+        ready = store.ensure(alloc, speaker, try voices.modelKeys(arena, io, path), voices.omnivoiceEncoders(voice)) catch |err| {
+            if (err == error.TranscriptRequired)
+                diag.set("{s} has no transcript; {s} clones only from a clip and its words (`nuclis voice add {s} <clip> --text \"…\"`)", .{ speaker, name, speaker })
+            else
+                voices.explain(err, speaker, "", diag);
+            return err;
+        };
+        try kit.blocks.result(out, ui, .ok, try std.fmt.allocPrint(arena, "voice {s} ready", .{try kit.text.clean(arena, speaker)}), try std.fmt.allocPrint(arena, "its clip and transcript · {f}", .{v.duration(@as(f64, @floatFromInt(ready_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds())) / 1000)}));
+        try out.flush();
+    }
+
+    const start = std.Io.Clock.awake.now(io);
+    var synth = voice.synthesize(alloc, .{
+        .text = text,
+        .language = language,
+        .instruct = options.instruct,
+        .ref_text = if (ready) |*r| r.reference_text else null,
+        .ref_codes = if (ready) |*r| r.rows(omni.Frame) else null,
+        .speed = speed,
+        .sampling = .{ .seed = seed },
+    }) catch |err| {
+        switch (err) {
+            error.ReservedText => diag.set("{s} cannot speak the text: it holds a reserved OmniVoice control token", .{name}),
+            error.EmptyText => diag.set("the text is empty", .{}),
+            else => {},
+        }
+        return err;
+    };
+    defer synth.deinit();
+
+    const file = std.Io.Dir.cwd().createFile(io, options.output.?, .{}) catch |err| {
+        diag.set("{s}", .{options.output.?});
+        return err;
+    };
+    defer file.close(io);
+    var file_buffer: [64 * 1024]u8 = undefined;
+    var writer = file.writerStreaming(io, &file_buffer);
+    try writer.interface.writeAll(&try wavHeader(0, omni.sample_rate));
+    const buffer = try arena.alloc(f32, 24 * omni.samples_per_frame);
+    var first_ms: ?f64 = null;
+    var samples: usize = 0;
+    while (true) {
+        const n = try synth.read(buffer);
+        if (n == 0) break;
+        if (first_ms == null) first_ms = @as(f64, @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toMicroseconds())) / 1000;
+        samples += n;
+        if (step.live()) step.update("speaking  {d:.1} s of audio", .{@as(f64, @floatFromInt(samples)) / omni.sample_rate});
+        for (buffer[0..n]) |x| try writer.interface.writeInt(i16, pcm16(x), .little);
+        if (options.stream) try writer.interface.flush();
+    }
+    const seconds = @as(f64, @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toMicroseconds())) / 1e6;
+    try writer.interface.flush();
+    try file.writePositionalAll(io, &try wavHeader(samples, omni.sample_rate), 0);
+    const audio_seconds = @as(f64, @floatFromInt(samples)) / omni.sample_rate;
+    step.clear();
+    try kit.blocks.result(out, ui, .ok, try std.fmt.allocPrint(arena, "wrote {s}", .{try kit.text.clean(arena, options.output.?)}), try std.fmt.allocPrint(arena, "{d:.2} s of audio in {f} · {d:.2}x real time", .{ audio_seconds, v.duration(seconds), if (seconds > 0) audio_seconds / seconds else 0 }));
+    var fields: std.ArrayList(kit.blocks.Field) = .empty;
+    try fields.append(arena, .{ .key = "Frames", .value = try std.fmt.allocPrint(arena, "{d} in {f}", .{ synth.frames(), v.count(synth.chunks.len, "chunk") }) });
+    try fields.append(arena, .{ .key = "Generation", .value = try std.fmt.allocPrint(arena, "diffusion {d:.0} ms · codec {d:.0} ms", .{ @as(f64, @floatFromInt(synth.diffusion_us)) / 1000.0, @as(f64, @floatFromInt(synth.codec_us)) / 1000.0 }) });
+    if (first_ms) |ms| try fields.append(arena, .{ .key = "First audio", .value = try std.fmt.allocPrint(arena, "{d:.0} ms after the text", .{ms}), .role = .emphasis });
+    try out.writeByte('\n');
+    try kit.blocks.detail(out, ui, &.{.{ .title = "Timing", .fields = fields.items }});
+}
+
 /// The profile's kernels by device time, each with its share and, for a
 /// matrix, the weight bytes it read per second.
 fn printProfile(arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui, p: *const inference.metal.Profile, frames: usize) !void {
@@ -508,7 +658,13 @@ test "speak's arguments: the text joined, the output required, the chunk bounded
     try std.testing.expectEqual(@as(?u64, 4), o.seed);
     try std.testing.expectError(error.MissingOutput, parseArgs(arena, &.{"Hello"}, &diag));
     try std.testing.expectError(error.MissingInput, parseArgs(arena, &.{ "-o", "x.wav" }, &diag));
-    try std.testing.expectError(error.UnknownOption, parseArgs(arena, &.{ "Hi", "--speed", "2" }, &diag));
+    try std.testing.expectError(error.UnknownOption, parseArgs(arena, &.{ "Hi", "--bogus", "2" }, &diag));
+    const fast = try parseArgs(arena, &.{ "Hi", "-o", "a.wav", "--speed", "1.25" }, &diag);
+    try std.testing.expectEqual(@as(?f32, 1.25), fast.speed);
+    try std.testing.expectError(error.InvalidOptionValue, parseArgs(arena, &.{ "Hi", "-o", "a.wav", "--speed", "0" }, &diag));
+    try std.testing.expectError(error.InvalidOptionValue, parseArgs(arena, &.{ "Hi", "-o", "a.wav", "--speed", "-1" }, &diag));
+    try std.testing.expectError(error.InvalidOptionValue, parseArgs(arena, &.{ "Hi", "-o", "a.wav", "--speed", "fast" }, &diag));
+    try std.testing.expectError(error.DuplicateOption, parseArgs(arena, &.{ "Hi", "-o", "a.wav", "--speed", "1", "--speed", "2" }, &diag));
     try std.testing.expectError(error.DuplicateOption, parseArgs(arena, &.{ "Hi", "-o", "a.wav", "--output", "b.wav" }, &diag));
     inline for (.{ "--stream", "--profile", "--split", "--host-sampling" }) |flag| {
         try std.testing.expectError(error.DuplicateOption, parseArgs(arena, &.{ "Hi", "-o", "a.wav", flag, flag }, &diag));

@@ -30,6 +30,8 @@ pub const Request = struct {
     format: Format = .wav,
     stream: StreamFormat = .audio,
     seed: ?u64 = null,
+    /// Speaking rate multiplier (> 0; supported by OmniVoice).
+    speed: ?f32 = null,
     /// A language of the model, or `auto`; null is `auto`.
     language: ?[]const u8 = null,
     /// Drama 3: an earlier response's `x-speech-context`, whose last
@@ -95,13 +97,20 @@ pub fn parse(arena: Allocator, body: []const u8, problem: *Problem) Error!Reques
             return refuse(arena, problem, "invalid_request", "stream_format", "\"stream_format\" is \"audio\" or \"sse\", not \"{s}\"", .{f});
     }
     if (o.get("speed")) |v| {
-        const speed: f64 = switch (v) {
-            .null => 1,
-            .integer => |n| @floatFromInt(n),
-            .float => |f| f,
+        switch (v) {
+            .null => {},
+            .integer => |n| {
+                const s: f32 = @floatFromInt(n);
+                if (!std.math.isFinite(s) or s <= 0.0) return refuse(arena, problem, "invalid_request", "speed", "\"speed\" must be a positive number", .{});
+                request.speed = s;
+            },
+            .float => |f| {
+                const s: f32 = @floatCast(f);
+                if (!std.math.isFinite(s) or s <= 0.0) return refuse(arena, problem, "invalid_request", "speed", "\"speed\" must be a positive number", .{});
+                request.speed = s;
+            },
             else => return refuse(arena, problem, "invalid_request", "speed", "\"speed\" must be a number", .{}),
-        };
-        if (speed != 1) return refuse(arena, problem, "unsupported_feature", "speed", "only \"speed\": 1 is spoken; the model has no rate control", .{});
+        }
     }
     if (o.get("seed")) |v| switch (v) {
         .null => {},
@@ -254,12 +263,15 @@ test "the speech request: every refusal names its code and field" {
     try expectRefused("{\"input\": \"x\", \"response_format\": \"opus\"}", "unsupported_feature", "response_format");
     try expectRefused("{\"input\": \"x\", \"response_format\": \"ogg\"}", "invalid_request", "response_format");
     try expectRefused("{\"input\": \"x\", \"stream_format\": \"chunks\"}", "invalid_request", "stream_format");
-    try expectRefused("{\"input\": \"x\", \"speed\": 1.25}", "unsupported_feature", "speed");
+    try expectRefused("{\"input\": \"x\", \"speed\": 0}", "invalid_request", "speed");
+    try expectRefused("{\"input\": \"x\", \"speed\": -1.5}", "invalid_request", "speed");
     try expectRefused("{\"input\": \"x\", \"speed\": \"fast\"}", "invalid_request", "speed");
     try expectRefused("{\"input\": \"x\", \"voice\": {\"name\": \"v1\"}}", "invalid_request", "voice");
     var problem: Problem = .{};
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
+    const fast = try parse(arena_state.allocator(), "{\"input\": \"x\", \"speed\": 1.25}", &problem);
+    try testing.expectEqual(@as(?f32, 1.25), fast.speed);
     const by_id = try parse(arena_state.allocator(), "{\"input\": \"x\", \"voice\": {\"id\": \"anna\"}}", &problem);
     try testing.expectEqualStrings("anna", by_id.voice.?);
     try testing.expect(by_id.voice_by_id);

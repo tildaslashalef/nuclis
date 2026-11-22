@@ -29,6 +29,7 @@ const hf = @import("huggingface");
 const inference = @import("inference");
 const config = @import("config.zig");
 const catalog = @import("catalog.zig");
+const audio_catalog = @import("audio/catalog.zig");
 const interrupt = @import("interrupt.zig");
 const inspection = @import("inspect.zig");
 const kit = @import("ui.zig");
@@ -847,8 +848,19 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
         }
     }
     display.finish(pull_started);
-    if (options.register != null and registration.kind == null) if (main_path) |p| if (hf.format(p) == .safetensors) {
-        registration.kind = try speechCheckpoint(gpa, io, p, diag);
+    if (options.register != null and registration.kind == null) if (main_path) |p| {
+        if (hf.format(p) == .safetensors) {
+            registration.kind = try speechCheckpoint(gpa, io, p, diag);
+        } else if (hf.format(p) == .gguf) {
+            if (inference.gguf.open(arena, io, p, .{}) catch null) |doc_val| {
+                var doc = doc_val;
+                defer doc.deinit();
+                const arch = doc.string("general.architecture") orelse "";
+                if (std.mem.eql(u8, arch, "drama3") or audio_catalog.isOmniVoice(&doc)) {
+                    registration.kind = .speech;
+                }
+            }
+        }
     };
     // 5. The registry entry, only once every file above is verified, so a
     //    failed pull registers nothing.
@@ -1691,14 +1703,15 @@ fn judgeLocal(arena: Allocator, io: std.Io, models: []const u8, path: []const u8
     var doc = inference.gguf.open(arena, io, absolute, .{}) catch return .{ .kind = null, .architecture = null, .runnable = false };
     defer doc.deinit();
     const arch = try arena.dupe(u8, doc.string("general.architecture") orelse "");
-    if (std.mem.eql(u8, arch, inference.embed.architecture)) return .{ .kind = .embedding, .architecture = arch, .runnable = true };
-    if (std.mem.eql(u8, arch, "drama3")) return .{ .kind = .speech, .architecture = arch, .runnable = true };
-    const adapter = inference.models.adapterFor(arch);
     const file_type: ?u64 = if (doc.get("general.file_type")) |v| switch (v) {
         .unsigned => |n| n,
         .signed => |n| if (n >= 0) @intCast(n) else null,
         else => null,
     } else null;
+    if (std.mem.eql(u8, arch, inference.embed.architecture)) return .{ .kind = .embedding, .architecture = arch, .runnable = true };
+    if (std.mem.eql(u8, arch, "drama3")) return .{ .kind = .speech, .architecture = arch, .runnable = true, .quantization = if (file_type) |t| fileTypeName(t) else null };
+    if (audio_catalog.isOmniVoice(&doc)) return .{ .kind = .speech, .architecture = inference.models.omnivoice.family_name, .runnable = true, .quantization = if (file_type) |t| fileTypeName(t) else "Q8_0" };
+    const adapter = inference.models.adapterFor(arch);
     return .{
         .kind = if (adapter != null) .generation else null,
         .architecture = if (arch.len > 0) arch else null,
@@ -2659,6 +2672,10 @@ fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, 
     if (in_catalog and pinned.?.file.role == .main and pinned.?.artifact.kind != .generation) {
         const a = pinned.?.artifact;
         return .{ .status = .supported, .catalog = a.name, .role = .main, .reason = try arena.print("index entry {s}, run by `{s}` (architecture \"{s}\"); the Hub's digest at this commit equals the pinned one", .{ a.name, catalog.command(a.kind), architecture }) };
+    }
+    if (audio_catalog.isOmniVoice(doc) or std.mem.eql(u8, architecture, "drama3")) {
+        const family = if (audio_catalog.isOmniVoice(doc)) inference.models.omnivoice.family_name else "drama3";
+        return .{ .status = .runnable, .reason = try arena.print("speech model (architecture \"{s}\"), run by `nuclis speak`", .{family}) };
     }
     const adapter = inference.models.adapterFor(architecture) orelse {
         if (in_catalog and pinned.?.file.role != .main) return .{

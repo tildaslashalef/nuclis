@@ -36,6 +36,8 @@ const runtime = inference.models.qwen3_tts_runtime;
 const ApiError = errors.ApiError;
 
 const drama = inference.models.drama3_speech;
+const omni = inference.models.omnivoice_speech;
+const omni_text = inference.models.omnivoice_text;
 
 pub const Voice = speech.Voice;
 pub const Slot = slot_mod.Slot(Voice, .speech);
@@ -181,15 +183,34 @@ pub const Service = struct {
             else => refuse(arena, .internal_server_error, "model_failed", "model", "{s}: {s}", .{ name, if (diag.len > 0) diag.message() else @errorName(err) }),
         };
         const mode = (audio_catalog.speechMode(arena, io, located.directory) catch return internal(arena)) orelse .speakers;
+        const engine = speech.engineOf(arena, io, located.directory);
         fields.text("model", name);
         fields.text("voice_kind", @tagName(mode));
-        if (speech.engineOf(located.directory) == .drama3) {
+        if (engine != .omnivoice) {
+            if (parsed.speed) |s| if (s != 1.0)
+                return refuse(arena, .bad_request, "unsupported_feature", "speed", "only \"speed\": 1 is spoken; {s} has no rate control", .{name});
+        }
+        if (engine == .drama3) {
             if (parsed.instructions != null)
                 return refuse(arena, .bad_request, "instructions_unsupported", "instructions", "{s} takes its delivery from cues in the input ([whispering], <emphasis>…</emphasis>), not instructions", .{name});
             if (parsed.language) |l| if (!std.mem.eql(u8, l, "auto"))
                 return refuse(arena, .bad_request, "invalid_request", "language", "{s} reads the language from the input; it takes only auto", .{name});
         }
-        if (parsed.instructions != null) {
+        if (engine == .omnivoice) {
+            if (parsed.voice != null and parsed.instructions != null)
+                return refuse(arena, .bad_request, "invalid_request", "instructions", "{s} cannot combine \"instructions\" with a saved \"voice\"; omit \"voice\" for voice design or omit \"instructions\" for voice cloning", .{name});
+            if (parsed.instructions) |inst| {
+                omni_text.validateInstruct(inst) catch |err| return switch (err) {
+                    error.DuplicateInstructCategory => refuse(arena, .bad_request, "invalid_request", "instructions", "conflicting attribute tags in \"instructions\": {s}", .{speech.omnivoice_instruct_help}),
+                    else => refuse(arena, .bad_request, "invalid_request", "instructions", "unsupported attribute tag in \"instructions\": {s}", .{speech.omnivoice_instruct_help}),
+                };
+            }
+            if (parsed.language) |l| {
+                const lang = if (std.mem.eql(u8, l, "auto")) omni_text.default_language else l;
+                omni_text.validateLanguage(lang) catch
+                    return refuse(arena, .bad_request, "invalid_request", "language", "invalid \"language\" \"{s}\"", .{l});
+            }
+        } else if (parsed.instructions != null) {
             if (mode == .clone) return refuse(arena, .bad_request, "instructions_unsupported", "instructions", "{s} is a Base: it takes no instruction (qwen3-tts-1.7b-customvoice does)", .{name});
             if (located.entry) |entry| if (!entry.traits.instructions)
                 return refuse(arena, .bad_request, "instructions_unsupported", "instructions", "{s} performs no instruction; qwen3-tts-1.7b-customvoice does", .{name});
@@ -197,10 +218,11 @@ pub const Service = struct {
         if (parsed.voice_by_id and mode != .clone)
             return refuse(arena, .bad_request, "voice_cloning_unsupported", "voice", "{s} speaks in {s}; a saved voice needs a Base (qwen3-tts-1.7b-base, qwen3-tts-0.6b-base)", .{ name, if (mode == .design) "a voice its instructions describe" else "its own speakers" });
         // VoiceDesign has no voice to name: OpenAI's clients always send one, so it is ignored.
-        const voice_name = if (mode == .design) "" else parsed.voice orelse self.settings.voice;
+        // OmniVoice defaults to auto-voice when "voice" is omitted/null.
+        const voice_name = if (mode == .design) "" else if (engine == .omnivoice) (parsed.voice orelse "") else (parsed.voice orelse self.settings.voice);
         if (voice_name.len > 0) fields.text("voice", voice_name);
         var ready: ?voice_store.Ready = null;
-        if (mode == .clone) {
+        if (mode == .clone and (engine != .omnivoice or voice_name.len > 0)) {
             var refusal: ApiError = undefined;
             const started = std.Io.Clock.awake.now(io);
             ready = readyVoice(self.gpa, arena, io, self.root, located.directory, name, voice_name, &refusal) catch return .fromError(arena, refusal);
@@ -234,7 +256,7 @@ pub const Service = struct {
             .peer = peer,
             .fields = fields,
         };
-        if (speech.engineOf(located.directory) == .drama3) {
+        if (engine == .drama3) {
             job.context_id = request_log.uuid7(io);
             fields.text("context_id", &job.context_id.?); // checked: set on the line above
             if (parsed.context) |id| {
@@ -447,6 +469,19 @@ pub const Service = struct {
                     .seed = job.request.seed orelse 0,
                 }) };
             },
+            .omnivoice => |v| o: {
+                const lang = if (job.request.language) |l| (if (std.mem.eql(u8, l, "auto")) omni_text.default_language else l) else omni_text.default_language;
+                break :o .{ .omnivoice = try omni.Synthesizer.init(self.gpa, v, .{
+                    .text = job.request.input,
+                    .language = lang,
+                    .instruct = job.request.instructions,
+                    .ref_text = if (job.saved) |*r| r.reference_text else null,
+                    .ref_codes = if (job.saved) |*r| r.rows(omni.Frame) else null,
+                    .speed = job.request.speed orelse 1.0,
+                    .sampling = .{ .seed = job.request.seed orelse 0 },
+                    .cancel = &job.cancel,
+                }) };
+            },
         };
         errdefer synth.deinit();
         synth.setChunk(self.chunk);
@@ -519,7 +554,7 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
         try details.put(arena, "kind", .{ .string = @tagName(kind) });
         const title = if (entry) |e| e.title else if (registered) |r| if (r.repo) |repo| std.fs.path.basenamePosix(repo) else name else name;
         try details.put(arena, "name", .{ .string = title });
-        try details.put(arena, "architecture", if (entry) |e| .{ .string = e.architecture } else if (described != null) .{ .string = "qwen3_tts" } else .null);
+        try details.put(arena, "architecture", if (entry) |e| .{ .string = e.architecture } else if (described) |d| .{ .string = d.architecture } else .null);
         try details.put(arena, "quantization", if (entry) |e| .{ .string = e.quantization } else if (described) |d| .{ .string = d.quantization } else .null);
         try details.put(arena, "size_bytes", .{ .integer = @intCast(if (entry) |e| e.totalSize() else if (located) |l| l.bytes else 0) }); // checked: a catalogue size or a file's, below 2^63
         try details.put(arena, "present", .{ .bool = present });
@@ -532,7 +567,8 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
         try details.put(arena, "default", .{ .bool = std.mem.eql(u8, name, default_model) });
         switch (kind) {
             .speech => {
-                const drama3 = if (entry) |e| std.mem.eql(u8, e.architecture, "drama3") else audio_catalog.isFile(resolved.directory);
+                const is_omnivoice = if (entry) |e| std.mem.eql(u8, e.architecture, inference.models.omnivoice.family_name) else if (described) |d| std.mem.eql(u8, d.architecture, inference.models.omnivoice.family_name) else false;
+                const is_drama3 = if (entry) |e| std.mem.eql(u8, e.architecture, "drama3") else if (described) |d| std.mem.eql(u8, d.architecture, "drama3") else (!is_omnivoice and audio_catalog.isFile(resolved.directory));
                 const speakers = if (described) |d| d.speakers else if (entry) |e| e.traits.speakers else &.{};
                 // The checkpoint's own word once pulled, else the catalogue's; unknown for a registry entry not pulled.
                 const mode: ?audio_catalog.Mode = if (described) |d| d.mode else if (entry) |e| e.traits.mode else null;
@@ -548,20 +584,20 @@ pub fn listAudio(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, regist
                     try objects.append(.{ .object = speaker });
                 }
                 try details.put(arena, "speakers", .{ .array = objects });
-                const languages = if (described) |d| d.languages else &.{};
+                const languages: []const []const u8 = if (described) |d| d.languages else if (is_omnivoice) &.{omni_text.default_language} else &.{};
                 try details.put(arena, "languages", .{ .array = try models.strings(arena, languages) });
                 const instructions: ?bool = if (entry) |e| e.traits.instructions else if (described) |d| d.instructions else null;
                 try details.put(arena, "instructions", if (instructions) |b| .{ .bool = b } else .null);
-                try details.put(arena, "cloning", if (mode == .clone) try cloning(arena, drama3) else .null);
+                try details.put(arena, "cloning", if (mode == .clone) try cloning(arena, is_drama3 or is_omnivoice) else .null);
                 try details.put(arena, "design", if (mode) |m| .{ .bool = m == .design } else .null);
-                try details.put(arena, "sample_rate", .{ .integer = if (drama3) drama.sample_rate else wire.sample_rate });
+                try details.put(arena, "sample_rate", .{ .integer = if (is_drama3) drama.sample_rate else wire.sample_rate });
                 var formats: std.json.Array = .init(arena);
                 for (std.enums.values(wire.Format)) |f| try formats.append(.{ .string = @tagName(f) });
                 try details.put(arena, "formats", .{ .array = formats });
                 var limits: std.json.ObjectMap = .empty;
                 try limits.put(arena, "max_input_bytes", .{ .integer = wire.max_input_bytes });
                 try details.put(arena, "limits", .{ .object = limits });
-                try details.put(arena, "options", .{ .object = try speechOptions(arena, voices, languages, instructions orelse false, default_voice, mode != .design) });
+                try details.put(arena, "options", .{ .object = try speechOptions(arena, voices, languages, instructions orelse false, default_voice, mode != .design, if (is_omnivoice) omni_text.default_language else "auto", is_omnivoice) });
             },
             .transcription => {
                 try details.put(arena, "sample_rate", .{ .integer = 16000 });
@@ -601,7 +637,7 @@ fn cloning(arena: std.mem.Allocator, transcript_only: bool) !std.json.Value {
 /// gets `speech.voice`, so its default is null when the model has no such
 /// speaker or saved voice (the request must name one); VoiceDesign takes
 /// no voice (`takes_voice` false).
-fn speechOptions(arena: std.mem.Allocator, voices: std.json.Array, languages: []const []const u8, instructions: bool, default_voice: ?[]const u8, takes_voice: bool) !std.json.ObjectMap {
+fn speechOptions(arena: std.mem.Allocator, voices: std.json.Array, languages: []const []const u8, instructions: bool, default_voice: ?[]const u8, takes_voice: bool, default_language: []const u8, supports_speed: bool) !std.json.ObjectMap {
     const Option = models.Option;
     var o: std.json.ObjectMap = .empty;
     var voice_default: std.json.Value = .null;
@@ -611,8 +647,9 @@ fn speechOptions(arena: std.mem.Allocator, voices: std.json.Array, languages: []
     if (takes_voice) try o.put(arena, "voice", try (Option{ .type = .@"enum", .values = voices, .default = voice_default }).value(arena));
     var language_values = try models.strings(arena, &.{"auto"});
     for (languages) |l| try language_values.append(.{ .string = l });
-    try o.put(arena, "language", try (Option{ .type = .@"enum", .values = language_values, .default = .{ .string = "auto" } }).value(arena));
+    try o.put(arena, "language", try (Option{ .type = .@"enum", .values = language_values, .default = .{ .string = default_language } }).value(arena));
     if (instructions) try o.put(arena, "instructions", try (Option{ .type = .string }).value(arena));
+    if (supports_speed) try o.put(arena, "speed", try (Option{ .type = .number, .default = .{ .float = 1.0 } }).value(arena));
     var formats: std.ArrayList([]const u8) = .empty;
     for (std.enums.values(wire.Format)) |f| try formats.append(arena, @tagName(f));
     try o.put(arena, "response_format", try (Option{ .type = .@"enum", .values = try models.strings(arena, formats.items), .default = .{ .string = "wav" } }).value(arena));
@@ -699,6 +736,7 @@ const Job = struct {
     fn speak(self: *Job, io: std.Io) bool {
         const synth = &self.synth.?; // checked: `start` set it before the first step; `finish` clears it only as the job leaves
         const n = synth.read(self.samples) catch |err| {
+            if (err == error.Cancelled and self.cancel.load(.acquire)) return false;
             self.failure = apiError(self.message_buffer, .internal_server_error, "model_failed", null, "the synthesis failed: {s}", .{@errorName(err)});
             if (self.request.stream == .sse) self.emitError(io);
             return false;
@@ -776,7 +814,7 @@ const Job = struct {
         else
             std.fmt.bufPrint(self.note_buffer, "{s} · {s} · {d:.2} s of audio · first audio {d:.0} ms{s}{s}", .{
                 self.name,
-                if (self.mode == .design) "designed" else self.voice,
+                if (self.mode == .design) "designed" else if (self.voice.len == 0) (if (self.request.instructions != null) "designed" else "auto") else self.voice,
                 seconds,
                 if (self.first_audio_ns) |ns| @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms else 0,
                 if (self.load_ns > 0) " · opened the voice" else "",
@@ -1155,16 +1193,108 @@ test "a speech model's voice has no default when speech.voice is not one of its 
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const voices = try models.strings(arena, &.{"egyptian_speaker"});
-    const fine_tune = try speechOptions(arena, voices, &.{"english"}, true, "ryan", true);
+    const fine_tune = try speechOptions(arena, voices, &.{"english"}, true, "ryan", true, "auto", false);
     try std.testing.expect(fine_tune.get("voice").?.object.get("default").? == .null);
     try std.testing.expectEqual(@as(usize, 2), fine_tune.get("language").?.object.get("values").?.array.items.len);
     try std.testing.expect(fine_tune.get("instructions") != null);
-    const own = try speechOptions(arena, voices, &.{}, false, "egyptian_speaker", true);
+    const own = try speechOptions(arena, voices, &.{}, false, "egyptian_speaker", true, "auto", false);
     // VoiceDesign takes no voice.
-    const designed = try speechOptions(arena, .init(arena), &.{}, true, "ryan", false);
+    const designed = try speechOptions(arena, .init(arena), &.{}, true, "ryan", false, "auto", false);
     try std.testing.expect(designed.get("voice") == null and designed.get("instructions") != null);
     try std.testing.expectEqualStrings("egyptian_speaker", own.get("voice").?.object.get("default").?.string);
     try std.testing.expect(own.get("instructions") == null);
+    // OmniVoice defaults language to arz and exposes speed.
+    const omni_opts = try speechOptions(arena, voices, &.{"arz"}, true, "ryan", true, "arz", true);
+    try std.testing.expectEqualStrings("arz", omni_opts.get("language").?.object.get("default").?.string);
+    try std.testing.expect(omni_opts.get("speed") != null);
+    try std.testing.expect(omni_opts.get("instructions") != null);
+}
+
+test "speech: OmniVoice validates instructions, voice-mode conflicts, and transcript requirement" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Minimal OmniVoice GGUF header (valid directory, no weights).
+    var gguf_buf: std.ArrayList(u8) = .empty;
+    defer gguf_buf.deinit(gpa);
+    try gguf_buf.appendSlice(gpa, "GGUF");
+    var b4: [4]u8 = undefined;
+    var b8: [8]u8 = undefined;
+    std.mem.writeInt(u32, &b4, 3, .little);
+    try gguf_buf.appendSlice(gpa, &b4);
+    std.mem.writeInt(u64, &b8, 0, .little);
+    try gguf_buf.appendSlice(gpa, &b8);
+    std.mem.writeInt(u64, &b8, 2, .little);
+    try gguf_buf.appendSlice(gpa, &b8);
+    const kv = struct {
+        fn put(out: *std.ArrayList(u8), a: std.mem.Allocator, k: []const u8, v: []const u8) !void {
+            var u8b: [8]u8 = undefined;
+            var u4b: [4]u8 = undefined;
+            std.mem.writeInt(u64, &u8b, k.len, .little);
+            try out.appendSlice(a, &u8b);
+            try out.appendSlice(a, k);
+            std.mem.writeInt(u32, &u4b, 8, .little);
+            try out.appendSlice(a, &u4b);
+            std.mem.writeInt(u64, &u8b, v.len, .little);
+            try out.appendSlice(a, &u8b);
+            try out.appendSlice(a, v);
+        }
+    }.put;
+    try kv(&gguf_buf, gpa, "general.architecture", "audiocpp");
+    try kv(&gguf_buf, gpa, "audiocpp.model_spec.family", "omnivoice");
+    const pad = (32 - gguf_buf.items.len % 32) % 32;
+    try gguf_buf.appendNTimes(gpa, 0, pad);
+    try tmp.dir.createDirPath(io, "models/test/voicetut");
+    try tmp.dir.writeFile(io, .{ .sub_path = "models/test/voicetut/voicetut.gguf", .data = gguf_buf.items });
+
+    const root = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(root);
+    const entries = [_]config.NamedModel{
+        .{ .name = "vt", .entry = .{ .kind = .speech, .path = "test/voicetut/voicetut.gguf" } },
+    };
+    var executor: gpu.Executor = .init(4);
+    var service: Service = .init(gpa, &executor, false, root, .{ .entries = &entries }, .{ .model = "vt" }, 20 * std.time.ns_per_ms);
+    defer service.deinit(io);
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Save a voice without transcript to test TranscriptRequired refusal.
+    const voices_dir = try paths.voicesPath(arena, root);
+    const store: voice_store.Store = .{ .io = io, .path = voices_dir };
+    const wav_samples = 24000;
+    const wav = try gpa.alloc(u8, 44 + 2 * wav_samples);
+    defer gpa.free(wav);
+    wav[0..44].* = try @import("../../speak.zig").wavHeader(wav_samples, 24000);
+    @memset(wav[44..], 0);
+    _ = try store.add(arena, "notext", wav, null, 0);
+
+    // Invalid instruct tag -> 400 invalid_request on instructions.
+    try expectError(service.answer(arena, io, "{\"model\":\"vt\",\"input\":\"أهلاً\",\"instructions\":\"robotic\"}", null, .{}), .bad_request, "invalid_request", "instructions");
+    // Conflicting instruct tags -> 400 invalid_request on instructions.
+    try expectError(service.answer(arena, io, "{\"model\":\"vt\",\"input\":\"أهلاً\",\"instructions\":\"male, female\"}", null, .{}), .bad_request, "invalid_request", "instructions");
+    // Combining saved voice + instructions -> 400 invalid_request on instructions.
+    try expectError(service.answer(arena, io, "{\"model\":\"vt\",\"input\":\"أهلاً\",\"voice\":\"notext\",\"instructions\":\"male\"}", null, .{}), .bad_request, "invalid_request", "instructions");
+    // Saved voice without transcript -> 400 invalid_request on voice.
+    try expectError(service.answer(arena, io, "{\"model\":\"vt\",\"input\":\"أهلاً\",\"voice\":{\"id\":\"notext\"}}", null, .{}), .bad_request, "invalid_request", "voice");
+    // GET /v1/models lists vt with instructions=true, sample_rate=24000, languages=["arz"], saved voices.
+    var listing: std.ArrayList(models.Entry) = .empty;
+    try Service.list(&service, arena, io, &listing);
+    var found_vt = false;
+    for (listing.items) |e| if (std.mem.eql(u8, e.id, "vt")) {
+        found_vt = true;
+        const d = e.details.object;
+        try std.testing.expectEqualStrings("omnivoice", d.get("architecture").?.string);
+        try std.testing.expectEqual(@as(i64, 24000), d.get("sample_rate").?.integer);
+        try std.testing.expect(d.get("instructions").?.bool);
+        try std.testing.expectEqual(@as(usize, 1), d.get("voices").?.array.items.len);
+        try std.testing.expectEqualStrings("notext", d.get("voices").?.array.items[0].string);
+        try std.testing.expectEqualStrings("/v1/audio/voices", d.get("cloning").?.object.get("voices_route").?.string);
+        try std.testing.expectEqualStrings("arz", d.get("options").?.object.get("language").?.object.get("default").?.string);
+        try std.testing.expect(d.get("options").?.object.get("speed") != null);
+    };
+    try std.testing.expect(found_vt);
 }
 
 test "the pace beside a generation: a frame after a token, a chunk's worth after a prefill chunk" {
