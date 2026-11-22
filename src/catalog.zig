@@ -447,6 +447,21 @@ pub const artifacts = [_]Artifact{
         .traits = .{ .mode = .clone },
         .files = &.{.{ .role = .main, .path = "Drama-35B-A3B-v3-Q4_K.gguf", .size = 20_787_264_352, .sha256 = "2a57b14c9b208a2ff833ab7305b920ca8f154ad807004a52d96a86a90a55523e" }},
     },
+    // VoiceTut-TTS (OmniVoice fine-tuned for Egyptian Arabic and Arabic-English
+    // code-switching) as one Q8_0 audio.cpp GGUF holding backbone, Higgs Audio V2
+    // codec, and embedded Qwen3 tokenizer (docs/models/omnivoice.md).
+    .{
+        .name = "voicetut-tts",
+        .title = "VoiceTut-TTS (Egyptian Arabic)",
+        .kind = .speech,
+        .status = .current,
+        .repo = "mohammedaly22/VoiceTut-TTS-GGUF",
+        .revision = "615457bb2e9043f468e012c159146b28fa8f5959",
+        .architecture = "omnivoice",
+        .quantization = "Q8_0",
+        .traits = .{ .mode = .clone, .instructions = true },
+        .files = &.{.{ .role = .main, .path = "voicetut-tts-q8_0.gguf", .size = 1_350_264_224, .sha256 = "995a1fc8973cf376b490231aa107bd22ab1f5da003e89d11ada48f6d5058f67a" }},
+    },
     // NVIDIA's Nemotron 3.5 ASR streaming 0.6B, F32 as published
     // (docs/models/nemotron-asr.md).
     .{
@@ -753,7 +768,7 @@ test "the index: kinds, lifecycle, and the per-kind facts the old tables held" {
     for ([_][]const u8{ "gemma-4-12b-qat", "muse-glimmer-30b", "gemma-4-26b-a4b", "laya-multilingual", "qwen3-tts-0.6b-customvoice", "qwen3-tts-0.6b-base", "qwen3-tts-1.7b-base", "qwen3-tts-1.7b-voicedesign", "drama-3" }) |name| try std.testing.expectEqual(Lifecycle.legacy, find(name).?.status);
     var current: usize = 0;
     for (&artifacts) |*a| current += @intFromBool(a.status == .current);
-    try std.testing.expectEqual(@as(usize, 7), current);
+    try std.testing.expectEqual(@as(usize, 8), current);
     // Files outside the index run through discovery, not by name.
     try std.testing.expect(find("gemma-4-12b") == null and find("qwen") == null and find("qwen/Qwen3.8-27B-UD-Q4_K_M.gguf") == null);
     // The measured verdicts: every drafter pays.
@@ -768,6 +783,7 @@ test "the index: kinds, lifecycle, and the per-kind facts the old tables held" {
     try std.testing.expect(findKind("laya", .decision) != null and findKind("laya", .generation) == null);
     try std.testing.expectEqual(ModelKind.transcription, kindOf(.{}, "nemotron-asr-0.6b"));
     try std.testing.expectEqual(ModelKind.speech, kindOf(.{}, "drama-3"));
+    try std.testing.expectEqual(ModelKind.speech, kindOf(.{}, "voicetut-tts"));
     try std.testing.expectEqual(ModelKind.generation, kindOf(.{}, "me/finetune"));
     try std.testing.expectEqualStrings("gemma-embedding2", find("embeddinggemma-2").?.architecture);
     try std.testing.expect(embeddingByDigest(find("embeddinggemma-2").?.main().sha256) == find("embeddinggemma-2"));

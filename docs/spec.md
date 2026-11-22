@@ -99,6 +99,7 @@ one pulls, verifies, and runs by name, with no gates. The index:
 | `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | legacy |
 | `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | legacy |
 | `drama-3` | speech | Q4_K | 20.79 GB | legacy |
+| `voicetut-tts` | speech | Q8_0 | 1.35 GB | current |
 | `nemotron-asr-0.6b` | transcription | F32 | 2.55 GB | current |
 <!-- /gen -->
 
@@ -273,11 +274,9 @@ tokens, with no session ([models/embeddinggemma.md](models/embeddinggemma.md)).
 
 ### 5.11 The speech path
 
-`inference.models.qwen3_tts_runtime` speaks and
-`inference.audio.nemotron_asr` hears, on the CPU or a Metal plan, validated
-by data (§ 3): word error rates against human transcripts and a round trip
-through the recognizer ([models/qwen3-tts.md](models/qwen3-tts.md),
-[models/drama3.md](models/drama3.md), [models/nemotron-asr.md](models/nemotron-asr.md)).
+`qwen3_tts_runtime`, `drama3_speech`, and `omnivoice_speech` speak and
+`nemotron_asr` hears (CPU or Metal), validated by data (§ 3): WER/CER against
+human transcripts and a round trip through the recognizer ([qwen3-tts.md](models/qwen3-tts.md), [drama3.md](models/drama3.md), [omnivoice.md](models/omnivoice.md), [nemotron-asr.md](models/nemotron-asr.md)).
 A voice **must** decode causally, its samples independent of chunking and
 of other work for the same text, voice, and seed; an instruction a model
 cannot take is refused. A clip streamed in any pieces **must** give the

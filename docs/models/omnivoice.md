@@ -111,5 +111,46 @@ verbatim (no implicit text normalizer):
   (`omnivoice-trace-metal` and `omnivoice-codec-metal`, tier `verify`,
   [record](../benchmarks/record/omnivoice.md#on-metal-2026-11-22)).
 
+## Verified
+
+- `omnivoice-vocabulary` (`verify`): structural binding (313 generator + 527
+  codec tensors), embedded `config.json` and `tokenizer.json`, and pinned
+  English, Egyptian Arabic, code-switching, diacritics, and prompt token IDs.
+- `omnivoice-codec-cpu` (`verify-cpu`) and `omnivoice-codec-metal` (`verify`):
+  50-frame Higgs Audio V2 encoder (400/400 RVQ codes exact) and decoder
+  (`rel RMS ≤ 2e-6` against both CPU and author trace).
+- `omnivoice-trace-cpu` (`verify-cpu`) and `omnivoice-trace-metal` (`verify`):
+  step-0 conditional, unconditional, and packed CFG backbone traces
+  (`rel RMS ≤ 2.4e-6`, 192/192 codebook logit argmax equal, cancel and cleanup
+  verified).
+- `omnivoice-roundtrip-metal` (`verify`): 8 pinned Egyptian Arabic and
+  Arabic–English code-switching sentences synthesized on Metal and recognized
+  by `nemotron-asr-0.6b` (`CER ≤ 22 %`; measured `15.42 %`).
+
+## Current numbers
+
+Apple M4 Pro (48 GiB), `ReleaseSafe`, Metal
+([record](../benchmarks/record/omnivoice.md#round-trip-and-speed-baseline-2026-11-22)):
+
+- **Auto-voice / voice design**: 1.15–1.30× real time (short 2.16 s in 1.81 s;
+  medium 6.19 s in 4.76 s; code-switching 7.57 s in 6.11 s); load ~180 ms;
+  peak RSS 408 MiB.
+- **Zero-shot voice cloning**: 0.80–0.84× real time with a 2.16 s reference
+  clip; first-use CPU reference encoding takes ~1.0 s (cached thereafter in
+  `voice.json`).
+
+## Known limits
+
+- Masked diffusion generates an entire text chunk (32 steps) before decoding
+  audio, so time-to-first-audio equals one chunk's diffusion time (~1.8–6.1 s)
+  rather than one frame.
+- Zero-shot voice cloning requires a saved transcript (`--text` /
+  `reference_text`) and cannot be combined with `--instruct` / `instructions`.
+- Voice design accepts only OmniVoice's fixed attribute tags (not free-form
+  descriptions).
+- CPU synthesis is a reference path (~120× slower than real time); interactive
+  use requires Metal.
+
+
 
 

@@ -784,13 +784,16 @@ fn speak(p: *Page) !void {
     try more(p, "or auto; default auto");
     try row(p, "--instruct <text>", "how to say it (\"Speak in a warm, cheerful");
     try more(p, "tone.\"), on the 1.7B CustomVoice; on VoiceDesign");
-    try more(p, "the voice itself (\"a calm elderly man, deep\")");
-    try row(p, "--model <name|dir>", "qwen3-tts-1.7b-customvoice, -0.6b-customvoice,");
-    try more(p, "-1.7b-base, -0.6b-base, -1.7b-voicedesign, a speech");
+    try more(p, "the voice itself (\"a calm elderly man, deep\");");
+    try more(p, "on voicetut-tts attribute tags (\"male, whisper\")");
+    try row(p, "--model <name|dir>", "qwen3-tts-1.7b-customvoice, voicetut-tts,");
+    try more(p, "drama-3, qwen3-tts-*-base/-voicedesign, a speech");
     try more(p, "registry entry,");
     try more(p, "or a checkpoint directory; default speech.model");
     try more(p, "(qwen3-tts-1.7b-customvoice)");
     try row(p, "--seed <n>", "the sampler's seed; default 0");
+    try row(p, "--speed <rate>", "speaking rate multiplier (> 0, default 1.0;");
+    try more(p, "voicetut-tts only)");
     try row(p, "--backend cpu|metal", default_backend);
     try row(p, "--stream", "write each chunk as it is decoded; report the");
     try more(p, "time from the text to the first audio");
@@ -808,6 +811,7 @@ fn speak(p: *Page) !void {
     try example(p, "nuclis speak --instruct \"Whisper.\" \"Good night.\" -o night.wav", "a mood, on the 1.7B");
     try example(p, "nuclis speak --stream \"One moment, please.\" -o wait.wav", "chunk by chunk, timed");
     try example(p, "nuclis speak --model qwen3-tts-1.7b-base --voice anna \"Hi.\" -o hi.wav", "a saved voice");
+    try example(p, "nuclis speak --model voicetut-tts \"أهلاً بيك في القاهرة.\" -o cairo.wav", "Egyptian Arabic");
 
     try heading(p, "Notes:");
     try plain(p, "Speech is sampled: the same text, voice, and seed give the same audio,");
@@ -823,7 +827,7 @@ fn speak(p: *Page) !void {
 }
 
 fn voice(p: *Page) !void {
-    try title(p, "nuclis voice", "save a clip as a voice for Qwen3-TTS Base or Drama 3");
+    try title(p, "nuclis voice", "save a clip as a voice for cloning speech models");
     try heading(p, "Usage:");
     try code(p, "nuclis voice add <name> <audio> [--text <transcript>] [--json]");
     try code(p, "nuclis voice list [--json]");
@@ -839,7 +843,7 @@ fn voice(p: *Page) !void {
     try heading(p, "Options:");
     try row(p, "--text <transcript>", "what the clip says, up to 2 KiB: the closest");
     try more(p, "likeness; without it, the speaker's timbre alone");
-    try more(p, "(Qwen3-TTS Base only: Drama 3 needs it)");
+    try more(p, "(Qwen3-TTS Base only: Drama 3 and VoiceTut-TTS need it)");
     try row(p, "--json", "the voice, the list, or the removal as JSON");
 
     try heading(p, "Examples:");

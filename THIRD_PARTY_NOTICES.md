@@ -97,6 +97,7 @@ are its outputs, pinned before nuclis became its own reference
 | clef-flash `joint_schema_model.py` (Apache-2.0, `17f0b0ad`) | the sequence and the head | `inference/src/models/fixtures/clef/` |
 | [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) `022e286b` (Apache-2.0), with Transformers 4.57.3 | the talker, code predictor, codec; the tokenizer's split pattern (`inference/src/tokenizer/cased.zig`) | `tests/fixtures/qwen3-tts/` |
 | [fish-speech](https://github.com/fishaudio/fish-speech) `0f8a12e8` (Fish Audio Community License 1.0) | Drama 3's backbone, codebook tower, prompt, sampler, codec | `tests/fixtures/drama3/` |
+| [k2-fsa/OmniVoice](https://github.com/k2-fsa/OmniVoice) (Apache-2.0 code; base weights CC-BY-NC), [VoiceTut-TTS](https://huggingface.co/mohammedaly22/VoiceTut-TTS-GGUF) (Apache-2.0), and [Higgs Audio 2 Tokenizer](https://huggingface.co/bosonai/higgs-audio-v2-tokenizer) (Boson Higgs Audio 2 Community License) | OmniVoice / VoiceTut-TTS masked-diffusion backbone, prompt/tag schema, and Higgs Audio V2 codec | `tests/fixtures/omnivoice/` |
 | [transformers](https://github.com/huggingface/transformers) `c0d024fb` (Apache-2.0) | Nemotron 3.5 ASR: features, encoder, streaming, transducer | `tests/fixtures/nemotron-asr/` |
 
 Drama 3's weights are under the Fish Audio Community License: no hosted

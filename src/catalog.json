@@ -531,6 +531,30 @@
    ]
   },
   {
+   "name": "voicetut-tts",
+   "title": "VoiceTut-TTS (Egyptian Arabic)",
+   "kind": "speech",
+   "status": "current",
+   "repo": "mohammedaly22/VoiceTut-TTS-GGUF",
+   "revision": "615457bb2e9043f468e012c159146b28fa8f5959",
+   "architecture": "omnivoice",
+   "quantization": "Q8_0",
+   "defaults": {
+    "profile": null,
+    "draft": null
+   },
+   "files": [
+    {
+     "role": "main",
+     "variant": null,
+     "local": "mohammedaly22/VoiceTut-TTS-GGUF/voicetut-tts-q8_0.gguf",
+     "size": 1350264224,
+     "sha256": "995a1fc8973cf376b490231aa107bd22ab1f5da003e89d11ada48f6d5058f67a",
+     "verdict": null
+    }
+   ]
+  },
+  {
    "name": "nemotron-asr-0.6b",
    "title": "Nemotron 3.5 ASR Streaming 0.6B",
    "kind": "transcription",

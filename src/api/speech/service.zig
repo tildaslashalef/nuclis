@@ -1161,7 +1161,7 @@ test "speech: a voice that fails to open fails its request before the head, and 
     try std.testing.expectEqual(@as(usize, 0), stats.waiting);
     try std.testing.expectEqual(@as(u64, 0), budget.resident(io));
 
-    // The listing names the six speech models, pulled or not, the default
+    // The listing names the seven speech models, pulled or not, the default
     // marked; only CustomVoice has speakers.
     var listing: std.ArrayList(models.Entry) = .empty;
     try Service.list(&f.service, arena, io, &listing);
@@ -1170,22 +1170,23 @@ test "speech: a voice that fails to open fails its request before the head, and 
         const d = e.details.object;
         try std.testing.expectEqualStrings("speech", d.get("kind").?.string);
         const drama3 = std.mem.eql(u8, e.id, "drama-3");
-        try std.testing.expectEqualStrings(if (drama3) "sakasegawa" else "Qwen", e.owned_by);
+        const voicetut = std.mem.eql(u8, e.id, "voicetut-tts");
+        try std.testing.expectEqualStrings(if (drama3) "sakasegawa" else if (voicetut) "mohammedaly22" else "Qwen", e.owned_by);
         try std.testing.expectEqual(@as(i64, if (drama3) 44100 else 24000), d.get("sample_rate").?.integer);
         const small = std.mem.eql(u8, e.id, "qwen3-tts-0.6b-customvoice");
         const speakers = std.mem.endsWith(u8, e.id, "-customvoice");
         // The fixture holds the 0.6B CustomVoice's files and the 0.6B Base's.
         try std.testing.expectEqual(small or std.mem.eql(u8, e.id, "qwen3-tts-0.6b-base"), d.get("present").?.bool);
         try std.testing.expectEqual(small, d.get("default").?.bool);
-        try std.testing.expectEqual(std.mem.indexOf(u8, e.id, "1.7b-customvoice") != null or std.mem.endsWith(u8, e.id, "-voicedesign"), d.get("instructions").?.bool);
+        try std.testing.expectEqual(std.mem.indexOf(u8, e.id, "1.7b-customvoice") != null or std.mem.endsWith(u8, e.id, "-voicedesign") or voicetut, d.get("instructions").?.bool);
         try std.testing.expectEqual(@as(usize, if (speakers) 9 else 0), d.get("voices").?.array.items.len);
         // A Base clones (from a clip, or a clip and its words); VoiceDesign designs; both before the pull.
-        try std.testing.expectEqual(std.mem.endsWith(u8, e.id, "-base") or drama3, d.get("cloning").? != .null);
+        try std.testing.expectEqual(std.mem.endsWith(u8, e.id, "-base") or drama3 or voicetut, d.get("cloning").? != .null);
         try std.testing.expectEqual(std.mem.endsWith(u8, e.id, "-voicedesign"), d.get("design").?.bool);
-        if (std.mem.endsWith(u8, e.id, "-base") or drama3) try std.testing.expectEqual(@as(usize, if (drama3) 1 else 2), d.get("cloning").?.object.get("modes").?.array.items.len);
+        if (std.mem.endsWith(u8, e.id, "-base") or drama3 or voicetut) try std.testing.expectEqual(@as(usize, if (drama3 or voicetut) 1 else 2), d.get("cloning").?.object.get("modes").?.array.items.len);
         seen += 1;
     }
-    try std.testing.expectEqual(@as(usize, 6), seen);
+    try std.testing.expectEqual(@as(usize, 7), seen);
 }
 
 test "a speech model's voice has no default when speech.voice is not one of its speakers" {
