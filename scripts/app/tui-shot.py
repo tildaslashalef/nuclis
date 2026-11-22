@@ -1,84 +1,56 @@
 #!/usr/bin/env python3
-"""The screenshot harness: drives `nuclis agent` in a detached tmux session
-and captures its screen, so the surface can be looked at without a person
-at the keyboard.
+"""The screenshot harness: drives `nuclis agent` in a Rex terminal and
+captures its screen, so the surface can be looked at without a person at
+the keyboard.
 
-tmux is a full terminal emulator, so what it captures is what a terminal
-would show: the live region's scrolling, the synchronized frames, the
-colours. The session runs with COLORTERM=truecolor, the way Ghostty sets it,
-so the theme resolves to the same palette. Each capture is written three
-ways under .zig-cache/tui/: `<name>.txt` (the text), `<name>.ansi` (the
-escape stream tmux replays), and `<name>.tagged.txt` (every styled run as
-`[fg=#hex bg=#hex bold]…[/]`, readable without a terminal). A burst captures
-at a fixed rate for a while and reports which frames changed and the
-interval between them, which is how an animation's cadence is measured.
+The terminal is Rex's own, on the Rex server, with no multiplexer between
+it and the agent: what it captures is what Rex shows, kitty graphics and
+all (rexterm.py, beside this file). It needs no window; the session shows
+up in the Rex app's sidebar to be watched. The block is pinned to the size
+asked for and to fixed default colours, so captures do not depend on the
+app's theme. Each capture is written under .zig-cache/tui/ as `<name>.txt`
+(the text), `<name>.ansi` (the escape stream that redraws it),
+`<name>.tagged.txt` (every styled run as `[fg=#hex bg=#hex bold]…[/]`,
+readable without a terminal) and `<name>.html` (Rex's styled page); with
+`--png`, also `<name>.png`, that page rendered by headless Chrome. Images
+drawn with kitty graphics are not in any capture, only in the live
+terminal. A burst captures at a fixed rate for a while and reports which
+frames changed and the interval between them, which is how an animation's
+cadence is measured.
 
 Steps, in order, as arguments:
   keys=<text>            type the text (literally; no key names)
-  key=<name>             one tmux key name: Enter, Tab, Escape, C-c, C-o, Up
-  enter                  the same as key=Enter
+  key=<name>             one key in Rex's syntax: enter, tab, escape, ctrl+c,
+                         alt+enter, up (tmux's names, C-c or Up, also work)
+  enter                  the same as key=enter
   wait=<seconds>         sleep
   capture=<name>         capture the screen now
   burst=<name>,<s>,<hz>  capture every 1/hz seconds for s seconds
   until=<text>,<s>       wait up to s seconds for the text to appear on screen,
                          and print how long it took (to 0.05 s)
-  buffer=<name>          save tmux's paste buffer (what an OSC 52 copy set)
-                         to <name>.buffer.txt
+  buffer=<name>          save the newest OSC 52 copy to <name>.buffer.txt
   paste=<text>           a bracketed paste of the text (a dropped file's path)
+  resize=<cols>x<rows>   resize the terminal, as a window resize does
 
-`--ghostty` also opens one Ghostty window attached to the session and, on
-each capture, photographs it to `<name>.png` with `screencapture` (needs the
-screen-recording permission for the terminal running this script; without
-it the PNG step reports and the text captures continue).
-
-`--direct` runs the command in a Ghostty window of its own, with no tmux
-in between, so what the terminal alone does (kitty image placements, its
-cursor reports, its resize) is what is photographed. A pty relay inside the
-window forwards the terminal's keys and the harness's steps (written to a
-FIFO) to the command, and records everything the command writes to
-`<session>.stream`; `until=` searches that stream, and a capture writes the
-PNG and the stream so far (`<name>.stream`). The window stays open after
-the command exits, so its last screen can be photographed.
-
-The session is left running unless `--stop` is given; attach to it with
-`tmux -L nuclis attach -t <session>`. See docs/development.md § Looking at
-the agent without a person at the keyboard.
+The session is left running unless `--stop` is given: open it from the Rex
+sidebar, or read it with `rex capture -s nuclis-<session>`. See
+docs/development.md § Looking at the agent without a person at the keyboard.
 """
 
 import argparse
-import fcntl
 import json
-import os
-import pty
 import re
-import select
-import signal
-import subprocess
 import sys
-import tempfile
-import termios
 import time
-import tty
 import unittest
 from typing import Any
 from pathlib import Path
 
+from rexterm import Terminal, html_page, png, rex_key
+
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / ".zig-cache" / "tui"
-SOCKET = "nuclis"
 DEFAULT_COMMAND = "./zig-out/bin/nuclis agent"
-
-TMUX_CONF = """
-set -g default-terminal "tmux-256color"
-set -as terminal-overrides ",*:RGB"
-set -g status off
-set -g escape-time 0
-set -g focus-events on
-set -g history-limit 10000
-set -g remain-on-exit on
-set -g window-size latest
-set -g set-clipboard on
-"""
 
 # ---- the SGR tagger (pure; covered by --self-test) --------------------------
 
@@ -186,321 +158,6 @@ def plain(ansi):
     return OTHER_ESCAPE.sub("", SGR.sub("", ansi))
 
 
-# ---- tmux --------------------------------------------------------------------
-
-
-class Session:
-    def __init__(self, name, size, command, cwd, env=()):
-        self.name = name
-        self.columns, self.rows = size
-        self.command = command
-        self.cwd = cwd
-        self.env = list(env)
-        conf = tempfile.NamedTemporaryFile("w", suffix=".tmux.conf", delete=False)
-        conf.write(TMUX_CONF)
-        conf.close()
-        self.conf = conf.name
-
-    def tmux(self, *args, check=True, capture=False):
-        cmd = ["tmux", "-L", SOCKET, "-f", self.conf] + list(args)
-        return subprocess.run(cmd, check=check, capture_output=capture, text=True)
-
-    def start(self):
-        self.tmux("kill-session", "-t", self.name, check=False, capture=True)
-        env = ["-e", "COLORTERM=truecolor", "-e", "NUCLIS_NO_NOTIFY=1"]
-        for pair in self.env:
-            env += ["-e", pair]
-        self.tmux(
-            "new-session",
-            "-d",
-            "-s",
-            self.name,
-            "-x",
-            str(self.columns),
-            "-y",
-            str(self.rows),
-            "-c",
-            str(self.cwd),
-            *env,
-            self.command,
-        )
-        # The pane must be exactly the requested size: the status bar is off
-        # and no client is attached, so the window keeps its creation size.
-        info = self.tmux(
-            "display-message", "-p", "-t", self.name, "#{pane_width}x#{pane_height}", capture=True
-        ).stdout.strip()
-        if info != "%dx%d" % (self.columns, self.rows):
-            print("warning: pane is %s, wanted %dx%d" % (info, self.columns, self.rows), file=sys.stderr)
-
-    def send_text(self, text):
-        self.tmux("send-keys", "-t", self.name, "-l", text)
-
-    def send_key(self, key):
-        self.tmux("send-keys", "-t", self.name, key)
-
-    def paste(self, text):
-        """A bracketed paste, as a drop or Cmd-V arrives: tmux wraps the
-        buffer in the paste markers because the agent requested them."""
-        self.tmux("set-buffer", "-b", "nuclis-paste", text)
-        self.tmux("paste-buffer", "-p", "-b", "nuclis-paste", "-t", self.name)
-
-    def screen(self):
-        return self.tmux("capture-pane", "-t", self.name, "-p", "-e", capture=True).stdout
-
-    def buffer(self):
-        """tmux's newest paste buffer: with `set-clipboard on`, an OSC 52
-        from the pane lands here, so a Ctrl-X can be read back as text."""
-        r = self.tmux("show-buffer", check=False, capture=True)
-        return r.stdout if r.returncode == 0 else ""
-
-    def alive(self):
-        return self.tmux("has-session", "-t", self.name, check=False, capture=True).returncode == 0
-
-    def stop(self):
-        self.tmux("kill-session", "-t", self.name, check=False, capture=True)
-        os.unlink(self.conf)
-
-
-# ---- Ghostty ----------------------------------------------------------------
-
-
-class Ghostty:
-    """One Ghostty window attached to the session, photographed on capture."""
-
-    def __init__(self, session):
-        self.session = session
-        self.window_id = None
-
-    def open(self):
-        subprocess.run(
-            [
-                "open",
-                "-na",
-                "Ghostty",
-                "--args",
-                # The lookup matches the title; tmux and the agent would
-                # otherwise set their own.
-                "--title=%s" % self.session.name,
-                "--window-width=%d" % self.session.columns,
-                "--window-height=%d" % self.session.rows,
-                "-e",
-                "tmux",
-                "-L",
-                SOCKET,
-                "attach",
-                "-t",
-                self.session.name,
-            ],
-            check=True,
-        )
-        deadline = time.time() + 10
-        while time.time() < deadline and self.window_id is None:
-            time.sleep(0.5)
-            self.window_id = self.find_window()
-        if self.window_id is None:
-            print("ghostty: window not found; PNG captures skipped", file=sys.stderr)
-
-    def find_window(self):
-        script = (
-            'ObjC.import("CoreGraphics");'
-            # The call returns a CFArrayRef, which deepUnwrap leaves opaque
-            # unless it is cast to an object first.
-            "const list = ObjC.deepUnwrap(ObjC.castRefToObject("
-            "$.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)));"
-            'const w = list.filter(w => w.kCGWindowOwnerName === "Ghostty" && (w.kCGWindowName || "").includes("%s"));'
-            "JSON.stringify(w.map(w => w.kCGWindowNumber));" % self.session.name
-        )
-        r = subprocess.run(["osascript", "-l", "JavaScript", "-e", script], capture_output=True, text=True)
-        try:
-            ids = json.loads(r.stdout.strip() or "[]")
-        except json.JSONDecodeError:
-            return None
-        return ids[0] if ids else None
-
-    def shot(self, path):
-        if self.window_id is None:
-            return False
-        r = subprocess.run(
-            ["screencapture", "-x", "-o", "-l", str(self.window_id), str(path)], capture_output=True, text=True
-        )
-        if r.returncode != 0 or not path.exists():
-            print(
-                "ghostty: screencapture failed (%s); grant screen recording to the terminal" % r.stderr.strip(),
-                file=sys.stderr,
-            )
-            self.window_id = None
-            return False
-        return True
-
-
-# ---- Ghostty without tmux ---------------------------------------------------
-
-# tmux key names to the bytes a terminal sends for them.
-KEY_BYTES = {
-    "Enter": b"\r",
-    "Tab": b"\t",
-    "Escape": b"\x1b",
-    "BSpace": b"\x7f",
-    "Space": b" ",
-    "Up": b"\x1b[A",
-    "Down": b"\x1b[B",
-    "Right": b"\x1b[C",
-    "Left": b"\x1b[D",
-    "M-Enter": b"\x1b\r",
-}
-
-
-def key_bytes(name):
-    if name in KEY_BYTES:
-        return KEY_BYTES[name]
-    if len(name) == 3 and name.startswith("C-"):
-        return bytes([ord(name[2].lower()) & 0x1F])
-    raise SystemExit("unknown key for --direct: %s" % name)
-
-
-def relay(fifo, record, argv):
-    """Runs inside the Ghostty window: the command on a pty sized like the
-    window, the window's keys and the FIFO's bytes to it, its output to the
-    window and to `record`. After the command exits the window is left as
-    the command left it, until the harness closes it."""
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.execvp(argv[0], argv)
-
-    def winch(*_):
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8))
-
-    signal.signal(signal.SIGWINCH, winch)
-    winch()
-    saved = termios.tcgetattr(0)
-    tty.setraw(0)
-    # Read-write keeps a writer open, so an idle FIFO blocks rather than
-    # reporting end of file on every poll.
-    steps = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
-    with open(record, "ab", buffering=0) as log:
-        while True:
-            try:
-                ready, _, _ = select.select([0, fd, steps], [], [])
-            except InterruptedError:
-                continue
-            if fd in ready:
-                try:
-                    data = os.read(fd, 65536)
-                except OSError:
-                    data = b""
-                if not data:
-                    break
-                os.write(1, data)
-                log.write(data)
-            for source in (0, steps):
-                if source in ready:
-                    data = os.read(source, 65536)
-                    if data:
-                        os.write(fd, data)
-    os.waitpid(pid, 0)
-    termios.tcsetattr(0, termios.TCSAFLUSH, saved)
-    signal.pause()
-
-
-class Direct:
-    """The command in its own Ghostty window, driven through the relay.
-    Stands in for `Session` and `Ghostty` together."""
-
-    def __init__(self, name, size, command, cwd, out_dir, env=()):
-        self.name = name
-        self.columns, self.rows = size
-        self.command = command
-        self.cwd = cwd
-        self.env = list(env)
-        self.fifo = Path(tempfile.gettempdir()) / ("nuclis-shot-%s.fifo" % name)
-        self.record = out_dir / (name + ".stream")
-        self.pidfile = Path(tempfile.gettempdir()) / ("nuclis-shot-%s.pid" % name)
-        self.window = None
-
-    def start(self):
-        self.stop()
-        os.mkfifo(self.fifo)
-        self.record.write_bytes(b"")
-        env = ["COLORTERM=truecolor", "NUCLIS_NO_NOTIFY=1"] + self.env
-        inner = "echo $$ > %s; cd %s && exec env %s python3 %s --relay %s %s -- %s" % (
-            self.pidfile,
-            _q(str(self.cwd)),
-            " ".join(_q(e) for e in env),
-            _q(str(Path(__file__).resolve())),
-            _q(str(self.fifo)),
-            _q(str(self.record)),
-            self.command,
-        )
-        subprocess.run(
-            [
-                "open",
-                "-na",
-                "Ghostty",
-                "--args",
-                "--title=%s" % self.name,
-                "--window-width=%d" % self.columns,
-                "--window-height=%d" % self.rows,
-                "--confirm-close-surface=false",
-                "-e",
-                "/bin/sh",
-                "-c",
-                inner,
-            ],
-            check=True,
-        )
-        self.window = Ghostty(self)
-        deadline = time.time() + 10
-        while time.time() < deadline and self.window.window_id is None:
-            time.sleep(0.5)
-            self.window.window_id = self.window.find_window()
-        if self.window.window_id is None:
-            print("ghostty: window not found; PNG captures skipped", file=sys.stderr)
-
-    def write(self, data):
-        fd = os.open(self.fifo, os.O_WRONLY)
-        try:
-            os.write(fd, data)
-        finally:
-            os.close(fd)
-
-    def send_text(self, text):
-        self.write(text.encode())
-
-    def send_key(self, key):
-        self.write(key_bytes(key))
-
-    def paste(self, text):
-        self.write(b"\x1b[200~" + text.encode() + b"\x1b[201~")
-
-    def stream(self):
-        return self.record.read_bytes() if self.record.exists() else b""
-
-    def screen(self):
-        return self.stream().decode("utf-8", "replace")
-
-    def buffer(self):
-        return ""
-
-    def capture(self, out_dir, name):
-        (out_dir / (name + ".stream")).write_bytes(self.stream())
-        if self.window is not None:
-            self.window.shot(out_dir / (name + ".png"))
-
-    def stop(self):
-        if self.pidfile.exists():
-            try:
-                os.kill(int(self.pidfile.read_text().strip()), signal.SIGTERM)
-            except (ValueError, ProcessLookupError):
-                pass
-            self.pidfile.unlink()
-        if self.fifo.exists():
-            self.fifo.unlink()
-
-
-def _q(text):
-    return "'" + text.replace("'", "'\\''") + "'"
-
-
 # ---- the run ----------------------------------------------------------------
 
 
@@ -508,6 +165,35 @@ def write_capture(out_dir, name, ansi):
     (out_dir / (name + ".ansi")).write_text(ansi)
     (out_dir / (name + ".txt")).write_text(plain(ansi))
     (out_dir / (name + ".tagged.txt")).write_text(tagged(ansi))
+
+
+def screen_html(fragment, rows):
+    """Rex's HTML capture cut to its last `rows` lines. The capture is one
+    pre-formatted block with the screen's trailing blank rows left out; a
+    styled run never spans lines."""
+    head, sep, body = fragment.partition(">")
+    body = body.rstrip("\n")
+    if body.endswith("</div>"):
+        body = body[: -len("</div>")]
+    body = body.rstrip("\n")
+    return head + sep + ("\n".join(body.split("\n")[-rows:]) if rows else "") + "</div>"
+
+
+def shown_rows(ansi):
+    """How many of the screen's rows are left once its trailing blank rows
+    are dropped, as Rex's HTML capture drops them."""
+    lines = plain(ansi).split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return len(lines)
+
+
+def write_page(session, out_dir, name, ansi, with_png):
+    page = out_dir / (name + ".html")
+    shown = shown_rows(ansi)
+    page.write_text(html_page(screen_html(session.capture("html"), shown), session.columns, session.rows))
+    if with_png and not png(page.resolve(), out_dir / (name + ".png"), session.columns, session.rows):
+        print("png: no headless Chrome found, or it failed; the text captures continue", file=sys.stderr)
 
 
 def burst(session, out_dir, name, seconds, hz):
@@ -556,7 +242,7 @@ def wait_for(session, text, seconds):
 
 def parse_step(arg) -> tuple[str, Any]:
     if arg == "enter":
-        return ("key", "Enter")
+        return ("key", "enter")
     if "=" not in arg:
         raise SystemExit("bad step: %s" % arg)
     kind, value = arg.split("=", 1)
@@ -564,6 +250,9 @@ def parse_step(arg) -> tuple[str, Any]:
         return (kind, value)
     if kind == "wait":
         return (kind, float(value))
+    if kind == "resize":
+        columns, rows = (int(x) for x in value.lower().split("x"))
+        return (kind, (columns, rows))
     if kind == "burst":
         name, seconds, hz = value.split(",")
         return (kind, (name, float(seconds), float(hz)))
@@ -582,14 +271,9 @@ def run(args):
         # A repository-relative binary, whatever --cwd the app runs in.
         head, _, tail = command.partition(" ")
         command = str(ROOT / head[2:]) + (" " + tail if tail else "")
-    if args.direct:
-        session = Direct(args.session, (columns, rows), command, ROOT / args.cwd, out_dir, env=args.env)
-    else:
-        session = Session(args.session, (columns, rows), command, ROOT / args.cwd, env=args.env)
+    name = "nuclis-" + args.session
+    session = Terminal(name, (columns, rows), command, ROOT / args.cwd, env=args.env)
     session.start()
-    ghostty = Ghostty(session) if args.ghostty and not args.direct else None
-    if ghostty:
-        ghostty.open()
     ok = True
     for step in [parse_step(s) for s in args.steps]:
         kind, value = step
@@ -601,12 +285,12 @@ def run(args):
             session.paste(value)
         elif kind == "wait":
             time.sleep(value)
-        elif kind == "capture" and isinstance(session, Direct):
-            session.capture(out_dir, value)
+        elif kind == "resize":
+            session.resize(*value)
         elif kind == "capture":
-            write_capture(out_dir, value, session.screen())
-            if ghostty:
-                ghostty.shot(out_dir / (value + ".png"))
+            ansi = session.screen()
+            write_capture(out_dir, value, ansi)
+            write_page(session, out_dir, value, ansi, args.png)
             print("capture %s" % value)
         elif kind == "burst":
             burst(session, out_dir, *value)
@@ -617,10 +301,8 @@ def run(args):
             print("buffer %s" % value)
     if args.stop:
         session.stop()
-    elif args.direct:
-        print("window left open: close it, or rerun with --stop")
     else:
-        print("session left running: tmux -L %s attach -t %s" % (SOCKET, args.session))
+        print("session left running: %s in the Rex sidebar; rex capture -s %s; rex kill %s" % (name, name, name))
     return 0 if ok else 1
 
 
@@ -644,25 +326,41 @@ class TaggerTest(unittest.TestCase):
     def test_empty_and_unstyled(self):
         self.assertEqual(tagged("plain\n\nrows\n"), "plain\n\nrows\n")
 
+    def test_screen_html(self):
+        page = '<div style="white-space: pre;">a\nb <div style="display: inline;">c</div>\nd\n</div>'
+        self.assertEqual(
+            screen_html(page, 2), '<div style="white-space: pre;">b <div style="display: inline;">c</div>\nd</div>'
+        )
+
+    def test_shown_rows(self):
+        self.assertEqual(shown_rows("a\n\x1b[31mb\x1b[0m\n  \n\n"), 2)
+        self.assertEqual(shown_rows("\n\n"), 0)
+
+    def test_keys(self):
+        self.assertEqual(rex_key("C-c"), "ctrl+c")
+        self.assertEqual(rex_key("M-Enter"), "alt+enter")
+        self.assertEqual(rex_key("Up"), "up")
+        self.assertEqual(rex_key("ctrl+o"), "ctrl+o")
+        self.assertEqual(rex_key("x"), "x")
+
     def test_steps(self):
-        self.assertEqual(parse_step("enter"), ("key", "Enter"))
+        self.assertEqual(parse_step("enter"), ("key", "enter"))
         self.assertEqual(parse_step("burst=warm,30,10"), ("burst", ("warm", 30.0, 10.0)))
         self.assertEqual(parse_step("until=ready,40"), ("until", ("ready", 40.0)))
         self.assertEqual(parse_step("keys=a=b"), ("keys", "a=b"))
         self.assertEqual(parse_step("buffer=clip"), ("buffer", "clip"))
+        self.assertEqual(parse_step("resize=100x30"), ("resize", (100, 30)))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("steps", nargs="*", help="the steps, in order")
     ap.add_argument("--size", default="160x45", help="columns x rows (default 160x45)")
-    ap.add_argument("--session", default="shot", help="tmux session name (default shot)")
+    ap.add_argument("--session", default="shot", help="Rex session name, after nuclis- (default shot)")
     ap.add_argument("--command", default=DEFAULT_COMMAND, help="what to run (default: %s)" % DEFAULT_COMMAND)
     ap.add_argument("--cwd", default=".", help="working directory of the command, relative to the repository")
     ap.add_argument("--out", default=str(OUT_DIR.relative_to(ROOT)), help="where captures go")
-    ap.add_argument("--ghostty", action="store_true", help="also attach a Ghostty window and photograph it on capture")
-    ap.add_argument("--direct", action="store_true", help="run in a Ghostty window of its own, no tmux (see above)")
-    ap.add_argument("--relay", nargs=2, metavar=("FIFO", "RECORD"), help=argparse.SUPPRESS)
+    ap.add_argument("--png", action="store_true", help="also render each capture to <name>.png (headless Chrome)")
     ap.add_argument(
         "--env",
         action="append",
@@ -670,13 +368,8 @@ def main():
         metavar="KEY=VALUE",
         help="an environment variable for the command (repeatable)",
     )
-    ap.add_argument("--stop", action="store_true", help="kill the session at the end")
+    ap.add_argument("--stop", action="store_true", help="kill the Rex session at the end")
     ap.add_argument("--self-test", action="store_true")
-    if "--relay" in sys.argv:
-        at = sys.argv.index("--relay")
-        split = sys.argv.index("--", at)
-        relay(sys.argv[at + 1], sys.argv[at + 2], sys.argv[split + 1 :])
-        return 0
     args = ap.parse_args()
     if args.self_test:
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(TaggerTest)

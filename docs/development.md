@@ -178,49 +178,48 @@ for a user is in [guide/](guide/), how its terminal works in
 ### Looking at the agent without a person at the keyboard
 
 `make shot ARGS='<steps>'` (`scripts/app/tui-shot.py`) starts `nuclis agent`
-in a detached tmux session (`tmux -L nuclis`, 160×45 by default, the status
-bar off so the pane is the whole window, `COLORTERM=truecolor` as Ghostty
-sets it so the theme resolves to the same palette) and runs the steps in
-order: `keys=<text>`, `enter`, `key=<tmux key>` (`C-c`, `Tab`, `Escape`),
+in a Rex terminal (`scripts/app/rexterm.py`; needs the Rex app's `rex` CLI)
+in a session named `nuclis-shot`: Rex's own terminal with no multiplexer in
+between, so what the agent does with it (kitty images, cursor reports,
+resizes) is what a user's terminal gets. It needs no window; the session
+shows up in the Rex sidebar to be watched. The block is pinned to the size
+(`--size`, 160×45 by default) and to fixed default colours and sixteen-colour
+palette, so captures do not depend on the app's theme; an app that shows the
+session takes its size over, and the harness warns. The steps run in
+order: `keys=<text>`, `enter`, `key=<key>` in Rex's syntax (`ctrl+c`, `tab`,
+`escape`, `alt+enter`; tmux's `C-c` and `Up` also work),
 `paste=<text>` (a bracketed paste, as a dropped file's path arrives),
 `wait=<s>`, `until=<text>,<s>` (wait for the text on screen; prints how
 long it took, to 0.05 s, so `enter until=generating,60` times Enter to
-the first token), `capture=<name>`,
-`burst=<name>,<seconds>,<hz>`, and `buffer=<name>` (tmux's paste buffer,
-where an OSC 52 copy lands, to `<name>.buffer.txt`); `--env KEY=VALUE`
+the first token), `resize=<cols>x<rows>` (as a window resize),
+`capture=<name>`, `burst=<name>,<seconds>,<hz>`, and `buffer=<name>` (the
+newest OSC 52 copy, to `<name>.buffer.txt`); `--env KEY=VALUE`
 sets a variable for the agent (`EDITOR`, to drive Ctrl-G). A step with a
 space is one quoted argument. A capture writes `<name>.txt`,
-`<name>.ansi`, and `<name>.tagged.txt` (every styled run as
-`[fg=#hex bg=#hex bold]…[/]`, so a colour is readable as text) under
-`.zig-cache/tui/`; a burst captures at the given rate, keeps the frames that
-differ from their predecessor, and reports the mean interval between them
-in `<name>.burst.json` — the way an animation's cadence is measured rather
-than eyeballed. `--ghostty` also opens one Ghostty window attached to the
-session and photographs it to `<name>.png` on each capture (`screencapture`
-needs the screen-recording permission once). `--direct` runs the agent in a
-Ghostty window of its own with no tmux in between, for what only the
-terminal does (kitty image placements, its cursor reports and resizes): a
-pty relay in the window forwards the steps (through a FIFO) and the
-window's own keys, records every byte the agent writes to
-`<session>.stream`, `until=` searches that stream, and a capture writes the
-PNG and `<name>.stream`; the window stays open after the agent exits so its
-last screen can be photographed. The session stays up unless
-`--stop` is given; `tmux -L nuclis attach -t shot` joins it. <!-- ok: a tmux command, not nuclis --> Captures are
-evidence for the log, never fixtures: the goldens in `src/tui/` stay the
-contract.
+`<name>.ansi`, `<name>.tagged.txt` (every styled run as
+`[fg=#hex bg=#hex bold]…[/]`, so a colour is readable as text), and
+`<name>.html` (Rex's styled capture) under `.zig-cache/tui/`; `--png` also
+renders the page to `<name>.png` with headless Chrome, which needs no
+screen-recording permission and leaves every window alone. A burst
+captures at the given rate (one capture takes about 20 ms), keeps the
+frames that differ from their predecessor, and reports the mean interval
+between them in `<name>.burst.json` — the way an animation's cadence is
+measured rather than eyeballed. The session stays up unless `--stop` is
+given; open it from the Rex sidebar, or read it with
+`rex capture -s nuclis-shot`. Captures are evidence for the log, never
+fixtures: the goldens in `src/tui/` stay the contract.
 
 This is the iteration loop for every change to the surface: `make build`,
 one `make shot` run that drives the feature (a `paste=` for a drop, `keys=`
 for a prompt, `until=ready,<s>` to wait out a turn, `capture=` at each
 state worth looking at), the `.txt` for the layout and the `.tagged.txt`
 for the colours, then the fix and the same run again. A crash lands in the
-capture as the panic and its trace, since tmux keeps the dead pane
-(`remain-on-exit`), so a failure is read the same way as a success. To look
-at a run in a real terminal, pass `--ghostty` (the harness opens the window
-attached) or leave `--stop` off and attach from Ghostty. One thing the
-harness cannot show is the inline image preview: it is off under tmux,
-which cannot scroll a picture it does not know about, so that one is looked
-at by running `./zig-out/bin/nuclis agent` in Ghostty directly.
+capture as the panic and its trace, since the terminal stays open after
+the agent exits, so a failure is read the same way as a success. One thing
+no capture holds is the inline image preview: Rex draws it, so it is on in
+the harness, but a capture is the terminal's text, so the preview's rows
+are blank there; it is looked at in the session itself, from the Rex
+sidebar.
 
 ### The agent's task list
 

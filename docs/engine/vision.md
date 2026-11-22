@@ -204,7 +204,7 @@ so a conversation that has fed an image decodes at the plain rate.
 
 **What is shown and stored.** The transcript's user block gets one dim
 detail row per image (`image #1: /path/shot.png (320×240 → 10×8 tokens)`)
-and, where `tui.graphics.enabled` finds Ghostty or kitty in the environment
+and, where `tui.graphics.enabled` finds Ghostty, kitty or Rex in the environment
 (`NUCLIS_NO_PREVIEW=1` disables it), a preview: the decoded image
 box-filtered to a longest side of 512 px, sent as one kitty direct
 transmission (`f=24`, base64 in 4096-byte chunks, `q=2`, `C=1`) over a box
