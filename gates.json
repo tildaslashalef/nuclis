@@ -2480,6 +2480,28 @@
    },
    "note": "replays the 50-frame (2.00 s, 48,000 samples) HiggsAudioV2Tokenizer author trace under tests/fixtures/omnivoice/codec/ through higgs_codec_encoder and higgs_codec on the CPU: requires all 400/400 RVQ codes exact and every encoder and decoder stage within 1e-4 relative RMS (first run 2026-11-22: 400/400 codes exact, encoder worst 8.231e-6, decoder samples 1.689e-6)",
    "evidence": "docs/benchmarks/record/omnivoice.md#the-codec-on-the-cpu-2026-11-22"
+  },
+  {
+   "name": "omnivoice-trace-cpu",
+   "family": "omnivoice",
+   "tier": "verify-cpu",
+   "model": "omnivoice",
+   "command": [
+    "{zig-cpu}",
+    "test-omnivoice",
+    "--",
+    "{model}",
+    "trace",
+    "--max-relative-rms",
+    "1e-4",
+    "--max-abs",
+    "2e-3"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "replays step-0 conditional (S=53: 25 prompt + 16 ref + 12 masked target) and unconditional (S=12) traces under tests/fixtures/omnivoice/backbone/ through omnivoice_runtime on the CPU: requires every stage within 1e-4 relative RMS, embed/norm/logits within 2e-3 max abs, and all 96/96 codebook logit argmax equal for both cond and uncond (first run 2026-11-22: worst rel_rms 2.169e-6, worst normalized max_abs 5.493e-4, 192/192 argmax equal)",
+   "evidence": "docs/benchmarks/record/omnivoice.md#the-backbone-on-the-cpu-2026-11-22"
   }
  ]
 }

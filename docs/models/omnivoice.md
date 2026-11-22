@@ -100,5 +100,11 @@ verbatim (no implicit text normalizer):
   against the 50-frame `HiggsAudioV2Tokenizer` trace (400/400 RVQ codes exact,
   samples within `1.7e-6` relative RMS,
   [record](../benchmarks/record/omnivoice.md#the-codec-on-the-cpu-2026-11-22)).
+  `omnivoice-trace-cpu` (`make gate NAME=omnivoice-trace-cpu`, tier
+  `verify-cpu`) checks `omnivoice_runtime` on the CPU against the step-0
+  conditional and unconditional backbone traces (worst `2.2e-6` relative RMS,
+  all 192/192 codebook logit argmax equal,
+  [record](../benchmarks/record/omnivoice.md#the-backbone-on-the-cpu-2026-11-22)).
+
 
 
