@@ -119,6 +119,7 @@ generated block.
 | [embeddinggemma.md](models/embeddinggemma.md) | EmbeddingGemma 2: the embedding model, its files, forward pass, prefixes, and encoders |
 | [nemotron-asr.md](models/nemotron-asr.md) | Nemotron 3.5 ASR streaming 0.6B: the speech recognizer, its front end, cache-aware encoder, and transducer |
 | [drama3.md](models/drama3.md) | Fish Audio Drama 3 (35B-A3B): the dialogue speech synthesizer, its MoE backbone, codebook tower, and 44.1 kHz codec |
+| [omnivoice.md](models/omnivoice.md) | OmniVoice / VoiceTut-TTS: the Egyptian Arabic and code-switching masked-diffusion speech synthesizer, its `audio.cpp` container, and Higgs Audio V2 codec |
 | [qwen3-tts.md](models/qwen3-tts.md) | Qwen3-TTS (0.6B and 1.7B): the speech synthesizer, its talker, code predictor, and codec decoder; CustomVoice's built-in voices, the Base's cloned voices, VoiceDesign's described ones |
 
 ## The engine: `engine/` (the `inference/` package)
@@ -189,6 +190,7 @@ never edited after, one file per document it came from.
 | [metal-backend.md](benchmarks/record/metal-backend.md) | Metal backend: the record |
 | [muse-glimmer.md](benchmarks/record/muse-glimmer.md) | Muse Glimmer 30B: the record |
 | [nemotron-asr.md](benchmarks/record/nemotron-asr.md) | Nemotron 3.5 ASR: the record |
+| [omnivoice.md](benchmarks/record/omnivoice.md) | OmniVoice / VoiceTut-TTS: the record |
 | [prompt-profile.md](benchmarks/record/prompt-profile.md) | Prompt profiles: the record |
 | [qwen3-tts.md](benchmarks/record/qwen3-tts.md) | Qwen3-TTS: the record |
 | [qwen3.8.md](benchmarks/record/qwen3.8.md) | Qwen3.8-27B: the record |
