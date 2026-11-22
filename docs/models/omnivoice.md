@@ -105,6 +105,11 @@ verbatim (no implicit text normalizer):
   conditional and unconditional backbone traces (worst `2.2e-6` relative RMS,
   all 192/192 codebook logit argmax equal,
   [record](../benchmarks/record/omnivoice.md#the-backbone-on-the-cpu-2026-11-22)).
+  On Metal, `omnivoice_metal.Plan` packs conditional and unconditional CFG
+  sequences into one command buffer per step via `attentionSegmentsGrouped` and
+  `higgs_codec_metal.Decoder` decodes all 5 DAC blocks in one command buffer
+  (`omnivoice-trace-metal` and `omnivoice-codec-metal`, tier `verify`,
+  [record](../benchmarks/record/omnivoice.md#on-metal-2026-11-22)).
 
 
 

@@ -58,6 +58,7 @@ pub const drama3_speech = @import("drama3_speech.zig");
 pub const omnivoice = @import("omnivoice.zig");
 pub const omnivoice_text = @import("omnivoice_text.zig");
 pub const omnivoice_runtime = @import("omnivoice_runtime.zig");
+pub const omnivoice_metal = @import("omnivoice_metal.zig");
 pub const omnivoice_speech = @import("omnivoice_speech.zig");
 
 /// The registered families, in lookup order. Each registers itself through
@@ -173,6 +174,7 @@ test {
     _ = omnivoice;
     _ = omnivoice_text;
     _ = omnivoice_runtime;
+    _ = omnivoice_metal;
     _ = omnivoice_speech;
     _ = dflash;
     _ = dflash2;

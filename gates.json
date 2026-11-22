@@ -2502,6 +2502,50 @@
    },
    "note": "replays step-0 conditional (S=53: 25 prompt + 16 ref + 12 masked target) and unconditional (S=12) traces under tests/fixtures/omnivoice/backbone/ through omnivoice_runtime on the CPU: requires every stage within 1e-4 relative RMS, embed/norm/logits within 2e-3 max abs, and all 96/96 codebook logit argmax equal for both cond and uncond (first run 2026-11-22: worst rel_rms 2.169e-6, worst normalized max_abs 5.493e-4, 192/192 argmax equal)",
    "evidence": "docs/benchmarks/record/omnivoice.md#the-backbone-on-the-cpu-2026-11-22"
+  },
+  {
+   "name": "omnivoice-trace-metal",
+   "family": "omnivoice",
+   "tier": "verify",
+   "model": "omnivoice",
+   "command": [
+    "{zig-metal}",
+    "test-omnivoice",
+    "--",
+    "{model}",
+    "trace-metal",
+    "--max-relative-rms",
+    "1e-4",
+    "--max-abs",
+    "2e-3"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "compares omnivoice_metal.Plan (observed single-sequence cond S=53 and uncond S=12, plus packed CFG [cond || uncond] S=65 in one command buffer) against CPU omnivoice_runtime, and checks generate cancellation and GPU buffer lifecycle cleanup: requires every stage within 1e-4 relative RMS, embed/norm/logits within 2e-3 max abs, all 192/192 codebook logit argmax equal, cancel=true, and cleanup=true (first run 2026-11-22: worst rel_rms 2.363e-6, worst normalized max_abs 4.883e-4, 192/192 argmax equal, 61.7 ms/step)",
+   "evidence": "docs/benchmarks/record/omnivoice.md#on-metal-2026-11-22"
+  },
+  {
+   "name": "omnivoice-codec-metal",
+   "family": "omnivoice",
+   "tier": "verify",
+   "model": "omnivoice",
+   "command": [
+    "{zig-metal}",
+    "test-omnivoice",
+    "--",
+    "{model}",
+    "codec-metal",
+    "--max-relative-rms",
+    "1e-4",
+    "--max-abs",
+    "2e-3"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "decodes the 50-frame (2.00 s, 48,000 samples) HiggsAudioV2Tokenizer fixture codes.u16 through higgs_codec_metal.Decoder in one Metal command buffer (two init/decode/deinit lifecycle passes with zero leaked GPU buffers) and compares against both CPU higgs_codec and the author trace: requires <= 1e-4 relative RMS and <= 2e-3 max abs (first run 2026-11-22: 31.3 ms, vs CPU rel_rms 1.878e-6 max_abs 3.776e-6, vs author rel_rms 1.915e-6 max_abs 3.040e-6)",
+   "evidence": "docs/benchmarks/record/omnivoice.md#on-metal-2026-11-22"
   }
  ]
 }

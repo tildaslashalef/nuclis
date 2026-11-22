@@ -158,4 +158,54 @@ The unnormalized layer-27 residual stream reaches magnitude ~3×10⁴ before
 open 189 ms). Transcribed by `nuclis transcribe --language ar` (`nemotron-3.5-asr-streaming-0.6b`):
 `"إزيك بش عامل إيه النهار ده"`.
 
+## On Metal (2026-11-22)
+
+`omnivoice_metal.Plan` wraps all mapped `Q8_0` weights in place (`Backend.wrap`)
+and packs the conditional and unconditional CFG sequences (`[S_cond ‖ S_uncond]`)
+into one forward pass and one Metal command buffer per diffusion step using
+`Backend.attentionSegmentsGrouped`, per-segment NeoX `ropeRows`, `addRmsNorm`,
+`siluMul`, and `matmulTile` (with `audio_heads` evaluated only on the packed
+target tail rows). `higgs_codec_metal.Decoder` executes all five DAC decoder
+blocks and the final unclamped 7-tap convolution in one Metal command buffer via
+`codec_metal.Device`, folding non-causal `ConvTranspose1d` into a 3-tap gather +
+`matmulTile` + `addBiasRows` with no new Metal shaders.
+
+**Backbone trace on Metal** (`omnivoice-check MODEL.gguf trace-metal --max-relative-rms 1e-4 --max-abs 2e-3`,
+gate `omnivoice-trace-metal`, tier `verify`, ReleaseSafe on Apple M4 Pro):
+
+| Stage | Conditional vs CPU rel RMS / max \|Δ\| | Unconditional vs CPU rel RMS / max \|Δ\| |
+| --- | ---: | ---: |
+| `embed` | 0.000e0 / 0.000e0 | 0.000e0 / 0.000e0 |
+| `layer0` | 7.031e-7 / 2.861e-5 | 4.969e-7 / 1.526e-5 |
+| `layer13` | 8.306e-7 / 3.662e-4 | 3.285e-7 / 3.052e-5 |
+| `layer27` | 2.363e-6 / 6.641e-2 | 1.133e-6 / 3.662e-3 |
+| `norm` | 8.824e-7 / 4.883e-4 | 9.120e-7 / 2.136e-4 |
+| `logits` (`[12, 8200]`, 96/96 argmax equal) | 5.970e-7 / 3.204e-4 | 6.046e-7 / 3.204e-4 |
+| Packed CFG (`[cond ‖ uncond]`, `S = 65`) | 5.970e-7 / 3.204e-4 | 6.026e-7 / 3.204e-4 |
+
+Worst relative RMS across all stages is `2.363e-6`, worst normalized `max |Δ|`
+is `4.883e-4`, `generate` cancellation returns `error.Canceled`, and `Plan.deinit`
+leaves `created_bytes == 0` and `wrapped.count() == 0`.
+
+**Higgs Audio V2 codec decode on Metal** (`omnivoice-check MODEL.gguf codec-metal --max-relative-rms 1e-4 --max-abs 2e-3`,
+gate `omnivoice-codec-metal`, tier `verify`, ReleaseSafe on Apple M4 Pro):
+50 frames → 48,000 samples (2.00 s) in **31.3 ms** (64× faster than real time),
+`rel RMS = 1.878e-6` / `max |Δ| = 3.776e-6` against CPU `higgs_codec`, and
+`rel RMS = 1.915e-6` / `max |Δ| = 3.040e-6` against the author trace, with two
+init/decode/deinit lifecycle passes leaving zero leaked GPU buffers.
+
+**Metal synthesis first-look (2026-11-22)**: `omnivoice-check MODEL.gguf speak
+--backend metal --text "إزيك يا باشا؟ عامل إيه النهارده؟" --duration 2.0 --seed 0`
+(ReleaseSafe, Apple M4 Pro, 32 packed CFG diffusion steps, `guidance_scale = 2.0`,
+open 184 ms):
+
+| Phase | Time | Notes |
+| --- | ---: | --- |
+| Diffusion backbone (32 packed CFG steps) | 1,742.9 ms | 54.5 ms/step (`S_cond = 75`, `S_uncond = 50`, packed `S = 125`) |
+| Higgs Audio V2 codec decode (50 frames) | 31.4 ms | 1 command buffer → 48,000 samples (2.00 s) |
+| **Total synthesis** | **1,774.5 ms** | **RTF 0.89×** (136× faster than CPU's 240.9 s; RMS 0.1106, finite) |
+
+Transcribed by `nuclis transcribe --language ar` (`nemotron-3.5-asr-streaming-0.6b`):
+`"إزيك بش عامل إيه النهار ده"` (identical to CPU).
+
 
