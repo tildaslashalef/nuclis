@@ -75,6 +75,17 @@ pub fn isFile(directory: []const u8) bool {
     return std.mem.endsWith(u8, directory, ".gguf");
 }
 
+/// Whether a parsed GGUF header declares an OmniVoice / VoiceTut-TTS model
+/// (`general.architecture = "audiocpp"` with `audiocpp.model_spec.family =
+/// "omnivoice"`, or `general.architecture = "omnivoice"`).
+pub fn isOmniVoice(doc: *const inference.gguf.Document) bool {
+    const arch = doc.string("general.architecture") orelse return false;
+    if (std.mem.eql(u8, arch, inference.models.omnivoice.family_name)) return true;
+    if (!std.mem.eql(u8, arch, inference.models.omnivoice.container_architecture)) return false;
+    const family = doc.string("audiocpp.model_spec.family") orelse return false;
+    return std.mem.eql(u8, family, inference.models.omnivoice.family_name);
+}
+
 /// `resolve`, then the weights' presence: `ModelFileNotFound` names the
 /// pull that fetches them. `bytes` is the files' size on disk.
 pub fn locate(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: config.Models, name: []const u8, kind: Kind, paths: bool, diag: *config.Diagnostic) Error!Located {
@@ -144,14 +155,51 @@ pub const Described = struct {
     /// The `language` values besides `auto`: the codec's language ids.
     languages: []const []const u8,
     instructions: bool,
-    /// The weights' dtype (`BF16`), or `mixed`.
+    /// The weights' dtype (`BF16`), or `mixed` / GGUF quantization (`Q8_0`).
     quantization: []const u8,
+    /// Engine architecture name (`qwen3_tts`, `drama3`, `omnivoice`).
+    architecture: []const u8 = "qwen3_tts",
+    /// Output sample rate in Hz.
+    sample_rate: u32 = 24000,
 };
 
 /// Reads `directory`'s `config.json` (and `generation_config.json`) with the
-/// parse `nuclis speak` runs and the weights' safetensors header. Null when
-/// either is missing or not a speech checkpoint nuclis opens.
+/// parse `nuclis speak` runs and the weights' safetensors header, or for a
+/// speech GGUF reads its GGUF header. Null when missing or not a speech
+/// checkpoint nuclis opens.
 pub fn describeSpeech(arena: std.mem.Allocator, io: std.Io, directory: []const u8) !?Described {
+    if (isFile(directory)) {
+        var doc = inference.gguf.open(arena, io, directory, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return null,
+        };
+        defer doc.deinit();
+        if (isOmniVoice(&doc)) {
+            return .{
+                .mode = .clone,
+                .speakers = &.{},
+                .dialects = &.{},
+                .languages = try arena.dupe([]const u8, &.{inference.models.omnivoice_text.default_language}),
+                .instructions = true,
+                .quantization = "Q8_0",
+                .architecture = inference.models.omnivoice.family_name,
+                .sample_rate = inference.models.omnivoice_speech.sample_rate,
+            };
+        }
+        if (doc.string("general.architecture")) |arch| if (std.mem.eql(u8, arch, "drama3")) {
+            return .{
+                .mode = .clone,
+                .speakers = &.{},
+                .dialects = &.{},
+                .languages = &.{},
+                .instructions = false,
+                .quantization = "Q4_K",
+                .architecture = "drama3",
+                .sample_rate = inference.models.drama3_speech.sample_rate,
+            };
+        };
+        return null;
+    }
     const max_config_bytes = 1024 * 1024;
     const cwd = std.Io.Dir.cwd();
     const config_json = cwd.readFileAlloc(io, try std.fs.path.join(arena, &.{ directory, "config.json" }), arena, .limited(max_config_bytes)) catch |err| switch (err) {

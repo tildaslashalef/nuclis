@@ -24,7 +24,10 @@ const Allocator = std.mem.Allocator;
 const audio = inference.audio.audio;
 const speech = inference.models.qwen3_tts_runtime;
 const drama3 = inference.models.drama3_speech;
+const omnivoice = inference.models.omnivoice_speech;
 const fish = inference.audio.fish_codec;
+const higgs = inference.audio.higgs_codec;
+const speech_union = @import("audio/speech.zig");
 pub const Frame = inference.audio.qwen3_codec.Frame;
 
 pub const sample_rate = 24000;
@@ -110,6 +113,7 @@ const drama3_sizes = blk: {
     sizes[0] = fish.semantic_size;
     break :blk sizes;
 };
+const omnivoice_sizes: [higgs.codebooks]u16 = @splat(higgs.codebook_size);
 
 fn noEmbedding(_: *anyopaque, _: Allocator, _: []const f32, _: []f32) anyerror!void {
     unreachable;
@@ -125,6 +129,19 @@ pub fn drama3Encoders(voice: *drama3.Voice) Encoders {
         }
     };
     return .{ .context = voice, .rate = wide_rate, .sizes = &drama3_sizes, .dim = 0, .embed = noEmbedding, .codes = wrap.codes };
+}
+
+/// An open OmniVoice's encoder (24 kHz, 8 codebooks of 1024), which needs the
+/// transcript and makes no embedding.
+pub fn omnivoiceEncoders(voice: *omnivoice.Voice) Encoders {
+    const wrap = struct {
+        fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]u16 {
+            const v: *omnivoice.Voice = @ptrCast(@alignCast(context));
+            const encoded = try v.encodeReference(gpa, samples);
+            return flat(encoded.codes);
+        }
+    };
+    return .{ .context = voice, .rate = sample_rate, .sizes = &omnivoice_sizes, .dim = 0, .embed = noEmbedding, .codes = wrap.codes };
 }
 
 /// `frames` as one slice of codes, the same allocation.
@@ -149,22 +166,27 @@ pub fn encodersOf(voice: *speech.Voice) Encoders {
     return .{ .context = voice, .dim = voice.config.talker.hidden, .embed = wrap.embed, .codes = wrap.codes };
 }
 
-/// Encoders over a Base checkpoint's directory or a Drama 3 GGUF, mapped on
-/// their first call (`speech.Encoding`, `Drama3Encoding`), so a voice
-/// already made for the model maps nothing: the server's way, beside the
-/// voice its worker holds. Not thread-safe.
+/// Encoders over a Base checkpoint's directory, a Drama 3 GGUF, or an
+/// OmniVoice GGUF, mapped on their first call (`speech.Encoding`,
+/// `Drama3Encoding`, `OmniVoiceEncoding`), so a voice already made for the
+/// model maps nothing: the server's way, beside the voice its worker holds.
+/// Not thread-safe.
 pub const FileEncoders = struct {
     gpa: Allocator,
     io: std.Io,
     dir: []const u8,
+    kind: speech_union.Engine = .qwen3_tts,
     dim: usize,
     encoding: ?*speech.Encoding = null,
     drama3: ?*Drama3Encoding = null,
+    omnivoice: ?*OmniVoiceEncoding = null,
 
-    /// Reads `dir`'s `config.json` only (nothing for a `.gguf`, Drama 3);
+    /// Reads `dir`'s `config.json` (or GGUF header for a `.gguf`);
     /// `NotABase` when it clones nothing. `dir` is borrowed.
     pub fn init(gpa: Allocator, io: std.Io, dir: []const u8) !FileEncoders {
-        if (std.mem.endsWith(u8, dir, ".gguf")) return .{ .gpa = gpa, .io = io, .dir = dir, .dim = 0 };
+        if (std.mem.endsWith(u8, dir, ".gguf")) {
+            return .{ .gpa = gpa, .io = io, .dir = dir, .kind = speech_union.engineOf(gpa, io, dir), .dim = 0 };
+        }
         var arena: std.heap.ArenaAllocator = .init(gpa);
         defer arena.deinit();
         const a = arena.allocator();
@@ -172,40 +194,96 @@ pub const FileEncoders = struct {
         var parsed = try inference.models.qwen3_tts.parseConfig(gpa, bytes, null);
         defer parsed.deinit();
         if (!parsed.clones()) return error.NotABase;
-        return .{ .gpa = gpa, .io = io, .dir = dir, .dim = parsed.talker.hidden };
+        return .{ .gpa = gpa, .io = io, .dir = dir, .kind = .qwen3_tts, .dim = parsed.talker.hidden };
     }
 
     pub fn deinit(self: *FileEncoders) void {
         if (self.encoding) |e| e.close();
         if (self.drama3) |e| e.close();
+        if (self.omnivoice) |e| e.close();
         self.* = undefined;
     }
 
     pub fn encoders(self: *FileEncoders) Encoders {
-        if (std.mem.endsWith(u8, self.dir, ".gguf")) {
-            const wrap = struct {
-                fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]u16 {
-                    const f: *FileEncoders = @ptrCast(@alignCast(context));
-                    if (f.drama3 == null) f.drama3 = try Drama3Encoding.open(f.gpa, f.io, f.dir);
-                    return flat(try f.drama3.?.encoder.encode(gpa, samples));
-                }
-            };
-            return .{ .context = self, .rate = wide_rate, .sizes = &drama3_sizes, .dim = 0, .embed = noEmbedding, .codes = wrap.codes };
+        switch (self.kind) {
+            .omnivoice => {
+                const wrap = struct {
+                    fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]u16 {
+                        const f: *FileEncoders = @ptrCast(@alignCast(context));
+                        if (f.omnivoice == null) f.omnivoice = try OmniVoiceEncoding.open(f.gpa, f.io, f.dir);
+                        return flat(try f.omnivoice.?.encode(gpa, samples));
+                    }
+                };
+                return .{ .context = self, .rate = sample_rate, .sizes = &omnivoice_sizes, .dim = 0, .embed = noEmbedding, .codes = wrap.codes };
+            },
+            .drama3 => {
+                const wrap = struct {
+                    fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]u16 {
+                        const f: *FileEncoders = @ptrCast(@alignCast(context));
+                        if (f.drama3 == null) f.drama3 = try Drama3Encoding.open(f.gpa, f.io, f.dir);
+                        return flat(try f.drama3.?.encoder.encode(gpa, samples));
+                    }
+                };
+                return .{ .context = self, .rate = wide_rate, .sizes = &drama3_sizes, .dim = 0, .embed = noEmbedding, .codes = wrap.codes };
+            },
+            .qwen3_tts => {
+                const wrap = struct {
+                    fn opened(context: *anyopaque) !*speech.Encoding {
+                        const f: *FileEncoders = @ptrCast(@alignCast(context));
+                        if (f.encoding == null) f.encoding = try speech.Encoding.open(f.gpa, f.io, f.dir);
+                        return f.encoding.?;
+                    }
+                    fn embed(context: *anyopaque, gpa: Allocator, samples: []const f32, out: []f32) anyerror!void {
+                        try (try opened(context)).speakerEmbedding(gpa, samples, out);
+                    }
+                    fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]u16 {
+                        return flat(try (try opened(context)).referenceCodes(gpa, samples));
+                    }
+                };
+                return .{ .context = self, .dim = self.dim, .embed = wrap.embed, .codes = wrap.codes };
+            },
         }
-        const wrap = struct {
-            fn opened(context: *anyopaque) !*speech.Encoding {
-                const f: *FileEncoders = @ptrCast(@alignCast(context));
-                if (f.encoding == null) f.encoding = try speech.Encoding.open(f.gpa, f.io, f.dir);
-                return f.encoding.?;
-            }
-            fn embed(context: *anyopaque, gpa: Allocator, samples: []const f32, out: []f32) anyerror!void {
-                try (try opened(context)).speakerEmbedding(gpa, samples, out);
-            }
-            fn codes(context: *anyopaque, gpa: Allocator, samples: []const f32) anyerror![]u16 {
-                return flat(try (try opened(context)).referenceCodes(gpa, samples));
-            }
-        };
-        return .{ .context = self, .dim = self.dim, .embed = wrap.embed, .codes = wrap.codes };
+    }
+};
+
+/// OmniVoice's encoder alone over its GGUF: the mapping and the Higgs Audio V2
+/// codec encoder, without the diffusion backbone.
+pub const OmniVoiceEncoding = struct {
+    gpa: Allocator,
+    io: std.Io,
+    mapped: inference.weights.Mapped,
+    encoder: inference.audio.higgs_codec_encoder.Encoder,
+
+    pub fn open(gpa: Allocator, io: std.Io, path: []const u8) !*OmniVoiceEncoding {
+        const self = try gpa.create(OmniVoiceEncoding);
+        errdefer gpa.destroy(self);
+        self.gpa = gpa;
+        self.io = io;
+        self.mapped = try .open(gpa, io, path);
+        errdefer self.mapped.deinit(io);
+        const directory = self.mapped.mapping.memory[0..@intCast(self.mapped.document.directory_bytes)];
+        self.encoder = try .init(gpa, io, self.mapped.document, directory, self.mapped.view());
+        return self;
+    }
+
+    pub fn encode(self: *OmniVoiceEncoding, gpa: Allocator, samples: []const f32) ![]higgs.Frame {
+        var sum_sq: f64 = 0;
+        for (samples) |s| sum_sq += @as(f64, s) * @as(f64, s);
+        const rms: f32 = if (samples.len > 0) @floatCast(@sqrt(sum_sq / @as(f64, @floatFromInt(samples.len)))) else 0;
+        const normalized = if (rms > 0.0 and rms < 0.1) blk: {
+            const buf = try gpa.alloc(f32, samples.len);
+            const gain = 0.1 / rms;
+            for (buf, samples) |*d, s| d.* = s * gain;
+            break :blk buf;
+        } else null;
+        defer if (normalized) |n| gpa.free(n);
+        return self.encoder.encode(gpa, normalized orelse samples);
+    }
+
+    pub fn close(self: *OmniVoiceEncoding) void {
+        self.encoder.deinit();
+        self.mapped.deinit(self.io);
+        self.gpa.destroy(self);
     }
 };
 
@@ -771,6 +849,7 @@ test {
     // `encodersOf` has no caller here; this compiles it and the Voice methods it wraps.
     _ = &encodersOf;
     _ = &drama3Encoders;
+    _ = &omnivoiceEncoders;
     _ = &FileEncoders.encoders;
 }
 
@@ -906,6 +985,53 @@ test "a model without an embedding needs the transcript and encodes the 44.1 kHz
     try std.testing.expectEqual(@as(usize, wide_rate), wide.rate);
     try std.testing.expectEqual(@as(usize, 0), ready.embedding.len);
     try std.testing.expectEqual(@as(usize, 3), ready.rows([fish.codebooks]u16).len);
+}
+
+test "OmniVoice cloning uses 24 kHz 8x1024 codes and requires a transcript" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(root);
+    const path = try std.fs.path.join(gpa, &.{ root, "voices" });
+    defer gpa.free(path);
+    const store: Store = .{ .io = io, .path = path };
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const clip = try testClip(gpa, 2);
+    defer gpa.free(clip);
+    _ = try store.add(arena, "layla", clip, "أهلاً بيك.", 0);
+    _ = try store.add(arena, "silent", clip, null, 0);
+
+    const Omni = struct {
+        rate: usize = 0,
+        calls: usize = 0,
+        fn codes(context: *anyopaque, a: Allocator, samples: []const f32) anyerror![]u16 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            self.rate = samples.len / 2;
+            const out = try a.alloc(u16, 4 * higgs.codebooks);
+            for (out, 0..) |*c, i| c.* = @intCast((i * 17) % higgs.codebook_size);
+            return out;
+        }
+    };
+    var omni: Omni = .{};
+    const encoders: Encoders = .{ .context = &omni, .rate = sample_rate, .sizes = &omnivoice_sizes, .dim = 0, .embed = noEmbedding, .codes = Omni.codes };
+    const keys: Keys = .{ .model = &@as([64]u8, @splat('o')), .codec = &@as([64]u8, @splat('o')) };
+    try std.testing.expectError(error.TranscriptRequired, store.ensure(gpa, "silent", keys, encoders));
+    var ready = try store.ensure(gpa, "layla", keys, encoders);
+    defer ready.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, sample_rate), omni.rate);
+    try std.testing.expectEqual(@as(usize, 0), ready.embedding.len);
+    try std.testing.expectEqual(@as(usize, 4), ready.rows(higgs.Frame).len);
+    try std.testing.expectEqual(@as(usize, 1), omni.calls);
+    // Second call hits cache.
+    var cached = try store.ensure(gpa, "layla", keys, encoders);
+    defer cached.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 1), omni.calls);
+    try std.testing.expectEqualSlices(u16, ready.codes, cached.codes);
 }
 
 test "names, clips, transcripts, and the count are bounded; a changed clip is refused" {
