@@ -137,7 +137,7 @@ pub fn build(b: *std.Build) void {
     b.step("test-drama3", "Check Drama 3 against Fish's traces, Metal against the CPU, or speak (-- MODEL.gguf smoke|trace|codec|codec-metal|metal|speak)").dependOn(&drama3_check.step);
     const omnivoice_check = b.addRunArtifact(inference.artifact("omnivoice-check"));
     omnivoice_check.addPassthruArgs();
-    b.step("test-omnivoice", "Check OmniVoice / VoiceTut-TTS binding and embedded tokenizer (-- MODEL.gguf vocab)").dependOn(&omnivoice_check.step);
+    b.step("test-omnivoice", "Check OmniVoice / VoiceTut-TTS binding, tokenizer, and Higgs Audio V2 codec (-- MODEL.gguf vocab|codec|codec-encode|codec-decode)").dependOn(&omnivoice_check.step);
     const nemotron_asr_check = b.addRunArtifact(inference.artifact("nemotron-asr-check"));
     nemotron_asr_check.addPassthruArgs();
     b.step("test-nemotron-asr", "Check Nemotron ASR against the pinned trace, or time it (-- MODEL_DIR [FIXTURES] [--transducer] [--metal] [--bench] [--clip ID])").dependOn(&nemotron_asr_check.step);

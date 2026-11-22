@@ -14,6 +14,9 @@ pub const ecapa = @import("ecapa.zig");
 pub const qwen3_codec_encoder = @import("qwen3_codec_encoder.zig");
 pub const fish_codec = @import("fish_codec.zig");
 pub const fish_codec_encoder = @import("fish_codec_encoder.zig");
+/// Higgs Audio V2 codec decoder & encoder (OmniVoice / VoiceTut-TTS).
+pub const higgs_codec = @import("higgs_codec.zig");
+pub const higgs_codec_encoder = @import("higgs_codec_encoder.zig");
 /// Drama 3's codec decoder on Metal, with fish_codec's streaming contract.
 pub const fish_codec_metal = @import("fish_codec_metal.zig");
 /// The codec decoder on Metal, with the same streaming contract.
@@ -40,6 +43,8 @@ test {
     _ = qwen3_codec_encoder;
     _ = fish_codec;
     _ = fish_codec_encoder;
+    _ = higgs_codec;
+    _ = higgs_codec_encoder;
     _ = fish_codec_metal;
     _ = qwen3_codec_metal;
     _ = codec_attention;

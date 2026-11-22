@@ -308,7 +308,9 @@
   "omnivoice": [
    "inference/omnivoice-check.zig",
    "inference/src/models/omnivoice*.zig",
-   "inference/src/models/fixtures/omnivoice-*.json"
+   "inference/src/models/fixtures/omnivoice-*.json",
+   "inference/src/audio/higgs_codec*.zig",
+   "tests/fixtures/omnivoice/**"
   ]
  },
  "aggregators": [
@@ -2458,6 +2460,26 @@
    },
    "note": "binds voicetut-tts-q8_0.gguf (313 generator + 527 codec tensors), verifies audiocpp.tensor_names, config.json, and weights/codebook_layer_offsets, parses the embedded Qwen3 BPE tokenizer.json, and checks all 5 standalone strings (English, Egyptian Arabic, code-switching, Arabic diacritics, punctuation/whitespace) and 4 full prompts (auto-voice, voice design, zero-shot clone with denoise, unconditional CFG) against pinned token IDs",
    "evidence": "docs/models/omnivoice.md#prompt-format-and-tokenizer"
+  },
+  {
+   "name": "omnivoice-codec-cpu",
+   "family": "omnivoice",
+   "tier": "verify-cpu",
+   "model": "omnivoice",
+   "command": [
+    "{zig-cpu}",
+    "test-omnivoice",
+    "--",
+    "{model}",
+    "codec",
+    "--max-relative-rms",
+    "1e-4"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "replays the 50-frame (2.00 s, 48,000 samples) HiggsAudioV2Tokenizer author trace under tests/fixtures/omnivoice/codec/ through higgs_codec_encoder and higgs_codec on the CPU: requires all 400/400 RVQ codes exact and every encoder and decoder stage within 1e-4 relative RMS (first run 2026-11-22: 400/400 codes exact, encoder worst 8.231e-6, decoder samples 1.689e-6)",
+   "evidence": "docs/benchmarks/record/omnivoice.md#the-codec-on-the-cpu-2026-11-22"
   }
  ]
 }
