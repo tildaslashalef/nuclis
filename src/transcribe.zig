@@ -35,6 +35,8 @@ pub const Options = struct {
     format: Format = .text,
     /// The segments, with their words in JSON.
     segments: bool = false,
+    /// Each listed language's reading in JSON.
+    alternatives: bool = false,
     lookahead: usize = 3,
     /// A `prompt_dictionary` key; null is the model's default (`auto`).
     language: ?[]const u8 = null,
@@ -66,8 +68,8 @@ pub fn parseArgs(args: []const []const u8, diag: *config.Diagnostic) !Options {
             o.file = word;
             continue;
         }
-        if (std.mem.eql(u8, word, "--stream") or std.mem.eql(u8, word, "--segments")) {
-            const flag = if (std.mem.eql(u8, word, "--stream")) &o.stream else &o.segments;
+        if (std.mem.eql(u8, word, "--stream") or std.mem.eql(u8, word, "--segments") or std.mem.eql(u8, word, "--alternatives")) {
+            const flag = if (std.mem.eql(u8, word, "--stream")) &o.stream else if (std.mem.eql(u8, word, "--segments")) &o.segments else &o.alternatives;
             if (flag.*) return error.DuplicateOption;
             flag.* = true;
             continue;
@@ -154,7 +156,18 @@ const Report = struct {
     tokens: []const TokenReport,
     /// With `--segments`, else null.
     segments: ?Segments = null,
+    /// With `--alternatives`, else null.
+    alternatives: ?Alternatives = null,
     timings: Timings,
+};
+
+/// Each listed language's reading, as JSON.
+const Alternatives = struct {
+    items: []const asr.Alternative,
+
+    pub fn jsonStringify(self: Alternatives, w: *std.json.Stringify) std.Io.Writer.Error!void {
+        try transcript.writeAlternatives(w, self.items);
+    }
 };
 
 /// The segments with their words, as JSON.
@@ -322,6 +335,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, o: Options
         .score = transcriber.score(),
         .tokens = tokens,
         .segments = if (o.segments) .{ .segmenter = &segmenter } else null,
+        .alternatives = if (o.alternatives) .{ .items = try transcriber.alternatives(arena) } else null,
         .timings = .{
             .load_ms = timing.ms(load_ns),
             .decode_audio_ms = timing.ms(decode_ns),
@@ -375,9 +389,9 @@ fn showPartial(arena: std.mem.Allocator, transcriber: *const asr.Transcriber, sh
 
 test "transcribe's options: one file, the lookaheads the checkpoint has, cpu or metal, a format" {
     var diag: config.Diagnostic = .{};
-    const o = try parseArgs(&.{ "clip.wav", "--stream", "--lookahead", "13", "--language", "de-DE", "--json", "--model", "dir", "--segments" }, &diag);
+    const o = try parseArgs(&.{ "clip.wav", "--stream", "--lookahead", "13", "--language", "de-DE", "--json", "--model", "dir", "--segments", "--alternatives" }, &diag);
     try std.testing.expectEqualStrings("clip.wav", o.file.?);
-    try std.testing.expect(o.stream and o.segments);
+    try std.testing.expect(o.stream and o.segments and o.alternatives);
     try std.testing.expectEqual(Format.json, o.format);
     try std.testing.expectEqual(@as(usize, 13), o.lookahead);
     try std.testing.expectEqualStrings("de-DE", o.language.?);

@@ -745,6 +745,7 @@ fn transcribe(p: *Page) !void {
     try more(p, "with times, timings; srt or vtt: subtitles");
     try row(p, "--segments", "the segments: sentences, or speech between");
     try more(p, "pauses, with their times (and words, in json)");
+    try row(p, "--alternatives", "each listed language's reading, in json");
     try row(p, "--json", "the same as --format json");
 
     try heading(p, "Examples:");

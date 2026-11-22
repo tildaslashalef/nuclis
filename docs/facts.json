@@ -388,6 +388,7 @@
         "--backend",
         "--format",
         "--segments",
+        "--alternatives",
         "--json"
       ]
     },

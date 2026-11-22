@@ -30,6 +30,7 @@ The session is set by the query:
 | `model` | a registry entry of kind `transcription` or `nemotron-asr-0.6b`; never a path. Absent: the open one, else `transcribe.model` |
 | `language` | a locale of the model's prompt dictionary (`en-US`, `de-DE`, `fr`, `es-419`, …) or `auto` (the default: the model tags the language it heard), or a comma-separated list of up to four, `auto` only last ([several languages](#several-languages)) |
 | `lookahead` | `0`, `3` (the default), `6`, or `13` rows of 80 ms the encoder waits for: a chunk, and so a possible partial, every 80, 320, 560, or 1,120 ms of audio |
+| `alternatives` | `true` or `false` (default): include each listed language's reading (`alternatives`) on every `final` event |
 
 A refusal before the upgrade is an ordinary HTTP response with the
 shared error body: `426 upgrade_required` (with `upgrade: websocket`) to
@@ -73,7 +74,10 @@ with pongs; a close is answered once what was asked before it (a
   nothing.
 - `final` after `finish`: the text (equal to `nuclis transcribe --json`'s
   for the same samples, lookahead, and language), the language tag the
-  model emitted (`null` if none), the words, and the utterance's length.
+  model emitted (`null` if none), the words, the utterance's length, and
+  when `alternatives=true`, an `alternatives` array with one entry per
+  listed language (`language`, `text`, `tokens`, `text_rows`, and `tag`
+  for `auto` if it emitted one).
   Words are grouped as a file's are ([segments](#segments)): a word
   starts at a piece that begins with a space; its `start` and `end` are
   the 80 ms encoder rows its pieces were emitted at (a late punctuation
@@ -175,6 +179,7 @@ one is a file (`phrases` may be 8 KiB).
 | `timestamp_granularities[]` | `segment`, `word`, or both (repeat the field); with `verbose_json` or `stream`. Absent: segments |
 | `stream` | `true`: server-sent events (below); not with `srt` or `vtt` |
 | `lookahead` | nuclis's: rows of 80 ms the encoder waits for, `0`, `3` (the default), `6`, `13`; as `nuclis transcribe --lookahead` |
+| `alternatives` | nuclis's: `true` or `false` (default); include each listed language's reading (`alternatives`) in `json`, `verbose_json`, and `transcript.text.done` events |
 | `phrases` | nuclis's: a JSON array of names or words to expect, `["Siobhan", "Dun Laoghaire"]` (at most 64, each at most 48 bytes, the field 8 KiB); as `nuclis transcribe --phrase` ([phrases](#phrases-to-expect)) |
 
 Refused with `400 unsupported_feature`: a `prompt` (the model takes no
@@ -195,18 +200,27 @@ What phrases fix and cost: [record, 2026-10-28](../benchmarks/record/api.md#phra
 
 ### Several languages
 
-A user who speaks more than one language lists them: `language:
-"ar,en,auto"` on either route (`nuclis transcribe --language
-ar,en-US,auto`). The audio is encoded once and decoded under each; each
-stretch of words up to a pause takes the language that wrote it,
-because a fixed locale writes nothing for most other languages. `auto`,
-only last, is the fallback: it is used when none of the others wrote, or
-when it wrote the same script better (Spanish that `en` spelled in
-English). The response's `language` (a final's on the live route) names
-the language chosen, from its tag or, without one, the locale. Partials
-may change language until the pause; segments and finals do not.
+A user who speaks more than one language lists them in priority order:
+`language: "de,ar,en,auto"` on either route (`nuclis transcribe --language
+de-DE,ar,en-US,auto`). The audio is encoded once and decoded under each.
+Within each stretch of words up to a pause, the earliest listed language
+that wrote text keeps the stretch unless a later one covers at least 1.5×
+as many text rows and at least 3 more text rows. `auto`, only last, is
+the fallback: it is used when none of the others wrote, or when it
+out-covers the incumbent by the same margin while writing the same script.
+Arbitration replays row by row, so the live WebSocket route, the file
+route, and `nuclis transcribe` choose identically for the same audio and
+list. The response's `language` (a final's on the live route) names the
+language chosen, from its tag or, without one, the locale. Partials may
+change language until the pause; segments and finals do not.
 
-What a list costs and gains: [record, 2026-10-30](../benchmarks/record/api.md#several-languages-2026-10-30).
+When a client asks for `alternatives=true` (or `--alternatives` on the
+CLI), the final response includes `alternatives`: one object per listed
+language in list order with `language`, `text`, `tokens`, `text_rows`,
+and `tag` (for `auto`, if it emitted a language tag). No log-probabilities
+are reported (`include[]` remains refused).
+
+What a list costs and gains: [record, 2026-10-30](../benchmarks/record/api.md#several-languages-2026-10-30) and [ranked lists, 2026-11-22](../benchmarks/record/nemotron-asr.md#ranked-language-lists-and-push-size-invariance-2026-11-22).
 
 ### The file transcription response
 

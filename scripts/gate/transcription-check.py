@@ -156,7 +156,16 @@ def transcribe_stream(port: int, fields: list[tuple[str, str]], audio: bytes, fi
     return out
 
 
-def cli(nuclis: str, model: str, path: pathlib.Path, language: str, backend: str) -> Json:
+def cli(
+    nuclis: str,
+    model: str,
+    path: pathlib.Path,
+    language: str,
+    backend: str,
+    *,
+    stream: bool = False,
+    alternatives: bool = False,
+) -> Json:
     command = [
         nuclis,
         "transcribe",
@@ -169,6 +178,10 @@ def cli(nuclis: str, model: str, path: pathlib.Path, language: str, backend: str
         "--language",
         language,
     ]
+    if stream:
+        command.append("--stream")
+    if alternatives:
+        command.append("--alternatives")
     done = subprocess.run(command, capture_output=True, text=True, check=False)
     if done.returncode != 0:
         raise Failure(f"{' '.join(command)}: exit {done.returncode}\n{done.stderr}")
@@ -489,6 +502,70 @@ def long(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def build_fixture_join() -> pathlib.Path:
+    """Four pinned fixtures joined by silence, under .zig-cache/transcription/."""
+    fixtures = ROOT / "tests/fixtures"
+    parts = [
+        (fixtures / "embeddinggemma-inputs/speech-2.wav", 1.2),
+        (fixtures / "embeddinggemma-inputs/speech-1.wav", 1.7),
+        (fixtures / "nemotron-asr/fleurs-de/clip.wav", 1.1),
+        (fixtures / "nemotron-asr/librispeech/clip.wav", 0.0),
+    ]
+    pieces: list[bytes] = []
+    for path, gap in parts:
+        raw = read_wav(path.read_bytes())
+        pcm = raw if isinstance(raw, bytes) else pcm16(raw)
+        pieces.append(pcm)
+        if gap > 0:
+            pieces.append(bytes(2 * round(gap * RATE)))
+    CACHE.mkdir(parents=True, exist_ok=True)
+    out = CACHE / "fixtures-join4.wav"
+    out.write_bytes(wav16(b"".join(pieces)))
+    return out
+
+
+def languages(args: argparse.Namespace) -> int:
+    """Multi-language arbiter gate: stream == pieced on CPU and Metal, and
+    list order flips equal-coverage choice on fleurs-de."""
+    join4 = build_fixture_join()
+    fleurs_de = ROOT / "tests/fixtures/nemotron-asr/fleurs-de/clip.wav"
+    backends = [b.strip() for b in args.backends.split(",") if b.strip()]
+    for backend in backends:
+        pieced = cli(args.nuclis, args.model, join4, "de-DE,ar,en-US,auto", backend, alternatives=True)
+        streamed = cli(args.nuclis, args.model, join4, "de-DE,ar,en-US,auto", backend, stream=True, alternatives=True)
+        if pieced["text"] != streamed["text"]:
+            raise Failure(
+                f"{backend} join4 pieced != stream:\n  pieced: {pieced['text']!r}\n  stream: {streamed['text']!r}"
+            )
+        if backend == "cpu" and pieced["tokens"] != streamed["tokens"]:
+            raise Failure("cpu join4 tokens differ between pieced and --stream")
+        alts = cast(list[Json], pieced.get("alternatives") or [])
+        if len(alts) != 4:
+            raise Failure(f"{backend} join4 expected 4 alternatives, got {len(alts)}")
+        for alt in alts:
+            for key in ("language", "text", "tokens", "text_rows"):
+                if key not in alt:
+                    raise Failure(f"{backend} alternative missing {key}: {alt}")
+        if alts[3]["language"] != "auto" or not alts[3].get("tag"):
+            raise Failure(f"{backend} join4 auto alternative missing emitted tag: {alts[3]}")
+
+        de_pieced = cli(args.nuclis, args.model, fleurs_de, "de-DE,en-US", backend)
+        de_stream = cli(args.nuclis, args.model, fleurs_de, "de-DE,en-US", backend, stream=True)
+        en_pieced = cli(args.nuclis, args.model, fleurs_de, "en-US,de-DE", backend)
+        en_stream = cli(args.nuclis, args.model, fleurs_de, "en-US,de-DE", backend, stream=True)
+        if de_pieced["text"] != de_stream["text"] or en_pieced["text"] != en_stream["text"]:
+            raise Failure(f"{backend} fleurs-de pieced != stream")
+        if not cast(str, de_pieced["text"]).startswith("Die"):
+            raise Failure(f"{backend} de-DE,en-US expected 'Die...', got {de_pieced['text']!r}")
+        if not cast(str, en_pieced["text"]).startswith("The"):
+            raise Failure(f"{backend} en-US,de-DE expected 'The...', got {en_pieced['text']!r}")
+        print(
+            f"{backend}: join4 stream==pieced ({len(pieced['tokens'])} tokens, 4 alternatives); "
+            f"fleurs-de order flip OK ({de_pieced['text'][:16]!r} vs {en_pieced['text'][:16]!r})"
+        )
+    return 0
+
+
 class Tests(unittest.TestCase):
     def test_wav(self) -> None:
         pcm = struct.pack("<3h", 0, 16384, -32768)
@@ -515,10 +592,11 @@ class Tests(unittest.TestCase):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("mode", choices=("route", "long", "self-test"))
+    parser.add_argument("mode", choices=("route", "long", "languages", "self-test"))
     parser.add_argument("--nuclis", default=str(ROOT / "zig-out/bin/nuclis"), help="the binary to run")
     parser.add_argument("--model", help="the checkpoint directory (with --chat, a catalogue name)")
     parser.add_argument("--backend", default="metal", choices=("cpu", "metal"), help="the CLI's, as the server's")
+    parser.add_argument("--backends", default="metal,cpu", help="languages: comma-separated backends to check")
     parser.add_argument("--speech", type=pathlib.Path, default=wer.SPEECH, help="the fetched corpus")
     parser.add_argument("--minutes", default="5,30", help="long: the recordings' durations")
     parser.add_argument("--languages", default="en-US", help="long: the clips' locales, comma-separated, or all")
@@ -534,7 +612,11 @@ def main() -> int:
     if not shutil.which("afconvert") and args.mode == "long":
         parser.error("long needs afconvert (macOS)")
     try:
-        return route(args) if args.mode == "route" else long(args)
+        if args.mode == "route":
+            return route(args)
+        if args.mode == "languages":
+            return languages(args)
+        return long(args)
     except Failure as failure:
         print(f"transcription-check: FAILED: {failure}", file=sys.stderr)
         return 1

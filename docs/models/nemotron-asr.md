@@ -25,7 +25,8 @@ checkpoint and the transformers definition:
 | Transducer | RNN-T: a 2-layer LSTM of 640 over a 13,088-row embedding (the blank, 13087, a zero row), joint `head · relu(e + g)` over 13,088 outputs, greedy |
 
 **Lookahead** r is 0, 3 (the default), 6, or 13 rows (80–1,120 ms of
-latency); the checkpoint has no full-context mode. A stream carries per
+latency); the checkpoint has no full-context mode, and r = 1 is absent
+because `supported_num_lookahead_tokens` is `[3, 0, 6, 13]`. A stream carries per
 block the last 56 keys and values and the last 8 GLU rows, one input row
 per subsampling convolution, the open mel frames, and the LSTM state.
 Chunked equals whole-clip at the same r; at the end of a stream nuclis
@@ -66,16 +67,26 @@ No chat profile. The language prompt is an id from `prompt_dictionary`
 tag after terminal punctuation. A fixed locale transcribes its own
 language and returns nothing for most others.
 
-**Several languages.** `--language ar,en-US,auto` takes up to
+**Several languages.** `--language de-DE,ar,en-US,auto` takes up to
 `max_languages` = 4 prompts for one encoder pass, then per language the
 prompt block, the projector, and its own greedy `Decoder`
-(`Transcriber.setLanguages`). Words come in stretches that end
-`choose_again_rows` = 13 rows (1.04 s) after the last text of the chosen
-language; within the open stretch the language that wrote text with the
-highest score gain wins. `auto` may come only last, as the fallback, and
-replaces another only while writing the same script. `Transcriber.settled`
-counts the tokens that are final; each language's next stretch
-begins `echo_rows` = 4 rows past the last text.
+(`Transcriber.setLanguages`). List order is priority: within an open
+stretch, the earliest listed language that wrote text keeps the stretch
+unless a later one out-covers it by at least 1.5× as many text rows and
+at least 3 more text rows (`coverage_num/coverage_den` = 3/2,
+`coverage_min_diff` = 3). `auto` may come only last, as the fallback: it
+is chosen when no listed language wrote text, or when it out-covers the
+incumbent by the same margin while writing the same script. Arbitration
+replays row by row (`Arbiter`), so the choice is independent of push size
+and uses no log-probabilities (phrase boosting does not penalize a
+language). Stretches settle `choose_again_rows` = 13 rows (1.04 s) after
+the chosen language's last text; `Transcriber.settled` and
+`Transcriber.settledRows` mark what is final; each language's next
+stretch begins `echo_rows` = 4 rows past the last text. Opt-in
+`Transcriber.alternatives` returns every listed language's reading
+(`language`, `text`, `tokens`, `text_rows`, and `auto`'s emitted `tag` if
+any). Measurements:
+[record, 2026-11-22](../benchmarks/record/nemotron-asr.md#ranked-language-lists-and-push-size-invariance-2026-11-22).
 
 **Phrase boosting** (`--phrase`, at most 64; `inference/src/audio/boost.zig`).
 Each phrase is spelled as the pieces spell it and matched as text against
@@ -106,6 +117,7 @@ each final transcript and on `reset`.
 | `nemotron-asr-file-route` | `verify` | nemotron_asr | [api-transcription.md § transcription-files](../guide/api-transcription.md#transcription-files) |
 | `nemotron-asr-long` | `verify` | nemotron_asr | [api-transcription.md § transcription-files](../guide/api-transcription.md#transcription-files) |
 | `nemotron-asr-stream-route` | `verify` | nemotron_asr | [api-transcription.md § live-transcription](../guide/api-transcription.md#live-transcription) |
+| `nemotron-asr-languages` | `verify` | nemotron_asr | [nemotron-asr.md § prompt-profile](nemotron-asr.md#prompt-profile) |
 <!-- /gen -->
 
 ## Current numbers
