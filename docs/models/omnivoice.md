@@ -63,3 +63,36 @@ VoiceTut-TTS has no bundled speaker clips. One file serves three modes:
   clip.
 - **Zero-shot voice cloning**: a saved reference clip and transcript
   (`nuclis voice add`), encoded through the Higgs Audio V2 tokenizer.
+
+## Prompt format and tokenizer
+
+No chat profile. `omnivoice_text` builds OmniVoice's conditional prompt
+verbatim (no implicit text normalizer):
+
+```text
+[<|denoise|>]<|lang_start|>{lang}<|lang_end|><|instruct_start|>{instruct}<|instruct_end|><|text_start|>[{ref_text} ]{text}<|text_end|>
+```
+
+- **Control tokens**: seven added special tokens (`151669` `<|denoise|>` through
+  `151675` `<|text_end|>`), matched before NFC normalization by the embedded
+  Qwen3 BPE tokenizer (`hf_json.Shape.qwen2`: `NFC` +
+  `Sequence([Split(qwen2 regex, Isolated), ByteLevel(use_regex=false)])` +
+  `ByteLevel` decoder, 151,643 vocab, 151,387 merges, 33 added tokens).
+- **Language**: defaults to `arz` (Egyptian Arabic); `None` leaves the language
+  unspecified.
+- **Instruct tags**: validated strictly against OmniVoice's five categories, at
+  most one tag per category — gender (`male`, `female`, `男`, `女`), age
+  (`child`, `teenager`, `young adult`, `middle-aged`, `elderly`, and Chinese
+  equivalents), pitch (`very low pitch`…`very high pitch`), style (`whisper`,
+  `耳语`), and English accents / Chinese dialects. Unknown or conflicting tags
+  return a typed error, and `instruct` is mutually exclusive with a reference
+  clip.
+- **Duration and chunking**: explicit `duration_sec` overrides `speed` and
+  automatic script-aware frame estimation (25 fps, bounded to 10–1,500 frames).
+  Long text splits on Arabic and English sentence ends (`.!?;…`, newlines,
+  `؟؛۔`) without breaking `<|...|>` or `[...]` tags.
+- **Gate**: `omnivoice-vocabulary` (`make gate NAME=omnivoice-vocabulary`)
+  checks the full structural binding, embedded `config.json`,
+  `weights/codebook_layer_offsets`, and pinned English, Egyptian Arabic,
+  code-switching, diacritics, and prompt token sequences.
+

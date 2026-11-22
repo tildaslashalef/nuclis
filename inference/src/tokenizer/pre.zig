@@ -44,6 +44,11 @@ pub const Char = struct {
     fn punctuation(self: Char) bool {
         return self.len != 0 and self.bits == 0;
     }
+    /// Neither letter, number, nor whitespace: qwen2's `[^\s\p{L}\p{N}]` class
+    /// (combining marks are outside `\p{L}`, unlike qwen35's `[\p{L}\p{M}]`).
+    fn qwen2Punctuation(self: Char) bool {
+        return self.len != 0 and !self.letter() and !self.number() and !self.space();
+    }
 };
 
 /// Decodes the character at `offset` of already validated UTF-8.
@@ -54,70 +59,82 @@ pub fn charAt(text: []const u8, offset: usize) Char {
     return .{ .cp = cp, .len = len, .bits = flags(cp) };
 }
 
-pub const Iterator = struct {
-    text: []const u8,
-    position: usize = 0,
+/// `Iterator` (`marks_in_word = true`) matches qwen35 (`[\p{L}\p{M}]+`);
+/// `Qwen2Iterator` (`marks_in_word = false`) matches Qwen2/Qwen3 (`\p{L}+`).
+pub const Iterator = Splitter(true);
+pub const Qwen2Iterator = Splitter(false);
 
-    pub fn init(text: []const u8) error{InvalidUtf8}!Iterator {
-        if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
-        return .{ .text = text };
-    }
+fn Splitter(comptime marks_in_word: bool) type {
+    return struct {
+        const Self = @This();
+        text: []const u8,
+        position: usize = 0,
 
-    fn at(self: Iterator, offset: usize) Char {
-        return charAt(self.text, offset);
-    }
+        pub fn init(text: []const u8) error{InvalidUtf8}!Self {
+            if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
+            return .{ .text = text };
+        }
 
-    pub fn next(self: *Iterator) ?[]const u8 {
-        if (self.position == self.text.len) return null;
-        const start = self.position;
-        const first = self.at(start);
-        var end = start + first.len;
-        const second = self.at(end);
-        // Case-insensitive contractions precede the optional-prefix letter run.
-        if (first.cp == '\'') {
-            for ([_][]const u8{ "'s", "'t", "'re", "'ve", "'m", "'ll", "'d" }) |suffix| {
-                if (self.text.len - start >= suffix.len and std.ascii.eqlIgnoreCase(self.text[start..][0..suffix.len], suffix))
-                    return self.finish(start, start + suffix.len);
+        fn at(self: Self, offset: usize) Char {
+            return charAt(self.text, offset);
+        }
+
+        pub fn next(self: *Self) ?[]const u8 {
+            if (self.position == self.text.len) return null;
+            const start = self.position;
+            const first = self.at(start);
+            var end = start + first.len;
+            const second = self.at(end);
+            // Case-insensitive contractions precede the optional-prefix letter run.
+            if (first.cp == '\'') {
+                for ([_][]const u8{ "'s", "'t", "'re", "'ve", "'m", "'ll", "'d" }) |suffix| {
+                    if (self.text.len - start >= suffix.len and std.ascii.eqlIgnoreCase(self.text[start..][0..suffix.len], suffix))
+                        return self.finish(start, start + suffix.len);
+                }
             }
+            // The run class is letters (and combining marks for qwen35).
+            if (!first.newline() and !first.number() and (wordChar(first) or wordChar(second))) {
+                while (wordChar(self.at(end))) end += self.at(end).len;
+                return self.finish(start, end);
+            }
+            if (first.number()) return self.finish(start, end);
+            const punct = if (first.cp == ' ') second else first;
+            if (isPunct(punct)) {
+                end = if (first.cp == ' ') start + first.len else start;
+                while (isPunct(self.at(end))) end += self.at(end).len;
+                while (self.at(end).newline()) end += self.at(end).len;
+                return self.finish(start, end);
+            }
+            end = start;
+            var last_newline: usize = start;
+            var last_space: usize = start;
+            while (self.at(end).space()) {
+                last_space = end;
+                const ch = self.at(end);
+                end += ch.len;
+                if (ch.newline()) last_newline = end;
+            }
+            if (last_newline > start) return self.finish(start, last_newline);
+            // Leave one whitespace for the next optional-prefix word alternative.
+            if (last_space > start and end < self.text.len) return self.finish(start, last_space);
+            if (end > start) return self.finish(start, end);
+            return self.finish(start, start + first.len);
         }
-        // The run class is letters and combining marks.
-        if (!first.newline() and !first.number() and (wordChar(first) or wordChar(second))) {
-            while (wordChar(self.at(end))) end += self.at(end).len;
-            return self.finish(start, end);
-        }
-        if (first.number()) return self.finish(start, end);
-        const punct = if (first.cp == ' ') second else first;
-        if (punct.punctuation()) {
-            end = if (first.cp == ' ') start + first.len else start;
-            while (self.at(end).punctuation()) end += self.at(end).len;
-            while (self.at(end).newline()) end += self.at(end).len;
-            return self.finish(start, end);
-        }
-        end = start;
-        var last_newline: usize = start;
-        var last_space: usize = start;
-        while (self.at(end).space()) {
-            last_space = end;
-            const ch = self.at(end);
-            end += ch.len;
-            if (ch.newline()) last_newline = end;
-        }
-        if (last_newline > start) return self.finish(start, last_newline);
-        // Leave one whitespace for the next optional-prefix word alternative.
-        if (last_space > start and end < self.text.len) return self.finish(start, last_space);
-        if (end > start) return self.finish(start, end);
-        return self.finish(start, start + first.len);
-    }
 
-    fn wordChar(ch: Char) bool {
-        return ch.letter() or ch.mark();
-    }
+        fn wordChar(ch: Char) bool {
+            return if (marks_in_word) (ch.letter() or ch.mark()) else ch.letter();
+        }
 
-    fn finish(self: *Iterator, start: usize, end: usize) []const u8 {
-        self.position = end;
-        return self.text[start..end];
-    }
-};
+        fn isPunct(ch: Char) bool {
+            return if (marks_in_word) ch.punctuation() else ch.qwen2Punctuation();
+        }
+
+        fn finish(self: *Self, start: usize, end: usize) []const u8 {
+            self.position = end;
+            return self.text[start..end];
+        }
+    };
+}
 
 test "qwen35 ordered Unicode, contraction, digit, and whitespace splitting" {
     const cases = .{
@@ -137,6 +154,16 @@ test "qwen35 ordered Unicode, contraction, digit, and whitespace splitting" {
     try std.testing.expectError(error.InvalidUtf8, Iterator.init("\xff"));
     var empty = try Iterator.init("");
     try std.testing.expect(empty.next() == null);
+}
+
+test "qwen2 splitter excludes combining marks from letter runs" {
+    // Arabic word with fatha (U+064E, category Mn): `\p{L}+` breaks at the mark,
+    // which then acts as the optional non-letter prefix of the next letter run.
+    var it = try Qwen2Iterator.init("م\u{064E}رْحبا meeting!");
+    for ([_][]const u8{ "م", "\u{064E}ر", "ْحبا", " meeting", "!" }) |expected| {
+        try std.testing.expectEqualStrings(expected, it.next().?);
+    }
+    try std.testing.expectEqual(@as(?[]const u8, null), it.next());
 }
 
 test "pinned Unicode table is ordered and spans supplementary characters" {

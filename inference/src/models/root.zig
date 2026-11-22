@@ -53,6 +53,10 @@ pub const drama3_metal = @import("drama3_metal.zig");
 pub const drama3_text = @import("drama3_text.zig");
 pub const drama3_sampler = @import("drama3_sampler.zig");
 pub const drama3_speech = @import("drama3_speech.zig");
+/// OmniVoice / VoiceTut-TTS, the masked-diffusion speech model in `audio.cpp`'s
+/// single-GGUF container. Not a registry family: it decodes audio codebooks.
+pub const omnivoice = @import("omnivoice.zig");
+pub const omnivoice_text = @import("omnivoice_text.zig");
 
 /// The registered families, in lookup order. Each registers itself through
 /// its `family` declaration.
@@ -164,6 +168,8 @@ test {
     _ = drama3_text;
     _ = drama3_sampler;
     _ = drama3_speech;
+    _ = omnivoice;
+    _ = omnivoice_text;
     _ = dflash;
     _ = dflash2;
     _ = dflash2_runtime;

@@ -63,6 +63,10 @@
   "nemotron_asr": {
    "artifact": "nemotron-asr-0.6b",
    "file": "directory"
+  },
+  "omnivoice": {
+   "path": "~/.nuclis/models/mohammedaly22/VoiceTut-TTS-GGUF/voicetut-tts-q8_0.gguf",
+   "note": "voicetut-tts-q8_0.gguf is pulled by repo id until end-to-end synthesis enters the catalogue"
   }
  },
  "data": {
@@ -300,6 +304,11 @@
    "inference/src/audio/nemotron_*.zig",
    "tests/fixtures/nemotron-asr/**",
    "tests/fixtures/speech-corpus.json"
+  ],
+  "omnivoice": [
+   "inference/omnivoice-check.zig",
+   "inference/src/models/omnivoice*.zig",
+   "inference/src/models/fixtures/omnivoice-*.json"
   ]
  },
  "aggregators": [
@@ -2431,6 +2440,24 @@
    },
    "note": "four pinned fixtures joined with silence (speech-2, speech-1, fleurs-de, librispeech) under de-DE,ar,en-US,auto: --stream must equal pieced on both Metal and CPU (exact tokens on CPU), with four alternatives reported; fleurs-de under de-DE,en-US vs en-US,de-DE must flip between 'Die...' and 'The...'",
    "evidence": "docs/models/nemotron-asr.md#prompt-profile"
+  },
+  {
+   "name": "omnivoice-vocabulary",
+   "family": "omnivoice",
+   "tier": "verify",
+   "model": "omnivoice",
+   "command": [
+    "{zig-cpu}",
+    "test-omnivoice",
+    "--",
+    "{model}",
+    "vocab"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "binds voicetut-tts-q8_0.gguf (313 generator + 527 codec tensors), verifies audiocpp.tensor_names, config.json, and weights/codebook_layer_offsets, parses the embedded Qwen3 BPE tokenizer.json, and checks all 5 standalone strings (English, Egyptian Arabic, code-switching, Arabic diacritics, punctuation/whitespace) and 4 full prompts (auto-voice, voice design, zero-shot clone with denoise, unconditional CFG) against pinned token IDs",
+   "evidence": "docs/models/omnivoice.md#prompt-format-and-tokenizer"
   }
  ]
 }

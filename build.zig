@@ -135,6 +135,9 @@ pub fn build(b: *std.Build) void {
     const drama3_check = b.addRunArtifact(inference.artifact("drama3-check"));
     drama3_check.addPassthruArgs();
     b.step("test-drama3", "Check Drama 3 against Fish's traces, Metal against the CPU, or speak (-- MODEL.gguf smoke|trace|codec|codec-metal|metal|speak)").dependOn(&drama3_check.step);
+    const omnivoice_check = b.addRunArtifact(inference.artifact("omnivoice-check"));
+    omnivoice_check.addPassthruArgs();
+    b.step("test-omnivoice", "Check OmniVoice / VoiceTut-TTS binding and embedded tokenizer (-- MODEL.gguf vocab)").dependOn(&omnivoice_check.step);
     const nemotron_asr_check = b.addRunArtifact(inference.artifact("nemotron-asr-check"));
     nemotron_asr_check.addPassthruArgs();
     b.step("test-nemotron-asr", "Check Nemotron ASR against the pinned trace, or time it (-- MODEL_DIR [FIXTURES] [--transducer] [--metal] [--bench] [--clip ID])").dependOn(&nemotron_asr_check.step);
@@ -146,8 +149,8 @@ pub fn build(b: *std.Build) void {
     b.step("test-cross-encoding", "Compare one model's matrices across two files' encodings (-- NEW VALIDATED [--rows n] [--min-mean ENC=x])").dependOn(&cross_encoding_check.step);
     // Compiles the check tools without running them, so the gate runner
     // can time the build apart from the checks.
-    const check_tools = b.step("check-tools", "Install the vocabulary, Laya, clef, EmbeddingGemma, Qwen3-TTS, Drama 3, Nemotron ASR, generation, and cross-encoding check tools");
-    for ([_][]const u8{ "vocabulary-check", "laya-check", "clef-check", "embeddinggemma-check", "qwen3-tts-check", "drama3-check", "nemotron-asr-check", "generation-check", "cross-encoding-check" }) |name|
+    const check_tools = b.step("check-tools", "Install the vocabulary, Laya, clef, EmbeddingGemma, Qwen3-TTS, Drama 3, OmniVoice, Nemotron ASR, generation, and cross-encoding check tools");
+    for ([_][]const u8{ "vocabulary-check", "laya-check", "clef-check", "embeddinggemma-check", "qwen3-tts-check", "drama3-check", "omnivoice-check", "nemotron-asr-check", "generation-check", "cross-encoding-check" }) |name|
         check_tools.dependOn(&b.addInstallArtifact(inference.artifact(name), .{}).step);
     const metal_check = b.addRunArtifact(inference.artifact("metal-check"));
     metal_check.addPassthruArgs();

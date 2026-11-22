@@ -47,10 +47,10 @@ pub fn build(b: *std.Build) void {
     // The check executables. The root declares every step that runs them
     // (AGENTS.md § Repository architecture); this file only builds them.
     const checks = [_][]const u8{
-        "vocabulary-check",     "laya-check",       "clef-check",
-        "embeddinggemma-check", "qwen3-tts-check",  "drama3-check",
-        "nemotron-asr-check",   "generation-check", "cross-encoding-check",
-        "metal-check",
+        "vocabulary-check",     "laya-check",         "clef-check",
+        "embeddinggemma-check", "qwen3-tts-check",    "drama3-check",
+        "omnivoice-check",      "nemotron-asr-check", "generation-check",
+        "cross-encoding-check", "metal-check",
     };
     for (checks) |name| {
         b.installArtifact(b.addExecutable(.{
