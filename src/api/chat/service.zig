@@ -482,6 +482,10 @@ const Job = struct {
             };
         };
         const outcome = ran.reply.outcome;
+        // Known before any failure, so the request log carries them on one.
+        const effort_name = if (ran.minimal and ran.effort == .low) "minimal" else @tagName(ran.effort);
+        self.effort = effort_name;
+        self.web_rounds = round;
         if (outcome.stop == .failure) {
             self.fail(.init(.internal_server_error, "model_failed", "the completion failed on the GPU"));
             return .done;
@@ -499,10 +503,7 @@ const Job = struct {
         self.finish = finish;
         const usage = self.usage;
         if (self.pipe != null and outcome.stop != .cancelled) self.emit(ChunkFinish{ .finish = finish, .usage = usage });
-        const effort_name = if (ran.minimal and ran.effort == .low) "minimal" else @tagName(ran.effort);
-        self.effort = effort_name;
         self.finish_reason = if (outcome.stop == .cancelled) "cancelled" else @tagName(finish);
-        self.web_rounds = round;
         self.note = self.arena.print("{s} {s}: {d} prompt ({d} reused), {d} generated, {s}{s}{s}{s}{s}", .{
             self.name,
             effort_name,
@@ -780,11 +781,16 @@ const Job = struct {
         if (self.name.len > 0) fields.text("model", self.name);
         if (self.effort.len > 0) fields.text("effort", self.effort);
         fields.flag("stream", self.pipe != null);
-        if (self.finish_reason.len == 0) return;
+        const failed = switch (self.outcome) {
+            .failed => |err| err,
+            else => null,
+        };
+        if (failed) |err| fields.fail(err);
+        if (self.finish_reason.len == 0 and (failed == null or self.effort.len == 0)) return;
         fields.int("prompt_tokens", self.usage.prompt);
         fields.int("cached_tokens", self.usage.cached);
         fields.int("completion_tokens", self.usage.completion);
-        fields.text("finish_reason", self.finish_reason);
+        if (self.finish_reason.len > 0) fields.text("finish_reason", self.finish_reason);
         if (self.web_calls > 0) {
             fields.int("web_calls", self.web_calls);
             fields.int("web_rounds", self.web_rounds);
@@ -1003,6 +1009,32 @@ test "a file the catalogue pins is found by its place in the models directory" {
     try std.testing.expect(pinned(arena, "/r", companion) == null);
     try std.testing.expect(pinned(arena, "/r", "/elsewhere/x.gguf") == null);
     try std.testing.expect(pinned(arena, "/r", "/r/models/owner/repo/unknown.gguf") == null);
+}
+
+test "a failed request's log line names its error, effort, and tokens" {
+    // Only the fields `logTo` reads are set.
+    var job: Job = .{ .service = undefined, .arena = undefined, .request = undefined, .peer = null, .deadline = undefined, .id = "", .created = 0, .collected = undefined };
+    job.name = "gemma-4-e4b-qat";
+    job.effort = "low";
+    job.usage = .{ .prompt = 2126, .cached = 1091, .completion = 260, .reasoning = 0 };
+    job.outcome = .{ .failed = .init(.internal_server_error, "malformed_tool_call", "the model wrote a tool call that does not parse; nothing ran") };
+    var record: request_log.Record = .init(std.testing.io);
+    job.logTo(.{ .record = &record });
+    const fields = record.fields[0..record.count];
+    var seen: usize = 0;
+    for (fields) |field| {
+        if (std.mem.eql(u8, field.name, "error")) {
+            try std.testing.expectEqualStrings("malformed_tool_call", field.value.text);
+            seen += 1;
+        } else if (std.mem.eql(u8, field.name, "effort")) {
+            try std.testing.expectEqualStrings("low", field.value.text);
+            seen += 1;
+        } else if (std.mem.eql(u8, field.name, "completion_tokens")) {
+            try std.testing.expectEqual(@as(i64, 260), field.value.int);
+            seen += 1;
+        } else if (std.mem.eql(u8, field.name, "finish_reason")) return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(@as(usize, 3), seen);
 }
 
 test "an empty round counts only after hosted calls, with nothing else to act on" {

@@ -109,8 +109,14 @@ The models leave the grammar in one way seen so far: the 26B-A4B wrote
 replays of one turn (Muon, 2026-10-28). The parser reads a JSON string,
 as value or key (`{"fact":…}`), as JSON reads it, except that an escape
 JSON lacks (`\$`, `` \` `` in a shell command) keeps its backslash, as the
-command means it. A body that still does not parse is dropped with
-`tool_cut`, not released as answer text (`Tool.unparsed`): its brackets are
+command means it. Gemma 4 E4B, at `low` with the hosted web tools, once wrote a whole
+call and then, with no `<tool_call|>`, went on inside the body: a thought
+channel about results it had not seen and a made-up answer, closed many
+tokens later (Muon, 2026-11-23; every run on one seed). A whole call
+followed by `<|channel>`, `<|turn>` or `<turn|>`, markers no call
+contains, is that call: it runs, and the rest of the body is dropped, never
+released. Anything else after a call still refuses it. A body that still
+does not parse is dropped with `tool_cut`, not released as answer text (`Tool.unparsed`): its brackets are
 control tokens, so the text would show the reader the model's call syntax;
 the API answers `malformed_tool_call`.
 
