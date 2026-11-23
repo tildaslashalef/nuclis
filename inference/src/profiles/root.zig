@@ -44,6 +44,9 @@ pub const ToolCall = struct {
     id: u32,
     name: []const u8,
     arguments: []const u8,
+    /// The profile read the call past a slip of the model's: a close it
+    /// went on past without writing (`gemma4.parseTool`). For the logs.
+    repaired: bool = false,
 };
 
 /// A tool the model may call, supplied to rendering: the name the model

@@ -115,7 +115,8 @@ channel about results it had not seen and a made-up answer, closed many
 tokens later (Muon, 2026-11-23; every run on one seed). A whole call
 followed by `<|channel>`, `<|turn>` or `<turn|>`, markers no call
 contains, is that call: it runs, and the rest of the body is dropped, never
-released. Anything else after a call still refuses it. A body that still
+released, and the request log counts it (`tool_calls_repaired`).
+Anything else after a call still refuses it. A body that still
 does not parse is dropped with `tool_cut`, not released as answer text (`Tool.unparsed`): its brackets are
 control tokens, so the text would show the reader the model's call syntax;
 the API answers `malformed_tool_call`.
