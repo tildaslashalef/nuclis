@@ -295,13 +295,16 @@ way rather than rewriting `nuclis.json`.
 - A round after hosted calls that ends the turn with no text and no call
   runs once more on the same prompt (a `seed` moves on by one), which
   reuses the conversation before the turn and reads the results again.
-  Still empty, the `finish_reason` is `no_answer`. A token the vocabulary marks as anything
+  Still empty, the `finish_reason` is `no_answer`. A round whose only
+  call does not parse (Gemma 4) runs once more the same way, if no answer
+  text has reached the client yet; still cut, or with text already sent,
+  the request fails with `malformed_tool_call`. A token the vocabulary marks as anything
   but text never reaches `content` or `reasoning_content`, wherever the
   model writes it; the exception is a Qwen3.8 call that does not parse,
   released as the model wrote it.
 - The usage counts every completion; the log line adds `2 web calls in 3
   rounds`, `1 web exchange put back` when earlier hosted rounds were
-  restored, and `empty answer retried`. The model's state carries over between completions, so a round
+  restored, `empty answer retried`, and `malformed call retried`. The model's state carries over between completions, so a round
   reuses the conversation before it ([record, 2026-10-16](../benchmarks/record/api.md#hosted-rounds-reuse-the-state-2026-10-16)).
 - Text the model writes before a call (Muon's "Let me check.") is rendered
   by Gemma 4's template after the call's results, where the next round's

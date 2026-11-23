@@ -395,6 +395,8 @@ const Job = struct {
     round_cut: bool = false,
     /// An empty round after hosted calls already ran once more.
     retried: bool = false,
+    /// A round whose only call did not parse already ran once more.
+    cut_retried: bool = false,
     client_calls: usize = 0,
     usage: wire.Usage = .{ .prompt = 0, .cached = 0, .completion = 0, .reasoning = 0 },
     web_calls: usize = 0,
@@ -465,6 +467,14 @@ const Job = struct {
                 round -= 1;
                 continue;
             }
+            if (self.retriesCut(ran)) {
+                // The cut call is gone with the round; the next seed writes
+                // it again. Nothing of the round reached the client as answer.
+                self.cut_retried = true;
+                if (self.request.seed) |seed| self.request.seed = seed +% 1;
+                round -= 1;
+                continue;
+            }
             if (ran.reply.outcome.stop != .eos or self.hosted.items.len == 0 or round == max_web_rounds) break ran;
             const results = self.runHosted() catch {
                 self.fail(.init(.internal_server_error, "internal", "out of memory"));
@@ -504,7 +514,7 @@ const Job = struct {
         const usage = self.usage;
         if (self.pipe != null and outcome.stop != .cancelled) self.emit(ChunkFinish{ .finish = finish, .usage = usage });
         self.finish_reason = if (outcome.stop == .cancelled) "cancelled" else @tagName(finish);
-        self.note = self.arena.print("{s} {s}: {d} prompt ({d} reused), {d} generated, {s}{s}{s}{s}{s}", .{
+        self.note = self.arena.print("{s} {s}: {d} prompt ({d} reused), {d} generated, {s}{s}{s}{s}{s}{s}", .{
             self.name,
             effort_name,
             usage.prompt,
@@ -515,12 +525,27 @@ const Job = struct {
             if (self.web_calls > 0) self.arena.print(", {d} web call{s} in {d} round{s}", .{ self.web_calls, if (self.web_calls == 1) "" else "s", round, if (round == 1) "" else "s" }) catch "" else "",
             if (self.spliced > 0) self.arena.print(", {d} web exchange{s} put back", .{ self.spliced, if (self.spliced == 1) "" else "s" }) catch "" else "",
             if (self.retried) ", empty answer retried" else "",
+            if (self.cut_retried) ", malformed call retried" else "",
         }) catch "";
         return .done;
     }
 
     /// Whether this round ended the model's turn with nothing after the
     /// hosted calls it asked for.
+    /// A round that ended with a call it could not parse and nothing else
+    /// to act on is run once more, as `malformed_tool_call` advises a
+    /// client to; only while no answer text has reached the client, which
+    /// would otherwise hear it twice.
+    fn retriesCut(self: *const Job, ran: language_mod.Language.Ran) bool {
+        return cutRetryable(.{
+            .stop = ran.reply.outcome.stop,
+            .cut = self.round_cut,
+            .calls = self.round_calls.items.len,
+            .answer = self.round_answer.items,
+            .retried = self.cut_retried,
+        });
+    }
+
     fn unanswered(self: *const Job, ran: language_mod.Language.Ran) bool {
         return emptyAfterHosted(.{
             .stop = ran.reply.outcome.stop,
@@ -810,6 +835,13 @@ const Round = struct {
 
 /// A round that left the client with no answer after hosted calls ran: the
 /// model stopped of its own accord, with no text and no call to act on.
+const CutRound = struct { stop: inference.engine.StopReason, cut: bool, calls: usize, answer: []const u8, retried: bool };
+
+fn cutRetryable(round: CutRound) bool {
+    return round.cut and round.calls == 0 and round.stop == .eos and !round.retried and
+        std.mem.trim(u8, round.answer, " \t\r\n").len == 0;
+}
+
 fn emptyAfterHosted(round: Round) bool {
     return round.stop == .eos and round.web_calls > 0 and round.hosted == 0 and round.client_calls == 0 and !round.cut and
         std.mem.trim(u8, round.answer, " \t\r\n").len == 0;
@@ -1035,6 +1067,26 @@ test "a failed request's log line names its error, effort, and tokens" {
         } else if (std.mem.eql(u8, field.name, "finish_reason")) return error.TestUnexpectedResult;
     }
     try std.testing.expectEqual(@as(usize, 3), seen);
+}
+
+test "a round whose only call did not parse runs once more, while no answer has reached the client" {
+    const cut: CutRound = .{ .stop = .eos, .cut = true, .calls = 0, .answer = " \n", .retried = false };
+    try std.testing.expect(cutRetryable(cut));
+    var other = cut;
+    other.retried = true;
+    try std.testing.expect(!cutRetryable(other));
+    other = cut;
+    other.answer = "Let me check.";
+    try std.testing.expect(!cutRetryable(other));
+    other = cut;
+    other.calls = 1;
+    try std.testing.expect(!cutRetryable(other));
+    other = cut;
+    other.cut = false;
+    try std.testing.expect(!cutRetryable(other));
+    other = cut;
+    other.stop = .token_budget;
+    try std.testing.expect(!cutRetryable(other));
 }
 
 test "an empty round counts only after hosted calls, with nothing else to act on" {
