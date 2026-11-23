@@ -621,12 +621,25 @@ pub fn parseTool(alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.E
     defer parser.scratch.deinit(alloc);
     if (!try parser.object(0)) return null;
     parser.space();
-    if (parser.pos != text.len) return null;
+    if (parser.pos != text.len and !skippedClose(text[parser.pos..])) return null;
     const name_owned = try alloc.dupe(u8, name);
     errdefer alloc.free(name_owned);
     const arguments_owned = try arguments.toOwnedSlice();
     errdefer alloc.free(arguments_owned);
     return .{ .id = 0, .name = name_owned, .arguments = arguments_owned };
+}
+
+/// Whether what follows a whole call is the model going on past a close it
+/// never wrote: a thought channel or a turn marker, which no call contains.
+/// Gemma 4 E4B wrote `call:web_search{query: "…"}` and then, with no
+/// `<tool_call|>`, a thought about results it had not seen and a made-up
+/// answer (Muon, 2026-11-23). The call is what it meant; the rest is
+/// dropped with the body, never released as answer text.
+fn skippedClose(rest: []const u8) bool {
+    for ([_][]const u8{ "<|channel>", "<|turn>", "<turn|>" }) |marker| {
+        if (std.mem.startsWith(u8, rest, marker)) return true;
+    }
+    return false;
 }
 
 /// Why `parseTool` refused `body`: no `call:NAME{` head, a `\\u` escape
@@ -1190,6 +1203,29 @@ test "parseTool accepts the grammar's whitespace and refuses malformed or trunca
         "call:f{a:[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]}", // beyond the depth bound
     }) |body| {
         try std.testing.expect((try parseTool(alloc, body)) == null);
+    }
+}
+
+test "parseTool takes a whole call the model went on past without its close" {
+    const alloc = std.testing.allocator;
+    // As logged: the call, then a thought and an answer in the call body.
+    const body = "call:web_search{query: \"current price of Bitcoin\"}\n<|channel>thought\nI have called `web_search`.<channel|>[neutral] A Bitcoin is about sixty thousand dollars.";
+    const call = (try parseTool(alloc, body)) orelse return error.TestUnexpectedResult;
+    defer {
+        alloc.free(call.name);
+        alloc.free(call.arguments);
+    }
+    try std.testing.expectEqualStrings("web_search", call.name);
+    try std.testing.expectEqualStrings("{\"query\":\"current price of Bitcoin\"}", call.arguments);
+    for ([_][]const u8{ "call:f{a:1}<|turn>model\nhi", "call:f{a:1} <turn|>" }) |turned| {
+        const got = (try parseTool(alloc, turned)) orelse return error.TestUnexpectedResult;
+        alloc.free(got.name);
+        alloc.free(got.arguments);
+    }
+    // Anything else after the call still refuses it, and so does a broken
+    // call before a marker.
+    for ([_][]const u8{ "call:f{a:1}x<|channel>", "call:f{a:1}<|tool_call>call:g{}", "call:f{a:01}<|channel>thought" }) |refused| {
+        try std.testing.expect((try parseTool(alloc, refused)) == null);
     }
 }
 
