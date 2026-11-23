@@ -397,6 +397,11 @@ const Job = struct {
     retried: bool = false,
     /// A round whose only call did not parse already ran once more.
     cut_retried: bool = false,
+    /// Over every round, for the request log: calls dropped unrun and the
+    /// last one's reason, and calls the profile read past a slip.
+    cuts: usize = 0,
+    cut_reason: []const u8 = "",
+    repaired: usize = 0,
     client_calls: usize = 0,
     usage: wire.Usage = .{ .prompt = 0, .cached = 0, .completion = 0, .reasoning = 0 },
     web_calls: usize = 0,
@@ -645,6 +650,7 @@ const Job = struct {
         const self: *Job = @ptrCast(@alignCast(context));
         switch (event) {
             .tool_call => |call| {
+                if (call.repaired) self.repaired += 1;
                 const hosted = wire.holds(self.request, call.name);
                 const name = try self.arena.dupe(u8, call.name);
                 const arguments = try self.arena.dupe(u8, call.arguments);
@@ -660,7 +666,11 @@ const Job = struct {
                 try self.answers.appendSlice(self.arena, text);
             },
             .thinking => |text| try self.round_reasoning.appendSlice(self.arena, text),
-            .tool_cut => self.round_cut = true,
+            .tool_cut => |cut| {
+                self.round_cut = true;
+                self.cuts += 1;
+                self.cut_reason = @tagName(cut.reason);
+            },
             else => {},
         }
         if (self.pipe != null) self.emit(event) else try self.collected.send(event);
@@ -811,6 +821,12 @@ const Job = struct {
             else => null,
         };
         if (failed) |err| fields.fail(err);
+        if (self.cuts > 0) {
+            fields.int("tool_cuts", self.cuts);
+            fields.text("tool_cut_reason", self.cut_reason);
+        }
+        if (self.cut_retried) fields.flag("cut_retried", true);
+        if (self.repaired > 0) fields.int("tool_calls_repaired", self.repaired);
         if (self.finish_reason.len == 0 and (failed == null or self.effort.len == 0)) return;
         fields.int("prompt_tokens", self.usage.prompt);
         fields.int("cached_tokens", self.usage.cached);
@@ -1050,6 +1066,9 @@ test "a failed request's log line names its error, effort, and tokens" {
     job.effort = "low";
     job.usage = .{ .prompt = 2126, .cached = 1091, .completion = 260, .reasoning = 0 };
     job.outcome = .{ .failed = .init(.internal_server_error, "malformed_tool_call", "the model wrote a tool call that does not parse; nothing ran") };
+    job.cuts = 2;
+    job.cut_reason = "malformed";
+    job.cut_retried = true;
     var record: request_log.Record = .init(std.testing.io);
     job.logTo(.{ .record = &record });
     const fields = record.fields[0..record.count];
@@ -1064,9 +1083,17 @@ test "a failed request's log line names its error, effort, and tokens" {
         } else if (std.mem.eql(u8, field.name, "completion_tokens")) {
             try std.testing.expectEqual(@as(i64, 260), field.value.int);
             seen += 1;
+        } else if (std.mem.eql(u8, field.name, "tool_cuts")) {
+            try std.testing.expectEqual(@as(i64, 2), field.value.int);
+            seen += 1;
+        } else if (std.mem.eql(u8, field.name, "tool_cut_reason")) {
+            try std.testing.expectEqualStrings("malformed", field.value.text);
+            seen += 1;
+        } else if (std.mem.eql(u8, field.name, "cut_retried")) {
+            seen += 1;
         } else if (std.mem.eql(u8, field.name, "finish_reason")) return error.TestUnexpectedResult;
     }
-    try std.testing.expectEqual(@as(usize, 3), seen);
+    try std.testing.expectEqual(@as(usize, 6), seen);
 }
 
 test "a round whose only call did not parse runs once more, while no answer has reached the client" {

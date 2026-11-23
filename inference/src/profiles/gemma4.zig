@@ -621,12 +621,13 @@ pub fn parseTool(alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.E
     defer parser.scratch.deinit(alloc);
     if (!try parser.object(0)) return null;
     parser.space();
-    if (parser.pos != text.len and !skippedClose(text[parser.pos..])) return null;
+    const repaired = parser.pos != text.len;
+    if (repaired and !skippedClose(text[parser.pos..])) return null;
     const name_owned = try alloc.dupe(u8, name);
     errdefer alloc.free(name_owned);
     const arguments_owned = try arguments.toOwnedSlice();
     errdefer alloc.free(arguments_owned);
-    return .{ .id = 0, .name = name_owned, .arguments = arguments_owned };
+    return .{ .id = 0, .name = name_owned, .arguments = arguments_owned, .repaired = repaired };
 }
 
 /// Whether what follows a whole call is the model going on past a close it
@@ -1216,6 +1217,7 @@ test "parseTool takes a whole call the model went on past without its close" {
         alloc.free(call.arguments);
     }
     try std.testing.expectEqualStrings("web_search", call.name);
+    try std.testing.expect(call.repaired);
     try std.testing.expectEqualStrings("{\"query\":\"current price of Bitcoin\"}", call.arguments);
     for ([_][]const u8{ "call:f{a:1}<|turn>model\nhi", "call:f{a:1} <turn|>" }) |turned| {
         const got = (try parseTool(alloc, turned)) orelse return error.TestUnexpectedResult;
