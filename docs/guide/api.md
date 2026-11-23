@@ -282,7 +282,7 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 400 | `model_too_large` | file transcriptions: the model needs more than the budget leaves beside the pinned models |
 | 431 | `headers_too_large` | the request line and headers exceed 16 KiB |
 | 500 | `model_failed` | the model could not be opened, or a completion failed on the GPU |
-| 500 | `malformed_tool_call` | chat: the model wrote a tool call that does not parse (Gemma 4), so nothing ran and there is no answer; streamed, it is the stream's error line. Sending the request again usually works |
+| 500 | `malformed_tool_call` | chat: the model wrote a tool call that does not parse (Gemma 4), so nothing ran and there is no answer; streamed, it is the stream's error line. nuclis has already run the round once more when no answer text had been sent ([api-chat.md](api-chat.md)); sending the request again may still work |
 | 500 | `internal`, `invalid_registry_entry` | a fault on the server's side |
 | 503 | `shutting_down` | the server is stopping |
 | 529 | `busy` | 64 requests wait already, 64 connections are open, or the memory a model needs is held by a running request (retry shortly) |
