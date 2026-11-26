@@ -155,9 +155,26 @@ Closed by the CPU reference's layer comparison on the real file:
   reference, never against the official checkpoint.
 - No Q4_K tensor despite the name. Every quantization in the repository
   keeps the NVFP4 experts.
-- Vocabulary: 200,058 tokenizer entries (`gpt2` model, `pre =
-  inkling2`), EOS and EOT 200006, padding 199999, no BOS. Chat template
-  6,868 bytes.
+
+## Tokenizer
+
+The `gpt2` model with `pre = inkling2`: 200,058 tokens (199,998 normal
+and 60 control; `inspect --metadata` counts the types),
+424,413 merges, EOS and EOT 200006, padding 199999, no BOS, chat template
+6,868 bytes. The splitter is [o200k.zig](../../inference/src/tokenizer/o200k.zig),
+the checkpoint's own expression with Unicode's letter classes
+([tokenizer.md § Full text encoding](../engine/tokenizer.md#full-text-encoding)),
+not the folded rewrite `llama4` uses: a cased capital starts only the
+capital run, so `ÇA` is one piece and one token (118428) where the folded
+classes cut `Ç` from `A`.
+
+Evidence (2026-11-26): `nuclis tokenize --raw --json` on 308 strings
+(scripts, cases, marks, contractions, digits, whitespace, emoji, code, and
+two chat shapes) gave the same ids as the format's reference tokenizer on
+every one; that tokenizer splits with the folded classes, and no string of
+the corpus tells the two apart, because BPE seldom merges across the seams
+where they differ. Of thirteen words built on such a seam (`ÉCOLE`, `ÜBER`,
+`ÉTATS-UNIS`, …) one, `ÇA VA`, gives other ids.
 
 ## Known limits
 

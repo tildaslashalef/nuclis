@@ -104,11 +104,14 @@ pub const Scalar = union(enum) {
 
 /// A metadata value: a scalar, or an array's element type and count with
 /// its values when the parser retained them (small arrays; vocabulary
-/// arrays stay lazy and show their count only).
+/// arrays stay lazy and show their count only, `token_type` its counts by type).
 pub const MetadataValue = union(enum) {
     scalar: Scalar,
-    array: struct { element_type: []const u8, count: u64, values: ?[]const Scalar },
+    array: struct { element_type: []const u8, count: u64, values: ?[]const Scalar, token_types: ?[]const TypeCount = null },
 };
+
+/// How many tokens of `tokenizer.ggml.token_type` carry one type.
+pub const TypeCount = struct { type: []const u8, count: u64 };
 
 pub const MetadataRow = struct {
     key: []const u8,
@@ -127,7 +130,9 @@ pub const TensorRow = struct {
 };
 
 /// Copies every metadata key into `arena`, so the rows outlive `doc`.
-pub fn metadataRows(arena: std.mem.Allocator, doc: inference.gguf.Document) ![]const MetadataRow {
+/// `directory`, the file's bytes up to its tensor data, lets the lazy
+/// `tokenizer.ggml.token_type` array be counted by type.
+pub fn metadataRows(arena: std.mem.Allocator, doc: inference.gguf.Document, directory: ?[]const u8) ![]const MetadataRow {
     const rows = try arena.alloc(MetadataRow, doc.metadata.len);
     for (doc.metadata, rows) |m, *row| row.* = .{
         .key = try arena.dupe(u8, m.key),
@@ -141,12 +146,26 @@ pub fn metadataRows(arena: std.mem.Allocator, doc: inference.gguf.Document) ![]c
                     for (values, out) |v, *o| o.* = try scalar(arena, v);
                     break :blk out;
                 } else null,
+                .token_types = if (a.values == null and std.mem.eql(u8, m.key, "tokenizer.ggml.token_type")) if (directory) |bytes| try tokenTypes(arena, a, bytes) else null else null,
             } },
             .float => |x| .{ .scalar = if (m.kind == .float32) .{ .float32 = @floatCast(x) } else .{ .float = x } },
             else => .{ .scalar = try scalar(arena, m.value) },
         },
     };
     return rows;
+}
+
+/// Counts by type, in type order; a value outside the GGUF token types is
+/// counted as `other`. Null when the array cannot be read from `directory`.
+fn tokenTypes(arena: std.mem.Allocator, array: inference.gguf.Array, directory: []const u8) !?[]const TypeCount {
+    const names = [_][]const u8{ "other", "normal", "unknown", "control", "user_defined", "unused", "byte" };
+    var counts: [names.len]u64 = @splat(0);
+    var reader = inference.gguf.ArrayReader.init(array, directory, .{}) catch return null;
+    while (reader.nextInt32() catch return null) |value| counts[if (value >= 1 and value < names.len) @intCast(value) else 0] += 1;
+    var out: std.ArrayList(TypeCount) = .empty;
+    for (names[1..], counts[1..]) |name, count| if (count > 0) try out.append(arena, .{ .type = name, .count = count });
+    if (counts[0] > 0) try out.append(arena, .{ .type = names[0], .count = counts[0] });
+    return out.items;
 }
 
 fn scalar(arena: std.mem.Allocator, v: inference.gguf.Value) !Scalar {
@@ -243,7 +262,10 @@ fn renderMetadata(arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui, row
                     try value.append(arena, '[');
                     for (values, 0..) |v, i| try value.print(arena, "{s}{s}", .{ if (i > 0) ", " else "", try scalarText(arena, v) });
                     try value.append(arena, ']');
-                } else try value.print(arena, "{d} items", .{a.count});
+                } else {
+                    try value.print(arena, "{d} items", .{a.count});
+                    if (a.token_types) |types| for (types, 0..) |t, i| try value.print(arena, "{s}{d} {s}", .{ if (i == 0) ": " else ", ", t.count, t.type });
+                }
             },
         }
         row.* = try arena.dupe(kit.table.Cell, &.{
@@ -527,4 +549,20 @@ test "JSON output preserves paths and clearly reports inspection-only capability
         \\→ nuclis validate --model a\b"c.gguf checks architecture support
         \\
     , text_out.written());
+}
+
+test "a lazy token_type array is counted by type, an unknown value as other" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var directory: [4 + 6 * 4]u8 = undefined;
+    for ([_]i32{ 1, 3, 1, 9, 1, 6 }, 0..) |value, i| std.mem.writeInt(i32, directory[4 + 4 * i ..][0..4], value, .little);
+    const array: inference.gguf.Array = .{ .element_type = .int32, .count = 6, .file_offset = 4 };
+    const counts = (try tokenTypes(arena, array, &directory)).?;
+    try std.testing.expectEqual(@as(usize, 4), counts.len);
+    for (counts, [_][]const u8{ "normal", "control", "byte", "other" }, [_]u64{ 3, 1, 1, 1 }) |c, name, n| {
+        try std.testing.expectEqualStrings(name, c.type);
+        try std.testing.expectEqual(n, c.count);
+    }
+    try std.testing.expect(try tokenTypes(arena, array, directory[0..8]) == null);
 }

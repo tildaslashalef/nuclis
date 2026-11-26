@@ -7,7 +7,8 @@ owned vocabulary storage for GPT-2-family and Gemma 4 GGUF tokenizers. The libra
 and `bpe.decode` in [bpe.zig](../../inference/src/tokenizer/bpe.zig), composed
 by `tokenizer.Encoder` with the splitter the vocabulary's `pre` label selects:
 `qwen35` ([pre.zig](../../inference/src/tokenizer/pre.zig)), `llama4`
-([gpt4o.zig](../../inference/src/tokenizer/gpt4o.zig), Muse Glimmer), and
+([gpt4o.zig](../../inference/src/tokenizer/gpt4o.zig), Muse Glimmer),
+`inkling2` ([o200k.zig](../../inference/src/tokenizer/o200k.zig), Inkling 2), and
 Gemma 4's SPM-style `gemma4` ([gemma4.md § Tokenizer](../models/gemma4.md#tokenizer)).
 The explicit artifact check matches all [prompt/token fixtures](prompt-profile.md).
 A Hugging Face `tokenizer.json` (Laya's ModernBERT and mmBERT tokenizers)
@@ -66,7 +67,7 @@ failures return typed errors and release partially initialized state.
 ## Full text encoding
 
 `tokenizer.Encoder.init(allocator, &vocabulary)` accepts `pre` = `qwen35`,
-`llama4`, or `gemma4` (any other label is `UnsupportedPreTokenizer`) and
+`llama4`, `inkling2`, or `gemma4` (any other label is `UnsupportedPreTokenizer`) and
 owns a sorted special-ID index. The borrowed immutable vocabulary must outlive
 the encoder. Call `deinit` once. Initialization accepts at most 8,192 special
 markers, each between 1 and 256 bytes.
@@ -101,6 +102,12 @@ marks are not letters here (`e\u0301` is `e` then `\u0301`). The rules and
 their evidence are in [muse-glimmer.md § Tokenizer](../models/muse-glimmer.md#tokenizer).
 No table change was needed: the seam only reads ASCII case.
 
+The `inkling2` iterator is that expression with Unicode's own classes, as
+the checkpoint writes it: a cased capital (Lu, Lt) is only in the capital
+run, Ll only in the lower one, Lm, Lo and marks in both, so `ÉCOLE` and `ÇA`
+stay whole; the contraction folds `ſ` to `s`. Cases and the comparison:
+[inkling2.md § Tokenizer](../models/inkling2.md#tokenizer).
+
 Category data comes from pinned llama.cpp `unicode-data.cpp`, not the host's
 Unicode library. The compact checked-in table contains 1,921 five-byte range
 records (9,605 bytes) for letter, mark, number, and whitespace membership.
@@ -110,6 +117,8 @@ tag `v0.11.0`), which verified source SHA-256
 `95170cd1c105a5b41a1b2dce73b0fae8ce8011ef7897600828bb2babe8b26e5d`.
 The generated table SHA-256 is
 `462abaa4ae40898a30bdde54e46ea081a917c77ec7c786a0a7f7cdcc74c26ebd`.
+Case is a second table, [case_table.zig](../../inference/src/tokenizer/case_table.zig)
+(1,322 Lu/Lt and Ll ranges from UCD 17.0.0, by `scripts/fixtures/tokenizer-case.py`).
 
 Encoding defaults bound input to 1 MiB, output to 1,048,576 IDs, special-marker
 search to a conservative 1 GiB comparison budget (each marker's pass over the

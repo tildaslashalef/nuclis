@@ -1021,7 +1021,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 var result = try inspection.snapshot(document, path, &histogram);
                 var arena_state = std.heap.ArenaAllocator.init(alloc);
                 defer arena_state.deinit();
-                if (options.detail.metadata) result.metadata = try inspection.metadataRows(arena_state.allocator(), document);
+                if (options.detail.metadata) result.metadata = try inspection.metadataRows(arena_state.allocator(), document, try readDirectory(arena_state.allocator(), io, path, document));
                 if (options.detail.tensors) result.tensors = try inspection.tensorRows(arena_state.allocator(), document);
                 try result.render(arena_state.allocator(), out, options.json, ui);
             }
@@ -1182,6 +1182,18 @@ const known_architectures = blk: {
 
 /// The registry's adapter for an opened file, or `UnknownArchitecture`
 /// with the file's id and the known ones in the diagnostic.
+/// The file's bytes up to its tensor data (the parsed header bounds them),
+/// owned by `arena`, for metadata that stays lazy in the Document.
+fn readDirectory(arena: std.mem.Allocator, io: std.Io, path: []const u8, document: inference.gguf.Document) ![]const u8 {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    const bytes = try arena.alloc(u8, @intCast(document.directory_bytes));
+    var buffer: [64 * 1024]u8 = undefined;
+    var reader = file.reader(io, &buffer);
+    try reader.interface.readSliceAll(bytes);
+    return bytes;
+}
+
 fn selectAdapter(document: *const inference.gguf.Document, diag: *Diagnostic) !inference.models.Adapter {
     const architecture = document.string("general.architecture") orelse "";
     return inference.models.select(architecture) catch |err| {

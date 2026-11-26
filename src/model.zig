@@ -2621,7 +2621,7 @@ fn inspectDirectory(arena: Allocator, gpa: Allocator, reader: anytype, id: Ident
     var snapshot = try inspection.snapshot(doc, try arena.print("{s}/{s}", .{ id.repo, id.file }), try arena.alloc(inspection.EncodingCount, 32));
     if (snapshot.architecture) |a| snapshot.architecture = try arena.dupe(u8, a);
     if (snapshot.name) |n| snapshot.name = try arena.dupe(u8, n);
-    if (detail.metadata) snapshot.metadata = try inspection.metadataRows(arena, doc);
+    if (detail.metadata) snapshot.metadata = try inspection.metadataRows(arena, doc, head.items);
     if (detail.tensors) snapshot.tensors = try inspection.tensorRows(arena, doc);
     var report = finish(id, head.items.len, requests, snapshot, try judge(arena, gpa, &doc, id));
     if (detail.tensor) |name| {

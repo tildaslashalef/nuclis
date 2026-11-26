@@ -47,9 +47,10 @@ inputs; none implements assistant prefill.
 - **Unicode Character Database** ([Unicode License](https://www.unicode.org/license.txt),
   Copyright © Unicode, Inc.): `inference/src/tokenizer/unicode-ranges.bin`
   (character classes, by way of llama.cpp's `unicode-data.cpp` at the
-  revision above); `inference/src/tokenizer/nfc_table.zig` and
-  `src/tui/graphemes_table.zig`, generated from UCD 17.0.0 by
-  `scripts/fixtures/tokenizer-nfc.py` and `scripts/fixtures/grapheme-table.py`;
+  revision above); `inference/src/tokenizer/nfc_table.zig`,
+  `inference/src/tokenizer/case_table.zig`, and `src/tui/graphemes_table.zig`,
+  generated from UCD 17.0.0 by `scripts/fixtures/tokenizer-nfc.py`,
+  `scripts/fixtures/tokenizer-case.py`, and `scripts/fixtures/grapheme-table.py`;
   and `src/tui/fixtures/GraphemeBreakTest.txt`, the conformance file. The
   pre-tokenizers, NFC, and grapheme rules over that data are written
   independently.

@@ -8,6 +8,7 @@ const vocabulary = @import("vocabulary.zig");
 const bpe = @import("bpe.zig");
 pub const pre = @import("pre.zig");
 pub const gpt4o = @import("gpt4o.zig");
+pub const o200k = @import("o200k.zig");
 pub const Limits = struct {
     input_bytes: usize = 1024 * 1024,
     output_tokens: usize = 1024 * 1024,
@@ -36,8 +37,9 @@ pub fn withoutLiteralMarks(alloc: std.mem.Allocator, text: []const u8) std.mem.A
 }
 
 /// The splitters, keyed by the `pre` labels the encoder accepts: byte-level
-/// `qwen35` and `llama4` (gpt4o.zig), and Gemma's SPM-style `gemma4`.
-pub const Splitter = enum { qwen35, gpt4o, spm };
+/// `qwen35`, `llama4` (gpt4o.zig), and `inkling2` (o200k.zig), and Gemma's
+/// SPM-style `gemma4`.
+pub const Splitter = enum { qwen35, gpt4o, o200k, spm };
 
 pub const Encoder = struct {
     vocab: *const vocabulary.Vocabulary,
@@ -52,6 +54,8 @@ pub const Encoder = struct {
             .qwen35
         else if (std.mem.eql(u8, vocab.pre, "llama4"))
             .gpt4o
+        else if (std.mem.eql(u8, vocab.pre, "inkling2"))
+            .o200k
         else if (std.mem.eql(u8, vocab.pre, "gemma4"))
             .spm
         else
@@ -189,6 +193,7 @@ pub const Encoder = struct {
                     .spm => try self.encodeSpm(alloc, text[start..pos], &output, limits, &work),
                     .qwen35 => try self.encodePieces(pre.Iterator, alloc, text[start..pos], &output, limits, &work),
                     .gpt4o => try self.encodePieces(gpt4o.Iterator, alloc, text[start..pos], &output, limits, &work),
+                    .o200k => try self.encodePieces(o200k.Iterator, alloc, text[start..pos], &output, limits, &work),
                 }
             }
         }
@@ -252,6 +257,7 @@ fn spend(work: *usize, amount: usize) Error!void {
 test {
     _ = pre;
     _ = gpt4o;
+    _ = o200k;
 }
 
 fn fixture() !vocabulary.Vocabulary {
