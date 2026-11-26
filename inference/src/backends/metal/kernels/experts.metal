@@ -214,18 +214,30 @@ kernel void nu_expert_lists(device const uint * indices [[buffer(0)]],
 
 
 // SITU over strided rows (`cpu.situ`): out = β·tanh(g/β)·σ(g) ·
-// λ·tanh(u/λ) for gate g and up u.
-struct SituRowsParams { uint width; uint rows; uint gate_stride; uint up_stride; uint out_stride; float beta; float linear_beta; };
-kernel void nu_situ_mul_rows(device const float * gate [[buffer(0)]],
-                             device const float * up [[buffer(1)]],
-                             device float * output [[buffer(2)]],
-                             constant SituRowsParams & p [[buffer(7)]],
-                             uint id [[thread_position_in_grid]]) {
+// λ·tanh(u/λ) for gate g and up u. SCALED multiplies both of row r by
+// `scales[indices[r]]` first (an expert's gate-up factor; the index
+// clamped to `experts − 1`).
+struct SituRowsParams { uint width; uint rows; uint gate_stride; uint up_stride; uint out_stride; float beta; float linear_beta; uint experts; };
+template <bool SCALED>
+kernel void nu_situ_mul_rows_t(device const float * gate [[buffer(0)]],
+                               device const float * up [[buffer(1)]],
+                               device float * output [[buffer(2)]],
+                               device const uint * indices [[buffer(3)]],
+                               device const float * scales [[buffer(4)]],
+                               constant SituRowsParams & p [[buffer(7)]],
+                               uint id [[thread_position_in_grid]]) {
     if (id >= p.width * p.rows) return;
     const uint row = id / p.width, i = id % p.width;
-    const float g = gate[ulong(row) * p.gate_stride + i], u = up[ulong(row) * p.up_stride + i];
+    float g = gate[ulong(row) * p.gate_stride + i], u = up[ulong(row) * p.up_stride + i];
+    if (SCALED) {
+        const float s = scales[min(indices[row], p.experts - 1)];
+        g *= s;
+        u *= s;
+    }
     output[ulong(row) * p.out_stride + i] = p.beta * nu_tanh(g / p.beta) * nu_sigmoid(g) * (p.linear_beta * nu_tanh(u / p.linear_beta));
 }
+template [[host_name("nu_situ_mul_rows")]] kernel void nu_situ_mul_rows_t<false>(device const float *, device const float *, device float *, device const uint *, device const float *, constant SituRowsParams &, uint);
+template [[host_name("nu_situ_mul_rows_scaled")]] kernel void nu_situ_mul_rows_t<true>(device const float *, device const float *, device float *, device const uint *, device const float *, constant SituRowsParams &, uint);
 
 // The biased sigmoid router (`cpu.experts.routeBiased`): one 256-thread
 // group per row selects `k` experts by (σ(logit) + bias desc, index asc);

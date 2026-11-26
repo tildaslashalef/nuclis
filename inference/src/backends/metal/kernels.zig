@@ -376,6 +376,7 @@ const shipped = enum(u32) {
     depth_mix,
     control_join,
     control_blend,
+    situ_mul_rows_scaled,
 };
 
 /// The tags of `bench_files`, after the shipped ones so every value stays its

@@ -392,7 +392,19 @@ const gemma_experts_bounds: Bounds = .{
     .q8 = .{ .max_abs = 2e0, .rel_rms = 5e-1 },
 };
 
+/// The stepped plan is the schedule's rounding; the caches are held to a
+/// reference rounded the same way, and the rounding still crosses a code
+/// or the router's top-k boundary on some seeds, so they bound one swap.
+/// The plan steps a prompt, so the chunked row is the stepped one.
+const inkling_bounds: Bounds = .{
+    .step = .{ .max_abs = 3e-5, .rel_rms = 7e-6 },
+    .chunk = .{ .max_abs = 3e-5, .rel_rms = 7e-6 },
+    .half = .{ .max_abs = 2e0, .rel_rms = 5e-1 },
+    .q8 = .{ .max_abs = 2e0, .rel_rms = 5e-1 },
+};
+
 fn boundsOf(variant: *const tiny.Variant) *const Bounds {
+    if (std.mem.eql(u8, variant.name, "inkling2")) return &inkling_bounds;
     if (std.mem.eql(u8, variant.name, "gemma4-experts")) return &gemma_experts_bounds;
     if (std.mem.startsWith(u8, variant.name, "gemma4")) return &gemma_bounds;
     if (std.mem.startsWith(u8, variant.name, "muse")) return &muse_bounds;
@@ -405,9 +417,18 @@ const Reference = struct {
     rows: []f32,
     vocabulary: usize,
 
-    fn init(gpa: Allocator, io: std.Io, path: []const u8) !Reference {
+    /// `rounding` other than F32 rounds the cache rows as a lossy cache
+    /// does, in a family whose runtime can (`cache_rounding`); null when
+    /// it cannot.
+    fn init(gpa: Allocator, io: std.Io, path: []const u8, rounding: Precision) !?Reference {
         var engine = try Engine.open(gpa, io, path, .cpu, capacity, .f32, null, .none);
         defer engine.deinit();
+        if (rounding != .f32) switch (engine.model.exec) {
+            inline else => |*e| {
+                if (!@hasField(@TypeOf(e.cpu), "cache_rounding")) return null;
+                e.cpu.cache_rounding = rounding;
+            },
+        };
         const tokens = try promptTokens(gpa, &engine);
         errdefer gpa.free(tokens);
         const vocabulary = engine.vocab.tokens.len;
@@ -478,19 +499,20 @@ fn metalRun(gpa: Allocator, io: std.Io, path: []const u8, reference: Reference, 
     return run;
 }
 
-/// A run of 64 bytes in the middle of `blk.0.ffn_up.weight` changed, a block
-/// or so of one early matrix: what a decoder wrong in a corner would do. The
-/// stepped bound must catch it.
+/// A run of 64 bytes in the middle of `blk.0.ffn_up.weight` changed (of
+/// `blk.0.attn_q.weight` in a family without one), a block or so of one
+/// early matrix: what a decoder wrong in a corner would do. The stepped
+/// bound must catch it.
 fn corruptBlock(gpa: Allocator, bytes: []u8) !void {
     var reader: std.Io.Reader = .fixed(bytes);
     var doc = try inference.gguf.parse(gpa, &reader, bytes.len, .{});
     defer doc.deinit();
-    for (doc.tensors) |tensor| {
-        if (!std.mem.eql(u8, tensor.name, "blk.0.ffn_up.weight")) continue;
+    for ([_][]const u8{ "blk.0.ffn_up.weight", "blk.0.attn_q.weight" }) |name| for (doc.tensors) |tensor| {
+        if (!std.mem.eql(u8, tensor.name, name)) continue;
         const middle: usize = @intCast(doc.data_offset + tensor.offset + tensor.bytes / 2);
         for (bytes[middle..][0..64]) |*byte| byte.* ^= 0x10;
         return;
-    }
+    };
     return error.MissingTensor;
 }
 
@@ -503,7 +525,7 @@ fn checkVariant(gpa: Allocator, io: std.Io, out: *std.Io.Writer, dir: std.Io.Dir
         defer gpa.free(bytes);
         const path = try writeFile(gpa, io, dir, prefix, "model.gguf", bytes);
         defer gpa.free(path);
-        const reference: Reference = try .init(gpa, io, path);
+        const reference = (try Reference.init(gpa, io, path, .f32)).?;
         defer reference.deinit(gpa);
         const run = metalRun(gpa, io, path, reference, .f32) catch |err| {
             try out.print("{s:<16} {s:>8} {t}\n", .{ variant.name, encoding_name, err });
@@ -517,7 +539,12 @@ fn checkVariant(gpa: Allocator, io: std.Io, out: *std.Io.Writer, dir: std.Io.Dir
         if (index == 0) {
             // The two lossy caches, once per variant.
             for ([_]Precision{ .f16, .q8_0 }, [_]Deviation{ bounds.half, bounds.q8 }) |kv, bound| {
-                const cached = try metalRun(gpa, io, path, reference, kv);
+                // Against a reference whose cache rounds the same way, where
+                // the family can: Inkling 2's clipped keys amplify a cache's
+                // rounding past anything a bound against F32 could hold.
+                const rounded = try Reference.init(gpa, io, path, kv);
+                defer if (rounded) |r| r.deinit(gpa);
+                const cached = try metalRun(gpa, io, path, rounded orelse reference, kv);
                 const worst = cached.stepped.merge(cached.chunked);
                 const fine = worst.within(bound);
                 passed = passed and fine;

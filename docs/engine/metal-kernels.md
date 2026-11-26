@@ -293,7 +293,7 @@ per layer:
   `in_stride` 0 shares one input across the slots (gate-up). Expert indices
   are clamped to the tensor, so a corrupt routing buffer cannot read past it.
 - `Backend.geluMulRows`: `gelu(gate[r][i]) · up[r][i]` over strided rows;
-  `Backend.situMulRows` is Inkling 2's SITU in the same layout.
+  `Backend.situMulRows` is Inkling 2's SITU in the same layout, each row's expert factor first.
 - `Backend.combineExperts`: `out[row][c] = Σ_s w[row][s] · scale[e_s] ·
   y[row·k + s][c]`, the per-expert down scale optional.
 

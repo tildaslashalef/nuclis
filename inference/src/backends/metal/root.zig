@@ -375,6 +375,7 @@ pub const Backend = struct {
     pub const geluMulRows = experts_ops.geluMulRows;
     pub const SituRowsParams = experts_ops.SituRowsParams;
     pub const situMulRows = experts_ops.situMulRows;
+    pub const RowScales = experts_ops.RowScales;
     pub const ExpertListsParams = experts_ops.ExpertListsParams;
     pub const expert_tile = experts_ops.expert_tile;
     pub const expertTileBound = experts_ops.expertTileBound;

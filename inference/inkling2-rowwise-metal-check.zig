@@ -257,7 +257,7 @@ fn checkSitu(alloc: std.mem.Allocator, b: *Backend, random: std.Random) !f64 {
     const out = try b.create(slots * ff * 4);
     defer b.release(out) catch {};
     try b.begin();
-    try b.situMulRows(buffer, buffer.slice(ff * 4, buffer.len - ff * 4), out, ff, slots, 2 * ff, 2 * ff, ff, 4, 25);
+    try b.situMulRows(buffer, buffer.slice(ff * 4, buffer.len - ff * 4), out, ff, slots, 2 * ff, 2 * ff, ff, 4, 25, null);
     try b.commit();
     const want = try alloc.alloc(f32, slots * ff);
     defer alloc.free(want);
@@ -265,7 +265,28 @@ fn checkSitu(alloc: std.mem.Allocator, b: *Backend, random: std.Random) !f64 {
         want[s * ff + i] = cpu.situ(gate_up[s * 2 * ff + i], gate_up[s * 2 * ff + ff + i], 4, 25);
     };
     // Two F32 tanh and an exp against F64: the GELU chain's bound.
-    return expectNear("SITU", out.floats()[0 .. slots * ff], want, 2e-5);
+    var worst = try expectNear("SITU", out.floats()[0 .. slots * ff], want, 2e-5);
+
+    // Each slot's expert factor, as `cpu.experts.ffn` applies it before
+    // the activation; slot 7 names an expert past the table, clamped.
+    const experts = 16;
+    var factors: [experts]f32 = undefined;
+    for (&factors) |*f| f.* = 0.25 + 2 * random.float(f32);
+    const ids = [slots]u32{ 3, 0, 15, 3, 9, 1, 12, 40 };
+    const factors_buffer = try upload(b, &factors);
+    defer b.release(factors_buffer) catch {};
+    const ids_buffer = try b.create(slots * 4);
+    defer b.release(ids_buffer) catch {};
+    @memcpy(@as([*]u32, @ptrCast(@alignCast(ids_buffer.host)))[0..slots], &ids);
+    try b.begin();
+    try b.situMulRows(buffer, buffer.slice(ff * 4, buffer.len - ff * 4), out, ff, slots, 2 * ff, 2 * ff, ff, 4, 25, .{ .indices = ids_buffer, .scales = factors_buffer, .experts = experts });
+    try b.commit();
+    for (0..slots) |s| for (0..ff) |i| {
+        const f = factors[@min(ids[s], experts - 1)];
+        want[s * ff + i] = cpu.situ(gate_up[s * 2 * ff + i] * f, gate_up[s * 2 * ff + ff + i] * f, 4, 25);
+    };
+    worst = @max(worst, try expectNear("SITU, scaled", out.floats()[0 .. slots * ff], want, 2e-5));
+    return worst;
 }
 
 /// The biased router over 128 experts, eight chosen, four rows: the
@@ -322,7 +343,8 @@ fn checkRouteBiased(alloc: std.mem.Allocator, b: *Backend, random: std.Random) !
 }
 
 /// The refusals: overlapping outputs (with the input or the history),
-/// gains overlapping the clipped data, too many states, a nonpositive
+/// gains overlapping the clipped data, SITU's expert factors short,
+/// misaligned, or overlapping its output, too many states, a nonpositive
 /// threshold, and dynamic taps that do not divide the channels.
 fn checkRefusals(b: *Backend) !void {
     const any = try b.create(1 << 20);
@@ -337,7 +359,13 @@ fn checkRefusals(b: *Backend) !void {
     try std.testing.expectError(error.InvalidShape, b.l2ClipRows(any, any.slice(256, 512), 8, null, 2, 64, 1, 128));
     try std.testing.expectError(error.InvalidShape, b.shortConvolution(any.slice(0, 4096), other, other, null, any.slice(256, 4096), 64, taps, 1, 64, 64));
     try std.testing.expectError(error.InvalidShape, b.controlBlend(any, other, other, other, any.slice(4, 1024), 64, 1, 64, 64, 64, 64));
-    try std.testing.expectError(error.InvalidShape, b.situMulRows(any, any, any, 64, 1, 64, 64, 64, 4, 25));
+    try std.testing.expectError(error.InvalidShape, b.situMulRows(any, any, any, 64, 1, 64, 64, 64, 4, 25, null));
+    const ids = any.slice(1024, 64);
+    const sixteen = any.slice(2048, 64);
+    try std.testing.expectError(error.InvalidShape, b.situMulRows(other, other, any.slice(0, 256), 64, 1, 64, 64, 64, 4, 25, .{ .indices = ids, .scales = sixteen, .experts = 0 }));
+    try std.testing.expectError(error.InvalidShape, b.situMulRows(other, other, any.slice(0, 256), 64, 1, 64, 64, 64, 4, 25, .{ .indices = ids, .scales = sixteen, .experts = 17 }));
+    try std.testing.expectError(error.InvalidShape, b.situMulRows(other, other, any.slice(0, 256), 64, 1, 64, 64, 64, 4, 25, .{ .indices = any.slice(1026, 4), .scales = sixteen, .experts = 16 }));
+    try std.testing.expectError(error.InvalidShape, b.situMulRows(other, other, any.slice(0, 256), 64, 1, 64, 64, 64, 4, 25, .{ .indices = any.slice(128, 4), .scales = sixteen, .experts = 16 }));
     try std.testing.expectError(error.InvalidShape, b.routeBiased(any, other, 300, 8, 1, 300, 8, other, other));
 }
 
@@ -359,5 +387,5 @@ pub fn check(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
     const situ = try checkSitu(alloc, b, random);
     const route = try checkRouteBiased(alloc, b, random);
     try checkRefusals(b);
-    std.debug.print("Inkling 2 row-wise operations vs the CPU, relative past 1: short convolution (static and dynamic taps, 1 and 5 rows) {e:.3}, the history advanced exactly; l2 clip (gains, log scale) {e:.3}; depth mix (1-32 states) {e:.3} (bounds 2e-6); controller {e:.3} (1e-5); SITU {e:.3} (2e-5); biased route weights {e:.3}, its choices the CPU's, a NaN row's every slot written\n", .{ conv, clip, mix, control, situ, route });
+    std.debug.print("Inkling 2 row-wise operations vs the CPU, relative past 1: short convolution (static and dynamic taps, 1 and 5 rows) {e:.3}, the history advanced exactly; l2 clip (gains, log scale) {e:.3}; depth mix (1-32 states) {e:.3} (bounds 2e-6); controller {e:.3} (1e-5); SITU (with expert factors) {e:.3} (2e-5); biased route weights {e:.3}, its choices the CPU's, a NaN row's every slot written\n", .{ conv, clip, mix, control, situ, route });
 }

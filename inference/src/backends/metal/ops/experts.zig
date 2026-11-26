@@ -202,18 +202,26 @@ pub fn matmulExperts(self: *Backend, weights: Buffer, tensor: cpu.ExpertMatrix, 
     try self.dispatch(kernel, &.{ weights, input, output, lists }, p, groups, 128, .{ .encoding = tensor.encoding, .rows = @intCast(tensor.rows), .columns = @intCast(tensor.columns) });
 }
 
-pub const SituRowsParams = extern struct { width: u32, rows: u32, gate_stride: u32, up_stride: u32, out_stride: u32, beta: f32, linear_beta: f32 };
-/// `output[r][i] = situ(gate[r][i], up[r][i])` (`cpu.situ`, β and
-/// λ positive) over `rows` strided rows; the layout and overlap rules of
-/// `geluMulRows`.
-pub fn situMulRows(self: *Backend, gate: Buffer, up: Buffer, output: Buffer, width: usize, rows: usize, gate_stride: usize, up_stride: usize, out_stride: usize, beta: f32, linear_beta: f32) !void {
+pub const SituRowsParams = extern struct { width: u32, rows: u32, gate_stride: u32, up_stride: u32, out_stride: u32, beta: f32, linear_beta: f32, experts: u32 = 0 };
+/// Each row's expert factor on its gate and up halves: `scales[indices[r]]`
+/// (`cpu.experts.Ffn.gate_up_scale`), `experts` F32 values.
+pub const RowScales = struct { indices: Buffer, scales: Buffer, experts: usize };
+/// `output[r][i] = situ(s·gate[r][i], s·up[r][i])` (`cpu.situ`, β and
+/// λ positive) over `rows` strided rows, `s` the row's factor from
+/// `scaled` or 1; the layout and overlap rules of `geluMulRows`.
+pub fn situMulRows(self: *Backend, gate: Buffer, up: Buffer, output: Buffer, width: usize, rows: usize, gate_stride: usize, up_stride: usize, out_stride: usize, beta: f32, linear_beta: f32, scaled: ?RowScales) !void {
     if (width == 0 or rows == 0 or gate_stride < width or up_stride < width or out_stride < width) return error.InvalidShape;
     if (!std.math.isFinite(beta) or beta <= 0 or !std.math.isFinite(linear_beta) or linear_beta <= 0) return error.InvalidShape;
     if (gate.len < ((rows - 1) * gate_stride + width) * 4 or up.len < ((rows - 1) * up_stride + width) * 4 or output.len < ((rows - 1) * out_stride + width) * 4) return error.InvalidShape;
     const out_len = ((rows - 1) * out_stride + width) * 4;
     if (Buffer.overlaps(output, out_len, gate, ((rows - 1) * gate_stride + width) * 4) or Buffer.overlaps(output, out_len, up, ((rows - 1) * up_stride + width) * 4)) return error.InvalidShape;
-    const p: SituRowsParams = .{ .width = @intCast(width), .rows = @intCast(rows), .gate_stride = @intCast(gate_stride), .up_stride = @intCast(up_stride), .out_stride = @intCast(out_stride), .beta = beta, .linear_beta = linear_beta };
-    try self.dispatch(.situ_mul_rows, &.{ gate, up, output }, p, perElement(width * rows), 256, .{});
+    var p: SituRowsParams = .{ .width = @intCast(width), .rows = @intCast(rows), .gate_stride = @intCast(gate_stride), .up_stride = @intCast(up_stride), .out_stride = @intCast(out_stride), .beta = beta, .linear_beta = linear_beta };
+    if (scaled) |s| {
+        if (s.experts == 0 or s.experts > std.math.maxInt(u32) or s.indices.len < rows * 4 or s.indices.offset % 4 != 0 or s.scales.len < s.experts * 4 or s.scales.offset % 4 != 0) return error.InvalidShape;
+        if (Buffer.overlaps(output, out_len, s.indices, rows * 4) or Buffer.overlaps(output, out_len, s.scales, s.experts * 4)) return error.InvalidShape;
+        p.experts = @intCast(s.experts);
+        try self.dispatch(.situ_mul_rows_scaled, &.{ gate, up, output, s.indices, s.scales }, p, perElement(width * rows), 256, .{});
+    } else try self.dispatch(.situ_mul_rows, &.{ gate, up, output }, p, perElement(width * rows), 256, .{});
 }
 
 pub const RouteBiasedParams = extern struct { experts: u32, k: u32, rows: u32, in_stride: u32, scale: f32 };

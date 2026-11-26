@@ -12,10 +12,9 @@ DSpark drafter (`dspark-Inkling-2-Mini-Q8_0.gguf`, architecture
 `dflash`); commits and digests in
 [the record](../benchmarks/record/catalogue.md#pinned-commits-and-digests-2026-09-11).
 The header's facts are pinned in
-`inference/src/models/fixtures/inkling2-q4_k_xl.json`. The `inkling2`
-adapter binds the file and the CPU reference
+`inference/src/models/fixtures/inkling2-q4_k_xl.json`. The CPU reference
 ([inkling2_runtime.zig](../../inference/src/models/inkling2_runtime.zig))
-runs it; no Metal plan does yet (`MetalPlanUnavailable`): `--backend cpu`.
+and the Metal plan ([§ Metal](#metal)) run it.
 
 ## Architecture
 
@@ -108,8 +107,7 @@ index of application `il`.
 
 ### Session state
 
-- 48 KV caches, one per application: 8 full, 40 windowed at 1,024; F16
-  K and V take 4 KiB a token an application (1 GiB at 32,768 tokens).
+- 48 KV caches, one per application: 8 full, 40 windowed at 1,024; F16 K and V take 4 KiB a token per application (1 GiB at 32,768 tokens).
 - Per application, a convolution history of 3 rows × 6,656 F32 channels:
   K 0–1,023, V 1,024–2,047, attention output 2,048–4,351, FFN output
   4,352–6,655 (78 KiB; 3.7 MiB for the 48).
@@ -121,12 +119,10 @@ index of application `il`.
 
 ### Readings confirmed
 
-The CPU reference's per-layer outputs on the real file chose each reading
-above: each alternative (static or dynamic taps reversed, bias and sink
+On the real file each alternative reading (taps reversed, bias and sink
 inside `c`, the sink's sign, up before gate) moved all 48 layers an order
-of magnitude or more further from the format's graph. The sliding bias
-table has the window's columns, as the binder holds it; `relative_extent`
-is the same 1,024, so the file cannot tell them apart.
+of magnitude further from the format's graph. The sliding bias table has
+the window's columns; `relative_extent` is the same 1,024.
 
 ## Files and encodings
 
@@ -146,7 +142,7 @@ is the same 1,024, so the file cannot tell them apart.
   nuclis validates the file against its own CPU reference only.
 - **Binding** ([inkling2.zig](../../inference/src/models/inkling2.zig)):
   every tensor by name, shape, and encoding; block 0 has no
-  `attn_res_query`, only the core has loop controllers, and a block has
+  `attn_res_query`, the core alone has loop controllers, and a block has
   both expert scales or neither.
 
 ## Tokenizer
@@ -177,9 +173,18 @@ token `<|content_model_end_sampling|>` (200006).
   ([tool-calling.md § Inkling 2](../engine/tool-calling.md#inkling-2-json-calls-in-their-own-messages)).
   **Images**: a `<|content_image|>` user message each, one
   `<|unused_200054|>` per merged row, before the text.
-- **Sampling**: temperature 1, top-k 0, top-p 1, min-p 0 (`general.sampling.*`).
-  Fixtures: `inkling2-{text,tools,media}.json` (9 prompts with ids and 11
-  strings, 5, 2).
+- **Sampling**: temperature 1, top-k 0, top-p 1, min-p 0. Fixtures:
+  `inkling2-{text,tools,media}.json` (9 prompts with ids and 11 strings, 5, 2).
+
+## Metal
+
+[inkling2_metal.zig](../../inference/src/models/inkling2_metal.zig) steps
+each token in one command buffer, stage for stage the CPU reference's. On
+the real file its F32 trace is 7.6e-5 (relative RMS 8.7e-7) from the
+reference's; rounding the reference's own cache to F16
+(`Runtime.cache_rounding`) moves it 2.57 / 0.082, Metal's F16 cache 3.0e-3
+/ 8.8e-5 from that. The F16 gate bounds the rounding; the packed path, the
+window, the log scale, and Q8_0 are held by `make test-tiny` alone.
 
 ## What is verified
 
@@ -193,6 +198,8 @@ router's eighth expert differs at a near tie
 | --- | --- | --- | --- |
 | `inkling2-vocabulary` | `verify` | inkling2 | [inkling2.md § prompt-profile](inkling2.md#prompt-profile) |
 | `inkling2-trace-cpu` | `verify-cpu` | inkling2 | [inkling2.md](inkling2.md) |
+| `inkling2-trace-f32` | `verify` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
+| `inkling2-trace-f16` | `verify` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
 <!-- /gen -->
 
 ## Known limits

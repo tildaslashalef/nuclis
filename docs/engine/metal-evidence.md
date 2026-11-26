@@ -58,7 +58,7 @@ every contract violation it lists is refused before dispatch.
 | `nu_gelu_mul` (with ±60, 200, −3e3), `nu_scale`, `nu_add_scale`, `nu_softcap` (with ±3e3) | vs `cpu.gelu`, F32 arithmetic, `std.math.tanh` | 2e-6 relative; exact; exact; 2e-6 relative |
 | L2 norm, silu·mul, add, silu, gates, sigmoid gate | vs `cpu.*` | 1e-6 |
 | Inkling 2's short convolution (1,024 with eight heads of dynamic taps, 1,024 and 2,304 static; 1 and 5 rows), `l2ClipRows` (24 × 128 and 24 × 16 with gains and the log scale, 8 × 128 plain), depth mix (1 to 32 states, 1 to 3 queries, three tokens) | vs `cpu.recurrent.shortConvolution` stepped (history exact), `cpu.l2Clip` × `logPositionScale`, `cpu.depth.mix` | 2e-6 relative past 1 |
-| The loop controller (join, three F32 `matvec`s at rank 64, blend in place); SITU over a fused gate-up row with ±60 | vs `cpu.depth.control`; `cpu.situ` | 1e-5; 2e-5 relative past 1 |
+| The loop controller (join, three F32 `matvec`s at rank 64, blend in place); SITU over a fused gate-up row with ±60, plain and with per-slot expert factors | vs `cpu.depth.control`; `cpu.situ` | 1e-5; 2e-5 relative past 1 |
 | Hadamard on 5,120 / 6,144 / 17,408 over strided rows, forward, inverse, round trip; the 48 × 128 row gather and its refusals | vs `cpu.hadamard`; exact | 3e-5; exact |
 | History penalties over every logit sign (positive, negative, zero, negative zero) | vs `Sampling.Sampler.penalize` | exact but for flushed subnormals |
 | Argmax over 248,320 with a tie; partial top-k (256) with ties | lowest index; vs the CPU sort | exact; **exact** |

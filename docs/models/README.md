@@ -411,16 +411,14 @@ builds a GGUF per variant at test time (`formats/gguf_writer.zig`,
 `quant/sample.zig`), seeded and deterministic, in a temporary directory.
 
 - **`zig build test`** (`inference/tiny-check.zig`, also `-Dmetal=false` on
-  Linux): each family through `Engine.open` on the CPU, two rows plus a
-  rerun, in each variant's first encoding: finite, the right shapes, same seed
-  same logits; tokenizer round trips, GPT-4o's cuts on Muse. A variant
-  whose family has no executor (`forward = .none`) loads up to the
-  executor, which must refuse. Adds 2 s.
-- **`zig build test-tiny -Dmetal=true -- [variant] [seed]`** (`make
-  test-tiny`): every variant in every encoding against the CPU reference,
-  stepped and chunked, with the F16 and Q8_0 caches on the first encoding,
-  and a control that corrupts 64 bytes of one matrix and must leave the
-  stepped bound. It takes 2.5 minutes.
+  Linux): each family through `Engine.open` on the CPU, two rows plus a rerun,
+  in each variant's first encoding: finite, the right shapes, same seed same
+  logits; tokenizer round trips, GPT-4o's cuts on Muse. A family with no
+  executor (`forward = .none`) loads up to it, which must refuse. Adds 2 s.
+- **`zig build test-tiny -Dmetal=true -- [variant] [seed]`** (`make test-tiny`,
+  2.5 minutes): every variant in every encoding against the CPU reference,
+  stepped and chunked, the F16 and Q8_0 caches on the first encoding, and a
+  control corrupting 64 bytes of one matrix, which must leave the stepped bound.
 
 They prove the code paths, the plan's agreement with the reference, and the
 layouts; never accuracy, since these weights mean nothing. Blocks are random
@@ -447,7 +445,7 @@ vocabulary, and production refuses a shape only the tiny build pins).
 | `gemma4-dense`, `gemma4-mix` | 6 layers | F32, Q4_0, Q5_0, Q5_1, Q8_0, Q3_K to Q6_K, IQ3_S, IQ4_NL, IQ4_XS | <!-- ok: tiny-build variants, not gates -->
 | `gemma4-experts` | 7 layers, 16 experts of 64 | the same, `ffn_down_exps` in Q5_0 under a 256-block file | <!-- ok: tiny-build variant, not a gate -->
 | `gemma4-e4b` | 12 layers, per-layer embedding | the same, its projection BF16 under Q4_K |
-| `inkling2` | 18 stored blocks as 24 applications, 256 wide, 16 experts of 64; the CPU forward and its hybrid session, Metal loads only | Q8_0, F32, with NVFP4 experts and BF16 projections |
+| `inkling2` | 18 stored blocks as 24 applications, 256 wide, 16 experts of 64; the CPU forward and its hybrid session, the stepped Metal plan | Q8_0, F32, with NVFP4 experts and BF16 projections |
 
 That is every encoding each adapter accepts. Bounds are about three times the
 worst of three seeds over every encoding on the M4 Pro, in absolute logit
@@ -458,6 +456,7 @@ error and RMS relative to the reference's logits:
 | Qwen, Saluki, Bonsai | 6e-5, 1.5e-5 | 4e-2, 1e-2 | 3e-2, 1e-2 | 4e-2, 1e-2 |
 | Muse Glimmer | 5e-6, 1e-5 | 3e-3, 5e-3 | 2e-3, 3e-3 | 3e-2, 5e-2 |
 | Gemma 4 | 1.5e-4, 3e-5 | 2e-2, 6e-3 | 3e-2, 6e-3 | 1.5e-1, 5e-2 |
+| Inkling 2 | 3e-5, 7e-6 | the stepped row | 2e0, 5e-1 | 2e0, 5e-1 |
 | Gemma 4 experts | 4e-4, 1.2e-4 | 2, 5e-1 | 2, 5e-1 | 2, 5e-1 |
 
 Stepped runs F32 activations on both sides, so what is left is F32 rounding,
@@ -465,6 +464,9 @@ amplified by a random network. Chunked adds the half-operand tiles of the
 encodings that use them, and the caches add their own. The experts' row is
 wide because the router's top-k is discontinuous: rounding across a close
 pair swaps an expert, which moves the logits far more than the rounding did.
+So are Inkling 2's caches, held to a reference rounding its own cache rows
+alike (`cache_rounding`; against F32 the rounding moves the logits by their
+size): a code or the router still flips on some seeds (1.3 / 0.34 at worst).
 The Gemma generator sets `attn_q_norm` near `1/sqrt(head)`, since its scores
 are unscaled and at unit gain the softmax is one-hot, which amplified rounding
 a thousandfold. A real model's numbers are the gates', never these.

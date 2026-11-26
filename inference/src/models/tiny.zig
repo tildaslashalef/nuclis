@@ -133,7 +133,7 @@ pub const variants = [_]Variant{
     .{ .name = "muse-mix", .emit = emitMuse, .encodings = &.{12}, .cycle = &.{ 12, 13 } },
     // NVFP4 experts with scales but on the last four blocks, which take the
     // file's matrix encoding; BF16 sink and conv projections.
-    .{ .name = "inkling2", .emit = emitInkling2, .encodings = &.{ 8, 0 }, .forward = .cpu },
+    .{ .name = "inkling2", .emit = emitInkling2, .encodings = &.{ 8, 0 } },
     .{ .name = "gemma4-mix", .emit = emitGemmaDense, .encodings = &.{12}, .cycle = &.{ 12, 13, 2, 8 } },
 };
 

@@ -16,6 +16,8 @@ const model = @import("inkling2.zig");
 const weights = @import("../runtime/weights.zig");
 const session = @import("../runtime/session.zig");
 const cpu = @import("../backends/cpu/root.zig");
+const quant_encode = @import("../quant/encode.zig");
+const quant_decode = @import("../quant/decode.zig");
 const Tensor = @import("../formats/gguf.zig").Tensor;
 
 pub const Observer = @import("../runtime/observer.zig").Observer;
@@ -81,6 +83,11 @@ pub const Runtime = struct {
     state: session.Session,
     view: weights.View,
     binding: model.Binding,
+    /// The precision each key and value row is rounded through as it
+    /// enters the F32 cache: what a Metal cache of that precision stores.
+    /// F32, no rounding, is the reference; the lossy caches' checks set
+    /// the others (docs/models/inkling2.md § Metal).
+    cache_rounding: session.Precision = .f32,
     constants: []Constants,
     token_norm: []f32,
     output_norm: []f32,
@@ -200,6 +207,7 @@ pub const Runtime = struct {
             };
         }
         r.storage = storage;
+        r.cache_rounding = .f32;
         r.state = state;
         r.view = view;
         r.io = io;
@@ -400,6 +408,8 @@ pub const Runtime = struct {
             const value = self.v[h * hd ..][0..hd];
             try cpu.rmsNorm(value, value, model.rms_epsilon);
         }
+        try roundRow(self.cache_rounding, self.k);
+        try roundRow(self.cache_rounding, self.v);
         const cache = self.state.layers[il].attention;
         @memcpy(cache.keys.floats(position, 1), self.k);
         @memcpy(cache.values.floats(position, 1), self.v);
@@ -423,6 +433,22 @@ pub const Runtime = struct {
         for (self.mixed_out, self.gate) |*o, g| o.* *= cpu.sigmoid(g);
         try self.mm(block.output, self.mixed_out, self.convolved);
         try cpu.recurrent.shortConvolution(self.convolved, c.attention_post_conv, null, self.history(il, attention_offset, E), self.projected, taps, &.{});
+    }
+
+    /// `values` as a cache of `precision` holds them: F16 by round to
+    /// nearest, Q8_0 through `quant_encode.q8_0Row` and back.
+    fn roundRow(precision: session.Precision, values: []f32) !void {
+        switch (precision) {
+            .f32 => {},
+            .f16 => for (values) |*x| {
+                x.* = @as(f16, @floatCast(x.*));
+            },
+            .q8_0 => {
+                var bytes: [model.kv_width / quant_encode.q8_0_block * quant_encode.q8_0_block_bytes]u8 = undefined;
+                try quant_encode.q8_0Row(values, &bytes);
+                try quant_decode.row(8, &bytes, values);
+            },
+        }
     }
 
     /// The experts of application `il` over the mixed residual, into

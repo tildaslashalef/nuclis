@@ -202,26 +202,7 @@ pub const family = struct {
 
 pub const Runtime = @import("inkling2_runtime.zig").Runtime;
 
-/// The Metal plan's place in the registry: opening one is the typed
-/// `MetalPlanUnavailable`, so the engine refuses the backend, not the file.
-pub const Plan = struct {
-    state: session.Session,
-
-    pub fn init(_: std.mem.Allocator, _: anytype, _: weights.View, _: Binding, _: usize, _: usize, _: session.Precision, _: bool, _: bool) !Plan {
-        return error.MetalPlanUnavailable;
-    }
-    pub fn deinit(_: *Plan) void {}
-    pub fn reset(_: *Plan) void {}
-    pub fn step(_: *Plan, _: u32, _: ?[]f32, _: anytype, _: anytype, _: anytype, _: anytype) !void {
-        return error.MetalPlanUnavailable;
-    }
-    pub fn prefill(_: *Plan, _: []const u32, _: ?[]f32, _: anytype, _: anytype, _: anytype, _: ?[]f32, _: anytype) !void {
-        return error.MetalPlanUnavailable;
-    }
-    pub fn readLogits(_: *Plan, _: []f32) !void {
-        return error.MetalPlanUnavailable;
-    }
-};
+pub const Plan = @import("inkling2_metal.zig").Plan;
 
 const IntegerSetting = struct { key: []const u8, value: u64 };
 const integer_settings = [_]IntegerSetting{
@@ -656,8 +637,4 @@ test "binding survives allocation failure without leaks" {
             _ = try bind(alloc, d);
         }
     }.check, .{&doc});
-}
-
-test "the Metal plan refuses: only the CPU reference runs the family" {
-    try std.testing.expectError(error.MetalPlanUnavailable, Plan.init(std.testing.allocator, {}, undefined, undefined, 1, 1, .f32, false, false));
 }
