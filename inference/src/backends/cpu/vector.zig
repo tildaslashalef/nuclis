@@ -259,6 +259,27 @@ pub fn silu(x: f32) f32 {
 
 /// log(1+exp(x)), with log1p preserving the small negative-input tail.
 /// -infinity maps to zero; +infinity remains +infinity; NaN propagates.
+/// SITU, a gated activation with soft-capped halves:
+/// `β·tanh(g/β)·σ(g) · λ·tanh(u/λ)` for gate `g` and up `u`; β and λ are
+/// positive. NaN propagates.
+pub fn situ(g: f32, u: f32, beta: f32, linear_beta: f32) f32 {
+    const gate: f64 = @as(f64, beta) * std.math.tanh(@as(f64, g) / beta) * logistic(g);
+    const up: f64 = @as(f64, linear_beta) * std.math.tanh(@as(f64, u) / linear_beta);
+    return @floatCast(gate * up);
+}
+
+test "SITU caps both halves and gates by the sigmoid" {
+    try std.testing.expectEqual(@as(f32, 0), situ(0, 7, 4, 25));
+    const expected = 4 * std.math.tanh(@as(f64, 1)) / (1 + @exp(@as(f64, -4))) * 25 * std.math.tanh(@as(f64, 1));
+    try std.testing.expectApproxEqRel(@as(f32, @floatCast(expected)), situ(4, 25, 4, 25), 1e-6);
+    // Saturation: the gate reaches β, the up half λ; a negative gate closes.
+    try std.testing.expectApproxEqRel(@as(f32, 100), situ(1e4, 1e4, 4, 25), 1e-6);
+    try std.testing.expectApproxEqRel(@as(f32, -100), situ(1e4, -1e4, 4, 25), 1e-6);
+    try std.testing.expect(@abs(situ(-100, 25, 4, 25)) < 1e-40);
+    try std.testing.expectApproxEqRel(@as(f32, 100), situ(std.math.inf(f32), std.math.inf(f32), 4, 25), 1e-6);
+    try std.testing.expect(std.math.isNan(situ(std.math.nan(f32), 1, 4, 25)));
+}
+
 pub fn softplus(x: f32) f32 {
     if (std.math.isNan(x)) return x;
     const wide: f64 = x;

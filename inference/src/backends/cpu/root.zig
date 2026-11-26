@@ -11,6 +11,7 @@ pub const rope = @import("rope.zig");
 pub const dense = @import("dense.zig");
 pub const attention = @import("attention.zig");
 pub const recurrent = @import("recurrent.zig");
+pub const depth = @import("depth.zig");
 pub const experts = @import("experts.zig");
 pub const hadamard = @import("hadamard.zig");
 pub const ExpertMatrix = experts.ExpertMatrix;
@@ -26,6 +27,7 @@ pub const gelu = vector.gelu;
 pub const geluQuick = vector.geluQuick;
 pub const geluErf = vector.geluErf;
 pub const softplus = vector.softplus;
+pub const situ = vector.situ;
 
 /// Borrowed, contiguous row-major encoded weights. No padding or transpose is
 /// implied. GGUF dimension 0 corresponds to `columns`, dimension 1 to `rows`.
@@ -45,6 +47,7 @@ test {
     _ = dense;
     _ = attention;
     _ = recurrent;
+    _ = depth;
     _ = experts;
     _ = hadamard;
 }

@@ -1,5 +1,6 @@
-//! Mixture-of-experts references: routing (softmax, top-k, renormalized
-//! weights) and the gathered gated-GELU expert FFN over 3-D encoded tensors
+//! Mixture-of-experts references: routing (softmax or a biased sigmoid,
+//! top-k, renormalized weights) and the gathered gated expert FFN (GELU or
+//! SITU) over 3-D encoded tensors
 //! whose experts are contiguous row-major matrices. F64 intermediates, no
 //! allocation. The chain a model applies before the router logits (norms,
 //! scales) and after the sum (post norms) belongs to its adapter.
@@ -78,6 +79,44 @@ pub fn route(logits: []const f32, indices: []u32, weights: []f32) Error!void {
     for (weights) |*w| w.* = @floatCast(@as(f64, w.*) / denominator);
 }
 
+/// The sigmoid router's floor under the chosen gates' sum.
+pub const biased_weight_epsilon: f64 = 1e-20;
+
+/// Selects `indices.len` experts for one token by `σ(logit) + bias[e]`
+/// (value desc, index asc): the bias steers the choice only. A chosen
+/// expert's weight is its gate `σ(logit)` over the chosen gates' sum plus
+/// `biased_weight_epsilon`, times `scale`. Gates and selection values are
+/// F32, so a tie at F32 precision goes to the lower index. Logits and bias
+/// must be finite; errors leave the outputs untouched.
+pub fn routeBiased(logits: []const f32, bias: []const f32, scale: f32, indices: []u32, weights: []f32) Error!void {
+    const k = indices.len;
+    if (k == 0 or k > logits.len or weights.len != k or bias.len != logits.len) return error.InvalidShape;
+    if (logits.len > max_experts) return error.InvalidShape;
+    if (!std.math.isFinite(scale)) return error.NonFiniteInput;
+    for (logits, bias) |x, b| if (!std.math.isFinite(x) or !std.math.isFinite(b)) return error.NonFiniteInput;
+    var taken: [max_experts]bool = @splat(false);
+    var gates: [max_experts]f32 = undefined;
+    var chosen_sum: f64 = 0;
+    for (0..k) |slot| {
+        var best: usize = logits.len;
+        var best_value: f32 = undefined;
+        for (logits, bias, 0..) |x, b, i| {
+            if (taken[i]) continue;
+            const value = vector.sigmoid(x) + b;
+            if (best == logits.len or value > best_value) {
+                best = i;
+                best_value = value;
+            }
+        }
+        taken[best] = true;
+        indices[slot] = @intCast(best);
+        gates[slot] = vector.sigmoid(logits[best]);
+        chosen_sum += gates[slot];
+    }
+    const denominator = chosen_sum + biased_weight_epsilon;
+    for (weights, gates[0..k]) |*w, g| w.* = @floatCast(@as(f64, g) / denominator * scale);
+}
+
 /// Experts a router may choose among; bounds the selection scratch.
 pub const max_experts = 1024;
 
@@ -92,6 +131,8 @@ pub const Ffn = struct {
     down: ExpertMatrix,
     gate_up_scale: ?[]const f32 = null,
     down_scale: ?[]const f32 = null,
+    /// The hidden row's activation of the gate and up halves.
+    activation: Activation = .gelu,
 
     /// F32 scratch `ffn` needs: the gate-up row, the hidden row, the down
     /// row, and the widest decode row.
@@ -100,7 +141,13 @@ pub const Ffn = struct {
     }
 };
 
-/// output = Σ_s weights[s] · scale[e_s] · down[e_s] · (gelu(g) ⊙ u) with
+/// `gelu(g) · u`, or `vector.situ(g, u, beta, linear_beta)`.
+pub const Activation = union(enum) {
+    gelu,
+    situ: struct { beta: f32, linear_beta: f32 },
+};
+
+/// output = Σ_s weights[s] · scale[e_s] · down[e_s] · act(g, u) with
 /// (g, u) the halves of gate_up_scale[e_s] · gate_up[e_s] · input, summed in
 /// F64 over the slots.
 /// `scratch` needs `spec.scratchLen()` floats and `accumulator` one F64
@@ -132,7 +179,14 @@ pub fn ffn(io: std.Io, spec: Ffn, input: []const f32, indices: []const u32, weig
         if (spec.gate_up_scale) |s| for (gate_up_row) |*x| {
             x.* *= s[e];
         };
-        for (hidden, gate_up_row[0..ff], gate_up_row[ff..]) |*h, g, u| h.* = vector.gelu(g) * u;
+        switch (spec.activation) {
+            .gelu => for (hidden, gate_up_row[0..ff], gate_up_row[ff..]) |*h, g, u| {
+                h.* = vector.gelu(g) * u;
+            },
+            .situ => |a| for (hidden, gate_up_row[0..ff], gate_up_row[ff..]) |*h, g, u| {
+                h.* = vector.situ(g, u, a.beta, a.linear_beta);
+            },
+        }
         try cpu.matvec(io, try down.expert(e), hidden, projected, decode);
         const scale: f64 = if (spec.down_scale) |s| s[e] else 1;
         for (acc, projected) |*a, y| a.* += @as(f64, w) * (scale * @as(f64, y));
@@ -234,4 +288,74 @@ test "gathered FFN weights, scales, and sums the selected experts" {
     try std.testing.expectApproxEqRel(@as(f32, @floatCast(0.5 * h_scaled * 3)), output[0], 1e-6);
     try std.testing.expectApproxEqRel(@as(f32, @floatCast(0.5 * h_scaled * 4)), output[1], 1e-6);
     try std.testing.expect(@abs(output[0] - @as(f32, @floatCast(0.0625 * 0.5 * h1 * 3))) > 0.05);
+}
+
+test "the biased sigmoid router selects on gate plus bias and weights by gate" {
+    // Gates σ(0, 1, −1, 2) = (0.5, 0.731, 0.269, 0.881); with bias (0.5, 0,
+    // 0, −1) the selection values are (1.0, 0.731, 0.269, −0.119).
+    var indices: [2]u32 = undefined;
+    var weights: [2]f32 = undefined;
+    try routeBiased(&.{ 0, 1, -1, 2 }, &.{ 0.5, 0, 0, -1 }, 8, &indices, &weights);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1 }, &indices);
+    const g0: f64 = 0.5;
+    const g1: f64 = vector.sigmoid(1);
+    try std.testing.expectApproxEqRel(@as(f32, @floatCast(8 * g0 / (g0 + g1))), weights[0], 1e-6);
+    try std.testing.expectApproxEqRel(@as(f32, @floatCast(8 * g1 / (g0 + g1))), weights[1], 1e-6);
+    // Without the bias the gates themselves choose.
+    try routeBiased(&.{ 0, 1, -1, 2 }, &.{ 0, 0, 0, 0 }, 1, &indices, &weights);
+    try std.testing.expectEqualSlices(u32, &.{ 3, 1 }, &indices);
+}
+
+test "a near tie under F32 goes to the lower index; underflowing gates stay finite" {
+    // 0.5 + 1e-9 rounds to 0.5 in F32: a tie, though F64 would pick index 1.
+    var indices: [1]u32 = undefined;
+    var weights: [1]f32 = undefined;
+    try routeBiased(&.{ 0, 0 }, &.{ 0, 1e-9 }, 1, &indices, &weights);
+    try std.testing.expectEqual(@as(u32, 0), indices[0]);
+    // A bias one F32 step above wins.
+    try routeBiased(&.{ 0, 0 }, &.{ 0, 6e-8 }, 1, &indices, &weights);
+    try std.testing.expectEqual(@as(u32, 1), indices[0]);
+    // Gates that underflow F32 sum to 0: the epsilon keeps weights at 0.
+    var two: [2]u32 = undefined;
+    var two_w: [2]f32 = undefined;
+    try routeBiased(&.{ -200, -300, -250 }, &.{ 0, 0, 1 }, 8, &two, &two_w);
+    try std.testing.expectEqualSlices(u32, &.{ 2, 0 }, &two);
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0 }, &two_w);
+}
+
+test "the biased router rejects bad shapes and non-finite input untouched" {
+    var indices: [2]u32 = @splat(7);
+    var weights: [2]f32 = @splat(9);
+    try std.testing.expectError(error.InvalidShape, routeBiased(&.{ 1, 2 }, &.{1}, 1, &indices, &weights));
+    try std.testing.expectError(error.InvalidShape, routeBiased(&.{1}, &.{1}, 1, &indices, &weights));
+    try std.testing.expectError(error.NonFiniteInput, routeBiased(&.{ 1, std.math.nan(f32) }, &.{ 0, 0 }, 1, &indices, &weights));
+    try std.testing.expectError(error.NonFiniteInput, routeBiased(&.{ 1, 2 }, &.{ 0, std.math.inf(f32) }, 1, &indices, &weights));
+    try std.testing.expectError(error.NonFiniteInput, routeBiased(&.{ 1, 2 }, &.{ 0, 0 }, std.math.nan(f32), &indices, &weights));
+    try std.testing.expectEqualSlices(u32, &.{ 7, 7 }, &indices);
+    try std.testing.expectEqualSlices(f32, &.{ 9, 9 }, &weights);
+}
+
+test "the SITU expert FFN applies its activation after the gate-up scale" {
+    // One expert, width 2, ff 1: gate [1, 0], up [0, 1], down [1], [2].
+    const gate_up_values = [_]f32{ 1, 0, 0, 1 };
+    const down_values = [_]f32{ 1, 2 };
+    var gate_up_bytes: [16]u8 = undefined;
+    var down_bytes: [8]u8 = undefined;
+    for (gate_up_values, 0..) |v, i| std.mem.writeInt(u32, gate_up_bytes[i * 4 ..][0..4], @bitCast(v), .little);
+    for (down_values, 0..) |v, i| std.mem.writeInt(u32, down_bytes[i * 4 ..][0..4], @bitCast(v), .little);
+    const spec: Ffn = .{
+        .gate_up = .{ .encoding = 0, .experts = 1, .rows = 2, .columns = 2, .bytes = &gate_up_bytes },
+        .down = .{ .encoding = 0, .experts = 1, .rows = 2, .columns = 1, .bytes = &down_bytes },
+        .gate_up_scale = &.{2},
+        .down_scale = &.{0.5},
+        .activation = .{ .situ = .{ .beta = 4, .linear_beta = 25 } },
+    };
+    var output: [2]f32 = undefined;
+    var scratch: [16]f32 = undefined;
+    var acc: [2]f64 = undefined;
+    try ffn(std.testing.io, spec, &.{ 3, 5 }, &.{0}, &.{1.5}, &output, &scratch, &acc);
+    // (g, u) = 2·(3, 5); hidden = situ(6, 10); y = 1.5 · 0.5 · (1, 2) · hidden.
+    const h: f64 = vector.situ(6, 10, 4, 25);
+    try std.testing.expectApproxEqRel(@as(f32, @floatCast(0.75 * h)), output[0], 1e-6);
+    try std.testing.expectApproxEqRel(@as(f32, @floatCast(1.5 * h)), output[1], 1e-6);
 }

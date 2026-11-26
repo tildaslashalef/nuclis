@@ -4,9 +4,10 @@
 The inference library exposes `cpu.Matrix` and `cpu.matvec(matrix, input,
 output, scratch)` from [the CPU module](../../inference/src/backends/cpu/root.zig).
 It also exposes `rmsNorm`, `l2Norm`, `l2Clip`, `logPositionScale`,
-`softmax`, `sigmoid`, `silu`, the GELU variants, `softplus`, and
+`softmax`, `sigmoid`, `silu`, the GELU variants, `softplus`, `situ`, and
 `rope.apply`, `attention.apply`, `recurrent.convolution`,
-`recurrent.shortConvolution`, `recurrent.delta`, and `experts.route`/`experts.ffn`
+`recurrent.shortConvolution`, `recurrent.delta`, `depth.mix`/`depth.control`,
+and `experts.route`/`experts.routeBiased`/`experts.ffn`
 over `cpu.ExpertMatrix`. These primitives are architecture-neutral: they load
 no model and run no layers. Each family's `*_runtime.zig` composes them into
 the CPU executor ([§ Full-model composition](#full-model-composition)).
@@ -100,28 +101,22 @@ y[i+half] = x[i] * sin(theta[i]) + x[i+half] * cos(theta[i])
 ```
 
 Only the rotary prefix changes; the tail is copied unchanged. Position zero
-preserves all bits, including signed zero. Negative positions apply the inverse
-rotation up to rounding. Slices must be equally sized and nonempty, and every
-input value must be finite. Exact alias is supported; partial overlap is
-forbidden. Shape, base, and input checks finish before writes. No allocation or
-I/O occurs. Intermediate arithmetic is F64, with final F32 rounding; rotation
-of extreme finite inputs can overflow F32 and produce infinity.
+preserves all bits; negative positions invert the rotation up to rounding.
+Slices are equal and nonempty, inputs finite, exact alias allowed; checks
+finish before writes. Arithmetic is F64 with final F32 rounding, so extreme
+finite inputs can overflow F32 to infinity.
 
-The pinned model rotates 64 of each head's 256 channels with base 10,000,000.
-Its text positions repeat the same index across the temporal/height/width
-streams, and the fourth rotary section is empty. Therefore its unscaled text
-MRoPE reduces to this ordinary split-half rotation. `pairing` selects
+Qwen's unscaled text MRoPE (64 of 256 channels, base 10,000,000, one index
+on every stream) reduces to this split-half rotation. `pairing` selects
 split-half or adjacent `(2i, 2i + 1)` pairs (Muse Glimmer), and the optional
 per-pair `factors` (`dimensions/2` finite positive values, all ones when
 absent) divide each pair's angle: Gemma 4's checkpoints store 1e30 to leave a
-pair unrotated. The operator does not implement different multimodal
-positions, frequency scaling, or YaRN. The adapter supplies positions and
-traverses Q/K heads; calling this operator does not run attention.
+pair unrotated. No multimodal positions, frequency scaling, or YaRN; the
+adapter supplies positions and traverses the heads.
 
-Synthetic tests cover hand-calculated angles with two frequencies, rotation
-followed by its inverse, pair-norm preservation, exact alias, unchanged tails,
-identity, overflow behavior, and invalid inputs. The fixed angle example uses
-absolute tolerance `5e-7`; norm preservation uses relative tolerance `2e-7`.
+Synthetic tests cover hand-calculated angles, the inverse, pair norms, alias,
+tails, identity, overflow, and invalid inputs (absolute `5e-7` on the angle
+example, relative `2e-7` on norms).
 
 ## Pinned vector fixtures
 
@@ -136,13 +131,11 @@ values. Four RoPE cases use a synthetic 256-channel head at positions 0, 1,
 with sections `[11,11,10,0]` and positions `[p,p,p,0]`.
 
 L2 fixtures use absolute tolerance `1e-7`. RoPE's rotated channels use `5e-6`
-through position 127 and `1e-3` at 32,767; tails match exactly. The largest
-observed discrepancy against the latter fixture is about `9.4e-4`. The reference
-advances F32 angles by repeated multiplication, while ours evaluates each
-frequency directly in F64. Differences grow with position, so this comparison
-is not bitwise equivalence. It does not set GPU tolerances or establish
-end-to-end inference accuracy. The fixtures avoid extreme values where the
-reference's F32 squaring overflows or underflows but our F64 L2 reference does not.
+through position 127 and `1e-3` at 32,767 (largest seen `9.4e-4`); tails match
+exactly. The reference advances F32 angles by repeated multiplication where
+ours evaluates each frequency in F64, so differences grow with position; these
+are not GPU tolerances. The fixtures avoid the extremes where the reference's
+F32 squaring overflows and our F64 L2 does not.
 
 ## Single-position grouped-query attention
 
@@ -317,34 +310,41 @@ and the full model composed from these primitives generates text
 
 [experts.zig](../../inference/src/backends/cpu/experts.zig) is the reference
 for a mixture-of-experts layer's routing and expert projections; the chain
-a model applies before the router logits (norms, scales) and after the sum
-(post norms) belongs to its adapter (Gemma 4 26B-A4B's is in
-[gemma4.md](../models/gemma4.md)).
-
+before the router logits and after the sum belongs to the adapter.
 `ExpertMatrix` is a borrowed 3-D encoded tensor `[experts][rows][columns]`
-(GGUF dimension 2 is the expert): `experts` contiguous `rows × columns`
-matrices of equal byte length. `expert(index)` returns one as a `Matrix`
+(GGUF dimension 2 is the expert); `expert(index)` returns one as a `Matrix`
 after validating that the bytes divide into whole rows of whole blocks.
 
-`route(logits, indices, weights)` selects `indices.len` experts for one
-token: the largest **logits** by (value desc, index asc), then their
-softmax probabilities (F64) renormalized to sum one, with the sum clamped
-below at the smallest F16 normal (`weight_sum_floor`, the reference's
-clamp against a zero denominator). Selection compares the logits rather
-than the probabilities because softmax is monotone, so a kernel that
-rounds `exp` differently still selects the same set — the GPU router's
-indices are checked exact against this. Logits must be finite; at most
-`max_experts` (1,024).
+- `route(logits, indices, weights)` takes the largest **logits** (value
+  desc, index asc), then their softmax probabilities renormalized to sum
+  one, the sum clamped below at the smallest F16 normal
+  (`weight_sum_floor`). Comparing logits, not probabilities, keeps a
+  kernel that rounds `exp` differently on the same set; the GPU router's
+  indices are checked exact against it.
+- `routeBiased(logits, bias, scale, indices, weights)` selects on the F32
+  value `σ(logit) + bias` (a tie at F32 precision to the lower index) and
+  weights each chosen expert by its gate `σ(logit)` over the chosen gates'
+  sum plus `1e-20`, times `scale`; the bias steers the choice only.
+- Logits must be finite; at most `max_experts` (1,024).
 
 `ffn(spec, input, indices, weights, output, scratch, accumulator)` is the
-gathered gated-GELU FFN of one token: for each slot `s`, `gate_up[e_s] ·
-input` (the expert's gate rows followed by its up rows, the reference's
-fused layout), `gelu(gate) ⊙ up`, `down[e_s] ·` that, times the optional
-per-expert `down_scale[e_s]`, times `weights[s]`, summed over the slots
-in F64. Scratch is `Ffn.scratchLen()` floats plus one F64 per output. The
-Metal decode chain (`route`, `matvecExperts`, `geluMulRows`,
-`matvecExperts`, `combineExperts`) is checked against it in `test-metal`
+gathered gated FFN of one token: for each slot `s`, `gate_up[e_s] · input`
+(gate rows then up rows) times the optional `gate_up_scale[e_s]`, the
+activation (`gelu(gate) ⊙ up`, or `situ(gate, up, β, λ) = β·tanh(g/β)·σ(g)
+· λ·tanh(u/λ)`), `down[e_s] ·` that times the optional `down_scale[e_s]`,
+times `weights[s]`, summed over the slots in F64. Scratch is
+`Ffn.scratchLen()` floats plus one F64 per output. The Metal decode chain is
+checked against it in `test-metal`
 ([metal-kernels.md § Gathered expert kernels](metal-kernels.md#gathered-expert-kernels)).
+
+## Attention over the depth
+
+[depth.zig](../../inference/src/backends/cpu/depth.zig): `mix(states,
+queries, width, epsilon, output, scratch)` gives each query row `q`
+`Σ_s softmax_s(q·K_s/√width)·K_s` over the state rows, `K_s = rms(S_s)`
+without gain (`2·states` F64 scratch). `control(io, controller, current,
+message, epsilon, output, scratch)` is the gated blend `(1 − tanh(F h)) ⊙ x
++ tanh(G h) ⊙ m` with `h = D [rms(x); rms(m)]`, each half normed alone.
 
 ## The Hadamard rotation's activation side
 
