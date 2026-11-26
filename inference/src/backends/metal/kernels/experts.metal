@@ -212,3 +212,63 @@ kernel void nu_expert_lists(device const uint * indices [[buffer(0)]],
     }
 }
 
+
+// SITU over strided rows (`cpu.situ`): out = β·tanh(g/β)·σ(g) ·
+// λ·tanh(u/λ) for gate g and up u.
+struct SituRowsParams { uint width; uint rows; uint gate_stride; uint up_stride; uint out_stride; float beta; float linear_beta; };
+kernel void nu_situ_mul_rows(device const float * gate [[buffer(0)]],
+                             device const float * up [[buffer(1)]],
+                             device float * output [[buffer(2)]],
+                             constant SituRowsParams & p [[buffer(7)]],
+                             uint id [[thread_position_in_grid]]) {
+    if (id >= p.width * p.rows) return;
+    const uint row = id / p.width, i = id % p.width;
+    const float g = gate[ulong(row) * p.gate_stride + i], u = up[ulong(row) * p.up_stride + i];
+    output[ulong(row) * p.out_stride + i] = p.beta * nu_tanh(g / p.beta) * nu_sigmoid(g) * (p.linear_beta * nu_tanh(u / p.linear_beta));
+}
+
+// The biased sigmoid router (`cpu.experts.routeBiased`): one 256-thread
+// group per row selects `k` experts by (σ(logit) + bias desc, index asc);
+// the bias steers the choice only. A chosen expert's weight is its gate
+// σ(logit) over the chosen gates' sum (in selection order) plus 1e-20,
+// times `scale`. Bounds as `nu_route`. The F32 sigmoid can rank two
+// experts within an ulp of a tie apart from the CPU's; a NaN logit ranks
+// last, so every slot is written.
+struct RouteBiasedParams { uint experts, k, rows, in_stride; float scale; };
+kernel void nu_route_biased(device const float * logits [[buffer(0)]],
+                            device const float * bias [[buffer(1)]],
+                            device uint * indices [[buffer(2)]],
+                            device float * weights [[buffer(3)]],
+                            constant RouteBiasedParams & p [[buffer(7)]],
+                            uint row [[threadgroup_position_in_grid]],
+                            uint tid [[thread_position_in_threadgroup]],
+                            uint lane [[thread_index_in_simdgroup]],
+                            uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float partial[8];
+    threadgroup uint partial_index[8];
+    threadgroup float selected[NU_ROUTE_MAX_K];
+    const bool live = tid < p.experts;
+    const float gate = live ? nu_sigmoid(logits[ulong(row) * p.in_stride + tid]) : 0.0f;
+    const float biased = live ? gate + bias[tid] : -INFINITY;
+    const float value = isnan(biased) ? -INFINITY : biased;
+    bool taken = !live;
+    for (uint r = 0; r < p.k; ++r) {
+        threadgroup_barrier(mem_flags::mem_threadgroup); // partials free for reuse
+        float v = taken ? -INFINITY : value; uint idx = taken ? 0xffffffffu : tid;
+        for (uint offset = 16; offset > 0; offset >>= 1) {
+            float ov = simd_shuffle_down(v, offset); uint oi = simd_shuffle_down(idx, offset);
+            if (ov > v || (ov == v && oi < idx)) { v = ov; idx = oi; }
+        }
+        if (lane == 0) { partial[sg] = v; partial_index[sg] = idx; }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        v = partial[0]; idx = partial_index[0];
+        for (uint i = 1; i < 8; ++i) if (partial[i] > v || (partial[i] == v && partial_index[i] < idx)) { v = partial[i]; idx = partial_index[i]; }
+        if (tid == idx) { taken = true; selected[r] = gate; indices[ulong(row) * p.k + r] = idx; }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < p.k) {
+        float total = 0.0f;
+        for (uint r = 0; r < p.k; ++r) total += selected[r];
+        weights[ulong(row) * p.k + tid] = selected[tid] / (total + 1e-20f) * p.scale;
+    }
+}

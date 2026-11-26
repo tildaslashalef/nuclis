@@ -11,7 +11,9 @@ what the checks enforce; the values each measured, and when, are in
 ## What test-metal checks
 
 `inference/metal-check.zig` (the TTS kernels' checks are in
-`tts-metal-check.zig`) needs a Metal device and no model. Every check
+`tts-metal-check.zig`, the attention modes' in
+`attention-modes-metal-check.zig`, Inkling 2's row-wise kernels' in
+`inkling2-rowwise-metal-check.zig`) needs a Metal device and no model. Every check
 compares against the F64 CPU reference unless the row names another, and
 every contract violation it lists is refused before dispatch.
 
@@ -44,8 +46,10 @@ every contract violation it lists is refused before dispatch.
 | Chunk attention: 256 rows at 1,792..2,047 over 2,048; a 37-row chunk with 1e30 past a row's horizon; one- and three-token prompts; windows of 1,024 and 8; 16 heads of 512 over one (two value splits) | vs F64 per row over its visible keys | F32 1e-5; F16 over the rounded operands 1e-3 to 2e-3 |
 | Bidirectional spans: a span in a 300-row chunk with poisoned rows after it, a span past a window of 8, F16, 16×72 heads at 200 and 9,900 rows | vs F64 per row, the span's rows seeing to its end | 1e-5 relative past 1; 2e-3 F16 |
 | Register-reuse chunk attention: the windowed and wide cases and counts 1–256 over a poisoned range past `position + count` | vs F64 per row, both bodies | 1e-5; 1e-3 F16 |
+| Attention modes (distance bias, sinks, `scale` 1): decode, verify, the row-split and materialized chunk bodies at 24 heads of 128 over 8, F32/F16/Q8_0 caches, windows 1,024 and full, 1,300 rows poisoned past the batch; every biased split-pass instantiation; each mode alone | vs F64 per row; a zero table and a −1e30 sink vs the plain bodies | 2e-5 relative past 1, 2e-3 for the half row-split body; **exact** |
 | Segments attention, 1 to 8,192 rows, packed and windowed, widths 256 and 512, long inputs in 8 and 64 chunks | vs F64 over each row's visible keys | 2e-4 |
 | Router on 128 experts (k 8: ties at the top and the k boundary, an all-equal row, a 40× spread) and 37 (k 5) | indices; weights | exact; 1e-6 |
+| Biased sigmoid router, 128 experts, k 8, scale 8, four rows; a NaN row | vs `cpu.experts.routeBiased`: indices (the F32 sigmoid may part an ulp-close tie differently); weights; every slot written | exact on these rows; 2e-6; exact |
 | Gathered Q4_0 matvec, slots `[5, 0, 5, 2]`, shared and per-slot inputs, NaN in unselected experts' scales | vs dense matvec; the selected outputs | the matvec bound; bit-identical |
 | Expert decode chain, three tokens; prefill chain over 45 tokens (135 slot rows) with one expert on every token and one on none | vs `cpu.experts.ffn`; the lists on the host | 2e-5 of (1 + max|y|) F32 tile, 2e-3 half tile; exact |
 | Fused norms: `rmsNormAdd`, `addRmsNorm`, `rmsNormRope` (24 packed heads at stride 512, 8 adjacent in place) | vs the unfused pair; vs `cpu.rmsNorm`/`cpu.rope` | 2e-5; 2e-4 |
@@ -53,6 +57,8 @@ every contract violation it lists is refused before dispatch.
 | RoPE at 32,767, both pairings; a 512-wide head with factors (64 ones, 192 × 1e30) | vs CPU `rope.apply`; unrotated pairs | 2e-6 relative; **exact** |
 | `nu_gelu_mul` (with ±60, 200, −3e3), `nu_scale`, `nu_add_scale`, `nu_softcap` (with ±3e3) | vs `cpu.gelu`, F32 arithmetic, `std.math.tanh` | 2e-6 relative; exact; exact; 2e-6 relative |
 | L2 norm, silu·mul, add, silu, gates, sigmoid gate | vs `cpu.*` | 1e-6 |
+| Inkling 2's short convolution (1,024 with eight heads of dynamic taps, 1,024 and 2,304 static; 1 and 5 rows), `l2ClipRows` (24 × 128 and 24 × 16 with gains and the log scale, 8 × 128 plain), depth mix (1 to 32 states, 1 to 3 queries, three tokens) | vs `cpu.recurrent.shortConvolution` stepped (history exact), `cpu.l2Clip` × `logPositionScale`, `cpu.depth.mix` | 2e-6 relative past 1 |
+| The loop controller (join, three F32 `matvec`s at rank 64, blend in place); SITU over a fused gate-up row with ±60 | vs `cpu.depth.control`; `cpu.situ` | 1e-5; 2e-5 relative past 1 |
 | Hadamard on 5,120 / 6,144 / 17,408 over strided rows, forward, inverse, round trip; the 48 × 128 row gather and its refusals | vs `cpu.hadamard`; exact | 3e-5; exact |
 | History penalties over every logit sign (positive, negative, zero, negative zero) | vs `Sampling.Sampler.penalize` | exact but for flushed subnormals |
 | Argmax over 248,320 with a tie; partial top-k (256) with ties | lowest index; vs the CPU sort | exact; **exact** |

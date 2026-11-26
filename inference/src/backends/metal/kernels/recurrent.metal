@@ -153,3 +153,37 @@ kernel void nu_convolution_history(device float * history [[buffer(0)]],
     for (uint j = 0; j < n; ++j) history[c * n + j] = next[j];
 }
 
+
+// The short convolution with its own residual (`cpu.recurrent.shortConvolution`)
+// over `rows` token rows: out = (x + conv(x) + dyn(x)) / root, `conv` the
+// static taps as `nu_convolution_rows`, `dyn` (DYN only) the per-head taps
+// `dynamic[row][head][lag]` over the same window (lag 0 the current input;
+// a channel's head is c / (channels / heads)), and `root` = √(taps + 1), or
+// √(2·taps + 1) with dynamic taps. Reads `history` as the pre-chunk inputs
+// and leaves it: `nu_convolution_history` advances it. One thread per
+// (row, channel).
+struct ShortConvParams { uint channels; uint taps; uint rows; uint stride; uint out_stride; uint heads; uint dyn_stride; float root; };
+template <bool DYN>
+kernel void nu_short_convolution_t(device const float * history [[buffer(0)]],
+                                   device const float * input [[buffer(1)]],
+                                   device const float * weights [[buffer(2)]],
+                                   device float * output [[buffer(3)]],
+                                   device const float * dynamic [[buffer(4)]],
+                                   constant ShortConvParams & p [[buffer(7)]],
+                                   uint index [[thread_position_in_grid]]) {
+    if (index >= p.rows * p.channels) return;
+    const uint t = index / p.channels, c = index % p.channels, taps = p.taps;
+    const float x = input[ulong(t) * p.stride + c];
+    float conv = x * weights[c * taps + taps - 1];
+    for (uint tap = 0; tap + 1 < taps; ++tap) conv += nu_conv_input(history, input, c, int(t) - int(taps - 1) + int(tap), taps, p.stride) * weights[c * taps + tap];
+    float sum = x + conv;
+    if constexpr (DYN) {
+        device const float * d = dynamic + ulong(t) * p.dyn_stride + (c / (p.channels / p.heads)) * taps;
+        float extra = x * d[0];
+        for (uint lag = 1; lag < taps; ++lag) extra += nu_conv_input(history, input, c, int(t) - int(lag), taps, p.stride) * d[lag];
+        sum += extra;
+    }
+    output[ulong(t) * p.out_stride + c] = sum / p.root;
+}
+template [[host_name("nu_short_convolution")]] kernel void nu_short_convolution_t<false>(device const float *, device const float *, device const float *, device float *, device const float *, constant ShortConvParams &, uint);
+template [[host_name("nu_short_convolution_dynamic")]] kernel void nu_short_convolution_t<true>(device const float *, device const float *, device const float *, device float *, device const float *, constant ShortConvParams &, uint);

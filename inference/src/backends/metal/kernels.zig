@@ -64,7 +64,7 @@ const kernel_files = [_][]const u8{
     "kernels/matmul.metal",       "kernels/rowwise.metal",         "kernels/recurrent.metal",
     "kernels/attention.metal",    "kernels/recurrent_chunk.metal", "kernels/sampling.metal",
     "kernels/encoders.metal",     "kernels/audio.metal",           "kernels/asr.metal",
-    "kernels/tts.metal",
+    "kernels/tts.metal",          "kernels/depth.metal",
 };
 /// Benchmark-only kernels (the split-K matvecs, the fragment layout pin):
 /// joined after `kernel_files` and given the `bench_tags` only in the module
@@ -368,6 +368,14 @@ const shipped = enum(u32) {
     chunk_scores_biased,
     chunk_scores_h_biased,
     chunk_stats_sink,
+    short_convolution,
+    short_convolution_dynamic,
+    l2_clip_rows,
+    situ_mul_rows,
+    route_biased,
+    depth_mix,
+    control_join,
+    control_blend,
 };
 
 /// The tags of `bench_files`, after the shipped ones so every value stays its

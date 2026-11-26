@@ -290,3 +290,25 @@ pub fn sigmoidGate(self: *Backend, out: Buffer, gates: Buffer, heads: usize, wid
     const p: GateParams = .{ .heads = @intCast(heads), .width = @intCast(width), .gate_stride = @intCast(gate_stride), .gate_offset = @intCast(gate_offset) };
     try self.dispatch(.sigmoid_gate, &.{ out, gates }, p, perElement(heads * width), 256, .{});
 }
+pub const ClipParams = extern struct { heads: u32, width: u32, rows: u32, row_stride: u32, threshold: f32, position: u32, floor: u32, alpha: f32, flags: u32 };
+/// `cpu.logPositionScale` of row r's position `position + r`.
+pub const LogScale = struct { position: usize, floor: usize, alpha: f32 };
+/// `cpu.l2Clip` in place on each of `heads` segments of `width` in each of
+/// `rows` rows (`row_stride` apart), with the per-channel `gains`
+/// (`[heads][width]`) when given; then, with `log_scale`, every row times
+/// its position's log scale (Inkling 2's τ on global layers). The gains
+/// must not overlap the data.
+pub fn l2ClipRows(self: *Backend, data: Buffer, gains: ?Buffer, threshold: f32, log_scale: ?LogScale, heads: usize, width: usize, rows: usize, row_stride: usize) !void {
+    if (heads == 0 or width == 0 or rows == 0 or row_stride < heads * width or !std.math.isFinite(threshold) or threshold <= 0) return error.InvalidShape;
+    if (data.len < ((rows - 1) * row_stride + heads * width) * 4 or data.offset % 4 != 0) return error.InvalidShape;
+    if (gains) |s| if (s.len < heads * width * 4 or s.offset % 4 != 0 or Buffer.overlaps(data, ((rows - 1) * row_stride + heads * width) * 4, s, heads * width * 4)) return error.InvalidShape;
+    var p: ClipParams = .{ .heads = @intCast(heads), .width = @intCast(width), .rows = @intCast(rows), .row_stride = @intCast(row_stride), .threshold = threshold, .position = 0, .floor = 1, .alpha = 0, .flags = if (gains != null) 1 else 0 };
+    if (log_scale) |l| {
+        if (l.floor == 0 or l.floor > std.math.maxInt(u32) or !std.math.isFinite(l.alpha) or l.position + rows > std.math.maxInt(u32)) return error.InvalidShape;
+        p.position = @intCast(l.position);
+        p.floor = @intCast(l.floor);
+        p.alpha = l.alpha;
+        p.flags |= 2;
+    }
+    try self.dispatch(.l2_clip_rows, &.{ data, gains orelse data }, p, @intCast(rows * heads), 32, .{});
+}

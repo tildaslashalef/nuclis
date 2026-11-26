@@ -201,3 +201,29 @@ pub fn matmulExperts(self: *Backend, weights: Buffer, tensor: cpu.ExpertMatrix, 
     const groups = std.math.cast(u32, row_tiles * expertTileBound(n, tensor.experts)) orelse return error.InvalidShape;
     try self.dispatch(kernel, &.{ weights, input, output, lists }, p, groups, 128, .{ .encoding = tensor.encoding, .rows = @intCast(tensor.rows), .columns = @intCast(tensor.columns) });
 }
+
+pub const SituRowsParams = extern struct { width: u32, rows: u32, gate_stride: u32, up_stride: u32, out_stride: u32, beta: f32, linear_beta: f32 };
+/// `output[r][i] = situ(gate[r][i], up[r][i])` (`cpu.situ`, β and
+/// λ positive) over `rows` strided rows; the layout and overlap rules of
+/// `geluMulRows`.
+pub fn situMulRows(self: *Backend, gate: Buffer, up: Buffer, output: Buffer, width: usize, rows: usize, gate_stride: usize, up_stride: usize, out_stride: usize, beta: f32, linear_beta: f32) !void {
+    if (width == 0 or rows == 0 or gate_stride < width or up_stride < width or out_stride < width) return error.InvalidShape;
+    if (!std.math.isFinite(beta) or beta <= 0 or !std.math.isFinite(linear_beta) or linear_beta <= 0) return error.InvalidShape;
+    if (gate.len < ((rows - 1) * gate_stride + width) * 4 or up.len < ((rows - 1) * up_stride + width) * 4 or output.len < ((rows - 1) * out_stride + width) * 4) return error.InvalidShape;
+    const out_len = ((rows - 1) * out_stride + width) * 4;
+    if (Buffer.overlaps(output, out_len, gate, ((rows - 1) * gate_stride + width) * 4) or Buffer.overlaps(output, out_len, up, ((rows - 1) * up_stride + width) * 4)) return error.InvalidShape;
+    const p: SituRowsParams = .{ .width = @intCast(width), .rows = @intCast(rows), .gate_stride = @intCast(gate_stride), .up_stride = @intCast(up_stride), .out_stride = @intCast(out_stride), .beta = beta, .linear_beta = linear_beta };
+    try self.dispatch(.situ_mul_rows, &.{ gate, up, output }, p, perElement(width * rows), 256, .{});
+}
+
+pub const RouteBiasedParams = extern struct { experts: u32, k: u32, rows: u32, in_stride: u32, scale: f32 };
+/// `cpu.experts.routeBiased` per row: the `k` experts by (σ(logit) +
+/// `bias[e]` desc, index asc) into `indices` (`[row][k]` u32) and their
+/// gates over the chosen gates' sum plus 1e-20, times `scale`, into
+/// `weights` (`[row][k]` f32). The bounds of `route`.
+pub fn routeBiased(self: *Backend, logits: Buffer, bias: Buffer, experts: usize, k: usize, rows: usize, in_stride: usize, scale: f32, indices: Buffer, weights: Buffer) !void {
+    if (experts == 0 or experts > route_max_experts or k == 0 or k > experts or k > route_max_k or rows == 0 or in_stride < experts or !std.math.isFinite(scale)) return error.InvalidShape;
+    if (logits.len < ((rows - 1) * in_stride + experts) * 4 or bias.len < experts * 4 or indices.len < rows * k * 4 or weights.len < rows * k * 4 or indices.offset % 4 != 0 or weights.offset % 4 != 0) return error.InvalidShape;
+    const p: RouteBiasedParams = .{ .experts = @intCast(experts), .k = @intCast(k), .rows = @intCast(rows), .in_stride = @intCast(in_stride), .scale = scale };
+    try self.dispatch(.route_biased, &.{ logits, bias, indices, weights }, p, @intCast(rows), 256, .{});
+}

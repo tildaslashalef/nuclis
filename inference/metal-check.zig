@@ -5354,6 +5354,7 @@ pub fn main(init: std.process.Init) !void {
     try checkChunkAttentionReuse(alloc, b);
     try checkChunkAttentionMaterialized(alloc, b);
     try @import("attention-modes-metal-check.zig").check(alloc, b);
+    try @import("inkling2-rowwise-metal-check.zig").check(alloc, io, b);
     try checkAttentionVerify(alloc, b);
     try checkWindowAttention(alloc, b);
     try checkSegmentAttention(alloc, b);

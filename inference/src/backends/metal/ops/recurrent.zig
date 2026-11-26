@@ -111,3 +111,28 @@ pub fn convolutionHistory(self: *Backend, history: Buffer, input: Buffer, channe
     const p: ConvRowsParams = .{ .channels = @intCast(channels), .taps = @intCast(taps), .rows = @intCast(rows), .stride = @intCast(stride) };
     try self.dispatch(.convolution_history, &.{ history, input }, p, perElement(channels), 256, .{});
 }
+pub const ShortConvParams = extern struct { channels: u32, taps: u32, rows: u32, stride: u32, out_stride: u32, heads: u32, dyn_stride: u32, root: f32 };
+/// Per-head taps for `shortConvolution`: `taps` holds `[row][heads][taps]`
+/// F32 rows `stride` floats apart, lag 0 the current input.
+pub const DynamicTaps = struct { taps: Buffer, heads: usize, stride: usize };
+/// `cpu.recurrent.shortConvolution` over `rows` token rows (input stride
+/// `stride`, output stride `out_stride`): `(x + conv(x) + dyn(x)) / √n`,
+/// reading the pre-chunk inputs from `history` as `convolutionRows` does
+/// and leaving it: `convolutionHistory` advances it. The output must not
+/// overlap the other buffers.
+pub fn shortConvolution(self: *Backend, history: Buffer, input: Buffer, weights: Buffer, dynamic: ?DynamicTaps, output: Buffer, channels: usize, taps: usize, rows: usize, stride: usize, out_stride: usize) !void {
+    if (channels == 0 or taps < 2 or taps > 32 or rows == 0 or stride < channels or out_stride < channels) return error.InvalidShape;
+    const in_len = ((rows - 1) * stride + channels) * 4;
+    const out_len = ((rows - 1) * out_stride + channels) * 4;
+    if (history.len < channels * (taps - 1) * 4 or input.len < in_len or weights.len < channels * taps * 4 or output.len < out_len) return error.InvalidShape;
+    if (Buffer.overlaps(output, out_len, input, in_len) or Buffer.overlaps(output, out_len, history, channels * (taps - 1) * 4) or Buffer.overlaps(output, out_len, weights, channels * taps * 4)) return error.InvalidShape;
+    var p: ShortConvParams = .{ .channels = @intCast(channels), .taps = @intCast(taps), .rows = @intCast(rows), .stride = @intCast(stride), .out_stride = @intCast(out_stride), .heads = 1, .dyn_stride = 0, .root = @floatCast(@sqrt(@as(f64, @floatFromInt(taps + 1)))) };
+    if (dynamic) |d| {
+        const taps_len = ((rows - 1) * d.stride + d.heads * taps) * 4;
+        if (d.heads == 0 or channels % d.heads != 0 or d.stride < d.heads * taps or d.taps.len < taps_len or d.taps.offset % 4 != 0 or Buffer.overlaps(output, out_len, d.taps, taps_len)) return error.InvalidShape;
+        p.heads = @intCast(d.heads);
+        p.dyn_stride = @intCast(d.stride);
+        p.root = @floatCast(@sqrt(@as(f64, @floatFromInt(2 * taps + 1))));
+        try self.dispatch(.short_convolution_dynamic, &.{ history, input, weights, output, d.taps }, p, perElement(rows * channels), 256, .{});
+    } else try self.dispatch(.short_convolution, &.{ history, input, weights, output }, p, perElement(rows * channels), 256, .{});
+}

@@ -259,23 +259,19 @@ kernels, and the cache layouts they read, are in
 - `nu_convolution`: one thread per channel, history shifted in place;
   `nu_convolution_rows` and `nu_convolution_history` are the chunk forms,
   bit-identical to the sequential kernel by construction.
+- `nu_short_convolution`: Inkling 2's `(x + conv(x) + dyn(x)) / √n` over
+  rows, `_dynamic` adding per-head taps `[row][head][lag]`; it reads the
+  history as `nu_convolution_rows` does, `nu_convolution_history` advances it.
 - `nu_delta_chunk`: chunkwise DeltaNet for a prefill chunk in one dispatch
   per layer, the WY form of `cpu.recurrent.deltaChunk`
   ([cpu-reference.md § Chunkwise DeltaNet](cpu-reference.md#chunkwise-deltanet)).
-  A threadgroup per (value head, block of 32 value rows) loops over 32-token
-  sub-chunks with the state carried in the session buffer; each group reads
-  and writes only its own 32 state rows, and a `mem_device` barrier orders
-  the carry before the next sub-chunk. Per sub-chunk: `K·Kᵀ` and `Q·Kᵀ` on
-  the matrix unit, `S₀·Kᵀ` and `S₀·Qᵀ` streamed from the state rows, decay
-  ratios as `exp(L_t − L_s)` of cumulative log decays, forward substitution
-  with one thread per value column, the output on the matrix unit, and the
-  carry `S_new = γ_n S₀ + Wᵀ K` stored in place. The state never sits in
-  threadgroup memory (64 KB per head against 32 KB); the six 32×32 tiles
-  take 24 KB. Token rows past `count` go through the zero-filling masked
-  loader, so the caller's padding is never read. Contract
+  A threadgroup per (value head, 32 value rows) loops over 32-token
+  sub-chunks, carrying the state in the session buffer (it never fits
+  threadgroup memory: 64 KB a head) behind a `mem_device` barrier; the
+  products run on the matrix unit, the forward substitution one thread per
+  value column. Rows past `count` load as zeros. Contract
   (`Backend.deltaChunk`): `keys % 8 == 0`, `values % 32 == 0`, `count` ≤
-  4,096, `qkv` rows padded to a multiple of 32 (`deltaChunkRows`).
-  Nontransactional like `nu_delta`.
+  4,096, `qkv` rows padded to 32 (`deltaChunkRows`); nontransactional.
 
 ## Gathered expert kernels
 
@@ -289,12 +285,15 @@ per layer:
   rounding cannot reorder near-ties, and the selected probabilities are
   divided by their sum clamped below at the smallest F16 normal, as the
   CPU reference does. At most 256 experts and 64 selected.
+  `Backend.routeBiased` is Inkling 2's sigmoid router
+  (`cpu.experts.routeBiased`) in the same group.
 - `Backend.matvecExperts`: threadgroup `g` serves slot `g / row_groups` and
   16-row block `g % row_groups` of that slot's expert, through the segment
   bodies, so a selected expert costs the bytes of a dense matrix of its size.
   `in_stride` 0 shares one input across the slots (gate-up). Expert indices
   are clamped to the tensor, so a corrupt routing buffer cannot read past it.
-- `Backend.geluMulRows`: `gelu(gate[r][i]) · up[r][i]` over strided rows.
+- `Backend.geluMulRows`: `gelu(gate[r][i]) · up[r][i]` over strided rows;
+  `Backend.situMulRows` is Inkling 2's SITU in the same layout.
 - `Backend.combineExperts`: `out[row][c] = Σ_s w[row][s] · scale[e_s] ·
   y[row·k + s][c]`, the per-expert down scale optional.
 
@@ -327,9 +326,12 @@ per row. Measurements and the adapter's routing sensitivity:
   `nu_silu_inplace`, `nu_delta_gates`, `nu_sigmoid_gate`.
 - Gemma 4's epilogues: `nu_gelu_mul` (tanh GELU of `cpu.gelu`), `nu_scale`,
   `nu_add_scale` (x = (x + y)·s, one rounding after the add), `nu_softcap`
-  (cap·tanh(x/cap)). Their `tanh` is `nu_tanh`, clamped at ±20: Metal's
-  `tanh` returns NaN past about ±44, while F32 tanh is exactly ±1 from ±20
-  on, so the clamp changes no finite result.
+  (cap·tanh(x/cap)). Their `tanh` is `nu_tanh`, clamped at ±20 (Metal's
+  returns NaN past ±44; F32 tanh is ±1 from ±20).
+- Inkling 2's: `nu_l2_clip_rows` (`cpu.l2Clip` per head, with gains and
+  the log position scale), `nu_depth_mix` (`cpu.depth.mix`, at most 32
+  states), and the controller's `nu_control_join` and `nu_control_blend`
+  around three `matvec`s.
 - `nu_pack_half`, `nu_pack_q8_0`, and `nu_unpack_q8_0` write and expand
   the cache rows ([metal-attention.md § The KV
   cache](metal-attention.md#the-kv-cache)).
@@ -368,10 +370,8 @@ pair, over the FFN hidden before `ffn_down`, and over the output-head
 input, each in place. The DeltaNet `ssm_alpha` / `ssm_beta` projections are
 dispatched before the residual is transformed, so the plain file's
 four-way merged matvec becomes two two-way merges around it. The `ssm_out`
-input is first regathered from the mixer's tiled head order into the
-fold's grouped order by `nu_gather_rows` (`Backend.gatherRows`:
-`dst[r][g] = src[r][map[g]]`, the map uploaded once at plan init) into a
-scratch of one decode row and `padded` prefill rows.
+input is first regathered from the tiled head order into the fold's
+grouped one by `nu_gather_rows` (`dst[r][g] = src[r][map[g]]`).
 
 ## Sampling
 

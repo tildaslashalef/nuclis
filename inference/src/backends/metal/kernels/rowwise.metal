@@ -362,3 +362,30 @@ kernel void nu_sigmoid_gate(device float * out [[buffer(0)]], device const float
     out[index] *= nu_sigmoid(gates[h * p.gate_stride + p.gate_offset + i]);
 }
 
+
+// `cpu.l2Clip` per (row, head) segment of `width`, in place: v = x ⊙ scale
+// (flag 1; `scale[head][width]`), shortened to `threshold` when longer
+// (‖v‖ + 1e-6 in the ratio), then (flag 2) times the log position scale
+// `1 + alpha · ln(max(1, (position + row + 1) / floor))` of the row's
+// position. One SIMD group per segment.
+struct ClipParams { uint heads; uint width; uint rows; uint row_stride; float threshold; uint position; uint floor; float alpha; uint flags; };
+kernel void nu_l2_clip_rows(device float * data [[buffer(0)]],
+                            device const float * scale [[buffer(1)]],
+                            constant ClipParams & p [[buffer(7)]],
+                            uint group [[threadgroup_position_in_grid]],
+                            uint lane [[thread_index_in_simdgroup]]) {
+    const uint row = group / p.heads, h = group % p.heads;
+    device float * x = data + ulong(row) * p.row_stride + h * p.width;
+    const bool scaled = (p.flags & 1) != 0;
+    float squares = 0.0f;
+    for (uint i = lane; i < p.width; i += 32) {
+        const float v = scaled ? x[i] * scale[h * p.width + i] : x[i];
+        squares += v * v;
+    }
+    float factor = min(1.0f, p.threshold / (sqrt(simd_sum(squares)) + 1e-6f));
+    if ((p.flags & 2) != 0) factor *= 1.0f + p.alpha * log(max(1.0f, float(p.position + row + 1) / float(p.floor)));
+    for (uint i = lane; i < p.width; i += 32) {
+        const float v = scaled ? x[i] * scale[h * p.width + i] : x[i];
+        x[i] = v * factor;
+    }
+}
