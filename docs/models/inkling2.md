@@ -108,9 +108,8 @@ index of application `il`.
 
 ### Session state
 
-- 48 KV caches, one per application (each pass sees other states): 8
-  full, 40 windowed at 1,024. F16 K and V take 4 KiB a token an
-  application: 1 GiB for the global ones at 32,768 tokens.
+- 48 KV caches, one per application: 8 full, 40 windowed at 1,024; F16
+  K and V take 4 KiB a token an application (1 GiB at 32,768 tokens).
 - Per application, a convolution history of 3 rows × 6,656 F32 channels:
   K 0–1,023, V 1,024–2,047, attention output 2,048–4,351, FFN output
   4,352–6,655 (78 KiB; 3.7 MiB for the 48).
@@ -122,18 +121,16 @@ index of application `il`.
 
 ### Readings confirmed
 
-The CPU reference's per-layer outputs on the real file, against the
-format's graph, chose each reading above; each alternative moved all 48
-layers further away by an order of magnitude or more: the static taps
-reversed (`w[0]` on the current row), the dynamic taps reversed, the bias
-and sink inside the score's scale (`c·(q·k + b)`, sink `c·t`), the sink's
-sign flipped, and up before gate. The sliding bias table has the window's
-columns, which the binder holds it to; `relative_extent` is the same
-1,024, so the file cannot tell the two apart.
+The CPU reference's per-layer outputs on the real file chose each reading
+above: each alternative (static or dynamic taps reversed, bias and sink
+inside `c`, the sink's sign, up before gate) moved all 48 layers an order
+of magnitude or more further from the format's graph. The sliding bias
+table has the window's columns, as the binder holds it; `relative_extent`
+is the same 1,024, so the file cannot tell them apart.
 
 ## Files and encodings
 
-734 tensors. By encoding:
+734 tensors, none Q4_K despite the name. By encoding:
 
 | Encoding | Tensors | What |
 | --- | ---: | --- |
@@ -143,31 +140,24 @@ columns, which the binder holds it to; `relative_extent` is the same
 | BF16 | 32 | `attn_sink_proj`, `attn_{k,v}_conv_proj` |
 
 - **NVFP4 block**: 64 values in 36 bytes, four UE4M3 scales then 32 bytes
-  of E2M1 codes ([quantization.md](../engine/quantization.md)). The file's
-  1.27 billion scale bytes use none of `0x00`, `0x7F`, or a set bit 7;
-  1.1 % have exponent 15 (256–448).
-- The model was trained in NVFP4 with MXFP8 on its last four blocks; the
-  file stores all but the NVFP4 experts as the converter's Q8_0
-  requantization, which cannot hold per-value floating-point codes
-  exactly, so nuclis validates it against its own CPU reference only.
+  of E2M1 codes ([quantization.md](../engine/quantization.md)); no scale
+  byte is `0x00`, `0x7F`, or has bit 7 set. Trained in NVFP4 (MXFP8 on the
+  last four blocks), the rest is the converter's Q8_0 requantization, so
+  nuclis validates the file against its own CPU reference only.
 - **Binding** ([inkling2.zig](../../inference/src/models/inkling2.zig)):
-  every tensor by name, shape, and encoding. Block 0 has no
+  every tensor by name, shape, and encoding; block 0 has no
   `attn_res_query`, only the core has loop controllers, and a block has
-  both expert scales or neither; the tokens equal `vocab_size_unpadded`,
-  the head's rows `vocab_size`.
-- No Q4_K tensor despite the name; every quantization keeps NVFP4 experts.
+  both expert scales or neither.
 
 ## Tokenizer
 
-The `gpt2` model with `pre = inkling2`: 200,058 tokens (199,998 normal and
-60 control, as `inspect --metadata` counts them), 424,413 merges, EOS and
-EOT 200006, padding 199999, no BOS. The splitter is
-[o200k.zig](../../inference/src/tokenizer/o200k.zig), the checkpoint's own
-expression with Unicode's letter classes
+The `gpt2` model with `pre = inkling2`: 200,058 tokens (60 control),
+424,413 merges, EOS and EOT 200006, padding 199999, no BOS. The splitter,
+[o200k.zig](../../inference/src/tokenizer/o200k.zig), is the checkpoint's
+own expression with Unicode's letter classes
 ([tokenizer.md § Full text encoding](../engine/tokenizer.md#full-text-encoding)),
-not `llama4`'s folded rewrite: `ÇA` is one piece and one token (118428)
-where the folded classes cut `Ç` from `A`. The comparison is in
-[the record](../benchmarks/record/prompt-profile.md#inkling-2s-tokenizer-and-template-2026-11-26).
+not `llama4`'s folded rewrite: `ÇA` is one token (118428)
+([record](../benchmarks/record/prompt-profile.md#inkling-2s-tokenizer-and-template-2026-11-26)).
 
 ## Prompt profile
 
@@ -177,24 +167,34 @@ template `53a9035f…` (6,868 bytes): messages `ROLE CONTENT-TYPE text
 thinking,invoke_tool_json,xml,image}|>`); a model turn ends with the stop
 token `<|content_model_end_sampling|>` (200006).
 
-- **Effort**: a system message `Thinking effort level: X` before the first
-  other message (off `0`, low `0.2`, medium `0.7`, high `0.9`, xhigh
-  `0.99`; the template's default `0.9`), so part of `prefix`. A developer
-  message renders as a system one.
+- **Effort**: a system message `Thinking effort level: X` first (off `0`,
+  low `0.2`, medium `0.7`, high `0.9`, xhigh `0.99`; default `0.9`), so
+  part of `prefix`; a developer message renders as a system one.
 - **No generation prompt**: the model writes `<|message_model|>` before
-  each segment, and the decoder's channel grammar routes the body by its
-  content type at every effort (`0` does not stop reasoning); a reasoning
-  budget cuts with `<|end_message|>`.
+  each segment, and the channel grammar routes each body by its content
+  type at every effort; a reasoning budget cuts with `<|end_message|>`.
 - **Tools**: JSON in messages of their own
   ([tool-calling.md § Inkling 2](../engine/tool-calling.md#inkling-2-json-calls-in-their-own-messages)).
-- **Images**: a `<|content_image|>` user message each, one
+  **Images**: a `<|content_image|>` user message each, one
   `<|unused_200054|>` per merged row, before the text.
 - **Sampling**: temperature 1, top-k 0, top-p 1, min-p 0 (`general.sampling.*`).
+  Fixtures: `inkling2-{text,tools,media}.json` (9 prompts with ids and 11
+  strings, 5, 2).
 
-Fixtures, from the template's text: `inkling2-{text,tools,media}.json`
-(9 prompts with ids and 11 strings, 5, 2); `make gate NAME=inkling2-vocabulary`.
+## What is verified
+
+The CPU reference agrees with the format's definition to 5 % relative RMS
+at every application of an 8-token prompt, the largest errors where the
+router's eighth expert differs at a near tie
+([record](../benchmarks/record/inkling2.md)); its own trace is pinned.
+
+<!-- gen:gates-for:inkling2 -->
+| Gate | Tier | Model | Evidence |
+| --- | --- | --- | --- |
+| `inkling2-vocabulary` | `verify` | inkling2 | [inkling2.md § prompt-profile](inkling2.md#prompt-profile) |
+| `inkling2-trace-cpu` | `verify-cpu` | inkling2 | [inkling2.md](inkling2.md) |
+<!-- /gen -->
 
 ## Known limits
 
-- Only the pinned commit binds: the repository's `main` (2026-11-26) is a
-  re-upload declaring `inkling2_loop`, 24 blocks, and 744 tensors.
+- Only the pinned commit binds; `main` (2026-11-26) re-uploads it as `inkling2_loop`.

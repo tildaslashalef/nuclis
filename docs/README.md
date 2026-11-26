@@ -187,6 +187,7 @@ never edited after, one file per document it came from.
 | [eval.md](benchmarks/record/eval.md) | Teacher-forced evaluation: the record |
 | [gemma4.md](benchmarks/record/gemma4.md) | Gemma 4: the record |
 | [gguf.md](benchmarks/record/gguf.md) | GGUF inspection: the record |
+| [inkling2.md](benchmarks/record/inkling2.md) | Inkling 2 Mini: the record |
 | [laya.md](benchmarks/record/laya.md) | Laya: the record |
 | [metal-backend.md](benchmarks/record/metal-backend.md) | Metal backend: the record |
 | [muse-glimmer.md](benchmarks/record/muse-glimmer.md) | Muse Glimmer 30B: the record |

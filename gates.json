@@ -323,7 +323,8 @@
    "inference/src/tokenizer/o200k.zig",
    "inference/src/tokenizer/case_table.zig",
    "inference/src/models/inkling2*.zig",
-   "inference/src/models/fixtures/inkling2-*.json"
+   "inference/src/models/fixtures/inkling2-*.json",
+   "tests/fixtures/inkling2-*/**"
   ]
  },
  "aggregators": [
@@ -2605,6 +2606,45 @@
     "kind": "exit"
    },
    "evidence": "docs/models/inkling2.md#prompt-profile"
+  },
+  {
+   "name": "inkling2-trace-cpu",
+   "family": "inkling2",
+   "tier": "verify-cpu",
+   "model": "inkling2",
+   "command": [
+    "{nuclis-cpu}",
+    "generate",
+    "--backend",
+    "cpu",
+    "--model",
+    "{model}",
+    "--prompt-tokens",
+    "tests/fixtures/inkling2-quick-brown/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "16",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/inkling2-quick-brown",
+    "positions": 8,
+    "embedding": 2304,
+    "layers": 48,
+    "vocab": 200058
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/models/inkling2.md"
   }
  ]
 }
