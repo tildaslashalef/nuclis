@@ -321,7 +321,9 @@
    "inference/src/profiles/inkling2.zig",
    "inference/src/profiles/fixtures/inkling2-*.json",
    "inference/src/tokenizer/o200k.zig",
-   "inference/src/tokenizer/case_table.zig"
+   "inference/src/tokenizer/case_table.zig",
+   "inference/src/models/inkling2*.zig",
+   "inference/src/models/fixtures/inkling2-*.json"
   ]
  },
  "aggregators": [

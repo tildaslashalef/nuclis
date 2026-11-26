@@ -27,7 +27,10 @@ pub fn render(arena: std.mem.Allocator, path: []const u8, summary: Summary, out:
     if (summary.rotated_basis) |basis| try fields.append(arena, .{ .key = "Rotated basis", .value = try std.fmt.allocPrint(arena, "{s} (the runtimes transform every projection input)", .{basis}) });
     try kit.blocks.detail(out, ui, &.{.{ .fields = fields.items }});
     try out.writeByte('\n');
-    try kit.blocks.result(out, ui, .ok, "structure matches the text profile", "`generate` runs it on CPU and Metal");
+    if (summary.inference_available)
+        try kit.blocks.result(out, ui, .ok, "structure matches the text profile", "`generate` runs it on CPU and Metal")
+    else
+        try kit.blocks.result(out, ui, .warning, "structure matches the text profile", "no executor runs it: `generate` refuses it");
 }
 
 test "validation JSON reports structural check kind and executable binding" {
@@ -50,4 +53,22 @@ test "validation JSON reports structural check kind and executable binding" {
     const model = parsed.value.object.get("model").?.object;
     try std.testing.expectEqualStrings("structure_only", model.get("validation").?.string);
     try std.testing.expect(model.get("inference_available").?.bool);
+}
+
+test "a binding with no executor is a warning that generate refuses it" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    try render(arena_state.allocator(), "model.gguf", .{
+        .profile = "inkling2_mini",
+        .decoder_layers = 48,
+        .layer_kinds = &.{ .{ .kind = "sliding_attention", .count = 40 }, .{ .kind = "global_attention", .count = 8 } },
+        .text_tensors = 734,
+        .auxiliary_tensors = 0,
+        .text_tensor_bytes = 10,
+        .auxiliary_tensor_bytes = 0,
+        .inference_available = false,
+    }, &out.writer, false, .plain);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "`generate` refuses it") != null);
 }

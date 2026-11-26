@@ -413,7 +413,9 @@ builds a GGUF per variant at test time (`formats/gguf_writer.zig`,
 - **`zig build test`** (`inference/tiny-check.zig`, also `-Dmetal=false` on
   Linux): each family through `Engine.open` on the CPU, two rows plus a
   rerun, in each variant's first encoding: finite, the right shapes, same seed
-  same logits; tokenizer round trips, GPT-4o's cuts on Muse. Adds 2 s.
+  same logits; tokenizer round trips, GPT-4o's cuts on Muse. A variant
+  whose family has no executor (`forward = .none`) loads up to the
+  executor, which must refuse. Adds 2 s.
 - **`zig build test-tiny -Dmetal=true -- [variant] [seed]`** (`make
   test-tiny`): every variant in every encoding against the CPU reference,
   stepped and chunked, with the F16 and Q8_0 caches on the first encoding,
@@ -445,6 +447,7 @@ vocabulary, and production refuses a shape only the tiny build pins).
 | `gemma4-dense`, `gemma4-mix` | 6 layers | F32, Q4_0, Q5_0, Q5_1, Q8_0, Q3_K to Q6_K, IQ3_S, IQ4_NL, IQ4_XS | <!-- ok: tiny-build variants, not gates -->
 | `gemma4-experts` | 7 layers, 16 experts of 64 | the same, `ffn_down_exps` in Q5_0 under a 256-block file | <!-- ok: tiny-build variant, not a gate -->
 | `gemma4-e4b` | 12 layers, per-layer embedding | the same, its projection BF16 under Q4_K |
+| `inkling2` | 18 stored blocks as 24 applications, 256 wide, 16 experts of 64; loads only, no executor | Q8_0, F32, with NVFP4 experts and BF16 projections |
 
 That is every encoding each adapter accepts. Bounds are about three times the
 worst of three seeds over every encoding on the M4 Pro, in absolute logit

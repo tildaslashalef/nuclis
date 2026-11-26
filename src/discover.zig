@@ -339,10 +339,11 @@ fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, 
         const layout = inference.encoding.layout(tensor.encoding_id);
         return .{ .rejected = try arena.print("tensor {s} uses encoding {s} (id {d}), outside the {s} adapter's executable set", .{ tensor.name, if (layout) |l| l.name else "?", tensor.encoding_id, @tagName(adapter) }) };
     };
-    _ = inference.models.registry.validate(adapter, gpa, doc) catch |err| switch (err) {
+    const summary = inference.models.registry.validate(adapter, gpa, doc) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => return .{ .rejected = try arena.print("the {s} adapter rejects the file: {s}", .{ @tagName(adapter), @errorName(err) }) },
     };
+    if (!summary.inference_available) return .{ .rejected = try arena.print("the {s} adapter binds it, but no executor runs the architecture", .{@tagName(adapter)}) };
     return .{ .adapter = adapter };
 }
 

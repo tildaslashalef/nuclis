@@ -229,6 +229,7 @@ pub fn main(init: std.process.Init) !void {
         else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
         // No Muse Glimmer model file is gated, so none is checked.
         .@"muse-glimmer" => return error.UnsupportedFamily,
+        .inkling2 => return error.UnsupportedFamily,
     }
     // The ordinary run's engine-level addition, backend-independent like
     // `speculativeLoop`, so the Metal run covers it.

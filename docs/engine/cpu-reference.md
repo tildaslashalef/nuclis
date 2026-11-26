@@ -383,7 +383,9 @@ zig build test
 
 The freshly built `nuclis validate --json` reports `validation: structure_only`
 and `inference_available: true`: a successful binding is the profile `generate`
-executes on the CPU and Metal backends.
+executes on the CPU and Metal backends. A family that binds and has no
+executor (Inkling 2) reports `false`; `generate` refuses it and `inspect`
+calls it *not runnable*.
 
 ## Full-model composition
 

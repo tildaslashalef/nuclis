@@ -17,6 +17,7 @@ const layouts = @import("../tensor/encoding.zig");
 const qwen35 = @import("qwen35.zig");
 const muse = @import("muse_glimmer.zig");
 const gemma4 = @import("gemma4.zig");
+const inkling2 = @import("inkling2.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Error = gguf_writer.Error || sample.Error;
@@ -107,7 +108,12 @@ pub const Variant = struct {
     /// A mix: one file whose matrices walk these encodings, so a fused pair
     /// meets two layouts. Checked on Metal only; `encodings` then names it.
     cycle: []const u32 = &.{},
+    /// Where a forward runs: `none` is a family that binds and has no
+    /// executor, checked by loading only.
+    forward: Forward = .both,
 };
+
+pub const Forward = enum { none, cpu, both };
 
 /// The shapes that mirror a released file: qwen35's are the smallest the
 /// adapter accepts from the file; the others are the pinned tiny constants.
@@ -124,6 +130,9 @@ pub const variants = [_]Variant{
     .{ .name = "gemma4-e4b", .emit = emitGemmaE4b, .encodings = &.{ 2, 0, 6, 7, 8, 11, 12, 13, 14, 20, 21, 23 } },
     .{ .name = "saluki-mix", .emit = emitQwen35, .encodings = &.{16}, .cycle = &.{ 16, 10, 17, 18, 19, 22, 29 } },
     .{ .name = "muse-mix", .emit = emitMuse, .encodings = &.{12}, .cycle = &.{ 12, 13 } },
+    // NVFP4 experts with scales but on the last four blocks, which take the
+    // file's matrix encoding; BF16 sink and conv projections.
+    .{ .name = "inkling2", .emit = emitInkling2, .encodings = &.{ 8, 0 }, .forward = .none },
     .{ .name = "gemma4-mix", .emit = emitGemmaDense, .encodings = &.{12}, .cycle = &.{ 12, 13, 2, 8 } },
 };
 
@@ -444,6 +453,123 @@ fn emitMuse(b: *Builder, _: u64) Allocator.Error!void {
     }
 }
 
+// --- inkling2 -----------------------------------------------------------
+
+fn emitInkling2(b: *Builder, _: u64) Allocator.Error!void {
+    const k = inkling2;
+    try b.set("general.architecture", .{ .string = k.architecture });
+    try b.set("general.quantization_version", .{ .uint32 = 2 });
+    try b.set("general.name", .{ .string = "tiny inkling2" });
+    for ([_]struct { []const u8, usize }{
+        .{ "block_count", k.block_count },
+        .{ "context_length", k.context_length },
+        .{ "embedding_length", k.embedding },
+        .{ "feed_forward_length", k.expert_feed_forward },
+        .{ "expert_count", k.experts },
+        .{ "expert_used_count", k.experts_used },
+        .{ "expert_feed_forward_length", k.expert_feed_forward },
+        .{ "attention.key_length", k.head_size },
+        .{ "attention.value_length", k.head_size },
+        .{ "attention.key_length_swa", k.head_size },
+        .{ "attention.value_length_swa", k.head_size },
+        .{ "attention.sliding_window", k.window },
+        .{ "attention.relative_length", k.relative_length },
+        .{ "attention.relative_extent", k.relative_extent },
+        .{ "attention.log_scale_floor", k.log_scale_floor },
+        .{ "rope.dimension_count", 0 },
+        .{ "num_loops", k.loops },
+        .{ "loop.core_start", k.core_start },
+        .{ "loop.core_end", k.core_end },
+        .{ "loop.gate_rank", k.gate_rank },
+        .{ "attn_res.block_size", k.residual_span },
+        .{ "shortconv.l_cache", k.conv_taps },
+        .{ "vocab_size", k.padded_vocabulary },
+        .{ "vocab_size_unpadded", k.vocabulary },
+    }) |entry| try b.setf("inkling2.{s}", .{entry[0]}, .{ .uint32 = @intCast(entry[1]) });
+    for ([_]struct { []const u8, f32 }{
+        .{ "attention.layer_norm_rms_epsilon", k.rms_epsilon },
+        .{ "expert_weights_scale", k.expert_weights_scale },
+        .{ "activation.situ_beta", k.situ_beta },
+        .{ "activation.situ_linear_beta", k.situ_linear_beta },
+        .{ "final_logit_softcapping", k.final_softcap },
+        .{ "attention.qk_clip", k.qk_clip },
+        .{ "attention.relative_clip", k.relative_clip },
+        .{ "attention.log_scale_alpha", k.log_scale_alpha },
+    }) |entry| try b.setf("inkling2.{s}", .{entry[0]}, .{ .float32 = entry[1] });
+    var head_counts: [k.block_count]i32 = undefined;
+    var kv_counts: [k.block_count]i32 = undefined;
+    var sliding: [k.block_count]bool = undefined;
+    for (0..k.block_count) |a| {
+        head_counts[a] = k.heads;
+        kv_counts[a] = k.kv_heads;
+        sliding[a] = !k.isGlobal(a);
+    }
+    try b.set("inkling2.attention.head_count", .{ .int32s = try b.arena.dupe(i32, &head_counts) });
+    try b.set("inkling2.attention.head_count_kv", .{ .int32s = try b.arena.dupe(i32, &kv_counts) });
+    try b.set("inkling2.attention.sliding_window_pattern", .{ .booleans = try b.arena.dupe(bool, &sliding) });
+    try byteLevelTokenizer(b, "inkling2", k.vocabulary);
+
+    const d: u64 = k.embedding;
+    const nvfp4 = 40;
+    const bf16 = 30;
+    try b.matrix("token_embd.weight", &.{ d, k.padded_vocabulary });
+    try b.gain("token_embd_norm.weight", &.{d});
+    try b.matrix("output.weight", &.{ d, k.padded_vocabulary });
+    try b.gain("output_norm.weight", &.{d});
+    try b.noise("output_res_query.weight", &.{d}, 0.1);
+    try b.noise("loop_res_query.weight", &.{ d, k.loop_queries }, 0.1);
+    try b.noise("loop_kv_res_query.weight", &.{ d, k.loop_queries }, 0.1);
+    for (0..k.stored_blocks) |i| {
+        const global = k.kindOf(i) == .global;
+        if (global) {
+            for ([_][]const u8{ "q", "k", "v" }) |part| try b.gain(try b.label("blk.{d}.attn_{s}_inp_norm.weight", .{ i, part }), &.{d});
+            try b.encoded(try b.label("blk.{d}.attn_k_conv_proj.weight", .{i}), &.{ d, k.conv_taps * k.kv_heads }, bf16);
+            try b.encoded(try b.label("blk.{d}.attn_v_conv_proj.weight", .{i}), &.{ d, k.conv_taps * k.kv_heads }, bf16);
+        } else try b.gain(try b.label("blk.{d}.attn_norm.weight", .{i}), &.{d});
+        try b.matrix(try b.label("blk.{d}.attn_q.weight", .{i}), &.{ d, k.query_width });
+        try b.matrix(try b.label("blk.{d}.attn_k.weight", .{i}), &.{ d, k.kv_width });
+        try b.matrix(try b.label("blk.{d}.attn_v.weight", .{i}), &.{ d, k.kv_width });
+        try b.matrix(try b.label("blk.{d}.attn_gate.weight", .{i}), &.{ d, k.query_width });
+        try b.matrix(try b.label("blk.{d}.attn_output.weight", .{i}), &.{ k.query_width, d });
+        try b.uniform(try b.label("blk.{d}.attn_q_clip.weight", .{i}), &.{ k.head_size, k.heads }, 0.5, 1.5);
+        try b.encoded(try b.label("blk.{d}.attn_sink_proj.weight", .{i}), &.{ d, k.heads }, bf16);
+        try b.matrix(try b.label("blk.{d}.attn_rel.weight", .{i}), &.{ d, k.relative_length * k.heads });
+        try b.noise(try b.label("blk.{d}.attn_rel_bias.weight", .{i}), &.{ k.relative_length, if (global) k.relative_extent else k.window }, 0.1);
+        try b.uniform(try b.label("blk.{d}.attn_rel_clip.weight", .{i}), &.{ k.relative_length, k.heads }, 0.5, 1.5);
+        try b.noise(try b.label("blk.{d}.attn_k_conv.weight", .{i}), &.{ k.conv_taps, k.kv_width }, 0.5);
+        try b.noise(try b.label("blk.{d}.attn_v_conv.weight", .{i}), &.{ k.conv_taps, k.kv_width }, 0.5);
+        try b.noise(try b.label("blk.{d}.attn_post_conv.weight", .{i}), &.{ k.conv_taps, d }, 0.5);
+        try b.noise(try b.label("blk.{d}.ffn_post_conv.weight", .{i}), &.{ k.conv_taps, d }, 0.5);
+        if (i > 0) {
+            const shape: []const u64 = if (global) &.{ d, 3 } else &.{d};
+            try b.noise(try b.label("blk.{d}.attn_res_query.weight", .{i}), shape, 0.1);
+        }
+        try b.noise(try b.label("blk.{d}.ffn_res_query.weight", .{i}), &.{d}, 0.1);
+        try b.gain(try b.label("blk.{d}.ffn_norm.weight", .{i}), &.{d});
+        try b.noise(try b.label("blk.{d}.ffn_gate_inp.weight", .{i}), &.{ d, k.experts }, 1 / @sqrt(@as(f32, @floatFromInt(d))));
+        try b.noise(try b.label("blk.{d}.exp_probs_b.bias", .{i}), &.{k.experts}, 0.1);
+        const gate_up = try b.label("blk.{d}.ffn_gate_up_exps.weight", .{i});
+        const down = try b.label("blk.{d}.ffn_down_exps.weight", .{i});
+        const gate_up_shape = [_]u64{ d, 2 * k.expert_feed_forward, k.experts };
+        const down_shape = [_]u64{ k.expert_feed_forward, d, k.experts };
+        // As the file: NVFP4 experts with scales but on the last four blocks.
+        if (i + 4 < k.stored_blocks) {
+            try b.encoded(gate_up, &gate_up_shape, nvfp4);
+            try b.encoded(down, &down_shape, nvfp4);
+            try b.uniform(try b.label("blk.{d}.ffn_gate_up_exps.scale", .{i}), &.{k.experts}, 0.5, 2);
+            try b.uniform(try b.label("blk.{d}.ffn_down_exps.scale", .{i}), &.{k.experts}, 0.5, 2);
+        } else {
+            try b.matrix(gate_up, &gate_up_shape);
+            try b.matrix(down, &down_shape);
+        }
+        if (i >= k.core_start and i < k.core_end) for ([_][]const u8{ "attn", "k", "v", "mlp" }) |part| {
+            try b.noise(try b.label("blk.{d}.loop_{s}_down.weight", .{ i, part }), &.{ 2 * d, k.gate_rank }, 1 / @sqrt(@as(f32, @floatFromInt(2 * d))));
+            try b.noise(try b.label("blk.{d}.loop_{s}_gain.weight", .{ i, part }), &.{ k.gate_rank, d }, 0.1);
+            try b.noise(try b.label("blk.{d}.loop_{s}_forget.weight", .{ i, part }), &.{ k.gate_rank, d }, 0.1);
+        };
+    }
+}
+
 // --- gemma4 -------------------------------------------------------------
 
 /// `per_layer_model_proj` is BF16 on a K-quant file, as a real one keeps it.
@@ -567,6 +693,23 @@ test "the tiny Qwen shape passes the production validators" {
     const binding = try qwen35.bind(std.testing.allocator, &doc);
     try std.testing.expectEqualStrings("qwen35", binding.summary.profile);
     try std.testing.expectEqual(@as(u32, 4), binding.summary.decoder_layers);
+}
+
+test "the inkling2 emitter at the production constants writes the pinned directory" {
+    var doc = try directoryDocument(std.testing.allocator, find("inkling2").?, 8);
+    defer doc.deinit();
+    const binding = try inkling2.bind(std.testing.allocator, &doc);
+    var pinned = try inkling2.inventoryDocument(std.testing.allocator);
+    defer pinned.deinit();
+    const expected = try inkling2.bind(std.testing.allocator, &pinned);
+    try std.testing.expectEqual(expected.summary.text_tensors, binding.summary.text_tensors);
+    for (pinned.tensors) |tensor| {
+        const emitted = for (doc.tensors) |t| {
+            if (std.mem.eql(u8, t.name, tensor.name)) break t;
+        } else return error.MissingTensor;
+        try std.testing.expectEqualSlices(u64, tensor.dimensions, emitted.dimensions);
+        try std.testing.expectEqual(tensor.encoding_id, emitted.encoding_id);
+    }
 }
 
 test "production refuses a shape only the tiny build pins" {

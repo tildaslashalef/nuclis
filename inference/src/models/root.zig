@@ -22,6 +22,7 @@ pub const chat_plan = @import("chat_plan.zig");
 pub const muse_glimmer = @import("muse_glimmer.zig");
 pub const muse_glimmer_runtime = @import("muse_glimmer_runtime.zig");
 pub const muse_glimmer_metal = @import("muse_glimmer_metal.zig");
+pub const inkling2 = @import("inkling2.zig");
 /// Muse Glimmer's DFlash draft companion (an architecture of its own, not a
 /// registry family: the target binds it).
 pub const dflash = @import("dflash.zig");
@@ -63,7 +64,7 @@ pub const omnivoice_speech = @import("omnivoice_speech.zig");
 
 /// The registered families, in lookup order. Each registers itself through
 /// its `family` declaration.
-pub const table = [_]type{ qwen35.family, gemma4.family, muse_glimmer.family };
+pub const table = [_]type{ qwen35.family, gemma4.family, muse_glimmer.family, inkling2.family };
 
 pub const Registry = registry_module.Registry;
 pub const BindError = registry_module.BindError;
@@ -106,12 +107,14 @@ test "adapters are looked up by architecture id" {
     try std.testing.expectError(error.UnknownArchitecture, select("gemma3"));
     try std.testing.expect(registry.executableEncoding(.qwen35, 12) and !registry.executableEncoding(.qwen35, 2));
     try std.testing.expect(registry.executableEncoding(.gemma4, 2) and registry.executableEncoding(.gemma4, 30) and !registry.executableEncoding(.gemma4, 10));
-    try std.testing.expectEqual(3, known.len);
+    try std.testing.expectEqual(4, known.len);
     try std.testing.expectEqualStrings("qwen35", known[0]);
     try std.testing.expectEqualStrings("gemma4", known[1]);
     try std.testing.expectEqualStrings("muse-glimmer", known[2]);
     try std.testing.expectEqual(Adapter.@"muse-glimmer", try select("muse-glimmer"));
     try std.testing.expect(registry.executableEncoding(.@"muse-glimmer", 13) and !registry.executableEncoding(.@"muse-glimmer", 30));
+    try std.testing.expectEqual(Adapter.inkling2, try select("inkling2"));
+    try std.testing.expect(registry.executableEncoding(.inkling2, 40) and !registry.executableEncoding(.inkling2, 12));
 }
 
 test "validate through the registry reaches the third family" {

@@ -2661,8 +2661,8 @@ fn encodingLabel(arena: Allocator, encoding_id: u32) ![]const u8 {
 }
 
 /// The verdict on a parsed directory. Runnable needs an adapter for the
-/// architecture, every tensor in its executable set, and the adapter's
-/// binding; supported adds the catalogue pinning the Hub's digest.
+/// architecture, every tensor in its executable set, the adapter's
+/// binding, and an executor for the family; supported adds the catalogue pinning the Hub's digest.
 fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, id: Identity) !Verdict {
     const pinned = catalog.findFile(id.repo, id.file);
     const in_catalog = pinned != null and std.mem.eql(u8, pinned.?.file.sha256, id.sha256);
@@ -2698,9 +2698,13 @@ fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, 
             .encoding = encoding,
         };
     };
-    _ = inference.models.registry.validate(adapter, gpa, doc) catch |err| switch (err) {
+    const summary = inference.models.registry.validate(adapter, gpa, doc) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => return .{ .status = .not_runnable, .reason = try arena.print("the {s} adapter rejects the file: {s}", .{ @tagName(adapter), @errorName(err) }) },
+    };
+    if (!summary.inference_available) return .{
+        .status = .not_runnable,
+        .reason = try arena.print("the {s} adapter binds it, but no executor runs the architecture", .{@tagName(adapter)}),
     };
     if (in_catalog and pinned.?.file.role == .main) return .{
         .status = .supported,

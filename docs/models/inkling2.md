@@ -12,8 +12,9 @@ DSpark drafter (`dspark-Inkling-2-Mini-Q8_0.gguf`, architecture
 `dflash`); commits and digests in
 [the record](../benchmarks/record/catalogue.md#pinned-commits-and-digests-2026-09-11).
 The header's facts are pinned in
-`inference/src/models/fixtures/inkling2-q4_k_xl.json`. No adapter binds
-the file yet: `inspect` reports it *not runnable* on the NVFP4 experts.
+`inference/src/models/fixtures/inkling2-q4_k_xl.json`. The `inkling2`
+adapter binds the file and no executor runs it: `inspect` reports it *not
+runnable*, `generate` refuses it (`InferenceUnavailable`).
 
 ## Architecture
 
@@ -141,33 +142,31 @@ Closed by the CPU reference's layer comparison on the real file:
 | NVFP4 (ggml id 40) | 40 | the experts of stored 0–19, each with a per-expert F32 `ffn_{gate_up,down}_exps.scale [128]` |
 | BF16 | 32 | `attn_sink_proj`, `attn_{k,v}_conv_proj` |
 
-- **NVFP4 block**: 64 values in 36 bytes: four UE4M3 scales (one per 16
-  values), then 32 bytes of E2M1 codes; in sub-block `s`, byte `j` holds
-  value `j` in its low nibble and value `j + 8` in its high nibble. A
-  value is `e2m1(code) · ue4m3(scale)` ([quantization.md](../engine/quantization.md)).
-  The file's 1.27 billion scale bytes use none of `0x00`, `0x7F`, or a set
-  bit 7; 1.1 % have exponent 15 (256–448).
-- The model was trained in NVFP4 with MXFP8 on its last four blocks; this
-  file keeps the NVFP4 experts and stores the rest, the last four
-  blocks' experts included, as the converter's Q8_0 requantization. One
-  F16 scale and 32 signed bytes cannot hold per-value floating-point
-  codes exactly, so nuclis validates this file against its own CPU
-  reference, never against the official checkpoint.
-- No Q4_K tensor despite the name. Every quantization in the repository
-  keeps the NVFP4 experts.
+- **NVFP4 block**: 64 values in 36 bytes, four UE4M3 scales then 32 bytes
+  of E2M1 codes ([quantization.md](../engine/quantization.md)). The file's
+  1.27 billion scale bytes use none of `0x00`, `0x7F`, or a set bit 7;
+  1.1 % have exponent 15 (256–448).
+- The model was trained in NVFP4 with MXFP8 on its last four blocks; the
+  file stores all but the NVFP4 experts as the converter's Q8_0
+  requantization, which cannot hold per-value floating-point codes
+  exactly, so nuclis validates it against its own CPU reference only.
+- **Binding** ([inkling2.zig](../../inference/src/models/inkling2.zig)):
+  every tensor by name, shape, and encoding. Block 0 has no
+  `attn_res_query`, only the core has loop controllers, and a block has
+  both expert scales or neither; the tokens equal `vocab_size_unpadded`,
+  the head's rows `vocab_size`.
+- No Q4_K tensor despite the name; every quantization keeps NVFP4 experts.
 
 ## Tokenizer
 
-The `gpt2` model with `pre = inkling2`: 200,058 tokens (199,998 normal
-and 60 control; `inspect --metadata` counts the types),
-424,413 merges, EOS and EOT 200006, padding 199999, no BOS, chat template
-6,868 bytes. The splitter is [o200k.zig](../../inference/src/tokenizer/o200k.zig),
-the checkpoint's own expression with Unicode's letter classes
+The `gpt2` model with `pre = inkling2`: 200,058 tokens (199,998 normal and
+60 control, as `inspect --metadata` counts them), 424,413 merges, EOS and
+EOT 200006, padding 199999, no BOS. The splitter is
+[o200k.zig](../../inference/src/tokenizer/o200k.zig), the checkpoint's own
+expression with Unicode's letter classes
 ([tokenizer.md § Full text encoding](../engine/tokenizer.md#full-text-encoding)),
-not the folded rewrite `llama4` uses: a cased capital starts only the
-capital run, so `ÇA` is one piece and one token (118428) where the folded
-classes cut `Ç` from `A`.
-The comparison with the format's reference tokenizer is in
+not `llama4`'s folded rewrite: `ÇA` is one piece and one token (118428)
+where the folded classes cut `Ç` from `A`. The comparison is in
 [the record](../benchmarks/record/prompt-profile.md#inkling-2s-tokenizer-and-template-2026-11-26).
 
 ## Prompt profile
@@ -197,4 +196,5 @@ Fixtures, from the template's text: `inkling2-{text,tools,media}.json`
 
 ## Known limits
 
-None measured yet.
+- Only the pinned commit binds: the repository's `main` (2026-11-26) is a
+  re-upload declaring `inkling2_loop`, 24 blocks, and 744 tensors.

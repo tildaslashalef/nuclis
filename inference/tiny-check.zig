@@ -3,7 +3,8 @@
 //! Built against the `tiny_models` instance of the inference module.
 //!
 //! As a test binary (part of `zig build test`): each family loads on the CPU,
-//! with no GPU, and its forward is finite and deterministic.
+//! with no GPU, and its forward is finite and deterministic; a family with
+//! no executor loads and is refused at the executor.
 //! As an executable (`zig build test-tiny -Dmetal=true -- [variant] [seed]`):
 //! every variant in every encoding its Metal plan executes, against the CPU
 //! reference, with a negative control per variant.
@@ -77,13 +78,44 @@ test "each family loads on the CPU, and its forward is finite and deterministic"
     const prefix = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path });
     defer gpa.free(prefix);
     for (&tiny.variants) |*variant| {
-        if (variant.cycle.len != 0) continue;
+        if (variant.cycle.len != 0 or variant.forward == .none) continue;
         errdefer std.debug.print("tiny variant {s}\n", .{variant.name});
         const bytes = try tiny.generate(gpa, variant, variant.encodings[0], default_seed);
         defer gpa.free(bytes);
         const path = try writeFile(gpa, io, tmp.dir, prefix, variant.name, bytes);
         defer gpa.free(path);
         try cpuRun(gpa, io, path);
+    }
+}
+
+/// Parses, binds, and builds the vocabulary through `Engine.open`; the
+/// executor's refusal is the only failure allowed.
+fn loadRun(gpa: Allocator, io: std.Io, path: []const u8, backend: inference.engine.Backend) !void {
+    var engine = Engine.open(gpa, io, path, backend, capacity, .f32, null, .none) catch |err| switch (err) {
+        error.InferenceUnavailable => return,
+        else => return err,
+    };
+    engine.deinit();
+    return error.UnexpectedExecutor;
+}
+
+test "a family without an executor loads up to the executor, in each encoding" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const prefix = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path });
+    defer gpa.free(prefix);
+    for (&tiny.variants) |*variant| {
+        if (variant.forward != .none) continue;
+        for (variant.encodings) |encoding| {
+            errdefer std.debug.print("tiny variant {s}, encoding {d}\n", .{ variant.name, encoding });
+            const bytes = try tiny.generate(gpa, variant, encoding, default_seed);
+            defer gpa.free(bytes);
+            const path = try writeFile(gpa, io, tmp.dir, prefix, variant.name, bytes);
+            defer gpa.free(path);
+            try loadRun(gpa, io, path, .cpu);
+        }
     }
 }
 
@@ -131,7 +163,7 @@ const Tokenizer = struct {
 
 test "each tokenizer path decodes what it encoded" {
     const gpa = std.testing.allocator;
-    for ([_][]const u8{ "qwen35", "muse-glimmer", "gemma4-dense" }) |name| {
+    for ([_][]const u8{ "qwen35", "muse-glimmer", "gemma4-dense", "inkling2" }) |name| {
         const variant = tiny.find(name).?;
         const bytes = try tiny.generate(gpa, variant, variant.encodings[0], default_seed);
         defer gpa.free(bytes);
@@ -413,6 +445,18 @@ pub fn main(init: std.process.Init) !void {
     for (&tiny.variants) |*variant| {
         if (only) |name| if (!std.mem.eql(u8, name, "all") and !std.mem.eql(u8, name, variant.name)) continue;
         checked += 1;
+        if (variant.forward != .both) {
+            // Nothing runs on Metal: the file loads up to the executor.
+            const bytes = try tiny.generate(gpa, variant, variant.encodings[0], seed);
+            defer gpa.free(bytes);
+            const path = try writeFile(gpa, io, dir, prefix, "model.gguf", bytes);
+            defer gpa.free(path);
+            const loaded = if (loadRun(gpa, io, path, .metal)) "loads, no Metal plan" else |err| @errorName(err);
+            passed = passed and std.mem.eql(u8, loaded, "loads, no Metal plan");
+            try out.print("{s:<16} {s:>8} {s}\n", .{ variant.name, "", loaded });
+            try out.flush();
+            continue;
+        }
         passed = try checkVariant(gpa, io, out, dir, prefix, variant, seed) and passed;
     }
     try out.print("{d} variants checked\n", .{checked});
