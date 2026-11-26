@@ -4,7 +4,7 @@
 //! for transcendental formulas were checked with Python decimal at 80 digits.
 const std = @import("std");
 
-pub const Error = error{ InvalidShape, InvalidEpsilon, NonFiniteInput, EmptySupport };
+pub const Error = error{ InvalidShape, InvalidEpsilon, InvalidThreshold, NonFiniteInput, EmptySupport };
 
 /// x / max(sqrt(sum(x*x)), epsilon). Unlike RMSNorm, this uses a sum,
 /// and epsilon clamps the norm after the square root. Zero vectors stay zero.
@@ -45,6 +45,83 @@ test "L2 errors leave output unchanged" {
     for ([_]f32{ std.math.nan(f32), std.math.inf(f32), -std.math.inf(f32) }) |bad|
         try std.testing.expectError(error.NonFiniteInput, l2Norm(&.{ 1, bad }, &output, 1));
     try std.testing.expectEqualSlices(f32, &.{ 123, 123 }, &output);
+}
+
+/// `v · min(1, threshold / (‖v‖ + 1e-6))` with `v = input ⊙ scale` when a
+/// per-channel scale is given, else `input`: a row whose norm is under the
+/// threshold passes unchanged, a longer one is shortened to it. `scale` has
+/// the input's length; output may exactly alias input.
+pub fn l2Clip(input: []const f32, scale: ?[]const f32, threshold: f32, output: []f32) Error!void {
+    try shape(input, output);
+    if (!std.math.isFinite(threshold) or threshold <= 0) return error.InvalidThreshold;
+    if (scale) |s| if (s.len != input.len) return error.InvalidShape;
+    var squares: f64 = 0;
+    for (input, 0..) |x, i| {
+        const gain: f32 = if (scale) |s| s[i] else 1;
+        if (!std.math.isFinite(x) or !std.math.isFinite(gain)) return error.NonFiniteInput;
+        // A product of two finite F32 squares to at most ~1e154: F64 holds it.
+        const v = @as(f64, x) * gain;
+        squares += v * v;
+    }
+    const factor = @min(1, @as(f64, threshold) / (@sqrt(squares) + 1e-6));
+    for (input, output, 0..) |x, *y, i| {
+        const gain: f32 = if (scale) |s| s[i] else 1;
+        y.* = @floatCast(@as(f64, x) * gain * factor);
+    }
+}
+
+/// `1 + alpha · ln(max(1, (position + 1) / floor))`: a query's attention
+/// scale that grows with the log of its position past `floor` tokens and is
+/// 1 before. `floor` is positive.
+pub fn logPositionScale(position: usize, floor: usize, alpha: f32) f32 {
+    std.debug.assert(floor > 0);
+    const ratio = (@as(f64, @floatFromInt(position)) + 1) / @as(f64, @floatFromInt(floor));
+    return @floatCast(1 + @as(f64, alpha) * @log(@max(1, ratio)));
+}
+
+test "an L2 clip shortens only rows past the threshold, after the scale" {
+    var output: [2]f32 = undefined;
+    // ‖(3, 4)‖ = 5: under 8 it passes; at 2.5 it halves (up to the 1e-6).
+    try l2Clip(&.{ 3, 4 }, null, 8, &output);
+    try std.testing.expectEqualSlices(f32, &.{ 3, 4 }, &output);
+    try l2Clip(&.{ 3, 4 }, null, 2.5, &output);
+    try std.testing.expectApproxEqRel(@as(f32, 1.5), output[0], 1e-6);
+    try std.testing.expectApproxEqRel(@as(f32, 2), output[1], 1e-6);
+    // The scale applies first: (6, 8) has norm 10, clipped to 5.
+    try l2Clip(&.{ 3, 4 }, &.{ 2, 2 }, 5, &output);
+    try std.testing.expectApproxEqRel(@as(f32, 3), output[0], 1e-6);
+    try std.testing.expectApproxEqRel(@as(f32, 4), output[1], 1e-6);
+    // Scaled but under the threshold: the scaled row, unclipped.
+    try l2Clip(&.{ 3, 4 }, &.{ 0.5, -1 }, 100, &output);
+    try std.testing.expectEqualSlices(f32, &.{ 1.5, -4 }, &output);
+    var in_place = [_]f32{ 0, 0 };
+    try l2Clip(&in_place, null, 1, &in_place);
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0 }, &in_place);
+    const big = std.math.floatMax(f32);
+    try l2Clip(&.{ big, big }, &.{ big, 1 }, 1, &output);
+    try std.testing.expectApproxEqRel(@as(f32, 1), output[0], 1e-6);
+    try std.testing.expect(output[1] > 0 and output[1] < 1e-30);
+}
+
+test "L2 clip errors leave output unchanged" {
+    var output: [2]f32 = @splat(123);
+    try std.testing.expectError(error.InvalidShape, l2Clip(&.{1}, null, 1, &output));
+    try std.testing.expectError(error.InvalidShape, l2Clip(&.{ 1, 2 }, &.{1}, 1, &output));
+    for ([_]f32{ 0, -1, std.math.nan(f32), std.math.inf(f32) }) |threshold|
+        try std.testing.expectError(error.InvalidThreshold, l2Clip(&.{ 1, 2 }, null, threshold, &output));
+    try std.testing.expectError(error.NonFiniteInput, l2Clip(&.{ 1, std.math.nan(f32) }, null, 1, &output));
+    try std.testing.expectError(error.NonFiniteInput, l2Clip(&.{ 1, 2 }, &.{ 1, std.math.inf(f32) }, 1, &output));
+    try std.testing.expectEqualSlices(f32, &.{ 123, 123 }, &output);
+}
+
+test "the log position scale is 1 through the floor, then grows with ln" {
+    try std.testing.expectEqual(@as(f32, 1), logPositionScale(0, 8192, 0.1));
+    try std.testing.expectEqual(@as(f32, 1), logPositionScale(8191, 8192, 0.1));
+    // (16383 + 1)/8192 = 2: 1 + 0.1·ln 2.
+    try std.testing.expectApproxEqRel(@as(f32, 1.0693147180559945), logPositionScale(16383, 8192, 0.1), 1e-7);
+    // The 1,048,576-token context: 1 + 0.1·ln 128.
+    try std.testing.expectApproxEqRel(@as(f32, 1.4852030263919618), logPositionScale(1048575, 8192, 0.1), 1e-7);
+    try std.testing.expectEqual(@as(f32, 1), logPositionScale(1048575, 8192, 0));
 }
 
 /// x / sqrt(mean(x*x) + epsilon), without learned weights or a bias.

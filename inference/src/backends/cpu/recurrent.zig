@@ -42,6 +42,120 @@ pub fn convolution(input: []const f32, weights: []const f32, history: []f32, out
     };
 }
 
+/// Per-head taps for `shortConvolution`: `taps[head][lag]` multiplies the
+/// sample `lag` rows back (lag 0 the current input), newest first. A channel's
+/// head is `channel / (channels / heads)`.
+pub const DynamicTaps = struct { taps: []const f32, heads: usize };
+
+/// A short convolution with its own residual: `(x + conv(x) + dyn(x)) / √n`,
+/// `conv` being `convolution`'s static taps, `dyn` the optional per-head
+/// taps over the same window, and `n = kernel + 1`, or `2·kernel + 1` with
+/// dynamic taps. Shapes, history, and its update are `convolution`'s.
+/// `scratch` needs `input.len` F64 elements with dynamic taps, none without.
+/// On any error history and output are unchanged.
+pub fn shortConvolution(input: []const f32, weights: []const f32, dynamic: ?DynamicTaps, history: []f32, output: []f32, kernel: usize, scratch: []f64) Error!void {
+    if (input.len == 0 or kernel == 0 or output.len != input.len) return error.InvalidShape;
+    if (weights.len != try std.math.mul(usize, input.len, kernel) or
+        history.len != try std.math.mul(usize, input.len, kernel - 1)) return error.InvalidShape;
+    if (dynamic) |d| {
+        if (d.heads == 0 or input.len % d.heads != 0 or d.taps.len != try std.math.mul(usize, d.heads, kernel)) return error.InvalidShape;
+        if (scratch.len < input.len) return error.ScratchTooSmall;
+        try finite(d.taps);
+    }
+    try finite(input);
+    try finite(weights);
+    try finite(history);
+    const n: f64 = @floatFromInt(if (dynamic != null) 2 * kernel + 1 else kernel + 1);
+    const divisor = @sqrt(n);
+    // Every result is checked before `convolution` advances the history. The
+    // dynamic taps read the oldest sample, which that update drops, so their
+    // sums wait in scratch.
+    for (input, 0..) |x, c| {
+        const w = weights[c * kernel ..][0..kernel];
+        const h = history[c * (kernel - 1) ..][0 .. kernel - 1];
+        var static: f64 = @as(f64, x) * w[kernel - 1];
+        for (h, w[0 .. kernel - 1]) |a, b| static += @as(f64, a) * b;
+        try representable(static);
+        var total = @as(f64, x) + static;
+        if (dynamic) |d| {
+            const taps = d.taps[(c / (input.len / d.heads)) * kernel ..][0..kernel];
+            var sum: f64 = @as(f64, x) * taps[0];
+            for (1..kernel) |lag| sum += @as(f64, h[kernel - 1 - lag]) * taps[lag];
+            try representable(sum);
+            scratch[c] = sum;
+            total += sum;
+        }
+        try representable(total / divisor);
+    }
+    try convolution(input, weights, history, output, kernel);
+    for (input, output, 0..) |x, *y, c| {
+        var sum = @as(f64, x) + y.*;
+        if (dynamic != null) sum += scratch[c];
+        y.* = @floatCast(sum / divisor);
+    }
+}
+
+test "a short convolution adds its residual and scales by the tap count" {
+    // Two channels, kernel 2, history one row: static w = [old, current].
+    var history = [_]f32{ 1, 10 };
+    var output: [2]f32 = undefined;
+    try shortConvolution(&.{ 2, 20 }, &.{ 0.5, 1, 0, 2 }, null, &history, &output, 2, &.{});
+    // (x + w0·old + w1·x) / √3: (2 + 0.5 + 2)/√3, (20 + 0 + 40)/√3.
+    try std.testing.expectApproxEqRel(@as(f32, 4.5 / @sqrt(3.0)), output[0], 1e-6);
+    try std.testing.expectApproxEqRel(@as(f32, 60.0 / @sqrt(3.0)), output[1], 1e-6);
+    try std.testing.expectEqualSlices(f32, &.{ 2, 20 }, &history);
+}
+
+test "dynamic taps run newest first per head over the pre-update window" {
+    // Four channels in two heads, kernel 3, zero static taps so only the
+    // residual and the dynamic part remain. History rows oldest first.
+    var history = [_]f32{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    var output: [4]f32 = undefined;
+    var scratch: [4]f64 = undefined;
+    const zero: [12]f32 = @splat(0);
+    // Head 0 weighs lag 0 by 1, lag 2 (the oldest) by 10; head 1 lag 1 by 100.
+    const dynamic: DynamicTaps = .{ .taps = &.{ 1, 0, 10, 0, 100, 0 }, .heads = 2 };
+    try shortConvolution(&.{ 0.5, 0.25, 2, 4 }, &zero, dynamic, &history, &output, 3, &scratch);
+    const d = @sqrt(7.0);
+    // Channel 0: x 0.5 + 1·0.5 + 10·1 (oldest); channel 2: x 2 + 100·6 (lag 1).
+    try std.testing.expectApproxEqRel(@as(f32, (0.5 + 0.5 + 10) / d), output[0], 1e-6);
+    try std.testing.expectApproxEqRel(@as(f32, (0.25 + 0.25 + 30) / d), output[1], 1e-6);
+    try std.testing.expectApproxEqRel(@as(f32, (2.0 + 600.0) / d), output[2], 1e-6);
+    try std.testing.expectApproxEqRel(@as(f32, (4.0 + 800.0) / d), output[3], 1e-6);
+    // The window advanced: the oldest sample dropped, the input appended.
+    try std.testing.expectEqualSlices(f32, &.{ 2, 0.5, 4, 0.25, 6, 2, 8, 4 }, &history);
+}
+
+test "static and dynamic taps agree on the window when both name a lag" {
+    // One channel, kernel 2: static [w_old, w_cur] = [3, 5], dynamic newest
+    // first [7, 11]; old 2, input 1: (1 + 3·2 + 5·1 + 7·1 + 11·2) / √5.
+    var history = [_]f32{2};
+    var output: [1]f32 = undefined;
+    var scratch: [1]f64 = undefined;
+    try shortConvolution(&.{1}, &.{ 3, 5 }, .{ .taps = &.{ 7, 11 }, .heads = 1 }, &history, &output, 2, &scratch);
+    try std.testing.expectApproxEqRel(@as(f32, 41.0 / @sqrt(5.0)), output[0], 1e-6);
+}
+
+test "short convolution errors leave history and output unchanged" {
+    var history = [_]f32{ 1, 2 };
+    var output: [2]f32 = @splat(123);
+    var scratch: [2]f64 = undefined;
+    const w = [_]f32{ 1, 1, 1, 1 };
+    try std.testing.expectError(error.InvalidShape, shortConvolution(&.{ 1, 2 }, &w, .{ .taps = &.{ 1, 1, 1 }, .heads = 2 }, &history, &output, 2, &scratch));
+    try std.testing.expectError(error.InvalidShape, shortConvolution(&.{ 1, 2 }, &w, .{ .taps = &.{ 1, 1, 1, 1, 1, 1 }, .heads = 3 }, &history, &output, 2, &scratch));
+    try std.testing.expectError(error.ScratchTooSmall, shortConvolution(&.{ 1, 2 }, &w, .{ .taps = &.{ 1, 1 }, .heads = 1 }, &history, &output, 2, scratch[0..1]));
+    try std.testing.expectError(error.NonFiniteInput, shortConvolution(&.{ 1, 2 }, &w, .{ .taps = &.{ 1, std.math.nan(f32) }, .heads = 1 }, &history, &output, 2, &scratch));
+    try std.testing.expectError(error.NonFiniteResult, shortConvolution(&.{ 3e38, 2 }, &w, .{ .taps = &.{ 3e38, 0 }, .heads = 1 }, &history, &output, 2, &scratch));
+    // Each term in range, the scaled sum not: x + x·1 + x·1 over √3 with kernel 1.
+    var none: [0]f32 = .{};
+    var single: [1]f32 = @splat(123);
+    try std.testing.expectError(error.NonFiniteResult, shortConvolution(&.{3e38}, &.{1}, .{ .taps = &.{1}, .heads = 1 }, &none, &single, 1, &scratch));
+    try std.testing.expectEqual(@as(f32, 123), single[0]);
+    try std.testing.expectError(error.InvalidShape, shortConvolution(&.{ 1, 2 }, w[0..3], null, &history, &output, 2, &.{}));
+    try std.testing.expectEqualSlices(f32, &.{ 1, 2 }, &history);
+    try std.testing.expectEqualSlices(f32, &.{ 123, 123 }, &output);
+}
+
 pub const Delta = struct {
     query: []const f32,
     key: []const f32,

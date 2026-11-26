@@ -17,6 +17,8 @@ pub const ExpertMatrix = experts.ExpertMatrix;
 
 pub const rmsNorm = vector.rmsNorm;
 pub const l2Norm = vector.l2Norm;
+pub const l2Clip = vector.l2Clip;
+pub const logPositionScale = vector.logPositionScale;
 pub const softmax = vector.softmax;
 pub const sigmoid = vector.sigmoid;
 pub const silu = vector.silu;

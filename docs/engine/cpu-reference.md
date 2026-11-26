@@ -3,9 +3,10 @@
 
 The inference library exposes `cpu.Matrix` and `cpu.matvec(matrix, input,
 output, scratch)` from [the CPU module](../../inference/src/backends/cpu/root.zig).
-It also exposes `rmsNorm`, `l2Norm`, `softmax`, `sigmoid`, `silu`, the GELU
-variants, `softplus`, and `rope.apply`, `attention.apply`,
-`recurrent.convolution`/`recurrent.delta`, and `experts.route`/`experts.ffn`
+It also exposes `rmsNorm`, `l2Norm`, `l2Clip`, `logPositionScale`,
+`softmax`, `sigmoid`, `silu`, the GELU variants, `softplus`, and
+`rope.apply`, `attention.apply`, `recurrent.convolution`,
+`recurrent.shortConvolution`, `recurrent.delta`, and `experts.route`/`experts.ffn`
 over `cpu.ExpertMatrix`. These primitives are architecture-neutral: they load
 no model and run no layers. Each family's `*_runtime.zig` composes them into
 the CPU executor ([§ Full-model composition](#full-model-composition)).
@@ -56,6 +57,8 @@ expected error conditions before changing output.
 | --- | --- | --- |
 | `rmsNorm(input, output, epsilon)` | `x / sqrt(mean(x*x) + epsilon)` | Finite input; finite positive epsilon; typed error otherwise |
 | `l2Norm(input, output, epsilon)` | `x / max(sqrt(sum(x*x)), epsilon)` | Finite input; finite positive epsilon; zero vectors stay zero |
+| `l2Clip(input, scale, threshold, output)` | `v · min(1, threshold / (‖v‖ + 1e-6))`, `v = x ⊙ scale` (or `x`) | Finite input and scale; finite positive threshold |
+| `logPositionScale(position, floor, alpha)` | `1 + alpha · ln(max(1, (position + 1) / floor))` | Scalar; positive floor |
 | `softmax(input, output)` | `exp(x-max(x)) / sum(exp(x-max(x)))` | Negative infinity masks an entry; NaN/+infinity rejected; all-masked returns `EmptySupport` |
 | `sigmoid(x)` | `1 / (1 + exp(-x))` | Scalar; -/+infinity map to 0/1; NaN propagates |
 | `silu(x)` | `x * sigmoid(x)` | Scalar; -infinity maps to negative zero; +infinity preserved; NaN propagates |
@@ -66,25 +69,22 @@ square root. It does not add epsilon inside the root or average the squares.
 For `[3,4]`, epsilon 10 gives `[0.3,0.4]`; epsilon below 5 gives `[0.6,0.8]`.
 F64 squaring also preserves tiny F32 inputs and avoids F32 square overflow.
 
-RMSNorm does not include learned weights, gating, or a model-specific weight
-offset. Adapters must apply those explicitly. It squares in F64 to avoid F32
-overflow on large finite inputs. Softmax subtracts in F64 before exponentiation,
-so even opposite F32 extremes are safe. It finishes its maximum and sum
-reductions before writing and recomputes exponentials rather than allocating
-an F64 temporary vector. This is a clarity/memory choice, not an optimization.
+RMSNorm has no learned weight, gating, or weight offset; adapters apply those.
+It squares in F64, so large finite inputs cannot overflow. Softmax subtracts in
+F64 before exponentiation, finishes its maximum and sum before writing, and
+recomputes exponentials rather than allocating an F64 temporary.
 
 Sigmoid splits its computation by input sign to avoid exponential overflow.
 Softplus uses `max(x,0) + log1p(exp(-abs(x)))`; `log1p` preserves the small
 negative-input tail that `log(1 + tiny)` can lose to rounding.
 
-Six numerical test blocks check exact normalization examples, zeros and large
+The test blocks check exact normalization and clip examples, zeros and large
 inputs, softmax probabilities and translation invariance, masks and all-masked
 errors, in-place operation, activations' finite values and nonfinite limits,
-and invalid inputs without partial writes. The nontrivial constants were checked
-independently using Python `decimal` with 80-digit precision; they are formula
-references, not measurements of llama.cpp kernels. F32 transcendental results
-use absolute tolerance `1e-7`, with relative `1e-6` for the tiny softplus tail.
-These CPU test tolerances are not the GPU acceptance tolerances.
+and invalid inputs without partial writes. The nontrivial constants were
+checked with Python `decimal` at 80 digits. F32 transcendental results use
+absolute tolerance `1e-7`, relative `1e-6` for the tiny softplus tail; these
+are not the GPU acceptance tolerances.
 
 ## Unscaled text RoPE
 
@@ -153,26 +153,30 @@ the number of visible KV tokens. The operation computes:
 
 ```text
 kv_head = query_head / (query_heads / kv_heads)
-score[t] = scale * dot(query[query_head], key[t, kv_head])
-probability = softmax(score[0..visible_tokens])
+score[t] = scale * dot(query[query_head], key[t, kv_head]) + bias[query_head][d]
+probability[t] = exp(score[t]) / (exp(sink[query_head]) + sum_u exp(score[u]))
 output[query_head, c] = sum(probability[t] * value[t, kv_head, c])
 ```
+
+`d = visible_tokens − 1 − t` counts rows back from the last visible key,
+which is the query's own row; the optional `bias` table is
+`[query_head][extent]` and adds nothing at `d ≥ extent`. The optional
+`sinks` (one logit a query head) take mass and carry no value. Without
+either the arithmetic is the plain softmax's, bit for bit (a test holds it).
 
 Queries use `[query_head][key_channel]` order. Keys and values use
 `[token][kv_head][channel]` order; output uses `[query_head][value_channel]`.
 Query heads must be a positive multiple of KV heads, with consecutive query
-head groups sharing one KV head. Key and value widths may differ. For the
-pinned model's 24 query heads and four KV heads, each group has six query heads;
-the Qwen adapter supplies scale `1/sqrt(256)` after Q/K normalization and RoPE.
-The primitive itself chooses neither scale nor model equations.
+head groups sharing one KV head. Key and value widths may differ. The
+primitive chooses neither scale nor model equations: the adapter does.
 
 Only the leading `visible_tokens` KV entries participate. The caller can choose
 a different prefix for each prefill position or expose the full current cache
 for decode. A zero visible prefix returns `EmptySupport`; a prefix longer than
 storage is invalid. `tokens` counts initialized records, not unused cache capacity.
 This operation does not create or append a cache and does
-not infer a causal position. Arbitrary additive masks, sliding windows,
-position biases, and attention sinks are outside its contract.
+not infer a causal position; arbitrary masks and sliding windows are the
+caller's choice of visible rows.
 
 All dimensions must be nonzero, all buffers must have their exact declared
 sizes, and products are overflow-checked. Every Q/K/V value, including masked
@@ -181,24 +185,21 @@ The scratch buffer holds at least `visible_tokens` F64 values; its unused suffix
 is untouched. It is reused across heads. Writable buffers must not overlap each
 other or any input. No allocation or I/O occurs; the function borrows all buffers.
 
-Dot products, scaled scores, exponentials, and weighted sums remain F64. This
-avoids narrowing large finite dot products into F32 infinity before softmax.
+Dot products, scaled scores, exponentials, and weighted sums remain F64, so a
+large finite dot product never narrows to F32 infinity before the softmax.
 The reference's cache is F32 by decision: `Session.Rows.floats` asserts
 an `f32` layout, the CPU runtime never asks for another, and an `f16`
 request on `--backend cpu` runs F32 and reports it. The F16 cache is a GPU
 layout whose tolerance against this reference is recorded in
 [metal-attention.md § F16 KV cache](metal-attention.md#f16-kv-cache).
-Subtracting the maximum makes exponentials at most one, with at least one
-nonzero term. Values are accumulated with these unnormalized weights and divided
-by their sum before the final F32 conversion. The existing F32 softmax API is
-therefore not used as an intermediate narrowing step. Work is proportional to
-query heads times visible tokens times the combined key/value widths, in addition
-to validation of all declared storage. This is a correctness reference, not a
-measured throughput implementation.
+Subtracting the maximum (the sink's logit included) makes exponentials at most
+one; values accumulate with these unnormalized weights and divide by their sum
+before the final F32 conversion.
 
-Five test blocks cover analytical probabilities and scaling, visible-prefix
-masking, distinct GQA groups and channels, scores beyond F32 range, malformed
-shapes, overflow, masked nonfinite storage, and validation before writes.
+Eight test blocks cover analytical probabilities and scaling, visible-prefix
+masking, distinct GQA groups and channels, the distance bias and the sink by
+hand, scores beyond F32 range, malformed shapes, overflow, masked nonfinite
+storage, and validation before writes.
 The [attention fixtures](../../inference/src/backends/cpu/fixtures/attention.json)
 add six pinned one-thread CPU graphs: four query/two KV heads or three query/one
 KV head, key width three, value width two, and visible prefixes one, two, or four.
@@ -222,6 +223,14 @@ sample and appends the current input. Kernel one needs no history. No bias or
 SiLU is included. Buffers must be disjoint. A validation pass and a numerical
 check pass ensure every failure leaves both history and output unchanged.
 
+`recurrent.shortConvolution(input, weights, dynamic, history, output, kernel,
+scratch)` adds a residual and a scale around it: `(x + conv(x) + dyn(x)) / √n`,
+`n = kernel + 1`, or `2·kernel + 1` with `dynamic` taps. Those are per head,
+`[head][lag]` newest first (lag 0 the input), over the same window as the
+static taps; a channel's head is `channel / (channels / heads)`. They read
+the oldest sample the update drops, so their sums wait in `scratch`
+(`input.len` F64), and every result is checked before the history moves.
+
 `recurrent.delta(parameters, state, next_state, output, scratch)` handles one
 scalar-gated head. State uses `[value_channel][key_channel]` order, permitting
 rectangular matrices. The supplied query/key vectors have equal width; value
@@ -244,23 +253,19 @@ with modulo indexing, and so does the Qwen adapter (`h % 16`), not
 attention's consecutive GQA grouping (the pinned model has 16 Q/K and 48 value heads).
 
 `next_state` may exactly alias `state`; other overlap is forbidden. Scratch
-requires `state.len + value.len` F64 elements, and its suffix is untouched.
-Candidates are validated before committing any next state or output. Shape,
-gate, and nonfinite-input errors modify no buffers. Unrepresentable F32 results
-return `NonFiniteResult`; scratch may change, but durable state and output do
-not. State rounds to F32 between steps, with F64 calculations within each step.
-This differs from the reference backend's intermediate F32 rounding and uses
-explicit tolerances rather than claiming bitwise agreement.
+requires `state.len + value.len` F64 elements, its suffix untouched. Shape,
+gate, and nonfinite-input errors modify no buffers; unrepresentable F32 results
+return `NonFiniteResult` with state and output unchanged (scratch may change).
+State rounds to F32 between steps, with F64 calculations within each step.
 
-Eleven test blocks cover convolution orientation and independent channels,
-updated history, kernel one, the DeltaNet equations, beta/decay extremes,
-rectangular state, replay from an explicitly copied checkpoint, and transactional
-failure including overflow in a later channel. Three consecutive convolution and
+Fifteen test blocks cover convolution orientation and independent channels,
+updated history, kernel one, the short convolution's residual, scale, and
+dynamic taps by hand, the DeltaNet equations, beta/decay extremes, rectangular
+state, checkpoint replay, and transactional failure. Three consecutive convolution and
 DeltaNet steps are checked against [pinned fixtures](../../inference/src/backends/cpu/fixtures/recurrent.json),
 carrying our own state between steps. DeltaNet outputs and updated matrices use
 absolute tolerance `1e-6`; the exactly representable convolution examples and
-history shifts match exactly. Expected convolution history is the explicit
-window shift. No model or GPU is needed to run them.
+history shifts match exactly. No model or GPU is needed to run them.
 
 ### Chunkwise DeltaNet
 
@@ -373,19 +378,17 @@ Five matrix-vector test blocks cover:
   decoder fixtures for every quantized encoding.
 
 The basis-vector cases test matrix orientation and row offsets against known
-decoded values; they are not an end-to-end comparison against llama.cpp's matrix
-kernels. The independent hand-calculated dot products test summation and signed
+decoded values; the hand-calculated dot products test summation and signed
 contributions. Default tests require no reference checkout, model, or GPU:
 
 ```sh
 zig build test
 ```
 
-The freshly built `nuclis validate --json` reports `validation: structure_only`
-and `inference_available: true`: a successful binding is the profile `generate`
-executes on the CPU and Metal backends. A family that binds and has no
-executor (Inkling 2) reports `false`; `generate` refuses it and `inspect`
-calls it *not runnable*.
+`nuclis validate --json` reports `validation: structure_only` and
+`inference_available: true` for a binding `generate` executes on both
+backends; `false` for a family that binds and has no executor (Inkling 2),
+which `generate` refuses and `inspect` calls *not runnable*.
 
 ## Full-model composition
 
