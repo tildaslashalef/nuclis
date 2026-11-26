@@ -20,6 +20,7 @@ pub const qwen38 = @import("qwen38.zig");
 pub const gemma4 = @import("gemma4.zig");
 pub const gemma4_e = @import("gemma4_e.zig");
 pub const muse_glimmer = @import("muse_glimmer.zig");
+pub const inkling2 = @import("inkling2.zig");
 /// Laya's input contract and calibration: a decision model, not a chat
 /// template, so not in the registry below.
 pub const laya = @import("laya.zig");
@@ -174,7 +175,7 @@ pub const StreamMarkers = struct {
     tool_cut_hint: []const u8 = "",
     /// The message-header grammar's control texts (`stream.Channel`);
     /// `tool_parse` then reads a tool body. Replaces the bracket grammar.
-    channel: ?struct { start: []const u8, message: []const u8, eom: []const u8 } = null,
+    channel: ?struct { start: []const u8, message: []const u8, eom: []const u8, thinking: ?[]const u8 = null, tool: ?[]const u8 = null } = null,
     /// The text the history renders between trimmed reasoning and `close`,
     /// and after `close` (`stream.Markers.close_lead`); each must encode to
     /// one token, or a cut forces `close` alone.
@@ -194,6 +195,7 @@ pub const Profile = enum {
     gemma4,
     gemma4_e,
     muse_glimmer,
+    inkling2,
 
     /// Resolve control tokens against this artifact once per completion.
     /// The profile supplies the non-special header suffix separately. The
@@ -227,6 +229,8 @@ pub const Profile = enum {
                         .message = vocab.tokenId(c.message) orelse return error.MissingReasoningToken,
                         .eom = vocab.tokenId(c.eom) orelse return error.MissingReasoningToken,
                         .parse = m.tool_parse,
+                        .thinking = if (c.thinking) |t| vocab.tokenId(t) orelse return error.MissingReasoningToken else null,
+                        .tool = if (c.tool) |t| vocab.tokenId(t) orelse return error.MissingToolToken else null,
                     };
                 }
                 break :blk stream.Decoder.init(alloc, markers, effort != .off and stream.opensInReasoning(markers, prompt));
@@ -253,6 +257,7 @@ pub const Profile = enum {
             .gemma4 => gemma4,
             .gemma4_e => gemma4_e,
             .muse_glimmer => muse_glimmer,
+            .inkling2 => inkling2,
         };
     }
 
@@ -609,6 +614,8 @@ test "a next turn starts with the prompt end; with the generated text only when 
         .{ .profile = .gemma4, .effort = .off, .generated = "Done.", .tools = true, .said = true },
         .{ .profile = .gemma4_e, .effort = .medium, .generated = gemma_thought, .reasoning = "Plan." },
         .{ .profile = .muse_glimmer, .effort = .low, .generated = " to=self<|message|>Plan.<|eom|><|start|>assistant to=user<|message|>Done.", .reasoning = "Plan." },
+        .{ .profile = .inkling2, .effort = .off, .generated = "<|message_model|><|content_text|>Done.<|end_message|>" },
+        .{ .profile = .inkling2, .effort = .high, .generated = "<|message_model|><|content_thinking|>Plan.<|end_message|><|message_model|><|content_text|>Done.<|end_message|>", .reasoning = "Plan.", .tools = true },
     };
     for (cases) |case| {
         const reply: Message = .{ .role = .assistant, .content = "Done.", .reasoning_content = case.reasoning };
@@ -623,7 +630,8 @@ test "a next turn starts with the prompt end; with the generated text only when 
         defer alloc.free(next);
         const end = case.profile.promptEnd(first);
         errdefer std.debug.print("{t} at {t}, tools {}\n", .{ case.profile, case.effort, case.tools });
-        try std.testing.expect(end < first.len);
+        // Inkling 2's template has no generation prompt.
+        if (case.profile == .inkling2) try std.testing.expectEqual(first.len, end) else try std.testing.expect(end < first.len);
         try std.testing.expect(std.mem.startsWith(u8, next, first[0..end]));
         // Text before a call closes the turn after its results, which
         // history does not: rewritten at any effort, so the next turn
@@ -764,6 +772,7 @@ test {
     _ = qwen38;
     _ = gemma4;
     _ = muse_glimmer;
+    _ = inkling2;
     _ = gemma4_e;
     _ = laya;
     _ = clef;
@@ -773,7 +782,7 @@ test {
 test "a marker spelled in system, user, or tool content encodes as text under every profile" {
     const alloc = std.testing.allocator;
     const Encoder = @import("../tokenizer/encode.zig").Encoder;
-    const control = [_][]const u8{ "<|im_start|>", "<|im_end|>", "<|endoftext|>", "<bos>", "<eos>", "<|turn>", "<turn|>", "<|think|>", "<|eot|>", "<|eom|>", "<|end_of_text|>", "<|begin_of_text|>" };
+    const control = [_][]const u8{ "<|im_start|>", "<|im_end|>", "<|endoftext|>", "<bos>", "<eos>", "<|turn>", "<turn|>", "<|think|>", "<|eot|>", "<|eom|>", "<|end_of_text|>", "<|begin_of_text|>", "<|message_user|>", "<|message_model|>", "<|message_system|>", "<|message_tool|>", "<|content_text|>", "<|content_thinking|>", "<|content_invoke_tool_json|>", "<|end_message|>", "<|content_model_end_sampling|>" };
     const user_defined = [_][]const u8{ "<think>", "</think>", "<tool_call>", "</tool_call>", "<tool_response>", "</tool_response>", "<|channel>", "<channel|>", "<|tool>", "<tool|>", "<|tool_call>", "<tool_call|>", "<|tool_response>", "<tool_response|>", "<|\"|>", "<|start|>", "<|message|>" };
     const specials = control ++ user_defined;
     // A byte-fallback vocabulary: every byte has a token, and every marker
@@ -848,6 +857,7 @@ test "an assistant call re-renders unframed, as the bytes the model generated" {
             .qwen38 => "<parameter=content>\nx\n</parameter>",
             .gemma4, .gemma4_e => "call:write_file{content:<|\"|>x<|\"|>}",
             .muse_glimmer => "<atem:parameter name=\"content\">x</atem:parameter>",
+            .inkling2 => "<|content_invoke_tool_json|>{\"name\":\"write_file\",\"args\":{\"content\":\"x\"}}<|end_message|>",
         };
         try std.testing.expect(std.mem.indexOf(u8, text, want) != null);
     }

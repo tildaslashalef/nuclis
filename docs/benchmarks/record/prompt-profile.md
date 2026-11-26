@@ -47,3 +47,20 @@ differ**, the `merged_system_*` histories, which that template refuses
 them; every other prompt and token stream is byte-identical
 ([bonsai.md § Chat template](../../models/bonsai.md#chat-template)). Not an alias
 either; the Bonsai entry's profile was chosen from that evidence.
+
+## Inkling 2's tokenizer and template (2026-11-26)
+
+On `Inkling-2-Mini-UD-Q4_K_XL.gguf` at the pinned revision:
+
+- `nuclis tokenize --raw --json` on 308 strings (scripts, cases, marks,
+  contractions, digits, whitespace, emoji, code, two chat shapes) gave the
+  same ids as the format's reference tokenizer on every one. That tokenizer
+  splits with the folded classes `llama4` uses, and no corpus string tells
+  the two apart: BPE seldom merges across the seams where they differ. Of
+  thirteen words built on such a seam (`ÉCOLE`, `ÜBER`, `ÉTATS-UNIS`, …)
+  one, `ÇA VA`, gives other ids; the fixture keeps it.
+- The 16 prompts of the hand-written `inkling2-*.json` fixtures matched the
+  format's reference rendering of the template byte for byte, images aside:
+  there the reference puts its media marker where the template writes
+  `<|content_image|><|unused_200054|>`. The fixture's ids matched its
+  tokenizer except on `ÇA VA`.

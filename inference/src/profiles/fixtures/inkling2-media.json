@@ -1,0 +1,44 @@
+{
+ "template_sha256": "53a9035f3255945704b5857657cfb00c1165090c0641c4f782a0cbf268cc16dc",
+ "provenance": "Written by hand from the GGUF's tokenizer.chat_template (6,868 bytes, the digest above); token ids from nuclis's encoder.",
+ "prompt_cases": [
+  {
+   "name": "image_then_text",
+   "effort": "high",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Describe this image.",
+     "images": [
+      {
+       "width_tokens": 1,
+       "height_tokens": 1
+      }
+     ]
+    }
+   ],
+   "prompt": "<|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_image|><|unused_200054|><|end_message|><|message_user|><|content_text|>Describe this image.<|end_message|>"
+  },
+  {
+   "name": "two_images_no_text",
+   "effort": "off",
+   "messages": [
+    {
+     "role": "user",
+     "content": "",
+     "images": [
+      {
+       "width_tokens": 1,
+       "height_tokens": 1
+      },
+      {
+       "width_tokens": 1,
+       "height_tokens": 1
+      }
+     ]
+    }
+   ],
+   "prompt": "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_user|><|content_image|><|unused_200054|><|end_message|><|message_user|><|content_image|><|unused_200054|><|end_message|>"
+  }
+ ]
+}

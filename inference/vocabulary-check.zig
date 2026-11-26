@@ -54,6 +54,16 @@ fn expectations(profile: inference.profiles.Profile) error{UnsupportedProfile}!E
             .byte_level = false,
         },
         .muse_glimmer => error.UnsupportedProfile,
+        .inkling2 => .{
+            .tokens = 200_058,
+            .merges = 424_413,
+            .bos = null,
+            .eos = &.{200006},
+            .texts = &.{ "<|message_user|>", "<|message_model|>", "<|message_system|>", "<|message_tool|>", "<|content_text|>", "<|content_image|>", "<|content_model_end_sampling|>", "<|content_thinking|>", "<|end_message|>", "<|content_xml|>", "<|content_invoke_tool_json|>", "<|unused_200054|>" },
+            .ids = &.{ 200000, 200001, 200002, 200003, 200004, 200005, 200006, 200008, 200010, 200024, 200049, 200054 },
+            .fixture = @embedFile("src/profiles/fixtures/inkling2-text.json"),
+            .byte_level = true,
+        },
     };
 }
 

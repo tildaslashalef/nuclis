@@ -16,11 +16,13 @@ not copied into the tree.
 | `inference/src/profiles/gemma4.zig` | the template in [unsloth/gemma-4-12b-it-GGUF](https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/tree/fc034cfff751157913579611efad8462ac1be606) and the QAT files, SHA-256 `845f1ee4…` | `gemma4-text.json`, `gemma4-tools.json` | the artifact declares Apache-2.0; the weights follow [Google's model card](https://huggingface.co/google/gemma-4-12b-it) |
 | `inference/src/profiles/gemma4_e.zig` | the E-series revision in `gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf`, SHA-256 `241c50d8…` | `gemma4_e-text.json` | as Gemma 4 |
 | `inference/src/profiles/muse_glimmer.zig` | the template in [unsloth/Muse-Glimmer-30B-GGUF](https://huggingface.co/unsloth/Muse-Glimmer-30B-GGUF/tree/faa5b025c584459c13febfa5c59883516710ae39), SHA-256 `114f55eb…` | `muse_glimmer-text.json`, `muse_glimmer-tools.json` | none declared; the weights follow the model card |
+| `inference/src/profiles/inkling2.zig` | the template in [unsloth/Inkling-2-Mini-GGUF](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/tree/45fd08764f2b0bf16b03a5483a80e5c7aaec8772), SHA-256 `53a9035f…` | `inkling2-text.json`, `inkling2-tools.json`, `inkling2-media.json` | none declared; the weights follow the model card |
 | `inference/src/profiles/clef.zig`, `inference/src/models/clef.zig` | the record encoding, fixed prompt text, and `JointSchemaHead.forward` of Cloudflare's [`joint_schema_model.py`](https://huggingface.co/Cloudflare/clef-flash/tree/17f0b0ad64efb65d273590632833508766b2aae6) | `inference/src/models/fixtures/clef/` | [Apache-2.0](https://huggingface.co/Cloudflare/clef-flash/blob/17f0b0ad64efb65d273590632833508766b2aae6/LICENSE) |
 
 Profile fixtures are in `inference/src/profiles/fixtures/`. The Gemma 4 and
 Muse Glimmer fixtures were rendered by llama.cpp's server from the template
-before 2026-10-14; the template text itself is not in the tree. Every
+before 2026-10-14; Inkling 2's were written from its template's text. The
+template text itself is not in the tree. Every
 reimplementation adds size limits, ownership, UTF-8 checks, and typed
 inputs; none implements assistant prefill.
 

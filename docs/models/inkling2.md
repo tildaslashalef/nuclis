@@ -167,14 +167,33 @@ the checkpoint's own expression with Unicode's letter classes
 not the folded rewrite `llama4` uses: a cased capital starts only the
 capital run, so `ÇA` is one piece and one token (118428) where the folded
 classes cut `Ç` from `A`.
+The comparison with the format's reference tokenizer is in
+[the record](../benchmarks/record/prompt-profile.md#inkling-2s-tokenizer-and-template-2026-11-26).
 
-Evidence (2026-11-26): `nuclis tokenize --raw --json` on 308 strings
-(scripts, cases, marks, contractions, digits, whitespace, emoji, code, and
-two chat shapes) gave the same ids as the format's reference tokenizer on
-every one; that tokenizer splits with the folded classes, and no string of
-the corpus tells the two apart, because BPE seldom merges across the seams
-where they differ. Of thirteen words built on such a seam (`ÉCOLE`, `ÜBER`,
-`ÉTATS-UNIS`, …) one, `ÇA VA`, gives other ids.
+## Prompt profile
+
+[inkling2.zig](../../inference/src/profiles/inkling2.zig), for the
+template `53a9035f…` (6,868 bytes): messages `ROLE CONTENT-TYPE text
+<|end_message|>` (`<|message_{user,model,system,tool}|>`, `<|content_{text,
+thinking,invoke_tool_json,xml,image}|>`); a model turn ends with the stop
+token `<|content_model_end_sampling|>` (200006).
+
+- **Effort**: a system message `Thinking effort level: X` before the first
+  other message (off `0`, low `0.2`, medium `0.7`, high `0.9`, xhigh
+  `0.99`; the template's default `0.9`), so part of `prefix`. A developer
+  message renders as a system one.
+- **No generation prompt**: the model writes `<|message_model|>` before
+  each segment, and the decoder's channel grammar routes the body by its
+  content type at every effort (`0` does not stop reasoning); a reasoning
+  budget cuts with `<|end_message|>`.
+- **Tools**: JSON in messages of their own
+  ([tool-calling.md § Inkling 2](../engine/tool-calling.md#inkling-2-json-calls-in-their-own-messages)).
+- **Images**: a `<|content_image|>` user message each, one
+  `<|unused_200054|>` per merged row, before the text.
+- **Sampling**: temperature 1, top-k 0, top-p 1, min-p 0 (`general.sampling.*`).
+
+Fixtures, from the template's text: `inkling2-{text,tools,media}.json`
+(9 prompts with ids and 11 strings, 5, 2); `make gate NAME=inkling2-vocabulary`.
 
 ## Known limits
 

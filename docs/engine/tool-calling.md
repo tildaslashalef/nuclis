@@ -2,7 +2,8 @@
 # Tool calling: model evidence and the engine seam
 
 Each family's native tool format, the evidence it was read from (Qwen on
-2026-09-13, Gemma 4 on 2026-09-16, Muse Glimmer on 2026-09-19), and the
+2026-09-13, Gemma 4 on 2026-09-16, Muse Glimmer on 2026-09-19, Inkling 2
+on 2026-11-26), and the
 engine seam it constrains: the completion events. Every profile implements
 its native path, the E-series through Gemma 4's
 ([prompt-profile.md](prompt-profile.md)).
@@ -171,6 +172,28 @@ are rejected (`error.UnsupportedContent`) because the reference parses with
 regular expressions and the markup would be structure; the model's own
 released text loses the markup instead.
 
+
+## Inkling 2: JSON calls in their own messages
+
+Read from the template in the pinned file (2026-11-26,
+[inkling2.md § Prompt profile](../models/inkling2.md#prompt-profile)):
+
+- One `<|message_system|>tool_declare<|content_xml|>` message before the
+  system messages holds the declarations as a JSON array of
+  `{"description","name","parameters","type":"function"}`, every key
+  sorted, compact, non-ASCII literal.
+- A call is its own message,
+  `<|message_model|>NAME<|content_invoke_tool_json|>{"name":…,"args":{…}}<|end_message|>`:
+  the arguments' top-level keys sorted by code point, each value compact
+  in its own order, numbers as spelled. Several calls follow one another;
+  the turn ends with `<|content_model_end_sampling|>`.
+- A result is `<|message_tool|>NAME<|content_text|>…<|end_message|>`, the
+  name being its call's.
+- `parseTool` takes a body that is one object of exactly a string `name`
+  and an object `args`, nested at most 64 levels, spelling no control
+  text `<|name|>`; anything else is released as answer text, never run as
+  a call the history could not render again. Render refuses the same in
+  names, arguments, and schemas.
 ## Consequences for implementation
 
 The shared boundary: profiles receive token IDs plus decoded pieces and
@@ -204,6 +227,8 @@ several calls in one step all arrive before generation ends.
 Muse's grammar (`fixtures/muse_glimmer-tools.json`, `muse_glimmer.parseTool`)
 rides the decoder's second grammar, the message headers; its handoff is the
 stop token `<|eot|>` after the step's last call, the same shape as Gemma's.
+Inkling 2's (`inkling2.parseTool`) rides it too: there the content-type
+token routes the body, and the stop token hands the step over (§ Inkling 2).
 
 Under both bracket grammars a second opening token before a close settles
 the first call as cut (`tool_cut`) and starts the next one; no assert is

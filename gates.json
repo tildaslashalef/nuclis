@@ -66,6 +66,10 @@
   },
   "omnivoice": {
    "artifact": "voicetut-tts"
+  },
+  "inkling2": {
+   "path": "~/.nuclis/models/unsloth/Inkling-2-Mini-GGUF/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+   "note": "no index entry until Inkling 2 is accepted; the file the family card pins"
   }
  },
  "data": {
@@ -311,6 +315,13 @@
    "inference/src/audio/higgs_codec*.zig",
    "tests/fixtures/omnivoice/**",
    "tests/fixtures/omnivoice-roundtrip.json"
+  ],
+  "inkling2": [
+   "inference/vocabulary-check.zig",
+   "inference/src/profiles/inkling2.zig",
+   "inference/src/profiles/fixtures/inkling2-*.json",
+   "inference/src/tokenizer/o200k.zig",
+   "inference/src/tokenizer/case_table.zig"
   ]
  },
  "aggregators": [
@@ -2576,6 +2587,22 @@
    },
    "note": "the Egyptian Arabic and Arabic-English code-switching round trip: 8 pinned sentences spoken by nuclis speak --model voicetut-tts --backend metal --seed 0 (auto-voice, language arz), recognized by nuclis transcribe --backend cpu (nemotron-asr-0.6b, language ar / ar,en-US), scored with Egyptian-aware Arabic normalization (folding diacritics, Alef variants, Alef Maqsura, and Ta Marbuta): requires CER <= 22% (first run 2026-11-22: 15.42% CER, 35/227 chars, 34.69% WER, 26.7 s audio in 27.5 s wall time; most diffs are Nemotron ASR transliterating English code-switched words into Arabic script)",
    "evidence": "docs/benchmarks/record/omnivoice.md#round-trip-and-speed-baseline-2026-11-22"
+  },
+  {
+   "name": "inkling2-vocabulary",
+   "family": "inkling2",
+   "tier": "verify",
+   "model": "inkling2",
+   "command": [
+    "{zig-cpu}",
+    "test-vocabulary",
+    "--",
+    "{model}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/models/inkling2.md#prompt-profile"
   }
  ]
 }

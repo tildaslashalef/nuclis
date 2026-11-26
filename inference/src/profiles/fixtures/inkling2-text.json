@@ -1,0 +1,487 @@
+{
+ "template_sha256": "53a9035f3255945704b5857657cfb00c1165090c0641c4f782a0cbf268cc16dc",
+ "provenance": "Written by hand from the GGUF's tokenizer.chat_template (6,868 bytes, the digest above); token ids from nuclis's encoder.",
+ "token_cases": [
+  {
+   "text": "",
+   "parse_special": false,
+   "tokens": []
+  },
+  {
+   "text": "",
+   "parse_special": true,
+   "tokens": []
+  },
+  {
+   "text": "hello",
+   "parse_special": false,
+   "tokens": [
+    32205
+   ]
+  },
+  {
+   "text": " hello",
+   "parse_special": false,
+   "tokens": [
+    171551
+   ]
+  },
+  {
+   "text": "Hello world",
+   "parse_special": false,
+   "tokens": [
+    32269,
+    150770
+   ]
+  },
+  {
+   "text": "ÇA VA, école",
+   "parse_special": false,
+   "tokens": [
+    118428,
+    198756,
+    11,
+    166025
+   ]
+  },
+  {
+   "text": "<|message_user|>",
+   "parse_special": true,
+   "tokens": [
+    200000
+   ]
+  },
+  {
+   "text": "<|end_message|><|content_model_end_sampling|>",
+   "parse_special": true,
+   "tokens": [
+    200010,
+    200006
+   ]
+  },
+  {
+   "text": "tool_declare",
+   "parse_special": false,
+   "tokens": [
+    2251,
+    62,
+    76529
+   ]
+  },
+  {
+   "text": "Thinking effort level: 0.99",
+   "parse_special": false,
+   "tokens": [
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    68436
+   ]
+  },
+  {
+   "text": "def f(x):\n\treturn x**2\n",
+   "parse_special": false,
+   "tokens": [
+    1719,
+    149983,
+    7,
+    87,
+    8,
+    25,
+    198,
+    197,
+    65108,
+    149924,
+    145054,
+    17,
+    198
+   ]
+  }
+ ],
+ "prompt_cases": [
+  {
+   "name": "single_high",
+   "effort": "high",
+   "messages": [
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "prompt": "<|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|>What is the capital of France?<|end_message|>",
+   "tokens": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    24,
+    200010,
+    200000,
+    200004,
+    1775,
+    149884,
+    149876,
+    151451,
+    149879,
+    151194,
+    30,
+    200010
+   ]
+  },
+  {
+   "name": "system_medium",
+   "effort": "medium",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are a concise assistant."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    }
+   ],
+   "prompt": "<|message_system|><|content_text|>You are a concise assistant.<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.7<|end_message|><|message_user|><|content_text|>Hi<|end_message|>",
+   "tokens": [
+    200002,
+    200004,
+    1735,
+    149914,
+    149878,
+    149911,
+    4123,
+    171159,
+    13,
+    200010,
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    22,
+    200010,
+    200000,
+    200004,
+    4896,
+    200010
+   ]
+  },
+  {
+   "name": "effort_off",
+   "effort": "off",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello"
+    }
+   ],
+   "prompt": "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_user|><|content_text|>Hello<|end_message|>",
+   "tokens": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    200010,
+    200000,
+    200004,
+    32269,
+    200010
+   ]
+  },
+  {
+   "name": "effort_low",
+   "effort": "low",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello"
+    }
+   ],
+   "prompt": "<|message_system|><|content_text|>Thinking effort level: 0.2<|end_message|><|message_user|><|content_text|>Hello<|end_message|>",
+   "tokens": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    17,
+    200010,
+    200000,
+    200004,
+    32269,
+    200010
+   ]
+  },
+  {
+   "name": "effort_xhigh",
+   "effort": "xhigh",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Think hard."
+    },
+    {
+     "role": "user",
+     "content": "Prove it."
+    }
+   ],
+   "prompt": "<|message_system|><|content_text|>Think hard.<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.99<|end_message|><|message_user|><|content_text|>Prove it.<|end_message|>",
+   "tokens": [
+    200002,
+    200004,
+    34182,
+    151435,
+    13,
+    200010,
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    68436,
+    200010,
+    200000,
+    200004,
+    34749,
+    149921,
+    13,
+    200010
+   ]
+  },
+  {
+   "name": "multi_turn_reasoning",
+   "effort": "low",
+   "messages": [
+    {
+     "role": "user",
+     "content": "What is 2+2?"
+    },
+    {
+     "role": "assistant",
+     "content": "4",
+     "reasoning_content": "Two plus two is four."
+    },
+    {
+     "role": "user",
+     "content": "And 3+3?"
+    }
+   ],
+   "prompt": "<|message_system|><|content_text|>Thinking effort level: 0.2<|end_message|><|message_user|><|content_text|>What is 2+2?<|end_message|><|message_model|><|content_thinking|>Two plus two is four.<|end_message|><|message_model|><|content_text|>4<|end_message|><|content_model_end_sampling|><|message_user|><|content_text|>And 3+3?<|end_message|>",
+   "tokens": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    17,
+    200010,
+    200000,
+    200004,
+    1775,
+    149884,
+    220,
+    17,
+    10,
+    17,
+    30,
+    200010,
+    200001,
+    200008,
+    4348,
+    150196,
+    150103,
+    149884,
+    150792,
+    13,
+    200010,
+    200001,
+    200004,
+    19,
+    200010,
+    200006,
+    200000,
+    200004,
+    1790,
+    220,
+    18,
+    10,
+    18,
+    30,
+    200010
+   ]
+  },
+  {
+   "name": "multi_turn_plain",
+   "effort": "off",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Say hi."
+    },
+    {
+     "role": "assistant",
+     "content": "Hi!"
+    },
+    {
+     "role": "user",
+     "content": "Again."
+    }
+   ],
+   "prompt": "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_user|><|content_text|>Say hi.<|end_message|><|message_model|><|content_text|>Hi!<|end_message|><|content_model_end_sampling|><|message_user|><|content_text|>Again.<|end_message|>",
+   "tokens": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    200010,
+    200000,
+    200004,
+    35240,
+    151003,
+    13,
+    200010,
+    200001,
+    200004,
+    4896,
+    0,
+    200010,
+    200006,
+    200000,
+    200004,
+    33396,
+    13,
+    200010
+   ]
+  },
+  {
+   "name": "two_systems",
+   "effort": "high",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "system",
+     "content": "Answer in French."
+    },
+    {
+     "role": "user",
+     "content": "Thanks"
+    }
+   ],
+   "prompt": "<|message_system|><|content_text|>Be brief.<|end_message|><|message_system|><|content_text|>Answer in French.<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|>Thanks<|end_message|>",
+   "tokens": [
+    200002,
+    200004,
+    1618,
+    156834,
+    13,
+    200010,
+    200002,
+    200004,
+    3256,
+    149881,
+    157728,
+    13,
+    200010,
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    24,
+    200010,
+    200000,
+    200004,
+    78028,
+    200010
+   ]
+  },
+  {
+   "name": "unicode",
+   "effort": "medium",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Grüße 世界 🙂\n\tline two  "
+    }
+   ],
+   "prompt": "<|message_system|><|content_text|>Thinking effort level: 0.7<|end_message|><|message_user|><|content_text|>Grüße 世界 🙂\n\tline two  <|end_message|>",
+   "tokens": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    22,
+    200010,
+    200000,
+    200004,
+    99116,
+    70752,
+    220,
+    110174,
+    220,
+    104523,
+    198,
+    197,
+    909,
+    150103,
+    149859,
+    200010
+   ]
+  }
+ ]
+}

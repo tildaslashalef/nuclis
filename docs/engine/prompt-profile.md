@@ -18,6 +18,7 @@ fixtures did not verify. The profiles and their template digests:
 | `gemma4` | `845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b` |
 | `gemma4_e` | `241c50d86bdfe5e43307da87f559cd2416aacd67a8de46c15acc0105ef2200b7` |
 | `muse_glimmer` | `114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e` |
+| `inkling2` | `53a9035f3255945704b5857657cfb00c1165090c0641c4f782a0cbf268cc16dc` |
 <!-- /gen -->
 
 | Profile | Module | Stop tokens | Reasoning markers |
@@ -26,12 +27,12 @@ fixtures did not verify. The profiles and their template digests:
 | `gemma4` | [gemma4.zig](../../inference/src/profiles/gemma4.zig) | `<turn|>`, `<eos>`, `<|tool_response>` | `<|channel>thought\n` … `<channel|>` |
 | `gemma4_e` | [gemma4_e.zig](../../inference/src/profiles/gemma4_e.zig) | as `gemma4` | as `gemma4` |
 | `muse_glimmer` | [muse_glimmer.zig](../../inference/src/profiles/muse_glimmer.zig) | `<|eot|>`, `<|end_of_text|>` | `<|start|>assistant to=self<|message|>` … `<|eom|>` |
+| `inkling2` | [inkling2.zig](../../inference/src/profiles/inkling2.zig) | `<|content_model_end_sampling|>` | `<|message_model|><|content_thinking|>` … `<|end_message|>` ([inkling2.md § Prompt profile](../models/inkling2.md#prompt-profile)) |
 
 The catalogue's `qwen3.8-27b` uses `qwen38`; `gemma-4-26b-a4b` and
 `gemma-4-12b-qat` use `gemma4`; `gemma-4-e4b-qat` uses `gemma4_e`;
-`muse-glimmer-30b` uses `muse_glimmer`. The same directory holds the
-decision models' input contracts (`laya.zig`, `clef.zig`, `decision.zig`),
-which are not chat templates and not in the registry.
+`muse-glimmer-30b` uses `muse_glimmer`; Inkling 2 Mini's file `inkling2`.
+Decision models' input contracts (`laya.zig`, `clef.zig`, `decision.zig`) are not in the registry.
 
 Every module exposes the same surface: `template_sha256`,
 `template_aliases`, `render`, `prefix`, `samplingDefaults`, `efforts`,
@@ -79,10 +80,10 @@ A user message may carry images and audio clips (`Message.images`,
 `width_tokens × height_tokens` copies of its `image_placeholder` between
 the family's markers (Qwen3.8 `<|vision_start|>` … `<|vision_end|>`,
 Gemma 4 `<|image>` … `<image|>`, Muse Glimmer `<|image_start|>` …
-`<|image_end|>`); the Gemma profiles render each clip after the images as
-one `<|audio|>` per encoder row between `<|audio>` and `<audio|>`. The
-projector's or encoder's rows replace the placeholders at prefill
-([vision.md](vision.md), [audio.md](audio.md)).
+`<|image_end|>`, Inkling 2 a `<|content_image|>` message each); the Gemma
+profiles render each clip after the images as one `<|audio|>` per encoder
+row between `<|audio>` and `<audio|>`. The projector's or encoder's rows
+replace the placeholders at prefill ([vision.md](vision.md), [audio.md](audio.md)).
 
 ### Content is data
 
@@ -368,14 +369,14 @@ need JSON escaping (quotes, a backslash, a tab, a newline, non-ASCII, `<`,
 `<|begin_of_text|>` and removes the synthesized turn's date line as the
 text test does.
 
-`make gate NAME=qwen38-vocabulary` and `make gate NAME=gemma4-e4b-vocabulary`
-(`zig build test-vocabulary`, `inference/vocabulary-check.zig`) are the
-checks against the real artifact: each selects the profile from the file's
-template, asserts the vocabulary facts (size, merges, BOS/EOS, selected ids,
-the stop set resolving), and encodes every captured string and prompt to
+`make gate NAME=qwen38-vocabulary`, `gemma4-e4b-vocabulary`, and
+`inkling2-vocabulary` (`zig build test-vocabulary`, `inference/vocabulary-check.zig`)
+are the checks against the real artifact: each selects the profile from the
+file's template, asserts the vocabulary facts (size, merges, BOS/EOS, selected
+ids, the stop set resolving), and encodes every fixture string and prompt to
 the pinned ids (Qwen3.8: 20 standalone and 35 prompts, plus the byte-level
-single-piece checks; Gemma 4 E4B: 20 and 14). The check knows the `gemma4`
-facts too; `muse_glimmer` has no pinned facts there and is refused
+single-piece checks; Gemma 4 E4B: 20 and 14; Inkling 2: 11 and 9).
+`muse_glimmer` has no pinned facts there and is refused
 (`UnsupportedProfile`). Default tests exercise committed fixtures and
 synthetic vocabularies only.
 

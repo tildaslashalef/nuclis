@@ -632,6 +632,10 @@
     {
       "name": "muse_glimmer",
       "template_sha256": "114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e"
+    },
+    {
+      "name": "inkling2",
+      "template_sha256": "53a9035f3255945704b5857657cfb00c1165090c0641c4f782a0cbf268cc16dc"
     }
   ],
   "limits": [

@@ -326,8 +326,8 @@ fn engineOptions(p: *Page) !void {
     try row(p, "--draft-length <n>", "drafts per verify batch, 1..15, capped by the");
     try more(p, "draft source; default the model entry's, else 4");
     try row(p, "--draft-max-depth <n>", "depth drafting stops at; 0 never; default measured");
-    try row(p, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e, or muse_glimmer");
-    try more(p, "on a finetune whose chat template is not pinned");
+    try row(p, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e,");
+    try more(p, "muse_glimmer, or inkling2 on an unpinned template");
     try row(p, "--seed <n>", "sampler seed; default 0");
 }
 
@@ -567,8 +567,8 @@ fn eval(p: *Page) !void {
     try more(p, "engine.model of the config file (qwen3.8-27b)");
     try row(p, "--backend cpu|metal", default_backend);
     try row(p, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16");
-    try row(p, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e, or muse_glimmer");
-    try more(p, "(its BOS)");
+    try row(p, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e,");
+    try more(p, "muse_glimmer, or inkling2 (its BOS)");
     try row(p, "--json", "the report: every window's running perplexity");
 
     try heading(p, "Examples:");
@@ -596,7 +596,8 @@ fn tokenize(p: *Page) !void {
     try row(p, "--prompt-file <path>", "the same, read from a file");
     try row(p, "--raw", "tokenize the text as written, without the template");
     try row(p, "--think <effort>", "render the turn at this effort; default off");
-    try row(p, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e, or muse_glimmer");
+    try row(p, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e,");
+    try more(p, "muse_glimmer, or inkling2");
     try row(p, "--model <name|path>", "whose vocabulary and template; default engine.model");
     try row(p, "--json", "ids, offsets, and the rendered text as JSON");
 
@@ -1040,7 +1041,7 @@ fn model(p: *Page) !void {
     try row(p, "--register <name>", "once verified, write the pull as a registry entry");
     try more(p, "(repo, file, commit); a companion fills the same entry");
     try row(p, "--profile <p>", "with --register: force qwen38, gemma4,");
-    try more(p, "gemma4_e, or muse_glimmer");
+    try more(p, "gemma4_e, muse_glimmer, or inkling2");
     try row(p, "--force", "download every file again, replacing each once the");
     try more(p, "copy verifies; adopt: replace a sidecar already there");
     try row(p, "--json", "the listing, pull, verdict, or removal as JSON");

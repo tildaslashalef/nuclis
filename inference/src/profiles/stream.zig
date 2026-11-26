@@ -25,7 +25,9 @@
 //! routes the body to thinking, the answer, or a tool parser, and a tool
 //! body is complete at the end of the turn (`<|eot|>` is a stop token), not
 //! at a closing bracket, so `end` completes it on EOS and cuts it on any
-//! other stop.
+//! other stop. Inkling 2 shares it with content-type tokens in place of
+//! `<|message|>`: `<|content_thinking|>` and `<|content_invoke_tool_json|>`
+//! route the body themselves, whatever the header (the tool's name) says.
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const Utf8 = @import("../tokenizer/stream.zig").Stream;
@@ -59,11 +61,15 @@ pub const Tool = struct {
 
 /// The message-header grammar: `start` opens a header, `message` ends it
 /// and starts the body, `eom` ends a message. `parse` reads a tool body.
+/// `thinking` and `tool`, where a template has them, also end a header and
+/// route the body to reasoning or to `parse` without reading the header.
 pub const Channel = struct {
     start: u32,
     message: u32,
     eom: u32,
     parse: ?ParseTool = null,
+    thinking: ?u32 = null,
+    tool: ?u32 = null,
 };
 /// A header longer than this is not one: its bytes are released as answer
 /// text (a model writing prose where a header belongs hides nothing).
@@ -394,6 +400,16 @@ pub const Decoder = struct {
             if (token == channel.message) {
                 self.in_header = false;
                 self.route(channel);
+                return;
+            }
+            const thinks = if (channel.thinking) |t| token == t else false;
+            const calls = if (channel.tool) |t| token == t and channel.parse != null else false;
+            if (thinks or calls) {
+                self.in_header = false;
+                self.header_buf.clearRetainingCapacity();
+                self.thinking = thinks;
+                self.in_tool = calls;
+                self.tool_buf.clearRetainingCapacity();
                 return;
             }
             if (self.markers.isHidden(token)) return;
