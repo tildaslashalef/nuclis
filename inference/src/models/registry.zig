@@ -58,6 +58,9 @@ pub const Summary = struct {
     /// A successful binding is exactly the schedule the runtimes execute;
     /// this does not claim numerical or coding-quality acceptance.
     inference_available: bool = true,
+    /// Whether a Metal plan executes it too; false for a family only the
+    /// CPU reference runs, which the Metal backend refuses.
+    metal_available: bool = true,
 };
 
 /// Compile-time check that a family exposes the registry's surface; the

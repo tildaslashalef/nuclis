@@ -121,7 +121,7 @@ generated block.
 | [drama3.md](models/drama3.md) | Fish Audio Drama 3 (35B-A3B): the dialogue speech synthesizer, its MoE backbone, codebook tower, and 44.1 kHz codec |
 | [omnivoice.md](models/omnivoice.md) | OmniVoice / VoiceTut-TTS: the Egyptian Arabic and code-switching masked-diffusion speech synthesizer, its `audio.cpp` container, and Higgs Audio V2 codec |
 | [qwen3-tts.md](models/qwen3-tts.md) | Qwen3-TTS (0.6B and 1.7B): the speech synthesizer, its talker, code predictor, and codec decoder; CustomVoice's built-in voices, the Base's cloned voices, VoiceDesign's described ones |
-| [inkling2.md](models/inkling2.md) | Inkling 2 Mini: the looped mixture of experts, its forward pass as equations, the NVFP4 file, the open readings |
+| [inkling2.md](models/inkling2.md) | Inkling 2 Mini: the looped mixture of experts, its forward pass as equations, the NVFP4 file, the hybrid session, the confirmed readings |
 
 ## The engine: `engine/` (the `inference/` package)
 

@@ -95,6 +95,7 @@ pub fn describe(err: anyerror) []const u8 {
         error.AccessDenied, error.PermissionDenied => "permission denied",
         error.MetalNotEnabled => "this build has no Metal backend; build with `make metal`",
         error.InferenceUnavailable => "the model's weights bind, but no executor runs its architecture",
+        error.MetalPlanUnavailable => "no Metal plan runs this architecture yet; pass --backend cpu",
         error.NoProjector => "the model has no projector for images or audio (pull it with --with mmproj)",
         error.ImagesNeedChatPrompt => "images go with a chat prompt, not --raw",
         error.ProfileRequiresMetal => "--profile needs the Metal backend",

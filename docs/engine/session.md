@@ -37,6 +37,12 @@ to `window_margin` rows below it (`Snapshot.margin`), and `restore` sets
 `base` from them. On the 26B-A4B at 32,768 tokens the F16 session is
 2.77 GB where every row kept was 7.38
 ([record, 2026-11-19](../benchmarks/record/gemma4.md#sliding-layers-keep-their-window-2026-11-19)).
+Inkling 2 is the first layout with both kinds: 48 attention layers, 40 of
+them windowed, and 48 recurrent ones holding only short-convolution
+history (a matrix region of one unread value: `init` refuses an empty one). Its
+windows compact as Gemma's do, `truncate` and `rewindTo` refuse, and a
+checkpoint copies the 48 histories
+([inkling2.md § Session state](../models/inkling2.md#session-state)).
 `max_capacity` is 131,072 in a release build and `supported_context`
 65,536, the length the gates cover; `zig build -Dmax-context=<n>` changes
 the ceiling ([spec § 8](../spec.md#8-performance-requirements)).

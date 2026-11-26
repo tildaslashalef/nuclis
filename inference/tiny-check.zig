@@ -4,7 +4,8 @@
 //!
 //! As a test binary (part of `zig build test`): each family loads on the CPU,
 //! with no GPU, and its forward is finite and deterministic; a family with
-//! no executor loads and is refused at the executor.
+//! no executor loads and is refused at the executor; a hybrid family's
+//! session splits, restores, rewinds, and resets bit for bit.
 //! As an executable (`zig build test-tiny -Dmetal=true -- [variant] [seed]`):
 //! every variant in every encoding its Metal plan executes, against the CPU
 //! reference, with a negative control per variant.
@@ -78,7 +79,7 @@ test "each family loads on the CPU, and its forward is finite and deterministic"
     const prefix = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path });
     defer gpa.free(prefix);
     for (&tiny.variants) |*variant| {
-        if (variant.cycle.len != 0 or variant.forward == .none) continue;
+        if (variant.cycle.len != 0 or variant.forward != .both) continue;
         errdefer std.debug.print("tiny variant {s}\n", .{variant.name});
         const bytes = try tiny.generate(gpa, variant, variant.encodings[0], default_seed);
         defer gpa.free(bytes);
@@ -91,15 +92,19 @@ test "each family loads on the CPU, and its forward is finite and deterministic"
 /// Parses, binds, and builds the vocabulary through `Engine.open`; the
 /// executor's refusal is the only failure allowed.
 fn loadRun(gpa: Allocator, io: std.Io, path: []const u8, backend: inference.engine.Backend) !void {
-    var engine = Engine.open(gpa, io, path, backend, capacity, .f32, null, .none) catch |err| switch (err) {
-        error.InferenceUnavailable => return,
-        else => return err,
+    // By name: which refusals a registry can return depends on the
+    // families it holds. Only Metal may refuse for want of a plan.
+    var engine = Engine.open(gpa, io, path, backend, capacity, .f32, null, .none) catch |err| {
+        const name = @errorName(err);
+        if (std.mem.eql(u8, name, "InferenceUnavailable")) return;
+        if (backend == .metal and std.mem.eql(u8, name, "MetalPlanUnavailable")) return;
+        return err;
     };
     engine.deinit();
     return error.UnexpectedExecutor;
 }
 
-test "a family without an executor loads up to the executor, in each encoding" {
+test "a family without a Metal plan loads, and runs on the CPU when it has a forward, in each encoding" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
@@ -107,16 +112,132 @@ test "a family without an executor loads up to the executor, in each encoding" {
     const prefix = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path });
     defer gpa.free(prefix);
     for (&tiny.variants) |*variant| {
-        if (variant.forward != .none) continue;
+        if (variant.forward == .both) continue;
         for (variant.encodings) |encoding| {
             errdefer std.debug.print("tiny variant {s}, encoding {d}\n", .{ variant.name, encoding });
             const bytes = try tiny.generate(gpa, variant, encoding, default_seed);
             defer gpa.free(bytes);
             const path = try writeFile(gpa, io, tmp.dir, prefix, variant.name, bytes);
             defer gpa.free(path);
-            try loadRun(gpa, io, path, .cpu);
+            switch (variant.forward) {
+                .none => try loadRun(gpa, io, path, .cpu),
+                .cpu => try cpuRun(gpa, io, path),
+                .both => unreachable,
+            }
         }
     }
+}
+
+/// Inkling 2's hybrid session through its CPU forward over `tokens`, each
+/// case bit for bit against one uninterrupted run: the head skipped on the
+/// row before `split`, a snapshot at `split` restored, a checkpoint there
+/// rewound and replayed, and a reset. Every step runs the whole looped
+/// schedule, so each crosses the core's pass boundaries. The runtime is
+/// opened directly, with the checkpoint region the engine sizes only for a
+/// verify.
+fn hybridRun(gpa: Allocator, io: std.Io, path: []const u8, tokens: []const u32, split: usize) !void {
+    const family = inference.models.inkling2;
+    var mapped = try inference.weights.Mapped.open(gpa, io, path);
+    defer mapped.deinit(io);
+    const binding = try family.bind(gpa, &mapped.document);
+    var runtime = try family.Runtime.init(gpa, io, mapped.view(), binding, capacity, true, false);
+    defer runtime.deinit();
+    const state = &runtime.state;
+    const run = struct {
+        fn f(r: *family.Runtime, ids: []const u32, logits: ?[]f32) !void {
+            for (ids, 0..) |id, i| try r.step(id, if (i + 1 == ids.len) logits else null, null);
+        }
+    }.f;
+    const whole = try gpa.alloc(f32, family.vocabulary);
+    defer gpa.free(whole);
+    const again = try gpa.alloc(f32, family.vocabulary);
+    defer gpa.free(again);
+    const half = split;
+    try run(&runtime, tokens, whole);
+    try expectFinite(whole);
+
+    runtime.reset();
+    try run(&runtime, tokens[0..half], null);
+    try run(&runtime, tokens[half..], again);
+    if (!same(whole, again)) return error.SkippedHeadDiffers;
+
+    runtime.reset();
+    try run(&runtime, tokens[0..half], null);
+    var snap = try state.snapshot(gpa);
+    defer snap.deinit();
+    try run(&runtime, tokens[half..], again);
+    try state.restore(&snap);
+    // The window restores above row 0, so the replay reads past `base`.
+    for (state.layers[0..inference.models.inkling2.block_count]) |layer| {
+        if (layer.attention.keys.window != null) try std.testing.expect(layer.attention.keys.base > 0);
+    }
+    @memset(again, 0);
+    try run(&runtime, tokens[half..], again);
+    if (!same(whole, again)) return error.RestoreDiffers;
+
+    runtime.reset();
+    try run(&runtime, tokens[0..half], null);
+    try state.checkpoint();
+    try run(&runtime, tokens[half..], again);
+    // A position alone cannot move the convolution history back.
+    try std.testing.expectError(error.RecurrentStateNotRewindable, state.truncate(half));
+    try std.testing.expectError(error.RecurrentStateNotRewindable, state.rewindTo(half));
+    try state.rewind();
+    try std.testing.expectEqual(half, state.position);
+    @memset(again, 0);
+    try run(&runtime, tokens[half..], again);
+    if (!same(whole, again)) return error.ReplayDiffers;
+
+    runtime.reset();
+    try run(&runtime, tokens, again);
+    if (!same(whole, again)) return error.ResetDiffers;
+}
+
+test "Inkling 2's hybrid CPU session splits, restores, rewinds, and resets exactly" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const prefix = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path });
+    defer gpa.free(prefix);
+    const variant = for (&tiny.variants) |*v| {
+        if (std.mem.eql(u8, v.name, "inkling2")) break v;
+    } else return error.UnknownVariant;
+    const bytes = try tiny.generate(gpa, variant, variant.encodings[0], default_seed);
+    defer gpa.free(bytes);
+    const path = try writeFile(gpa, io, tmp.dir, prefix, variant.name, bytes);
+    defer gpa.free(path);
+    // Past the tiny window of 8 and relative extent of 16; the split past
+    // the window and its margin, so a restore moves the window's base.
+    var tokens: [32]u32 = undefined;
+    for (&tokens, 0..) |*t, i| t.* = @intCast((i * 97 + 3) % inference.models.inkling2.vocabulary);
+    try hybridRun(gpa, io, path, &tokens, 26);
+}
+
+test "Inkling 2's CPU runtime frees on every failed allocation" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const prefix = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path });
+    defer gpa.free(prefix);
+    const family = inference.models.inkling2;
+    const variant = for (&tiny.variants) |*v| {
+        if (std.mem.eql(u8, v.name, "inkling2")) break v;
+    } else return error.UnknownVariant;
+    const bytes = try tiny.generate(gpa, variant, variant.encodings[0], default_seed);
+    defer gpa.free(bytes);
+    const path = try writeFile(gpa, io, tmp.dir, prefix, variant.name, bytes);
+    defer gpa.free(path);
+    var mapped = try inference.weights.Mapped.open(gpa, io, path);
+    defer mapped.deinit(io);
+    const binding = try family.bind(gpa, &mapped.document);
+    try inference.alloc_check.checkAll(gpa, struct {
+        fn f(a: Allocator, m: *const inference.weights.Mapped, b: family.Binding) !void {
+            var runtime = try family.Runtime.init(a, std.testing.io, m.view(), b, 16, true, false);
+            runtime.deinit();
+        }
+    }.f, .{ &mapped, binding });
 }
 
 test "a tiny file is a function of its seed" {

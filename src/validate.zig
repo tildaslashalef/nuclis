@@ -27,8 +27,10 @@ pub fn render(arena: std.mem.Allocator, path: []const u8, summary: Summary, out:
     if (summary.rotated_basis) |basis| try fields.append(arena, .{ .key = "Rotated basis", .value = try std.fmt.allocPrint(arena, "{s} (the runtimes transform every projection input)", .{basis}) });
     try kit.blocks.detail(out, ui, &.{.{ .fields = fields.items }});
     try out.writeByte('\n');
-    if (summary.inference_available)
+    if (summary.inference_available and summary.metal_available)
         try kit.blocks.result(out, ui, .ok, "structure matches the text profile", "`generate` runs it on CPU and Metal")
+    else if (summary.inference_available)
+        try kit.blocks.result(out, ui, .ok, "structure matches the text profile", "`generate` runs it on the CPU only: no Metal plan yet")
     else
         try kit.blocks.result(out, ui, .warning, "structure matches the text profile", "no executor runs it: `generate` refuses it");
 }
@@ -55,20 +57,27 @@ test "validation JSON reports structural check kind and executable binding" {
     try std.testing.expect(model.get("inference_available").?.bool);
 }
 
-test "a binding with no executor is a warning that generate refuses it" {
-    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
-    defer out.deinit();
+test "a binding with no executor is a warning, and one without a Metal plan says CPU only" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    try render(arena_state.allocator(), "model.gguf", .{
-        .profile = "inkling2_mini",
-        .decoder_layers = 48,
-        .layer_kinds = &.{ .{ .kind = "sliding_attention", .count = 40 }, .{ .kind = "global_attention", .count = 8 } },
-        .text_tensors = 734,
-        .auxiliary_tensors = 0,
-        .text_tensor_bytes = 10,
-        .auxiliary_tensor_bytes = 0,
-        .inference_available = false,
-    }, &out.writer, false, .plain);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "`generate` refuses it") != null);
+    const cases = [_]struct { inference: bool, metal: bool, says: []const u8 }{
+        .{ .inference = false, .metal = false, .says = "`generate` refuses it" },
+        .{ .inference = true, .metal = false, .says = "on the CPU only" },
+    };
+    for (cases) |case| {
+        var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+        defer out.deinit();
+        try render(arena_state.allocator(), "model.gguf", .{
+            .profile = "synthetic",
+            .decoder_layers = 2,
+            .layer_kinds = &.{.{ .kind = "full_attention", .count = 2 }},
+            .text_tensors = 10,
+            .auxiliary_tensors = 0,
+            .text_tensor_bytes = 10,
+            .auxiliary_tensor_bytes = 0,
+            .inference_available = case.inference,
+            .metal_available = case.metal,
+        }, &out.writer, false, .plain);
+        try std.testing.expect(std.mem.indexOf(u8, out.written(), case.says) != null);
+    }
 }

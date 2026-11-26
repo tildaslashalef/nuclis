@@ -10,7 +10,8 @@
 //! core carries the loop's message controllers. `tiny_models` is the
 //! test-only build (docs/models/README.md § Tiny models): it shrinks the
 //! depth, widths, windows, experts, and vocabulary and keeps the schedule's
-//! shape. No executor runs the family yet: `Runtime` and `Plan` refuse.
+//! shape. `Runtime` is the CPU reference (`inkling2_runtime.zig`); no Metal
+//! plan runs the family yet, so `Plan` refuses.
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const gguf = @import("../formats/gguf.zig");
@@ -199,38 +200,26 @@ pub const family = struct {
     pub const Plan = @import("inkling2.zig").Plan;
 };
 
-/// The CPU executor's place in the registry: opening one is the typed
-/// `InferenceUnavailable`, so the engine refuses the family after binding.
-pub const Runtime = struct {
-    state: session.Session,
+pub const Runtime = @import("inkling2_runtime.zig").Runtime;
 
-    pub fn init(_: std.mem.Allocator, _: std.Io, _: weights.View, _: Binding, _: usize, _: bool, _: bool) !Runtime {
-        return error.InferenceUnavailable;
-    }
-    pub fn deinit(_: *Runtime) void {}
-    pub fn reset(_: *Runtime) void {}
-    pub fn step(_: *Runtime, _: u32, _: ?[]f32, _: anytype) !void {
-        return error.InferenceUnavailable;
-    }
-};
-
-/// The Metal plan's place in the registry; refuses like `Runtime`.
+/// The Metal plan's place in the registry: opening one is the typed
+/// `MetalPlanUnavailable`, so the engine refuses the backend, not the file.
 pub const Plan = struct {
     state: session.Session,
 
     pub fn init(_: std.mem.Allocator, _: anytype, _: weights.View, _: Binding, _: usize, _: usize, _: session.Precision, _: bool, _: bool) !Plan {
-        return error.InferenceUnavailable;
+        return error.MetalPlanUnavailable;
     }
     pub fn deinit(_: *Plan) void {}
     pub fn reset(_: *Plan) void {}
     pub fn step(_: *Plan, _: u32, _: ?[]f32, _: anytype, _: anytype, _: anytype, _: anytype) !void {
-        return error.InferenceUnavailable;
+        return error.MetalPlanUnavailable;
     }
     pub fn prefill(_: *Plan, _: []const u32, _: ?[]f32, _: anytype, _: anytype, _: anytype, _: ?[]f32, _: anytype) !void {
-        return error.InferenceUnavailable;
+        return error.MetalPlanUnavailable;
     }
     pub fn readLogits(_: *Plan, _: []f32) !void {
-        return error.InferenceUnavailable;
+        return error.MetalPlanUnavailable;
     }
 };
 
@@ -471,7 +460,8 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
         .auxiliary_tensors = 0,
         .text_tensor_bytes = binder.bytes,
         .auxiliary_tensor_bytes = 0,
-        .inference_available = false,
+        .inference_available = true,
+        .metal_available = false,
     };
     return result;
 }
@@ -501,7 +491,7 @@ test "the pinned inventory binds: 734 tensors, the looped core, the padded head"
     const binding = try bind(std.testing.allocator, &doc);
     try std.testing.expectEqual(@as(u32, 734), binding.summary.text_tensors);
     try std.testing.expectEqual(@as(u32, 48), binding.summary.decoder_layers);
-    try std.testing.expect(!binding.summary.inference_available);
+    try std.testing.expect(binding.summary.inference_available and !binding.summary.metal_available);
     try std.testing.expectEqual(@as(u64, 201024), binding.output.dimensions[1]);
     for (binding.blocks, 0..) |block, i| {
         try std.testing.expectEqual(kindOf(i), block.kind());
@@ -668,6 +658,6 @@ test "binding survives allocation failure without leaks" {
     }.check, .{&doc});
 }
 
-test "the executors refuse: no forward runs the family" {
-    try std.testing.expectError(error.InferenceUnavailable, Runtime.init(std.testing.allocator, std.testing.io, undefined, undefined, 1, false, false));
+test "the Metal plan refuses: only the CPU reference runs the family" {
+    try std.testing.expectError(error.MetalPlanUnavailable, Plan.init(std.testing.allocator, {}, undefined, undefined, 1, 1, .f32, false, false));
 }

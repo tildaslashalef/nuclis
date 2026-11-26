@@ -13,8 +13,9 @@ DSpark drafter (`dspark-Inkling-2-Mini-Q8_0.gguf`, architecture
 [the record](../benchmarks/record/catalogue.md#pinned-commits-and-digests-2026-09-11).
 The header's facts are pinned in
 `inference/src/models/fixtures/inkling2-q4_k_xl.json`. The `inkling2`
-adapter binds the file and no executor runs it: `inspect` reports it *not
-runnable*, `generate` refuses it (`InferenceUnavailable`).
+adapter binds the file and the CPU reference
+([inkling2_runtime.zig](../../inference/src/models/inkling2_runtime.zig))
+runs it; no Metal plan does yet (`MetalPlanUnavailable`): `--backend cpu`.
 
 ## Architecture
 
@@ -107,29 +108,28 @@ index of application `il`.
 
 ### Session state
 
-- 48 position-local KV caches, one per application (each pass sees other
-  states): 8 full, 40 windowed at 1,024. F16 K and V take 4 KiB a token
-  an application: 1 GiB for the global ones at 32,768 tokens, 160 MiB
-  for the windowed.
+- 48 KV caches, one per application (each pass sees other states): 8
+  full, 40 windowed at 1,024. F16 K and V take 4 KiB a token an
+  application: 1 GiB for the global ones at 32,768 tokens.
 - Per application, a convolution history of 3 rows × 6,656 F32 channels:
   K 0–1,023, V 1,024–2,047, attention output 2,048–4,351, FFN output
   4,352–6,655 (78 KiB; 3.7 MiB for the 48).
-- That history is recurrent state, so the session is hybrid
-  ([spec § 5.4](../spec.md#54-session-contract)): a rewind restores a checkpoint, and
-  speculative verify recovers by rewind and replay.
+- That history is recurrent, so the session is hybrid ([spec § 5.4](../spec.md#54-session-contract)):
+  a rewind restores a checkpoint, verify recovers by rewind and replay,
+  `truncate` and `rewindTo` refuse. Attention layer `il`, recurrent
+  `48 + il`, whose matrix region is one unread value (`Session.init`
+  refuses an empty one); the depth residual is rebuilt from each token.
 
-### Ambiguities in the reading
+### Readings confirmed
 
-Closed by the CPU reference's layer comparison on the real file:
-
-| Question | Reading | Alternative |
-| --- | --- | --- |
-| Static tap order | `w[3]` on the current row | `w[0]` on the current row |
-| Dynamic tap order | `δ[h][0]` on the current row | `δ[h][3]` on the current row |
-| Bias and sink scaling | `s = c·q·k + b`, sink `t` | `s = c·(q·k + b)`, sink `c·t` (the format's dense path computes this; its banded path the reading) |
-| Sink sign | `+t` in the denominator | `−t` |
-| Sliding bias extent | `attention.sliding_window` columns | `attention.relative_extent` columns (both 1,024 here; the binder checks the shape) |
-| Gate/up split | gate first | up first |
+The CPU reference's per-layer outputs on the real file, against the
+format's graph, chose each reading above; each alternative moved all 48
+layers further away by an order of magnitude or more: the static taps
+reversed (`w[0]` on the current row), the dynamic taps reversed, the bias
+and sink inside the score's scale (`c·(q·k + b)`, sink `c·t`), the sink's
+sign flipped, and up before gate. The sliding bias table has the window's
+columns, which the binder holds it to; `relative_extent` is the same
+1,024, so the file cannot tell the two apart.
 
 ## Files and encodings
 

@@ -23,6 +23,7 @@ pub const muse_glimmer = @import("muse_glimmer.zig");
 pub const muse_glimmer_runtime = @import("muse_glimmer_runtime.zig");
 pub const muse_glimmer_metal = @import("muse_glimmer_metal.zig");
 pub const inkling2 = @import("inkling2.zig");
+pub const inkling2_runtime = @import("inkling2_runtime.zig");
 /// Muse Glimmer's DFlash draft companion (an architecture of its own, not a
 /// registry family: the target binds it).
 pub const dflash = @import("dflash.zig");
@@ -157,6 +158,7 @@ test {
     _ = chat_plan;
     _ = muse_glimmer;
     _ = muse_glimmer_runtime;
+    _ = inkling2_runtime;
     _ = muse_glimmer_metal;
     _ = modernbert;
     _ = modernbert_runtime;

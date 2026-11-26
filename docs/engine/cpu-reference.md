@@ -386,9 +386,9 @@ zig build test
 ```
 
 `nuclis validate --json` reports `validation: structure_only` and
-`inference_available: true` for a binding `generate` executes on both
-backends; `false` for a family that binds and has no executor (Inkling 2),
-which `generate` refuses and `inspect` calls *not runnable*.
+`inference_available: true` for a binding an executor runs, with
+`metal_available: false` when only the CPU reference does (Inkling 2);
+`inference_available: false` for a family that binds and has none.
 
 ## Full-model composition
 

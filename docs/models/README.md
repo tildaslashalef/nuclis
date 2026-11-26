@@ -447,7 +447,7 @@ vocabulary, and production refuses a shape only the tiny build pins).
 | `gemma4-dense`, `gemma4-mix` | 6 layers | F32, Q4_0, Q5_0, Q5_1, Q8_0, Q3_K to Q6_K, IQ3_S, IQ4_NL, IQ4_XS | <!-- ok: tiny-build variants, not gates -->
 | `gemma4-experts` | 7 layers, 16 experts of 64 | the same, `ffn_down_exps` in Q5_0 under a 256-block file | <!-- ok: tiny-build variant, not a gate -->
 | `gemma4-e4b` | 12 layers, per-layer embedding | the same, its projection BF16 under Q4_K |
-| `inkling2` | 18 stored blocks as 24 applications, 256 wide, 16 experts of 64; loads only, no executor | Q8_0, F32, with NVFP4 experts and BF16 projections |
+| `inkling2` | 18 stored blocks as 24 applications, 256 wide, 16 experts of 64; the CPU forward and its hybrid session, Metal loads only | Q8_0, F32, with NVFP4 experts and BF16 projections |
 
 That is every encoding each adapter accepts. Bounds are about three times the
 worst of three seeds over every encoding on the M4 Pro, in absolute logit
