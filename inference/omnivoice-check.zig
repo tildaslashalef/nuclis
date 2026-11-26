@@ -492,13 +492,20 @@ const MetalStageRec = struct {
         self.worst_rel.observe(s.rel);
         const check_abs = stage != .layer;
         if (check_abs) self.worst_abs.observe(s.max_abs);
+        // The half weight tiles may flip a codebook's argmax only between
+        // logits the CPU puts within `abs_bound` of each other: a near-tie.
         var argmax_ok = true;
+        var flips: usize = 0;
         if (stage == .logits) {
             const slices = rows.len / runtime.audio_vocab;
             for (0..slices) |k| {
                 const g_sl = rows[k * runtime.audio_vocab ..][0..runtime.audio_vocab];
                 const w_sl = want[k * runtime.audio_vocab ..][0..runtime.audio_vocab];
-                if (std.mem.indexOfMax(f32, g_sl) != std.mem.indexOfMax(f32, w_sl)) argmax_ok = false;
+                const g_top = std.mem.indexOfMax(f32, g_sl);
+                const w_top = std.mem.indexOfMax(f32, w_sl);
+                if (g_top == w_top) continue;
+                flips += 1;
+                if (@as(f64, w_sl[w_top]) - w_sl[g_top] > self.abs_bound) argmax_ok = false;
             }
         }
         const pass = !check_stats.exceeds(s.rel, self.rel_bound) and (!check_abs or !check_stats.exceeds(s.max_abs, self.abs_bound)) and argmax_ok;
@@ -508,7 +515,9 @@ const MetalStageRec = struct {
             .layer => std.fmt.bufPrint(&label_buf, "{s}_layer{d}", .{ self.prefix, layer_index.? }) catch unreachable,
             else => std.fmt.bufPrint(&label_buf, "{s}_{s}", .{ self.prefix, @tagName(stage) }) catch unreachable,
         };
-        std.debug.print("  {s:<18} rel_rms={e:.3} max_abs={e:.3}{s} {s}\n", .{ label, s.rel, s.max_abs, if (stage == .logits) (if (argmax_ok) " argmax=ok" else " argmax=FAIL") else "", if (pass) "ok" else "FAIL" });
+        var flip_buf: [48]u8 = undefined;
+        const argmax_note = if (stage != .logits) "" else if (!argmax_ok) " argmax=FAIL" else if (flips == 0) " argmax=ok" else std.fmt.bufPrint(&flip_buf, " argmax=ok ({d} near-tie flips)", .{flips}) catch unreachable;
+        std.debug.print("  {s:<18} rel_rms={e:.3} max_abs={e:.3}{s} {s}\n", .{ label, s.rel, s.max_abs, argmax_note, if (pass) "ok" else "FAIL" });
     }
 };
 

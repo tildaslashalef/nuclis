@@ -2132,3 +2132,82 @@ Inkling's experts (128 × top 8, gate-up 2,304 → 2,304 and down
 and 9 tokens) and 4.5e-5 for the tile (1, 2, 9, and 512 tokens), which
 rounds only the activations to half: a weight has at most six significant
 bits and is at least 2⁻¹⁰.
+
+## Q8_0 on specialized kernels (2026-11-26)
+
+Q8_0 is about 53 % of the weight bytes an Inkling 2 token reads (2.13 of
+4.0 GB, arithmetic from the inventory): every attention projection, the
+head, and the experts of stored 20–23. It had no specialized matvec, and
+`matmul` sent it to the generic F32 tile except for the drafters' by-name
+`nu_matmul_q8_0_f2`. M4 Pro 48 GB, `metal-check` ReleaseSafe, working
+tree on `4a4a0d6`, matrices tiled from the `simple` fixture's Q8_0 row.
+
+**Decode matvec.** `make bench-kernels ARGS="Q8_0 inkling"`, best of five
+command buffers, GB/s. Shapes under ~8 MB are repeated 64 times a buffer
+and stay in the system cache, so their rates pass the 273 GB/s of DRAM;
+the head and the 45 MB matrix are the memory rates.
+
+| Shape | generic `nu_matvec` | a block per lane | 8 values per lane |
+| --- | ---: | ---: | ---: |
+| 201,024 × 2,304 (head) | 201.7 | 261.3 | 262.0 |
+| 18,432 × 2,304 | 197.2 | 250.7 | 252.5 |
+| 18,432 × 1,152 | 186.1 | 280.5 | 349.6 |
+| 3,072 × 2,304 (`attn_q`) | 204.5 | 314.8 | 375.2 |
+| 2,304 × 3,072 (`attn_output`) | 211.2 | 343.1 | 359.6 |
+| 1,024 × 2,304 (`attn_k`) | 169.1 | 328.5 | 342.4 |
+
+Kept: eight values a lane (288 lane units at 2,304 columns, nine a lane,
+against 72 blocks over 32 lanes). On Qwen's 69,632 × 5,120 the kernel runs
+257.9 against 210.0 generic; the merged gate+up pair 256.7 against 253.5
+for two standalone matvecs, so the merge stays.
+
+**Gathered experts** (`make bench-experts`, Inkling's geometry, 8 of 128,
+GB/s of the selected bytes): gate-up 249.4 against 184.1 generic, down
+261.4 against 159.8, the chain (gate-up, GELU, down, combine) 245.0
+against 171.7.
+
+**Prefill tiles** (`make bench-matmul ARGS=<tokens>`, best ms of the
+generic F32 tile → the specialized one):
+
+| Shape | 4 tokens, 16×8 fragment | 8, 16×8 | 32, 32×32 | 256, 64×64 |
+| --- | --- | --- | --- | --- |
+| 17,408 × 5,120 | 1.72 → 0.41 | 1.72 → 0.43 | 1.71 → 1.64 | 13.32 → 8.78 |
+| 5,120 × 17,408 | 1.85 → 0.45 | 1.85 → 0.47 | 1.84 → 1.80 | 13.69 → 9.20 |
+| 3,072 × 2,304 | 0.16 → 0.03 | 0.16 → 0.03 | 0.16 → 0.15 | 1.03 → 0.73 |
+| 2,304 × 3,072 | 0.16 → 0.03 | 0.16 → 0.03 | 0.16 → 0.17 | 1.04 → 0.74 |
+| 1,024 × 2,304 | 0.07 → 0.01 | 0.07 → 0.01 | 0.07 → 0.07 | 0.35 → 0.27 |
+
+Kept: the fragment tile to `small_chunk_tokens` and the 64 × 64 tile. Not
+kept: the 32 × 32 tile, which gained 2–4 % on Qwen's shapes and lost 2–5 %
+on `attn_output` over three runs, so 25–32 tokens keep the generic F32
+tile. The staged `nu_matmul_q8_0_8` is routed like the other encodings'
+benchmark controls.
+
+**Numerics** (`make test-metal`): on Inkling's four shapes the specialized
+matvec, the generic one, and a weight slice at an odd offset (the generic
+fallback) are within 2.3e-8 of Σ|w·x| of the F64 CPU matvec (bound 4e-6);
+the gathered experts 2.7e-8 (matvec) and 3.5e-7 (the F32 expert tile).
+The half tiles round `d · q` (up to 18 significant bits) to 11, as on
+every other specialized tile.
+
+**Families reached.** The files holding Q8_0 matrices: Inkling 2 (154),
+Qwen3.5/3.8 27B (106: `ssm_alpha`, `ssm_beta` and the like), Saluki 27B
+(96), the DFlash2 drafter (49), EmbeddingGemma 2 (218), OmniVoice (289),
+and Clef (212). Every pinned tolerance holds unchanged. One pin was
+re-made: `clef-metal` holds Clef's logits within 1e-3 of nuclis's own
+earlier Metal run, and the half tiles on its Q8_0 matrices moved them
+1.65e-3 (`multi_question`; the other nine requests within 4.0e-4). The new
+pin (`fixtures/clef/logits.json`) keeps the CPU reference within its 2e-3
+(`clef-cpu`) and the probabilities within 1.55e-2 of the oracle, the gap
+the old pin had. One bound moved: `omnivoice-trace-metal` held Metal to
+1e-4 relative RMS, 2e-3 max abs and every codebook argmax equal against the
+CPU forward, numbers set while Q8_0 ran on the F32 tile (2.4e-6). On the
+half tiles: 2.6e-4 and 5.4e-2, and one of 192 argmaxes flipped between
+logits the CPU puts within 0.1. The gate now allows 1e-3, 1e-1 and such
+near-tie flips; the CPU trace keeps its bounds. End to end nothing moved:
+`omnivoice-roundtrip-metal` recognized the eight sentences at CER 14.98 %
+(15.42 % recorded, bound 22 %).
+Qwen3.8-27B UD-Q4_K_M, `make bench` (the default prompt, 64 tokens),
+`4a4a0d6` → this change: prefill 52.78 → 54.64 tok/s, decode 11.88 →
+12.04; with DFlash2 (`--speculative on --draft dflash2`) decode 26.14 →
+26.21 at draft length 7, 3.57 of 4.36 drafts accepted on both.

@@ -121,8 +121,9 @@ verbatim (no implicit text normalizer):
   (`rel RMS ≤ 2e-6` against both CPU and author trace).
 - `omnivoice-trace-cpu` (`verify-cpu`) and `omnivoice-trace-metal` (`verify`):
   step-0 conditional, unconditional, and packed CFG backbone traces
-  (`rel RMS ≤ 2.4e-6`, 192/192 codebook logit argmax equal, cancel and cleanup
-  verified).
+  (CPU `rel RMS ≤ 2.4e-6`, 192/192 codebook logit argmax equal; Metal, whose
+  Q8_0 projections take half tiles, `rel RMS ≤ 2.6e-4`, one argmax flipped
+  between near-tied logits; cancel and cleanup verified).
 - `omnivoice-roundtrip-metal` (`verify`): 8 pinned Egyptian Arabic and
   Arabic–English code-switching sentences synthesized on Metal and recognized
   by `nemotron-asr-0.6b` (`CER ≤ 22 %`; measured `15.42 %`).

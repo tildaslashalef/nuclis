@@ -308,7 +308,7 @@ const Flash = struct {
     /// A batched projection whose weight lives in the companion's file.
     fn mmRows(self: *Flash, backend: *metal.Backend, tensor: *const Tensor, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, rows: usize) !void {
         const matrix = try self.binding.view.matrix(tensor);
-        try q8FragOrMatmul(backend, try backend.wrap(matrix.bytes), matrix, input, in_stride, output, out_stride, rows);
+        try backend.matmul(try backend.wrap(matrix.bytes), matrix, input, in_stride, output, out_stride, rows);
     }
 
     /// The `slot`-th capture slab's first `rows` rows.
@@ -731,7 +731,7 @@ pub const Plan = struct {
     fn mmRows(self: *Plan, tensor: *const Tensor, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, count: usize) !void {
         const w = try self.weight(tensor);
         if (count == 1) return self.backend.matvec(w.buffer, w.matrix, input.slice(0, w.matrix.columns * 4), output.slice(0, w.matrix.rows * 4));
-        try q8FragOrMatmul(self.backend, w.buffer, w.matrix, input, in_stride, output, out_stride, count);
+        try self.backend.matmul(w.buffer, w.matrix, input, in_stride, output, out_stride, count);
     }
     /// The rope table and rotary width of a layer kind (the whole head).
     fn ropeOf(self: *Plan, kind: model.Kind) struct { table: Buffer, dims: usize } {
@@ -1752,13 +1752,4 @@ test "the visible window of a token is a suffix of the cache rows" {
 /// A DFlash RMS norm over `rows` rows of `width` at the drafter's epsilon.
 fn flashNorm(rows: usize, width: usize) metal.Backend.Norm {
     return .{ .rows = rows, .width = width, .in_stride = width, .out_stride = width, .eps = dflash.rms_epsilon };
-}
-
-/// `matmul`, except that a Q8_0 matrix's few-row batch takes Q8_0's
-/// fragment tile by name, as Qwen's DFlash2 does: `matmul` routes Q8_0 to
-/// the generic F32 tile (docs/engine/metal-backend.md § Limits).
-fn q8FragOrMatmul(backend: *metal.Backend, buffer: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, rows: usize) !void {
-    if (matrix.encoding == 8 and rows <= metal.Backend.small_chunk_tokens and buffer.offset % 2 == 0 and (matrix.bytes.len / matrix.rows) % 2 == 0)
-        return backend.matmulKernel(.matmul_q8_0_f2, buffer, matrix, input, in_stride, output, out_stride, rows);
-    try backend.matmul(buffer, matrix, input, in_stride, output, out_stride, rows);
 }

@@ -201,8 +201,8 @@ from `z-lab/dflash` `dflash/model.py`, the format's only definition.
 the family declares `attachDraft` instead of `bindDraft` so it can choose
 by content. The CPU reference is `dflash2_runtime.zig`; on Metal (`Flash`
 in `qwen35_metal.zig`) the convolution is `nu_dflash_conv`, the drafter's
-Q8_0 projections call the fragment tile `nu_matmul_q8_0_f2` by name, and
-the selector runs on the host over a device top-16 per row.
+Q8_0 projections take `matmul`'s Q8_0 tiles as any family's do, and the
+selector runs on the host over a device top-16 per row.
 
 ## The verify batch
 

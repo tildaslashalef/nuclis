@@ -600,6 +600,7 @@ template [[host_name("nu_matmul_iq4_xs")]] kernel void nu_matmul_t<23, 64, 64, h
 template [[host_name("nu_matmul_q4_0")]] kernel void nu_matmul_t<2, 64, 64, half, half, true>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q5_0")]] kernel void nu_matmul_t<6, 64, 64, half, half, true>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q5_1")]] kernel void nu_matmul_t<7, 64, 64, half, half, true>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q8_0")]] kernel void nu_matmul_t<8, 64, 64, half, half, true>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q3_k_32")]] kernel void nu_matmul_t<11, 32, 32, half, float, false>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q4_k_32")]] kernel void nu_matmul_t<12, 32, 32, half, float, false>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q5_k_32")]] kernel void nu_matmul_t<13, 32, 32, half, float, false>(NU_MATMUL_ARGS);
@@ -639,6 +640,7 @@ template [[host_name("nu_matmul_iq4_xs_8")]] kernel void nu_matmul_split_t<23, h
 template [[host_name("nu_matmul_q4_0_8")]] kernel void nu_matmul_split_t<2, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q5_0_8")]] kernel void nu_matmul_split_t<6, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q5_1_8")]] kernel void nu_matmul_split_t<7, half>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q8_0_8")]] kernel void nu_matmul_split_t<8, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_pq2_0_8")]] kernel void nu_matmul_split_t<142, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_ptq1_0_8")]] kernel void nu_matmul_split_t<143, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q2_k_8")]] kernel void nu_matmul_split_t<10, half>(NU_MATMUL_ARGS);

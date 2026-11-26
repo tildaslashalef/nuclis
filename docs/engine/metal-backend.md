@@ -197,8 +197,8 @@ build's file and a candidate's; no gate runs it.
 
 - The specialized matvec kernels reach 150–258 GB/s of a published 273 and
   are bound by per-block instruction issue, not bytes
-  ([apple-gpu.md](apple-gpu.md)). Q8_0 and IQ4_NL (under 1 % of the Qwen
-  file's bytes) use the generic kernel.
+  ([apple-gpu.md](apple-gpu.md)). IQ4_NL (under 1 % of the Qwen file's
+  bytes) uses the generic kernel.
 - Profiling times dispatches in separate encoders, which perturbs what it
   measures by ~8 %; there is no per-dispatch sampling on Apple GPUs, and the
   Instruments GPU limiter counters are unavailable on this device from

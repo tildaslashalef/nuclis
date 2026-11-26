@@ -324,7 +324,7 @@ fn tiledMatrixRows(alloc: std.mem.Allocator, sample_bytes: []const u8, encoding:
 /// half operands of the matmul tiles. The CPU reference reads the same
 /// bytes, so the comparison stays exact. Positions are format facts
 /// (dequant.metal header): Q4_K/Q5_K d and dmin at 0/2, Q6_K d at 208,
-/// Q3_K d at 108, IQ3_S, IQ4_XS, Q4_0, Q5_0, and PQ2_0 d at 0, Q5_1 d and m
+/// Q3_K d at 108, IQ3_S, IQ4_XS, Q4_0, Q5_0, Q8_0, and PQ2_0 d at 0, Q5_1 d and m
 /// at 0/2, PTQ1_0 d at 26.
 fn tameScales(region: []u8, encoding: u32) void {
     const layout = inference.encoding.layout(encoding) orelse return;
@@ -333,7 +333,7 @@ fn tameScales(region: []u8, encoding: u32) void {
         14 => &.{208},
         11 => &.{108},
         143 => &.{26},
-        2, 6, 20, 21, 23, 142 => &.{0},
+        2, 6, 8, 20, 21, 23, 142 => &.{0},
         else => return,
     };
     var offset: usize = 0;
@@ -409,6 +409,11 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8, only_shape: ?[]const
         // same bytes: gate-up (2,304 columns) and down (1,152).
         .{ .rows = 18432, .columns = 2304, .name = "18432x2304 (inkling 8 gate_up)" },
         .{ .rows = 18432, .columns = 1152, .name = "18432x1152 (inkling 8 down)" },
+        // Inkling 2's Q8_0 projections and head.
+        .{ .rows = 3072, .columns = 2304, .name = "3072x2304 (inkling attn_q)" },
+        .{ .rows = 2304, .columns = 3072, .name = "2304x3072 (inkling attn_out)" },
+        .{ .rows = 1024, .columns = 2304, .name = "1024x2304 (inkling attn_k)" },
+        .{ .rows = 201024, .columns = 2304, .name = "201024x2304 (inkling head)" },
     };
     const encodings = [_]struct { id: u32, fixture: []const u8, name: []const u8 }{
         .{ .id = 11, .fixture = "k-signed", .name = "Q3_K" },
@@ -430,6 +435,7 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8, only_shape: ?[]const
         .{ .id = 19, .fixture = "codebook", .name = "IQ1_S" },
         .{ .id = 29, .fixture = "codebook", .name = "IQ1_M" },
         .{ .id = 40, .fixture = "nvfp4", .name = "NVFP4" },
+        .{ .id = 8, .fixture = "simple", .name = "Q8_0" },
     };
     const rounds = 5; // measured command buffers
     // One weight buffer for every case: fresh multi-GB buffers made timings swing
@@ -703,6 +709,10 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
     const shapes = [_]Shape{
         .{ .rows = 17408, .columns = 5120, .name = "17408x5120 (ffn_gate)" },
         .{ .rows = 5120, .columns = 17408, .name = "5120x17408 (ffn_down)" },
+        // Inkling 2's Q8_0 projections.
+        .{ .rows = 3072, .columns = 2304, .name = "3072x2304 (inkling attn_q)" },
+        .{ .rows = 2304, .columns = 3072, .name = "2304x3072 (inkling attn_out)" },
+        .{ .rows = 1024, .columns = 2304, .name = "1024x2304 (inkling attn_k)" },
     };
     const encodings = [_]struct { id: u32, fixture: []const u8, name: []const u8 }{
         .{ .id = 11, .fixture = "k-signed", .name = "Q3_K" },
@@ -723,6 +733,7 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
         .{ .id = 18, .fixture = "codebook", .name = "IQ3_XXS" },
         .{ .id = 19, .fixture = "codebook", .name = "IQ1_S" },
         .{ .id = 29, .fixture = "codebook", .name = "IQ1_M" },
+        .{ .id = 8, .fixture = "simple", .name = "Q8_0" },
     };
     const rounds = 5;
     // Back-to-back dispatches per command buffer keep the clock where a token
@@ -1634,7 +1645,86 @@ fn checkNvfp4(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
         b.generic_only = false;
     }
 
-    var prng = std.Random.DefaultPrng.init(0x4f4f);
+    const worst = try checkInklingExperts(alloc, io, b, 40, true);
+    std.debug.print("NVFP4: 256 scale bytes x 16 codes bit-identical (decode) and exact (one-hot matvec); Inkling experts 128 x top 8, worst |difference| / sum|w*x|: matvec {e:.2}, tile {e:.2}\n", .{ worst[0], worst[1] });
+}
+
+/// Q8_0 on Inkling 2's shapes: the specialized matvec, the generic one
+/// (`generic_only`), and a weight slice at an odd offset (which the generic
+/// fallback takes) against the F64 CPU matvec, within 4e-6 · Σ|w·x| + 1e-6;
+/// the 201,024-row head on every 97th row. Then the gathered experts.
+fn checkQ8_0(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
+    var prng = std.Random.DefaultPrng.init(0x0808);
+    const random = prng.random();
+    const input = try alloc.alloc(f32, 3072);
+    defer alloc.free(input);
+    for (input) |*v| v.* = random.float(f32) * 2 - 1;
+    const decoded = try alloc.alloc(f32, 3072);
+    defer alloc.free(decoded);
+    var worst: check_stats.Worst = .{};
+    for ([_][2]usize{ .{ 3072, 2304 }, .{ 2304, 3072 }, .{ 1024, 2304 }, .{ 201024, 2304 } }) |shape| {
+        const rows = shape[0];
+        const columns = shape[1];
+        const stride = columns / 32 * 34;
+        // One spare byte ahead of the matrix: the slice at offset 1 is misaligned.
+        const backing = try b.create(rows * stride + 1);
+        randomBlocks(random, backing.host[1..][0 .. rows * stride], 8);
+        const region = backing.host[1..][0 .. rows * stride];
+        const matrix: inference.cpu.Matrix = .{ .rows = rows, .columns = columns, .encoding = 8, .bytes = region };
+        const expected = try alloc.alloc(f32, rows);
+        defer alloc.free(expected);
+        try inference.cpu.matvec(io, matrix, input[0..columns], expected, decoded[0..columns]);
+        const aligned = try uploadBytes(b, region);
+        const got = try alloc.alloc(f32, rows);
+        defer alloc.free(got);
+        const Path = struct { name: []const u8, generic: bool, weights: Buffer };
+        for ([_]Path{
+            .{ .name = "Q8_0 specialized matvec", .generic = false, .weights = aligned },
+            .{ .name = "Q8_0 generic matvec", .generic = true, .weights = aligned },
+            .{ .name = "Q8_0 matvec at an odd offset", .generic = false, .weights = backing.slice(1, rows * stride) },
+        }) |path| {
+            b.generic_only = path.generic;
+            defer b.generic_only = false;
+            try matvecOnce(b, matrix, path.weights, input[0..columns], got);
+            var r: usize = 0;
+            while (r < rows) : (r += if (rows > 4096) 97 else 1) {
+                try inference.quant.row(8, region[r * stride ..][0..stride], decoded[0..columns]);
+                var mass: f64 = 0;
+                for (decoded[0..columns], input[0..columns]) |w, x| mass += @abs(@as(f64, w) * x);
+                worst.observe(@abs(@as(f64, got[r]) - expected[r]) / mass);
+                expectClose(path.name, got[r], expected[r], @floatCast(mass * 4e-6 + 1e-6)) catch |err| {
+                    std.debug.print("  {d}x{d}, row {d}\n", .{ rows, columns, r });
+                    return err;
+                };
+            }
+        }
+    }
+    const experts = try checkInklingExperts(alloc, io, b, 8, false);
+    std.debug.print("Q8_0 on Inkling's shapes (3072x2304, 2304x3072, 1024x2304, 201024x2304), specialized, generic, odd offset: worst |difference| / sum|w*x| {e:.2}; experts 128 x top 8: matvec {e:.2}, tile {e:.2}\n", .{ worst.shown(), experts[0], experts[1] });
+}
+
+/// Random blocks of `encoding` with scales that keep every product inside a
+/// half: NVFP4 scale bytes 2⁻³–2, Q8_0 F16 scales 2⁻⁸–2⁻⁵.
+fn randomBlocks(random: std.Random, region: []u8, encoding: u32) void {
+    random.bytes(region);
+    const layout = inference.encoding.layout(encoding).?;
+    var at: usize = 0;
+    while (at + layout.bytes_per_block <= region.len) : (at += layout.bytes_per_block) switch (encoding) {
+        40 => for (region[at..][0..4]) |*scale| {
+            scale.* = 0x20 + random.uintLessThan(u8, 0x20);
+        },
+        8 => std.mem.writeInt(u16, region[at..][0..2], @bitCast(@as(f16, @floatCast(std.math.ldexp(@as(f32, 1) + random.float(f32), -8 - @as(i32, random.uintLessThan(u8, 3)))))), .little),
+        else => {},
+    };
+}
+
+/// Inkling 2's expert geometry in `encoding`: 128 experts of seeded random
+/// blocks, gate-up 2,304 → 2,304 and down 1,152 → 2,304, eight slots a token,
+/// through the gathered matvec (1, 2, and 9 tokens) and the gathered tile (1,
+/// 2, 9, and 512), against the CPU matvec of each selected expert. Returns
+/// the worst |difference| / Σ|w·x| of the matvec and of the tile.
+fn checkInklingExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend, encoding: u32, half_tile: bool) ![2]f64 {
+    var prng = std.Random.DefaultPrng.init(0x4f4f + encoding);
     const random = prng.random();
     const experts: usize = 128;
     const k: usize = 8;
@@ -1644,15 +1734,12 @@ fn checkNvfp4(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
     var projections: [2]Projection = undefined;
     var regions: [2][]u8 = undefined;
     for ([_][2]usize{ .{ 2 * ff, width }, .{ width, ff } }, 0..) |shape, which| {
-        const region = try alloc.alloc(u8, experts * shape[0] * (shape[1] / 64) * 36);
-        random.bytes(region);
-        var at: usize = 0;
-        while (at < region.len) : (at += 36) for (region[at..][0..4]) |*scale| {
-            scale.* = 0x20 + random.uintLessThan(u8, 0x20);
-        };
+        const layout = inference.encoding.layout(encoding) orelse return error.UnknownEncoding;
+        const region = try alloc.alloc(u8, experts * shape[0] * (shape[1] / layout.elements_per_block) * layout.bytes_per_block);
+        randomBlocks(random, region, encoding);
         regions[which] = region;
         projections[which] = .{
-            .tensor = .{ .encoding = 40, .experts = experts, .rows = shape[0], .columns = shape[1], .bytes = region },
+            .tensor = .{ .encoding = encoding, .experts = experts, .rows = shape[0], .columns = shape[1], .bytes = region },
             .weights = try uploadBytes(b, region),
         };
     }
@@ -1700,21 +1787,21 @@ fn checkNvfp4(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
                 const row = x.floats()[slot / in_group * in_stride ..][0..t.columns];
                 try inference.cpu.matvec(io, matrix, row, expected[0..t.rows], decoded[0..t.columns]);
                 for (0..t.rows) |r| {
-                    try inference.quant.row(40, matrix.bytes[r * (matrix.bytes.len / t.rows) ..][0 .. matrix.bytes.len / t.rows], decoded[0..t.columns]);
+                    try inference.quant.row(encoding, matrix.bytes[r * (matrix.bytes.len / t.rows) ..][0 .. matrix.bytes.len / t.rows], decoded[0..t.columns]);
                     var mass: f64 = 0;
                     for (decoded[0..t.columns], row) |w, v| mass += @abs(@as(f64, w) * v);
                     const got = out.floats()[slot * t.rows + r];
                     worst[@intFromBool(tile)].observe(@abs(@as(f64, got) - expected[r]) / mass);
-                    // The tile rounds the activations to half; the weights are exact.
-                    expectClose(if (tile) "NVFP4 expert tile" else "NVFP4 gathered matvec", got, expected[r], @floatCast(mass * @as(f64, if (tile) 2e-4 else 4e-6) + 1e-6)) catch |err| {
-                        std.debug.print("  projection {d}, tokens {d}, slot {d}, row {d}\n", .{ which, tokens, slot, r });
+                    // A half tile rounds the activations (and NVFP4's weights not at all).
+                    expectClose(if (tile) "expert tile" else "gathered matvec", got, expected[r], @floatCast(mass * @as(f64, if (tile and half_tile) 2e-4 else 4e-6) + 1e-6)) catch |err| {
+                        std.debug.print("  encoding {d}, projection {d}, tokens {d}, slot {d}, row {d}\n", .{ encoding, which, tokens, slot, r });
                         return err;
                     };
                 }
             }
         };
     }
-    std.debug.print("NVFP4: 256 scale bytes x 16 codes bit-identical (decode) and exact (one-hot matvec); Inkling experts 128 x top 8, worst |difference| / sum|w*x|: matvec {e:.2}, tile {e:.2}\n", .{ worst[0].shown(), worst[1].shown() });
+    return .{ worst[0].shown(), worst[1].shown() };
 }
 
 /// Mixture-of-experts kernels against `cpu.experts`: the router on rows with
@@ -2132,8 +2219,9 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
 fn expertsBench(alloc: std.mem.Allocator, chunk: usize) !void {
     var backend = try openBackend(alloc);
     defer backend.deinit();
-    // Gemma 4 26B-A4B's Q4_0 experts, then Inkling 2's NVFP4 ones.
-    inline for (.{ .{ "simple", 2, 2816, 704 }, .{ "nvfp4", 40, 2304, 1152 } }) |g| {
+    // Gemma 4 26B-A4B's Q4_0 experts, then Inkling 2's NVFP4 ones and its
+    // Q8_0 ones (stored blocks 20-23), those also through the generic kernels.
+    inline for (.{ .{ "simple", 2, 2816, 704, false }, .{ "nvfp4", 40, 2304, 1152, false }, .{ "simple", 8, 2304, 1152, true } }) |g| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ g[0] ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
         var sample: ?[]const u8 = null;
@@ -2141,7 +2229,13 @@ fn expertsBench(alloc: std.mem.Allocator, chunk: usize) !void {
             sample = row.bytes;
             break;
         };
-        try expertsBenchGeometry(alloc, &backend, chunk, sample orelse return error.FixtureMissing, g[1], g[2], g[3]);
+        for ([_]bool{ false, true }) |generic| {
+            if (generic and !g[4]) continue;
+            backend.generic_only = generic;
+            if (generic) std.debug.print("generic kernels:\n", .{});
+            try expertsBenchGeometry(alloc, &backend, chunk, sample orelse return error.FixtureMissing, g[1], g[2], g[3]);
+        }
+        backend.generic_only = false;
     }
 }
 
@@ -4647,7 +4741,11 @@ pub fn main(init: std.process.Init) !void {
         if (Backend.matmulGeometry(Backend.specializedMatmul(142, 0, 42 * 34, 8).?).tokens != 8 or Backend.matmulGeometry(Backend.specializedMatmul(143, 0, 42 * 28, 8).?).tokens != 8) return error.AlignmentRuleMismatch;
         // Q4_0: both kernels take any whole-block row (a 42-block row here), at 2-byte alignment.
         if (Backend.specializedMatvec(2, 0, 756, 0) == null or Backend.specializedMatmul(2, 0, 756, 64) == null or Backend.specializedMatvec(2, 2, 2880, 0) == null) return error.AlignmentRuleMismatch;
-        for ([_]u32{ 0, 1, 8, 20, 30 }) |encoding| if (Backend.specializedMatvec(encoding, 0, 4096, 0) != null or Backend.specializedMatmul(encoding, 0, 4096, 64) != null) return error.GenericEncodingSpecialized;
+        // Q8_0: any whole-block row at 2-byte alignment (Inkling's 72-block row), none at an odd offset.
+        if (Backend.specializedMatvec(8, 0, 72 * 34, 0) != .matvec_q8_0 or Backend.specializedMatvec(8, 1, 72 * 34, 0) != null) return error.AlignmentRuleMismatch;
+        // Its tiles: the fragment tile to `small_chunk_tokens`, the generic one to 32, then 64×64.
+        if (Backend.specializedTile(8, 0, 72 * 34, 8) != .matmul_q8_0_f2 or Backend.specializedTile(8, 0, 72 * 34, 32) != null or Backend.specializedTile(8, 0, 72 * 34, 256) != .matmul_q8_0) return error.AlignmentRuleMismatch;
+        for ([_]u32{ 0, 1, 20, 30 }) |encoding| if (Backend.specializedMatvec(encoding, 0, 4096, 0) != null or Backend.specializedMatmul(encoding, 0, 4096, 64) != null) return error.GenericEncodingSpecialized;
         // A misaligned weight slice still computes correctly through the fallback:
         // the same Q4_K matrix copied 8 bytes into a larger buffer.
         {
@@ -5910,6 +6008,7 @@ pub fn main(init: std.process.Init) !void {
     // 9b. Mixture-of-experts kernels against the CPU references.
     try checkExperts(alloc, io, b);
     try checkNvfp4(alloc, io, b);
+    try checkQ8_0(alloc, io, b);
 
     // 10. Recording contract: dispatch outside begin/commit is rejected, and a
     // committed empty pass is fine.

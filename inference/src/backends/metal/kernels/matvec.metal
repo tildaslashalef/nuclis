@@ -390,6 +390,51 @@ kernel void nu_matvec_q4_0(device const uchar * weights [[buffer(0)]], device co
         nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane);
 }
 
+// Q8_0 (34 B, 2-byte aligned): an F16 scale and 32 signed bytes.
+#define Q8_0_UNIT 8
+inline float4 nu_signed_bytes(uint w) { return float4(as_type<char4>(w)); }
+template <uint ROWS>
+inline void nu_matvec_q8_0_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc) {
+    uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
+    if (row0 >= p.rows) return;
+    for (uint r = 0; r < ROWS; ++r) acc[r] = 0;
+#if Q8_0_UNIT == 32
+    for (uint block = lane; block < p.columns / 32; block += 32) {
+        device const float4 * x = (device const float4 *)(input + block * 32);
+        float4 x0 = x[0], x1 = x[1], x2 = x[2], x3 = x[3], x4 = x[4], x5 = x[5], x6 = x[6], x7 = x[7];
+        for (uint r = 0; r < ROWS; ++r) {
+            device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + block * 34;
+            float d = float(as_type<half>(*(device const ushort *)b));
+            packed_ushort4 l0 = *(device const packed_ushort4 *)(b + 2), l1 = *(device const packed_ushort4 *)(b + 10);
+            packed_ushort4 l2 = *(device const packed_ushort4 *)(b + 18), l3 = *(device const packed_ushort4 *)(b + 26);
+            float sum = nu_dot(nu_signed_bytes(nu_word(l0, 0)), x0, nu_dot(nu_signed_bytes(nu_word(l0, 1)), x1, nu_dot(nu_signed_bytes(nu_word(l1, 0)), x2, nu_dot(nu_signed_bytes(nu_word(l1, 1)), x3, 0.0f))));
+            sum = nu_dot(nu_signed_bytes(nu_word(l2, 0)), x4, nu_dot(nu_signed_bytes(nu_word(l2, 1)), x5, nu_dot(nu_signed_bytes(nu_word(l3, 0)), x6, nu_dot(nu_signed_bytes(nu_word(l3, 1)), x7, sum))));
+            acc[r] += d * sum;
+        }
+    }
+#else
+    for (uint u = lane; u < p.columns / 8; u += 32) {
+        device const float4 * x = (device const float4 *)(input + u * 8);
+        float4 x0 = x[0], x1 = x[1];
+        for (uint r = 0; r < ROWS; ++r) {
+            device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + (u / 4) * 34;
+            float d = float(as_type<half>(*(device const ushort *)b));
+            packed_ushort4 l = *(device const packed_ushort4 *)(b + 2 + 8 * (u % 4));
+            acc[r] += d * nu_dot(nu_signed_bytes(nu_word(l, 0)), x0, nu_dot(nu_signed_bytes(nu_word(l, 1)), x1, 0.0f));
+        }
+    }
+#endif
+}
+template <uint ROWS>
+kernel void nu_matvec_q8_0(device const uchar * weights [[buffer(0)]], device const float * input [[buffer(1)]], device float * output [[buffer(2)]],
+                           constant MatvecBlockParams & p [[buffer(7)]], uint group_index [[threadgroup_position_in_grid]],
+                           uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    float acc[ROWS];
+    nu_matvec_q8_0_body<ROWS>(weights, input, p, group_index, sg, lane, acc);
+    if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
+        nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane);
+}
+
 // Q5_0 (22 B) and Q5_1 (OFFSET, 24 B): Q4_0's lane slice and nibble words,
 // each code byte completed by its plane bit, 2-byte aligned loads. The bias
 // folds into the input sum as Q4_0's does, Q5_1's offset likewise:

@@ -64,7 +64,7 @@ with a cliff between 16 and 24 KB per group
 
 `nu_matvec` is the generic kernel: one SIMD group per output row, each lane
 decoding 16-value segments straight from quantized bytes through the
-runtime encoding switch. It serves F32, F16, BF16, Q8_0, IQ4_NL, and any
+runtime encoding switch. It serves F32, F16, BF16, IQ4_NL, and any
 misaligned range. `Backend.matvec` records a specialized kernel instead
 when `specializedMatvec` accepts the encoding and the row start, row
 stride, and input are aligned for its vector loads.
@@ -74,18 +74,18 @@ stride, and input are aligned for its vector loads.
 Decode reads every weight once per token, so these kernels decide decode
 speed. They exist for Q4_K, Q5_K, Q6_K, Q3_K, Q2_K, IQ4_XS, IQ3_S,
 IQ3_XXS, IQ2_XXS, IQ2_XS, IQ2_S, IQ1_S, IQ1_M, Q4_0, Q5_0, Q5_1, PQ2_0,
-PTQ1_0, and NVFP4, as templates instantiated with `[[host_name]]`, so the bridge
-needs no function constants.
+PTQ1_0, NVFP4, and Q8_0, as templates instantiated with `[[host_name]]`, so
+the bridge needs no function constants.
 
 - **Geometry.** 128-thread groups of four SIMD groups; each SIMD group owns
   four consecutive output rows (`Backend.rows_per_simdgroup`) and walks their
   256-value blocks four at a time, eight lanes per block. A lane decodes 32
   values of its block from one to three vector loads and reads its 32 inputs
   as eight `float4` from device memory, shared by the four rows. Q4_0 walks
-  32-value blocks instead (lane `l` takes blocks `l`,
-  `l + 32`, …), so any whole-block row serves, including a 22-block expert
-  row; the ternary encodings give four lanes to each 128-value block, and
-  NVFP4 a lane to each 16-value sub-block, so an 18-block row serves.
+  32-value blocks instead (lane `l` takes blocks `l`, `l + 32`, …), so any
+  whole-block row serves, including a 22-block expert row; the ternary encodings give four lanes to each 128-value block,
+  NVFP4 a lane to each 16-value sub-block and Q8_0 to each eight values,
+  which fills the lanes of a 72-block row a whole block each would not.
 - **Factored scales.** Per 32-value group a lane accumulates `Σq·x` and `Σx`
   and applies the group's scale and minimum once:
   `Σ(d·s·q − dmin·m)·x = d·s·Σ(q·x) − dmin·m·Σx`. With a one-hot input this is
@@ -112,7 +112,7 @@ needs no function constants.
 - **Alignment rules.** Vector-load widths follow block sizes: Q4_K (144 B) and
   Q5_K (176 B) use `uint4`, IQ4_XS (136 B) `uint2`, NVFP4 (36 B) `uint`,
   and Q3_K/IQ3_S
-  (110 B), Q6_K (210 B), and Q4_0 (18 B) use `packed_ushort4`.
+  (110 B), Q6_K (210 B), Q4_0 (18 B), and Q8_0 (34 B) use `packed_ushort4`.
   `specializedMatvec` requires the row offset and stride to be multiples of
   the load width and the input to be float4-aligned; otherwise the generic
   kernel is recorded. Every tensor of the pinned artifacts qualifies.
@@ -211,7 +211,7 @@ chunk length (`specializedMatmul`, `specializedMatmulFrag`,
 | 2 to 3 (by encoding, above) | the multi-row matvec | F32 |
 | 2 to 8, no specialized tile, ≤ `small_matrix_rows` (1,024) rows | the generic multi-row matvec | F32 |
 | ≤ `small_chunk_tokens` (24) | `nu_matmul_*_f2`, the register-fragment 16×8 tile | half weights, F32 activations |
-| ≤ 32 | `nu_matmul_*_32`, 32×32, activations from device | half weights, F32 activations |
+| ≤ 32 | `nu_matmul_*_32`, 32×32, activations from device (Q8_0: the generic tile) | half weights, F32 activations |
 | above | `nu_matmul_*`, 64×64, both operands staged | half, F32 accumulation |
 | any, no specialized tile | `nu_matmul`, 32×32 | F32 |
 

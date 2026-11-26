@@ -39,9 +39,9 @@ pub const MatmulGeometry = struct { rows: usize, tokens: usize, half: bool };
 pub fn matmulGeometry(kernel: Kernel) MatmulGeometry {
     return switch (kernel) {
         .matmul => .{ .rows = 32, .tokens = 32, .half = false },
-        .matmul_q3_k, .matmul_q4_k, .matmul_q5_k, .matmul_q6_k, .matmul_iq3_s, .matmul_iq4_xs, .matmul_q4_0, .matmul_q5_0, .matmul_q5_1, .matmul_pq2_0, .matmul_ptq1_0 => .{ .rows = 64, .tokens = 64, .half = true },
+        .matmul_q3_k, .matmul_q4_k, .matmul_q5_k, .matmul_q6_k, .matmul_iq3_s, .matmul_iq4_xs, .matmul_q4_0, .matmul_q5_0, .matmul_q5_1, .matmul_q8_0, .matmul_pq2_0, .matmul_ptq1_0 => .{ .rows = 64, .tokens = 64, .half = true },
         .matmul_q2_k, .matmul_iq2_xxs, .matmul_iq2_xs, .matmul_iq3_xxs, .matmul_iq1_s, .matmul_iq2_s, .matmul_iq1_m => .{ .rows = 64, .tokens = 64, .half = true },
-        .matmul_q3_k_8, .matmul_q4_k_8, .matmul_q5_k_8, .matmul_q6_k_8, .matmul_iq3_s_8, .matmul_iq4_xs_8, .matmul_q4_0_8, .matmul_q5_0_8, .matmul_q5_1_8, .matmul_pq2_0_8, .matmul_ptq1_0_8 => .{ .rows = 16, .tokens = 8, .half = true },
+        .matmul_q3_k_8, .matmul_q4_k_8, .matmul_q5_k_8, .matmul_q6_k_8, .matmul_iq3_s_8, .matmul_iq4_xs_8, .matmul_q4_0_8, .matmul_q5_0_8, .matmul_q5_1_8, .matmul_q8_0_8, .matmul_pq2_0_8, .matmul_ptq1_0_8 => .{ .rows = 16, .tokens = 8, .half = true },
         .matmul_q2_k_8, .matmul_iq2_xxs_8, .matmul_iq2_xs_8, .matmul_iq3_xxs_8, .matmul_iq1_s_8, .matmul_iq2_s_8, .matmul_iq1_m_8 => .{ .rows = 16, .tokens = 8, .half = true },
         .matmul_q4_k_f2, .matmul_q5_k_f2, .matmul_q6_k_f2, .matmul_iq4_xs_f2, .matmul_q3_k_f2, .matmul_iq3_s_f2, .matmul_q4_0_f2, .matmul_q5_0_f2, .matmul_q5_1_f2, .matmul_q8_0_f2, .matmul_pq2_0_f2, .matmul_ptq1_0_f2, .matmul_iq4_nl_f2 => .{ .rows = 16, .tokens = 8, .half = true },
         .matmul_q2_k_f2, .matmul_iq2_xxs_f2, .matmul_iq2_xs_f2, .matmul_iq3_xxs_f2, .matmul_iq1_s_f2, .matmul_iq2_s_f2, .matmul_iq1_m_f2 => .{ .rows = 16, .tokens = 8, .half = true },
@@ -116,7 +116,7 @@ pub fn blockAligned(encoding: u32, weight_offset: usize, stride: usize) bool {
         12, 13 => 16,
         23, 29 => 8,
         10, 40, 143 => 4,
-        2, 6, 7, 11, 14, 16, 17, 18, 19, 21, 22, 142 => 2,
+        2, 6, 7, 8, 11, 14, 16, 17, 18, 19, 21, 22, 142 => 2,
         else => return false,
     };
     return weight_offset % alignment == 0 and stride % alignment == 0;
@@ -145,6 +145,7 @@ pub fn specializedMatmulFrag(encoding: u32, weight_offset: usize, stride: usize,
         2 => .matmul_q4_0_f2,
         6 => .matmul_q5_0_f2,
         7 => .matmul_q5_1_f2,
+        8 => .matmul_q8_0_f2,
         142 => .matmul_pq2_0_f2,
         143 => .matmul_ptq1_0_f2,
         10 => .matmul_q2_k_f2,
@@ -167,6 +168,7 @@ pub fn specializedMatmul(encoding: u32, weight_offset: usize, stride: usize, tok
         2 => .matmul_q4_0_8,
         6 => .matmul_q5_0_8,
         7 => .matmul_q5_1_8,
+        8 => .matmul_q8_0_8,
         142 => .matmul_pq2_0_8,
         143 => .matmul_ptq1_0_8,
         11 => .matmul_q3_k_8,
@@ -184,6 +186,8 @@ pub fn specializedMatmul(encoding: u32, weight_offset: usize, stride: usize, tok
         29 => .matmul_iq1_m_8,
         else => null,
     };
+    // Q8_0 has no 32×32 tile: it did not beat the generic F32 one
+    // (docs/benchmarks/record/metal-backend.md).
     if (tokens <= 32) return switch (encoding) {
         2 => .matmul_q4_0_32,
         6 => .matmul_q5_0_32,
@@ -209,6 +213,7 @@ pub fn specializedMatmul(encoding: u32, weight_offset: usize, stride: usize, tok
         2 => .matmul_q4_0,
         6 => .matmul_q5_0,
         7 => .matmul_q5_1,
+        8 => .matmul_q8_0,
         142 => .matmul_pq2_0,
         143 => .matmul_ptq1_0,
         11 => .matmul_q3_k,

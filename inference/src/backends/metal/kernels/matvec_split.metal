@@ -24,6 +24,7 @@ inline void nu_segment_sums(device const uchar * w, device const float * x, Matv
     // refuses to force a split for them).
     switch (encoding) {
         case 2: nu_matvec_q4_0_body<4>(w, x, p, group, sg, lane, acc); return;
+        case 8: nu_matvec_q8_0_body<4>(w, x, p, group, sg, lane, acc); return;
         case 6: nu_matvec_five_body<4, false>(w, x, p, group, sg, lane, acc); return;
         case 7: nu_matvec_five_body<4, true>(w, x, p, group, sg, lane, acc); return;
         case 11: nu_matvec_three_body<4>(w, x, p, group, sg, lane, acc); return;
@@ -115,4 +116,5 @@ template [[host_name("nu_matvec_q5_1")]] kernel void nu_matvec_five<4, true>(NU_
 template [[host_name("nu_matvec_pq2_0")]] kernel void nu_matvec_pq2_0<4>(NU_MATVEC_ARGS);
 template [[host_name("nu_matvec_ptq1_0")]] kernel void nu_matvec_ptq1_0<4>(NU_MATVEC_ARGS);
 template [[host_name("nu_matvec_nvfp4")]] kernel void nu_matvec_nvfp4<4>(NU_MATVEC_ARGS);
+template [[host_name("nu_matvec_q8_0")]] kernel void nu_matvec_q8_0<4>(NU_MATVEC_ARGS);
 

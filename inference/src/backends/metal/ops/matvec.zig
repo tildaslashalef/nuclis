@@ -202,6 +202,7 @@ pub fn specializedMatvec(encoding: u32, weight_offset: usize, stride: usize, inp
         142 => .matvec_pq2_0,
         143 => .matvec_ptq1_0,
         40 => .matvec_nvfp4,
+        8 => .matvec_q8_0,
         11 => .matvec_q3_k,
         21 => .matvec_iq3_s,
         12 => .matvec_q4_k,
