@@ -43,6 +43,8 @@ second row below, not the first.
 | keys and tensors an existing adapter can bind as a new configuration (an optional block, a layer pattern, a size) | a configuration of that adapter | its binding and its `<family>_metal.zig` plan; the E4B (per-layer embeddings, shared KV) and the 26B-A4B (experts) joined Gemma 4 this way ([gemma4.md](gemma4.md)) |
 | a new `general.architecture`, or an operation no adapter computes | a new family | § 1 onward |
 
+A new `general.architecture` that loops stored blocks is a new family even when its blocks resemble one nuclis runs: the application-to-block map, per-application caches, and the passes' state are the adapter's ([inkling2.md](inkling2.md)).
+
 A configuration still takes the whole of § 4–§ 7 for its own file: CPU
 traces, Metal gates, a tiny variant when its shape is new, the catalogue
 entry, a perplexity reference, and a speed baseline. What it does not
