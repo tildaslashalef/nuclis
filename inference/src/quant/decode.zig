@@ -702,6 +702,10 @@ test "Q5_0 and Q5_1 rows match the values their formats' equations give" {
     try checkFixture(@embedFile("fixtures/five-bit.json"), "nuclis: the formats' equations (scripts/fixtures/five-bit-fixtures.py)");
 }
 
+test "an NVFP4 row decodes to the format's equations" {
+    try checkFixture(@embedFile("fixtures/nvfp4.json"), "nuclis: the format's equations (scripts/fixtures/nvfp4-fixture.py)");
+}
+
 test "ternary rows match the PrismML fork's decoder fixtures exactly" {
     try checkFixture(@embedFile("fixtures/ternary.json"), prism_revision);
 }

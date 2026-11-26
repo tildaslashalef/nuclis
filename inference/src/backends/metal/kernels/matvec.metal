@@ -305,6 +305,52 @@ kernel void nu_matvec_iq4_xs(device const uchar * weights [[buffer(0)]], device 
 }
 
 
+// NVFP4 (36-byte blocks of 64, 4-byte aligned). Lane unit: one 16-value
+// sub-block, unit `lane + 32·i`, walking the row's own columns (an expert's
+// down projection is 18 blocks): its scale byte and two code words, whose
+// low nibbles are values 0-7 and high nibbles 8-15. A code is decoded by
+// moving its three magnitude bits into a half's exponent and mantissa and its
+// sign into the half's (the value times 2⁻¹⁴, subnormal for codes 1 and 0),
+// with 2¹⁴ folded into the scale: exact, and no table. Eight values a lane
+// and a threadgroup table both measured slower on Inkling 2's experts
+// (docs/benchmarks/record/metal-backend.md).
+inline float4 nu_e2m1_bits(uint w) {
+    uint a = w & 0x000f000fu, b = (w >> 8) & 0x000f000fu;
+    half2 ha = as_type<half2>(((a & 0x00070007u) << 9) | ((a & 0x00080008u) << 12));
+    half2 hb = as_type<half2>(((b & 0x00070007u) << 9) | ((b & 0x00080008u) << 12));
+    return float4(float(ha.x), float(hb.x), float(ha.y), float(hb.y));
+}
+template <uint ROWS>
+inline void nu_matvec_nvfp4_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc) {
+    uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
+    if (row0 >= p.rows) return;
+    for (uint r = 0; r < ROWS; ++r) acc[r] = 0;
+    for (uint u = lane; u < p.columns / 16; u += 32) {
+        uint block = u / 4, s = u % 4;
+        device const float4 * x = (device const float4 *)(input + u * 16);
+        float4 x0 = x[0], x1 = x[1], x2 = x[2], x3 = x[3];
+        for (uint r = 0; r < ROWS; ++r) {
+            device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + block * 36;
+            float d = nu_ue4m3(b[s]) * 0x1p14f;
+            // Code words are 4-byte aligned only: two word loads, never one uint2.
+            device const uint * w = (device const uint *)(b + 4 + 8 * s);
+            uint2 q = uint2(w[0], w[1]);
+            float sum = nu_dot(nu_e2m1_bits(q.x), x0, nu_dot(nu_e2m1_bits(q.y), x1, nu_dot(nu_e2m1_bits(q.x >> 4), x2, nu_dot(nu_e2m1_bits(q.y >> 4), x3, 0.0f))));
+            acc[r] += d * sum;
+        }
+    }
+}
+template <uint ROWS>
+kernel void nu_matvec_nvfp4(device const uchar * weights [[buffer(0)]], device const float * input [[buffer(1)]], device float * output [[buffer(2)]],
+                            constant MatvecBlockParams & p [[buffer(7)]], uint group_index [[threadgroup_position_in_grid]],
+                            uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    float acc[ROWS];
+    nu_matvec_nvfp4_body<ROWS>(weights, input, p, group_index, sg, lane, acc);
+    if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
+        nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane);
+}
+
+
 // Q4_0. Lane slice: whole 18-byte blocks of 32 values, block `lane + 32·i`
 // (the row is walked in blocks, not 256-value strides, so any block count
 // serves — the expert down projection has 22): its sixteen nibble bytes

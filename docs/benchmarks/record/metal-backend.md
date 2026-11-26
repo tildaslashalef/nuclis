@@ -2075,3 +2075,60 @@ attention, experts, and the projections in nearly equal parts. The
 sliding layers stay on the online body (a 1,024-key window), and so do
 the image spans, Drama 3, Muse Glimmer, and Qwen3-TTS, none measured
 here.
+
+## NVFP4 kernels (2026-11-26)
+
+Inkling 2 Mini's experts of stored blocks 0–19 are NVFP4
+([inkling2.md](../../models/inkling2.md)). M4 Pro 48 GB, `metal-check`
+ReleaseSafe, working tree on `4ff5f27`; matrices tiled from the fixture
+row (`quant/fixtures/nvfp4.json`).
+
+**Lane unit and decode**, chosen by measurement. Four variants of one
+body: a 16-value sub-block per lane (scale byte, two code words) or 8
+values (one word, two float4 inputs), each decoding codes through a
+threadgroup E2M1 table or by moving the code's bits into a half
+(`nu_e2m1_bits`). `make bench-kernels ARGS="NVFP4 inkling"`, eight
+selected experts as one dense matrix of the same bytes, best of five
+command buffers, GB/s (the gate-up rounds swung with clock ramp-up, 44–223):
+
+| Variant | 18,432 × 2,304 | 18,432 × 1,152 |
+| --- | ---: | ---: |
+| 16 values, bits | 183.2 | 231.5 |
+| 16 values, table | 135.8 | 178.6 |
+| 8 values, bits | 222.8 | 204.3 |
+| 8 values, table | 217.2 | 198.9 |
+| generic `nu_matvec` | 119.3 | 99.6 |
+
+The gathered path decides (`make bench-experts`, 64 dispatches a command
+buffer, steady to 1 %), 8 of 128 experts, GB/s of the selected bytes,
+best / mean:
+
+| Case | 16 values, bits | 8 values, bits |
+| --- | ---: | ---: |
+| gathered gate-up 8 × (2,304 × 2,304) | 243.2 / 243.1 | 201.6 / 201.3 |
+| gathered down 8 × (2,304 × 1,152) | 204.6 / 202.9 | 177.2 / 176.2 |
+| chain (gate-up, GELU, down, combine) | 218.4 / 218.1 | 186.4 / 185.9 |
+
+Kept: 16 values a lane with the bit decode, which needs no table in the
+merged and gathered bodies. The code words sit at 4 mod 8 in every other
+block, so the shipped kernel reads them as two `uint` loads rather than one
+`uint2` (Metal's `uint2` wants 8-byte alignment); that moved nothing past
+1 %. On it: gathered gate-up 242.2, down 204.8, the chain 219.8; the dense
+matrices of the same bytes 250.3 and 247.6. Prefill at 256 tokens through
+the half expert tile (2,048 slot rows, 128 tiles): gate-up 44.2 GB/s
+(8,644 µs), down 43.8 (4,363 µs), the chain 43.5 (13,177 µs); Q4_0's tile
+at its Gemma geometry is 42.2.
+
+`bench-experts` now runs both geometries and builds its rows with
+`tiledMatrixRows`; Q4_0's numbers at the base commit, in the old form, are
+the same (down 143.1 against 142.4).
+
+**Numerics** (`make test-metal`): all 256 scale bytes under all 16 codes
+decode on the GPU bit for bit as the CPU does, and the specialized and
+generic matvecs reproduce each of them exactly on one-hot inputs. On
+Inkling's experts (128 × top 8, gate-up 2,304 → 2,304 and down
+1,152 → 2,304, random codes under scales 2⁻³–2), the worst |difference| /
+Σ|w·x| against the F64 CPU matvec is 3.6e-8 for the gathered matvec (1, 2,
+and 9 tokens) and 4.5e-5 for the tile (1, 2, 9, and 512 tokens), which
+rounds only the activations to half: a weight has at most six significant
+bits and is at least 2⁻¹⁰.

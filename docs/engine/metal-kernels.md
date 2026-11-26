@@ -74,7 +74,7 @@ stride, and input are aligned for its vector loads.
 Decode reads every weight once per token, so these kernels decide decode
 speed. They exist for Q4_K, Q5_K, Q6_K, Q3_K, Q2_K, IQ4_XS, IQ3_S,
 IQ3_XXS, IQ2_XXS, IQ2_XS, IQ2_S, IQ1_S, IQ1_M, Q4_0, Q5_0, Q5_1, PQ2_0,
-and PTQ1_0, as templates instantiated with `[[host_name]]`, so the bridge
+PTQ1_0, and NVFP4, as templates instantiated with `[[host_name]]`, so the bridge
 needs no function constants.
 
 - **Geometry.** 128-thread groups of four SIMD groups; each SIMD group owns
@@ -84,7 +84,8 @@ needs no function constants.
   as eight `float4` from device memory, shared by the four rows. Q4_0 walks
   32-value blocks instead (lane `l` takes blocks `l`,
   `l + 32`, …), so any whole-block row serves, including a 22-block expert
-  row; the ternary encodings give four lanes to each 128-value block.
+  row; the ternary encodings give four lanes to each 128-value block, and
+  NVFP4 a lane to each 16-value sub-block, so an 18-block row serves.
 - **Factored scales.** Per 32-value group a lane accumulates `Σq·x` and `Σx`
   and applies the group's scale and minimum once:
   `Σ(d·s·q − dmin·m)·x = d·s·Σ(q·x) − dmin·m·Σx`. With a one-hot input this is
@@ -103,11 +104,14 @@ needs no function constants.
   IQ2_XS, IQ2_S, IQ3_XXS, `matvec_codebook.metal`) mask grid bytes into
   F16 subnormals the same way and XOR their signs into the half sign bits.
   IQ4_XS reads its 16-entry table from a threadgroup copy (`nu_iq4_table`).
+  NVFP4 shifts a code into a half times 2⁻¹⁴ (`nu_e2m1_bits`), faster than
+  a table ([record](../benchmarks/record/metal-backend.md#nvfp4-kernels-2026-11-26)).
   These kernels are issue-bound on the integer and complex pipe, which is
   why the conversions were moved off it
   ([the counters](../benchmarks/record/apple-gpu.md#nu_matvec_q4_k-on-qwens-ffn_down-shape-2026-09-30)).
 - **Alignment rules.** Vector-load widths follow block sizes: Q4_K (144 B) and
-  Q5_K (176 B) use `uint4`, IQ4_XS (136 B) `uint2`, and Q3_K/IQ3_S
+  Q5_K (176 B) use `uint4`, IQ4_XS (136 B) `uint2`, NVFP4 (36 B) `uint`,
+  and Q3_K/IQ3_S
   (110 B), Q6_K (210 B), and Q4_0 (18 B) use `packed_ushort4`.
   `specializedMatvec` requires the row offset and stride to be multiples of
   the load width and the input to be float4-aligned; otherwise the generic
@@ -302,8 +306,9 @@ one threadgroup (histogram by atomics, prefix sum, scatter); the bound
 `Backend.matmulExperts` is the dense tile's body with a `GATHER` flag: it
 reads a tile's activation rows through the row list (input row `slot_row /
 in_group`, `in_group` = k on gate-up) and scatters each valid result to
-its slot row. Q4_0, Q5_0, and Q5_1 have a half 64×32 instantiation; every
-other encoding takes the generic F32 tile. The chain per layer is `route` →
+its slot row. Q4_0, Q5_0, Q5_1, and NVFP4 (whose weights half holds
+exactly) have a half 64×32 instantiation; every other encoding takes the
+generic F32 tile. The chain per layer is `route` →
 `expertLists` → `matmulExperts` → `geluMulRows` → `matmulExperts` →
 `combineExperts`. Qwen3.5-MoE's gated shared expert adds
 `Backend.sharedExpertAdd`: `x[r] += sigmoid(g · x[r]) · y[r]` in one dispatch

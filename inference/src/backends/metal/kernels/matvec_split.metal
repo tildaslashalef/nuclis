@@ -37,6 +37,7 @@ inline void nu_segment_sums(device const uchar * w, device const float * x, Matv
         // in ops/matvec.zig), so their segments take the generic branch.
         case 142: nu_matvec_pq2_0_body<4>(w, x, p, group, sg, lane, acc); return;
         case 143: nu_matvec_ptq1_0_body<4>(w, x, p, group, sg, lane, acc); return;
+        case 40: nu_matvec_nvfp4_body<4>(w, x, p, group, sg, lane, acc); return;
         default:
             uint row0 = (group * NU_MATVEC_SIMDGROUPS + sg) * 4;
             for (uint r = 0; r < 4; ++r) {
@@ -113,4 +114,5 @@ template [[host_name("nu_matvec_q5_0")]] kernel void nu_matvec_five<4, false>(NU
 template [[host_name("nu_matvec_q5_1")]] kernel void nu_matvec_five<4, true>(NU_MATVEC_ARGS);
 template [[host_name("nu_matvec_pq2_0")]] kernel void nu_matvec_pq2_0<4>(NU_MATVEC_ARGS);
 template [[host_name("nu_matvec_ptq1_0")]] kernel void nu_matvec_ptq1_0<4>(NU_MATVEC_ARGS);
+template [[host_name("nu_matvec_nvfp4")]] kernel void nu_matvec_nvfp4<4>(NU_MATVEC_ARGS);
 

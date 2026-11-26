@@ -190,9 +190,9 @@ fn matvecRowsBodies(comptime name: []const u8) [matvec_rows_max - 1]Kernel {
 /// (`blockAligned`) and the input vector is float4-aligned. Otherwise
 /// `null`: generic path. Every encoding `blockAligned` accepts has one (see
 /// the switch). The K-quant and codebook kernels walk 256-value strides;
-/// the Q4_0, Q5_0, and Q5_1 kernels walk 32-value blocks and the ternary
-/// kernels 128-value blocks (lanes past the last block idle), so any
-/// whole-block row serves those five.
+/// the Q4_0, Q5_0, and Q5_1 kernels walk 32-value blocks, the ternary
+/// kernels 128-value blocks, and NVFP4 its sub-blocks (lanes past the last
+/// unit idle), so any whole-block row serves those six.
 pub fn specializedMatvec(encoding: u32, weight_offset: usize, stride: usize, input_offset: usize) ?Kernel {
     if (input_offset % 16 != 0 or !blockAligned(encoding, weight_offset, stride)) return null;
     return switch (encoding) {
@@ -201,6 +201,7 @@ pub fn specializedMatvec(encoding: u32, weight_offset: usize, stride: usize, inp
         7 => .matvec_q5_1,
         142 => .matvec_pq2_0,
         143 => .matvec_ptq1_0,
+        40 => .matvec_nvfp4,
         11 => .matvec_q3_k,
         21 => .matvec_iq3_s,
         12 => .matvec_q4_k,

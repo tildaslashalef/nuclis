@@ -405,6 +405,10 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8, only_shape: ?[]const
         .{ .rows = 6656, .columns = 4096, .name = "6656x4096 (muse attn_out)" },
         .{ .rows = 39936, .columns = 6656, .name = "39936x6656 (muse ffn_gate)" },
         .{ .rows = 202048, .columns = 6656, .name = "202048x6656 (muse head)" },
+        // Inkling 2's eight selected experts as one dense matrix of the
+        // same bytes: gate-up (2,304 columns) and down (1,152).
+        .{ .rows = 18432, .columns = 2304, .name = "18432x2304 (inkling 8 gate_up)" },
+        .{ .rows = 18432, .columns = 1152, .name = "18432x1152 (inkling 8 down)" },
     };
     const encodings = [_]struct { id: u32, fixture: []const u8, name: []const u8 }{
         .{ .id = 11, .fixture = "k-signed", .name = "Q3_K" },
@@ -425,6 +429,7 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8, only_shape: ?[]const
         .{ .id = 18, .fixture = "codebook", .name = "IQ3_XXS" },
         .{ .id = 19, .fixture = "codebook", .name = "IQ1_S" },
         .{ .id = 29, .fixture = "codebook", .name = "IQ1_M" },
+        .{ .id = 40, .fixture = "nvfp4", .name = "NVFP4" },
     };
     const rounds = 5; // measured command buffers
     // One weight buffer for every case: fresh multi-GB buffers made timings swing
@@ -439,7 +444,7 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8, only_shape: ?[]const
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(248320 * 4);
     std.debug.print("{s:<8} {s:<26} {s:>9} {s:>8} {s:>9} {s:>9}  rounds (GB/s)\n", .{ "encoding", "shape", "MB", "path", "best", "mean" });
-    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary", "codebook", "five-bit" }) |fixture_name| {
+    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary", "codebook", "five-bit", "nvfp4" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
         for (encodings) |enc| {
@@ -453,6 +458,8 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8, only_shape: ?[]const
             const bytes = sample_bytes orelse return error.FixtureMissing;
             for (shapes) |shape| {
                 if (only_shape) |name| if (std.mem.indexOf(u8, shape.name, name) == null) continue;
+                // A shape whose columns are not whole blocks of the encoding does not apply to it.
+                if (shape.columns % (inference.encoding.layout(enc.id) orelse return error.UnknownEncoding).elements_per_block != 0) continue;
                 // Small matrices need longer batches to avoid measuring clock ramp-up.
                 const repeats: usize = if (shape.rows < 8192) 64 else 8;
                 const region = try tiledMatrixRows(alloc, bytes, enc.id, shape.rows, shape.columns);
@@ -1579,6 +1586,137 @@ fn attentionBench(alloc: std.mem.Allocator) !void {
     }
 }
 
+/// NVFP4 (docs/engine/quantization.md). First every scale byte under every
+/// code, 256 blocks: the GPU decoder (`embed`) bit for bit against the CPU,
+/// and the specialized and generic matvec on one-hot inputs, exactly. Then
+/// Inkling 2's expert projections: 128 experts of seeded random codes under
+/// scales 2⁻³–2, gate-up 2,304 → 2,304 and down 1,152 → 2,304, eight slots a
+/// token, through the gathered matvec (1, 2, and 9 tokens) and the gathered
+/// tile (1, 2, 9, and 512), against the CPU matvec of each selected expert.
+fn checkNvfp4(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
+    {
+        var table: [256 * 36]u8 = undefined;
+        for (0..256) |blk| {
+            const block = table[blk * 36 ..][0..36];
+            block[0..4].* = @splat(@intCast(blk));
+            for (0..4) |s| for (0..8) |j| {
+                block[4 + 8 * s + j] = @as(u8, @intCast(j)) | @as(u8, @intCast(j + 8)) << 4;
+            };
+        }
+        const expected = try alloc.alloc(f32, 256 * 64);
+        defer alloc.free(expected);
+        try inference.quant.row(40, &table, expected);
+        const weights = try uploadBytes(b, &table);
+        const decoded = try b.create(expected.len * 4);
+        try b.begin();
+        try b.embed(weights, .{ .rows = 1, .columns = expected.len, .encoding = 40, .bytes = &table }, 0, decoded);
+        try b.commit();
+        for (decoded.floats()[0..expected.len], expected, 0..) |got, want, i| if (@as(u32, @bitCast(got)) != @as(u32, @bitCast(want))) {
+            std.debug.print("NVFP4 decode, scale byte 0x{x:0>2} value {d}: {d} vs {d}\n", .{ i / 64, i % 64, got, want });
+            return error.MetalDecodeMismatch;
+        };
+        const matrix: inference.cpu.Matrix = .{ .rows = 256, .columns = 64, .encoding = 40, .bytes = &table };
+        if (Backend.specializedMatvec(40, 0, 36, 0) != .matvec_nvfp4) return error.SpecializedPathNotSelected;
+        var input: [64]f32 = @splat(0);
+        var output: [256]f32 = undefined;
+        for ([_]bool{ false, true }) |generic| {
+            b.generic_only = generic;
+            for (0..64) |c| {
+                input[c] = 1;
+                try matvecOnce(b, matrix, weights, &input, &output);
+                input[c] = 0;
+                for (output, 0..) |got, r| if (got != expected[r * 64 + c]) {
+                    std.debug.print("NVFP4 one-hot matvec ({s}), scale byte 0x{x:0>2} value {d}: {d} vs {d}\n", .{ if (generic) "generic" else "specialized", r, c, got, expected[r * 64 + c] });
+                    return error.MetalDecodeMismatch;
+                };
+            }
+        }
+        b.generic_only = false;
+    }
+
+    var prng = std.Random.DefaultPrng.init(0x4f4f);
+    const random = prng.random();
+    const experts: usize = 128;
+    const k: usize = 8;
+    const width: usize = 2304;
+    const ff: usize = 1152;
+    const Projection = struct { tensor: inference.cpu.ExpertMatrix, weights: Buffer };
+    var projections: [2]Projection = undefined;
+    var regions: [2][]u8 = undefined;
+    for ([_][2]usize{ .{ 2 * ff, width }, .{ width, ff } }, 0..) |shape, which| {
+        const region = try alloc.alloc(u8, experts * shape[0] * (shape[1] / 64) * 36);
+        random.bytes(region);
+        var at: usize = 0;
+        while (at < region.len) : (at += 36) for (region[at..][0..4]) |*scale| {
+            scale.* = 0x20 + random.uintLessThan(u8, 0x20);
+        };
+        regions[which] = region;
+        projections[which] = .{
+            .tensor = .{ .encoding = 40, .experts = experts, .rows = shape[0], .columns = shape[1], .bytes = region },
+            .weights = try uploadBytes(b, region),
+        };
+    }
+    defer for (regions) |region| alloc.free(region);
+    const max_tokens: usize = 512;
+    const indices = try b.create(max_tokens * k * 4);
+    const idx = @as([*]u32, @ptrCast(@alignCast(indices.host)))[0 .. max_tokens * k];
+    for (0..max_tokens) |t| {
+        var taken: [experts]bool = @splat(false);
+        for (idx[t * k ..][0..k]) |*e| {
+            var pick = random.uintLessThan(u32, experts);
+            while (taken[pick]) pick = random.uintLessThan(u32, experts);
+            taken[pick] = true;
+            e.* = pick;
+        }
+    }
+    const x = try b.create(max_tokens * k * width * 4);
+    for (x.floats()) |*v| v.* = random.float(f32) * 2 - 1;
+    const out = try b.create(max_tokens * k * width * 4);
+    const lists = try b.create(Backend.expertListsLayout(max_tokens * k, experts).words * 4);
+    const expected = try alloc.alloc(f32, width);
+    defer alloc.free(expected);
+    const decoded = try alloc.alloc(f32, width);
+    defer alloc.free(decoded);
+    var worst: [2]check_stats.Worst = .{ .{}, .{} };
+    for (projections, 0..) |proj, which| {
+        const t = proj.tensor;
+        // Gate-up shares the token's row across its slots; down reads a row per slot.
+        const in_group: usize = if (which == 0) k else 1;
+        const in_stride = t.columns;
+        for ([_]usize{ 1, 2, 9, 512 }) |tokens| for ([_]bool{ false, true }) |tile| {
+            if (!tile and tokens > 9) continue;
+            const n = tokens * k;
+            for (out.floats()[0 .. n * t.rows]) |*v| v.* = std.math.nan(f32);
+            try b.begin();
+            if (tile) {
+                try b.expertLists(indices, tokens, k, experts, lists);
+                try b.matmulExperts(proj.weights, t, lists, tokens, k, x, in_stride, in_group, out, t.rows);
+            } else try b.matvecExpertsGrouped(proj.weights, t, indices, n, x, in_stride, in_group, out, t.rows);
+            try b.commit();
+            // Every slot of the small batches; a spread of slots of the large one.
+            var slot: usize = 0;
+            while (slot < n) : (slot += if (tokens > 9) 37 else 1) {
+                const matrix = try t.expert(idx[slot]);
+                const row = x.floats()[slot / in_group * in_stride ..][0..t.columns];
+                try inference.cpu.matvec(io, matrix, row, expected[0..t.rows], decoded[0..t.columns]);
+                for (0..t.rows) |r| {
+                    try inference.quant.row(40, matrix.bytes[r * (matrix.bytes.len / t.rows) ..][0 .. matrix.bytes.len / t.rows], decoded[0..t.columns]);
+                    var mass: f64 = 0;
+                    for (decoded[0..t.columns], row) |w, v| mass += @abs(@as(f64, w) * v);
+                    const got = out.floats()[slot * t.rows + r];
+                    worst[@intFromBool(tile)].observe(@abs(@as(f64, got) - expected[r]) / mass);
+                    // The tile rounds the activations to half; the weights are exact.
+                    expectClose(if (tile) "NVFP4 expert tile" else "NVFP4 gathered matvec", got, expected[r], @floatCast(mass * @as(f64, if (tile) 2e-4 else 4e-6) + 1e-6)) catch |err| {
+                        std.debug.print("  projection {d}, tokens {d}, slot {d}, row {d}\n", .{ which, tokens, slot, r });
+                        return err;
+                    };
+                }
+            }
+        };
+    }
+    std.debug.print("NVFP4: 256 scale bytes x 16 codes bit-identical (decode) and exact (one-hot matvec); Inkling experts 128 x top 8, worst |difference| / sum|w*x|: matvec {e:.2}, tile {e:.2}\n", .{ worst[0].shown(), worst[1].shown() });
+}
+
 /// Mixture-of-experts kernels against `cpu.experts`: the router on rows with
 /// ties and lanes past the expert count (indices exact), the gathered matvec
 /// on both kernel paths with shared and per-slot inputs and NaN in every
@@ -1994,25 +2132,28 @@ fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
 fn expertsBench(alloc: std.mem.Allocator, chunk: usize) !void {
     var backend = try openBackend(alloc);
     defer backend.deinit();
-    const b = &backend;
-    const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/simple.json"), .{ .ignore_unknown_fields = true });
-    defer fixtures.deinit();
-    var q4_0: ?[]const u8 = null;
-    for (fixtures.value.rows) |sample| if (sample.encoding == 2) {
-        q4_0 = sample.bytes;
-        break;
-    };
-    const sample_bytes = q4_0 orelse return error.FixtureMissing;
+    // Gemma 4 26B-A4B's Q4_0 experts, then Inkling 2's NVFP4 ones.
+    inline for (.{ .{ "simple", 2, 2816, 704 }, .{ "nvfp4", 40, 2304, 1152 } }) |g| {
+        const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ g[0] ++ ".json"), .{ .ignore_unknown_fields = true });
+        defer fixtures.deinit();
+        var sample: ?[]const u8 = null;
+        for (fixtures.value.rows) |row| if (row.encoding == g[1]) {
+            sample = row.bytes;
+            break;
+        };
+        try expertsBenchGeometry(alloc, &backend, chunk, sample orelse return error.FixtureMissing, g[1], g[2], g[3]);
+    }
+}
+
+fn expertsBenchGeometry(alloc: std.mem.Allocator, b: *Backend, chunk: usize, sample_bytes: []const u8, encoding: u32, width: usize, ff: usize) !void {
     const experts: usize = 128;
     const k: usize = 8;
-    const width: usize = 2816;
-    const ff: usize = 704;
-    const gu_region = try tiledMatrix(alloc, sample_bytes, 2, experts * 2 * ff, width);
+    const gu_region = try tiledMatrixRows(alloc, sample_bytes, encoding, experts * 2 * ff, width);
     defer alloc.free(gu_region);
-    const down_region = try tiledMatrix(alloc, sample_bytes, 2, experts * width, ff);
+    const down_region = try tiledMatrixRows(alloc, sample_bytes, encoding, experts * width, ff);
     defer alloc.free(down_region);
-    const gate_up: inference.cpu.ExpertMatrix = .{ .encoding = 2, .experts = experts, .rows = 2 * ff, .columns = width, .bytes = gu_region };
-    const down: inference.cpu.ExpertMatrix = .{ .encoding = 2, .experts = experts, .rows = width, .columns = ff, .bytes = down_region };
+    const gate_up: inference.cpu.ExpertMatrix = .{ .encoding = encoding, .experts = experts, .rows = 2 * ff, .columns = width, .bytes = gu_region };
+    const down: inference.cpu.ExpertMatrix = .{ .encoding = encoding, .experts = experts, .rows = width, .columns = ff, .bytes = down_region };
     const gu_weights = try uploadBytes(b, gu_region);
     const down_weights = try uploadBytes(b, down_region);
     const indices = try b.create(k * 4);
@@ -2028,8 +2169,8 @@ fn expertsBench(alloc: std.mem.Allocator, chunk: usize) !void {
     const gu_bytes = @as(f64, @floatFromInt(gu_region.len / experts * k));
     const down_bytes = @as(f64, @floatFromInt(down_region.len / experts * k));
     // Dense equivalents: one matrix holding the selected experts' bytes.
-    const dense_gu: inference.cpu.Matrix = .{ .encoding = 2, .rows = k * 2 * ff, .columns = width, .bytes = gu_region[0 .. gu_region.len / experts * k] };
-    const dense_down: inference.cpu.Matrix = .{ .encoding = 2, .rows = width, .columns = k * ff, .bytes = down_region[0 .. down_region.len / experts * k] };
+    const dense_gu: inference.cpu.Matrix = .{ .encoding = encoding, .rows = k * 2 * ff, .columns = width, .bytes = gu_region[0 .. gu_region.len / experts * k] };
+    const dense_down: inference.cpu.Matrix = .{ .encoding = encoding, .rows = width, .columns = k * ff, .bytes = down_region[0 .. down_region.len / experts * k] };
     const dense_x = try b.create(k * ff * 4);
     for (dense_x.floats(), 0..) |*v, i| v.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const dense_out = try b.create(k * 2 * ff * 4);
@@ -2060,19 +2201,20 @@ fn expertsBench(alloc: std.mem.Allocator, chunk: usize) !void {
     const tile_gu_bytes = @as(f64, @floatFromInt(gu_region.len / experts)) * @as(f64, @floatFromInt(tiles));
     const tile_down_bytes = @as(f64, @floatFromInt(down_region.len / experts)) * @as(f64, @floatFromInt(tiles));
     const Case = struct { name: []const u8, bytes: f64, which: enum { gate_up, down, chain, dense_gate_up, dense_down, prefill_gate_up, prefill_down, prefill_chain }, tokens: usize = 0 };
+    var names: [5][64]u8 = undefined;
     const cases = [_]Case{
-        .{ .name = "gathered gate-up 8 × (1408×2816)", .bytes = gu_bytes, .which = .gate_up },
-        .{ .name = "gathered down 8 × (2816×704)", .bytes = down_bytes, .which = .down },
+        .{ .name = try std.fmt.bufPrint(&names[0], "gathered gate-up 8 × ({d}×{d})", .{ 2 * ff, width }), .bytes = gu_bytes, .which = .gate_up },
+        .{ .name = try std.fmt.bufPrint(&names[1], "gathered down 8 × ({d}×{d})", .{ width, ff }), .bytes = down_bytes, .which = .down },
         .{ .name = "expert chain (gate-up, gelu, down, combine)", .bytes = gu_bytes + down_bytes, .which = .chain },
-        .{ .name = "dense 11264×2816 (same bytes as gate-up)", .bytes = gu_bytes, .which = .dense_gate_up },
-        .{ .name = "dense 2816×5632 (same bytes as down)", .bytes = down_bytes, .which = .dense_down },
+        .{ .name = try std.fmt.bufPrint(&names[3], "dense {d}×{d} (same bytes as gate-up)", .{ k * 2 * ff, width }), .bytes = gu_bytes, .which = .dense_gate_up },
+        .{ .name = try std.fmt.bufPrint(&names[4], "dense {d}×{d} (same bytes as down)", .{ width, k * ff }), .bytes = down_bytes, .which = .dense_down },
         .{ .name = "prefill gate-up tiles", .bytes = tile_gu_bytes, .which = .prefill_gate_up, .tokens = chunk },
         .{ .name = "prefill down tiles", .bytes = tile_down_bytes, .which = .prefill_down, .tokens = chunk },
         .{ .name = "prefill chain (lists, tiles, gelu, combine)", .bytes = tile_gu_bytes + tile_down_bytes, .which = .prefill_chain, .tokens = chunk },
     };
     const rounds = 5;
     const repeats = 64;
-    std.debug.print("prefill chunk of {d} tokens: {d} slot rows in {d} tiles of 32 over {d} experts\n", .{ chunk, n, tiles, experts });
+    std.debug.print("encoding {d}: prefill chunk of {d} tokens: {d} slot rows in {d} tiles of 32 over {d} experts\n", .{ encoding, chunk, n, tiles, experts });
     std.debug.print("{s:<46} {s:>7} {s:>9} {s:>9}  rounds (GB/s of the selected experts' bytes)\n", .{ "case", "MB", "best", "mean" });
     for (cases) |case| {
         var best: f64 = 0;
@@ -2305,7 +2447,7 @@ fn checkSegments(alloc: std.mem.Allocator) !void {
     const packed_output = try b.create(24 * rows * 4); // one slice per fixture encoding
     var list: std.ArrayList(Backend.Segment) = .empty;
     defer list.deinit(alloc);
-    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit" }) |name| {
+    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit", "nvfp4" }) |name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
         var seen: [256]bool = @splat(false);
@@ -3944,7 +4086,7 @@ fn checkWideRows(alloc: std.mem.Allocator, io: std.Io, b: *Backend, random: std.
         for (input) |*x| x.* = random.float(f32) * 2 - 1;
         const decoded = try alloc.alloc(f32, columns);
         defer alloc.free(decoded);
-        inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit" }) |name| {
+        inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit", "nvfp4" }) |name| {
             const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
             defer fixtures.deinit();
             var seen: [256]bool = @splat(false);
@@ -4201,7 +4343,7 @@ pub fn main(init: std.process.Init) !void {
 
     // 1. Every quantized fixture column through the GPU matvec, exact. The
     // backend is recreated per fixture file to exercise object cleanup.
-    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit" }) |name| {
+    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit", "nvfp4" }) |name| {
         var backend = try openBackend(alloc);
         defer backend.deinit();
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
@@ -4221,7 +4363,7 @@ pub fn main(init: std.process.Init) !void {
                 try backend.matvec(region, matrix, in, out);
                 try backend.commit();
                 output[0] = out.floats()[0];
-                if ((sample.encoding == 11 or sample.encoding == 12 or sample.encoding == 21) and output[0] != sample.values[column]) return error.MetalDecodeMismatch;
+                if ((sample.encoding == 11 or sample.encoding == 12 or sample.encoding == 21 or sample.encoding == 40) and output[0] != sample.values[column]) return error.MetalDecodeMismatch;
                 try expectClose("fixture column", output[0], sample.values[column], 0.00001 * @max(1, @abs(sample.values[column])));
                 in.floats()[column] = 0;
             }
@@ -4379,7 +4521,7 @@ pub fn main(init: std.process.Init) !void {
                 const generic_out = try b.create(padded * mm_rows * 4);
                 const decoded = try alloc.alloc(f32, columns);
                 defer alloc.free(decoded);
-                inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit" }) |name| {
+                inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit", "nvfp4" }) |name| {
                     const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
                     defer fixtures.deinit();
                     var seen: [256]bool = @splat(false);
@@ -4550,7 +4692,7 @@ pub fn main(init: std.process.Init) !void {
                     for (activations.floats()) |*x| x.* = random.float(f32) * 2 - 1;
                     const decoded = try alloc.alloc(f32, columns);
                     defer alloc.free(decoded);
-                    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit" }) |name| {
+                    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook", "five-bit", "nvfp4" }) |name| {
                         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
                         defer fixtures.deinit();
                         var seen: [256]bool = @splat(false);
@@ -5767,6 +5909,7 @@ pub fn main(init: std.process.Init) !void {
 
     // 9b. Mixture-of-experts kernels against the CPU references.
     try checkExperts(alloc, io, b);
+    try checkNvfp4(alloc, io, b);
 
     // 10. Recording contract: dispatch outside begin/commit is rejected, and a
     // committed empty pass is fine.

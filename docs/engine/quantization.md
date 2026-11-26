@@ -147,7 +147,15 @@ ignored, so `0x78`–`0x7E` are 256–448, `0x80` is 0 and `0xFF` is 480. Every
 product has at most six significant bits, so the decode is exact in F32.
 The per-expert F32 `.scale` tensors a file carries beside NVFP4 experts
 are not part of the block: the adapter applies them
-(`cpu.experts.Ffn.gate_up_scale` and `down_scale`).
+(`cpu.experts.Ffn.gate_up_scale` and `down_scale`). The GPU decoder
+(`nu_dequant_nvfp4`) matches this one bit for bit on all 256 scale bytes
+under all 16 codes ([metal-kernels.md](metal-kernels.md#specialized-matvec)).
+The [NVFP4 fixture](../../inference/src/quant/fixtures/nvfp4.json) (18
+blocks, an Inkling expert's down row, written by
+`scripts/fixtures/nvfp4-fixture.py` from these equations: every code in both
+nibble orders under the edge-case scale bytes, then random codes under the
+scale bytes the Inkling file uses) is the row `metal-check` tiles its
+NVFP4 matrices from.
 
 The block layouts and equations are facts of the GGML storage formats, learned
 from the pinned llama.cpp

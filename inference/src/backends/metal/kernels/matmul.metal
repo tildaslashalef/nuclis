@@ -161,6 +161,19 @@ inline void nu_tile_iq4_nl(device const uchar * b, uint first, thread float4 * q
     else { q[0] = nu_iq4_low(w0); q[1] = nu_iq4_low(w1); q[2] = nu_iq4_low(w2); q[3] = nu_iq4_low(w3); }
     for (uint i = 0; i < 4; ++i) q[i] = d * q[i];
 }
+// NVFP4 segment: sub-block first/16, its scale byte and two code words, in
+// the generic decoder's expression. A product has at most six significant
+// bits and is at least 2⁻¹⁰, so the half tile holds it exactly.
+inline void nu_tile_nvfp4(device const uchar * b, uint first, thread float4 * q) {
+    uint s = first / 16;
+    float d = nu_ue4m3(b[s]);
+    device const uint * words = (device const uint *)(b + 4 + 8 * s);
+    uint2 w = uint2(words[0], words[1]);
+    for (uint i = 0; i < 4; ++i) {
+        uchar4 n = as_type<uchar4>(i < 2 ? (w[i] & 0x0f0f0f0fu) : ((w[i - 2] >> 4) & 0x0f0f0f0fu));
+        q[i] = float4(nu_e2m1_values[n.x] * d, nu_e2m1_values[n.y] * d, nu_e2m1_values[n.z] * d, nu_e2m1_values[n.w] * d);
+    }
+}
 // PQ2_0 segment: four bytes at 2 + first/4 (two-byte aligned), each four
 // consecutive codes; PTQ1_0 segment: digit first/16 of the 16-byte run for
 // the first five segments, then the 8-byte run's digit pairs (0,1), (2,3),
@@ -279,10 +292,11 @@ inline void nu_tile_segment(device const uchar * row, uint encoding, uint segmen
         return;
     }
     // 256-value blocks hold sixteen segments; the 32-value blocks (Q4_0, Q5_0,
-    // Q5_1, Q8_0, IQ4_NL) two; the ternary 128-value blocks eight.
-    const uint block_bytes = ENC == 8 ? 34 : (ENC == 2 || ENC == 20) ? 18 : ENC == 6 ? 22 : ENC == 7 ? 24 : ENC == 12 ? 144 : ENC == 13 ? 176 : ENC == 14 ? 210 : ENC == 23 ? 136 : ENC == 142 ? 34 : ENC == 143 ? 28
+    // Q5_1, Q8_0, IQ4_NL) two; NVFP4's 64-value blocks four; the ternary
+    // 128-value blocks eight.
+    const uint block_bytes = ENC == 40 ? 36 : ENC == 8 ? 34 : (ENC == 2 || ENC == 20) ? 18 : ENC == 6 ? 22 : ENC == 7 ? 24 : ENC == 12 ? 144 : ENC == 13 ? 176 : ENC == 14 ? 210 : ENC == 23 ? 136 : ENC == 142 ? 34 : ENC == 143 ? 28
         : ENC == 10 ? 84 : ENC == 16 ? 66 : ENC == 17 ? 74 : ENC == 18 ? 98 : ENC == 19 ? 50 : ENC == 22 ? 82 : ENC == 29 ? 56 : 110;
-    const uint segments_per_block = (ENC == 2 || ENC == 6 || ENC == 7 || ENC == 20 || ENC == 8) ? 2 : (ENC == 142 || ENC == 143) ? 8 : 16;
+    const uint segments_per_block = (ENC == 2 || ENC == 6 || ENC == 7 || ENC == 20 || ENC == 8) ? 2 : ENC == 40 ? 4 : (ENC == 142 || ENC == 143) ? 8 : 16;
     device const uchar * b = row + ulong(segment / segments_per_block) * block_bytes;
     uint first = (segment % segments_per_block) * 16;
     switch (ENC) {
@@ -298,6 +312,7 @@ inline void nu_tile_segment(device const uchar * row, uint encoding, uint segmen
         case 21: nu_tile_iq3_s(b, first, q); break;
         case 142: nu_tile_pq2_0(b, first, q); break;
         case 143: nu_tile_ptq1_0(b, first, q); break;
+        case 40: nu_tile_nvfp4(b, first, q); break;
         case 10: nu_tile_q2_k(b, first, q); break;
         case 16: nu_tile_iq2_xxs(b, first, q); break;
         case 17: nu_tile_iq2_xs(b, first, q); break;
@@ -665,4 +680,5 @@ template [[host_name("nu_matmul_experts")]] kernel void nu_matmul_experts_t<NU_T
 template [[host_name("nu_matmul_experts_q4_0")]] kernel void nu_matmul_experts_t<2, 64, half, half>(NU_MATMUL_EXPERTS_ARGS);
 template [[host_name("nu_matmul_experts_q5_0")]] kernel void nu_matmul_experts_t<6, 64, half, half>(NU_MATMUL_EXPERTS_ARGS);
 template [[host_name("nu_matmul_experts_q5_1")]] kernel void nu_matmul_experts_t<7, 64, half, half>(NU_MATMUL_EXPERTS_ARGS);
+template [[host_name("nu_matmul_experts_nvfp4")]] kernel void nu_matmul_experts_t<40, 64, half, half>(NU_MATMUL_EXPERTS_ARGS);
 

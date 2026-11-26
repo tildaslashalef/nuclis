@@ -159,7 +159,7 @@ pub const MatmulExpertsParams = extern struct { columns: u32, encoding: u32, str
 /// 32-row tile of an expert's slot rows; no padding rows are written,
 /// so `output` holds exactly `rows · k` rows. Same shape rules as
 /// `matmul` (columns % 64, rows % 8, float4-aligned input). Q4_0, Q5_0,
-/// and Q5_1 take the half tile under the matvec alignment rules, everything else the
+/// Q5_1, and NVFP4 take the half tile under the matvec alignment rules, everything else the
 /// generic F32 tile. The profile attributes no bytes: the volume read
 /// depends on the routing.
 pub fn matmulExperts(self: *Backend, weights: Buffer, tensor: cpu.ExpertMatrix, lists: Buffer, rows: usize, k: usize, input: Buffer, in_stride: usize, in_group: usize, output: Buffer, out_stride: usize) !void {
@@ -178,6 +178,7 @@ pub fn matmulExperts(self: *Backend, weights: Buffer, tensor: cpu.ExpertMatrix, 
         2 => .matmul_experts_q4_0,
         6 => .matmul_experts_q5_0,
         7 => .matmul_experts_q5_1,
+        40 => .matmul_experts_nvfp4,
         else => null,
     };
     const specialized = !self.generic_only and half_tile != null and blockAligned(tensor.encoding, weights.offset, stride);

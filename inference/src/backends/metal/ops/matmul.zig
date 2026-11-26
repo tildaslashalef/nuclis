@@ -108,14 +108,14 @@ fn matmulImpl(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer
 }
 /// Whether the row start (buffer offset) and the row stride are multiples
 /// of the vector-load width the encoding's block size allows (see the
-/// switch: Q4_K/Q5_K 16, IQ4_XS/IQ1_M 8, Q2_K/PTQ1_0 4, the rest 2). False for encodings
+/// switch: Q4_K/Q5_K 16, IQ4_XS/IQ1_M 8, Q2_K/PTQ1_0/NVFP4 4, the rest 2). False for encodings
 /// without a specialized matvec; an encoding may have a matvec and no
 /// matmul tile, so each picker below answers null for its own gaps.
 pub fn blockAligned(encoding: u32, weight_offset: usize, stride: usize) bool {
     const alignment: usize = switch (encoding) {
         12, 13 => 16,
         23, 29 => 8,
-        10, 143 => 4,
+        10, 40, 143 => 4,
         2, 6, 7, 11, 14, 16, 17, 18, 19, 21, 22, 142 => 2,
         else => return false,
     };

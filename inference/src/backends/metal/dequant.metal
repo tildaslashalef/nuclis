@@ -11,6 +11,7 @@
 //   Q2_K 84/256  IQ2_XXS 66/256  IQ2_XS 74/256  IQ2_S 82/256  IQ3_XXS 98/256
 //   IQ1_S 50/256  IQ1_M 56/256 (codebooks: quant/iq-codebooks.zig)
 //   PQ2_0 34/128  PTQ1_0 28/128 (the PrismML fork's ternary blocks; docs/models/bonsai.md)
+//   NVFP4 36/64 (four UE4M3 scales, then E2M1 codes; docs/engine/quantization.md)
 
 inline float nu_half(device const uchar * b) {
     ushort bits = ushort(b[0]) | (ushort(b[1]) << 8);
@@ -80,6 +81,29 @@ inline void nu_dequant_iq4_nl(device const uchar * b, uint first, thread float *
     for (uint j = 0; j < 16; ++j) {
         uchar byte = b[2 + j];
         out[j] = d * float(nu_iq4_values[first == 0 ? (byte & 15) : (byte >> 4)]);
+    }
+}
+
+// NVFP4: four UE4M3 scale bytes, then 32 code bytes; sub-block s (16 values)
+// is scale byte s and bytes 4 + 8s .. 11 + 8s, whose low nibbles are values
+// 0..7 and high nibbles 8..15. Code 8 is +0, as the CPU table has it.
+constant float nu_e2m1_values[16] = { 0, 0.5, 1, 1.5, 2, 3, 4, 6, 0, -0.5, -1, -1.5, -2, -3, -4, -6 };
+// All 256 bytes: 0x00 and 0x7F are 0, bit 7 is ignored, exponent 0 is
+// subnormal (m·2⁻⁹); otherwise the exponent field (bias 7) goes straight into
+// a float's, so the value is exact.
+inline float nu_ue4m3(uint byte) {
+    uint low = byte & 0x7fu, e = low >> 3, m = low & 7u;
+    float normal = as_type<float>(((e + 120u) << 23) | (m << 20));
+    float value = e == 0 ? float(m) * 0x1p-9f : normal;
+    return (byte == 0u || byte == 0x7fu) ? 0.0f : value;
+}
+inline void nu_dequant_nvfp4(device const uchar * b, uint first, thread float * out) {
+    uint s = first / 16;
+    float d = nu_ue4m3(b[s]);
+    for (uint j = 0; j < 8; ++j) {
+        uchar byte = b[4 + 8 * s + j];
+        out[j] = nu_e2m1_values[byte & 15] * d;
+        out[j + 8] = nu_e2m1_values[byte >> 4] * d;
     }
 }
 
@@ -361,6 +385,7 @@ inline uint2 nu_block_geometry(uint encoding) {
         case 29: return uint2(56, 256);
         case 142: return uint2(34, 128);
         case 143: return uint2(28, 128);
+        case 40: return uint2(36, 64);
         default: return uint2(0, 0);
     }
 }
@@ -395,6 +420,7 @@ inline void nu_segment(device const uchar * row, uint encoding, uint segment, th
         case 29: nu_dequant_iq1_m(block, first, out); break;
         case 142: nu_dequant_pq2_0(block, first, out); break;
         case 143: nu_dequant_ptq1_0(block, first, out); break;
+        case 40: nu_dequant_nvfp4(block, first, out); break;
         default: for (uint j = 0; j < 16; ++j) out[j] = 0; break;
     }
 }
