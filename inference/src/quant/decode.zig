@@ -13,7 +13,8 @@
 //! the fork's own decoder (docs/models/bonsai.md). IQ1_S, IQ1_M, IQ2_XXS,
 //! IQ2_XS, IQ2_S, and IQ3_XXS index the codebooks in `iq-codebooks.zig`;
 //! their rows, and Q2_K's, are validated against the same model in a
-//! validated encoding (docs/models/saluki.md).
+//! validated encoding (docs/models/saluki.md). NVFP4 (id 40) is four UE4M3
+//! scales over 16-value sub-blocks of E2M1 codes (docs/engine/quantization.md).
 const std = @import("std");
 const encoding = @import("../tensor/encoding.zig");
 const iq3_grid = @import("iq3-grid.zig").values;
@@ -96,6 +97,7 @@ pub fn row(id: u32, bytes: []const u8, output: []f32) Error!void {
                     }
                 }
             },
+            40 => nvfp4Block(block, output[out..][0..64]),
             143 => ptq1Block(block, output[out..][0..128]),
             else => unreachable, // The supported IDs were checked above.
         }
@@ -107,7 +109,7 @@ pub fn row(id: u32, bytes: []const u8, output: []f32) Error!void {
 /// block-size rules remain centralized in the quantization module.
 pub fn validateRow(id: u32, byte_count: usize, element_count: usize) Error!void {
     switch (id) {
-        0, 1, 2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 29, 30, 142, 143 => {},
+        0, 1, 2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 29, 30, 40, 142, 143 => {},
         else => return error.UnsupportedTensorEncoding,
     }
     const layout = encoding.layout(id).?;
@@ -429,6 +431,33 @@ fn trit(byte: u8, power: u8) f32 {
     return @floatFromInt(@as(i32, (q * 3) >> 8) - 1);
 }
 
+/// NVFP4: four UE4M3 scales, one per 16 values, then 32 bytes of codes; in
+/// sub-block `s`, byte `j` holds value `j` (low nibble) and `j + 8` (high).
+fn nvfp4Block(block: []const u8, output: *[64]f32) void {
+    for (0..4) |s| {
+        const d = ue4m3(block[s]);
+        for (block[4 + 8 * s ..][0..8], 0..) |encoded, j| {
+            output[16 * s + j] = e2m1_values[encoded & 15] * d;
+            output[16 * s + j + 8] = e2m1_values[encoded >> 4] * d;
+        }
+    }
+}
+
+/// E2M1 codes: bit 3 is the sign. Code 8 is +0, as the format's own decoder
+/// computes it, so a decoded row matches it bit for bit.
+pub const e2m1_values = [16]f32{ 0, 0.5, 1, 1.5, 2, 3, 4, 6, 0, -0.5, -1, -1.5, -2, -3, -4, -6 };
+
+/// A UE4M3 scale byte, all 256 defined: `0x00` and `0x7F` are 0; otherwise
+/// bit 7 is ignored and the low seven bits are a 4-bit exponent (bias 7) over
+/// a 3-bit mantissa, subnormal (`man · 2⁻⁹`) at exponent 0.
+pub fn ue4m3(byte: u8) f32 {
+    if (byte == 0 or byte == 0x7f) return 0;
+    const exponent: i32 = (byte >> 3) & 15;
+    const mantissa: f32 = @floatFromInt(byte & 7);
+    if (exponent == 0) return mantissa * 0x1p-9;
+    return std.math.ldexp(1 + mantissa / 8, exponent - 7);
+}
+
 fn half(bytes: *const [2]u8) f32 {
     const value: f16 = @bitCast(std.mem.readInt(u16, bytes, .little));
     return @floatCast(value);
@@ -470,6 +499,80 @@ test "Q8_0 signed extremes and independent block scales" {
     expected[32] = -6;
     expected[63] = 4;
     try std.testing.expectEqualSlices(f32, &expected, &output);
+}
+
+/// The closed forms, written apart from the decoder: E2M1 magnitude `c / 2`
+/// below 2, else `(1 + (c & 1) / 2) · 2^((c >> 1) − 1)`; UE4M3 `(8 + m) ·
+/// 2^(e − 10)`, or `m / 512` at `e = 0`.
+fn nvfp4Expected(scale: u8, code: u8) f32 {
+    const c = code & 7;
+    const magnitude: f32 = if (c < 2) @as(f32, @floatFromInt(c)) / 2 else (1 + @as(f32, @floatFromInt(c & 1)) / 2) * std.math.pow(f32, 2, @as(f32, @floatFromInt(@as(i32, c >> 1) - 1)));
+    const low = scale & 0x7f;
+    const e: i32 = low >> 3;
+    const m: f32 = @floatFromInt(low & 7);
+    const d: f32 = if (scale == 0 or scale == 0x7f) 0 else if (e == 0) m / 512 else (8 + m) * std.math.pow(f32, 2, @as(f32, @floatFromInt(e - 10)));
+    // Code 8 is +0; any other negative code times a zero scale is −0.
+    if (code == 8) return 0;
+    return if (code & 8 != 0) -magnitude * d else magnitude * d;
+}
+
+test "NVFP4 every code with both signs, the nibble order, and successive sub-blocks" {
+    var bytes: [72]u8 = undefined;
+    // Sub-blocks 0 and 1 at scale 1 (0x38), 2 at 2 (0x40), 3 at 0.
+    bytes[0..4].* = .{ 0x38, 0x38, 0x40, 0x00 };
+    for (0..8) |j| {
+        const c: u8 = @intCast(j);
+        bytes[4 + j] = c | (c + 8) << 4; // value j positive, value j + 8 negative
+        bytes[12 + j] = (c + 8) | c << 4; // the reverse
+        bytes[20 + j] = c | c << 4;
+        bytes[28 + j] = (c + 8) | (c + 8) << 4;
+    }
+    // A second block: the first, with every scale doubled.
+    bytes[36..72].* = bytes[0..36].*;
+    bytes[36..40].* = .{ 0x40, 0x40, 0x48, 0x00 };
+    var output: [128]f32 = undefined;
+    try row(40, &bytes, &output);
+    const magnitudes = [8]f32{ 0, 0.5, 1, 1.5, 2, 3, 4, 6 };
+    for (0..8) |j| {
+        const m = magnitudes[j];
+        try std.testing.expectEqual(m, output[j]);
+        try std.testing.expectEqual(-m, output[8 + j]);
+        try std.testing.expectEqual(-m, output[16 + j]);
+        try std.testing.expectEqual(m, output[24 + j]);
+        try std.testing.expectEqual(2 * m, output[32 + j]);
+        try std.testing.expectEqual(2 * m, output[40 + j]);
+    }
+    for (0..64) |k| try std.testing.expectEqual(2 * output[k], output[64 + k]);
+    // Code 8 is +0, a negative code under a zero scale −0.
+    try std.testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(output[8])));
+    try std.testing.expectEqual(@as(u32, 0x8000_0000), @as(u32, @bitCast(output[57])));
+}
+
+test "NVFP4 decodes all 256 scale bytes times all 16 codes exactly" {
+    var bytes: [36]u8 = undefined;
+    for (0..8) |j| {
+        const c: u8 = @intCast(j);
+        for (0..4) |s| bytes[4 + 8 * s + j] = c | (c + 8) << 4;
+    }
+    var output: [64]f32 = undefined;
+    for (0..256) |b| {
+        const scale: u8 = @intCast(b);
+        bytes[0..4].* = @splat(scale);
+        try row(40, &bytes, &output);
+        for (0..16) |code| {
+            // Value j holds code j, value j + 8 code j + 8.
+            const expected = nvfp4Expected(scale, @intCast(code));
+            try std.testing.expectEqual(@as(u32, @bitCast(expected)), @as(u32, @bitCast(output[code])));
+        }
+    }
+    // The edges of the byte space.
+    try std.testing.expectEqual(@as(f32, 256), ue4m3(0x78));
+    try std.testing.expectEqual(@as(f32, 448), ue4m3(0x7e));
+    try std.testing.expectEqual(@as(f32, 0), ue4m3(0x7f));
+    try std.testing.expectEqual(@as(f32, 0), ue4m3(0x80));
+    try std.testing.expectEqual(@as(f32, 480), ue4m3(0xff));
+    try std.testing.expectEqual(@as(f32, 0x1p-9), ue4m3(0x01));
+    try std.testing.expectEqual(@as(f32, 0x1p-6), ue4m3(0x08));
 }
 
 test "IQ4_NL all codes, half-row ordering, and successive scales" {
@@ -566,7 +669,7 @@ test "Q5_1 offset, scale order, and the same plane layout as Q5_0" {
 test "invalid encodings and row sizes leave caller output untouched" {
     var output: [512]f32 = @splat(123);
     const bytes: [420]u8 = @splat(0);
-    for ([_]u32{ 0, 1, 2, 6, 7, 8, 11, 12, 13, 14, 20, 21, 23, 30, 142, 143 }) |id| {
+    for ([_]u32{ 0, 1, 2, 6, 7, 8, 11, 12, 13, 14, 20, 21, 23, 30, 40, 142, 143 }) |id| {
         const layout = encoding.layout(id).?;
         const n = layout.elements_per_block;
         const size = layout.bytes_per_block;

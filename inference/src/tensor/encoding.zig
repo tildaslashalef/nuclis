@@ -50,6 +50,7 @@ pub fn layout(id: u32) ?Layout {
         27 => .{ .name = "I64", .elements_per_block = 1, .bytes_per_block = 8 },
         29 => .{ .name = "IQ1_M", .elements_per_block = 256, .bytes_per_block = 56 },
         30 => .{ .name = "BF16", .elements_per_block = 1, .bytes_per_block = 2 },
+        40 => .{ .name = "NVFP4", .elements_per_block = 64, .bytes_per_block = 36 },
         142 => .{ .name = "PQ2_0", .elements_per_block = 128, .bytes_per_block = 34 },
         143 => .{ .name = "PTQ1_0", .elements_per_block = 128, .bytes_per_block = 28 },
         else => null,
@@ -71,5 +72,7 @@ test "quantized rows must contain whole blocks" {
     try std.testing.expectEqualStrings("I64", layout(27).?.name);
     try std.testing.expectEqual(@as(u64, 64), try layout(27).?.byteCount(&.{8}));
     try std.testing.expectError(error.InvalidShape, layout(27).?.byteCount(&.{0}));
+    try std.testing.expectEqual(@as(u64, 36 * 36 * 2), try layout(40).?.byteCount(&.{ 2304, 2 }));
+    try std.testing.expectError(error.InvalidShape, layout(40).?.byteCount(&.{ 32, 4 }));
     try std.testing.expect(layout(999) == null);
 }

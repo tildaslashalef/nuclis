@@ -28,7 +28,7 @@ the repository card does
 ([record, 2026-09-09](../benchmarks/record/catalogue.md#quantization-generations-recorded-2026-09-09)).
 Every tensor's actual encoding is enumerated by `nuclis inspect`
 ([gguf.md](../engine/gguf.md)); the loader knows
-<!-- gen:encodings-count -->24<!-- /gen --> encodings
+<!-- gen:encodings-count -->25<!-- /gen --> encodings
 ([quantization.md](../engine/quantization.md)), each adapter accepts its
 own executable set for matrices, and anything else is rejected
 explicitly, never requantized. A repository file is *runnable* when every

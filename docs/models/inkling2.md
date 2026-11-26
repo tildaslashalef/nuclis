@@ -144,7 +144,9 @@ Closed by the CPU reference's layer comparison on the real file:
 - **NVFP4 block**: 64 values in 36 bytes: four UE4M3 scales (one per 16
   values), then 32 bytes of E2M1 codes; in sub-block `s`, byte `j` holds
   value `j` in its low nibble and value `j + 8` in its high nibble. A
-  value is `e2m1(code) · ue4m3(scale)`.
+  value is `e2m1(code) · ue4m3(scale)` ([quantization.md](../engine/quantization.md)).
+  The file's 1.27 billion scale bytes use none of `0x00`, `0x7F`, or a set
+  bit 7; 1.1 % have exponent 15 (256–448).
 - The model was trained in NVFP4 with MXFP8 on its last four blocks; this
   file keeps the NVFP4 experts and stores the rest, the last four
   blocks' experts included, as the converter's Q8_0 requantization. One

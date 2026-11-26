@@ -83,11 +83,14 @@ pub const max_experts = 1024;
 
 /// The gathered expert FFN of one token. `gate_up` holds, per expert, the
 /// gate rows followed by the up rows (`2 · ff` rows); `down` maps `ff` back
-/// to the model width; `down_scale`, when present, is one factor per expert
-/// applied to the down projection before the routing weight.
+/// to the model width. `gate_up_scale` and `down_scale`, when present, are
+/// one factor per expert: the first multiplies both halves of the gate-up
+/// projection before the activation, the second the down projection before
+/// the routing weight.
 pub const Ffn = struct {
     gate_up: ExpertMatrix,
     down: ExpertMatrix,
+    gate_up_scale: ?[]const f32 = null,
     down_scale: ?[]const f32 = null,
 
     /// F32 scratch `ffn` needs: the gate-up row, the hidden row, the down
@@ -98,7 +101,8 @@ pub const Ffn = struct {
 };
 
 /// output = Σ_s weights[s] · scale[e_s] · down[e_s] · (gelu(g) ⊙ u) with
-/// (g, u) the halves of gate_up[e_s] · input, summed in F64 over the slots.
+/// (g, u) the halves of gate_up_scale[e_s] · gate_up[e_s] · input, summed in
+/// F64 over the slots.
 /// `scratch` needs `spec.scratchLen()` floats and `accumulator` one F64
 /// per output; all slices are borrowed and must not overlap the outputs.
 /// Each expert's matvecs split their rows across `io` tasks as far as the
@@ -113,6 +117,7 @@ pub fn ffn(io: std.Io, spec: Ffn, input: []const f32, indices: []const u32, weig
     if (indices.len == 0 or indices.len != weights.len or accumulator.len < output.len) return error.InvalidShape;
     if (scratch.len < spec.scratchLen()) return error.ScratchTooSmall;
     if (spec.down_scale) |s| if (s.len != down.experts) return error.InvalidShape;
+    if (spec.gate_up_scale) |s| if (s.len != gu.experts) return error.InvalidShape;
     for (indices) |e| if (e >= gu.experts) return error.InvalidExpert;
     for (weights) |w| if (!std.math.isFinite(w)) return error.NonFiniteWeight;
     const ff = down.columns;
@@ -124,6 +129,9 @@ pub fn ffn(io: std.Io, spec: Ffn, input: []const f32, indices: []const u32, weig
     @memset(acc, 0);
     for (indices, weights) |e, w| {
         try cpu.matvec(io, try gu.expert(e), input, gate_up_row, decode);
+        if (spec.gate_up_scale) |s| for (gate_up_row) |*x| {
+            x.* *= s[e];
+        };
         for (hidden, gate_up_row[0..ff], gate_up_row[ff..]) |*h, g, u| h.* = vector.gelu(g) * u;
         try cpu.matvec(io, try down.expert(e), hidden, projected, decode);
         const scale: f64 = if (spec.down_scale) |s| s[e] else 1;
@@ -213,4 +221,17 @@ test "gathered FFN weights, scales, and sums the selected experts" {
     var bad = spec;
     bad.down_scale = &.{1};
     try std.testing.expectError(error.InvalidShape, ffn(std.testing.io, bad, &.{ 2, 3 }, &.{0}, &.{1}, &output, &scratch, &acc));
+    bad = spec;
+    bad.gate_up_scale = &.{1};
+    try std.testing.expectError(error.InvalidShape, ffn(std.testing.io, bad, &.{ 2, 3 }, &.{0}, &.{1}, &output, &scratch, &acc));
+
+    // The gate-up scale enters before the activation: expert 1's hidden is
+    // gelu(3 / 4) · (2 / 4), which the factor 1/16 on the weight misses.
+    var scaled = spec;
+    scaled.gate_up_scale = &.{ 1, 0.25 };
+    try ffn(std.testing.io, scaled, &.{ 2, 3 }, &.{1}, &.{1}, &output, &scratch, &acc);
+    const h_scaled: f64 = @as(f64, vector.gelu(0.75)) * 0.5;
+    try std.testing.expectApproxEqRel(@as(f32, @floatCast(0.5 * h_scaled * 3)), output[0], 1e-6);
+    try std.testing.expectApproxEqRel(@as(f32, @floatCast(0.5 * h_scaled * 4)), output[1], 1e-6);
+    try std.testing.expect(@abs(output[0] - @as(f32, @floatCast(0.0625 * 0.5 * h1 * 3))) > 0.05);
 }

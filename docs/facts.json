@@ -598,6 +598,12 @@
       "bytes_per_block": 2
     },
     {
+      "id": 40,
+      "name": "NVFP4",
+      "elements_per_block": 64,
+      "bytes_per_block": 36
+    },
+    {
       "id": 142,
       "name": "PQ2_0",
       "elements_per_block": 128,

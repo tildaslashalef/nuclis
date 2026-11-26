@@ -48,11 +48,16 @@ fn writeSpreadScale(target: []u8, d: f32) void {
     }
 }
 
-/// One random block whose scale is `d`. The two restrictions are the
-/// writers': Q8_0 never stores -128 and PQ2_0 never stores code 3.
+/// One random block whose scale is `d` (for NVFP4, the nearest UE4M3 in
+/// all four sub-blocks). The two restrictions are the writers': Q8_0 never
+/// stores -128 and PQ2_0 never stores code 3.
 fn block(id: u32, random: std.Random, d: f32, bytes: []u8) void {
     random.bytes(bytes);
     if (id == 29) return writeSpreadScale(bytes, d);
+    if (id == 40) {
+        bytes[0..4].* = @splat(nearestUe4m3(d));
+        return;
+    }
     const at = fields(id).?;
     if (id == 8) {
         for (bytes[2..]) |*code| if (code.* == 0x80) {
@@ -66,6 +71,16 @@ fn block(id: u32, random: std.Random, d: f32, bytes: []u8) void {
     }
     writeHalf(bytes[at.d..], d);
     if (at.offset) |offset| writeHalf(bytes[offset.at..], d * offset.ratio);
+}
+
+/// The UE4M3 byte (0x01–0x7E) nearest to `d`; NVFP4's scale is not a half.
+fn nearestUe4m3(d: f32) u8 {
+    var best: u8 = 1;
+    for (1..0x7f) |b| {
+        const byte: u8 = @intCast(b);
+        if (@abs(decode.ue4m3(byte) - d) < @abs(decode.ue4m3(best) - d)) best = byte;
+    }
+    return best;
 }
 
 const calibration_blocks = 16;
@@ -92,7 +107,7 @@ pub fn row(id: u32, random: std.Random, rms: f32, bytes: []u8) Error!void {
     const layout = encoding.layout(id) orelse return error.UnsupportedTensorEncoding;
     const width = layout.bytes_per_block;
     if (bytes.len == 0 or bytes.len % width != 0) return error.InvalidByteLength;
-    if (layout.elements_per_block != 1 and id != 29 and fields(id) == null) return error.UnsupportedTensorEncoding;
+    if (layout.elements_per_block != 1 and id != 29 and id != 40 and fields(id) == null) return error.UnsupportedTensorEncoding;
     const d = try scaleFor(id, rms);
     var offset: usize = 0;
     while (offset < bytes.len) : (offset += width) {
@@ -110,7 +125,7 @@ pub fn row(id: u32, random: std.Random, rms: f32, bytes: []u8) Error!void {
     }
 }
 
-const all_layouts = [_]u32{ 0, 1, 2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 29, 30, 142, 143 };
+const all_layouts = [_]u32{ 0, 1, 2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 29, 30, 40, 142, 143 };
 
 fn sampleRow(id: u32, seed: u64, rms: f32, bytes: []u8, output: []f32) !void {
     var prng: std.Random.DefaultPrng = .init(seed);

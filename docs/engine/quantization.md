@@ -7,7 +7,7 @@ row into caller-owned `f32` storage: the numerical reference the CPU
 executor computes with and the Metal decoders are held to.
 
 [encoding.zig](../../inference/src/tensor/encoding.zig) sizes, and `quant.row`
-decodes, <!-- gen:encodings-count -->24<!-- /gen --> encodings, PQ2_0 and
+decodes, <!-- gen:encodings-count -->25<!-- /gen --> encodings, PQ2_0 and
 PTQ1_0 from the PrismML fork:
 
 <!-- gen:encodings -->
@@ -35,6 +35,7 @@ PTQ1_0 from the PrismML fork:
 | 27 | `I64` | 1 | 8 |
 | 29 | `IQ1_M` | 256 | 56 |
 | 30 | `BF16` | 1 | 2 |
+| 40 | `NVFP4` | 64 | 36 |
 | 142 | `PQ2_0` | 128 | 34 |
 | 143 | `PTQ1_0` | 128 | 28 |
 <!-- /gen -->
@@ -133,6 +134,20 @@ bytes, then the scale: digit `n` of a byte is `((byte * 3^n mod 256) * 3)
 bytes hold four trits at the leading positions. BF16 (id 30) widens the
 high half of a single. The contracts, the fork's revision, and the
 rotation these files also need are in [bonsai.md](../models/bonsai.md#encodings-from-the-forks-ggml-commonh-and-ggml-quantsc).
+
+NVFP4 (id 40) stores 64 values in 36 bytes: four UE4M3 scale bytes, one per
+16-value sub-block, then 32 bytes of E2M1 codes. In sub-block `s`, byte `j`
+(0–7) holds value `j` in its low nibble and value `j + 8` in its high
+nibble, and each value is `e2m1(code) · ue4m3(d[s])`. E2M1 is a sign (bit
+3) over the magnitudes {0, 0.5, 1, 1.5, 2, 3, 4, 6}; code 8 decodes to +0,
+as the format's own decoder computes it. UE4M3 has a 4-bit exponent with
+bias 7 over a 3-bit mantissa, `man · 2⁻⁹` at exponent 0. All 256 scale
+bytes are defined: `0x00` and `0x7F` are 0, and otherwise bit 7 is
+ignored, so `0x78`–`0x7E` are 256–448, `0x80` is 0 and `0xFF` is 480. Every
+product has at most six significant bits, so the decode is exact in F32.
+The per-expert F32 `.scale` tensors a file carries beside NVFP4 experts
+are not part of the block: the adapter applies them
+(`cpu.experts.Ffn.gate_up_scale` and `down_scale`).
 
 The block layouts and equations are facts of the GGML storage formats, learned
 from the pinned llama.cpp
