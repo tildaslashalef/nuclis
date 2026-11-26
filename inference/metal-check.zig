@@ -5353,6 +5353,7 @@ pub fn main(init: std.process.Init) !void {
     try checkWindowedAndWideAttention(alloc, b, true);
     try checkChunkAttentionReuse(alloc, b);
     try checkChunkAttentionMaterialized(alloc, b);
+    try @import("attention-modes-metal-check.zig").check(alloc, b);
     try checkAttentionVerify(alloc, b);
     try checkWindowAttention(alloc, b);
     try checkSegmentAttention(alloc, b);

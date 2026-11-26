@@ -138,6 +138,14 @@ inline void nu_kv_load(device const nu_q8_0 * row, uint lane, uint width, thread
     }
 }
 
+// The score bias of the key `d` rows before a query row's own key (`d` = 0):
+// `table[row][head][extent]`, none at `extent` or more rows back (an extent
+// of 0 adds nothing). The kernels' `BIAS`/`MODES` instantiations add it to
+// the scaled score.
+inline float nu_distance_bias(device const float * table, uint extent, uint heads, uint row, uint head, uint d) {
+    return d < extent ? table[(ulong(row) * heads + head) * extent + d] : 0.0f;
+}
+
 // ---------------------------------------------------------------------------
 // Flash-decoding attention: one query position over `visible` cache
 // rows in one pass, no score buffer. Grid = (kv_head, split): a threadgroup
@@ -162,18 +170,21 @@ inline void nu_kv_load(device const nu_q8_0 * row, uint lane, uint width, thread
 // rows = 1, window = 0 (its callers slice the window off the cache).
 // Keys and values of one width 128, 256, or 512 run in
 // `nu_attention_heads_t` below; this kernel takes every other shape.
-struct AttentionDecodeParams { uint query_heads; uint kv_heads; uint key_width; uint value_width; uint visible; uint splits; float scale; uint rows; uint q_stride; uint out_stride; uint window; };
+// `BIAS` adds `nu_distance_bias` (`bias`, `[row][query head][bias_extent]`)
+// to each score; the sinks join in `nu_attention_merge_t`.
+struct AttentionDecodeParams { uint query_heads; uint kv_heads; uint key_width; uint value_width; uint visible; uint splits; float scale; uint rows; uint q_stride; uint out_stride; uint window; uint bias_extent; };
 // GROUP query heads per threadgroup and CH channels per lane (widths up to
 // 32 * CH); the register budget is GROUP * CH * 2 floats per lane in both
 // instantiation pairs (8 × 8 for widths up to 256, 4 × 16 up to 512). A KV
 // head with more query heads than GROUP is covered by several threadgroups
 // per split (`head_groups`), each reading the slice once (Gemma's
 // global layers put 16 query heads of 512 channels over one KV head).
-template <typename KV, uint GROUP, uint CH>
+template <typename KV, uint GROUP, uint CH, bool BIAS>
 kernel void nu_attention_decode_t(device const KV * keys [[buffer(0)]],
                                   device const KV * values [[buffer(1)]],
                                   device const float * queries [[buffer(2)]],
                                   device float * partials [[buffer(3)]],
+                                  device const float * bias [[buffer(4)]],
                                   constant AttentionDecodeParams & p [[buffer(7)]],
                                   uint group [[threadgroup_position_in_grid]],
                                   uint sg [[simdgroup_index_in_threadgroup]],
@@ -209,7 +220,8 @@ kernel void nu_attention_decode_t(device const KV * keys [[buffer(0)]],
             if (h < hn) {
                 float partial = 0.0f;
                 for (uint i = 0; i < CH; ++i) partial += q[h][i] * kr[i];
-                const float sc = simd_sum(partial);
+                float sc = simd_sum(partial);
+                if constexpr (BIAS) sc += nu_distance_bias(bias, p.bias_extent, p.query_heads, row, kv * g + h0 + h, seen - 1 - t);
                 const float m_new = max(m[h], sc);
                 const float alpha = exp(m[h] - m_new), pr = exp(sc - m_new);
                 l[h] = l[h] * alpha + pr;
@@ -250,13 +262,12 @@ kernel void nu_attention_decode_t(device const KV * keys [[buffer(0)]],
         for (uint i = 0; i < CH; ++i) { const uint c = nu_kv_channel(values, lane, i); if (c < p.value_width) out[2 + c] = acc[h][i]; }
     }
 }
-#define NU_ATTN_DECODE_ARGS device const float *, device float *, constant AttentionDecodeParams &, uint, uint, uint
-template [[host_name("nu_attention_decode")]] kernel void nu_attention_decode_t<float, 8, 8>(device const float *, device const float *, NU_ATTN_DECODE_ARGS);
-template [[host_name("nu_attention_decode_h")]] kernel void nu_attention_decode_t<half, 8, 8>(device const half *, device const half *, NU_ATTN_DECODE_ARGS);
-template [[host_name("nu_attention_decode_w")]] kernel void nu_attention_decode_t<float, 4, 16>(device const float *, device const float *, NU_ATTN_DECODE_ARGS);
-template [[host_name("nu_attention_decode_wh")]] kernel void nu_attention_decode_t<half, 4, 16>(device const half *, device const half *, NU_ATTN_DECODE_ARGS);
-template [[host_name("nu_attention_decode_q8")]] kernel void nu_attention_decode_t<nu_q8_0, 8, 8>(device const nu_q8_0 *, device const nu_q8_0 *, NU_ATTN_DECODE_ARGS);
-template [[host_name("nu_attention_decode_wq8")]] kernel void nu_attention_decode_t<nu_q8_0, 4, 16>(device const nu_q8_0 *, device const nu_q8_0 *, NU_ATTN_DECODE_ARGS);
+#define NU_ATTN_DECODE_ARGS device const float *, device float *, device const float *, constant AttentionDecodeParams &, uint, uint, uint
+#define NU_ATTN_DECODE(NAME, KV, GROUP, CH) \
+    template [[host_name("nu_attention_decode" NAME)]] kernel void nu_attention_decode_t<KV, GROUP, CH, false>(device const KV *, device const KV *, NU_ATTN_DECODE_ARGS); \
+    template [[host_name("nu_attention_decode" NAME "_biased")]] kernel void nu_attention_decode_t<KV, GROUP, CH, true>(device const KV *, device const KV *, NU_ATTN_DECODE_ARGS);
+NU_ATTN_DECODE("", float, 8, 8) NU_ATTN_DECODE("_h", half, 8, 8) NU_ATTN_DECODE("_w", float, 4, 16)
+NU_ATTN_DECODE("_wh", half, 4, 16) NU_ATTN_DECODE("_q8", nu_q8_0, 8, 8) NU_ATTN_DECODE("_wq8", nu_q8_0, 4, 16)
 // The split pass for one head width known at compile time, 32 × CH for
 // keys and values alike (CH 4, 8, or 16): `nu_attention_decode_t`'s
 // contract and partial layout, built for occupancy, since registers and
@@ -280,17 +291,19 @@ inline void nu_heads_load(device const half * row, uint lane, thread float * out
     for (uint j = 0; j < CH / 4; ++j) { const float4 x = float4(half4(r[j])); out[4 * j] = x.x; out[4 * j + 1] = x.y; out[4 * j + 2] = x.z; out[4 * j + 3] = x.w; }
 }
 // One cache row for a SIMD group's GROUP heads: the dot, the online
-// softmax, and the accumulation, per head.
-template <uint CH, uint GROUP, typename T>
+// softmax, and the accumulation, per head; `BIAS` adds `extra[h]` to head
+// h's score.
+template <uint CH, uint GROUP, bool BIAS, typename T>
 inline void nu_heads_row(device const T * k, device const T * v, uint lane, thread const float (&q)[GROUP][CH],
-                         thread float * m, thread float * l, thread float (&acc)[GROUP][CH]) {
+                         thread const float * extra, thread float * m, thread float * l, thread float (&acc)[GROUP][CH]) {
     float kr[CH], vr[CH];
     nu_heads_load<CH>(k, lane, kr);
     nu_heads_load<CH>(v, lane, vr);
     for (uint h = 0; h < GROUP; ++h) {
         float partial = 0.0f;
         for (uint i = 0; i < CH; ++i) partial += q[h][i] * kr[i];
-        const float sc = simd_sum(partial);
+        float sc = simd_sum(partial);
+        if constexpr (BIAS) sc += extra[h];
         const float m_new = max(m[h], sc);
         const float alpha = exp(m[h] - m_new), pr = exp(sc - m_new);
         l[h] = l[h] * alpha + pr;
@@ -309,9 +322,9 @@ inline void nu_heads_codes(device const nu_q8_0 & b, uint at, thread float * x) 
 // accumulation) so K and V codes are never live together, with each
 // block's scale outside the per-code products: dot = d · Σ q·code,
 // acc += (p · d) · code.
-template <uint CH, uint GROUP>
+template <uint CH, uint GROUP, bool BIAS>
 inline void nu_heads_row(device const nu_q8_0 * k, device const nu_q8_0 * v, uint lane, thread const float (&q)[GROUP][CH],
-                         thread float * m, thread float * l, thread float (&acc)[GROUP][CH]) {
+                         thread const float * extra, thread float * m, thread float * l, thread float (&acc)[GROUP][CH]) {
     constexpr uint U = CH < 8 ? CH : 8;
     float partial[GROUP], pr[GROUP], alpha[GROUP];
     for (uint h = 0; h < GROUP; ++h) partial[h] = 0.0f;
@@ -327,7 +340,8 @@ inline void nu_heads_row(device const nu_q8_0 * k, device const nu_q8_0 * v, uin
         }
     }
     for (uint h = 0; h < GROUP; ++h) {
-        const float sc = simd_sum(partial[h]);
+        float sc = simd_sum(partial[h]);
+        if constexpr (BIAS) sc += extra[h];
         const float m_new = max(m[h], sc);
         alpha[h] = exp(m[h] - m_new);
         pr[h] = exp(sc - m_new);
@@ -345,11 +359,12 @@ inline void nu_heads_row(device const nu_q8_0 * k, device const nu_q8_0 * v, uin
         }
     }
 }
-template <typename KV, uint GROUP, uint CH>
+template <typename KV, uint GROUP, uint CH, bool BIAS>
 kernel void nu_attention_heads_t(device const KV * keys [[buffer(0)]],
                                  device const KV * values [[buffer(1)]],
                                  device const float * queries [[buffer(2)]],
                                  device float * partials [[buffer(3)]],
+                                 device const float * bias [[buffer(4)]],
                                  constant AttentionDecodeParams & p [[buffer(7)]],
                                  uint group [[threadgroup_position_in_grid]],
                                  uint sg [[simdgroup_index_in_threadgroup]],
@@ -376,8 +391,11 @@ kernel void nu_attention_heads_t(device const KV * keys [[buffer(0)]],
     float m[GROUP], l[GROUP], acc[GROUP][CH];
     for (uint h = 0; h < GROUP; ++h) { m[h] = -INFINITY; l[h] = 0.0f; for (uint i = 0; i < CH; ++i) acc[h][i] = 0.0f; }
     const ulong stride_row = ulong(p.kv_heads) * W;
-    for (uint t = start + rl; t < end; t += lanes)
-        nu_heads_row<CH, GROUP>(nu_kv_row(keys, ulong(t) * stride_row + ulong(kv) * W), nu_kv_row(values, ulong(t) * stride_row + ulong(kv) * W), lane, q, m, l, acc);
+    for (uint t = start + rl; t < end; t += lanes) {
+        float extra[GROUP];
+        if constexpr (BIAS) for (uint h = 0; h < GROUP; ++h) extra[h] = h < hn ? nu_distance_bias(bias, p.bias_extent, p.query_heads, row, kv * g + h0 + h, seen - 1 - t) : 0.0f;
+        nu_heads_row<CH, GROUP, BIAS>(nu_kv_row(keys, ulong(t) * stride_row + ulong(kv) * W), nu_kv_row(values, ulong(t) * stride_row + ulong(kv) * W), lane, q, extra, m, l, acc);
+    }
     // Merge row lanes 1.. into lane 0, one at a time; every head group at once.
     const uint slot = hg * GROUP;
     for (uint r = 1; r < lanes; ++r) {
@@ -413,24 +431,30 @@ kernel void nu_attention_heads_t(device const KV * keys [[buffer(0)]],
 // GROUP per (precision, width) must match `decodePlan`'s `Choice.group` in
 // ops/attention.zig.
 #define NU_ATTN_HEADS(NAME, KV, GROUP, CH) \
-    template [[host_name("nu_attention_heads_" NAME)]] kernel void nu_attention_heads_t<KV, GROUP, CH>(device const KV *, device const KV *, device const float *, device float *, constant AttentionDecodeParams &, uint, uint, uint, uint);
+    template [[host_name("nu_attention_heads_" NAME)]] kernel void nu_attention_heads_t<KV, GROUP, CH, false>(device const KV *, device const KV *, device const float *, device float *, device const float *, constant AttentionDecodeParams &, uint, uint, uint, uint); \
+    template [[host_name("nu_attention_heads_" NAME "_biased")]] kernel void nu_attention_heads_t<KV, GROUP, CH, true>(device const KV *, device const KV *, device const float *, device float *, device const float *, constant AttentionDecodeParams &, uint, uint, uint, uint);
 NU_ATTN_HEADS("f32_128", float, 4, 4) NU_ATTN_HEADS("f32_256", float, 2, 8) NU_ATTN_HEADS("f32_512", float, 1, 16)
 NU_ATTN_HEADS("f16_128", half, 4, 4) NU_ATTN_HEADS("f16_256", half, 2, 8) NU_ATTN_HEADS("f16_512", half, 1, 16)
 NU_ATTN_HEADS("q8_128", nu_q8_0, 4, 4) NU_ATTN_HEADS("q8_256", nu_q8_0, 3, 8) NU_ATTN_HEADS("q8_512", nu_q8_0, 1, 16)
 // One threadgroup per (row, query head), 256 threads striding the value
 // channels: rescale every split's partial to the global max, divide by the
-// merged sum.
-kernel void nu_attention_merge(device const float * partials [[buffer(0)]],
-                               device float * output [[buffer(1)]],
-                               constant AttentionDecodeParams & p [[buffer(7)]],
-                               uint head [[threadgroup_position_in_grid]],
-                               uint channel [[thread_position_in_threadgroup]]) {
+// merged sum. `SINK` adds `exp(sinks[row][head])` to the sum, a key that
+// carries no value.
+template <bool SINK>
+kernel void nu_attention_merge_t(device const float * partials [[buffer(0)]],
+                                 device float * output [[buffer(1)]],
+                                 device const float * sinks [[buffer(2)]],
+                                 constant AttentionDecodeParams & p [[buffer(7)]],
+                                 uint head [[threadgroup_position_in_grid]],
+                                 uint channel [[thread_position_in_threadgroup]]) {
     const uint stride = 2 + p.value_width;
     device const float * part = partials + ulong(head) * p.splits * stride;
     float global_max = -INFINITY;
     for (uint s = 0; s < p.splits; ++s) global_max = max(global_max, part[s * stride]);
+    float sink = 0.0f;
+    if constexpr (SINK) { sink = sinks[head]; global_max = max(global_max, sink); }
     for (uint c = channel; c < p.value_width; c += 256) {
-        float total = 0.0f, sum = 0.0f;
+        float total = SINK ? exp(sink - global_max) : 0.0f, sum = 0.0f;
         for (uint s = 0; s < p.splits; ++s) {
             const float ms = part[s * stride];
             if (ms == -INFINITY) continue;
@@ -441,6 +465,8 @@ kernel void nu_attention_merge(device const float * partials [[buffer(0)]],
         output[ulong(head / p.query_heads) * p.out_stride + (head % p.query_heads) * p.value_width + c] = sum / total;
     }
 }
+template [[host_name("nu_attention_merge")]] kernel void nu_attention_merge_t<false>(device const float *, device float *, device const float *, constant AttentionDecodeParams &, uint, uint);
+template [[host_name("nu_attention_merge_sink")]] kernel void nu_attention_merge_t<true>(device const float *, device float *, device const float *, constant AttentionDecodeParams &, uint, uint);
 
 // ---------------------------------------------------------------------------
 // Causal tiled attention for a prefill chunk: `count` query rows at
@@ -478,7 +504,12 @@ kernel void nu_attention_merge(device const float * partials [[buffer(0)]],
 // multiplies operands of one type into F32 accumulators (the matmul's
 // contract). Scores, the online softmax, the accumulators, and the output
 // stay F32 in both instantiations.
-struct AttentionChunkParams { uint query_heads; uint kv_heads; uint key_width; uint value_width; uint position; uint count; uint q_stride; uint out_stride; float scale; uint window; uint span_begin; uint span_end; };
+//
+// `MODES` (the row-split body only) adds `nu_distance_bias` (`bias`,
+// `[chunk row][query head][bias_extent]`) to each visible score and, when
+// `sinks` is nonzero, starts each row's softmax at `sinks[chunk row][head]`
+// with a sum of 1: a key that carries no value.
+struct AttentionChunkParams { uint query_heads; uint kv_heads; uint key_width; uint value_width; uint position; uint count; uint q_stride; uint out_stride; float scale; uint window; uint span_begin; uint span_end; uint bias_extent; uint sinks; };
 #define NU_ATTN_KEYS 32 // keys per tile; the score tile is 8 × NU_ATTN_KEYS per SIMD group
 template <typename T>
 inline void nu_load_rows_masked(thread simdgroup_matrix<T, 8, 8> & m, device const T * src, ulong stride, uint valid_rows, threadgroup T * stage, uint lane, bool transpose) {
@@ -487,11 +518,13 @@ inline void nu_load_rows_masked(thread simdgroup_matrix<T, 8, 8> & m, device con
     simdgroup_load(m, stage, 8, ulong2(0, 0), transpose);
     simdgroup_barrier(mem_flags::mem_threadgroup);
 }
-template <typename T>
+template <typename T, bool MODES>
 kernel void nu_attention_chunk_t(device const T * keys [[buffer(0)]],
                                  device const T * values [[buffer(1)]],
                                  device const T * queries [[buffer(2)]],
                                  device float * output [[buffer(3)]],
+                                 device const float * bias [[buffer(4)]],
+                                 device const float * sinks [[buffer(5)]],
                                  constant AttentionChunkParams & p [[buffer(7)]],
                                  uint group [[threadgroup_position_in_grid]],
                                  uint sg [[simdgroup_index_in_threadgroup]],
@@ -528,6 +561,8 @@ kernel void nu_attention_chunk_t(device const T * keys [[buffer(0)]],
     const uint row_lo = (p.window != 0 && p.position + q0 + row + 1 > p.window) ? p.position + q0 + row + 1 - p.window : 0;
     const uint k_begin = (p.window != 0 && p.position + q0 + 1 > p.window) ? (p.position + q0 + 1 - p.window) / NU_ATTN_KEYS * NU_ATTN_KEYS : 0;
     float m = -INFINITY, l = 0.0f;
+    const bool row_real = q0 + row < p.count;
+    if constexpr (MODES) if (p.sinks != 0 && row_real) { m = sinks[ulong(q0 + row) * p.query_heads + head]; l = 1.0f; }
     simdgroup_float8x8 o[32];
     const uint vblocks = min(p.value_width - v0, 256u) / 8;
     for (uint j = 0; j < 32; ++j) o[j] = simdgroup_float8x8(0.0f);
@@ -553,7 +588,10 @@ kernel void nu_attention_chunk_t(device const T * keys [[buffer(0)]],
         float tile_max = -INFINITY;
         for (uint c = 0; c < 8; ++c) {
             const uint key = k0 + col0 + c;
-            local[c] = (key < row_limit && key >= row_lo) ? s[row * NU_ATTN_KEYS + col0 + c] * p.scale : -INFINITY;
+            const bool visible = key < row_limit && key >= row_lo;
+            float x = s[row * NU_ATTN_KEYS + col0 + c] * p.scale;
+            if constexpr (MODES) if (visible && row_real) x += nu_distance_bias(bias, p.bias_extent, p.query_heads, q0 + row, head, p.position + q0 + row - key);
+            local[c] = visible ? x : -INFINITY;
             tile_max = max(tile_max, local[c]);
         }
         tile_max = max(tile_max, simd_shuffle_xor(tile_max, 1));
@@ -610,8 +648,11 @@ kernel void nu_attention_chunk_t(device const T * keys [[buffer(0)]],
     }
 }
 #define NU_ATTN_CHUNK_ARGS device float *, constant AttentionChunkParams &, uint, uint, uint
-template [[host_name("nu_attention_chunk")]] kernel void nu_attention_chunk_t<float>(device const float *, device const float *, device const float *, NU_ATTN_CHUNK_ARGS);
-template [[host_name("nu_attention_chunk_h")]] kernel void nu_attention_chunk_t<half>(device const half *, device const half *, device const half *, NU_ATTN_CHUNK_ARGS);
+#define NU_ATTN_CHUNK_MODE_ARGS device float *, device const float *, device const float *, constant AttentionChunkParams &, uint, uint, uint
+template [[host_name("nu_attention_chunk")]] kernel void nu_attention_chunk_t<float, false>(device const float *, device const float *, device const float *, NU_ATTN_CHUNK_MODE_ARGS);
+template [[host_name("nu_attention_chunk_h")]] kernel void nu_attention_chunk_t<half, false>(device const half *, device const half *, device const half *, NU_ATTN_CHUNK_MODE_ARGS);
+template [[host_name("nu_attention_chunk_modes")]] kernel void nu_attention_chunk_t<float, true>(device const float *, device const float *, device const float *, NU_ATTN_CHUNK_MODE_ARGS);
+template [[host_name("nu_attention_chunk_h_modes")]] kernel void nu_attention_chunk_t<half, true>(device const half *, device const half *, device const half *, NU_ATTN_CHUNK_MODE_ARGS);
 
 // Register-reuse causal chunk attention: the same contract, tiling, and
 // masking as `nu_attention_chunk_t`, with the four SIMD groups of a (head,
@@ -782,7 +823,10 @@ template [[host_name("nu_attention_chunk_reuse_h")]] kernel void nu_attention_ch
 // queries and output are F32, and the staging converts to F32, so an F16
 // cache multiplies in F32 like an F32 one. Rows past `count` up to the
 // caller's padding are computed over keys clamped to the chunk's end.
-struct ChunkStripParams { uint query_heads; uint kv_heads; uint key_width; uint value_width; uint position; uint count; uint q_stride; uint out_stride; float scale; uint tile0; uint tiles; uint row_stride; uint window; };
+// `BIAS` scores add `nu_distance_bias` (`[chunk row][query head][bias_extent]`)
+// to each visible key; `SINK` statistics add `exp(sinks[chunk row][head])`
+// to each row's sum, a key that carries no value.
+struct ChunkStripParams { uint query_heads; uint kv_heads; uint key_width; uint value_width; uint position; uint count; uint q_stride; uint out_stride; float scale; uint tile0; uint tiles; uint row_stride; uint window; uint bias_extent; };
 struct ChunkTile { uint first; uint rows; uint base; uint span; uint total; };
 inline ChunkTile nu_chunk_tile(constant ChunkStripParams & p, uint index) {
     ChunkTile t;
@@ -800,10 +844,11 @@ inline float4 nu_load4(device const T * x) { return float4(*(device const vec<T,
 // Scores: one threadgroup per (tile, head × 32-key block), as
 // `nu_segments_scores`; invisible keys are written −∞, key rows past the
 // chunk's end stage as zeros.
-template <typename T>
+template <typename T, bool BIAS>
 kernel void nu_chunk_scores_t(device const float * queries [[buffer(0)]],
                               device const T * keys [[buffer(1)]],
                               device float * scores [[buffer(2)]],
+                              device const float * bias [[buffer(3)]],
                               constant ChunkStripParams & p [[buffer(7)]],
                               uint2 group [[threadgroup_position_in_grid]],
                               uint2 local [[thread_position_in_threadgroup]],
@@ -852,19 +897,25 @@ kernel void nu_chunk_scores_t(device const float * queries [[buffer(0)]],
         const uint hi = min(p.position + t.first + row + 1, t.total); // exclusive
         const uint lo = p.window != 0 && hi > p.window ? hi - p.window : 0;
         const uint key = key0 + col;
-        strip[ulong(row) * p.row_stride + col] = key < hi && key >= lo ? result[e] * p.scale : -INFINITY;
+        const bool visible = key < hi && key >= lo;
+        float x = result[e] * p.scale;
+        if constexpr (BIAS) if (visible && t.first + row < p.count) x += nu_distance_bias(bias, p.bias_extent, p.query_heads, t.first + row, head, hi - 1 - key);
+        strip[ulong(row) * p.row_stride + col] = visible ? x : -INFINITY;
     }
 }
-template [[host_name("nu_chunk_scores")]] kernel void nu_chunk_scores_t<float>(device const float *, device const float *, device float *, constant ChunkStripParams &, uint2, uint2, uint);
-template [[host_name("nu_chunk_scores_h")]] kernel void nu_chunk_scores_t<half>(device const float *, device const half *, device float *, constant ChunkStripParams &, uint2, uint2, uint);
+#define NU_CHUNK_SCORES(NAME, T, BIAS) \
+    template [[host_name("nu_chunk_scores" NAME)]] kernel void nu_chunk_scores_t<T, BIAS>(device const float *, device const T *, device float *, device const float *, constant ChunkStripParams &, uint2, uint2, uint);
+NU_CHUNK_SCORES("", float, false) NU_CHUNK_SCORES("_h", half, false) NU_CHUNK_SCORES("_biased", float, true) NU_CHUNK_SCORES("_h_biased", half, true)
 
 // Statistics: one threadgroup per (tile, head), one SIMD group per strip
 // row, as `nu_segments_stats`. Every row sees at least its own key.
-kernel void nu_chunk_stats(device float * scores [[buffer(0)]],
-                           constant ChunkStripParams & p [[buffer(7)]],
-                           uint2 group [[threadgroup_position_in_grid]],
-                           uint sg [[simdgroup_index_in_threadgroup]],
-                           uint lane [[thread_index_in_simdgroup]]) {
+template <bool SINK>
+kernel void nu_chunk_stats_t(device float * scores [[buffer(0)]],
+                             device const float * sinks [[buffer(1)]],
+                             constant ChunkStripParams & p [[buffer(7)]],
+                             uint2 group [[threadgroup_position_in_grid]],
+                             uint sg [[simdgroup_index_in_threadgroup]],
+                             uint lane [[thread_index_in_simdgroup]]) {
     const ChunkTile t = nu_chunk_tile(p, group.x);
     const ulong head_stride = ulong(p.tiles) * 32 * p.row_stride;
     device const float * strip = scores + group.y * head_stride + ulong(group.x) * 32 * p.row_stride;
@@ -878,11 +929,15 @@ kernel void nu_chunk_stats(device float * scores [[buffer(0)]],
             if (v > m) { sum = sum * exp(m - v) + 1.0f; m = v; }
             else sum += exp(v - m);
         }
-        const float mx = simd_max(m);
-        const float total = simd_sum(m == -INFINITY ? 0.0f : sum * exp(m - mx));
+        float mx = simd_max(m), sink = -INFINITY;
+        if constexpr (SINK) if (t.first + row < p.count) { sink = sinks[ulong(t.first + row) * p.query_heads + group.y]; mx = max(mx, sink); }
+        float total = simd_sum(m == -INFINITY ? 0.0f : sum * exp(m - mx));
+        if constexpr (SINK) if (sink != -INFINITY) total += exp(sink - mx);
         if (lane == 0) stats[row] = mx == -INFINITY ? float2(0.0f) : float2(mx, 1.0f / total);
     }
 }
+template [[host_name("nu_chunk_stats")]] kernel void nu_chunk_stats_t<false>(device float *, device const float *, constant ChunkStripParams &, uint2, uint, uint);
+template [[host_name("nu_chunk_stats_sink")]] kernel void nu_chunk_stats_t<true>(device float *, device const float *, constant ChunkStripParams &, uint2, uint, uint);
 
 // Values: one threadgroup per (tile, head × 32 value columns), as
 // `nu_segments_values`; key rows past the chunk's end stage as zeros.

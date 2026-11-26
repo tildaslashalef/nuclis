@@ -14,14 +14,22 @@ const max_capacity = @import("../../../runtime/session.zig").max_capacity;
 const perElement = Backend.perElement;
 
 pub const AttentionParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, visible: u32, scale: f32 };
+/// A score bias by distance, the contract of `cpu.attention.Bias` per query
+/// row: `table` holds F32 `[row][query head][extent]`, and entry `d` adds to
+/// the scaled score of the key `d` rows before the row's own; keys `extent`
+/// or more rows back take none.
+pub const Bias = struct { table: Buffer, extent: usize };
 /// `precision` is how `keys`/`values` are stored; queries, scores,
 /// and the output are always F32. This three-pass path reads F32 or
-/// F16; `attentionDecode` also reads Q8_0.
-pub const AttentionShape = struct { query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize, visible: usize, scale: f32, precision: Precision = .f32 };
+/// F16; `attentionDecode` also reads Q8_0. `bias` and `sinks` (F32
+/// `[row][query head]`, a logit in each softmax's sum that carries no
+/// value) are the CPU reference's modes; this path takes neither. Queries
+/// may arrive scaled, with a `scale` of 1.
+pub const AttentionShape = struct { query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize, visible: usize, scale: f32, precision: Precision = .f32, bias: ?Bias = null, sinks: ?Buffer = null };
 /// Three dispatches; `scores` needs query_heads * visible floats.
 pub fn attention(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, scores: Buffer, output: Buffer, s: AttentionShape) !void {
     if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or s.key_width == 0 or s.value_width == 0 or s.visible == 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
-    if (s.precision == .q8_0) return error.InvalidShape;
+    if (s.precision == .q8_0 or s.bias != null or s.sinks != null) return error.InvalidShape;
     try checkCache(s.precision, keys, values, s.visible * s.kv_heads, s.key_width, s.value_width);
     if (queries.len < s.query_heads * s.key_width * 4 or scores.len < s.query_heads * s.visible * 4 or output.len < s.query_heads * s.value_width * 4) return error.InvalidShape;
     const p: AttentionParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .visible = @intCast(s.visible), .scale = s.scale };
@@ -30,7 +38,7 @@ pub fn attention(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, 
     try self.dispatch(.attention_softmax, &.{scores}, p, @intCast(s.query_heads), 32, .{});
     try self.dispatch(if (half) .attention_values_h else .attention_values, &.{ values, scores, output }, p, @intCast(s.query_heads * s.value_width), 32, .{});
 }
-pub const AttentionDecodeParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, visible: u32, splits: u32, scale: f32, rows: u32, q_stride: u32, out_stride: u32, window: u32 };
+pub const AttentionDecodeParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, visible: u32, splits: u32, scale: f32, rows: u32, q_stride: u32, out_stride: u32, window: u32, bias_extent: u32 = 0 };
 /// Most splits of the visible range one `attentionDecode` uses, and the
 /// rows each split holds before another split is added; must match the
 /// partial layout the kernels write.
@@ -63,25 +71,26 @@ const DecodePlan = struct { kernel: Kernel, groups_per_split: usize, threads: u3
 /// split pass at the memory roof); row lanes halve until the threadgroup holds
 /// at most 1,024 threads and their merge fits the kernel's 4,096-float
 /// stage. The group counts must match the kernel's instantiations.
-fn decodePlan(precision: Precision, query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize) DecodePlan {
-    const general: DecodePlan = .{ .kernel = decodeKernel(precision, key_width, value_width), .groups_per_split = attentionDecodeHeadGroups(query_heads, kv_heads, key_width, value_width), .threads = 128 };
+/// `biased` takes each kernel's distance-bias instantiation.
+fn decodePlan(precision: Precision, query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize, biased: bool) DecodePlan {
+    const general: DecodePlan = .{ .kernel = decodeKernel(precision, key_width, value_width, biased), .groups_per_split = attentionDecodeHeadGroups(query_heads, kv_heads, key_width, value_width), .threads = 128 };
     if (key_width != value_width) return general;
     const Choice = struct { kernel: Kernel, group: usize, lanes: usize };
     const choice: Choice = switch (key_width) {
         128 => switch (precision) {
-            .f32 => .{ .kernel = .attention_heads_f32_128, .group = 4, .lanes = 2 },
-            .f16 => .{ .kernel = .attention_heads_f16_128, .group = 4, .lanes = 2 },
-            .q8_0 => .{ .kernel = .attention_heads_q8_128, .group = 4, .lanes = 2 },
+            .f32 => .{ .kernel = if (biased) .attention_heads_f32_128_biased else .attention_heads_f32_128, .group = 4, .lanes = 2 },
+            .f16 => .{ .kernel = if (biased) .attention_heads_f16_128_biased else .attention_heads_f16_128, .group = 4, .lanes = 2 },
+            .q8_0 => .{ .kernel = if (biased) .attention_heads_q8_128_biased else .attention_heads_q8_128, .group = 4, .lanes = 2 },
         },
         256 => switch (precision) {
-            .f32 => .{ .kernel = .attention_heads_f32_256, .group = 2, .lanes = 2 },
-            .f16 => .{ .kernel = .attention_heads_f16_256, .group = 2, .lanes = 2 },
-            .q8_0 => .{ .kernel = .attention_heads_q8_256, .group = 3, .lanes = 4 },
+            .f32 => .{ .kernel = if (biased) .attention_heads_f32_256_biased else .attention_heads_f32_256, .group = 2, .lanes = 2 },
+            .f16 => .{ .kernel = if (biased) .attention_heads_f16_256_biased else .attention_heads_f16_256, .group = 2, .lanes = 2 },
+            .q8_0 => .{ .kernel = if (biased) .attention_heads_q8_256_biased else .attention_heads_q8_256, .group = 3, .lanes = 4 },
         },
         512 => switch (precision) {
-            .f32 => .{ .kernel = .attention_heads_f32_512, .group = 1, .lanes = 2 },
-            .f16 => .{ .kernel = .attention_heads_f16_512, .group = 1, .lanes = 2 },
-            .q8_0 => .{ .kernel = .attention_heads_q8_512, .group = 1, .lanes = 2 },
+            .f32 => .{ .kernel = if (biased) .attention_heads_f32_512_biased else .attention_heads_f32_512, .group = 1, .lanes = 2 },
+            .f16 => .{ .kernel = if (biased) .attention_heads_f16_512_biased else .attention_heads_f16_512, .group = 1, .lanes = 2 },
+            .q8_0 => .{ .kernel = if (biased) .attention_heads_q8_512_biased else .attention_heads_q8_512, .group = 1, .lanes = 2 },
         },
         else => return general,
     };
@@ -96,17 +105,39 @@ fn decodePlan(precision: Precision, query_heads: usize, kv_heads: usize, key_wid
 /// floats. The shape contract of `attention`, plus widths of at most
 /// 512 (above 256 through the wide instantiation); the cache may also
 /// be `q8_0`, whose widths are multiples of 32 (a block per head row).
+/// A `bias` takes the split pass's biased instantiation, `sinks` the
+/// merge's sink one; the bias's distances count back from the last row.
 pub fn attentionDecode(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, partials: Buffer, output: Buffer, s: AttentionShape) !void {
     if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or s.key_width == 0 or s.key_width > 512 or s.value_width == 0 or s.value_width > 512 or s.visible == 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
     const splits = attentionDecodeSplits(s.visible);
-    const plan = decodePlan(s.precision, s.query_heads, s.kv_heads, s.key_width, s.value_width);
+    const plan = decodePlan(s.precision, s.query_heads, s.kv_heads, s.key_width, s.value_width, s.bias != null);
     try checkCache(s.precision, keys, values, s.visible * s.kv_heads, s.key_width, s.value_width);
+    try checkModes(s.bias, s.sinks, 1, s.query_heads);
     if (queries.len < s.query_heads * s.key_width * 4 or partials.len < s.query_heads * splits * (2 + s.value_width) * 4 or output.len < s.query_heads * s.value_width * 4) return error.InvalidShape;
-    const p: AttentionDecodeParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .visible = @intCast(s.visible), .splits = @intCast(splits), .scale = s.scale, .rows = 1, .q_stride = @intCast(s.query_heads * s.key_width), .out_stride = @intCast(s.query_heads * s.value_width), .window = 0 };
+    const p: AttentionDecodeParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .visible = @intCast(s.visible), .splits = @intCast(splits), .scale = s.scale, .rows = 1, .q_stride = @intCast(s.query_heads * s.key_width), .out_stride = @intCast(s.query_heads * s.value_width), .window = 0, .bias_extent = biasExtent(s.bias) };
     // Cache traffic per dispatch, for the profile: every row once.
     const bytes: u64 = @intCast(s.visible * s.precision.bytes(s.kv_heads * (s.key_width + s.value_width)));
-    try self.dispatch(plan.kernel, &.{ keys, values, queries, partials }, p, @intCast(s.kv_heads * plan.groups_per_split * splits), plan.threads, .{ .bytes = bytes });
-    try self.dispatch(.attention_merge, &.{ partials, output }, p, @intCast(s.query_heads), 256, .{});
+    try splitAndMerge(self, plan, keys, values, queries, partials, output, p, s.bias, s.sinks, @intCast(s.kv_heads * plan.groups_per_split * splits), @intCast(s.query_heads), bytes);
+}
+/// The split pass and the merge of `attentionDecode` and `attentionVerify`.
+fn splitAndMerge(self: *Backend, plan: DecodePlan, keys: Buffer, values: Buffer, queries: Buffer, partials: Buffer, output: Buffer, p: AttentionDecodeParams, bias: ?Bias, sinks: ?Buffer, groups: u32, heads: u32, bytes: u64) !void {
+    if (bias) |x|
+        try self.dispatch(plan.kernel, &.{ keys, values, queries, partials, x.table }, p, groups, plan.threads, .{ .bytes = bytes })
+    else
+        try self.dispatch(plan.kernel, &.{ keys, values, queries, partials }, p, groups, plan.threads, .{ .bytes = bytes });
+    if (sinks) |x|
+        try self.dispatch(.attention_merge_sink, &.{ partials, output, x }, p, heads, 256, .{})
+    else
+        try self.dispatch(.attention_merge, &.{ partials, output }, p, heads, 256, .{});
+}
+/// A bias table of whole `[rows][query_heads][extent]` F32 rows and sinks of
+/// `[rows][query_heads]`, when given.
+fn checkModes(bias: ?Bias, sinks: ?Buffer, rows: usize, query_heads: usize) !void {
+    if (bias) |x| if (x.extent == 0 or x.extent > max_capacity or x.table.offset % 4 != 0 or x.table.len < rows * query_heads * x.extent * 4) return error.InvalidShape;
+    if (sinks) |x| if (x.offset % 4 != 0 or x.len < rows * query_heads * 4) return error.InvalidShape;
+}
+fn biasExtent(bias: ?Bias) u32 {
+    return if (bias) |x| @intCast(x.extent) else 0;
 }
 /// The most rows `attentionVerify` takes: a verify batch or a drafter's
 /// commit, never a prefill chunk.
@@ -122,18 +153,18 @@ pub fn attentionVerifyPartials(rows: usize, query_heads: usize, value_width: usi
 /// head. Queries are F32 whatever the cache's `precision`, which may be
 /// `q8_0` (as in `attentionDecode`); `partials` needs
 /// `attentionVerifyPartials` floats.
-/// A window as in `attentionChunk`; no span.
+/// A window as in `attentionChunk`; no span. The bias and sinks as in
+/// `attentionDecode`, one table row per query row.
 pub fn attentionVerify(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, partials: Buffer, output: Buffer, s: AttentionChunkShape) !void {
     if (s.count > verify_max_rows or s.span.end != 0 or s.key_width > 512) return error.InvalidShape;
     try checkAttentionChunk(s, keys, values, queries, output, 4);
     const visible = s.position + s.count;
     const splits = attentionDecodeSplits(visible);
-    const plan = decodePlan(s.precision, s.query_heads, s.kv_heads, s.key_width, s.value_width);
+    const plan = decodePlan(s.precision, s.query_heads, s.kv_heads, s.key_width, s.value_width, s.bias != null);
     if (partials.len < s.count * s.query_heads * splits * (2 + s.value_width) * 4) return error.InvalidShape;
-    const p: AttentionDecodeParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .visible = @intCast(visible), .splits = @intCast(splits), .scale = s.scale, .rows = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .window = @intCast(s.window) };
+    const p: AttentionDecodeParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .visible = @intCast(visible), .splits = @intCast(splits), .scale = s.scale, .rows = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .window = @intCast(s.window), .bias_extent = biasExtent(s.bias) };
     const bytes: u64 = @intCast(s.count * visible * s.precision.bytes(s.kv_heads * (s.key_width + s.value_width)));
-    try self.dispatch(plan.kernel, &.{ keys, values, queries, partials }, p, @intCast(s.kv_heads * plan.groups_per_split * splits * s.count), plan.threads, .{ .bytes = bytes });
-    try self.dispatch(.attention_merge, &.{ partials, output }, p, @intCast(s.query_heads * s.count), 256, .{});
+    try splitAndMerge(self, plan, keys, values, queries, partials, output, p, s.bias, s.sinks, @intCast(s.kv_heads * plan.groups_per_split * splits * s.count), @intCast(s.query_heads * s.count), bytes);
 }
 pub const PackParams = extern struct { count0: u32, count1: u32 };
 /// One F32 → F16 conversion: `count` floats of `src` into `dst`.
@@ -199,8 +230,13 @@ fn cacheAlignment(precision: Precision) usize {
     };
 }
 /// The split-pass instantiation for a cache precision and widths.
-fn decodeKernel(precision: Precision, key_width: usize, value_width: usize) Kernel {
+fn decodeKernel(precision: Precision, key_width: usize, value_width: usize, biased: bool) Kernel {
     const wide = key_width > 256 or value_width > 256;
+    if (biased) return switch (precision) {
+        .f32 => if (wide) .attention_decode_w_biased else .attention_decode_biased,
+        .f16 => if (wide) .attention_decode_wh_biased else .attention_decode_h_biased,
+        .q8_0 => if (wide) .attention_decode_wq8_biased else .attention_decode_q8_biased,
+    };
     return switch (precision) {
         .f32 => if (wide) .attention_decode_w else .attention_decode,
         .f16 => if (wide) .attention_decode_wh else .attention_decode_h,
@@ -214,7 +250,7 @@ fn checkCache(precision: Precision, keys: Buffer, values: Buffer, rows: usize, k
     if (keys.len < rows * precision.bytes(key_width) or values.len < rows * precision.bytes(value_width)) return error.InvalidShape;
     if (keys.offset % cacheAlignment(precision) != 0 or values.offset % cacheAlignment(precision) != 0) return error.InvalidShape;
 }
-pub const AttentionChunkParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, position: u32, count: u32, q_stride: u32, out_stride: u32, scale: f32, window: u32, span_begin: u32, span_end: u32 };
+pub const AttentionChunkParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, position: u32, count: u32, q_stride: u32, out_stride: u32, scale: f32, window: u32, span_begin: u32, span_end: u32, bias_extent: u32 = 0, sinks: u32 = 0 };
 /// Chunk rows `[begin, end)` that attend bidirectionally among
 /// themselves: each sees keys up to `position + end` (exclusive) instead
 /// of its own row, the window still bounding it from below. Gemma 4's
@@ -232,7 +268,9 @@ pub const Span = struct { begin: usize = 0, end: usize = 0 };
 /// accumulators, so the caller packs its queries to half first
 /// (`packHalf`); the output is F32 either way. The chunk bodies read
 /// no `q8_0` cache: the caller expands it to F16 first (`unpackQ8`).
-pub const AttentionChunkShape = struct { query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize, position: usize, count: usize, q_stride: usize, out_stride: usize, scale: f32, precision: Precision = .f32, window: usize = 0, span: Span = .{} };
+/// `bias` and `sinks` as in `AttentionShape`, one row per chunk row; the
+/// register-reuse body takes neither.
+pub const AttentionChunkShape = struct { query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize, position: usize, count: usize, q_stride: usize, out_stride: usize, scale: f32, precision: Precision = .f32, window: usize = 0, span: Span = .{}, bias: ?Bias = null, sinks: ?Buffer = null };
 /// The most rows one chunk dispatch covers: a projector's whole patch
 /// set (10,080 for Gemma 4's largest image) runs as one span.
 pub const max_chunk_rows = 16384;
@@ -252,11 +290,19 @@ pub fn attentionChunk(self: *Backend, keys: Buffer, values: Buffer, queries: Buf
     const p = attentionChunkParams(s);
     const tiles = @divCeil(s.count, 32);
     const value_splits = (s.value_width + 255) / 256;
+    const groups: u32 = @intCast(s.query_heads * tiles * value_splits);
+    const half = s.precision == .f16;
+    if (s.bias != null or s.sinks != null) {
+        // The modes run in the row-split body; an absent table binds a
+        // buffer the kernel never reads.
+        const bias = if (s.bias) |x| x.table else keys;
+        const sinks = s.sinks orelse keys;
+        return self.dispatch(if (half) .attention_chunk_h_modes else .attention_chunk_modes, &.{ keys, values, queries, output, bias, sinks }, p, groups, 128, chunkProfile(s));
+    }
     // The register-reuse body has no span; a span takes the row-split body.
     const reuse = s.value_width == 256 and s.count <= self.attention_reuse_max_rows and s.span.end == 0;
-    const half = s.precision == .f16;
     const kernel: Kernel = if (reuse) (if (half) .attention_chunk_reuse_h else .attention_chunk_reuse) else if (half) .attention_chunk_h else .attention_chunk;
-    try self.dispatch(kernel, &.{ keys, values, queries, output }, p, @intCast(s.query_heads * tiles * value_splits), 128, chunkProfile(s));
+    try self.dispatch(kernel, &.{ keys, values, queries, output }, p, groups, 128, chunkProfile(s));
 }
 /// The register-reuse body explicitly: the same contract, but each
 /// threadgroup's four SIMD groups split the value columns instead of the
@@ -265,7 +311,7 @@ pub fn attentionChunk(self: *Backend, keys: Buffer, values: Buffer, queries: Buf
 pub fn attentionChunkReuse(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer, s: AttentionChunkShape) !void {
     if (s.precision == .q8_0) return error.InvalidShape;
     try checkAttentionChunk(s, keys, values, queries, output, s.precision.bytes(1));
-    if (s.span.end != 0) return error.InvalidShape;
+    if (s.span.end != 0 or s.bias != null or s.sinks != null) return error.InvalidShape;
     const p = attentionChunkParams(s);
     const tiles = @divCeil(s.count, 32);
     const value_splits = (s.value_width + 255) / 256;
@@ -283,7 +329,7 @@ fn chunkProfile(s: AttentionChunkShape) Shape {
 /// (docs/benchmarks/record/metal-backend.md § Gemma 4's global-layer
 /// chunk attention, measured).
 pub const materialized_min_rows = 16;
-pub const ChunkStripParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, position: u32, count: u32, q_stride: u32, out_stride: u32, scale: f32, tile0: u32, tiles: u32, row_stride: u32, window: u32 };
+pub const ChunkStripParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, position: u32, count: u32, q_stride: u32, out_stride: u32, scale: f32, tile0: u32, tiles: u32, row_stride: u32, window: u32, bias_extent: u32 = 0 };
 /// Floats of scratch `attentionChunkMaterialized` needs to run `tiles`
 /// 32-row tiles at once whose rows see at most `keys` keys: the strips and
 /// one (max, 1 / sum) pair per strip row.
@@ -311,7 +357,8 @@ pub fn attentionStripScratch(query_heads: usize, chunk: usize, capacity: usize) 
 /// whatever the cache's `precision` (F32 or F16; a Q8_0 cache passes its
 /// F16 view). `scratch` must hold at least the widest tile's strips
 /// (`attentionChunkStripFloats(query_heads, 1, stripKeys(s, tiles))` floats);
-/// the result does not depend on how many tiles a group takes.
+/// the result does not depend on how many tiles a group takes. A `bias`
+/// takes the scores' biased instantiation, `sinks` the statistics' sink one.
 pub fn attentionChunkMaterialized(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer, scratch: Buffer, s: AttentionChunkShape) !void {
     if (s.precision == .q8_0 or s.span.end != 0) return error.InvalidShape;
     try checkAttentionChunk(s, keys, values, queries, output, 4);
@@ -327,10 +374,17 @@ pub fn attentionChunkMaterialized(self: *Backend, keys: Buffer, values: Buffer, 
         var tiles: usize = 1;
         while (tile0 + tiles < tile_count and attentionChunkStripFloats(s.query_heads, tiles + 1, stripKeys(s, tile0 + tiles + 1)) <= capacity) tiles += 1;
         const row_stride = std.mem.alignForward(usize, stripKeys(s, tile0 + tiles), 32);
-        const p: ChunkStripParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .position = @intCast(s.position), .count = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .tile0 = @intCast(tile0), .tiles = @intCast(tiles), .row_stride = @intCast(row_stride), .window = @intCast(s.window) };
+        const p: ChunkStripParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .position = @intCast(s.position), .count = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .tile0 = @intCast(tile0), .tiles = @intCast(tiles), .row_stride = @intCast(row_stride), .window = @intCast(s.window), .bias_extent = biasExtent(s.bias) };
         const n: u32 = @intCast(tiles);
-        try self.dispatch2(if (half) .chunk_scores_h else .chunk_scores, &.{ queries, keys, scratch }, p, n, @intCast(s.query_heads * row_stride / 32), 128);
-        try self.dispatch2(.chunk_stats, &.{scratch}, p, n, @intCast(s.query_heads), 256);
+        const blocks: u32 = @intCast(s.query_heads * row_stride / 32);
+        if (s.bias) |x|
+            try self.dispatch2(if (half) .chunk_scores_h_biased else .chunk_scores_biased, &.{ queries, keys, scratch, x.table }, p, n, blocks, 128)
+        else
+            try self.dispatch2(if (half) .chunk_scores_h else .chunk_scores, &.{ queries, keys, scratch }, p, n, blocks, 128);
+        if (s.sinks) |x|
+            try self.dispatch2(.chunk_stats_sink, &.{ scratch, x }, p, n, @intCast(s.query_heads), 256)
+        else
+            try self.dispatch2(.chunk_stats, &.{scratch}, p, n, @intCast(s.query_heads), 256);
         try self.dispatch2(if (half) .chunk_values_h else .chunk_values, &.{ scratch, values, output }, p, n, @intCast(s.query_heads * @divCeil(s.value_width, 32)), 128);
         tile0 += tiles;
     }
@@ -347,7 +401,7 @@ pub fn stripKeys(s: AttentionChunkShape, end: usize) usize {
     return if (s.window == 0) seen else @min(seen, s.window + 96);
 }
 fn attentionChunkParams(s: AttentionChunkShape) AttentionChunkParams {
-    return .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .position = @intCast(s.position), .count = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .window = @intCast(s.window), .span_begin = @intCast(s.span.begin), .span_end = @intCast(s.span.end) };
+    return .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .position = @intCast(s.position), .count = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .window = @intCast(s.window), .span_begin = @intCast(s.span.begin), .span_end = @intCast(s.span.end), .bias_extent = biasExtent(s.bias), .sinks = @intFromBool(s.sinks != null) };
 }
 /// `query_elem` is the queries' bytes per value: the cache's for the
 /// chunk bodies, 4 for `attentionVerify`.
@@ -357,6 +411,8 @@ fn checkAttentionChunk(s: AttentionChunkShape, keys: Buffer, values: Buffer, que
     if (s.count == 0 or s.count > max_chunk_rows or s.position > max_capacity - s.count) return error.InvalidShape;
     if (s.span.begin > s.span.end or s.span.end > s.count) return error.InvalidShape;
     if (s.q_stride < s.query_heads * s.key_width or s.out_stride < s.query_heads * s.value_width) return error.InvalidShape;
+    if ((s.bias != null or s.sinks != null) and s.span.end != 0) return error.InvalidShape;
+    try checkModes(s.bias, s.sinks, s.count, s.query_heads);
     const total = s.position + s.count;
     const rows = attentionChunkRows(s.count);
     try checkCache(s.precision, keys, values, total * s.kv_heads, s.key_width, s.value_width);

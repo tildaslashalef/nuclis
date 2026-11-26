@@ -491,6 +491,7 @@ pub const Backend = struct {
     pub const convolutionHistory = recurrent_ops.convolutionHistory;
     pub const AttentionParams = attention_ops.AttentionParams;
     pub const AttentionShape = attention_ops.AttentionShape;
+    pub const Bias = attention_ops.Bias;
     pub const attention = attention_ops.attention;
     pub const AttentionDecodeParams = attention_ops.AttentionDecodeParams;
     pub const decode_splits_max = attention_ops.decode_splits_max;

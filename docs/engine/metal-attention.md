@@ -179,6 +179,33 @@ dispatch at 32,768 visible takes 198 ms in this structure against 984 in
 the online F16 body
 ([record](../benchmarks/record/metal-backend.md#gemma-4s-global-layer-chunk-attention-measured-2026-11-18)).
 
+## Score bias and sinks
+
+Two modes of the CPU reference (`cpu.attention`), taken by the decode
+split pass, verify, the row-split chunk body, and the materialized body
+(Inkling 2 is the first caller):
+
+- **A distance bias** (`Bias { table, extent }`): `table` holds F32
+  `[row][query head][extent]`, and entry `d` adds to the scaled score of
+  the key `d` rows before the row's own; keys `extent` or more rows back
+  take none. The kernels gather it at `d`; nothing materializes a
+  `[row][key]` bias.
+- **Sinks**: one F32 logit per row and head, `[row][query head]`, that
+  joins the softmax's sum as `exp(sink)` and carries no value. The split
+  passes leave it to the merge (`nu_attention_merge_sink`), the row-split
+  body starts each row's online softmax at it with a sum of 1, and the
+  materialized body adds it in `nu_chunk_stats_sink`.
+
+Each is a compile-time flag on the kernel templates (`_biased`, `_sink`,
+and `_modes` for the row-split body, which takes either at run time), so
+the plain instantiations compile as before. Queries may arrive scaled,
+with a `scale` of 1, and the inputs are not checked for non-finite values
+(the CPU reference refuses them). The three-pass kernels and the
+register-reuse body take neither mode, and a mode takes no span.
+`test-metal` holds every body to the CPU F64 reference at each cache
+precision, windowed at 1,024 and full, and a zero table with a −1e30 sink
+to the plain bodies bit for bit.
+
 ## Segments attention with materialized scores
 
 `Backend.attentionSegmentsGrouped` is bidirectional attention with no
