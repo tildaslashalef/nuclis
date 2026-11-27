@@ -224,3 +224,60 @@ same length the 26B-A4B spent 236.0 seconds, 66 % of them in global
 attention and 12 % in experts ([gemma4.md](gemma4.md#prefill-at-32k-todays-baseline-and-its-split-2026-11-18)):
 Inkling's windows keep attention cheap and its 48 expert applications a
 token cost the time instead.
+
+## What a verify batch costs (2026-11-27)
+
+The same machine; nuclis at `9447861`, `ReleaseSafe`, Metal, F16 cache,
+context 4,096; the drafter is not bound, so every number here is the
+target's own.
+
+**Sampling.** The 512-token prose array, 128 tokens, six interleaved
+pairs: greedy 28.16 to 28.46 tokens/s (mean 28.30), the profile's
+sampling (temperature 1, top-k 0, top-p 1) 18.49 to 18.86 (mean 18.75),
+34 % slower. Over 128 tokens the sampled path spends 18 ms a token more,
+the host sorting all 200,058 logits.
+
+**The batch split** (`bench --profile-prefill`, prompts of the first R
+tokens of `wiki.test.raw`, 20 runs; profiling serializes the kernels, so
+a step reads above plain decode's 28.7 GPU ms):
+
+| Rows | 1 | 2 | 4 | 8 | ms a row |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Command buffer | 32.0 | 42.3 | 61.0 | 97.2 | 9.31 |
+| Kernels attributed | 39.2 | 48.0 | 67.3 | 103.7 | 9.21 |
+| NVFP4 experts | 7.88 | 14.89 | 29.03 | 58.45 | 7.22 |
+| Q8_0 experts (stored 20–23) | 1.16 | 2.29 | 4.65 | 9.42 | 1.18 |
+| Q8_0 projections and head | 11.75 | 13.75 | 14.49 | 14.83 | 0.44 |
+| Everything else | 18.41 | 17.07 | 19.13 | 21.00 | 0.37 |
+
+The experts are 91 % of what a row adds: every row reads its own eight,
+and nothing else grows with the batch. Over 1,024 prose rows
+(`--expert-counts`), 2 rows touch 12.8 distinct experts, 4 touch 20.2
+and 8 touch 30.7: 0.80, 0.63 and 0.48 of the experts read today. An
+expert kernel that read each distinct expert once would, by those
+ratios (an estimate, not a measurement), take a 4-row batch's experts
+from 33.7 ms to about 21 ms.
+
+**The Q8_0 projections** (`make bench-matvec-rows ARGS='8 inkling'`,
+synthetic weights of Inkling's shapes): the multi-row matmul holds
+223 to 262 GB/s from 2 to 8 rows on 3072×2304, 2304×3072 and 9216×2304,
+and the 201,024-row head takes 2.12 ms at 2 rows and 2.21 ms at 8,
+against 1.90 ms for one. A few-row Q8_0 kernel has nothing to win. A
+verify that computes the head for each row with the 1-row matvec instead
+pays 1.90 ms a row: 15.3 ms at 8.
+
+**One row.** The 1-row batch path runs the loop's 2304×64 F32 gain and
+forget projections as a matvec at 24 GB/s (4.74 ms a step, 192 of them);
+the 2-row path's matmul does the same in 2.08 ms. Plain decode does not
+take that path: routed to the matmul, decode's GPU time stayed at 28.6 ms
+a token, and the change was not kept. Decode's wall time is 31.1 ms a
+token against 28.6 on the GPU.
+
+**Depth** is not measured here: `bench --verify-rows` needs a drafter,
+so the 4,096 and 16,384 tails of 2, 4 and 8 rows move to the drafter's
+binding.
+
+What it decides for the drafter: sampling from the device's top-k is
+worth its own change (a third of sampled decode); the expert kernel is
+the per-row cost to cut, not the Q8_0 projections; and a verify computes
+its R rows' logits with the matmul.

@@ -878,18 +878,27 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
     std.debug.print("The multi-row path reads the weights once for all rows; the tile reads them once per 8-row token tile (one tile here).\n", .{});
 }
 
-/// `--matvec-rows-bench <max_rows> gemma`: Gemma 4's dense projections
-/// (Q4_0, both files' shapes, and the 26B-A4B's F32 router) at
-/// 1..`max_rows` rows, three ways: what `matmul` routes today (the fragment
+/// `--matvec-rows-bench <max_rows> gemma|inkling`: Gemma 4's dense
+/// projections (Q4_0, both files' shapes, and the 26B-A4B's F32 router) or
+/// Inkling 2 Mini's Q8_0 ones (the head included) at 1..`max_rows` rows,
+/// three ways: what `matmul` routes today (the fragment
 /// tile), R decode matvecs, one per row, and the generic multi-row matvec.
 /// GPU ms per projection and GB/s of weight bytes; minimum of three command
 /// buffers of 16 after a warm-up. A measurement aid.
-fn gemmaRowsBench(alloc: std.mem.Allocator, max_rows: usize) !void {
+fn denseRowsBench(alloc: std.mem.Allocator, max_rows: usize, inkling: bool) !void {
     var backend = try openBackend(alloc);
     defer backend.deinit();
     const b = &backend;
     const Shape = struct { rows: usize, columns: usize, encoding: u32, name: []const u8 };
-    const shapes = [_]Shape{
+    const inkling_shapes = [_]Shape{
+        .{ .rows = 3072, .columns = 2304, .encoding = 8, .name = "ink 3072x2304" },
+        .{ .rows = 2304, .columns = 3072, .encoding = 8, .name = "ink 2304x3072" },
+        .{ .rows = 1024, .columns = 2304, .encoding = 8, .name = "ink 1024x2304" },
+        .{ .rows = 384, .columns = 2304, .encoding = 8, .name = "ink 384x2304" },
+        .{ .rows = 9216, .columns = 2304, .encoding = 8, .name = "ink 9216x2304" },
+        .{ .rows = 201024, .columns = 2304, .encoding = 8, .name = "ink head" },
+    };
+    const gemma_shapes = [_]Shape{
         .{ .rows = 2112, .columns = 2816, .encoding = 2, .name = "26b 2112x2816" },
         .{ .rows = 2816, .columns = 2112, .encoding = 2, .name = "26b 2816x2112" },
         .{ .rows = 4096, .columns = 2816, .encoding = 2, .name = "26b 4096x2816" },
@@ -903,20 +912,32 @@ fn gemmaRowsBench(alloc: std.mem.Allocator, max_rows: usize) !void {
         .{ .rows = 2048, .columns = 2560, .encoding = 2, .name = "e4b 2048x2560" },
         .{ .rows = 2560, .columns = 2048, .encoding = 2, .name = "e4b 2560x2048" },
     };
+    const shapes: []const Shape = if (inkling) &inkling_shapes else &gemma_shapes;
     const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/simple.json"), .{ .ignore_unknown_fields = true });
     defer fixtures.deinit();
-    var q4_sample: ?[]const u8 = null;
-    for (fixtures.value.rows) |sample| if (sample.encoding == 2) {
-        q4_sample = sample.bytes;
+    const quant_encoding: u32 = if (inkling) 8 else 2;
+    var quant_sample: ?[]const u8 = null;
+    for (fixtures.value.rows) |sample| if (sample.encoding == quant_encoding) {
+        quant_sample = sample.bytes;
         break;
     };
-    const q4 = q4_sample orelse return error.FixtureMissing;
+    const sample = quant_sample orelse return error.FixtureMissing;
+    var max_bytes: usize = 0;
+    var max_dim: usize = 0;
+    for (shapes) |shape| {
+        const bytes = if (shape.encoding == 0) shape.rows * shape.columns * 4 else blk: {
+            const layout = inference.encoding.layout(shape.encoding) orelse return error.UnknownEncoding;
+            break :blk shape.rows * (shape.columns / layout.elements_per_block) * layout.bytes_per_block;
+        };
+        max_bytes = @max(max_bytes, bytes);
+        max_dim = @max(max_dim, shape.rows, shape.columns);
+    }
     var prng = std.Random.DefaultPrng.init(0x6e3a);
     const random = prng.random();
-    const weights = try b.create(10240 * 2816 * 4);
-    const input = try b.create(Backend.matmulPadded(max_rows) * 10240 * 4);
+    const weights = try b.create(max_bytes);
+    const input = try b.create(Backend.matmulPadded(max_rows) * max_dim * 4);
     for (input.floats()) |*x| x.* = random.float(f32) * 2 - 1;
-    const output = try b.create(Backend.matmulPadded(max_rows) * 10240 * 4);
+    const output = try b.create(Backend.matmulPadded(max_rows) * max_dim * 4);
     const rounds = 3;
     const repeats: usize = 16;
     std.debug.print("{s:<16} {s:>4} {s:>9} {s:>8} {s:>9} {s:>8} {s:>9} {s:>8}  ms per projection, GB/s of weights ({d} rounds of {d})\n", .{ "shape", "rows", "matmul ms", "GB/s", "R mv ms", "GB/s", "rows ms", "GB/s", rounds, repeats });
@@ -925,7 +946,7 @@ fn gemmaRowsBench(alloc: std.mem.Allocator, max_rows: usize) !void {
             const raw = try alloc.alloc(u8, shape.rows * shape.columns * 4);
             for (std.mem.bytesAsSlice(f32, raw)) |*v| v.* = (random.float(f32) * 2 - 1) * 0.05;
             break :blk raw;
-        } else try tiledMatrix(alloc, q4, shape.encoding, shape.rows, shape.columns);
+        } else try tiledMatrix(alloc, sample, shape.encoding, shape.rows, shape.columns);
         defer alloc.free(region);
         @memcpy(weights.host[0..region.len], region);
         const w = weights.slice(0, region.len);
@@ -4405,7 +4426,8 @@ pub fn main(init: std.process.Init) !void {
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-rows-bench")) {
         const max_rows = if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 8;
         if (args.len > 3 and std.mem.eql(u8, args[3], "frag")) return fragBench(alloc, max_rows);
-        if (args.len > 3 and std.mem.eql(u8, args[3], "gemma")) return gemmaRowsBench(alloc, max_rows);
+        if (args.len > 3 and std.mem.eql(u8, args[3], "gemma")) return denseRowsBench(alloc, max_rows, false);
+        if (args.len > 3 and std.mem.eql(u8, args[3], "inkling")) return denseRowsBench(alloc, max_rows, true);
         const with_head = args.len > 3 and std.mem.eql(u8, args[3], "head");
         return matvecRowsBench(alloc, max_rows, with_head);
     }
