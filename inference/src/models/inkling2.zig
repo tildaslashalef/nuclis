@@ -36,6 +36,7 @@ pub const core_blocks = core_end - core_start;
 pub const residual_span = 6;
 /// The attention pattern's period; the last application of each is global.
 pub const attention_period = 6;
+pub const VisionSpan = @import("../vision/root.zig").Span;
 pub const embedding = if (tiny_models) 256 else 2304;
 pub const heads = if (tiny_models) 4 else 24;
 pub const kv_heads = if (tiny_models) 2 else 8;

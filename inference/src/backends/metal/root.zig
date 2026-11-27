@@ -440,6 +440,7 @@ pub const Backend = struct {
     pub const layerNorm = encoders_ops.layerNorm;
     pub const BiasRowsParams = encoders_ops.BiasRowsParams;
     pub const addBiasRows = encoders_ops.addBiasRows;
+    pub const mulRows = encoders_ops.mulRows;
     pub const gelu = encoders_ops.gelu;
     pub const AttentionFullParams = encoders_ops.AttentionFullParams;
     pub const AttentionFullShape = encoders_ops.AttentionFullShape;

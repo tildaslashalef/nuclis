@@ -379,6 +379,7 @@ const shipped = enum(u32) {
     situ_mul_rows_scaled,
     relative_bias,
     matmul_experts_q8_0,
+    mul_rows,
 };
 
 /// The tags of `bench_files`, after the shipped ones so every value stays its

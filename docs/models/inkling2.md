@@ -7,7 +7,7 @@ inkling2`): 24 stored blocks run as 48 layer applications, 128 experts
 relative-position bias, short convolutions, and attention over the depth
 in place of a plain residual stream. The file is Unsloth's
 `unsloth/Inkling-2-Mini-GGUF` `Inkling-2-Mini-UD-Q4_K_XL.gguf` (17.6 GB),
-with a vision projector (`mmproj-F16.gguf`, projector `inkling2v`) and a
+with a [vision projector](../engine/vision.md#inkling-2s-projector) (`mmproj-F16.gguf`) and a
 DSpark drafter (`dspark-Inkling-2-Mini-Q8_0.gguf`, architecture
 `dflash`); commits and digests in
 [the record](../benchmarks/record/catalogue.md#pinned-commits-and-digests-2026-09-11).
@@ -204,6 +204,8 @@ router's eighth expert differs at a near tie
 | `inkling2-trace-f16` | `verify` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
 | `inkling2-trace-q8_0` | `verify` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
 | `inkling2-generation-metal` | `verify` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
+| `inkling2-vision-metal` | `verify` | inkling2 | [vision.md § inkling-2s-projector](../engine/vision.md#inkling-2s-projector) |
+| `inkling2-vision-cpu` | `verify-cpu` | inkling2 | [vision.md § inkling-2s-projector](../engine/vision.md#inkling-2s-projector) |
 <!-- /gen -->
 
 ## Known limits

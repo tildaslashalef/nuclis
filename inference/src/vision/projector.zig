@@ -1,6 +1,6 @@
 //! One loaded companion projector, whatever its family: the file's
-//! projector type picks the adapter (Qwen3-VL, either of Gemma 4's, or Muse
-//! Glimmer's), and
+//! projector type picks the adapter (Qwen3-VL, either of Gemma 4's, Muse
+//! Glimmer's, or Inkling 2's), and
 //! the executor picks its CPU reference or Metal plan. The engine and the
 //! checks hold this value instead of naming an adapter; its methods are
 //! the contract of docs/engine/vision.md § The contract.
@@ -13,6 +13,7 @@ const preprocess = @import("preprocess.zig");
 const qwen3vl = @import("qwen3vl.zig");
 const gemma4 = @import("gemma4.zig");
 const muse = @import("muse_glimmer.zig");
+const inkling = @import("inkling2v.zig");
 
 /// An image's placeholder-token grid.
 pub const Grid = struct {
@@ -28,6 +29,7 @@ pub const Projector = struct {
         qwen3vl: qwen3vl.Binding,
         gemma4: gemma4.Binding,
         muse: muse.Binding,
+        inkling: inkling.Binding,
     },
     exec: union(enum) {
         qwen3vl_cpu: qwen3vl.Runtime,
@@ -36,6 +38,8 @@ pub const Projector = struct {
         gemma4_metal: gemma4.Plan,
         muse_cpu: muse.Runtime,
         muse_metal: muse.Plan,
+        inkling_cpu: inkling.Runtime,
+        inkling_metal: inkling.Plan,
     },
     /// The token minimum an image is scaled up to; the reference's, unless
     /// a check pins a smaller fixture (`gemma4` only).
@@ -48,7 +52,13 @@ pub const Projector = struct {
     /// afterwards (the executor borrows the binding). `backend` selects
     /// Metal; the mapped file must outlive the projector.
     pub fn init(self: *Projector, alloc: std.mem.Allocator, io: std.Io, doc: *const gguf.Document, view: weights.View, backend: ?*metal.Backend) !void {
-        if (muse.matches(doc)) {
+        if (inkling.matches(doc)) {
+            self.family = .{ .inkling = try inkling.bind(alloc, doc) };
+            self.min_tokens = inkling.min_tokens;
+            self.max_tokens = inkling.max_tokens;
+            const binding = &self.family.inkling;
+            self.exec = if (backend) |b| .{ .inkling_metal = try inkling.Plan.init(alloc, b, view, binding) } else .{ .inkling_cpu = try inkling.Runtime.init(alloc, io, view, binding) };
+        } else if (muse.matches(doc)) {
             self.family = .{ .muse = try muse.bind(alloc, doc) };
             self.min_tokens = muse.min_tokens;
             self.max_tokens = muse.max_tokens;
@@ -81,6 +91,7 @@ pub const Projector = struct {
             .qwen3vl => |b| b.output_width,
             .gemma4 => |b| b.output_width,
             .muse => muse.output_width,
+            .inkling => inkling.output_width,
         };
     }
     /// The most tokens one image becomes (the cap in effect).
@@ -94,6 +105,7 @@ pub const Projector = struct {
             .qwen3vl => .{ .min = qwen3vl.min_tokens, .max = qwen3vl.max_tokens },
             .gemma4 => .{ .min = gemma4.min_tokens, .max = gemma4.max_tokens },
             .muse => .{ .min = muse.min_tokens, .max = muse.max_tokens },
+            .inkling => .{ .min = inkling.min_tokens, .max = inkling.max_tokens },
         };
     }
     /// Sets the cap: `null` is the family's maximum, a number is clamped to
@@ -121,6 +133,10 @@ pub const Projector = struct {
             },
             .muse => blk: {
                 const g = muse.gridFor(size, self.max_tokens);
+                break :blk .{ .width_tokens = g.widthTokens(), .height_tokens = g.heightTokens() };
+            },
+            .inkling => blk: {
+                const g = inkling.layoutFor(size, self.max_tokens).grid;
                 break :blk .{ .width_tokens = g.widthTokens(), .height_tokens = g.heightTokens() };
             },
         };
@@ -163,6 +179,12 @@ pub const Projector = struct {
                 defer alloc.free(resized);
                 return preprocess.patches(alloc, resized, target, muse.patchOptions(b.mean, b.std));
             },
+            .inkling => |b| {
+                // Padded, not resized, unless past the cap.
+                const layout = inkling.layoutFor(.{ .width = source.width, .height = source.height }, self.max_tokens);
+                if (layout.grid.widthTokens() != g.width_tokens or layout.grid.heightTokens() != g.height_tokens) return error.InvalidShape;
+                return inkling.prepare(alloc, source, layout, b.mean, b.std);
+            },
         }
     }
 
@@ -182,6 +204,7 @@ pub const Projector = struct {
     pub fn encode(self: *Projector, patches: preprocess.Patches, g: Grid, out: []f32) !void {
         const gemma_grid: gemma4.Grid = .{ .width_tokens = g.width_tokens, .height_tokens = g.height_tokens };
         const muse_grid: muse.Grid = .{ .width_patches = g.width_tokens * muse.merge, .height_patches = g.height_tokens * muse.merge };
+        const inkling_grid: inkling.Grid = .{ .width_patches = g.width_tokens * inkling.merge, .height_patches = g.height_tokens * inkling.merge };
         switch (self.exec) {
             .qwen3vl_cpu => |*e| try e.encode(patches, out),
             .qwen3vl_metal => |*e| try e.encode(patches, out),
@@ -189,6 +212,8 @@ pub const Projector = struct {
             .gemma4_metal => |*e| try e.encode(patches, gemma_grid, out),
             .muse_cpu => |*e| try e.encode(patches, muse_grid, out),
             .muse_metal => |*e| try e.encode(patches, muse_grid, out),
+            .inkling_cpu => |*e| try e.encode(patches, inkling_grid, out),
+            .inkling_metal => |*e| try e.encode(patches, inkling_grid, out),
         }
     }
 };

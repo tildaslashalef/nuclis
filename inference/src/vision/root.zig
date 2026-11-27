@@ -16,6 +16,7 @@ pub const qwen3vl = @import("qwen3vl.zig");
 pub const attention_metal = @import("attention_metal.zig");
 pub const gemma4 = @import("gemma4.zig");
 pub const muse_glimmer = @import("muse_glimmer.zig");
+pub const inkling2v = @import("inkling2v.zig");
 pub const projector = @import("projector.zig");
 pub const Projector = projector.Projector;
 pub const Grid = projector.Grid;
@@ -26,5 +27,6 @@ test {
     _ = qwen3vl;
     _ = gemma4;
     _ = muse_glimmer;
+    _ = inkling2v;
     _ = projector;
 }

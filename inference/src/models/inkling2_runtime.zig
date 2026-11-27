@@ -13,6 +13,7 @@
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const model = @import("inkling2.zig");
+const models = @import("root.zig");
 const weights = @import("../runtime/weights.zig");
 const session = @import("../runtime/session.zig");
 const cpu = @import("../backends/cpu/root.zig");
@@ -268,11 +269,49 @@ pub const Runtime = struct {
     /// one token; an error after `begin` requires reset.
     pub fn step(self: *Runtime, token: u32, logits: ?[]f32, observer: ?Observer) !void {
         if (token >= model.vocabulary) return error.InvalidTokenId;
+        return self.stepRow(.{ .token = token }, logits, observer);
+    }
+
+    /// Reference prefill with image spans: token rows step as `step`'s, a
+    /// span's rows step with the projector's rows (`features`, `Σ span.count
+    /// × embedding`) in place of the embedding, without the token norm, and
+    /// causally like text.
+    pub fn prefillVision(self: *Runtime, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, observer: ?Observer) !void {
+        if (tokens.len == 0) return error.InvalidShape;
+        try models.checkSpans(tokens.len, spans);
+        var rows: usize = 0;
+        for (spans) |span| rows += span.count;
+        if (features.len < rows * E) return error.InvalidShape;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        var si: usize = 0;
+        var frow: usize = 0;
+        for (tokens, 0..) |token, i| {
+            const last = if (i + 1 == tokens.len) logits else null;
+            if (si < spans.len and i >= spans[si].start and i < spans[si].start + spans[si].count) {
+                try self.stepRow(.{ .features = features[frow * E ..][0..E] }, last, observer);
+                frow += 1;
+                if (i + 1 == spans[si].start + spans[si].count) si += 1;
+            } else {
+                if (token >= model.vocabulary) return error.InvalidTokenId;
+                try self.stepRow(.{ .token = token }, last, observer);
+            }
+        }
+    }
+
+    const Input = union(enum) { token: u32, features: []const f32 };
+
+    fn stepRow(self: *Runtime, input: Input, logits: ?[]f32, observer: ?Observer) !void {
         if (logits) |out| if (out.len != model.vocabulary) return error.InvalidShape;
         try self.state.begin();
         errdefer self.state.fail();
-        try self.view.row(self.binding.token_embedding, token, self.cur);
-        try norm(self.cur, self.cur, self.token_norm);
+        switch (input) {
+            .token => |token| {
+                try self.view.row(self.binding.token_embedding, token, self.cur);
+                try norm(self.cur, self.cur, self.token_norm);
+            },
+            // An image row skips the token norm.
+            .features => |row| @memcpy(self.cur, row),
+        }
         var count: usize = 0;
         var prelude_count: usize = 0;
         var bank_count: usize = 0;

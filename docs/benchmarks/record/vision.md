@@ -631,3 +631,23 @@ projector already loaded):
 | this tree, Enter after the chip shows `676 tokens` | 2.26–2.30 s |
 
 What remains after Enter is the prefill of the ~700-token turn.
+
+## Inkling 2's projector (2026-11-27)
+
+M4 Pro, `mmproj-F16.gguf` with `Inkling-2-Mini-UD-Q4_K_XL.gguf`; the
+CPU reference in `ReleaseFast` (Debug in parentheses), F32 KV cache.
+
+| Image | Tokens | CPU reference | Metal | Metal vs CPU (max abs / rel. RMS) |
+| --- | ---: | ---: | ---: | --- |
+| synthetic 96×64, padded to 120×80 | 3×2 | (2.3 s) | 0.04 s | 2.1e-6 / 2.5e-6 |
+| 1200×630, padded to 1200×640 | 30×16 | 152 s (841 s) | 0.61 s | 1.7e-5 / 7.0e-6 |
+
+The second image exercises the position table resized to 30×16 and a
+partly padded last token row. On the synthetic rows, the greedy tokens
+agree on both executors and the engine loop; steps after the image differ
+from one prefill by 0 on the CPU and 8.3e-2 on Metal, inside the family's
+0.5 chunk-against-step bound (its prefill tiles against its step matvecs,
+as on text). End to end on Metal, `generate --image` on the 1200×630 image
+named its headline, subtitle, and address, and the same image stretched to
+1600×1600 (1,600 tokens, a span over two chunks) gave the headline
+verbatim.

@@ -31,6 +31,13 @@ pub fn addBiasRows(self: *Backend, x: Buffer, bias: Buffer, width: usize, rows: 
     const p: BiasRowsParams = .{ .width = @intCast(width), .rows = @intCast(rows), .stride = @intCast(stride) };
     try self.dispatch(.add_bias_rows, &.{ x, bias }, p, perElement(width * rows), 256, .{});
 }
+/// `x[row · stride + i] *= scale[i]` over `rows` rows of `width`: a
+/// per-channel layer scale.
+pub fn mulRows(self: *Backend, x: Buffer, scale: Buffer, width: usize, rows: usize, stride: usize) !void {
+    if (width == 0 or rows == 0 or stride < width or x.len < ((rows - 1) * stride + width) * 4 or scale.len < width * 4) return error.InvalidShape;
+    const p: BiasRowsParams = .{ .width = @intCast(width), .rows = @intCast(rows), .stride = @intCast(stride) };
+    try self.dispatch(.mul_rows, &.{ x, scale }, p, perElement(width * rows), 256, .{});
+}
 /// x = gelu(x) (the tanh form of `cpu.gelu`) over `count` values.
 pub fn gelu(self: *Backend, x: Buffer, count: usize) !void {
     if (count == 0 or x.len < count * 4) return error.InvalidShape;

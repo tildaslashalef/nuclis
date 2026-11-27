@@ -14,6 +14,7 @@ measurements, and the investigations behind it are in
 - [Images in the chat](#images-in-the-chat)
 - [Gemma 4's projectors](#gemma-4s-projectors)
 - [Muse Glimmer's projector](#muse-glimmers-projector)
+- [Inkling 2's projector](#inkling-2s-projector)
 - [Encoder attention](#encoder-attention)
 
 ## The contract
@@ -347,6 +348,38 @@ test of the patch embedding. A full-size image costs tens of seconds
 before the first token; a lower `image_max_tokens` is the lever. Why its
 rows track another implementation only up to block 33: [record,
 2026-09-23](../benchmarks/record/vision.md#muse-glimmers-projector-2026-09-23).
+
+## Inkling 2's projector
+
+**The file.** `mmproj-F16.gguf`, 422 tensors, `clip.vision.projector_type
+= inkling2v`, mean/std 0.5, LayerNorm eps 1e-5, patch 20, merge 2;
+inventory `fixtures/inkling2-mmproj.json`. Twenty-three blocks of width
+1024 (16 heads of 64), every matrix F16 with F32 biases, no gate, and
+per-channel layer scales `ls1`/`ls2`; `v.pre_ln`, no post-norm; a class
+token; a 32×32 position table; the adapter `mm.1`/`mm.2` (4096 → 4096 →
+2304) without biases. 1 to 4,096 tokens: the image is padded right and
+bottom to a multiple of 40 with −1 before the normalization, rounded to
+F16, and resized (bicubic) only past the cap (`inkling2v.layoutFor`).
+
+**The encoder.** Row 0 the class token, then the patches raster, each
+conv + the position table (resized bilinearly, half-pixel centres).
+`pre_ln`; per block `x += ls1 ⊙ (W_o·attn(LN(x)·ln1 + b) + b)`,
+`x += ls2 ⊙ (W_down·gelu_erf(W_up·(LN(x)·ln2 + b) + b) + b)`; 2-D RoPE,
+adjacent pairs, base 1e4: pair j < 16 by the column + 1 at
+`10000^(−j/16)`, j ≥ 16 by the row + 1, the class row at (0, 0);
+bidirectional attention at scale 1/8. The merge drops the class row and is
+position-major: token (ox, oy) holds at `s·1024 + c` channel c of patch
+(2ox + dx, 2oy + dy), s = 2dy + dx. Then `mm.1`, erf GELU, `mm.2`.
+
+**Executors and the language model.** The CPU reference shares Muse
+Glimmer's F64 products (`rows_cpu.rowsTimes`); the Metal plan adds the
+per-channel scale `nu_mul_rows` and merges on the host between two command
+buffers. One `<|content_image|>` user message per image, one
+`<|unused_200054|>` per token; image rows skip the token norm and attend
+causally. Gates `inkling2-vision-cpu`/`-metal` pin the synthetic image's
+rows (`fixtures/inkling2v-synthetic/`, nuclis's CPU) and greedy tokens;
+decode after it stays within the family's chunk bound, 0.5
+([record](../benchmarks/record/vision.md#inkling-2s-projector-2026-11-27)).
 
 ## Encoder attention
 

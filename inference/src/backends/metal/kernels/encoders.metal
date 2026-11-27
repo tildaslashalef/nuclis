@@ -45,6 +45,12 @@ kernel void nu_add_bias_rows(device float * x [[buffer(0)]], device const float 
     uint row = id / p.width, i = id % p.width;
     x[ulong(row) * p.stride + i] += bias[i];
 }
+kernel void nu_mul_rows(device float * x [[buffer(0)]], device const float * scale [[buffer(1)]],
+                        constant BiasRowsParams & p [[buffer(7)]], uint id [[thread_position_in_grid]]) {
+    if (id >= p.width * p.rows) return;
+    uint row = id / p.width, i = id % p.width;
+    x[ulong(row) * p.stride + i] *= scale[i];
+}
 kernel void nu_gelu_inplace(device float * x [[buffer(0)]],
                             constant CountParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
     if (i < p.count) x[i] = nu_gelu(x[i]);

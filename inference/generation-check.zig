@@ -248,7 +248,12 @@ pub fn main(init: std.process.Init) !void {
         else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
         // No Muse Glimmer model file is gated, so none is checked.
         .@"muse-glimmer" => return error.UnsupportedFamily,
-        .inkling2 => if (draft_trace != null or draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(inkling2_spec, alloc, init.io, &mapped, use_metal),
+        .inkling2 => if (vision_check) |projector|
+            if (vision_image) |image|
+                try visionCompare(alloc, init.io, projector, image, vision_oracle, use_metal, null)
+            else
+                try visionCheck(alloc, init.io, model_path, projector, use_metal)
+        else if (draft_trace != null or draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(inkling2_spec, alloc, init.io, &mapped, use_metal),
     }
     // The ordinary run's engine-level addition, backend-independent like
     // `speculativeLoop`, so the Metal run covers it.
@@ -2229,6 +2234,9 @@ const VisionFixture = struct {
     /// Bound on the best logits' difference; a span that is not
     /// bidirectional misses it (1.80 on the 12B, 0.41 on the 26B-A4B).
     logits_max_abs: f64 = 0,
+    /// Bound on steps after the image against one prefill: the family's
+    /// chunk-against-step spread.
+    decode_max_abs: f64 = 2e-2,
     max_abs: f64,
     rel_rms: f64,
 };
@@ -2247,6 +2255,10 @@ fn visionFixture(projector: *const inference.vision.Projector) error{Unsupported
             else
                 .{ .features = @embedFile("src/vision/fixtures/gemma4v-synthetic/features.f32"), .greedy = @embedFile("src/vision/fixtures/gemma4v-synthetic/greedy.txt"), .prompt_tokens = @embedFile("src/vision/fixtures/gemma4v-synthetic/prompt-tokens.json"), .top_logits = @embedFile("src/vision/fixtures/gemma4v-synthetic/top-logits.txt"), .min_tokens = 4, .logits_max_abs = 0.1, .max_abs = 0.2, .rel_rms = 2.5e-2 },
         },
+        // nuclis's own CPU rows and greedy tokens; the Metal plan differs
+        // by 2.5e-6 relative RMS. Its prefill tiles and step matvecs differ
+        // as on text (`inkling2_spec.bounds.chunk_max_abs`).
+        .inkling => .{ .features = @embedFile("src/vision/fixtures/inkling2v-synthetic/features.f32"), .greedy = @embedFile("src/vision/fixtures/inkling2v-synthetic/greedy.txt"), .decode_max_abs = 5e-1, .max_abs = 1e-4, .rel_rms = 1e-4 },
         .muse => error.UnsupportedFamily,
     };
 }
@@ -2422,8 +2434,8 @@ fn visionCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, pro
     try eng.model.prefillVision(extended.items, spans, pinned, logits, null, null, null, null);
     var max_abs: check_stats.Worst = .{};
     for (stepped, logits) |a, b| max_abs.observe(@abs(@as(f64, a) - b));
-    std.debug.print("Decode after the image, {d} steps vs one prefill: max abs {e:.3} (bound 2e-2)\n", .{ count - 1, max_abs.shown() });
-    if (!max_abs.within(2e-2)) return error.VisionDecodeMismatch;
+    std.debug.print("Decode after the image, {d} steps vs one prefill: max abs {e:.3} (bound {e:.1})\n", .{ count - 1, max_abs.shown(), fixture.decode_max_abs });
+    if (!max_abs.within(fixture.decode_max_abs)) return error.VisionDecodeMismatch;
 
     // The engine's loop over the same prompt, with the device's greedy
     // selection on Metal (the chat's path), must choose the same tokens.

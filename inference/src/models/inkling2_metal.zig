@@ -14,6 +14,7 @@
 //! docs/models/inkling2.md § Metal says what the plan covers.
 const std = @import("std");
 const model = @import("inkling2.zig");
+const models = @import("root.zig");
 const runtime = @import("inkling2_runtime.zig");
 const weights = @import("../runtime/weights.zig");
 const session = @import("../runtime/session.zig");
@@ -163,6 +164,9 @@ pub const Plan = struct {
     /// Every application's routing for the batch, while an observer asks.
     expert_tap: ?Buffer,
     tapping: bool,
+    /// The projector's rows for the chunk being recorded, when it is an
+    /// image span's; borrowed for that one chunk.
+    image_rows: ?[]const f32,
 
     /// The prompt chunk the engine should ask for (docs/models/inkling2.md
     /// § Metal).
@@ -194,6 +198,7 @@ pub const Plan = struct {
         self.has_draft = draft;
         self.expert_tap = null;
         self.tapping = false;
+        self.image_rows = null;
         const rows: usize = if (draft) @max(chunk, max_verify_rows) else chunk;
         const n = metal.Backend.matmulPadded(rows);
         self.capacity_rows = n;
@@ -383,9 +388,15 @@ pub const Plan = struct {
     fn record(self: *Plan, tokens: []const u32, observer: ?Observer, layered: bool) !usize {
         const b = self.backend;
         const count = tokens.len;
-        const embedding = try self.weight(self.binding.token_embedding);
-        for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.cur.slice(t * E * 4, E * 4));
-        try b.rmsNorm(self.cur, self.token_norm, self.cur, .{ .rows = count, .width = E, .in_stride = E, .out_stride = E });
+        if (self.image_rows) |rows| {
+            // Image rows skip the token norm. The previous command buffer
+            // has completed, so the host may write the batch rows.
+            @memcpy(self.cur.floats()[0 .. count * E], rows[0 .. count * E]);
+        } else {
+            const embedding = try self.weight(self.binding.token_embedding);
+            for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.cur.slice(t * E * 4, E * 4));
+            try b.rmsNorm(self.cur, self.token_norm, self.cur, .{ .rows = count, .width = E, .in_stride = E, .out_stride = E });
+        }
         var closed: usize = 0;
         var prelude_closed: usize = 0;
         var bank_closed: usize = 0;
@@ -709,6 +720,43 @@ pub const Plan = struct {
             try self.prefillChunk(tokens[offset..][0..count], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, observer);
             offset += count;
             if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .prefill, .position = offset, .target = tokens.len });
+        }
+    }
+
+    /// Prefills a prompt with image spans: text runs and image spans are
+    /// chunked separately (a span never shares a chunk with text), and a
+    /// span's rows take the projector's rows (`features`, `Σ span.count ×
+    /// E`) in place of the token embedding and its norm. Attention over
+    /// them is causal, as for text.
+    pub fn prefillVision(self: *Plan, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, observer: ?Observer) !void {
+        if (tokens.len == 0) return error.InvalidShape;
+        try models.checkSpans(tokens.len, spans);
+        var span_rows: usize = 0;
+        for (spans) |span| span_rows += span.count;
+        if (features.len < span_rows * E) return error.InvalidShape;
+        if (observer) |o| if (o.layer != null) return error.InvalidShape;
+        for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
+        if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
+        if (topk) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
+        if (self.state.status != .ready) return error.SessionNotReady;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        var i: usize = 0;
+        var si: usize = 0;
+        var frow: usize = 0;
+        defer self.image_rows = null;
+        while (i < tokens.len) {
+            const in_span = si < spans.len and spans[si].start == i;
+            const end = if (in_span) i + spans[si].count else if (si < spans.len) spans[si].start else tokens.len;
+            while (i < end) {
+                const c = @min(self.chunk, end - i);
+                const last = i + c == tokens.len;
+                self.image_rows = if (in_span) features[frow * E ..][0 .. c * E] else null;
+                if (in_span) frow += c;
+                try self.prefillChunk(tokens[i..][0..c], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, observer);
+                i += c;
+                if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .prefill, .position = i, .target = tokens.len });
+            }
+            if (in_span) si += 1;
         }
     }
 

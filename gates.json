@@ -69,7 +69,8 @@
   },
   "inkling2": {
    "path": "~/.nuclis/models/unsloth/Inkling-2-Mini-GGUF/Inkling-2-Mini-UD-Q4_K_XL.gguf",
-   "note": "no index entry until Inkling 2 is accepted; the file the family card pins"
+   "note": "no index entry until Inkling 2 is accepted; the file the family card pins",
+   "mmproj": "~/.nuclis/models/unsloth/Inkling-2-Mini-GGUF/mmproj-F16.gguf"
   }
  },
  "data": {
@@ -216,11 +217,13 @@
    "tier": "verify-cpu",
    "paths": [
     "inference/src/backends/cpu/**",
-    "inference/src/quant/**",
     "inference/src/models/*_runtime.zig",
+    "inference/src/quant/**",
     "inference/src/vision/gemma4.zig",
+    "inference/src/vision/inkling2v.zig",
     "inference/src/vision/muse_glimmer.zig",
-    "inference/src/vision/qwen3vl.zig"
+    "inference/src/vision/qwen3vl.zig",
+    "inference/src/vision/rows_cpu.zig"
    ],
    "reason": "may change what the CPU reference computes; not required for an addition nothing calls yet or a refactor a unit test pins (AGENTS.md, Validation and definition of done)"
   },
@@ -324,7 +327,11 @@
    "inference/src/tokenizer/case_table.zig",
    "inference/src/models/inkling2*.zig",
    "inference/src/models/fixtures/inkling2-*.json",
-   "tests/fixtures/inkling2-*/**"
+   "tests/fixtures/inkling2-*/**",
+   "inference/src/vision/inkling2*.zig",
+   "inference/src/vision/fixtures/inkling2*/**",
+   "inference/src/vision/fixtures/inkling2-mmproj.json",
+   "inference/src/vision/rows_cpu.zig"
   ]
  },
  "aggregators": [
@@ -2869,6 +2876,43 @@
     "kind": "exit"
    },
    "evidence": "docs/models/inkling2.md#metal"
+  },
+  {
+   "name": "inkling2-vision-metal",
+   "family": "inkling2",
+   "tier": "verify",
+   "model": "inkling2",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--vision-check",
+    "{mmproj}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/engine/vision.md#inkling-2s-projector"
+  },
+  {
+   "name": "inkling2-vision-cpu",
+   "family": "inkling2",
+   "tier": "verify-cpu",
+   "model": "inkling2",
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--vision-check",
+    "{mmproj}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/engine/vision.md#inkling-2s-projector"
   }
  ]
 }

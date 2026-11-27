@@ -4101,12 +4101,14 @@ fn checkVisionNorms(alloc: std.mem.Allocator, b: *Backend) !void {
     for (0..rows) |r| {
         const row = expected[r * stride ..][0..width];
         try inference.cpu.dense.layerNorm(row, weight.floats(), bias.floats(), 1e-6, row);
-        for (row, bias.floats()) |*v, add| v.* += add;
+        for (row, bias.floats(), weight.floats()) |*v, add, s| v.* = (v.* + add) * s;
     }
     try b.begin();
     try b.layerNorm(input, weight, bias, input, .{ .rows = rows, .width = width, .in_stride = stride, .out_stride = stride, .eps = 1e-6 });
     try b.addBiasRows(input, bias, width, rows, stride);
+    try b.mulRows(input, weight, width, rows, stride);
     try b.commit();
+    if (b.mulRows(input, weight.slice(0, width * 4 - 4), width, rows, stride)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
     var worst: check_stats.Worst = .{};
     for (0..rows) |r| for (0..stride) |c| {
         const i = r * stride + c;
@@ -4117,9 +4119,9 @@ fn checkVisionNorms(alloc: std.mem.Allocator, b: *Backend) !void {
             continue;
         }
         worst.observe(@abs(got - expected[i]));
-        try expectClose("layerNorm then addBiasRows", got, expected[i], 1e-5 * @max(1, @abs(expected[i])));
+        try expectClose("layerNorm, addBiasRows, mulRows", got, expected[i], 1e-5 * @max(1, @abs(expected[i])));
     };
-    std.debug.print("LayerNorm and per-row bias vs CPU, {d} strided rows of {d}: max abs {e:.3} (bound 1e-5, relative past 1)\n", .{ rows, width, worst.shown() });
+    std.debug.print("LayerNorm, per-row bias, and per-channel scale vs CPU, {d} strided rows of {d}: max abs {e:.3} (bound 1e-5, relative past 1)\n", .{ rows, width, worst.shown() });
 }
 
 /// `NUCLIS_CAPTURE=<substring>`: the benchmarks record the last warm-up
