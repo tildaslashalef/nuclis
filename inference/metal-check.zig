@@ -979,6 +979,61 @@ fn denseRowsBench(alloc: std.mem.Allocator, max_rows: usize, inkling: bool) !voi
     }
 }
 
+/// The DSpark drafter's two kernels against `dspark.mixTaps` and
+/// `dspark.markovStep` on random rows, with the bias the op adds.
+fn checkDspark(alloc: std.mem.Allocator) !void {
+    const dspark = inference.models.dspark;
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    var prng = std.Random.DefaultPrng.init(0xd5a7);
+    const random = prng.random();
+    const width = 96;
+    const rows = 5;
+    const stride = dspark.taps * width + 8;
+    const input = try b.create(rows * stride * 4);
+    const mix = try b.create(dspark.taps * 4);
+    const output = try b.create(rows * width * 4);
+    for (input.floats()) |*v| v.* = random.float(f32) * 4 - 2;
+    for (mix.floats()) |*v| v.* = random.float(f32) * 2 - 1;
+    try b.begin();
+    try b.dsparkMix(input, mix, output, rows, width, dspark.taps, stride, width);
+    try b.commit();
+    var worst: check_stats.Worst = .{};
+    var expected: [width]f32 = undefined;
+    for (0..rows) |r| {
+        var features: [dspark.taps * width]f32 = undefined;
+        @memcpy(&features, input.floats()[r * stride ..][0 .. dspark.taps * width]);
+        dspark.mixTaps(&features, mix.floats()[0..dspark.taps], &expected);
+        for (output.floats()[r * width ..][0..width], expected) |got, want| worst.observe(@abs(got - want));
+    }
+    const rank = dspark.markov_rank;
+    const joint = try b.create(dspark.joint_output * 4);
+    const bias = try b.create(dspark.joint_output * 4);
+    const state = try b.create(rank * 4);
+    const markov = try b.create(rank * 4);
+    for (joint.floats()) |*v| v.* = random.float(f32) * 12 - 6;
+    for (bias.floats()) |*v| v.* = random.float(f32) - 0.5;
+    for (state.floats()) |*v| v.* = random.float(f32) * 2 - 1;
+    var want_state: [rank]f32 = undefined;
+    @memcpy(&want_state, state.floats()[0..rank]);
+    var want_markov: [rank]f32 = undefined;
+    var biased: [dspark.joint_output]f32 = undefined;
+    for (&biased, joint.floats()[0..dspark.joint_output], bias.floats()[0..dspark.joint_output]) |*o, j, x| o.* = j + x;
+    dspark.markovStep(&biased, &want_state, &want_markov);
+    try b.begin();
+    try b.dsparkMarkov(joint, bias, state, markov, rank);
+    try b.commit();
+    if (inject_nan) markov.floats()[3] = std.math.nan(f32);
+    for (state.floats()[0..rank], want_state) |got, want| worst.observe(@abs(got - want));
+    for (markov.floats()[0..rank], want_markov) |got, want| worst.observe(@abs(got - want));
+    if (!worst.within(1e-5)) {
+        std.debug.print("dspark_mix / dspark_markov: max abs {e} (bound 1e-5)\n", .{worst.shown()});
+        return error.MetalMismatch;
+    }
+    std.debug.print("DSpark tap mix and Markov step vs CPU: max abs {e:.3} (bound 1e-5)\n", .{worst.shown()});
+}
+
 /// DFlash2's convolution kernel against `dflash2.convolve` on random rows,
 /// both halves, every block length.
 fn checkDflashConv(alloc: std.mem.Allocator) !void {
@@ -4454,6 +4509,7 @@ pub fn main(init: std.process.Init) !void {
     try checkUnwrap(alloc);
     try checkCreated(alloc);
     try checkDflashConv(alloc);
+    try checkDspark(alloc);
     try checkDiscard(alloc);
     try checkTick(alloc);
     try checkSegments(alloc);

@@ -222,6 +222,27 @@ pub fn dflashConv(self: *Backend, base: Buffer, taps: Buffer, input: Buffer, out
     const p: DflashConvParams = .{ .rows = @intCast(rows), .width = @intCast(width), .half_index = @intCast(half), .group = @intCast(group), .groups = @intCast(groups), .taps_stride = @intCast(taps_stride) };
     try self.dispatch(.dflash_conv, &.{ base, taps, input, output }, p, perElement(rows * width), 256, .{});
 }
+pub const DsparkMixParams = extern struct { rows: u32, width: u32, taps: u32, in_stride: u32, out_stride: u32 };
+/// The DSpark drafter's tap mix (`dspark.mixTaps`): for each of `rows`
+/// rows, `output = Σ_t mix[t] · input[t · width ..]` over `taps` adjacent
+/// slices of `width`, rows `in_stride` and `out_stride` floats apart.
+pub fn dsparkMix(self: *Backend, input: Buffer, mix: Buffer, output: Buffer, rows: usize, width: usize, taps: usize, in_stride: usize, out_stride: usize) !void {
+    if (rows == 0 or width == 0 or taps == 0 or in_stride < taps * width or out_stride < width) return error.InvalidShape;
+    if (input.len < ((rows - 1) * in_stride + taps * width) * 4 or mix.len < taps * 4 or output.len < ((rows - 1) * out_stride + width) * 4) return error.InvalidShape;
+    if (input.id == output.id) return error.InvalidShape;
+    const p: DsparkMixParams = .{ .rows = @intCast(rows), .width = @intCast(width), .taps = @intCast(taps), .in_stride = @intCast(in_stride), .out_stride = @intCast(out_stride) };
+    try self.dispatch(.dspark_mix, &.{ input, mix, output }, p, perElement(rows * width), 256, .{});
+}
+pub const DsparkMarkovParams = extern struct { rank: u32 };
+/// One step of the DSpark Markov recurrence (`dspark.markovStep`) on
+/// `joint + bias` (`3 · rank` each): `state` (`rank`) is updated in place
+/// and `markov` (`rank`) written. `state` and `markov` must not alias
+/// `joint`.
+pub fn dsparkMarkov(self: *Backend, joint: Buffer, bias: Buffer, state: Buffer, markov: Buffer, rank: usize) !void {
+    if (rank == 0 or joint.len < 3 * rank * 4 or bias.len < 3 * rank * 4 or state.len < rank * 4 or markov.len < rank * 4) return error.InvalidShape;
+    const p: DsparkMarkovParams = .{ .rank = @intCast(rank) };
+    try self.dispatch(.dspark_markov, &.{ joint, bias, state, markov }, p, perElement(rank), 256, .{});
+}
 pub fn silu(self: *Backend, x: Buffer, count: usize) !void {
     if (count == 0 or x.len < count * 4) return error.InvalidShape;
     try self.dispatch(.silu_inplace, &.{x}, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});

@@ -11,6 +11,11 @@
 //! the session's, and a chunk's convolutions read the history the last
 //! chunk left. The residual bookkeeping (which blocks are open, the core's
 //! bank) is host integers, the same for every row and every token.
+//! A verify batch leaves the convolution histories at its start and copies
+//! its rows' convolution inputs to the tape; `replayRows` shifts the kept
+//! ones in (the history is a pure shift register of its inputs). A bound
+//! DSpark drafter (`dspark_metal.zig`) reads each row's commit row, which
+//! the forward captures while it records.
 //! docs/models/inkling2.md § Metal says what the plan covers.
 const std = @import("std");
 const model = @import("inkling2.zig");
@@ -25,6 +30,8 @@ const cpu = @import("../backends/cpu/root.zig");
 const Tensor = @import("../formats/gguf.zig").Tensor;
 const Buffer = metal.Buffer;
 const observer_types = @import("../runtime/observer.zig");
+const dspark = @import("dspark.zig");
+const dspark_metal = @import("dspark_metal.zig");
 
 pub const Observer = observer_types.Observer;
 
@@ -58,6 +65,11 @@ const max_extent = @max(model.relative_extent, model.window);
 /// K's and V's, so each of the two bank mixes writes two adjacent rows.
 const message_row = [4]usize{ 0, 2, 3, 1 };
 const eps = model.rms_epsilon;
+/// Floats of one application's convolution channels, K, V, attention out,
+/// FFN out, as its history orders them; one tape row of an application.
+const conv_channels = runtime.conv_channels;
+/// Rows the verify tape holds: every verify batch.
+const tape_rows = max_verify_rows;
 
 /// A stored block's small F32 tensors, one GPU buffer each.
 const Constants = struct {
@@ -104,7 +116,22 @@ pub const Plan = struct {
     /// Rows every batch buffer holds: the chunk or a verify batch, padded
     /// to the matmul tile (`n` in the counts below).
     capacity_rows: usize,
+    /// The verify head and the tape exist (a drafter was asked for).
     has_draft: bool,
+    /// The DSpark drafter, when the binding carries one and a draft was
+    /// asked for; its caches are session layers from `2 · block_count`.
+    spark: ?dspark_metal.Draft,
+    /// The verify tape: per application, `tape_rows` rows of the batch's
+    /// convolution inputs (`conv_channels` each); a float without a drafter.
+    tape: Buffer,
+    /// The batch being recorded copies its convolution inputs to the tape
+    /// instead of advancing the histories.
+    taping: bool,
+    /// Each row's commit row (`dspark.hidden_width`: `cur` entering the
+    /// three tap applications, then the head's normed input) while
+    /// `capturing`; a float without the drafter.
+    capture: Buffer, // n × dspark.hidden_width
+    capturing: bool,
 
     // A batch's activations, row-major (F32 counts in comments).
     cur: Buffer, // n × E
@@ -177,13 +204,20 @@ pub const Plan = struct {
     }
 
     /// `chunk` bounds the prompt rows one command buffer records and sizes
-    /// the batch buffers. `kv` is every application's cache precision.
-    /// `draft` sizes the verify head; no drafter is bound to this family
-    /// yet, so a plan without it refuses `verify`.
+    /// the batch buffers. `kv` is every application's cache precision, the
+    /// drafter's included. `draft` sizes the verify head and the tape, and
+    /// loads the binding's DSpark drafter when it carries one; a plan
+    /// without it refuses `verify`.
     pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision, checkpoint: bool, draft: bool) !Plan {
         if (chunk == 0 or chunk > metal.Backend.max_chunk_rows) return error.InvalidShape;
-        const all = runtime.layouts(kv, chunk);
-        var state = try session.Session.init(alloc, &all, capacity, checkpoint);
+        const spark = draft and binding.dspark != null;
+        var all: [2 * model.block_count + dspark.block_count]session.Layout = undefined;
+        all[0 .. 2 * model.block_count].* = runtime.layouts(kv, chunk);
+        // The drafter's caches keep every row: a block writes past the
+        // position, ahead of what a windowed region's compaction admits.
+        for (all[2 * model.block_count ..]) |*layout| layout.* = .{ .attention = .{ .key_row = dspark.kv_width, .value_row = dspark.kv_width, .precision = kv } };
+        const used = 2 * model.block_count + @as(usize, if (spark) dspark.block_count else 0);
+        var state = try session.Session.init(alloc, all[0..used], capacity, checkpoint);
         errdefer state.deinit();
         const constants = try alloc.alloc(Constants, model.stored_blocks);
         errdefer alloc.free(constants);
@@ -196,6 +230,9 @@ pub const Plan = struct {
         self.constants = constants;
         self.chunk = chunk;
         self.has_draft = draft;
+        self.spark = null;
+        self.taping = false;
+        self.capturing = false;
         self.expert_tap = null;
         self.tapping = false;
         self.image_rows = null;
@@ -269,6 +306,9 @@ pub const Plan = struct {
         self.padded_logits = try created.create(model.padded_vocabulary * 4);
         self.head_rows = try created.create(if (draft) metal.Backend.matmulPadded(max_verify_rows) * model.padded_vocabulary * 4 else 4);
         self.readout = try .init(&created, draft);
+        self.tape = try created.create(if (draft) model.block_count * tape_rows * conv_channels * 4 else 4);
+        self.capture = try created.create(if (spark) n * dspark.hidden_width * 4 else 4);
+        if (spark) self.spark = try .init(alloc, &created, binding.dspark.?, capacity, 2 * model.block_count);
         return self;
     }
 
@@ -284,6 +324,7 @@ pub const Plan = struct {
 
     pub fn reset(self: *Plan) void {
         self.state.reset();
+        if (self.spark) |*d| d.reset();
     }
 
     /// Small F32 tensor copied into its own GPU buffer once at init.
@@ -352,10 +393,40 @@ pub const Plan = struct {
 
     /// `cpu.recurrent.shortConvolution` of `count` contiguous rows, the
     /// history read for the rows before the batch and then advanced past it.
+    /// A taped batch copies the inputs to the tape and leaves the history.
     fn convolve(self: *Plan, il: usize, first: usize, channels: usize, in: Buffer, w: Buffer, dynamic: ?metal.Backend.DynamicTaps, output: Buffer, count: usize) !void {
         const h = self.history(il, first, channels);
         try self.backend.shortConvolution(h, in, w, dynamic, output, channels, taps, count, channels, channels);
-        try self.backend.convolutionHistory(h, in, channels, taps, count, channels);
+        if (self.taping) {
+            try self.copyRows(from(self.tapeOf(il), first), conv_channels, in, channels, channels, count);
+        } else try self.backend.convolutionHistory(h, in, channels, taps, count, channels);
+    }
+    /// Application `il`'s tape: `tape_rows` rows of `conv_channels`.
+    fn tapeOf(self: *Plan, il: usize) Buffer {
+        return self.tape.slice(il * tape_rows * conv_channels * 4, tape_rows * conv_channels * 4);
+    }
+
+    /// Applies the first `kept` rows of the last verify's tape to every
+    /// application's convolution history and settles the session at the
+    /// batch's start plus `kept`. `kept` is at most the pending rows; zero
+    /// replays nothing. A failed replay leaves the session failed, as a
+    /// failed forward does.
+    pub fn replayRows(self: *Plan, kept: usize) !void {
+        if (self.state.pending_rows == 0 or kept > self.state.pending_rows) return error.InvalidShape;
+        if (kept > 0) {
+            errdefer self.state.fail();
+            const b = self.backend;
+            try b.begin();
+            errdefer b.discard();
+            for (0..model.block_count) |il| try b.convolutionHistory(self.history(il, 0, conv_channels), self.tapeOf(il), conv_channels, taps, kept, conv_channels);
+            try b.commit();
+        }
+        try self.state.settleRows(kept);
+    }
+    /// Replays every pending row: what a forward needs before it reads or
+    /// extends the state, when no `recover` chose a shorter prefix.
+    fn settle(self: *Plan) !void {
+        if (self.state.pending_rows > 0) try self.replayRows(self.state.pending_rows);
     }
 
     /// Puts each row's `cur` after its `closed` closed blocks, so a mix
@@ -427,6 +498,9 @@ pub const Plan = struct {
                     looped = true;
                 }
             }
+            if (self.capturing) inline for (dspark.target_layers[0 .. dspark.taps - 1], 0..) |tap, slot| {
+                if (il == tap) try self.copyRows(from(self.capture, slot * E), dspark.hidden_width, self.cur, E, E, count);
+            };
             try self.attention(il, block, c, closed, looped, count);
             if (ip % model.residual_span == 0) {
                 try self.copyRows(from(self.states, closed * E), state_stride, self.cur, E, E, count);
@@ -466,11 +540,20 @@ pub const Plan = struct {
     /// The head over every row of a verify batch, into `head_rows`
     /// (padded rows, unsoftcapped).
     fn headRows(self: *Plan, closed: usize, count: usize) !void {
-        const b = self.backend;
+        try self.headInputs(closed, count);
+        try self.mmRows(self.binding.output, self.mixed, E, self.head_rows, model.padded_vocabulary, count);
+    }
+    /// Every row's mixed, normed head input into `mixed`, and into the
+    /// commit rows while capturing.
+    fn headInputs(self: *Plan, closed: usize, count: usize) !void {
         try self.stageCur(closed, count);
         try self.mix(closed, self.output_query, 1, self.mixed, E, count);
-        try b.rmsNorm(self.mixed, self.output_norm, self.mixed, .{ .rows = count, .width = E, .in_stride = E, .out_stride = E });
-        try self.mmRows(self.binding.output, self.mixed, E, self.head_rows, model.padded_vocabulary, count);
+        try self.backend.rmsNorm(self.mixed, self.output_norm, self.mixed, .{ .rows = count, .width = E, .in_stride = E, .out_stride = E });
+        if (self.capturing) try self.copyRows(from(self.capture, (dspark.taps - 1) * E), dspark.hidden_width, self.mixed, E, E, count);
+    }
+    /// Copies `count` captured commit rows to the host.
+    fn readCapture(self: *Plan, count: usize, out: []f32) void {
+        @memcpy(out[0 .. count * dspark.hidden_width], self.capture.floats()[0 .. count * dspark.hidden_width]);
     }
 
     /// Records and runs one token. `logits` receives the vocabulary scores,
@@ -483,6 +566,7 @@ pub const Plan = struct {
         if (token >= vocabulary) return error.InvalidTokenId;
         if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
         if (topk) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
+        try self.settle();
         if (penalties) |p| try self.readout.syncPenalties(p);
         try self.state.begin();
         errdefer self.state.fail();
@@ -703,22 +787,30 @@ pub const Plan = struct {
     /// buffer each; only the last row runs the head. The whole prompt is
     /// admitted before the first chunk, and each chunk commits, so an error
     /// part way leaves the chunks before it consumed. A per-layer observer
-    /// is a per-token contract (`step`), refused here; `hidden_rows` is
-    /// refused too: no drafter reads them.
+    /// is a per-token contract (`step`), refused here. `hidden_rows`
+    /// (`tokens.len` commit rows), when given, receives each row's commit
+    /// row; only a plan with the drafter has them.
     pub fn prefill(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, hidden_rows: ?[]f32, observer: ?Observer) !void {
         if (tokens.len == 0) return error.InvalidShape;
-        if (hidden_rows != null) return error.HiddenUnsupported;
+        if (hidden_rows) |h| {
+            if (self.spark == null) return error.HiddenUnsupported;
+            if (h.len != tokens.len * dspark.hidden_width) return error.InvalidShape;
+        }
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
         for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
         if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
         if (topk) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
+        try self.settle();
         if (self.state.status != .ready) return error.SessionNotReady;
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        self.capturing = hidden_rows != null;
+        defer self.capturing = false;
         var offset: usize = 0;
         while (offset < tokens.len) {
             const count = @min(self.chunk, tokens.len - offset);
             const last = offset + count == tokens.len;
             try self.prefillChunk(tokens[offset..][0..count], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, observer);
+            if (hidden_rows) |h| self.readCapture(count, h[offset * dspark.hidden_width ..][0 .. count * dspark.hidden_width]);
             offset += count;
             if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .prefill, .position = offset, .target = tokens.len });
         }
@@ -739,6 +831,7 @@ pub const Plan = struct {
         for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
         if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
         if (topk) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
+        try self.settle();
         if (self.state.status != .ready) return error.SessionNotReady;
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
         var i: usize = 0;
@@ -773,6 +866,7 @@ pub const Plan = struct {
         try b.begin();
         errdefer b.discard();
         const closed = try self.record(tokens, observer, false);
+        if (self.capturing) try self.headInputs(closed, count);
         if (logits != null or greedy != null or topk != null) try self.head(count - 1, closed, greedy != null, topk, penalties);
         try b.commit();
         try finite(self.cur, count);
@@ -781,23 +875,51 @@ pub const Plan = struct {
         try self.state.commitChunk(count);
     }
 
-    /// Admits a verify batch of `tokens` (at most `max_verify_rows`) and
-    /// records it. Refused without a drafter.
+    /// Checks a verify batch of `tokens` (at most `max_verify_rows`) and
+    /// settles the last one's pending rows. Refused without a drafter.
     fn beginVerify(self: *Plan, tokens: []const u32, h_rows: ?[]f32, observer: ?Observer) !void {
         if (!self.has_draft) return error.NoDraftBlock;
-        if (h_rows != null) return error.HiddenUnsupported;
+        if (h_rows) |h| {
+            if (self.spark == null) return error.HiddenUnsupported;
+            if (h.len != tokens.len * dspark.hidden_width) return error.InvalidShape;
+        }
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
         if (tokens.len == 0 or tokens.len > max_verify_rows) return error.InvalidShape;
         for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
+        try self.settle();
         if (self.state.status != .ready) return error.SessionNotReady;
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+    }
+
+    /// Records a verify batch's applications with its convolution inputs on
+    /// the tape and its commit rows captured when `h_rows` asks, and its
+    /// head over every row into `head_rows`.
+    fn recordVerify(self: *Plan, tokens: []const u32, capture: bool, observer: ?Observer) !void {
+        self.taping = true;
+        self.capturing = capture;
+        defer {
+            self.taping = false;
+            self.capturing = false;
+        }
+        const closed = try self.record(tokens, observer, false);
+        try self.headRows(closed, tokens.len);
+    }
+
+    /// Ends a verify batch: its rows are committed to the attention caches
+    /// and pending on the tape for the recurrent histories.
+    fn endVerify(self: *Plan, count: usize, h_rows: ?[]f32) !void {
+        if (h_rows) |h| self.readCapture(count, h);
+        try self.state.commitChunk(count);
+        try self.state.deferRows(count);
     }
 
     /// Verifies a batch: records the applications once and runs the head
     /// over every row. Exactly one of `rows` (`tokens.len × vocabulary`)
     /// and `tops` (one `sampling.TopK` per row) is given; the soft-capped
     /// logits stay resident either way, so `readVerifyRow` serves a
-    /// fallback. `h_rows` is refused: the family binds no drafter yet.
+    /// fallback. `h_rows` (`tokens.len` commit rows), when given, receives
+    /// what the drafter's `commit` reads. The batch's recurrent update waits
+    /// on the tape (`replayRows`).
     pub fn verify(self: *Plan, tokens: []const u32, rows: ?[]f32, tops: ?[]sampling.TopK, h_rows: ?[]f32, observer: ?Observer) !void {
         try self.beginVerify(tokens, h_rows, observer);
         if ((rows == null) == (tops == null)) return error.InvalidShape;
@@ -814,8 +936,7 @@ pub const Plan = struct {
         const b = self.backend;
         try b.begin();
         errdefer b.discard();
-        const closed = try self.record(tokens, observer, false);
-        try self.headRows(closed, count);
+        try self.recordVerify(tokens, h_rows != null, observer);
         const logits = self.readout.verify_logits;
         try self.copyRows(logits, vocabulary, self.head_rows, model.padded_vocabulary, vocabulary, count);
         // The rows are the distributions acceptance draws from, so they
@@ -831,7 +952,7 @@ pub const Plan = struct {
         if (tops) |out| {
             for (out, 0..) |*top, i| try self.readout.readVerifyTopK(i, top);
         }
-        try self.state.commitChunk(count);
+        try self.endVerify(count, h_rows);
     }
 
     /// `verify`'s greedy sibling: per-row argmax read back, no logit
@@ -847,8 +968,7 @@ pub const Plan = struct {
         const b = self.backend;
         try b.begin();
         errdefer b.discard();
-        const closed = try self.record(tokens, observer, false);
-        try self.headRows(closed, count);
+        try self.recordVerify(tokens, h_rows != null, observer);
         const r = self.readout;
         for (0..count) |i| try b.argmax(self.head_rows.slice(i * model.padded_vocabulary * 4, vocabulary * 4), vocabulary, r.argmax_values, r.argmax_indices, r.verify_argmax.slice(i * 4, 4));
         try b.commit();
@@ -859,7 +979,69 @@ pub const Plan = struct {
             if (id >= vocabulary) return error.NonFiniteResult;
             token.* = id;
         }
-        try self.state.commitChunk(count);
+        try self.endVerify(count, h_rows);
+    }
+
+    // --- the DSpark drafter ---------------------------------------------
+
+    /// What the drafter borrows from the plan for one call.
+    fn sparkTarget(self: *Plan) !dspark_metal.Target {
+        const embedding = try self.weight(self.binding.token_embedding);
+        const output = try self.weight(self.binding.output);
+        return .{
+            .backend = self.backend,
+            .state = &self.state,
+            .state_buffer = self.state_buffer,
+            .token_embedding = .{ .buffer = embedding.buffer, .matrix = embedding.matrix },
+            .output = .{ .buffer = output.buffer, .matrix = output.matrix },
+            .logits = self.head_rows,
+        };
+    }
+
+    /// Greedy drafts from the state after the last committed token: one
+    /// block from `token` at the session position and the Markov chain on
+    /// the device (`dspark_metal.Draft.propose`).
+    pub fn sparkPropose(self: *Plan, token: u32, out: []u32, p_min: f32) !usize {
+        const d = &(self.spark orelse return error.NoDraftBlock);
+        try self.settle();
+        if (self.state.status != .ready) return error.SessionNotReady;
+        return d.propose(try self.sparkTarget(), token, out, p_min);
+    }
+
+    /// Advances the drafter over committed tokens, which end at the session
+    /// position; the caller has already recovered the session.
+    pub fn sparkCommit(self: *Plan, tokens: []const u32, h_rows: []const f32) !void {
+        const d = &(self.spark orelse return error.NoDraftBlock);
+        try self.settle();
+        if (self.state.status != .ready) return error.SessionNotReady;
+        return d.commit(try self.sparkTarget(), tokens, h_rows);
+    }
+
+    /// The contract value the engine holds, or null when no drafter is loaded.
+    pub fn drafter(self: *Plan) ?@import("../runtime/draft.zig").Drafter {
+        if (self.spark == null) return null;
+        return .{ .host = self, .hidden = dspark.hidden_width, .max_proposals = dspark.max_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetFn, .carried_fn = carriedFn, .bytes_fn = bytesFn };
+    }
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
+        const self: *Plan = @ptrCast(@alignCast(host));
+        return self.sparkPropose(token, out, p_min);
+    }
+    fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
+        const self: *Plan = @ptrCast(@alignCast(host));
+        return self.sparkCommit(tokens, h_rows);
+    }
+    fn resetFn(host: *anyopaque) void {
+        const self: *Plan = @ptrCast(@alignCast(host));
+        if (self.spark) |*d| d.reset();
+    }
+    fn carriedFn(host: *anyopaque) []f32 {
+        const self: *Plan = @ptrCast(@alignCast(host));
+        return if (self.spark) |*d| d.carriedValues() else &.{};
+    }
+    fn bytesFn(host: *anyopaque) usize {
+        const self: *Plan = @ptrCast(@alignCast(host));
+        const d = &(self.spark orelse return 0);
+        return d.bytes() + self.capture.len + self.tape.len;
     }
 
     /// Copies one row of the last `verify`'s logits out of the shared buffer:

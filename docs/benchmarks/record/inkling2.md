@@ -398,3 +398,77 @@ plain loop through `engine.runLoop` (`inkling2-dspark-speculative-cpu`:
 after 65 tokens, cancellation, and the context limit, where a block that
 does not fit drafts nothing). The block's rows and greedy chain on the
 `inkling2-quick-brown` prompt are pinned in `tests/fixtures/inkling2-dspark`.
+
+## The DSpark drafter on Metal (2026-11-27)
+
+The same machine; nuclis at `3e874ee` with the Metal drafter and the
+convolution tape on top, `ReleaseSafe`, Metal, F16 cache, context 32,768,
+nothing else on the GPU. The prompts are this run's token arrays
+(`tests/fixtures/run-2026-11-27-inkling2/prompt-{512,4096,16384}.json`,
+prefixes saved under `.zig-cache/`) and the raw code prompt.
+
+**Correctness.** The block's rows on the `inkling2-quick-brown` prompt
+meet the CPU rows in `tests/fixtures/inkling2-dspark` to 3.7e-2 max /
+4.6e-3 relative RMS through the half-operand tiles and to 1.6e-4 / 3.0e-6
+through the generic F32 kernels; the anchor and all 7 greedy drafts are
+the CPU's either way (`inkling2-dspark-trace-metal{,-generic}`). The
+loop with the drafter is greedy-identical to the plain loop through
+`engine.runLoop` (`inkling2-dspark-speculative-metal`: 5 of 6 drafts
+accepted over 12 tokens, and the forced token, budget, EOS, cancellation
+and context checks). Recovery from the tape at every accepted length of a
+4- and an 8-row batch meets sequential F32 steps within the family's
+bounds, 5.1e-5 max on the generic tiles (`inkling2-generation-metal`).
+
+**One batch** (`bench --speculative on --verify-rows R --accept R−1`,
+p_min 0, 16 batches, mean of 3 runs after a warmup; ms):
+
+| Depth | R | Propose | Verify | Recover | Commit | C | 28.5 + 8.6 R |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 | 2 | 4.77 | 41.16 | 0.32 | 0.33 | 46.68 | 45.7 |
+| 512 | 4 | 6.08 | 59.24 | 0.32 | 0.33 | 66.08 | 62.9 |
+| 512 | 8 | 8.73 | 94.24 | 0.31 | 0.34 | 103.72 | 97.3 |
+| 4,096 | 2 | 5.15 | 45.43 | 0.32 | 0.33 | 51.33 | |
+| 4,096 | 4 | 6.46 | 65.90 | 0.32 | 0.33 | 73.11 | |
+| 4,096 | 8 | 9.09 | 108.05 | 0.31 | 0.34 | 117.90 | |
+| 16,384 | 2 | 5.96 | 52.27 | 0.32 | 0.33 | 58.98 | |
+| 16,384 | 4 | 7.28 | 79.14 | 0.32 | 0.33 | 87.18 | |
+| 16,384 | 8 | 9.91 | 134.18 | 0.31 | 0.34 | 144.85 | |
+
+At 512 a verify of R rows is 0.90 to 0.97 of the batch-split fit. With
+depth the verify's rows each attend over the whole context: from 512 to
+16,384 a 2-row batch gains 11.1 ms and an 8-row one 39.9 ms. The block
+always runs 8 rows, so propose is 4.1 ms of block and head plus 0.66 ms
+a draft. Before the block's rows shared one attention pass, each of the
+8 read the cache on its own: propose at 7 drafts was 9.40, 10.63 and
+13.78 ms at the three depths, against 8.73, 9.09 and 9.91 after. The
+recovery's 48 history shifts take 0.31 ms.
+
+**The matrix** (`make spec-matrix ARGS='--model inkling2_dspark_pair
+--contexts 512,4096,16384,code --sampling greedy --drafts 2-7 --repeat
+5'`, then `--contexts 512,4096 --sampling instruct --drafts 2-4`; 128
+tokens, p_min 0.7, five interleaved off/on pairs a cell; "instruct" is the
+profile's sampling, temperature 1, top-k 0, top-p 1, seed 0). Off → on
+decode tokens/s and the mean ratio (range):
+
+| Context | Draft 2 | 3 | 4 | 5 | 6 | 7 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 | 32.07 → 35.45, 1.106× | 31.99 → 36.93, 1.154× | 31.96 → 37.87, **1.186×** | 32.01 → 35.97, 1.123× | 31.99 → 35.49, 1.110× | 32.03 → 34.97, 1.093× |
+| 4,096 | 30.09 → 34.93, 1.161× | 30.09 → 35.11, 1.167× | 30.04 → 34.99, 1.164× | 30.08 → 35.27, **1.174×** | 30.13 → 34.74, 1.153× | 30.09 → 34.33, 1.142× |
+| 16,384 | 27.24 → 30.26, 1.110× | 27.28 → 30.62, **1.124×** | 27.25 → 29.67, 1.088× | 27.34 → 28.83, 1.056× | 27.25 → 28.74, 1.055× | 27.28 → 28.34, 1.040× |
+| code | 33.69 → 44.23, 1.311× | 33.63 → 46.46, 1.381× | 33.69 → 48.01, 1.426× | 33.66 → 45.97, 1.365× | 33.68 → 48.25, 1.432× | 33.65 → 49.18, **1.462×** |
+| 512, sampled | 31.51 → 32.04, 1.016× (0.99–1.04) | 31.53 → 32.74, 1.038× (1.01–1.08) | 31.51 → 31.77, 1.019× (0.91–1.10) | | | |
+| 4,096, sampled | 29.84 → 29.91, 0.991× (0.95–1.11) | 29.71 → 30.13, 0.994× (0.90–1.13) | 29.71 → 29.95, 1.045× (0.88–1.09) | | | |
+
+The greedy pairs' ranges are within 0.02 of their means. Greedy pays in
+every cell, most on code (1.46× at 7 drafts, 3.53 tokens a batch); prose
+peaks at 4 drafts at 512 (2.19 tokens a batch; the accepted drafts
+stop rising past 5), at 5 at 4,096, and at 3 at 16,384, where the
+verify's depth cost takes the rest. At the profile's sampling a batch
+keeps 1.74 to 2.03 tokens and every cell is within its own noise of 1.00×:
+the pairs spread by ±10 %, the two sides of a pair not sampling the same
+continuation. The recovery's mean of 0.3 to 1.4 ms includes one rewind and
+replay a run, at the budget, where the loop cuts a batch it had already
+recovered (66.8 ms of the 83.4 ms recovery in the 512, 5-draft cell).
+
+The entry stays off: greedy is not the profile's sampling, and sampled
+decode does not gain.

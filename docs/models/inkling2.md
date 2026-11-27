@@ -108,8 +108,8 @@ index of application `il`.
 - 48 KV caches, one per application: 8 full, 40 windowed at 1,024; F16 K and V take 4 KiB a token per application (1 GiB at 32,768 tokens).
 - Per application, a convolution history of 3 rows × 6,656 F32 channels (K, V, attention output 2,048–4,351, FFN output 4,352–6,655; 3.7 MiB for the 48).
 - That history is recurrent, so the session is hybrid ([spec § 5.4](../spec.md#54-session-contract)):
-  a rewind restores a checkpoint, verify recovers by rewind and replay,
-  `truncate` and `rewindTo` refuse. Attention layer `il`, recurrent
+  a rewind restores a checkpoint, verify recovers from the Metal plan's
+  tape with a drafter, else by rewind and replay; `truncate` and `rewindTo` refuse. Attention layer `il`, recurrent
   `48 + il` (a one-value matrix region); the depth residual is rebuilt from each token.
 
 ### Readings confirmed
@@ -198,6 +198,9 @@ the agent's tasks 34 of 36 at medium ([record](../benchmarks/record/agent.md#ink
 | `inkling2-trace-cpu` | `verify-cpu` | inkling2 | [inkling2.md](inkling2.md) |
 | `inkling2-dspark-trace-cpu` | `verify-cpu` | inkling2 | [speculative-decoding.md § inkling-2s-dspark-drafter](../engine/speculative-decoding.md#inkling-2s-dspark-drafter) |
 | `inkling2-dspark-speculative-cpu` | `verify-cpu` | inkling2 | [speculative-decoding.md § inkling-2s-dspark-drafter](../engine/speculative-decoding.md#inkling-2s-dspark-drafter) |
+| `inkling2-dspark-trace-metal` | `verify` | inkling2 | [inkling2.md § the-dspark-drafter-on-metal-2026-11-27](../benchmarks/record/inkling2.md#the-dspark-drafter-on-metal-2026-11-27) |
+| `inkling2-dspark-trace-metal-generic` | `verify` | inkling2 | [inkling2.md § the-dspark-drafter-on-metal-2026-11-27](../benchmarks/record/inkling2.md#the-dspark-drafter-on-metal-2026-11-27) |
+| `inkling2-dspark-speculative-metal` | `verify` | inkling2 | [inkling2.md § the-dspark-drafter-on-metal-2026-11-27](../benchmarks/record/inkling2.md#the-dspark-drafter-on-metal-2026-11-27) |
 | `inkling2-trace-cpu-f16` | `verify-cpu` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
 | `inkling2-trace-cpu-q8_0` | `verify-cpu` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
 | `inkling2-trace-f32` | `verify` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
@@ -212,4 +215,4 @@ the agent's tasks 34 of 36 at medium ([record](../benchmarks/record/agent.md#ink
 ## Known limits
 
 - Only `inkling2_loop` binds; the Hub's first encoding (`inkling2`, 48 applications in the header) is refused.
-- The DSpark drafter ([speculative-decoding.md](../engine/speculative-decoding.md#inkling-2s-dspark-drafter)) runs on the CPU reference only and the entry does not draft ([record](../benchmarks/record/inkling2.md#the-dspark-drafter-on-the-cpu-2026-11-27)).
+- The entry does not draft: its DSpark drafter ([speculative-decoding.md](../engine/speculative-decoding.md#inkling-2s-dspark-drafter)) runs on both executors, and on Metal it speeds greedy decode 1.04 to 1.46× but the profile's sampling 0.99 to 1.05× ([record](../benchmarks/record/inkling2.md#the-dspark-drafter-on-metal-2026-11-27)).

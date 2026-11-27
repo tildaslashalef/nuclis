@@ -470,7 +470,8 @@ fn generate(p: *Page) !void {
     try row(p, "--think <effort>", "off, low, medium, high, xhigh; default off");
     try row(p, "--logits <path>", "write the final prompt logits, F32 little-endian");
     try row(p, "--trace-dir <dir>", "write every layer's output as F32 (slow)");
-    try row(p, "--json", "the run's report (tokens, timings) instead of text");
+    try row(p, "--json", "the run's report (answer, reasoning, tokens, timings)");
+    try more(p, "instead of text");
     try engineOptions(p);
     try samplingOptions(p);
 
@@ -482,9 +483,13 @@ fn generate(p: *Page) !void {
     try heading(p, "Notes:");
     try plain(p, "The prompt is rendered as one user turn with the profile pinned to the");
     try plain(p, "file's own chat template, and sampled with that profile's defaults for the");
-    try plain(p, "reasoning mode; each sampling flag overrides one option. Text streams as");
-    try plain(p, "valid UTF-8 even when a token ends inside a character. Ctrl-C stops at the");
-    try plain(p, "next layer and keeps what was written; a second Ctrl-C ends the process.");
+    try plain(p, "reasoning mode; each sampling flag overrides one option. A rendered turn's");
+    try plain(p, "reasoning, which a model may write even at --think off, streams first");
+    try plain(p, "under a \"Thinking\" label (dimmed on a terminal), then the answer; --json");
+    try plain(p, "keeps them in reasoning and text. A tool call is not run (none is offered).");
+    try plain(p, "--raw output is the text as decoded. Text streams as valid UTF-8 even when");
+    try plain(p, "a token ends inside a character. Ctrl-C stops at the next layer and keeps");
+    try plain(p, "what was written; a second Ctrl-C ends the process.");
     try p.end();
 }
 

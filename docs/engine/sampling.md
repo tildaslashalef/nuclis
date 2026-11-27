@@ -222,8 +222,17 @@ the pinned profile. Special tokens are omitted from presented text.
 
 Text is flushed after each token. The UTF-8 stream buffers incomplete characters
 across tokens; malformed bytes and an incomplete character at termination become
-U+FFFD. JSON (schema 2) buffers the result and includes backend, sampling
-settings, seed, prompt count, exact generated IDs, text, `stop_reason`
+U+FFFD. A rendered turn's tokens go through the profile's stream decoder,
+the one the agent and the server use, so the reasoning is kept apart from the
+answer whatever the effort (Inkling 2 opens a reasoning segment even at
+`Thinking effort level: 0`): the text shows it first under a `▾ Thinking`
+label, in the chat surface's thinking style on a terminal, then a blank line
+and the answer. A tool call is neither (no tools are offered and none run);
+it is counted in a warning on stderr and stays in the IDs. `--raw` and
+`--prompt-tokens` output is the decoded text, no grammar applied. JSON
+(schema 3) buffers the result and includes backend, sampling settings, seed,
+prompt count, exact generated IDs, `text` (the answer), `reasoning` (empty
+when there is none, and always under `--raw`), `stop_reason`
 (`eos`, `token_budget`, `context_limit`, or `cancelled`), and load/prefill/first-token/decode
 milliseconds with GPU busy time on Metal; definitions are in [benchmarks](../benchmarks/README.md).
 Token IDs preserve information lost by text presentation.

@@ -188,6 +188,18 @@ test-metal`); `make gate NAME=qwen38-generation-metal` checks the recovery
 at every accepted length of a 4- and an 8-row batch against sequential
 steps and exercises the refusals.
 
+Inkling 2's Metal plan keeps a tape for its convolution histories while a
+drafter is loaded. A verify batch of at most `max_verify_rows` (16) copies
+each application's 6,656 convolution inputs (K, V, attention output, FFN
+output) to the tape instead of shifting the history, and
+`Plan.replayRows(kept)` shifts the kept rows in, one
+`nu_convolution_history` per application in one command buffer; the
+pending rows, the settle points, and the refusals are Qwen's. The tape is
+48 × 16 × 6,656 floats, 20,447,232 bytes. Recovery at every accepted
+length of a 4- and an 8-row batch meets sequential F32 steps within the
+family's bounds, 5.1e-5 on the generic tiles (`make gate
+NAME=inkling2-generation-metal`).
+
 The tape replaced per-row recurrent checkpoints ([record, 2026-10-01](../benchmarks/record/session.md#the-row-checkpoints-the-tape-replaced-2026-10-01)).
 
 ## The agent's token cache

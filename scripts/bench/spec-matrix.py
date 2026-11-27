@@ -45,6 +45,7 @@ SAMPLING = {
         "thinking": {"temperature": 1.0, "top-p": 0.95, "top-k": 20},
     },
     "card": {"instruct": {"temperature": 1.0, "top-p": 0.95, "top-k": 64}},
+    "inkling": {"instruct": {"temperature": 1.0, "top-p": 1.0, "top-k": 0}},
 }
 # Re-encodings of Qwen3.8 that run its profile, and so its sampling.
 QWEN_FILES = {"saluki", "bonsai"}
@@ -68,7 +69,10 @@ def parse_ints(text):
 def sampling_flags(model_key, sampling):
     if sampling == "greedy":
         return []
-    table = SAMPLING["qwen" if model_key.startswith("qwen") or model_key in QWEN_FILES else "card"]
+    if model_key.startswith("qwen") or model_key in QWEN_FILES:
+        table = SAMPLING["qwen"]
+    else:
+        table = SAMPLING["inkling" if model_key.startswith("inkling") else "card"]
     if sampling not in table:
         raise ValueError(f"{model_key} has no {sampling} sampling")
     flags = []
@@ -289,6 +293,10 @@ class SelfTest(unittest.TestCase):
         self.assertEqual(sampling_flags("muse", "greedy"), [])
         self.assertIn("1.5", sampling_flags("qwen38", "instruct"))
         self.assertIn("64", sampling_flags("gemma4_qat", "instruct"))
+        self.assertEqual(
+            sampling_flags("inkling2_dspark_pair", "instruct")[:6],
+            ["--temperature", "1.0", "--top-p", "1.0", "--top-k", "0"],
+        )
         with self.assertRaises(ValueError):
             sampling_flags("muse", "thinking")
 

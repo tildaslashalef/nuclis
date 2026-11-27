@@ -381,7 +381,7 @@ What each command **must** do beyond its summary; `decide`, `embed`, `speak`,
 
 | Command | Contract |
 | --- | --- |
-| `generate` | one completion: raw prompt or one rendered turn, streamed, seeded, the profile's per-mode sampling defaults with per-flag overrides, a structured stop reason, timings |
+| `generate` | one completion: raw prompt or one rendered turn, streamed, seeded, the profile's per-mode sampling defaults with per-flag overrides, a structured stop reason, timings; a rendered turn's reasoning kept apart from its answer by the profile's stream decoder, labelled in the text and its own field in `--json` |
 | `bench` | repeated cold and warm measurements with separate load, prefill, and decode timings; a prompt may be a token array so an exact input is reproduced; the speculative pair on one loaded model in one process ([benchmarks](benchmarks/README.md)) |
 | `tokenize` | the prompt as `generate` would feed it, its ids and byte offsets, from the artifact's header only |
 | `model` | pull with digest verification and sidecars; list what is installed, grouped by kind; adopt a file placed by hand; judge a file at the four levels of § 4 |

@@ -1,11 +1,16 @@
 //! Bounded native generation. Model semantics stay in the inference adapter;
 //! this module owns CLI presentation, prompt construction, and output files.
+//! A rendered turn's tokens go through the profile's stream decoder, as the
+//! agent's and the server's do, so the reasoning is kept apart from the
+//! answer (`Split`); a raw prompt or a token array is text as decoded.
 const std = @import("std");
 const inference = @import("inference");
 const engine = @import("engine.zig");
 const expert_counts = @import("expert_counts.zig");
 const config = @import("config.zig");
 const interrupt = @import("interrupt.zig");
+const kit = @import("ui.zig");
+const tui_style = @import("tui/style.zig");
 
 /// What only this command reads from the command line. The backend,
 /// context, output budget, reasoning effort, and sampling overrides arrive
@@ -154,19 +159,128 @@ const Presenter = struct {
     stream: inference.text_stream.Stream = .{},
     enabled: bool,
     logits_path: ?[]const u8,
+    /// Set for a rendered turn: the profile's decoder and what it split.
+    turn: ?Turn = null,
     fn prefill(context: *anyopaque, logits: []const f32) !void {
         const self: *Presenter = @ptrCast(@alignCast(context));
         if (self.logits_path) |path| try writeFloats(self.eng.io, path, logits);
     }
     fn token(context: *anyopaque, id: u32) !void {
         const self: *Presenter = @ptrCast(@alignCast(context));
-        if (!self.enabled or self.eng.isStop(id)) return;
+        if (self.eng.isStop(id)) return;
+        if (self.turn) |*turn| {
+            try turn.feed(self.eng.alloc, self.eng.vocab, id);
+            if (self.enabled) try self.writer.flush();
+            return;
+        }
+        if (!self.enabled) return;
         const piece = try inference.bpe.decode(self.eng.alloc, self.eng.vocab, &.{id}, false, .{});
         defer self.eng.alloc.free(piece);
         try self.stream.write(piece, self.writer);
         try self.writer.flush();
     }
 };
+
+/// A rendered turn: the profile's decoder, fed every generated token but
+/// the stop tokens, and the `Split` it sends its events to.
+const Turn = struct {
+    decoder: inference.profiles.stream.Decoder,
+    split: Split,
+
+    fn deinit(self: *Turn) void {
+        self.decoder.deinit();
+        self.split.deinit();
+    }
+
+    /// One token, decoded with its control text as the decoder expects.
+    fn feed(self: *Turn, alloc: std.mem.Allocator, vocab: *const inference.vocabulary.Vocabulary, id: u32) !void {
+        const piece = try inference.bpe.decode(alloc, vocab, &.{id}, true, .{});
+        defer alloc.free(piece);
+        try self.decoder.feed(id, piece, &self.split);
+    }
+
+    /// Settles an open call and flushes held bytes at the completion's stop.
+    fn end(self: *Turn, outcome: Outcome) !void {
+        try self.decoder.end(outcome, &self.split);
+    }
+};
+
+/// A rendered turn's events as `generate` presents them: the reasoning and
+/// the answer collected apart for the report and, when `out` is set,
+/// streamed there, the reasoning under a label in the chat surface's
+/// thinking style (unstyled off a terminal: `paint` is then `.none`). A
+/// call is neither: `generate` offers no tools and runs none, so a call
+/// (`tool_call`) or a dropped one (`tool_cut`) is only counted, for `run`
+/// to report; its tokens stay in the report's `tokens`.
+pub const Split = struct {
+    alloc: std.mem.Allocator,
+    out: ?*std.Io.Writer = null,
+    paint: tui_style.Style = .none,
+    reasoning: std.ArrayList(u8) = .empty,
+    answer: std.ArrayList(u8) = .empty,
+    calls: usize = 0,
+    cuts: usize = 0,
+    /// What `out` showed last, and whether its last byte ended a line.
+    shown: enum { nothing, reasoning, answer } = .nothing,
+    line_ended: bool = true,
+
+    pub fn deinit(self: *Split) void {
+        self.reasoning.deinit(self.alloc);
+        self.answer.deinit(self.alloc);
+        self.* = undefined;
+    }
+
+    pub fn send(self: *Split, event: inference.events.Event) !void {
+        switch (event) {
+            .thinking => |bytes| {
+                try self.reasoning.appendSlice(self.alloc, bytes);
+                const out = self.out orelse return;
+                if (self.shown != .reasoning) {
+                    if (self.shown == .answer) try self.blankLine(out);
+                    const label = self.paint.theme.glyphs().fold_open;
+                    try out.print("{s}{s} Thinking{s}\n", .{ self.paint.on(.thinking_header), label, self.paint.off() });
+                    self.shown = .reasoning;
+                }
+                // Each piece is its own span, so a stop at any point leaves
+                // the terminal unstyled.
+                try out.print("{s}{s}{s}", .{ self.paint.on(.thinking), bytes, self.paint.off() });
+                self.noteEnd(bytes);
+            },
+            .answer => |bytes| {
+                try self.answer.appendSlice(self.alloc, bytes);
+                const out = self.out orelse return;
+                if (self.shown == .reasoning) try self.blankLine(out);
+                self.shown = .answer;
+                try out.writeAll(bytes);
+                self.noteEnd(bytes);
+            },
+            .tool_call => self.calls += 1,
+            .tool_cut => self.cuts += 1,
+            .tool_progress, .stop => {},
+        }
+    }
+
+    fn noteEnd(self: *Split, bytes: []const u8) void {
+        if (bytes.len != 0) self.line_ended = bytes[bytes.len - 1] == '\n';
+    }
+
+    /// Ends the line being written, then leaves one empty line.
+    fn blankLine(self: *Split, out: *std.Io.Writer) !void {
+        if (!self.line_ended) try out.writeByte('\n');
+        try out.writeByte('\n');
+        self.line_ended = true;
+    }
+};
+
+/// A raw completion's text: every id decoded at once, control tokens
+/// omitted, repaired to valid UTF-8.
+fn rawText(alloc: std.mem.Allocator, vocab: *const inference.vocabulary.Vocabulary, ids: []const u32, out: *std.Io.Writer) !void {
+    const decoded = try inference.bpe.decode(alloc, vocab, ids, false, .{});
+    defer alloc.free(decoded);
+    var stream: inference.text_stream.Stream = .{};
+    try stream.write(decoded, out);
+    try stream.finish(out);
+}
 
 /// Encodes inputs `0..count` in order through `encoder.encode(idx)` into a
 /// slice the caller owns, features included. On an error it frees what it
@@ -215,7 +329,9 @@ const ClipEncoder = struct {
     }
 };
 
-pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, settings: config.Resolved, options: Options, json: bool, writer: *std.Io.Writer) !void {
+/// `ui` styles the streamed text (the reasoning's label and span); `--json`
+/// passes `.plain`.
+pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, settings: config.Resolved, options: Options, json: bool, writer: *std.Io.Writer, ui: kit.Ui) !void {
     const user: ?[]u8 = if (options.prompt_tokens == null) try engine.readPrompt(alloc, io, options.prompt, options.prompt_file) else null;
     defer if (user) |u| alloc.free(u);
     const limit = settings.max_tokens;
@@ -310,19 +426,31 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     // Final prompt logits are written before decoding so a later failure
     // still leaves the comparison artifact behind.
     var presenter: Presenter = .{ .eng = &eng, .writer = writer, .enabled = !json, .logits_path = options.logits_path };
+    // A rendered turn speaks the profile's grammar; literal text and a token
+    // array are the caller's, shown as decoded.
+    const rendered = !options.raw and options.prompt_tokens == null;
+    if (rendered) if (eng.profile) |profile| {
+        presenter.turn = .{
+            .decoder = try profile.decoder(alloc, eng.vocab, settings.think, tokens),
+            .split = .{ .alloc = alloc, .out = if (json) null else writer, .paint = ui.paint },
+        };
+    };
+    defer if (presenter.turn) |*turn| turn.deinit();
     const outcome = try runLoop(&eng, tokens, limit, &sampler, &history, .{ .enabled = settings.speculative, .draft_length = settings.draft_length, .max_position = settings.draft_max_depth }, if (media_prefill) |m| m.value() else null, logits, candidates, generated, &trace, .{ .context = &presenter, .prefill = if (options.logits_path != null) Presenter.prefill else null, .token = Presenter.token });
     const count = outcome.timing.generated_tokens;
-    const decoded = try inference.bpe.decode(alloc, eng.vocab, generated[0..count], false, .{});
-    defer alloc.free(decoded);
+    if (presenter.turn) |*turn| {
+        try turn.end(outcome);
+        const split = &turn.split;
+        if (split.calls + split.cuts != 0) std.log.warn("the model wrote {d} tool call(s); generate offers no tools and runs none (the tokens are in --json's tokens)", .{split.calls + split.cuts});
+    }
     var presentation: std.Io.Writer.Allocating = .init(alloc);
     defer presentation.deinit();
-    var json_stream: inference.text_stream.Stream = .{};
-    try json_stream.write(decoded, &presentation.writer);
-    try json_stream.finish(&presentation.writer);
-    const text = presentation.written();
+    if (presenter.turn == null) try rawText(alloc, eng.vocab, generated[0..count], &presentation.writer);
+    const text = if (presenter.turn) |*turn| turn.split.answer.items else presentation.written();
+    const reasoning = if (presenter.turn) |*turn| turn.split.reasoning.items else "";
     if (json) {
         try std.json.Stringify.value(.{
-            .schema_version = @as(u32, 2),
+            .schema_version = @as(u32, 3),
             .backend = @tagName(settings.backend),
             .kv_precision = @tagName(eng.kv_precision),
             .session_bytes = eng.model.session().bytes(),
@@ -335,6 +463,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
             .prompt_tokens = tokens.len,
             .tokens = generated[0..count],
             .text = text,
+            .reasoning = reasoning,
             .stop_reason = @tagName(outcome.stop),
             .stopped_eos = outcome.stop == .eos,
             .load_milliseconds = engine.milliseconds(eng.load),
@@ -351,7 +480,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         }, .{ .whitespace = .indent_2, .emit_null_optional_fields = false }, writer);
         try writer.writeByte('\n');
     } else {
-        try presenter.stream.finish(writer);
+        if (presenter.turn == null) try presenter.stream.finish(writer);
         try writer.writeByte('\n');
         if (outcome.stop == .cancelled) std.log.info("generation cancelled after {d} tokens", .{count});
     }
@@ -416,4 +545,115 @@ test "a failing input frees what was encoded once and leaves the caller nothing"
         alloc.free(all);
     }
     try std.testing.expectEqual(@as(usize, 2), all.len);
+}
+
+/// Control tokens of both test grammars (Inkling 2's channels, Qwen's
+/// brackets) and a few words, so `Profile.decoder` resolves the markers as
+/// on the files. Words are byte-level text (`Ġ` a space).
+fn testVocabulary(alloc: std.mem.Allocator) !inference.vocabulary.Vocabulary {
+    const controls = [_][]const u8{ "<|message_model|>", "<|content_text|>", "<|content_thinking|>", "<|content_invoke_tool_json|>", "<|end_message|>", "<think>", "</think>", "<tool_call>", "</tool_call>" };
+    const words = [_][]const u8{ "plan", "Hello", "Ġthere", "{\"name\":\"read\",\"args\":{}}" };
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    errdefer arena.deinit();
+    const a = arena.allocator();
+    var tokens: std.ArrayList(inference.vocabulary.Token) = .empty;
+    var ids: std.StringHashMapUnmanaged(u32) = .empty;
+    for (controls) |text| {
+        try ids.put(a, text, @intCast(tokens.items.len));
+        try tokens.append(a, .{ .text = text, .kind = .control });
+    }
+    for (words) |text| {
+        try ids.put(a, text, @intCast(tokens.items.len));
+        try tokens.append(a, .{ .text = text, .kind = .normal });
+    }
+    return .{ .storage = arena, .tokens = tokens.items, .pre = "test", .bos = null, .eos = null, .padding = null, .token_ids = ids, .merge_ranks = .empty };
+}
+
+/// Feeds `texts`, each one token of `vocab`, through `turn` and ends it at EOS.
+fn feedAll(turn: *Turn, vocab: *const inference.vocabulary.Vocabulary, texts: []const []const u8) !void {
+    for (texts) |text| try turn.feed(std.testing.allocator, vocab, vocab.tokenId(text).?);
+    try turn.end(.{ .stop = .eos, .timing = .{ .prompt_tokens = 1, .generated_tokens = texts.len } });
+}
+
+test "a channel-grammar turn keeps the reasoning apart from the answer, even at effort off" {
+    const alloc = std.testing.allocator;
+    var vocab = try testVocabulary(alloc);
+    defer vocab.deinit();
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    // What Inkling 2 writes at `Thinking effort level: 0`: a reasoning
+    // segment first, then the answer.
+    var turn: Turn = .{
+        .decoder = try inference.profiles.Profile.inkling2.decoder(alloc, &vocab, .off, &.{}),
+        .split = .{ .alloc = alloc, .out = &out.writer },
+    };
+    defer turn.deinit();
+    try feedAll(&turn, &vocab, &.{ "<|message_model|>", "<|content_thinking|>", "plan", "<|end_message|>", "<|message_model|>", "<|content_text|>", "Hello", "Ġthere", "<|end_message|>" });
+    try std.testing.expectEqualStrings("plan", turn.split.reasoning.items);
+    try std.testing.expectEqualStrings("Hello there", turn.split.answer.items);
+    // Off a terminal: the label alone sets the reasoning apart.
+    try std.testing.expectEqualStrings("▾ Thinking\nplan\n\nHello there", out.written());
+}
+
+test "a bracket-grammar turn paints the reasoning on a terminal and leaves the answer plain" {
+    const alloc = std.testing.allocator;
+    var vocab = try testVocabulary(alloc);
+    defer vocab.deinit();
+    const paint: tui_style.Style = .{ .theme = .{ .kind = .truecolor }, .enabled = true };
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    // Qwen's thinking prompt ends inside `<think>`.
+    var turn: Turn = .{
+        .decoder = try inference.profiles.Profile.qwen38.decoder(alloc, &vocab, .medium, &.{vocab.tokenId("<think>").?}),
+        .split = .{ .alloc = alloc, .out = &out.writer, .paint = paint },
+    };
+    defer turn.deinit();
+    try feedAll(&turn, &vocab, &.{ "plan", "</think>", "Hello" });
+    try std.testing.expectEqualStrings("plan", turn.split.reasoning.items);
+    try std.testing.expectEqualStrings("Hello", turn.split.answer.items);
+    const thinking = paint.on(.thinking);
+    try std.testing.expect(thinking.len != 0);
+    const expected = try std.mem.concat(alloc, u8, &.{ paint.on(.thinking_header), "▾ Thinking", paint.off(), "\n", thinking, "plan", paint.off(), "\n\nHello" });
+    defer alloc.free(expected);
+    try std.testing.expectEqualStrings(expected, out.written());
+
+    // Thinking off: the prompt closed the reasoning, so all is answer and
+    // nothing is labelled.
+    var plain: std.Io.Writer.Allocating = .init(alloc);
+    defer plain.deinit();
+    var off: Turn = .{
+        .decoder = try inference.profiles.Profile.qwen38.decoder(alloc, &vocab, .off, &.{ vocab.tokenId("<think>").?, vocab.tokenId("</think>").? }),
+        .split = .{ .alloc = alloc, .out = &plain.writer, .paint = paint },
+    };
+    defer off.deinit();
+    try feedAll(&off, &vocab, &.{ "Hello", "Ġthere" });
+    try std.testing.expectEqualStrings("", off.split.reasoning.items);
+    try std.testing.expectEqualStrings("Hello there", plain.written());
+}
+
+test "a call in a turn that offers no tools is neither answer nor reasoning, only counted" {
+    const alloc = std.testing.allocator;
+    var vocab = try testVocabulary(alloc);
+    defer vocab.deinit();
+    var turn: Turn = .{
+        .decoder = try inference.profiles.Profile.inkling2.decoder(alloc, &vocab, .off, &.{}),
+        .split = .{ .alloc = alloc },
+    };
+    defer turn.deinit();
+    try feedAll(&turn, &vocab, &.{ "<|message_model|>", "<|content_invoke_tool_json|>", "{\"name\":\"read\",\"args\":{}}", "<|end_message|>" });
+    try std.testing.expectEqual(@as(usize, 1), turn.split.calls);
+    try std.testing.expectEqualStrings("", turn.split.answer.items);
+    try std.testing.expectEqualStrings("", turn.split.reasoning.items);
+}
+
+test "a raw completion is text as decoded: no grammar, control tokens omitted" {
+    const alloc = std.testing.allocator;
+    var vocab = try testVocabulary(alloc);
+    defer vocab.deinit();
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    var ids: [4]u32 = undefined;
+    for (&ids, [_][]const u8{ "<think>", "plan", "</think>", "Hello" }) |*id, text| id.* = vocab.tokenId(text).?;
+    try rawText(alloc, &vocab, &ids, &out.writer);
+    try std.testing.expectEqualStrings("planHello", out.written());
 }

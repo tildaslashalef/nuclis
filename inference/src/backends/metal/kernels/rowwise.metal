@@ -283,6 +283,31 @@ kernel void nu_dflash_conv(device const float * base [[buffer(0)]], device const
     }
     output[i] = sum;
 }
+// The DSpark drafter's tap mix (`dspark.mixTaps`): out[r][e] = Σ_t mix[t] ·
+// in[r · in_stride + t · width + e], in tap order.
+struct DsparkMixParams { uint rows; uint width; uint taps; uint in_stride; uint out_stride; };
+kernel void nu_dspark_mix(device const float * input [[buffer(0)]], device const float * mix [[buffer(1)]],
+                          device float * output [[buffer(2)]],
+                          constant DsparkMixParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
+    if (i >= p.rows * p.width) return;
+    const uint r = i / p.width, e = i % p.width;
+    float sum = 0.0f;
+    for (uint t = 0; t < p.taps; ++t) sum += mix[t] * input[ulong(r) * p.in_stride + t * p.width + e];
+    output[ulong(r) * p.out_stride + e] = sum;
+}
+// The DSpark Markov head's recurrence (`dspark.markovStep`) on `joint + bias`:
+// gate σ(j[r]), candidate tanh(j[R + r]), state ← candidate + gate ·
+// (state − candidate), markov tanh(j[2R + r]).
+struct DsparkMarkovParams { uint rank; };
+kernel void nu_dspark_markov(device const float * joint [[buffer(0)]], device const float * bias [[buffer(1)]],
+                             device float * state [[buffer(2)]], device float * markov [[buffer(3)]],
+                             constant DsparkMarkovParams & p [[buffer(7)]], uint r [[thread_position_in_grid]]) {
+    if (r >= p.rank) return;
+    const float gate = nu_sigmoid(joint[r] + bias[r]);
+    const float candidate = nu_tanh(joint[p.rank + r] + bias[p.rank + r]);
+    state[r] = candidate + gate * (state[r] - candidate);
+    markov[r] = nu_tanh(joint[2 * p.rank + r] + bias[2 * p.rank + r]);
+}
 kernel void nu_silu_inplace(device float * x [[buffer(0)]],
                             constant CountParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
     if (i < p.count) x[i] = nu_silu(x[i]);

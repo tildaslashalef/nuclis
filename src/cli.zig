@@ -955,7 +955,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // diagnostic lives.
     (switch (options.command) {
         .help, .version, .config, .model, .cache, .decide, .embed, .transcribe, .speak, .voice, .serve, .completion, .complete, .index => unreachable,
-        .generate => generate.run(alloc, io, path, config.resolve(&loaded, model_name, options.flags, .generate), options.generation, options.json, out),
+        .generate => generate.run(alloc, io, path, config.resolve(&loaded, model_name, options.flags, .generate), options.generation, options.json, out, ui),
         .bench => bench.run(alloc, io, path, config.resolve(&loaded, model_name, options.flags, .bench), options.benchmark, options.json, out, ui, &step),
         .tokenize => blk: {
             const resolved = config.resolve(&loaded, model_name, options.flags, .generate);
@@ -1684,6 +1684,7 @@ test {
     _ = validation;
     _ = engine;
     _ = bench;
+    _ = generate;
     _ = eval;
     _ = discover;
     _ = @import("interrupt.zig");

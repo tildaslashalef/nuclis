@@ -105,6 +105,8 @@ const shipped = enum(u32) {
     add,
     silu_mul,
     dflash_conv,
+    dspark_mix,
+    dspark_markov,
     silu_inplace,
     delta_gates,
     sigmoid_gate,

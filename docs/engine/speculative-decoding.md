@@ -1,12 +1,10 @@
 <!-- kind: reference -->
 # Speculative decoding: recovery contract, draft sources, measurements
 
-The reference document of speculative decoding: the contract a draft
-source meets, how the session recovers a partly accepted batch, the five
-draft sources, the verify batch and the loop, and the switch. Its
-requirements are in the [spec](../spec.md#56-speculative-decoding); how
-each piece was built and measured is in
-[the record](../benchmarks/record/speculative-decoding.md).
+The draft contract, how the session recovers a partly accepted batch, the
+five draft sources, the verify batch, the loop, and the switch. The
+requirements: [spec § 5.6](../spec.md#56-speculative-decoding); how each
+piece was built and measured: [the record](../benchmarks/record/speculative-decoding.md).
 
 Every catalogue entry with a draft source is measured, and its defaults
 follow the record
@@ -22,7 +20,7 @@ follow the record
 | Gemma 4 26B-A4B (archived) | on at draft 4 | its assistant head |
 | Gemma 4 12B QAT (archived) | on at draft 5 | its assistant head |
 | Muse Glimmer | on at draft 6 | its DFlash drafter |
-| Inkling 2 Mini | off (CPU reference only) | its DSpark drafter |
+| Inkling 2 Mini | off | its DSpark drafter |
 
 ## The draft contract
 
@@ -45,8 +43,8 @@ pointers.
 There is no `rewind`: a drafter's own attention cache is one more layout in
 the same `Session`, so the session's checkpoint, rewind, and truncate cover
 it, and the generation loop only calls `reset` on a session reset.
-`max_proposals` is 7 for the MTP blocks, the Gemma heads, and DFlash2, and
-15 for Muse's DFlash block; `propose` never returns more and `verify`
+`max_proposals` is 7 for the MTP blocks, the Gemma heads, DFlash2, and
+DSpark, and 15 for Muse's DFlash block; `propose` never returns more and `verify`
 refuses a batch above `max_proposals + 1` rows.
 
 ## The recovery contract
@@ -60,11 +58,11 @@ recover differently:
   on later rows, so `truncate(P + a + 1)` sets the position and nothing is
   copied; rows past it are ignored by contract. Gemma 4 and Muse Glimmer
   (attention-only) recover this way, in about a microsecond.
-- **Recurrent state is restored from the verify tape.** Qwen3.8 holds 48
-  DeltaNet layers whose matrices are a function of every token fed;
-  truncating the position alone would leave them at `P + k + 1`. The
-  verify batch keeps a frozen state and a per-token tape, and recovery
-  replays the accepted prefix from it
+- **Recurrent state is restored from the verify tape.** Qwen3.8's 48
+  DeltaNet layers and Inkling 2's 48 convolution histories are a function
+  of every token fed; truncating the position alone would leave them at
+  `P + k + 1`. The verify batch keeps a frozen state and a per-token tape,
+  and recovery replays the accepted prefix from it
   ([session.md § Pending rows and the verify tape](session.md#pending-rows-and-the-verify-tape)).
 
 `engine.Model.recover` is the accepted-prefix operation; it does nothing
@@ -231,10 +229,15 @@ through `inkling2.attachDraft` when its taps `[5, 23, 41, 48]` fit.
   full vocabulary, and `30 · tanh((base + bias) / 30)` the draft's logits;
   `prev` is the anchor, then the draft before.
 
-The CPU reference is `dspark_runtime.zig`: three full-capacity caches after
-the target's 96 (a block writes 8 rows past a window's compaction); recovery
-by checkpoint, rewind and replay (the convolution history is a pure shift
-register of its inputs). No Metal drafter yet; the entry is off ([record](../benchmarks/record/inkling2.md#the-dspark-drafter-on-the-cpu-2026-11-27)).
+Three full-capacity caches follow the target's 96 (a block writes 8 rows
+past a window's compaction). The CPU reference (`dspark_runtime.zig`)
+recovers by rewind and replay, Metal (`dspark_metal.zig`) from the verify
+tape. The Metal plan captures commit rows in `prefill` and `verify*`
+(`nu_dspark_mix` mixes them); one command buffer runs the block, its 8 rows
+as 192 query heads of one `attentionDecode` (`gatherRows` folds them into
+each KV head's group: the mask is not causal), and the chain, per draft
+`ttsEmbedRow` of `markov_w1[prev]` by the device-held id, `nu_dspark_markov`,
+the BF16 `markov_w2` matvec, the cap, and `argmax`. The entry is off ([record](../benchmarks/record/inkling2.md#the-dspark-drafter-on-metal-2026-11-27)).
 
 ## The verify batch
 
@@ -361,15 +364,12 @@ and the external evidence surveyed are in
 | Gate | What it holds |
 | --- | --- |
 | `qwen38-generation-{metal,cpu}` | recovery per accepted length; the block's checkpoint and reset (`draftRecoveryCheck`) |
-| `qwen38-draft-trace-{metal,cpu}` | the embedded block's rows against `inference/src/models/fixtures/qwen35-mtp/` |
-| `qwen38-mtp-companion-trace-{metal,cpu}` | the companion's block on the Q4_K_M against the same rows, equal greedy drafts |
+| `qwen38-{draft,mtp-companion}-trace-{metal,cpu}` | the embedded block's rows against `inference/src/models/fixtures/qwen35-mtp/`; the companion's on the Q4_K_M against the same rows, equal greedy drafts |
 | `qwen38-draft-stats` | per-depth and per-`p_max` acceptance on two fixed code prompts |
 | `qwen38-speculative-{metal,cpu}` | greedy equivalence and the loop's edges: partial acceptance, budget, EOS, cancellation, context |
-| `qwen38-dflash2-trace-{metal,cpu}` | DFlash2 on Metal against the CPU rows in `tests/fixtures/qwen38-dflash2` |
-| `qwen38-dflash2-speculative-{metal,cpu}` | the same loop checks with DFlash2 |
+| `qwen38-dflash2-{trace,speculative}-{metal,cpu}` | DFlash2 on Metal against the CPU rows in `tests/fixtures/qwen38-dflash2`; the same loop checks |
 | `gemma4-e4b-draft-trace-{metal,cpu}` | the E4B head's rows (`inference/src/models/fixtures/gemma4-mtp-e4b/`) and every `verify` row against the stepped logits |
-| `inkling2-dspark-trace-cpu` | the DSpark block's rows and greedy chain against `tests/fixtures/inkling2-dspark` |
-| `inkling2-dspark-speculative-cpu` | the loop checks with DSpark on the CPU reference |
+| `inkling2-dspark-{trace-cpu,trace-metal,trace-metal-generic,speculative-cpu,speculative-metal}` | the DSpark block's rows and greedy chain against `tests/fixtures/inkling2-dspark`; the loop checks |
 
 `generation-check --metal` also runs `verifyTopKCheck`, which requires the
 `topk` readback's decisions to equal `select` on the `rows`-mode row, and

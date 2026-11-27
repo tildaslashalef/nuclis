@@ -120,6 +120,7 @@ pub fn main(init: std.process.Init) !void {
     var draft_model: ?[]const u8 = null;
     var prompt_profile: ?inference.profiles.Profile = null;
     var flash_trace: ?[]const u8 = null;
+    var generic_kernels = false;
     var vision_check: ?[]const u8 = null;
     var vision_image: ?[]const u8 = null;
     var vision_oracle: ?[]const u8 = null;
@@ -155,6 +156,8 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedTraceDirectory;
             flash_trace = args[i];
+        } else if (std.mem.eql(u8, arg, "--generic-kernels")) {
+            generic_kernels = true;
         } else if (std.mem.eql(u8, arg, "--prompt-profile")) {
             i += 1;
             if (i >= args.len) return error.ExpectedPromptProfile;
@@ -272,7 +275,7 @@ pub fn main(init: std.process.Init) !void {
             else
                 try visionCheck(alloc, init.io, model_path, projector, use_metal)
         else if (flash_trace) |dir|
-            try sparkTrace(alloc, init.io, &mapped, use_metal, dir, draft_model orelse return error.ExpectedDraftModel)
+            try sparkTrace(alloc, init.io, &mapped, use_metal, generic_kernels, dir, draft_model orelse return error.ExpectedDraftModel)
         else if (draft_stats)
             try sparkStats(alloc, init.io, &mapped, use_metal, draft_model orelse return error.ExpectedDraftModel, stats)
         else if (speculative_check)
@@ -460,7 +463,9 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
     // (Bonsai 2's re-encoding of Qwen3.8 has none), so the draft checks
     // follow the file, not the family.
     const has_draft = if (comptime spec.draft != null) binding.draft != null else false;
-    const first_draft = use_metal and has_draft;
+    // A family whose verify keeps a tape without a bound drafter (Inkling 2)
+    // takes the verify path too, so recovery replays the tape.
+    const first_draft = use_metal and (has_draft or spec.verify_rows);
     var first: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, first_draft) } else .{ .cpu = try Runtime.init(alloc, io, mapped.view(), binding, 16, true, false) };
     defer first.deinit();
     var second: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, false) } else .{ .cpu = try Runtime.init(alloc, io, mapped.view(), binding, 16, true, false) };
@@ -2815,38 +2820,60 @@ fn compareRows(label: []const u8, expected: []const u8, actual: []const f32, max
 /// The pinned prompt of the DSpark trace: `inkling2-quick-brown`'s ids.
 const spark_trace_tokens = [_]u32{ 371, 157021, 161319, 220, 32329, 160581, 82, 150053 };
 
-/// The DSpark drafter's CPU trace on the pinned prompt: the prompt's commit
+/// The DSpark drafter's trace on the pinned prompt: the prompt's commit
 /// rows committed, then one block from the prompt's greedy token writes
 /// every row's final hidden (`p{r}-h.f32`), and the greedy chain at `p_min`
-/// 0 writes the anchor and its 7 drafts (`greedy.txt`). Compared against the
-/// pinned rows in `tests/fixtures/inkling2-dspark` (`nuclis-gates compare
-/// --draft --positions 8`). The Metal drafter does not exist yet.
-fn sparkTrace(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, directory: []const u8, draft_model: []const u8) !void {
+/// 0 writes the anchor and its 7 drafts (`greedy.txt`). The CPU reference
+/// pinned the rows in `tests/fixtures/inkling2-dspark`; the Metal plan
+/// (F32 cache) is compared against them (`nuclis-gates compare --draft
+/// --positions 8`), through the specialized kernels or, with `generic`
+/// (`--generic-kernels`), the generic F32 ones.
+fn sparkTrace(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, generic: bool, directory: []const u8, draft_model: []const u8) !void {
     const inkling2 = inference.models.inkling2;
     const dspark = inference.models.dspark;
-    if (use_metal) return error.MetalDrafterUnsupported;
     var companion: ?inference.weights.Mapped = null;
     defer if (companion) |*c| c.deinit(io);
     const binding = try bindDraftSource(inkling2.family, alloc, io, mapped, draft_model, &companion);
     if (binding.dspark == null) return error.DraftSourceMismatch;
     const tokens = spark_trace_tokens;
     const capacity = tokens.len + dspark.block_size + 2;
-    var runtime = try inkling2.Runtime.init(alloc, io, mapped.view(), binding, capacity, false, true);
-    defer runtime.deinit();
     const logits = try alloc.alloc(f32, inkling2.vocabulary);
     defer alloc.free(logits);
     const hidden = try alloc.alloc(f32, tokens.len * dspark.hidden_width);
     defer alloc.free(hidden);
-    try runtime.prefill(&tokens, logits, hidden, null);
-    const anchor = argmax(logits);
-    try runtime.sparkCommit(&tokens, hidden);
-    const d = try runtime.sparkBlock(anchor);
+    const rows = try alloc.alloc(f32, dspark.block_size * dspark.embedding);
+    defer alloc.free(rows);
+    var drafts: [dspark.max_proposals]u32 = undefined;
+    var anchor: u32 = 0;
+    if (use_metal) {
+        var diagnostic: [8192]u8 = @splat(0);
+        var backend = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
+            std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
+            return err;
+        };
+        defer backend.deinit();
+        backend.generic_only = generic;
+        var plan = try inkling2.Plan.init(alloc, &backend, mapped.view(), binding, capacity, 16, .f32, false, true);
+        defer plan.deinit();
+        try plan.prefill(&tokens, logits, null, null, null, hidden, null);
+        anchor = argmax(logits);
+        try plan.sparkCommit(&tokens, hidden);
+        if (try plan.sparkPropose(anchor, &drafts, 0) != drafts.len) return error.DraftLengthMismatch;
+        @memcpy(rows, plan.spark.?.hidden.floats()[0..rows.len]);
+    } else {
+        var runtime = try inkling2.Runtime.init(alloc, io, mapped.view(), binding, capacity, false, true);
+        defer runtime.deinit();
+        try runtime.prefill(&tokens, logits, hidden, null);
+        anchor = argmax(logits);
+        try runtime.sparkCommit(&tokens, hidden);
+        const d = try runtime.sparkBlock(anchor);
+        @memcpy(rows, d.hidden[0..rows.len]);
+        _ = try d.select(runtime.sparkTarget(), &drafts, 0);
+    }
     for (0..dspark.block_size) |r| {
         var name: [32]u8 = undefined;
-        try writeFloats(io, directory, try std.fmt.bufPrint(&name, "p{d}-h.f32", .{r}), d.hidden[r * dspark.embedding ..][0..dspark.embedding]);
+        try writeFloats(io, directory, try std.fmt.bufPrint(&name, "p{d}-h.f32", .{r}), rows[r * dspark.embedding ..][0..dspark.embedding]);
     }
-    var drafts: [dspark.max_proposals]u32 = undefined;
-    _ = try d.select(runtime.sparkTarget(), &drafts, 0);
     var path: [4096]u8 = undefined;
     const file = try std.Io.Dir.cwd().createFile(io, try std.fmt.bufPrint(&path, "{s}/greedy.txt", .{directory}), .{});
     defer file.close(io);
@@ -2855,7 +2882,7 @@ fn sparkTrace(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.M
     try writer.interface.print("{d}\n", .{anchor});
     for (drafts) |t| try writer.interface.print("{d}\n", .{t});
     try writer.interface.flush();
-    std.debug.print("DSpark trace (cpu) written to {s}: anchor {d}, drafts {any}.\n", .{ directory, anchor, drafts });
+    std.debug.print("DSpark trace ({s}) written to {s}: anchor {d}, drafts {any}.\n", .{ if (use_metal) "metal" else "cpu", directory, anchor, drafts });
 }
 
 const SparkSampling = enum { greedy, sampled };

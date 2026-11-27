@@ -73,6 +73,10 @@
   "inkling2_dspark": {
    "artifact": "inkling-2-mini",
    "file": "draft:dspark"
+  },
+  "inkling2_dspark_pair": {
+   "artifact": "inkling-2-mini",
+   "draft": "dspark"
   }
  },
  "data": {
@@ -2705,6 +2709,90 @@
     "kind": "exit"
    },
    "evidence": "docs/engine/speculative-decoding.md#inkling-2s-dspark-drafter"
+  },
+  {
+   "name": "inkling2-dspark-trace-metal",
+   "family": "inkling2",
+   "tier": "verify",
+   "model": "inkling2",
+   "mtp": "inkling2_dspark",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--flash-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/inkling2-dspark",
+    "positions": 8,
+    "embedding": 2304,
+    "draft": true
+   },
+   "bounds": {
+    "max_absolute": 0.05,
+    "max_relative_rms": 0.008
+   },
+   "evidence": "docs/benchmarks/record/inkling2.md#the-dspark-drafter-on-metal-2026-11-27",
+   "note": "the target's and the drafter's Q8_0 and NVFP4 projections run the half-operand tiles; measured 3.7e-2 / 4.6e-3, drafts identical"
+  },
+  {
+   "name": "inkling2-dspark-trace-metal-generic",
+   "family": "inkling2",
+   "tier": "verify",
+   "model": "inkling2",
+   "mtp": "inkling2_dspark",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--generic-kernels",
+    "--flash-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/inkling2-dspark",
+    "positions": 8,
+    "embedding": 2304,
+    "draft": true
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/benchmarks/record/inkling2.md#the-dspark-drafter-on-metal-2026-11-27",
+   "note": "the generic F32 kernels: summation order alone; measured 1.6e-4 / 3.0e-6, drafts identical"
+  },
+  {
+   "name": "inkling2-dspark-speculative-metal",
+   "family": "inkling2",
+   "tier": "verify",
+   "model": "inkling2",
+   "mtp": "inkling2_dspark",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--speculative-check",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/benchmarks/record/inkling2.md#the-dspark-drafter-on-metal-2026-11-27"
   },
   {
    "name": "inkling2-trace-cpu-f16",

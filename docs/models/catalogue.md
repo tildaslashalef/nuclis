@@ -226,8 +226,8 @@ and lands beside the artifact's other files.
   file fetched from another repository at a Hub name of its own lands
   where the index places it, beside its parent: the DFlash2 file is
   `unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf`.
-  `inkling-2-mini` has one, `dspark`, off: only the CPU reference drafts
-  with it.
+  `inkling-2-mini` has one, `dspark`, off (its verdict:
+  [record](../benchmarks/record/inkling2.md#the-dspark-drafter-on-metal-2026-11-27)).
   `--draft <variant>` (or `generation.draft` in a registry entry) picks
   one at run time; `--with draft=<variant>` pulls one, `--all` takes the
   default variant of each role, `--all --variants` every variant.
