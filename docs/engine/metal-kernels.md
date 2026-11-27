@@ -305,11 +305,9 @@ one threadgroup (histogram by atomics, prefix sum, scatter); the bound
 `Backend.matmulExperts` is the dense tile's body with a `GATHER` flag: it
 reads a tile's activation rows through the row list (input row `slot_row /
 in_group`, `in_group` = k on gate-up) and scatters each valid result to
-its slot row. Q4_0, Q5_0, Q5_1, and NVFP4 (whose weights half holds
-exactly) have a half 64×32 instantiation; every other encoding takes the
-generic F32 tile. The chain per layer is `route` →
-`expertLists` → `matmulExperts` → `geluMulRows` → `matmulExperts` →
-`combineExperts`. Qwen3.5-MoE's gated shared expert adds
+its slot row. Q4_0, Q5_0, Q5_1, Q8_0, and NVFP4 have a half 64×32 tile,
+the rest the generic F32 tile. The chain per layer is `route` →
+`expertLists` → `matmulExperts` → `geluMulRows` → `matmulExperts` → `combineExperts`. Qwen3.5-MoE's gated shared expert adds
 `Backend.sharedExpertAdd`: `x[r] += sigmoid(g · x[r]) · y[r]` in one dispatch
 per row. Measurements and the adapter's routing sensitivity:
 [record](../benchmarks/record/metal-backend.md#gathered-expert-kernels-2026-09-18).
@@ -330,8 +328,9 @@ per row. Measurements and the adapter's routing sensitivity:
   returns NaN past ±44; F32 tanh is ±1 from ±20).
 - Inkling 2's: `nu_l2_clip_rows` (`cpu.l2Clip` per head, with gains and
   the log position scale), `nu_depth_mix` (`cpu.depth.mix`, at most 32
-  states), and the controller's `nu_control_join` and `nu_control_blend`
-  around three `matvec`s.
+  states), the controller's `nu_control_join` and `nu_control_blend`
+  around three `matvec`s, and `nu_relative_bias` (a chunk's bias table
+  through the F32 `[1024][16]` tensor, a shape the tiles refuse).
 - `nu_pack_half`, `nu_pack_q8_0`, and `nu_unpack_q8_0` write and expand
   the cache rows ([metal-attention.md § The KV
   cache](metal-attention.md#the-kv-cache)).

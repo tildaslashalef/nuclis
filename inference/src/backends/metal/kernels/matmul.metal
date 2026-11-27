@@ -674,7 +674,7 @@ template [[host_name("nu_matmul_iq1_m_f2")]] kernel void nu_matmul_frag_t<29, 2,
 // Q8_0's tile is called by name (the DFlash2 drafter), never routed by `matmul`.
 template [[host_name("nu_matmul_q8_0_f2")]] kernel void nu_matmul_frag_t<8, 2, half, float>(NU_MATMUL_ARGS);
 // Gathered expert tiles: 64 rows × 32 slot rows with half operands for Q4_0,
-// Q5_0, and Q5_1 (an expert averages k · chunk / experts slot rows per chunk,
+// Q5_0, Q5_1, Q8_0, and NVFP4 (an expert averages k · chunk / experts slot rows per chunk,
 // 16 on the 26B-A4B at 256 tokens, so one token tile covers most experts), and
 // the generic F32 32 × 32 tile for every other encoding or alignment.
 #define NU_MATMUL_EXPERTS_ARGS device const uchar *, device const float *, device float *, device const uint *, constant MatmulExpertsParams &, uint, uint, uint
@@ -683,4 +683,5 @@ template [[host_name("nu_matmul_experts_q4_0")]] kernel void nu_matmul_experts_t
 template [[host_name("nu_matmul_experts_q5_0")]] kernel void nu_matmul_experts_t<6, 64, half, half>(NU_MATMUL_EXPERTS_ARGS);
 template [[host_name("nu_matmul_experts_q5_1")]] kernel void nu_matmul_experts_t<7, 64, half, half>(NU_MATMUL_EXPERTS_ARGS);
 template [[host_name("nu_matmul_experts_nvfp4")]] kernel void nu_matmul_experts_t<40, 64, half, half>(NU_MATMUL_EXPERTS_ARGS);
+template [[host_name("nu_matmul_experts_q8_0")]] kernel void nu_matmul_experts_t<8, 64, half, half>(NU_MATMUL_EXPERTS_ARGS);
 

@@ -46,6 +46,12 @@ const Spec = struct {
     expert_bounds: ?Bounds = null,
     /// The prediction block's trace to check, when the family has one.
     draft: ?Draft = null,
+    /// Every configuration routes experts (no `binding.config.experts`):
+    /// `bounds` are the expert ones, and the generic-tile pass runs.
+    routed: bool = false,
+    /// The plan verifies without a bound drafter (a verify head sized by
+    /// `Plan.init`'s `draft`): its rows are checked against steps.
+    verify_rows: bool = false,
 };
 const qwen35_spec: Spec = .{ .Family = inference.models.qwen35.family, .vocabulary = inference.models.qwen35_metal.vocabulary, .tokens = .{ 9419, 11 }, .bounds = .{ .chunk_max_abs = 2e-2, .chunk_rel_rms = 1e-3, .half_max_abs = 2e-2, .half_rel_rms = 1e-3, .q8 = .{ .max_abs = 6e-2, .rel_rms = 3e-3 } }, .draft = .{ .tokens = .{ 9419, 11 }, .greedy = .{ 9419, 271 } } };
 // Gemma's F16 tolerance is the model's own sensitivity to rounding keys
@@ -68,6 +74,19 @@ const gemma4_spec: Spec = .{
     .tokens = .{ 9259, 236764 },
     .bounds = .{ .chunk_max_abs = 6e-1, .chunk_rel_rms = 2e-2, .half_max_abs = 2.0, .half_rel_rms = 6e-2, .q8 = .{ .max_abs = 1.2e1, .rel_rms = 3.5e-1 } },
     .expert_bounds = .{ .chunk_max_abs = 2e1, .chunk_rel_rms = 5e-1, .half_max_abs = 2e1, .half_rel_rms = 5e-1, .q8 = null, .greedy = false },
+};
+// Inkling 2 routes 8 of 128 experts at each of 48 applications. Its chunk
+// and F16 bounds are the half-operand tiles' and the cache's rounding,
+// measured at 1.7e-1 / 9.9e-3 at worst (Q8_0 4.8e-1 / 3.5e-2), with the
+// greedy token held; the F32 tiles sit at 1.8e-5 / 2.8e-7
+// (record/inkling2.md § The chunked plan (2026-11-27)).
+const inkling2_spec: Spec = .{
+    .Family = inference.models.inkling2.family,
+    .vocabulary = inference.models.inkling2.vocabulary,
+    .tokens = .{ 32269, 11 },
+    .bounds = .{ .chunk_max_abs = 5e-1, .chunk_rel_rms = 3e-2, .half_max_abs = 5e-1, .half_rel_rms = 3e-2, .q8 = .{ .max_abs = 1.5, .rel_rms = 1e-1 } },
+    .routed = true,
+    .verify_rows = true,
 };
 /// The bounds of the bound configuration: the expert ones when the family
 /// declares them and the file is an expert configuration.
@@ -229,7 +248,7 @@ pub fn main(init: std.process.Init) !void {
         else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
         // No Muse Glimmer model file is gated, so none is checked.
         .@"muse-glimmer" => return error.UnsupportedFamily,
-        .inkling2 => return error.UnsupportedFamily,
+        .inkling2 => if (draft_trace != null or draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(inkling2_spec, alloc, init.io, &mapped, use_metal),
     }
     // The ordinary run's engine-level addition, backend-independent like
     // `speculativeLoop`, so the Metal run covers it.
@@ -465,7 +484,7 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
         try draftRecoveryCheck(spec, alloc, io, if (backend) |*b| b else null, mapped.view(), binding, spec.draft.?);
         if (backend) |*b| try draftBatchCommitCheck(spec, alloc, b, mapped.view(), binding);
     } else std.debug.print("Draft block checks skipped: the file carries no embedded block.\n", .{});
-    const routed = if (comptime spec.expert_bounds != null) binding.config.experts != null else false;
+    const routed = spec.routed or if (comptime spec.expert_bounds != null) binding.config.experts != null else false;
     try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 4, use_metal, boundsOf(spec, binding), !routed);
     if (use_metal) try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 8, true, boundsOf(spec, binding), !routed);
     if (routed) if (backend) |*b| {
@@ -479,6 +498,46 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
         try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 8, true, exact, true);
     };
     if (backend) |*b| try checkChunkedPrefill(spec, alloc, b, mapped.view(), binding, expected, actual);
+    if (comptime spec.verify_rows) if (backend) |*b| try checkVerifyRows(spec, alloc, b, mapped.view(), binding);
+}
+
+/// A verify batch of 8 rows after a stepped prefix: each row's soft-capped
+/// logits against the stepped run's at the same position (the chunk
+/// bounds), and the greedy sibling's ids against those rows' argmax.
+fn checkVerifyRows(comptime spec: Spec, alloc: std.mem.Allocator, b: *inference.metal.Backend, view: inference.weights.View, binding: spec.Family.Binding) !void {
+    const Plan = spec.Family.Plan;
+    const v = spec.vocabulary;
+    var tokens: [18]u32 = undefined;
+    var seed: u32 = 777;
+    for (&tokens) |*t| {
+        seed = seed *% 1664525 +% 1013904223;
+        t.* = seed % 150000;
+    }
+    const prefix = tokens[0..10];
+    const batch = tokens[10..];
+    const expected = try alloc.alloc(f32, batch.len * v);
+    defer alloc.free(expected);
+    const actual = try alloc.alloc(f32, batch.len * v);
+    defer alloc.free(actual);
+    var stepped = try Plan.init(alloc, b, view, binding, 32, 16, .f32, false, false);
+    defer stepped.deinit();
+    for (prefix) |t| try stepped.step(t, null, null, null, null, null);
+    for (batch, 0..) |t, i| try stepped.step(t, expected[i * v ..][0..v], null, null, null, null);
+    var verified = try Plan.init(alloc, b, view, binding, 32, 16, .f32, false, true);
+    defer verified.deinit();
+    for (prefix) |t| try verified.step(t, null, null, null, null, null);
+    try verified.verify(batch, actual, null, null, null);
+    if (verified.state.position != tokens.len) return error.PositionMismatch;
+    try compareLogitRows("Verify (8 rows)", v, expected, actual, boundsOf(spec, binding).chunk_max_abs, boundsOf(spec, binding).chunk_rel_rms);
+    var greedy = try Plan.init(alloc, b, view, binding, 32, 16, .f32, false, true);
+    defer greedy.deinit();
+    for (prefix) |t| try greedy.step(t, null, null, null, null, null);
+    var ids: [8]u32 = undefined;
+    try greedy.verifyGreedy(batch, &ids, null, null);
+    for (ids, 0..) |id, i| if (id != argmaxOf(actual[i * v ..][0..v])) return error.VerifyGreedyMismatch;
+    // A plan without the verify head refuses the batch untouched.
+    if (stepped.verify(batch[0..1], actual[0..v], null, null, null)) |_| return error.ExpectedNoDraftBlock else |err| if (err != error.NoDraftBlock) return err;
+    std.debug.print("Verify check passed: 8 rows after a stepped prefix match the steps, and the greedy batch their argmax.\n", .{});
 }
 
 /// Step token 1, snapshot, step token 2 → logits A; restore, step

@@ -363,7 +363,16 @@ const Deviation = struct {
 /// stepped row is the schedule: F32 activations on both sides, so what is
 /// left is rounding. The chunked row adds the half-operand tiles', and the
 /// F16 and Q8_0 rows their caches'.
-const Bounds = struct { step: Deviation, chunk: Deviation, half: Deviation, q8: Deviation };
+const Bounds = struct {
+    step: Deviation,
+    chunk: Deviation,
+    half: Deviation,
+    q8: Deviation,
+    /// The chunked prefill runs on the generic F32 tiles: where the router's
+    /// top-k turns the half tiles' rounding into swaps the size of a
+    /// corruption, the row then holds the chunk schedule alone.
+    generic_chunk: bool = false,
+};
 
 const qwen_bounds: Bounds = .{
     .step = .{ .max_abs = 6e-5, .rel_rms = 1.5e-5 },
@@ -392,13 +401,15 @@ const gemma_experts_bounds: Bounds = .{
     .q8 = .{ .max_abs = 2e0, .rel_rms = 5e-1 },
 };
 
-/// The stepped plan is the schedule's rounding; the caches are held to a
-/// reference rounded the same way, and the rounding still crosses a code
-/// or the router's top-k boundary on some seeds, so they bound one swap.
-/// The plan steps a prompt, so the chunked row is the stepped one.
+/// The stepped plan is the schedule's rounding, and so is the chunked one
+/// on the generic tiles; the caches are held to a reference rounded the
+/// same way (a Q8_0 chunk's through its F16 expansion too), and the
+/// rounding still crosses a code or the router's top-k boundary on some
+/// seeds, so they bound one swap.
 const inkling_bounds: Bounds = .{
     .step = .{ .max_abs = 3e-5, .rel_rms = 7e-6 },
     .chunk = .{ .max_abs = 3e-5, .rel_rms = 7e-6 },
+    .generic_chunk = true,
     .half = .{ .max_abs = 2e0, .rel_rms = 5e-1 },
     .q8 = .{ .max_abs = 2e0, .rel_rms = 5e-1 },
 };
@@ -419,14 +430,16 @@ const Reference = struct {
 
     /// `rounding` other than F32 rounds the cache rows as a lossy cache
     /// does, in a family whose runtime can (`cache_rounding`); null when
-    /// it cannot.
-    fn init(gpa: Allocator, io: std.Io, path: []const u8, rounding: Precision) !?Reference {
+    /// it cannot. `half_reads` adds the F16 expansion a chunk's attention
+    /// reads a Q8_0 cache through.
+    fn init(gpa: Allocator, io: std.Io, path: []const u8, rounding: Precision, half_reads: bool) !?Reference {
         var engine = try Engine.open(gpa, io, path, .cpu, capacity, .f32, null, .none);
         defer engine.deinit();
         if (rounding != .f32) switch (engine.model.exec) {
             inline else => |*e| {
                 if (!@hasField(@TypeOf(e.cpu), "cache_rounding")) return null;
                 e.cpu.cache_rounding = rounding;
+                e.cpu.cache_half_reads = half_reads;
             },
         };
         const tokens = try promptTokens(gpa, &engine);
@@ -468,9 +481,14 @@ const Beats = struct {
 
 const Run = struct { stepped: Deviation = .{}, chunked: Deviation = .{}, greedy_agrees: bool = true };
 
+/// Where a generic-tile chunked run splits its prompt: 10 rows from 0, then
+/// 5 (the verify attention) and 17 (the materialized one) whose windows
+/// start past position 0.
+const split_ends = [_]usize{ 10, 15, 32 };
+
 /// The prompt on Metal, stepped and then chunked, against the reference. A
 /// GPU argmax that disagrees with the reference's fails the row.
-fn metalRun(gpa: Allocator, io: std.Io, path: []const u8, reference: Reference, kv: Precision) !Run {
+fn metalRun(gpa: Allocator, io: std.Io, path: []const u8, reference: Reference, chunk_reference: ?Reference, kv: Precision, generic_chunk: bool) !Run {
     var engine = try Engine.open(gpa, io, path, .metal, capacity, kv, null, .none);
     defer engine.deinit();
     const logits = try gpa.alloc(f32, reference.vocabulary);
@@ -484,11 +502,22 @@ fn metalRun(gpa: Allocator, io: std.Io, path: []const u8, reference: Reference, 
         run.greedy_agrees = run.greedy_agrees and greedy == std.mem.indexOfMax(f32, reference.row(i));
     }
     engine.model.reset();
+    const gpu = engine.model.gpu().?;
+    gpu.generic_only = generic_chunk;
+    defer gpu.generic_only = false;
     var beats: Beats = .{};
-    try engine.model.prefill(reference.tokens, logits, null, null, null, null, beats.observer());
+    if (generic_chunk) {
+        if (reference.tokens.len <= split_ends[split_ends.len - 1]) return error.PromptTooShort;
+        var start: usize = 0;
+        for (split_ends ++ [_]usize{reference.tokens.len}) |end| {
+            try engine.model.prefill(reference.tokens[start..end], if (end == reference.tokens.len) logits else null, null, null, null, null, beats.observer());
+            start = end;
+        }
+    } else try engine.model.prefill(reference.tokens, logits, null, null, null, null, beats.observer());
     try expectFinite(logits);
-    run.chunked = .of(logits, reference.row(reference.tokens.len - 1));
-    try beats.expectReached(reference.tokens.len);
+    run.chunked = .of(logits, (chunk_reference orelse reference).row(reference.tokens.len - 1));
+    // Each call reports its own rows.
+    try beats.expectReached(if (generic_chunk) reference.tokens.len - split_ends[split_ends.len - 1] else reference.tokens.len);
     engine.model.reset();
     beats = .{};
     engine.model.prefillVision(reference.tokens, &.{}, &.{}, logits, null, null, null, beats.observer()) catch |err| switch (err) {
@@ -525,9 +554,9 @@ fn checkVariant(gpa: Allocator, io: std.Io, out: *std.Io.Writer, dir: std.Io.Dir
         defer gpa.free(bytes);
         const path = try writeFile(gpa, io, dir, prefix, "model.gguf", bytes);
         defer gpa.free(path);
-        const reference = (try Reference.init(gpa, io, path, .f32)).?;
+        const reference = (try Reference.init(gpa, io, path, .f32, false)).?;
         defer reference.deinit(gpa);
-        const run = metalRun(gpa, io, path, reference, .f32) catch |err| {
+        const run = metalRun(gpa, io, path, reference, null, .f32, bounds.generic_chunk) catch |err| {
             try out.print("{s:<16} {s:>8} {t}\n", .{ variant.name, encoding_name, err });
             try out.flush();
             passed = false;
@@ -542,9 +571,14 @@ fn checkVariant(gpa: Allocator, io: std.Io, out: *std.Io.Writer, dir: std.Io.Dir
                 // Against a reference whose cache rounds the same way, where
                 // the family can: Inkling 2's clipped keys amplify a cache's
                 // rounding past anything a bound against F32 could hold.
-                const rounded = try Reference.init(gpa, io, path, kv);
+                const rounded = try Reference.init(gpa, io, path, kv, false);
                 defer if (rounded) |r| r.deinit(gpa);
-                const cached = try metalRun(gpa, io, path, rounded orelse reference, kv);
+                // A chunk past the few-row pass reads a Q8_0 cache through
+                // an F16 expansion; decode reads the codes.
+                const expanded = kv == .q8_0 and rounded != null and reference.tokens.len > inference.metal.Backend.verify_max_rows;
+                const half_reads = if (expanded) try Reference.init(gpa, io, path, kv, true) else null;
+                defer if (half_reads) |r| r.deinit(gpa);
+                const cached = try metalRun(gpa, io, path, rounded orelse reference, half_reads, kv, bounds.generic_chunk);
                 const worst = cached.stepped.merge(cached.chunked);
                 const fine = worst.within(bound);
                 passed = passed and fine;
@@ -553,7 +587,7 @@ fn checkVariant(gpa: Allocator, io: std.Io, out: *std.Io.Writer, dir: std.Io.Dir
             try corruptBlock(gpa, bytes);
             const mutated = try writeFile(gpa, io, dir, prefix, "mutated.gguf", bytes);
             defer gpa.free(mutated);
-            const control = try metalRun(gpa, io, mutated, reference, .f32);
+            const control = try metalRun(gpa, io, mutated, reference, null, .f32, bounds.generic_chunk);
             const seen = !control.stepped.within(bounds.step);
             passed = passed and seen;
             try out.print("{s:<16} {s:>8} {e:>9.2} {e:>9.2} {s:>19} {s}\n", .{ variant.name, "control", control.stepped.max_abs, control.stepped.rel_rms, "", if (seen) "seen" else "MISSED" });

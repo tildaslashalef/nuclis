@@ -88,6 +88,10 @@ pub const Runtime = struct {
     /// F32, no rounding, is the reference; the lossy caches' checks set
     /// the others (docs/models/inkling2.md § Metal).
     cache_rounding: session.Precision = .f32,
+    /// A Q8_0 rounding then takes each row through F16 too: what a Metal
+    /// chunk's attention reads of a Q8_0 cache, its rows expanded to F16.
+    /// The tiny check's chunked comparison sets it.
+    cache_half_reads: bool = false,
     constants: []Constants,
     token_norm: []f32,
     output_norm: []f32,
@@ -208,6 +212,7 @@ pub const Runtime = struct {
         }
         r.storage = storage;
         r.cache_rounding = .f32;
+        r.cache_half_reads = false;
         r.state = state;
         r.view = view;
         r.io = io;
@@ -408,8 +413,8 @@ pub const Runtime = struct {
             const value = self.v[h * hd ..][0..hd];
             try cpu.rmsNorm(value, value, model.rms_epsilon);
         }
-        try roundRow(self.cache_rounding, self.k);
-        try roundRow(self.cache_rounding, self.v);
+        try roundRow(self.cache_rounding, self.cache_half_reads, self.k);
+        try roundRow(self.cache_rounding, self.cache_half_reads, self.v);
         const cache = self.state.layers[il].attention;
         @memcpy(cache.keys.floats(position, 1), self.k);
         @memcpy(cache.values.floats(position, 1), self.v);
@@ -436,8 +441,9 @@ pub const Runtime = struct {
     }
 
     /// `values` as a cache of `precision` holds them: F16 by round to
-    /// nearest, Q8_0 through `quant_encode.q8_0Row` and back.
-    fn roundRow(precision: session.Precision, values: []f32) !void {
+    /// nearest, Q8_0 through `quant_encode.q8_0Row` and back, then through
+    /// F16 when `half_reads`.
+    fn roundRow(precision: session.Precision, half_reads: bool, values: []f32) !void {
         switch (precision) {
             .f32 => {},
             .f16 => for (values) |*x| {
@@ -447,6 +453,9 @@ pub const Runtime = struct {
                 var bytes: [model.kv_width / quant_encode.q8_0_block * quant_encode.q8_0_block_bytes]u8 = undefined;
                 try quant_encode.q8_0Row(values, &bytes);
                 try quant_decode.row(8, &bytes, values);
+                if (half_reads) for (values) |*x| {
+                    x.* = @as(f16, @floatCast(x.*));
+                };
             },
         }
     }

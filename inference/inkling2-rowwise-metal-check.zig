@@ -2,8 +2,8 @@
 //! against the CPU function it stands for at the model's geometry: the
 //! short convolution (static and per-head dynamic taps, the history read
 //! and then advanced), `l2Clip` with per-channel gains and the log position
-//! scale, the depth mix, the message controller, SITU, and the biased
-//! sigmoid router.
+//! scale, the depth mix, the message controller, SITU, the biased
+//! sigmoid router, and the relative-position bias table.
 const std = @import("std");
 const inference = @import("inference");
 const check_stats = @import("check_stats.zig");
@@ -342,6 +342,41 @@ fn checkRouteBiased(alloc: std.mem.Allocator, b: *Backend, random: std.Random) !
     return worst;
 }
 
+/// The bias table of a chunk's `rows` heads (relative rows of 16) against
+/// `cpu.matvec` of each row through the F32 `[1024][16]` bias tensor, then
+/// the refusals: a non-F32 tensor and an output over the input.
+fn checkRelativeBias(alloc: std.mem.Allocator, io: std.Io, b: *Backend, random: std.Random) !f64 {
+    const length = 16;
+    const extent = 1024;
+    const rows = 3 * heads;
+    const table = try alloc.alloc(f32, extent * length);
+    defer alloc.free(table);
+    fill(random, table, 0.5);
+    const relative = try alloc.alloc(f32, rows * length);
+    defer alloc.free(relative);
+    fill(random, relative, 2);
+    const matrix: cpu.Matrix = .{ .encoding = 0, .rows = extent, .columns = length, .bytes = std.mem.sliceAsBytes(table) };
+    const weights = try upload(b, table);
+    defer b.release(weights) catch {};
+    const input = try upload(b, relative);
+    defer b.release(input) catch {};
+    const out = try b.create(rows * extent * 4);
+    defer b.release(out) catch {};
+    try b.begin();
+    try b.relativeBias(input, weights, matrix, out, rows);
+    try b.commit();
+    const want = try alloc.alloc(f32, rows * extent);
+    defer alloc.free(want);
+    var scratch: [length]f32 = undefined;
+    for (0..rows) |r| try cpu.matvec(io, matrix, relative[r * length ..][0..length], want[r * extent ..][0..extent], &scratch);
+    const worst = try expectNear("relative bias", out.floats()[0 .. rows * extent], want, 2e-6);
+    var half = matrix;
+    half.encoding = 1;
+    if (b.relativeBias(input, weights, half, out, rows)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+    if (b.relativeBias(input, weights, matrix, input, 1)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+    return worst;
+}
+
 /// The refusals: overlapping outputs (with the input or the history),
 /// gains overlapping the clipped data, SITU's expert factors short,
 /// misaligned, or overlapping its output, too many states, a nonpositive
@@ -386,6 +421,7 @@ pub fn check(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
     const control = try checkControl(alloc, io, b, random);
     const situ = try checkSitu(alloc, b, random);
     const route = try checkRouteBiased(alloc, b, random);
+    const bias = try checkRelativeBias(alloc, io, b, random);
     try checkRefusals(b);
-    std.debug.print("Inkling 2 row-wise operations vs the CPU, relative past 1: short convolution (static and dynamic taps, 1 and 5 rows) {e:.3}, the history advanced exactly; l2 clip (gains, log scale) {e:.3}; depth mix (1-32 states) {e:.3} (bounds 2e-6); controller {e:.3} (1e-5); SITU (with expert factors) {e:.3} (2e-5); biased route weights {e:.3}, its choices the CPU's, a NaN row's every slot written\n", .{ conv, clip, mix, control, situ, route });
+    std.debug.print("Inkling 2 row-wise operations vs the CPU, relative past 1: short convolution (static and dynamic taps, 1 and 5 rows) {e:.3}, the history advanced exactly; l2 clip (gains, log scale) {e:.3}; depth mix (1-32 states) {e:.3} (bounds 2e-6); controller {e:.3} (1e-5); SITU (with expert factors) {e:.3} (2e-5); biased route weights {e:.3}, its choices the CPU's, a NaN row's every slot written; the bias table of 72 heads {e:.3}\n", .{ conv, clip, mix, control, situ, route, bias });
 }

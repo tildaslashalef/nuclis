@@ -181,8 +181,8 @@ pub const Config = struct {
         /// this window, and the flagship's session is about 4.5 GB in it
         /// (docs/benchmarks/record/benchmarks.md, 2026-11-20).
         ctx_size: usize = 65536,
-        /// Attention cache precision on the GPU; the CPU reference
-        /// always keeps F32 and reports it.
+        /// Attention cache precision on the GPU; the CPU reference keeps
+        /// F32 unless `--kv` asks a runtime that can round to (Inkling 2).
         kv_precision: KvPrecision = .f16,
     };
     pub const Generation = struct {
@@ -979,7 +979,9 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
         .forced_profile = flags.prompt_profile orelse e.profile orelse pinnedProfile(name),
         .backend = flags.backend orelse cfg.engine.backend,
         .ctx_size = flags.ctx_size orelse e.ctx_size orelse cfg.engine.ctx_size,
-        .kv_precision = flags.kv orelse cfg.engine.kv_precision,
+        // The configured precision is the GPU cache's; the CPU reference
+        // rounds its rows only when the command line asks.
+        .kv_precision = flags.kv orelse if ((flags.backend orelse cfg.engine.backend) == .cpu) .f32 else cfg.engine.kv_precision,
         .max_tokens = flags.max_tokens orelse if (bench) bench_max_tokens else e.generation.max_tokens orelse cfg.generation.max_tokens,
         .think = flags.think orelse switch (command) {
             .generate => e.generation.think orelse cfg.generation.think,
@@ -1007,7 +1009,8 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
     if (model != null) o[comptime leafIndex(Config, "engine.model")] = .flag;
     if (flags.backend != null) o[comptime leafIndex(Config, "engine.backend")] = .flag;
     if (flags.ctx_size != null) o[comptime leafIndex(Config, "engine.ctx_size")] = .flag else if (e.ctx_size != null) o[comptime leafIndex(Config, "engine.ctx_size")] = .model;
-    if (flags.kv != null) o[comptime leafIndex(Config, "engine.kv_precision")] = .flag;
+    // The CPU's F32 is its own default: the configured precision is the GPU's.
+    if (flags.kv != null) o[comptime leafIndex(Config, "engine.kv_precision")] = .flag else if (r.backend == .cpu) o[comptime leafIndex(Config, "engine.kv_precision")] = .default;
     const budget = comptime leafIndex(Config, "generation.max_tokens");
     if (flags.max_tokens != null) o[budget] = .flag else if (bench) o[budget] = .default else if (e.generation.max_tokens != null) o[budget] = .model;
     // The entry's efforts are not command-specific, the flag is.
@@ -2008,6 +2011,11 @@ test "resolve applies defaults < file < flags per command and records the source
     try std.testing.expectEqual(.default, gen.source("engine.model"));
     try std.testing.expectEqual(.cpu, gen.backend);
     try std.testing.expectEqual(.file, gen.source("engine.backend"));
+    // The configured F16 is the GPU's; on the CPU only the flag rounds.
+    try std.testing.expectEqual(.f32, gen.kv_precision);
+    try std.testing.expectEqual(.default, gen.source("engine.kv_precision"));
+    try std.testing.expectEqual(.q8_0, resolve(&loaded, null, .{ .kv = .q8_0 }, .generate).kv_precision);
+    try std.testing.expectEqual(.f16, resolve(&loaded, null, .{ .backend = .metal }, .generate).kv_precision);
     try std.testing.expectEqual(@as(usize, 1024), gen.ctx_size);
     try std.testing.expectEqual(.flag, gen.source("engine.ctx_size"));
     try std.testing.expectEqual(@as(usize, 64), gen.max_tokens);

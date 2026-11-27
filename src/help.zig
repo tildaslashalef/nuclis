@@ -319,7 +319,7 @@ fn engineOptions(p: *Page) !void {
     try more(p, "engine.model of the config file (qwen3.8-27b)");
     try row(p, "--backend cpu|metal", default_backend);
     try row(p, "--ctx-size <n>", "context window in tokens, 1.." ++ max_ctx ++ "; default 65536");
-    try row(p, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16");
+    try row(p, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16 (on the CPU, Inkling 2 rounds only if given)");
     try row(p, "--max-tokens <n>", "output budget, 1..16384; default 8192 (bench: 32)");
     try row(p, "--speculative on|off", "verify drafts; default the model's verdict, else off");
     try row(p, "--draft <variant>", "another drafter of an index model (qwen: dflash2)");
@@ -566,7 +566,7 @@ fn eval(p: *Page) !void {
     try row(p, "--model <name|path>", "registry entry, catalogue name, or path; default");
     try more(p, "engine.model of the config file (qwen3.8-27b)");
     try row(p, "--backend cpu|metal", default_backend);
-    try row(p, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16");
+    try row(p, "--kv f16|f32|q8_0", "attention cache precision on the GPU; default f16 (on the CPU, Inkling 2 rounds only if given)");
     try row(p, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e,");
     try more(p, "muse_glimmer, or inkling2 (its BOS)");
     try row(p, "--json", "the report: every window's running perplexity");

@@ -178,13 +178,13 @@ token `<|content_model_end_sampling|>` (200006).
 
 ## Metal
 
-[inkling2_metal.zig](../../inference/src/models/inkling2_metal.zig) steps
-each token in one command buffer, stage for stage the CPU reference's. On
-the real file its F32 trace is 7.6e-5 (relative RMS 8.7e-7) from the
-reference's; rounding the reference's own cache to F16
-(`Runtime.cache_rounding`) moves it 2.57 / 0.082, Metal's F16 cache 3.0e-3
-/ 8.8e-5 from that. The F16 gate bounds the rounding; the packed path, the
-window, the log scale, and Q8_0 are held by `make test-tiny` alone.
+[inkling2_metal.zig](../../inference/src/models/inkling2_metal.zig) runs a
+step, a chunk (1,024 rows) and verify rows through one body, the CPU
+reference's stages; attention verifies to 16 rows, experts take the matvec
+to 32 ([record](../benchmarks/record/inkling2.md#the-chunked-plan-2026-11-27)).
+F32 trace 7.6e-5 / 8.7e-7 from the reference's; a chunk on the F32 tiles
+1.8e-5 from stepping. F16 and Q8_0 caches meet the reference rounded alike
+(`--kv` on the CPU), 3.0e-3 / 8.8e-5 and 0.14 / 2.5e-3; `make test-tiny` alone holds the window.
 
 ## What is verified
 
@@ -198,8 +198,12 @@ router's eighth expert differs at a near tie
 | --- | --- | --- | --- |
 | `inkling2-vocabulary` | `verify` | inkling2 | [inkling2.md § prompt-profile](inkling2.md#prompt-profile) |
 | `inkling2-trace-cpu` | `verify-cpu` | inkling2 | [inkling2.md](inkling2.md) |
+| `inkling2-trace-cpu-f16` | `verify-cpu` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
+| `inkling2-trace-cpu-q8_0` | `verify-cpu` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
 | `inkling2-trace-f32` | `verify` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
 | `inkling2-trace-f16` | `verify` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
+| `inkling2-trace-q8_0` | `verify` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
+| `inkling2-generation-metal` | `verify` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
 <!-- /gen -->
 
 ## Known limits

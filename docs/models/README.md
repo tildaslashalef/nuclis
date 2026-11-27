@@ -445,7 +445,7 @@ vocabulary, and production refuses a shape only the tiny build pins).
 | `gemma4-dense`, `gemma4-mix` | 6 layers | F32, Q4_0, Q5_0, Q5_1, Q8_0, Q3_K to Q6_K, IQ3_S, IQ4_NL, IQ4_XS | <!-- ok: tiny-build variants, not gates -->
 | `gemma4-experts` | 7 layers, 16 experts of 64 | the same, `ffn_down_exps` in Q5_0 under a 256-block file | <!-- ok: tiny-build variant, not a gate -->
 | `gemma4-e4b` | 12 layers, per-layer embedding | the same, its projection BF16 under Q4_K |
-| `inkling2` | 18 stored blocks as 24 applications, 256 wide, 16 experts of 64; the CPU forward and its hybrid session, the stepped Metal plan | Q8_0, F32, with NVFP4 experts and BF16 projections |
+| `inkling2` | 18 stored blocks as 24 applications, 256 wide, 16 experts of 64; the CPU forward and its hybrid session, the Metal plan stepped and chunked | Q8_0, F32, with NVFP4 experts and BF16 projections |
 
 That is every encoding each adapter accepts. Bounds are about three times the
 worst of three seeds over every encoding on the M4 Pro, in absolute logit
@@ -456,7 +456,7 @@ error and RMS relative to the reference's logits:
 | Qwen, Saluki, Bonsai | 6e-5, 1.5e-5 | 4e-2, 1e-2 | 3e-2, 1e-2 | 4e-2, 1e-2 |
 | Muse Glimmer | 5e-6, 1e-5 | 3e-3, 5e-3 | 2e-3, 3e-3 | 3e-2, 5e-2 |
 | Gemma 4 | 1.5e-4, 3e-5 | 2e-2, 6e-3 | 3e-2, 6e-3 | 1.5e-1, 5e-2 |
-| Inkling 2 | 3e-5, 7e-6 | the stepped row | 2e0, 5e-1 | 2e0, 5e-1 |
+| Inkling 2 | 3e-5, 7e-6 | 3e-5, 7e-6 (F32 tiles) | 2e0, 5e-1 | 2e0, 5e-1 |
 | Gemma 4 experts | 4e-4, 1.2e-4 | 2, 5e-1 | 2, 5e-1 | 2, 5e-1 |
 
 Stepped runs F32 activations on both sides, so what is left is F32 rounding,
@@ -464,9 +464,9 @@ amplified by a random network. Chunked adds the half-operand tiles of the
 encodings that use them, and the caches add their own. The experts' row is
 wide because the router's top-k is discontinuous: rounding across a close
 pair swaps an expert, which moves the logits far more than the rounding did.
-So are Inkling 2's caches, held to a reference rounding its own cache rows
-alike (`cache_rounding`; against F32 the rounding moves the logits by their
-size): a code or the router still flips on some seeds (1.3 / 0.34 at worst).
+So are Inkling 2's caches, held to a reference rounded alike (`cache_rounding`,
+with a Q8_0 chunk's F16 expansion): a code or the router still flips on some
+seeds (1.5 / 0.44 at worst of ten); its chunked row takes the F32 tiles.
 The Gemma generator sets `attn_q_norm` near `1/sqrt(head)`, since its scores
 are unscaled and at unit gain the softmax is one-hot, which amplified rounding
 a thousandfold. A real model's numbers are the gates', never these.

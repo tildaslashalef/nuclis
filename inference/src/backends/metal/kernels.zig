@@ -377,6 +377,8 @@ const shipped = enum(u32) {
     control_join,
     control_blend,
     situ_mul_rows_scaled,
+    relative_bias,
+    matmul_experts_q8_0,
 };
 
 /// The tags of `bench_files`, after the shipped ones so every value stays its

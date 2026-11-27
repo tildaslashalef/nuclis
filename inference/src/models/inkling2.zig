@@ -10,8 +10,8 @@
 //! core carries the loop's message controllers. `tiny_models` is the
 //! test-only build (docs/models/README.md § Tiny models): it shrinks the
 //! depth, widths, windows, experts, and vocabulary and keeps the schedule's
-//! shape. `Runtime` is the CPU reference (`inkling2_runtime.zig`); no Metal
-//! plan runs the family yet, so `Plan` refuses.
+//! shape. `Runtime` is the CPU reference (`inkling2_runtime.zig`), `Plan` the
+//! Metal plan (`inkling2_metal.zig`).
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const gguf = @import("../formats/gguf.zig");

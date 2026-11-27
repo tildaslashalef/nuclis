@@ -59,3 +59,79 @@ M4 Pro, 48 GB; `ReleaseFast` with Metal, the plan of the commit after
 - First speed reading, `nuclis bench`, 64 tokens after the 8-token
   prompt, F16 cache, mean of 3: decode 33.98 tok/s (29.4 ms a token);
   the stepped prefill 36.9 tok/s.
+
+## The rounded references (2026-11-27)
+
+The same machine, file, and prompt; the gates' CPU build at `356d69b`
+plus this change, where `generate --backend cpu --kv f16|q8_0` rounds each
+cache row as a Metal cache of that precision stores it. The two traces are
+pinned as `tests/fixtures/inkling2-quick-brown-f16` and `-q8_0`; a second
+run of each matched it exactly.
+
+| Run | vs | Max abs | Relative RMS |
+| --- | --- | ---: | ---: |
+| CPU, rows rounded to Q8_0 | the CPU reference's F32 trace | 2.93 | 0.128 |
+| Metal, Q8_0 cache | the CPU reference's F32 trace | 2.91 | 0.127 |
+| Metal, F16 cache | the CPU with rows rounded to F16 | 2.96e-3 | 8.8e-5 |
+| Metal, Q8_0 cache | the CPU with rows rounded to Q8_0 | 0.140 | 2.5e-3 |
+
+- Q8_0 holds every position within 6e-5 through application 10. At
+  application 11 or 13, positions 2 to 7 step to about 1e-3 at once: a
+  block's code that a last-place difference in the key moves by one. The
+  rest is that step carried forward.
+- The Q8_0 rounding moves the logits 0.242; the greedy token holds.
+
+## The chunked plan (2026-11-27)
+
+The same machine and file, `nuclis bench` at `356d69b` plus this change,
+Metal, greedy, F16 cache; the prompts are the first 512 and 4,096 tokens
+of `docs/spec.md` (raw), 64 generated, context prompt + 128, mean of 3.
+The machine read 10 to 15 % apart between runs this day, so each A/B
+below alternates its builds.
+
+| Prompt | Prefill tok/s | First token ms | Decode tok/s |
+| ---: | ---: | ---: | ---: |
+| 8 (the trace prompt) | 80.3 | 99 | 29.7 |
+| 512 | 311.5 | 1,643 | 29.3 |
+| 4,096 | 292.0 | 14,026 | 27.2 |
+
+- The stepped plan at `356d69b`, same session and method: prefill 31.5
+  tok/s, decode 29.1 (and 28.7 at a 65,536 context); this change's
+  decode, run straight after, 29.7 and 29.3. The 33.98 of the stepped
+  record was a cooler machine, not a faster plan.
+- Chunk size, 4,096 tokens, builds alternated twice: 512 rows 289 and
+  278 tok/s, 1,024 rows 331 and 313. A first pass read 256 rows 196 and
+  180 (512 tokens). `preferredChunk` is 1,024.
+- The expert path's crossover, first token over 2 generated, mean of 5,
+  by threshold (the matvec below it, the gathered tile from it):
+
+  | Prompt | 8 | 16 | 32 | 64 |
+  | ---: | ---: | ---: | ---: | ---: |
+  | 8 | 113 | 107 | 92 | 127 |
+  | 12 | 240 | 143 | 141 | 195 |
+  | 16 | 273 | 221 | 191 | 175 |
+  | 24 | 402 | 360 | 280 | 320 |
+  | 32 | 423 | 434 | 393 | 355 |
+  | 48 | 452 | 452 | 452 | 454 |
+
+  32 is never worst and best or near it from 8 to 24; `matvec_expert_rows`
+  is 32. Under 16 rows the verify attention runs; past it the
+  materialized chunk.
+- Prefill profile, 512 tokens (one encoder a dispatch, so its times are
+  for shares only): 2,794 dispatches a chunk. The NVFP4 expert tiles take
+  51 % (gate-up 312 ms, down 160 ms of 858); the Q8_0 projections 14 %;
+  the bias table 4.6 %; `l2_clip_rows` 4.5 %; the convolutions 4.1 %.
+  Stored blocks 20 to 23 hold Q8_0 experts: on the generic F32 tile they
+  took 62 ms of 935 for 2 of 24 applications, on the half tile added here
+  47 ms, about the NVFP4 tiles' cost a block.
+- Decode profile, 8-token prompt: 2,490 dispatches a token. The expert
+  matvecs take 19 % (NVFP4 gate-up 216 GB/s, down 176 GB/s); the
+  controller's F32 matvecs 12 % at 22 GB/s, being 192 calls of 64 × 2,304;
+  the Q8_0 projections 17 %; the head 222 GB/s.
+- Correctness of the chunked paths (`generation-check --metal`, the real
+  file, these thresholds): the generic F32 tiles' chunk of 32 over 40
+  tokens 1.8e-5 / 2.8e-7 from stepping; the half tiles 0.117 / 3.5e-3 at
+  chunks of 64 and 48, and 9.7e-4 / 2.6e-5 at 32, whose experts take the
+  matvec; F16 cache chunked 0.170 / 9.7e-3, Q8_0 0.262 / 1.2e-2; eight
+  verify rows within 2.6e-3 / 1.9e-4 of stepping; the greedy token held in
+  each.

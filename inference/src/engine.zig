@@ -81,8 +81,9 @@ fn vocabularyCount(doc: *const inference.gguf.Document) ?u64 {
     };
 }
 /// Attention cache precision. A GPU option: the CPU reference runtime
-/// keeps F32 whatever is requested, and `Engine.kv_precision` reports what
-/// the session actually uses.
+/// keeps F32, except one that can round each row as such a cache stores it
+/// (`cache_rounding`, for the lossy caches' checks); `Engine.kv_precision`
+/// reports what the session actually uses.
 pub const KvPrecision = inference.session.Precision;
 
 pub const StopReason = enum {
@@ -310,6 +311,14 @@ pub fn Executor(comptime Family: type) type {
             return switch (self.*) {
                 .cpu => |*r| if (comptime @hasDecl(@TypeOf(r.*), "drafter")) r.drafter() else null,
                 .metal => |*m| if (comptime @hasDecl(@TypeOf(m.plan), "drafter")) m.plan.drafter() else null,
+            };
+        }
+        /// The cache precision the session stores (the CPU reference's
+        /// F32, or the rows it rounds) for a request of `kv`.
+        pub fn kvPrecision(self: *const Self, kv: KvPrecision) KvPrecision {
+            return switch (self.*) {
+                .cpu => |*r| if (comptime @hasField(Family.Runtime, "cache_rounding")) r.cache_rounding else .f32,
+                .metal => kv,
             };
         }
         pub fn checkpoint(self: *Self) !void {
@@ -552,6 +561,11 @@ pub const Model = struct {
     /// only calls: propose chained candidates, commit advances the drafter
     /// over the accepted prefix after `recover`. The drafter's cache is one
     /// more layout in the session, so `checkpoint`/`rewind` cover it.
+    pub fn kvPrecision(self: *const Model, kv: KvPrecision) KvPrecision {
+        switch (self.exec) {
+            inline else => |*e| return e.kvPrecision(kv),
+        }
+    }
     pub fn drafter(self: *Model) ?inference.draft.Drafter {
         switch (self.exec) {
             inline else => |*e| return e.drafter(),
@@ -731,7 +745,13 @@ fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, io: std.Io, vie
     // A checkpoint region is sized only when a caller needs to undo a verify
     // batch, which is exactly when a drafter is loaded.
     return switch (backend) {
-        .cpu => .{ .cpu = try Family.Runtime.init(alloc, io, view, binding, capacity, want_draft, want_draft) },
+        .cpu => blk: {
+            var runtime = try Family.Runtime.init(alloc, io, view, binding, capacity, want_draft, want_draft);
+            // A runtime that can round its cache rows as a GPU cache of that
+            // precision stores them does so on request; the others keep F32.
+            if (comptime @hasField(Family.Runtime, "cache_rounding")) runtime.cache_rounding = kv;
+            break :blk .{ .cpu = runtime };
+        },
         .metal => blk: {
             const gpu = try alloc.create(inference.metal.Backend);
             errdefer alloc.destroy(gpu);
@@ -969,7 +989,7 @@ pub const Engine = struct {
             .profile_forced = forced != null and forced != detected,
             .stop_ids = stop_ids,
             .stop_count = stop_count,
-            .kv_precision = if (backend == .cpu) .f32 else kv,
+            .kv_precision = model.kvPrecision(kv),
             .spec = spec,
             .draft_mapped = draft_mapped,
             .name = mapped.document.string("general.name") orelse "unnamed model",

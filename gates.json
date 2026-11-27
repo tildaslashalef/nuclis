@@ -2647,6 +2647,88 @@
    "evidence": "docs/models/inkling2.md"
   },
   {
+   "name": "inkling2-trace-cpu-f16",
+   "family": "inkling2",
+   "tier": "verify-cpu",
+   "model": "inkling2",
+   "command": [
+    "{nuclis-cpu}",
+    "generate",
+    "--backend",
+    "cpu",
+    "--kv",
+    "f16",
+    "--model",
+    "{model}",
+    "--prompt-tokens",
+    "tests/fixtures/inkling2-quick-brown/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "16",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/inkling2-quick-brown-f16",
+    "positions": 8,
+    "embedding": 2304,
+    "layers": 48,
+    "vocab": 200058
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/models/inkling2.md#metal"
+  },
+  {
+   "name": "inkling2-trace-cpu-q8_0",
+   "family": "inkling2",
+   "tier": "verify-cpu",
+   "model": "inkling2",
+   "command": [
+    "{nuclis-cpu}",
+    "generate",
+    "--backend",
+    "cpu",
+    "--kv",
+    "q8_0",
+    "--model",
+    "{model}",
+    "--prompt-tokens",
+    "tests/fixtures/inkling2-quick-brown/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "16",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/inkling2-quick-brown-q8_0",
+    "positions": 8,
+    "embedding": 2304,
+    "layers": 48,
+    "vocab": 200058
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/models/inkling2.md#metal"
+  },
+  {
    "name": "inkling2-trace-f32",
    "family": "inkling2",
    "tier": "verify",
@@ -2716,18 +2798,77 @@
    ],
    "comparator": {
     "kind": "trace",
-    "reference": "tests/fixtures/inkling2-quick-brown",
+    "reference": "tests/fixtures/inkling2-quick-brown-f16",
     "positions": 8,
     "embedding": 2304,
     "layers": 48,
     "vocab": 200058
    },
    "bounds": {
-    "max_absolute": 4.0,
-    "max_relative_rms": 0.12
+    "max_absolute": 0.01,
+    "max_relative_rms": 0.0003
    },
    "evidence": "docs/models/inkling2.md#metal",
-   "note": "the F16 rounding itself: the CPU reference with its cache rounded to F16 sits 2.57 / 0.082 from the fixture, and Metal 3.0e-3 / 8.8e-5 from that (2026-11-26)"
+   "note": "against the CPU reference with its cache rounded to F16 (inkling2-trace-cpu-f16), 3.0e-3 / 8.8e-5 (2026-11-27)"
+  },
+  {
+   "name": "inkling2-trace-q8_0",
+   "family": "inkling2",
+   "tier": "verify",
+   "model": "inkling2",
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--kv",
+    "q8_0",
+    "--model",
+    "{model}",
+    "--prompt-tokens",
+    "tests/fixtures/inkling2-quick-brown/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "16",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/inkling2-quick-brown-q8_0",
+    "positions": 8,
+    "embedding": 2304,
+    "layers": 48,
+    "vocab": 200058
+   },
+   "bounds": {
+    "max_absolute": 0.5,
+    "max_relative_rms": 0.01
+   },
+   "evidence": "docs/models/inkling2.md#metal",
+   "note": "against the CPU reference with its cache rounded to Q8_0 (inkling2-trace-cpu-q8_0), 0.14 / 2.5e-3: a code a last-place difference flips at application 11 (2026-11-27)"
+  },
+  {
+   "name": "inkling2-generation-metal",
+   "family": "inkling2",
+   "tier": "verify",
+   "model": "inkling2",
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/models/inkling2.md#metal"
   }
  ]
 }

@@ -290,6 +290,21 @@ pub fn sigmoidGate(self: *Backend, out: Buffer, gates: Buffer, heads: usize, wid
     const p: GateParams = .{ .heads = @intCast(heads), .width = @intCast(width), .gate_stride = @intCast(gate_stride), .gate_offset = @intCast(gate_offset) };
     try self.dispatch(.sigmoid_gate, &.{ out, gates }, p, perElement(heads * width), 256, .{});
 }
+pub const RelativeBiasParams = extern struct { length: u32, extent: u32, rows: u32 };
+/// Inkling 2's bias table: `output[n][d] = Σ_r relative[n][r] · w[d][r]`
+/// for `rows` contiguous relative rows of `w.columns` against the F32
+/// `w` (`[extent][length]`, `cpu.matvec` of each row), into `rows ×
+/// extent` floats. The output must not overlap the inputs.
+pub fn relativeBias(self: *Backend, relative: Buffer, weights: Buffer, matrix: cpu.Matrix, output: Buffer, rows: usize) !void {
+    if (matrix.encoding != 0 or matrix.rows == 0 or matrix.columns == 0 or rows == 0 or matrix.bytes.len != matrix.rows * matrix.columns * 4) return error.InvalidShape;
+    if (rows * matrix.rows > std.math.maxInt(u32) or weights.len < matrix.bytes.len) return error.InvalidShape;
+    const in_len = rows * matrix.columns * 4;
+    const out_len = rows * matrix.rows * 4;
+    if (relative.len < in_len or output.len < out_len or relative.offset % 4 != 0 or output.offset % 4 != 0 or weights.offset % 4 != 0) return error.InvalidShape;
+    if (Buffer.overlaps(output, out_len, relative, in_len) or Buffer.overlaps(output, out_len, weights, matrix.bytes.len)) return error.InvalidShape;
+    const p: RelativeBiasParams = .{ .length = @intCast(matrix.columns), .extent = @intCast(matrix.rows), .rows = @intCast(rows) };
+    try self.dispatch(.relative_bias, &.{ relative, weights, output }, p, perElement(rows * matrix.rows), 256, .{ .encoding = 0, .rows = @intCast(matrix.rows), .columns = @intCast(matrix.columns), .bytes = matrix.bytes.len });
+}
 pub const ClipParams = extern struct { heads: u32, width: u32, rows: u32, row_stride: u32, threshold: f32, position: u32, floor: u32, alpha: f32, flags: u32 };
 /// `cpu.logPositionScale` of row r's position `position + r`.
 pub const LogScale = struct { position: usize, floor: usize, alpha: f32 };

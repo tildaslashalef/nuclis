@@ -435,6 +435,7 @@ pub const Backend = struct {
     pub const ClipParams = rowwise_ops.ClipParams;
     pub const LogScale = rowwise_ops.LogScale;
     pub const l2ClipRows = rowwise_ops.l2ClipRows;
+    pub const relativeBias = rowwise_ops.relativeBias;
     pub const LayerNormParams = encoders_ops.LayerNormParams;
     pub const layerNorm = encoders_ops.layerNorm;
     pub const BiasRowsParams = encoders_ops.BiasRowsParams;

@@ -363,6 +363,21 @@ kernel void nu_sigmoid_gate(device float * out [[buffer(0)]], device const float
 }
 
 
+// Inkling 2's relative-position bias table: `out[n][d] = Σ_r rel[n][r] ·
+// w[d][r]` for `rows` relative rows of `length` (a chunk row's heads, in
+// order) against the F32 `w[extent][length]`. One thread per output.
+struct RelativeBiasParams { uint length; uint extent; uint rows; };
+kernel void nu_relative_bias(device const float * rel [[buffer(0)]], device const float * w [[buffer(1)]], device float * out [[buffer(2)]],
+                             constant RelativeBiasParams & p [[buffer(7)]], uint index [[thread_position_in_grid]]) {
+    if (index >= p.rows * p.extent) return;
+    uint n = index / p.extent, d = index % p.extent;
+    device const float * a = rel + ulong(n) * p.length;
+    device const float * b = w + ulong(d) * p.length;
+    float sum = 0.0f;
+    for (uint r = 0; r < p.length; ++r) sum = fma(a[r], b[r], sum);
+    out[index] = sum;
+}
+
 // `cpu.l2Clip` per (row, head) segment of `width`, in place: v = x ⊙ scale
 // (flag 1; `scale[head][width]`), shortened to `threshold` when longer
 // (‖v‖ + 1e-6 in the ratio), then (flag 2) times the log position scale
