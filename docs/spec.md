@@ -78,7 +78,9 @@ The index (`src/catalog.json`, read by `src/catalog.zig`) is the list of
 supported artifacts. An entry pins the Hub repository, revision, and every
 file's SHA-256 and size; its kind, profile, and lifecycle; and its
 companions by role, each draft with the speculative verdict a measurement
-set. A `current` entry is gated and written by `config init`; a `legacy`
+set. A `current` entry is gated and written by `config init`; an
+`experimental` one is gated too (a skip fails `--strict`) and runs by name,
+but `config init` never writes it and a run prints its reason; a `legacy`
 one pulls, verifies, and runs by name, with no gates. The index:
 
 <!-- gen:catalogue -->

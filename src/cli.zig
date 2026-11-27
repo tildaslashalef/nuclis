@@ -930,6 +930,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         },
         else => return err,
     };
+    if (options.command != .inspect and options.command != .validate and options.command != .tokenize) experimentalNotice(path);
     // A file named by path takes the settings of the registry entry that
     // locates it, as its name would.
     const model_name: ?[]const u8 = if (options.model) |m| (try paths.registryName(alloc, path, root, loaded.config.models)) orelse m else null;
@@ -1208,6 +1209,13 @@ fn selectAdapter(document: *const inference.gguf.Document, diag: *Diagnostic) !i
 /// Names the registry entries that still say `mtp`, which reads as
 /// `draft` for one minor release.
 /// A warning on stderr naming the entries that still spell `mtp`.
+/// On stderr, apart from the result: the model about to run is
+/// experimental, and why.
+fn experimentalNotice(path: []const u8) void {
+    var buffer: [512]u8 = undefined;
+    if (catalog.ofPath(path)) |a| if (catalog.notice(&buffer, a)) |line| std.log.warn("{s}", .{line});
+}
+
 fn oldMtpNotice(models: config.Models) void {
     if (models.old_mtp.len == 0) return;
     var buffer: [256]u8 = undefined;

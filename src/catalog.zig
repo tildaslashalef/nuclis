@@ -4,7 +4,9 @@
 //! under `<root>/models`; *known* is this table, consulted to pull, to
 //! verify, and to supply defaults (docs/models/catalogue.md). A file is
 //! *runnable* when its architecture has an adapter and *supported* only when
-//! it is a `File` here with a pinned commit and SHA-256. A `legacy` artifact
+//! it is a `File` here with a pinned commit and SHA-256. An `experimental`
+//! artifact is pinned, verified, and gated like a current one, but `config
+//! init` never writes it and a run prints its `reason`. A `legacy` artifact
 //! still pulls, verifies, and runs, but `config init` never writes it, the
 //! index view hides it without `--all`, and it has no gates.
 //!
@@ -30,8 +32,25 @@ pub const Profile = inference.profiles.Profile;
 /// `generation` keeps its name; `model ls` prints it as "chat".
 pub const ModelKind = enum { generation, decision, embedding, speech, transcription };
 
-/// Whether the project still looks after an artifact.
-pub const Lifecycle = enum { current, legacy };
+/// Whether the project still looks after an artifact
+/// (docs/models/catalogue.md § The catalogue).
+pub const Lifecycle = enum {
+    current,
+    /// Verified, but resting on something still moving; it names why and
+    /// what promotes it.
+    experimental,
+    legacy,
+
+    /// The index view shows it without `--all`.
+    pub fn listed(self: Lifecycle, all: bool) bool {
+        return all or self != .legacy;
+    }
+
+    /// `config init` and `config sync` may write it into the registry.
+    pub fn written(self: Lifecycle) bool {
+        return self == .current;
+    }
+};
 
 /// How a speech model picks its voice (`config.json`'s `tts_model_type`).
 pub const SpeechMode = enum {
@@ -111,6 +130,10 @@ pub const Artifact = struct {
     title: []const u8,
     kind: ModelKind,
     status: Lifecycle = .current,
+    /// An experimental artifact's one-line reason, printed when it runs.
+    reason: ?[]const u8 = null,
+    /// What promotes an experimental artifact to current.
+    promote_when: ?[]const u8 = null,
     repo: []const u8,
     /// The 40-character commit every digest below was read at.
     revision: []const u8,
@@ -527,6 +550,27 @@ pub fn embeddingByDigest(sha256: []const u8) ?*const Artifact {
     return null;
 }
 
+/// The artifact whose main file `path` is (`<models>/<repo>/<file>`),
+/// however the caller named it: index name, registry entry, or path.
+pub fn ofPath(path: []const u8) ?*const Artifact {
+    for (&artifacts) |*a| {
+        const file = a.main().path;
+        if (!std.mem.endsWith(u8, path, file) or path.len < a.repo.len + 1 + file.len) continue;
+        // `<repo>/` directly before the file, at a component boundary.
+        const repo_at = path.len - file.len - 1 - a.repo.len;
+        if (path[path.len - file.len - 1] != '/' or !std.mem.eql(u8, path[repo_at..][0..a.repo.len], a.repo)) continue;
+        if (repo_at == 0 or path[repo_at - 1] == '/') return a;
+    }
+    return null;
+}
+
+/// The line a run of an experimental artifact prints, or null for any
+/// other.
+pub fn notice(buffer: []u8, a: *const Artifact) ?[]const u8 {
+    if (a.status != .experimental) return null;
+    return std.fmt.bufPrint(buffer, "{s} is experimental: {s}", .{ a.name, a.reason.? }) catch buffer;
+}
+
 /// The first artifact of `kind`, for messages that name one.
 pub fn firstOf(kind: ModelKind) *const Artifact {
     for (&artifacts) |*a| if (a.kind == kind and a.status == .current) return a;
@@ -723,6 +767,8 @@ pub fn writeJson(out: *std.Io.Writer) std.Io.Writer.Error!void {
 
 comptime {
     for (artifacts) |a| {
+        if ((a.status == .experimental) != (a.reason != null) or (a.status == .experimental) != (a.promote_when != null))
+            @compileError(a.name ++ ": an experimental artifact, and only one, names its reason and promote_when");
         if (a.files.len > 8) @compileError(a.name ++ ": writeJson holds at most 8 files");
         for (a.files) |f| if (a.repo.len + 1 + f.path.len > 256) @compileError(a.name ++ ": a local path over 256 bytes");
     }
@@ -769,6 +815,20 @@ test "the index: kinds, lifecycle, and the per-kind facts the old tables held" {
     var current: usize = 0;
     for (&artifacts) |*a| current += @intFromBool(a.status == .current);
     try std.testing.expectEqual(@as(usize, 8), current);
+    // A run finds its artifact from the path, at component boundaries.
+    const qwen_path = try std.mem.concat(std.testing.allocator, u8, &.{ "/home/u/.nuclis/models/", qwen.repo, "/", qwen.main().path });
+    defer std.testing.allocator.free(qwen_path);
+    try std.testing.expectEqual(qwen, ofPath(qwen_path).?);
+    const glued = try std.mem.concat(std.testing.allocator, u8, &.{ "/x/not", qwen.repo, "/", qwen.main().path });
+    defer std.testing.allocator.free(glued);
+    try std.testing.expect(ofPath(glued) == null and ofPath(qwen.main().path) == null);
+    var line: [256]u8 = undefined;
+    try std.testing.expect(notice(&line, qwen) == null);
+    const trial: Artifact = .{ .name = "trial", .title = "Trial", .kind = .generation, .status = .experimental, .reason = "its format is not merged upstream", .promote_when = "the format merges", .repo = "o/r", .revision = "", .files = &.{}, .architecture = "x", .quantization = "Q8_0" };
+    try std.testing.expectEqualStrings("trial is experimental: its format is not merged upstream", notice(&line, &trial).?);
+    // Experimental is listed and gated, never written by `config init`.
+    try std.testing.expect(Lifecycle.experimental.listed(false) and !Lifecycle.experimental.written());
+    try std.testing.expect(Lifecycle.current.written() and !Lifecycle.legacy.listed(false) and Lifecycle.legacy.listed(true));
     // Files outside the index run through discovery, not by name.
     try std.testing.expect(find("gemma-4-12b") == null and find("qwen") == null and find("qwen/Qwen3.8-27B-UD-Q4_K_M.gguf") == null);
     // The measured verdicts: every drafter pays.

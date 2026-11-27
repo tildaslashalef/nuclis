@@ -72,6 +72,8 @@ pub const Language = struct {
         defer self.gpa.free(path);
         std.Io.Dir.cwd().access(io, path, .{}) catch return error.ModelNotFound;
         if (self.holds > 0) return error.Pinned;
+        var line: [512]u8 = undefined;
+        if (catalog.ofPath(path)) |a| if (catalog.notice(&line, a)) |text| std.log.warn("{s}", .{text});
         var settings = config.resolve(self.loaded, name, .{}, .agent);
         const default_tokens = settings.max_tokens;
         // Sized for the largest request; each request slices its own budget.

@@ -98,8 +98,8 @@ pub fn resolve(arena: Allocator, doc: *Value, index: Value) Allocator.Error![]co
     return problems.items;
 }
 
-/// Every current chat artifact that no gate's model names: a model nobody
-/// checks is not current.
+/// Every current or experimental chat artifact that no gate's model names:
+/// a model nobody checks is neither.
 pub fn coverage(arena: Allocator, doc: Value, index: Value) Allocator.Error![]const []const u8 {
     var problems: std.ArrayList([]const u8) = .empty;
     const list = field(index, "artifacts") orelse return problems.items;
@@ -108,20 +108,22 @@ pub fn coverage(arena: Allocator, doc: Value, index: Value) Allocator.Error![]co
     const gates = field(doc, "gates") orelse return problems.items;
     if (gates != .array) return problems.items;
     for (list.array.items) |a| {
-        if (!std.mem.eql(u8, stringField(a, "status") orelse "", "current")) continue;
+        const lifecycle = stringField(a, "status") orelse "";
+        if (!std.mem.eql(u8, lifecycle, "current") and !std.mem.eql(u8, lifecycle, "experimental")) continue;
         if (!std.mem.eql(u8, stringField(a, "kind") orelse "", "generation")) continue;
         const name = stringField(a, "name") orelse continue;
         const checked = for (gates.array.items) |gate| {
             const key = stringField(gate, "model") orelse continue;
             if (std.mem.eql(u8, stringField(field(models, key) orelse .null, "artifact") orelse "", name)) break true;
         } else false;
-        if (!checked) try problems.append(arena, try arena.print("{s} is current in {s} but no gate checks it", .{ name, path }));
+        if (!checked) try problems.append(arena, try arena.print("{s} is {s} in {s} but no gate checks it", .{ name, lifecycle, path }));
     }
     return problems.items;
 }
 
 /// An index for the tests: one current chat artifact with a projector and
-/// two drafts, a legacy one, and a safetensors checkpoint.
+/// two drafts, an experimental one, a legacy one, and a safetensors
+/// checkpoint.
 pub const sample =
     \\{"schema_version": 1, "artifacts": [
     \\ {"name": "a", "kind": "generation", "status": "current", "defaults": {"draft": "mtp"}, "files": [
@@ -129,6 +131,8 @@ pub const sample =
     \\  {"role": "mmproj", "variant": null, "local": "o/a/mmproj.gguf"},
     \\  {"role": "draft", "variant": "mtp", "local": "o/a/MTP/mtp.gguf"},
     \\  {"role": "draft", "variant": "dflash2", "local": "o/a/MTP/dflash2.gguf"}]},
+    \\ {"name": "trial", "kind": "generation", "status": "experimental", "defaults": {"draft": null}, "files": [
+    \\  {"role": "main", "variant": null, "local": "o/trial/trial.gguf"}]},
     \\ {"name": "old", "kind": "generation", "status": "legacy", "defaults": {"draft": null}, "files": [
     \\  {"role": "main", "variant": null, "local": "o/old/old.gguf"}]},
     \\ {"name": "voice", "kind": "speech", "status": "current", "defaults": {"draft": null}, "files": [
@@ -147,8 +151,8 @@ test "artifacts resolve to paths, and every mistake is named" {
         \\{"models": {
         \\ "a": {"artifact": "a"}, "a_mtp": {"artifact": "a", "file": "draft"},
         \\ "a_dflash2": {"artifact": "a", "file": "draft:dflash2"}, "voice": {"artifact": "voice", "file": "directory"},
-        \\ "loose": {"path": "~/x.gguf", "note": "not pinned"}},
-        \\ "gates": [{"model": "a"}]}
+        \\ "trial": {"artifact": "trial"}, "loose": {"path": "~/x.gguf", "note": "not pinned"}},
+        \\ "gates": [{"model": "a"}, {"model": "trial"}]}
     , .{});
     try testing.expectEqual(@as(usize, 0), (try resolve(a, &doc, index)).len);
     const models = doc.object.get("models").?;
@@ -175,7 +179,9 @@ test "artifacts resolve to paths, and every mistake is named" {
             return error.TestExpectedProblem;
         }
     }
+    // An experimental artifact is gated like a current one.
     const uncovered = try coverage(a, bad, index);
-    try testing.expectEqual(@as(usize, 1), uncovered.len);
+    try testing.expectEqual(@as(usize, 2), uncovered.len);
     try testing.expect(std.mem.indexOf(u8, uncovered[0], "a is current") != null);
+    try testing.expect(std.mem.indexOf(u8, uncovered[1], "trial is experimental") != null);
 }

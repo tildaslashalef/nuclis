@@ -1332,6 +1332,7 @@ pub const Installed = struct {
     /// The index artifact, null for a file not in the index.
     artifact: ?[]const u8 = null,
     legacy: bool = false,
+    experimental: bool = false,
     registered: ?RegisteredAs = null,
     architecture: ?[]const u8 = null,
     quantization: []const u8,
@@ -1366,6 +1367,9 @@ pub const Available = struct {
     title: []const u8,
     kind: catalog.ModelKind,
     status: catalog.Lifecycle,
+    /// An experimental entry's reason and what promotes it.
+    reason: ?[]const u8 = null,
+    promote_when: ?[]const u8 = null,
     repo: []const u8,
     revision: []const u8,
     architecture: []const u8,
@@ -1382,7 +1386,7 @@ pub const LsOptions = struct {
     long: bool = false,
     /// The index view instead of the installed one.
     available: bool = false,
-    /// With `available`: legacy artifacts too.
+    /// With `available`: legacy artifacts too (experimental ones always).
     all: bool = false,
 };
 
@@ -1396,7 +1400,7 @@ pub const Listing = struct {
     installed: []const Installed,
     /// Model files with no sidecar (`nuclis model adopt <path>` writes one).
     without_sidecar: []const []const u8,
-    /// Current index artifacts not installed.
+    /// Current and experimental index artifacts not installed.
     available: usize,
     /// Model files found above the `<owner>/<repo>/` level; they are not
     /// listed because nothing can say which repository they came from.
@@ -1484,8 +1488,8 @@ pub const Listing = struct {
                 try renderAvailableLong(arena, out, a, ui);
             }
         } else {
-            var legacy_shown = false;
-            for (self.index) |a| legacy_shown = legacy_shown or a.status == .legacy;
+            var lifecycle_shown = false;
+            for (self.index) |a| lifecycle_shown = lifecycle_shown or a.status != .current;
             const columns = [_]kit.table.Column{
                 .{ .title = "NAME", .truncate = false },
                 .{ .title = "KIND", .drop = 2 },
@@ -1506,7 +1510,7 @@ pub const Listing = struct {
                     .{ .text = @tagName(a.status), .role = .muted },
                 });
             }
-            try kit.table.render(out, ui, arena, 0, columns[0..if (legacy_shown) columns.len else columns.len - 1], rows);
+            try kit.table.render(out, ui, arena, 0, columns[0..if (lifecycle_shown) columns.len else columns.len - 1], rows);
         }
         if (!options.all) {
             var legacy: usize = 0;
@@ -1534,12 +1538,14 @@ fn installedStatus(i: Installed) struct { status: kit.style.Status, word: []cons
     return .{ .status = .ok, .word = "verified" };
 }
 
-/// The NOTE column: the default, its registry name, legacy, outside the index.
+/// The NOTE column: the default, its registry name, its lifecycle when not
+/// current, outside the index.
 fn installedNote(arena: Allocator, i: Installed) ![]const u8 {
     var parts: std.ArrayList([]const u8) = .empty;
     if (i.default) try parts.append(arena, "default");
     if (i.registered) |r| if (!std.mem.eql(u8, r.name, i.name)) try parts.append(arena, try std.fmt.allocPrint(arena, "registered as {s}", .{try kit.text.clean(arena, r.name)}));
     if (i.legacy) try parts.append(arena, "legacy");
+    if (i.experimental) try parts.append(arena, "experimental");
     if (i.artifact == null) try parts.append(arena, "not in the catalogue");
     return std.mem.join(arena, ", ", parts.items);
 }
@@ -1612,8 +1618,9 @@ fn renderInstalledLong(arena: Allocator, out: *std.Io.Writer, i: Installed, ui: 
 fn renderAvailableLong(arena: Allocator, out: *std.Io.Writer, a: Available, ui: kit.Ui) !void {
     try out.print("{s}{s}{s} {s}{s} {s} {s} {s} {f} {s} {s}@{s}{s}  ", .{ ui.on(.title), a.name, ui.off(.title), ui.on(.muted), catalog.groupName(a.kind), ui.glyphs.dot, a.quantization, ui.glyphs.dot, kit.values.size(a.size), ui.glyphs.dot, a.repo, a.revision[0..12], ui.off(.muted) });
     try kit.blocks.status(out, ui, if (a.installed) .ok else .not_checked, if (a.installed) "installed" else "not pulled");
-    if (a.status == .legacy) try out.print("  {s}legacy{s}", .{ ui.on(.muted), ui.off(.muted) });
+    if (a.status != .current) try out.print("  {s}{s}{s}", .{ ui.on(.muted), @tagName(a.status), ui.off(.muted) });
     try out.writeByte('\n');
+    if (a.reason) |r| try out.print("  {s}{s}; promoted when {s}{s}\n", .{ ui.on(.muted), r, a.promote_when.?, ui.off(.muted) });
     const rows = try arena.alloc([]const kit.table.Cell, a.files.len);
     for (a.files, rows) |f, *row| row.* = try arena.dupe(kit.table.Cell, &.{
         .{ .text = try roleLabel(arena, f.role, f.variant) },
@@ -1820,9 +1827,9 @@ pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Mod
         }
         if (!main_present and present.items.len > 0) try warnings.append(arena, try arena.print("only companions are present; `nuclis model pull {s}` fetches the model", .{a.name}));
         if (main_present or present.items.len > 0) {
-            try installed.append(arena, .{ .name = a.name, .kind = a.kind, .artifact = a.name, .legacy = a.status == .legacy, .architecture = a.architecture, .quantization = a.quantization, .runnable = true, .size = size, .files = present.items, .defaults = runDefaults(a), .warnings = warnings.items });
-        } else if (a.status == .current) available += 1;
-        try index.append(arena, .{ .name = a.name, .title = a.title, .kind = a.kind, .status = a.status, .repo = a.repo, .revision = a.revision, .architecture = a.architecture, .quantization = a.quantization, .size = a.totalSize(), .installed = main_present, .files = avail_files.items, .defaults = runDefaults(a) });
+            try installed.append(arena, .{ .name = a.name, .kind = a.kind, .artifact = a.name, .legacy = a.status == .legacy, .experimental = a.status == .experimental, .architecture = a.architecture, .quantization = a.quantization, .runnable = true, .size = size, .files = present.items, .defaults = runDefaults(a), .warnings = warnings.items });
+        } else if (a.status.listed(false)) available += 1;
+        try index.append(arena, .{ .name = a.name, .title = a.title, .kind = a.kind, .status = a.status, .reason = a.reason, .promote_when = a.promote_when, .repo = a.repo, .revision = a.revision, .architecture = a.architecture, .quantization = a.quantization, .size = a.totalSize(), .installed = main_present, .files = avail_files.items, .defaults = runDefaults(a) });
     }
     // Files outside the index: each main file a row, its companions with it.
     var without: std.ArrayList([]const u8) = .empty;
@@ -1993,7 +2000,7 @@ pub fn ls(gpa: Allocator, io: std.Io, root: []const u8, registry: config.Models,
     if (options.available) {
         if (!options.all) {
             var current: std.ArrayList(Available) = .empty;
-            for (listing.index) |a| if (a.status == .current) try current.append(arena_state.allocator(), a);
+            for (listing.index) |a| if (a.status.listed(false)) try current.append(arena_state.allocator(), a);
             listing.index = current.items;
         }
         if (json) {

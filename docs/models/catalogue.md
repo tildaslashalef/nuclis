@@ -191,7 +191,14 @@ decoding; `codec` for a speech model). A file from another repository
 and lands beside the artifact's other files.
 
 - **Lifecycle.** `current` artifacts are looked after: they have gates,
-  `config init` writes them, and `model pull --catalogue` fetches them all. A `legacy` artifact (`gemma-4-12b-qat` and
+  `config init` writes them, and `model pull --catalogue` fetches them all.
+  An `experimental` artifact rests on something still moving (a format not
+  yet merged upstream, a file re-uploaded): it is pinned, verified, and
+  gated like a current one, `model pull <name>` fetches it, and `model ls
+  --available` lists it marked, but `config init` and `--catalogue` skip
+  it, a run prints its `reason` on stderr, and `promote_when` states what
+  makes it current. Its gates run when the file is present, and a skip
+  fails under `--strict` like any other. A `legacy` artifact (`gemma-4-12b-qat` and
   `muse-glimmer-30b`, decided 2026-11-10; `gemma-4-26b-a4b`,
   `laya-multilingual`, `drama-3`, and every Qwen3-TTS but the 1.7B
   CustomVoice, decided 2026-11-20) still pulls, verifies, and runs by name,

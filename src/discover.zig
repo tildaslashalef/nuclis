@@ -3,8 +3,8 @@
 //!
 //! An installed index artifact of the chat kind gets the entry
 //! `config.registryEntry` writes (its pinned files and measured defaults);
-//! other kinds resolve by their index name and need none, and `legacy`
-//! artifacts are never written. A file outside the index is judged as
+//! other kinds resolve by their index name and need none, and `legacy` and
+//! `experimental` artifacts are never written. A file outside the index is judged as
 //! `model inspect` judges a directory (an adapter for its architecture,
 //! every tensor in the executable set, the binding) or, for safetensors, by
 //! the files beside it; its profile is chosen by template digest and forced
@@ -192,7 +192,7 @@ pub fn plan(arena: Allocator, gpa: Allocator, io: std.Io, root: []const u8, regi
         if (row.artifact) |name| {
             const a = catalog.find(name).?;
             if (row.registered != null or registry.find(name) != null) continue;
-            if (a.kind != .generation or a.status == .legacy or main.status == .mismatch) continue;
+            if (a.kind != .generation or !a.status.written() or main.status == .mismatch) continue;
             try registered.append(arena, .{ .name = name, .path = main.path, .kind = .generation, .artifact = name, .architecture = a.architecture, .entry = config.registryEntry(a) });
             continue;
         }

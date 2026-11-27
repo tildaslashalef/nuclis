@@ -70,7 +70,9 @@ index from `src/catalog.json`, which `make index` writes from
 none of nuclis, and CI's docs job has no Zig). A literal `path` is
 allowed only with a `note` saying why the file is not in the index. The
 manifest is invalid when a model names a legacy artifact, or when a
-current chat artifact has no gate. The manifest's `retired` list names
+current or experimental chat artifact has no gate. An experimental
+artifact's gates skip without its file like any other, so `--strict` fails
+on them. The manifest's `retired` list names
 fixture prefixes under `tests/fixtures/` that must not come back; the
 tree lint fails on any tracked file under one.
 
