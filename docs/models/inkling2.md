@@ -211,3 +211,4 @@ experts at 1K, 8K, and 32K tokens ([record](../benchmarks/record/inkling2.md#the
 ## Known limits
 
 - Only `inkling2_loop` binds; the Hub's first encoding (`inkling2`, 48 applications in the header) is refused.
+- The DSpark drafter is not run: its acceptance does not pay for a verify batch and the recurrent state's replay ([record](../benchmarks/record/inkling2.md#the-dspark-drafter-priced-2026-11-27)).

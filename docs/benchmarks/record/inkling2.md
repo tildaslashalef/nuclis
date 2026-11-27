@@ -164,3 +164,26 @@ pin, `main` at `8078d149…` (`inkling2_loop`, SHA-256 `e6427665…`).
   A chunk's lists hold about 74 rows each, 45 to 48 % of them under 32.
   The next token shares 3.2 to 3.5 of its 8 experts with the prompt's
   last, and 2.8 to 4.2 in decode.
+
+## The DSpark drafter, priced (2026-11-27)
+
+The same machine; nuclis at `ec6ffcc`, Metal, F16 cache, context 4,096;
+`nuclis bench`, the first R tokens of `wiki.test.raw` as a prompt, mean
+of 5. A prompt of R tokens stands for a verify batch of R rows at a
+shallow depth (`--verify-rows` needs a drafter):
+
+| Rows | 1 | 3 | 4 | 5 | 9 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| First token, ms | 32.2 | 54.3 | 63.7 | 71.5 | 131.7 |
+
+Decode reads 30.5 tokens/s, 32.7 ms a token. A block pays only if
+`E · 32.7 > t(verify R) + t(draft) + t(recover)`, E being the tokens a
+verify keeps; before the draft and the recovery, E must pass 1.66 at 3
+rows, 1.95 at 4, 2.19 at 5, and 4.03 at 9. Recovery is not free: the
+convolution history is recurrent, so a partial accept rewinds and replays
+the kept rows. The new drafter (`3da00cf7…`), measured in session on prose
+and code, greedy and at the profile's sampling, keeps too few to clear
+these with room for its own pass and the replay at any draft length, so
+it is not implemented. A later attempt starts from these costs, the
+routing above, and a recovery that copies the history instead of
+replaying it.
