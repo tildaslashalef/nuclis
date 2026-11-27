@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The speculative matrix: real speculation, off/on pairs, per family and cell.
 
-A cell is (context, sampling, draft length, p_min). Each runs one `nuclis
+A cell is (context, sampling, draft length, p_min, chain floor). Each runs one `nuclis
 bench --speculative on` process: `--repeat` off/on pairs on one loaded
 model, 128 output tokens, F16 KV, context 32,768 (or the next power of two
 that holds the prompt and the output, `ctx_for`). A numeric context restores
@@ -81,8 +81,12 @@ def sampling_flags(model_key, sampling):
     return flags + ["--seed", "0"]
 
 
-def cell_name(context, sampling, draft, p_min):
-    return f"{context}-{sampling}-d{draft}" + ("" if p_min is None else f"-p{p_min:g}")
+def cell_name(context, sampling, draft, p_min, chain_min=None):
+    return (
+        f"{context}-{sampling}-d{draft}"
+        + ("" if p_min is None else f"-p{p_min:g}")
+        + ("" if chain_min is None else f"-c{chain_min:g}")
+    )
 
 
 def ctx_for(context, tokens):
@@ -94,7 +98,9 @@ def ctx_for(context, tokens):
     return ctx
 
 
-def bench_argv(nuclis, model, model_key, prompt, sampling, draft, p_min, repeat, tokens, variant=None, ctx=32768):
+def bench_argv(
+    nuclis, model, model_key, prompt, sampling, draft, p_min, repeat, tokens, variant=None, ctx=32768, chain_min=None
+):
     """One cell's off/on pairs; `draft` None is the no-drafter baseline run."""
     argv = [str(nuclis), "bench", "--backend", "metal", "--model", model]
     if variant is not None and draft is not None:
@@ -111,6 +117,8 @@ def bench_argv(nuclis, model, model_key, prompt, sampling, draft, p_min, repeat,
     argv += ["--speculative", "on", "--draft-length", str(draft), "--draft-max-depth", "0"]
     if p_min is not None:
         argv += ["--draft-p-min", str(p_min)]
+    if chain_min is not None:
+        argv += ["--draft-chain-min", str(chain_min)]
     return argv + sampling_flags(model_key, sampling) + ["--json"]
 
 
@@ -150,11 +158,13 @@ def row_of(report):
         "speedup_min": min(ratios),
         "speedup_max": max(ratios),
         "stops": sorted({s["stop_reason"] for s in samples}),
+        # Sampled pairs share a seed: how many "on" runs drew the "off" run's tokens.
+        "same": sum(1 for s in on if s.get("same_tokens")) if any("same_tokens" in s for s in on) else None,
     }
 
 
 HEADER = (
-    "| context | sampling | draft | p_min | accepted | proposed | E | propose | verify | recover | commit | C ms "
+    "| context | sampling | draft | p_min, chain | accepted | proposed | E | propose | verify | recover | commit | C ms "
     "| C / 50E | off → on tok/s | speedup (pairs) |\n"
     "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
 )
@@ -165,10 +175,14 @@ def table_line(cell, row):
     # With --baseline: the true baseline, then the pair's loaded-but-off rate.
     rates = f"{row['off']:.2f}" if row.get("baseline") is None else f"{row['baseline']:.2f} → {row['off']:.2f}"
     return (
-        f"| {context} | {cell['sampling']} | {cell['draft']} | {cell['p_min']:g} | {row['accepted']:.2f} | {row['proposed']:.2f} "
+        f"| {context} | {cell['sampling']} | {cell['draft']} | {cell['p_min']:g}"
+        + (f", {cell['chain_min']:g}" if cell.get("chain_min") else "")
+        + f" | {row['accepted']:.2f} | {row['proposed']:.2f} "
         f"| {row['E']:.2f} | {row['propose']:.1f} | {row['verify']:.1f} | {row['recover']:.1f} | {row['commit']:.1f} "
         f"| {row['C']:.1f} | {row['C_over_50E']:.2f} | {rates} → {row['on']:.2f} "
-        f"| {row['speedup']:.3f}× ({row['speedup_min']:.2f}–{row['speedup_max']:.2f}) |"
+        f"| {row['speedup']:.3f}× ({row['speedup_min']:.2f}–{row['speedup_max']:.2f})"
+        + ("" if row.get("same") is None else f", {row['same']}/{row['pairs']} same")
+        + " |"
     )
 
 
@@ -181,7 +195,8 @@ def main():
     ap.add_argument("--contexts", default="512,4096", help="prompt lengths and/or `code` (default: %(default)s)")
     ap.add_argument("--sampling", default="greedy,instruct", help="greedy, instruct, thinking (Qwen)")
     ap.add_argument("--drafts", default="2-7", help="draft lengths, e.g. 2-7 or 2,4,7 (default: %(default)s)")
-    ap.add_argument("--p-min", help="proposal thresholds, e.g. 0,0.5,0.7 (default: the engine's)")
+    ap.add_argument("--p-min", help="proposal thresholds, e.g. 0,0.5,0.7 (default: the draft's verdict)")
+    ap.add_argument("--chain-min", help="chain-product floors, e.g. 0,0.4 (default: the draft's verdict)")
     ap.add_argument("--repeat", type=int, default=3, help="off/on pairs per cell (default: %(default)s)")
     ap.add_argument("--tokens", type=int, default=128, help="output tokens per run (default: %(default)s)")
     ap.add_argument("--run", help="the fixture run whose token arrays to use (default: the family's acceptance run)")
@@ -213,6 +228,8 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     run = args.run or speed.family_run(args.model)
     p_mins = [None] if args.p_min is None else [float(p) for p in args.p_min.split(",")]
+    chain_mins = [None] if args.chain_min is None else [float(c) for c in args.chain_min.split(",")]
+    policies = [(p, c) for p in p_mins for c in chain_mins]
     rows = []
     print(HEADER)
     for context in args.contexts.split(","):
@@ -243,8 +260,8 @@ def main():
                     samples = json.loads(path.read_text())["samples"]
                     baseline = statistics.mean(s["decode_tokens_per_second"] for s in samples)
             for draft in parse_ints(args.drafts):
-                for p_min in p_mins:
-                    path = out_dir / (cell_name(context, sampling, draft, p_min) + ".json")
+                for p_min, chain_min in policies:
+                    path = out_dir / (cell_name(context, sampling, draft, p_min, chain_min) + ".json")
                     if args.fresh or not path.exists():
                         if args.report:
                             continue
@@ -260,6 +277,7 @@ def main():
                             args.tokens,
                             variant,
                             ctx=ctx_for(context, args.tokens),
+                            chain_min=chain_min,
                         )
                         time.sleep(args.cooldown)
                         result = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
@@ -276,6 +294,7 @@ def main():
                         "sampling": sampling,
                         "draft": draft,
                         "p_min": report.get("speculative_p_min", 0.7),
+                        "chain_min": report.get("speculative_chain_min") or 0,
                     }
                     row["baseline"] = baseline
                     rows.append({**cell, **row})
@@ -310,6 +329,9 @@ class SelfTest(unittest.TestCase):
         self.assertEqual(deep[deep.index("--draft-max-depth") + 1], "0")
         self.assertEqual(deep[deep.index("--draft-p-min") + 1], "0.5")
         self.assertIn("--prefix-cache", deep)
+        self.assertNotIn("--draft-chain-min", deep)
+        cut = bench_argv("nuclis", "m", "inkling2_dspark_pair", None, "greedy", 3, 0, 3, 128, chain_min=0.4)
+        self.assertEqual(cut[cut.index("--draft-chain-min") + 1], "0.4")
 
     def test_baseline_argv(self):
         base = bench_argv("nuclis", "m", "qwen38", Path("p.json"), "instruct", None, None, 3, 128, "dflash2")
@@ -338,6 +360,7 @@ class SelfTest(unittest.TestCase):
             },
         )
         self.assertIn("10.50 → 10.00 → 12.00", line)
+        self.assertNotIn("same", line)
 
     def test_ctx_for(self):
         self.assertEqual(ctx_for("code", 128), 32768)
@@ -349,6 +372,7 @@ class SelfTest(unittest.TestCase):
     def test_cell_name(self):
         self.assertEqual(cell_name("512", "greedy", 4, None), "512-greedy-d4")
         self.assertEqual(cell_name("code", "instruct", 7, 0.5), "code-instruct-d7-p0.5")
+        self.assertEqual(cell_name("512", "greedy", 3, 0, 0.4), "512-greedy-d3-p0-c0.4")
 
     def test_row_of(self):
         def sample(on, rate, steps=0, generated=129, ms=0.0):
@@ -387,6 +411,12 @@ class SelfTest(unittest.TestCase):
         self.assertAlmostEqual(row["C_over_50E"], 200.0 / (50 * 128 / 50))
         self.assertAlmostEqual(row["speedup"], 1.25)
         self.assertAlmostEqual(row["verify"], 150.0)
+        self.assertIsNone(row["same"])
+        report["samples"][1]["same_tokens"] = True
+        report["samples"][3]["same_tokens"] = False
+        marked = row_of(report)
+        assert marked is not None
+        self.assertEqual(marked["same"], 1)
         self.assertIsNone(row_of({"samples": [sample(False, 10.0)]}))
 
 

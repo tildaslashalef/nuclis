@@ -35,6 +35,7 @@
 //! reference does the same); a ring layout for the windowed layers is a
 //! session-layout change of its own.
 const std = @import("std");
+const DraftStop = @import("../runtime/draft.zig").Stop;
 const models = @import("root.zig");
 const model = @import("muse_glimmer.zig");
 const dflash = @import("dflash.zig");
@@ -1029,13 +1030,13 @@ pub const Plan = struct {
 
     /// Greedy candidates from the state after the last committed token: one
     /// noise block proposes every requested position in a single forward.
-    /// `out.len` bounds the count (at most `dflash.block_size - 1`). `p_min`
-    /// > 0 stops after a position whose top candidate's full-vocabulary
-    /// softmax probability is below it; the first position is always proposed.
-    pub fn propose(self: *Plan, token: u32, out: []u32, p_min: f32) !usize {
+    /// `out.len` bounds the count (at most `dflash.block_size - 1`); `stop`
+    /// ends the chain on each position's top candidate's full-vocabulary
+    /// softmax probability.
+    pub fn propose(self: *Plan, token: u32, out: []u32, stop: DraftStop) !usize {
         const d = &(self.draft orelse return error.NoDraftBlock);
         if (token >= vocabulary) return error.InvalidTokenId;
-        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        if (!stop.valid()) return error.InvalidShape;
         if (out.len == 0) return 0;
         // The explicit type keeps Zig's comptime-operand narrowing from
         // making this a `u4` (15 + 1 would overflow).
@@ -1052,20 +1053,21 @@ pub const Plan = struct {
         for (1..rows) |r| try b.topk(d.logits.slice(r * vocabulary * 4, vocabulary * 4), vocabulary, 1, 1.0, d.topk[r]);
         try b.commit();
         var count: usize = 0;
+        var chain: f64 = 1;
         while (count < count_max) : (count += 1) {
             const scratch = d.topk[1 + count];
             const id = @as(*const u32, @ptrCast(@alignCast(scratch.indices.host))).*;
             if (id >= vocabulary) return error.NonFiniteResult;
             out[count] = id;
-            if (p_min > 0) {
+            if (stop.active()) {
                 var total: f64 = 0;
                 for (scratch.sums.floats()[0..metal.Backend.topk_partials]) |partial| total += partial;
                 var finite = true;
                 for (@as([*]const u32, @ptrCast(@alignCast(scratch.flags.host)))[0..metal.Backend.topk_partials]) |flag| if (flag != 0) {
                     finite = false;
                 };
-                if (finite and total > 0 and 1.0 / total < p_min) {
-                    count += 1;
+                if (stop.cut(&chain, count, if (finite and total > 0) 1.0 / total else 1)) |n| {
+                    count = n;
                     break;
                 }
             }
@@ -1182,9 +1184,9 @@ pub const Plan = struct {
         if (!self.has_draft) return null;
         return .{ .host = self, .hidden = dflash.hidden_width, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
     }
-    fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32, stop: DraftStop) anyerror!usize {
         const self: *Plan = @ptrCast(@alignCast(host));
-        return self.propose(token, out, p_min);
+        return self.propose(token, out, stop);
     }
     fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
         const self: *Plan = @ptrCast(@alignCast(host));

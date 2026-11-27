@@ -5,7 +5,10 @@
 //! its model files' identity, the manifest's build block, and the compiler's
 //! version. Only passes
 //! are stored; a failure or a skip always runs again. `times.json` beside it
-//! holds each gate's last seconds, which `select.byCost` orders by.
+//! holds each gate's last seconds, which `select.byCost` orders by, and
+//! `tiers.json` each tier's passes with the fingerprints of the files its
+//! `requires` rules name, so `--auto` does not ask again for a tier whose
+//! files have not moved since it passed.
 const std = @import("std");
 const json = std.json;
 const manifest = @import("manifest.zig");
@@ -296,6 +299,123 @@ pub const TimesFile = struct {
     }
 };
 
+/// A file's fingerprint as stored, hex; null when the file is absent.
+pub const FileDigest = struct {
+    path: []const u8,
+    digest: ?[]const u8,
+};
+
+/// A tier that passed, with every file its `requires` rules name.
+pub const TierPass = struct {
+    tier: []const u8,
+    revision: []const u8,
+    /// Present files only, sorted by path.
+    files: []const FileDigest,
+
+    fn digestOf(pass: *const TierPass, path: []const u8) ?[]const u8 {
+        var low: usize = 0;
+        var high = pass.files.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            switch (std.mem.order(u8, pass.files[middle].path, path)) {
+                .lt => low = middle + 1,
+                .gt => high = middle,
+                .eq => return pass.files[middle].digest,
+            }
+        }
+        return null;
+    }
+};
+
+/// Tier passes kept; the oldest go first.
+const max_tier_passes = 64;
+
+pub const TierPasses = struct {
+    path: []const u8,
+    /// Insertion order is age.
+    entries: std.ArrayList(TierPass) = .empty,
+    /// Recorded by this run, written by `save`.
+    added: std.ArrayList(TierPass) = .empty,
+
+    pub fn load(arena: Allocator, io: std.Io, dir: []const u8) Allocator.Error!TierPasses {
+        var passes: TierPasses = .{ .path = try std.fs.path.join(arena, &.{ dir, "tiers.json" }) };
+        const doc = readJson(arena, io, passes.path) orelse return passes;
+        if (doc != .object) return passes;
+        const stored = doc.object.get("passes") orelse return passes;
+        if (stored != .array) return passes;
+        next: for (stored.array.items) |entry| {
+            if (entry != .object) continue;
+            const tier = entry.object.get("tier") orelse continue;
+            const revision = entry.object.get("revision") orelse continue;
+            const files = entry.object.get("files") orelse continue;
+            if (tier != .string or revision != .string or files != .array) continue;
+            var list: std.ArrayList(FileDigest) = .empty;
+            for (files.array.items) |file| {
+                if (file != .object) continue :next;
+                const path = file.object.get("path") orelse continue :next;
+                const digest = file.object.get("digest") orelse continue :next;
+                if (path != .string or digest != .string) continue :next;
+                try list.append(arena, .{ .path = path.string, .digest = digest.string });
+            }
+            std.mem.sort(FileDigest, list.items, {}, byPath);
+            try passes.entries.append(arena, .{ .tier = tier.string, .revision = revision.string, .files = list.items });
+        }
+        return passes;
+    }
+
+    fn byPath(_: void, a: FileDigest, b: FileDigest) bool {
+        return std.mem.lessThan(u8, a.path, b.path);
+    }
+
+    /// Remembers that `tier` passed with `files` as they are; absent ones are dropped.
+    pub fn record(passes: *TierPasses, arena: Allocator, tier: []const u8, revision: []const u8, files: []const FileDigest) Allocator.Error!void {
+        var present: std.ArrayList(FileDigest) = .empty;
+        for (files) |file| {
+            if (file.digest != null) try present.append(arena, file);
+        }
+        std.mem.sort(FileDigest, present.items, {}, byPath);
+        const pass: TierPass = .{ .tier = tier, .revision = revision, .files = present.items };
+        try passes.entries.append(arena, pass);
+        try passes.added.append(arena, pass);
+    }
+
+    /// The newest pass of `tier` under which every file of `current` had the
+    /// fingerprint it has now (absent then and now counts as unchanged).
+    pub fn covering(passes: *const TierPasses, tier: []const u8, current: []const FileDigest) ?*const TierPass {
+        var i = passes.entries.items.len;
+        next: while (i > 0) {
+            i -= 1;
+            const pass = &passes.entries.items[i];
+            if (!std.mem.eql(u8, pass.tier, tier)) continue;
+            for (current) |file| {
+                const then = pass.digestOf(file.path);
+                if (then == null and file.digest == null) continue;
+                if (then == null or file.digest == null) continue :next;
+                if (!std.mem.eql(u8, then.?, file.digest.?)) continue :next;
+            }
+            return pass;
+        }
+        return null;
+    }
+
+    /// Appends this run's passes to what is on disk, because another
+    /// worktree may share the store, keeps the newest, and writes.
+    pub fn save(passes: *const TierPasses, arena: Allocator, io: std.Io) !void {
+        if (passes.added.items.len == 0) return;
+        var merged = try load(arena, io, std.fs.path.dirname(passes.path).?);
+        try merged.entries.appendSlice(arena, passes.added.items);
+        const all = merged.entries.items;
+        var out: std.Io.Writer.Allocating = .init(arena);
+        var w: json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .indent_1 } };
+        try w.beginObject();
+        try w.objectField("passes");
+        try w.write(all[all.len -| max_tier_passes..]);
+        try w.endObject();
+        try out.writer.writeByte('\n');
+        try writeAtomic(io, passes.path, out.written());
+    }
+};
+
 const testing = std.testing;
 
 const Scene = struct {
@@ -520,4 +640,55 @@ test "a model's identity covers a directory's files and changes with their size"
     try testing.expect(std.mem.indexOf(u8, before, "one.bin 2 ") != null);
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "one.bin", .data = "aaa" });
     try testing.expect(!std.mem.eql(u8, before, try modelIdentity(a, testing.io, &.{path})));
+}
+
+test "a tier pass covers a change only while the files it names keep their fingerprints" {
+    var state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer state.deinit();
+    const a = state.allocator();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try a.print(".zig-cache/tmp/{s}", .{tmp.sub_path});
+
+    var passes = try TierPasses.load(a, testing.io, dir);
+    try passes.record(a, "verify-cpu", "abc1234", &.{
+        .{ .path = "inference/src/quant/q8.zig", .digest = "11" },
+        .{ .path = "inference/src/backends/cpu/attention.zig", .digest = "22" },
+        .{ .path = "inference/src/backends/cpu/gone.zig", .digest = null },
+    });
+    try passes.save(a, testing.io);
+
+    const stored = try TierPasses.load(a, testing.io, dir);
+    const same = [_]FileDigest{.{ .path = "inference/src/backends/cpu/attention.zig", .digest = "22" }};
+    try testing.expectEqualStrings("abc1234", stored.covering("verify-cpu", &same).?.revision);
+    try testing.expect(stored.covering("verify-long", &same) == null);
+    const moved = [_]FileDigest{.{ .path = "inference/src/backends/cpu/attention.zig", .digest = "33" }};
+    try testing.expect(stored.covering("verify-cpu", &moved) == null);
+    const deleted = [_]FileDigest{.{ .path = "inference/src/quant/q8.zig", .digest = null }};
+    try testing.expect(stored.covering("verify-cpu", &deleted) == null);
+    const still_absent = [_]FileDigest{.{ .path = "inference/src/backends/cpu/gone.zig", .digest = null }};
+    try testing.expect(stored.covering("verify-cpu", &still_absent) != null);
+    const added = [_]FileDigest{.{ .path = "inference/src/backends/cpu/new.zig", .digest = "44" }};
+    try testing.expect(stored.covering("verify-cpu", &added) == null);
+}
+
+test "a newer tier pass is found first, and a save keeps what another worktree wrote" {
+    var state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer state.deinit();
+    const a = state.allocator();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try a.print(".zig-cache/tmp/{s}", .{tmp.sub_path});
+    const file = [_]FileDigest{.{ .path = "x.zig", .digest = "11" }};
+
+    var first = try TierPasses.load(a, testing.io, dir);
+    var second = try TierPasses.load(a, testing.io, dir);
+    try first.record(a, "verify-long", "old", &file);
+    try first.save(a, testing.io);
+    try second.record(a, "verify-long", "new", &file);
+    try second.save(a, testing.io);
+
+    const stored = try TierPasses.load(a, testing.io, dir);
+    try testing.expectEqual(@as(usize, 2), stored.entries.items.len);
+    try testing.expectEqualStrings("new", stored.covering("verify-long", &file).?.revision);
 }

@@ -32,6 +32,7 @@
 //! included (the reference does the same); a ring layout for the windowed
 //! layers is a session-layout change of its own.
 const std = @import("std");
+const DraftStop = @import("../runtime/draft.zig").Stop;
 const models = @import("root.zig");
 const model = @import("gemma4.zig");
 const assistant = @import("gemma4_assistant.zig");
@@ -1529,22 +1530,23 @@ pub const Plan = struct {
     /// Greedy candidates from the state after the last committed token, each
     /// block step at the target's current position and chained through the
     /// head's own `h_next`; `out.len` bounds the count.
-    pub fn propose(self: *Plan, token: u32, out: []u32, p_min: f32) !usize {
+    pub fn propose(self: *Plan, token: u32, out: []u32, stop: DraftStop) !usize {
         if (!self.has_draft) return error.NoDraftBlock;
-        if (self.flash != null) return self.flashPropose(token, out, p_min);
-        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        if (self.flash != null) return self.flashPropose(token, out, stop);
+        if (!stop.valid()) return error.InvalidShape;
         const head = &self.draft.?;
         const position = self.state.position;
         var h_prev = head.pending_h;
         var next = token;
         var count: usize = 0;
+        var chain: f64 = 1;
         while (count < out.len) : (count += 1) {
             var greedy: u32 = 0;
             var pmax: f32 = 0;
-            try self.draftForward(h_prev, next, position, &greedy, if (p_min > 0) &pmax else null, null);
+            try self.draftForward(h_prev, next, position, &greedy, if (stop.active()) &pmax else null, null);
             out[count] = greedy;
-            if (p_min > 0 and pmax < p_min) {
-                count += 1;
+            if (stop.cut(&chain, count, pmax)) |n| {
+                count = n;
                 break;
             }
             next = greedy;
@@ -1623,12 +1625,12 @@ pub const Plan = struct {
 
     /// One noise block from the session position: row 0 the anchor `token`,
     /// the rest the mask token; every row's greedy draft through the
-    /// target's tied, soft-capped head. `p_min` > 0 stops after a position
-    /// whose top probability is below it.
-    fn flashPropose(self: *Plan, token: u32, out: []u32, p_min: f32) !usize {
+    /// target's tied, soft-capped head. `stop` ends the chain on each
+    /// position's top probability.
+    fn flashPropose(self: *Plan, token: u32, out: []u32, stop: DraftStop) !usize {
         const f = &self.flash.?;
         if (token >= vocabulary) return error.InvalidTokenId;
-        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        if (!stop.valid()) return error.InvalidShape;
         if (out.len == 0) return 0;
         const count_max: usize = @min(out.len, dflash.block_size - 1);
         const rows = count_max + 1;
@@ -1688,20 +1690,21 @@ pub const Plan = struct {
         for (1..rows) |r| try b.topk(f.logits.slice(r * vocabulary * 4, vocabulary * 4), vocabulary, 1, 1.0, f.topk[r]);
         try b.commit();
         var count: usize = 0;
+        var chain: f64 = 1;
         while (count < count_max) : (count += 1) {
             const scratch = f.topk[1 + count];
             const id = @as(*const u32, @ptrCast(@alignCast(scratch.indices.host))).*;
             if (id >= vocabulary) return error.NonFiniteResult;
             out[count] = id;
-            if (p_min > 0) {
+            if (stop.active()) {
                 var total: f64 = 0;
                 for (scratch.sums.floats()[0..metal.Backend.topk_partials]) |partial| total += partial;
                 var finite = true;
                 for (@as([*]const u32, @ptrCast(@alignCast(scratch.flags.host)))[0..metal.Backend.topk_partials]) |flag| if (flag != 0) {
                     finite = false;
                 };
-                if (finite and total > 0 and 1.0 / total < p_min) {
-                    count += 1;
+                if (stop.cut(&chain, count, if (finite and total > 0) 1.0 / total else 1)) |n| {
+                    count = n;
                     break;
                 }
             }
@@ -1714,9 +1717,9 @@ pub const Plan = struct {
         if (!self.has_draft) return null;
         return .{ .host = self, .hidden = self.hiddenWidth(), .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
     }
-    fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32, stop: DraftStop) anyerror!usize {
         const self: *Plan = @ptrCast(@alignCast(host));
-        return self.propose(token, out, p_min);
+        return self.propose(token, out, stop);
     }
     fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
         const self: *Plan = @ptrCast(@alignCast(host));

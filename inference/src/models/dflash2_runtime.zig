@@ -6,6 +6,7 @@
 //! head per call. The equations are in docs/engine/speculative-decoding.md
 //! § The Qwen DFlash2 drafter.
 const std = @import("std");
+const DraftStop = @import("../runtime/draft.zig").Stop;
 const dflash2 = @import("dflash2.zig");
 const weights = @import("../runtime/weights.zig");
 const session = @import("../runtime/session.zig");
@@ -242,12 +243,13 @@ pub const Draft = struct {
     /// The selector over block rows `1 .. 1 + count`, chained from `anchor`:
     /// each position's top-16 logits from the target's head, re-scored with
     /// the bilinear term of the chosen predecessor, the greedy choice taken.
-    /// `p_min > 0` stops after a position whose choice's full-vocabulary
-    /// softmax probability is below it; the first position is always proposed.
-    pub fn select(self: *Draft, target: Target, anchor: u32, out: []u32, p_min: f32) !usize {
+    /// `stop` ends the chain on each choice's full-vocabulary softmax
+    /// probability.
+    pub fn select(self: *Draft, target: Target, anchor: u32, out: []u32, stop: DraftStop) !usize {
         const head = try target.view.matrix(target.output);
         var previous = anchor;
         var count: usize = 0;
+        var chain: f64 = 1;
         while (count < out.len) {
             const row = self.hidden[(1 + count) * embedding ..][0..embedding];
             try cpu.matvec(self.io, head, row, self.logits, self.row);
@@ -260,7 +262,12 @@ pub const Draft = struct {
             out[count] = chosen;
             previous = chosen;
             count += 1;
-            if (p_min > 0 and probability(self.logits, chosen) < p_min) break;
+            if (stop.active()) {
+                if (stop.cut(&chain, count - 1, probability(self.logits, chosen))) |n| {
+                    count = n;
+                    break;
+                }
+            }
         }
         return count;
     }

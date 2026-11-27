@@ -851,6 +851,9 @@ pub const Resolved = struct {
     /// The session position drafting stops at, null for none
     /// (`generation.draft_max_depth` resolved).
     draft_max_depth: ?usize = null,
+    /// Where the drafter's chain stops: the draft file's verdict, else the
+    /// engine's default. Not a setting.
+    draft_stop: inference.draft.Stop = inference.engine.draft_stop,
     /// The draft variant asked for (`--draft`, else the entry's
     /// `generation.draft`), and the index file it chose: the variant's, else
     /// the artifact's default when the entry names no draft file.
@@ -996,6 +999,7 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
         .speculative = flags.speculative orelse if (asked) |v| v.speculative else e.generation.speculative orelse if (choice) |c| c.verdict.?.speculative else cfg.generation.speculative,
         .draft_length = flags.draft_length orelse if (asked) |v| v.draft_length else e.generation.draft_length orelse if (choice) |c| c.verdict.?.draft_length else cfg.generation.draft_length,
         .draft_max_depth = if (depth_set) |n| (if (n == 0) null else n) else if (draft_file) |f| (if (f.verdict) |v| v.max_depth else null) else null,
+        .draft_stop = if (draft_file) |f| (if (f.verdict) |v| v.stop orelse inference.engine.draft_stop else inference.engine.draft_stop) else inference.engine.draft_stop,
         .draft = variant,
         .draft_choice = choice,
         .image_max_tokens = flags.image_max_tokens orelse e.generation.image_max_tokens orelse cfg.generation.image_max_tokens,

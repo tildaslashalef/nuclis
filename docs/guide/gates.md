@@ -96,7 +96,14 @@ until one fails (`ARGS=--keep-going` runs the rest), and ends by naming the
 tiers the manifest's `requires` rules ask for. Those rules name files, not
 intent: an addition nothing calls yet or a refactor a unit test pins still
 skips the CPU tier, and the long rule's line asks for a judgment of the
-diff. `ARGS=--dry-run` prints the plan, and says why each gate was chosen.
+diff. A tier that passes (`make verify-cpu`, or `--changed` with `--tier`,
+with at least one gate run or remembered) is remembered in
+`$NUCLIS_HOME/gates/tiers.json` with the fingerprint of every file its
+rules name. While each changed file a rule matches keeps the fingerprint
+it had at such a pass, the line reads `Passed already: <tier> at <rev>`
+instead, and the tier is not run again: a branch whose first unit changed
+`cpu/attention.zig` asks for the CPU tier once, not at every later unit.
+`ARGS=--dry-run` prints the plan, and says why each gate was chosen.
 
 **Selection.** `tools/gates` (`nuclis-gates`) fingerprints each engine file:
 a Zig file by its tokens, so comments and spacing do not count, anything

@@ -8,6 +8,7 @@
 //! projection except `ssm_alpha` / `ssm_beta` reads its input through the
 //! Hadamard transform and the embedding row is un-rotated after lookup.
 const std = @import("std");
+const DraftStop = @import("../runtime/draft.zig").Stop;
 const models = @import("root.zig");
 const alloc_check = @import("../alloc_check.zig");
 const model = @import("qwen35.zig");
@@ -511,26 +512,26 @@ pub const Runtime = struct {
     }
 
     /// Greedy candidates from the state after the last committed token;
-    /// `out.len` bounds the count. `p_min > 0` stops after a position whose
-    /// top candidate's softmax probability (the exact host maximum) is below
-    /// it; the first position is always proposed.
-    pub fn propose(self: *Runtime, token: u32, out: []u32, p_min: f32) !usize {
+    /// `out.len` bounds the count, `stop` ends the chain on each position's
+    /// top candidate's softmax probability (the exact host maximum).
+    pub fn propose(self: *Runtime, token: u32, out: []u32, stop: DraftStop) !usize {
         if (!self.has_draft) return error.NoDraftBlock;
-        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        if (!stop.valid()) return error.InvalidShape;
         const start = self.state.position;
         var h_prev: []const f32 = self.draft_pending_h;
         var next = token;
         var count: usize = 0;
+        var chain: f64 = 1;
         while (count < out.len) : (count += 1) {
             try self.draftForward(h_prev, next, start + count, self.draft_logits);
             out[count] = argmax(self.draft_logits);
-            if (p_min > 0) {
+            if (stop.active()) {
                 var maximum: f64 = -std.math.inf(f64);
                 for (self.draft_logits) |v| maximum = @max(maximum, v);
                 var total: f64 = 0;
                 for (self.draft_logits) |v| total += @exp(@as(f64, v) - maximum);
-                if (total > 0 and 1.0 / total < p_min) {
-                    count += 1;
+                if (stop.cut(&chain, count, if (total > 0) 1.0 / total else 1)) |n| {
+                    count = n;
                     break;
                 }
             }
@@ -602,9 +603,9 @@ pub const Runtime = struct {
         if (!self.has_draft) return null;
         return .{ .host = self, .hidden = self.binding.shape.hidden, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
     }
-    fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32, stop: DraftStop) anyerror!usize {
         const self: *Runtime = @ptrCast(@alignCast(host));
-        return self.propose(token, out, p_min);
+        return self.propose(token, out, stop);
     }
     fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
         const self: *Runtime = @ptrCast(@alignCast(host));
@@ -642,14 +643,14 @@ pub const Runtime = struct {
 
     /// One noise block from `token` at the session position, then the
     /// selector chain; at most `block_size - 1` drafts.
-    pub fn flashPropose(self: *Runtime, token: u32, out: []u32, p_min: f32) !usize {
+    pub fn flashPropose(self: *Runtime, token: u32, out: []u32, stop: DraftStop) !usize {
         const d = &(self.flash orelse return error.NoDraftBlock);
         if (token >= model.vocabulary) return error.InvalidTokenId;
-        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        if (!stop.valid()) return error.InvalidShape;
         const count: usize = @min(out.len, dflash2.block_size - 1);
         if (count == 0) return 0;
         try d.block(self.flashTarget(), &self.state, self.draft_layer, token, 1 + count, self.state.position);
-        return d.select(self.flashTarget(), token, out[0..count], p_min);
+        return d.select(self.flashTarget(), token, out[0..count], stop);
     }
 
     /// One noise block for `--draft-trace`: every row's final hidden into
@@ -661,9 +662,9 @@ pub const Runtime = struct {
         @memcpy(hidden, d.hidden[0..hidden.len]);
     }
 
-    fn flashProposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
+    fn flashProposeFn(host: *anyopaque, token: u32, out: []u32, stop: DraftStop) anyerror!usize {
         const self: *Runtime = @ptrCast(@alignCast(host));
-        return self.flashPropose(token, out, p_min);
+        return self.flashPropose(token, out, stop);
     }
     fn flashCommitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
         const self: *Runtime = @ptrCast(@alignCast(host));

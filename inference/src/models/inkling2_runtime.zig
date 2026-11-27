@@ -13,6 +13,7 @@
 //! attention layers after the target's and reads each step's commit row:
 //! `cur` entering applications 5, 23 and 41, and the head's normed input.
 const std = @import("std");
+const DraftStop = @import("../runtime/draft.zig").Stop;
 const alloc_check = @import("../alloc_check.zig");
 const model = @import("inkling2.zig");
 const models = @import("root.zig");
@@ -626,15 +627,15 @@ pub const Runtime = struct {
     /// Markov chain; at most `max_proposals` drafts, none when the row
     /// before the position was never committed or the block's 8 rows do not
     /// fit in the context.
-    pub fn sparkPropose(self: *Runtime, token: u32, out: []u32, p_min: f32) !usize {
+    pub fn sparkPropose(self: *Runtime, token: u32, out: []u32, stop: DraftStop) !usize {
         const d = &(self.spark orelse return error.NoDraftBlock);
         if (token >= model.vocabulary) return error.InvalidTokenId;
-        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        if (!stop.valid()) return error.InvalidShape;
         const count: usize = @min(out.len, dspark.max_proposals);
         // A block that does not fit in the context drafts nothing.
         if (count == 0 or !d.ready(self.state.position) or self.state.position + dspark.block_size > self.state.capacity) return 0;
         try d.block(self.sparkTarget(), &self.state, self.draft_layer, token, self.state.position);
-        return d.select(self.sparkTarget(), out[0..count], p_min);
+        return d.select(self.sparkTarget(), out[0..count], stop);
     }
 
     /// Runs the block from `token` at the session position without choosing:
@@ -652,9 +653,9 @@ pub const Runtime = struct {
         if (self.spark == null) return null;
         return .{ .host = self, .hidden = dspark.hidden_width, .max_proposals = dspark.max_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetFn, .carried_fn = carriedFn, .bytes_fn = bytesFn };
     }
-    fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32, stop: DraftStop) anyerror!usize {
         const self: *Runtime = @ptrCast(@alignCast(host));
-        return self.sparkPropose(token, out, p_min);
+        return self.sparkPropose(token, out, stop);
     }
     fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
         const self: *Runtime = @ptrCast(@alignCast(host));

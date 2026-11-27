@@ -34,6 +34,7 @@
 //!   sliding and last global layer, write none, and chain only its `h_next`;
 //!   `commit` is a copy of the last target hidden into `pending_h`.
 const std = @import("std");
+const DraftStop = @import("../runtime/draft.zig").Stop;
 const models = @import("root.zig");
 const alloc_check = @import("../alloc_check.zig");
 const model = @import("gemma4.zig");
@@ -682,26 +683,27 @@ pub const Runtime = struct {
 
     /// Greedy candidates from the state after the last committed token, each
     /// block step at the target's position and chained through the head's own
-    /// `h_next`; `out.len` bounds the count. `p_min > 0` stops after a
-    /// position whose top candidate's softmax probability is below it.
-    pub fn propose(self: *Runtime, token: u32, out: []u32, p_min: f32) !usize {
+    /// `h_next`; `out.len` bounds the count, `stop` ends the chain on each
+    /// position's top candidate's softmax probability.
+    pub fn propose(self: *Runtime, token: u32, out: []u32, stop: DraftStop) !usize {
         if (!self.has_draft) return error.NoDraftBlock;
-        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        if (!stop.valid()) return error.InvalidShape;
         const head = &self.draft.?;
         const position = self.state.position;
         var h_prev: []const f32 = head.pending_h;
         var next = token;
         var count: usize = 0;
+        var chain: f64 = 1;
         while (count < out.len) : (count += 1) {
             try self.headForward(h_prev, next, position, head.logits);
             out[count] = argmax(head.logits);
-            if (p_min > 0) {
+            if (stop.active()) {
                 var maximum: f64 = -std.math.inf(f64);
                 for (head.logits) |v| maximum = @max(maximum, v);
                 var total: f64 = 0;
                 for (head.logits) |v| total += @exp(@as(f64, v) - maximum);
-                if (total > 0 and 1.0 / total < p_min) {
-                    count += 1;
+                if (stop.cut(&chain, count, if (total > 0) 1.0 / total else 1)) |n| {
+                    count = n;
                     break;
                 }
             }
@@ -756,9 +758,9 @@ pub const Runtime = struct {
         const head = &self.draft.?;
         return .{ .host = self, .hidden = head.binding.config.embedding_out, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
     }
-    fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32, stop: DraftStop) anyerror!usize {
         const self: *Runtime = @ptrCast(@alignCast(host));
-        return self.propose(token, out, p_min);
+        return self.propose(token, out, stop);
     }
     fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
         const self: *Runtime = @ptrCast(@alignCast(host));

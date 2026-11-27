@@ -215,4 +215,4 @@ the agent's tasks 34 of 36 at medium ([record](../benchmarks/record/agent.md#ink
 ## Known limits
 
 - Only `inkling2_loop` binds; the Hub's first encoding (`inkling2`, 48 applications in the header) is refused.
-- The entry does not draft: its DSpark drafter ([speculative-decoding.md](../engine/speculative-decoding.md#inkling-2s-dspark-drafter)) runs on both executors, and on Metal it speeds greedy decode 1.04 to 1.46× but the profile's sampling 0.99 to 1.05× ([record](../benchmarks/record/inkling2.md#the-dspark-drafter-on-metal-2026-11-27)).
+- The entry does not draft: its DSpark drafter ([speculative-decoding.md](../engine/speculative-decoding.md#inkling-2s-dspark-drafter)) speeds greedy decode 1.22× at 512 and 4,096 with its verdict's stop (3 drafts, chain product 0.4), but the profile's sampling 0.90 to 1.10× from run to run ([record](../benchmarks/record/inkling2.md#the-drafters-policy-and-verdict-2026-11-27)); `--speculative on` uses that stop.

@@ -2214,7 +2214,7 @@ fn bind(ui: *Ui, open: *Open, sampler: *inference.sampling.Sampler, label: []con
     c.effort = ui.effort;
     c.buffers = .{ .logits = open.logits, .candidates = open.candidates, .generated = open.generated, .effort = ui.effort };
     c.thinking_budget = settings.thinking_budget;
-    c.speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length, .max_position = settings.draft_max_depth };
+    c.speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length, .stop = settings.draft_stop, .max_position = settings.draft_max_depth };
     c.dropCache();
     if (c.disk) |*d| d.close();
     c.disk = loop.cache.openDisk(ui.alloc, ui.io, ui.root_dir, settings.cache.disk_bytes, open.model_path, if (open.eng.model.drafter() != null) open.draft_path else null, @tagName(settings.backend));

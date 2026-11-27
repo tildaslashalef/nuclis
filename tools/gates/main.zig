@@ -22,8 +22,9 @@ const usage =
     \\  --validate          validate gates.json against the tree (no model needed)
     \\  --auto [REV]        what a change needs: the checks its paths select, the
     \\                      gates its impact selects, cheapest first until one
-    \\                      fails, then the tiers it requires. REV defaults to
-    \\                      where the branch left origin/main
+    \\                      fails, then the tiers it requires, or that passed
+    \\                      already with those files as they are. REV defaults
+    \\                      to where the branch left origin/main
     \\  --tier TIER         every gate of a tier; with --changed, the selected ones
     \\  --gate NAME         gates by name or pattern (repeatable): 'qwen38-*'
     \\  --changed [REV]     the verify gates the working tree's change from REV
@@ -338,6 +339,7 @@ fn dispatch(init: std.process.Init, args: []const []const u8, out: *std.Io.Write
                 if (std.mem.eql(u8, gate.tier, tier)) try selected.append(arena, gate);
             }
             const status = try session.runAll(selected.items);
+            try session.recordTier(tier, status);
             if (command.options.dry_run) return status;
             // The tier's cost after this run, against its budget.
             const times = (try cache.TimesFile.load(arena, io, try cache.directory(arena, init.environ_map))).times;

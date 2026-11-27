@@ -311,6 +311,7 @@ pub const Session = struct {
     universe: []const []const u8 = &.{},
     passes: cache.Passes = undefined,
     times: cache.TimesFile = undefined,
+    tier_passes: cache.TierPasses = undefined,
     revision: []const u8 = "unknown",
     /// `zig version`, part of every key.
     toolchain: []const u8 = "unknown",
@@ -326,6 +327,7 @@ pub const Session = struct {
         const dir = try cache.directory(s.arena, s.env);
         s.passes = try cache.Passes.load(s.arena, s.io, dir);
         s.times = try cache.TimesFile.load(s.arena, s.io, dir);
+        s.tier_passes = try cache.TierPasses.load(s.arena, s.io, dir);
         s.revision = try git.revision(s.arena, s.io);
         s.toolchain = try zigVersion(s.arena, s.io, s.env);
     }
@@ -732,7 +734,42 @@ pub const Session = struct {
         try s.sayImpact(selection, tier);
         if (std.mem.eql(u8, tier, "verify")) try s.sayOtherTiers(selection);
         if (selection.gates.len == 0) return 0;
-        return s.runAll(selection.gates);
+        const status = try s.runAll(selection.gates);
+        try s.recordTier(tier, status);
+        return status;
+    }
+
+    /// The fingerprint of `path` as the store keeps it, hex: the tree's, else
+    /// the file's on disk; null when it is absent.
+    fn storedDigest(s: *Session, path: []const u8) !?[]const u8 {
+        const digest = if (s.tree.get(path)) |file| file.digest else blk: {
+            const bytes = Dir.cwd().readFileAlloc(s.io, path, s.arena, .limited(tree_module.max_input_bytes)) catch |err| switch (err) {
+                error.FileNotFound, error.IsDir => return null,
+                else => |e| return e,
+            };
+            break :blk try fingerprint.ofFile(s.gpa, path, bytes);
+        };
+        return try s.arena.dupe(u8, &std.fmt.bytesToHex(digest, .lower));
+    }
+
+    /// Remembers that `tier` passed, with every file its `requires` rules
+    /// name, when the run passed and at least one gate passed (a run of
+    /// skips proves nothing).
+    pub fn recordTier(s: *Session, tier: []const u8, status: u8) !void {
+        if (status != 0 or s.options.dry_run) return;
+        for (s.results.items) |r| {
+            if (r.passed orelse false) break;
+        } else return;
+        var files: std.ArrayList(cache.FileDigest) = .empty;
+        for (s.m.requires) |rule| {
+            if (!std.mem.eql(u8, rule.tier, tier)) continue;
+            for (s.universe) |path| {
+                if (glob.matchesAny(rule.paths, path)) try files.append(s.arena, .{ .path = path, .digest = try s.storedDigest(path) });
+            }
+        }
+        if (files.items.len == 0) return;
+        try s.tier_passes.record(s.arena, tier, s.revision, files.items);
+        try s.tier_passes.save(s.arena, s.io);
     }
 
     fn sayOtherTiers(s: *Session, selection: select.Selection) !void {
@@ -808,6 +845,12 @@ pub const Session = struct {
         }
 
         for (try select.requirements(s.arena, s.m.requires, change.effective)) |required| {
+            var current: std.ArrayList(cache.FileDigest) = .empty;
+            for (required.files) |path| try current.append(s.arena, .{ .path = path, .digest = try s.storedDigest(path) });
+            if (s.tier_passes.covering(required.tier, current.items)) |pass| {
+                try s.say("Passed already: {s} at {s}; the {d} file(s) that require it ({s} first) are unchanged since", .{ required.tier, pass.revision, required.files.len, required.file });
+                continue;
+            }
             try s.say("Required, not run: {s} ({s}: {s}); make verify-changed BASE={s} ARGS='--tier {s}'", .{ required.tier, required.file, required.reason, base, required.tier });
         }
         if (s.options.dry_run) return 0;

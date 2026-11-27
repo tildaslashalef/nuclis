@@ -472,3 +472,80 @@ recovered (66.8 ms of the 83.4 ms recovery in the 512, 5-draft cell).
 
 The entry stays off: greedy is not the profile's sampling, and sampled
 decode does not gain.
+
+## The drafter's policy and verdict (2026-11-27)
+
+The same machine and method as the Metal drafter's section; nuclis at
+`6a0891e` with the chain's stop (`draft.Stop`) on top. `make spec-matrix`
+on `inkling2_dspark_pair`, 128 tokens, interleaved off/on pairs (3 greedy,
+5 to 8 sampled); greedy pairs agree to ±0.01 unless noted.
+
+**The threshold.** Greedy speedup by `--draft-p-min` and draft length:
+
+| Context | p_min | 2 | 3 | 4 | 5 | 6 | 7 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 | 0 | 1.028 | 1.048 | 1.014 | 0.877 | 0.797 | 0.734 |
+| 512 | 0.5 | 1.086 | 1.141 | 1.143 | 1.062 | 1.032 | 1.019 |
+| 512 | 0.7 | 1.110 | 1.156 | 1.186 | 1.131 | 1.112 | 1.097 |
+| 512 | 0.9 | 1.123 | 1.189 | 1.180 | 1.158 | 1.143 | 1.131 |
+| 4,096 | 0 | 1.132 | 1.086 | 0.975 | 0.927 | 0.832 | 0.757 |
+| 4,096 | 0.5 | 1.157 | 1.148 | 1.132 | 1.117 | 1.081 | 1.057 |
+| 4,096 | 0.7 | 1.162 | 1.170 | 1.164 | 1.172 | 1.155 | 1.140 |
+| 4,096 | 0.9 | 1.187 | 1.189 | 1.187 | 1.188 | 1.175 | 1.165 |
+
+(0.3 and 0.8 sit between their neighbours.) Without a stop, every
+position past the third costs more than it keeps.
+
+**The chain's product.** `--draft-chain-min τ` stops before a position
+that would take the product of the chain's top probabilities below τ
+(p_min 0), drafts 3 / 4 / 5 / 7:
+
+| τ | 512 | 4,096 |
+| ---: | --- | --- |
+| 0.2 | 1.140, 1.129, 1.059, 1.023 | 1.142, 1.109, 1.102, 1.060 |
+| 0.31 | 1.185, 1.176, 1.115, 1.085 | 1.195, 1.180, 1.182, 1.145 |
+| **0.4** | **1.228, 1.229**, 1.166, 1.134 | **1.223**, 1.190, 1.195, 1.168 |
+| 0.5 | 1.205, 1.167, 1.120, 1.087 | 1.213, 1.199, 1.198, 1.172 |
+| 0.5 with p_min 0.9 | –, 1.175, 1.161, 1.132 | –, 1.210, 1.198, 1.171 |
+
+At τ 0.4 and 3 drafts a batch keeps 2.19 tokens at 512 and 2.31 at
+4,096, against 2.05 and 2.12 with p_min 0.9: the product cuts the chain
+where its last positions stop paying, which a per-position threshold does
+not see. Off ran at 31.96 and 30.13 tokens/s, the control's rates, so the
+gain is not a slow baseline.
+
+**Back-off.** After a batch that kept no draft, skipping the next one or
+two batches (p_min 0.9, drafts 3 to 5) gave 1.128 to 1.196, and drafting
+one probe position gave 1.118 to 1.224 with pairs from 0.90 to 1.59: neither
+beats the control (1.158 to 1.189). Not kept.
+
+**Sampled acceptance.** `generation-check --draft-stats` on Metal at
+temperature 1, 3 drafts: `min(1, p/q)` with the chain drawn from the
+drafter keeps 1.623 against 1.482 under the target-draw rule on prose,
+2.397 against 2.198 on code and 2.431 against 2.359 on explanation: +0.07
+to +0.20 a verify, under the +0.25 that would justify changing the
+acceptance contract. The loop keeps the target-draw rule.
+
+**The profile's sampling** (temperature 1, top-k 0, top-p 1), 512:
+
+| p_min | Draft | Speedup (pairs) |
+| ---: | ---: | --- |
+| 0.7 | 2 | 1.052 (0.95–1.10), 1.057 (0.94–1.30), 1.072 (0.84–1.52) |
+| 0.9 | 2 | 1.104 (0.99–1.16), 1.066 (0.95–1.33), 0.901 (0.82–1.10) |
+| 0.7 | 3 | 0.963 (0.87–1.07), 1.030 (0.96–1.21) |
+| 0.9 | 3 | 1.100 (0.96–1.25), 1.086 (0.93–1.40) |
+| 0.7 | 4 | 0.942 (0.91–1.01), 1.053 (0.87–1.51) |
+| 0.9 | 4 | 1.061 (0.89–1.32) |
+
+A sampled pair draws both runs from one seed, but only 1 or 2 pairs in 5
+to 8 emit the same tokens; the others decode different text, whose own
+acceptance moves the ratio more than the drafter does. Repeats of one cell
+span 0.90 to 1.10.
+
+**Verdict.** Greedy meets the goal (1.15× at 512 and 1.08× at 4,096: 1.23
+and 1.22 at τ 0.4); the profile's sampling, which is how the entry runs,
+does not show 1.08× and has cells below 1.00. The entry stays off; its
+verdict carries 3 drafts and the stop `chain_min 0.4` for a session that
+turns drafting on, and no `max_depth` (greedy stays above 1.00× at 16,384
+in the Metal drafter's section). Not measured: τ 0.4 under sampling, and
+the agent's task list with drafting on.

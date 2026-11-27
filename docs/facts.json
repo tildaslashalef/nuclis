@@ -175,6 +175,7 @@
         "--verify-rows",
         "--accept",
         "--draft-p-min",
+        "--draft-chain-min",
         "--json",
         "--model",
         "--backend",

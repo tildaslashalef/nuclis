@@ -50,9 +50,11 @@ pub const Options = struct {
     verify_rows: ?usize = null,
     /// Drafts each verify batch accepts, below `verify_rows`; default 0.
     accept: ?usize = null,
-    /// The drafter's proposal threshold for the speculative runs, in place of
-    /// `inference.engine.draft_p_min`: a tuning knob, not a user setting.
+    /// The drafter's proposal threshold and chain-product floor for the
+    /// speculative runs, in place of the draft file's verdict (else
+    /// `inference.engine.draft_stop`): tuning knobs, not user settings.
     draft_p_min: ?f32 = null,
+    draft_chain_min: ?f32 = null,
     /// Print every Metal pipeline's compiled limits (`kernelStats`) instead
     /// of benchmarking; no model is loaded.
     kernel_stats: bool = false,
@@ -191,6 +193,10 @@ pub const Sample = struct {
     topk_fallbacks: ?usize = null,
     /// This sample ran with the speculative switch on (the pair's second run).
     speculative: bool = false,
+    /// A sampled pair: whether the "on" run generated the "off" run's
+    /// tokens (both draw from the pair's seed, so they part only where a
+    /// verify row's rounding moves a draw).
+    same_tokens: ?bool = null,
     draft_length: ?usize = null,
     /// Verify batches run, accepted drafts per batch, and the run's time in
     /// the drafter's `propose`, the model's `verify`, the host acceptance
@@ -284,6 +290,7 @@ pub const Report = struct {
     /// drafts per verify batch, and the decode speedup over the baseline.
     speculative_draft_length: ?usize = null,
     speculative_p_min: ?f32 = null,
+    speculative_chain_min: ?f32 = null,
     /// The depth cap the "on" runs drafted under; a prompt at or past it ran
     /// plainly, so its "on" rate is the plain one.
     speculative_max_depth: ?usize = null,
@@ -637,7 +644,9 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile, draft);
     defer eng.deinit();
     const speculate = eng.model.drafter() != null;
-    const p_min = options.draft_p_min orelse inference.engine.draft_p_min;
+    var stop = settings.draft_stop;
+    if (options.draft_p_min) |p| stop.p_min = p;
+    if (options.draft_chain_min) |c| stop.chain_min = c;
     const gpu: ?*inference.metal.Backend = eng.model.gpu();
     if (gpu) |backend| backend.fused_norms = !options.unfused_norms;
     if (options.profile) {
@@ -768,6 +777,13 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     const per_iteration: usize = if (speculate) 2 else 1;
     const samples = try alloc.alloc(Sample, (warmup + repeat) * per_iteration);
     defer alloc.free(samples);
+    // A sampled pair draws both runs from one seed, `seed + i`, so the two
+    // sample the same continuation and the pair's ratio is the drafter's,
+    // not two texts'.
+    const paired_seed = speculate and sampler.options.temperature > 0;
+    const off_tokens = try alloc.alloc(u32, if (paired_seed) limit else 0);
+    defer alloc.free(off_tokens);
+    var off_count: usize = 0;
     var completed: usize = 0;
     var cancelled = false;
     for (0..warmup + repeat) |i| {
@@ -784,7 +800,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
                 for (prefix_tokens) |token| try history.observe(token);
             }
             const fed = if (prefix != null) tokens[prefix_tokens.len..] else tokens;
-            const spec: inference.engine.Speculative = if (on) .{ .enabled = true, .draft_length = settings.draft_length, .p_min = p_min, .max_position = settings.draft_max_depth } else .{};
+            if (paired_seed) sampler.rng = .init((options.seed orelse 0) +% i);
+            const spec: inference.engine.Speculative = if (on) .{ .enabled = true, .draft_length = settings.draft_length, .stop = stop, .max_position = settings.draft_max_depth } else .{};
             // Decode covers the steps after the first sampled token; the first
             // token's latency (prefill included) is reported separately.
             // The profile covers decode steps only: a run's prefill is
@@ -796,6 +813,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
             if (gate.profile) |p| p.paused = false;
             const t = outcome.timing;
             const decode_steps = if (t.generated_tokens > 1) t.generated_tokens - 1 else 0;
+            if (paired_seed and !on) {
+                off_count = t.generated_tokens;
+                @memcpy(off_tokens[0..off_count], generated[0..off_count]);
+            }
             samples[completed] = .{
                 .warmup = i < warmup,
                 .prompt_tokens = tokens.len,
@@ -809,6 +830,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
                 .gpu_busy_milliseconds = if (t.gpu_seconds) |sec| sec * 1000 else null,
                 .topk_fallbacks = t.topk_fallbacks,
                 .speculative = on,
+                .same_tokens = if (paired_seed and on) std.mem.eql(u32, off_tokens[0..off_count], generated[0..t.generated_tokens]) else null,
                 .draft_length = if (on) settings.draft_length else null,
                 .speculative_steps = if (on) t.speculative_steps else null,
                 .accepted_per_step = if (on and t.speculative_steps > 0) @as(f64, @floatFromInt(t.accepted_drafts)) / @as(f64, @floatFromInt(t.speculative_steps)) else null,
@@ -877,7 +899,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         .mean_decode_tokens_per_second = stats.decode,
         .mean_first_token_milliseconds = stats.first,
         .speculative_draft_length = if (speculate) settings.draft_length else null,
-        .speculative_p_min = if (speculate) p_min else null,
+        .speculative_p_min = if (speculate) stop.p_min else null,
+        .speculative_chain_min = if (speculate) stop.chain_min else null,
         .speculative_max_depth = if (speculate) settings.draft_max_depth else null,
         .mean_speculative_decode_tokens_per_second = stats.speculative_decode,
         .mean_accepted_per_step = stats.accepted_per_step,

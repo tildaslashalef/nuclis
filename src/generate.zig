@@ -436,7 +436,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         };
     };
     defer if (presenter.turn) |*turn| turn.deinit();
-    const outcome = try runLoop(&eng, tokens, limit, &sampler, &history, .{ .enabled = settings.speculative, .draft_length = settings.draft_length, .max_position = settings.draft_max_depth }, if (media_prefill) |m| m.value() else null, logits, candidates, generated, &trace, .{ .context = &presenter, .prefill = if (options.logits_path != null) Presenter.prefill else null, .token = Presenter.token });
+    const outcome = try runLoop(&eng, tokens, limit, &sampler, &history, .{ .enabled = settings.speculative, .draft_length = settings.draft_length, .stop = settings.draft_stop, .max_position = settings.draft_max_depth }, if (media_prefill) |m| m.value() else null, logits, candidates, generated, &trace, .{ .context = &presenter, .prefill = if (options.logits_path != null) Presenter.prefill else null, .token = Presenter.token });
     const count = outcome.timing.generated_tokens;
     if (presenter.turn) |*turn| {
         try turn.end(outcome);

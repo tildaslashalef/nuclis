@@ -30,6 +30,7 @@
 //! - the FFN gate is SiLU, there is no per-layer output scale, and logits
 //!   come from the untied head, scaled by `logit_scale`, soft-capped at 20.
 const std = @import("std");
+const DraftStop = @import("../runtime/draft.zig").Stop;
 const models = @import("root.zig");
 const alloc_check = @import("../alloc_check.zig");
 const model = @import("muse_glimmer.zig");
@@ -547,12 +548,12 @@ pub const Runtime = struct {
 
     /// Greedy candidates from the state after the last committed token: one
     /// noise block proposes every requested position in a single forward.
-    /// `out.len` bounds the count (at most `block_size - 1`). `p_min > 0`
-    /// stops after a position whose top candidate's softmax probability (the
-    /// exact host maximum) is below it; the first position is always proposed.
-    pub fn propose(self: *Runtime, token: u32, out: []u32, p_min: f32) !usize {
+    /// `out.len` bounds the count (at most `block_size - 1`); `stop` ends the
+    /// chain on each position's top candidate's softmax probability (the
+    /// exact host maximum).
+    pub fn propose(self: *Runtime, token: u32, out: []u32, stop: DraftStop) !usize {
         if (self.draft == null) return error.NoDraftBlock;
-        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        if (!stop.valid()) return error.InvalidShape;
         if (out.len == 0) return 0;
         // The explicit type keeps Zig's comptime-operand narrowing from
         // making this a `u4` (15 + 1 would overflow).
@@ -560,17 +561,18 @@ pub const Runtime = struct {
         try self.draftBlock(token, 1 + count_max);
         const d = &self.draft.?;
         var count: usize = 0;
+        var chain: f64 = 1;
         while (count < count_max) : (count += 1) {
             const row = d.hidden[(1 + count) * dflash.embedding ..][0..dflash.embedding];
             try self.mm(self.binding.output, row, d.logits);
             out[count] = argmax(d.logits);
-            if (p_min > 0) {
+            if (stop.active()) {
                 var maximum: f64 = -std.math.inf(f64);
                 for (d.logits) |v| maximum = @max(maximum, v);
                 var total: f64 = 0;
                 for (d.logits) |v| total += @exp(@as(f64, v) - maximum);
-                if (total > 0 and 1.0 / total < p_min) {
-                    count += 1;
+                if (stop.cut(&chain, count, if (total > 0) 1.0 / total else 1)) |n| {
+                    count = n;
                     break;
                 }
             }
@@ -606,9 +608,9 @@ pub const Runtime = struct {
         if (self.draft == null) return null;
         return .{ .host = self, .hidden = dflash.hidden_width, .max_proposals = dflash.block_size - 1, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
     }
-    fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32, stop: DraftStop) anyerror!usize {
         const self: *Runtime = @ptrCast(@alignCast(host));
-        return self.propose(token, out, p_min);
+        return self.propose(token, out, stop);
     }
     fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
         const self: *Runtime = @ptrCast(@alignCast(host));

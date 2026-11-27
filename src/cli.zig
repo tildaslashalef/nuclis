@@ -91,7 +91,7 @@ pub const Options = struct {
 
 /// The flags `generate`, `bench`, `agent`, and `tokenize` read with a value;
 /// which command accepts which is decided where the value is read.
-const value_flags = [_][]const u8{ "--accept", "--audio", "--backend", "--capture", "--ctx-size", "--draft", "--draft-length", "--draft-max-depth", "--draft-p-min", "--image", "--image-max-tokens", "--kv", "--logits", "--max-tokens", "--min-p", "--prefix-cache", "--presence-penalty", "--prompt", "--prompt-file", "--prompt-profile", "--prompt-tokens", "--repeat", "--repetition-penalty", "--seed", "--speculative", "--temperature", "--think", "--thinking-budget", "--top-k", "--top-p", "--trace-dir", "--verify-rows", "--warmup" };
+const value_flags = [_][]const u8{ "--accept", "--audio", "--backend", "--capture", "--ctx-size", "--draft", "--draft-length", "--draft-max-depth", "--draft-p-min", "--draft-chain-min", "--image", "--image-max-tokens", "--kv", "--logits", "--max-tokens", "--min-p", "--prefix-cache", "--presence-penalty", "--prompt", "--prompt-file", "--prompt-profile", "--prompt-tokens", "--repeat", "--repetition-penalty", "--seed", "--speculative", "--temperature", "--think", "--thinking-budget", "--top-k", "--top-p", "--trace-dir", "--verify-rows", "--warmup" };
 
 fn isValueFlag(flag: []const u8) bool {
     for (value_flags) |known| if (std.mem.eql(u8, flag, known)) return true;
@@ -415,6 +415,11 @@ fn parseAt(args: []const []const u8, at: *usize) !Options {
                 const p = std.fmt.parseFloat(f32, value) catch return error.InvalidNumber;
                 if (!std.math.isFinite(p) or p < 0 or p > 1) return error.InvalidNumber;
                 b.draft_p_min = p;
+            } else if (command == .bench and std.mem.eql(u8, flag, "--draft-chain-min")) {
+                if (b.draft_chain_min != null) return error.DuplicateOption;
+                const c = std.fmt.parseFloat(f32, value) catch return error.InvalidNumber;
+                if (!std.math.isFinite(c) or c < 0 or c > 1) return error.InvalidNumber;
+                b.draft_chain_min = c;
             } else if (command == .bench and std.mem.eql(u8, flag, "--accept")) {
                 if (b.accept != null) return error.DuplicateOption;
                 b.accept = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
@@ -1754,6 +1759,9 @@ test "bench parses shared prompt flags and its own repetition flags" {
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "bench", "--prompt", "a", "--draft-p-min", "1.5" }));
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "bench", "--prompt", "a", "--draft-p-min", "nan" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "agent", "--draft-p-min", "0.5" }));
+    try std.testing.expectEqual(@as(f32, 0.4), (try parseArgs(&.{ "bench", "--prompt", "a", "--draft-chain-min", "0.4" })).benchmark.draft_chain_min.?);
+    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "bench", "--prompt", "a", "--draft-chain-min", "-0.1" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--draft-chain-min", "0.4" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--profile", "--prompt", "a" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--prompt", "a", "--repeat", "1" }));
 }

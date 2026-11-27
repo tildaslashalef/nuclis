@@ -571,9 +571,9 @@ pub const Model = struct {
             inline else => |*e| return e.drafter(),
         }
     }
-    pub fn propose(self: *Model, token: u32, out: []u32, p_min: f32) !usize {
+    pub fn propose(self: *Model, token: u32, out: []u32, stop: inference.draft.Stop) !usize {
         const d = self.drafter() orelse return error.NoDrafter;
-        return d.propose(token, out, p_min);
+        return d.propose(token, out, stop);
     }
     pub fn commitDraft(self: *Model, tokens: []const u32, h_rows: []const f32) !void {
         const d = self.drafter() orelse return error.NoDrafter;
@@ -669,14 +669,18 @@ pub const max_draft_length = 15;
 /// and the recovery scheme.
 pub const draft_p_min: f32 = 0.7;
 
+/// The chain's stop when the draft file's verdict names none.
+pub const draft_stop: inference.draft.Stop = .{ .p_min = draft_p_min };
+
 /// Runtime speculative settings, resolved by the caller from the
 /// configuration file and flags. `enabled` alone does nothing without a
 /// loaded drafter.
 pub const Speculative = struct {
     enabled: bool = false,
     draft_length: usize = 0,
-    /// The proposal threshold; only `bench --draft-p-min` departs from the default.
-    p_min: f32 = draft_p_min,
+    /// Where the drafter's chain stops: the draft file's verdict, else
+    /// `draft_stop`; `bench --draft-p-min` and `--draft-chain-min` override it.
+    stop: inference.draft.Stop = draft_stop,
     /// The session position drafting stops at: a run whose prompt reaches it
     /// decodes plainly; one that starts below drafts to its end. Null drafts
     /// at any depth.
@@ -1694,7 +1698,7 @@ pub fn runLoop(
             const room = eng.model.session().capacity - position - 1;
             const k = @min(settings.draft_length, @min(room, limit - count));
             if (hooks) |h| if (h.before_step) |call| try call(h.context, position);
-            var result = speculativeBatch(eng, sampler, history, observer, s, token, k, settings.p_min, greedy_verify, vocabulary, drafter.?) catch |err| switch (err) {
+            var result = speculativeBatch(eng, sampler, history, observer, s, token, k, settings.stop, greedy_verify, vocabulary, drafter.?) catch |err| switch (err) {
                 // A cancelled batch poisons the session exactly as a cancelled
                 // step does; the loop resets it and reports cancellation.
                 error.Cancelled => {
@@ -1808,13 +1812,13 @@ fn speculativeBatch(
     s: *SpeculativeScratch,
     seed_token: u32,
     k: usize,
-    p_min: f32,
+    stop: inference.draft.Stop,
     greedy: bool,
     vocabulary: usize,
     drafter: inference.draft.Drafter,
 ) !BatchResult {
     const propose_start = std.Io.Clock.awake.now(eng.io);
-    const n = try eng.model.propose(seed_token, s.drafts[0..k], p_min);
+    const n = try eng.model.propose(seed_token, s.drafts[0..k], stop);
     const propose = propose_start.durationTo(std.Io.Clock.awake.now(eng.io));
     const checkpoint_start = std.Io.Clock.awake.now(eng.io);
     try eng.model.checkpoint();
@@ -1952,7 +1956,7 @@ pub fn forcedBatch(eng: *Engine, seed: u32, drafts: []const u32, accepted: usize
     var cost: BatchCost = .{ .next = seed };
     const start = std.Io.Clock.awake.now(io);
     var mark = start;
-    _ = try eng.model.propose(seed, s.drafts[0..n], 0);
+    _ = try eng.model.propose(seed, s.drafts[0..n], .{});
     cost.propose = lap(io, &mark);
     try eng.model.checkpoint();
     cost.checkpoint = lap(io, &mark);

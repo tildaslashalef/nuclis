@@ -25,12 +25,11 @@ pub const Drafter = struct {
     max_proposals: usize,
     /// Greedy candidates from the state after the last committed token, using
     /// `token` (the last chosen token not yet fed) as the block's seed.
-    /// Returns the count proposed, at most `out.len`. Verification needs no
-    /// draft distribution: acceptance draws from the target alone. `p_min`
-    /// > 0 stops after a position whose top candidate's probability is below
-    /// it (the first position is always proposed); 0 proposes every position
-    /// `out` has room for.
-    propose_fn: *const fn (host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize,
+    /// Returns the count proposed, at most `out.len`, where `stop` ends the
+    /// chain (`Stop.next`); an inactive `stop` proposes every position `out`
+    /// has room for. Verification needs no draft distribution: acceptance
+    /// draws from the target alone.
+    propose_fn: *const fn (host: *anyopaque, token: u32, out: []u32, stop: Stop) anyerror!usize,
     /// Advances the drafter over `tokens`, whose target hidden rows are
     /// `h_rows` (`tokens.len * hidden` values), as committed by `recover`.
     commit_fn: *const fn (host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void,
@@ -41,8 +40,8 @@ pub const Drafter = struct {
     carried_fn: *const fn (host: *anyopaque) []f32,
     bytes_fn: *const fn (host: *anyopaque) usize,
 
-    pub fn propose(self: Drafter, token: u32, out: []u32, p_min: f32) !usize {
-        return self.propose_fn(self.host, token, out, p_min);
+    pub fn propose(self: Drafter, token: u32, out: []u32, stop: Stop) !usize {
+        return self.propose_fn(self.host, token, out, stop);
     }
     pub fn commit(self: Drafter, tokens: []const u32, h_rows: []const f32) !void {
         return self.commit_fn(self.host, tokens, h_rows);
@@ -59,3 +58,54 @@ pub const Drafter = struct {
         return self.bytes_fn(self.host);
     }
 };
+
+/// Where a greedy chain stops, from each position's top-candidate
+/// probability `p` (the full-vocabulary softmax at its choice): after a
+/// position whose `p` is below `p_min`, that position still proposed; and
+/// before a position that would take the product of the chain's `p` below
+/// `chain_min`, the first position always proposed. 0 turns either off.
+pub const Stop = struct {
+    p_min: f32 = 0,
+    chain_min: f32 = 0,
+
+    pub fn valid(self: Stop) bool {
+        return std.math.isFinite(self.p_min) and self.p_min >= 0 and self.p_min <= 1 and
+            std.math.isFinite(self.chain_min) and self.chain_min >= 0 and self.chain_min <= 1;
+    }
+
+    /// Whether a position's `p` is needed at all; an inactive stop never cuts.
+    pub fn active(self: Stop) bool {
+        return self.p_min > 0 or self.chain_min > 0;
+    }
+
+    /// After choosing position `index` (0-based) with top probability `p`:
+    /// null to go on, or the count to propose (`index + 1` when it is the
+    /// chain's last, `index` when it is not proposed). `chain` carries the
+    /// product, 1 before the first position.
+    pub fn cut(self: Stop, chain: *f64, index: usize, p: f64) ?usize {
+        chain.* *= p;
+        if (index > 0 and chain.* < self.chain_min) return index;
+        return if (p < self.p_min) index + 1 else null;
+    }
+};
+
+test "a stop cuts after a low position and before a low product" {
+    const testing = std.testing;
+    const run = struct {
+        fn f(stop: Stop, ps: []const f64) usize {
+            var chain: f64 = 1;
+            for (ps, 0..) |p, i| if (stop.cut(&chain, i, p)) |n| return n;
+            return ps.len;
+        }
+    }.f;
+    const ps = [_]f64{ 0.9, 0.8, 0.6, 0.95 };
+    try testing.expectEqual(@as(usize, 4), run(.{}, &ps));
+    try testing.expectEqual(@as(usize, 3), run(.{ .p_min = 0.7 }, &ps));
+    // 0.9, 0.72, 0.432: the third position falls below 0.5.
+    try testing.expectEqual(@as(usize, 2), run(.{ .chain_min = 0.5 }, &ps));
+    try testing.expectEqual(@as(usize, 2), run(.{ .p_min = 0.85, .chain_min = 0.5 }, &ps));
+    // The first position is proposed whatever its product.
+    try testing.expectEqual(@as(usize, 1), run(.{ .chain_min = 0.99 }, &ps));
+    try testing.expect(!(Stop{ .chain_min = 1.5 }).valid());
+    try testing.expect(!(Stop{}).active());
+}

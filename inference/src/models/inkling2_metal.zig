@@ -18,6 +18,7 @@
 //! the forward captures while it records.
 //! docs/models/inkling2.md § Metal says what the plan covers.
 const std = @import("std");
+const DraftStop = @import("../runtime/draft.zig").Stop;
 const model = @import("inkling2.zig");
 const models = @import("root.zig");
 const runtime = @import("inkling2_runtime.zig");
@@ -985,7 +986,7 @@ pub const Plan = struct {
     // --- the DSpark drafter ---------------------------------------------
 
     /// What the drafter borrows from the plan for one call.
-    fn sparkTarget(self: *Plan) !dspark_metal.Target {
+    pub fn sparkTarget(self: *Plan) !dspark_metal.Target {
         const embedding = try self.weight(self.binding.token_embedding);
         const output = try self.weight(self.binding.output);
         return .{
@@ -1001,11 +1002,11 @@ pub const Plan = struct {
     /// Greedy drafts from the state after the last committed token: one
     /// block from `token` at the session position and the Markov chain on
     /// the device (`dspark_metal.Draft.propose`).
-    pub fn sparkPropose(self: *Plan, token: u32, out: []u32, p_min: f32) !usize {
+    pub fn sparkPropose(self: *Plan, token: u32, out: []u32, stop: DraftStop) !usize {
         const d = &(self.spark orelse return error.NoDraftBlock);
         try self.settle();
         if (self.state.status != .ready) return error.SessionNotReady;
-        return d.propose(try self.sparkTarget(), token, out, p_min);
+        return d.propose(try self.sparkTarget(), token, out, stop);
     }
 
     /// Advances the drafter over committed tokens, which end at the session
@@ -1022,9 +1023,9 @@ pub const Plan = struct {
         if (self.spark == null) return null;
         return .{ .host = self, .hidden = dspark.hidden_width, .max_proposals = dspark.max_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetFn, .carried_fn = carriedFn, .bytes_fn = bytesFn };
     }
-    fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32, stop: DraftStop) anyerror!usize {
         const self: *Plan = @ptrCast(@alignCast(host));
-        return self.sparkPropose(token, out, p_min);
+        return self.sparkPropose(token, out, stop);
     }
     fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
         const self: *Plan = @ptrCast(@alignCast(host));

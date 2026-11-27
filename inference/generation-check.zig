@@ -215,6 +215,10 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedStatsKind;
             stats.kind = args[i];
+        } else if (std.mem.eql(u8, arg, "--stats-prompt-tokens")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedTokenArray;
+            stats.prompt_tokens = args[i];
         } else if (std.mem.eql(u8, arg, "--stats-sampling")) {
             i += 1;
             if (i >= args.len) return error.ExpectedStatsSampling;
@@ -849,8 +853,8 @@ fn draftRecoveryCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io,
     var two: [4]u32 = undefined;
     first.reset();
     second.reset();
-    _ = try first.propose(draft.tokens[0], &one, 0);
-    _ = try second.propose(draft.tokens[0], &two, 0);
+    _ = try first.propose(draft.tokens[0], &one, .{});
+    _ = try second.propose(draft.tokens[0], &two, .{});
     if (!std.mem.eql(u32, &one, &two)) return error.DraftProposeMismatch;
     std.debug.print("Draft recovery check passed ({s}): reset and rewind reproduce the block's hidden; propose is deterministic.\n", .{if (backend != null) "metal" else "cpu"});
 }
@@ -892,8 +896,8 @@ fn draftBatchCommitCheck(comptime spec: Spec, alloc: std.mem.Allocator, b: *infe
     const seed_token = tokens[count - 1];
     var a: [draft_n]u32 = undefined;
     var c: [draft_n]u32 = undefined;
-    const na = try batched.propose(seed_token, &a, 0);
-    const nc = try serial.propose(seed_token, &c, 0);
+    const na = try batched.propose(seed_token, &a, .{});
+    const nc = try serial.propose(seed_token, &c, .{});
     if (na != nc or !std.mem.eql(u32, a[0..na], c[0..nc])) return error.BatchedCommitDraftMismatch;
 
     const logits_a = try alloc.alloc(f32, spec.vocabulary);
@@ -1003,7 +1007,7 @@ fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, m
         carried = false;
         const room = speculative.state().capacity - speculative.state().position - 1;
         const k = @min(block_drafts, room);
-        const n = try speculative.propose(seed, drafts[0..k], 0);
+        const n = try speculative.propose(seed, drafts[0..k], .{});
         try speculative.checkpoint();
         batch[0] = seed;
         @memcpy(batch[1 .. 1 + n], drafts[0..n]);
@@ -1544,10 +1548,10 @@ fn DraftRunner(comptime spec: Spec) type {
                 .metal => |*p| p.draft_pending_h.floats()[0..hidden],
             };
         }
-        fn propose(self: *@This(), token: u32, out: []u32, p_min: f32) !usize {
+        fn propose(self: *@This(), token: u32, out: []u32, stop: inference.draft.Stop) !usize {
             return switch (self.*) {
-                .cpu => |*r| r.propose(token, out, p_min),
-                .metal => |*p| p.propose(token, out, p_min),
+                .cpu => |*r| r.propose(token, out, stop),
+                .metal => |*p| p.propose(token, out, stop),
             };
         }
         fn commit(self: *@This(), tokens: []const u32, h_rows: []const f32) !void {
@@ -1799,7 +1803,7 @@ fn flashTrace(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.M
         anchor = argmax(logits);
         try plan.flashCommit(&tokens, &hidden);
         try plan.flashBlockTrace(anchor, rows, block);
-        _ = try plan.flashPropose(anchor, &drafts, 0);
+        _ = try plan.flashPropose(anchor, &drafts, .{});
     } else {
         var runtime = try qwen35.family.Runtime.init(alloc, io, mapped.view(), binding, capacity, false, true);
         defer runtime.deinit();
@@ -1807,7 +1811,7 @@ fn flashTrace(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.M
         anchor = argmax(logits);
         try runtime.flashCommit(&tokens, &hidden);
         try runtime.flashBlockTrace(anchor, rows, block);
-        _ = try runtime.flashPropose(anchor, &drafts, 0);
+        _ = try runtime.flashPropose(anchor, &drafts, .{});
     }
     for (0..rows) |r| {
         var name: [32]u8 = undefined;
@@ -2052,13 +2056,13 @@ fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
             try fresh.prefill(tokens[0..2], null, null, null, null, prompt_hidden, null);
         }
         try fresh.commit(tokens[0..2], prompt_hidden);
-        break :count try fresh.propose(tokens[2], &proposed, 0);
+        break :count try fresh.propose(tokens[2], &proposed, .{});
     } else count: {
         var fresh = try Family.Runtime.init(alloc, io, mapped.view(), binding, 32, false, true);
         defer fresh.deinit();
         try fresh.prefill(tokens[0..2], null, prompt_hidden, null);
         try fresh.commit(tokens[0..2], prompt_hidden);
-        break :count try fresh.propose(tokens[2], &proposed, 0);
+        break :count try fresh.propose(tokens[2], &proposed, .{});
     };
     if (count < 1 or proposed[0] != greedy[1]) return error.DraftGreedyMismatch;
     std.debug.print("Gemma assistant draft check passed ({s}): both rows match the pinned trace; propose returns {d}.\n", .{ if (use_metal) "metal" else "cpu", proposed[0] });
@@ -2858,7 +2862,7 @@ fn sparkTrace(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.M
         try plan.prefill(&tokens, logits, null, null, null, hidden, null);
         anchor = argmax(logits);
         try plan.sparkCommit(&tokens, hidden);
-        if (try plan.sparkPropose(anchor, &drafts, 0) != drafts.len) return error.DraftLengthMismatch;
+        if (try plan.sparkPropose(anchor, &drafts, .{}) != drafts.len) return error.DraftLengthMismatch;
         @memcpy(rows, plan.spark.?.hidden.floats()[0..rows.len]);
     } else {
         var runtime = try inkling2.Runtime.init(alloc, io, mapped.view(), binding, capacity, false, true);
@@ -2868,7 +2872,7 @@ fn sparkTrace(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.M
         try runtime.sparkCommit(&tokens, hidden);
         const d = try runtime.sparkBlock(anchor);
         @memcpy(rows, d.hidden[0..rows.len]);
-        _ = try d.select(runtime.sparkTarget(), &drafts, 0);
+        _ = try d.select(runtime.sparkTarget(), &drafts, .{});
     }
     for (0..dspark.block_size) |r| {
         var name: [32]u8 = undefined;
@@ -2895,6 +2899,8 @@ const SparkStatsOptions = struct {
     kind: ?[]const u8 = null,
     /// One sampling, or greedy then temperature 1.
     sampling: ?SparkSampling = null,
+    /// A JSON token array measured as one more kind, `tokens`, taken raw.
+    prompt_tokens: ?[]const u8 = null,
 };
 
 const spark_prose =
@@ -3034,7 +3040,6 @@ fn inTop(values: []const f32, id: u32, k: usize) bool {
 /// of the drafter's probability outside them.
 fn sparkStats(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, draft_model: []const u8, options: SparkStatsOptions) !void {
     const inkling2 = inference.models.inkling2;
-    if (use_metal) return error.MetalDrafterUnsupported;
     var companion: ?inference.weights.Mapped = null;
     defer if (companion) |*c| c.deinit(io);
     const binding = try bindDraftSource(inkling2.family, alloc, io, mapped, draft_model, &companion);
@@ -3044,23 +3049,150 @@ fn sparkStats(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.M
     var encoder = try inference.tokenizer.Encoder.init(alloc, &vocab);
     defer encoder.deinit();
     const profile = inference.profiles.forDocument(mapped.document) orelse return error.UnsupportedPromptTemplate;
+    var diagnostic: [8192]u8 = @splat(0);
+    var backend: ?inference.metal.Backend = if (use_metal) inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
+        std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
+        return err;
+    } else null;
+    defer if (backend) |*b| b.deinit();
     var ran = false;
-    for (spark_kinds) |kind| {
+    var array: ?std.json.Parsed([]const u32) = null;
+    defer if (array) |*a| a.deinit();
+    if (options.prompt_tokens) |path| {
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(16 << 20));
+        defer alloc.free(bytes);
+        array = try std.json.parseFromSlice([]const u32, alloc, bytes, .{});
+        if (array.?.value.len == 0) return error.InvalidTokenArray;
+    }
+    for (spark_kinds ++ [_]SparkKind{.{ .name = "tokens", .text = "", .chat = false }}) |kind| {
         if (options.kind) |only| if (!std.mem.eql(u8, only, kind.name)) continue;
+        const is_array = std.mem.eql(u8, kind.name, "tokens");
+        if (is_array and array == null) continue;
         const text = if (kind.chat)
             try profile.render(alloc, &.{.{ .role = .user, .content = kind.text }}, &.{}, .medium, .{ .literal_marks = true })
         else
             try alloc.dupe(u8, kind.text);
         defer alloc.free(text);
-        const prompt = try encoder.encode(alloc, text, true, .{});
+        const prompt = if (is_array) try alloc.dupe(u32, array.?.value) else try encoder.encode(alloc, text, true, .{});
         defer alloc.free(prompt);
         for ([_]SparkSampling{ .greedy, .sampled }) |sampling| {
             if (options.sampling) |only| if (only != sampling) continue;
-            try sparkStatsRun(alloc, io, mapped.view(), binding, kind.name, prompt, sampling, options);
+            if (backend) |*b|
+                try sparkStatsMetal(alloc, io, b, mapped.view(), binding, kind.name, prompt, sampling, options)
+            else
+                try sparkStatsRun(alloc, io, mapped.view(), binding, kind.name, prompt, sampling, options);
             ran = true;
         }
     }
     if (!ran) return error.UnknownStatsKind;
+}
+
+/// `sparkStatsRun` on the Metal plan and drafter, F16 cache: the target's
+/// continuation and its rows from `Plan.step`, the commit rows from one
+/// prefill of the prompt and the continuation, then per position the
+/// drafter committed up to it, its greedy chain and, sampled, the chain fed
+/// the continuation. Reports E(k) per rule as the CPU run does (no
+/// base-256 containment: the device chain does not keep the base logits).
+fn sparkStatsMetal(alloc: std.mem.Allocator, io: std.Io, backend: *inference.metal.Backend, view: inference.weights.View, binding: inference.models.inkling2.Binding, name: []const u8, prompt: []const u32, sampling: SparkSampling, options: SparkStatsOptions) !void {
+    const inkling2 = inference.models.inkling2;
+    const dspark = inference.models.dspark;
+    const V = inkling2.vocabulary;
+    const W = dspark.hidden_width;
+    const k_max = dspark.max_proposals;
+    const steps = options.tokens + k_max;
+    const capacity = prompt.len + steps + dspark.block_size + 1;
+    var plan = try inkling2.Plan.init(alloc, backend, view, binding, capacity, 256, .f16, false, true);
+    defer plan.deinit();
+    const first = try alloc.alloc(f32, V);
+    defer alloc.free(first);
+    const rows = try alloc.alloc(f32, steps * V);
+    defer alloc.free(rows);
+    const all = try alloc.alloc(u32, prompt.len + steps);
+    defer alloc.free(all);
+    const commit_rows = try alloc.alloc(f32, all.len * W);
+    defer alloc.free(commit_rows);
+    const continuation = try alloc.alloc(u32, steps + 1);
+    defer alloc.free(continuation);
+    var prng = std.Random.DefaultPrng.init(options.seed);
+    const random = prng.random();
+    const choose = struct {
+        fn f(logits: []const f32, s: SparkSampling, r: std.Random) u32 {
+            return if (s == .greedy) argmax(logits) else drawFrom(logits, r);
+        }
+    }.f;
+
+    const decode_start = std.Io.Clock.awake.now(io);
+    try plan.prefill(prompt, first, null, null, null, null, null);
+    continuation[0] = choose(first, sampling, random);
+    for (0..steps) |j| {
+        try plan.step(continuation[j], rows[j * V ..][0..V], null, null, null, null);
+        continuation[j + 1] = choose(rows[j * V ..][0..V], sampling, random);
+    }
+    const decode_ms = msSince(io, decode_start);
+    // The commit rows of every position, from one prefill as a run's
+    // `commitPrompt` takes them.
+    plan.reset();
+    @memcpy(all[0..prompt.len], prompt);
+    @memcpy(all[prompt.len..], continuation[0..steps]);
+    try plan.prefill(all, null, null, null, null, commit_rows, null);
+
+    // The drafter alone from here, the session position moved to each
+    // measured position: its caches and carried feature advance row by row
+    // as a run's commits would, and a block's rows past it are rewritten by
+    // the next commit.
+    const end = plan.state.position;
+    defer plan.state.position = end;
+    const d = &plan.spark.?;
+    const target = try plan.sparkTarget();
+    var greedy_tally: SparkTally = .{};
+    var draw_tally: SparkTally = .{};
+    var ratio_tally: SparkTally = .{};
+    var draft_ns: u64 = 0;
+    plan.state.position = prompt.len;
+    try d.commit(target, prompt, commit_rows[0 .. prompt.len * W]);
+    for (0..options.tokens) |s| {
+        const base = prompt.len + s;
+        plan.state.position = base;
+        if (s > 0) try d.commit(target, all[base - 1 .. base], commit_rows[(base - 1) * W ..][0..W]);
+        const start = std.Io.Clock.awake.now(io);
+        var drafts: [k_max]u32 = undefined;
+        @memcpy(&drafts, try d.statsChain(target, continuation[s], k_max, null));
+        draft_ns += @intCast(start.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds());
+        var bins: [k_max]u8 = undefined;
+        for (0..k_max) |i| bins[i] = pmaxBin(Softmax.of(d.chainLogits(target, i)).at(drafts[i]));
+        var accept: [k_max]f64 = undefined;
+        if (sampling == .greedy) {
+            for (0..k_max) |i| accept[i] = if (drafts[i] == continuation[s + 1 + i]) 1 else 0;
+            greedy_tally.add(&accept, &bins);
+            continue;
+        }
+        var reach: [k_max]f64 = undefined;
+        var r: f64 = 1;
+        for (0..k_max) |i| {
+            reach[i] = r;
+            accept[i] = if (r > 0) Softmax.of(rows[(s + i) * V ..][0..V]).at(drafts[i]) else 0;
+            if (drafts[i] != continuation[s + 1 + i]) r = 0;
+        }
+        draw_tally.addReached(&reach, &accept, &bins);
+        // min(1, p/q) along the continuation, the chain fed its tokens.
+        _ = try d.statsChain(target, continuation[s], k_max, continuation[s + 1 ..][0 .. k_max - 1]);
+        for (0..k_max) |i| {
+            const x = continuation[s + 1 + i];
+            const q = Softmax.of(d.chainLogits(target, i)).at(x);
+            const p = Softmax.of(rows[(s + i) * V ..][0..V]).at(x);
+            accept[i] = if (p > 0) @min(1.0, q / p) else 1.0;
+        }
+        ratio_tally.add(&accept, null);
+    }
+    const draft_ms = @as(f64, @floatFromInt(draft_ns)) / std.time.ns_per_ms;
+    std.debug.print("DSpark draft statistics (metal, {s}, {s}, {d} prompt tokens, {d} positions, seed {d}):\n", .{ name, if (sampling == .greedy) "greedy" else "temperature 1", prompt.len, options.tokens, options.seed });
+    if (sampling == .greedy) {
+        greedy_tally.print("greedy", true);
+    } else {
+        draw_tally.print("temperature 1, every emitted token a target draw (greedy chain)", true);
+        ratio_tally.print("temperature 1, min(1, p/q) (chain drawn from the drafter)", false);
+    }
+    std.debug.print("  target decode {d:.0} ms for {d} tokens; drafter {d:.1} ms a block with its chain\n", .{ decode_ms, prompt.len + steps, draft_ms / @as(f64, @floatFromInt(options.tokens)) });
 }
 
 fn sparkStatsRun(alloc: std.mem.Allocator, io: std.Io, view: inference.weights.View, binding: inference.models.inkling2.Binding, name: []const u8, prompt: []const u32, sampling: SparkSampling, options: SparkStatsOptions) !void {

@@ -7,6 +7,7 @@
 //! call. The equations are in docs/engine/speculative-decoding.md
 //! § Inkling 2's DSpark drafter.
 const std = @import("std");
+const DraftStop = @import("../runtime/draft.zig").Stop;
 const dspark = @import("dspark.zig");
 const weights = @import("../runtime/weights.zig");
 const session = @import("../runtime/session.zig");
@@ -320,18 +321,23 @@ pub const Draft = struct {
         return @intCast(best);
     }
 
-    /// The greedy chain over block rows `1 .. 1 + out.len`. `p_min > 0`
-    /// stops after a position whose choice's full-vocabulary probability
-    /// is below it; the first position is always proposed.
-    pub fn select(self: *Draft, target: Target, out: []u32, p_min: f32) !usize {
+    /// The greedy chain over block rows `1 .. 1 + out.len`; `stop` ends it
+    /// on each choice's full-vocabulary probability.
+    pub fn select(self: *Draft, target: Target, out: []u32, stop: DraftStop) !usize {
         var previous = self.anchor;
         var count: usize = 0;
+        var chain: f64 = 1;
         while (count < out.len) {
             const chosen = try self.nextPosition(target, previous);
             out[count] = chosen;
             previous = chosen;
             count += 1;
-            if (p_min > 0 and topProbability(self.logits) < p_min) break;
+            if (stop.active()) {
+                if (stop.cut(&chain, count - 1, topProbability(self.logits))) |n| {
+                    count = n;
+                    break;
+                }
+            }
         }
         return count;
     }

@@ -146,7 +146,7 @@ pub fn run(
         .buffers = .{ .logits = logits, .candidates = candidates, .generated = generated, .effort = settings.think },
         .thinking_budget = settings.thinking_budget,
         .observer = trace.observer(),
-        .speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length, .max_position = settings.draft_max_depth },
+        .speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length, .stop = settings.draft_stop, .max_position = settings.draft_max_depth },
         .cache = .{ .alloc = alloc, .budget = settings.cache.memory_bytes },
         .disk = loop.cache.openDisk(alloc, io, root, settings.cache.disk_bytes, model_path, if (eng.model.drafter() != null) draft_path else null, @tagName(settings.backend)),
         .save_turns = options.session != null,

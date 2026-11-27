@@ -12,6 +12,7 @@
 //! as a shared buffer, so `reset()` is a CPU memset that is only valid after
 //! `commit()` — which the synchronous backend guarantees.
 const std = @import("std");
+const DraftStop = @import("../runtime/draft.zig").Stop;
 const models = @import("root.zig");
 const model = @import("qwen35.zig");
 const weights = @import("../runtime/weights.zig");
@@ -1263,24 +1264,24 @@ pub const Plan = struct {
 
     /// Greedy candidates from the state after the last committed token, each
     /// chained through the block's own hidden; `out.len` bounds the count.
-    /// `p_min > 0` stops after a position whose top candidate's probability
-    /// (the device top-1 pass) is below it; the first position is always
-    /// proposed.
-    pub fn propose(self: *Plan, token: u32, out: []u32, p_min: f32) !usize {
+    /// `stop` ends the chain on each position's top candidate's probability
+    /// (the device top-1 pass).
+    pub fn propose(self: *Plan, token: u32, out: []u32, stop: DraftStop) !usize {
         if (!self.mtp) return error.NoDraftBlock;
-        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        if (!stop.valid()) return error.InvalidShape;
         try self.settle();
         const start = self.state.position;
         var h_prev = self.draft_pending_h;
         var next = token;
         var count: usize = 0;
+        var chain: f64 = 1;
         while (count < out.len) : (count += 1) {
             var greedy: u32 = 0;
             var pmax: f32 = 0;
-            try self.draftForward(h_prev, next, start + count, &greedy, if (p_min > 0) &pmax else null, null);
+            try self.draftForward(h_prev, next, start + count, &greedy, if (stop.active()) &pmax else null, null);
             out[count] = greedy;
-            if (p_min > 0 and pmax < p_min) {
-                count += 1;
+            if (stop.cut(&chain, count, pmax)) |n| {
+                count = n;
                 break;
             }
             next = greedy;
@@ -1473,12 +1474,12 @@ pub const Plan = struct {
     /// One noise block from `token`, then the selector chain over rows
     /// 1… on the host: each position's device top-16 logits, re-scored by the
     /// bilinear term of the chosen predecessor (`dflash2.selectorScores`).
-    /// `p_min > 0` stops after a position whose choice's full-vocabulary
-    /// softmax probability is below it; the first position is always proposed.
-    pub fn flashPropose(self: *Plan, token: u32, out: []u32, p_min: f32) !usize {
+    /// `stop` ends the chain on each choice's full-vocabulary softmax
+    /// probability.
+    pub fn flashPropose(self: *Plan, token: u32, out: []u32, stop: DraftStop) !usize {
         const d = &(self.flash orelse return error.NoDraftBlock);
         if (token >= vocabulary) return error.InvalidTokenId;
-        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        if (!stop.valid()) return error.InvalidShape;
         const count_max: usize = @min(out.len, dflash2.block_size - 1);
         if (count_max == 0) return 0;
         try self.settle();
@@ -1495,6 +1496,7 @@ pub const Plan = struct {
         const view = d.binding.view;
         var previous = token;
         var count: usize = 0;
+        var chain: f64 = 1;
         while (count < count_max) {
             const scratch = d.topk[1 + count];
             const ids = @as([*]const u32, @ptrCast(@alignCast(scratch.indices.host)))[0..dflash2.selector_top_k];
@@ -1508,12 +1510,15 @@ pub const Plan = struct {
             out[count] = ids[choice];
             previous = ids[choice];
             count += 1;
-            if (p_min > 0) {
+            if (stop.active()) {
                 // The partition sums are Σ exp(l − max); values[0] is the max.
                 var total: f64 = 0;
                 for (scratch.sums.floats()[0..metal.Backend.topk_partials]) |partial| total += partial;
                 const p = @exp(@as(f64, values[choice]) - values[0]) / total;
-                if (total > 0 and p < p_min) break;
+                if (stop.cut(&chain, count - 1, if (total > 0) p else 1)) |n| {
+                    count = n;
+                    break;
+                }
             }
         }
         return count;
@@ -1529,9 +1534,9 @@ pub const Plan = struct {
         @memcpy(hidden, d.hidden.floats()[0..hidden.len]);
     }
 
-    fn flashProposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
+    fn flashProposeFn(host: *anyopaque, token: u32, out: []u32, stop: DraftStop) anyerror!usize {
         const self: *Plan = @ptrCast(@alignCast(host));
-        return self.flashPropose(token, out, p_min);
+        return self.flashPropose(token, out, stop);
     }
     fn flashCommitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
         const self: *Plan = @ptrCast(@alignCast(host));
@@ -1558,9 +1563,9 @@ pub const Plan = struct {
         if (!self.mtp) return null;
         return .{ .host = self, .hidden = hidden, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
     }
-    fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32, stop: DraftStop) anyerror!usize {
         const self: *Plan = @ptrCast(@alignCast(host));
-        return self.propose(token, out, p_min);
+        return self.propose(token, out, stop);
     }
     fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
         const self: *Plan = @ptrCast(@alignCast(host));

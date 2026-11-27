@@ -60,9 +60,12 @@ what was delivered and what remains; the next session folds that into the
 unit's one commit.
 
 **Finishing a milestone**: after its last unit, on the user's word, the
-branch is pushed and one pull request opened, titled for the milestone,
-its description listing the units. The user merges it by rebase, so each
-unit stays one commit and `git log main` is the history of the work.
+branch is rebased onto `origin/main` and lands one of two ways, as the
+user says: pushed to `main` as a fast-forward (the maintainer's bypass of
+the `main` ruleset; CI runs on the push), or pushed as a branch with one
+pull request, titled for the milestone and listing its units, that the
+user merges by rebase. Either way each unit stays one commit and
+`git log main` is the history of the work.
 
 **Nothing lands silently.** A side fix found inside a unit, and work the
 user asks for during a session, belong to that unit's commit and its
@@ -283,8 +286,9 @@ finished, fold the steps into the unit's one commit. Inspect the staged
 diff and run the applicable checks before committing.
 
 **Authorized without asking:** commits on the milestone's branch. **Ask
-first, every time:** pushing a branch, opening a pull request, updating its
-description. **Never:** pushing to `main`, merging a pull request,
+first, every time:** pushing a branch, fast-forwarding `main` to a
+finished milestone, opening a pull request, updating its description.
+**Never:** any other push to `main`, merging a pull request,
 force-pushing a branch others may have fetched, rewriting `main`'s history,
 or opening issues on GitHub.
 

@@ -29,9 +29,9 @@ family exposes a `Drafter`: a host pointer, the target hidden width
 `hidden` it consumes, its block bound `max_proposals`, and five function
 pointers.
 
-- `propose(token, out)` returns greedy candidates chained from the state
-  after the last committed token. There is no draft distribution:
-  acceptance draws from the target alone ([§ The loop](#the-loop)).
+- `propose(token, out, stop)` returns greedy candidates chained from the
+  last committed state, cut by `stop` ([§ The loop](#the-loop)); acceptance
+  draws from the target alone.
 - `commit(tokens, h_rows)` advances the drafter over tokens the main model
   committed, using their target hidden rows (`hidden` floats per token).
 - `reset()` clears the drafter's state.
@@ -220,8 +220,7 @@ through `inkling2.attachDraft` when its taps `[5, 23, 41, 48]` fit.
   keys `k_ctx_norm(attn_k_ctx(c))` with RoPE and values `attn_v_ctx(c)`, for
   `c = ctx_norm(Σ ctx_mix[i] · row_i)`; `f_rnn = markov_ctx_norm(Σ
   markov_ctx_mix[i] · row_i)` of the last committed row is `carried`, tagged
-  with its position. A block whose previous row was not committed drafts
-  nothing.
+  with its position. A block after an uncommitted row drafts nothing.
 - **The Markov chain.** Draft `i` (rows 1 … 7) starts from the target's
   head on row `i`'s hidden, uncapped; `joint_proj · [state; markov_w1[prev];
   hidden_i; f_rnn]` gives a gate, a candidate and the Markov feature
@@ -233,11 +232,11 @@ Three full-capacity caches follow the target's 96 (a block writes 8 rows
 past a window's compaction). The CPU reference (`dspark_runtime.zig`)
 recovers by rewind and replay, Metal (`dspark_metal.zig`) from the verify
 tape. The Metal plan captures commit rows in `prefill` and `verify*`
-(`nu_dspark_mix` mixes them); one command buffer runs the block, its 8 rows
-as 192 query heads of one `attentionDecode` (`gatherRows` folds them into
-each KV head's group: the mask is not causal), and the chain, per draft
-`ttsEmbedRow` of `markov_w1[prev]` by the device-held id, `nu_dspark_markov`,
-the BF16 `markov_w2` matvec, the cap, and `argmax`. The entry is off ([record](../benchmarks/record/inkling2.md#the-dspark-drafter-on-metal-2026-11-27)).
+(`nu_dspark_mix`); one command buffer runs the block, its 8 rows as 192
+query heads of one `attentionDecode` (`gatherRows` folds them into each KV
+head's group), and the chain: `ttsEmbedRow` of `markov_w1[prev]` by the
+device-held id, `nu_dspark_markov`, `markov_w2`, the cap, `argmax`. Off;
+its verdict stops on chain product 0.4 ([record](../benchmarks/record/inkling2.md#the-drafters-policy-and-verdict-2026-11-27)).
 
 ## The verify batch
 
@@ -267,10 +266,10 @@ loaded and the switch is on, it commits the prompt to the drafter through
 `engine.commitPrompt` in `prefill_chunk` chunks, then each step:
 
 1. proposes `k = min(draft_length, max_proposals, capacity − position − 1,
-   budget_left)` drafts, stopping the chain after the first position whose
-   top-candidate probability (the full-vocabulary softmax at the argmax) is
-   below `engine.draft_p_min = 0.7` (that position is still proposed; `0`
-   proposes every requested position);
+   budget_left)` drafts, cut by `Speculative.stop` (`draft.Stop`: the draft
+   file's verdict, else `engine.draft_stop`) on each position's top
+   probability p (full-vocabulary softmax): after a p below `p_min` (0.7;
+   still proposed), before a chain product of p below `chain_min` (0);
 2. checkpoints, verifies `[seed] ++ drafts`, and accepts the longest
    prefix;
 3. recovers the accepted prefix, commits it to the drafter, and emits the
@@ -340,11 +339,12 @@ would only accept less after a rewind below the cap.
 The commands open the model with `.preferred` when the switch is on and
 `.none` otherwise. `bench` with the switch on measures every run as an
 off/on pair on the one loaded model, so the pair's ratio is the speedup
-claim; `--draft-p-min` overrides the stop threshold there. Its samples
-carry `speculative_steps`, `proposed_per_step`, `accepted_per_step`, and the
+claim; `--draft-p-min` and `--draft-chain-min` override the stop, and a
+sampled pair shares one seed (`same_tokens`). Its samples carry
+`speculative_steps`, `proposed_per_step`, `accepted_per_step`, and the
 per-phase milliseconds (`propose`, `verify`, `accept`, `checkpoint`,
-`recover`, its rewind/replay split and `recover_by_length`, `commit`); its
-report carries `decode_speedup`. `make spec-matrix` runs real speculation
+`recover`, its rewind/replay split and `recover_by_length`, `commit`);
+its report carries `decode_speedup`. `make spec-matrix` runs real speculation
 on saved prefixes across contexts, draft lengths, and samplings, and is
 how the defaults above are set.
 
@@ -382,8 +382,7 @@ and the external evidence surveyed are in
   [2026-09-20](../benchmarks/record/speculative-decoding.md#recovery-by-accepted-length-2026-09-20).
 - Why acceptance draws from the target rather than `min(1, p/q)`:
   [record, 2026-09-20](../benchmarks/record/speculative-decoding.md#the-verify-batch-and-the-loop-2026-09-20).
-- Why `draft_p_min` is 0.7 and the adaptive length was dropped:
-  [record, 2026-09-20](../benchmarks/record/speculative-decoding.md#the-proposal-policy-2026-09-20).
+- Why `draft_p_min` is 0.7 and the adaptive length was dropped: [record, 2026-09-20](../benchmarks/record/speculative-decoding.md#the-proposal-policy-2026-09-20); Inkling's chain product: [2026-11-27](../benchmarks/record/inkling2.md#the-drafters-policy-and-verdict-2026-11-27).
 - Why the multi-row matvec takes only small batches and the wide tile was
   not adopted: [record, 2026-09-20](../benchmarks/record/speculative-decoding.md#small-batches-the-multi-row-matvec-and-the-2-row-routing-2026-09-20),
   [the tile experiment](../benchmarks/record/speculative-decoding.md#the-small-batch-tile-experiment-2026-09-20-closed-negative).

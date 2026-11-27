@@ -211,6 +211,7 @@ pub const commands = [_]Command{
         .{ .name = "--verify-rows", .value = .number, .summary = "time verify batches of R rows" },
         .{ .name = "--accept", .value = .number, .summary = "drafts each verify batch accepts" },
         .{ .name = "--draft-p-min", .value = .number, .summary = "the drafter's proposal threshold" },
+        .{ .name = "--draft-chain-min", .value = .number, .summary = "the drafter's chain-product floor" },
         json,
     } ++ engine_flags) }} },
     .{ .name = "tokenize", .summary = "the prompt's token ids, no model run", .actions = &.{.{ .flags = &.{

@@ -527,7 +527,11 @@ fn bench(p: *Page) !void {
     try more(p, "--speculative on");
     try row(p, "--accept <a>", "drafts each verify batch accepts, 0..R-1 (0)");
     try row(p, "--draft-p-min <p>", "the drafter's proposal threshold, 0..1, for the");
-    try more(p, "speculative runs (0.7; 0 proposes every position)");
+    try more(p, "speculative runs (the draft's verdict, else 0.7;");
+    try more(p, "0 proposes every position)");
+    try row(p, "--draft-chain-min <c>", "stop the chain before the product of its top");
+    try more(p, "probabilities falls below c, 0..1 (the draft's");
+    try more(p, "verdict, else 0: off)");
     try row(p, "--json", "the report: every sample and the measured means");
     try engineOptions(p);
     try samplingOptions(p);

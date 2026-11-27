@@ -90,20 +90,23 @@ pub fn matching(arena: Allocator, comptime T: type, items: []const T, changed: [
 
 pub const Requirement = struct {
     tier: []const u8,
+    /// The first file that matched.
     file: []const u8,
+    /// Every changed file that matched, `file` first.
+    files: []const []const u8,
     reason: []const u8,
 };
 
-/// Each `requires` rule the change matches, with the first file that did.
+/// Each `requires` rule the change matches, with the files that did.
 pub fn requirements(arena: Allocator, rules: []const manifest.Rule, changed: []const []const u8) Allocator.Error![]const Requirement {
     var out: std.ArrayList(Requirement) = .empty;
     for (rules) |rule| {
+        var files: std.ArrayList([]const u8) = .empty;
         for (changed) |path| {
-            if (glob.matchesAny(rule.paths, path)) {
-                try out.append(arena, .{ .tier = rule.tier, .file = path, .reason = rule.reason });
-                break;
-            }
+            if (glob.matchesAny(rule.paths, path)) try files.append(arena, path);
         }
+        if (files.items.len == 0) continue;
+        try out.append(arena, .{ .tier = rule.tier, .file = files.items[0], .files = files.items, .reason = rule.reason });
     }
     return out.items;
 }
@@ -264,6 +267,10 @@ test "checks and requirements follow paths" {
     try testing.expectEqual(@as(usize, 1), required.len);
     try testing.expectEqualStrings("verify-cpu", required[0].tier);
     try testing.expectEqualStrings("inference/src/backends/cpu/vector.zig", required[0].file);
+    try testing.expectEqual(@as(usize, 1), required[0].files.len);
+    const two = try requirements(a, m.requires, &.{ "inference/src/backends/cpu/vector.zig", "docs/x.md", "inference/src/backends/cpu/other.zig" });
+    try testing.expectEqual(@as(usize, 2), two[0].files.len);
+    try testing.expectEqualStrings("inference/src/backends/cpu/other.zig", two[0].files[1]);
     try testing.expectEqual(@as(usize, 0), (try requirements(a, m.requires, &.{"src/tui/editor.zig"})).len);
 }
 

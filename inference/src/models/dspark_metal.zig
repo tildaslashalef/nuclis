@@ -9,6 +9,7 @@
 //! the previous position's argmax wrote, so the drafts need no host round
 //! trip (docs/engine/speculative-decoding.md § Inkling 2's DSpark drafter).
 const std = @import("std");
+const DraftStop = @import("../runtime/draft.zig").Stop;
 const dspark = @import("dspark.zig");
 const session = @import("../runtime/session.zig");
 const metal = @import("../backends/metal/root.zig");
@@ -263,32 +264,62 @@ pub const Draft = struct {
 
     /// One block from `anchor` at the session position, then the greedy
     /// Markov chain over `out.len` positions (at most `max_proposals`), all
-    /// in one command buffer. `p_min > 0` keeps the positions up to the first
-    /// whose choice's full-vocabulary probability is below it. Returns the
-    /// count; none when the row before the position was never committed or
-    /// the block does not fit.
-    pub fn propose(self: *Draft, t: Target, anchor: u32, out: []u32, p_min: f32) !usize {
+    /// in one command buffer; `stop` then keeps a prefix of it from each
+    /// position's full-vocabulary probability (`draft.Stop.next`). Returns
+    /// the count; none when the row before the position was never committed
+    /// or the block does not fit.
+    pub fn propose(self: *Draft, t: Target, anchor: u32, out: []u32, stop: DraftStop) !usize {
         if (anchor >= V) return error.InvalidTokenId;
-        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        if (!stop.valid()) return error.InvalidShape;
         const count: usize = @min(out.len, dspark.max_proposals);
         const base = t.state.position;
         if (count == 0 or !self.ready(base) or base + rows > t.state.capacity) return 0;
-        try self.block(t, anchor, base, count, p_min > 0);
+        try self.block(t, anchor, base, count, stop.active(), false);
         const ids = @as([*]const u32, @ptrCast(@alignCast(self.codes.host)))[0..rows];
-        var kept: usize = 0;
-        while (kept < count) {
-            const id = ids[1 + kept];
+        var chain: f64 = 1;
+        for (0..count) |i| {
+            const id = ids[1 + i];
             if (id >= V) return error.NonFiniteResult;
-            out[kept] = id;
-            kept += 1;
-            if (p_min > 0 and topProbability(self.topk[kept - 1]) < p_min) break;
+            out[i] = id;
+            if (stop.active()) if (stop.cut(&chain, i, topProbability(self.topk[i]))) |n| return n;
         }
-        return kept;
+        return count;
+    }
+
+    /// `generation-check --draft-stats`: one block from `anchor` at the
+    /// session position and `count` chain positions, greedy, or fed
+    /// `forced` (position `i`'s previous token `forced[i - 1]`, the anchor
+    /// before position 1). Returns the greedy drafts (empty when forced);
+    /// `chainLogits` then reads each position's capped logits.
+    pub fn statsChain(self: *Draft, t: Target, anchor: u32, count: usize, forced: ?[]const u32) ![]const u32 {
+        if (anchor >= V) return error.InvalidTokenId;
+        if (count == 0 or count > dspark.max_proposals) return error.InvalidShape;
+        const base = t.state.position;
+        if (!self.ready(base) or base + rows > t.state.capacity) return error.InvalidShape;
+        const codes = @as([*]u32, @ptrCast(@alignCast(self.codes.host)))[0..rows];
+        if (forced) |f| {
+            if (f.len + 1 < count) return error.InvalidShape;
+            for (f[0 .. count - 1], 1..) |id, i| {
+                if (id >= V) return error.InvalidTokenId;
+                codes[i] = id;
+            }
+        }
+        try self.block(t, anchor, base, count, false, forced != null);
+        if (forced != null) return &.{};
+        for (codes[1 .. count + 1]) |id| if (id >= V) return error.NonFiniteResult;
+        return codes[1 .. count + 1];
+    }
+
+    /// Chain position `i`'s capped logits (0-based) after `statsChain`.
+    pub fn chainLogits(_: *const Draft, t: Target, i: usize) []const f32 {
+        return t.logits.floats()[(i + 1) * PV ..][0..V];
     }
 
     /// Records and runs the block and `count` chain positions; `probability`
-    /// also takes each position's partial softmax sums.
-    fn block(self: *Draft, t: Target, anchor: u32, base: usize, count: usize, probability: bool) !void {
+    /// also takes each position's partial softmax sums. `forced` keeps the
+    /// host-written ids in `codes` as each position's previous token instead
+    /// of the chain's own argmax.
+    fn block(self: *Draft, t: Target, anchor: u32, base: usize, count: usize, probability: bool, forced: bool) !void {
         const b = t.backend;
         const last = base + rows - 1;
         // The chain's fixed inputs: a zero state, the carried f_rnn, the anchor.
@@ -363,7 +394,7 @@ pub const Draft = struct {
             const row = logits.slice(i * PV * 4, V * 4);
             try b.add(row, self.bias, V);
             try b.softcap(row, V, dspark.softcap);
-            try b.argmax(row, V, self.argmax_values, self.argmax_indices, self.codes.slice(i * 4, 4));
+            if (!forced) try b.argmax(row, V, self.argmax_values, self.argmax_indices, self.codes.slice(i * 4, 4));
             if (probability) try b.topk(row, V, 1, 1.0, self.topk[i - 1]);
         }
         try b.commit();

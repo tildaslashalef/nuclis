@@ -69,6 +69,9 @@ pub const Verdict = struct {
     /// The context depth drafting stops at, where the measured off/on pairs
     /// fall below 1×; null drafts at any depth.
     max_depth: ?usize = null,
+    /// Where the drafter's chain stops, when the record measured a better
+    /// one than `engine.draft_stop`; null keeps that default.
+    stop: ?inference.draft.Stop = null,
 };
 
 /// One pinned file of an artifact. `path` is where it lands under the
@@ -347,7 +350,7 @@ pub const artifacts = [_]Artifact{
             .{ .role = .mmproj, .path = "mmproj-F16.gguf", .size = 639_348_160, .sha256 = "3bff75ffeb2d6e0371ba7bd42e30d26a7d98aea681fa44b03b5a20891cfa2c5f", .used_for = "image input" },
             // Off: only the CPU reference drafts with it so far
             // (docs/engine/speculative-decoding.md § Inkling 2's DSpark drafter).
-            .{ .role = .draft, .variant = "dspark", .path = "dspark-Inkling-2-Mini-Q8_0.gguf", .size = 503_889_952, .sha256 = "3da00cf7c31bbe5662b3c0d373ecf782d74d32ef43990acc158ce60c2add72e0", .used_for = "speculative decoding (a DSpark drafter)", .verdict = .{ .speculative = false, .draft_length = 3 } },
+            .{ .role = .draft, .variant = "dspark", .path = "dspark-Inkling-2-Mini-Q8_0.gguf", .size = 503_889_952, .sha256 = "3da00cf7c31bbe5662b3c0d373ecf782d74d32ef43990acc158ce60c2add72e0", .used_for = "speculative decoding (a DSpark drafter)", .verdict = .{ .speculative = false, .draft_length = 3, .stop = .{ .chain_min = 0.4 } } },
         },
     },
     // Meta's dense agentic model with its DFlash drafter.
